@@ -1,5 +1,5 @@
 {
   "name": "agentic",
   "private": true,
-  "workspaces": ["packages/*", "examples"]
+  "workspaces": ["packages/*", "examples/*"]
 }

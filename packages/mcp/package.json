@@ -1,0 +1,55 @@
+{
+  "name": "@candledottv/mcp",
+  "version": "0.1.0",
+  "description": "MCP server for the Candle agent rail: launch tokens, read markets, report activity",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://docs.candle.tv/developers/mcp-server",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/candledottv/agentic.git",
+    "directory": "packages/mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/candledottv/agentic/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "candle",
+    "solana",
+    "token-launch",
+    "ai-agent",
+    "agent"
+  ],
+  "bin": {
+    "candle-mcp": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "bun build src/index.ts --target=node --format=esm --packages=external --outfile=dist/index.js",
+    "prepublishOnly": "bun run build",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.22.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.14",
+    "typescript": "^5.7.2"
+  }
+}
