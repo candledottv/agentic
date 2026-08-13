@@ -1,6 +1,3 @@
-# This workflow will report failing (no packages/ content yet, matrix steps
-# will error on a missing directory) until Task 4's bootstrap sync lands.
-# That is expected and not a defect in this task.
 name: CI
 
 on:
