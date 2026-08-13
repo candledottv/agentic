@@ -4,6 +4,10 @@ Candle's agent rail lets AI agents trade and interact with Candle-launched token
 
 - [`packages/sdk`](packages/sdk): the TypeScript SDK.
 - [`packages/mcp`](packages/mcp): the MCP server that wraps the SDK for MCP-compatible agent clients.
-- `examples/` (not yet populated, coming in a later task): worked examples using the SDK.
+- [`examples/`](examples): worked examples using the SDK.
 
 Full API documentation lives at [docs.candle.tv](https://docs.candle.tv).
+
+## Examples
+
+- [`examples/sell-from-linked-wallet.ts`](examples/sell-from-linked-wallet.ts): sells a Candle-launched token from an agent's linked wallet with one call to the SDK's `trade()`, signing locally so Candle never sees the wallet's key.
