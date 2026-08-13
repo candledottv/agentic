@@ -1,13 +1,15 @@
 import { describe, expect, test } from "bun:test"
 import { buildRequest, TOOL_NAMES } from "./tools"
 
-test("all five tools are registered", () => {
+test("all registered tools are listed", () => {
   expect([...TOOL_NAMES].sort()).toEqual([
     "candle_get_agent_profile",
     "candle_get_feed",
     "candle_get_market",
+    "candle_launch_and_seed",
     "candle_launch_token",
     "candle_report_activity",
+    "candle_trade",
   ])
 })
 

@@ -1,13 +1,13 @@
 /**
- * The five agent-rail tools this MCP server exposes, and their mapping onto the Candle REST
- * surface (apps/api/src/routes/{launch-headless,markets,activity,users}.ts).
+ * The agent-rail tools this MCP server exposes, and their mapping onto the Candle REST surface
+ * (apps/api/src/routes/{launch-headless,markets,activity,users,trade}.ts).
  *
  * `buildRequest` is pure -- no fetch, no SDK types -- so the mapping from tool name + args to
  * (url, init) is fully unit-tested on its own (tools.test.ts) without spinning up a server or
  * mocking a transport. `registerTools` is the only function that touches the MCP SDK; it wires
  * each tool's zod input schema, calls `buildRequest`, fetches, and hands the response text back
  * verbatim -- this package never reinterprets an error body, it relays exactly what the endpoint
- * sent. That body is NOT one uniform shape across all five tools:
+ * sent. That body is NOT one uniform shape across all five one-request tools:
  *   - `candle_launch_token`, `candle_get_market`, and `candle_get_feed` hit endpoints that use
  *     the structured `{ success: false, error: { code, message, ... } }` envelope
  *     (apps/api/src/lib/launch-errors.ts); agents branch on `error.code`.
@@ -15,6 +15,18 @@
  *     `{ error: true, payload: string }`.
  *   - `candle_get_agent_profile` relays `users.ts`'s own plain error shape verbatim:
  *     `{ error: string }`.
+ *
+ * `candle_trade` and `candle_launch_and_seed` are not one-request mappings: `candle_trade` needs
+ * pre-request reads (the market, for the token's own decimals on a sell and its QUOTE asset's
+ * decimals on a buy, or wallet address + balance for a percent sell), and
+ * `candle_launch_and_seed` needs a devBuy decimal-to-raw conversion plus a best-effort follow-up
+ * market read after the launch. Both are built in orchestrate.ts (`executeTrade` /
+ * `executeLaunchAndSeed`) behind an injectable fetch, and registered here the same way the other
+ * five are. `candle_trade`'s relayed text wraps the trade endpoint's body verbatim under `api`,
+ * alongside the echoed `clientTradeId` and the `resolved` conversion; `candle_launch_and_seed`'s
+ * wraps the launch endpoint's body under `launch` (or `api` for dryRun/error), alongside the
+ * echoed `clientLaunchId` and, on a real launch, the best-effort `market` read (see
+ * orchestrate.ts's doc comment).
  *
  * No `candle_import_wallet` tool: MCP hosts commonly log stdio tool call arguments (for replay,
  * debugging, or transcripts), which is an unacceptable place for a plaintext private key to ever
@@ -29,6 +41,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { type RequestConfig, resolveConfig } from "./client"
+import { executeLaunchAndSeed, executeTrade } from "./orchestrate"
 
 export const TOOL_NAMES = [
   "candle_launch_token",
@@ -36,9 +49,19 @@ export const TOOL_NAMES = [
   "candle_get_feed",
   "candle_report_activity",
   "candle_get_agent_profile",
+  "candle_trade",
+  "candle_launch_and_seed",
 ] as const
 
 export type ToolName = (typeof TOOL_NAMES)[number]
+
+/**
+ * The tool names that map onto a single request via `buildRequest`. `candle_trade` and
+ * `candle_launch_and_seed` are deliberately excluded: both are multi-call orchestrations (see
+ * orchestrate.ts's `executeTrade` / `executeLaunchAndSeed`), never built as a single (url, init)
+ * pair, so they're kept out of this type rather than added as dead switch cases.
+ */
+type RestToolName = Exclude<ToolName, "candle_trade" | "candle_launch_and_seed">
 
 export interface BuiltRequest {
   url: string
@@ -61,7 +84,7 @@ function jsonHeaders(apiKey?: string): Record<string, string> {
 /**
  * Pure mapping from a tool call to a fetchable request. No I/O -- see the file doc comment.
  */
-export function buildRequest(name: ToolName, args: Record<string, unknown>, cfg: RequestConfig): BuiltRequest {
+export function buildRequest(name: RestToolName, args: Record<string, unknown>, cfg: RequestConfig): BuiltRequest {
   const base = cfg.apiUrl.replace(/\/$/, "")
 
   switch (name) {
@@ -105,7 +128,7 @@ export function buildRequest(name: ToolName, args: Record<string, unknown>, cfg:
 }
 
 /** Fetches the request and hands the raw response text back to the agent, error body included. */
-async function callAndRelay(name: ToolName, args: Record<string, unknown>, cfg: RequestConfig) {
+async function callAndRelay(name: RestToolName, args: Record<string, unknown>, cfg: RequestConfig) {
   const { url, init } = buildRequest(name, args, cfg)
   const res = await fetch(url, init)
   const text = await res.text()
@@ -168,8 +191,63 @@ const getAgentProfileShape = {
   idOrWallet: z.string().describe("Candle username or wallet address"),
 }
 
+const tradeShape = {
+  mint: z.string().describe("Token mint (solana) or contract address (hood)"),
+  side: z.enum(["buy", "sell"]),
+  amount: z
+    .string()
+    .optional()
+    .describe(
+      "Decimal amount. Buys: how much of THIS TOKEN'S OWN quote asset to spend (SOL for a " +
+        'SOL-launched token, USDC for a USDC-quoted one, and so on: e.g. "0.5"). Sells: how many ' +
+        "TOKENS to sell. Pass exactly one of amount or percent.",
+    ),
+  percent: z
+    .number()
+    .optional()
+    .describe("Sells only: sell this percent (integer 1-100) of the wallet's holding. Solana only."),
+  quoteAsset: z
+    .string()
+    .optional()
+    .describe(
+      'Quote asset ("sol", "usdc", "cndl") for an arbitrary Solana mint Candle never launched ' +
+        "(Pro/Max only); defaults to sol. Ignored for a Candle-launched token, whose quote comes " +
+        "from the token itself, so it never changes how a buy amount is interpreted there.",
+    ),
+  maxSlippageBps: z.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
+  clientTradeId: z
+    .string()
+    .optional()
+    .describe(
+      "Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " +
+        "SAME id is safe (idempotent replay); a new id is a SECOND trade.",
+    ),
+}
+
+// `buyAmount` (raw base units) is destructured out rather than spread in: this tool's one seed
+// input is `devBuy`, in decimal quote units, and advertising both would invite a caller to pass a
+// raw amount the tool never converted. executeLaunchAndSeed strips it from the body as well.
+const { buyAmount: _rawBuyAmount, ...seedableLaunchShape } = launchTokenShape
+
+const launchAndSeedShape = {
+  ...seedableLaunchShape,
+  clientLaunchId: z
+    .string()
+    .optional()
+    .describe("Idempotency key. Auto-generated when omitted and echoed in the result."),
+  devBuy: z
+    .string()
+    .optional()
+    .describe(
+      'Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' +
+        "ETH on hood), bundled into the launch transaction itself. Follows quoteAsset, which " +
+        "defaults to sol on solana and eth on hood. Capped by the platform dev-buy ceiling; for " +
+        "a larger seed, launch then follow with candle_trade.",
+    ),
+}
+
 /**
- * Wires all five tools onto an McpServer instance. Kept out of index.ts so tests never import a
+ * Wires all seven tools onto an McpServer instance. Kept out of index.ts so tests never import a
  * module that constructs a transport-connected server. Config is resolved from the environment
  * once, at registration time (`client.ts`'s `resolveConfig`).
  */
@@ -224,5 +302,39 @@ export function registerTools(server: McpServer): void {
       inputSchema: getAgentProfileShape,
     },
     async (args) => callAndRelay("candle_get_agent_profile", args, cfg),
+  )
+
+  server.registerTool(
+    "candle_trade",
+    {
+      title: "Buy or sell a token",
+      description:
+        "Execute a buy or sell through the Candle trade rail. MOVES REAL FUNDS: the payer is the " +
+        "account's embedded (main) wallet, executed server-side via delegation. Amounts are " +
+        "decimal (never raw base units). Retry a timeout with the SAME clientTradeId from the " +
+        "result; a new id is a second trade.",
+      inputSchema: tradeShape,
+    },
+    async (args) => {
+      const result = await executeTrade(args as never, cfg, fetch)
+      return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true } : {}) }
+    },
+  )
+
+  server.registerTool(
+    "candle_launch_and_seed",
+    {
+      title: "Launch a token and seed it",
+      description:
+        "Launch a new token with an optional dev-buy seed bundled into the launch itself, then " +
+        "return the fresh market state and token links in one result. MOVES REAL FUNDS unless " +
+        "dryRun. Seeds above the platform dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH); " +
+        "launch, then top up with candle_trade.",
+      inputSchema: launchAndSeedShape,
+    },
+    async (args) => {
+      const result = await executeLaunchAndSeed(args as never, cfg, fetch)
+      return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true } : {}) }
+    },
   )
 }
