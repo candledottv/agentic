@@ -1,0 +1,32 @@
+# This workflow will report failing (no packages/ content yet, matrix steps
+# will error on a missing directory) until Task 4's bootstrap sync lands.
+# That is expected and not a defect in this task.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [sdk, mcp]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+      - name: Install
+        working-directory: packages/${{ matrix.package }}
+        run: bun install
+      - name: Build
+        working-directory: packages/${{ matrix.package }}
+        run: bun run build
+      - name: Typecheck
+        working-directory: packages/${{ matrix.package }}
+        run: bun run typecheck
+      - name: Test
+        working-directory: packages/${{ matrix.package }}
+        run: bun test
