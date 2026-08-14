@@ -582,6 +582,29 @@ class CandleClient {
     }
     return this.jsonRpcCall(this.evmRpcUrl, "eth_sendRawTransaction", [signedTransaction]);
   }
+  async swapFromLinked(req) {
+    this.requireKey("swapFromLinked()");
+    const build = await this.requestJson("POST", "/api/v1/agent/swap/build", {
+      from: req.from,
+      to: req.to,
+      amountRaw: req.amountRaw,
+      ...req.maxSlippageBps !== undefined ? { maxSlippageBps: req.maxSlippageBps } : {},
+      payer: { type: "linked", linkedWalletId: req.payer.linkedWalletId },
+      ...req.toWalletId !== undefined ? { toWalletId: req.toWalletId } : {}
+    });
+    const signed = [];
+    for (const unsignedTransactionBase64 of build.payload.transactionsBase64) {
+      const result = await this.signLinkedTransaction({
+        chain: "solana",
+        linkedWalletId: req.payer.linkedWalletId,
+        privyWalletId: req.payer.privyWalletId,
+        unsignedTransactionBase64
+      });
+      signed.push(result.signedTransaction);
+    }
+    const submit = await this.requestJson("POST", "/api/v1/agent/swap/submit", { swapId: build.payload.swapId, signedTransactionsBase64: signed });
+    return submit.payload;
+  }
   async trade(req) {
     const clientTradeId = req.clientTradeId ?? generateClientTradeId();
     const buildReq = {

@@ -632,6 +632,28 @@ export interface EvmSignTransactionParams {
   max_priority_fee_per_gas: string
 }
 
+/** `swapFromLinked()` request: SOL on the linked wallet into ETH/USDG on Hood. */
+export interface LinkedSwapRequest {
+  from: "SOL"
+  to: "ETH" | "USDG"
+  /** Lamports, as a decimal string. */
+  amountRaw: string
+  /** The linked Solana wallet funding the swap. */
+  payer: { linkedWalletId: string; privyWalletId: string }
+  /** The account's OWN linked EVM wallet to receive the output; omitted = the owner's embedded Hood wallet. */
+  toWalletId?: string
+  maxSlippageBps?: number
+}
+
+/** `swapFromLinked()` result. `hashes` is the Solana deposit; poll `statusChecks` for the fill. */
+export interface LinkedSwapResult {
+  hashes: string[]
+  expectedOutRaw: string
+  outDecimals: number
+  statusChecks: string[]
+  recipient: string
+}
+
 export interface SignLinkedTransactionParams {
   /** The linked wallet's row id: keys the secretStore lookup AND is the relay's :id path segment. */
   linkedWalletId: string
@@ -1250,6 +1272,56 @@ export class CandleClient {
       )
     }
     return this.jsonRpcCall(this.evmRpcUrl, "eth_sendRawTransaction", [signedTransaction])
+  }
+
+  /**
+   * Cross-chain base-asset swap FROM A LINKED WALLET: SOL on the linked Solana wallet into
+   * ETH/USDG on Hood, without Candle ever holding a key. Three steps in one call, mirroring
+   * `trade()`'s linked flow: `POST /api/v1/agent/swap/build` (the server quotes the bridge and
+   * compiles the unsigned deposit transaction with the linked wallet as payer, stamping its
+   * bytes for the sign relay), `signLinkedTransaction()` per returned transaction, and
+   * `POST /api/v1/agent/swap/submit` (server-side broadcast -- no solanaRpcUrl needed).
+   *
+   * The output lands on the account's OWN wallets only: pass `toWalletId` (a linked EVM wallet
+   * of the same account) or omit it for the owner's embedded Hood wallet. The bridge fill is
+   * asynchronous -- poll the returned `statusChecks` URLs to observe it complete; `hashes` only
+   * proves the Solana deposit landed. Sign promptly after building: the deposit transaction
+   * carries a recent blockhash and expires in about a minute.
+   *
+   * v1 supports `from: "SOL"` only. Same-chain conversions (SOL/USDC/CNDL) are `trade()` with a
+   * base-asset mint (free, every tier); USDC/CNDL origins convert to SOL that way first.
+   */
+  async swapFromLinked(req: LinkedSwapRequest): Promise<LinkedSwapResult> {
+    this.requireKey("swapFromLinked()")
+    const build = await this.requestJson<{
+      success: true
+      payload: { swapId: string; transactionsBase64: string[] }
+    }>("POST", "/api/v1/agent/swap/build", {
+      from: req.from,
+      to: req.to,
+      amountRaw: req.amountRaw,
+      ...(req.maxSlippageBps !== undefined ? { maxSlippageBps: req.maxSlippageBps } : {}),
+      payer: { type: "linked", linkedWalletId: req.payer.linkedWalletId },
+      ...(req.toWalletId !== undefined ? { toWalletId: req.toWalletId } : {}),
+    })
+
+    const signed: string[] = []
+    for (const unsignedTransactionBase64 of build.payload.transactionsBase64) {
+      const result = await this.signLinkedTransaction({
+        chain: "solana",
+        linkedWalletId: req.payer.linkedWalletId,
+        privyWalletId: req.payer.privyWalletId,
+        unsignedTransactionBase64,
+      })
+      signed.push(result.signedTransaction)
+    }
+
+    const submit = await this.requestJson<{ success: true; payload: LinkedSwapResult }>(
+      "POST",
+      "/api/v1/agent/swap/submit",
+      { swapId: build.payload.swapId, signedTransactionsBase64: signed },
+    )
+    return submit.payload
   }
 
   /**

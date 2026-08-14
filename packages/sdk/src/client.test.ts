@@ -1890,3 +1890,66 @@ describe("AgentTierInfo.feeTotals (type-level)", () => {
     expect(typeof assertFeeRawSumIsString).toBe("function")
   })
 })
+
+describe("swapFromLinked", () => {
+  test("build -> relay-sign per transaction -> submit, returning the submit payload", async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = []
+    const client = new CandleClient({
+      apiUrl: "https://api.test",
+      apiKey: "ck_live_x",
+      privyAppId: "app1",
+      secretStore: await (async () => {
+        const store = new InMemorySecretStore()
+        const { privateKeyPem } = await generateSignerKeypair()
+        await store.set("lw-1", privateKeyPem)
+        return store
+      })(),
+      fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url)
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>
+        calls.push({ url: u, body })
+        if (u.endsWith("/agent/swap/build")) {
+          return json(200, {
+            success: true,
+            payload: { swapId: "swap-1", transactionsBase64: ["dW5zaWduZWQ="] },
+          })
+        }
+        if (u.includes("/agent/wallets/lw-1/sign")) {
+          return json(200, { success: true, signedTransaction: "c2lnbmVk", encoding: "base64" })
+        }
+        if (u.endsWith("/agent/swap/submit")) {
+          return json(200, {
+            success: true,
+            payload: {
+              hashes: ["DepositHash1"],
+              expectedOutRaw: "16000000000000000",
+              outDecimals: 18,
+              statusChecks: ["https://api.relay.link/intents/status?requestId=r1"],
+              recipient: "0x00000000000000000000000000000000000000BB",
+            },
+          })
+        }
+        throw new Error(`unexpected fetch ${u}`)
+      }) as typeof fetch,
+    })
+
+    const result = await client.swapFromLinked({
+      from: "SOL",
+      to: "ETH",
+      amountRaw: "3000000000",
+      payer: { linkedWalletId: "lw-1", privyWalletId: "pw-1" },
+      toWalletId: "lw-evm-1",
+    })
+
+    expect(result.hashes).toEqual(["DepositHash1"])
+    expect(result.recipient).toBe("0x00000000000000000000000000000000000000BB")
+    expect(result.statusChecks.length).toBe(1)
+
+    const build = calls.find((c) => c.url.endsWith("/agent/swap/build"))
+    expect(build?.body.payer).toEqual({ type: "linked", linkedWalletId: "lw-1" })
+    expect(build?.body.toWalletId).toBe("lw-evm-1")
+    const submit = calls.find((c) => c.url.endsWith("/agent/swap/submit"))
+    expect(submit?.body.swapId).toBe("swap-1")
+    expect(submit?.body.signedTransactionsBase64).toEqual(["c2lnbmVk"])
+  })
+})
