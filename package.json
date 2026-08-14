@@ -1,5 +1,11 @@
 {
   "name": "agentic",
   "private": true,
-  "workspaces": ["packages/*", "examples/*"]
+  "workspaces": [
+    "packages/*",
+    "examples/*"
+  ],
+  "bin": {
+    "candle": "packages/cli/dist/index.js"
+  }
 }
