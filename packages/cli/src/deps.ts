@@ -1,0 +1,83 @@
+/**
+ * `Deps`: everything a command needs, injected so tests never touch the network, a real keychain,
+ * real timers, or the real filesystem outside a `CANDLE_CONFIG_DIR` temp dir. `index.ts`'s bin
+ * entry builds the real version of this (real fetch, `resolveSecretStore()`, the real config
+ * file, real process.stdout/stderr, a real clock, a real browser-opener, `process.env`); tests
+ * build fakes (see `test-support.ts`).
+ *
+ * `CommandContext` is the smaller, per-invocation slice every command function actually takes:
+ * the full `Deps`, whether `--json` was passed, and the API URL already resolved for this run
+ * (`--api-url` flag, else `CANDLE_API_URL` env, else the stored config value, else the default --
+ * see `client.ts`'s `resolveApiUrl`). `apiUrlFlag` carries the RAW `--api-url` value only when the
+ * flag was actually given this invocation, distinct from the already-resolved `apiUrl`: `auth
+ * login` needs to know whether to persist an override into config, and "the flag was passed" is
+ * not recoverable from the resolved value alone (a flag equal to the default would look identical
+ * to no flag at all).
+ */
+
+import type { CliConfig } from "./config"
+import type { SecretStore } from "./secret-store"
+import { SECRET_REFS } from "./secret-store"
+
+export interface Writer {
+  write(chunk: string): void
+}
+
+export interface Deps {
+  fetch: typeof fetch
+  store: SecretStore
+  backend: "keychain" | "secret-tool" | "encrypted-file"
+  readConfig: () => Promise<CliConfig>
+  writeConfig: (patch: Partial<CliConfig>) => Promise<void>
+  clearConfig: () => Promise<void>
+  stdout: Writer
+  stderr: Writer
+  /** Current time in ms. Only ever compared against other `now()` calls and `sleep`-advanced
+   * time, never against a wall-clock constant, so a fake clock starting anywhere is safe. */
+  now: () => number
+  /** Waits `ms` milliseconds. The device-flow poll loop sleeps through this exclusively, so a
+   * fake implementation can advance a fake clock and resolve instantly instead of actually
+   * waiting. */
+  sleep: (ms: number) => Promise<void>
+  /** Best-effort browser launch. Real implementation (index.ts) tries open/xdg-open/start and
+   * swallows failure; the URL is always printed by the caller regardless, for SSH sessions. */
+  openBrowser: (url: string) => void
+  env: Record<string, string | undefined>
+  /** The running Node version string (e.g. "22.23.2"), for `doctor`'s runtime-version check.
+   * Real implementation reads `process.versions.node`; injected here (rather than doctor.ts
+   * reading `process.versions.node` directly) so that check's FAIL branch is testable without
+   * actually running the CLI under an old Node. */
+  nodeVersion: string
+  /** This machine's hostname, which `auth login` puts in the default `clientName` shown on the
+   * approval screen. Injected for the same reason `nodeVersion` is: the interesting branch is a
+   * hostname long enough to push the default name past the API's 64-character cap, and that is
+   * not reproducible by running the CLI on the test machine. */
+  hostname: string
+}
+
+export interface CommandContext {
+  deps: Deps
+  json: boolean
+  apiUrl: string
+  /** The raw `--api-url` value for THIS invocation, if the flag was given; undefined otherwise.
+   * See this file's header comment for why this is not recoverable from `apiUrl` alone. */
+  apiUrlFlag?: string
+}
+
+/** Resolves the device token: `CANDLE_DEVICE_TOKEN` env override first, then the store. Every
+ * command that needs the device token goes through this so the precedence is defined exactly
+ * once. */
+export async function resolveDeviceToken(deps: Deps): Promise<string | undefined> {
+  const fromEnv = deps.env.CANDLE_DEVICE_TOKEN?.trim()
+  if (fromEnv) return fromEnv
+  const stored = await deps.store.get(SECRET_REFS.deviceToken)
+  return stored ?? undefined
+}
+
+/** Resolves the API key: `CANDLE_API_KEY` env override first, then the store. */
+export async function resolveApiKey(deps: Deps): Promise<string | undefined> {
+  const fromEnv = deps.env.CANDLE_API_KEY?.trim()
+  if (fromEnv) return fromEnv
+  const stored = await deps.store.get(SECRET_REFS.apiKey)
+  return stored ?? undefined
+}
