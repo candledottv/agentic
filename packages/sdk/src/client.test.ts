@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   type AgentTierInfo,
+  type BuildAtomicLaunchRequest,
   type BuildSelfLaunchRequest,
   type BuildTradeRequest,
   type BuildTradeResult,
@@ -15,10 +16,12 @@ import {
   type ConfirmSelfLaunchRequest,
   type ConfirmTradeRequest,
   type EvmSignTransactionParams,
+  type LaunchAtomicRequest,
   type LaunchRequest,
   type ListWalletsResult,
   type PresetsPayload,
   type SpendLimitsResult,
+  type SubmitAtomicLaunchRequest,
   type SubmitTradeRequest,
 } from "./client"
 
@@ -732,6 +735,191 @@ describe("request shapes", () => {
     const client = new CandleClient({ apiUrl: "https://api.test/", fetch: impl })
     await client.getPresets()
     expect(calls[0]?.url).toBe("https://api.test/api/v1/launch/presets")
+  })
+})
+
+describe("atomic launch (build/submit request shapes, no linked signing)", () => {
+  const ATOMIC_BUILD_REQ: BuildAtomicLaunchRequest = {
+    clientLaunchId: "atomic-run-1",
+    chain: "solana",
+    name: "Atomic Coin",
+    symbol: "ATOM",
+    imageUrl: "https://example.com/atomic.png",
+    payer: { type: "main" },
+    firstBuys: [{ payer: { type: "main" }, amountRaw: "1000000" }],
+  }
+
+  const ATOMIC_BUILD_RESULT_ALL_SERVER = {
+    bundleId: "bundle-server-only",
+    legs: [
+      { index: 0, role: "launch", signer: "server" },
+      { index: 1, role: "buy", signer: "server", expectedFill: { amountOutRaw: "500000" } },
+    ],
+    expiresAt: 1692345678000,
+  }
+
+  test("buildAtomicLaunch: POST /api/v1/launch/atomic/build with key and JSON body", async () => {
+    const { client, calls } = makeClient(KEYED, [json(200, ATOMIC_BUILD_RESULT_ALL_SERVER)])
+    const result = await client.buildAtomicLaunch(ATOMIC_BUILD_REQ)
+    expect(calls[0]).toEqual({
+      url: "https://api.test/api/v1/launch/atomic/build",
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(ATOMIC_BUILD_REQ),
+    })
+    expect(result).toEqual(ATOMIC_BUILD_RESULT_ALL_SERVER as never)
+  })
+
+  test("buildAtomicLaunch generates a sdk- prefixed clientLaunchId when the caller omits one", async () => {
+    const { client, calls } = makeClient(KEYED, [json(200, ATOMIC_BUILD_RESULT_ALL_SERVER)])
+    const { clientLaunchId: _omitted, ...withoutId } = ATOMIC_BUILD_REQ
+    await client.buildAtomicLaunch(withoutId)
+    const sent = JSON.parse(String(calls[0]?.body)) as BuildAtomicLaunchRequest
+    expect(sent.clientLaunchId).toMatch(/^sdk-/)
+  })
+
+  test("submitAtomicLaunch: POSTs bundleId + signedTxsBase64 and returns the landed 200 result untouched", async () => {
+    const landed = { status: "landed", bundleId: "bundle-1", mint: "Mint111", signatures: ["Sig0", "Sig1"] }
+    const { client, calls } = makeClient(KEYED, [json(200, landed)])
+    const req: SubmitAtomicLaunchRequest = { bundleId: "bundle-1", signedTxsBase64: ["legA"] }
+    const result = await client.submitAtomicLaunch(req)
+    expect(calls[0]).toEqual({
+      url: "https://api.test/api/v1/launch/atomic/submit",
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(req),
+    })
+    expect(result).toEqual(landed as never)
+  })
+
+  test("submitAtomicLaunch: a 502 failed outcome is RETURNED, not thrown", async () => {
+    const failed = { status: "failed", bundleId: "bundle-2", retryable: false }
+    const { client } = makeClient(KEYED, [json(502, failed)])
+    const result = await client.submitAtomicLaunch({ bundleId: "bundle-2", signedTxsBase64: [] })
+    expect(result).toEqual(failed as never)
+  })
+
+  test("submitAtomicLaunch: a 502 timeout outcome is RETURNED, not thrown, retryable reflects the resolution", async () => {
+    const timeoutRetryable = { status: "timeout", bundleId: "bundle-3", retryable: true }
+    const { client: client1 } = makeClient(KEYED, [json(502, timeoutRetryable)])
+    const result1 = await client1.submitAtomicLaunch({ bundleId: "bundle-3", signedTxsBase64: [] })
+    expect(result1).toEqual(timeoutRetryable as never)
+
+    // retryable: false (the "ambiguous" resolution -- see task-4-report.md) is a DIFFERENT value,
+    // not a default; both must survive the parse untouched.
+    const timeoutNotRetryable = { status: "timeout", bundleId: "bundle-4", retryable: false }
+    const { client: client2 } = makeClient(KEYED, [json(502, timeoutNotRetryable)])
+    const result2 = await client2.submitAtomicLaunch({ bundleId: "bundle-4", signedTxsBase64: [] })
+    expect(result2).toEqual(timeoutNotRetryable as never)
+  })
+
+  test("submitAtomicLaunch: every OTHER non-2xx status still throws CandleApiError (structured errorBody codes)", async () => {
+    const { client } = makeClient(KEYED, [envelope(404, "JOB_NOT_FOUND", { retryable: false })])
+    const error = (await client
+      .submitAtomicLaunch({ bundleId: "unknown-bundle", signedTxsBase64: [] })
+      .catch((e: unknown) => e)) as CandleApiError
+    expect(error).toBeInstanceOf(CandleApiError)
+    expect(error.code).toBe("JOB_NOT_FOUND")
+    expect(error.status).toBe(404)
+  })
+
+  test("submitAtomicLaunch: a genuine non-envelope 502 (not this route's own shape) still throws CandleApiError", async () => {
+    const { client } = makeClient(KEYED, [new Response("upstream blew up", { status: 502 })])
+    const error = (await client
+      .submitAtomicLaunch({ bundleId: "bundle-5", signedTxsBase64: [] })
+      .catch((e: unknown) => e)) as CandleApiError
+    expect(error).toBeInstanceOf(CandleApiError)
+    expect(error.code).toBe("HTTP_502")
+  })
+
+  test("submitAtomicLaunch: an unexpected 200 response shape throws instead of being silently trusted", async () => {
+    const { client } = makeClient(KEYED, [json(200, { success: true, foo: "bar" })])
+    await expect(client.submitAtomicLaunch({ bundleId: "bundle-6", signedTxsBase64: [] })).rejects.toThrow(
+      /unexpected 200 response shape/,
+    )
+  })
+
+  test("submitAtomicLaunch: a malformed 200 'landed' body (missing mint/signatures) is REJECTED by the outcome guard, not silently trusted", async () => {
+    const { client } = makeClient(KEYED, [json(200, { status: "landed", bundleId: "bundle-7" })])
+    await expect(client.submitAtomicLaunch({ bundleId: "bundle-7", signedTxsBase64: [] })).rejects.toThrow(
+      /unexpected 200 response shape/,
+    )
+  })
+
+  test("submitAtomicLaunch: a malformed 502 body (retryable is not a boolean) is REJECTED by the outcome guard, still throws CandleApiError", async () => {
+    const { client } = makeClient(KEYED, [json(502, { status: "timeout", bundleId: "bundle-8", retryable: "yes" })])
+    const error = (await client
+      .submitAtomicLaunch({ bundleId: "bundle-8", signedTxsBase64: [] })
+      .catch((e: unknown) => e)) as CandleApiError
+    expect(error).toBeInstanceOf(CandleApiError)
+    expect(error.code).toBe("HTTP_502")
+  })
+
+  test("buildAtomicLaunch surfaces a structured error (TIER_REQUIRED) as CandleApiError", async () => {
+    const { client } = makeClient(KEYED, [envelope(403, "TIER_REQUIRED", { retryable: false })])
+    const error = (await client.buildAtomicLaunch(ATOMIC_BUILD_REQ).catch((e: unknown) => e)) as CandleApiError
+    expect(error).toBeInstanceOf(CandleApiError)
+    expect(error.code).toBe("TIER_REQUIRED")
+  })
+
+  test("buildAtomicLaunch surfaces KEY_LIMIT_REACHED (403, with resetsAt) as CandleApiError", async () => {
+    const { client } = makeClient(KEYED, [
+      json(403, {
+        success: false,
+        error: {
+          code: "KEY_LIMIT_REACHED",
+          message: "firstBuys[0]: this key's transaction volume cap would be exceeded by this buy",
+          retryable: true,
+          resetsAt: 1755302400000,
+        },
+      }),
+    ])
+    const error = (await client.buildAtomicLaunch(ATOMIC_BUILD_REQ).catch((e: unknown) => e)) as CandleApiError
+    expect(error.code).toBe("KEY_LIMIT_REACHED")
+    expect(error.retryable).toBe(true)
+  })
+
+  test("launchAtomic(): a server-legs-only bundle (every payer 'main') skips the signing round entirely, no secretStore/privyAppId needed", async () => {
+    const landed = { status: "landed", bundleId: "bundle-server-only", mint: "Mint111", signatures: ["Sig0", "Sig1"] }
+    // No secretStore, no privyAppId in KEYED -- proves this path never touches either.
+    const { client, calls } = makeClient(KEYED, [json(200, ATOMIC_BUILD_RESULT_ALL_SERVER), json(200, landed)])
+    const req: LaunchAtomicRequest = {
+      ...ATOMIC_BUILD_REQ,
+      payer: { type: "main" },
+      firstBuys: [{ payer: { type: "main" }, amountRaw: "1000000" }],
+    }
+    const result = await client.launchAtomic(req)
+    expect(result).toEqual(landed as never)
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://api.test/api/v1/launch/atomic/build",
+      "https://api.test/api/v1/launch/atomic/submit",
+    ])
+    const submitSent = JSON.parse(String(calls[1]?.body)) as SubmitAtomicLaunchRequest
+    expect(submitSent).toEqual({ bundleId: "bundle-server-only", signedTxsBase64: [] })
+  })
+
+  test("launchAtomic(): a server-legs-only bundle that fails is returned, not thrown", async () => {
+    const failed = { status: "failed", bundleId: "bundle-server-only", retryable: false }
+    const { client } = makeClient(KEYED, [json(200, ATOMIC_BUILD_RESULT_ALL_SERVER), json(502, failed)])
+    const req: LaunchAtomicRequest = {
+      ...ATOMIC_BUILD_REQ,
+      payer: { type: "main" },
+      firstBuys: [{ payer: { type: "main" }, amountRaw: "1000000" }],
+    }
+    const result = await client.launchAtomic(req)
+    expect(result).toEqual(failed as never)
+  })
+
+  test("launchAtomic(): a server-legs-only bundle that times out is returned, not thrown", async () => {
+    const timedOut = { status: "timeout", bundleId: "bundle-server-only", retryable: true }
+    const { client } = makeClient(KEYED, [json(200, ATOMIC_BUILD_RESULT_ALL_SERVER), json(502, timedOut)])
+    const req: LaunchAtomicRequest = {
+      ...ATOMIC_BUILD_REQ,
+      payer: { type: "main" },
+      firstBuys: [{ payer: { type: "main" }, amountRaw: "1000000" }],
+    }
+    const result = await client.launchAtomic(req)
+    expect(result).toEqual(timedOut as never)
   })
 })
 
@@ -1619,6 +1807,149 @@ describe("linked-wallet signing relay + one-shot flows", () => {
       })
     })
   })
+
+  describe("launchAtomic() (mixed signer legs)", () => {
+    const ATOMIC_LINKED_WALLET_ID_2 = "wallet-456"
+    const ATOMIC_PRIVY_WALLET_ID_2 = "privy-wallet-456"
+    const ATOMIC_SIGN_RELAY_URL_2 = `https://api.test/api/v1/agent/wallets/${ATOMIC_LINKED_WALLET_ID_2}/sign`
+
+    /** A secretStore holding BOTH linked wallets' signer PEMs, so a bundle mixing two different linked payers can sign each leg. */
+    async function twoWalletSecretStore(): Promise<SecretStore> {
+      const store = new InMemorySecretStore()
+      const { privateKeyPem: pem1 } = await generateSignerKeypair()
+      const { privateKeyPem: pem2 } = await generateSignerKeypair()
+      await store.set(LINKED_WALLET_ID, pem1)
+      await store.set(ATOMIC_LINKED_WALLET_ID_2, pem2)
+      return store
+    }
+
+    const ATOMIC_LAUNCH_REQ_BASE = {
+      clientLaunchId: "atomic-run-linked-1",
+      chain: "solana" as const,
+      name: "Atomic Coin",
+      symbol: "ATOM",
+      imageUrl: "https://example.com/atomic.png",
+    }
+
+    /** Leg 0 (launch): client signer, LINKED_WALLET_ID. Leg 1 (buy): server signer (main payer), no unsignedTxBase64. Leg 2 (buy): client signer, the SECOND linked wallet, non-zero index -- Task 4's own review flagged this exact case (a client leg NOT at index 0). */
+    const ATOMIC_BUILT_MIXED = {
+      bundleId: "bundle-mixed-1",
+      legs: [
+        { index: 0, role: "launch", signer: "client", unsignedTxBase64: "unsigned-launch" },
+        { index: 1, role: "buy", signer: "server", expectedFill: { amountOutRaw: "500000" } },
+        {
+          index: 2,
+          role: "buy",
+          signer: "client",
+          unsignedTxBase64: "unsigned-buy-2",
+          expectedFill: { amountOutRaw: "480000" },
+        },
+      ],
+      expiresAt: 1692345678000,
+    }
+
+    test("signs every client leg in leg order and submits EXACTLY those, in order (server leg is skipped, not padded)", async () => {
+      const store = await twoWalletSecretStore()
+      const landed = {
+        status: "landed",
+        bundleId: "bundle-mixed-1",
+        mint: "Mint111",
+        signatures: ["SigLaunch", "SigBuy1", "SigBuy2"],
+      }
+      const { client, calls } = makeClient({ ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID }, [
+        json(200, ATOMIC_BUILT_MIXED),
+        json(200, { success: true, signedTransaction: "signed-launch-tx", encoding: "base64" }),
+        json(200, { success: true, signedTransaction: "signed-buy-2-tx", encoding: "base64" }),
+        json(200, landed),
+      ])
+      const req: LaunchAtomicRequest = {
+        ...ATOMIC_LAUNCH_REQ_BASE,
+        payer: { type: "linked", linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
+        firstBuys: [
+          { payer: { type: "main" }, amountRaw: "1000000" },
+          {
+            payer: {
+              type: "linked",
+              linkedWalletId: ATOMIC_LINKED_WALLET_ID_2,
+              privyWalletId: ATOMIC_PRIVY_WALLET_ID_2,
+            },
+            amountRaw: "2000000",
+          },
+        ],
+      }
+      const result = await client.launchAtomic(req)
+      expect(result).toEqual(landed as never)
+
+      // build -> sign leg 0 (LINKED_WALLET_ID) -> sign leg 2 (the SECOND wallet) -> submit, in that
+      // exact order; no call at all for leg 1 (the server/main-payer leg).
+      expect(calls.map((c) => c.url)).toEqual([
+        "https://api.test/api/v1/launch/atomic/build",
+        SIGN_RELAY_URL,
+        ATOMIC_SIGN_RELAY_URL_2,
+        "https://api.test/api/v1/launch/atomic/submit",
+      ])
+
+      const buildSent = JSON.parse(String(calls[0]?.body)) as BuildAtomicLaunchRequest
+      expect(buildSent.payer).toEqual({ type: "linked", linkedWalletId: LINKED_WALLET_ID })
+      expect(buildSent.firstBuys).toEqual([
+        { payer: { type: "main" }, amountRaw: "1000000" },
+        { payer: { type: "linked", linkedWalletId: ATOMIC_LINKED_WALLET_ID_2 }, amountRaw: "2000000" },
+      ])
+      // privyWalletId never leaves the process -- the server-bound build body carries neither.
+      expect(JSON.stringify(buildSent)).not.toContain("privy-wallet")
+
+      const leg0SignBody = JSON.parse(String(calls[1]?.body)) as { body: { params: { transaction: string } } }
+      expect(leg0SignBody.body.params.transaction).toBe("unsigned-launch")
+      const leg2SignBody = JSON.parse(String(calls[2]?.body)) as { body: { params: { transaction: string } } }
+      expect(leg2SignBody.body.params.transaction).toBe("unsigned-buy-2")
+
+      const submitSent = JSON.parse(String(calls[3]?.body)) as SubmitAtomicLaunchRequest
+      expect(submitSent).toEqual({
+        bundleId: "bundle-mixed-1",
+        signedTxsBase64: ["signed-launch-tx", "signed-buy-2-tx"],
+      })
+    })
+
+    test("a failed outcome after signing is returned, not thrown", async () => {
+      const store = await twoWalletSecretStore()
+      const failed = { status: "failed", bundleId: "bundle-mixed-1", retryable: false }
+      const { client } = makeClient({ ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID }, [
+        json(200, ATOMIC_BUILT_MIXED),
+        json(200, { success: true, signedTransaction: "signed-launch-tx", encoding: "base64" }),
+        json(200, { success: true, signedTransaction: "signed-buy-2-tx", encoding: "base64" }),
+        json(502, failed),
+      ])
+      const result = await client.launchAtomic({
+        ...ATOMIC_LAUNCH_REQ_BASE,
+        payer: { type: "linked", linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
+        firstBuys: [
+          { payer: { type: "main" }, amountRaw: "1000000" },
+          {
+            payer: {
+              type: "linked",
+              linkedWalletId: ATOMIC_LINKED_WALLET_ID_2,
+              privyWalletId: ATOMIC_PRIVY_WALLET_ID_2,
+            },
+            amountRaw: "2000000",
+          },
+        ],
+      })
+      expect(result).toEqual(failed as never)
+    })
+
+    test("a missing secretStore/privyAppId throws a clear error BEFORE any client leg is submitted", async () => {
+      const { client, calls } = makeClient(KEYED, [json(200, ATOMIC_BUILT_MIXED)])
+      await expect(
+        client.launchAtomic({
+          ...ATOMIC_LAUNCH_REQ_BASE,
+          payer: { type: "linked", linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
+          firstBuys: [{ payer: { type: "main" }, amountRaw: "1000000" }],
+        }),
+      ).rejects.toThrow(/privyAppId/)
+      // build already ran (the failure is discovered while signing leg 0), but submit never did.
+      expect(calls.some((c) => c.url === "https://api.test/api/v1/launch/atomic/submit")).toBe(false)
+    })
+  })
 })
 
 describe("expandPreset (local, no fetch)", () => {
@@ -1735,6 +2066,19 @@ describe("api key requirement", () => {
           unsignedTransactionBase64: "AQ==",
         }),
       () => client.selfLaunch({ ...LAUNCH_REQ, linkedWalletId: "wallet-1", privyWalletId: "privy-1" }),
+      () =>
+        client.buildAtomicLaunch({
+          ...LAUNCH_REQ,
+          payer: { type: "main" },
+          firstBuys: [{ payer: { type: "main" }, amountRaw: "1000000" }],
+        }),
+      () => client.submitAtomicLaunch({ bundleId: "bundle-1", signedTxsBase64: [] }),
+      () =>
+        client.launchAtomic({
+          ...LAUNCH_REQ,
+          payer: { type: "main" },
+          firstBuys: [{ payer: { type: "main" }, amountRaw: "1000000" }],
+        }),
     ]
     for (const attempt of attempts) {
       await expect(attempt()).rejects.toThrow(/apiKey/)

@@ -691,6 +691,110 @@ export type SelfLaunchRequest = BuildSelfLaunchRequest & {
     /** The linked wallet's Privy wallet id (from importWallet()'s result). */
     privyWalletId: string;
 };
+/** Who pays for one leg of an atomic bundle (the launch, or one first buy): the account's own delegated wallet ("main"), or an imported linked wallet. Mirrors TradePayer. */
+export type AtomicLaunchPayer = {
+    type: "main";
+} | {
+    type: "linked";
+    linkedWalletId: string;
+};
+/** One first-buy leg of an atomic launch request. */
+export interface AtomicFirstBuyRequest {
+    payer: AtomicLaunchPayer;
+    /** Quote-asset raw units this leg spends. */
+    amountRaw: string;
+}
+/**
+ * POST /api/v1/launch/atomic/build request body: LaunchRequest without `buyAmount` (atomic
+ * launches never bundle a dev buy into the launch transaction itself -- give the creator a first
+ * buy via `firstBuys` instead, so it lands as bundle leg 1 against a still-virgin curve) plus the
+ * creator's own payer and 1-4 first-buy legs.
+ */
+export interface BuildAtomicLaunchRequest extends Omit<LaunchRequest, "buyAmount"> {
+    payer: AtomicLaunchPayer;
+    /** 1 to 4 buy legs, sharing the launch transaction's own recent blockhash and landing atomically with it (Jito's 5-transaction bundle cap: 1 launch + up to 4 buys). */
+    firstBuys: AtomicFirstBuyRequest[];
+}
+export type AtomicBundleLegRole = "launch" | "buy";
+export type AtomicBundleLegSigner = "server" | "client";
+/**
+ * One leg of a built atomic bundle, in bundle order (index 0 is always the launch; 1..N are the
+ * first buys, in request order). `unsignedTxBase64` is present only for a "client" signer leg (a
+ * "server" leg -- a "main" payer -- is signed by Candle itself at submit time and never leaves the
+ * server). `expectedFill` is present only on a "buy" leg the pricing ladder could compute: it is
+ * an ADVISORY fill, not a slippage guarantee -- every buy leg's own on-chain `minAmountOut` is
+ * always "0" inside the bundle (see "Atomic launch with first buys" in docs/headless-launch.md for
+ * why that is safe here and what `expectedFill` is for instead).
+ */
+export interface AtomicBundleResponseLeg {
+    index: number;
+    role: AtomicBundleLegRole;
+    signer: AtomicBundleLegSigner;
+    unsignedTxBase64?: string;
+    expectedFill?: {
+        amountOutRaw: string;
+    };
+}
+/** POST /api/v1/launch/atomic/build response. */
+export interface BuildAtomicLaunchResult {
+    bundleId: string;
+    legs: AtomicBundleResponseLeg[];
+    expiresAt: number;
+}
+/**
+ * POST /api/v1/launch/atomic/submit request body: EXACTLY the client-signer legs
+ * `BuildAtomicLaunchResult.legs` named (`signer: "client"`), in leg order -- omit every "server"
+ * leg entirely, never pad the array.
+ */
+export interface SubmitAtomicLaunchRequest {
+    bundleId: string;
+    signedTxsBase64: string[];
+}
+/**
+ * POST /api/v1/launch/atomic/submit response. `"landed"` is the 200 body; `"failed"`/`"timeout"`
+ * are the 502 body -- all three are NORMAL, expected outcomes of submitting a Jito bundle that
+ * this route documents as part of its own response surface, so `submitAtomicLaunch()`/
+ * `launchAtomic()` return them here rather than throwing `CandleApiError` (every OTHER non-2xx
+ * status still throws, same as every other method). `retryable` is always `false` for `"failed"`;
+ * for `"timeout"` it is `true` only when the bundle's shared blockhash was proven to have expired
+ * with no confirmation -- `false` means the resolution window simply ran out with no definitive
+ * answer and the bundle MIGHT STILL LAND, so the caller should wait rather than immediately
+ * rebuild under a fresh `clientLaunchId`. In every case, `bundleId` itself is dead once this
+ * response arrives: it is consumed on the first `/submit` call regardless of outcome, so recovery
+ * is always a fresh `buildAtomicLaunch()`/`launchAtomic()` call, never a retried `submit` with the
+ * same id. See "Atomic launch with first buys" in docs/headless-launch.md for the full model.
+ */
+export type SubmitAtomicLaunchResult = {
+    status: "landed";
+    bundleId: string;
+    mint: string;
+    signatures: string[];
+} | {
+    status: "failed";
+    bundleId: string;
+    retryable: false;
+} | {
+    status: "timeout";
+    bundleId: string;
+    retryable: boolean;
+};
+/** Who pays for one leg of launchAtomic()'s one-call request. Mirrors AtomicLaunchPayer, but a "linked" payer also carries the privyWalletId signLinkedTransaction() needs to sign that leg -- mirrors TradeRequest's `from` field. */
+export type LaunchAtomicPayer = {
+    type: "main";
+} | {
+    type: "linked";
+    linkedWalletId: string;
+    privyWalletId: string;
+};
+export interface LaunchAtomicFirstBuyRequest {
+    payer: LaunchAtomicPayer;
+    amountRaw: string;
+}
+/** launchAtomic()'s one-call request: BuildAtomicLaunchRequest's fields, but `payer`/`firstBuys[].payer` use LaunchAtomicPayer (carrying privyWalletId for any linked leg). */
+export type LaunchAtomicRequest = Omit<BuildAtomicLaunchRequest, "payer" | "firstBuys"> & {
+    payer: LaunchAtomicPayer;
+    firstBuys: LaunchAtomicFirstBuyRequest[];
+};
 export declare class CandleClient {
     private readonly apiUrl;
     private readonly apiKey?;
@@ -960,6 +1064,56 @@ export declare class CandleClient {
      * the build response never includes a dev-buy leg, and this method does not assemble one.
      */
     selfLaunch(req: SelfLaunchRequest): Promise<ConfirmSelfLaunchResult>;
+    /**
+     * Builds an atomic launch bundle: a Solana launch transaction plus 1-4 first-buy transactions,
+     * all sharing one recent blockhash so Jito lands them together or not at all. Returns the
+     * UNSIGNED bytes for every "client" signer leg (a "main" payer leg is signed by Candle itself at
+     * submit time and is never returned). Fills in `clientLaunchId` (like `launch()`) when the
+     * caller omits one. Call `submitAtomicLaunch()` next -- or drive both calls plus signing in one
+     * shot with `launchAtomic()`. See "Atomic launch with first buys" in docs/headless-launch.md for
+     * the full model: Pro/Max tier, `launch:write` + `swap:write` scopes, Solana only, the 1-4 buy
+     * cap (Jito's 5-transaction bundle limit), and why every buy leg's own on-chain `minAmountOut` is
+     * "0" inside the bundle (`expectedFill` on the returned legs is the real consent surface).
+     */
+    buildAtomicLaunch(req: BuildAtomicLaunchRequest): Promise<BuildAtomicLaunchResult>;
+    /**
+     * Submits an already-built bundle's client-signer legs (EXACTLY the ones
+     * `BuildAtomicLaunchResult.legs` named `signer: "client"`, in leg order -- omit every "server"
+     * leg entirely, never pad the array) and relays the whole bundle to Jito as one atomic unit.
+     * `bundleId` is single-use regardless of outcome: it is consumed on this call even before any
+     * verification, so a rejected call (tampered bytes, wrong leg count) can only be corrected by
+     * calling `buildAtomicLaunch()` again, never by retrying `submitAtomicLaunch()` with the same
+     * `bundleId`.
+     *
+     * Unlike every other keyed method here, a `"failed"` or `"timeout"` outcome (HTTP 502) is
+     * returned in this SAME result, not thrown as a `CandleApiError` -- both are normal, expected
+     * outcomes of submitting a Jito bundle, not malformed requests or server malfunctions. Every
+     * other non-2xx status (400/403/404/501/503 -- scope/tier/validation failures, an unknown or
+     * expired `bundleId`, tampered signature bytes) still throws `CandleApiError` as usual.
+     *
+     * A `"timeout"` response can take meaningfully longer to arrive than a typical API call -- up to
+     * roughly 150-160s in the worst case (Jito's own ~60s poll budget plus a further ~90s resolution
+     * phase), since Candle checks the launch signature's own on-chain status before answering. Set a
+     * client-side timeout no shorter than ~160s (or none) for this call, or you risk abandoning a
+     * request that was about to return a normal, if late, response.
+     */
+    submitAtomicLaunch(req: SubmitAtomicLaunchRequest): Promise<SubmitAtomicLaunchResult>;
+    /**
+     * One-call atomic launch: `buildAtomicLaunch()` -> `signLinkedTransaction()` for every "client"
+     * signer leg, IN LEG ORDER -> `submitAtomicLaunch()`. A "main" payer leg needs no client-side
+     * signing at all (Candle signs it server-side at submit, the same delegated-wallet path
+     * `launch()`/`trade()`'s main-payer branch uses); a "linked" payer leg is signed HERE, through
+     * the same sign relay `trade()`'s linked branch uses -- requires `privyAppId` and a
+     * `secretStore` holding that leg's own `linkedWalletId`'s signer key (see
+     * `signLinkedTransaction()`'s own jsdoc for the exact errors thrown when either is missing). A
+     * bundle with no linked payer at all (every leg "main") skips the signing round entirely and
+     * goes straight from build to submit.
+     *
+     * Returns `submitAtomicLaunch()`'s own result untouched -- see that method's jsdoc for why
+     * `"failed"`/`"timeout"` are returned here rather than thrown, and for the recommended
+     * client-side timeout.
+     */
+    launchAtomic(req: LaunchAtomicRequest): Promise<SubmitAtomicLaunchResult>;
     /**
      * The `EvmRpc` seam packages/sdk/src/evm-tx.ts's helpers are built against, built from this
      * client's own `jsonRpcCall`/`jsonRpcCallRaw` closed over `evmRpcUrl`. Callers must have already

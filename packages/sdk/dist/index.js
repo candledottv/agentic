@@ -360,6 +360,22 @@ function formatJsonRpcErrorMessage(method, url, rpcError) {
   }
   return parts.length > 0 ? `${base} [${parts.join("; ")}]` : base;
 }
+function toAtomicWirePayer(payer) {
+  return payer.type === "main" ? { type: "main" } : { type: "linked", linkedWalletId: payer.linkedWalletId };
+}
+function isAtomicSubmitOutcome(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const v = value;
+  if (typeof v.bundleId !== "string")
+    return false;
+  if (v.status === "failed" || v.status === "timeout")
+    return typeof v.retryable === "boolean";
+  if (v.status === "landed") {
+    return typeof v.mint === "string" && Array.isArray(v.signatures) && v.signatures.every((s) => typeof s === "string");
+  }
+  return false;
+}
 var DEFAULT_MAX_RETRIES = 3;
 var DEFAULT_POLL_MS = 2000;
 var DEFAULT_WAIT_TIMEOUT_MS = 180000;
@@ -760,6 +776,61 @@ class CandleClient {
       signature: createCurveTxHash,
       ...feeTxHash ? { feeTxHash } : {}
     });
+  }
+  async buildAtomicLaunch(req) {
+    this.requireKey("buildAtomicLaunch()");
+    const body = { ...req, clientLaunchId: req.clientLaunchId ?? generateClientLaunchId() };
+    return this.requestJson("POST", "/api/v1/launch/atomic/build", body);
+  }
+  async submitAtomicLaunch(req) {
+    this.requireKey("submitAtomicLaunch()");
+    const res = await this.fetchImpl(`${this.apiUrl}/api/v1/launch/atomic/submit`, {
+      method: "POST",
+      headers: this.headers({ json: true }),
+      body: JSON.stringify(req)
+    });
+    const text = await res.text();
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = undefined;
+    }
+    if (isAtomicSubmitOutcome(parsed))
+      return parsed;
+    if (!res.ok)
+      throw candleApiErrorFromResponse(res.status, text);
+    throw new Error(`submitAtomicLaunch(): unexpected 200 response shape: ${text}`);
+  }
+  async launchAtomic(req) {
+    const { payer, firstBuys, ...launchFields } = req;
+    const buildReq = {
+      ...launchFields,
+      clientLaunchId: launchFields.clientLaunchId ?? generateClientLaunchId(),
+      payer: toAtomicWirePayer(payer),
+      firstBuys: firstBuys.map((leg) => ({ payer: toAtomicWirePayer(leg.payer), amountRaw: leg.amountRaw }))
+    };
+    const built = await this.buildAtomicLaunch(buildReq);
+    const signedTxsBase64 = [];
+    for (const leg of built.legs) {
+      if (leg.signer !== "client")
+        continue;
+      if (!leg.unsignedTxBase64) {
+        throw new Error(`launchAtomic(): build response's leg ${leg.index} is signer "client" but omitted unsignedTxBase64`);
+      }
+      const legPayer = leg.index === 0 ? payer : firstBuys[leg.index - 1]?.payer;
+      if (!legPayer || legPayer.type !== "linked") {
+        throw new Error(`launchAtomic(): build response's leg ${leg.index} is signer "client" but this request's own leg ${leg.index} is not a linked payer`);
+      }
+      const signed = await this.signLinkedTransaction({
+        linkedWalletId: legPayer.linkedWalletId,
+        privyWalletId: legPayer.privyWalletId,
+        chain: "solana",
+        unsignedTransactionBase64: leg.unsignedTxBase64
+      });
+      signedTxsBase64.push(signed.signedTransaction);
+    }
+    return this.submitAtomicLaunch({ bundleId: built.bundleId, signedTxsBase64 });
   }
   evmRpc() {
     const url = this.evmRpcUrl;
