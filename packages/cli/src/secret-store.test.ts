@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { EncryptedFileSecretStore, SECRET_REFS } from "./secret-store"
+import { EncryptedFileSecretStore, pemToStoredSigner, SECRET_REFS, storedSignerToPem } from "./secret-store"
 
 const ORIGINAL_PASSPHRASE_ENV = process.env.CANDLE_KEYRING_PASSPHRASE
 const ORIGINAL_IS_TTY = process.stdin.isTTY
@@ -120,5 +120,20 @@ describe("EncryptedFileSecretStore", () => {
     await expect(store.get("device_token")).rejects.toThrow(/CANDLE_KEYRING_PASSPHRASE/)
     await expect(store.set("device_token", "x")).rejects.toThrow(/CANDLE_KEYRING_PASSPHRASE/)
     await expect(store.delete("device_token")).rejects.toThrow(/CANDLE_KEYRING_PASSPHRASE/)
+  })
+})
+
+describe("signer PEM storage format", () => {
+  const PEM = `-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg0123456789abcdef\n0123456789abcdefABCD\n-----END PRIVATE KEY-----\n`
+
+  test("pemToStoredSigner strips armor and newlines, so the value is safe for every keychain backend", () => {
+    const stored = pemToStoredSigner(PEM)
+    expect(stored).not.toContain("\n")
+    expect(stored).not.toContain("BEGIN")
+    expect(stored).toMatch(/^[A-Za-z0-9+/]+=*$/)
+  })
+
+  test("storedSignerToPem round-trips back to the exact original PEM", () => {
+    expect(storedSignerToPem(pemToStoredSigner(PEM))).toBe(PEM)
   })
 })

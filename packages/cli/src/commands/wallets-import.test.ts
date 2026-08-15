@@ -91,9 +91,11 @@ describe("wallets import", () => {
     expect(String(submit.ciphertext)).not.toContain(SOL_SECRET_BASE58)
     expect(String(submit.signerPublicKey)).toMatch(BASE64_RE)
 
-    // The signer's private half landed in the store, keyed by the returned wallet id.
-    const pem = await store.get(walletSignerRef("lw_test0001"))
-    expect(pem).toContain("BEGIN PRIVATE KEY")
+    // The signer's private half landed in the store, keyed by the returned wallet id, in the
+    // single-line form (newline-free: the macOS keychain backend refuses multiline values).
+    const stored = await store.get(walletSignerRef("lw_test0001"))
+    expect(stored).toMatch(/^[A-Za-z0-9+/]+=*$/)
+    expect(stored).not.toContain("\n")
 
     expect(stdout.text).toContain("lw_test0001")
     expect(stdout.text).toContain("pw_test0001")

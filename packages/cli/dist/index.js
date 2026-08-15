@@ -212,6 +212,9 @@ var SECRET_REFS = {
 function walletSignerRef(walletId) {
   return `wallet_signer_${walletId}`;
 }
+function pemToStoredSigner(pem) {
+  return pem.replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s+/g, "");
+}
 function configDir() {
   return process.env.CANDLE_CONFIG_DIR?.trim() || join(homedir(), ".config", "candle");
 }
@@ -364,7 +367,7 @@ async function resolveApiKey(deps) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.1.0";
+var CLI_VERSION = "0.2.0";
 
 // src/commands/auth.ts
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
@@ -3847,7 +3850,8 @@ Linked wallets:
     deps.stdout.write(`(none)
 `);
   } else {
-    deps.stdout.write(`${renderTable(["Chain", "Address", "Label", "Revoked"], linkedBody.page.map((wallet) => [
+    deps.stdout.write(`${renderTable(["Id", "Chain", "Address", "Label", "Revoked"], linkedBody.page.map((wallet) => [
+      wallet._id,
       wallet.chain,
       wallet.address,
       wallet.label ?? "-",
@@ -3983,7 +3987,7 @@ async function walletsImport(args, ctx) {
     return 1;
   }
   const result = submit.body;
-  await deps.store.set(walletSignerRef(result.id), signer.privateKeyPem);
+  await deps.store.set(walletSignerRef(result.id), pemToStoredSigner(signer.privateKeyPem));
   const signerOut = parsed.values["--signer-out"];
   if (signerOut !== undefined) {
     try {

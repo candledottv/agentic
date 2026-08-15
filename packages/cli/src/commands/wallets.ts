@@ -20,7 +20,7 @@ import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
 import { renderTable, writeFailure, writeLocalFailure } from "../render"
-import { walletSignerRef } from "../secret-store"
+import { pemToStoredSigner, walletSignerRef } from "../secret-store"
 import { encryptWalletKeyForImport, generateSignerKeypair, parseSolanaSecret, type WalletChain } from "../wallet-import"
 
 interface EmbeddedWalletsResponse {
@@ -31,6 +31,9 @@ interface EmbeddedWalletsResponse {
 }
 
 interface LinkedWalletRow {
+  /** The Convex row id GET /wallets returns verbatim: the handle `wallets revoke`, the trade
+   * API's `from.linkedWalletId`, and the SDK's secretStore keying all take. */
+  _id: string
   address: string
   chain: string
   label?: string
@@ -118,8 +121,9 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
   } else {
     deps.stdout.write(
       `${renderTable(
-        ["Chain", "Address", "Label", "Revoked"],
+        ["Id", "Chain", "Address", "Label", "Revoked"],
         linkedBody.page.map((wallet) => [
+          wallet._id,
           wallet.chain,
           wallet.address,
           wallet.label ?? "-",
@@ -306,8 +310,10 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
 
   // The signer's private half is the credential every later trade from this wallet signs with.
   // Keychain first (the point of doing this in the CLI); --signer-out additionally exports a
-  // PEM for use on another machine, written 0600 by the real writeFile.
-  await deps.store.set(walletSignerRef(result.id), signer.privateKeyPem)
+  // PEM for use on another machine, written 0600 by the real writeFile. Stored in the
+  // single-line form (pemToStoredSigner): a raw PEM contains newlines, which the macOS
+  // keychain backend's command-injection guard rightly refuses.
+  await deps.store.set(walletSignerRef(result.id), pemToStoredSigner(signer.privateKeyPem))
   const signerOut = parsed.values["--signer-out"]
   if (signerOut !== undefined) {
     try {

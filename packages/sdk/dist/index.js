@@ -880,6 +880,108 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
+// src/keychain-secret-store.ts
+import { spawn, spawnSync } from "node:child_process";
+var SERVICE = "tv.candle.cli";
+function walletSignerRef(walletRef) {
+  return `wallet_signer_${walletRef}`;
+}
+function pemToStoredSigner(pem) {
+  return pem.replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s+/g, "");
+}
+function storedSignerToPem(stored) {
+  const lines = stored.match(/.{1,64}/g) ?? [stored];
+  return `-----BEGIN PRIVATE KEY-----
+${lines.join(`
+`)}
+-----END PRIVATE KEY-----
+`;
+}
+function assertStorable(value) {
+  if (!/^[A-Za-z0-9+/]+=*$/.test(value)) {
+    throw new Error("Refusing to store a signer value that is not single-line base64");
+  }
+}
+var RUN_TIMEOUT_MS = 1e4;
+var realExec = (binary, args, stdin) => new Promise((resolvePromise, reject) => {
+  const child = spawn(binary, args, { stdio: ["pipe", "pipe", "ignore"], env: process.env });
+  let stdout = "";
+  let settled = false;
+  const timeout = setTimeout(() => {
+    if (!settled)
+      child.kill("SIGKILL");
+  }, RUN_TIMEOUT_MS);
+  child.stdin.on("error", () => {});
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+  });
+  child.on("error", (err) => {
+    if (settled)
+      return;
+    settled = true;
+    clearTimeout(timeout);
+    reject(err);
+  });
+  child.on("close", (status) => {
+    if (settled)
+      return;
+    settled = true;
+    clearTimeout(timeout);
+    resolvePromise({ status: status ?? 1, stdout });
+  });
+  if (stdin !== undefined)
+    child.stdin.write(stdin);
+  child.stdin.end();
+});
+
+class KeychainSecretStore {
+  backend;
+  exec;
+  constructor(opts = {}) {
+    this.backend = opts.backend ?? (process.platform === "darwin" ? "security" : "secret-tool");
+    this.exec = opts.exec ?? realExec;
+  }
+  static detect() {
+    const backend = process.platform === "darwin" ? "security" : "secret-tool";
+    const found = spawnSync("which", [backend], { env: process.env }).status === 0;
+    return found ? new KeychainSecretStore({ backend }) : null;
+  }
+  async get(walletRef) {
+    const ref = walletSignerRef(walletRef);
+    const result = this.backend === "security" ? await this.exec("security", ["find-generic-password", "-s", SERVICE, "-a", ref, "-w"]) : await this.exec("secret-tool", ["lookup", "service", SERVICE, "account", ref]);
+    if (result.status !== 0)
+      return null;
+    const value = result.stdout.replace(/\n$/, "");
+    if (value.length === 0)
+      return null;
+    return value.includes("BEGIN PRIVATE KEY") ? value : storedSignerToPem(value);
+  }
+  async set(walletRef, privateKeyPem) {
+    const ref = walletSignerRef(walletRef);
+    const value = pemToStoredSigner(privateKeyPem);
+    assertStorable(value);
+    if (this.backend === "security") {
+      const command = `add-generic-password -U -s "${SERVICE}" -a "${ref}" -w "${value}"
+`;
+      const result2 = await this.exec("security", ["-i"], command);
+      if (result2.status !== 0)
+        throw new Error(`Failed to store signer in the macOS Keychain (${result2.status})`);
+      return;
+    }
+    const result = await this.exec("secret-tool", ["store", "--label=Candle CLI", "service", SERVICE, "account", ref], value);
+    if (result.status !== 0)
+      throw new Error(`Failed to store signer via secret-tool (${result.status})`);
+  }
+  async delete(walletRef) {
+    const ref = walletSignerRef(walletRef);
+    if (this.backend === "security") {
+      await this.exec("security", ["-i"], `delete-generic-password -s "${SERVICE}" -a "${ref}"
+`);
+      return;
+    }
+    await this.exec("secret-tool", ["clear", "service", SERVICE, "account", ref]);
+  }
+}
 // src/secret-store.ts
 class InMemorySecretStore {
   entries = new Map;
@@ -1000,6 +1102,7 @@ export {
   verifyWebhookSignature,
   generateSignerKeypair,
   encryptWalletKeyForImport,
+  KeychainSecretStore,
   JsonRpcError,
   InMemorySecretStore,
   EncryptedFileSecretStore,

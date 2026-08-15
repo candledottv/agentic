@@ -19,7 +19,7 @@ describe("wallets", () => {
       "/api/v1/agent/wallets": () =>
         jsonResponse(200, {
           success: true,
-          page: [{ address: "0xLinked", chain: "evm", label: "my wallet" }],
+          page: [{ _id: "lw_listed01", address: "0xLinked", chain: "evm", label: "my wallet" }],
           isDone: true,
           continueCursor: null,
         }),
@@ -35,6 +35,8 @@ describe("wallets", () => {
     }
     expect(stdout.text).toContain("So1anaAddr")
     expect(stdout.text).toContain("0xLinked")
+    // The row id renders: it is the handle wallets revoke and the trade API's linkedWalletId take.
+    expect(stdout.text).toContain("lw_listed01")
   })
 
   test("requires an API key; without one it fails without making a request", async () => {

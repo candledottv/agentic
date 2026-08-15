@@ -2,6 +2,7 @@ export type { AcceptedJob, AgentProfile, AgentTierInfo, BuildSelfLaunchHoodResul
 export { CandleClient } from "./client";
 export type { CandleErrorPayload } from "./errors";
 export { CandleApiError, JsonRpcError } from "./errors";
+export { KeychainSecretStore } from "./keychain-secret-store";
 export type { SecretStore } from "./secret-store";
 export { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store";
 export type { EncryptWalletKeyParams, EncryptWalletKeyResult, SignerKeypair, WalletChain } from "./wallet-import";

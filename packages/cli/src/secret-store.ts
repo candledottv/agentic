@@ -43,6 +43,27 @@ export function walletSignerRef(walletId: string): string {
 }
 
 /**
+ * The signer PEM's STORED form: its base64 body, armor and newlines stripped. A PEM block
+ * contains newlines, which `KeychainSecretStore.set`'s command-injection guard rightly refuses
+ * (a newline starts a whole new `security -i` command), so a multiline value can never go into
+ * the macOS Keychain as-is. Storing the single-line base64 body keeps every backend on one
+ * format, and the SDK's keychain store re-armors on read. Round-trip contract:
+ * `storedSignerToPem(pemToStoredSigner(pem)) === pem` for any standard 64-column PKCS8 PEM.
+ */
+export function pemToStoredSigner(pem: string): string {
+  return pem
+    .replace(/-----BEGIN PRIVATE KEY-----/, "")
+    .replace(/-----END PRIVATE KEY-----/, "")
+    .replace(/\s+/g, "")
+}
+
+/** Re-armors a stored single-line signer value back into the standard 64-column PEM block. */
+export function storedSignerToPem(stored: string): string {
+  const lines = stored.match(/.{1,64}/g) ?? [stored]
+  return `-----BEGIN PRIVATE KEY-----\n${lines.join("\n")}\n-----END PRIVATE KEY-----\n`
+}
+
+/**
  * Resolves the directory the CLI keeps its state in: `$CANDLE_CONFIG_DIR` if set (test /
  * advanced-use seam -- tests point this at a temp dir so nothing here ever touches a real
  * `~/.config`), else `~/.config/candle`. Mirrored in `config.ts` for the same reason: keeping each
