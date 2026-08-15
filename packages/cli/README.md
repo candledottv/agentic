@@ -52,7 +52,7 @@ Every command accepts these global options:
 ## Credential storage
 
 Two credentials are stored: a device token (`cndl_dvc_...`, scoped to key management) and an API
-key (`ck_live_...` or `ck_test_...`, scoped to whatever your device authorized). Neither is ever
+key (`cndl_live_...` or `cndl_test_...`, scoped to whatever your device authorized). Neither is ever
 written to the config file, logged, or printed, with one exception: `keys create` shows the
 plaintext API key exactly once, at the moment it's issued. `auth login` never prints either
 plaintext value, in any mode (including `--json`) -- both credentials go straight into storage,

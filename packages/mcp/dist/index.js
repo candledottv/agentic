@@ -11,7 +11,7 @@ import { z } from "zod";
 var DEFAULT_API_URL = "https://api.candle.tv";
 function resolveConfig() {
   const apiUrl = process.env.CANDLE_API_URL?.trim() || DEFAULT_API_URL;
-  const apiKey = process.env.CANDLE_AGENT_API_KEY?.trim();
+  const apiKey = process.env.CANDLE_AGENT_API_KEY?.trim() || process.env.CANDLE_API_KEY?.trim();
   return apiKey ? { apiUrl, apiKey } : { apiUrl };
 }
 

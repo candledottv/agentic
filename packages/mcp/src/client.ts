@@ -21,6 +21,8 @@ export const DEFAULT_API_URL = "https://api.candle.tv"
 
 export function resolveConfig(): RequestConfig {
   const apiUrl = process.env.CANDLE_API_URL?.trim() || DEFAULT_API_URL
-  const apiKey = process.env.CANDLE_AGENT_API_KEY?.trim()
+  // CANDLE_API_KEY is the CLI's variable for the same credential; accept it as an alias so the
+  // public install docs teach ONE name per credential. The MCP's own name keeps precedence.
+  const apiKey = process.env.CANDLE_AGENT_API_KEY?.trim() || process.env.CANDLE_API_KEY?.trim()
   return apiKey ? { apiUrl, apiKey } : { apiUrl }
 }

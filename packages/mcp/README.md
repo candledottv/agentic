@@ -59,6 +59,8 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
   you try to write. `candle_trade` additionally needs the key's `swap:write` scope server-side,
   which is opt-in only and never granted by omission, see `docs/mcp-launch-and-seed.md` in the
   `candle-monorepo` repo.
+- `CANDLE_API_KEY` -- alias for `CANDLE_AGENT_API_KEY`, the same variable name the Candle CLI uses
+  for this credential. Set either one; if both are set, `CANDLE_AGENT_API_KEY` takes precedence.
 
 ## Tools
 

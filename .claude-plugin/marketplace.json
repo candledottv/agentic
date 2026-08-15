@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "candle",
+  "description": "Candle launchpad skills for AI coding agents: launch and seed tokens on Solana or Hood, trade with structural custody safety, read markets with no API key, and react to events via webhooks",
+  "owner": { "name": "Candle" },
+  "plugins": [
+    {
+      "name": "candle",
+      "source": "./",
+      "description": "5 Candle skills: launch and seed tokens on Solana or Hood, trade (buy, sell, limit orders) with structural custody safety, read markets and curated feeds with no API key, authorize a device and manage agent keys, and register webhooks for event delivery instead of polling",
+      "version": "0.1.0",
+      "author": { "name": "Candle", "url": "https://candle.tv" },
+      "homepage": "https://candle.tv",
+      "repository": "https://github.com/candledottv/agentic",
+      "license": "MIT",
+      "keywords": ["candle", "launchpad", "solana", "token", "defi", "swap", "agent", "skills"],
+      "category": "web3",
+      "tags": ["launch", "trade", "market-data", "webhooks", "mcp", "solana", "hood"],
+      "strict": false
+    }
+  ]
+}

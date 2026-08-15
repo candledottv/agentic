@@ -51,3 +51,35 @@ describe("resolveConfig", () => {
     expect(resolveConfig().apiUrl).toBe("https://api.candle.tv")
   })
 })
+
+describe("resolveConfig API key alias", () => {
+  const originalAgentKey = process.env.CANDLE_AGENT_API_KEY
+  const originalAliasKey = process.env.CANDLE_API_KEY
+
+  beforeEach(() => {
+    delete process.env.CANDLE_AGENT_API_KEY
+    delete process.env.CANDLE_API_KEY
+  })
+
+  afterEach(() => {
+    if (originalAgentKey === undefined) delete process.env.CANDLE_AGENT_API_KEY
+    else process.env.CANDLE_AGENT_API_KEY = originalAgentKey
+    if (originalAliasKey === undefined) delete process.env.CANDLE_API_KEY
+    else process.env.CANDLE_API_KEY = originalAliasKey
+  })
+
+  test("CANDLE_API_KEY is used when CANDLE_AGENT_API_KEY is unset", () => {
+    process.env.CANDLE_API_KEY = "cndl_live_alias"
+    expect(resolveConfig().apiKey).toBe("cndl_live_alias")
+  })
+
+  test("CANDLE_AGENT_API_KEY takes precedence when both are set", () => {
+    process.env.CANDLE_AGENT_API_KEY = "cndl_live_agent"
+    process.env.CANDLE_API_KEY = "cndl_live_alias"
+    expect(resolveConfig().apiKey).toBe("cndl_live_agent")
+  })
+
+  test("neither set yields no key", () => {
+    expect(resolveConfig().apiKey).toBeUndefined()
+  })
+})

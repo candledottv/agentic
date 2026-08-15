@@ -1,0 +1,10 @@
+{
+  "name": "candle",
+  "version": "0.1.0",
+  "description": "Candle launchpad skills: launch and seed tokens, trade with structural custody safety, read markets with no API key, and react to events via webhooks",
+  "author": { "name": "Candle", "url": "https://candle.tv" },
+  "homepage": "https://candle.tv",
+  "repository": "https://github.com/candledottv/agentic",
+  "license": "MIT",
+  "keywords": ["candle", "launchpad", "solana", "token", "defi", "swap", "agent", "skills"]
+}
