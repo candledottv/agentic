@@ -4,6 +4,7 @@ var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
 // src/index.ts
 import { spawn as spawn2 } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -1295,7 +1296,14 @@ async function main() {
   const code = await run2(process.argv.slice(2), deps);
   process.exit(code);
 }
-var isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+function entryHref(argv1) {
+  try {
+    return pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return pathToFileURL(argv1).href;
+  }
+}
+var isMainModule = process.argv[1] !== undefined && import.meta.url === entryHref(process.argv[1]);
 if (isMainModule) {
   main().catch((err) => {
     process.stderr.write(`Unexpected error: ${err instanceof Error ? err.message : String(err)}

@@ -17,6 +17,7 @@
  */
 
 import { spawn } from "node:child_process"
+import { realpathSync } from "node:fs"
 import { hostname } from "node:os"
 import { pathToFileURL } from "node:url"
 import { resolveApiUrl } from "./client"
@@ -193,7 +194,22 @@ async function main(): Promise<void> {
 // a test, this file's own path when run directly), so comparing it against `import.meta.url`
 // distinguishes the two under both bun and plain node -- unlike `import.meta.main`, which bun
 // supports but node does not.
-const isMainModule = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
+//
+// argv[1] must be REALPATH'd before comparing: package managers execute a bin through a symlink
+// (node_modules/.bin/candle -> .../packages/cli/dist/index.js), and node resolves import.meta.url
+// to the real file while argv[1] keeps the symlink path. Without the realpath, every bunx/npx
+// invocation failed this guard and exited 0 having done nothing -- caught live by the P4b-3
+// acceptance test, invisible to any test that ran the file by its direct path.
+function entryHref(argv1: string): string {
+  try {
+    return pathToFileURL(realpathSync(argv1)).href
+  } catch {
+    // argv[1] may not exist as a file at all (some embedders pass synthetic values); fall back to
+    // the plain comparison, which is what this guard always did for the direct-path case.
+    return pathToFileURL(argv1).href
+  }
+}
+const isMainModule = process.argv[1] !== undefined && import.meta.url === entryHref(process.argv[1])
 if (isMainModule) {
   main().catch((err) => {
     process.stderr.write(`Unexpected error: ${err instanceof Error ? err.message : String(err)}\n`)
