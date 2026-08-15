@@ -53,6 +53,16 @@ export interface Deps {
    * hostname long enough to push the default name past the API's 64-character cap, and that is
    * not reproducible by running the CLI on the test machine. */
   hostname: string
+  /** Reads a UTF-8 file (wallets import's `--key-file`). Injected so tests never touch the real
+   * filesystem and a missing-file failure is testable with a plain throwing fake. */
+  readFile: (path: string) => Promise<string>
+  /** Writes a UTF-8 file with owner-only permissions (wallets import's `--signer-out`). The real
+   * implementation writes mode 0600: the content is a signing private key. */
+  writeFile: (path: string, content: string) => Promise<void>
+  /** Reads a secret interactively with echo disabled (wallets import's prompt path, when no
+   * `--key-file` is given). The real implementation needs a TTY and throws without one, which is
+   * the signal to use `--key-file` in scripts. */
+  promptSecret: (promptText: string) => Promise<string>
 }
 
 export interface CommandContext {

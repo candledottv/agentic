@@ -34,6 +34,15 @@ export const SECRET_REFS = {
 } as const
 
 /**
+ * The ref an imported linked wallet's signer private key (PEM) is stored under, keyed by the
+ * wallet's Candle linked-wallet id. Per-wallet (unlike SECRET_REFS' two fixed credentials)
+ * because an account can import any number of wallets, each with its own 1-of-1 signer.
+ */
+export function walletSignerRef(walletId: string): string {
+  return `wallet_signer_${walletId}`
+}
+
+/**
  * Resolves the directory the CLI keeps its state in: `$CANDLE_CONFIG_DIR` if set (test /
  * advanced-use seam -- tests point this at a temp dir so nothing here ever touches a real
  * `~/.config`), else `~/.config/candle`. Mirrored in `config.ts` for the same reason: keeping each
@@ -255,6 +264,18 @@ export class EncryptedFileSecretStore implements SecretStore {
  * it). Not covered by the automated tests, since exercising it requires a real TTY; the non-TTY
  * refusal path immediately above it is what's tested.
  */
+/**
+ * TTY-guarded hidden prompt for `Deps.promptSecret` (wallets import's interactive key entry).
+ * Same masking mechanism as the passphrase prompt below; refuses without a TTY so a piped or CI
+ * invocation gets an actionable error instead of hanging on stdin.
+ */
+export async function promptHiddenSecret(promptText: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    throw new Error("No TTY available for interactive input; pass --key-file instead")
+  }
+  return promptHiddenPassphrase(promptText)
+}
+
 async function promptHiddenPassphrase(promptText: string): Promise<string> {
   const readline = await import("node:readline")
   return new Promise((resolve) => {

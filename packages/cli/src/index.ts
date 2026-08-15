@@ -18,16 +18,18 @@
 
 import { spawn } from "node:child_process"
 import { realpathSync } from "node:fs"
+import { readFile, writeFile } from "node:fs/promises"
 import { hostname } from "node:os"
 import { pathToFileURL } from "node:url"
 import { resolveApiUrl } from "./client"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { doctor } from "./commands/doctor"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
-import { wallets } from "./commands/wallets"
+import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
 import { clearConfig, readConfig, writeConfig } from "./config"
 import type { CommandContext, Deps } from "./deps"
 import { resolveSecretStore } from "./keychain"
+import { promptHiddenSecret } from "./secret-store"
 import { CLI_VERSION } from "./version"
 
 interface GlobalFlags {
@@ -67,6 +69,8 @@ Commands:
   keys create [--scopes <a,b,c>] [--environment production|test]  Create an API key
   keys revoke <prefix>                                            Revoke an API key
   wallets                                                         Show launch and linked wallets
+  wallets import --chain <solana|evm> [options]                   Import a wallet you own (key via --key-file or hidden prompt)
+  wallets revoke <wallet-id>                                      Revoke a linked wallet
   doctor                                                          Diagnose CLI setup
 
 Global options:
@@ -117,7 +121,11 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
     if (sub === "revoke") return keysRevoke(cmdArgs, ctx)
     return unknownCommand(deps, sub === undefined ? undefined : `keys ${sub}`)
   }
-  if (cmd === "wallets") return wallets(tokens.slice(1), ctx)
+  if (cmd === "wallets") {
+    if (sub === "import") return walletsImport(cmdArgs, ctx)
+    if (sub === "revoke") return walletsRevoke(cmdArgs, ctx)
+    return wallets(tokens.slice(1), ctx)
+  }
   if (cmd === "doctor") return doctor(tokens.slice(1), ctx)
 
   return unknownCommand(deps, cmd)
@@ -180,6 +188,11 @@ async function buildRealDeps(): Promise<Deps> {
     env: process.env,
     nodeVersion: process.versions.node,
     hostname: hostname(),
+    readFile: (path: string) => readFile(path, "utf8"),
+    // 0600: the only caller is wallets import's --signer-out, and the content is a signing
+    // private key.
+    writeFile: (path: string, content: string) => writeFile(path, content, { mode: 0o600 }),
+    promptSecret: promptHiddenSecret,
   }
 }
 

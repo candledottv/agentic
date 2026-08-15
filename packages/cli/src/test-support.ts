@@ -160,6 +160,18 @@ export function createTestDeps(overrides: Partial<Deps> & { fetch: typeof fetch 
     env: {},
     nodeVersion: process.versions.node,
     hostname: "test-host",
+    // Throwing defaults, like fetch's must-be-supplied rule but softer: only tests that
+    // exercise wallets import's file/prompt paths need these, and a test that hits one
+    // unexpectedly should fail loud, not silently read something.
+    readFile: async (path: string) => {
+      throw new Error(`no readFile fake configured (asked for ${path})`)
+    },
+    writeFile: async (path: string) => {
+      throw new Error(`no writeFile fake configured (asked for ${path})`)
+    },
+    promptSecret: async () => {
+      throw new Error("no promptSecret fake configured")
+    },
     ...overrides,
   }
 }
