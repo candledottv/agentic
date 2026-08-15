@@ -51,10 +51,12 @@ platform's install doc) until the feature reaches production.
 ### Limit orders (Max tier, linked wallet only)
 
 Candle can watch a price and flip an order to triggered server-side, but it does not fill
-unattended: **an order only fills while your agent is online to poll for the trigger and complete
-the trade.** This is honest by design, not a limitation to work around. It requires Max tier and a
-linked wallet (the account's main embedded wallet cannot place one), and it is not exposed as an
-MCP tool today: it is a REST-only surface your agent's own online loop has to drive directly.
+unattended: **an order only fills while your agent is online to react to the trigger and complete
+the trade.** This is honest by design, not a limitation to work around. The trigger itself is
+pushed as an `order.triggered` webhook (see the candle-webhooks skill), with polling as the
+fallback. It requires Max tier and a linked wallet (the account's main embedded wallet cannot
+place one), and it is not exposed as an MCP tool today: it is a REST-only surface your agent's
+own online loop has to drive directly.
 
 ## Safety rails
 

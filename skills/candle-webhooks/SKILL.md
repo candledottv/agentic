@@ -1,14 +1,14 @@
 ---
 name: candle-webhooks
-description: "[EVENTS] Register a webhook endpoint and verify signed Candle event deliveries for launches, graduations, migrations, and trades. Use when the user asks about webhooks, notifications, or reacting to fills or graduations instead of polling."
+description: "[EVENTS] Register a webhook endpoint and verify signed Candle event deliveries for launches, graduations, migrations, trades, and limit-order triggers. Use when the user asks about webhooks, notifications, or reacting to fills, graduations, or triggered orders instead of polling."
 ---
 
 ## What this does
 
 Most agent toolkits only know what happened by polling. Candle can push events instead: launch
-confirmations, curve graduations, migrations, and executed trades, signed and delivered to an
-endpoint you register, so an agent reacts the moment something happens rather than discovering it
-on the next poll.
+confirmations, curve graduations, migrations, executed trades, and limit-order triggers, signed
+and delivered to an endpoint you register, so an agent reacts the moment something happens rather
+than discovering it on the next poll.
 
 ## Setup
 
@@ -25,7 +25,8 @@ delivery verification requires.
 
 1. From a logged-in session, register an endpoint: `POST /api/v1/agent/webhooks` with a public
    https `url` and the `events` you want (for example `curve.graduated`, `trade.executed`,
-   `launch.confirmed`, `launch.failed`, `migration.completed`, `migration.delayed`). The response
+   `order.triggered`, `launch.confirmed`, `launch.failed`, `migration.completed`,
+   `migration.delayed`). The response
    includes a signing secret (`whsec_...`) shown exactly once; store it where your agent's own code
    can reach it, since it is never shown again.
 2. Verify every delivery before acting on it, using only that secret. Each delivery carries a
