@@ -6,6 +6,9 @@ API key instead of a private key. This repo holds the developer tooling for that
 TypeScript SDK, an MCP server, a CLI for device-based authorization and key management, and a
 packaged skill library that teaches an agent these workflows directly.
 
+Full documentation lives at [docs.candle.tv](https://docs.candle.tv). Start with the
+[Agent quickstart](https://docs.candle.tv/developers/quickstart).
+
 ## Try it with no account
 
 Three tools are read-only and need no API key at all: `candle_get_market`, `candle_get_feed`, and
@@ -33,28 +36,23 @@ bun run --cwd packages/mcp build
 }
 ```
 
-Substitute the actual absolute path to your clone (MCP clients spawn from their own working
-directory, so a relative path resolves nowhere). The default API host is production, which
-doesn't serve these routes yet; `CANDLE_API_URL` points the server at staging, where they run
-today, until the feature reaches production. Ask an agent to call `candle_get_feed` with
-`{ "bucket": "new" }`, or `candle_get_market` with `{ "chain": "solana", "mint": "<any live
-mint>" }`, and it works before signing up for anything. See the candle-market skill in `skills/`
-for the full read-only workflow.
+Use the real absolute path to your clone (MCP clients spawn from their own working directory),
+and keep `CANDLE_API_URL` on staging until this rail reaches production. Ask an agent to call
+`candle_get_feed` with `{ "bucket": "new" }` and it works before signing up for anything. Details:
+[Candle MCP server](https://docs.candle.tv/developers/mcp-server).
 
 ## Full setup
 
 Once you are ready to launch, trade, or report activity, authorize a device from the browser:
 
 ```bash
-bunx github:candledottv/agentic candle auth login
+bunx github:candledottv/agentic candle auth login --api-url https://staging.api.candle.tv
 ```
 
-This installs nothing permanently: it fetches this repo, resolves the `candle` bin at its root,
-and runs `auth login`, which opens your browser to approve the device and stores the resulting
-credentials locally. `candle auth login` defaults to Candle's production API; while the device flow
-is still rolling out to production, add `--api-url https://staging.api.candle.tv` to reach the
-environment serving it today. See the candle-setup skill in `skills/` for the full flow, including
-where credentials are stored and how to check them with `candle doctor`.
+Nothing installs permanently: one browser approval later, this machine holds a device token and
+an agent API key in your OS keychain, and `--api-url` is remembered. Check the result with
+`candle doctor`. The full command surface, credential storage, and headless use are documented on
+the [Candle CLI](https://docs.candle.tv/developers/cli) page.
 
 ## Install as a skill package
 
@@ -68,9 +66,10 @@ Every platform below installs the same five skills (in `skills/`).
 | OpenCode | Follow the install doc | [`.opencode/INSTALL.md`](.opencode/INSTALL.md) |
 | Grok Build | Follow the install doc | [`.grok/INSTALL.md`](.grok/INSTALL.md) |
 
-No platform wires the MCP server for you: on every one of them the skills install on their own,
-and the server is set up separately, with the clone-and-build config shown under "Try it with no
-account" above. Each platform's install doc spells out where that config goes.
+No platform wires the MCP server for you: the skills install on their own, and the server is set
+up separately with the clone-and-build config above. Each platform's install doc spells out where
+that config goes; the skills-vs-server split is explained under
+[Skills for coding agents](https://docs.candle.tv/developers/coding-agents).
 
 ## The five skills
 
@@ -88,10 +87,12 @@ account" above. Each platform's install doc spells out where that config goes.
 ## Packages
 
 - [`packages/sdk`](packages/sdk): the TypeScript SDK.
+  Docs: [TypeScript SDK](https://docs.candle.tv/developers/sdk).
 - [`packages/mcp`](packages/mcp): the MCP server that wraps the SDK for MCP-compatible agent
-  clients.
+  clients. Docs: [Candle MCP server](https://docs.candle.tv/developers/mcp-server).
 - [`packages/cli`](packages/cli): the `candle` CLI, device-based authorization plus API key,
   wallet, and setup-health management from the terminal.
+  Docs: [Candle CLI](https://docs.candle.tv/developers/cli).
 
 ## Examples
 
@@ -102,4 +103,11 @@ account" above. Each platform's install doc spells out where that config goes.
   Candle-launched token from an agent's linked wallet with one call to the SDK's `trade()`,
   signing locally so Candle never sees the wallet's key.
 
-Full API documentation lives at [docs.candle.tv](https://docs.candle.tv).
+## Documentation
+
+- [Agent quickstart](https://docs.candle.tv/developers/quickstart): keyless reads to first launch.
+- [Agent access & API keys](https://docs.candle.tv/developers/agent-access): scopes, tiers,
+  device authorization, revocation.
+- [Agent trading API](https://docs.candle.tv/developers/agent-trading): the build-and-confirm
+  trade flow behind `candle_trade`.
+- [Webhooks](https://docs.candle.tv/developers/webhooks): signed events instead of polling.
