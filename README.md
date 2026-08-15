@@ -91,7 +91,9 @@ that config goes; the skills-vs-server split is explained under
 - [`packages/mcp`](packages/mcp): the MCP server that wraps the SDK for MCP-compatible agent
   clients. Docs: [Candle MCP server](https://docs.candle.tv/developers/mcp-server).
 - [`packages/cli`](packages/cli): the `candle` CLI, device-based authorization plus API key,
-  wallet, and setup-health management from the terminal.
+  wallet, and setup-health management from the terminal, including `candle wallets import`,
+  the safe path for linking a wallet you already own (key via file or hidden prompt, sealed
+  locally, signer stored in your OS keychain).
   Docs: [Candle CLI](https://docs.candle.tv/developers/cli).
 
 ## Examples

@@ -39,15 +39,20 @@ never need any of this: they work with no key at all.
    wallet delegation as a PASS/FAIL/SKIP table.
 6. `candle wallets` shows the account's embedded and linked wallets. `candle keys list`,
    `candle keys create`, and `candle keys revoke` manage API keys directly from the terminal.
+   `candle wallets import --chain solana` (or `evm`) links a wallet the user already owns: the
+   private key is read from `--key-file` or a hidden prompt, never a command argument, encrypted
+   locally, and only ciphertext leaves the machine; the signing key it generates is stored in the
+   same keyring as the credentials. `candle wallets revoke <wallet-id>` unlinks one.
 7. For CI or headless automation, skip the keyring entirely: set `CANDLE_API_KEY` and
    `CANDLE_DEVICE_TOKEN` in the environment and every command works with no storage backend at all.
 
 ## Safety rails
 
 Neither credential is ever written to a config file, logged, or printed, except `candle keys create`
-showing a new key's plaintext exactly once, at the moment it is issued. Revoking a device token
-does not revoke the API keys it minted: audit `candle keys list` separately after any suspected
-compromise. Device revocation itself happens on the account portal's Authorized devices screen
+showing a new key's plaintext exactly once, at the moment it is issued. Keys are labeled with the
+device that minted them, and revoking a device offers to revoke every key it minted in the same
+atomic action, so containing a suspected compromise is one step; audit `candle keys list` afterward
+to confirm. Device revocation itself happens on the account portal's Authorized devices screen
 under `/dev/agent`, not from the CLI: a device token is deliberately unable to revoke its own
 device, so a stolen token cannot erase its own trail.
 
