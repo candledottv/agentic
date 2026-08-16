@@ -761,7 +761,7 @@ var KEYS_PATH = "/api/v1/agent/keys";
 var NO_DEVICE_TOKEN = { code: "NO_DEVICE_TOKEN", message: "No device token available. Run: candle auth login" };
 function mintedByLabel(mintedBy, ownDeviceTokenPrefix) {
   if (!mintedBy)
-    return "unknown";
+    return "browser session";
   if (mintedBy === ownDeviceTokenPrefix)
     return "this device";
   return mintedBy;

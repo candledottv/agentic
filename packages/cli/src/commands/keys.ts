@@ -29,7 +29,11 @@ interface KeyRow {
 }
 
 function mintedByLabel(mintedBy: string | undefined, ownDeviceTokenPrefix: string | undefined): string {
-  if (!mintedBy) return "unknown"
+  // Absent provenance is not a mystery: it means the key was created from a signed-in browser
+  // session (the portal), or predates provenance stamping entirely. An earlier "unknown" here
+  // read as "a device Candle can no longer identify" and got escalated as a possible compromise
+  // in a live session; naming the actual origin kills that false alarm.
+  if (!mintedBy) return "browser session"
   if (mintedBy === ownDeviceTokenPrefix) return "this device"
   return mintedBy
 }

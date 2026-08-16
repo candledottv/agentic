@@ -17,7 +17,7 @@ import {
 } from "../test-support"
 
 describe("keys list", () => {
-  test("renders 'minted by' as 'this device' when it matches the stored deviceTokenPrefix, 'unknown' when absent, and the raw prefix for a different device", async () => {
+  test("renders 'minted by' as 'this device' when it matches the stored deviceTokenPrefix, 'browser session' when absent, and the raw prefix for a different device", async () => {
     const { fetch } = createRoutedFetch({
       "/api/v1/agent/keys": () =>
         jsonResponse(200, {
@@ -64,7 +64,11 @@ describe("keys list", () => {
 
     expect(code).toBe(0)
     expect(stdout.text).toContain("this device")
-    expect(stdout.text).toContain("unknown")
+    // Absent provenance means the key was created in a signed-in browser session (or predates
+    // provenance entirely) -- "unknown" read as "a device Candle cannot identify," which a live
+    // session escalated as a possible compromise. "browser session" is the truth.
+    expect(stdout.text).toContain("browser session")
+    expect(stdout.text).not.toContain("unknown")
     expect(stdout.text).toContain("dvcprefOTHER")
   })
 
