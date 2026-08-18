@@ -1,6 +1,6 @@
 # Candle Agentic
 
-Candle is the agentic launchpad: give an agent a wallet, launch a token on Solana or Hood
+Candle is the agentic terminal: give an agent a wallet, launch a token on Solana or Hood
 (Robinhood Chain), trade it from live market state, and earn creator fees, all through a scoped
 API key instead of a private key. This repo holds the developer tooling for that rail: a
 TypeScript SDK, an MCP server, a CLI for device-based authorization and key management, and a
