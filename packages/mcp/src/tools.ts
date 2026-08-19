@@ -7,10 +7,10 @@
  * mocking a transport. `registerTools` is the only function that touches the MCP SDK; it wires
  * each tool's zod input schema, calls `buildRequest`, fetches, and hands the response text back
  * verbatim -- this package never reinterprets an error body, it relays exactly what the endpoint
- * sent. That body is NOT one uniform shape across all five one-request tools:
- *   - `candle_launch_token`, `candle_get_market`, and `candle_get_feed` hit endpoints that use
- *     the structured `{ success: false, error: { code, message, ... } }` envelope
- *     (apps/api/src/lib/launch-errors.ts); agents branch on `error.code`.
+ * sent. That body is NOT one uniform shape across all six one-request tools:
+ *   - `candle_launch_token`, `candle_get_market`, `candle_get_feed`, and `candle_swap` hit
+ *     endpoints that use the structured `{ success: false, error: { code, message, ... } }`
+ *     envelope (apps/api/src/lib/launch-errors.ts); agents branch on `error.code`.
  *   - `candle_report_activity` relays `activity.ts`'s own plain error shape verbatim:
  *     `{ error: true, payload: string }`.
  *   - `candle_get_agent_profile` relays `users.ts`'s own plain error shape verbatim:
@@ -22,7 +22,7 @@
  * `candle_launch_and_seed` needs a devBuy decimal-to-raw conversion plus a best-effort follow-up
  * market read after the launch. Both are built in orchestrate.ts (`executeTrade` /
  * `executeLaunchAndSeed`) behind an injectable fetch, and registered here the same way the other
- * five are. `candle_trade`'s relayed text wraps the trade endpoint's body verbatim under `api`,
+ * six are. `candle_trade`'s relayed text wraps the trade endpoint's body verbatim under `api`,
  * alongside the echoed `clientTradeId` and the `resolved` conversion; `candle_launch_and_seed`'s
  * wraps the launch endpoint's body under `launch` (or `api` for dryRun/error), alongside the
  * echoed `clientLaunchId` and, on a real launch, the best-effort `market` read (see
@@ -51,6 +51,7 @@ export const TOOL_NAMES = [
   "candle_get_agent_profile",
   "candle_trade",
   "candle_launch_and_seed",
+  "candle_swap",
 ] as const
 
 export type ToolName = (typeof TOOL_NAMES)[number]
@@ -124,6 +125,14 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       const { idOrWallet } = args as { idOrWallet: string }
       return { url: `${base}/api/v1/users/${idOrWallet}/agent`, init: { method: "GET", headers: jsonHeaders() } }
     }
+
+    case "candle_swap": {
+      const apiKey = requireApiKey(cfg)
+      return {
+        url: `${base}/api/v1/agent/swap`,
+        init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify(args) },
+      }
+    }
   }
 }
 
@@ -191,6 +200,20 @@ const getAgentProfileShape = {
   idOrWallet: z.string().describe("Candle username or wallet address"),
 }
 
+const swapShape = {
+  from: z.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to spend"),
+  to: z.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to receive; must differ from `from`"),
+  amountRaw: z.string().describe("Raw base units of `from` to spend, as a positive integer string"),
+  maxSlippageBps: z.number().optional().describe("Slippage bound in bps, 0-10000. Server defaults to 100 (1%)"),
+  clientSwapId: z
+    .string()
+    .optional()
+    .describe(
+      "Optional dedup key. Only coalesces a duplicate that arrives while the first call is still " +
+        "in flight; one arriving after it settled will swap again",
+    ),
+}
+
 const tradeShape = {
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
   side: z.enum(["buy", "sell"]),
@@ -247,7 +270,7 @@ const launchAndSeedShape = {
 }
 
 /**
- * Wires all seven tools onto an McpServer instance. Kept out of index.ts so tests never import a
+ * Wires all eight tools onto an McpServer instance. Kept out of index.ts so tests never import a
  * module that constructs a transport-connected server. Config is resolved from the environment
  * once, at registration time (`client.ts`'s `resolveConfig`).
  */
@@ -302,6 +325,21 @@ export function registerTools(server: McpServer): void {
       inputSchema: getAgentProfileShape,
     },
     async (args) => callAndRelay("candle_get_agent_profile", args, cfg),
+  )
+
+  server.registerTool(
+    "candle_swap",
+    {
+      title: "Convert between base assets",
+      description:
+        "Convert one base asset into another through the account's own embedded wallets. MOVES " +
+        "REAL FUNDS. A pair spanning the Solana side (SOL/USDC/CNDL) and the Hood side (ETH/USDG) " +
+        "routes through the bridge, so this is how a Hood wallet gets funded before launching or " +
+        "trading on hood. Amounts are RAW base units, not decimal. Test-environment keys are " +
+        "refused: every leg settles on a live venue.",
+      inputSchema: swapShape,
+    },
+    async (args) => callAndRelay("candle_swap", args, cfg),
   )
 
   server.registerTool(

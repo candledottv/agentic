@@ -374,6 +374,58 @@ describe("request shapes", () => {
     expect(result).toEqual(payload)
   })
 
+  test("swap: POST /api/v1/agent/swap with the key, unwrapping payload", async () => {
+    const payload = {
+      hashes: ["sig1"],
+      expectedOutRaw: "990000",
+      outDecimals: 6,
+      statusChecks: [],
+    }
+    const { client, calls } = makeClient(KEYED, [json(200, { success: true, payload })])
+    const result = await client.swap({ from: "SOL", to: "USDC", amountRaw: "1000000000" })
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/agent/swap")
+    expect(calls[0]?.method).toBe("POST")
+    expect(calls[0]?.headers).toEqual(JSON_HEADERS)
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({ from: "SOL", to: "USDC", amountRaw: "1000000000" })
+    // The useful object, not the envelope: same stance as getMarket/getAgentProfile.
+    expect(result).toEqual(payload)
+  })
+
+  test("swap: a cross-chain fill reports every leg's hash and its status URLs", async () => {
+    const payload = {
+      hashes: ["solanaSig", "0xhoodTx"],
+      expectedOutRaw: "5000000",
+      outDecimals: 6,
+      venueCostUsd: 0.42,
+      statusChecks: ["https://relay.link/status/abc"],
+    }
+    const { client, calls } = makeClient(KEYED, [json(200, { success: true, payload })])
+    const result = await client.swap({
+      from: "SOL",
+      to: "USDG",
+      amountRaw: "2000000000",
+      maxSlippageBps: 50,
+      clientSwapId: "fund-hood-1",
+    })
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({
+      from: "SOL",
+      to: "USDG",
+      amountRaw: "2000000000",
+      maxSlippageBps: 50,
+      clientSwapId: "fund-hood-1",
+    })
+    expect(result.hashes).toEqual(["solanaSig", "0xhoodTx"])
+    expect(result.statusChecks).toEqual(["https://relay.link/status/abc"])
+    expect(result.venueCostUsd).toBe(0.42)
+  })
+
+  test("swap: never retries, so a funding call that already landed is not repeated", async () => {
+    // launch() retries on a 5xx; swap() must not, since a second execution moves the funds twice.
+    const { client, calls } = makeClient(KEYED, [json(500, { success: false, error: { code: "INTERNAL" } })])
+    await expect(client.swap({ from: "SOL", to: "USDC", amountRaw: "1" })).rejects.toBeInstanceOf(CandleApiError)
+    expect(calls).toHaveLength(1)
+  })
+
   test("uploadImage: POST raw bytes with the caller's content-type and the key", async () => {
     const bytes = new Uint8Array([137, 80, 78, 71])
     const { client, calls } = makeClient(KEYED, [json(200, { success: true, imageUrl: "https://gateway/img.png" })])
@@ -2047,6 +2099,7 @@ describe("api key requirement", () => {
       () => client.uploadImage(new Uint8Array([1]), "image/png"),
       () => client.listWallets(),
       () => client.getSpendLimits(),
+      () => client.swap({ from: "SOL", to: "USDC", amountRaw: "1000000" }),
       () =>
         client.buildTrade({
           clientTradeId: "trade-1",

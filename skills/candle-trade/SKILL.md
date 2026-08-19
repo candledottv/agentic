@@ -58,6 +58,25 @@ fallback. It requires Max tier and a linked wallet (the account's main embedded 
 place one), and it is not exposed as an MCP tool today: it is a REST-only surface your agent's
 own online loop has to drive directly.
 
+## Funding a wallet, and moving value between chains
+
+Trading on Hood spends from the account's embedded `evm` wallet, and launching on Hood does too. If
+that wallet is empty, nothing on hood can succeed, and the trade rail cannot fill it: `candle_trade`
+moves a token against its quote asset, it does not convert one base asset into another.
+
+`candle_swap` is that conversion. It takes `from` and `to` as base-asset keys (`SOL`, `USDC`, `CNDL`
+on the Solana side; `ETH`, `USDG` on the Hood side), plus `amountRaw` in RAW base units rather than
+the decimal amounts the trade tool accepts. A pair spanning the two sides routes through the bridge,
+so `{from: "SOL", to: "ETH"}` is how a Hood wallet gets funded out of Solana holdings. The swap rail
+charges no platform fee at any tier and is not subject to the spend cap, though the `swap:write`
+scope and the per-key rate limit apply exactly as they do to a trade.
+
+Two things to know before calling it. A cross-chain fill settles as more than one transaction, so
+the result carries a `hashes` array and `statusChecks` URLs to poll: the Solana leg confirming does
+not mean the Hood side has landed. And `clientSwapId` only coalesces a duplicate that arrives while
+the first call is still in flight; one sent after the first settled will swap again, so retrying a
+timed-out swap is not free the way retrying a launch is.
+
 ## Safety rails
 
 When your agent signs from a linked wallet, which a limit order's completing trade always does,

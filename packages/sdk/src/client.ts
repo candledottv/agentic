@@ -672,6 +672,40 @@ export interface SignLinkedTransactionResult {
   encoding: string
 }
 
+/**
+ * The base assets `swap()` converts between. Inlined rather than imported from `@candle/shared`'s
+ * `BaseAssetKey`, for the same reason `packages/mcp` inlines its curve constants: this SDK is
+ * published standalone and must not depend on a monorepo-internal package.
+ *
+ * SOL, USDC and CNDL are Solana-side; ETH and USDG are Hood-side. A pair that spans the two sides
+ * is a cross-chain swap and settles as more than one transaction.
+ */
+export type BaseAssetKey = "SOL" | "USDC" | "CNDL" | "ETH" | "USDG"
+
+/** swap()'s request body: `POST /api/v1/agent/swap`. */
+export interface SwapRequest {
+  from: BaseAssetKey
+  /** Must differ from `from`; the API rejects a same-asset pair. */
+  to: BaseAssetKey
+  /** Raw base units of `from` to spend, as a positive integer string. */
+  amountRaw: string
+  /** Bps, 0-10000. Server defaults to 100 (1%) when omitted. */
+  maxSlippageBps?: number
+  /** Optional in-flight dedup key. See swap()'s jsdoc for what it does and does not guarantee. */
+  clientSwapId?: string
+}
+
+/** swap()'s unwrapped `payload`. */
+export interface SwapResult {
+  /** One hash per executed leg, in execution order. A cross-chain swap reports more than one. */
+  hashes: string[]
+  expectedOutRaw: string
+  outDecimals: number
+  venueCostUsd?: number
+  /** URLs to poll a cross-chain fill's status, so a caller need not re-derive them from a quote. */
+  statusChecks: string[]
+}
+
 /** trade()'s one-call request: mirrors BuildTradeRequest minus clientTradeId/payer, plus who signs. */
 export interface TradeRequest {
   mint: string
@@ -1181,6 +1215,28 @@ export class CandleClient {
   }
 
   /**
+   * One-shot base-asset conversion through the account's own embedded wallets: quote and execute
+   * in a single call. A pair that spans the Solana and Hood sides routes through the bridge, which
+   * makes this the only agent-facing way to move value between them, and therefore how a Hood
+   * wallet gets funded before a Hood launch or trade.
+   *
+   * MOVES REAL FUNDS on every call. Test-environment keys are refused outright with
+   * `TEST_ENVIRONMENT_FORBIDDEN`: no leg of this rail has a non-production equivalent, since every
+   * one settles on a live venue.
+   *
+   * `clientSwapId` is a coalescing key, NOT a durable idempotency ledger. A duplicate arriving
+   * while the first request is still in flight is handed that same result; one arriving after it
+   * settled executes a second swap. Omitting it never coalesces at all. This method therefore
+   * never retries on its own, unlike `launch()`: a retried funding call that already landed would
+   * silently move the funds twice.
+   */
+  async swap(req: SwapRequest): Promise<SwapResult> {
+    this.requireKey("swap()")
+    const body = await this.requestJson<{ success: true; payload: SwapResult }>("POST", "/api/v1/agent/swap", req)
+    return body.payload
+  }
+
+  /**
    * Imports an existing wallet via Candle's ciphertext-only flow (PR3): calls
    * `/agent/wallets/import/init` for Privy's HPKE receiver public key, encrypts `privateKey`
    * locally with `encryptWalletKeyForImport` (wallet-import.ts) -- which decodes it to raw bytes
@@ -1543,8 +1599,8 @@ export class CandleClient {
     // only holds when each leg is broadcast and its receipt awaited before the next is assembled.
     if (!this.evmRpcUrl) {
       throw new Error(
-        'trade({ from: <linked> }) for chain "hood" requires evmRpcUrl: pass one in CandleClientOptions ' +
-          "(new CandleClient({ evmRpcUrl }))",
+        'trade({ from: <linked> }) on chain "hood" requires evmRpcUrl, because hood is an EVM chain: ' +
+          "pass one in CandleClientOptions (new CandleClient({ evmRpcUrl }))",
       )
     }
     const rpc = this.evmRpc()
@@ -1661,8 +1717,8 @@ export class CandleClient {
     const hoodBuilt = built as BuildSelfLaunchHoodResult
     if (!this.evmRpcUrl) {
       throw new Error(
-        'selfLaunch() for chain "hood" requires evmRpcUrl: pass one in CandleClientOptions ' +
-          "(new CandleClient({ evmRpcUrl }))",
+        'selfLaunch() on chain "hood" requires evmRpcUrl, because hood is an EVM chain: ' +
+          "pass one in CandleClientOptions (new CandleClient({ evmRpcUrl }))",
       )
     }
     const rpc = this.evmRpc()

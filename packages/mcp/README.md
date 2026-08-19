@@ -1,9 +1,10 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. It exposes Candle's REST API as
-seven tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
-buy in the same call), trade, read market and feed data, report on-chain activity, and check an
-agent profile without hand-rolling HTTP calls.
+eight tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
+buy in the same call), trade, convert between base assets (including across chains), read market
+and feed data, report on-chain activity, and check an agent profile without hand-rolling HTTP
+calls.
 
 ## Try it without a key
 
@@ -54,7 +55,8 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
   `http://localhost:3001` when developing against a local API.
 - `CANDLE_AGENT_API_KEY` -- an agent API key (`cndl_live_...` / `cndl_test_...`), issued from a
   Candle account's agent settings page. Only required by `candle_launch_token`,
-  `candle_report_activity`, `candle_trade`, and `candle_launch_and_seed`; the three read-only tools
+  `candle_report_activity`, `candle_trade`, `candle_launch_and_seed`, and `candle_swap`; the three
+  read-only tools
   work without it, so the server is useful the moment it is installed and only asks for a key when
   you try to write. `candle_trade` additionally needs the key's `swap:write` scope server-side,
   which is opt-in only and never granted by omission, see `docs/mcp-launch-and-seed.md` in the
@@ -77,7 +79,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-seven tools:
+eight tools:
 
 - `candle_launch_token`, `candle_get_market`, and `candle_get_feed` hit endpoints that use the
   structured envelope `{ success: false, error: { code, message, ... } }`. Branch on `error.code`.
@@ -165,6 +167,6 @@ this on machines that have node and may not have bun.
 `@modelcontextprotocol/sdk` is pinned to `1.22.0` rather than the newest 1.x release: starting at
 `1.23.0`, the SDK's zod v3/v4 compatibility types (`server/zod-compat.ts`) trip a TypeScript
 `TS2589` ("Type instantiation is excessively deep") once more than a couple of `registerTool`
-calls with multi-field zod input shapes coexist in one file, which this package's seven tools
+calls with multi-field zod input shapes coexist in one file, which this package's eight tools
 always will. `1.22.0` predates that rewrite and type-checks cleanly with the exact same tool
 code. Re-check this pin when bumping the SDK.

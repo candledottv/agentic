@@ -215,7 +215,7 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
   // v1. Say so here instead of letting the wallet read fail into a wrong-sounding message.
   if (args.percent !== undefined && chainForMint(args.mint) === "hood") {
     return errText(
-      `percent sells are Solana-only in v1, and ${args.mint} is a hood (0x) address; pass an explicit amount instead`,
+      `percent sells are Solana-only in v1, and ${args.mint} is a 0x address, so it is on chain "hood"; pass an explicit amount instead`,
       { clientTradeId },
     )
   }
