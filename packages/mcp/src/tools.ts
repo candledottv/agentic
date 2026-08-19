@@ -228,7 +228,7 @@ const tradeShape = {
   percent: z
     .number()
     .optional()
-    .describe("Sells only: sell this percent (integer 1-100) of the wallet's holding. Solana only."),
+    .describe("Sells only: sell this percent (integer 1-100) of the wallet's holding, on either chain."),
   quoteAsset: z
     .string()
     .optional()

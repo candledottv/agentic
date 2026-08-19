@@ -30,7 +30,7 @@ platform's install doc) until the feature reaches production.
      against (SOL for a SOL-launched token, USDC or CNDL for those quote pairs). The tool reads the
      market first and converts against its `quoteDecimals`, so you never compute raw base units.
    - A sell's `amount` is denominated in the token itself, and converts against the market's own
-     `decimals`. Or pass `percent` (an integer 1-100, Solana only) to sell a slice of the wallet's
+     `decimals`. Or pass `percent` (an integer 1-100) to sell a slice of the wallet's
      current holding; the MCP resolves the balance for you.
    - `quoteAsset` only matters for an arbitrary Solana mint Candle never launched, the Pro/Max-only
      path traded through Jupiter. It changes nothing for a Candle-launched token.

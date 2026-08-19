@@ -90,7 +90,7 @@ eight tools:
 - `candle_trade` and `candle_launch_and_seed` wrap the underlying REST body instead of relaying it
   bare, in one of two shapes depending on how far the call got:
   - A failure caught before any REST request goes out (e.g. passing both `amount` and `percent`,
-    a percent sell against a hood mint, an unrecognized `quoteAsset`, or a devBuy conversion
+    an unrecognized `quoteAsset`, or a devBuy conversion
     error) returns
     `{ clientTradeId | clientLaunchId, success: false, error: { code: "MCP_VALIDATION", message } }`.
   - A pre-request READ that comes back non-ok (an expired key on the wallet read, a 500 on the

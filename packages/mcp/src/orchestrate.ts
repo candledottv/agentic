@@ -211,15 +211,6 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
   if (args.percent !== undefined && args.side !== "sell") {
     return errText("percent is only valid on sells; buys take a quote-asset amount", { clientTradeId })
   }
-  // A percent sell resolves its size from a Solana balance read, which has no Hood counterpart in
-  // v1. Say so here instead of letting the wallet read fail into a wrong-sounding message.
-  if (args.percent !== undefined && chainForMint(args.mint) === "hood") {
-    return errText(
-      `percent sells are Solana-only in v1, and ${args.mint} is a 0x address, so it is on chain "hood"; pass an explicit amount instead`,
-      { clientTradeId },
-    )
-  }
-
   let amountRaw: string
   let resolved: Record<string, unknown>
   try {
@@ -281,11 +272,18 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       const walletsText = await walletsRes.text()
       if (!walletsRes.ok) return relayRead(walletsText, { clientTradeId })
       const walletsBody = JSON.parse(walletsText) as {
-        wallets?: { solana?: { address: string } | null }
+        wallets?: { solana?: { address: string } | null; evm?: { address: string } | null }
       }
-      const address = walletsBody.wallets?.solana?.address
+      // A hood token is held by the embedded EVM wallet, not the Solana one. These are the two
+      // different chain axes the wallets table names as "Wallet" and "Launches on"; see
+      // docs/reference/chain-vocabulary.md.
+      const chain = chainForMint(args.mint)
+      const address = chain === "hood" ? walletsBody.wallets?.evm?.address : walletsBody.wallets?.solana?.address
       if (!address) {
-        return errText("percent sells need an embedded Solana wallet, and this account has none", { clientTradeId })
+        return errText(
+          `percent sells need an embedded ${chain === "hood" ? "EVM" : "Solana"} wallet, and this account has none`,
+          { clientTradeId },
+        )
       }
       const balRes = await doFetch(`${base(cfg)}/api/v1/tokens/${args.mint}/balance/${address}`, {
         method: "GET",

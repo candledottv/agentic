@@ -258,18 +258,44 @@ describe("executeTrade: sells", () => {
     expect(JSON.parse(result.text).clientTradeId).toBe("t-zero-bal")
   })
 
-  test("a percent sell on a 0x (hood) mint is rejected before any request", async () => {
-    const { calls, fetch } = fakeFetch({})
+  test("a percent sell on a 0x (hood) mint reads the EVM wallet, not the Solana one", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/agent/wallets/embedded": {
+        body: {
+          success: true,
+          wallets: { solana: { address: "Emb1", delegated: true }, evm: { address: "0xEmb2", delegated: true } },
+        },
+      },
+      "https://api.test/api/v1/tokens/0xAbC123/balance/0xEmb2": {
+        body: { payload: { balance: "2000000000000000000", uiAmount: 2, decimals: 18 } },
+      },
+      "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
+    })
     const result = await executeTrade(
       { mint: "0xAbC123", side: "sell", percent: 50, clientTradeId: "t-hood-percent" },
       CFG,
       fetch,
     )
+    expect(calls.length).toBe(3)
+    // Sized off the raw string, so an 18-decimal balance past 2^53 stays exact.
+    expect(JSON.parse(String(calls[2]?.init?.body)).amountRaw).toBe("1000000000000000000")
+    expect(JSON.parse(result.text).resolved.percent).toBe(50)
+  })
+
+  test("a percent sell on a hood mint with no embedded EVM wallet names the EVM wallet", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/agent/wallets/embedded": {
+        body: { success: true, wallets: { solana: { address: "Emb1", delegated: true }, evm: null } },
+      },
+    })
+    const result = await executeTrade(
+      { mint: "0xAbC123", side: "sell", percent: 50, clientTradeId: "t-hood-no-evm" },
+      CFG,
+      fetch,
+    )
     expect(result.isError).toBe(true)
-    expect(result.text).toMatch(/Solana-only/)
-    expect(result.text).toMatch(/hood/)
-    expect(calls.length).toBe(0)
-    expect(JSON.parse(result.text).clientTradeId).toBe("t-hood-percent")
+    expect(result.text).toMatch(/EVM/)
+    expect(calls.length).toBe(1)
   })
 
   test("a non-ok wallet read is relayed verbatim, not reported as a missing wallet", async () => {
