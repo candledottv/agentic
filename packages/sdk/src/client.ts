@@ -164,7 +164,14 @@ export interface LaunchRequest {
   buyAmount?: number | string
   name: string
   symbol: string
+  /** Roughly SQUARE (at most 1.5:1): this is the avatar. Wider is rejected as IMAGE_WRONG_SHAPE. */
   imageUrl: string
+  /**
+   * Optional WIDE artwork (wider than 1.5:1, e.g. 1200x630) for the token page's banner strip.
+   * Where a share card or OG image belongs; a square image here is rejected as
+   * BANNER_WRONG_SHAPE. Omitted, the strip falls back to `imageUrl`.
+   */
+  bannerUrl?: string
   description?: string
   socials?: { twitter?: string; telegram?: string; website?: string; discord?: string }
   /*

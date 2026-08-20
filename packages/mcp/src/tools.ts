@@ -156,7 +156,15 @@ const launchTokenShape = {
     .describe(
       "https URL to the token image. Must be roughly SQUARE (aspect ratio at most 1.5:1): it " +
         "renders as a small circle/square avatar everywhere. Share cards, OG images and banners " +
-        "are rejected with IMAGE_WRONG_SHAPE",
+        "are rejected with IMAGE_WRONG_SHAPE -- pass those as bannerUrl instead",
+    ),
+  bannerUrl: z
+    .string()
+    .optional()
+    .describe(
+      "Optional https URL to WIDE artwork for the token page's banner strip (wider than 1.5:1, " +
+        "e.g. 1200x630). This is where a share card or OG image belongs. A square image here is " +
+        "rejected with BANNER_WRONG_SHAPE. Omit it and the strip falls back to imageUrl",
     ),
   chain: z.string().optional().describe('"solana" or "hood"; defaults to solana'),
   quoteAsset: z.string().optional().describe("Quote asset symbol; defaults per chain"),
