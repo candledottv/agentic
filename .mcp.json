@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "candle": {
+      "command": "node",
+      "args": ["packages/mcp/dist/index.js"],
+      "env": {
+        "CANDLE_API_URL": "https://staging.api.candle.tv"
+      }
+    }
+  }
+}

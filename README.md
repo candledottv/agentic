@@ -6,8 +6,29 @@ API key instead of a private key. This repo holds the developer tooling for that
 TypeScript SDK, an MCP server, a CLI for device-based authorization and key management, and a
 packaged skill library that teaches an agent these workflows directly.
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-docs.candle.tv-black.svg)](https://docs.candle.tv)
+[![MCP](https://img.shields.io/badge/MCP-server-black.svg)](https://docs.candle.tv/developers/mcp-server)
+
 Full documentation lives at [docs.candle.tv](https://docs.candle.tv). Start with the
 [Agent quickstart](https://docs.candle.tv/developers/quickstart).
+
+**Building an agent against this?** Load [AGENTS.md](AGENTS.md) into its context. It is the same
+material written for a machine rather than a reader, with the retry rules and the tool surface in
+one place.
+
+## Contents
+
+- [Try it with no account](#try-it-with-no-account)
+- [Full setup](#full-setup)
+- [Install as a skill package](#install-as-a-skill-package)
+- [The five skills](#the-five-skills)
+- [Packages](#packages)
+- [Examples](#examples)
+- [For agents: machine-readable references](#for-agents-machine-readable-references)
+- [Troubleshooting](#troubleshooting)
+- [Documentation](#documentation)
+- [Contributing and license](#contributing-and-license)
 
 ## Try it with no account
 
@@ -35,6 +56,10 @@ bun run --cwd packages/mcp build
   }
 }
 ```
+
+This repository also ships that configuration as [`.mcp.json`](.mcp.json) at the root, so a client
+that reads a project-scoped MCP file (Claude Code, and others that follow the same convention)
+picks the server up from a clone with no JSON to write by hand.
 
 Use the real absolute path to your clone (MCP clients spawn from their own working directory),
 and keep `CANDLE_API_URL` on staging until this rail reaches production. Ask an agent to call
@@ -105,6 +130,38 @@ that config goes; the skills-vs-server split is explained under
   Candle-launched token from an agent's linked wallet with one call to the SDK's `trade()`,
   signing locally so Candle never sees the wallet's key.
 
+## For agents: machine-readable references
+
+Three artifacts exist so an agent does not have to scrape prose:
+
+| Artifact | What it answers |
+| --- | --- |
+| [`agents/error-catalog.json`](agents/error-catalog.json) | every error code the rail returns, grouped, each carrying `retryable` and an action |
+| [`openapi.json`](https://staging.api.candle.tv/api/v1/openapi.json) | the exact request and response shape of every endpoint, gated against drift in CI |
+| [`llms.txt`](https://docs.candle.tv/llms.txt) | the whole documentation set as one context-sized file, freshness-gated |
+
+The error catalog is the one worth reading before writing retry logic. Retrying a
+`VALIDATION_FAILED` forever is the most common way an agent burns its rate limit and reaches
+nothing.
+
+## Troubleshooting
+
+**The MCP client shows no Candle tools.** The server has to be built before it can be spawned:
+`bun run --cwd packages/mcp build`. Then check the path in your config is absolute, because MCP
+clients spawn from their own working directory, not from your clone.
+
+**Everything returns `UNAUTHORIZED`.** Run `candle doctor`. It resolves credentials in the same
+order the CLI does, so it separates "no key" from "key for the other environment" from "revoked",
+which the error alone cannot.
+
+**Writes fail but reads work.** Reads need no key at all, so this is almost always a missing scope
+or an undelegated wallet. Scopes are fixed when a key is issued and cannot be added later; check
+the code against `agents/error-catalog.json` and issue a new key if the scope is absent.
+
+**Calls hit the wrong environment.** `CANDLE_API_URL` decides which one you are on, and the agent
+rail runs on staging until the production flip. A key issued for one environment does not work
+against the other.
+
 ## Documentation
 
 - [Agent quickstart](https://docs.candle.tv/developers/quickstart): keyless reads to first launch.
@@ -113,3 +170,11 @@ that config goes; the skills-vs-server split is explained under
 - [Agent trading API](https://docs.candle.tv/developers/agent-trading): the build-and-confirm
   trade flow behind `candle_trade`.
 - [Webhooks](https://docs.candle.tv/developers/webhooks): signed events instead of polling.
+
+## Contributing and license
+
+This repository is a read-only mirror generated from Candle's monorepo, so a pull request opened
+here cannot be merged. Issues are read and welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for
+where each kind of change actually goes.
+
+MIT, see [LICENSE](LICENSE).

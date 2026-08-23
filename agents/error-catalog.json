@@ -1,0 +1,133 @@
+{
+  "$comment": [
+    "Every error code the Candle agent rail returns, grouped so an agent can decide what to do",
+    "without parsing prose. Branch on `code`, never on `message`: the code is stable, the message",
+    "is written for humans and will change.",
+    "",
+    "`retryable` means the SAME request may succeed later, unchanged. A category marked false will",
+    "fail identically forever until something about the request, the key, or the account changes.",
+    "Retrying it is how an agent burns its rate limit and reaches nothing.",
+    "",
+    "Source of truth is LAUNCH_ERROR_CODES in the monorepo. Coverage is asserted in CI, so a new",
+    "code cannot ship without landing in a category here."
+  ],
+  "version": 1,
+  "categories": {
+    "auth": {
+      "retryable": false,
+      "action": "Fix the credential. Run `candle doctor` to tell 'no key' apart from 'wrong environment' and 'revoked'.",
+      "codes": [
+        "UNAUTHORIZED",
+        "KEY_EXPIRED",
+        "DEVICE_TOKEN_INVALID",
+        "DEVICE_CODE_EXPIRED",
+        "DEVICE_CODE_NOT_FOUND",
+        "SCOPE_MISSING",
+        "TEST_ENVIRONMENT_FORBIDDEN",
+        "LOOSEN_REQUIRES_SESSION"
+      ]
+    },
+    "rate_limit": {
+      "retryable": true,
+      "action": "Back off exponentially and retry. DAILY_CAP_REACHED resets on the UTC day, so do not retry it inside the same day.",
+      "codes": ["RATE_LIMITED", "DAILY_CAP_REACHED"]
+    },
+    "tier": {
+      "retryable": false,
+      "action": "The account's tier does not include this capability. Surface it to the owner; an agent cannot resolve it.",
+      "codes": ["TIER_REQUIRED", "EXCLUSIVE_NOT_ELIGIBLE"]
+    },
+    "wallet_delegation": {
+      "retryable": false,
+      "action": "Needs a human in the browser to delegate an embedded wallet. Report exactly which chain is undelegated.",
+      "codes": [
+        "AGENT_WALLET_MISSING",
+        "AGENT_WALLET_NOT_DELEGATED",
+        "AGENT_WALLET_NOT_EMBEDDED",
+        "DELEGATION_REVOKED",
+        "SIGNER_MISMATCH"
+      ]
+    },
+    "spend_policy": {
+      "retryable": false,
+      "action": "A spend limit refused the amount. Lower the amount or have the owner raise the limit. Never retry the same size.",
+      "codes": ["SPEND_LIMIT_EXCEEDED", "SPEND_POLICY_DENIED"]
+    },
+    "request_validation": {
+      "retryable": false,
+      "action": "The request is malformed. Fix the named field. For TRANSACTION_TOO_LARGE the error carries the exact name-byte budget.",
+      "codes": [
+        "VALIDATION_FAILED",
+        "INVALID_NAME_BYTES",
+        "INVALID_SYMBOL",
+        "TRANSACTION_TOO_LARGE",
+        "UPLOAD_INVALID",
+        "IMAGE_TOO_LARGE",
+        "IMAGE_UNREACHABLE",
+        "IMAGE_WRONG_SHAPE",
+        "IMAGE_REDIRECT_NOT_ALLOWED",
+        "BANNER_UNREACHABLE",
+        "BANNER_WRONG_SHAPE"
+      ]
+    },
+    "market": {
+      "retryable": false,
+      "action": "The market or pair cannot serve this request. Re-read with `candle_get_market` before trying another route.",
+      "codes": [
+        "MARKET_NOT_FOUND",
+        "MARKET_NOT_TRADABLE",
+        "PAIR_UNSUPPORTED",
+        "QUOTE_PAIR_UNKNOWN",
+        "DEV_BUY_UNSUPPORTED_FOR_PAIR"
+      ]
+    },
+    "sizing": {
+      "retryable": true,
+      "action": "Retry only after changing the amount or slippage. Re-quote first: repeating the same size reproduces the same failure.",
+      "codes": [
+        "AMOUNT_TOO_LOW",
+        "DEV_BUY_TOO_HIGH",
+        "DEV_BUY_TOO_LOW",
+        "SLIPPAGE_EXCEEDED",
+        "INSUFFICIENT_OWNER_BALANCE"
+      ]
+    },
+    "transient": {
+      "retryable": true,
+      "action": "Something upstream was slow or failed. Retry with backoff, reusing the SAME idempotency id so a retry cannot double-execute.",
+      "codes": [
+        "BUILD_TIMEOUT",
+        "LAUNCH_FAILED",
+        "SWAP_FAILED",
+        "LEG2_FAILED",
+        "DEVICE_REQUEST_FAILED",
+        "KEY_ISSUANCE_FAILED"
+      ]
+    },
+    "state_conflict": {
+      "retryable": false,
+      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice.",
+      "codes": [
+        "IDEMPOTENCY_CONFLICT",
+        "TRADE_ALREADY_CLAIMED",
+        "TRADE_NOT_CONFIRMED",
+        "ORDER_ALREADY_FILLED",
+        "ORDER_NOT_FOUND",
+        "ORDER_NOT_TRIGGERED",
+        "JOB_NOT_FOUND",
+        "UNRECOGNIZED_TRANSACTION",
+        "WALLET_ALREADY_LINKED"
+      ]
+    },
+    "quota": {
+      "retryable": false,
+      "action": "A per-account ceiling is full. Revoke or delete something first; waiting does not help.",
+      "codes": ["KEY_LIMIT_REACHED", "ORDER_LIMIT_REACHED", "WALLET_LIMIT_REACHED", "WEBHOOK_LIMIT_REACHED"]
+    },
+    "availability": {
+      "retryable": true,
+      "action": "The capability is switched off or a required leg is absent in this environment. Retry later; escalate if it persists.",
+      "codes": ["LAUNCH_DISABLED", "FEE_LEG_MISSING"]
+    }
+  }
+}
