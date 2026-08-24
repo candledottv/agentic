@@ -12,7 +12,7 @@ candle-trade, candle-webhooks) depends on the key this produces.
 
 ## Setup
 
-This is the setup skill; there is no prerequisite. The candle-market skill's three read tools
+This is the setup skill; there is no prerequisite. The candle-market skill's four read tools
 never need any of this: they work with no key at all.
 
 ## The workflow

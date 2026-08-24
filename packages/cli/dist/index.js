@@ -1053,6 +1053,7 @@ var MCP_TOOL_NAMES = [
   "candle_launch_and_seed",
   "candle_get_market",
   "candle_get_feed",
+  "candle_token_forensics",
   "candle_get_agent_profile",
   "candle_report_activity",
   "candle_trade",
@@ -1060,7 +1061,12 @@ var MCP_TOOL_NAMES = [
   "candle_transfer",
   "candle_sweep"
 ];
-var READ_ONLY_TOOL_NAMES = ["candle_get_market", "candle_get_feed", "candle_get_agent_profile"];
+var READ_ONLY_TOOL_NAMES = [
+  "candle_get_market",
+  "candle_get_feed",
+  "candle_token_forensics",
+  "candle_get_agent_profile"
+];
 function mcpClientConfig(args) {
   return JSON.stringify({ mcpServers: { candle: { command: "candle", args: ["mcp", ...args] } } }, null, 2);
 }

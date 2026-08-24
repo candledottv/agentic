@@ -11,6 +11,7 @@ test("all registered tools are listed", () => {
     "candle_report_activity",
     "candle_swap",
     "candle_sweep",
+    "candle_token_forensics",
     "candle_trade",
     "candle_transfer",
   ])

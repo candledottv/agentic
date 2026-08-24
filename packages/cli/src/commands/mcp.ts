@@ -30,6 +30,7 @@ export const MCP_TOOL_NAMES = [
   "candle_launch_and_seed",
   "candle_get_market",
   "candle_get_feed",
+  "candle_token_forensics",
   "candle_get_agent_profile",
   "candle_report_activity",
   "candle_trade",
@@ -38,9 +39,14 @@ export const MCP_TOOL_NAMES = [
   "candle_sweep",
 ] as const
 
-/** The three tools that authenticate with no API key at all -- what `--read-only` pins the
+/** The four tools that authenticate with no API key at all -- what `--read-only` pins the
  * server to. Mirrors the keyless tools in packages/mcp/src/tools.ts's buildRequest. */
-export const READ_ONLY_TOOL_NAMES = ["candle_get_market", "candle_get_feed", "candle_get_agent_profile"] as const
+export const READ_ONLY_TOOL_NAMES = [
+  "candle_get_market",
+  "candle_get_feed",
+  "candle_token_forensics",
+  "candle_get_agent_profile",
+] as const
 
 /** What `--print-config` emits: a ready-to-paste MCP client block. */
 export function mcpClientConfig(args: string[]): string {
@@ -100,7 +106,7 @@ export async function mcp(args: string[], ctx: CommandContext): Promise<number> 
     return 0
   }
 
-  // --read-only launches with no key at all: the three read tools authenticate with nothing,
+  // --read-only launches with no key at all: the four read tools authenticate with nothing,
   // and a server that HAS no key cannot be talked into moving funds. Otherwise the key is
   // required -- an MCP server that starts keyless and fails on first real tool call is a worse
   // failure mode than not starting.

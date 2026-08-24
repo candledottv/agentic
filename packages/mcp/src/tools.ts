@@ -47,6 +47,7 @@ export const TOOL_NAMES = [
   "candle_launch_token",
   "candle_get_market",
   "candle_get_feed",
+  "candle_token_forensics",
   "candle_report_activity",
   "candle_get_agent_profile",
   "candle_trade",
@@ -127,6 +128,14 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
     case "candle_get_market": {
       const { chain, mint } = args as { chain: string; mint: string }
       return { url: `${base}/api/v1/markets/${chain}/${mint}`, init: { method: "GET", headers: jsonHeaders() } }
+    }
+
+    case "candle_token_forensics": {
+      const { chain, mint } = args as { chain: string; mint: string }
+      return {
+        url: `${base}/api/v1/markets/${chain}/${mint}/forensics`,
+        init: { method: "GET", headers: jsonHeaders() },
+      }
     }
 
     case "candle_get_feed": {
@@ -221,6 +230,11 @@ const launchTokenShape = {
 }
 
 const getMarketShape = {
+  chain: z.string().describe('"solana" or "hood"'),
+  mint: z.string().describe("Token mint (solana) or contract address (hood)"),
+}
+
+const tokenForensicsShape = {
   chain: z.string().describe('"solana" or "hood"'),
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
 }
@@ -379,6 +393,17 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       inputSchema: getMarketShape,
     },
     async (args) => callAndRelay("candle_get_market", args, cfg),
+  )
+
+  register(
+    "candle_token_forensics",
+    {
+      title: "Token forensics",
+      description:
+        "Gate a buy before making it: deployer history, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), holder concentration, and a risk tier (LOW/MODERATE/HIGH/CRITICAL) with per-factor reasons. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.",
+      inputSchema: tokenForensicsShape,
+    },
+    async (args) => callAndRelay("candle_token_forensics", args, cfg),
   )
 
   register(

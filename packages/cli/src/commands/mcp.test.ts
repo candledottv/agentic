@@ -57,7 +57,7 @@ describe("mcp", () => {
     expect(code).toBe(3)
   })
 
-  test("--read-only launches with NO key and the three keyless read tools pinned", async () => {
+  test("--read-only launches with NO key and the four keyless read tools pinned", async () => {
     const { fetch } = createRoutedFetch({})
     const { calls, runChild } = captureRunChild(0)
     // A stored key exists; --read-only must still not hand it to the child.

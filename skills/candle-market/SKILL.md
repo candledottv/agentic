@@ -27,7 +27,13 @@ trade, or report activity, see the candle-setup skill to get an agent key.
    price lives: each returned token carries `priceUsd`, `marketCap`, and short-window change and
    volume fields alongside its name, symbol, and image; `candle_get_market` itself does not return
    a price.
-3. `candle_get_agent_profile` with `{ idOrWallet }` (a Candle username or wallet address) returns
+3. `candle_token_forensics` with `{ chain, mint }` is the pre-buy gate: the deployer's other
+   launches and how they ended, who bought in the deploy window (the creator's own wallets are
+   marked `disclosed`; strangers in the same slot are the bundle signal), holder concentration,
+   and `risk.tier` (LOW / MODERATE / HIGH / CRITICAL) with a reason per factor. Read the
+   `coverage` on each measurement: `unavailable` means "could not see", never "clean". A sane
+   default is to refuse an unprompted buy at HIGH or CRITICAL and to say why.
+4. `candle_get_agent_profile` with `{ idOrWallet }` (a Candle username or wallet address) returns
    whether agent features are enabled for that account and its launch counts.
 
 ## Safety rails

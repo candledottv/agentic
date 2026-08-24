@@ -362,6 +362,7 @@ var TOOL_NAMES = [
   "candle_launch_token",
   "candle_get_market",
   "candle_get_feed",
+  "candle_token_forensics",
   "candle_report_activity",
   "candle_get_agent_profile",
   "candle_trade",
@@ -408,6 +409,13 @@ function buildRequest(name, args, cfg) {
     case "candle_get_market": {
       const { chain, mint } = args;
       return { url: `${base2}/api/v1/markets/${chain}/${mint}`, init: { method: "GET", headers: jsonHeaders() } };
+    }
+    case "candle_token_forensics": {
+      const { chain, mint } = args;
+      return {
+        url: `${base2}/api/v1/markets/${chain}/${mint}/forensics`,
+        init: { method: "GET", headers: jsonHeaders() }
+      };
     }
     case "candle_get_feed": {
       const { bucket, chain } = args;
@@ -471,6 +479,10 @@ var launchTokenShape = {
   dryRun: z.boolean().optional().describe("Validate without executing the launch")
 };
 var getMarketShape = {
+  chain: z.string().describe('"solana" or "hood"'),
+  mint: z.string().describe("Token mint (solana) or contract address (hood)")
+};
+var tokenForensicsShape = {
   chain: z.string().describe('"solana" or "hood"'),
   mint: z.string().describe("Token mint (solana) or contract address (hood)")
 };
@@ -538,6 +550,11 @@ function registerTools(server, env = process.env) {
     description: "Read the current market state for a token: lifecycle, pool address, whether buys are open.",
     inputSchema: getMarketShape
   }, async (args) => callAndRelay("candle_get_market", args, cfg));
+  register("candle_token_forensics", {
+    title: "Token forensics",
+    description: "Gate a buy before making it: deployer history, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), holder concentration, and a risk tier (LOW/MODERATE/HIGH/CRITICAL) with per-factor reasons. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.",
+    inputSchema: tokenForensicsShape
+  }, async (args) => callAndRelay("candle_token_forensics", args, cfg));
   register("candle_get_feed", {
     title: "Get a token feed",
     description: "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip.",

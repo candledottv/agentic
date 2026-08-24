@@ -42,7 +42,7 @@ registered with `grok mcp list`; remove it later with `grok mcp remove candle`.
 
 `grok mcp add` has no flag for environment variables on a stdio server, so add the `env` table by
 hand to the entry it just wrote (in `~/.grok/config.toml`, or `.grok/config.toml` if you used
-`--scope project`). This is required even for the three read-only tools, `candle_get_market`,
+`--scope project`). This is required even for the four read-only tools, `candle_get_market`,
 `candle_get_feed`, and `candle_get_agent_profile`: the server defaults to the alpha API host
 (`https://api.alpha.candle.tv`), where these routes run today.
 

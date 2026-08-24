@@ -86,7 +86,7 @@ from here the MCP server needs no env block at all:
 ```
 
 `candle mcp` launches the same server with the key and API URL this device just stored, so the
-credential never sits in a config file. `--read-only` pins it to the three keyless read tools;
+credential never sits in a config file. `--read-only` pins it to the four keyless read tools;
 `--tools` takes an explicit allowlist; `--print-config` prints the block above. The full command surface, credential storage, and headless use are documented on
 the [Candle CLI](https://docs.candle.tv/developers/cli) page.
 
