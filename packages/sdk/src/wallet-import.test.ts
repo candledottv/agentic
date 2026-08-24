@@ -372,30 +372,9 @@ describe("CandleClient.importWallet", () => {
     expect("label" in submitBody).toBe(false)
   })
 
-  // ── Agent Pilot Phase 1, Task 4: initialSpendLimits -> initialLinkedLimits ─────────────────
+  // ── Per-key only (2026-08-23): the account scopes and their import-time seeding are retired ──
 
-  test("sends initialSpendLimits as initialLinkedLimits in the submit body", async () => {
-    const suite = testSuite()
-    const { encryptionPublicKey } = await generateReceiver(suite)
-    const { calls, impl } = fakeFetch([
-      json(200, { success: true, encryptionPublicKey }),
-      json(200, { success: true, id: "link_3", address: "SolAddr222", chain: "solana", privyWalletId: "wallet_3" }),
-    ])
-    const client = new CandleClient({ apiUrl: "https://api.test", apiKey: "cndl_test_key", fetch: impl })
-
-    await client.importWallet({
-      chain: "solana",
-      address: "SolAddr222",
-      privateKey: SOLANA_BASE58_KEY,
-      signerPublicKey: "irrelevant-for-this-test",
-      initialSpendLimits: [{ asset: "sol", maxPerTxRaw: "100000000" }],
-    })
-
-    const submitBody = JSON.parse(String(calls[1]?.body)) as Record<string, unknown>
-    expect(submitBody.initialLinkedLimits).toEqual([{ asset: "sol", maxPerTxRaw: "100000000" }])
-  })
-
-  test("omits initialLinkedLimits from the submit body when initialSpendLimits is not provided", async () => {
+  test("never sends an initialLinkedLimits field (the seeding mechanism is retired)", async () => {
     const suite = testSuite()
     const { encryptionPublicKey } = await generateReceiver(suite)
     const { calls, impl } = fakeFetch([

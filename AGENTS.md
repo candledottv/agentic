@@ -14,8 +14,9 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 1. **Read without credentials.** `candle_get_market`, `candle_get_feed` and
    `candle_get_agent_profile` need no API key. Use them to confirm the server is wired before
    asking anyone for a credential.
-2. **Get a key** only when you need to write. `candle auth login` authorizes a device from the
-   browser and stores a device token plus an agent key in the OS keychain.
+2. **Get a key** only when you need to write. `npx @candledottv/cli auth login` authorizes a
+   device from the browser and stores a device token plus an agent key in the OS keychain.
+   From then on `candle mcp` runs this MCP server with those stored credentials -- no env block.
 3. **Check the setup** with `candle doctor` before concluding anything is broken.
 
 ## The tool surface
@@ -29,6 +30,8 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 | `candle_launch_and_seed` | yes | launch and seed with a dev buy in one transaction |
 | `candle_trade` | yes | buy or sell a Candle-launched token |
 | `candle_swap` | yes | one-shot base-asset swap |
+| `candle_transfer` | yes | move an asset to an own wallet or an owner-approved withdrawal address |
+| `candle_sweep` | yes | sweep a wallet's base assets (tokens first, native last) to one destination |
 | `candle_report_activity` | yes | report agent activity for verification |
 
 ## Machine-readable references
@@ -72,6 +75,21 @@ is written for humans and will change.
 { "error": { "code": "SLIPPAGE_EXCEEDED", "message": "..." } }
 ```
 
+## The CLI's `--json` contract
+
+Under `--json`, the CLI's stdout carries exactly one JSON value per invocation -- the result on
+success, or this failure envelope -- and stderr is diagnostics only. Exit codes: `0` success,
+`1` failure, `2` usage error.
+
+```json
+{ "ok": false, "code": "TIER_REQUIRED", "status": 403, "message": "...", "suggestion": "Stake CNDL to reach Pro.", "docsUrl": "https://docs.candle.tv/developers/agent-access" }
+```
+
+`code` is always present: the API's own code, an RFC 6749 device-flow error, `NETWORK_UNREACHABLE`
+(the server was never reached), `USAGE` (the arguments were wrong; nothing ran), or a local
+precondition like `NO_DEVICE_TOKEN`. When `suggestion` is present it is the fix, as a command or a
+setting -- run it before asking a human.
+
 ## Environment variables
 
 | Variable | Purpose |
@@ -82,6 +100,7 @@ is written for humans and will change.
 | `CANDLE_DEVICE_TOKEN` | device token from `candle auth login` |
 | `CANDLE_CONFIG_DIR` | override the config location |
 | `CANDLE_KEYRING_PASSPHRASE` | unlock the keyring in headless environments |
+| `CANDLE_MCP_TOOLS` | comma-separated tool allowlist for the MCP server (`candle mcp --tools` sets it) |
 
 ## When you are stuck
 

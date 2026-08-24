@@ -408,9 +408,9 @@ export interface AgentTierInfo {
 }
 
 /**
- * One user-set per-transaction spend cap, mirroring `SpendLimit` in
- * `apps/api/src/lib/agent-policy.ts` and what `GET`/`PUT /api/v1/agent/limits` read and write.
- * `asset` is `"sol" | "usdc" | "cndl"` on Solana or `"eth" | "usdg"` on Hood/EVM; `maxPerTxRaw` is
+ * One per-transaction spend cap, mirroring `SpendLimit` in `apps/api/src/lib/agent-policy.ts`
+ * and what `PUT /api/v1/agent/keys/{prefix}/limits` reads and writes (per-key only, 2026-08-23:
+ * the account-wide limits are retired). `asset` is `"sol" | "usdc" | "cndl"` on Solana or `"eth" | "usdg"` on Hood/EVM; `maxPerTxRaw` is
  * a positive base-10 integer string of the asset's raw base-unit amount (same raw-string
  * convention as `CurveTerms.thresholdRaw` above). Defined locally, not imported from
  * `@candle/shared`, per this file's near-zero-dependency design rule.
@@ -423,20 +423,14 @@ export interface SpendLimit {
 /**
  * `GET /api/v1/agent/keys/self/limits` response (roadmap C, Task 5): the CALLING key's own
  * spend-limit configuration, exactly as the server-side gate resolves it
- * (`apps/api/src/lib/spend-limit-gate.ts`'s `checkSpendAgainstLimits`) -- a per-key cap REPLACES
- * the account cap for any asset it mentions; an asset the key does not mention falls through to
- * the account's cap for whichever wallet pays (`main` or `linked`).
- *
- * Deliberately the RAW inputs, not a single collapsed "effective cap per asset": when the key has
- * no cap for an asset and `accountLimits.main`/`accountLimits.linked` differ, there is no one
- * number to report -- it depends on which wallet the trade pays from. Resolve it the same way the
- * gate does: `keyLimits?.find((l) => l.asset === asset)?.maxPerTxRaw ??
- * accountLimits[scope]?.find((l) => l.asset === asset)?.maxPerTxRaw` (undefined means unlimited).
+ * (`apps/api/src/lib/spend-limit-gate.ts`'s `checkSpendAgainstLimits`). Per-key only
+ * (2026-08-23): `keyLimits` is the whole answer -- an asset the key does not mention is
+ * uncapped, with no account fallback. Resolve a cap as
+ * `keyLimits?.find((l) => l.asset === asset)?.maxPerTxRaw` (undefined means unlimited).
  */
 export interface SpendLimitsResult {
   success: true
   keyLimits: SpendLimit[] | null
-  accountLimits: { main: SpendLimit[] | null; linked: SpendLimit[] | null }
 }
 
 /** POST /api/v1/agent/wallets/import/submit response: the linked-wallet row summary. */
@@ -1214,7 +1208,7 @@ export class CandleClient {
    * Reads this key's own effective spend limits (roadmap C, Task 5), so an agent can self-throttle
    * before a trade or launch ever hits `SPEND_LIMIT_EXCEEDED`. Read-only: raising a cap always
    * requires a Privy session (the portal), never this SDK -- see `SpendLimitsResult` for how to
-   * resolve the raw `keyLimits`/`accountLimits` into the cap that applies to a given trade.
+   * resolve `keyLimits` into the cap that applies to a given trade.
    */
   async getSpendLimits(): Promise<SpendLimitsResult> {
     this.requireKey("getSpendLimits()")
@@ -1256,16 +1250,6 @@ export class CandleClient {
    * `generateSignerKeypair()` in wallet-import.ts, or any equivalent key the caller manages) that
    * Privy registers as the wallet's signer; its private half is never sent here or anywhere else
    * in this call.
-   *
-   * `initialSpendLimits` (Agent Pilot Phase 1, Task 4), sent as `initialLinkedLimits` in the
-   * submit body, lets the FIRST import also seed the account's `linked` spend-limit scope in one
-   * call, instead of a separate `PUT /api/v1/agent/limits` afterward. It only takes effect when
-   * the account's linked scope is currently unset -- that scope is account-wide, shared by every
-   * linked wallet, not per-wallet -- so it is silently ignored on any later import once a linked
-   * cap already exists. Omit it entirely to leave the account's linked scope exactly as it is
-   * (unlimited by default); this is opt-in only, never a forced default. See "Account spend
-   * limits" in docs/headless-launch.md for the full model, including what a cap does and does not
-   * bound.
    */
   async importWallet(params: {
     chain: WalletChain
@@ -1273,7 +1257,6 @@ export class CandleClient {
     privateKey: string
     signerPublicKey: string
     label?: string
-    initialSpendLimits?: SpendLimit[]
   }): Promise<ImportWalletResult> {
     this.requireKey("importWallet()")
     const init = await this.requestJson<{ success: true; encryptionPublicKey: string }>(
@@ -1293,7 +1276,6 @@ export class CandleClient {
       encapsulatedKey,
       signerPublicKey: params.signerPublicKey,
       ...(params.label !== undefined ? { label: params.label } : {}),
-      ...(params.initialSpendLimits !== undefined ? { initialLinkedLimits: params.initialSpendLimits } : {}),
     })
   }
 

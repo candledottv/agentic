@@ -348,10 +348,6 @@ describe("request shapes", () => {
     const payload: SpendLimitsResult = {
       success: true,
       keyLimits: [{ asset: "sol", maxPerTxRaw: "1000000000" }],
-      accountLimits: {
-        main: [{ asset: "sol", maxPerTxRaw: "5000000000" }],
-        linked: null,
-      },
     }
     const { client, calls } = makeClient(KEYED, [json(200, payload)])
     const result = await client.getSpendLimits()
@@ -363,12 +359,8 @@ describe("request shapes", () => {
     expect(result).toEqual(payload)
   })
 
-  test("getSpendLimits: a key with no per-key caps returns keyLimits: null with the account fallback present", async () => {
-    const payload: SpendLimitsResult = {
-      success: true,
-      keyLimits: null,
-      accountLimits: { main: null, linked: [{ asset: "usdc", maxPerTxRaw: "1000000" }] },
-    }
+  test("getSpendLimits: a key with no per-key caps returns keyLimits: null (per-key only, no account fallback)", async () => {
+    const payload: SpendLimitsResult = { success: true, keyLimits: null }
     const { client } = makeClient(KEYED, [json(200, payload)])
     const result = await client.getSpendLimits()
     expect(result).toEqual(payload)

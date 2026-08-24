@@ -51,7 +51,7 @@
     "spend_policy": {
       "retryable": false,
       "action": "A spend limit refused the amount. Lower the amount or have the owner raise the limit. Never retry the same size.",
-      "codes": ["SPEND_LIMIT_EXCEEDED", "SPEND_POLICY_DENIED"]
+      "codes": ["SPEND_LIMIT_EXCEEDED", "SPEND_POLICY_DENIED", "TRANSFER_DESTINATION_NOT_APPROVED"]
     },
     "request_validation": {
       "retryable": false,
@@ -67,7 +67,8 @@
         "IMAGE_WRONG_SHAPE",
         "IMAGE_REDIRECT_NOT_ALLOWED",
         "BANNER_UNREACHABLE",
-        "BANNER_WRONG_SHAPE"
+        "BANNER_WRONG_SHAPE",
+        "TRANSFER_ASSET_NOT_SUPPORTED"
       ]
     },
     "market": {
@@ -89,7 +90,8 @@
         "DEV_BUY_TOO_HIGH",
         "DEV_BUY_TOO_LOW",
         "SLIPPAGE_EXCEEDED",
-        "INSUFFICIENT_OWNER_BALANCE"
+        "INSUFFICIENT_OWNER_BALANCE",
+        "TRANSFER_AMOUNT_UNAVAILABLE"
       ]
     },
     "transient": {
@@ -101,7 +103,8 @@
         "SWAP_FAILED",
         "LEG2_FAILED",
         "DEVICE_REQUEST_FAILED",
-        "KEY_ISSUANCE_FAILED"
+        "KEY_ISSUANCE_FAILED",
+        "TRANSFER_FAILED"
       ]
     },
     "state_conflict": {
