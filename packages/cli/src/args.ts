@@ -63,3 +63,30 @@ export function parseScopesList(raw: string): string[] {
     .map((scope) => scope.trim())
     .filter(Boolean)
 }
+
+/** Mirrors the portal's `parseUsdAmount` (apps/frontend .../key-usage-format.ts), duplicated here
+ * since the CLI has zero runtime dependencies and no cross-package import -- same convention as
+ * `ALL_AGENT_SCOPES` in render.ts. Accepts "$1,500" / "1500" / "0.5"; rejects blank, non-numeric,
+ * and non-positive amounts. Returns integer micro-USD, the unit `POST /keys`'s txLimit speaks. */
+export function parseUsdToMicros(raw: string): { ok: true; usdMicros: number } | { ok: false; message: string } {
+  const cleaned = raw.trim().replace(/^\$/, "").replace(/,/g, "")
+  if (cleaned.length === 0) return { ok: false, message: "--tx-limit requires a dollar amount, for example 100." }
+  const usd = Number(cleaned)
+  if (!Number.isFinite(usd)) return { ok: false, message: `--tx-limit is not a dollar amount: ${raw}` }
+  const usdMicros = Math.round(usd * 1_000_000)
+  if (usdMicros <= 0) return { ok: false, message: "--tx-limit must be greater than $0." }
+  return { ok: true, usdMicros }
+}
+
+/** `--reset` cadences `POST /keys`'s txLimit accepts, mirroring the portal's create form. */
+export const TX_LIMIT_RESETS = ["daily", "weekly", "monthly", "never"] as const
+export type TxLimitReset = (typeof TX_LIMIT_RESETS)[number]
+
+/** Parses `--expires-in`: a positive integer count of days. */
+export function parseExpiresInDays(raw: string): { ok: true; days: number } | { ok: false; message: string } {
+  const days = Number(raw.trim())
+  if (!Number.isInteger(days) || days <= 0) {
+    return { ok: false, message: `--expires-in must be a positive whole number of days, got: ${raw}` }
+  }
+  return { ok: true, days }
+}

@@ -37,8 +37,8 @@ describe("resolveConfig", () => {
   })
 
   test("defaults to the production API, not localhost", () => {
-    expect(DEFAULT_API_URL).toBe("https://api.candle.tv")
-    expect(resolveConfig().apiUrl).toBe("https://api.candle.tv")
+    expect(DEFAULT_API_URL).toBe("https://api.alpha.candle.tv")
+    expect(resolveConfig().apiUrl).toBe("https://api.alpha.candle.tv")
   })
 
   test("CANDLE_API_URL overrides the default for local development", () => {
@@ -48,7 +48,7 @@ describe("resolveConfig", () => {
 
   test("trims whitespace and falls back when the override is blank", () => {
     process.env.CANDLE_API_URL = "   "
-    expect(resolveConfig().apiUrl).toBe("https://api.candle.tv")
+    expect(resolveConfig().apiUrl).toBe("https://api.alpha.candle.tv")
   })
 })
 

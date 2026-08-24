@@ -416,3 +416,103 @@ export async function executeLaunchAndSeed(
     text: JSON.stringify({ clientLaunchId, launch, market, ...(note ? { note } : {}) }),
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+// candle_sweep (agent transfers spec, slice 3)
+// ---------------------------------------------------------------------------------------------
+
+/** Sweep order is deliberate: tokens FIRST, the chain's native asset LAST. The native asset
+ * pays every transfer's fee (and any destination-ATA rent on Solana), so sweeping it first
+ * would strand the tokens behind an empty fee wallet. */
+const SWEEP_BASE_ASSETS: Record<"solana" | "hood", string[]> = {
+  solana: ["USDC", "CNDL", "SOL"],
+  hood: ["USDG", "ETH"],
+}
+
+export interface SweepArgs {
+  chain: "solana" | "hood"
+  to: string
+  mints?: string[]
+}
+
+interface SweepResult {
+  asset: string
+  status: "transferred" | "empty" | "error"
+  amountRaw?: string
+  signature?: string
+  error?: unknown
+}
+
+/**
+ * One transfer per asset with amountRaw "max", the transfer rail's sweep primitive: the chain's
+ * base assets (plus any explicitly named mints), tokens before the native asset. An asset with
+ * nothing spendable (TRANSFER_AMOUNT_UNAVAILABLE) reports "empty", not an error, and a failed
+ * asset never stops the rest -- the launch-and-seed partial-failure discipline. isError is set
+ * only when NOTHING transferred and at least one asset genuinely failed.
+ */
+export async function executeSweep(args: SweepArgs, cfg: RequestConfig, doFetch: FetchLike): Promise<ToolText> {
+  const apiKey = cfg.apiKey
+  if (!apiKey) {
+    throw new Error("CANDLE_AGENT_API_KEY is required for this tool. Set it in the environment or MCP client config.")
+  }
+  const base = cfg.apiUrl.replace(/\/$/, "")
+  const baseAssets = SWEEP_BASE_ASSETS[args.chain]
+  const targets: { field: "asset" | "mint"; value: string }[] = [
+    // Extra mints sweep before the native asset too, for the same fee reason.
+    ...baseAssets.slice(0, -1).map((value) => ({ field: "asset" as const, value })),
+    ...(args.mints ?? []).map((value) => ({ field: "mint" as const, value })),
+    { field: "asset" as const, value: baseAssets[baseAssets.length - 1] as string },
+  ]
+
+  const results: SweepResult[] = []
+  for (const target of targets) {
+    let body: unknown
+    let ok = false
+    try {
+      const res = await doFetch(`${base}/api/v1/agent/transfer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": apiKey },
+        body: JSON.stringify({
+          chain: args.chain,
+          [target.field]: target.value,
+          amountRaw: "max",
+          to: args.to,
+        }),
+      })
+      ok = res.ok
+      // FetchLike exposes text(), not json() -- parse defensively like relayRead does.
+      const text = await res.text()
+      try {
+        body = JSON.parse(text)
+      } catch {
+        body = text
+      }
+    } catch (err) {
+      results.push({ asset: target.value, status: "error", error: String(err) })
+      continue
+    }
+    if (ok) {
+      const payload = body as { amountRaw?: string; signature?: string }
+      results.push({
+        asset: target.value,
+        status: "transferred",
+        amountRaw: payload.amountRaw,
+        signature: payload.signature,
+      })
+      continue
+    }
+    const code = ((body as { error?: { code?: string } } | null)?.error?.code ?? "") as string
+    if (code === "TRANSFER_AMOUNT_UNAVAILABLE") {
+      results.push({ asset: target.value, status: "empty" })
+    } else {
+      results.push({ asset: target.value, status: "error", error: body })
+    }
+  }
+
+  const transferred = results.filter((r) => r.status === "transferred").length
+  const failed = results.filter((r) => r.status === "error").length
+  return {
+    text: JSON.stringify({ chain: args.chain, to: args.to, transferred, failed, results }),
+    ...(transferred === 0 && failed > 0 ? { isError: true } : {}),
+  }
+}

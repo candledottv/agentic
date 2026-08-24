@@ -265,3 +265,31 @@ describe("apiRequest: injected env drives the network-failure hint", () => {
     expect(result.message).toContain('currently "https://real-process-env.candle.tv"')
   })
 })
+
+describe("classifyError: uiHint/docsPath lift", () => {
+  test("the API's uiHint and docsPath ride the failed ApiResult so --json failures can carry a suggestion", async () => {
+    const fetchFn = (async () =>
+      new Response(
+        JSON.stringify({
+          success: false,
+          error: {
+            code: "TIER_REQUIRED",
+            message: "Pro tier required",
+            uiHint: "Stake CNDL to reach Pro.",
+            docsPath: "developers/agent-access",
+          },
+        }),
+        { status: 403, headers: { "content-type": "application/json" } },
+      )) as unknown as typeof fetch
+    const result = await apiRequest("/api/v1/agent/tier", {
+      auth: "key",
+      credentials: { apiKey: "k" },
+      apiUrl: "https://api.test",
+      fetch: fetchFn,
+    })
+    if (result.ok) throw new Error("expected a failure")
+    expect(result.code).toBe("TIER_REQUIRED")
+    expect(result.uiHint).toBe("Stake CNDL to reach Pro.")
+    expect(result.docsPath).toBe("developers/agent-access")
+  })
+})

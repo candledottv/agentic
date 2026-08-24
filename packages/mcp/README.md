@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. It exposes Candle's REST API as
-eight tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
+ten tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, report on-chain activity, and check an agent profile without hand-rolling HTTP
 calls.
@@ -24,7 +24,13 @@ server with no `env` block at all and those three work immediately:
 ```
 
 Add `CANDLE_AGENT_API_KEY` only once you're ready to launch, trade, or report activity, see
-Environment below.
+Environment below -- or skip env editing entirely: after `npx @candledottv/cli auth login`,
+`candle mcp` launches this server with the stored key and API URL in its environment.
+
+`CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
+Unset means all eight. An unknown name fails startup with the valid names in the message, rather
+than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
+you.
 
 Most tools are a thin wrapper: a one-request mapping onto `apps/api`
 (`POST /api/v1/launch/headless`, `GET /api/v1/markets/:chain/:mint`, `GET /api/v1/markets/feed`,
@@ -51,7 +57,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 
 ## Environment
 
-- `CANDLE_API_URL` -- base URL of the Candle API. Defaults to `https://api.candle.tv`. Set it to
+- `CANDLE_API_URL` -- base URL of the Candle API. Defaults to `https://api.alpha.candle.tv` (the alpha deployment; production does not serve the agent API yet). Set it to
   `http://localhost:3001` when developing against a local API.
 - `CANDLE_AGENT_API_KEY` -- an agent API key (`cndl_live_...` / `cndl_test_...`), issued from a
   Candle account's agent settings page. Only required by `candle_launch_token`,
@@ -75,11 +81,26 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_get_agent_profile` | Get an agent profile | `GET /api/v1/users/:idOrWallet/agent` | none |
 | `candle_trade` | Buy or sell a token | Reads the market for its decimals (or wallet balance, for a percent sell) then `POST /api/v1/trade/agent/build` | `CANDLE_AGENT_API_KEY` (`swap:write`) |
 | `candle_launch_and_seed` | Launch a token and seed it | `POST /api/v1/launch/headless` (or `/dry-run`), then a follow-up `GET /api/v1/markets/:chain/:mint` | `CANDLE_AGENT_API_KEY` |
+| `candle_swap` | Swap between base assets | `POST /api/v1/agent/swap` | `CANDLE_AGENT_API_KEY` (`swap:write`) |
+| `candle_transfer` | Transfer an asset | `POST /api/v1/agent/transfer` | `CANDLE_AGENT_API_KEY` (`transfer:write`) |
+| `candle_sweep` | Sweep a wallet to one destination | One `POST /api/v1/agent/transfer` per asset, `amountRaw: "max"` | `CANDLE_AGENT_API_KEY` (`transfer:write`) |
+
+### Transfers and sweeps
+
+`candle_transfer` moves one asset from the account's embedded wallet: to any of the account's
+OWN wallets freely (any asset, `amountRaw` in RAW base units or `"max"` for the spendable
+balance), or to an address the OWNER pre-approved as a withdrawal address in the Candle console
+(base assets only, bounded by the account's spend caps and the key's transaction limit).
+Anything else is refused before signing -- an agent key can never approve its own destination.
+
+`candle_sweep` is the whole-wallet loop: one `"max"` transfer per asset on the chosen chain,
+tokens before the native asset (the native asset pays the fees), plus any `mints` named
+explicitly. Assets with nothing spendable report `empty`; a failed asset never stops the rest.
 
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-eight tools:
+ten tools:
 
 - `candle_launch_token`, `candle_get_market`, and `candle_get_feed` hit endpoints that use the
   structured envelope `{ success: false, error: { code, message, ... } }`. Branch on `error.code`.
@@ -167,6 +188,6 @@ this on machines that have node and may not have bun.
 `@modelcontextprotocol/sdk` is pinned to `1.22.0` rather than the newest 1.x release: starting at
 `1.23.0`, the SDK's zod v3/v4 compatibility types (`server/zod-compat.ts`) trip a TypeScript
 `TS2589` ("Type instantiation is excessively deep") once more than a couple of `registerTool`
-calls with multi-field zod input shapes coexist in one file, which this package's eight tools
+calls with multi-field zod input shapes coexist in one file, which this package's tools
 always will. `1.22.0` predates that rewrite and type-checks cleanly with the exact same tool
 code. Re-check this pin when bumping the SDK.

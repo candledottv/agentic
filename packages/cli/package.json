@@ -1,6 +1,6 @@
 {
   "name": "@candledottv/cli",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "The Candle CLI: authorize a device from your browser, then manage API keys, wallets, and setup health from the terminal",
   "type": "module",
   "bin": {
@@ -25,7 +25,8 @@
     "url": "https://github.com/candledottv/agentic/issues"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
   },
   "scripts": {
     "build": "bun build src/index.ts --target=node --format=esm --outfile=dist/index.js",

@@ -23,7 +23,7 @@ Web Crypto port of the verifier; that is a deliberate later concern.
 import { CandleClient } from "@candledottv/agent-sdk"
 
 const candle = new CandleClient({
-  apiUrl: "https://api.candle.tv",
+  apiUrl: "https://api.alpha.candle.tv",
   apiKey: process.env.CANDLE_AGENT_API_KEY, // cndl_live_... / cndl_test_...
 })
 
@@ -105,7 +105,7 @@ a ciphertext-only proxy to Privy's HPKE endpoint.
 import { CandleClient, generateSignerKeypair } from "@candledottv/agent-sdk"
 
 const candle = new CandleClient({
-  apiUrl: "https://api.candle.tv",
+  apiUrl: "https://api.alpha.candle.tv",
   apiKey: process.env.CANDLE_AGENT_API_KEY,
 })
 

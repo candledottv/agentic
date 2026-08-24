@@ -43,7 +43,7 @@ required:
       "command": "npx",
       "args": ["--yes", "@candledottv/mcp"],
       "env": {
-        "CANDLE_API_URL": "https://staging.api.candle.tv"
+        "CANDLE_API_URL": "https://api.alpha.candle.tv"
       }
     }
   }
@@ -67,7 +67,7 @@ and keep `CANDLE_API_URL` on staging until this rail reaches production. Ask an 
 Once you are ready to launch, trade, or report activity, authorize a device from the browser:
 
 ```bash
-npx @candledottv/cli auth login --api-url https://staging.api.candle.tv
+npx @candledottv/cli auth login --api-url https://api.alpha.candle.tv
 ```
 
 (or, with no npm: `bunx github:candledottv/agentic candle auth login`). Nothing installs
@@ -146,7 +146,7 @@ Three artifacts exist so an agent does not have to scrape prose:
 | Artifact | What it answers |
 | --- | --- |
 | [`agents/error-catalog.json`](agents/error-catalog.json) | every error code the rail returns, grouped, each carrying `retryable` and an action |
-| [`openapi.json`](https://staging.api.candle.tv/api/v1/openapi.json) | the exact request and response shape of every endpoint, gated against drift in CI |
+| [`openapi.json`](https://api.alpha.candle.tv/api/v1/openapi.json) | the exact request and response shape of every endpoint, gated against drift in CI |
 | [`llms.txt`](https://docs.candle.tv/llms.txt) | the whole documentation set as one context-sized file, freshness-gated |
 
 The error catalog is the one worth reading before writing retry logic. Retrying a

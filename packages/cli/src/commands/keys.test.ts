@@ -90,15 +90,18 @@ describe("keys list", () => {
       ["keys", "revoke", "ck_liveab", "--json"],
     ]) {
       const { fetch, calls } = createRoutedFetch({})
+      const stdout = createCapture()
       const stderr = createCapture()
-      const code = await run(argv, createTestDeps({ fetch, stderr }))
+      const code = await run(argv, createTestDeps({ fetch, stdout, stderr }))
       expect(code).toBe(1)
       expect(calls).toHaveLength(0)
-      const parsed = JSON.parse(stderr.text)
+      expect(stderr.text).toBe("")
+      const parsed = JSON.parse(stdout.text)
       expect(parsed).toEqual({
         ok: false,
         code: "NO_DEVICE_TOKEN",
-        message: "No device token available. Run: candle auth login",
+        message: "No device token available.",
+        suggestion: "Run: candle auth login",
       })
     }
   })
@@ -263,5 +266,95 @@ describe("keys revoke", () => {
 
     expect(code).toBe(0)
     expect(calls[0]?.url).toContain("weird%2Fprefix")
+  })
+})
+
+describe("keys create: name, expiry, and transaction limit (portal parity)", () => {
+  const routes = () =>
+    createRoutedFetch({
+      "/api/v1/agent/keys": () => {
+        // Assertions read the SENT body off createRoutedFetch's captured calls, not this response.
+        return jsonResponse(200, {
+          success: true,
+          key: "cndl_live_plain",
+          keyPrefix: "ck_liveaa",
+          scopes: ["launch:write"],
+          environment: "production",
+        })
+      },
+    })
+
+  test("--label, --expires-in, and --tx-limit ride the POST body in the API's own field shapes", async () => {
+    const { fetch, calls } = routes()
+    const store = createFakeStore({ device_token: "cndl_dvc_x" })
+    const code = await run(
+      [
+        "keys",
+        "create",
+        "--label",
+        "trading-bot",
+        "--expires-in",
+        "30",
+        "--tx-limit",
+        "$1,500.50",
+        "--reset",
+        "weekly",
+      ],
+      createTestDeps({ fetch, store }),
+    )
+    expect(code).toBe(0)
+    const body = JSON.parse(String(calls[0]?.init.body))
+    expect(body.label).toBe("trading-bot")
+    expect(body.expiresInDays).toBe(30)
+    expect(body.txLimit).toEqual({ usdMicros: 1_500_500_000, reset: "weekly" })
+  })
+
+  test("omitted flags are omitted from the body entirely, never sent blank", async () => {
+    const { fetch, calls } = routes()
+    const store = createFakeStore({ device_token: "cndl_dvc_x" })
+    const code = await run(["keys", "create"], createTestDeps({ fetch, store }))
+    expect(code).toBe(0)
+    const body = JSON.parse(String(calls[0]?.init.body))
+    expect("label" in body).toBe(false)
+    expect("expiresInDays" in body).toBe(false)
+    expect("txLimit" in body).toBe(false)
+  })
+
+  test("--tx-limit without --reset defaults to daily, matching the portal's create form", async () => {
+    const { fetch, calls } = routes()
+    const store = createFakeStore({ device_token: "cndl_dvc_x" })
+    const code = await run(["keys", "create", "--tx-limit", "100"], createTestDeps({ fetch, store }))
+    expect(code).toBe(0)
+    const body = JSON.parse(String(calls[0]?.init.body))
+    expect(body.txLimit).toEqual({ usdMicros: 100_000_000, reset: "daily" })
+  })
+
+  test("malformed values fail as usage errors BEFORE any request: bad amount, bad days, bare --reset, oversize label", async () => {
+    for (const argv of [
+      ["keys", "create", "--tx-limit", "a-lot"],
+      ["keys", "create", "--expires-in", "0"],
+      ["keys", "create", "--expires-in", "1.5"],
+      ["keys", "create", "--reset", "weekly"],
+      ["keys", "create", "--label", "x".repeat(65)],
+      ["keys", "create", "--tx-limit", "100", "--reset", "hourly"],
+    ]) {
+      const { fetch, calls } = routes()
+      const store = createFakeStore({ device_token: "cndl_dvc_x" })
+      const code = await run(argv, createTestDeps({ fetch, store }))
+      expect(code).toBe(2)
+      expect(calls).toHaveLength(0)
+    }
+  })
+
+  test("a usage error under --json is still an envelope on stdout", async () => {
+    const { fetch } = routes()
+    const store = createFakeStore({ device_token: "cndl_dvc_x" })
+    const stdout = createCapture()
+    const code = await run(["keys", "create", "--tx-limit", "nope", "--json"], createTestDeps({ fetch, store, stdout }))
+    expect(code).toBe(2)
+    const envelope = JSON.parse(stdout.text)
+    expect(envelope.ok).toBe(false)
+    expect(envelope.code).toBe("USAGE")
+    expect(envelope.message).toContain("--tx-limit")
   })
 })

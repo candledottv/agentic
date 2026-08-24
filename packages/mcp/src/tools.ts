@@ -41,7 +41,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { type RequestConfig, resolveConfig } from "./client"
-import { executeLaunchAndSeed, executeTrade } from "./orchestrate"
+import { executeLaunchAndSeed, executeSweep, executeTrade } from "./orchestrate"
 
 export const TOOL_NAMES = [
   "candle_launch_token",
@@ -52,9 +52,34 @@ export const TOOL_NAMES = [
   "candle_trade",
   "candle_launch_and_seed",
   "candle_swap",
+  "candle_transfer",
+  "candle_sweep",
 ] as const
 
 export type ToolName = (typeof TOOL_NAMES)[number]
+
+/**
+ * Resolves the CANDLE_MCP_TOOLS allowlist (CLI P0 plan, Task 2): a comma-separated subset of
+ * TOOL_NAMES, set by `candle mcp --tools`/`--read-only` (or by hand). Unset or blank means
+ * every tool. An unknown name is a hard error, not a silent skip -- a server that quietly
+ * dropped a typo'd allowlist entry would register everything the operator meant to exclude.
+ * Pure and injected-env so tools.test.ts covers it without touching process.env.
+ */
+export function resolveToolAllowlist(env: Record<string, string | undefined>): Set<ToolName> {
+  const raw = env.CANDLE_MCP_TOOLS?.trim()
+  if (!raw) return new Set(TOOL_NAMES)
+  const requested = raw
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0)
+  const unknown = requested.filter((name) => !(TOOL_NAMES as readonly string[]).includes(name))
+  if (requested.length === 0 || unknown.length > 0) {
+    throw new Error(
+      `CANDLE_MCP_TOOLS contains unknown tool name(s): ${unknown.join(", ") || "(none given)"}. Valid names: ${TOOL_NAMES.join(", ")}`,
+    )
+  }
+  return new Set(requested as ToolName[])
+}
 
 /**
  * The tool names that map onto a single request via `buildRequest`. `candle_trade` and
@@ -62,7 +87,7 @@ export type ToolName = (typeof TOOL_NAMES)[number]
  * orchestrate.ts's `executeTrade` / `executeLaunchAndSeed`), never built as a single (url, init)
  * pair, so they're kept out of this type rather than added as dead switch cases.
  */
-type RestToolName = Exclude<ToolName, "candle_trade" | "candle_launch_and_seed">
+type RestToolName = Exclude<ToolName, "candle_trade" | "candle_launch_and_seed" | "candle_sweep">
 
 export interface BuiltRequest {
   url: string
@@ -130,6 +155,14 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       const apiKey = requireApiKey(cfg)
       return {
         url: `${base}/api/v1/agent/swap`,
+        init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify(args) },
+      }
+    }
+
+    case "candle_transfer": {
+      const apiKey = requireApiKey(cfg)
+      return {
+        url: `${base}/api/v1/agent/transfer`,
         init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify(args) },
       }
     }
@@ -277,14 +310,57 @@ const launchAndSeedShape = {
     ),
 }
 
+const transferShape = {
+  chain: z.enum(["solana", "hood"]).describe("Which chain the transfer executes on"),
+  asset: z
+    .enum(["SOL", "USDC", "CNDL", "ETH", "USDG"])
+    .optional()
+    .describe("A base asset key. Pass exactly one of asset or mint."),
+  mint: z
+    .string()
+    .optional()
+    .describe(
+      "An arbitrary token: SPL mint (Solana) or ERC-20 contract (Hood). Own-wallet destinations only; withdrawals to approved addresses are base-assets-only.",
+    ),
+  amountRaw: z
+    .string()
+    .describe(
+      'RAW base units as a decimal string (lamports, wei, token raw units), or "max" to sweep the spendable balance. NOT a human decimal: 1 SOL is "1000000000".',
+    ),
+  to: z
+    .string()
+    .describe(
+      "Destination address. Must be one of the account's own wallets, or an address the OWNER pre-approved as a withdrawal address in the Candle console -- anything else is refused before signing.",
+    ),
+  clientTransferId: z.string().optional().describe("Caller-chosen idempotency key for safe retries"),
+}
+
+const sweepShape = {
+  chain: z.enum(["solana", "hood"]).describe("Which chain to sweep"),
+  to: z.string().describe("Destination address, same rules as candle_transfer's `to`"),
+  mints: z
+    .array(z.string())
+    .optional()
+    .describe("Extra token mints/contracts to sweep besides the chain's base assets (own-wallet destinations only)."),
+}
+
 /**
- * Wires all eight tools onto an McpServer instance. Kept out of index.ts so tests never import a
+ * Wires the tools onto an McpServer instance. Kept out of index.ts so tests never import a
  * module that constructs a transport-connected server. Config is resolved from the environment
  * once, at registration time (`client.ts`'s `resolveConfig`).
  */
-export function registerTools(server: McpServer): void {
+export function registerTools(server: McpServer, env: Record<string, string | undefined> = process.env): void {
   const cfg = resolveConfig()
-  server.registerTool(
+  // Fail-fast at startup on a bad allowlist: the process exits before the transport connects,
+  // and the operator sees the valid names instead of a server that silently has the wrong tools.
+  const allowed = resolveToolAllowlist(env)
+  // One local guard for all eight registrations rather than eight if-wrappers: every call site
+  // below goes through `register`, so the filter cannot drift out of one of them.
+  const register: McpServer["registerTool"] = (name, ...rest) => {
+    if (!allowed.has(name as ToolName)) return undefined as never
+    return (server.registerTool as (...a: unknown[]) => never)(name, ...rest)
+  }
+  register(
     "candle_launch_token",
     {
       title: "Launch a token on Candle",
@@ -295,7 +371,7 @@ export function registerTools(server: McpServer): void {
     async (args) => callAndRelay("candle_launch_token", args, cfg),
   )
 
-  server.registerTool(
+  register(
     "candle_get_market",
     {
       title: "Get market state",
@@ -305,7 +381,7 @@ export function registerTools(server: McpServer): void {
     async (args) => callAndRelay("candle_get_market", args, cfg),
   )
 
-  server.registerTool(
+  register(
     "candle_get_feed",
     {
       title: "Get a token feed",
@@ -315,7 +391,7 @@ export function registerTools(server: McpServer): void {
     async (args) => callAndRelay("candle_get_feed", args, cfg),
   )
 
-  server.registerTool(
+  register(
     "candle_report_activity",
     {
       title: "Report on-chain activity",
@@ -325,7 +401,7 @@ export function registerTools(server: McpServer): void {
     async (args) => callAndRelay("candle_report_activity", args, cfg),
   )
 
-  server.registerTool(
+  register(
     "candle_get_agent_profile",
     {
       title: "Get an agent profile",
@@ -335,7 +411,7 @@ export function registerTools(server: McpServer): void {
     async (args) => callAndRelay("candle_get_agent_profile", args, cfg),
   )
 
-  server.registerTool(
+  register(
     "candle_swap",
     {
       title: "Convert between base assets",
@@ -350,7 +426,32 @@ export function registerTools(server: McpServer): void {
     async (args) => callAndRelay("candle_swap", args, cfg),
   )
 
-  server.registerTool(
+  register(
+    "candle_transfer",
+    {
+      title: "Transfer an asset",
+      description:
+        "Move an asset from the account's embedded wallet to one of the account's own wallets, or to an owner-approved withdrawal address. amountRaw 'max' sweeps the spendable balance of that asset.",
+      inputSchema: transferShape,
+    },
+    async (args) => callAndRelay("candle_transfer", args, cfg),
+  )
+
+  register(
+    "candle_sweep",
+    {
+      title: "Sweep a wallet",
+      description:
+        "Sweep the embedded wallet on one chain to a destination: every base asset (plus any explicitly named mints), one transfer per asset with amountRaw 'max'. Assets with nothing spendable are reported as empty, not errors.",
+      inputSchema: sweepShape,
+    },
+    async (args) => {
+      const result = await executeSweep(args as never, cfg, fetch)
+      return { content: [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) }
+    },
+  )
+
+  register(
     "candle_trade",
     {
       title: "Buy or sell a token",
@@ -367,7 +468,7 @@ export function registerTools(server: McpServer): void {
     },
   )
 
-  server.registerTool(
+  register(
     "candle_launch_and_seed",
     {
       title: "Launch a token and seed it",

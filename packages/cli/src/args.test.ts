@@ -4,7 +4,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { parseArgs, parseScopesList } from "./args"
+import { parseArgs, parseExpiresInDays, parseScopesList, parseUsdToMicros } from "./args"
 
 describe("parseArgs", () => {
   test("parses a recognized value flag", () => {
@@ -62,5 +62,27 @@ describe("parseScopesList", () => {
       "launch:read",
       "swap:write",
     ])
+  })
+})
+
+describe("parseUsdToMicros", () => {
+  test("accepts plain, $-prefixed, and comma-grouped amounts", () => {
+    expect(parseUsdToMicros("100")).toEqual({ ok: true, usdMicros: 100_000_000 })
+    expect(parseUsdToMicros("$1,500.50")).toEqual({ ok: true, usdMicros: 1_500_500_000 })
+    expect(parseUsdToMicros("0.5")).toEqual({ ok: true, usdMicros: 500_000 })
+  })
+  test("rejects blank, non-numeric, zero, and negative amounts", () => {
+    for (const raw of ["", "  ", "a-lot", "0", "-5"]) {
+      expect(parseUsdToMicros(raw).ok).toBe(false)
+    }
+  })
+})
+
+describe("parseExpiresInDays", () => {
+  test("accepts positive whole days only", () => {
+    expect(parseExpiresInDays("30")).toEqual({ ok: true, days: 30 })
+    for (const raw of ["0", "-1", "1.5", "soon"]) {
+      expect(parseExpiresInDays(raw).ok).toBe(false)
+    }
   })
 })

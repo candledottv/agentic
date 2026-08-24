@@ -19,7 +19,7 @@ import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
-import { renderTable, writeFailure, writeLocalFailure } from "../render"
+import { renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { pemToStoredSigner, walletSignerRef } from "../secret-store"
 import { encryptWalletKeyForImport, generateSignerKeypair, parseSolanaSecret, type WalletChain } from "../wallet-import"
 
@@ -48,11 +48,11 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, {})
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}\n`)
+    writeUsageFailure(deps, parsed.error, json)
     return 2
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}\n`)
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
     return 2
   }
 
@@ -61,8 +61,8 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
     // Through the json-aware path, same as every API failure below: a `--json` caller gets an
     // object for this exit too, not a sentence it would have to parse.
     writeLocalFailure(
-      deps.stderr,
-      { code: "NO_API_KEY", message: "No API key available. Run: candle keys create" },
+      deps,
+      { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" },
       json,
     )
     return 1
@@ -76,7 +76,7 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
     env: deps.env,
   })
   if (!embedded.ok) {
-    writeFailure(deps.stderr, embedded, { apiUrl, authType: "key" }, json)
+    writeFailure(deps, embedded, { apiUrl, authType: "key" }, json)
     return 1
   }
 
@@ -88,7 +88,7 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
     env: deps.env,
   })
   if (!linked.ok) {
-    writeFailure(deps.stderr, linked, { apiUrl, authType: "key" }, json)
+    writeFailure(deps, linked, { apiUrl, authType: "key" }, json)
     return 1
   }
 
@@ -100,17 +100,28 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
   const embeddedBody = embedded.body as EmbeddedWalletsResponse
   const linkedBody = linked.body as LinkedWalletsResponse
 
+  // Two vocabularies meet in this table: the rows are WALLETS ("solana" | "evm", an address and
+  // signing family) while the value a caller passes to launch/trade is a LAUNCH CHAIN
+  // ("solana" | "hood"). Heading the column "Chain" made them look like one axis and left
+  // nothing on screen to say that a Hood launch spends from the `evm` row, so the mapping is
+  // stated outright. See docs/reference/chain-vocabulary.md.
   deps.stdout.write("Embedded (launch) wallets:\n")
   deps.stdout.write(
     `${renderTable(
-      ["Chain", "Address", "Delegated"],
+      ["Wallet", "Address", "Delegated", "Launches on"],
       [
         [
           "solana",
           embeddedBody.wallets.solana?.address ?? "none",
           embeddedBody.wallets.solana?.delegated ? "yes" : "no",
+          "solana",
         ],
-        ["evm", embeddedBody.wallets.evm?.address ?? "none", embeddedBody.wallets.evm?.delegated ? "yes" : "no"],
+        [
+          "evm",
+          embeddedBody.wallets.evm?.address ?? "none",
+          embeddedBody.wallets.evm?.delegated ? "yes" : "no",
+          "hood",
+        ],
       ],
     )}\n`,
   )
@@ -121,7 +132,7 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
   } else {
     deps.stdout.write(
       `${renderTable(
-        ["Id", "Chain", "Address", "Label", "Revoked"],
+        ["Id", "Wallet", "Address", "Label", "Revoked"],
         linkedBody.page.map((wallet) => [
           wallet._id,
           wallet.chain,
@@ -219,37 +230,41 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
     valueFlags: ["--chain", "--address", "--label", "--key-file", "--signer-out"],
   })
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}\n`)
+    writeUsageFailure(deps, parsed.error, json)
     return 2
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}\n`)
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
     return 2
   }
+  // Every missing requirement at once. Reporting them one per invocation makes the caller
+  // rediscover the command by trial: the 2026-08-19 import took three runs to learn --chain and
+  // then --address. An agent relaying this to a human pays that cost twice over.
   const chainFlag = parsed.values["--chain"]
-  if (chainFlag !== "solana" && chainFlag !== "evm") {
-    deps.stderr.write('--chain is required and must be "solana" or "evm"\n')
+  const chainValid = chainFlag === "solana" || chainFlag === "evm"
+  const missing: string[] = []
+  if (!chainValid) missing.push("--chain <solana|evm>")
+  // Required for EVM only: a Solana secret embeds its own public key, so the address is derived.
+  // Checked before the key prompt so nobody types a private key and then learns a flag is absent.
+  if (chainFlag === "evm" && parsed.values["--address"] === undefined) missing.push("--address <0x...>")
+  if (missing.length > 0) {
+    deps.stderr.write(`Missing required: ${missing.join(", ")}\n`)
+    deps.stderr.write(`Example: candle wallets import --chain evm --address 0xYourWallet --api-url ${apiUrl}\n`)
     return 2
   }
-  const chain: WalletChain = chainFlag
-  // Checked before the key prompt, not inside resolveImportAddress: a user missing a required
-  // flag should learn that immediately, not after typing their private key into a prompt.
-  if (chain === "evm" && parsed.values["--address"] === undefined) {
-    deps.stderr.write("--address is required for --chain evm\n")
-    return 2
-  }
+  const chain: WalletChain = chainFlag as WalletChain
 
   // Everything local happens BEFORE any network call: key material, decode, address derivation.
   // A typo'd key or mismatched address must never cost an init round trip, and must never leave
   // this process in any form.
   const material = await resolveKeyMaterial(parsed.values["--key-file"], chain, ctx)
   if (!material.ok) {
-    writeLocalFailure(deps.stderr, { code: "KEY_INPUT_FAILED", message: material.message }, json)
+    writeLocalFailure(deps, { code: "KEY_INPUT_FAILED", message: material.message }, json)
     return 1
   }
   const resolvedAddress = resolveImportAddress(chain, material.privateKey, parsed.values["--address"])
   if (!resolvedAddress.ok) {
-    writeLocalFailure(deps.stderr, { code: "KEY_INPUT_FAILED", message: resolvedAddress.message }, json)
+    writeLocalFailure(deps, { code: "KEY_INPUT_FAILED", message: resolvedAddress.message }, json)
     return 1
   }
   const address = resolvedAddress.address
@@ -257,8 +272,8 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
   const apiKey = await resolveApiKey(deps)
   if (!apiKey) {
     writeLocalFailure(
-      deps.stderr,
-      { code: "NO_API_KEY", message: "No API key available. Run: candle keys create" },
+      deps,
+      { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" },
       json,
     )
     return 1
@@ -274,7 +289,7 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
     env: deps.env,
   })
   if (!init.ok) {
-    writeFailure(deps.stderr, init, { apiUrl, authType: "key" }, json)
+    writeFailure(deps, init, { apiUrl, authType: "key" }, json)
     return 1
   }
   const { encryptionPublicKey } = init.body as ImportInitResponse
@@ -303,7 +318,7 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
     env: deps.env,
   })
   if (!submit.ok) {
-    writeFailure(deps.stderr, submit, { apiUrl, authType: "key" }, json)
+    writeFailure(deps, submit, { apiUrl, authType: "key" }, json)
     return 1
   }
   const result = submit.body as ImportSubmitResponse
@@ -327,6 +342,30 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
     }
   }
 
+  // Read the wallet back from the account it was supposed to land on, BEFORE reporting success.
+  //
+  // On 2026-08-19 this command printed a wallet id and a stored signer for an EVM import that
+  // never appeared on the agent's account: the credentials in the keychain belonged to a
+  // different Candle login, so the row was created under someone else. Nothing in the output
+  // named an account, so a wrong-account import was indistinguishable from a right one, and it
+  // took a database query to find out. Trusting our own POST is what made that invisible.
+  const verification = await verifyImportLanded({ id: result.id, apiKey, apiUrl, ctx })
+  if (verification.status === "missing") {
+    writeLocalFailure(
+      deps,
+      {
+        code: "IMPORT_NOT_VISIBLE",
+        message:
+          `The server accepted the import (wallet id ${result.id}) but it is not on the account these ` +
+          `credentials belong to${verification.account !== undefined ? ` (${verification.account})` : ""}. ` +
+          `That usually means the CLI is logged in as a different Candle account than you expect. ` +
+          `Run: candle doctor --api-url ${apiUrl}`,
+      },
+      json,
+    )
+    return 1
+  }
+
   if (json) {
     deps.stdout.write(
       `${JSON.stringify({
@@ -334,7 +373,10 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
         address: result.address,
         chain: result.chain,
         privyWalletId: result.privyWalletId,
+        account: verification.account,
+        apiUrl,
         signerStore: deps.backend,
+        verified: verification.status === "verified",
         ...(signerOut !== undefined ? { signerOut } : {}),
       })}\n`,
     )
@@ -342,20 +384,63 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
   }
 
   deps.stdout.write(`Imported ${result.chain} wallet ${result.address}\n`)
+  // The account and host lead, because they are the two facts that were missing when this went
+  // wrong, and the only two the caller cannot check from the rest of this output.
+  deps.stdout.write(`  Account:         ${verification.account ?? "unknown"} at ${apiUrl}\n`)
   deps.stdout.write(`  Wallet id:       ${result.id}\n`)
   deps.stdout.write(`  Privy wallet id: ${result.privyWalletId}\n`)
-  deps.stdout.write(
-    `  Signer key:      stored in the ${deps.backend} store${signerOut !== undefined ? ` and exported to ${signerOut}` : ""}\n`,
-  )
-  deps.stdout.write("Keep the signer key: trades from this wallet sign with it, and it cannot be re-downloaded.\n")
+  if (signerOut !== undefined) {
+    deps.stdout.write(`  Signer key:      exported to ${signerOut} (and in the ${deps.backend} store)\n`)
+    deps.stdout.write(`Back up ${signerOut}: trades from this wallet sign with it, and it cannot be re-downloaded.\n`)
+  } else {
+    // Previously this said "stored in the keychain" and then "keep the signer key", which asks
+    // for an action against something the caller was never handed.
+    deps.stdout.write(`  Signer key:      stored in your ${deps.backend} store; nothing to save by hand\n`)
+  }
+  if (verification.status === "unchecked") {
+    deps.stdout.write(
+      `Note: could not read the wallet back to confirm which account it landed on. Run: candle wallets --api-url ${apiUrl}\n`,
+    )
+  }
   return 0
+}
+
+/**
+ * Confirm an imported wallet is visible on the account the calling credentials belong to.
+ *
+ * Three outcomes, deliberately distinct: "verified" (the row is there), "missing" (the account
+ * answered and the wallet is NOT in it, which is a real failure and the case this exists for),
+ * and "unchecked" (the read itself failed, which is not evidence of anything and must never fail
+ * an import that already succeeded).
+ */
+async function verifyImportLanded(args: {
+  id: string
+  apiKey: string
+  apiUrl: string
+  ctx: CommandContext
+}): Promise<{ status: "verified" | "missing" | "unchecked"; account?: string }> {
+  const { deps } = args.ctx
+  const listed = await apiRequest("/api/v1/agent/wallets", {
+    method: "GET",
+    auth: "key",
+    credentials: { apiKey: args.apiKey },
+    apiUrl: args.apiUrl,
+    fetch: deps.fetch,
+    env: deps.env,
+  })
+  if (!listed.ok) return { status: "unchecked" }
+  const page = (listed.body as { page?: Array<{ _id?: string; userAddress?: string }> }).page
+  if (!Array.isArray(page)) return { status: "unchecked" }
+  const account = page.find((row) => typeof row.userAddress === "string")?.userAddress
+  const found = page.some((row) => row._id === args.id)
+  return { status: found ? "verified" : "missing", ...(account !== undefined ? { account } : {}) }
 }
 
 export async function walletsRevoke(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, {})
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}\n`)
+    writeUsageFailure(deps, parsed.error, json)
     return 2
   }
   const [walletId, extra] = parsed.positionals
@@ -367,8 +452,8 @@ export async function walletsRevoke(args: string[], ctx: CommandContext): Promis
   const apiKey = await resolveApiKey(deps)
   if (!apiKey) {
     writeLocalFailure(
-      deps.stderr,
-      { code: "NO_API_KEY", message: "No API key available. Run: candle keys create" },
+      deps,
+      { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" },
       json,
     )
     return 1
@@ -383,7 +468,7 @@ export async function walletsRevoke(args: string[], ctx: CommandContext): Promis
     env: deps.env,
   })
   if (!result.ok) {
-    writeFailure(deps.stderr, result, { apiUrl, authType: "key" }, json)
+    writeFailure(deps, result, { apiUrl, authType: "key" }, json)
     return 1
   }
 

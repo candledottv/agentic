@@ -13,7 +13,7 @@ import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
-import { renderError, renderTable } from "../render"
+import { renderError, renderTable, writeUsageFailure } from "../render"
 
 // Matches packages/mcp's own `engines.node` floor (">=18"); doctor needs an actual number to
 // compare against, package.json's engines field alone isn't read at runtime by the built bundle
@@ -33,11 +33,11 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, {})
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}\n`)
+    writeUsageFailure(deps, parsed.error, json)
     return 2
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}\n`)
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
     return 2
   }
 
@@ -127,6 +127,7 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
     )
   }
 
+  let account: string | undefined
   if (!apiKey) {
     rows.push({ check: "Launch wallet delegated", state: "SKIP", detail: "no API key to check" })
   } else {
@@ -145,8 +146,13 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
       })
     } else {
       const body = result.body as {
+        account?: string
         wallets: { solana: { delegated: boolean } | null; evm: { delegated: boolean } | null }
       }
+      // Which account these credentials act as. Valid-but-wrong-account is the failure this
+      // command exists to make visible: on 2026-08-19 both credential checks passed while an
+      // import had landed on a different account entirely, and nothing here would have said so.
+      account = body.account
       const delegated = Boolean(body.wallets.solana?.delegated || body.wallets.evm?.delegated)
       rows.push(
         delegated
@@ -160,10 +166,16 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
     }
   }
 
+  rows.push(
+    account !== undefined
+      ? { check: "Account", state: "PASS", detail: account }
+      : { check: "Account", state: "SKIP", detail: "could not resolve which account these credentials act as" },
+  )
+
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0
 
   if (json) {
-    deps.stdout.write(`${JSON.stringify({ rows })}\n`)
+    deps.stdout.write(`${JSON.stringify({ rows, ...(account !== undefined ? { account } : {}) })}\n`)
     return exitCode
   }
 

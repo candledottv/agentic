@@ -10,7 +10,7 @@ import { hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
 // src/client.ts
-var DEFAULT_API_URL = "https://api.candle.tv";
+var DEFAULT_API_URL = "https://api.alpha.candle.tv";
 function trimTrailingSlashes(url) {
   return url.trim().replace(/\/+$/, "");
 }
@@ -53,7 +53,9 @@ function classifyError(status, raw) {
       const errorObj = obj.error;
       const code = typeof errorObj.code === "string" ? errorObj.code : undefined;
       const message = typeof errorObj.message === "string" ? errorObj.message : `Request failed with status ${status}`;
-      return { code, message };
+      const uiHint = typeof errorObj.uiHint === "string" ? errorObj.uiHint : undefined;
+      const docsPath = typeof errorObj.docsPath === "string" ? errorObj.docsPath : undefined;
+      return { code, message, ...uiHint ? { uiHint } : {}, ...docsPath ? { docsPath } : {} };
     }
   }
   return { message: `Request failed with status ${status}` };
@@ -123,13 +125,40 @@ function parseArgs(args, spec) {
 function parseScopesList(raw) {
   return raw.split(",").map((scope) => scope.trim()).filter(Boolean);
 }
+function parseUsdToMicros(raw) {
+  const cleaned = raw.trim().replace(/^\$/, "").replace(/,/g, "");
+  if (cleaned.length === 0)
+    return { ok: false, message: "--tx-limit requires a dollar amount, for example 100." };
+  const usd = Number(cleaned);
+  if (!Number.isFinite(usd))
+    return { ok: false, message: `--tx-limit is not a dollar amount: ${raw}` };
+  const usdMicros = Math.round(usd * 1e6);
+  if (usdMicros <= 0)
+    return { ok: false, message: "--tx-limit must be greater than $0." };
+  return { ok: true, usdMicros };
+}
+var TX_LIMIT_RESETS = ["daily", "weekly", "monthly", "never"];
+function parseExpiresInDays(raw) {
+  const days = Number(raw.trim());
+  if (!Number.isInteger(days) || days <= 0) {
+    return { ok: false, message: `--expires-in must be a positive whole number of days, got: ${raw}` };
+  }
+  return { ok: true, days };
+}
 
 // src/render.ts
-var ALL_AGENT_SCOPES = ["launch:write", "launch:read", "activity:write", "swap:write"];
-var DEFAULT_AGENT_SCOPES = ALL_AGENT_SCOPES.filter((scope) => scope !== "swap:write");
+var ALL_AGENT_SCOPES = [
+  "launch:write",
+  "launch:read",
+  "activity:write",
+  "swap:write",
+  "transfer:write"
+];
+var DEFAULT_AGENT_SCOPES = ALL_AGENT_SCOPES.filter((scope) => scope !== "swap:write" && scope !== "transfer:write");
 var SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf";
+var TRANSFER_WRITE_NOTE = "moves funds -- this key can transfer assets between your wallets";
 function formatScopesForSummary(scopes) {
-  return scopes.map((scope) => scope === "swap:write" ? `${scope} (${SWAP_WRITE_NOTE})` : scope).join(", ");
+  return scopes.map((scope) => scope === "swap:write" ? `${scope} (${SWAP_WRITE_NOTE})` : scope === "transfer:write" ? `${scope} (${TRANSFER_WRITE_NOTE})` : scope).join(", ");
 }
 function renderTable(headers, rows) {
   const widths = headers.map((header, col) => Math.max(header.length, ...rows.map((row) => (row[col] ?? "").length)));
@@ -156,14 +185,54 @@ function renderError(result, ctx) {
   }
   return result.message;
 }
-function writeFailure(writer, result, ctx, json) {
-  writer.write(json ? `${JSON.stringify(result)}
-` : `${renderError(result, ctx)}
+function suggestionFor(result, ctx) {
+  if (result.code === "DEVICE_TOKEN_INVALID")
+    return "Run: candle auth login";
+  if (result.status === 403 && result.code === "SCOPE_MISSING") {
+    return "Mint a key that has it: candle keys create --scopes <a,b,c>, or check an existing key's scopes: candle keys list";
+  }
+  if (result.status === 401 && ctx.authType === "key")
+    return "Run: candle keys create";
+  if (result.status === 0)
+    return "Set CANDLE_API_URL to override the API endpoint.";
+  return result.uiHint;
+}
+function errorEnvelope(result, ctx) {
+  const code = result.code ?? result.rfcError ?? (result.status === 0 ? "NETWORK_UNREACHABLE" : `HTTP_${result.status}`);
+  const message = result.status === 0 ? `Could not reach ${ctx.apiUrl}.` : result.message;
+  const suggestion = suggestionFor(result, ctx);
+  const docsUrl = result.docsPath ? `https://docs.candle.tv/${result.docsPath}` : undefined;
+  return {
+    ok: false,
+    code,
+    status: result.status,
+    message,
+    ...suggestion ? { suggestion } : {},
+    ...docsUrl ? { docsUrl } : {}
+  };
+}
+function writeFailure(deps, result, ctx, json) {
+  if (json)
+    deps.stdout.write(`${JSON.stringify(errorEnvelope(result, ctx))}
+`);
+  else
+    deps.stderr.write(`${renderError(result, ctx)}
 `);
 }
-function writeLocalFailure(writer, failure, json) {
-  writer.write(json ? `${JSON.stringify({ ok: false, ...failure })}
-` : `${failure.message}
+function writeLocalFailure(deps, failure, json) {
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ ok: false, ...failure })}
+`);
+  else
+    deps.stderr.write(`${failure.suggestion ? `${failure.message} ${failure.suggestion}` : failure.message}
+`);
+}
+function writeUsageFailure(deps, message, json) {
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ ok: false, code: "USAGE", message })}
+`);
+  else
+    deps.stderr.write(`${message}
 `);
 }
 function portalDeviceUrl(apiUrl, portalOrigin) {
@@ -172,8 +241,6 @@ function portalDeviceUrl(apiUrl, portalOrigin) {
       return `${new URL(portalOrigin).origin}/dev/agent`;
     } catch {}
   }
-  if (apiUrl === DEFAULT_API_URL)
-    return "https://candle.tv/dev/agent";
   try {
     const url = new URL(apiUrl);
     const labels = url.hostname.split(".");
@@ -367,7 +434,7 @@ async function resolveApiKey(deps) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.2.0";
+var CLI_VERSION = "0.4.0";
 
 // src/commands/auth.ts
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
@@ -377,13 +444,11 @@ async function authLogin(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, { valueFlags: ["--scopes", "--label"], booleanFlags: ["--no-browser"] });
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}
-`);
+    writeUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}
-`);
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
   const scopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined;
@@ -405,7 +470,7 @@ async function authLogin(args, ctx) {
     body: { clientName, ...scopes ? { scopes } : {} }
   });
   if (!codeResult.ok) {
-    writeFailure(deps.stderr, codeResult, { apiUrl, authType: "none" }, json);
+    writeFailure(deps, codeResult, { apiUrl, authType: "none" }, json);
     return 1;
   }
   const code = codeResult.body;
@@ -450,7 +515,7 @@ async function authLogin(args, ctx) {
 `);
       return 1;
     }
-    writeFailure(deps.stderr, tokenResult, { apiUrl, authType: "none" }, json);
+    writeFailure(deps, tokenResult, { apiUrl, authType: "none" }, json);
     return 1;
   }
   if (json)
@@ -527,13 +592,11 @@ async function authLogout(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, { booleanFlags: ["--keep-key"] });
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}
-`);
+    writeUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}
-`);
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
   const keepKey = parsed.booleans.has("--keep-key");
@@ -586,13 +649,11 @@ async function authStatus(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}
-`);
+    writeUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}
-`);
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
   const config = await deps.readConfig();
@@ -625,6 +686,18 @@ async function authStatus(args, ctx) {
       passDetail: "valid"
     }));
   }
+  let account;
+  if (apiKey) {
+    const identity = await apiRequest("/api/v1/agent/wallets/embedded", {
+      auth: "key",
+      credentials: { apiKey },
+      apiUrl,
+      fetch: deps.fetch,
+      env: deps.env
+    });
+    if (identity.ok)
+      account = identity.body.account;
+  }
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0;
   const configPath = configFilePathForDisplay(deps.env);
   if (json) {
@@ -632,12 +705,16 @@ async function authStatus(args, ctx) {
       backend: deps.backend,
       deviceTokenPrefix: config.deviceTokenPrefix,
       keyPrefix: config.keyPrefix,
+      account,
+      apiUrl,
       configPath,
       rows
     })}
 `);
     return exitCode;
   }
+  deps.stdout.write(`Account: ${account ?? "unknown"} at ${apiUrl}
+`);
   deps.stdout.write(`Backend: ${deps.backend}
 `);
   deps.stdout.write(`Device token prefix: ${config.deviceTokenPrefix ?? "not set"}
@@ -659,13 +736,11 @@ async function doctor(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}
-`);
+    writeUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}
-`);
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
   const rows = [];
@@ -719,6 +794,7 @@ async function doctor(args, ctx) {
       passDetail
     }));
   }
+  let account;
   if (!apiKey) {
     rows.push({ check: "Launch wallet delegated", state: "SKIP", detail: "no API key to check" });
   } else {
@@ -737,6 +813,7 @@ async function doctor(args, ctx) {
       });
     } else {
       const body = result.body;
+      account = body.account;
       const delegated = Boolean(body.wallets.solana?.delegated || body.wallets.evm?.delegated);
       rows.push(delegated ? { check: "Launch wallet delegated", state: "PASS", detail: "delegated" } : {
         check: "Launch wallet delegated",
@@ -745,9 +822,10 @@ async function doctor(args, ctx) {
       });
     }
   }
+  rows.push(account !== undefined ? { check: "Account", state: "PASS", detail: account } : { check: "Account", state: "SKIP", detail: "could not resolve which account these credentials act as" });
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0;
   if (json) {
-    deps.stdout.write(`${JSON.stringify({ rows })}
+    deps.stdout.write(`${JSON.stringify({ rows, ...account !== undefined ? { account } : {} })}
 `);
     return exitCode;
   }
@@ -758,7 +836,11 @@ async function doctor(args, ctx) {
 
 // src/commands/keys.ts
 var KEYS_PATH = "/api/v1/agent/keys";
-var NO_DEVICE_TOKEN = { code: "NO_DEVICE_TOKEN", message: "No device token available. Run: candle auth login" };
+var NO_DEVICE_TOKEN = {
+  code: "NO_DEVICE_TOKEN",
+  message: "No device token available.",
+  suggestion: "Run: candle auth login"
+};
 function mintedByLabel(mintedBy, ownDeviceTokenPrefix) {
   if (!mintedBy)
     return "browser session";
@@ -770,18 +852,16 @@ async function keysList(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}
-`);
+    writeUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}
-`);
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
   const deviceToken = await resolveDeviceToken(deps);
   if (!deviceToken) {
-    writeLocalFailure(deps.stderr, NO_DEVICE_TOKEN, json);
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
     return 1;
   }
   const result = await apiRequest(KEYS_PATH, {
@@ -792,7 +872,7 @@ async function keysList(args, ctx) {
     env: deps.env
   });
   if (!result.ok) {
-    writeFailure(deps.stderr, result, { apiUrl, authType: "device" }, json);
+    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
     return 1;
   }
   if (json) {
@@ -817,22 +897,54 @@ async function keysList(args, ctx) {
 }
 async function keysCreate(args, ctx) {
   const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--scopes", "--environment"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--scopes", "--environment", "--label", "--expires-in", "--tx-limit", "--reset"]
+  });
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}
-`);
+    writeUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}
-`);
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
   const requestedScopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined;
   const environment = parsed.values["--environment"];
+  const label = parsed.values["--label"]?.trim();
+  if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > 64)) {
+    writeUsageFailure(deps, "--label must be 1 to 64 characters.", json);
+    return 2;
+  }
+  let expiresInDays;
+  if (parsed.values["--expires-in"] !== undefined) {
+    const parsedDays = parseExpiresInDays(parsed.values["--expires-in"]);
+    if (!parsedDays.ok) {
+      writeUsageFailure(deps, parsedDays.message, json);
+      return 2;
+    }
+    expiresInDays = parsedDays.days;
+  }
+  if (parsed.values["--reset"] !== undefined && parsed.values["--tx-limit"] === undefined) {
+    writeUsageFailure(deps, "--reset requires --tx-limit.", json);
+    return 2;
+  }
+  let txLimit;
+  if (parsed.values["--tx-limit"] !== undefined) {
+    const parsedUsd = parseUsdToMicros(parsed.values["--tx-limit"]);
+    if (!parsedUsd.ok) {
+      writeUsageFailure(deps, parsedUsd.message, json);
+      return 2;
+    }
+    const reset = parsed.values["--reset"] ?? "daily";
+    if (!TX_LIMIT_RESETS.includes(reset)) {
+      writeUsageFailure(deps, `--reset must be one of: ${TX_LIMIT_RESETS.join(", ")}.`, json);
+      return 2;
+    }
+    txLimit = { usdMicros: parsedUsd.usdMicros, reset };
+  }
   const deviceToken = await resolveDeviceToken(deps);
   if (!deviceToken) {
-    writeLocalFailure(deps.stderr, NO_DEVICE_TOKEN, json);
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
     return 1;
   }
   const result = await apiRequest(KEYS_PATH, {
@@ -844,11 +956,14 @@ async function keysCreate(args, ctx) {
     env: deps.env,
     body: {
       ...requestedScopes ? { scopes: requestedScopes } : {},
-      ...environment ? { environment } : {}
+      ...environment ? { environment } : {},
+      ...label ? { label } : {},
+      ...expiresInDays !== undefined ? { expiresInDays } : {},
+      ...txLimit ? { txLimit } : {}
     }
   });
   if (!result.ok) {
-    writeFailure(deps.stderr, result, { apiUrl, authType: "device" }, json);
+    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
     return 1;
   }
   const body = result.body;
@@ -885,8 +1000,7 @@ async function keysRevoke(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}
-`);
+    writeUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length !== 1) {
@@ -897,7 +1011,7 @@ async function keysRevoke(args, ctx) {
   const prefix = parsed.positionals[0];
   const deviceToken = await resolveDeviceToken(deps);
   if (!deviceToken) {
-    writeLocalFailure(deps.stderr, NO_DEVICE_TOKEN, json);
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
     return 1;
   }
   const result = await apiRequest(`${KEYS_PATH}/${encodeURIComponent(prefix)}`, {
@@ -909,7 +1023,7 @@ async function keysRevoke(args, ctx) {
     env: deps.env
   });
   if (!result.ok) {
-    writeFailure(deps.stderr, result, { apiUrl, authType: "device" }, json);
+    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
     return 1;
   }
   const config = await deps.readConfig();
@@ -931,6 +1045,178 @@ async function keysRevoke(args, ctx) {
 `);
   }
   return 0;
+}
+
+// src/commands/mcp.ts
+var MCP_TOOL_NAMES = [
+  "candle_launch_token",
+  "candle_launch_and_seed",
+  "candle_get_market",
+  "candle_get_feed",
+  "candle_get_agent_profile",
+  "candle_report_activity",
+  "candle_trade",
+  "candle_swap",
+  "candle_transfer",
+  "candle_sweep"
+];
+var READ_ONLY_TOOL_NAMES = ["candle_get_market", "candle_get_feed", "candle_get_agent_profile"];
+function mcpClientConfig(args) {
+  return JSON.stringify({ mcpServers: { candle: { command: "candle", args: ["mcp", ...args] } } }, null, 2);
+}
+async function mcp(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {
+    valueFlags: ["--tools"],
+    booleanFlags: ["--read-only", "--print-config"]
+  });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  const readOnly = parsed.booleans.has("--read-only");
+  const toolsFlag = parsed.values["--tools"];
+  if (readOnly && toolsFlag !== undefined) {
+    writeUsageFailure(deps, "--read-only and --tools are mutually exclusive; --read-only IS a tool selection.", json);
+    return 2;
+  }
+  let toolAllowlist;
+  if (readOnly) {
+    toolAllowlist = READ_ONLY_TOOL_NAMES.join(",");
+  } else if (toolsFlag !== undefined) {
+    const requested = toolsFlag.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
+    const unknown = requested.filter((name) => !MCP_TOOL_NAMES.includes(name));
+    if (requested.length === 0 || unknown.length > 0) {
+      writeUsageFailure(deps, `--tools must be a comma-separated list of: ${MCP_TOOL_NAMES.join(", ")}${unknown.length > 0 ? ` (unknown: ${unknown.join(", ")})` : ""}`, json);
+      return 2;
+    }
+    toolAllowlist = requested.join(",");
+  }
+  if (parsed.booleans.has("--print-config")) {
+    const launchArgs = [
+      ...readOnly ? ["--read-only"] : [],
+      ...toolsFlag !== undefined ? ["--tools", toolsFlag] : []
+    ];
+    deps.stdout.write(`${mcpClientConfig(launchArgs)}
+`);
+    return 0;
+  }
+  const apiKey = readOnly ? undefined : await resolveApiKey(deps);
+  if (!readOnly && !apiKey) {
+    writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle auth login" }, json);
+    return 1;
+  }
+  const childEnv = {
+    ...deps.env,
+    CANDLE_API_URL: apiUrl,
+    ...apiKey ? { CANDLE_AGENT_API_KEY: apiKey } : {},
+    ...toolAllowlist ? { CANDLE_MCP_TOOLS: toolAllowlist } : {}
+  };
+  deps.stderr.write(`Starting @candledottv/mcp against ${apiUrl}${toolAllowlist ? ` (tools: ${toolAllowlist})` : ""}
+`);
+  return deps.runChild("npx", ["--yes", "@candledottv/mcp"], childEnv);
+}
+
+// src/commands/setup.ts
+var SKILLS_CLAUDE_COMMAND = "/plugin marketplace add candledottv/agentic";
+var CODING_AGENTS_DOCS = "https://docs.candle.tv/developers/coding-agents";
+function section(deps, title) {
+  deps.stdout.write(`
+== ${title} ==
+`);
+}
+async function setup(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { booleanFlags: ["--no-browser"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  if (json) {
+    writeUsageFailure(deps, "setup is an interactive wizard; for machine use, compose `auth login --json` and `doctor --json` directly", json);
+    return 2;
+  }
+  deps.stdout.write(`candle setup: this wizard authorizes the device, shows funding, and verifies everything.
+`);
+  section(deps, "1/4 Authorize this device");
+  const deviceToken = await resolveDeviceToken(deps);
+  const apiKey = await resolveApiKey(deps);
+  if (deviceToken && apiKey) {
+    deps.stdout.write(`Already authorized on this machine (device token + API key present). Skipping login.
+`);
+  } else {
+    const loginArgs = parsed.booleans.has("--no-browser") ? ["--no-browser"] : [];
+    const loginExit = await authLogin(loginArgs, ctx);
+    if (loginExit !== 0) {
+      deps.stderr.write(`Setup stopped: device authorization did not complete.
+`);
+      return loginExit;
+    }
+  }
+  section(deps, "2/4 Fund your agent's wallets");
+  const key = await resolveApiKey(deps);
+  const walletsResult = key ? await apiRequest("/api/v1/agent/wallets/embedded", {
+    auth: "key",
+    credentials: { apiKey: key },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  }) : null;
+  if (walletsResult?.ok) {
+    const body = walletsResult.body;
+    const solana = body.wallets?.solana ?? null;
+    const evm = body.wallets?.evm ?? null;
+    if (body.account)
+      deps.stdout.write(`Account: ${body.account}
+`);
+    if (solana)
+      deps.stdout.write(`Solana (send SOL here):    ${solana.address}
+`);
+    if (evm)
+      deps.stdout.write(`Hood    (send ETH here):    ${evm.address}
+`);
+    deps.stdout.write(`Launches and trades are paid from these wallets. There is no minimum, and read-only requests work unfunded.
+`);
+    deps.stdout.write(`
+Tell your agent (paste into its context):
+`);
+    deps.stdout.write(`  You operate a Candle agent account. API base URL: ${apiUrl} (send your API key in the x-api-key header).
+`);
+    if (solana)
+      deps.stdout.write(`  Your Solana wallet: ${solana.address}
+`);
+    if (evm)
+      deps.stdout.write(`  Your Hood Chain (EVM) wallet: ${evm.address}
+`);
+    deps.stdout.write(`  Check balances before trading, and ask me to fund whichever chain you need.
+`);
+  } else {
+    deps.stdout.write("Could not read the agent wallets right now; `candle wallets` shows them once the API is reachable.\n");
+  }
+  section(deps, "3/4 Connect your agent");
+  deps.stdout.write(`Claude Code skills:  ${SKILLS_CLAUDE_COMMAND}
+`);
+  deps.stdout.write(`MCP (any client):    candle mcp --print-config
+`);
+  deps.stdout.write(`Other platforms:     ${CODING_AGENTS_DOCS}
+`);
+  section(deps, "4/4 Health check");
+  const doctorExit = await doctor([], ctx);
+  const config = await deps.readConfig();
+  deps.stdout.write(`
+Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl, config.portalOrigin)}
+`);
+  deps.stdout.write(doctorExit === 0 ? `Setup complete. Your agent can launch, trade, and transfer the moment the wallets are funded.
+` : "Setup finished with failed checks above; fix them and re-run `candle doctor`.\n");
+  return doctorExit;
 }
 
 // ../../node_modules/@scure/base/lib/esm/index.js
@@ -3789,18 +4075,16 @@ async function wallets(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}
-`);
+    writeUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}
-`);
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
   const apiKey = await resolveApiKey(deps);
   if (!apiKey) {
-    writeLocalFailure(deps.stderr, { code: "NO_API_KEY", message: "No API key available. Run: candle keys create" }, json);
+    writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
     return 1;
   }
   const embedded = await apiRequest("/api/v1/agent/wallets/embedded", {
@@ -3811,7 +4095,7 @@ async function wallets(args, ctx) {
     env: deps.env
   });
   if (!embedded.ok) {
-    writeFailure(deps.stderr, embedded, { apiUrl, authType: "key" }, json);
+    writeFailure(deps, embedded, { apiUrl, authType: "key" }, json);
     return 1;
   }
   const linked = await apiRequest("/api/v1/agent/wallets", {
@@ -3822,7 +4106,7 @@ async function wallets(args, ctx) {
     env: deps.env
   });
   if (!linked.ok) {
-    writeFailure(deps.stderr, linked, { apiUrl, authType: "key" }, json);
+    writeFailure(deps, linked, { apiUrl, authType: "key" }, json);
     return 1;
   }
   if (json) {
@@ -3834,13 +4118,19 @@ async function wallets(args, ctx) {
   const linkedBody = linked.body;
   deps.stdout.write(`Embedded (launch) wallets:
 `);
-  deps.stdout.write(`${renderTable(["Chain", "Address", "Delegated"], [
+  deps.stdout.write(`${renderTable(["Wallet", "Address", "Delegated", "Launches on"], [
     [
       "solana",
       embeddedBody.wallets.solana?.address ?? "none",
-      embeddedBody.wallets.solana?.delegated ? "yes" : "no"
+      embeddedBody.wallets.solana?.delegated ? "yes" : "no",
+      "solana"
     ],
-    ["evm", embeddedBody.wallets.evm?.address ?? "none", embeddedBody.wallets.evm?.delegated ? "yes" : "no"]
+    [
+      "evm",
+      embeddedBody.wallets.evm?.address ?? "none",
+      embeddedBody.wallets.evm?.delegated ? "yes" : "no",
+      "hood"
+    ]
   ])}
 `);
   deps.stdout.write(`
@@ -3850,7 +4140,7 @@ Linked wallets:
     deps.stdout.write(`(none)
 `);
   } else {
-    deps.stdout.write(`${renderTable(["Id", "Chain", "Address", "Label", "Revoked"], linkedBody.page.map((wallet) => [
+    deps.stdout.write(`${renderTable(["Id", "Wallet", "Address", "Label", "Revoked"], linkedBody.page.map((wallet) => [
       wallet._id,
       wallet.chain,
       wallet.address,
@@ -3909,41 +4199,42 @@ async function walletsImport(args, ctx) {
     valueFlags: ["--chain", "--address", "--label", "--key-file", "--signer-out"]
   });
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}
-`);
+    writeUsageFailure(deps, parsed.error, json);
     return 2;
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}
-`);
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
   const chainFlag = parsed.values["--chain"];
-  if (chainFlag !== "solana" && chainFlag !== "evm") {
-    deps.stderr.write(`--chain is required and must be "solana" or "evm"
+  const chainValid = chainFlag === "solana" || chainFlag === "evm";
+  const missing = [];
+  if (!chainValid)
+    missing.push("--chain <solana|evm>");
+  if (chainFlag === "evm" && parsed.values["--address"] === undefined)
+    missing.push("--address <0x...>");
+  if (missing.length > 0) {
+    deps.stderr.write(`Missing required: ${missing.join(", ")}
+`);
+    deps.stderr.write(`Example: candle wallets import --chain evm --address 0xYourWallet --api-url ${apiUrl}
 `);
     return 2;
   }
   const chain2 = chainFlag;
-  if (chain2 === "evm" && parsed.values["--address"] === undefined) {
-    deps.stderr.write(`--address is required for --chain evm
-`);
-    return 2;
-  }
   const material = await resolveKeyMaterial(parsed.values["--key-file"], chain2, ctx);
   if (!material.ok) {
-    writeLocalFailure(deps.stderr, { code: "KEY_INPUT_FAILED", message: material.message }, json);
+    writeLocalFailure(deps, { code: "KEY_INPUT_FAILED", message: material.message }, json);
     return 1;
   }
   const resolvedAddress = resolveImportAddress(chain2, material.privateKey, parsed.values["--address"]);
   if (!resolvedAddress.ok) {
-    writeLocalFailure(deps.stderr, { code: "KEY_INPUT_FAILED", message: resolvedAddress.message }, json);
+    writeLocalFailure(deps, { code: "KEY_INPUT_FAILED", message: resolvedAddress.message }, json);
     return 1;
   }
   const address = resolvedAddress.address;
   const apiKey = await resolveApiKey(deps);
   if (!apiKey) {
-    writeLocalFailure(deps.stderr, { code: "NO_API_KEY", message: "No API key available. Run: candle keys create" }, json);
+    writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
     return 1;
   }
   const init = await apiRequest("/api/v1/agent/wallets/import/init", {
@@ -3956,7 +4247,7 @@ async function walletsImport(args, ctx) {
     env: deps.env
   });
   if (!init.ok) {
-    writeFailure(deps.stderr, init, { apiUrl, authType: "key" }, json);
+    writeFailure(deps, init, { apiUrl, authType: "key" }, json);
     return 1;
   }
   const { encryptionPublicKey } = init.body;
@@ -3983,7 +4274,7 @@ async function walletsImport(args, ctx) {
     env: deps.env
   });
   if (!submit.ok) {
-    writeFailure(deps.stderr, submit, { apiUrl, authType: "key" }, json);
+    writeFailure(deps, submit, { apiUrl, authType: "key" }, json);
     return 1;
   }
   const result = submit.body;
@@ -3997,13 +4288,24 @@ async function walletsImport(args, ctx) {
 `);
     }
   }
+  const verification = await verifyImportLanded({ id: result.id, apiKey, apiUrl, ctx });
+  if (verification.status === "missing") {
+    writeLocalFailure(deps, {
+      code: "IMPORT_NOT_VISIBLE",
+      message: `The server accepted the import (wallet id ${result.id}) but it is not on the account these ` + `credentials belong to${verification.account !== undefined ? ` (${verification.account})` : ""}. ` + `That usually means the CLI is logged in as a different Candle account than you expect. ` + `Run: candle doctor --api-url ${apiUrl}`
+    }, json);
+    return 1;
+  }
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       id: result.id,
       address: result.address,
       chain: result.chain,
       privyWalletId: result.privyWalletId,
+      account: verification.account,
+      apiUrl,
       signerStore: deps.backend,
+      verified: verification.status === "verified",
       ...signerOut !== undefined ? { signerOut } : {}
     })}
 `);
@@ -4011,22 +4313,51 @@ async function walletsImport(args, ctx) {
   }
   deps.stdout.write(`Imported ${result.chain} wallet ${result.address}
 `);
+  deps.stdout.write(`  Account:         ${verification.account ?? "unknown"} at ${apiUrl}
+`);
   deps.stdout.write(`  Wallet id:       ${result.id}
 `);
   deps.stdout.write(`  Privy wallet id: ${result.privyWalletId}
 `);
-  deps.stdout.write(`  Signer key:      stored in the ${deps.backend} store${signerOut !== undefined ? ` and exported to ${signerOut}` : ""}
+  if (signerOut !== undefined) {
+    deps.stdout.write(`  Signer key:      exported to ${signerOut} (and in the ${deps.backend} store)
 `);
-  deps.stdout.write(`Keep the signer key: trades from this wallet sign with it, and it cannot be re-downloaded.
+    deps.stdout.write(`Back up ${signerOut}: trades from this wallet sign with it, and it cannot be re-downloaded.
 `);
+  } else {
+    deps.stdout.write(`  Signer key:      stored in your ${deps.backend} store; nothing to save by hand
+`);
+  }
+  if (verification.status === "unchecked") {
+    deps.stdout.write(`Note: could not read the wallet back to confirm which account it landed on. Run: candle wallets --api-url ${apiUrl}
+`);
+  }
   return 0;
+}
+async function verifyImportLanded(args) {
+  const { deps } = args.ctx;
+  const listed = await apiRequest("/api/v1/agent/wallets", {
+    method: "GET",
+    auth: "key",
+    credentials: { apiKey: args.apiKey },
+    apiUrl: args.apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!listed.ok)
+    return { status: "unchecked" };
+  const page = listed.body.page;
+  if (!Array.isArray(page))
+    return { status: "unchecked" };
+  const account = page.find((row) => typeof row.userAddress === "string")?.userAddress;
+  const found = page.some((row) => row._id === args.id);
+  return { status: found ? "verified" : "missing", ...account !== undefined ? { account } : {} };
 }
 async function walletsRevoke(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {});
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}
-`);
+    writeUsageFailure(deps, parsed.error, json);
     return 2;
   }
   const [walletId, extra] = parsed.positionals;
@@ -4037,7 +4368,7 @@ async function walletsRevoke(args, ctx) {
   }
   const apiKey = await resolveApiKey(deps);
   if (!apiKey) {
-    writeLocalFailure(deps.stderr, { code: "NO_API_KEY", message: "No API key available. Run: candle keys create" }, json);
+    writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
     return 1;
   }
   const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(walletId)}`, {
@@ -4049,7 +4380,7 @@ async function walletsRevoke(args, ctx) {
     env: deps.env
   });
   if (!result.ok) {
-    writeFailure(deps.stderr, result, { apiUrl, authType: "key" }, json);
+    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
     return 1;
   }
   try {
@@ -4260,11 +4591,14 @@ Commands:
   auth status                                                     Show credential status
   auth logout [--keep-key]                                        Clear local credentials
   keys list                                                       List API keys
-  keys create [--scopes <a,b,c>] [--environment production|test]  Create an API key
+  keys create [--scopes <a,b,c>] [--label <name>]                 Create an API key
+              [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]
   keys revoke <prefix>                                            Revoke an API key
   wallets                                                         Show launch and linked wallets
   wallets import --chain <solana|evm> [options]                   Import a wallet you own (key via --key-file or hidden prompt)
   wallets revoke <wallet-id>                                      Revoke a linked wallet
+  setup [--no-browser]                                            One wizard: authorize, fund, connect, verify
+  mcp [--tools <a,b,c>] [--read-only] [--print-config]            Run the Candle MCP server with stored credentials
   doctor                                                          Diagnose CLI setup
 
 Global options:
@@ -4322,6 +4656,10 @@ async function run2(argv, deps) {
   }
   if (cmd === "doctor")
     return doctor(tokens.slice(1), ctx);
+  if (cmd === "mcp")
+    return mcp(tokens.slice(1), ctx);
+  if (cmd === "setup")
+    return setup(tokens.slice(1), ctx);
   return unknownCommand(deps, cmd);
 }
 function unknownCommand(deps, token) {
@@ -4364,6 +4702,15 @@ async function buildRealDeps() {
     env: process.env,
     nodeVersion: process.versions.node,
     hostname: hostname(),
+    runChild: (command, args, env) => new Promise((resolve) => {
+      const child = spawn2(command, args, {
+        stdio: "inherit",
+        env,
+        shell: process.platform === "win32"
+      });
+      child.on("error", () => resolve(1));
+      child.on("close", (code) => resolve(code ?? 1));
+    }),
     readFile: (path) => readFile3(path, "utf8"),
     writeFile: (path, content) => writeFile3(path, content, { mode: 384 }),
     promptSecret: promptHiddenSecret

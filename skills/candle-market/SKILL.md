@@ -11,9 +11,9 @@ launches; it only reads.
 
 ## Setup
 
-Nothing to set up beyond pointing the MCP server at staging: the default API host is production,
-which doesn't serve these routes yet, so set `CANDLE_API_URL=https://staging.api.candle.tv` when
-configuring the server (see each platform's install doc) until the feature reaches production.
+Nothing to set up: the CLI and MCP default to the alpha API host
+(`https://api.alpha.candle.tv`), where these routes run today; set `CANDLE_API_URL` only to
+point at a different deployment (see each platform's install doc).
 From there, all three tools below work immediately, with no API key. If you later want to launch,
 trade, or report activity, see the candle-setup skill to get an agent key.
 
@@ -43,6 +43,6 @@ Read-only: none of these three tools move funds, sign a transaction, or need any
 → call `candle_get_market` with `{ "chain": "solana", "mint": "<mint address>" }`
 
 To go further and actually launch or trade, see the candle-setup skill: run
-`candle auth login --api-url https://staging.api.candle.tv` to get an agent key (the `--api-url`
+`candle auth login --api-url https://api.alpha.candle.tv` to get an agent key (the `--api-url`
 override is needed while the device flow is still staging-only), then move on to the candle-launch
 or candle-trade skills.

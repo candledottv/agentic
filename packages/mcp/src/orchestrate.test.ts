@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { executeLaunchAndSeed, executeTrade, type FetchLike } from "./orchestrate"
+import { executeLaunchAndSeed, executeSweep, executeTrade, type FetchLike } from "./orchestrate"
 
 const CFG = { apiUrl: "https://api.test", apiKey: "cndl_live_k" }
 
@@ -637,5 +637,70 @@ describe("executeLaunchAndSeed", () => {
     const parsed = JSON.parse(result.text)
     expect(parsed.clientLaunchId).toBe("L-html")
     expect(parsed.error.code).toBe("MCP_TRANSPORT")
+  })
+})
+
+describe("executeSweep", () => {
+  const cfg = { apiUrl: "https://api.test", apiKey: "cndl_live_k" }
+
+  function sweepFetch(perAsset: Record<string, { ok: boolean; body: unknown }>) {
+    const calls: { asset: string }[] = []
+    const doFetch = (async (_url: string, init?: { body?: unknown }) => {
+      const body = JSON.parse(String(init?.body)) as { asset?: string; mint?: string }
+      const key = body.asset ?? body.mint ?? "?"
+      calls.push({ asset: key })
+      const answer = perAsset[key] ?? { ok: true, body: { success: true, amountRaw: "1", signature: `sig-${key}` } }
+      return {
+        ok: answer.ok,
+        status: answer.ok ? 200 : 400,
+        text: async () => JSON.stringify(answer.body),
+      }
+    }) as never
+    return { calls, doFetch }
+  }
+
+  test("sweeps tokens before the native asset -- the native asset pays the fees", async () => {
+    const { calls, doFetch } = sweepFetch({})
+    await executeSweep({ chain: "solana", to: "Dest" }, cfg, doFetch)
+    expect(calls.map((c) => c.asset)).toEqual(["USDC", "CNDL", "SOL"])
+  })
+
+  test("explicit mints sweep after base tokens, still before the native asset", async () => {
+    const { calls, doFetch } = sweepFetch({})
+    await executeSweep({ chain: "solana", to: "Dest", mints: ["Mint1"] }, cfg, doFetch)
+    expect(calls.map((c) => c.asset)).toEqual(["USDC", "CNDL", "Mint1", "SOL"])
+  })
+
+  test("empty assets report empty, failures report error, and neither stops the rest", async () => {
+    const { doFetch } = sweepFetch({
+      USDC: { ok: false, body: { error: { code: "TRANSFER_AMOUNT_UNAVAILABLE", message: "zero" } } },
+      CNDL: { ok: false, body: { error: { code: "TRANSFER_FAILED", message: "boom" } } },
+    })
+    const result = await executeSweep({ chain: "solana", to: "Dest" }, cfg, doFetch)
+    const parsed = JSON.parse(result.text) as {
+      transferred: number
+      failed: number
+      results: { asset: string; status: string }[]
+    }
+    expect(parsed.results.map((r) => `${r.asset}:${r.status}`)).toEqual(["USDC:empty", "CNDL:error", "SOL:transferred"])
+    expect(parsed.transferred).toBe(1)
+    expect(parsed.failed).toBe(1)
+    expect(result.isError).toBeUndefined()
+  })
+
+  test("isError only when nothing transferred and something genuinely failed", async () => {
+    const { doFetch } = sweepFetch({
+      USDC: { ok: false, body: { error: { code: "TRANSFER_FAILED", message: "boom" } } },
+      CNDL: { ok: false, body: { error: { code: "TRANSFER_AMOUNT_UNAVAILABLE", message: "zero" } } },
+      SOL: { ok: false, body: { error: { code: "TRANSFER_FAILED", message: "boom" } } },
+    })
+    const result = await executeSweep({ chain: "solana", to: "Dest" }, cfg, doFetch)
+    expect(result.isError).toBe(true)
+  })
+
+  test("hood sweeps USDG then ETH", async () => {
+    const { calls, doFetch } = sweepFetch({})
+    await executeSweep({ chain: "hood", to: "0xdest" }, cfg, doFetch)
+    expect(calls.map((c) => c.asset)).toEqual(["USDG", "ETH"])
   })
 })

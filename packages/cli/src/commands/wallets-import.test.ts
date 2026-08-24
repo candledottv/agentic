@@ -20,6 +20,7 @@ const SOL_SECRET = Uint8Array.from({ length: 64 }, (_, i) => i)
 const SOL_SECRET_BASE58 = base58.encode(SOL_SECRET)
 const SOL_ID_JSON = JSON.stringify(Array.from(SOL_SECRET))
 const SOL_DERIVED_ADDRESS = base58.encode(SOL_SECRET.slice(32))
+const ACCOUNT = "FaKwE2xXBwjvNJhD7zRrCLsQTB6xCix1JDWZQcjUvd8Q"
 
 /** A real P-256 public key in the raw uncompressed SEC1 form `/import/init` returns, so the
  * vendored suite's `deserializePublicKey` accepts it and the seal actually runs. */
@@ -41,6 +42,16 @@ function importRoutes(overrides: Partial<Record<string, Parameters<typeof create
         address: SOL_DERIVED_ADDRESS,
         chain: "solana",
         privyWalletId: "pw_test0001",
+      }),
+    // The post-import read-back: the command confirms the wallet is visible on the account its
+    // credentials belong to before reporting success. Default stub answers "yes, and here is the
+    // account", which is the healthy case.
+    "/api/v1/agent/wallets": () =>
+      jsonResponse(200, {
+        success: true,
+        page: [{ _id: "lw_test0001", address: SOL_DERIVED_ADDRESS, chain: "solana", userAddress: ACCOUNT }],
+        isDone: true,
+        continueCursor: null,
       }),
     ...overrides,
   })
@@ -73,7 +84,8 @@ describe("wallets import", () => {
     )
     expect(code).toBe(0)
 
-    expect(calls).toHaveLength(2)
+    // init, submit, then the read-back that confirms which account it landed on.
+    expect(calls).toHaveLength(3)
     const initCall = calls[0]
     const submitCall = calls[1]
     if (!initCall || !submitCall) throw new Error("expected two calls")
@@ -138,7 +150,7 @@ describe("wallets import", () => {
     const code = await run(["wallets", "import", "--chain", "solana"], deps)
     expect(code).toBe(0)
     expect(promptedWith.toLowerCase()).toContain("hidden")
-    expect(calls).toHaveLength(2)
+    expect(calls).toHaveLength(3)
   })
 
   test("--signer-out additionally exports the PEM through deps.writeFile", async () => {
@@ -163,6 +175,73 @@ describe("wallets import", () => {
     expect(written[0]?.content).toContain("BEGIN PRIVATE KEY")
   })
 
+  test("a wallet that does not appear on the calling account FAILS, instead of printing success", async () => {
+    // The 2026-08-19 case: the server accepted the import and returned an id, but the row landed
+    // under a different Candle login, so the agent's own account never saw it. The old output
+    // named no account, so this was indistinguishable from a correct import.
+    const { fetch } = importRoutes({
+      "/api/v1/agent/wallets": () =>
+        jsonResponse(200, {
+          success: true,
+          page: [{ _id: "lw_someone_else", address: "GCvZ4XsV", chain: "solana", userAddress: ACCOUNT }],
+          isDone: true,
+          continueCursor: null,
+        }),
+    })
+    const stderr = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      store: createFakeStore({ api_key: "ck_live_x" }),
+      stderr,
+      readFile: async () => SOL_ID_JSON,
+    })
+
+    const code = await run(["wallets", "import", "--chain", "solana", "--key-file", "/k"], deps)
+    expect(code).toBe(1)
+    expect(stderr.text).toContain("not on the account")
+    expect(stderr.text).toContain(ACCOUNT)
+    expect(stderr.text).toContain("candle doctor")
+  })
+
+  test("a read-back that itself fails does NOT fail an import that already succeeded", async () => {
+    // Absence of evidence is not evidence of absence: a 500 on the list endpoint says nothing
+    // about where the wallet landed, and must not turn a good import into a failure.
+    const { fetch } = importRoutes({
+      "/api/v1/agent/wallets": () => jsonResponse(500, { success: false, error: { code: "BOOM", message: "down" } }),
+    })
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      store: createFakeStore({ api_key: "ck_live_x" }),
+      stdout,
+      readFile: async () => SOL_ID_JSON,
+    })
+
+    const code = await run(["wallets", "import", "--chain", "solana", "--key-file", "/k"], deps)
+    expect(code).toBe(0)
+    expect(stdout.text).toContain("could not read the wallet back")
+  })
+
+  test("success names the account and host, and does not ask the caller to keep a key they never got", async () => {
+    const { fetch } = importRoutes()
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      store: createFakeStore({ api_key: "ck_live_x" }),
+      stdout,
+      readFile: async () => SOL_ID_JSON,
+    })
+
+    const code = await run(["wallets", "import", "--chain", "solana", "--key-file", "/k"], deps)
+    expect(code).toBe(0)
+    expect(stdout.text).toContain(`Account:`)
+    expect(stdout.text).toContain(ACCOUNT)
+    expect(stdout.text).toContain("nothing to save by hand")
+    // The old copy told the caller to "keep the signer key" while also saying it was in the
+    // keychain, which is an instruction with no possible action behind it.
+    expect(stdout.text).not.toContain("Keep the signer key")
+  })
+
   test("evm without --address is a usage error, before the key is ever prompted for", async () => {
     const { fetch, calls } = importRoutes()
     const stderr = createCapture()
@@ -181,7 +260,9 @@ describe("wallets import", () => {
     expect(code).toBe(2)
     expect(prompted).toBe(false)
     expect(calls).toHaveLength(0)
-    expect(stderr.text).toContain("--address is required")
+    expect(stderr.text).toContain("Missing required: --address")
+    // and shows a runnable example rather than making the caller guess the rest
+    expect(stderr.text).toContain("candle wallets import --chain evm --address")
   })
 
   test("a malformed solana key fails locally with the decoder's own message and no network call", async () => {

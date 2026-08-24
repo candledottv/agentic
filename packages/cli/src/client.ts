@@ -2,9 +2,13 @@
  * client: the CLI's single HTTP call site.
  *
  * `DEFAULT_API_URL` matches `packages/mcp/src/client.ts`'s convention: this package is fetched via
- * `bunx` from a git ref by people who have never run this monorepo, so the default has to be the
- * endpoint that works on a machine that never ran a local Candle API. Point `CANDLE_API_URL` at
- * localhost explicitly when developing against a local API.
+ * `bunx`/`npx` by people who have never run this monorepo, so the default has to be the endpoint
+ * that works on a machine that never ran a local Candle API. That is the ALPHA deployment for now
+ * (2026-08-23): production api.candle.tv does not serve /api/v1 yet, and candle.tv redirects to
+ * alpha.candle.tv while the alpha runs, for an indeterminate time. Flip this to
+ * https://api.candle.tv at GA with a version bump -- npx users pick the new default up
+ * automatically. Point `CANDLE_API_URL` at localhost explicitly when developing against a local
+ * API.
  *
  * `apiRequest` never throws on an HTTP-level error (4xx/5xx): those come back as a typed
  * `ApiResult` with `ok: false` so command code can pattern-match on it. It only rejects for
@@ -14,11 +18,23 @@
  * way (print an error and exit non-zero) without a try/catch at every call site.
  */
 
-export const DEFAULT_API_URL = "https://api.candle.tv"
+export const DEFAULT_API_URL = "https://api.alpha.candle.tv"
 
 export type ApiResult =
   | { ok: true; status: number; body: unknown }
-  | { ok: false; status: number; code?: string; message: string; rfcError?: string; raw: unknown }
+  | {
+      ok: false
+      status: number
+      code?: string
+      message: string
+      rfcError?: string
+      /** The API's plain-language fix for this error (ERROR_UI_CATALOG's uiHint), when it sent
+       * one -- surfaced so `--json` failures can carry a `suggestion` an agent can act on. */
+      uiHint?: string
+      /** The API's docs path for this error, relative to docs.candle.tv, when it sent one. */
+      docsPath?: string
+      raw: unknown
+    }
 
 export interface ApiRequestOptions {
   method?: string
@@ -104,7 +120,10 @@ function parseBody(text: string): unknown {
  * body matching neither shape (or non-JSON, or no response at all) falls through to a generic
  * status-only message.
  */
-function classifyError(status: number, raw: unknown): { code?: string; message: string; rfcError?: string } {
+function classifyError(
+  status: number,
+  raw: unknown,
+): { code?: string; message: string; rfcError?: string; uiHint?: string; docsPath?: string } {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const obj = raw as Record<string, unknown>
 
@@ -117,7 +136,12 @@ function classifyError(status: number, raw: unknown): { code?: string; message: 
       const errorObj = obj.error as Record<string, unknown>
       const code = typeof errorObj.code === "string" ? errorObj.code : undefined
       const message = typeof errorObj.message === "string" ? errorObj.message : `Request failed with status ${status}`
-      return { code, message }
+      // uiHint/docsPath ride along when the API sent them (launch-errors.ts's errorBody):
+      // dropping them here is why `--json` failures used to answer "what went wrong" but never
+      // "what do I do about it".
+      const uiHint = typeof errorObj.uiHint === "string" ? errorObj.uiHint : undefined
+      const docsPath = typeof errorObj.docsPath === "string" ? errorObj.docsPath : undefined
+      return { code, message, ...(uiHint ? { uiHint } : {}), ...(docsPath ? { docsPath } : {}) }
     }
   }
 

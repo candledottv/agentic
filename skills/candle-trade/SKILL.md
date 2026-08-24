@@ -18,9 +18,9 @@ explicitly before you approve. `swap:write` is never granted silently, only ever
 screen or asked for by hand. A narrower key, one minted with an explicit `--scopes` list on
 `candle auth login`, or created with `candle keys create`, does not include `swap:write` by default;
 request it there instead. There is no keyless path for trading: this always moves funds. Point the
-MCP server at staging too: the default API host is production, which doesn't serve the trade routes
-yet, so set `CANDLE_API_URL=https://staging.api.candle.tv` when configuring the server (see each
-platform's install doc) until the feature reaches production.
+MCP server anywhere: the CLI and MCP default to the alpha API host
+(`https://api.alpha.candle.tv`), where the trade routes run today. Set `CANDLE_API_URL` only to
+point at a different deployment.
 
 ## The workflow
 

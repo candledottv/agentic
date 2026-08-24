@@ -14,6 +14,7 @@ import {
   renderTable,
   writeFailure,
   writeLocalFailure,
+  writeUsageFailure,
 } from "./render"
 
 describe("renderTable", () => {
@@ -101,20 +102,68 @@ describe("renderError", () => {
 })
 
 describe("writeFailure", () => {
-  test("json mode writes the raw result as JSON, not the human message", () => {
-    const writes: string[] = []
-    const writer = { write: (s: string) => writes.push(s) }
+  const ioPair = () => {
+    const out: string[] = []
+    const err: string[] = []
+    return {
+      deps: { stdout: { write: (s: string) => out.push(s) }, stderr: { write: (s: string) => err.push(s) } },
+      out,
+      err,
+    }
+  }
+
+  test("json mode writes the typed envelope to STDOUT with a suggestion, nothing to stderr", () => {
+    const { deps, out, err } = ioPair()
     const result = { ok: false as const, status: 401, code: "DEVICE_TOKEN_INVALID", message: "x", raw: { error: "x" } }
-    writeFailure(writer, result, { apiUrl: "https://api.candle.tv", authType: "device" }, true)
-    expect(JSON.parse(writes.join(""))).toEqual(result)
+    writeFailure(deps, result, { apiUrl: "https://api.candle.tv", authType: "device" }, true)
+    expect(err.join("")).toBe("")
+    expect(JSON.parse(out.join(""))).toEqual({
+      ok: false,
+      code: "DEVICE_TOKEN_INVALID",
+      status: 401,
+      message: "x",
+      suggestion: "Run: candle auth login",
+    })
   })
 
-  test("human mode writes the rendered message, never the raw envelope", () => {
-    const writes: string[] = []
-    const writer = { write: (s: string) => writes.push(s) }
+  test("json mode surfaces the API's uiHint/docsPath as suggestion/docsUrl", () => {
+    const { deps, out } = ioPair()
+    const result = {
+      ok: false as const,
+      status: 403,
+      code: "TIER_REQUIRED",
+      message: "Pro tier required",
+      uiHint: "Stake CNDL to reach Pro.",
+      docsPath: "developers/agent-access",
+      raw: {},
+    }
+    writeFailure(deps, result, { apiUrl: "https://api.candle.tv", authType: "key" }, true)
+    expect(JSON.parse(out.join(""))).toEqual({
+      ok: false,
+      code: "TIER_REQUIRED",
+      status: 403,
+      message: "Pro tier required",
+      suggestion: "Stake CNDL to reach Pro.",
+      docsUrl: "https://docs.candle.tv/developers/agent-access",
+    })
+  })
+
+  test("json mode network failure: NETWORK_UNREACHABLE code, could-not-reach message, env-var suggestion", () => {
+    const { deps, out } = ioPair()
+    const result = { ok: false as const, status: 0, message: "fetch failed", raw: undefined }
+    writeFailure(deps, result, { apiUrl: "https://api.candle.tv", authType: "device" }, true)
+    const envelope = JSON.parse(out.join(""))
+    expect(envelope.code).toBe("NETWORK_UNREACHABLE")
+    expect(envelope.message).toBe("Could not reach https://api.candle.tv.")
+    expect(envelope.suggestion).toContain("CANDLE_API_URL")
+  })
+
+  test("human mode writes the rendered message to STDERR, never the raw envelope", () => {
+    const { deps, out, err } = ioPair()
     const result = { ok: false as const, status: 401, code: "DEVICE_TOKEN_INVALID", message: "x", raw: { error: "x" } }
-    writeFailure(writer, result, { apiUrl: "https://api.candle.tv", authType: "device" }, false)
-    const combined = writes.join("")
+    writeFailure(deps, result, { apiUrl: "https://api.candle.tv", authType: "device" }, false)
+    const combined = err.join("")
+    expect(out.join("")).toBe("")
     expect(combined).toContain("This device was revoked or its token is stale")
     expect(combined).not.toContain('"raw"')
     expect(combined).not.toContain("{")
@@ -122,35 +171,52 @@ describe("writeFailure", () => {
 })
 
 describe("writeLocalFailure", () => {
-  test("json mode writes a parseable object carrying the code; human mode writes the bare line", () => {
-    const jsonWrites: string[] = []
-    writeLocalFailure(
-      { write: (s: string) => jsonWrites.push(s) },
-      { code: "NO_DEVICE_TOKEN", message: "No device token available. Run: candle auth login" },
-      true,
-    )
-    expect(JSON.parse(jsonWrites.join(""))).toEqual({
-      ok: false,
-      code: "NO_DEVICE_TOKEN",
-      message: "No device token available. Run: candle auth login",
-    })
+  const ioPair = () => {
+    const out: string[] = []
+    const err: string[] = []
+    return {
+      deps: { stdout: { write: (s: string) => out.push(s) }, stderr: { write: (s: string) => err.push(s) } },
+      out,
+      err,
+    }
+  }
 
-    const humanWrites: string[] = []
-    writeLocalFailure(
-      { write: (s: string) => humanWrites.push(s) },
-      { code: "NO_DEVICE_TOKEN", message: "No device token available. Run: candle auth login" },
-      false,
-    )
-    expect(humanWrites.join("")).toBe("No device token available. Run: candle auth login\n")
+  test("json mode writes a parseable object (code + suggestion) to stdout; human mode joins them on stderr", () => {
+    const failure = {
+      code: "NO_DEVICE_TOKEN",
+      message: "No device token available.",
+      suggestion: "Run: candle auth login",
+    }
+    const jsonIo = ioPair()
+    writeLocalFailure(jsonIo.deps, failure, true)
+    expect(jsonIo.err.join("")).toBe("")
+    expect(JSON.parse(jsonIo.out.join(""))).toEqual({ ok: false, ...failure })
+
+    const humanIo = ioPair()
+    writeLocalFailure(humanIo.deps, failure, false)
+    expect(humanIo.out.join("")).toBe("")
+    expect(humanIo.err.join("")).toBe("No device token available. Run: candle auth login\n")
   })
 
   // The reason this helper exists rather than reusing writeFailure with a synthetic status: 0
   // means "could not reach the server" to renderError, which would print THAT instead of the
   // message this failure carries.
   test("human mode never renders the network-failure message for a local precondition", () => {
-    const writes: string[] = []
-    writeLocalFailure({ write: (s: string) => writes.push(s) }, { code: "NO_API_KEY", message: "No API key" }, false)
-    expect(writes.join("")).not.toContain("Could not reach")
+    const { deps, err } = ioPair()
+    writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key" }, false)
+    expect(err.join("")).not.toContain("Could not reach")
+  })
+})
+
+describe("writeUsageFailure", () => {
+  test("json mode: a USAGE envelope on stdout; human mode: the sentence on stderr", () => {
+    const out: string[] = []
+    const err: string[] = []
+    const deps = { stdout: { write: (s: string) => out.push(s) }, stderr: { write: (s: string) => err.push(s) } }
+    writeUsageFailure(deps, "Unknown flag: --frobnicate", true)
+    expect(JSON.parse(out.join(""))).toEqual({ ok: false, code: "USAGE", message: "Unknown flag: --frobnicate" })
+    writeUsageFailure(deps, "Unknown flag: --frobnicate", false)
+    expect(err.join("")).toBe("Unknown flag: --frobnicate\n")
   })
 })
 
@@ -176,7 +242,7 @@ describe("formatScopesForSummary", () => {
 
 describe("portalDeviceUrl", () => {
   test("the default API URL maps to the known portal domain", () => {
-    expect(portalDeviceUrl(DEFAULT_API_URL)).toBe("https://candle.tv/dev/agent")
+    expect(portalDeviceUrl(DEFAULT_API_URL)).toBe("https://alpha.candle.tv/dev/agent")
   })
 
   test("a non-default API URL gets 'api.' stripped and the portal path appended", () => {

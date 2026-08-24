@@ -53,7 +53,7 @@ export type LaunchTier = "open" | "exclusive" | "test-open" | "test-exclusive"
 export type FeedBucket = "new" | "graduated" | "onfire" | "bluechip"
 
 export interface CandleClientOptions {
-  /** Base URL of the Candle API, e.g. "https://api.candle.tv". Trailing slashes are trimmed. */
+  /** Base URL of the Candle API, e.g. "https://api.alpha.candle.tv" (the alpha deployment). Trailing slashes are trimmed. */
   apiUrl: string
   /** Agent API key (cndl_live_... / cndl_test_...). Required for launch, jobs, activity, uploads. */
   apiKey?: string

@@ -20,7 +20,11 @@ describe("doctor", () => {
         }),
       "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
       "/api/v1/agent/wallets/embedded": () =>
-        jsonResponse(200, { success: true, wallets: { solana: { address: "abc", delegated: false }, evm: null } }),
+        jsonResponse(200, {
+          success: true,
+          account: "FaKwE2xX",
+          wallets: { solana: { address: "abc", delegated: false }, evm: null },
+        }),
     })
     const store = createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_x" })
     const stdout = createCapture()
@@ -135,5 +139,25 @@ describe("doctor", () => {
     expect(newCode).toBe(1)
     const runtimeLine = stdoutNew.text.split("\n").find((line) => line.startsWith("Runtime version"))
     expect(runtimeLine).toContain("PASS")
+  })
+
+  test("reports which account the credentials act as", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, {
+          success: true,
+          account: "FaKwE2xX",
+          wallets: { solana: { address: "abc", delegated: true }, evm: null },
+        }),
+    })
+    const stdout = createCapture()
+    const store = createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_x" })
+    const code = await run(["doctor"], createTestDeps({ fetch, store, stdout }))
+    expect(stdout.text).toContain("Account")
+    expect(stdout.text).toContain("FaKwE2xX")
+    expect(code).toBe(0)
   })
 })

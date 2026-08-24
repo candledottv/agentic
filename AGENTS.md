@@ -40,7 +40,7 @@ Prefer these over scraping prose:
 
 - **`agents/error-catalog.json`** in this repo: every error code the rail returns, grouped by
   category, each carrying `retryable` and an action. Read it before writing retry logic.
-- **OpenAPI**: `https://staging.api.candle.tv/api/v1/openapi.json`. Gated against drift in CI, so
+- **OpenAPI**: `https://api.alpha.candle.tv/api/v1/openapi.json`. Gated against drift in CI, so
   it describes what actually ships.
 - **`https://docs.candle.tv/llms.txt`**: the whole documentation set as one file, sized for a
   context window and freshness-gated.

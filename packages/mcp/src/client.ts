@@ -17,7 +17,9 @@ export interface RequestConfig {
   apiKey?: string
 }
 
-export const DEFAULT_API_URL = "https://api.candle.tv"
+// The ALPHA deployment (2026-08-23): production api.candle.tv does not serve /api/v1 yet.
+// Flip to https://api.candle.tv at GA with a version bump; see packages/cli/src/client.ts.
+export const DEFAULT_API_URL = "https://api.alpha.candle.tv"
 
 export function resolveConfig(): RequestConfig {
   const apiUrl = process.env.CANDLE_API_URL?.trim() || DEFAULT_API_URL

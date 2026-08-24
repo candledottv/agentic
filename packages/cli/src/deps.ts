@@ -63,6 +63,11 @@ export interface Deps {
    * `--key-file` is given). The real implementation needs a TTY and throws without one, which is
    * the signal to use `--key-file` in scripts. */
   promptSecret: (promptText: string) => Promise<string>
+  /** Runs a child process to completion with stdio inherited, resolving to its exit code.
+   * `candle mcp` launches the MCP server through this exclusively, so a test can assert the
+   * exact command, args, and env without spawning anything -- the same seam discipline as
+   * `fetch` and `openBrowser`. The real implementation (index.ts) uses child_process.spawn. */
+  runChild: (command: string, args: string[], env: Record<string, string | undefined>) => Promise<number>
 }
 
 export interface CommandContext {

@@ -48,16 +48,19 @@ describe("wallets", () => {
     expect(stderr.text.toLowerCase()).toContain("keys create")
   })
 
-  test("the missing-API-key exit honors --json: stdout parses, and carries the code", async () => {
+  test("the missing-API-key exit honors --json: STDOUT parses (the machine contract), and carries the code", async () => {
     const { fetch, calls } = createRoutedFetch({})
+    const stdout = createCapture()
     const stderr = createCapture()
-    const code = await run(["wallets", "--json"], createTestDeps({ fetch, stderr }))
+    const code = await run(["wallets", "--json"], createTestDeps({ fetch, stdout, stderr }))
     expect(code).toBe(1)
     expect(calls).toHaveLength(0)
-    expect(JSON.parse(stderr.text)).toEqual({
+    expect(stderr.text).toBe("")
+    expect(JSON.parse(stdout.text)).toEqual({
       ok: false,
       code: "NO_API_KEY",
-      message: "No API key available. Run: candle keys create",
+      message: "No API key available.",
+      suggestion: "Run: candle keys create",
     })
   })
 

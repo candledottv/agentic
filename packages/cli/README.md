@@ -7,17 +7,23 @@ health from the terminal. Zero runtime dependencies; the whole thing is one self
 ## Quick start
 
 ```
+npx @candledottv/cli auth login
+```
+
+This runs `auth login`, which opens your browser to approve this device. Install it permanently
+with `npm install -g @candledottv/cli` and the command is just `candle`.
+
+### No-npm fallback
+
+The same CLI can run straight from the public repo:
+
+```
 bunx github:candledottv/agentic candle auth login
 ```
 
-This installs nothing permanently. It fetches the `agentic` repo, resolves the `candle` bin at its
-root (`packages/cli/dist/index.js`, a committed build), and runs `auth login`, which opens your
-browser to approve this device.
-
-### Clone fallback
-
-If the one-liner above does not work on your machine (bun's git-dependency handling of a root bin
-pointing into a workspace member can be finicky), clone and build directly:
+That fetches the `agentic` repo, resolves the `candle` bin at its root (`packages/cli/dist/index.js`,
+a committed build), and runs it. If bun's git-dependency handling fails on your machine, clone and
+build directly:
 
 ```
 git clone https://github.com/candledottv/agentic.git
@@ -31,13 +37,15 @@ node packages/cli/dist/index.js auth login
 
 | Command | What it does |
 | --- | --- |
+| `candle setup [--no-browser]` | The onboarding wizard: authorizes this device (skipped when already authorized), prints the agent wallets as funding destinations plus the paste-into-your-agent brief, shows the skill/MCP install lines, runs the full doctor check (setup's exit code is doctor's), and links the web console. Safe to re-run. |
 | `candle auth login [--scopes <a,b,c>] [--label <name>] [--no-browser]` | Authorizes this device: prints a code, opens (or prints) an approval URL, polls until approved, then stores the resulting device token and API key. |
 | `candle auth status` | Shows which storage backend is in use, both credential prefixes, the config file path, and a live validity check for each credential. |
 | `candle auth logout [--keep-key]` | Revokes the stored API key (skipped with `--keep-key`), clears local credentials and config, and prints the portal URL for revoking the device itself. |
 | `candle keys list` | Lists this account's API keys: prefix, scopes, environment, timestamps, and which device minted each one. |
-| `candle keys create [--scopes <a,b,c>] [--environment production\|test]` | Creates a new API key and prints the plaintext exactly once. Stored locally only if the CLI does not already hold a working key. |
+| `candle keys create [--scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily\|weekly\|monthly\|never]]` | Creates a new API key and prints the plaintext exactly once, with the same optional name, expiration, and USD transaction limit the portal's create form takes. Stored locally only if the CLI does not already hold a working key. |
 | `candle keys revoke <prefix>` | Revokes an API key by prefix. Revoking the CLI's own stored key also clears it locally. |
 | `candle wallets` | Shows the account's embedded (launch) wallets and any linked wallets, using the API key. |
+| `candle mcp [--tools <a,b,c>] [--read-only] [--print-config]` | Runs the Candle MCP server (`npx @candledottv/mcp`) with this CLI's stored API key and API URL in its environment, so an MCP client config is just `{"command": "candle", "args": ["mcp"]}`. `--read-only` starts it with no key and only the three keyless read tools; `--tools` pins an explicit allowlist; `--print-config` prints the ready-to-paste client block instead of launching. |
 | `candle doctor` | Runs a full health check (runtime, backend, credentials, API reachability, credential validity, wallet delegation) as a PASS/FAIL/SKIP table. Exits nonzero on any FAIL. |
 
 Every command accepts these global options:
@@ -48,6 +56,32 @@ Every command accepts these global options:
 | `--json` | Machine-readable output instead of a formatted table or summary, generally the underlying API response. One exception: `auth login`'s JSON output still omits the plaintext device token and API key, matching its human-readable summary, since login never displays either value in any mode. |
 | `--help`, `-h` | Prints usage. |
 | `--version`, `-v` | Prints the CLI version. |
+
+## The `--json` contract
+
+For agents and scripts, `--json` guarantees: **stdout carries exactly one JSON value** -- the
+result on success, or a failure envelope -- and stderr carries diagnostics only. Exit codes:
+`0` success, `1` failure (the envelope says why), `2` usage error (the arguments themselves were
+wrong; nothing ran).
+
+The failure envelope is stable:
+
+```json
+{
+  "ok": false,
+  "code": "TIER_REQUIRED",
+  "status": 403,
+  "message": "Pro tier required",
+  "suggestion": "Stake CNDL to reach Pro.",
+  "docsUrl": "https://docs.candle.tv/developers/agent-access"
+}
+```
+
+`code` is always present (the API's error code, an RFC 6749 error for the device flow,
+`NETWORK_UNREACHABLE` when the server was never reached, `USAGE` for argument errors, or a
+local precondition code like `NO_DEVICE_TOKEN`). `suggestion` is the fix as a command or
+setting when one is known; `docsUrl` appears when the API names a docs page for this error.
+Parse stdout, switch on `code`, run the `suggestion`.
 
 ## Credential storage
 

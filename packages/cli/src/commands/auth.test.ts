@@ -522,6 +522,39 @@ describe("auth status", () => {
     expect(stdout.text).not.toContain("FAIL")
   })
 
+  test("names the account these credentials act as, not just that they are valid", async () => {
+    // The 2026-08-19 case: both rows read PASS while an EVM import had landed on a different
+    // account than the operator believed. Valid-but-wrong-account is the failure this command is
+    // reached for, so the account has to be on screen.
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, { success: true, account: "FaKwE2xX", wallets: { solana: null, evm: null } }),
+    })
+    const store = createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_x" })
+    const stdout = createCapture()
+    const code = await run(["auth", "status"], createTestDeps({ fetch, store, stdout }))
+    expect(code).toBe(0)
+    expect(stdout.text).toContain("Account: FaKwE2xX")
+  })
+
+  test("an unreachable identity lookup degrades to unknown rather than failing the report", async () => {
+    // Absence of evidence again: a 500 on the identity call says nothing about the credentials,
+    // and must not turn a credential report into a failure.
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(500, { success: false }),
+    })
+    const store = createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_x" })
+    const stdout = createCapture()
+    const code = await run(["auth", "status"], createTestDeps({ fetch, store, stdout }))
+    expect(code).toBe(0)
+    expect(stdout.text).toContain("Account: unknown")
+    expect(stdout.text).not.toContain("FAIL")
+  })
+
   test("a missing credential SKIPs its row rather than failing, and does not fail the exit code", async () => {
     const { fetch } = createRoutedFetch({
       "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),

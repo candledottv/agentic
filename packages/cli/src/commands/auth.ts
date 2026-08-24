@@ -31,7 +31,14 @@ import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
-import { ALL_AGENT_SCOPES, formatScopesForSummary, portalDeviceUrl, renderTable, writeFailure } from "../render"
+import {
+  ALL_AGENT_SCOPES,
+  formatScopesForSummary,
+  portalDeviceUrl,
+  renderTable,
+  writeFailure,
+  writeUsageFailure,
+} from "../render"
 import { SECRET_REFS } from "../secret-store"
 import { CLI_VERSION } from "../version"
 
@@ -69,11 +76,11 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, { valueFlags: ["--scopes", "--label"], booleanFlags: ["--no-browser"] })
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}\n`)
+    writeUsageFailure(deps, parsed.error, json)
     return 2
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}\n`)
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
     return 2
   }
   const scopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined
@@ -101,7 +108,7 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
   })
 
   if (!codeResult.ok) {
-    writeFailure(deps.stderr, codeResult, { apiUrl, authType: "none" }, json)
+    writeFailure(deps, codeResult, { apiUrl, authType: "none" }, json)
     return 1
   }
 
@@ -158,7 +165,7 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
 
     // Anything else during polling is unexpected (not part of the RFC vocabulary this endpoint
     // uses) -- surface it and stop, rather than looping forever on an error class not named above.
-    writeFailure(deps.stderr, tokenResult, { apiUrl, authType: "none" }, json)
+    writeFailure(deps, tokenResult, { apiUrl, authType: "none" }, json)
     return 1
   }
 
@@ -250,11 +257,11 @@ export async function authLogout(args: string[], ctx: CommandContext): Promise<n
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, { booleanFlags: ["--keep-key"] })
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}\n`)
+    writeUsageFailure(deps, parsed.error, json)
     return 2
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}\n`)
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
     return 2
   }
   const keepKey = parsed.booleans.has("--keep-key")
@@ -323,11 +330,11 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, {})
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}\n`)
+    writeUsageFailure(deps, parsed.error, json)
     return 2
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}\n`)
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
     return 2
   }
 
@@ -371,6 +378,23 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
     )
   }
 
+  // WHICH account these credentials act as, not just whether they are valid. On 2026-08-19 this
+  // command reported both checks PASS while an EVM wallet import had landed on a different
+  // account than the operator believed, and resolving it took a database query. A valid
+  // credential for the wrong account is the failure this command is reached for, so it has to be
+  // on screen. Best-effort: an unreachable API must not turn a credential report into a failure.
+  let account: string | undefined
+  if (apiKey) {
+    const identity = await apiRequest("/api/v1/agent/wallets/embedded", {
+      auth: "key",
+      credentials: { apiKey },
+      apiUrl,
+      fetch: deps.fetch,
+      env: deps.env,
+    })
+    if (identity.ok) account = (identity.body as { account?: string }).account
+  }
+
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0
   const configPath = configFilePathForDisplay(deps.env)
 
@@ -380,6 +404,8 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
         backend: deps.backend,
         deviceTokenPrefix: config.deviceTokenPrefix,
         keyPrefix: config.keyPrefix,
+        account,
+        apiUrl,
         configPath,
         rows,
       })}\n`,
@@ -387,6 +413,8 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
     return exitCode
   }
 
+  // Account first: it is the fact most likely to be wrong, and the one nothing else reveals.
+  deps.stdout.write(`Account: ${account ?? "unknown"} at ${apiUrl}\n`)
   deps.stdout.write(`Backend: ${deps.backend}\n`)
   deps.stdout.write(`Device token prefix: ${config.deviceTokenPrefix ?? "not set"}\n`)
   deps.stdout.write(`API key prefix: ${config.keyPrefix ?? "not set"}\n`)

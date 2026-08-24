@@ -43,14 +43,14 @@ registered with `grok mcp list`; remove it later with `grok mcp remove candle`.
 `grok mcp add` has no flag for environment variables on a stdio server, so add the `env` table by
 hand to the entry it just wrote (in `~/.grok/config.toml`, or `.grok/config.toml` if you used
 `--scope project`). This is required even for the three read-only tools, `candle_get_market`,
-`candle_get_feed`, and `candle_get_agent_profile`: the default API host is production, which
-doesn't serve these routes yet.
+`candle_get_feed`, and `candle_get_agent_profile`: the server defaults to the alpha API host
+(`https://api.alpha.candle.tv`), where these routes run today.
 
 ```toml
 [mcp_servers.candle]
 command = "node"
 args = ["/absolute/path/to/agentic/packages/mcp/dist/index.js"]
-env = { CANDLE_API_URL = "https://staging.api.candle.tv" }
+env = { CANDLE_API_URL = "https://api.alpha.candle.tv" }
 ```
 
 `CANDLE_API_URL` points the server at staging, where these routes run today, until the feature
@@ -61,7 +61,7 @@ table:
 [mcp_servers.candle]
 command = "node"
 args = ["/absolute/path/to/agentic/packages/mcp/dist/index.js"]
-env = { CANDLE_API_URL = "https://staging.api.candle.tv", CANDLE_AGENT_API_KEY = "cndl_live_..." }
+env = { CANDLE_API_URL = "https://api.alpha.candle.tv", CANDLE_AGENT_API_KEY = "cndl_live_..." }
 ```
 
 `CANDLE_API_KEY` is accepted as an alias for `CANDLE_AGENT_API_KEY` if you set either one; if both

@@ -1,6 +1,6 @@
 {
   "name": "@candledottv/mcp",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "MCP server for the Candle agent rail: launch tokens, read markets, report activity",
   "type": "module",
   "license": "MIT",
@@ -34,7 +34,8 @@
     "node": ">=18"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
   },
   "scripts": {
     "build": "bun build src/index.ts --target=node --format=esm --packages=external --outfile=dist/index.js",

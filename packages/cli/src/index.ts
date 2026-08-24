@@ -25,6 +25,8 @@ import { resolveApiUrl } from "./client"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { doctor } from "./commands/doctor"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
+import { mcp } from "./commands/mcp"
+import { setup } from "./commands/setup"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
 import { clearConfig, readConfig, writeConfig } from "./config"
 import type { CommandContext, Deps } from "./deps"
@@ -66,11 +68,14 @@ Commands:
   auth status                                                     Show credential status
   auth logout [--keep-key]                                        Clear local credentials
   keys list                                                       List API keys
-  keys create [--scopes <a,b,c>] [--environment production|test]  Create an API key
+  keys create [--scopes <a,b,c>] [--label <name>]                 Create an API key
+              [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]
   keys revoke <prefix>                                            Revoke an API key
   wallets                                                         Show launch and linked wallets
   wallets import --chain <solana|evm> [options]                   Import a wallet you own (key via --key-file or hidden prompt)
   wallets revoke <wallet-id>                                      Revoke a linked wallet
+  setup [--no-browser]                                            One wizard: authorize, fund, connect, verify
+  mcp [--tools <a,b,c>] [--read-only] [--print-config]            Run the Candle MCP server with stored credentials
   doctor                                                          Diagnose CLI setup
 
 Global options:
@@ -127,6 +132,10 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
     return wallets(tokens.slice(1), ctx)
   }
   if (cmd === "doctor") return doctor(tokens.slice(1), ctx)
+  // tokens.slice(1), not cmdArgs: mcp has no subcommand, so its first flag must not be
+  // destructured away as one (same shape as doctor above).
+  if (cmd === "mcp") return mcp(tokens.slice(1), ctx)
+  if (cmd === "setup") return setup(tokens.slice(1), ctx)
 
   return unknownCommand(deps, cmd)
 }
@@ -188,6 +197,17 @@ async function buildRealDeps(): Promise<Deps> {
     env: process.env,
     nodeVersion: process.versions.node,
     hostname: hostname(),
+    runChild: (command, args, env) =>
+      new Promise((resolve) => {
+        // shell on Windows: npx is npx.cmd there, and spawn without a shell cannot resolve it.
+        const child = spawn(command, args, {
+          stdio: "inherit",
+          env: env as NodeJS.ProcessEnv,
+          shell: process.platform === "win32",
+        })
+        child.on("error", () => resolve(1))
+        child.on("close", (code) => resolve(code ?? 1))
+      }),
     readFile: (path: string) => readFile(path, "utf8"),
     // 0600: the only caller is wallets import's --signer-out, and the content is a signing
     // private key.

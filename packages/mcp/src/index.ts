@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Candle MCP server entry point: stdio transport, five agent-rail tools.
+ * Candle MCP server entry point: stdio transport, the agent-rail tools.
  *
  * Kept thin on purpose -- the moment this module is imported it constructs a transport and
  * calls `connect()`, which starts reading stdin. `tools.test.ts` imports `./tools` directly, not

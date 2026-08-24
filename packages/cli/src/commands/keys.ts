@@ -4,11 +4,25 @@
  * the latter). Credential resolution is env-first, then the store, via `resolveDeviceToken`.
  */
 
-import { parseArgs, parseScopesList } from "../args"
+import {
+  parseArgs,
+  parseExpiresInDays,
+  parseScopesList,
+  parseUsdToMicros,
+  TX_LIMIT_RESETS,
+  type TxLimitReset,
+} from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveDeviceToken } from "../deps"
-import { formatScopesForSummary, formatTimestamp, renderTable, writeFailure, writeLocalFailure } from "../render"
+import {
+  formatScopesForSummary,
+  formatTimestamp,
+  renderTable,
+  writeFailure,
+  writeLocalFailure,
+  writeUsageFailure,
+} from "../render"
 import { SECRET_REFS } from "../secret-store"
 
 const KEYS_PATH = "/api/v1/agent/keys"
@@ -16,7 +30,11 @@ const KEYS_PATH = "/api/v1/agent/keys"
 /** The one precondition all three `keys` subcommands share. Written through `writeLocalFailure`
  * so `--json` gets an object here too: this exit is as much a result of the command as an API
  * error is, and a `--json` caller must never have to fall back to parsing a sentence. */
-const NO_DEVICE_TOKEN = { code: "NO_DEVICE_TOKEN", message: "No device token available. Run: candle auth login" }
+const NO_DEVICE_TOKEN = {
+  code: "NO_DEVICE_TOKEN",
+  message: "No device token available.",
+  suggestion: "Run: candle auth login",
+}
 
 interface KeyRow {
   keyPrefix: string
@@ -42,17 +60,17 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, {})
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}\n`)
+    writeUsageFailure(deps, parsed.error, json)
     return 2
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}\n`)
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
     return 2
   }
 
   const deviceToken = await resolveDeviceToken(deps)
   if (!deviceToken) {
-    writeLocalFailure(deps.stderr, NO_DEVICE_TOKEN, json)
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json)
     return 1
   }
 
@@ -64,7 +82,7 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
     env: deps.env,
   })
   if (!result.ok) {
-    writeFailure(deps.stderr, result, { apiUrl, authType: "device" }, json)
+    writeFailure(deps, result, { apiUrl, authType: "device" }, json)
     return 1
   }
 
@@ -93,21 +111,63 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
 
 export async function keysCreate(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
-  const parsed = parseArgs(args, { valueFlags: ["--scopes", "--environment"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--scopes", "--environment", "--label", "--expires-in", "--tx-limit", "--reset"],
+  })
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}\n`)
+    writeUsageFailure(deps, parsed.error, json)
     return 2
   }
   if (parsed.positionals.length > 0) {
-    deps.stderr.write(`Unexpected argument: ${parsed.positionals[0]}\n`)
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
     return 2
   }
   const requestedScopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined
   const environment = parsed.values["--environment"]
 
+  // Key-manager parity (CLI P0 plan, Task 4): the same optional name / expiry / spend cap the
+  // portal's create form takes, validated with the API's own rules BEFORE the round trip so a
+  // malformed value fails in milliseconds with a usage error, not an HTTP 400.
+  const label = parsed.values["--label"]?.trim()
+  if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > 64)) {
+    writeUsageFailure(deps, "--label must be 1 to 64 characters.", json)
+    return 2
+  }
+
+  let expiresInDays: number | undefined
+  if (parsed.values["--expires-in"] !== undefined) {
+    const parsedDays = parseExpiresInDays(parsed.values["--expires-in"])
+    if (!parsedDays.ok) {
+      writeUsageFailure(deps, parsedDays.message, json)
+      return 2
+    }
+    expiresInDays = parsedDays.days
+  }
+
+  // --reset only means something with --tx-limit; a bare --reset is a usage error rather than a
+  // silently ignored flag (same posture parseArgs takes toward unknown flags).
+  if (parsed.values["--reset"] !== undefined && parsed.values["--tx-limit"] === undefined) {
+    writeUsageFailure(deps, "--reset requires --tx-limit.", json)
+    return 2
+  }
+  let txLimit: { usdMicros: number; reset: TxLimitReset } | undefined
+  if (parsed.values["--tx-limit"] !== undefined) {
+    const parsedUsd = parseUsdToMicros(parsed.values["--tx-limit"])
+    if (!parsedUsd.ok) {
+      writeUsageFailure(deps, parsedUsd.message, json)
+      return 2
+    }
+    const reset = (parsed.values["--reset"] ?? "daily") as TxLimitReset
+    if (!TX_LIMIT_RESETS.includes(reset)) {
+      writeUsageFailure(deps, `--reset must be one of: ${TX_LIMIT_RESETS.join(", ")}.`, json)
+      return 2
+    }
+    txLimit = { usdMicros: parsedUsd.usdMicros, reset }
+  }
+
   const deviceToken = await resolveDeviceToken(deps)
   if (!deviceToken) {
-    writeLocalFailure(deps.stderr, NO_DEVICE_TOKEN, json)
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json)
     return 1
   }
 
@@ -121,11 +181,16 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
     body: {
       ...(requestedScopes ? { scopes: requestedScopes } : {}),
       ...(environment ? { environment } : {}),
+      // Omit-when-blank, matching the portal's createKeyRequestBody: the API validates label as
+      // 1..64 characters the moment the key is present at all.
+      ...(label ? { label } : {}),
+      ...(expiresInDays !== undefined ? { expiresInDays } : {}),
+      ...(txLimit ? { txLimit } : {}),
     },
   })
 
   if (!result.ok) {
-    writeFailure(deps.stderr, result, { apiUrl, authType: "device" }, json)
+    writeFailure(deps, result, { apiUrl, authType: "device" }, json)
     return 1
   }
 
@@ -169,7 +234,7 @@ export async function keysRevoke(args: string[], ctx: CommandContext): Promise<n
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, {})
   if ("error" in parsed) {
-    deps.stderr.write(`${parsed.error}\n`)
+    writeUsageFailure(deps, parsed.error, json)
     return 2
   }
   if (parsed.positionals.length !== 1) {
@@ -180,7 +245,7 @@ export async function keysRevoke(args: string[], ctx: CommandContext): Promise<n
 
   const deviceToken = await resolveDeviceToken(deps)
   if (!deviceToken) {
-    writeLocalFailure(deps.stderr, NO_DEVICE_TOKEN, json)
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json)
     return 1
   }
 
@@ -194,7 +259,7 @@ export async function keysRevoke(args: string[], ctx: CommandContext): Promise<n
   })
 
   if (!result.ok) {
-    writeFailure(deps.stderr, result, { apiUrl, authType: "device" }, json)
+    writeFailure(deps, result, { apiUrl, authType: "device" }, json)
     return 1
   }
 

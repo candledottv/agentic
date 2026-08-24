@@ -39,13 +39,14 @@ command = "node"
 args = ["/absolute/path/to/agentic/packages/mcp/dist/index.js"]
 
 [mcp_servers.candle.env]
-CANDLE_API_URL = "https://staging.api.candle.tv"
+CANDLE_API_URL = "https://api.alpha.candle.tv"
 ```
 
 Substitute the actual absolute path to your clone from step 1 (Codex spawns the server from its
-own working directory, so a relative path will not resolve). The default API host is production,
-which doesn't serve these routes yet; `CANDLE_API_URL` points the server at staging, where they
-run today, until the feature reaches production. This works as written for the three read-only
+own working directory, so a relative path will not resolve). The server already defaults to the
+alpha API host (`https://api.alpha.candle.tv`), where these routes run today; the explicit
+`CANDLE_API_URL` below just pins that, and is where you point elsewhere (e.g. production, once
+the feature reaches it). This works as written for the three read-only
 tools, `candle_get_market`, `candle_get_feed`, and `candle_get_agent_profile`, no key needed.
 
 To launch, trade, or report activity, add your agent API key alongside it:
@@ -56,7 +57,7 @@ command = "node"
 args = ["/absolute/path/to/agentic/packages/mcp/dist/index.js"]
 
 [mcp_servers.candle.env]
-CANDLE_API_URL = "https://staging.api.candle.tv"
+CANDLE_API_URL = "https://api.alpha.candle.tv"
 CANDLE_AGENT_API_KEY = "cndl_live_..."
 ```
 
