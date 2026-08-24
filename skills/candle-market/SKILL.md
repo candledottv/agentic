@@ -43,6 +43,5 @@ Read-only: none of these three tools move funds, sign a transaction, or need any
 → call `candle_get_market` with `{ "chain": "solana", "mint": "<mint address>" }`
 
 To go further and actually launch or trade, see the candle-setup skill: run
-`candle auth login --api-url https://api.alpha.candle.tv` to get an agent key (the `--api-url`
-override is needed while the device flow is still staging-only), then move on to the candle-launch
-or candle-trade skills.
+`npx @candledottv/cli auth login` to get an agent key (the CLI already defaults to the alpha
+API), then move on to the candle-launch or candle-trade skills.

@@ -67,12 +67,14 @@ and keep `CANDLE_API_URL` on staging until this rail reaches production. Ask an 
 Once you are ready to launch, trade, or report activity, authorize a device from the browser:
 
 ```bash
-npx @candledottv/cli auth login --api-url https://api.alpha.candle.tv
+npx @candledottv/cli auth login
 ```
 
-(or, with no npm: `bunx github:candledottv/agentic candle auth login`). Nothing installs
-permanently: one browser approval later, this machine holds a device token and an agent API key
-in your OS keychain, and `--api-url` is remembered. Check the result with `candle doctor` -- and
+(or, with no npm: `bunx github:candledottv/agentic candle auth login`). The CLI already defaults
+to the alpha API (`https://api.alpha.candle.tv`); pass `--api-url` only to point at a different
+deployment, and it is remembered. Nothing installs permanently: one browser approval later, this
+machine holds a device token and an agent API key
+in your OS keychain. Check the result with `candle doctor` -- and
 from here the MCP server needs no env block at all:
 
 ```json

@@ -17,12 +17,13 @@ never need any of this: they work with no key at all.
 
 ## The workflow
 
-1. Run `bunx github:candledottv/agentic candle auth login --api-url https://api.alpha.candle.tv`.
-   The `--api-url` override targets Candle's staging backend, which is what serves the device flow
-   today; once the feature reaches production, `candle auth login` on its own is the form to run.
-   Omitting `--scopes` requests all four grants (`launch:write`, `launch:read`, `activity:write`,
-   `swap:write`); pass your own `--scopes` list to mint a narrower key instead. This prints a short
-   code, opens (or prints) a browser approval URL, and polls until approved.
+1. Run `npx @candledottv/cli auth login` (or, with no npm,
+   `bunx github:candledottv/agentic candle auth login`). The CLI defaults to the alpha API
+   (`https://api.alpha.candle.tv`), where the device flow runs today; pass `--api-url` only to
+   target a different deployment. Omitting `--scopes` requests all five grants (`launch:write`,
+   `launch:read`, `activity:write`, `swap:write`, `transfer:write`); pass your own `--scopes`
+   list to mint a narrower key instead. This prints a short code, opens (or prints) a browser
+   approval URL, and polls until approved.
 2. In the browser, confirm the client name and scopes match what you expect, rendered in plain
    language rather than raw scope strings. `swap:write` is never granted silently: the screen calls
    it out prominently as the grant that moves funds from the account's own wallet, before you can
@@ -59,8 +60,8 @@ device, so a stolen token cannot erase its own trail.
 ## Example
 
 "Set up Candle so I can trade."
-1. Run `candle auth login --api-url https://api.alpha.candle.tv` with no `--scopes` flag, so the
-   resulting key already carries `swap:write` along with the other three grants.
+1. Run `candle auth login` with no `--scopes` flag, so the resulting key already carries
+   `swap:write` along with the other grants.
 2. Approve in the browser, confirming `swap:write` is one of the grants named on the screen.
 3. Run `candle doctor` to confirm credentials and wallet delegation are healthy.
 4. Continue with the candle-launch or candle-trade skill.
