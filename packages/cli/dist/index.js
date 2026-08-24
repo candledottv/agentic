@@ -434,7 +434,7 @@ async function resolveApiKey(deps) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.4.0";
+var CLI_VERSION = "0.5.0";
 
 // src/commands/auth.ts
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";

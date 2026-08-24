@@ -607,7 +607,7 @@ function registerTools(server, env = process.env) {
 }
 
 // src/version.ts
-var SERVER_VERSION = "0.3.0";
+var SERVER_VERSION = "0.4.0";
 
 // src/index.ts
 var server = new McpServer({ name: "candle-mcp", version: SERVER_VERSION });
