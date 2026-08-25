@@ -32,6 +32,15 @@ import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
 import {
+  credentialEnvOverrides,
+  defaultProfileNameFor,
+  effectiveProfileFields,
+  identityLine,
+  isValidProfileName,
+  printIdentity,
+  profileSecretRef,
+} from "../profiles"
+import {
   ALL_AGENT_SCOPES,
   formatScopesForSummary,
   portalDeviceUrl,
@@ -81,6 +90,12 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
   }
   if (parsed.positionals.length > 0) {
     writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
+    return 2
+  }
+  // `--profile` here names a profile to CREATE (or re-authenticate), not one to select, so it is
+  // validated for shape only -- never checked against what already exists (see finishLogin).
+  if (ctx.profileFlag !== undefined && !isValidProfileName(ctx.profileFlag)) {
+    writeUsageFailure(deps, `Invalid profile name: ${ctx.profileFlag}. Run: candle auth login --profile <name>`, json)
     return 2
   }
   const scopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined
@@ -200,12 +215,33 @@ async function finishLogin(
   ctx: CommandContext,
   requested: { scopes?: string[]; label?: string; verificationUri?: string },
 ): Promise<number> {
-  const { deps, json, apiUrlFlag } = ctx
+  const { deps, json } = ctx
   const body = rawBody as DeviceTokenSuccessResponse
 
-  await deps.store.set(SECRET_REFS.deviceToken, body.deviceToken)
+  // Every login names a profile: `--profile` when given, else the one this invocation already
+  // resolved to (dispatch resolves leniently for login -- see index.ts), else one derived from
+  // the host (`defaultProfileNameFor`). Only that last case is a NEW profile; the middle case is
+  // a re-authentication, and it updates the existing entry in place, secrets overwritten under
+  // the same refs. There is no flat, profile-less write anymore -- the legacy
+  // SECRET_REFS/top-level-config shape is read-only from here on, kept only for migration and
+  // rollback.
+  const config = await deps.readConfig()
+  const profileName = ctx.profileFlag ?? ctx.profile ?? defaultProfileNameFor(ctx.apiUrl, config.profiles)
+  await deps.store.set(profileSecretRef(profileName, "deviceToken"), body.deviceToken)
+  if (body.apiKey) await deps.store.set(profileSecretRef(profileName, "apiKey"), body.apiKey.key)
+
+  // WHICH account this profile acts as, cached for the identity line (and Phase 2's guard).
+  // Best-effort: an unreachable API must not fail a login that already succeeded.
+  let account: string | undefined
   if (body.apiKey) {
-    await deps.store.set(SECRET_REFS.apiKey, body.apiKey.key)
+    const identity = await apiRequest("/api/v1/agent/wallets/embedded", {
+      auth: "key",
+      credentials: { apiKey: body.apiKey.key },
+      apiUrl: ctx.apiUrl,
+      fetch: deps.fetch,
+      env: deps.env,
+    })
+    if (identity.ok) account = (identity.body as { account?: string }).account
   }
 
   // `scopes` is only ever persisted (and only ever reported as "Granted") when a key actually
@@ -214,13 +250,18 @@ async function finishLogin(
   // there would have `doctor` later report them against whatever DIFFERENT key eventually gets
   // created (fix round 1, item 4).
   const portalOrigin = portalOriginFrom(requested.verificationUri)
-  await deps.writeConfig({
+  await deps.updateProfile(profileName, {
+    apiUrl: ctx.apiUrl,
     deviceTokenPrefix: body.tokenPrefix,
     ...(body.apiKey ? { keyPrefix: body.apiKey.keyPrefix, scopes: body.apiKey.scopes } : {}),
     ...(requested.label ? { label: requested.label } : {}),
-    ...(apiUrlFlag ? { apiUrl: apiUrlFlag } : {}),
     ...(portalOrigin ? { portalOrigin } : {}),
+    ...(account ? { account } : {}),
   })
+  // The FIRST profile ever created on this machine becomes active; a second `auth login` (a
+  // different `--profile`, or re-authenticating the same one) never steals that from the one
+  // already selected.
+  if (!config.activeProfile) await deps.writeConfig({ activeProfile: profileName })
 
   if (json) {
     // Deliberately NOT the raw response: it carries the plaintext deviceToken and (when present)
@@ -230,6 +271,8 @@ async function finishLogin(
     deps.stdout.write(
       `${JSON.stringify({
         backend: deps.backend,
+        profile: profileName,
+        account,
         deviceTokenPrefix: body.tokenPrefix,
         apiKeyPrefix: body.apiKey?.keyPrefix,
         scopes: body.apiKey?.scopes,
@@ -239,6 +282,7 @@ async function finishLogin(
     return 0
   }
 
+  deps.stdout.write(`Profile: ${profileName}\n`)
   deps.stdout.write(`Device authorized. Credentials stored in the ${deps.backend} backend.\n`)
   deps.stdout.write(`Device token prefix: ${body.tokenPrefix}\n`)
   if (body.apiKey) {
@@ -266,12 +310,19 @@ export async function authLogout(args: string[], ctx: CommandContext): Promise<n
   }
   const keepKey = parsed.booleans.has("--keep-key")
 
+  // Ahead of acting, like every other authenticated command: this one REMOVES an identity, so
+  // "which one" is the fact most worth having on screen before the lines describing what is gone.
+  await printIdentity(ctx)
+
   const config = await deps.readConfig()
-  const deviceToken = await resolveDeviceToken(deps)
+  // In profile mode these come from the profile's own fields, not the (unused, legacy) top-level
+  // ones -- a second profile's key prefix must never leak into a different profile's logout.
+  const { keyPrefix, portalOrigin } = effectiveProfileFields(config, ctx.profile)
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile)
 
   let revokedKey: string | undefined
-  if (!keepKey && deviceToken && config.keyPrefix) {
-    const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(config.keyPrefix)}`, {
+  if (!keepKey && deviceToken && keyPrefix) {
+    const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}`, {
       method: "DELETE",
       auth: "device",
       credentials: { deviceToken },
@@ -280,23 +331,48 @@ export async function authLogout(args: string[], ctx: CommandContext): Promise<n
       env: deps.env,
     })
     if (result.ok) {
-      revokedKey = config.keyPrefix
+      revokedKey = keyPrefix
     } else if (!json) {
       deps.stdout.write("Could not revoke the stored API key remotely (clearing it locally anyway).\n")
     }
   }
 
-  await deps.store.delete(SECRET_REFS.deviceToken)
-  await deps.store.delete(SECRET_REFS.apiKey)
-  await deps.clearConfig()
+  if (ctx.profile) {
+    // Only THIS profile's two namespaced refs and entry -- a sibling PROFILE is untouched.
+    await deps.store.delete(profileSecretRef(ctx.profile, "deviceToken"))
+    await deps.store.delete(profileSecretRef(ctx.profile, "apiKey"))
+    // The legacy refs and top-level prefixes go too. Migration COPIES the pre-profile secrets
+    // rather than moving them, so sparing them here left the device token this logout just
+    // revoked its key with sitting in the store, live: with the profile entry gone,
+    // `resolveDeviceToken` falls straight back to `SECRET_REFS.deviceToken` and the next command
+    // keeps acting as the account the operator believes they signed out of. "Local credentials
+    // cleared." has to be true of the whole store, not of one namespace within it.
+    await deps.store.delete(SECRET_REFS.deviceToken)
+    await deps.store.delete(SECRET_REFS.apiKey)
+    const profiles = { ...(config.profiles ?? {}) }
+    delete profiles[ctx.profile]
+    await deps.writeConfig({
+      profiles,
+      keyPrefix: undefined,
+      deviceTokenPrefix: undefined,
+      scopes: undefined,
+      ...(config.activeProfile === ctx.profile ? { activeProfile: undefined } : {}),
+    })
+  } else {
+    // Pre-profile mode: today's behavior, unchanged.
+    await deps.store.delete(SECRET_REFS.deviceToken)
+    await deps.store.delete(SECRET_REFS.apiKey)
+    await deps.clearConfig()
+  }
 
-  // Read from the config captured BEFORE the clear above: the stored portal origin is exactly
+  // Read from state captured BEFORE the mutations above: the stored portal origin is exactly
   // what makes this pointer right on a non-default backend, and it is gone by this line.
-  const portalUrl = portalDeviceUrl(apiUrl, config.portalOrigin)
+  const portalUrl = portalDeviceUrl(apiUrl, portalOrigin)
 
   // Clearing the store does not clear the shell. Either env var still set means a live credential
-  // survives this logout, which "Local credentials cleared." on its own would misrepresent.
-  const liveEnvOverrides = ["CANDLE_DEVICE_TOKEN", "CANDLE_API_KEY"].filter((name) => deps.env[name]?.trim())
+  // survives this logout, which "Local credentials cleared." on its own would misrepresent. Same
+  // set the identity line names, read through the same helper.
+  const liveEnvOverrides = credentialEnvOverrides(deps.env)
 
   if (json) {
     deps.stdout.write(
@@ -339,8 +415,8 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   }
 
   const config = await deps.readConfig()
-  const deviceToken = await resolveDeviceToken(deps)
-  const apiKey = await resolveApiKey(deps)
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile)
+  const apiKey = await resolveApiKey(deps, ctx.profile)
 
   const rows: CheckRow[] = []
 
@@ -397,13 +473,18 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
 
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0
   const configPath = configFilePathForDisplay(deps.env)
+  // The profile's own recorded prefixes (or the legacy top-level ones pre-profile). Reading the
+  // top-level fields unconditionally reported "not set" for both on every profile created since
+  // the upgrade, which is precisely the question this command is run to answer.
+  const fields = effectiveProfileFields(config, ctx.profile)
 
   if (json) {
     deps.stdout.write(
       `${JSON.stringify({
         backend: deps.backend,
-        deviceTokenPrefix: config.deviceTokenPrefix,
-        keyPrefix: config.keyPrefix,
+        profile: ctx.profile,
+        deviceTokenPrefix: fields.deviceTokenPrefix,
+        keyPrefix: fields.keyPrefix,
         account,
         apiUrl,
         configPath,
@@ -413,11 +494,14 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
     return exitCode
   }
 
-  // Account first: it is the fact most likely to be wrong, and the one nothing else reveals.
-  deps.stdout.write(`Account: ${account ?? "unknown"} at ${apiUrl}\n`)
+  // The identity line first: it is the fact most likely to be wrong, and the one nothing else
+  // reveals. Falls back to the profile's cached account when the live lookup above didn't run or
+  // didn't answer (no API key, or an unreachable API) -- see identityLine's own doc comment for
+  // why an absent value is still named rather than omitted.
+  deps.stdout.write(`${identityLine(ctx.profile, account ?? fields.account, apiUrl)}\n`)
   deps.stdout.write(`Backend: ${deps.backend}\n`)
-  deps.stdout.write(`Device token prefix: ${config.deviceTokenPrefix ?? "not set"}\n`)
-  deps.stdout.write(`API key prefix: ${config.keyPrefix ?? "not set"}\n`)
+  deps.stdout.write(`Device token prefix: ${fields.deviceTokenPrefix ?? "not set"}\n`)
+  deps.stdout.write(`API key prefix: ${fields.keyPrefix ?? "not set"}\n`)
   deps.stdout.write(`Config file: ${configPath}\n\n`)
   deps.stdout.write(
     `${renderTable(

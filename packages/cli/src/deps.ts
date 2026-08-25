@@ -15,7 +15,8 @@
  * to no flag at all).
  */
 
-import type { CliConfig } from "./config"
+import type { CliConfig, ProfileConfig } from "./config"
+import { profileSecretRef } from "./profiles"
 import type { SecretStore } from "./secret-store"
 import { SECRET_REFS } from "./secret-store"
 
@@ -30,6 +31,7 @@ export interface Deps {
   readConfig: () => Promise<CliConfig>
   writeConfig: (patch: Partial<CliConfig>) => Promise<void>
   clearConfig: () => Promise<void>
+  updateProfile: (name: string, patch: Partial<ProfileConfig>) => Promise<void>
   stdout: Writer
   stderr: Writer
   /** Current time in ms. Only ever compared against other `now()` calls and `sleep`-advanced
@@ -77,22 +79,31 @@ export interface CommandContext {
   /** The raw `--api-url` value for THIS invocation, if the flag was given; undefined otherwise.
    * See this file's header comment for why this is not recoverable from `apiUrl` alone. */
   apiUrlFlag?: string
+  /** The resolved profile for this invocation (see profiles.ts resolveProfileName); undefined in
+   * the pre-profile mode (no profiles exist). Commands pass this to the credential resolvers and
+   * write profile fields under it. */
+  profile?: string
+  /** The raw --profile value, only when the flag was given. `auth login` names a NEW profile
+   * from it, which the resolved `profile` cannot express (that name does not exist yet). */
+  profileFlag?: string
 }
 
-/** Resolves the device token: `CANDLE_DEVICE_TOKEN` env override first, then the store. Every
- * command that needs the device token goes through this so the precedence is defined exactly
- * once. */
-export async function resolveDeviceToken(deps: Deps): Promise<string | undefined> {
+/** Resolves the device token: `CANDLE_DEVICE_TOKEN` env override first, then the named profile's
+ * ref, or the legacy ref when no profile is in play. Defined exactly once; every command goes
+ * through here. A profile with nothing stored resolves to undefined, never to another identity. */
+export async function resolveDeviceToken(deps: Deps, profile?: string): Promise<string | undefined> {
   const fromEnv = deps.env.CANDLE_DEVICE_TOKEN?.trim()
   if (fromEnv) return fromEnv
-  const stored = await deps.store.get(SECRET_REFS.deviceToken)
+  const ref = profile ? profileSecretRef(profile, "deviceToken") : SECRET_REFS.deviceToken
+  const stored = await deps.store.get(ref)
   return stored ?? undefined
 }
 
-/** Resolves the API key: `CANDLE_API_KEY` env override first, then the store. */
-export async function resolveApiKey(deps: Deps): Promise<string | undefined> {
+/** Resolves the API key: `CANDLE_API_KEY` env override first, then the profile's ref, else legacy. */
+export async function resolveApiKey(deps: Deps, profile?: string): Promise<string | undefined> {
   const fromEnv = deps.env.CANDLE_API_KEY?.trim()
   if (fromEnv) return fromEnv
-  const stored = await deps.store.get(SECRET_REFS.apiKey)
+  const ref = profile ? profileSecretRef(profile, "apiKey") : SECRET_REFS.apiKey
+  const stored = await deps.store.get(ref)
   return stored ?? undefined
 }

@@ -13,6 +13,7 @@ import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
+import { effectiveProfileFields, printIdentity } from "../profiles"
 import { renderError, renderTable, writeUsageFailure } from "../render"
 
 // Matches packages/mcp's own `engines.node` floor (">=18"); doctor needs an actual number to
@@ -58,8 +59,8 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
 
   rows.push({ check: "Keychain backend", state: "PASS", detail: deps.backend })
 
-  const deviceToken = await resolveDeviceToken(deps)
-  const apiKey = await resolveApiKey(deps)
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile)
+  const apiKey = await resolveApiKey(deps, ctx.profile)
   rows.push(
     deviceToken
       ? {
@@ -113,7 +114,8 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
     // PASS correctly (the key IS valid), just without a scopes list for a key the CLI never
     // minted itself.
     const config = await deps.readConfig()
-    const passDetail = config.scopes ? `scopes: ${config.scopes.join(", ")}` : "valid"
+    const scopes = effectiveProfileFields(config, ctx.profile).scopes
+    const passDetail = scopes ? `scopes: ${scopes.join(", ")}` : "valid"
     rows.push(
       await runLiveCheck({
         deps,
@@ -173,6 +175,11 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
   )
 
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0
+
+  // The identity line is doctor's own first line of output, ahead of the table -- a header for
+  // the whole report, distinct from the table's own live "Account" row below (which is what these
+  // credentials actually resolve to, versus this line's cached record of the profile).
+  await printIdentity(ctx)
 
   if (json) {
     deps.stdout.write(`${JSON.stringify({ rows, ...(account !== undefined ? { account } : {}) })}\n`)

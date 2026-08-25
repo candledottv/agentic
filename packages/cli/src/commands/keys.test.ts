@@ -63,13 +63,18 @@ describe("keys list", () => {
     const code = await run(["keys", "list"], deps)
 
     expect(code).toBe(0)
-    expect(stdout.text).toContain("this device")
+    // The first line is the identity line printIdentity prints ahead of every command's own
+    // output; the table itself is everything after it, which is what the "minted by" assertions
+    // below are actually about.
+    const [, ...tableLines] = stdout.text.split("\n")
+    const table = tableLines.join("\n")
+    expect(table).toContain("this device")
     // Absent provenance means the key was created in a signed-in browser session (or predates
     // provenance entirely) -- "unknown" read as "a device Candle cannot identify," which a live
     // session escalated as a possible compromise. "browser session" is the truth.
-    expect(stdout.text).toContain("browser session")
-    expect(stdout.text).not.toContain("unknown")
-    expect(stdout.text).toContain("dvcprefOTHER")
+    expect(table).toContain("browser session")
+    expect(table).not.toContain("unknown")
+    expect(table).toContain("dvcprefOTHER")
   })
 
   test("requires a device token; without one it fails without making a request", async () => {
@@ -216,21 +221,21 @@ describe("keys revoke", () => {
     const store = createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_stored" })
     const configStore = createFakeConfigStore({ keyPrefix: "ck_liveab" })
     const stdout = createCapture()
-    const deps = createTestDeps({
-      fetch,
-      store,
-      readConfig: configStore.readConfig,
-      writeConfig: configStore.writeConfig,
-      clearConfig: configStore.clearConfig,
-      stdout,
-    })
+    // This config's legacy `keyPrefix` is silently migrated to profile "default" on the very
+    // first dispatch (profiles.ts's migratedConfig), so `deps` must wire ALL four config-store
+    // fields (not just the three read/write/clear ones the pre-profile version of this test
+    // needed) -- `updateProfile` is how the revoke actually clears the migrated profile's key.
+    const deps = createTestDeps({ fetch, store, stdout, ...configStore })
 
     const code = await run(["keys", "revoke", "ck_liveab"], deps)
 
     expect(code).toBe(0)
     expect(calls[0]?.init.method).toBe("DELETE")
-    expect(await store.get(SECRET_REFS.apiKey)).toBeNull()
-    expect((await configStore.readConfig()).keyPrefix).toBeUndefined()
+    // The ref and field this clears are the namespaced ones the migrated "default" profile
+    // actually uses -- not the untouched legacy `api_key` / top-level `keyPrefix`, which
+    // migration deliberately leaves in place so a rollback to a pre-profile CLI keeps working.
+    expect(await store.get("profile:default:api_key")).toBeNull()
+    expect((await configStore.readConfig()).profiles?.default?.keyPrefix).toBeUndefined()
     expect(stdout.text.toLowerCase()).toContain("cleared")
   })
 
@@ -356,5 +361,99 @@ describe("keys create: name, expiry, and transaction limit (portal parity)", () 
     expect(envelope.ok).toBe(false)
     expect(envelope.code).toBe("USAGE")
     expect(envelope.message).toContain("--tx-limit")
+  })
+})
+
+describe("profiles", () => {
+  test("keys create stores the key under the profile and records its prefix on the profile", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () =>
+        jsonResponse(201, {
+          success: true,
+          key: "ck_live_new",
+          keyPrefix: "ck_live_ne",
+          scopes: ["trade:write"],
+          createdAt: 1,
+        }),
+    })
+    const store = createFakeStore({ "profile:staging:device_token": "d" })
+    const config = createFakeConfigStore({ profiles: { staging: { account: "A" } }, activeProfile: "staging" })
+    const stdout = createCapture()
+    const code = await run(
+      ["keys", "create", "--scopes", "trade:write"],
+      createTestDeps({ fetch, store, stdout, ...config }),
+    )
+    expect(code).toBe(0)
+    expect(await store.get("profile:staging:api_key")).toBe("ck_live_new")
+    expect(await store.get("api_key")).toBeNull()
+    expect((await config.readConfig()).profiles?.staging).toMatchObject({
+      keyPrefix: "ck_live_ne",
+      scopes: ["trade:write"],
+    })
+    expect(stdout.text.startsWith("Profile: staging   Account: A at ")).toBe(true)
+  })
+
+  test("keys list reads the PROFILE's device prefix, so a key this device minted still says 'this device'", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () =>
+        jsonResponse(200, {
+          success: true,
+          keys: [
+            {
+              keyPrefix: "ck_liveaa",
+              scopes: ["launch:write"],
+              environment: "production",
+              createdAt: 1000,
+              mintedByDevicePrefix: "dvcprofl",
+            },
+          ],
+        }),
+    })
+    const store = createFakeStore({ "profile:staging:device_token": "d" })
+    const config = createFakeConfigStore({
+      profiles: { staging: { deviceTokenPrefix: "dvcprofl" } },
+      activeProfile: "staging",
+    })
+    const stdout = createCapture()
+
+    const code = await run(["keys", "list"], createTestDeps({ fetch, store, stdout, ...config }))
+
+    expect(code).toBe(0)
+    // Reading the legacy top-level `deviceTokenPrefix` (absent on every login-created profile)
+    // printed this device's own prefix as if it belonged to some other machine.
+    expect(stdout.text).toContain("this device")
+    expect(stdout.text).not.toContain("browser session")
+  })
+
+  test("with CANDLE_API_KEY set, the identity line names the override instead of the profile's cached account", async () => {
+    // The cached account describes the profile's OWN key. An env override is a different
+    // credential, possibly a different account entirely, and printing the cached name beside it
+    // asserts an identity nothing checked -- the exact failure the identity line exists to stop.
+    const { fetch } = createRoutedFetch({ "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }) })
+    const store = createFakeStore({ "profile:staging:device_token": "d" })
+    const config = createFakeConfigStore({ profiles: { staging: { account: "FaKwE2xX" } }, activeProfile: "staging" })
+    const stdout = createCapture()
+
+    const code = await run(
+      ["keys", "list"],
+      createTestDeps({ fetch, store, stdout, env: { CANDLE_API_KEY: "ck_live_from_env" }, ...config }),
+    )
+
+    expect(code).toBe(0)
+    expect(stdout.text).toContain("Account: unknown (CANDLE_API_KEY override)")
+    expect(stdout.text).not.toContain("FaKwE2xX")
+  })
+
+  test("keys revoke of the stored key clears the profile's key and prefix", async () => {
+    const { fetch } = createRoutedFetch({ "/api/v1/agent/keys/ck_live_ne": () => jsonResponse(200, { success: true }) })
+    const store = createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "ck_live_new" })
+    const config = createFakeConfigStore({
+      profiles: { staging: { keyPrefix: "ck_live_ne" } },
+      activeProfile: "staging",
+    })
+    const code = await run(["keys", "revoke", "ck_live_ne"], createTestDeps({ fetch, store, ...config }))
+    expect(code).toBe(0)
+    expect(await store.get("profile:staging:api_key")).toBeNull()
+    expect((await config.readConfig()).profiles?.staging?.keyPrefix).toBeUndefined()
   })
 })

@@ -19,6 +19,7 @@
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
+import { credentialEnvOverrides, effectiveProfileFields, identityLine } from "../profiles"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 
 /** Mirrors `TOOL_NAMES` in packages/mcp/src/tools.ts -- duplicated here since the CLI has zero
@@ -95,6 +96,14 @@ export async function mcp(args: string[], ctx: CommandContext): Promise<number> 
     toolAllowlist = requested.join(",")
   }
 
+  // stderr, not stdout, and unconditionally on --json: stdout belongs to the server (or, under
+  // --print-config, to the printed JSON client block) either way, so this is the only place the
+  // identity line can go without corrupting a machine-readable stream. Unlike printIdentity, it
+  // is never skipped for --json -- there is no other output here that carries the same fields.
+  const identityConfig = await deps.readConfig()
+  const identityAccount = effectiveProfileFields(identityConfig, ctx.profile).account
+  deps.stderr.write(`${identityLine(ctx.profile, identityAccount, apiUrl, credentialEnvOverrides(deps.env))}\n`)
+
   if (parsed.booleans.has("--print-config")) {
     // Reconstruct the launch args minus --print-config itself, so what is printed is exactly
     // what the client should run.
@@ -110,7 +119,7 @@ export async function mcp(args: string[], ctx: CommandContext): Promise<number> 
   // and a server that HAS no key cannot be talked into moving funds. Otherwise the key is
   // required -- an MCP server that starts keyless and fails on first real tool call is a worse
   // failure mode than not starting.
-  const apiKey = readOnly ? undefined : await resolveApiKey(deps)
+  const apiKey = readOnly ? undefined : await resolveApiKey(deps, ctx.profile)
   if (!readOnly && !apiKey) {
     writeLocalFailure(
       deps,

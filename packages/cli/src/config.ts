@@ -13,8 +13,30 @@ import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
+/**
+ * The non-secret half of one identity. The two secrets that belong to it live in the
+ * SecretStore under `profileSecretRef(name, kind)` (profiles.ts). `account` is cached at
+ * login for display and, in Phase 2, the mismatch guard; it is never a credential.
+ */
+export interface ProfileConfig {
+  apiUrl?: string
+  account?: string
+  keyPrefix?: string
+  deviceTokenPrefix?: string
+  scopes?: string[]
+  label?: string
+  portalOrigin?: string
+}
+
 /** Plain, non-secret CLI state. See this file's header comment: no credential fields belong here. */
 export interface CliConfig {
+  /** One entry per identity on this machine. See profiles.ts. */
+  profiles?: Record<string, ProfileConfig>
+  /** The profile a command acts as when neither --profile nor CANDLE_PROFILE names one. */
+  activeProfile?: string
+  // The fields below are the PRE-PROFILE shape. They stay readable for migration and are left in
+  // place afterwards (a rollback to the previous CLI must keep working); nothing writes them
+  // once `profiles` exists.
   /** The API base URL to use when `CANDLE_API_URL` is not set. See client.ts's `resolveApiUrl`. */
   apiUrl?: string
   /** The stored API key's display prefix (e.g. `ck_live_ab12`), for `candle key list`-style output. */
@@ -68,6 +90,15 @@ export async function writeConfig(patch: Partial<CliConfig>): Promise<void> {
   // stored) still leaves `~/.config/candle` non-world-readable.
   await chmod(dir, 0o700)
   await writeFile(configFilePath(), JSON.stringify(next, null, 2), "utf8")
+}
+
+/** Merges `patch` into `profiles[name]` (creating the profile) and writes the file. Sibling
+ * profiles and the top-level fields are untouched. An undefined field clears, like writeConfig. */
+export async function updateProfile(name: string, patch: Partial<ProfileConfig>): Promise<void> {
+  const current = await readConfig()
+  const profiles = { ...(current.profiles ?? {}) }
+  profiles[name] = { ...(profiles[name] ?? {}), ...patch }
+  await writeConfig({ profiles })
 }
 
 /** Deletes the config file. A no-op if it does not exist. */

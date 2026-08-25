@@ -7,7 +7,13 @@
 
 import { describe, expect, test } from "bun:test"
 import { run } from "../index"
-import { createCapture, createFakeStore, createRoutedFetch, createTestDeps } from "../test-support"
+import {
+  createCapture,
+  createFakeConfigStore,
+  createFakeStore,
+  createRoutedFetch,
+  createTestDeps,
+} from "../test-support"
 import { MCP_TOOL_NAMES, READ_ONLY_TOOL_NAMES } from "./mcp"
 
 interface CapturedChild {
@@ -144,5 +150,43 @@ describe("mcp", () => {
     // of truth for what registers.
     const registered = [...toolsSource.matchAll(/\n {2}register\(\s*\n?\s*"(candle_[a-z_]+)"/g)].map((m) => m[1])
     expect(new Set(registered)).toEqual(new Set(MCP_TOOL_NAMES))
+  })
+})
+
+describe("profiles", () => {
+  test("--print-config prints the identity line to stderr, using the profile's cached account, and stdout stays pure JSON", async () => {
+    const { fetch } = createRoutedFetch({})
+    const { calls, runChild } = captureRunChild(0)
+    const store = createFakeStore({ "profile:staging:api_key": "cndl_live_secret" })
+    const config = createFakeConfigStore({ profiles: { staging: { account: "A" } }, activeProfile: "staging" })
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const code = await run(
+      ["mcp", "--print-config", "--read-only"],
+      createTestDeps({ fetch, runChild, stdout, stderr, store, ...config }),
+    )
+    expect(code).toBe(0)
+    expect(calls).toHaveLength(0)
+    expect(stderr.text).toContain("Profile: staging   Account: A at ")
+    expect(JSON.parse(stdout.text)).toEqual({
+      mcpServers: { candle: { command: "candle", args: ["mcp", "--read-only"] } },
+    })
+  })
+
+  test("the stderr identity line names an acting env override rather than the profile's cached account", async () => {
+    // The server the launcher is about to start would run on the OVERRIDE's key, so naming the
+    // profile's cached account here would misreport which account the MCP client is wired to.
+    const { fetch } = createRoutedFetch({})
+    const { calls, runChild } = captureRunChild(0)
+    const config = createFakeConfigStore({ profiles: { staging: { account: "A" } }, activeProfile: "staging" })
+    const stderr = createCapture()
+    const code = await run(
+      ["mcp"],
+      createTestDeps({ fetch, runChild, stderr, env: { CANDLE_API_KEY: "cndl_live_from_env" }, ...config }),
+    )
+    expect(code).toBe(0)
+    expect(calls[0]?.env.CANDLE_AGENT_API_KEY).toBe("cndl_live_from_env")
+    expect(stderr.text).toContain("Account: unknown (CANDLE_API_KEY override)")
+    expect(stderr.text).not.toContain("Account: A")
   })
 })

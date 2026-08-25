@@ -19,6 +19,7 @@ import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
+import { printIdentity } from "../profiles"
 import { renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { pemToStoredSigner, walletSignerRef } from "../secret-store"
 import { encryptWalletKeyForImport, generateSignerKeypair, parseSolanaSecret, type WalletChain } from "../wallet-import"
@@ -56,7 +57,9 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
     return 2
   }
 
-  const apiKey = await resolveApiKey(deps)
+  await printIdentity(ctx)
+
+  const apiKey = await resolveApiKey(deps, ctx.profile)
   if (!apiKey) {
     // Through the json-aware path, same as every API failure below: a `--json` caller gets an
     // object for this exit too, not a sentence it would have to parse.
@@ -254,6 +257,8 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
   }
   const chain: WalletChain = chainFlag as WalletChain
 
+  await printIdentity(ctx)
+
   // Everything local happens BEFORE any network call: key material, decode, address derivation.
   // A typo'd key or mismatched address must never cost an init round trip, and must never leave
   // this process in any form.
@@ -269,7 +274,7 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
   }
   const address = resolvedAddress.address
 
-  const apiKey = await resolveApiKey(deps)
+  const apiKey = await resolveApiKey(deps, ctx.profile)
   if (!apiKey) {
     writeLocalFailure(
       deps,
@@ -449,7 +454,9 @@ export async function walletsRevoke(args: string[], ctx: CommandContext): Promis
     return 2
   }
 
-  const apiKey = await resolveApiKey(deps)
+  await printIdentity(ctx)
+
+  const apiKey = await resolveApiKey(deps, ctx.profile)
   if (!apiKey) {
     writeLocalFailure(
       deps,

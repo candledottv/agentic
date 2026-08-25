@@ -15,6 +15,7 @@ import {
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveDeviceToken } from "../deps"
+import { effectiveProfileFields, printIdentity, profileSecretRef } from "../profiles"
 import {
   formatScopesForSummary,
   formatTimestamp,
@@ -68,7 +69,9 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
     return 2
   }
 
-  const deviceToken = await resolveDeviceToken(deps)
+  await printIdentity(ctx)
+
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile)
   if (!deviceToken) {
     writeLocalFailure(deps, NO_DEVICE_TOKEN, json)
     return 1
@@ -93,6 +96,9 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
 
   const body = result.body as { keys: KeyRow[] }
   const config = await deps.readConfig()
+  // THIS profile's device prefix: reading the legacy top-level one (absent on any profile created
+  // since the upgrade) printed this very device's own key as if another machine had minted it.
+  const ownDevicePrefix = effectiveProfileFields(config, ctx.profile).deviceTokenPrefix
   const rows = body.keys.map((key) => [
     key.keyPrefix,
     key.scopes.join(","),
@@ -100,7 +106,7 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
     formatTimestamp(key.createdAt),
     formatTimestamp(key.lastUsedAt),
     key.revokedAt ? formatTimestamp(key.revokedAt) : "no",
-    mintedByLabel(key.mintedByDevicePrefix, config.deviceTokenPrefix),
+    mintedByLabel(key.mintedByDevicePrefix, ownDevicePrefix),
   ])
 
   deps.stdout.write(
@@ -165,7 +171,9 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
     txLimit = { usdMicros: parsedUsd.usdMicros, reset }
   }
 
-  const deviceToken = await resolveDeviceToken(deps)
+  await printIdentity(ctx)
+
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile)
   if (!deviceToken) {
     writeLocalFailure(deps, NO_DEVICE_TOKEN, json)
     return 1
@@ -197,12 +205,18 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
   const body = result.body as { key: string; keyPrefix: string; scopes: string[]; environment: string }
 
   // Store only when the CLI holds no working key yet -- it manages exactly one, and any other
-  // key belongs to whichever agent it was minted for.
-  const existingKey = await deps.store.get(SECRET_REFS.apiKey)
+  // key belongs to whichever agent it was minted for. Under a profile the ref and the recorded
+  // prefix/scopes are namespaced to it; the legacy top-level fields are used only pre-profile.
+  const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey
+  const existingKey = await deps.store.get(apiKeyRef)
   let stored = false
   if (!existingKey) {
-    await deps.store.set(SECRET_REFS.apiKey, body.key)
-    await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes })
+    await deps.store.set(apiKeyRef, body.key)
+    if (ctx.profile) {
+      await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes })
+    } else {
+      await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes })
+    }
     stored = true
   }
 
@@ -243,7 +257,9 @@ export async function keysRevoke(args: string[], ctx: CommandContext): Promise<n
   }
   const prefix = parsed.positionals[0] as string
 
-  const deviceToken = await resolveDeviceToken(deps)
+  await printIdentity(ctx)
+
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile)
   if (!deviceToken) {
     writeLocalFailure(deps, NO_DEVICE_TOKEN, json)
     return 1
@@ -264,10 +280,16 @@ export async function keysRevoke(args: string[], ctx: CommandContext): Promise<n
   }
 
   const config = await deps.readConfig()
+  const storedPrefix = effectiveProfileFields(config, ctx.profile).keyPrefix
   let clearedLocal = false
-  if (config.keyPrefix === prefix) {
-    await deps.store.delete(SECRET_REFS.apiKey)
-    await deps.writeConfig({ keyPrefix: undefined })
+  if (storedPrefix === prefix) {
+    const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey
+    await deps.store.delete(apiKeyRef)
+    if (ctx.profile) {
+      await deps.updateProfile(ctx.profile, { keyPrefix: undefined })
+    } else {
+      await deps.writeConfig({ keyPrefix: undefined })
+    }
     clearedLocal = true
   }
 

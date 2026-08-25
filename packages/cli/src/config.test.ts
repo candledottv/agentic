@@ -74,4 +74,30 @@ describe("config", () => {
     const parsed = JSON.parse(raw)
     expect(parsed).toEqual({ apiUrl: "https://api.example.com", keyPrefix: "ck_live_", label: "my laptop" })
   })
+
+  test("updateProfile creates the profile and merges into it on later calls", async () => {
+    const { updateProfile } = await import("./config")
+    await updateProfile("staging", { apiUrl: "https://staging.api.candle.tv", account: "FaKw" })
+    await updateProfile("staging", { keyPrefix: "8I0CZztp" })
+    expect((await readConfig()).profiles).toEqual({
+      staging: { apiUrl: "https://staging.api.candle.tv", account: "FaKw", keyPrefix: "8I0CZztp" },
+    })
+  })
+
+  test("updateProfile leaves sibling profiles and top-level fields alone", async () => {
+    const { updateProfile } = await import("./config")
+    await writeConfig({ activeProfile: "production", profiles: { production: { account: "A" } } })
+    await updateProfile("staging", { account: "B" })
+    const config = await readConfig()
+    expect(config.activeProfile).toBe("production")
+    expect(config.profiles?.production).toEqual({ account: "A" })
+    expect(config.profiles?.staging).toEqual({ account: "B" })
+  })
+
+  test("updateProfile with an undefined field clears it", async () => {
+    const { updateProfile } = await import("./config")
+    await updateProfile("staging", { keyPrefix: "8I0CZztp", scopes: ["trade:write"] })
+    await updateProfile("staging", { keyPrefix: undefined })
+    expect((await readConfig()).profiles?.staging).toEqual({ scopes: ["trade:write"] })
+  })
 })

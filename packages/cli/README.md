@@ -38,7 +38,7 @@ node packages/cli/dist/index.js auth login
 | Command | What it does |
 | --- | --- |
 | `candle setup [--no-browser]` | The onboarding wizard: authorizes this device (skipped when already authorized), prints the agent wallets as funding destinations plus the paste-into-your-agent brief, shows the skill/MCP install lines, runs the full doctor check (setup's exit code is doctor's), and links the web console. Safe to re-run. |
-| `candle auth login [--scopes <a,b,c>] [--label <name>] [--no-browser]` | Authorizes this device: prints a code, opens (or prints) an approval URL, polls until approved, then stores the resulting device token and API key. |
+| `candle auth login [--profile <name>] [--scopes <a,b,c>] [--label <name>] [--no-browser]` | Authorizes this device: prints a code, opens (or prints) an approval URL, polls until approved, then stores the resulting device token and API key. |
 | `candle auth status` | Shows which storage backend is in use, both credential prefixes, the config file path, and a live validity check for each credential. |
 | `candle auth logout [--keep-key]` | Revokes the stored API key (skipped with `--keep-key`), clears local credentials and config, and prints the portal URL for revoking the device itself. |
 | `candle keys list` | Lists this account's API keys: prefix, scopes, environment, timestamps, and which device minted each one. |
@@ -53,6 +53,7 @@ Every command accepts these global options:
 | Flag | Effect |
 | --- | --- |
 | `--api-url <url>` | Overrides the API base URL for this invocation, beating `CANDLE_API_URL` and the stored config value. |
+| `--profile <name>` | Act as a named profile; see Profiles below. |
 | `--json` | Machine-readable output instead of a formatted table or summary, generally the underlying API response. One exception: `auth login`'s JSON output still omits the plaintext device token and API key, matching its human-readable summary, since login never displays either value in any mode. |
 | `--help`, `-h` | Prints usage. |
 | `--version`, `-v` | Prints the CLI version. |
@@ -104,6 +105,36 @@ The CLI picks the best available backend for your machine, in this order:
 
 `candle auth status` and `candle doctor` both report which backend is active.
 
+## Profiles
+
+One machine can hold credentials for several accounts and hosts. `auth login` creates a profile
+implicitly when none is already selected, named from `--profile <name>` or derived from the API
+host (`staging`, `production`, or the hostname, de-duplicated with a numeric suffix). Which profile a command acts as, highest
+wins: `--profile`, `CANDLE_PROFILE`, the `activeProfile` in `config.json`, the sole profile. With
+several profiles and none selected the CLI refuses and lists them; guessing is how a wallet
+import once landed on the wrong account.
+
+Re-running `auth login` refreshes the profile you are already on, in place: the same name, the
+same refs, a new device token and key. Use `--profile <new name>` to add another instead.
+`auth logout` removes the acting profile's entry and its stored credentials, and clears
+`activeProfile` when it pointed there. Switching which profile is active is Phase 2's
+`profile use`; until then, select one per command with `--profile`, per shell with
+`CANDLE_PROFILE`, or edit `activeProfile` in `config.json`.
+
+Every authenticated command prints `Profile: <name>   Account: <account> at <api url>` before its
+own output (`--json` output is unchanged except `auth status` and `auth login`, which carry
+`profile` and `account`; scripts get identity from `auth status --json`). The account is cached
+at login from the API. Where the line is printed from that cache and `CANDLE_API_KEY` or
+`CANDLE_DEVICE_TOKEN` is overriding the stored credential, it reads
+`Account: unknown (CANDLE_API_KEY override)` rather than naming an account that credential was
+never checked against; `auth status` and `setup` look the account up live and print what they
+get. Phase 2 adds `candle profile list|add|use|rename|remove` and a strict mismatch guard.
+
+A pre-profile install is migrated on first run: profile `default` is created from the existing
+settings and the two credentials are copied to `profile:default:*` refs. The old refs and fields
+are left in place so an older CLI keeps working, until an `auth logout` clears them along with
+the profile they were migrated into.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -111,6 +142,7 @@ The CLI picks the best available backend for your machine, in this order:
 | `CANDLE_DEVICE_TOKEN` | Overrides the stored device token for this process. Every command that needs the device token checks this first, before the store. |
 | `CANDLE_API_KEY` | Overrides the stored API key for this process, same precedence as above. |
 | `CANDLE_API_URL` | Overrides the API base URL, beating the stored config value (but not an explicit `--api-url` flag). |
+| `CANDLE_PROFILE` | Selects the profile when `--profile` is not given. |
 | `CANDLE_KEYRING_PASSPHRASE` | The passphrase for the encrypted-file backend. Without it, a non-interactive process (no TTY) fails with a clear error rather than falling back to writing plaintext; an interactive session is prompted instead. |
 | `CANDLE_CONFIG_DIR` | Overrides where the CLI keeps its config and encrypted-file credentials (default `~/.config/candle`). Mainly a testing seam. |
 

@@ -268,6 +268,120 @@ async function runLiveCheck(params) {
   return result.ok ? { check, state: "PASS", detail: passDetail } : { check, state: "FAIL", detail: renderError(result, { apiUrl, authType: auth }) };
 }
 
+// src/profiles.ts
+function profileSecretRef(name, kind) {
+  return `profile:${name}:${kind === "deviceToken" ? "device_token" : "api_key"}`;
+}
+function isValidProfileName(name) {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(name);
+}
+function listForHumans(profiles, active) {
+  return Object.entries(profiles).map(([name, p]) => `  ${name}${name === active ? " (active)" : ""}${p.account ? `  ${p.account}` : ""}${p.apiUrl ? `  ${p.apiUrl}` : ""}`).join(`
+`);
+}
+function resolveProfileName(config, opts) {
+  const profiles = config.profiles ?? {};
+  const names = Object.keys(profiles);
+  const requested = opts.flag?.trim() || opts.env.CANDLE_PROFILE?.trim() || undefined;
+  if (requested !== undefined) {
+    if (!isValidProfileName(requested))
+      return { ok: false, message: `Invalid profile name: ${requested}` };
+    if (!(requested in profiles)) {
+      return {
+        ok: false,
+        message: `No profile named "${requested}".${names.length ? `
+Profiles on this machine:
+${listForHumans(profiles, config.activeProfile)}` : " Run: candle auth login --profile " + requested}`
+      };
+    }
+    return { ok: true, name: requested };
+  }
+  if (config.activeProfile && config.activeProfile in profiles)
+    return { ok: true, name: config.activeProfile };
+  if (names.length === 0)
+    return { ok: true, name: undefined };
+  if (names.length === 1)
+    return { ok: true, name: names[0] };
+  return {
+    ok: false,
+    message: `Several profiles exist and none is selected. Pick one with --profile <name> or CANDLE_PROFILE=<name>:
+${listForHumans(profiles, config.activeProfile)}`
+  };
+}
+function resolveProfileNameForLogin(config, opts) {
+  const profiles = config.profiles ?? {};
+  const requested = opts.flag?.trim() || opts.env.CANDLE_PROFILE?.trim() || undefined;
+  if (requested !== undefined && isValidProfileName(requested))
+    return requested;
+  if (config.activeProfile && config.activeProfile in profiles)
+    return config.activeProfile;
+  const names = Object.keys(profiles);
+  return names.length === 1 ? names[0] : undefined;
+}
+var PRE_PROFILE_FIELDS = ["apiUrl", "keyPrefix", "deviceTokenPrefix", "scopes", "label", "portalOrigin"];
+function migratedConfig(config) {
+  if (config.profiles !== undefined)
+    return { config, migrated: false };
+  const legacy = {};
+  for (const field of PRE_PROFILE_FIELDS) {
+    const value = config[field];
+    if (value !== undefined)
+      legacy[field] = value;
+  }
+  if (Object.keys(legacy).length === 0)
+    return { config, migrated: false };
+  return { config: { ...config, profiles: { default: legacy }, activeProfile: "default" }, migrated: true };
+}
+function effectiveProfileFields(config, profile) {
+  if (profile !== undefined)
+    return config.profiles?.[profile] ?? {};
+  const legacy = {};
+  for (const field of PRE_PROFILE_FIELDS) {
+    const value = config[field];
+    if (value !== undefined)
+      legacy[field] = value;
+  }
+  return legacy;
+}
+function defaultProfileNameFor(apiUrl, existing) {
+  let host = "profile";
+  try {
+    host = new URL(apiUrl).hostname;
+  } catch {}
+  let base;
+  if (host === "staging.api.candle.tv")
+    base = "staging";
+  else if (host === "api.candle.tv" || host === "api.alpha.candle.tv")
+    base = "production";
+  else
+    base = host.replace(/[^A-Za-z0-9._-]/g, "-").replace(/\./g, "-").slice(0, 28) || "profile";
+  if (!isValidProfileName(base))
+    base = "profile";
+  const taken = new Set(Object.keys(existing ?? {}));
+  if (!taken.has(base))
+    return base;
+  for (let n = 2;; n++) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate))
+      return candidate;
+  }
+}
+function credentialEnvOverrides(env) {
+  return ["CANDLE_API_KEY", "CANDLE_DEVICE_TOKEN"].filter((name) => env[name]?.trim());
+}
+function identityLine(profile, account, apiUrl, overrides) {
+  const shown = overrides?.length ? `unknown (${overrides.join(", ")} override)` : account ?? "unknown";
+  return `Profile: ${profile ?? "none"}   Account: ${shown} at ${apiUrl}`;
+}
+async function printIdentity(ctx) {
+  if (ctx.json)
+    return;
+  const config = await ctx.deps.readConfig();
+  const account = effectiveProfileFields(config, ctx.profile).account;
+  ctx.deps.stdout.write(`${identityLine(ctx.profile, account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env))}
+`);
+}
+
 // src/secret-store.ts
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -418,18 +532,20 @@ function fromBase64(base64) {
 }
 
 // src/deps.ts
-async function resolveDeviceToken(deps) {
+async function resolveDeviceToken(deps, profile) {
   const fromEnv = deps.env.CANDLE_DEVICE_TOKEN?.trim();
   if (fromEnv)
     return fromEnv;
-  const stored = await deps.store.get(SECRET_REFS.deviceToken);
+  const ref = profile ? profileSecretRef(profile, "deviceToken") : SECRET_REFS.deviceToken;
+  const stored = await deps.store.get(ref);
   return stored ?? undefined;
 }
-async function resolveApiKey(deps) {
+async function resolveApiKey(deps, profile) {
   const fromEnv = deps.env.CANDLE_API_KEY?.trim();
   if (fromEnv)
     return fromEnv;
-  const stored = await deps.store.get(SECRET_REFS.apiKey);
+  const ref = profile ? profileSecretRef(profile, "apiKey") : SECRET_REFS.apiKey;
+  const stored = await deps.store.get(ref);
   return stored ?? undefined;
 }
 
@@ -449,6 +565,10 @@ async function authLogin(args, ctx) {
   }
   if (parsed.positionals.length > 0) {
     writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  if (ctx.profileFlag !== undefined && !isValidProfileName(ctx.profileFlag)) {
+    writeUsageFailure(deps, `Invalid profile name: ${ctx.profileFlag}. Run: candle auth login --profile <name>`, json);
     return 2;
   }
   const scopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined;
@@ -543,23 +663,41 @@ function portalOriginFrom(verificationUri) {
   }
 }
 async function finishLogin(rawBody, ctx, requested) {
-  const { deps, json, apiUrlFlag } = ctx;
+  const { deps, json } = ctx;
   const body = rawBody;
-  await deps.store.set(SECRET_REFS.deviceToken, body.deviceToken);
+  const config = await deps.readConfig();
+  const profileName = ctx.profileFlag ?? ctx.profile ?? defaultProfileNameFor(ctx.apiUrl, config.profiles);
+  await deps.store.set(profileSecretRef(profileName, "deviceToken"), body.deviceToken);
+  if (body.apiKey)
+    await deps.store.set(profileSecretRef(profileName, "apiKey"), body.apiKey.key);
+  let account;
   if (body.apiKey) {
-    await deps.store.set(SECRET_REFS.apiKey, body.apiKey.key);
+    const identity = await apiRequest("/api/v1/agent/wallets/embedded", {
+      auth: "key",
+      credentials: { apiKey: body.apiKey.key },
+      apiUrl: ctx.apiUrl,
+      fetch: deps.fetch,
+      env: deps.env
+    });
+    if (identity.ok)
+      account = identity.body.account;
   }
   const portalOrigin = portalOriginFrom(requested.verificationUri);
-  await deps.writeConfig({
+  await deps.updateProfile(profileName, {
+    apiUrl: ctx.apiUrl,
     deviceTokenPrefix: body.tokenPrefix,
     ...body.apiKey ? { keyPrefix: body.apiKey.keyPrefix, scopes: body.apiKey.scopes } : {},
     ...requested.label ? { label: requested.label } : {},
-    ...apiUrlFlag ? { apiUrl: apiUrlFlag } : {},
-    ...portalOrigin ? { portalOrigin } : {}
+    ...portalOrigin ? { portalOrigin } : {},
+    ...account ? { account } : {}
   });
+  if (!config.activeProfile)
+    await deps.writeConfig({ activeProfile: profileName });
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       backend: deps.backend,
+      profile: profileName,
+      account,
       deviceTokenPrefix: body.tokenPrefix,
       apiKeyPrefix: body.apiKey?.keyPrefix,
       scopes: body.apiKey?.scopes,
@@ -568,6 +706,8 @@ async function finishLogin(rawBody, ctx, requested) {
 `);
     return 0;
   }
+  deps.stdout.write(`Profile: ${profileName}
+`);
   deps.stdout.write(`Device authorized. Credentials stored in the ${deps.backend} backend.
 `);
   deps.stdout.write(`Device token prefix: ${body.tokenPrefix}
@@ -600,11 +740,13 @@ async function authLogout(args, ctx) {
     return 2;
   }
   const keepKey = parsed.booleans.has("--keep-key");
+  await printIdentity(ctx);
   const config = await deps.readConfig();
-  const deviceToken = await resolveDeviceToken(deps);
+  const { keyPrefix, portalOrigin } = effectiveProfileFields(config, ctx.profile);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   let revokedKey;
-  if (!keepKey && deviceToken && config.keyPrefix) {
-    const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(config.keyPrefix)}`, {
+  if (!keepKey && deviceToken && keyPrefix) {
+    const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}`, {
       method: "DELETE",
       auth: "device",
       credentials: { deviceToken },
@@ -613,17 +755,33 @@ async function authLogout(args, ctx) {
       env: deps.env
     });
     if (result.ok) {
-      revokedKey = config.keyPrefix;
+      revokedKey = keyPrefix;
     } else if (!json) {
       deps.stdout.write(`Could not revoke the stored API key remotely (clearing it locally anyway).
 `);
     }
   }
-  await deps.store.delete(SECRET_REFS.deviceToken);
-  await deps.store.delete(SECRET_REFS.apiKey);
-  await deps.clearConfig();
-  const portalUrl = portalDeviceUrl(apiUrl, config.portalOrigin);
-  const liveEnvOverrides = ["CANDLE_DEVICE_TOKEN", "CANDLE_API_KEY"].filter((name) => deps.env[name]?.trim());
+  if (ctx.profile) {
+    await deps.store.delete(profileSecretRef(ctx.profile, "deviceToken"));
+    await deps.store.delete(profileSecretRef(ctx.profile, "apiKey"));
+    await deps.store.delete(SECRET_REFS.deviceToken);
+    await deps.store.delete(SECRET_REFS.apiKey);
+    const profiles = { ...config.profiles ?? {} };
+    delete profiles[ctx.profile];
+    await deps.writeConfig({
+      profiles,
+      keyPrefix: undefined,
+      deviceTokenPrefix: undefined,
+      scopes: undefined,
+      ...config.activeProfile === ctx.profile ? { activeProfile: undefined } : {}
+    });
+  } else {
+    await deps.store.delete(SECRET_REFS.deviceToken);
+    await deps.store.delete(SECRET_REFS.apiKey);
+    await deps.clearConfig();
+  }
+  const portalUrl = portalDeviceUrl(apiUrl, portalOrigin);
+  const liveEnvOverrides = credentialEnvOverrides(deps.env);
   if (json) {
     deps.stdout.write(`${JSON.stringify({ success: true, revokedKey: revokedKey ?? null, portalUrl, envOverrides: liveEnvOverrides })}
 `);
@@ -657,8 +815,8 @@ async function authStatus(args, ctx) {
     return 2;
   }
   const config = await deps.readConfig();
-  const deviceToken = await resolveDeviceToken(deps);
-  const apiKey = await resolveApiKey(deps);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
   const rows = [];
   if (!deviceToken) {
     rows.push({ check: "Device token", state: "SKIP", detail: "not set. Run: candle auth login" });
@@ -700,11 +858,13 @@ async function authStatus(args, ctx) {
   }
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0;
   const configPath = configFilePathForDisplay(deps.env);
+  const fields = effectiveProfileFields(config, ctx.profile);
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       backend: deps.backend,
-      deviceTokenPrefix: config.deviceTokenPrefix,
-      keyPrefix: config.keyPrefix,
+      profile: ctx.profile,
+      deviceTokenPrefix: fields.deviceTokenPrefix,
+      keyPrefix: fields.keyPrefix,
       account,
       apiUrl,
       configPath,
@@ -713,13 +873,13 @@ async function authStatus(args, ctx) {
 `);
     return exitCode;
   }
-  deps.stdout.write(`Account: ${account ?? "unknown"} at ${apiUrl}
+  deps.stdout.write(`${identityLine(ctx.profile, account ?? fields.account, apiUrl)}
 `);
   deps.stdout.write(`Backend: ${deps.backend}
 `);
-  deps.stdout.write(`Device token prefix: ${config.deviceTokenPrefix ?? "not set"}
+  deps.stdout.write(`Device token prefix: ${fields.deviceTokenPrefix ?? "not set"}
 `);
-  deps.stdout.write(`API key prefix: ${config.keyPrefix ?? "not set"}
+  deps.stdout.write(`API key prefix: ${fields.keyPrefix ?? "not set"}
 `);
   deps.stdout.write(`Config file: ${configPath}
 
@@ -751,8 +911,8 @@ async function doctor(args, ctx) {
     detail: `node ${deps.nodeVersion} is below the minimum (${MIN_NODE_MAJOR}). Fix: upgrade Node.js to ${MIN_NODE_MAJOR} or later.`
   });
   rows.push({ check: "Keychain backend", state: "PASS", detail: deps.backend });
-  const deviceToken = await resolveDeviceToken(deps);
-  const apiKey = await resolveApiKey(deps);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
   rows.push(deviceToken ? {
     check: "Credentials present",
     state: "PASS",
@@ -783,7 +943,8 @@ async function doctor(args, ctx) {
     rows.push({ check: API_KEY_CHECK, state: "SKIP", detail: "no API key to check" });
   } else {
     const config = await deps.readConfig();
-    const passDetail = config.scopes ? `scopes: ${config.scopes.join(", ")}` : "valid";
+    const scopes = effectiveProfileFields(config, ctx.profile).scopes;
+    const passDetail = scopes ? `scopes: ${scopes.join(", ")}` : "valid";
     rows.push(await runLiveCheck({
       deps,
       apiUrl,
@@ -824,6 +985,7 @@ async function doctor(args, ctx) {
   }
   rows.push(account !== undefined ? { check: "Account", state: "PASS", detail: account } : { check: "Account", state: "SKIP", detail: "could not resolve which account these credentials act as" });
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0;
+  await printIdentity(ctx);
   if (json) {
     deps.stdout.write(`${JSON.stringify({ rows, ...account !== undefined ? { account } : {} })}
 `);
@@ -859,7 +1021,8 @@ async function keysList(args, ctx) {
     writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
-  const deviceToken = await resolveDeviceToken(deps);
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   if (!deviceToken) {
     writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
     return 1;
@@ -882,6 +1045,7 @@ async function keysList(args, ctx) {
   }
   const body = result.body;
   const config = await deps.readConfig();
+  const ownDevicePrefix = effectiveProfileFields(config, ctx.profile).deviceTokenPrefix;
   const rows = body.keys.map((key) => [
     key.keyPrefix,
     key.scopes.join(","),
@@ -889,7 +1053,7 @@ async function keysList(args, ctx) {
     formatTimestamp(key.createdAt),
     formatTimestamp(key.lastUsedAt),
     key.revokedAt ? formatTimestamp(key.revokedAt) : "no",
-    mintedByLabel(key.mintedByDevicePrefix, config.deviceTokenPrefix)
+    mintedByLabel(key.mintedByDevicePrefix, ownDevicePrefix)
   ]);
   deps.stdout.write(`${renderTable(["Prefix", "Scopes", "Environment", "Created", "Last used", "Revoked", "Minted by"], rows)}
 `);
@@ -942,7 +1106,8 @@ async function keysCreate(args, ctx) {
     }
     txLimit = { usdMicros: parsedUsd.usdMicros, reset };
   }
-  const deviceToken = await resolveDeviceToken(deps);
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   if (!deviceToken) {
     writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
     return 1;
@@ -967,11 +1132,16 @@ async function keysCreate(args, ctx) {
     return 1;
   }
   const body = result.body;
-  const existingKey = await deps.store.get(SECRET_REFS.apiKey);
+  const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
+  const existingKey = await deps.store.get(apiKeyRef);
   let stored = false;
   if (!existingKey) {
-    await deps.store.set(SECRET_REFS.apiKey, body.key);
-    await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes });
+    await deps.store.set(apiKeyRef, body.key);
+    if (ctx.profile) {
+      await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes });
+    } else {
+      await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes });
+    }
     stored = true;
   }
   if (json) {
@@ -1009,7 +1179,8 @@ async function keysRevoke(args, ctx) {
     return 2;
   }
   const prefix = parsed.positionals[0];
-  const deviceToken = await resolveDeviceToken(deps);
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   if (!deviceToken) {
     writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
     return 1;
@@ -1027,10 +1198,16 @@ async function keysRevoke(args, ctx) {
     return 1;
   }
   const config = await deps.readConfig();
+  const storedPrefix = effectiveProfileFields(config, ctx.profile).keyPrefix;
   let clearedLocal = false;
-  if (config.keyPrefix === prefix) {
-    await deps.store.delete(SECRET_REFS.apiKey);
-    await deps.writeConfig({ keyPrefix: undefined });
+  if (storedPrefix === prefix) {
+    const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
+    await deps.store.delete(apiKeyRef);
+    if (ctx.profile) {
+      await deps.updateProfile(ctx.profile, { keyPrefix: undefined });
+    } else {
+      await deps.writeConfig({ keyPrefix: undefined });
+    }
     clearedLocal = true;
   }
   if (json) {
@@ -1102,6 +1279,10 @@ async function mcp(args, ctx) {
     }
     toolAllowlist = requested.join(",");
   }
+  const identityConfig = await deps.readConfig();
+  const identityAccount = effectiveProfileFields(identityConfig, ctx.profile).account;
+  deps.stderr.write(`${identityLine(ctx.profile, identityAccount, apiUrl, credentialEnvOverrides(deps.env))}
+`);
   if (parsed.booleans.has("--print-config")) {
     const launchArgs = [
       ...readOnly ? ["--read-only"] : [],
@@ -1111,7 +1292,7 @@ async function mcp(args, ctx) {
 `);
     return 0;
   }
-  const apiKey = readOnly ? undefined : await resolveApiKey(deps);
+  const apiKey = readOnly ? undefined : await resolveApiKey(deps, ctx.profile);
   if (!readOnly && !apiKey) {
     writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle auth login" }, json);
     return 1;
@@ -1150,11 +1331,13 @@ async function setup(args, ctx) {
     writeUsageFailure(deps, "setup is an interactive wizard; for machine use, compose `auth login --json` and `doctor --json` directly", json);
     return 2;
   }
+  await printIdentity(ctx);
   deps.stdout.write(`candle setup: this wizard authorizes the device, shows funding, and verifies everything.
 `);
   section(deps, "1/4 Authorize this device");
-  const deviceToken = await resolveDeviceToken(deps);
-  const apiKey = await resolveApiKey(deps);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  let nextCtx = ctx;
   if (deviceToken && apiKey) {
     deps.stdout.write(`Already authorized on this machine (device token + API key present). Skipping login.
 `);
@@ -1166,9 +1349,17 @@ async function setup(args, ctx) {
 `);
       return loginExit;
     }
+    const loginConfig = await deps.readConfig();
+    const resolution = resolveProfileName(loginConfig, { flag: ctx.profileFlag, env: deps.env });
+    if (!resolution.ok) {
+      deps.stderr.write(`${resolution.message}
+`);
+      return 1;
+    }
+    nextCtx = { ...ctx, profile: resolution.name };
   }
   section(deps, "2/4 Fund your agent's wallets");
-  const key = await resolveApiKey(deps);
+  const key = await resolveApiKey(deps, nextCtx.profile);
   const walletsResult = key ? await apiRequest("/api/v1/agent/wallets/embedded", {
     auth: "key",
     credentials: { apiKey: key },
@@ -1181,7 +1372,7 @@ async function setup(args, ctx) {
     const solana = body.wallets?.solana ?? null;
     const evm = body.wallets?.evm ?? null;
     if (body.account)
-      deps.stdout.write(`Account: ${body.account}
+      deps.stdout.write(`${identityLine(nextCtx.profile, body.account, apiUrl)}
 `);
     if (solana)
       deps.stdout.write(`Solana (send SOL here):    ${solana.address}
@@ -1215,10 +1406,11 @@ Tell your agent (paste into its context):
   deps.stdout.write(`Other platforms:     ${CODING_AGENTS_DOCS}
 `);
   section(deps, "4/4 Health check");
-  const doctorExit = await doctor([], ctx);
+  const doctorExit = await doctor([], nextCtx);
   const config = await deps.readConfig();
+  const { portalOrigin } = effectiveProfileFields(config, nextCtx.profile);
   deps.stdout.write(`
-Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl, config.portalOrigin)}
+Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl, portalOrigin)}
 `);
   deps.stdout.write(doctorExit === 0 ? `Setup complete. Your agent can launch, trade, and transfer the moment the wallets are funded.
 ` : "Setup finished with failed checks above; fix them and re-run `candle doctor`.\n");
@@ -4088,7 +4280,8 @@ async function wallets(args, ctx) {
     writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
-  const apiKey = await resolveApiKey(deps);
+  await printIdentity(ctx);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
     writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
     return 1;
@@ -4227,6 +4420,7 @@ async function walletsImport(args, ctx) {
     return 2;
   }
   const chain2 = chainFlag;
+  await printIdentity(ctx);
   const material = await resolveKeyMaterial(parsed.values["--key-file"], chain2, ctx);
   if (!material.ok) {
     writeLocalFailure(deps, { code: "KEY_INPUT_FAILED", message: material.message }, json);
@@ -4238,7 +4432,7 @@ async function walletsImport(args, ctx) {
     return 1;
   }
   const address = resolvedAddress.address;
-  const apiKey = await resolveApiKey(deps);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
     writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
     return 1;
@@ -4372,7 +4566,8 @@ async function walletsRevoke(args, ctx) {
 `);
     return 2;
   }
-  const apiKey = await resolveApiKey(deps);
+  await printIdentity(ctx);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
     writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
     return 1;
@@ -4429,6 +4624,12 @@ async function writeConfig(patch) {
   await mkdir2(dir, { recursive: true });
   await chmod2(dir, 448);
   await writeFile2(configFilePath(), JSON.stringify(next, null, 2), "utf8");
+}
+async function updateProfile(name, patch) {
+  const current = await readConfig();
+  const profiles = { ...current.profiles ?? {} };
+  profiles[name] = { ...profiles[name] ?? {}, ...patch };
+  await writeConfig({ profiles });
 }
 async function clearConfig() {
   try {
@@ -4583,6 +4784,13 @@ function extractGlobalFlags(argv) {
       flags.apiUrl = value;
     } else if (arg?.startsWith("--api-url="))
       flags.apiUrl = arg.slice("--api-url=".length);
+    else if (arg === "--profile") {
+      const value = argv[++i];
+      if (value === undefined)
+        return { error: "--profile requires a value" };
+      flags.profile = value;
+    } else if (arg?.startsWith("--profile="))
+      flags.profile = arg.slice("--profile=".length);
     else if (arg !== undefined)
       rest.push(arg);
   }
@@ -4594,6 +4802,7 @@ Usage: candle <command> [subcommand] [options]
 
 Commands:
   auth login [--scopes <a,b,c>] [--label <name>] [--no-browser]   Authorize this device
+             [--profile <name>]
   auth status                                                     Show credential status
   auth logout [--keep-key]                                        Clear local credentials
   keys list                                                       List API keys
@@ -4609,6 +4818,7 @@ Commands:
 
 Global options:
   --api-url <url>         Override the API base URL
+  --profile <name>        Act as a named profile (see: candle auth login --profile)
   --json                  Machine-readable output
   --help, -h              Show this help
   --version, -v           Show the CLI version
@@ -4632,9 +4842,25 @@ async function run2(argv, deps) {
   }
   const tokens = rest[0] === "candle" ? rest.slice(1) : rest;
   const [cmd, sub, ...cmdArgs] = tokens;
-  const config = await deps.readConfig();
-  const apiUrl = flags.apiUrl ?? resolveApiUrl(config.apiUrl, deps.env);
-  const ctx = { deps, json: flags.json, apiUrl, apiUrlFlag: flags.apiUrl };
+  const config = await migrateProfiles(deps);
+  const isAuthLogin = cmd === "auth" && sub === "login";
+  const resolution = isAuthLogin ? { ok: true, name: resolveProfileNameForLogin(config, { flag: flags.profile, env: deps.env }) } : resolveProfileName(config, { flag: flags.profile, env: deps.env });
+  if (!resolution.ok) {
+    deps.stderr.write(`${resolution.message}
+`);
+    return 1;
+  }
+  const profile = resolution.name;
+  const profileApiUrl = profile ? config.profiles?.[profile]?.apiUrl : config.apiUrl;
+  const apiUrl = flags.apiUrl ?? resolveApiUrl(profileApiUrl, deps.env);
+  const ctx = {
+    deps,
+    json: flags.json,
+    apiUrl,
+    apiUrlFlag: flags.apiUrl,
+    profile,
+    profileFlag: flags.profile
+  };
   if (cmd === "auth") {
     if (sub === "login")
       return authLogin(cmdArgs, ctx);
@@ -4675,6 +4901,22 @@ function unknownCommand(deps, token) {
   deps.stderr.write(HELP_TEXT);
   return 1;
 }
+async function migrateProfiles(deps) {
+  const before = await deps.readConfig();
+  const { config, migrated } = migratedConfig(before);
+  if (!migrated)
+    return before;
+  for (const [legacyRef, kind] of [
+    [SECRET_REFS.deviceToken, "deviceToken"],
+    [SECRET_REFS.apiKey, "apiKey"]
+  ]) {
+    const value = await deps.store.get(legacyRef);
+    if (value)
+      await deps.store.set(profileSecretRef("default", kind), value);
+  }
+  await deps.writeConfig({ profiles: config.profiles, activeProfile: config.activeProfile });
+  return config;
+}
 function realOpenBrowser(url) {
   try {
     const platform = process.platform;
@@ -4692,6 +4934,7 @@ async function buildRealDeps() {
     readConfig,
     writeConfig,
     clearConfig,
+    updateProfile,
     stdout: {
       write: (chunk) => {
         process.stdout.write(chunk);

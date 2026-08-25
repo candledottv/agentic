@@ -6,8 +6,10 @@
  */
 
 import { describe, expect, test } from "bun:test"
+import { resolveApiKey, resolveDeviceToken } from "../deps"
 import { run } from "../index"
 import { SECRET_REFS } from "../secret-store"
+import type { RouteHandler } from "../test-support"
 import {
   createCapture,
   createFakeClock,
@@ -26,6 +28,24 @@ const CODE_RESPONSE = {
   verificationUriComplete: "https://candle.tv/dev/agent/device?code=ABCD-1234",
   expiresIn: 600,
   interval: 5,
+}
+
+const DEVICE_TOKEN = "cndl_dvc_PROFILE_FIXTURE_TOKEN"
+const API_KEY = "ck_live_PROFILE_FIXTURE_KEY"
+
+/** The happy-path device/code + device/token routes shared by every test that just needs a
+ * login to succeed, without exercising the state machine itself (that is
+ * `describe("auth login: state machine", ...)`'s job). */
+function deviceFlowRoutes(): Record<string, RouteHandler> {
+  return {
+    "/api/v1/agent/device/code": () => jsonResponse(200, CODE_RESPONSE),
+    "/api/v1/agent/device/token": () =>
+      jsonResponse(200, {
+        deviceToken: DEVICE_TOKEN,
+        tokenPrefix: "dvcprofl",
+        apiKey: { key: API_KEY, keyPrefix: "ck_livepr", scopes: ["launch:write"] },
+      }),
+  }
 }
 
 describe("auth login: state machine", () => {
@@ -59,6 +79,7 @@ describe("auth login: state machine", () => {
       readConfig: configStore.readConfig,
       writeConfig: configStore.writeConfig,
       clearConfig: configStore.clearConfig,
+      updateProfile: configStore.updateProfile,
       now: clock.now,
       sleep: clock.sleep,
       stdout,
@@ -67,13 +88,17 @@ describe("auth login: state machine", () => {
     const code = await run(["auth", "login"], deps)
 
     expect(code).toBe(0)
-    expect(await store.get(SECRET_REFS.deviceToken)).toBe(DEVICE_TOKEN)
-    expect(await store.get(SECRET_REFS.apiKey)).toBe(API_KEY)
+    // No --profile and no existing profiles: the name is derived from the (default) API host --
+    // DEFAULT_API_URL's host maps to "production" (defaultProfileNameFor, client.ts).
+    expect(await store.get("profile:production:device_token")).toBe(DEVICE_TOKEN)
+    expect(await store.get("profile:production:api_key")).toBe(API_KEY)
 
     const config = await configStore.readConfig()
-    expect(config.deviceTokenPrefix).toBe("dvcpref1")
-    expect(config.keyPrefix).toBe("ck_liveab")
-    expect(config.scopes).toEqual(scopes)
+    const profile = config.profiles?.production
+    expect(profile?.deviceTokenPrefix).toBe("dvcpref1")
+    expect(profile?.keyPrefix).toBe("ck_liveab")
+    expect(profile?.scopes).toEqual(scopes)
+    expect(config.activeProfile).toBe("production")
 
     // Sleep calls, in order: the initial 5s interval while pending, the SAME 5s interval again
     // for the poll that comes back slow_down (the increase only applies going forward), then the
@@ -87,7 +112,7 @@ describe("auth login: state machine", () => {
 
     // The portal origin is taken from the API's own verificationUri, not derived from the API
     // URL, so `auth logout` later points at the portal this backend actually uses.
-    expect(config.portalOrigin).toBe("https://candle.tv")
+    expect(profile?.portalOrigin).toBe("https://candle.tv")
   })
 
   test("opens the browser with the verification URL unless --no-browser is passed; the URL is always printed either way", async () => {
@@ -248,25 +273,27 @@ describe("auth login: provisioning failure", () => {
       readConfig: configStore.readConfig,
       writeConfig: configStore.writeConfig,
       clearConfig: configStore.clearConfig,
+      updateProfile: configStore.updateProfile,
       stdout,
     })
 
     const code = await run(["auth", "login"], deps)
 
     expect(code).toBe(0)
-    expect(await store.get(SECRET_REFS.deviceToken)).toBe(DEVICE_TOKEN)
-    expect(await store.get(SECRET_REFS.apiKey)).toBeNull()
+    expect(await store.get("profile:production:device_token")).toBe(DEVICE_TOKEN)
+    expect(await store.get("profile:production:api_key")).toBeNull()
     expect(stdout.text).toContain("candle keys create")
     expect(stdout.text).toContain("No delegated launch wallet on file")
 
     // Fix round 1, item 4: no key was issued, so nothing was "Granted" -- the summary must not
-    // claim otherwise, and config.scopes must not be persisted for a key that doesn't exist
-    // (doctor would later report those scopes against whatever DIFFERENT key eventually gets
-    // created).
+    // claim otherwise, and the profile's scopes must not be persisted for a key that doesn't
+    // exist (doctor would later report those scopes against whatever DIFFERENT key eventually
+    // gets created).
     expect(stdout.text).not.toContain("Granted")
     const config = await configStore.readConfig()
-    expect(config.scopes).toBeUndefined()
-    expect(config.deviceTokenPrefix).toBe("dvcpref2")
+    const profile = config.profiles?.production
+    expect(profile?.scopes).toBeUndefined()
+    expect(profile?.deviceTokenPrefix).toBe("dvcpref2")
   })
 })
 
@@ -363,9 +390,16 @@ describe("auth logout", () => {
     expect(headers.authorization).toBe(`Bearer ${DEVICE_TOKEN}`)
     expect(headers["x-api-key"]).toBeUndefined()
 
+    // `keyPrefix`/`deviceTokenPrefix` in the seed are pre-profile fields, so `run()`'s migration
+    // step turns this into profile "default" before logout ever runs. Logout clears THAT
+    // profile's refs and entry AND the legacy refs and prefixes it was migrated from: migration
+    // COPIES the secrets, so a logout that spared the originals would leave a live device token
+    // in the store that the very next command falls back to once the profile is gone.
+    expect(await store.get("profile:default:device_token")).toBeNull()
+    expect(await store.get("profile:default:api_key")).toBeNull()
     expect(await store.get(SECRET_REFS.deviceToken)).toBeNull()
     expect(await store.get(SECRET_REFS.apiKey)).toBeNull()
-    expect(await configStore.readConfig()).toEqual({})
+    expect(await configStore.readConfig()).toEqual({ profiles: {} })
 
     expect(stdout.text).toContain("/dev/agent")
     expect(stdout.text.toLowerCase()).toContain("session")
@@ -396,8 +430,12 @@ describe("auth logout", () => {
     const code = await run(["auth", "logout"], deps)
 
     expect(code).toBe(0)
-    expect(stdout.text).toContain("https://staging.candle.tv/dev/agent")
-    expect(stdout.text).not.toContain("staging.api.candle.tv")
+    // Asserted on the Portal line itself rather than on the whole of stdout: the identity line
+    // logout now prints ahead of everything names the API host legitimately, and the claim here
+    // was only ever about the portal pointer not being derived from it.
+    expect(stdout.text.split("\n").find((line) => line.startsWith("Portal: "))).toBe(
+      "Portal: https://staging.candle.tv/dev/agent",
+    )
   })
 
   test("with no recorded portal origin, the fallback derivation still names the portal, not the API host", async () => {
@@ -429,8 +467,9 @@ describe("auth logout", () => {
     const code = await run(["auth", "logout"], deps)
 
     expect(code).toBe(0)
-    expect(stdout.text).toContain("CANDLE_DEVICE_TOKEN")
-    expect(stdout.text).toContain("CANDLE_API_KEY")
+    // Anchored on the literal notice line, not just the variable names: the identity line prints
+    // them too, so a test that only checked for the names would not notice this notice vanishing.
+    expect(stdout.text).toContain("Still set in this shell: CANDLE_API_KEY, CANDLE_DEVICE_TOKEN")
     // The values themselves are never echoed, only the variable names.
     expect(stdout.text).not.toContain("cndl_dvc_from_env")
     expect(stdout.text).not.toContain("ck_live_from_env")
@@ -465,9 +504,37 @@ describe("auth logout", () => {
 
     expect(code).toBe(0)
     expect(calls).toHaveLength(0)
+    // `keyPrefix` in the seed is a pre-profile field, so this migrates to profile "default"
+    // before logout runs. --keep-key is about the REMOTE revoke only: locally it still clears
+    // everything, the legacy refs the migration copied from included.
+    expect(await store.get("profile:default:device_token")).toBeNull()
+    expect(await store.get("profile:default:api_key")).toBeNull()
     expect(await store.get(SECRET_REFS.deviceToken)).toBeNull()
     expect(await store.get(SECRET_REFS.apiKey)).toBeNull()
-    expect(await configStore.readConfig()).toEqual({})
+    expect(await configStore.readConfig()).toEqual({ profiles: {} })
+  })
+
+  test("after logout on a migrated install neither resolver finds a credential, and the next keys create takes the not-set path", async () => {
+    // The whole point: a logout that left the legacy refs behind left the device token LIVE.
+    // `resolveDeviceToken`/`resolveApiKey` fall back to those refs the moment the profile is
+    // gone, so the next command would have kept working against the account just logged out of.
+    const { fetch, calls } = createRoutedFetch({})
+    const store = createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_x" })
+    const configStore = createFakeConfigStore({ deviceTokenPrefix: "dvcpref1" })
+    const deps = createTestDeps({ fetch, store, ...configStore })
+
+    expect(await run(["auth", "logout"], deps)).toBe(0)
+
+    expect(await resolveDeviceToken(deps)).toBeUndefined()
+    expect(await resolveApiKey(deps)).toBeUndefined()
+    expect(await resolveDeviceToken(deps, "default")).toBeUndefined()
+    expect(await resolveApiKey(deps, "default")).toBeUndefined()
+
+    const stderr = createCapture()
+    const nextCode = await run(["keys", "create"], createTestDeps({ fetch, store, stderr, ...configStore }))
+    expect(nextCode).toBe(1)
+    expect(stderr.text).toContain("No device token available.")
+    expect(calls).toHaveLength(0)
   })
 
   test("logout with no stored key prefix never attempts a DELETE (nothing to revoke)", async () => {
@@ -597,3 +664,225 @@ describe("auth status", () => {
     expect(stdout.text).toContain("candle auth login")
   })
 })
+
+describe("profiles", () => {
+  test("auth login with no profiles creates one named from the host, active, with the account cached", async () => {
+    const { fetch } = createRoutedFetch({
+      ...deviceFlowRoutes(),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, { success: true, account: "FaKwE2xX", wallets: { solana: null, evm: null } }),
+    })
+    const store = createFakeStore()
+    const config = createFakeConfigStore({})
+    const code = await run(
+      ["auth", "login", "--no-browser", "--api-url", "https://staging.api.candle.tv"],
+      createTestDeps({ fetch, store, ...config }),
+    )
+    expect(code).toBe(0)
+    const after = await config.readConfig()
+    expect(after.activeProfile).toBe("staging")
+    expect(after.profiles?.staging).toMatchObject({
+      apiUrl: "https://staging.api.candle.tv",
+      account: "FaKwE2xX",
+      deviceTokenPrefix: expect.any(String),
+    })
+    expect(await store.get("profile:staging:device_token")).toBe(DEVICE_TOKEN)
+    expect(await store.get("profile:staging:api_key")).toBe(API_KEY)
+    expect(await store.get("device_token")).toBeNull()
+  })
+
+  test("auth login --profile names the new profile and a second login does not overwrite the first", async () => {
+    const { fetch } = createRoutedFetch({
+      ...deviceFlowRoutes(),
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "A" }),
+    })
+    const store = createFakeStore({ "profile:hood:device_token": "keep-me" })
+    const config = createFakeConfigStore({ profiles: { hood: { account: "A" } }, activeProfile: "hood" })
+    const code = await run(
+      ["auth", "login", "--no-browser", "--profile", "sol"],
+      createTestDeps({ fetch, store, ...config }),
+    )
+    expect(code).toBe(0)
+    expect(await store.get("profile:hood:device_token")).toBe("keep-me")
+    expect(await store.get("profile:sol:device_token")).toBe(DEVICE_TOKEN)
+    expect((await config.readConfig()).activeProfile).toBe("hood")
+  })
+
+  test("auth login with no flag re-authenticates the sole existing profile IN PLACE, never a numbered twin", async () => {
+    // Re-running `auth login` is the documented way to refresh an expired device token. Deriving
+    // a fresh name from the host instead produced `production-2`: a second, non-active profile
+    // holding the only working credentials, while every command kept resolving `production`.
+    const { fetch } = createRoutedFetch({
+      ...deviceFlowRoutes(),
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "FaKwE2xX" }),
+    })
+    const store = createFakeStore({ "profile:production:device_token": "stale-token" })
+    const config = createFakeConfigStore({
+      profiles: { production: { deviceTokenPrefix: "oldpref1", account: "FaKwE2xX" } },
+      activeProfile: "production",
+    })
+
+    const code = await run(["auth", "login", "--no-browser"], createTestDeps({ fetch, store, ...config }))
+
+    expect(code).toBe(0)
+    expect(await store.get("profile:production:device_token")).toBe(DEVICE_TOKEN)
+    expect(await store.get("profile:production:api_key")).toBe(API_KEY)
+    expect(await store.get("profile:production-2:device_token")).toBeNull()
+    const after = await config.readConfig()
+    expect(Object.keys(after.profiles ?? {})).toEqual(["production"])
+    expect(after.profiles?.production).toMatchObject({ deviceTokenPrefix: "dvcprofl", keyPrefix: "ck_livepr" })
+    expect(after.activeProfile).toBe("production")
+  })
+
+  test("auth login --profile <existing> honors that profile's apiUrl and leaves it intact", async () => {
+    const { fetch, calls } = createRoutedFetch({
+      ...deviceFlowRoutes(),
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "FaKwE2xX" }),
+    })
+    const store = createFakeStore()
+    const config = createFakeConfigStore({
+      profiles: { staging: { apiUrl: "https://staging.api.candle.tv" } },
+      activeProfile: "staging",
+    })
+
+    const code = await run(
+      ["auth", "login", "--profile", "staging", "--no-browser"],
+      createTestDeps({ fetch, store, ...config }),
+    )
+
+    expect(code).toBe(0)
+    // The device flow itself has to run against the profile's own backend: authorizing against
+    // production and then filing the result under `staging` is how a profile ends up holding
+    // credentials for a host it does not name.
+    expect(calls[0]?.url.startsWith("https://staging.api.candle.tv/")).toBe(true)
+    expect((await config.readConfig()).profiles?.staging?.apiUrl).toBe("https://staging.api.candle.tv")
+  })
+
+  test("auth login --profile still CREATES a new profile when another one would have resolved", async () => {
+    const { fetch } = createRoutedFetch({
+      ...deviceFlowRoutes(),
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "A" }),
+    })
+    const store = createFakeStore({ "profile:production:device_token": "keep-me" })
+    const config = createFakeConfigStore({ profiles: { production: {} }, activeProfile: "production" })
+
+    const code = await run(
+      ["auth", "login", "--no-browser", "--profile", "new-one"],
+      createTestDeps({ fetch, store, ...config }),
+    )
+
+    expect(code).toBe(0)
+    expect(await store.get("profile:new-one:device_token")).toBe(DEVICE_TOKEN)
+    expect(await store.get("profile:production:device_token")).toBe("keep-me")
+    const after = await config.readConfig()
+    expect(Object.keys(after.profiles ?? {}).sort()).toEqual(["new-one", "production"])
+    expect(after.activeProfile).toBe("production")
+  })
+
+  test("auth login rejects an invalid --profile before any request", async () => {
+    const stderr = createCapture()
+    const code = await run(
+      ["auth", "login", "--profile", "bad name"],
+      createTestDeps({ fetch: unusedFetch, stderr, ...createFakeConfigStore({}) }),
+    )
+    expect(code).toBe(2)
+    expect(stderr.text).toContain("profile")
+  })
+
+  test("auth status prints the identity line first, from the profile's cached account", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, tier: "free", keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "max" }),
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "FaKwE2xX" }),
+    })
+    const store = createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "k" })
+    const config = createFakeConfigStore({
+      profiles: { staging: { account: "FaKwE2xX", apiUrl: "https://staging.api.candle.tv" } },
+      activeProfile: "staging",
+    })
+    const stdout = createCapture()
+    await run(["auth", "status"], createTestDeps({ fetch, store, stdout, ...config }))
+    expect(stdout.text.startsWith("Profile: staging   Account: FaKwE2xX at https://staging.api.candle.tv\n")).toBe(true)
+  })
+
+  test("auth status reports the PROFILE's prefixes: a login-created profile has no legacy top-level fields to read", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "FaKwE2xX" }),
+    })
+    const store = createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "k" })
+    const config = createFakeConfigStore({
+      profiles: { staging: { deviceTokenPrefix: "RMe25DjO", keyPrefix: "8I0CZztp" } },
+      activeProfile: "staging",
+    })
+
+    const stdout = createCapture()
+    expect(await run(["auth", "status"], createTestDeps({ fetch, store, stdout, ...config }))).toBe(0)
+    // Reading the legacy top-level fields here printed "not set" for both prefixes on every
+    // profile created since the upgrade -- the exact opposite of what the command is for.
+    expect(stdout.text).toContain("Device token prefix: RMe25DjO")
+    expect(stdout.text).toContain("API key prefix: 8I0CZztp")
+    expect(stdout.text).not.toContain("not set")
+
+    const stdoutJson = createCapture()
+    expect(
+      await run(["auth", "status", "--json"], createTestDeps({ fetch, store, stdout: stdoutJson, ...config })),
+    ).toBe(0)
+    const parsed = JSON.parse(stdoutJson.text)
+    expect(parsed.deviceTokenPrefix).toBe("RMe25DjO")
+    expect(parsed.keyPrefix).toBe("8I0CZztp")
+  })
+
+  test("auth logout prints the identity line first, naming the profile it is about to remove", async () => {
+    // The one command whose whole effect is destructive was the one command that never said
+    // which identity it was acting on.
+    const { fetch } = createRoutedFetch({})
+    const store = createFakeStore({ "profile:staging:device_token": "d" })
+    const config = createFakeConfigStore({
+      profiles: {
+        staging: {
+          account: "FaKwE2xX",
+          apiUrl: "https://staging.api.candle.tv",
+          portalOrigin: "https://staging.candle.tv",
+        },
+      },
+      activeProfile: "staging",
+    })
+    const stdout = createCapture()
+
+    const code = await run(["auth", "logout"], createTestDeps({ fetch, store, stdout, ...config }))
+
+    expect(code).toBe(0)
+    expect(stdout.text.startsWith("Profile: staging   Account: FaKwE2xX at https://staging.api.candle.tv\n")).toBe(true)
+    // And the portal pointer still comes from the profile's own recorded origin.
+    expect(stdout.text.split("\n").find((line) => line.startsWith("Portal: "))).toBe(
+      "Portal: https://staging.candle.tv/dev/agent",
+    )
+  })
+
+  test("auth logout clears only the active profile's secrets and entry", async () => {
+    const { fetch } = createRoutedFetch({ "/api/v1/agent/keys/8I0CZztp": () => jsonResponse(200, { success: true }) })
+    const store = createFakeStore({
+      "profile:staging:device_token": "d",
+      "profile:staging:api_key": "k",
+      "profile:production:device_token": "p",
+    })
+    const config = createFakeConfigStore({
+      profiles: { staging: { keyPrefix: "8I0CZztp" }, production: {} },
+      activeProfile: "staging",
+    })
+    const code = await run(["auth", "logout"], createTestDeps({ fetch, store, ...config }))
+    expect(code).toBe(0)
+    expect(await store.get("profile:staging:device_token")).toBeNull()
+    expect(await store.get("profile:staging:api_key")).toBeNull()
+    expect(await store.get("profile:production:device_token")).toBe("p")
+    const after = await config.readConfig()
+    expect(after.profiles).toEqual({ production: {} })
+    expect(after.activeProfile).toBeUndefined()
+  })
+})
+
+const unusedFetch = (() => {
+  throw new Error("fetch should not be called for this test")
+}) as unknown as typeof fetch

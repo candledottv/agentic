@@ -28,14 +28,17 @@ import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { mcp } from "./commands/mcp"
 import { setup } from "./commands/setup"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
-import { clearConfig, readConfig, writeConfig } from "./config"
+import type { CliConfig } from "./config"
+import { clearConfig, readConfig, updateProfile, writeConfig } from "./config"
 import type { CommandContext, Deps } from "./deps"
 import { resolveSecretStore } from "./keychain"
-import { promptHiddenSecret } from "./secret-store"
+import { migratedConfig, profileSecretRef, resolveProfileName, resolveProfileNameForLogin } from "./profiles"
+import { promptHiddenSecret, SECRET_REFS } from "./secret-store"
 import { CLI_VERSION } from "./version"
 
 interface GlobalFlags {
   apiUrl?: string
+  profile?: string
   json: boolean
   help: boolean
   version: boolean
@@ -54,6 +57,11 @@ function extractGlobalFlags(argv: string[]): { rest: string[]; flags: GlobalFlag
       if (value === undefined) return { error: "--api-url requires a value" }
       flags.apiUrl = value
     } else if (arg?.startsWith("--api-url=")) flags.apiUrl = arg.slice("--api-url=".length)
+    else if (arg === "--profile") {
+      const value = argv[++i]
+      if (value === undefined) return { error: "--profile requires a value" }
+      flags.profile = value
+    } else if (arg?.startsWith("--profile=")) flags.profile = arg.slice("--profile=".length)
     else if (arg !== undefined) rest.push(arg)
   }
   return { rest, flags }
@@ -65,6 +73,7 @@ Usage: candle <command> [subcommand] [options]
 
 Commands:
   auth login [--scopes <a,b,c>] [--label <name>] [--no-browser]   Authorize this device
+             [--profile <name>]
   auth status                                                     Show credential status
   auth logout [--keep-key]                                        Clear local credentials
   keys list                                                       List API keys
@@ -80,6 +89,7 @@ Commands:
 
 Global options:
   --api-url <url>         Override the API base URL
+  --profile <name>        Act as a named profile (see: candle auth login --profile)
   --json                  Machine-readable output
   --help, -h              Show this help
   --version, -v           Show the CLI version
@@ -110,9 +120,35 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
   const tokens = rest[0] === "candle" ? rest.slice(1) : rest
 
   const [cmd, sub, ...cmdArgs] = tokens
-  const config = await deps.readConfig()
-  const apiUrl = flags.apiUrl ?? resolveApiUrl(config.apiUrl, deps.env)
-  const ctx: CommandContext = { deps, json: flags.json, apiUrl, apiUrlFlag: flags.apiUrl }
+  const config = await migrateProfiles(deps)
+  // `auth login` resolves LENIENTLY (resolveProfileNameForLogin): its `--profile` may name a
+  // profile to CREATE, so it must not be gated by resolveProfileName's "does this name already
+  // exist" refusal, which exists to protect a command ACTING as an already-selected identity.
+  // But it must still SEE the profile that is already selected: skipping resolution entirely
+  // made every re-login derive a fresh host-based name, filing the new credentials under
+  // `production-2` while every other command went on resolving `production`, and losing the
+  // selected profile's own `apiUrl` in the bargain. See
+  // docs/superpowers/specs/2026-08-19-cli-profiles-design.md, "auth login creates a profile
+  // implicitly" (settled 2026-08-19). `authLogin` validates the flag's shape itself.
+  const isAuthLogin = cmd === "auth" && sub === "login"
+  const resolution = isAuthLogin
+    ? ({ ok: true, name: resolveProfileNameForLogin(config, { flag: flags.profile, env: deps.env }) } as const)
+    : resolveProfileName(config, { flag: flags.profile, env: deps.env })
+  if (!resolution.ok) {
+    deps.stderr.write(`${resolution.message}\n`)
+    return 1
+  }
+  const profile = resolution.name
+  const profileApiUrl = profile ? config.profiles?.[profile]?.apiUrl : config.apiUrl
+  const apiUrl = flags.apiUrl ?? resolveApiUrl(profileApiUrl, deps.env)
+  const ctx: CommandContext = {
+    deps,
+    json: flags.json,
+    apiUrl,
+    apiUrlFlag: flags.apiUrl,
+    profile,
+    profileFlag: flags.profile,
+  }
 
   if (cmd === "auth") {
     if (sub === "login") return authLogin(cmdArgs, ctx)
@@ -150,6 +186,27 @@ function unknownCommand(deps: Deps, token: string | undefined): number {
   return 1
 }
 
+/**
+ * First run after the upgrade that introduced profiles: a pre-profile install becomes profile
+ * "default" (config half in profiles.ts's migratedConfig), and its two secrets are COPIED to the
+ * namespaced refs. The old refs and fields are left in place: a rollback to the previous CLI must
+ * keep working, and a keychain entry is not ours to delete on someone's behalf. Silent on success.
+ */
+async function migrateProfiles(deps: Deps): Promise<CliConfig> {
+  const before = await deps.readConfig()
+  const { config, migrated } = migratedConfig(before)
+  if (!migrated) return before
+  for (const [legacyRef, kind] of [
+    [SECRET_REFS.deviceToken, "deviceToken"],
+    [SECRET_REFS.apiKey, "apiKey"],
+  ] as const) {
+    const value = await deps.store.get(legacyRef)
+    if (value) await deps.store.set(profileSecretRef("default", kind), value)
+  }
+  await deps.writeConfig({ profiles: config.profiles, activeProfile: config.activeProfile })
+  return config
+}
+
 /** Best-effort browser launch: `open` on macOS, `start` via `cmd` on Windows, `xdg-open`
  * elsewhere. Failure (no launcher on PATH, no display) is swallowed -- the URL is always printed
  * by the caller regardless, which is the actual guarantee for a headless/SSH session. Not unit
@@ -181,6 +238,7 @@ async function buildRealDeps(): Promise<Deps> {
     readConfig,
     writeConfig,
     clearConfig,
+    updateProfile,
     stdout: {
       write: (chunk: string) => {
         process.stdout.write(chunk)

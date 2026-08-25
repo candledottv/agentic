@@ -6,8 +6,16 @@
  * --json.
  */
 import { describe, expect, test } from "bun:test"
+import { resolveApiKey } from "../deps"
 import { run } from "../index"
-import { createCapture, createFakeStore, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
+import {
+  createCapture,
+  createFakeConfigStore,
+  createFakeStore,
+  createRoutedFetch,
+  createTestDeps,
+  jsonResponse,
+} from "../test-support"
 
 const SOL = "vP5sRxZFRxTdwtLADe4NxhiqNosJb2guRCYphojbG4j"
 const EVM = "0x00000000000000000000000000000000000000A1"
@@ -82,6 +90,108 @@ describe("setup", () => {
     const code = await run(["setup", "--frobnicate"], createTestDeps({ fetch, store: authorizedStore() }))
     expect(code).toBe(2)
     expect(calls).toHaveLength(0)
+  })
+
+  test("a profile with a device token but no key: the nested login files the key under THAT profile and funding reads it", async () => {
+    // The wizard's own precondition. Its nested `auth login` has to refresh the profile setup
+    // already resolved: a login that invented a second name stored the new key somewhere step 2
+    // does not look, so the funding read found no key and the wizard fell to its "could not read
+    // the agent wallets" branch on a perfectly healthy account.
+    const NEW_KEY = "cndl_live_setup_key"
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/device/code": () =>
+        jsonResponse(200, {
+          deviceCode: "dc_setup",
+          userCode: "ABCD-1234",
+          verificationUri: "https://candle.tv/dev/agent/device",
+          verificationUriComplete: "https://candle.tv/dev/agent/device?code=ABCD-1234",
+          expiresIn: 600,
+          interval: 5,
+        }),
+      "/api/v1/agent/device/token": () =>
+        jsonResponse(200, {
+          deviceToken: "cndl_dvc_setup",
+          tokenPrefix: "dvcpref9",
+          apiKey: { key: NEW_KEY, keyPrefix: "ck_livenn", scopes: ["launch:write"] },
+        }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, {
+          success: true,
+          account: "AgentWa11et",
+          wallets: { solana: { address: SOL, delegated: true }, evm: { address: EVM, delegated: true } },
+        }),
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, tier: "free", keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/status": () => jsonResponse(200, { ok: true }),
+    })
+    const store = createFakeStore({ "profile:production:device_token": "cndl_dvc_existing" })
+    const config = createFakeConfigStore({
+      profiles: { production: { deviceTokenPrefix: "dvcpref1" } },
+      activeProfile: "production",
+    })
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, store, stdout, ...config })
+
+    const code = await run(["setup", "--no-browser"], deps)
+
+    expect(code).toBe(0)
+    expect(await resolveApiKey(deps, "production")).toBe(NEW_KEY)
+    expect(Object.keys((await config.readConfig()).profiles ?? {})).toEqual(["production"])
+    expect(stdout.text).toContain(SOL)
+    expect(stdout.text).toContain("Tell your agent")
+    expect(stdout.text).not.toContain("Could not read the agent wallets")
+    // The console link comes from the portal origin the login just recorded ON THE PROFILE, not
+    // from the legacy top-level field (absent here) and so not derived from the API host.
+    const consoleLine = stdout.text.split("\n").find((line) => line.startsWith("Console ("))
+    expect(consoleLine).toContain("https://candle.tv/dev/agent")
+    expect(consoleLine).not.toContain("alpha")
+  })
+
+  test("fresh install, no profiles at all: the nested login mints the profile step 2 has to read", async () => {
+    // ctx.profile is undefined at dispatch here (no profiles exist yet), the true fresh-install
+    // case. finishLogin derives "production" from the default API URL and makes it active, but
+    // setup's OWN ctx.profile is still undefined for the rest of the run unless setup re-resolves
+    // after the nested login -- otherwise step 2's resolveApiKey(deps, undefined) reads the
+    // legacy flat ref, finds nothing, and degrades to "Could not read the agent wallets right now."
+    const NEW_KEY = "cndl_live_fresh_key"
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/device/code": () =>
+        jsonResponse(200, {
+          deviceCode: "dc_fresh",
+          userCode: "WXYZ-5678",
+          verificationUri: "https://candle.tv/dev/agent/device",
+          verificationUriComplete: "https://candle.tv/dev/agent/device?code=WXYZ-5678",
+          expiresIn: 600,
+          interval: 5,
+        }),
+      "/api/v1/agent/device/token": () =>
+        jsonResponse(200, {
+          deviceToken: "cndl_dvc_fresh",
+          tokenPrefix: "dvcpref2",
+          apiKey: { key: NEW_KEY, keyPrefix: "ck_freshnn", scopes: ["launch:write"] },
+        }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, {
+          success: true,
+          account: "AgentWa11et",
+          wallets: { solana: { address: SOL, delegated: true }, evm: { address: EVM, delegated: true } },
+        }),
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, tier: "free", keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/status": () => jsonResponse(200, { ok: true }),
+    })
+    const store = createFakeStore()
+    const config = createFakeConfigStore({})
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, store, stdout, ...config })
+
+    const code = await run(["setup", "--no-browser"], deps)
+
+    expect(code).toBe(0)
+    expect(stdout.text).not.toContain("Could not read the agent wallets")
+    expect(stdout.text).toContain(SOL)
+    expect(await resolveApiKey(deps, "production")).toBe(NEW_KEY)
+    expect((await config.readConfig()).activeProfile).toBe("production")
   })
 
   test("unauthorized: the wizard starts the device flow (login is step 1)", async () => {

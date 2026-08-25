@@ -77,3 +77,42 @@ describe("resolveApiKey", () => {
     expect(await resolveApiKey(deps)).toBe("stored_key")
   })
 })
+
+describe("profile-aware resolution", () => {
+  const unused = (() => {
+    throw new Error("not used")
+  }) as unknown as typeof fetch
+
+  test("with a profile named, the namespaced ref is read and the legacy ref is ignored", async () => {
+    const deps = createTestDeps({
+      fetch: unused,
+      store: createFakeStore({
+        api_key: "legacy",
+        "profile:staging:api_key": "staged",
+        "profile:staging:device_token": "dvc",
+      }),
+      env: {},
+    })
+    expect(await resolveApiKey(deps, "staging")).toBe("staged")
+    expect(await resolveDeviceToken(deps, "staging")).toBe("dvc")
+  })
+
+  test("with no profile the legacy ref is read, so a pre-profile install keeps working", async () => {
+    const deps = createTestDeps({ fetch: unused, store: createFakeStore({ api_key: "legacy" }), env: {} })
+    expect(await resolveApiKey(deps, undefined)).toBe("legacy")
+  })
+
+  test("the env override still beats a profile's stored value", async () => {
+    const deps = createTestDeps({
+      fetch: unused,
+      store: createFakeStore({ "profile:staging:api_key": "staged" }),
+      env: { CANDLE_API_KEY: "from-env" },
+    })
+    expect(await resolveApiKey(deps, "staging")).toBe("from-env")
+  })
+
+  test("a profile with nothing stored resolves to undefined rather than falling back to another identity", async () => {
+    const deps = createTestDeps({ fetch: unused, store: createFakeStore({ api_key: "legacy" }), env: {} })
+    expect(await resolveApiKey(deps, "staging")).toBeUndefined()
+  })
+})

@@ -6,7 +6,14 @@
 
 import { describe, expect, test } from "bun:test"
 import { run } from "../index"
-import { createCapture, createFakeStore, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
+import {
+  createCapture,
+  createFakeConfigStore,
+  createFakeStore,
+  createRoutedFetch,
+  createTestDeps,
+  jsonResponse,
+} from "../test-support"
 
 describe("wallets", () => {
   test("prints embedded and linked wallets using the agent key", async () => {
@@ -85,5 +92,21 @@ describe("wallets", () => {
     expect(stderr.text).toContain("launch:write")
     expect(stderr.text).toContain("candle keys create --scopes")
     expect(stderr.text).toContain("candle keys list")
+  })
+})
+
+describe("profiles", () => {
+  test("prints the identity line first, using the profile's cached account", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, { success: true, wallets: { solana: null, evm: null } }),
+      "/api/v1/agent/wallets": () => jsonResponse(200, { success: true, page: [], isDone: true, continueCursor: null }),
+    })
+    const store = createFakeStore({ "profile:staging:api_key": "ck_live_x" })
+    const config = createFakeConfigStore({ profiles: { staging: { account: "A" } }, activeProfile: "staging" })
+    const stdout = createCapture()
+    const code = await run(["wallets"], createTestDeps({ fetch, store, stdout, ...config }))
+    expect(code).toBe(0)
+    expect(stdout.text.startsWith("Profile: staging   Account: A at ")).toBe(true)
   })
 })

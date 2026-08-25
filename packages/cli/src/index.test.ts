@@ -7,7 +7,14 @@
 
 import { describe, expect, test } from "bun:test"
 import { run } from "./index"
-import { createCapture, createFakeStore, createRoutedFetch, createTestDeps, jsonResponse } from "./test-support"
+import {
+  createCapture,
+  createFakeConfigStore,
+  createFakeStore,
+  createRoutedFetch,
+  createTestDeps,
+  jsonResponse,
+} from "./test-support"
 import { CLI_VERSION } from "./version"
 
 describe("dispatch", () => {
@@ -99,6 +106,17 @@ describe("dispatch", () => {
     expect(stdoutVersion.text.trim()).toBe(CLI_VERSION)
   })
 
+  test("every global option's description starts in the same column, --profile included", async () => {
+    const stdout = createCapture()
+    await run(["--help"], createTestDeps({ fetch: unusedFetch, stdout }))
+    const globals = stdout.text.slice(stdout.text.indexOf("Global options:")).split("\n")
+    const columns = globals
+      .filter((line) => line.startsWith("  --"))
+      .map((line) => (line.match(/^ {2}.*? {2,}(?=\S)/) as RegExpMatchArray)[0].length)
+    expect(columns.length).toBeGreaterThan(1)
+    expect(new Set(columns).size).toBe(1)
+  })
+
   test("--api-url with no value is a usage error naming the flag, exit 2 (fix round 1, item 13)", async () => {
     const stderr = createCapture()
     const code = await run(["doctor", "--api-url"], createTestDeps({ fetch: unusedFetch, stderr }))
@@ -162,11 +180,16 @@ describe("secrecy", () => {
     })
 
     const store = createFakeStore()
+    // A real CLI session shares one config.json across separate invocations; login now creates a
+    // profile and `keys create` has to resolve the SAME one (its device token lives under that
+    // profile's namespaced ref since Task 5), so the fake config store is shared here the same
+    // way `store` already is.
+    const config = createFakeConfigStore()
     const stdoutLogin = createCapture()
     const stderrLogin = createCapture()
     const loginCode = await run(
       ["auth", "login"],
-      createTestDeps({ fetch, store, stdout: stdoutLogin, stderr: stderrLogin }),
+      createTestDeps({ fetch, store, stdout: stdoutLogin, stderr: stderrLogin, ...config }),
     )
     expect(loginCode).toBe(0)
 
@@ -174,7 +197,7 @@ describe("secrecy", () => {
     const stderrCreate = createCapture()
     const createCode = await run(
       ["keys", "create"],
-      createTestDeps({ fetch, store, stdout: stdoutCreate, stderr: stderrCreate }),
+      createTestDeps({ fetch, store, stdout: stdoutCreate, stderr: stderrCreate, ...config }),
     )
     expect(createCode).toBe(0)
 
@@ -183,6 +206,95 @@ describe("secrecy", () => {
 
     const occurrences = combined.split(API_KEY).length - 1
     expect(occurrences).toBe(1)
+  })
+})
+
+describe("profiles at dispatch", () => {
+  const keysRoute = { "/api/v1/agent/keys": () => jsonResponse(200, { success: true, tier: "free", keys: [] }) }
+
+  test("--profile selects which stored device token a command uses", async () => {
+    const { fetch, calls } = createRoutedFetch(keysRoute)
+    const store = createFakeStore({
+      "profile:staging:device_token": "cndl_dvc_staging",
+      "profile:production:device_token": "cndl_dvc_prod",
+    })
+    const config = createFakeConfigStore({ profiles: { staging: {}, production: {} } })
+    const code = await run(
+      ["keys", "list", "--profile", "production", "--json"],
+      createTestDeps({ fetch, store, ...config }),
+    )
+    expect(code).toBe(0)
+    expect((calls[0]?.init.headers as Record<string, string>).authorization).toContain("cndl_dvc_prod")
+  })
+
+  test("CANDLE_PROFILE selects the profile when no flag is given", async () => {
+    const { fetch, calls } = createRoutedFetch(keysRoute)
+    const store = createFakeStore({
+      "profile:staging:device_token": "cndl_dvc_staging",
+      "profile:production:device_token": "cndl_dvc_prod",
+    })
+    const config = createFakeConfigStore({ profiles: { staging: {}, production: {} } })
+    const code = await run(
+      ["keys", "list", "--json"],
+      createTestDeps({ fetch, store, env: { CANDLE_PROFILE: "staging" }, ...config }),
+    )
+    expect(code).toBe(0)
+    expect((calls[0]?.init.headers as Record<string, string>).authorization).toContain("cndl_dvc_staging")
+  })
+
+  test("several profiles and nothing selected refuses before any request, exit 1, naming them", async () => {
+    const stderr = createCapture()
+    const config = createFakeConfigStore({ profiles: { staging: {}, production: {} } })
+    const code = await run(["keys", "list"], createTestDeps({ fetch: unusedFetch, stderr, ...config }))
+    expect(code).toBe(1)
+    expect(stderr.text).toContain("staging")
+    expect(stderr.text).toContain("production")
+    expect(stderr.text).toContain("--profile")
+  })
+
+  test("the profile's apiUrl is used, and --api-url / CANDLE_API_URL still beat it", async () => {
+    const { fetch, calls } = createRoutedFetch(keysRoute)
+    const store = createFakeStore({ "profile:staging:device_token": "t" })
+    const config = createFakeConfigStore({ profiles: { staging: { apiUrl: "https://staging.api.candle.tv" } } })
+    await run(["keys", "list", "--json"], createTestDeps({ fetch, store, ...config }))
+    expect(calls[0]?.url.startsWith("https://staging.api.candle.tv/")).toBe(true)
+    await run(
+      ["keys", "list", "--json", "--api-url", "https://other.example"],
+      createTestDeps({ fetch, store, ...config }),
+    )
+    expect(calls[1]?.url.startsWith("https://other.example/")).toBe(true)
+  })
+
+  test("a pre-profile install is migrated silently: profile 'default', secrets copied, old refs kept", async () => {
+    const { fetch } = createRoutedFetch(keysRoute)
+    const store = createFakeStore({ device_token: "cndl_dvc_old", api_key: "ck_live_old" })
+    const config = createFakeConfigStore({
+      apiUrl: "https://staging.api.candle.tv",
+      deviceTokenPrefix: "RMe25DjO",
+      keyPrefix: "8I0CZztp",
+    })
+    const stdout = createCapture()
+    const code = await run(["keys", "list", "--json"], createTestDeps({ fetch, store, stdout, ...config }))
+    expect(code).toBe(0)
+    const after = await config.readConfig()
+    expect(after.activeProfile).toBe("default")
+    expect(after.profiles?.default).toEqual({
+      apiUrl: "https://staging.api.candle.tv",
+      deviceTokenPrefix: "RMe25DjO",
+      keyPrefix: "8I0CZztp",
+    })
+    expect(after.deviceTokenPrefix).toBe("RMe25DjO")
+    expect(await store.get("profile:default:device_token")).toBe("cndl_dvc_old")
+    expect(await store.get("profile:default:api_key")).toBe("ck_live_old")
+    expect(await store.get("device_token")).toBe("cndl_dvc_old")
+    expect(stdout.text).not.toContain("migrat")
+  })
+
+  test("--version and --help never touch the config, so they work with an unresolvable profile set", async () => {
+    const config = createFakeConfigStore({ profiles: { a: {}, b: {} } })
+    const stdout = createCapture()
+    expect(await run(["--version"], createTestDeps({ fetch: unusedFetch, stdout, ...config }))).toBe(0)
+    expect(stdout.text.trim()).toBe(CLI_VERSION)
   })
 })
 

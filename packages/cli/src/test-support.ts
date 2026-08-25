@@ -6,7 +6,7 @@
  * fake here behaves exactly like the real thing from a command's point of view.
  */
 
-import type { CliConfig } from "./config"
+import type { CliConfig, ProfileConfig } from "./config"
 import type { Deps } from "./deps"
 import type { SecretStore } from "./secret-store"
 
@@ -57,6 +57,7 @@ export function createFakeConfigStore(initial: CliConfig = {}): {
   readConfig: () => Promise<CliConfig>
   writeConfig: (patch: Partial<CliConfig>) => Promise<void>
   clearConfig: () => Promise<void>
+  updateProfile: (name: string, patch: Partial<ProfileConfig>) => Promise<void>
 } {
   let current: CliConfig = { ...initial }
   return {
@@ -69,6 +70,11 @@ export function createFakeConfigStore(initial: CliConfig = {}): {
     },
     async clearConfig() {
       current = {}
+    },
+    async updateProfile(name: string, patch: Partial<ProfileConfig>) {
+      const profiles = { ...(current.profiles ?? {}) }
+      profiles[name] = { ...(profiles[name] ?? {}), ...patch }
+      current = JSON.parse(JSON.stringify({ ...current, profiles }))
     },
   }
 }
@@ -152,6 +158,7 @@ export function createTestDeps(overrides: Partial<Deps> & { fetch: typeof fetch 
     readConfig: configStore.readConfig,
     writeConfig: configStore.writeConfig,
     clearConfig: configStore.clearConfig,
+    updateProfile: configStore.updateProfile,
     stdout: createCapture(),
     // Inert by default: no test should launch a real child accidentally. mcp tests override
     // this with a capturing fake, the same posture as `fetch` (which has no default at all).

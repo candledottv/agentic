@@ -7,7 +7,14 @@
 
 import { describe, expect, test } from "bun:test"
 import { run } from "../index"
-import { createCapture, createFakeStore, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
+import {
+  createCapture,
+  createFakeConfigStore,
+  createFakeStore,
+  createRoutedFetch,
+  createTestDeps,
+  jsonResponse,
+} from "../test-support"
 
 describe("doctor", () => {
   test("renders a PASS/FAIL/SKIP table and exits 1 when any check FAILs; the FAIL line names its fix", async () => {
@@ -159,5 +166,29 @@ describe("doctor", () => {
     expect(stdout.text).toContain("Account")
     expect(stdout.text).toContain("FaKwE2xX")
     expect(code).toBe(0)
+  })
+})
+
+describe("profiles", () => {
+  test("prints the identity line first, using the profile's cached account", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, { success: true, wallets: { solana: { address: "abc", delegated: true }, evm: null } }),
+    })
+    const store = createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "k" })
+    const config = createFakeConfigStore({
+      profiles: { staging: { account: "A", scopes: ["launch:write"] } },
+      activeProfile: "staging",
+    })
+    const stdout = createCapture()
+    await run(["doctor"], createTestDeps({ fetch, store, stdout, ...config }))
+    expect(stdout.text.startsWith("Profile: staging   Account: A at ")).toBe(true)
+    // The agent-key row's scopes come from the same profile, not from the legacy top-level
+    // `scopes` (absent on every login-created profile, which left the row bare).
+    const keyRow = stdout.text.split("\n").find((line) => line.startsWith("API key valid (launch:write)"))
+    expect(keyRow).toContain("scopes: launch:write")
   })
 })
