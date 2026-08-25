@@ -606,6 +606,85 @@ describe("auth status", () => {
     expect(stdout.text).toContain("Account: FaKwE2xX")
   })
 
+  // Fix wave item 1: the live account alone reads as "fine" to an operator who never doubted it.
+  // The repair is only obvious once BOTH names are on screen, so the mismatch line names what the
+  // profile recorded beside what the key answers, and points at the one-command fix.
+  test("names the cached account beside the live one when they differ, and the cheapest repair", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, { success: true, account: "OTHER22", wallets: { solana: null, evm: null } }),
+    })
+    const store = createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "k" })
+    const config = createFakeConfigStore({ profiles: { staging: { account: "CACHED1" } }, activeProfile: "staging" })
+    const stdout = createCapture()
+    const code = await run(["auth", "status"], createTestDeps({ fetch, store, stdout, ...config }))
+    expect(code).toBe(0)
+    expect(stdout.text).toContain("Account: OTHER22")
+    expect(stdout.text).toContain("Profile staging recorded CACHED1")
+    expect(stdout.text).toContain("this key belongs to OTHER22")
+    expect(stdout.text).toContain("Run: candle profile use staging")
+  })
+
+  test("--json carries cachedAccount beside account when the two differ", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, { success: true, account: "OTHER22", wallets: { solana: null, evm: null } }),
+    })
+    const store = createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "k" })
+    const config = createFakeConfigStore({ profiles: { staging: { account: "CACHED1" } }, activeProfile: "staging" })
+    const stdout = createCapture()
+    const code = await run(["auth", "status", "--json"], createTestDeps({ fetch, store, stdout, ...config }))
+    expect(code).toBe(0)
+    const parsed = JSON.parse(stdout.text) as { account?: string; cachedAccount?: string }
+    expect(parsed.account).toBe("OTHER22")
+    expect(parsed.cachedAccount).toBe("CACHED1")
+  })
+
+  test("a cached account that matches the live one prints nothing extra", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, { success: true, account: "CACHED1", wallets: { solana: null, evm: null } }),
+    })
+    const store = createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "k" })
+    const config = createFakeConfigStore({ profiles: { staging: { account: "CACHED1" } }, activeProfile: "staging" })
+    const stdout = createCapture()
+    const code = await run(["auth", "status"], createTestDeps({ fetch, store, stdout, ...config }))
+    expect(code).toBe(0)
+    expect(stdout.text).toContain("Account: CACHED1")
+    expect(stdout.text).not.toContain("recorded")
+    expect(stdout.text).not.toContain("candle profile use")
+  })
+
+  // The env-override correction to item 1. Under CANDLE_API_KEY (or CANDLE_DEVICE_TOKEN) the live
+  // answer comes from a credential that is NOT the profile's stored key, so the two names differing
+  // is expected rather than wrong, and `profile use` would re-cache from the wrong key entirely.
+  // The guard skips for exactly this reason; this line stays quiet on the same condition.
+  test("an env credential override silences the mismatch line, leaving the identity line", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, { success: true, account: "OTHER22", wallets: { solana: null, evm: null } }),
+    })
+    const store = createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "k" })
+    const config = createFakeConfigStore({ profiles: { staging: { account: "CACHED1" } }, activeProfile: "staging" })
+    const stdout = createCapture()
+    const code = await run(
+      ["auth", "status"],
+      createTestDeps({ fetch, store, stdout, env: { CANDLE_API_KEY: "ck_live_env" }, ...config }),
+    )
+    expect(code).toBe(0)
+    expect(stdout.text).toContain("Profile: staging   Account: OTHER22 at ")
+    expect(stdout.text).not.toContain("recorded")
+    expect(stdout.text).not.toContain("candle profile use")
+  })
+
   test("an unreachable identity lookup degrades to unknown rather than failing the report", async () => {
     // Absence of evidence again: a 500 on the identity call says nothing about the credentials,
     // and must not turn a credential report into a failure.
@@ -880,6 +959,23 @@ describe("profiles", () => {
     const after = await config.readConfig()
     expect(after.profiles).toEqual({ production: {} })
     expect(after.activeProfile).toBeUndefined()
+  })
+
+  test("auth login stamps when the account was cached", async () => {
+    const { fetch } = createRoutedFetch({
+      ...deviceFlowRoutes(),
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "FaKwE2xX" }),
+    })
+    const clock = createFakeClock(1_700_000_000_000)
+    const config = createFakeConfigStore({})
+    const code = await run(
+      ["auth", "login", "--no-browser"],
+      createTestDeps({ fetch, store: createFakeStore(), ...config, now: clock.now, sleep: clock.sleep }),
+    )
+    expect(code).toBe(0)
+    const profile = Object.values((await config.readConfig()).profiles ?? {})[0]
+    expect(profile?.account).toBe("FaKwE2xX")
+    expect(profile?.accountCachedAt).toBe(clock.now())
   })
 })
 

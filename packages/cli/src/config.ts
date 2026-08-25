@@ -21,6 +21,8 @@ import { join } from "node:path"
 export interface ProfileConfig {
   apiUrl?: string
   account?: string
+  /** Unix ms when `account` was last read from the API (auth login, profile use). Display only. */
+  accountCachedAt?: number
   keyPrefix?: string
   deviceTokenPrefix?: string
   scopes?: string[]

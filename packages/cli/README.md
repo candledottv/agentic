@@ -45,6 +45,11 @@ node packages/cli/dist/index.js auth login
 | `candle keys create [--scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily\|weekly\|monthly\|never]]` | Creates a new API key and prints the plaintext exactly once, with the same optional name, expiration, and USD transaction limit the portal's create form takes. Stored locally only if the CLI does not already hold a working key. |
 | `candle keys revoke <prefix>` | Revokes an API key by prefix. Revoking the CLI's own stored key also clears it locally. |
 | `candle wallets` | Shows the account's embedded (launch) wallets and any linked wallets, using the API key. |
+| `candle profile list` | Lists profiles on this machine, with cached accounts. |
+| `candle profile add <name> --api-url <url>` | Creates a profile before authenticating it. |
+| `candle profile use <name>` | Makes a profile the active one. |
+| `candle profile rename <old> <new>` | Renames a profile. |
+| `candle profile remove <name> --yes` | Deletes a profile and its stored credentials. |
 | `candle mcp [--tools <a,b,c>] [--read-only] [--print-config]` | Runs the Candle MCP server (`npx @candledottv/mcp`) with this CLI's stored API key and API URL in its environment, so an MCP client config is just `{"command": "candle", "args": ["mcp"]}`. `--read-only` starts it with no key and only the three keyless read tools; `--tools` pins an explicit allowlist; `--print-config` prints the ready-to-paste client block instead of launching. |
 | `candle doctor` | Runs a full health check (runtime, backend, credentials, API reachability, credential validity, wallet delegation) as a PASS/FAIL/SKIP table. Exits nonzero on any FAIL. |
 
@@ -54,6 +59,7 @@ Every command accepts these global options:
 | --- | --- |
 | `--api-url <url>` | Overrides the API base URL for this invocation, beating `CANDLE_API_URL` and the stored config value. |
 | `--profile <name>` | Act as a named profile; see Profiles below. |
+| `--no-verify-account` | Skips the check that the stored key belongs to the profile's account. |
 | `--json` | Machine-readable output instead of a formatted table or summary, generally the underlying API response. One exception: `auth login`'s JSON output still omits the plaintext device token and API key, matching its human-readable summary, since login never displays either value in any mode. |
 | `--help`, `-h` | Prints usage. |
 | `--version`, `-v` | Prints the CLI version. |
@@ -117,18 +123,35 @@ import once landed on the wrong account.
 Re-running `auth login` refreshes the profile you are already on, in place: the same name, the
 same refs, a new device token and key. Use `--profile <new name>` to add another instead.
 `auth logout` removes the acting profile's entry and its stored credentials, and clears
-`activeProfile` when it pointed there. Switching which profile is active is Phase 2's
-`profile use`; until then, select one per command with `--profile`, per shell with
-`CANDLE_PROFILE`, or edit `activeProfile` in `config.json`.
+`activeProfile` when it pointed there. `candle profile list` shows every profile with its cached
+account and how old that cache is (no network call); `profile use <name>` makes one active and
+refreshes its account from the API; `profile add <name> --api-url <url>` creates one before
+authenticating it; `profile rename` and `profile remove <name> --yes` do what they say. Removing a
+profile deletes its two stored credentials and nothing else; imported wallet signers belong to the
+wallet, not the profile.
 
 Every authenticated command prints `Profile: <name>   Account: <account> at <api url>` before its
-own output (`--json` output is unchanged except `auth status` and `auth login`, which carry
-`profile` and `account`; scripts get identity from `auth status --json`). The account is cached
+own output (`--json` output is unchanged except `auth status`, `auth login` and `doctor`, which
+carry `profile` and `account`; `auth status` and `doctor` also carry `cachedAccount`, the account
+the profile recorded, whenever a profile is resolved; scripts get identity from
+`auth status --json`). The account is cached
 at login from the API. Where the line is printed from that cache and `CANDLE_API_KEY` or
 `CANDLE_DEVICE_TOKEN` is overriding the stored credential, it reads
 `Account: unknown (CANDLE_API_KEY override)` rather than naming an account that credential was
 never checked against; `auth status` and `setup` look the account up live and print what they
-get. Phase 2 adds `candle profile list|add|use|rename|remove` and a strict mismatch guard.
+get, and `auth status` and `doctor` name the account the profile recorded beside it when the two
+differ (not under an env credential override, where the live answer is not the profile's key's).
+Before an authenticated command acts, the CLI asks the profile's stored key which account it
+belongs to and **refuses** if the answer differs from the account the profile recorded, naming
+both and the repairs in order of cost. A key that was legitimately re-issued is repaired with
+`candle profile use <name>`, which re-caches the account; `candle auth login --profile <name>`
+re-authenticates instead; `--no-verify-account` skips the check for one invocation without
+repairing anything. An unreachable API turns the check into a warning, never a failure. The
+check is skipped when
+`CANDLE_API_KEY` or `CANDLE_DEVICE_TOKEN` is overriding the stored credential, when a profile has
+no cached account or no stored key, and for the commands that only read the identity or repair it:
+`auth login`, `auth status`, `auth logout`, `doctor`, and the `profile` commands. `setup` is
+guarded, because it skips its login step whenever credentials are already stored.
 
 A pre-profile install is migrated on first run: profile `default` is created from the existing
 settings and the two credentials are copied to `profile:default:*` refs. The old refs and fields

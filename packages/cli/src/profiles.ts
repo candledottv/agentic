@@ -71,26 +71,33 @@ export function resolveProfileName(
 }
 
 /**
- * `auth login`'s own resolution, and the only lenient one. Same order as `resolveProfileName` --
- * the flag, CANDLE_PROFILE, activeProfile, the sole profile -- with two deliberate differences:
- * a named profile need NOT already exist (naming one is how login creates it), and nothing here
- * ever refuses. `undefined` means "no profile is in play", which login answers by deriving a name
- * from the host; it is not an error the way it would be for a command acting AS an identity.
+ * `auth login`'s own resolution, and the only lenient one about EXISTENCE. Same order as
+ * `resolveProfileName` -- the flag, CANDLE_PROFILE, activeProfile, the sole profile -- with one
+ * deliberate difference: a named profile need NOT already exist (naming one is how login creates
+ * it), so this never refuses for that reason the way `resolveProfileName` does. `undefined` means
+ * "no profile is in play", which login answers by deriving a name from the host; it is not an
+ * error the way it would be for a command acting AS an identity.
  *
- * An unusable name is skipped rather than refused: an invalid `--profile` is rejected by
- * `authLogin` itself (exit 2, naming the flag), and an invalid `CANDLE_PROFILE` must not be able
- * to write a profile entry that `resolveProfileName` could never select afterwards.
+ * An invalid name IS refused (`ProfileResolution`'s `ok: false`), the same shape every other
+ * caller already returns. Dispatch (index.ts) treats that as a usage error for `auth login`
+ * specifically, exit 2. A `--profile` this shape-invalid is also caught by `authLogin` itself,
+ * which names the flag in its own message; what this function closes is `CANDLE_PROFILE`, which
+ * used to be silently skipped here and fall through to the active profile, so an operator with a
+ * mistyped env var logged in as, and overwrote the credentials of, a profile they never named.
  */
 export function resolveProfileNameForLogin(
   config: CliConfig,
   opts: { flag?: string; env: Record<string, string | undefined> },
-): string | undefined {
+): ProfileResolution {
   const profiles = config.profiles ?? {}
   const requested = opts.flag?.trim() || opts.env.CANDLE_PROFILE?.trim() || undefined
-  if (requested !== undefined && isValidProfileName(requested)) return requested
-  if (config.activeProfile && config.activeProfile in profiles) return config.activeProfile
+  if (requested !== undefined) {
+    if (!isValidProfileName(requested)) return { ok: false, message: `Invalid profile name: ${requested}` }
+    return { ok: true, name: requested }
+  }
+  if (config.activeProfile && config.activeProfile in profiles) return { ok: true, name: config.activeProfile }
   const names = Object.keys(profiles)
-  return names.length === 1 ? names[0] : undefined
+  return { ok: true, name: names.length === 1 ? names[0] : undefined }
 }
 
 const PRE_PROFILE_FIELDS = ["apiUrl", "keyPrefix", "deviceTokenPrefix", "scopes", "label", "portalOrigin"] as const
@@ -193,4 +200,50 @@ export async function printIdentity(ctx: CommandContext): Promise<void> {
   const config = await ctx.deps.readConfig()
   const account = effectiveProfileFields(config, ctx.profile).account
   ctx.deps.stdout.write(`${identityLine(ctx.profile, account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env))}\n`)
+}
+
+/** How old the cached account is, in the largest whole unit; a browsing command shows this
+ * instead of spending a network call per profile. A future stamp (clock skew) reads as now. */
+export function formatCacheAge(now: number, cachedAt: number | undefined): string {
+  if (cachedAt === undefined) return "not cached"
+  const seconds = Math.max(0, Math.floor((now - cachedAt) / 1000))
+  if (seconds < 60) return "just now"
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
+}
+
+export interface ProfileRow {
+  name: string
+  active: boolean
+  account?: string
+  cachedAge: string
+  apiUrl?: string
+  keyPrefix?: string
+}
+
+/**
+ * The rows `profile list` prints, sorted by name. Cached account and its age; no network.
+ *
+ * An account WITHOUT a stamp reads "age unknown", not "not cached": every profile written before
+ * `accountCachedAt` existed is in exactly that state, and "not cached" printed beside the cached
+ * account itself, contradicting the column next to it. "Not cached" is reserved for the case it
+ * actually describes, a profile that has no account recorded at all.
+ */
+export function profileTable(config: CliConfig, now: number): ProfileRow[] {
+  return Object.entries(config.profiles ?? {})
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, p]) => ({
+      name,
+      active: config.activeProfile === name,
+      account: p.account,
+      cachedAge:
+        p.account !== undefined && p.accountCachedAt === undefined
+          ? "age unknown"
+          : formatCacheAge(now, p.accountCachedAt),
+      apiUrl: p.apiUrl,
+      keyPrefix: p.keyPrefix,
+    }))
 }

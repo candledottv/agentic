@@ -96,6 +96,21 @@ async function apiRequest(path, opts) {
 import { homedir as homedir2 } from "node:os";
 import { join as join2 } from "node:path";
 
+// src/account.ts
+async function fetchAccount(deps, apiUrl, apiKey) {
+  const identity = await apiRequest("/api/v1/agent/wallets/embedded", {
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  const account = identity.ok ? identity.body.account : undefined;
+  if (account)
+    return { account };
+  return { failure: identity.ok ? "no account in the response" : identity.message };
+}
+
 // src/args.ts
 function parseArgs(args, spec) {
   const valueFlags = new Set(spec.valueFlags ?? []);
@@ -311,12 +326,15 @@ ${listForHumans(profiles, config.activeProfile)}`
 function resolveProfileNameForLogin(config, opts) {
   const profiles = config.profiles ?? {};
   const requested = opts.flag?.trim() || opts.env.CANDLE_PROFILE?.trim() || undefined;
-  if (requested !== undefined && isValidProfileName(requested))
-    return requested;
+  if (requested !== undefined) {
+    if (!isValidProfileName(requested))
+      return { ok: false, message: `Invalid profile name: ${requested}` };
+    return { ok: true, name: requested };
+  }
   if (config.activeProfile && config.activeProfile in profiles)
-    return config.activeProfile;
+    return { ok: true, name: config.activeProfile };
   const names = Object.keys(profiles);
-  return names.length === 1 ? names[0] : undefined;
+  return { ok: true, name: names.length === 1 ? names[0] : undefined };
 }
 var PRE_PROFILE_FIELDS = ["apiUrl", "keyPrefix", "deviceTokenPrefix", "scopes", "label", "portalOrigin"];
 function migratedConfig(config) {
@@ -380,6 +398,30 @@ async function printIdentity(ctx) {
   const account = effectiveProfileFields(config, ctx.profile).account;
   ctx.deps.stdout.write(`${identityLine(ctx.profile, account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env))}
 `);
+}
+function formatCacheAge(now, cachedAt) {
+  if (cachedAt === undefined)
+    return "not cached";
+  const seconds = Math.max(0, Math.floor((now - cachedAt) / 1000));
+  if (seconds < 60)
+    return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60)
+    return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24)
+    return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+function profileTable(config, now) {
+  return Object.entries(config.profiles ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([name, p]) => ({
+    name,
+    active: config.activeProfile === name,
+    account: p.account,
+    cachedAge: p.account !== undefined && p.accountCachedAt === undefined ? "age unknown" : formatCacheAge(now, p.accountCachedAt),
+    apiUrl: p.apiUrl,
+    keyPrefix: p.keyPrefix
+  }));
 }
 
 // src/secret-store.ts
@@ -671,17 +713,8 @@ async function finishLogin(rawBody, ctx, requested) {
   if (body.apiKey)
     await deps.store.set(profileSecretRef(profileName, "apiKey"), body.apiKey.key);
   let account;
-  if (body.apiKey) {
-    const identity = await apiRequest("/api/v1/agent/wallets/embedded", {
-      auth: "key",
-      credentials: { apiKey: body.apiKey.key },
-      apiUrl: ctx.apiUrl,
-      fetch: deps.fetch,
-      env: deps.env
-    });
-    if (identity.ok)
-      account = identity.body.account;
-  }
+  if (body.apiKey)
+    account = (await fetchAccount(deps, ctx.apiUrl, body.apiKey.key)).account;
   const portalOrigin = portalOriginFrom(requested.verificationUri);
   await deps.updateProfile(profileName, {
     apiUrl: ctx.apiUrl,
@@ -689,7 +722,7 @@ async function finishLogin(rawBody, ctx, requested) {
     ...body.apiKey ? { keyPrefix: body.apiKey.keyPrefix, scopes: body.apiKey.scopes } : {},
     ...requested.label ? { label: requested.label } : {},
     ...portalOrigin ? { portalOrigin } : {},
-    ...account ? { account } : {}
+    ...account ? { account, accountCachedAt: deps.now() } : {}
   });
   if (!config.activeProfile)
     await deps.writeConfig({ activeProfile: profileName });
@@ -845,20 +878,13 @@ async function authStatus(args, ctx) {
     }));
   }
   let account;
-  if (apiKey) {
-    const identity = await apiRequest("/api/v1/agent/wallets/embedded", {
-      auth: "key",
-      credentials: { apiKey },
-      apiUrl,
-      fetch: deps.fetch,
-      env: deps.env
-    });
-    if (identity.ok)
-      account = identity.body.account;
-  }
+  if (apiKey)
+    account = (await fetchAccount(deps, apiUrl, apiKey)).account;
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0;
   const configPath = configFilePathForDisplay(deps.env);
   const fields = effectiveProfileFields(config, ctx.profile);
+  const cachedAccount = ctx.profile !== undefined ? fields.account : undefined;
+  const mismatch = ctx.profile !== undefined && account !== undefined && cachedAccount !== undefined && account !== cachedAccount && credentialEnvOverrides(deps.env).length === 0;
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       backend: deps.backend,
@@ -866,6 +892,7 @@ async function authStatus(args, ctx) {
       deviceTokenPrefix: fields.deviceTokenPrefix,
       keyPrefix: fields.keyPrefix,
       account,
+      cachedAccount,
       apiUrl,
       configPath,
       rows
@@ -875,6 +902,10 @@ async function authStatus(args, ctx) {
   }
   deps.stdout.write(`${identityLine(ctx.profile, account ?? fields.account, apiUrl)}
 `);
+  if (mismatch) {
+    deps.stdout.write(`Profile ${ctx.profile} recorded ${cachedAccount}; this key belongs to ${account}. Run: candle profile use ${ctx.profile}
+`);
+  }
   deps.stdout.write(`Backend: ${deps.backend}
 `);
   deps.stdout.write(`Device token prefix: ${fields.deviceTokenPrefix ?? "not set"}
@@ -904,6 +935,7 @@ async function doctor(args, ctx) {
     return 2;
   }
   const rows = [];
+  const fields = effectiveProfileFields(await deps.readConfig(), ctx.profile);
   const nodeMajor = Number(deps.nodeVersion.split(".")[0]);
   rows.push(Number.isFinite(nodeMajor) && nodeMajor >= MIN_NODE_MAJOR ? { check: "Runtime version", state: "PASS", detail: `node ${deps.nodeVersion}` } : {
     check: "Runtime version",
@@ -942,8 +974,7 @@ async function doctor(args, ctx) {
   if (!apiKey) {
     rows.push({ check: API_KEY_CHECK, state: "SKIP", detail: "no API key to check" });
   } else {
-    const config = await deps.readConfig();
-    const scopes = effectiveProfileFields(config, ctx.profile).scopes;
+    const scopes = fields.scopes;
     const passDetail = scopes ? `scopes: ${scopes.join(", ")}` : "valid";
     rows.push(await runLiveCheck({
       deps,
@@ -983,11 +1014,21 @@ async function doctor(args, ctx) {
       });
     }
   }
-  rows.push(account !== undefined ? { check: "Account", state: "PASS", detail: account } : { check: "Account", state: "SKIP", detail: "could not resolve which account these credentials act as" });
+  const cachedAccount = ctx.profile !== undefined ? fields.account : undefined;
+  const mismatch = account !== undefined && cachedAccount !== undefined && account !== cachedAccount && credentialEnvOverrides(deps.env).length === 0;
+  rows.push(account === undefined ? { check: "Account", state: "SKIP", detail: "could not resolve which account these credentials act as" } : {
+    check: "Account",
+    state: "PASS",
+    detail: mismatch ? `${account} (profile ${ctx.profile} recorded ${cachedAccount}. Fix: run candle profile use ${ctx.profile})` : account
+  });
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0;
   await printIdentity(ctx);
   if (json) {
-    deps.stdout.write(`${JSON.stringify({ rows, ...account !== undefined ? { account } : {} })}
+    deps.stdout.write(`${JSON.stringify({
+      rows,
+      ...account !== undefined ? { account } : {},
+      ...cachedAccount !== undefined ? { cachedAccount } : {}
+    })}
 `);
     return exitCode;
   }
@@ -1306,6 +1347,217 @@ async function mcp(args, ctx) {
   deps.stderr.write(`Starting @candledottv/mcp against ${apiUrl}${toolAllowlist ? ` (tools: ${toolAllowlist})` : ""}
 `);
   return deps.runChild("npx", ["--yes", "@candledottv/mcp"], childEnv);
+}
+
+// src/commands/profile.ts
+async function profileList(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const rows = profileTable(await deps.readConfig(), deps.now());
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(rows)}
+`);
+    return 0;
+  }
+  if (rows.length === 0) {
+    deps.stdout.write(`No profiles on this machine. Run: candle auth login
+`);
+    return 0;
+  }
+  deps.stdout.write(renderTable(["Profile", "Account", "Cached", "Host", "Key"], rows.map((r) => [
+    r.active ? `${r.name} (active)` : r.name,
+    r.account ?? "unknown",
+    r.cachedAge,
+    r.apiUrl ?? "-",
+    r.keyPrefix ?? "-"
+  ])));
+  return 0;
+}
+async function profileAdd(args, ctx) {
+  const { deps, json, apiUrlFlag } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const name = parsed.positionals[0];
+  if (!name || parsed.positionals.length !== 1) {
+    writeUsageFailure(deps, "Usage: candle profile add <name> --api-url <url>", json);
+    return 2;
+  }
+  if (!isValidProfileName(name)) {
+    writeUsageFailure(deps, `Invalid profile name: ${name}`, json);
+    return 2;
+  }
+  if (!apiUrlFlag) {
+    writeUsageFailure(deps, "profile add needs --api-url <url>: the host this profile authenticates against", json);
+    return 2;
+  }
+  try {
+    new URL(apiUrlFlag);
+  } catch {
+    writeUsageFailure(deps, `Invalid --api-url: ${apiUrlFlag}. It needs a scheme, such as https://${apiUrlFlag}`, json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  if (config.profiles?.[name]) {
+    writeLocalFailure(deps, {
+      code: "PROFILE_EXISTS",
+      message: `Profile "${name}" already exists.`,
+      suggestion: `Run: candle profile use ${name}`
+    }, json);
+    return 1;
+  }
+  await deps.updateProfile(name, { apiUrl: apiUrlFlag });
+  if (!config.activeProfile)
+    await deps.writeConfig({ activeProfile: name });
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ name, apiUrl: apiUrlFlag })}
+`);
+  else
+    deps.stdout.write(`Created profile ${name} for ${apiUrlFlag}. Run: candle auth login --profile ${name}
+`);
+  return 0;
+}
+async function profileUse(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const name = parsed.positionals[0];
+  if (!name || parsed.positionals.length !== 1) {
+    writeUsageFailure(deps, "Usage: candle profile use <name>", json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  const profile = config.profiles?.[name];
+  if (!profile) {
+    const names = Object.keys(config.profiles ?? {}).join(", ") || "(none)";
+    writeLocalFailure(deps, {
+      code: "NO_SUCH_PROFILE",
+      message: `No profile named "${name}".`,
+      suggestion: `Profiles on this machine: ${names}`
+    }, json);
+    return 1;
+  }
+  await deps.writeConfig({ activeProfile: name });
+  const envProfile = deps.env.CANDLE_PROFILE?.trim();
+  if (envProfile && envProfile !== name) {
+    deps.stderr.write(`CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.
+`);
+  }
+  const apiUrl = ctx.apiUrlFlag ?? resolveApiUrl(profile.apiUrl, deps.env);
+  const apiKey = await deps.store.get(profileSecretRef(name, "apiKey"));
+  let account = profile.account;
+  if (apiKey) {
+    const { account: live, failure } = await fetchAccount(deps, apiUrl, apiKey);
+    if (live) {
+      account = live;
+      await deps.updateProfile(name, { account: live, accountCachedAt: deps.now() });
+    } else {
+      deps.stderr.write(`Could not refresh the account for ${name} (${failure}); keeping the cached value.
+`);
+    }
+  } else {
+    deps.stderr.write(`No stored credentials for ${name}. Run: candle auth login --profile ${name}
+`);
+  }
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ name, account, apiUrl })}
+`);
+  else
+    deps.stdout.write(`${identityLine(name, account, apiUrl)}
+`);
+  return 0;
+}
+var SECRET_KINDS = ["deviceToken", "apiKey"];
+async function profileRename(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const [from, to] = parsed.positionals;
+  if (!from || !to || parsed.positionals.length !== 2) {
+    writeUsageFailure(deps, "Usage: candle profile rename <old> <new>", json);
+    return 2;
+  }
+  if (!isValidProfileName(to)) {
+    writeUsageFailure(deps, `Invalid profile name: ${to}`, json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  const profiles = { ...config.profiles ?? {} };
+  if (!profiles[from]) {
+    writeLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${from}".` }, json);
+    return 1;
+  }
+  if (profiles[to]) {
+    writeLocalFailure(deps, { code: "PROFILE_EXISTS", message: `Profile "${to}" already exists.` }, json);
+    return 1;
+  }
+  for (const kind of SECRET_KINDS) {
+    const value = await deps.store.get(profileSecretRef(from, kind));
+    if (value) {
+      await deps.store.set(profileSecretRef(to, kind), value);
+      await deps.store.delete(profileSecretRef(from, kind));
+    }
+  }
+  profiles[to] = profiles[from];
+  delete profiles[from];
+  await deps.writeConfig({ profiles, ...config.activeProfile === from ? { activeProfile: to } : {} });
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ from, to })}
+`);
+  else
+    deps.stdout.write(`Renamed profile ${from} to ${to}.
+`);
+  return 0;
+}
+async function profileRemove(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, { booleanFlags: ["--yes"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const name = parsed.positionals[0];
+  if (!name || parsed.positionals.length !== 1) {
+    writeUsageFailure(deps, "Usage: candle profile remove <name> --yes", json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  const profiles = { ...config.profiles ?? {} };
+  const profile = profiles[name];
+  if (!profile) {
+    writeLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${name}".` }, json);
+    return 1;
+  }
+  if (!parsed.booleans.has("--yes")) {
+    writeUsageFailure(deps, `Would delete profile ${name} (${profile.account ?? "unknown"} at ${profile.apiUrl ?? "default host"}) and its stored credentials. Re-run with --yes to confirm.`, json);
+    return 2;
+  }
+  for (const kind of SECRET_KINDS)
+    await deps.store.delete(profileSecretRef(name, kind));
+  delete profiles[name];
+  const wasActive = config.activeProfile === name;
+  await deps.writeConfig({ profiles, ...wasActive ? { activeProfile: undefined } : {} });
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ removed: name })}
+`);
+  else {
+    const needsPick = wasActive && Object.keys(profiles).length > 1;
+    deps.stdout.write(`Deleted profile ${name} and its stored credentials.${needsPick ? " Run: candle profile use <name>" : ""}
+`);
+  }
+  return 0;
 }
 
 // src/commands/setup.ts
@@ -4640,6 +4892,43 @@ async function clearConfig() {
   }
 }
 
+// src/guard.ts
+async function verifyProfileAccount(ctx, config) {
+  const { deps, profile } = ctx;
+  if (!ctx.verifyAccount)
+    return { ok: true, skipped: "--no-verify-account" };
+  if (!profile)
+    return { ok: true, skipped: "no profile" };
+  if (credentialEnvOverrides(deps.env).length > 0)
+    return { ok: true, skipped: "env override" };
+  const cached = effectiveProfileFields(config, profile).account;
+  if (!cached)
+    return { ok: true, skipped: "no cached account" };
+  const apiKey = await deps.store.get(profileSecretRef(profile, "apiKey"));
+  if (!apiKey)
+    return { ok: true, skipped: "no stored key" };
+  const { account: live, failure } = await fetchAccount(deps, ctx.apiUrl, apiKey);
+  if (!live) {
+    return {
+      ok: true,
+      warning: `Could not verify the account for ${profile} (${failure}); proceeding on the cached value ${cached}.`
+    };
+  }
+  if (live !== cached) {
+    return {
+      ok: false,
+      message: [
+        `Refusing: profile ${profile} expects account ${cached} but its stored key belongs to ${live}.`,
+        `If that key was legitimately re-issued: candle profile use ${profile}`,
+        `To re-authenticate: candle auth login --profile ${profile}`,
+        "To proceed once without the check: --no-verify-account"
+      ].join(`
+`)
+    };
+  }
+  return { ok: true };
+}
+
 // src/keychain.ts
 import { spawn, spawnSync } from "node:child_process";
 var SERVICE = "tv.candle.cli";
@@ -4768,7 +5057,7 @@ async function resolveSecretStore(platform = process.platform) {
 // src/index.ts
 function extractGlobalFlags(argv) {
   const rest = [];
-  const flags = { json: false, help: false, version: false };
+  const flags = { json: false, help: false, version: false, noVerifyAccount: false };
   for (let i = 0;i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--json")
@@ -4777,6 +5066,8 @@ function extractGlobalFlags(argv) {
       flags.help = true;
     else if (arg === "--version" || arg === "-v")
       flags.version = true;
+    else if (arg === "--no-verify-account")
+      flags.noVerifyAccount = true;
     else if (arg === "--api-url") {
       const value = argv[++i];
       if (value === undefined)
@@ -4812,6 +5103,11 @@ Commands:
   wallets                                                         Show launch and linked wallets
   wallets import --chain <solana|evm> [options]                   Import a wallet you own (key via --key-file or hidden prompt)
   wallets revoke <wallet-id>                                      Revoke a linked wallet
+  profile list                                                    Profiles on this machine, with cached accounts
+  profile add <name> --api-url <url>                              Create a profile before authenticating it
+  profile use <name>                                              Make a profile the active one
+  profile rename <old> <new>                                      Rename a profile
+  profile remove <name> --yes                                     Delete a profile and its stored credentials
   setup [--no-browser]                                            One wizard: authorize, fund, connect, verify
   mcp [--tools <a,b,c>] [--read-only] [--print-config]            Run the Candle MCP server with stored credentials
   doctor                                                          Diagnose CLI setup
@@ -4819,10 +5115,13 @@ Commands:
 Global options:
   --api-url <url>         Override the API base URL
   --profile <name>        Act as a named profile (see: candle auth login --profile)
+  --no-verify-account     Skip the check that the stored key belongs to the profile's account
   --json                  Machine-readable output
   --help, -h              Show this help
   --version, -v           Show the CLI version
 `;
+var ROUTED_COMMANDS = new Set(["auth", "keys", "wallets", "profile", "doctor", "mcp", "setup"]);
+var NEVER_GUARDED = new Set(["auth", "profile", "doctor"]);
 async function run2(argv, deps) {
   const extracted = extractGlobalFlags(argv);
   if ("error" in extracted) {
@@ -4844,11 +5143,12 @@ async function run2(argv, deps) {
   const [cmd, sub, ...cmdArgs] = tokens;
   const config = await migrateProfiles(deps);
   const isAuthLogin = cmd === "auth" && sub === "login";
-  const resolution = isAuthLogin ? { ok: true, name: resolveProfileNameForLogin(config, { flag: flags.profile, env: deps.env }) } : resolveProfileName(config, { flag: flags.profile, env: deps.env });
+  const isProfileCommand = cmd === "profile";
+  const resolution = isAuthLogin ? resolveProfileNameForLogin(config, { flag: flags.profile, env: deps.env }) : isProfileCommand ? { ok: true, name: undefined } : resolveProfileName(config, { flag: flags.profile, env: deps.env });
   if (!resolution.ok) {
     deps.stderr.write(`${resolution.message}
 `);
-    return 1;
+    return isAuthLogin ? 2 : 1;
   }
   const profile = resolution.name;
   const profileApiUrl = profile ? config.profiles?.[profile]?.apiUrl : config.apiUrl;
@@ -4859,8 +5159,21 @@ async function run2(argv, deps) {
     apiUrl,
     apiUrlFlag: flags.apiUrl,
     profile,
-    profileFlag: flags.profile
+    profileFlag: flags.profile,
+    verifyAccount: !flags.noVerifyAccount
   };
+  const word = cmd ?? "";
+  if (ROUTED_COMMANDS.has(word) && !NEVER_GUARDED.has(word)) {
+    const verdict = await verifyProfileAccount(ctx, config);
+    if (!verdict.ok) {
+      deps.stderr.write(`${verdict.message}
+`);
+      return 1;
+    }
+    if (verdict.warning)
+      deps.stderr.write(`${verdict.warning}
+`);
+  }
   if (cmd === "auth") {
     if (sub === "login")
       return authLogin(cmdArgs, ctx);
@@ -4869,6 +5182,19 @@ async function run2(argv, deps) {
     if (sub === "logout")
       return authLogout(cmdArgs, ctx);
     return unknownCommand(deps, sub === undefined ? undefined : `auth ${sub}`);
+  }
+  if (cmd === "profile") {
+    if (sub === "list")
+      return profileList(cmdArgs, ctx);
+    if (sub === "add")
+      return profileAdd(cmdArgs, ctx);
+    if (sub === "use")
+      return profileUse(cmdArgs, ctx);
+    if (sub === "rename")
+      return profileRename(cmdArgs, ctx);
+    if (sub === "remove")
+      return profileRemove(cmdArgs, ctx);
+    return unknownCommand(deps, sub === undefined ? undefined : `profile ${sub}`);
   }
   if (cmd === "keys") {
     if (sub === "list")
@@ -4986,5 +5312,7 @@ if (isMainModule) {
   });
 }
 export {
-  run2 as run
+  run2 as run,
+  ROUTED_COMMANDS,
+  NEVER_GUARDED
 };

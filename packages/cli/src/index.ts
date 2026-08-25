@@ -26,11 +26,13 @@ import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { doctor } from "./commands/doctor"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { mcp } from "./commands/mcp"
+import { profileAdd, profileList, profileRemove, profileRename, profileUse } from "./commands/profile"
 import { setup } from "./commands/setup"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
 import type { CliConfig } from "./config"
 import { clearConfig, readConfig, updateProfile, writeConfig } from "./config"
 import type { CommandContext, Deps } from "./deps"
+import { verifyProfileAccount } from "./guard"
 import { resolveSecretStore } from "./keychain"
 import { migratedConfig, profileSecretRef, resolveProfileName, resolveProfileNameForLogin } from "./profiles"
 import { promptHiddenSecret, SECRET_REFS } from "./secret-store"
@@ -42,16 +44,18 @@ interface GlobalFlags {
   json: boolean
   help: boolean
   version: boolean
+  noVerifyAccount: boolean
 }
 
 function extractGlobalFlags(argv: string[]): { rest: string[]; flags: GlobalFlags } | { error: string } {
   const rest: string[] = []
-  const flags: GlobalFlags = { json: false, help: false, version: false }
+  const flags: GlobalFlags = { json: false, help: false, version: false, noVerifyAccount: false }
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === "--json") flags.json = true
     else if (arg === "--help" || arg === "-h") flags.help = true
     else if (arg === "--version" || arg === "-v") flags.version = true
+    else if (arg === "--no-verify-account") flags.noVerifyAccount = true
     else if (arg === "--api-url") {
       const value = argv[++i]
       if (value === undefined) return { error: "--api-url requires a value" }
@@ -83,6 +87,11 @@ Commands:
   wallets                                                         Show launch and linked wallets
   wallets import --chain <solana|evm> [options]                   Import a wallet you own (key via --key-file or hidden prompt)
   wallets revoke <wallet-id>                                      Revoke a linked wallet
+  profile list                                                    Profiles on this machine, with cached accounts
+  profile add <name> --api-url <url>                              Create a profile before authenticating it
+  profile use <name>                                              Make a profile the active one
+  profile rename <old> <new>                                      Rename a profile
+  profile remove <name> --yes                                     Delete a profile and its stored credentials
   setup [--no-browser]                                            One wizard: authorize, fund, connect, verify
   mcp [--tools <a,b,c>] [--read-only] [--print-config]            Run the Candle MCP server with stored credentials
   doctor                                                          Diagnose CLI setup
@@ -90,10 +99,33 @@ Commands:
 Global options:
   --api-url <url>         Override the API base URL
   --profile <name>        Act as a named profile (see: candle auth login --profile)
+  --no-verify-account     Skip the check that the stored key belongs to the profile's account
   --json                  Machine-readable output
   --help, -h              Show this help
   --version, -v           Show the CLI version
 `
+
+/** Every command word the dispatch chain in `run` routes. The guard's gate reads it so that an
+ * unrecognized word prints usage without a network call. It duplicates the chain, so
+ * `index.test.ts` asserts it against the Commands: block of HELP_TEXT, which enforces exactly
+ * this: a command DOCUMENTED in HELP_TEXT must appear here. A command added to dispatch with no
+ * help entry satisfies the test and still runs unguarded; what prevents that is the convention
+ * that every command is documented, not the test. */
+export const ROUTED_COMMANDS = new Set(["auth", "keys", "wallets", "profile", "doctor", "mcp", "setup"])
+
+/**
+ * The commands the account guard never runs for, in one place. The rule is what a command does
+ * with the identity: the guard belongs in front of the ones that ACT as it, and nowhere else.
+ * `auth` in every form is the repair path (login re-authenticates a profile whose key moved,
+ * status only reads, and logout revokes the stored key using that very credential); `doctor` only
+ * reads, and is how a mismatch gets seen in the first place; `profile` manages the profiles map
+ * rather than acting as an identity. Refusing any of these would leave an operator holding a
+ * mismatch with no command left to diagnose or repair it with.
+ *
+ * `setup` is deliberately NOT here: it skips its login step whenever both credentials are already
+ * stored (setup.ts) and then mints keys as whoever those credentials belong to.
+ */
+export const NEVER_GUARDED = new Set(["auth", "profile", "doctor"])
 
 export async function run(argv: string[], deps: Deps): Promise<number> {
   const extracted = extractGlobalFlags(argv)
@@ -121,22 +153,34 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
 
   const [cmd, sub, ...cmdArgs] = tokens
   const config = await migrateProfiles(deps)
-  // `auth login` resolves LENIENTLY (resolveProfileNameForLogin): its `--profile` may name a
-  // profile to CREATE, so it must not be gated by resolveProfileName's "does this name already
-  // exist" refusal, which exists to protect a command ACTING as an already-selected identity.
-  // But it must still SEE the profile that is already selected: skipping resolution entirely
-  // made every re-login derive a fresh host-based name, filing the new credentials under
+  // `auth login` resolves LENIENTLY about EXISTENCE (resolveProfileNameForLogin): its `--profile`
+  // may name a profile to CREATE, so it must not be gated by resolveProfileName's "does this name
+  // already exist" refusal, which exists to protect a command ACTING as an already-selected
+  // identity. But it must still SEE the profile that is already selected: skipping resolution
+  // entirely made every re-login derive a fresh host-based name, filing the new credentials under
   // `production-2` while every other command went on resolving `production`, and losing the
   // selected profile's own `apiUrl` in the bargain. See
   // docs/superpowers/specs/2026-08-19-cli-profiles-design.md, "auth login creates a profile
-  // implicitly" (settled 2026-08-19). `authLogin` validates the flag's shape itself.
+  // implicitly" (settled 2026-08-19). An invalid NAME is still refused: `authLogin` validates the
+  // flag's shape itself (naming the flag in its message), and resolveProfileNameForLogin refuses
+  // an invalid CANDLE_PROFILE the same way, below, as a usage error rather than a silent skip to
+  // whatever profile was already active.
   const isAuthLogin = cmd === "auth" && sub === "login"
+  // `profile` needs no resolved identity at all: its subcommands manage the profiles map itself
+  // (list, add, and -- Tasks 3 and 4 -- use/rename/remove), and `profile use` is the way OUT of
+  // resolveProfileName's "several profiles, none selected" refusal, so it cannot be gated by it.
+  const isProfileCommand = cmd === "profile"
   const resolution = isAuthLogin
-    ? ({ ok: true, name: resolveProfileNameForLogin(config, { flag: flags.profile, env: deps.env }) } as const)
-    : resolveProfileName(config, { flag: flags.profile, env: deps.env })
+    ? resolveProfileNameForLogin(config, { flag: flags.profile, env: deps.env })
+    : isProfileCommand
+      ? ({ ok: true, name: undefined } as const)
+      : resolveProfileName(config, { flag: flags.profile, env: deps.env })
   if (!resolution.ok) {
     deps.stderr.write(`${resolution.message}\n`)
-    return 1
+    // A resolution failure reaching `auth login` is a usage error (an invalid CANDLE_PROFILE,
+    // Task 6): exit 2, before any request. Every other command's refusal (an ambiguous or unknown
+    // profile selection) stays exit 1, as it always has.
+    return isAuthLogin ? 2 : 1
   }
   const profile = resolution.name
   const profileApiUrl = profile ? config.profiles?.[profile]?.apiUrl : config.apiUrl
@@ -148,6 +192,23 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
     apiUrlFlag: flags.apiUrl,
     profile,
     profileFlag: flags.profile,
+    verifyAccount: !flags.noVerifyAccount,
+  }
+
+  // The strict account guard (guard.ts), run once here rather than inside each command: a command
+  // that ACTS as the resolved profile must first be told its stored key still belongs to that
+  // profile's account, and that is one decision about the command being dispatched, not six
+  // copies of one. NEVER_GUARDED names the commands that only read the identity or repair it,
+  // which must keep working precisely when the guard would refuse; ROUTED_COMMANDS keeps an
+  // unrecognized word on the help path without a network call.
+  const word = cmd ?? ""
+  if (ROUTED_COMMANDS.has(word) && !NEVER_GUARDED.has(word)) {
+    const verdict = await verifyProfileAccount(ctx, config)
+    if (!verdict.ok) {
+      deps.stderr.write(`${verdict.message}\n`)
+      return 1
+    }
+    if (verdict.warning) deps.stderr.write(`${verdict.warning}\n`)
   }
 
   if (cmd === "auth") {
@@ -155,6 +216,14 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
     if (sub === "status") return authStatus(cmdArgs, ctx)
     if (sub === "logout") return authLogout(cmdArgs, ctx)
     return unknownCommand(deps, sub === undefined ? undefined : `auth ${sub}`)
+  }
+  if (cmd === "profile") {
+    if (sub === "list") return profileList(cmdArgs, ctx)
+    if (sub === "add") return profileAdd(cmdArgs, ctx)
+    if (sub === "use") return profileUse(cmdArgs, ctx)
+    if (sub === "rename") return profileRename(cmdArgs, ctx)
+    if (sub === "remove") return profileRemove(cmdArgs, ctx)
+    return unknownCommand(deps, sub === undefined ? undefined : `profile ${sub}`)
   }
   if (cmd === "keys") {
     if (sub === "list") return keysList(cmdArgs, ctx)

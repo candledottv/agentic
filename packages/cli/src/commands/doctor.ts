@@ -13,7 +13,7 @@ import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
-import { effectiveProfileFields, printIdentity } from "../profiles"
+import { credentialEnvOverrides, effectiveProfileFields, printIdentity } from "../profiles"
 import { renderError, renderTable, writeUsageFailure } from "../render"
 
 // Matches packages/mcp's own `engines.node` floor (">=18"); doctor needs an actual number to
@@ -43,6 +43,9 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
   }
 
   const rows: CheckRow[] = []
+  // The acting profile's own non-secret fields (or the legacy top-level ones pre-profile), read
+  // once: two rows below want something out of them, and doctor never writes config.
+  const fields = effectiveProfileFields(await deps.readConfig(), ctx.profile)
 
   // `deps.nodeVersion` (not `process.versions.node` read directly) so this branch is testable
   // without actually running the CLI under an old Node.
@@ -113,8 +116,7 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
     // CANDLE_API_KEY (an env override never recorded in config at all) -- the row still reports
     // PASS correctly (the key IS valid), just without a scopes list for a key the CLI never
     // minted itself.
-    const config = await deps.readConfig()
-    const scopes = effectiveProfileFields(config, ctx.profile).scopes
+    const scopes = fields.scopes
     const passDetail = scopes ? `scopes: ${scopes.join(", ")}` : "valid"
     rows.push(
       await runLiveCheck({
@@ -168,10 +170,32 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
     }
   }
 
+  // What the profile RECORDED, beside what the key answers. Doctor is where a mismatch is meant
+  // to be seen, and the identity line above already prints the cached value: leaving the two to be
+  // compared by eye, one at the top of the report and one at the bottom, is how a mismatch reads
+  // as a typo. Reported as a note on the row rather than a FAIL: doctor's exit code is what
+  // `setup` branches on, and this wave does not move it.
+  //
+  // Silent under a credential env override, the condition the guard itself skips on: the live
+  // account then belongs to CANDLE_API_KEY's key rather than the profile's stored one, so the
+  // disagreement is expected, and `profile use` would re-cache from the key that was not acting.
+  // `cachedAccount` still goes into the --json body; only the note is gated.
+  const cachedAccount = ctx.profile !== undefined ? fields.account : undefined
+  const mismatch =
+    account !== undefined &&
+    cachedAccount !== undefined &&
+    account !== cachedAccount &&
+    credentialEnvOverrides(deps.env).length === 0
   rows.push(
-    account !== undefined
-      ? { check: "Account", state: "PASS", detail: account }
-      : { check: "Account", state: "SKIP", detail: "could not resolve which account these credentials act as" },
+    account === undefined
+      ? { check: "Account", state: "SKIP", detail: "could not resolve which account these credentials act as" }
+      : {
+          check: "Account",
+          state: "PASS",
+          detail: mismatch
+            ? `${account} (profile ${ctx.profile} recorded ${cachedAccount}. Fix: run candle profile use ${ctx.profile})`
+            : account,
+        },
   )
 
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0
@@ -182,7 +206,13 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
   await printIdentity(ctx)
 
   if (json) {
-    deps.stdout.write(`${JSON.stringify({ rows, ...(account !== undefined ? { account } : {}) })}\n`)
+    deps.stdout.write(
+      `${JSON.stringify({
+        rows,
+        ...(account !== undefined ? { account } : {}),
+        ...(cachedAccount !== undefined ? { cachedAccount } : {}),
+      })}\n`,
+    )
     return exitCode
   }
 

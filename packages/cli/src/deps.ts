@@ -86,6 +86,8 @@ export interface CommandContext {
   /** The raw --profile value, only when the flag was given. `auth login` names a NEW profile
    * from it, which the resolved `profile` cannot express (that name does not exist yet). */
   profileFlag?: string
+  /** False when --no-verify-account was given: the strict account guard (guard.ts) is skipped. */
+  verifyAccount: boolean
 }
 
 /** Resolves the device token: `CANDLE_DEVICE_TOKEN` env override first, then the named profile's

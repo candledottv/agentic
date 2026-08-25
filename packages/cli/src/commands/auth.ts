@@ -26,6 +26,7 @@
 
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { fetchAccount } from "../account"
 import { parseArgs, parseScopesList } from "../args"
 import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest } from "../client"
@@ -233,16 +234,7 @@ async function finishLogin(
   // WHICH account this profile acts as, cached for the identity line (and Phase 2's guard).
   // Best-effort: an unreachable API must not fail a login that already succeeded.
   let account: string | undefined
-  if (body.apiKey) {
-    const identity = await apiRequest("/api/v1/agent/wallets/embedded", {
-      auth: "key",
-      credentials: { apiKey: body.apiKey.key },
-      apiUrl: ctx.apiUrl,
-      fetch: deps.fetch,
-      env: deps.env,
-    })
-    if (identity.ok) account = (identity.body as { account?: string }).account
-  }
+  if (body.apiKey) account = (await fetchAccount(deps, ctx.apiUrl, body.apiKey.key)).account
 
   // `scopes` is only ever persisted (and only ever reported as "Granted") when a key actually
   // exists to describe. On the provisioning-failure path (body.apiKey null) there is no key, so
@@ -256,7 +248,7 @@ async function finishLogin(
     ...(body.apiKey ? { keyPrefix: body.apiKey.keyPrefix, scopes: body.apiKey.scopes } : {}),
     ...(requested.label ? { label: requested.label } : {}),
     ...(portalOrigin ? { portalOrigin } : {}),
-    ...(account ? { account } : {}),
+    ...(account ? { account, accountCachedAt: deps.now() } : {}),
   })
   // The FIRST profile ever created on this machine becomes active; a second `auth login` (a
   // different `--profile`, or re-authenticating the same one) never steals that from the one
@@ -460,16 +452,7 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   // credential for the wrong account is the failure this command is reached for, so it has to be
   // on screen. Best-effort: an unreachable API must not turn a credential report into a failure.
   let account: string | undefined
-  if (apiKey) {
-    const identity = await apiRequest("/api/v1/agent/wallets/embedded", {
-      auth: "key",
-      credentials: { apiKey },
-      apiUrl,
-      fetch: deps.fetch,
-      env: deps.env,
-    })
-    if (identity.ok) account = (identity.body as { account?: string }).account
-  }
+  if (apiKey) account = (await fetchAccount(deps, apiUrl, apiKey)).account
 
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0
   const configPath = configFilePathForDisplay(deps.env)
@@ -477,6 +460,23 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   // top-level fields unconditionally reported "not set" for both on every profile created since
   // the upgrade, which is precisely the question this command is run to answer.
   const fields = effectiveProfileFields(config, ctx.profile)
+  // Both names, whenever they disagree. The live account alone reads as "fine" to an operator who
+  // never doubted which account they were on; the mismatch is only visible once the profile's own
+  // record is beside it. `cachedAccount` is reported only when a profile is resolved, since
+  // without one there is no record to disagree with.
+  //
+  // NOT under a credential env override, though, and for the reason the guard skips there: the
+  // live answer then comes from CANDLE_API_KEY's key, not the profile's stored one, so the two
+  // names differing is expected rather than wrong -- and the repair this line offers,
+  // `profile use`, re-caches from the stored key that was never acting. The `cachedAccount` field
+  // is unconditional; only the sentence and its suggestion are gated.
+  const cachedAccount = ctx.profile !== undefined ? fields.account : undefined
+  const mismatch =
+    ctx.profile !== undefined &&
+    account !== undefined &&
+    cachedAccount !== undefined &&
+    account !== cachedAccount &&
+    credentialEnvOverrides(deps.env).length === 0
 
   if (json) {
     deps.stdout.write(
@@ -486,6 +486,7 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
         deviceTokenPrefix: fields.deviceTokenPrefix,
         keyPrefix: fields.keyPrefix,
         account,
+        cachedAccount,
         apiUrl,
         configPath,
         rows,
@@ -499,6 +500,14 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   // didn't answer (no API key, or an unreachable API) -- see identityLine's own doc comment for
   // why an absent value is still named rather than omitted.
   deps.stdout.write(`${identityLine(ctx.profile, account ?? fields.account, apiUrl)}\n`)
+  // `profile use` is the cheapest of the three repairs (it re-caches the account from this very
+  // key); the guard's own refusal names the other two, which cost a re-authentication or a skipped
+  // check. This line is a report, not a refusal, so it names only the cheap one.
+  if (mismatch) {
+    deps.stdout.write(
+      `Profile ${ctx.profile} recorded ${cachedAccount}; this key belongs to ${account}. Run: candle profile use ${ctx.profile}\n`,
+    )
+  }
   deps.stdout.write(`Backend: ${deps.backend}\n`)
   deps.stdout.write(`Device token prefix: ${fields.deviceTokenPrefix ?? "not set"}\n`)
   deps.stdout.write(`API key prefix: ${fields.keyPrefix ?? "not set"}\n`)

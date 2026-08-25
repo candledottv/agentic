@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { run } from "./index"
+import { NEVER_GUARDED, ROUTED_COMMANDS, run } from "./index"
 import {
   createCapture,
   createFakeConfigStore,
@@ -252,6 +252,16 @@ describe("profiles at dispatch", () => {
     expect(stderr.text).toContain("--profile")
   })
 
+  test("auth login with an invalid CANDLE_PROFILE is a usage error before any request", async () => {
+    const stderr = createCapture()
+    const code = await run(
+      ["auth", "login", "--no-browser"],
+      createTestDeps({ fetch: unusedFetch, stderr, env: { CANDLE_PROFILE: "bad name" }, ...createFakeConfigStore({}) }),
+    )
+    expect(code).toBe(2)
+    expect(stderr.text).toContain("Invalid profile name")
+  })
+
   test("the profile's apiUrl is used, and --api-url / CANDLE_API_URL still beat it", async () => {
     const { fetch, calls } = createRoutedFetch(keysRoute)
     const store = createFakeStore({ "profile:staging:device_token": "t" })
@@ -295,6 +305,195 @@ describe("profiles at dispatch", () => {
     const stdout = createCapture()
     expect(await run(["--version"], createTestDeps({ fetch: unusedFetch, stdout, ...config }))).toBe(0)
     expect(stdout.text.trim()).toBe(CLI_VERSION)
+  })
+})
+
+describe("the account guard at dispatch", () => {
+  const guarded = () =>
+    createFakeConfigStore({
+      activeProfile: "staging",
+      profiles: { staging: { apiUrl: "https://staging.api.candle.tv", account: "CACHED1" } },
+    })
+  const store = () => createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "k" })
+
+  test("a mismatched account refuses an authenticated command before it runs, exit 1", async () => {
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "OTHER22" }),
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, tier: "free", keys: [] }),
+    })
+    const stderr = createCapture()
+    const code = await run(["keys", "list"], createTestDeps({ fetch, store: store(), stderr, ...guarded() }))
+    expect(code).toBe(1)
+    expect(stderr.text).toContain("OTHER22")
+    expect(calls.some((c) => c.url.includes("/agent/keys"))).toBe(false)
+  })
+
+  test("--no-verify-account runs the command without the check", async () => {
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, tier: "free", keys: [] }),
+    })
+    const code = await run(
+      ["keys", "list", "--no-verify-account", "--json"],
+      createTestDeps({ fetch, store: store(), ...guarded() }),
+    )
+    expect(code).toBe(0)
+    expect(calls.some((c) => c.url.includes("/wallets/embedded"))).toBe(false)
+  })
+
+  test("an unreachable API warns on stderr and the command still runs", async () => {
+    let first = true
+    const fetch = (async (url: string) => {
+      if (String(url).includes("/wallets/embedded") && first) {
+        first = false
+        throw new Error("ECONNREFUSED")
+      }
+      return jsonResponse(200, { success: true, tier: "free", keys: [] })
+      // `typeof globalThis.fetch`, not `typeof fetch`: this const is itself named `fetch`, so the
+      // bare form would be a self-reference and infer `any`.
+    }) as unknown as typeof globalThis.fetch
+    const stderr = createCapture()
+    const code = await run(["keys", "list", "--json"], createTestDeps({ fetch, store: store(), stderr, ...guarded() }))
+    expect(code).toBe(0)
+    expect(stderr.text).toContain("Could not verify")
+  })
+
+  // The exempt commands (NEVER_GUARDED in index.ts), each run against the very fixture that
+  // refuses `keys list` above: cached account CACHED1, live account OTHER22. Every one of these
+  // fails if its exemption is removed, which is the point -- an operator holding a mismatch must
+  // keep the commands that show it and fix it.
+  const mismatched = {
+    "/api/v1/agent/wallets/embedded": () =>
+      jsonResponse(200, {
+        success: true,
+        account: "OTHER22",
+        wallets: { solana: { address: "abc", delegated: true }, evm: null },
+      }),
+  }
+
+  test("auth login is never guarded: re-authenticating the profile is how a moved key gets fixed", async () => {
+    const { fetch } = createRoutedFetch({
+      ...mismatched,
+      "/api/v1/agent/device/code": () =>
+        jsonResponse(200, {
+          deviceCode: "dc_abc123",
+          userCode: "ABCD-1234",
+          verificationUri: "https://candle.tv/dev/agent/device",
+          verificationUriComplete: "https://candle.tv/dev/agent/device?code=ABCD-1234",
+          expiresIn: 600,
+          interval: 5,
+        }),
+      "/api/v1/agent/device/token": () =>
+        jsonResponse(200, {
+          deviceToken: "cndl_dvc_fresh",
+          tokenPrefix: "dvcprofl",
+          apiKey: { key: "ck_live_fresh", keyPrefix: "ck_livepr", scopes: ["launch:write"] },
+        }),
+    })
+    const secrets = store()
+    const stderr = createCapture()
+    const code = await run(
+      ["auth", "login", "--no-browser"],
+      createTestDeps({ fetch, store: secrets, stderr, ...guarded() }),
+    )
+    expect(code).toBe(0)
+    expect(stderr.text).not.toContain("Refusing")
+    // The credentials the login just filed, which a refusal would have prevented it from writing.
+    expect(await secrets.get("profile:staging:device_token")).toBe("cndl_dvc_fresh")
+    expect(await secrets.get("profile:staging:api_key")).toBe("ck_live_fresh")
+  })
+
+  test("auth status is never guarded: reading the live account is how a mismatch gets seen", async () => {
+    const { fetch } = createRoutedFetch({
+      ...mismatched,
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, tier: "free", keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+    })
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const code = await run(["auth", "status"], createTestDeps({ fetch, store: store(), stdout, stderr, ...guarded() }))
+    expect(code).toBe(0)
+    expect(stderr.text).not.toContain("Refusing")
+    // It reports the LIVE account, which is the whole reason it must not be refused.
+    expect(stdout.text).toContain("OTHER22")
+  })
+
+  test("auth logout is never guarded, and still revokes the stored key with the credential it names", async () => {
+    const { fetch, calls } = createRoutedFetch({
+      ...mismatched,
+      "/api/v1/agent/keys/ck_livepr": () => jsonResponse(200, { success: true }),
+    })
+    const config = createFakeConfigStore({
+      activeProfile: "staging",
+      profiles: { staging: { apiUrl: "https://staging.api.candle.tv", account: "CACHED1", keyPrefix: "ck_livepr" } },
+    })
+    const stderr = createCapture()
+    const code = await run(["auth", "logout"], createTestDeps({ fetch, store: store(), stderr, ...config }))
+    expect(code).toBe(0)
+    expect(stderr.text).not.toContain("Refusing")
+    expect(calls.some((c) => c.url.endsWith("/api/v1/agent/keys/ck_livepr") && c.init.method === "DELETE")).toBe(true)
+  })
+
+  test("doctor is never guarded: it is the command the mismatch is diagnosed with", async () => {
+    const { fetch } = createRoutedFetch({
+      ...mismatched,
+      "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [], tier: "free" }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+    })
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const code = await run(["doctor"], createTestDeps({ fetch, store: store(), stdout, stderr, ...guarded() }))
+    expect(code).toBe(0)
+    expect(stderr.text).not.toContain("Refusing")
+    expect(stdout.text).toContain("PASS")
+  })
+
+  test("profile commands are never guarded, and make no verification call at all", async () => {
+    // Protected twice over: dispatch resolves no profile for `profile *` (so the guard would
+    // skip at "no profile" even if it ran), and NEVER_GUARDED exempts the word. The behaviour
+    // below therefore cannot distinguish the two, so the rule itself is asserted as well: an
+    // exemption that holds only by accident of resolution would break the day `profile use`
+    // wanted a resolved `ctx.profile`.
+    expect(NEVER_GUARDED.has("profile")).toBe(true)
+    const { fetch, calls } = createRoutedFetch(mismatched)
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const code = await run(["profile", "list"], createTestDeps({ fetch, store: store(), stdout, stderr, ...guarded() }))
+    expect(code).toBe(0)
+    expect(calls).toHaveLength(0)
+    expect(stderr.text).toBe("")
+  })
+
+  test("setup stays guarded: it skips login when credentials exist, then acts as whoever they belong to", async () => {
+    const { fetch, calls } = createRoutedFetch(mismatched)
+    const stderr = createCapture()
+    const code = await run(["setup"], createTestDeps({ fetch, store: store(), stderr, ...guarded() }))
+    expect(code).toBe(1)
+    expect(stderr.text).toContain("OTHER22")
+    expect(calls).toHaveLength(1)
+  })
+
+  test("the guarded set stays in step with the commands dispatch routes", async () => {
+    // ROUTED_COMMANDS duplicates the dispatch chain, so a command added there and left out here
+    // would be silently unguarded. The help text's Commands: block is the third copy, and what
+    // this compares against. What it enforces is one direction: a command DOCUMENTED in the help
+    // must be in the set. A command added to dispatch and documented nowhere passes this test and
+    // still runs unguarded; the convention that every command is documented is what closes that.
+    const stdout = createCapture()
+    await run(["--help"], createTestDeps({ fetch: unusedFetch, stdout }))
+    const block = stdout.text.slice(
+      stdout.text.indexOf("Commands:") + "Commands:".length,
+      stdout.text.indexOf("Global options:"),
+    )
+    const documented = new Set(
+      block
+        .split("\n")
+        .map((line) => line.match(/^ {2}(\S+)/)?.[1])
+        .filter((word): word is string => word !== undefined),
+    )
+    expect([...documented].sort()).toEqual([...ROUTED_COMMANDS].sort())
+    // A typo here would silently guard a command the ruling exempts, or exempt nothing at all.
+    expect([...NEVER_GUARDED].filter((word) => !ROUTED_COMMANDS.has(word))).toEqual([])
   })
 })
 

@@ -191,4 +191,104 @@ describe("profiles", () => {
     const keyRow = stdout.text.split("\n").find((line) => line.startsWith("API key valid (launch:write)"))
     expect(keyRow).toContain("scopes: launch:write")
   })
+
+  // Fix wave item 1: doctor is where a mismatch is meant to be SEEN, so the row that reports the
+  // live account has to report the profile's record of it too, and the cheap repair, rather than
+  // leaving the operator to notice that the identity line above disagrees with the row below.
+  test("the Account row names the profile's cached account and the repair when the live one differs", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, {
+          success: true,
+          account: "OTHER22",
+          wallets: { solana: { address: "abc", delegated: true }, evm: null },
+        }),
+    })
+    const store = createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "k" })
+    const config = createFakeConfigStore({ profiles: { staging: { account: "CACHED1" } }, activeProfile: "staging" })
+    const stdout = createCapture()
+    const code = await run(["doctor"], createTestDeps({ fetch, store, stdout, ...config }))
+    // Doctor's exit code is unchanged by this wave: `setup` depends on it.
+    expect(code).toBe(0)
+    const accountRow = stdout.text.split("\n").find((line) => line.startsWith("Account"))
+    expect(accountRow).toContain("OTHER22")
+    expect(accountRow).toContain("CACHED1")
+    expect(accountRow).toContain("candle profile use staging")
+  })
+
+  test("--json carries cachedAccount beside account, and a matching cache adds nothing to the row", async () => {
+    const routes = {
+      "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, {
+          success: true,
+          account: "OTHER22",
+          wallets: { solana: { address: "abc", delegated: true }, evm: null },
+        }),
+    }
+    const store = () => createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "k" })
+    const jsonOut = createCapture()
+    await run(
+      ["doctor", "--json"],
+      createTestDeps({
+        fetch: createRoutedFetch(routes).fetch,
+        store: store(),
+        stdout: jsonOut,
+        ...createFakeConfigStore({ profiles: { staging: { account: "CACHED1" } }, activeProfile: "staging" }),
+      }),
+    )
+    const parsed = JSON.parse(jsonOut.text) as { account?: string; cachedAccount?: string }
+    expect(parsed.account).toBe("OTHER22")
+    expect(parsed.cachedAccount).toBe("CACHED1")
+
+    const matching = createCapture()
+    await run(
+      ["doctor"],
+      createTestDeps({
+        fetch: createRoutedFetch(routes).fetch,
+        store: store(),
+        stdout: matching,
+        ...createFakeConfigStore({ profiles: { staging: { account: "OTHER22" } }, activeProfile: "staging" }),
+      }),
+    )
+    const accountRow = matching.text.split("\n").find((line) => line.startsWith("Account"))
+    expect(accountRow).toContain("OTHER22")
+    expect(accountRow).not.toContain("recorded")
+    expect(accountRow).not.toContain("candle profile use")
+  })
+
+  // Doctor runs under a credential env override too (resolveApiKey reads it first), so its row
+  // carries the same correction as auth status: the live account then belongs to a key that is not
+  // the profile's stored one, and naming the profile's record as a disagreement would send the
+  // operator to `profile use`, which re-caches from the key that was never acting.
+  test("an env credential override silences the cached-account note on the Account row", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, {
+          success: true,
+          account: "OTHER22",
+          wallets: { solana: { address: "abc", delegated: true }, evm: null },
+        }),
+    })
+    const store = createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "k" })
+    const config = createFakeConfigStore({ profiles: { staging: { account: "CACHED1" } }, activeProfile: "staging" })
+    const stdout = createCapture()
+    const code = await run(
+      ["doctor"],
+      createTestDeps({ fetch, store, stdout, env: { CANDLE_API_KEY: "ck_live_env" }, ...config }),
+    )
+    expect(code).toBe(0)
+    const row = stdout.text.split("\n").find((line) => line.startsWith("Account"))
+    expect(row).toContain("OTHER22")
+    expect(row).not.toContain("recorded")
+    expect(row).not.toContain("candle profile use")
+  })
 })

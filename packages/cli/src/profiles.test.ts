@@ -6,10 +6,12 @@ import { describe, expect, test } from "bun:test"
 import {
   defaultProfileNameFor,
   effectiveProfileFields,
+  formatCacheAge,
   identityLine,
   isValidProfileName,
   migratedConfig,
   profileSecretRef,
+  profileTable,
   resolveProfileName,
   resolveProfileNameForLogin,
 } from "./profiles"
@@ -84,20 +86,34 @@ describe("resolveProfileNameForLogin", () => {
   const two = { profiles: { staging: {}, production: {} } }
 
   test("a named profile need not exist yet: naming one is how login creates it", () => {
-    expect(resolveProfileNameForLogin(two, { flag: "hood", env: {} })).toBe("hood")
-    expect(resolveProfileNameForLogin({}, { env: { CANDLE_PROFILE: "hood" } })).toBe("hood")
+    expect(resolveProfileNameForLogin(two, { flag: "hood", env: {} })).toEqual({ ok: true, name: "hood" })
+    expect(resolveProfileNameForLogin({}, { env: { CANDLE_PROFILE: "hood" } })).toEqual({ ok: true, name: "hood" })
   })
   test("with nothing named it refreshes the selected profile, or the sole one", () => {
-    expect(resolveProfileNameForLogin({ ...two, activeProfile: "production" }, { env: {} })).toBe("production")
-    expect(resolveProfileNameForLogin({ profiles: { staging: {} } }, { env: {} })).toBe("staging")
+    expect(resolveProfileNameForLogin({ ...two, activeProfile: "production" }, { env: {} })).toEqual({
+      ok: true,
+      name: "production",
+    })
+    expect(resolveProfileNameForLogin({ profiles: { staging: {} } }, { env: {} })).toEqual({
+      ok: true,
+      name: "staging",
+    })
   })
-  test("it never refuses: no profiles, or several with none selected, resolve to none", () => {
-    expect(resolveProfileNameForLogin({}, { env: {} })).toBeUndefined()
-    expect(resolveProfileNameForLogin(two, { env: {} })).toBeUndefined()
+  test("with no profile in play at all it resolves to none, not an error", () => {
+    expect(resolveProfileNameForLogin({}, { env: {} })).toEqual({ ok: true, name: undefined })
+    expect(resolveProfileNameForLogin(two, { env: {} })).toEqual({ ok: true, name: undefined })
   })
-  test("an unusable name is skipped, never written as a profile nothing could select again", () => {
+  test("an invalid name is an error even with an active profile it could otherwise fall back to", () => {
     const config = { ...two, activeProfile: "production" }
-    expect(resolveProfileNameForLogin(config, { env: { CANDLE_PROFILE: "bad name" } })).toBe("production")
+    const r = resolveProfileNameForLogin(config, { env: { CANDLE_PROFILE: "bad name" } })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.message).toContain("Invalid profile name")
+  })
+
+  test("an invalid requested name is an error, not silently skipped", () => {
+    const r = resolveProfileNameForLogin({ profiles: { staging: {} } }, { env: { CANDLE_PROFILE: "bad name" } })
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.message).toContain("Invalid profile name")
   })
 })
 
@@ -193,5 +209,54 @@ describe("identityLine", () => {
       "Profile: staging   Account: unknown (CANDLE_API_KEY, CANDLE_DEVICE_TOKEN override) at https://api.candle.tv",
     )
     expect(identityLine("staging", "FaKwE2xX", "https://api.candle.tv", [])).toContain("Account: FaKwE2xX")
+  })
+})
+
+describe("formatCacheAge", () => {
+  const now = Date.parse("2026-08-25T12:00:00Z")
+  test("names the age in the largest whole unit, and the absent case", () => {
+    expect(formatCacheAge(now, undefined)).toBe("not cached")
+    expect(formatCacheAge(now, now - 30_000)).toBe("just now")
+    expect(formatCacheAge(now, now - 5 * 60_000)).toBe("5m ago")
+    expect(formatCacheAge(now, now - 3 * 3_600_000)).toBe("3h ago")
+    expect(formatCacheAge(now, now - 2 * 86_400_000)).toBe("2d ago")
+  })
+  test("a cache stamped in the future reads as just now rather than negative", () => {
+    expect(formatCacheAge(now, now + 60_000)).toBe("just now")
+  })
+})
+
+describe("profileTable", () => {
+  const now = Date.parse("2026-08-25T12:00:00Z")
+
+  // Fix wave item 3: every profile that predates `accountCachedAt` has an account and no stamp,
+  // so "not cached" said the opposite of what the row showed -- an account, right there, beside
+  // the claim that none was cached. The unknown is the AGE, not the account.
+  test("an account with no stamp reads as an unknown age, not as an uncached account", () => {
+    const rows = profileTable({ profiles: { upgraded: { account: "FaKwE2xX" } } }, now)
+    expect(rows[0]?.account).toBe("FaKwE2xX")
+    expect(rows[0]?.cachedAge).toBe("age unknown")
+  })
+
+  test("a profile with no account at all still reads not cached", () => {
+    const rows = profileTable({ profiles: { fresh: { apiUrl: "https://api.candle.tv" } } }, now)
+    expect(rows[0]?.account).toBeUndefined()
+    expect(rows[0]?.cachedAge).toBe("not cached")
+  })
+
+  test("a stamped profile still reads its age, sorted by name, marking the active one", () => {
+    const rows = profileTable(
+      {
+        activeProfile: "staging",
+        profiles: {
+          staging: { account: "A", accountCachedAt: now - 3_600_000 },
+          production: { account: "B", accountCachedAt: now - 30_000 },
+        },
+      },
+      now,
+    )
+    expect(rows.map((r) => r.name)).toEqual(["production", "staging"])
+    expect(rows.map((r) => r.cachedAge)).toEqual(["just now", "1h ago"])
+    expect(rows.map((r) => r.active)).toEqual([false, true])
   })
 })
