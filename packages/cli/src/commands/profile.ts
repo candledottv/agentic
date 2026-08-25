@@ -41,6 +41,30 @@ export async function profileList(args: string[], ctx: CommandContext): Promise<
   return 0
 }
 
+const NEEDS_SCHEME = (value: string) => `It needs a scheme, such as https://${value}`
+const BAD_SCHEME = "The scheme must be http or https."
+
+/**
+ * What is wrong with a `--api-url` value, as the sentence to say about it, or `undefined` when the
+ * CLI could actually send a request to it. Parsing with `new URL` is not enough on its own: it
+ * ACCEPTS "localhost:3000" and "api.candle.tv:443", reading the part before the colon as a SCHEME
+ * and leaving the host empty, which is exactly the shape an operator types when they mean to leave
+ * the scheme off -- so those get the same advice as a value that does not parse at all.
+ *
+ * A value that DID parse with a real scheme the client cannot speak gets its own sentence: telling
+ * someone who typed "ftp://api.candle.tv" to try "https://ftp://api.candle.tv" is nonsense.
+ */
+function apiUrlFault(value: string): string | undefined {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    return NEEDS_SCHEME(value)
+  }
+  if (url.host === "") return NEEDS_SCHEME(value)
+  return url.protocol === "http:" || url.protocol === "https:" ? undefined : BAD_SCHEME
+}
+
 export async function profileAdd(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, json, apiUrlFlag } = ctx
   const parsed = parseArgs(args, {})
@@ -64,10 +88,9 @@ export async function profileAdd(args: string[], ctx: CommandContext): Promise<n
   // Parsed here, where the operator is still looking at what they typed. The value is otherwise
   // written to config unread and only fails much later, inside whatever command first tries to
   // reach it, with the typo sitting in a file nothing prompted them to open.
-  try {
-    new URL(apiUrlFlag)
-  } catch {
-    writeUsageFailure(deps, `Invalid --api-url: ${apiUrlFlag}. It needs a scheme, such as https://${apiUrlFlag}`, json)
+  const fault = apiUrlFault(apiUrlFlag)
+  if (fault) {
+    writeUsageFailure(deps, `Invalid --api-url: ${apiUrlFlag}. ${fault}`, json)
     return 2
   }
   const config = await deps.readConfig()

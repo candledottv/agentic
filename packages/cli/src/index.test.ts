@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { NEVER_GUARDED, ROUTED_COMMANDS, run } from "./index"
+import { NEVER_GUARDED, ROUTED_COMMANDS, ROUTED_SUBCOMMANDS, run } from "./index"
 import {
   createCapture,
   createFakeConfigStore,
@@ -24,6 +24,26 @@ describe("dispatch", () => {
     expect(code).toBe(1)
     expect(stderr.text).toContain("Unknown command: frobnicate")
     expect(stderr.text.toLowerCase()).toContain("usage")
+  })
+
+  // The dispatch table and each command's subcommand map are plain objects, so a bare index
+  // lookup finds Object.prototype's members: "toString" would route as a command word, and "keys
+  // toString" would find a "handler" that is not one and call it. Every one of these is an
+  // unknown command and has to read exactly like any other unknown word.
+  test("a prototype member is an unknown command, not a routed one", async () => {
+    const control = createCapture()
+    expect(await run(["frobnicate"], createTestDeps({ fetch: unusedFetch, stderr: control }))).toBe(1)
+
+    for (const [argv, token] of [
+      [["toString"], "toString"],
+      [["constructor", "foo"], "constructor"],
+      [["keys", "toString"], "keys toString"],
+    ] as const) {
+      const stderr = createCapture()
+      // unusedFetch throws, so this also pins that none of them pays for a verification request.
+      expect(await run([...argv], createTestDeps({ fetch: unusedFetch, stderr }))).toBe(1)
+      expect(stderr.text).toBe(control.text.replace("frobnicate", token))
+    }
   })
 
   // `bunx github:candledottv/agentic candle auth login` resolves the bin by name and then hands
@@ -252,6 +272,100 @@ describe("profiles at dispatch", () => {
     expect(stderr.text).toContain("--profile")
   })
 
+  // Both refusals below happen at dispatch, before any command owns the output stream. Under
+  // --json they still have to keep the CLI's contract with agents: exactly one JSON value on
+  // stdout, stderr reserved for diagnostics. They used to write a bare sentence to stderr and
+  // leave stdout empty, so a --json caller got an unparseable exit 1.
+  test("--json: an unresolved profile is an envelope on stdout, with nothing on stderr", async () => {
+    const config = createFakeConfigStore({ profiles: { staging: {}, production: {} } })
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const code = await run(
+      ["keys", "list", "--json"],
+      createTestDeps({ fetch: unusedFetch, stdout, stderr, ...config }),
+    )
+    expect(code).toBe(1)
+    const parsed = JSON.parse(stdout.text)
+    expect(parsed.ok).toBe(false)
+    expect(parsed.code).toBe("PROFILE_UNRESOLVED")
+    expect(`${parsed.message} ${parsed.suggestion}`).toContain("staging")
+    expect(stderr.text).toBe("")
+  })
+
+  test("--json: auth login's invalid CANDLE_PROFILE is a USAGE envelope on stdout, exit 2", async () => {
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const code = await run(
+      ["auth", "login", "--no-browser", "--json"],
+      createTestDeps({
+        fetch: unusedFetch,
+        stdout,
+        stderr,
+        env: { CANDLE_PROFILE: "bad name" },
+        ...createFakeConfigStore({}),
+      }),
+    )
+    expect(code).toBe(2)
+    const parsed = JSON.parse(stdout.text)
+    expect(parsed.ok).toBe(false)
+    expect(parsed.code).toBe("USAGE")
+    expect(parsed.message).toContain("Invalid profile name")
+    expect(stderr.text).toBe("")
+  })
+
+  // Every shape resolveProfileName can refuse with, pinned to the byte: splitFix cuts these into
+  // a message and a suggestion for the envelope, and writeLocalFailure has to put the very same
+  // separator back -- a newline before a list, a single space before a " Run: ..." tail.
+  test("human mode is unchanged: every resolution refusal is the same text on stderr", async () => {
+    const named = createFakeConfigStore({
+      activeProfile: "staging",
+      profiles: { staging: { account: "ACC1" }, production: {} },
+    })
+    const namedOut = createCapture()
+    const namedErr = createCapture()
+    await run(
+      ["keys", "list", "--profile", "gone"],
+      createTestDeps({ fetch: unusedFetch, stdout: namedOut, stderr: namedErr, ...named }),
+    )
+    expect(namedOut.text).toBe("")
+    expect(namedErr.text).toBe(
+      ['No profile named "gone".', "Profiles on this machine:", "  staging (active)  ACC1", "  production", ""].join(
+        "\n",
+      ),
+    )
+
+    // With no profiles at all there is no list to print, and the fix sits on the same line.
+    const emptyOut = createCapture()
+    const emptyErr = createCapture()
+    await run(
+      ["keys", "list", "--profile", "gone"],
+      createTestDeps({ fetch: unusedFetch, stdout: emptyOut, stderr: emptyErr, ...createFakeConfigStore({}) }),
+    )
+    expect(emptyOut.text).toBe("")
+    expect(emptyErr.text).toBe('No profile named "gone". Run: candle auth login --profile gone\n')
+
+    const severalOut = createCapture()
+    const severalErr = createCapture()
+    await run(
+      ["keys", "list"],
+      createTestDeps({
+        fetch: unusedFetch,
+        stdout: severalOut,
+        stderr: severalErr,
+        ...createFakeConfigStore({ profiles: { staging: {}, production: {} } }),
+      }),
+    )
+    expect(severalOut.text).toBe("")
+    expect(severalErr.text).toBe(
+      [
+        "Several profiles exist and none is selected. Pick one with --profile <name> or CANDLE_PROFILE=<name>:",
+        "  staging",
+        "  production",
+        "",
+      ].join("\n"),
+    )
+  })
+
   test("auth login with an invalid CANDLE_PROFILE is a usage error before any request", async () => {
     const stderr = createCapture()
     const code = await run(
@@ -328,6 +442,46 @@ describe("the account guard at dispatch", () => {
     expect(calls.some((c) => c.url.includes("/agent/keys"))).toBe(false)
   })
 
+  test("--json: the refusal is an envelope on stdout, with nothing on stderr", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "OTHER22" }),
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, tier: "free", keys: [] }),
+    })
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const code = await run(
+      ["keys", "list", "--json"],
+      createTestDeps({ fetch, store: store(), stdout, stderr, ...guarded() }),
+    )
+    expect(code).toBe(1)
+    const parsed = JSON.parse(stdout.text)
+    expect(parsed.ok).toBe(false)
+    expect(parsed.code).toBe("ACCOUNT_MISMATCH")
+    expect(parsed.message).toContain("OTHER22")
+    expect(parsed.suggestion).toContain("candle profile use staging")
+    expect(stderr.text).toBe("")
+  })
+
+  // The wording is guard.ts's, and routing it through render.ts must not have moved a byte of it.
+  test("human mode is unchanged: the sentence naming both accounts, then the three repairs", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "OTHER22" }),
+    })
+    const stdout = createCapture()
+    const stderr = createCapture()
+    await run(["keys", "list"], createTestDeps({ fetch, store: store(), stdout, stderr, ...guarded() }))
+    expect(stdout.text).toBe("")
+    expect(stderr.text).toBe(
+      [
+        "Refusing: profile staging expects account CACHED1 but its stored key belongs to OTHER22.",
+        "If that key was legitimately re-issued: candle profile use staging",
+        "To re-authenticate: candle auth login --profile staging",
+        "To proceed once without the check: --no-verify-account",
+        "",
+      ].join("\n"),
+    )
+  })
+
   test("--no-verify-account runs the command without the check", async () => {
     const { fetch, calls } = createRoutedFetch({
       "/api/v1/agent/keys": () => jsonResponse(200, { success: true, tier: "free", keys: [] }),
@@ -351,10 +505,17 @@ describe("the account guard at dispatch", () => {
       // `typeof globalThis.fetch`, not `typeof fetch`: this const is itself named `fetch`, so the
       // bare form would be a self-reference and infer `any`.
     }) as unknown as typeof globalThis.fetch
+    const stdout = createCapture()
     const stderr = createCapture()
-    const code = await run(["keys", "list", "--json"], createTestDeps({ fetch, store: store(), stderr, ...guarded() }))
+    const code = await run(
+      ["keys", "list", "--json"],
+      createTestDeps({ fetch, store: store(), stdout, stderr, ...guarded() }),
+    )
     expect(code).toBe(0)
     expect(stderr.text).toContain("Could not verify")
+    // The warning is a diagnostic and stays on stderr in BOTH modes: under --json stdout carries
+    // exactly one JSON value, the command's own.
+    expect(JSON.parse(stdout.text)).toEqual({ success: true, tier: "free", keys: [] })
   })
 
   // The exempt commands (NEVER_GUARDED in index.ts), each run against the very fixture that
@@ -464,6 +625,95 @@ describe("the account guard at dispatch", () => {
     expect(stderr.text).toBe("")
   })
 
+  // An invocation dispatch is about to answer with usage has no identity to verify: the guard's
+  // request would be spent on a command that never runs. The three cases below all sit on the
+  // fixture that refuses `keys list`, so a guard that still ran would refuse them instead.
+  test("an unknown subcommand prints usage without paying for a verification request", async () => {
+    const { fetch, calls } = createRoutedFetch(mismatched)
+    const stderr = createCapture()
+    const code = await run(["keys", "bogus"], createTestDeps({ fetch, store: store(), stderr, ...guarded() }))
+    expect(code).toBe(1)
+    expect(stderr.text).toContain("Unknown command: keys bogus")
+    expect(stderr.text).not.toContain("Refusing")
+    expect(calls).toHaveLength(0)
+  })
+
+  test("a command word with no subcommand prints usage without paying for a verification request", async () => {
+    const { fetch, calls } = createRoutedFetch(mismatched)
+    const stderr = createCapture()
+    const code = await run(["keys"], createTestDeps({ fetch, store: store(), stderr, ...guarded() }))
+    expect(code).toBe(1)
+    expect(stderr.text).not.toContain("Unknown command")
+    expect(stderr.text.toLowerCase()).toContain("usage")
+    expect(calls).toHaveLength(0)
+  })
+
+  test("mcp --read-only is not guarded: it launches with no key at all, so it acts as no account", async () => {
+    const { fetch, calls } = createRoutedFetch(mismatched)
+    const children: string[][] = []
+    const stderr = createCapture()
+    const code = await run(
+      ["mcp", "--read-only"],
+      createTestDeps({
+        fetch,
+        store: store(),
+        stderr,
+        runChild: async (_command, args) => {
+          children.push(args)
+          return 0
+        },
+        ...guarded(),
+      }),
+    )
+    expect(code).toBe(0)
+    expect(stderr.text).not.toContain("Refusing")
+    expect(calls).toHaveLength(0)
+    expect(children).toHaveLength(1)
+  })
+
+  test("mcp --print-config stays guarded: the block it prints launches a server WITH the key", async () => {
+    const { fetch, calls } = createRoutedFetch(mismatched)
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const code = await run(
+      ["mcp", "--print-config"],
+      createTestDeps({ fetch, store: store(), stdout, stderr, ...guarded() }),
+    )
+    expect(code).toBe(1)
+    expect(stderr.text).toContain("OTHER22")
+    expect(stdout.text).toBe("")
+    expect(calls).toHaveLength(1)
+  })
+
+  // The two flags together print the block for a launch that carries NO key, so there is still no
+  // identity to verify: what --print-config is guarded for is the key the printed command would
+  // run with, not the printing.
+  test("mcp --print-config --read-only is not guarded: the block it prints is a keyless launch", async () => {
+    const { fetch, calls } = createRoutedFetch(mismatched)
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const code = await run(
+      ["mcp", "--print-config", "--read-only"],
+      createTestDeps({ fetch, store: store(), stdout, stderr, ...guarded() }),
+    )
+    expect(code).toBe(0)
+    expect(stderr.text).not.toContain("Refusing")
+    expect(calls).toHaveLength(0)
+    expect(JSON.parse(stdout.text).mcpServers.candle.args).toEqual(["mcp", "--read-only"])
+  })
+
+  // `wallets` with no subcommand is not a usage error: it IS a command, and an authenticated one.
+  // Skipping the guard for it (its subcommands are import and revoke, neither of them typed here)
+  // would run it as whatever account the stored key belongs to.
+  test("bare wallets is a command in its own right, so it stays guarded", async () => {
+    const { fetch, calls } = createRoutedFetch(mismatched)
+    const stderr = createCapture()
+    const code = await run(["wallets"], createTestDeps({ fetch, store: store(), stderr, ...guarded() }))
+    expect(code).toBe(1)
+    expect(stderr.text).toContain("OTHER22")
+    expect(calls).toHaveLength(1)
+  })
+
   test("setup stays guarded: it skips login when credentials exist, then acts as whoever they belong to", async () => {
     const { fetch, calls } = createRoutedFetch(mismatched)
     const stderr = createCapture()
@@ -494,6 +744,23 @@ describe("the account guard at dispatch", () => {
     expect([...documented].sort()).toEqual([...ROUTED_COMMANDS].sort())
     // A typo here would silently guard a command the ruling exempts, or exempt nothing at all.
     expect([...NEVER_GUARDED].filter((word) => !ROUTED_COMMANDS.has(word))).toEqual([])
+
+    // The same block documents SUBCOMMANDS ("auth login", "keys create"), and the guard now reads
+    // them: an invocation whose subcommand is not one dispatch routes is about to print usage, so
+    // it is not verified. A subcommand documented here and missing from the map would therefore
+    // run its command with no verification at all.
+    const documentedSubs: Record<string, string[]> = {}
+    for (const line of block.split("\n")) {
+      // The second token only counts when it is a plain word: `setup [--no-browser]` and `keys
+      // revoke <prefix>` document a flag and an argument, not a subcommand.
+      const match = line.match(/^ {2}(\S+) ([a-z][a-z-]*)(?:\s|$)/)
+      if (!match?.[1] || !match[2]) continue
+      documentedSubs[match[1]] = [...(documentedSubs[match[1]] ?? []), match[2]]
+    }
+    const sorted = (map: Record<string, readonly string[]>) =>
+      Object.fromEntries(Object.entries(map).map(([word, subs]) => [word, [...subs].sort()]))
+    expect(sorted(documentedSubs)).toEqual(sorted(ROUTED_SUBCOMMANDS))
+    expect(Object.keys(ROUTED_SUBCOMMANDS).filter((word) => !ROUTED_COMMANDS.has(word))).toEqual([])
   })
 })
 

@@ -49,6 +49,21 @@ export const READ_ONLY_TOOL_NAMES = [
   "candle_get_agent_profile",
 ] as const
 
+/**
+ * Whether a `candle mcp` invocation would act as the profile's account. `--read-only` launches
+ * the server with no key at all (see the launch below), pinned to the four tools that
+ * authenticate with nothing, so there is no account for the dispatch-level guard to verify and no
+ * way for such a server to act as one. Everything else does act, `--print-config` included: the
+ * block it prints is for a server that WILL be launched with the stored key.
+ *
+ * A membership check, not a second parser: `--read-only` is a boolean flag in this command's own
+ * `parseArgs` spec, so it never consumes the token after it and can never be another flag's
+ * value. The guard stays at dispatch; this only tells it what the invocation means.
+ */
+export function mcpActsAsIdentity(args: string[]): boolean {
+  return !args.includes("--read-only")
+}
+
 /** What `--print-config` emits: a ready-to-paste MCP client block. */
 export function mcpClientConfig(args: string[]): string {
   return JSON.stringify({ mcpServers: { candle: { command: "candle", args: ["mcp", ...args] } } }, null, 2)

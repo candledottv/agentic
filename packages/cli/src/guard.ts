@@ -24,7 +24,13 @@ import type { CliConfig } from "./config"
 import type { CommandContext } from "./deps"
 import { credentialEnvOverrides, effectiveProfileFields, profileSecretRef } from "./profiles"
 
-export type GuardVerdict = { ok: true; skipped?: string; warning?: string } | { ok: false; message: string }
+/** A refusal carries its wording already split the way `writeLocalFailure` renders a local
+ * failure: `message` is the finding (the sentence naming both accounts), `suggestion` the fix
+ * (the repairs, one per line). Split HERE so guard.ts stays the single owner of the words, and so
+ * a `--json` caller gets the two as separate fields rather than one string to cut apart. */
+export type GuardVerdict =
+  | { ok: true; skipped?: string; warning?: string }
+  | { ok: false; message: string; suggestion: string }
 
 /** `config` is passed in rather than read again: `run` has already read it, resolved `ctx.profile`
  * from it, and migrated it if needed, and the guard must judge that same value. */
@@ -54,8 +60,8 @@ export async function verifyProfileAccount(ctx: CommandContext, config: CliConfi
     // one, which is how an operator ends up minting a key they did not need.
     return {
       ok: false,
-      message: [
-        `Refusing: profile ${profile} expects account ${cached} but its stored key belongs to ${live}.`,
+      message: `Refusing: profile ${profile} expects account ${cached} but its stored key belongs to ${live}.`,
+      suggestion: [
         `If that key was legitimately re-issued: candle profile use ${profile}`,
         `To re-authenticate: candle auth login --profile ${profile}`,
         "To proceed once without the check: --no-verify-account",

@@ -185,19 +185,29 @@ export function writeFailure(
 
 /**
  * A LOCAL failure, decided before any request was made: the command needs a credential the CLI
- * does not have. Same two-mode contract `writeFailure` gives an API failure -- a machine-readable
- * object in `--json` mode, the plain line otherwise -- so a `--json` caller never has to parse a
- * sentence. Deliberately not routed through `writeFailure`: that takes an HTTP status, and there
- * is no honest one here (status 0 specifically means "could not reach the server", which
- * `renderError` would then print INSTEAD of the message this failure carries).
+ * does not have, or dispatch will not let it act (an unresolved profile, a mismatched account).
+ * Same two-mode contract `writeFailure` gives an API failure -- a machine-readable object in
+ * `--json` mode, the plain line otherwise -- so a `--json` caller never has to parse a sentence.
+ * Deliberately not routed through `writeFailure`: that takes an HTTP status, and there is no
+ * honest one here (status 0 specifically means "could not reach the server", which `renderError`
+ * would then print INSTEAD of the message this failure carries).
+ *
+ * A one-line suggestion reads as the tail of the sentence and is joined to it with a space ("No
+ * API key available. Run: candle auth login"). A suggestion that is ITSELF several lines (the
+ * guard's three repairs, a list of profiles to pick from) is its own block and keeps the newline:
+ * gluing a list onto the end of a sentence produces a first line that is neither.
  */
 export function writeLocalFailure(
   deps: ModeWriters,
   failure: { code: string; message: string; suggestion?: string },
   json: boolean,
 ): void {
-  if (json) deps.stdout.write(`${JSON.stringify({ ok: false, ...failure })}\n`)
-  else deps.stderr.write(`${failure.suggestion ? `${failure.message} ${failure.suggestion}` : failure.message}\n`)
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ok: false, ...failure })}\n`)
+    return
+  }
+  const separator = failure.suggestion?.includes("\n") ? "\n" : " "
+  deps.stderr.write(`${failure.suggestion ? `${failure.message}${separator}${failure.suggestion}` : failure.message}\n`)
 }
 
 /**

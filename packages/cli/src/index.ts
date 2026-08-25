@@ -25,7 +25,7 @@ import { resolveApiUrl } from "./client"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { doctor } from "./commands/doctor"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
-import { mcp } from "./commands/mcp"
+import { mcp, mcpActsAsIdentity } from "./commands/mcp"
 import { profileAdd, profileList, profileRemove, profileRename, profileUse } from "./commands/profile"
 import { setup } from "./commands/setup"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
@@ -35,6 +35,7 @@ import type { CommandContext, Deps } from "./deps"
 import { verifyProfileAccount } from "./guard"
 import { resolveSecretStore } from "./keychain"
 import { migratedConfig, profileSecretRef, resolveProfileName, resolveProfileNameForLogin } from "./profiles"
+import { writeLocalFailure, writeUsageFailure } from "./render"
 import { promptHiddenSecret, SECRET_REFS } from "./secret-store"
 import { CLI_VERSION } from "./version"
 
@@ -105,13 +106,80 @@ Global options:
   --version, -v           Show the CLI version
 `
 
-/** Every command word the dispatch chain in `run` routes. The guard's gate reads it so that an
- * unrecognized word prints usage without a network call. It duplicates the chain, so
- * `index.test.ts` asserts it against the Commands: block of HELP_TEXT, which enforces exactly
- * this: a command DOCUMENTED in HELP_TEXT must appear here. A command added to dispatch with no
- * help entry satisfies the test and still runs unguarded; what prevents that is the convention
- * that every command is documented, not the test. */
-export const ROUTED_COMMANDS = new Set(["auth", "keys", "wallets", "profile", "doctor", "mcp", "setup"])
+type CommandHandler = (args: string[], ctx: CommandContext) => Promise<number>
+
+interface CommandRoute {
+  /** Handlers keyed by the subcommand word, each called with the tokens AFTER it. */
+  subcommands?: Record<string, CommandHandler>
+  /** The command's own form, run when no subcommand matches: `candle wallets`, `candle doctor`,
+   * `candle mcp --read-only`. Called with the tokens after the command word, so a leading flag is
+   * never mistaken for a subcommand. A word with no bare form answers usage instead. */
+  bare?: CommandHandler
+}
+
+/**
+ * The dispatch table: every command word `run` routes, its subcommands, and its bare form. This
+ * is the single copy -- `ROUTED_COMMANDS`, `ROUTED_SUBCOMMANDS`, the guard's routability gate and
+ * the chain at the bottom of `run` are all derived from it, so the invocations the guard reasons
+ * about are by construction the ones dispatch actually runs. A command added here is routed,
+ * listed and gated in one edit.
+ */
+const COMMANDS: Record<string, CommandRoute> = {
+  auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
+  keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke } },
+  wallets: { subcommands: { import: walletsImport, revoke: walletsRevoke }, bare: wallets },
+  profile: {
+    subcommands: { list: profileList, add: profileAdd, use: profileUse, rename: profileRename, remove: profileRemove },
+  },
+  doctor: { bare: doctor },
+  mcp: { bare: mcp },
+  setup: { bare: setup },
+}
+
+/** Every command word the dispatch table routes. The guard's gate reads it so that an
+ * unrecognized word prints usage without a network call. `index.test.ts` asserts it against the
+ * Commands: block of HELP_TEXT, which enforces exactly this: a command DOCUMENTED in HELP_TEXT
+ * must appear here. A command added to dispatch with no help entry satisfies the test and still
+ * runs unguarded; what prevents that is the convention that every command is documented, not the
+ * test. */
+export const ROUTED_COMMANDS = new Set(Object.keys(COMMANDS))
+
+/** The subcommands each command routes, for the words that have any (`doctor`, `mcp` and `setup`
+ * take none and are absent). The guard reads it to tell an invocation that is about to RUN from
+ * one that is about to print usage: `candle keys bogus` names no subcommand dispatch has, so it
+ * gets usage without a verification request first. Derived from the table above, so it cannot
+ * drift from the chain; the help-text test pins it against the documented subcommands. */
+export const ROUTED_SUBCOMMANDS: Record<string, readonly string[]> = Object.fromEntries(
+  Object.entries(COMMANDS)
+    .filter(([, route]) => route.subcommands !== undefined)
+    .map(([word, route]) => [word, Object.keys(route.subcommands ?? {})]),
+)
+
+/**
+ * Own-property lookups, never a bare index: `COMMANDS` and each subcommand map are plain objects,
+ * so `COMMANDS["toString"]` and `subcommands["constructor"]` would otherwise find members of
+ * Object.prototype. That made `candle toString` a "known" word (help alone, its own name never
+ * echoed back) and `candle keys toString` find a "handler" that is not one and CALL it, returning
+ * a string where an exit code belongs. Every such word is an unknown command like any other.
+ */
+function routeFor(word: string | undefined): CommandRoute | undefined {
+  return word !== undefined && Object.hasOwn(COMMANDS, word) ? COMMANDS[word] : undefined
+}
+
+function subHandlerFor(route: CommandRoute | undefined, sub: string | undefined): CommandHandler | undefined {
+  const subcommands = route?.subcommands
+  if (!subcommands || sub === undefined || !Object.hasOwn(subcommands, sub)) return undefined
+  return subcommands[sub]
+}
+
+/** Whether dispatch will hand this invocation to a command at all. False means the chain answers
+ * `unknownCommand`, which needs no identity and must cost no request. */
+function routesToCommand(cmd: string | undefined, sub: string | undefined): boolean {
+  const route = routeFor(cmd)
+  if (!route) return false
+  if (subHandlerFor(route, sub) !== undefined) return true
+  return route.bare !== undefined
+}
 
 /**
  * The commands the account guard never runs for, in one place. The rule is what a command does
@@ -176,11 +244,20 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
       ? ({ ok: true, name: undefined } as const)
       : resolveProfileName(config, { flag: flags.profile, env: deps.env })
   if (!resolution.ok) {
-    deps.stderr.write(`${resolution.message}\n`)
+    // Both refusals go through render.ts's writers rather than straight to stderr: they happen
+    // before any command owns the output stream, and a `--json` caller has to get the same
+    // envelope on stdout it gets for every other failure instead of an unparseable exit. Human
+    // mode is unchanged to the byte.
+    //
     // A resolution failure reaching `auth login` is a usage error (an invalid CANDLE_PROFILE,
     // Task 6): exit 2, before any request. Every other command's refusal (an ambiguous or unknown
     // profile selection) stays exit 1, as it always has.
-    return isAuthLogin ? 2 : 1
+    if (isAuthLogin) {
+      writeUsageFailure(deps, resolution.message, flags.json)
+      return 2
+    }
+    writeLocalFailure(deps, { code: "PROFILE_UNRESOLVED", ...splitFix(resolution.message) }, flags.json)
+    return 1
   }
   const profile = resolution.name
   const profileApiUrl = profile ? config.profiles?.[profile]?.apiUrl : config.apiUrl
@@ -199,50 +276,66 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
   // that ACTS as the resolved profile must first be told its stored key still belongs to that
   // profile's account, and that is one decision about the command being dispatched, not six
   // copies of one. NEVER_GUARDED names the commands that only read the identity or repair it,
-  // which must keep working precisely when the guard would refuse; ROUTED_COMMANDS keeps an
-  // unrecognized word on the help path without a network call.
+  // which must keep working precisely when the guard would refuse.
+  //
+  // The rest of the gate is about what this invocation is about to DO. It pays a request only
+  // when a command will actually run as the identity:
+  //   - `routesToCommand` is false for a word or subcommand the chain answers with usage
+  //     (`candle keys bogus`, `candle keys`), which acts as nobody.
+  //   - `mcp --read-only` launches a server with no key at all, so there is no identity to verify
+  //     (mcpActsAsIdentity; `--print-config` is deliberately still guarded).
+  // Malformed FLAGS on an invocation that DOES route still pay for the check (`candle keys create
+  // --bogus`, `candle mcp --tools nonsense`): the command owns its own flags, dispatch does not
+  // parse them, and guessing at them here is how the gate would come to disagree with the command
+  // about whether it was going to run.
   const word = cmd ?? ""
-  if (ROUTED_COMMANDS.has(word) && !NEVER_GUARDED.has(word)) {
+  const actsAsIdentity = word !== "mcp" || mcpActsAsIdentity(tokens.slice(1))
+  if (ROUTED_COMMANDS.has(word) && !NEVER_GUARDED.has(word) && routesToCommand(cmd, sub) && actsAsIdentity) {
     const verdict = await verifyProfileAccount(ctx, config)
     if (!verdict.ok) {
-      deps.stderr.write(`${verdict.message}\n`)
+      writeLocalFailure(
+        deps,
+        { code: "ACCOUNT_MISMATCH", message: verdict.message, suggestion: verdict.suggestion },
+        flags.json,
+      )
       return 1
     }
+    // The warning stays on stderr in BOTH modes: the command is about to run and its own output
+    // owns stdout, which under `--json` must carry exactly one JSON value.
     if (verdict.warning) deps.stderr.write(`${verdict.warning}\n`)
   }
 
-  if (cmd === "auth") {
-    if (sub === "login") return authLogin(cmdArgs, ctx)
-    if (sub === "status") return authStatus(cmdArgs, ctx)
-    if (sub === "logout") return authLogout(cmdArgs, ctx)
-    return unknownCommand(deps, sub === undefined ? undefined : `auth ${sub}`)
-  }
-  if (cmd === "profile") {
-    if (sub === "list") return profileList(cmdArgs, ctx)
-    if (sub === "add") return profileAdd(cmdArgs, ctx)
-    if (sub === "use") return profileUse(cmdArgs, ctx)
-    if (sub === "rename") return profileRename(cmdArgs, ctx)
-    if (sub === "remove") return profileRemove(cmdArgs, ctx)
-    return unknownCommand(deps, sub === undefined ? undefined : `profile ${sub}`)
-  }
-  if (cmd === "keys") {
-    if (sub === "list") return keysList(cmdArgs, ctx)
-    if (sub === "create") return keysCreate(cmdArgs, ctx)
-    if (sub === "revoke") return keysRevoke(cmdArgs, ctx)
-    return unknownCommand(deps, sub === undefined ? undefined : `keys ${sub}`)
-  }
-  if (cmd === "wallets") {
-    if (sub === "import") return walletsImport(cmdArgs, ctx)
-    if (sub === "revoke") return walletsRevoke(cmdArgs, ctx)
-    return wallets(tokens.slice(1), ctx)
-  }
-  if (cmd === "doctor") return doctor(tokens.slice(1), ctx)
-  // tokens.slice(1), not cmdArgs: mcp has no subcommand, so its first flag must not be
-  // destructured away as one (same shape as doctor above).
-  if (cmd === "mcp") return mcp(tokens.slice(1), ctx)
-  if (cmd === "setup") return setup(tokens.slice(1), ctx)
-
+  const route = routeFor(cmd)
+  const handler = subHandlerFor(route, sub)
+  if (handler) return handler(cmdArgs, ctx)
+  // tokens.slice(1), not cmdArgs: a bare command has no subcommand, so its first flag must not be
+  // destructured away as one (`candle mcp --read-only`, `candle wallets --json`).
+  if (route?.bare) return route.bare(tokens.slice(1), ctx)
+  // A known word with a subcommand it does not have names the pair; with none typed, there is
+  // nothing to be wrong about and help alone is the answer.
+  if (route) return unknownCommand(deps, sub === undefined ? undefined : `${cmd} ${sub}`)
   return unknownCommand(deps, cmd)
+}
+
+/**
+ * Splits a profile-resolution refusal into the finding and the fix that follows it, for the
+ * `--json` envelope's two fields. `resolveProfileName` owns the wording and is not changed for
+ * this: its messages already end in a fix, either on the same line (" Run: candle auth login
+ * --profile x") or as a block below it ("Profiles on this machine:" and the list).
+ *
+ * The cut is only ever made where `writeLocalFailure` puts the very same separator back -- a
+ * newline before a multi-line suggestion, a space before a one-line one -- so human-mode output
+ * is byte for byte what it was before any of this was split. Anything that does not fit that
+ * stays whole, as one message with no suggestion.
+ */
+function splitFix(message: string): { message: string; suggestion?: string } {
+  const newline = message.indexOf("\n")
+  if (newline !== -1) {
+    const suggestion = message.slice(newline + 1)
+    return suggestion.includes("\n") ? { message: message.slice(0, newline), suggestion } : { message }
+  }
+  const fixAt = message.indexOf(" Run: ")
+  return fixAt === -1 ? { message } : { message: message.slice(0, fixAt), suggestion: message.slice(fixAt + 1) }
 }
 
 /** Names the offending token before printing help, so "it printed usage" and "it did not

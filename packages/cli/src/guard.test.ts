@@ -63,14 +63,19 @@ describe("verifyProfileAccount", () => {
     const verdict = await verify(ctxWith({ fetch }))
     expect(verdict.ok).toBe(false)
     if (!verdict.ok) {
+      // The refusal arrives already split the way writeLocalFailure renders it: the finding, then
+      // the repairs. `rendered` is exactly what dispatch prints in human mode, so what an operator
+      // reads is asserted here however the two fields are put back together.
+      const rendered = `${verdict.message}\n${verdict.suggestion}`
       expect(verdict.message).toContain("CACHED1")
       expect(verdict.message).toContain("OTHER22")
-      expect(verdict.message).toContain("candle profile use staging")
-      expect(verdict.message).toContain("candle auth login --profile staging")
-      expect(verdict.message).toContain("--no-verify-account")
+      expect(rendered).toContain("candle profile use staging")
+      expect(rendered).toContain("candle auth login --profile staging")
+      expect(rendered).toContain("--no-verify-account")
       const order = ["candle profile use staging", "candle auth login --profile staging", "--no-verify-account"].map(
-        (repair) => verdict.message.indexOf(repair),
+        (repair) => verdict.suggestion.indexOf(repair),
       )
+      expect(order.every((at) => at !== -1)).toBe(true)
       expect(order).toEqual([...order].sort((a, b) => a - b))
     }
   })

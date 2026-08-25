@@ -198,6 +198,19 @@ describe("writeLocalFailure", () => {
     expect(humanIo.err.join("")).toBe("No device token available. Run: candle auth login\n")
   })
 
+  // A multi-line suggestion is a block, not the tail of a sentence: joined with a space, the
+  // first repair would land on the end of the refusal line and the rest would hang under it.
+  test("human mode keeps a multi-line suggestion on its own lines", () => {
+    const { deps, out, err } = ioPair()
+    writeLocalFailure(
+      deps,
+      { code: "ACCOUNT_MISMATCH", message: "Refusing: x.", suggestion: "First repair\nSecond repair" },
+      false,
+    )
+    expect(out.join("")).toBe("")
+    expect(err.join("")).toBe("Refusing: x.\nFirst repair\nSecond repair\n")
+  })
+
   // The reason this helper exists rather than reusing writeFailure with a synthetic status: 0
   // means "could not reach the server" to renderError, which would print THAT instead of the
   // message this failure carries.

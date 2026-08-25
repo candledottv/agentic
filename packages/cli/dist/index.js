@@ -235,11 +235,15 @@ function writeFailure(deps, result, ctx, json) {
 `);
 }
 function writeLocalFailure(deps, failure, json) {
-  if (json)
+  if (json) {
     deps.stdout.write(`${JSON.stringify({ ok: false, ...failure })}
 `);
-  else
-    deps.stderr.write(`${failure.suggestion ? `${failure.message} ${failure.suggestion}` : failure.message}
+    return;
+  }
+  const separator = failure.suggestion?.includes(`
+`) ? `
+` : " ";
+  deps.stderr.write(`${failure.suggestion ? `${failure.message}${separator}${failure.suggestion}` : failure.message}
 `);
 }
 function writeUsageFailure(deps, message, json) {
@@ -1285,6 +1289,9 @@ var READ_ONLY_TOOL_NAMES = [
   "candle_token_forensics",
   "candle_get_agent_profile"
 ];
+function mcpActsAsIdentity(args) {
+  return !args.includes("--read-only");
+}
 function mcpClientConfig(args) {
   return JSON.stringify({ mcpServers: { candle: { command: "candle", args: ["mcp", ...args] } } }, null, 2);
 }
@@ -1377,6 +1384,19 @@ async function profileList(args, ctx) {
   ])));
   return 0;
 }
+var NEEDS_SCHEME = (value) => `It needs a scheme, such as https://${value}`;
+var BAD_SCHEME = "The scheme must be http or https.";
+function apiUrlFault(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return NEEDS_SCHEME(value);
+  }
+  if (url.host === "")
+    return NEEDS_SCHEME(value);
+  return url.protocol === "http:" || url.protocol === "https:" ? undefined : BAD_SCHEME;
+}
 async function profileAdd(args, ctx) {
   const { deps, json, apiUrlFlag } = ctx;
   const parsed = parseArgs(args, {});
@@ -1397,10 +1417,9 @@ async function profileAdd(args, ctx) {
     writeUsageFailure(deps, "profile add needs --api-url <url>: the host this profile authenticates against", json);
     return 2;
   }
-  try {
-    new URL(apiUrlFlag);
-  } catch {
-    writeUsageFailure(deps, `Invalid --api-url: ${apiUrlFlag}. It needs a scheme, such as https://${apiUrlFlag}`, json);
+  const fault = apiUrlFault(apiUrlFlag);
+  if (fault) {
+    writeUsageFailure(deps, `Invalid --api-url: ${apiUrlFlag}. ${fault}`, json);
     return 2;
   }
   const config = await deps.readConfig();
@@ -4917,8 +4936,8 @@ async function verifyProfileAccount(ctx, config) {
   if (live !== cached) {
     return {
       ok: false,
-      message: [
-        `Refusing: profile ${profile} expects account ${cached} but its stored key belongs to ${live}.`,
+      message: `Refusing: profile ${profile} expects account ${cached} but its stored key belongs to ${live}.`,
+      suggestion: [
         `If that key was legitimately re-issued: candle profile use ${profile}`,
         `To re-authenticate: candle auth login --profile ${profile}`,
         "To proceed once without the check: --no-verify-account"
@@ -5120,7 +5139,36 @@ Global options:
   --help, -h              Show this help
   --version, -v           Show the CLI version
 `;
-var ROUTED_COMMANDS = new Set(["auth", "keys", "wallets", "profile", "doctor", "mcp", "setup"]);
+var COMMANDS = {
+  auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
+  keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke } },
+  wallets: { subcommands: { import: walletsImport, revoke: walletsRevoke }, bare: wallets },
+  profile: {
+    subcommands: { list: profileList, add: profileAdd, use: profileUse, rename: profileRename, remove: profileRemove }
+  },
+  doctor: { bare: doctor },
+  mcp: { bare: mcp },
+  setup: { bare: setup }
+};
+var ROUTED_COMMANDS = new Set(Object.keys(COMMANDS));
+var ROUTED_SUBCOMMANDS = Object.fromEntries(Object.entries(COMMANDS).filter(([, route]) => route.subcommands !== undefined).map(([word, route]) => [word, Object.keys(route.subcommands ?? {})]));
+function routeFor(word) {
+  return word !== undefined && Object.hasOwn(COMMANDS, word) ? COMMANDS[word] : undefined;
+}
+function subHandlerFor(route, sub) {
+  const subcommands = route?.subcommands;
+  if (!subcommands || sub === undefined || !Object.hasOwn(subcommands, sub))
+    return;
+  return subcommands[sub];
+}
+function routesToCommand(cmd, sub) {
+  const route = routeFor(cmd);
+  if (!route)
+    return false;
+  if (subHandlerFor(route, sub) !== undefined)
+    return true;
+  return route.bare !== undefined;
+}
 var NEVER_GUARDED = new Set(["auth", "profile", "doctor"]);
 async function run2(argv, deps) {
   const extracted = extractGlobalFlags(argv);
@@ -5146,9 +5194,12 @@ async function run2(argv, deps) {
   const isProfileCommand = cmd === "profile";
   const resolution = isAuthLogin ? resolveProfileNameForLogin(config, { flag: flags.profile, env: deps.env }) : isProfileCommand ? { ok: true, name: undefined } : resolveProfileName(config, { flag: flags.profile, env: deps.env });
   if (!resolution.ok) {
-    deps.stderr.write(`${resolution.message}
-`);
-    return isAuthLogin ? 2 : 1;
+    if (isAuthLogin) {
+      writeUsageFailure(deps, resolution.message, flags.json);
+      return 2;
+    }
+    writeLocalFailure(deps, { code: "PROFILE_UNRESOLVED", ...splitFix(resolution.message) }, flags.json);
+    return 1;
   }
   const profile = resolution.name;
   const profileApiUrl = profile ? config.profiles?.[profile]?.apiUrl : config.apiUrl;
@@ -5163,62 +5214,37 @@ async function run2(argv, deps) {
     verifyAccount: !flags.noVerifyAccount
   };
   const word = cmd ?? "";
-  if (ROUTED_COMMANDS.has(word) && !NEVER_GUARDED.has(word)) {
+  const actsAsIdentity = word !== "mcp" || mcpActsAsIdentity(tokens.slice(1));
+  if (ROUTED_COMMANDS.has(word) && !NEVER_GUARDED.has(word) && routesToCommand(cmd, sub) && actsAsIdentity) {
     const verdict = await verifyProfileAccount(ctx, config);
     if (!verdict.ok) {
-      deps.stderr.write(`${verdict.message}
-`);
+      writeLocalFailure(deps, { code: "ACCOUNT_MISMATCH", message: verdict.message, suggestion: verdict.suggestion }, flags.json);
       return 1;
     }
     if (verdict.warning)
       deps.stderr.write(`${verdict.warning}
 `);
   }
-  if (cmd === "auth") {
-    if (sub === "login")
-      return authLogin(cmdArgs, ctx);
-    if (sub === "status")
-      return authStatus(cmdArgs, ctx);
-    if (sub === "logout")
-      return authLogout(cmdArgs, ctx);
-    return unknownCommand(deps, sub === undefined ? undefined : `auth ${sub}`);
-  }
-  if (cmd === "profile") {
-    if (sub === "list")
-      return profileList(cmdArgs, ctx);
-    if (sub === "add")
-      return profileAdd(cmdArgs, ctx);
-    if (sub === "use")
-      return profileUse(cmdArgs, ctx);
-    if (sub === "rename")
-      return profileRename(cmdArgs, ctx);
-    if (sub === "remove")
-      return profileRemove(cmdArgs, ctx);
-    return unknownCommand(deps, sub === undefined ? undefined : `profile ${sub}`);
-  }
-  if (cmd === "keys") {
-    if (sub === "list")
-      return keysList(cmdArgs, ctx);
-    if (sub === "create")
-      return keysCreate(cmdArgs, ctx);
-    if (sub === "revoke")
-      return keysRevoke(cmdArgs, ctx);
-    return unknownCommand(deps, sub === undefined ? undefined : `keys ${sub}`);
-  }
-  if (cmd === "wallets") {
-    if (sub === "import")
-      return walletsImport(cmdArgs, ctx);
-    if (sub === "revoke")
-      return walletsRevoke(cmdArgs, ctx);
-    return wallets(tokens.slice(1), ctx);
-  }
-  if (cmd === "doctor")
-    return doctor(tokens.slice(1), ctx);
-  if (cmd === "mcp")
-    return mcp(tokens.slice(1), ctx);
-  if (cmd === "setup")
-    return setup(tokens.slice(1), ctx);
+  const route = routeFor(cmd);
+  const handler = subHandlerFor(route, sub);
+  if (handler)
+    return handler(cmdArgs, ctx);
+  if (route?.bare)
+    return route.bare(tokens.slice(1), ctx);
+  if (route)
+    return unknownCommand(deps, sub === undefined ? undefined : `${cmd} ${sub}`);
   return unknownCommand(deps, cmd);
+}
+function splitFix(message) {
+  const newline = message.indexOf(`
+`);
+  if (newline !== -1) {
+    const suggestion = message.slice(newline + 1);
+    return suggestion.includes(`
+`) ? { message: message.slice(0, newline), suggestion } : { message };
+  }
+  const fixAt = message.indexOf(" Run: ");
+  return fixAt === -1 ? { message } : { message: message.slice(0, fixAt), suggestion: message.slice(fixAt + 1) };
 }
 function unknownCommand(deps, token) {
   if (token !== undefined)
@@ -5313,6 +5339,7 @@ if (isMainModule) {
 }
 export {
   run2 as run,
+  ROUTED_SUBCOMMANDS,
   ROUTED_COMMANDS,
   NEVER_GUARDED
 };

@@ -157,8 +157,49 @@ describe("profile add", () => {
       createTestDeps({ fetch: unusedFetch, stderr, ...config }),
     )
     expect(code).toBe(2)
-    expect(stderr.text).toContain("staging.api.candle.tv")
+    expect(stderr.text).toBe(
+      "Invalid --api-url: staging.api.candle.tv. It needs a scheme, such as https://staging.api.candle.tv\n",
+    )
     expect((await config.readConfig()).profiles).toBeUndefined()
+  })
+
+  // `new URL` alone is not the test: it ACCEPTS "localhost:3000" (scheme "localhost:", no host)
+  // and "api.candle.tv:443" the same way, so the host-shaped typo the check exists to catch was
+  // the one shape it let through. The advice differs with what is actually wrong: a value with no
+  // usable scheme is told to add one, while a value that HAS a scheme the client cannot speak is
+  // told that -- "such as https://ftp://api.candle.tv" would be nonsense.
+  test("an --api-url no command could reach is a usage error, and no profile is created", async () => {
+    const cases = [
+      ["localhost:3000", "Invalid --api-url: localhost:3000. It needs a scheme, such as https://localhost:3000\n"],
+      [
+        "api.candle.tv:443",
+        "Invalid --api-url: api.candle.tv:443. It needs a scheme, such as https://api.candle.tv:443\n",
+      ],
+      ["ftp://api.candle.tv", "Invalid --api-url: ftp://api.candle.tv. The scheme must be http or https.\n"],
+    ] as const
+    for (const [value, expected] of cases) {
+      const config = createFakeConfigStore({})
+      const stderr = createCapture()
+      const code = await run(
+        ["profile", "add", "hood", "--api-url", value],
+        createTestDeps({ fetch: unusedFetch, stderr, ...config }),
+      )
+      expect(code).toBe(2)
+      expect(stderr.text).toBe(expected)
+      expect((await config.readConfig()).profiles).toBeUndefined()
+    }
+  })
+
+  test("http and https hosts are accepted, port and all", async () => {
+    for (const value of ["http://localhost:3000", "https://api.candle.tv"]) {
+      const config = createFakeConfigStore({})
+      const code = await run(
+        ["profile", "add", "hood", "--api-url", value],
+        createTestDeps({ fetch: unusedFetch, ...config }),
+      )
+      expect(code).toBe(0)
+      expect((await config.readConfig()).profiles?.hood).toEqual({ apiUrl: value })
+    }
   })
 })
 
