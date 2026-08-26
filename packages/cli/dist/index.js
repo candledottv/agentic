@@ -5384,7 +5384,7 @@ async function resolveApiKey(deps, profile) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.6.0";
+var CLI_VERSION = "0.6.1";
 
 // src/commands/auth.ts
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
@@ -6762,6 +6762,13 @@ function getVerifier() {
   return verifier;
 }
 var IN_TOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json";
+function isLegacyCosignBundle(bundleJson) {
+  if (typeof bundleJson !== "object" || bundleJson === null)
+    return false;
+  const candidate = bundleJson;
+  return "base64Signature" in candidate && "rekorBundle" in candidate && !("mediaType" in candidate);
+}
+var LEGACY_BUNDLE_REASON = "legacy cosign bundle (base64Signature/rekorBundle); Candle releases are signed with cosign --new-bundle-format, so this is not a Candle release bundle or the release workflow regressed";
 function exactIdentity(identityUri) {
   return new RegExp(`^${identityUri.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
 }
@@ -6772,6 +6779,8 @@ function withTrustRootHint(reason) {
   return `${reason}; the trust root embedded in this candle may be out of date; reinstall with curl -fsSL https://candle.tv/install.sh | bash`;
 }
 function verifyReleaseAsset(bytes, bundleJson, identityUri, issuer) {
+  if (isLegacyCosignBundle(bundleJson))
+    return { ok: false, reason: LEGACY_BUNDLE_REASON };
   try {
     const bundle = import_bundle.bundleFromJSON(bundleJson);
     const digest = createHash("sha256").update(bytes).digest();

@@ -1,6 +1,6 @@
 {
   "name": "@candledottv/cli",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "The Candle CLI: authorize a device from your browser, then manage API keys, wallets, and setup health from the terminal",
   "type": "module",
   "bin": {

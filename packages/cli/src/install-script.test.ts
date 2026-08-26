@@ -187,6 +187,10 @@ describe("install.sh", () => {
     expect(r.code).toBe(0)
     const calls = await readFile(log, "utf8")
     expect(calls).toContain("verify-blob")
+    // Without --new-bundle-format cosign also accepts its own LEGACY bundle shape
+    // ({"base64Signature","cert","rekorBundle"}), which candle's in-process verifier refuses.
+    // That gap is what let 0.6.0 ship assets this installer took and `candle verify` would not.
+    expect(calls).toContain("--new-bundle-format")
     expect(calls).toContain("--certificate-oidc-issuer https://token.actions.githubusercontent.com")
     expect(calls).toContain(
       "--certificate-identity-regexp ^https://github.com/candledottv/agentic/\\.github/workflows/release\\.yaml@refs/tags/cli-v",

@@ -34,6 +34,27 @@ function getVerifier(): Verifier {
 const IN_TOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json"
 
 /**
+ * cosign's own LEGACY bundle, which `cosign sign-blob --bundle` writes unless it is given
+ * `--new-bundle-format`: a flat `{"base64Signature","cert","rekorBundle"}` object with no
+ * `mediaType`, and not the Sigstore protobuf bundle (`verificationMaterial`, `messageSignature`,
+ * `mediaType: application/vnd.dev.sigstore.bundle.v0.3+json`) that `@sigstore/bundle` reads.
+ *
+ * It is detected by name because `bundleFromJSON` answers it with "invalid bundle", which reads
+ * as a corrupt or forged download and sends the reader looking in the wrong place. 0.6.0 was
+ * signed this way: cosign and gh both read the legacy shape, so the release workflow's own
+ * self-verify and both of install.sh's verifier paths passed, and only this verifier (the one
+ * `candle verify` and `candle update` use) noticed.
+ */
+function isLegacyCosignBundle(bundleJson: unknown): boolean {
+  if (typeof bundleJson !== "object" || bundleJson === null) return false
+  const candidate = bundleJson as Record<string, unknown>
+  return "base64Signature" in candidate && "rekorBundle" in candidate && !("mediaType" in candidate)
+}
+
+const LEGACY_BUNDLE_REASON =
+  "legacy cosign bundle (base64Signature/rekorBundle); Candle releases are signed with cosign --new-bundle-format, so this is not a Candle release bundle or the release workflow regressed"
+
+/**
  * The identity, as an ANCHORED, ESCAPED regular expression.
  *
  * `@sigstore/verify` matches the policy identity with `signerIdentity.match(policyIdentity)`
@@ -85,6 +106,7 @@ export function verifyReleaseAsset(
   identityUri: string,
   issuer: string,
 ): VerifyResult {
+  if (isLegacyCosignBundle(bundleJson)) return { ok: false, reason: LEGACY_BUNDLE_REASON }
   try {
     const bundle = bundleFromJSON(bundleJson)
     const digest = createHash("sha256").update(bytes).digest()

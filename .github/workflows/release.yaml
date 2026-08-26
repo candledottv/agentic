@@ -94,8 +94,13 @@ jobs:
       - name: Sign the binaries and SHA256SUMS (keyless)
         working-directory: packages/cli/dist-bin
         run: |
+          # --new-bundle-format, and it is not optional. Without it cosign writes its own LEGACY
+          # bundle ({"base64Signature","cert","rekorBundle"}) rather than the Sigstore protobuf
+          # bundle, and while cosign and gh read both, the in-process verifier every candle
+          # carries (packages/cli/src/release-verify.ts, via @sigstore/bundle) reads only the
+          # protobuf one and refuses the legacy shape outright. 0.6.0 shipped signed that way.
           for f in candle-darwin-arm64 candle-darwin-x64 candle-linux-x64 candle-linux-arm64 install.sh SHA256SUMS; do
-            cosign sign-blob --yes --bundle "${f}.sigstore.json" "${f}"
+            cosign sign-blob --yes --new-bundle-format --bundle "${f}.sigstore.json" "${f}"
           done
       - name: Verify what was just signed
         working-directory: packages/cli/dist-bin
@@ -109,8 +114,26 @@ jobs:
           else
             id_re="^https://github\.com/candledottv/agentic/\.github/workflows/release\.yaml@${GITHUB_REF}\$"
           fi
+          # --new-bundle-format here means "expect a Sigstore protobuf bundle": cosign reads the
+          # legacy shape happily without it, so leaving it off is what let 0.6.0's mis-signed
+          # bundles pass their own self-verify.
           for f in candle-darwin-arm64 candle-darwin-x64 candle-linux-x64 candle-linux-arm64 install.sh SHA256SUMS; do
-            cosign verify-blob --bundle "${f}.sigstore.json" --certificate-identity-regexp "${id_re}" --certificate-oidc-issuer "${ISSUER}" "${f}"
+            cosign verify-blob --new-bundle-format --bundle "${f}.sigstore.json" --certificate-identity-regexp "${id_re}" --certificate-oidc-issuer "${ISSUER}" "${f}"
+          done
+      # The guard that would have caught 0.6.0. cosign verifying its own output only proves cosign
+      # agrees with cosign; this runs the SAME verifier the installed CLI uses (@sigstore/bundle,
+      # which refuses a legacy bundle) over the assets about to be published, so a release whose
+      # bundles `candle verify` and `candle update` would reject cannot be cut.
+      - name: Verify with the freshly built binary
+        working-directory: packages/cli
+        run: |
+          # The ubuntu runner is x64, so candle-linux-x64 is the host binary and can verify the
+          # rest. GITHUB_REF is refs/tags/cli-v<version> on a tag push, which is exactly the
+          # identity releaseIdentityUri() builds; a workflow_dispatch rehearsal signs under
+          # refs/heads/<branch> and this same expression follows it.
+          identity="https://github.com/candledottv/agentic/.github/workflows/release.yaml@${GITHUB_REF}"
+          for f in candle-linux-x64 install.sh; do
+            ./dist-bin/candle-linux-x64 verify "dist-bin/${f}" --bundle "dist-bin/${f}.sigstore.json" --identity "${identity}" --issuer "${ISSUER}"
           done
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:

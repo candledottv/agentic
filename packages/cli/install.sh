@@ -129,7 +129,13 @@ expected_manifest="$(tr -d '[:space:]' < "$tmp/latest.json" | sed -n "s/.*\"${as
 
 verified=0
 if command -v cosign >/dev/null 2>&1; then
-  if ! verify_output="$(cosign verify-blob --bundle "$tmp/$asset.sigstore.json" --certificate-identity-regexp "$IDENTITY_REGEX" --certificate-oidc-issuer "$ISSUER" "$tmp/$asset" 2>&1)"; then
+  # --new-bundle-format says "expect a Sigstore protobuf bundle", which is what the release
+  # workflow signs and the only shape candle's own in-process verifier reads. Without the flag
+  # cosign also accepts its legacy {"base64Signature","cert","rekorBundle"} shape, so a release
+  # mis-signed that way (0.6.0 was) would install here and then fail every `candle update`.
+  # The flag needs cosign 2.2 or newer; an older cosign rejects the unknown flag and the install
+  # stops, which is the right way to be wrong.
+  if ! verify_output="$(cosign verify-blob --new-bundle-format --bundle "$tmp/$asset.sigstore.json" --certificate-identity-regexp "$IDENTITY_REGEX" --certificate-oidc-issuer "$ISSUER" "$tmp/$asset" 2>&1)"; then
     echo "$verify_output" >&2
     fail "signature verification failed for $asset; nothing installed"
   fi
@@ -152,7 +158,7 @@ if [ "$verified" -eq 0 ]; then
     fail "no signature verifier found, so the download is not verified and nothing was installed. This binary will hold API keys and wallet signers, so the installer stops here by default. Install one and rerun: on macOS, brew install cosign; on Linux, download cosign from https://github.com/sigstore/cosign/releases (a single binary) or run gh auth login for the GitHub CLI. To install on the checksum alone: CANDLE_INSTALL_ALLOW_UNSIGNED=1 curl -fsSL https://candle.tv/install.sh | bash"
   fi
   echo "Warning: signature not verified (CANDLE_INSTALL_ALLOW_UNSIGNED=1); the checksum matched. To verify later:"
-  echo "  cosign verify-blob --bundle ${asset}.sigstore.json --certificate-identity-regexp '${IDENTITY_REGEX}' --certificate-oidc-issuer ${ISSUER} ${asset}"
+  echo "  cosign verify-blob --new-bundle-format --bundle ${asset}.sigstore.json --certificate-identity-regexp '${IDENTITY_REGEX}' --certificate-oidc-issuer ${ISSUER} ${asset}"
 fi
 
 # 6. Install atomically. $tmp is often a different filesystem than $BIN_DIR (tmpfs on Linux), and

@@ -85,6 +85,43 @@ describe("verifyReleaseAsset", () => {
 })
 
 /**
+ * The 0.6.0 defect, pinned. `cosign sign-blob --bundle` writes cosign's own LEGACY bundle unless
+ * it is given `--new-bundle-format`, and cosign and gh both read that shape, so the release
+ * workflow's self-verify and both of install.sh's verifier paths passed on assets this verifier
+ * cannot read at all. The fixture is cli-v0.6.0's real `candle-darwin-arm64.sigstore.json`,
+ * public release material and no secret.
+ *
+ * The point of the named reason is that `bundleFromJSON` answers this file with "invalid bundle",
+ * which reads as a corrupt or forged download and sends the reader to the wrong problem.
+ */
+describe("a legacy cosign bundle is named, not called invalid", () => {
+  const legacy = JSON.parse(readFileSync(join(dir, "legacy-cosign-bundle.json"), "utf8"))
+
+  test("the fixture really is the legacy shape", () => {
+    expect(Object.keys(legacy).sort()).toEqual(["base64Signature", "cert", "rekorBundle"])
+    expect(legacy.mediaType).toBeUndefined()
+  })
+
+  test("it is refused with the reason that says which format it is", () => {
+    const result = verifyReleaseAsset(bytes, legacy, FIXTURE_IDENTITY, FIXTURE_ISSUER)
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.reason).toStartWith("legacy cosign bundle (base64Signature/rekorBundle);")
+      expect(result.reason).toContain("cosign --new-bundle-format")
+      expect(result.reason).not.toContain("invalid bundle")
+    }
+  })
+
+  // The detection is by shape, not by "anything bundleFromJSON dislikes": a protobuf bundle that
+  // happens to be broken must keep its own message rather than being blamed on the format.
+  test("an ordinary malformed bundle is not reported as a legacy one", () => {
+    const result = verifyReleaseAsset(bytes, { not: "a bundle" }, FIXTURE_IDENTITY, FIXTURE_ISSUER)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).not.toContain("legacy cosign bundle")
+  })
+})
+
+/**
  * The DSSE half of the same rule. `toSignedEntity(bundle, artifact)` throws `artifact` away for a
  * DSSE bundle, so a real attestation would otherwise "verify" beside a file it says nothing
  * about; the in-toto subject digest is what closes it, and it is checked BEFORE the signature.
