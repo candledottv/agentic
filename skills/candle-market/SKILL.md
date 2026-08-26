@@ -48,6 +48,7 @@ Read-only: none of these three tools move funds, sign a transaction, or need any
 "What's the market state for this token on Solana?"
 → call `candle_get_market` with `{ "chain": "solana", "mint": "<mint address>" }`
 
-To go further and actually launch or trade, see the candle-setup skill: run
-`npx @candledottv/cli auth login` to get an agent key (the CLI already defaults to the alpha
-API), then move on to the candle-launch or candle-trade skills.
+To go further and actually launch or trade, see the candle-setup skill: install the Candle CLI
+(`curl -fsSL https://candle.tv/install.sh | bash`, or `brew install candledottv/tap/candle`), run
+`candle auth login` to get an agent key (the CLI already defaults to the alpha API), then move on
+to the candle-launch or candle-trade skills.

@@ -64,31 +64,48 @@ and keep `CANDLE_API_URL` on staging until this rail reaches production. Ask an 
 
 ## Full setup
 
-Once you are ready to launch, trade, or report activity, authorize a device from the browser:
+Once you are ready to launch, trade, or report activity, install the Candle CLI and authorize a
+device from the browser:
 
-```bash
-npx @candledottv/cli auth login
+```
+Install the Candle CLI (macOS or Linux):
+
+    curl -fsSL https://candle.tv/install.sh | bash
+
+or with Homebrew:
+
+    brew install candledottv/tap/candle
+
+Then: candle setup
 ```
 
-(or, with no npm: `bunx github:candledottv/agentic candle auth login`). The CLI already defaults
-to the alpha API (`https://api.alpha.candle.tv`); pass `--api-url` only to point at a different
-deployment, and it is remembered. Nothing installs permanently: one browser approval later, this
-machine holds a device token and an agent API key
+(or, with no npm and no install.sh: `bunx github:candledottv/agentic candle auth login`). The npm
+package `@candledottv/cli` stays published for CI, programmatic use, and Windows until
+`install.ps1` ships; `npx -y @candledottv/cli@latest <command>` runs it once without installing.
+The CLI already defaults to the alpha API (`https://api.alpha.candle.tv`); pass `--api-url` only
+to point at a different deployment, and it is remembered. Nothing installs permanently beyond the
+binary itself: one browser approval later, this machine holds a device token and an agent API key
 in your OS keychain. Check the result with `candle doctor` -- and
 from here the MCP server needs no env block at all:
 
 ```json
 {
   "mcpServers": {
-    "candle": { "command": "npx", "args": ["--yes", "@candledottv/cli", "mcp"] }
+    "candle": {
+      "command": "/Users/<you>/.local/bin/candle",
+      "args": ["mcp"]
+    }
   }
 }
 ```
 
-`candle mcp` launches the same server with the key and API URL this device just stored, so the
-credential never sits in a config file. `--read-only` pins it to the four keyless read tools;
-`--tools` takes an explicit allowlist; `--print-config` prints the block above. The full command surface, credential storage, and headless use are documented on
-the [Candle CLI](https://docs.candle.tv/developers/cli) page.
+The absolute path, because GUI hosts launch servers with the app's environment and never see your
+PATH; MCP hosts also need Node 18+ on their own PATH. `candle mcp` launches the same server with
+the key and API URL this device just stored, so the credential never sits in a config file.
+`--read-only` pins it to the four keyless read tools; `--tools` takes an explicit allowlist;
+`--print-config` prints the block above filled in for this install. The full command surface,
+credential storage, and headless use are documented on the
+[Candle CLI](https://docs.candle.tv/developers/cli) page.
 
 ## Install as a skill package
 

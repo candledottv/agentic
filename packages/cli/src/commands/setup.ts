@@ -125,6 +125,7 @@ export async function setup(args: string[], ctx: CommandContext): Promise<number
       "Launches and trades are paid from these wallets. There is no minimum, and read-only requests work unfunded.\n",
     )
     deps.stdout.write("\nTell your agent (paste into its context):\n")
+    deps.stdout.write(`  Install the Candle CLI: curl -fsSL https://candle.tv/install.sh | bash\n`)
     deps.stdout.write(
       `  You operate a Candle agent account. API base URL: ${apiUrl} (send your API key in the x-api-key header).\n`,
     )

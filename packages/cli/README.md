@@ -7,11 +7,23 @@ health from the terminal. Zero runtime dependencies; the whole thing is one self
 ## Quick start
 
 ```
-npx @candledottv/cli auth login
+Install the Candle CLI (macOS or Linux):
+
+    curl -fsSL https://candle.tv/install.sh | bash
+
+or with Homebrew:
+
+    brew install candledottv/tap/candle
+
+Then: candle setup
 ```
 
-This runs `auth login`, which opens your browser to approve this device. Install it permanently
-with `npm install -g @candledottv/cli` and the command is just `candle`.
+`candle setup` authorizes this device from your browser, shows the agent wallets as funding
+destinations, prints the skill and MCP install lines, and runs a full health check. `candle auth
+login` on its own does just the authorization step.
+
+The npm package `@candledottv/cli` stays published for CI, programmatic use, and Windows until
+`install.ps1` ships; `npx -y @candledottv/cli@latest <command>` runs it once without installing.
 
 ### No-npm fallback
 
@@ -65,6 +77,40 @@ Every command accepts these global options:
 | `--json` | Machine-readable output instead of a formatted table or summary, generally the underlying API response. One exception: `auth login`'s JSON output still omits the plaintext device token and API key, matching its human-readable summary, since login never displays either value in any mode. |
 | `--help`, `-h` | Prints usage. |
 | `--version`, `-v` | Prints the CLI version. |
+
+## Verify a release
+
+Every release on https://github.com/candledottv/agentic/releases is built and signed by that
+repository's `release.yaml` workflow, and `install.sh` and `candle update` already check this for
+you. To check a download by hand, three commands, in increasing strength:
+
+```
+curl -fsSLO https://github.com/candledottv/agentic/releases/download/cli-v0.6.1/SHA256SUMS
+curl -fsSLO https://github.com/candledottv/agentic/releases/download/cli-v0.6.1/candle-darwin-arm64
+grep candle-darwin-arm64 SHA256SUMS | shasum -a 256 -c
+```
+
+```
+gh attestation verify candle-darwin-arm64 --repo candledottv/agentic \
+  --signer-workflow candledottv/agentic/.github/workflows/release.yaml
+```
+
+```
+curl -fsSLO https://github.com/candledottv/agentic/releases/download/cli-v0.6.1/candle-darwin-arm64.sigstore.json
+cosign verify-blob --new-bundle-format --bundle candle-darwin-arm64.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/candledottv/agentic/\.github/workflows/release\.yaml@refs/tags/cli-v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  candle-darwin-arm64
+```
+
+`--new-bundle-format` (cosign 2.2 or newer) says "expect a Sigstore bundle", which is what releases
+from 0.6.1 onward are signed as; without it cosign also accepts an older bundle format of its own,
+which `candle verify` cannot read.
+
+No cosign or gh installed? `candle verify <file> --bundle <path>` (this CLI's own command, see the
+table above) runs the same check against the trusted root compiled into the binary, no network
+call required. Full walkthrough, including the installer script's own signature and the
+transparency log: [Verify a Candle release](https://docs.candle.tv/developers/verify-a-candle-release).
 
 ## The `--json` contract
 

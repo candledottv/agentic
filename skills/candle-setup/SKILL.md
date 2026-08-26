@@ -17,13 +17,14 @@ never need any of this: they work with no key at all.
 
 ## The workflow
 
-1. Run `npx @candledottv/cli auth login` (or, with no npm,
-   `bunx github:candledottv/agentic candle auth login`). The CLI defaults to the alpha API
-   (`https://api.alpha.candle.tv`), where the device flow runs today; pass `--api-url` only to
-   target a different deployment. Omitting `--scopes` requests all five grants (`launch:write`,
-   `launch:read`, `activity:write`, `swap:write`, `transfer:write`); pass your own `--scopes`
-   list to mint a narrower key instead. This prints a short code, opens (or prints) a browser
-   approval URL, and polls until approved.
+1. Install the Candle CLI (macOS or Linux): `curl -fsSL https://candle.tv/install.sh | bash`, or
+   with Homebrew: `brew install candledottv/tap/candle`. With no npm and no install.sh:
+   `bunx github:candledottv/agentic candle auth login`. Then run `candle auth login`. The CLI
+   defaults to the alpha API (`https://api.alpha.candle.tv`), where the device flow runs today;
+   pass `--api-url` only to target a different deployment. Omitting `--scopes` requests all five
+   grants (`launch:write`, `launch:read`, `activity:write`, `swap:write`, `transfer:write`); pass
+   your own `--scopes` list to mint a narrower key instead. This prints a short code, opens (or
+   prints) a browser approval URL, and polls until approved.
 2. In the browser, confirm the client name and scopes match what you expect, rendered in plain
    language rather than raw scope strings. `swap:write` is never granted silently: the screen calls
    it out prominently as the grant that moves funds from the account's own wallet, before you can

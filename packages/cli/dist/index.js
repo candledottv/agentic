@@ -6546,6 +6546,8 @@ async function setup(args, ctx) {
     deps.stdout.write(`
 Tell your agent (paste into its context):
 `);
+    deps.stdout.write(`  Install the Candle CLI: curl -fsSL https://candle.tv/install.sh | bash
+`);
     deps.stdout.write(`  You operate a Candle agent account. API base URL: ${apiUrl} (send your API key in the x-api-key header).
 `);
     if (solana)

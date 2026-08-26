@@ -25,8 +25,10 @@ server with no `env` block at all and those three work immediately:
 ```
 
 Add `CANDLE_AGENT_API_KEY` only once you're ready to launch, trade, or report activity, see
-Environment below -- or skip env editing entirely: after `npx @candledottv/cli auth login`,
-`candle mcp` launches this server with the stored key and API URL in its environment.
+Environment below -- or skip env editing entirely: install the Candle CLI
+(`curl -fsSL https://candle.tv/install.sh | bash` or `brew install candledottv/tap/candle`), run
+`candle auth login`, and `candle mcp` launches this server with the stored key and API URL in its
+environment.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
 Unset means all eight. An unknown name fails startup with the valid names in the message, rather

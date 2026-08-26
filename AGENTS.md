@@ -14,9 +14,13 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 1. **Read without credentials.** `candle_get_market`, `candle_get_feed` and
    `candle_get_agent_profile` need no API key. Use them to confirm the server is wired before
    asking anyone for a credential.
-2. **Get a key** only when you need to write. `npx @candledottv/cli auth login` authorizes a
-   device from the browser and stores a device token plus an agent key in the OS keychain.
-   From then on `candle mcp` runs this MCP server with those stored credentials -- no env block.
+2. **Get a key** only when you need to write. Install the Candle CLI
+   (`curl -fsSL https://candle.tv/install.sh | bash`, or `brew install candledottv/tap/candle`),
+   then `candle auth login` authorizes a device from the browser and stores a device token plus an
+   agent key in the OS keychain. From then on `candle mcp` runs this MCP server with those stored
+   credentials -- no env block. The npm package `@candledottv/cli` stays published for CI,
+   programmatic use, and Windows until `install.ps1` ships; `npx -y @candledottv/cli@latest
+   <command>` runs it once without installing.
 3. **Check the setup** with `candle doctor` before concluding anything is broken.
 
 ## The tool surface
