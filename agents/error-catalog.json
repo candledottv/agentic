@@ -104,7 +104,8 @@
         "LEG2_FAILED",
         "DEVICE_REQUEST_FAILED",
         "KEY_ISSUANCE_FAILED",
-        "TRANSFER_FAILED"
+        "TRANSFER_FAILED",
+        "WALLET_IMPORT_FAILED"
       ]
     },
     "state_conflict": {
@@ -119,7 +120,8 @@
         "ORDER_NOT_TRIGGERED",
         "JOB_NOT_FOUND",
         "UNRECOGNIZED_TRANSACTION",
-        "WALLET_ALREADY_LINKED"
+        "WALLET_ALREADY_LINKED",
+        "WALLET_ALREADY_REGISTERED"
       ]
     },
     "quota": {
