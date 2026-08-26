@@ -231,10 +231,16 @@ async function finishLogin(
   await deps.store.set(profileSecretRef(profileName, "deviceToken"), body.deviceToken)
   if (body.apiKey) await deps.store.set(profileSecretRef(profileName, "apiKey"), body.apiKey.key)
 
-  // WHICH account this profile acts as, cached for the identity line (and Phase 2's guard).
+  // WHICH account this profile acts as, cached for the identity line (and Phase 2's guard). The
+  // account's username, when it has one, is cached beside it so the line can name the handle.
   // Best-effort: an unreachable API must not fail a login that already succeeded.
   let account: string | undefined
-  if (body.apiKey) account = (await fetchAccount(deps, ctx.apiUrl, body.apiKey.key)).account
+  let username: string | undefined
+  if (body.apiKey) {
+    const lookup = await fetchAccount(deps, ctx.apiUrl, body.apiKey.key)
+    account = lookup.account
+    username = lookup.username
+  }
 
   // `scopes` is only ever persisted (and only ever reported as "Granted") when a key actually
   // exists to describe. On the provisioning-failure path (body.apiKey null) there is no key, so
@@ -248,7 +254,11 @@ async function finishLogin(
     ...(body.apiKey ? { keyPrefix: body.apiKey.keyPrefix, scopes: body.apiKey.scopes } : {}),
     ...(requested.label ? { label: requested.label } : {}),
     ...(portalOrigin ? { portalOrigin } : {}),
-    ...(account ? { account, accountCachedAt: deps.now() } : {}),
+    // `username` is written unconditionally inside the account branch, live value and all: when the
+    // account has since removed its handle the live value is undefined, and updateProfile's write
+    // JSON.stringifies, which drops an undefined key -- so the stale cached handle is cleared rather
+    // than kept. Mirrors profileUse's refresh.
+    ...(account ? { account, accountCachedAt: deps.now(), username } : {}),
   })
   // The FIRST profile ever created on this machine becomes active; a second `auth login` (a
   // different `--profile`, or re-authenticating the same one) never steals that from the one
@@ -452,7 +462,12 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   // credential for the wrong account is the failure this command is reached for, so it has to be
   // on screen. Best-effort: an unreachable API must not turn a credential report into a failure.
   let account: string | undefined
-  if (apiKey) account = (await fetchAccount(deps, apiUrl, apiKey)).account
+  let username: string | undefined
+  if (apiKey) {
+    const lookup = await fetchAccount(deps, apiUrl, apiKey)
+    account = lookup.account
+    username = lookup.username
+  }
 
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0
   const configPath = configFilePathForDisplay(deps.env)
@@ -499,7 +514,13 @@ export async function authStatus(args: string[], ctx: CommandContext): Promise<n
   // reveals. Falls back to the profile's cached account when the live lookup above didn't run or
   // didn't answer (no API key, or an unreachable API) -- see identityLine's own doc comment for
   // why an absent value is still named rather than omitted.
-  deps.stdout.write(`${identityLine(ctx.profile, account ?? fields.account, apiUrl)}\n`)
+  // Account and username are paired from the SAME source: when the live lookup named an account,
+  // its username (or none) is shown beside it; only when falling back to the cached account is the
+  // cached username used. Mixing them -- a live account with a cached handle -- would print a
+  // handle that belongs to a DIFFERENT account, in the very command meant to reveal a mismatch.
+  const shownAccount = account ?? fields.account
+  const shownUsername = account !== undefined ? username : fields.username
+  deps.stdout.write(`${identityLine(ctx.profile, shownAccount, apiUrl, undefined, shownUsername)}\n`)
   // `profile use` is the cheapest of the three repairs (it re-caches the account from this very
   // key); the guard's own refusal names the other two, which cost a re-authentication or a skipped
   // check. This line is a report, not a refusal, so it names only the cheap one.

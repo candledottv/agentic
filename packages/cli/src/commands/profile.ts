@@ -156,11 +156,16 @@ export async function profileUse(args: string[], ctx: CommandContext): Promise<n
   const apiUrl = ctx.apiUrlFlag ?? resolveApiUrl(profile.apiUrl, deps.env)
   const apiKey = await deps.store.get(profileSecretRef(name, "apiKey"))
   let account = profile.account
+  let username = profile.username
   if (apiKey) {
-    const { account: live, failure } = await fetchAccount(deps, apiUrl, apiKey)
+    const { account: live, username: liveUsername, failure } = await fetchAccount(deps, apiUrl, apiKey)
     if (live) {
       account = live
-      await deps.updateProfile(name, { account: live, accountCachedAt: deps.now() })
+      // Re-cache the username from the very key this refresh read: `undefined` when the account has
+      // none clears any stale value (updateProfile drops an undefined field on write), so the cache
+      // never keeps a handle the account has since removed.
+      username = liveUsername
+      await deps.updateProfile(name, { account: live, username: liveUsername, accountCachedAt: deps.now() })
     } else {
       deps.stderr.write(`Could not refresh the account for ${name} (${failure}); keeping the cached value.\n`)
     }
@@ -172,7 +177,7 @@ export async function profileUse(args: string[], ctx: CommandContext): Promise<n
     deps.stderr.write(`No stored credentials for ${name}. Run: candle auth login --profile ${name}\n`)
   }
   if (json) deps.stdout.write(`${JSON.stringify({ name, account, apiUrl })}\n`)
-  else deps.stdout.write(`${identityLine(name, account, apiUrl)}\n`)
+  else deps.stdout.write(`${identityLine(name, account, apiUrl, undefined, username)}\n`)
   return 0
 }
 

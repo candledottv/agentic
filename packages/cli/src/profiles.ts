@@ -180,15 +180,25 @@ export function credentialEnvOverrides(env: Record<string, string | undefined>):
  * `overrides`, when non-empty, REPLACES the account: the cached name describes the profile's own
  * stored key, and an env override is a different credential for a possibly different account.
  * Printing the cached name beside a credential nothing checked asserts exactly the identity this
- * line exists to stop being assumed.
+ * line exists to stop being assumed. For the same reason the override branch is username-free: the
+ * username belongs to the profile's own account, not to whatever the env var supplied.
+ *
+ * `username` is the account's Candle handle (optional). When it and an account are both known the
+ * line reads `Account: <username> (<address>)`; with no username it is the address alone, exactly
+ * as before this parameter existed.
  */
 export function identityLine(
   profile: string | undefined,
   account: string | undefined,
   apiUrl: string,
   overrides?: string[],
+  username?: string,
 ): string {
-  const shown = overrides?.length ? `unknown (${overrides.join(", ")} override)` : (account ?? "unknown")
+  const shown = overrides?.length
+    ? `unknown (${overrides.join(", ")} override)`
+    : username && account
+      ? `${username} (${account})`
+      : (account ?? "unknown")
   return `Profile: ${profile ?? "none"}   Account: ${shown} at ${apiUrl}`
 }
 
@@ -198,8 +208,10 @@ export function identityLine(
 export async function printIdentity(ctx: CommandContext): Promise<void> {
   if (ctx.json) return
   const config = await ctx.deps.readConfig()
-  const account = effectiveProfileFields(config, ctx.profile).account
-  ctx.deps.stdout.write(`${identityLine(ctx.profile, account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env))}\n`)
+  const fields = effectiveProfileFields(config, ctx.profile)
+  ctx.deps.stdout.write(
+    `${identityLine(ctx.profile, fields.account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env), fields.username)}\n`,
+  )
 }
 
 /** How old the cached account is, in the largest whole unit; a browsing command shows this

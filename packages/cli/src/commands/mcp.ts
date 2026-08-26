@@ -139,8 +139,10 @@ export async function mcp(args: string[], ctx: CommandContext): Promise<number> 
   // identity line can go without corrupting a machine-readable stream. Unlike printIdentity, it
   // is never skipped for --json -- there is no other output here that carries the same fields.
   const identityConfig = await deps.readConfig()
-  const identityAccount = effectiveProfileFields(identityConfig, ctx.profile).account
-  deps.stderr.write(`${identityLine(ctx.profile, identityAccount, apiUrl, credentialEnvOverrides(deps.env))}\n`)
+  const identityFields = effectiveProfileFields(identityConfig, ctx.profile)
+  deps.stderr.write(
+    `${identityLine(ctx.profile, identityFields.account, apiUrl, credentialEnvOverrides(deps.env), identityFields.username)}\n`,
+  )
 
   if (parsed.booleans.has("--print-config")) {
     // Reconstruct the launch args minus --print-config itself, so what is printed is exactly

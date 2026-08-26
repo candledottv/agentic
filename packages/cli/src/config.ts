@@ -21,6 +21,9 @@ import { join } from "node:path"
 export interface ProfileConfig {
   apiUrl?: string
   account?: string
+  /** The account's Candle username (optional; not everyone sets one), cached beside `account` for
+   * the identity line to render `Account: <username> (<address>)`. Display only, never a credential. */
+  username?: string
   /** Unix ms when `account` was last read from the API (auth login, profile use). Display only. */
   accountCachedAt?: number
   keyPrefix?: string

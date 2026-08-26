@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { buildRealDeps, NEVER_GUARDED, ROUTED_COMMANDS, ROUTED_SUBCOMMANDS, run } from "./index"
+import { ALIASES, buildRealDeps, NEVER_GUARDED, ROUTED_COMMANDS, ROUTED_SUBCOMMANDS, run } from "./index"
 import {
   createCapture,
   createFakeConfigStore,
@@ -442,6 +442,85 @@ describe("profiles at dispatch", () => {
   })
 })
 
+describe("wallet is an alias of wallets", () => {
+  // `wallets` is released and referenced by docs, skills and the MCP surface, so `wallet` is an
+  // alias RESOLVED to the canonical `wallets` before routing -- not a rename. Same command, same
+  // subcommands, same guard.
+  const walletRoutes = () => ({
+    "/api/v1/agent/wallets/embedded": () =>
+      jsonResponse(200, {
+        success: true,
+        wallets: { solana: { address: "So1anaAddr", delegated: true }, evm: null },
+      }),
+    "/api/v1/agent/wallets": () =>
+      jsonResponse(200, {
+        success: true,
+        page: [{ _id: "lw_listed01", address: "0xLinked", chain: "evm", label: "my wallet" }],
+        isDone: true,
+        continueCursor: null,
+      }),
+  })
+
+  test("bare `candle wallet` prints exactly what `candle wallets` prints", async () => {
+    const walletsOut = createCapture()
+    const walletsCode = await run(
+      ["wallets"],
+      createTestDeps({
+        fetch: createRoutedFetch(walletRoutes()).fetch,
+        store: createFakeStore({ api_key: "ck_live_x" }),
+        stdout: walletsOut,
+      }),
+    )
+    const walletOut = createCapture()
+    const walletCode = await run(
+      ["wallet"],
+      createTestDeps({
+        fetch: createRoutedFetch(walletRoutes()).fetch,
+        store: createFakeStore({ api_key: "ck_live_x" }),
+        stdout: walletOut,
+      }),
+    )
+    expect(walletsCode).toBe(0)
+    expect(walletCode).toBe(0)
+    expect(walletOut.text).toBe(walletsOut.text)
+    expect(walletOut.text).toContain("So1anaAddr")
+  })
+
+  test("`candle wallet import` reaches walletsImport, with the same usage error as `candle wallets import`", async () => {
+    // evm without --address is walletsImport's OWN usage error, printed before any key prompt or
+    // request. If `wallet import` failed to resolve to `wallets import` it would instead reach the
+    // unknown-command path and print "Unknown command: wallet ...", so byte-equality proves the sub.
+    const walletsErr = createCapture()
+    const walletsCode = await run(
+      ["wallets", "import", "--chain", "evm"],
+      createTestDeps({ fetch: unusedFetch, store: createFakeStore({ api_key: "ck_live_x" }), stderr: walletsErr }),
+    )
+    const walletErr = createCapture()
+    const walletCode = await run(
+      ["wallet", "import", "--chain", "evm"],
+      createTestDeps({ fetch: unusedFetch, store: createFakeStore({ api_key: "ck_live_x" }), stderr: walletErr }),
+    )
+    expect(walletsCode).toBe(2)
+    expect(walletCode).toBe(2)
+    expect(walletErr.text).toBe(walletsErr.text)
+    expect(walletErr.text).toContain("candle wallets import --chain evm --address")
+  })
+
+  test("`candle wallet bogus` is the same usage error as `candle wallets bogus`", async () => {
+    // `wallets` has a bare form, so `wallets bogus` reaches it with `bogus` as an unexpected
+    // argument (exit 2) rather than the unknown-command path. What matters is that the alias lands
+    // on the very same handler and produces byte-identical output.
+    const walletsErr = createCapture()
+    const walletsCode = await run(["wallets", "bogus"], createTestDeps({ fetch: unusedFetch, stderr: walletsErr }))
+    const walletErr = createCapture()
+    const walletCode = await run(["wallet", "bogus"], createTestDeps({ fetch: unusedFetch, stderr: walletErr }))
+    expect(walletsCode).toBe(2)
+    expect(walletCode).toBe(2)
+    expect(walletErr.text).toBe(walletsErr.text)
+    expect(walletErr.text).toContain("Unexpected argument: bogus")
+  })
+})
+
 describe("the account guard at dispatch", () => {
   const guarded = () =>
     createFakeConfigStore({
@@ -738,6 +817,17 @@ describe("the account guard at dispatch", () => {
     expect(calls).toHaveLength(1)
   })
 
+  // The `wallet` alias resolves to `wallets` BEFORE the guard reads the command word, so it is a
+  // guarded identity command exactly as `wallets` is: a mismatched profile refuses it the same way.
+  test("the wallet alias stays guarded: a mismatched profile refuses `candle wallet` too", async () => {
+    const { fetch, calls } = createRoutedFetch(mismatched)
+    const stderr = createCapture()
+    const code = await run(["wallet"], createTestDeps({ fetch, store: store(), stderr, ...guarded() }))
+    expect(code).toBe(1)
+    expect(stderr.text).toContain("OTHER22")
+    expect(calls).toHaveLength(1)
+  })
+
   test("setup stays guarded: it skips login when credentials exist, then acts as whoever they belong to", async () => {
     const { fetch, calls } = createRoutedFetch(mismatched)
     const stderr = createCapture()
@@ -759,13 +849,21 @@ describe("the account guard at dispatch", () => {
       stdout.text.indexOf("Commands:") + "Commands:".length,
       stdout.text.indexOf("Global options:"),
     )
+    // A documented word is mapped through ALIASES before the comparison: a documented ALIAS
+    // (`wallet`) is legitimate precisely when it resolves to a routed command (`wallets`). This
+    // keeps the invariant intact -- every documented word resolves to something dispatch routes,
+    // and every routed command is documented -- without exempting the alias by hand.
     const documented = new Set(
       block
         .split("\n")
         .map((line) => line.match(/^ {2}(\S+)/)?.[1])
-        .filter((word): word is string => word !== undefined),
+        .filter((word): word is string => word !== undefined)
+        .map((word) => ALIASES[word] ?? word),
     )
     expect([...documented].sort()).toEqual([...ROUTED_COMMANDS].sort())
+    // Every alias points at a command that is actually routed, or the mapping above would launder
+    // a documented word into a routed one that dispatch cannot reach.
+    expect(Object.values(ALIASES).filter((target) => !ROUTED_COMMANDS.has(target))).toEqual([])
     // A typo here would silently guard a command the ruling exempts, or exempt nothing at all.
     expect([...NEVER_GUARDED].filter((word) => !ROUTED_COMMANDS.has(word))).toEqual([])
     // `update` replaces this binary and acts as no identity, so it must keep working on a machine
@@ -782,7 +880,10 @@ describe("the account guard at dispatch", () => {
       // revoke <prefix>` document a flag and an argument, not a subcommand.
       const match = line.match(/^ {2}(\S+) ([a-z][a-z-]*)(?:\s|$)/)
       if (!match?.[1] || !match[2]) continue
-      documentedSubs[match[1]] = [...(documentedSubs[match[1]] ?? []), match[2]]
+      // The word is mapped through ALIASES too, so `wallet import` is recorded against the routed
+      // `wallets`, matching ROUTED_SUBCOMMANDS which is keyed by the canonical word.
+      const word = ALIASES[match[1]] ?? match[1]
+      documentedSubs[word] = [...(documentedSubs[word] ?? []), match[2]]
     }
     const sorted = (map: Record<string, readonly string[]>) =>
       Object.fromEntries(Object.entries(map).map(([word, subs]) => [word, [...subs].sort()]))

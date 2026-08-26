@@ -115,6 +115,37 @@ describe("auth login: state machine", () => {
     expect(profile?.portalOrigin).toBe("https://candle.tv")
   })
 
+  test("a re-login clears a cached username when the account has since removed its handle", async () => {
+    // The profile cached the handle "bob"; the live lookup on re-login names the account but returns
+    // no username. The cache write includes `username` unconditionally, so the undefined live value
+    // (dropped by the config's JSON write) clears the stale handle rather than keeping it.
+    const { fetch } = createRoutedFetch({
+      ...deviceFlowRoutes(),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, { success: true, account: "ACC1", wallets: { solana: null, evm: null } }),
+    })
+    const store = createFakeStore()
+    const configStore = createFakeConfigStore({
+      profiles: { production: { account: "ACC1", username: "bob", accountCachedAt: 1 } },
+      activeProfile: "production",
+    })
+    const deps = createTestDeps({
+      fetch,
+      store,
+      readConfig: configStore.readConfig,
+      writeConfig: configStore.writeConfig,
+      clearConfig: configStore.clearConfig,
+      updateProfile: configStore.updateProfile,
+      stdout: createCapture(),
+    })
+
+    const code = await run(["auth", "login"], deps)
+    expect(code).toBe(0)
+    const config = await configStore.readConfig()
+    expect(config.profiles?.production?.account).toBe("ACC1")
+    expect(config.profiles?.production?.username).toBeUndefined()
+  })
+
   test("opens the browser with the verification URL unless --no-browser is passed; the URL is always printed either way", async () => {
     const { fetch } = createRoutedFetch({
       "/api/v1/agent/device/code": () => jsonResponse(200, CODE_RESPONSE),
@@ -604,6 +635,49 @@ describe("auth status", () => {
     const code = await run(["auth", "status"], createTestDeps({ fetch, store, stdout }))
     expect(code).toBe(0)
     expect(stdout.text).toContain("Account: FaKwE2xX")
+  })
+
+  test("names the account's username beside its address when the live lookup returns one", async () => {
+    // The embedded endpoint answers WHO the key is: address plus, when set, the Candle handle. The
+    // handle is what an operator recognizes, so the identity line leads with it, address in parens.
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, {
+          success: true,
+          account: "FaKwE2xX",
+          username: "satoshi",
+          wallets: { solana: null, evm: null },
+        }),
+    })
+    const store = createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_x" })
+    const stdout = createCapture()
+    const code = await run(["auth", "status"], createTestDeps({ fetch, store, stdout }))
+    expect(code).toBe(0)
+    expect(stdout.text).toContain("Account: satoshi (FaKwE2xX)")
+  })
+
+  test("pairs the shown username with the shown account: a live account with no handle never borrows the cached one", async () => {
+    // The live key answers account OTHER22 with NO username; the profile cached CACHED1 as "bob".
+    // Falling back to the cached handle here would print `bob (OTHER22)` -- a handle that belongs to
+    // a DIFFERENT account, in the very command whose job is to reveal exactly that kind of mismatch.
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, { success: true, account: "OTHER22", wallets: { solana: null, evm: null } }),
+    })
+    const store = createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "k" })
+    const config = createFakeConfigStore({
+      profiles: { staging: { account: "CACHED1", username: "bob" } },
+      activeProfile: "staging",
+    })
+    const stdout = createCapture()
+    const code = await run(["auth", "status"], createTestDeps({ fetch, store, stdout, ...config }))
+    expect(code).toBe(0)
+    expect(stdout.text).toContain("Account: OTHER22")
+    expect(stdout.text).not.toContain("bob")
   })
 
   // Fix wave item 1: the live account alone reads as "fine" to an operator who never doubted it.

@@ -35,6 +35,7 @@ const CODING_AGENTS_DOCS = "https://docs.candle.tv/developers/coding-agents"
 
 interface EmbeddedWalletsResponse {
   account?: string
+  username?: string
   wallets?: {
     solana?: { address: string; delegated: boolean } | null
     evm?: { address: string; delegated: boolean } | null
@@ -118,7 +119,8 @@ export async function setup(args: string[], ctx: CommandContext): Promise<number
     const body = walletsResult.body as EmbeddedWalletsResponse
     const solana = body.wallets?.solana ?? null
     const evm = body.wallets?.evm ?? null
-    if (body.account) deps.stdout.write(`${identityLine(nextCtx.profile, body.account, apiUrl)}\n`)
+    if (body.account)
+      deps.stdout.write(`${identityLine(nextCtx.profile, body.account, apiUrl, undefined, body.username)}\n`)
     if (solana) deps.stdout.write(`Solana (send SOL here):    ${solana.address}\n`)
     if (evm) deps.stdout.write(`Hood    (send ETH here):    ${evm.address}\n`)
     deps.stdout.write(

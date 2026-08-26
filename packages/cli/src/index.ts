@@ -88,9 +88,9 @@ Commands:
   keys create [--scopes <a,b,c>] [--label <name>]                 Create an API key
               [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]
   keys revoke <prefix>                                            Revoke an API key
-  wallets                                                         Show launch and linked wallets
-  wallets import --chain <solana|evm> [options]                   Import a wallet you own (key via --key-file or hidden prompt)
-  wallets revoke <wallet-id>                                      Revoke a linked wallet
+  wallet                                                          Show launch and linked wallets (wallets is an alias)
+  wallet import --chain <solana|evm> [options]                    Import a wallet you own (key via --key-file or hidden prompt)
+  wallet revoke <wallet-id>                                       Revoke a linked wallet
   profile list                                                    Profiles on this machine, with cached accounts
   profile add <name> --api-url <url>                              Create a profile before authenticating it
   profile use <name>                                              Make a profile the active one
@@ -150,6 +150,23 @@ const COMMANDS: Record<string, CommandRoute> = {
  * runs unguarded; what prevents that is the convention that every command is documented, not the
  * test. */
 export const ROUTED_COMMANDS = new Set(Object.keys(COMMANDS))
+
+/**
+ * Command-word aliases, resolved to the canonical word BEFORE routing and before the guard reads
+ * the command word. `wallet` -> `wallets`: the singular is the friendlier primary (HELP_TEXT
+ * documents it), but `wallets` is released and referenced by docs, skills and the MCP surface, so
+ * it stays the canonical word every derived set (`ROUTED_COMMANDS`, `ROUTED_SUBCOMMANDS`, the
+ * guard, dispatch) reasons about. An alias therefore inherits the canonical command's subcommands
+ * and its guard for free. `index.test.ts`'s drift test maps documented words through this before
+ * comparing, so a documented alias is allowed precisely when its target is a routed command.
+ */
+export const ALIASES: Record<string, string> = { wallet: "wallets" }
+
+/** The canonical command word for `word`, resolving an alias (own-property only, never a
+ * prototype member) and passing everything else through unchanged. */
+function canonicalCommand(word: string | undefined): string | undefined {
+  return word !== undefined && Object.hasOwn(ALIASES, word) ? ALIASES[word] : word
+}
 
 /** The subcommands each command routes, for the words that have any (`doctor`, `mcp` and `setup`
  * take none and are absent). The guard reads it to tell an invocation that is about to RUN from
@@ -230,7 +247,7 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
     // version was printed, the process exited 0, and nothing was updated. That reads as success.
     // The CLI's pin flag is `--to`, and this says so rather than obeying the wrong reading
     // silently. Bare `candle --version`, with no command word behind it, is untouched.
-    const versionWord = tokens[0]
+    const versionWord = canonicalCommand(tokens[0])
     if (versionWord !== undefined && ROUTED_COMMANDS.has(versionWord)) {
       const fix = "--version prints the CLI version; to pin a release use: candle update --to <tag>"
       writeUsageFailure(deps, fix, flags.json)
@@ -244,7 +261,11 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
     return 0
   }
 
-  const [cmd, sub, ...cmdArgs] = tokens
+  // An alias is resolved to its canonical word here, once, before anything reads `cmd`: routing,
+  // the guard's command-word gate, and the unknown-command message all then see `wallets` for a
+  // typed `wallet`. `sub` is untouched, so `wallet import` dispatches as `wallets import`.
+  const [rawCmd, sub, ...cmdArgs] = tokens
+  const cmd = canonicalCommand(rawCmd)
   const config = await migrateProfiles(deps)
   // `auth login` resolves LENIENTLY about EXISTENCE (resolveProfileNameForLogin): its `--profile`
   // may name a profile to CREATE, so it must not be gated by resolveProfileName's "does this name

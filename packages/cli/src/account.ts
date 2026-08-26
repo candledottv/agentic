@@ -21,6 +21,9 @@ import type { Deps } from "./deps"
 export interface AccountLookup {
   /** The account the key belongs to, when the API named one. */
   account?: string
+  /** The account's Candle username, when it has one. Optional and independent of `account`: the
+   * endpoint returns `username: null` for an account that never set one. Display only. */
+  username?: string
   /** Why it did not, in words a message can carry: an API error, or a body with no account. */
   failure?: string
 }
@@ -37,7 +40,8 @@ export async function fetchAccount(
     fetch: deps.fetch,
     env: deps.env,
   })
-  const account = identity.ok ? (identity.body as { account?: string }).account : undefined
-  if (account) return { account }
+  const body = identity.ok ? (identity.body as { account?: string; username?: string }) : undefined
+  const account = body?.account
+  if (account) return { account, ...(body?.username ? { username: body.username } : {}) }
   return { failure: identity.ok ? "no account in the response" : identity.message }
 }

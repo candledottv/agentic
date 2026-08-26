@@ -4893,9 +4893,10 @@ async function fetchAccount(deps, apiUrl, apiKey) {
     fetch: deps.fetch,
     env: deps.env
   });
-  const account = identity.ok ? identity.body.account : undefined;
+  const body = identity.ok ? identity.body : undefined;
+  const account = body?.account;
   if (account)
-    return { account };
+    return { account, ...body?.username ? { username: body.username } : {} };
   return { failure: identity.ok ? "no account in the response" : identity.message };
 }
 
@@ -5179,16 +5180,16 @@ function defaultProfileNameFor(apiUrl, existing) {
 function credentialEnvOverrides(env) {
   return ["CANDLE_API_KEY", "CANDLE_DEVICE_TOKEN"].filter((name) => env[name]?.trim());
 }
-function identityLine(profile, account, apiUrl, overrides) {
-  const shown = overrides?.length ? `unknown (${overrides.join(", ")} override)` : account ?? "unknown";
+function identityLine(profile, account, apiUrl, overrides, username) {
+  const shown = overrides?.length ? `unknown (${overrides.join(", ")} override)` : username && account ? `${username} (${account})` : account ?? "unknown";
   return `Profile: ${profile ?? "none"}   Account: ${shown} at ${apiUrl}`;
 }
 async function printIdentity(ctx) {
   if (ctx.json)
     return;
   const config = await ctx.deps.readConfig();
-  const account = effectiveProfileFields(config, ctx.profile).account;
-  ctx.deps.stdout.write(`${identityLine(ctx.profile, account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env))}
+  const fields = effectiveProfileFields(config, ctx.profile);
+  ctx.deps.stdout.write(`${identityLine(ctx.profile, fields.account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env), fields.username)}
 `);
 }
 function formatCacheAge(now, cachedAt) {
@@ -5505,8 +5506,12 @@ async function finishLogin(rawBody, ctx, requested) {
   if (body.apiKey)
     await deps.store.set(profileSecretRef(profileName, "apiKey"), body.apiKey.key);
   let account;
-  if (body.apiKey)
-    account = (await fetchAccount(deps, ctx.apiUrl, body.apiKey.key)).account;
+  let username;
+  if (body.apiKey) {
+    const lookup = await fetchAccount(deps, ctx.apiUrl, body.apiKey.key);
+    account = lookup.account;
+    username = lookup.username;
+  }
   const portalOrigin = portalOriginFrom(requested.verificationUri);
   await deps.updateProfile(profileName, {
     apiUrl: ctx.apiUrl,
@@ -5514,7 +5519,7 @@ async function finishLogin(rawBody, ctx, requested) {
     ...body.apiKey ? { keyPrefix: body.apiKey.keyPrefix, scopes: body.apiKey.scopes } : {},
     ...requested.label ? { label: requested.label } : {},
     ...portalOrigin ? { portalOrigin } : {},
-    ...account ? { account, accountCachedAt: deps.now() } : {}
+    ...account ? { account, accountCachedAt: deps.now(), username } : {}
   });
   if (!config.activeProfile)
     await deps.writeConfig({ activeProfile: profileName });
@@ -5670,8 +5675,12 @@ async function authStatus(args, ctx) {
     }));
   }
   let account;
-  if (apiKey)
-    account = (await fetchAccount(deps, apiUrl, apiKey)).account;
+  let username;
+  if (apiKey) {
+    const lookup = await fetchAccount(deps, apiUrl, apiKey);
+    account = lookup.account;
+    username = lookup.username;
+  }
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0;
   const configPath = configFilePathForDisplay(deps.env);
   const fields = effectiveProfileFields(config, ctx.profile);
@@ -5692,7 +5701,9 @@ async function authStatus(args, ctx) {
 `);
     return exitCode;
   }
-  deps.stdout.write(`${identityLine(ctx.profile, account ?? fields.account, apiUrl)}
+  const shownAccount = account ?? fields.account;
+  const shownUsername = account !== undefined ? username : fields.username;
+  deps.stdout.write(`${identityLine(ctx.profile, shownAccount, apiUrl, undefined, shownUsername)}
 `);
   if (mismatch) {
     deps.stdout.write(`Profile ${ctx.profile} recorded ${cachedAccount}; this key belongs to ${account}. Run: candle profile use ${ctx.profile}
@@ -6218,8 +6229,8 @@ async function mcp(args, ctx) {
     toolAllowlist = requested.join(",");
   }
   const identityConfig = await deps.readConfig();
-  const identityAccount = effectiveProfileFields(identityConfig, ctx.profile).account;
-  deps.stderr.write(`${identityLine(ctx.profile, identityAccount, apiUrl, credentialEnvOverrides(deps.env))}
+  const identityFields = effectiveProfileFields(identityConfig, ctx.profile);
+  deps.stderr.write(`${identityLine(ctx.profile, identityFields.account, apiUrl, credentialEnvOverrides(deps.env), identityFields.username)}
 `);
   if (parsed.booleans.has("--print-config")) {
     const launchArgs = [
@@ -6364,11 +6375,13 @@ async function profileUse(args, ctx) {
   const apiUrl = ctx.apiUrlFlag ?? resolveApiUrl(profile.apiUrl, deps.env);
   const apiKey = await deps.store.get(profileSecretRef(name, "apiKey"));
   let account = profile.account;
+  let username = profile.username;
   if (apiKey) {
-    const { account: live, failure } = await fetchAccount(deps, apiUrl, apiKey);
+    const { account: live, username: liveUsername, failure } = await fetchAccount(deps, apiUrl, apiKey);
     if (live) {
       account = live;
-      await deps.updateProfile(name, { account: live, accountCachedAt: deps.now() });
+      username = liveUsername;
+      await deps.updateProfile(name, { account: live, username: liveUsername, accountCachedAt: deps.now() });
     } else {
       deps.stderr.write(`Could not refresh the account for ${name} (${failure}); keeping the cached value.
 `);
@@ -6381,7 +6394,7 @@ async function profileUse(args, ctx) {
     deps.stdout.write(`${JSON.stringify({ name, account, apiUrl })}
 `);
   else
-    deps.stdout.write(`${identityLine(name, account, apiUrl)}
+    deps.stdout.write(`${identityLine(name, account, apiUrl, undefined, username)}
 `);
   return 0;
 }
@@ -6533,7 +6546,7 @@ async function setup(args, ctx) {
     const solana = body.wallets?.solana ?? null;
     const evm = body.wallets?.evm ?? null;
     if (body.account)
-      deps.stdout.write(`${identityLine(nextCtx.profile, body.account, apiUrl)}
+      deps.stdout.write(`${identityLine(nextCtx.profile, body.account, apiUrl, undefined, body.username)}
 `);
     if (solana)
       deps.stdout.write(`Solana (send SOL here):    ${solana.address}
@@ -10617,9 +10630,9 @@ Commands:
   keys create [--scopes <a,b,c>] [--label <name>]                 Create an API key
               [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]
   keys revoke <prefix>                                            Revoke an API key
-  wallets                                                         Show launch and linked wallets
-  wallets import --chain <solana|evm> [options]                   Import a wallet you own (key via --key-file or hidden prompt)
-  wallets revoke <wallet-id>                                      Revoke a linked wallet
+  wallet                                                          Show launch and linked wallets (wallets is an alias)
+  wallet import --chain <solana|evm> [options]                    Import a wallet you own (key via --key-file or hidden prompt)
+  wallet revoke <wallet-id>                                       Revoke a linked wallet
   profile list                                                    Profiles on this machine, with cached accounts
   profile add <name> --api-url <url>                              Create a profile before authenticating it
   profile use <name>                                              Make a profile the active one
@@ -10653,6 +10666,10 @@ var COMMANDS = {
   update: { bare: update }
 };
 var ROUTED_COMMANDS = new Set(Object.keys(COMMANDS));
+var ALIASES = { wallet: "wallets" };
+function canonicalCommand(word) {
+  return word !== undefined && Object.hasOwn(ALIASES, word) ? ALIASES[word] : word;
+}
 var ROUTED_SUBCOMMANDS = Object.fromEntries(Object.entries(COMMANDS).filter(([, route]) => route.subcommands !== undefined).map(([word, route]) => [word, Object.keys(route.subcommands ?? {})]));
 function routeFor(word) {
   return word !== undefined && Object.hasOwn(COMMANDS, word) ? COMMANDS[word] : undefined;
@@ -10682,7 +10699,7 @@ async function run2(argv, deps) {
   const { rest, flags } = extracted;
   const tokens = rest[0] === "candle" ? rest.slice(1) : rest;
   if (flags.version) {
-    const versionWord = tokens[0];
+    const versionWord = canonicalCommand(tokens[0]);
     if (versionWord !== undefined && ROUTED_COMMANDS.has(versionWord)) {
       const fix = "--version prints the CLI version; to pin a release use: candle update --to <tag>";
       writeUsageFailure(deps, fix, flags.json);
@@ -10696,7 +10713,8 @@ async function run2(argv, deps) {
     deps.stdout.write(HELP_TEXT);
     return 0;
   }
-  const [cmd, sub, ...cmdArgs] = tokens;
+  const [rawCmd, sub, ...cmdArgs] = tokens;
+  const cmd = canonicalCommand(rawCmd);
   const config = await migrateProfiles(deps);
   const isAuthLogin = cmd === "auth" && sub === "login";
   const isProfileCommand = cmd === "profile";
@@ -10861,5 +10879,6 @@ export {
   buildRealDeps,
   ROUTED_SUBCOMMANDS,
   ROUTED_COMMANDS,
-  NEVER_GUARDED
+  NEVER_GUARDED,
+  ALIASES
 };

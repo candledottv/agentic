@@ -210,6 +210,26 @@ describe("identityLine", () => {
     )
     expect(identityLine("staging", "FaKwE2xX", "https://api.candle.tv", [])).toContain("Account: FaKwE2xX")
   })
+  test("shows the username beside the address when both are present, the address alone without", () => {
+    expect(identityLine("hood-staging", "FaKwE2xX", "https://staging.api.candle.tv", undefined, "satoshi")).toBe(
+      "Profile: hood-staging   Account: satoshi (FaKwE2xX) at https://staging.api.candle.tv",
+    )
+    // No username: the address alone, byte for byte what it was before the parameter existed.
+    expect(identityLine("hood-staging", "FaKwE2xX", "https://staging.api.candle.tv", undefined, undefined)).toBe(
+      "Profile: hood-staging   Account: FaKwE2xX at https://staging.api.candle.tv",
+    )
+    // A username with no account cannot form the pair, so the "unknown" fallback still wins.
+    expect(identityLine("hood-staging", undefined, "https://staging.api.candle.tv", undefined, "satoshi")).toBe(
+      "Profile: hood-staging   Account: unknown at https://staging.api.candle.tv",
+    )
+  })
+  test("an env override stays username-free even when a username is cached", () => {
+    // The override REPLACES the account entirely; a cached username describes the profile's own
+    // stored key, not the credential the env var supplied, so it must not appear beside it.
+    expect(identityLine("staging", "FaKwE2xX", "https://api.candle.tv", ["CANDLE_API_KEY"], "satoshi")).toBe(
+      "Profile: staging   Account: unknown (CANDLE_API_KEY override) at https://api.candle.tv",
+    )
+  })
 })
 
 describe("formatCacheAge", () => {
