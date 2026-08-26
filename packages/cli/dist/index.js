@@ -4540,6 +4540,32 @@ ${lines.join(`
 }
 
 // src/commands/wallets.ts
+var NONE_HINT = `A wallet marked none has no signer on this machine, so a trade from here cannot sign with it.
+` + `Import it here (candle wallets import), or run the trade from the machine that imported it.
+`;
+var STALE_HINT = `A wallet marked stale is revoked but its signer is still stored here. Run: candle wallets revoke <id>
+`;
+async function probeSignerStates(rows, store) {
+  const states = new Map;
+  let storeError;
+  for (const row of rows) {
+    if (typeof row._id !== "string" || row._id.length === 0)
+      continue;
+    let stored = false;
+    try {
+      stored = await store.get(walletSignerRef(row._id)) !== null;
+    } catch (error) {
+      storeError ??= error instanceof Error ? error.message : String(error);
+    }
+    states.set(row._id, stored ? row.revokedAt ? "stale" : "stored" : "none");
+  }
+  return { states, ...storeError !== undefined ? { storeError } : {} };
+}
+function signerCell(state, row) {
+  if (state === undefined || state === "none" && row.revokedAt)
+    return "-";
+  return state;
+}
 async function wallets(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {});
@@ -4579,13 +4605,22 @@ async function wallets(args, ctx) {
     writeFailure(deps, linked, { apiUrl, authType: "key" }, json);
     return 1;
   }
+  const linkedBody = linked.body;
+  const linkedRows = Array.isArray(linkedBody.page) ? linkedBody.page : [];
+  const { states: signerStates, storeError } = await probeSignerStates(linkedRows, deps.store);
+  if (storeError !== undefined)
+    deps.stderr.write(`Could not read the signer store: ${storeError}
+`);
   if (json) {
-    deps.stdout.write(`${JSON.stringify({ embedded: embedded.body, linked: linked.body })}
+    deps.stdout.write(`${JSON.stringify({
+      embedded: embedded.body,
+      linked: linked.body,
+      signers: Object.fromEntries(signerStates)
+    })}
 `);
     return 0;
   }
   const embeddedBody = embedded.body;
-  const linkedBody = linked.body;
   deps.stdout.write(`Embedded (launch) wallets:
 `);
   deps.stdout.write(`${renderTable(["Wallet", "Address", "Delegated", "Launches on"], [
@@ -4606,18 +4641,29 @@ async function wallets(args, ctx) {
   deps.stdout.write(`
 Linked wallets:
 `);
-  if (linkedBody.page.length === 0) {
+  if (linkedRows.length === 0) {
     deps.stdout.write(`(none)
 `);
   } else {
-    deps.stdout.write(`${renderTable(["Id", "Wallet", "Address", "Label", "Revoked"], linkedBody.page.map((wallet) => [
+    const cells = linkedRows.map((wallet) => signerCell(signerStates.get(wallet._id), wallet));
+    deps.stdout.write(`${renderTable(["Id", "Wallet", "Address", "Label", "Revoked", "Signer"], linkedRows.map((wallet, index) => [
       wallet._id,
       wallet.chain,
       wallet.address,
       wallet.label ?? "-",
-      wallet.revokedAt ? "yes" : "no"
+      wallet.revokedAt ? "yes" : "no",
+      cells[index] ?? "-"
     ]))}
 `);
+    const anyNone = cells.includes("none");
+    const anyStale = cells.includes("stale");
+    if (anyNone || anyStale)
+      deps.stdout.write(`
+`);
+    if (anyNone)
+      deps.stdout.write(NONE_HINT);
+    if (anyStale)
+      deps.stdout.write(STALE_HINT);
   }
   return 0;
 }

@@ -44,7 +44,7 @@ node packages/cli/dist/index.js auth login
 | `candle keys list` | Lists this account's API keys: prefix, scopes, environment, timestamps, and which device minted each one. |
 | `candle keys create [--scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily\|weekly\|monthly\|never]]` | Creates a new API key and prints the plaintext exactly once, with the same optional name, expiration, and USD transaction limit the portal's create form takes. Stored locally only if the CLI does not already hold a working key. |
 | `candle keys revoke <prefix>` | Revokes an API key by prefix. Revoking the CLI's own stored key also clears it locally. |
-| `candle wallets` | Shows the account's embedded (launch) wallets and any linked wallets, using the API key. |
+| `candle wallets` | Shows the account's embedded (launch) wallets and any linked wallets, using the API key, with a `Signer` column saying whether this machine holds each linked wallet's signing key. |
 | `candle profile list` | Lists profiles on this machine, with cached accounts. |
 | `candle profile add <name> --api-url <url>` | Creates a profile before authenticating it. |
 | `candle profile use <name>` | Makes a profile the active one. |
@@ -128,7 +128,8 @@ account and how old that cache is (no network call); `profile use <name>` makes 
 refreshes its account from the API; `profile add <name> --api-url <url>` creates one before
 authenticating it; `profile rename` and `profile remove <name> --yes` do what they say. Removing a
 profile deletes its two stored credentials and nothing else; imported wallet signers belong to the
-wallet, not the profile.
+wallet, not the profile. `candle wallets` marks, per linked wallet, whether this machine holds its
+signer (`stored`, `none`, or `stale` for a revoked wallet whose signer is still here).
 
 Every authenticated command prints `Profile: <name>   Account: <account> at <api url>` before its
 own output (`--json` output is unchanged except `auth status`, `auth login` and `doctor`, which

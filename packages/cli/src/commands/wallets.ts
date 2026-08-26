@@ -12,6 +12,10 @@
  *
  * `wallets revoke` completes the lifecycle: `DELETE /wallets/:id`, plus removal of any stored
  * signer for that wallet id.
+ *
+ * The listing's `Signer` column is the view from the wallet side: a linked wallet's row lives on
+ * a Candle account while its signer lives on ONE machine, and a trade from that wallet needs
+ * both halves. See `probeSignerStates`.
  */
 
 import { base58 } from "@scure/base"
@@ -21,7 +25,7 @@ import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
 import { printIdentity } from "../profiles"
 import { renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
-import { pemToStoredSigner, walletSignerRef } from "../secret-store"
+import { pemToStoredSigner, type SecretStore, walletSignerRef } from "../secret-store"
 import { encryptWalletKeyForImport, generateSignerKeypair, parseSolanaSecret, type WalletChain } from "../wallet-import"
 
 interface EmbeddedWalletsResponse {
@@ -43,6 +47,67 @@ interface LinkedWalletRow {
 
 interface LinkedWalletsResponse {
   page: LinkedWalletRow[]
+}
+
+/**
+ * What THIS MACHINE can do with a linked wallet's signing key:
+ *
+ *   stored -- the signer for this wallet id is in this machine's store and the wallet is live;
+ *   none   -- it is not here, so a trade run from here cannot sign for this wallet;
+ *   stale  -- the wallet is revoked but its signer is still stored here.
+ *
+ * The human table prints `-` rather than `none` for a revoked row, where there is nothing to
+ * say; the `--json` map carries `none` for it, since that row already carries `revokedAt`.
+ */
+type SignerState = "stored" | "none" | "stale"
+
+/** The two lines printed under the table when any row reads `none`. */
+const NONE_HINT =
+  "A wallet marked none has no signer on this machine, so a trade from here cannot sign with it.\n" +
+  "Import it here (candle wallets import), or run the trade from the machine that imported it.\n"
+
+/** The line printed under the table when any row reads `stale`. */
+const STALE_HINT =
+  "A wallet marked stale is revoked but its signer is still stored here. Run: candle wallets revoke <id>\n"
+
+/**
+ * Probes the local secret store once per linked row, keyed by wallet id.
+ *
+ * Deliberately a probe of exactly the ids the API returned, never an enumeration of the store:
+ * `SecretStore` is get/set/delete only and the macOS backend shells out per ref, so listing
+ * every `wallet_signer_*` would mean a new capability on three backends for one column. The
+ * consequence is stated in the docs: a signer for a wallet on ANOTHER account is not shown here,
+ * it shows as `stored` when you list under that account's profile.
+ *
+ * A store that throws (a locked keychain, a missing `secret-tool`) is not a failed listing: the
+ * row falls back to `none` and the caller prints ONE warning for the whole listing rather than
+ * one per row, keeping the exit code at 0. The rows themselves are still worth printing.
+ */
+async function probeSignerStates(
+  rows: LinkedWalletRow[],
+  store: SecretStore,
+): Promise<{ states: Map<string, SignerState>; storeError?: string }> {
+  const states = new Map<string, SignerState>()
+  let storeError: string | undefined
+  for (const row of rows) {
+    // The type says `_id` is always present. A row without one is skipped rather than probed
+    // under `wallet_signer_undefined`, and is left out of the map.
+    if (typeof row._id !== "string" || row._id.length === 0) continue
+    let stored = false
+    try {
+      stored = (await store.get(walletSignerRef(row._id))) !== null
+    } catch (error) {
+      storeError ??= error instanceof Error ? error.message : String(error)
+    }
+    states.set(row._id, stored ? (row.revokedAt ? "stale" : "stored") : "none")
+  }
+  return { states, ...(storeError !== undefined ? { storeError } : {}) }
+}
+
+/** The `Signer` cell for a row: `none` on a revoked wallet has nothing to say, so it prints `-`. */
+function signerCell(state: SignerState | undefined, row: LinkedWalletRow): string {
+  if (state === undefined || (state === "none" && row.revokedAt)) return "-"
+  return state
 }
 
 export async function wallets(args: string[], ctx: CommandContext): Promise<number> {
@@ -95,13 +160,29 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
     return 1
   }
 
+  const linkedBody = linked.body as LinkedWalletsResponse
+  // Guarded rather than trusted: `body` is `unknown` until this cast, and the JSON branch below
+  // now reads the rows where before it only echoed the body.
+  const linkedRows = Array.isArray(linkedBody.page) ? linkedBody.page : []
+  const { states: signerStates, storeError } = await probeSignerStates(linkedRows, deps.store)
+  // On STDERR in both modes: a warning must never land in the middle of the JSON document
+  // stdout is contracted to carry, and it is not a failure of the listing either way.
+  if (storeError !== undefined) deps.stderr.write(`Could not read the signer store: ${storeError}\n`)
+
   if (json) {
-    deps.stdout.write(`${JSON.stringify({ embedded: embedded.body, linked: linked.body })}\n`)
+    // Both API bodies stay verbatim and `signers` sits beside them, so a consumer can still tell
+    // what the API said from what the CLI worked out about this machine.
+    deps.stdout.write(
+      `${JSON.stringify({
+        embedded: embedded.body,
+        linked: linked.body,
+        signers: Object.fromEntries(signerStates),
+      })}\n`,
+    )
     return 0
   }
 
   const embeddedBody = embedded.body as EmbeddedWalletsResponse
-  const linkedBody = linked.body as LinkedWalletsResponse
 
   // Two vocabularies meet in this table: the rows are WALLETS ("solana" | "evm", an address and
   // signing family) while the value a caller passes to launch/trade is a LAUNCH CHAIN
@@ -130,21 +211,32 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
   )
 
   deps.stdout.write("\nLinked wallets:\n")
-  if (linkedBody.page.length === 0) {
+  if (linkedRows.length === 0) {
     deps.stdout.write("(none)\n")
   } else {
+    // Rendered once, then read back for the hints, so what the hint says about "a wallet marked
+    // none" is the same value the table actually printed and cannot drift from it.
+    const cells = linkedRows.map((wallet) => signerCell(signerStates.get(wallet._id), wallet))
     deps.stdout.write(
       `${renderTable(
-        ["Id", "Wallet", "Address", "Label", "Revoked"],
-        linkedBody.page.map((wallet) => [
+        ["Id", "Wallet", "Address", "Label", "Revoked", "Signer"],
+        linkedRows.map((wallet, index) => [
           wallet._id,
           wallet.chain,
           wallet.address,
           wallet.label ?? "-",
           wallet.revokedAt ? "yes" : "no",
+          cells[index] ?? "-",
         ]),
       )}\n`,
     )
+    // Only for a state some row is actually in: a listing where every signer is present says
+    // nothing extra.
+    const anyNone = cells.includes("none")
+    const anyStale = cells.includes("stale")
+    if (anyNone || anyStale) deps.stdout.write("\n")
+    if (anyNone) deps.stdout.write(NONE_HINT)
+    if (anyStale) deps.stdout.write(STALE_HINT)
   }
   return 0
 }
