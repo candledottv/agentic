@@ -1,11 +1,13 @@
 /**
- * `doctor`: a PASS/FAIL/SKIP table over seven checks, in order (task-3-brief.md): runtime
- * version, keychain backend detected, credentials present, API reachable, device token valid,
- * agent key valid for launch:write (see API_KEY_CHECK for why the scope is named in the row
- * label), launch wallet delegated. Exits nonzero on any FAIL. A missing credential SKIPs
- * the checks that need it rather than failing them (matching `auth status`); "credentials
- * present" itself still FAILs when there is no device token at all, since nothing past it can
- * meaningfully run.
+ * `doctor`: a PASS/FAIL/SKIP table over ten checks, in order (task-3-brief.md, then task-9):
+ * runtime version, keychain backend detected, credentials present, API reachable, device token
+ * valid, agent key valid for launch:write (see API_KEY_CHECK for why the scope is named in the
+ * row label), launch wallet delegated, account, install method, and whether a newer signed
+ * release exists. Exits nonzero on any FAIL. A missing credential SKIPs the checks that need it
+ * rather than failing them (matching `auth status`); "credentials present" itself still FAILs
+ * when there is no device token at all, since nothing past it can meaningfully run. Install and
+ * Update never move the exit code either: an available update is PASS with the fix in its
+ * detail, and offline is SKIP (see the rows themselves for why).
  */
 
 import { parseArgs } from "../args"
@@ -14,7 +16,9 @@ import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
 import { credentialEnvOverrides, effectiveProfileFields, printIdentity } from "../profiles"
+import { compareVersions, detectInstall, fetchLatest, releaseBaseUrl } from "../release"
 import { renderError, renderTable, writeUsageFailure } from "../render"
+import { CLI_VERSION } from "../version"
 
 // Matches packages/mcp's own `engines.node` floor (">=18"); doctor needs an actual number to
 // compare against, package.json's engines field alone isn't read at runtime by the built bundle
@@ -198,6 +202,45 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
         },
   )
 
+  // Install and Update: what this binary is and whether a newer signed release exists. doctor
+  // already talks to the network, so the one manifest read belongs here; ordinary commands never
+  // make it (see update.ts). An available update is not a failure, so the row is PASS with the
+  // fix in its detail, and offline is SKIP.
+  const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath)
+  const method = detectInstall(deps.execPath, realExec)
+  const installDetail =
+    method === "binary"
+      ? `binary at ${deps.execPath}`
+      : method === "homebrew"
+        ? `Homebrew (${realExec})`
+        : `script (${deps.execPath}); update with npm`
+  rows.push({ check: "Install", state: "PASS", detail: installDetail })
+  const latest = await fetchLatest(deps, releaseBaseUrl(deps.env))
+  const updateBody = latest.ok
+    ? {
+        current: CLI_VERSION,
+        latest: latest.manifest.version,
+        available: compareVersions(CLI_VERSION, latest.manifest.version) < 0,
+      }
+    : { current: CLI_VERSION, latest: null, available: null }
+  rows.push(
+    latest.ok
+      ? {
+          check: "Update",
+          state: "PASS",
+          detail: updateBody.available
+            ? `${latest.manifest.version} available: ${
+                method === "homebrew"
+                  ? "brew upgrade candle"
+                  : method === "script"
+                    ? "npm i -g @candledottv/cli@latest"
+                    : "candle update"
+              }`
+            : `up to date (${CLI_VERSION})`,
+        }
+      : { check: "Update", state: "SKIP", detail: `could not check: ${latest.message}` },
+  )
+
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0
 
   // The identity line is doctor's own first line of output, ahead of the table -- a header for
@@ -211,6 +254,8 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
         rows,
         ...(account !== undefined ? { account } : {}),
         ...(cachedAccount !== undefined ? { cachedAccount } : {}),
+        install: { method, path: method === "homebrew" ? realExec : deps.execPath },
+        update: updateBody,
       })}\n`,
     )
     return exitCode

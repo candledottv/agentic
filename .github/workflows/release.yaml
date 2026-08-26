@@ -1,0 +1,159 @@
+name: Release CLI
+
+# Runs on the cli-v<version> tag the monorepo's sync creates. Builds four native binaries, signs
+# them keyless with Sigstore, attests provenance, publishes the GitHub Release, then bumps the
+# Homebrew tap. The release has seventeen assets: candle-<os>-<arch> (4),
+# candle-<version>-<os>-<arch>.tar.gz (4), install.sh, SHA256SUMS, six *.sigstore.json, latest.json.
+on:
+  push:
+    tags: ["cli-v*"]
+  # A manual run always builds, signs and verifies, and publishes nothing; a release is cut only
+  # by a cli-v tag push.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  IDENTITY_REGEX: '^https://github.com/candledottv/agentic/\.github/workflows/release\.yaml@refs/tags/cli-v'
+  ISSUER: https://token.actions.githubusercontent.com
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Every third-party action here is pinned to a full commit SHA, with its tag in a trailing
+    # comment. A tag is a moving pointer its owner can repoint at any commit, and this job holds
+    # `id-token: write` and signs the binaries users install: what runs in it has to be a fixed
+    # set of bytes. Bump one by resolving the new tag's commit and rewriting the SHA and the
+    # comment together.
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          # One file owns the Bun pin: packages/cli/.bun-version, which the sync carries into this
+          # mirror and src/release-pins.test.ts holds equal to the monorepo's own packageManager
+          # field. The in-process verifier carries a shim over Bun's crypto (see
+          # packages/cli/src/bun-crypto-shim.ts), so a runtime change has to be a deliberate bump
+          # of that one file rather than a drift between two copies of the number.
+          bun-version-file: packages/cli/.bun-version
+      - name: Resolve the version and check it against the tag
+        id: version
+        run: |
+          version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' packages/cli/package.json | head -1)"
+          [ -n "$version" ] || { echo "no version in packages/cli/package.json"; exit 1; }
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "cli-v${version}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match package version ${version}"; exit 1
+          fi
+      # --frozen-lockfile, at the REPOSITORY ROOT rather than in packages/cli: this repo is the
+      # exported mirror and it carries a root bun.lock covering the whole workspace, which the
+      # sync refreshes (it runs `bun install` at the mirror root and commits the result) in the
+      # very commit this tag lands on. A signed binary compiled from a dependency graph resolved
+      # fresh at build time is the threat this feature exists to close, so the install fails
+      # closed on a stale lock instead of silently resolving something else. The exact versions in
+      # packages/cli/package.json (pinned by src/release-pins.test.ts) are the second half of
+      # that: they are what the lock is a lock ON.
+      - name: Install (frozen, at the mirror root)
+        run: bun install --frozen-lockfile
+      # Between the install and the tests, and not after them. It needs @sigstore/tuf, so it
+      # cannot run before the install; and the tests have to run against the trust root the
+      # binaries below will embed, so it cannot run after them.
+      - name: Refresh the embedded Sigstore trusted root
+        working-directory: packages/cli
+        run: bun scripts/refresh-sigstore-root.mjs
+      - name: Test
+        working-directory: packages/cli
+        run: bun test
+      - name: Build the binaries
+        working-directory: packages/cli
+        run: |
+          mkdir -p dist-bin
+          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+            bun build --compile --minify --target="bun-${target}" src/index.ts --outfile "dist-bin/candle-${target}"
+          done
+          ls -la dist-bin
+      - name: Pack tarballs and write checksums and the manifest
+        working-directory: packages/cli
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd dist-bin
+          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+            mkdir -p "pack/${target}" && cp "candle-${target}" "pack/${target}/candle" && cp ../LICENSE "pack/${target}/LICENSE"
+            tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -C "pack/${target}" -czf "candle-${VERSION}-${target}.tar.gz" candle LICENSE
+          done
+          rm -rf pack
+          cp ../install.sh install.sh
+          sha256sum candle-* install.sh > SHA256SUMS
+          cat SHA256SUMS
+          cd ..
+          bun ../../scripts/release/write-manifest.mjs "${VERSION}" dist-bin
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - name: Sign the binaries and SHA256SUMS (keyless)
+        working-directory: packages/cli/dist-bin
+        run: |
+          for f in candle-darwin-arm64 candle-darwin-x64 candle-linux-x64 candle-linux-arm64 install.sh SHA256SUMS; do
+            cosign sign-blob --yes --bundle "${f}.sigstore.json" "${f}"
+          done
+      - name: Verify what was just signed
+        working-directory: packages/cli/dist-bin
+        run: |
+          # A tag build's certificate identity ends @refs/tags/cli-v<version>, which is what
+          # IDENTITY_REGEX matches. A workflow_dispatch (rehearsal) run signs under the branch
+          # ref instead, so its identity ends @refs/heads/<branch>; build that regex here rather
+          # than reusing the tag-anchored one, which a dry run could never satisfy.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            id_re="${IDENTITY_REGEX}"
+          else
+            id_re="^https://github\.com/candledottv/agentic/\.github/workflows/release\.yaml@${GITHUB_REF}\$"
+          fi
+          for f in candle-darwin-arm64 candle-darwin-x64 candle-linux-x64 candle-linux-arm64 install.sh SHA256SUMS; do
+            cosign verify-blob --bundle "${f}.sigstore.json" --certificate-identity-regexp "${id_re}" --certificate-oidc-issuer "${ISSUER}" "${f}"
+          done
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            packages/cli/dist-bin/candle-darwin-arm64
+            packages/cli/dist-bin/candle-darwin-x64
+            packages/cli/dist-bin/candle-linux-x64
+            packages/cli/dist-bin/candle-linux-arm64
+            packages/cli/dist-bin/candle-*.tar.gz
+            packages/cli/dist-bin/install.sh
+      - name: Rehearsal complete (nothing published)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "rehearsal complete: built, signed and verified; nothing published"
+      - name: Create the GitHub Release
+        if: github.event_name == 'push'
+        working-directory: packages/cli/dist-bin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          tag="cli-v${VERSION}"
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Candle CLI ${VERSION}" --generate-notes
+          gh release upload "$tag" --clobber candle-* install.sh install.sh.sigstore.json SHA256SUMS SHA256SUMS.sigstore.json latest.json
+      - name: Check the Homebrew tap token
+        if: github.event_name == 'push'
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "${TAP_TOKEN}" ]; then
+            echo "HOMEBREW_TAP_TOKEN is not set" >&2
+            exit 1
+          fi
+      - name: Checkout homebrew-tap
+        if: github.event_name == 'push'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: candledottv/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap-checkout
+      - name: Bump the Homebrew tap
+        if: github.event_name == 'push'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          bash scripts/release/bump-tap.sh "${VERSION}" packages/cli/dist-bin tap-checkout

@@ -25,6 +25,7 @@ import { effectiveProfileFields, identityLine, printIdentity, resolveProfileName
 import { portalDeviceUrl, writeUsageFailure } from "../render"
 import { authLogin } from "./auth"
 import { doctor } from "./doctor"
+import { mcpClientConfig } from "./mcp"
 
 /** Mirrors distribution/agentic's install table and the console's connect tab -- the same three
  * lines the CLI P0 work put everywhere else. Hardcoded (no cross-package import), the
@@ -139,7 +140,11 @@ export async function setup(args: string[], ctx: CommandContext): Promise<number
   // 3. Connect a coding agent.
   section(deps, "3/4 Connect your agent")
   deps.stdout.write(`Claude Code skills:  ${SKILLS_CLAUDE_COMMAND}\n`)
-  deps.stdout.write(`MCP (any client):    candle mcp --print-config\n`)
+  deps.stdout.write("MCP (any client), paste into the host's MCP config:\n")
+  deps.stdout.write(`${await mcpClientConfig([], deps)}\n`)
+  deps.stdout.write(
+    "MCP hosts also need Node 18+ on their own PATH: candle mcp starts the server with npx --yes @candledottv/mcp.\n",
+  )
   deps.stdout.write(`Other platforms:     ${CODING_AGENTS_DOCS}\n`)
 
   // 4. Verify everything end to end. Setup's exit code IS doctor's: `candle setup && ...`

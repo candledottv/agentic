@@ -18,7 +18,7 @@
 
 import { spawn } from "node:child_process"
 import { realpathSync } from "node:fs"
-import { readFile, writeFile } from "node:fs/promises"
+import { chmod, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises"
 import { hostname } from "node:os"
 import { pathToFileURL } from "node:url"
 import { resolveApiUrl } from "./client"
@@ -28,6 +28,8 @@ import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { mcp, mcpActsAsIdentity } from "./commands/mcp"
 import { profileAdd, profileList, profileRemove, profileRename, profileUse } from "./commands/profile"
 import { setup } from "./commands/setup"
+import { update } from "./commands/update"
+import { verify } from "./commands/verify"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
 import type { CliConfig } from "./config"
 import { clearConfig, readConfig, updateProfile, writeConfig } from "./config"
@@ -35,6 +37,7 @@ import type { CommandContext, Deps } from "./deps"
 import { verifyProfileAccount } from "./guard"
 import { resolveSecretStore } from "./keychain"
 import { migratedConfig, profileSecretRef, resolveProfileName, resolveProfileNameForLogin } from "./profiles"
+import { platformKey } from "./release"
 import { writeLocalFailure, writeUsageFailure } from "./render"
 import { promptHiddenSecret, SECRET_REFS } from "./secret-store"
 import { CLI_VERSION } from "./version"
@@ -96,6 +99,8 @@ Commands:
   setup [--no-browser]                                            One wizard: authorize, fund, connect, verify
   mcp [--tools <a,b,c>] [--read-only] [--print-config]            Run the Candle MCP server with stored credentials
   doctor                                                          Diagnose CLI setup
+  verify <file> --bundle <path>                                   Verify a release asset's Sigstore bundle
+  update [--check] [--to <tag>]                                   Update the CLI to the latest signed release
 
 Global options:
   --api-url <url>         Override the API base URL
@@ -134,6 +139,8 @@ const COMMANDS: Record<string, CommandRoute> = {
   doctor: { bare: doctor },
   mcp: { bare: mcp },
   setup: { bare: setup },
+  verify: { bare: verify },
+  update: { bare: update },
 }
 
 /** Every command word the dispatch table routes. The guard's gate reads it so that an
@@ -190,10 +197,16 @@ function routesToCommand(cmd: string | undefined, sub: string | undefined): bool
  * rather than acting as an identity. Refusing any of these would leave an operator holding a
  * mismatch with no command left to diagnose or repair it with.
  *
+ * `verify` is here for the plainest version of the same reason: it reads two files off disk and
+ * checks a signature against the trusted root compiled into this binary. There is no key, no
+ * request, and no account for a mismatch to be about.
+ *
  * `setup` is deliberately NOT here: it skips its login step whenever both credentials are already
  * stored (setup.ts) and then mints keys as whoever those credentials belong to.
+ *
+ * `update` acts as no identity and must work before any login.
  */
-export const NEVER_GUARDED = new Set(["auth", "profile", "doctor"])
+export const NEVER_GUARDED = new Set(["auth", "profile", "doctor", "verify", "update"])
 
 export async function run(argv: string[], deps: Deps): Promise<number> {
   const extracted = extractGlobalFlags(argv)
@@ -203,7 +216,26 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
   }
   const { rest, flags } = extracted
 
+  // `bunx github:candledottv/agentic candle auth login` uses "candle" to RESOLVE the bin and then
+  // passes that same token through as the CLI's own first argument, so argv here starts with the
+  // bin's own name rather than a command. Dropping exactly one leading "candle" makes both
+  // invocation forms dispatch identically; a second one (`candle candle auth`) is still an
+  // unknown command, as it should be.
+  const tokens = rest[0] === "candle" ? rest.slice(1) : rest
+
   if (flags.version) {
+    // A command word left behind by a stripped `--version` is not a request for the version.
+    // `candle update --version cli-v0.6.0` is what someone types straight after reading
+    // install.sh, whose own pin flag IS `--version`: the flag was stripped here, this binary's
+    // version was printed, the process exited 0, and nothing was updated. That reads as success.
+    // The CLI's pin flag is `--to`, and this says so rather than obeying the wrong reading
+    // silently. Bare `candle --version`, with no command word behind it, is untouched.
+    const versionWord = tokens[0]
+    if (versionWord !== undefined && ROUTED_COMMANDS.has(versionWord)) {
+      const fix = "--version prints the CLI version; to pin a release use: candle update --to <tag>"
+      writeUsageFailure(deps, fix, flags.json)
+      return 2
+    }
     deps.stdout.write(`${CLI_VERSION}\n`)
     return 0
   }
@@ -211,13 +243,6 @@ export async function run(argv: string[], deps: Deps): Promise<number> {
     deps.stdout.write(HELP_TEXT)
     return 0
   }
-
-  // `bunx github:candledottv/agentic candle auth login` uses "candle" to RESOLVE the bin and then
-  // passes that same token through as the CLI's own first argument, so argv here starts with the
-  // bin's own name rather than a command. Dropping exactly one leading "candle" makes both
-  // invocation forms dispatch identically; a second one (`candle candle auth`) is still an
-  // unknown command, as it should be.
-  const tokens = rest[0] === "candle" ? rest.slice(1) : rest
 
   const [cmd, sub, ...cmdArgs] = tokens
   const config = await migrateProfiles(deps)
@@ -391,7 +416,11 @@ function realOpenBrowser(url: string): void {
   }
 }
 
-async function buildRealDeps(): Promise<Deps> {
+/** The real `Deps` the bin entry runs with. Exported for index.test.ts: the update path's own
+ * guarantees live in these implementations rather than in any command (the verifier seam stays
+ * unset; `writeBytes` is 0755 and refuses an existing path), and a suite built entirely on fakes
+ * cannot see them. */
+export async function buildRealDeps(): Promise<Deps> {
   const { store, backend } = await resolveSecretStore()
   return {
     fetch: globalThis.fetch,
@@ -429,10 +458,26 @@ async function buildRealDeps(): Promise<Deps> {
         child.on("close", (code) => resolve(code ?? 1))
       }),
     readFile: (path: string) => readFile(path, "utf8"),
+    readBytes: (path: string) => readFile(path),
     // 0600: the only caller is wallets import's --signer-out, and the content is a signing
     // private key.
     writeFile: (path: string, content: string) => writeFile(path, content, { mode: 0o600 }),
     promptSecret: promptHiddenSecret,
+    execPath: process.execPath,
+    argv1: process.argv[1] ?? "",
+    platformKey: platformKey(process.platform, process.arch),
+    realpath: (path) => realpath(path),
+    // `flag: "wx"` refuses an existing path instead of truncating it. The only caller is
+    // `update`, writing a fresh random temp name beside the binary: a path that already exists
+    // there is either a collision or somebody else's file, and neither is ours to overwrite and
+    // then rename over the running binary. The chmod follows the write because `mode` is masked
+    // by the process umask.
+    writeBytes: async (path, bytes) => {
+      await writeFile(path, bytes, { flag: "wx", mode: 0o755 })
+      await chmod(path, 0o755)
+    },
+    rename: (from, to) => rename(from, to),
+    unlink: (path) => unlink(path),
   }
 }
 

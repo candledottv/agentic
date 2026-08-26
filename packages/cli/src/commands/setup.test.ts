@@ -46,7 +46,10 @@ describe("setup", () => {
   test("already authorized: skips login, prints funding addresses and the agent brief, links the console", async () => {
     const { fetch } = armRoutes()
     const stdout = createCapture()
-    await run(["setup"], createTestDeps({ fetch, store: authorizedStore(), stdout }))
+    await run(
+      ["setup"],
+      createTestDeps({ fetch, store: authorizedStore(), stdout, execPath: "/Users/a/.local/bin/candle" }),
+    )
 
     const out = stdout.text
     expect(out).toContain("Skipping login")
@@ -54,7 +57,9 @@ describe("setup", () => {
     expect(out).toContain(EVM)
     expect(out).toContain("Tell your agent")
     expect(out).toContain("/plugin marketplace add candledottv/agentic")
-    expect(out).toContain("candle mcp --print-config")
+    expect(out).toContain("MCP (any client), paste into the host's MCP config:")
+    expect(out).toContain('"command": "/Users/a/.local/bin/candle"')
+    expect(out).toContain("MCP hosts also need Node 18+ on their own PATH")
     expect(out).toContain("/dev/agent")
     // The four numbered stages appear in order.
     const order = ["1/4", "2/4", "3/4", "4/4"].map((mark) => out.indexOf(mark))

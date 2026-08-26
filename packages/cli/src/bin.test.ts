@@ -8,9 +8,10 @@
  */
 import { beforeAll, describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, symlinkSync } from "node:fs"
+import { mkdtempSync, readFileSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import pkg from "../package.json"
 
 const pkgDir = resolve(import.meta.dir, "..")
 const bundle = join(pkgDir, "dist", "index.js")
@@ -38,6 +39,33 @@ describe("the built bin entry", () => {
     const res = runNode(link, ["--version"])
     // The unfixed guard exits 0 with EMPTY output here, so assert on stdout, not just the code.
     expect(res.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/)
+    expect(res.status).toBe(0)
+  })
+
+  test("carries the Sigstore verifier inside the bundle, with no runtime dependency to install", () => {
+    // The three @sigstore packages are devDependencies. `bun build` inlines them into
+    // dist/index.js, so the published package still declares no runtime dependencies at all
+    // (README.md's opening paragraph) and `engines: node >=18` stays true -- as runtime
+    // dependencies they would be installed on their own terms, and @sigstore/verify's own engines
+    // floor refuses Node 18 and 20.
+    //
+    // What makes that move safe is not the manifest but this: the bundle alone, run by plain node
+    // with nothing installed beside it, verifies a real Sigstore bundle.
+    expect((pkg as { dependencies?: Record<string, string> }).dependencies ?? {}).toEqual({})
+    expect(readFileSync(bundle, "utf8")).toContain("sigstore")
+
+    const fx = join(pkgDir, "test-fixtures", "sigstore")
+    const res = runNode(bundle, [
+      "verify",
+      join(fx, "fixture.bin"),
+      "--bundle",
+      join(fx, "fixture.sigstore.json"),
+      "--identity",
+      readFileSync(join(fx, "identity.txt"), "utf8").trim(),
+      "--issuer",
+      readFileSync(join(fx, "issuer.txt"), "utf8").trim(),
+    ])
+    expect(res.stdout).toContain("verified:")
     expect(res.status).toBe(0)
   })
 

@@ -1,11 +1,4799 @@
 #!/usr/bin/env node
 import { createRequire } from "node:module";
+var __create = Object.create;
+var __getProtoOf = Object.getPrototypeOf;
+var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+function __accessProp(key) {
+  return this[key];
+}
+var __toESMCache_node;
+var __toESMCache_esm;
+var __toESM = (mod, isNodeMode, target) => {
+  var canCache = mod != null && typeof mod === "object";
+  if (canCache) {
+    var cache = isNodeMode ? __toESMCache_node ??= new WeakMap : __toESMCache_esm ??= new WeakMap;
+    var cached = cache.get(mod);
+    if (cached)
+      return cached;
+  }
+  target = mod != null ? __create(__getProtoOf(mod)) : {};
+  const to = isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target;
+  for (let key of __getOwnPropNames(mod))
+    if (!__hasOwnProp.call(to, key))
+      __defProp(to, key, {
+        get: __accessProp.bind(mod, key),
+        enumerable: true
+      });
+  if (canCache)
+    cache.set(mod, to);
+  return to;
+};
+var __commonJS = (cb, mod) => () => (mod || cb((mod = { exports: {} }).exports, mod), mod.exports);
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
+
+// ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/envelope.js
+var require_envelope = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.Signature = exports.Envelope = undefined;
+  exports.Envelope = {
+    fromJSON(object) {
+      return {
+        payload: isSet(object.payload) ? Buffer.from(bytesFromBase64(object.payload)) : Buffer.alloc(0),
+        payloadType: isSet(object.payloadType) ? globalThis.String(object.payloadType) : "",
+        signatures: globalThis.Array.isArray(object?.signatures) ? object.signatures.map((e) => exports.Signature.fromJSON(e)) : []
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.payload.length !== 0) {
+        obj.payload = base64FromBytes(message.payload);
+      }
+      if (message.payloadType !== "") {
+        obj.payloadType = message.payloadType;
+      }
+      if (message.signatures?.length) {
+        obj.signatures = message.signatures.map((e) => exports.Signature.toJSON(e));
+      }
+      return obj;
+    }
+  };
+  exports.Signature = {
+    fromJSON(object) {
+      return {
+        sig: isSet(object.sig) ? Buffer.from(bytesFromBase64(object.sig)) : Buffer.alloc(0),
+        keyid: isSet(object.keyid) ? globalThis.String(object.keyid) : ""
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.sig.length !== 0) {
+        obj.sig = base64FromBytes(message.sig);
+      }
+      if (message.keyid !== "") {
+        obj.keyid = message.keyid;
+      }
+      return obj;
+    }
+  };
+  function bytesFromBase64(b64) {
+    return Uint8Array.from(globalThis.Buffer.from(b64, "base64"));
+  }
+  function base64FromBytes(arr) {
+    return globalThis.Buffer.from(arr).toString("base64");
+  }
+  function isSet(value) {
+    return value !== null && value !== undefined;
+  }
+});
+
+// ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/google/protobuf/timestamp.js
+var require_timestamp = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.Timestamp = undefined;
+  exports.Timestamp = {
+    fromJSON(object) {
+      return {
+        seconds: isSet(object.seconds) ? globalThis.String(object.seconds) : "0",
+        nanos: isSet(object.nanos) ? globalThis.Number(object.nanos) : 0
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.seconds !== "0") {
+        obj.seconds = message.seconds;
+      }
+      if (message.nanos !== 0) {
+        obj.nanos = Math.round(message.nanos);
+      }
+      return obj;
+    }
+  };
+  function isSet(value) {
+    return value !== null && value !== undefined;
+  }
+});
+
+// ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/sigstore_common.js
+var require_sigstore_common = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.TimeRange = exports.X509CertificateChain = exports.SubjectAlternativeName = exports.X509Certificate = exports.DistinguishedName = exports.ObjectIdentifierValuePair = exports.ObjectIdentifier = exports.PublicKeyIdentifier = exports.PublicKey = exports.RFC3161SignedTimestamp = exports.LogId = exports.MessageSignature = exports.HashOutput = exports.SubjectAlternativeNameType = exports.PublicKeyDetails = exports.HashAlgorithm = undefined;
+  exports.hashAlgorithmFromJSON = hashAlgorithmFromJSON;
+  exports.hashAlgorithmToJSON = hashAlgorithmToJSON;
+  exports.publicKeyDetailsFromJSON = publicKeyDetailsFromJSON;
+  exports.publicKeyDetailsToJSON = publicKeyDetailsToJSON;
+  exports.subjectAlternativeNameTypeFromJSON = subjectAlternativeNameTypeFromJSON;
+  exports.subjectAlternativeNameTypeToJSON = subjectAlternativeNameTypeToJSON;
+  var timestamp_1 = require_timestamp();
+  var HashAlgorithm;
+  (function(HashAlgorithm2) {
+    HashAlgorithm2[HashAlgorithm2["HASH_ALGORITHM_UNSPECIFIED"] = 0] = "HASH_ALGORITHM_UNSPECIFIED";
+    HashAlgorithm2[HashAlgorithm2["SHA2_256"] = 1] = "SHA2_256";
+    HashAlgorithm2[HashAlgorithm2["SHA2_384"] = 2] = "SHA2_384";
+    HashAlgorithm2[HashAlgorithm2["SHA2_512"] = 3] = "SHA2_512";
+    HashAlgorithm2[HashAlgorithm2["SHA3_256"] = 4] = "SHA3_256";
+    HashAlgorithm2[HashAlgorithm2["SHA3_384"] = 5] = "SHA3_384";
+  })(HashAlgorithm || (exports.HashAlgorithm = HashAlgorithm = {}));
+  function hashAlgorithmFromJSON(object) {
+    switch (object) {
+      case 0:
+      case "HASH_ALGORITHM_UNSPECIFIED":
+        return HashAlgorithm.HASH_ALGORITHM_UNSPECIFIED;
+      case 1:
+      case "SHA2_256":
+        return HashAlgorithm.SHA2_256;
+      case 2:
+      case "SHA2_384":
+        return HashAlgorithm.SHA2_384;
+      case 3:
+      case "SHA2_512":
+        return HashAlgorithm.SHA2_512;
+      case 4:
+      case "SHA3_256":
+        return HashAlgorithm.SHA3_256;
+      case 5:
+      case "SHA3_384":
+        return HashAlgorithm.SHA3_384;
+      default:
+        throw new globalThis.Error("Unrecognized enum value " + object + " for enum HashAlgorithm");
+    }
+  }
+  function hashAlgorithmToJSON(object) {
+    switch (object) {
+      case HashAlgorithm.HASH_ALGORITHM_UNSPECIFIED:
+        return "HASH_ALGORITHM_UNSPECIFIED";
+      case HashAlgorithm.SHA2_256:
+        return "SHA2_256";
+      case HashAlgorithm.SHA2_384:
+        return "SHA2_384";
+      case HashAlgorithm.SHA2_512:
+        return "SHA2_512";
+      case HashAlgorithm.SHA3_256:
+        return "SHA3_256";
+      case HashAlgorithm.SHA3_384:
+        return "SHA3_384";
+      default:
+        throw new globalThis.Error("Unrecognized enum value " + object + " for enum HashAlgorithm");
+    }
+  }
+  var PublicKeyDetails;
+  (function(PublicKeyDetails2) {
+    PublicKeyDetails2[PublicKeyDetails2["PUBLIC_KEY_DETAILS_UNSPECIFIED"] = 0] = "PUBLIC_KEY_DETAILS_UNSPECIFIED";
+    PublicKeyDetails2[PublicKeyDetails2["PKCS1_RSA_PKCS1V5"] = 1] = "PKCS1_RSA_PKCS1V5";
+    PublicKeyDetails2[PublicKeyDetails2["PKCS1_RSA_PSS"] = 2] = "PKCS1_RSA_PSS";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_RSA_PKCS1V5"] = 3] = "PKIX_RSA_PKCS1V5";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_RSA_PSS"] = 4] = "PKIX_RSA_PSS";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_RSA_PKCS1V15_2048_SHA256"] = 9] = "PKIX_RSA_PKCS1V15_2048_SHA256";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_RSA_PKCS1V15_3072_SHA256"] = 10] = "PKIX_RSA_PKCS1V15_3072_SHA256";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_RSA_PKCS1V15_4096_SHA256"] = 11] = "PKIX_RSA_PKCS1V15_4096_SHA256";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_RSA_PSS_2048_SHA256"] = 16] = "PKIX_RSA_PSS_2048_SHA256";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_RSA_PSS_3072_SHA256"] = 17] = "PKIX_RSA_PSS_3072_SHA256";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_RSA_PSS_4096_SHA256"] = 18] = "PKIX_RSA_PSS_4096_SHA256";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_ECDSA_P256_HMAC_SHA_256"] = 6] = "PKIX_ECDSA_P256_HMAC_SHA_256";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_ECDSA_P256_SHA_256"] = 5] = "PKIX_ECDSA_P256_SHA_256";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_ECDSA_P384_SHA_384"] = 12] = "PKIX_ECDSA_P384_SHA_384";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_ECDSA_P521_SHA_512"] = 13] = "PKIX_ECDSA_P521_SHA_512";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_ED25519"] = 7] = "PKIX_ED25519";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_ED25519_PH"] = 8] = "PKIX_ED25519_PH";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_ECDSA_P384_SHA_256"] = 19] = "PKIX_ECDSA_P384_SHA_256";
+    PublicKeyDetails2[PublicKeyDetails2["PKIX_ECDSA_P521_SHA_256"] = 20] = "PKIX_ECDSA_P521_SHA_256";
+    PublicKeyDetails2[PublicKeyDetails2["LMS_SHA256"] = 14] = "LMS_SHA256";
+    PublicKeyDetails2[PublicKeyDetails2["LMOTS_SHA256"] = 15] = "LMOTS_SHA256";
+    PublicKeyDetails2[PublicKeyDetails2["ML_DSA_44"] = 23] = "ML_DSA_44";
+    PublicKeyDetails2[PublicKeyDetails2["ML_DSA_65"] = 21] = "ML_DSA_65";
+    PublicKeyDetails2[PublicKeyDetails2["ML_DSA_87"] = 22] = "ML_DSA_87";
+  })(PublicKeyDetails || (exports.PublicKeyDetails = PublicKeyDetails = {}));
+  function publicKeyDetailsFromJSON(object) {
+    switch (object) {
+      case 0:
+      case "PUBLIC_KEY_DETAILS_UNSPECIFIED":
+        return PublicKeyDetails.PUBLIC_KEY_DETAILS_UNSPECIFIED;
+      case 1:
+      case "PKCS1_RSA_PKCS1V5":
+        return PublicKeyDetails.PKCS1_RSA_PKCS1V5;
+      case 2:
+      case "PKCS1_RSA_PSS":
+        return PublicKeyDetails.PKCS1_RSA_PSS;
+      case 3:
+      case "PKIX_RSA_PKCS1V5":
+        return PublicKeyDetails.PKIX_RSA_PKCS1V5;
+      case 4:
+      case "PKIX_RSA_PSS":
+        return PublicKeyDetails.PKIX_RSA_PSS;
+      case 9:
+      case "PKIX_RSA_PKCS1V15_2048_SHA256":
+        return PublicKeyDetails.PKIX_RSA_PKCS1V15_2048_SHA256;
+      case 10:
+      case "PKIX_RSA_PKCS1V15_3072_SHA256":
+        return PublicKeyDetails.PKIX_RSA_PKCS1V15_3072_SHA256;
+      case 11:
+      case "PKIX_RSA_PKCS1V15_4096_SHA256":
+        return PublicKeyDetails.PKIX_RSA_PKCS1V15_4096_SHA256;
+      case 16:
+      case "PKIX_RSA_PSS_2048_SHA256":
+        return PublicKeyDetails.PKIX_RSA_PSS_2048_SHA256;
+      case 17:
+      case "PKIX_RSA_PSS_3072_SHA256":
+        return PublicKeyDetails.PKIX_RSA_PSS_3072_SHA256;
+      case 18:
+      case "PKIX_RSA_PSS_4096_SHA256":
+        return PublicKeyDetails.PKIX_RSA_PSS_4096_SHA256;
+      case 6:
+      case "PKIX_ECDSA_P256_HMAC_SHA_256":
+        return PublicKeyDetails.PKIX_ECDSA_P256_HMAC_SHA_256;
+      case 5:
+      case "PKIX_ECDSA_P256_SHA_256":
+        return PublicKeyDetails.PKIX_ECDSA_P256_SHA_256;
+      case 12:
+      case "PKIX_ECDSA_P384_SHA_384":
+        return PublicKeyDetails.PKIX_ECDSA_P384_SHA_384;
+      case 13:
+      case "PKIX_ECDSA_P521_SHA_512":
+        return PublicKeyDetails.PKIX_ECDSA_P521_SHA_512;
+      case 7:
+      case "PKIX_ED25519":
+        return PublicKeyDetails.PKIX_ED25519;
+      case 8:
+      case "PKIX_ED25519_PH":
+        return PublicKeyDetails.PKIX_ED25519_PH;
+      case 19:
+      case "PKIX_ECDSA_P384_SHA_256":
+        return PublicKeyDetails.PKIX_ECDSA_P384_SHA_256;
+      case 20:
+      case "PKIX_ECDSA_P521_SHA_256":
+        return PublicKeyDetails.PKIX_ECDSA_P521_SHA_256;
+      case 14:
+      case "LMS_SHA256":
+        return PublicKeyDetails.LMS_SHA256;
+      case 15:
+      case "LMOTS_SHA256":
+        return PublicKeyDetails.LMOTS_SHA256;
+      case 23:
+      case "ML_DSA_44":
+        return PublicKeyDetails.ML_DSA_44;
+      case 21:
+      case "ML_DSA_65":
+        return PublicKeyDetails.ML_DSA_65;
+      case 22:
+      case "ML_DSA_87":
+        return PublicKeyDetails.ML_DSA_87;
+      default:
+        throw new globalThis.Error("Unrecognized enum value " + object + " for enum PublicKeyDetails");
+    }
+  }
+  function publicKeyDetailsToJSON(object) {
+    switch (object) {
+      case PublicKeyDetails.PUBLIC_KEY_DETAILS_UNSPECIFIED:
+        return "PUBLIC_KEY_DETAILS_UNSPECIFIED";
+      case PublicKeyDetails.PKCS1_RSA_PKCS1V5:
+        return "PKCS1_RSA_PKCS1V5";
+      case PublicKeyDetails.PKCS1_RSA_PSS:
+        return "PKCS1_RSA_PSS";
+      case PublicKeyDetails.PKIX_RSA_PKCS1V5:
+        return "PKIX_RSA_PKCS1V5";
+      case PublicKeyDetails.PKIX_RSA_PSS:
+        return "PKIX_RSA_PSS";
+      case PublicKeyDetails.PKIX_RSA_PKCS1V15_2048_SHA256:
+        return "PKIX_RSA_PKCS1V15_2048_SHA256";
+      case PublicKeyDetails.PKIX_RSA_PKCS1V15_3072_SHA256:
+        return "PKIX_RSA_PKCS1V15_3072_SHA256";
+      case PublicKeyDetails.PKIX_RSA_PKCS1V15_4096_SHA256:
+        return "PKIX_RSA_PKCS1V15_4096_SHA256";
+      case PublicKeyDetails.PKIX_RSA_PSS_2048_SHA256:
+        return "PKIX_RSA_PSS_2048_SHA256";
+      case PublicKeyDetails.PKIX_RSA_PSS_3072_SHA256:
+        return "PKIX_RSA_PSS_3072_SHA256";
+      case PublicKeyDetails.PKIX_RSA_PSS_4096_SHA256:
+        return "PKIX_RSA_PSS_4096_SHA256";
+      case PublicKeyDetails.PKIX_ECDSA_P256_HMAC_SHA_256:
+        return "PKIX_ECDSA_P256_HMAC_SHA_256";
+      case PublicKeyDetails.PKIX_ECDSA_P256_SHA_256:
+        return "PKIX_ECDSA_P256_SHA_256";
+      case PublicKeyDetails.PKIX_ECDSA_P384_SHA_384:
+        return "PKIX_ECDSA_P384_SHA_384";
+      case PublicKeyDetails.PKIX_ECDSA_P521_SHA_512:
+        return "PKIX_ECDSA_P521_SHA_512";
+      case PublicKeyDetails.PKIX_ED25519:
+        return "PKIX_ED25519";
+      case PublicKeyDetails.PKIX_ED25519_PH:
+        return "PKIX_ED25519_PH";
+      case PublicKeyDetails.PKIX_ECDSA_P384_SHA_256:
+        return "PKIX_ECDSA_P384_SHA_256";
+      case PublicKeyDetails.PKIX_ECDSA_P521_SHA_256:
+        return "PKIX_ECDSA_P521_SHA_256";
+      case PublicKeyDetails.LMS_SHA256:
+        return "LMS_SHA256";
+      case PublicKeyDetails.LMOTS_SHA256:
+        return "LMOTS_SHA256";
+      case PublicKeyDetails.ML_DSA_44:
+        return "ML_DSA_44";
+      case PublicKeyDetails.ML_DSA_65:
+        return "ML_DSA_65";
+      case PublicKeyDetails.ML_DSA_87:
+        return "ML_DSA_87";
+      default:
+        throw new globalThis.Error("Unrecognized enum value " + object + " for enum PublicKeyDetails");
+    }
+  }
+  var SubjectAlternativeNameType;
+  (function(SubjectAlternativeNameType2) {
+    SubjectAlternativeNameType2[SubjectAlternativeNameType2["SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED"] = 0] = "SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED";
+    SubjectAlternativeNameType2[SubjectAlternativeNameType2["EMAIL"] = 1] = "EMAIL";
+    SubjectAlternativeNameType2[SubjectAlternativeNameType2["URI"] = 2] = "URI";
+    SubjectAlternativeNameType2[SubjectAlternativeNameType2["OTHER_NAME"] = 3] = "OTHER_NAME";
+  })(SubjectAlternativeNameType || (exports.SubjectAlternativeNameType = SubjectAlternativeNameType = {}));
+  function subjectAlternativeNameTypeFromJSON(object) {
+    switch (object) {
+      case 0:
+      case "SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED":
+        return SubjectAlternativeNameType.SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED;
+      case 1:
+      case "EMAIL":
+        return SubjectAlternativeNameType.EMAIL;
+      case 2:
+      case "URI":
+        return SubjectAlternativeNameType.URI;
+      case 3:
+      case "OTHER_NAME":
+        return SubjectAlternativeNameType.OTHER_NAME;
+      default:
+        throw new globalThis.Error("Unrecognized enum value " + object + " for enum SubjectAlternativeNameType");
+    }
+  }
+  function subjectAlternativeNameTypeToJSON(object) {
+    switch (object) {
+      case SubjectAlternativeNameType.SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED:
+        return "SUBJECT_ALTERNATIVE_NAME_TYPE_UNSPECIFIED";
+      case SubjectAlternativeNameType.EMAIL:
+        return "EMAIL";
+      case SubjectAlternativeNameType.URI:
+        return "URI";
+      case SubjectAlternativeNameType.OTHER_NAME:
+        return "OTHER_NAME";
+      default:
+        throw new globalThis.Error("Unrecognized enum value " + object + " for enum SubjectAlternativeNameType");
+    }
+  }
+  exports.HashOutput = {
+    fromJSON(object) {
+      return {
+        algorithm: isSet(object.algorithm) ? hashAlgorithmFromJSON(object.algorithm) : 0,
+        digest: isSet(object.digest) ? Buffer.from(bytesFromBase64(object.digest)) : Buffer.alloc(0)
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.algorithm !== 0) {
+        obj.algorithm = hashAlgorithmToJSON(message.algorithm);
+      }
+      if (message.digest.length !== 0) {
+        obj.digest = base64FromBytes(message.digest);
+      }
+      return obj;
+    }
+  };
+  exports.MessageSignature = {
+    fromJSON(object) {
+      return {
+        messageDigest: isSet(object.messageDigest) ? exports.HashOutput.fromJSON(object.messageDigest) : undefined,
+        signature: isSet(object.signature) ? Buffer.from(bytesFromBase64(object.signature)) : Buffer.alloc(0)
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.messageDigest !== undefined) {
+        obj.messageDigest = exports.HashOutput.toJSON(message.messageDigest);
+      }
+      if (message.signature.length !== 0) {
+        obj.signature = base64FromBytes(message.signature);
+      }
+      return obj;
+    }
+  };
+  exports.LogId = {
+    fromJSON(object) {
+      return { keyId: isSet(object.keyId) ? Buffer.from(bytesFromBase64(object.keyId)) : Buffer.alloc(0) };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.keyId.length !== 0) {
+        obj.keyId = base64FromBytes(message.keyId);
+      }
+      return obj;
+    }
+  };
+  exports.RFC3161SignedTimestamp = {
+    fromJSON(object) {
+      return {
+        signedTimestamp: isSet(object.signedTimestamp) ? Buffer.from(bytesFromBase64(object.signedTimestamp)) : Buffer.alloc(0)
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.signedTimestamp.length !== 0) {
+        obj.signedTimestamp = base64FromBytes(message.signedTimestamp);
+      }
+      return obj;
+    }
+  };
+  exports.PublicKey = {
+    fromJSON(object) {
+      return {
+        rawBytes: isSet(object.rawBytes) ? Buffer.from(bytesFromBase64(object.rawBytes)) : undefined,
+        keyDetails: isSet(object.keyDetails) ? publicKeyDetailsFromJSON(object.keyDetails) : 0,
+        validFor: isSet(object.validFor) ? exports.TimeRange.fromJSON(object.validFor) : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.rawBytes !== undefined) {
+        obj.rawBytes = base64FromBytes(message.rawBytes);
+      }
+      if (message.keyDetails !== 0) {
+        obj.keyDetails = publicKeyDetailsToJSON(message.keyDetails);
+      }
+      if (message.validFor !== undefined) {
+        obj.validFor = exports.TimeRange.toJSON(message.validFor);
+      }
+      return obj;
+    }
+  };
+  exports.PublicKeyIdentifier = {
+    fromJSON(object) {
+      return { hint: isSet(object.hint) ? globalThis.String(object.hint) : "" };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.hint !== "") {
+        obj.hint = message.hint;
+      }
+      return obj;
+    }
+  };
+  exports.ObjectIdentifier = {
+    fromJSON(object) {
+      return { id: globalThis.Array.isArray(object?.id) ? object.id.map((e) => globalThis.Number(e)) : [] };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.id?.length) {
+        obj.id = message.id.map((e) => Math.round(e));
+      }
+      return obj;
+    }
+  };
+  exports.ObjectIdentifierValuePair = {
+    fromJSON(object) {
+      return {
+        oid: isSet(object.oid) ? exports.ObjectIdentifier.fromJSON(object.oid) : undefined,
+        value: isSet(object.value) ? Buffer.from(bytesFromBase64(object.value)) : Buffer.alloc(0)
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.oid !== undefined) {
+        obj.oid = exports.ObjectIdentifier.toJSON(message.oid);
+      }
+      if (message.value.length !== 0) {
+        obj.value = base64FromBytes(message.value);
+      }
+      return obj;
+    }
+  };
+  exports.DistinguishedName = {
+    fromJSON(object) {
+      return {
+        organization: isSet(object.organization) ? globalThis.String(object.organization) : "",
+        commonName: isSet(object.commonName) ? globalThis.String(object.commonName) : ""
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.organization !== "") {
+        obj.organization = message.organization;
+      }
+      if (message.commonName !== "") {
+        obj.commonName = message.commonName;
+      }
+      return obj;
+    }
+  };
+  exports.X509Certificate = {
+    fromJSON(object) {
+      return { rawBytes: isSet(object.rawBytes) ? Buffer.from(bytesFromBase64(object.rawBytes)) : Buffer.alloc(0) };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.rawBytes.length !== 0) {
+        obj.rawBytes = base64FromBytes(message.rawBytes);
+      }
+      return obj;
+    }
+  };
+  exports.SubjectAlternativeName = {
+    fromJSON(object) {
+      return {
+        type: isSet(object.type) ? subjectAlternativeNameTypeFromJSON(object.type) : 0,
+        identity: isSet(object.regexp) ? { $case: "regexp", regexp: globalThis.String(object.regexp) } : isSet(object.value) ? { $case: "value", value: globalThis.String(object.value) } : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.type !== 0) {
+        obj.type = subjectAlternativeNameTypeToJSON(message.type);
+      }
+      if (message.identity?.$case === "regexp") {
+        obj.regexp = message.identity.regexp;
+      } else if (message.identity?.$case === "value") {
+        obj.value = message.identity.value;
+      }
+      return obj;
+    }
+  };
+  exports.X509CertificateChain = {
+    fromJSON(object) {
+      return {
+        certificates: globalThis.Array.isArray(object?.certificates) ? object.certificates.map((e) => exports.X509Certificate.fromJSON(e)) : []
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.certificates?.length) {
+        obj.certificates = message.certificates.map((e) => exports.X509Certificate.toJSON(e));
+      }
+      return obj;
+    }
+  };
+  exports.TimeRange = {
+    fromJSON(object) {
+      return {
+        start: isSet(object.start) ? fromJsonTimestamp(object.start) : undefined,
+        end: isSet(object.end) ? fromJsonTimestamp(object.end) : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.start !== undefined) {
+        obj.start = message.start.toISOString();
+      }
+      if (message.end !== undefined) {
+        obj.end = message.end.toISOString();
+      }
+      return obj;
+    }
+  };
+  function bytesFromBase64(b64) {
+    return Uint8Array.from(globalThis.Buffer.from(b64, "base64"));
+  }
+  function base64FromBytes(arr) {
+    return globalThis.Buffer.from(arr).toString("base64");
+  }
+  function fromTimestamp(t) {
+    let millis = (globalThis.Number(t.seconds) || 0) * 1000;
+    millis += (t.nanos || 0) / 1e6;
+    return new globalThis.Date(millis);
+  }
+  function fromJsonTimestamp(o) {
+    if (o instanceof globalThis.Date) {
+      return o;
+    } else if (typeof o === "string") {
+      return new globalThis.Date(o);
+    } else {
+      return fromTimestamp(timestamp_1.Timestamp.fromJSON(o));
+    }
+  }
+  function isSet(value) {
+    return value !== null && value !== undefined;
+  }
+});
+
+// ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/sigstore_rekor.js
+var require_sigstore_rekor = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.TransparencyLogEntry = exports.InclusionPromise = exports.InclusionProof = exports.Checkpoint = exports.KindVersion = undefined;
+  var sigstore_common_1 = require_sigstore_common();
+  exports.KindVersion = {
+    fromJSON(object) {
+      return {
+        kind: isSet(object.kind) ? globalThis.String(object.kind) : "",
+        version: isSet(object.version) ? globalThis.String(object.version) : ""
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.kind !== "") {
+        obj.kind = message.kind;
+      }
+      if (message.version !== "") {
+        obj.version = message.version;
+      }
+      return obj;
+    }
+  };
+  exports.Checkpoint = {
+    fromJSON(object) {
+      return { envelope: isSet(object.envelope) ? globalThis.String(object.envelope) : "" };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.envelope !== "") {
+        obj.envelope = message.envelope;
+      }
+      return obj;
+    }
+  };
+  exports.InclusionProof = {
+    fromJSON(object) {
+      return {
+        logIndex: isSet(object.logIndex) ? globalThis.String(object.logIndex) : "0",
+        rootHash: isSet(object.rootHash) ? Buffer.from(bytesFromBase64(object.rootHash)) : Buffer.alloc(0),
+        treeSize: isSet(object.treeSize) ? globalThis.String(object.treeSize) : "0",
+        hashes: globalThis.Array.isArray(object?.hashes) ? object.hashes.map((e) => Buffer.from(bytesFromBase64(e))) : [],
+        checkpoint: isSet(object.checkpoint) ? exports.Checkpoint.fromJSON(object.checkpoint) : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.logIndex !== "0") {
+        obj.logIndex = message.logIndex;
+      }
+      if (message.rootHash.length !== 0) {
+        obj.rootHash = base64FromBytes(message.rootHash);
+      }
+      if (message.treeSize !== "0") {
+        obj.treeSize = message.treeSize;
+      }
+      if (message.hashes?.length) {
+        obj.hashes = message.hashes.map((e) => base64FromBytes(e));
+      }
+      if (message.checkpoint !== undefined) {
+        obj.checkpoint = exports.Checkpoint.toJSON(message.checkpoint);
+      }
+      return obj;
+    }
+  };
+  exports.InclusionPromise = {
+    fromJSON(object) {
+      return {
+        signedEntryTimestamp: isSet(object.signedEntryTimestamp) ? Buffer.from(bytesFromBase64(object.signedEntryTimestamp)) : Buffer.alloc(0)
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.signedEntryTimestamp.length !== 0) {
+        obj.signedEntryTimestamp = base64FromBytes(message.signedEntryTimestamp);
+      }
+      return obj;
+    }
+  };
+  exports.TransparencyLogEntry = {
+    fromJSON(object) {
+      return {
+        logIndex: isSet(object.logIndex) ? globalThis.String(object.logIndex) : "0",
+        logId: isSet(object.logId) ? sigstore_common_1.LogId.fromJSON(object.logId) : undefined,
+        kindVersion: isSet(object.kindVersion) ? exports.KindVersion.fromJSON(object.kindVersion) : undefined,
+        integratedTime: isSet(object.integratedTime) ? globalThis.String(object.integratedTime) : "0",
+        inclusionPromise: isSet(object.inclusionPromise) ? exports.InclusionPromise.fromJSON(object.inclusionPromise) : undefined,
+        inclusionProof: isSet(object.inclusionProof) ? exports.InclusionProof.fromJSON(object.inclusionProof) : undefined,
+        canonicalizedBody: isSet(object.canonicalizedBody) ? Buffer.from(bytesFromBase64(object.canonicalizedBody)) : Buffer.alloc(0)
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.logIndex !== "0") {
+        obj.logIndex = message.logIndex;
+      }
+      if (message.logId !== undefined) {
+        obj.logId = sigstore_common_1.LogId.toJSON(message.logId);
+      }
+      if (message.kindVersion !== undefined) {
+        obj.kindVersion = exports.KindVersion.toJSON(message.kindVersion);
+      }
+      if (message.integratedTime !== "0") {
+        obj.integratedTime = message.integratedTime;
+      }
+      if (message.inclusionPromise !== undefined) {
+        obj.inclusionPromise = exports.InclusionPromise.toJSON(message.inclusionPromise);
+      }
+      if (message.inclusionProof !== undefined) {
+        obj.inclusionProof = exports.InclusionProof.toJSON(message.inclusionProof);
+      }
+      if (message.canonicalizedBody.length !== 0) {
+        obj.canonicalizedBody = base64FromBytes(message.canonicalizedBody);
+      }
+      return obj;
+    }
+  };
+  function bytesFromBase64(b64) {
+    return Uint8Array.from(globalThis.Buffer.from(b64, "base64"));
+  }
+  function base64FromBytes(arr) {
+    return globalThis.Buffer.from(arr).toString("base64");
+  }
+  function isSet(value) {
+    return value !== null && value !== undefined;
+  }
+});
+
+// ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/sigstore_bundle.js
+var require_sigstore_bundle = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.Bundle = exports.VerificationMaterial = exports.TimestampVerificationData = undefined;
+  var envelope_1 = require_envelope();
+  var sigstore_common_1 = require_sigstore_common();
+  var sigstore_rekor_1 = require_sigstore_rekor();
+  exports.TimestampVerificationData = {
+    fromJSON(object) {
+      return {
+        rfc3161Timestamps: globalThis.Array.isArray(object?.rfc3161Timestamps) ? object.rfc3161Timestamps.map((e) => sigstore_common_1.RFC3161SignedTimestamp.fromJSON(e)) : []
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.rfc3161Timestamps?.length) {
+        obj.rfc3161Timestamps = message.rfc3161Timestamps.map((e) => sigstore_common_1.RFC3161SignedTimestamp.toJSON(e));
+      }
+      return obj;
+    }
+  };
+  exports.VerificationMaterial = {
+    fromJSON(object) {
+      return {
+        content: isSet(object.publicKey) ? { $case: "publicKey", publicKey: sigstore_common_1.PublicKeyIdentifier.fromJSON(object.publicKey) } : isSet(object.x509CertificateChain) ? {
+          $case: "x509CertificateChain",
+          x509CertificateChain: sigstore_common_1.X509CertificateChain.fromJSON(object.x509CertificateChain)
+        } : isSet(object.certificate) ? { $case: "certificate", certificate: sigstore_common_1.X509Certificate.fromJSON(object.certificate) } : undefined,
+        tlogEntries: globalThis.Array.isArray(object?.tlogEntries) ? object.tlogEntries.map((e) => sigstore_rekor_1.TransparencyLogEntry.fromJSON(e)) : [],
+        timestampVerificationData: isSet(object.timestampVerificationData) ? exports.TimestampVerificationData.fromJSON(object.timestampVerificationData) : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.content?.$case === "publicKey") {
+        obj.publicKey = sigstore_common_1.PublicKeyIdentifier.toJSON(message.content.publicKey);
+      } else if (message.content?.$case === "x509CertificateChain") {
+        obj.x509CertificateChain = sigstore_common_1.X509CertificateChain.toJSON(message.content.x509CertificateChain);
+      } else if (message.content?.$case === "certificate") {
+        obj.certificate = sigstore_common_1.X509Certificate.toJSON(message.content.certificate);
+      }
+      if (message.tlogEntries?.length) {
+        obj.tlogEntries = message.tlogEntries.map((e) => sigstore_rekor_1.TransparencyLogEntry.toJSON(e));
+      }
+      if (message.timestampVerificationData !== undefined) {
+        obj.timestampVerificationData = exports.TimestampVerificationData.toJSON(message.timestampVerificationData);
+      }
+      return obj;
+    }
+  };
+  exports.Bundle = {
+    fromJSON(object) {
+      return {
+        mediaType: isSet(object.mediaType) ? globalThis.String(object.mediaType) : "",
+        verificationMaterial: isSet(object.verificationMaterial) ? exports.VerificationMaterial.fromJSON(object.verificationMaterial) : undefined,
+        content: isSet(object.messageSignature) ? { $case: "messageSignature", messageSignature: sigstore_common_1.MessageSignature.fromJSON(object.messageSignature) } : isSet(object.dsseEnvelope) ? { $case: "dsseEnvelope", dsseEnvelope: envelope_1.Envelope.fromJSON(object.dsseEnvelope) } : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.mediaType !== "") {
+        obj.mediaType = message.mediaType;
+      }
+      if (message.verificationMaterial !== undefined) {
+        obj.verificationMaterial = exports.VerificationMaterial.toJSON(message.verificationMaterial);
+      }
+      if (message.content?.$case === "messageSignature") {
+        obj.messageSignature = sigstore_common_1.MessageSignature.toJSON(message.content.messageSignature);
+      } else if (message.content?.$case === "dsseEnvelope") {
+        obj.dsseEnvelope = envelope_1.Envelope.toJSON(message.content.dsseEnvelope);
+      }
+      return obj;
+    }
+  };
+  function isSet(value) {
+    return value !== null && value !== undefined;
+  }
+});
+
+// ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/sigstore_trustroot.js
+var require_sigstore_trustroot = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.ClientTrustConfig = exports.ServiceConfiguration = exports.Service = exports.SigningConfig = exports.TrustedRoot = exports.CertificateAuthority = exports.TransparencyLogInstance = exports.ServiceSelector = undefined;
+  exports.serviceSelectorFromJSON = serviceSelectorFromJSON;
+  exports.serviceSelectorToJSON = serviceSelectorToJSON;
+  var sigstore_common_1 = require_sigstore_common();
+  var ServiceSelector;
+  (function(ServiceSelector2) {
+    ServiceSelector2[ServiceSelector2["SERVICE_SELECTOR_UNDEFINED"] = 0] = "SERVICE_SELECTOR_UNDEFINED";
+    ServiceSelector2[ServiceSelector2["ALL"] = 1] = "ALL";
+    ServiceSelector2[ServiceSelector2["ANY"] = 2] = "ANY";
+    ServiceSelector2[ServiceSelector2["EXACT"] = 3] = "EXACT";
+  })(ServiceSelector || (exports.ServiceSelector = ServiceSelector = {}));
+  function serviceSelectorFromJSON(object) {
+    switch (object) {
+      case 0:
+      case "SERVICE_SELECTOR_UNDEFINED":
+        return ServiceSelector.SERVICE_SELECTOR_UNDEFINED;
+      case 1:
+      case "ALL":
+        return ServiceSelector.ALL;
+      case 2:
+      case "ANY":
+        return ServiceSelector.ANY;
+      case 3:
+      case "EXACT":
+        return ServiceSelector.EXACT;
+      default:
+        throw new globalThis.Error("Unrecognized enum value " + object + " for enum ServiceSelector");
+    }
+  }
+  function serviceSelectorToJSON(object) {
+    switch (object) {
+      case ServiceSelector.SERVICE_SELECTOR_UNDEFINED:
+        return "SERVICE_SELECTOR_UNDEFINED";
+      case ServiceSelector.ALL:
+        return "ALL";
+      case ServiceSelector.ANY:
+        return "ANY";
+      case ServiceSelector.EXACT:
+        return "EXACT";
+      default:
+        throw new globalThis.Error("Unrecognized enum value " + object + " for enum ServiceSelector");
+    }
+  }
+  exports.TransparencyLogInstance = {
+    fromJSON(object) {
+      return {
+        baseUrl: isSet(object.baseUrl) ? globalThis.String(object.baseUrl) : "",
+        hashAlgorithm: isSet(object.hashAlgorithm) ? (0, sigstore_common_1.hashAlgorithmFromJSON)(object.hashAlgorithm) : 0,
+        publicKey: isSet(object.publicKey) ? sigstore_common_1.PublicKey.fromJSON(object.publicKey) : undefined,
+        logId: isSet(object.logId) ? sigstore_common_1.LogId.fromJSON(object.logId) : undefined,
+        checkpointKeyId: isSet(object.checkpointKeyId) ? sigstore_common_1.LogId.fromJSON(object.checkpointKeyId) : undefined,
+        operator: isSet(object.operator) ? globalThis.String(object.operator) : ""
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.baseUrl !== "") {
+        obj.baseUrl = message.baseUrl;
+      }
+      if (message.hashAlgorithm !== 0) {
+        obj.hashAlgorithm = (0, sigstore_common_1.hashAlgorithmToJSON)(message.hashAlgorithm);
+      }
+      if (message.publicKey !== undefined) {
+        obj.publicKey = sigstore_common_1.PublicKey.toJSON(message.publicKey);
+      }
+      if (message.logId !== undefined) {
+        obj.logId = sigstore_common_1.LogId.toJSON(message.logId);
+      }
+      if (message.checkpointKeyId !== undefined) {
+        obj.checkpointKeyId = sigstore_common_1.LogId.toJSON(message.checkpointKeyId);
+      }
+      if (message.operator !== "") {
+        obj.operator = message.operator;
+      }
+      return obj;
+    }
+  };
+  exports.CertificateAuthority = {
+    fromJSON(object) {
+      return {
+        subject: isSet(object.subject) ? sigstore_common_1.DistinguishedName.fromJSON(object.subject) : undefined,
+        uri: isSet(object.uri) ? globalThis.String(object.uri) : "",
+        certChain: isSet(object.certChain) ? sigstore_common_1.X509CertificateChain.fromJSON(object.certChain) : undefined,
+        validFor: isSet(object.validFor) ? sigstore_common_1.TimeRange.fromJSON(object.validFor) : undefined,
+        operator: isSet(object.operator) ? globalThis.String(object.operator) : ""
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.subject !== undefined) {
+        obj.subject = sigstore_common_1.DistinguishedName.toJSON(message.subject);
+      }
+      if (message.uri !== "") {
+        obj.uri = message.uri;
+      }
+      if (message.certChain !== undefined) {
+        obj.certChain = sigstore_common_1.X509CertificateChain.toJSON(message.certChain);
+      }
+      if (message.validFor !== undefined) {
+        obj.validFor = sigstore_common_1.TimeRange.toJSON(message.validFor);
+      }
+      if (message.operator !== "") {
+        obj.operator = message.operator;
+      }
+      return obj;
+    }
+  };
+  exports.TrustedRoot = {
+    fromJSON(object) {
+      return {
+        mediaType: isSet(object.mediaType) ? globalThis.String(object.mediaType) : "",
+        tlogs: globalThis.Array.isArray(object?.tlogs) ? object.tlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
+        certificateAuthorities: globalThis.Array.isArray(object?.certificateAuthorities) ? object.certificateAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : [],
+        ctlogs: globalThis.Array.isArray(object?.ctlogs) ? object.ctlogs.map((e) => exports.TransparencyLogInstance.fromJSON(e)) : [],
+        timestampAuthorities: globalThis.Array.isArray(object?.timestampAuthorities) ? object.timestampAuthorities.map((e) => exports.CertificateAuthority.fromJSON(e)) : []
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.mediaType !== "") {
+        obj.mediaType = message.mediaType;
+      }
+      if (message.tlogs?.length) {
+        obj.tlogs = message.tlogs.map((e) => exports.TransparencyLogInstance.toJSON(e));
+      }
+      if (message.certificateAuthorities?.length) {
+        obj.certificateAuthorities = message.certificateAuthorities.map((e) => exports.CertificateAuthority.toJSON(e));
+      }
+      if (message.ctlogs?.length) {
+        obj.ctlogs = message.ctlogs.map((e) => exports.TransparencyLogInstance.toJSON(e));
+      }
+      if (message.timestampAuthorities?.length) {
+        obj.timestampAuthorities = message.timestampAuthorities.map((e) => exports.CertificateAuthority.toJSON(e));
+      }
+      return obj;
+    }
+  };
+  exports.SigningConfig = {
+    fromJSON(object) {
+      return {
+        mediaType: isSet(object.mediaType) ? globalThis.String(object.mediaType) : "",
+        caUrls: globalThis.Array.isArray(object?.caUrls) ? object.caUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        oidcUrls: globalThis.Array.isArray(object?.oidcUrls) ? object.oidcUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        rekorTlogUrls: globalThis.Array.isArray(object?.rekorTlogUrls) ? object.rekorTlogUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        rekorTlogConfig: isSet(object.rekorTlogConfig) ? exports.ServiceConfiguration.fromJSON(object.rekorTlogConfig) : undefined,
+        tsaUrls: globalThis.Array.isArray(object?.tsaUrls) ? object.tsaUrls.map((e) => exports.Service.fromJSON(e)) : [],
+        tsaConfig: isSet(object.tsaConfig) ? exports.ServiceConfiguration.fromJSON(object.tsaConfig) : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.mediaType !== "") {
+        obj.mediaType = message.mediaType;
+      }
+      if (message.caUrls?.length) {
+        obj.caUrls = message.caUrls.map((e) => exports.Service.toJSON(e));
+      }
+      if (message.oidcUrls?.length) {
+        obj.oidcUrls = message.oidcUrls.map((e) => exports.Service.toJSON(e));
+      }
+      if (message.rekorTlogUrls?.length) {
+        obj.rekorTlogUrls = message.rekorTlogUrls.map((e) => exports.Service.toJSON(e));
+      }
+      if (message.rekorTlogConfig !== undefined) {
+        obj.rekorTlogConfig = exports.ServiceConfiguration.toJSON(message.rekorTlogConfig);
+      }
+      if (message.tsaUrls?.length) {
+        obj.tsaUrls = message.tsaUrls.map((e) => exports.Service.toJSON(e));
+      }
+      if (message.tsaConfig !== undefined) {
+        obj.tsaConfig = exports.ServiceConfiguration.toJSON(message.tsaConfig);
+      }
+      return obj;
+    }
+  };
+  exports.Service = {
+    fromJSON(object) {
+      return {
+        url: isSet(object.url) ? globalThis.String(object.url) : "",
+        majorApiVersion: isSet(object.majorApiVersion) ? globalThis.Number(object.majorApiVersion) : 0,
+        validFor: isSet(object.validFor) ? sigstore_common_1.TimeRange.fromJSON(object.validFor) : undefined,
+        operator: isSet(object.operator) ? globalThis.String(object.operator) : ""
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.url !== "") {
+        obj.url = message.url;
+      }
+      if (message.majorApiVersion !== 0) {
+        obj.majorApiVersion = Math.round(message.majorApiVersion);
+      }
+      if (message.validFor !== undefined) {
+        obj.validFor = sigstore_common_1.TimeRange.toJSON(message.validFor);
+      }
+      if (message.operator !== "") {
+        obj.operator = message.operator;
+      }
+      return obj;
+    }
+  };
+  exports.ServiceConfiguration = {
+    fromJSON(object) {
+      return {
+        selector: isSet(object.selector) ? serviceSelectorFromJSON(object.selector) : 0,
+        count: isSet(object.count) ? globalThis.Number(object.count) : 0
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.selector !== 0) {
+        obj.selector = serviceSelectorToJSON(message.selector);
+      }
+      if (message.count !== 0) {
+        obj.count = Math.round(message.count);
+      }
+      return obj;
+    }
+  };
+  exports.ClientTrustConfig = {
+    fromJSON(object) {
+      return {
+        mediaType: isSet(object.mediaType) ? globalThis.String(object.mediaType) : "",
+        trustedRoot: isSet(object.trustedRoot) ? exports.TrustedRoot.fromJSON(object.trustedRoot) : undefined,
+        signingConfig: isSet(object.signingConfig) ? exports.SigningConfig.fromJSON(object.signingConfig) : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.mediaType !== "") {
+        obj.mediaType = message.mediaType;
+      }
+      if (message.trustedRoot !== undefined) {
+        obj.trustedRoot = exports.TrustedRoot.toJSON(message.trustedRoot);
+      }
+      if (message.signingConfig !== undefined) {
+        obj.signingConfig = exports.SigningConfig.toJSON(message.signingConfig);
+      }
+      return obj;
+    }
+  };
+  function isSet(value) {
+    return value !== null && value !== undefined;
+  }
+});
+
+// ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/sigstore_verification.js
+var require_sigstore_verification = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.Input = exports.Artifact = exports.ArtifactVerificationOptions_ObserverTimestampOptions = exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions = exports.ArtifactVerificationOptions_TimestampAuthorityOptions = exports.ArtifactVerificationOptions_CtlogOptions = exports.ArtifactVerificationOptions_TlogOptions = exports.ArtifactVerificationOptions = exports.PublicKeyIdentities = exports.CertificateIdentities = exports.CertificateIdentity = undefined;
+  var sigstore_bundle_1 = require_sigstore_bundle();
+  var sigstore_common_1 = require_sigstore_common();
+  var sigstore_trustroot_1 = require_sigstore_trustroot();
+  exports.CertificateIdentity = {
+    fromJSON(object) {
+      return {
+        issuer: isSet(object.issuer) ? globalThis.String(object.issuer) : "",
+        san: isSet(object.san) ? sigstore_common_1.SubjectAlternativeName.fromJSON(object.san) : undefined,
+        oids: globalThis.Array.isArray(object?.oids) ? object.oids.map((e) => sigstore_common_1.ObjectIdentifierValuePair.fromJSON(e)) : []
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.issuer !== "") {
+        obj.issuer = message.issuer;
+      }
+      if (message.san !== undefined) {
+        obj.san = sigstore_common_1.SubjectAlternativeName.toJSON(message.san);
+      }
+      if (message.oids?.length) {
+        obj.oids = message.oids.map((e) => sigstore_common_1.ObjectIdentifierValuePair.toJSON(e));
+      }
+      return obj;
+    }
+  };
+  exports.CertificateIdentities = {
+    fromJSON(object) {
+      return {
+        identities: globalThis.Array.isArray(object?.identities) ? object.identities.map((e) => exports.CertificateIdentity.fromJSON(e)) : []
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.identities?.length) {
+        obj.identities = message.identities.map((e) => exports.CertificateIdentity.toJSON(e));
+      }
+      return obj;
+    }
+  };
+  exports.PublicKeyIdentities = {
+    fromJSON(object) {
+      return {
+        publicKeys: globalThis.Array.isArray(object?.publicKeys) ? object.publicKeys.map((e) => sigstore_common_1.PublicKey.fromJSON(e)) : []
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.publicKeys?.length) {
+        obj.publicKeys = message.publicKeys.map((e) => sigstore_common_1.PublicKey.toJSON(e));
+      }
+      return obj;
+    }
+  };
+  exports.ArtifactVerificationOptions = {
+    fromJSON(object) {
+      return {
+        signers: isSet(object.certificateIdentities) ? {
+          $case: "certificateIdentities",
+          certificateIdentities: exports.CertificateIdentities.fromJSON(object.certificateIdentities)
+        } : isSet(object.publicKeys) ? { $case: "publicKeys", publicKeys: exports.PublicKeyIdentities.fromJSON(object.publicKeys) } : undefined,
+        tlogOptions: isSet(object.tlogOptions) ? exports.ArtifactVerificationOptions_TlogOptions.fromJSON(object.tlogOptions) : undefined,
+        ctlogOptions: isSet(object.ctlogOptions) ? exports.ArtifactVerificationOptions_CtlogOptions.fromJSON(object.ctlogOptions) : undefined,
+        tsaOptions: isSet(object.tsaOptions) ? exports.ArtifactVerificationOptions_TimestampAuthorityOptions.fromJSON(object.tsaOptions) : undefined,
+        integratedTsOptions: isSet(object.integratedTsOptions) ? exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions.fromJSON(object.integratedTsOptions) : undefined,
+        observerOptions: isSet(object.observerOptions) ? exports.ArtifactVerificationOptions_ObserverTimestampOptions.fromJSON(object.observerOptions) : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.signers?.$case === "certificateIdentities") {
+        obj.certificateIdentities = exports.CertificateIdentities.toJSON(message.signers.certificateIdentities);
+      } else if (message.signers?.$case === "publicKeys") {
+        obj.publicKeys = exports.PublicKeyIdentities.toJSON(message.signers.publicKeys);
+      }
+      if (message.tlogOptions !== undefined) {
+        obj.tlogOptions = exports.ArtifactVerificationOptions_TlogOptions.toJSON(message.tlogOptions);
+      }
+      if (message.ctlogOptions !== undefined) {
+        obj.ctlogOptions = exports.ArtifactVerificationOptions_CtlogOptions.toJSON(message.ctlogOptions);
+      }
+      if (message.tsaOptions !== undefined) {
+        obj.tsaOptions = exports.ArtifactVerificationOptions_TimestampAuthorityOptions.toJSON(message.tsaOptions);
+      }
+      if (message.integratedTsOptions !== undefined) {
+        obj.integratedTsOptions = exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions.toJSON(message.integratedTsOptions);
+      }
+      if (message.observerOptions !== undefined) {
+        obj.observerOptions = exports.ArtifactVerificationOptions_ObserverTimestampOptions.toJSON(message.observerOptions);
+      }
+      return obj;
+    }
+  };
+  exports.ArtifactVerificationOptions_TlogOptions = {
+    fromJSON(object) {
+      return {
+        threshold: isSet(object.threshold) ? globalThis.Number(object.threshold) : 0,
+        performOnlineVerification: isSet(object.performOnlineVerification) ? globalThis.Boolean(object.performOnlineVerification) : false,
+        disable: isSet(object.disable) ? globalThis.Boolean(object.disable) : false
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.threshold !== 0) {
+        obj.threshold = Math.round(message.threshold);
+      }
+      if (message.performOnlineVerification !== false) {
+        obj.performOnlineVerification = message.performOnlineVerification;
+      }
+      if (message.disable !== false) {
+        obj.disable = message.disable;
+      }
+      return obj;
+    }
+  };
+  exports.ArtifactVerificationOptions_CtlogOptions = {
+    fromJSON(object) {
+      return {
+        threshold: isSet(object.threshold) ? globalThis.Number(object.threshold) : 0,
+        disable: isSet(object.disable) ? globalThis.Boolean(object.disable) : false
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.threshold !== 0) {
+        obj.threshold = Math.round(message.threshold);
+      }
+      if (message.disable !== false) {
+        obj.disable = message.disable;
+      }
+      return obj;
+    }
+  };
+  exports.ArtifactVerificationOptions_TimestampAuthorityOptions = {
+    fromJSON(object) {
+      return {
+        threshold: isSet(object.threshold) ? globalThis.Number(object.threshold) : 0,
+        disable: isSet(object.disable) ? globalThis.Boolean(object.disable) : false
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.threshold !== 0) {
+        obj.threshold = Math.round(message.threshold);
+      }
+      if (message.disable !== false) {
+        obj.disable = message.disable;
+      }
+      return obj;
+    }
+  };
+  exports.ArtifactVerificationOptions_TlogIntegratedTimestampOptions = {
+    fromJSON(object) {
+      return {
+        threshold: isSet(object.threshold) ? globalThis.Number(object.threshold) : 0,
+        disable: isSet(object.disable) ? globalThis.Boolean(object.disable) : false
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.threshold !== 0) {
+        obj.threshold = Math.round(message.threshold);
+      }
+      if (message.disable !== false) {
+        obj.disable = message.disable;
+      }
+      return obj;
+    }
+  };
+  exports.ArtifactVerificationOptions_ObserverTimestampOptions = {
+    fromJSON(object) {
+      return {
+        threshold: isSet(object.threshold) ? globalThis.Number(object.threshold) : 0,
+        disable: isSet(object.disable) ? globalThis.Boolean(object.disable) : false
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.threshold !== 0) {
+        obj.threshold = Math.round(message.threshold);
+      }
+      if (message.disable !== false) {
+        obj.disable = message.disable;
+      }
+      return obj;
+    }
+  };
+  exports.Artifact = {
+    fromJSON(object) {
+      return {
+        data: isSet(object.artifactUri) ? { $case: "artifactUri", artifactUri: globalThis.String(object.artifactUri) } : isSet(object.artifact) ? { $case: "artifact", artifact: Buffer.from(bytesFromBase64(object.artifact)) } : isSet(object.artifactDigest) ? { $case: "artifactDigest", artifactDigest: sigstore_common_1.HashOutput.fromJSON(object.artifactDigest) } : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.data?.$case === "artifactUri") {
+        obj.artifactUri = message.data.artifactUri;
+      } else if (message.data?.$case === "artifact") {
+        obj.artifact = base64FromBytes(message.data.artifact);
+      } else if (message.data?.$case === "artifactDigest") {
+        obj.artifactDigest = sigstore_common_1.HashOutput.toJSON(message.data.artifactDigest);
+      }
+      return obj;
+    }
+  };
+  exports.Input = {
+    fromJSON(object) {
+      return {
+        artifactTrustRoot: isSet(object.artifactTrustRoot) ? sigstore_trustroot_1.TrustedRoot.fromJSON(object.artifactTrustRoot) : undefined,
+        artifactVerificationOptions: isSet(object.artifactVerificationOptions) ? exports.ArtifactVerificationOptions.fromJSON(object.artifactVerificationOptions) : undefined,
+        bundle: isSet(object.bundle) ? sigstore_bundle_1.Bundle.fromJSON(object.bundle) : undefined,
+        artifact: isSet(object.artifact) ? exports.Artifact.fromJSON(object.artifact) : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.artifactTrustRoot !== undefined) {
+        obj.artifactTrustRoot = sigstore_trustroot_1.TrustedRoot.toJSON(message.artifactTrustRoot);
+      }
+      if (message.artifactVerificationOptions !== undefined) {
+        obj.artifactVerificationOptions = exports.ArtifactVerificationOptions.toJSON(message.artifactVerificationOptions);
+      }
+      if (message.bundle !== undefined) {
+        obj.bundle = sigstore_bundle_1.Bundle.toJSON(message.bundle);
+      }
+      if (message.artifact !== undefined) {
+        obj.artifact = exports.Artifact.toJSON(message.artifact);
+      }
+      return obj;
+    }
+  };
+  function bytesFromBase64(b64) {
+    return Uint8Array.from(globalThis.Buffer.from(b64, "base64"));
+  }
+  function base64FromBytes(arr) {
+    return globalThis.Buffer.from(arr).toString("base64");
+  }
+  function isSet(value) {
+    return value !== null && value !== undefined;
+  }
+});
+
+// ../../node_modules/@sigstore/protobuf-specs/dist/index.js
+var require_dist = __commonJS((exports) => {
+  var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() {
+        return m[k];
+      } };
+    }
+    Object.defineProperty(o, k2, desc);
+  } : function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    o[k2] = m[k];
+  });
+  var __exportStar = exports && exports.__exportStar || function(m, exports2) {
+    for (var p in m)
+      if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p))
+        __createBinding(exports2, m, p);
+  };
+  Object.defineProperty(exports, "__esModule", { value: true });
+  __exportStar(require_envelope(), exports);
+  __exportStar(require_sigstore_bundle(), exports);
+  __exportStar(require_sigstore_common(), exports);
+  __exportStar(require_sigstore_rekor(), exports);
+  __exportStar(require_sigstore_trustroot(), exports);
+  __exportStar(require_sigstore_verification(), exports);
+});
+
+// ../../node_modules/@sigstore/bundle/dist/bundle.js
+var require_bundle = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.BUNDLE_V03_MEDIA_TYPE = exports.BUNDLE_V03_LEGACY_MEDIA_TYPE = exports.BUNDLE_V02_MEDIA_TYPE = exports.BUNDLE_V01_MEDIA_TYPE = undefined;
+  exports.isBundleWithCertificateChain = isBundleWithCertificateChain;
+  exports.isBundleWithPublicKey = isBundleWithPublicKey;
+  exports.isBundleWithMessageSignature = isBundleWithMessageSignature;
+  exports.isBundleWithDsseEnvelope = isBundleWithDsseEnvelope;
+  exports.BUNDLE_V01_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle+json;version=0.1";
+  exports.BUNDLE_V02_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle+json;version=0.2";
+  exports.BUNDLE_V03_LEGACY_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle+json;version=0.3";
+  exports.BUNDLE_V03_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle.v0.3+json";
+  function isBundleWithCertificateChain(b) {
+    return b.verificationMaterial.content.$case === "x509CertificateChain";
+  }
+  function isBundleWithPublicKey(b) {
+    return b.verificationMaterial.content.$case === "publicKey";
+  }
+  function isBundleWithMessageSignature(b) {
+    return b.content.$case === "messageSignature";
+  }
+  function isBundleWithDsseEnvelope(b) {
+    return b.content.$case === "dsseEnvelope";
+  }
+});
+
+// ../../node_modules/@sigstore/bundle/dist/build.js
+var require_build = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.toMessageSignatureBundle = toMessageSignatureBundle;
+  exports.toDSSEBundle = toDSSEBundle;
+  var protobuf_specs_1 = require_dist();
+  var bundle_1 = require_bundle();
+  function toMessageSignatureBundle(options) {
+    return {
+      mediaType: options.certificateChain ? bundle_1.BUNDLE_V02_MEDIA_TYPE : bundle_1.BUNDLE_V03_MEDIA_TYPE,
+      content: {
+        $case: "messageSignature",
+        messageSignature: {
+          messageDigest: {
+            algorithm: protobuf_specs_1.HashAlgorithm.SHA2_256,
+            digest: options.digest
+          },
+          signature: options.signature
+        }
+      },
+      verificationMaterial: toVerificationMaterial(options)
+    };
+  }
+  function toDSSEBundle(options) {
+    return {
+      mediaType: options.certificateChain ? bundle_1.BUNDLE_V02_MEDIA_TYPE : bundle_1.BUNDLE_V03_MEDIA_TYPE,
+      content: {
+        $case: "dsseEnvelope",
+        dsseEnvelope: toEnvelope(options)
+      },
+      verificationMaterial: toVerificationMaterial(options)
+    };
+  }
+  function toEnvelope(options) {
+    return {
+      payloadType: options.artifactType,
+      payload: options.artifact,
+      signatures: [toSignature(options)]
+    };
+  }
+  function toSignature(options) {
+    return {
+      keyid: options.keyHint || "",
+      sig: options.signature
+    };
+  }
+  function toVerificationMaterial(options) {
+    return {
+      content: toKeyContent(options),
+      tlogEntries: [],
+      timestampVerificationData: { rfc3161Timestamps: [] }
+    };
+  }
+  function toKeyContent(options) {
+    if (options.certificate) {
+      if (options.certificateChain) {
+        return {
+          $case: "x509CertificateChain",
+          x509CertificateChain: {
+            certificates: [{ rawBytes: options.certificate }]
+          }
+        };
+      } else {
+        return {
+          $case: "certificate",
+          certificate: { rawBytes: options.certificate }
+        };
+      }
+    } else {
+      return {
+        $case: "publicKey",
+        publicKey: {
+          hint: options.keyHint || ""
+        }
+      };
+    }
+  }
+});
+
+// ../../node_modules/@sigstore/bundle/dist/error.js
+var require_error = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.ValidationError = undefined;
+
+  class ValidationError extends Error {
+    fields;
+    constructor(message, fields) {
+      super(message);
+      this.fields = fields;
+    }
+  }
+  exports.ValidationError = ValidationError;
+});
+
+// ../../node_modules/@sigstore/bundle/dist/validate.js
+var require_validate = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.assertBundle = assertBundle;
+  exports.assertBundleV01 = assertBundleV01;
+  exports.isBundleV01 = isBundleV01;
+  exports.assertBundleV02 = assertBundleV02;
+  exports.assertBundleLatest = assertBundleLatest;
+  var error_1 = require_error();
+  function assertBundle(b) {
+    const invalidValues = validateBundleBase(b);
+    if (invalidValues.length > 0) {
+      throw new error_1.ValidationError("invalid bundle", invalidValues);
+    }
+  }
+  function assertBundleV01(b) {
+    const invalidValues = [];
+    invalidValues.push(...validateBundleBase(b));
+    invalidValues.push(...validateInclusionPromise(b));
+    if (invalidValues.length > 0) {
+      throw new error_1.ValidationError("invalid v0.1 bundle", invalidValues);
+    }
+  }
+  function isBundleV01(b) {
+    try {
+      assertBundleV01(b);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+  function assertBundleV02(b) {
+    const invalidValues = [];
+    invalidValues.push(...validateBundleBase(b));
+    invalidValues.push(...validateInclusionProof(b));
+    if (invalidValues.length > 0) {
+      throw new error_1.ValidationError("invalid v0.2 bundle", invalidValues);
+    }
+  }
+  function assertBundleLatest(b) {
+    const invalidValues = [];
+    invalidValues.push(...validateBundleBase(b));
+    invalidValues.push(...validateInclusionProof(b));
+    invalidValues.push(...validateNoCertificateChain(b));
+    if (invalidValues.length > 0) {
+      throw new error_1.ValidationError("invalid bundle", invalidValues);
+    }
+  }
+  function validateBundleBase(b) {
+    const invalidValues = [];
+    if (b.mediaType === undefined || !b.mediaType.match(/^application\/vnd\.dev\.sigstore\.bundle\+json;version=\d\.\d/) && !b.mediaType.match(/^application\/vnd\.dev\.sigstore\.bundle\.v\d\.\d\+json/)) {
+      invalidValues.push("mediaType");
+    }
+    if (b.content === undefined) {
+      invalidValues.push("content");
+    } else {
+      switch (b.content.$case) {
+        case "messageSignature":
+          if (b.content.messageSignature.messageDigest === undefined) {
+            invalidValues.push("content.messageSignature.messageDigest");
+          } else {
+            if (b.content.messageSignature.messageDigest.digest.length === 0) {
+              invalidValues.push("content.messageSignature.messageDigest.digest");
+            }
+          }
+          if (b.content.messageSignature.signature.length === 0) {
+            invalidValues.push("content.messageSignature.signature");
+          }
+          break;
+        case "dsseEnvelope":
+          if (b.content.dsseEnvelope.payload.length === 0) {
+            invalidValues.push("content.dsseEnvelope.payload");
+          }
+          if (b.content.dsseEnvelope.signatures.length !== 1) {
+            invalidValues.push("content.dsseEnvelope.signatures");
+          } else {
+            if (b.content.dsseEnvelope.signatures[0].sig.length === 0) {
+              invalidValues.push("content.dsseEnvelope.signatures[0].sig");
+            }
+          }
+          break;
+      }
+    }
+    if (b.verificationMaterial === undefined) {
+      invalidValues.push("verificationMaterial");
+    } else {
+      if (b.verificationMaterial.content === undefined) {
+        invalidValues.push("verificationMaterial.content");
+      } else {
+        switch (b.verificationMaterial.content.$case) {
+          case "x509CertificateChain":
+            if (b.verificationMaterial.content.x509CertificateChain.certificates.length === 0) {
+              invalidValues.push("verificationMaterial.content.x509CertificateChain.certificates");
+            }
+            b.verificationMaterial.content.x509CertificateChain.certificates.forEach((cert, i) => {
+              if (cert.rawBytes.length === 0) {
+                invalidValues.push(`verificationMaterial.content.x509CertificateChain.certificates[${i}].rawBytes`);
+              }
+            });
+            break;
+          case "certificate":
+            if (b.verificationMaterial.content.certificate.rawBytes.length === 0) {
+              invalidValues.push("verificationMaterial.content.certificate.rawBytes");
+            }
+            break;
+        }
+      }
+      if (b.verificationMaterial.tlogEntries === undefined) {
+        invalidValues.push("verificationMaterial.tlogEntries");
+      } else {
+        if (b.verificationMaterial.tlogEntries.length > 0) {
+          b.verificationMaterial.tlogEntries.forEach((entry, i) => {
+            if (entry.logId === undefined) {
+              invalidValues.push(`verificationMaterial.tlogEntries[${i}].logId`);
+            }
+            if (entry.kindVersion === undefined) {
+              invalidValues.push(`verificationMaterial.tlogEntries[${i}].kindVersion`);
+            }
+          });
+        }
+      }
+    }
+    return invalidValues;
+  }
+  function validateInclusionPromise(b) {
+    const invalidValues = [];
+    if (b.verificationMaterial && b.verificationMaterial.tlogEntries?.length > 0) {
+      b.verificationMaterial.tlogEntries.forEach((entry, i) => {
+        if (entry.inclusionPromise === undefined) {
+          invalidValues.push(`verificationMaterial.tlogEntries[${i}].inclusionPromise`);
+        }
+      });
+    }
+    return invalidValues;
+  }
+  function validateInclusionProof(b) {
+    const invalidValues = [];
+    if (b.verificationMaterial && b.verificationMaterial.tlogEntries?.length > 0) {
+      b.verificationMaterial.tlogEntries.forEach((entry, i) => {
+        if (entry.inclusionProof === undefined) {
+          invalidValues.push(`verificationMaterial.tlogEntries[${i}].inclusionProof`);
+        } else {
+          if (entry.inclusionProof.checkpoint === undefined) {
+            invalidValues.push(`verificationMaterial.tlogEntries[${i}].inclusionProof.checkpoint`);
+          }
+        }
+      });
+    }
+    return invalidValues;
+  }
+  function validateNoCertificateChain(b) {
+    const invalidValues = [];
+    if (b.verificationMaterial?.content?.$case === "x509CertificateChain") {
+      invalidValues.push("verificationMaterial.content.$case");
+    }
+    return invalidValues;
+  }
+});
+
+// ../../node_modules/@sigstore/bundle/dist/serialized.js
+var require_serialized = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.envelopeToJSON = exports.envelopeFromJSON = exports.bundleToJSON = exports.bundleFromJSON = undefined;
+  var protobuf_specs_1 = require_dist();
+  var bundle_1 = require_bundle();
+  var validate_1 = require_validate();
+  var bundleFromJSON = (obj) => {
+    const bundle = protobuf_specs_1.Bundle.fromJSON(obj);
+    switch (bundle.mediaType) {
+      case bundle_1.BUNDLE_V01_MEDIA_TYPE:
+        (0, validate_1.assertBundleV01)(bundle);
+        break;
+      case bundle_1.BUNDLE_V02_MEDIA_TYPE:
+        (0, validate_1.assertBundleV02)(bundle);
+        break;
+      default:
+        (0, validate_1.assertBundleLatest)(bundle);
+        break;
+    }
+    return bundle;
+  };
+  exports.bundleFromJSON = bundleFromJSON;
+  var bundleToJSON = (bundle) => {
+    return protobuf_specs_1.Bundle.toJSON(bundle);
+  };
+  exports.bundleToJSON = bundleToJSON;
+  var envelopeFromJSON = (obj) => {
+    return protobuf_specs_1.Envelope.fromJSON(obj);
+  };
+  exports.envelopeFromJSON = envelopeFromJSON;
+  var envelopeToJSON = (envelope) => {
+    return protobuf_specs_1.Envelope.toJSON(envelope);
+  };
+  exports.envelopeToJSON = envelopeToJSON;
+});
+
+// ../../node_modules/@sigstore/bundle/dist/index.js
+var require_dist2 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.isBundleV01 = exports.assertBundleV02 = exports.assertBundleV01 = exports.assertBundleLatest = exports.assertBundle = exports.envelopeToJSON = exports.envelopeFromJSON = exports.bundleToJSON = exports.bundleFromJSON = exports.ValidationError = exports.isBundleWithPublicKey = exports.isBundleWithMessageSignature = exports.isBundleWithDsseEnvelope = exports.isBundleWithCertificateChain = exports.BUNDLE_V03_MEDIA_TYPE = exports.BUNDLE_V03_LEGACY_MEDIA_TYPE = exports.BUNDLE_V02_MEDIA_TYPE = exports.BUNDLE_V01_MEDIA_TYPE = exports.toMessageSignatureBundle = exports.toDSSEBundle = undefined;
+  var build_1 = require_build();
+  Object.defineProperty(exports, "toDSSEBundle", { enumerable: true, get: function() {
+    return build_1.toDSSEBundle;
+  } });
+  Object.defineProperty(exports, "toMessageSignatureBundle", { enumerable: true, get: function() {
+    return build_1.toMessageSignatureBundle;
+  } });
+  var bundle_1 = require_bundle();
+  Object.defineProperty(exports, "BUNDLE_V01_MEDIA_TYPE", { enumerable: true, get: function() {
+    return bundle_1.BUNDLE_V01_MEDIA_TYPE;
+  } });
+  Object.defineProperty(exports, "BUNDLE_V02_MEDIA_TYPE", { enumerable: true, get: function() {
+    return bundle_1.BUNDLE_V02_MEDIA_TYPE;
+  } });
+  Object.defineProperty(exports, "BUNDLE_V03_LEGACY_MEDIA_TYPE", { enumerable: true, get: function() {
+    return bundle_1.BUNDLE_V03_LEGACY_MEDIA_TYPE;
+  } });
+  Object.defineProperty(exports, "BUNDLE_V03_MEDIA_TYPE", { enumerable: true, get: function() {
+    return bundle_1.BUNDLE_V03_MEDIA_TYPE;
+  } });
+  Object.defineProperty(exports, "isBundleWithCertificateChain", { enumerable: true, get: function() {
+    return bundle_1.isBundleWithCertificateChain;
+  } });
+  Object.defineProperty(exports, "isBundleWithDsseEnvelope", { enumerable: true, get: function() {
+    return bundle_1.isBundleWithDsseEnvelope;
+  } });
+  Object.defineProperty(exports, "isBundleWithMessageSignature", { enumerable: true, get: function() {
+    return bundle_1.isBundleWithMessageSignature;
+  } });
+  Object.defineProperty(exports, "isBundleWithPublicKey", { enumerable: true, get: function() {
+    return bundle_1.isBundleWithPublicKey;
+  } });
+  var error_1 = require_error();
+  Object.defineProperty(exports, "ValidationError", { enumerable: true, get: function() {
+    return error_1.ValidationError;
+  } });
+  var serialized_1 = require_serialized();
+  Object.defineProperty(exports, "bundleFromJSON", { enumerable: true, get: function() {
+    return serialized_1.bundleFromJSON;
+  } });
+  Object.defineProperty(exports, "bundleToJSON", { enumerable: true, get: function() {
+    return serialized_1.bundleToJSON;
+  } });
+  Object.defineProperty(exports, "envelopeFromJSON", { enumerable: true, get: function() {
+    return serialized_1.envelopeFromJSON;
+  } });
+  Object.defineProperty(exports, "envelopeToJSON", { enumerable: true, get: function() {
+    return serialized_1.envelopeToJSON;
+  } });
+  var validate_1 = require_validate();
+  Object.defineProperty(exports, "assertBundle", { enumerable: true, get: function() {
+    return validate_1.assertBundle;
+  } });
+  Object.defineProperty(exports, "assertBundleLatest", { enumerable: true, get: function() {
+    return validate_1.assertBundleLatest;
+  } });
+  Object.defineProperty(exports, "assertBundleV01", { enumerable: true, get: function() {
+    return validate_1.assertBundleV01;
+  } });
+  Object.defineProperty(exports, "assertBundleV02", { enumerable: true, get: function() {
+    return validate_1.assertBundleV02;
+  } });
+  Object.defineProperty(exports, "isBundleV01", { enumerable: true, get: function() {
+    return validate_1.isBundleV01;
+  } });
+});
+
+// ../../node_modules/@sigstore/core/dist/stream.js
+var require_stream = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.ByteStream = undefined;
+
+  class StreamError extends Error {
+  }
+
+  class ByteStream {
+    static BLOCK_SIZE = 1024;
+    buf;
+    view;
+    start = 0;
+    constructor(buffer) {
+      if (buffer) {
+        this.buf = buffer;
+        this.view = Buffer.from(buffer);
+      } else {
+        this.buf = Buffer.alloc(0);
+        this.view = Buffer.from(this.buf);
+      }
+    }
+    get buffer() {
+      return this.view.subarray(0, this.start);
+    }
+    get length() {
+      return this.view.byteLength;
+    }
+    get position() {
+      return this.start;
+    }
+    seek(position) {
+      this.start = position;
+    }
+    slice(start, len) {
+      const end = start + len;
+      if (end > this.length) {
+        throw new StreamError("request past end of buffer");
+      }
+      return this.view.subarray(start, end);
+    }
+    appendChar(char) {
+      this.ensureCapacity(1);
+      this.view[this.start] = char;
+      this.start += 1;
+    }
+    appendUint16(num) {
+      this.ensureCapacity(2);
+      const value = new Uint16Array([num]);
+      const view = new Uint8Array(value.buffer);
+      this.view[this.start] = view[1];
+      this.view[this.start + 1] = view[0];
+      this.start += 2;
+    }
+    appendUint24(num) {
+      this.ensureCapacity(3);
+      const value = new Uint32Array([num]);
+      const view = new Uint8Array(value.buffer);
+      this.view[this.start] = view[2];
+      this.view[this.start + 1] = view[1];
+      this.view[this.start + 2] = view[0];
+      this.start += 3;
+    }
+    appendView(view) {
+      this.ensureCapacity(view.length);
+      this.view.set(view, this.start);
+      this.start += view.length;
+    }
+    getBlock(size) {
+      if (size <= 0) {
+        return Buffer.alloc(0);
+      }
+      if (this.start + size > this.view.length) {
+        throw new Error("request past end of buffer");
+      }
+      const result = this.view.subarray(this.start, this.start + size);
+      this.start += size;
+      return result;
+    }
+    getUint8() {
+      return this.getBlock(1)[0];
+    }
+    getUint16() {
+      const block = this.getBlock(2);
+      return block[0] << 8 | block[1];
+    }
+    ensureCapacity(size) {
+      if (this.start + size > this.view.byteLength) {
+        const blockSize = ByteStream.BLOCK_SIZE + (size > ByteStream.BLOCK_SIZE ? size : 0);
+        this.realloc(this.view.byteLength + blockSize);
+      }
+    }
+    realloc(size) {
+      const newArray = Buffer.alloc(size);
+      const newView = Buffer.from(newArray);
+      newView.set(this.view);
+      this.buf = newArray;
+      this.view = newView;
+    }
+  }
+  exports.ByteStream = ByteStream;
+});
+
+// ../../node_modules/@sigstore/core/dist/asn1/error.js
+var require_error2 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.ASN1TypeError = exports.ASN1ParseError = undefined;
+
+  class ASN1ParseError extends Error {
+  }
+  exports.ASN1ParseError = ASN1ParseError;
+
+  class ASN1TypeError extends Error {
+  }
+  exports.ASN1TypeError = ASN1TypeError;
+});
+
+// ../../node_modules/@sigstore/core/dist/asn1/length.js
+var require_length = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.decodeLength = decodeLength;
+  exports.encodeLength = encodeLength;
+  var error_1 = require_error2();
+  function decodeLength(stream) {
+    const buf = stream.getUint8();
+    if ((buf & 128) === 0) {
+      return buf;
+    }
+    const byteCount = buf & 127;
+    if (byteCount > 6) {
+      throw new error_1.ASN1ParseError("length exceeds 6 byte limit");
+    }
+    let len = 0;
+    for (let i = 0;i < byteCount; i++) {
+      const byte = stream.getUint8();
+      if (i === 0 && byte === 0) {
+        throw new error_1.ASN1ParseError("non-minimal length encoding");
+      }
+      len = len * 256 + byte;
+    }
+    if (len === 0) {
+      throw new error_1.ASN1ParseError("indefinite length encoding not supported");
+    }
+    if (len < 128) {
+      throw new error_1.ASN1ParseError("non-minimal length encoding");
+    }
+    return len;
+  }
+  function encodeLength(len) {
+    if (len < 128) {
+      return Buffer.from([len]);
+    }
+    let val = BigInt(len);
+    const bytes = [];
+    while (val > 0n) {
+      bytes.unshift(Number(val & 255n));
+      val = val >> 8n;
+    }
+    return Buffer.from([128 | bytes.length, ...bytes]);
+  }
+});
+
+// ../../node_modules/@sigstore/core/dist/asn1/parse.js
+var require_parse = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.parseInteger = parseInteger;
+  exports.parseStringASCII = parseStringASCII;
+  exports.parseTime = parseTime;
+  exports.parseOID = parseOID;
+  exports.parseBoolean = parseBoolean;
+  exports.parseBitString = parseBitString;
+  var error_1 = require_error2();
+  var RE_TIME_SHORT_YEAR = /^(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\.\d{3})?Z$/;
+  var RE_TIME_LONG_YEAR = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\.\d{3})?Z$/;
+  function parseInteger(buf) {
+    let pos = 0;
+    const end = buf.length;
+    let val = buf[pos];
+    const neg = val > 127;
+    const pad = neg ? 255 : 0;
+    while (val == pad && ++pos < end) {
+      val = buf[pos];
+    }
+    const len = end - pos;
+    if (len === 0)
+      return BigInt(neg ? -1 : 0);
+    val = neg ? val - 256 : val;
+    let n = BigInt(val);
+    for (let i = pos + 1;i < end; ++i) {
+      n = n * BigInt(256) + BigInt(buf[i]);
+    }
+    return n;
+  }
+  function parseStringASCII(buf) {
+    return buf.toString("ascii");
+  }
+  function parseTime(buf, shortYear) {
+    const timeStr = parseStringASCII(buf);
+    const m = shortYear ? RE_TIME_SHORT_YEAR.exec(timeStr) : RE_TIME_LONG_YEAR.exec(timeStr);
+    if (!m) {
+      throw new Error("invalid time");
+    }
+    if (shortYear) {
+      let year = Number(m[1]);
+      year += year >= 50 ? 1900 : 2000;
+      m[1] = year.toString();
+    }
+    return new Date(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`);
+  }
+  function parseOID(buf) {
+    let pos = 0;
+    const end = buf.length;
+    let n = buf[pos++];
+    const first = Math.floor(n / 40);
+    const second = n % 40;
+    let oid = `${first}.${second}`;
+    let val = 0n;
+    for (;pos < end; ++pos) {
+      n = buf[pos];
+      val = (val << 7n) + BigInt(n & 127);
+      if ((n & 128) === 0) {
+        oid += `.${val}`;
+        val = 0n;
+      }
+    }
+    return oid;
+  }
+  function parseBoolean(buf) {
+    if (buf.length !== 1) {
+      throw new error_1.ASN1ParseError("invalid boolean");
+    }
+    switch (buf[0]) {
+      case 0:
+        return false;
+      case 255:
+        return true;
+      default:
+        throw new error_1.ASN1ParseError("invalid boolean");
+    }
+  }
+  function parseBitString(buf) {
+    const unused = buf[0];
+    if (unused > 7) {
+      throw new error_1.ASN1ParseError("invalid bit string");
+    }
+    const start = 1;
+    const end = buf.length;
+    const bits = [];
+    for (let i = start;i < end; ++i) {
+      const byte = buf[i];
+      const skip = i === end - 1 ? unused : 0;
+      for (let j = 7;j >= skip; --j) {
+        bits.push(byte >> j & 1);
+      }
+    }
+    return bits;
+  }
+});
+
+// ../../node_modules/@sigstore/core/dist/asn1/tag.js
+var require_tag = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.ASN1Tag = undefined;
+  var error_1 = require_error2();
+  var UNIVERSAL_TAG = {
+    BOOLEAN: 1,
+    INTEGER: 2,
+    BIT_STRING: 3,
+    OCTET_STRING: 4,
+    OBJECT_IDENTIFIER: 6,
+    SEQUENCE: 16,
+    SET: 17,
+    PRINTABLE_STRING: 19,
+    UTC_TIME: 23,
+    GENERALIZED_TIME: 24
+  };
+  var TAG_CLASS = {
+    UNIVERSAL: 0,
+    APPLICATION: 1,
+    CONTEXT_SPECIFIC: 2,
+    PRIVATE: 3
+  };
+
+  class ASN1Tag {
+    number;
+    constructed;
+    class;
+    constructor(enc) {
+      this.number = enc & 31;
+      this.constructed = (enc & 32) === 32;
+      this.class = enc >> 6;
+      if (this.number === 31) {
+        throw new error_1.ASN1ParseError("long form tags not supported");
+      }
+      if (this.class === TAG_CLASS.UNIVERSAL && this.number === 0) {
+        throw new error_1.ASN1ParseError("unsupported tag 0x00");
+      }
+    }
+    isUniversal() {
+      return this.class === TAG_CLASS.UNIVERSAL;
+    }
+    isContextSpecific(num) {
+      const res = this.class === TAG_CLASS.CONTEXT_SPECIFIC;
+      return num !== undefined ? res && this.number === num : res;
+    }
+    isBoolean() {
+      return this.isUniversal() && this.number === UNIVERSAL_TAG.BOOLEAN;
+    }
+    isInteger() {
+      return this.isUniversal() && this.number === UNIVERSAL_TAG.INTEGER;
+    }
+    isBitString() {
+      return this.isUniversal() && this.number === UNIVERSAL_TAG.BIT_STRING;
+    }
+    isOctetString() {
+      return this.isUniversal() && this.number === UNIVERSAL_TAG.OCTET_STRING;
+    }
+    isOID() {
+      return this.isUniversal() && this.number === UNIVERSAL_TAG.OBJECT_IDENTIFIER;
+    }
+    isUTCTime() {
+      return this.isUniversal() && this.number === UNIVERSAL_TAG.UTC_TIME;
+    }
+    isGeneralizedTime() {
+      return this.isUniversal() && this.number === UNIVERSAL_TAG.GENERALIZED_TIME;
+    }
+    toDER() {
+      return this.number | (this.constructed ? 32 : 0) | this.class << 6;
+    }
+  }
+  exports.ASN1Tag = ASN1Tag;
+});
+
+// ../../node_modules/@sigstore/core/dist/asn1/obj.js
+var require_obj = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.ASN1Obj = undefined;
+  var stream_1 = require_stream();
+  var error_1 = require_error2();
+  var length_1 = require_length();
+  var parse_1 = require_parse();
+  var tag_1 = require_tag();
+
+  class ASN1Obj {
+    tag;
+    subs;
+    value;
+    constructor(tag, value, subs) {
+      this.tag = tag;
+      this.value = value;
+      this.subs = subs;
+    }
+    static parseBuffer(buf) {
+      const stream = new stream_1.ByteStream(buf);
+      const obj = parseStream(stream);
+      if (stream.position !== stream.length) {
+        throw new error_1.ASN1ParseError("invalid trailing data");
+      }
+      return obj;
+    }
+    toDER() {
+      const valueStream = new stream_1.ByteStream;
+      if (this.subs.length > 0) {
+        for (const sub of this.subs) {
+          valueStream.appendView(sub.toDER());
+        }
+      } else {
+        valueStream.appendView(this.value);
+      }
+      const value = valueStream.buffer;
+      const obj = new stream_1.ByteStream;
+      obj.appendChar(this.tag.toDER());
+      obj.appendView((0, length_1.encodeLength)(value.length));
+      obj.appendView(value);
+      return obj.buffer;
+    }
+    toBoolean() {
+      if (!this.tag.isBoolean()) {
+        throw new error_1.ASN1TypeError("not a boolean");
+      }
+      return (0, parse_1.parseBoolean)(this.value);
+    }
+    toInteger() {
+      if (!this.tag.isInteger()) {
+        throw new error_1.ASN1TypeError("not an integer");
+      }
+      return (0, parse_1.parseInteger)(this.value);
+    }
+    toOID() {
+      if (!this.tag.isOID()) {
+        throw new error_1.ASN1TypeError("not an OID");
+      }
+      return (0, parse_1.parseOID)(this.value);
+    }
+    toDate() {
+      switch (true) {
+        case this.tag.isUTCTime():
+          return (0, parse_1.parseTime)(this.value, true);
+        case this.tag.isGeneralizedTime():
+          return (0, parse_1.parseTime)(this.value, false);
+        default:
+          throw new error_1.ASN1TypeError("not a date");
+      }
+    }
+    toBitString() {
+      if (!this.tag.isBitString()) {
+        throw new error_1.ASN1TypeError("not a bit string");
+      }
+      return (0, parse_1.parseBitString)(this.value);
+    }
+  }
+  exports.ASN1Obj = ASN1Obj;
+  var MAX_DEPTH = 100;
+  function parseStream(stream, depth = 0) {
+    if (depth > MAX_DEPTH) {
+      throw new error_1.ASN1ParseError("maximum nesting depth exceeded");
+    }
+    const tag = new tag_1.ASN1Tag(stream.getUint8());
+    const len = (0, length_1.decodeLength)(stream);
+    const value = stream.slice(stream.position, len);
+    const start = stream.position;
+    let subs = [];
+    if (tag.constructed) {
+      subs = collectSubs(stream, len, depth);
+    } else if (tag.isOctetString()) {
+      try {
+        subs = collectSubs(stream, len, depth);
+      } catch (e) {}
+    }
+    if (subs.length === 0) {
+      stream.seek(start + len);
+    }
+    return new ASN1Obj(tag, value, subs);
+  }
+  function collectSubs(stream, len, depth) {
+    const end = stream.position + len;
+    if (end > stream.length) {
+      throw new error_1.ASN1ParseError("invalid length");
+    }
+    const subs = [];
+    while (stream.position < end) {
+      subs.push(parseStream(stream, depth + 1));
+    }
+    if (stream.position !== end) {
+      throw new error_1.ASN1ParseError("invalid length");
+    }
+    return subs;
+  }
+});
+
+// ../../node_modules/@sigstore/core/dist/asn1/index.js
+var require_asn1 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.ASN1Obj = undefined;
+  var obj_1 = require_obj();
+  Object.defineProperty(exports, "ASN1Obj", { enumerable: true, get: function() {
+    return obj_1.ASN1Obj;
+  } });
+});
+
+// ../../node_modules/@sigstore/core/dist/crypto.js
+var require_crypto = __commonJS((exports) => {
+  var __importDefault = exports && exports.__importDefault || function(mod) {
+    return mod && mod.__esModule ? mod : { default: mod };
+  };
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.createPublicKey = createPublicKey;
+  exports.digest = digest;
+  exports.verify = verify;
+  exports.bufferEqual = bufferEqual;
+  var crypto_1 = __importDefault(__require("crypto"));
+  function createPublicKey(key, type = "spki") {
+    if (typeof key === "string") {
+      if (key.startsWith("-----")) {
+        return crypto_1.default.createPublicKey(key);
+      } else {
+        return crypto_1.default.createPublicKey({
+          key: Buffer.from(key, "base64"),
+          format: "der",
+          type
+        });
+      }
+    } else {
+      return crypto_1.default.createPublicKey({ key, format: "der", type });
+    }
+  }
+  function digest(algorithm, ...data) {
+    const hash = crypto_1.default.createHash(algorithm);
+    for (const d of data) {
+      hash.update(d);
+    }
+    return hash.digest();
+  }
+  function verify(data, key, signature, algorithm) {
+    try {
+      return crypto_1.default.verify(algorithm, data, key, signature);
+    } catch (e) {
+      return false;
+    }
+  }
+  function bufferEqual(a, b) {
+    try {
+      return crypto_1.default.timingSafeEqual(a, b);
+    } catch {
+      return false;
+    }
+  }
+});
+
+// ../../node_modules/@sigstore/core/dist/dsse.js
+var require_dsse = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.preAuthEncoding = preAuthEncoding;
+  var PAE_PREFIX = "DSSEv1";
+  function preAuthEncoding(payloadType, payload) {
+    const typeBytes = Buffer.from(payloadType, "utf-8");
+    return Buffer.concat([
+      Buffer.from(`${PAE_PREFIX} ${typeBytes.length} `, "ascii"),
+      typeBytes,
+      Buffer.from(` ${payload.length} `, "ascii"),
+      payload
+    ]);
+  }
+});
+
+// ../../node_modules/@sigstore/core/dist/encoding.js
+var require_encoding = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.base64Encode = base64Encode;
+  exports.base64Decode = base64Decode;
+  var BASE64_ENCODING = "base64";
+  var UTF8_ENCODING = "utf-8";
+  function base64Encode(str) {
+    return Buffer.from(str, UTF8_ENCODING).toString(BASE64_ENCODING);
+  }
+  function base64Decode(str) {
+    return Buffer.from(str, BASE64_ENCODING).toString(UTF8_ENCODING);
+  }
+});
+
+// ../../node_modules/@sigstore/core/dist/json.js
+var require_json = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.canonicalize = canonicalize;
+  function canonicalize(object) {
+    let buffer = "";
+    if (object === null || typeof object !== "object" || object.toJSON != null) {
+      buffer += JSON.stringify(object);
+    } else if (Array.isArray(object)) {
+      buffer += "[";
+      let first = true;
+      object.forEach((element) => {
+        if (!first) {
+          buffer += ",";
+        }
+        first = false;
+        buffer += canonicalize(element);
+      });
+      buffer += "]";
+    } else {
+      buffer += "{";
+      let first = true;
+      Object.keys(object).sort().forEach((property) => {
+        if (!first) {
+          buffer += ",";
+        }
+        first = false;
+        buffer += JSON.stringify(property);
+        buffer += ":";
+        buffer += canonicalize(object[property]);
+      });
+      buffer += "}";
+    }
+    return buffer;
+  }
+});
+
+// ../../node_modules/@sigstore/core/dist/pem.js
+var require_pem = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.toDER = toDER;
+  exports.fromDER = fromDER;
+  var PEM_HEADER = /-----BEGIN (.*)-----/;
+  var PEM_FOOTER = /-----END (.*)-----/;
+  function toDER(certificate) {
+    let der = "";
+    certificate.split(`
+`).forEach((line) => {
+      if (line.match(PEM_HEADER) || line.match(PEM_FOOTER)) {
+        return;
+      }
+      der += line;
+    });
+    return Buffer.from(der, "base64");
+  }
+  function fromDER(certificate, type = "CERTIFICATE") {
+    const der = certificate.toString("base64");
+    const lines = der.match(/.{1,64}/g) || "";
+    return [`-----BEGIN ${type}-----`, ...lines, `-----END ${type}-----`].join(`
+`).concat(`
+`);
+  }
+});
+
+// ../../node_modules/@sigstore/core/dist/oid.js
+var require_oid = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.SHA2_HASH_ALGOS = exports.RSA_SIGNATURE_ALGOS = exports.ECDSA_SIGNATURE_ALGOS = undefined;
+  exports.ECDSA_SIGNATURE_ALGOS = {
+    "1.2.840.10045.4.3.1": "sha224",
+    "1.2.840.10045.4.3.2": "sha256",
+    "1.2.840.10045.4.3.3": "sha384",
+    "1.2.840.10045.4.3.4": "sha512"
+  };
+  exports.RSA_SIGNATURE_ALGOS = {
+    "1.2.840.113549.1.1.14": "sha224",
+    "1.2.840.113549.1.1.11": "sha256",
+    "1.2.840.113549.1.1.12": "sha384",
+    "1.2.840.113549.1.1.13": "sha512"
+  };
+  exports.SHA2_HASH_ALGOS = {
+    "2.16.840.1.101.3.4.2.1": "sha256",
+    "2.16.840.1.101.3.4.2.2": "sha384",
+    "2.16.840.1.101.3.4.2.3": "sha512"
+  };
+});
+
+// ../../node_modules/@sigstore/core/dist/rfc3161/error.js
+var require_error3 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.RFC3161TimestampVerificationError = undefined;
+
+  class RFC3161TimestampVerificationError extends Error {
+  }
+  exports.RFC3161TimestampVerificationError = RFC3161TimestampVerificationError;
+});
+
+// ../../node_modules/@sigstore/core/dist/rfc3161/tstinfo.js
+var require_tstinfo = __commonJS((exports) => {
+  var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() {
+        return m[k];
+      } };
+    }
+    Object.defineProperty(o, k2, desc);
+  } : function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    o[k2] = m[k];
+  });
+  var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+  } : function(o, v) {
+    o["default"] = v;
+  });
+  var __importStar = exports && exports.__importStar || function() {
+    var ownKeys = function(o) {
+      ownKeys = Object.getOwnPropertyNames || function(o2) {
+        var ar = [];
+        for (var k in o2)
+          if (Object.prototype.hasOwnProperty.call(o2, k))
+            ar[ar.length] = k;
+        return ar;
+      };
+      return ownKeys(o);
+    };
+    return function(mod) {
+      if (mod && mod.__esModule)
+        return mod;
+      var result = {};
+      if (mod != null) {
+        for (var k = ownKeys(mod), i = 0;i < k.length; i++)
+          if (k[i] !== "default")
+            __createBinding(result, mod, k[i]);
+      }
+      __setModuleDefault(result, mod);
+      return result;
+    };
+  }();
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.TSTInfo = undefined;
+  var crypto3 = __importStar(require_crypto());
+  var oid_1 = require_oid();
+  var error_1 = require_error3();
+
+  class TSTInfo {
+    root;
+    constructor(asn1) {
+      this.root = asn1;
+    }
+    get version() {
+      return this.root.subs[0].toInteger();
+    }
+    get genTime() {
+      return this.root.subs[4].toDate();
+    }
+    get messageImprintHashAlgorithm() {
+      const oid = this.messageImprintObj.subs[0].subs[0].toOID();
+      return oid_1.SHA2_HASH_ALGOS[oid];
+    }
+    get messageImprintHashedMessage() {
+      return this.messageImprintObj.subs[1].value;
+    }
+    get raw() {
+      return this.root.toDER();
+    }
+    verify(data) {
+      const digest = crypto3.digest(this.messageImprintHashAlgorithm, data);
+      if (!crypto3.bufferEqual(digest, this.messageImprintHashedMessage)) {
+        throw new error_1.RFC3161TimestampVerificationError("message imprint does not match artifact");
+      }
+    }
+    get messageImprintObj() {
+      return this.root.subs[2];
+    }
+  }
+  exports.TSTInfo = TSTInfo;
+});
+
+// ../../node_modules/@sigstore/core/dist/rfc3161/timestamp.js
+var require_timestamp2 = __commonJS((exports) => {
+  var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() {
+        return m[k];
+      } };
+    }
+    Object.defineProperty(o, k2, desc);
+  } : function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    o[k2] = m[k];
+  });
+  var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+  } : function(o, v) {
+    o["default"] = v;
+  });
+  var __importStar = exports && exports.__importStar || function() {
+    var ownKeys = function(o) {
+      ownKeys = Object.getOwnPropertyNames || function(o2) {
+        var ar = [];
+        for (var k in o2)
+          if (Object.prototype.hasOwnProperty.call(o2, k))
+            ar[ar.length] = k;
+        return ar;
+      };
+      return ownKeys(o);
+    };
+    return function(mod) {
+      if (mod && mod.__esModule)
+        return mod;
+      var result = {};
+      if (mod != null) {
+        for (var k = ownKeys(mod), i = 0;i < k.length; i++)
+          if (k[i] !== "default")
+            __createBinding(result, mod, k[i]);
+      }
+      __setModuleDefault(result, mod);
+      return result;
+    };
+  }();
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.RFC3161Timestamp = undefined;
+  var asn1_1 = require_asn1();
+  var crypto3 = __importStar(require_crypto());
+  var oid_1 = require_oid();
+  var error_1 = require_error3();
+  var tstinfo_1 = require_tstinfo();
+  var OID_PKCS9_CONTENT_TYPE_SIGNED_DATA = "1.2.840.113549.1.7.2";
+  var OID_PKCS9_CONTENT_TYPE_TSTINFO = "1.2.840.113549.1.9.16.1.4";
+  var OID_PKCS9_MESSAGE_DIGEST_KEY = "1.2.840.113549.1.9.4";
+
+  class RFC3161Timestamp {
+    root;
+    constructor(asn1) {
+      this.root = asn1;
+    }
+    static parse(der) {
+      const asn1 = asn1_1.ASN1Obj.parseBuffer(der);
+      return new RFC3161Timestamp(asn1);
+    }
+    get status() {
+      return this.pkiStatusInfoObj.subs[0].toInteger();
+    }
+    get contentType() {
+      return this.contentTypeObj.toOID();
+    }
+    get eContentType() {
+      return this.eContentTypeObj.toOID();
+    }
+    get signingTime() {
+      return this.tstInfo.genTime;
+    }
+    get signerIssuer() {
+      return this.signerSidObj.subs[0].value;
+    }
+    get signerSerialNumber() {
+      return this.signerSidObj.subs[1].value;
+    }
+    get signerDigestAlgorithm() {
+      const oid = this.signerDigestAlgorithmObj.subs[0].toOID();
+      return oid_1.SHA2_HASH_ALGOS[oid];
+    }
+    get signatureAlgorithm() {
+      const oid = this.signatureAlgorithmObj.subs[0].toOID();
+      return oid_1.ECDSA_SIGNATURE_ALGOS[oid];
+    }
+    get signatureValue() {
+      return this.signatureValueObj.value;
+    }
+    get tstInfo() {
+      return new tstinfo_1.TSTInfo(this.eContentObj.subs[0].subs[0]);
+    }
+    verify(data, publicKey) {
+      if (!this.timeStampTokenObj) {
+        throw new error_1.RFC3161TimestampVerificationError("timeStampToken is missing");
+      }
+      if (this.contentType !== OID_PKCS9_CONTENT_TYPE_SIGNED_DATA) {
+        throw new error_1.RFC3161TimestampVerificationError(`incorrect content type: ${this.contentType}`);
+      }
+      if (this.eContentType !== OID_PKCS9_CONTENT_TYPE_TSTINFO) {
+        throw new error_1.RFC3161TimestampVerificationError(`incorrect encapsulated content type: ${this.eContentType}`);
+      }
+      this.tstInfo.verify(data);
+      this.verifyMessageDigest();
+      this.verifySignature(publicKey);
+    }
+    verifyMessageDigest() {
+      const tstInfoDigest = crypto3.digest(this.signerDigestAlgorithm, this.tstInfo.raw);
+      const expectedDigest = this.messageDigestAttributeObj.subs[1].subs[0].value;
+      if (!crypto3.bufferEqual(tstInfoDigest, expectedDigest)) {
+        throw new error_1.RFC3161TimestampVerificationError("signed data does not match tstInfo");
+      }
+    }
+    verifySignature(key) {
+      const signedAttrs = this.signedAttrsObj.toDER();
+      signedAttrs[0] = 49;
+      const verified = crypto3.verify(signedAttrs, key, this.signatureValue, this.signatureAlgorithm);
+      if (!verified) {
+        throw new error_1.RFC3161TimestampVerificationError("signature verification failed");
+      }
+    }
+    get pkiStatusInfoObj() {
+      return this.root.subs[0];
+    }
+    get timeStampTokenObj() {
+      return this.root.subs[1];
+    }
+    get contentTypeObj() {
+      return this.timeStampTokenObj.subs[0];
+    }
+    get signedDataObj() {
+      const obj = this.timeStampTokenObj.subs.find((sub) => sub.tag.isContextSpecific(0));
+      return obj.subs[0];
+    }
+    get encapContentInfoObj() {
+      return this.signedDataObj.subs[2];
+    }
+    get signerInfosObj() {
+      const sd = this.signedDataObj;
+      return sd.subs[sd.subs.length - 1];
+    }
+    get signerInfoObj() {
+      return this.signerInfosObj.subs[0];
+    }
+    get eContentTypeObj() {
+      return this.encapContentInfoObj.subs[0];
+    }
+    get eContentObj() {
+      return this.encapContentInfoObj.subs[1];
+    }
+    get signedAttrsObj() {
+      const signedAttrs = this.signerInfoObj.subs.find((sub) => sub.tag.isContextSpecific(0));
+      return signedAttrs;
+    }
+    get messageDigestAttributeObj() {
+      const messageDigest = this.signedAttrsObj.subs.find((sub) => sub.subs[0].tag.isOID() && sub.subs[0].toOID() === OID_PKCS9_MESSAGE_DIGEST_KEY);
+      return messageDigest;
+    }
+    get signerSidObj() {
+      return this.signerInfoObj.subs[1];
+    }
+    get signerDigestAlgorithmObj() {
+      return this.signerInfoObj.subs[2];
+    }
+    get signatureAlgorithmObj() {
+      return this.signerInfoObj.subs[4];
+    }
+    get signatureValueObj() {
+      return this.signerInfoObj.subs[5];
+    }
+  }
+  exports.RFC3161Timestamp = RFC3161Timestamp;
+});
+
+// ../../node_modules/@sigstore/core/dist/rfc3161/index.js
+var require_rfc3161 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.RFC3161Timestamp = undefined;
+  var timestamp_1 = require_timestamp2();
+  Object.defineProperty(exports, "RFC3161Timestamp", { enumerable: true, get: function() {
+    return timestamp_1.RFC3161Timestamp;
+  } });
+});
+
+// ../../node_modules/@sigstore/core/dist/x509/sct.js
+var require_sct = __commonJS((exports) => {
+  var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() {
+        return m[k];
+      } };
+    }
+    Object.defineProperty(o, k2, desc);
+  } : function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    o[k2] = m[k];
+  });
+  var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+  } : function(o, v) {
+    o["default"] = v;
+  });
+  var __importStar = exports && exports.__importStar || function() {
+    var ownKeys = function(o) {
+      ownKeys = Object.getOwnPropertyNames || function(o2) {
+        var ar = [];
+        for (var k in o2)
+          if (Object.prototype.hasOwnProperty.call(o2, k))
+            ar[ar.length] = k;
+        return ar;
+      };
+      return ownKeys(o);
+    };
+    return function(mod) {
+      if (mod && mod.__esModule)
+        return mod;
+      var result = {};
+      if (mod != null) {
+        for (var k = ownKeys(mod), i = 0;i < k.length; i++)
+          if (k[i] !== "default")
+            __createBinding(result, mod, k[i]);
+      }
+      __setModuleDefault(result, mod);
+      return result;
+    };
+  }();
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.SignedCertificateTimestamp = undefined;
+  var crypto3 = __importStar(require_crypto());
+  var stream_1 = require_stream();
+
+  class SignedCertificateTimestamp {
+    version;
+    logID;
+    timestamp;
+    extensions;
+    hashAlgorithm;
+    signatureAlgorithm;
+    signature;
+    constructor(options) {
+      this.version = options.version;
+      this.logID = options.logID;
+      this.timestamp = options.timestamp;
+      this.extensions = options.extensions;
+      this.hashAlgorithm = options.hashAlgorithm;
+      this.signatureAlgorithm = options.signatureAlgorithm;
+      this.signature = options.signature;
+    }
+    get datetime() {
+      return new Date(Number(this.timestamp.readBigInt64BE()));
+    }
+    get algorithm() {
+      switch (this.hashAlgorithm) {
+        case 0:
+          return "none";
+        case 1:
+          return "md5";
+        case 2:
+          return "sha1";
+        case 3:
+          return "sha224";
+        case 4:
+          return "sha256";
+        case 5:
+          return "sha384";
+        case 6:
+          return "sha512";
+        default:
+          return "unknown";
+      }
+    }
+    verify(preCert, key) {
+      const stream = new stream_1.ByteStream;
+      stream.appendChar(this.version);
+      stream.appendChar(0);
+      stream.appendView(this.timestamp);
+      stream.appendUint16(1);
+      stream.appendView(preCert);
+      stream.appendUint16(this.extensions.byteLength);
+      if (this.extensions.byteLength > 0) {
+        stream.appendView(this.extensions);
+      }
+      return crypto3.verify(stream.buffer, key, this.signature, this.algorithm);
+    }
+    static parse(buf) {
+      const stream = new stream_1.ByteStream(buf);
+      const version = stream.getUint8();
+      const logID = stream.getBlock(32);
+      const timestamp = stream.getBlock(8);
+      const extenstionLength = stream.getUint16();
+      const extensions = stream.getBlock(extenstionLength);
+      const hashAlgorithm = stream.getUint8();
+      const signatureAlgorithm = stream.getUint8();
+      const sigLength = stream.getUint16();
+      const signature = stream.getBlock(sigLength);
+      if (stream.position !== buf.length) {
+        throw new Error("SCT buffer length mismatch");
+      }
+      return new SignedCertificateTimestamp({
+        version,
+        logID,
+        timestamp,
+        extensions,
+        hashAlgorithm,
+        signatureAlgorithm,
+        signature
+      });
+    }
+  }
+  exports.SignedCertificateTimestamp = SignedCertificateTimestamp;
+});
+
+// ../../node_modules/@sigstore/core/dist/x509/ext.js
+var require_ext = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.X509SCTExtension = exports.X509SubjectKeyIDExtension = exports.X509AuthorityKeyIDExtension = exports.X509SubjectAlternativeNameExtension = exports.X509KeyUsageExtension = exports.X509BasicConstraintsExtension = exports.X509Extension = undefined;
+  var stream_1 = require_stream();
+  var sct_1 = require_sct();
+
+  class X509Extension {
+    root;
+    constructor(asn1) {
+      this.root = asn1;
+    }
+    get oid() {
+      return this.root.subs[0].toOID();
+    }
+    get critical() {
+      return this.root.subs.length === 3 ? this.root.subs[1].toBoolean() : false;
+    }
+    get value() {
+      return this.extnValueObj.value;
+    }
+    get valueObj() {
+      return this.extnValueObj;
+    }
+    get extnValueObj() {
+      return this.root.subs[this.root.subs.length - 1];
+    }
+  }
+  exports.X509Extension = X509Extension;
+
+  class X509BasicConstraintsExtension extends X509Extension {
+    get isCA() {
+      return this.sequence.subs[0]?.toBoolean() ?? false;
+    }
+    get pathLenConstraint() {
+      return this.sequence.subs.length > 1 ? this.sequence.subs[1].toInteger() : undefined;
+    }
+    get sequence() {
+      return this.extnValueObj.subs[0];
+    }
+  }
+  exports.X509BasicConstraintsExtension = X509BasicConstraintsExtension;
+
+  class X509KeyUsageExtension extends X509Extension {
+    get digitalSignature() {
+      return this.bitString[0] === 1;
+    }
+    get keyCertSign() {
+      return this.bitString[5] === 1;
+    }
+    get crlSign() {
+      return this.bitString[6] === 1;
+    }
+    get bitString() {
+      return this.extnValueObj.subs[0].toBitString();
+    }
+  }
+  exports.X509KeyUsageExtension = X509KeyUsageExtension;
+
+  class X509SubjectAlternativeNameExtension extends X509Extension {
+    get rfc822Name() {
+      return this.findGeneralName(1)?.value.toString("ascii");
+    }
+    get uri() {
+      return this.findGeneralName(6)?.value.toString("ascii");
+    }
+    otherName(oid) {
+      const otherName = this.findGeneralName(0);
+      if (otherName === undefined) {
+        return;
+      }
+      const otherNameOID = otherName.subs[0].toOID();
+      if (otherNameOID !== oid) {
+        return;
+      }
+      const otherNameValue = otherName.subs[1];
+      return otherNameValue.subs[0].value.toString("ascii");
+    }
+    findGeneralName(tag) {
+      return this.generalNames.find((gn) => gn.tag.isContextSpecific(tag));
+    }
+    get generalNames() {
+      return this.extnValueObj.subs[0].subs;
+    }
+  }
+  exports.X509SubjectAlternativeNameExtension = X509SubjectAlternativeNameExtension;
+
+  class X509AuthorityKeyIDExtension extends X509Extension {
+    get keyIdentifier() {
+      return this.findSequenceMember(0)?.value;
+    }
+    findSequenceMember(tag) {
+      return this.sequence.subs.find((el) => el.tag.isContextSpecific(tag));
+    }
+    get sequence() {
+      return this.extnValueObj.subs[0];
+    }
+  }
+  exports.X509AuthorityKeyIDExtension = X509AuthorityKeyIDExtension;
+
+  class X509SubjectKeyIDExtension extends X509Extension {
+    get keyIdentifier() {
+      return this.extnValueObj.subs[0].value;
+    }
+  }
+  exports.X509SubjectKeyIDExtension = X509SubjectKeyIDExtension;
+
+  class X509SCTExtension extends X509Extension {
+    constructor(asn1) {
+      super(asn1);
+    }
+    get signedCertificateTimestamps() {
+      const buf = this.extnValueObj.subs[0].value;
+      const stream = new stream_1.ByteStream(buf);
+      const end = stream.getUint16() + 2;
+      const sctList = [];
+      while (stream.position < end) {
+        const sctLength = stream.getUint16();
+        const sct = stream.getBlock(sctLength);
+        sctList.push(sct_1.SignedCertificateTimestamp.parse(sct));
+      }
+      if (stream.position !== end) {
+        throw new Error("SCT list length does not match actual length");
+      }
+      return sctList;
+    }
+  }
+  exports.X509SCTExtension = X509SCTExtension;
+});
+
+// ../../node_modules/@sigstore/core/dist/x509/cert.js
+var require_cert = __commonJS((exports) => {
+  var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() {
+        return m[k];
+      } };
+    }
+    Object.defineProperty(o, k2, desc);
+  } : function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    o[k2] = m[k];
+  });
+  var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+  } : function(o, v) {
+    o["default"] = v;
+  });
+  var __importStar = exports && exports.__importStar || function() {
+    var ownKeys = function(o) {
+      ownKeys = Object.getOwnPropertyNames || function(o2) {
+        var ar = [];
+        for (var k in o2)
+          if (Object.prototype.hasOwnProperty.call(o2, k))
+            ar[ar.length] = k;
+        return ar;
+      };
+      return ownKeys(o);
+    };
+    return function(mod) {
+      if (mod && mod.__esModule)
+        return mod;
+      var result = {};
+      if (mod != null) {
+        for (var k = ownKeys(mod), i = 0;i < k.length; i++)
+          if (k[i] !== "default")
+            __createBinding(result, mod, k[i]);
+      }
+      __setModuleDefault(result, mod);
+      return result;
+    };
+  }();
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.X509Certificate = exports.EXTENSION_OID_SCT = undefined;
+  var asn1_1 = require_asn1();
+  var crypto3 = __importStar(require_crypto());
+  var oid_1 = require_oid();
+  var pem = __importStar(require_pem());
+  var ext_1 = require_ext();
+  var EXTENSION_OID_SUBJECT_KEY_ID = "2.5.29.14";
+  var EXTENSION_OID_KEY_USAGE = "2.5.29.15";
+  var EXTENSION_OID_SUBJECT_ALT_NAME = "2.5.29.17";
+  var EXTENSION_OID_BASIC_CONSTRAINTS = "2.5.29.19";
+  var EXTENSION_OID_AUTHORITY_KEY_ID = "2.5.29.35";
+  exports.EXTENSION_OID_SCT = "1.3.6.1.4.1.11129.2.4.2";
+
+  class X509Certificate {
+    root;
+    constructor(asn1) {
+      this.root = asn1;
+    }
+    static parse(cert) {
+      const der = typeof cert === "string" ? pem.toDER(cert) : cert;
+      const asn1 = asn1_1.ASN1Obj.parseBuffer(der);
+      return new X509Certificate(asn1);
+    }
+    get tbsCertificate() {
+      return this.tbsCertificateObj;
+    }
+    get version() {
+      const ver = this.versionObj.subs[0].toInteger();
+      return `v${(ver + BigInt(1)).toString()}`;
+    }
+    get serialNumber() {
+      return this.serialNumberObj.value;
+    }
+    get notBefore() {
+      return this.validityObj.subs[0].toDate();
+    }
+    get notAfter() {
+      return this.validityObj.subs[1].toDate();
+    }
+    get issuer() {
+      return this.issuerObj.value;
+    }
+    get subject() {
+      return this.subjectObj.value;
+    }
+    get publicKey() {
+      return this.subjectPublicKeyInfoObj.toDER();
+    }
+    get signatureAlgorithm() {
+      const oid = this.signatureAlgorithmObj.subs[0].toOID();
+      if (oid_1.RSA_SIGNATURE_ALGOS[oid]) {
+        return oid_1.RSA_SIGNATURE_ALGOS[oid];
+      }
+      return oid_1.ECDSA_SIGNATURE_ALGOS[oid];
+    }
+    get signatureValue() {
+      return this.signatureValueObj.value.subarray(1);
+    }
+    get subjectAltName() {
+      const ext = this.extSubjectAltName;
+      return ext?.uri || ext?.rfc822Name;
+    }
+    get extensions() {
+      const extSeq = this.extensionsObj?.subs[0];
+      return extSeq?.subs || [];
+    }
+    get extKeyUsage() {
+      const ext = this.findExtension(EXTENSION_OID_KEY_USAGE);
+      return ext ? new ext_1.X509KeyUsageExtension(ext) : undefined;
+    }
+    get extBasicConstraints() {
+      const ext = this.findExtension(EXTENSION_OID_BASIC_CONSTRAINTS);
+      return ext ? new ext_1.X509BasicConstraintsExtension(ext) : undefined;
+    }
+    get extSubjectAltName() {
+      const ext = this.findExtension(EXTENSION_OID_SUBJECT_ALT_NAME);
+      return ext ? new ext_1.X509SubjectAlternativeNameExtension(ext) : undefined;
+    }
+    get extAuthorityKeyID() {
+      const ext = this.findExtension(EXTENSION_OID_AUTHORITY_KEY_ID);
+      return ext ? new ext_1.X509AuthorityKeyIDExtension(ext) : undefined;
+    }
+    get extSubjectKeyID() {
+      const ext = this.findExtension(EXTENSION_OID_SUBJECT_KEY_ID);
+      return ext ? new ext_1.X509SubjectKeyIDExtension(ext) : undefined;
+    }
+    get extSCT() {
+      const ext = this.findExtension(exports.EXTENSION_OID_SCT);
+      return ext ? new ext_1.X509SCTExtension(ext) : undefined;
+    }
+    get isCA() {
+      const ca = this.extBasicConstraints?.isCA || false;
+      if (this.extKeyUsage) {
+        return ca && this.extKeyUsage.keyCertSign;
+      }
+      return ca;
+    }
+    extension(oid) {
+      const ext = this.findExtension(oid);
+      return ext ? new ext_1.X509Extension(ext) : undefined;
+    }
+    verify(issuerCertificate) {
+      const publicKey = issuerCertificate?.publicKey || this.publicKey;
+      const key = crypto3.createPublicKey(publicKey);
+      return crypto3.verify(this.tbsCertificate.toDER(), key, this.signatureValue, this.signatureAlgorithm);
+    }
+    validForDate(date) {
+      return this.notBefore <= date && date <= this.notAfter;
+    }
+    equals(other) {
+      return this.root.toDER().equals(other.root.toDER());
+    }
+    clone() {
+      const der = this.root.toDER();
+      const clone = Buffer.alloc(der.length);
+      der.copy(clone);
+      return X509Certificate.parse(clone);
+    }
+    findExtension(oid) {
+      return this.extensions.find((ext) => ext.subs[0].toOID() === oid);
+    }
+    get tbsCertificateObj() {
+      return this.root.subs[0];
+    }
+    get signatureAlgorithmObj() {
+      return this.root.subs[1];
+    }
+    get signatureValueObj() {
+      return this.root.subs[2];
+    }
+    get versionObj() {
+      return this.tbsCertificateObj.subs[0];
+    }
+    get serialNumberObj() {
+      return this.tbsCertificateObj.subs[1];
+    }
+    get issuerObj() {
+      return this.tbsCertificateObj.subs[3];
+    }
+    get validityObj() {
+      return this.tbsCertificateObj.subs[4];
+    }
+    get subjectObj() {
+      return this.tbsCertificateObj.subs[5];
+    }
+    get subjectPublicKeyInfoObj() {
+      return this.tbsCertificateObj.subs[6];
+    }
+    get extensionsObj() {
+      return this.tbsCertificateObj.subs.find((sub) => sub.tag.isContextSpecific(3));
+    }
+  }
+  exports.X509Certificate = X509Certificate;
+});
+
+// ../../node_modules/@sigstore/core/dist/x509/index.js
+var require_x509 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.X509SCTExtension = exports.X509Certificate = exports.EXTENSION_OID_SCT = undefined;
+  var cert_1 = require_cert();
+  Object.defineProperty(exports, "EXTENSION_OID_SCT", { enumerable: true, get: function() {
+    return cert_1.EXTENSION_OID_SCT;
+  } });
+  Object.defineProperty(exports, "X509Certificate", { enumerable: true, get: function() {
+    return cert_1.X509Certificate;
+  } });
+  var ext_1 = require_ext();
+  Object.defineProperty(exports, "X509SCTExtension", { enumerable: true, get: function() {
+    return ext_1.X509SCTExtension;
+  } });
+});
+
+// ../../node_modules/@sigstore/core/dist/index.js
+var require_dist3 = __commonJS((exports) => {
+  var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() {
+        return m[k];
+      } };
+    }
+    Object.defineProperty(o, k2, desc);
+  } : function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    o[k2] = m[k];
+  });
+  var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+  } : function(o, v) {
+    o["default"] = v;
+  });
+  var __importStar = exports && exports.__importStar || function() {
+    var ownKeys = function(o) {
+      ownKeys = Object.getOwnPropertyNames || function(o2) {
+        var ar = [];
+        for (var k in o2)
+          if (Object.prototype.hasOwnProperty.call(o2, k))
+            ar[ar.length] = k;
+        return ar;
+      };
+      return ownKeys(o);
+    };
+    return function(mod) {
+      if (mod && mod.__esModule)
+        return mod;
+      var result = {};
+      if (mod != null) {
+        for (var k = ownKeys(mod), i = 0;i < k.length; i++)
+          if (k[i] !== "default")
+            __createBinding(result, mod, k[i]);
+      }
+      __setModuleDefault(result, mod);
+      return result;
+    };
+  }();
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.X509SCTExtension = exports.X509Certificate = exports.EXTENSION_OID_SCT = exports.ByteStream = exports.RFC3161Timestamp = exports.pem = exports.json = exports.encoding = exports.dsse = exports.crypto = exports.ASN1Obj = undefined;
+  var asn1_1 = require_asn1();
+  Object.defineProperty(exports, "ASN1Obj", { enumerable: true, get: function() {
+    return asn1_1.ASN1Obj;
+  } });
+  exports.crypto = __importStar(require_crypto());
+  exports.dsse = __importStar(require_dsse());
+  exports.encoding = __importStar(require_encoding());
+  exports.json = __importStar(require_json());
+  exports.pem = __importStar(require_pem());
+  var rfc3161_1 = require_rfc3161();
+  Object.defineProperty(exports, "RFC3161Timestamp", { enumerable: true, get: function() {
+    return rfc3161_1.RFC3161Timestamp;
+  } });
+  var stream_1 = require_stream();
+  Object.defineProperty(exports, "ByteStream", { enumerable: true, get: function() {
+    return stream_1.ByteStream;
+  } });
+  var x509_1 = require_x509();
+  Object.defineProperty(exports, "EXTENSION_OID_SCT", { enumerable: true, get: function() {
+    return x509_1.EXTENSION_OID_SCT;
+  } });
+  Object.defineProperty(exports, "X509Certificate", { enumerable: true, get: function() {
+    return x509_1.X509Certificate;
+  } });
+  Object.defineProperty(exports, "X509SCTExtension", { enumerable: true, get: function() {
+    return x509_1.X509SCTExtension;
+  } });
+});
+
+// ../../node_modules/@sigstore/verify/dist/bundle/dsse.js
+var require_dsse2 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.DSSESignatureContent = undefined;
+  var core_1 = require_dist3();
+
+  class DSSESignatureContent {
+    env;
+    constructor(env) {
+      this.env = env;
+    }
+    compareDigest(digest) {
+      return core_1.crypto.bufferEqual(digest, core_1.crypto.digest("sha256", this.env.payload));
+    }
+    compareSignedDigest(digest) {
+      return core_1.crypto.bufferEqual(digest, core_1.crypto.digest("sha256", this.preAuthEncoding));
+    }
+    compareSignature(signature) {
+      return core_1.crypto.bufferEqual(signature, this.signature);
+    }
+    verifySignature(key) {
+      return core_1.crypto.verify(this.preAuthEncoding, key, this.signature);
+    }
+    get signature() {
+      return this.env.signatures.length > 0 ? this.env.signatures[0].sig : Buffer.from("");
+    }
+    get preAuthEncoding() {
+      return core_1.dsse.preAuthEncoding(this.env.payloadType, this.env.payload);
+    }
+  }
+  exports.DSSESignatureContent = DSSESignatureContent;
+});
+
+// ../../node_modules/@sigstore/verify/dist/bundle/message.js
+var require_message = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.MessageSignatureContent = undefined;
+  var core_1 = require_dist3();
+  var protobuf_specs_1 = require_dist();
+  var HASH_ALGORITHM_MAP = {
+    [protobuf_specs_1.HashAlgorithm.HASH_ALGORITHM_UNSPECIFIED]: "sha256",
+    [protobuf_specs_1.HashAlgorithm.SHA2_256]: "sha256",
+    [protobuf_specs_1.HashAlgorithm.SHA2_384]: "sha384",
+    [protobuf_specs_1.HashAlgorithm.SHA2_512]: "sha512",
+    [protobuf_specs_1.HashAlgorithm.SHA3_256]: "sha3-256",
+    [protobuf_specs_1.HashAlgorithm.SHA3_384]: "sha3-384"
+  };
+
+  class MessageSignatureContent {
+    signature;
+    messageDigest;
+    artifact;
+    hashAlgorithm;
+    constructor(messageSignature, artifact) {
+      this.signature = messageSignature.signature;
+      this.messageDigest = messageSignature.messageDigest.digest;
+      this.artifact = artifact;
+      this.hashAlgorithm = HASH_ALGORITHM_MAP[messageSignature.messageDigest.algorithm] ?? "sha256";
+    }
+    compareSignature(signature) {
+      return core_1.crypto.bufferEqual(signature, this.signature);
+    }
+    compareDigest(digest) {
+      return core_1.crypto.bufferEqual(digest, this.messageDigest);
+    }
+    compareSignedDigest(digest) {
+      return this.compareDigest(digest);
+    }
+    verifySignature(key) {
+      return core_1.crypto.verify(this.artifact, key, this.signature, this.hashAlgorithm);
+    }
+  }
+  exports.MessageSignatureContent = MessageSignatureContent;
+});
+
+// ../../node_modules/@sigstore/verify/dist/bundle/index.js
+var require_bundle2 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.toSignedEntity = toSignedEntity;
+  exports.signatureContent = signatureContent;
+  var core_1 = require_dist3();
+  var dsse_1 = require_dsse2();
+  var message_1 = require_message();
+  function toSignedEntity(bundle, artifact) {
+    const { tlogEntries, timestampVerificationData } = bundle.verificationMaterial;
+    const timestamps = [];
+    for (const entry of tlogEntries) {
+      if (entry.integratedTime && entry.integratedTime !== "0") {
+        timestamps.push({
+          $case: "transparency-log",
+          tlogEntry: entry
+        });
+      }
+    }
+    for (const ts of timestampVerificationData?.rfc3161Timestamps ?? []) {
+      timestamps.push({
+        $case: "timestamp-authority",
+        timestamp: core_1.RFC3161Timestamp.parse(Buffer.from(ts.signedTimestamp))
+      });
+    }
+    return {
+      signature: signatureContent(bundle, artifact),
+      key: key(bundle),
+      tlogEntries,
+      timestamps
+    };
+  }
+  function signatureContent(bundle, artifact) {
+    switch (bundle.content.$case) {
+      case "dsseEnvelope":
+        return new dsse_1.DSSESignatureContent(bundle.content.dsseEnvelope);
+      case "messageSignature":
+        return new message_1.MessageSignatureContent(bundle.content.messageSignature, artifact);
+    }
+  }
+  function key(bundle) {
+    switch (bundle.verificationMaterial.content.$case) {
+      case "publicKey":
+        return {
+          $case: "public-key",
+          hint: bundle.verificationMaterial.content.publicKey.hint
+        };
+      case "x509CertificateChain":
+        return {
+          $case: "certificate",
+          certificate: core_1.X509Certificate.parse(Buffer.from(bundle.verificationMaterial.content.x509CertificateChain.certificates[0].rawBytes))
+        };
+      case "certificate":
+        return {
+          $case: "certificate",
+          certificate: core_1.X509Certificate.parse(Buffer.from(bundle.verificationMaterial.content.certificate.rawBytes))
+        };
+    }
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/error.js
+var require_error4 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.PolicyError = exports.VerificationError = undefined;
+
+  class BaseError extends Error {
+    code;
+    cause;
+    constructor({ code, message, cause }) {
+      super(message);
+      this.code = code;
+      this.cause = cause;
+      this.name = this.constructor.name;
+    }
+  }
+
+  class VerificationError extends BaseError {
+  }
+  exports.VerificationError = VerificationError;
+
+  class PolicyError extends BaseError {
+  }
+  exports.PolicyError = PolicyError;
+});
+
+// ../../node_modules/@sigstore/verify/dist/trust/filter.js
+var require_filter = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.filterCertAuthorities = filterCertAuthorities;
+  exports.filterTLogAuthorities = filterTLogAuthorities;
+  function filterCertAuthorities(certAuthorities, timestamp) {
+    return certAuthorities.filter((ca) => {
+      return ca.validFor.start <= timestamp && ca.validFor.end >= timestamp;
+    });
+  }
+  function filterTLogAuthorities(tlogAuthorities, criteria) {
+    return tlogAuthorities.filter((tlog) => {
+      if (criteria.logID && !tlog.logID.equals(criteria.logID)) {
+        return false;
+      }
+      return tlog.validFor.start <= criteria.targetDate && criteria.targetDate <= tlog.validFor.end;
+    });
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/trust/index.js
+var require_trust = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.filterTLogAuthorities = exports.filterCertAuthorities = undefined;
+  exports.toTrustMaterial = toTrustMaterial;
+  var core_1 = require_dist3();
+  var protobuf_specs_1 = require_dist();
+  var error_1 = require_error4();
+  var BEGINNING_OF_TIME = new Date(0);
+  var END_OF_TIME = new Date(8640000000000000);
+  var filter_1 = require_filter();
+  Object.defineProperty(exports, "filterCertAuthorities", { enumerable: true, get: function() {
+    return filter_1.filterCertAuthorities;
+  } });
+  Object.defineProperty(exports, "filterTLogAuthorities", { enumerable: true, get: function() {
+    return filter_1.filterTLogAuthorities;
+  } });
+  function toTrustMaterial(root, keys) {
+    const keyFinder = typeof keys === "function" ? keys : keyLocator(keys);
+    return {
+      certificateAuthorities: root.certificateAuthorities.map(createCertAuthority),
+      timestampAuthorities: root.timestampAuthorities.map(createCertAuthority),
+      tlogs: root.tlogs.map(createTLogAuthority),
+      ctlogs: root.ctlogs.map(createTLogAuthority),
+      publicKey: keyFinder
+    };
+  }
+  function createTLogAuthority(tlogInstance) {
+    const keyDetails = tlogInstance.publicKey.keyDetails;
+    const keyType = keyDetails === protobuf_specs_1.PublicKeyDetails.PKCS1_RSA_PKCS1V5 || keyDetails === protobuf_specs_1.PublicKeyDetails.PKIX_RSA_PKCS1V5 || keyDetails === protobuf_specs_1.PublicKeyDetails.PKIX_RSA_PKCS1V15_2048_SHA256 || keyDetails === protobuf_specs_1.PublicKeyDetails.PKIX_RSA_PKCS1V15_3072_SHA256 || keyDetails === protobuf_specs_1.PublicKeyDetails.PKIX_RSA_PKCS1V15_4096_SHA256 ? "pkcs1" : "spki";
+    return {
+      baseURL: tlogInstance.baseUrl,
+      logID: tlogInstance.checkpointKeyId ? tlogInstance.checkpointKeyId.keyId : tlogInstance.logId.keyId,
+      publicKey: core_1.crypto.createPublicKey(tlogInstance.publicKey.rawBytes, keyType),
+      validFor: {
+        start: tlogInstance.publicKey.validFor?.start || BEGINNING_OF_TIME,
+        end: tlogInstance.publicKey.validFor?.end || END_OF_TIME
+      }
+    };
+  }
+  function createCertAuthority(ca) {
+    return {
+      certChain: ca.certChain.certificates.map((cert) => {
+        return core_1.X509Certificate.parse(Buffer.from(cert.rawBytes));
+      }),
+      validFor: {
+        start: ca.validFor?.start || BEGINNING_OF_TIME,
+        end: ca.validFor?.end || END_OF_TIME
+      }
+    };
+  }
+  function keyLocator(keys) {
+    return (hint) => {
+      const key = (keys || {})[hint];
+      if (!key) {
+        throw new error_1.VerificationError({
+          code: "PUBLIC_KEY_ERROR",
+          message: `key not found: ${hint}`
+        });
+      }
+      return {
+        publicKey: core_1.crypto.createPublicKey(key.rawBytes),
+        validFor: (date) => {
+          return (key.validFor?.start || BEGINNING_OF_TIME) <= date && (key.validFor?.end || END_OF_TIME) >= date;
+        }
+      };
+    };
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/key/certificate.js
+var require_certificate = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.CertificateChainVerifier = undefined;
+  exports.verifyCertificateChain = verifyCertificateChain;
+  var error_1 = require_error4();
+  var trust_1 = require_trust();
+  function verifyCertificateChain(timestamp, leaf, certificateAuthorities) {
+    const cas = (0, trust_1.filterCertAuthorities)(certificateAuthorities, timestamp);
+    let error;
+    for (const ca of cas) {
+      try {
+        const verifier = new CertificateChainVerifier({
+          trustedCerts: ca.certChain,
+          untrustedCert: leaf,
+          timestamp
+        });
+        return verifier.verify();
+      } catch (err) {
+        error = err;
+      }
+    }
+    throw new error_1.VerificationError({
+      code: "CERTIFICATE_ERROR",
+      message: "Failed to verify certificate chain",
+      cause: error
+    });
+  }
+
+  class CertificateChainVerifier {
+    untrustedCert;
+    trustedCerts;
+    localCerts;
+    timestamp;
+    constructor(opts) {
+      this.untrustedCert = opts.untrustedCert;
+      this.trustedCerts = opts.trustedCerts;
+      this.localCerts = dedupeCertificates([
+        ...opts.trustedCerts,
+        opts.untrustedCert
+      ]);
+      this.timestamp = opts.timestamp;
+    }
+    verify() {
+      const certificatePath = this.sort();
+      this.checkPath(certificatePath);
+      const validForDate = certificatePath.every((cert) => cert.validForDate(this.timestamp));
+      if (!validForDate) {
+        throw new error_1.VerificationError({
+          code: "CERTIFICATE_ERROR",
+          message: "certificate is not valid or expired at the specified date"
+        });
+      }
+      return certificatePath;
+    }
+    sort() {
+      const leafCert = this.untrustedCert;
+      let paths = this.buildPaths(leafCert);
+      paths = paths.filter((path2) => path2.some((cert) => this.trustedCerts.includes(cert)));
+      if (paths.length === 0) {
+        throw new error_1.VerificationError({
+          code: "CERTIFICATE_ERROR",
+          message: "no trusted certificate path found"
+        });
+      }
+      const path = paths.reduce((prev, curr) => prev.length < curr.length ? prev : curr);
+      return [leafCert, ...path].slice(0, -1);
+    }
+    buildPaths(certificate) {
+      const paths = [];
+      const issuers = this.findIssuer(certificate);
+      if (issuers.length === 0) {
+        throw new error_1.VerificationError({
+          code: "CERTIFICATE_ERROR",
+          message: "no valid certificate path found"
+        });
+      }
+      for (let i = 0;i < issuers.length; i++) {
+        const issuer = issuers[i];
+        if (issuer.equals(certificate)) {
+          paths.push([certificate]);
+          continue;
+        }
+        const subPaths = this.buildPaths(issuer);
+        for (let j = 0;j < subPaths.length; j++) {
+          paths.push([issuer, ...subPaths[j]]);
+        }
+      }
+      return paths;
+    }
+    findIssuer(certificate) {
+      let issuers = [];
+      let keyIdentifier;
+      if (certificate.subject.equals(certificate.issuer)) {
+        if (certificate.verify()) {
+          return [certificate];
+        }
+      }
+      if (certificate.extAuthorityKeyID) {
+        keyIdentifier = certificate.extAuthorityKeyID.keyIdentifier;
+      }
+      this.localCerts.forEach((possibleIssuer) => {
+        if (keyIdentifier) {
+          if (possibleIssuer.extSubjectKeyID) {
+            if (possibleIssuer.extSubjectKeyID.keyIdentifier.equals(keyIdentifier)) {
+              issuers.push(possibleIssuer);
+            }
+            return;
+          }
+        }
+        if (possibleIssuer.subject.equals(certificate.issuer)) {
+          issuers.push(possibleIssuer);
+        }
+      });
+      issuers = issuers.filter((issuer) => {
+        try {
+          return certificate.verify(issuer);
+        } catch (ex) {
+          return false;
+        }
+      });
+      return issuers;
+    }
+    checkPath(path) {
+      if (path.length < 1) {
+        throw new error_1.VerificationError({
+          code: "CERTIFICATE_ERROR",
+          message: "certificate chain must contain at least one certificate"
+        });
+      }
+      const validCAs = path.slice(1).every((cert) => cert.isCA);
+      if (!validCAs) {
+        throw new error_1.VerificationError({
+          code: "CERTIFICATE_ERROR",
+          message: "intermediate certificate is not a CA"
+        });
+      }
+      for (let i = path.length - 2;i >= 0; i--) {
+        if (!path[i].issuer.equals(path[i + 1].subject)) {
+          throw new error_1.VerificationError({
+            code: "CERTIFICATE_ERROR",
+            message: "incorrect certificate name chaining"
+          });
+        }
+      }
+      for (let i = 0;i < path.length; i++) {
+        const cert = path[i];
+        if (cert.extBasicConstraints?.isCA) {
+          const pathLength = cert.extBasicConstraints.pathLenConstraint;
+          if (pathLength !== undefined && pathLength < i - 1) {
+            throw new error_1.VerificationError({
+              code: "CERTIFICATE_ERROR",
+              message: "path length constraint exceeded"
+            });
+          }
+        }
+      }
+    }
+  }
+  exports.CertificateChainVerifier = CertificateChainVerifier;
+  function dedupeCertificates(certs) {
+    for (let i = 0;i < certs.length; i++) {
+      for (let j = i + 1;j < certs.length; j++) {
+        if (certs[i].equals(certs[j])) {
+          certs.splice(j, 1);
+          j--;
+        }
+      }
+    }
+    return certs;
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/key/sct.js
+var require_sct2 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.verifySCTs = verifySCTs;
+  var core_1 = require_dist3();
+  var error_1 = require_error4();
+  var trust_1 = require_trust();
+  function verifySCTs(cert, issuer, ctlogs) {
+    let extSCT;
+    const clone = cert.clone();
+    for (let i = 0;i < clone.extensions.length; i++) {
+      const ext = clone.extensions[i];
+      if (ext.subs[0].toOID() === core_1.EXTENSION_OID_SCT) {
+        extSCT = new core_1.X509SCTExtension(ext);
+        clone.extensions.splice(i, 1);
+        break;
+      }
+    }
+    if (!extSCT) {
+      return [];
+    }
+    if (extSCT.signedCertificateTimestamps.length === 0) {
+      return [];
+    }
+    const preCert = new core_1.ByteStream;
+    const issuerId = core_1.crypto.digest("sha256", issuer.publicKey);
+    preCert.appendView(issuerId);
+    const tbs = clone.tbsCertificate.toDER();
+    preCert.appendUint24(tbs.length);
+    preCert.appendView(tbs);
+    return extSCT.signedCertificateTimestamps.map((sct) => {
+      const validCTLogs = (0, trust_1.filterTLogAuthorities)(ctlogs, {
+        logID: sct.logID,
+        targetDate: sct.datetime
+      });
+      const verified = validCTLogs.some((log) => sct.verify(preCert.buffer, log.publicKey));
+      if (!verified) {
+        throw new error_1.VerificationError({
+          code: "CERTIFICATE_ERROR",
+          message: "SCT verification failed"
+        });
+      }
+      return sct.logID;
+    });
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/key/index.js
+var require_key = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.verifyPublicKey = verifyPublicKey;
+  exports.verifyCertificate = verifyCertificate;
+  var core_1 = require_dist3();
+  var error_1 = require_error4();
+  var certificate_1 = require_certificate();
+  var sct_1 = require_sct2();
+  var OID_FULCIO_ISSUER_V1 = "1.3.6.1.4.1.57264.1.1";
+  var OID_FULCIO_ISSUER_V2 = "1.3.6.1.4.1.57264.1.8";
+  function verifyPublicKey(hint, timestamps, trustMaterial) {
+    const key = trustMaterial.publicKey(hint);
+    timestamps.forEach((timestamp) => {
+      if (!key.validFor(timestamp)) {
+        throw new error_1.VerificationError({
+          code: "PUBLIC_KEY_ERROR",
+          message: `Public key is not valid for timestamp: ${timestamp.toISOString()}`
+        });
+      }
+    });
+    return { key: key.publicKey };
+  }
+  function verifyCertificate(leaf, timestamps, trustMaterial) {
+    let path = [];
+    timestamps.forEach((timestamp) => {
+      path = (0, certificate_1.verifyCertificateChain)(timestamp, leaf, trustMaterial.certificateAuthorities);
+    });
+    return {
+      scts: (0, sct_1.verifySCTs)(path[0], path[1], trustMaterial.ctlogs),
+      signer: getSigner(path[0])
+    };
+  }
+  function getSigner(cert) {
+    let issuer;
+    const issuerExtension = cert.extension(OID_FULCIO_ISSUER_V2);
+    if (issuerExtension) {
+      issuer = issuerExtension.valueObj.subs?.[0]?.value.toString("ascii");
+    } else {
+      issuer = cert.extension(OID_FULCIO_ISSUER_V1)?.value.toString("ascii");
+    }
+    const oids = cert.extensions.map((ext) => {
+      const oid = ext.subs[0].toOID();
+      return {
+        oid: { id: oid.split(".").map(Number) },
+        value: ext.subs[ext.subs.length - 1].value
+      };
+    });
+    const identity = {
+      extensions: { issuer },
+      subjectAlternativeName: cert.subjectAltName,
+      oids
+    };
+    return {
+      key: core_1.crypto.createPublicKey(cert.publicKey),
+      identity
+    };
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/policy.js
+var require_policy = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.verifySubjectAlternativeName = verifySubjectAlternativeName;
+  exports.verifyExtensions = verifyExtensions;
+  exports.verifyOIDs = verifyOIDs;
+  var error_1 = require_error4();
+  function verifySubjectAlternativeName(policyIdentity, signerIdentity) {
+    if (signerIdentity === undefined || !signerIdentity.match(policyIdentity)) {
+      throw new error_1.PolicyError({
+        code: "UNTRUSTED_SIGNER_ERROR",
+        message: `certificate identity error - expected ${policyIdentity}, got ${signerIdentity}`
+      });
+    }
+  }
+  function verifyExtensions(policyExtensions, signerExtensions = {}) {
+    let key;
+    for (key in policyExtensions) {
+      if (signerExtensions[key] !== policyExtensions[key]) {
+        throw new error_1.PolicyError({
+          code: "UNTRUSTED_SIGNER_ERROR",
+          message: `invalid certificate extension - expected ${key}=${policyExtensions[key]}, got ${key}=${signerExtensions[key]}`
+        });
+      }
+    }
+  }
+  function verifyOIDs(policyOIDs, signerOIDs = []) {
+    for (const policyOID of policyOIDs) {
+      const match = signerOIDs.find((signerOID) => oidEquals(policyOID.oid?.id, signerOID.oid?.id) && policyOID.value.equals(signerOID.value));
+      if (!match) {
+        const oid = policyOID.oid?.id.join(".") ?? "<unknown>";
+        throw new error_1.PolicyError({
+          code: "UNTRUSTED_SIGNER_ERROR",
+          message: `invalid certificate extension - missing OID ${oid}`
+        });
+      }
+    }
+  }
+  function oidEquals(a, b) {
+    if (a === undefined || b === undefined) {
+      return false;
+    }
+    return a.length === b.length && a.every((v, i) => v === b[i]);
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/timestamp/tsa.js
+var require_tsa = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.verifyRFC3161Timestamp = verifyRFC3161Timestamp;
+  var core_1 = require_dist3();
+  var error_1 = require_error4();
+  var certificate_1 = require_certificate();
+  var trust_1 = require_trust();
+  function verifyRFC3161Timestamp(timestamp, data, timestampAuthorities) {
+    const signingTime = timestamp.signingTime;
+    timestampAuthorities = (0, trust_1.filterCertAuthorities)(timestampAuthorities, signingTime);
+    timestampAuthorities = filterCAsBySerialAndIssuer(timestampAuthorities, {
+      serialNumber: timestamp.signerSerialNumber,
+      issuer: timestamp.signerIssuer
+    });
+    const verified = timestampAuthorities.some((ca) => {
+      try {
+        verifyTimestampForCA(timestamp, data, ca);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    });
+    if (!verified) {
+      throw new error_1.VerificationError({
+        code: "TIMESTAMP_ERROR",
+        message: "timestamp could not be verified"
+      });
+    }
+  }
+  function verifyTimestampForCA(timestamp, data, ca) {
+    const [leaf, ...cas] = ca.certChain;
+    const signingKey = core_1.crypto.createPublicKey(leaf.publicKey);
+    const signingTime = timestamp.signingTime;
+    try {
+      new certificate_1.CertificateChainVerifier({
+        untrustedCert: leaf,
+        trustedCerts: cas,
+        timestamp: signingTime
+      }).verify();
+    } catch (e) {
+      throw new error_1.VerificationError({
+        code: "TIMESTAMP_ERROR",
+        message: "invalid certificate chain"
+      });
+    }
+    timestamp.verify(data, signingKey);
+  }
+  function filterCAsBySerialAndIssuer(timestampAuthorities, criteria) {
+    return timestampAuthorities.filter((ca) => ca.certChain.length > 0 && core_1.crypto.bufferEqual(ca.certChain[0].serialNumber, criteria.serialNumber) && core_1.crypto.bufferEqual(ca.certChain[0].issuer, criteria.issuer));
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/timestamp/index.js
+var require_timestamp3 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.getTSATimestamp = getTSATimestamp;
+  exports.getTLogTimestamp = getTLogTimestamp;
+  var tsa_1 = require_tsa();
+  function getTSATimestamp(timestamp, data, timestampAuthorities) {
+    (0, tsa_1.verifyRFC3161Timestamp)(timestamp, data, timestampAuthorities);
+    return {
+      type: "timestamp-authority",
+      logID: timestamp.signerSerialNumber,
+      timestamp: timestamp.signingTime
+    };
+  }
+  function getTLogTimestamp(entry) {
+    if (!entry.inclusionPromise) {
+      return;
+    }
+    return {
+      type: "transparency-log",
+      logID: entry.logId.keyId,
+      timestamp: new Date(Number(entry.integratedTime) * 1000)
+    };
+  }
+});
+
+// ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/rekor/v2/verifier.js
+var require_verifier = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.Signature = exports.Verifier = exports.PublicKey = undefined;
+  var sigstore_common_1 = require_sigstore_common();
+  exports.PublicKey = {
+    fromJSON(object) {
+      return { rawBytes: isSet(object.rawBytes) ? Buffer.from(bytesFromBase64(object.rawBytes)) : Buffer.alloc(0) };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.rawBytes.length !== 0) {
+        obj.rawBytes = base64FromBytes(message.rawBytes);
+      }
+      return obj;
+    }
+  };
+  exports.Verifier = {
+    fromJSON(object) {
+      return {
+        verifier: isSet(object.publicKey) ? { $case: "publicKey", publicKey: exports.PublicKey.fromJSON(object.publicKey) } : isSet(object.x509Certificate) ? { $case: "x509Certificate", x509Certificate: sigstore_common_1.X509Certificate.fromJSON(object.x509Certificate) } : undefined,
+        keyDetails: isSet(object.keyDetails) ? (0, sigstore_common_1.publicKeyDetailsFromJSON)(object.keyDetails) : 0
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.verifier?.$case === "publicKey") {
+        obj.publicKey = exports.PublicKey.toJSON(message.verifier.publicKey);
+      } else if (message.verifier?.$case === "x509Certificate") {
+        obj.x509Certificate = sigstore_common_1.X509Certificate.toJSON(message.verifier.x509Certificate);
+      }
+      if (message.keyDetails !== 0) {
+        obj.keyDetails = (0, sigstore_common_1.publicKeyDetailsToJSON)(message.keyDetails);
+      }
+      return obj;
+    }
+  };
+  exports.Signature = {
+    fromJSON(object) {
+      return {
+        content: isSet(object.content) ? Buffer.from(bytesFromBase64(object.content)) : Buffer.alloc(0),
+        verifier: isSet(object.verifier) ? exports.Verifier.fromJSON(object.verifier) : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.content.length !== 0) {
+        obj.content = base64FromBytes(message.content);
+      }
+      if (message.verifier !== undefined) {
+        obj.verifier = exports.Verifier.toJSON(message.verifier);
+      }
+      return obj;
+    }
+  };
+  function bytesFromBase64(b64) {
+    return Uint8Array.from(globalThis.Buffer.from(b64, "base64"));
+  }
+  function base64FromBytes(arr) {
+    return globalThis.Buffer.from(arr).toString("base64");
+  }
+  function isSet(value) {
+    return value !== null && value !== undefined;
+  }
+});
+
+// ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/rekor/v2/dsse.js
+var require_dsse3 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.DSSELogEntryV002 = exports.DSSERequestV002 = undefined;
+  var envelope_1 = require_envelope();
+  var sigstore_common_1 = require_sigstore_common();
+  var verifier_1 = require_verifier();
+  exports.DSSERequestV002 = {
+    fromJSON(object) {
+      return {
+        envelope: isSet(object.envelope) ? envelope_1.Envelope.fromJSON(object.envelope) : undefined,
+        verifiers: globalThis.Array.isArray(object?.verifiers) ? object.verifiers.map((e) => verifier_1.Verifier.fromJSON(e)) : []
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.envelope !== undefined) {
+        obj.envelope = envelope_1.Envelope.toJSON(message.envelope);
+      }
+      if (message.verifiers?.length) {
+        obj.verifiers = message.verifiers.map((e) => verifier_1.Verifier.toJSON(e));
+      }
+      return obj;
+    }
+  };
+  exports.DSSELogEntryV002 = {
+    fromJSON(object) {
+      return {
+        payloadHash: isSet(object.payloadHash) ? sigstore_common_1.HashOutput.fromJSON(object.payloadHash) : undefined,
+        signatures: globalThis.Array.isArray(object?.signatures) ? object.signatures.map((e) => verifier_1.Signature.fromJSON(e)) : []
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.payloadHash !== undefined) {
+        obj.payloadHash = sigstore_common_1.HashOutput.toJSON(message.payloadHash);
+      }
+      if (message.signatures?.length) {
+        obj.signatures = message.signatures.map((e) => verifier_1.Signature.toJSON(e));
+      }
+      return obj;
+    }
+  };
+  function isSet(value) {
+    return value !== null && value !== undefined;
+  }
+});
+
+// ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/rekor/v2/hashedrekord.js
+var require_hashedrekord = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.HashedRekordLogEntryV002 = exports.HashedRekordRequestV002 = undefined;
+  var sigstore_common_1 = require_sigstore_common();
+  var verifier_1 = require_verifier();
+  exports.HashedRekordRequestV002 = {
+    fromJSON(object) {
+      return {
+        digest: isSet(object.digest) ? Buffer.from(bytesFromBase64(object.digest)) : Buffer.alloc(0),
+        signature: isSet(object.signature) ? verifier_1.Signature.fromJSON(object.signature) : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.digest.length !== 0) {
+        obj.digest = base64FromBytes(message.digest);
+      }
+      if (message.signature !== undefined) {
+        obj.signature = verifier_1.Signature.toJSON(message.signature);
+      }
+      return obj;
+    }
+  };
+  exports.HashedRekordLogEntryV002 = {
+    fromJSON(object) {
+      return {
+        data: isSet(object.data) ? sigstore_common_1.HashOutput.fromJSON(object.data) : undefined,
+        signature: isSet(object.signature) ? verifier_1.Signature.fromJSON(object.signature) : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.data !== undefined) {
+        obj.data = sigstore_common_1.HashOutput.toJSON(message.data);
+      }
+      if (message.signature !== undefined) {
+        obj.signature = verifier_1.Signature.toJSON(message.signature);
+      }
+      return obj;
+    }
+  };
+  function bytesFromBase64(b64) {
+    return Uint8Array.from(globalThis.Buffer.from(b64, "base64"));
+  }
+  function base64FromBytes(arr) {
+    return globalThis.Buffer.from(arr).toString("base64");
+  }
+  function isSet(value) {
+    return value !== null && value !== undefined;
+  }
+});
+
+// ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/rekor/v2/entry.js
+var require_entry = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.CreateEntryRequest = exports.Spec = exports.Entry = undefined;
+  var dsse_1 = require_dsse3();
+  var hashedrekord_1 = require_hashedrekord();
+  exports.Entry = {
+    fromJSON(object) {
+      return {
+        kind: isSet(object.kind) ? globalThis.String(object.kind) : "",
+        apiVersion: isSet(object.apiVersion) ? globalThis.String(object.apiVersion) : "",
+        spec: isSet(object.spec) ? exports.Spec.fromJSON(object.spec) : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.kind !== "") {
+        obj.kind = message.kind;
+      }
+      if (message.apiVersion !== "") {
+        obj.apiVersion = message.apiVersion;
+      }
+      if (message.spec !== undefined) {
+        obj.spec = exports.Spec.toJSON(message.spec);
+      }
+      return obj;
+    }
+  };
+  exports.Spec = {
+    fromJSON(object) {
+      return {
+        spec: isSet(object.hashedRekordV002) ? { $case: "hashedRekordV002", hashedRekordV002: hashedrekord_1.HashedRekordLogEntryV002.fromJSON(object.hashedRekordV002) } : isSet(object.dsseV002) ? { $case: "dsseV002", dsseV002: dsse_1.DSSELogEntryV002.fromJSON(object.dsseV002) } : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.spec?.$case === "hashedRekordV002") {
+        obj.hashedRekordV002 = hashedrekord_1.HashedRekordLogEntryV002.toJSON(message.spec.hashedRekordV002);
+      } else if (message.spec?.$case === "dsseV002") {
+        obj.dsseV002 = dsse_1.DSSELogEntryV002.toJSON(message.spec.dsseV002);
+      }
+      return obj;
+    }
+  };
+  exports.CreateEntryRequest = {
+    fromJSON(object) {
+      return {
+        spec: isSet(object.hashedRekordRequestV002) ? {
+          $case: "hashedRekordRequestV002",
+          hashedRekordRequestV002: hashedrekord_1.HashedRekordRequestV002.fromJSON(object.hashedRekordRequestV002)
+        } : isSet(object.dsseRequestV002) ? { $case: "dsseRequestV002", dsseRequestV002: dsse_1.DSSERequestV002.fromJSON(object.dsseRequestV002) } : undefined
+      };
+    },
+    toJSON(message) {
+      const obj = {};
+      if (message.spec?.$case === "hashedRekordRequestV002") {
+        obj.hashedRekordRequestV002 = hashedrekord_1.HashedRekordRequestV002.toJSON(message.spec.hashedRekordRequestV002);
+      } else if (message.spec?.$case === "dsseRequestV002") {
+        obj.dsseRequestV002 = dsse_1.DSSERequestV002.toJSON(message.spec.dsseRequestV002);
+      }
+      return obj;
+    }
+  };
+  function isSet(value) {
+    return value !== null && value !== undefined;
+  }
+});
+
+// ../../node_modules/@sigstore/protobuf-specs/dist/rekor/v2/index.js
+var require_v2 = __commonJS((exports) => {
+  var __createBinding = exports && exports.__createBinding || (Object.create ? function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() {
+        return m[k];
+      } };
+    }
+    Object.defineProperty(o, k2, desc);
+  } : function(o, m, k, k2) {
+    if (k2 === undefined)
+      k2 = k;
+    o[k2] = m[k];
+  });
+  var __exportStar = exports && exports.__exportStar || function(m, exports2) {
+    for (var p in m)
+      if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports2, p))
+        __createBinding(exports2, m, p);
+  };
+  Object.defineProperty(exports, "__esModule", { value: true });
+  __exportStar(require_dsse3(), exports);
+  __exportStar(require_entry(), exports);
+  __exportStar(require_hashedrekord(), exports);
+  __exportStar(require_verifier(), exports);
+});
+
+// ../../node_modules/@sigstore/verify/dist/tlog/dsse.js
+var require_dsse4 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.DSSE_API_VERSION_V1 = undefined;
+  exports.verifyDSSETLogBody = verifyDSSETLogBody;
+  exports.verifyDSSETLogBodyV2 = verifyDSSETLogBodyV2;
+  var error_1 = require_error4();
+  exports.DSSE_API_VERSION_V1 = "0.0.1";
+  function verifyDSSETLogBody(tlogEntry, content) {
+    switch (tlogEntry.apiVersion) {
+      case exports.DSSE_API_VERSION_V1:
+        return verifyDSSE001TLogBody(tlogEntry, content);
+      default:
+        throw new error_1.VerificationError({
+          code: "TLOG_BODY_ERROR",
+          message: `unsupported dsse version: ${tlogEntry.apiVersion}`
+        });
+    }
+  }
+  function verifyDSSETLogBodyV2(tlogEntry, content) {
+    const spec = tlogEntry.spec?.spec;
+    if (!spec) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: `missing dsse spec`
+      });
+    }
+    switch (spec.$case) {
+      case "dsseV002":
+        return verifyDSSE002TLogBody(spec.dsseV002, content);
+      default:
+        throw new error_1.VerificationError({
+          code: "TLOG_BODY_ERROR",
+          message: `unsupported version: ${spec.$case}`
+        });
+    }
+  }
+  function verifyDSSE001TLogBody(tlogEntry, content) {
+    if (tlogEntry.spec.signatures?.length !== 1) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "signature count mismatch"
+      });
+    }
+    const tlogSig = tlogEntry.spec.signatures[0].signature;
+    if (!content.compareSignature(Buffer.from(tlogSig, "base64")))
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "tlog entry signature mismatch"
+      });
+    const tlogHash = tlogEntry.spec.payloadHash?.value || "";
+    if (!content.compareDigest(Buffer.from(tlogHash, "hex"))) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "DSSE payload hash mismatch"
+      });
+    }
+  }
+  function verifyDSSE002TLogBody(spec, content) {
+    if (spec.signatures?.length !== 1) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "signature count mismatch"
+      });
+    }
+    const tlogSig = spec.signatures[0].content;
+    if (!content.compareSignature(tlogSig))
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "tlog entry signature mismatch"
+      });
+    const tlogHash = spec.payloadHash?.digest || Buffer.from("");
+    if (!content.compareDigest(tlogHash)) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "DSSE payload hash mismatch"
+      });
+    }
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/tlog/hashedrekord.js
+var require_hashedrekord2 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.HASHEDREKORD_API_VERSION_V1 = undefined;
+  exports.verifyHashedRekordTLogBody = verifyHashedRekordTLogBody;
+  exports.verifyHashedRekordTLogBodyV2 = verifyHashedRekordTLogBodyV2;
+  var error_1 = require_error4();
+  exports.HASHEDREKORD_API_VERSION_V1 = "0.0.1";
+  function verifyHashedRekordTLogBody(tlogEntry, content) {
+    switch (tlogEntry.apiVersion) {
+      case exports.HASHEDREKORD_API_VERSION_V1:
+        return verifyHashedrekord001TLogBody(tlogEntry, content);
+      default:
+        throw new error_1.VerificationError({
+          code: "TLOG_BODY_ERROR",
+          message: `unsupported hashedrekord version: ${tlogEntry.apiVersion}`
+        });
+    }
+  }
+  function verifyHashedRekordTLogBodyV2(tlogEntry, content) {
+    const spec = tlogEntry.spec?.spec;
+    if (!spec) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: `missing dsse spec`
+      });
+    }
+    switch (spec.$case) {
+      case "hashedRekordV002":
+        return verifyHashedrekord002TLogBody(spec.hashedRekordV002, content);
+      default:
+        throw new error_1.VerificationError({
+          code: "TLOG_BODY_ERROR",
+          message: `unsupported version: ${spec.$case}`
+        });
+    }
+  }
+  function verifyHashedrekord001TLogBody(tlogEntry, content) {
+    const tlogSig = tlogEntry.spec.signature.content || "";
+    if (!content.compareSignature(Buffer.from(tlogSig, "base64"))) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "signature mismatch"
+      });
+    }
+    const tlogDigest = tlogEntry.spec.data.hash?.value || "";
+    if (!content.compareSignedDigest(Buffer.from(tlogDigest, "hex"))) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "digest mismatch"
+      });
+    }
+  }
+  function verifyHashedrekord002TLogBody(spec, content) {
+    const tlogSig = spec.signature?.content || Buffer.from("");
+    if (!content.compareSignature(tlogSig)) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "signature mismatch"
+      });
+    }
+    const tlogHash = spec.data?.digest || Buffer.from("");
+    if (!content.compareSignedDigest(tlogHash)) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "digest mismatch"
+      });
+    }
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/tlog/intoto.js
+var require_intoto = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.verifyIntotoTLogBody = verifyIntotoTLogBody;
+  var error_1 = require_error4();
+  function verifyIntotoTLogBody(tlogEntry, content) {
+    switch (tlogEntry.apiVersion) {
+      case "0.0.2":
+        return verifyIntoto002TLogBody(tlogEntry, content);
+      default:
+        throw new error_1.VerificationError({
+          code: "TLOG_BODY_ERROR",
+          message: `unsupported intoto version: ${tlogEntry.apiVersion}`
+        });
+    }
+  }
+  function verifyIntoto002TLogBody(tlogEntry, content) {
+    if (tlogEntry.spec.content.envelope.signatures?.length !== 1) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "signature count mismatch"
+      });
+    }
+    const tlogSig = base64Decode(tlogEntry.spec.content.envelope.signatures[0].sig);
+    if (!content.compareSignature(Buffer.from(tlogSig, "base64"))) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "tlog entry signature mismatch"
+      });
+    }
+    const tlogHash = tlogEntry.spec.content.payloadHash?.value || "";
+    if (!content.compareDigest(Buffer.from(tlogHash, "hex"))) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "DSSE payload hash mismatch"
+      });
+    }
+  }
+  function base64Decode(str) {
+    return Buffer.from(str, "base64").toString("utf-8");
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/tlog/checkpoint.js
+var require_checkpoint = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.LogCheckpoint = undefined;
+  exports.verifyCheckpoint = verifyCheckpoint;
+  var core_1 = require_dist3();
+  var error_1 = require_error4();
+  var CHECKPOINT_SEPARATOR = `
+
+`;
+  var SIGNATURE_REGEX = /\u2014 (\S+) (\S+)\n/g;
+  function verifyCheckpoint(entry, tlogs) {
+    const inclusionProof = entry.inclusionProof;
+    const signedNote = SignedNote.fromString(inclusionProof.checkpoint.envelope);
+    const checkpoint = LogCheckpoint.fromString(signedNote.note);
+    if (!verifySignedNote(signedNote, tlogs)) {
+      throw new error_1.VerificationError({
+        code: "TLOG_INCLUSION_PROOF_ERROR",
+        message: "invalid checkpoint signature"
+      });
+    }
+    return checkpoint;
+  }
+  function verifySignedNote(signedNote, tlogs) {
+    const data = Buffer.from(signedNote.note, "utf-8");
+    return signedNote.signatures.some((signature) => {
+      const tlog = tlogs.find((tlog2) => core_1.crypto.bufferEqual(tlog2.logID.subarray(0, 4), signature.keyHint) && tlog2.baseURL.includes(signature.name));
+      if (!tlog) {
+        return false;
+      }
+      return core_1.crypto.verify(data, tlog.publicKey, signature.signature);
+    });
+  }
+
+  class SignedNote {
+    note;
+    signatures;
+    constructor(note, signatures) {
+      this.note = note;
+      this.signatures = signatures;
+    }
+    static fromString(envelope) {
+      if (!envelope.includes(CHECKPOINT_SEPARATOR)) {
+        throw new error_1.VerificationError({
+          code: "TLOG_INCLUSION_PROOF_ERROR",
+          message: "missing checkpoint separator"
+        });
+      }
+      const split = envelope.indexOf(CHECKPOINT_SEPARATOR);
+      const header = envelope.slice(0, split + 1);
+      const data = envelope.slice(split + CHECKPOINT_SEPARATOR.length);
+      const matches = data.matchAll(SIGNATURE_REGEX);
+      const signatures = Array.from(matches, (match) => {
+        const [, name, signature] = match;
+        const sigBytes = Buffer.from(signature, "base64");
+        if (sigBytes.length < 5) {
+          throw new error_1.VerificationError({
+            code: "TLOG_INCLUSION_PROOF_ERROR",
+            message: "malformed checkpoint signature"
+          });
+        }
+        return {
+          name,
+          keyHint: sigBytes.subarray(0, 4),
+          signature: sigBytes.subarray(4)
+        };
+      });
+      if (signatures.length === 0) {
+        throw new error_1.VerificationError({
+          code: "TLOG_INCLUSION_PROOF_ERROR",
+          message: "no signatures found in checkpoint"
+        });
+      }
+      return new SignedNote(header, signatures);
+    }
+  }
+
+  class LogCheckpoint {
+    origin;
+    logSize;
+    logHash;
+    rest;
+    constructor(origin, logSize, logHash, rest) {
+      this.origin = origin;
+      this.logSize = logSize;
+      this.logHash = logHash;
+      this.rest = rest;
+    }
+    static fromString(note) {
+      const lines = note.trimEnd().split(`
+`);
+      if (lines.length < 3) {
+        throw new error_1.VerificationError({
+          code: "TLOG_INCLUSION_PROOF_ERROR",
+          message: "too few lines in checkpoint header"
+        });
+      }
+      const origin = lines[0];
+      let logSize;
+      try {
+        logSize = BigInt(lines[1]);
+      } catch {
+        throw new error_1.VerificationError({
+          code: "TLOG_INCLUSION_PROOF_ERROR",
+          message: "invalid checkpoint log size"
+        });
+      }
+      const rootHash = Buffer.from(lines[2], "base64");
+      const rest = lines.slice(3);
+      return new LogCheckpoint(origin, logSize, rootHash, rest);
+    }
+  }
+  exports.LogCheckpoint = LogCheckpoint;
+});
+
+// ../../node_modules/@sigstore/verify/dist/tlog/merkle.js
+var require_merkle = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.verifyMerkleInclusion = verifyMerkleInclusion;
+  var core_1 = require_dist3();
+  var error_1 = require_error4();
+  var RFC6962_LEAF_HASH_PREFIX = Buffer.from([0]);
+  var RFC6962_NODE_HASH_PREFIX = Buffer.from([1]);
+  function verifyMerkleInclusion(entry, checkpoint) {
+    const inclusionProof = entry.inclusionProof;
+    let logIndex;
+    try {
+      logIndex = BigInt(inclusionProof.logIndex);
+    } catch {
+      throw new error_1.VerificationError({
+        code: "TLOG_INCLUSION_PROOF_ERROR",
+        message: "invalid inclusion proof log index"
+      });
+    }
+    const treeSize = BigInt(checkpoint.logSize);
+    if (logIndex < 0n || logIndex >= treeSize) {
+      throw new error_1.VerificationError({
+        code: "TLOG_INCLUSION_PROOF_ERROR",
+        message: `invalid index: ${logIndex}`
+      });
+    }
+    const { inner, border } = decompInclProof(logIndex, treeSize);
+    if (inclusionProof.hashes.length !== inner + border) {
+      throw new error_1.VerificationError({
+        code: "TLOG_INCLUSION_PROOF_ERROR",
+        message: "invalid hash count"
+      });
+    }
+    const innerHashes = inclusionProof.hashes.slice(0, inner);
+    const borderHashes = inclusionProof.hashes.slice(inner);
+    const leafHash = hashLeaf(entry.canonicalizedBody);
+    const calculatedHash = chainBorderRight(chainInner(leafHash, innerHashes, logIndex), borderHashes);
+    if (!core_1.crypto.bufferEqual(calculatedHash, checkpoint.logHash)) {
+      throw new error_1.VerificationError({
+        code: "TLOG_INCLUSION_PROOF_ERROR",
+        message: "calculated root hash does not match inclusion proof"
+      });
+    }
+  }
+  function decompInclProof(index, size) {
+    const inner = innerProofSize(index, size);
+    const border = onesCount(index >> BigInt(inner));
+    return { inner, border };
+  }
+  function chainInner(seed, hashes, index) {
+    return hashes.reduce((acc, h, i) => {
+      if (index >> BigInt(i) & BigInt(1)) {
+        return hashChildren(h, acc);
+      } else {
+        return hashChildren(acc, h);
+      }
+    }, seed);
+  }
+  function chainBorderRight(seed, hashes) {
+    return hashes.reduce((acc, h) => hashChildren(h, acc), seed);
+  }
+  function innerProofSize(index, size) {
+    return bitLength(index ^ size - BigInt(1));
+  }
+  function onesCount(num) {
+    return num.toString(2).split("1").length - 1;
+  }
+  function bitLength(n) {
+    if (n === 0n) {
+      return 0;
+    }
+    return n.toString(2).length;
+  }
+  function hashChildren(left, right) {
+    return core_1.crypto.digest("sha256", RFC6962_NODE_HASH_PREFIX, left, right);
+  }
+  function hashLeaf(leaf) {
+    return core_1.crypto.digest("sha256", RFC6962_LEAF_HASH_PREFIX, leaf);
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/tlog/set.js
+var require_set = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.verifyTLogSET = verifyTLogSET;
+  var core_1 = require_dist3();
+  var error_1 = require_error4();
+  var trust_1 = require_trust();
+  function verifyTLogSET(entry, tlogs) {
+    const validTLogs = (0, trust_1.filterTLogAuthorities)(tlogs, {
+      logID: entry.logId.keyId,
+      targetDate: new Date(Number(entry.integratedTime) * 1000)
+    });
+    const verified = validTLogs.some((tlog) => {
+      const payload = toVerificationPayload(entry);
+      const data = Buffer.from(core_1.json.canonicalize(payload), "utf8");
+      const signature = entry.inclusionPromise.signedEntryTimestamp;
+      return core_1.crypto.verify(data, tlog.publicKey, signature);
+    });
+    if (!verified) {
+      throw new error_1.VerificationError({
+        code: "TLOG_INCLUSION_PROMISE_ERROR",
+        message: "inclusion promise could not be verified"
+      });
+    }
+  }
+  function toVerificationPayload(entry) {
+    const { integratedTime, logIndex, logId, canonicalizedBody } = entry;
+    return {
+      body: canonicalizedBody.toString("base64"),
+      integratedTime: Number(integratedTime),
+      logIndex: Number(logIndex),
+      logID: logId.keyId.toString("hex")
+    };
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/tlog/index.js
+var require_tlog = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.verifyTLogBody = verifyTLogBody;
+  exports.verifyTLogInclusion = verifyTLogInclusion;
+  var v2_1 = require_v2();
+  var error_1 = require_error4();
+  var dsse_1 = require_dsse4();
+  var hashedrekord_1 = require_hashedrekord2();
+  var intoto_1 = require_intoto();
+  var checkpoint_1 = require_checkpoint();
+  var merkle_1 = require_merkle();
+  var set_1 = require_set();
+  function verifyTLogBody(entry, sigContent) {
+    const { kind, version } = entry.kindVersion;
+    let body;
+    try {
+      body = JSON.parse(entry.canonicalizedBody.toString("utf8"));
+    } catch {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: "invalid canonicalized body"
+      });
+    }
+    if (kind !== body.kind || version !== body.apiVersion) {
+      throw new error_1.VerificationError({
+        code: "TLOG_BODY_ERROR",
+        message: `kind/version mismatch - expected: ${kind}/${version}, received: ${body.kind}/${body.apiVersion}`
+      });
+    }
+    switch (kind) {
+      case "dsse":
+        if (version == dsse_1.DSSE_API_VERSION_V1) {
+          return (0, dsse_1.verifyDSSETLogBody)(body, sigContent);
+        } else {
+          const entryRekorV2 = v2_1.Entry.fromJSON(body);
+          return (0, dsse_1.verifyDSSETLogBodyV2)(entryRekorV2, sigContent);
+        }
+      case "intoto":
+        return (0, intoto_1.verifyIntotoTLogBody)(body, sigContent);
+      case "hashedrekord":
+        if (version == hashedrekord_1.HASHEDREKORD_API_VERSION_V1) {
+          return (0, hashedrekord_1.verifyHashedRekordTLogBody)(body, sigContent);
+        } else {
+          const entryRekorV2 = v2_1.Entry.fromJSON(body);
+          return (0, hashedrekord_1.verifyHashedRekordTLogBodyV2)(entryRekorV2, sigContent);
+        }
+      default:
+        throw new error_1.VerificationError({
+          code: "TLOG_BODY_ERROR",
+          message: `unsupported kind: ${kind}`
+        });
+    }
+  }
+  function verifyTLogInclusion(entry, tlogAuthorities) {
+    let inclusionVerified = false;
+    if (isTLogEntryWithInclusionPromise(entry)) {
+      (0, set_1.verifyTLogSET)(entry, tlogAuthorities);
+      inclusionVerified = true;
+    }
+    if (isTLogEntryWithInclusionProof(entry)) {
+      const checkpoint = (0, checkpoint_1.verifyCheckpoint)(entry, tlogAuthorities);
+      (0, merkle_1.verifyMerkleInclusion)(entry, checkpoint);
+      inclusionVerified = true;
+    }
+    if (!inclusionVerified) {
+      throw new error_1.VerificationError({
+        code: "TLOG_MISSING_INCLUSION_ERROR",
+        message: "inclusion could not be verified"
+      });
+    }
+    return;
+  }
+  function isTLogEntryWithInclusionPromise(entry) {
+    return entry.inclusionPromise !== undefined;
+  }
+  function isTLogEntryWithInclusionProof(entry) {
+    return entry.inclusionProof !== undefined;
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/verifier.js
+var require_verifier2 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.Verifier = undefined;
+  var util_1 = __require("util");
+  var error_1 = require_error4();
+  var key_1 = require_key();
+  var policy_1 = require_policy();
+  var timestamp_1 = require_timestamp3();
+  var tlog_1 = require_tlog();
+
+  class Verifier {
+    trustMaterial;
+    options;
+    constructor(trustMaterial, options = {}) {
+      this.trustMaterial = trustMaterial;
+      this.options = {
+        ctlogThreshold: options.ctlogThreshold ?? 1,
+        tlogThreshold: options.tlogThreshold ?? 1,
+        timestampThreshold: options.timestampThreshold ?? options.tsaThreshold ?? 1,
+        tsaThreshold: 0
+      };
+    }
+    verify(entity, policy) {
+      const timestamps = this.verifyTimestamps(entity);
+      const signer = this.verifySigningKey(entity, timestamps);
+      this.verifyTLogs(entity);
+      this.verifySignature(entity, signer);
+      if (policy) {
+        this.verifyPolicy(policy, signer.identity || {});
+      }
+      return signer;
+    }
+    verifyTimestamps(entity) {
+      const timestamps = [];
+      for (const timestamp of entity.timestamps) {
+        switch (timestamp.$case) {
+          case "timestamp-authority":
+            timestamps.push((0, timestamp_1.getTSATimestamp)(timestamp.timestamp, entity.signature.signature, this.trustMaterial.timestampAuthorities));
+            break;
+          case "transparency-log": {
+            const result = (0, timestamp_1.getTLogTimestamp)(timestamp.tlogEntry);
+            if (result) {
+              timestamps.push(result);
+            }
+            break;
+          }
+        }
+      }
+      if (containsDupes(timestamps)) {
+        throw new error_1.VerificationError({
+          code: "TIMESTAMP_ERROR",
+          message: "duplicate timestamp"
+        });
+      }
+      if (timestamps.length < this.options.timestampThreshold) {
+        throw new error_1.VerificationError({
+          code: "TIMESTAMP_ERROR",
+          message: `expected ${this.options.timestampThreshold} timestamps, got ${timestamps.length}`
+        });
+      }
+      return timestamps.map((t) => t.timestamp);
+    }
+    verifySigningKey({ key }, timestamps) {
+      switch (key.$case) {
+        case "public-key": {
+          return (0, key_1.verifyPublicKey)(key.hint, timestamps, this.trustMaterial);
+        }
+        case "certificate": {
+          const result = (0, key_1.verifyCertificate)(key.certificate, timestamps, this.trustMaterial);
+          if (containsDupes(result.scts)) {
+            throw new error_1.VerificationError({
+              code: "CERTIFICATE_ERROR",
+              message: "duplicate SCT"
+            });
+          }
+          if (result.scts.length < this.options.ctlogThreshold) {
+            throw new error_1.VerificationError({
+              code: "CERTIFICATE_ERROR",
+              message: `expected ${this.options.ctlogThreshold} SCTs, got ${result.scts.length}`
+            });
+          }
+          return result.signer;
+        }
+      }
+    }
+    verifyTLogs({ signature: content, tlogEntries }) {
+      const entryIDs = [];
+      tlogEntries.forEach((entry) => {
+        (0, tlog_1.verifyTLogInclusion)(entry, this.trustMaterial.tlogs);
+        (0, tlog_1.verifyTLogBody)(entry, content);
+        entryIDs.push({ logID: entry.logId.keyId, logIndex: entry.logIndex });
+      });
+      if (containsDupes(entryIDs)) {
+        throw new error_1.VerificationError({
+          code: "TLOG_ERROR",
+          message: "duplicate tlog entry"
+        });
+      }
+      if (entryIDs.length < this.options.tlogThreshold) {
+        throw new error_1.VerificationError({
+          code: "TLOG_ERROR",
+          message: `expected ${this.options.tlogThreshold} tlog entries, got ${entryIDs.length}`
+        });
+      }
+    }
+    verifySignature(entity, signer) {
+      if (!entity.signature.verifySignature(signer.key)) {
+        throw new error_1.VerificationError({
+          code: "SIGNATURE_ERROR",
+          message: "signature verification failed"
+        });
+      }
+    }
+    verifyPolicy(policy, identity) {
+      if (policy.subjectAlternativeName) {
+        (0, policy_1.verifySubjectAlternativeName)(policy.subjectAlternativeName, identity.subjectAlternativeName);
+      }
+      if (policy.extensions) {
+        (0, policy_1.verifyExtensions)(policy.extensions, identity.extensions);
+      }
+      if (policy.oids) {
+        (0, policy_1.verifyOIDs)(policy.oids, identity.oids);
+      }
+    }
+  }
+  exports.Verifier = Verifier;
+  function containsDupes(arr) {
+    for (let i = 0;i < arr.length; i++) {
+      for (let j = i + 1;j < arr.length; j++) {
+        if ((0, util_1.isDeepStrictEqual)(arr[i], arr[j])) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+});
+
+// ../../node_modules/@sigstore/verify/dist/index.js
+var require_dist4 = __commonJS((exports) => {
+  Object.defineProperty(exports, "__esModule", { value: true });
+  exports.Verifier = exports.toTrustMaterial = exports.VerificationError = exports.PolicyError = exports.toSignedEntity = undefined;
+  var bundle_1 = require_bundle2();
+  Object.defineProperty(exports, "toSignedEntity", { enumerable: true, get: function() {
+    return bundle_1.toSignedEntity;
+  } });
+  var error_1 = require_error4();
+  Object.defineProperty(exports, "PolicyError", { enumerable: true, get: function() {
+    return error_1.PolicyError;
+  } });
+  Object.defineProperty(exports, "VerificationError", { enumerable: true, get: function() {
+    return error_1.VerificationError;
+  } });
+  var trust_1 = require_trust();
+  Object.defineProperty(exports, "toTrustMaterial", { enumerable: true, get: function() {
+    return trust_1.toTrustMaterial;
+  } });
+  var verifier_1 = require_verifier2();
+  Object.defineProperty(exports, "Verifier", { enumerable: true, get: function() {
+    return verifier_1.Verifier;
+  } });
+});
 
 // src/index.ts
 import { spawn as spawn2 } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { readFile as readFile3, writeFile as writeFile3 } from "node:fs/promises";
+import { chmod as chmod3, readFile as readFile3, realpath, rename as rename2, unlink, writeFile as writeFile3 } from "node:fs/promises";
 import { hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -924,6 +5712,79 @@ async function authStatus(args, ctx) {
   return exitCode;
 }
 
+// src/release.ts
+var RELEASE_BASE_URL = "https://github.com/candledottv/agentic";
+var RELEASE_ISSUER = "https://token.actions.githubusercontent.com";
+var VERSION = /^\d+\.\d+\.\d+$/;
+function releaseIdentityUri(version) {
+  if (!VERSION.test(version))
+    throw new Error(`invalid release version: ${version}`);
+  return `https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v${version}`;
+}
+function compareVersions(a, b) {
+  const pa = a.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const pb = b.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  for (let i = 0;i < 3; i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x < y)
+      return -1;
+    if (x > y)
+      return 1;
+  }
+  return 0;
+}
+function platformKey(platform, arch) {
+  const os = platform === "darwin" ? "darwin" : platform === "linux" ? "linux" : null;
+  const cpu = arch === "arm64" ? "arm64" : arch === "x64" ? "x64" : null;
+  if (!os || !cpu)
+    return null;
+  return `${os}-${cpu}`;
+}
+function detectInstall(execPath, realExecPath) {
+  const base = execPath.split("/").pop() ?? "";
+  if (base === "node" || base === "bun" || base === "node.exe" || base === "bun.exe")
+    return "script";
+  if (/\/Cellar\/candle\//.test(realExecPath))
+    return "homebrew";
+  return "binary";
+}
+function latestUrl(baseUrl) {
+  return `${baseUrl}/releases/latest/download/latest.json`;
+}
+function assetUrl(baseUrl, tag, name) {
+  return `${baseUrl}/releases/download/${tag}/${name}`;
+}
+async function fetchLatest(deps, baseUrl) {
+  let res;
+  try {
+    res = await deps.fetch(latestUrl(baseUrl), { redirect: "follow" });
+  } catch (error) {
+    return {
+      ok: false,
+      kind: "unreachable",
+      message: `Could not reach ${latestUrl(baseUrl)}: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+  if (!res.ok)
+    return { ok: false, kind: "unreachable", message: `${latestUrl(baseUrl)} answered ${res.status}` };
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    return { ok: false, kind: "invalid", message: "The release manifest is not JSON" };
+  }
+  const manifest = body;
+  if (typeof manifest.version !== "string" || typeof manifest.tag !== "string" || typeof manifest.assets !== "object" || manifest.assets === null) {
+    return { ok: false, kind: "invalid", message: "The release manifest has no version, tag or assets" };
+  }
+  return { ok: true, manifest };
+}
+function releaseBaseUrl(env) {
+  const override = env.CANDLE_RELEASE_BASE_URL?.trim();
+  return override ? override.replace(/\/$/, "") : RELEASE_BASE_URL;
+}
+
 // src/commands/doctor.ts
 var MIN_NODE_MAJOR = 18;
 var API_KEY_CHECK = "API key valid (launch:write)";
@@ -1025,13 +5886,30 @@ async function doctor(args, ctx) {
     state: "PASS",
     detail: mismatch ? `${account} (profile ${ctx.profile} recorded ${cachedAccount}. Fix: run candle profile use ${ctx.profile})` : account
   });
+  const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath);
+  const method = detectInstall(deps.execPath, realExec);
+  const installDetail = method === "binary" ? `binary at ${deps.execPath}` : method === "homebrew" ? `Homebrew (${realExec})` : `script (${deps.execPath}); update with npm`;
+  rows.push({ check: "Install", state: "PASS", detail: installDetail });
+  const latest = await fetchLatest(deps, releaseBaseUrl(deps.env));
+  const updateBody = latest.ok ? {
+    current: CLI_VERSION,
+    latest: latest.manifest.version,
+    available: compareVersions(CLI_VERSION, latest.manifest.version) < 0
+  } : { current: CLI_VERSION, latest: null, available: null };
+  rows.push(latest.ok ? {
+    check: "Update",
+    state: "PASS",
+    detail: updateBody.available ? `${latest.manifest.version} available: ${method === "homebrew" ? "brew upgrade candle" : method === "script" ? "npm i -g @candledottv/cli@latest" : "candle update"}` : `up to date (${CLI_VERSION})`
+  } : { check: "Update", state: "SKIP", detail: `could not check: ${latest.message}` });
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0;
   await printIdentity(ctx);
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       rows,
       ...account !== undefined ? { account } : {},
-      ...cachedAccount !== undefined ? { cachedAccount } : {}
+      ...cachedAccount !== undefined ? { cachedAccount } : {},
+      install: { method, path: method === "homebrew" ? realExec : deps.execPath },
+      update: updateBody
     })}
 `);
     return exitCode;
@@ -1292,8 +6170,20 @@ var READ_ONLY_TOOL_NAMES = [
 function mcpActsAsIdentity(args) {
   return !args.includes("--read-only");
 }
-function mcpClientConfig(args) {
-  return JSON.stringify({ mcpServers: { candle: { command: "candle", args: ["mcp", ...args] } } }, null, 2);
+async function mcpCommandForHost(deps) {
+  const real = await deps.realpath(deps.execPath).catch(() => deps.execPath);
+  const method = detectInstall(deps.execPath, real);
+  if (method === "script")
+    return { command: deps.execPath, prefixArgs: [deps.argv1] };
+  if (method === "homebrew") {
+    const opt = real.replace(/\/Cellar\/candle\/[^/]+\/bin\/candle$/, "/opt/candle/bin/candle");
+    return { command: opt, prefixArgs: [] };
+  }
+  return { command: real, prefixArgs: [] };
+}
+async function mcpClientConfig(args, deps) {
+  const { command, prefixArgs } = await mcpCommandForHost(deps);
+  return JSON.stringify({ mcpServers: { candle: { command, args: [...prefixArgs, "mcp", ...args] } } }, null, 2);
 }
 async function mcp(args, ctx) {
   const { deps, apiUrl, json } = ctx;
@@ -1336,7 +6226,7 @@ async function mcp(args, ctx) {
       ...readOnly ? ["--read-only"] : [],
       ...toolsFlag !== undefined ? ["--tools", toolsFlag] : []
     ];
-    deps.stdout.write(`${mcpClientConfig(launchArgs)}
+    deps.stdout.write(`${await mcpClientConfig(launchArgs, deps)}
 `);
     return 0;
   }
@@ -1672,7 +6562,11 @@ Tell your agent (paste into its context):
   section(deps, "3/4 Connect your agent");
   deps.stdout.write(`Claude Code skills:  ${SKILLS_CLAUDE_COMMAND}
 `);
-  deps.stdout.write(`MCP (any client):    candle mcp --print-config
+  deps.stdout.write(`MCP (any client), paste into the host's MCP config:
+`);
+  deps.stdout.write(`${await mcpClientConfig([], deps)}
+`);
+  deps.stdout.write(`MCP hosts also need Node 18+ on their own PATH: candle mcp starts the server with npx --yes @candledottv/mcp.
 `);
   deps.stdout.write(`Other platforms:     ${CODING_AGENTS_DOCS}
 `);
@@ -1686,6 +6580,553 @@ Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl,
   deps.stdout.write(doctorExit === 0 ? `Setup complete. Your agent can launch, trade, and transfer the moment the wallets are funded.
 ` : "Setup finished with failed checks above; fix them and re-run `candle doctor`.\n");
   return doctorExit;
+}
+
+// src/commands/update.ts
+import { createHash as createHash2, randomBytes } from "node:crypto";
+
+// src/bun-crypto-shim.ts
+import crypto2, { KeyObject } from "node:crypto";
+var original = crypto2.verify.bind(crypto2);
+var MAX_UNWRAP = 3;
+function keyOf(key, depth = 0) {
+  if (key instanceof KeyObject)
+    return key;
+  if (key !== null && typeof key === "object" && "key" in key) {
+    return depth >= MAX_UNWRAP ? null : keyOf(key.key, depth + 1);
+  }
+  if (typeof key === "string" || key instanceof Uint8Array) {
+    try {
+      return crypto2.createPublicKey(key);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+function installBunCryptoShim() {
+  if (!("Bun" in globalThis))
+    return;
+  const shimmed = (algorithm, data, key, signature, ...rest) => {
+    if (algorithm === null || algorithm === undefined) {
+      const resolved = keyOf(key);
+      if (resolved?.asymmetricKeyType === "ec")
+        return original("sha256", data, key, signature, ...rest);
+    }
+    return original(algorithm, data, key, signature, ...rest);
+  };
+  Object.defineProperty(crypto2, "verify", { value: shimmed, configurable: true, writable: true });
+}
+installBunCryptoShim();
+
+// src/release-verify.ts
+var import_bundle = __toESM(require_dist2(), 1);
+var import_protobuf_specs = __toESM(require_dist(), 1);
+var import_verify = __toESM(require_dist4(), 1);
+import { createHash } from "node:crypto";
+// src/sigstore-trusted-root.json
+var sigstore_trusted_root_default = {
+  mediaType: "application/vnd.dev.sigstore.trustedroot+json;version=0.1",
+  tlogs: [
+    {
+      baseUrl: "https://rekor.sigstore.dev",
+      hashAlgorithm: "SHA2_256",
+      publicKey: {
+        rawBytes: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE2G2Y+2tabdTV5BcGiBIx0a9fAFwrkBbmLSGtks4L3qX6yYY0zufBnhC8Ur/iy55GhWP/9A/bY2LhC30M9+RYtw==",
+        keyDetails: "PKIX_ECDSA_P256_SHA_256",
+        validFor: {
+          start: "2021-01-12T11:53:27.000Z"
+        }
+      },
+      logId: {
+        keyId: "wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0="
+      }
+    },
+    {
+      baseUrl: "https://log2025-1.rekor.sigstore.dev",
+      hashAlgorithm: "SHA2_256",
+      publicKey: {
+        rawBytes: "MCowBQYDK2VwAyEAt8rlp1knGwjfbcXAYPYAkn0XiLz1x8O4t0YkEhie244=",
+        keyDetails: "PKIX_ED25519",
+        validFor: {
+          start: "2025-09-23T00:00:00.000Z"
+        }
+      },
+      logId: {
+        keyId: "zxGZFVvd0FEmjR8WrFwMdcAJ9vtaY/QXf44Y1wUeP6A="
+      }
+    }
+  ],
+  certificateAuthorities: [
+    {
+      subject: {
+        organization: "sigstore.dev",
+        commonName: "sigstore"
+      },
+      uri: "https://fulcio.sigstore.dev",
+      certChain: {
+        certificates: [
+          {
+            rawBytes: "MIIB+DCCAX6gAwIBAgITNVkDZoCiofPDsy7dfm6geLbuhzAKBggqhkjOPQQDAzAqMRUwEwYDVQQKEwxzaWdzdG9yZS5kZXYxETAPBgNVBAMTCHNpZ3N0b3JlMB4XDTIxMDMwNzAzMjAyOVoXDTMxMDIyMzAzMjAyOVowKjEVMBMGA1UEChMMc2lnc3RvcmUuZGV2MREwDwYDVQQDEwhzaWdzdG9yZTB2MBAGByqGSM49AgEGBSuBBAAiA2IABLSyA7Ii5k+pNO8ZEWY0ylemWDowOkNa3kL+GZE5Z5GWehL9/A9bRNA3RbrsZ5i0JcastaRL7Sp5fp/jD5dxqc/UdTVnlvS16an+2Yfswe/QuLolRUCrcOE2+2iA5+tzd6NmMGQwDgYDVR0PAQH/BAQDAgEGMBIGA1UdEwEB/wQIMAYBAf8CAQEwHQYDVR0OBBYEFMjFHQBBmiQpMlEk6w2uSu1KBtPsMB8GA1UdIwQYMBaAFMjFHQBBmiQpMlEk6w2uSu1KBtPsMAoGCCqGSM49BAMDA2gAMGUCMH8liWJfMui6vXXBhjDgY4MwslmN/TJxVe/83WrFomwmNf056y1X48F9c4m3a3ozXAIxAKjRay5/aj/jsKKGIkmQatjI8uupHr/+CxFvaJWmpYqNkLDGRU+9orzh5hI2RrcuaQ=="
+          }
+        ]
+      },
+      validFor: {
+        start: "2021-03-07T03:20:29.000Z",
+        end: "2022-12-31T23:59:59.999Z"
+      }
+    },
+    {
+      subject: {
+        organization: "sigstore.dev",
+        commonName: "sigstore"
+      },
+      uri: "https://fulcio.sigstore.dev",
+      certChain: {
+        certificates: [
+          {
+            rawBytes: "MIICGjCCAaGgAwIBAgIUALnViVfnU0brJasmRkHrn/UnfaQwCgYIKoZIzj0EAwMwKjEVMBMGA1UEChMMc2lnc3RvcmUuZGV2MREwDwYDVQQDEwhzaWdzdG9yZTAeFw0yMjA0MTMyMDA2MTVaFw0zMTEwMDUxMzU2NThaMDcxFTATBgNVBAoTDHNpZ3N0b3JlLmRldjEeMBwGA1UEAxMVc2lnc3RvcmUtaW50ZXJtZWRpYXRlMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAE8RVS/ysH+NOvuDZyPIZtilgUF9NlarYpAd9HP1vBBH1U5CV77LSS7s0ZiH4nE7Hv7ptS6LvvR/STk798LVgMzLlJ4HeIfF3tHSaexLcYpSASr1kS0N/RgBJz/9jWCiXno3sweTAOBgNVHQ8BAf8EBAMCAQYwEwYDVR0lBAwwCgYIKwYBBQUHAwMwEgYDVR0TAQH/BAgwBgEB/wIBADAdBgNVHQ4EFgQU39Ppz1YkEZb5qNjpKFWixi4YZD8wHwYDVR0jBBgwFoAUWMAeX5FFpWapesyQoZMi0CrFxfowCgYIKoZIzj0EAwMDZwAwZAIwPCsQK4DYiZYDPIaDi5HFKnfxXx6ASSVmERfsynYBiX2X6SJRnZU84/9DZdnFvvxmAjBOt6QpBlc4J/0DxvkTCqpclvziL6BCCPnjdlIB3Pu3BxsPmygUY7Ii2zbdCdliiow="
+          },
+          {
+            rawBytes: "MIIB9zCCAXygAwIBAgIUALZNAPFdxHPwjeDloDwyYChAO/4wCgYIKoZIzj0EAwMwKjEVMBMGA1UEChMMc2lnc3RvcmUuZGV2MREwDwYDVQQDEwhzaWdzdG9yZTAeFw0yMTEwMDcxMzU2NTlaFw0zMTEwMDUxMzU2NThaMCoxFTATBgNVBAoTDHNpZ3N0b3JlLmRldjERMA8GA1UEAxMIc2lnc3RvcmUwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAT7XeFT4rb3PQGwS4IajtLk3/OlnpgangaBclYpsYBr5i+4ynB07ceb3LP0OIOZdxexX69c5iVuyJRQ+Hz05yi+UF3uBWAlHpiS5sh0+H2GHE7SXrk1EC5m1Tr19L9gg92jYzBhMA4GA1UdDwEB/wQEAwIBBjAPBgNVHRMBAf8EBTADAQH/MB0GA1UdDgQWBBRYwB5fkUWlZql6zJChkyLQKsXF+jAfBgNVHSMEGDAWgBRYwB5fkUWlZql6zJChkyLQKsXF+jAKBggqhkjOPQQDAwNpADBmAjEAj1nHeXZp+13NWBNa+EDsDP8G1WWg1tCMWP/WHPqpaVo0jhsweNFZgSs0eE7wYI4qAjEA2WB9ot98sIkoF3vZYdd3/VtWB5b9TNMea7Ix/stJ5TfcLLeABLE4BNJOsQ4vnBHJ"
+          }
+        ]
+      },
+      validFor: {
+        start: "2022-04-13T20:06:15.000Z"
+      }
+    }
+  ],
+  ctlogs: [
+    {
+      baseUrl: "https://ctfe.sigstore.dev/test",
+      hashAlgorithm: "SHA2_256",
+      publicKey: {
+        rawBytes: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEbfwR+RJudXscgRBRpKX1XFDy3PyudDxz/SfnRi1fT8ekpfBd2O1uoz7jr3Z8nKzxA69EUQ+eFCFI3zeubPWU7w==",
+        keyDetails: "PKIX_ECDSA_P256_SHA_256",
+        validFor: {
+          start: "2021-03-14T00:00:00.000Z",
+          end: "2022-10-31T23:59:59.999Z"
+        }
+      },
+      logId: {
+        keyId: "CGCS8ChS/2hF0dFrJ4ScRWcYrBY9wzjSbea8IgY2b3I="
+      }
+    },
+    {
+      baseUrl: "https://ctfe.sigstore.dev/2022",
+      hashAlgorithm: "SHA2_256",
+      publicKey: {
+        rawBytes: "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEiPSlFi0CmFTfEjCUqF9HuCEcYXNKAaYalIJmBZ8yyezPjTqhxrKBpMnaocVtLJBI1eM3uXnQzQGAJdJ4gs9Fyw==",
+        keyDetails: "PKIX_ECDSA_P256_SHA_256",
+        validFor: {
+          start: "2022-10-20T00:00:00.000Z"
+        }
+      },
+      logId: {
+        keyId: "3T0wasbHETJjGR4cmWc3AqJKXrjePK3/h4pygC8p7o4="
+      }
+    }
+  ],
+  timestampAuthorities: [
+    {
+      subject: {
+        organization: "sigstore.dev",
+        commonName: "sigstore-tsa-selfsigned"
+      },
+      uri: "https://timestamp.sigstore.dev/api/v1/timestamp",
+      certChain: {
+        certificates: [
+          {
+            rawBytes: "MIICEDCCAZagAwIBAgIUOhNULwyQYe68wUMvy4qOiyojiwwwCgYIKoZIzj0EAwMwOTEVMBMGA1UEChMMc2lnc3RvcmUuZGV2MSAwHgYDVQQDExdzaWdzdG9yZS10c2Etc2VsZnNpZ25lZDAeFw0yNTA0MDgwNjU5NDNaFw0zNTA0MDYwNjU5NDNaMC4xFTATBgNVBAoTDHNpZ3N0b3JlLmRldjEVMBMGA1UEAxMMc2lnc3RvcmUtdHNhMHYwEAYHKoZIzj0CAQYFK4EEACIDYgAE4ra2Z8hKNig2T9kFjCAToGG30jky+WQv3BzL+mKvh1SKNR/UwuwsfNCg4sryoYAd8E6isovVA3M4aoNdm9QDi50Z8nTEyvqgfDPtTIwXItfiW/AFf1V7uwkbkAoj0xxco2owaDAOBgNVHQ8BAf8EBAMCB4AwHQYDVR0OBBYEFIn9eUOHz9BlRsMCRscsc1t9tOsDMB8GA1UdIwQYMBaAFJjsAe9/u1H/1JUeb4qImFMHic6/MBYGA1UdJQEB/wQMMAoGCCsGAQUFBwMIMAoGCCqGSM49BAMDA2gAMGUCMDtpsV/6KaO0qyF/UMsX2aSUXKQFdoGTptQGc0ftq1csulHPGG6dsmyMNd3JB+G3EQIxAOajvBcjpJmKb4Nv+2Taoj8Uc5+b6ih6FXCCKraSqupe07zqswMcXJTe1cExvHvvlw=="
+          },
+          {
+            rawBytes: "MIIB9zCCAXygAwIBAgIUV7f0GLDOoEzIh8LXSW80OJiUp14wCgYIKoZIzj0EAwMwOTEVMBMGA1UEChMMc2lnc3RvcmUuZGV2MSAwHgYDVQQDExdzaWdzdG9yZS10c2Etc2VsZnNpZ25lZDAeFw0yNTA0MDgwNjU5NDNaFw0zNTA0MDYwNjU5NDNaMDkxFTATBgNVBAoTDHNpZ3N0b3JlLmRldjEgMB4GA1UEAxMXc2lnc3RvcmUtdHNhLXNlbGZzaWduZWQwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAQUQNtfRT/ou3YATa6wB/kKTe70cfJwyRIBovMnt8RcJph/COE82uyS6FmppLLL1VBPGcPfpQPYJNXzWwi8icwhKQ6W/Qe2h3oebBb2FHpwNJDqo+TMaC/tdfkv/ElJB72jRTBDMA4GA1UdDwEB/wQEAwIBBjASBgNVHRMBAf8ECDAGAQH/AgEAMB0GA1UdDgQWBBSY7AHvf7tR/9SVHm+KiJhTB4nOvzAKBggqhkjOPQQDAwNpADBmAjEAwGEGrfGZR1cen1R8/DTVMI943LssZmJRtDp/i7SfGHmGRP6gRbuj9vOK3b67Z0QQAjEAuT2H673LQEaHTcyQSZrkp4mX7WwkmF+sVbkYY5mXN+RMH13KUEHHOqASaemYWK/E"
+          }
+        ]
+      },
+      validFor: {
+        start: "2025-07-04T00:00:00.000Z"
+      }
+    }
+  ]
+};
+
+// src/release-verify.ts
+var verifier;
+function getVerifier() {
+  if (!verifier) {
+    const root = import_protobuf_specs.TrustedRoot.fromJSON(sigstore_trusted_root_default);
+    verifier = new import_verify.Verifier(import_verify.toTrustMaterial(root), { ctlogThreshold: 1, tlogThreshold: 1 });
+  }
+  return verifier;
+}
+var IN_TOTO_PAYLOAD_TYPE = "application/vnd.in-toto+json";
+function exactIdentity(identityUri) {
+  return new RegExp(`^${identityUri.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+}
+function withTrustRootHint(reason) {
+  const staleRoot = /certificate chain|certificate path|certificate is not valid or expired/i;
+  if (!staleRoot.test(reason))
+    return reason;
+  return `${reason}; the trust root embedded in this candle may be out of date; reinstall with curl -fsSL https://candle.tv/install.sh | bash`;
+}
+function verifyReleaseAsset(bytes, bundleJson, identityUri, issuer) {
+  try {
+    const bundle = import_bundle.bundleFromJSON(bundleJson);
+    const digest = createHash("sha256").update(bytes).digest();
+    const content = bundle.content;
+    if (content.$case === "messageSignature") {
+      const claimed = content.messageSignature.messageDigest?.digest;
+      if (!claimed || Buffer.compare(Buffer.from(claimed), digest) !== 0) {
+        return { ok: false, reason: "the bundle's message digest does not match the file" };
+      }
+    } else if (content.$case === "dsseEnvelope") {
+      if (content.dsseEnvelope.payloadType !== IN_TOTO_PAYLOAD_TYPE) {
+        return { ok: false, reason: `unsupported attestation payload type: ${content.dsseEnvelope.payloadType}` };
+      }
+      let statement;
+      try {
+        statement = JSON.parse(Buffer.from(content.dsseEnvelope.payload).toString("utf8"));
+      } catch {
+        return { ok: false, reason: "the attestation payload is not valid JSON" };
+      }
+      const hex = digest.toString("hex");
+      if (!statement.subject?.some((subject) => subject.digest?.sha256 === hex)) {
+        return { ok: false, reason: "the attestation's subject digest does not match the file" };
+      }
+    } else {
+      return { ok: false, reason: "unsupported bundle content" };
+    }
+    const entity = import_verify.toSignedEntity(bundle, Buffer.from(bytes));
+    getVerifier().verify(entity, { subjectAlternativeName: exactIdentity(identityUri), extensions: { issuer } });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: withTrustRootHint(error instanceof Error ? error.message : String(error)) };
+  }
+}
+
+// src/commands/update.ts
+var INSTALLER_LINE = "curl -fsSL https://candle.tv/install.sh | bash";
+async function update(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, { valueFlags: ["--to"], booleanFlags: ["--check"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  const check = parsed.booleans.has("--check");
+  const pinned = parsed.values["--to"];
+  const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath);
+  const method = detectInstall(deps.execPath, realExec);
+  if (method === "homebrew") {
+    if (json) {
+      const payload = { current: CLI_VERSION, latest: null, updated: false, path: realExec, method };
+      deps.stdout.write(`${JSON.stringify(payload)}
+`);
+    } else {
+      deps.stdout.write(`Installed by Homebrew. Run: brew upgrade candle
+`);
+    }
+    return 0;
+  }
+  if (method === "script") {
+    if (json) {
+      const payload = { current: CLI_VERSION, latest: null, updated: false, path: realExec, method };
+      deps.stdout.write(`${JSON.stringify(payload)}
+`);
+    } else {
+      deps.stdout.write(`Installed with npm (or a dev checkout). Run: npm i -g @candledottv/cli@latest
+`);
+    }
+    return 0;
+  }
+  const base = releaseBaseUrl(deps.env);
+  const fetched = pinned ? await fetchPinned(deps, base, pinned) : await fetchLatest(deps, base);
+  if (!fetched.ok) {
+    const code = fetched.kind === "invalid" ? "MANIFEST_INVALID" : "UPDATE_UNREACHABLE";
+    writeLocalFailure(deps, { code, message: fetched.message }, json);
+    return 1;
+  }
+  const target = fetched.manifest;
+  let identityUri;
+  try {
+    identityUri = releaseIdentityUri(target.version);
+  } catch (error) {
+    writeLocalFailure(deps, {
+      code: "MANIFEST_INVALID",
+      message: `Refusing the release manifest at ${base}: ${messageOf(error)}.`,
+      suggestion: "Nothing was downloaded or installed."
+    }, json);
+    return 1;
+  }
+  const order = compareVersions(CLI_VERSION, target.version);
+  if (check) {
+    if (json) {
+      const payload = { current: CLI_VERSION, latest: target.version, updated: false, path: realExec };
+      deps.stdout.write(`${JSON.stringify(payload)}
+`);
+    } else if (order < 0) {
+      deps.stdout.write(`candle ${CLI_VERSION}; ${target.version} available. Run: candle update
+`);
+    } else {
+      deps.stdout.write(`candle ${CLI_VERSION} is up to date (latest ${target.version})
+`);
+    }
+    return 0;
+  }
+  if (order === 0 || order > 0 && !pinned) {
+    if (json) {
+      const payload = { current: CLI_VERSION, latest: target.version, updated: false, path: realExec };
+      deps.stdout.write(`${JSON.stringify(payload)}
+`);
+    } else {
+      deps.stdout.write(`candle ${CLI_VERSION} is up to date
+`);
+    }
+    return 0;
+  }
+  if (order > 0 && pinned)
+    deps.stderr.write(`Warning: ${target.version} is a downgrade from ${CLI_VERSION}
+`);
+  if (!deps.platformKey) {
+    writeLocalFailure(deps, {
+      code: "UPDATE_UNSUPPORTED_PLATFORM",
+      message: "No release binary for this platform.",
+      suggestion: "Run: npm i -g @candledottv/cli@latest"
+    }, json);
+    return 1;
+  }
+  const expectedName = `candle-${deps.platformKey}`;
+  const asset = target.assets[deps.platformKey];
+  if (!asset) {
+    writeLocalFailure(deps, {
+      code: "UPDATE_UNSUPPORTED_PLATFORM",
+      message: `Release ${target.tag} has no asset for ${deps.platformKey}.`
+    }, json);
+    return 1;
+  }
+  if (asset.name !== expectedName) {
+    writeLocalFailure(deps, {
+      code: "MANIFEST_INVALID",
+      message: `Release ${target.tag} names ${asset.name} as the ${deps.platformKey} asset; this platform installs ${expectedName}.`,
+      suggestion: "Nothing was downloaded or installed."
+    }, json);
+    return 1;
+  }
+  const download = await fetchAll(deps, base, target.tag, expectedName);
+  if (!download.ok) {
+    writeLocalFailure(deps, { code: "UPDATE_UNREACHABLE", message: download.message }, json);
+    return 1;
+  }
+  const { bytes, sums, bundle } = download;
+  const dir = realExec.slice(0, realExec.lastIndexOf("/")) || ".";
+  const tmpPath = `${dir}/.candle-update-${target.version}-${randomBytes(6).toString("hex")}`;
+  try {
+    await deps.writeBytes(tmpPath, bytes);
+  } catch (error) {
+    writeLocalFailure(deps, notWritable(dir, error), json);
+    return 1;
+  }
+  const actual = createHash2("sha256").update(bytes).digest("hex");
+  const fromSums = sums.split(`
+`).map((line) => line.trim().split(/\s+/)).find((parts) => parts[1] === expectedName)?.[0];
+  if (actual !== asset.sha256 || actual !== fromSums) {
+    await discard(deps, tmpPath);
+    writeLocalFailure(deps, {
+      code: "UPDATE_VERIFY_FAILED",
+      message: `checksum mismatch for ${expectedName} (manifest ${asset.sha256}, SHA256SUMS ${fromSums ?? "missing"}, downloaded ${actual}); nothing installed.`
+    }, json);
+    return 1;
+  }
+  const verify = deps.verify ?? verifyReleaseAsset;
+  const verdict = verify(bytes, bundle, identityUri, RELEASE_ISSUER);
+  if (!verdict.ok) {
+    await discard(deps, tmpPath);
+    writeLocalFailure(deps, {
+      code: "UPDATE_VERIFY_FAILED",
+      message: `signature verification failed for ${expectedName}: ${verdict.reason}; nothing installed.`,
+      suggestion: `Checked against ${identityUri}.`
+    }, json);
+    return 1;
+  }
+  try {
+    await deps.rename(tmpPath, realExec);
+  } catch (error) {
+    await discard(deps, tmpPath);
+    writeLocalFailure(deps, notWritable(dir, error), json);
+    return 1;
+  }
+  if (json) {
+    const payload = { current: CLI_VERSION, latest: target.version, updated: true, path: realExec };
+    deps.stdout.write(`${JSON.stringify(payload)}
+`);
+  } else {
+    deps.stdout.write(`Updated candle ${CLI_VERSION} -> ${target.version}
+`);
+  }
+  return 0;
+}
+function notWritable(dir, error) {
+  return {
+    code: "UPDATE_NOT_WRITABLE",
+    message: `Cannot write ${dir}: ${messageOf(error)}.`,
+    suggestion: `Rerun the installer with --bin-dir <writable dir>: ${INSTALLER_LINE}`
+  };
+}
+async function discard(deps, path) {
+  try {
+    await deps.unlink(path);
+  } catch {}
+}
+async function fetchPinned(deps, base, tag) {
+  const url = assetUrl(base, tag, "latest.json");
+  try {
+    const res = await deps.fetch(url, { redirect: "follow" });
+    if (!res.ok)
+      return { ok: false, kind: "unreachable", message: `${url} answered ${res.status}` };
+    const manifest = await res.json();
+    const missing = [
+      typeof manifest.version === "string" ? null : "version",
+      typeof manifest.tag === "string" ? null : "tag",
+      typeof manifest.assets === "object" && manifest.assets !== null ? null : "assets"
+    ].filter((field) => field !== null);
+    if (missing.length > 0) {
+      return { ok: false, kind: "invalid", message: `The release manifest at ${url} has no ${missing.join(", ")}` };
+    }
+    return { ok: true, manifest };
+  } catch (error) {
+    return { ok: false, kind: "unreachable", message: `Could not reach ${url}: ${messageOf(error)}` };
+  }
+}
+async function fetchAll(deps, base, tag, name) {
+  try {
+    const [bin, sums, bundle] = await Promise.all([
+      deps.fetch(assetUrl(base, tag, name), { redirect: "follow" }),
+      deps.fetch(assetUrl(base, tag, "SHA256SUMS"), { redirect: "follow" }),
+      deps.fetch(assetUrl(base, tag, `${name}.sigstore.json`), { redirect: "follow" })
+    ]);
+    for (const [label, res] of [
+      [name, bin],
+      ["SHA256SUMS", sums],
+      [`${name}.sigstore.json`, bundle]
+    ]) {
+      if (!res.ok)
+        return { ok: false, message: `${label} answered ${res.status} at ${assetUrl(base, tag, label)}` };
+    }
+    return {
+      ok: true,
+      bytes: new Uint8Array(await bin.arrayBuffer()),
+      sums: await sums.text(),
+      bundle: await bundle.json()
+    };
+  } catch (error) {
+    return { ok: false, message: `Could not download ${tag}: ${messageOf(error)}` };
+  }
+}
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+// src/commands/verify.ts
+import { dirname as dirname2, join as join3 } from "node:path";
+var USAGE = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+async function resolveIdentity(deps, bundlePath, flag) {
+  if (flag)
+    return { kind: "ok", uri: flag, provenance: "identity from --identity" };
+  let version;
+  try {
+    const manifest = JSON.parse(await deps.readFile(join3(dirname2(bundlePath), "latest.json")));
+    if (typeof manifest.version !== "string" || manifest.version.length === 0)
+      return { kind: "absent" };
+    version = manifest.version;
+  } catch {
+    return { kind: "absent" };
+  }
+  try {
+    return {
+      kind: "ok",
+      uri: releaseIdentityUri(version),
+      provenance: "identity from latest.json beside the bundle"
+    };
+  } catch (error) {
+    return { kind: "invalid", message: messageOf2(error) };
+  }
+}
+async function verify(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, { valueFlags: ["--bundle", "--identity", "--issuer"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, `${parsed.error}
+${USAGE}`, json);
+    return 2;
+  }
+  const file = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || file === undefined) {
+    writeUsageFailure(deps, `verify takes exactly one file.
+${USAGE}`, json);
+    return 2;
+  }
+  const bundlePath = parsed.values["--bundle"];
+  if (!bundlePath) {
+    writeUsageFailure(deps, `--bundle is required.
+${USAGE}`, json);
+    return 2;
+  }
+  const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
+  if (resolved.kind === "invalid") {
+    writeLocalFailure(deps, {
+      code: "MANIFEST_INVALID",
+      message: `Refusing ${file}: ${resolved.message}.`,
+      suggestion: `The latest.json beside ${bundlePath} does not name a release version. Pass --identity to say what signature to expect.`
+    }, json);
+    return 1;
+  }
+  if (resolved.kind === "absent") {
+    writeUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
+${USAGE}`, json);
+    return 2;
+  }
+  const identity = resolved.uri;
+  const issuer = parsed.values["--issuer"] ?? RELEASE_ISSUER;
+  let bytes;
+  let bundleJson;
+  try {
+    bytes = await deps.readBytes(file);
+  } catch (error) {
+    writeLocalFailure(deps, { code: "FILE_UNREADABLE", message: `Could not read ${file}: ${messageOf2(error)}` }, json);
+    return 1;
+  }
+  try {
+    bundleJson = JSON.parse(await deps.readFile(bundlePath));
+  } catch (error) {
+    writeLocalFailure(deps, { code: "BUNDLE_UNREADABLE", message: `Could not read the bundle ${bundlePath}: ${messageOf2(error)}` }, json);
+    return 1;
+  }
+  const result = verifyReleaseAsset(bytes, bundleJson, identity, issuer);
+  if (!result.ok) {
+    writeLocalFailure(deps, {
+      code: "SIGNATURE_INVALID",
+      message: `Refusing ${file}: ${result.reason}.`,
+      suggestion: `Checked against ${identity} (${resolved.provenance}).`
+    }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ok: true, file, identity, issuer, identitySource: resolved.provenance })}
+`);
+  } else {
+    deps.stdout.write(`verified: ${identity} (${resolved.provenance})
+`);
+  }
+  return 0;
+}
+function messageOf2(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 // ../../node_modules/@scure/base/lib/esm/index.js
@@ -1769,7 +7210,7 @@ function alphabet(letters) {
     }
   };
 }
-function join3(separator = "") {
+function join4(separator = "") {
   astr("join", separator);
   return {
     encode: (from) => {
@@ -1946,12 +7387,12 @@ function unsafeWrapper(fn) {
     } catch (e) {}
   };
 }
-var base16 = chain(radix2(4), alphabet("0123456789ABCDEF"), join3(""));
-var base32 = chain(radix2(5), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"), padding(5), join3(""));
-var base32nopad = chain(radix2(5), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"), join3(""));
-var base32hex = chain(radix2(5), alphabet("0123456789ABCDEFGHIJKLMNOPQRSTUV"), padding(5), join3(""));
-var base32hexnopad = chain(radix2(5), alphabet("0123456789ABCDEFGHIJKLMNOPQRSTUV"), join3(""));
-var base32crockford = chain(radix2(5), alphabet("0123456789ABCDEFGHJKMNPQRSTVWXYZ"), join3(""), normalize((s) => s.toUpperCase().replace(/O/g, "0").replace(/[IL]/g, "1")));
+var base16 = chain(radix2(4), alphabet("0123456789ABCDEF"), join4(""));
+var base32 = chain(radix2(5), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"), padding(5), join4(""));
+var base32nopad = chain(radix2(5), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"), join4(""));
+var base32hex = chain(radix2(5), alphabet("0123456789ABCDEFGHIJKLMNOPQRSTUV"), padding(5), join4(""));
+var base32hexnopad = chain(radix2(5), alphabet("0123456789ABCDEFGHIJKLMNOPQRSTUV"), join4(""));
+var base32crockford = chain(radix2(5), alphabet("0123456789ABCDEFGHJKMNPQRSTVWXYZ"), join4(""), normalize((s) => s.toUpperCase().replace(/O/g, "0").replace(/[IL]/g, "1")));
 var hasBase64Builtin = /* @__PURE__ */ (() => typeof Uint8Array.from([]).toBase64 === "function" && typeof Uint8Array.fromBase64 === "function")();
 var decodeBase64Builtin = (s, isUrl) => {
   astr("base64", s);
@@ -1969,8 +7410,8 @@ var base64 = hasBase64Builtin ? {
   decode(s) {
     return decodeBase64Builtin(s, false);
   }
-} : chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"), padding(6), join3(""));
-var base64nopad = chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"), join3(""));
+} : chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"), padding(6), join4(""));
+var base64nopad = chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"), join4(""));
 var base64url = hasBase64Builtin ? {
   encode(b) {
     abytes(b);
@@ -1979,13 +7420,13 @@ var base64url = hasBase64Builtin ? {
   decode(s) {
     return decodeBase64Builtin(s, true);
   }
-} : chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"), padding(6), join3(""));
-var base64urlnopad = chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"), join3(""));
-var genBase58 = (abc) => chain(radix(58), alphabet(abc), join3(""));
+} : chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"), padding(6), join4(""));
+var base64urlnopad = chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"), join4(""));
+var genBase58 = (abc) => chain(radix(58), alphabet(abc), join4(""));
 var base58 = genBase58("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz");
 var base58flickr = genBase58("123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ");
 var base58xrp = genBase58("rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz");
-var BECH_ALPHABET = chain(alphabet("qpzry9x8gf2tvdw0s3jn54khce6mua7l"), join3(""));
+var BECH_ALPHABET = chain(alphabet("qpzry9x8gf2tvdw0s3jn54khce6mua7l"), join4(""));
 var POLYMOD_GENERATORS = [996825010, 642813549, 513874426, 1027748829, 705979059];
 function bech32Polymod(pre) {
   const b = pre >> 25;
@@ -2089,7 +7530,7 @@ var hexBuiltin = {
     return Uint8Array.fromHex(s);
   }
 };
-var hex = hasHexBuiltin ? hexBuiltin : chain(radix2(4), alphabet("0123456789abcdef"), join3(""), normalize((s) => {
+var hex = hasHexBuiltin ? hexBuiltin : chain(radix2(4), alphabet("0123456789abcdef"), join4(""), normalize((s) => {
   if (typeof s !== "string" || s.length % 2 !== 0)
     throw new TypeError(`hex.decode: expected string, got ${typeof s} with length ${s.length}`);
   return s.toLowerCase();
@@ -4917,12 +10358,12 @@ async function walletsRevoke(args, ctx) {
 // src/config.ts
 import { chmod as chmod2, mkdir as mkdir2, readFile as readFile2, rm, writeFile as writeFile2 } from "node:fs/promises";
 import { homedir as homedir3 } from "node:os";
-import { join as join4 } from "node:path";
+import { join as join5 } from "node:path";
 function configDir2() {
-  return process.env.CANDLE_CONFIG_DIR?.trim() || join4(homedir3(), ".config", "candle");
+  return process.env.CANDLE_CONFIG_DIR?.trim() || join5(homedir3(), ".config", "candle");
 }
 function configFilePath() {
-  return join4(configDir2(), "config.json");
+  return join5(configDir2(), "config.json");
 }
 async function readConfig() {
   try {
@@ -5176,6 +10617,8 @@ Commands:
   setup [--no-browser]                                            One wizard: authorize, fund, connect, verify
   mcp [--tools <a,b,c>] [--read-only] [--print-config]            Run the Candle MCP server with stored credentials
   doctor                                                          Diagnose CLI setup
+  verify <file> --bundle <path>                                   Verify a release asset's Sigstore bundle
+  update [--check] [--to <tag>]                                   Update the CLI to the latest signed release
 
 Global options:
   --api-url <url>         Override the API base URL
@@ -5194,7 +10637,9 @@ var COMMANDS = {
   },
   doctor: { bare: doctor },
   mcp: { bare: mcp },
-  setup: { bare: setup }
+  setup: { bare: setup },
+  verify: { bare: verify },
+  update: { bare: update }
 };
 var ROUTED_COMMANDS = new Set(Object.keys(COMMANDS));
 var ROUTED_SUBCOMMANDS = Object.fromEntries(Object.entries(COMMANDS).filter(([, route]) => route.subcommands !== undefined).map(([word, route]) => [word, Object.keys(route.subcommands ?? {})]));
@@ -5215,7 +10660,7 @@ function routesToCommand(cmd, sub) {
     return true;
   return route.bare !== undefined;
 }
-var NEVER_GUARDED = new Set(["auth", "profile", "doctor"]);
+var NEVER_GUARDED = new Set(["auth", "profile", "doctor", "verify", "update"]);
 async function run2(argv, deps) {
   const extracted = extractGlobalFlags(argv);
   if ("error" in extracted) {
@@ -5224,7 +10669,14 @@ async function run2(argv, deps) {
     return 2;
   }
   const { rest, flags } = extracted;
+  const tokens = rest[0] === "candle" ? rest.slice(1) : rest;
   if (flags.version) {
+    const versionWord = tokens[0];
+    if (versionWord !== undefined && ROUTED_COMMANDS.has(versionWord)) {
+      const fix = "--version prints the CLI version; to pin a release use: candle update --to <tag>";
+      writeUsageFailure(deps, fix, flags.json);
+      return 2;
+    }
     deps.stdout.write(`${CLI_VERSION}
 `);
     return 0;
@@ -5233,7 +10685,6 @@ async function run2(argv, deps) {
     deps.stdout.write(HELP_TEXT);
     return 0;
   }
-  const tokens = rest[0] === "candle" ? rest.slice(1) : rest;
   const [cmd, sub, ...cmdArgs] = tokens;
   const config = await migrateProfiles(deps);
   const isAuthLogin = cmd === "auth" && sub === "login";
@@ -5359,8 +10810,19 @@ async function buildRealDeps() {
       child.on("close", (code) => resolve(code ?? 1));
     }),
     readFile: (path) => readFile3(path, "utf8"),
+    readBytes: (path) => readFile3(path),
     writeFile: (path, content) => writeFile3(path, content, { mode: 384 }),
-    promptSecret: promptHiddenSecret
+    promptSecret: promptHiddenSecret,
+    execPath: process.execPath,
+    argv1: process.argv[1] ?? "",
+    platformKey: platformKey(process.platform, process.arch),
+    realpath: (path) => realpath(path),
+    writeBytes: async (path, bytes) => {
+      await writeFile3(path, bytes, { flag: "wx", mode: 493 });
+      await chmod3(path, 493);
+    },
+    rename: (from, to) => rename2(from, to),
+    unlink: (path) => unlink(path)
   };
 }
 async function main() {
@@ -5385,6 +10847,7 @@ if (isMainModule) {
 }
 export {
   run2 as run,
+  buildRealDeps,
   ROUTED_SUBCOMMANDS,
   ROUTED_COMMANDS,
   NEVER_GUARDED

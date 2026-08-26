@@ -30,6 +30,8 @@
   },
   "scripts": {
     "build": "bun build src/index.ts --target=node --format=esm --outfile=dist/index.js",
+    "build:binary": "bun build --compile --minify src/index.ts --outfile dist-bin/candle",
+    "refresh-sigstore-root": "bun scripts/refresh-sigstore-root.mjs",
     "prepublishOnly": "bun run build",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
@@ -40,6 +42,10 @@
     "@hpke/chacha20poly1305": "^1.6.2",
     "@hpke/core": "^1.7.2",
     "@scure/base": "^1.2.6",
+    "@sigstore/bundle": "5.0.0",
+    "@sigstore/protobuf-specs": "0.5.2",
+    "@sigstore/tuf": "5.0.0",
+    "@sigstore/verify": "4.1.2",
     "@types/bun": "^1.1.14",
     "typescript": "^5.7.2"
   }

@@ -2,12 +2,15 @@
  * `candle mcp`: launch the Candle MCP server with the credentials this CLI already manages
  * (CLI P0 plan, Task 2). The server itself lives in `@candledottv/mcp` and reads
  * `CANDLE_AGENT_API_KEY` / `CANDLE_API_URL` from its environment; before this command, wiring
- * it up meant hand-editing those into every MCP client's config. Now the client config is just
+ * it up meant hand-editing those into every MCP client's config. Now the client config is what
+ * `candle mcp --print-config` prints, which names this binary by its ABSOLUTE path:
  *
- *   { "command": "candle", "args": ["mcp"] }
+ *   { "mcpServers": { "candle": { "command": "/Users/you/.local/bin/candle", "args": ["mcp"] } } }
  *
- * and the key comes from the CLI's secret store at launch time, so it never sits in a config
- * file at all.
+ * A bare "candle" is not enough: GUI hosts (Cursor, Claude Desktop) launch servers with the app's
+ * own environment, which never sourced a shell rc, so nothing the installer put on PATH is
+ * visible there. See `mcpCommandForHost` below for the three install shapes. The key comes from
+ * the CLI's secret store at launch time either way, so it never sits in a config file at all.
  *
  * Launches `npx --yes @candledottv/mcp` rather than importing the server across packages: the
  * CLI is a standalone zero-dependency package (its tsconfig pins rootDir to src, and its export
@@ -17,9 +20,10 @@
  */
 
 import { parseArgs } from "../args"
-import type { CommandContext } from "../deps"
+import type { CommandContext, Deps } from "../deps"
 import { resolveApiKey } from "../deps"
 import { credentialEnvOverrides, effectiveProfileFields, identityLine } from "../profiles"
+import { detectInstall } from "../release"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 
 /** Mirrors `TOOL_NAMES` in packages/mcp/src/tools.ts -- duplicated here since the CLI has zero
@@ -64,9 +68,28 @@ export function mcpActsAsIdentity(args: string[]): boolean {
   return !args.includes("--read-only")
 }
 
-/** What `--print-config` emits: a ready-to-paste MCP client block. */
-export function mcpClientConfig(args: string[]): string {
-  return JSON.stringify({ mcpServers: { candle: { command: "candle", args: ["mcp", ...args] } } }, null, 2)
+/**
+ * The command a GUI MCP host should run. Cursor, Claude Desktop and their kind launch servers
+ * with the app's own environment, which never sourced a shell rc, so a bare "candle" fails there
+ * no matter what the installer put on PATH. A compiled binary names its own absolute path (for a
+ * Homebrew install the opt link, which survives brew upgrade; the Cellar path does not). A script
+ * install names the runtime and the script, which needs no PATH at all.
+ */
+export async function mcpCommandForHost(deps: Deps): Promise<{ command: string; prefixArgs: string[] }> {
+  const real = await deps.realpath(deps.execPath).catch(() => deps.execPath)
+  const method = detectInstall(deps.execPath, real)
+  if (method === "script") return { command: deps.execPath, prefixArgs: [deps.argv1] }
+  if (method === "homebrew") {
+    const opt = real.replace(/\/Cellar\/candle\/[^/]+\/bin\/candle$/, "/opt/candle/bin/candle")
+    return { command: opt, prefixArgs: [] }
+  }
+  return { command: real, prefixArgs: [] }
+}
+
+/** What `--print-config` emits: a ready-to-paste MCP client block with an absolute command. */
+export async function mcpClientConfig(args: string[], deps: Deps): Promise<string> {
+  const { command, prefixArgs } = await mcpCommandForHost(deps)
+  return JSON.stringify({ mcpServers: { candle: { command, args: [...prefixArgs, "mcp", ...args] } } }, null, 2)
 }
 
 export async function mcp(args: string[], ctx: CommandContext): Promise<number> {
@@ -126,7 +149,7 @@ export async function mcp(args: string[], ctx: CommandContext): Promise<number> 
       ...(readOnly ? ["--read-only"] : []),
       ...(toolsFlag !== undefined ? ["--tools", toolsFlag] : []),
     ]
-    deps.stdout.write(`${mcpClientConfig(launchArgs)}\n`)
+    deps.stdout.write(`${await mcpClientConfig(launchArgs, deps)}\n`)
     return 0
   }
 

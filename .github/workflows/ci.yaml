@@ -12,9 +12,16 @@ jobs:
     strategy:
       matrix:
         package: [sdk, mcp, cli]
+    # Actions pinned to full commit SHAs with their tags in trailing comments, matching
+    # release.yaml: a tag is a moving pointer, and this repo is what the installer downloads from.
     steps:
-      - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          # The same one file release.yaml reads. CI running a different Bun from the one the
+          # release compiles with is how a crypto-shim regression (packages/cli/src/
+          # bun-crypto-shim.ts) would pass here and fail in a signed binary.
+          bun-version-file: packages/cli/.bun-version
       - name: Install
         working-directory: packages/${{ matrix.package }}
         run: bun install

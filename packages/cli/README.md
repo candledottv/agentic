@@ -50,8 +50,10 @@ node packages/cli/dist/index.js auth login
 | `candle profile use <name>` | Makes a profile the active one. |
 | `candle profile rename <old> <new>` | Renames a profile. |
 | `candle profile remove <name> --yes` | Deletes a profile and its stored credentials. |
-| `candle mcp [--tools <a,b,c>] [--read-only] [--print-config]` | Runs the Candle MCP server (`npx @candledottv/mcp`) with this CLI's stored API key and API URL in its environment, so an MCP client config is just `{"command": "candle", "args": ["mcp"]}`. `--read-only` starts it with no key and only the three keyless read tools; `--tools` pins an explicit allowlist; `--print-config` prints the ready-to-paste client block instead of launching. |
+| `candle mcp [--tools <a,b,c>] [--read-only] [--print-config]` | Runs the Candle MCP server (`npx @candledottv/mcp`) with this CLI's stored API key and API URL in its environment, so an MCP client config is just `{"mcpServers": {"candle": {"command": "/Users/you/.local/bin/candle", "args": ["mcp"]}}}` -- the absolute path, because GUI hosts launch servers with the app's environment and never see your PATH. Run `--print-config` to print that block filled in for this install. `--read-only` starts it with no key and only the four keyless read tools; `--tools` pins an explicit allowlist. |
 | `candle doctor` | Runs a full health check (runtime, backend, credentials, API reachability, credential validity, wallet delegation) as a PASS/FAIL/SKIP table. Exits nonzero on any FAIL. |
+| `candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]` | Verifies a release asset's Sigstore bundle against the trusted root compiled into this binary. No network, no credentials, and nothing else installed: the bundle carries the certificate and the transparency-log entry. `--identity` defaults to the release identity for the version in a `latest.json` sitting beside the bundle; `--issuer` defaults to GitHub Actions'. Prints `verified: <identity>` and exits 0, or the reason on stderr and exits 1. |
+| `candle update [--check] [--to <tag>]` | Replaces this binary with the latest signed release. The download is renamed over the running binary only after its SHA-256 matches both SHA256SUMS and `latest.json` AND its Sigstore bundle verifies in process against that exact version's release workflow. `--check` reports what is available and installs nothing; `--to <tag>` pins a release (an older one installs, with a warning). A Homebrew or npm install is left alone, with the command that owns it printed instead. |
 
 Every command accepts these global options:
 
@@ -151,8 +153,9 @@ repairing anything. An unreachable API turns the check into a warning, never a f
 check is skipped when
 `CANDLE_API_KEY` or `CANDLE_DEVICE_TOKEN` is overriding the stored credential, when a profile has
 no cached account or no stored key, and for the commands that only read the identity or repair it:
-`auth login`, `auth status`, `auth logout`, `doctor`, and the `profile` commands. `setup` is
-guarded, because it skips its login step whenever credentials are already stored.
+`auth login`, `auth status`, `auth logout`, `doctor`, `verify` (which acts as no identity at all:
+two files and a signature) and the `profile` commands. `setup` is guarded, because it skips its
+login step whenever credentials are already stored.
 
 A pre-profile install is migrated on first run: profile `default` is created from the existing
 settings and the two credentials are copied to `profile:default:*` refs. The old refs and fields

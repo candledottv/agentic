@@ -6,7 +6,10 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { NEVER_GUARDED, ROUTED_COMMANDS, ROUTED_SUBCOMMANDS, run } from "./index"
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { buildRealDeps, NEVER_GUARDED, ROUTED_COMMANDS, ROUTED_SUBCOMMANDS, run } from "./index"
 import {
   createCapture,
   createFakeConfigStore,
@@ -107,6 +110,23 @@ describe("dispatch", () => {
     const code = await run(["--version"], createTestDeps({ fetch: unusedFetch, stdout }))
     expect(code).toBe(0)
     expect(stdout.text.trim()).toBe(CLI_VERSION)
+  })
+
+  test("a routed command word after a stripped --version is a usage error naming --to", async () => {
+    // `candle update --version cli-v0.6.0` is the shape someone reaches for straight after
+    // reading install.sh, whose own pin flag IS --version. Global-flag stripping ate it: the CLI
+    // printed its own version, exited 0 and updated nothing, which looks like success. The pin
+    // flag is `--to`, and the mistake is answered rather than silently obeyed as something else.
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const code = await run(
+      ["update", "--version", "cli-v0.5.0"],
+      createTestDeps({ fetch: unusedFetch, stdout, stderr }),
+    )
+    expect(code).toBe(2)
+    expect(`${stdout.text}${stderr.text}`).toContain("candle update --to <tag>")
+    // Not the version, which is what it used to print.
+    expect(stdout.text.trim()).not.toBe(CLI_VERSION)
   })
 
   test("--help prints help and exits 0", async () => {
@@ -699,7 +719,11 @@ describe("the account guard at dispatch", () => {
     expect(code).toBe(0)
     expect(stderr.text).not.toContain("Refusing")
     expect(calls).toHaveLength(0)
-    expect(JSON.parse(stdout.text).mcpServers.candle.args).toEqual(["mcp", "--read-only"])
+    expect(JSON.parse(stdout.text).mcpServers.candle.args).toEqual([
+      "/usr/local/lib/node_modules/@candledottv/cli/dist/index.js",
+      "mcp",
+      "--read-only",
+    ])
   })
 
   // `wallets` with no subcommand is not a usage error: it IS a command, and an authenticated one.
@@ -744,6 +768,9 @@ describe("the account guard at dispatch", () => {
     expect([...documented].sort()).toEqual([...ROUTED_COMMANDS].sort())
     // A typo here would silently guard a command the ruling exempts, or exempt nothing at all.
     expect([...NEVER_GUARDED].filter((word) => !ROUTED_COMMANDS.has(word))).toEqual([])
+    // `update` replaces this binary and acts as no identity, so it must keep working on a machine
+    // whose stored key belongs to another account -- that is precisely when an upgrade is wanted.
+    expect(NEVER_GUARDED.has("update")).toBe(true)
 
     // The same block documents SUBCOMMANDS ("auth login", "keys create"), and the guard now reads
     // them: an invocation whose subcommand is not one dispatch routes is about to print usage, so
@@ -761,6 +788,55 @@ describe("the account guard at dispatch", () => {
       Object.fromEntries(Object.entries(map).map(([word, subs]) => [word, [...subs].sort()]))
     expect(sorted(documentedSubs)).toEqual(sorted(ROUTED_SUBCOMMANDS))
     expect(Object.keys(ROUTED_SUBCOMMANDS).filter((word) => !ROUTED_COMMANDS.has(word))).toEqual([])
+  })
+})
+
+/**
+ * The real `Deps`, which every other test in the suite replaces with fakes. That is the right
+ * default -- nothing here should touch a keychain or the filesystem to check a command's logic --
+ * but it left the real implementations of the update path untested: the seam that must stay
+ * unset, and a write whose two guarantees (mode 0755, refuse an existing path) are the reason a
+ * downloaded binary can be renamed over the running one at all.
+ *
+ * `buildRealDeps` constructs objects and reads process fields; it opens nothing and prompts for
+ * nothing, so calling it here is safe.
+ */
+describe("the real deps", () => {
+  test("leave the verifier seam unset, so update uses the compiled-in verifier", async () => {
+    const deps = await buildRealDeps()
+    // `deps.verify` exists for the update tests to stub. If the real deps ever filled it in,
+    // `update` would silently verify with something other than release-verify.ts.
+    expect(deps.verify).toBeUndefined()
+  })
+
+  test("writeBytes writes mode 0755 and refuses a path that already exists", async () => {
+    const deps = await buildRealDeps()
+    const dir = mkdtempSync(join(tmpdir(), "candle-real-deps-"))
+    try {
+      const path = join(dir, "candle-new")
+      const bytes = new Uint8Array([0x7f, 0x45, 0x4c, 0x46])
+      await deps.writeBytes(path, bytes)
+      expect(Array.from(readFileSync(path))).toEqual(Array.from(bytes))
+      // Executable, or the rename puts a file nobody can run where candle was. The chmod after
+      // the write is what survives a restrictive umask.
+      expect(statSync(path).mode & 0o777).toBe(0o755)
+
+      // `flag: "wx"`. update writes a fresh random name beside the binary, so a path that already
+      // exists there is either a collision or somebody else's file, and truncating it and then
+      // renaming it over the running binary is exactly the move this refusal denies.
+      const other = new Uint8Array([0x00])
+      await expect(deps.writeBytes(path, other)).rejects.toThrow()
+      expect(Array.from(readFileSync(path))).toEqual(Array.from(bytes))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("every filesystem dep is wired to a real function", async () => {
+    const deps = await buildRealDeps()
+    for (const name of ["readFile", "readBytes", "writeFile", "writeBytes", "rename", "unlink", "realpath"] as const) {
+      expect(typeof deps[name]).toBe("function")
+    }
   })
 })
 

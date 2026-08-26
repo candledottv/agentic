@@ -14,7 +14,25 @@ import {
   createRoutedFetch,
   createTestDeps,
   jsonResponse,
+  type RouteHandler,
 } from "../test-support"
+import { CLI_VERSION } from "../version"
+
+/** The four routes every doctor row below "API reachable" needs to PASS, keyed by PATH the way
+ * `createRoutedFetch` routes them -- reused as a base by the install/update tests below, which
+ * only ever add or override the release manifest route. */
+const HEALTHY_ROUTES: Record<string, RouteHandler | RouteHandler[]> = {
+  "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
+  "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [], tier: "free" }),
+  "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+  "/api/v1/agent/wallets/embedded": () =>
+    jsonResponse(200, { success: true, wallets: { solana: { address: "abc", delegated: true }, evm: null } }),
+}
+
+/** A device token and API key, matching `HEALTHY_ROUTES`' credentials. */
+function healthyStores() {
+  return { store: createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_x" }) }
+}
 
 describe("doctor", () => {
   test("renders a PASS/FAIL/SKIP table and exits 1 when any check FAILs; the FAIL line names its fix", async () => {
@@ -32,6 +50,12 @@ describe("doctor", () => {
           account: "FaKwE2xX",
           wallets: { solana: { address: "abc", delegated: false }, evm: null },
         }),
+      // No CANDLE_RELEASE_BASE_URL override in this fixture, so the default RELEASE_BASE_URL
+      // (https://github.com/candledottv/agentic) applies, and its own path segment is part of
+      // the pathname `createRoutedFetch` routes on -- unlike the other fixtures below, which set
+      // CANDLE_RELEASE_BASE_URL to a bare host and register the manifest at the plain path.
+      "/candledottv/agentic/releases/latest/download/latest.json": () =>
+        jsonResponse(200, { version: CLI_VERSION, tag: `cli-v${CLI_VERSION}`, assets: {} }),
     })
     const store = createFakeStore({ device_token: "cndl_dvc_x", api_key: "ck_live_x" })
     const stdout = createCapture()
@@ -290,5 +314,63 @@ describe("profiles", () => {
     expect(row).toContain("OTHER22")
     expect(row).not.toContain("recorded")
     expect(row).not.toContain("candle profile use")
+  })
+})
+
+describe("doctor install and update rows", () => {
+  test("a binary install with a newer release available", async () => {
+    const routes = {
+      ...HEALTHY_ROUTES,
+      "/releases/latest/download/latest.json": () =>
+        jsonResponse(200, { version: "99.0.0", tag: "cli-v99.0.0", assets: {} }),
+    }
+    const { fetch } = createRoutedFetch(routes)
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      stdout,
+      execPath: "/home/u/.local/bin/candle",
+      env: { CANDLE_RELEASE_BASE_URL: "https://example.test" },
+      ...healthyStores(),
+    })
+    await run(["doctor"], deps)
+    expect(stdout.text).toMatch(/Install\s+PASS\s+binary at \/home\/u\/\.local\/bin\/candle/)
+    expect(stdout.text).toMatch(/Update\s+PASS\s+99\.0\.0 available: candle update/)
+  })
+
+  test("a Homebrew install points at brew, and offline the update row is SKIP", async () => {
+    const { fetch } = createRoutedFetch(HEALTHY_ROUTES) // no manifest route: the fetch throws
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      stdout,
+      execPath: "/opt/homebrew/bin/candle",
+      realpath: async () => "/opt/homebrew/Cellar/candle/0.5.0/bin/candle",
+      ...healthyStores(),
+    })
+    await run(["doctor"], deps)
+    expect(stdout.text).toMatch(/Install\s+PASS\s+Homebrew/)
+    expect(stdout.text).toMatch(/Update\s+SKIP\s+could not check/)
+  })
+
+  test("--json carries install and update", async () => {
+    const routes = {
+      ...HEALTHY_ROUTES,
+      "/releases/latest/download/latest.json": () =>
+        jsonResponse(200, { version: CLI_VERSION, tag: `cli-v${CLI_VERSION}`, assets: {} }),
+    }
+    const { fetch } = createRoutedFetch(routes)
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      stdout,
+      execPath: "/usr/local/bin/node",
+      env: { CANDLE_RELEASE_BASE_URL: "https://example.test" },
+      ...healthyStores(),
+    })
+    await run(["doctor", "--json"], deps)
+    const body = JSON.parse(stdout.text)
+    expect(body.install).toEqual({ method: "script", path: "/usr/local/bin/node" })
+    expect(body.update).toEqual({ current: CLI_VERSION, latest: CLI_VERSION, available: false })
   })
 })

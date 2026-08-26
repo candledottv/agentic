@@ -1,0 +1,36 @@
+class Candle < Formula
+  desc "Authorize a device, manage API keys and wallets, run the MCP server"
+  homepage "https://candle.tv"
+  version "__VERSION__"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/candledottv/agentic/releases/download/cli-v__VERSION__/candle-__VERSION__-darwin-arm64.tar.gz"
+      sha256 "__SHA_darwin_arm64__"
+    end
+    on_intel do
+      url "https://github.com/candledottv/agentic/releases/download/cli-v__VERSION__/candle-__VERSION__-darwin-x64.tar.gz"
+      sha256 "__SHA_darwin_x64__"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/candledottv/agentic/releases/download/cli-v__VERSION__/candle-__VERSION__-linux-arm64.tar.gz"
+      sha256 "__SHA_linux_arm64__"
+    end
+    on_intel do
+      url "https://github.com/candledottv/agentic/releases/download/cli-v__VERSION__/candle-__VERSION__-linux-x64.tar.gz"
+      sha256 "__SHA_linux_x64__"
+    end
+  end
+
+  def install
+    bin.install "candle"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/candle --version")
+  end
+end

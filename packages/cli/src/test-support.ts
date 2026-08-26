@@ -176,12 +176,26 @@ export function createTestDeps(overrides: Partial<Deps> & { fetch: typeof fetch 
     readFile: async (path: string) => {
       throw new Error(`no readFile fake configured (asked for ${path})`)
     },
+    readBytes: async (path: string) => {
+      throw new Error(`no readBytes fake configured (asked for ${path})`)
+    },
     writeFile: async (path: string) => {
       throw new Error(`no writeFile fake configured (asked for ${path})`)
     },
     promptSecret: async () => {
       throw new Error("no promptSecret fake configured")
     },
+    execPath: "/usr/local/bin/node",
+    argv1: "/usr/local/lib/node_modules/@candledottv/cli/dist/index.js",
+    platformKey: "linux-x64",
+    realpath: async (path: string) => path,
+    writeBytes: async (path: string) => {
+      throw new Error(`no writeBytes fake configured (asked for ${path})`)
+    },
+    rename: async (from: string) => {
+      throw new Error(`no rename fake configured (asked for ${from})`)
+    },
+    unlink: async () => {},
     ...overrides,
   }
 }

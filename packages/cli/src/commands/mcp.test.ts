@@ -36,6 +36,10 @@ function captureRunChild(exitCode = 0): {
   }
 }
 
+const unusedFetch = (() => {
+  throw new Error("fetch should not be called for this test")
+}) as unknown as typeof fetch
+
 describe("mcp", () => {
   test("launches npx @candledottv/mcp with the stored key and resolved API URL in the child env", async () => {
     const { fetch } = createRoutedFetch({})
@@ -133,7 +137,12 @@ describe("mcp", () => {
     expect(code).toBe(0)
     expect(calls).toHaveLength(0)
     expect(JSON.parse(stdout.text)).toEqual({
-      mcpServers: { candle: { command: "candle", args: ["mcp", "--read-only"] } },
+      mcpServers: {
+        candle: {
+          command: "/usr/local/bin/node",
+          args: ["/usr/local/lib/node_modules/@candledottv/cli/dist/index.js", "mcp", "--read-only"],
+        },
+      },
     })
   })
 
@@ -153,6 +162,41 @@ describe("mcp", () => {
   })
 })
 
+describe("mcp --print-config uses an absolute command", () => {
+  test("a compiled binary names its own path", async () => {
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch: unusedFetch, stdout, execPath: "/Users/a/.local/bin/candle" })
+    expect(await run(["mcp", "--print-config", "--read-only"], deps)).toBe(0)
+    const block = JSON.parse(stdout.text)
+    expect(block.mcpServers.candle).toEqual({ command: "/Users/a/.local/bin/candle", args: ["mcp", "--read-only"] })
+  })
+  test("a Homebrew install names the opt link that survives brew upgrade", async () => {
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch: unusedFetch,
+      stdout,
+      execPath: "/opt/homebrew/bin/candle",
+      realpath: async () => "/opt/homebrew/Cellar/candle/0.6.0/bin/candle",
+    })
+    expect(await run(["mcp", "--print-config"], deps)).toBe(0)
+    expect(JSON.parse(stdout.text).mcpServers.candle.command).toBe("/opt/homebrew/opt/candle/bin/candle")
+  })
+  test("a script install names node and the script, so a GUI host needs no PATH", async () => {
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch: unusedFetch,
+      stdout,
+      execPath: "/usr/local/bin/node",
+      argv1: "/usr/local/lib/node_modules/@candledottv/cli/dist/index.js",
+    })
+    expect(await run(["mcp", "--print-config"], deps)).toBe(0)
+    expect(JSON.parse(stdout.text).mcpServers.candle).toEqual({
+      command: "/usr/local/bin/node",
+      args: ["/usr/local/lib/node_modules/@candledottv/cli/dist/index.js", "mcp"],
+    })
+  })
+})
+
 describe("profiles", () => {
   test("--print-config prints the identity line to stderr, using the profile's cached account, and stdout stays pure JSON", async () => {
     const { fetch } = createRoutedFetch({})
@@ -169,7 +213,12 @@ describe("profiles", () => {
     expect(calls).toHaveLength(0)
     expect(stderr.text).toContain("Profile: staging   Account: A at ")
     expect(JSON.parse(stdout.text)).toEqual({
-      mcpServers: { candle: { command: "candle", args: ["mcp", "--read-only"] } },
+      mcpServers: {
+        candle: {
+          command: "/usr/local/bin/node",
+          args: ["/usr/local/lib/node_modules/@candledottv/cli/dist/index.js", "mcp", "--read-only"],
+        },
+      },
     })
   })
 

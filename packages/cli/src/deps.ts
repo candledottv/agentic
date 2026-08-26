@@ -17,6 +17,7 @@
 
 import type { CliConfig, ProfileConfig } from "./config"
 import { profileSecretRef } from "./profiles"
+import type { VerifyResult } from "./release-verify"
 import type { SecretStore } from "./secret-store"
 import { SECRET_REFS } from "./secret-store"
 
@@ -58,6 +59,10 @@ export interface Deps {
   /** Reads a UTF-8 file (wallets import's `--key-file`). Injected so tests never touch the real
    * filesystem and a missing-file failure is testable with a plain throwing fake. */
   readFile: (path: string) => Promise<string>
+  /** Reads a file as raw bytes (`verify`'s asset, and the binary `update` downloads). Separate
+   * from `readFile` rather than an option on it: what a signature covers is the byte sequence,
+   * and a UTF-8 decode of a binary does not round trip, so the two must not share a path. */
+  readBytes: (path: string) => Promise<Uint8Array>
   /** Writes a UTF-8 file with owner-only permissions (wallets import's `--signer-out`). The real
    * implementation writes mode 0600: the content is a signing private key. */
   writeFile: (path: string, content: string) => Promise<void>
@@ -65,6 +70,25 @@ export interface Deps {
    * `--key-file` is given). The real implementation needs a TTY and throws without one, which is
    * the signal to use `--key-file` in scripts. */
   promptSecret: (promptText: string) => Promise<string>
+  /** This process's executable. A compiled binary reports itself; node or bun report the runtime.
+   * Injected so update's install-method detection is testable without running a real binary. */
+  execPath: string
+  /** The script path when a runtime is running the CLI; `process.argv[1]`. Unused for a compiled
+   * binary. `mcp --print-config`'s script-install branch needs both: `execPath` alone (node or
+   * bun) is not a runnable MCP server command, so a GUI host needs the script path too. */
+  argv1: string
+  /** The release target this machine maps to (release.ts platformKey), or null off the four. */
+  platformKey: string | null
+  /** Resolves symlinks; Homebrew installs a symlink in bin/ pointing into the Cellar. */
+  realpath: (path: string) => Promise<string>
+  /** Writes bytes with mode 0755: the only writer of a new binary. */
+  writeBytes: (path: string, bytes: Uint8Array) => Promise<void>
+  /** Atomic replace on one filesystem; update writes next to the binary and renames over it. */
+  rename: (from: string, to: string) => Promise<void>
+  unlink: (path: string) => Promise<void>
+  /** Injected so update's tests can stub the Sigstore verifier; the real deps leave it undefined
+   * and update uses release-verify.ts. */
+  verify?: (bytes: Uint8Array, bundle: unknown, identityUri: string, issuer: string) => VerifyResult
   /** Runs a child process to completion with stdio inherited, resolving to its exit code.
    * `candle mcp` launches the MCP server through this exclusively, so a test can assert the
    * exact command, args, and env without spawning anything -- the same seam discipline as
