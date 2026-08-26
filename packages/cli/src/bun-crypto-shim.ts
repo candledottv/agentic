@@ -8,6 +8,10 @@
  * signed by 0/3 keys". The shim supplies sha256 for EC keys only when no digest was given and
  * leaves every other call untouched.
  *
+ * Reported upstream as https://github.com/oven-sh/bun/issues/40559. Remove the shim only once the
+ * Bun pinned in packages/cli/.bun-version returns true for `crypto.verify(null, data, ecKey, sig)`
+ * on a valid SHA-256 ECDSA signature (bun-crypto-shim.test.ts is the check).
+ *
  * Three things about it are load-bearing, all measured in Task 1's spike:
  *   - tuf-js's getPublicKey() passes `{ key, padding }` wrappers rather than bare KeyObjects,
  *     which is why the key is unwrapped first. Handling only KeyObject fixed @sigstore/verify and
