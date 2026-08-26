@@ -5385,7 +5385,7 @@ async function resolveApiKey(deps, profile) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.6.1";
+var CLI_VERSION = "0.6.2";
 
 // src/commands/auth.ts
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
