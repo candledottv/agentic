@@ -91,6 +91,10 @@ jobs:
           cd ..
           bun ../../scripts/release/write-manifest.mjs "${VERSION}" dist-bin
       - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+        with:
+          # The signing tool is pinned like everything else in this job: every release so far has
+          # run with cosign v2.5.2, and --new-bundle-format below needs 2.2 or newer.
+          cosign-release: "v2.5.2"
       - name: Sign the binaries and SHA256SUMS (keyless)
         working-directory: packages/cli/dist-bin
         run: |
