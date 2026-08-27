@@ -20,9 +20,11 @@
  *
  * Secrets travel exclusively via the child's STDIN or its stdout, never argv, mirroring the
  * CLI's own stores: macOS `security` only takes secrets as a `-w` argv flag in its normal form,
- * so writes go through `security -i` (command-on-stdin mode) instead. The stored value is
- * base64 by construction, so embedding it in the quoted `-w "<value>"` token cannot break out
- * of the quoting; `assertStorable` makes that invariant checked rather than assumed.
+ * so writes go through `security -i` (command-on-stdin mode) instead. BOTH interpolated halves of
+ * that command line are checked rather than assumed: `assertStorable` for the `-w "<value>"` token
+ * and `assertSafeRef` for the `-a "<ref>"` one. The value check alone is not enough, and saying so
+ * here is the point: this doc previously reasoned only about the value, and the unchecked ref was
+ * a command-injection path through `security -i` for anything that could influence a wallet id.
  */
 
 import { spawn, spawnSync } from "node:child_process"
@@ -51,6 +53,32 @@ function storedSignerToPem(stored: string): string {
 function assertStorable(value: string): void {
   if (!/^[A-Za-z0-9+/]+=*$/.test(value)) {
     throw new Error("Refusing to store a signer value that is not single-line base64")
+  }
+}
+
+/**
+ * The account/reference half of the same quoting problem `assertStorable` closes for the value.
+ *
+ * `security -i` executes each LINE of its stdin as one command, and `set` and `delete` both build
+ * that line by interpolating the ref into a quoted `-a "<ref>"` token. A `"` closes the token
+ * early, a `\` escapes the closing quote, and a CR or LF ends the command outright and starts a
+ * second one, for instance a `delete-generic-password` against an account the caller chose. Mirrors
+ * `UNSAFE_FOR_SECURITY_COMMAND_LINE` in the CLI's keychain.ts, which has carried this guard on the
+ * VALUE from the start; the ref was unchecked in both copies.
+ *
+ * A ref is a server-issued linked-wallet id, so this should never fire in practice. That is exactly
+ * why it is a check rather than a comment: nothing else stops a hostile or malfunctioning API
+ * response from running `security` batch commands as the local user.
+ */
+const UNSAFE_FOR_SECURITY_COMMAND_LINE = /["\\\n\r]/
+
+function assertSafeRef(ref: string): void {
+  if (UNSAFE_FOR_SECURITY_COMMAND_LINE.test(ref)) {
+    throw new Error(
+      "Refusing to use this wallet reference against the macOS Keychain: it contains a quote, " +
+        "backslash, or newline, which could break out of the quoted argument on security's " +
+        "command-on-stdin line",
+    )
   }
 }
 
@@ -131,6 +159,7 @@ export class KeychainSecretStore implements SecretStore {
     const value = pemToStoredSigner(privateKeyPem)
     assertStorable(value)
     if (this.backend === "security") {
+      assertSafeRef(ref)
       const command = `add-generic-password -U -s "${SERVICE}" -a "${ref}" -w "${value}"\n`
       const result = await this.exec("security", ["-i"], command)
       if (result.status !== 0) throw new Error(`Failed to store signer in the macOS Keychain (${result.status})`)
@@ -147,7 +176,10 @@ export class KeychainSecretStore implements SecretStore {
   async delete(walletRef: string): Promise<void> {
     const ref = walletSignerRef(walletRef)
     // Best-effort, matching the SecretStore contract: deleting a never-stored ref is a no-op.
+    // The ref check is NOT best-effort: an unsafe ref here would inject a second command just as
+    // it would on the write path, so it throws rather than silently doing something else.
     if (this.backend === "security") {
+      assertSafeRef(ref)
       await this.exec("security", ["-i"], `delete-generic-password -s "${SERVICE}" -a "${ref}"\n`)
       return
     }

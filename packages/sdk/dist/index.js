@@ -995,6 +995,12 @@ function assertStorable(value) {
     throw new Error("Refusing to store a signer value that is not single-line base64");
   }
 }
+var UNSAFE_FOR_SECURITY_COMMAND_LINE = /["\\\n\r]/;
+function assertSafeRef(ref) {
+  if (UNSAFE_FOR_SECURITY_COMMAND_LINE.test(ref)) {
+    throw new Error("Refusing to use this wallet reference against the macOS Keychain: it contains a quote, " + "backslash, or newline, which could break out of the quoted argument on security's " + "command-on-stdin line");
+  }
+}
 var RUN_TIMEOUT_MS = 1e4;
 var realExec = (binary, args, stdin) => new Promise((resolvePromise, reject) => {
   const child = spawn(binary, args, { stdio: ["pipe", "pipe", "ignore"], env: process.env });
@@ -1054,6 +1060,7 @@ class KeychainSecretStore {
     const value = pemToStoredSigner(privateKeyPem);
     assertStorable(value);
     if (this.backend === "security") {
+      assertSafeRef(ref);
       const command = `add-generic-password -U -s "${SERVICE}" -a "${ref}" -w "${value}"
 `;
       const result2 = await this.exec("security", ["-i"], command);
@@ -1068,6 +1075,7 @@ class KeychainSecretStore {
   async delete(walletRef) {
     const ref = walletSignerRef(walletRef);
     if (this.backend === "security") {
+      assertSafeRef(ref);
       await this.exec("security", ["-i"], `delete-generic-password -s "${SERVICE}" -a "${ref}"
 `);
       return;

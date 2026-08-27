@@ -54,6 +54,29 @@ export const READ_ONLY_TOOL_NAMES = [
 ] as const
 
 /**
+ * Every environment variable that carries a Candle credential, plus the tool allowlist, cleared
+ * from the MCP child's environment before the launch re-adds what it actually resolved.
+ *
+ * `CANDLE_API_KEY` and `CANDLE_DEVICE_TOKEN` are the CLI's own env overrides (see `deps.ts`),
+ * `CANDLE_AGENT_API_KEY` is what the server itself reads, and `CANDLE_KEYRING_PASSPHRASE` unlocks
+ * the encrypted signer store. Deliberately NOT listed: `CANDLE_API_URL`, `CANDLE_PROFILE`,
+ * `CANDLE_CONFIG_DIR` and the release/install variables, which carry no secret and which the child
+ * (or a wrapper around it) may legitimately need.
+ */
+export const CREDENTIAL_ENV_NAMES = [
+  "CANDLE_API_KEY",
+  "CANDLE_AGENT_API_KEY",
+  "CANDLE_DEVICE_TOKEN",
+  "CANDLE_KEYRING_PASSPHRASE",
+  "CANDLE_MCP_TOOLS",
+] as const
+
+/** Those names mapped to `undefined`, for spreading over an inherited environment. */
+export function clearedCredentialEnv(): Record<string, undefined> {
+  return Object.fromEntries(CREDENTIAL_ENV_NAMES.map((name) => [name, undefined]))
+}
+
+/**
  * Whether a `candle mcp` invocation would act as the profile's account. `--read-only` launches
  * the server with no key at all (see the launch below), pinned to the four tools that
  * authenticate with nothing, so there is no account for the dispatch-level guard to verify and no
@@ -171,6 +194,14 @@ export async function mcp(args: string[], ctx: CommandContext): Promise<number> 
 
   const childEnv: Record<string, string | undefined> = {
     ...deps.env,
+    // Clear every inherited Candle credential BEFORE re-adding the one this launch resolved. The
+    // spread above is what gives the server PATH, HOME and the rest of what npx needs, and it used
+    // to carry these along with it: under --read-only that handed a server advertised as keyless a
+    // fund-moving key and the encrypted-store passphrase anyway, and on a normal launch it let a
+    // stale ambient key outrank the profile whose identity line was just printed. Clearing first
+    // makes the key set below the only one the child can see. CANDLE_MCP_TOOLS is cleared for the
+    // same reason: an inherited allowlist must not widen what --read-only or --tools pinned.
+    ...clearedCredentialEnv(),
     CANDLE_API_URL: apiUrl,
     ...(apiKey ? { CANDLE_AGENT_API_KEY: apiKey } : {}),
     ...(toolAllowlist ? { CANDLE_MCP_TOOLS: toolAllowlist } : {}),

@@ -20,9 +20,11 @@
  *
  * Secrets travel exclusively via the child's STDIN or its stdout, never argv, mirroring the
  * CLI's own stores: macOS `security` only takes secrets as a `-w` argv flag in its normal form,
- * so writes go through `security -i` (command-on-stdin mode) instead. The stored value is
- * base64 by construction, so embedding it in the quoted `-w "<value>"` token cannot break out
- * of the quoting; `assertStorable` makes that invariant checked rather than assumed.
+ * so writes go through `security -i` (command-on-stdin mode) instead. BOTH interpolated halves of
+ * that command line are checked rather than assumed: `assertStorable` for the `-w "<value>"` token
+ * and `assertSafeRef` for the `-a "<ref>"` one. The value check alone is not enough, and saying so
+ * here is the point: this doc previously reasoned only about the value, and the unchecked ref was
+ * a command-injection path through `security -i` for anything that could influence a wallet id.
  */
 import type { SecretStore } from "./secret-store";
 export interface ExecResult {

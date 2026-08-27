@@ -234,6 +234,20 @@ describe("KeychainSecretStore (macOS `security`)", () => {
     expect(argv).toBe("")
     expect(stdin).toBe("")
   })
+
+  test("set and delete reject an unsafe REF, not just an unsafe value, before spawning anything", async () => {
+    const store = new KeychainSecretStore()
+    // The ref is interpolated into the same quoted command line as the value, so it is the same
+    // injection: close the -a token, newline, and the rest of the line is a second command.
+    const hostile = `device_token"\ndelete-generic-password -s "tv.candle.cli" -a "api_key`
+    await expect(store.set(hostile, "dtok_value")).rejects.toThrow(/quote, backslash, or newline/)
+    await expect(store.delete(hostile)).rejects.toThrow(/quote, backslash, or newline/)
+
+    const argv = await readFile(env.argvCapture, "utf8")
+    const stdin = await readFile(env.stdinCapture, "utf8")
+    expect(argv).toBe("")
+    expect(stdin).toBe("")
+  })
 })
 
 describe("SecretToolSecretStore (linux `secret-tool`)", () => {

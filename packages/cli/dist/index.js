@@ -6178,6 +6178,16 @@ var READ_ONLY_TOOL_NAMES = [
   "candle_token_forensics",
   "candle_get_agent_profile"
 ];
+var CREDENTIAL_ENV_NAMES = [
+  "CANDLE_API_KEY",
+  "CANDLE_AGENT_API_KEY",
+  "CANDLE_DEVICE_TOKEN",
+  "CANDLE_KEYRING_PASSPHRASE",
+  "CANDLE_MCP_TOOLS"
+];
+function clearedCredentialEnv() {
+  return Object.fromEntries(CREDENTIAL_ENV_NAMES.map((name) => [name, undefined]));
+}
 function mcpActsAsIdentity(args) {
   return !args.includes("--read-only");
 }
@@ -6248,6 +6258,7 @@ async function mcp(args, ctx) {
   }
   const childEnv = {
     ...deps.env,
+    ...clearedCredentialEnv(),
     CANDLE_API_URL: apiUrl,
     ...apiKey ? { CANDLE_AGENT_API_KEY: apiKey } : {},
     ...toolAllowlist ? { CANDLE_MCP_TOOLS: toolAllowlist } : {}
@@ -10464,6 +10475,11 @@ import { spawn, spawnSync } from "node:child_process";
 var SERVICE = "tv.candle.cli";
 var PROBE_ACCOUNT = "tv.candle.cli.probe";
 var UNSAFE_FOR_SECURITY_COMMAND_LINE = /["\\\n\r]/;
+function assertSafeRef(ref) {
+  if (UNSAFE_FOR_SECURITY_COMMAND_LINE.test(ref)) {
+    throw new Error("Refusing to use this keychain reference: it contains a quote, backslash, or newline, which " + "could break out of the quoted argument on security's command-on-stdin line");
+  }
+}
 var RUN_TIMEOUT_MS = 1e4;
 function run(bin, args, stdin) {
   return new Promise((resolve, reject) => {
@@ -10518,6 +10534,7 @@ class KeychainSecretStore {
     return result.stdout.replace(/\n$/, "");
   }
   async set(ref, value) {
+    assertSafeRef(ref);
     if (UNSAFE_FOR_SECURITY_COMMAND_LINE.test(value)) {
       throw new Error("Refusing to store this secret in the macOS Keychain: it contains a quote, backslash, or " + "newline, which could break out of the quoted argument on security's command-on-stdin line");
     }
@@ -10529,6 +10546,7 @@ class KeychainSecretStore {
     }
   }
   async delete(ref) {
+    assertSafeRef(ref);
     const command = `delete-generic-password -s "${SERVICE}" -a "${ref}"
 `;
     await run(this.binary, ["-i"], command);

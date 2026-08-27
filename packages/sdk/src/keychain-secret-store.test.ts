@@ -73,6 +73,30 @@ describe("KeychainSecretStore (security backend)", () => {
     expect(stdin).not.toContain("BEGIN PRIVATE KEY")
   })
 
+  test("set refuses a wallet ref that could inject a second security command, before spawning", async () => {
+    const { calls, exec } = fakeExec(() => ({ status: 0, stdout: "" }))
+    const store = new KeychainSecretStore({ backend: "security", exec })
+
+    // The injection: closing the -a token and adding a newline makes security -i run whatever
+    // follows as its own command. This ref would delete another entry during a plain write.
+    const hostile = `lw_abc"\ndelete-generic-password -s "tv.candle.cli" -a "wallet_signer_lw_victim`
+    await expect(store.set(hostile, PEM)).rejects.toThrow(/quote, backslash, or newline/)
+    await expect(store.set("lw\\abc", PEM)).rejects.toThrow()
+    await expect(store.set("lw\rabc", PEM)).rejects.toThrow()
+    // Nothing spawned: the guard runs before the command line is built.
+    expect(calls).toHaveLength(0)
+  })
+
+  test("delete refuses the same unsafe ref rather than silently running something else", async () => {
+    const { calls, exec } = fakeExec(() => ({ status: 0, stdout: "" }))
+    const store = new KeychainSecretStore({ backend: "security", exec })
+
+    await expect(store.delete(`lw_abc"\nadd-generic-password -s "x" -a "y" -w "z`)).rejects.toThrow(
+      /quote, backslash, or newline/,
+    )
+    expect(calls).toHaveLength(0)
+  })
+
   test("round trip: set's stored form is exactly what get re-armors back to the original PEM", async () => {
     let storedValue = ""
     const { exec } = fakeExec((call) => {

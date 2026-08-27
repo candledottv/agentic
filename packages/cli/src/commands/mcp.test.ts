@@ -79,6 +79,54 @@ describe("mcp", () => {
     expect(calls[0]?.env.CANDLE_MCP_TOOLS).toBe(READ_ONLY_TOOL_NAMES.join(","))
   })
 
+  test("--read-only strips every inherited Candle credential from the child env", async () => {
+    const { fetch } = createRoutedFetch({})
+    const { calls, runChild } = captureRunChild(0)
+    // The leak this closes: the child env was built by spreading the parent's, so a credential
+    // that was merely PRESENT in the environment reached a server advertised as keyless. Resolving
+    // the key to undefined was never enough on its own.
+    const env = {
+      CANDLE_API_KEY: "cndl_live_ambient",
+      CANDLE_AGENT_API_KEY: "cndl_live_agent",
+      CANDLE_DEVICE_TOKEN: "device_token_ambient",
+      CANDLE_KEYRING_PASSPHRASE: "passphrase_ambient",
+      PATH: "/usr/bin",
+    }
+    const code = await run(["mcp", "--read-only"], createTestDeps({ fetch, runChild, env }))
+
+    expect(code).toBe(0)
+    expect(calls[0]?.env.CANDLE_API_KEY).toBeUndefined()
+    expect(calls[0]?.env.CANDLE_AGENT_API_KEY).toBeUndefined()
+    expect(calls[0]?.env.CANDLE_DEVICE_TOKEN).toBeUndefined()
+    expect(calls[0]?.env.CANDLE_KEYRING_PASSPHRASE).toBeUndefined()
+    // Non-credential inherited environment still reaches the child: npx needs it.
+    expect(calls[0]?.env.PATH).toBe("/usr/bin")
+  })
+
+  test("a normal launch passes only the resolved key, never an ambient one", async () => {
+    const { fetch } = createRoutedFetch({})
+    const { calls, runChild } = captureRunChild(0)
+    const store = createFakeStore({ api_key: "cndl_live_from_store" })
+    // An ambient CANDLE_AGENT_API_KEY must not survive next to the resolved key: whichever the
+    // child preferred, the identity line the user just read would be describing a different one.
+    const env = { CANDLE_AGENT_API_KEY: "cndl_live_stale", CANDLE_KEYRING_PASSPHRASE: "passphrase_ambient" }
+    const code = await run(["mcp"], createTestDeps({ fetch, store, runChild, env }))
+
+    expect(code).toBe(0)
+    expect(calls[0]?.env.CANDLE_AGENT_API_KEY).toBe("cndl_live_from_store")
+    expect(calls[0]?.env.CANDLE_KEYRING_PASSPHRASE).toBeUndefined()
+  })
+
+  test("an inherited CANDLE_MCP_TOOLS cannot widen what --read-only pinned", async () => {
+    const { fetch } = createRoutedFetch({})
+    const { calls, runChild } = captureRunChild(0)
+    const env = { CANDLE_MCP_TOOLS: MCP_TOOL_NAMES.join(",") }
+    const code = await run(["mcp", "--read-only"], createTestDeps({ fetch, runChild, env }))
+
+    expect(code).toBe(0)
+    expect(calls[0]?.env.CANDLE_MCP_TOOLS).toBe(READ_ONLY_TOOL_NAMES.join(","))
+  })
+
   test("--tools passes a validated allowlist through CANDLE_MCP_TOOLS", async () => {
     const { fetch } = createRoutedFetch({})
     const { calls, runChild } = captureRunChild(0)

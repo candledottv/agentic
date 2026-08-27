@@ -28,6 +28,25 @@ const PROBE_ACCOUNT = "tv.candle.cli.probe"
 // to make that assumption true by construction rather than merely documented.
 const UNSAFE_FOR_SECURITY_COMMAND_LINE = /["\\\n\r]/
 
+/**
+ * The same rule applied to the ACCOUNT half of the command line, `-a "<ref>"`.
+ *
+ * The guard above shipped on the value only, which left the ref as an injection path on both the
+ * write and the delete line: a ref carrying a quote plus a newline ends the intended command and
+ * starts a second one of the caller's choosing. Refs here are internal constants (`device_token`,
+ * `api_key`) or server-issued wallet ids rather than typed input, so this should never fire; it
+ * exists so the assumption is enforced rather than trusted. `packages/sdk/src/keychain-secret-store.ts`
+ * carries the identical check for the same command line.
+ */
+function assertSafeRef(ref: string): void {
+  if (UNSAFE_FOR_SECURITY_COMMAND_LINE.test(ref)) {
+    throw new Error(
+      "Refusing to use this keychain reference: it contains a quote, backslash, or newline, which " +
+        "could break out of the quoted argument on security's command-on-stdin line",
+    )
+  }
+}
+
 interface RunResult {
   status: number
   stdout: string
@@ -115,6 +134,7 @@ export class KeychainSecretStore implements SecretStore {
   }
 
   async set(ref: string, value: string): Promise<void> {
+    assertSafeRef(ref)
     if (UNSAFE_FOR_SECURITY_COMMAND_LINE.test(value)) {
       throw new Error(
         "Refusing to store this secret in the macOS Keychain: it contains a quote, backslash, or " +
@@ -132,6 +152,9 @@ export class KeychainSecretStore implements SecretStore {
   }
 
   async delete(ref: string): Promise<void> {
+    // Throws rather than degrading to best-effort: an unsafe ref injects a second command here
+    // exactly as it would on the write path, which is not something to swallow.
+    assertSafeRef(ref)
     const command = `delete-generic-password -s "${SERVICE}" -a "${ref}"\n`
     // Best-effort: deleting an entry that was never stored is a no-op, matching SecretStore's
     // contract, so a nonzero exit here (e.g. "could not be found") is not treated as failure.
