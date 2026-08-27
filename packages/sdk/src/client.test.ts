@@ -1268,7 +1268,7 @@ describe("linked-wallet signing relay + one-shot flows", () => {
       expect(rpcError.data).toEqual({ err: "BlockhashNotFound", logs: ["a", "b"] })
     })
 
-    test("a broadcast JSON-RPC error inlines data.err and the first logs into the thrown message", async () => {
+    test("a broadcast JSON-RPC error inlines data.err and the LAST logs into the thrown message", async () => {
       const { client } = makeClient({ solanaRpcUrl: SOLANA_RPC }, [
         json(200, {
           jsonrpc: "2.0",
@@ -1291,9 +1291,15 @@ describe("linked-wallet signing relay + one-shot flows", () => {
       expect(rpcError.message).toContain("Transaction simulation failed: Blockhash not found")
       // the structured cause is now inlined so the message is self-explaining
       expect(rpcError.message).toContain("BlockhashNotFound")
-      expect(rpcError.message).toContain("Program log: A")
-      // only the first few logs are inlined, not an unbounded dump
-      expect(rpcError.message).not.toContain("Program log: D")
+      /*
+        The TAIL. An aggregator-built transaction opens with ComputeBudget frames, so a head
+        slice reliably spent the preview on boilerplate and cut off the frame that actually
+        failed -- reported by an integrator on 2026-08-27 who had exactly that in their logs.
+      */
+      expect(rpcError.message).toContain("Program log: D")
+      expect(rpcError.message).not.toContain("Program log: A")
+      // still bounded, not an unbounded dump; the full array stays on .data.logs
+      expect((rpcError.data as { logs: string[] }).logs).toHaveLength(4)
       // structured data is still attached, unchanged
       expect((rpcError.data as { err: string }).err).toBe("BlockhashNotFound")
     })

@@ -87,6 +87,14 @@ class CandleApiError extends Error {
       this.field = args.field;
   }
 }
+function isSolanaRpcErrorData(data) {
+  if (typeof data !== "object" || data === null)
+    return false;
+  const candidate = data;
+  if (!("err" in candidate))
+    return false;
+  return Array.isArray(candidate.logs) && candidate.logs.every((line) => typeof line === "string");
+}
 
 class JsonRpcError extends Error {
   code;
@@ -234,6 +242,15 @@ async function waitForReceipt(rpc, txHash, opts = {}) {
   }
 }
 
+// src/internal/rpc-endpoint.ts
+function describeRpcEndpoint(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "<unparseable rpc endpoint>";
+  }
+}
+
 // src/wallet-import.ts
 import { Chacha20Poly1305 } from "@hpke/chacha20poly1305";
 import { CipherSuite, DhkemP256HkdfSha256, HkdfSha256 } from "@hpke/core";
@@ -346,7 +363,7 @@ function withRpcLagHint(error) {
   });
 }
 function formatJsonRpcErrorMessage(method, url, rpcError) {
-  const base = `JSON-RPC ${method} against ${url} was rejected (code ${rpcError.code}): ${rpcError.message}`;
+  const base = `JSON-RPC ${method} against ${describeRpcEndpoint(url)} was rejected (code ${rpcError.code}): ${rpcError.message}`;
   const data = rpcError.data;
   if (typeof data !== "object" || data === null)
     return base;
@@ -356,7 +373,8 @@ function formatJsonRpcErrorMessage(method, url, rpcError) {
     parts.push(`err: ${typeof d.err === "string" ? d.err : JSON.stringify(d.err)}`);
   }
   if (Array.isArray(d.logs) && d.logs.length > 0) {
-    parts.push(`logs: ${d.logs.slice(0, 3).join(" | ")}`);
+    const logs = d.logs.filter((line) => typeof line === "string");
+    parts.push(`logs: ${logs.slice(-3).join(" | ")}`);
   }
   return parts.length > 0 ? `${base} [${parts.join("; ")}]` : base;
 }
@@ -910,7 +928,7 @@ class CandleClient {
     });
     const text = await res.text();
     if (!res.ok) {
-      throw new Error(`JSON-RPC ${method} against ${url} failed: HTTP ${res.status}: ${text}`);
+      throw new Error(`JSON-RPC ${method} against ${describeRpcEndpoint(url)} failed: HTTP ${res.status}: ${text}`);
     }
     const parsed = JSON.parse(text);
     if (parsed.error) {
@@ -921,7 +939,7 @@ class CandleClient {
       });
     }
     if (typeof parsed.result !== "string") {
-      throw new Error(`JSON-RPC ${method} against ${url} returned a non-string result: ${JSON.stringify(parsed.result)}`);
+      throw new Error(`JSON-RPC ${method} against ${describeRpcEndpoint(url)} returned a non-string result: ${JSON.stringify(parsed.result)}`);
     }
     return parsed.result;
   }
@@ -933,7 +951,7 @@ class CandleClient {
     });
     const text = await res.text();
     if (!res.ok) {
-      throw new Error(`JSON-RPC ${method} against ${url} failed: HTTP ${res.status}: ${text}`);
+      throw new Error(`JSON-RPC ${method} against ${describeRpcEndpoint(url)} failed: HTTP ${res.status}: ${text}`);
     }
     const parsed = JSON.parse(text);
     if (parsed.error) {
@@ -1175,6 +1193,7 @@ function verifyWebhookSignature(secret, header, body, nowSec, toleranceSec = 300
 }
 export {
   verifyWebhookSignature,
+  isSolanaRpcErrorData,
   generateSignerKeypair,
   encryptWalletKeyForImport,
   KeychainSecretStore,

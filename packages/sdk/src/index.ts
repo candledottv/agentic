@@ -51,8 +51,8 @@ export type {
   VerifyResult,
 } from "./client"
 export { CandleClient } from "./client"
-export type { CandleErrorPayload } from "./errors"
-export { CandleApiError, JsonRpcError } from "./errors"
+export type { CandleErrorPayload, SolanaRpcErrorData } from "./errors"
+export { CandleApiError, isSolanaRpcErrorData, JsonRpcError } from "./errors"
 export { KeychainSecretStore } from "./keychain-secret-store"
 export type { SecretStore } from "./secret-store"
 export { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store"

@@ -39,6 +39,7 @@ import {
   fetchNonce,
   waitForReceipt,
 } from "./evm-tx"
+import { describeRpcEndpoint } from "./internal/rpc-endpoint"
 import type { SecretStore } from "./secret-store"
 import { encryptWalletKeyForImport, type WalletChain } from "./wallet-import"
 
@@ -497,9 +498,30 @@ export interface BuildTradeRequest {
   quoteAsset?: "sol" | "usdc" | "cndl"
 }
 
-/** The platform fee actually itemized on this trade. `treasury` is null only when the fee is disabled server-side (unset AGENT_FEE_TREASURY_*). */
+/**
+ * The platform fee actually itemized on this trade.
+ *
+ * WHICH SIDE IT COMES FROM, because it is not symmetric and cost-basis math depends on it.
+ * The fee is always denominated in the QUOTE asset, on both chains and both sides. What differs
+ * is the amount it is charged on:
+ *
+ * - **Buy**: charged on what you SPEND. `feeRaw = amountRaw * bps / 10000`, and it is an
+ *   ADDITIONAL transfer -- the full `amountRaw` still enters the swap. So the wallet parts with
+ *   `amountRaw + feeRaw`, and `expectedOutRaw`/`minOutRaw` (the token you receive) are
+ *   unaffected by the fee entirely.
+ * - **Sell**: charged on what you RECEIVE. `feeRaw = expectedOutRaw * bps / 10000`, drawn from
+ *   the swap's own output in the same transaction. So `expectedOutRaw` and `minOutRaw` are
+ *   **gross**, and the wallet nets `expectedOutRaw - feeRaw`.
+ *
+ * A caller computing realised PnL therefore subtracts the fee on a buy from the cost side, and
+ * on a sell from the proceeds -- never from the token amount on either.
+ *
+ * `treasury` is null only when the fee is disabled server-side (unset AGENT_FEE_TREASURY_*), in
+ * which case `feeRaw` is "0" and `bps` is 0; the pair is never a nonzero rate with a zero amount.
+ */
 export interface TradeFee {
   bps: number
+  /** Base units of the QUOTE asset. Never the token being traded, on either side. */
   feeRaw: string
   treasury: string | null
 }
@@ -932,7 +954,7 @@ function formatJsonRpcErrorMessage(
   url: string,
   rpcError: { code: number; message: string; data?: unknown },
 ): string {
-  const base = `JSON-RPC ${method} against ${url} was rejected (code ${rpcError.code}): ${rpcError.message}`
+  const base = `JSON-RPC ${method} against ${describeRpcEndpoint(url)} was rejected (code ${rpcError.code}): ${rpcError.message}`
   const data = rpcError.data
   if (typeof data !== "object" || data === null) return base
   const d = data as { err?: unknown; logs?: unknown }
@@ -941,7 +963,17 @@ function formatJsonRpcErrorMessage(
     parts.push(`err: ${typeof d.err === "string" ? d.err : JSON.stringify(d.err)}`)
   }
   if (Array.isArray(d.logs) && d.logs.length > 0) {
-    parts.push(`logs: ${d.logs.slice(0, 3).join(" | ")}`)
+    /*
+      The TAIL, not the head. An aggregator-built Solana transaction opens with ComputeBudget
+      frames every time, so `slice(0, 3)` reliably spent the whole preview on boilerplate and
+      cut off the frame that failed. The last lines are where the failing program and its error
+      actually are.
+
+      The full array is still on `JsonRpcError.data.logs`, untruncated. This is a preview for
+      whoever logs `error.message` -- which is most callers -- not a replacement for reading it.
+    */
+    const logs = d.logs.filter((line): line is string => typeof line === "string")
+    parts.push(`logs: ${logs.slice(-3).join(" | ")}`)
   }
   return parts.length > 0 ? `${base} [${parts.join("; ")}]` : base
 }
@@ -1335,6 +1367,24 @@ export class CandleClient {
    *
    * Requires an agent key with the `swap:write` scope -- opt-in, omitted by default when a key is
    * issued; pass `scopes: [..., "swap:write"]` to `POST /api/v1/agent/keys` to grant it.
+   *
+   * ## Rebuilding an UNCONFIRMED `clientTradeId`
+   *
+   * The idempotency notes elsewhere on this rail describe the CONFIRMED case (you get the
+   * original result back). The unconfirmed case, which a caller hits whenever a build expires
+   * before it is signed, was undocumented until an integrator asked on 2026-08-27:
+   *
+   * - **It re-quotes, and does NOT create a second intent.** There is one row per
+   *   `(account, clientTradeId)`, and a rebuild patches it in place with a fresh plan. That is
+   *   deliberate rather than incidental: a Solana blockhash dies in about 90 seconds, so a
+   *   replayed build MUST re-plan or it would hand back an artifact that can no longer land.
+   * - **The request body is conflict-checked on every build**, not only after confirmation. A
+   *   differing body under the same id is refused with `IDEMPOTENCY_CONFLICT`, exactly as the
+   *   launch rail does -- so an id cannot be reused for a different trade.
+   * - **A `failed` row is reset to `built`** by a matching rebuild, so one id survives a failed
+   *   attempt and stays the anti-double-spend key across the retry.
+   * - Beyond `BuildTradeBuiltResult.expiresAt`, the server-side states are
+   *   `built | confirmed | failed`.
    */
   async buildTrade(req: BuildTradeRequest): Promise<BuildTradeResult> {
     this.requireKey("buildTrade()")
@@ -1527,8 +1577,14 @@ export class CandleClient {
    *   read at all -- `solanaRpcUrl` is unused on this path, and there is no client-side
    *   blockhash-rebuild loop; the server controls broadcast and its own blockhash freshness now.
    *   The lower-level `buildTrade`/`signLinkedTransaction`/`broadcastSignedTransaction`/
-   *   `confirmTrade` sequence (with its own blockhash-rebuild loop) stays available, unchanged,
-   *   for callers who want to broadcast client-side instead -- see those methods' own jsdoc.
+   *   `confirmTrade` sequence stays available for callers who want to broadcast client-side.
+   *   **That path has NO blockhash-rebuild loop, and never did.**
+   *   `broadcastSignedTransaction` is a single unretried JSON-RPC send, so a caller who takes it
+   *   owns expiry themselves: a Solana blockhash dies in about 90 seconds, and a send that
+   *   arrives after that fails with no recovery unless the caller rebuilds. This doc previously
+   *   said the opposite, which was the worst possible way to be wrong -- a caller who trusted it
+   *   would lose transactions and have no reason to look for the retry that was not there.
+   *   Reported by an integrator on 2026-08-27.
    * - **Hood/EVM**: unchanged from before -- `artifacts.approval` (when present), then
    *   `artifacts.trade`, then `artifacts.feeTransfer` (when present) -- in that exact order, EACH
    *   leg's receipt awaited (`waitForReceipt`) before the next leg is even assembled, then
@@ -1567,12 +1623,16 @@ export class CandleClient {
     }
 
     if (built.chain === "solana") {
-      // The build response already carries the full unsigned transaction, blockhash included --
-      // no RPC read is needed to sign it, and the server (submit()'s target) now owns broadcast
-      // and its own blockhash freshness, so there is no rebuild-on-expiry loop here. That loop
-      // still exists, unchanged, on the lower-level opt-in broadcast path (see
-      // signLinkedTransaction()/broadcastSignedTransaction()/confirmTrade()'s own jsdoc) and on
-      // selfLaunch()'s Solana branch below.
+      /*
+        The build response already carries the full unsigned transaction, blockhash included, so
+        signing needs no RPC read, and the server (submit()'s target) owns broadcast and its own
+        blockhash freshness. There is deliberately no rebuild-on-expiry loop here.
+
+        This comment used to add that the loop "still exists on the lower-level opt-in broadcast
+        path". It does not: `broadcastSignedTransaction` is a single unretried `jsonRpcCall`. The
+        only client-side rebuild loop in this file is selfLaunch()'s Solana branch below, which
+        still signs and broadcasts itself.
+      */
       const signed = await this.signLinkedTransaction({
         linkedWalletId,
         privyWalletId,
@@ -1662,8 +1722,10 @@ export class CandleClient {
     const built = await this.buildSelfLaunch(body)
 
     if (typeof built.transaction === "string") {
-      // Same bounded rebuild-on-blockhash-expiry loop as trade()'s Solana branch above; see its
-      // comment for the full rationale. Tracked as plain fields (not the whole `built` object)
+      // The one client-side rebuild-on-blockhash-expiry loop left in this file. It used to say
+      // "same loop as trade()'s Solana branch above", which stopped being true when trade()
+      // handed broadcast to the server: selfLaunch still signs and broadcasts here, so it still
+      // owns expiry. Tracked as plain fields (not the whole `built` object)
       // because `typeof built.transaction === "string"` narrows that one property, not the full
       // BuildSelfLaunchResult union (see the Hood branch's cast below for the same caveat).
       let unsignedTransactionBase64 = built.transaction
@@ -1977,7 +2039,7 @@ export class CandleClient {
     })
     const text = await res.text()
     if (!res.ok) {
-      throw new Error(`JSON-RPC ${method} against ${url} failed: HTTP ${res.status}: ${text}`)
+      throw new Error(`JSON-RPC ${method} against ${describeRpcEndpoint(url)} failed: HTTP ${res.status}: ${text}`)
     }
     const parsed = JSON.parse(text) as { result?: unknown; error?: { code: number; message: string; data?: unknown } }
     if (parsed.error) {
@@ -1989,7 +2051,7 @@ export class CandleClient {
     }
     if (typeof parsed.result !== "string") {
       throw new Error(
-        `JSON-RPC ${method} against ${url} returned a non-string result: ${JSON.stringify(parsed.result)}`,
+        `JSON-RPC ${method} against ${describeRpcEndpoint(url)} returned a non-string result: ${JSON.stringify(parsed.result)}`,
       )
     }
     return parsed.result
@@ -2011,7 +2073,7 @@ export class CandleClient {
     })
     const text = await res.text()
     if (!res.ok) {
-      throw new Error(`JSON-RPC ${method} against ${url} failed: HTTP ${res.status}: ${text}`)
+      throw new Error(`JSON-RPC ${method} against ${describeRpcEndpoint(url)} failed: HTTP ${res.status}: ${text}`)
     }
     const parsed = JSON.parse(text) as { result?: unknown; error?: { code: number; message: string; data?: unknown } }
     if (parsed.error) {

@@ -39,9 +39,34 @@ export declare class CandleApiError extends Error {
  * Solana `-32002` "Transaction simulation failed", `data` is typically `{ err, logs }`, naming
  * the actual on-chain failure (e.g. `err: "BlockhashNotFound"`) that the top-level `message`
  * alone does not surface. `broadcastSignedTransaction()` lets this propagate unchanged, and the
- * Solana linked one-shots (`trade()`/`selfLaunch()`) inspect `.data.err` to decide whether a
- * failed broadcast is a blockhash-expiry worth rebuilding and retrying.
+ * `selfLaunch()` inspects `.data.err` to decide whether a failed broadcast is a blockhash expiry
+ * worth rebuilding and retrying. `trade()` no longer does: it hands broadcast to the server and
+ * has no client-side rebuild loop, so nothing there reads this field. (This sentence used to
+ * name both; corrected 2026-08-27 after an integrator found the pair of claims disagreed.)
  */
+/**
+ * The shape a Solana JSON-RPC error's `data` takes for a failed simulation or send.
+ *
+ * `JsonRpcError.data` stays `unknown`, deliberately: it is a third party's field and a different
+ * endpoint may answer with anything. But the doc above has always told callers what to expect,
+ * so the type is exported rather than left for each integration to hand-roll -- pair it with
+ * `isSolanaRpcErrorData` instead of asserting.
+ *
+ * `logs` is the FULL array, untruncated. The preview inside `JsonRpcError.message` is three
+ * lines from the tail; anything doing real diagnosis should read this.
+ */
+export interface SolanaRpcErrorData {
+    /** The on-chain failure, e.g. `"BlockhashNotFound"` or `{ InstructionError: [3, ...] }`. */
+    err: unknown;
+    logs: string[];
+}
+/**
+ * Whether a `JsonRpcError.data` carries the Solana `{ err, logs }` shape.
+ *
+ * Checks `logs` is an array of strings rather than trusting the key's presence, because that is
+ * the field callers iterate and a non-array there would throw at the call site instead of here.
+ */
+export declare function isSolanaRpcErrorData(data: unknown): data is SolanaRpcErrorData;
 export declare class JsonRpcError extends Error {
     /** The JSON-RPC error's numeric code, e.g. -32002. */
     readonly code: number;

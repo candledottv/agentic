@@ -482,9 +482,30 @@ export interface BuildTradeRequest {
      */
     quoteAsset?: "sol" | "usdc" | "cndl";
 }
-/** The platform fee actually itemized on this trade. `treasury` is null only when the fee is disabled server-side (unset AGENT_FEE_TREASURY_*). */
+/**
+ * The platform fee actually itemized on this trade.
+ *
+ * WHICH SIDE IT COMES FROM, because it is not symmetric and cost-basis math depends on it.
+ * The fee is always denominated in the QUOTE asset, on both chains and both sides. What differs
+ * is the amount it is charged on:
+ *
+ * - **Buy**: charged on what you SPEND. `feeRaw = amountRaw * bps / 10000`, and it is an
+ *   ADDITIONAL transfer -- the full `amountRaw` still enters the swap. So the wallet parts with
+ *   `amountRaw + feeRaw`, and `expectedOutRaw`/`minOutRaw` (the token you receive) are
+ *   unaffected by the fee entirely.
+ * - **Sell**: charged on what you RECEIVE. `feeRaw = expectedOutRaw * bps / 10000`, drawn from
+ *   the swap's own output in the same transaction. So `expectedOutRaw` and `minOutRaw` are
+ *   **gross**, and the wallet nets `expectedOutRaw - feeRaw`.
+ *
+ * A caller computing realised PnL therefore subtracts the fee on a buy from the cost side, and
+ * on a sell from the proceeds -- never from the token amount on either.
+ *
+ * `treasury` is null only when the fee is disabled server-side (unset AGENT_FEE_TREASURY_*), in
+ * which case `feeRaw` is "0" and `bps` is 0; the pair is never a nonzero rate with a zero amount.
+ */
 export interface TradeFee {
     bps: number;
+    /** Base units of the QUOTE asset. Never the token being traded, on either side. */
     feeRaw: string;
     treasury: string | null;
 }
@@ -993,6 +1014,24 @@ export declare class CandleClient {
      *
      * Requires an agent key with the `swap:write` scope -- opt-in, omitted by default when a key is
      * issued; pass `scopes: [..., "swap:write"]` to `POST /api/v1/agent/keys` to grant it.
+     *
+     * ## Rebuilding an UNCONFIRMED `clientTradeId`
+     *
+     * The idempotency notes elsewhere on this rail describe the CONFIRMED case (you get the
+     * original result back). The unconfirmed case, which a caller hits whenever a build expires
+     * before it is signed, was undocumented until an integrator asked on 2026-08-27:
+     *
+     * - **It re-quotes, and does NOT create a second intent.** There is one row per
+     *   `(account, clientTradeId)`, and a rebuild patches it in place with a fresh plan. That is
+     *   deliberate rather than incidental: a Solana blockhash dies in about 90 seconds, so a
+     *   replayed build MUST re-plan or it would hand back an artifact that can no longer land.
+     * - **The request body is conflict-checked on every build**, not only after confirmation. A
+     *   differing body under the same id is refused with `IDEMPOTENCY_CONFLICT`, exactly as the
+     *   launch rail does -- so an id cannot be reused for a different trade.
+     * - **A `failed` row is reset to `built`** by a matching rebuild, so one id survives a failed
+     *   attempt and stays the anti-double-spend key across the retry.
+     * - Beyond `BuildTradeBuiltResult.expiresAt`, the server-side states are
+     *   `built | confirmed | failed`.
      */
     buildTrade(req: BuildTradeRequest): Promise<BuildTradeResult>;
     /**
@@ -1073,8 +1112,14 @@ export declare class CandleClient {
      *   read at all -- `solanaRpcUrl` is unused on this path, and there is no client-side
      *   blockhash-rebuild loop; the server controls broadcast and its own blockhash freshness now.
      *   The lower-level `buildTrade`/`signLinkedTransaction`/`broadcastSignedTransaction`/
-     *   `confirmTrade` sequence (with its own blockhash-rebuild loop) stays available, unchanged,
-     *   for callers who want to broadcast client-side instead -- see those methods' own jsdoc.
+     *   `confirmTrade` sequence stays available for callers who want to broadcast client-side.
+     *   **That path has NO blockhash-rebuild loop, and never did.**
+     *   `broadcastSignedTransaction` is a single unretried JSON-RPC send, so a caller who takes it
+     *   owns expiry themselves: a Solana blockhash dies in about 90 seconds, and a send that
+     *   arrives after that fails with no recovery unless the caller rebuilds. This doc previously
+     *   said the opposite, which was the worst possible way to be wrong -- a caller who trusted it
+     *   would lose transactions and have no reason to look for the retry that was not there.
+     *   Reported by an integrator on 2026-08-27.
      * - **Hood/EVM**: unchanged from before -- `artifacts.approval` (when present), then
      *   `artifacts.trade`, then `artifacts.feeTransfer` (when present) -- in that exact order, EACH
      *   leg's receipt awaited (`waitForReceipt`) before the next leg is even assembled, then
