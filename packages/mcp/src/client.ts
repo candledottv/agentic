@@ -42,7 +42,7 @@ function isLoopbackHost(hostname: string): boolean {
  * Throws at startup rather than per call: a server that cannot reach its API securely should fail
  * where the operator is looking, not once per tool invocation.
  */
-function assertTransportSecurity(apiUrl: string): void {
+function assertTransportSecurity(apiUrl: string, env: Record<string, string | undefined>): void {
   let parsed: URL
   try {
     parsed = new URL(apiUrl)
@@ -54,18 +54,25 @@ function assertTransportSecurity(apiUrl: string): void {
     throw new Error(`CANDLE_API_URL must be http or https, got ${parsed.protocol.replace(":", "")}`)
   }
   if (isLoopbackHost(parsed.hostname)) return
-  if (process.env.CANDLE_ALLOW_INSECURE_HTTP?.trim()) return
+  if (env.CANDLE_ALLOW_INSECURE_HTTP?.trim()) return
   throw new Error(
     `Refusing to send credentials in the clear to ${parsed.origin}. Set CANDLE_API_URL to an https:// ` +
       "URL, or set CANDLE_ALLOW_INSECURE_HTTP=1 if this really is a trusted local endpoint.",
   )
 }
 
-export function resolveConfig(): RequestConfig {
-  const apiUrl = process.env.CANDLE_API_URL?.trim() || DEFAULT_API_URL
-  assertTransportSecurity(apiUrl)
+/**
+ * `env` is a parameter rather than a direct `process.env` read so an in-process host can pass the
+ * environment it means. `candle mcp` runs this server inside its own process having stripped every
+ * inherited credential, and reading the ambient environment here would hand back exactly the
+ * variables that strip removed. Defaults to `process.env` for the published bin, which has no
+ * other source.
+ */
+export function resolveConfig(env: Record<string, string | undefined> = process.env): RequestConfig {
+  const apiUrl = env.CANDLE_API_URL?.trim() || DEFAULT_API_URL
+  assertTransportSecurity(apiUrl, env)
   // CANDLE_API_KEY is the CLI's variable for the same credential; accept it as an alias so the
   // public install docs teach ONE name per credential. The MCP's own name keeps precedence.
-  const apiKey = process.env.CANDLE_AGENT_API_KEY?.trim() || process.env.CANDLE_API_KEY?.trim()
+  const apiKey = env.CANDLE_AGENT_API_KEY?.trim() || env.CANDLE_API_KEY?.trim()
   return apiKey ? { apiUrl, apiKey } : { apiUrl }
 }

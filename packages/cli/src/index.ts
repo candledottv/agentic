@@ -467,17 +467,15 @@ export async function buildRealDeps(): Promise<Deps> {
     env: process.env,
     nodeVersion: process.versions.node,
     hostname: hostname(),
-    runChild: (command, args, env) =>
-      new Promise((resolve) => {
-        // shell on Windows: npx is npx.cmd there, and spawn without a shell cannot resolve it.
-        const child = spawn(command, args, {
-          stdio: "inherit",
-          env: env as NodeJS.ProcessEnv,
-          shell: process.platform === "win32",
-        })
-        child.on("error", () => resolve(1))
-        child.on("close", (code) => resolve(code ?? 1))
-      }),
+    // Imported lazily so the MCP server and its transport are only pulled in when `candle mcp`
+    // actually runs. The module is bundled into this binary either way, but `./server` connects a
+    // transport the moment it is asked to run, and every other command should stay untouched by
+    // that. A static import would also make the server's own module graph part of startup for
+    // `candle --version`.
+    runMcpServer: async (env) => {
+      const { runStdioServer } = await import("../../mcp/src/server")
+      await runStdioServer(env)
+    },
     readFile: (path: string) => readFile(path, "utf8"),
     readBytes: (path: string) => readFile(path),
     // 0600: the only caller is wallets import's --signer-out, and the content is a signing

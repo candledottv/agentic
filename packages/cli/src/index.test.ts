@@ -749,7 +749,7 @@ describe("the account guard at dispatch", () => {
 
   test("mcp --read-only is not guarded: it launches with no key at all, so it acts as no account", async () => {
     const { fetch, calls } = createRoutedFetch(mismatched)
-    const children: string[][] = []
+    const starts: Record<string, string | undefined>[] = []
     const stderr = createCapture()
     const code = await run(
       ["mcp", "--read-only"],
@@ -757,9 +757,8 @@ describe("the account guard at dispatch", () => {
         fetch,
         store: store(),
         stderr,
-        runChild: async (_command, args) => {
-          children.push(args)
-          return 0
+        runMcpServer: async (env) => {
+          starts.push(env)
         },
         ...guarded(),
       }),
@@ -767,7 +766,7 @@ describe("the account guard at dispatch", () => {
     expect(code).toBe(0)
     expect(stderr.text).not.toContain("Refusing")
     expect(calls).toHaveLength(0)
-    expect(children).toHaveLength(1)
+    expect(starts).toHaveLength(1)
   })
 
   test("mcp --print-config stays guarded: the block it prints launches a server WITH the key", async () => {

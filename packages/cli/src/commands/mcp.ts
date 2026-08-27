@@ -12,11 +12,23 @@
  * visible there. See `mcpCommandForHost` below for the three install shapes. The key comes from
  * the CLI's secret store at launch time either way, so it never sits in a config file at all.
  *
- * Launches `npx --yes @candledottv/mcp` rather than importing the server across packages: the
- * CLI is a standalone zero-dependency package (its tsconfig pins rootDir to src, and its export
- * to the public agentic repo is per-package), so the published server is the one artifact both
- * install paths agree on. stdio is inherited -- the MCP client owns this process's stdin/stdout
- * exactly as it would the server's own.
+ * The server is BUNDLED into this binary and started in-process. It used to be launched as
+ * `npx --yes @candledottv/mcp`, which resolved it fresh from the registry on every invocation with
+ * no version or integrity pin and handed it a fund-moving API key: whatever `latest` happened to
+ * be at that moment received the key, and a stable CLI install could change behaviour between runs
+ * without an upgrade. Bundling makes the server the exact code tested, signed and released
+ * alongside this CLI, and removes the network from startup entirely -- which also means an MCP
+ * host no longer needs Node on its PATH.
+ *
+ * The two constraints that once argued for npx are both handled rather than merely accepted: the
+ * CLI's tsconfig no longer pins rootDir (nothing is emitted from it, so it only limited what could
+ * be typechecked), and the per-package export to the public agentic repo preserves the same
+ * `packages/{cli,mcp}` layout, so the relative import resolves identically in both repos. The
+ * package stays zero-RUNTIME-dependency: the server and its deps are inlined at build time, which
+ * is what `bun build` already did for every other import here.
+ *
+ * stdio still belongs to the protocol; it is now this process's own stdin/stdout rather than a
+ * child's.
  */
 
 import { parseArgs } from "../args"
@@ -192,21 +204,43 @@ export async function mcp(args: string[], ctx: CommandContext): Promise<number> 
     return 1
   }
 
-  const childEnv: Record<string, string | undefined> = {
+  const serverEnv: Record<string, string | undefined> = {
     ...deps.env,
     // Clear every inherited Candle credential BEFORE re-adding the one this launch resolved. The
-    // spread above is what gives the server PATH, HOME and the rest of what npx needs, and it used
-    // to carry these along with it: under --read-only that handed a server advertised as keyless a
-    // fund-moving key and the encrypted-store passphrase anyway, and on a normal launch it let a
-    // stale ambient key outrank the profile whose identity line was just printed. Clearing first
-    // makes the key set below the only one the child can see. CANDLE_MCP_TOOLS is cleared for the
-    // same reason: an inherited allowlist must not widen what --read-only or --tools pinned.
+    // spread above is what carries PATH, HOME and the rest, and it used to carry these along with
+    // it: under --read-only that handed a server advertised as keyless a fund-moving key and the
+    // encrypted-store passphrase anyway, and on a normal launch it let a stale ambient key outrank
+    // the profile whose identity line was just printed. Clearing first makes the key set below the
+    // only one the server can see. CANDLE_MCP_TOOLS is cleared for the same reason: an inherited
+    // allowlist must not widen what --read-only or --tools pinned.
+    //
+    // Still built as an explicit environment even though the server now runs IN THIS PROCESS: it
+    // is passed to the server rather than applied to process.env, so the reduction is a value the
+    // server reads, not a mutation of this process that other code could observe or undo.
     ...clearedCredentialEnv(),
     CANDLE_API_URL: apiUrl,
     ...(apiKey ? { CANDLE_AGENT_API_KEY: apiKey } : {}),
     ...(toolAllowlist ? { CANDLE_MCP_TOOLS: toolAllowlist } : {}),
   }
-  // stderr, not stdout: under MCP the child owns stdout for the protocol stream.
-  deps.stderr.write(`Starting @candledottv/mcp against ${apiUrl}${toolAllowlist ? ` (tools: ${toolAllowlist})` : ""}\n`)
-  return deps.runChild("npx", ["--yes", "@candledottv/mcp"], childEnv)
+  // stderr, not stdout: under MCP the protocol owns stdout, and that is now THIS process's stdout.
+  deps.stderr.write(
+    `Starting the Candle MCP server against ${apiUrl}${toolAllowlist ? ` (tools: ${toolAllowlist})` : ""}\n`,
+  )
+  // Resolves when the transport is connected; the transport then holds stdin open, which is what
+  // keeps the process alive. Exit code 0 because there is nothing left to fail: a server that
+  // failed to start threw instead, and is reported below.
+  try {
+    await deps.runMcpServer(serverEnv)
+    return 0
+  } catch (error) {
+    writeLocalFailure(
+      deps,
+      {
+        code: "MCP_SERVER_FAILED",
+        message: `The MCP server could not start: ${error instanceof Error ? error.message : error}`,
+      },
+      json,
+    )
+    return 1
+  }
 }

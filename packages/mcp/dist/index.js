@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// src/index.ts
+// src/server.ts
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
@@ -17,7 +17,7 @@ function isLoopbackHost(hostname) {
     return true;
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
-function assertTransportSecurity(apiUrl) {
+function assertTransportSecurity(apiUrl, env) {
   let parsed;
   try {
     parsed = new URL(apiUrl);
@@ -31,14 +31,14 @@ function assertTransportSecurity(apiUrl) {
   }
   if (isLoopbackHost(parsed.hostname))
     return;
-  if (process.env.CANDLE_ALLOW_INSECURE_HTTP?.trim())
+  if (env.CANDLE_ALLOW_INSECURE_HTTP?.trim())
     return;
   throw new Error(`Refusing to send credentials in the clear to ${parsed.origin}. Set CANDLE_API_URL to an https:// ` + "URL, or set CANDLE_ALLOW_INSECURE_HTTP=1 if this really is a trusted local endpoint.");
 }
-function resolveConfig() {
-  const apiUrl = process.env.CANDLE_API_URL?.trim() || DEFAULT_API_URL;
-  assertTransportSecurity(apiUrl);
-  const apiKey = process.env.CANDLE_AGENT_API_KEY?.trim() || process.env.CANDLE_API_KEY?.trim();
+function resolveConfig(env = process.env) {
+  const apiUrl = env.CANDLE_API_URL?.trim() || DEFAULT_API_URL;
+  assertTransportSecurity(apiUrl, env);
+  const apiKey = env.CANDLE_AGENT_API_KEY?.trim() || env.CANDLE_API_KEY?.trim();
   return apiKey ? { apiUrl, apiKey } : { apiUrl };
 }
 
@@ -568,7 +568,7 @@ var sweepShape = {
   mints: z.array(z.string()).optional().describe("Extra token mints/contracts to sweep besides the chain's base assets (own-wallet destinations only).")
 };
 function registerTools(server, env = process.env) {
-  const cfg = resolveConfig();
+  const cfg = resolveConfig(env);
   const allowed = resolveToolAllowlist(env);
   const register = (name, ...rest) => {
     if (!allowed.has(name))
@@ -644,8 +644,23 @@ function registerTools(server, env = process.env) {
 // src/version.ts
 var SERVER_VERSION = "0.4.0";
 
+// src/server.ts
+function createCandleMcpServer(env = process.env) {
+  const server = new McpServer({ name: "candle-mcp", version: SERVER_VERSION });
+  registerTools(server, env);
+  return server;
+}
+async function runStdioServer(env = process.env, transport = new StdioServerTransport) {
+  const server = createCandleMcpServer(env);
+  await server.connect(transport);
+  await new Promise((resolve) => {
+    const sdkOnClose = transport.onclose;
+    transport.onclose = () => {
+      sdkOnClose?.();
+      resolve();
+    };
+  });
+}
+
 // src/index.ts
-var server = new McpServer({ name: "candle-mcp", version: SERVER_VERSION });
-registerTools(server);
-var transport = new StdioServerTransport;
-await server.connect(transport);
+await runStdioServer();

@@ -89,11 +89,21 @@ export interface Deps {
   /** Injected so update's tests can stub the Sigstore verifier; the real deps leave it undefined
    * and update uses release-verify.ts. */
   verify?: (bytes: Uint8Array, bundle: unknown, identityUri: string, issuer: string) => VerifyResult
-  /** Runs a child process to completion with stdio inherited, resolving to its exit code.
-   * `candle mcp` launches the MCP server through this exclusively, so a test can assert the
-   * exact command, args, and env without spawning anything -- the same seam discipline as
-   * `fetch` and `openBrowser`. The real implementation (index.ts) uses child_process.spawn. */
-  runChild: (command: string, args: string[], env: Record<string, string | undefined>) => Promise<number>
+  /**
+   * Starts the Candle MCP server IN THIS PROCESS on the stdio transport, with exactly the
+   * environment given, resolving once the transport is connected.
+   *
+   * This replaced a `runChild("npx", ["--yes", "@candledottv/mcp"], env)` seam. That launch
+   * resolved the server fresh from the registry on every invocation with no version or integrity
+   * pin, and handed it a fund-moving API key: whatever `latest` happened to be at that moment got
+   * the key, and a stable CLI install could change behaviour between runs without an upgrade. The
+   * server is now bundled into this binary at build time, so it is the exact code that was tested,
+   * signed and released alongside the CLI, and starting it needs no network at all.
+   *
+   * Still a dep seam for the reason the old one was: a test asserts the environment the server
+   * would receive without starting a real server on this process's stdio.
+   */
+  runMcpServer: (env: Record<string, string | undefined>) => Promise<void>
 }
 
 export interface CommandContext {

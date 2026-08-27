@@ -160,9 +160,10 @@ export function createTestDeps(overrides: Partial<Deps> & { fetch: typeof fetch 
     clearConfig: configStore.clearConfig,
     updateProfile: configStore.updateProfile,
     stdout: createCapture(),
-    // Inert by default: no test should launch a real child accidentally. mcp tests override
-    // this with a capturing fake, the same posture as `fetch` (which has no default at all).
-    runChild: async () => 0,
+    // Inert by default: no test should start a real MCP server on this process's stdio by
+    // accident. mcp tests override this with a capturing fake, the same posture as `fetch`
+    // (which has no default at all).
+    runMcpServer: async () => {},
     stderr: createCapture(),
     now: clock.now,
     sleep: clock.sleep,

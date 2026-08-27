@@ -145,9 +145,10 @@ export async function setup(args: string[], ctx: CommandContext): Promise<number
   deps.stdout.write(`Claude Code skills:  ${SKILLS_CLAUDE_COMMAND}\n`)
   deps.stdout.write("MCP (any client), paste into the host's MCP config:\n")
   deps.stdout.write(`${await mcpClientConfig([], deps)}\n`)
-  deps.stdout.write(
-    "MCP hosts also need Node 18+ on their own PATH: candle mcp starts the server with npx --yes @candledottv/mcp.\n",
-  )
+  // No runtime prerequisite to mention any more: the server is bundled into this binary, so
+  // `candle mcp` starts it in-process. This line used to say MCP hosts needed Node 18+ on their
+  // own PATH, which was true only while the server was fetched with npx at every launch.
+  deps.stdout.write("The MCP server is built into this binary; the host needs nothing else installed.\n")
   deps.stdout.write(`Other platforms:     ${CODING_AGENTS_DOCS}\n`)
 
   // 4. Verify everything end to end. Setup's exit code IS doctor's: `candle setup && ...`

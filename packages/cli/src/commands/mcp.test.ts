@@ -1,8 +1,11 @@
 /**
- * `candle mcp`, driven through `run()`: the launcher that hands the CLI's stored credentials to
- * the published MCP server (CLI P0 plan, Task 2). The child process is never actually spawned:
- * `deps.runChild` is the injected seam, and every test asserts the exact command, args, and env
- * the launcher would run.
+ * `candle mcp`, driven through `run()`: the command that starts the bundled MCP server with the
+ * CLI's stored credentials. No server is ever actually started: `deps.runMcpServer` is the
+ * injected seam, and every test asserts the exact environment the server would receive.
+ *
+ * That seam used to be `runChild`, spawning `npx --yes @candledottv/mcp`. The server is bundled
+ * into the binary now, so there is no command, no args and no child process to assert -- only the
+ * environment, which is where every property these tests care about lives.
  */
 
 import { describe, expect, test } from "bun:test"
@@ -16,22 +19,22 @@ import {
 } from "../test-support"
 import { MCP_TOOL_NAMES, READ_ONLY_TOOL_NAMES } from "./mcp"
 
-interface CapturedChild {
-  command: string
-  args: string[]
+interface CapturedStart {
   env: Record<string, string | undefined>
 }
 
-function captureRunChild(exitCode = 0): {
-  calls: CapturedChild[]
-  runChild: (c: string, a: string[], e: Record<string, string | undefined>) => Promise<number>
+/** Captures the environment the server would be started with. `fail` makes the start throw, the
+ * in-process equivalent of the old child exiting non-zero. */
+function captureMcpServer(fail?: Error): {
+  calls: CapturedStart[]
+  runMcpServer: (env: Record<string, string | undefined>) => Promise<void>
 } {
-  const calls: CapturedChild[] = []
+  const calls: CapturedStart[] = []
   return {
     calls,
-    runChild: async (command, args, env) => {
-      calls.push({ command, args, env })
-      return exitCode
+    runMcpServer: async (env) => {
+      calls.push({ env })
+      if (fail) throw fail
     },
   }
 }
@@ -41,38 +44,39 @@ const unusedFetch = (() => {
 }) as unknown as typeof fetch
 
 describe("mcp", () => {
-  test("launches npx @candledottv/mcp with the stored key and resolved API URL in the child env", async () => {
+  test("starts the bundled server with the stored key and resolved API URL in its environment", async () => {
     const { fetch } = createRoutedFetch({})
-    const { calls, runChild } = captureRunChild(0)
+    const { calls, runMcpServer } = captureMcpServer()
     const store = createFakeStore({ api_key: "cndl_live_secret" })
     const stderr = createCapture()
-    const code = await run(["mcp"], createTestDeps({ fetch, store, runChild, stderr }))
+    const code = await run(["mcp"], createTestDeps({ fetch, store, runMcpServer, stderr }))
 
     expect(code).toBe(0)
     expect(calls).toHaveLength(1)
-    expect(calls[0]?.command).toBe("npx")
-    expect(calls[0]?.args).toEqual(["--yes", "@candledottv/mcp"])
     expect(calls[0]?.env.CANDLE_AGENT_API_KEY).toBe("cndl_live_secret")
     expect(calls[0]?.env.CANDLE_API_URL).toBe("https://api.alpha.candle.tv")
     expect(calls[0]?.env.CANDLE_MCP_TOOLS).toBeUndefined()
-    // The startup note goes to stderr: under MCP the child owns stdout for the protocol.
-    expect(stderr.text).toContain("@candledottv/mcp")
+    // The startup note goes to stderr: under MCP the protocol owns stdout, which is now this
+    // process's own stdout rather than a child's.
+    expect(stderr.text).toContain("Candle MCP server")
   })
 
-  test("the child's exit code is the command's exit code", async () => {
+  test("a server that fails to start exits 1 and says why, instead of reporting success", async () => {
     const { fetch } = createRoutedFetch({})
-    const { runChild } = captureRunChild(3)
+    const { runMcpServer } = captureMcpServer(new Error("transport unavailable"))
     const store = createFakeStore({ api_key: "cndl_live_secret" })
-    const code = await run(["mcp"], createTestDeps({ fetch, store, runChild }))
-    expect(code).toBe(3)
+    const stderr = createCapture()
+    const code = await run(["mcp"], createTestDeps({ fetch, store, runMcpServer, stderr }))
+    expect(code).toBe(1)
+    expect(stderr.text).toContain("transport unavailable")
   })
 
   test("--read-only launches with NO key and the four keyless read tools pinned", async () => {
     const { fetch } = createRoutedFetch({})
-    const { calls, runChild } = captureRunChild(0)
+    const { calls, runMcpServer } = captureMcpServer()
     // A stored key exists; --read-only must still not hand it to the child.
     const store = createFakeStore({ api_key: "cndl_live_secret" })
-    const code = await run(["mcp", "--read-only"], createTestDeps({ fetch, store, runChild }))
+    const code = await run(["mcp", "--read-only"], createTestDeps({ fetch, store, runMcpServer }))
 
     expect(code).toBe(0)
     expect(calls[0]?.env.CANDLE_AGENT_API_KEY).toBeUndefined()
@@ -81,7 +85,7 @@ describe("mcp", () => {
 
   test("--read-only strips every inherited Candle credential from the child env", async () => {
     const { fetch } = createRoutedFetch({})
-    const { calls, runChild } = captureRunChild(0)
+    const { calls, runMcpServer } = captureMcpServer()
     // The leak this closes: the child env was built by spreading the parent's, so a credential
     // that was merely PRESENT in the environment reached a server advertised as keyless. Resolving
     // the key to undefined was never enough on its own.
@@ -92,25 +96,25 @@ describe("mcp", () => {
       CANDLE_KEYRING_PASSPHRASE: "passphrase_ambient",
       PATH: "/usr/bin",
     }
-    const code = await run(["mcp", "--read-only"], createTestDeps({ fetch, runChild, env }))
+    const code = await run(["mcp", "--read-only"], createTestDeps({ fetch, runMcpServer, env }))
 
     expect(code).toBe(0)
     expect(calls[0]?.env.CANDLE_API_KEY).toBeUndefined()
     expect(calls[0]?.env.CANDLE_AGENT_API_KEY).toBeUndefined()
     expect(calls[0]?.env.CANDLE_DEVICE_TOKEN).toBeUndefined()
     expect(calls[0]?.env.CANDLE_KEYRING_PASSPHRASE).toBeUndefined()
-    // Non-credential inherited environment still reaches the child: npx needs it.
+    // Non-credential inherited environment still reaches the server: PATH, HOME and the rest.
     expect(calls[0]?.env.PATH).toBe("/usr/bin")
   })
 
   test("a normal launch passes only the resolved key, never an ambient one", async () => {
     const { fetch } = createRoutedFetch({})
-    const { calls, runChild } = captureRunChild(0)
+    const { calls, runMcpServer } = captureMcpServer()
     const store = createFakeStore({ api_key: "cndl_live_from_store" })
     // An ambient CANDLE_AGENT_API_KEY must not survive next to the resolved key: whichever the
     // child preferred, the identity line the user just read would be describing a different one.
     const env = { CANDLE_AGENT_API_KEY: "cndl_live_stale", CANDLE_KEYRING_PASSPHRASE: "passphrase_ambient" }
-    const code = await run(["mcp"], createTestDeps({ fetch, store, runChild, env }))
+    const code = await run(["mcp"], createTestDeps({ fetch, store, runMcpServer, env }))
 
     expect(code).toBe(0)
     expect(calls[0]?.env.CANDLE_AGENT_API_KEY).toBe("cndl_live_from_store")
@@ -119,9 +123,9 @@ describe("mcp", () => {
 
   test("an inherited CANDLE_MCP_TOOLS cannot widen what --read-only pinned", async () => {
     const { fetch } = createRoutedFetch({})
-    const { calls, runChild } = captureRunChild(0)
+    const { calls, runMcpServer } = captureMcpServer()
     const env = { CANDLE_MCP_TOOLS: MCP_TOOL_NAMES.join(",") }
-    const code = await run(["mcp", "--read-only"], createTestDeps({ fetch, runChild, env }))
+    const code = await run(["mcp", "--read-only"], createTestDeps({ fetch, runMcpServer, env }))
 
     expect(code).toBe(0)
     expect(calls[0]?.env.CANDLE_MCP_TOOLS).toBe(READ_ONLY_TOOL_NAMES.join(","))
@@ -129,11 +133,11 @@ describe("mcp", () => {
 
   test("--tools passes a validated allowlist through CANDLE_MCP_TOOLS", async () => {
     const { fetch } = createRoutedFetch({})
-    const { calls, runChild } = captureRunChild(0)
+    const { calls, runMcpServer } = captureMcpServer()
     const store = createFakeStore({ api_key: "cndl_live_secret" })
     const code = await run(
       ["mcp", "--tools", "candle_get_market, candle_trade"],
-      createTestDeps({ fetch, store, runChild }),
+      createTestDeps({ fetch, store, runMcpServer }),
     )
     expect(code).toBe(0)
     expect(calls[0]?.env.CANDLE_MCP_TOOLS).toBe("candle_get_market,candle_trade")
@@ -141,12 +145,12 @@ describe("mcp", () => {
 
   test("an unknown tool name is a usage error, exit 2, naming the valid tools, with no child launched", async () => {
     const { fetch } = createRoutedFetch({})
-    const { calls, runChild } = captureRunChild(0)
+    const { calls, runMcpServer } = captureMcpServer()
     const store = createFakeStore({ api_key: "cndl_live_secret" })
     const stderr = createCapture()
     const code = await run(
       ["mcp", "--tools", "candle_get_market,candle_frobnicate"],
-      createTestDeps({ fetch, store, runChild, stderr }),
+      createTestDeps({ fetch, store, runMcpServer, stderr }),
     )
     expect(code).toBe(2)
     expect(calls).toHaveLength(0)
@@ -156,17 +160,20 @@ describe("mcp", () => {
 
   test("--read-only with --tools is a usage error: read-only IS a tool selection", async () => {
     const { fetch } = createRoutedFetch({})
-    const { calls, runChild } = captureRunChild(0)
-    const code = await run(["mcp", "--read-only", "--tools", "candle_get_market"], createTestDeps({ fetch, runChild }))
+    const { calls, runMcpServer } = captureMcpServer()
+    const code = await run(
+      ["mcp", "--read-only", "--tools", "candle_get_market"],
+      createTestDeps({ fetch, runMcpServer }),
+    )
     expect(code).toBe(2)
     expect(calls).toHaveLength(0)
   })
 
   test("no stored key and not --read-only: exits 1 with the auth-login suggestion, no child launched", async () => {
     const { fetch } = createRoutedFetch({})
-    const { calls, runChild } = captureRunChild(0)
+    const { calls, runMcpServer } = captureMcpServer()
     const stdout = createCapture()
-    const code = await run(["mcp", "--json"], createTestDeps({ fetch, runChild, stdout }))
+    const code = await run(["mcp", "--json"], createTestDeps({ fetch, runMcpServer, stdout }))
     expect(code).toBe(1)
     expect(calls).toHaveLength(0)
     expect(JSON.parse(stdout.text)).toEqual({
@@ -179,9 +186,9 @@ describe("mcp", () => {
 
   test("--print-config prints the ready-to-paste client block, launches nothing, needs no key", async () => {
     const { fetch } = createRoutedFetch({})
-    const { calls, runChild } = captureRunChild(0)
+    const { calls, runMcpServer } = captureMcpServer()
     const stdout = createCapture()
-    const code = await run(["mcp", "--print-config", "--read-only"], createTestDeps({ fetch, runChild, stdout }))
+    const code = await run(["mcp", "--print-config", "--read-only"], createTestDeps({ fetch, runMcpServer, stdout }))
     expect(code).toBe(0)
     expect(calls).toHaveLength(0)
     expect(JSON.parse(stdout.text)).toEqual({
@@ -248,14 +255,14 @@ describe("mcp --print-config uses an absolute command", () => {
 describe("profiles", () => {
   test("--print-config prints the identity line to stderr, using the profile's cached account, and stdout stays pure JSON", async () => {
     const { fetch } = createRoutedFetch({})
-    const { calls, runChild } = captureRunChild(0)
+    const { calls, runMcpServer } = captureMcpServer()
     const store = createFakeStore({ "profile:staging:api_key": "cndl_live_secret" })
     const config = createFakeConfigStore({ profiles: { staging: { account: "A" } }, activeProfile: "staging" })
     const stdout = createCapture()
     const stderr = createCapture()
     const code = await run(
       ["mcp", "--print-config", "--read-only"],
-      createTestDeps({ fetch, runChild, stdout, stderr, store, ...config }),
+      createTestDeps({ fetch, runMcpServer, stdout, stderr, store, ...config }),
     )
     expect(code).toBe(0)
     expect(calls).toHaveLength(0)
@@ -274,12 +281,12 @@ describe("profiles", () => {
     // The server the launcher is about to start would run on the OVERRIDE's key, so naming the
     // profile's cached account here would misreport which account the MCP client is wired to.
     const { fetch } = createRoutedFetch({})
-    const { calls, runChild } = captureRunChild(0)
+    const { calls, runMcpServer } = captureMcpServer()
     const config = createFakeConfigStore({ profiles: { staging: { account: "A" } }, activeProfile: "staging" })
     const stderr = createCapture()
     const code = await run(
       ["mcp"],
-      createTestDeps({ fetch, runChild, stderr, env: { CANDLE_API_KEY: "cndl_live_from_env" }, ...config }),
+      createTestDeps({ fetch, runMcpServer, stderr, env: { CANDLE_API_KEY: "cndl_live_from_env" }, ...config }),
     )
     expect(code).toBe(0)
     expect(calls[0]?.env.CANDLE_AGENT_API_KEY).toBe("cndl_live_from_env")

@@ -370,7 +370,9 @@ const sweepShape = {
  * once, at registration time (`client.ts`'s `resolveConfig`).
  */
 export function registerTools(server: McpServer, env: Record<string, string | undefined> = process.env): void {
-  const cfg = resolveConfig()
+  // `env`, not the ambient environment: an in-process host (`candle mcp`) passes a deliberately
+  // reduced environment, and reading process.env here would restore what that strip removed.
+  const cfg = resolveConfig(env)
   // Fail-fast at startup on a bad allowlist: the process exits before the transport connects,
   // and the operator sees the valid names instead of a server that silently has the wrong tools.
   const allowed = resolveToolAllowlist(env)

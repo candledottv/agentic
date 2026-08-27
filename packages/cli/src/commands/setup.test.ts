@@ -59,7 +59,10 @@ describe("setup", () => {
     expect(out).toContain("/plugin marketplace add candledottv/agentic")
     expect(out).toContain("MCP (any client), paste into the host's MCP config:")
     expect(out).toContain('"command": "/Users/a/.local/bin/candle"')
-    expect(out).toContain("MCP hosts also need Node 18+ on their own PATH")
+    // The server is bundled into the binary, so setup no longer tells the operator to install a
+    // Node runtime for the MCP host: there is nothing left to install.
+    expect(out).toContain("The MCP server is built into this binary")
+    expect(out).not.toContain("Node 18+")
     expect(out).toContain("/dev/agent")
     // The four numbered stages appear in order.
     const order = ["1/4", "2/4", "3/4", "4/4"].map((mark) => out.indexOf(mark))
