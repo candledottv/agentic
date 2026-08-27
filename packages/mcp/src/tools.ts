@@ -127,13 +127,16 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
 
     case "candle_get_market": {
       const { chain, mint } = args as { chain: string; mint: string }
-      return { url: `${base}/api/v1/markets/${chain}/${mint}`, init: { method: "GET", headers: jsonHeaders() } }
+      return {
+        url: `${base}/api/v1/markets/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}`,
+        init: { method: "GET", headers: jsonHeaders() },
+      }
     }
 
     case "candle_token_forensics": {
       const { chain, mint } = args as { chain: string; mint: string }
       return {
-        url: `${base}/api/v1/markets/${chain}/${mint}/forensics`,
+        url: `${base}/api/v1/markets/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}/forensics`,
         init: { method: "GET", headers: jsonHeaders() },
       }
     }
@@ -157,7 +160,10 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
 
     case "candle_get_agent_profile": {
       const { idOrWallet } = args as { idOrWallet: string }
-      return { url: `${base}/api/v1/users/${idOrWallet}/agent`, init: { method: "GET", headers: jsonHeaders() } }
+      return {
+        url: `${base}/api/v1/users/${encodeURIComponent(idOrWallet)}/agent`,
+        init: { method: "GET", headers: jsonHeaders() },
+      }
     }
 
     case "candle_swap": {

@@ -135,7 +135,7 @@ async function postJson(url, apiKey, payload, doFetch) {
   }
 }
 async function readMarket(mint, cfg, doFetch, extra) {
-  const res = await doFetch(`${base(cfg)}/api/v1/markets/${chainForMint(mint)}/${mint}`, {
+  const res = await doFetch(`${base(cfg)}/api/v1/markets/${chainForMint(mint)}/${encodeURIComponent(mint)}`, {
     method: "GET",
     headers: headers()
   });
@@ -210,7 +210,7 @@ async function executeTrade(args, cfg, doFetch) {
       if (!address) {
         return errText(`percent sells need an embedded ${chain === "hood" ? "EVM" : "Solana"} wallet, and this account has none`, { clientTradeId });
       }
-      const balRes = await doFetch(`${base(cfg)}/api/v1/tokens/${args.mint}/balance/${address}`, {
+      const balRes = await doFetch(`${base(cfg)}/api/v1/tokens/${encodeURIComponent(args.mint)}/balance/${encodeURIComponent(address)}`, {
         method: "GET",
         headers: headers()
       });
@@ -274,7 +274,9 @@ async function executeLaunchAndSeed(args, cfg, doFetch) {
   let market = null;
   let note;
   try {
-    const marketRes = await doFetch(`${base(cfg)}/api/v1/markets/${launch.chain ?? "solana"}/${launch.mint}`, {
+    if (launch.mint === undefined)
+      throw new Error("the launch response carried no mint");
+    const marketRes = await doFetch(`${base(cfg)}/api/v1/markets/${encodeURIComponent(launch.chain ?? "solana")}/${encodeURIComponent(launch.mint)}`, {
       method: "GET",
       headers: headers()
     });
@@ -408,12 +410,15 @@ function buildRequest(name, args, cfg) {
     }
     case "candle_get_market": {
       const { chain, mint } = args;
-      return { url: `${base2}/api/v1/markets/${chain}/${mint}`, init: { method: "GET", headers: jsonHeaders() } };
+      return {
+        url: `${base2}/api/v1/markets/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}`,
+        init: { method: "GET", headers: jsonHeaders() }
+      };
     }
     case "candle_token_forensics": {
       const { chain, mint } = args;
       return {
-        url: `${base2}/api/v1/markets/${chain}/${mint}/forensics`,
+        url: `${base2}/api/v1/markets/${encodeURIComponent(chain)}/${encodeURIComponent(mint)}/forensics`,
         init: { method: "GET", headers: jsonHeaders() }
       };
     }
@@ -434,7 +439,10 @@ function buildRequest(name, args, cfg) {
     }
     case "candle_get_agent_profile": {
       const { idOrWallet } = args;
-      return { url: `${base2}/api/v1/users/${idOrWallet}/agent`, init: { method: "GET", headers: jsonHeaders() } };
+      return {
+        url: `${base2}/api/v1/users/${encodeURIComponent(idOrWallet)}/agent`,
+        init: { method: "GET", headers: jsonHeaders() }
+      };
     }
     case "candle_swap": {
       const apiKey = requireApiKey2(cfg);

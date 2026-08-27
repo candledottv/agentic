@@ -60,14 +60,17 @@ export declare class InMemorySecretStore implements SecretStore {
  *     re-derive the key even after {@link PBKDF2_ITERATIONS} is raised for new entries later.
  *   - Encryption: AES-GCM-256, a random {@link IV_LENGTH_BYTES}-byte IV generated fresh for every
  *     `set` call (never reused across entries or across overwrites of the same entry).
- *   - At rest: one JSON object per file, one salt/iv/iterations/ciphertext record per `walletRef`.
- *     The ciphertext is AES-GCM's own output (ciphertext + auth tag), so a wrong passphrase
- *     derives the wrong key and `crypto.subtle.decrypt` throws on the auth-tag check -- it can
- *     never silently return garbage plaintext instead of the real PEM.
+ *   - At rest: one JSON object per file (mode 0600, parent directory 0700), one
+ *     salt/iv/iterations/ciphertext record per `walletRef`. The ciphertext is AES-GCM's own output
+ *     (ciphertext + auth tag), so a wrong passphrase derives the wrong key and
+ *     `crypto.subtle.decrypt` throws on the auth-tag check -- it can never silently return garbage
+ *     plaintext instead of the real PEM. Writes go to a temp file in the same directory and are
+ *     renamed over the real path, so an interrupted write cannot leave a half-written file.
  *
  * Not safe for concurrent writers against the same file: `set` and `delete` both do a
  * read-modify-write of the whole file, so two concurrent calls (same process or different
- * processes) against the same `path` can race and lose one write.
+ * processes) against the same `path` can race and lose one write. The atomic rename bounds the
+ * damage to a lost update; it does not make the read-modify-write itself safe.
  */
 export declare class EncryptedFileSecretStore implements SecretStore {
     private readonly path;
@@ -77,6 +80,21 @@ export declare class EncryptedFileSecretStore implements SecretStore {
     set(walletRef: string, privateKeyPem: string): Promise<void>;
     delete(walletRef: string): Promise<void>;
     private readFile;
+    /**
+     * Write the whole store, owner-only and atomically. Mirrors `writeContents` in the CLI's
+     * secret-store.ts, which has done both from the start; this copy did neither.
+     *
+     * The modes matter because the file holds signer ciphertext whose only protection is a
+     * PBKDF2 passphrase: created with no `mode`, a normal `umask 022` left the directory 0755 and
+     * the file 0644, so any other local account could copy the ciphertext and attack the passphrase
+     * offline, at its leisure. `chmod` runs after `mkdir`/`writeFile` because the `mode` options
+     * apply only when the entry is newly created, and a directory or leftover temp file from an
+     * earlier run would otherwise keep its old, wider mode.
+     *
+     * The rename matters because `set` and `delete` rewrite the entire file: truncating it in place
+     * means an interrupted write loses EVERY stored signer, not just the entry being changed.
+     * `rename` within one directory is atomic, so a reader sees either the old file or the new one.
+     */
     private writeFile;
 }
 //# sourceMappingURL=secret-store.d.ts.map

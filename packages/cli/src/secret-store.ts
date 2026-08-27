@@ -43,6 +43,25 @@ export function walletSignerRef(walletId: string): string {
 }
 
 /**
+ * The ref a freshly generated signer is STAGED under, before the server has issued the wallet id
+ * that {@link walletSignerRef} needs.
+ *
+ * `wallets import` generates the signer, sends its public half to the server, and only then stores
+ * the private half. A store failure in that window used to lose the private half outright, leaving
+ * a registered wallet that could never sign anything. Staging first means the private half is
+ * durable before the server is told about it, so the worst case is a recoverable stray entry
+ * instead of a dead wallet.
+ *
+ * Keyed by the chain and address being imported, not a random id: this ref is a recovery
+ * destination, so it has to be something the operator (and the message that points at it) can
+ * reconstruct from what they typed. Both parts are validated wallet identifiers by the time this is
+ * called, so the ref is safe for every backend, including the macOS keychain's command-line guard.
+ */
+export function importPendingSignerRef(chain: string, address: string): string {
+  return `import_pending_${chain}_${address}`
+}
+
+/**
  * The signer PEM's STORED form: its base64 body, armor and newlines stripped. A PEM block
  * contains newlines, which `KeychainSecretStore.set`'s command-injection guard rightly refuses
  * (a newline starts a whole new `security -i` command), so a multiline value can never go into

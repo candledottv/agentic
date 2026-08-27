@@ -179,7 +179,7 @@ async function readMarket(
   doFetch: FetchLike,
   extra: Record<string, unknown>,
 ): Promise<{ market: MarketRead } | { status: number; err: ToolText }> {
-  const res = await doFetch(`${base(cfg)}/api/v1/markets/${chainForMint(mint)}/${mint}`, {
+  const res = await doFetch(`${base(cfg)}/api/v1/markets/${chainForMint(mint)}/${encodeURIComponent(mint)}`, {
     method: "GET",
     headers: headers(),
   })
@@ -285,10 +285,13 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
           { clientTradeId },
         )
       }
-      const balRes = await doFetch(`${base(cfg)}/api/v1/tokens/${args.mint}/balance/${address}`, {
-        method: "GET",
-        headers: headers(),
-      })
+      const balRes = await doFetch(
+        `${base(cfg)}/api/v1/tokens/${encodeURIComponent(args.mint)}/balance/${encodeURIComponent(address)}`,
+        {
+          method: "GET",
+          headers: headers(),
+        },
+      )
       const balText = await balRes.text()
       if (!balRes.ok) return relayRead(balText, { clientTradeId })
       const balBody = JSON.parse(balText) as { payload?: { balance: string } | null }
@@ -399,10 +402,17 @@ export async function executeLaunchAndSeed(
   let market: unknown = null
   let note: string | undefined
   try {
-    const marketRes = await doFetch(`${base(cfg)}/api/v1/markets/${launch.chain ?? "solana"}/${launch.mint}`, {
-      method: "GET",
-      headers: headers(),
-    })
+    // No mint means there is no market to read. Interpolating it unchecked used to request
+    // `/markets/<chain>/undefined` and rely on that 404ing into the note below; asking for the
+    // mint we actually have, or not asking at all, says the same thing without the round trip.
+    if (launch.mint === undefined) throw new Error("the launch response carried no mint")
+    const marketRes = await doFetch(
+      `${base(cfg)}/api/v1/markets/${encodeURIComponent(launch.chain ?? "solana")}/${encodeURIComponent(launch.mint)}`,
+      {
+        method: "GET",
+        headers: headers(),
+      },
+    )
     if (marketRes.ok) {
       market = (JSON.parse(await marketRes.text()) as { market?: unknown }).market ?? null
     } else {

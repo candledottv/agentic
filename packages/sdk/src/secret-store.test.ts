@@ -7,7 +7,7 @@
  */
 
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store"
@@ -59,6 +59,32 @@ describe("EncryptedFileSecretStore", () => {
     // proving the round trip goes through the file, not an in-memory cache.
     const reopened = new EncryptedFileSecretStore(path, "correct horse battery staple")
     expect(await reopened.get("wallet-1")).toBe(SAMPLE_PEM)
+  })
+
+  test("the ciphertext file and its directory are owner-only, and no temp file is left behind", async () => {
+    const path = await tempPath()
+    const store = new EncryptedFileSecretStore(path, "correct horse battery staple")
+    await store.set("wallet-1", SAMPLE_PEM)
+
+    // Created with no explicit mode, a normal `umask 022` left these 0644/0755, so any other
+    // local account could copy the ciphertext and attack the passphrase offline.
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
+    expect((await stat(dir)).mode & 0o777).toBe(0o700)
+    // The write goes via a temp file plus rename; the temp must not survive the call.
+    expect(await readdir(dir)).toEqual(["secrets.json"])
+  })
+
+  test("a second write keeps the owner-only mode, and both entries survive it", async () => {
+    const path = await tempPath()
+    const store = new EncryptedFileSecretStore(path, "correct horse battery staple")
+    await store.set("wallet-1", SAMPLE_PEM)
+    await store.set("wallet-2", SAMPLE_PEM)
+
+    // `writeFile`'s mode applies only on creation, so the rename path has to hold the mode too.
+    expect((await stat(path)).mode & 0o777).toBe(0o600)
+    const reopened = new EncryptedFileSecretStore(path, "correct horse battery staple")
+    expect(await reopened.get("wallet-1")).toBe(SAMPLE_PEM)
+    expect(await reopened.get("wallet-2")).toBe(SAMPLE_PEM)
   })
 
   test("delete removes the entry from a reopened store", async () => {

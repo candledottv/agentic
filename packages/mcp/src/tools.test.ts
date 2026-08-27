@@ -55,6 +55,28 @@ describe("buildRequest", () => {
     expect(r.init.method).toBe("GET")
     expect((r.init.headers as Record<string, string>)["x-api-key"]).toBeUndefined()
   })
+  test("path parameters are URL-encoded, so a hostile mint cannot restructure the request", () => {
+    // `chain` and `mint` arrive as free-form strings from the tool call (the schema does not
+    // constrain them), so an unencoded `../` or `?` walks the path or starts a query string
+    // against our own API. The SDK has always encoded the equivalent segments.
+    const r = buildRequest(
+      "candle_get_market",
+      { chain: "solana", mint: "../../agent/wallets?x=1" },
+      { apiUrl: "https://api.test" },
+    )
+    expect(r.url).toBe("https://api.test/api/v1/markets/solana/..%2F..%2Fagent%2Fwallets%3Fx%3D1")
+    expect(r.url).not.toContain("/agent/wallets")
+
+    const forensics = buildRequest(
+      "candle_token_forensics",
+      { chain: "so/lana", mint: "M 1" },
+      { apiUrl: "https://api.test" },
+    )
+    expect(forensics.url).toBe("https://api.test/api/v1/markets/so%2Flana/M%201/forensics")
+
+    const profile = buildRequest("candle_get_agent_profile", { idOrWallet: "a/b?c" }, { apiUrl: "https://api.test" })
+    expect(profile.url).toBe("https://api.test/api/v1/users/a%2Fb%3Fc/agent")
+  })
   test("launch without an api key throws a clear error", () => {
     expect(() => buildRequest("candle_launch_token", { clientLaunchId: "c" }, { apiUrl: "https://api.test" })).toThrow(
       /CANDLE_AGENT_API_KEY/,

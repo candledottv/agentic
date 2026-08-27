@@ -5228,6 +5228,9 @@ var SECRET_REFS = {
 function walletSignerRef(walletId) {
   return `wallet_signer_${walletId}`;
 }
+function importPendingSignerRef(chain, address) {
+  return `import_pending_${chain}_${address}`;
+}
 function pemToStoredSigner(pem) {
   return pem.replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s+/g, "");
 }
@@ -10250,6 +10253,18 @@ async function walletsImport(args, ctx) {
     encryptionPublicKey
   });
   const signer = await generateSignerKeypair();
+  const storedSigner = pemToStoredSigner(signer.privateKeyPem);
+  const pendingRef = importPendingSignerRef(chain2, address);
+  try {
+    await deps.store.set(pendingRef, storedSigner);
+  } catch (error) {
+    writeLocalFailure(deps, {
+      code: "SIGNER_STORE_FAILED",
+      message: `Could not store the new signer in the ${deps.backend} store: ${error instanceof Error ? error.message : error}`,
+      suggestion: "Nothing was imported. Unlock the store (or fix the error above) and run the command again."
+    }, json);
+    return 1;
+  }
   const submit = await apiRequest("/api/v1/agent/wallets/import/submit", {
     method: "POST",
     body: {
@@ -10267,11 +10282,22 @@ async function walletsImport(args, ctx) {
     env: deps.env
   });
   if (!submit.ok) {
+    await deps.store.delete(pendingRef).catch(() => {});
     writeFailure(deps, submit, { apiUrl, authType: "key" }, json);
     return 1;
   }
   const result = submit.body;
-  await deps.store.set(walletSignerRef(result.id), pemToStoredSigner(signer.privateKeyPem));
+  try {
+    await deps.store.set(walletSignerRef(result.id), storedSigner);
+  } catch (error) {
+    writeLocalFailure(deps, {
+      code: "SIGNER_COMMIT_FAILED",
+      message: `Wallet ${result.id} was imported, but its signer could not be stored under the wallet's own ` + `ref: ${error instanceof Error ? error.message : error}`,
+      suggestion: `The signer is not lost: it is in the ${deps.backend} store under "${pendingRef}". Copy it to ` + `"${walletSignerRef(result.id)}", or revoke the wallet with: candle wallets revoke ${result.id}`
+    }, json);
+    return 1;
+  }
+  await deps.store.delete(pendingRef).catch(() => {});
   const signerOut = parsed.values["--signer-out"];
   if (signerOut !== undefined) {
     try {

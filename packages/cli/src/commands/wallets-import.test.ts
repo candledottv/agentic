@@ -11,7 +11,7 @@
 import { beforeAll, describe, expect, test } from "bun:test"
 import { base58 } from "@scure/base"
 import { run } from "../index"
-import { walletSignerRef } from "../secret-store"
+import { importPendingSignerRef, walletSignerRef } from "../secret-store"
 import { createCapture, createFakeStore, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
 
 /** Fixed 64-byte "secret": bytes 0..63. Solana keypair layout embeds the public key as the last
@@ -112,6 +112,51 @@ describe("wallets import", () => {
     expect(stdout.text).toContain("lw_test0001")
     expect(stdout.text).toContain("pw_test0001")
     expect(stdout.text).toContain("encrypted-file")
+  })
+
+  test("a store that cannot hold the signer fails BEFORE submit, so no wallet is registered", async () => {
+    const { fetch, calls } = importRoutes()
+    const base = createFakeStore({ api_key: "ck_live_x" })
+    // The window this closes: the signer used to be stored only AFTER submit, so a store failure
+    // left a registered wallet whose signing key existed nowhere but this process's memory.
+    const store = {
+      get: base.get.bind(base),
+      delete: base.delete.bind(base),
+      set: async (ref: string, value: string) => {
+        if (ref.startsWith("import_pending_")) throw new Error("keychain is locked")
+        return base.set(ref, value)
+      },
+    }
+    const deps = createTestDeps({ fetch, store, readFile: async () => SOL_ID_JSON })
+
+    const code = await run(["wallets", "import", "--chain", "solana", "--key-file", "/keys/id.json"], deps)
+    expect(code).toBe(1)
+    // init ran; submit never did, so nothing exists server-side to be orphaned.
+    expect(calls).toHaveLength(1)
+  })
+
+  test("the staged signer is cleaned up once it is committed under the wallet id", async () => {
+    const { fetch } = importRoutes()
+    const store = createFakeStore({ api_key: "ck_live_x" })
+    const deps = createTestDeps({ fetch, store, readFile: async () => SOL_ID_JSON })
+
+    const code = await run(["wallets", "import", "--chain", "solana", "--key-file", "/keys/id.json"], deps)
+    expect(code).toBe(0)
+    // Committed under the wallet id, and the staging copy is gone rather than left as a duplicate.
+    expect(await store.get(walletSignerRef("lw_test0001"))).not.toBeNull()
+    expect(await store.get(importPendingSignerRef("solana", SOL_DERIVED_ADDRESS))).toBeNull()
+  })
+
+  test("a failed submit does not leave the staged signer behind", async () => {
+    const { fetch } = importRoutes({
+      "/api/v1/agent/wallets/import/submit": () => jsonResponse(409, { error: "Wallet already exists" }),
+    })
+    const store = createFakeStore({ api_key: "ck_live_x" })
+    const deps = createTestDeps({ fetch, store, readFile: async () => SOL_ID_JSON })
+
+    const code = await run(["wallets", "import", "--chain", "solana", "--key-file", "/keys/id.json"], deps)
+    expect(code).toBe(1)
+    expect(await store.get(importPendingSignerRef("solana", SOL_DERIVED_ADDRESS))).toBeNull()
   })
 
   test("--address matching the derived one is accepted; a mismatch refuses BEFORE any network call", async () => {

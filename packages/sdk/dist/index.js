@@ -1158,10 +1158,15 @@ class EncryptedFileSecretStore {
     }
   }
   async writeFile(contents) {
-    const { mkdir, writeFile } = await import("node:fs/promises");
+    const { chmod, mkdir, rename, writeFile } = await import("node:fs/promises");
     const { dirname } = await import("node:path");
-    await mkdir(dirname(this.path), { recursive: true });
-    await writeFile(this.path, JSON.stringify(contents, null, 2), "utf8");
+    const dir = dirname(this.path);
+    await mkdir(dir, { recursive: true });
+    await chmod(dir, 448);
+    const tmpPath = `${this.path}.tmp`;
+    await writeFile(tmpPath, JSON.stringify(contents, null, 2), { encoding: "utf8", mode: 384 });
+    await chmod(tmpPath, 384);
+    await rename(tmpPath, this.path);
   }
 }
 // src/webhooks.ts

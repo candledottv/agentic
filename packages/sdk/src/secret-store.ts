@@ -117,14 +117,17 @@ async function deriveKey(passphrase: string, salt: Uint8Array, iterations: numbe
  *     re-derive the key even after {@link PBKDF2_ITERATIONS} is raised for new entries later.
  *   - Encryption: AES-GCM-256, a random {@link IV_LENGTH_BYTES}-byte IV generated fresh for every
  *     `set` call (never reused across entries or across overwrites of the same entry).
- *   - At rest: one JSON object per file, one salt/iv/iterations/ciphertext record per `walletRef`.
- *     The ciphertext is AES-GCM's own output (ciphertext + auth tag), so a wrong passphrase
- *     derives the wrong key and `crypto.subtle.decrypt` throws on the auth-tag check -- it can
- *     never silently return garbage plaintext instead of the real PEM.
+ *   - At rest: one JSON object per file (mode 0600, parent directory 0700), one
+ *     salt/iv/iterations/ciphertext record per `walletRef`. The ciphertext is AES-GCM's own output
+ *     (ciphertext + auth tag), so a wrong passphrase derives the wrong key and
+ *     `crypto.subtle.decrypt` throws on the auth-tag check -- it can never silently return garbage
+ *     plaintext instead of the real PEM. Writes go to a temp file in the same directory and are
+ *     renamed over the real path, so an interrupted write cannot leave a half-written file.
  *
  * Not safe for concurrent writers against the same file: `set` and `delete` both do a
  * read-modify-write of the whole file, so two concurrent calls (same process or different
- * processes) against the same `path` can race and lose one write.
+ * processes) against the same `path` can race and lose one write. The atomic rename bounds the
+ * damage to a lost update; it does not make the read-modify-write itself safe.
  */
 export class EncryptedFileSecretStore implements SecretStore {
   constructor(
@@ -191,10 +194,30 @@ export class EncryptedFileSecretStore implements SecretStore {
     }
   }
 
+  /**
+   * Write the whole store, owner-only and atomically. Mirrors `writeContents` in the CLI's
+   * secret-store.ts, which has done both from the start; this copy did neither.
+   *
+   * The modes matter because the file holds signer ciphertext whose only protection is a
+   * PBKDF2 passphrase: created with no `mode`, a normal `umask 022` left the directory 0755 and
+   * the file 0644, so any other local account could copy the ciphertext and attack the passphrase
+   * offline, at its leisure. `chmod` runs after `mkdir`/`writeFile` because the `mode` options
+   * apply only when the entry is newly created, and a directory or leftover temp file from an
+   * earlier run would otherwise keep its old, wider mode.
+   *
+   * The rename matters because `set` and `delete` rewrite the entire file: truncating it in place
+   * means an interrupted write loses EVERY stored signer, not just the entry being changed.
+   * `rename` within one directory is atomic, so a reader sees either the old file or the new one.
+   */
   private async writeFile(contents: EncryptedFileContents): Promise<void> {
-    const { mkdir, writeFile } = await import("node:fs/promises")
+    const { chmod, mkdir, rename, writeFile } = await import("node:fs/promises")
     const { dirname } = await import("node:path")
-    await mkdir(dirname(this.path), { recursive: true })
-    await writeFile(this.path, JSON.stringify(contents, null, 2), "utf8")
+    const dir = dirname(this.path)
+    await mkdir(dir, { recursive: true })
+    await chmod(dir, 0o700)
+    const tmpPath = `${this.path}.tmp`
+    await writeFile(tmpPath, JSON.stringify(contents, null, 2), { encoding: "utf8", mode: 0o600 })
+    await chmod(tmpPath, 0o600)
+    await rename(tmpPath, this.path)
   }
 }

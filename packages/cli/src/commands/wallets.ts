@@ -25,7 +25,7 @@ import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
 import { printIdentity } from "../profiles"
 import { renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
-import { pemToStoredSigner, type SecretStore, walletSignerRef } from "../secret-store"
+import { importPendingSignerRef, pemToStoredSigner, type SecretStore, walletSignerRef } from "../secret-store"
 import { encryptWalletKeyForImport, generateSignerKeypair, parseSolanaSecret, type WalletChain } from "../wallet-import"
 
 interface EmbeddedWalletsResponse {
@@ -397,6 +397,31 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
     encryptionPublicKey,
   })
   const signer = await generateSignerKeypair()
+  const storedSigner = pemToStoredSigner(signer.privateKeyPem)
+
+  // Stage the signer's PRIVATE half before the server hears about its public half.
+  //
+  // The order used to be the other way round: submit, then store. A store failure in that window
+  // (a locked keychain, a cancelled passphrase prompt, a full disk) left a wallet registered on
+  // the account whose signer existed only in this process's memory, so it could never sign a
+  // trade and nothing on screen said so. Writing first inverts the failure: if the store is
+  // unavailable we find out before anything is registered, and the command fails having changed
+  // nothing anywhere.
+  const pendingRef = importPendingSignerRef(chain, address)
+  try {
+    await deps.store.set(pendingRef, storedSigner)
+  } catch (error) {
+    writeLocalFailure(
+      deps,
+      {
+        code: "SIGNER_STORE_FAILED",
+        message: `Could not store the new signer in the ${deps.backend} store: ${error instanceof Error ? error.message : error}`,
+        suggestion: "Nothing was imported. Unlock the store (or fix the error above) and run the command again.",
+      },
+      json,
+    )
+    return 1
+  }
 
   const submit = await apiRequest("/api/v1/agent/wallets/import/submit", {
     method: "POST",
@@ -415,6 +440,9 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
     env: deps.env,
   })
   if (!submit.ok) {
+    // No wallet was created, so the staged signer is for nothing. Best-effort: a store that
+    // cannot delete is not a reason to report the import as anything other than what it was.
+    await deps.store.delete(pendingRef).catch(() => {})
     writeFailure(deps, submit, { apiUrl, authType: "key" }, json)
     return 1
   }
@@ -425,7 +453,31 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
   // PEM for use on another machine, written 0600 by the real writeFile. Stored in the
   // single-line form (pemToStoredSigner): a raw PEM contains newlines, which the macOS
   // keychain backend's command-injection guard rightly refuses.
-  await deps.store.set(walletSignerRef(result.id), pemToStoredSigner(signer.privateKeyPem))
+  //
+  // Commit: move the staged signer to the ref the wallet id names. If this fails the signer is
+  // NOT lost, because the staged copy above is still there, so the message names where it is
+  // rather than telling the operator to re-import a wallet that already exists.
+  try {
+    await deps.store.set(walletSignerRef(result.id), storedSigner)
+  } catch (error) {
+    writeLocalFailure(
+      deps,
+      {
+        code: "SIGNER_COMMIT_FAILED",
+        message:
+          `Wallet ${result.id} was imported, but its signer could not be stored under the wallet's own ` +
+          `ref: ${error instanceof Error ? error.message : error}`,
+        suggestion:
+          `The signer is not lost: it is in the ${deps.backend} store under "${pendingRef}". Copy it to ` +
+          `"${walletSignerRef(result.id)}", or revoke the wallet with: candle wallets revoke ${result.id}`,
+      },
+      json,
+    )
+    return 1
+  }
+  // Best-effort: the committed copy is what every later trade reads, so a stray staged duplicate
+  // is hygiene, not correctness.
+  await deps.store.delete(pendingRef).catch(() => {})
   const signerOut = parsed.values["--signer-out"]
   if (signerOut !== undefined) {
     try {
