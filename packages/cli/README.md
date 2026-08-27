@@ -218,6 +218,7 @@ the profile they were migrated into.
 | `CANDLE_PROFILE` | Selects the profile when `--profile` is not given. |
 | `CANDLE_KEYRING_PASSPHRASE` | The passphrase for the encrypted-file backend. Without it, a non-interactive process (no TTY) fails with a clear error rather than falling back to writing plaintext; an interactive session is prompted instead. |
 | `CANDLE_CONFIG_DIR` | Overrides where the CLI keeps its config and encrypted-file credentials (default `~/.config/candle`). Mainly a testing seam. |
+| `CANDLE_ALLOW_INSECURE_HTTP` | Allows an `http://` API URL pointing at a non-loopback host. The CLI attaches a device token or API key to nearly every request, so it refuses cleartext by default. Loopback (`localhost`, `127.0.0.0/8`, `::1`) is always allowed and needs no opt-in; set this only for a trusted local endpoint that is not loopback, such as a devcontainer reaching its host. |
 
 `CANDLE_DEVICE_TOKEN` and `CANDLE_API_KEY` together mean CI needs no storage backend at all: set
 both and every command works without ever touching a keychain or the encrypted file.

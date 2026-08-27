@@ -397,6 +397,30 @@ function isAtomicSubmitOutcome(value) {
 var DEFAULT_MAX_RETRIES = 3;
 var DEFAULT_POLL_MS = 2000;
 var DEFAULT_WAIT_TIMEOUT_MS = 180000;
+function isLoopbackHost(hostname) {
+  const host = hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost"))
+    return true;
+  if (host === "::1" || host === "[::1]")
+    return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+function assertTransportSecurity(apiUrl, allowInsecureHttp) {
+  let parsed;
+  try {
+    parsed = new URL(apiUrl);
+  } catch {
+    throw new Error(`CandleClient: apiUrl is not a valid URL: ${JSON.stringify(apiUrl)}`);
+  }
+  if (parsed.protocol === "https:")
+    return;
+  if (parsed.protocol !== "http:") {
+    throw new Error(`CandleClient: apiUrl must be http or https, got ${parsed.protocol.replace(":", "")}`);
+  }
+  if (isLoopbackHost(parsed.hostname) || allowInsecureHttp)
+    return;
+  throw new Error(`CandleClient: refusing to send credentials in the clear to ${parsed.origin}. Use https://, or ` + "pass allowInsecureHttp: true if this really is a trusted local endpoint.");
+}
 
 class CandleClient {
   apiUrl;
@@ -408,6 +432,7 @@ class CandleClient {
   solanaRpcUrl;
   evmRpcUrl;
   constructor(opts) {
+    assertTransportSecurity(opts.apiUrl, opts.allowInsecureHttp === true);
     this.apiUrl = opts.apiUrl.replace(/\/+$/, "");
     if (opts.apiKey !== undefined)
       this.apiKey = opts.apiKey;

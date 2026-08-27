@@ -65,6 +65,67 @@ function trimTrailingSlashes(url: string): string {
 }
 
 /**
+ * Set to any non-empty value to allow a cleartext `http://` API URL to a NON-loopback host.
+ *
+ * Loopback needs no opt-in (see {@link isLoopbackHost}); this exists for the dev shapes that are
+ * not loopback but are still local, the common one being a devcontainer reaching its host through
+ * `http://host.docker.internal:3000`. Deliberately an explicit, named act rather than a silent
+ * allowance: it shows up in a shell profile or a compose file where a reviewer can see it.
+ */
+export const ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP"
+
+/**
+ * Whether `hostname` is this machine talking to itself, where cleartext never leaves the host.
+ *
+ * `URL.hostname` keeps IPv6 literals in brackets, hence the `[::1]` form. The whole `127.0.0.0/8`
+ * block counts, not just `127.0.0.1`: `127.0.0.2` and friends are equally loopback, and a dev who
+ * picked one should not get a security error for it.
+ */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase()
+  if (host === "localhost" || host.endsWith(".localhost")) return true
+  if (host === "::1" || host === "[::1]") return true
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+}
+
+/**
+ * Why this API base URL must not be used, as the sentence to say about it, or `undefined` when it
+ * is safe to send credentials to.
+ *
+ * The CLI attaches a bearer device token or an `x-api-key` to nearly every request, so an
+ * `http://` base URL puts a live credential on the wire in the clear. A redirect to HTTPS does not
+ * save it: the first request has already left the machine. One mistyped or copy-pasted profile is
+ * all it takes, and the failure is silent -- the command works, which is exactly why nobody
+ * notices.
+ *
+ * Returns a sentence rather than throwing because both callers want to present it their own way:
+ * `profile add` refuses at the point the value is typed, and {@link apiRequest} refuses at the
+ * call site as the backstop for every other route a URL can arrive by (`--api-url`,
+ * `CANDLE_API_URL`, a stored profile, a config file edited by hand).
+ *
+ * A value that does not parse is NOT this function's problem: it returns `undefined` and leaves
+ * that to the existing "it needs a scheme" advice, which says something more useful about it.
+ */
+export function insecureApiUrlFault(
+  url: string,
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return undefined
+  }
+  if (parsed.protocol !== "http:") return undefined
+  if (isLoopbackHost(parsed.hostname)) return undefined
+  if (env[ALLOW_INSECURE_HTTP_ENV]?.trim()) return undefined
+  return (
+    `Refusing to send credentials in the clear to ${parsed.origin}. Use https://, or set ` +
+    `${ALLOW_INSECURE_HTTP_ENV}=1 if this really is a trusted local endpoint.`
+  )
+}
+
+/**
  * Resolves the API base URL a command should use: `CANDLE_API_URL` (an explicit override, e.g. for
  * pointing at a local dev API) beats the value stored in `CliConfig.apiUrl` (set during `candle
  * login`, e.g. for a staging deployment) beats {@link DEFAULT_API_URL}. Does not read the config
@@ -150,6 +211,14 @@ function classifyError(
 
 export async function apiRequest(path: string, opts: ApiRequestOptions): Promise<ApiResult> {
   const url = buildUrl(opts.apiUrl, path)
+  // The backstop, checked here because this is the CLI's single HTTP call site: a URL can arrive
+  // from --api-url, CANDLE_API_URL, a stored profile or a hand-edited config, and validating each
+  // of those routes separately means the next one added is unguarded. Refused BEFORE the headers
+  // are built, so the credential is never even assembled for a cleartext request.
+  const insecure = insecureApiUrlFault(opts.apiUrl, opts.env ?? process.env)
+  if (insecure) {
+    return { ok: false, status: 0, code: "INSECURE_API_URL", message: insecure, raw: undefined }
+  }
   const headers = buildHeaders(opts)
   // Stringified outside the network try/catch below on purpose: a body that can't be serialized
   // (circular references, a BigInt without a toJSON) is a programmer error in the caller, not a

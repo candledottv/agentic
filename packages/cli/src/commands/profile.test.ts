@@ -163,6 +163,29 @@ describe("profile add", () => {
     expect((await config.readConfig()).profiles).toBeUndefined()
   })
 
+  test("a cleartext --api-url is refused, and no profile is created to fail later", async () => {
+    const config = createFakeConfigStore({})
+    const stderr = createCapture()
+    const code = await run(
+      ["profile", "add", "hood", "--api-url", "http://staging.api.candle.tv"],
+      createTestDeps({ fetch: unusedFetch, stderr, ...config, env: {} }),
+    )
+    expect(code).toBe(2)
+    expect(stderr.text).toContain("Refusing to send credentials in the clear")
+    expect(stderr.text).toContain("CANDLE_ALLOW_INSECURE_HTTP")
+    expect((await config.readConfig()).profiles).toBeUndefined()
+  })
+
+  test("a loopback --api-url is still accepted: local development needs no opt-in", async () => {
+    const config = createFakeConfigStore({})
+    const code = await run(
+      ["profile", "add", "local", "--api-url", "http://localhost:3000"],
+      createTestDeps({ fetch: unusedFetch, ...config, env: {} }),
+    )
+    expect(code).toBe(0)
+    expect((await config.readConfig()).profiles?.local?.apiUrl).toBe("http://localhost:3000")
+  })
+
   // `new URL` alone is not the test: it ACCEPTS "localhost:3000" (scheme "localhost:", no host)
   // and "api.candle.tv:443" the same way, so the host-shaped typo the check exists to catch was
   // the one shape it let through. The advice differs with what is actually wrong: a value with no

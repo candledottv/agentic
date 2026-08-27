@@ -9,8 +9,35 @@ import { z } from "zod";
 
 // src/client.ts
 var DEFAULT_API_URL = "https://api.alpha.candle.tv";
+function isLoopbackHost(hostname) {
+  const host = hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost"))
+    return true;
+  if (host === "::1" || host === "[::1]")
+    return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+function assertTransportSecurity(apiUrl) {
+  let parsed;
+  try {
+    parsed = new URL(apiUrl);
+  } catch {
+    throw new Error(`CANDLE_API_URL is not a valid URL: ${JSON.stringify(apiUrl)}`);
+  }
+  if (parsed.protocol === "https:")
+    return;
+  if (parsed.protocol !== "http:") {
+    throw new Error(`CANDLE_API_URL must be http or https, got ${parsed.protocol.replace(":", "")}`);
+  }
+  if (isLoopbackHost(parsed.hostname))
+    return;
+  if (process.env.CANDLE_ALLOW_INSECURE_HTTP?.trim())
+    return;
+  throw new Error(`Refusing to send credentials in the clear to ${parsed.origin}. Set CANDLE_API_URL to an https:// ` + "URL, or set CANDLE_ALLOW_INSECURE_HTTP=1 if this really is a trusted local endpoint.");
+}
 function resolveConfig() {
   const apiUrl = process.env.CANDLE_API_URL?.trim() || DEFAULT_API_URL;
+  assertTransportSecurity(apiUrl);
   const apiKey = process.env.CANDLE_AGENT_API_KEY?.trim() || process.env.CANDLE_API_KEY?.trim();
   return apiKey ? { apiUrl, apiKey } : { apiUrl };
 }

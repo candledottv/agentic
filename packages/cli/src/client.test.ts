@@ -105,6 +105,61 @@ describe("apiRequest: error envelope classification", () => {
   })
 })
 
+describe("apiRequest: cleartext transport", () => {
+  test("an http:// API URL to a real host is refused before any request is made", async () => {
+    let called = false
+    stubFetch(() => {
+      called = true
+      return new Response("{}", { status: 200 })
+    })
+
+    const result = await apiRequest("/v1/keys", {
+      auth: "key",
+      credentials: { apiKey: "ck_live_secret" },
+      apiUrl: "http://api.candle.tv",
+      env: {},
+    })
+
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error("expected ok:false")
+    expect(result.code).toBe("INSECURE_API_URL")
+    expect(result.message).toContain("http://api.candle.tv")
+    // Nothing was sent: the credential is never assembled into a cleartext request.
+    expect(called).toBe(false)
+    expect(result.message).not.toContain("ck_live_secret")
+  })
+
+  test("loopback over http is allowed with no ceremony, in each of its spellings", async () => {
+    for (const apiUrl of ["http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000"]) {
+      stubFetch(() => new Response(JSON.stringify({ success: true }), { status: 200 }))
+      const result = await apiRequest("/v1/keys", { auth: "none", credentials: {}, apiUrl, env: {} })
+      expect(result.ok).toBe(true)
+    }
+  })
+
+  test("CANDLE_ALLOW_INSECURE_HTTP opts a non-loopback host back in", async () => {
+    stubFetch(() => new Response(JSON.stringify({ success: true }), { status: 200 }))
+    const result = await apiRequest("/v1/keys", {
+      auth: "none",
+      credentials: {},
+      apiUrl: "http://host.docker.internal:3000",
+      env: { CANDLE_ALLOW_INSECURE_HTTP: "1" },
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  test("https is unaffected", async () => {
+    stubFetch(() => new Response(JSON.stringify({ success: true }), { status: 200 }))
+    const result = await apiRequest("/v1/keys", {
+      auth: "none",
+      credentials: {},
+      apiUrl: "https://api.candle.tv",
+      env: {},
+    })
+    expect(result.ok).toBe(true)
+  })
+})
+
 describe("apiRequest: credentials never leak into the result", () => {
   test("an ok:false result never contains the credential used to make the request", async () => {
     stubFetch(() => jsonResponse(401, { success: false, error: { code: "UNAUTHORIZED", message: "Bad token" } }))

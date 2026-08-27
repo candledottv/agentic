@@ -4802,6 +4802,30 @@ var DEFAULT_API_URL = "https://api.alpha.candle.tv";
 function trimTrailingSlashes(url) {
   return url.trim().replace(/\/+$/, "");
 }
+var ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP";
+function isLoopbackHost(hostname) {
+  const host = hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost"))
+    return true;
+  if (host === "::1" || host === "[::1]")
+    return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+function insecureApiUrlFault(url, env = process.env) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return;
+  }
+  if (parsed.protocol !== "http:")
+    return;
+  if (isLoopbackHost(parsed.hostname))
+    return;
+  if (env[ALLOW_INSECURE_HTTP_ENV]?.trim())
+    return;
+  return `Refusing to send credentials in the clear to ${parsed.origin}. Use https://, or set ` + `${ALLOW_INSECURE_HTTP_ENV}=1 if this really is a trusted local endpoint.`;
+}
 function resolveApiUrl(configuredApiUrl, env = process.env) {
   const fromEnv = env.CANDLE_API_URL?.trim();
   const resolved = fromEnv || configuredApiUrl?.trim() || DEFAULT_API_URL;
@@ -4850,6 +4874,10 @@ function classifyError(status, raw) {
 }
 async function apiRequest(path, opts) {
   const url = buildUrl(opts.apiUrl, path);
+  const insecure = insecureApiUrlFault(opts.apiUrl, opts.env ?? process.env);
+  if (insecure) {
+    return { ok: false, status: 0, code: "INSECURE_API_URL", message: insecure, raw: undefined };
+  }
   const headers = buildHeaders(opts);
   const body = opts.body === undefined ? undefined : JSON.stringify(opts.body);
   const doFetch = opts.fetch ?? fetch;
@@ -6301,7 +6329,7 @@ async function profileList(args, ctx) {
 }
 var NEEDS_SCHEME = (value) => `It needs a scheme, such as https://${value}`;
 var BAD_SCHEME = "The scheme must be http or https.";
-function apiUrlFault(value) {
+function apiUrlFault(value, env) {
   let url;
   try {
     url = new URL(value);
@@ -6310,7 +6338,9 @@ function apiUrlFault(value) {
   }
   if (url.host === "")
     return NEEDS_SCHEME(value);
-  return url.protocol === "http:" || url.protocol === "https:" ? undefined : BAD_SCHEME;
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    return BAD_SCHEME;
+  return insecureApiUrlFault(value, env);
 }
 async function profileAdd(args, ctx) {
   const { deps, json, apiUrlFlag } = ctx;
@@ -6332,7 +6362,7 @@ async function profileAdd(args, ctx) {
     writeUsageFailure(deps, "profile add needs --api-url <url>: the host this profile authenticates against", json);
     return 2;
   }
-  const fault = apiUrlFault(apiUrlFlag);
+  const fault = apiUrlFault(apiUrlFlag, deps.env);
   if (fault) {
     writeUsageFailure(deps, `Invalid --api-url: ${apiUrlFlag}. ${fault}`, json);
     return 2;

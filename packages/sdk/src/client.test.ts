@@ -117,6 +117,34 @@ function jobBody(status: "submitted" | "confirming" | "confirmed" | "failed") {
   }
 }
 
+describe("apiUrl transport security", () => {
+  test("an http:// apiUrl to a real host is refused at construction", () => {
+    // The client attaches x-api-key to every authenticated call, so a cleartext base URL hands
+    // the key to anything on the path. The constructor used to only trim trailing slashes.
+    expect(() => new CandleClient({ apiUrl: "http://api.candle.tv", apiKey: "cndl_live_k" })).toThrow(
+      /refusing to send credentials in the clear/i,
+    )
+  })
+
+  test("loopback over http is allowed, in each of its spellings", () => {
+    for (const apiUrl of ["http://localhost:3000", "http://127.0.0.1:8080", "http://[::1]:3000"]) {
+      expect(() => new CandleClient({ apiUrl })).not.toThrow()
+    }
+  })
+
+  test("allowInsecureHttp opts a non-loopback host back in", () => {
+    expect(
+      () => new CandleClient({ apiUrl: "http://host.docker.internal:3000", allowInsecureHttp: true }),
+    ).not.toThrow()
+  })
+
+  test("https is unaffected, and a non-http scheme is rejected as such", () => {
+    expect(() => new CandleClient({ apiUrl: "https://api.test" })).not.toThrow()
+    expect(() => new CandleClient({ apiUrl: "ftp://api.test" })).toThrow(/must be http or https/i)
+    expect(() => new CandleClient({ apiUrl: "not a url" })).toThrow(/not a valid URL/i)
+  })
+})
+
 describe("request shapes", () => {
   test("getQuotePairs: GET /api/v1/launch/quote-pairs, no auth header without a key", async () => {
     const payload = { matrixVersion: 1, pairs: { solana: [] }, defaults: { solana: "sol" } }

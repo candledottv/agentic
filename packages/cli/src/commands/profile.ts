@@ -5,7 +5,7 @@
  */
 import { fetchAccount } from "../account"
 import { parseArgs } from "../args"
-import { resolveApiUrl } from "../client"
+import { insecureApiUrlFault, resolveApiUrl } from "../client"
 import type { CommandContext } from "../deps"
 import { identityLine, isValidProfileName, profileSecretRef, profileTable } from "../profiles"
 import { renderTable, writeLocalFailure, writeUsageFailure } from "../render"
@@ -54,7 +54,7 @@ const BAD_SCHEME = "The scheme must be http or https."
  * A value that DID parse with a real scheme the client cannot speak gets its own sentence: telling
  * someone who typed "ftp://api.candle.tv" to try "https://ftp://api.candle.tv" is nonsense.
  */
-function apiUrlFault(value: string): string | undefined {
+function apiUrlFault(value: string, env: Record<string, string | undefined>): string | undefined {
   let url: URL
   try {
     url = new URL(value)
@@ -62,7 +62,11 @@ function apiUrlFault(value: string): string | undefined {
     return NEEDS_SCHEME(value)
   }
   if (url.host === "") return NEEDS_SCHEME(value)
-  return url.protocol === "http:" || url.protocol === "https:" ? undefined : BAD_SCHEME
+  if (url.protocol !== "http:" && url.protocol !== "https:") return BAD_SCHEME
+  // Refuse cleartext here too, not only at the call site: writing the profile and failing on its
+  // first use would leave a saved profile that can never make a request, and the advice would
+  // arrive a command later than the value it is about.
+  return insecureApiUrlFault(value, env)
 }
 
 export async function profileAdd(args: string[], ctx: CommandContext): Promise<number> {
@@ -88,7 +92,7 @@ export async function profileAdd(args: string[], ctx: CommandContext): Promise<n
   // Parsed here, where the operator is still looking at what they typed. The value is otherwise
   // written to config unread and only fails much later, inside whatever command first tries to
   // reach it, with the typo sitting in a file nothing prompted them to open.
-  const fault = apiUrlFault(apiUrlFlag)
+  const fault = apiUrlFault(apiUrlFlag, deps.env)
   if (fault) {
     writeUsageFailure(deps, `Invalid --api-url: ${apiUrlFlag}. ${fault}`, json)
     return 2

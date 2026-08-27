@@ -50,6 +50,29 @@ describe("resolveConfig", () => {
     process.env.CANDLE_API_URL = "   "
     expect(resolveConfig().apiUrl).toBe("https://api.alpha.candle.tv")
   })
+
+  test("a cleartext CANDLE_API_URL to a real host is refused at startup", () => {
+    // Every write tool sends x-api-key, so an http:// base URL hands the agent key to the path.
+    process.env.CANDLE_API_URL = "http://api.candle.tv"
+    expect(() => resolveConfig()).toThrow(/refusing to send credentials in the clear/i)
+  })
+
+  test("CANDLE_ALLOW_INSECURE_HTTP opts a non-loopback host back in", () => {
+    process.env.CANDLE_API_URL = "http://host.docker.internal:3000"
+    process.env.CANDLE_ALLOW_INSECURE_HTTP = "1"
+    try {
+      expect(resolveConfig().apiUrl).toBe("http://host.docker.internal:3000")
+    } finally {
+      delete process.env.CANDLE_ALLOW_INSECURE_HTTP
+    }
+  })
+
+  test("every loopback spelling stays allowed without an opt-in", () => {
+    for (const url of ["http://localhost:3001", "http://127.0.0.1:3001", "http://[::1]:3001"]) {
+      process.env.CANDLE_API_URL = url
+      expect(resolveConfig().apiUrl).toBe(url)
+    }
+  })
 })
 
 describe("resolveConfig API key alias", () => {

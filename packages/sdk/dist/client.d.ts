@@ -44,6 +44,14 @@ export interface CandleClientOptions {
     apiKey?: string;
     /** Injectable fetch for tests; defaults to the global. */
     fetch?: typeof fetch;
+    /**
+     * Allow an `http://` {@link apiUrl} pointing at a NON-loopback host. Off by default: this client
+     * attaches `x-api-key` to every authenticated call, so cleartext hands the key to anything on the
+     * path, and a redirect to HTTPS is too late to help. Loopback (`localhost`, `127.0.0.0/8`, `::1`)
+     * is always allowed and needs no flag. Set this only for a trusted local endpoint that is not
+     * loopback, such as a devcontainer reaching its host.
+     */
+    allowInsecureHttp?: boolean;
     /** Max launch() retries after the initial attempt. Default 3. */
     maxRetries?: number;
     /**

@@ -60,6 +60,14 @@ export interface CandleClientOptions {
   apiKey?: string
   /** Injectable fetch for tests; defaults to the global. */
   fetch?: typeof fetch
+  /**
+   * Allow an `http://` {@link apiUrl} pointing at a NON-loopback host. Off by default: this client
+   * attaches `x-api-key` to every authenticated call, so cleartext hands the key to anything on the
+   * path, and a redirect to HTTPS is too late to help. Loopback (`localhost`, `127.0.0.0/8`, `::1`)
+   * is always allowed and needs no flag. Set this only for a trusted local endpoint that is not
+   * loopback, such as a devcontainer reaching its host.
+   */
+  allowInsecureHttp?: boolean
   /** Max launch() retries after the initial attempt. Default 3. */
   maxRetries?: number
   /**
@@ -1028,6 +1036,48 @@ const DEFAULT_MAX_RETRIES = 3
 const DEFAULT_POLL_MS = 2_000
 const DEFAULT_WAIT_TIMEOUT_MS = 180_000
 
+/** Loopback, where cleartext never leaves the machine. Brackets because `URL.hostname` keeps them
+ * on IPv6 literals; the whole 127.0.0.0/8 block counts, not just 127.0.0.1. */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.toLowerCase()
+  if (host === "localhost" || host.endsWith(".localhost")) return true
+  if (host === "::1" || host === "[::1]") return true
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+}
+
+/**
+ * Refuse an `apiUrl` that would put this client's credentials on the wire in the clear.
+ *
+ * Every authenticated call attaches `x-api-key`, so an `http://` base URL leaks the key to anything
+ * on the path. A redirect to HTTPS does not help: the first request has already been sent. This
+ * used to be unchecked entirely -- the constructor only trimmed trailing slashes -- so a typo or a
+ * copied config silently downgraded every request the client would ever make.
+ *
+ * Loopback is allowed with no ceremony, since the bytes never leave the host. Anything else needs
+ * `allowInsecureHttp: true`, an explicit argument at the construction site rather than an ambient
+ * environment variable: a library should not have its transport security flipped by something the
+ * calling process cannot see in its own source.
+ *
+ * Throws rather than returning a fault, matching how this constructor treats other caller mistakes.
+ */
+function assertTransportSecurity(apiUrl: string, allowInsecureHttp: boolean): void {
+  let parsed: URL
+  try {
+    parsed = new URL(apiUrl)
+  } catch {
+    throw new Error(`CandleClient: apiUrl is not a valid URL: ${JSON.stringify(apiUrl)}`)
+  }
+  if (parsed.protocol === "https:") return
+  if (parsed.protocol !== "http:") {
+    throw new Error(`CandleClient: apiUrl must be http or https, got ${parsed.protocol.replace(":", "")}`)
+  }
+  if (isLoopbackHost(parsed.hostname) || allowInsecureHttp) return
+  throw new Error(
+    `CandleClient: refusing to send credentials in the clear to ${parsed.origin}. Use https://, or ` +
+      "pass allowInsecureHttp: true if this really is a trusted local endpoint.",
+  )
+}
+
 export class CandleClient {
   private readonly apiUrl: string
   private readonly apiKey?: string
@@ -1039,6 +1089,7 @@ export class CandleClient {
   private readonly evmRpcUrl?: string
 
   constructor(opts: CandleClientOptions) {
+    assertTransportSecurity(opts.apiUrl, opts.allowInsecureHttp === true)
     this.apiUrl = opts.apiUrl.replace(/\/+$/, "")
     if (opts.apiKey !== undefined) this.apiKey = opts.apiKey
     this.fetchImpl = opts.fetch ?? fetch

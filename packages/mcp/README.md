@@ -61,7 +61,12 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 ## Environment
 
 - `CANDLE_API_URL` -- base URL of the Candle API. Defaults to `https://api.alpha.candle.tv` (the alpha deployment; production does not serve the agent API yet). Set it to
-  `http://localhost:3001` when developing against a local API.
+  `http://localhost:3001` when developing against a local API. A cleartext `http://` URL pointing
+  at a NON-loopback host is refused at startup, since every write tool sends `x-api-key`; loopback
+  (`localhost`, `127.0.0.0/8`, `::1`) needs no opt-in.
+- `CANDLE_ALLOW_INSECURE_HTTP` -- set to any non-empty value to allow an `http://` API URL to a
+  non-loopback host. For a trusted local endpoint that is not loopback, such as a devcontainer
+  reaching its host; not for anything that leaves the machine.
 - `CANDLE_AGENT_API_KEY` -- an agent API key (`cndl_live_...` / `cndl_test_...`), issued from a
   Candle account's agent settings page. Only required by `candle_launch_token`,
   `candle_report_activity`, `candle_trade`, `candle_launch_and_seed`, and `candle_swap`; the three
