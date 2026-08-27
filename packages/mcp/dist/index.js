@@ -642,7 +642,7 @@ function registerTools(server, env = process.env) {
 }
 
 // src/version.ts
-var SERVER_VERSION = "0.4.0";
+var SERVER_VERSION = "0.5.0";
 
 // src/server.ts
 function createCandleMcpServer(env = process.env) {

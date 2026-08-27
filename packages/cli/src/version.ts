@@ -7,4 +7,4 @@
  * `dist/index.js` with no `package.json` read back out of it at run time; bump this alongside
  * `package.json`'s `version` field on release.
  */
-export const CLI_VERSION = "0.6.2"
+export const CLI_VERSION = "0.7.0"
