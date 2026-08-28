@@ -567,12 +567,21 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       title: "Convert between base assets",
       description:
         "Convert one base asset into another through the account's own embedded wallets. MOVES " +
-        "REAL FUNDS. A pair spanning the Solana side (SOL/USDC/CNDL) and the Hood side (ETH/USDG) " +
-        "routes through the bridge, so this is how a Hood wallet gets funded before launching or " +
-        "trading on hood, and that leg settles across two chains rather than instantly. Amounts " +
-        'are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for callers ' +
-        "that already compute them. Test-environment keys are refused: every leg settles on a " +
-        "live venue.",
+        "REAL FUNDS.\n\n" +
+        "SOL, USDC and CNDL are on Solana. ETH and USDG are on Hood. A pair drawn from ONE of " +
+        "those groups settles on that chain in a single transaction. A pair spanning both is a " +
+        "BRIDGE, and this is how a Hood wallet gets funded before launching or trading there.\n\n" +
+        "A bridge behaves differently and the difference matters:\n" +
+        "- It is several transactions, not one, and it takes time rather than settling on the call.\n" +
+        "- A confirmed source transaction is NOT proof the destination was credited. Read the " +
+        "returned status before treating the funds as arrived; the response carries the venue's " +
+        "own status URLs for the cross-chain fill.\n" +
+        "- Do NOT re-send after a timeout. `clientSwapId` only coalesces a duplicate that arrives " +
+        "while the first call is still in flight; once the first has settled, a second call with " +
+        "the same id bridges AGAIN. If a bridge times out, check its status rather than retrying.\n\n" +
+        'Amounts are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for ' +
+        "callers that already compute them. Test-environment keys are refused: every leg settles " +
+        "on a live venue.",
       inputSchema: swapShape,
     },
     async (args) => callAndRelay("candle_swap", args, cfg),
