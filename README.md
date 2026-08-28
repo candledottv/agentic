@@ -100,8 +100,9 @@ from here the MCP server needs no env block at all:
 ```
 
 The absolute path, because GUI hosts launch servers with the app's environment and never see your
-PATH; MCP hosts also need Node 18+ on their own PATH. `candle mcp` launches the same server with
-the key and API URL this device just stored, so the credential never sits in a config file.
+PATH. `candle mcp` runs the server built into the binary, with the key and API URL this device
+just stored, so the credential never sits in a config file and the host needs nothing else
+installed.
 `--read-only` pins it to the four keyless read tools; `--tools` takes an explicit allowlist;
 `--print-config` prints the block above filled in for this install. The full command surface,
 credential storage, and headless use are documented on the
