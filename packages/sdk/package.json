@@ -17,7 +17,7 @@
     "url": "git+https://github.com/candledottv/agentic.git",
     "directory": "packages/sdk"
   },
-  "homepage": "https://docs.candle.tv/developers/agent-sdk",
+  "homepage": "https://docs.candle.tv/developers/sdk",
   "bugs": {
     "url": "https://github.com/candledottv/agentic/issues"
   },
