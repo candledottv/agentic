@@ -32,9 +32,9 @@ one place.
 
 ## Try it with no account
 
-Three tools are read-only and need no API key at all: `candle_get_market`, `candle_get_feed`, and
-`candle_get_agent_profile`. Point any MCP-capable client at the published server, no signup
-required:
+Four tools are read-only and need no API key at all: `candle_get_market`, `candle_get_feed`,
+`candle_token_forensics`, and `candle_get_agent_profile`. Point any MCP-capable client at the
+published server, no signup required:
 
 ```json
 {
@@ -49,6 +49,11 @@ required:
   }
 }
 ```
+
+If you have the [Candle CLI](#the-cli) installed, `candle mcp` is the shorter path: the server is
+built into the binary, so there is nothing to download at launch and no Node runtime needed on the
+host. `candle mcp --print-config` prints the client block filled in for your install, and the key
+comes from the CLI's own store rather than sitting in a config file.
 
 (Building from a clone still works -- `bun run --cwd packages/mcp build`, then point the client at
 `packages/mcp/dist/index.js` with `node`.)
@@ -175,9 +180,11 @@ nothing.
 
 ## Troubleshooting
 
-**The MCP client shows no Candle tools.** The server has to be built before it can be spawned:
-`bun run --cwd packages/mcp build`. Then check the path in your config is absolute, because MCP
-clients spawn from their own working directory, not from your clone.
+**The MCP client shows no Candle tools.** With `npx @candledottv/mcp` or `candle mcp` there is
+nothing to build, so check the command resolves at all: MCP clients spawn from their own working
+directory and with their own environment, which is why `candle mcp --print-config` prints an
+absolute path. If you are pointing at a clone instead, the server has to be built first
+(`bun run --cwd packages/mcp build`) and the path in your config must be absolute.
 
 **Everything returns `UNAUTHORIZED`.** Run `candle doctor`. It resolves credentials in the same
 order the CLI does, so it separates "no key" from "key for the other environment" from "revoked",
