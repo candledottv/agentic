@@ -42,7 +42,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { type RequestConfig, resolveConfig } from "./client"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
-import { executeLaunchAndSeed, executeSweep, executeTrade } from "./orchestrate"
+import { executeLaunchAndSeed, executeSweep, executeTrade, executionStatus, resolveToken } from "./orchestrate"
 
 export const TOOL_NAMES = [
   "candle_launch_token",
@@ -56,6 +56,9 @@ export const TOOL_NAMES = [
   "candle_swap",
   "candle_transfer",
   "candle_sweep",
+  "candle_get_wallets",
+  "candle_resolve_token",
+  "candle_execution_status",
 ] as const
 
 export type ToolName = (typeof TOOL_NAMES)[number]
@@ -89,7 +92,10 @@ export function resolveToolAllowlist(env: Record<string, string | undefined>): S
  * orchestrate.ts's `executeTrade` / `executeLaunchAndSeed`), never built as a single (url, init)
  * pair, so they're kept out of this type rather than added as dead switch cases.
  */
-type RestToolName = Exclude<ToolName, "candle_trade" | "candle_launch_and_seed" | "candle_sweep">
+type RestToolName = Exclude<
+  ToolName,
+  "candle_trade" | "candle_launch_and_seed" | "candle_sweep" | "candle_resolve_token" | "candle_execution_status"
+>
 
 export interface BuiltRequest {
   url: string
@@ -211,6 +217,14 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       }
     }
 
+    case "candle_get_wallets": {
+      const apiKey = requireApiKey(cfg)
+      return {
+        url: `${base}/api/v1/agent/wallets/embedded`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) },
+      }
+    }
+
     case "candle_transfer": {
       const apiKey = requireApiKey(cfg)
       return {
@@ -296,6 +310,10 @@ const reportActivityShape = {
 
 const getAgentProfileShape = {
   idOrWallet: z.string().describe("Candle username or wallet address"),
+}
+
+const resolveTokenShape = {
+  mint: z.string().describe("Token mint (Solana, base58) or contract address (Hood, 0x-prefixed)"),
 }
 
 const swapShape = {
@@ -489,6 +507,58 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       inputSchema: getAgentProfileShape,
     },
     async (args) => callAndRelay("candle_get_agent_profile", args, cfg),
+  )
+
+  register(
+    "candle_get_wallets",
+    {
+      title: "List the wallets Candle executes with",
+      description:
+        "The account's EMBEDDED wallets, one per chain, with their delegation state. These are " +
+        "the wallets candle_trade, candle_swap and candle_transfer spend from, so this is how an " +
+        "agent finds its own funding addresses. Reads only; moves nothing. Not the same as the " +
+        "account's LINKED wallets, which are the owner's own wallets and are not spent from here. " +
+        "Balances are not included: read a specific one with the market and balance endpoints.",
+      inputSchema: {},
+    },
+    async () => callAndRelay("candle_get_wallets", {}, cfg),
+  )
+
+  register(
+    "candle_resolve_token",
+    {
+      title: "Resolve a contract address to a token",
+      description:
+        "Turn a bare contract address or mint into Candle's market for it: chain, symbol, " +
+        "decimals, quote asset, and whether Candle can trade it. Start here when a human gives " +
+        "you an address and nothing else. The chain is read off the address's own shape and is " +
+        "not guessed, so it does not need to be supplied. Reads only; moves nothing. A 404 means " +
+        "Candle has no market for that address, which is an answer, not a failure to retry.",
+      inputSchema: resolveTokenShape,
+    },
+    async (args) => {
+      const result = await resolveToken(args as never, cfg, fetch)
+      return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true } : {}) }
+    },
+  )
+
+  register(
+    "candle_execution_status",
+    {
+      title: "Can this key execute right now",
+      description:
+        "One call before trading: the embedded wallets to spend from, the tier that decides what " +
+        "may be traded, and this key's own spend limits. Reads only; moves nothing. Call it when " +
+        "a run starts, or after an authorization error, rather than inferring readiness from a " +
+        "failed trade. If a read could not be completed the tool says which one and does NOT " +
+        "claim the account is unready: an unreachable endpoint and a missing tier are different " +
+        "problems with different fixes.",
+      inputSchema: {},
+    },
+    async () => {
+      const result = await executionStatus(cfg, fetch)
+      return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true } : {}) }
+    },
   )
 
   register(

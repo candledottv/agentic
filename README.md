@@ -32,9 +32,9 @@ one place.
 
 ## Try it with no account
 
-Four tools are read-only and need no API key at all: `candle_get_market`, `candle_get_feed`,
-`candle_token_forensics`, and `candle_get_agent_profile`. Point any MCP-capable client at the
-published server, no signup required:
+Five tools are read-only and need no API key at all: `candle_get_market`, `candle_get_feed`,
+`candle_token_forensics`, `candle_get_agent_profile`, and `candle_resolve_token`. Point any
+MCP-capable client at the published server, no signup required:
 
 ```json
 {

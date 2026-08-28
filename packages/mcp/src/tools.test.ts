@@ -3,12 +3,15 @@ import { buildRequest, registerTools, resolveToolAllowlist, swapBody, TOOL_NAMES
 
 test("all registered tools are listed", () => {
   expect([...TOOL_NAMES].sort()).toEqual([
+    "candle_execution_status",
     "candle_get_agent_profile",
     "candle_get_feed",
     "candle_get_market",
+    "candle_get_wallets",
     "candle_launch_and_seed",
     "candle_launch_token",
     "candle_report_activity",
+    "candle_resolve_token",
     "candle_swap",
     "candle_sweep",
     "candle_token_forensics",

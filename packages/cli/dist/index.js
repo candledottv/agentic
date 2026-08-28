@@ -19127,6 +19127,48 @@ async function executeSweep(args, cfg, doFetch) {
     ...transferred === 0 && failed > 0 ? { isError: true } : {}
   };
 }
+async function resolveToken(args, cfg, doFetch) {
+  const chain2 = chainForMint(args.mint);
+  const read = await readMarket(args.mint, cfg, doFetch, { mint: args.mint, chain: chain2 });
+  if ("err" in read)
+    return read.err;
+  return { text: JSON.stringify({ success: true, chain: chain2, mint: args.mint, market: read.market }, null, 2) };
+}
+async function executionStatus(cfg, doFetch) {
+  const apiKey = requireApiKey(cfg);
+  const get = async (path) => {
+    const res = await doFetch(`${base(cfg)}${path}`, { method: "GET", headers: headers(apiKey) });
+    const text = await res.text();
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+    return { ok: res.ok, status: res.status, body };
+  };
+  const [wallets2, tier, limits] = await Promise.all([
+    get("/api/v1/agent/wallets/embedded"),
+    get("/api/v1/agent/tier"),
+    get("/api/v1/agent/keys/self/limits")
+  ]);
+  const unreadable = [
+    ["wallets", wallets2],
+    ["tier", tier],
+    ["limits", limits]
+  ].filter(([, r]) => !r.ok);
+  return {
+    text: JSON.stringify({
+      success: true,
+      ready: unreadable.length === 0 ? true : undefined,
+      unreadable: unreadable.length > 0 ? unreadable.map(([name]) => name) : undefined,
+      wallets: wallets2.body,
+      tier: tier.body,
+      limits: limits.body
+    }, null, 2),
+    ...unreadable.length > 0 ? { isError: true } : {}
+  };
+}
 var SWEEP_BASE_ASSETS;
 var init_orchestrate = __esm(() => {
   init_convert();
@@ -19159,6 +19201,25 @@ function jsonHeaders(apiKey) {
   if (apiKey)
     headers2["x-api-key"] = apiKey;
   return headers2;
+}
+function swapBody(args) {
+  const { amount, amountRaw, ...rest } = args;
+  const hasAmount = typeof amount === "string" && amount.length > 0;
+  const hasRaw = typeof amountRaw === "string" && amountRaw.length > 0;
+  if (hasAmount && hasRaw) {
+    throw new Error("Pass exactly one of amount or amountRaw, not both.");
+  }
+  if (!hasAmount && !hasRaw) {
+    throw new Error('Pass an amount, e.g. amount: "0.5".');
+  }
+  if (hasRaw)
+    return { ...rest, amountRaw };
+  const from = String(rest.from ?? "").toLowerCase();
+  const decimals = QUOTE_DECIMALS[from];
+  if (decimals === undefined) {
+    throw new Error(`Unknown decimals for base asset "${from}". Pass amountRaw instead.`);
+  }
+  return { ...rest, amountRaw: decimalToRaw(amount, decimals) };
 }
 function buildRequest(name, args, cfg) {
   const base2 = cfg.apiUrl.replace(/\/$/, "");
@@ -19212,7 +19273,14 @@ function buildRequest(name, args, cfg) {
       const apiKey = requireApiKey2(cfg);
       return {
         url: `${base2}/api/v1/agent/swap`,
-        init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify(args) }
+        init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify(swapBody(args)) }
+      };
+    }
+    case "candle_get_wallets": {
+      const apiKey = requireApiKey2(cfg);
+      return {
+        url: `${base2}/api/v1/agent/wallets/embedded`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) }
       };
     }
     case "candle_transfer": {
@@ -19271,9 +19339,30 @@ function registerTools(server, env = process.env) {
     description: "Read a Candle user's public agent profile: whether agent features are enabled and launch counts.",
     inputSchema: getAgentProfileShape
   }, async (args) => callAndRelay("candle_get_agent_profile", args, cfg));
+  register("candle_get_wallets", {
+    title: "List the wallets Candle executes with",
+    description: "The account's EMBEDDED wallets, one per chain, with their delegation state. These are " + "the wallets candle_trade, candle_swap and candle_transfer spend from, so this is how an " + "agent finds its own funding addresses. Reads only; moves nothing. Not the same as the " + "account's LINKED wallets, which are the owner's own wallets and are not spent from here. " + "Balances are not included: read a specific one with the market and balance endpoints.",
+    inputSchema: {}
+  }, async () => callAndRelay("candle_get_wallets", {}, cfg));
+  register("candle_resolve_token", {
+    title: "Resolve a contract address to a token",
+    description: "Turn a bare contract address or mint into Candle's market for it: chain, symbol, " + "decimals, quote asset, and whether Candle can trade it. Start here when a human gives " + "you an address and nothing else. The chain is read off the address's own shape and is " + "not guessed, so it does not need to be supplied. Reads only; moves nothing. A 404 means " + "Candle has no market for that address, which is an answer, not a failure to retry.",
+    inputSchema: resolveTokenShape
+  }, async (args) => {
+    const result = await resolveToken(args, cfg, fetch);
+    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+  });
+  register("candle_execution_status", {
+    title: "Can this key execute right now",
+    description: "One call before trading: the embedded wallets to spend from, the tier that decides what " + "may be traded, and this key's own spend limits. Reads only; moves nothing. Call it when " + "a run starts, or after an authorization error, rather than inferring readiness from a " + "failed trade. If a read could not be completed the tool says which one and does NOT " + "claim the account is unready: an unreachable endpoint and a missing tier are different " + "problems with different fixes.",
+    inputSchema: {}
+  }, async () => {
+    const result = await executionStatus(cfg, fetch);
+    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+  });
   register("candle_swap", {
     title: "Convert between base assets",
-    description: "Convert one base asset into another through the account's own embedded wallets. MOVES " + "REAL FUNDS. A pair spanning the Solana side (SOL/USDC/CNDL) and the Hood side (ETH/USDG) " + "routes through the bridge, so this is how a Hood wallet gets funded before launching or " + "trading on hood. Amounts are RAW base units, not decimal. Test-environment keys are " + "refused: every leg settles on a live venue.",
+    description: "Convert one base asset into another through the account's own embedded wallets. MOVES " + "REAL FUNDS. A pair spanning the Solana side (SOL/USDC/CNDL) and the Hood side (ETH/USDG) " + "routes through the bridge, so this is how a Hood wallet gets funded before launching or " + "trading on hood, and that leg settles across two chains rather than instantly. Amounts " + 'are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for callers ' + "that already compute them. Test-environment keys are refused: every leg settles on a " + "live venue.",
     inputSchema: swapShape
   }, async (args) => callAndRelay("candle_swap", args, cfg));
   register("candle_transfer", {
@@ -19306,9 +19395,10 @@ function registerTools(server, env = process.env) {
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
 }
-var TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, getFeedShape, reportActivityShape, getAgentProfileShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, launchAndSeedShape, transferShape, sweepShape;
+var TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, getFeedShape, reportActivityShape, getAgentProfileShape, resolveTokenShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, launchAndSeedShape, transferShape, sweepShape;
 var init_tools = __esm(() => {
   init_zod();
+  init_convert();
   init_orchestrate();
   TOOL_NAMES = [
     "candle_launch_token",
@@ -19321,7 +19411,10 @@ var init_tools = __esm(() => {
     "candle_launch_and_seed",
     "candle_swap",
     "candle_transfer",
-    "candle_sweep"
+    "candle_sweep",
+    "candle_get_wallets",
+    "candle_resolve_token",
+    "candle_execution_status"
   ];
   launchTokenShape = {
     clientLaunchId: exports_external.string().describe("Caller-chosen idempotency key, unique per account"),
@@ -19359,10 +19452,14 @@ var init_tools = __esm(() => {
   getAgentProfileShape = {
     idOrWallet: exports_external.string().describe("Candle username or wallet address")
   };
+  resolveTokenShape = {
+    mint: exports_external.string().describe("Token mint (Solana, base58) or contract address (Hood, 0x-prefixed)")
+  };
   swapShape = {
     from: exports_external.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to spend"),
     to: exports_external.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to receive; must differ from `from`"),
-    amountRaw: exports_external.string().describe("Raw base units of `from` to spend, as a positive integer string"),
+    amount: exports_external.string().optional().describe('Decimal amount of `from` to spend, e.g. "0.5". Preferred. Pass exactly one of amount or amountRaw.'),
+    amountRaw: exports_external.string().optional().describe("Raw base units of `from`, as a positive integer string. Kept for callers that already " + "compute raw units; new callers should use `amount`."),
     maxSlippageBps: exports_external.number().optional().describe("Slippage bound in bps, 0-10000. Server defaults to 100 (1%)"),
     clientSwapId: exports_external.string().optional().describe("Optional dedup key. Only coalesces a duplicate that arrives while the first call is still " + "in flight; one arriving after it settled will swap again")
   };
@@ -20838,13 +20935,17 @@ var MCP_TOOL_NAMES = [
   "candle_trade",
   "candle_swap",
   "candle_transfer",
-  "candle_sweep"
+  "candle_sweep",
+  "candle_get_wallets",
+  "candle_resolve_token",
+  "candle_execution_status"
 ];
 var READ_ONLY_TOOL_NAMES = [
   "candle_get_market",
   "candle_get_feed",
   "candle_token_forensics",
-  "candle_get_agent_profile"
+  "candle_get_agent_profile",
+  "candle_resolve_token"
 ];
 var CREDENTIAL_ENV_NAMES = [
   "CANDLE_API_KEY",

@@ -526,3 +526,85 @@ export async function executeSweep(args: SweepArgs, cfg: RequestConfig, doFetch:
     ...(transferred === 0 && failed > 0 ? { isError: true } : {}),
   }
 }
+
+/**
+ * candle_resolve_token: a contract address in, the token's market out.
+ *
+ * The chain is not asked for and not guessed. `chainForMint` reads it off the address's own shape,
+ * which is the same rule the API applies, and it is deterministic rather than a heuristic in the
+ * risky sense: an EVM address is 0x-prefixed and a Solana mint is base58, so the two cannot be
+ * confused. An agent handed a bare CA by a human therefore does not have to ask which chain it is
+ * on, which is the whole point of the tool.
+ *
+ * The market body is relayed as-is, 404 included: "Candle has no market for this mint" is a real
+ * answer an agent must be able to act on, and turning it into a guess about the token would be
+ * worse than returning nothing.
+ */
+export interface ResolveTokenArgs {
+  mint: string
+}
+
+export async function resolveToken(args: ResolveTokenArgs, cfg: RequestConfig, doFetch: FetchLike): Promise<ToolText> {
+  const chain = chainForMint(args.mint)
+  const read = await readMarket(args.mint, cfg, doFetch, { mint: args.mint, chain })
+  if ("err" in read) return read.err
+  return { text: JSON.stringify({ success: true, chain, mint: args.mint, market: read.market }, null, 2) }
+}
+
+/**
+ * candle_execution_status: one call answering "can this key trade right now, and if not, what is
+ * missing".
+ *
+ * Three reads that an agent would otherwise have to know to make separately and in the right
+ * order: the embedded wallets it executes with, the tier that decides what it may trade, and the
+ * calling key's own spend limits.
+ *
+ * Each read is reported as it came back. A failing read is NOT flattened into "not ready": a 500
+ * on the tier endpoint and a key that genuinely lacks a tier are different situations, and an
+ * agent told "not ready" for the first one would go and re-run setup that was never broken. The
+ * `ready` flag is therefore only ever false because a read SUCCEEDED and said so.
+ */
+export async function executionStatus(cfg: RequestConfig, doFetch: FetchLike): Promise<ToolText> {
+  const apiKey = requireApiKey(cfg)
+  const get = async (path: string) => {
+    const res = await doFetch(`${base(cfg)}${path}`, { method: "GET", headers: headers(apiKey) })
+    const text = await res.text()
+    let body: unknown
+    try {
+      body = JSON.parse(text)
+    } catch {
+      body = text
+    }
+    return { ok: res.ok, status: res.status, body }
+  }
+
+  const [wallets, tier, limits] = await Promise.all([
+    get("/api/v1/agent/wallets/embedded"),
+    get("/api/v1/agent/tier"),
+    get("/api/v1/agent/keys/self/limits"),
+  ])
+
+  const unreadable = [
+    ["wallets", wallets],
+    ["tier", tier],
+    ["limits", limits],
+  ].filter(([, r]) => !(r as { ok: boolean }).ok)
+
+  return {
+    text: JSON.stringify(
+      {
+        success: true,
+        // Undefined rather than false when a read failed: the honest answer is "not known", and a
+        // false here would read as "authorized: no" to a model that cannot see the reads.
+        ready: unreadable.length === 0 ? true : undefined,
+        unreadable: unreadable.length > 0 ? unreadable.map(([name]) => name) : undefined,
+        wallets: wallets.body,
+        tier: tier.body,
+        limits: limits.body,
+      },
+      null,
+      2,
+    ),
+    ...(unreadable.length > 0 ? { isError: true } : {}),
+  }
+}

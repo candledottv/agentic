@@ -54,15 +54,25 @@ export const MCP_TOOL_NAMES = [
   "candle_swap",
   "candle_transfer",
   "candle_sweep",
+  "candle_get_wallets",
+  "candle_resolve_token",
+  "candle_execution_status",
 ] as const
 
-/** The four tools that authenticate with no API key at all -- what `--read-only` pins the
- * server to. Mirrors the keyless tools in packages/mcp/src/tools.ts's buildRequest. */
+/**
+ * The five tools that authenticate with no API key at all -- what `--read-only` pins the server
+ * to. Mirrors the keyless tools in packages/mcp/src/tools.ts's buildRequest.
+ *
+ * KEYLESS, not merely non-writing: candle_get_wallets and candle_execution_status also move
+ * nothing, but they read the account and need a key, so pinning the server to them would hand
+ * back a `--read-only` server that fails on every call without one.
+ */
 export const READ_ONLY_TOOL_NAMES = [
   "candle_get_market",
   "candle_get_feed",
   "candle_token_forensics",
   "candle_get_agent_profile",
+  "candle_resolve_token",
 ] as const
 
 /**
