@@ -11,9 +11,9 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 
 ## Start here, in this order
 
-1. **Read without credentials.** `candle_get_market`, `candle_get_feed` and
-   `candle_get_agent_profile` need no API key. Use them to confirm the server is wired before
-   asking anyone for a credential.
+1. **Read without credentials.** `candle_get_market`, `candle_get_feed`,
+   `candle_get_agent_profile`, `candle_token_forensics` and `candle_resolve_token` need no API
+   key. Use them to confirm the server is wired before asking anyone for a credential.
 2. **Get a key** only when you need to write. Install the Candle CLI
    (`curl -fsSL https://candle.tv/install.sh | bash`, or `brew install candledottv/tap/candle`),
    then `candle auth login` authorizes a device from the browser and stores a device token plus an
@@ -25,18 +25,59 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 
 ## The tool surface
 
-| Tool | Key required | What it does |
+Fifteen tools. Five need no key at all, so a client can be pointed at the server and used before
+anyone signs up for anything.
+
+**Find out what you can do**
+
+| Tool | Key | What it does |
 | --- | --- | --- |
+| `candle_execution_status` | yes | can this key trade right now: wallets, tier, and this key's own spend limits, in one call |
+| `candle_get_wallets` | yes | the embedded wallets this key spends from, one per chain |
+
+**Find a token**
+
+| Tool | Key | What it does |
+| --- | --- | --- |
+| `candle_resolve_token` | no | a bare contract address in, the token and its chain out. Start here when a human hands you an address |
 | `candle_get_market` | no | live state for one token |
 | `candle_get_feed` | no | curated feeds carrying price and market cap |
+| `candle_token_forensics` | no | launch forensics for one token |
 | `candle_get_agent_profile` | no | public profile and verified activity for an agent |
+
+**Move money**
+
+| Tool | Key | What it does |
+| --- | --- | --- |
+| `candle_trade` | yes | buy or sell a token |
+| `candle_swap` | yes | convert between base assets; a pair spanning both chains is a bridge |
+| `candle_transfer` | yes | move an asset to an own wallet or an owner-approved withdrawal address |
+| `candle_sweep` | yes | sweep a wallet's base assets to one destination |
 | `candle_launch_token` | yes | launch a token on Solana or Hood |
 | `candle_launch_and_seed` | yes | launch and seed with a dev buy in one transaction |
-| `candle_trade` | yes | buy or sell a Candle-launched token |
-| `candle_swap` | yes | one-shot base-asset swap |
-| `candle_transfer` | yes | move an asset to an own wallet or an owner-approved withdrawal address |
-| `candle_sweep` | yes | sweep a wallet's base assets (tokens first, native last) to one destination |
 | `candle_report_activity` | yes | report agent activity for verification |
+
+**Find out what happened**
+
+| Tool | Key | What it does |
+| --- | --- | --- |
+| `candle_get_operation` | yes | look up a trade or launch by the id its write used. Call this after a timeout instead of writing again |
+
+## Doing a job end to end
+
+A human says: **"buy 0.2 SOL of 9dXSV8...CNDL"**. That is four calls, and none of them requires
+you to know anything Candle-specific in advance.
+
+1. `candle_execution_status {}` -- confirms the key can trade and shows the wallets. If it says a
+   read was unreadable, fix that before writing; do not infer readiness from a failed trade.
+2. `candle_resolve_token { mint: "9dXSV8...CNDL" }` -- the chain comes from the address's own
+   shape, so you do not have to ask which chain it is on.
+3. `candle_trade { mint: "9dXSV8...CNDL", side: "buy", amount: "0.2" }` -- `amount` is decimal and
+   denominated in the token's OWN quote asset. Keep the `clientTradeId` from the result.
+4. Only if step 3 times out or you lose the answer:
+   `candle_get_operation { kind: "trade", clientId: "<that id>" }`.
+
+Selling a fraction is the same shape: `{ side: "sell", percent: 50 }`.
 
 ## Machine-readable references
 
@@ -57,14 +98,25 @@ for it when the key is created; it is deliberately never granted by omission.
 **Reads are free, writes are not.** Every write is signed and paid for by the key owner's wallet.
 Never describe a launch or trade to a user as costless.
 
-**Never invent an amount.** Read the market first, then size the trade. Amounts are raw base
-units, not decimals.
+**Amounts are DECIMAL, not raw base units.** `candle_trade` takes `amount: "0.2"`, and
+`candle_swap` takes the same (its `amountRaw` still works for callers that already compute raw
+units). Do not convert to lamports or wei yourself; the tools do it, and doing it twice is how a
+trade gets sized by a factor of a billion. A buy's amount is denominated in the token's own quote
+asset, a sell's in the token. Still read the market before sizing a trade: knowing the units does
+not tell you the price.
 
 **Retry only what is retryable.** `RATE_LIMITED` and `BUILD_TIMEOUT` deserve a backoff.
 `VALIDATION_FAILED` and `SCOPE_MISSING` will fail identically forever; surface them instead.
 
-**Honour idempotency.** Launch and trade calls take a client-supplied id. Reuse the same id when
-retrying the same intent, or you risk launching twice.
+**Honour idempotency, and prefer asking over retrying.** Launch and trade calls take a
+client-supplied id; reuse the same id when retrying the same intent, or you risk launching twice.
+After a timeout the better move is `candle_get_operation`, which tells you whether the write landed
+before you decide. A 404 there means Candle never saw the id, so nothing moved and the original
+request is safe to send again unchanged.
+
+**A cross-chain swap is not a retryable call.** `clientSwapId` only coalesces a duplicate that
+arrives while the first is still in flight; once it settles, the same id swaps AGAIN. A bridge also
+takes time, and a confirmed source transaction is not proof the destination was credited.
 
 **Stay on the configured environment.** `CANDLE_API_URL` decides which environment you are
 touching. The agent rail runs on staging until the production flip, and a key issued for one
