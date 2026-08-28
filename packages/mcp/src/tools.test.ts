@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildRequest, registerTools, resolveToolAllowlist, TOOL_NAMES } from "./tools"
+import { buildRequest, registerTools, resolveToolAllowlist, swapBody, TOOL_NAMES } from "./tools"
 
 test("all registered tools are listed", () => {
   expect([...TOOL_NAMES].sort()).toEqual([
@@ -152,5 +152,57 @@ describe("buildRequest: candle_transfer", () => {
         { apiUrl: "https://api.test" },
       ),
     ).toThrow(/CANDLE_AGENT_API_KEY/)
+  })
+})
+
+describe("swapBody", () => {
+  test("converts a decimal amount using the base asset's own decimals", () => {
+    expect(swapBody({ from: "SOL", to: "USDC", amount: "0.5" })).toEqual({
+      from: "SOL",
+      to: "USDC",
+      amountRaw: "500000000",
+    })
+    // USDC is 6, not 9. Reusing SOL's scale here would spend 1000x.
+    expect(swapBody({ from: "USDC", to: "SOL", amount: "100" })).toEqual({
+      from: "USDC",
+      to: "SOL",
+      amountRaw: "100000000",
+    })
+    // ETH is 18: the case a model is most likely to get wrong by hand.
+    expect(swapBody({ from: "ETH", to: "USDG", amount: "0.003" })).toEqual({
+      from: "ETH",
+      to: "USDG",
+      amountRaw: "3000000000000000",
+    })
+  })
+
+  test("passes a raw amount through untouched, so existing callers are unaffected", () => {
+    expect(swapBody({ from: "SOL", to: "USDC", amountRaw: "500000000" })).toEqual({
+      from: "SOL",
+      to: "USDC",
+      amountRaw: "500000000",
+    })
+  })
+
+  test("refuses both or neither rather than picking one", () => {
+    expect(() => swapBody({ from: "SOL", to: "USDC", amount: "0.5", amountRaw: "1" })).toThrow(/exactly one/)
+    expect(() => swapBody({ from: "SOL", to: "USDC" })).toThrow(/Pass an amount/)
+  })
+
+  test("carries the other fields through", () => {
+    expect(swapBody({ from: "SOL", to: "ETH", amount: "1", maxSlippageBps: 50, clientSwapId: "abc" })).toEqual({
+      from: "SOL",
+      to: "ETH",
+      maxSlippageBps: 50,
+      clientSwapId: "abc",
+      amountRaw: "1000000000",
+    })
+  })
+
+  test("a bad decimal fails loudly instead of being truncated", () => {
+    // 10 fraction digits against SOL's 9: truncating would silently swap a different size.
+    expect(() => swapBody({ from: "SOL", to: "USDC", amount: "0.1234567891" })).toThrow(/fraction digits/)
+    expect(() => swapBody({ from: "SOL", to: "USDC", amount: "-1" })).toThrow(/plain positive decimal/)
+    expect(() => swapBody({ from: "SOL", to: "USDC", amount: "0" })).toThrow(/greater than zero/)
   })
 })

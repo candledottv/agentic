@@ -42,9 +42,6 @@ function resolveConfig(env = process.env) {
   return apiKey ? { apiUrl, apiKey } : { apiUrl };
 }
 
-// src/orchestrate.ts
-import { randomUUID } from "node:crypto";
-
 // src/convert.ts
 var QUOTE_DECIMALS = {
   sol: 9,
@@ -88,6 +85,7 @@ function percentOfBalance(balanceRaw, percent) {
 }
 
 // src/orchestrate.ts
+import { randomUUID } from "node:crypto";
 function requireApiKey(cfg) {
   if (!cfg.apiKey) {
     throw new Error("CANDLE_AGENT_API_KEY is required for this tool. Set it in the environment or MCP client config.");
@@ -423,6 +421,25 @@ function jsonHeaders(apiKey) {
     headers2["x-api-key"] = apiKey;
   return headers2;
 }
+function swapBody(args) {
+  const { amount, amountRaw, ...rest } = args;
+  const hasAmount = typeof amount === "string" && amount.length > 0;
+  const hasRaw = typeof amountRaw === "string" && amountRaw.length > 0;
+  if (hasAmount && hasRaw) {
+    throw new Error("Pass exactly one of amount or amountRaw, not both.");
+  }
+  if (!hasAmount && !hasRaw) {
+    throw new Error('Pass an amount, e.g. amount: "0.5".');
+  }
+  if (hasRaw)
+    return { ...rest, amountRaw };
+  const from = String(rest.from ?? "").toLowerCase();
+  const decimals = QUOTE_DECIMALS[from];
+  if (decimals === undefined) {
+    throw new Error(`Unknown decimals for base asset "${from}". Pass amountRaw instead.`);
+  }
+  return { ...rest, amountRaw: decimalToRaw(amount, decimals) };
+}
 function buildRequest(name, args, cfg) {
   const base2 = cfg.apiUrl.replace(/\/$/, "");
   switch (name) {
@@ -475,7 +492,7 @@ function buildRequest(name, args, cfg) {
       const apiKey = requireApiKey2(cfg);
       return {
         url: `${base2}/api/v1/agent/swap`,
-        init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify(args) }
+        init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify(swapBody(args)) }
       };
     }
     case "candle_transfer": {
@@ -535,7 +552,8 @@ var getAgentProfileShape = {
 var swapShape = {
   from: z.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to spend"),
   to: z.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to receive; must differ from `from`"),
-  amountRaw: z.string().describe("Raw base units of `from` to spend, as a positive integer string"),
+  amount: z.string().optional().describe('Decimal amount of `from` to spend, e.g. "0.5". Preferred. Pass exactly one of amount or amountRaw.'),
+  amountRaw: z.string().optional().describe("Raw base units of `from`, as a positive integer string. Kept for callers that already " + "compute raw units; new callers should use `amount`."),
   maxSlippageBps: z.number().optional().describe("Slippage bound in bps, 0-10000. Server defaults to 100 (1%)"),
   clientSwapId: z.string().optional().describe("Optional dedup key. Only coalesces a duplicate that arrives while the first call is still " + "in flight; one arriving after it settled will swap again")
 };
@@ -607,7 +625,7 @@ function registerTools(server, env = process.env) {
   }, async (args) => callAndRelay("candle_get_agent_profile", args, cfg));
   register("candle_swap", {
     title: "Convert between base assets",
-    description: "Convert one base asset into another through the account's own embedded wallets. MOVES " + "REAL FUNDS. A pair spanning the Solana side (SOL/USDC/CNDL) and the Hood side (ETH/USDG) " + "routes through the bridge, so this is how a Hood wallet gets funded before launching or " + "trading on hood. Amounts are RAW base units, not decimal. Test-environment keys are " + "refused: every leg settles on a live venue.",
+    description: "Convert one base asset into another through the account's own embedded wallets. MOVES " + "REAL FUNDS. A pair spanning the Solana side (SOL/USDC/CNDL) and the Hood side (ETH/USDG) " + "routes through the bridge, so this is how a Hood wallet gets funded before launching or " + "trading on hood, and that leg settles across two chains rather than instantly. Amounts " + 'are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for callers ' + "that already compute them. Test-environment keys are refused: every leg settles on a " + "live venue.",
     inputSchema: swapShape
   }, async (args) => callAndRelay("candle_swap", args, cfg));
   register("candle_transfer", {

@@ -41,6 +41,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
 import { type RequestConfig, resolveConfig } from "./client"
+import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
 import { executeLaunchAndSeed, executeSweep, executeTrade } from "./orchestrate"
 
 export const TOOL_NAMES = [
@@ -111,6 +112,33 @@ function jsonHeaders(apiKey?: string): Record<string, string> {
 /**
  * Pure mapping from a tool call to a fetchable request. No I/O -- see the file doc comment.
  */
+/**
+ * candle_swap's body: exactly one of `amount` (decimal) or `amountRaw`, resolved to the
+ * `amountRaw` the API takes.
+ *
+ * Both-or-neither is rejected rather than resolved by precedence. A caller that sends both has
+ * two different numbers in mind and silently honouring one of them spends the wrong amount; the
+ * error costs a round trip and says which field to drop.
+ */
+export function swapBody(args: Record<string, unknown>): Record<string, unknown> {
+  const { amount, amountRaw, ...rest } = args as { amount?: string; amountRaw?: string }
+  const hasAmount = typeof amount === "string" && amount.length > 0
+  const hasRaw = typeof amountRaw === "string" && amountRaw.length > 0
+  if (hasAmount && hasRaw) {
+    throw new Error("Pass exactly one of amount or amountRaw, not both.")
+  }
+  if (!hasAmount && !hasRaw) {
+    throw new Error('Pass an amount, e.g. amount: "0.5".')
+  }
+  if (hasRaw) return { ...rest, amountRaw }
+  const from = String((rest as { from?: unknown }).from ?? "").toLowerCase()
+  const decimals = QUOTE_DECIMALS[from]
+  if (decimals === undefined) {
+    throw new Error(`Unknown decimals for base asset "${from}". Pass amountRaw instead.`)
+  }
+  return { ...rest, amountRaw: decimalToRaw(amount as string, decimals) }
+}
+
 export function buildRequest(name: RestToolName, args: Record<string, unknown>, cfg: RequestConfig): BuiltRequest {
   const base = cfg.apiUrl.replace(/\/$/, "")
 
@@ -168,9 +196,18 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
 
     case "candle_swap": {
       const apiKey = requireApiKey(cfg)
+      // `amount` is decimal, `amountRaw` is what the API takes. Converting here is safe without a
+      // network read because `from` is one of the five BASE assets, whose decimals are pinned in
+      // QUOTE_DECIMALS; a token trade cannot do this, which is why candle_trade reads the market
+      // first and this does not.
+      //
+      // This tool took raw units only until now, while candle_trade next to it took decimals. Two
+      // sibling money-moving tools disagreeing about units is the kind of difference a model gets
+      // wrong in one direction: 0.5 SOL sent as "0.5" raw is 5e-10 SOL and looks like a rounding
+      // bug, while 0.5 sent as 500000000 to a decimal field would be half a billion SOL.
       return {
         url: `${base}/api/v1/agent/swap`,
-        init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify(args) },
+        init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify(swapBody(args)) },
       }
     }
 
@@ -264,7 +301,17 @@ const getAgentProfileShape = {
 const swapShape = {
   from: z.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to spend"),
   to: z.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to receive; must differ from `from`"),
-  amountRaw: z.string().describe("Raw base units of `from` to spend, as a positive integer string"),
+  amount: z
+    .string()
+    .optional()
+    .describe('Decimal amount of `from` to spend, e.g. "0.5". Preferred. Pass exactly one of amount or amountRaw.'),
+  amountRaw: z
+    .string()
+    .optional()
+    .describe(
+      "Raw base units of `from`, as a positive integer string. Kept for callers that already " +
+        "compute raw units; new callers should use `amount`.",
+    ),
   maxSlippageBps: z.number().optional().describe("Slippage bound in bps, 0-10000. Server defaults to 100 (1%)"),
   clientSwapId: z
     .string()
@@ -452,8 +499,10 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "Convert one base asset into another through the account's own embedded wallets. MOVES " +
         "REAL FUNDS. A pair spanning the Solana side (SOL/USDC/CNDL) and the Hood side (ETH/USDG) " +
         "routes through the bridge, so this is how a Hood wallet gets funded before launching or " +
-        "trading on hood. Amounts are RAW base units, not decimal. Test-environment keys are " +
-        "refused: every leg settles on a live venue.",
+        "trading on hood, and that leg settles across two chains rather than instantly. Amounts " +
+        'are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for callers ' +
+        "that already compute them. Test-environment keys are refused: every leg settles on a " +
+        "live venue.",
       inputSchema: swapShape,
     },
     async (args) => callAndRelay("candle_swap", args, cfg),
