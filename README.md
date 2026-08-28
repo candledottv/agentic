@@ -20,6 +20,7 @@ one place.
 ## Contents
 
 - [Try it with no account](#try-it-with-no-account)
+- [The tool surface](#the-tool-surface)
 - [Full setup](#full-setup)
 - [Install as a skill package](#install-as-a-skill-package)
 - [The five skills](#the-five-skills)
@@ -66,6 +67,44 @@ Use the real absolute path to your clone (MCP clients spawn from their own worki
 and keep `CANDLE_API_URL` on staging until this rail reaches production. Ask an agent to call
 `candle_get_feed` with `{ "bucket": "new" }` and it works before signing up for anything. Details:
 [Candle MCP server](https://docs.candle.tv/developers/mcp-server).
+
+## The tool surface
+
+Fifteen tools. Five need no key, so a client can be pointed at the server and used before anyone
+signs up.
+
+| | Tool | Key | What it does |
+| --- | --- | --- | --- |
+| **Can I trade?** | `candle_execution_status` | yes | wallets, tier and this key's spend limits, in one call |
+| | `candle_get_wallets` | yes | the embedded wallets this key spends from |
+| **Find a token** | `candle_resolve_token` | no | an address in, the token and its chain out |
+| | `candle_get_market` | no | live state for one token |
+| | `candle_get_feed` | no | curated feeds with price and market cap |
+| | `candle_token_forensics` | no | launch forensics for one token |
+| | `candle_get_agent_profile` | no | public profile and verified activity for an agent |
+| **Move money** | `candle_trade` | yes | buy or sell a token |
+| | `candle_swap` | yes | convert base assets; a pair spanning both chains is a bridge |
+| | `candle_transfer` | yes | move an asset to an own or owner-approved address |
+| | `candle_sweep` | yes | sweep a wallet's base assets to one destination |
+| | `candle_launch_token` | yes | launch a token on Solana or Hood |
+| | `candle_launch_and_seed` | yes | launch and seed with a dev buy in one transaction |
+| | `candle_report_activity` | yes | report agent activity for verification |
+| **What happened?** | `candle_get_operation` | yes | look up a trade or launch by the id its write used |
+
+### A whole job
+
+"Buy 0.2 SOL of `9dXSV8...CNDL`" is four calls, and none of them needs Candle-specific knowledge
+up front:
+
+1. `candle_execution_status {}` -- can this key trade, and from which wallets.
+2. `candle_resolve_token { "mint": "9dXSV8...CNDL" }` -- the chain comes from the address's own
+   shape, so you never have to ask which chain it is on.
+3. `candle_trade { "mint": "9dXSV8...CNDL", "side": "buy", "amount": "0.2" }` -- `amount` is
+   **decimal**. Never convert to lamports or wei yourself. Keep the `clientTradeId` from the result.
+4. Only if step 3 times out: `candle_get_operation { "kind": "trade", "clientId": "<that id>" }`.
+   A 404 means Candle never saw the id, so nothing moved and the request is safe to send again.
+
+Selling a fraction is the same shape with `{ "side": "sell", "percent": 50 }`.
 
 ## Full setup
 

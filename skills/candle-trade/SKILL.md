@@ -9,6 +9,23 @@ Executes a buy or sell through Candle's trade rail. The payer is the account's o
 wallet, executed server-side via delegation. Amounts are always decimal, the tool converts to raw
 base units itself.
 
+## If a trade times out
+
+Do NOT call `candle_trade` again to find out what happened. Every result carries a
+`clientTradeId`, including the error a timeout produces, and `candle_get_operation` looks the trade
+up by it:
+
+```json
+{ "kind": "trade", "clientId": "<the clientTradeId from the failed call>" }
+```
+
+`confirmed` or `failed` means it is over. `built` means it is still in flight, so wait and ask
+again. A 404 means Candle never saw that id, so the write never reached the rail and nothing moved:
+the original request is safe to send again exactly as it was.
+
+Retrying `candle_trade` with the SAME `clientTradeId` is also safe, because the rail replays rather
+than trading twice. Retrying with a NEW id is a second trade.
+
 ## Setup
 
 Needs an agent API key carrying the `swap:write` scope. If you followed the candle-setup skill's
@@ -23,6 +40,12 @@ MCP server anywhere: the CLI and MCP default to the alpha API host
 point at a different deployment.
 
 ## The workflow
+
+0. **If the user gave you only a contract address**, call `candle_resolve_token` with it first.
+   It returns the token and its chain, read off the address's own shape, so you never have to ask
+   which chain an address is on or guess. If you are unsure the key can trade at all, or a previous
+   call failed on authorization, `candle_execution_status` answers that in one call (wallets, tier,
+   and this key's own spend limits) rather than leaving you to infer it from a failed trade.
 
 1. Call `candle_trade` with `mint`, `side` (`"buy"` or `"sell"`), and exactly one of `amount` or
    `percent`.
