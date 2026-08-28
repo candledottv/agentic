@@ -19276,6 +19276,12 @@ function buildRequest(name, args, cfg) {
         init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify(swapBody(args)) }
       };
     }
+    case "candle_get_operation": {
+      const apiKey = requireApiKey2(cfg);
+      const { clientId, kind } = args;
+      const path = kind === "launch" ? `/api/v1/launch/headless/jobs/${encodeURIComponent(clientId)}` : `/api/v1/trade/agent/jobs/${encodeURIComponent(clientId)}`;
+      return { url: `${base2}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } };
+    }
     case "candle_get_wallets": {
       const apiKey = requireApiKey2(cfg);
       return {
@@ -19339,6 +19345,19 @@ function registerTools(server, env = process.env) {
     description: "Read a Candle user's public agent profile: whether agent features are enabled and launch counts.",
     inputSchema: getAgentProfileShape
   }, async (args) => callAndRelay("candle_get_agent_profile", args, cfg));
+  register("candle_get_operation", {
+    title: "What happened to a write",
+    description: "Look up a trade or launch by the id its write used, and find out whether it landed. " + `Reads only; moves nothing.
+
+` + "Call this after a timeout, after a restart, or any time you hold an id and do not know " + `the outcome. Do NOT re-send the write to find out.
+
+` + `Four answers, four different next moves:
+` + "- `confirmed`/`failed`: it is over. `signature` proves the first, `errorCode` explains " + `the second.
+` + "- `built`/`submitted`: still in flight. Wait and ask again.\n" + "- 404 (`JOB_NOT_FOUND`): Candle never saw this id, so the write never reached the rail " + "and nothing moved. The original request is safe to send again exactly as it was. This " + `is a definite answer, not a failure to retry.
+
+` + "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " + "and you already know what you asked for.",
+    inputSchema: getOperationShape
+  }, async (args) => callAndRelay("candle_get_operation", args, cfg));
   register("candle_get_wallets", {
     title: "List the wallets Candle executes with",
     description: "The account's EMBEDDED wallets, one per chain, with their delegation state. These are " + "the wallets candle_trade, candle_swap and candle_transfer spend from, so this is how an " + "agent finds its own funding addresses. Reads only; moves nothing. Not the same as the " + "account's LINKED wallets, which are the owner's own wallets and are not spent from here. " + "Balances are not included: read a specific one with the market and balance endpoints.",
@@ -19362,7 +19381,16 @@ function registerTools(server, env = process.env) {
   });
   register("candle_swap", {
     title: "Convert between base assets",
-    description: "Convert one base asset into another through the account's own embedded wallets. MOVES " + "REAL FUNDS. A pair spanning the Solana side (SOL/USDC/CNDL) and the Hood side (ETH/USDG) " + "routes through the bridge, so this is how a Hood wallet gets funded before launching or " + "trading on hood, and that leg settles across two chains rather than instantly. Amounts " + 'are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for callers ' + "that already compute them. Test-environment keys are refused: every leg settles on a " + "live venue.",
+    description: "Convert one base asset into another through the account's own embedded wallets. MOVES " + `REAL FUNDS.
+
+` + "SOL, USDC and CNDL are on Solana. ETH and USDG are on Hood. A pair drawn from ONE of " + "those groups settles on that chain in a single transaction. A pair spanning both is a " + `BRIDGE, and this is how a Hood wallet gets funded before launching or trading there.
+
+` + `A bridge behaves differently and the difference matters:
+` + `- It is several transactions, not one, and it takes time rather than settling on the call.
+` + "- A confirmed source transaction is NOT proof the destination was credited. Read the " + "returned status before treating the funds as arrived; the response carries the venue's " + `own status URLs for the cross-chain fill.
+` + "- Do NOT re-send after a timeout. `clientSwapId` only coalesces a duplicate that arrives " + "while the first call is still in flight; once the first has settled, a second call with " + `the same id bridges AGAIN. If a bridge times out, check its status rather than retrying.
+
+` + 'Amounts are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for ' + "callers that already compute them. Test-environment keys are refused: every leg settles " + "on a live venue.",
     inputSchema: swapShape
   }, async (args) => callAndRelay("candle_swap", args, cfg));
   register("candle_transfer", {
@@ -19395,7 +19423,7 @@ function registerTools(server, env = process.env) {
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
 }
-var TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, getFeedShape, reportActivityShape, getAgentProfileShape, resolveTokenShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, launchAndSeedShape, transferShape, sweepShape;
+var TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, getFeedShape, reportActivityShape, getAgentProfileShape, getOperationShape, resolveTokenShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, launchAndSeedShape, transferShape, sweepShape;
 var init_tools = __esm(() => {
   init_zod();
   init_convert();
@@ -19414,7 +19442,8 @@ var init_tools = __esm(() => {
     "candle_sweep",
     "candle_get_wallets",
     "candle_resolve_token",
-    "candle_execution_status"
+    "candle_execution_status",
+    "candle_get_operation"
   ];
   launchTokenShape = {
     clientLaunchId: exports_external.string().describe("Caller-chosen idempotency key, unique per account"),
@@ -19451,6 +19480,10 @@ var init_tools = __esm(() => {
   };
   getAgentProfileShape = {
     idOrWallet: exports_external.string().describe("Candle username or wallet address")
+  };
+  getOperationShape = {
+    clientId: exports_external.string().describe("The clientTradeId or clientLaunchId the write used, or that the tool echoed back to you"),
+    kind: exports_external.enum(["trade", "launch"]).describe("Which rail the id belongs to. Required: ids are caller-chosen strings with no shape to dispatch on")
   };
   resolveTokenShape = {
     mint: exports_external.string().describe("Token mint (Solana, base58) or contract address (Hood, 0x-prefixed)")
@@ -20938,7 +20971,8 @@ var MCP_TOOL_NAMES = [
   "candle_sweep",
   "candle_get_wallets",
   "candle_resolve_token",
-  "candle_execution_status"
+  "candle_execution_status",
+  "candle_get_operation"
 ];
 var READ_ONLY_TOOL_NAMES = [
   "candle_get_market",

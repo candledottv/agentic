@@ -59,6 +59,7 @@ export const TOOL_NAMES = [
   "candle_get_wallets",
   "candle_resolve_token",
   "candle_execution_status",
+  "candle_get_operation",
 ] as const
 
 export type ToolName = (typeof TOOL_NAMES)[number]
@@ -217,6 +218,19 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       }
     }
 
+    case "candle_get_operation": {
+      const apiKey = requireApiKey(cfg)
+      // Two rails, two ledgers, one tool. The path is chosen by `kind` rather than sniffed from
+      // the id: clientTradeId and clientLaunchId are both caller-chosen strings, so there is
+      // nothing in an id to dispatch on, and guessing wrong returns a 404 for the wrong rail.
+      const { clientId, kind } = args as { clientId: string; kind: "trade" | "launch" }
+      const path =
+        kind === "launch"
+          ? `/api/v1/launch/headless/jobs/${encodeURIComponent(clientId)}`
+          : `/api/v1/trade/agent/jobs/${encodeURIComponent(clientId)}`
+      return { url: `${base}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } }
+    }
+
     case "candle_get_wallets": {
       const apiKey = requireApiKey(cfg)
       return {
@@ -310,6 +324,15 @@ const reportActivityShape = {
 
 const getAgentProfileShape = {
   idOrWallet: z.string().describe("Candle username or wallet address"),
+}
+
+const getOperationShape = {
+  clientId: z
+    .string()
+    .describe("The clientTradeId or clientLaunchId the write used, or that the tool echoed back to you"),
+  kind: z
+    .enum(["trade", "launch"])
+    .describe("Which rail the id belongs to. Required: ids are caller-chosen strings with no shape to dispatch on"),
 }
 
 const resolveTokenShape = {
@@ -507,6 +530,29 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       inputSchema: getAgentProfileShape,
     },
     async (args) => callAndRelay("candle_get_agent_profile", args, cfg),
+  )
+
+  register(
+    "candle_get_operation",
+    {
+      title: "What happened to a write",
+      description:
+        "Look up a trade or launch by the id its write used, and find out whether it landed. " +
+        "Reads only; moves nothing.\n\n" +
+        "Call this after a timeout, after a restart, or any time you hold an id and do not know " +
+        "the outcome. Do NOT re-send the write to find out.\n\n" +
+        "Four answers, four different next moves:\n" +
+        "- `confirmed`/`failed`: it is over. `signature` proves the first, `errorCode` explains " +
+        "the second.\n" +
+        "- `built`/`submitted`: still in flight. Wait and ask again.\n" +
+        "- 404 (`JOB_NOT_FOUND`): Candle never saw this id, so the write never reached the rail " +
+        "and nothing moved. The original request is safe to send again exactly as it was. This " +
+        "is a definite answer, not a failure to retry.\n\n" +
+        "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " +
+        "and you already know what you asked for.",
+      inputSchema: getOperationShape,
+    },
+    async (args) => callAndRelay("candle_get_operation", args, cfg),
   )
 
   register(

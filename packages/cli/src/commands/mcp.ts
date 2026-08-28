@@ -57,6 +57,7 @@ export const MCP_TOOL_NAMES = [
   "candle_get_wallets",
   "candle_resolve_token",
   "candle_execution_status",
+  "candle_get_operation",
 ] as const
 
 /**

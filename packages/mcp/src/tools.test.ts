@@ -7,6 +7,7 @@ test("all registered tools are listed", () => {
     "candle_get_agent_profile",
     "candle_get_feed",
     "candle_get_market",
+    "candle_get_operation",
     "candle_get_wallets",
     "candle_launch_and_seed",
     "candle_launch_token",

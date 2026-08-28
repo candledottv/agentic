@@ -441,7 +441,8 @@ var TOOL_NAMES = [
   "candle_sweep",
   "candle_get_wallets",
   "candle_resolve_token",
-  "candle_execution_status"
+  "candle_execution_status",
+  "candle_get_operation"
 ];
 function resolveToolAllowlist(env) {
   const raw = env.CANDLE_MCP_TOOLS?.trim();
@@ -540,6 +541,12 @@ function buildRequest(name, args, cfg) {
         init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify(swapBody(args)) }
       };
     }
+    case "candle_get_operation": {
+      const apiKey = requireApiKey2(cfg);
+      const { clientId, kind } = args;
+      const path = kind === "launch" ? `/api/v1/launch/headless/jobs/${encodeURIComponent(clientId)}` : `/api/v1/trade/agent/jobs/${encodeURIComponent(clientId)}`;
+      return { url: `${base2}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } };
+    }
     case "candle_get_wallets": {
       const apiKey = requireApiKey2(cfg);
       return {
@@ -600,6 +607,10 @@ var reportActivityShape = {
 };
 var getAgentProfileShape = {
   idOrWallet: z.string().describe("Candle username or wallet address")
+};
+var getOperationShape = {
+  clientId: z.string().describe("The clientTradeId or clientLaunchId the write used, or that the tool echoed back to you"),
+  kind: z.enum(["trade", "launch"]).describe("Which rail the id belongs to. Required: ids are caller-chosen strings with no shape to dispatch on")
 };
 var resolveTokenShape = {
   mint: z.string().describe("Token mint (Solana, base58) or contract address (Hood, 0x-prefixed)")
@@ -678,6 +689,19 @@ function registerTools(server, env = process.env) {
     description: "Read a Candle user's public agent profile: whether agent features are enabled and launch counts.",
     inputSchema: getAgentProfileShape
   }, async (args) => callAndRelay("candle_get_agent_profile", args, cfg));
+  register("candle_get_operation", {
+    title: "What happened to a write",
+    description: "Look up a trade or launch by the id its write used, and find out whether it landed. " + `Reads only; moves nothing.
+
+` + "Call this after a timeout, after a restart, or any time you hold an id and do not know " + `the outcome. Do NOT re-send the write to find out.
+
+` + `Four answers, four different next moves:
+` + "- `confirmed`/`failed`: it is over. `signature` proves the first, `errorCode` explains " + `the second.
+` + "- `built`/`submitted`: still in flight. Wait and ask again.\n" + "- 404 (`JOB_NOT_FOUND`): Candle never saw this id, so the write never reached the rail " + "and nothing moved. The original request is safe to send again exactly as it was. This " + `is a definite answer, not a failure to retry.
+
+` + "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " + "and you already know what you asked for.",
+    inputSchema: getOperationShape
+  }, async (args) => callAndRelay("candle_get_operation", args, cfg));
   register("candle_get_wallets", {
     title: "List the wallets Candle executes with",
     description: "The account's EMBEDDED wallets, one per chain, with their delegation state. These are " + "the wallets candle_trade, candle_swap and candle_transfer spend from, so this is how an " + "agent finds its own funding addresses. Reads only; moves nothing. Not the same as the " + "account's LINKED wallets, which are the owner's own wallets and are not spent from here. " + "Balances are not included: read a specific one with the market and balance endpoints.",
