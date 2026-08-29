@@ -564,6 +564,8 @@ export type BuildTradeBuiltResult = {
     expectedOutRaw: string;
     minOutRaw: string;
     expiresAt: number;
+    /** The linked payer's own base58 address: the wallet that must sign this build. */
+    walletAddress: string;
 } | {
     success: true;
     status: "built";
@@ -603,6 +605,21 @@ export interface ExecutedTradeResult {
         expectedOutRaw: string;
         minOutRaw: string;
         quoteAsset: string;
+        /**
+         * What the trade ACTUALLY delivered, in the output asset's raw units.
+         *
+         * `expectedOutRaw` beside it is the quote taken at BUILD time -- what you agreed to, not what
+         * arrived. The difference between them is your realised slippage, and it is the number a
+         * position ledger needs: without this you had to re-read the transaction the server had
+         * already read to confirm it.
+         *
+         * Present on SOLANA confirmations, where the server derives the payer's own balance delta
+         * for the mint as the gate that proves the trade happened and moved the right way, so the
+         * figure is decoded truth rather than an estimate. Absent on Hood, whose confirm verifies a
+         * fee receipt and decodes no balance delta -- absent rather than a guess or a zero, so
+         * `"actualOutRaw" in result.amounts` is a truthful test.
+         */
+        actualOutRaw?: string;
     };
 }
 /** POST /api/v1/trade/agent/build response: "built" for a linked payer, "executed" for a main payer (or an idempotent replay of an already-confirmed trade under the same clientTradeId). */
