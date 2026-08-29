@@ -1,6 +1,6 @@
 {
   "name": "@candledottv/cli",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "The Candle CLI: authorize a device from your browser, then manage API keys, wallets, and setup health from the terminal",
   "type": "module",
   "bin": {
@@ -42,6 +42,8 @@
     "@hpke/chacha20poly1305": "^1.6.2",
     "@hpke/core": "^1.7.2",
     "@modelcontextprotocol/sdk": "1.22.0",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
     "@scure/base": "^1.2.6",
     "@sigstore/bundle": "5.0.0",
     "@sigstore/protobuf-specs": "0.5.2",

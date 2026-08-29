@@ -31,6 +31,8 @@ import { setup } from "./commands/setup"
 import { update } from "./commands/update"
 import { verify } from "./commands/verify"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
+import { walletsExport } from "./commands/wallets-export"
+import { walletsGenerate } from "./commands/wallets-generate"
 import type { CliConfig } from "./config"
 import { clearConfig, readConfig, updateProfile, writeConfig } from "./config"
 import type { CommandContext, Deps } from "./deps"
@@ -90,6 +92,8 @@ Commands:
   keys revoke <prefix>                                            Revoke an API key
   wallet                                                          Show launch and linked wallets (wallets is an alias)
   wallet import --chain <solana|evm> [options]                    Import a wallet you own (key via --key-file or hidden prompt)
+  wallet generate --chain <solana|hood|evm> --count <n>            Generate wallets, seal them locally, then import
+  wallet export --index <n> [--yes]                                Print one generated key from the keystore
   wallet revoke <wallet-id>                                       Revoke a linked wallet
   profile list                                                    Profiles on this machine, with cached accounts
   profile add <name> --api-url <url>                              Create a profile before authenticating it
@@ -132,7 +136,15 @@ interface CommandRoute {
 const COMMANDS: Record<string, CommandRoute> = {
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
   keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke } },
-  wallets: { subcommands: { import: walletsImport, revoke: walletsRevoke }, bare: wallets },
+  wallets: {
+    subcommands: {
+      import: walletsImport,
+      revoke: walletsRevoke,
+      generate: walletsGenerate,
+      export: walletsExport,
+    },
+    bare: wallets,
+  },
   profile: {
     subcommands: { list: profileList, add: profileAdd, use: profileUse, rename: profileRename, remove: profileRemove },
   },

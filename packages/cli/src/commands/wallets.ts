@@ -26,7 +26,8 @@ import { resolveApiKey } from "../deps"
 import { printIdentity } from "../profiles"
 import { renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { importPendingSignerRef, pemToStoredSigner, type SecretStore, walletSignerRef } from "../secret-store"
-import { encryptWalletKeyForImport, generateSignerKeypair, parseSolanaSecret, type WalletChain } from "../wallet-import"
+import { parseSolanaSecret, type WalletChain } from "../wallet-import"
+import { runImportFlow } from "../wallet-import-flow"
 
 interface EmbeddedWalletsResponse {
   wallets: {
@@ -241,17 +242,6 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
   return 0
 }
 
-interface ImportInitResponse {
-  encryptionPublicKey: string
-}
-
-interface ImportSubmitResponse {
-  id: string
-  address: string
-  chain: WalletChain
-  privyWalletId: string
-}
-
 /**
  * Resolves the raw private-key string for `wallets import`: `--key-file`'s contents when given,
  * else a hidden interactive prompt. Returned to the caller for immediate sealing; nothing here
@@ -376,112 +366,54 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
     return 1
   }
 
-  const init = await apiRequest("/api/v1/agent/wallets/import/init", {
-    method: "POST",
-    body: { chain, address },
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env,
-  })
-  if (!init.ok) {
-    writeFailure(deps, init, { apiUrl, authType: "key" }, json)
-    return 1
-  }
-  const { encryptionPublicKey } = init.body as ImportInitResponse
-
-  const { ciphertext, encapsulatedKey } = await encryptWalletKeyForImport({
+  const flow = await runImportFlow({
     chain,
+    address,
     privateKey: material.privateKey,
-    encryptionPublicKey,
-  })
-  const signer = await generateSignerKeypair()
-  const storedSigner = pemToStoredSigner(signer.privateKeyPem)
-
-  // Stage the signer's PRIVATE half before the server hears about its public half.
-  //
-  // The order used to be the other way round: submit, then store. A store failure in that window
-  // (a locked keychain, a cancelled passphrase prompt, a full disk) left a wallet registered on
-  // the account whose signer existed only in this process's memory, so it could never sign a
-  // trade and nothing on screen said so. Writing first inverts the failure: if the store is
-  // unavailable we find out before anything is registered, and the command fails having changed
-  // nothing anywhere.
-  const pendingRef = importPendingSignerRef(chain, address)
-  try {
-    await deps.store.set(pendingRef, storedSigner)
-  } catch (error) {
-    writeLocalFailure(
-      deps,
-      {
-        code: "SIGNER_STORE_FAILED",
-        message: `Could not store the new signer in the ${deps.backend} store: ${error instanceof Error ? error.message : error}`,
-        suggestion: "Nothing was imported. Unlock the store (or fix the error above) and run the command again.",
-      },
-      json,
-    )
-    return 1
-  }
-
-  const submit = await apiRequest("/api/v1/agent/wallets/import/submit", {
-    method: "POST",
-    body: {
-      chain,
-      address,
-      ciphertext,
-      encapsulatedKey,
-      signerPublicKey: signer.publicKeyDerBase64,
-      ...(parsed.values["--label"] !== undefined ? { label: parsed.values["--label"] } : {}),
-    },
-    auth: "key",
-    credentials: { apiKey },
+    ...(parsed.values["--label"] !== undefined ? { label: parsed.values["--label"] } : {}),
+    apiKey,
     apiUrl,
-    fetch: deps.fetch,
-    env: deps.env,
+    deps,
   })
-  if (!submit.ok) {
-    // No wallet was created, so the staged signer is for nothing. Best-effort: a store that
-    // cannot delete is not a reason to report the import as anything other than what it was.
-    await deps.store.delete(pendingRef).catch(() => {})
-    writeFailure(deps, submit, { apiUrl, authType: "key" }, json)
-    return 1
-  }
-  const result = submit.body as ImportSubmitResponse
-
-  // The signer's private half is the credential every later trade from this wallet signs with.
-  // Keychain first (the point of doing this in the CLI); --signer-out additionally exports a
-  // PEM for use on another machine, written 0600 by the real writeFile. Stored in the
-  // single-line form (pemToStoredSigner): a raw PEM contains newlines, which the macOS
-  // keychain backend's command-injection guard rightly refuses.
-  //
-  // Commit: move the staged signer to the ref the wallet id names. If this fails the signer is
-  // NOT lost, because the staged copy above is still there, so the message names where it is
-  // rather than telling the operator to re-import a wallet that already exists.
-  try {
-    await deps.store.set(walletSignerRef(result.id), storedSigner)
-  } catch (error) {
+  if (!flow.ok) {
+    const failure = flow.failure
+    if (failure.kind === "api") {
+      writeFailure(deps, failure.response, { apiUrl, authType: "key" }, json)
+      return 1
+    }
+    if (failure.kind === "signer-store") {
+      writeLocalFailure(
+        deps,
+        {
+          code: "SIGNER_STORE_FAILED",
+          message: `Could not store the new signer in the ${deps.backend} store: ${failure.error instanceof Error ? failure.error.message : failure.error}`,
+          suggestion: "Nothing was imported. Unlock the store (or fix the error above) and run the command again.",
+        },
+        json,
+      )
+      return 1
+    }
     writeLocalFailure(
       deps,
       {
         code: "SIGNER_COMMIT_FAILED",
         message:
-          `Wallet ${result.id} was imported, but its signer could not be stored under the wallet's own ` +
-          `ref: ${error instanceof Error ? error.message : error}`,
+          `Wallet ${failure.walletId} was imported, but its signer could not be stored under the wallet's own ` +
+          `ref: ${failure.error instanceof Error ? failure.error.message : failure.error}`,
         suggestion:
-          `The signer is not lost: it is in the ${deps.backend} store under "${pendingRef}". Copy it to ` +
-          `"${walletSignerRef(result.id)}", or revoke the wallet with: candle wallets revoke ${result.id}`,
+          `The signer is not lost: it is in the ${deps.backend} store under "${failure.pendingRef}". Copy it to ` +
+          `"${walletSignerRef(failure.walletId)}", or revoke the wallet with: candle wallets revoke ${failure.walletId}`,
       },
       json,
     )
     return 1
   }
-  // Best-effort: the committed copy is what every later trade reads, so a stray staged duplicate
-  // is hygiene, not correctness.
-  await deps.store.delete(pendingRef).catch(() => {})
+  const result = flow.submitted
+
   const signerOut = parsed.values["--signer-out"]
   if (signerOut !== undefined) {
     try {
-      await deps.writeFile(signerOut, signer.privateKeyPem)
+      await deps.writeFile(signerOut, flow.signerPrivateKeyPem)
     } catch (error) {
       // The import itself succeeded and the keychain holds the signer; report the export
       // failure without failing the command, and say where the signer still lives.
