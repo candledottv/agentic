@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { createHash } from "node:crypto"
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -9,6 +9,23 @@ import { join } from "node:path"
  * script's platform detection reads the host, so the fixture publishes assets for THIS machine's
  * os/arch and the "binary" is a shell script that prints a version, which is all `--version` needs.
  */
+
+/**
+ * Bun's default is 5s, and these are the wrong tests for it.
+ *
+ * Every case here spawns the real `install.sh` as a bash subprocess -- which fetches from the
+ * fixture server, hashes the asset, may run a stub verifier, and writes an rc file -- and several
+ * then spawn a SECOND shell to source that rc and echo `$PATH`, on top of temp-dir creation and
+ * an `rm -rf`. That is process and filesystem work, not computation, so its wall time depends on
+ * how loaded the machine is rather than on anything the test does.
+ *
+ * On a busy CI runner it crossed 5s and the suite failed with exit 143 (SIGTERM, the timeout
+ * killing bash) on 2026-08-27, then passed on a re-run with no code change. A flaky security
+ * check is worse than a slow one: it teaches everyone to re-run rather than read.
+ *
+ * Set for the file rather than per test, because the reason applies to all of them equally.
+ */
+setDefaultTimeout(30_000)
 const SCRIPT = join(import.meta.dir, "..", "install.sh")
 const os = process.platform === "darwin" ? "darwin" : "linux"
 const arch = process.arch === "arm64" ? "arm64" : "x64"
