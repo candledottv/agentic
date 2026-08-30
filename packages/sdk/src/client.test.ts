@@ -132,10 +132,29 @@ describe("apiUrl transport security", () => {
     }
   })
 
-  test("allowInsecureHttp opts a non-loopback host back in", () => {
+  test("allowInsecureHttp opts a non-loopback PRIVATE host back in", () => {
     expect(
       () => new CandleClient({ apiUrl: "http://host.docker.internal:3000", allowInsecureHttp: true }),
     ).not.toThrow()
+    for (const host of ["10.0.0.5", "192.168.1.10", "172.16.4.2", "dev-box", "api.local"]) {
+      expect(() => new CandleClient({ apiUrl: `http://${host}:3000`, allowInsecureHttp: true })).not.toThrow()
+    }
+  })
+
+  /**
+   * The escape hatch covers private networks and stops there. Its whole purpose is a devcontainer
+   * reaching its host, which is always private; letting the same opt-in cover a public address is
+   * what turns it into an API key read off the wire, and a stale `allowInsecureHttp: true` left in
+   * someone's code should not be able to do that.
+   */
+  test("allowInsecureHttp does NOT opt a public host back in", () => {
+    for (const host of ["api.example.com", "203.0.113.7", "8.8.8.8"]) {
+      expect(() => new CandleClient({ apiUrl: `http://${host}`, allowInsecureHttp: true })).toThrow(/public address/)
+    }
+  })
+
+  test("carrier-grade NAT is not treated as your network", () => {
+    expect(() => new CandleClient({ apiUrl: "http://100.64.0.1", allowInsecureHttp: true })).toThrow()
   })
 
   test("https is unaffected, and a non-http scheme is rejected as such", () => {

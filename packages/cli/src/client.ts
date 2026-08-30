@@ -71,6 +71,10 @@ function trimTrailingSlashes(url: string): string {
  * not loopback but are still local, the common one being a devcontainer reaching its host through
  * `http://host.docker.internal:3000`. Deliberately an explicit, named act rather than a silent
  * allowance: it shows up in a shell profile or a compose file where a reviewer can see it.
+ *
+ * It reaches PRIVATE hosts only (see {@link isPrivateHost}). A cleartext public URL is refused
+ * whether or not this is set, because the failure it prevents (an API key read off the wire) is
+ * not something a stale export in someone's shell profile should be able to re-enable.
  */
 export const ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP"
 
@@ -106,6 +110,36 @@ function isLoopbackHost(hostname: string): boolean {
  * A value that does not parse is NOT this function's problem: it returns `undefined` and leaves
  * that to the existing "it needs a scheme" advice, which says something more useful about it.
  */
+/**
+ * Whether `hostname` is on a private network, i.e. somewhere cleartext stays inside a LAN or a
+ * container host instead of crossing the public internet.
+ *
+ * This is what BOUNDS the insecure-HTTP escape hatch rather than merely describing it. The hatch
+ * exists for one shape, a devcontainer reaching its host (`http://host.docker.internal:3000`), and
+ * that shape is always private. Letting the same opt-in also cover a public address is what turns
+ * a dev convenience into an API key read off the wire by anyone on the path, so the flag no longer
+ * reaches those at all: a cleartext public URL is refused with or without it.
+ *
+ * Names as well as literals, because the documented case IS a name: `host.docker.internal` never
+ * appears as an IP in the URL. A single-label host is included for the same reason it cannot be a
+ * public FQDN.
+ *
+ * Deliberately excluded: 100.64.0.0/10 (carrier-grade NAT) is not "your network" in any sense a
+ * developer controls, so it gets no more trust than the public internet.
+ */
+function isPrivateHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "")
+  // A single-label name has no public DNS answer, so it can only be resolved locally.
+  if (!host.includes(".") && !host.includes(":")) return true
+  if (/\.(local|internal|home\.arpa)$/.test(host)) return true
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host)) return true
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host)) return true
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host)) return true
+  if (/^f[cd][0-9a-f]{2}:/.test(host)) return true
+  return /^fe[89ab][0-9a-f]:/.test(host)
+}
+
 export function insecureApiUrlFault(
   url: string,
   env: Record<string, string | undefined> = process.env,
@@ -118,10 +152,12 @@ export function insecureApiUrlFault(
   }
   if (parsed.protocol !== "http:") return undefined
   if (isLoopbackHost(parsed.hostname)) return undefined
-  if (env[ALLOW_INSECURE_HTTP_ENV]?.trim()) return undefined
+  if (env[ALLOW_INSECURE_HTTP_ENV]?.trim() && isPrivateHost(parsed.hostname)) return undefined
   return (
-    `Refusing to send credentials in the clear to ${parsed.origin}. Use https://, or set ` +
-    `${ALLOW_INSECURE_HTTP_ENV}=1 if this really is a trusted local endpoint.`
+    `Refusing to send credentials in the clear to ${parsed.origin}. Use https://` +
+    (isPrivateHost(parsed.hostname)
+      ? `, or set ${ALLOW_INSECURE_HTTP_ENV}=1 if this really is a trusted local endpoint.`
+      : `. ${ALLOW_INSECURE_HTTP_ENV} does not apply here: it covers private networks only, and this is a public address.`)
   )
 }
 

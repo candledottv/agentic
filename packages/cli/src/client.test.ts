@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { apiRequest, DEFAULT_API_URL, resolveApiUrl } from "./client"
+import { apiRequest, DEFAULT_API_URL, insecureApiUrlFault, resolveApiUrl } from "./client"
 
 type CapturedRequest = { url: string; init: RequestInit }
 
@@ -346,5 +346,30 @@ describe("classifyError: uiHint/docsPath lift", () => {
     expect(result.code).toBe("TIER_REQUIRED")
     expect(result.uiHint).toBe("Stake CNDL to reach Pro.")
     expect(result.docsPath).toBe("developers/agent-access")
+  })
+})
+
+describe("insecureApiUrlFault: the escape hatch reaches private hosts only", () => {
+  const allow = { CANDLE_ALLOW_INSECURE_HTTP: "1" }
+
+  test("a private host is allowed when the flag is set", () => {
+    for (const host of ["host.docker.internal:3000", "10.0.0.5", "192.168.1.10", "172.31.0.9", "dev-box"]) {
+      expect(insecureApiUrlFault(`http://${host}`, allow)).toBeUndefined()
+    }
+  })
+
+  test("a public host is refused even WITH the flag, and says why", () => {
+    for (const host of ["api.example.com", "203.0.113.7"]) {
+      expect(insecureApiUrlFault(`http://${host}`, allow)).toMatch(/public address/)
+    }
+  })
+
+  test("a private host is still refused without the flag", () => {
+    expect(insecureApiUrlFault("http://10.0.0.5", {})).toMatch(/Refusing/)
+  })
+
+  test("https and loopback are unaffected either way", () => {
+    expect(insecureApiUrlFault("https://api.example.com", {})).toBeUndefined()
+    expect(insecureApiUrlFault("http://127.0.0.5:3001", {})).toBeUndefined()
   })
 })

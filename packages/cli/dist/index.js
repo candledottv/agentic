@@ -18761,6 +18761,24 @@ function isLoopbackHost2(hostname) {
     return true;
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
+function isPrivateHost2(hostname) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host.includes(".") && !host.includes(":"))
+    return true;
+  if (/\.(local|internal|home\.arpa)$/.test(host))
+    return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^f[cd][0-9a-f]{2}:/.test(host))
+    return true;
+  return /^fe[89ab][0-9a-f]:/.test(host);
+}
 function assertTransportSecurity(apiUrl, env) {
   let parsed;
   try {
@@ -18775,9 +18793,9 @@ function assertTransportSecurity(apiUrl, env) {
   }
   if (isLoopbackHost2(parsed.hostname))
     return;
-  if (env.CANDLE_ALLOW_INSECURE_HTTP?.trim())
+  if (env.CANDLE_ALLOW_INSECURE_HTTP?.trim() && isPrivateHost2(parsed.hostname))
     return;
-  throw new Error(`Refusing to send credentials in the clear to ${parsed.origin}. Set CANDLE_API_URL to an https:// ` + "URL, or set CANDLE_ALLOW_INSECURE_HTTP=1 if this really is a trusted local endpoint.");
+  throw new Error(`Refusing to send credentials in the clear to ${parsed.origin}. Set CANDLE_API_URL to an https:// ` + (isPrivateHost2(parsed.hostname) ? "URL, or set CANDLE_ALLOW_INSECURE_HTTP=1 if this really is a trusted local endpoint." : "URL. CANDLE_ALLOW_INSECURE_HTTP does not apply here: it covers private networks only, " + "and this is a public address."));
 }
 function resolveConfig(env = process.env) {
   const apiUrl = env.CANDLE_API_URL?.trim() || DEFAULT_API_URL2;
@@ -19578,6 +19596,24 @@ function isLoopbackHost(hostname) {
     return true;
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
+function isPrivateHost(hostname) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host.includes(".") && !host.includes(":"))
+    return true;
+  if (/\.(local|internal|home\.arpa)$/.test(host))
+    return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^f[cd][0-9a-f]{2}:/.test(host))
+    return true;
+  return /^fe[89ab][0-9a-f]:/.test(host);
+}
 function insecureApiUrlFault(url, env = process.env) {
   let parsed;
   try {
@@ -19589,9 +19625,9 @@ function insecureApiUrlFault(url, env = process.env) {
     return;
   if (isLoopbackHost(parsed.hostname))
     return;
-  if (env[ALLOW_INSECURE_HTTP_ENV]?.trim())
+  if (env[ALLOW_INSECURE_HTTP_ENV]?.trim() && isPrivateHost(parsed.hostname))
     return;
-  return `Refusing to send credentials in the clear to ${parsed.origin}. Use https://, or set ` + `${ALLOW_INSECURE_HTTP_ENV}=1 if this really is a trusted local endpoint.`;
+  return `Refusing to send credentials in the clear to ${parsed.origin}. Use https://` + (isPrivateHost(parsed.hostname) ? `, or set ${ALLOW_INSECURE_HTTP_ENV}=1 if this really is a trusted local endpoint.` : `. ${ALLOW_INSECURE_HTTP_ENV} does not apply here: it covers private networks only, and this is a public address.`);
 }
 function resolveApiUrl(configuredApiUrl, env = process.env) {
   const fromEnv = env.CANDLE_API_URL?.trim();

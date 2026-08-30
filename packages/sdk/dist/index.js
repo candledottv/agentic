@@ -405,6 +405,24 @@ function isLoopbackHost(hostname) {
     return true;
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }
+function isPrivateHost(hostname) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host.includes(".") && !host.includes(":"))
+    return true;
+  if (/\.(local|internal|home\.arpa)$/.test(host))
+    return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^f[cd][0-9a-f]{2}:/.test(host))
+    return true;
+  return /^fe[89ab][0-9a-f]:/.test(host);
+}
 function assertTransportSecurity(apiUrl, allowInsecureHttp) {
   let parsed;
   try {
@@ -417,9 +435,11 @@ function assertTransportSecurity(apiUrl, allowInsecureHttp) {
   if (parsed.protocol !== "http:") {
     throw new Error(`CandleClient: apiUrl must be http or https, got ${parsed.protocol.replace(":", "")}`);
   }
-  if (isLoopbackHost(parsed.hostname) || allowInsecureHttp)
+  if (isLoopbackHost(parsed.hostname))
     return;
-  throw new Error(`CandleClient: refusing to send credentials in the clear to ${parsed.origin}. Use https://, or ` + "pass allowInsecureHttp: true if this really is a trusted local endpoint.");
+  if (allowInsecureHttp && isPrivateHost(parsed.hostname))
+    return;
+  throw new Error(`CandleClient: refusing to send credentials in the clear to ${parsed.origin}. Use https://.` + (isPrivateHost(parsed.hostname) ? " Pass allowInsecureHttp: true if this really is a trusted local endpoint." : " allowInsecureHttp does not apply here: it covers private networks only, and this is a" + " public address."));
 }
 
 class CandleClient {
