@@ -19527,7 +19527,7 @@ var init_tools = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.5.0";
+var SERVER_VERSION = "0.6.1";
 
 // ../mcp/src/server.ts
 var exports_server = {};
@@ -27919,7 +27919,16 @@ async function walletsGenerate(args, ctx) {
   let existingRaw = null;
   try {
     existingRaw = await deps.readFile(keystorePath);
-  } catch {
+  } catch (error) {
+    const code = error?.code;
+    if (code !== undefined && code !== "ENOENT") {
+      writeLocalFailure(deps, {
+        code: "KEYSTORE_UNREADABLE",
+        message: `Could not read ${keystorePath}: ${error instanceof Error ? error.message : error}`,
+        suggestion: "Refusing to continue: a keystore may exist at that path, and overwriting it would destroy the only copy of its keys."
+      }, json);
+      return 1;
+    }
     existingRaw = null;
   }
   if (existingRaw !== null && !resuming) {
@@ -28045,14 +28054,25 @@ Sealed to ${keystorePath}
       if (alreadyExists) {
         const found = await lookupByAddress(entry.address, apiKey, ctx);
         if (found) {
+          const promoted = await promoteStagedSigner(deps, entry, found._id);
           entry.imported = true;
-          entry.privyWalletId = found._id;
+          entry.linkedWalletId = found._id;
           entry.importedAt = new Date().toISOString();
           await persist(store, keystorePath);
-          if (!json)
-            deps.stdout.write(`  [${entry.index}] ${entry.address} already imported, reconciled
+          if (promoted.ok) {
+            if (!json) {
+              deps.stdout.write(`  [${entry.index}] ${entry.address} already imported, reconciled as ${found._id}
 `);
-          continue;
+            }
+            continue;
+          }
+          failures++;
+          writeLocalFailure(deps, {
+            code: "SIGNER_MISSING",
+            message: `Wallet ${entry.address} exists as ${found._id}, but ${promoted.message}.`,
+            suggestion: `Revoke it (candle wallets revoke ${found._id}) and run: candle wallets generate --resume`
+          }, json);
+          break;
         }
       }
       failures++;
@@ -28068,6 +28088,7 @@ Sealed to ${keystorePath}
       break;
     }
     entry.imported = true;
+    entry.linkedWalletId = flow.submitted.id;
     entry.privyWalletId = flow.submitted.privyWalletId;
     entry.importedAt = new Date().toISOString();
     await persist(store, keystorePath);
@@ -28105,6 +28126,22 @@ ${imported}/${store.entries.length} imported.
 ` + `user identity was sent to Privy, so none of these is a way to sign in to your account.
 `);
   return 0;
+}
+async function promoteStagedSigner(deps, entry, linkedWalletId) {
+  const committedRef = walletSignerRef(linkedWalletId);
+  if (await deps.store.get(committedRef) !== null)
+    return { ok: true };
+  const pendingRef = importPendingSignerRef(entry.chain, entry.address);
+  const staged = await deps.store.get(pendingRef);
+  if (staged === null) {
+    return {
+      ok: false,
+      message: `its signer is on neither "${committedRef}" nor "${pendingRef}" in the ${deps.backend} store`
+    };
+  }
+  await deps.store.set(committedRef, staged);
+  await deps.store.delete(pendingRef).catch(() => {});
+  return { ok: true };
 }
 async function persist(store, path) {
   await writeKeystoreFile(path, await serializeKeystore(store.entries, store.key, store.salt, store.iterations));

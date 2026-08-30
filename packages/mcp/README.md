@@ -1,17 +1,17 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. It exposes Candle's REST API as
-eleven tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
+fifteen tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, report on-chain activity, and check an agent profile without hand-rolling HTTP
 calls.
 
 ## Try it without a key
 
-Three tools are read-only and need nothing but `CANDLE_API_URL` (which already defaults to
-production): `candle_get_market`, `candle_get_feed`, `candle_token_forensics`, and
-`candle_get_agent_profile`. Install the
-server with no `env` block at all and those three work immediately:
+Five tools are read-only and need nothing but `CANDLE_API_URL` (which already defaults to
+production): `candle_get_market`, `candle_get_feed`, `candle_token_forensics`,
+`candle_get_agent_profile`, and `candle_resolve_token`. Install the
+server with no `env` block at all and those five work immediately:
 
 ```json
 {
@@ -31,7 +31,7 @@ Environment below -- or skip env editing entirely: install the Candle CLI
 environment.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all eight. An unknown name fails startup with the valid names in the message, rather
+Unset means all fifteen. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
 
@@ -68,9 +68,9 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
   non-loopback host. For a trusted local endpoint that is not loopback, such as a devcontainer
   reaching its host; not for anything that leaves the machine.
 - `CANDLE_AGENT_API_KEY` -- an agent API key (`cndl_live_...` / `cndl_test_...`), issued from a
-  Candle account's agent settings page. Only required by `candle_launch_token`,
-  `candle_report_activity`, `candle_trade`, `candle_launch_and_seed`, and `candle_swap`; the three
-  read-only tools
+  Candle account's agent settings page. Required by every tool except the five read-only ones
+  listed above, which includes the account-scoped reads (`candle_get_wallets`,
+  `candle_execution_status`, `candle_get_operation`) as well as the writes; those five
   work without it, so the server is useful the moment it is installed and only asks for a key when
   you try to write. `candle_trade` additionally needs the key's `swap:write` scope server-side,
   which is opt-in only and never granted by omission, see `docs/mcp-launch-and-seed.md` in the
@@ -93,6 +93,10 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_swap` | Swap between base assets | `POST /api/v1/agent/swap` | `CANDLE_AGENT_API_KEY` (`swap:write`) |
 | `candle_transfer` | Transfer an asset | `POST /api/v1/agent/transfer` | `CANDLE_AGENT_API_KEY` (`transfer:write`) |
 | `candle_sweep` | Sweep a wallet to one destination | One `POST /api/v1/agent/transfer` per asset, `amountRaw: "max"` | `CANDLE_AGENT_API_KEY` (`transfer:write`) |
+| `candle_resolve_token` | Turn a bare mint or contract address into Candle's market for it | `GET /api/v1/markets/:chain/:mint` | none |
+| `candle_get_wallets` | The account's embedded wallets, one per chain, with delegation state | `GET /api/v1/agent/wallets/embedded` | `CANDLE_AGENT_API_KEY` |
+| `candle_execution_status` | One call before trading: wallets to spend from, tier, and whether trading is possible | Composes the wallet and tier reads | `CANDLE_AGENT_API_KEY` |
+| `candle_get_operation` | Look up a trade or launch by the id its write used, and whether it landed | `GET /api/v1/trade/agent/jobs/:clientId` or `/api/v1/launch/headless/jobs/:clientId` | `CANDLE_AGENT_API_KEY` |
 
 ### Transfers and sweeps
 
@@ -109,7 +113,7 @@ explicitly. Assets with nothing spendable report `empty`; a failed asset never s
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-eleven tools:
+fifteen tools:
 
 - `candle_launch_token`, `candle_get_market`, and `candle_get_feed` hit endpoints that use the
   structured envelope `{ success: false, error: { code, message, ... } }`. Branch on `error.code`.

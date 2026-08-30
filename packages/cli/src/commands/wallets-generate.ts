@@ -18,6 +18,7 @@ import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
 import { printIdentity } from "../profiles"
 import { writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
+import { importPendingSignerRef, walletSignerRef } from "../secret-store"
 import type { WalletChain } from "../wallet-import"
 import { runImportFlow } from "../wallet-import-flow"
 import { generateWallet } from "../wallet-keygen"
@@ -90,7 +91,28 @@ export async function walletsGenerate(args: string[], ctx: CommandContext): Prom
   let existingRaw: string | null = null
   try {
     existingRaw = await deps.readFile(keystorePath)
-  } catch {
+  } catch (error) {
+    // ENOENT is the ONLY error that means "no keystore here". Every other read failure (a
+    // permissions problem, an I/O error, a directory in the way) means a keystore may well exist
+    // and merely could not be read, and treating that as absent would let the create path below
+    // rename a fresh file over the only copy of somebody's keys.
+    //
+    // A thrown error with no `code` is treated as absent on purpose: deps.readFile is documented
+    // as testable "with a plain throwing fake", and those fakes carry no errno.
+    const code = (error as NodeJS.ErrnoException | undefined)?.code
+    if (code !== undefined && code !== "ENOENT") {
+      writeLocalFailure(
+        deps,
+        {
+          code: "KEYSTORE_UNREADABLE",
+          message: `Could not read ${keystorePath}: ${error instanceof Error ? error.message : error}`,
+          suggestion:
+            "Refusing to continue: a keystore may exist at that path, and overwriting it would destroy the only copy of its keys.",
+        },
+        json,
+      )
+      return 1
+    }
     existingRaw = null
   }
   if (existingRaw !== null && !resuming) {
@@ -237,12 +259,31 @@ export async function walletsGenerate(args: string[], ctx: CommandContext): Prom
       if (alreadyExists) {
         const found = await lookupByAddress(entry.address, apiKey, ctx)
         if (found) {
+          const promoted = await promoteStagedSigner(deps, entry, found._id)
           entry.imported = true
-          entry.privyWalletId = found._id
+          entry.linkedWalletId = found._id
           entry.importedAt = new Date().toISOString()
           await persist(store, keystorePath)
-          if (!json) deps.stdout.write(`  [${entry.index}] ${entry.address} already imported, reconciled\n`)
-          continue
+          if (promoted.ok) {
+            if (!json) {
+              deps.stdout.write(`  [${entry.index}] ${entry.address} already imported, reconciled as ${found._id}\n`)
+            }
+            continue
+          }
+          // The wallet is real, so recording it imported is accurate and re-importing cannot help.
+          // But it cannot sign from here, and reporting that as success would be exactly the
+          // silent half-success this command's ordering exists to prevent.
+          failures++
+          writeLocalFailure(
+            deps,
+            {
+              code: "SIGNER_MISSING",
+              message: `Wallet ${entry.address} exists as ${found._id}, but ${promoted.message}.`,
+              suggestion: `Revoke it (candle wallets revoke ${found._id}) and run: candle wallets generate --resume`,
+            },
+            json,
+          )
+          break
         }
       }
       failures++
@@ -264,6 +305,7 @@ export async function walletsGenerate(args: string[], ctx: CommandContext): Prom
     }
 
     entry.imported = true
+    entry.linkedWalletId = flow.submitted.id
     entry.privyWalletId = flow.submitted.privyWalletId
     entry.importedAt = new Date().toISOString()
     await persist(store, keystorePath)
@@ -300,6 +342,43 @@ export async function walletsGenerate(args: string[], ctx: CommandContext): Prom
       `user identity was sent to Privy, so none of these is a way to sign in to your account.\n`,
   )
   return 0
+}
+
+/**
+ * Moves the signer `runImportFlow` staged before submit onto the ref the wallet id names.
+ *
+ * Only the reconcile path needs this: on a successful import runImportFlow commits the signer
+ * itself. We reach reconcile when submit SUCCEEDED on an earlier run but that commit did not
+ * happen, either because the process died in between or because the store threw, which
+ * runImportFlow reports as `signer-commit` and deliberately leaves the staged copy behind so it
+ * can be recovered.
+ *
+ * Nothing consults the pending ref at signing time (`wallets` reads `walletSignerRef` only), so
+ * marking the entry imported without promoting would produce a wallet that exists remotely, holds
+ * funds, and cannot sign.
+ */
+async function promoteStagedSigner(
+  deps: CommandContext["deps"],
+  entry: KeystoreEntry,
+  linkedWalletId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const committedRef = walletSignerRef(linkedWalletId)
+  // Already committed: the crash landed after runImportFlow finished its own commit.
+  if ((await deps.store.get(committedRef)) !== null) return { ok: true }
+
+  const pendingRef = importPendingSignerRef(entry.chain, entry.address)
+  const staged = await deps.store.get(pendingRef)
+  if (staged === null) {
+    return {
+      ok: false,
+      message: `its signer is on neither "${committedRef}" nor "${pendingRef}" in the ${deps.backend} store`,
+    }
+  }
+  await deps.store.set(committedRef, staged)
+  // Delete only AFTER the commit lands, mirroring runImportFlow: a delete-first ordering would
+  // lose the signer entirely if the set threw.
+  await deps.store.delete(pendingRef).catch(() => {})
+  return { ok: true }
 }
 
 async function persist(store: OpenKeystore, path: string): Promise<void> {

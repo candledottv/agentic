@@ -50,6 +50,16 @@ export interface KeystoreEntry {
   /** Base58 of the 64-byte secret for Solana, 0x-prefixed hex for EVM. */
   privateKey: string
   imported: boolean
+  /**
+   * The linked-wallet row id the import returned: the handle `wallets revoke` takes, the trade
+   * API's `from.linkedWalletId`, and what the signer is keyed under. Recorded on BOTH the import
+   * and reconcile paths, because it is the id every later operation needs.
+   */
+  linkedWalletId?: string
+  /**
+   * Privy's own wallet id. Only the import path has it; `GET /wallets` does not return it, so a
+   * reconciled entry leaves this unset rather than filling it with a different id.
+   */
   privyWalletId?: string
   importedAt?: string
 }
