@@ -19545,7 +19545,7 @@ var init_tools = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.6.1";
+var SERVER_VERSION = "0.6.2";
 
 // ../mcp/src/server.ts
 var exports_server = {};
@@ -20258,7 +20258,7 @@ async function resolveApiKey(deps, profile) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.8.0";
+var CLI_VERSION = "0.8.1";
 
 // src/commands/auth.ts
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
