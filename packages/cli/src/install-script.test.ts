@@ -209,8 +209,11 @@ describe("install.sh", () => {
     // That gap is what let 0.6.0 ship assets this installer took and `candle verify` would not.
     expect(calls).toContain("--new-bundle-format")
     expect(calls).toContain("--certificate-oidc-issuer https://token.actions.githubusercontent.com")
+    // Pinned to the RESOLVED version and anchored, not merely prefixed with `cli-v`. A bare
+    // prefix accepts a signature minted for any cli-v tag, which is a signed downgrade: ask for
+    // 9.9.9, be handed a legitimately signed 0.3.0, and verification passes.
     expect(calls).toContain(
-      "--certificate-identity-regexp ^https://github.com/candledottv/agentic/\\.github/workflows/release\\.yaml@refs/tags/cli-v",
+      "--certificate-identity-regexp ^https://github.com/candledottv/agentic/\\.github/workflows/release\\.yaml@refs/tags/cli-v9\\.9\\.9$",
     )
     await rm(r.home, { recursive: true, force: true })
     await rm(stubDir, { recursive: true, force: true })
@@ -303,8 +306,23 @@ describe("install.sh", () => {
     expect(calls).toContain("attestation verify")
     expect(calls).toContain("--repo candledottv/agentic")
     expect(calls).toContain("--signer-workflow candledottv/agentic/.github/workflows/release.yaml")
+    // And the tag, so this branch is not weaker than the cosign one above.
+    expect(calls).toContain(
+      "--cert-identity https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v9.9.9",
+    )
     await rm(r.home, { recursive: true, force: true })
     await rm(stubDir, { recursive: true, force: true })
+  })
+
+  test("a manifest whose version disagrees with the requested tag installs nothing", async () => {
+    // The fixture serves the same latest.json (version 9.9.9) under every tag, so asking for a
+    // different tag is exactly the mismatch: the assets you were handed do not describe the
+    // version you asked for, and reconciling that quietly is how a downgrade slips through.
+    const r = await runInstaller(["--version", "cli-v1.2.3"])
+    expect(r.code).toBe(1)
+    expect(r.stderr).toContain("cli-v9.9.9")
+    await expect(readFile(join(r.binDir, "candle"), "utf8")).rejects.toThrow()
+    await rm(r.home, { recursive: true, force: true })
   })
 
   test("an existing Homebrew candle is left alone, and --force overrides it", async () => {

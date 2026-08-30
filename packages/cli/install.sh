@@ -111,6 +111,27 @@ curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/latest.json" -o
 version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$tmp/latest.json" | head -1)"
 [ -n "$version" ] || fail "the release manifest has no version"
 
+# Bind signature verification to the version actually being installed.
+#
+# IDENTITY_REGEX above ends at `cli-v`, so on its own it accepts a signature minted for ANY cli-v
+# tag. That is a signed downgrade: ask for 0.8.0, be handed a legitimately signed 0.3.0 with known
+# holes, and verification passes. `candle verify` and `candle update` already pin the exact tag
+# through releaseIdentityUri(); this is the installer catching up.
+#
+# The version is VALIDATED before it reaches a regex, not trusted. It comes out of a downloaded
+# latest.json, which is exactly the input an attacker controls, and release.ts records what an
+# unvalidated one does: `{"version": "x|"}` yields an identity whose alternation matches every
+# identity there is, so a file signed by an unrelated project verifies.
+printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+  || fail "the release manifest has a malformed version: ${version}"
+# A manifest describing a different version than the tag we asked for is a mismatch worth stopping
+# on, not reconciling.
+if [ -n "$VERSION_TAG" ] && [ "$VERSION_TAG" != "cli-v${version}" ]; then
+  fail "requested ${VERSION_TAG} but the manifest at that tag describes cli-v${version}; nothing installed"
+fi
+identity_regex_pinned="${IDENTITY_REGEX}$(printf '%s' "$version" | sed 's/\./\\./g')\$"
+identity_exact="https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v${version}"
+
 # 4. Download.
 curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/${asset}" -o "$tmp/$asset" || fail "no release binary for ${os}-${arch} at ${download_base}/${asset}"
 curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/SHA256SUMS" -o "$tmp/SHA256SUMS" || fail "could not fetch SHA256SUMS"
@@ -135,16 +156,17 @@ if command -v cosign >/dev/null 2>&1; then
   # mis-signed that way (0.6.0 was) would install here and then fail every `candle update`.
   # The flag needs cosign 2.2 or newer; an older cosign rejects the unknown flag and the install
   # stops, which is the right way to be wrong.
-  if ! verify_output="$(cosign verify-blob --new-bundle-format --bundle "$tmp/$asset.sigstore.json" --certificate-identity-regexp "$IDENTITY_REGEX" --certificate-oidc-issuer "$ISSUER" "$tmp/$asset" 2>&1)"; then
+  if ! verify_output="$(cosign verify-blob --new-bundle-format --bundle "$tmp/$asset.sigstore.json" --certificate-identity-regexp "$identity_regex_pinned" --certificate-oidc-issuer "$ISSUER" "$tmp/$asset" 2>&1)"; then
     echo "$verify_output" >&2
     fail "signature verification failed for $asset; nothing installed"
   fi
   verified=1
 elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   # --signer-workflow, not just --repo: the repo alone accepts an attestation from ANY workflow in
-  # candledottv/agentic that can mint one, while the cosign branch above pins the workflow FILE
-  # through IDENTITY_REGEX. Without this the two verifiers do not check the same thing.
-  if ! verify_output="$(gh attestation verify "$tmp/$asset" --repo candledottv/agentic --signer-workflow candledottv/agentic/.github/workflows/release.yaml 2>&1)"; then
+  # candledottv/agentic that can mint one, while the cosign branch above pins the workflow FILE.
+  # --cert-identity additionally pins the TAG, matching what the cosign branch now does, so the two
+  # verifiers keep checking the same thing rather than drifting apart on which one is stricter.
+  if ! verify_output="$(gh attestation verify "$tmp/$asset" --repo candledottv/agentic --signer-workflow candledottv/agentic/.github/workflows/release.yaml --cert-identity "$identity_exact" 2>&1)"; then
     echo "$verify_output" >&2
     fail "signature verification failed for $asset (gh attestation verify); nothing installed"
   fi
