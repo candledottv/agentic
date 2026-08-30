@@ -20052,6 +20052,41 @@ function profileTable(config, now) {
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+
+// src/file-lock.ts
+import { open, rm, stat } from "node:fs/promises";
+var STALE_MS = 30000;
+var RETRY_MS = 25;
+var TIMEOUT_MS = 1e4;
+async function withFileLock(target, fn) {
+  const lockPath = `${target}.lock`;
+  const deadline = Date.now() + TIMEOUT_MS;
+  for (;; ) {
+    try {
+      await (await open(lockPath, "wx")).close();
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST")
+        throw error;
+      const age = await stat(lockPath).then((s) => Date.now() - s.mtimeMs).catch(() => 0);
+      if (age > STALE_MS) {
+        await rm(lockPath, { force: true });
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`Timed out waiting for ${lockPath}. Another candle process is writing; if none is running, delete that file.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await rm(lockPath, { force: true });
+  }
+}
+
+// src/secret-store.ts
 var SECRET_REFS = {
   deviceToken: "device_token",
   apiKey: "api_key"
@@ -20109,26 +20144,30 @@ class EncryptedFileSecretStore {
   }
   async set(ref, value) {
     const passphrase = await this.resolvePassphrase();
-    const contents = await this.readContents();
-    const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH_BYTES));
-    const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH_BYTES));
-    const key = await deriveKey(passphrase, salt, this.iterations);
-    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
-    contents[ref] = {
-      salt: toBase64(salt),
-      iv: toBase64(iv),
-      ciphertext: toBase64(new Uint8Array(ciphertext)),
-      iterations: this.iterations
-    };
-    await this.writeContents(contents);
+    return withFileLock(this.path, async () => {
+      const contents = await this.readContents();
+      const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH_BYTES));
+      const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH_BYTES));
+      const key = await deriveKey(passphrase, salt, this.iterations);
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
+      contents[ref] = {
+        salt: toBase64(salt),
+        iv: toBase64(iv),
+        ciphertext: toBase64(new Uint8Array(ciphertext)),
+        iterations: this.iterations
+      };
+      await this.writeContents(contents);
+    });
   }
   async delete(ref) {
     await this.resolvePassphrase();
-    const contents = await this.readContents();
-    if (!(ref in contents))
-      return;
-    delete contents[ref];
-    await this.writeContents(contents);
+    return withFileLock(this.path, async () => {
+      const contents = await this.readContents();
+      if (!Object.hasOwn(contents, ref))
+        return;
+      delete contents[ref];
+      await this.writeContents(contents);
+    });
   }
   async resolvePassphrase() {
     if (this.cachedPassphrase !== undefined)
@@ -20164,7 +20203,7 @@ class EncryptedFileSecretStore {
     const dir = dirname(this.path);
     await mkdir(dir, { recursive: true });
     await chmod(dir, 448);
-    const tmpPath = `${this.path}.tmp`;
+    const tmpPath = `${this.path}.${crypto.randomUUID()}.tmp`;
     await writeFile(tmpPath, JSON.stringify(contents, null, 2), { encoding: "utf8", mode: 384 });
     await chmod(tmpPath, 384);
     await rename(tmpPath, this.path);
@@ -20901,21 +20940,25 @@ async function keysCreate(args, ctx) {
   }
   const body = result.body;
   const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
-  const existingKey = await deps.store.get(apiKeyRef);
   let stored = false;
-  if (!existingKey) {
-    await deps.store.set(apiKeyRef, body.key);
-    if (ctx.profile) {
-      await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes });
-    } else {
-      await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes });
+  let storeError;
+  try {
+    if (!await deps.store.get(apiKeyRef)) {
+      await deps.store.set(apiKeyRef, body.key);
+      if (ctx.profile) {
+        await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes });
+      } else {
+        await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes });
+      }
+      stored = true;
     }
-    stored = true;
+  } catch (error) {
+    storeError = error instanceof Error ? error.message : String(error);
   }
   if (json) {
-    deps.stdout.write(`${JSON.stringify({ ...body, stored })}
+    deps.stdout.write(`${JSON.stringify({ ...body, stored, ...storeError ? { storeError } : {} })}
 `);
-    return 0;
+    return storeError ? 1 : 0;
   }
   deps.stdout.write(`API key: ${body.key}
 `);
@@ -20925,14 +20968,22 @@ async function keysCreate(args, ctx) {
 `);
   deps.stdout.write(`Scopes: ${formatScopesForSummary(body.scopes)}
 `);
+  if (storeError !== undefined) {
+    deps.stderr.write(`
+WARNING: the key above was NOT stored in the ${deps.backend} store: ${storeError}
+` + "It is live on your account. Save it now, or revoke it with: candle keys revoke " + `${body.keyPrefix}
+`);
+  }
   if (!requestedScopes) {
     deps.stdout.write(`No --scopes given: the server granted the default scopes (swap:write excluded).
 `);
   }
-  deps.stdout.write(stored ? `Stored in the ${deps.backend} backend as the CLI's working key.
+  if (storeError === undefined) {
+    deps.stdout.write(stored ? `Stored in the ${deps.backend} backend as the CLI's working key.
 ` : `Not stored: the CLI already manages a different working key. This key belongs to whichever agent it was minted for.
 `);
-  return 0;
+  }
+  return storeError === undefined ? 0 : 1;
 }
 async function keysRevoke(args, ctx) {
   const { deps, apiUrl, json } = ctx;
@@ -25356,7 +25407,7 @@ async function writeKeystoreFile(path, contents) {
   const dir = dirname3(path);
   await mkdir2(dir, { recursive: true });
   await chmod2(dir, 448);
-  const tmpPath = `${path}.tmp`;
+  const tmpPath = `${path}.${crypto.randomUUID()}.tmp`;
   await writeFile2(tmpPath, contents, { encoding: "utf8", mode: 384 });
   await chmod2(tmpPath, 384);
   await rename2(tmpPath, path);
@@ -28202,7 +28253,7 @@ async function lookupByAddress(address, apiKey, ctx) {
 }
 
 // src/config.ts
-import { chmod as chmod3, mkdir as mkdir3, readFile as readFile2, rm, writeFile as writeFile3 } from "node:fs/promises";
+import { chmod as chmod3, mkdir as mkdir3, readFile as readFile2, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
 import { join as join6 } from "node:path";
 function configDir2() {
@@ -28237,7 +28288,7 @@ async function updateProfile(name, patch) {
 }
 async function clearConfig() {
   try {
-    await rm(configFilePath());
+    await rm2(configFilePath());
   } catch (err) {
     if (err.code !== "ENOENT")
       throw err;

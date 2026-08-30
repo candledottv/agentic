@@ -1136,6 +1136,39 @@ class KeychainSecretStore {
     await this.exec("secret-tool", ["clear", "service", SERVICE, "account", ref]);
   }
 }
+// src/file-lock.ts
+var STALE_MS = 30000;
+var RETRY_MS = 25;
+var TIMEOUT_MS = 1e4;
+async function withFileLock(target, fn) {
+  const { open, rm, stat } = await import("node:fs/promises");
+  const lockPath = `${target}.lock`;
+  const deadline = Date.now() + TIMEOUT_MS;
+  for (;; ) {
+    try {
+      await (await open(lockPath, "wx")).close();
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST")
+        throw error;
+      const age = await stat(lockPath).then((s) => Date.now() - s.mtimeMs).catch(() => 0);
+      if (age > STALE_MS) {
+        await rm(lockPath, { force: true });
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`Timed out waiting for ${lockPath}. Another candle process is writing; if none is running, delete that file.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await rm(lockPath, { force: true });
+  }
+}
+
 // src/secret-store.ts
 class InMemorySecretStore {
   entries = new Map;
@@ -1179,25 +1212,29 @@ class EncryptedFileSecretStore {
     return new TextDecoder().decode(plaintext);
   }
   async set(walletRef, privateKeyPem) {
-    const contents = await this.readFile();
-    const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH_BYTES));
-    const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH_BYTES));
-    const key = await deriveKey(this.passphrase, salt, PBKDF2_ITERATIONS);
-    const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(privateKeyPem));
-    contents[walletRef] = {
-      salt: toBase64(salt),
-      iv: toBase64(iv),
-      ciphertext: toBase64(new Uint8Array(ciphertext)),
-      iterations: PBKDF2_ITERATIONS
-    };
-    await this.writeFile(contents);
+    return withFileLock(this.path, async () => {
+      const contents = await this.readFile();
+      const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH_BYTES));
+      const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH_BYTES));
+      const key = await deriveKey(this.passphrase, salt, PBKDF2_ITERATIONS);
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(privateKeyPem));
+      contents[walletRef] = {
+        salt: toBase64(salt),
+        iv: toBase64(iv),
+        ciphertext: toBase64(new Uint8Array(ciphertext)),
+        iterations: PBKDF2_ITERATIONS
+      };
+      await this.writeFile(contents);
+    });
   }
   async delete(walletRef) {
-    const contents = await this.readFile();
-    if (!(walletRef in contents))
-      return;
-    delete contents[walletRef];
-    await this.writeFile(contents);
+    return withFileLock(this.path, async () => {
+      const contents = await this.readFile();
+      if (!Object.hasOwn(contents, walletRef))
+        return;
+      delete contents[walletRef];
+      await this.writeFile(contents);
+    });
   }
   async readFile() {
     const { readFile } = await import("node:fs/promises");
@@ -1216,7 +1253,7 @@ class EncryptedFileSecretStore {
     const dir = dirname(this.path);
     await mkdir(dir, { recursive: true });
     await chmod(dir, 448);
-    const tmpPath = `${this.path}.tmp`;
+    const tmpPath = `${this.path}.${crypto.randomUUID()}.tmp`;
     await writeFile(tmpPath, JSON.stringify(contents, null, 2), { encoding: "utf8", mode: 384 });
     await chmod(tmpPath, 384);
     await rename(tmpPath, this.path);

@@ -11,6 +11,7 @@
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { withFileLock } from "./file-lock"
 
 /** Storage for a single CLI credential, keyed by a stable `ref` (see `SECRET_REFS`). */
 export interface SecretStore {
@@ -211,32 +212,38 @@ export class EncryptedFileSecretStore implements SecretStore {
 
   async set(ref: string, value: string): Promise<void> {
     const passphrase = await this.resolvePassphrase()
-    const contents = await this.readContents()
+    // Locked around the whole cycle, not just the write: the read is half of it, and two callers
+    // reading the same starting state is how an entry gets lost.
+    return withFileLock(this.path, async () => {
+      const contents = await this.readContents()
 
-    const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH_BYTES))
-    const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH_BYTES))
-    const key = await deriveKey(passphrase, salt, this.iterations)
-    const ciphertext = await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv: iv as BufferSource },
-      key,
-      new TextEncoder().encode(value),
-    )
+      const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH_BYTES))
+      const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH_BYTES))
+      const key = await deriveKey(passphrase, salt, this.iterations)
+      const ciphertext = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv: iv as BufferSource },
+        key,
+        new TextEncoder().encode(value),
+      )
 
-    contents[ref] = {
-      salt: toBase64(salt),
-      iv: toBase64(iv),
-      ciphertext: toBase64(new Uint8Array(ciphertext)),
-      iterations: this.iterations,
-    }
-    await this.writeContents(contents)
+      contents[ref] = {
+        salt: toBase64(salt),
+        iv: toBase64(iv),
+        ciphertext: toBase64(new Uint8Array(ciphertext)),
+        iterations: this.iterations,
+      }
+      await this.writeContents(contents)
+    })
   }
 
   async delete(ref: string): Promise<void> {
     await this.resolvePassphrase()
-    const contents = await this.readContents()
-    if (!(ref in contents)) return
-    delete contents[ref]
-    await this.writeContents(contents)
+    return withFileLock(this.path, async () => {
+      const contents = await this.readContents()
+      if (!Object.hasOwn(contents, ref)) return
+      delete contents[ref]
+      await this.writeContents(contents)
+    })
   }
 
   private async resolvePassphrase(): Promise<string> {
@@ -288,7 +295,7 @@ export class EncryptedFileSecretStore implements SecretStore {
     // truncating it in place: `rename` is atomic on the same filesystem, so a crash or power loss
     // mid-write can never leave `credentials.enc` half-written (which would lose BOTH stored
     // credentials, not just the one being updated, since they share one file).
-    const tmpPath = `${this.path}.tmp`
+    const tmpPath = `${this.path}.${crypto.randomUUID()}.tmp`
     await writeFile(tmpPath, JSON.stringify(contents, null, 2), { encoding: "utf8", mode: 0o600 })
     // `writeFile`'s `mode` option only applies when the file is newly created; force it explicitly
     // in case a previous run left a `.tmp` file behind with a different mode.

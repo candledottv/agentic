@@ -137,3 +137,51 @@ describe("signer PEM storage format", () => {
     expect(storedSignerToPem(pemToStoredSigner(PEM))).toBe(PEM)
   })
 })
+
+/**
+ * set and delete rewrite the WHOLE file, so two of them interleaving loses an entry: both read the
+ * same starting state, both add their own ref, and whichever renames second silently drops the
+ * other's. `candle keys create` in one terminal while `candle auth login` finishes in another is
+ * enough, and the symptom is a credential reported stored that is not there.
+ *
+ * The atomic rename never protected against this. It prevents a TORN file, not a lost write.
+ */
+describe("EncryptedFileSecretStore serializes concurrent writers", () => {
+  let dir: string
+  let path: string
+  const previous = process.env.CANDLE_KEYRING_PASSPHRASE
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "candle-lock-"))
+    path = join(dir, "credentials.enc")
+    process.env.CANDLE_KEYRING_PASSPHRASE = "correct horse battery staple"
+  })
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true })
+    if (previous === undefined) delete process.env.CANDLE_KEYRING_PASSPHRASE
+    else process.env.CANDLE_KEYRING_PASSPHRASE = previous
+  })
+
+  test("every concurrent set survives", async () => {
+    const store = new EncryptedFileSecretStore({ path })
+    const refs = Array.from({ length: 12 }, (_, i) => `ref_${i}`)
+    await Promise.all(refs.map((ref) => store.set(ref, `value-${ref}`)))
+
+    // Re-read from disk rather than trusting the in-process object.
+    const reopened = new EncryptedFileSecretStore({ path })
+    for (const ref of refs) expect(await reopened.get(ref)).toBe(`value-${ref}`)
+  })
+
+  test("concurrent deletes leave the untouched entries alone, and no lock is left behind", async () => {
+    const store = new EncryptedFileSecretStore({ path })
+    const refs = Array.from({ length: 8 }, (_, i) => `ref_${i}`)
+    for (const ref of refs) await store.set(ref, `value-${ref}`)
+
+    await Promise.all(refs.slice(0, 4).map((ref) => store.delete(ref)))
+
+    const reopened = new EncryptedFileSecretStore({ path })
+    for (const ref of refs.slice(0, 4)) expect(await reopened.get(ref)).toBeNull()
+    for (const ref of refs.slice(4)) expect(await reopened.get(ref)).toBe(`value-${ref}`)
+    await expect(stat(`${path}.lock`)).rejects.toThrow()
+  })
+})

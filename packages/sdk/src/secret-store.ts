@@ -18,6 +18,7 @@
  * 4). Implement `SecretStore` for it then.
  */
 
+import { withFileLock } from "./file-lock"
 import { fromBase64, toBase64 } from "./internal/encoding"
 
 /**
@@ -156,31 +157,38 @@ export class EncryptedFileSecretStore implements SecretStore {
   }
 
   async set(walletRef: string, privateKeyPem: string): Promise<void> {
-    const contents = await this.readFile()
+    // Locked around the READ as well as the write. set and delete rewrite the whole file, so two
+    // callers that both read the same starting state each drop the other's entry when they write,
+    // and rename being atomic does not help: nothing is torn, an entry is simply gone.
+    return withFileLock(this.path, async () => {
+      const contents = await this.readFile()
 
-    const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH_BYTES))
-    const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH_BYTES))
-    const key = await deriveKey(this.passphrase, salt, PBKDF2_ITERATIONS)
-    const ciphertext = await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv: iv as BufferSource },
-      key,
-      new TextEncoder().encode(privateKeyPem),
-    )
+      const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH_BYTES))
+      const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH_BYTES))
+      const key = await deriveKey(this.passphrase, salt, PBKDF2_ITERATIONS)
+      const ciphertext = await crypto.subtle.encrypt(
+        { name: "AES-GCM", iv: iv as BufferSource },
+        key,
+        new TextEncoder().encode(privateKeyPem),
+      )
 
-    contents[walletRef] = {
-      salt: toBase64(salt),
-      iv: toBase64(iv),
-      ciphertext: toBase64(new Uint8Array(ciphertext)),
-      iterations: PBKDF2_ITERATIONS,
-    }
-    await this.writeFile(contents)
+      contents[walletRef] = {
+        salt: toBase64(salt),
+        iv: toBase64(iv),
+        ciphertext: toBase64(new Uint8Array(ciphertext)),
+        iterations: PBKDF2_ITERATIONS,
+      }
+      await this.writeFile(contents)
+    })
   }
 
   async delete(walletRef: string): Promise<void> {
-    const contents = await this.readFile()
-    if (!(walletRef in contents)) return
-    delete contents[walletRef]
-    await this.writeFile(contents)
+    return withFileLock(this.path, async () => {
+      const contents = await this.readFile()
+      if (!Object.hasOwn(contents, walletRef)) return
+      delete contents[walletRef]
+      await this.writeFile(contents)
+    })
   }
 
   private async readFile(): Promise<EncryptedFileContents> {
@@ -215,7 +223,7 @@ export class EncryptedFileSecretStore implements SecretStore {
     const dir = dirname(this.path)
     await mkdir(dir, { recursive: true })
     await chmod(dir, 0o700)
-    const tmpPath = `${this.path}.tmp`
+    const tmpPath = `${this.path}.${crypto.randomUUID()}.tmp`
     await writeFile(tmpPath, JSON.stringify(contents, null, 2), { encoding: "utf8", mode: 0o600 })
     await chmod(tmpPath, 0o600)
     await rename(tmpPath, this.path)

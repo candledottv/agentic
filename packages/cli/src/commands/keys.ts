@@ -208,21 +208,36 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
   // key belongs to whichever agent it was minted for. Under a profile the ref and the recorded
   // prefix/scopes are namespaced to it; the legacy top-level fields are used only pre-profile.
   const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey
-  const existingKey = await deps.store.get(apiKeyRef)
+
+  // Storing must never stop the key being shown.
+  //
+  // The API issues the plaintext exactly once. Before this, a throw anywhere in the block below (a
+  // locked keychain, a cancelled passphrase prompt, a full disk) skipped the display entirely and
+  // left an ACTIVE key on the account that nobody had ever seen: unusable, and revocable only by
+  // first noticing an orphaned prefix in `keys list`. An UNSTORED key the operator can read is
+  // strictly better than a key they cannot, so the outcome is captured rather than thrown, and
+  // reported alongside the key instead of in place of it.
   let stored = false
-  if (!existingKey) {
-    await deps.store.set(apiKeyRef, body.key)
-    if (ctx.profile) {
-      await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes })
-    } else {
-      await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes })
+  let storeError: string | undefined
+  try {
+    if (!(await deps.store.get(apiKeyRef))) {
+      await deps.store.set(apiKeyRef, body.key)
+      if (ctx.profile) {
+        await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes })
+      } else {
+        await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes })
+      }
+      stored = true
     }
-    stored = true
+  } catch (error) {
+    storeError = error instanceof Error ? error.message : String(error)
   }
 
   if (json) {
-    deps.stdout.write(`${JSON.stringify({ ...body, stored })}\n`)
-    return 0
+    // One object, key included, whether or not storage worked: a `--json` caller parsing this is
+    // the case least able to recover a key that was never emitted.
+    deps.stdout.write(`${JSON.stringify({ ...body, stored, ...(storeError ? { storeError } : {}) })}\n`)
+    return storeError ? 1 : 0
   }
 
   // The plaintext key is printed exactly once, right here -- the API's own one-time issuance
@@ -233,15 +248,28 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
   // This is the moment a fund-moving key is actually minted, so swap:write (if granted) is
   // called out here the same way the login summary calls it out (fix round 1, item 16).
   deps.stdout.write(`Scopes: ${formatScopesForSummary(body.scopes)}\n`)
+  if (storeError !== undefined) {
+    // After the key, never instead of it. The exit code is non-zero so a script notices, but the
+    // key is on screen first because that is the part that cannot be recovered.
+    deps.stderr.write(
+      `\nWARNING: the key above was NOT stored in the ${deps.backend} store: ${storeError}\n` +
+        "It is live on your account. Save it now, or revoke it with: candle keys revoke " +
+        `${body.keyPrefix}\n`,
+    )
+  }
   if (!requestedScopes) {
     deps.stdout.write("No --scopes given: the server granted the default scopes (swap:write excluded).\n")
   }
-  deps.stdout.write(
-    stored
-      ? `Stored in the ${deps.backend} backend as the CLI's working key.\n`
-      : "Not stored: the CLI already manages a different working key. This key belongs to whichever agent it was minted for.\n",
-  )
-  return 0
+  if (storeError === undefined) {
+    deps.stdout.write(
+      stored
+        ? `Stored in the ${deps.backend} backend as the CLI's working key.\n`
+        : "Not stored: the CLI already manages a different working key. This key belongs to whichever agent it was minted for.\n",
+    )
+  }
+  // Non-zero when storage failed, so a script notices what a human would read in the warning
+  // above. The key was still printed, which is the part that cannot be recovered.
+  return storeError === undefined ? 0 : 1
 }
 
 export async function keysRevoke(args: string[], ctx: CommandContext): Promise<number> {

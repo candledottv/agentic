@@ -457,3 +457,58 @@ describe("profiles", () => {
     expect((await config.readConfig()).profiles?.staging?.keyPrefix).toBeUndefined()
   })
 })
+
+/**
+ * The API issues the plaintext key exactly once. A store failure used to skip the display
+ * entirely, leaving an ACTIVE key on the account that nobody had ever seen: unusable, and
+ * revocable only by first noticing an orphaned prefix in `keys list`.
+ */
+describe("keys create: a storage failure never swallows the key", () => {
+  const FAIL_KEY = "ck_live_FIXTURE_UNSTORABLE"
+  const routes = () =>
+    createRoutedFetch({
+      "/api/v1/agent/keys": () =>
+        jsonResponse(200, {
+          success: true,
+          key: FAIL_KEY,
+          keyPrefix: "ck_livezz",
+          scopes: ["trade:write"],
+          environment: "live",
+        }),
+    })
+  const lockedStore = () => {
+    const base = createFakeStore({ device_token: "cndl_dvc_x" })
+    return {
+      ...base,
+      set: async () => {
+        throw new Error("keychain is locked")
+      },
+    }
+  }
+
+  test("the key is printed, the failure is reported, and the exit is non-zero", async () => {
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const code = await run(
+      ["keys", "create"],
+      createTestDeps({ fetch: routes().fetch, store: lockedStore(), stdout, stderr }),
+    )
+    expect(stdout.text).toContain(FAIL_KEY)
+    expect(stderr.text).toMatch(/NOT stored/)
+    expect(stderr.text).toContain("keys revoke")
+    expect(code).toBe(1)
+  })
+
+  test("--json still emits one object carrying the key and the failure", async () => {
+    const stdout = createCapture()
+    const code = await run(
+      ["keys", "create", "--json"],
+      createTestDeps({ fetch: routes().fetch, store: lockedStore(), stdout }),
+    )
+    const parsed = JSON.parse(stdout.text.trim()) as { key: string; stored: boolean; storeError?: string }
+    expect(parsed.key).toBe(FAIL_KEY)
+    expect(parsed.stored).toBe(false)
+    expect(parsed.storeError).toMatch(/locked/)
+    expect(code).toBe(1)
+  })
+})

@@ -173,7 +173,11 @@ export async function writeKeystoreFile(path: string, contents: string): Promise
   const dir = dirname(path)
   await mkdir(dir, { recursive: true })
   await chmod(dir, 0o700)
-  const tmpPath = `${path}.tmp`
+  // A unique temp per write. A shared `${path}.tmp` meant two concurrent generators raced on one
+  // file and whichever renamed second won, so a run could believe it had sealed keys that the
+  // other run's bytes had replaced, and then import them. That is the half of the audit's NEW-02
+  // that the ENOENT fix did not cover.
+  const tmpPath = `${path}.${crypto.randomUUID()}.tmp`
   await writeFile(tmpPath, contents, { encoding: "utf8", mode: 0o600 })
   // `mode` only applies when the file is newly created, so force it in case a previous run left a
   // .tmp behind with a different mode.
