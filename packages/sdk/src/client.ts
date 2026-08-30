@@ -1149,6 +1149,12 @@ export class CandleClient {
     this.apiUrl = opts.apiUrl.replace(/\/+$/, "")
     if (opts.apiKey !== undefined) this.apiKey = opts.apiKey
     this.fetchImpl = opts.fetch ?? fetch
+    // Validated rather than trusted: the retry loop is `attempt <= maxRetries`, so a negative
+    // value runs zero attempts and falls through to `throw lastError` before any error exists,
+    // surfacing as a confusing TypeError instead of the caller's actual mistake.
+    if (opts.maxRetries !== undefined && (!Number.isInteger(opts.maxRetries) || opts.maxRetries < 0)) {
+      throw new Error(`CandleClient: maxRetries must be a non-negative integer, got ${opts.maxRetries}`)
+    }
     this.maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES
     if (opts.privyAppId !== undefined) this.privyAppId = opts.privyAppId
     if (opts.secretStore !== undefined) this.secretStore = opts.secretStore
@@ -1975,6 +1981,13 @@ export class CandleClient {
     } catch {
       parsed = undefined
     }
+    // Shape BEFORE status, deliberately. A `failed` or `timeout` outcome arrives with a 502 and is
+    // still the answer: it carries the bundleId and the retryable flag the caller needs, and
+    // throwing a generic API error would discard exactly that. Two tests pin it ("a 502 failed
+    // outcome is RETURNED, not thrown"). An audit read this ordering as a status-gate bypass; it
+    // is not, because isAtomicSubmitOutcome is strict enough that no error body satisfies it: it
+    // requires a string bundleId AND either failed/timeout with a boolean retryable, or landed
+    // with a mint and a signatures array.
     if (isAtomicSubmitOutcome(parsed)) return parsed
     if (!res.ok) throw candleApiErrorFromResponse(res.status, text)
     throw new Error(`submitAtomicLaunch(): unexpected 200 response shape: ${text}`)

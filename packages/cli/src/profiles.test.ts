@@ -280,3 +280,23 @@ describe("profileTable", () => {
     expect(rows.map((r) => r.active)).toEqual([false, true])
   })
 })
+
+/**
+ * `in` walks the prototype chain, so every Object.prototype member resolved as a profile name
+ * against an ordinary object literal. `candle --profile constructor` passed the existence check
+ * and carried a function forward as if it were config.
+ */
+describe("profile lookup ignores inherited properties", () => {
+  for (const name of ["constructor", "toString", "hasOwnProperty", "valueOf"]) {
+    test(`"${name}" is not a profile`, () => {
+      const config = { profiles: { real: { apiUrl: "https://api.test" } }, activeProfile: "real" }
+      const r = resolveProfileName(config as never, { flag: name, env: {} })
+      expect(r.ok).toBe(false)
+    })
+  }
+
+  test("a real profile still resolves", () => {
+    const config = { profiles: { real: { apiUrl: "https://api.test" } }, activeProfile: "real" }
+    expect(resolveProfileName(config as never, { flag: "real", env: {} })).toEqual({ ok: true, name: "real" })
+  })
+})

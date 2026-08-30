@@ -98,7 +98,9 @@ export async function profileAdd(args: string[], ctx: CommandContext): Promise<n
     return 2
   }
   const config = await deps.readConfig()
-  if (config.profiles?.[name]) {
+  // Object.hasOwn, not truthy bracket access: `profiles["constructor"]` resolves up the prototype
+  // chain to a function, so `profile add constructor` reported a profile that does not exist.
+  if (config.profiles !== undefined && Object.hasOwn(config.profiles, name)) {
     writeLocalFailure(
       deps,
       {
@@ -130,7 +132,10 @@ export async function profileUse(args: string[], ctx: CommandContext): Promise<n
     return 2
   }
   const config = await deps.readConfig()
-  const profile = config.profiles?.[name]
+  // Same prototype hazard as `profile add`: without the ownership check, `profile use constructor`
+  // found a truthy value and made a nonexistent profile active.
+  const profile =
+    config.profiles !== undefined && Object.hasOwn(config.profiles, name) ? config.profiles[name] : undefined
   if (!profile) {
     const names = Object.keys(config.profiles ?? {}).join(", ") || "(none)"
     writeLocalFailure(

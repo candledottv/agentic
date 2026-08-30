@@ -53,7 +53,9 @@ export function resolveProfileName(
   const requested = opts.flag?.trim() || opts.env.CANDLE_PROFILE?.trim() || undefined
   if (requested !== undefined) {
     if (!isValidProfileName(requested)) return { ok: false, message: `Invalid profile name: ${requested}` }
-    if (!(requested in profiles)) {
+    // Object.hasOwn, not `in`: `in` walks the prototype chain, so "constructor", "toString" and
+    // friends resolve as profile names against an ordinary object literal.
+    if (!Object.hasOwn(profiles, requested)) {
       return {
         ok: false,
         message: `No profile named "${requested}".${names.length ? `\nProfiles on this machine:\n${listForHumans(profiles, config.activeProfile)}` : " Run: candle auth login --profile " + requested}`,
@@ -61,7 +63,8 @@ export function resolveProfileName(
     }
     return { ok: true, name: requested }
   }
-  if (config.activeProfile && config.activeProfile in profiles) return { ok: true, name: config.activeProfile }
+  if (config.activeProfile && Object.hasOwn(profiles, config.activeProfile))
+    return { ok: true, name: config.activeProfile }
   if (names.length === 0) return { ok: true, name: undefined }
   if (names.length === 1) return { ok: true, name: names[0] }
   return {
@@ -95,7 +98,8 @@ export function resolveProfileNameForLogin(
     if (!isValidProfileName(requested)) return { ok: false, message: `Invalid profile name: ${requested}` }
     return { ok: true, name: requested }
   }
-  if (config.activeProfile && config.activeProfile in profiles) return { ok: true, name: config.activeProfile }
+  if (config.activeProfile && Object.hasOwn(profiles, config.activeProfile))
+    return { ok: true, name: config.activeProfile }
   const names = Object.keys(profiles)
   return { ok: true, name: names.length === 1 ? names[0] : undefined }
 }

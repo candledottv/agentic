@@ -265,11 +265,16 @@ function buildCipherSuite() {
 function parseSolanaSecret(input) {
   const trimmed = input.trim();
   if (!trimmed.startsWith("[")) {
+    let decoded;
     try {
-      return base58.decode(trimmed);
+      decoded = base58.decode(trimmed);
     } catch {
       throw new Error("Invalid Solana private key: expected a base58 string or an id.json byte array.");
     }
+    if (decoded.length !== 64) {
+      throw new Error(`Invalid Solana private key: expected 64 bytes, got ${decoded.length}. A 32-byte value is the ` + "SEED, not the keypair; export the full secret key, which is what solana-keygen writes to id.json.");
+    }
+    return decoded;
   }
   const parsed = (() => {
     try {
@@ -287,8 +292,8 @@ function parseSolanaSecret(input) {
 function decodeWalletPrivateKey(chain, privateKey) {
   if (chain === "evm") {
     const hex = privateKey.startsWith("0x") ? privateKey.slice(2) : privateKey;
-    if (hex.length === 0 || hex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(hex)) {
-      throw new Error('Invalid EVM private key: expected a hex string (optionally "0x"-prefixed)');
+    if (hex.length !== 64 || !/^[0-9a-fA-F]+$/.test(hex)) {
+      throw new Error("Invalid EVM private key: expected 32 bytes as 64 hex characters " + `(optionally "0x"-prefixed), got ${hex.length} characters`);
     }
     return Uint8Array.from(Buffer.from(hex, "hex"));
   }
@@ -457,6 +462,9 @@ class CandleClient {
     if (opts.apiKey !== undefined)
       this.apiKey = opts.apiKey;
     this.fetchImpl = opts.fetch ?? fetch;
+    if (opts.maxRetries !== undefined && (!Number.isInteger(opts.maxRetries) || opts.maxRetries < 0)) {
+      throw new Error(`CandleClient: maxRetries must be a non-negative integer, got ${opts.maxRetries}`);
+    }
     this.maxRetries = opts.maxRetries ?? DEFAULT_MAX_RETRIES;
     if (opts.privyAppId !== undefined)
       this.privyAppId = opts.privyAppId;

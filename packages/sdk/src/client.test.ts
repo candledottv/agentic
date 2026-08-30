@@ -2395,3 +2395,20 @@ describe("swapFromLinked", () => {
     expect(submit?.body.signedTransactionsBase64).toEqual(["c2lnbmVk"])
   })
 })
+
+describe("maxRetries is validated, not trusted", () => {
+  // The loop is `attempt <= maxRetries`, so a negative value runs ZERO attempts and falls through
+  // to `throw lastError` before any error exists: the caller sees a TypeError about undefined
+  // rather than the mistake they actually made.
+  test("a negative, fractional, or non-finite value is refused at construction", () => {
+    for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => new CandleClient({ apiUrl: "https://api.test", maxRetries: bad })).toThrow(
+        /maxRetries must be a non-negative integer/,
+      )
+    }
+  })
+
+  test("zero is legitimate and still allowed", () => {
+    expect(() => new CandleClient({ apiUrl: "https://api.test", maxRetries: 0 })).not.toThrow()
+  })
+})

@@ -66,11 +66,23 @@ export type WalletChain = "solana" | "evm"
 export function parseSolanaSecret(input: string): Uint8Array {
   const trimmed = input.trim()
   if (!trimmed.startsWith("[")) {
+    let decoded: Uint8Array
     try {
-      return base58.decode(trimmed)
+      decoded = base58.decode(trimmed)
     } catch {
       throw new Error("Invalid Solana private key: expected a base58 string or an id.json byte array.")
     }
+    // Length is checked for the same reason the id.json branch below checks it: a decode that
+    // succeeds proves the ALPHABET, not the key. A wrong-length secret seals cleanly and provisions
+    // a wallet whose key cannot sign it -- the "garbage-keyed wallet" this module's doc warns
+    // about -- and nothing downstream notices until a trade fails.
+    if (decoded.length !== 64) {
+      throw new Error(
+        `Invalid Solana private key: expected 64 bytes, got ${decoded.length}. A 32-byte value is the ` +
+          "SEED, not the keypair; export the full secret key, which is what solana-keygen writes to id.json.",
+      )
+    }
+    return decoded
   }
   const parsed: unknown = (() => {
     try {
@@ -99,8 +111,13 @@ export function parseSolanaSecret(input: string): Uint8Array {
 function decodeWalletPrivateKey(chain: WalletChain, privateKey: string): Uint8Array {
   if (chain === "evm") {
     const hex = privateKey.startsWith("0x") ? privateKey.slice(2) : privateKey
-    if (hex.length === 0 || hex.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(hex)) {
-      throw new Error('Invalid EVM private key: expected a hex string (optionally "0x"-prefixed)')
+    // Exactly 32 bytes. An even-length check alone accepts a truncated or padded key, which seals
+    // and imports cleanly and only fails later, at signing time, on a wallet that already exists.
+    if (hex.length !== 64 || !/^[0-9a-fA-F]+$/.test(hex)) {
+      throw new Error(
+        "Invalid EVM private key: expected 32 bytes as 64 hex characters " +
+          `(optionally "0x"-prefixed), got ${hex.length} characters`,
+      )
     }
     return Uint8Array.from(Buffer.from(hex, "hex"))
   }

@@ -19925,7 +19925,7 @@ function resolveProfileName(config, opts) {
   if (requested !== undefined) {
     if (!isValidProfileName(requested))
       return { ok: false, message: `Invalid profile name: ${requested}` };
-    if (!(requested in profiles)) {
+    if (!Object.hasOwn(profiles, requested)) {
       return {
         ok: false,
         message: `No profile named "${requested}".${names.length ? `
@@ -19935,7 +19935,7 @@ ${listForHumans(profiles, config.activeProfile)}` : " Run: candle auth login --p
     }
     return { ok: true, name: requested };
   }
-  if (config.activeProfile && config.activeProfile in profiles)
+  if (config.activeProfile && Object.hasOwn(profiles, config.activeProfile))
     return { ok: true, name: config.activeProfile };
   if (names.length === 0)
     return { ok: true, name: undefined };
@@ -19955,7 +19955,7 @@ function resolveProfileNameForLogin(config, opts) {
       return { ok: false, message: `Invalid profile name: ${requested}` };
     return { ok: true, name: requested };
   }
-  if (config.activeProfile && config.activeProfile in profiles)
+  if (config.activeProfile && Object.hasOwn(profiles, config.activeProfile))
     return { ok: true, name: config.activeProfile };
   const names = Object.keys(profiles);
   return { ok: true, name: names.length === 1 ? names[0] : undefined };
@@ -21185,7 +21185,7 @@ async function profileAdd(args, ctx) {
     return 2;
   }
   const config = await deps.readConfig();
-  if (config.profiles?.[name]) {
+  if (config.profiles !== undefined && Object.hasOwn(config.profiles, name)) {
     writeLocalFailure(deps, {
       code: "PROFILE_EXISTS",
       message: `Profile "${name}" already exists.`,
@@ -21217,7 +21217,7 @@ async function profileUse(args, ctx) {
     return 2;
   }
   const config = await deps.readConfig();
-  const profile = config.profiles?.[name];
+  const profile = config.profiles !== undefined && Object.hasOwn(config.profiles, name) ? config.profiles[name] : undefined;
   if (!profile) {
     const names = Object.keys(config.profiles ?? {}).join(", ") || "(none)";
     writeLocalFailure(deps, {
@@ -24804,11 +24804,16 @@ function buildCipherSuite() {
 function parseSolanaSecret(input) {
   const trimmed = input.trim();
   if (!trimmed.startsWith("[")) {
+    let decoded;
     try {
-      return base58.decode(trimmed);
+      decoded = base58.decode(trimmed);
     } catch {
       throw new Error("Invalid Solana private key: expected a base58 string or an id.json byte array.");
     }
+    if (decoded.length !== 64) {
+      throw new Error(`Invalid Solana private key: expected 64 bytes, got ${decoded.length}. A 32-byte value is the ` + "SEED, not the keypair; export the full secret key, which is what solana-keygen writes to id.json.");
+    }
+    return decoded;
   }
   const parsed = (() => {
     try {
@@ -24826,8 +24831,8 @@ function parseSolanaSecret(input) {
 function decodeWalletPrivateKey(chain2, privateKey) {
   if (chain2 === "evm") {
     const hex2 = privateKey.startsWith("0x") ? privateKey.slice(2) : privateKey;
-    if (hex2.length === 0 || hex2.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(hex2)) {
-      throw new Error('Invalid EVM private key: expected a hex string (optionally "0x"-prefixed)');
+    if (hex2.length !== 64 || !/^[0-9a-fA-F]+$/.test(hex2)) {
+      throw new Error("Invalid EVM private key: expected 32 bytes as 64 hex characters " + `(optionally "0x"-prefixed), got ${hex2.length} characters`);
     }
     return Uint8Array.from(Buffer.from(hex2, "hex"));
   }

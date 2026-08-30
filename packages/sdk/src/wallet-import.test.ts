@@ -55,13 +55,19 @@ const EVM_RAW_KEY = new Uint8Array([
 ])
 const EVM_HEX_KEY = `0x${Buffer.from(EVM_RAW_KEY).toString("hex")}`
 
+// 64 bytes, because that is what a Solana secret key IS: a 32-byte seed followed by its 32-byte
+// public key. It used to be 32 here on the grounds that sealing does not care about length, which
+// stopped being true when decoding started rejecting a wrong-length key. The old fixture was
+// exactly the mistake that check exists to catch (a seed passed off as a keypair), so it could not
+// stay.
 const SOLANA_RAW_KEY = new Uint8Array([
   9, 8, 7, 6, 5, 4, 3, 2, 1, 0, 255, 254, 253, 252, 251, 250, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110,
-  111, 112, 113, 114, 115,
+  111, 112, 113, 114, 115, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
+  54, 55, 56, 57, 58, 59, 60, 61, 62,
 ])
 const SOLANA_BASE58_KEY = base58.encode(SOLANA_RAW_KEY)
 
-// A real Solana secret key is 64 bytes (unlike the 32-byte fixture above, which is fine for the
+// A real Solana secret key is 64 bytes (as the fixture above now is; this one is the
 // generic base58-decode tests but not representative of an actual id.json keyfile's length).
 const SOLANA_64_BYTE_KEY = new Uint8Array(64).map((_, i) => (i * 7 + 3) % 256)
 const SOLANA_64_BYTE_BASE58 = base58.encode(SOLANA_64_BYTE_KEY)
@@ -406,5 +412,38 @@ describe("CandleClient.importWallet", () => {
       }),
     ).rejects.toThrow(/apiKey/)
     expect(calls.length).toBe(0)
+  })
+})
+
+/**
+ * Length, not just alphabet. A decode that succeeds proves the input is base58 or hex; it says
+ * nothing about whether it is a KEY. A wrong-length secret seals cleanly and provisions a wallet
+ * whose key cannot sign it, and nothing notices until a trade fails against real funds.
+ *
+ * This suite's own fixture used to be a 32-byte Solana value, which is exactly that mistake.
+ */
+describe("private keys are rejected on length, not only on shape", () => {
+  test("a 32-byte Solana value is refused as the seed it is", () => {
+    expect(() => parseSolanaSecret(base58.encode(new Uint8Array(32)))).toThrow(/expected 64 bytes, got 32/)
+    expect(() => parseSolanaSecret(base58.encode(new Uint8Array(32)))).toThrow(/SEED/)
+  })
+
+  test("near-misses either side of 64 are refused too", () => {
+    for (const n of [63, 65]) {
+      expect(() => parseSolanaSecret(base58.encode(new Uint8Array(n)))).toThrow(/expected 64 bytes/)
+    }
+  })
+
+  test("an even-length EVM hex that is not 32 bytes is refused", async () => {
+    for (const hex of ["0x" + "ab".repeat(31), "0x" + "ab".repeat(33)]) {
+      await expect(
+        encryptWalletKeyForImport({ chain: "evm", privateKey: hex, encryptionPublicKey: "irrelevant" }),
+      ).rejects.toThrow(/expected 32 bytes as 64 hex characters/)
+    }
+  })
+
+  test("the valid lengths still pass", async () => {
+    expect(parseSolanaSecret(SOLANA_64_BYTE_BASE58)).toEqual(SOLANA_64_BYTE_KEY)
+    expect(() => parseSolanaSecret(base58.encode(new Uint8Array(64)))).not.toThrow()
   })
 })
