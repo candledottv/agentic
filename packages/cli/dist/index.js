@@ -18850,6 +18850,42 @@ var init_convert = __esm(() => {
   DECIMAL_RE = /^\d+(\.\d+)?$/;
 });
 
+// ../mcp/src/version.ts
+var SERVER_VERSION = "0.6.4";
+
+// ../mcp/src/update-notice.ts
+function newer(a, b) {
+  const [a1 = 0, a2 = 0, a3 = 0] = a.split(".").map(Number);
+  const [b1 = 0, b2 = 0, b3 = 0] = b.split(".").map(Number);
+  return a1 !== b1 ? a1 > b1 : a2 !== b2 ? a2 > b2 : a3 > b3;
+}
+function noteVersionHeaders(res) {
+  const headers = res?.headers;
+  const value = typeof headers?.get === "function" ? headers.get("x-candle-mcp-latest") : null;
+  if (!value || !PLAIN_VERSION.test(value))
+    return;
+  if (latestSeen !== null && !newer(value, latestSeen))
+    return;
+  latestSeen = value;
+  if (!warned && newer(value, SERVER_VERSION) && !process.env.CANDLE_NO_UPDATE_NOTIFIER) {
+    warned = true;
+    console.error(`@candledottv/mcp ${value} is available (running ${SERVER_VERSION}). Update: npm install -g @candledottv/mcp@latest`);
+  }
+}
+function updateAvailable() {
+  if (latestSeen === null || !newer(latestSeen, SERVER_VERSION))
+    return null;
+  return {
+    current: SERVER_VERSION,
+    latest: latestSeen,
+    command: "npm install -g @candledottv/mcp@latest"
+  };
+}
+var PLAIN_VERSION, latestSeen = null, warned = false;
+var init_update_notice = __esm(() => {
+  PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
+});
+
 // ../mcp/src/orchestrate.ts
 import { randomUUID } from "node:crypto";
 function requireApiKey(cfg) {
@@ -19156,6 +19192,7 @@ async function executionStatus(cfg, doFetch) {
   const apiKey = requireApiKey(cfg);
   const get = async (path) => {
     const res = await doFetch(`${base(cfg)}${path}`, { method: "GET", headers: headers(apiKey) });
+    noteVersionHeaders(res);
     const text = await res.text();
     let body;
     try {
@@ -19181,6 +19218,7 @@ async function executionStatus(cfg, doFetch) {
       success: true,
       ready: unreadable.length === 0 ? true : undefined,
       notice: tierBody?.maxExpired ? tierBody.maxExpiredNotice : undefined,
+      updateAvailable: updateAvailable() ?? undefined,
       unreadable: unreadable.length > 0 ? unreadable.map(([name]) => name) : undefined,
       wallets: wallets2.body,
       tier: tier.body,
@@ -19192,6 +19230,7 @@ async function executionStatus(cfg, doFetch) {
 var SWEEP_BASE_ASSETS;
 var init_orchestrate = __esm(() => {
   init_convert();
+  init_update_notice();
   SWEEP_BASE_ASSETS = {
     solana: ["USDC", "CNDL", "SOL"],
     hood: ["USDG", "ETH"]
@@ -19321,6 +19360,7 @@ function buildRequest(name, args, cfg) {
 async function callAndRelay(name, args, cfg) {
   const { url, init } = buildRequest(name, args, cfg);
   const res = await fetch(url, init);
+  noteVersionHeaders(res);
   const text = await res.text();
   return {
     content: [{ type: "text", text }],
@@ -19448,6 +19488,7 @@ var init_tools = __esm(() => {
   init_zod();
   init_convert();
   init_orchestrate();
+  init_update_notice();
   TOOL_NAMES = [
     "candle_launch_token",
     "candle_get_market",
@@ -19545,9 +19586,6 @@ var init_tools = __esm(() => {
     mints: exports_external.array(exports_external.string()).optional().describe("Extra token mints/contracts to sweep besides the chain's base assets (own-wallet destinations only).")
   };
 });
-
-// ../mcp/src/version.ts
-var SERVER_VERSION = "0.6.3";
 
 // ../mcp/src/server.ts
 var exports_server = {};
@@ -19677,6 +19715,10 @@ function classifyError(status, raw) {
   }
   return { message: `Request failed with status ${status}` };
 }
+var latestCliVersionSeen = null;
+function latestCliVersionFromApi() {
+  return latestCliVersionSeen;
+}
 async function apiRequest(path, opts) {
   const url = buildUrl(opts.apiUrl, path);
   const insecure = insecureApiUrlFault(opts.apiUrl, opts.env ?? process.env);
@@ -19704,6 +19746,9 @@ async function apiRequest(path, opts) {
       raw: undefined
     };
   }
+  const latestHeader = response.headers?.get?.("x-candle-cli-latest");
+  if (latestHeader)
+    latestCliVersionSeen = latestHeader;
   const text = await response.text();
   const raw = parseBody(text);
   if (response.ok) {
@@ -20260,7 +20305,7 @@ async function resolveApiKey(deps, profile) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.8.3";
+var CLI_VERSION = "0.8.4";
 
 // src/commands/auth.ts
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
@@ -20602,6 +20647,9 @@ async function authStatus(args, ctx) {
 var RELEASE_BASE_URL = "https://github.com/candledottv/agentic";
 var RELEASE_ISSUER = "https://token.actions.githubusercontent.com";
 var VERSION = /^\d+\.\d+\.\d+$/;
+function isPlainVersion(value) {
+  return VERSION.test(value);
+}
 function releaseIdentityUri(version) {
   if (!VERSION.test(version))
     throw new Error(`invalid release version: ${version}`);
@@ -21538,6 +21586,58 @@ Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl,
 // src/commands/update.ts
 import { createHash as createHash2, randomBytes } from "node:crypto";
 
+// src/progress.ts
+var FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+var INTERVAL_MS = 80;
+function stepReporter(write, tty) {
+  let timer = null;
+  let frame = 0;
+  let current = null;
+  const clearSpinner = () => {
+    if (timer !== null)
+      clearInterval(timer);
+    timer = null;
+    if (tty && current !== null)
+      write("\r\x1B[2K");
+    current = null;
+  };
+  return {
+    start(label) {
+      clearSpinner();
+      current = label;
+      if (!tty) {
+        write(`${label}...
+`);
+        return;
+      }
+      write(`${FRAMES[0]} ${label}`);
+      frame = 1;
+      timer = setInterval(() => {
+        write(`\r\x1B[2K${FRAMES[frame % FRAMES.length]} ${current}`);
+        frame++;
+      }, INTERVAL_MS);
+      if (typeof timer === "object" && "unref" in timer)
+        timer.unref();
+    },
+    done(label) {
+      clearSpinner();
+      write(`✓ ${label}
+`);
+    },
+    fail(label) {
+      clearSpinner();
+      write(`✗ ${label}
+`);
+    },
+    stop: clearSpinner
+  };
+}
+function formatBytes(n) {
+  if (n >= 1024 * 1024)
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
 // src/bun-crypto-shim.ts
 import crypto2, { KeyObject } from "node:crypto";
 var original = crypto2.verify.bind(crypto2);
@@ -21880,12 +21980,19 @@ async function update(args, ctx) {
     }, json);
     return 1;
   }
+  const steps = json ? stepReporter(() => {}, false) : stepReporter((text) => deps.stderr.write(text), process.stderr.isTTY === true);
+  if (!json)
+    deps.stderr.write(`Updating candle ${CLI_VERSION} -> ${target.version}
+`);
+  steps.start(`downloading ${expectedName}`);
   const download = await fetchAll(deps, base, target.tag, expectedName);
   if (!download.ok) {
+    steps.fail(`downloading ${expectedName}`);
     writeLocalFailure(deps, { code: "UPDATE_UNREACHABLE", message: download.message }, json);
     return 1;
   }
   const { bytes, sums, bundle } = download;
+  steps.done(`downloaded ${expectedName} (${formatBytes(bytes.length)})`);
   const dir = realExec.slice(0, realExec.lastIndexOf("/")) || ".";
   const tmpPath = `${dir}/.candle-update-${target.version}-${randomBytes(6).toString("hex")}`;
   try {
@@ -21894,10 +22001,12 @@ async function update(args, ctx) {
     writeLocalFailure(deps, notWritable(dir, error), json);
     return 1;
   }
+  steps.start("verifying checksum");
   const actual = createHash2("sha256").update(bytes).digest("hex");
   const fromSums = sums.split(`
 `).map((line) => line.trim().split(/\s+/)).find((parts) => parts[1] === expectedName)?.[0];
   if (actual !== asset.sha256 || actual !== fromSums) {
+    steps.fail("verifying checksum");
     await discard(deps, tmpPath);
     writeLocalFailure(deps, {
       code: "UPDATE_VERIFY_FAILED",
@@ -21905,9 +22014,12 @@ async function update(args, ctx) {
     }, json);
     return 1;
   }
+  steps.done("checksum verified");
+  steps.start("verifying signature");
   const verify = deps.verify ?? verifyReleaseAsset;
   const verdict = verify(bytes, bundle, identityUri, RELEASE_ISSUER);
   if (!verdict.ok) {
+    steps.fail("verifying signature");
     await discard(deps, tmpPath);
     writeLocalFailure(deps, {
       code: "UPDATE_VERIFY_FAILED",
@@ -21916,13 +22028,17 @@ async function update(args, ctx) {
     }, json);
     return 1;
   }
+  steps.done("signature verified");
+  steps.start("installing");
   try {
     await deps.rename(tmpPath, realExec);
   } catch (error) {
+    steps.fail("installing");
     await discard(deps, tmpPath);
     writeLocalFailure(deps, notWritable(dir, error), json);
     return 1;
   }
+  steps.done(`installed to ${realExec}`);
   if (json) {
     const payload = { current: CLI_VERSION, latest: target.version, updated: true, path: realExec };
     deps.stdout.write(`${JSON.stringify(payload)}
@@ -28500,6 +28616,30 @@ async function resolveSecretStore(platform = process.platform) {
   return { store: new EncryptedFileSecretStore, backend: "encrypted-file" };
 }
 
+// src/update-notice.ts
+var DAY_MS = 24 * 60 * 60 * 1000;
+async function maybeWriteUpdateNotice(deps, opts = {}) {
+  try {
+    if (deps.env.CANDLE_NO_UPDATE_NOTIFIER)
+      return;
+    if (opts.command === "update" || opts.command === "doctor")
+      return;
+    const latest = latestCliVersionFromApi();
+    if (!latest || !isPlainVersion(latest) || compareVersions(latest, CLI_VERSION) <= 0)
+      return;
+    const config = await deps.readConfig();
+    const prior = config.updateNotice;
+    if (prior && prior.version === latest && deps.now() - prior.shownAt < DAY_MS)
+      return;
+    const line = `Update available: candle ${CLI_VERSION} -> ${latest}. Run: candle update`;
+    const tty = process.stderr.isTTY === true;
+    deps.stderr.write(tty ? `\x1B[2m${line}\x1B[0m
+` : `${line}
+`);
+    await deps.writeConfig({ updateNotice: { version: latest, shownAt: deps.now() } });
+  } catch {}
+}
+
 // src/index.ts
 function extractGlobalFlags(argv) {
   const rest = [];
@@ -28616,6 +28756,13 @@ function routesToCommand(cmd, sub) {
 }
 var NEVER_GUARDED = new Set(["auth", "profile", "doctor", "verify", "update"]);
 async function run2(argv, deps) {
+  const code = await runCommand(argv, deps);
+  const extractedForNotice = extractGlobalFlags(argv);
+  const word = "error" in extractedForNotice ? undefined : canonicalCommand(extractedForNotice.rest[0] === "candle" ? extractedForNotice.rest[1] : extractedForNotice.rest[0]);
+  await maybeWriteUpdateNotice(deps, { command: word });
+  return code;
+}
+async function runCommand(argv, deps) {
   const extracted = extractGlobalFlags(argv);
   if ("error" in extracted) {
     deps.stderr.write(`${extracted.error}

@@ -42,6 +42,7 @@ import { migratedConfig, profileSecretRef, resolveProfileName, resolveProfileNam
 import { platformKey } from "./release"
 import { writeLocalFailure, writeUsageFailure } from "./render"
 import { promptHiddenSecret, SECRET_REFS } from "./secret-store"
+import { maybeWriteUpdateNotice } from "./update-notice"
 import { CLI_VERSION } from "./version"
 
 interface GlobalFlags {
@@ -238,6 +239,23 @@ function routesToCommand(cmd: string | undefined, sub: string | undefined): bool
 export const NEVER_GUARDED = new Set(["auth", "profile", "doctor", "verify", "update"])
 
 export async function run(argv: string[], deps: Deps): Promise<number> {
+  const code = await runCommand(argv, deps)
+  // After the command, never before or during: the notice must not interleave with command
+  // output, and a command that failed still deserves to learn an update exists -- the fix for
+  // its failure may BE the update. The command word rides along so `update` and `doctor`, whose
+  // whole job is this question, never also nag.
+  const extractedForNotice = extractGlobalFlags(argv)
+  const word =
+    "error" in extractedForNotice
+      ? undefined
+      : canonicalCommand(
+          extractedForNotice.rest[0] === "candle" ? extractedForNotice.rest[1] : extractedForNotice.rest[0],
+        )
+  await maybeWriteUpdateNotice(deps, { command: word })
+  return code
+}
+
+async function runCommand(argv: string[], deps: Deps): Promise<number> {
   const extracted = extractGlobalFlags(argv)
   if ("error" in extracted) {
     deps.stderr.write(`${extracted.error}\n`)

@@ -104,6 +104,43 @@ function percentOfBalance(balanceRaw, percent) {
 
 // src/orchestrate.ts
 import { randomUUID } from "node:crypto";
+
+// src/version.ts
+var SERVER_VERSION = "0.6.4";
+
+// src/update-notice.ts
+var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
+var latestSeen = null;
+var warned = false;
+function newer(a, b) {
+  const [a1 = 0, a2 = 0, a3 = 0] = a.split(".").map(Number);
+  const [b1 = 0, b2 = 0, b3 = 0] = b.split(".").map(Number);
+  return a1 !== b1 ? a1 > b1 : a2 !== b2 ? a2 > b2 : a3 > b3;
+}
+function noteVersionHeaders(res) {
+  const headers = res?.headers;
+  const value = typeof headers?.get === "function" ? headers.get("x-candle-mcp-latest") : null;
+  if (!value || !PLAIN_VERSION.test(value))
+    return;
+  if (latestSeen !== null && !newer(value, latestSeen))
+    return;
+  latestSeen = value;
+  if (!warned && newer(value, SERVER_VERSION) && !process.env.CANDLE_NO_UPDATE_NOTIFIER) {
+    warned = true;
+    console.error(`@candledottv/mcp ${value} is available (running ${SERVER_VERSION}). Update: npm install -g @candledottv/mcp@latest`);
+  }
+}
+function updateAvailable() {
+  if (latestSeen === null || !newer(latestSeen, SERVER_VERSION))
+    return null;
+  return {
+    current: SERVER_VERSION,
+    latest: latestSeen,
+    command: "npm install -g @candledottv/mcp@latest"
+  };
+}
+
+// src/orchestrate.ts
 function requireApiKey(cfg) {
   if (!cfg.apiKey) {
     throw new Error("CANDLE_AGENT_API_KEY is required for this tool. Set it in the environment or MCP client config.");
@@ -412,6 +449,7 @@ async function executionStatus(cfg, doFetch) {
   const apiKey = requireApiKey(cfg);
   const get = async (path) => {
     const res = await doFetch(`${base(cfg)}${path}`, { method: "GET", headers: headers(apiKey) });
+    noteVersionHeaders(res);
     const text = await res.text();
     let body;
     try {
@@ -437,6 +475,7 @@ async function executionStatus(cfg, doFetch) {
       success: true,
       ready: unreadable.length === 0 ? true : undefined,
       notice: tierBody?.maxExpired ? tierBody.maxExpiredNotice : undefined,
+      updateAvailable: updateAvailable() ?? undefined,
       unreadable: unreadable.length > 0 ? unreadable.map(([name]) => name) : undefined,
       wallets: wallets.body,
       tier: tier.body,
@@ -586,6 +625,7 @@ function buildRequest(name, args, cfg) {
 async function callAndRelay(name, args, cfg) {
   const { url, init } = buildRequest(name, args, cfg);
   const res = await fetch(url, init);
+  noteVersionHeaders(res);
   const text = await res.text();
   return {
     content: [{ type: "text", text }],
@@ -787,9 +827,6 @@ function registerTools(server, env = process.env) {
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
 }
-
-// src/version.ts
-var SERVER_VERSION = "0.6.3";
 
 // src/server.ts
 function createCandleMcpServer(env = process.env) {

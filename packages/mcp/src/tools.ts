@@ -43,6 +43,7 @@ import { z } from "zod"
 import { type RequestConfig, resolveConfig } from "./client"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
 import { executeLaunchAndSeed, executeSweep, executeTrade, executionStatus, resolveToken } from "./orchestrate"
+import { noteVersionHeaders } from "./update-notice"
 
 export const TOOL_NAMES = [
   "candle_launch_token",
@@ -253,6 +254,7 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
 async function callAndRelay(name: RestToolName, args: Record<string, unknown>, cfg: RequestConfig) {
   const { url, init } = buildRequest(name, args, cfg)
   const res = await fetch(url, init)
+  noteVersionHeaders(res)
   const text = await res.text()
   return {
     content: [{ type: "text" as const, text }],

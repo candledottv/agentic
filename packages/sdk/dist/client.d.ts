@@ -1278,4 +1278,8 @@ export declare class CandleClient {
      */
     private jsonRpcCallRaw;
 }
+/** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
+export declare const SDK_VERSION = "0.3.2";
+/** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
+export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

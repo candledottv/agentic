@@ -10,8 +10,11 @@ import type { CliConfig, ProfileConfig } from "./config"
 import type { Deps } from "./deps"
 import type { SecretStore } from "./secret-store"
 
-export function jsonResponse(status: number, body: unknown): Response {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
+export function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...headers },
+  })
 }
 
 export interface CapturedRequest {

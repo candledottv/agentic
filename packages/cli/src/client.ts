@@ -245,6 +245,17 @@ function classifyError(
   return { message: `Request failed with status ${status}` }
 }
 
+let latestCliVersionSeen: string | null = null
+
+/** What the API said the latest CLI version is, from any response this process has made. */
+export function latestCliVersionFromApi(): string | null {
+  return latestCliVersionSeen
+}
+
+export function __resetLatestCliVersionForTest(): void {
+  latestCliVersionSeen = null
+}
+
 export async function apiRequest(path: string, opts: ApiRequestOptions): Promise<ApiResult> {
   const url = buildUrl(opts.apiUrl, path)
   // The backstop, checked here because this is the CLI's single HTTP call site: a URL can arrive
@@ -283,6 +294,13 @@ export async function apiRequest(path: string, opts: ApiRequestOptions): Promise
       raw: undefined,
     }
   }
+
+  // Ride-along update discovery: every API response carries the latest CLI version
+  // (apps/api client-versions middleware). Noted here, at the single HTTP call site, and READ
+  // by update-notice.ts at exit -- that direction keeps this file import-free, which it visibly
+  // is on purpose. Raw and unvalidated on purpose too: the notice module owns trust decisions.
+  const latestHeader = response.headers?.get?.("x-candle-cli-latest")
+  if (latestHeader) latestCliVersionSeen = latestHeader
 
   const text = await response.text()
   const raw = parseBody(text)

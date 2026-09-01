@@ -968,6 +968,7 @@ class CandleClient {
     return this.parseResponse(res);
   }
   async parseResponse(res) {
+    noteLatestSdkVersion(res.headers?.get?.("x-candle-sdk-latest") ?? null);
     const text = await res.text();
     if (!res.ok)
       throw candleApiErrorFromResponse(res.status, text);
@@ -1025,6 +1026,21 @@ function generateClientLaunchId() {
 }
 function generateClientTradeId() {
   return generateSdkId();
+}
+var SDK_VERSION = "0.3.2";
+var sdkUpdateWarned = false;
+function noteLatestSdkVersion(value) {
+  if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))
+    return;
+  const [a1 = 0, a2 = 0, a3 = 0] = value.split(".").map(Number);
+  const [b1 = 0, b2 = 0, b3 = 0] = SDK_VERSION.split(".").map(Number);
+  const isNewer = a1 !== b1 ? a1 > b1 : a2 !== b2 ? a2 > b2 : a3 > b3;
+  if (!isNewer)
+    return;
+  if (typeof process !== "undefined" && process.env?.CANDLE_NO_UPDATE_NOTICE)
+    return;
+  sdkUpdateWarned = true;
+  console.warn(`@candledottv/agent-sdk ${value} is available (running ${SDK_VERSION}). Update: npm install @candledottv/agent-sdk@latest (set CANDLE_NO_UPDATE_NOTICE=1 to silence)`);
 }
 // src/keychain-secret-store.ts
 import { spawn, spawnSync } from "node:child_process";

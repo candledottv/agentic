@@ -25,6 +25,7 @@
 import { randomUUID } from "node:crypto"
 import type { RequestConfig } from "./client"
 import { decimalToRaw, defaultQuoteId, percentOfBalance, QUOTE_DECIMALS } from "./convert"
+import { noteVersionHeaders, updateAvailable } from "./update-notice"
 
 export type FetchLike = (
   url: string,
@@ -568,6 +569,7 @@ export async function executionStatus(cfg: RequestConfig, doFetch: FetchLike): P
   const apiKey = requireApiKey(cfg)
   const get = async (path: string) => {
     const res = await doFetch(`${base(cfg)}${path}`, { method: "GET", headers: headers(apiKey) })
+    noteVersionHeaders(res)
     const text = await res.text()
     let body: unknown
     try {
@@ -606,6 +608,9 @@ export async function executionStatus(cfg: RequestConfig, doFetch: FetchLike): P
         // it may be assuming is zero. The sentence is the server's own copy, so the agent relays
         // the same words the CLI and the refusal messages use.
         notice: tierBody?.maxExpired ? tierBody.maxExpiredNotice : undefined,
+        // Structured so an agent can act (relay it, or run the command); null-when-current is
+        // omitted entirely rather than sent as noise.
+        updateAvailable: updateAvailable() ?? undefined,
         unreadable: unreadable.length > 0 ? unreadable.map(([name]) => name) : undefined,
         wallets: wallets.body,
         tier: tier.body,

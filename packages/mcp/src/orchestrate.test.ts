@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { executeLaunchAndSeed, executeSweep, executeTrade, executionStatus, type FetchLike } from "./orchestrate"
+import { __resetUpdateNoticeForTest, noteVersionHeaders } from "./update-notice"
 
 const CFG = { apiUrl: "https://api.test", apiKey: "cndl_live_k" }
 
@@ -739,5 +740,26 @@ describe("executionStatus max-expiry notice", () => {
     })
     const body = JSON.parse((await executionStatus(CFG, fetch)).text) as { notice?: string }
     expect(body.notice).toBeUndefined()
+  })
+})
+
+describe("executionStatus update notice", () => {
+  test("a newer server version rides the header into a structured updateAvailable", async () => {
+    __resetUpdateNoticeForTest()
+    const { fetch } = fakeFetch({
+      "https://api.test/api/v1/agent/wallets/embedded": {
+        body: { success: true, wallets: { solana: null, evm: null } },
+      },
+      "https://api.test/api/v1/agent/keys/self/limits": { body: { success: true, limits: [] } },
+      "https://api.test/api/v1/agent/tier": { body: { success: true, tier: "max", feeBps: 0, maxExpired: false } },
+    })
+    // fakeFetch's responses have no headers, so simulate the capture the real fetch site does.
+    noteVersionHeaders(new Response("{}", { headers: { "x-candle-mcp-latest": "99.0.0" } }))
+    const body = JSON.parse((await executionStatus(CFG, fetch)).text) as {
+      updateAvailable?: { current: string; latest: string; command: string }
+    }
+    expect(body.updateAvailable?.latest).toBe("99.0.0")
+    expect(body.updateAvailable?.command).toBe("npm install -g @candledottv/mcp@latest")
+    __resetUpdateNoticeForTest()
   })
 })

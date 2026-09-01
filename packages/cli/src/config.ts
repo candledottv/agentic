@@ -48,6 +48,12 @@ export interface CliConfig {
   keyPrefix?: string
   /** The stored device token's display prefix, for the same reason. */
   deviceTokenPrefix?: string
+  /**
+   * When the update-available notice last printed, and for which version (update-notice.ts).
+   * Throttle state only: the notice shows at most once per day per newer version, so a daily
+   * driver sees it without every command nagging.
+   */
+  updateNotice?: { version: string; shownAt: number }
   /** The scopes this device/key was authorized with. */
   scopes?: string[]
   /** A human-readable label for this device, as shown during authorization. */

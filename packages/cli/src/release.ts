@@ -14,6 +14,11 @@ export const RELEASE_ISSUER = "https://token.actions.githubusercontent.com"
  * which is lenient about what it is handed because it only ever ORDERS versions. */
 const VERSION = /^\d+\.\d+\.\d+$/
 
+/** Whether `value` is exactly three dot-separated numbers -- the only shape trusted as a version. */
+export function isPlainVersion(value: string): boolean {
+  return VERSION.test(value)
+}
+
 /**
  * The exact identity a given version's signature must carry: the workflow at that version's tag.
  *

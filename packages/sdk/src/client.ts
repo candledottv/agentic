@@ -2154,6 +2154,7 @@ export class CandleClient {
   }
 
   private async parseResponse<T>(res: Response): Promise<T> {
+    noteLatestSdkVersion(res.headers?.get?.("x-candle-sdk-latest") ?? null)
     const text = await res.text()
     if (!res.ok) throw candleApiErrorFromResponse(res.status, text)
     return JSON.parse(text) as T
@@ -2237,4 +2238,36 @@ function generateClientLaunchId(): string {
 
 function generateClientTradeId(): string {
   return generateSdkId()
+}
+
+// ── Update notice ───────────────────────────────────────────────────────────────────────────
+//
+// The API stamps x-candle-sdk-latest on every response (its client-versions middleware), so an
+// SDK process learns a newer release exists from requests it was already making: no registry
+// call, no startup cost, nothing for serverless cold starts to pay. The single console.warn
+// per process is the whole surface -- a library that prints more than once, or on a channel a
+// host cannot filter, is a library that gets muted wholesale. Silence it entirely with
+// CANDLE_NO_UPDATE_NOTICE=1.
+
+/** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
+export const SDK_VERSION = "0.3.2"
+
+let sdkUpdateWarned = false
+
+function noteLatestSdkVersion(value: string | null): void {
+  if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value)) return
+  const [a1 = 0, a2 = 0, a3 = 0] = value.split(".").map(Number)
+  const [b1 = 0, b2 = 0, b3 = 0] = SDK_VERSION.split(".").map(Number)
+  const isNewer = a1 !== b1 ? a1 > b1 : a2 !== b2 ? a2 > b2 : a3 > b3
+  if (!isNewer) return
+  if (typeof process !== "undefined" && process.env?.CANDLE_NO_UPDATE_NOTICE) return
+  sdkUpdateWarned = true
+  console.warn(
+    `@candledottv/agent-sdk ${value} is available (running ${SDK_VERSION}). Update: npm install @candledottv/agent-sdk@latest (set CANDLE_NO_UPDATE_NOTICE=1 to silence)`,
+  )
+}
+
+/** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
+export function __resetSdkUpdateNoticeForTest(): void {
+  sdkUpdateWarned = false
 }

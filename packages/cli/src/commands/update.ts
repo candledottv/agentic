@@ -7,6 +7,7 @@
 import { createHash, randomBytes } from "node:crypto"
 import { parseArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
+import { formatBytes, stepReporter } from "../progress"
 import {
   assetUrl,
   compareVersions,
@@ -166,14 +167,28 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
     return 1
   }
 
+  // Staged progress from here down: this is where the command used to go silent for the whole
+  // multi-megabyte download and both verifications -- long enough to look dead and invite a
+  // Ctrl+C mid-install. Silent under --json (progress is human commentary; stdout stays owned
+  // by the payload), plain lines when stderr is not a terminal.
+  const steps = json
+    ? stepReporter(() => {}, false)
+    : stepReporter((text) => deps.stderr.write(text), process.stderr.isTTY === true)
+  if (!json)
+    deps.stderr.write(`Updating candle ${CLI_VERSION} -> ${target.version}
+`)
+
   // Download the binary, SHA256SUMS and the bundle, by `expectedName`: the check above is what
   // makes the manifest's own name safe to have agreed with, and this is the name that is used.
+  steps.start(`downloading ${expectedName}`)
   const download = await fetchAll(deps, base, target.tag, expectedName)
   if (!download.ok) {
+    steps.fail(`downloading ${expectedName}`)
     writeLocalFailure(deps, { code: "UPDATE_UNREACHABLE", message: download.message }, json)
     return 1
   }
   const { bytes, sums, bundle } = download
+  steps.done(`downloaded ${expectedName} (${formatBytes(bytes.length)})`)
 
   // Beside the REAL file, and later renamed over it, rather than over `execPath`: a bin entry is
   // often a symlink into a versioned directory, and replacing the link would leave the file it
@@ -197,12 +212,14 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
   // succeeds. Cleanup is best effort: it is a file being abandoned either way, and a failure to
   // remove it must not replace the failure actually being reported.
 
+  steps.start("verifying checksum")
   const actual = createHash("sha256").update(bytes).digest("hex")
   const fromSums = sums
     .split("\n")
     .map((line) => line.trim().split(/\s+/))
     .find((parts) => parts[1] === expectedName)?.[0]
   if (actual !== asset.sha256 || actual !== fromSums) {
+    steps.fail("verifying checksum")
     await discard(deps, tmpPath)
     writeLocalFailure(
       deps,
@@ -217,9 +234,12 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
   // `deps.verify` is the injected seam (deps.ts); the real deps leave it undefined and this is
   // the in-process verifier from Task 6, running against the trusted root compiled into this
   // binary -- no cosign, no gh, no network.
+  steps.done("checksum verified")
+  steps.start("verifying signature")
   const verify = deps.verify ?? verifyReleaseAsset
   const verdict = verify(bytes, bundle, identityUri, RELEASE_ISSUER)
   if (!verdict.ok) {
+    steps.fail("verifying signature")
     await discard(deps, tmpPath)
     writeLocalFailure(
       deps,
@@ -233,9 +253,12 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
     return 1
   }
 
+  steps.done("signature verified")
+  steps.start("installing")
   try {
     await deps.rename(tmpPath, realExec)
   } catch (error) {
+    steps.fail("installing")
     // A rename that fails is the same problem as a write that fails, reported the same way: the
     // directory is not ours to replace a file in. Letting it throw would exit through
     // `Unexpected error` with nothing on stdout and no envelope for a `--json` caller.
@@ -243,6 +266,7 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
     writeLocalFailure(deps, notWritable(dir, error), json)
     return 1
   }
+  steps.done(`installed to ${realExec}`)
   if (json) {
     const payload = { current: CLI_VERSION, latest: target.version, updated: true, path: realExec }
     deps.stdout.write(`${JSON.stringify(payload)}\n`)
