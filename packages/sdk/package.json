@@ -1,6 +1,6 @@
 {
   "name": "@candledottv/agent-sdk",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "TypeScript SDK for the Candle agent rail: typed headless launches, market reads, and webhook verification",
   "type": "module",
   "main": "./dist/index.js",

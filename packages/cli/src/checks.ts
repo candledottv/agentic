@@ -15,7 +15,7 @@ import { renderError } from "./render"
 
 export interface CheckRow {
   check: string
-  state: "PASS" | "FAIL" | "SKIP"
+  state: "PASS" | "WARN" | "FAIL" | "SKIP"
   detail: string
 }
 

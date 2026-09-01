@@ -590,6 +590,10 @@ export async function executionStatus(cfg: RequestConfig, doFetch: FetchLike): P
     ["limits", limits],
   ].filter(([, r]) => !(r as { ok: boolean }).ok)
 
+  const tierBody = tier.ok
+    ? (tier.body as { maxExpired?: boolean; maxExpiredNotice?: string; feeBps?: number })
+    : undefined
+
   return {
     text: JSON.stringify(
       {
@@ -597,6 +601,11 @@ export async function executionStatus(cfg: RequestConfig, doFetch: FetchLike): P
         // Undefined rather than false when a read failed: the honest answer is "not known", and a
         // false here would read as "authorized: no" to a model that cannot see the reads.
         ready: unreadable.length === 0 ? true : undefined,
+        // Surfaced at the TOP of the context, not buried in tier.body, because it changes what a
+        // trading agent should do next: an account whose Max lapsed pays a per-trade platform fee
+        // it may be assuming is zero. The sentence is the server's own copy, so the agent relays
+        // the same words the CLI and the refusal messages use.
+        notice: tierBody?.maxExpired ? tierBody.maxExpiredNotice : undefined,
         unreadable: unreadable.length > 0 ? unreadable.map(([name]) => name) : undefined,
         wallets: wallets.body,
         tier: tier.body,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { executeLaunchAndSeed, executeSweep, executeTrade, type FetchLike } from "./orchestrate"
+import { executeLaunchAndSeed, executeSweep, executeTrade, executionStatus, type FetchLike } from "./orchestrate"
 
 const CFG = { apiUrl: "https://api.test", apiKey: "cndl_live_k" }
 
@@ -702,5 +702,42 @@ describe("executeSweep", () => {
     const { calls, doFetch } = sweepFetch({})
     await executeSweep({ chain: "hood", to: "0xdest" }, cfg, doFetch)
     expect(calls.map((c) => c.asset)).toEqual(["USDG", "ETH"])
+  })
+})
+
+describe("executionStatus max-expiry notice", () => {
+  const ROUTES = {
+    "https://api.test/api/v1/agent/wallets/embedded": {
+      body: { success: true, wallets: { solana: { address: "abc", delegated: true }, evm: null } },
+    },
+    "https://api.test/api/v1/agent/keys/self/limits": { body: { success: true, limits: [] } },
+  }
+
+  test("a lapsed Max surfaces as a top-level notice, in the server's own words", async () => {
+    const notice =
+      "Your Max plan expired on 2026-08-30. Renew to restore 0% trade fees and up to 1,000 linked wallets: https://alpha.candle.tv/agents/pricing"
+    const { fetch } = fakeFetch({
+      ...ROUTES,
+      "https://api.test/api/v1/agent/tier": {
+        body: { success: true, tier: "free", feeBps: 100, maxExpired: true, maxExpiredNotice: notice },
+      },
+    })
+    const out = await executionStatus(CFG, fetch)
+    const body = JSON.parse(out.text) as { ready?: boolean; notice?: string }
+    // The agent reads this JSON: the notice sits at the top, not buried in tier.body, because it
+    // changes what to do next -- trades on this account are no longer fee-free.
+    expect(body.notice).toBe(notice)
+    expect(body.ready).toBe(true)
+  })
+
+  test("an active plan carries no notice at all", async () => {
+    const { fetch } = fakeFetch({
+      ...ROUTES,
+      "https://api.test/api/v1/agent/tier": {
+        body: { success: true, tier: "max", feeBps: 0, maxExpired: false },
+      },
+    })
+    const body = JSON.parse((await executionStatus(CFG, fetch)).text) as { notice?: string }
+    expect(body.notice).toBeUndefined()
   })
 })

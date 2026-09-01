@@ -431,10 +431,12 @@ async function executionStatus(cfg, doFetch) {
     ["tier", tier],
     ["limits", limits]
   ].filter(([, r]) => !r.ok);
+  const tierBody = tier.ok ? tier.body : undefined;
   return {
     text: JSON.stringify({
       success: true,
       ready: unreadable.length === 0 ? true : undefined,
+      notice: tierBody?.maxExpired ? tierBody.maxExpiredNotice : undefined,
       unreadable: unreadable.length > 0 ? unreadable.map(([name]) => name) : undefined,
       wallets: wallets.body,
       tier: tier.body,
@@ -787,7 +789,7 @@ function registerTools(server, env = process.env) {
 }
 
 // src/version.ts
-var SERVER_VERSION = "0.6.2";
+var SERVER_VERSION = "0.6.3";
 
 // src/server.ts
 function createCandleMcpServer(env = process.env) {

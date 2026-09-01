@@ -7,4 +7,4 @@
  * it matches `package.json` -- `index.ts` starts a stdio transport the moment it is imported, so
  * a test can never read the constant from there. Bump both together when releasing.
  */
-export const SERVER_VERSION = "0.6.2"
+export const SERVER_VERSION = "0.6.3"

@@ -135,6 +135,38 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
     )
   }
 
+  // The plan row: the one place the CLI says what tier this account is on, and the ONLY place
+  // it can say "your Max expired" -- a state doctor previously rendered as ten green rows,
+  // because a lapsed subscription and an account that never subscribed produce identical
+  // credentials. WARN, not FAIL: an expired plan is a fact about money, not a broken setup, and
+  // doctor's exit code stays a setup verdict.
+  if (!apiKey) {
+    rows.push({ check: "Plan", state: "SKIP", detail: "no API key to check" })
+  } else {
+    const tierRes = await apiRequest("/api/v1/agent/tier", {
+      auth: "key",
+      credentials: { apiKey },
+      apiUrl,
+      fetch: deps.fetch,
+      env: deps.env,
+    })
+    const tierBody = tierRes.ok
+      ? (tierRes.body as { tier?: string; feeBps?: number; maxExpired?: boolean; maxExpiredNotice?: string })
+      : undefined
+    if (!tierBody || typeof tierBody.tier !== "string") {
+      rows.push({ check: "Plan", state: "SKIP", detail: "tier not reported" })
+    } else if (tierBody.maxExpired) {
+      rows.push({
+        check: "Plan",
+        state: "WARN",
+        detail: tierBody.maxExpiredNotice ?? `Max expired; this account is now on the ${tierBody.tier} plan`,
+      })
+    } else {
+      const fee = typeof tierBody.feeBps === "number" ? ` (${tierBody.feeBps / 100}% trade fee)` : ""
+      rows.push({ check: "Plan", state: "PASS", detail: `${tierBody.tier}${fee}` })
+    }
+  }
+
   let account: string | undefined
   if (!apiKey) {
     rows.push({ check: "Launch wallet delegated", state: "SKIP", detail: "no API key to check" })

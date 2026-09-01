@@ -411,6 +411,25 @@ export interface AgentTierInfo {
   /** `startedAt` is null unless `active` (see the endpoint's own doc for why). */
   grace: { active: boolean; startedAt: number | null }
   maxTierExpiresAt: number | null
+  /**
+   * True when this account HAD Max and it lapsed. False both for an active Max and for an
+   * account that never subscribed, which otherwise read identically (`tier: "free"`), and
+   * which is exactly the confusion this flag exists to end: the fee below silently became
+   * nonzero the moment the plan expired.
+   */
+  maxExpired: boolean
+  /** When the lapsed grant ended (ms). Present only when `maxExpired`. */
+  maxExpiredAt?: number
+  /** Which kind of grant lapsed. Present only when `maxExpired`. */
+  maxExpiredSource?: "subscription" | "trial" | "team"
+  /**
+   * The server's own sentence about the lapse, dated, with the renewal link. Relay it verbatim:
+   * it is the same copy the CLI doctor row, the MCP notice, and the tier refusals use, so every
+   * surface tells the operator one story. Present only when `maxExpired`.
+   */
+  maxExpiredNotice?: string
+  /** Where to renew. Present only when `maxExpired`. */
+  renewalUrl?: string
   /** The account's resolved platform fee, in bps, on API-built value-moving transactions. */
   feeBps: number
   feeTotals: Array<{ chain: Chain; quoteAsset: string; feeRawSum: string; count: number }>

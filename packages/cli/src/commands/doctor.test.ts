@@ -70,6 +70,41 @@ describe("doctor", () => {
     expect(unmatched).toHaveLength(0)
   })
 
+  test("the Plan row names the tier and fee, WARNs when Max lapsed, and never fails doctor", async () => {
+    const notice =
+      "Your Max plan expired on 2026-08-30. Renew to restore 0% trade fees and up to 1,000 linked wallets: https://alpha.candle.tv/agents/pricing"
+    const { fetch } = createRoutedFetch({
+      ...HEALTHY_ROUTES,
+      "/api/v1/agent/tier": () =>
+        jsonResponse(200, {
+          success: true,
+          tier: "free",
+          feeBps: 100,
+          maxExpired: true,
+          maxExpiredAt: Date.parse("2026-08-30T00:00:00Z"),
+          maxExpiredNotice: notice,
+        }),
+    })
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, ...healthyStores(), stdout, env: {} })
+    const code = await run(["doctor"], deps)
+    // WARN is a fact about money, not a broken setup: the exit code stays a setup verdict.
+    expect(code).toBe(0)
+    expect(stdout.text).toMatch(/Plan\s+WARN\s+Your Max plan expired on 2026-08-30/)
+    expect(stdout.text).toContain("/agents/pricing")
+  })
+
+  test("an active plan renders PASS with the tier and its fee", async () => {
+    const { fetch } = createRoutedFetch({
+      ...HEALTHY_ROUTES,
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "max", feeBps: 0, maxExpired: false }),
+    })
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, ...healthyStores(), stdout, env: {} })
+    await run(["doctor"], deps)
+    expect(stdout.text).toMatch(/Plan\s+PASS\s+max \(0% trade fee\)/)
+  })
+
   test("all checks passing exits 0 with no FAIL rows", async () => {
     const { fetch } = createRoutedFetch({
       "/api/v1/status": () => jsonResponse(200, { api: "ok" }),

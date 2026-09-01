@@ -320,6 +320,7 @@ describe("request shapes", () => {
       thresholds: { minStakedCndl: 500_000, minHeldCndl: 1_000_000, graceMs: 172_800_000 },
       grace: { active: false, startedAt: null },
       maxTierExpiresAt: null,
+      maxExpired: false,
       feeBps: 50,
       feeTotals: [{ chain: "solana", quoteAsset: "sol", feeRawSum: "9007199254740993", count: 3 }],
     }
@@ -343,6 +344,7 @@ describe("request shapes", () => {
       thresholds: { minStakedCndl: 500_000, minHeldCndl: 1_000_000, graceMs: 172_800_000 },
       grace: { active: false, startedAt: null },
       maxTierExpiresAt: null,
+      maxExpired: false,
       feeBps: 100,
       feeTotals: [],
     }

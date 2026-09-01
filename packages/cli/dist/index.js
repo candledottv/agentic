@@ -19175,10 +19175,12 @@ async function executionStatus(cfg, doFetch) {
     ["tier", tier],
     ["limits", limits]
   ].filter(([, r]) => !r.ok);
+  const tierBody = tier.ok ? tier.body : undefined;
   return {
     text: JSON.stringify({
       success: true,
       ready: unreadable.length === 0 ? true : undefined,
+      notice: tierBody?.maxExpired ? tierBody.maxExpiredNotice : undefined,
       unreadable: unreadable.length > 0 ? unreadable.map(([name]) => name) : undefined,
       wallets: wallets2.body,
       tier: tier.body,
@@ -19545,7 +19547,7 @@ var init_tools = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.6.2";
+var SERVER_VERSION = "0.6.3";
 
 // ../mcp/src/server.ts
 var exports_server = {};
@@ -20258,7 +20260,7 @@ async function resolveApiKey(deps, profile) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.8.2";
+var CLI_VERSION = "0.8.3";
 
 // src/commands/auth.ts
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
@@ -20734,6 +20736,30 @@ async function doctor(args, ctx) {
       check: API_KEY_CHECK,
       passDetail
     }));
+  }
+  if (!apiKey) {
+    rows.push({ check: "Plan", state: "SKIP", detail: "no API key to check" });
+  } else {
+    const tierRes = await apiRequest("/api/v1/agent/tier", {
+      auth: "key",
+      credentials: { apiKey },
+      apiUrl,
+      fetch: deps.fetch,
+      env: deps.env
+    });
+    const tierBody = tierRes.ok ? tierRes.body : undefined;
+    if (!tierBody || typeof tierBody.tier !== "string") {
+      rows.push({ check: "Plan", state: "SKIP", detail: "tier not reported" });
+    } else if (tierBody.maxExpired) {
+      rows.push({
+        check: "Plan",
+        state: "WARN",
+        detail: tierBody.maxExpiredNotice ?? `Max expired; this account is now on the ${tierBody.tier} plan`
+      });
+    } else {
+      const fee = typeof tierBody.feeBps === "number" ? ` (${tierBody.feeBps / 100}% trade fee)` : "";
+      rows.push({ check: "Plan", state: "PASS", detail: `${tierBody.tier}${fee}` });
+    }
   }
   let account;
   if (!apiKey) {
