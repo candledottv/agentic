@@ -248,6 +248,72 @@ describe("wallets import", () => {
     expect(stderr.text).toContain("candle doctor")
   })
 
+  test("the 21st wallet lands on page 2 of the read-back and still verifies", async () => {
+    // The list serves 20 active rows per page, oldest first, so a fresh import is always the
+    // LAST active row: one wallet past twenty, the single-page read-back stopped seeing new
+    // imports at all and failed every healthy one with IMPORT_NOT_VISIBLE -- while naming the
+    // caller's own account as the one the wallet was "not on". Bit for real on 2026-09-01, on
+    // an account whose 21st import was fine.
+    const olderRows = Array.from({ length: 20 }, (_, i) => ({
+      _id: `lw_old_${i}`,
+      address: `Older${i}`,
+      chain: "solana",
+      userAddress: ACCOUNT,
+    }))
+    const { fetch, calls } = importRoutes({
+      "/api/v1/agent/wallets": [
+        () => jsonResponse(200, { success: true, page: olderRows, isDone: false, continueCursor: "20" }),
+        () =>
+          jsonResponse(200, {
+            success: true,
+            page: [{ _id: "lw_test0001", address: SOL_DERIVED_ADDRESS, chain: "solana", userAddress: ACCOUNT }],
+            isDone: true,
+            continueCursor: null,
+          }),
+      ],
+    })
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      store: createFakeStore({ api_key: "ck_live_x" }),
+      stdout,
+      readFile: async () => SOL_ID_JSON,
+    })
+
+    const code = await run(["wallets", "import", "--chain", "solana", "--key-file", "/k"], deps)
+    expect(code).toBe(0)
+    // The second read carried the cursor the first one returned.
+    const listCalls = calls.filter((c) => new URL(c.url).pathname === "/api/v1/agent/wallets")
+    expect(listCalls).toHaveLength(2)
+    expect(new URL(listCalls[1]?.url ?? "").searchParams.get("cursor")).toBe("20")
+  })
+
+  test("a server that never finishes its list cannot hold the verification forever", async () => {
+    // Termination belongs to the read-back, not to the server: a wedge that repeats
+    // isDone: false with a cursor forever must end as a bounded "missing", not an infinite loop.
+    const { fetch, calls } = importRoutes({
+      "/api/v1/agent/wallets": () =>
+        jsonResponse(200, {
+          success: true,
+          page: [{ _id: "lw_other", userAddress: ACCOUNT }],
+          isDone: false,
+          continueCursor: "1",
+        }),
+    })
+    const stderr = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      store: createFakeStore({ api_key: "ck_live_x" }),
+      stderr,
+      readFile: async () => SOL_ID_JSON,
+    })
+    const code = await run(["wallets", "import", "--chain", "solana", "--key-file", "/k"], deps)
+    expect(code).toBe(1)
+    const listCalls = calls.filter((c) => new URL(c.url).pathname === "/api/v1/agent/wallets")
+    expect(listCalls.length).toBeLessThanOrEqual(25)
+    expect(stderr.text).toContain("not on the account")
+  })
+
   test("a read-back that itself fails does NOT fail an import that already succeeded", async () => {
     // Absence of evidence is not evidence of absence: a 500 on the list endpoint says nothing
     // about where the wallet landed, and must not turn a good import into a failure.

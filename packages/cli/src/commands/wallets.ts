@@ -501,20 +501,41 @@ async function verifyImportLanded(args: {
   ctx: CommandContext
 }): Promise<{ status: "verified" | "missing" | "unchecked"; account?: string }> {
   const { deps } = args.ctx
-  const listed = await apiRequest("/api/v1/agent/wallets", {
-    method: "GET",
-    auth: "key",
-    credentials: { apiKey: args.apiKey },
-    apiUrl: args.apiUrl,
-    fetch: deps.fetch,
-    env: deps.env,
-  })
-  if (!listed.ok) return { status: "unchecked" }
-  const page = (listed.body as { page?: Array<{ _id?: string; userAddress?: string }> }).page
-  if (!Array.isArray(page)) return { status: "unchecked" }
-  const account = page.find((row) => typeof row.userAddress === "string")?.userAddress
-  const found = page.some((row) => row._id === args.id)
-  return { status: found ? "verified" : "missing", ...(account !== undefined ? { account } : {}) }
+  // Follow the cursor to the END of the list, never just the first page. The list serves 20
+  // rows by default, active rows first in insertion order, so a freshly imported wallet is
+  // always the LAST active row -- which put every import past an account's 20th onto page 2,
+  // where the old single-page read could not see it. That fired a false IMPORT_NOT_VISIBLE on
+  // a healthy import, and the "account these credentials belong to" it printed came from page
+  // one of the caller's own list, so the message named the very account the wallet was on.
+  // The page cap only bounds a misbehaving server: 25 pages of 100 comfortably covers the
+  // 1,000-wallet Max tier ceiling.
+  let cursor: string | null = null
+  let account: string | undefined
+  for (let pageCount = 0; pageCount < 25; pageCount++) {
+    const query = cursor === null ? "?limit=100" : `?limit=100&cursor=${encodeURIComponent(cursor)}`
+    const listed = await apiRequest(`/api/v1/agent/wallets${query}`, {
+      method: "GET",
+      auth: "key",
+      credentials: { apiKey: args.apiKey },
+      apiUrl: args.apiUrl,
+      fetch: deps.fetch,
+      env: deps.env,
+    })
+    if (!listed.ok) return { status: "unchecked", ...(account !== undefined ? { account } : {}) }
+    const body = listed.body as {
+      page?: Array<{ _id?: string; userAddress?: string }>
+      isDone?: boolean
+      continueCursor?: string | null
+    }
+    if (!Array.isArray(body.page)) return { status: "unchecked", ...(account !== undefined ? { account } : {}) }
+    account ??= body.page.find((row) => typeof row.userAddress === "string")?.userAddress
+    if (body.page.some((row) => row._id === args.id)) {
+      return { status: "verified", ...(account !== undefined ? { account } : {}) }
+    }
+    if (body.isDone !== false || typeof body.continueCursor !== "string") break
+    cursor = body.continueCursor
+  }
+  return { status: "missing", ...(account !== undefined ? { account } : {}) }
 }
 
 export async function walletsRevoke(args: string[], ctx: CommandContext): Promise<number> {

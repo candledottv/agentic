@@ -20258,7 +20258,7 @@ async function resolveApiKey(deps, profile) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.8.1";
+var CLI_VERSION = "0.8.2";
 
 // src/commands/auth.ts
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
@@ -25279,22 +25279,32 @@ async function walletsImport(args, ctx) {
 }
 async function verifyImportLanded(args) {
   const { deps } = args.ctx;
-  const listed = await apiRequest("/api/v1/agent/wallets", {
-    method: "GET",
-    auth: "key",
-    credentials: { apiKey: args.apiKey },
-    apiUrl: args.apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!listed.ok)
-    return { status: "unchecked" };
-  const page = listed.body.page;
-  if (!Array.isArray(page))
-    return { status: "unchecked" };
-  const account = page.find((row) => typeof row.userAddress === "string")?.userAddress;
-  const found = page.some((row) => row._id === args.id);
-  return { status: found ? "verified" : "missing", ...account !== undefined ? { account } : {} };
+  let cursor = null;
+  let account;
+  for (let pageCount = 0;pageCount < 25; pageCount++) {
+    const query = cursor === null ? "?limit=100" : `?limit=100&cursor=${encodeURIComponent(cursor)}`;
+    const listed = await apiRequest(`/api/v1/agent/wallets${query}`, {
+      method: "GET",
+      auth: "key",
+      credentials: { apiKey: args.apiKey },
+      apiUrl: args.apiUrl,
+      fetch: deps.fetch,
+      env: deps.env
+    });
+    if (!listed.ok)
+      return { status: "unchecked", ...account !== undefined ? { account } : {} };
+    const body = listed.body;
+    if (!Array.isArray(body.page))
+      return { status: "unchecked", ...account !== undefined ? { account } : {} };
+    account ??= body.page.find((row) => typeof row.userAddress === "string")?.userAddress;
+    if (body.page.some((row) => row._id === args.id)) {
+      return { status: "verified", ...account !== undefined ? { account } : {} };
+    }
+    if (body.isDone !== false || typeof body.continueCursor !== "string")
+      break;
+    cursor = body.continueCursor;
+  }
+  return { status: "missing", ...account !== undefined ? { account } : {} };
 }
 async function walletsRevoke(args, ctx) {
   const { deps, apiUrl, json } = ctx;
