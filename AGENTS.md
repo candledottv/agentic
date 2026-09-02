@@ -92,6 +92,21 @@ Prefer these over scraping prose:
 
 ## Rules that will save you a failed call
 
+**The feed is wider than Candle's markets, and this is the first thing you will hit.**
+`candle_get_feed` indexes the whole market -- pump.fun, pons.family and other launchpads, which is
+why rows carry a `launchpad`. `candle_get_market` and `candle_token_forensics` answer for tokens
+that have a **Candle** market. So the obvious first move, taking a mint off the feed and running
+forensics on it, can legitimately come back `MARKET_NOT_FOUND`.
+
+That is a coverage boundary, not an outage. Do not retry it, do not ask the human to
+re-authenticate, and do not report the rail as down. Say Candle has no market for that token and
+move on.
+
+It is also **not a clean bill of health.** `MARKET_NOT_FOUND` from forensics means the check could
+not run, so report that you could not check the token rather than reporting the token as safe.
+The same rule governs the coverage note on every individual forensics measurement: `unavailable`
+is not `clean`.
+
 **Scopes are fixed at issuance.** A key cannot gain a scope later. If you need `swap:write`, ask
 for it when the key is created; it is deliberately never granted by omission.
 

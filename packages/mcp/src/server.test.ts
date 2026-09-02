@@ -12,6 +12,7 @@
 import { describe, expect, test } from "bun:test"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import { createCandleMcpServer, runStdioServer } from "./server"
+import { TOOL_NAMES } from "./tools"
 
 /** The smallest thing `server.connect()` accepts: it starts, accepts sends, and can be closed. */
 function fakeTransport(): Transport & { closeIt: () => void } {
@@ -76,5 +77,56 @@ describe("createCandleMcpServer", () => {
     expect(() => createCandleMcpServer({ CANDLE_API_URL: "http://api.candle.tv" })).toThrow(
       /refusing to send credentials in the clear/i,
     )
+  })
+})
+
+/**
+ * The server's own orientation, handed to the client at initialize.
+ *
+ * Worth pinning for two reasons. It is the ONLY thing a model reads before it starts guessing
+ * at fifteen tools, and it names a specific set of no-key tools — a name that drifts out of
+ * `TOOL_NAMES` becomes an instruction to call something that does not exist, which is worse
+ * than no instruction at all.
+ */
+describe("server instructions", () => {
+  const instructions = (createCandleMcpServer({}) as unknown as { server: { _instructions?: string } }).server
+    ._instructions
+
+  test("the server ships orientation, not just tools", () => {
+    expect(instructions).toBeTruthy()
+    expect(instructions).toContain("START HERE")
+  })
+
+  test("every tool the instructions name actually exists", () => {
+    const named = [...(instructions ?? "").matchAll(/candle_[a-z_]+/g)].map((m) => m[0])
+    expect(named.length).toBeGreaterThan(0)
+    for (const name of new Set(named)) {
+      expect(TOOL_NAMES).toContain(name as (typeof TOOL_NAMES)[number])
+    }
+  })
+
+  test("forensics is called out, because a model will not run it unprompted", () => {
+    expect(instructions).toContain("candle_token_forensics")
+    // "unavailable is not clean" is the one judgement the rail cannot make for the model.
+    expect(instructions?.toLowerCase()).toContain("unavailable")
+  })
+
+  /*
+   * The coverage boundary is load-bearing, and it was found by actually connecting.
+   *
+   * candle_get_feed indexes external launchpads; candle_get_market and candle_token_forensics
+   * only answer for tokens with a Candle market. So the very first thing a connected agent does
+   * -- take a mint off the feed and run the gating call the instructions demand -- returns
+   * MARKET_NOT_FOUND. Without this paragraph a model reads that as a broken integration and
+   * either retries, asks the human to re-authenticate, or reports the rail as down. All three
+   * are wrong, and all three are what "the agent doesn't understand it" looked like.
+   */
+  test("the feed/market coverage boundary is explained, and MARKET_NOT_FOUND is not 'clean'", () => {
+    expect(instructions).toContain("MARKET_NOT_FOUND")
+    expect(instructions).toContain("candle_get_feed")
+    // It must say the error is expected rather than a fault, so the model does not retry or re-auth.
+    expect(instructions?.toLowerCase()).toContain("coverage boundary")
+    // And it must not let that error be read as a pass.
+    expect(instructions?.toLowerCase()).toContain("clean bill of health")
   })
 })

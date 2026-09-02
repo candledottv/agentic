@@ -63,6 +63,13 @@ This repository also ships that configuration as [`.mcp.json`](.mcp.json) at the
 that reads a project-scoped MCP file (Claude Code, and others that follow the same convention)
 picks the server up from a clone with no JSON to write by hand.
 
+**One thing to know before the first call.** `candle_get_feed` indexes the wider market, not just
+Candle's own launches, while `candle_get_market` and `candle_token_forensics` answer for tokens
+that have a Candle market. A mint the feed just returned can therefore come back
+`MARKET_NOT_FOUND` from those two. That is a coverage boundary rather than a fault -- it is not a
+reason to retry, and from forensics it is not a clean bill of health either. It is the single most
+common reason an agent decides the integration is broken when it is working.
+
 Use the real absolute path to your clone (MCP clients spawn from their own working directory),
 and keep `CANDLE_API_URL` on staging until this rail reaches production. Ask an agent to call
 `candle_get_feed` with `{ "bucket": "new" }` and it works before signing up for anything. Details:

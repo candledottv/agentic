@@ -726,17 +726,23 @@ function registerTools(server, env = process.env) {
   }, async (args) => callAndRelay("candle_launch_token", args, cfg));
   register("candle_get_market", {
     title: "Get market state",
-    description: "Read the current market state for a token: lifecycle, pool address, whether buys are open.",
+    description: "Read the current market state for a token: lifecycle, pool address, whether buys are " + `open. Reads only; moves nothing. No key needed.
+
+` + "COVERAGE: this answers for tokens that have a CANDLE market. candle_get_feed indexes " + "the wider market too (pump.fun, pons.family), so a mint that feed just returned can " + "still come back MARKET_NOT_FOUND here. That is a coverage boundary, not a fault and " + "not a reason to retry or re-authenticate -- say Candle has no market for it and move on.",
     inputSchema: getMarketShape
   }, async (args) => callAndRelay("candle_get_market", args, cfg));
   register("candle_token_forensics", {
     title: "Token forensics",
-    description: "Gate a buy before making it: deployer history, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), holder concentration, and a risk tier (LOW/MODERATE/HIGH/CRITICAL) with per-factor reasons. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.",
+    description: `Gate a buy before making it: deployer history, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), holder concentration, and a risk tier (LOW/MODERATE/HIGH/CRITICAL) with per-factor reasons. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.
+
+MARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe.`,
     inputSchema: tokenForensicsShape
   }, async (args) => callAndRelay("candle_token_forensics", args, cfg));
   register("candle_get_feed", {
     title: "Get a token feed",
-    description: "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip.",
+    description: "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip. Reads " + `only; moves nothing. No key needed. Start here when nobody has named a token.
+
+` + "This indexes the WIDER market, not just Candle's own launches, so rows carry a " + "`launchpad` (pump.fun, pons.family, ...). A row appearing here does NOT mean Candle " + "has a market for it: candle_get_market and candle_token_forensics can legitimately " + "answer MARKET_NOT_FOUND for a mint this returned.",
     inputSchema: getFeedShape
   }, async (args) => callAndRelay("candle_get_feed", args, cfg));
   register("candle_report_activity", {
@@ -812,7 +818,18 @@ function registerTools(server, env = process.env) {
   });
   register("candle_trade", {
     title: "Buy or sell a token",
-    description: "Execute a buy or sell through the Candle trade rail. MOVES REAL FUNDS: the payer is the " + "account's embedded (main) wallet, executed server-side via delegation. Amounts are " + "decimal (never raw base units). Retry a timeout with the SAME clientTradeId from the " + "result; a new id is a second trade.",
+    description: "Buy or sell a token. MOVES REAL FUNDS: the payer is the account's embedded (main) " + `wallet, executed server-side via delegation.
+
+` + `Before the first trade of a run, once:
+` + "1. candle_execution_status  -- confirms the wallets, the tier and this key's spend " + "limits. Call it at the start, or after an auth error; do not infer readiness from a " + `failed trade.
+` + "2. candle_resolve_token  -- if a human handed you a bare address. It returns the chain, " + `so you never have to guess it.
+` + "3. candle_token_forensics  -- before you quote or buy anything. It returns a risk tier " + "and per-factor reasons. MARKET_NOT_FOUND there means Candle has no market for the " + `token, NOT that the token is clean.
+
+` + "Arguments: `mint` and `side` are required. Amounts are DECIMAL, never raw base units " + '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' + `position.
+
+` + `After the call:
+` + "- A timeout is not a failure. Retry with the SAME clientTradeId from the result -- it " + `coalesces the duplicate. A NEW id is a SECOND trade, and that is how you double-spend.
+` + "- If you no longer hold the result, do not re-send to find out what happened. Ask " + "candle_get_operation with the clientTradeId; a 404 there means the trade never reached " + "the rail and nothing moved.",
     inputSchema: tradeShape
   }, async (args) => {
     const result = await executeTrade(args, cfg, fetch);
@@ -829,8 +846,36 @@ function registerTools(server, env = process.env) {
 }
 
 // src/server.ts
+var INSTRUCTIONS = `Candle is a trading and token-launch rail for agents. You hold a scoped API key, never a private key; signing and funding stay with the key owner's wallet.
+
+START HERE — five tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
+  candle_get_market       price, market cap, volume, curve state for one token
+  candle_get_feed         the roster: hot streak, new pairs, graduated, blue chip
+  candle_resolve_token    a ticker or partial name -> mint address + chain
+  candle_token_forensics  call this before quoting or buying, whenever the token has a Candle market. Returns deployer history, who bought in the deploy window (strangers in the same slot are the bundle signal), holder concentration, and a risk tier LOW/MODERATE/HIGH/CRITICAL with per-factor reasons
+  candle_get_agent_profile  your own tier, caps and verified activity
+
+COVERAGE — read this before you treat an error as a broken server.
+candle_get_feed indexes the wider market (pump.fun, pons.family and other external launchpads).
+candle_get_market and candle_token_forensics answer for tokens that have a CANDLE market. So a
+mint that candle_get_feed just returned can still come back MARKET_NOT_FOUND from those two, and
+that is a coverage boundary, not a fault and not a reason to retry, re-auth, or tell the human the
+integration is down. Report it as "Candle has no market for this token, so I could not run
+forensics on it" and let the human decide.
+
+Never let a MARKET_NOT_FOUND stand in for a clean bill of health. The same rule governs the
+coverage note on every forensics measurement: "unavailable" is NOT "clean" — say so rather than
+reporting a token as safe.
+
+WRITING (trade, launch, transfer, sweep, swap) needs a key. If a call returns an auth error, the fix is on the human's side: they run \`candle auth login\`, which authorizes a device in the browser and stores the credentials. Do not ask them to paste a key into a config file, and do not retry the call until they confirm.
+
+Two chains: solana and hood. Most tools take an explicit chain — resolve it with candle_resolve_token rather than guessing.
+
+Writes are idempotent by client token and may be asynchronous: poll candle_execution_status or candle_get_operation rather than re-issuing a call. Re-issuing is how you double-spend.
+
+Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv — and AGENTS.md in github.com/candledottv/agentic.`;
 function createCandleMcpServer(env = process.env) {
-  const server = new McpServer({ name: "candle-mcp", version: SERVER_VERSION });
+  const server = new McpServer({ name: "candle-mcp", version: SERVER_VERSION }, { instructions: INSTRUCTIONS });
   registerTools(server, env);
   return server;
 }

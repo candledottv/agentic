@@ -487,7 +487,13 @@ export function registerTools(server: McpServer, env: Record<string, string | un
     "candle_get_market",
     {
       title: "Get market state",
-      description: "Read the current market state for a token: lifecycle, pool address, whether buys are open.",
+      description:
+        "Read the current market state for a token: lifecycle, pool address, whether buys are " +
+        "open. Reads only; moves nothing. No key needed.\n\n" +
+        "COVERAGE: this answers for tokens that have a CANDLE market. candle_get_feed indexes " +
+        "the wider market too (pump.fun, pons.family), so a mint that feed just returned can " +
+        "still come back MARKET_NOT_FOUND here. That is a coverage boundary, not a fault and " +
+        "not a reason to retry or re-authenticate -- say Candle has no market for it and move on.",
       inputSchema: getMarketShape,
     },
     async (args) => callAndRelay("candle_get_market", args, cfg),
@@ -498,7 +504,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
     {
       title: "Token forensics",
       description:
-        "Gate a buy before making it: deployer history, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), holder concentration, and a risk tier (LOW/MODERATE/HIGH/CRITICAL) with per-factor reasons. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.",
+        "Gate a buy before making it: deployer history, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), holder concentration, and a risk tier (LOW/MODERATE/HIGH/CRITICAL) with per-factor reasons. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.\n\nMARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe.",
       inputSchema: tokenForensicsShape,
     },
     async (args) => callAndRelay("candle_token_forensics", args, cfg),
@@ -508,7 +514,13 @@ export function registerTools(server: McpServer, env: Record<string, string | un
     "candle_get_feed",
     {
       title: "Get a token feed",
-      description: "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip.",
+      description:
+        "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip. Reads " +
+        "only; moves nothing. No key needed. Start here when nobody has named a token.\n\n" +
+        "This indexes the WIDER market, not just Candle's own launches, so rows carry a " +
+        "`launchpad` (pump.fun, pons.family, ...). A row appearing here does NOT mean Candle " +
+        "has a market for it: candle_get_market and candle_token_forensics can legitimately " +
+        "answer MARKET_NOT_FOUND for a mint this returned.",
       inputSchema: getFeedShape,
     },
     async (args) => callAndRelay("candle_get_feed", args, cfg),
@@ -665,10 +677,26 @@ export function registerTools(server: McpServer, env: Record<string, string | un
     {
       title: "Buy or sell a token",
       description:
-        "Execute a buy or sell through the Candle trade rail. MOVES REAL FUNDS: the payer is the " +
-        "account's embedded (main) wallet, executed server-side via delegation. Amounts are " +
-        "decimal (never raw base units). Retry a timeout with the SAME clientTradeId from the " +
-        "result; a new id is a second trade.",
+        "Buy or sell a token. MOVES REAL FUNDS: the payer is the account's embedded (main) " +
+        "wallet, executed server-side via delegation.\n\n" +
+        "Before the first trade of a run, once:\n" +
+        "1. candle_execution_status  -- confirms the wallets, the tier and this key's spend " +
+        "limits. Call it at the start, or after an auth error; do not infer readiness from a " +
+        "failed trade.\n" +
+        "2. candle_resolve_token  -- if a human handed you a bare address. It returns the chain, " +
+        "so you never have to guess it.\n" +
+        "3. candle_token_forensics  -- before you quote or buy anything. It returns a risk tier " +
+        "and per-factor reasons. MARKET_NOT_FOUND there means Candle has no market for the " +
+        "token, NOT that the token is clean.\n\n" +
+        "Arguments: `mint` and `side` are required. Amounts are DECIMAL, never raw base units " +
+        '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' +
+        "position.\n\n" +
+        "After the call:\n" +
+        "- A timeout is not a failure. Retry with the SAME clientTradeId from the result -- it " +
+        "coalesces the duplicate. A NEW id is a SECOND trade, and that is how you double-spend.\n" +
+        "- If you no longer hold the result, do not re-send to find out what happened. Ask " +
+        "candle_get_operation with the clientTradeId; a 404 there means the trade never reached " +
+        "the rail and nothing moved.",
       inputSchema: tradeShape,
     },
     async (args) => {

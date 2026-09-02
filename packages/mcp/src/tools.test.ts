@@ -210,3 +210,58 @@ describe("swapBody", () => {
     expect(() => swapBody({ from: "SOL", to: "USDC", amount: "0" })).toThrow(/greater than zero/)
   })
 })
+
+/*
+ * The tool DESCRIPTION is what an agent reads at call time.
+ *
+ * `instructions` are optional for a client to surface and easy to truncate; the description on
+ * the tool it is about to invoke is not. So the two rules that were learned by actually
+ * connecting -- the feed/market coverage boundary, and "retry with the SAME id" -- have to live
+ * on the tools themselves, not only in the server preamble.
+ */
+describe("tool descriptions carry the rules an agent needs at call time", () => {
+  const describeOf = (name: string): string => {
+    const registered: Record<string, string> = {}
+    const server = {
+      registerTool(toolName: string, config: { description?: string }) {
+        registered[toolName] = config.description ?? ""
+      },
+    }
+    registerTools(server as never, {})
+    return registered[name] ?? ""
+  }
+
+  test("the feed says a row it returns may have no Candle market", () => {
+    const d = describeOf("candle_get_feed")
+    expect(d).toContain("MARKET_NOT_FOUND")
+    // Case-insensitive: the copy capitalises WIDER for emphasis, and the assertion is about the
+    // claim being present, not about how it is typeset.
+    expect(d.toLowerCase()).toContain("wider market")
+  })
+
+  test("get_market explains MARKET_NOT_FOUND as a boundary rather than a fault", () => {
+    const d = describeOf("candle_get_market")
+    expect(d).toContain("coverage boundary")
+    expect(d.toLowerCase()).toContain("not a reason to retry")
+  })
+
+  test("forensics refuses to let MARKET_NOT_FOUND read as clean", () => {
+    const d = describeOf("candle_token_forensics")
+    expect(d).toContain("MARKET_NOT_FOUND")
+    expect(d).toContain("not 'clean'")
+  })
+
+  /*
+   * The double-spend rule. `candle_swap` has carried it since it was written; `candle_trade` --
+   * the tool this product exists for -- only said "a new id is a second trade" in passing, with
+   * no mention of the read that answers "did it land" without re-sending.
+   */
+  test("trade names its pre-flight and points a lost result at get_operation, not a retry", () => {
+    const d = describeOf("candle_trade")
+    expect(d).toContain("candle_execution_status")
+    expect(d).toContain("candle_token_forensics")
+    expect(d).toContain("candle_get_operation")
+    expect(d).toContain("SAME clientTradeId")
+    expect(d).toContain("double-spend")
+  })
+})
