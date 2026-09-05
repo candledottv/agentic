@@ -103,6 +103,7 @@
         "SWAP_FAILED",
         "LEG2_FAILED",
         "DEVICE_REQUEST_FAILED",
+        "QUOTE_UNAVAILABLE",
         "KEY_ISSUANCE_FAILED",
         "TRANSFER_FAILED",
         "WALLET_IMPORT_FAILED"
