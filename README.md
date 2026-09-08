@@ -84,6 +84,10 @@ signs up.
 | --- | --- | --- | --- |
 | **Can I trade?** | `candle_execution_status` | yes | wallets, tier and this key's spend limits, in one call |
 | | `candle_get_wallets` | yes | the embedded wallets this key spends from |
+| | `candle_get_profile_wallets` | yes | which linked wallets this profile may spend from, and whether it is scoped |
+| | `candle_set_profile_wallets` | yes | replace the linked wallets this profile may spend from |
+| | `candle_get_profile_pnl` | yes | this profile's realized P&L, fees, and what it still holds at cost |
+| | `candle_get_profile_trades` | yes | this profile's orders, fills, fees and transaction hashes |
 | **Find a token** | `candle_resolve_token` | no | an address in, the token and its chain out |
 | | `candle_get_market` | no | live state for one token |
 | | `candle_get_feed` | no | curated feeds with price and market cap |

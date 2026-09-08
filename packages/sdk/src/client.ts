@@ -497,6 +497,130 @@ export interface ListWalletsResult {
   continueCursor: string | null
 }
 
+/**
+ * Whether an agent profile spends from every wallet on its account, or only the ones assigned
+ * to it.
+ *
+ * A profile with no explicit scope reads as `"all"` -- that is what every key issued before
+ * profiles existed does, and the API resolves the default server-side so a client never has to
+ * infer it.
+ */
+export type ProfileWalletScope = "all" | "selected"
+
+/** One wallet assigned to a profile, as `GET /api/v1/agent/keys/{prefix}/wallets` reports it. */
+export interface ProfileWalletRow {
+  linkedWalletId: string
+  assignedAt: number
+  chain: WalletChain
+  address: string
+  label?: string
+  /**
+   * False for an attribution-only wallet. Such a wallet can be assigned, but it can never sign,
+   * so a trade naming it as payer fails regardless of the assignment.
+   */
+  spendCapable: boolean
+}
+
+/** One position a profile still holds, for the caller to mark against a current price. */
+export interface ProfileOpenPosition {
+  mint: string
+  quantity: number
+  avgEntryUsd: number
+  costBasisUsd: number
+  /** The price used to value this position. Absent when no mark was available for the token. */
+  markPriceUsd?: number
+  /** When that price was last refreshed. */
+  markedAt?: number
+  marketValueUsd?: number
+  /** `marketValueUsd - costBasisUsd`. Absent when unmarked — which is not the same as zero. */
+  unrealizedUsd?: number
+}
+
+/**
+ * `GET /api/v1/agent/keys/{prefix}/pnl` response.
+ *
+ * REALIZED only. `openPositions` carries what is needed to mark the rest yourself; nothing here
+ * is marked for you, so no figure can be stale in a way you cannot see. Deposits and withdrawals
+ * are excluded entirely: funding a wallet is not trading profit.
+ */
+export interface ProfilePnlResult {
+  success: true
+  keyPrefix: string
+  pnl: {
+    realizedGrossUsd: number
+    /** Candle fees over the counted fills. Reported separately, netted only into realizedNetUsd. */
+    feesUsd: number
+    realizedNetUsd: number
+    openPositions: ProfileOpenPosition[]
+    /**
+     * Unrealized across the positions that could be marked. Read it WITH `unmarkedPositions` and
+     * `oldestMarkAt`: a total is only as meaningful as its coverage and the age of the prices
+     * behind it.
+     */
+    unrealizedUsd: number
+    /** Positions with no price available, excluded from `unrealizedUsd` rather than valued at zero. */
+    unmarkedPositions: number
+    /** The oldest mark used, epoch ms. Absent when nothing could be marked. */
+    oldestMarkAt?: number
+    /** Fills counted, and fills that had no trusted USD price and so were left out entirely. */
+    counted: number
+    unvalued: number
+    tradesConsidered: number
+    lookback: number
+    /** True when the lookback window was full, so this is not a lifetime figure. */
+    truncated: boolean
+  }
+}
+
+/**
+ * One row of a profile's trade history: what was ordered, what actually filled, what it cost,
+ * and the hash to verify it against a chain explorer.
+ *
+ * `filledAmount` and `usdValue` are absent for a trade that never confirmed, and `usdValue` is
+ * also absent when the quote asset had no trusted USD price — absence means "not known", never
+ * zero.
+ */
+export interface ProfileTradeRow {
+  clientTradeId: string
+  createdAt: number
+  status: "built" | "confirmed" | "failed"
+  chain: "solana" | "hood"
+  side: "buy" | "sell"
+  mint: string
+  quoteAsset: string
+  /** What was asked for, raw base units. */
+  amountRaw: string
+  /** What actually filled, in base tokens. */
+  filledAmount?: number
+  usdValue?: number
+  feeBps: number
+  feeUsd?: number
+  payerWallet: string
+  venue?: "curve" | "jupiter" | "dex"
+  signature?: string
+  errorCode?: string
+}
+
+/** `GET /api/v1/agent/keys/{prefix}/trades` response. */
+export interface ProfileTradesResult {
+  success: true
+  keyPrefix: string
+  trades: ProfileTradeRow[]
+}
+
+/** `GET /api/v1/agent/keys/{prefix}/wallets` response. */
+export interface ProfileWalletsResult {
+  keyPrefix: string
+  /** The profile's stable public id, or null for a key minted before profile ids existed. */
+  profileId: string | null
+  walletScope: ProfileWalletScope
+  /**
+   * The assigned wallets. Under scope `"all"` this list does NOT bound what the profile can
+   * spend from -- it can use every wallet on the account regardless of what appears here.
+   */
+  wallets: ProfileWalletRow[]
+}
+
 // ---------------------------------------------------------------------------
 // Agent trade API (docs/agent-trading.md): POST /api/v1/trade/agent/{build,confirm}
 // ---------------------------------------------------------------------------
@@ -1369,6 +1493,93 @@ export class CandleClient {
   }
 
   /**
+   * Reads which wallets an agent profile may spend from
+   * (GET /api/v1/agent/keys/{prefix}/wallets).
+   *
+   * Read `walletScope` before drawing conclusions from `wallets`: an empty list means "every
+   * wallet on the account" under `"all"` and "none at all" under `"selected"`.
+   */
+  async getProfileWallets(keyPrefix: string): Promise<ProfileWalletsResult> {
+    this.requireKey("getProfileWallets()")
+    return this.requestJson<ProfileWalletsResult>("GET", `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/wallets`)
+  }
+
+  /**
+   * One profile's trade history (GET /api/v1/agent/keys/{prefix}/trades).
+   *
+   * Includes FAILED trades, deliberately: a record that dropped them would misrepresent what the
+   * agent did, and `errorCode` is how you find out why one did not go through. For a spreadsheet
+   * instead of JSON, request the same path with `?format=csv`.
+   */
+  async getProfileTrades(keyPrefix: string, opts: { limit?: number } = {}): Promise<ProfileTradesResult> {
+    this.requireKey("getProfileTrades()")
+    const query = opts.limit !== undefined ? `?limit=${encodeURIComponent(String(opts.limit))}` : ""
+    return this.requestJson<ProfileTradesResult>(
+      "GET",
+      `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/trades${query}`,
+    )
+  }
+
+  /**
+   * One profile's realized P&L, fees, and open positions
+   * (GET /api/v1/agent/keys/{prefix}/pnl).
+   *
+   * Check `unvalued` and `truncated` before quoting the number: the first counts fills that had
+   * no trusted USD price and were left out rather than counted as zero, the second says the
+   * lookback window was full and this is not a lifetime figure.
+   */
+  async getProfilePnl(keyPrefix: string): Promise<ProfilePnlResult> {
+    this.requireKey("getProfilePnl()")
+    return this.requestJson<ProfilePnlResult>("GET", `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl`)
+  }
+
+  /**
+   * Replaces the wallets an agent profile may spend from
+   * (PUT /api/v1/agent/keys/{prefix}/wallets).
+   *
+   * A REPLACE, not a merge: the array passed becomes the profile's entire set, so omitting a
+   * wallet revokes its access. Pass `[]` to leave a scoped profile with no wallets at all.
+   *
+   * NARROWING ONLY from an API key. A key may remove wallets from its OWN profile — so reining an
+   * agent in from code never needs a browser — but naming a wallet the profile does not already
+   * hold is a grant, and grants require a Privy session (`LOOSEN_REQUIRES_SESSION`). Editing a
+   * DIFFERENT profile needs a session too, since otherwise the narrowest key on an account could
+   * rewrite the reach of the widest one.
+   *
+   * Only takes effect while the profile's scope is `"selected"` -- assignments are stored either
+   * way, but an unscoped profile can reach every wallet regardless. Use `setProfileWalletScope`
+   * to scope it.
+   */
+  async setProfileWallets(keyPrefix: string, walletIds: string[]): Promise<{ success: true; count: number }> {
+    this.requireKey("setProfileWallets()")
+    return this.requestJson<{ success: true; count: number }>(
+      "PUT",
+      `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/wallets`,
+      { walletIds },
+    )
+  }
+
+  /**
+   * Switches a profile between all-wallets and assigned-only
+   * (PUT /api/v1/agent/keys/{prefix}/wallet-scope).
+   *
+   * TIGHTENING ONLY from an agent key. Widening a profile back to `"all"` requires a Privy
+   * session (the portal) and fails here with `LOOSEN_REQUIRES_SESSION`, for the same reason
+   * raising a spend limit does: a leaked key must not be able to extend its own reach.
+   */
+  async setProfileWalletScope(
+    keyPrefix: string,
+    scope: ProfileWalletScope,
+  ): Promise<{ success: true; scope: ProfileWalletScope }> {
+    this.requireKey("setProfileWalletScope()")
+    return this.requestJson<{ success: true; scope: ProfileWalletScope }>(
+      "PUT",
+      `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/wallet-scope`,
+      { scope },
+    )
+  }
+
+  /**
    * Reads this key's own effective spend limits (roadmap C, Task 5), so an agent can self-throttle
    * before a trade or launch ever hits `SPEND_LIMIT_EXCEEDED`. Read-only: raising a cap always
    * requires a Privy session (the portal), never this SDK -- see `SpendLimitsResult` for how to
@@ -2144,7 +2355,10 @@ export class CandleClient {
     return headers
   }
 
-  private async requestJson<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+  // PUT joins GET/POST for the profile-wallet routes, which are replace-semantics writes. The
+  // verb is passed straight to fetch and nothing below branches on it, so this widening is a
+  // type change only.
+  private async requestJson<T>(method: "GET" | "POST" | "PUT", path: string, body?: unknown): Promise<T> {
     const res = await this.fetchImpl(`${this.apiUrl}${path}`, {
       method,
       headers: this.headers({ json: body !== undefined }),

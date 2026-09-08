@@ -34,6 +34,10 @@ anyone signs up for anything.
 | --- | --- | --- |
 | `candle_execution_status` | yes | can this key trade right now: wallets, tier, and this key's own spend limits, in one call |
 | `candle_get_wallets` | yes | the embedded wallets this key spends from, one per chain |
+| `candle_get_profile_wallets` | yes | which linked wallets this profile may spend from. Read `walletScope` first: an empty list means every wallet under `all`, none under `selected` |
+| `candle_set_profile_wallets` | yes | replace that set. Omitting a wallet revokes its access; an empty list assigns none |
+| `candle_get_profile_pnl` | yes | realized P&L for this profile's own fills, fees charged, and open positions at COST BASIS. Deposits and transfers are excluded; check `unvalued` and `truncated` before quoting it |
+| `candle_get_profile_trades` | yes | orders, actual fills, fees, timestamps and tx hashes. Includes failed trades, with `errorCode` saying why |
 
 **Find a token**
 

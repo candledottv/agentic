@@ -499,6 +499,10 @@ var TOOL_NAMES = [
   "candle_transfer",
   "candle_sweep",
   "candle_get_wallets",
+  "candle_get_profile_wallets",
+  "candle_set_profile_wallets",
+  "candle_get_profile_pnl",
+  "candle_get_profile_trades",
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation"
@@ -613,6 +617,39 @@ function buildRequest(name, args, cfg) {
         init: { method: "GET", headers: jsonHeaders(apiKey) }
       };
     }
+    case "candle_get_profile_wallets": {
+      const apiKey = requireApiKey2(cfg);
+      const { keyPrefix } = args;
+      return {
+        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/wallets`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) }
+      };
+    }
+    case "candle_set_profile_wallets": {
+      const apiKey = requireApiKey2(cfg);
+      const { keyPrefix, walletIds } = args;
+      return {
+        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/wallets`,
+        init: { method: "PUT", headers: jsonHeaders(apiKey), body: JSON.stringify({ walletIds }) }
+      };
+    }
+    case "candle_get_profile_pnl": {
+      const apiKey = requireApiKey2(cfg);
+      const { keyPrefix } = args;
+      return {
+        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) }
+      };
+    }
+    case "candle_get_profile_trades": {
+      const apiKey = requireApiKey2(cfg);
+      const { keyPrefix, limit } = args;
+      const query = limit === undefined ? "" : `?limit=${encodeURIComponent(String(limit))}`;
+      return {
+        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/trades${query}`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) }
+      };
+    }
     case "candle_transfer": {
       const apiKey = requireApiKey2(cfg);
       return {
@@ -674,6 +711,20 @@ var getOperationShape = {
 };
 var resolveTokenShape = {
   mint: z.string().describe("Token mint (Solana, base58) or contract address (Hood, 0x-prefixed)")
+};
+var profileWalletsShape = {
+  keyPrefix: z.string().describe("The profile's API key prefix, as listed by candle keys list or in the dashboard")
+};
+var profilePnlShape = {
+  keyPrefix: z.string().describe("The profile's API key prefix")
+};
+var profileTradesShape = {
+  keyPrefix: z.string().describe("The profile's API key prefix"),
+  limit: z.number().optional().describe("How many of the most recent trades to return. Default 200, max 1000.")
+};
+var setProfileWalletsShape = {
+  keyPrefix: z.string().describe("The profile's API key prefix"),
+  walletIds: z.array(z.string()).describe("The linked-wallet ids the profile may spend from -- ids, not addresses. This REPLACES the " + "whole set: any wallet omitted loses access. An empty array assigns none.")
 };
 var swapShape = {
   from: z.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to spend"),
@@ -773,6 +824,26 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     description: "The account's EMBEDDED wallets, one per chain, with their delegation state. These are " + "the wallets candle_trade, candle_swap and candle_transfer spend from, so this is how an " + "agent finds its own funding addresses. Reads only; moves nothing. Not the same as the " + "account's LINKED wallets, which are the owner's own wallets and are not spent from here. " + "Balances are not included: read a specific one with the market and balance endpoints.",
     inputSchema: {}
   }, async () => callAndRelay("candle_get_wallets", {}, cfg));
+  register("candle_get_profile_wallets", {
+    title: "Read which wallets an agent profile can spend from",
+    description: "An agent profile (API key) either spends from EVERY wallet on its account or only from " + "the ones assigned to it. Read walletScope before drawing any conclusion from the list: " + "an empty list means 'every wallet' under scope 'all' and 'none at all' under 'selected'. " + "Reads only; moves nothing.",
+    inputSchema: profileWalletsShape
+  }, async (args) => callAndRelay("candle_get_profile_wallets", args, cfg));
+  register("candle_set_profile_wallets", {
+    title: "Set which wallets an agent profile can spend from",
+    description: "REPLACES the profile's whole wallet set with the ids given, so a wallet left out of the " + "list loses access; pass an empty list to leave the profile with no wallets. NARROWING " + "ONLY: an API key can remove wallets from its OWN profile, but naming one it does not " + "already hold is a grant and needs a human in the dashboard, as does editing any other " + "profile. Takes effect only while the profile's scope is 'selected'. Wallet ids are the " + "linked-wallet ids, not addresses.",
+    inputSchema: setProfileWalletsShape
+  }, async (args) => callAndRelay("candle_set_profile_wallets", args, cfg));
+  register("candle_get_profile_pnl", {
+    title: "Read an agent profile's realized P&L",
+    description: "Realized profit for this profile's own fills, the Candle fees charged against it, and the " + "positions it still holds with their COST BASIS -- not their current value, which is not marked " + "here. Deposits, withdrawals and transfers are excluded: funding a wallet is not profit. Check " + "`unvalued` and `truncated` before quoting the number; they mean the total is partial. Reads only.",
+    inputSchema: profilePnlShape
+  }, async (args) => callAndRelay("candle_get_profile_pnl", args, cfg));
+  register("candle_get_profile_trades", {
+    title: "Read an agent profile's trade history",
+    description: "Orders, actual fills, fees, timestamps and transaction hashes for this profile. Includes FAILED " + "trades, with an errorCode saying why each did not go through, so this answers 'what happened to " + "my order' as well as 'what did I trade'. Reads only; moves nothing.",
+    inputSchema: profileTradesShape
+  }, async (args) => callAndRelay("candle_get_profile_trades", args, cfg));
   register("candle_resolve_token", {
     title: "Resolve a contract address to a token",
     description: "Turn a bare contract address or mint into Candle's market for it: chain, symbol, " + "decimals, quote asset, and whether Candle can trade it. Start here when a human gives " + "you an address and nothing else. The chain is read off the address's own shape and is " + "not guessed, so it does not need to be supplied. Reads only; moves nothing. A 404 means " + "Candle has no market for that address, which is an answer, not a failure to retry.",

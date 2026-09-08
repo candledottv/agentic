@@ -19348,6 +19348,39 @@ function buildRequest(name, args, cfg) {
         init: { method: "GET", headers: jsonHeaders(apiKey) }
       };
     }
+    case "candle_get_profile_wallets": {
+      const apiKey = requireApiKey2(cfg);
+      const { keyPrefix } = args;
+      return {
+        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/wallets`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) }
+      };
+    }
+    case "candle_set_profile_wallets": {
+      const apiKey = requireApiKey2(cfg);
+      const { keyPrefix, walletIds } = args;
+      return {
+        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/wallets`,
+        init: { method: "PUT", headers: jsonHeaders(apiKey), body: JSON.stringify({ walletIds }) }
+      };
+    }
+    case "candle_get_profile_pnl": {
+      const apiKey = requireApiKey2(cfg);
+      const { keyPrefix } = args;
+      return {
+        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) }
+      };
+    }
+    case "candle_get_profile_trades": {
+      const apiKey = requireApiKey2(cfg);
+      const { keyPrefix, limit } = args;
+      const query = limit === undefined ? "" : `?limit=${encodeURIComponent(String(limit))}`;
+      return {
+        url: `${base2}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/trades${query}`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) }
+      };
+    }
     case "candle_transfer": {
       const apiKey = requireApiKey2(cfg);
       return {
@@ -19382,17 +19415,23 @@ function registerTools(server, env = process.env) {
   }, async (args) => callAndRelay("candle_launch_token", args, cfg));
   register("candle_get_market", {
     title: "Get market state",
-    description: "Read the current market state for a token: lifecycle, pool address, whether buys are open.",
+    description: "Read the current market state for a token: lifecycle, pool address, whether buys are " + `open. Reads only; moves nothing. No key needed.
+
+` + "COVERAGE: this answers for tokens that have a CANDLE market. candle_get_feed indexes " + "the wider market too (pump.fun, pons.family), so a mint that feed just returned can " + "still come back MARKET_NOT_FOUND here. That is a coverage boundary, not a fault and " + "not a reason to retry or re-authenticate -- say Candle has no market for it and move on.",
     inputSchema: getMarketShape
   }, async (args) => callAndRelay("candle_get_market", args, cfg));
   register("candle_token_forensics", {
     title: "Token forensics",
-    description: "Gate a buy before making it: deployer history, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), holder concentration, and a risk tier (LOW/MODERATE/HIGH/CRITICAL) with per-factor reasons. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.",
+    description: `Gate a buy before making it: deployer history, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), holder concentration, and a risk tier (LOW/MODERATE/HIGH/CRITICAL) with per-factor reasons. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.
+
+MARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe.`,
     inputSchema: tokenForensicsShape
   }, async (args) => callAndRelay("candle_token_forensics", args, cfg));
   register("candle_get_feed", {
     title: "Get a token feed",
-    description: "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip.",
+    description: "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip. Reads " + `only; moves nothing. No key needed. Start here when nobody has named a token.
+
+` + "This indexes the WIDER market, not just Candle's own launches, so rows carry a " + "`launchpad` (pump.fun, pons.family, ...). A row appearing here does NOT mean Candle " + "has a market for it: candle_get_market and candle_token_forensics can legitimately " + "answer MARKET_NOT_FOUND for a mint this returned.",
     inputSchema: getFeedShape
   }, async (args) => callAndRelay("candle_get_feed", args, cfg));
   register("candle_report_activity", {
@@ -19423,6 +19462,26 @@ function registerTools(server, env = process.env) {
     description: "The account's EMBEDDED wallets, one per chain, with their delegation state. These are " + "the wallets candle_trade, candle_swap and candle_transfer spend from, so this is how an " + "agent finds its own funding addresses. Reads only; moves nothing. Not the same as the " + "account's LINKED wallets, which are the owner's own wallets and are not spent from here. " + "Balances are not included: read a specific one with the market and balance endpoints.",
     inputSchema: {}
   }, async () => callAndRelay("candle_get_wallets", {}, cfg));
+  register("candle_get_profile_wallets", {
+    title: "Read which wallets an agent profile can spend from",
+    description: "An agent profile (API key) either spends from EVERY wallet on its account or only from " + "the ones assigned to it. Read walletScope before drawing any conclusion from the list: " + "an empty list means 'every wallet' under scope 'all' and 'none at all' under 'selected'. " + "Reads only; moves nothing.",
+    inputSchema: profileWalletsShape
+  }, async (args) => callAndRelay("candle_get_profile_wallets", args, cfg));
+  register("candle_set_profile_wallets", {
+    title: "Set which wallets an agent profile can spend from",
+    description: "REPLACES the profile's whole wallet set with the ids given, so a wallet left out of the " + "list loses access; pass an empty list to leave the profile with no wallets. NARROWING " + "ONLY: an API key can remove wallets from its OWN profile, but naming one it does not " + "already hold is a grant and needs a human in the dashboard, as does editing any other " + "profile. Takes effect only while the profile's scope is 'selected'. Wallet ids are the " + "linked-wallet ids, not addresses.",
+    inputSchema: setProfileWalletsShape
+  }, async (args) => callAndRelay("candle_set_profile_wallets", args, cfg));
+  register("candle_get_profile_pnl", {
+    title: "Read an agent profile's realized P&L",
+    description: "Realized profit for this profile's own fills, the Candle fees charged against it, and the " + "positions it still holds with their COST BASIS -- not their current value, which is not marked " + "here. Deposits, withdrawals and transfers are excluded: funding a wallet is not profit. Check " + "`unvalued` and `truncated` before quoting the number; they mean the total is partial. Reads only.",
+    inputSchema: profilePnlShape
+  }, async (args) => callAndRelay("candle_get_profile_pnl", args, cfg));
+  register("candle_get_profile_trades", {
+    title: "Read an agent profile's trade history",
+    description: "Orders, actual fills, fees, timestamps and transaction hashes for this profile. Includes FAILED " + "trades, with an errorCode saying why each did not go through, so this answers 'what happened to " + "my order' as well as 'what did I trade'. Reads only; moves nothing.",
+    inputSchema: profileTradesShape
+  }, async (args) => callAndRelay("candle_get_profile_trades", args, cfg));
   register("candle_resolve_token", {
     title: "Resolve a contract address to a token",
     description: "Turn a bare contract address or mint into Candle's market for it: chain, symbol, " + "decimals, quote asset, and whether Candle can trade it. Start here when a human gives " + "you an address and nothing else. The chain is read off the address's own shape and is " + "not guessed, so it does not need to be supplied. Reads only; moves nothing. A 404 means " + "Candle has no market for that address, which is an answer, not a failure to retry.",
@@ -19468,7 +19527,18 @@ function registerTools(server, env = process.env) {
   });
   register("candle_trade", {
     title: "Buy or sell a token",
-    description: "Execute a buy or sell through the Candle trade rail. MOVES REAL FUNDS: the payer is the " + "account's embedded (main) wallet, executed server-side via delegation. Amounts are " + "decimal (never raw base units). Retry a timeout with the SAME clientTradeId from the " + "result; a new id is a second trade.",
+    description: "Buy or sell a token. MOVES REAL FUNDS: the payer is the account's embedded (main) " + `wallet, executed server-side via delegation.
+
+` + `Before the first trade of a run, once:
+` + "1. candle_execution_status  -- confirms the wallets, the tier and this key's spend " + "limits. Call it at the start, or after an auth error; do not infer readiness from a " + `failed trade.
+` + "2. candle_resolve_token  -- if a human handed you a bare address. It returns the chain, " + `so you never have to guess it.
+` + "3. candle_token_forensics  -- before you quote or buy anything. It returns a risk tier " + "and per-factor reasons. MARKET_NOT_FOUND there means Candle has no market for the " + `token, NOT that the token is clean.
+
+` + "Arguments: `mint` and `side` are required. Amounts are DECIMAL, never raw base units " + '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' + `position.
+
+` + `After the call:
+` + "- A timeout is not a failure. Retry with the SAME clientTradeId from the result -- it " + `coalesces the duplicate. A NEW id is a SECOND trade, and that is how you double-spend.
+` + "- If you no longer hold the result, do not re-send to find out what happened. Ask " + "candle_get_operation with the clientTradeId; a 404 there means the trade never reached " + "the rail and nothing moved.",
     inputSchema: tradeShape
   }, async (args) => {
     const result = await executeTrade(args, cfg, fetch);
@@ -19483,7 +19553,7 @@ function registerTools(server, env = process.env) {
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
 }
-var TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, getFeedShape, reportActivityShape, getAgentProfileShape, getOperationShape, resolveTokenShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, launchAndSeedShape, transferShape, sweepShape;
+var TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, getFeedShape, reportActivityShape, getAgentProfileShape, getOperationShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, launchAndSeedShape, transferShape, sweepShape;
 var init_tools = __esm(() => {
   init_zod();
   init_convert();
@@ -19502,6 +19572,10 @@ var init_tools = __esm(() => {
     "candle_transfer",
     "candle_sweep",
     "candle_get_wallets",
+    "candle_get_profile_wallets",
+    "candle_set_profile_wallets",
+    "candle_get_profile_pnl",
+    "candle_get_profile_trades",
     "candle_resolve_token",
     "candle_execution_status",
     "candle_get_operation"
@@ -19549,6 +19623,20 @@ var init_tools = __esm(() => {
   resolveTokenShape = {
     mint: exports_external.string().describe("Token mint (Solana, base58) or contract address (Hood, 0x-prefixed)")
   };
+  profileWalletsShape = {
+    keyPrefix: exports_external.string().describe("The profile's API key prefix, as listed by candle keys list or in the dashboard")
+  };
+  profilePnlShape = {
+    keyPrefix: exports_external.string().describe("The profile's API key prefix")
+  };
+  profileTradesShape = {
+    keyPrefix: exports_external.string().describe("The profile's API key prefix"),
+    limit: exports_external.number().optional().describe("How many of the most recent trades to return. Default 200, max 1000.")
+  };
+  setProfileWalletsShape = {
+    keyPrefix: exports_external.string().describe("The profile's API key prefix"),
+    walletIds: exports_external.array(exports_external.string()).describe("The linked-wallet ids the profile may spend from -- ids, not addresses. This REPLACES the " + "whole set: any wallet omitted loses access. An empty array assigns none.")
+  };
   swapShape = {
     from: exports_external.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to spend"),
     to: exports_external.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to receive; must differ from `from`"),
@@ -19594,7 +19682,7 @@ __export(exports_server, {
   createCandleMcpServer: () => createCandleMcpServer
 });
 function createCandleMcpServer(env = process.env) {
-  const server = new McpServer({ name: "candle-mcp", version: SERVER_VERSION });
+  const server = new McpServer({ name: "candle-mcp", version: SERVER_VERSION }, { instructions: INSTRUCTIONS });
   registerTools(server, env);
   return server;
 }
@@ -19609,6 +19697,34 @@ async function runStdioServer(env = process.env, transport = new StdioServerTran
     };
   });
 }
+var INSTRUCTIONS = `Candle is a trading and token-launch rail for agents. You hold a scoped API key, never a private key; signing and funding stay with the key owner's wallet.
+
+START HERE — five tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
+  candle_get_market       price, market cap, volume, curve state for one token
+  candle_get_feed         the roster: hot streak, new pairs, graduated, blue chip
+  candle_resolve_token    a ticker or partial name -> mint address + chain
+  candle_token_forensics  call this before quoting or buying, whenever the token has a Candle market. Returns deployer history, who bought in the deploy window (strangers in the same slot are the bundle signal), holder concentration, and a risk tier LOW/MODERATE/HIGH/CRITICAL with per-factor reasons
+  candle_get_agent_profile  your own tier, caps and verified activity
+
+COVERAGE — read this before you treat an error as a broken server.
+candle_get_feed indexes the wider market (pump.fun, pons.family and other external launchpads).
+candle_get_market and candle_token_forensics answer for tokens that have a CANDLE market. So a
+mint that candle_get_feed just returned can still come back MARKET_NOT_FOUND from those two, and
+that is a coverage boundary, not a fault and not a reason to retry, re-auth, or tell the human the
+integration is down. Report it as "Candle has no market for this token, so I could not run
+forensics on it" and let the human decide.
+
+Never let a MARKET_NOT_FOUND stand in for a clean bill of health. The same rule governs the
+coverage note on every forensics measurement: "unavailable" is NOT "clean" — say so rather than
+reporting a token as safe.
+
+WRITING (trade, launch, transfer, sweep, swap) needs a key. If a call returns an auth error, the fix is on the human's side: they run \`candle auth login\`, which authorizes a device in the browser and stores the credentials. Do not ask them to paste a key into a config file, and do not retry the call until they confirm.
+
+Two chains: solana and hood. Most tools take an explicit chain — resolve it with candle_resolve_token rather than guessing.
+
+Writes are idempotent by client token and may be asynchronous: poll candle_execution_status or candle_get_operation rather than re-issuing a call. Re-issuing is how you double-spend.
+
+Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv — and AGENTS.md in github.com/candledottv/agentic.`;
 var init_server2 = __esm(() => {
   init_mcp();
   init_stdio2();
@@ -21117,6 +21233,171 @@ async function keysRevoke(args, ctx) {
   return 0;
 }
 
+// src/commands/keys-wallets.ts
+var NO_API_KEY = {
+  code: "NO_API_KEY",
+  message: "No API key for this profile.",
+  suggestion: "Set CANDLE_API_KEY, or run `candle keys create` and store one."
+};
+function formatTimestamp2(ms) {
+  return ms ? new Date(ms).toISOString().replace("T", " ").slice(0, 16) : "-";
+}
+async function keysWalletsList(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const prefix = parsed.positionals[0];
+  if (!prefix) {
+    writeUsageFailure(deps, "Usage: candle keys wallets <prefix>", json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(deps, NO_API_KEY, json);
+    return 1;
+  }
+  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallets`, {
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(result.body)}
+`);
+    return 0;
+  }
+  const body = result.body;
+  deps.stdout.write(body.walletScope === "selected" ? `Scope: selected — this profile can only spend from the wallets below.
+` : `Scope: all — this profile can spend from every wallet on the account, listed here or not.
+`);
+  if (body.profileId)
+    deps.stdout.write(`Profile: ${body.profileId}
+`);
+  if (body.wallets.length === 0) {
+    deps.stdout.write(`No wallets assigned.
+`);
+    return 0;
+  }
+  const rows = body.wallets.map((w) => [
+    w.linkedWalletId,
+    w.chain,
+    w.address,
+    w.label ?? "-",
+    w.spendCapable ? "yes" : "no",
+    formatTimestamp2(w.assignedAt)
+  ]);
+  deps.stdout.write(`${renderTable(["Id", "Chain", "Address", "Label", "Can sign", "Assigned"], rows)}
+`);
+  return 0;
+}
+async function keysWalletsSet(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { valueFlags: ["--wallets"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const prefix = parsed.positionals[0];
+  if (!prefix) {
+    writeUsageFailure(deps, "Usage: candle keys wallets set <prefix> --wallets <id,id,...>", json);
+    return 2;
+  }
+  const raw = parsed.values["--wallets"];
+  if (raw === undefined) {
+    writeUsageFailure(deps, 'Missing --wallets. Pass a comma-separated list, or "" to assign none.', json);
+    return 2;
+  }
+  const walletIds = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  await printIdentity(ctx);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(deps, NO_API_KEY, json);
+    return 1;
+  }
+  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallets`, {
+    method: "PUT",
+    body: { walletIds },
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(result.body)}
+`);
+    return 0;
+  }
+  deps.stdout.write(walletIds.length === 0 ? `Cleared every wallet assignment on ${prefix}.
+` : `Assigned ${walletIds.length} wallet${walletIds.length === 1 ? "" : "s"} to ${prefix}.
+`);
+  return 0;
+}
+async function keysWalletsScope(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { valueFlags: ["--scope"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const prefix = parsed.positionals[0];
+  const scope = parsed.values["--scope"];
+  if (!prefix || scope !== "all" && scope !== "selected") {
+    writeUsageFailure(deps, "Usage: candle keys wallets scope <prefix> --scope <all|selected>", json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(deps, NO_API_KEY, json);
+    return 1;
+  }
+  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallet-scope`, {
+    method: "PUT",
+    body: { scope },
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(result.body)}
+`);
+    return 0;
+  }
+  deps.stdout.write(scope === "selected" ? `${prefix} is now limited to its assigned wallets.
+` : `${prefix} can now spend from every wallet on the account.
+`);
+  return 0;
+}
+async function keysWallets(args, ctx) {
+  const [verb, ...rest] = args;
+  if (verb === "set")
+    return keysWalletsSet(rest, ctx);
+  if (verb === "scope")
+    return keysWalletsScope(rest, ctx);
+  return keysWalletsList(args, ctx);
+}
+
 // src/commands/mcp.ts
 var MCP_TOOL_NAMES = [
   "candle_launch_token",
@@ -21131,6 +21412,10 @@ var MCP_TOOL_NAMES = [
   "candle_transfer",
   "candle_sweep",
   "candle_get_wallets",
+  "candle_get_profile_wallets",
+  "candle_set_profile_wallets",
+  "candle_get_profile_pnl",
+  "candle_get_profile_trades",
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation"
@@ -28686,6 +28971,9 @@ Commands:
   keys create [--scopes <a,b,c>] [--label <name>]                 Create an API key
               [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]
   keys revoke <prefix>                                            Revoke an API key
+  keys wallets <prefix>                                           Wallets an agent profile can use
+    set <prefix> --wallets <id,id>                                Replace the profile's wallet set
+    scope <prefix> --scope <all|selected>                         Limit a profile to assigned wallets
   wallet                                                          Show launch and linked wallets (wallets is an alias)
   wallet import --chain <solana|evm> [options]                    Import a wallet you own (key via --key-file or hidden prompt)
   wallet generate --chain <solana|hood|evm> --count <n>            Generate wallets, seal them locally, then import
@@ -28712,7 +29000,7 @@ Global options:
 `;
 var COMMANDS = {
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
-  keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke } },
+  keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke, wallets: keysWallets } },
   wallets: {
     subcommands: {
       import: walletsImport,
