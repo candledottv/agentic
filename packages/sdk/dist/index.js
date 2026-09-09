@@ -587,27 +587,6 @@ class CandleClient {
     const query = opts.includeRevoked === true ? "?includeRevoked=true" : "";
     return this.requestJson("GET", `/api/v1/agent/wallets${query}`);
   }
-  async getProfileWallets(keyPrefix) {
-    this.requireKey("getProfileWallets()");
-    return this.requestJson("GET", `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/wallets`);
-  }
-  async getProfileTrades(keyPrefix, opts = {}) {
-    this.requireKey("getProfileTrades()");
-    const query = opts.limit !== undefined ? `?limit=${encodeURIComponent(String(opts.limit))}` : "";
-    return this.requestJson("GET", `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/trades${query}`);
-  }
-  async getProfilePnl(keyPrefix) {
-    this.requireKey("getProfilePnl()");
-    return this.requestJson("GET", `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl`);
-  }
-  async setProfileWallets(keyPrefix, walletIds) {
-    this.requireKey("setProfileWallets()");
-    return this.requestJson("PUT", `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/wallets`, { walletIds });
-  }
-  async setProfileWalletScope(keyPrefix, scope) {
-    this.requireKey("setProfileWalletScope()");
-    return this.requestJson("PUT", `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/wallet-scope`, { scope });
-  }
   async getSpendLimits() {
     this.requireKey("getSpendLimits()");
     return this.requestJson("GET", "/api/v1/agent/keys/self/limits");

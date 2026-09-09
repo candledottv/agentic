@@ -25,7 +25,6 @@ import { resolveApiUrl } from "./client"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { doctor } from "./commands/doctor"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
-import { keysWallets } from "./commands/keys-wallets"
 import { mcp, mcpActsAsIdentity } from "./commands/mcp"
 import { profileAdd, profileList, profileRemove, profileRename, profileUse } from "./commands/profile"
 import { setup } from "./commands/setup"
@@ -92,9 +91,6 @@ Commands:
   keys create [--scopes <a,b,c>] [--label <name>]                 Create an API key
               [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]
   keys revoke <prefix>                                            Revoke an API key
-  keys wallets <prefix>                                           Wallets an agent profile can use
-    set <prefix> --wallets <id,id>                                Replace the profile's wallet set
-    scope <prefix> --scope <all|selected>                         Limit a profile to assigned wallets
   wallet                                                          Show launch and linked wallets (wallets is an alias)
   wallet import --chain <solana|evm> [options]                    Import a wallet you own (key via --key-file or hidden prompt)
   wallet generate --chain <solana|hood|evm> --count <n>            Generate wallets, seal them locally, then import
@@ -140,7 +136,7 @@ interface CommandRoute {
  */
 const COMMANDS: Record<string, CommandRoute> = {
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
-  keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke, wallets: keysWallets } },
+  keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke } },
   wallets: {
     subcommands: {
       import: walletsImport,
