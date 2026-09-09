@@ -739,7 +739,7 @@ var tradeShape = {
   side: z.enum(["buy", "sell"]),
   amount: z.string().optional().describe("Decimal amount. Buys: how much of THIS TOKEN'S OWN quote asset to spend (SOL for a " + 'SOL-launched token, USDC for a USDC-quoted one, and so on: e.g. "0.5"). Sells: how many ' + "TOKENS to sell. Pass exactly one of amount or percent."),
   percent: z.number().optional().describe("Sells only: sell this percent (integer 1-100) of the wallet's holding, on either chain."),
-  quoteAsset: z.string().optional().describe('Quote asset ("sol", "usdc", "cndl") for an arbitrary Solana mint Candle never launched ' + "(Pro/Max only); defaults to sol. Ignored for a Candle-launched token, whose quote comes " + "from the token itself, so it never changes how a buy amount is interpreted there."),
+  quoteAsset: z.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' + "to an arbitrary mint Candle never launched (Pro/Max) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
   maxSlippageBps: z.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
   clientTradeId: z.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade.")
 };

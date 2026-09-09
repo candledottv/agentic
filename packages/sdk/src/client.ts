@@ -642,11 +642,24 @@ export interface BuildTradeRequest {
   /** Bps, 0-10000. Server defaults to 100 (1%) when omitted. */
   maxSlippageBps?: number
   /**
-   * Which asset to quote this trade in. Applies only when trading a non-Candle-launched token
-   * (Pro/Max); ignored for a Candle token, whose curve/pool quote asset is fixed. The server
-   * defaults it when omitted.
+   * What the wallet spends on a buy, or receives on a sell. Safe to pass straight through from a
+   * `POST /trade/agent/quote` response: the two endpoints take the same ids.
+   *
+   * Solana (`sol` | `usdc` | `cndl`): applies only when trading a non-Candle-launched token
+   * (Pro/Max), and is ignored for a Candle token whose curve pair is fixed. A Hood id on a
+   * Solana mint is refused.
+   *
+   * Hood (`eth` | `usdg`): the settlement asset of a DEX trade. **A USDG buy spends an ERC-20,
+   * so the build carries an `approval` leg that an ETH buy does not** -- one extra transaction
+   * for a main payer, one extra artifact to sign for a linked one.
+   *
+   * This is not the route. The cheapest path to the asset is raced independently, so a fill can
+   * report `amounts.quoteAsset: "eth"` alongside `route.kind: "usdg"`. Both are true.
+   *
+   * Requires a server carrying the widened validator; older hosts accept only the Solana ids.
+   * The server defaults it when omitted, which is `sol` on Solana and ETH settlement on Hood.
    */
-  quoteAsset?: "sol" | "usdc" | "cndl"
+  quoteAsset?: "sol" | "usdc" | "cndl" | "eth" | "usdg"
 }
 
 /**
@@ -692,13 +705,54 @@ export interface SolanaTradeArtifacts {
  * `feeTransfer` (present only when a fee applies). Hood cannot batch calls the way one Solana
  * transaction can carry multiple instructions, so each leg is its own transaction.
  */
+/** One leg of a route: which venue, which pair, and how much of the order went through it. */
+export interface TradeRouteHop {
+  exchange: string
+  tokenIn: string
+  tokenOut: string
+  sharePct: number
+  pool?: string
+  /** The pool's STATIC fee tier. A v4 hook can charge on top of it; see `roundTripBps`. */
+  fee?: number
+}
+
+/**
+ * The path a fill actually took, mirroring the API's `TradeRoute`.
+ *
+ * Read this to verify a receipt: `hops` and `kind` say which routers and pools the transaction
+ * should touch. Do NOT read it for cost basis -- `amounts.quoteAsset` is what the wallet paid,
+ * and the two differ routinely (a trade settled in ETH can cross USDG, giving
+ * `kind: "usdg"`).
+ *
+ * `priceImpactBps` is a depth statistic, not a cost: it compares two sizes on the same route, so
+ * a proportional fee cancels out of it entirely.
+ */
+export interface TradeRoute {
+  source: "kyber" | "uniswap"
+  hops: TradeRouteHop[]
+  /** `weth`, `usdg`, `usdg-direct`, `usdg-hop`, `v4`, `bridged-v4`, `v2`. Absent on some aggregator routes, which let `hops` speak. */
+  kind?: string
+  priceImpactBps?: number
+  usd?: { in?: number; out?: number; gas?: number }
+  hinted?: boolean
+  surplusToVendor?: boolean
+}
+
 export interface HoodTradeArtifacts {
-  venue: "curve"
+  /** `"dex"` since the server grew the Uniswap venue; `"curve"` for a live bonding curve. */
+  venue: "curve" | "dex"
   trade: { to: string; data: string; value: string }
   approval?: { to: string; data: string }
+  /**
+   * Permit2 allowance leg, on v4 sells and on any trade whose input is an ERC-20 the Universal
+   * Router pulls through Permit2. Sign it in the documented order, after `approval`.
+   */
+  permit2Approval?: { to: string; data: string }
   feeTransfer?: { to: string; data: string; value: string }
   quoteAsset: string
   quoteDecimals: number
+  /** The route this build was planned against. Present on the DEX venue. */
+  route?: TradeRoute
 }
 
 /**
@@ -775,6 +829,14 @@ export interface ExecutedTradeResult {
      */
     actualOutRaw?: string
   }
+  /**
+   * The route the fill actually took, on a Hood DEX trade.
+   *
+   * A main payer never sees `artifacts`, so without this a typed client could not tell which
+   * router or pools its own executed trade went through, and had to re-read the transaction the
+   * server had already read. Present on the executed response since 2026-09-04.
+   */
+  route?: TradeRoute
 }
 
 /** POST /api/v1/trade/agent/build response: "built" for a linked payer, "executed" for a main payer (or an idempotent replay of an already-confirmed trade under the same clientTradeId). */
@@ -913,11 +975,24 @@ export interface TradeRequest {
   /** Bps, 0-10000. Server defaults to 100 (1%) when omitted. */
   maxSlippageBps?: number
   /**
-   * Which asset to quote this trade in. Applies only when trading a non-Candle-launched token
-   * (Pro/Max); ignored for a Candle token, whose curve/pool quote asset is fixed. The server
-   * defaults it when omitted.
+   * What the wallet spends on a buy, or receives on a sell. Safe to pass straight through from a
+   * `POST /trade/agent/quote` response: the two endpoints take the same ids.
+   *
+   * Solana (`sol` | `usdc` | `cndl`): applies only when trading a non-Candle-launched token
+   * (Pro/Max), and is ignored for a Candle token whose curve pair is fixed. A Hood id on a
+   * Solana mint is refused.
+   *
+   * Hood (`eth` | `usdg`): the settlement asset of a DEX trade. **A USDG buy spends an ERC-20,
+   * so the build carries an `approval` leg that an ETH buy does not** -- one extra transaction
+   * for a main payer, one extra artifact to sign for a linked one.
+   *
+   * This is not the route. The cheapest path to the asset is raced independently, so a fill can
+   * report `amounts.quoteAsset: "eth"` alongside `route.kind: "usdg"`. Both are true.
+   *
+   * Requires a server carrying the widened validator; older hosts accept only the Solana ids.
+   * The server defaults it when omitted, which is `sol` on Solana and ETH settlement on Hood.
    */
-  quoteAsset?: "sol" | "usdc" | "cndl"
+  quoteAsset?: "sol" | "usdc" | "cndl" | "eth" | "usdg"
   /** Idempotency key shared by the build and confirm calls; generated ("sdk-" + UUID) when omitted. */
   clientTradeId?: string
 }

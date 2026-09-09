@@ -72,6 +72,8 @@ export type {
   TradeFee,
   TradePayer,
   TradeRequest,
+  TradeRoute,
+  TradeRouteHop,
   TradeSide,
   VerifyResult,
 } from "./client"

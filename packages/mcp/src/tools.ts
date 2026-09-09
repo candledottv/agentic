@@ -448,9 +448,12 @@ const tradeShape = {
     .string()
     .optional()
     .describe(
-      'Quote asset ("sol", "usdc", "cndl") for an arbitrary Solana mint Candle never launched ' +
-        "(Pro/Max only); defaults to sol. Ignored for a Candle-launched token, whose quote comes " +
-        "from the token itself, so it never changes how a buy amount is interpreted there.",
+      'What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' +
+        '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' +
+        "to an arbitrary mint Candle never launched (Pro/Max) and is ignored for a Candle token, " +
+        "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " +
+        "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " +
+        "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement.",
     ),
   maxSlippageBps: z.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
   clientTradeId: z

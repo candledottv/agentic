@@ -683,6 +683,100 @@ describe("request shapes", () => {
     expect(sent.quoteAsset).toBe("usdc")
   })
 
+  test("buildTrade forwards a Hood quoteAsset, so a caller can echo /quote's answer", async () => {
+    // "eth" is what /trade/agent/quote returns for a Hood DEX trade. Before the validator widened
+    // this was a 400; now it must reach the wire unchanged and, above all, type-check without a
+    // cast.
+    const result = {
+      success: true,
+      status: "executed",
+      clientTradeId: "trade-hood-eth",
+      chain: "hood",
+      signature: "0xabc",
+      fee: { bps: 0, feeRaw: "0", treasury: "0x00000000000000000000000000000000000000fe" },
+      amounts: {
+        amountRaw: "2000000000000000",
+        expectedOutRaw: "49111866775705432588",
+        minOutRaw: "48620748107948378162",
+        quoteAsset: "eth",
+      },
+    }
+    const { client, calls } = makeClient(KEYED, [json(200, result)])
+    const req: BuildTradeRequest = {
+      clientTradeId: "trade-hood-eth",
+      mint: "0x385f4f8ae47651ce5f58f5265395a669f8281e18",
+      side: "buy",
+      amountRaw: "2000000000000000",
+      payer: { type: "main" },
+      quoteAsset: "eth",
+    }
+    await client.buildTrade(req)
+    const sent = JSON.parse(String(calls[0]?.body)) as BuildTradeRequest
+    expect(sent.quoteAsset).toBe("eth")
+  })
+
+  test("a Hood executed result carries route with source, kind and hops, and none of it is stripped", async () => {
+    // The 2026-09-08 live fill: main payer, so no artifacts, and the only way a typed client can
+    // see which router and pools its own trade went through is this field. A kind-only fixture
+    // would pass with `{ kind: string }`, which is exactly the under-typing being fixed, so
+    // source and hops are asserted too.
+    const result = {
+      success: true,
+      status: "executed",
+      clientTradeId: "trade-hood-route",
+      chain: "hood",
+      signature: "0xa7e3a40b7d14d386a707bca9b7e4daaac74171511e6170699f4db653a59f59d6",
+      fee: { bps: 0, feeRaw: "0", treasury: "0x00000000000000000000000000000000000000fe" },
+      amounts: {
+        amountRaw: "2000000000000000",
+        expectedOutRaw: "49111866775705432588",
+        minOutRaw: "48620748107948378162",
+        quoteAsset: "eth",
+      },
+      route: {
+        source: "uniswap",
+        kind: "usdg",
+        priceImpactBps: 9,
+        // Placeholder addresses on purpose. The assertions below read hop count and fee, never
+        // the pair, and the real WETH/USDG/token addresses trip the secret scanner's generic
+        // rule ("token" beside 40 hex chars). Low-entropy stand-ins say what they are.
+        hops: [
+          {
+            exchange: "uniswap-v3",
+            tokenIn: "0x0000000000000000000000000000000000000001",
+            tokenOut: "0x0000000000000000000000000000000000000002",
+            sharePct: 100,
+            fee: 500,
+          },
+          {
+            exchange: "uniswap-v3",
+            tokenIn: "0x0000000000000000000000000000000000000002",
+            tokenOut: "0x0000000000000000000000000000000000000003",
+            sharePct: 100,
+            fee: 3000,
+          },
+        ],
+      },
+    }
+    const { client } = makeClient(KEYED, [json(200, result)])
+    const out = await client.buildTrade({
+      clientTradeId: "trade-hood-route",
+      mint: "0x385f4f8ae47651ce5f58f5265395a669f8281e18",
+      side: "buy",
+      amountRaw: "2000000000000000",
+      payer: { type: "main" },
+      quoteAsset: "eth",
+    })
+    if (out.status !== "executed") throw new Error("expected executed")
+    // Settlement and route are different questions, and both must survive the round trip:
+    // the wallet paid ETH while the path crossed USDG.
+    expect(out.amounts.quoteAsset).toBe("eth")
+    expect(out.route?.source).toBe("uniswap")
+    expect(out.route?.kind).toBe("usdg")
+    expect(out.route?.hops).toHaveLength(2)
+    expect(out.route?.hops[0]?.fee).toBe(500)
+  })
+
   test("buildTrade omits quoteAsset from the request body when not provided, so the server default applies", async () => {
     const result = {
       success: true,
