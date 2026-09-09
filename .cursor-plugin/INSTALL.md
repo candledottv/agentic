@@ -75,7 +75,7 @@ are set, `CANDLE_AGENT_API_KEY` wins.
 
 ## 3. The skills
 
-Cursor has no plugin-install command for this tree, so the five skills are used as what they
+Cursor has no plugin-install command for this tree, so the seven skills are used as what they
 already are: plain markdown. Each `skills/<name>/SKILL.md` in your clone is a self-contained
 instruction pack (`name` and `description` frontmatter plus the workflow), so reference the one you
 need in a Cursor chat, or copy its content into a project rule, and the model follows it exactly

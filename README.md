@@ -23,7 +23,7 @@ one place.
 - [The tool surface](#the-tool-surface)
 - [Full setup](#full-setup)
 - [Install as a skill package](#install-as-a-skill-package)
-- [The five skills](#the-five-skills)
+- [The skills](#the-skills)
 - [Packages](#packages)
 - [Examples](#examples)
 - [For agents: machine-readable references](#for-agents-machine-readable-references)
@@ -165,7 +165,7 @@ credential storage, and headless use are documented on the
 
 ## Install as a skill package
 
-Every platform below installs the same five skills (in `skills/`).
+Every platform below installs the same seven skills (in `skills/`).
 
 | Platform | Install | Details |
 | --- | --- | --- |
@@ -180,7 +180,9 @@ up separately with the clone-and-build config above. Each platform's install doc
 that config goes; the skills-vs-server split is explained under
 [Skills for coding agents](https://docs.candle.tv/developers/coding-agents).
 
-## The five skills
+## The skills
+
+Five cover the surface: what you can call, and how to call it.
 
 - [`skills/candle-launch`](skills/candle-launch/SKILL.md): launch a token on Solana or Hood,
   optionally seeded with a dev buy bundled into the same transaction.
@@ -192,6 +194,20 @@ that config goes; the skills-vs-server split is explained under
   API key, and check credential health from the terminal.
 - [`skills/candle-webhooks`](skills/candle-webhooks/SKILL.md): register a webhook endpoint and
   verify signed event deliveries instead of polling.
+
+Two more cover what the surface will not tell you: how automated trading on it actually goes
+wrong, and how to decide whether a strategy is worth running at all. Both are written from
+production failures rather than from the API shape, which is why they read differently.
+
+- [`skills/candle-trade-execution`](skills/candle-trade-execution/SKILL.md): position accounting,
+  sells that fail forever, retry loops on a live wallet, and reading an error's structure instead
+  of its prose. Every rule in it cost real money before it was a rule. The headline one: a quote
+  is not a fill, and booking `expectedOutRaw` as a quantity drifts your ledger from the wallet by
+  the buy's realised slippage.
+- [`skills/onchain-strategy-research`](skills/onchain-strategy-research/SKILL.md): turning an
+  observation into an experiment that can be rejected. Decision-time information only, fills that
+  are actually executable, and net portfolio outcomes rather than win rates. A valid result is to
+  reject every candidate and keep the capital.
 
 ## Packages
 

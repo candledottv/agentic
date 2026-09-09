@@ -74,7 +74,7 @@ Grok Build's own `SKILL.md` format reads directly (Grok ignores frontmatter keys
 recognize, and neither `name` nor `description` needs converting to a Grok-specific `skill.json`).
 Grok Build is also documented as fully Claude Code compatible, reading Claude Code marketplaces,
 plugins, and skills automatically with no extra setup, so a `.claude-plugin/`-based install (see
-the Claude Code platform's own instructions) may surface these same five skills with nothing
+the Claude Code platform's own instructions) may surface these same seven skills with nothing
 further to do. To point Grok Build at the clone directly instead, add its `skills/` directory to
 `~/.grok/config.toml`:
 

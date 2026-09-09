@@ -1,7 +1,7 @@
 {
   "name": "candle",
   "version": "0.1.0",
-  "description": "Candle launchpad skills: launch and seed tokens, trade with structural custody safety, read markets with no API key, and react to events via webhooks",
+  "description": "Candle launchpad skills: launch and seed tokens, trade with structural custody safety, read markets with no API key, react to events via webhooks, keep an automated strategy's books honest, and research strategies that can actually be rejected",
   "author": { "name": "Candle", "url": "https://candle.tv" },
   "homepage": "https://candle.tv",
   "repository": "https://github.com/candledottv/agentic",
