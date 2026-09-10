@@ -699,12 +699,6 @@ export interface SolanaTradeArtifacts {
   quoteDecimals: number
 }
 
-/**
- * Hood "built" artifacts: up to three calldata legs. Send order matters and is fixed: `approval`
- * (present only when the payer's existing ERC-20 allowance is insufficient), then `trade`, then
- * `feeTransfer` (present only when a fee applies). Hood cannot batch calls the way one Solana
- * transaction can carry multiple instructions, so each leg is its own transaction.
- */
 /** One leg of a route: which venue, which pair, and how much of the order went through it. */
 export interface TradeRouteHop {
   exchange: string
@@ -738,6 +732,13 @@ export interface TradeRoute {
   surplusToVendor?: boolean
 }
 
+/**
+ * Hood "built" artifacts: up to four calldata legs. Send order matters and is fixed: `approval`
+ * (present only when the payer's existing ERC-20 allowance is insufficient), then
+ * `permit2Approval` (present only when the Universal Router pulls the input through Permit2),
+ * then `trade`, then `feeTransfer` (present only when a fee applies). Hood cannot batch calls the
+ * way one Solana transaction can carry multiple instructions, so each leg is its own transaction.
+ */
 export interface HoodTradeArtifacts {
   /** `"dex"` since the server grew the Uniswap venue; `"curve"` for a live bonding curve. */
   venue: "curve" | "dex"
@@ -857,9 +858,9 @@ export type ConfirmTradeResult = ExecutedTradeResult
 
 /**
  * POST /api/v1/trade/agent/submit request body. `signedTransactions` is the ordered signed legs:
- * one for Solana; one to three for Hood in the fixed approval, trade, feeTransfer order (omitting
- * a leg that was not built). The server broadcasts them itself and confirms inline, so there is no
- * separate confirmTrade() call after this one.
+ * one for Solana; one to four for Hood in the fixed approval, permit2Approval, trade, feeTransfer
+ * order (omitting a leg that was not built). The server broadcasts them itself and confirms
+ * inline, so there is no separate confirmTrade() call after this one.
  */
 export interface SubmitTradeRequest {
   clientTradeId: string
@@ -1770,12 +1771,14 @@ export class CandleClient {
    *   Signing goes through the Candle sign relay (the same one self-signed launches depend on; see
    *   buildSelfLaunch()'s jsdoc): Solana signs `artifacts.transactionBase64` via the linked
    *   wallet's own Privy signer quorum. Hood signs `artifacts.approval` (if present), then
-   *   `artifacts.trade`, then `artifacts.feeTransfer` (if present) -- in that exact order. From
-   *   there, trade() below's default differs by chain: Solana hands the already-signed bytes to
+   *   `artifacts.permit2Approval` (if present), then `artifacts.trade`, then
+   *   `artifacts.feeTransfer` (if present), in that exact order. From there, trade() below's
+   *   default differs by chain: Solana hands the already-signed bytes to
    *   `submit({ clientTradeId, signedTransactions })`, which broadcasts and confirms them
    *   server-side in one call; Hood stays on the client-broadcast sequence -- broadcast each signed
    *   leg with `broadcastSignedTransaction`, awaiting each leg's own receipt before assembling the
-   *   next (its `trade` leg's gas estimate depends on the `approval` leg already being mined), then
+   *   next (its `trade` leg's gas estimate depends on the `approval` and `permit2Approval` legs
+   *   already being mined), then
    *   `confirmTrade({ clientTradeId, tradeTxHash, feeTxHash })`, where `feeTxHash` is REQUIRED
    *   whenever `artifacts.feeTransfer` was present (a confirm that omits it is refused
    *   `FEE_LEG_MISSING`). Solana's lower-level opt-in path
@@ -2003,14 +2006,15 @@ export class CandleClient {
    *   said the opposite, which was the worst possible way to be wrong -- a caller who trusted it
    *   would lose transactions and have no reason to look for the retry that was not there.
    *   Reported by an integrator on 2026-08-27.
-   * - **Hood/EVM**: unchanged from before -- `artifacts.approval` (when present), then
-   *   `artifacts.trade`, then `artifacts.feeTransfer` (when present) -- in that exact order, EACH
-   *   leg's receipt awaited (`waitForReceipt`) before the next leg is even assembled, then
-   *   `confirmTrade({ clientTradeId, tradeTxHash, feeTxHash })`. This ordering is load-bearing,
-   *   not a style choice: the `trade` leg's `eth_estimateGas` reverts if it runs before the
-   *   `approval` leg is mined, since the on-chain allowance is not yet set -- so Hood stays off
-   *   `submit()` by default (submit() is still available as an explicit opt-in for a caller that
-   *   has already confirmed no approval leg is needed). Requires `evmRpcUrl`; throws a clear error
+   * - **Hood/EVM**: `artifacts.approval` (when present), then `artifacts.permit2Approval` (when
+   *   present), then `artifacts.trade`, then `artifacts.feeTransfer` (when present), in that
+   *   exact order. EACH leg's receipt is awaited (`waitForReceipt`) before the next leg is even
+   *   assembled, then `confirmTrade({ clientTradeId, tradeTxHash, feeTxHash })`. This ordering is
+   *   load-bearing, not a style choice: the `trade` leg's `eth_estimateGas` reverts if it runs
+   *   before the `approval` and `permit2Approval` legs are mined, since neither allowance is set
+   *   yet. So Hood stays off `submit()` by default. submit() is still available as an explicit
+   *   opt-in, but only for a caller that has already confirmed the build carries neither an
+   *   `approval` nor a `permit2Approval` leg. Requires `evmRpcUrl`; throws a clear error
    *   naming it when unset, before any RPC read or signing.
    */
   async trade(req: TradeRequest): Promise<ExecutedTradeResult> {
@@ -2076,9 +2080,24 @@ export class CandleClient {
     const baseNonce = await fetchNonce(rpc, from)
     const feeData = await fetchFeeData(rpc)
 
-    const legs: Array<{ kind: "approval" | "trade" | "feeTransfer"; to: string; data: string; value: string }> = []
+    const legs: Array<{
+      kind: "approval" | "permit2Approval" | "trade" | "feeTransfer"
+      to: string
+      data: string
+      value: string
+    }> = []
     if (built.artifacts.approval) {
       legs.push({ kind: "approval", to: built.artifacts.approval.to, data: built.artifacts.approval.data, value: "0" })
+    }
+    // Permit2 grants the Universal Router its allowance inside Permit2. Like `approval`, it must be
+    // mined before the trade leg's estimateGas runs. SDK 0.4.0 and earlier skipped this leg.
+    if (built.artifacts.permit2Approval) {
+      legs.push({
+        kind: "permit2Approval",
+        to: built.artifacts.permit2Approval.to,
+        data: built.artifacts.permit2Approval.data,
+        value: "0",
+      })
     }
     legs.push({ kind: "trade", ...built.artifacts.trade })
     if (built.artifacts.feeTransfer) {
@@ -2539,7 +2558,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.4.0"
+export const SDK_VERSION = "0.4.1"
 
 let sdkUpdateWarned = false
 

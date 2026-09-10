@@ -1219,6 +1219,48 @@ describe("linked-wallet signing relay + one-shot flows", () => {
     expiresAt: 1692345678000,
   }
 
+  /** A v4 sell: the token approves Permit2, then Permit2 grants the Universal Router. All four legs. */
+  const HOOD_BUILT_TRADE_WITH_PERMIT2 = {
+    success: true,
+    status: "built",
+    clientTradeId: "trade-linked-4",
+    chain: "hood",
+    walletAddress: HOOD_WALLET_ADDRESS,
+    artifacts: {
+      venue: "dex",
+      approval: { to: "0xToken789", data: "0xapprove" },
+      permit2Approval: { to: "0xPermit2", data: "0xpermit2approve" },
+      trade: { to: "0xRouter1", data: "0xtrade", value: "0" },
+      feeTransfer: { to: "0xTreasury1", data: "0xfeetransfer", value: "0" },
+      quoteAsset: "eth",
+      quoteDecimals: 18,
+    },
+    fee: { bps: 100, feeRaw: "7000", treasury: "0xTreasury1" },
+    expectedOutRaw: "700000",
+    minOutRaw: "693000",
+    expiresAt: 1692345678000,
+  }
+
+  /** The ERC-20 allowance to Permit2 already exists, so only the Permit2 grant is built. No fee. */
+  const HOOD_BUILT_TRADE_PERMIT2_ONLY = {
+    success: true,
+    status: "built",
+    clientTradeId: "trade-linked-5",
+    chain: "hood",
+    walletAddress: HOOD_WALLET_ADDRESS,
+    artifacts: {
+      venue: "dex",
+      permit2Approval: { to: "0xPermit2", data: "0xpermit2approve" },
+      trade: { to: "0xRouter1", data: "0xtrade", value: "0" },
+      quoteAsset: "eth",
+      quoteDecimals: 18,
+    },
+    fee: { bps: 0, feeRaw: "0", treasury: null },
+    expectedOutRaw: "700000",
+    minOutRaw: "693000",
+    expiresAt: 1692345678000,
+  }
+
   const SIGN_RELAY_OK = { success: true, signedTransaction: "c2lnbmVkLXR4", encoding: "base64" }
 
   const CONFIRMED_TRADE = {
@@ -1705,6 +1747,137 @@ describe("linked-wallet signing relay + one-shot flows", () => {
 
       // build, 4 setup calls, 4 leg calls, confirm -- nothing extra (no approval, no fee leg).
       expect(calls).toHaveLength(10)
+    })
+
+    /** Labels each recorded call: the JSON-RPC method for an EVM RPC call, else "sign" or the URL. */
+    function callLabels(calls: { url: string; body?: unknown }[]): string[] {
+      return calls.map((c) => {
+        if (c.url === EVM_RPC) return (JSON.parse(String(c.body)) as { method: string }).method
+        if (c.url === SIGN_RELAY_URL) return "sign"
+        return c.url
+      })
+    }
+
+    function signedTransactions(calls: { url: string; body?: unknown }[]): EvmSignTransactionParams[] {
+      return calls
+        .filter((c) => c.url === SIGN_RELAY_URL)
+        .map(
+          (c) =>
+            (JSON.parse(String(c.body)) as { body: { params: { transaction: EvmSignTransactionParams } } }).body.params
+              .transaction,
+        )
+    }
+
+    const LEG_CALLS = ["eth_estimateGas", "sign", "eth_sendRawTransaction", "eth_getTransactionReceipt"]
+
+    test("from: linked (Hood) with all four legs sends permit2Approval between approval and trade, nonces 5-8, and confirms with the trade and fee hashes", async () => {
+      const store = await keyedSecretStore()
+      const confirmed = {
+        success: true,
+        status: "executed",
+        clientTradeId: HOOD_BUILT_TRADE_WITH_PERMIT2.clientTradeId,
+        chain: "hood",
+        signature: "0xTradeTxHash",
+        feeSignature: "0xFeeTxHash",
+        fee: HOOD_BUILT_TRADE_WITH_PERMIT2.fee,
+        amounts: { amountRaw: "500000", expectedOutRaw: "700000", minOutRaw: "693000", quoteAsset: "eth" },
+      }
+      const { client, calls } = makeClient(
+        { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC },
+        [
+          json(200, HOOD_BUILT_TRADE_WITH_PERMIT2),
+          ...evmSetupResponses(),
+          ...evmLegResponses("0xApprovalTxHash"),
+          ...evmLegResponses("0xPermit2TxHash"),
+          ...evmLegResponses("0xTradeTxHash"),
+          ...evmLegResponses("0xFeeTxHash"),
+          json(200, confirmed),
+        ],
+      )
+      const result = await client.trade({
+        mint: "0xMint",
+        side: "sell",
+        amountRaw: "500000",
+        from: { linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
+      })
+      expect(result).toEqual(confirmed as never)
+
+      const transactions = signedTransactions(calls)
+      expect(transactions.map((tx) => tx.to)).toEqual(["0xToken789", "0xPermit2", "0xRouter1", "0xTreasury1"])
+      expect(transactions.map((tx) => tx.nonce)).toEqual([5, 6, 7, 8])
+      expect(transactions[1]?.data).toBe("0xpermit2approve")
+      expect(transactions[1]?.value).toBe("0x0")
+
+      // Strictly sequential: the Permit2 leg's receipt lands before the trade leg's estimateGas,
+      // which is the call that reverts while the Permit2 allowance is unset.
+      expect(callLabels(calls)).toEqual([
+        "https://api.test/api/v1/trade/agent/build",
+        "eth_chainId",
+        "eth_getTransactionCount",
+        "eth_maxPriorityFeePerGas",
+        "eth_getBlockByNumber",
+        ...LEG_CALLS, // approval
+        ...LEG_CALLS, // permit2Approval
+        ...LEG_CALLS, // trade
+        ...LEG_CALLS, // feeTransfer
+        "https://api.test/api/v1/trade/agent/confirm",
+      ])
+      const estimates = calls
+        .filter((c) => c.url === EVM_RPC)
+        .map((c) => JSON.parse(String(c.body)) as { method: string; params: { to: string }[] })
+        .filter((b) => b.method === "eth_estimateGas")
+      expect(estimates.map((b) => b.params[0]?.to)).toEqual(["0xToken789", "0xPermit2", "0xRouter1", "0xTreasury1"])
+
+      const confirmSent = JSON.parse(String(calls[calls.length - 1]?.body)) as ConfirmTradeRequest
+      expect(confirmSent).toEqual({
+        clientTradeId: HOOD_BUILT_TRADE_WITH_PERMIT2.clientTradeId,
+        tradeTxHash: "0xTradeTxHash",
+        feeTxHash: "0xFeeTxHash",
+      })
+    })
+
+    test("from: linked (Hood) with permit2Approval but no approval sends Permit2 first at the base nonce, and confirms with just tradeTxHash", async () => {
+      const store = await keyedSecretStore()
+      const confirmed = {
+        success: true,
+        status: "executed",
+        clientTradeId: HOOD_BUILT_TRADE_PERMIT2_ONLY.clientTradeId,
+        chain: "hood",
+        signature: "0xTradeTxHash",
+        fee: HOOD_BUILT_TRADE_PERMIT2_ONLY.fee,
+        amounts: { amountRaw: "500000", expectedOutRaw: "700000", minOutRaw: "693000", quoteAsset: "eth" },
+      }
+      const { client, calls } = makeClient(
+        { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC },
+        [
+          json(200, HOOD_BUILT_TRADE_PERMIT2_ONLY),
+          ...evmSetupResponses(),
+          ...evmLegResponses("0xPermit2TxHash"),
+          ...evmLegResponses("0xTradeTxHash"),
+          json(200, confirmed),
+        ],
+      )
+      const result = await client.trade({
+        mint: "0xMint",
+        side: "sell",
+        amountRaw: "500000",
+        from: { linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
+      })
+      expect(result).toEqual(confirmed as never)
+
+      const transactions = signedTransactions(calls)
+      expect(transactions.map((tx) => tx.to)).toEqual(["0xPermit2", "0xRouter1"])
+      expect(transactions.map((tx) => tx.nonce)).toEqual([5, 6])
+
+      const confirmSent = JSON.parse(String(calls[calls.length - 1]?.body)) as ConfirmTradeRequest
+      expect(confirmSent).toEqual({
+        clientTradeId: HOOD_BUILT_TRADE_PERMIT2_ONLY.clientTradeId,
+        tradeTxHash: "0xTradeTxHash",
+      })
+      expect("feeTxHash" in confirmSent).toBe(false)
+
+      // build, 4 setup calls, 4 calls per leg x2, confirm.
+      expect(calls).toHaveLength(14)
     })
 
     test("from: linked (Hood) throws a clear error naming evmRpcUrl when unset, before any signing", async () => {

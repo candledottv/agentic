@@ -761,6 +761,14 @@ class CandleClient {
     if (built.artifacts.approval) {
       legs.push({ kind: "approval", to: built.artifacts.approval.to, data: built.artifacts.approval.data, value: "0" });
     }
+    if (built.artifacts.permit2Approval) {
+      legs.push({
+        kind: "permit2Approval",
+        to: built.artifacts.permit2Approval.to,
+        data: built.artifacts.permit2Approval.data,
+        value: "0"
+      });
+    }
     legs.push({ kind: "trade", ...built.artifacts.trade });
     if (built.artifacts.feeTransfer) {
       legs.push({ kind: "feeTransfer", ...built.artifacts.feeTransfer });
@@ -1048,7 +1056,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.4.0";
+var SDK_VERSION = "0.4.1";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))
