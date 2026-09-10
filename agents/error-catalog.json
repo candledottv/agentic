@@ -134,6 +134,11 @@
       "retryable": true,
       "action": "The capability is switched off or a required leg is absent in this environment. Retry later; escalate if it persists.",
       "codes": ["LAUNCH_DISABLED", "FEE_LEG_MISSING"]
+    },
+    "risk_stop": {
+      "retryable": false,
+      "action": "This profile stopped itself: it reached a loss limit its owner set, or tripped its circuit breaker. Waiting does not clear it and neither does a smaller amount. Stop trading on this profile, report why, and leave it to an account owner to review and resume. GET /agent/keys/{prefix}/risk says which bound broke.",
+      "codes": ["RISK_LIMIT_REACHED"]
     }
   }
 }
