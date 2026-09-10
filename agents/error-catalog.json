@@ -139,6 +139,11 @@
       "retryable": false,
       "action": "This profile stopped itself: it reached a loss limit its owner set, or tripped its circuit breaker. Waiting does not clear it and neither does a smaller amount. Stop trading on this profile, report why, and leave it to an account owner to review and resume. GET /agent/keys/{prefix}/risk says which bound broke.",
       "codes": ["RISK_LIMIT_REACHED"]
+    },
+    "owner_stop": {
+      "retryable": false,
+      "action": "An account owner paused this profile deliberately. This is not a fault and not a limit the profile reached on its own -- nothing about the request will change it and waiting will not clear it. Stop trading on this key and say plainly that only the owner can resume it, from the agent console.",
+      "codes": ["PROFILE_PAUSED"]
     }
   }
 }
