@@ -25,6 +25,68 @@ test("all registered tools are listed", () => {
   ])
 })
 
+describe("buildRequest: the feed's server-side query", () => {
+  const cfg = { apiUrl: "https://api.test" }
+
+  test("a bare feed read is unchanged", () => {
+    const r = buildRequest("candle_get_feed", { bucket: "new" }, cfg)
+    expect(r.url).toBe("https://api.test/api/v1/markets/feed?bucket=new")
+  })
+
+  /*
+    The knobs have to REACH the API. A tool whose schema advertises a filter that its request
+    builder drops would return the whole feed while the model believed it had narrowed it, which
+    is worse than not offering the filter at all.
+  */
+  test("every knob reaches the URL", () => {
+    const r = buildRequest(
+      "candle_get_feed",
+      {
+        bucket: "graduated",
+        chain: "solana",
+        where: '{"marketCap":{"lt":150000}}',
+        sort: "marketCap:desc",
+        fields: "symbol,marketCap",
+        limit: "20",
+      },
+      cfg,
+    )
+    const url = new URL(r.url)
+    expect(url.searchParams.get("bucket")).toBe("graduated")
+    expect(url.searchParams.get("chain")).toBe("solana")
+    expect(url.searchParams.get("where")).toBe('{"marketCap":{"lt":150000}}')
+    expect(url.searchParams.get("sort")).toBe("marketCap:desc")
+    expect(url.searchParams.get("fields")).toBe("symbol,marketCap")
+    expect(url.searchParams.get("limit")).toBe("20")
+  })
+
+  /*
+    An empty string must not be forwarded. A blank `where` that the API read as "no filter" would
+    hand back the whole feed to a caller who thought they had filtered.
+  */
+  test("empty knobs are omitted rather than sent blank", () => {
+    const r = buildRequest("candle_get_feed", { bucket: "new", where: "", sort: "", fields: "", limit: "" }, cfg)
+    const url = new URL(r.url)
+    expect(url.searchParams.has("where")).toBe(false)
+    expect(url.searchParams.has("sort")).toBe(false)
+    expect(url.searchParams.has("fields")).toBe(false)
+    expect(url.searchParams.has("limit")).toBe(false)
+  })
+
+  test("the JSON filter survives URL encoding intact", () => {
+    // Braces and quotes are percent-encoded on the wire; what matters is that the API decodes
+    // back to exactly the JSON the model wrote.
+    const where = '{"mintAuthorityDisabled":{"eq":true},"liquidityUsd":{"gte":25000}}'
+    const r = buildRequest("candle_get_feed", { bucket: "new", where }, cfg)
+    expect(new URL(r.url).searchParams.get("where")).toBe(where)
+  })
+
+  test("the feed still needs no key", () => {
+    const r = buildRequest("candle_get_feed", { bucket: "new" }, cfg)
+    expect((r.init.headers as Record<string, string>)["x-api-key"]).toBeUndefined()
+  })
+})
+
 describe("buildRequest", () => {
   test("launch maps to POST /api/v1/launch/headless with the key header", () => {
     const r = buildRequest(

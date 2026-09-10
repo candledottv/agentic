@@ -576,8 +576,15 @@ function buildRequest(name, args, cfg) {
       };
     }
     case "candle_get_feed": {
-      const { bucket, chain } = args;
-      const query = new URLSearchParams({ bucket, ...chain ? { chain } : {} });
+      const { bucket, chain, where, sort, fields, limit } = args;
+      const query = new URLSearchParams({
+        bucket,
+        ...chain ? { chain } : {},
+        ...where ? { where } : {},
+        ...sort ? { sort } : {},
+        ...fields ? { fields } : {},
+        ...limit ? { limit } : {}
+      });
       return {
         url: `${base2}/api/v1/markets/feed?${query.toString()}`,
         init: { method: "GET", headers: jsonHeaders() }
@@ -696,7 +703,11 @@ var tokenForensicsShape = {
 };
 var getFeedShape = {
   bucket: z.enum(["new", "graduated", "onfire", "bluechip"]),
-  chain: z.string().optional().describe("Optional chain filter")
+  chain: z.string().optional().describe("Optional chain filter"),
+  where: z.string().optional().describe('JSON filter, e.g. {"marketCap":{"lt":150000},"liquidityUsd":{"gte":25000},"mintAuthorityDisabled":{"eq":true}}. ' + "Comparators: eq, ne, lt, lte, gt, gte, present. An ABSENT field satisfies none of them except " + "present:false, so a filter for mintAuthorityDisabled eq true returns only tokens that actually say " + "true, never ones where the flag is simply missing. Use present:false to find the tokens with no data."),
+  sort: z.string().optional().describe('Sort as "field" or "field:asc" / "field:desc". A bare field means desc.'),
+  fields: z.string().optional().describe("Comma-separated fields to return, e.g. symbol,marketCap,liquidityUsd. chain, address and symbol always " + "ride along. Cuts a 135KB response to a couple of KB."),
+  limit: z.string().optional().describe("Max rows to return, 1-200.")
 };
 var reportActivityShape = {
   chain: z.string().describe('"solana" or "hood"'),
@@ -793,7 +804,9 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     title: "Get a token feed",
     description: "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip. Reads " + `only; moves nothing. No key needed. Start here when nobody has named a token.
 
-` + "This indexes the WIDER market, not just Candle's own launches, so rows carry a " + "`launchpad` (pump.fun, pons.family, ...). A row appearing here does NOT mean Candle " + "has a market for it: candle_get_market and candle_token_forensics can legitimately " + "answer MARKET_NOT_FOUND for a mint this returned.",
+` + "This indexes the WIDER market, not just Candle's own launches, so rows carry a " + "`launchpad` (pump.fun, pons.family, ...). A row appearing here does NOT mean Candle " + "has a market for it: candle_get_market and candle_token_forensics can legitimately " + `answer MARKET_NOT_FOUND for a mint this returned.
+
+` + "Filter, sort and pick fields SERVER-SIDE rather than reading the whole feed: an " + "unfiltered response is around 135KB and will not fit in a tool result. See `where`, " + "`sort` and `fields`.\n\n" + "One rule to know before screening on safety: a missing field is NOT a false one. " + "mintAuthorityDisabled and freezeAuthorityDisabled are absent on a real share of rows, " + "and absent means nobody checked, not that the authority is disabled. `where` never lets " + 'an absent field satisfy a comparison, so {"mintAuthorityDisabled":{"eq":true}} returns ' + "only tokens that actually say so.",
     inputSchema: getFeedShape
   }, async (args) => callAndRelay("candle_get_feed", args, cfg));
   register("candle_report_activity", {

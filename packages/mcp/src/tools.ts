@@ -182,8 +182,25 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
     }
 
     case "candle_get_feed": {
-      const { bucket, chain } = args as { bucket: string; chain?: string }
-      const query = new URLSearchParams({ bucket, ...(chain ? { chain } : {}) })
+      const { bucket, chain, where, sort, fields, limit } = args as {
+        bucket: string
+        chain?: string
+        where?: string
+        sort?: string
+        fields?: string
+        limit?: string
+      }
+      // Every optional knob is forwarded only when set. An empty string would reach the API as a
+      // present-but-blank parameter, and a blank `where` treated as "no filter" would hand back
+      // the whole feed to a caller who believed they had narrowed it.
+      const query = new URLSearchParams({
+        bucket,
+        ...(chain ? { chain } : {}),
+        ...(where ? { where } : {}),
+        ...(sort ? { sort } : {}),
+        ...(fields ? { fields } : {}),
+        ...(limit ? { limit } : {}),
+      })
       return {
         url: `${base}/api/v1/markets/feed?${query.toString()}`,
         init: { method: "GET", headers: jsonHeaders() },
@@ -356,6 +373,24 @@ const tokenForensicsShape = {
 const getFeedShape = {
   bucket: z.enum(["new", "graduated", "onfire", "bluechip"]),
   chain: z.string().optional().describe("Optional chain filter"),
+  where: z
+    .string()
+    .optional()
+    .describe(
+      'JSON filter, e.g. {"marketCap":{"lt":150000},"liquidityUsd":{"gte":25000},"mintAuthorityDisabled":{"eq":true}}. ' +
+        "Comparators: eq, ne, lt, lte, gt, gte, present. An ABSENT field satisfies none of them except " +
+        "present:false, so a filter for mintAuthorityDisabled eq true returns only tokens that actually say " +
+        "true, never ones where the flag is simply missing. Use present:false to find the tokens with no data.",
+    ),
+  sort: z.string().optional().describe('Sort as "field" or "field:asc" / "field:desc". A bare field means desc.'),
+  fields: z
+    .string()
+    .optional()
+    .describe(
+      "Comma-separated fields to return, e.g. symbol,marketCap,liquidityUsd. chain, address and symbol always " +
+        "ride along. Cuts a 135KB response to a couple of KB.",
+    ),
+  limit: z.string().optional().describe("Max rows to return, 1-200."),
 }
 
 // The activity report body is a passthrough: the API is the authoritative validator, and its
@@ -587,7 +622,15 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "This indexes the WIDER market, not just Candle's own launches, so rows carry a " +
         "`launchpad` (pump.fun, pons.family, ...). A row appearing here does NOT mean Candle " +
         "has a market for it: candle_get_market and candle_token_forensics can legitimately " +
-        "answer MARKET_NOT_FOUND for a mint this returned.",
+        "answer MARKET_NOT_FOUND for a mint this returned.\n\n" +
+        "Filter, sort and pick fields SERVER-SIDE rather than reading the whole feed: an " +
+        "unfiltered response is around 135KB and will not fit in a tool result. See `where`, " +
+        "`sort` and `fields`.\n\n" +
+        "One rule to know before screening on safety: a missing field is NOT a false one. " +
+        "mintAuthorityDisabled and freezeAuthorityDisabled are absent on a real share of rows, " +
+        "and absent means nobody checked, not that the authority is disabled. `where` never lets " +
+        'an absent field satisfy a comparison, so {"mintAuthorityDisabled":{"eq":true}} returns ' +
+        "only tokens that actually say so.",
       inputSchema: getFeedShape,
     },
     async (args) => callAndRelay("candle_get_feed", args, cfg),
