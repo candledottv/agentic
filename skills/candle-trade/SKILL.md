@@ -39,6 +39,25 @@ MCP server anywhere: the CLI and MCP default to the alpha API host
 (`https://api.alpha.candle.tv`), where the trade routes run today. Set `CANDLE_API_URL` only to
 point at a different deployment.
 
+## Rehearse first
+
+`candle_trade` takes `paper: true`. The request runs through every admission rule a live trade runs
+through, the same planner, the same spend gate, the same key cap, the same loss limits, and records
+what it was quoted. Nothing is broadcast and no funds move.
+
+Use it before the first live trade of a new strategy, and any time you are unsure a trade would be
+admitted at all. Finding out that a key cap or a loss limit refuses you is much cheaper this way
+than by having the live call fail halfway.
+
+Two things to hold onto about a paper fill:
+
+- **It is optimistic by construction.** It books the price it was quoted, and a real fill arrives
+  at whatever the pool gave you. So paper profit is systematically better than live profit, and the
+  gap between a paper arm and a live one IS your execution cost, which is otherwise hard to see.
+- **It never appears in your public record.** Paper fills are kept apart from verified trades on
+  purpose: the whole value of a Candle trading record is that it is derived from trades that
+  actually happened.
+
 ## The workflow
 
 0. **If the user gave you only a contract address**, call `candle_resolve_token` with it first.

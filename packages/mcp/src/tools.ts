@@ -498,6 +498,16 @@ const tradeShape = {
       "Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " +
         "SAME id is safe (idempotent replay); a new id is a SECOND trade.",
     ),
+  paper: z
+    .boolean()
+    .optional()
+    .describe(
+      "Rehearse instead of trading. The request passes every admission rule a live trade passes " +
+        "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " +
+        "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " +
+        "before risking anything on it. A paper fill is optimistic by construction: it books the " +
+        "quoted price, so the gap between a paper arm and a live one IS the execution cost.",
+    ),
 }
 
 // `buyAmount` (raw base units) is destructured out rather than spread in: this tool's one seed
@@ -858,6 +868,9 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "Arguments: `mint` and `side` are required. Amounts are DECIMAL, never raw base units " +
         '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' +
         "position.\n\n" +
+        "Pass `paper: true` to rehearse: every admission rule runs and the quote is recorded, but " +
+        "nothing broadcasts and no funds move. Do this before the first live trade of a new " +
+        "strategy, and whenever you are unsure a trade would be admitted at all.\n\n" +
         "After the call:\n" +
         "- A timeout is not a failure. Retry with the SAME clientTradeId from the result -- it " +
         "coalesces the duplicate. A NEW id is a SECOND trade, and that is how you double-spend.\n" +

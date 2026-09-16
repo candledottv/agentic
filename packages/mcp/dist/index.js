@@ -106,7 +106,7 @@ function percentOfBalance(balanceRaw, percent) {
 import { randomUUID } from "node:crypto";
 
 // src/version.ts
-var SERVER_VERSION = "0.8.0";
+var SERVER_VERSION = "0.9.0";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -315,7 +315,8 @@ async function executeTrade(args, cfg, doFetch) {
     amountRaw,
     payer: { type: "main" },
     ...args.quoteAsset !== undefined ? { quoteAsset: args.quoteAsset } : {},
-    ...args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {}
+    ...args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {},
+    ...args.paper === true ? { paper: true } : {}
   }, doFetch);
   if ("thrown" in posted)
     return transportError("clientTradeId", clientTradeId, posted.thrown);
@@ -752,7 +753,8 @@ var tradeShape = {
   percent: z.number().optional().describe("Sells only: sell this percent (integer 1-100) of the wallet's holding, on either chain."),
   quoteAsset: z.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' + "to an arbitrary mint Candle never launched (Pro/Max) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
   maxSlippageBps: z.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
-  clientTradeId: z.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade.")
+  clientTradeId: z.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade."),
+  paper: z.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost.")
 };
 var { buyAmount: _rawBuyAmount, ...seedableLaunchShape } = launchTokenShape;
 var launchAndSeedShape = {
@@ -910,6 +912,8 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 ` + "3. candle_token_forensics  -- before you quote or buy anything. It returns a risk tier " + "and per-factor reasons. MARKET_NOT_FOUND there means Candle has no market for the " + `token, NOT that the token is clean.
 
 ` + "Arguments: `mint` and `side` are required. Amounts are DECIMAL, never raw base units " + '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' + `position.
+
+` + "Pass `paper: true` to rehearse: every admission rule runs and the quote is recorded, but " + "nothing broadcasts and no funds move. Do this before the first live trade of a new " + `strategy, and whenever you are unsure a trade would be admitted at all.
 
 ` + `After the call:
 ` + "- A timeout is not a failure. Retry with the SAME clientTradeId from the result -- it " + `coalesces the duplicate. A NEW id is a SECOND trade, and that is how you double-spend.

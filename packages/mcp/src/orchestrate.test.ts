@@ -180,6 +180,70 @@ describe("executeTrade: buys", () => {
   })
 })
 
+describe("executeTrade: paper mode", () => {
+  /*
+    Paper existed on the API and was reachable from nothing an agent could call, so an agent had
+    no way to rehearse a strategy before putting money behind it. The flag is the whole feature;
+    everything else about the request is deliberately identical, because a paper trade is only
+    worth anything if the SAME admission rules ran.
+  */
+  test("paper: true reaches the API", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+      "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
+    })
+    await executeTrade({ mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "p-1", paper: true }, CFG, fetch)
+    expect(JSON.parse(String(calls[1]?.init?.body)).paper).toBe(true)
+  })
+
+  test("the rest of the request is byte-identical to a live one, so the same rules run", async () => {
+    const bodies: string[] = []
+    for (const paper of [undefined, true]) {
+      const { calls, fetch } = fakeFetch({
+        "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+        "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
+      })
+      await executeTrade(
+        { mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "same", ...(paper ? { paper } : {}) },
+        CFG,
+        fetch,
+      )
+      const parsed = JSON.parse(String(calls[1]?.init?.body))
+      delete parsed.paper
+      bodies.push(JSON.stringify(parsed))
+    }
+    expect(bodies[0]).toBe(bodies[1])
+  })
+
+  /*
+    The word "paper" must not appear in the body of a live trade. It is exactly the string someone
+    greps for when they need to know whether real money moved, and a `paper: false` riding along
+    on every live request would make that search useless.
+  */
+  test("a live trade carries no paper key at all, not paper: false", async () => {
+    for (const args of [{}, { paper: false as const }]) {
+      const { calls, fetch } = fakeFetch({
+        "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+        "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
+      })
+      await executeTrade({ mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "live", ...args }, CFG, fetch)
+      const raw = String(calls[1]?.init?.body)
+      expect(raw).not.toContain("paper")
+      expect(JSON.parse(raw)).not.toHaveProperty("paper")
+    }
+  })
+
+  test("paper works on a sell too, since rehearsing an exit is the half that matters", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+      "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
+    })
+    await executeTrade({ mint: "M1nt", side: "sell", amount: "100", clientTradeId: "p-2", paper: true }, CFG, fetch)
+    const body = JSON.parse(String(calls[1]?.init?.body))
+    expect(body).toMatchObject({ side: "sell", paper: true })
+  })
+})
+
 describe("executeTrade: sells", () => {
   test("a sell with amount reads market decimals then trades", async () => {
     const { calls, fetch } = fakeFetch({

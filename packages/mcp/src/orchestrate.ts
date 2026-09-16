@@ -197,6 +197,8 @@ export interface TradeArgs {
   quoteAsset?: string
   maxSlippageBps?: number
   clientTradeId?: string
+  /** Rehearse: run every admission rule, record the quote, broadcast nothing. */
+  paper?: boolean
 }
 
 export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch: FetchLike): Promise<ToolText> {
@@ -320,6 +322,11 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       payer: { type: "main" },
       ...(args.quoteAsset !== undefined ? { quoteAsset: args.quoteAsset } : {}),
       ...(args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {}),
+      // Forwarded only when the caller actually asked for it. Sending `paper: false` explicitly
+      // would be identical in effect but would put the word "paper" in the body of every live
+      // trade, which is exactly the string someone greps for when working out whether real money
+      // moved.
+      ...(args.paper === true ? { paper: true } : {}),
     },
     doFetch,
   )

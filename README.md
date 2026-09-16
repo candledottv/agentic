@@ -195,9 +195,17 @@ Five cover the surface: what you can call, and how to call it.
 - [`skills/candle-webhooks`](skills/candle-webhooks/SKILL.md): register a webhook endpoint and
   verify signed event deliveries instead of polling.
 
-Two more cover what the surface will not tell you: how automated trading on it actually goes
-wrong, and how to decide whether a strategy is worth running at all. Both are written from
-production failures rather than from the API shape, which is why they read differently.
+Three more cover what the surface will not tell you: when to refuse a trade, how automated trading
+on it actually goes wrong, and how to decide whether a strategy is worth running at all. All three
+are written from production failures rather than from the API shape, which is why they read
+differently.
+
+- [`skills/candle-risk-gate`](skills/candle-risk-gate/SKILL.md): the three refusals a real buy
+  meets. Gate the token on forensics AND on its coverage, because a check that could not run is
+  not a check that passed. Decide the exit before the entry and attach it to the entry, since the
+  gap between a fill and a hand-placed stop is where a position is naked. Judge a trader on
+  whether you can capture their edge, not on whether they made money: a wallet that is out in nine
+  seconds is profitable and uncopyable at once.
 
 - [`skills/candle-trade-execution`](skills/candle-trade-execution/SKILL.md): position accounting,
   sells that fail forever, retry loops on a live wallet, and reading an error's structure instead
