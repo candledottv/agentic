@@ -106,3 +106,45 @@ describe("wallets export", () => {
     expect(stdout.text).not.toContain(keys[0] as string)
   })
 })
+
+// ── Ember Phase 1 (BE-94, T26): the hot store has no plaintext export path ─────────────────────
+
+describe("wallets export refuses the Ember hot store", () => {
+  test("--yes against hot-wallets.enc prints no key and names the sweep", async () => {
+    const { serializeKeystore, deriveKeystoreKey, KEYSTORE_ITERATIONS } = await import("../wallet-keystore")
+    const salt = crypto.getRandomValues(new Uint8Array(16))
+    const key = await deriveKeystoreKey(PASSPHRASE, salt, KEYSTORE_ITERATIONS)
+    const raw = await serializeKeystore(
+      [
+        {
+          index: 0,
+          chain: "solana",
+          address: "HotAddr11111111111111111111111111111111111",
+          label: "hot-0",
+          createdAt: "2026-09-16T00:00:00.000Z",
+          privateKey: "5SecretThatMustNeverPrint",
+          imported: true,
+          hot: { network: "solana-mainnet" },
+        },
+      ],
+      key,
+      salt,
+      KEYSTORE_ITERATIONS,
+      "ember-hot",
+    )
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const deps = createTestDeps({
+      fetch: createRoutedFetch({}).fetch,
+      store: createFakeStore(),
+      stdout,
+      stderr,
+      readFile: async () => raw,
+      promptSecret: async () => PASSPHRASE,
+    })
+    const code = await run(["wallets", "export", "--index", "0", "--yes", "--keystore", "/x/hot-wallets.enc"], deps)
+    expect(code).toBe(1)
+    expect(stdout.text).not.toContain("5SecretThatMustNeverPrint")
+    expect(stderr.text).toContain("hot sweep")
+  })
+})

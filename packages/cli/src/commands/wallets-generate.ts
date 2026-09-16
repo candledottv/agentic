@@ -165,7 +165,7 @@ export async function walletsGenerate(args: string[], ctx: CommandContext): Prom
   let store: OpenKeystore
   if (existingRaw !== null) {
     try {
-      store = await readKeystore(existingRaw, passphrase.passphrase)
+      store = await readKeystore(existingRaw, passphrase.passphrase, { expectPurpose: "wallets" })
     } catch (error) {
       writeLocalFailure(
         deps,

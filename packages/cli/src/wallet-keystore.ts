@@ -22,7 +22,7 @@
  * file can be decrypted by anyone with the passphrase and any AES-GCM implementation, with no
  * dependency on this CLI continuing to exist.
  */
-import { chmod, mkdir, rename, writeFile } from "node:fs/promises"
+import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import type { WalletChain } from "./wallet-import"
@@ -36,6 +36,23 @@ export function defaultKeystorePath(env: Record<string, string | undefined>): st
   const dir = env.CANDLE_CONFIG_DIR?.trim() || join(homedir(), ".config", "candle")
   return join(dir, "wallets.enc")
 }
+
+/**
+ * Ember Phase 1 (BE-94, D3): the dedicated hot-wallet store, a SEPARATE file from wallets.enc with
+ * its own passphrase and a `purpose` marker in the header, so the legacy readers (`wallets export`,
+ * `wallets generate --resume`) refuse it and the `hot` commands refuse anything else.
+ */
+export function defaultHotKeystorePath(env: Record<string, string | undefined>): string {
+  const dir = env.CANDLE_CONFIG_DIR?.trim() || join(homedir(), ".config", "candle")
+  return join(dir, "hot-wallets.enc")
+}
+
+/** What a keystore file is FOR. Absent in every file written before Phase 1, which reads as `wallets`. */
+export type KeystorePurpose = "wallets" | "ember-hot"
+
+/** The Ember hot store accepts PBKDF2 iteration counts in this range and fails closed outside it (D3). */
+export const HOT_KEYSTORE_MIN_ITERATIONS = 210_000
+export const HOT_KEYSTORE_MAX_ITERATIONS = 2_100_000
 
 export const KEYSTORE_VERSION = 1
 /** Matches EncryptedFileSecretStore's constant. Persisted per file so raising it never orphans. */
@@ -62,6 +79,57 @@ export interface KeystoreEntry {
    */
   privyWalletId?: string
   importedAt?: string
+  /**
+   * Ember Phase 1 (BE-94): the hot-wallet grant this key backs. Lives INSIDE the sealed blob on
+   * purpose: the vault destination is what a sweep sends every asset to, and a cleartext side
+   * file could be edited by anything running as the user. Under the AEAD it is tamper-evident.
+   */
+  hot?: HotWalletMeta
+}
+
+export interface HotWalletMeta {
+  network: "solana-mainnet"
+  /** The human-approved sweep destination, pinned at enable. Never edited by an agent. */
+  vaultDestination?: string
+  /** The one API key the server bound this wallet to at import. */
+  boundKeyPrefix?: string
+  /** What the server's enable read-back established; only `verified-active` trades. */
+  remoteAuthority?: "verified-active" | "verified-denied" | "unknown" | "none"
+  enabledAt?: string
+  stopRequestedAt?: string
+  /**
+   * Every finalized sweep transaction this key ever signed, retained across runs (HW-07 operation
+   * evidence). A later `hot sweep` reconciles them: a recording outage, an interrupted run, or an
+   * emergency sweep followed by a verified disable all finish from here without another transfer.
+   */
+  sweepReceipts?: SweepReceiptRecord[]
+  /**
+   * Sweep transactions signed and handed to the RPC whose fate is not yet known: written BEFORE
+   * the broadcast, so a polling deadline, an ambiguous send, or a crash never loses the signature.
+   * The next run resolves each one (finalized -> receipt; failed or blockhash expired -> dropped
+   * and the balance swept again; still pending -> the run signs nothing new and stays residual).
+   */
+  sweepPending?: SweepPendingRecord[]
+  /** Set when the server accepted the sweep record (or already derived `swept`). */
+  sweptAt?: string
+}
+
+export interface SweepPendingRecord {
+  kind: "token" | "sol" | "close"
+  mint?: string
+  account?: string
+  amountRaw: string
+  signature: string
+  blockhash: string
+  submittedAt: string
+}
+
+export interface SweepReceiptRecord {
+  kind: "token" | "sol" | "close"
+  mint?: string
+  amountRaw: string
+  signature: string
+  finalizedAt: string
 }
 
 interface KeystoreFile {
@@ -73,6 +141,9 @@ interface KeystoreFile {
   cipher: "AES-256-GCM"
   iv: string
   ciphertext: string
+  /** Absent on legacy files (= "wallets"). Cleartext, and covered by nothing: it is a ROUTING hint
+   * for which command may open the file, not a security claim; the secrets stay under the AEAD. */
+  purpose?: KeystorePurpose
 }
 
 /** An opened keystore, carrying the derived key so rewrites do not re-run PBKDF2. */
@@ -110,6 +181,7 @@ export async function serializeKeystore(
   key: CryptoKey,
   salt: Uint8Array,
   iterations: number,
+  purpose?: KeystorePurpose,
 ): Promise<string> {
   // A fresh IV per write. Reusing one across rewrites under the same key would be a nonce reuse,
   // which for GCM is not a weakening but a break.
@@ -128,11 +200,22 @@ export async function serializeKeystore(
     cipher: "AES-256-GCM",
     iv: b64(iv),
     ciphertext: b64(new Uint8Array(sealed)),
+    ...(purpose !== undefined && purpose !== "wallets" ? { purpose } : {}),
   }
   return `${JSON.stringify(file, null, 2)}\n`
 }
 
-export async function readKeystore(raw: string, passphrase: string): Promise<OpenKeystore> {
+export async function readKeystore(
+  raw: string,
+  passphrase: string,
+  /**
+   * `expectPurpose` (Ember Phase 1): which kind of file the CALLER is allowed to open. A legacy
+   * reader passes "wallets" and is refused a hot store; a `hot` command passes "ember-hot" and is
+   * refused a legacy store. Omitted = no check (the pre-Phase-1 behavior, kept for the tests and
+   * tooling that read either).
+   */
+  opts: { expectPurpose?: KeystorePurpose } = {},
+): Promise<OpenKeystore> {
   let file: KeystoreFile
   try {
     file = JSON.parse(raw) as KeystoreFile
@@ -141,6 +224,31 @@ export async function readKeystore(raw: string, passphrase: string): Promise<Ope
   }
   if (file.version !== KEYSTORE_VERSION) {
     throw new Error(`Unsupported keystore version ${file.version}: this CLI writes version ${KEYSTORE_VERSION}.`)
+  }
+  const purpose: KeystorePurpose = file.purpose === "ember-hot" ? "ember-hot" : "wallets"
+  if (opts.expectPurpose !== undefined && purpose !== opts.expectPurpose) {
+    throw new Error(
+      purpose === "ember-hot"
+        ? "This is an Ember hot-wallet store (hot-wallets.enc). It has no export path; use: candle hot sweep."
+        : "This is not an Ember hot-wallet store. The hot commands only open hot-wallets.enc.",
+    )
+  }
+  if (purpose === "ember-hot") {
+    // Fail closed on anything the format does not promise (D3): a downgraded KDF, an absurd
+    // iteration count, or an algorithm swap must not be "repaired" by guessing.
+    if (file.kdf !== "PBKDF2-HMAC-SHA256" || file.cipher !== "AES-256-GCM") {
+      throw new Error("The hot-wallet store names an unsupported KDF or cipher; refusing to open it.")
+    }
+    if (
+      !Number.isInteger(file.iterations) ||
+      file.iterations < HOT_KEYSTORE_MIN_ITERATIONS ||
+      file.iterations > HOT_KEYSTORE_MAX_ITERATIONS
+    ) {
+      throw new Error(
+        `The hot-wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` +
+          `${HOT_KEYSTORE_MIN_ITERATIONS}-${HOT_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`,
+      )
+    }
   }
   const salt = unb64(file.salt)
   const key = await deriveKeystoreKey(passphrase, salt, file.iterations)
@@ -183,4 +291,77 @@ export async function writeKeystoreFile(path: string, contents: string): Promise
   // .tmp behind with a different mode.
   await chmod(tmpPath, 0o600)
   await rename(tmpPath, path)
+}
+
+/**
+ * Ember Phase 1 (BE-94, T28 "two writers cannot lose keys"): an advisory lock around a whole
+ * read-modify-write of one keystore file. `writeKeystoreFile`'s unique temp + rename makes each
+ * REPLACEMENT atomic, but two commands that both opened the store, both appended, and both renamed
+ * would each replace the other's entry with their own stale copy, and the second writer would
+ * silently delete the first writer's key. The lock is a directory beside the store (`mkdir` is
+ * atomic and fails EEXIST when it exists), held only across the re-read + merge + write, never
+ * across a prompt or a network call, so a normal hold is well under a second.
+ *
+ * A lock left behind by a crash is never broken automatically: breaking a live lock would reopen
+ * the exact race this exists to close. After `waitMs` of polling the caller gets
+ * `KeystoreLockedError` naming the lock path and, when readable, who took it and when, so a human
+ * can remove it once they know no other `candle hot` command is running.
+ */
+export class KeystoreLockedError extends Error {
+  constructor(
+    readonly lockPath: string,
+    readonly owner: string | null,
+  ) {
+    super(
+      `Another command holds the hot-wallet store lock at ${lockPath}` +
+        `${owner ? ` (${owner})` : ""}. If no other candle hot command is running, remove that directory and retry.`,
+    )
+    this.name = "KeystoreLockedError"
+  }
+}
+
+export function keystoreLockPath(path: string): string {
+  return `${path}.lock`
+}
+
+export async function withKeystoreLock<T>(
+  path: string,
+  clock: { now: () => number; sleep: (ms: number) => Promise<void> },
+  fn: () => Promise<T>,
+  opts: { waitMs?: number; pollMs?: number; owner?: string } = {},
+): Promise<T> {
+  const lockPath = keystoreLockPath(path)
+  const waitMs = opts.waitMs ?? 10_000
+  const pollMs = opts.pollMs ?? 100
+  await mkdir(dirname(path), { recursive: true })
+  const started = clock.now()
+  for (;;) {
+    try {
+      await mkdir(lockPath)
+      break
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") throw error
+      if (clock.now() - started >= waitMs) {
+        let owner: string | null = null
+        try {
+          owner = (await readFile(join(lockPath, "owner"), "utf8")).trim() || null
+        } catch {
+          owner = null
+        }
+        throw new KeystoreLockedError(lockPath, owner)
+      }
+      await clock.sleep(pollMs)
+    }
+  }
+  try {
+    // Best effort: who holds it, for the message a blocked operator reads. Not a correctness input.
+    await writeFile(
+      join(lockPath, "owner"),
+      `${opts.owner ?? `pid ${process.pid}`} since ${new Date().toISOString()}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    ).catch(() => {})
+    return await fn()
+  } finally {
+    await rm(lockPath, { recursive: true, force: true })
+  }
 }

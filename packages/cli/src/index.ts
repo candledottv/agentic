@@ -24,6 +24,7 @@ import { pathToFileURL } from "node:url"
 import { resolveApiUrl } from "./client"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { doctor } from "./commands/doctor"
+import { hotDisable, hotEnable, hotFund, hotNew, hotStatus, hotSweep } from "./commands/hot"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { keysWallets } from "./commands/keys-wallets"
 import { mcp, mcpActsAsIdentity } from "./commands/mcp"
@@ -100,6 +101,12 @@ Commands:
   wallet generate --chain <solana|hood|evm> --count <n>            Generate wallets, seal them locally, then import
   wallet export --index <n> [--yes]                                Print one generated key from the keystore
   wallet revoke <wallet-id>                                       Revoke a linked wallet
+  hot new [--label <name>]                                        Ember: seal a fresh dedicated Solana hot key locally
+  hot enable <address> --vault <address>                          Ember: delegate a hot key to this profile's agent, pin the sweep vault
+  hot fund <address> --amount <n> [--asset SOL|USDC]              Ember: print the funding instruction for your vault to sign
+  hot status <address> [--rpc-url <url>]                          Ember: server lifecycle state and on-chain balances
+  hot disable <address>                                           Ember: stop the agent; verified stop or pending, never "done" on a 200
+  hot sweep <address> --rpc-url <url> [--emergency]               Ember: sign locally and move everything to the pinned vault
   profile list                                                    Profiles on this machine, with cached accounts
   profile add <name> --api-url <url>                              Create a profile before authenticating it
   profile use <name>                                              Make a profile the active one
@@ -149,6 +156,16 @@ const COMMANDS: Record<string, CommandRoute> = {
       export: walletsExport,
     },
     bare: wallets,
+  },
+  hot: {
+    subcommands: {
+      new: hotNew,
+      enable: hotEnable,
+      fund: hotFund,
+      status: hotStatus,
+      disable: hotDisable,
+      sweep: hotSweep,
+    },
   },
   profile: {
     subcommands: { list: profileList, add: profileAdd, use: profileUse, rename: profileRename, remove: profileRemove },

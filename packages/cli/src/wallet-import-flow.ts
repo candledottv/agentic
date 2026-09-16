@@ -35,6 +35,12 @@ export interface ImportSubmitResponse {
   address: string
   chain: WalletChain
   privyWalletId: string
+  /** Ember Phase 1: present only for `profile: "ember-hot"` imports. */
+  profile?: "ember-hot"
+  boundKeyPrefix?: string
+  vaultDestination?: string
+  remoteAuthority?: "verified-active" | "verified-denied" | "unknown" | "none"
+  reasonCode?: string
 }
 
 type ApiResult = Awaited<ReturnType<typeof apiRequest>>
@@ -61,10 +67,14 @@ export interface ImportFlowParams {
   apiKey: string
   apiUrl: string
   deps: Deps
+  /** Ember Phase 1 (BE-94): the dedicated hot-wallet profile and its pinned sweep destination.
+   * Forwarded to import/submit verbatim; the server validates and records them. */
+  profile?: "ember-hot"
+  vaultDestination?: string
 }
 
 export async function runImportFlow(params: ImportFlowParams): Promise<ImportFlowResult> {
-  const { chain, address, privateKey, label, apiKey, apiUrl, deps } = params
+  const { chain, address, privateKey, label, apiKey, apiUrl, deps, profile, vaultDestination } = params
   const credentials = { apiKey }
 
   const init = await apiRequest("/api/v1/agent/wallets/import/init", {
@@ -99,6 +109,8 @@ export async function runImportFlow(params: ImportFlowParams): Promise<ImportFlo
       encapsulatedKey,
       signerPublicKey: signer.publicKeyDerBase64,
       ...(label !== undefined ? { label } : {}),
+      ...(profile !== undefined ? { profile } : {}),
+      ...(vaultDestination !== undefined ? { vaultDestination } : {}),
     },
     auth: "key",
     credentials,

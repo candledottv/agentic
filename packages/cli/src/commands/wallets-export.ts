@@ -63,7 +63,7 @@ export async function walletsExport(args: string[], ctx: CommandContext): Promis
 
   let entries: Awaited<ReturnType<typeof readKeystore>>["entries"]
   try {
-    entries = (await readKeystore(raw, passphrase)).entries
+    entries = (await readKeystore(raw, passphrase, { expectPurpose: "wallets" })).entries
   } catch (error) {
     writeLocalFailure(
       deps,
