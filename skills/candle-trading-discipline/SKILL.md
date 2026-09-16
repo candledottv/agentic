@@ -97,6 +97,13 @@ each is independent:
 **Zero is a real setting.** Zero consecutive losses means stop on the first loss. It does not mean
 unset. Never decide any of these with a truthiness check.
 
+**These bounds are the real protection, not your stop-loss orders.** A standing stop on Candle
+flips to `triggered` and waits for your agent to complete the sale; it does not sell by itself, and
+it needs a linked imported wallet, which the default main-wallet trading path does not have. The
+loss limits above are enforced by the rail on the way IN to every trade, so they hold whether or
+not your agent is awake. That asymmetry is the reason to set them rather than trusting an exit
+order to save you.
+
 **A volume cap is not a loss cap.** A key with a $10 per-trade cap and a $500 daily volume cap can
 round-trip fifty losing scalps inside every limit it has and finish the day with an empty wallet.
 Volume is what gets spent; loss is what does not come back. Set both.

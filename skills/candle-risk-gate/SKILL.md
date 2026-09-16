@@ -76,6 +76,28 @@ Rules a bracket must satisfy, all of which are refused rather than repaired:
 Every leg either lands or none does. If a bracket is refused, you are holding no exits, not some
 of them, and you should know which.
 
+### What a standing order on Candle does NOT do
+
+Read this before you rely on one. Two limits, both verified against the running product:
+
+**A triggered order does not sell.** The keeper makes exactly one decision, whether the price
+condition holds, and exactly one write, flipping the order's status to `triggered`. It never builds
+a transaction and never signs. YOUR AGENT then has to notice and complete the trade through
+`/orders/:clientOrderId/fill`. Past the expiry, a triggered order is abandoned rather than
+executed.
+
+So a stop here is an alarm, not an automatic exit. If your agent is offline when the price breaks,
+nothing sells. Plan for that: it changes what a stop is worth, and it means "I attached a stop" is
+not the same sentence as "my downside is capped".
+
+**A standing order needs a linked wallet.** Limit, stop and trailing orders all require a
+spend-capable imported wallet. The main embedded wallet that `candle_trade` spends from by default
+cannot back one. So on the default trading path there is currently no standing stop available at
+all, and the only exit is your agent selling.
+
+Neither of these is a reason to skip the exit. They are reasons to know what the exit is: a
+scheduled prompt to act, delivered to something that has to be alive to receive it.
+
 ## 3. Judge a trader on whether you can follow them
 
 A published record answers whether an account made money. That is not the question you are asking
