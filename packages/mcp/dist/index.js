@@ -106,7 +106,7 @@ function percentOfBalance(balanceRaw, percent) {
 import { randomUUID } from "node:crypto";
 
 // src/version.ts
-var SERVER_VERSION = "0.7.0";
+var SERVER_VERSION = "0.8.0";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
