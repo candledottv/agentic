@@ -368,10 +368,32 @@ describe("wallets signer column", () => {
  * this account's own rows (an already-revoked row comes back unchanged, 2xx), and answers 404
  * only for a wallet that does not exist or belongs to someone else.
  */
+const QUARANTINED = {
+  success: true,
+  state: "quarantined",
+  stopAcknowledged: true,
+  remoteAuthority: "verified-denied",
+  evidenceObservedAt: 1_726_000_000_000,
+  complete: true,
+  retryable: false,
+  policyNeutralized: true,
+}
+const PENDING = {
+  success: true,
+  state: "disable-pending",
+  stopAcknowledged: true,
+  remoteAuthority: "unknown",
+  evidenceObservedAt: null,
+  complete: false,
+  retryable: true,
+  reasonCode: "READ_BACK_UNAVAILABLE",
+  policyNeutralized: false,
+}
+
 describe("wallets revoke and the stored signer", () => {
-  test("a 2xx revoke deletes the local signer, which is what makes the stale hint true", async () => {
+  test("a verified (200 quarantined) revoke deletes the local signer, which is what makes the stale hint true", async () => {
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_stale": () => jsonResponse(200, { success: true }),
+      "/api/v1/agent/wallets/lw_stale": () => jsonResponse(200, QUARANTINED),
     })
     const store = createFakeStore({ api_key: "ck_live_x", wallet_signer_lw_stale: "c2lnbmVyLWJvZHk=" })
     const stdout = createCapture()
@@ -379,8 +401,80 @@ describe("wallets revoke and the stored signer", () => {
     const code = await run(["wallets", "revoke", "lw_stale"], createTestDeps({ fetch, store, stdout }))
 
     expect(code).toBe(0)
+    expect(stdout.text).toContain("quarantined")
     // The dead end the hint would otherwise point into: a stale row nothing can clear.
     expect(await store.get("wallet_signer_lw_stale")).toBeNull()
+  })
+
+  // Ember Phase 0 (BE-93, T03/T23): a 202 disable-pending is an ACCEPTED stop whose remote
+  // enforcement is unconfirmed. The command must not print "Revoked", must exit 3, and must leave
+  // the signer where it is until the stop is verified.
+  test("a 202 disable-pending revoke exits 3, says pending, names the reason, and keeps the signer", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_pending": () => jsonResponse(202, PENDING),
+    })
+    const store = createFakeStore({ api_key: "ck_live_x", wallet_signer_lw_pending: "c2lnbmVyLWJvZHk=" })
+    const stdout = createCapture()
+
+    const code = await run(["wallets", "revoke", "lw_pending"], createTestDeps({ fetch, store, stdout }))
+
+    expect(code).toBe(3)
+    expect(stdout.text).toContain("verification is pending")
+    expect(stdout.text).toContain("READ_BACK_UNAVAILABLE")
+    expect(stdout.text).toContain("remains hot")
+    expect(stdout.text).not.toContain("Revoked linked wallet")
+    expect(await store.get("wallet_signer_lw_pending")).toBe("c2lnbmVyLWJvZHk=")
+  })
+
+  test("an older API that answers a bare success:true is treated as unverified: exit 3, signer kept", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_legacy": () => jsonResponse(200, { success: true, policyNeutralized: true }),
+    })
+    const store = createFakeStore({ api_key: "ck_live_x", wallet_signer_lw_legacy: "c2lnbmVyLWJvZHk=" })
+    const stdout = createCapture()
+
+    const code = await run(["wallets", "revoke", "lw_legacy"], createTestDeps({ fetch, store, stdout }))
+
+    expect(code).toBe(3)
+    expect(await store.get("wallet_signer_lw_legacy")).toBe("c2lnbmVyLWJvZHk=")
+  })
+
+  test("--json carries the typed state through and the exit code still follows it", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_pending": () => jsonResponse(202, PENDING),
+    })
+    const store = createFakeStore({ api_key: "ck_live_x" })
+    const stdout = createCapture()
+
+    const code = await run(["wallets", "revoke", "lw_pending", "--json"], createTestDeps({ fetch, store, stdout }))
+
+    expect(code).toBe(3)
+    const parsed = JSON.parse(stdout.text.trim())
+    expect(parsed.revoked).toBe("lw_pending")
+    expect(parsed.state).toBe("disable-pending")
+    expect(parsed.complete).toBe(false)
+  })
+
+  test("an attribution-only row (remoteAuthority none) is complete on the spot", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_attr": () =>
+        jsonResponse(200, {
+          success: true,
+          state: "quarantined",
+          stopAcknowledged: true,
+          remoteAuthority: "none",
+          evidenceObservedAt: null,
+          complete: true,
+          retryable: false,
+        }),
+    })
+    const store = createFakeStore({ api_key: "ck_live_x" })
+    const stdout = createCapture()
+
+    const code = await run(["wallets", "revoke", "lw_attr"], createTestDeps({ fetch, store, stdout }))
+
+    expect(code).toBe(0)
+    expect(stdout.text).toContain("attribution-only")
   })
 
   test("a 404 revoke leaves the signer alone and exits 1: that wallet may be another profile's", async () => {

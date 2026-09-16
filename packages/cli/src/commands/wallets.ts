@@ -576,18 +576,61 @@ export async function walletsRevoke(args: string[], ctx: CommandContext): Promis
     return 1
   }
 
-  // Best-effort cleanup of the stored signer: the wallet is gone either way, and a store
-  // without keychain access should not turn a successful revoke into a failure.
-  try {
-    await deps.store.delete(walletSignerRef(walletId))
-  } catch {
-    // The revoke succeeded; a stale signer entry is harmless.
+  // Ember Phase 0 (BE-93): the API now answers with a typed lifecycle state. `quarantined` means
+  // Privy READ BACK an empty policy still attached to the wallet: the stop is verified. Anything
+  // else (`disable-pending`, or an older API that sent only `success: true`) means the stop was
+  // accepted at Candle but remote enforcement is unconfirmed, and this command must say so and
+  // exit non-zero (3, the pending code) rather than print "Revoked" and exit 0.
+  const outcome = readDisableOutcome(result.body)
+
+  // Best-effort cleanup of the stored signer, but ONLY once the stop is verified: while the remote
+  // side is unconfirmed the signer is still the operator's evidence of what was registered, and
+  // deleting it is hygiene the contract defers until reconciliation (SC-11: "local deletion is
+  // hygiene, not revocation evidence").
+  if (outcome.complete) {
+    try {
+      await deps.store.delete(walletSignerRef(walletId))
+    } catch {
+      // The revoke succeeded; a stale signer entry is harmless.
+    }
   }
 
   if (json) {
     deps.stdout.write(`${JSON.stringify({ revoked: walletId, ...(result.body as object) })}\n`)
+    return outcome.complete ? 0 : 3
+  }
+  if (outcome.complete) {
+    deps.stdout.write(
+      outcome.remoteAuthority === "none"
+        ? `Revoked linked wallet ${walletId} (attribution-only link; no agent signer to neutralize).\n`
+        : `Revoked linked wallet ${walletId}. Remote signing denial verified; the wallet is quarantined.\n`,
+    )
     return 0
   }
-  deps.stdout.write(`Revoked linked wallet ${walletId}\n`)
-  return 0
+  deps.stdout.write(
+    `Agent trading stopped at Candle for ${walletId}. Remote policy verification is pending` +
+      `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.\n` +
+      `Funds remain in the wallet and this address remains hot. Re-run: candle wallets revoke ${walletId}\n`,
+  )
+  return 3
+}
+
+/**
+ * The typed disable body (apps/api DELETE /wallets/:id, Ember Phase 0). Defensive on purpose: an
+ * older API answers `{ success: true, policyNeutralized?: boolean }` with no `state`, and that
+ * must read as UNVERIFIED (pending), not as complete -- the whole point of the typed state is that
+ * a bare 200 is not evidence.
+ */
+export function readDisableOutcome(body: unknown): {
+  complete: boolean
+  state: string
+  remoteAuthority: string
+  reasonCode?: string
+} {
+  const record = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {}
+  const state = typeof record.state === "string" ? record.state : "unknown"
+  const remoteAuthority = typeof record.remoteAuthority === "string" ? record.remoteAuthority : "unknown"
+  const reasonCode = typeof record.reasonCode === "string" ? record.reasonCode : undefined
+  const complete = record.complete === true && state === "quarantined"
+  return { complete, state, remoteAuthority, ...(reasonCode !== undefined ? { reasonCode } : {}) }
 }

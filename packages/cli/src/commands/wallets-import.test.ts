@@ -435,8 +435,20 @@ describe("wallets import", () => {
 
 describe("wallets revoke", () => {
   test("revokes by wallet id and removes the stored signer for it", async () => {
+    // Ember Phase 0 (BE-93): the API answers with a typed lifecycle state; only a verified
+    // `quarantined` stop clears the local signer (see wallets.test.ts for the pending case).
     const { fetch, calls } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_test0001": () => jsonResponse(200, { success: true, policyNeutralized: true }),
+      "/api/v1/agent/wallets/lw_test0001": () =>
+        jsonResponse(200, {
+          success: true,
+          state: "quarantined",
+          stopAcknowledged: true,
+          remoteAuthority: "verified-denied",
+          evidenceObservedAt: 1_726_000_000_000,
+          complete: true,
+          retryable: false,
+          policyNeutralized: true,
+        }),
     })
     const store = createFakeStore({
       api_key: "ck_live_x",

@@ -18851,7 +18851,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.7.0";
+var SERVER_VERSION = "0.8.0";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -19307,8 +19307,15 @@ function buildRequest(name, args, cfg) {
       };
     }
     case "candle_get_feed": {
-      const { bucket, chain: chain2 } = args;
-      const query = new URLSearchParams({ bucket, ...chain2 ? { chain: chain2 } : {} });
+      const { bucket, chain: chain2, where, sort, fields, limit } = args;
+      const query = new URLSearchParams({
+        bucket,
+        ...chain2 ? { chain: chain2 } : {},
+        ...where ? { where } : {},
+        ...sort ? { sort } : {},
+        ...fields ? { fields } : {},
+        ...limit ? { limit } : {}
+      });
       return {
         url: `${base2}/api/v1/markets/feed?${query.toString()}`,
         init: { method: "GET", headers: jsonHeaders() }
@@ -19424,14 +19431,16 @@ function registerTools(server, env = process.env) {
     title: "Token forensics",
     description: `Gate a buy before making it: deployer history, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), holder concentration, and a risk tier (LOW/MODERATE/HIGH/CRITICAL) with per-factor reasons. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.
 
-MARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe.`,
+MARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed answers this way.`,
     inputSchema: tokenForensicsShape
   }, async (args) => callAndRelay("candle_token_forensics", args, cfg));
   register("candle_get_feed", {
     title: "Get a token feed",
     description: "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip. Reads " + `only; moves nothing. No key needed. Start here when nobody has named a token.
 
-` + "This indexes the WIDER market, not just Candle's own launches, so rows carry a " + "`launchpad` (pump.fun, pons.family, ...). A row appearing here does NOT mean Candle " + "has a market for it: candle_get_market and candle_token_forensics can legitimately " + "answer MARKET_NOT_FOUND for a mint this returned.",
+` + "This indexes the WIDER market, not just Candle's own launches, so rows carry a " + "`launchpad` (pump.fun, pons.family, ...). A row appearing here does NOT mean Candle " + "has a market for it: candle_get_market and candle_token_forensics can legitimately " + `answer MARKET_NOT_FOUND for a mint this returned.
+
+` + "Filter, sort and pick fields SERVER-SIDE rather than reading the whole feed: an " + "unfiltered response is around 135KB and will not fit in a tool result. See `where`, " + "`sort` and `fields`.\n\n" + "One rule to know before screening on safety: a missing field is NOT a false one. " + "mintAuthorityDisabled and freezeAuthorityDisabled are absent on a real share of rows, " + "and absent means nobody checked, not that the authority is disabled. `where` never lets " + 'an absent field satisfy a comparison, so {"mintAuthorityDisabled":{"eq":true}} returns ' + "only tokens that actually say so.",
     inputSchema: getFeedShape
   }, async (args) => callAndRelay("candle_get_feed", args, cfg));
   register("candle_report_activity", {
@@ -19607,7 +19616,11 @@ var init_tools = __esm(() => {
   };
   getFeedShape = {
     bucket: exports_external.enum(["new", "graduated", "onfire", "bluechip"]),
-    chain: exports_external.string().optional().describe("Optional chain filter")
+    chain: exports_external.string().optional().describe("Optional chain filter"),
+    where: exports_external.string().optional().describe('JSON filter, e.g. {"marketCap":{"lt":150000},"liquidityUsd":{"gte":25000},"mintAuthorityDisabled":{"eq":true}}. ' + "Comparators: eq, ne, lt, lte, gt, gte, present. An ABSENT field satisfies none of them except " + "present:false, so a filter for mintAuthorityDisabled eq true returns only tokens that actually say " + "true, never ones where the flag is simply missing. Use present:false to find the tokens with no data."),
+    sort: exports_external.string().optional().describe('Sort as "field" or "field:asc" / "field:desc". A bare field means desc.'),
+    fields: exports_external.string().optional().describe("Comma-separated fields to return, e.g. symbol,marketCap,liquidityUsd. chain, address and symbol always " + "ride along. Cuts a 135KB response to a couple of KB."),
+    limit: exports_external.string().optional().describe("Max rows to return, 1-200.")
   };
   reportActivityShape = {
     chain: exports_external.string().describe('"solana" or "hood"'),
@@ -25764,17 +25777,35 @@ async function walletsRevoke(args, ctx) {
     writeFailure(deps, result, { apiUrl, authType: "key" }, json);
     return 1;
   }
-  try {
-    await deps.store.delete(walletSignerRef(walletId));
-  } catch {}
+  const outcome = readDisableOutcome(result.body);
+  if (outcome.complete) {
+    try {
+      await deps.store.delete(walletSignerRef(walletId));
+    } catch {}
+  }
   if (json) {
     deps.stdout.write(`${JSON.stringify({ revoked: walletId, ...result.body })}
 `);
+    return outcome.complete ? 0 : 3;
+  }
+  if (outcome.complete) {
+    deps.stdout.write(outcome.remoteAuthority === "none" ? `Revoked linked wallet ${walletId} (attribution-only link; no agent signer to neutralize).
+` : `Revoked linked wallet ${walletId}. Remote signing denial verified; the wallet is quarantined.
+`);
     return 0;
   }
-  deps.stdout.write(`Revoked linked wallet ${walletId}
+  deps.stdout.write(`Agent trading stopped at Candle for ${walletId}. Remote policy verification is pending` + `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
+` + `Funds remain in the wallet and this address remains hot. Re-run: candle wallets revoke ${walletId}
 `);
-  return 0;
+  return 3;
+}
+function readDisableOutcome(body) {
+  const record = body !== null && typeof body === "object" ? body : {};
+  const state = typeof record.state === "string" ? record.state : "unknown";
+  const remoteAuthority = typeof record.remoteAuthority === "string" ? record.remoteAuthority : "unknown";
+  const reasonCode = typeof record.reasonCode === "string" ? record.reasonCode : undefined;
+  const complete = record.complete === true && state === "quarantined";
+  return { complete, state, remoteAuthority, ...reasonCode !== undefined ? { reasonCode } : {} };
 }
 
 // src/wallet-keystore.ts
