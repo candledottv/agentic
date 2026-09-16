@@ -195,8 +195,8 @@ Five cover the surface: what you can call, and how to call it.
 - [`skills/candle-webhooks`](skills/candle-webhooks/SKILL.md): register a webhook endpoint and
   verify signed event deliveries instead of polling.
 
-Three more cover what the surface will not tell you: when to refuse a trade, how automated trading
-on it actually goes wrong, and how to decide whether a strategy is worth running at all. All three
+Four more cover what the surface will not tell you: when to refuse a trade, how automated trading
+on it actually goes wrong, and how to decide whether a strategy is worth running at all. All four
 are written from production failures rather than from the API shape, which is why they read
 differently.
 
@@ -212,6 +212,12 @@ differently.
   of its prose. Every rule in it cost real money before it was a rule. The headline one: a quote
   is not a fill, and booking `expectedOutRaw` as a quantity drifts your ledger from the wallet by
   the buy's realised slippage.
+- [`skills/candle-trading-discipline`](skills/candle-trading-discipline/SKILL.md): how much to bet,
+  when to stop, and the arithmetic that decides whether a strategy can be profitable at all. Work
+  out what a round trip costs before trading, because on a Free tier through a thin pool you can be
+  down 8% the instant you are in and out, having been right about the direction. Also says what to
+  do when told to trade until it profits, which is the instruction in the history of every blown
+  account.
 - [`skills/onchain-strategy-research`](skills/onchain-strategy-research/SKILL.md): turning an
   observation into an experiment that can be rejected. Decision-time information only, fills that
   are actually executable, and net portfolio outcomes rather than win rates. A valid result is to
