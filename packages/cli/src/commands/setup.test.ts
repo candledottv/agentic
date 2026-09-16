@@ -63,7 +63,7 @@ describe("setup", () => {
     // Node runtime for the MCP host: there is nothing left to install.
     expect(out).toContain("The MCP server is built into this binary")
     expect(out).not.toContain("Node 18+")
-    expect(out).toContain("/dev/agent")
+    expect(out).toContain("/agents")
     // The four numbered stages appear in order.
     const order = ["1/4", "2/4", "3/4", "4/4"].map((mark) => out.indexOf(mark))
     expect(order.every((idx, i) => idx >= 0 && (i === 0 || idx > (order[i - 1] as number)))).toBe(true)
@@ -151,7 +151,7 @@ describe("setup", () => {
     // The console link comes from the portal origin the login just recorded ON THE PROFILE, not
     // from the legacy top-level field (absent here) and so not derived from the API host.
     const consoleLine = stdout.text.split("\n").find((line) => line.startsWith("Console ("))
-    expect(consoleLine).toContain("https://candle.tv/dev/agent")
+    expect(consoleLine).toContain("https://candle.tv/agents")
     expect(consoleLine).not.toContain("alpha")
   })
 

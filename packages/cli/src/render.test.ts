@@ -255,11 +255,11 @@ describe("formatScopesForSummary", () => {
 
 describe("portalDeviceUrl", () => {
   test("the default API URL maps to the known portal domain", () => {
-    expect(portalDeviceUrl(DEFAULT_API_URL)).toBe("https://alpha.candle.tv/dev/agent")
+    expect(portalDeviceUrl(DEFAULT_API_URL)).toBe("https://alpha.candle.tv/agents")
   })
 
   test("a non-default API URL gets 'api.' stripped and the portal path appended", () => {
-    expect(portalDeviceUrl("https://api.staging.candle.tv")).toBe("https://staging.candle.tv/dev/agent")
+    expect(portalDeviceUrl("https://api.staging.candle.tv")).toBe("https://staging.candle.tv/agents")
   })
 
   // The staging host both halves of the fix exist for: `staging.api.candle.tv` is the ACTUAL
@@ -267,44 +267,44 @@ describe("portalDeviceUrl", () => {
   // host itself (a 404), not at the portal that can revoke the device.
   test("a stored portal origin is authoritative: it wins over any derivation from the API URL", () => {
     expect(portalDeviceUrl("https://staging.api.candle.tv", "https://staging.candle.tv")).toBe(
-      "https://staging.candle.tv/dev/agent",
+      "https://staging.candle.tv/agents",
     )
     // Even where the derivation would disagree entirely -- the stored value came from the API's
     // own verificationUri, so it is right by construction and nothing overrides it.
-    expect(portalDeviceUrl(DEFAULT_API_URL, "https://portal.example.com")).toBe("https://portal.example.com/dev/agent")
+    expect(portalDeviceUrl(DEFAULT_API_URL, "https://portal.example.com")).toBe("https://portal.example.com/agents")
   })
 
   test("with no stored origin, the fallback removes the first 'api' LABEL anywhere in the host", () => {
-    expect(portalDeviceUrl("https://staging.api.candle.tv")).toBe("https://staging.candle.tv/dev/agent")
+    expect(portalDeviceUrl("https://staging.api.candle.tv")).toBe("https://staging.candle.tv/agents")
     // A leading label still works, via the same rule rather than a separate branch (asserted on a
     // host that is NOT DEFAULT_API_URL, so this exercises the derivation and not the pinned case).
-    expect(portalDeviceUrl("https://api.example.com")).toBe("https://example.com/dev/agent")
+    expect(portalDeviceUrl("https://api.example.com")).toBe("https://example.com/agents")
   })
 
   test("an unparseable stored origin falls through to the derivation instead of emitting garbage", () => {
-    expect(portalDeviceUrl("https://staging.api.candle.tv", "not a url")).toBe("https://staging.candle.tv/dev/agent")
+    expect(portalDeviceUrl("https://staging.api.candle.tv", "not a url")).toBe("https://staging.candle.tv/agents")
   })
 
   test("a stored origin's path is discarded -- only its origin plus the fixed portal path is used", () => {
     expect(portalDeviceUrl(DEFAULT_API_URL, "https://staging.candle.tv/dev/agent/device")).toBe(
-      "https://staging.candle.tv/dev/agent",
+      "https://staging.candle.tv/agents",
     )
   })
 
   test("an API URL with no 'api.' segment just gets the portal path appended", () => {
-    expect(portalDeviceUrl("http://localhost:3001")).toBe("http://localhost:3001/dev/agent")
+    expect(portalDeviceUrl("http://localhost:3001")).toBe("http://localhost:3001/agents")
   })
 
   test("a hostname that merely CONTAINS 'api.' but does not START with it is left alone", () => {
-    expect(portalDeviceUrl("https://myapi.candle.tv")).toBe("https://myapi.candle.tv/dev/agent")
-    expect(portalDeviceUrl("https://staging-api.candle.tv")).toBe("https://staging-api.candle.tv/dev/agent")
+    expect(portalDeviceUrl("https://myapi.candle.tv")).toBe("https://myapi.candle.tv/agents")
+    expect(portalDeviceUrl("https://staging-api.candle.tv")).toBe("https://staging-api.candle.tv/agents")
   })
 
   test("an 'api.' occurring inside a PATH segment is never mistaken for the host label", () => {
-    expect(portalDeviceUrl("https://example.com/api.internal")).toBe("https://example.com/dev/agent")
+    expect(portalDeviceUrl("https://example.com/api.internal")).toBe("https://example.com/agents")
   })
 
   test("stripping a leading api. host label never touches the port", () => {
-    expect(portalDeviceUrl("https://api.example.com:8443")).toBe("https://example.com:8443/dev/agent")
+    expect(portalDeviceUrl("https://api.example.com:8443")).toBe("https://example.com:8443/agents")
   })
 })

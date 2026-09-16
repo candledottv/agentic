@@ -20053,7 +20053,7 @@ function writeUsageFailure(deps, message, json) {
 function portalDeviceUrl(apiUrl, portalOrigin) {
   if (portalOrigin) {
     try {
-      return `${new URL(portalOrigin).origin}/dev/agent`;
+      return `${new URL(portalOrigin).origin}/agents`;
     } catch {}
   }
   try {
@@ -20064,9 +20064,9 @@ function portalDeviceUrl(apiUrl, portalOrigin) {
       labels.splice(apiLabel, 1);
       url.hostname = labels.join(".");
     }
-    return `${url.origin}/dev/agent`;
+    return `${url.origin}/agents`;
   } catch {
-    return `${apiUrl}/dev/agent`;
+    return `${apiUrl}/agents`;
   }
 }
 

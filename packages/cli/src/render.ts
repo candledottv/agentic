@@ -239,13 +239,13 @@ export function writeUsageFailure(deps: ModeWriters, message: string, json: bool
  * whole URL: `"staging-api.candle.tv".replace("api.", "")` would wrongly cut the middle of a
  * hostname that merely CONTAINS "api." (producing "staging-.candle.tv"), and could just as easily
  * match "api." inside a path segment that has nothing to do with the host. Only the hostname is
- * ever touched -- the reconstructed URL is always `<origin>/dev/agent`, never carrying over any
+ * ever touched -- the reconstructed URL is always `<origin>/agents`, never carrying over any
  * path `apiUrl` had (this is a portal deep link with its own fixed path, not a URL rewrite).
  */
 export function portalDeviceUrl(apiUrl: string, portalOrigin?: string): string {
   if (portalOrigin) {
     try {
-      return `${new URL(portalOrigin).origin}/dev/agent`
+      return `${new URL(portalOrigin).origin}/agents`
     } catch {
       // A hand-edited or corrupted config value: fall through to the derivation rather than
       // emitting a broken URL built out of it.
@@ -261,10 +261,10 @@ export function portalDeviceUrl(apiUrl: string, portalOrigin?: string): string {
       labels.splice(apiLabel, 1)
       url.hostname = labels.join(".")
     }
-    return `${url.origin}/dev/agent`
+    return `${url.origin}/agents`
   } catch {
     // Not a parseable URL -- shouldn't happen in practice (apiUrl always comes from
     // resolveApiUrl/--api-url), but fail soft rather than throw out of a printed-message helper.
-    return `${apiUrl}/dev/agent`
+    return `${apiUrl}/agents`
   }
 }

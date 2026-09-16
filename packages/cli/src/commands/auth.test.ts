@@ -432,7 +432,7 @@ describe("auth logout", () => {
     expect(await store.get(SECRET_REFS.apiKey)).toBeNull()
     expect(await configStore.readConfig()).toEqual({ profiles: {} })
 
-    expect(stdout.text).toContain("/dev/agent")
+    expect(stdout.text).toContain("/agents")
     expect(stdout.text.toLowerCase()).toContain("session")
     // The claim is narrowed to what is actually true: GET /keys carries mintedByDevicePrefix and
     // IS device-token-readable, so sibling prefixes are visible. What the session-only routes
@@ -465,7 +465,7 @@ describe("auth logout", () => {
     // logout now prints ahead of everything names the API host legitimately, and the claim here
     // was only ever about the portal pointer not being derived from it.
     expect(stdout.text.split("\n").find((line) => line.startsWith("Portal: "))).toBe(
-      "Portal: https://staging.candle.tv/dev/agent",
+      "Portal: https://staging.candle.tv/agents",
     )
   })
 
@@ -483,7 +483,7 @@ describe("auth logout", () => {
     const code = await run(["auth", "logout"], deps)
 
     expect(code).toBe(0)
-    expect(stdout.text).toContain("https://staging.candle.tv/dev/agent")
+    expect(stdout.text).toContain("https://staging.candle.tv/agents")
   })
 
   test("names any env-var credential still live in this shell, which clearing the store does not touch", async () => {
@@ -1010,7 +1010,7 @@ describe("profiles", () => {
     expect(stdout.text.startsWith("Profile: staging   Account: FaKwE2xX at https://staging.api.candle.tv\n")).toBe(true)
     // And the portal pointer still comes from the profile's own recorded origin.
     expect(stdout.text.split("\n").find((line) => line.startsWith("Portal: "))).toBe(
-      "Portal: https://staging.candle.tv/dev/agent",
+      "Portal: https://staging.candle.tv/agents",
     )
   })
 
