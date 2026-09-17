@@ -18851,7 +18851,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.8.0";
+var SERVER_VERSION = "0.9.0";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -19062,7 +19062,8 @@ async function executeTrade(args, cfg, doFetch) {
     amountRaw,
     payer: { type: "main" },
     ...args.quoteAsset !== undefined ? { quoteAsset: args.quoteAsset } : {},
-    ...args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {}
+    ...args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {},
+    ...args.paper === true ? { paper: true } : {}
   }, doFetch);
   if ("thrown" in posted)
     return transportError("clientTradeId", clientTradeId, posted.thrown);
@@ -19545,6 +19546,8 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 
 ` + "Arguments: `mint` and `side` are required. Amounts are DECIMAL, never raw base units " + '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' + `position.
 
+` + "Pass `paper: true` to rehearse: every admission rule runs and the quote is recorded, but " + "nothing broadcasts and no funds move. Do this before the first live trade of a new " + `strategy, and whenever you are unsure a trade would be admitted at all.
+
 ` + `After the call:
 ` + "- A timeout is not a failure. Retry with the SAME clientTradeId from the result -- it " + `coalesces the duplicate. A NEW id is a SECOND trade, and that is how you double-spend.
 ` + "- If you no longer hold the result, do not re-send to find out what happened. Ask " + "candle_get_operation with the clientTradeId; a 404 there means the trade never reached " + "the rail and nothing moved.",
@@ -19665,7 +19668,8 @@ var init_tools = __esm(() => {
     percent: exports_external.number().optional().describe("Sells only: sell this percent (integer 1-100) of the wallet's holding, on either chain."),
     quoteAsset: exports_external.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' + "to an arbitrary mint Candle never launched (Pro/Max) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
     maxSlippageBps: exports_external.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
-    clientTradeId: exports_external.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade.")
+    clientTradeId: exports_external.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade."),
+    paper: exports_external.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost.")
   };
   ({ buyAmount: _rawBuyAmount, ...seedableLaunchShape } = launchTokenShape);
   launchAndSeedShape = {
@@ -21004,6 +21008,881 @@ async function doctor(args, ctx) {
   deps.stdout.write(`${renderTable(["Check", "Status", "Detail"], rows.map((row) => [row.check, row.state, row.detail]))}
 `);
   return exitCode;
+}
+
+// src/commands/keys.ts
+var KEYS_PATH = "/api/v1/agent/keys";
+var NO_DEVICE_TOKEN = {
+  code: "NO_DEVICE_TOKEN",
+  message: "No device token available.",
+  suggestion: "Run: candle auth login"
+};
+function mintedByLabel(mintedBy, ownDeviceTokenPrefix) {
+  if (!mintedBy)
+    return "browser session";
+  if (mintedBy === ownDeviceTokenPrefix)
+    return "this device";
+  return mintedBy;
+}
+async function keysList(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    return 1;
+  }
+  const result = await apiRequest(KEYS_PATH, {
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(result.body)}
+`);
+    return 0;
+  }
+  const body = result.body;
+  const config = await deps.readConfig();
+  const ownDevicePrefix = effectiveProfileFields(config, ctx.profile).deviceTokenPrefix;
+  const rows = body.keys.map((key) => [
+    key.keyPrefix,
+    key.scopes.join(","),
+    key.environment,
+    formatTimestamp(key.createdAt),
+    formatTimestamp(key.lastUsedAt),
+    key.revokedAt ? formatTimestamp(key.revokedAt) : "no",
+    mintedByLabel(key.mintedByDevicePrefix, ownDevicePrefix)
+  ]);
+  deps.stdout.write(`${renderTable(["Prefix", "Scopes", "Environment", "Created", "Last used", "Revoked", "Minted by"], rows)}
+`);
+  return 0;
+}
+async function keysCreate(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {
+    valueFlags: ["--scopes", "--environment", "--label", "--expires-in", "--tx-limit", "--reset"]
+  });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  const requestedScopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined;
+  const environment = parsed.values["--environment"];
+  const label = parsed.values["--label"]?.trim();
+  if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > 64)) {
+    writeUsageFailure(deps, "--label must be 1 to 64 characters.", json);
+    return 2;
+  }
+  let expiresInDays;
+  if (parsed.values["--expires-in"] !== undefined) {
+    const parsedDays = parseExpiresInDays(parsed.values["--expires-in"]);
+    if (!parsedDays.ok) {
+      writeUsageFailure(deps, parsedDays.message, json);
+      return 2;
+    }
+    expiresInDays = parsedDays.days;
+  }
+  if (parsed.values["--reset"] !== undefined && parsed.values["--tx-limit"] === undefined) {
+    writeUsageFailure(deps, "--reset requires --tx-limit.", json);
+    return 2;
+  }
+  let txLimit;
+  if (parsed.values["--tx-limit"] !== undefined) {
+    const parsedUsd = parseUsdToMicros(parsed.values["--tx-limit"]);
+    if (!parsedUsd.ok) {
+      writeUsageFailure(deps, parsedUsd.message, json);
+      return 2;
+    }
+    const reset = parsed.values["--reset"] ?? "daily";
+    if (!TX_LIMIT_RESETS.includes(reset)) {
+      writeUsageFailure(deps, `--reset must be one of: ${TX_LIMIT_RESETS.join(", ")}.`, json);
+      return 2;
+    }
+    txLimit = { usdMicros: parsedUsd.usdMicros, reset };
+  }
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    return 1;
+  }
+  const result = await apiRequest(KEYS_PATH, {
+    method: "POST",
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env,
+    body: {
+      ...requestedScopes ? { scopes: requestedScopes } : {},
+      ...environment ? { environment } : {},
+      ...label ? { label } : {},
+      ...expiresInDays !== undefined ? { expiresInDays } : {},
+      ...txLimit ? { txLimit } : {}
+    }
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
+    return 1;
+  }
+  const body = result.body;
+  const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
+  let stored = false;
+  let storeError;
+  try {
+    if (!await deps.store.get(apiKeyRef)) {
+      await deps.store.set(apiKeyRef, body.key);
+      if (ctx.profile) {
+        await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes });
+      } else {
+        await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes });
+      }
+      stored = true;
+    }
+  } catch (error) {
+    storeError = error instanceof Error ? error.message : String(error);
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ...body, stored, ...storeError ? { storeError } : {} })}
+`);
+    return storeError ? 1 : 0;
+  }
+  deps.stdout.write(`API key: ${body.key}
+`);
+  deps.stdout.write(`This is the only time the plaintext key is shown; store it now.
+`);
+  deps.stdout.write(`Prefix: ${body.keyPrefix}
+`);
+  deps.stdout.write(`Scopes: ${formatScopesForSummary(body.scopes)}
+`);
+  if (storeError !== undefined) {
+    deps.stderr.write(`
+WARNING: the key above was NOT stored in the ${deps.backend} store: ${storeError}
+` + "It is live on your account. Save it now, or revoke it with: candle keys revoke " + `${body.keyPrefix}
+`);
+  }
+  if (!requestedScopes) {
+    deps.stdout.write(`No --scopes given: the server granted the default scopes (swap:write excluded).
+`);
+  }
+  if (storeError === undefined) {
+    deps.stdout.write(stored ? `Stored in the ${deps.backend} backend as the CLI's working key.
+` : `Not stored: the CLI already manages a different working key. This key belongs to whichever agent it was minted for.
+`);
+  }
+  return storeError === undefined ? 0 : 1;
+}
+async function keysRevoke(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length !== 1) {
+    deps.stderr.write(`Usage: candle keys revoke <prefix>
+`);
+    return 2;
+  }
+  const prefix = parsed.positionals[0];
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    return 1;
+  }
+  const result = await apiRequest(`${KEYS_PATH}/${encodeURIComponent(prefix)}`, {
+    method: "DELETE",
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
+    return 1;
+  }
+  const config = await deps.readConfig();
+  const storedPrefix = effectiveProfileFields(config, ctx.profile).keyPrefix;
+  let clearedLocal = false;
+  if (storedPrefix === prefix) {
+    const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
+    await deps.store.delete(apiKeyRef);
+    if (ctx.profile) {
+      await deps.updateProfile(ctx.profile, { keyPrefix: undefined });
+    } else {
+      await deps.writeConfig({ keyPrefix: undefined });
+    }
+    clearedLocal = true;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ success: true, keyPrefix: prefix, clearedLocal })}
+`);
+    return 0;
+  }
+  deps.stdout.write(`Revoked key ${prefix}.
+`);
+  if (clearedLocal) {
+    deps.stdout.write(`This was the CLI's stored working key; also cleared it locally.
+`);
+  }
+  return 0;
+}
+
+// src/commands/keys-wallets.ts
+var NO_API_KEY = {
+  code: "NO_API_KEY",
+  message: "No API key for this profile.",
+  suggestion: "Set CANDLE_API_KEY, or run `candle keys create` and store one."
+};
+function formatTimestamp2(ms) {
+  return ms ? new Date(ms).toISOString().replace("T", " ").slice(0, 16) : "-";
+}
+async function keysWalletsList(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const prefix = parsed.positionals[0];
+  if (!prefix) {
+    writeUsageFailure(deps, "Usage: candle keys wallets <prefix>", json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(deps, NO_API_KEY, json);
+    return 1;
+  }
+  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallets`, {
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(result.body)}
+`);
+    return 0;
+  }
+  const body = result.body;
+  deps.stdout.write(body.walletScope === "selected" ? `Scope: selected — this profile can only spend from the wallets below.
+` : `Scope: all — this profile can spend from every wallet on the account, listed here or not.
+`);
+  if (body.profileId)
+    deps.stdout.write(`Profile: ${body.profileId}
+`);
+  if (body.wallets.length === 0) {
+    deps.stdout.write(`No wallets assigned.
+`);
+    return 0;
+  }
+  const rows = body.wallets.map((w) => [
+    w.linkedWalletId,
+    w.chain,
+    w.address,
+    w.label ?? "-",
+    w.spendCapable ? "yes" : "no",
+    formatTimestamp2(w.assignedAt)
+  ]);
+  deps.stdout.write(`${renderTable(["Id", "Chain", "Address", "Label", "Can sign", "Assigned"], rows)}
+`);
+  return 0;
+}
+async function keysWalletsSet(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { valueFlags: ["--wallets"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const prefix = parsed.positionals[0];
+  if (!prefix) {
+    writeUsageFailure(deps, "Usage: candle keys wallets set <prefix> --wallets <id,id,...>", json);
+    return 2;
+  }
+  const raw = parsed.values["--wallets"];
+  if (raw === undefined) {
+    writeUsageFailure(deps, 'Missing --wallets. Pass a comma-separated list, or "" to assign none.', json);
+    return 2;
+  }
+  const walletIds = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  await printIdentity(ctx);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(deps, NO_API_KEY, json);
+    return 1;
+  }
+  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallets`, {
+    method: "PUT",
+    body: { walletIds },
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(result.body)}
+`);
+    return 0;
+  }
+  deps.stdout.write(walletIds.length === 0 ? `Cleared every wallet assignment on ${prefix}.
+` : `Assigned ${walletIds.length} wallet${walletIds.length === 1 ? "" : "s"} to ${prefix}.
+`);
+  return 0;
+}
+async function keysWalletsScope(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { valueFlags: ["--scope"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const prefix = parsed.positionals[0];
+  const scope = parsed.values["--scope"];
+  if (!prefix || scope !== "all" && scope !== "selected") {
+    writeUsageFailure(deps, "Usage: candle keys wallets scope <prefix> --scope <all|selected>", json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(deps, NO_API_KEY, json);
+    return 1;
+  }
+  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallet-scope`, {
+    method: "PUT",
+    body: { scope },
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(result.body)}
+`);
+    return 0;
+  }
+  deps.stdout.write(scope === "selected" ? `${prefix} is now limited to its assigned wallets.
+` : `${prefix} can now spend from every wallet on the account.
+`);
+  return 0;
+}
+async function keysWallets(args, ctx) {
+  const [verb, ...rest] = args;
+  if (verb === "set")
+    return keysWalletsSet(rest, ctx);
+  if (verb === "scope")
+    return keysWalletsScope(rest, ctx);
+  return keysWalletsList(args, ctx);
+}
+
+// src/commands/mcp.ts
+var MCP_TOOL_NAMES = [
+  "candle_launch_token",
+  "candle_launch_and_seed",
+  "candle_get_market",
+  "candle_get_feed",
+  "candle_token_forensics",
+  "candle_get_agent_profile",
+  "candle_report_activity",
+  "candle_trade",
+  "candle_swap",
+  "candle_transfer",
+  "candle_sweep",
+  "candle_get_wallets",
+  "candle_get_profile_wallets",
+  "candle_set_profile_wallets",
+  "candle_get_profile_pnl",
+  "candle_get_profile_trades",
+  "candle_resolve_token",
+  "candle_execution_status",
+  "candle_get_operation"
+];
+var READ_ONLY_TOOL_NAMES = [
+  "candle_get_market",
+  "candle_get_feed",
+  "candle_token_forensics",
+  "candle_get_agent_profile",
+  "candle_resolve_token"
+];
+var CREDENTIAL_ENV_NAMES = [
+  "CANDLE_API_KEY",
+  "CANDLE_AGENT_API_KEY",
+  "CANDLE_DEVICE_TOKEN",
+  "CANDLE_KEYRING_PASSPHRASE",
+  "CANDLE_MCP_TOOLS"
+];
+function clearedCredentialEnv() {
+  return Object.fromEntries(CREDENTIAL_ENV_NAMES.map((name) => [name, undefined]));
+}
+function mcpActsAsIdentity(args) {
+  return !args.includes("--read-only");
+}
+async function mcpCommandForHost(deps) {
+  const real = await deps.realpath(deps.execPath).catch(() => deps.execPath);
+  const method = detectInstall(deps.execPath, real);
+  if (method === "script")
+    return { command: deps.execPath, prefixArgs: [deps.argv1] };
+  if (method === "homebrew") {
+    const opt = real.replace(/\/Cellar\/candle\/[^/]+\/bin\/candle$/, "/opt/candle/bin/candle");
+    return { command: opt, prefixArgs: [] };
+  }
+  return { command: real, prefixArgs: [] };
+}
+async function mcpClientConfig(args, deps) {
+  const { command, prefixArgs } = await mcpCommandForHost(deps);
+  return JSON.stringify({ mcpServers: { candle: { command, args: [...prefixArgs, "mcp", ...args] } } }, null, 2);
+}
+async function mcp(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {
+    valueFlags: ["--tools"],
+    booleanFlags: ["--read-only", "--print-config"]
+  });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  const readOnly = parsed.booleans.has("--read-only");
+  const toolsFlag = parsed.values["--tools"];
+  if (readOnly && toolsFlag !== undefined) {
+    writeUsageFailure(deps, "--read-only and --tools are mutually exclusive; --read-only IS a tool selection.", json);
+    return 2;
+  }
+  let toolAllowlist;
+  if (readOnly) {
+    toolAllowlist = READ_ONLY_TOOL_NAMES.join(",");
+  } else if (toolsFlag !== undefined) {
+    const requested = toolsFlag.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
+    const unknown = requested.filter((name) => !MCP_TOOL_NAMES.includes(name));
+    if (requested.length === 0 || unknown.length > 0) {
+      writeUsageFailure(deps, `--tools must be a comma-separated list of: ${MCP_TOOL_NAMES.join(", ")}${unknown.length > 0 ? ` (unknown: ${unknown.join(", ")})` : ""}`, json);
+      return 2;
+    }
+    toolAllowlist = requested.join(",");
+  }
+  const identityConfig = await deps.readConfig();
+  const identityFields = effectiveProfileFields(identityConfig, ctx.profile);
+  deps.stderr.write(`${identityLine(ctx.profile, identityFields.account, apiUrl, credentialEnvOverrides(deps.env), identityFields.username)}
+`);
+  if (parsed.booleans.has("--print-config")) {
+    const launchArgs = [
+      ...readOnly ? ["--read-only"] : [],
+      ...toolsFlag !== undefined ? ["--tools", toolsFlag] : []
+    ];
+    deps.stdout.write(`${await mcpClientConfig(launchArgs, deps)}
+`);
+    return 0;
+  }
+  const apiKey = readOnly ? undefined : await resolveApiKey(deps, ctx.profile);
+  if (!readOnly && !apiKey) {
+    writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle auth login" }, json);
+    return 1;
+  }
+  const serverEnv = {
+    ...deps.env,
+    ...clearedCredentialEnv(),
+    CANDLE_API_URL: apiUrl,
+    ...apiKey ? { CANDLE_AGENT_API_KEY: apiKey } : {},
+    ...toolAllowlist ? { CANDLE_MCP_TOOLS: toolAllowlist } : {}
+  };
+  deps.stderr.write(`Starting the Candle MCP server against ${apiUrl}${toolAllowlist ? ` (tools: ${toolAllowlist})` : ""}
+`);
+  try {
+    await deps.runMcpServer(serverEnv);
+    return 0;
+  } catch (error) {
+    writeLocalFailure(deps, {
+      code: "MCP_SERVER_FAILED",
+      message: `The MCP server could not start: ${error instanceof Error ? error.message : error}`
+    }, json);
+    return 1;
+  }
+}
+
+// src/commands/profile.ts
+async function profileList(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const rows = profileTable(await deps.readConfig(), deps.now());
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(rows)}
+`);
+    return 0;
+  }
+  if (rows.length === 0) {
+    deps.stdout.write(`No profiles on this machine. Run: candle auth login
+`);
+    return 0;
+  }
+  deps.stdout.write(renderTable(["Profile", "Account", "Cached", "Host", "Key"], rows.map((r) => [
+    r.active ? `${r.name} (active)` : r.name,
+    r.account ?? "unknown",
+    r.cachedAge,
+    r.apiUrl ?? "-",
+    r.keyPrefix ?? "-"
+  ])));
+  return 0;
+}
+var NEEDS_SCHEME = (value) => `It needs a scheme, such as https://${value}`;
+var BAD_SCHEME = "The scheme must be http or https.";
+function apiUrlFault(value, env) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return NEEDS_SCHEME(value);
+  }
+  if (url.host === "")
+    return NEEDS_SCHEME(value);
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    return BAD_SCHEME;
+  return insecureApiUrlFault(value, env);
+}
+async function profileAdd(args, ctx) {
+  const { deps, json, apiUrlFlag } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const name = parsed.positionals[0];
+  if (!name || parsed.positionals.length !== 1) {
+    writeUsageFailure(deps, "Usage: candle profile add <name> --api-url <url>", json);
+    return 2;
+  }
+  if (!isValidProfileName(name)) {
+    writeUsageFailure(deps, `Invalid profile name: ${name}`, json);
+    return 2;
+  }
+  if (!apiUrlFlag) {
+    writeUsageFailure(deps, "profile add needs --api-url <url>: the host this profile authenticates against", json);
+    return 2;
+  }
+  const fault = apiUrlFault(apiUrlFlag, deps.env);
+  if (fault) {
+    writeUsageFailure(deps, `Invalid --api-url: ${apiUrlFlag}. ${fault}`, json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  if (config.profiles !== undefined && Object.hasOwn(config.profiles, name)) {
+    writeLocalFailure(deps, {
+      code: "PROFILE_EXISTS",
+      message: `Profile "${name}" already exists.`,
+      suggestion: `Run: candle profile use ${name}`
+    }, json);
+    return 1;
+  }
+  await deps.updateProfile(name, { apiUrl: apiUrlFlag });
+  if (!config.activeProfile)
+    await deps.writeConfig({ activeProfile: name });
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ name, apiUrl: apiUrlFlag })}
+`);
+  else
+    deps.stdout.write(`Created profile ${name} for ${apiUrlFlag}. Run: candle auth login --profile ${name}
+`);
+  return 0;
+}
+async function profileUse(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const name = parsed.positionals[0];
+  if (!name || parsed.positionals.length !== 1) {
+    writeUsageFailure(deps, "Usage: candle profile use <name>", json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  const profile = config.profiles !== undefined && Object.hasOwn(config.profiles, name) ? config.profiles[name] : undefined;
+  if (!profile) {
+    const names = Object.keys(config.profiles ?? {}).join(", ") || "(none)";
+    writeLocalFailure(deps, {
+      code: "NO_SUCH_PROFILE",
+      message: `No profile named "${name}".`,
+      suggestion: `Profiles on this machine: ${names}`
+    }, json);
+    return 1;
+  }
+  await deps.writeConfig({ activeProfile: name });
+  const envProfile = deps.env.CANDLE_PROFILE?.trim();
+  if (envProfile && envProfile !== name) {
+    deps.stderr.write(`CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.
+`);
+  }
+  const apiUrl = ctx.apiUrlFlag ?? resolveApiUrl(profile.apiUrl, deps.env);
+  const apiKey = await deps.store.get(profileSecretRef(name, "apiKey"));
+  let account = profile.account;
+  let username = profile.username;
+  if (apiKey) {
+    const { account: live, username: liveUsername, failure } = await fetchAccount(deps, apiUrl, apiKey);
+    if (live) {
+      account = live;
+      username = liveUsername;
+      await deps.updateProfile(name, { account: live, username: liveUsername, accountCachedAt: deps.now() });
+    } else {
+      deps.stderr.write(`Could not refresh the account for ${name} (${failure}); keeping the cached value.
+`);
+    }
+  } else {
+    deps.stderr.write(`No stored credentials for ${name}. Run: candle auth login --profile ${name}
+`);
+  }
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ name, account, apiUrl })}
+`);
+  else
+    deps.stdout.write(`${identityLine(name, account, apiUrl, undefined, username)}
+`);
+  return 0;
+}
+var SECRET_KINDS = ["deviceToken", "apiKey"];
+async function profileRename(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const [from, to] = parsed.positionals;
+  if (!from || !to || parsed.positionals.length !== 2) {
+    writeUsageFailure(deps, "Usage: candle profile rename <old> <new>", json);
+    return 2;
+  }
+  if (!isValidProfileName(to)) {
+    writeUsageFailure(deps, `Invalid profile name: ${to}`, json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  const profiles = { ...config.profiles ?? {} };
+  if (!profiles[from]) {
+    writeLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${from}".` }, json);
+    return 1;
+  }
+  if (profiles[to]) {
+    writeLocalFailure(deps, { code: "PROFILE_EXISTS", message: `Profile "${to}" already exists.` }, json);
+    return 1;
+  }
+  for (const kind of SECRET_KINDS) {
+    const value = await deps.store.get(profileSecretRef(from, kind));
+    if (value) {
+      await deps.store.set(profileSecretRef(to, kind), value);
+      await deps.store.delete(profileSecretRef(from, kind));
+    }
+  }
+  profiles[to] = profiles[from];
+  delete profiles[from];
+  await deps.writeConfig({ profiles, ...config.activeProfile === from ? { activeProfile: to } : {} });
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ from, to })}
+`);
+  else
+    deps.stdout.write(`Renamed profile ${from} to ${to}.
+`);
+  return 0;
+}
+async function profileRemove(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, { booleanFlags: ["--yes"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const name = parsed.positionals[0];
+  if (!name || parsed.positionals.length !== 1) {
+    writeUsageFailure(deps, "Usage: candle profile remove <name> --yes", json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  const profiles = { ...config.profiles ?? {} };
+  const profile = profiles[name];
+  if (!profile) {
+    writeLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${name}".` }, json);
+    return 1;
+  }
+  if (!parsed.booleans.has("--yes")) {
+    writeUsageFailure(deps, `Would delete profile ${name} (${profile.account ?? "unknown"} at ${profile.apiUrl ?? "default host"}) and its stored credentials. Re-run with --yes to confirm.`, json);
+    return 2;
+  }
+  for (const kind of SECRET_KINDS)
+    await deps.store.delete(profileSecretRef(name, kind));
+  delete profiles[name];
+  const wasActive = config.activeProfile === name;
+  await deps.writeConfig({ profiles, ...wasActive ? { activeProfile: undefined } : {} });
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ removed: name })}
+`);
+  else {
+    const needsPick = wasActive && Object.keys(profiles).length > 1;
+    deps.stdout.write(`Deleted profile ${name} and its stored credentials.${needsPick ? " Run: candle profile use <name>" : ""}
+`);
+  }
+  return 0;
+}
+
+// src/commands/setup.ts
+var SKILLS_CLAUDE_COMMAND = "/plugin marketplace add candledottv/agentic";
+var CODING_AGENTS_DOCS = "https://docs.candle.tv/developers/coding-agents";
+function section(deps, title) {
+  deps.stdout.write(`
+== ${title} ==
+`);
+}
+async function setup(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { booleanFlags: ["--no-browser"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  if (json) {
+    writeUsageFailure(deps, "setup is an interactive wizard; for machine use, compose `auth login --json` and `doctor --json` directly", json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  deps.stdout.write(`candle setup: this wizard authorizes the device, shows funding, and verifies everything.
+`);
+  section(deps, "1/4 Authorize this device");
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  let nextCtx = ctx;
+  if (deviceToken && apiKey) {
+    deps.stdout.write(`Already authorized on this machine (device token + API key present). Skipping login.
+`);
+  } else {
+    const loginArgs = parsed.booleans.has("--no-browser") ? ["--no-browser"] : [];
+    const loginExit = await authLogin(loginArgs, ctx);
+    if (loginExit !== 0) {
+      deps.stderr.write(`Setup stopped: device authorization did not complete.
+`);
+      return loginExit;
+    }
+    const loginConfig = await deps.readConfig();
+    const resolution = resolveProfileName(loginConfig, { flag: ctx.profileFlag, env: deps.env });
+    if (!resolution.ok) {
+      deps.stderr.write(`${resolution.message}
+`);
+      return 1;
+    }
+    nextCtx = { ...ctx, profile: resolution.name };
+  }
+  section(deps, "2/4 Fund your agent's wallets");
+  const key = await resolveApiKey(deps, nextCtx.profile);
+  const walletsResult = key ? await apiRequest("/api/v1/agent/wallets/embedded", {
+    auth: "key",
+    credentials: { apiKey: key },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  }) : null;
+  if (walletsResult?.ok) {
+    const body = walletsResult.body;
+    const solana = body.wallets?.solana ?? null;
+    const evm = body.wallets?.evm ?? null;
+    if (body.account)
+      deps.stdout.write(`${identityLine(nextCtx.profile, body.account, apiUrl, undefined, body.username)}
+`);
+    if (solana)
+      deps.stdout.write(`Solana (send SOL here):    ${solana.address}
+`);
+    if (evm)
+      deps.stdout.write(`Hood    (send ETH here):    ${evm.address}
+`);
+    deps.stdout.write(`Launches and trades are paid from these wallets. There is no minimum, and read-only requests work unfunded.
+`);
+    deps.stdout.write(`
+Tell your agent (paste into its context):
+`);
+    deps.stdout.write(`  Install the Candle CLI: curl -fsSL https://candle.tv/install.sh | bash
+`);
+    deps.stdout.write(`  You operate a Candle agent account. API base URL: ${apiUrl} (send your API key in the x-api-key header).
+`);
+    if (solana)
+      deps.stdout.write(`  Your Solana wallet: ${solana.address}
+`);
+    if (evm)
+      deps.stdout.write(`  Your Hood Chain (EVM) wallet: ${evm.address}
+`);
+    deps.stdout.write(`  Check balances before trading, and ask me to fund whichever chain you need.
+`);
+  } else {
+    deps.stdout.write("Could not read the agent wallets right now; `candle wallets` shows them once the API is reachable.\n");
+  }
+  section(deps, "3/4 Connect your agent");
+  deps.stdout.write(`Claude Code skills:  ${SKILLS_CLAUDE_COMMAND}
+`);
+  deps.stdout.write(`MCP (any client), paste into the host's MCP config:
+`);
+  deps.stdout.write(`${await mcpClientConfig([], deps)}
+`);
+  deps.stdout.write(`The MCP server is built into this binary; the host needs nothing else installed.
+`);
+  deps.stdout.write(`Other platforms:     ${CODING_AGENTS_DOCS}
+`);
+  section(deps, "4/4 Health check");
+  const doctorExit = await doctor([], nextCtx);
+  const config = await deps.readConfig();
+  const { portalOrigin } = effectiveProfileFields(config, nextCtx.profile);
+  deps.stdout.write(`
+Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl, portalOrigin)}
+`);
+  deps.stdout.write(doctorExit === 0 ? `Setup complete. Your agent can launch, trade, and transfer the moment the wallets are funded.
+` : "Setup finished with failed checks above; fix them and re-run `candle doctor`.\n");
+  return doctorExit;
 }
 
 // ../../node_modules/@scure/base/lib/esm/index.js
@@ -26374,6 +27253,7 @@ ${lines.join(`
 }
 
 // src/wallet-import-flow.ts
+var TEE_PROFILE = "ember-tee";
 async function runImportFlow(params) {
   const { chain: chain2, address, privateKey, label, apiKey, apiUrl, deps, profile, vaultDestination } = params;
   const credentials = { apiKey };
@@ -27730,15 +28610,22 @@ import { chmod as chmod2, mkdir as mkdir2, readFile as readFile2, rename as rena
 import { homedir as homedir3 } from "node:os";
 import { dirname as dirname2, join as join4 } from "node:path";
 function defaultKeystorePath(env) {
-  const dir = env.CANDLE_CONFIG_DIR?.trim() || join4(homedir3(), ".config", "candle");
-  return join4(dir, "wallets.enc");
+  return join4(candleConfigDir(env), "wallets.enc");
 }
-function defaultHotKeystorePath(env) {
-  const dir = env.CANDLE_CONFIG_DIR?.trim() || join4(homedir3(), ".config", "candle");
-  return join4(dir, "hot-wallets.enc");
+function defaultTeeKeystorePath(env) {
+  return join4(candleConfigDir(env), "tee-wallets.enc");
 }
-var HOT_KEYSTORE_MIN_ITERATIONS = 210000;
-var HOT_KEYSTORE_MAX_ITERATIONS = 2100000;
+function legacyTeeKeystorePath(env) {
+  return join4(candleConfigDir(env), "hot-wallets.enc");
+}
+function candleConfigDir(env) {
+  return env.CANDLE_CONFIG_DIR?.trim() || join4(homedir3(), ".config", "candle");
+}
+var TEE_KEYSTORE_PURPOSE = "ember-tee";
+var LEGACY_TEE_PURPOSE = "ember-hot";
+var LEGACY_TEE_FIELD = "hot";
+var TEE_KEYSTORE_MIN_ITERATIONS = 210000;
+var TEE_KEYSTORE_MAX_ITERATIONS = 2100000;
 var KEYSTORE_VERSION = 1;
 var KEYSTORE_ITERATIONS = 210000;
 var b64 = (bytes) => Buffer.from(bytes).toString("base64");
@@ -27780,16 +28667,16 @@ async function readKeystore(raw, passphrase, opts = {}) {
   if (file.version !== KEYSTORE_VERSION) {
     throw new Error(`Unsupported keystore version ${file.version}: this CLI writes version ${KEYSTORE_VERSION}.`);
   }
-  const purpose = file.purpose === "ember-hot" ? "ember-hot" : "wallets";
+  const purpose = file.purpose === TEE_KEYSTORE_PURPOSE || file.purpose === LEGACY_TEE_PURPOSE ? TEE_KEYSTORE_PURPOSE : "wallets";
   if (opts.expectPurpose !== undefined && purpose !== opts.expectPurpose) {
-    throw new Error(purpose === "ember-hot" ? "This is an Ember hot-wallet store (hot-wallets.enc). It has no export path; use: candle hot sweep." : "This is not an Ember hot-wallet store. The hot commands only open hot-wallets.enc.");
+    throw new Error(purpose === TEE_KEYSTORE_PURPOSE ? "This is a TEE wallet store (tee-wallets.enc). It has no export path; use: candle tee sweep." : "This is not a TEE wallet store. The tee commands only open tee-wallets.enc.");
   }
-  if (purpose === "ember-hot") {
+  if (purpose === TEE_KEYSTORE_PURPOSE) {
     if (file.kdf !== "PBKDF2-HMAC-SHA256" || file.cipher !== "AES-256-GCM") {
-      throw new Error("The hot-wallet store names an unsupported KDF or cipher; refusing to open it.");
+      throw new Error("The TEE wallet store names an unsupported KDF or cipher; refusing to open it.");
     }
-    if (!Number.isInteger(file.iterations) || file.iterations < HOT_KEYSTORE_MIN_ITERATIONS || file.iterations > HOT_KEYSTORE_MAX_ITERATIONS) {
-      throw new Error(`The hot-wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` + `${HOT_KEYSTORE_MIN_ITERATIONS}-${HOT_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`);
+    if (!Number.isInteger(file.iterations) || file.iterations < TEE_KEYSTORE_MIN_ITERATIONS || file.iterations > TEE_KEYSTORE_MAX_ITERATIONS) {
+      throw new Error(`The TEE wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` + `${TEE_KEYSTORE_MIN_ITERATIONS}-${TEE_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`);
     }
   }
   const salt = unb64(file.salt);
@@ -27800,8 +28687,9 @@ async function readKeystore(raw, passphrase, opts = {}) {
   } catch {
     throw new Error("Could not decrypt the keystore: wrong passphrase, or the file is corrupt.");
   }
+  const decoded = JSON.parse(new TextDecoder().decode(plain));
   return {
-    entries: JSON.parse(new TextDecoder().decode(plain)),
+    entries: decoded.map(({ [LEGACY_TEE_FIELD]: legacy, ...entry }) => legacy !== undefined && entry.tee === undefined ? { ...entry, tee: legacy } : entry),
     key,
     salt,
     iterations: file.iterations
@@ -27821,7 +28709,7 @@ class KeystoreLockedError extends Error {
   lockPath;
   owner;
   constructor(lockPath, owner) {
-    super(`Another command holds the hot-wallet store lock at ${lockPath}` + `${owner ? ` (${owner})` : ""}. If no other candle hot command is running, remove that directory and retry.`);
+    super(`Another command holds the TEE wallet store lock at ${lockPath}` + `${owner ? ` (${owner})` : ""}. If no other candle tee command is running, remove that directory and retry.`);
     this.lockPath = lockPath;
     this.owner = owner;
     this.name = "KeystoreLockedError";
@@ -28243,7 +29131,7 @@ async function walletsRevoke(args, ctx) {
     return 0;
   }
   deps.stdout.write(`Agent trading stopped at Candle for ${walletId}. Remote policy verification is pending` + `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
-` + `Funds remain in the wallet and this address remains hot. Re-run: candle wallets revoke ${walletId}
+` + `Funds remain in the wallet and its TEE signing authority may still be active. Re-run: candle wallets revoke ${walletId}
 `);
   return 3;
 }
@@ -28256,7 +29144,7 @@ function readDisableOutcome(body) {
   return { complete, state, remoteAuthority, ...reasonCode !== undefined ? { reasonCode } : {} };
 }
 
-// src/commands/hot.ts
+// src/commands/tee.ts
 var MIN_PASSPHRASE_LENGTH = 12;
 var USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 var RPC_URL_ENV = "CANDLE_SOLANA_RPC_URL";
@@ -28267,8 +29155,8 @@ function refuseEnvPassphrase(ctx) {
     return true;
   writeLocalFailure(ctx.deps, {
     code: "ENV_PASSPHRASE_REFUSED",
-    message: "CANDLE_KEYSTORE_PASSPHRASE is set. The Ember hot store never reads its passphrase from the environment.",
-    suggestion: "Unset it and run again; the hot commands prompt for the passphrase with input hidden."
+    message: "CANDLE_KEYSTORE_PASSPHRASE is set. The TEE wallet store never reads its passphrase from the environment.",
+    suggestion: "Unset it and run again; the tee commands prompt for the passphrase with input hidden."
   }, ctx.json);
   return false;
 }
@@ -28276,10 +29164,24 @@ function usage(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
-function hotStorePath(ctx, parsed) {
-  return parsed.values["--keystore"] ?? defaultHotKeystorePath(ctx.deps.env);
+async function readTeeStore(ctx, parsed) {
+  const attempt = async (path) => {
+    try {
+      return { path, raw: await readTeeStoreRaw(ctx.deps, path) };
+    } catch (error) {
+      return { path, error };
+    }
+  };
+  const explicit = parsed.values["--keystore"];
+  if (explicit !== undefined)
+    return attempt(explicit);
+  const current = await attempt(defaultTeeKeystorePath(ctx.deps.env));
+  if ("error" in current || current.raw !== null)
+    return current;
+  const legacy = await attempt(legacyTeeKeystorePath(ctx.deps.env));
+  return "error" in legacy || legacy.raw !== null ? legacy : current;
 }
-async function readHotStoreRaw(deps, path) {
+async function readTeeStoreRaw(deps, path) {
   try {
     return await deps.readFile(path);
   } catch (error) {
@@ -28290,7 +29192,7 @@ async function readHotStoreRaw(deps, path) {
   }
 }
 async function promptPassphrase(deps, creating) {
-  const first = (await deps.promptSecret("Hot-wallet store passphrase (input hidden): ")).trim();
+  const first = (await deps.promptSecret("TEE wallet store passphrase (input hidden): ")).trim();
   if (first === "")
     return { ok: false, message: "A passphrase is required." };
   if (creating) {
@@ -28303,12 +29205,12 @@ async function promptPassphrase(deps, creating) {
   }
   return { ok: true, passphrase: first };
 }
-async function persistHot(store, path) {
-  const contents = await serializeKeystore(store.entries, store.key, store.salt, store.iterations, "ember-hot");
+async function persistTee(store, path) {
+  const contents = await serializeKeystore(store.entries, store.key, store.salt, store.iterations, TEE_KEYSTORE_PURPOSE);
   await writeKeystoreFile(path, contents);
   return contents;
 }
-async function commitHot(deps, opened, mutate, opts = {}) {
+async function commitTee(deps, opened, mutate, opts = {}) {
   try {
     const store = await withKeystoreLock(opened.path, deps, async () => {
       let current;
@@ -28326,17 +29228,17 @@ async function commitHot(deps, opened, mutate, opts = {}) {
           target = opened.store;
         } else {
           try {
-            target = await readKeystore(current, opened.passphrase, { expectPurpose: "ember-hot" });
+            target = await readKeystore(current, opened.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE });
           } catch (error) {
             throw new StoreChangedError(`${opened.path} was replaced by another command and does not open with this passphrase: ` + `${error instanceof Error ? error.message : error}`);
           }
         }
       }
       mutate(target.entries);
-      opened.raw = await persistHot(target, opened.path);
+      opened.raw = await persistTee(target, opened.path);
       if (opts.verifyAddress !== undefined) {
         const reopened = await readKeystore(await deps.readFile(opened.path), opened.passphrase, {
-          expectPurpose: "ember-hot"
+          expectPurpose: TEE_KEYSTORE_PURPOSE
         });
         const stored = reopened.entries.find((e) => e.address === opts.verifyAddress);
         if (!stored)
@@ -28346,17 +29248,17 @@ async function commitHot(deps, opened, mutate, opts = {}) {
           throw new Error("the stored secret does not derive the printed address");
       }
       return target;
-    }, { owner: `candle hot (pid ${process.pid})` });
+    }, { owner: `candle tee (pid ${process.pid})` });
     opened.store = store;
     return { ok: true, store };
   } catch (error) {
     if (error instanceof KeystoreLockedError)
-      return { ok: false, code: "HOT_STORE_LOCKED", message: error.message };
+      return { ok: false, code: "TEE_STORE_LOCKED", message: error.message };
     if (error instanceof StoreChangedError)
-      return { ok: false, code: "HOT_STORE_CHANGED", message: error.message };
+      return { ok: false, code: "TEE_STORE_CHANGED", message: error.message };
     return {
       ok: false,
-      code: "HOT_STORE_WRITE_FAILED",
+      code: "TEE_STORE_WRITE_FAILED",
       message: error instanceof Error ? error.message : String(error)
     };
   }
@@ -28367,33 +29269,32 @@ class StoreChangedError extends Error {
 function writeCommitFailure(ctx, failure, consequence) {
   writeLocalFailure(ctx.deps, { code: failure.code, message: failure.message, suggestion: consequence }, ctx.json);
 }
-async function openExistingHotStore(ctx, parsed) {
+async function openExistingTeeStore(ctx, parsed) {
   const { deps, json } = ctx;
-  const path = hotStorePath(ctx, parsed);
-  let raw;
-  try {
-    raw = await readHotStoreRaw(deps, path);
-  } catch (error) {
+  const found = await readTeeStore(ctx, parsed);
+  const { path } = found;
+  if ("error" in found) {
     writeLocalFailure(deps, {
-      code: "HOT_STORE_UNREADABLE",
-      message: `Could not read ${path}: ${error instanceof Error ? error.message : error}`
+      code: "TEE_STORE_UNREADABLE",
+      message: `Could not read ${path}: ${found.error instanceof Error ? found.error.message : found.error}`
     }, json);
     return { ok: false, code: 1 };
   }
+  const { raw } = found;
   if (raw === null) {
-    writeLocalFailure(deps, { code: "HOT_STORE_MISSING", message: `No hot-wallet store at ${path}.`, suggestion: "Run: candle hot new" }, json);
+    writeLocalFailure(deps, { code: "TEE_STORE_MISSING", message: `No TEE wallet store at ${path}.`, suggestion: "Run: candle tee new" }, json);
     return { ok: false, code: 1 };
   }
   const passphrase = await promptPassphrase(deps, false);
   if (!passphrase.ok) {
-    writeLocalFailure(deps, { code: "HOT_STORE_PASSPHRASE", message: passphrase.message }, json);
+    writeLocalFailure(deps, { code: "TEE_STORE_PASSPHRASE", message: passphrase.message }, json);
     return { ok: false, code: 1 };
   }
   try {
-    const store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: "ember-hot" });
+    const store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE });
     return { ok: true, store, path, passphrase: passphrase.passphrase, raw };
   } catch (error) {
-    writeLocalFailure(deps, { code: "HOT_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, json);
+    writeLocalFailure(deps, { code: "TEE_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, json);
     return { ok: false, code: 1 };
   }
 }
@@ -28402,9 +29303,9 @@ function findEntry(store, address) {
 }
 function noSuchEntry(ctx, address, path) {
   writeLocalFailure(ctx.deps, {
-    code: "HOT_WALLET_UNKNOWN",
-    message: `${address} is not a hot wallet in ${path}.`,
-    suggestion: "Run: candle hot new"
+    code: "TEE_WALLET_UNKNOWN",
+    message: `${address} is not a TEE wallet in ${path}.`,
+    suggestion: "Run: candle tee new"
   }, ctx.json);
   return 1;
 }
@@ -28436,7 +29337,7 @@ function rpcUrlFrom(ctx, parsed) {
   }
   return url;
 }
-async function hotNew(args, ctx) {
+async function teeNew(args, ctx) {
   const { deps, json } = ctx;
   if (!refuseEnvPassphrase(ctx))
     return 1;
@@ -28445,29 +29346,28 @@ async function hotNew(args, ctx) {
     return usage(ctx, parsed.error);
   if (parsed.positionals.length > 0)
     return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
-  const path = hotStorePath(ctx, parsed);
-  let raw;
-  try {
-    raw = await readHotStoreRaw(deps, path);
-  } catch (error) {
+  const found = await readTeeStore(ctx, parsed);
+  const { path } = found;
+  if ("error" in found) {
     writeLocalFailure(deps, {
-      code: "HOT_STORE_UNREADABLE",
-      message: `Could not read ${path}: ${error instanceof Error ? error.message : error}`,
+      code: "TEE_STORE_UNREADABLE",
+      message: `Could not read ${path}: ${found.error instanceof Error ? found.error.message : found.error}`,
       suggestion: "Refusing to continue: a store may exist at that path, and overwriting it would destroy its keys."
     }, json);
     return 1;
   }
+  const { raw } = found;
   const passphrase = await promptPassphrase(deps, raw === null);
   if (!passphrase.ok) {
-    writeLocalFailure(deps, { code: "HOT_STORE_PASSPHRASE", message: passphrase.message }, json);
+    writeLocalFailure(deps, { code: "TEE_STORE_PASSPHRASE", message: passphrase.message }, json);
     return 1;
   }
   let store;
   if (raw !== null) {
     try {
-      store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: "ember-hot" });
+      store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE });
     } catch (error) {
-      writeLocalFailure(deps, { code: "HOT_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, json);
+      writeLocalFailure(deps, { code: "TEE_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, json);
       return 1;
     }
   } else {
@@ -28476,9 +29376,9 @@ async function hotNew(args, ctx) {
   const wallet = generateWallet("solana");
   let index = -1;
   let label = "";
-  const committed = await commitHot(deps, { store, path, passphrase: passphrase.passphrase, raw }, (entries) => {
+  const committed = await commitTee(deps, { store, path, passphrase: passphrase.passphrase, raw }, (entries) => {
     index = entries.length;
-    label = parsed.values["--label"] ?? `hot-${index}`;
+    label = parsed.values["--label"] ?? `tee-${index}`;
     entries.push({
       index,
       chain: "solana",
@@ -28487,14 +29387,14 @@ async function hotNew(args, ctx) {
       createdAt: new Date().toISOString(),
       privateKey: wallet.privateKey,
       imported: false,
-      hot: { network: "solana-mainnet" }
+      tee: { network: "solana-mainnet" }
     });
   }, { verifyAddress: wallet.address });
   if (!committed.ok) {
     writeLocalFailure(deps, {
-      code: committed.code === "HOT_STORE_WRITE_FAILED" ? "HOT_STORE_VERIFY_FAILED" : committed.code,
-      message: `${committed.code === "HOT_STORE_WRITE_FAILED" ? "Backup verification failed: " : ""}${committed.message}`,
-      suggestion: "Nothing was enabled or funded. Fix the error and run: candle hot new"
+      code: committed.code === "TEE_STORE_WRITE_FAILED" ? "TEE_STORE_VERIFY_FAILED" : committed.code,
+      message: `${committed.code === "TEE_STORE_WRITE_FAILED" ? "Backup verification failed: " : ""}${committed.message}`,
+      suggestion: "Nothing was enabled or funded. Fix the error and run: candle tee new"
     }, json);
     return 1;
   }
@@ -28503,17 +29403,17 @@ async function hotNew(args, ctx) {
 `);
     return 0;
   }
-  deps.stdout.write(`New hot wallet [${index}] ${wallet.address}  ${label}
+  deps.stdout.write(`New TEE wallet [${index}] ${wallet.address}  ${label}
 `);
   deps.stdout.write(`Sealed to ${path} and verified to restore.
 `);
   deps.stdout.write(`BACK UP THIS FILE AND REMEMBER THE PASSPHRASE. This key exists nowhere else.
 `);
-  deps.stdout.write(`State: local-only. Next: candle hot enable ${wallet.address} --vault <your-vault-address>
+  deps.stdout.write(`State: local-only. Next: candle tee enable ${wallet.address} --vault <your-vault-address>
 `);
   return 0;
 }
-async function hotEnable(args, ctx) {
+async function teeEnable(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   if (!refuseEnvPassphrase(ctx))
     return 1;
@@ -28522,21 +29422,21 @@ async function hotEnable(args, ctx) {
     return usage(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage(ctx, "Usage: candle hot enable <address> --vault <address>");
+    return usage(ctx, "Usage: candle tee enable <address> --vault <address>");
   const vault = parsed.values["--vault"];
   if (!vault)
     return usage(ctx, "--vault <address> is required: the destination every sweep sends to.");
   if (!isSolanaAddress(vault))
     return usage(ctx, "--vault is not a valid Solana address.");
   if (vault === address)
-    return usage(ctx, "--vault must be a different address from the hot wallet.");
+    return usage(ctx, "--vault must be a different address from the TEE wallet.");
   await printIdentity(ctx);
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
     writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, json);
     return 1;
   }
-  const opened = await openExistingHotStore(ctx, parsed);
+  const opened = await openExistingTeeStore(ctx, parsed);
   if (!opened.ok)
     return opened.code;
   const { store, path } = opened;
@@ -28545,16 +29445,16 @@ async function hotEnable(args, ctx) {
     return noSuchEntry(ctx, address, path);
   if (entry.imported || entry.linkedWalletId) {
     writeLocalFailure(deps, {
-      code: "HOT_WALLET_ALREADY_ENABLED",
+      code: "TEE_WALLET_ALREADY_ENABLED",
       message: `${address} was already enabled${entry.linkedWalletId ? ` as ${entry.linkedWalletId}` : ""}.`,
-      suggestion: "A retired or enabled hot wallet is never re-enabled. Run: candle hot new"
+      suggestion: "A retired or enabled TEE wallet is never re-enabled. Run: candle tee new"
     }, json);
     return 1;
   }
   if (!json) {
-    deps.stdout.write(`About to delegate a DEDICATED hot wallet to this profile's agent:
+    deps.stdout.write(`About to delegate a DEDICATED TEE wallet to this profile's agent:
 `);
-    deps.stdout.write(`  hot wallet   ${address}
+    deps.stdout.write(`  TEE wallet   ${address}
 `);
     deps.stdout.write(`  network      solana-mainnet
 `);
@@ -28566,7 +29466,7 @@ async function hotEnable(args, ctx) {
 `);
     deps.stdout.write(`Exposure: everything you fund into this wallet, plus anything deposited later, can be lost by a
 `);
-    deps.stdout.write(`compromised agent within those limits. Once enabled this address is permanently hot.
+    deps.stdout.write(`compromised agent within those limits. Once enabled a copy of this key stays in the TEE for good.
 `);
   }
   if (!await confirmVault(deps, vault)) {
@@ -28581,7 +29481,7 @@ async function hotEnable(args, ctx) {
     apiKey,
     apiUrl,
     deps,
-    profile: "ember-hot",
+    profile: TEE_PROFILE,
     vaultDestination: vault
   });
   if (!flow.ok) {
@@ -28599,7 +29499,7 @@ async function hotEnable(args, ctx) {
   }
   const submitted = flow.submitted;
   const importedAt = new Date().toISOString();
-  const committed = await commitHot(deps, opened, (entries) => {
+  const committed = await commitTee(deps, opened, (entries) => {
     const target = entries.find((e) => e.address === address);
     if (!target)
       throw new Error(`${address} is no longer in ${path}`);
@@ -28607,7 +29507,7 @@ async function hotEnable(args, ctx) {
     target.linkedWalletId = submitted.id;
     target.privyWalletId = submitted.privyWalletId;
     target.importedAt = importedAt;
-    target.hot = {
+    target.tee = {
       network: "solana-mainnet",
       vaultDestination: vault,
       ...submitted.boundKeyPrefix ? { boundKeyPrefix: submitted.boundKeyPrefix } : {},
@@ -28616,7 +29516,7 @@ async function hotEnable(args, ctx) {
     };
   });
   if (!committed.ok) {
-    writeCommitFailure(ctx, committed, `The server DID import ${address} as ${submitted.id}, but the grant could not be recorded locally. ` + `Do not fund it. Stop it (candle hot disable ${address}, or revoke ${submitted.id} from your session) and enable a fresh wallet.`);
+    writeCommitFailure(ctx, committed, `The server DID import ${address} as ${submitted.id}, but the grant could not be recorded locally. ` + `Do not fund it. Stop it (candle tee disable ${address}, or revoke ${submitted.id} from your session) and enable a fresh wallet.`);
     return 1;
   }
   const verified = submitted.remoteAuthority === "verified-active";
@@ -28636,12 +29536,12 @@ async function hotEnable(args, ctx) {
   if (verified) {
     deps.stdout.write(`Enabled ${address} as ${submitted.id}, bound to key ${submitted.boundKeyPrefix ?? "?"}.
 `);
-    deps.stdout.write(`Remote authority verified. Fund it: candle hot fund ${address} --amount <n> --asset SOL|USDC
+    deps.stdout.write(`Remote authority verified. Fund it: candle tee fund ${address} --amount <n> --asset SOL|USDC
 `);
     return 0;
   }
   deps.stdout.write(`Imported ${address} as ${submitted.id}, but the server could NOT verify the remote authority` + `${submitted.reasonCode ? ` (${submitted.reasonCode})` : ""}. The agent cannot trade it.
-` + `Do not fund it. Disable it (candle hot disable ${address}) and enable a fresh wallet.
+` + `Do not fund it. Disable it (candle tee disable ${address}) and enable a fresh wallet.
 `);
   return 3;
 }
@@ -28653,7 +29553,7 @@ function decimalToRaw(decimal, decimals) {
     return null;
   return BigInt((whole ?? "0") + frac.padEnd(decimals, "0"));
 }
-async function hotFund(args, ctx) {
+async function teeFund(args, ctx) {
   const { deps, json } = ctx;
   if (!refuseEnvPassphrase(ctx))
     return 1;
@@ -28662,7 +29562,7 @@ async function hotFund(args, ctx) {
     return usage(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage(ctx, "Usage: candle hot fund <address> --amount <n> [--asset SOL|USDC]");
+    return usage(ctx, "Usage: candle tee fund <address> --amount <n> [--asset SOL|USDC]");
   const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase();
   if (asset !== "SOL" && asset !== "USDC")
     return usage(ctx, "--asset must be SOL or USDC.");
@@ -28673,26 +29573,26 @@ async function hotFund(args, ctx) {
   const raw = decimalToRaw(amount, decimals);
   if (raw === null || raw === 0n)
     return usage(ctx, `--amount must be a positive decimal with at most ${decimals} decimal places.`);
-  const opened = await openExistingHotStore(ctx, parsed);
+  const opened = await openExistingTeeStore(ctx, parsed);
   if (!opened.ok)
     return opened.code;
   const entry = findEntry(opened.store, address);
   if (!entry)
     return noSuchEntry(ctx, address, opened.path);
-  if (!entry.linkedWalletId || entry.hot?.remoteAuthority !== "verified-active") {
+  if (!entry.linkedWalletId || entry.tee?.remoteAuthority !== "verified-active") {
     writeLocalFailure(deps, {
-      code: "HOT_WALLET_NOT_VERIFIED",
-      message: `${address} is not an enabled hot wallet with verified remote authority; do not fund it.`,
-      suggestion: "Run: candle hot enable <address> --vault <address>, and fund only after it reports verified."
+      code: "TEE_WALLET_NOT_VERIFIED",
+      message: `${address} is not an enabled TEE wallet with verified remote authority; do not fund it.`,
+      suggestion: "Run: candle tee enable <address> --vault <address>, and fund only after it reports verified."
     }, json);
     return 1;
   }
-  if (entry.hot?.stopRequestedAt) {
-    writeLocalFailure(deps, { code: "HOT_WALLET_STOPPED", message: `${address} has been stopped; a retired address is never refunded.` }, json);
+  if (entry.tee?.stopRequestedAt) {
+    writeLocalFailure(deps, { code: "TEE_WALLET_STOPPED", message: `${address} has been stopped; a retired address is never refunded.` }, json);
     return 1;
   }
   const instruction = {
-    action: "fund-hot-wallet",
+    action: "fund-tee-wallet",
     network: "solana-mainnet",
     asset,
     ...asset === "USDC" ? { mint: USDC_MINT } : {},
@@ -28700,7 +29600,7 @@ async function hotFund(args, ctx) {
     amountRaw: raw.toString(),
     destination: address,
     from: "your vault wallet (sign it there; this CLI signs nothing)",
-    note: "Every funded unit adds to the hot exposure. The initial float is not a maximum loss."
+    note: "Every funded unit adds to the TEE wallet exposure. The initial float is not a maximum loss."
   };
   if (json) {
     deps.stdout.write(`${JSON.stringify(instruction)}
@@ -28715,7 +29615,7 @@ async function hotFund(args, ctx) {
 `);
   deps.stdout.write(`  network   solana-mainnet
 `);
-  deps.stdout.write(`Every funded unit adds to the hot exposure; the initial float is not a maximum loss.
+  deps.stdout.write(`Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
 `);
   return 0;
 }
@@ -28731,7 +29631,7 @@ async function readLifecycle(ctx, apiKey, linkedWalletId) {
     return { ok: false, result };
   return { ok: true, body: result.body };
 }
-async function hotStatus(args, ctx) {
+async function teeStatus(args, ctx) {
   const { deps, json } = ctx;
   if (!refuseEnvPassphrase(ctx))
     return 1;
@@ -28740,8 +29640,8 @@ async function hotStatus(args, ctx) {
     return usage(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage(ctx, "Usage: candle hot status <address> [--rpc-url <url>]");
-  const opened = await openExistingHotStore(ctx, parsed);
+    return usage(ctx, "Usage: candle tee status <address> [--rpc-url <url>]");
+  const opened = await openExistingTeeStore(ctx, parsed);
   if (!opened.ok)
     return opened.code;
   const entry = findEntry(opened.store, address);
@@ -28751,10 +29651,10 @@ async function hotStatus(args, ctx) {
     address,
     label: entry.label,
     linkedWalletId: entry.linkedWalletId ?? null,
-    vaultDestination: entry.hot?.vaultDestination ?? null,
-    localState: entry.hot?.sweptAt ? "swept" : entry.hot?.stopRequestedAt ? "stop-requested" : entry.linkedWalletId ? "enabled" : "local-only",
-    retainedSweepReceipts: entry.hot?.sweepReceipts?.length ?? 0,
-    pendingSweepTransactions: entry.hot?.sweepPending?.length ?? 0,
+    vaultDestination: entry.tee?.vaultDestination ?? null,
+    localState: entry.tee?.sweptAt ? "swept" : entry.tee?.stopRequestedAt ? "stop-requested" : entry.linkedWalletId ? "enabled" : "local-only",
+    retainedSweepReceipts: entry.tee?.sweepReceipts?.length ?? 0,
+    pendingSweepTransactions: entry.tee?.sweepPending?.length ?? 0,
     observedAt: new Date(deps.now()).toISOString()
   };
   if (entry.linkedWalletId) {
@@ -28806,8 +29706,8 @@ async function hotStatus(args, ctx) {
 `);
   deps.stdout.write(`  local state   ${report.localState}
 `);
-  if (entry.hot?.vaultDestination)
-    deps.stdout.write(`  vault         ${entry.hot.vaultDestination}
+  if (entry.tee?.vaultDestination)
+    deps.stdout.write(`  vault         ${entry.tee.vaultDestination}
 `);
   const server = report.server;
   if (server) {
@@ -28840,7 +29740,7 @@ async function hotStatus(args, ctx) {
 `);
   return 0;
 }
-async function hotDisable(args, ctx) {
+async function teeDisable(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   if (!refuseEnvPassphrase(ctx))
     return 1;
@@ -28849,9 +29749,9 @@ async function hotDisable(args, ctx) {
     return usage(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage(ctx, "Usage: candle hot disable <address>");
+    return usage(ctx, "Usage: candle tee disable <address>");
   await printIdentity(ctx);
-  const opened = await openExistingHotStore(ctx, parsed);
+  const opened = await openExistingTeeStore(ctx, parsed);
   if (!opened.ok)
     return opened.code;
   const { store, path } = opened;
@@ -28859,19 +29759,19 @@ async function hotDisable(args, ctx) {
   if (!entry)
     return noSuchEntry(ctx, address, path);
   if (!entry.linkedWalletId) {
-    writeLocalFailure(deps, { code: "HOT_WALLET_NOT_ENABLED", message: `${address} was never enabled; there is nothing to stop.` }, json);
+    writeLocalFailure(deps, { code: "TEE_WALLET_NOT_ENABLED", message: `${address} was never enabled; there is nothing to stop.` }, json);
     return 1;
   }
   const linkedWalletId = entry.linkedWalletId;
-  const stopRequestedAt = entry.hot?.stopRequestedAt ?? new Date().toISOString();
-  const committed = await commitHot(deps, opened, (entries) => {
+  const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString();
+  const committed = await commitTee(deps, opened, (entries) => {
     const target = entries.find((e) => e.address === address);
     if (!target)
       throw new Error(`${address} is no longer in ${path}`);
-    target.hot = { ...target.hot ?? { network: "solana-mainnet" }, stopRequestedAt };
+    target.tee = { ...target.tee ?? { network: "solana-mainnet" }, stopRequestedAt };
   });
   if (!committed.ok) {
-    writeCommitFailure(ctx, committed, `The stop was NOT recorded locally and the server was not asked. Retry: candle hot disable ${address}`);
+    writeCommitFailure(ctx, committed, `The stop was NOT recorded locally and the server was not asked. Retry: candle tee disable ${address}`);
     return 1;
   }
   const unconfirmed = (detail, suggestion) => {
@@ -28897,7 +29797,7 @@ ${suggestion}
   };
   const apiKey = await resolveApiKey(deps, ctx.profile);
   if (!apiKey) {
-    unconfirmed("No API key available, so the server was not asked to stop the agent.", `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle hot disable ${address}`);
+    unconfirmed("No API key available, so the server was not asked to stop the agent.", `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle tee disable ${address}`);
     return 1;
   }
   const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(linkedWalletId)}`, {
@@ -28909,7 +29809,7 @@ ${suggestion}
     env: deps.env
   });
   if (!result.ok) {
-    unconfirmed(`The stop request failed: ${result.message ?? `HTTP ${result.status}`}${result.status === 401 ? " (this API key no longer works)" : ""}.`, `Re-run: candle hot disable ${address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`);
+    unconfirmed(`The stop request failed: ${result.message ?? `HTTP ${result.status}`}${result.status === 401 ? " (this API key no longer works)" : ""}.`, `Re-run: candle tee disable ${address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`);
     return 1;
   }
   const outcome = readDisableOutcome(result.body);
@@ -28921,13 +29821,13 @@ ${suggestion}
   if (outcome.complete) {
     deps.stdout.write(`Stopped ${address}. Remote signing denial verified; the wallet is quarantined.
 `);
-    deps.stdout.write(`Recover the funds: candle hot sweep ${address} --rpc-url <url>
+    deps.stdout.write(`Recover the funds: candle tee sweep ${address} --rpc-url <url>
 `);
     return 0;
   }
   deps.stdout.write(`Agent trading stopped at Candle for ${address}. Remote policy verification is pending` + `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
-` + `Funds remain in the hot wallet and this address remains hot. Re-run: candle hot disable ${address}
-` + `If the provider is down or theft is suspected: candle hot sweep ${address} --rpc-url <url> --emergency
+` + `Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${address}
+` + `If the provider is down or theft is suspected: candle tee sweep ${address} --rpc-url <url> --emergency
 `);
   return 3;
 }
@@ -28998,7 +29898,7 @@ async function broadcastAndFinalize(rpc, deps, secret, feePayer, instructions, p
     error: `transaction ${signature} was not finalized within ${CONFIRM_MAX_POLLS * CONFIRM_POLL_MS / 1000}s; it may still land${echoNote}`
   };
 }
-async function hotSweep(args, ctx) {
+async function teeSweep(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   if (!refuseEnvPassphrase(ctx))
     return 1;
@@ -29007,22 +29907,22 @@ async function hotSweep(args, ctx) {
     return usage(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage(ctx, "Usage: candle hot sweep <address> --rpc-url <url> [--emergency]");
+    return usage(ctx, "Usage: candle tee sweep <address> --rpc-url <url> [--emergency]");
   const rpcUrl = rpcUrlFrom(ctx, parsed);
   if (typeof rpcUrl !== "string")
     return usage(ctx, rpcUrl.error);
   const emergency = parsed.booleans.has("--emergency");
-  const opened = await openExistingHotStore(ctx, parsed);
+  const opened = await openExistingTeeStore(ctx, parsed);
   if (!opened.ok)
     return opened.code;
   const { store, path } = opened;
   const entry = findEntry(store, address);
   if (!entry)
     return noSuchEntry(ctx, address, path);
-  const vault = entry.hot?.vaultDestination;
+  const vault = entry.tee?.vaultDestination;
   if (!vault) {
     writeLocalFailure(deps, {
-      code: "HOT_WALLET_NO_VAULT",
+      code: "TEE_WALLET_NO_VAULT",
       message: `${address} has no pinned vault (it was never enabled), so there is nothing a sweep may send to.`
     }, json);
     return 1;
@@ -29047,30 +29947,30 @@ async function hotSweep(args, ctx) {
       serverState = "unread";
       if (!emergency) {
         writeLocalFailure(deps, {
-          code: "HOT_WALLET_STATE_UNREAD",
+          code: "TEE_WALLET_STATE_UNREAD",
           message: `Could not read ${address}'s lifecycle from the server (${unreadReason}); its remote signing authority is unverified.`,
-          suggestion: `Restore the API key or connectivity and re-run, or stop it from your Candle session first. ` + `If the credential is lost or theft is suspected, recover WITHOUT the server: candle hot sweep ${address} --rpc-url <url> --emergency ` + `(remote authority stays pending and a still-authorized agent signer may race the sweep).`
+          suggestion: `Restore the API key or connectivity and re-run, or stop it from your Candle session first. ` + `If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address} --rpc-url <url> --emergency ` + `(remote authority stays pending and a still-authorized agent signer may race the sweep).`
         }, json);
         return 3;
       }
     } else if (serverState === "enabled") {
       writeLocalFailure(deps, {
-        code: "HOT_WALLET_STILL_ENABLED",
+        code: "TEE_WALLET_STILL_ENABLED",
         message: `${address} is still enabled for the agent.`,
-        suggestion: `Stop it first: candle hot disable ${address}`
+        suggestion: `Stop it first: candle tee disable ${address}`
       }, json);
       return 1;
     }
     if (serverState === "disable-pending" && !emergency) {
       writeLocalFailure(deps, {
-        code: "HOT_WALLET_DISABLE_PENDING",
+        code: "TEE_WALLET_DISABLE_PENDING",
         message: `${address}'s remote signing authority is not yet verified denied.`,
-        suggestion: `Re-run: candle hot disable ${address}. If the provider is down or theft is suspected, add --emergency (the agent signer may still race you).`
+        suggestion: `Re-run: candle tee disable ${address}. If the provider is down or theft is suspected, add --emergency (the agent signer may still race you).`
       }, json);
       return 3;
     }
     if (serverState !== "quarantined" && serverState !== "swept" && serverState !== "disable-pending" && serverState !== "unread") {
-      writeLocalFailure(deps, { code: "HOT_WALLET_STATE_UNKNOWN", message: `Server reports state "${serverState}"; refusing to sweep.` }, json);
+      writeLocalFailure(deps, { code: "TEE_WALLET_STATE_UNKNOWN", message: `Server reports state "${serverState}"; refusing to sweep.` }, json);
       return 1;
     }
   }
@@ -29081,7 +29981,7 @@ async function hotSweep(args, ctx) {
 `);
     if (unreadReason !== null) {
       deps.stdout.write(`The server's lifecycle state was NOT read (${unreadReason}): this recovery uses only the local key and the pinned vault.
-` + `Stop the agent from your Candle session if you have not, and re-run candle hot disable once a key is available.
+` + `Stop the agent from your Candle session if you have not, and re-run candle tee disable once a key is available.
 `);
     }
   }
@@ -29094,17 +29994,17 @@ async function hotSweep(args, ctx) {
     return 1;
   }
   const secret = base58.decode(entry.privateKey);
-  const hot = pubkeyFromSecret(secret);
-  if (encodePubkey(hot) !== address) {
-    writeLocalFailure(deps, { code: "HOT_KEY_MISMATCH", message: "The stored secret does not derive this address; refusing to sign." }, json);
+  const teePubkey = pubkeyFromSecret(secret);
+  if (encodePubkey(teePubkey) !== address) {
+    writeLocalFailure(deps, { code: "TEE_KEY_MISMATCH", message: "The stored secret does not derive this address; refusing to sign." }, json);
     return 1;
   }
-  const stopRequestedAt = entry.hot?.stopRequestedAt ?? new Date().toISOString();
-  const marked = await commitHot(deps, opened, (entries) => {
+  const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString();
+  const marked = await commitTee(deps, opened, (entries) => {
     const target = entries.find((e) => e.address === address);
     if (!target)
       throw new Error(`${address} is no longer in ${path}`);
-    target.hot = { ...target.hot ?? { network: "solana-mainnet" }, stopRequestedAt };
+    target.tee = { ...target.tee ?? { network: "solana-mainnet" }, stopRequestedAt };
   });
   if (!marked.ok) {
     writeCommitFailure(ctx, marked, "Nothing was signed: the sweep needs to record the retirement of this address first.");
@@ -29112,23 +30012,23 @@ async function hotSweep(args, ctx) {
   }
   const vaultKey = decodePubkey(vault);
   const rpc = createSolanaRpc(rpcUrl, deps.fetch);
-  const retained = entry.hot?.sweepReceipts ?? [];
+  const retained = entry.tee?.sweepReceipts ?? [];
   const receipts = [];
   const residuals = [];
   let solHandledAsResidual = false;
-  const alreadyRecordedLocally = entry.hot?.sweptAt !== undefined;
+  const alreadyRecordedLocally = entry.tee?.sweptAt !== undefined;
   const pendingStill = [];
   const retainReceipt = async (receipt) => {
     receipts.push(receipt);
-    const kept = await commitHot(deps, opened, (entries) => {
+    const kept = await commitTee(deps, opened, (entries) => {
       const target = entries.find((e) => e.address === address);
       if (!target)
         throw new Error(`${address} is no longer in ${path}`);
-      const existing = target.hot?.sweepReceipts ?? [];
-      target.hot = {
-        ...target.hot ?? { network: "solana-mainnet" },
+      const existing = target.tee?.sweepReceipts ?? [];
+      target.tee = {
+        ...target.tee ?? { network: "solana-mainnet" },
         sweepReceipts: existing.some((r) => r.signature === receipt.signature) ? existing : [...existing, receipt],
-        sweepPending: (target.hot?.sweepPending ?? []).filter((p) => p.signature !== receipt.signature)
+        sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== receipt.signature)
       };
     });
     if (!kept.ok) {
@@ -29139,33 +30039,33 @@ async function hotSweep(args, ctx) {
     }
   };
   const recordPending = async (record) => {
-    const kept = await commitHot(deps, opened, (entries) => {
+    const kept = await commitTee(deps, opened, (entries) => {
       const target = entries.find((e) => e.address === address);
       if (!target)
         throw new Error(`${address} is no longer in ${path}`);
-      const existing = target.hot?.sweepPending ?? [];
+      const existing = target.tee?.sweepPending ?? [];
       if (existing.some((p) => p.signature === record.signature))
         return;
-      target.hot = { ...target.hot ?? { network: "solana-mainnet" }, sweepPending: [...existing, record] };
+      target.tee = { ...target.tee ?? { network: "solana-mainnet" }, sweepPending: [...existing, record] };
     });
     if (!kept.ok)
       residuals.push({ kind: "local-record-failed", detail: kept.message });
     return kept.ok;
   };
   const clearPending = async (signature) => {
-    const kept = await commitHot(deps, opened, (entries) => {
+    const kept = await commitTee(deps, opened, (entries) => {
       const target = entries.find((e) => e.address === address);
       if (!target)
         throw new Error(`${address} is no longer in ${path}`);
-      target.hot = {
-        ...target.hot ?? { network: "solana-mainnet" },
-        sweepPending: (target.hot?.sweepPending ?? []).filter((p) => p.signature !== signature)
+      target.tee = {
+        ...target.tee ?? { network: "solana-mainnet" },
+        sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== signature)
       };
     });
     if (!kept.ok)
       residuals.push({ kind: "local-record-failed", detail: kept.message });
   };
-  const broadcast = (instructions, pending) => broadcastAndFinalize(rpc, deps, secret, hot, instructions, pending, recordPending, clearPending);
+  const broadcast = (instructions, pending) => broadcastAndFinalize(rpc, deps, secret, teePubkey, instructions, pending, recordPending, clearPending);
   const settle2 = (outcome, pending, describe2) => {
     if (outcome.status === "failed") {
       residuals.push({
@@ -29193,7 +30093,7 @@ async function hotSweep(args, ctx) {
     status: (signature) => rpc.getSignatureStatus(signature),
     blockhashValid: (blockhash) => rpc.isBlockhashValid(blockhash)
   };
-  for (const p of entry.hot?.sweepPending ?? []) {
+  for (const p of entry.tee?.sweepPending ?? []) {
     const resolution = await resolvePending(reads, p);
     if (resolution.kind === "finalized") {
       await retainReceipt({
@@ -29254,11 +30154,11 @@ async function hotSweep(args, ctx) {
       const amount = BigInt(acct.amountRaw);
       if (amount > 0n) {
         if (!await rpc.accountExists(encodePubkey(destination))) {
-          instructions.push(createAssociatedTokenAccountIdempotent({ payer: hot, owner: vaultKey, mint }));
+          instructions.push(createAssociatedTokenAccountIdempotent({ payer: teePubkey, owner: vaultKey, mint }));
         }
-        instructions.push(tokenTransferChecked({ source, mint, destination, owner: hot, amount, decimals: acct.decimals }));
+        instructions.push(tokenTransferChecked({ source, mint, destination, owner: teePubkey, amount, decimals: acct.decimals }));
       }
-      instructions.push(tokenCloseAccount({ account: source, destination: hot, owner: hot }));
+      instructions.push(tokenCloseAccount({ account: source, destination: teePubkey, owner: teePubkey }));
       const pending = {
         kind: amount > 0n ? "token" : "close",
         mint: acct.mint,
@@ -29298,7 +30198,7 @@ async function hotSweep(args, ctx) {
     for (const acct of await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)) {
       residuals.push({
         kind: "token-2022-unsupported",
-        detail: "Token-2022 accounts are not swept in Phase 1",
+        detail: "Token-2022 accounts are not swept yet",
         mint: acct.mint,
         account: acct.pubkey,
         amountRaw: acct.amountRaw
@@ -29315,9 +30215,9 @@ async function hotSweep(args, ctx) {
     if (balance > 0n) {
       const blockhash = await rpc.getLatestBlockhash();
       const probe = compileLegacyMessage({
-        feePayer: hot,
+        feePayer: teePubkey,
         recentBlockhash: blockhash,
-        instructions: [systemTransfer(hot, vaultKey, 1n)]
+        instructions: [systemTransfer(teePubkey, vaultKey, 1n)]
       });
       const fee = await rpc.getFeeForMessage(toBase642(probe));
       if (fee === null) {
@@ -29337,7 +30237,7 @@ async function hotSweep(args, ctx) {
       } else {
         const amount = balance - fee;
         const pending = { kind: "sol", amountRaw: amount.toString() };
-        const outcome = await broadcast([systemTransfer(hot, vaultKey, amount)], pending);
+        const outcome = await broadcast([systemTransfer(teePubkey, vaultKey, amount)], pending);
         if (outcome.status !== "finalized") {
           solHandledAsResidual = true;
           if (!settle2(outcome, pending, "sol-transfer"))
@@ -29431,11 +30331,11 @@ async function hotSweep(args, ctx) {
       sweptLocally = true;
     else {
       const sweptAt = new Date().toISOString();
-      const recorded = await commitHot(deps, opened, (entries) => {
+      const recorded = await commitTee(deps, opened, (entries) => {
         const target = entries.find((e) => e.address === address);
         if (!target)
           throw new Error(`${address} is no longer in ${path}`);
-        target.hot = { ...target.hot ?? { network: "solana-mainnet" }, sweptAt };
+        target.tee = { ...target.tee ?? { network: "solana-mainnet" }, sweptAt };
       });
       sweptLocally = recorded.ok;
       if (!recorded.ok)
@@ -29482,13 +30382,13 @@ async function hotSweep(args, ctx) {
 `);
   }
   if (emergency)
-    deps.stdout.write(`Recovered funds recorded; remote authority is still pending. Re-run: candle hot disable ${address}
+    deps.stdout.write(`Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}
 `);
   if (pendingStill.length > 0)
     deps.stdout.write(`${pendingStill.length} transaction(s) still in flight (${pendingStill.map((p) => p.signature).join(", ")}). Re-run this sweep: a finalized one becomes a receipt, an expired one is swept again.
 `);
   if (serverState === "disable-pending" && !emergency)
-    deps.stdout.write(`Remote signing authority is not verified denied. Re-run: candle hot disable ${address}, then re-run this sweep to record it.
+    deps.stdout.write(`Remote signing authority is not verified denied. Re-run: candle tee disable ${address}, then re-run this sweep to record it.
 `);
   if (allReceipts.length === 0 && residuals.length === 0)
     deps.stdout.write(`Nothing to sweep: no balances found.
@@ -29496,881 +30396,6 @@ async function hotSweep(args, ctx) {
   deps.stdout.write(`Inventory at ${inventory.observedAt}: ${inventory.verified ? `${inventory.lamports} lamports, ${inventory.tokenAccounts} token account(s)` : "NOT verified"}.
 `);
   return 3;
-}
-
-// src/commands/keys.ts
-var KEYS_PATH = "/api/v1/agent/keys";
-var NO_DEVICE_TOKEN = {
-  code: "NO_DEVICE_TOKEN",
-  message: "No device token available.",
-  suggestion: "Run: candle auth login"
-};
-function mintedByLabel(mintedBy, ownDeviceTokenPrefix) {
-  if (!mintedBy)
-    return "browser session";
-  if (mintedBy === ownDeviceTokenPrefix)
-    return "this device";
-  return mintedBy;
-}
-async function keysList(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
-    return 2;
-  }
-  await printIdentity(ctx);
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
-  if (!deviceToken) {
-    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
-    return 1;
-  }
-  const result = await apiRequest(KEYS_PATH, {
-    auth: "device",
-    credentials: { deviceToken },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
-    return 1;
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(result.body)}
-`);
-    return 0;
-  }
-  const body = result.body;
-  const config = await deps.readConfig();
-  const ownDevicePrefix = effectiveProfileFields(config, ctx.profile).deviceTokenPrefix;
-  const rows = body.keys.map((key) => [
-    key.keyPrefix,
-    key.scopes.join(","),
-    key.environment,
-    formatTimestamp(key.createdAt),
-    formatTimestamp(key.lastUsedAt),
-    key.revokedAt ? formatTimestamp(key.revokedAt) : "no",
-    mintedByLabel(key.mintedByDevicePrefix, ownDevicePrefix)
-  ]);
-  deps.stdout.write(`${renderTable(["Prefix", "Scopes", "Environment", "Created", "Last used", "Revoked", "Minted by"], rows)}
-`);
-  return 0;
-}
-async function keysCreate(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {
-    valueFlags: ["--scopes", "--environment", "--label", "--expires-in", "--tx-limit", "--reset"]
-  });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
-    return 2;
-  }
-  const requestedScopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined;
-  const environment = parsed.values["--environment"];
-  const label = parsed.values["--label"]?.trim();
-  if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > 64)) {
-    writeUsageFailure(deps, "--label must be 1 to 64 characters.", json);
-    return 2;
-  }
-  let expiresInDays;
-  if (parsed.values["--expires-in"] !== undefined) {
-    const parsedDays = parseExpiresInDays(parsed.values["--expires-in"]);
-    if (!parsedDays.ok) {
-      writeUsageFailure(deps, parsedDays.message, json);
-      return 2;
-    }
-    expiresInDays = parsedDays.days;
-  }
-  if (parsed.values["--reset"] !== undefined && parsed.values["--tx-limit"] === undefined) {
-    writeUsageFailure(deps, "--reset requires --tx-limit.", json);
-    return 2;
-  }
-  let txLimit;
-  if (parsed.values["--tx-limit"] !== undefined) {
-    const parsedUsd = parseUsdToMicros(parsed.values["--tx-limit"]);
-    if (!parsedUsd.ok) {
-      writeUsageFailure(deps, parsedUsd.message, json);
-      return 2;
-    }
-    const reset = parsed.values["--reset"] ?? "daily";
-    if (!TX_LIMIT_RESETS.includes(reset)) {
-      writeUsageFailure(deps, `--reset must be one of: ${TX_LIMIT_RESETS.join(", ")}.`, json);
-      return 2;
-    }
-    txLimit = { usdMicros: parsedUsd.usdMicros, reset };
-  }
-  await printIdentity(ctx);
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
-  if (!deviceToken) {
-    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
-    return 1;
-  }
-  const result = await apiRequest(KEYS_PATH, {
-    method: "POST",
-    auth: "device",
-    credentials: { deviceToken },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env,
-    body: {
-      ...requestedScopes ? { scopes: requestedScopes } : {},
-      ...environment ? { environment } : {},
-      ...label ? { label } : {},
-      ...expiresInDays !== undefined ? { expiresInDays } : {},
-      ...txLimit ? { txLimit } : {}
-    }
-  });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
-    return 1;
-  }
-  const body = result.body;
-  const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
-  let stored = false;
-  let storeError;
-  try {
-    if (!await deps.store.get(apiKeyRef)) {
-      await deps.store.set(apiKeyRef, body.key);
-      if (ctx.profile) {
-        await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes });
-      } else {
-        await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes });
-      }
-      stored = true;
-    }
-  } catch (error) {
-    storeError = error instanceof Error ? error.message : String(error);
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify({ ...body, stored, ...storeError ? { storeError } : {} })}
-`);
-    return storeError ? 1 : 0;
-  }
-  deps.stdout.write(`API key: ${body.key}
-`);
-  deps.stdout.write(`This is the only time the plaintext key is shown; store it now.
-`);
-  deps.stdout.write(`Prefix: ${body.keyPrefix}
-`);
-  deps.stdout.write(`Scopes: ${formatScopesForSummary(body.scopes)}
-`);
-  if (storeError !== undefined) {
-    deps.stderr.write(`
-WARNING: the key above was NOT stored in the ${deps.backend} store: ${storeError}
-` + "It is live on your account. Save it now, or revoke it with: candle keys revoke " + `${body.keyPrefix}
-`);
-  }
-  if (!requestedScopes) {
-    deps.stdout.write(`No --scopes given: the server granted the default scopes (swap:write excluded).
-`);
-  }
-  if (storeError === undefined) {
-    deps.stdout.write(stored ? `Stored in the ${deps.backend} backend as the CLI's working key.
-` : `Not stored: the CLI already manages a different working key. This key belongs to whichever agent it was minted for.
-`);
-  }
-  return storeError === undefined ? 0 : 1;
-}
-async function keysRevoke(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length !== 1) {
-    deps.stderr.write(`Usage: candle keys revoke <prefix>
-`);
-    return 2;
-  }
-  const prefix = parsed.positionals[0];
-  await printIdentity(ctx);
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
-  if (!deviceToken) {
-    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
-    return 1;
-  }
-  const result = await apiRequest(`${KEYS_PATH}/${encodeURIComponent(prefix)}`, {
-    method: "DELETE",
-    auth: "device",
-    credentials: { deviceToken },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
-    return 1;
-  }
-  const config = await deps.readConfig();
-  const storedPrefix = effectiveProfileFields(config, ctx.profile).keyPrefix;
-  let clearedLocal = false;
-  if (storedPrefix === prefix) {
-    const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
-    await deps.store.delete(apiKeyRef);
-    if (ctx.profile) {
-      await deps.updateProfile(ctx.profile, { keyPrefix: undefined });
-    } else {
-      await deps.writeConfig({ keyPrefix: undefined });
-    }
-    clearedLocal = true;
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify({ success: true, keyPrefix: prefix, clearedLocal })}
-`);
-    return 0;
-  }
-  deps.stdout.write(`Revoked key ${prefix}.
-`);
-  if (clearedLocal) {
-    deps.stdout.write(`This was the CLI's stored working key; also cleared it locally.
-`);
-  }
-  return 0;
-}
-
-// src/commands/keys-wallets.ts
-var NO_API_KEY = {
-  code: "NO_API_KEY",
-  message: "No API key for this profile.",
-  suggestion: "Set CANDLE_API_KEY, or run `candle keys create` and store one."
-};
-function formatTimestamp2(ms) {
-  return ms ? new Date(ms).toISOString().replace("T", " ").slice(0, 16) : "-";
-}
-async function keysWalletsList(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const prefix = parsed.positionals[0];
-  if (!prefix) {
-    writeUsageFailure(deps, "Usage: candle keys wallets <prefix>", json);
-    return 2;
-  }
-  await printIdentity(ctx);
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  if (!apiKey) {
-    writeLocalFailure(deps, NO_API_KEY, json);
-    return 1;
-  }
-  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallets`, {
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
-    return 1;
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(result.body)}
-`);
-    return 0;
-  }
-  const body = result.body;
-  deps.stdout.write(body.walletScope === "selected" ? `Scope: selected — this profile can only spend from the wallets below.
-` : `Scope: all — this profile can spend from every wallet on the account, listed here or not.
-`);
-  if (body.profileId)
-    deps.stdout.write(`Profile: ${body.profileId}
-`);
-  if (body.wallets.length === 0) {
-    deps.stdout.write(`No wallets assigned.
-`);
-    return 0;
-  }
-  const rows = body.wallets.map((w) => [
-    w.linkedWalletId,
-    w.chain,
-    w.address,
-    w.label ?? "-",
-    w.spendCapable ? "yes" : "no",
-    formatTimestamp2(w.assignedAt)
-  ]);
-  deps.stdout.write(`${renderTable(["Id", "Chain", "Address", "Label", "Can sign", "Assigned"], rows)}
-`);
-  return 0;
-}
-async function keysWalletsSet(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--wallets"] });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const prefix = parsed.positionals[0];
-  if (!prefix) {
-    writeUsageFailure(deps, "Usage: candle keys wallets set <prefix> --wallets <id,id,...>", json);
-    return 2;
-  }
-  const raw = parsed.values["--wallets"];
-  if (raw === undefined) {
-    writeUsageFailure(deps, 'Missing --wallets. Pass a comma-separated list, or "" to assign none.', json);
-    return 2;
-  }
-  const walletIds = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
-  await printIdentity(ctx);
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  if (!apiKey) {
-    writeLocalFailure(deps, NO_API_KEY, json);
-    return 1;
-  }
-  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallets`, {
-    method: "PUT",
-    body: { walletIds },
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
-    return 1;
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(result.body)}
-`);
-    return 0;
-  }
-  deps.stdout.write(walletIds.length === 0 ? `Cleared every wallet assignment on ${prefix}.
-` : `Assigned ${walletIds.length} wallet${walletIds.length === 1 ? "" : "s"} to ${prefix}.
-`);
-  return 0;
-}
-async function keysWalletsScope(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--scope"] });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const prefix = parsed.positionals[0];
-  const scope = parsed.values["--scope"];
-  if (!prefix || scope !== "all" && scope !== "selected") {
-    writeUsageFailure(deps, "Usage: candle keys wallets scope <prefix> --scope <all|selected>", json);
-    return 2;
-  }
-  await printIdentity(ctx);
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  if (!apiKey) {
-    writeLocalFailure(deps, NO_API_KEY, json);
-    return 1;
-  }
-  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallet-scope`, {
-    method: "PUT",
-    body: { scope },
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
-    return 1;
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(result.body)}
-`);
-    return 0;
-  }
-  deps.stdout.write(scope === "selected" ? `${prefix} is now limited to its assigned wallets.
-` : `${prefix} can now spend from every wallet on the account.
-`);
-  return 0;
-}
-async function keysWallets(args, ctx) {
-  const [verb, ...rest] = args;
-  if (verb === "set")
-    return keysWalletsSet(rest, ctx);
-  if (verb === "scope")
-    return keysWalletsScope(rest, ctx);
-  return keysWalletsList(args, ctx);
-}
-
-// src/commands/mcp.ts
-var MCP_TOOL_NAMES = [
-  "candle_launch_token",
-  "candle_launch_and_seed",
-  "candle_get_market",
-  "candle_get_feed",
-  "candle_token_forensics",
-  "candle_get_agent_profile",
-  "candle_report_activity",
-  "candle_trade",
-  "candle_swap",
-  "candle_transfer",
-  "candle_sweep",
-  "candle_get_wallets",
-  "candle_get_profile_wallets",
-  "candle_set_profile_wallets",
-  "candle_get_profile_pnl",
-  "candle_get_profile_trades",
-  "candle_resolve_token",
-  "candle_execution_status",
-  "candle_get_operation"
-];
-var READ_ONLY_TOOL_NAMES = [
-  "candle_get_market",
-  "candle_get_feed",
-  "candle_token_forensics",
-  "candle_get_agent_profile",
-  "candle_resolve_token"
-];
-var CREDENTIAL_ENV_NAMES = [
-  "CANDLE_API_KEY",
-  "CANDLE_AGENT_API_KEY",
-  "CANDLE_DEVICE_TOKEN",
-  "CANDLE_KEYRING_PASSPHRASE",
-  "CANDLE_MCP_TOOLS"
-];
-function clearedCredentialEnv() {
-  return Object.fromEntries(CREDENTIAL_ENV_NAMES.map((name) => [name, undefined]));
-}
-function mcpActsAsIdentity(args) {
-  return !args.includes("--read-only");
-}
-async function mcpCommandForHost(deps) {
-  const real = await deps.realpath(deps.execPath).catch(() => deps.execPath);
-  const method = detectInstall(deps.execPath, real);
-  if (method === "script")
-    return { command: deps.execPath, prefixArgs: [deps.argv1] };
-  if (method === "homebrew") {
-    const opt = real.replace(/\/Cellar\/candle\/[^/]+\/bin\/candle$/, "/opt/candle/bin/candle");
-    return { command: opt, prefixArgs: [] };
-  }
-  return { command: real, prefixArgs: [] };
-}
-async function mcpClientConfig(args, deps) {
-  const { command, prefixArgs } = await mcpCommandForHost(deps);
-  return JSON.stringify({ mcpServers: { candle: { command, args: [...prefixArgs, "mcp", ...args] } } }, null, 2);
-}
-async function mcp(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {
-    valueFlags: ["--tools"],
-    booleanFlags: ["--read-only", "--print-config"]
-  });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
-    return 2;
-  }
-  const readOnly = parsed.booleans.has("--read-only");
-  const toolsFlag = parsed.values["--tools"];
-  if (readOnly && toolsFlag !== undefined) {
-    writeUsageFailure(deps, "--read-only and --tools are mutually exclusive; --read-only IS a tool selection.", json);
-    return 2;
-  }
-  let toolAllowlist;
-  if (readOnly) {
-    toolAllowlist = READ_ONLY_TOOL_NAMES.join(",");
-  } else if (toolsFlag !== undefined) {
-    const requested = toolsFlag.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
-    const unknown = requested.filter((name) => !MCP_TOOL_NAMES.includes(name));
-    if (requested.length === 0 || unknown.length > 0) {
-      writeUsageFailure(deps, `--tools must be a comma-separated list of: ${MCP_TOOL_NAMES.join(", ")}${unknown.length > 0 ? ` (unknown: ${unknown.join(", ")})` : ""}`, json);
-      return 2;
-    }
-    toolAllowlist = requested.join(",");
-  }
-  const identityConfig = await deps.readConfig();
-  const identityFields = effectiveProfileFields(identityConfig, ctx.profile);
-  deps.stderr.write(`${identityLine(ctx.profile, identityFields.account, apiUrl, credentialEnvOverrides(deps.env), identityFields.username)}
-`);
-  if (parsed.booleans.has("--print-config")) {
-    const launchArgs = [
-      ...readOnly ? ["--read-only"] : [],
-      ...toolsFlag !== undefined ? ["--tools", toolsFlag] : []
-    ];
-    deps.stdout.write(`${await mcpClientConfig(launchArgs, deps)}
-`);
-    return 0;
-  }
-  const apiKey = readOnly ? undefined : await resolveApiKey(deps, ctx.profile);
-  if (!readOnly && !apiKey) {
-    writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle auth login" }, json);
-    return 1;
-  }
-  const serverEnv = {
-    ...deps.env,
-    ...clearedCredentialEnv(),
-    CANDLE_API_URL: apiUrl,
-    ...apiKey ? { CANDLE_AGENT_API_KEY: apiKey } : {},
-    ...toolAllowlist ? { CANDLE_MCP_TOOLS: toolAllowlist } : {}
-  };
-  deps.stderr.write(`Starting the Candle MCP server against ${apiUrl}${toolAllowlist ? ` (tools: ${toolAllowlist})` : ""}
-`);
-  try {
-    await deps.runMcpServer(serverEnv);
-    return 0;
-  } catch (error) {
-    writeLocalFailure(deps, {
-      code: "MCP_SERVER_FAILED",
-      message: `The MCP server could not start: ${error instanceof Error ? error.message : error}`
-    }, json);
-    return 1;
-  }
-}
-
-// src/commands/profile.ts
-async function profileList(args, ctx) {
-  const { deps, json } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const rows = profileTable(await deps.readConfig(), deps.now());
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(rows)}
-`);
-    return 0;
-  }
-  if (rows.length === 0) {
-    deps.stdout.write(`No profiles on this machine. Run: candle auth login
-`);
-    return 0;
-  }
-  deps.stdout.write(renderTable(["Profile", "Account", "Cached", "Host", "Key"], rows.map((r) => [
-    r.active ? `${r.name} (active)` : r.name,
-    r.account ?? "unknown",
-    r.cachedAge,
-    r.apiUrl ?? "-",
-    r.keyPrefix ?? "-"
-  ])));
-  return 0;
-}
-var NEEDS_SCHEME = (value) => `It needs a scheme, such as https://${value}`;
-var BAD_SCHEME = "The scheme must be http or https.";
-function apiUrlFault(value, env) {
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    return NEEDS_SCHEME(value);
-  }
-  if (url.host === "")
-    return NEEDS_SCHEME(value);
-  if (url.protocol !== "http:" && url.protocol !== "https:")
-    return BAD_SCHEME;
-  return insecureApiUrlFault(value, env);
-}
-async function profileAdd(args, ctx) {
-  const { deps, json, apiUrlFlag } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const name = parsed.positionals[0];
-  if (!name || parsed.positionals.length !== 1) {
-    writeUsageFailure(deps, "Usage: candle profile add <name> --api-url <url>", json);
-    return 2;
-  }
-  if (!isValidProfileName(name)) {
-    writeUsageFailure(deps, `Invalid profile name: ${name}`, json);
-    return 2;
-  }
-  if (!apiUrlFlag) {
-    writeUsageFailure(deps, "profile add needs --api-url <url>: the host this profile authenticates against", json);
-    return 2;
-  }
-  const fault = apiUrlFault(apiUrlFlag, deps.env);
-  if (fault) {
-    writeUsageFailure(deps, `Invalid --api-url: ${apiUrlFlag}. ${fault}`, json);
-    return 2;
-  }
-  const config = await deps.readConfig();
-  if (config.profiles !== undefined && Object.hasOwn(config.profiles, name)) {
-    writeLocalFailure(deps, {
-      code: "PROFILE_EXISTS",
-      message: `Profile "${name}" already exists.`,
-      suggestion: `Run: candle profile use ${name}`
-    }, json);
-    return 1;
-  }
-  await deps.updateProfile(name, { apiUrl: apiUrlFlag });
-  if (!config.activeProfile)
-    await deps.writeConfig({ activeProfile: name });
-  if (json)
-    deps.stdout.write(`${JSON.stringify({ name, apiUrl: apiUrlFlag })}
-`);
-  else
-    deps.stdout.write(`Created profile ${name} for ${apiUrlFlag}. Run: candle auth login --profile ${name}
-`);
-  return 0;
-}
-async function profileUse(args, ctx) {
-  const { deps, json } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const name = parsed.positionals[0];
-  if (!name || parsed.positionals.length !== 1) {
-    writeUsageFailure(deps, "Usage: candle profile use <name>", json);
-    return 2;
-  }
-  const config = await deps.readConfig();
-  const profile = config.profiles !== undefined && Object.hasOwn(config.profiles, name) ? config.profiles[name] : undefined;
-  if (!profile) {
-    const names = Object.keys(config.profiles ?? {}).join(", ") || "(none)";
-    writeLocalFailure(deps, {
-      code: "NO_SUCH_PROFILE",
-      message: `No profile named "${name}".`,
-      suggestion: `Profiles on this machine: ${names}`
-    }, json);
-    return 1;
-  }
-  await deps.writeConfig({ activeProfile: name });
-  const envProfile = deps.env.CANDLE_PROFILE?.trim();
-  if (envProfile && envProfile !== name) {
-    deps.stderr.write(`CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.
-`);
-  }
-  const apiUrl = ctx.apiUrlFlag ?? resolveApiUrl(profile.apiUrl, deps.env);
-  const apiKey = await deps.store.get(profileSecretRef(name, "apiKey"));
-  let account = profile.account;
-  let username = profile.username;
-  if (apiKey) {
-    const { account: live, username: liveUsername, failure } = await fetchAccount(deps, apiUrl, apiKey);
-    if (live) {
-      account = live;
-      username = liveUsername;
-      await deps.updateProfile(name, { account: live, username: liveUsername, accountCachedAt: deps.now() });
-    } else {
-      deps.stderr.write(`Could not refresh the account for ${name} (${failure}); keeping the cached value.
-`);
-    }
-  } else {
-    deps.stderr.write(`No stored credentials for ${name}. Run: candle auth login --profile ${name}
-`);
-  }
-  if (json)
-    deps.stdout.write(`${JSON.stringify({ name, account, apiUrl })}
-`);
-  else
-    deps.stdout.write(`${identityLine(name, account, apiUrl, undefined, username)}
-`);
-  return 0;
-}
-var SECRET_KINDS = ["deviceToken", "apiKey"];
-async function profileRename(args, ctx) {
-  const { deps, json } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const [from, to] = parsed.positionals;
-  if (!from || !to || parsed.positionals.length !== 2) {
-    writeUsageFailure(deps, "Usage: candle profile rename <old> <new>", json);
-    return 2;
-  }
-  if (!isValidProfileName(to)) {
-    writeUsageFailure(deps, `Invalid profile name: ${to}`, json);
-    return 2;
-  }
-  const config = await deps.readConfig();
-  const profiles = { ...config.profiles ?? {} };
-  if (!profiles[from]) {
-    writeLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${from}".` }, json);
-    return 1;
-  }
-  if (profiles[to]) {
-    writeLocalFailure(deps, { code: "PROFILE_EXISTS", message: `Profile "${to}" already exists.` }, json);
-    return 1;
-  }
-  for (const kind of SECRET_KINDS) {
-    const value = await deps.store.get(profileSecretRef(from, kind));
-    if (value) {
-      await deps.store.set(profileSecretRef(to, kind), value);
-      await deps.store.delete(profileSecretRef(from, kind));
-    }
-  }
-  profiles[to] = profiles[from];
-  delete profiles[from];
-  await deps.writeConfig({ profiles, ...config.activeProfile === from ? { activeProfile: to } : {} });
-  if (json)
-    deps.stdout.write(`${JSON.stringify({ from, to })}
-`);
-  else
-    deps.stdout.write(`Renamed profile ${from} to ${to}.
-`);
-  return 0;
-}
-async function profileRemove(args, ctx) {
-  const { deps, json } = ctx;
-  const parsed = parseArgs(args, { booleanFlags: ["--yes"] });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const name = parsed.positionals[0];
-  if (!name || parsed.positionals.length !== 1) {
-    writeUsageFailure(deps, "Usage: candle profile remove <name> --yes", json);
-    return 2;
-  }
-  const config = await deps.readConfig();
-  const profiles = { ...config.profiles ?? {} };
-  const profile = profiles[name];
-  if (!profile) {
-    writeLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${name}".` }, json);
-    return 1;
-  }
-  if (!parsed.booleans.has("--yes")) {
-    writeUsageFailure(deps, `Would delete profile ${name} (${profile.account ?? "unknown"} at ${profile.apiUrl ?? "default host"}) and its stored credentials. Re-run with --yes to confirm.`, json);
-    return 2;
-  }
-  for (const kind of SECRET_KINDS)
-    await deps.store.delete(profileSecretRef(name, kind));
-  delete profiles[name];
-  const wasActive = config.activeProfile === name;
-  await deps.writeConfig({ profiles, ...wasActive ? { activeProfile: undefined } : {} });
-  if (json)
-    deps.stdout.write(`${JSON.stringify({ removed: name })}
-`);
-  else {
-    const needsPick = wasActive && Object.keys(profiles).length > 1;
-    deps.stdout.write(`Deleted profile ${name} and its stored credentials.${needsPick ? " Run: candle profile use <name>" : ""}
-`);
-  }
-  return 0;
-}
-
-// src/commands/setup.ts
-var SKILLS_CLAUDE_COMMAND = "/plugin marketplace add candledottv/agentic";
-var CODING_AGENTS_DOCS = "https://docs.candle.tv/developers/coding-agents";
-function section(deps, title) {
-  deps.stdout.write(`
-== ${title} ==
-`);
-}
-async function setup(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { booleanFlags: ["--no-browser"] });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
-    return 2;
-  }
-  if (json) {
-    writeUsageFailure(deps, "setup is an interactive wizard; for machine use, compose `auth login --json` and `doctor --json` directly", json);
-    return 2;
-  }
-  await printIdentity(ctx);
-  deps.stdout.write(`candle setup: this wizard authorizes the device, shows funding, and verifies everything.
-`);
-  section(deps, "1/4 Authorize this device");
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  let nextCtx = ctx;
-  if (deviceToken && apiKey) {
-    deps.stdout.write(`Already authorized on this machine (device token + API key present). Skipping login.
-`);
-  } else {
-    const loginArgs = parsed.booleans.has("--no-browser") ? ["--no-browser"] : [];
-    const loginExit = await authLogin(loginArgs, ctx);
-    if (loginExit !== 0) {
-      deps.stderr.write(`Setup stopped: device authorization did not complete.
-`);
-      return loginExit;
-    }
-    const loginConfig = await deps.readConfig();
-    const resolution = resolveProfileName(loginConfig, { flag: ctx.profileFlag, env: deps.env });
-    if (!resolution.ok) {
-      deps.stderr.write(`${resolution.message}
-`);
-      return 1;
-    }
-    nextCtx = { ...ctx, profile: resolution.name };
-  }
-  section(deps, "2/4 Fund your agent's wallets");
-  const key = await resolveApiKey(deps, nextCtx.profile);
-  const walletsResult = key ? await apiRequest("/api/v1/agent/wallets/embedded", {
-    auth: "key",
-    credentials: { apiKey: key },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  }) : null;
-  if (walletsResult?.ok) {
-    const body = walletsResult.body;
-    const solana = body.wallets?.solana ?? null;
-    const evm = body.wallets?.evm ?? null;
-    if (body.account)
-      deps.stdout.write(`${identityLine(nextCtx.profile, body.account, apiUrl, undefined, body.username)}
-`);
-    if (solana)
-      deps.stdout.write(`Solana (send SOL here):    ${solana.address}
-`);
-    if (evm)
-      deps.stdout.write(`Hood    (send ETH here):    ${evm.address}
-`);
-    deps.stdout.write(`Launches and trades are paid from these wallets. There is no minimum, and read-only requests work unfunded.
-`);
-    deps.stdout.write(`
-Tell your agent (paste into its context):
-`);
-    deps.stdout.write(`  Install the Candle CLI: curl -fsSL https://candle.tv/install.sh | bash
-`);
-    deps.stdout.write(`  You operate a Candle agent account. API base URL: ${apiUrl} (send your API key in the x-api-key header).
-`);
-    if (solana)
-      deps.stdout.write(`  Your Solana wallet: ${solana.address}
-`);
-    if (evm)
-      deps.stdout.write(`  Your Hood Chain (EVM) wallet: ${evm.address}
-`);
-    deps.stdout.write(`  Check balances before trading, and ask me to fund whichever chain you need.
-`);
-  } else {
-    deps.stdout.write("Could not read the agent wallets right now; `candle wallets` shows them once the API is reachable.\n");
-  }
-  section(deps, "3/4 Connect your agent");
-  deps.stdout.write(`Claude Code skills:  ${SKILLS_CLAUDE_COMMAND}
-`);
-  deps.stdout.write(`MCP (any client), paste into the host's MCP config:
-`);
-  deps.stdout.write(`${await mcpClientConfig([], deps)}
-`);
-  deps.stdout.write(`The MCP server is built into this binary; the host needs nothing else installed.
-`);
-  deps.stdout.write(`Other platforms:     ${CODING_AGENTS_DOCS}
-`);
-  section(deps, "4/4 Health check");
-  const doctorExit = await doctor([], nextCtx);
-  const config = await deps.readConfig();
-  const { portalOrigin } = effectiveProfileFields(config, nextCtx.profile);
-  deps.stdout.write(`
-Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl, portalOrigin)}
-`);
-  deps.stdout.write(doctorExit === 0 ? `Setup complete. Your agent can launch, trade, and transfer the moment the wallets are funded.
-` : "Setup finished with failed checks above; fix them and re-run `candle doctor`.\n");
-  return doctorExit;
 }
 
 // src/commands/update.ts
@@ -31648,12 +31673,12 @@ Commands:
   wallet generate --chain <solana|hood|evm> --count <n>            Generate wallets, seal them locally, then import
   wallet export --index <n> [--yes]                                Print one generated key from the keystore
   wallet revoke <wallet-id>                                       Revoke a linked wallet
-  hot new [--label <name>]                                        Ember: seal a fresh dedicated Solana hot key locally
-  hot enable <address> --vault <address>                          Ember: delegate a hot key to this profile's agent, pin the sweep vault
-  hot fund <address> --amount <n> [--asset SOL|USDC]              Ember: print the funding instruction for your vault to sign
-  hot status <address> [--rpc-url <url>]                          Ember: server lifecycle state and on-chain balances
-  hot disable <address>                                           Ember: stop the agent; verified stop or pending, never "done" on a 200
-  hot sweep <address> --rpc-url <url> [--emergency]               Ember: sign locally and move everything to the pinned vault
+  tee new [--label <name>]                                        Seal a fresh dedicated Solana TEE wallet key locally
+  tee enable <address> --vault <address>                          Delegate a TEE wallet key to this profile's agent, pin the sweep vault
+  tee fund <address> --amount <n> [--asset SOL|USDC]              Print the funding instruction for your vault to sign
+  tee status <address> [--rpc-url <url>]                          Server lifecycle state and on-chain balances
+  tee disable <address>                                           Stop the agent; verified stop or pending, never "done" on a 200
+  tee sweep <address> --rpc-url <url> [--emergency]               Sign locally and move everything to the pinned vault
   profile list                                                    Profiles on this machine, with cached accounts
   profile add <name> --api-url <url>                              Create a profile before authenticating it
   profile use <name>                                              Make a profile the active one
@@ -31685,14 +31710,14 @@ var COMMANDS = {
     },
     bare: wallets
   },
-  hot: {
+  tee: {
     subcommands: {
-      new: hotNew,
-      enable: hotEnable,
-      fund: hotFund,
-      status: hotStatus,
-      disable: hotDisable,
-      sweep: hotSweep
+      new: teeNew,
+      enable: teeEnable,
+      fund: teeFund,
+      status: teeStatus,
+      disable: teeDisable,
+      sweep: teeSweep
     }
   },
   profile: {

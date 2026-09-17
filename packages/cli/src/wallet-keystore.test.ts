@@ -95,61 +95,78 @@ describe("wallet keystore", () => {
   })
 })
 
-// ── Ember Phase 1 (BE-94, D3 / T26 / T28): the hot store's purpose marker and bounds ──────────
+// ── Ember Phase 1 (BE-94, D3 / T26 / T28): the TEE wallet store's purpose marker and bounds ──────────
 
-describe("hot-wallet store purpose (Ember Phase 1)", () => {
-  const hotEntry: KeystoreEntry = { ...entry, hot: { network: "solana-mainnet", vaultDestination: "Vault111" } }
+describe("TEE wallet store purpose (Ember Phase 1)", () => {
+  const teeEntry: KeystoreEntry = { ...entry, tee: { network: "solana-mainnet", vaultDestination: "Vault111" } }
 
-  async function sealHot(passphrase: string, iterations = KEYSTORE_ITERATIONS): Promise<string> {
+  async function sealTee(passphrase: string, iterations = KEYSTORE_ITERATIONS): Promise<string> {
     const salt = crypto.getRandomValues(new Uint8Array(16))
     return serializeKeystore(
-      [hotEntry],
+      [teeEntry],
       await deriveKeystoreKey(passphrase, salt, iterations),
       salt,
       iterations,
-      "ember-hot",
+      "ember-tee",
     )
   }
 
-  test("a hot store carries purpose ember-hot in the header and the hot metadata under the AEAD", async () => {
-    const raw = await sealHot("a strong passphrase 12")
-    expect(JSON.parse(raw).purpose).toBe("ember-hot")
+  test("a TEE wallet store carries purpose ember-tee in the header and the tee metadata under the AEAD", async () => {
+    const raw = await sealTee("a strong passphrase 12")
+    expect(JSON.parse(raw).purpose).toBe("ember-tee")
     expect(raw).not.toContain("Vault111")
-    const opened = await readKeystore(raw, "a strong passphrase 12", { expectPurpose: "ember-hot" })
-    expect(opened.entries[0]?.hot?.vaultDestination).toBe("Vault111")
+    const opened = await readKeystore(raw, "a strong passphrase 12", { expectPurpose: "ember-tee" })
+    expect(opened.entries[0]?.tee?.vaultDestination).toBe("Vault111")
   })
 
-  test("T26: a legacy reader (expectPurpose wallets) refuses a hot store and names the sweep", async () => {
-    const raw = await sealHot("a strong passphrase 12")
-    await expect(readKeystore(raw, "a strong passphrase 12", { expectPurpose: "wallets" })).rejects.toThrow(/hot sweep/)
+  test("T26: a legacy reader (expectPurpose wallets) refuses a TEE wallet store and names the sweep", async () => {
+    const raw = await sealTee("a strong passphrase 12")
+    await expect(readKeystore(raw, "a strong passphrase 12", { expectPurpose: "wallets" })).rejects.toThrow(/tee sweep/)
   })
 
-  test("a hot reader refuses a legacy store", async () => {
+  test("a tee reader refuses a legacy store", async () => {
     const raw = await seal([entry], "a strong passphrase 12")
     expect(JSON.parse(raw).purpose).toBeUndefined()
-    await expect(readKeystore(raw, "a strong passphrase 12", { expectPurpose: "ember-hot" })).rejects.toThrow(
-      /not an Ember/,
+    await expect(readKeystore(raw, "a strong passphrase 12", { expectPurpose: "ember-tee" })).rejects.toThrow(
+      /not a TEE wallet store/,
     )
   })
 
-  test("T28: iteration counts outside 210k-2.1M fail closed for a hot store, before any decrypt", async () => {
-    const low = await sealHot("a strong passphrase 12", 100_000)
-    await expect(readKeystore(low, "a strong passphrase 12", { expectPurpose: "ember-hot" })).rejects.toThrow(
+  test("T28: iteration counts outside 210k-2.1M fail closed for a TEE wallet store, before any decrypt", async () => {
+    const low = await sealTee("a strong passphrase 12", 100_000)
+    await expect(readKeystore(low, "a strong passphrase 12", { expectPurpose: "ember-tee" })).rejects.toThrow(
       /iteration count/,
     )
-    const high = await sealHot("a strong passphrase 12", 3_000_000)
-    await expect(readKeystore(high, "a strong passphrase 12", { expectPurpose: "ember-hot" })).rejects.toThrow(
+    const high = await sealTee("a strong passphrase 12", 3_000_000)
+    await expect(readKeystore(high, "a strong passphrase 12", { expectPurpose: "ember-tee" })).rejects.toThrow(
       /iteration count/,
     )
   })
 
   test("T28: a swapped KDF or cipher name fails closed", async () => {
-    const raw = await sealHot("a strong passphrase 12")
+    const raw = await sealTee("a strong passphrase 12")
     const file = JSON.parse(raw)
     file.kdf = "scrypt"
     await expect(
-      readKeystore(JSON.stringify(file), "a strong passphrase 12", { expectPurpose: "ember-hot" }),
+      readKeystore(JSON.stringify(file), "a strong passphrase 12", { expectPurpose: "ember-tee" }),
     ).rejects.toThrow(/unsupported KDF/)
+  })
+
+  test("a store written before the tee rename still opens for the tee commands, metadata carried over", async () => {
+    // The old header marker and entry field, as a source-built CLI wrote them before 2026-09-17.
+    const { tee: meta, ...plain } = teeEntry
+    const legacyEntry = { ...plain, hot: meta } as unknown as KeystoreEntry
+    const salt = crypto.getRandomValues(new Uint8Array(16))
+    const key = await deriveKeystoreKey("a strong passphrase 12", salt, KEYSTORE_ITERATIONS)
+    const file = JSON.parse(await serializeKeystore([legacyEntry], key, salt, KEYSTORE_ITERATIONS, "ember-tee"))
+    file.purpose = "ember-hot"
+    const raw = JSON.stringify(file)
+
+    const opened = await readKeystore(raw, "a strong passphrase 12", { expectPurpose: "ember-tee" })
+    expect(opened.entries[0]?.tee?.vaultDestination).toBe("Vault111")
+    expect(opened.entries[0]).not.toHaveProperty("hot")
+    // Still not a plain wallets store: the export path stays closed.
+    await expect(readKeystore(raw, "a strong passphrase 12", { expectPurpose: "wallets" })).rejects.toThrow(/tee sweep/)
   })
 
   test("a legacy file without a purpose still opens with no expectation (pre-Phase-1 readers)", async () => {

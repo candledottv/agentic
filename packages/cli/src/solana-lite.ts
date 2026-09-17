@@ -2,7 +2,7 @@
  * Ember Phase 1 (BE-94, HW-07): the smallest Solana surface the LOCAL recovery sweep needs, built
  * on the primitives the CLI already ships (`@noble/curves` ed25519, `@noble/hashes` sha256,
  * `@scure/base` base58) rather than a new dependency. The sweep's whole point is that it runs
- * with the hot key on the operator's machine after the remote signer has been neutralized, so it
+ * with the TEE wallet key on the operator's machine after the remote signer has been neutralized, so it
  * cannot lean on the API to build or sign anything.
  *
  * Scope, deliberately: legacy (non-versioned) messages; SystemProgram transfer; SPL Token

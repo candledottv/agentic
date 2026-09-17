@@ -24,12 +24,12 @@ import { pathToFileURL } from "node:url"
 import { resolveApiUrl } from "./client"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { doctor } from "./commands/doctor"
-import { hotDisable, hotEnable, hotFund, hotNew, hotStatus, hotSweep } from "./commands/hot"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { keysWallets } from "./commands/keys-wallets"
 import { mcp, mcpActsAsIdentity } from "./commands/mcp"
 import { profileAdd, profileList, profileRemove, profileRename, profileUse } from "./commands/profile"
 import { setup } from "./commands/setup"
+import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./commands/tee"
 import { update } from "./commands/update"
 import { verify } from "./commands/verify"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
@@ -101,12 +101,12 @@ Commands:
   wallet generate --chain <solana|hood|evm> --count <n>            Generate wallets, seal them locally, then import
   wallet export --index <n> [--yes]                                Print one generated key from the keystore
   wallet revoke <wallet-id>                                       Revoke a linked wallet
-  hot new [--label <name>]                                        Ember: seal a fresh dedicated Solana hot key locally
-  hot enable <address> --vault <address>                          Ember: delegate a hot key to this profile's agent, pin the sweep vault
-  hot fund <address> --amount <n> [--asset SOL|USDC]              Ember: print the funding instruction for your vault to sign
-  hot status <address> [--rpc-url <url>]                          Ember: server lifecycle state and on-chain balances
-  hot disable <address>                                           Ember: stop the agent; verified stop or pending, never "done" on a 200
-  hot sweep <address> --rpc-url <url> [--emergency]               Ember: sign locally and move everything to the pinned vault
+  tee new [--label <name>]                                        Seal a fresh dedicated Solana TEE wallet key locally
+  tee enable <address> --vault <address>                          Delegate a TEE wallet key to this profile's agent, pin the sweep vault
+  tee fund <address> --amount <n> [--asset SOL|USDC]              Print the funding instruction for your vault to sign
+  tee status <address> [--rpc-url <url>]                          Server lifecycle state and on-chain balances
+  tee disable <address>                                           Stop the agent; verified stop or pending, never "done" on a 200
+  tee sweep <address> --rpc-url <url> [--emergency]               Sign locally and move everything to the pinned vault
   profile list                                                    Profiles on this machine, with cached accounts
   profile add <name> --api-url <url>                              Create a profile before authenticating it
   profile use <name>                                              Make a profile the active one
@@ -157,14 +157,14 @@ const COMMANDS: Record<string, CommandRoute> = {
     },
     bare: wallets,
   },
-  hot: {
+  tee: {
     subcommands: {
-      new: hotNew,
-      enable: hotEnable,
-      fund: hotFund,
-      status: hotStatus,
-      disable: hotDisable,
-      sweep: hotSweep,
+      new: teeNew,
+      enable: teeEnable,
+      fund: teeFund,
+      status: teeStatus,
+      disable: teeDisable,
+      sweep: teeSweep,
     },
   },
   profile: {

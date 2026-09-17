@@ -421,7 +421,7 @@ describe("wallets revoke and the stored signer", () => {
     expect(code).toBe(3)
     expect(stdout.text).toContain("verification is pending")
     expect(stdout.text).toContain("READ_BACK_UNAVAILABLE")
-    expect(stdout.text).toContain("remains hot")
+    expect(stdout.text).toContain("TEE signing authority may still be active")
     expect(stdout.text).not.toContain("Revoked linked wallet")
     expect(await store.get("wallet_signer_lw_pending")).toBe("c2lnbmVyLWJvZHk=")
   })

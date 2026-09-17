@@ -30,13 +30,16 @@ export interface ImportInitResponse {
   encryptionPublicKey: string
 }
 
+/** The server's `profile` for a TEE wallet (apps/api, packages/db TEE_PROFILE). Not the store marker. */
+export const TEE_PROFILE = "ember-tee" as const
+
 export interface ImportSubmitResponse {
   id: string
   address: string
   chain: WalletChain
   privyWalletId: string
-  /** Ember Phase 1: present only for `profile: "ember-hot"` imports. */
-  profile?: "ember-hot"
+  /** Ember Phase 1: present only for `profile: "ember-tee"` imports. */
+  profile?: typeof TEE_PROFILE
   boundKeyPrefix?: string
   vaultDestination?: string
   remoteAuthority?: "verified-active" | "verified-denied" | "unknown" | "none"
@@ -67,9 +70,9 @@ export interface ImportFlowParams {
   apiKey: string
   apiUrl: string
   deps: Deps
-  /** Ember Phase 1 (BE-94): the dedicated hot-wallet profile and its pinned sweep destination.
+  /** Ember Phase 1 (BE-94): the dedicated TEE wallet profile and its pinned sweep destination.
    * Forwarded to import/submit verbatim; the server validates and records them. */
-  profile?: "ember-hot"
+  profile?: typeof TEE_PROFILE
   vaultDestination?: string
 }
 

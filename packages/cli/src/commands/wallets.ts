@@ -610,7 +610,7 @@ export async function walletsRevoke(args: string[], ctx: CommandContext): Promis
   deps.stdout.write(
     `Agent trading stopped at Candle for ${walletId}. Remote policy verification is pending` +
       `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.\n` +
-      `Funds remain in the wallet and this address remains hot. Re-run: candle wallets revoke ${walletId}\n`,
+      `Funds remain in the wallet and its TEE signing authority may still be active. Re-run: candle wallets revoke ${walletId}\n`,
   )
   return 3
 }

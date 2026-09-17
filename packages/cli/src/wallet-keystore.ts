@@ -33,26 +33,49 @@ import type { WalletChain } from "./wallet-import"
  * passed in rather than read from process so a test can point this somewhere disposable.
  */
 export function defaultKeystorePath(env: Record<string, string | undefined>): string {
-  const dir = env.CANDLE_CONFIG_DIR?.trim() || join(homedir(), ".config", "candle")
-  return join(dir, "wallets.enc")
+  return join(candleConfigDir(env), "wallets.enc")
 }
 
 /**
- * Ember Phase 1 (BE-94, D3): the dedicated hot-wallet store, a SEPARATE file from wallets.enc with
+ * Ember Phase 1 (BE-94, D3): the dedicated TEE wallet store, a SEPARATE file from wallets.enc with
  * its own passphrase and a `purpose` marker in the header, so the legacy readers (`wallets export`,
- * `wallets generate --resume`) refuse it and the `hot` commands refuse anything else.
+ * `wallets generate --resume`) refuse it and the `tee` commands refuse anything else.
  */
-export function defaultHotKeystorePath(env: Record<string, string | undefined>): string {
-  const dir = env.CANDLE_CONFIG_DIR?.trim() || join(homedir(), ".config", "candle")
-  return join(dir, "hot-wallets.enc")
+export function defaultTeeKeystorePath(env: Record<string, string | undefined>): string {
+  return join(candleConfigDir(env), "tee-wallets.enc")
 }
 
-/** What a keystore file is FOR. Absent in every file written before Phase 1, which reads as `wallets`. */
-export type KeystorePurpose = "wallets" | "ember-hot"
+/**
+ * Where the TEE wallet store was written before the 2026-09-17 rename. `candle tee` falls back to it
+ * only when no store exists at `defaultTeeKeystorePath`, so a source-built user's funded key is found
+ * without a flag; the next write rewrites that file under the current marker (LEGACY_TEE_PURPOSE).
+ */
+export function legacyTeeKeystorePath(env: Record<string, string | undefined>): string {
+  return join(candleConfigDir(env), "hot-wallets.enc")
+}
 
-/** The Ember hot store accepts PBKDF2 iteration counts in this range and fails closed outside it (D3). */
-export const HOT_KEYSTORE_MIN_ITERATIONS = 210_000
-export const HOT_KEYSTORE_MAX_ITERATIONS = 2_100_000
+function candleConfigDir(env: Record<string, string | undefined>): string {
+  return env.CANDLE_CONFIG_DIR?.trim() || join(homedir(), ".config", "candle")
+}
+
+/** The header marker of a TEE wallet store. One constant, so the value is spelled in one place. */
+export const TEE_KEYSTORE_PURPOSE = "ember-tee" as const
+
+/** What a keystore file is FOR. Absent in every file written before Phase 1, which reads as `wallets`. */
+export type KeystorePurpose = "wallets" | typeof TEE_KEYSTORE_PURPOSE
+
+/**
+ * The TEE wallet store's header marker and entry field before the 2026-09-17 rename. Only CLIs
+ * built from source ever wrote them (no npm release shipped the command), but such a file holds
+ * the only copy of a funded key, so it must still open for a sweep. Read, never written: the next
+ * rewrite of the file stores the current names.
+ */
+const LEGACY_TEE_PURPOSE = "ember-hot"
+const LEGACY_TEE_FIELD = "hot"
+
+/** The Ember TEE wallet store accepts PBKDF2 iteration counts in this range and fails closed outside it (D3). */
+export const TEE_KEYSTORE_MIN_ITERATIONS = 210_000
+export const TEE_KEYSTORE_MAX_ITERATIONS = 2_100_000
 
 export const KEYSTORE_VERSION = 1
 /** Matches EncryptedFileSecretStore's constant. Persisted per file so raising it never orphans. */
@@ -80,14 +103,14 @@ export interface KeystoreEntry {
   privyWalletId?: string
   importedAt?: string
   /**
-   * Ember Phase 1 (BE-94): the hot-wallet grant this key backs. Lives INSIDE the sealed blob on
+   * Ember Phase 1 (BE-94): the TEE wallet grant this key backs. Lives INSIDE the sealed blob on
    * purpose: the vault destination is what a sweep sends every asset to, and a cleartext side
    * file could be edited by anything running as the user. Under the AEAD it is tamper-evident.
    */
-  hot?: HotWalletMeta
+  tee?: TeeWalletMeta
 }
 
-export interface HotWalletMeta {
+export interface TeeWalletMeta {
   network: "solana-mainnet"
   /** The human-approved sweep destination, pinned at enable. Never edited by an agent. */
   vaultDestination?: string
@@ -99,7 +122,7 @@ export interface HotWalletMeta {
   stopRequestedAt?: string
   /**
    * Every finalized sweep transaction this key ever signed, retained across runs (HW-07 operation
-   * evidence). A later `hot sweep` reconciles them: a recording outage, an interrupted run, or an
+   * evidence). A later `tee sweep` reconciles them: a recording outage, an interrupted run, or an
    * emergency sweep followed by a verified disable all finish from here without another transfer.
    */
   sweepReceipts?: SweepReceiptRecord[]
@@ -143,7 +166,7 @@ interface KeystoreFile {
   ciphertext: string
   /** Absent on legacy files (= "wallets"). Cleartext, and covered by nothing: it is a ROUTING hint
    * for which command may open the file, not a security claim; the secrets stay under the AEAD. */
-  purpose?: KeystorePurpose
+  purpose?: KeystorePurpose | typeof LEGACY_TEE_PURPOSE
 }
 
 /** An opened keystore, carrying the derived key so rewrites do not re-run PBKDF2. */
@@ -210,7 +233,7 @@ export async function readKeystore(
   passphrase: string,
   /**
    * `expectPurpose` (Ember Phase 1): which kind of file the CALLER is allowed to open. A legacy
-   * reader passes "wallets" and is refused a hot store; a `hot` command passes "ember-hot" and is
+   * reader passes "wallets" and is refused a TEE wallet store; a `tee` command passes "ember-tee" and is
    * refused a legacy store. Omitted = no check (the pre-Phase-1 behavior, kept for the tests and
    * tooling that read either).
    */
@@ -225,28 +248,29 @@ export async function readKeystore(
   if (file.version !== KEYSTORE_VERSION) {
     throw new Error(`Unsupported keystore version ${file.version}: this CLI writes version ${KEYSTORE_VERSION}.`)
   }
-  const purpose: KeystorePurpose = file.purpose === "ember-hot" ? "ember-hot" : "wallets"
+  const purpose: KeystorePurpose =
+    file.purpose === TEE_KEYSTORE_PURPOSE || file.purpose === LEGACY_TEE_PURPOSE ? TEE_KEYSTORE_PURPOSE : "wallets"
   if (opts.expectPurpose !== undefined && purpose !== opts.expectPurpose) {
     throw new Error(
-      purpose === "ember-hot"
-        ? "This is an Ember hot-wallet store (hot-wallets.enc). It has no export path; use: candle hot sweep."
-        : "This is not an Ember hot-wallet store. The hot commands only open hot-wallets.enc.",
+      purpose === TEE_KEYSTORE_PURPOSE
+        ? "This is a TEE wallet store (tee-wallets.enc). It has no export path; use: candle tee sweep."
+        : "This is not a TEE wallet store. The tee commands only open tee-wallets.enc.",
     )
   }
-  if (purpose === "ember-hot") {
+  if (purpose === TEE_KEYSTORE_PURPOSE) {
     // Fail closed on anything the format does not promise (D3): a downgraded KDF, an absurd
     // iteration count, or an algorithm swap must not be "repaired" by guessing.
     if (file.kdf !== "PBKDF2-HMAC-SHA256" || file.cipher !== "AES-256-GCM") {
-      throw new Error("The hot-wallet store names an unsupported KDF or cipher; refusing to open it.")
+      throw new Error("The TEE wallet store names an unsupported KDF or cipher; refusing to open it.")
     }
     if (
       !Number.isInteger(file.iterations) ||
-      file.iterations < HOT_KEYSTORE_MIN_ITERATIONS ||
-      file.iterations > HOT_KEYSTORE_MAX_ITERATIONS
+      file.iterations < TEE_KEYSTORE_MIN_ITERATIONS ||
+      file.iterations > TEE_KEYSTORE_MAX_ITERATIONS
     ) {
       throw new Error(
-        `The hot-wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` +
-          `${HOT_KEYSTORE_MIN_ITERATIONS}-${HOT_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`,
+        `The TEE wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` +
+          `${TEE_KEYSTORE_MIN_ITERATIONS}-${TEE_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`,
       )
     }
   }
@@ -264,8 +288,11 @@ export async function readKeystore(
   } catch {
     throw new Error("Could not decrypt the keystore: wrong passphrase, or the file is corrupt.")
   }
+  const decoded = JSON.parse(new TextDecoder().decode(plain)) as Array<KeystoreEntry & Record<string, unknown>>
   return {
-    entries: JSON.parse(new TextDecoder().decode(plain)) as KeystoreEntry[],
+    entries: decoded.map(({ [LEGACY_TEE_FIELD]: legacy, ...entry }) =>
+      legacy !== undefined && entry.tee === undefined ? { ...entry, tee: legacy as TeeWalletMeta } : entry,
+    ),
     key,
     salt,
     iterations: file.iterations,
@@ -305,7 +332,7 @@ export async function writeKeystoreFile(path: string, contents: string): Promise
  * A lock left behind by a crash is never broken automatically: breaking a live lock would reopen
  * the exact race this exists to close. After `waitMs` of polling the caller gets
  * `KeystoreLockedError` naming the lock path and, when readable, who took it and when, so a human
- * can remove it once they know no other `candle hot` command is running.
+ * can remove it once they know no other `candle tee` command is running.
  */
 export class KeystoreLockedError extends Error {
   constructor(
@@ -313,8 +340,8 @@ export class KeystoreLockedError extends Error {
     readonly owner: string | null,
   ) {
     super(
-      `Another command holds the hot-wallet store lock at ${lockPath}` +
-        `${owner ? ` (${owner})` : ""}. If no other candle hot command is running, remove that directory and retry.`,
+      `Another command holds the TEE wallet store lock at ${lockPath}` +
+        `${owner ? ` (${owner})` : ""}. If no other candle tee command is running, remove that directory and retry.`,
     )
     this.name = "KeystoreLockedError"
   }

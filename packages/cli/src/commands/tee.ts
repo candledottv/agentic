@@ -1,20 +1,20 @@
 /**
- * `candle hot …`: Ember Phase 1 (BE-94), the dedicated delegated hot wallet.
- * Spec: docs/superpowers/specs/2026-09-16-ember-phase-1-delegated-hot-wallets.md (Draft 2).
+ * `candle tee …`: Ember Phase 1 (BE-94), the dedicated delegated TEE wallet.
+ * Spec: docs/superpowers/specs/2026-09-16-ember-phase-1-delegated-tee-wallets.md (Draft 2).
  *
  * Six commands, one lifecycle:
  *
- *   new      seal a fresh Solana key into hot-wallets.enc (HW-01); no network
+ *   new      seal a fresh Solana key into tee-wallets.enc (HW-01); no network
  *   enable   import it for THIS profile's agent with the sweep vault pinned (HW-02, HW-03)
  *   fund     print the funding instruction the VAULT signs; the CLI signs nothing (HW-04)
  *   status   the server's derived lifecycle state, plus balances when an RPC is given
  *   disable  stop the agent: typed state, exit 3 when remote enforcement is unconfirmed (HW-06)
- *   sweep    sign LOCALLY with the hot key and move everything to the vault (HW-07)
+ *   sweep    sign LOCALLY with the TEE wallet key and move everything to the vault (HW-07)
  *
- * Every command refuses to run while CANDLE_KEYSTORE_PASSPHRASE is set (D3): the hot store's
- * passphrase is typed, never read from the environment, and its value is never looked at. The hot
- * store is a separate file with a `purpose` marker; the legacy `wallets` commands refuse it and
- * these commands refuse anything else. The API never sees the hot private key or the passphrase.
+ * Every command refuses to run while CANDLE_KEYSTORE_PASSPHRASE is set (D3): the TEE wallet store's
+ * passphrase is typed, never read from the environment, and its value is never looked at. The TEE
+ * wallet store is a separate file with a `purpose` marker; the legacy `wallets` commands refuse it and
+ * these commands refuse anything else. The API never sees the TEE wallet private key or the passphrase.
  */
 import { base58 } from "@scure/base"
 import { type ParsedArgs, parseArgs } from "../args"
@@ -43,18 +43,20 @@ import {
   tokenTransferChecked,
 } from "../solana-lite"
 import { classifyStatus, resolvePending } from "../sweep-pending"
-import { runImportFlow } from "../wallet-import-flow"
+import { runImportFlow, TEE_PROFILE } from "../wallet-import-flow"
 import { generateWallet } from "../wallet-keygen"
 import {
   createKeystore,
-  defaultHotKeystorePath,
+  defaultTeeKeystorePath,
   type KeystoreEntry,
   KeystoreLockedError,
+  legacyTeeKeystorePath,
   type OpenKeystore,
   readKeystore,
   type SweepPendingRecord,
   type SweepReceiptRecord,
   serializeKeystore,
+  TEE_KEYSTORE_PURPOSE,
   withKeystoreLock,
   writeKeystoreFile,
 } from "../wallet-keystore"
@@ -69,7 +71,7 @@ const CONFIRM_MAX_POLLS = 45
 
 // ── Shared guards and store access ──────────────────────────────────────────────────────────
 
-/** D3: the hot store's passphrase is typed. The variable's VALUE is never read, only its presence. */
+/** D3: the TEE wallet store's passphrase is typed. The variable's VALUE is never read, only its presence. */
 function refuseEnvPassphrase(ctx: CommandContext): boolean {
   if (ctx.deps.env.CANDLE_KEYSTORE_PASSPHRASE === undefined) return true
   writeLocalFailure(
@@ -77,8 +79,8 @@ function refuseEnvPassphrase(ctx: CommandContext): boolean {
     {
       code: "ENV_PASSPHRASE_REFUSED",
       message:
-        "CANDLE_KEYSTORE_PASSPHRASE is set. The Ember hot store never reads its passphrase from the environment.",
-      suggestion: "Unset it and run again; the hot commands prompt for the passphrase with input hidden.",
+        "CANDLE_KEYSTORE_PASSPHRASE is set. The TEE wallet store never reads its passphrase from the environment.",
+      suggestion: "Unset it and run again; the tee commands prompt for the passphrase with input hidden.",
     },
     ctx.json,
   )
@@ -90,12 +92,32 @@ function usage(ctx: CommandContext, line: string): number {
   return 2
 }
 
-function hotStorePath(ctx: CommandContext, parsed: ParsedArgs): string {
-  return parsed.values["--keystore"] ?? defaultHotKeystorePath(ctx.deps.env)
+type StoreRead = { path: string; raw: string | null } | { path: string; error: unknown }
+
+/**
+ * Finds the TEE wallet store and reads it, once. `--keystore` wins. Otherwise the current store, or,
+ * only when that file does not exist, the store a source-built CLI wrote before the rename
+ * (`hot-wallets.enc`). `raw` is null when neither exists (reported against the current path); any
+ * other read failure comes back as `error` with the path it happened on.
+ */
+async function readTeeStore(ctx: CommandContext, parsed: ParsedArgs): Promise<StoreRead> {
+  const attempt = async (path: string): Promise<StoreRead> => {
+    try {
+      return { path, raw: await readTeeStoreRaw(ctx.deps, path) }
+    } catch (error) {
+      return { path, error }
+    }
+  }
+  const explicit = parsed.values["--keystore"]
+  if (explicit !== undefined) return attempt(explicit)
+  const current = await attempt(defaultTeeKeystorePath(ctx.deps.env))
+  if ("error" in current || current.raw !== null) return current
+  const legacy = await attempt(legacyTeeKeystorePath(ctx.deps.env))
+  return "error" in legacy || legacy.raw !== null ? legacy : current
 }
 
 /** null = no store here (ENOENT); throws for every other read failure (see wallets-generate). */
-async function readHotStoreRaw(deps: Deps, path: string): Promise<string | null> {
+async function readTeeStoreRaw(deps: Deps, path: string): Promise<string | null> {
   try {
     return await deps.readFile(path)
   } catch (error) {
@@ -109,7 +131,7 @@ async function promptPassphrase(
   deps: Deps,
   creating: boolean,
 ): Promise<{ ok: true; passphrase: string } | { ok: false; message: string }> {
-  const first = (await deps.promptSecret("Hot-wallet store passphrase (input hidden): ")).trim()
+  const first = (await deps.promptSecret("TEE wallet store passphrase (input hidden): ")).trim()
   if (first === "") return { ok: false, message: "A passphrase is required." }
   if (creating) {
     if (first.length < MIN_PASSPHRASE_LENGTH) {
@@ -121,14 +143,14 @@ async function promptPassphrase(
   return { ok: true, passphrase: first }
 }
 
-async function persistHot(store: OpenKeystore, path: string): Promise<string> {
-  const contents = await serializeKeystore(store.entries, store.key, store.salt, store.iterations, "ember-hot")
+async function persistTee(store: OpenKeystore, path: string): Promise<string> {
+  const contents = await serializeKeystore(store.entries, store.key, store.salt, store.iterations, TEE_KEYSTORE_PURPOSE)
   await writeKeystoreFile(path, contents)
   return contents
 }
 
 /** A store as opened: the decrypted entries plus the exact bytes they came from (null = no file yet). */
-interface OpenedHot {
+interface OpenedTee {
   store: OpenKeystore
   path: string
   passphrase: string
@@ -137,11 +159,11 @@ interface OpenedHot {
 
 type CommitResult =
   | { ok: true; store: OpenKeystore }
-  | { ok: false; code: "HOT_STORE_LOCKED" | "HOT_STORE_CHANGED" | "HOT_STORE_WRITE_FAILED"; message: string }
+  | { ok: false; code: "TEE_STORE_LOCKED" | "TEE_STORE_CHANGED" | "TEE_STORE_WRITE_FAILED"; message: string }
 
 /**
- * T28 ("two writers cannot lose keys"): every write to the hot store goes through here. Under the
- * store lock it re-reads the file; if the bytes moved since this command opened it (another `hot`
+ * T28 ("two writers cannot lose keys"): every write to the TEE wallet store goes through here. Under the
+ * store lock it re-reads the file; if the bytes moved since this command opened it (another `tee`
  * command committed in between), it decrypts the CURRENT file with the same passphrase and applies
  * `mutate` to those entries instead of the stale copy, so a concurrent writer's key is carried
  * forward rather than replaced. `mutate` must therefore be expressed against whatever entries it
@@ -152,9 +174,9 @@ type CommitResult =
  * Fails closed, writing nothing, when the lock cannot be taken, when the changed file no longer
  * opens with this passphrase (it is not ours to merge into), or when `mutate` throws.
  */
-async function commitHot(
+async function commitTee(
   deps: Deps,
-  opened: OpenedHot,
+  opened: OpenedTee,
   mutate: (entries: KeystoreEntry[]) => void,
   opts: { verifyAddress?: string } = {},
 ): Promise<CommitResult> {
@@ -179,7 +201,7 @@ async function commitHot(
             target = opened.store
           } else {
             try {
-              target = await readKeystore(current, opened.passphrase, { expectPurpose: "ember-hot" })
+              target = await readKeystore(current, opened.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE })
             } catch (error) {
               throw new StoreChangedError(
                 `${opened.path} was replaced by another command and does not open with this passphrase: ` +
@@ -191,10 +213,10 @@ async function commitHot(
         mutate(target.entries)
         // Remember the bytes this command wrote: the next commit from the same command must not
         // mistake its own write for a foreign change and re-derive the key for nothing.
-        opened.raw = await persistHot(target, opened.path)
+        opened.raw = await persistTee(target, opened.path)
         if (opts.verifyAddress !== undefined) {
           const reopened = await readKeystore(await deps.readFile(opened.path), opened.passphrase, {
-            expectPurpose: "ember-hot",
+            expectPurpose: TEE_KEYSTORE_PURPOSE,
           })
           const stored = reopened.entries.find((e) => e.address === opts.verifyAddress)
           if (!stored) throw new Error("the new entry is missing after re-reading the store")
@@ -203,16 +225,16 @@ async function commitHot(
         }
         return target
       },
-      { owner: `candle hot (pid ${process.pid})` },
+      { owner: `candle tee (pid ${process.pid})` },
     )
     opened.store = store
     return { ok: true, store }
   } catch (error) {
-    if (error instanceof KeystoreLockedError) return { ok: false, code: "HOT_STORE_LOCKED", message: error.message }
-    if (error instanceof StoreChangedError) return { ok: false, code: "HOT_STORE_CHANGED", message: error.message }
+    if (error instanceof KeystoreLockedError) return { ok: false, code: "TEE_STORE_LOCKED", message: error.message }
+    if (error instanceof StoreChangedError) return { ok: false, code: "TEE_STORE_CHANGED", message: error.message }
     return {
       ok: false,
-      code: "HOT_STORE_WRITE_FAILED",
+      code: "TEE_STORE_WRITE_FAILED",
       message: error instanceof Error ? error.message : String(error),
     }
   }
@@ -224,46 +246,45 @@ function writeCommitFailure(ctx: CommandContext, failure: Extract<CommitResult, 
   writeLocalFailure(ctx.deps, { code: failure.code, message: failure.message, suggestion: consequence }, ctx.json)
 }
 
-type Opened = ({ ok: true } & OpenedHot) | { ok: false; code: number }
+type Opened = ({ ok: true } & OpenedTee) | { ok: false; code: number }
 
-/** Opens an EXISTING hot store (prompting once) and returns it, or writes the failure and a code. */
-async function openExistingHotStore(ctx: CommandContext, parsed: ParsedArgs): Promise<Opened> {
+/** Opens an EXISTING TEE wallet store (prompting once) and returns it, or writes the failure and a code. */
+async function openExistingTeeStore(ctx: CommandContext, parsed: ParsedArgs): Promise<Opened> {
   const { deps, json } = ctx
-  const path = hotStorePath(ctx, parsed)
-  let raw: string | null
-  try {
-    raw = await readHotStoreRaw(deps, path)
-  } catch (error) {
+  const found = await readTeeStore(ctx, parsed)
+  const { path } = found
+  if ("error" in found) {
     writeLocalFailure(
       deps,
       {
-        code: "HOT_STORE_UNREADABLE",
-        message: `Could not read ${path}: ${error instanceof Error ? error.message : error}`,
+        code: "TEE_STORE_UNREADABLE",
+        message: `Could not read ${path}: ${found.error instanceof Error ? found.error.message : found.error}`,
       },
       json,
     )
     return { ok: false, code: 1 }
   }
+  const { raw } = found
   if (raw === null) {
     writeLocalFailure(
       deps,
-      { code: "HOT_STORE_MISSING", message: `No hot-wallet store at ${path}.`, suggestion: "Run: candle hot new" },
+      { code: "TEE_STORE_MISSING", message: `No TEE wallet store at ${path}.`, suggestion: "Run: candle tee new" },
       json,
     )
     return { ok: false, code: 1 }
   }
   const passphrase = await promptPassphrase(deps, false)
   if (!passphrase.ok) {
-    writeLocalFailure(deps, { code: "HOT_STORE_PASSPHRASE", message: passphrase.message }, json)
+    writeLocalFailure(deps, { code: "TEE_STORE_PASSPHRASE", message: passphrase.message }, json)
     return { ok: false, code: 1 }
   }
   try {
-    const store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: "ember-hot" })
+    const store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE })
     return { ok: true, store, path, passphrase: passphrase.passphrase, raw }
   } catch (error) {
     writeLocalFailure(
       deps,
-      { code: "HOT_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) },
+      { code: "TEE_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) },
       json,
     )
     return { ok: false, code: 1 }
@@ -278,9 +299,9 @@ function noSuchEntry(ctx: CommandContext, address: string, path: string): number
   writeLocalFailure(
     ctx.deps,
     {
-      code: "HOT_WALLET_UNKNOWN",
-      message: `${address} is not a hot wallet in ${path}.`,
-      suggestion: "Run: candle hot new",
+      code: "TEE_WALLET_UNKNOWN",
+      message: `${address} is not a TEE wallet in ${path}.`,
+      suggestion: "Run: candle tee new",
     },
     ctx.json,
   )
@@ -324,46 +345,45 @@ function rpcUrlFrom(ctx: CommandContext, parsed: ParsedArgs): string | { error: 
   return url
 }
 
-// ── hot new ─────────────────────────────────────────────────────────────────────────────────
+// ── tee new ─────────────────────────────────────────────────────────────────────────────────
 
-export async function hotNew(args: string[], ctx: CommandContext): Promise<number> {
+export async function teeNew(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, json } = ctx
   if (!refuseEnvPassphrase(ctx)) return 1
   const parsed = parseArgs(args, { valueFlags: ["--label", "--keystore"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
 
-  const path = hotStorePath(ctx, parsed)
-  let raw: string | null
-  try {
-    raw = await readHotStoreRaw(deps, path)
-  } catch (error) {
+  const found = await readTeeStore(ctx, parsed)
+  const { path } = found
+  if ("error" in found) {
     writeLocalFailure(
       deps,
       {
-        code: "HOT_STORE_UNREADABLE",
-        message: `Could not read ${path}: ${error instanceof Error ? error.message : error}`,
+        code: "TEE_STORE_UNREADABLE",
+        message: `Could not read ${path}: ${found.error instanceof Error ? found.error.message : found.error}`,
         suggestion: "Refusing to continue: a store may exist at that path, and overwriting it would destroy its keys.",
       },
       json,
     )
     return 1
   }
+  const { raw } = found
 
   const passphrase = await promptPassphrase(deps, raw === null)
   if (!passphrase.ok) {
-    writeLocalFailure(deps, { code: "HOT_STORE_PASSPHRASE", message: passphrase.message }, json)
+    writeLocalFailure(deps, { code: "TEE_STORE_PASSPHRASE", message: passphrase.message }, json)
     return 1
   }
 
   let store: OpenKeystore
   if (raw !== null) {
     try {
-      store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: "ember-hot" })
+      store = await readKeystore(raw, passphrase.passphrase, { expectPurpose: TEE_KEYSTORE_PURPOSE })
     } catch (error) {
       writeLocalFailure(
         deps,
-        { code: "HOT_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) },
+        { code: "TEE_STORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) },
         json,
       )
       return 1
@@ -374,15 +394,15 @@ export async function hotNew(args: string[], ctx: CommandContext): Promise<numbe
 
   const wallet = generateWallet("solana")
   // The index and default label are decided at commit time against the entries actually in the
-  // file (T28): a concurrent `hot new` may have appended since this command opened the store.
+  // file (T28): a concurrent `tee new` may have appended since this command opened the store.
   let index = -1
   let label = ""
-  const committed = await commitHot(
+  const committed = await commitTee(
     deps,
     { store, path, passphrase: passphrase.passphrase, raw },
     (entries) => {
       index = entries.length
-      label = parsed.values["--label"] ?? `hot-${index}`
+      label = parsed.values["--label"] ?? `tee-${index}`
       entries.push({
         index,
         chain: "solana",
@@ -391,7 +411,7 @@ export async function hotNew(args: string[], ctx: CommandContext): Promise<numbe
         createdAt: new Date().toISOString(),
         privateKey: wallet.privateKey,
         imported: false,
-        hot: { network: "solana-mainnet" },
+        tee: { network: "solana-mainnet" },
       })
     },
     // HW-01: seal, then PROVE the backup restores before printing anything: re-read the file with
@@ -402,9 +422,9 @@ export async function hotNew(args: string[], ctx: CommandContext): Promise<numbe
     writeLocalFailure(
       deps,
       {
-        code: committed.code === "HOT_STORE_WRITE_FAILED" ? "HOT_STORE_VERIFY_FAILED" : committed.code,
-        message: `${committed.code === "HOT_STORE_WRITE_FAILED" ? "Backup verification failed: " : ""}${committed.message}`,
-        suggestion: "Nothing was enabled or funded. Fix the error and run: candle hot new",
+        code: committed.code === "TEE_STORE_WRITE_FAILED" ? "TEE_STORE_VERIFY_FAILED" : committed.code,
+        message: `${committed.code === "TEE_STORE_WRITE_FAILED" ? "Backup verification failed: " : ""}${committed.message}`,
+        suggestion: "Nothing was enabled or funded. Fix the error and run: candle tee new",
       },
       json,
     )
@@ -417,26 +437,26 @@ export async function hotNew(args: string[], ctx: CommandContext): Promise<numbe
     )
     return 0
   }
-  deps.stdout.write(`New hot wallet [${index}] ${wallet.address}  ${label}\n`)
+  deps.stdout.write(`New TEE wallet [${index}] ${wallet.address}  ${label}\n`)
   deps.stdout.write(`Sealed to ${path} and verified to restore.\n`)
   deps.stdout.write(`BACK UP THIS FILE AND REMEMBER THE PASSPHRASE. This key exists nowhere else.\n`)
-  deps.stdout.write(`State: local-only. Next: candle hot enable ${wallet.address} --vault <your-vault-address>\n`)
+  deps.stdout.write(`State: local-only. Next: candle tee enable ${wallet.address} --vault <your-vault-address>\n`)
   return 0
 }
 
-// ── hot enable ──────────────────────────────────────────────────────────────────────────────
+// ── tee enable ──────────────────────────────────────────────────────────────────────────────
 
-export async function hotEnable(args: string[], ctx: CommandContext): Promise<number> {
+export async function teeEnable(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
   if (!refuseEnvPassphrase(ctx)) return 1
   const parsed = parseArgs(args, { valueFlags: ["--vault", "--label", "--keystore"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
-  if (!address || extra !== undefined) return usage(ctx, "Usage: candle hot enable <address> --vault <address>")
+  if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee enable <address> --vault <address>")
   const vault = parsed.values["--vault"]
   if (!vault) return usage(ctx, "--vault <address> is required: the destination every sweep sends to.")
   if (!isSolanaAddress(vault)) return usage(ctx, "--vault is not a valid Solana address.")
-  if (vault === address) return usage(ctx, "--vault must be a different address from the hot wallet.")
+  if (vault === address) return usage(ctx, "--vault must be a different address from the TEE wallet.")
 
   await printIdentity(ctx)
   const apiKey = await resolveApiKey(deps, ctx.profile)
@@ -449,7 +469,7 @@ export async function hotEnable(args: string[], ctx: CommandContext): Promise<nu
     return 1
   }
 
-  const opened = await openExistingHotStore(ctx, parsed)
+  const opened = await openExistingTeeStore(ctx, parsed)
   if (!opened.ok) return opened.code
   const { store, path } = opened
   const entry = findEntry(store, address)
@@ -458,9 +478,9 @@ export async function hotEnable(args: string[], ctx: CommandContext): Promise<nu
     writeLocalFailure(
       deps,
       {
-        code: "HOT_WALLET_ALREADY_ENABLED",
+        code: "TEE_WALLET_ALREADY_ENABLED",
         message: `${address} was already enabled${entry.linkedWalletId ? ` as ${entry.linkedWalletId}` : ""}.`,
-        suggestion: "A retired or enabled hot wallet is never re-enabled. Run: candle hot new",
+        suggestion: "A retired or enabled TEE wallet is never re-enabled. Run: candle tee new",
       },
       json,
     )
@@ -469,8 +489,8 @@ export async function hotEnable(args: string[], ctx: CommandContext): Promise<nu
 
   // HW-02: the human sees exactly what is being granted before confirming.
   if (!json) {
-    deps.stdout.write(`About to delegate a DEDICATED hot wallet to this profile's agent:\n`)
-    deps.stdout.write(`  hot wallet   ${address}\n`)
+    deps.stdout.write(`About to delegate a DEDICATED TEE wallet to this profile's agent:\n`)
+    deps.stdout.write(`  TEE wallet   ${address}\n`)
     deps.stdout.write(`  network      solana-mainnet\n`)
     deps.stdout.write(`  sweep vault  ${vault}\n`)
     deps.stdout.write(
@@ -482,7 +502,9 @@ export async function hotEnable(args: string[], ctx: CommandContext): Promise<nu
     deps.stdout.write(
       `Exposure: everything you fund into this wallet, plus anything deposited later, can be lost by a\n`,
     )
-    deps.stdout.write(`compromised agent within those limits. Once enabled this address is permanently hot.\n`)
+    deps.stdout.write(
+      `compromised agent within those limits. Once enabled a copy of this key stays in the TEE for good.\n`,
+    )
   }
   if (!(await confirmVault(deps, vault))) {
     writeLocalFailure(
@@ -501,7 +523,7 @@ export async function hotEnable(args: string[], ctx: CommandContext): Promise<nu
     apiKey,
     apiUrl,
     deps,
-    profile: "ember-hot",
+    profile: TEE_PROFILE,
     vaultDestination: vault,
   })
   if (!flow.ok) {
@@ -523,14 +545,14 @@ export async function hotEnable(args: string[], ctx: CommandContext): Promise<nu
 
   const submitted = flow.submitted
   const importedAt = new Date().toISOString()
-  const committed = await commitHot(deps, opened, (entries) => {
+  const committed = await commitTee(deps, opened, (entries) => {
     const target = entries.find((e) => e.address === address)
     if (!target) throw new Error(`${address} is no longer in ${path}`)
     target.imported = true
     target.linkedWalletId = submitted.id
     target.privyWalletId = submitted.privyWalletId
     target.importedAt = importedAt
-    target.hot = {
+    target.tee = {
       network: "solana-mainnet",
       vaultDestination: vault,
       ...(submitted.boundKeyPrefix ? { boundKeyPrefix: submitted.boundKeyPrefix } : {}),
@@ -543,7 +565,7 @@ export async function hotEnable(args: string[], ctx: CommandContext): Promise<nu
       ctx,
       committed,
       `The server DID import ${address} as ${submitted.id}, but the grant could not be recorded locally. ` +
-        `Do not fund it. Stop it (candle hot disable ${address}, or revoke ${submitted.id} from your session) and enable a fresh wallet.`,
+        `Do not fund it. Stop it (candle tee disable ${address}, or revoke ${submitted.id} from your session) and enable a fresh wallet.`,
     )
     return 1
   }
@@ -565,18 +587,18 @@ export async function hotEnable(args: string[], ctx: CommandContext): Promise<nu
   }
   if (verified) {
     deps.stdout.write(`Enabled ${address} as ${submitted.id}, bound to key ${submitted.boundKeyPrefix ?? "?"}.\n`)
-    deps.stdout.write(`Remote authority verified. Fund it: candle hot fund ${address} --amount <n> --asset SOL|USDC\n`)
+    deps.stdout.write(`Remote authority verified. Fund it: candle tee fund ${address} --amount <n> --asset SOL|USDC\n`)
     return 0
   }
   deps.stdout.write(
     `Imported ${address} as ${submitted.id}, but the server could NOT verify the remote authority` +
       `${submitted.reasonCode ? ` (${submitted.reasonCode})` : ""}. The agent cannot trade it.\n` +
-      `Do not fund it. Disable it (candle hot disable ${address}) and enable a fresh wallet.\n`,
+      `Do not fund it. Disable it (candle tee disable ${address}) and enable a fresh wallet.\n`,
   )
   return 3
 }
 
-// ── hot fund ────────────────────────────────────────────────────────────────────────────────
+// ── tee fund ────────────────────────────────────────────────────────────────────────────────
 
 function decimalToRaw(decimal: string, decimals: number): bigint | null {
   if (!/^\d+(\.\d+)?$/.test(decimal)) return null
@@ -585,14 +607,14 @@ function decimalToRaw(decimal: string, decimals: number): bigint | null {
   return BigInt((whole ?? "0") + frac.padEnd(decimals, "0"))
 }
 
-export async function hotFund(args: string[], ctx: CommandContext): Promise<number> {
+export async function teeFund(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, json } = ctx
   if (!refuseEnvPassphrase(ctx)) return 1
   const parsed = parseArgs(args, { valueFlags: ["--amount", "--asset", "--keystore"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
   if (!address || extra !== undefined)
-    return usage(ctx, "Usage: candle hot fund <address> --amount <n> [--asset SOL|USDC]")
+    return usage(ctx, "Usage: candle tee fund <address> --amount <n> [--asset SOL|USDC]")
   const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase()
   if (asset !== "SOL" && asset !== "USDC") return usage(ctx, "--asset must be SOL or USDC.")
   const amount = parsed.values["--amount"]
@@ -602,33 +624,33 @@ export async function hotFund(args: string[], ctx: CommandContext): Promise<numb
   if (raw === null || raw === 0n)
     return usage(ctx, `--amount must be a positive decimal with at most ${decimals} decimal places.`)
 
-  const opened = await openExistingHotStore(ctx, parsed)
+  const opened = await openExistingTeeStore(ctx, parsed)
   if (!opened.ok) return opened.code
   const entry = findEntry(opened.store, address)
   if (!entry) return noSuchEntry(ctx, address, opened.path)
-  if (!entry.linkedWalletId || entry.hot?.remoteAuthority !== "verified-active") {
+  if (!entry.linkedWalletId || entry.tee?.remoteAuthority !== "verified-active") {
     writeLocalFailure(
       deps,
       {
-        code: "HOT_WALLET_NOT_VERIFIED",
-        message: `${address} is not an enabled hot wallet with verified remote authority; do not fund it.`,
-        suggestion: "Run: candle hot enable <address> --vault <address>, and fund only after it reports verified.",
+        code: "TEE_WALLET_NOT_VERIFIED",
+        message: `${address} is not an enabled TEE wallet with verified remote authority; do not fund it.`,
+        suggestion: "Run: candle tee enable <address> --vault <address>, and fund only after it reports verified.",
       },
       json,
     )
     return 1
   }
-  if (entry.hot?.stopRequestedAt) {
+  if (entry.tee?.stopRequestedAt) {
     writeLocalFailure(
       deps,
-      { code: "HOT_WALLET_STOPPED", message: `${address} has been stopped; a retired address is never refunded.` },
+      { code: "TEE_WALLET_STOPPED", message: `${address} has been stopped; a retired address is never refunded.` },
       json,
     )
     return 1
   }
 
   const instruction = {
-    action: "fund-hot-wallet",
+    action: "fund-tee-wallet",
     network: "solana-mainnet",
     asset,
     ...(asset === "USDC" ? { mint: USDC_MINT } : {}),
@@ -636,7 +658,7 @@ export async function hotFund(args: string[], ctx: CommandContext): Promise<numb
     amountRaw: raw.toString(),
     destination: address,
     from: "your vault wallet (sign it there; this CLI signs nothing)",
-    note: "Every funded unit adds to the hot exposure. The initial float is not a maximum loss.",
+    note: "Every funded unit adds to the TEE wallet exposure. The initial float is not a maximum loss.",
   }
   if (json) {
     deps.stdout.write(`${JSON.stringify(instruction)}\n`)
@@ -648,11 +670,11 @@ export async function hotFund(args: string[], ctx: CommandContext): Promise<numb
   )
   deps.stdout.write(`  to        ${address}\n`)
   deps.stdout.write(`  network   solana-mainnet\n`)
-  deps.stdout.write(`Every funded unit adds to the hot exposure; the initial float is not a maximum loss.\n`)
+  deps.stdout.write(`Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.\n`)
   return 0
 }
 
-// ── hot status ──────────────────────────────────────────────────────────────────────────────
+// ── tee status ──────────────────────────────────────────────────────────────────────────────
 
 type ApiFailure = Extract<Awaited<ReturnType<typeof apiRequest>>, { ok: false }>
 
@@ -682,15 +704,15 @@ async function readLifecycle(
   return { ok: true, body: result.body as LifecycleResponse }
 }
 
-export async function hotStatus(args: string[], ctx: CommandContext): Promise<number> {
+export async function teeStatus(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, json } = ctx
   if (!refuseEnvPassphrase(ctx)) return 1
   const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
-  if (!address || extra !== undefined) return usage(ctx, "Usage: candle hot status <address> [--rpc-url <url>]")
+  if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee status <address> [--rpc-url <url>]")
 
-  const opened = await openExistingHotStore(ctx, parsed)
+  const opened = await openExistingTeeStore(ctx, parsed)
   if (!opened.ok) return opened.code
   const entry = findEntry(opened.store, address)
   if (!entry) return noSuchEntry(ctx, address, opened.path)
@@ -699,16 +721,16 @@ export async function hotStatus(args: string[], ctx: CommandContext): Promise<nu
     address,
     label: entry.label,
     linkedWalletId: entry.linkedWalletId ?? null,
-    vaultDestination: entry.hot?.vaultDestination ?? null,
-    localState: entry.hot?.sweptAt
+    vaultDestination: entry.tee?.vaultDestination ?? null,
+    localState: entry.tee?.sweptAt
       ? "swept"
-      : entry.hot?.stopRequestedAt
+      : entry.tee?.stopRequestedAt
         ? "stop-requested"
         : entry.linkedWalletId
           ? "enabled"
           : "local-only",
-    retainedSweepReceipts: entry.hot?.sweepReceipts?.length ?? 0,
-    pendingSweepTransactions: entry.hot?.sweepPending?.length ?? 0,
+    retainedSweepReceipts: entry.tee?.sweepReceipts?.length ?? 0,
+    pendingSweepTransactions: entry.tee?.sweepPending?.length ?? 0,
     observedAt: new Date(deps.now()).toISOString(),
   }
 
@@ -760,7 +782,7 @@ export async function hotStatus(args: string[], ctx: CommandContext): Promise<nu
   }
   deps.stdout.write(`${address}  ${entry.label}\n`)
   deps.stdout.write(`  local state   ${report.localState}\n`)
-  if (entry.hot?.vaultDestination) deps.stdout.write(`  vault         ${entry.hot.vaultDestination}\n`)
+  if (entry.tee?.vaultDestination) deps.stdout.write(`  vault         ${entry.tee.vaultDestination}\n`)
   const server = report.server as LifecycleResponse | { error: string } | undefined
   if (server) {
     if ("error" in server) deps.stdout.write(`  server        (unavailable: ${server.error})\n`)
@@ -788,18 +810,18 @@ export async function hotStatus(args: string[], ctx: CommandContext): Promise<nu
   return 0
 }
 
-// ── hot disable ─────────────────────────────────────────────────────────────────────────────
+// ── tee disable ─────────────────────────────────────────────────────────────────────────────
 
-export async function hotDisable(args: string[], ctx: CommandContext): Promise<number> {
+export async function teeDisable(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
   if (!refuseEnvPassphrase(ctx)) return 1
   const parsed = parseArgs(args, { valueFlags: ["--keystore"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
-  if (!address || extra !== undefined) return usage(ctx, "Usage: candle hot disable <address>")
+  if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee disable <address>")
 
   await printIdentity(ctx)
-  const opened = await openExistingHotStore(ctx, parsed)
+  const opened = await openExistingTeeStore(ctx, parsed)
   if (!opened.ok) return opened.code
   const { store, path } = opened
   const entry = findEntry(store, address)
@@ -807,7 +829,7 @@ export async function hotDisable(args: string[], ctx: CommandContext): Promise<n
   if (!entry.linkedWalletId) {
     writeLocalFailure(
       deps,
-      { code: "HOT_WALLET_NOT_ENABLED", message: `${address} was never enabled; there is nothing to stop.` },
+      { code: "TEE_WALLET_NOT_ENABLED", message: `${address} was never enabled; there is nothing to stop.` },
       json,
     )
     return 1
@@ -817,17 +839,17 @@ export async function hotDisable(args: string[], ctx: CommandContext): Promise<n
   // HW-06: the stop intent is durable BEFORE the server is asked. From here on this CLI refuses to
   // fund the address whatever the server answers; a failed or unavailable acknowledgement is
   // reported as remote enforcement unconfirmed, never as "nothing happened".
-  const stopRequestedAt = entry.hot?.stopRequestedAt ?? new Date().toISOString()
-  const committed = await commitHot(deps, opened, (entries) => {
+  const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString()
+  const committed = await commitTee(deps, opened, (entries) => {
     const target = entries.find((e) => e.address === address)
     if (!target) throw new Error(`${address} is no longer in ${path}`)
-    target.hot = { ...(target.hot ?? { network: "solana-mainnet" }), stopRequestedAt }
+    target.tee = { ...(target.tee ?? { network: "solana-mainnet" }), stopRequestedAt }
   })
   if (!committed.ok) {
     writeCommitFailure(
       ctx,
       committed,
-      `The stop was NOT recorded locally and the server was not asked. Retry: candle hot disable ${address}`,
+      `The stop was NOT recorded locally and the server was not asked. Retry: candle tee disable ${address}`,
     )
     return 1
   }
@@ -859,7 +881,7 @@ export async function hotDisable(args: string[], ctx: CommandContext): Promise<n
   if (!apiKey) {
     unconfirmed(
       "No API key available, so the server was not asked to stop the agent.",
-      `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle hot disable ${address}`,
+      `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle tee disable ${address}`,
     )
     return 1
   }
@@ -875,7 +897,7 @@ export async function hotDisable(args: string[], ctx: CommandContext): Promise<n
   if (!result.ok) {
     unconfirmed(
       `The stop request failed: ${result.message ?? `HTTP ${result.status}`}${result.status === 401 ? " (this API key no longer works)" : ""}.`,
-      `Re-run: candle hot disable ${address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`,
+      `Re-run: candle tee disable ${address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`,
     )
     return 1
   }
@@ -889,19 +911,19 @@ export async function hotDisable(args: string[], ctx: CommandContext): Promise<n
   }
   if (outcome.complete) {
     deps.stdout.write(`Stopped ${address}. Remote signing denial verified; the wallet is quarantined.\n`)
-    deps.stdout.write(`Recover the funds: candle hot sweep ${address} --rpc-url <url>\n`)
+    deps.stdout.write(`Recover the funds: candle tee sweep ${address} --rpc-url <url>\n`)
     return 0
   }
   deps.stdout.write(
     `Agent trading stopped at Candle for ${address}. Remote policy verification is pending` +
       `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.\n` +
-      `Funds remain in the hot wallet and this address remains hot. Re-run: candle hot disable ${address}\n` +
-      `If the provider is down or theft is suspected: candle hot sweep ${address} --rpc-url <url> --emergency\n`,
+      `Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${address}\n` +
+      `If the provider is down or theft is suspected: candle tee sweep ${address} --rpc-url <url> --emergency\n`,
   )
   return 3
 }
 
-// ── hot sweep ───────────────────────────────────────────────────────────────────────────────
+// ── tee sweep ───────────────────────────────────────────────────────────────────────────────
 
 type SweepReceipt = SweepReceiptRecord
 interface SweepResidual {
@@ -1012,29 +1034,29 @@ async function broadcastAndFinalize(
   }
 }
 
-export async function hotSweep(args: string[], ctx: CommandContext): Promise<number> {
+export async function teeSweep(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
   if (!refuseEnvPassphrase(ctx)) return 1
   const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"], booleanFlags: ["--emergency"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
   if (!address || extra !== undefined)
-    return usage(ctx, "Usage: candle hot sweep <address> --rpc-url <url> [--emergency]")
+    return usage(ctx, "Usage: candle tee sweep <address> --rpc-url <url> [--emergency]")
   const rpcUrl = rpcUrlFrom(ctx, parsed)
   if (typeof rpcUrl !== "string") return usage(ctx, rpcUrl.error)
   const emergency = parsed.booleans.has("--emergency")
 
-  const opened = await openExistingHotStore(ctx, parsed)
+  const opened = await openExistingTeeStore(ctx, parsed)
   if (!opened.ok) return opened.code
   const { store, path } = opened
   const entry = findEntry(store, address)
   if (!entry) return noSuchEntry(ctx, address, path)
-  const vault = entry.hot?.vaultDestination
+  const vault = entry.tee?.vaultDestination
   if (!vault) {
     writeLocalFailure(
       deps,
       {
-        code: "HOT_WALLET_NO_VAULT",
+        code: "TEE_WALLET_NO_VAULT",
         message: `${address} has no pinned vault (it was never enabled), so there is nothing a sweep may send to.`,
       },
       json,
@@ -1069,11 +1091,11 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
         writeLocalFailure(
           deps,
           {
-            code: "HOT_WALLET_STATE_UNREAD",
+            code: "TEE_WALLET_STATE_UNREAD",
             message: `Could not read ${address}'s lifecycle from the server (${unreadReason}); its remote signing authority is unverified.`,
             suggestion:
               `Restore the API key or connectivity and re-run, or stop it from your Candle session first. ` +
-              `If the credential is lost or theft is suspected, recover WITHOUT the server: candle hot sweep ${address} --rpc-url <url> --emergency ` +
+              `If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address} --rpc-url <url> --emergency ` +
               `(remote authority stays pending and a still-authorized agent signer may race the sweep).`,
           },
           json,
@@ -1084,9 +1106,9 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
       writeLocalFailure(
         deps,
         {
-          code: "HOT_WALLET_STILL_ENABLED",
+          code: "TEE_WALLET_STILL_ENABLED",
           message: `${address} is still enabled for the agent.`,
-          suggestion: `Stop it first: candle hot disable ${address}`,
+          suggestion: `Stop it first: candle tee disable ${address}`,
         },
         json,
       )
@@ -1096,9 +1118,9 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
       writeLocalFailure(
         deps,
         {
-          code: "HOT_WALLET_DISABLE_PENDING",
+          code: "TEE_WALLET_DISABLE_PENDING",
           message: `${address}'s remote signing authority is not yet verified denied.`,
-          suggestion: `Re-run: candle hot disable ${address}. If the provider is down or theft is suspected, add --emergency (the agent signer may still race you).`,
+          suggestion: `Re-run: candle tee disable ${address}. If the provider is down or theft is suspected, add --emergency (the agent signer may still race you).`,
         },
         json,
       )
@@ -1112,7 +1134,7 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
     ) {
       writeLocalFailure(
         deps,
-        { code: "HOT_WALLET_STATE_UNKNOWN", message: `Server reports state "${serverState}"; refusing to sweep.` },
+        { code: "TEE_WALLET_STATE_UNKNOWN", message: `Server reports state "${serverState}"; refusing to sweep.` },
         json,
       )
       return 1
@@ -1128,7 +1150,7 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
     if (unreadReason !== null) {
       deps.stdout.write(
         `The server's lifecycle state was NOT read (${unreadReason}): this recovery uses only the local key and the pinned vault.\n` +
-          `Stop the agent from your Candle session if you have not, and re-run candle hot disable once a key is available.\n`,
+          `Stop the agent from your Candle session if you have not, and re-run candle tee disable once a key is available.\n`,
       )
     }
   }
@@ -1146,23 +1168,23 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
   }
 
   const secret = base58.decode(entry.privateKey)
-  const hot = pubkeyFromSecret(secret)
-  if (encodePubkey(hot) !== address) {
+  const teePubkey = pubkeyFromSecret(secret)
+  if (encodePubkey(teePubkey) !== address) {
     writeLocalFailure(
       deps,
-      { code: "HOT_KEY_MISMATCH", message: "The stored secret does not derive this address; refusing to sign." },
+      { code: "TEE_KEY_MISMATCH", message: "The stored secret does not derive this address; refusing to sign." },
       json,
     )
     return 1
   }
   // A sweep retires the address whatever else happens (SC-06): record the stop intent locally
-  // before the first signature, so `hot fund` refuses this address from now on even if the sweep
+  // before the first signature, so `tee fund` refuses this address from now on even if the sweep
   // is interrupted, and even when the server could not be told (HW-06, HW-08).
-  const stopRequestedAt = entry.hot?.stopRequestedAt ?? new Date().toISOString()
-  const marked = await commitHot(deps, opened, (entries) => {
+  const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString()
+  const marked = await commitTee(deps, opened, (entries) => {
     const target = entries.find((e) => e.address === address)
     if (!target) throw new Error(`${address} is no longer in ${path}`)
-    target.hot = { ...(target.hot ?? { network: "solana-mainnet" }), stopRequestedAt }
+    target.tee = { ...(target.tee ?? { network: "solana-mainnet" }), stopRequestedAt }
   })
   if (!marked.ok) {
     writeCommitFailure(
@@ -1178,22 +1200,22 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
   // HW-07 operation evidence: receipts from EARLIER runs of this sweep are retained in the sealed
   // entry and reconciled here; every receipt this run finalizes is persisted before the next
   // transaction is signed, so an outage or an interrupted run never loses what already moved.
-  const retained: SweepReceipt[] = entry.hot?.sweepReceipts ?? []
+  const retained: SweepReceipt[] = entry.tee?.sweepReceipts ?? []
   const receipts: SweepReceipt[] = []
   const residuals: SweepResidual[] = []
   let solHandledAsResidual = false
-  const alreadyRecordedLocally = entry.hot?.sweptAt !== undefined
+  const alreadyRecordedLocally = entry.tee?.sweptAt !== undefined
   const pendingStill: SweepPendingRecord[] = []
   const retainReceipt = async (receipt: SweepReceipt): Promise<void> => {
     receipts.push(receipt)
-    const kept = await commitHot(deps, opened, (entries) => {
+    const kept = await commitTee(deps, opened, (entries) => {
       const target = entries.find((e) => e.address === address)
       if (!target) throw new Error(`${address} is no longer in ${path}`)
-      const existing = target.hot?.sweepReceipts ?? []
-      target.hot = {
-        ...(target.hot ?? { network: "solana-mainnet" }),
+      const existing = target.tee?.sweepReceipts ?? []
+      target.tee = {
+        ...(target.tee ?? { network: "solana-mainnet" }),
         sweepReceipts: existing.some((r) => r.signature === receipt.signature) ? existing : [...existing, receipt],
-        sweepPending: (target.hot?.sweepPending ?? []).filter((p) => p.signature !== receipt.signature),
+        sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== receipt.signature),
       }
     })
     if (!kept.ok) {
@@ -1204,23 +1226,23 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
     }
   }
   const recordPending = async (record: SweepPendingRecord): Promise<boolean> => {
-    const kept = await commitHot(deps, opened, (entries) => {
+    const kept = await commitTee(deps, opened, (entries) => {
       const target = entries.find((e) => e.address === address)
       if (!target) throw new Error(`${address} is no longer in ${path}`)
-      const existing = target.hot?.sweepPending ?? []
+      const existing = target.tee?.sweepPending ?? []
       if (existing.some((p) => p.signature === record.signature)) return
-      target.hot = { ...(target.hot ?? { network: "solana-mainnet" }), sweepPending: [...existing, record] }
+      target.tee = { ...(target.tee ?? { network: "solana-mainnet" }), sweepPending: [...existing, record] }
     })
     if (!kept.ok) residuals.push({ kind: "local-record-failed", detail: kept.message })
     return kept.ok
   }
   const clearPending = async (signature: string): Promise<void> => {
-    const kept = await commitHot(deps, opened, (entries) => {
+    const kept = await commitTee(deps, opened, (entries) => {
       const target = entries.find((e) => e.address === address)
       if (!target) throw new Error(`${address} is no longer in ${path}`)
-      target.hot = {
-        ...(target.hot ?? { network: "solana-mainnet" }),
-        sweepPending: (target.hot?.sweepPending ?? []).filter((p) => p.signature !== signature),
+      target.tee = {
+        ...(target.tee ?? { network: "solana-mainnet" }),
+        sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== signature),
       }
     })
     if (!kept.ok) residuals.push({ kind: "local-record-failed", detail: kept.message })
@@ -1228,7 +1250,7 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
   const broadcast = (
     instructions: Instruction[],
     pending: Omit<SweepPendingRecord, "signature" | "blockhash" | "submittedAt">,
-  ) => broadcastAndFinalize(rpc, deps, secret, hot, instructions, pending, recordPending, clearPending)
+  ) => broadcastAndFinalize(rpc, deps, secret, teePubkey, instructions, pending, recordPending, clearPending)
   /** Records a non-finalized broadcast outcome; true when this run may keep signing. */
   const settle = (
     outcome: Exclude<BroadcastOutcome, { status: "finalized" }>,
@@ -1267,7 +1289,7 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
     status: (signature: string) => rpc.getSignatureStatus(signature),
     blockhashValid: (blockhash: string) => rpc.isBlockhashValid(blockhash),
   }
-  for (const p of entry.hot?.sweepPending ?? []) {
+  for (const p of entry.tee?.sweepPending ?? []) {
     const resolution = await resolvePending(reads, p)
     if (resolution.kind === "finalized") {
       await retainReceipt({
@@ -1325,13 +1347,13 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
       const amount = BigInt(acct.amountRaw)
       if (amount > 0n) {
         if (!(await rpc.accountExists(encodePubkey(destination)))) {
-          instructions.push(createAssociatedTokenAccountIdempotent({ payer: hot, owner: vaultKey, mint }))
+          instructions.push(createAssociatedTokenAccountIdempotent({ payer: teePubkey, owner: vaultKey, mint }))
         }
         instructions.push(
-          tokenTransferChecked({ source, mint, destination, owner: hot, amount, decimals: acct.decimals }),
+          tokenTransferChecked({ source, mint, destination, owner: teePubkey, amount, decimals: acct.decimals }),
         )
       }
-      instructions.push(tokenCloseAccount({ account: source, destination: hot, owner: hot }))
+      instructions.push(tokenCloseAccount({ account: source, destination: teePubkey, owner: teePubkey }))
       const pending = {
         kind: amount > 0n ? ("token" as const) : ("close" as const),
         mint: acct.mint,
@@ -1372,7 +1394,7 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
     for (const acct of await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)) {
       residuals.push({
         kind: "token-2022-unsupported",
-        detail: "Token-2022 accounts are not swept in Phase 1",
+        detail: "Token-2022 accounts are not swept yet",
         mint: acct.mint,
         account: acct.pubkey,
         amountRaw: acct.amountRaw,
@@ -1392,9 +1414,9 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
     if (balance > 0n) {
       const blockhash = await rpc.getLatestBlockhash()
       const probe = compileLegacyMessage({
-        feePayer: hot,
+        feePayer: teePubkey,
         recentBlockhash: blockhash,
-        instructions: [systemTransfer(hot, vaultKey, 1n)],
+        instructions: [systemTransfer(teePubkey, vaultKey, 1n)],
       })
       const fee = await rpc.getFeeForMessage(toBase64(probe))
       if (fee === null) {
@@ -1414,7 +1436,7 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
       } else {
         const amount = balance - fee
         const pending = { kind: "sol" as const, amountRaw: amount.toString() }
-        const outcome = await broadcast([systemTransfer(hot, vaultKey, amount)], pending)
+        const outcome = await broadcast([systemTransfer(teePubkey, vaultKey, amount)], pending)
         if (outcome.status !== "finalized") {
           solHandledAsResidual = true
           if (!settle(outcome, pending, "sol-transfer")) signingBlocked = true
@@ -1530,10 +1552,10 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
     if (alreadyRecordedLocally) sweptLocally = true
     else {
       const sweptAt = new Date().toISOString()
-      const recorded = await commitHot(deps, opened, (entries) => {
+      const recorded = await commitTee(deps, opened, (entries) => {
         const target = entries.find((e) => e.address === address)
         if (!target) throw new Error(`${address} is no longer in ${path}`)
-        target.hot = { ...(target.hot ?? { network: "solana-mainnet" }), sweptAt }
+        target.tee = { ...(target.tee ?? { network: "solana-mainnet" }), sweptAt }
       })
       sweptLocally = recorded.ok
       if (!recorded.ok) residuals.push({ kind: "local-record-failed", detail: recorded.message })
@@ -1592,7 +1614,7 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
   }
   if (emergency)
     deps.stdout.write(
-      `Recovered funds recorded; remote authority is still pending. Re-run: candle hot disable ${address}\n`,
+      `Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}\n`,
     )
   if (pendingStill.length > 0)
     deps.stdout.write(
@@ -1600,7 +1622,7 @@ export async function hotSweep(args: string[], ctx: CommandContext): Promise<num
     )
   if (serverState === "disable-pending" && !emergency)
     deps.stdout.write(
-      `Remote signing authority is not verified denied. Re-run: candle hot disable ${address}, then re-run this sweep to record it.\n`,
+      `Remote signing authority is not verified denied. Re-run: candle tee disable ${address}, then re-run this sweep to record it.\n`,
     )
   if (allReceipts.length === 0 && residuals.length === 0) deps.stdout.write(`Nothing to sweep: no balances found.\n`)
   deps.stdout.write(

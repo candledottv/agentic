@@ -1,7 +1,7 @@
 /**
- * `candle hot …` (Ember Phase 1, BE-94): T19, T20 (unit), T23, T24 (fake RPC), T26/T27 (refusals),
- * T29 (typed states and exit codes). The hot store lives in a real temp dir (the round-trip check
- * in `hot new` reads the file back); the API and the Solana RPC are routed fakes. Signed sweep
+ * `candle tee …` (Ember Phase 1, BE-94): T19, T20 (unit), T23, T24 (fake RPC), T26/T27 (refusals),
+ * T29 (typed states and exit codes). The TEE wallet store lives in a real temp dir (the round-trip check
+ * in `tee new` reads the file back); the API and the Solana RPC are routed fakes. Signed sweep
  * transactions are decoded and signature-verified with `@solana/web3.js` (hoisted oracle, same as
  * solana-lite.test.ts) so the test proves what was SIGNED, not what was logged.
  */
@@ -23,30 +23,31 @@ import {
 } from "../test-support"
 import {
   createKeystore,
-  defaultHotKeystorePath,
+  defaultTeeKeystorePath,
   type KeystoreEntry,
   keystoreLockPath,
+  legacyTeeKeystorePath,
   readKeystore,
   serializeKeystore,
   writeKeystoreFile,
 } from "../wallet-keystore"
 
-const PASSPHRASE = "a strong hot-store passphrase"
+const PASSPHRASE = "a strong tee-store passphrase"
 const RPC = "https://rpc.test/rpc"
 const ENCRYPTION_PUBLIC_KEY = await (async () => {
   const receiver = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"])
   return Buffer.from(await crypto.subtle.exportKey("raw", receiver.publicKey)).toString("base64")
 })()
 
-const hotKey = Keypair.generate()
-const HOT = hotKey.publicKey.toBase58()
+const teeKey = Keypair.generate()
+const TEE = teeKey.publicKey.toBase58()
 const VAULT = Keypair.generate().publicKey.toBase58()
 const MINT = Keypair.generate().publicKey
 const MINT_2022 = Keypair.generate().publicKey
 const BLOCKHASH = "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
 
 async function tempDir(): Promise<string> {
-  return await mkdtemp(join(tmpdir(), "candle-hot-"))
+  return await mkdtemp(join(tmpdir(), "candle-tee-"))
 }
 
 function prompts(answers: string[]) {
@@ -58,44 +59,44 @@ function prompts(answers: string[]) {
   }
 }
 
-async function seedHotStore(dir: string, entries: KeystoreEntry[], passphrase = PASSPHRASE): Promise<string> {
+async function seedTeeStore(dir: string, entries: KeystoreEntry[], passphrase = PASSPHRASE): Promise<string> {
   const ks = await createKeystore(passphrase)
-  const path = defaultHotKeystorePath({ CANDLE_CONFIG_DIR: dir })
-  await writeKeystoreFile(path, await serializeKeystore(entries, ks.key, ks.salt, ks.iterations, "ember-hot"))
+  const path = defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir })
+  await writeKeystoreFile(path, await serializeKeystore(entries, ks.key, ks.salt, ks.iterations, "ember-tee"))
   return path
 }
 
 async function openStore(dir: string, passphrase = PASSPHRASE) {
   return await readKeystore(
-    await realReadFile(defaultHotKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8"),
+    await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8"),
     passphrase,
     {
-      expectPurpose: "ember-hot",
+      expectPurpose: "ember-tee",
     },
   )
 }
 
-function hotEntry(overrides: Partial<KeystoreEntry> = {}): KeystoreEntry {
+function teeEntry(overrides: Partial<KeystoreEntry> = {}): KeystoreEntry {
   return {
     index: 0,
     chain: "solana",
-    address: HOT,
-    label: "hot-0",
+    address: TEE,
+    label: "tee-0",
     createdAt: "2026-09-16T00:00:00.000Z",
-    privateKey: base58.encode(hotKey.secretKey),
+    privateKey: base58.encode(teeKey.secretKey),
     imported: false,
-    hot: { network: "solana-mainnet" },
+    tee: { network: "solana-mainnet" },
     ...overrides,
   }
 }
 
 function enabledEntry(overrides: Partial<KeystoreEntry> = {}): KeystoreEntry {
-  return hotEntry({
+  return teeEntry({
     imported: true,
-    linkedWalletId: "lw_hot1",
-    privyWalletId: "pw_hot1",
+    linkedWalletId: "lw_tee1",
+    privyWalletId: "pw_tee1",
     importedAt: "2026-09-16T01:00:00.000Z",
-    hot: {
+    tee: {
       network: "solana-mainnet",
       vaultDestination: VAULT,
       boundKeyPrefix: "ck_live_x",
@@ -232,27 +233,27 @@ function defaultRpcState(overrides: Partial<RpcState> = {}): RpcState {
 
 const LIFECYCLE = (state: string, extra: Record<string, unknown> = {}) => ({
   success: true,
-  id: "lw_hot1",
+  id: "lw_tee1",
   state,
   remoteAuthority: state === "quarantined" ? "verified-denied" : state === "enabled" ? "verified-active" : "unknown",
   evidenceObservedAt: 1_726_000_000_000,
-  profile: "ember-hot",
+  profile: "ember-tee",
   boundKeyPrefix: "ck_live_x",
   vaultDestination: VAULT,
   ...extra,
 })
 
-describe("T27: every hot command refuses while CANDLE_KEYSTORE_PASSPHRASE is set", () => {
+describe("T27: every tee command refuses while CANDLE_KEYSTORE_PASSPHRASE is set", () => {
   test("new/enable/fund/status/disable/sweep all exit 1 without touching the store, the network, or the value", async () => {
     const dir = await tempDir()
     const { fetch, calls } = createRoutedFetch({})
     for (const argv of [
-      ["hot", "new"],
-      ["hot", "enable", HOT, "--vault", VAULT],
-      ["hot", "fund", HOT, "--amount", "1"],
-      ["hot", "status", HOT],
-      ["hot", "disable", HOT],
-      ["hot", "sweep", HOT, "--rpc-url", RPC],
+      ["tee", "new"],
+      ["tee", "enable", TEE, "--vault", VAULT],
+      ["tee", "fund", TEE, "--amount", "1"],
+      ["tee", "status", TEE],
+      ["tee", "disable", TEE],
+      ["tee", "sweep", TEE, "--rpc-url", RPC],
     ]) {
       const { deps, stderr } = depsFor(dir, fetch, [], {
         env: { CANDLE_CONFIG_DIR: dir, CANDLE_KEYSTORE_PASSPHRASE: "should-never-be-read" },
@@ -265,23 +266,23 @@ describe("T27: every hot command refuses while CANDLE_KEYSTORE_PASSPHRASE is set
   })
 })
 
-describe("hot new (T19, HW-01)", () => {
-  test("creates hot-wallets.enc with the purpose marker, verifies the round trip, prints the address, no network", async () => {
+describe("tee new (T19, HW-01)", () => {
+  test("creates tee-wallets.enc with the purpose marker, verifies the round trip, prints the address, no network", async () => {
     const dir = await tempDir()
     const { fetch, calls } = createRoutedFetch({})
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, PASSPHRASE])
-    const code = await run(["hot", "new", "--label", "scalper"], deps)
+    const code = await run(["tee", "new", "--label", "scalper"], deps)
     expect(code).toBe(0)
     expect(calls).toHaveLength(0)
-    const path = defaultHotKeystorePath({ CANDLE_CONFIG_DIR: dir })
+    const path = defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir })
     const raw = await realReadFile(path, "utf8")
-    expect(JSON.parse(raw).purpose).toBe("ember-hot")
-    const opened = await readKeystore(raw, PASSPHRASE, { expectPurpose: "ember-hot" })
+    expect(JSON.parse(raw).purpose).toBe("ember-tee")
+    const opened = await readKeystore(raw, PASSPHRASE, { expectPurpose: "ember-tee" })
     expect(opened.entries).toHaveLength(1)
     const entry = opened.entries[0] as KeystoreEntry
     expect(entry.label).toBe("scalper")
     expect(entry.imported).toBe(false)
-    expect(entry.hot?.network).toBe("solana-mainnet")
+    expect(entry.tee?.network).toBe("solana-mainnet")
     expect(stdout.text).toContain(entry.address)
     expect(stdout.text).toContain("verified to restore")
     expect(stdout.text).toContain("local-only")
@@ -293,26 +294,94 @@ describe("hot new (T19, HW-01)", () => {
     const dir = await tempDir()
     const { fetch } = createRoutedFetch({})
     const short = depsFor(dir, fetch, ["tooshort"])
-    expect(await run(["hot", "new"], short.deps)).toBe(1)
+    expect(await run(["tee", "new"], short.deps)).toBe(1)
     expect(short.stderr.text).toContain("at least 12")
     const mismatch = depsFor(dir, fetch, [PASSPHRASE, "something else entirely"])
-    expect(await run(["hot", "new"], mismatch.deps)).toBe(1)
-    await expect(realReadFile(defaultHotKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8")).rejects.toThrow()
+    expect(await run(["tee", "new"], mismatch.deps)).toBe(1)
+    await expect(realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8")).rejects.toThrow()
   })
 
-  test("a second `hot new` appends to the existing store under the same passphrase", async () => {
+  test("a second `tee new` appends to the existing store under the same passphrase", async () => {
     const dir = await tempDir()
     const { fetch } = createRoutedFetch({})
-    expect(await run(["hot", "new"], depsFor(dir, fetch, [PASSPHRASE, PASSPHRASE]).deps)).toBe(0)
+    expect(await run(["tee", "new"], depsFor(dir, fetch, [PASSPHRASE, PASSPHRASE]).deps)).toBe(0)
     const second = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "new", "--json"], second.deps)).toBe(0)
+    expect(await run(["tee", "new", "--json"], second.deps)).toBe(0)
     const parsed = JSON.parse(second.stdout.text.trim())
     expect(parsed.index).toBe(1)
     expect(parsed.state).toBe("local-only")
   })
 })
 
-describe("hot enable (T19/T20, HW-02/HW-03)", () => {
+describe("the store written before the tee rename (hot-wallets.enc)", () => {
+  /** The old file name, header marker and entry field, exactly as a source-built CLI wrote them. */
+  async function seedLegacyStore(dir: string, entry: KeystoreEntry): Promise<string> {
+    const { tee: meta, ...plain } = entry
+    const ks = await createKeystore(PASSPHRASE)
+    const sealed = await serializeKeystore(
+      [{ ...plain, hot: meta } as unknown as KeystoreEntry],
+      ks.key,
+      ks.salt,
+      ks.iterations,
+      "ember-tee",
+    )
+    const file = JSON.parse(sealed)
+    file.purpose = "ember-hot"
+    const path = legacyTeeKeystorePath({ CANDLE_CONFIG_DIR: dir })
+    await writeKeystoreFile(path, JSON.stringify(file))
+    return path
+  }
+
+  test("with no tee-wallets.enc, a tee command finds it without --keystore", async () => {
+    const dir = await tempDir()
+    await seedLegacyStore(dir, teeEntry())
+    const { fetch, calls } = createRoutedFetch({})
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
+    expect(await run(["tee", "status", TEE, "--json"], deps)).toBe(0)
+    expect(JSON.parse(stdout.text.trim()).localState).toBe("local-only")
+    expect(calls).toHaveLength(0)
+  })
+
+  test("the first write keeps the old key and rewrites the file under the current marker", async () => {
+    const dir = await tempDir()
+    const path = await seedLegacyStore(dir, teeEntry())
+    const { fetch } = createRoutedFetch({})
+    const { deps } = depsFor(dir, fetch, [PASSPHRASE])
+    expect(await run(["tee", "new", "--json"], deps)).toBe(0)
+    const raw = await realReadFile(path, "utf8")
+    expect(JSON.parse(raw).purpose).toBe("ember-tee")
+    const opened = await readKeystore(raw, PASSPHRASE, { expectPurpose: "ember-tee" })
+    expect(opened.entries.map((e) => e.address)[0]).toBe(TEE)
+    expect(opened.entries).toHaveLength(2)
+    expect(opened.entries[0]?.tee?.network).toBe("solana-mainnet")
+    expect(raw).not.toContain("ember-hot")
+  })
+
+  test("when both files exist the current store wins", async () => {
+    const dir = await tempDir()
+    const other = Keypair.generate()
+    const otherAddress = other.publicKey.toBase58()
+    await seedLegacyStore(dir, teeEntry({ address: otherAddress, privateKey: base58.encode(other.secretKey) }))
+    await seedTeeStore(dir, [teeEntry()])
+    const { fetch } = createRoutedFetch({})
+    expect(await run(["tee", "status", TEE, "--json"], depsFor(dir, fetch, [PASSPHRASE]).deps)).toBe(0)
+    const legacyOnly = depsFor(dir, fetch, [PASSPHRASE])
+    expect(await run(["tee", "status", otherAddress, "--json"], legacyOnly.deps)).toBe(1)
+    expect(JSON.parse(legacyOnly.stdout.text.trim()).code).toBe("TEE_WALLET_UNKNOWN")
+  })
+
+  test("with neither file, the missing-store error names the current path", async () => {
+    const dir = await tempDir()
+    const { fetch } = createRoutedFetch({})
+    const { deps, stdout } = depsFor(dir, fetch, [])
+    expect(await run(["tee", "status", TEE, "--json"], deps)).toBe(1)
+    const parsed = JSON.parse(stdout.text.trim())
+    expect(parsed.code).toBe("TEE_STORE_MISSING")
+    expect(parsed.message).toContain("tee-wallets.enc")
+  })
+})
+
+describe("tee enable (T19/T20, HW-02/HW-03)", () => {
   function apiRoutes(submitExtra: Record<string, unknown> = {}) {
     const submits: Record<string, unknown>[] = []
     const routes = createRoutedFetch({
@@ -323,11 +392,11 @@ describe("hot enable (T19/T20, HW-02/HW-03)", () => {
         submits.push(body)
         return jsonResponse(200, {
           success: true,
-          id: "lw_hot1",
+          id: "lw_tee1",
           address: body.address,
           chain: "solana",
-          privyWalletId: "pw_hot1",
-          profile: "ember-hot",
+          privyWalletId: "pw_tee1",
+          profile: "ember-tee",
           vaultDestination: body.vaultDestination,
           boundKeyPrefix: "ck_live_x",
           remoteAuthority: "verified-active",
@@ -342,88 +411,88 @@ describe("hot enable (T19/T20, HW-02/HW-03)", () => {
 
   test("happy path: confirmation typed, import carries profile + vault, entry records the grant, exit 0", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [hotEntry()])
+    await seedTeeStore(dir, [teeEntry()])
     const api = apiRoutes()
     const { deps, stdout } = depsFor(dir, api.fetch, [PASSPHRASE, VAULT.slice(-6)])
-    const code = await run(["hot", "enable", HOT, "--vault", VAULT], deps)
+    const code = await run(["tee", "enable", TEE, "--vault", VAULT], deps)
     expect(code).toBe(0)
     expect(api.submits).toHaveLength(1)
     expect(api.submits[0]).toMatchObject({
       chain: "solana",
-      address: HOT,
-      profile: "ember-hot",
+      address: TEE,
+      profile: "ember-tee",
       vaultDestination: VAULT,
     })
     // The private key never goes over the wire in the clear.
-    expect(JSON.stringify(api.submits[0])).not.toContain(base58.encode(hotKey.secretKey))
+    expect(JSON.stringify(api.submits[0])).not.toContain(base58.encode(teeKey.secretKey))
     expect(stdout.text).toContain("Remote authority verified")
     const opened = await readKeystore(
-      await realReadFile(defaultHotKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8"),
+      await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8"),
       PASSPHRASE,
       {
-        expectPurpose: "ember-hot",
+        expectPurpose: "ember-tee",
       },
     )
     expect(opened.entries[0]).toMatchObject({
       imported: true,
-      linkedWalletId: "lw_hot1",
-      hot: { vaultDestination: VAULT, boundKeyPrefix: "ck_live_x", remoteAuthority: "verified-active" },
+      linkedWalletId: "lw_tee1",
+      tee: { vaultDestination: VAULT, boundKeyPrefix: "ck_live_x", remoteAuthority: "verified-active" },
     })
   })
 
   test("HW-03: a wrong confirmation refuses before any import call", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [hotEntry()])
+    await seedTeeStore(dir, [teeEntry()])
     const api = apiRoutes()
     const { deps, stderr } = depsFor(dir, api.fetch, [PASSPHRASE, "nope00"])
-    expect(await run(["hot", "enable", HOT, "--vault", VAULT], deps)).toBe(1)
+    expect(await run(["tee", "enable", TEE, "--vault", VAULT], deps)).toBe(1)
     expect(stderr.text).toContain("confirmation did not match")
     expect(api.calls).toHaveLength(0)
   })
 
-  test("T20: the vault must be a valid Solana address and not the hot address; usage errors, no prompt, no network", async () => {
+  test("T20: the vault must be a valid Solana address and not the TEE wallet address; usage errors, no prompt, no network", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [hotEntry()])
+    await seedTeeStore(dir, [teeEntry()])
     const api = apiRoutes()
-    expect(await run(["hot", "enable", HOT, "--vault", "not-an-address"], depsFor(dir, api.fetch, []).deps)).toBe(2)
-    expect(await run(["hot", "enable", HOT, "--vault", HOT], depsFor(dir, api.fetch, []).deps)).toBe(2)
-    expect(await run(["hot", "enable", HOT], depsFor(dir, api.fetch, []).deps)).toBe(2)
+    expect(await run(["tee", "enable", TEE, "--vault", "not-an-address"], depsFor(dir, api.fetch, []).deps)).toBe(2)
+    expect(await run(["tee", "enable", TEE, "--vault", TEE], depsFor(dir, api.fetch, []).deps)).toBe(2)
+    expect(await run(["tee", "enable", TEE], depsFor(dir, api.fetch, []).deps)).toBe(2)
     expect(api.calls).toHaveLength(0)
   })
 
   test("an unverified enable read-back exits 3, tells the operator not to fund, and records unknown", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [hotEntry()])
+    await seedTeeStore(dir, [teeEntry()])
     const api = apiRoutes({ remoteAuthority: "unknown", reasonCode: "READ_BACK_UNAVAILABLE" })
     const { deps, stdout } = depsFor(dir, api.fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "enable", HOT, "--vault", VAULT], deps)).toBe(3)
+    expect(await run(["tee", "enable", TEE, "--vault", VAULT], deps)).toBe(3)
     expect(stdout.text).toContain("Do not fund it")
     expect(stdout.text).toContain("READ_BACK_UNAVAILABLE")
   })
 
-  test("an already-enabled or retired hot wallet is never re-enabled", async () => {
+  test("an already-enabled or retired TEE wallet is never re-enabled", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const api = apiRoutes()
     const { deps, stderr } = depsFor(dir, api.fetch, [PASSPHRASE])
-    expect(await run(["hot", "enable", HOT, "--vault", VAULT], deps)).toBe(1)
+    expect(await run(["tee", "enable", TEE, "--vault", VAULT], deps)).toBe(1)
     expect(stderr.text).toContain("never re-enabled")
     expect(api.calls).toHaveLength(0)
   })
 })
 
-describe("hot fund (HW-04)", () => {
+describe("tee fund (HW-04)", () => {
   test("prints the raw amount and destination for the vault to sign; signs nothing, calls nothing", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const { fetch, calls } = createRoutedFetch({})
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "fund", HOT, "--amount", "1.5", "--asset", "USDC", "--json"], deps)).toBe(0)
+    expect(await run(["tee", "fund", TEE, "--amount", "1.5", "--asset", "USDC", "--json"], deps)).toBe(0)
     const parsed = JSON.parse(stdout.text.trim())
     expect(parsed).toMatchObject({
       asset: "USDC",
       amountRaw: "1500000",
-      destination: HOT,
+      destination: TEE,
       mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     })
     expect(calls).toHaveLength(0)
@@ -431,28 +500,28 @@ describe("hot fund (HW-04)", () => {
 
   test("SOL amounts use 9 decimals; too many decimals or zero is a usage error", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const { fetch } = createRoutedFetch({})
     const ok = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "fund", HOT, "--amount", "0.25", "--json"], ok.deps)).toBe(0)
+    expect(await run(["tee", "fund", TEE, "--amount", "0.25", "--json"], ok.deps)).toBe(0)
     expect(JSON.parse(ok.stdout.text.trim()).amountRaw).toBe("250000000")
-    expect(await run(["hot", "fund", HOT, "--amount", "0.0000000001"], depsFor(dir, fetch, []).deps)).toBe(2)
-    expect(await run(["hot", "fund", HOT, "--amount", "0"], depsFor(dir, fetch, []).deps)).toBe(2)
+    expect(await run(["tee", "fund", TEE, "--amount", "0.0000000001"], depsFor(dir, fetch, []).deps)).toBe(2)
+    expect(await run(["tee", "fund", TEE, "--amount", "0"], depsFor(dir, fetch, []).deps)).toBe(2)
   })
 
   test("refuses to produce a funding instruction for a wallet whose authority is not verified, or that is stopped", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [
-      enabledEntry({ hot: { network: "solana-mainnet", vaultDestination: VAULT, remoteAuthority: "unknown" } }),
+    await seedTeeStore(dir, [
+      enabledEntry({ tee: { network: "solana-mainnet", vaultDestination: VAULT, remoteAuthority: "unknown" } }),
     ])
     const { fetch } = createRoutedFetch({})
     const a = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "fund", HOT, "--amount", "1"], a.deps)).toBe(1)
+    expect(await run(["tee", "fund", TEE, "--amount", "1"], a.deps)).toBe(1)
     expect(a.stderr.text).toContain("do not fund")
     const dir2 = await tempDir()
-    await seedHotStore(dir2, [
+    await seedTeeStore(dir2, [
       enabledEntry({
-        hot: {
+        tee: {
           network: "solana-mainnet",
           vaultDestination: VAULT,
           remoteAuthority: "verified-active",
@@ -461,15 +530,15 @@ describe("hot fund (HW-04)", () => {
       }),
     ])
     const b = depsFor(dir2, fetch, [PASSPHRASE])
-    expect(await run(["hot", "fund", HOT, "--amount", "1"], b.deps)).toBe(1)
+    expect(await run(["tee", "fund", TEE, "--amount", "1"], b.deps)).toBe(1)
     expect(b.stderr.text).toContain("never refunded")
   })
 })
 
-describe("hot status (T21 partial, T29)", () => {
+describe("tee status (T21 partial, T29)", () => {
   test("reports the server's derived state and on-chain balances with USD unknown, never zero", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState({
       tokenAccounts: [{ pubkey: "acct1", mint: MINT.toBase58(), amount: "700000", decimals: 6, state: "initialized" }],
       token2022Accounts: [
@@ -477,11 +546,11 @@ describe("hot status (T21 partial, T29)", () => {
       ],
     })
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("enabled")),
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("enabled")),
       "/rpc": rpcHandler(rpc),
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "status", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    expect(await run(["tee", "status", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     const parsed = JSON.parse(stdout.text.trim())
     expect(parsed.server.state).toBe("enabled")
     expect(parsed.balances.lamports).toBe("1000000")
@@ -493,16 +562,16 @@ describe("hot status (T21 partial, T29)", () => {
 
   test("a local-only wallet reports without any network call", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [hotEntry()])
+    await seedTeeStore(dir, [teeEntry()])
     const { fetch, calls } = createRoutedFetch({})
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "status", HOT, "--json"], deps)).toBe(0)
+    expect(await run(["tee", "status", TEE, "--json"], deps)).toBe(0)
     expect(JSON.parse(stdout.text.trim()).localState).toBe("local-only")
     expect(calls).toHaveLength(0)
   })
 })
 
-describe("hot disable (T23, HW-06)", () => {
+describe("tee disable (T23, HW-06)", () => {
   const PENDING = {
     success: true,
     state: "disable-pending",
@@ -526,55 +595,55 @@ describe("hot disable (T23, HW-06)", () => {
 
   test("202 disable-pending -> exit 3, pending message, stopRequestedAt persisted", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
-    const { fetch, calls } = createRoutedFetch({ "/api/v1/agent/wallets/lw_hot1": () => jsonResponse(202, PENDING) })
+    await seedTeeStore(dir, [enabledEntry()])
+    const { fetch, calls } = createRoutedFetch({ "/api/v1/agent/wallets/lw_tee1": () => jsonResponse(202, PENDING) })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "disable", HOT], deps)).toBe(3)
+    expect(await run(["tee", "disable", TEE], deps)).toBe(3)
     expect(calls[0]?.init.method).toBe("DELETE")
     expect(stdout.text).toContain("verification is pending")
     expect(stdout.text).toContain("--emergency")
     const opened = await readKeystore(
-      await realReadFile(defaultHotKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8"),
+      await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8"),
       PASSPHRASE,
       {
-        expectPurpose: "ember-hot",
+        expectPurpose: "ember-tee",
       },
     )
-    expect(typeof opened.entries[0]?.hot?.stopRequestedAt).toBe("string")
+    expect(typeof opened.entries[0]?.tee?.stopRequestedAt).toBe("string")
   })
 
   test("200 quarantined -> exit 0 and the sweep hint", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
-    const { fetch } = createRoutedFetch({ "/api/v1/agent/wallets/lw_hot1": () => jsonResponse(200, QUARANTINED) })
+    await seedTeeStore(dir, [enabledEntry()])
+    const { fetch } = createRoutedFetch({ "/api/v1/agent/wallets/lw_tee1": () => jsonResponse(200, QUARANTINED) })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "disable", HOT], deps)).toBe(0)
+    expect(await run(["tee", "disable", TEE], deps)).toBe(0)
     expect(stdout.text).toContain("quarantined")
-    expect(stdout.text).toContain("hot sweep")
+    expect(stdout.text).toContain("tee sweep")
   })
 
   test("a never-enabled wallet has nothing to stop", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [hotEntry()])
+    await seedTeeStore(dir, [teeEntry()])
     const { fetch, calls } = createRoutedFetch({})
     const { deps } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "disable", HOT], deps)).toBe(1)
+    expect(await run(["tee", "disable", TEE], deps)).toBe(1)
     expect(calls).toHaveLength(0)
   })
 })
 
-describe("hot sweep (T24, HW-07, SC-06)", () => {
+describe("tee sweep (T24, HW-07, SC-06)", () => {
   function decodeSent(b64: string) {
     const tx = Transaction.from(Buffer.from(b64, "base64"))
     expect(tx.verifySignatures()).toBe(true)
-    expect(tx.signatures[0]?.publicKey.toBase58()).toBe(HOT)
+    expect(tx.signatures[0]?.publicKey.toBase58()).toBe(TEE)
     return tx
   }
 
   test("quarantined: tokens first (create vault ATA, transferChecked, close), SOL last minus fee, receipts recorded, exit 0", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
-    const source = getAssociatedTokenAddressSync(MINT, hotKey.publicKey)
+    await seedTeeStore(dir, [enabledEntry()])
+    const source = getAssociatedTokenAddressSync(MINT, teeKey.publicKey)
     const rpc = defaultRpcState({
       tokenAccounts: [
         { pubkey: source.toBase58(), mint: MINT.toBase58(), amount: "700000", decimals: 6, state: "initialized" },
@@ -584,12 +653,12 @@ describe("hot sweep (T24, HW-07, SC-06)", () => {
     })
     const swept: unknown[] = []
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
-      "/api/v1/agent/wallets/lw_hot1/swept": (req) => {
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": (req) => {
         swept.push(JSON.parse(String(req.init.body)))
         return jsonResponse(200, {
           success: true,
-          id: "lw_hot1",
+          id: "lw_tee1",
           state: "swept",
           sweptAt: 1,
           signatures: rpc.sent.map(sigOf),
@@ -598,14 +667,14 @@ describe("hot sweep (T24, HW-07, SC-06)", () => {
       "/rpc": rpcHandler(rpc),
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    const code = await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)
+    const code = await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)
     expect(code).toBe(0)
     expect(rpc.sent).toHaveLength(2)
 
     const tokenTx = decodeSent(rpc.sent[0] as string)
     expect(tokenTx.instructions).toHaveLength(3)
     const vaultAta = getAssociatedTokenAddressSync(MINT, new PublicKey(VAULT))
-    // create ATA for the VAULT, paid by the hot wallet
+    // create ATA for the VAULT, paid by the TEE wallet
     expect(tokenTx.instructions[0]?.programId.toBase58()).toBe("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
     expect(tokenTx.instructions[0]?.keys[1]?.pubkey.toBase58()).toBe(vaultAta.toBase58())
     expect(tokenTx.instructions[0]?.keys[2]?.pubkey.toBase58()).toBe(VAULT)
@@ -615,9 +684,9 @@ describe("hot sweep (T24, HW-07, SC-06)", () => {
     expect(transfer?.keys[2]?.pubkey.toBase58()).toBe(vaultAta.toBase58())
     expect(transfer?.data[0]).toBe(12)
     expect(Buffer.from(transfer?.data.subarray(1, 9) ?? []).readBigUInt64LE()).toBe(700_000n)
-    // close the source account, rent back to the hot wallet
+    // close the source account, rent back to the TEE wallet
     expect(tokenTx.instructions[2]?.data[0]).toBe(9)
-    expect(tokenTx.instructions[2]?.keys[1]?.pubkey.toBase58()).toBe(HOT)
+    expect(tokenTx.instructions[2]?.keys[1]?.pubkey.toBase58()).toBe(TEE)
 
     const solTx = decodeSent(rpc.sent[1] as string)
     expect(solTx.instructions).toHaveLength(1)
@@ -637,18 +706,18 @@ describe("hot sweep (T24, HW-07, SC-06)", () => {
     expect(swept).toEqual([{ signatures: rpc.sent.map(sigOf), residuals: [] }])
     expect(parsed.receipts.map((r: { signature: string }) => r.signature)).toEqual(rpc.sent.map(sigOf))
     const opened = await readKeystore(
-      await realReadFile(defaultHotKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8"),
+      await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8"),
       PASSPHRASE,
       {
-        expectPurpose: "ember-hot",
+        expectPurpose: "ember-tee",
       },
     )
-    expect(typeof opened.entries[0]?.hot?.sweptAt).toBe("string")
+    expect(typeof opened.entries[0]?.tee?.sweptAt).toBe("string")
   })
 
   test("SC-06: a Token-2022 balance is a residual: SOL still moves, but nothing is marked swept and exit is 3", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState({
       token2022Accounts: [
         { pubkey: "acct2022", mint: MINT_2022.toBase58(), amount: "5", decimals: 0, state: "initialized" },
@@ -656,15 +725,15 @@ describe("hot sweep (T24, HW-07, SC-06)", () => {
     })
     const swept: unknown[] = []
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
-      "/api/v1/agent/wallets/lw_hot1/swept": () => {
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": () => {
         swept.push(true)
         return jsonResponse(200, { success: true })
       },
       "/rpc": rpcHandler(rpc),
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const parsed = JSON.parse(stdout.text.trim())
     expect(parsed.state).toBe("quarantined")
     expect(parsed.receipts).toHaveLength(1)
@@ -674,18 +743,18 @@ describe("hot sweep (T24, HW-07, SC-06)", () => {
 
   test("a frozen token account and SOL dust are residuals, listed with amounts, never touched", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState({
       tokenAccounts: [{ pubkey: "frozenAcct", mint: MINT.toBase58(), amount: "9", decimals: 6, state: "frozen" }],
       lamports: 4_000,
       fee: 5_000,
     })
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
       "/rpc": rpcHandler(rpc),
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const parsed = JSON.parse(stdout.text.trim())
     expect(rpc.sent).toHaveLength(0)
     expect(parsed.residuals.map((r: { kind: string }) => r.kind).sort()).toEqual([
@@ -697,24 +766,24 @@ describe("hot sweep (T24, HW-07, SC-06)", () => {
 
   test("disable-pending without --emergency refuses to sign (exit 3); with --emergency it sweeps, warns, and stays pending", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState()
     const swept: unknown[] = []
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("disable-pending")),
-      "/api/v1/agent/wallets/lw_hot1/swept": () => {
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("disable-pending")),
+      "/api/v1/agent/wallets/lw_tee1/swept": () => {
         swept.push(true)
         return jsonResponse(200, { success: true })
       },
       "/rpc": rpcHandler(rpc),
     })
     const refused = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC], refused.deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], refused.deps)).toBe(3)
     expect(refused.stderr.text).toContain("--emergency")
     expect(rpc.sent).toHaveLength(0)
 
     const emergency = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--emergency"], emergency.deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency"], emergency.deps)).toBe(3)
     expect(emergency.stdout.text).toContain("EMERGENCY SWEEP")
     expect(emergency.stdout.text).toContain("race")
     expect(rpc.sent).toHaveLength(1)
@@ -724,43 +793,43 @@ describe("hot sweep (T24, HW-07, SC-06)", () => {
 
   test("an enabled wallet is refused: disable first", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState()
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("enabled")),
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("enabled")),
       "/rpc": rpcHandler(rpc),
     })
     const { deps, stderr } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC], deps)).toBe(1)
-    expect(stderr.text).toContain("hot disable")
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], deps)).toBe(1)
+    expect(stderr.text).toContain("tee disable")
     expect(rpc.sent).toHaveLength(0)
   })
 
   test("a wrong vault confirmation signs nothing", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState()
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
       "/rpc": rpcHandler(rpc),
     })
     const { deps } = depsFor(dir, fetch, [PASSPHRASE, "wrong!"])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC], deps)).toBe(1)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], deps)).toBe(1)
     expect(rpc.sent).toHaveLength(0)
   })
 
   test("a transaction that never finalizes is a residual, not a success", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState({
       statuses: Array.from({ length: 60 }, () => ({ confirmationStatus: "processed", err: null })),
     })
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
       "/rpc": rpcHandler(rpc),
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const parsed = JSON.parse(stdout.text.trim())
     expect(parsed.residuals[0].kind).toBe("finality-uncertain")
     expect(parsed.residuals[0].detail).toContain("not finalized")
@@ -769,23 +838,23 @@ describe("hot sweep (T24, HW-07, SC-06)", () => {
     expect(parsed.pending[0].kind).toBe("sol")
     // The pending record was written BEFORE the broadcast and survives the deadline.
     const stored = (await openStore(dir)).entries[0]
-    expect(stored?.hot?.sweepPending?.map((p) => p.signature)).toEqual([parsed.pending[0].signature])
-    expect(stored?.hot?.sweepReceipts ?? []).toEqual([])
+    expect(stored?.tee?.sweepPending?.map((p) => p.signature)).toEqual([parsed.pending[0].signature])
+    expect(stored?.tee?.sweepReceipts ?? []).toEqual([])
   })
 
   test("a plain-http RPC URL to a remote host is a usage error", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const { fetch, calls } = createRoutedFetch({})
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", "http://rpc.example/"], depsFor(dir, fetch, []).deps)).toBe(2)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", "http://rpc.example/"], depsFor(dir, fetch, []).deps)).toBe(2)
     expect(calls).toHaveLength(0)
   })
 })
 
-describe("T28: two writers cannot lose keys (hot store lock + merge on commit)", () => {
-  test("overlapping `hot new` commands both succeed and BOTH keys are in the store", async () => {
+describe("T28: two writers cannot lose keys (TEE wallet store lock + merge on commit)", () => {
+  test("overlapping `tee new` commands both succeed and BOTH keys are in the store", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [hotEntry()])
+    await seedTeeStore(dir, [teeEntry()])
     const { fetch, calls } = createRoutedFetch({})
     // B opens the store first and stalls on that read; A runs to completion in between; B then
     // commits against the file A wrote, not the copy B opened.
@@ -809,10 +878,10 @@ describe("T28: two writers cannot lose keys (hot store lock + merge on commit)",
         return raw
       },
     })
-    const taskB = run(["hot", "new", "--json", "--label", "b"], b.deps)
+    const taskB = run(["tee", "new", "--json", "--label", "b"], b.deps)
     await startedB
     const a = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "new", "--json", "--label", "a"], a.deps)).toBe(0)
+    expect(await run(["tee", "new", "--json", "--label", "a"], a.deps)).toBe(0)
     releaseB()
     expect(await taskB).toBe(0)
     expect(calls).toHaveLength(0)
@@ -820,9 +889,9 @@ describe("T28: two writers cannot lose keys (hot store lock + merge on commit)",
     const addressA = JSON.parse(a.stdout.text).address
     const addressB = JSON.parse(b.stdout.text).address
     const stored = await openStore(dir)
-    expect(stored.entries.map((e) => e.address)).toEqual([HOT, addressA, addressB])
+    expect(stored.entries.map((e) => e.address)).toEqual([TEE, addressA, addressB])
     expect(stored.entries.map((e) => e.index)).toEqual([0, 1, 2])
-    expect(stored.entries.map((e) => e.label)).toEqual(["hot-0", "a", "b"])
+    expect(stored.entries.map((e) => e.label)).toEqual(["tee-0", "a", "b"])
     // B's printed index is the one it actually got after the merge, not the stale one.
     expect(JSON.parse(b.stdout.text).index).toBe(2)
     for (const e of stored.entries.slice(1)) {
@@ -832,21 +901,21 @@ describe("T28: two writers cannot lose keys (hot store lock + merge on commit)",
 
   test("a lock left behind fails closed: nothing is written and the message names the lock", async () => {
     const dir = await tempDir()
-    const path = await seedHotStore(dir, [hotEntry()])
+    const path = await seedTeeStore(dir, [teeEntry()])
     await mkdir(keystoreLockPath(path))
     const before = await realReadFile(path, "utf8")
     const { fetch } = createRoutedFetch({})
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "new", "--json"], deps)).toBe(1)
+    expect(await run(["tee", "new", "--json"], deps)).toBe(1)
     const failure = JSON.parse(stdout.text)
-    expect(failure.code).toBe("HOT_STORE_LOCKED")
+    expect(failure.code).toBe("TEE_STORE_LOCKED")
     expect(failure.message).toContain(keystoreLockPath(path))
     expect(await realReadFile(path, "utf8")).toBe(before)
   })
 
   test("a store replaced under a different passphrase between open and commit is never overwritten", async () => {
     const dir = await tempDir()
-    const path = await seedHotStore(dir, [hotEntry()])
+    const path = await seedTeeStore(dir, [teeEntry()])
     let reads = 0
     const { fetch } = createRoutedFetch({})
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE], {
@@ -854,24 +923,24 @@ describe("T28: two writers cannot lose keys (hot store lock + merge on commit)",
         const raw = await realReadFile(p, "utf8")
         reads += 1
         // Another operator (or a restore) replaces the file after this command opened it.
-        if (reads === 1) await seedHotStore(dir, [hotEntry({ label: "restored" })], "a different passphrase!")
+        if (reads === 1) await seedTeeStore(dir, [teeEntry({ label: "restored" })], "a different passphrase!")
         return raw
       },
     })
-    expect(await run(["hot", "new", "--json"], deps)).toBe(1)
-    expect(JSON.parse(stdout.text).code).toBe("HOT_STORE_CHANGED")
+    expect(await run(["tee", "new", "--json"], deps)).toBe(1)
+    expect(JSON.parse(stdout.text).code).toBe("TEE_STORE_CHANGED")
     const stored = await openStore(dir, "a different passphrase!")
     expect(stored.entries.map((e) => e.label)).toEqual(["restored"])
-    expect(await realReadFile(path, "utf8")).toContain("ember-hot")
+    expect(await realReadFile(path, "utf8")).toContain("ember-tee")
   })
 
   test("enable and disable commit against the current file: a key appended meanwhile survives", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const other = Keypair.generate()
     let reads = 0
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1": () =>
+      "/api/v1/agent/wallets/lw_tee1": () =>
         jsonResponse(202, { success: true, state: "disable-pending", complete: false }),
     })
     const { deps } = depsFor(dir, fetch, [PASSPHRASE], {
@@ -879,7 +948,7 @@ describe("T28: two writers cannot lose keys (hot store lock + merge on commit)",
         const raw = await realReadFile(p, "utf8")
         reads += 1
         if (reads === 1) {
-          // A concurrent `hot new` lands after this command opened the store.
+          // A concurrent `tee new` lands after this command opened the store.
           const current = await openStore(dir)
           current.entries.push({
             index: 1,
@@ -889,58 +958,58 @@ describe("T28: two writers cannot lose keys (hot store lock + merge on commit)",
             createdAt: "2026-09-16T02:00:00.000Z",
             privateKey: base58.encode(other.secretKey),
             imported: false,
-            hot: { network: "solana-mainnet" },
+            tee: { network: "solana-mainnet" },
           })
           await writeKeystoreFile(
-            defaultHotKeystorePath({ CANDLE_CONFIG_DIR: dir }),
-            await serializeKeystore(current.entries, current.key, current.salt, current.iterations, "ember-hot"),
+            defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }),
+            await serializeKeystore(current.entries, current.key, current.salt, current.iterations, "ember-tee"),
           )
         }
         return raw
       },
     })
-    expect(await run(["hot", "disable", HOT], deps)).toBe(3)
+    expect(await run(["tee", "disable", TEE], deps)).toBe(3)
     const stored = await openStore(dir)
-    expect(stored.entries.map((e) => e.label)).toEqual(["hot-0", "concurrent"])
-    expect(typeof stored.entries[0]?.hot?.stopRequestedAt).toBe("string")
+    expect(stored.entries.map((e) => e.label)).toEqual(["tee-0", "concurrent"])
+    expect(typeof stored.entries[0]?.tee?.stopRequestedAt).toBe("string")
   })
 })
 
 describe("HW-06: the stop intent is durable before the server is asked", () => {
   test("a failed stop request (503) still persists stopRequestedAt, exits 1, and reports remote enforcement UNCONFIRMED; fund then refuses", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const { fetch, calls } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1": () => jsonResponse(503, { error: "unavailable" }),
+      "/api/v1/agent/wallets/lw_tee1": () => jsonResponse(503, { error: "unavailable" }),
     })
     const { deps, stderr } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "disable", HOT], deps)).toBe(1)
+    expect(await run(["tee", "disable", TEE], deps)).toBe(1)
     expect(calls[0]?.init.method).toBe("DELETE")
     expect(stderr.text).toContain("UNCONFIRMED")
-    expect(stderr.text).toContain("hot disable")
+    expect(stderr.text).toContain("tee disable")
     const stored = await openStore(dir)
-    expect(typeof stored.entries[0]?.hot?.stopRequestedAt).toBe("string")
-    expect(stored.entries[0]?.hot?.remoteAuthority).toBe("verified-active")
+    expect(typeof stored.entries[0]?.tee?.stopRequestedAt).toBe("string")
+    expect(stored.entries[0]?.tee?.remoteAuthority).toBe("verified-active")
 
     const fund = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "fund", HOT, "--amount", "1", "--json"], fund.deps)).toBe(1)
-    expect(JSON.parse(fund.stdout.text).code).toBe("HOT_WALLET_STOPPED")
+    expect(await run(["tee", "fund", TEE, "--amount", "1", "--json"], fund.deps)).toBe(1)
+    expect(JSON.parse(fund.stdout.text).code).toBe("TEE_WALLET_STOPPED")
   })
 
   test("--json: the unconfirmed stop is one typed object carrying the local marker", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1": () => jsonResponse(401, { error: { code: "UNAUTHORIZED", message: "revoked" } }),
+      "/api/v1/agent/wallets/lw_tee1": () => jsonResponse(401, { error: { code: "UNAUTHORIZED", message: "revoked" } }),
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "disable", HOT, "--json"], deps)).toBe(1)
+    expect(await run(["tee", "disable", TEE, "--json"], deps)).toBe(1)
     const body = JSON.parse(stdout.text)
     expect(body).toMatchObject({
       ok: false,
       code: "STOP_UNCONFIRMED",
       remoteEnforcement: "unconfirmed",
-      linkedWalletId: "lw_hot1",
+      linkedWalletId: "lw_tee1",
     })
     expect(typeof body.stopRequestedAt).toBe("string")
     expect(body.message).toContain("no longer works")
@@ -948,21 +1017,21 @@ describe("HW-06: the stop intent is durable before the server is asked", () => {
 
   test("no API key: the stop intent is persisted, no request is made, and the session path is named", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const { fetch, calls } = createRoutedFetch({})
     const { deps, stderr } = depsFor(dir, fetch, [PASSPHRASE], { store: createFakeStore({}) })
-    expect(await run(["hot", "disable", HOT], deps)).toBe(1)
+    expect(await run(["tee", "disable", TEE], deps)).toBe(1)
     expect(calls).toHaveLength(0)
     expect(stderr.text).toContain("session")
-    expect(stderr.text).toContain("lw_hot1")
-    expect(typeof (await openStore(dir)).entries[0]?.hot?.stopRequestedAt).toBe("string")
+    expect(stderr.text).toContain("lw_tee1")
+    expect(typeof (await openStore(dir)).entries[0]?.tee?.stopRequestedAt).toBe("string")
   })
 
   test("a repeat disable keeps the FIRST stopRequestedAt", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [
+    await seedTeeStore(dir, [
       enabledEntry({
-        hot: {
+        tee: {
           network: "solana-mainnet",
           vaultDestination: VAULT,
           boundKeyPrefix: "ck_live_x",
@@ -973,23 +1042,23 @@ describe("HW-06: the stop intent is durable before the server is asked", () => {
       }),
     ])
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1": () =>
+      "/api/v1/agent/wallets/lw_tee1": () =>
         jsonResponse(202, { success: true, state: "disable-pending", complete: false }),
     })
     const { deps } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["hot", "disable", HOT], deps)).toBe(3)
-    expect((await openStore(dir)).entries[0]?.hot?.stopRequestedAt).toBe("2026-09-16T03:00:00.000Z")
+    expect(await run(["tee", "disable", TEE], deps)).toBe(3)
+    expect((await openStore(dir)).entries[0]?.tee?.stopRequestedAt).toBe("2026-09-16T03:00:00.000Z")
   })
 })
 
 describe("HW-08 / T25: recovery does not depend on the operational credential", () => {
   test("no API key + --emergency: the sweep signs and sends with only the local key and the pinned vault; authority stays pending", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState()
     const { fetch, calls } = createRoutedFetch({ "/rpc": rpcHandler(rpc) })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)], { store: createFakeStore({}) })
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--emergency"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency"], deps)).toBe(3)
     expect(rpc.sent).toHaveLength(1)
     const tx = Transaction.from(Buffer.from(rpc.sent[0] as string, "base64"))
     expect(tx.verifySignatures()).toBe(true)
@@ -1002,34 +1071,34 @@ describe("HW-08 / T25: recovery does not depend on the operational credential", 
     expect(stdout.text).toContain("no API key available")
     expect(stdout.text).toContain("remote authority is still pending")
     const stored = await openStore(dir)
-    expect(stored.entries[0]?.hot?.sweptAt).toBeUndefined()
-    expect(typeof stored.entries[0]?.hot?.stopRequestedAt).toBe("string")
+    expect(stored.entries[0]?.tee?.sweptAt).toBeUndefined()
+    expect(typeof stored.entries[0]?.tee?.stopRequestedAt).toBe("string")
   })
 
   test("no API key without --emergency: refuses (exit 3), signs nothing, and names the emergency path", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState()
     const { fetch } = createRoutedFetch({ "/rpc": rpcHandler(rpc) })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE], { store: createFakeStore({}) })
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     expect(rpc.sent).toHaveLength(0)
     const body = JSON.parse(stdout.text)
-    expect(body.code).toBe("HOT_WALLET_STATE_UNREAD")
+    expect(body.code).toBe("TEE_WALLET_STATE_UNREAD")
     expect(body.suggestion).toContain("--emergency")
   })
 
   test("a revoked key (401 on the lifecycle read) + --emergency: recovers locally and never posts a sweep record with that key", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState()
     const { fetch, calls } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () =>
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () =>
         jsonResponse(401, { error: { code: "UNAUTHORIZED", message: "API key revoked" } }),
       "/rpc": rpcHandler(rpc),
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--emergency", "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency", "--json"], deps)).toBe(3)
     expect(rpc.sent).toHaveLength(1)
     expect(calls.some((c) => c.url.includes("/swept"))).toBe(false)
     const body = JSON.parse(stdout.text)
@@ -1042,14 +1111,14 @@ describe("HW-08 / T25: recovery does not depend on the operational credential", 
 describe("SC-06: completion needs a post-finality inventory", () => {
   test("SOL deposited while the sweep finalized is a residual: exit 3, not swept, nothing recorded anywhere", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState()
     const base = rpcHandler(rpc)
     let balanceReadsAfterSend = 0
     const swept: unknown[] = []
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
-      "/api/v1/agent/wallets/lw_hot1/swept": () => {
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": () => {
         swept.push(true)
         return jsonResponse(200, { success: true, state: "swept" })
       },
@@ -1062,7 +1131,7 @@ describe("SC-06: completion needs a post-finality inventory", () => {
       },
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     expect(balanceReadsAfterSend).toBeGreaterThan(0)
     const body = JSON.parse(stdout.text)
     expect(body.state).toBe("quarantined")
@@ -1071,16 +1140,16 @@ describe("SC-06: completion needs a post-finality inventory", () => {
     expect(body.inventory).toMatchObject({ verified: true, lamports: "123456" })
     expect(body.recordedOnServer).toBe(false)
     expect(swept).toEqual([])
-    expect((await openStore(dir)).entries[0]?.hot?.sweptAt).toBeUndefined()
+    expect((await openStore(dir)).entries[0]?.tee?.sweptAt).toBeUndefined()
   })
 
   test("a token account that appears after finality is a residual too", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState()
     const base = rpcHandler(rpc)
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
       "/rpc": (req) => {
         const body = JSON.parse(String(req.init.body)) as { method: string }
         if (body.method === "getSignatureStatuses" && rpc.tokenAccounts.length === 0) {
@@ -1096,7 +1165,7 @@ describe("SC-06: completion needs a post-finality inventory", () => {
       },
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const body = JSON.parse(stdout.text)
     expect(body.state).not.toBe("swept")
     expect(body.residuals).toEqual([expect.objectContaining({ kind: "token-account-remaining", account: "lateAcct" })])
@@ -1104,11 +1173,11 @@ describe("SC-06: completion needs a post-finality inventory", () => {
 
   test("an inventory that cannot be read after the transfers keeps the address quarantined", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState()
     const base = rpcHandler(rpc)
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
       "/rpc": (req) => {
         const body = JSON.parse(String(req.init.body)) as { method: string }
         if (body.method === "getBalance" && rpc.sent.length > 0) return jsonResponse(503, {})
@@ -1116,7 +1185,7 @@ describe("SC-06: completion needs a post-finality inventory", () => {
       },
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const body = JSON.parse(stdout.text)
     expect(body.state).toBe("quarantined")
     expect(body.inventory.verified).toBe(false)
@@ -1125,11 +1194,11 @@ describe("SC-06: completion needs a post-finality inventory", () => {
 
   test("the server refusing the record (409: authority pending) REPLACES the earlier quarantined read: state disable-pending, receipts retained, no local swept mark", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState()
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
-      "/api/v1/agent/wallets/lw_hot1/swept": () =>
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": () =>
         jsonResponse(409, {
           success: false,
           error: {
@@ -1142,19 +1211,19 @@ describe("SC-06: completion needs a post-finality inventory", () => {
       "/rpc": rpcHandler(rpc),
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const body = JSON.parse(stdout.text)
     expect(body.state).toBe("disable-pending")
     expect(body.serverState).toBe("disable-pending")
     expect(body.residuals).toEqual([expect.objectContaining({ kind: "server-record-refused" })])
     expect(body.recordedOnServer).toBe(false)
     const stored = (await openStore(dir)).entries[0]
-    expect(stored?.hot?.sweptAt).toBeUndefined()
-    expect(stored?.hot?.sweepReceipts?.map((r) => r.signature)).toEqual(rpc.sent.map(sigOf))
+    expect(stored?.tee?.sweptAt).toBeUndefined()
+    expect(stored?.tee?.sweepReceipts?.map((r) => r.signature)).toEqual(rpc.sent.map(sigOf))
 
     // Text output says the same thing: the address is pending, not quarantined.
     const text = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC], text.deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], text.deps)).toBe(3)
     expect(text.stdout.text).toContain("stays disable-pending")
     expect(text.stdout.text).toContain("not verified denied")
     expect(text.stdout.text).not.toContain("stays quarantined")
@@ -1167,12 +1236,12 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
     const records: unknown[] = []
     const rpc = defaultRpcState()
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE(opts.lifecycle())),
-      "/api/v1/agent/wallets/lw_hot1/swept": (req) => {
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE(opts.lifecycle())),
+      "/api/v1/agent/wallets/lw_tee1/swept": (req) => {
         recordCalls += 1
         records.push(JSON.parse(String(req.init.body)))
         return opts.available()
-          ? jsonResponse(200, { success: true, id: "lw_hot1", state: "swept", sweptAt: 1 })
+          ? jsonResponse(200, { success: true, id: "lw_tee1", state: "swept", sweptAt: 1 })
           : jsonResponse(503, { error: "temporary outage" })
       },
       "/rpc": rpcHandler(rpc),
@@ -1182,23 +1251,23 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
 
   test("a recording outage: the second run records the retained receipt with no new transfer and exits 0", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     let available = false
     const server = recordingServer({ available: () => available, lifecycle: () => "quarantined" })
     const first = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
     const one = JSON.parse(first.stdout.text)
     expect(one.receipts).toHaveLength(1)
     expect(one.residuals).toEqual([expect.objectContaining({ kind: "server-record-failed" })])
     expect(one.residuals[0].detail).toContain("retained")
     expect(server.rpc.lamports).toBe(0)
-    expect((await openStore(dir)).entries[0]?.hot?.sweepReceipts?.map((r) => r.signature)).toEqual(
+    expect((await openStore(dir)).entries[0]?.tee?.sweepReceipts?.map((r) => r.signature)).toEqual(
       server.rpc.sent.map(sigOf),
     )
 
     available = true
     const second = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], second.deps)).toBe(0)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], second.deps)).toBe(0)
     const two = JSON.parse(second.stdout.text)
     expect(two.state).toBe("swept")
     expect(two.newReceipts).toBe(0)
@@ -1207,23 +1276,23 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
     expect(server.rpc.sent).toHaveLength(1)
     expect(server.recordCalls()).toBe(2)
     expect(server.records[1]).toEqual({ signatures: server.rpc.sent.map(sigOf), residuals: [] })
-    expect(typeof (await openStore(dir)).entries[0]?.hot?.sweptAt).toBe("string")
+    expect(typeof (await openStore(dir)).entries[0]?.tee?.sweptAt).toBe("string")
   })
 
   test("emergency sweep, then a verified disable, then a plain sweep: the emergency receipts are recorded, nothing is re-signed", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     let lifecycle = "disable-pending"
     const server = recordingServer({ available: () => true, lifecycle: () => lifecycle })
     const emergency = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--emergency", "--json"], emergency.deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency", "--json"], emergency.deps)).toBe(3)
     expect(JSON.parse(emergency.stdout.text).state).toBe("disable-pending")
     expect(server.recordCalls()).toBe(0)
     expect(server.rpc.sent).toHaveLength(1)
 
-    lifecycle = "quarantined" // a later `hot disable` read back the denial
+    lifecycle = "quarantined" // a later `tee disable` read back the denial
     const reconcile = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], reconcile.deps)).toBe(0)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], reconcile.deps)).toBe(0)
     const body = JSON.parse(reconcile.stdout.text)
     expect(body.state).toBe("swept")
     expect(body.emergency).toBe(false)
@@ -1235,14 +1304,14 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
 
   test("a repeat after success is idempotent: exit 0, no transfer, no second record, and a late deposit still reopens residuals", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const server = recordingServer({ available: () => true, lifecycle: () => "quarantined" })
     const first = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], first.deps)).toBe(0)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], first.deps)).toBe(0)
     expect(server.recordCalls()).toBe(1)
 
     const again = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], again.deps)).toBe(0)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], again.deps)).toBe(0)
     const body = JSON.parse(again.stdout.text)
     expect(body.state).toBe("swept")
     expect(body.recordedOnServer).toBe(true)
@@ -1254,7 +1323,7 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
     // moves it and reports the new receipt alongside the retained one.
     server.rpc.lamports = 50_000
     const late = depsFor(dir, server.fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], late.deps)).toBe(0)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], late.deps)).toBe(0)
     const moved = JSON.parse(late.stdout.text)
     expect(moved.newReceipts).toBe(1)
     expect(moved.retainedReceipts).toBe(1)
@@ -1264,8 +1333,8 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
 
   test("an interrupted run keeps the token receipt: the retry only moves what is left", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
-    const source = getAssociatedTokenAddressSync(MINT, hotKey.publicKey)
+    await seedTeeStore(dir, [enabledEntry()])
+    const source = getAssociatedTokenAddressSync(MINT, teeKey.publicKey)
     const rpc = defaultRpcState({
       tokenAccounts: [
         { pubkey: source.toBase58(), mint: MINT.toBase58(), amount: "700000", decimals: 6, state: "initialized" },
@@ -1278,15 +1347,15 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
     })
     const records: unknown[] = []
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
-      "/api/v1/agent/wallets/lw_hot1/swept": (req) => {
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": (req) => {
         records.push(JSON.parse(String(req.init.body)))
         return jsonResponse(200, { success: true, state: "swept" })
       },
       "/rpc": rpcHandler(rpc),
     })
     const first = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
     const one = JSON.parse(first.stdout.text)
     expect(one.receipts.map((r: { kind: string }) => r.kind)).toEqual(["token"])
     expect(one.residuals.map((r: { kind: string }) => r.kind)).toContain("finality-uncertain")
@@ -1300,7 +1369,7 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
     rpc.statuses = [null, null]
     rpc.blockhashValid = false
     const second = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], second.deps)).toBe(0)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], second.deps)).toBe(0)
     const two = JSON.parse(second.stdout.text)
     expect(two.retainedReceipts).toBe(1)
     expect(two.newReceipts).toBe(1)
@@ -1316,7 +1385,7 @@ describe("HW-07: finalized receipts are retained and reconciled on retry", () =>
 describe("HW-07: ambiguous finality is persisted before broadcast and reconciled", () => {
   test("a transfer that finalizes AFTER the polling deadline: the next run turns the pending record into a receipt, signs nothing, records, exit 0", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState({
       statuses: Array.from({ length: 45 }, () => ({ confirmationStatus: "processed", err: null })),
     })
@@ -1325,8 +1394,8 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
     let statusReads = 0
     const records: unknown[] = []
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
-      "/api/v1/agent/wallets/lw_hot1/swept": (req) => {
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": (req) => {
         records.push(JSON.parse(String(req.init.body)))
         return jsonResponse(200, { success: true, state: "swept" })
       },
@@ -1340,7 +1409,7 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
       },
     })
     const first = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
     const one = JSON.parse(first.stdout.text)
     expect(rpc.sent).toHaveLength(1)
     expect(one.pending).toHaveLength(1)
@@ -1348,14 +1417,14 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
     expect(one.residuals.map((r: { kind: string }) => r.kind)).toContain("finality-uncertain")
     expect(records).toEqual([])
     const afterFirst = (await openStore(dir)).entries[0]
-    expect(afterFirst?.hot?.sweepPending?.map((p) => p.signature)).toEqual([pendingSig])
-    expect(afterFirst?.hot?.sweepPending?.[0]?.blockhash).toBe(BLOCKHASH)
+    expect(afterFirst?.tee?.sweepPending?.map((p) => p.signature)).toEqual([pendingSig])
+    expect(afterFirst?.tee?.sweepPending?.[0]?.blockhash).toBe(BLOCKHASH)
 
     finalized = true
     rpc.statuses = []
     const before = statusReads
     const second = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], second.deps)).toBe(0)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], second.deps)).toBe(0)
     const two = JSON.parse(second.stdout.text)
     expect(statusReads - before).toBeGreaterThan(0)
     expect(rpc.sent).toHaveLength(1)
@@ -1365,20 +1434,20 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
     expect(two.pending).toEqual([])
     expect(records).toEqual([{ signatures: [pendingSig], residuals: [] }])
     const stored = (await openStore(dir)).entries[0]
-    expect(stored?.hot?.sweepPending).toEqual([])
-    expect(stored?.hot?.sweepReceipts?.map((r) => r.signature)).toEqual([pendingSig])
-    expect(typeof stored?.hot?.sweptAt).toBe("string")
+    expect(stored?.tee?.sweepPending).toEqual([])
+    expect(stored?.tee?.sweepReceipts?.map((r) => r.signature)).toEqual([pendingSig])
+    expect(typeof stored?.tee?.sweptAt).toBe("string")
   })
 
   test("a send that throws is uncertain, not failed: the record survives and the next run resolves it", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState()
     const base = rpcHandler(rpc)
     let sendThrows = true
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
-      "/api/v1/agent/wallets/lw_hot1/swept": () => jsonResponse(200, { success: true, state: "swept" }),
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": () => jsonResponse(200, { success: true, state: "swept" }),
       "/rpc": (req) => {
         const body = JSON.parse(String(req.init.body)) as { method: string }
         if (body.method === "sendTransaction" && sendThrows) {
@@ -1390,7 +1459,7 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
       },
     })
     const first = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
     const one = JSON.parse(first.stdout.text)
     expect(one.pending).toHaveLength(1)
     expect(one.residuals[0].kind).toBe("finality-uncertain")
@@ -1399,23 +1468,23 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
 
     sendThrows = false
     const second = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], second.deps)).toBe(0)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], second.deps)).toBe(0)
     expect(rpc.sent).toHaveLength(1)
     expect(JSON.parse(second.stdout.text).receipts).toHaveLength(1)
   })
 
   test("a still-unconfirmed pending transaction with a valid blockhash blocks new signing and stays residual", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState({
       statuses: Array.from({ length: 45 }, () => ({ confirmationStatus: "processed", err: null })),
     })
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
       "/rpc": rpcHandler(rpc),
     })
     const first = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], first.deps)).toBe(3)
     expect(rpc.sent).toHaveLength(1)
 
     // Still nothing known about it, and it can still land: do not race it.
@@ -1423,17 +1492,17 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
     rpc.statuses = [null]
     rpc.blockhashValid = true
     const second = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC], second.deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], second.deps)).toBe(3)
     expect(rpc.sent).toHaveLength(1)
     expect(second.stdout.text).toContain("still in flight")
     expect(second.stdout.text).toContain("stays quarantined")
-    expect((await openStore(dir)).entries[0]?.hot?.sweepPending).toHaveLength(1)
+    expect((await openStore(dir)).entries[0]?.tee?.sweepPending).toHaveLength(1)
 
     // Now it is gone for good (blockhash expired): the balance is swept again and recorded.
     const records: unknown[] = []
     const { fetch: fetch3 } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
-      "/api/v1/agent/wallets/lw_hot1/swept": (req) => {
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": (req) => {
         records.push(JSON.parse(String(req.init.body)))
         return jsonResponse(200, { success: true, state: "swept" })
       },
@@ -1442,7 +1511,7 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
     rpc.statuses = [null, null]
     rpc.blockhashValid = false
     const third = depsFor(dir, fetch3, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], third.deps)).toBe(0)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], third.deps)).toBe(0)
     expect(rpc.sent).toHaveLength(2)
     const body = JSON.parse(third.stdout.text)
     // The fake chain hands out one constant blockhash, so the re-signed transfer is byte-identical
@@ -1451,14 +1520,14 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
     expect(body.receipts).toHaveLength(1)
     expect(body.receipts[0].signature).toBe(sigOf(rpc.sent[1] as string))
     expect(records).toEqual([{ signatures: [body.receipts[0].signature], residuals: [] }])
-    expect((await openStore(dir)).entries[0]?.hot?.sweepPending).toEqual([])
+    expect((await openStore(dir)).entries[0]?.tee?.sweepPending).toEqual([])
   })
 
   test("a pending transaction that failed on chain is dropped and its balance swept again", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [
+    await seedTeeStore(dir, [
       enabledEntry({
-        hot: {
+        tee: {
           network: "solana-mainnet",
           vaultDestination: VAULT,
           boundKeyPrefix: "ck_live_x",
@@ -1481,12 +1550,12 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
       statuses: [{ confirmationStatus: "finalized", err: { InstructionError: [0, "Custom"] } }],
     })
     const { fetch } = createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
-      "/api/v1/agent/wallets/lw_hot1/swept": () => jsonResponse(200, { success: true, state: "swept" }),
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": () => jsonResponse(200, { success: true, state: "swept" }),
       "/rpc": rpcHandler(rpc),
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     const body = JSON.parse(stdout.text)
     expect(rpc.sent).toHaveLength(1)
     expect(body.receipts.map((r: { signature: string }) => r.signature)).not.toContain("oldsig")
@@ -1497,7 +1566,7 @@ describe("HW-07: ambiguous finality is persisted before broadcast and reconciled
 describe("HW-07: pending evidence is preserved until conclusive", () => {
   const withPending = (blockhash = BLOCKHASH) =>
     enabledEntry({
-      hot: {
+      tee: {
         network: "solana-mainnet",
         vaultDestination: VAULT,
         boundKeyPrefix: "ck_live_x",
@@ -1517,15 +1586,15 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
     })
   const quarantined = (rpc: RpcState, extra: Record<string, RouteHandler> = {}) =>
     createRoutedFetch({
-      "/api/v1/agent/wallets/lw_hot1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
-      "/api/v1/agent/wallets/lw_hot1/swept": () => jsonResponse(200, { success: true, state: "swept" }),
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": () => jsonResponse(200, { success: true, state: "swept" }),
       "/rpc": rpcHandler(rpc),
       ...extra,
     })
 
   test("a confirmed observation is kept even though its admission blockhash expired; nothing new is signed", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [withPending()])
+    await seedTeeStore(dir, [withPending()])
     const rpc = defaultRpcState({
       lamports: 0,
       statuses: [{ confirmationStatus: "confirmed", err: null }],
@@ -1533,34 +1602,34 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
     })
     const { fetch } = quarantined(rpc)
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const body = JSON.parse(stdout.text)
     expect(body.pending.map((p: { signature: string }) => p.signature)).toEqual(["original-signature"])
     expect(body.residuals[0]).toMatchObject({ kind: "finality-uncertain" })
     expect(body.residuals[0].detail).toContain("confirmed")
     expect(rpc.sent).toHaveLength(0)
-    expect((await openStore(dir)).entries[0]?.hot?.sweepPending).toHaveLength(1)
+    expect((await openStore(dir)).entries[0]?.tee?.sweepPending).toHaveLength(1)
   })
 
   test("a nonfinal ERROR is not a failure: kept pending, nothing new signed", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [withPending()])
+    await seedTeeStore(dir, [withPending()])
     const rpc = defaultRpcState({
       lamports: 995_000,
       statuses: [{ confirmationStatus: "processed", err: { InstructionError: [0, "Custom"] } }],
     })
     const { fetch } = quarantined(rpc)
     const { deps } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     expect(rpc.sent).toHaveLength(0)
-    expect((await openStore(dir)).entries[0]?.hot?.sweepPending?.map((p) => p.signature)).toEqual([
+    expect((await openStore(dir)).entries[0]?.tee?.sweepPending?.map((p) => p.signature)).toEqual([
       "original-signature",
     ])
   })
 
   test("a malformed isBlockhashValid answer is unknown, not expiry: kept pending, nothing new signed", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [withPending()])
+    await seedTeeStore(dir, [withPending()])
     const rpc = defaultRpcState({ lamports: 0, statuses: [null] })
     const base = rpcHandler(rpc)
     const { fetch } = quarantined(rpc, {
@@ -1571,15 +1640,15 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
       },
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     expect(JSON.parse(stdout.text).residuals[0].detail).toContain("validity is unknown")
     expect(rpc.sent).toHaveLength(0)
-    expect((await openStore(dir)).entries[0]?.hot?.sweepPending).toHaveLength(1)
+    expect((await openStore(dir)).entries[0]?.tee?.sweepPending).toHaveLength(1)
   })
 
   test("the status/expiry race: not found, blockhash expired, then finalized on the confirming re-read becomes a receipt", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [withPending()])
+    await seedTeeStore(dir, [withPending()])
     const rpc = defaultRpcState({
       lamports: 0,
       statuses: [null, { confirmationStatus: "finalized", err: null }],
@@ -1589,7 +1658,7 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
     const base = rpcHandler(rpc)
     const records: unknown[] = []
     const { fetch } = quarantined(rpc, {
-      "/api/v1/agent/wallets/lw_hot1/swept": (req) => {
+      "/api/v1/agent/wallets/lw_tee1/swept": (req) => {
         records.push(JSON.parse(String(req.init.body)))
         return jsonResponse(200, { success: true, state: "swept" })
       },
@@ -1600,7 +1669,7 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
       },
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     expect(statusReads).toBe(2)
     expect(rpc.sent).toHaveLength(0)
     expect(JSON.parse(stdout.text).receipts.map((r: { signature: string }) => r.signature)).toEqual([
@@ -1611,11 +1680,11 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
 
   test("validated expiry needs TWO missing reads around the invalid blockhash; only then is the balance swept again", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [withPending()])
+    await seedTeeStore(dir, [withPending()])
     const rpc = defaultRpcState({ lamports: 995_000, statuses: [null, null], blockhashValid: false })
     const { fetch } = quarantined(rpc)
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     const body = JSON.parse(stdout.text)
     expect(rpc.sent).toHaveLength(1)
     expect(body.receipts.map((r: { signature: string }) => r.signature)).toEqual([sigOf(rpc.sent[0] as string)])
@@ -1624,7 +1693,7 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
 
   test("a mismatched RPC echo never replaces the locally signed identity; the send stays uncertain under that identity", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState({
       statuses: Array.from({ length: 45 }, () => ({ confirmationStatus: "processed", err: null })),
     })
@@ -1640,17 +1709,17 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
       },
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const actual = sigOf(rpc.sent[0] as string)
     const body = JSON.parse(stdout.text)
     expect(body.pending[0].signature).toBe(actual)
     expect(body.residuals[0].detail).toContain("echoed a different signature")
-    expect((await openStore(dir)).entries[0]?.hot?.sweepPending?.[0]?.signature).toBe(actual)
+    expect((await openStore(dir)).entries[0]?.tee?.sweepPending?.[0]?.signature).toBe(actual)
   })
 
   test("in-run polling: a nonfinal error keeps polling and ends uncertain; only a finalized error is a failure", async () => {
     const dir = await tempDir()
-    await seedHotStore(dir, [enabledEntry()])
+    await seedTeeStore(dir, [enabledEntry()])
     const rpc = defaultRpcState({
       statuses: Array.from({ length: 45 }, () => ({
         confirmationStatus: "confirmed",
@@ -1659,21 +1728,21 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
     })
     const { fetch } = quarantined(rpc)
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     expect(JSON.parse(stdout.text).pending).toHaveLength(1)
-    expect((await openStore(dir)).entries[0]?.hot?.sweepPending).toHaveLength(1)
+    expect((await openStore(dir)).entries[0]?.tee?.sweepPending).toHaveLength(1)
 
     const dir2 = await tempDir()
-    await seedHotStore(dir2, [enabledEntry()])
+    await seedTeeStore(dir2, [enabledEntry()])
     const rpc2 = defaultRpcState({
       statuses: [{ confirmationStatus: "finalized", err: { InstructionError: [0, "Custom"] } }],
     })
     const { fetch: fetch2 } = quarantined(rpc2)
     const second = depsFor(dir2, fetch2, [PASSPHRASE, VAULT.slice(-6)])
-    expect(await run(["hot", "sweep", HOT, "--rpc-url", RPC, "--json"], second.deps)).toBe(3)
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], second.deps)).toBe(3)
     const body = JSON.parse(second.stdout.text)
     expect(body.pending).toEqual([])
     expect(body.residuals.map((r: { kind: string }) => r.kind)).toContain("sol-transfer-failed")
-    expect((await openStore(dir2)).entries[0]?.hot?.sweepPending).toEqual([])
+    expect((await openStore(dir2)).entries[0]?.tee?.sweepPending).toEqual([])
   })
 })
