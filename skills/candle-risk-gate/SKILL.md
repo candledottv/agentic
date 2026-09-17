@@ -25,9 +25,11 @@ figure does not mean supply is well distributed, it means nobody counted.
 
 ## 1. Gate the buy
 
-`candle_token_forensics` with `{ chain, mint }` returns the deployer's other launches and how they
-ended, who bought in the deploy window, holder concentration, and `risk.tier`, which is one of
-LOW, MODERATE, HIGH or CRITICAL with a reason per factor.
+`candle_token_forensics` with `{ chain, mint }` returns who launched it (resolved on-chain;
+pump.fun's shared `updateAuthority` is never the developer), the deployer's other launches and
+how they ended (went-to-zero rate and last coins), who bought in the deploy window, holder
+concentration, same-funder insider share, same-funder deployer cluster, and `risk.tier`, which is
+one of LOW, MODERATE, HIGH or CRITICAL with a reason per factor.
 
 **Refuse an unprompted buy at HIGH or CRITICAL, and say which factor drove it.** The tier is
 additive and every factor reports its own points and reason, so you can always name the reason
@@ -38,14 +40,17 @@ rather than citing a number nobody can argue with.
 `coverage.checked` lists what actually ran. `coverage.unavailable` lists what did not. A finding is
 only evidence if its check is in the first list.
 
-Tokens Candle did not launch now get a real report rather than a refusal, because holder
-concentration needs only the mint. What cannot be recovered for them is anchored to a launch
-record Candle never saw, so `deployer_history` and `deploy_window` come back unavailable. The
-coverage reason is `external_launchpad`, which means the token is fine and nothing is broken.
+Tokens Candle did not launch now get a real report rather than a refusal when the mint is already
+in the Solana feed. Holder concentration and on-chain developer resolution need only the mint.
+`deploy_window` stays unavailable (it is anchored to a launch record Candle never saw).
+`deployer_history` runs when a real person-sized developer can be named; it stays unavailable
+when the only credited account is a launchpad program. The coverage reason is
+`external_launchpad`, which means the token is fine and nothing is broken.
 
-That is a genuinely weaker report: one measured factor instead of four. Size accordingly. A LOW
-tier computed from one factor is not the same claim as a LOW tier computed from four, and the
-coverage object is how you tell them apart.
+That is a genuinely weaker report than a Candle launch: deploy-window is missing, and the
+went-to-zero peak is estimated from recent Jupiter windows rather than a true ATH. Size
+accordingly. A LOW tier computed from two factors is not the same claim as a LOW tier computed
+from four, and the coverage object is how you tell them apart.
 
 ### What concentration means here
 

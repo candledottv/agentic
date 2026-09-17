@@ -98,9 +98,11 @@ Prefer these over scraping prose:
 
 **The feed is wider than Candle's markets, and this is the first thing you will hit.**
 `candle_get_feed` indexes the whole market -- pump.fun, pons.family and other launchpads, which is
-why rows carry a `launchpad`. `candle_get_market` and `candle_token_forensics` answer for tokens
-that have a **Candle** market. So the obvious first move, taking a mint off the feed and running
-forensics on it, can legitimately come back `MARKET_NOT_FOUND`.
+why rows carry a `launchpad`. `candle_get_market` answers for tokens that have a **Candle**
+market. `candle_token_forensics` also answers for Solana tokens the feed already knows, with a
+partial report (on-chain developer, went-to-zero record, concentration, same-funder insiders and
+cluster). Deploy-window stays unavailable without a Candle launch record. Hood tokens Candle did
+not launch, and unknown mints, can still come back `MARKET_NOT_FOUND`.
 
 That is a coverage boundary, not an outage. Do not retry it, do not ask the human to
 re-authenticate, and do not report the rail as down. Say Candle has no market for that token and

@@ -64,11 +64,13 @@ that reads a project-scoped MCP file (Claude Code, and others that follow the sa
 picks the server up from a clone with no JSON to write by hand.
 
 **One thing to know before the first call.** `candle_get_feed` indexes the wider market, not just
-Candle's own launches, while `candle_get_market` and `candle_token_forensics` answer for tokens
-that have a Candle market. A mint the feed just returned can therefore come back
-`MARKET_NOT_FOUND` from those two. That is a coverage boundary rather than a fault -- it is not a
-reason to retry, and from forensics it is not a clean bill of health either. It is the single most
-common reason an agent decides the integration is broken when it is working.
+Candle's own launches. `candle_get_market` answers for tokens that have a Candle market.
+`candle_token_forensics` also answers for Solana tokens the feed already knows (partial report:
+on-chain developer, went-to-zero record, concentration, same-funder insiders and cluster). A mint
+the feed just returned can still come back `MARKET_NOT_FOUND` from `candle_get_market`, and from
+forensics when it is Hood-only or unknown. That is a coverage boundary rather than a fault -- it
+is not a reason to retry, and from forensics it is not a clean bill of health either. It is the
+single most common reason an agent decides the integration is broken when it is working.
 
 Use the real absolute path to your clone (MCP clients spawn from their own working directory),
 and keep `CANDLE_API_URL` on staging until this rail reaches production. Ask an agent to call
