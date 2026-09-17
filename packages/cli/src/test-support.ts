@@ -189,6 +189,12 @@ export function createTestDeps(overrides: Partial<Deps> & { fetch: typeof fetch 
     promptSecret: async () => {
       throw new Error("no promptSecret fake configured")
     },
+    promptLine: async () => {
+      throw new Error("no promptLine fake configured")
+    },
+    // TTY by default: the vault commands refuse without one, and a test that means to exercise
+    // that refusal says so explicitly rather than getting it by accident from an inert default.
+    isTTY: { stdin: true, stdout: true },
     execPath: "/usr/local/bin/node",
     argv1: "/usr/local/lib/node_modules/@candledottv/cli/dist/index.js",
     platformKey: "linux-x64",

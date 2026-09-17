@@ -47,6 +47,1297 @@ var __export = (target, all) => {
 var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
+// ../../node_modules/@scure/base/lib/esm/index.js
+function isBytes(a) {
+  return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
+}
+function abytes(b, ...lengths) {
+  if (!isBytes(b))
+    throw new Error("Uint8Array expected");
+  if (lengths.length > 0 && !lengths.includes(b.length))
+    throw new Error("Uint8Array expected of length " + lengths + ", got length=" + b.length);
+}
+function isArrayOf(isString, arr) {
+  if (!Array.isArray(arr))
+    return false;
+  if (arr.length === 0)
+    return true;
+  if (isString) {
+    return arr.every((item) => typeof item === "string");
+  } else {
+    return arr.every((item) => Number.isSafeInteger(item));
+  }
+}
+function afn(input) {
+  if (typeof input !== "function")
+    throw new Error("function expected");
+  return true;
+}
+function astr(label, input) {
+  if (typeof input !== "string")
+    throw new Error(`${label}: string expected`);
+  return true;
+}
+function anumber(n) {
+  if (!Number.isSafeInteger(n))
+    throw new Error(`invalid integer: ${n}`);
+}
+function aArr(input) {
+  if (!Array.isArray(input))
+    throw new Error("array expected");
+}
+function astrArr(label, input) {
+  if (!isArrayOf(true, input))
+    throw new Error(`${label}: array of strings expected`);
+}
+function anumArr(label, input) {
+  if (!isArrayOf(false, input))
+    throw new Error(`${label}: array of numbers expected`);
+}
+function chain(...args) {
+  const id = (a) => a;
+  const wrap = (a, b) => (c) => a(b(c));
+  const encode = args.map((x) => x.encode).reduceRight(wrap, id);
+  const decode = args.map((x) => x.decode).reduce(wrap, id);
+  return { encode, decode };
+}
+function alphabet(letters) {
+  const lettersA = typeof letters === "string" ? letters.split("") : letters;
+  const len = lettersA.length;
+  astrArr("alphabet", lettersA);
+  const indexes = new Map(lettersA.map((l, i) => [l, i]));
+  return {
+    encode: (digits) => {
+      aArr(digits);
+      return digits.map((i) => {
+        if (!Number.isSafeInteger(i) || i < 0 || i >= len)
+          throw new Error(`alphabet.encode: digit index outside alphabet "${i}". Allowed: ${letters}`);
+        return lettersA[i];
+      });
+    },
+    decode: (input) => {
+      aArr(input);
+      return input.map((letter) => {
+        astr("alphabet.decode", letter);
+        const i = indexes.get(letter);
+        if (i === undefined)
+          throw new Error(`Unknown letter: "${letter}". Allowed: ${letters}`);
+        return i;
+      });
+    }
+  };
+}
+function join3(separator = "") {
+  astr("join", separator);
+  return {
+    encode: (from) => {
+      astrArr("join.decode", from);
+      return from.join(separator);
+    },
+    decode: (to) => {
+      astr("join.decode", to);
+      return to.split(separator);
+    }
+  };
+}
+function padding(bits, chr = "=") {
+  anumber(bits);
+  astr("padding", chr);
+  return {
+    encode(data) {
+      astrArr("padding.encode", data);
+      while (data.length * bits % 8)
+        data.push(chr);
+      return data;
+    },
+    decode(input) {
+      astrArr("padding.decode", input);
+      let end = input.length;
+      if (end * bits % 8)
+        throw new Error("padding: invalid, string should have whole number of bytes");
+      for (;end > 0 && input[end - 1] === chr; end--) {
+        const last = end - 1;
+        const byte = last * bits;
+        if (byte % 8 === 0)
+          throw new Error("padding: invalid, string has too much padding");
+      }
+      return input.slice(0, end);
+    }
+  };
+}
+function normalize(fn) {
+  afn(fn);
+  return { encode: (from) => from, decode: (to) => fn(to) };
+}
+function convertRadix(data, from, to) {
+  if (from < 2)
+    throw new Error(`convertRadix: invalid from=${from}, base cannot be less than 2`);
+  if (to < 2)
+    throw new Error(`convertRadix: invalid to=${to}, base cannot be less than 2`);
+  aArr(data);
+  if (!data.length)
+    return [];
+  let pos = 0;
+  const res = [];
+  const digits = Array.from(data, (d) => {
+    anumber(d);
+    if (d < 0 || d >= from)
+      throw new Error(`invalid integer: ${d}`);
+    return d;
+  });
+  const dlen = digits.length;
+  while (true) {
+    let carry = 0;
+    let done = true;
+    for (let i = pos;i < dlen; i++) {
+      const digit = digits[i];
+      const fromCarry = from * carry;
+      const digitBase = fromCarry + digit;
+      if (!Number.isSafeInteger(digitBase) || fromCarry / from !== carry || digitBase - digit !== fromCarry) {
+        throw new Error("convertRadix: carry overflow");
+      }
+      const div = digitBase / to;
+      carry = digitBase % to;
+      const rounded = Math.floor(div);
+      digits[i] = rounded;
+      if (!Number.isSafeInteger(rounded) || rounded * to + carry !== digitBase)
+        throw new Error("convertRadix: carry overflow");
+      if (!done)
+        continue;
+      else if (!rounded)
+        pos = i;
+      else
+        done = false;
+    }
+    res.push(carry);
+    if (done)
+      break;
+  }
+  for (let i = 0;i < data.length - 1 && data[i] === 0; i++)
+    res.push(0);
+  return res.reverse();
+}
+function convertRadix2(data, from, to, padding2) {
+  aArr(data);
+  if (from <= 0 || from > 32)
+    throw new Error(`convertRadix2: wrong from=${from}`);
+  if (to <= 0 || to > 32)
+    throw new Error(`convertRadix2: wrong to=${to}`);
+  if (radix2carry(from, to) > 32) {
+    throw new Error(`convertRadix2: carry overflow from=${from} to=${to} carryBits=${radix2carry(from, to)}`);
+  }
+  let carry = 0;
+  let pos = 0;
+  const max = powers[from];
+  const mask = powers[to] - 1;
+  const res = [];
+  for (const n of data) {
+    anumber(n);
+    if (n >= max)
+      throw new Error(`convertRadix2: invalid data word=${n} from=${from}`);
+    carry = carry << from | n;
+    if (pos + from > 32)
+      throw new Error(`convertRadix2: carry overflow pos=${pos} from=${from}`);
+    pos += from;
+    for (;pos >= to; pos -= to)
+      res.push((carry >> pos - to & mask) >>> 0);
+    const pow = powers[pos];
+    if (pow === undefined)
+      throw new Error("invalid carry");
+    carry &= pow - 1;
+  }
+  carry = carry << to - pos & mask;
+  if (!padding2 && pos >= from)
+    throw new Error("Excess padding");
+  if (!padding2 && carry > 0)
+    throw new Error(`Non-zero padding: ${carry}`);
+  if (padding2 && pos > 0)
+    res.push(carry >>> 0);
+  return res;
+}
+function radix(num) {
+  anumber(num);
+  const _256 = 2 ** 8;
+  return {
+    encode: (bytes) => {
+      if (!isBytes(bytes))
+        throw new Error("radix.encode input should be Uint8Array");
+      return convertRadix(Array.from(bytes), _256, num);
+    },
+    decode: (digits) => {
+      anumArr("radix.decode", digits);
+      return Uint8Array.from(convertRadix(digits, num, _256));
+    }
+  };
+}
+function radix2(bits, revPadding = false) {
+  anumber(bits);
+  if (bits <= 0 || bits > 32)
+    throw new Error("radix2: bits should be in (0..32]");
+  if (radix2carry(8, bits) > 32 || radix2carry(bits, 8) > 32)
+    throw new Error("radix2: carry overflow");
+  return {
+    encode: (bytes) => {
+      if (!isBytes(bytes))
+        throw new Error("radix2.encode input should be Uint8Array");
+      return convertRadix2(Array.from(bytes), 8, bits, !revPadding);
+    },
+    decode: (digits) => {
+      anumArr("radix2.decode", digits);
+      return Uint8Array.from(convertRadix2(digits, bits, 8, revPadding));
+    }
+  };
+}
+function unsafeWrapper(fn) {
+  afn(fn);
+  return function(...args) {
+    try {
+      return fn.apply(null, args);
+    } catch (e) {}
+  };
+}
+function checksum(len, fn) {
+  anumber(len);
+  afn(fn);
+  return {
+    encode(data) {
+      if (!isBytes(data))
+        throw new Error("checksum.encode: input should be Uint8Array");
+      const sum = fn(data).slice(0, len);
+      const res = new Uint8Array(data.length + len);
+      res.set(data);
+      res.set(sum, data.length);
+      return res;
+    },
+    decode(data) {
+      if (!isBytes(data))
+        throw new Error("checksum.decode: input should be Uint8Array");
+      const payload = data.slice(0, -len);
+      const oldChecksum = data.slice(-len);
+      const newChecksum = fn(payload).slice(0, len);
+      for (let i = 0;i < len; i++)
+        if (newChecksum[i] !== oldChecksum[i])
+          throw new Error("Invalid checksum");
+      return payload;
+    }
+  };
+}
+function bech32Polymod(pre) {
+  const b = pre >> 25;
+  let chk = (pre & 33554431) << 5;
+  for (let i = 0;i < POLYMOD_GENERATORS.length; i++) {
+    if ((b >> i & 1) === 1)
+      chk ^= POLYMOD_GENERATORS[i];
+  }
+  return chk;
+}
+function bechChecksum(prefix, words, encodingConst = 1) {
+  const len = prefix.length;
+  let chk = 1;
+  for (let i = 0;i < len; i++) {
+    const c = prefix.charCodeAt(i);
+    if (c < 33 || c > 126)
+      throw new Error(`Invalid prefix (${prefix})`);
+    chk = bech32Polymod(chk) ^ c >> 5;
+  }
+  chk = bech32Polymod(chk);
+  for (let i = 0;i < len; i++)
+    chk = bech32Polymod(chk) ^ prefix.charCodeAt(i) & 31;
+  for (let v of words)
+    chk = bech32Polymod(chk) ^ v;
+  for (let i = 0;i < 6; i++)
+    chk = bech32Polymod(chk);
+  chk ^= encodingConst;
+  return BECH_ALPHABET.encode(convertRadix2([chk % powers[30]], 30, 5, false));
+}
+function genBech32(encoding) {
+  const ENCODING_CONST = encoding === "bech32" ? 1 : 734539939;
+  const _words = radix2(5);
+  const fromWords = _words.decode;
+  const toWords = _words.encode;
+  const fromWordsUnsafe = unsafeWrapper(fromWords);
+  function encode(prefix, words, limit = 90) {
+    astr("bech32.encode prefix", prefix);
+    if (isBytes(words))
+      words = Array.from(words);
+    anumArr("bech32.encode", words);
+    const plen = prefix.length;
+    if (plen === 0)
+      throw new TypeError(`Invalid prefix length ${plen}`);
+    const actualLength = plen + 7 + words.length;
+    if (limit !== false && actualLength > limit)
+      throw new TypeError(`Length ${actualLength} exceeds limit ${limit}`);
+    const lowered = prefix.toLowerCase();
+    const sum = bechChecksum(lowered, words, ENCODING_CONST);
+    return `${lowered}1${BECH_ALPHABET.encode(words)}${sum}`;
+  }
+  function decode(str, limit = 90) {
+    astr("bech32.decode input", str);
+    const slen = str.length;
+    if (slen < 8 || limit !== false && slen > limit)
+      throw new TypeError(`invalid string length: ${slen} (${str}). Expected (8..${limit})`);
+    const lowered = str.toLowerCase();
+    if (str !== lowered && str !== str.toUpperCase())
+      throw new Error(`String must be lowercase or uppercase`);
+    const sepIndex = lowered.lastIndexOf("1");
+    if (sepIndex === 0 || sepIndex === -1)
+      throw new Error(`Letter "1" must be present between prefix and data only`);
+    const prefix = lowered.slice(0, sepIndex);
+    const data = lowered.slice(sepIndex + 1);
+    if (data.length < 6)
+      throw new Error("Data must be at least 6 characters long");
+    const words = BECH_ALPHABET.decode(data).slice(0, -6);
+    const sum = bechChecksum(prefix, words, ENCODING_CONST);
+    if (!data.endsWith(sum))
+      throw new Error(`Invalid checksum in ${str}: expected "${sum}"`);
+    return { prefix, words };
+  }
+  const decodeUnsafe = unsafeWrapper(decode);
+  function decodeToBytes(str) {
+    const { prefix, words } = decode(str, false);
+    return { prefix, words, bytes: fromWords(words) };
+  }
+  function encodeFromBytes(prefix, bytes) {
+    return encode(prefix, toWords(bytes));
+  }
+  return {
+    encode,
+    decode,
+    encodeFromBytes,
+    decodeToBytes,
+    decodeUnsafe,
+    fromWords,
+    fromWordsUnsafe,
+    toWords
+  };
+}
+var gcd = (a, b) => b === 0 ? a : gcd(b, a % b), radix2carry = (from, to) => from + (to - gcd(from, to)), powers, utils, base16, base32, base32nopad, base32hex, base32hexnopad, base32crockford, hasBase64Builtin, decodeBase64Builtin = (s, isUrl) => {
+  astr("base64", s);
+  const re = isUrl ? /^[A-Za-z0-9=_-]+$/ : /^[A-Za-z0-9=+/]+$/;
+  const alphabet2 = isUrl ? "base64url" : "base64";
+  if (s.length > 0 && !re.test(s))
+    throw new Error("invalid base64");
+  return Uint8Array.fromBase64(s, { alphabet: alphabet2, lastChunkHandling: "strict" });
+}, base64, base64nopad, base64url, base64urlnopad, genBase58 = (abc) => chain(radix(58), alphabet(abc), join3("")), base58, base58flickr, base58xrp, BECH_ALPHABET, POLYMOD_GENERATORS, bech32, bech32m, hasHexBuiltin, hexBuiltin, hex;
+var init_esm = __esm(() => {
+  /*! scure-base - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+  powers = /* @__PURE__ */ (() => {
+    let res = [];
+    for (let i = 0;i < 40; i++)
+      res.push(2 ** i);
+    return res;
+  })();
+  utils = {
+    alphabet,
+    chain,
+    checksum,
+    convertRadix,
+    convertRadix2,
+    radix,
+    radix2,
+    join: join3,
+    padding
+  };
+  base16 = chain(radix2(4), alphabet("0123456789ABCDEF"), join3(""));
+  base32 = chain(radix2(5), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"), padding(5), join3(""));
+  base32nopad = chain(radix2(5), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"), join3(""));
+  base32hex = chain(radix2(5), alphabet("0123456789ABCDEFGHIJKLMNOPQRSTUV"), padding(5), join3(""));
+  base32hexnopad = chain(radix2(5), alphabet("0123456789ABCDEFGHIJKLMNOPQRSTUV"), join3(""));
+  base32crockford = chain(radix2(5), alphabet("0123456789ABCDEFGHJKMNPQRSTVWXYZ"), join3(""), normalize((s) => s.toUpperCase().replace(/O/g, "0").replace(/[IL]/g, "1")));
+  hasBase64Builtin = /* @__PURE__ */ (() => typeof Uint8Array.from([]).toBase64 === "function" && typeof Uint8Array.fromBase64 === "function")();
+  base64 = hasBase64Builtin ? {
+    encode(b) {
+      abytes(b);
+      return b.toBase64();
+    },
+    decode(s) {
+      return decodeBase64Builtin(s, false);
+    }
+  } : chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"), padding(6), join3(""));
+  base64nopad = chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"), join3(""));
+  base64url = hasBase64Builtin ? {
+    encode(b) {
+      abytes(b);
+      return b.toBase64({ alphabet: "base64url" });
+    },
+    decode(s) {
+      return decodeBase64Builtin(s, true);
+    }
+  } : chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"), padding(6), join3(""));
+  base64urlnopad = chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"), join3(""));
+  base58 = genBase58("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz");
+  base58flickr = genBase58("123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ");
+  base58xrp = genBase58("rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz");
+  BECH_ALPHABET = chain(alphabet("qpzry9x8gf2tvdw0s3jn54khce6mua7l"), join3(""));
+  POLYMOD_GENERATORS = [996825010, 642813549, 513874426, 1027748829, 705979059];
+  bech32 = genBech32("bech32");
+  bech32m = genBech32("bech32m");
+  hasHexBuiltin = /* @__PURE__ */ (() => typeof Uint8Array.from([]).toHex === "function" && typeof Uint8Array.fromHex === "function")();
+  hexBuiltin = {
+    encode(data) {
+      abytes(data);
+      return data.toHex();
+    },
+    decode(s) {
+      astr("hex", s);
+      return Uint8Array.fromHex(s);
+    }
+  };
+  hex = hasHexBuiltin ? hexBuiltin : chain(radix2(4), alphabet("0123456789abcdef"), join3(""), normalize((s) => {
+    if (typeof s !== "string" || s.length % 2 !== 0)
+      throw new TypeError(`hex.decode: expected string, got ${typeof s} with length ${s.length}`);
+    return s.toLowerCase();
+  }));
+});
+
+// ../../node_modules/@noble/hashes/esm/cryptoNode.js
+import * as nc from "node:crypto";
+var crypto2;
+var init_cryptoNode = __esm(() => {
+  crypto2 = nc && typeof nc === "object" && "webcrypto" in nc ? nc.webcrypto : nc && typeof nc === "object" && ("randomBytes" in nc) ? nc : undefined;
+});
+
+// ../../node_modules/@noble/hashes/esm/utils.js
+function isBytes2(a) {
+  return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
+}
+function anumber2(n) {
+  if (!Number.isSafeInteger(n) || n < 0)
+    throw new Error("positive integer expected, got " + n);
+}
+function abytes2(b, ...lengths) {
+  if (!isBytes2(b))
+    throw new Error("Uint8Array expected");
+  if (lengths.length > 0 && !lengths.includes(b.length))
+    throw new Error("Uint8Array expected of length " + lengths + ", got length=" + b.length);
+}
+function ahash(h) {
+  if (typeof h !== "function" || typeof h.create !== "function")
+    throw new Error("Hash should be wrapped by utils.createHasher");
+  anumber2(h.outputLen);
+  anumber2(h.blockLen);
+}
+function aexists(instance, checkFinished = true) {
+  if (instance.destroyed)
+    throw new Error("Hash instance has been destroyed");
+  if (checkFinished && instance.finished)
+    throw new Error("Hash#digest() has already been called");
+}
+function aoutput(out, instance) {
+  abytes2(out);
+  const min = instance.outputLen;
+  if (out.length < min) {
+    throw new Error("digestInto() expects output buffer of length at least " + min);
+  }
+}
+function u8(arr) {
+  return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+}
+function u32(arr) {
+  return new Uint32Array(arr.buffer, arr.byteOffset, Math.floor(arr.byteLength / 4));
+}
+function clean(...arrays) {
+  for (let i = 0;i < arrays.length; i++) {
+    arrays[i].fill(0);
+  }
+}
+function createView(arr) {
+  return new DataView(arr.buffer, arr.byteOffset, arr.byteLength);
+}
+function rotr(word, shift) {
+  return word << 32 - shift | word >>> shift;
+}
+function byteSwap(word) {
+  return word << 24 & 4278190080 | word << 8 & 16711680 | word >>> 8 & 65280 | word >>> 24 & 255;
+}
+function byteSwap32(arr) {
+  for (let i = 0;i < arr.length; i++) {
+    arr[i] = byteSwap(arr[i]);
+  }
+  return arr;
+}
+function bytesToHex(bytes) {
+  abytes2(bytes);
+  if (hasHexBuiltin2)
+    return bytes.toHex();
+  let hex2 = "";
+  for (let i = 0;i < bytes.length; i++) {
+    hex2 += hexes[bytes[i]];
+  }
+  return hex2;
+}
+function asciiToBase16(ch) {
+  if (ch >= asciis._0 && ch <= asciis._9)
+    return ch - asciis._0;
+  if (ch >= asciis.A && ch <= asciis.F)
+    return ch - (asciis.A - 10);
+  if (ch >= asciis.a && ch <= asciis.f)
+    return ch - (asciis.a - 10);
+  return;
+}
+function hexToBytes(hex2) {
+  if (typeof hex2 !== "string")
+    throw new Error("hex string expected, got " + typeof hex2);
+  if (hasHexBuiltin2)
+    return Uint8Array.fromHex(hex2);
+  const hl = hex2.length;
+  const al = hl / 2;
+  if (hl % 2)
+    throw new Error("hex string expected, got unpadded hex of length " + hl);
+  const array = new Uint8Array(al);
+  for (let ai = 0, hi = 0;ai < al; ai++, hi += 2) {
+    const n1 = asciiToBase16(hex2.charCodeAt(hi));
+    const n2 = asciiToBase16(hex2.charCodeAt(hi + 1));
+    if (n1 === undefined || n2 === undefined) {
+      const char = hex2[hi] + hex2[hi + 1];
+      throw new Error('hex string expected, got non-hex character "' + char + '" at index ' + hi);
+    }
+    array[ai] = n1 * 16 + n2;
+  }
+  return array;
+}
+async function asyncLoop(iters, tick, cb) {
+  let ts = Date.now();
+  for (let i = 0;i < iters; i++) {
+    cb(i);
+    const diff = Date.now() - ts;
+    if (diff >= 0 && diff < tick)
+      continue;
+    await nextTick();
+    ts += diff;
+  }
+}
+function utf8ToBytes(str) {
+  if (typeof str !== "string")
+    throw new Error("string expected");
+  return new Uint8Array(new TextEncoder().encode(str));
+}
+function toBytes(data) {
+  if (typeof data === "string")
+    data = utf8ToBytes(data);
+  abytes2(data);
+  return data;
+}
+function kdfInputToBytes(data) {
+  if (typeof data === "string")
+    data = utf8ToBytes(data);
+  abytes2(data);
+  return data;
+}
+function concatBytes(...arrays) {
+  let sum = 0;
+  for (let i = 0;i < arrays.length; i++) {
+    const a = arrays[i];
+    abytes2(a);
+    sum += a.length;
+  }
+  const res = new Uint8Array(sum);
+  for (let i = 0, pad = 0;i < arrays.length; i++) {
+    const a = arrays[i];
+    res.set(a, pad);
+    pad += a.length;
+  }
+  return res;
+}
+function checkOpts(defaults, opts) {
+  if (opts !== undefined && {}.toString.call(opts) !== "[object Object]")
+    throw new Error("options should be object or undefined");
+  const merged = Object.assign(defaults, opts);
+  return merged;
+}
+
+class Hash {
+}
+function createHasher(hashCons) {
+  const hashC = (msg) => hashCons().update(toBytes(msg)).digest();
+  const tmp = hashCons();
+  hashC.outputLen = tmp.outputLen;
+  hashC.blockLen = tmp.blockLen;
+  hashC.create = () => hashCons();
+  return hashC;
+}
+function createOptHasher(hashCons) {
+  const hashC = (msg, opts) => hashCons(opts).update(toBytes(msg)).digest();
+  const tmp = hashCons({});
+  hashC.outputLen = tmp.outputLen;
+  hashC.blockLen = tmp.blockLen;
+  hashC.create = (opts) => hashCons(opts);
+  return hashC;
+}
+function randomBytes(bytesLength = 32) {
+  if (crypto2 && typeof crypto2.getRandomValues === "function") {
+    return crypto2.getRandomValues(new Uint8Array(bytesLength));
+  }
+  if (crypto2 && typeof crypto2.randomBytes === "function") {
+    return Uint8Array.from(crypto2.randomBytes(bytesLength));
+  }
+  throw new Error("crypto.getRandomValues must be defined");
+}
+var isLE, swap8IfBE, swap32IfBE, hasHexBuiltin2, hexes, asciis, nextTick = async () => {};
+var init_utils = __esm(() => {
+  init_cryptoNode();
+  /*! noble-hashes - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+  isLE = /* @__PURE__ */ (() => new Uint8Array(new Uint32Array([287454020]).buffer)[0] === 68)();
+  swap8IfBE = isLE ? (n) => n : (n) => byteSwap(n);
+  swap32IfBE = isLE ? (u) => u : byteSwap32;
+  hasHexBuiltin2 = /* @__PURE__ */ (() => typeof Uint8Array.from([]).toHex === "function" && typeof Uint8Array.fromHex === "function")();
+  hexes = /* @__PURE__ */ Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
+  asciis = { _0: 48, _9: 57, A: 65, F: 70, a: 97, f: 102 };
+});
+
+// ../../node_modules/@noble/hashes/esm/_md.js
+function setBigUint64(view, byteOffset, value, isLE2) {
+  if (typeof view.setBigUint64 === "function")
+    return view.setBigUint64(byteOffset, value, isLE2);
+  const _32n = BigInt(32);
+  const _u32_max = BigInt(4294967295);
+  const wh = Number(value >> _32n & _u32_max);
+  const wl = Number(value & _u32_max);
+  const h = isLE2 ? 4 : 0;
+  const l = isLE2 ? 0 : 4;
+  view.setUint32(byteOffset + h, wh, isLE2);
+  view.setUint32(byteOffset + l, wl, isLE2);
+}
+function Chi(a, b, c) {
+  return a & b ^ ~a & c;
+}
+function Maj(a, b, c) {
+  return a & b ^ a & c ^ b & c;
+}
+var HashMD, SHA256_IV, SHA512_IV;
+var init__md = __esm(() => {
+  init_utils();
+  HashMD = class HashMD extends Hash {
+    constructor(blockLen, outputLen, padOffset, isLE2) {
+      super();
+      this.finished = false;
+      this.length = 0;
+      this.pos = 0;
+      this.destroyed = false;
+      this.blockLen = blockLen;
+      this.outputLen = outputLen;
+      this.padOffset = padOffset;
+      this.isLE = isLE2;
+      this.buffer = new Uint8Array(blockLen);
+      this.view = createView(this.buffer);
+    }
+    update(data) {
+      aexists(this);
+      data = toBytes(data);
+      abytes2(data);
+      const { view, buffer, blockLen } = this;
+      const len = data.length;
+      for (let pos = 0;pos < len; ) {
+        const take = Math.min(blockLen - this.pos, len - pos);
+        if (take === blockLen) {
+          const dataView = createView(data);
+          for (;blockLen <= len - pos; pos += blockLen)
+            this.process(dataView, pos);
+          continue;
+        }
+        buffer.set(data.subarray(pos, pos + take), this.pos);
+        this.pos += take;
+        pos += take;
+        if (this.pos === blockLen) {
+          this.process(view, 0);
+          this.pos = 0;
+        }
+      }
+      this.length += data.length;
+      this.roundClean();
+      return this;
+    }
+    digestInto(out) {
+      aexists(this);
+      aoutput(out, this);
+      this.finished = true;
+      const { buffer, view, blockLen, isLE: isLE2 } = this;
+      let { pos } = this;
+      buffer[pos++] = 128;
+      clean(this.buffer.subarray(pos));
+      if (this.padOffset > blockLen - pos) {
+        this.process(view, 0);
+        pos = 0;
+      }
+      for (let i = pos;i < blockLen; i++)
+        buffer[i] = 0;
+      setBigUint64(view, blockLen - 8, BigInt(this.length * 8), isLE2);
+      this.process(view, 0);
+      const oview = createView(out);
+      const len = this.outputLen;
+      if (len % 4)
+        throw new Error("_sha2: outputLen should be aligned to 32bit");
+      const outLen = len / 4;
+      const state = this.get();
+      if (outLen > state.length)
+        throw new Error("_sha2: outputLen bigger than state");
+      for (let i = 0;i < outLen; i++)
+        oview.setUint32(4 * i, state[i], isLE2);
+    }
+    digest() {
+      const { buffer, outputLen } = this;
+      this.digestInto(buffer);
+      const res = buffer.slice(0, outputLen);
+      this.destroy();
+      return res;
+    }
+    _cloneInto(to) {
+      to || (to = new this.constructor);
+      to.set(...this.get());
+      const { blockLen, buffer, length, finished, destroyed, pos } = this;
+      to.destroyed = destroyed;
+      to.finished = finished;
+      to.length = length;
+      to.pos = pos;
+      if (length % blockLen)
+        to.buffer.set(buffer);
+      return to;
+    }
+    clone() {
+      return this._cloneInto();
+    }
+  };
+  SHA256_IV = /* @__PURE__ */ Uint32Array.from([
+    1779033703,
+    3144134277,
+    1013904242,
+    2773480762,
+    1359893119,
+    2600822924,
+    528734635,
+    1541459225
+  ]);
+  SHA512_IV = /* @__PURE__ */ Uint32Array.from([
+    1779033703,
+    4089235720,
+    3144134277,
+    2227873595,
+    1013904242,
+    4271175723,
+    2773480762,
+    1595750129,
+    1359893119,
+    2917565137,
+    2600822924,
+    725511199,
+    528734635,
+    4215389547,
+    1541459225,
+    327033209
+  ]);
+});
+
+// ../../node_modules/@noble/hashes/esm/_u64.js
+function fromBig(n, le = false) {
+  if (le)
+    return { h: Number(n & U32_MASK64), l: Number(n >> _32n & U32_MASK64) };
+  return { h: Number(n >> _32n & U32_MASK64) | 0, l: Number(n & U32_MASK64) | 0 };
+}
+function split(lst, le = false) {
+  const len = lst.length;
+  let Ah = new Uint32Array(len);
+  let Al = new Uint32Array(len);
+  for (let i = 0;i < len; i++) {
+    const { h, l } = fromBig(lst[i], le);
+    [Ah[i], Al[i]] = [h, l];
+  }
+  return [Ah, Al];
+}
+function add(Ah, Al, Bh, Bl) {
+  const l = (Al >>> 0) + (Bl >>> 0);
+  return { h: Ah + Bh + (l / 2 ** 32 | 0) | 0, l: l | 0 };
+}
+var U32_MASK64, _32n, shrSH = (h, _l, s) => h >>> s, shrSL = (h, l, s) => h << 32 - s | l >>> s, rotrSH = (h, l, s) => h >>> s | l << 32 - s, rotrSL = (h, l, s) => h << 32 - s | l >>> s, rotrBH = (h, l, s) => h << 64 - s | l >>> s - 32, rotrBL = (h, l, s) => h >>> s - 32 | l << 64 - s, rotr32H = (_h, l) => l, rotr32L = (h, _l) => h, rotlSH = (h, l, s) => h << s | l >>> 32 - s, rotlSL = (h, l, s) => l << s | h >>> 32 - s, rotlBH = (h, l, s) => l << s - 32 | h >>> 64 - s, rotlBL = (h, l, s) => h << s - 32 | l >>> 64 - s, add3L = (Al, Bl, Cl) => (Al >>> 0) + (Bl >>> 0) + (Cl >>> 0), add3H = (low, Ah, Bh, Ch) => Ah + Bh + Ch + (low / 2 ** 32 | 0) | 0, add4L = (Al, Bl, Cl, Dl) => (Al >>> 0) + (Bl >>> 0) + (Cl >>> 0) + (Dl >>> 0), add4H = (low, Ah, Bh, Ch, Dh) => Ah + Bh + Ch + Dh + (low / 2 ** 32 | 0) | 0, add5L = (Al, Bl, Cl, Dl, El) => (Al >>> 0) + (Bl >>> 0) + (Cl >>> 0) + (Dl >>> 0) + (El >>> 0), add5H = (low, Ah, Bh, Ch, Dh, Eh) => Ah + Bh + Ch + Dh + Eh + (low / 2 ** 32 | 0) | 0;
+var init__u64 = __esm(() => {
+  U32_MASK64 = /* @__PURE__ */ BigInt(2 ** 32 - 1);
+  _32n = /* @__PURE__ */ BigInt(32);
+});
+
+// ../../node_modules/@noble/hashes/esm/sha2.js
+var SHA256_K, SHA256_W, SHA256, K512, SHA512_Kh, SHA512_Kl, SHA512_W_H, SHA512_W_L, SHA512, sha256, sha512;
+var init_sha2 = __esm(() => {
+  init__md();
+  init__u64();
+  init_utils();
+  SHA256_K = /* @__PURE__ */ Uint32Array.from([
+    1116352408,
+    1899447441,
+    3049323471,
+    3921009573,
+    961987163,
+    1508970993,
+    2453635748,
+    2870763221,
+    3624381080,
+    310598401,
+    607225278,
+    1426881987,
+    1925078388,
+    2162078206,
+    2614888103,
+    3248222580,
+    3835390401,
+    4022224774,
+    264347078,
+    604807628,
+    770255983,
+    1249150122,
+    1555081692,
+    1996064986,
+    2554220882,
+    2821834349,
+    2952996808,
+    3210313671,
+    3336571891,
+    3584528711,
+    113926993,
+    338241895,
+    666307205,
+    773529912,
+    1294757372,
+    1396182291,
+    1695183700,
+    1986661051,
+    2177026350,
+    2456956037,
+    2730485921,
+    2820302411,
+    3259730800,
+    3345764771,
+    3516065817,
+    3600352804,
+    4094571909,
+    275423344,
+    430227734,
+    506948616,
+    659060556,
+    883997877,
+    958139571,
+    1322822218,
+    1537002063,
+    1747873779,
+    1955562222,
+    2024104815,
+    2227730452,
+    2361852424,
+    2428436474,
+    2756734187,
+    3204031479,
+    3329325298
+  ]);
+  SHA256_W = /* @__PURE__ */ new Uint32Array(64);
+  SHA256 = class SHA256 extends HashMD {
+    constructor(outputLen = 32) {
+      super(64, outputLen, 8, false);
+      this.A = SHA256_IV[0] | 0;
+      this.B = SHA256_IV[1] | 0;
+      this.C = SHA256_IV[2] | 0;
+      this.D = SHA256_IV[3] | 0;
+      this.E = SHA256_IV[4] | 0;
+      this.F = SHA256_IV[5] | 0;
+      this.G = SHA256_IV[6] | 0;
+      this.H = SHA256_IV[7] | 0;
+    }
+    get() {
+      const { A, B, C, D, E, F, G, H } = this;
+      return [A, B, C, D, E, F, G, H];
+    }
+    set(A, B, C, D, E, F, G, H) {
+      this.A = A | 0;
+      this.B = B | 0;
+      this.C = C | 0;
+      this.D = D | 0;
+      this.E = E | 0;
+      this.F = F | 0;
+      this.G = G | 0;
+      this.H = H | 0;
+    }
+    process(view, offset) {
+      for (let i = 0;i < 16; i++, offset += 4)
+        SHA256_W[i] = view.getUint32(offset, false);
+      for (let i = 16;i < 64; i++) {
+        const W15 = SHA256_W[i - 15];
+        const W2 = SHA256_W[i - 2];
+        const s0 = rotr(W15, 7) ^ rotr(W15, 18) ^ W15 >>> 3;
+        const s1 = rotr(W2, 17) ^ rotr(W2, 19) ^ W2 >>> 10;
+        SHA256_W[i] = s1 + SHA256_W[i - 7] + s0 + SHA256_W[i - 16] | 0;
+      }
+      let { A, B, C, D, E, F, G, H } = this;
+      for (let i = 0;i < 64; i++) {
+        const sigma1 = rotr(E, 6) ^ rotr(E, 11) ^ rotr(E, 25);
+        const T1 = H + sigma1 + Chi(E, F, G) + SHA256_K[i] + SHA256_W[i] | 0;
+        const sigma0 = rotr(A, 2) ^ rotr(A, 13) ^ rotr(A, 22);
+        const T2 = sigma0 + Maj(A, B, C) | 0;
+        H = G;
+        G = F;
+        F = E;
+        E = D + T1 | 0;
+        D = C;
+        C = B;
+        B = A;
+        A = T1 + T2 | 0;
+      }
+      A = A + this.A | 0;
+      B = B + this.B | 0;
+      C = C + this.C | 0;
+      D = D + this.D | 0;
+      E = E + this.E | 0;
+      F = F + this.F | 0;
+      G = G + this.G | 0;
+      H = H + this.H | 0;
+      this.set(A, B, C, D, E, F, G, H);
+    }
+    roundClean() {
+      clean(SHA256_W);
+    }
+    destroy() {
+      this.set(0, 0, 0, 0, 0, 0, 0, 0);
+      clean(this.buffer);
+    }
+  };
+  K512 = /* @__PURE__ */ (() => split([
+    "0x428a2f98d728ae22",
+    "0x7137449123ef65cd",
+    "0xb5c0fbcfec4d3b2f",
+    "0xe9b5dba58189dbbc",
+    "0x3956c25bf348b538",
+    "0x59f111f1b605d019",
+    "0x923f82a4af194f9b",
+    "0xab1c5ed5da6d8118",
+    "0xd807aa98a3030242",
+    "0x12835b0145706fbe",
+    "0x243185be4ee4b28c",
+    "0x550c7dc3d5ffb4e2",
+    "0x72be5d74f27b896f",
+    "0x80deb1fe3b1696b1",
+    "0x9bdc06a725c71235",
+    "0xc19bf174cf692694",
+    "0xe49b69c19ef14ad2",
+    "0xefbe4786384f25e3",
+    "0x0fc19dc68b8cd5b5",
+    "0x240ca1cc77ac9c65",
+    "0x2de92c6f592b0275",
+    "0x4a7484aa6ea6e483",
+    "0x5cb0a9dcbd41fbd4",
+    "0x76f988da831153b5",
+    "0x983e5152ee66dfab",
+    "0xa831c66d2db43210",
+    "0xb00327c898fb213f",
+    "0xbf597fc7beef0ee4",
+    "0xc6e00bf33da88fc2",
+    "0xd5a79147930aa725",
+    "0x06ca6351e003826f",
+    "0x142929670a0e6e70",
+    "0x27b70a8546d22ffc",
+    "0x2e1b21385c26c926",
+    "0x4d2c6dfc5ac42aed",
+    "0x53380d139d95b3df",
+    "0x650a73548baf63de",
+    "0x766a0abb3c77b2a8",
+    "0x81c2c92e47edaee6",
+    "0x92722c851482353b",
+    "0xa2bfe8a14cf10364",
+    "0xa81a664bbc423001",
+    "0xc24b8b70d0f89791",
+    "0xc76c51a30654be30",
+    "0xd192e819d6ef5218",
+    "0xd69906245565a910",
+    "0xf40e35855771202a",
+    "0x106aa07032bbd1b8",
+    "0x19a4c116b8d2d0c8",
+    "0x1e376c085141ab53",
+    "0x2748774cdf8eeb99",
+    "0x34b0bcb5e19b48a8",
+    "0x391c0cb3c5c95a63",
+    "0x4ed8aa4ae3418acb",
+    "0x5b9cca4f7763e373",
+    "0x682e6ff3d6b2b8a3",
+    "0x748f82ee5defb2fc",
+    "0x78a5636f43172f60",
+    "0x84c87814a1f0ab72",
+    "0x8cc702081a6439ec",
+    "0x90befffa23631e28",
+    "0xa4506cebde82bde9",
+    "0xbef9a3f7b2c67915",
+    "0xc67178f2e372532b",
+    "0xca273eceea26619c",
+    "0xd186b8c721c0c207",
+    "0xeada7dd6cde0eb1e",
+    "0xf57d4f7fee6ed178",
+    "0x06f067aa72176fba",
+    "0x0a637dc5a2c898a6",
+    "0x113f9804bef90dae",
+    "0x1b710b35131c471b",
+    "0x28db77f523047d84",
+    "0x32caab7b40c72493",
+    "0x3c9ebe0a15c9bebc",
+    "0x431d67c49c100d4c",
+    "0x4cc5d4becb3e42b6",
+    "0x597f299cfc657e2a",
+    "0x5fcb6fab3ad6faec",
+    "0x6c44198c4a475817"
+  ].map((n) => BigInt(n))))();
+  SHA512_Kh = /* @__PURE__ */ (() => K512[0])();
+  SHA512_Kl = /* @__PURE__ */ (() => K512[1])();
+  SHA512_W_H = /* @__PURE__ */ new Uint32Array(80);
+  SHA512_W_L = /* @__PURE__ */ new Uint32Array(80);
+  SHA512 = class SHA512 extends HashMD {
+    constructor(outputLen = 64) {
+      super(128, outputLen, 16, false);
+      this.Ah = SHA512_IV[0] | 0;
+      this.Al = SHA512_IV[1] | 0;
+      this.Bh = SHA512_IV[2] | 0;
+      this.Bl = SHA512_IV[3] | 0;
+      this.Ch = SHA512_IV[4] | 0;
+      this.Cl = SHA512_IV[5] | 0;
+      this.Dh = SHA512_IV[6] | 0;
+      this.Dl = SHA512_IV[7] | 0;
+      this.Eh = SHA512_IV[8] | 0;
+      this.El = SHA512_IV[9] | 0;
+      this.Fh = SHA512_IV[10] | 0;
+      this.Fl = SHA512_IV[11] | 0;
+      this.Gh = SHA512_IV[12] | 0;
+      this.Gl = SHA512_IV[13] | 0;
+      this.Hh = SHA512_IV[14] | 0;
+      this.Hl = SHA512_IV[15] | 0;
+    }
+    get() {
+      const { Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl } = this;
+      return [Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl];
+    }
+    set(Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl) {
+      this.Ah = Ah | 0;
+      this.Al = Al | 0;
+      this.Bh = Bh | 0;
+      this.Bl = Bl | 0;
+      this.Ch = Ch | 0;
+      this.Cl = Cl | 0;
+      this.Dh = Dh | 0;
+      this.Dl = Dl | 0;
+      this.Eh = Eh | 0;
+      this.El = El | 0;
+      this.Fh = Fh | 0;
+      this.Fl = Fl | 0;
+      this.Gh = Gh | 0;
+      this.Gl = Gl | 0;
+      this.Hh = Hh | 0;
+      this.Hl = Hl | 0;
+    }
+    process(view, offset) {
+      for (let i = 0;i < 16; i++, offset += 4) {
+        SHA512_W_H[i] = view.getUint32(offset);
+        SHA512_W_L[i] = view.getUint32(offset += 4);
+      }
+      for (let i = 16;i < 80; i++) {
+        const W15h = SHA512_W_H[i - 15] | 0;
+        const W15l = SHA512_W_L[i - 15] | 0;
+        const s0h = rotrSH(W15h, W15l, 1) ^ rotrSH(W15h, W15l, 8) ^ shrSH(W15h, W15l, 7);
+        const s0l = rotrSL(W15h, W15l, 1) ^ rotrSL(W15h, W15l, 8) ^ shrSL(W15h, W15l, 7);
+        const W2h = SHA512_W_H[i - 2] | 0;
+        const W2l = SHA512_W_L[i - 2] | 0;
+        const s1h = rotrSH(W2h, W2l, 19) ^ rotrBH(W2h, W2l, 61) ^ shrSH(W2h, W2l, 6);
+        const s1l = rotrSL(W2h, W2l, 19) ^ rotrBL(W2h, W2l, 61) ^ shrSL(W2h, W2l, 6);
+        const SUMl = add4L(s0l, s1l, SHA512_W_L[i - 7], SHA512_W_L[i - 16]);
+        const SUMh = add4H(SUMl, s0h, s1h, SHA512_W_H[i - 7], SHA512_W_H[i - 16]);
+        SHA512_W_H[i] = SUMh | 0;
+        SHA512_W_L[i] = SUMl | 0;
+      }
+      let { Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl } = this;
+      for (let i = 0;i < 80; i++) {
+        const sigma1h = rotrSH(Eh, El, 14) ^ rotrSH(Eh, El, 18) ^ rotrBH(Eh, El, 41);
+        const sigma1l = rotrSL(Eh, El, 14) ^ rotrSL(Eh, El, 18) ^ rotrBL(Eh, El, 41);
+        const CHIh = Eh & Fh ^ ~Eh & Gh;
+        const CHIl = El & Fl ^ ~El & Gl;
+        const T1ll = add5L(Hl, sigma1l, CHIl, SHA512_Kl[i], SHA512_W_L[i]);
+        const T1h = add5H(T1ll, Hh, sigma1h, CHIh, SHA512_Kh[i], SHA512_W_H[i]);
+        const T1l = T1ll | 0;
+        const sigma0h = rotrSH(Ah, Al, 28) ^ rotrBH(Ah, Al, 34) ^ rotrBH(Ah, Al, 39);
+        const sigma0l = rotrSL(Ah, Al, 28) ^ rotrBL(Ah, Al, 34) ^ rotrBL(Ah, Al, 39);
+        const MAJh = Ah & Bh ^ Ah & Ch ^ Bh & Ch;
+        const MAJl = Al & Bl ^ Al & Cl ^ Bl & Cl;
+        Hh = Gh | 0;
+        Hl = Gl | 0;
+        Gh = Fh | 0;
+        Gl = Fl | 0;
+        Fh = Eh | 0;
+        Fl = El | 0;
+        ({ h: Eh, l: El } = add(Dh | 0, Dl | 0, T1h | 0, T1l | 0));
+        Dh = Ch | 0;
+        Dl = Cl | 0;
+        Ch = Bh | 0;
+        Cl = Bl | 0;
+        Bh = Ah | 0;
+        Bl = Al | 0;
+        const All = add3L(T1l, sigma0l, MAJl);
+        Ah = add3H(All, T1h, sigma0h, MAJh);
+        Al = All | 0;
+      }
+      ({ h: Ah, l: Al } = add(this.Ah | 0, this.Al | 0, Ah | 0, Al | 0));
+      ({ h: Bh, l: Bl } = add(this.Bh | 0, this.Bl | 0, Bh | 0, Bl | 0));
+      ({ h: Ch, l: Cl } = add(this.Ch | 0, this.Cl | 0, Ch | 0, Cl | 0));
+      ({ h: Dh, l: Dl } = add(this.Dh | 0, this.Dl | 0, Dh | 0, Dl | 0));
+      ({ h: Eh, l: El } = add(this.Eh | 0, this.El | 0, Eh | 0, El | 0));
+      ({ h: Fh, l: Fl } = add(this.Fh | 0, this.Fl | 0, Fh | 0, Fl | 0));
+      ({ h: Gh, l: Gl } = add(this.Gh | 0, this.Gl | 0, Gh | 0, Gl | 0));
+      ({ h: Hh, l: Hl } = add(this.Hh | 0, this.Hl | 0, Hh | 0, Hl | 0));
+      this.set(Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl);
+    }
+    roundClean() {
+      clean(SHA512_W_H, SHA512_W_L);
+    }
+    destroy() {
+      clean(this.buffer);
+      this.set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    }
+  };
+  sha256 = /* @__PURE__ */ createHasher(() => new SHA256);
+  sha512 = /* @__PURE__ */ createHasher(() => new SHA512);
+});
+
+// ../../node_modules/@noble/hashes/esm/sha256.js
+var sha2562;
+var init_sha256 = __esm(() => {
+  init_sha2();
+  sha2562 = sha256;
+});
+
+// src/wallet-keystore.ts
+import { chmod as chmod2, mkdir as mkdir2, readFile as readFile2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import { homedir as homedir3 } from "node:os";
+import { dirname as dirname2, join as join4 } from "node:path";
+function defaultTeeKeystorePath(env) {
+  return join4(candleConfigDir(env), "tee-wallets.enc");
+}
+function legacyTeeKeystorePath(env) {
+  return join4(candleConfigDir(env), "hot-wallets.enc");
+}
+function candleConfigDir(env) {
+  return env.CANDLE_CONFIG_DIR?.trim() || join4(homedir3(), ".config", "candle");
+}
+async function deriveKeystoreKey(passphrase, salt, iterations) {
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
+    "deriveKey"
+  ]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function createKeystore(passphrase) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  return { key: await deriveKeystoreKey(passphrase, salt, KEYSTORE_ITERATIONS), salt, iterations: KEYSTORE_ITERATIONS };
+}
+async function serializeKeystore(entries, key, salt, iterations, purpose) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(entries)));
+  const file = {
+    version: KEYSTORE_VERSION,
+    createdAt: new Date().toISOString(),
+    kdf: "PBKDF2-HMAC-SHA256",
+    iterations,
+    salt: b64(salt),
+    cipher: "AES-256-GCM",
+    iv: b64(iv),
+    ciphertext: b64(new Uint8Array(sealed)),
+    ...purpose !== undefined && purpose !== "wallets" ? { purpose } : {}
+  };
+  return `${JSON.stringify(file, null, 2)}
+`;
+}
+async function readKeystore(raw, passphrase, opts = {}) {
+  let file;
+  try {
+    file = JSON.parse(raw);
+  } catch {
+    throw new Error("The keystore file is not valid JSON.");
+  }
+  if (file.version !== KEYSTORE_VERSION) {
+    throw new Error(`Unsupported keystore version ${file.version}: this CLI writes version ${KEYSTORE_VERSION}.`);
+  }
+  const purpose = file.purpose === TEE_KEYSTORE_PURPOSE || file.purpose === LEGACY_TEE_PURPOSE ? TEE_KEYSTORE_PURPOSE : "wallets";
+  if (opts.expectPurpose !== undefined && purpose !== opts.expectPurpose) {
+    throw new Error(purpose === TEE_KEYSTORE_PURPOSE ? "This is a TEE wallet store (tee-wallets.enc). It has no export path; use: candle tee sweep." : "This is not a TEE wallet store. The tee commands only open tee-wallets.enc.");
+  }
+  if (purpose === TEE_KEYSTORE_PURPOSE) {
+    if (file.kdf !== "PBKDF2-HMAC-SHA256" || file.cipher !== "AES-256-GCM") {
+      throw new Error("The TEE wallet store names an unsupported KDF or cipher; refusing to open it.");
+    }
+    if (!Number.isInteger(file.iterations) || file.iterations < TEE_KEYSTORE_MIN_ITERATIONS || file.iterations > TEE_KEYSTORE_MAX_ITERATIONS) {
+      throw new Error(`The TEE wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` + `${TEE_KEYSTORE_MIN_ITERATIONS}-${TEE_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`);
+    }
+  }
+  const salt = unb64(file.salt);
+  const key = await deriveKeystoreKey(passphrase, salt, file.iterations);
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(file.iv) }, key, unb64(file.ciphertext));
+  } catch {
+    throw new Error("Could not decrypt the keystore: wrong passphrase, or the file is corrupt.");
+  }
+  const decoded = JSON.parse(new TextDecoder().decode(plain));
+  return {
+    entries: decoded.map(({ [LEGACY_TEE_FIELD]: legacy, ...entry }) => legacy !== undefined && entry.tee === undefined ? { ...entry, tee: legacy } : entry),
+    key,
+    salt,
+    iterations: file.iterations
+  };
+}
+async function writeKeystoreFile(path, contents) {
+  const dir = dirname2(path);
+  await mkdir2(dir, { recursive: true });
+  await chmod2(dir, 448);
+  const tmpPath = `${path}.${crypto.randomUUID()}.tmp`;
+  await writeFile2(tmpPath, contents, { encoding: "utf8", mode: 384 });
+  await chmod2(tmpPath, 384);
+  await rename2(tmpPath, path);
+}
+function keystoreLockPath(path) {
+  return `${path}.lock`;
+}
+async function withKeystoreLock(path, clock, fn, opts = {}) {
+  const lockPath = keystoreLockPath(path);
+  const waitMs = opts.waitMs ?? 1e4;
+  const pollMs = opts.pollMs ?? 100;
+  await mkdir2(dirname2(path), { recursive: true });
+  const started = clock.now();
+  for (;; ) {
+    try {
+      await mkdir2(lockPath);
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST")
+        throw error;
+      if (clock.now() - started >= waitMs) {
+        let owner = null;
+        try {
+          owner = (await readFile2(join4(lockPath, "owner"), "utf8")).trim() || null;
+        } catch {
+          owner = null;
+        }
+        throw new KeystoreLockedError(lockPath, owner);
+      }
+      await clock.sleep(pollMs);
+    }
+  }
+  try {
+    await writeFile2(join4(lockPath, "owner"), `${opts.owner ?? `pid ${process.pid}`} since ${new Date().toISOString()}
+`, { encoding: "utf8", mode: 384 }).catch(() => {});
+    return await fn();
+  } finally {
+    await rm2(lockPath, { recursive: true, force: true });
+  }
+}
+var TEE_KEYSTORE_PURPOSE = "ember-tee", LEGACY_TEE_PURPOSE = "ember-hot", LEGACY_TEE_FIELD = "hot", TEE_KEYSTORE_MIN_ITERATIONS = 210000, TEE_KEYSTORE_MAX_ITERATIONS = 2100000, KEYSTORE_VERSION = 1, KEYSTORE_ITERATIONS = 210000, b64 = (bytes) => Buffer.from(bytes).toString("base64"), unb64 = (s) => new Uint8Array(Buffer.from(s, "base64")), KeystoreLockedError;
+var init_wallet_keystore = __esm(() => {
+  KeystoreLockedError = class KeystoreLockedError extends Error {
+    lockPath;
+    owner;
+    constructor(lockPath, owner) {
+      super(`Another command holds the TEE wallet store lock at ${lockPath}` + `${owner ? ` (${owner})` : ""}. If no other candle tee command is running, remove that directory and retry.`);
+      this.lockPath = lockPath;
+      this.owner = owner;
+      this.name = "KeystoreLockedError";
+    }
+  };
+});
+
 // ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/envelope.js
 var require_envelope = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
@@ -4804,6 +6095,1795 @@ var require_dist4 = __commonJS((exports) => {
   } });
 });
 
+// src/vault/errors.ts
+function isVaultError(error) {
+  return error instanceof VaultError;
+}
+var VaultError;
+var init_errors = __esm(() => {
+  VaultError = class VaultError extends Error {
+    code;
+    suggestion;
+    exitCode;
+    constructor(code, message, opts = {}) {
+      super(message);
+      this.name = "VaultError";
+      this.code = code;
+      this.suggestion = opts.suggestion;
+      this.exitCode = opts.exitCode ?? 1;
+    }
+  };
+});
+
+// ../../node_modules/@noble/hashes/esm/_blake.js
+var BSIGMA;
+var init__blake = __esm(() => {
+  BSIGMA = /* @__PURE__ */ Uint8Array.from([
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    14,
+    10,
+    4,
+    8,
+    9,
+    15,
+    13,
+    6,
+    1,
+    12,
+    0,
+    2,
+    11,
+    7,
+    5,
+    3,
+    11,
+    8,
+    12,
+    0,
+    5,
+    2,
+    15,
+    13,
+    10,
+    14,
+    3,
+    6,
+    7,
+    1,
+    9,
+    4,
+    7,
+    9,
+    3,
+    1,
+    13,
+    12,
+    11,
+    14,
+    2,
+    6,
+    5,
+    10,
+    4,
+    0,
+    15,
+    8,
+    9,
+    0,
+    5,
+    7,
+    2,
+    4,
+    10,
+    15,
+    14,
+    1,
+    11,
+    12,
+    6,
+    8,
+    3,
+    13,
+    2,
+    12,
+    6,
+    10,
+    0,
+    11,
+    8,
+    3,
+    4,
+    13,
+    7,
+    5,
+    15,
+    14,
+    1,
+    9,
+    12,
+    5,
+    1,
+    15,
+    14,
+    13,
+    4,
+    10,
+    0,
+    7,
+    6,
+    3,
+    9,
+    2,
+    8,
+    11,
+    13,
+    11,
+    7,
+    14,
+    12,
+    1,
+    3,
+    9,
+    5,
+    0,
+    15,
+    4,
+    8,
+    6,
+    2,
+    10,
+    6,
+    15,
+    14,
+    9,
+    11,
+    3,
+    0,
+    8,
+    12,
+    2,
+    13,
+    7,
+    1,
+    4,
+    10,
+    5,
+    10,
+    2,
+    8,
+    4,
+    7,
+    6,
+    1,
+    5,
+    15,
+    11,
+    9,
+    14,
+    3,
+    12,
+    13,
+    0,
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    14,
+    10,
+    4,
+    8,
+    9,
+    15,
+    13,
+    6,
+    1,
+    12,
+    0,
+    2,
+    11,
+    7,
+    5,
+    3,
+    11,
+    8,
+    12,
+    0,
+    5,
+    2,
+    15,
+    13,
+    10,
+    14,
+    3,
+    6,
+    7,
+    1,
+    9,
+    4,
+    7,
+    9,
+    3,
+    1,
+    13,
+    12,
+    11,
+    14,
+    2,
+    6,
+    5,
+    10,
+    4,
+    0,
+    15,
+    8,
+    9,
+    0,
+    5,
+    7,
+    2,
+    4,
+    10,
+    15,
+    14,
+    1,
+    11,
+    12,
+    6,
+    8,
+    3,
+    13,
+    2,
+    12,
+    6,
+    10,
+    0,
+    11,
+    8,
+    3,
+    4,
+    13,
+    7,
+    5,
+    15,
+    14,
+    1,
+    9
+  ]);
+});
+
+// ../../node_modules/@noble/hashes/esm/blake2.js
+function G1b(a, b, c, d, msg, x) {
+  const Xl = msg[x], Xh = msg[x + 1];
+  let Al = BBUF[2 * a], Ah = BBUF[2 * a + 1];
+  let Bl = BBUF[2 * b], Bh = BBUF[2 * b + 1];
+  let Cl = BBUF[2 * c], Ch = BBUF[2 * c + 1];
+  let Dl = BBUF[2 * d], Dh = BBUF[2 * d + 1];
+  let ll = add3L(Al, Bl, Xl);
+  Ah = add3H(ll, Ah, Bh, Xh);
+  Al = ll | 0;
+  ({ Dh, Dl } = { Dh: Dh ^ Ah, Dl: Dl ^ Al });
+  ({ Dh, Dl } = { Dh: rotr32H(Dh, Dl), Dl: rotr32L(Dh, Dl) });
+  ({ h: Ch, l: Cl } = add(Ch, Cl, Dh, Dl));
+  ({ Bh, Bl } = { Bh: Bh ^ Ch, Bl: Bl ^ Cl });
+  ({ Bh, Bl } = { Bh: rotrSH(Bh, Bl, 24), Bl: rotrSL(Bh, Bl, 24) });
+  BBUF[2 * a] = Al, BBUF[2 * a + 1] = Ah;
+  BBUF[2 * b] = Bl, BBUF[2 * b + 1] = Bh;
+  BBUF[2 * c] = Cl, BBUF[2 * c + 1] = Ch;
+  BBUF[2 * d] = Dl, BBUF[2 * d + 1] = Dh;
+}
+function G2b(a, b, c, d, msg, x) {
+  const Xl = msg[x], Xh = msg[x + 1];
+  let Al = BBUF[2 * a], Ah = BBUF[2 * a + 1];
+  let Bl = BBUF[2 * b], Bh = BBUF[2 * b + 1];
+  let Cl = BBUF[2 * c], Ch = BBUF[2 * c + 1];
+  let Dl = BBUF[2 * d], Dh = BBUF[2 * d + 1];
+  let ll = add3L(Al, Bl, Xl);
+  Ah = add3H(ll, Ah, Bh, Xh);
+  Al = ll | 0;
+  ({ Dh, Dl } = { Dh: Dh ^ Ah, Dl: Dl ^ Al });
+  ({ Dh, Dl } = { Dh: rotrSH(Dh, Dl, 16), Dl: rotrSL(Dh, Dl, 16) });
+  ({ h: Ch, l: Cl } = add(Ch, Cl, Dh, Dl));
+  ({ Bh, Bl } = { Bh: Bh ^ Ch, Bl: Bl ^ Cl });
+  ({ Bh, Bl } = { Bh: rotrBH(Bh, Bl, 63), Bl: rotrBL(Bh, Bl, 63) });
+  BBUF[2 * a] = Al, BBUF[2 * a + 1] = Ah;
+  BBUF[2 * b] = Bl, BBUF[2 * b + 1] = Bh;
+  BBUF[2 * c] = Cl, BBUF[2 * c + 1] = Ch;
+  BBUF[2 * d] = Dl, BBUF[2 * d + 1] = Dh;
+}
+function checkBlake2Opts(outputLen, opts = {}, keyLen, saltLen, persLen) {
+  anumber2(keyLen);
+  if (outputLen < 0 || outputLen > keyLen)
+    throw new Error("outputLen bigger than keyLen");
+  const { key, salt, personalization } = opts;
+  if (key !== undefined && (key.length < 1 || key.length > keyLen))
+    throw new Error("key length must be undefined or 1.." + keyLen);
+  if (salt !== undefined && salt.length !== saltLen)
+    throw new Error("salt must be undefined or " + saltLen);
+  if (personalization !== undefined && personalization.length !== persLen)
+    throw new Error("personalization must be undefined or " + persLen);
+}
+var B2B_IV, BBUF, BLAKE2, BLAKE2b, blake2b;
+var init_blake2 = __esm(() => {
+  init__blake();
+  init__u64();
+  init_utils();
+  B2B_IV = /* @__PURE__ */ Uint32Array.from([
+    4089235720,
+    1779033703,
+    2227873595,
+    3144134277,
+    4271175723,
+    1013904242,
+    1595750129,
+    2773480762,
+    2917565137,
+    1359893119,
+    725511199,
+    2600822924,
+    4215389547,
+    528734635,
+    327033209,
+    1541459225
+  ]);
+  BBUF = /* @__PURE__ */ new Uint32Array(32);
+  BLAKE2 = class BLAKE2 extends Hash {
+    constructor(blockLen, outputLen) {
+      super();
+      this.finished = false;
+      this.destroyed = false;
+      this.length = 0;
+      this.pos = 0;
+      anumber2(blockLen);
+      anumber2(outputLen);
+      this.blockLen = blockLen;
+      this.outputLen = outputLen;
+      this.buffer = new Uint8Array(blockLen);
+      this.buffer32 = u32(this.buffer);
+    }
+    update(data) {
+      aexists(this);
+      data = toBytes(data);
+      abytes2(data);
+      const { blockLen, buffer, buffer32 } = this;
+      const len = data.length;
+      const offset = data.byteOffset;
+      const buf = data.buffer;
+      for (let pos = 0;pos < len; ) {
+        if (this.pos === blockLen) {
+          swap32IfBE(buffer32);
+          this.compress(buffer32, 0, false);
+          swap32IfBE(buffer32);
+          this.pos = 0;
+        }
+        const take = Math.min(blockLen - this.pos, len - pos);
+        const dataOffset = offset + pos;
+        if (take === blockLen && !(dataOffset % 4) && pos + take < len) {
+          const data32 = new Uint32Array(buf, dataOffset, Math.floor((len - pos) / 4));
+          swap32IfBE(data32);
+          for (let pos32 = 0;pos + blockLen < len; pos32 += buffer32.length, pos += blockLen) {
+            this.length += blockLen;
+            this.compress(data32, pos32, false);
+          }
+          swap32IfBE(data32);
+          continue;
+        }
+        buffer.set(data.subarray(pos, pos + take), this.pos);
+        this.pos += take;
+        this.length += take;
+        pos += take;
+      }
+      return this;
+    }
+    digestInto(out) {
+      aexists(this);
+      aoutput(out, this);
+      const { pos, buffer32 } = this;
+      this.finished = true;
+      clean(this.buffer.subarray(pos));
+      swap32IfBE(buffer32);
+      this.compress(buffer32, 0, true);
+      swap32IfBE(buffer32);
+      const out32 = u32(out);
+      this.get().forEach((v, i) => out32[i] = swap8IfBE(v));
+    }
+    digest() {
+      const { buffer, outputLen } = this;
+      this.digestInto(buffer);
+      const res = buffer.slice(0, outputLen);
+      this.destroy();
+      return res;
+    }
+    _cloneInto(to) {
+      const { buffer, length, finished, destroyed, outputLen, pos } = this;
+      to || (to = new this.constructor({ dkLen: outputLen }));
+      to.set(...this.get());
+      to.buffer.set(buffer);
+      to.destroyed = destroyed;
+      to.finished = finished;
+      to.length = length;
+      to.pos = pos;
+      to.outputLen = outputLen;
+      return to;
+    }
+    clone() {
+      return this._cloneInto();
+    }
+  };
+  BLAKE2b = class BLAKE2b extends BLAKE2 {
+    constructor(opts = {}) {
+      const olen = opts.dkLen === undefined ? 64 : opts.dkLen;
+      super(128, olen);
+      this.v0l = B2B_IV[0] | 0;
+      this.v0h = B2B_IV[1] | 0;
+      this.v1l = B2B_IV[2] | 0;
+      this.v1h = B2B_IV[3] | 0;
+      this.v2l = B2B_IV[4] | 0;
+      this.v2h = B2B_IV[5] | 0;
+      this.v3l = B2B_IV[6] | 0;
+      this.v3h = B2B_IV[7] | 0;
+      this.v4l = B2B_IV[8] | 0;
+      this.v4h = B2B_IV[9] | 0;
+      this.v5l = B2B_IV[10] | 0;
+      this.v5h = B2B_IV[11] | 0;
+      this.v6l = B2B_IV[12] | 0;
+      this.v6h = B2B_IV[13] | 0;
+      this.v7l = B2B_IV[14] | 0;
+      this.v7h = B2B_IV[15] | 0;
+      checkBlake2Opts(olen, opts, 64, 16, 16);
+      let { key, personalization, salt } = opts;
+      let keyLength = 0;
+      if (key !== undefined) {
+        key = toBytes(key);
+        keyLength = key.length;
+      }
+      this.v0l ^= this.outputLen | keyLength << 8 | 1 << 16 | 1 << 24;
+      if (salt !== undefined) {
+        salt = toBytes(salt);
+        const slt = u32(salt);
+        this.v4l ^= swap8IfBE(slt[0]);
+        this.v4h ^= swap8IfBE(slt[1]);
+        this.v5l ^= swap8IfBE(slt[2]);
+        this.v5h ^= swap8IfBE(slt[3]);
+      }
+      if (personalization !== undefined) {
+        personalization = toBytes(personalization);
+        const pers = u32(personalization);
+        this.v6l ^= swap8IfBE(pers[0]);
+        this.v6h ^= swap8IfBE(pers[1]);
+        this.v7l ^= swap8IfBE(pers[2]);
+        this.v7h ^= swap8IfBE(pers[3]);
+      }
+      if (key !== undefined) {
+        const tmp = new Uint8Array(this.blockLen);
+        tmp.set(key);
+        this.update(tmp);
+      }
+    }
+    get() {
+      let { v0l, v0h, v1l, v1h, v2l, v2h, v3l, v3h, v4l, v4h, v5l, v5h, v6l, v6h, v7l, v7h } = this;
+      return [v0l, v0h, v1l, v1h, v2l, v2h, v3l, v3h, v4l, v4h, v5l, v5h, v6l, v6h, v7l, v7h];
+    }
+    set(v0l, v0h, v1l, v1h, v2l, v2h, v3l, v3h, v4l, v4h, v5l, v5h, v6l, v6h, v7l, v7h) {
+      this.v0l = v0l | 0;
+      this.v0h = v0h | 0;
+      this.v1l = v1l | 0;
+      this.v1h = v1h | 0;
+      this.v2l = v2l | 0;
+      this.v2h = v2h | 0;
+      this.v3l = v3l | 0;
+      this.v3h = v3h | 0;
+      this.v4l = v4l | 0;
+      this.v4h = v4h | 0;
+      this.v5l = v5l | 0;
+      this.v5h = v5h | 0;
+      this.v6l = v6l | 0;
+      this.v6h = v6h | 0;
+      this.v7l = v7l | 0;
+      this.v7h = v7h | 0;
+    }
+    compress(msg, offset, isLast) {
+      this.get().forEach((v, i) => BBUF[i] = v);
+      BBUF.set(B2B_IV, 16);
+      let { h, l } = fromBig(BigInt(this.length));
+      BBUF[24] = B2B_IV[8] ^ l;
+      BBUF[25] = B2B_IV[9] ^ h;
+      if (isLast) {
+        BBUF[28] = ~BBUF[28];
+        BBUF[29] = ~BBUF[29];
+      }
+      let j = 0;
+      const s = BSIGMA;
+      for (let i = 0;i < 12; i++) {
+        G1b(0, 4, 8, 12, msg, offset + 2 * s[j++]);
+        G2b(0, 4, 8, 12, msg, offset + 2 * s[j++]);
+        G1b(1, 5, 9, 13, msg, offset + 2 * s[j++]);
+        G2b(1, 5, 9, 13, msg, offset + 2 * s[j++]);
+        G1b(2, 6, 10, 14, msg, offset + 2 * s[j++]);
+        G2b(2, 6, 10, 14, msg, offset + 2 * s[j++]);
+        G1b(3, 7, 11, 15, msg, offset + 2 * s[j++]);
+        G2b(3, 7, 11, 15, msg, offset + 2 * s[j++]);
+        G1b(0, 5, 10, 15, msg, offset + 2 * s[j++]);
+        G2b(0, 5, 10, 15, msg, offset + 2 * s[j++]);
+        G1b(1, 6, 11, 12, msg, offset + 2 * s[j++]);
+        G2b(1, 6, 11, 12, msg, offset + 2 * s[j++]);
+        G1b(2, 7, 8, 13, msg, offset + 2 * s[j++]);
+        G2b(2, 7, 8, 13, msg, offset + 2 * s[j++]);
+        G1b(3, 4, 9, 14, msg, offset + 2 * s[j++]);
+        G2b(3, 4, 9, 14, msg, offset + 2 * s[j++]);
+      }
+      this.v0l ^= BBUF[0] ^ BBUF[16];
+      this.v0h ^= BBUF[1] ^ BBUF[17];
+      this.v1l ^= BBUF[2] ^ BBUF[18];
+      this.v1h ^= BBUF[3] ^ BBUF[19];
+      this.v2l ^= BBUF[4] ^ BBUF[20];
+      this.v2h ^= BBUF[5] ^ BBUF[21];
+      this.v3l ^= BBUF[6] ^ BBUF[22];
+      this.v3h ^= BBUF[7] ^ BBUF[23];
+      this.v4l ^= BBUF[8] ^ BBUF[24];
+      this.v4h ^= BBUF[9] ^ BBUF[25];
+      this.v5l ^= BBUF[10] ^ BBUF[26];
+      this.v5h ^= BBUF[11] ^ BBUF[27];
+      this.v6l ^= BBUF[12] ^ BBUF[28];
+      this.v6h ^= BBUF[13] ^ BBUF[29];
+      this.v7l ^= BBUF[14] ^ BBUF[30];
+      this.v7h ^= BBUF[15] ^ BBUF[31];
+      clean(BBUF);
+    }
+    destroy() {
+      this.destroyed = true;
+      clean(this.buffer32);
+      this.set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    }
+  };
+  blake2b = /* @__PURE__ */ createOptHasher((opts) => new BLAKE2b(opts));
+});
+
+// ../../node_modules/@noble/hashes/esm/argon2.js
+function mul(a, b) {
+  const aL = a & 65535;
+  const aH = a >>> 16;
+  const bL = b & 65535;
+  const bH = b >>> 16;
+  const ll = Math.imul(aL, bL);
+  const hl = Math.imul(aH, bL);
+  const lh = Math.imul(aL, bH);
+  const hh = Math.imul(aH, bH);
+  const carry = (ll >>> 16) + (hl & 65535) + lh;
+  const high = hh + (hl >>> 16) + (carry >>> 16) | 0;
+  const low = carry << 16 | ll & 65535;
+  return { h: high, l: low };
+}
+function mul2(a, b) {
+  const { h, l } = mul(a, b);
+  return { h: (h << 1 | l >>> 31) & 4294967295, l: l << 1 & 4294967295 };
+}
+function blamka(Ah, Al, Bh, Bl) {
+  const { h: Ch, l: Cl } = mul2(Al, Bl);
+  const Rll = add3L(Al, Bl, Cl);
+  return { h: add3H(Rll, Ah, Bh, Ch), l: Rll | 0 };
+}
+function G(a, b, c, d) {
+  let Al = A2_BUF[2 * a], Ah = A2_BUF[2 * a + 1];
+  let Bl = A2_BUF[2 * b], Bh = A2_BUF[2 * b + 1];
+  let Cl = A2_BUF[2 * c], Ch = A2_BUF[2 * c + 1];
+  let Dl = A2_BUF[2 * d], Dh = A2_BUF[2 * d + 1];
+  ({ h: Ah, l: Al } = blamka(Ah, Al, Bh, Bl));
+  ({ Dh, Dl } = { Dh: Dh ^ Ah, Dl: Dl ^ Al });
+  ({ Dh, Dl } = { Dh: rotr32H(Dh, Dl), Dl: rotr32L(Dh, Dl) });
+  ({ h: Ch, l: Cl } = blamka(Ch, Cl, Dh, Dl));
+  ({ Bh, Bl } = { Bh: Bh ^ Ch, Bl: Bl ^ Cl });
+  ({ Bh, Bl } = { Bh: rotrSH(Bh, Bl, 24), Bl: rotrSL(Bh, Bl, 24) });
+  ({ h: Ah, l: Al } = blamka(Ah, Al, Bh, Bl));
+  ({ Dh, Dl } = { Dh: Dh ^ Ah, Dl: Dl ^ Al });
+  ({ Dh, Dl } = { Dh: rotrSH(Dh, Dl, 16), Dl: rotrSL(Dh, Dl, 16) });
+  ({ h: Ch, l: Cl } = blamka(Ch, Cl, Dh, Dl));
+  ({ Bh, Bl } = { Bh: Bh ^ Ch, Bl: Bl ^ Cl });
+  ({ Bh, Bl } = { Bh: rotrBH(Bh, Bl, 63), Bl: rotrBL(Bh, Bl, 63) });
+  A2_BUF[2 * a] = Al, A2_BUF[2 * a + 1] = Ah;
+  A2_BUF[2 * b] = Bl, A2_BUF[2 * b + 1] = Bh;
+  A2_BUF[2 * c] = Cl, A2_BUF[2 * c + 1] = Ch;
+  A2_BUF[2 * d] = Dl, A2_BUF[2 * d + 1] = Dh;
+}
+function P(v00, v01, v02, v03, v04, v05, v06, v07, v08, v09, v10, v11, v12, v13, v14, v15) {
+  G(v00, v04, v08, v12);
+  G(v01, v05, v09, v13);
+  G(v02, v06, v10, v14);
+  G(v03, v07, v11, v15);
+  G(v00, v05, v10, v15);
+  G(v01, v06, v11, v12);
+  G(v02, v07, v08, v13);
+  G(v03, v04, v09, v14);
+}
+function block(x, xPos, yPos, outPos, needXor) {
+  for (let i = 0;i < 256; i++)
+    A2_BUF[i] = x[xPos + i] ^ x[yPos + i];
+  for (let i = 0;i < 128; i += 16) {
+    P(i, i + 1, i + 2, i + 3, i + 4, i + 5, i + 6, i + 7, i + 8, i + 9, i + 10, i + 11, i + 12, i + 13, i + 14, i + 15);
+  }
+  for (let i = 0;i < 16; i += 2) {
+    P(i, i + 1, i + 16, i + 17, i + 32, i + 33, i + 48, i + 49, i + 64, i + 65, i + 80, i + 81, i + 96, i + 97, i + 112, i + 113);
+  }
+  if (needXor)
+    for (let i = 0;i < 256; i++)
+      x[outPos + i] ^= A2_BUF[i] ^ x[xPos + i] ^ x[yPos + i];
+  else
+    for (let i = 0;i < 256; i++)
+      x[outPos + i] = A2_BUF[i] ^ x[xPos + i] ^ x[yPos + i];
+  clean(A2_BUF);
+}
+function Hp(A, dkLen) {
+  const A8 = u8(A);
+  const T = new Uint32Array(1);
+  const T8 = u8(T);
+  T[0] = dkLen;
+  if (dkLen <= 64)
+    return blake2b.create({ dkLen }).update(T8).update(A8).digest();
+  const out = new Uint8Array(dkLen);
+  let V = blake2b.create({}).update(T8).update(A8).digest();
+  let pos = 0;
+  out.set(V.subarray(0, 32));
+  pos += 32;
+  for (;dkLen - pos > 64; pos += 32) {
+    const Vh = blake2b.create({}).update(V);
+    Vh.digestInto(V);
+    Vh.destroy();
+    out.set(V.subarray(0, 32), pos);
+  }
+  out.set(blake2b(V, { dkLen: dkLen - pos }), pos);
+  clean(V, T);
+  return u32(out);
+}
+function indexAlpha(r, s, laneLen, segmentLen, index, randL, sameLane = false) {
+  let area;
+  if (r === 0) {
+    if (s === 0)
+      area = index - 1;
+    else if (sameLane)
+      area = s * segmentLen + index - 1;
+    else
+      area = s * segmentLen + (index == 0 ? -1 : 0);
+  } else if (sameLane)
+    area = laneLen - segmentLen + index - 1;
+  else
+    area = laneLen - segmentLen + (index == 0 ? -1 : 0);
+  const startPos = r !== 0 && s !== ARGON2_SYNC_POINTS - 1 ? (s + 1) * segmentLen : 0;
+  const rel = area - 1 - mul(area, mul(randL, randL).h).h;
+  return (startPos + rel) % laneLen;
+}
+function isU32(num) {
+  return Number.isSafeInteger(num) && num >= 0 && num < maxUint32;
+}
+function argon2Opts(opts) {
+  const merged = {
+    version: 19,
+    dkLen: 32,
+    maxmem: maxUint32 - 1,
+    asyncTick: 10
+  };
+  for (let [k, v] of Object.entries(opts))
+    if (v != null)
+      merged[k] = v;
+  const { dkLen, p, m, t, version, onProgress } = merged;
+  if (!isU32(dkLen) || dkLen < 4)
+    throw new Error("dkLen should be at least 4 bytes");
+  if (!isU32(p) || p < 1 || p >= Math.pow(2, 24))
+    throw new Error("p should be 1 <= p < 2^24");
+  if (!isU32(m))
+    throw new Error("m should be 0 <= m < 2^32");
+  if (!isU32(t) || t < 1)
+    throw new Error("t (iterations) should be 1 <= t < 2^32");
+  if (onProgress !== undefined && typeof onProgress !== "function")
+    throw new Error("progressCb should be function");
+  if (!isU32(m) || m < 8 * p)
+    throw new Error("memory should be at least 8*p bytes");
+  if (version !== 16 && version !== 19)
+    throw new Error("unknown version=" + version);
+  return merged;
+}
+function argon2Init(password, salt, type, opts) {
+  password = kdfInputToBytes(password);
+  salt = kdfInputToBytes(salt);
+  abytes2(password);
+  abytes2(salt);
+  if (!isU32(password.length))
+    throw new Error("password should be less than 4 GB");
+  if (!isU32(salt.length) || salt.length < 8)
+    throw new Error("salt should be at least 8 bytes and less than 4 GB");
+  if (!Object.values(AT).includes(type))
+    throw new Error("invalid type");
+  let { p, dkLen, m, t, version, key, personalization, maxmem, onProgress, asyncTick } = argon2Opts(opts);
+  key = abytesOrZero(key);
+  personalization = abytesOrZero(personalization);
+  const h = blake2b.create({});
+  const BUF = new Uint32Array(1);
+  const BUF8 = u8(BUF);
+  for (let item of [p, dkLen, m, t, version, type]) {
+    BUF[0] = item;
+    h.update(BUF8);
+  }
+  for (let i of [password, salt, key, personalization]) {
+    BUF[0] = i.length;
+    h.update(BUF8).update(i);
+  }
+  const H0 = new Uint32Array(18);
+  const H0_8 = u8(H0);
+  h.digestInto(H0_8);
+  const lanes = p;
+  const mP = 4 * p * Math.floor(m / (ARGON2_SYNC_POINTS * p));
+  const laneLen = Math.floor(mP / p);
+  const segmentLen = Math.floor(laneLen / ARGON2_SYNC_POINTS);
+  const memUsed = mP * 256;
+  if (!isU32(maxmem) || memUsed > maxmem)
+    throw new Error("mem should be less than 2**32, got: maxmem=" + maxmem + ", memused=" + memUsed);
+  const B = new Uint32Array(memUsed);
+  for (let l = 0;l < p; l++) {
+    const i = 256 * laneLen * l;
+    H0[17] = l;
+    H0[16] = 0;
+    B.set(Hp(H0, 1024), i);
+    H0[16] = 1;
+    B.set(Hp(H0, 1024), i + 256);
+  }
+  let perBlock = () => {};
+  if (onProgress) {
+    const totalBlock = t * ARGON2_SYNC_POINTS * p * segmentLen;
+    const callbackPer = Math.max(Math.floor(totalBlock / 1e4), 1);
+    let blockCnt = 0;
+    perBlock = () => {
+      blockCnt++;
+      if (onProgress && (!(blockCnt % callbackPer) || blockCnt === totalBlock))
+        onProgress(blockCnt / totalBlock);
+    };
+  }
+  clean(BUF, H0);
+  return { type, mP, p, t, version, B, laneLen, lanes, segmentLen, dkLen, perBlock, asyncTick };
+}
+function argon2Output(B, p, laneLen, dkLen) {
+  const B_final = new Uint32Array(256);
+  for (let l = 0;l < p; l++)
+    for (let j = 0;j < 256; j++)
+      B_final[j] ^= B[256 * (laneLen * l + laneLen - 1) + j];
+  const res = u8(Hp(B_final, dkLen));
+  clean(B_final);
+  return res;
+}
+function processBlock(B, address, l, r, s, index, laneLen, segmentLen, lanes, offset, prev, dataIndependent, needXor) {
+  if (offset % laneLen)
+    prev = offset - 1;
+  let randL, randH;
+  if (dataIndependent) {
+    let i128 = index % 128;
+    if (i128 === 0) {
+      address[256 + 12]++;
+      block(address, 256, 2 * 256, 0, false);
+      block(address, 0, 2 * 256, 0, false);
+    }
+    randL = address[2 * i128];
+    randH = address[2 * i128 + 1];
+  } else {
+    const T = 256 * prev;
+    randL = B[T];
+    randH = B[T + 1];
+  }
+  const refLane = r === 0 && s === 0 ? l : randH % lanes;
+  const refPos = indexAlpha(r, s, laneLen, segmentLen, index, randL, refLane == l);
+  const refBlock = laneLen * refLane + refPos;
+  block(B, 256 * prev, 256 * refBlock, offset * 256, needXor);
+}
+async function argon2Async(type, password, salt, opts) {
+  const { mP, p, t, version, B, laneLen, lanes, segmentLen, dkLen, perBlock, asyncTick } = argon2Init(password, salt, type, opts);
+  const address = new Uint32Array(3 * 256);
+  address[256 + 6] = mP;
+  address[256 + 8] = t;
+  address[256 + 10] = type;
+  let ts = Date.now();
+  for (let r = 0;r < t; r++) {
+    const needXor = r !== 0 && version === 19;
+    address[256 + 0] = r;
+    for (let s = 0;s < ARGON2_SYNC_POINTS; s++) {
+      address[256 + 4] = s;
+      const dataIndependent = type == AT.Argon2i || type == AT.Argon2id && r === 0 && s < 2;
+      for (let l = 0;l < p; l++) {
+        address[256 + 2] = l;
+        address[256 + 12] = 0;
+        let startPos = 0;
+        if (r === 0 && s === 0) {
+          startPos = 2;
+          if (dataIndependent) {
+            address[256 + 12]++;
+            block(address, 256, 2 * 256, 0, false);
+            block(address, 0, 2 * 256, 0, false);
+          }
+        }
+        let offset = l * laneLen + s * segmentLen + startPos;
+        let prev = offset % laneLen ? offset - 1 : offset + laneLen - 1;
+        for (let index = startPos;index < segmentLen; index++, offset++, prev++) {
+          perBlock();
+          processBlock(B, address, l, r, s, index, laneLen, segmentLen, lanes, offset, prev, dataIndependent, needXor);
+          const diff = Date.now() - ts;
+          if (!(diff >= 0 && diff < asyncTick)) {
+            await nextTick();
+            ts += diff;
+          }
+        }
+      }
+    }
+  }
+  clean(address);
+  return argon2Output(B, p, laneLen, dkLen);
+}
+var AT, ARGON2_SYNC_POINTS = 4, abytesOrZero = (buf) => {
+  if (buf === undefined)
+    return Uint8Array.of();
+  return kdfInputToBytes(buf);
+}, A2_BUF, maxUint32, argon2idAsync = (password, salt, opts) => argon2Async(AT.Argon2id, password, salt, opts);
+var init_argon2 = __esm(() => {
+  init__u64();
+  init_blake2();
+  init_utils();
+  AT = { Argond2d: 0, Argon2i: 1, Argon2id: 2 };
+  A2_BUF = new Uint32Array(256);
+  maxUint32 = Math.pow(2, 32);
+});
+
+// src/vault/canonical-json.ts
+function canonicalJson(value) {
+  return encode(value, "$");
+}
+function canonicalBytes(value) {
+  return new TextEncoder().encode(canonicalJson(value));
+}
+function encode(value, path) {
+  if (value === null)
+    throw new CanonicalJsonError(`null at ${path}: canonical JSON has no nulls`);
+  switch (typeof value) {
+    case "string":
+      return JSON.stringify(value);
+    case "boolean":
+      return value ? "true" : "false";
+    case "number":
+      if (!Number.isInteger(value)) {
+        throw new CanonicalJsonError(`non-integer number at ${path}: canonical JSON carries integers only`);
+      }
+      if (!Number.isSafeInteger(value)) {
+        throw new CanonicalJsonError(`integer at ${path} is outside the safe range`);
+      }
+      if (Object.is(value, -0))
+        throw new CanonicalJsonError(`negative zero at ${path}`);
+      return String(value);
+    case "object":
+      break;
+    default:
+      throw new CanonicalJsonError(`${typeof value} at ${path} cannot appear in canonical JSON`);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item, i) => encode(item, `${path}[${i}]`)).join(",")}]`;
+  }
+  const record = value;
+  const parts = [];
+  for (const key of Object.keys(record).sort()) {
+    const child = record[key];
+    if (child === undefined)
+      continue;
+    parts.push(`${JSON.stringify(key)}:${encode(child, `${path}.${key}`)}`);
+  }
+  return `{${parts.join(",")}}`;
+}
+var CanonicalJsonError;
+var init_canonical_json = __esm(() => {
+  CanonicalJsonError = class CanonicalJsonError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "CanonicalJsonError";
+    }
+  };
+});
+
+// src/vault/hygiene.ts
+function wipe(...buffers) {
+  for (const buffer of buffers) {
+    if (buffer)
+      buffer.fill(0);
+  }
+}
+function secretBuffer(length) {
+  const buffer = new Uint8Array(length);
+  registry?.allocated.push(buffer);
+  return buffer;
+}
+function ownSecret(bytes) {
+  registry?.allocated.push(bytes);
+  return bytes;
+}
+async function withSecret(secret, use) {
+  ownSecret(secret);
+  try {
+    return await use(secret);
+  } finally {
+    wipe(secret);
+  }
+}
+var registry = null;
+
+// src/vault/crypto.ts
+function b64u(bytes) {
+  return base64urlnopad.encode(bytes);
+}
+function unb64u(value, field) {
+  if (typeof value !== "string")
+    throw new VaultError("VAULT_UNREADABLE", `${field} is not a string.`);
+  try {
+    return base64urlnopad.decode(value);
+  } catch {
+    throw new VaultError("VAULT_UNREADABLE", `${field} is not base64url.`);
+  }
+}
+function randomBytes3(length) {
+  return crypto.getRandomValues(secretBuffer(length));
+}
+function bytesEqual(a, b) {
+  if (a.length !== b.length)
+    return false;
+  let diff = 0;
+  for (let i = 0;i < a.length; i++)
+    diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
+  return diff === 0;
+}
+function assertKdfInBounds(kdf) {
+  const fail = (detail) => {
+    throw new VaultError("VAULT_KDF_OUT_OF_BOUNDS", `The vault's KDF parameters are outside the accepted range: ${detail}`, {
+      suggestion: "This file was not written by this CLI. Nothing was derived and nothing was written."
+    });
+  };
+  if (kdf.name !== "argon2id")
+    fail(`kdf.name is ${JSON.stringify(kdf.name)}, expected "argon2id"`);
+  if (kdf.version !== ARGON2_BOUNDS.version)
+    fail(`version ${kdf.version}, expected ${ARGON2_BOUNDS.version}`);
+  for (const [key, bounds] of [
+    ["m", ARGON2_BOUNDS.m],
+    ["t", ARGON2_BOUNDS.t],
+    ["p", ARGON2_BOUNDS.p]
+  ]) {
+    const value = kdf[key];
+    if (!Number.isInteger(value) || value < bounds.min || value > bounds.max) {
+      fail(`${key} is ${value}, accepted range ${bounds.min} to ${bounds.max}`);
+    }
+  }
+  const salt = unb64u(kdf.salt, "kdf.salt");
+  if (salt.length < ARGON2_BOUNDS.saltBytes.min || salt.length > ARGON2_BOUNDS.saltBytes.max) {
+    fail(`salt is ${salt.length} bytes, accepted range ${ARGON2_BOUNDS.saltBytes.min} to ${ARGON2_BOUNDS.saltBytes.max}`);
+  }
+}
+function freshArgon2Params() {
+  const salt = crypto.getRandomValues(new Uint8Array(ARGON2_SALT_BYTES));
+  return { name: "argon2id", ...testCostOverride ?? ARGON2_DEFAULTS, salt: b64u(salt) };
+}
+async function derivePassphraseKek(passphrase, kdf, notice) {
+  assertKdfInBounds(kdf);
+  notice?.(`Deriving the vault key (Argon2id, ${Math.round(kdf.m / 1024)} MiB)
+`);
+  const salt = unb64u(kdf.salt, "kdf.salt");
+  const kek = await argon2idAsync(passphrase, salt, {
+    t: kdf.t,
+    m: kdf.m,
+    p: kdf.p,
+    version: kdf.version,
+    dkLen: ARGON2_BOUNDS.outputBytes
+  });
+  return ownSecret(kek);
+}
+async function importAesKey(raw) {
+  if (raw.length !== 32)
+    throw new VaultError("VAULT_UNREADABLE", `expected a 32-byte key, got ${raw.length}`);
+  return crypto.subtle.importKey("raw", raw, { name: "AES-GCM", length: 256 }, false, [
+    "encrypt",
+    "decrypt"
+  ]);
+}
+async function derivePayloadKey(dek, vaultId) {
+  const material = await crypto.subtle.importKey("raw", dek, "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({
+    name: "HKDF",
+    hash: "SHA-256",
+    salt: vaultId,
+    info: new TextEncoder().encode("candle-vault/v2/payload")
+  }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function seal(key, plaintext, aad) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad }, key, plaintext);
+  return { iv: b64u(iv), ciphertext: b64u(new Uint8Array(sealed)) };
+}
+async function open2(key, blob, aad, failure) {
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt({
+      name: "AES-GCM",
+      iv: unb64u(blob.iv, "iv"),
+      additionalData: aad
+    }, key, unb64u(blob.ciphertext, "ciphertext"));
+  } catch {
+    throw new VaultError(failure.code, failure.message, { suggestion: failure.suggestion });
+  }
+  return ownSecret(new Uint8Array(plain));
+}
+async function sealJson(key, value, aad) {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  try {
+    return await seal(key, bytes, aad);
+  } finally {
+    wipe(bytes);
+  }
+}
+var ARGON2_DEFAULTS, ARGON2_SALT_BYTES = 16, DEK_BYTES = 32, ARGON2_BOUNDS, testCostOverride = null;
+var init_crypto = __esm(() => {
+  init_argon2();
+  init_esm();
+  init_canonical_json();
+  init_errors();
+  ARGON2_DEFAULTS = { version: 19, m: 65536, t: 3, p: 1 };
+  ARGON2_BOUNDS = {
+    m: { min: 19456, max: 1048576 },
+    t: { min: 2, max: 16 },
+    p: { min: 1, max: 4 },
+    version: 19,
+    saltBytes: { min: 16, max: 64 },
+    outputBytes: 32
+  };
+});
+
+// src/vault/sidecar.ts
+import { chmod as chmod3, mkdir as mkdir3, readFile as readFile3, writeFile as writeFile3 } from "node:fs/promises";
+import { dirname as dirname3 } from "node:path";
+function sidecarPath(vaultPath) {
+  return vaultPath.replace(/\.enc$/, "") + ".state.json";
+}
+async function readSidecar(path) {
+  let raw;
+  try {
+    raw = await readFile3(path, "utf8");
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.vaultId !== "string" || !Number.isInteger(parsed?.lastGeneration))
+      return null;
+    return {
+      ...parsed,
+      envelopeIds: Array.isArray(parsed.envelopeIds) ? parsed.envelopeIds : [],
+      removedEnvelopeIds: Array.isArray(parsed.removedEnvelopeIds) ? parsed.removedEnvelopeIds : []
+    };
+  } catch {
+    return null;
+  }
+}
+async function writeSidecar(path, state) {
+  const dir = dirname3(path);
+  await mkdir3(dir, { recursive: true });
+  await chmod3(dir, 448).catch(() => {});
+  await writeFile3(path, `${JSON.stringify(state, null, 2)}
+`, { encoding: "utf8", mode: 384 });
+  await chmod3(path, 384).catch(() => {});
+}
+function nextSidecar(previous, file, patch = {}) {
+  const currentIds = file.envelopes.map((envelope) => envelope.id);
+  const known = previous?.envelopeIds ?? [];
+  const removed = new Set(previous?.removedEnvelopeIds ?? []);
+  for (const id of known)
+    if (!currentIds.includes(id))
+      removed.add(id);
+  return {
+    ...previous ?? {},
+    vaultId: file.vaultId,
+    lastGeneration: file.generation,
+    envelopeIds: currentIds,
+    removedEnvelopeIds: [...removed].sort(),
+    ...patch
+  };
+}
+var init_sidecar = __esm(() => {
+  init_crypto();
+});
+
+// src/vault/format.ts
+function isPassphraseEnvelope(envelope) {
+  return envelope.factor === "passphrase";
+}
+function passphraseKdf(envelope) {
+  if (!isPassphraseEnvelope(envelope)) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passphrase one.`);
+  }
+  return envelope.kdf;
+}
+function canonicalHeader(file) {
+  const header = {};
+  for (const field of HEADER_FIELDS)
+    header[field] = file[field];
+  return canonicalBytes(header);
+}
+function envelopeAad(file, envelope) {
+  const base = {
+    format: VAULT_FORMAT,
+    version: VAULT_VERSION,
+    vaultId: file.vaultId,
+    envelopeId: envelope.id,
+    factor: envelope.factor
+  };
+  if (isPassphraseEnvelope(envelope)) {
+    return canonicalBytes({ ...base, kdf: envelope.kdf, strength: envelope.strength });
+  }
+  throw new VaultError("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM", `This CLI cannot unwrap a ${envelope.factor} envelope.`);
+}
+function rootAad(vaultId) {
+  return canonicalBytes({ format: VAULT_FORMAT, version: VAULT_VERSION, vaultId, purpose: "root" });
+}
+function keyAad(vaultId, keyId) {
+  return canonicalBytes({ format: VAULT_FORMAT, version: VAULT_VERSION, vaultId, purpose: "key", keyId });
+}
+function refuse(code, message) {
+  throw new VaultError(code, message);
+}
+function parseVaultFile(raw) {
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    refuse("VAULT_UNREADABLE", "The vault file is not valid JSON.");
+  }
+  if (!isRecord(value))
+    refuse("VAULT_UNREADABLE", "The vault file is not a JSON object.");
+  if (value.format !== VAULT_FORMAT) {
+    throw new VaultError("VAULT_FORMAT_UNKNOWN", `Not a Candle vault: format is ${JSON.stringify(value.format)}.`);
+  }
+  if (value.version !== VAULT_VERSION) {
+    throw new VaultError("VAULT_VERSION_UNSUPPORTED", `Unsupported vault version ${JSON.stringify(value.version)}: this CLI writes version ${VAULT_VERSION}.`);
+  }
+  if (value.cipher !== VAULT_CIPHER) {
+    refuse("VAULT_UNREADABLE", `Unsupported cipher ${JSON.stringify(value.cipher)}: this format is ${VAULT_CIPHER}.`);
+  }
+  for (const field of Object.keys(value)) {
+    if (!TOP_LEVEL_FIELDS.includes(field)) {
+      throw new VaultError("VAULT_FIELD_UNKNOWN", `The vault file carries an unknown top-level field: ${field}.`, {
+        suggestion: "A newer CLI may have written it. This CLI refuses rather than dropping a field it cannot honour."
+      });
+    }
+  }
+  if (typeof value.vaultId !== "string")
+    refuse("VAULT_UNREADABLE", "vaultId is missing or not a string.");
+  if (!Number.isInteger(value.generation) || value.generation < 0) {
+    refuse("VAULT_UNREADABLE", "generation is missing or is not a whole number.");
+  }
+  for (const field of ["createdAt", "updatedAt"]) {
+    if (typeof value[field] !== "string")
+      refuse("VAULT_UNREADABLE", `${field} is missing or not a string.`);
+  }
+  if (!Array.isArray(value.envelopes))
+    refuse("VAULT_UNREADABLE", "envelopes is missing or not an array.");
+  if (!Array.isArray(value.keyIds) || value.keyIds.some((id) => typeof id !== "string")) {
+    refuse("VAULT_UNREADABLE", "keyIds is missing or is not an array of strings.");
+  }
+  if (!isBlob(value.index))
+    refuse("VAULT_UNREADABLE", "index is missing or malformed.");
+  if (!isBlob(value.root)) {
+    throw new VaultError("VAULT_INDEX_INVALID", "The vault has no root blob; every version 2 vault must carry one.");
+  }
+  if (!Array.isArray(value.keys))
+    refuse("VAULT_UNREADABLE", "keys is missing or not an array.");
+  for (const blob of value.keys) {
+    if (!isRecord(blob) || typeof blob.id !== "string" || !isBlob(blob)) {
+      refuse("VAULT_UNREADABLE", "A key blob is malformed.");
+    }
+  }
+  for (const envelope of value.envelopes) {
+    if (!isRecord(envelope))
+      refuse("VAULT_UNREADABLE", "An envelope is not a JSON object.");
+    for (const field of ["id", "factor", "domain", "label", "createdAt"]) {
+      if (typeof envelope[field] !== "string") {
+        refuse("VAULT_UNREADABLE", `An envelope is missing its ${field}, which every factor carries.`);
+      }
+    }
+    const wrap = envelope.wrap;
+    if (!isBlob(wrap) || wrap.alg !== VAULT_CIPHER) {
+      refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has a malformed wrap.`);
+    }
+    if (envelope.factor === "passphrase") {
+      if (!isRecord(envelope.kdf))
+        refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has no kdf record.`);
+      if (envelope.strength !== "generated-103" && envelope.strength !== "user-chosen") {
+        refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has an unrecognized strength.`);
+      }
+      assertKdfInBounds(envelope.kdf);
+    }
+  }
+  const ids = new Set;
+  for (const envelope of value.envelopes) {
+    if (ids.has(envelope.id))
+      refuse("VAULT_UNREADABLE", `Two envelopes share the id ${envelope.id}.`);
+    ids.add(envelope.id);
+  }
+  return value;
+}
+function assertKeyIdsAgree(file) {
+  const declared = new Set(file.keyIds);
+  const present = new Set(file.keys.map((blob) => blob.id));
+  const missing = [...declared].filter((id) => !present.has(id));
+  const extra = [...present].filter((id) => !declared.has(id));
+  if (missing.length === 0 && extra.length === 0)
+    return;
+  throw new VaultError("VAULT_INDEX_INVALID", `The vault's keyIds and key blobs disagree: ${missing.length} declared blob(s) absent, ${extra.length} undeclared blob(s) present.`);
+}
+function parseIndexPlaintext(bytes) {
+  let value;
+  try {
+    value = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    refuse("VAULT_INDEX_INVALID", "The vault index is not valid JSON.");
+  }
+  if (!isRecord(value))
+    refuse("VAULT_INDEX_INVALID", "The vault index is not a JSON object.");
+  for (const field of Object.keys(value)) {
+    if (field !== "hd" && field !== "entries")
+      refuse("VAULT_INDEX_INVALID", `The index carries an unknown field: ${field}.`);
+  }
+  const hd = parseHd(value.hd);
+  if (!Array.isArray(value.entries))
+    refuse("VAULT_INDEX_INVALID", "The index has no entries array.");
+  const entries = value.entries.map(parseEntry);
+  const seen = new Set;
+  for (const entry of entries) {
+    if (seen.has(entry.id))
+      refuse("VAULT_INDEX_INVALID", `Two index entries share the id ${entry.id}.`);
+    seen.add(entry.id);
+  }
+  for (const entry of entries) {
+    if (entry.derivation === undefined)
+      continue;
+    const located = branchOfPath(entry.derivation.path);
+    if (located === undefined)
+      continue;
+    if (hd.nextIndex[located.branch] <= located.index) {
+      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${located.branch} is ${hd.nextIndex[located.branch]}, at or below the index ${located.index} that entry ${entry.id} already derives.`);
+    }
+  }
+  return { hd, entries };
+}
+function parseHd(value) {
+  if (!isRecord(value))
+    refuse("VAULT_INDEX_INVALID", "The index has no hd record.");
+  for (const field of Object.keys(value)) {
+    const allowed = [
+      "scheme",
+      "nextIndex",
+      "rootExported",
+      "rootExportedAt",
+      "exposureReconciledAt",
+      "exposedIndexes",
+      "discovery"
+    ];
+    if (!allowed.includes(field))
+      refuse("VAULT_INDEX_INVALID", `hd carries an unknown field: ${field}.`);
+  }
+  if (value.scheme !== "bip39-24/slip10")
+    refuse("VAULT_INDEX_INVALID", `hd.scheme is ${JSON.stringify(value.scheme)}.`);
+  if (typeof value.rootExported !== "boolean")
+    refuse("VAULT_INDEX_INVALID", "hd.rootExported is not a boolean.");
+  const counters = value.nextIndex;
+  if (!isRecord(counters))
+    refuse("VAULT_INDEX_INVALID", "hd.nextIndex is missing.");
+  const exposed = value.exposedIndexes;
+  if (!isRecord(exposed))
+    refuse("VAULT_INDEX_INVALID", "hd.exposedIndexes is missing.");
+  const nextIndex = {};
+  const exposedIndexes = {};
+  for (const branch of BRANCHES) {
+    const counter = counters[branch];
+    if (!Number.isInteger(counter) || counter < 0) {
+      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${branch} is missing or is not a whole number.`);
+    }
+    nextIndex[branch] = counter;
+    const list = exposed[branch];
+    if (!Array.isArray(list) || list.some((n) => !Number.isInteger(n) || n < 0)) {
+      refuse("VAULT_INDEX_INVALID", `hd.exposedIndexes.${branch} is missing or is not a list of whole numbers.`);
+    }
+    exposedIndexes[branch] = [...list].sort((a, b) => a - b);
+  }
+  let discovery;
+  if (value.discovery !== undefined) {
+    const record = value.discovery;
+    if (!isRecord(record))
+      refuse("VAULT_INDEX_INVALID", "hd.discovery is not an object.");
+    if (record.complete !== false) {
+      refuse("VAULT_INDEX_INVALID", "hd.discovery.complete is not false; no command ever writes it true.");
+    }
+    if (typeof record.restoredAt !== "string" || typeof record.account !== "string") {
+      refuse("VAULT_INDEX_INVALID", "hd.discovery is missing restoredAt or account.");
+    }
+    for (const field of ["requestedCounts", "highestMatched"]) {
+      const counts = record[field];
+      if (!isRecord(counts) || !Number.isInteger(counts.solanaVault) || !Number.isInteger(counts.solanaTee)) {
+        refuse("VAULT_INDEX_INVALID", `hd.discovery.${field} is missing or malformed.`);
+      }
+    }
+    discovery = record;
+  }
+  return {
+    scheme: "bip39-24/slip10",
+    nextIndex,
+    rootExported: value.rootExported,
+    ...typeof value.rootExportedAt === "string" ? { rootExportedAt: value.rootExportedAt } : {},
+    ...typeof value.exposureReconciledAt === "string" ? { exposureReconciledAt: value.exposureReconciledAt } : {},
+    exposedIndexes,
+    ...discovery ? { discovery } : {}
+  };
+}
+function parseEntry(value) {
+  if (!isRecord(value))
+    refuse("VAULT_INDEX_INVALID", "An index entry is not a JSON object.");
+  for (const field of Object.keys(value)) {
+    if (!KEY_ENTRY_FIELDS.includes(field)) {
+      refuse("VAULT_INDEX_INVALID", `An index entry carries a field this format does not define: ${field}.`);
+    }
+  }
+  for (const field of ["id", "address", "label", "createdAt"]) {
+    if (typeof value[field] !== "string")
+      refuse("VAULT_INDEX_INVALID", `An index entry is missing its ${field}.`);
+  }
+  if (value.chain !== "solana" && value.chain !== "evm") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized chain.`);
+  }
+  if (value.curve !== "ed25519" && value.curve !== "secp256k1") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized curve.`);
+  }
+  if (value.role !== "vault" && value.role !== "tee-wallet") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized role.`);
+  }
+  if (value.origin !== "derived" && value.origin !== "migrated-tee") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized origin.`);
+  }
+  if (value.origin === "derived" && value.derivation === undefined) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is derived but records no derivation.`);
+  }
+  if (value.origin === "migrated-tee" && value.derivation !== undefined) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is migrated-tee and must not record a derivation.`);
+  }
+  if (value.derivation !== undefined) {
+    const derivation = value.derivation;
+    if (!isRecord(derivation) || derivation.scheme !== "slip10-ed25519" && derivation.scheme !== "bip32-secp256k1" || typeof derivation.path !== "string") {
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed derivation.`);
+    }
+    for (const field of Object.keys(derivation)) {
+      if (field !== "scheme" && field !== "path") {
+        refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s derivation carries an unknown field: ${field}.`);
+      }
+    }
+  }
+  const exposure = value.exposure;
+  if (!isRecord(exposure) || typeof exposure.everRemoteExposed !== "boolean" || typeof exposure.everExported !== "boolean") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed exposure record.`);
+  }
+  for (const field of Object.keys(exposure)) {
+    if (!["everRemoteExposed", "everExported", "exposureUnknown"].includes(field)) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s exposure carries an unknown field: ${field}.`);
+    }
+  }
+  if (exposure.exposureUnknown !== undefined && typeof exposure.exposureUnknown !== "boolean") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s exposureUnknown is not a boolean.`);
+  }
+  if (value.linkedWalletId !== undefined && typeof value.linkedWalletId !== "string") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed linkedWalletId.`);
+  }
+  if (value.role === "vault") {
+    if (value.tee !== undefined)
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is a vault key carrying tee metadata.`);
+    if (value.linkedWalletId !== undefined) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is a vault key carrying a linkedWalletId.`);
+    }
+  } else {
+    if (value.tee === undefined)
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is a TEE wallet with no tee metadata.`);
+    parseTee(value.tee, value);
+  }
+  return value;
+}
+function parseTee(value, entry) {
+  const id = entry.id;
+  if (!isRecord(value))
+    refuse("VAULT_INDEX_INVALID", `Entry ${id} has malformed tee metadata.`);
+  for (const field of Object.keys(value)) {
+    if (!TEE_FIELDS.includes(field))
+      refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee metadata carries an unknown field: ${field}.`);
+  }
+  if (value.lifecycle === undefined)
+    refuse("VAULT_INDEX_INVALID", `Entry ${id} has no tee.lifecycle.`);
+  if (TEE_REMOTE_STATES.includes(value.lifecycle) && !TEE_LIFECYCLES.includes(value.lifecycle)) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.lifecycle is ${JSON.stringify(value.lifecycle)}, which is a remoteState observation and never a lifecycle value.`);
+  }
+  if (!TEE_LIFECYCLES.includes(value.lifecycle)) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.lifecycle is ${JSON.stringify(value.lifecycle)}, which is not one of the five values.`);
+  }
+  if (value.remoteState !== undefined && !TEE_REMOTE_STATES.includes(value.remoteState)) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.remoteState is not one of SC-03's words.`);
+  }
+  if (value.grantIdentity !== undefined) {
+    const grant = value.grantIdentity;
+    if (!isRecord(grant) || typeof grant.account !== "string" || typeof grant.apiBaseUrl !== "string" || grant.source !== "operator-asserted" && grant.source !== "recorded-at-operation") {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.grantIdentity is malformed.`);
+    }
+  }
+  const rule = LIFECYCLE_TABLE[value.lifecycle];
+  for (const field of rule.tee) {
+    if (value[field] === undefined) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must record tee.${field}.`);
+    }
+  }
+  for (const field of rule.entry) {
+    if (entry[field] === undefined) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must record ${field}.`);
+    }
+  }
+  for (const field of rule.forbiddenEntry) {
+    if (entry[field] !== undefined) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must not carry ${field}.`);
+    }
+  }
+}
+function branchOfPath(path) {
+  let match = /^m\/44'\/501'\/(\d+)'\/0'$/.exec(path);
+  if (match?.[1] !== undefined)
+    return { branch: "solanaVault", index: Number(match[1]) };
+  match = /^m\/44'\/501'\/(\d+)'\/1'$/.exec(path);
+  if (match?.[1] !== undefined)
+    return { branch: "solanaTee", index: Number(match[1]) };
+  match = /^m\/44'\/60'\/(\d+)'\/0\/0$/.exec(path);
+  if (match?.[1] !== undefined)
+    return { branch: "evm", index: Number(match[1]) };
+  return;
+}
+var VAULT_FORMAT = "candle-vault", VAULT_VERSION = 2, VAULT_CIPHER = "AES-256-GCM", NON_HEADER_FIELDS, HEADER_FIELDS, TOP_LEVEL_FIELDS, BRANCHES, TEE_LIFECYCLES, TEE_REMOTE_STATES, KEY_ENTRY_FIELDS, LIFECYCLE_TABLE, isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value), isBlob = (value) => isRecord(value) && typeof value.iv === "string" && typeof value.ciphertext === "string", TEE_FIELDS;
+var init_format = __esm(() => {
+  init_crypto();
+  init_errors();
+  NON_HEADER_FIELDS = ["index", "root", "keys"];
+  HEADER_FIELDS = [
+    "format",
+    "version",
+    "vaultId",
+    "generation",
+    "createdAt",
+    "updatedAt",
+    "cipher",
+    "envelopes",
+    "keyIds"
+  ];
+  TOP_LEVEL_FIELDS = [...HEADER_FIELDS, ...NON_HEADER_FIELDS];
+  BRANCHES = ["solanaVault", "solanaTee", "evm"];
+  TEE_LIFECYCLES = ["local-candidate", "import-pending", "enabled", "stranded", "retired"];
+  TEE_REMOTE_STATES = [
+    "local-only",
+    "enabling",
+    "enabled",
+    "disable-pending",
+    "quarantined",
+    "swept"
+  ];
+  KEY_ENTRY_FIELDS = [
+    "id",
+    "chain",
+    "curve",
+    "address",
+    "label",
+    "createdAt",
+    "role",
+    "origin",
+    "derivation",
+    "exposure",
+    "linkedWalletId",
+    "tee"
+  ];
+  LIFECYCLE_TABLE = {
+    "local-candidate": { tee: ["network"], entry: [], forbiddenEntry: ["linkedWalletId"] },
+    "import-pending": { tee: ["network"], entry: [], forbiddenEntry: ["linkedWalletId"] },
+    enabled: { tee: ["network", "grantIdentity", "vaultDestination"], entry: ["linkedWalletId"], forbiddenEntry: [] },
+    stranded: { tee: ["network", "grantIdentity"], entry: [], forbiddenEntry: ["linkedWalletId"] },
+    retired: { tee: ["network", "vaultDestination"], entry: [], forbiddenEntry: [] }
+  };
+  TEE_FIELDS = [
+    "network",
+    "vaultDestination",
+    "boundKeyPrefix",
+    "remoteAuthority",
+    "enabledAt",
+    "stopRequestedAt",
+    "sweepReceipts",
+    "sweepPending",
+    "sweptAt",
+    "lifecycle",
+    "grantIdentity",
+    "promotedInPlaceAt",
+    "fundingReceipts",
+    "destinationExposureAccepted",
+    "remoteState"
+  ];
+});
+
+// src/vault/store.ts
+var exports_store = {};
+__export(exports_store, {
+  writeNewVault: () => writeNewVault,
+  wrapDekForPassphrase: () => wrapDekForPassphrase,
+  withVaultLock: () => withVaultLock,
+  unlockWithPassphrase: () => unlockWithPassphrase,
+  unlockVault: () => unlockVault,
+  serializeVault: () => serializeVault,
+  sealKeyBlob: () => sealKeyBlob,
+  sealIndex: () => sealIndex,
+  readVaultRaw: () => readVaultRaw,
+  ownSecret: () => ownSecret,
+  legacyWalletsPath: () => legacyWalletsPath,
+  freshVaultId: () => freshVaultId,
+  freshKeyId: () => freshKeyId,
+  freshEnvelopeId: () => freshEnvelopeId,
+  freshDek: () => freshDek,
+  fileExists: () => fileExists,
+  entriesOf: () => entriesOf,
+  defaultVaultPath: () => defaultVaultPath,
+  decryptRoot: () => decryptRoot,
+  decryptKey: () => decryptKey,
+  commitVault: () => commitVault,
+  closeVault: () => closeVault,
+  candleConfigDir: () => candleConfigDir2
+});
+import { chmod as chmod4, mkdir as mkdir4, readFile as readFile4, stat as stat2 } from "node:fs/promises";
+import { homedir as homedir5 } from "node:os";
+import { join as join5 } from "node:path";
+function candleConfigDir2(env) {
+  return env.CANDLE_CONFIG_DIR?.trim() || join5(homedir5(), ".config", "candle");
+}
+function defaultVaultPath(env) {
+  return join5(candleConfigDir2(env), "vault.enc");
+}
+function legacyWalletsPath(env) {
+  return join5(candleConfigDir2(env), "wallets.enc");
+}
+async function readVaultRaw(path) {
+  try {
+    return await readFile4(path, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT")
+      return null;
+    throw new VaultError("VAULT_UNREADABLE", `Could not read the vault at ${path}.`);
+  }
+}
+async function fileExists(path) {
+  try {
+    await stat2(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function closeVault(vault) {
+  wipe(vault.dek);
+}
+async function unlockVault(path, raw, request, opts = {}) {
+  const file = parseVaultFile(raw);
+  const envelope = pickEnvelope(file, request);
+  const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), opts.notice);
+  const dek = await withSecret(kek, async (kekBytes) => {
+    const kekKey = await importAesKey(kekBytes);
+    return open2(kekKey, envelope.wrap, envelopeAad(file, envelope), {
+      code: "VAULT_UNLOCK_FAILED",
+      message: "Could not open the vault: wrong passphrase, or the file is corrupt."
+    });
+  });
+  if (dek.length !== DEK_BYTES) {
+    wipe(dek);
+    throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.");
+  }
+  try {
+    const payloadKey = await derivePayloadKey(dek, unb64u(file.vaultId, "vaultId"));
+    const indexBytes = await open2(payloadKey, file.index, canonicalHeader(file), {
+      code: "VAULT_BLOB_TAMPERED",
+      message: "The vault header was altered, an envelope was added or removed outside this CLI, or this index is from a different write of the vault.",
+      suggestion: "Nothing was written. Restore the file from a verified backup."
+    });
+    let index;
+    try {
+      index = parseIndexPlaintext(indexBytes);
+    } finally {
+      wipe(indexBytes);
+    }
+    assertKeyIdsAgree(file);
+    return { path, raw, file, index, payloadKey, dek, envelope };
+  } catch (error) {
+    wipe(dek);
+    throw error;
+  }
+}
+function pickEnvelope(file, request) {
+  const candidates = file.envelopes.filter((envelope) => envelope.factor === request.factor);
+  if (request.envelopeId !== undefined) {
+    const named = candidates.find((envelope) => envelope.id === request.envelopeId);
+    if (!named)
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request.factor} envelope with id ${request.envelopeId}.`);
+    return named;
+  }
+  const first = candidates[0];
+  if (!first) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request.factor} envelope.`, {
+      suggestion: "Run `candle vault status` to see which factors can open it."
+    });
+  }
+  return first;
+}
+async function unlockWithPassphrase(path, raw, passphrase, opts = {}) {
+  const file = parseVaultFile(raw);
+  const envelopes = file.envelopes.filter((envelope) => envelope.factor === "passphrase");
+  if (envelopes.length === 0) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
+  }
+  let last;
+  for (const envelope of envelopes) {
+    try {
+      return await unlockVault(path, raw, { factor: "passphrase", passphrase, envelopeId: envelope.id }, opts);
+    } catch (error) {
+      if (error instanceof VaultError && error.code !== "VAULT_UNLOCK_FAILED")
+        throw error;
+      last = error;
+    }
+  }
+  throw last;
+}
+async function decryptRoot(vault) {
+  return open2(vault.payloadKey, vault.file.root, rootAad(vault.file.vaultId), {
+    code: "VAULT_BLOB_TAMPERED",
+    message: "The vault's root blob failed its authentication tag.",
+    suggestion: "Nothing was written. Restore the file from a verified backup; `vault verify-backup` checks a copy in full."
+  });
+}
+async function decryptKey(vault, keyId) {
+  const blob = vault.file.keys.find((candidate) => candidate.id === keyId);
+  if (!blob)
+    throw new VaultError("VAULT_INDEX_INVALID", `The vault declares key ${keyId} but holds no blob for it.`);
+  return open2(vault.payloadKey, blob, keyAad(vault.file.vaultId, keyId), {
+    code: "VAULT_BLOB_TAMPERED",
+    message: `Key blob ${keyId} failed its authentication tag.`,
+    suggestion: "Nothing was written."
+  });
+}
+function freshId(bytes) {
+  for (;; ) {
+    const id = b64u(crypto.getRandomValues(new Uint8Array(bytes)));
+    if (!id.startsWith("-") && !id.startsWith("_"))
+      return id;
+  }
+}
+function freshEnvelopeId() {
+  return freshId(8);
+}
+function freshKeyId() {
+  return freshId(8);
+}
+function freshVaultId() {
+  return freshId(16);
+}
+function freshDek() {
+  return randomBytes3(DEK_BYTES);
+}
+async function wrapDekForPassphrase(dek, passphrase, envelope, header, notice) {
+  const kek = await derivePassphraseKek(passphrase, passphraseKdf(envelope), notice);
+  return withSecret(kek, async (kekBytes) => {
+    const kekKey = await importAesKey(kekBytes);
+    const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
+    return { alg: VAULT_CIPHER, ...blob };
+  });
+}
+function serializeVault(file) {
+  return `${JSON.stringify(file, null, 2)}
+`;
+}
+async function sealIndex(header, index, payloadKey) {
+  const withoutIndex = { ...header };
+  const blob = await sealJson(payloadKey, index, canonicalHeader(withoutIndex));
+  return { ...withoutIndex, index: blob };
+}
+async function commitVault(vault, plan, clock) {
+  const written = await withVaultLock(vault.path, clock, async () => {
+    const current = await readVaultRaw(vault.path);
+    if (current !== vault.raw) {
+      throw new VaultError("VAULT_CHANGED", "The vault changed on disk while this command was running; nothing was written.", {
+        suggestion: "Another candle command wrote to it. Run this one again."
+      });
+    }
+    const envelopes = plan.envelopes ?? vault.file.envelopes;
+    const keys = [...vault.file.keys, ...plan.addKeys ?? []];
+    const header = {
+      format: VAULT_FORMAT,
+      version: VAULT_VERSION,
+      vaultId: vault.file.vaultId,
+      generation: vault.file.generation + 1,
+      createdAt: vault.file.createdAt,
+      updatedAt: new Date(clock.now()).toISOString(),
+      cipher: VAULT_CIPHER,
+      envelopes,
+      keyIds: keys.map((blob) => blob.id),
+      root: vault.file.root,
+      keys
+    };
+    const next = await sealIndex(header, plan.index, vault.payloadKey);
+    const contents = serializeVault(next);
+    try {
+      await writeKeystoreFile(vault.path, contents);
+    } catch {
+      throw new VaultError("VAULT_WRITE_FAILED", `Could not write the vault at ${vault.path}.`);
+    }
+    return { next, contents };
+  });
+  const path = sidecarPath(vault.path);
+  await writeSidecar(path, nextSidecar(await readSidecar(path), written.next, plan.sidecar)).catch(() => {});
+  return { ...vault, raw: written.contents, file: written.next, index: plan.index };
+}
+async function withVaultLock(path, clock, fn) {
+  try {
+    return await withKeystoreLock(path, clock, fn);
+  } catch (error) {
+    if (error instanceof KeystoreLockedError) {
+      throw new VaultError("VAULT_LOCKED", error.message);
+    }
+    throw error;
+  }
+}
+async function sealKeyBlob(vault, keyId, secret) {
+  const blob = await seal(vault.payloadKey, secret, keyAad(vault.file.vaultId, keyId));
+  return { id: keyId, ...blob };
+}
+async function writeNewVault(path, contents) {
+  await mkdir4(candleConfigDirOf(path), { recursive: true });
+  await chmod4(candleConfigDirOf(path), 448).catch(() => {});
+  await writeKeystoreFile(path, contents);
+}
+function candleConfigDirOf(path) {
+  return join5(path, "..");
+}
+function entriesOf(vault) {
+  return vault.index.entries;
+}
+var init_store = __esm(() => {
+  init_wallet_keystore();
+  init_crypto();
+  init_errors();
+  init_format();
+  init_sidecar();
+});
+
 // ../../node_modules/zod/v3/helpers/util.js
 var util, objectUtil, ZodParsedType, getParsedType = (data) => {
   const t = typeof data;
@@ -5171,7 +8251,7 @@ function getErrorMap() {
   return overrideErrorMap;
 }
 var overrideErrorMap;
-var init_errors = __esm(() => {
+var init_errors2 = __esm(() => {
   init_en();
   overrideErrorMap = en_default;
 });
@@ -5273,7 +8353,7 @@ var makeIssue = (params) => {
   };
 }, EMPTY_PATH, INVALID, DIRTY = (value) => ({ status: "dirty", value }), OK = (value) => ({ status: "valid", value }), isAborted = (x) => x.status === "aborted", isDirty = (x) => x.status === "dirty", isValid = (x) => x.status === "valid", isAsync = (x) => typeof Promise !== "undefined" && x instanceof Promise;
 var init_parseUtil = __esm(() => {
-  init_errors();
+  init_errors2();
   init_en();
   EMPTY_PATH = [];
   INVALID = Object.freeze({
@@ -5841,7 +8921,7 @@ var handleResult = (ctx, result) => {
 }) => custom((data) => data instanceof cls, params), stringType, numberType, nanType, bigIntType, booleanType, dateType, symbolType, undefinedType, nullType, anyType, unknownType, neverType, voidType, arrayType, objectType, strictObjectType, unionType, discriminatedUnionType, intersectionType, tupleType, recordType, mapType, setType, functionType, lazyType, literalType, enumType, nativeEnumType, promiseType, effectsType, optionalType, nullableType, preprocessType, pipelineType, ostring = () => stringType().optional(), onumber = () => numberType().optional(), oboolean = () => booleanType().optional(), coerce, NEVER;
 var init_types = __esm(() => {
   init_ZodError();
-  init_errors();
+  init_errors2();
   init_errorUtil();
   init_parseUtil();
   init_util();
@@ -8756,7 +11836,7 @@ __export(exports_external, {
   BRAND: () => BRAND
 });
 var init_external = __esm(() => {
-  init_errors();
+  init_errors2();
   init_parseUtil();
   init_typeAliases();
   init_util();
@@ -9568,7 +12648,7 @@ class Protocol {
   }
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken } = options !== null && options !== undefined ? options : {};
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve3, reject) => {
       var _a, _b, _c, _d, _e, _f;
       if (!this._transport) {
         reject(new Error("Not connected"));
@@ -9619,7 +12699,7 @@ class Protocol {
         }
         try {
           const result = resultSchema.parse(response.result);
-          resolve(result);
+          resolve3(result);
         } catch (error) {
           reject(error);
         }
@@ -11863,8 +14943,8 @@ var require_resolve = __commonJS((exports) => {
     }
     return count;
   }
-  function getFullPath(resolver, id = "", normalize2) {
-    if (normalize2 !== false)
+  function getFullPath(resolver, id = "", normalize4) {
+    if (normalize4 !== false)
       id = normalizeId(id);
     const p = resolver.parse(id);
     return _getFullPath(resolver, p);
@@ -12602,7 +15682,7 @@ var require_compile = __commonJS((exports) => {
     const schOrFunc = root.refs[ref];
     if (schOrFunc)
       return schOrFunc;
-    let _sch = resolve.call(this, root, ref);
+    let _sch = resolve3.call(this, root, ref);
     if (_sch === undefined) {
       const schema = (_a = root.localRefs) === null || _a === undefined ? undefined : _a[ref];
       const { schemaId } = this.opts;
@@ -12629,7 +15709,7 @@ var require_compile = __commonJS((exports) => {
   function sameSchemaEnv(s1, s2) {
     return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
   }
-  function resolve(root, ref) {
+  function resolve3(root, ref) {
     let sch;
     while (typeof (sch = this.refs[ref]) == "string")
       ref = sch;
@@ -13207,7 +16287,7 @@ var require_schemes = __commonJS((exports, module) => {
 var require_fast_uri = __commonJS((exports, module) => {
   var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizePercentEncoding, normalizePathEncoding, escapePreservingEscapes, reescapeHostDelimiters, isIPv4, nonSimpleDomain } = require_utils();
   var { SCHEMES, getSchemeHandler } = require_schemes();
-  function normalize2(uri, options) {
+  function normalize4(uri, options) {
     if (typeof uri === "string") {
       uri = normalizeString(uri, options);
     } else if (typeof uri === "object") {
@@ -13215,7 +16295,7 @@ var require_fast_uri = __commonJS((exports, module) => {
     }
     return uri;
   }
-  function resolve(baseURI, relativeURI, options) {
+  function resolve3(baseURI, relativeURI, options) {
     const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
     const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
     const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
@@ -13499,8 +16579,8 @@ var require_fast_uri = __commonJS((exports, module) => {
   }
   var fastUri = {
     SCHEMES,
-    normalize: normalize2,
-    resolve,
+    normalize: normalize4,
+    resolve: resolve3,
     resolveComponent,
     equal,
     serialize,
@@ -13986,11 +17066,11 @@ var require_core = __commonJS((exports) => {
   Ajv.ValidationError = validation_error_1.default;
   Ajv.MissingRefError = ref_error_1.default;
   exports.default = Ajv;
-  function checkOptions(checkOpts2, options, msg, log = "error") {
-    for (const key in checkOpts2) {
+  function checkOptions(checkOpts3, options, msg, log = "error") {
+    for (const key in checkOpts3) {
       const opt = key;
       if (opt in options)
-        this.logger[log](`${msg}: option ${key}. ${checkOpts2[opt]}`);
+        this.logger[log](`${msg}: option ${key}. ${checkOpts3[opt]}`);
     }
   }
   function getSchEnv(keyRef) {
@@ -14919,7 +17999,7 @@ var require_contains = __commonJS((exports) => {
         const count = gen2.let("count", 0);
         validateItems(schValid, () => gen2.if(schValid, () => checkLimits(count)));
       }
-      function validateItems(_valid, block) {
+      function validateItems(_valid, block2) {
         gen2.forRange("i", 0, len, (i) => {
           cxt.subschema({
             keyword: "contains",
@@ -14927,7 +18007,7 @@ var require_contains = __commonJS((exports) => {
             dataPropType: util_1.Type.Num,
             compositeRule: true
           }, _valid);
-          block();
+          block2();
         });
       }
       function checkLimits(count) {
@@ -17920,7 +21000,7 @@ var init_zodToJsonSchema = __esm(() => {
 });
 
 // ../../node_modules/zod-to-json-schema/dist/esm/index.js
-var init_esm = __esm(() => {
+var init_esm2 = __esm(() => {
   init_zodToJsonSchema();
   init_Options();
   init_Refs();
@@ -18636,7 +21716,7 @@ function createCompletionResult(suggestions) {
 var EMPTY_OBJECT_JSON_SCHEMA, EMPTY_COMPLETION_RESULT;
 var init_mcp = __esm(() => {
   init_server();
-  init_esm();
+  init_esm2();
   init_zod();
   init_types2();
   init_completable();
@@ -18738,12 +21818,12 @@ class StdioServerTransport {
     (_a = this.onclose) === null || _a === undefined || _a.call(this);
   }
   send(message) {
-    return new Promise((resolve) => {
+    return new Promise((resolve3) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve();
+        resolve3();
       } else {
-        this._stdout.once("drain", resolve);
+        this._stdout.once("drain", resolve3);
       }
     });
   }
@@ -19430,9 +22510,9 @@ function registerTools(server, env = process.env) {
   }, async (args) => callAndRelay("candle_get_market", args, cfg));
   register("candle_token_forensics", {
     title: "Token forensics",
-    description: `Gate a buy before making it: deployer history, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), holder concentration, and a risk tier (LOW/MODERATE/HIGH/CRITICAL) with per-factor reasons. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.
+    description: `Gate a buy before making it: who launched it (resolved on-chain; pump.fun's shared updateAuthority is never the developer), their went-to-zero rate and last coins, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), holder concentration, same-funder insider share, same-funder deployer cluster, and a risk tier (LOW/MODERATE/HIGH/CRITICAL) with per-factor reasons. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.
 
-MARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed answers this way.`,
+MARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed now answers with a partial report instead.`,
     inputSchema: tokenForensicsShape
   }, async (args) => callAndRelay("candle_token_forensics", args, cfg));
   register("candle_get_feed", {
@@ -19706,11 +22786,11 @@ function createCandleMcpServer(env = process.env) {
 async function runStdioServer(env = process.env, transport = new StdioServerTransport) {
   const server = createCandleMcpServer(env);
   await server.connect(transport);
-  await new Promise((resolve) => {
+  await new Promise((resolve3) => {
     const sdkOnClose = transport.onclose;
     transport.onclose = () => {
       sdkOnClose?.();
-      resolve();
+      resolve3();
     };
   });
 }
@@ -19720,16 +22800,19 @@ START HERE — five tools need NO credential. Call these first to confirm the se
   candle_get_market       price, market cap, volume, curve state for one token
   candle_get_feed         the roster: hot streak, new pairs, graduated, blue chip
   candle_resolve_token    a ticker or partial name -> mint address + chain
-  candle_token_forensics  call this before quoting or buying, whenever the token has a Candle market. Returns deployer history, who bought in the deploy window (strangers in the same slot are the bundle signal), holder concentration, and a risk tier LOW/MODERATE/HIGH/CRITICAL with per-factor reasons
+  candle_token_forensics  call this before quoting or buying. Returns the on-chain developer (never a launchpad shared authority), their went-to-zero rate and last coins, who bought in the deploy window (strangers in the same slot are the bundle signal), holder concentration, same-funder insider share, same-funder cluster, and a risk tier LOW/MODERATE/HIGH/CRITICAL with per-factor reasons
   candle_get_agent_profile  your own tier, caps and verified activity
 
 COVERAGE — read this before you treat an error as a broken server.
 candle_get_feed indexes the wider market (pump.fun, pons.family and other external launchpads).
-candle_get_market and candle_token_forensics answer for tokens that have a CANDLE market. So a
-mint that candle_get_feed just returned can still come back MARKET_NOT_FOUND from those two, and
-that is a coverage boundary, not a fault and not a reason to retry, re-auth, or tell the human the
-integration is down. Report it as "Candle has no market for this token, so I could not run
-forensics on it" and let the human decide.
+candle_get_market answers for tokens that have a CANDLE market. candle_token_forensics also
+answers for Solana tokens the feed already knows, with a partial report: on-chain developer
+(never a launchpad shared authority), went-to-zero record, holder concentration, same-funder
+insiders and cluster. Deploy-window stays unavailable without a Candle launch record. Hood
+tokens Candle did not launch, and unknown mints, still come back MARKET_NOT_FOUND. That is a
+coverage boundary, not a fault and not a reason to retry, re-auth, or tell the human the
+integration is down. Report MARKET_NOT_FOUND as "Candle has no market for this token, so I
+could not run forensics on it" and let the human decide.
 
 Never let a MARKET_NOT_FOUND stand in for a clean bill of health. The same rule governs the
 coverage note on every forensics measurement: "unavailable" is NOT "clean" — say so rather than
@@ -19751,7 +22834,7 @@ var init_server2 = __esm(() => {
 // src/index.ts
 import { spawn as spawn2 } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod as chmod4, readFile as readFile4, realpath, rename as rename3, unlink, writeFile as writeFile4 } from "node:fs/promises";
+import { chmod as chmod6, readFile as readFile6, realpath, rename as rename3, unlink, writeFile as writeFile5 } from "node:fs/promises";
 import { hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -20358,7 +23441,7 @@ class EncryptedFileSecretStore {
       return fromEnv;
     }
     if (process.stdin.isTTY) {
-      const prompted = await promptHiddenPassphrase("Passphrase for Candle credential store: ");
+      const prompted = await readHiddenLine("Passphrase for Candle credential store: ", realPromptStreams());
       this.cachedPassphrase = prompted;
       return prompted;
     }
@@ -20393,20 +23476,39 @@ async function promptHiddenSecret(promptText) {
   if (!process.stdin.isTTY) {
     throw new Error("No TTY available for interactive input; pass --key-file instead");
   }
-  return promptHiddenPassphrase(promptText);
+  return readHiddenLine(promptText, realPromptStreams());
 }
-async function promptHiddenPassphrase(promptText) {
+function realPromptStreams() {
+  return { input: process.stdin, output: process.stderr };
+}
+async function promptVisibleLine(promptText) {
+  if (!process.stdin.isTTY) {
+    throw new Error("No TTY available for interactive input; this command cannot run unattended");
+  }
+  return readVisibleLine(promptText, realPromptStreams());
+}
+async function readVisibleLine(promptText, io) {
   const readline = await import("node:readline");
   return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
+    rl.question(promptText, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+async function readHiddenLine(promptText, io) {
+  const readline = await import("node:readline");
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
     const rlInternals = rl;
     rlInternals._writeToOutput = (text) => {
       if (text === promptText)
-        process.stdout.write(text);
+        io.output.write(text);
     };
     rl.question(promptText, (answer) => {
       rl.close();
-      process.stdout.write(`
+      io.output.write(`
 `);
       resolve(answer);
     });
@@ -21885,1081 +24987,16 @@ Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl,
   return doctorExit;
 }
 
-// ../../node_modules/@scure/base/lib/esm/index.js
-/*! scure-base - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-function isBytes(a) {
-  return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
-}
-function abytes(b, ...lengths) {
-  if (!isBytes(b))
-    throw new Error("Uint8Array expected");
-  if (lengths.length > 0 && !lengths.includes(b.length))
-    throw new Error("Uint8Array expected of length " + lengths + ", got length=" + b.length);
-}
-function isArrayOf(isString, arr) {
-  if (!Array.isArray(arr))
-    return false;
-  if (arr.length === 0)
-    return true;
-  if (isString) {
-    return arr.every((item) => typeof item === "string");
-  } else {
-    return arr.every((item) => Number.isSafeInteger(item));
-  }
-}
-function afn(input) {
-  if (typeof input !== "function")
-    throw new Error("function expected");
-  return true;
-}
-function astr(label, input) {
-  if (typeof input !== "string")
-    throw new Error(`${label}: string expected`);
-  return true;
-}
-function anumber(n) {
-  if (!Number.isSafeInteger(n))
-    throw new Error(`invalid integer: ${n}`);
-}
-function aArr(input) {
-  if (!Array.isArray(input))
-    throw new Error("array expected");
-}
-function astrArr(label, input) {
-  if (!isArrayOf(true, input))
-    throw new Error(`${label}: array of strings expected`);
-}
-function anumArr(label, input) {
-  if (!isArrayOf(false, input))
-    throw new Error(`${label}: array of numbers expected`);
-}
-function chain(...args) {
-  const id = (a) => a;
-  const wrap = (a, b) => (c) => a(b(c));
-  const encode = args.map((x) => x.encode).reduceRight(wrap, id);
-  const decode = args.map((x) => x.decode).reduce(wrap, id);
-  return { encode, decode };
-}
-function alphabet(letters) {
-  const lettersA = typeof letters === "string" ? letters.split("") : letters;
-  const len = lettersA.length;
-  astrArr("alphabet", lettersA);
-  const indexes = new Map(lettersA.map((l, i) => [l, i]));
-  return {
-    encode: (digits) => {
-      aArr(digits);
-      return digits.map((i) => {
-        if (!Number.isSafeInteger(i) || i < 0 || i >= len)
-          throw new Error(`alphabet.encode: digit index outside alphabet "${i}". Allowed: ${letters}`);
-        return lettersA[i];
-      });
-    },
-    decode: (input) => {
-      aArr(input);
-      return input.map((letter) => {
-        astr("alphabet.decode", letter);
-        const i = indexes.get(letter);
-        if (i === undefined)
-          throw new Error(`Unknown letter: "${letter}". Allowed: ${letters}`);
-        return i;
-      });
-    }
-  };
-}
-function join3(separator = "") {
-  astr("join", separator);
-  return {
-    encode: (from) => {
-      astrArr("join.decode", from);
-      return from.join(separator);
-    },
-    decode: (to) => {
-      astr("join.decode", to);
-      return to.split(separator);
-    }
-  };
-}
-function padding(bits, chr = "=") {
-  anumber(bits);
-  astr("padding", chr);
-  return {
-    encode(data) {
-      astrArr("padding.encode", data);
-      while (data.length * bits % 8)
-        data.push(chr);
-      return data;
-    },
-    decode(input) {
-      astrArr("padding.decode", input);
-      let end = input.length;
-      if (end * bits % 8)
-        throw new Error("padding: invalid, string should have whole number of bytes");
-      for (;end > 0 && input[end - 1] === chr; end--) {
-        const last = end - 1;
-        const byte = last * bits;
-        if (byte % 8 === 0)
-          throw new Error("padding: invalid, string has too much padding");
-      }
-      return input.slice(0, end);
-    }
-  };
-}
-function normalize(fn) {
-  afn(fn);
-  return { encode: (from) => from, decode: (to) => fn(to) };
-}
-function convertRadix(data, from, to) {
-  if (from < 2)
-    throw new Error(`convertRadix: invalid from=${from}, base cannot be less than 2`);
-  if (to < 2)
-    throw new Error(`convertRadix: invalid to=${to}, base cannot be less than 2`);
-  aArr(data);
-  if (!data.length)
-    return [];
-  let pos = 0;
-  const res = [];
-  const digits = Array.from(data, (d) => {
-    anumber(d);
-    if (d < 0 || d >= from)
-      throw new Error(`invalid integer: ${d}`);
-    return d;
-  });
-  const dlen = digits.length;
-  while (true) {
-    let carry = 0;
-    let done = true;
-    for (let i = pos;i < dlen; i++) {
-      const digit = digits[i];
-      const fromCarry = from * carry;
-      const digitBase = fromCarry + digit;
-      if (!Number.isSafeInteger(digitBase) || fromCarry / from !== carry || digitBase - digit !== fromCarry) {
-        throw new Error("convertRadix: carry overflow");
-      }
-      const div = digitBase / to;
-      carry = digitBase % to;
-      const rounded = Math.floor(div);
-      digits[i] = rounded;
-      if (!Number.isSafeInteger(rounded) || rounded * to + carry !== digitBase)
-        throw new Error("convertRadix: carry overflow");
-      if (!done)
-        continue;
-      else if (!rounded)
-        pos = i;
-      else
-        done = false;
-    }
-    res.push(carry);
-    if (done)
-      break;
-  }
-  for (let i = 0;i < data.length - 1 && data[i] === 0; i++)
-    res.push(0);
-  return res.reverse();
-}
-var gcd = (a, b) => b === 0 ? a : gcd(b, a % b);
-var radix2carry = (from, to) => from + (to - gcd(from, to));
-var powers = /* @__PURE__ */ (() => {
-  let res = [];
-  for (let i = 0;i < 40; i++)
-    res.push(2 ** i);
-  return res;
-})();
-function convertRadix2(data, from, to, padding2) {
-  aArr(data);
-  if (from <= 0 || from > 32)
-    throw new Error(`convertRadix2: wrong from=${from}`);
-  if (to <= 0 || to > 32)
-    throw new Error(`convertRadix2: wrong to=${to}`);
-  if (radix2carry(from, to) > 32) {
-    throw new Error(`convertRadix2: carry overflow from=${from} to=${to} carryBits=${radix2carry(from, to)}`);
-  }
-  let carry = 0;
-  let pos = 0;
-  const max = powers[from];
-  const mask = powers[to] - 1;
-  const res = [];
-  for (const n of data) {
-    anumber(n);
-    if (n >= max)
-      throw new Error(`convertRadix2: invalid data word=${n} from=${from}`);
-    carry = carry << from | n;
-    if (pos + from > 32)
-      throw new Error(`convertRadix2: carry overflow pos=${pos} from=${from}`);
-    pos += from;
-    for (;pos >= to; pos -= to)
-      res.push((carry >> pos - to & mask) >>> 0);
-    const pow = powers[pos];
-    if (pow === undefined)
-      throw new Error("invalid carry");
-    carry &= pow - 1;
-  }
-  carry = carry << to - pos & mask;
-  if (!padding2 && pos >= from)
-    throw new Error("Excess padding");
-  if (!padding2 && carry > 0)
-    throw new Error(`Non-zero padding: ${carry}`);
-  if (padding2 && pos > 0)
-    res.push(carry >>> 0);
-  return res;
-}
-function radix(num) {
-  anumber(num);
-  const _256 = 2 ** 8;
-  return {
-    encode: (bytes) => {
-      if (!isBytes(bytes))
-        throw new Error("radix.encode input should be Uint8Array");
-      return convertRadix(Array.from(bytes), _256, num);
-    },
-    decode: (digits) => {
-      anumArr("radix.decode", digits);
-      return Uint8Array.from(convertRadix(digits, num, _256));
-    }
-  };
-}
-function radix2(bits, revPadding = false) {
-  anumber(bits);
-  if (bits <= 0 || bits > 32)
-    throw new Error("radix2: bits should be in (0..32]");
-  if (radix2carry(8, bits) > 32 || radix2carry(bits, 8) > 32)
-    throw new Error("radix2: carry overflow");
-  return {
-    encode: (bytes) => {
-      if (!isBytes(bytes))
-        throw new Error("radix2.encode input should be Uint8Array");
-      return convertRadix2(Array.from(bytes), 8, bits, !revPadding);
-    },
-    decode: (digits) => {
-      anumArr("radix2.decode", digits);
-      return Uint8Array.from(convertRadix2(digits, bits, 8, revPadding));
-    }
-  };
-}
-function unsafeWrapper(fn) {
-  afn(fn);
-  return function(...args) {
-    try {
-      return fn.apply(null, args);
-    } catch (e) {}
-  };
-}
-var base16 = chain(radix2(4), alphabet("0123456789ABCDEF"), join3(""));
-var base32 = chain(radix2(5), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"), padding(5), join3(""));
-var base32nopad = chain(radix2(5), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"), join3(""));
-var base32hex = chain(radix2(5), alphabet("0123456789ABCDEFGHIJKLMNOPQRSTUV"), padding(5), join3(""));
-var base32hexnopad = chain(radix2(5), alphabet("0123456789ABCDEFGHIJKLMNOPQRSTUV"), join3(""));
-var base32crockford = chain(radix2(5), alphabet("0123456789ABCDEFGHJKMNPQRSTVWXYZ"), join3(""), normalize((s) => s.toUpperCase().replace(/O/g, "0").replace(/[IL]/g, "1")));
-var hasBase64Builtin = /* @__PURE__ */ (() => typeof Uint8Array.from([]).toBase64 === "function" && typeof Uint8Array.fromBase64 === "function")();
-var decodeBase64Builtin = (s, isUrl) => {
-  astr("base64", s);
-  const re = isUrl ? /^[A-Za-z0-9=_-]+$/ : /^[A-Za-z0-9=+/]+$/;
-  const alphabet2 = isUrl ? "base64url" : "base64";
-  if (s.length > 0 && !re.test(s))
-    throw new Error("invalid base64");
-  return Uint8Array.fromBase64(s, { alphabet: alphabet2, lastChunkHandling: "strict" });
-};
-var base64 = hasBase64Builtin ? {
-  encode(b) {
-    abytes(b);
-    return b.toBase64();
-  },
-  decode(s) {
-    return decodeBase64Builtin(s, false);
-  }
-} : chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"), padding(6), join3(""));
-var base64nopad = chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"), join3(""));
-var base64url = hasBase64Builtin ? {
-  encode(b) {
-    abytes(b);
-    return b.toBase64({ alphabet: "base64url" });
-  },
-  decode(s) {
-    return decodeBase64Builtin(s, true);
-  }
-} : chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"), padding(6), join3(""));
-var base64urlnopad = chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"), join3(""));
-var genBase58 = (abc) => chain(radix(58), alphabet(abc), join3(""));
-var base58 = genBase58("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz");
-var base58flickr = genBase58("123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ");
-var base58xrp = genBase58("rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz");
-var BECH_ALPHABET = chain(alphabet("qpzry9x8gf2tvdw0s3jn54khce6mua7l"), join3(""));
-var POLYMOD_GENERATORS = [996825010, 642813549, 513874426, 1027748829, 705979059];
-function bech32Polymod(pre) {
-  const b = pre >> 25;
-  let chk = (pre & 33554431) << 5;
-  for (let i = 0;i < POLYMOD_GENERATORS.length; i++) {
-    if ((b >> i & 1) === 1)
-      chk ^= POLYMOD_GENERATORS[i];
-  }
-  return chk;
-}
-function bechChecksum(prefix, words, encodingConst = 1) {
-  const len = prefix.length;
-  let chk = 1;
-  for (let i = 0;i < len; i++) {
-    const c = prefix.charCodeAt(i);
-    if (c < 33 || c > 126)
-      throw new Error(`Invalid prefix (${prefix})`);
-    chk = bech32Polymod(chk) ^ c >> 5;
-  }
-  chk = bech32Polymod(chk);
-  for (let i = 0;i < len; i++)
-    chk = bech32Polymod(chk) ^ prefix.charCodeAt(i) & 31;
-  for (let v of words)
-    chk = bech32Polymod(chk) ^ v;
-  for (let i = 0;i < 6; i++)
-    chk = bech32Polymod(chk);
-  chk ^= encodingConst;
-  return BECH_ALPHABET.encode(convertRadix2([chk % powers[30]], 30, 5, false));
-}
-function genBech32(encoding) {
-  const ENCODING_CONST = encoding === "bech32" ? 1 : 734539939;
-  const _words = radix2(5);
-  const fromWords = _words.decode;
-  const toWords = _words.encode;
-  const fromWordsUnsafe = unsafeWrapper(fromWords);
-  function encode(prefix, words, limit = 90) {
-    astr("bech32.encode prefix", prefix);
-    if (isBytes(words))
-      words = Array.from(words);
-    anumArr("bech32.encode", words);
-    const plen = prefix.length;
-    if (plen === 0)
-      throw new TypeError(`Invalid prefix length ${plen}`);
-    const actualLength = plen + 7 + words.length;
-    if (limit !== false && actualLength > limit)
-      throw new TypeError(`Length ${actualLength} exceeds limit ${limit}`);
-    const lowered = prefix.toLowerCase();
-    const sum = bechChecksum(lowered, words, ENCODING_CONST);
-    return `${lowered}1${BECH_ALPHABET.encode(words)}${sum}`;
-  }
-  function decode(str, limit = 90) {
-    astr("bech32.decode input", str);
-    const slen = str.length;
-    if (slen < 8 || limit !== false && slen > limit)
-      throw new TypeError(`invalid string length: ${slen} (${str}). Expected (8..${limit})`);
-    const lowered = str.toLowerCase();
-    if (str !== lowered && str !== str.toUpperCase())
-      throw new Error(`String must be lowercase or uppercase`);
-    const sepIndex = lowered.lastIndexOf("1");
-    if (sepIndex === 0 || sepIndex === -1)
-      throw new Error(`Letter "1" must be present between prefix and data only`);
-    const prefix = lowered.slice(0, sepIndex);
-    const data = lowered.slice(sepIndex + 1);
-    if (data.length < 6)
-      throw new Error("Data must be at least 6 characters long");
-    const words = BECH_ALPHABET.decode(data).slice(0, -6);
-    const sum = bechChecksum(prefix, words, ENCODING_CONST);
-    if (!data.endsWith(sum))
-      throw new Error(`Invalid checksum in ${str}: expected "${sum}"`);
-    return { prefix, words };
-  }
-  const decodeUnsafe = unsafeWrapper(decode);
-  function decodeToBytes(str) {
-    const { prefix, words } = decode(str, false);
-    return { prefix, words, bytes: fromWords(words) };
-  }
-  function encodeFromBytes(prefix, bytes) {
-    return encode(prefix, toWords(bytes));
-  }
-  return {
-    encode,
-    decode,
-    encodeFromBytes,
-    decodeToBytes,
-    decodeUnsafe,
-    fromWords,
-    fromWordsUnsafe,
-    toWords
-  };
-}
-var bech32 = genBech32("bech32");
-var bech32m = genBech32("bech32m");
-var hasHexBuiltin = /* @__PURE__ */ (() => typeof Uint8Array.from([]).toHex === "function" && typeof Uint8Array.fromHex === "function")();
-var hexBuiltin = {
-  encode(data) {
-    abytes(data);
-    return data.toHex();
-  },
-  decode(s) {
-    astr("hex", s);
-    return Uint8Array.fromHex(s);
-  }
-};
-var hex = hasHexBuiltin ? hexBuiltin : chain(radix2(4), alphabet("0123456789abcdef"), join3(""), normalize((s) => {
-  if (typeof s !== "string" || s.length % 2 !== 0)
-    throw new TypeError(`hex.decode: expected string, got ${typeof s} with length ${s.length}`);
-  return s.toLowerCase();
-}));
+// src/commands/tee.ts
+init_esm();
 
-// ../../node_modules/@noble/hashes/esm/cryptoNode.js
-import * as nc from "node:crypto";
-var crypto2 = nc && typeof nc === "object" && "webcrypto" in nc ? nc.webcrypto : nc && typeof nc === "object" && ("randomBytes" in nc) ? nc : undefined;
-
-// ../../node_modules/@noble/hashes/esm/utils.js
-/*! noble-hashes - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-function isBytes2(a) {
-  return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
-}
-function anumber2(n) {
-  if (!Number.isSafeInteger(n) || n < 0)
-    throw new Error("positive integer expected, got " + n);
-}
-function abytes2(b, ...lengths) {
-  if (!isBytes2(b))
-    throw new Error("Uint8Array expected");
-  if (lengths.length > 0 && !lengths.includes(b.length))
-    throw new Error("Uint8Array expected of length " + lengths + ", got length=" + b.length);
-}
-function ahash(h) {
-  if (typeof h !== "function" || typeof h.create !== "function")
-    throw new Error("Hash should be wrapped by utils.createHasher");
-  anumber2(h.outputLen);
-  anumber2(h.blockLen);
-}
-function aexists(instance, checkFinished = true) {
-  if (instance.destroyed)
-    throw new Error("Hash instance has been destroyed");
-  if (checkFinished && instance.finished)
-    throw new Error("Hash#digest() has already been called");
-}
-function aoutput(out, instance) {
-  abytes2(out);
-  const min = instance.outputLen;
-  if (out.length < min) {
-    throw new Error("digestInto() expects output buffer of length at least " + min);
-  }
-}
-function u32(arr) {
-  return new Uint32Array(arr.buffer, arr.byteOffset, Math.floor(arr.byteLength / 4));
-}
-function clean(...arrays) {
-  for (let i = 0;i < arrays.length; i++) {
-    arrays[i].fill(0);
-  }
-}
-function createView(arr) {
-  return new DataView(arr.buffer, arr.byteOffset, arr.byteLength);
-}
-function rotr(word, shift) {
-  return word << 32 - shift | word >>> shift;
-}
-var isLE = /* @__PURE__ */ (() => new Uint8Array(new Uint32Array([287454020]).buffer)[0] === 68)();
-function byteSwap(word) {
-  return word << 24 & 4278190080 | word << 8 & 16711680 | word >>> 8 & 65280 | word >>> 24 & 255;
-}
-function byteSwap32(arr) {
-  for (let i = 0;i < arr.length; i++) {
-    arr[i] = byteSwap(arr[i]);
-  }
-  return arr;
-}
-var swap32IfBE = isLE ? (u) => u : byteSwap32;
-var hasHexBuiltin2 = /* @__PURE__ */ (() => typeof Uint8Array.from([]).toHex === "function" && typeof Uint8Array.fromHex === "function")();
-var hexes = /* @__PURE__ */ Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
-function bytesToHex(bytes) {
-  abytes2(bytes);
-  if (hasHexBuiltin2)
-    return bytes.toHex();
-  let hex2 = "";
-  for (let i = 0;i < bytes.length; i++) {
-    hex2 += hexes[bytes[i]];
-  }
-  return hex2;
-}
-var asciis = { _0: 48, _9: 57, A: 65, F: 70, a: 97, f: 102 };
-function asciiToBase16(ch) {
-  if (ch >= asciis._0 && ch <= asciis._9)
-    return ch - asciis._0;
-  if (ch >= asciis.A && ch <= asciis.F)
-    return ch - (asciis.A - 10);
-  if (ch >= asciis.a && ch <= asciis.f)
-    return ch - (asciis.a - 10);
-  return;
-}
-function hexToBytes(hex2) {
-  if (typeof hex2 !== "string")
-    throw new Error("hex string expected, got " + typeof hex2);
-  if (hasHexBuiltin2)
-    return Uint8Array.fromHex(hex2);
-  const hl = hex2.length;
-  const al = hl / 2;
-  if (hl % 2)
-    throw new Error("hex string expected, got unpadded hex of length " + hl);
-  const array = new Uint8Array(al);
-  for (let ai = 0, hi = 0;ai < al; ai++, hi += 2) {
-    const n1 = asciiToBase16(hex2.charCodeAt(hi));
-    const n2 = asciiToBase16(hex2.charCodeAt(hi + 1));
-    if (n1 === undefined || n2 === undefined) {
-      const char = hex2[hi] + hex2[hi + 1];
-      throw new Error('hex string expected, got non-hex character "' + char + '" at index ' + hi);
-    }
-    array[ai] = n1 * 16 + n2;
-  }
-  return array;
-}
-function utf8ToBytes(str) {
-  if (typeof str !== "string")
-    throw new Error("string expected");
-  return new Uint8Array(new TextEncoder().encode(str));
-}
-function toBytes(data) {
-  if (typeof data === "string")
-    data = utf8ToBytes(data);
-  abytes2(data);
-  return data;
-}
-function concatBytes(...arrays) {
-  let sum = 0;
-  for (let i = 0;i < arrays.length; i++) {
-    const a = arrays[i];
-    abytes2(a);
-    sum += a.length;
-  }
-  const res = new Uint8Array(sum);
-  for (let i = 0, pad = 0;i < arrays.length; i++) {
-    const a = arrays[i];
-    res.set(a, pad);
-    pad += a.length;
-  }
-  return res;
-}
-class Hash {
-}
-function createHasher(hashCons) {
-  const hashC = (msg) => hashCons().update(toBytes(msg)).digest();
-  const tmp = hashCons();
-  hashC.outputLen = tmp.outputLen;
-  hashC.blockLen = tmp.blockLen;
-  hashC.create = () => hashCons();
-  return hashC;
-}
-function randomBytes(bytesLength = 32) {
-  if (crypto2 && typeof crypto2.getRandomValues === "function") {
-    return crypto2.getRandomValues(new Uint8Array(bytesLength));
-  }
-  if (crypto2 && typeof crypto2.randomBytes === "function") {
-    return Uint8Array.from(crypto2.randomBytes(bytesLength));
-  }
-  throw new Error("crypto.getRandomValues must be defined");
-}
-
-// ../../node_modules/@noble/hashes/esm/_md.js
-function setBigUint64(view, byteOffset, value, isLE2) {
-  if (typeof view.setBigUint64 === "function")
-    return view.setBigUint64(byteOffset, value, isLE2);
-  const _32n = BigInt(32);
-  const _u32_max = BigInt(4294967295);
-  const wh = Number(value >> _32n & _u32_max);
-  const wl = Number(value & _u32_max);
-  const h = isLE2 ? 4 : 0;
-  const l = isLE2 ? 0 : 4;
-  view.setUint32(byteOffset + h, wh, isLE2);
-  view.setUint32(byteOffset + l, wl, isLE2);
-}
-function Chi(a, b, c) {
-  return a & b ^ ~a & c;
-}
-function Maj(a, b, c) {
-  return a & b ^ a & c ^ b & c;
-}
-
-class HashMD extends Hash {
-  constructor(blockLen, outputLen, padOffset, isLE2) {
-    super();
-    this.finished = false;
-    this.length = 0;
-    this.pos = 0;
-    this.destroyed = false;
-    this.blockLen = blockLen;
-    this.outputLen = outputLen;
-    this.padOffset = padOffset;
-    this.isLE = isLE2;
-    this.buffer = new Uint8Array(blockLen);
-    this.view = createView(this.buffer);
-  }
-  update(data) {
-    aexists(this);
-    data = toBytes(data);
-    abytes2(data);
-    const { view, buffer, blockLen } = this;
-    const len = data.length;
-    for (let pos = 0;pos < len; ) {
-      const take = Math.min(blockLen - this.pos, len - pos);
-      if (take === blockLen) {
-        const dataView = createView(data);
-        for (;blockLen <= len - pos; pos += blockLen)
-          this.process(dataView, pos);
-        continue;
-      }
-      buffer.set(data.subarray(pos, pos + take), this.pos);
-      this.pos += take;
-      pos += take;
-      if (this.pos === blockLen) {
-        this.process(view, 0);
-        this.pos = 0;
-      }
-    }
-    this.length += data.length;
-    this.roundClean();
-    return this;
-  }
-  digestInto(out) {
-    aexists(this);
-    aoutput(out, this);
-    this.finished = true;
-    const { buffer, view, blockLen, isLE: isLE2 } = this;
-    let { pos } = this;
-    buffer[pos++] = 128;
-    clean(this.buffer.subarray(pos));
-    if (this.padOffset > blockLen - pos) {
-      this.process(view, 0);
-      pos = 0;
-    }
-    for (let i = pos;i < blockLen; i++)
-      buffer[i] = 0;
-    setBigUint64(view, blockLen - 8, BigInt(this.length * 8), isLE2);
-    this.process(view, 0);
-    const oview = createView(out);
-    const len = this.outputLen;
-    if (len % 4)
-      throw new Error("_sha2: outputLen should be aligned to 32bit");
-    const outLen = len / 4;
-    const state = this.get();
-    if (outLen > state.length)
-      throw new Error("_sha2: outputLen bigger than state");
-    for (let i = 0;i < outLen; i++)
-      oview.setUint32(4 * i, state[i], isLE2);
-  }
-  digest() {
-    const { buffer, outputLen } = this;
-    this.digestInto(buffer);
-    const res = buffer.slice(0, outputLen);
-    this.destroy();
-    return res;
-  }
-  _cloneInto(to) {
-    to || (to = new this.constructor);
-    to.set(...this.get());
-    const { blockLen, buffer, length, finished, destroyed, pos } = this;
-    to.destroyed = destroyed;
-    to.finished = finished;
-    to.length = length;
-    to.pos = pos;
-    if (length % blockLen)
-      to.buffer.set(buffer);
-    return to;
-  }
-  clone() {
-    return this._cloneInto();
-  }
-}
-var SHA256_IV = /* @__PURE__ */ Uint32Array.from([
-  1779033703,
-  3144134277,
-  1013904242,
-  2773480762,
-  1359893119,
-  2600822924,
-  528734635,
-  1541459225
-]);
-var SHA512_IV = /* @__PURE__ */ Uint32Array.from([
-  1779033703,
-  4089235720,
-  3144134277,
-  2227873595,
-  1013904242,
-  4271175723,
-  2773480762,
-  1595750129,
-  1359893119,
-  2917565137,
-  2600822924,
-  725511199,
-  528734635,
-  4215389547,
-  1541459225,
-  327033209
-]);
-
-// ../../node_modules/@noble/hashes/esm/_u64.js
-var U32_MASK64 = /* @__PURE__ */ BigInt(2 ** 32 - 1);
-var _32n = /* @__PURE__ */ BigInt(32);
-function fromBig(n, le = false) {
-  if (le)
-    return { h: Number(n & U32_MASK64), l: Number(n >> _32n & U32_MASK64) };
-  return { h: Number(n >> _32n & U32_MASK64) | 0, l: Number(n & U32_MASK64) | 0 };
-}
-function split(lst, le = false) {
-  const len = lst.length;
-  let Ah = new Uint32Array(len);
-  let Al = new Uint32Array(len);
-  for (let i = 0;i < len; i++) {
-    const { h, l } = fromBig(lst[i], le);
-    [Ah[i], Al[i]] = [h, l];
-  }
-  return [Ah, Al];
-}
-var shrSH = (h, _l, s) => h >>> s;
-var shrSL = (h, l, s) => h << 32 - s | l >>> s;
-var rotrSH = (h, l, s) => h >>> s | l << 32 - s;
-var rotrSL = (h, l, s) => h << 32 - s | l >>> s;
-var rotrBH = (h, l, s) => h << 64 - s | l >>> s - 32;
-var rotrBL = (h, l, s) => h >>> s - 32 | l << 64 - s;
-var rotlSH = (h, l, s) => h << s | l >>> 32 - s;
-var rotlSL = (h, l, s) => l << s | h >>> 32 - s;
-var rotlBH = (h, l, s) => l << s - 32 | h >>> 64 - s;
-var rotlBL = (h, l, s) => h << s - 32 | l >>> 64 - s;
-function add(Ah, Al, Bh, Bl) {
-  const l = (Al >>> 0) + (Bl >>> 0);
-  return { h: Ah + Bh + (l / 2 ** 32 | 0) | 0, l: l | 0 };
-}
-var add3L = (Al, Bl, Cl) => (Al >>> 0) + (Bl >>> 0) + (Cl >>> 0);
-var add3H = (low, Ah, Bh, Ch) => Ah + Bh + Ch + (low / 2 ** 32 | 0) | 0;
-var add4L = (Al, Bl, Cl, Dl) => (Al >>> 0) + (Bl >>> 0) + (Cl >>> 0) + (Dl >>> 0);
-var add4H = (low, Ah, Bh, Ch, Dh) => Ah + Bh + Ch + Dh + (low / 2 ** 32 | 0) | 0;
-var add5L = (Al, Bl, Cl, Dl, El) => (Al >>> 0) + (Bl >>> 0) + (Cl >>> 0) + (Dl >>> 0) + (El >>> 0);
-var add5H = (low, Ah, Bh, Ch, Dh, Eh) => Ah + Bh + Ch + Dh + Eh + (low / 2 ** 32 | 0) | 0;
-
-// ../../node_modules/@noble/hashes/esm/sha2.js
-var SHA256_K = /* @__PURE__ */ Uint32Array.from([
-  1116352408,
-  1899447441,
-  3049323471,
-  3921009573,
-  961987163,
-  1508970993,
-  2453635748,
-  2870763221,
-  3624381080,
-  310598401,
-  607225278,
-  1426881987,
-  1925078388,
-  2162078206,
-  2614888103,
-  3248222580,
-  3835390401,
-  4022224774,
-  264347078,
-  604807628,
-  770255983,
-  1249150122,
-  1555081692,
-  1996064986,
-  2554220882,
-  2821834349,
-  2952996808,
-  3210313671,
-  3336571891,
-  3584528711,
-  113926993,
-  338241895,
-  666307205,
-  773529912,
-  1294757372,
-  1396182291,
-  1695183700,
-  1986661051,
-  2177026350,
-  2456956037,
-  2730485921,
-  2820302411,
-  3259730800,
-  3345764771,
-  3516065817,
-  3600352804,
-  4094571909,
-  275423344,
-  430227734,
-  506948616,
-  659060556,
-  883997877,
-  958139571,
-  1322822218,
-  1537002063,
-  1747873779,
-  1955562222,
-  2024104815,
-  2227730452,
-  2361852424,
-  2428436474,
-  2756734187,
-  3204031479,
-  3329325298
-]);
-var SHA256_W = /* @__PURE__ */ new Uint32Array(64);
-
-class SHA256 extends HashMD {
-  constructor(outputLen = 32) {
-    super(64, outputLen, 8, false);
-    this.A = SHA256_IV[0] | 0;
-    this.B = SHA256_IV[1] | 0;
-    this.C = SHA256_IV[2] | 0;
-    this.D = SHA256_IV[3] | 0;
-    this.E = SHA256_IV[4] | 0;
-    this.F = SHA256_IV[5] | 0;
-    this.G = SHA256_IV[6] | 0;
-    this.H = SHA256_IV[7] | 0;
-  }
-  get() {
-    const { A, B, C, D, E, F, G, H } = this;
-    return [A, B, C, D, E, F, G, H];
-  }
-  set(A, B, C, D, E, F, G, H) {
-    this.A = A | 0;
-    this.B = B | 0;
-    this.C = C | 0;
-    this.D = D | 0;
-    this.E = E | 0;
-    this.F = F | 0;
-    this.G = G | 0;
-    this.H = H | 0;
-  }
-  process(view, offset) {
-    for (let i = 0;i < 16; i++, offset += 4)
-      SHA256_W[i] = view.getUint32(offset, false);
-    for (let i = 16;i < 64; i++) {
-      const W15 = SHA256_W[i - 15];
-      const W2 = SHA256_W[i - 2];
-      const s0 = rotr(W15, 7) ^ rotr(W15, 18) ^ W15 >>> 3;
-      const s1 = rotr(W2, 17) ^ rotr(W2, 19) ^ W2 >>> 10;
-      SHA256_W[i] = s1 + SHA256_W[i - 7] + s0 + SHA256_W[i - 16] | 0;
-    }
-    let { A, B, C, D, E, F, G, H } = this;
-    for (let i = 0;i < 64; i++) {
-      const sigma1 = rotr(E, 6) ^ rotr(E, 11) ^ rotr(E, 25);
-      const T1 = H + sigma1 + Chi(E, F, G) + SHA256_K[i] + SHA256_W[i] | 0;
-      const sigma0 = rotr(A, 2) ^ rotr(A, 13) ^ rotr(A, 22);
-      const T2 = sigma0 + Maj(A, B, C) | 0;
-      H = G;
-      G = F;
-      F = E;
-      E = D + T1 | 0;
-      D = C;
-      C = B;
-      B = A;
-      A = T1 + T2 | 0;
-    }
-    A = A + this.A | 0;
-    B = B + this.B | 0;
-    C = C + this.C | 0;
-    D = D + this.D | 0;
-    E = E + this.E | 0;
-    F = F + this.F | 0;
-    G = G + this.G | 0;
-    H = H + this.H | 0;
-    this.set(A, B, C, D, E, F, G, H);
-  }
-  roundClean() {
-    clean(SHA256_W);
-  }
-  destroy() {
-    this.set(0, 0, 0, 0, 0, 0, 0, 0);
-    clean(this.buffer);
-  }
-}
-var K512 = /* @__PURE__ */ (() => split([
-  "0x428a2f98d728ae22",
-  "0x7137449123ef65cd",
-  "0xb5c0fbcfec4d3b2f",
-  "0xe9b5dba58189dbbc",
-  "0x3956c25bf348b538",
-  "0x59f111f1b605d019",
-  "0x923f82a4af194f9b",
-  "0xab1c5ed5da6d8118",
-  "0xd807aa98a3030242",
-  "0x12835b0145706fbe",
-  "0x243185be4ee4b28c",
-  "0x550c7dc3d5ffb4e2",
-  "0x72be5d74f27b896f",
-  "0x80deb1fe3b1696b1",
-  "0x9bdc06a725c71235",
-  "0xc19bf174cf692694",
-  "0xe49b69c19ef14ad2",
-  "0xefbe4786384f25e3",
-  "0x0fc19dc68b8cd5b5",
-  "0x240ca1cc77ac9c65",
-  "0x2de92c6f592b0275",
-  "0x4a7484aa6ea6e483",
-  "0x5cb0a9dcbd41fbd4",
-  "0x76f988da831153b5",
-  "0x983e5152ee66dfab",
-  "0xa831c66d2db43210",
-  "0xb00327c898fb213f",
-  "0xbf597fc7beef0ee4",
-  "0xc6e00bf33da88fc2",
-  "0xd5a79147930aa725",
-  "0x06ca6351e003826f",
-  "0x142929670a0e6e70",
-  "0x27b70a8546d22ffc",
-  "0x2e1b21385c26c926",
-  "0x4d2c6dfc5ac42aed",
-  "0x53380d139d95b3df",
-  "0x650a73548baf63de",
-  "0x766a0abb3c77b2a8",
-  "0x81c2c92e47edaee6",
-  "0x92722c851482353b",
-  "0xa2bfe8a14cf10364",
-  "0xa81a664bbc423001",
-  "0xc24b8b70d0f89791",
-  "0xc76c51a30654be30",
-  "0xd192e819d6ef5218",
-  "0xd69906245565a910",
-  "0xf40e35855771202a",
-  "0x106aa07032bbd1b8",
-  "0x19a4c116b8d2d0c8",
-  "0x1e376c085141ab53",
-  "0x2748774cdf8eeb99",
-  "0x34b0bcb5e19b48a8",
-  "0x391c0cb3c5c95a63",
-  "0x4ed8aa4ae3418acb",
-  "0x5b9cca4f7763e373",
-  "0x682e6ff3d6b2b8a3",
-  "0x748f82ee5defb2fc",
-  "0x78a5636f43172f60",
-  "0x84c87814a1f0ab72",
-  "0x8cc702081a6439ec",
-  "0x90befffa23631e28",
-  "0xa4506cebde82bde9",
-  "0xbef9a3f7b2c67915",
-  "0xc67178f2e372532b",
-  "0xca273eceea26619c",
-  "0xd186b8c721c0c207",
-  "0xeada7dd6cde0eb1e",
-  "0xf57d4f7fee6ed178",
-  "0x06f067aa72176fba",
-  "0x0a637dc5a2c898a6",
-  "0x113f9804bef90dae",
-  "0x1b710b35131c471b",
-  "0x28db77f523047d84",
-  "0x32caab7b40c72493",
-  "0x3c9ebe0a15c9bebc",
-  "0x431d67c49c100d4c",
-  "0x4cc5d4becb3e42b6",
-  "0x597f299cfc657e2a",
-  "0x5fcb6fab3ad6faec",
-  "0x6c44198c4a475817"
-].map((n) => BigInt(n))))();
-var SHA512_Kh = /* @__PURE__ */ (() => K512[0])();
-var SHA512_Kl = /* @__PURE__ */ (() => K512[1])();
-var SHA512_W_H = /* @__PURE__ */ new Uint32Array(80);
-var SHA512_W_L = /* @__PURE__ */ new Uint32Array(80);
-
-class SHA512 extends HashMD {
-  constructor(outputLen = 64) {
-    super(128, outputLen, 16, false);
-    this.Ah = SHA512_IV[0] | 0;
-    this.Al = SHA512_IV[1] | 0;
-    this.Bh = SHA512_IV[2] | 0;
-    this.Bl = SHA512_IV[3] | 0;
-    this.Ch = SHA512_IV[4] | 0;
-    this.Cl = SHA512_IV[5] | 0;
-    this.Dh = SHA512_IV[6] | 0;
-    this.Dl = SHA512_IV[7] | 0;
-    this.Eh = SHA512_IV[8] | 0;
-    this.El = SHA512_IV[9] | 0;
-    this.Fh = SHA512_IV[10] | 0;
-    this.Fl = SHA512_IV[11] | 0;
-    this.Gh = SHA512_IV[12] | 0;
-    this.Gl = SHA512_IV[13] | 0;
-    this.Hh = SHA512_IV[14] | 0;
-    this.Hl = SHA512_IV[15] | 0;
-  }
-  get() {
-    const { Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl } = this;
-    return [Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl];
-  }
-  set(Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl) {
-    this.Ah = Ah | 0;
-    this.Al = Al | 0;
-    this.Bh = Bh | 0;
-    this.Bl = Bl | 0;
-    this.Ch = Ch | 0;
-    this.Cl = Cl | 0;
-    this.Dh = Dh | 0;
-    this.Dl = Dl | 0;
-    this.Eh = Eh | 0;
-    this.El = El | 0;
-    this.Fh = Fh | 0;
-    this.Fl = Fl | 0;
-    this.Gh = Gh | 0;
-    this.Gl = Gl | 0;
-    this.Hh = Hh | 0;
-    this.Hl = Hl | 0;
-  }
-  process(view, offset) {
-    for (let i = 0;i < 16; i++, offset += 4) {
-      SHA512_W_H[i] = view.getUint32(offset);
-      SHA512_W_L[i] = view.getUint32(offset += 4);
-    }
-    for (let i = 16;i < 80; i++) {
-      const W15h = SHA512_W_H[i - 15] | 0;
-      const W15l = SHA512_W_L[i - 15] | 0;
-      const s0h = rotrSH(W15h, W15l, 1) ^ rotrSH(W15h, W15l, 8) ^ shrSH(W15h, W15l, 7);
-      const s0l = rotrSL(W15h, W15l, 1) ^ rotrSL(W15h, W15l, 8) ^ shrSL(W15h, W15l, 7);
-      const W2h = SHA512_W_H[i - 2] | 0;
-      const W2l = SHA512_W_L[i - 2] | 0;
-      const s1h = rotrSH(W2h, W2l, 19) ^ rotrBH(W2h, W2l, 61) ^ shrSH(W2h, W2l, 6);
-      const s1l = rotrSL(W2h, W2l, 19) ^ rotrBL(W2h, W2l, 61) ^ shrSL(W2h, W2l, 6);
-      const SUMl = add4L(s0l, s1l, SHA512_W_L[i - 7], SHA512_W_L[i - 16]);
-      const SUMh = add4H(SUMl, s0h, s1h, SHA512_W_H[i - 7], SHA512_W_H[i - 16]);
-      SHA512_W_H[i] = SUMh | 0;
-      SHA512_W_L[i] = SUMl | 0;
-    }
-    let { Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl } = this;
-    for (let i = 0;i < 80; i++) {
-      const sigma1h = rotrSH(Eh, El, 14) ^ rotrSH(Eh, El, 18) ^ rotrBH(Eh, El, 41);
-      const sigma1l = rotrSL(Eh, El, 14) ^ rotrSL(Eh, El, 18) ^ rotrBL(Eh, El, 41);
-      const CHIh = Eh & Fh ^ ~Eh & Gh;
-      const CHIl = El & Fl ^ ~El & Gl;
-      const T1ll = add5L(Hl, sigma1l, CHIl, SHA512_Kl[i], SHA512_W_L[i]);
-      const T1h = add5H(T1ll, Hh, sigma1h, CHIh, SHA512_Kh[i], SHA512_W_H[i]);
-      const T1l = T1ll | 0;
-      const sigma0h = rotrSH(Ah, Al, 28) ^ rotrBH(Ah, Al, 34) ^ rotrBH(Ah, Al, 39);
-      const sigma0l = rotrSL(Ah, Al, 28) ^ rotrBL(Ah, Al, 34) ^ rotrBL(Ah, Al, 39);
-      const MAJh = Ah & Bh ^ Ah & Ch ^ Bh & Ch;
-      const MAJl = Al & Bl ^ Al & Cl ^ Bl & Cl;
-      Hh = Gh | 0;
-      Hl = Gl | 0;
-      Gh = Fh | 0;
-      Gl = Fl | 0;
-      Fh = Eh | 0;
-      Fl = El | 0;
-      ({ h: Eh, l: El } = add(Dh | 0, Dl | 0, T1h | 0, T1l | 0));
-      Dh = Ch | 0;
-      Dl = Cl | 0;
-      Ch = Bh | 0;
-      Cl = Bl | 0;
-      Bh = Ah | 0;
-      Bl = Al | 0;
-      const All = add3L(T1l, sigma0l, MAJl);
-      Ah = add3H(All, T1h, sigma0h, MAJh);
-      Al = All | 0;
-    }
-    ({ h: Ah, l: Al } = add(this.Ah | 0, this.Al | 0, Ah | 0, Al | 0));
-    ({ h: Bh, l: Bl } = add(this.Bh | 0, this.Bl | 0, Bh | 0, Bl | 0));
-    ({ h: Ch, l: Cl } = add(this.Ch | 0, this.Cl | 0, Ch | 0, Cl | 0));
-    ({ h: Dh, l: Dl } = add(this.Dh | 0, this.Dl | 0, Dh | 0, Dl | 0));
-    ({ h: Eh, l: El } = add(this.Eh | 0, this.El | 0, Eh | 0, El | 0));
-    ({ h: Fh, l: Fl } = add(this.Fh | 0, this.Fl | 0, Fh | 0, Fl | 0));
-    ({ h: Gh, l: Gl } = add(this.Gh | 0, this.Gl | 0, Gh | 0, Gl | 0));
-    ({ h: Hh, l: Hl } = add(this.Hh | 0, this.Hl | 0, Hh | 0, Hl | 0));
-    this.set(Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl);
-  }
-  roundClean() {
-    clean(SHA512_W_H, SHA512_W_L);
-  }
-  destroy() {
-    clean(this.buffer);
-    this.set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-  }
-}
-var sha256 = /* @__PURE__ */ createHasher(() => new SHA256);
-var sha512 = /* @__PURE__ */ createHasher(() => new SHA512);
+// ../../node_modules/@noble/curves/esm/ed25519.js
+init_sha2();
+init_utils();
 
 // ../../node_modules/@noble/curves/esm/utils.js
+init_utils();
+init_utils();
 /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
 var _0n = /* @__PURE__ */ BigInt(0);
 var _1n = /* @__PURE__ */ BigInt(1);
@@ -24150,7 +26187,7 @@ function eddsa(Point, cHash, eddsaOpts = {}) {
     return _abytes2(seed, lengths.seed, "seed");
   }
   function keygen(seed) {
-    const secretKey = utils.randomSecretKey(seed);
+    const secretKey = utils2.randomSecretKey(seed);
     return { secretKey, publicKey: getPublicKey(secretKey) };
   }
   function isValidSecretKey(key) {
@@ -24163,7 +26200,7 @@ function eddsa(Point, cHash, eddsaOpts = {}) {
       return false;
     }
   }
-  const utils = {
+  const utils2 = {
     getExtendedPublicKey,
     randomSecretKey,
     isValidSecretKey,
@@ -24193,7 +26230,7 @@ function eddsa(Point, cHash, eddsaOpts = {}) {
     getPublicKey,
     sign,
     verify,
-    utils,
+    utils: utils2,
     Point,
     lengths
   });
@@ -24445,10 +26482,9 @@ _RistrettoPoint.ZERO = /* @__PURE__ */ (() => new _RistrettoPoint(ed25519.Point.
 _RistrettoPoint.Fp = /* @__PURE__ */ (() => Fp)();
 _RistrettoPoint.Fn = /* @__PURE__ */ (() => Fn)();
 
-// ../../node_modules/@noble/hashes/esm/sha256.js
-var sha2562 = sha256;
-
 // src/solana-lite.ts
+init_sha256();
+init_esm();
 var SYSTEM_PROGRAM_ID = "11111111111111111111111111111111";
 var TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 var TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
@@ -24732,6 +26768,10 @@ function createSolanaRpc(url, fetchFn) {
       const r = await call("getSignatureStatuses", [[signature], { searchTransactionHistory: true }]);
       return r.value[0] ?? null;
     },
+    async hasSignatureHistory(address) {
+      const r = await call("getSignaturesForAddress", [address, { limit: 1 }]);
+      return Array.isArray(r) && r.length > 0;
+    },
     async isBlockhashValid(blockhash) {
       const r = await call("isBlockhashValid", [blockhash, { commitment: "finalized" }]);
       if (typeof r?.value !== "boolean")
@@ -24854,7 +26894,7 @@ function createView2(arr) {
   return new DataView(arr.buffer, arr.byteOffset, arr.byteLength);
 }
 var isLE2 = /* @__PURE__ */ (() => new Uint8Array(new Uint32Array([287454020]).buffer)[0] === 68)();
-function checkOpts(defaults, opts) {
+function checkOpts2(defaults, opts) {
   if (opts == null || typeof opts !== "object") {
     throw new Error("options must be defined");
   }
@@ -24988,7 +27028,7 @@ function runCipher(core, sigma, key, nonce, data, output, counter, rounds) {
   }
 }
 function createCipher(core, opts) {
-  const { allowShortKeys, extendNonceFn, counterLength, counterRight, rounds } = checkOpts({
+  const { allowShortKeys, extendNonceFn, counterLength, counterRight, rounds } = checkOpts2({
     allowShortKeys: false,
     counterLength: 8,
     counterRight: false,
@@ -27163,6 +29203,9 @@ class DhkemP256HkdfSha256 extends DhkemP256HkdfSha256Native {
 }
 class HkdfSha256 extends HkdfSha256Native {
 }
+// src/wallet-import.ts
+init_esm();
+
 // src/internal/encoding.ts
 function toArrayBuffer(view) {
   return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength);
@@ -27313,7 +29356,12 @@ async function runImportFlow(params) {
 // src/wallet-keygen.ts
 import { generateKeyPairSync } from "node:crypto";
 
+// ../../node_modules/@noble/curves/esm/secp256k1.js
+init_sha2();
+
 // ../../node_modules/@noble/hashes/esm/hmac.js
+init_utils();
+
 class HMAC extends Hash {
   constructor(hash, _key) {
     super();
@@ -27382,6 +29430,7 @@ var hmac2 = (hash, key, message) => new HMAC(hash, key).update(message).digest()
 hmac2.create = (hash, key) => new HMAC(hash, key);
 
 // ../../node_modules/@noble/curves/esm/abstract/weierstrass.js
+init_utils();
 /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
 var divNearest = (num, den) => (num + (num >= 0 ? den : -den) / _2n4) / den;
 function _splitEndoScalar(k, basis, n) {
@@ -28009,7 +30058,7 @@ function ecdh(Point, ecdhOpts = {}) {
     const b = Point.fromHex(publicKeyB);
     return b.multiply(s).toBytes(isCompressed);
   }
-  const utils = {
+  const utils2 = {
     isValidSecretKey,
     isValidPublicKey,
     randomSecretKey,
@@ -28020,7 +30069,7 @@ function ecdh(Point, ecdhOpts = {}) {
       return point.precompute(windowSize, false);
     }
   };
-  return Object.freeze({ getPublicKey, getSharedSecret, keygen, Point, utils, lengths });
+  return Object.freeze({ getPublicKey, getSharedSecret, keygen, Point, utils: utils2, lengths });
 }
 function ecdsa(Point, hash, ecdsaOpts = {}) {
   ahash(hash);
@@ -28035,7 +30084,7 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
   const hmac3 = ecdsaOpts.hmac || ((key, ...msgs) => hmac2(hash, key, concatBytes(...msgs)));
   const { Fp: Fp2, Fn: Fn2 } = Point;
   const { ORDER: CURVE_ORDER, BITS: fnBits } = Fn2;
-  const { keygen, getPublicKey, getSharedSecret, utils, lengths } = ecdh(Point, ecdsaOpts);
+  const { keygen, getPublicKey, getSharedSecret, utils: utils2, lengths } = ecdh(Point, ecdsaOpts);
   const defaultSigOpts = {
     prehash: false,
     lowS: typeof ecdsaOpts.lowS === "boolean" ? ecdsaOpts.lowS : false,
@@ -28280,7 +30329,7 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
     keygen,
     getPublicKey,
     getSharedSecret,
-    utils,
+    utils: utils2,
     lengths,
     Point,
     sign,
@@ -28396,6 +30445,8 @@ var Fpk1 = Field(secp256k1_CURVE.p, { sqrt: sqrtMod });
 var secp256k1 = createCurve({ ...secp256k1_CURVE, Fp: Fpk1, lowS: true, endo: secp256k1_ENDO }, sha256);
 
 // ../../node_modules/@noble/hashes/esm/sha3.js
+init__u64();
+init_utils();
 var _0n7 = BigInt(0);
 var _1n7 = BigInt(1);
 var _2n6 = BigInt(2);
@@ -28577,6 +30628,7 @@ var gen = (suffix, blockLen, outputLen) => createHasher(() => new Keccak(blockLe
 var keccak_256 = /* @__PURE__ */ (() => gen(1, 136, 256 / 8))();
 
 // src/wallet-keygen.ts
+init_esm();
 var hex2 = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 function toChecksumAddress(lowercaseBody) {
   const digest = hex2(keccak_256(new TextEncoder().encode(lowercaseBody)));
@@ -28605,154 +30657,11 @@ function generateWallet(chain2) {
   return chain2 === "solana" ? generateSolana() : generateEvm();
 }
 
-// src/wallet-keystore.ts
-import { chmod as chmod2, mkdir as mkdir2, readFile as readFile2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
-import { homedir as homedir3 } from "node:os";
-import { dirname as dirname2, join as join4 } from "node:path";
-function defaultKeystorePath(env) {
-  return join4(candleConfigDir(env), "wallets.enc");
-}
-function defaultTeeKeystorePath(env) {
-  return join4(candleConfigDir(env), "tee-wallets.enc");
-}
-function legacyTeeKeystorePath(env) {
-  return join4(candleConfigDir(env), "hot-wallets.enc");
-}
-function candleConfigDir(env) {
-  return env.CANDLE_CONFIG_DIR?.trim() || join4(homedir3(), ".config", "candle");
-}
-var TEE_KEYSTORE_PURPOSE = "ember-tee";
-var LEGACY_TEE_PURPOSE = "ember-hot";
-var LEGACY_TEE_FIELD = "hot";
-var TEE_KEYSTORE_MIN_ITERATIONS = 210000;
-var TEE_KEYSTORE_MAX_ITERATIONS = 2100000;
-var KEYSTORE_VERSION = 1;
-var KEYSTORE_ITERATIONS = 210000;
-var b64 = (bytes) => Buffer.from(bytes).toString("base64");
-var unb64 = (s) => new Uint8Array(Buffer.from(s, "base64"));
-async function deriveKeystoreKey(passphrase, salt, iterations) {
-  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
-    "deriveKey"
-  ]);
-  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-}
-async function createKeystore(passphrase) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  return { key: await deriveKeystoreKey(passphrase, salt, KEYSTORE_ITERATIONS), salt, iterations: KEYSTORE_ITERATIONS };
-}
-async function serializeKeystore(entries, key, salt, iterations, purpose) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(entries)));
-  const file = {
-    version: KEYSTORE_VERSION,
-    createdAt: new Date().toISOString(),
-    kdf: "PBKDF2-HMAC-SHA256",
-    iterations,
-    salt: b64(salt),
-    cipher: "AES-256-GCM",
-    iv: b64(iv),
-    ciphertext: b64(new Uint8Array(sealed)),
-    ...purpose !== undefined && purpose !== "wallets" ? { purpose } : {}
-  };
-  return `${JSON.stringify(file, null, 2)}
-`;
-}
-async function readKeystore(raw, passphrase, opts = {}) {
-  let file;
-  try {
-    file = JSON.parse(raw);
-  } catch {
-    throw new Error("The keystore file is not valid JSON.");
-  }
-  if (file.version !== KEYSTORE_VERSION) {
-    throw new Error(`Unsupported keystore version ${file.version}: this CLI writes version ${KEYSTORE_VERSION}.`);
-  }
-  const purpose = file.purpose === TEE_KEYSTORE_PURPOSE || file.purpose === LEGACY_TEE_PURPOSE ? TEE_KEYSTORE_PURPOSE : "wallets";
-  if (opts.expectPurpose !== undefined && purpose !== opts.expectPurpose) {
-    throw new Error(purpose === TEE_KEYSTORE_PURPOSE ? "This is a TEE wallet store (tee-wallets.enc). It has no export path; use: candle tee sweep." : "This is not a TEE wallet store. The tee commands only open tee-wallets.enc.");
-  }
-  if (purpose === TEE_KEYSTORE_PURPOSE) {
-    if (file.kdf !== "PBKDF2-HMAC-SHA256" || file.cipher !== "AES-256-GCM") {
-      throw new Error("The TEE wallet store names an unsupported KDF or cipher; refusing to open it.");
-    }
-    if (!Number.isInteger(file.iterations) || file.iterations < TEE_KEYSTORE_MIN_ITERATIONS || file.iterations > TEE_KEYSTORE_MAX_ITERATIONS) {
-      throw new Error(`The TEE wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` + `${TEE_KEYSTORE_MIN_ITERATIONS}-${TEE_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`);
-    }
-  }
-  const salt = unb64(file.salt);
-  const key = await deriveKeystoreKey(passphrase, salt, file.iterations);
-  let plain;
-  try {
-    plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(file.iv) }, key, unb64(file.ciphertext));
-  } catch {
-    throw new Error("Could not decrypt the keystore: wrong passphrase, or the file is corrupt.");
-  }
-  const decoded = JSON.parse(new TextDecoder().decode(plain));
-  return {
-    entries: decoded.map(({ [LEGACY_TEE_FIELD]: legacy, ...entry }) => legacy !== undefined && entry.tee === undefined ? { ...entry, tee: legacy } : entry),
-    key,
-    salt,
-    iterations: file.iterations
-  };
-}
-async function writeKeystoreFile(path, contents) {
-  const dir = dirname2(path);
-  await mkdir2(dir, { recursive: true });
-  await chmod2(dir, 448);
-  const tmpPath = `${path}.${crypto.randomUUID()}.tmp`;
-  await writeFile2(tmpPath, contents, { encoding: "utf8", mode: 384 });
-  await chmod2(tmpPath, 384);
-  await rename2(tmpPath, path);
-}
-
-class KeystoreLockedError extends Error {
-  lockPath;
-  owner;
-  constructor(lockPath, owner) {
-    super(`Another command holds the TEE wallet store lock at ${lockPath}` + `${owner ? ` (${owner})` : ""}. If no other candle tee command is running, remove that directory and retry.`);
-    this.lockPath = lockPath;
-    this.owner = owner;
-    this.name = "KeystoreLockedError";
-  }
-}
-function keystoreLockPath(path) {
-  return `${path}.lock`;
-}
-async function withKeystoreLock(path, clock, fn, opts = {}) {
-  const lockPath = keystoreLockPath(path);
-  const waitMs = opts.waitMs ?? 1e4;
-  const pollMs = opts.pollMs ?? 100;
-  await mkdir2(dirname2(path), { recursive: true });
-  const started = clock.now();
-  for (;; ) {
-    try {
-      await mkdir2(lockPath);
-      break;
-    } catch (error) {
-      if (error?.code !== "EEXIST")
-        throw error;
-      if (clock.now() - started >= waitMs) {
-        let owner = null;
-        try {
-          owner = (await readFile2(join4(lockPath, "owner"), "utf8")).trim() || null;
-        } catch {
-          owner = null;
-        }
-        throw new KeystoreLockedError(lockPath, owner);
-      }
-      await clock.sleep(pollMs);
-    }
-  }
-  try {
-    await writeFile2(join4(lockPath, "owner"), `${opts.owner ?? `pid ${process.pid}`} since ${new Date().toISOString()}
-`, { encoding: "utf8", mode: 384 }).catch(() => {});
-    return await fn();
-  } finally {
-    await rm2(lockPath, { recursive: true, force: true });
-  }
-}
+// src/commands/tee.ts
+init_wallet_keystore();
 
 // src/commands/wallets.ts
+init_esm();
 var NONE_HINT = `A wallet marked none has no signer on this machine, so a trade from here cannot sign with it.
 ` + `Import it here (candle wallets import), or run the trade from the machine that imported it.
 `;
@@ -30925,15 +32834,12172 @@ function messageOf(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+// src/commands/vault-backup.ts
+import { copyFile, stat as stat3 } from "node:fs/promises";
+import { resolve as resolve2 } from "node:path";
+
+// src/vault/domains.ts
+init_errors();
+import { homedir as homedir4 } from "node:os";
+import { isAbsolute, resolve, sep } from "node:path";
+var OTHER_CLOUD_MARKERS = [
+  "Library/CloudStorage",
+  "Dropbox",
+  "Google Drive",
+  "OneDrive",
+  "Sync",
+  "pCloudDrive",
+  "Nextcloud",
+  "ownCloud",
+  "Box",
+  "MEGA"
+];
+var REMOVABLE_PREFIXES = ["/Volumes/", "/media/", "/mnt/", "/run/media/"];
+function classifyDestination(path, home = homedir4()) {
+  const absolute = isAbsolute(path) ? path : resolve(path);
+  if (absolute.includes(`${sep}Library${sep}Mobile Documents`))
+    return "icloud-drive";
+  for (const marker of OTHER_CLOUD_MARKERS) {
+    if (absolute.startsWith(`${home}${sep}${marker.split("/").join(sep)}`))
+      return "other-cloud";
+  }
+  for (const prefix of REMOVABLE_PREFIXES) {
+    if (absolute.startsWith(prefix))
+      return "removable-media";
+  }
+  if (absolute.startsWith(`${home}${sep}`) || absolute.startsWith(`${sep}Users${sep}`) || absolute.startsWith(`${sep}home${sep}`)) {
+    return "local-disk";
+  }
+  if (absolute.startsWith(`${sep}tmp${sep}`) || absolute.startsWith(`${sep}var${sep}`) || absolute.startsWith(`${sep}private${sep}`)) {
+    return "local-disk";
+  }
+  return "unknown";
+}
+function accountDomainOf(destination) {
+  if (destination === "icloud-drive")
+    return "apple-account";
+  if (destination === "other-cloud")
+    return "other-cloud-account";
+  return;
+}
+function recoverableDomains(envelopes) {
+  const domains = [];
+  for (const envelope of envelopes) {
+    if (envelope.factor === "passphrase")
+      domains.push("human-memory");
+    else if (envelope.factor === "passkey-prf" && envelope.backupEligible === true)
+      domains.push(String(envelope.domain));
+  }
+  const hardware = envelopes.filter((e) => e.factor === "passkey-prf" && e.backupEligible !== true);
+  if (hardware.length >= 2)
+    domains.push("hardware-token");
+  return domains;
+}
+function countRecoverableFactors(envelopes) {
+  return new Set(recoverableDomains(envelopes)).size;
+}
+function assertRecoverableFactorExists(envelopes) {
+  if (countRecoverableFactors(envelopes) > 0)
+    return;
+  throw new VaultError("VAULT_NO_RECOVERABLE_FACTOR", "This vault has no recoverable factor, so creating a key in it would create one nobody can recover.", { suggestion: "Add a passphrase factor first: candle vault factor add passphrase" });
+}
+function assertBackupDomainAllowed(envelopes, destinationPath, opts) {
+  const destination = classifyDestination(destinationPath, opts.home);
+  const destinationAccount = accountDomainOf(destination);
+  const domains = new Set(recoverableDomains(envelopes));
+  if (domains.size === 0) {
+    throw new VaultError("VAULT_NO_RECOVERABLE_FACTOR", "This vault has no recoverable factor, so a backup of it could not be opened.", {
+      suggestion: "Add a passphrase factor first: candle vault factor add passphrase"
+    });
+  }
+  if (destinationAccount !== undefined && [...domains].every((domain) => domain === destinationAccount)) {
+    throw new VaultError("VAULT_SHARED_DOMAIN", `Every recoverable factor on this vault lives in the same administrative domain as ${destinationPath} (${destinationAccount}).`, {
+      suggestion: "One compromise would yield both the backup and a factor that opens it. Back up somewhere else, or add a factor in another domain."
+    });
+  }
+  const appleEnvelope = envelopes.some((envelope) => envelope.domain === "apple-account");
+  const sharedDomain = appleEnvelope && destination === "icloud-drive";
+  if (sharedDomain && !opts.acceptSharedDomain) {
+    throw new VaultError("VAULT_SHARED_DOMAIN", `${destinationPath} is in iCloud Drive and this vault has a synced passkey envelope, so one Apple account would hold both the backup and a factor that opens it.`, { suggestion: "Back it up outside iCloud Drive, or pass --accept-shared-domain to record that you accept this." });
+  }
+  return { destination, sharedDomain };
+}
+
+// src/commands/vault-backup.ts
+init_errors();
+init_sidecar();
+init_store();
+
+// src/vault/verify.ts
+init_crypto();
+
+// src/vault/ed25519.ts
+init_esm();
+init_errors();
+var SOLANA_SECRET_BYTES = 64;
+var SECP256K1_SCALAR_BYTES = 32;
+function pubkeyFromSecretSeed(seed32) {
+  if (seed32.length !== 32) {
+    throw new VaultError("VAULT_BLOB_TAMPERED", `expected a 32-byte ed25519 seed, got ${seed32.length}`);
+  }
+  const publicKey = ed25519.getPublicKey(seed32);
+  const secret64 = ownSecret(new Uint8Array(SOLANA_SECRET_BYTES));
+  secret64.set(seed32, 0);
+  secret64.set(publicKey, 32);
+  return { secret64, address: base58.encode(publicKey) };
+}
+function addressFromSecret64(secret64) {
+  if (secret64.length !== SOLANA_SECRET_BYTES) {
+    throw new VaultError("VAULT_BLOB_TAMPERED", `expected a ${SOLANA_SECRET_BYTES}-byte Solana secret, got ${secret64.length}`);
+  }
+  return base58.encode(ed25519.getPublicKey(secret64.subarray(0, 32)));
+}
+
+// src/vault/verify.ts
+init_errors();
+init_format();
+
+// ../../node_modules/@noble/hashes/esm/pbkdf2.js
+init_utils();
+function pbkdf2Init(hash, _password, _salt, _opts) {
+  ahash(hash);
+  const opts = checkOpts({ dkLen: 32, asyncTick: 10 }, _opts);
+  const { c, dkLen, asyncTick } = opts;
+  anumber2(c);
+  anumber2(dkLen);
+  anumber2(asyncTick);
+  if (c < 1)
+    throw new Error("iterations (c) should be >= 1");
+  const password = kdfInputToBytes(_password);
+  const salt = kdfInputToBytes(_salt);
+  const DK = new Uint8Array(dkLen);
+  const PRF = hmac2.create(hash, password);
+  const PRFSalt = PRF._cloneInto().update(salt);
+  return { c, dkLen, asyncTick, DK, PRF, PRFSalt };
+}
+function pbkdf2Output(PRF, PRFSalt, DK, prfW, u) {
+  PRF.destroy();
+  PRFSalt.destroy();
+  if (prfW)
+    prfW.destroy();
+  clean(u);
+  return DK;
+}
+async function pbkdf2Async(hash, password, salt, opts) {
+  const { c, dkLen, asyncTick, DK, PRF, PRFSalt } = pbkdf2Init(hash, password, salt, opts);
+  let prfW;
+  const arr = new Uint8Array(4);
+  const view = createView(arr);
+  const u = new Uint8Array(PRF.outputLen);
+  for (let ti = 1, pos = 0;pos < dkLen; ti++, pos += PRF.outputLen) {
+    const Ti = DK.subarray(pos, pos + PRF.outputLen);
+    view.setInt32(0, ti, false);
+    (prfW = PRFSalt._cloneInto(prfW)).update(arr).digestInto(u);
+    Ti.set(u.subarray(0, Ti.length));
+    await asyncLoop(c - 1, asyncTick, () => {
+      PRF._cloneInto(prfW).update(u).digestInto(u);
+      for (let i = 0;i < Ti.length; i++)
+        Ti[i] ^= u[i];
+    });
+  }
+  return pbkdf2Output(PRF, PRFSalt, DK, prfW, u);
+}
+
+// ../../node_modules/@scure/bip39/esm/index.js
+init_sha2();
+init_utils();
+init_esm();
+/*! scure-bip39 - MIT License (c) 2022 Patricio Palladino, Paul Miller (paulmillr.com) */
+var isJapanese = (wordlist) => wordlist[0] === "あいこくしん";
+function nfkd(str) {
+  if (typeof str !== "string")
+    throw new TypeError("invalid mnemonic type: " + typeof str);
+  return str.normalize("NFKD");
+}
+function normalize2(str) {
+  const norm = nfkd(str);
+  const words = norm.split(" ");
+  if (![12, 15, 18, 21, 24].includes(words.length))
+    throw new Error("Invalid mnemonic");
+  return { nfkd: norm, words };
+}
+function aentropy(ent) {
+  abytes2(ent, 16, 20, 24, 28, 32);
+}
+var calcChecksum = (entropy) => {
+  const bitsLeft = 8 - entropy.length / 4;
+  return new Uint8Array([sha256(entropy)[0] >> bitsLeft << bitsLeft]);
+};
+function getCoder(wordlist) {
+  if (!Array.isArray(wordlist) || wordlist.length !== 2048 || typeof wordlist[0] !== "string")
+    throw new Error("Wordlist: expected array of 2048 strings");
+  wordlist.forEach((i) => {
+    if (typeof i !== "string")
+      throw new Error("wordlist: non-string element: " + i);
+  });
+  return utils.chain(utils.checksum(1, calcChecksum), utils.radix2(11, true), utils.alphabet(wordlist));
+}
+function mnemonicToEntropy(mnemonic, wordlist) {
+  const { words } = normalize2(mnemonic);
+  const entropy = getCoder(wordlist).decode(words);
+  aentropy(entropy);
+  return entropy;
+}
+function entropyToMnemonic(entropy, wordlist) {
+  aentropy(entropy);
+  const words = getCoder(wordlist).encode(entropy);
+  return words.join(isJapanese(wordlist) ? "　" : " ");
+}
+function validateMnemonic(mnemonic, wordlist) {
+  try {
+    mnemonicToEntropy(mnemonic, wordlist);
+  } catch (e) {
+    return false;
+  }
+  return true;
+}
+var psalt = (passphrase) => nfkd("mnemonic" + passphrase);
+function mnemonicToSeed(mnemonic, passphrase = "") {
+  return pbkdf2Async(sha512, normalize2(mnemonic).nfkd, psalt(passphrase), { c: 2048, dkLen: 64 });
+}
+
+// ../../node_modules/@scure/bip39/esm/wordlists/english.js
+var wordlist = `abandon
+ability
+able
+about
+above
+absent
+absorb
+abstract
+absurd
+abuse
+access
+accident
+account
+accuse
+achieve
+acid
+acoustic
+acquire
+across
+act
+action
+actor
+actress
+actual
+adapt
+add
+addict
+address
+adjust
+admit
+adult
+advance
+advice
+aerobic
+affair
+afford
+afraid
+again
+age
+agent
+agree
+ahead
+aim
+air
+airport
+aisle
+alarm
+album
+alcohol
+alert
+alien
+all
+alley
+allow
+almost
+alone
+alpha
+already
+also
+alter
+always
+amateur
+amazing
+among
+amount
+amused
+analyst
+anchor
+ancient
+anger
+angle
+angry
+animal
+ankle
+announce
+annual
+another
+answer
+antenna
+antique
+anxiety
+any
+apart
+apology
+appear
+apple
+approve
+april
+arch
+arctic
+area
+arena
+argue
+arm
+armed
+armor
+army
+around
+arrange
+arrest
+arrive
+arrow
+art
+artefact
+artist
+artwork
+ask
+aspect
+assault
+asset
+assist
+assume
+asthma
+athlete
+atom
+attack
+attend
+attitude
+attract
+auction
+audit
+august
+aunt
+author
+auto
+autumn
+average
+avocado
+avoid
+awake
+aware
+away
+awesome
+awful
+awkward
+axis
+baby
+bachelor
+bacon
+badge
+bag
+balance
+balcony
+ball
+bamboo
+banana
+banner
+bar
+barely
+bargain
+barrel
+base
+basic
+basket
+battle
+beach
+bean
+beauty
+because
+become
+beef
+before
+begin
+behave
+behind
+believe
+below
+belt
+bench
+benefit
+best
+betray
+better
+between
+beyond
+bicycle
+bid
+bike
+bind
+biology
+bird
+birth
+bitter
+black
+blade
+blame
+blanket
+blast
+bleak
+bless
+blind
+blood
+blossom
+blouse
+blue
+blur
+blush
+board
+boat
+body
+boil
+bomb
+bone
+bonus
+book
+boost
+border
+boring
+borrow
+boss
+bottom
+bounce
+box
+boy
+bracket
+brain
+brand
+brass
+brave
+bread
+breeze
+brick
+bridge
+brief
+bright
+bring
+brisk
+broccoli
+broken
+bronze
+broom
+brother
+brown
+brush
+bubble
+buddy
+budget
+buffalo
+build
+bulb
+bulk
+bullet
+bundle
+bunker
+burden
+burger
+burst
+bus
+business
+busy
+butter
+buyer
+buzz
+cabbage
+cabin
+cable
+cactus
+cage
+cake
+call
+calm
+camera
+camp
+can
+canal
+cancel
+candy
+cannon
+canoe
+canvas
+canyon
+capable
+capital
+captain
+car
+carbon
+card
+cargo
+carpet
+carry
+cart
+case
+cash
+casino
+castle
+casual
+cat
+catalog
+catch
+category
+cattle
+caught
+cause
+caution
+cave
+ceiling
+celery
+cement
+census
+century
+cereal
+certain
+chair
+chalk
+champion
+change
+chaos
+chapter
+charge
+chase
+chat
+cheap
+check
+cheese
+chef
+cherry
+chest
+chicken
+chief
+child
+chimney
+choice
+choose
+chronic
+chuckle
+chunk
+churn
+cigar
+cinnamon
+circle
+citizen
+city
+civil
+claim
+clap
+clarify
+claw
+clay
+clean
+clerk
+clever
+click
+client
+cliff
+climb
+clinic
+clip
+clock
+clog
+close
+cloth
+cloud
+clown
+club
+clump
+cluster
+clutch
+coach
+coast
+coconut
+code
+coffee
+coil
+coin
+collect
+color
+column
+combine
+come
+comfort
+comic
+common
+company
+concert
+conduct
+confirm
+congress
+connect
+consider
+control
+convince
+cook
+cool
+copper
+copy
+coral
+core
+corn
+correct
+cost
+cotton
+couch
+country
+couple
+course
+cousin
+cover
+coyote
+crack
+cradle
+craft
+cram
+crane
+crash
+crater
+crawl
+crazy
+cream
+credit
+creek
+crew
+cricket
+crime
+crisp
+critic
+crop
+cross
+crouch
+crowd
+crucial
+cruel
+cruise
+crumble
+crunch
+crush
+cry
+crystal
+cube
+culture
+cup
+cupboard
+curious
+current
+curtain
+curve
+cushion
+custom
+cute
+cycle
+dad
+damage
+damp
+dance
+danger
+daring
+dash
+daughter
+dawn
+day
+deal
+debate
+debris
+decade
+december
+decide
+decline
+decorate
+decrease
+deer
+defense
+define
+defy
+degree
+delay
+deliver
+demand
+demise
+denial
+dentist
+deny
+depart
+depend
+deposit
+depth
+deputy
+derive
+describe
+desert
+design
+desk
+despair
+destroy
+detail
+detect
+develop
+device
+devote
+diagram
+dial
+diamond
+diary
+dice
+diesel
+diet
+differ
+digital
+dignity
+dilemma
+dinner
+dinosaur
+direct
+dirt
+disagree
+discover
+disease
+dish
+dismiss
+disorder
+display
+distance
+divert
+divide
+divorce
+dizzy
+doctor
+document
+dog
+doll
+dolphin
+domain
+donate
+donkey
+donor
+door
+dose
+double
+dove
+draft
+dragon
+drama
+drastic
+draw
+dream
+dress
+drift
+drill
+drink
+drip
+drive
+drop
+drum
+dry
+duck
+dumb
+dune
+during
+dust
+dutch
+duty
+dwarf
+dynamic
+eager
+eagle
+early
+earn
+earth
+easily
+east
+easy
+echo
+ecology
+economy
+edge
+edit
+educate
+effort
+egg
+eight
+either
+elbow
+elder
+electric
+elegant
+element
+elephant
+elevator
+elite
+else
+embark
+embody
+embrace
+emerge
+emotion
+employ
+empower
+empty
+enable
+enact
+end
+endless
+endorse
+enemy
+energy
+enforce
+engage
+engine
+enhance
+enjoy
+enlist
+enough
+enrich
+enroll
+ensure
+enter
+entire
+entry
+envelope
+episode
+equal
+equip
+era
+erase
+erode
+erosion
+error
+erupt
+escape
+essay
+essence
+estate
+eternal
+ethics
+evidence
+evil
+evoke
+evolve
+exact
+example
+excess
+exchange
+excite
+exclude
+excuse
+execute
+exercise
+exhaust
+exhibit
+exile
+exist
+exit
+exotic
+expand
+expect
+expire
+explain
+expose
+express
+extend
+extra
+eye
+eyebrow
+fabric
+face
+faculty
+fade
+faint
+faith
+fall
+false
+fame
+family
+famous
+fan
+fancy
+fantasy
+farm
+fashion
+fat
+fatal
+father
+fatigue
+fault
+favorite
+feature
+february
+federal
+fee
+feed
+feel
+female
+fence
+festival
+fetch
+fever
+few
+fiber
+fiction
+field
+figure
+file
+film
+filter
+final
+find
+fine
+finger
+finish
+fire
+firm
+first
+fiscal
+fish
+fit
+fitness
+fix
+flag
+flame
+flash
+flat
+flavor
+flee
+flight
+flip
+float
+flock
+floor
+flower
+fluid
+flush
+fly
+foam
+focus
+fog
+foil
+fold
+follow
+food
+foot
+force
+forest
+forget
+fork
+fortune
+forum
+forward
+fossil
+foster
+found
+fox
+fragile
+frame
+frequent
+fresh
+friend
+fringe
+frog
+front
+frost
+frown
+frozen
+fruit
+fuel
+fun
+funny
+furnace
+fury
+future
+gadget
+gain
+galaxy
+gallery
+game
+gap
+garage
+garbage
+garden
+garlic
+garment
+gas
+gasp
+gate
+gather
+gauge
+gaze
+general
+genius
+genre
+gentle
+genuine
+gesture
+ghost
+giant
+gift
+giggle
+ginger
+giraffe
+girl
+give
+glad
+glance
+glare
+glass
+glide
+glimpse
+globe
+gloom
+glory
+glove
+glow
+glue
+goat
+goddess
+gold
+good
+goose
+gorilla
+gospel
+gossip
+govern
+gown
+grab
+grace
+grain
+grant
+grape
+grass
+gravity
+great
+green
+grid
+grief
+grit
+grocery
+group
+grow
+grunt
+guard
+guess
+guide
+guilt
+guitar
+gun
+gym
+habit
+hair
+half
+hammer
+hamster
+hand
+happy
+harbor
+hard
+harsh
+harvest
+hat
+have
+hawk
+hazard
+head
+health
+heart
+heavy
+hedgehog
+height
+hello
+helmet
+help
+hen
+hero
+hidden
+high
+hill
+hint
+hip
+hire
+history
+hobby
+hockey
+hold
+hole
+holiday
+hollow
+home
+honey
+hood
+hope
+horn
+horror
+horse
+hospital
+host
+hotel
+hour
+hover
+hub
+huge
+human
+humble
+humor
+hundred
+hungry
+hunt
+hurdle
+hurry
+hurt
+husband
+hybrid
+ice
+icon
+idea
+identify
+idle
+ignore
+ill
+illegal
+illness
+image
+imitate
+immense
+immune
+impact
+impose
+improve
+impulse
+inch
+include
+income
+increase
+index
+indicate
+indoor
+industry
+infant
+inflict
+inform
+inhale
+inherit
+initial
+inject
+injury
+inmate
+inner
+innocent
+input
+inquiry
+insane
+insect
+inside
+inspire
+install
+intact
+interest
+into
+invest
+invite
+involve
+iron
+island
+isolate
+issue
+item
+ivory
+jacket
+jaguar
+jar
+jazz
+jealous
+jeans
+jelly
+jewel
+job
+join
+joke
+journey
+joy
+judge
+juice
+jump
+jungle
+junior
+junk
+just
+kangaroo
+keen
+keep
+ketchup
+key
+kick
+kid
+kidney
+kind
+kingdom
+kiss
+kit
+kitchen
+kite
+kitten
+kiwi
+knee
+knife
+knock
+know
+lab
+label
+labor
+ladder
+lady
+lake
+lamp
+language
+laptop
+large
+later
+latin
+laugh
+laundry
+lava
+law
+lawn
+lawsuit
+layer
+lazy
+leader
+leaf
+learn
+leave
+lecture
+left
+leg
+legal
+legend
+leisure
+lemon
+lend
+length
+lens
+leopard
+lesson
+letter
+level
+liar
+liberty
+library
+license
+life
+lift
+light
+like
+limb
+limit
+link
+lion
+liquid
+list
+little
+live
+lizard
+load
+loan
+lobster
+local
+lock
+logic
+lonely
+long
+loop
+lottery
+loud
+lounge
+love
+loyal
+lucky
+luggage
+lumber
+lunar
+lunch
+luxury
+lyrics
+machine
+mad
+magic
+magnet
+maid
+mail
+main
+major
+make
+mammal
+man
+manage
+mandate
+mango
+mansion
+manual
+maple
+marble
+march
+margin
+marine
+market
+marriage
+mask
+mass
+master
+match
+material
+math
+matrix
+matter
+maximum
+maze
+meadow
+mean
+measure
+meat
+mechanic
+medal
+media
+melody
+melt
+member
+memory
+mention
+menu
+mercy
+merge
+merit
+merry
+mesh
+message
+metal
+method
+middle
+midnight
+milk
+million
+mimic
+mind
+minimum
+minor
+minute
+miracle
+mirror
+misery
+miss
+mistake
+mix
+mixed
+mixture
+mobile
+model
+modify
+mom
+moment
+monitor
+monkey
+monster
+month
+moon
+moral
+more
+morning
+mosquito
+mother
+motion
+motor
+mountain
+mouse
+move
+movie
+much
+muffin
+mule
+multiply
+muscle
+museum
+mushroom
+music
+must
+mutual
+myself
+mystery
+myth
+naive
+name
+napkin
+narrow
+nasty
+nation
+nature
+near
+neck
+need
+negative
+neglect
+neither
+nephew
+nerve
+nest
+net
+network
+neutral
+never
+news
+next
+nice
+night
+noble
+noise
+nominee
+noodle
+normal
+north
+nose
+notable
+note
+nothing
+notice
+novel
+now
+nuclear
+number
+nurse
+nut
+oak
+obey
+object
+oblige
+obscure
+observe
+obtain
+obvious
+occur
+ocean
+october
+odor
+off
+offer
+office
+often
+oil
+okay
+old
+olive
+olympic
+omit
+once
+one
+onion
+online
+only
+open
+opera
+opinion
+oppose
+option
+orange
+orbit
+orchard
+order
+ordinary
+organ
+orient
+original
+orphan
+ostrich
+other
+outdoor
+outer
+output
+outside
+oval
+oven
+over
+own
+owner
+oxygen
+oyster
+ozone
+pact
+paddle
+page
+pair
+palace
+palm
+panda
+panel
+panic
+panther
+paper
+parade
+parent
+park
+parrot
+party
+pass
+patch
+path
+patient
+patrol
+pattern
+pause
+pave
+payment
+peace
+peanut
+pear
+peasant
+pelican
+pen
+penalty
+pencil
+people
+pepper
+perfect
+permit
+person
+pet
+phone
+photo
+phrase
+physical
+piano
+picnic
+picture
+piece
+pig
+pigeon
+pill
+pilot
+pink
+pioneer
+pipe
+pistol
+pitch
+pizza
+place
+planet
+plastic
+plate
+play
+please
+pledge
+pluck
+plug
+plunge
+poem
+poet
+point
+polar
+pole
+police
+pond
+pony
+pool
+popular
+portion
+position
+possible
+post
+potato
+pottery
+poverty
+powder
+power
+practice
+praise
+predict
+prefer
+prepare
+present
+pretty
+prevent
+price
+pride
+primary
+print
+priority
+prison
+private
+prize
+problem
+process
+produce
+profit
+program
+project
+promote
+proof
+property
+prosper
+protect
+proud
+provide
+public
+pudding
+pull
+pulp
+pulse
+pumpkin
+punch
+pupil
+puppy
+purchase
+purity
+purpose
+purse
+push
+put
+puzzle
+pyramid
+quality
+quantum
+quarter
+question
+quick
+quit
+quiz
+quote
+rabbit
+raccoon
+race
+rack
+radar
+radio
+rail
+rain
+raise
+rally
+ramp
+ranch
+random
+range
+rapid
+rare
+rate
+rather
+raven
+raw
+razor
+ready
+real
+reason
+rebel
+rebuild
+recall
+receive
+recipe
+record
+recycle
+reduce
+reflect
+reform
+refuse
+region
+regret
+regular
+reject
+relax
+release
+relief
+rely
+remain
+remember
+remind
+remove
+render
+renew
+rent
+reopen
+repair
+repeat
+replace
+report
+require
+rescue
+resemble
+resist
+resource
+response
+result
+retire
+retreat
+return
+reunion
+reveal
+review
+reward
+rhythm
+rib
+ribbon
+rice
+rich
+ride
+ridge
+rifle
+right
+rigid
+ring
+riot
+ripple
+risk
+ritual
+rival
+river
+road
+roast
+robot
+robust
+rocket
+romance
+roof
+rookie
+room
+rose
+rotate
+rough
+round
+route
+royal
+rubber
+rude
+rug
+rule
+run
+runway
+rural
+sad
+saddle
+sadness
+safe
+sail
+salad
+salmon
+salon
+salt
+salute
+same
+sample
+sand
+satisfy
+satoshi
+sauce
+sausage
+save
+say
+scale
+scan
+scare
+scatter
+scene
+scheme
+school
+science
+scissors
+scorpion
+scout
+scrap
+screen
+script
+scrub
+sea
+search
+season
+seat
+second
+secret
+section
+security
+seed
+seek
+segment
+select
+sell
+seminar
+senior
+sense
+sentence
+series
+service
+session
+settle
+setup
+seven
+shadow
+shaft
+shallow
+share
+shed
+shell
+sheriff
+shield
+shift
+shine
+ship
+shiver
+shock
+shoe
+shoot
+shop
+short
+shoulder
+shove
+shrimp
+shrug
+shuffle
+shy
+sibling
+sick
+side
+siege
+sight
+sign
+silent
+silk
+silly
+silver
+similar
+simple
+since
+sing
+siren
+sister
+situate
+six
+size
+skate
+sketch
+ski
+skill
+skin
+skirt
+skull
+slab
+slam
+sleep
+slender
+slice
+slide
+slight
+slim
+slogan
+slot
+slow
+slush
+small
+smart
+smile
+smoke
+smooth
+snack
+snake
+snap
+sniff
+snow
+soap
+soccer
+social
+sock
+soda
+soft
+solar
+soldier
+solid
+solution
+solve
+someone
+song
+soon
+sorry
+sort
+soul
+sound
+soup
+source
+south
+space
+spare
+spatial
+spawn
+speak
+special
+speed
+spell
+spend
+sphere
+spice
+spider
+spike
+spin
+spirit
+split
+spoil
+sponsor
+spoon
+sport
+spot
+spray
+spread
+spring
+spy
+square
+squeeze
+squirrel
+stable
+stadium
+staff
+stage
+stairs
+stamp
+stand
+start
+state
+stay
+steak
+steel
+stem
+step
+stereo
+stick
+still
+sting
+stock
+stomach
+stone
+stool
+story
+stove
+strategy
+street
+strike
+strong
+struggle
+student
+stuff
+stumble
+style
+subject
+submit
+subway
+success
+such
+sudden
+suffer
+sugar
+suggest
+suit
+summer
+sun
+sunny
+sunset
+super
+supply
+supreme
+sure
+surface
+surge
+surprise
+surround
+survey
+suspect
+sustain
+swallow
+swamp
+swap
+swarm
+swear
+sweet
+swift
+swim
+swing
+switch
+sword
+symbol
+symptom
+syrup
+system
+table
+tackle
+tag
+tail
+talent
+talk
+tank
+tape
+target
+task
+taste
+tattoo
+taxi
+teach
+team
+tell
+ten
+tenant
+tennis
+tent
+term
+test
+text
+thank
+that
+theme
+then
+theory
+there
+they
+thing
+this
+thought
+three
+thrive
+throw
+thumb
+thunder
+ticket
+tide
+tiger
+tilt
+timber
+time
+tiny
+tip
+tired
+tissue
+title
+toast
+tobacco
+today
+toddler
+toe
+together
+toilet
+token
+tomato
+tomorrow
+tone
+tongue
+tonight
+tool
+tooth
+top
+topic
+topple
+torch
+tornado
+tortoise
+toss
+total
+tourist
+toward
+tower
+town
+toy
+track
+trade
+traffic
+tragic
+train
+transfer
+trap
+trash
+travel
+tray
+treat
+tree
+trend
+trial
+tribe
+trick
+trigger
+trim
+trip
+trophy
+trouble
+truck
+true
+truly
+trumpet
+trust
+truth
+try
+tube
+tuition
+tumble
+tuna
+tunnel
+turkey
+turn
+turtle
+twelve
+twenty
+twice
+twin
+twist
+two
+type
+typical
+ugly
+umbrella
+unable
+unaware
+uncle
+uncover
+under
+undo
+unfair
+unfold
+unhappy
+uniform
+unique
+unit
+universe
+unknown
+unlock
+until
+unusual
+unveil
+update
+upgrade
+uphold
+upon
+upper
+upset
+urban
+urge
+usage
+use
+used
+useful
+useless
+usual
+utility
+vacant
+vacuum
+vague
+valid
+valley
+valve
+van
+vanish
+vapor
+various
+vast
+vault
+vehicle
+velvet
+vendor
+venture
+venue
+verb
+verify
+version
+very
+vessel
+veteran
+viable
+vibrant
+vicious
+victory
+video
+view
+village
+vintage
+violin
+virtual
+virus
+visa
+visit
+visual
+vital
+vivid
+vocal
+voice
+void
+volcano
+volume
+vote
+voyage
+wage
+wagon
+wait
+walk
+wall
+walnut
+want
+warfare
+warm
+warrior
+wash
+wasp
+waste
+water
+wave
+way
+wealth
+weapon
+wear
+weasel
+weather
+web
+wedding
+weekend
+weird
+welcome
+west
+wet
+whale
+what
+wheat
+wheel
+when
+where
+whip
+whisper
+wide
+width
+wife
+wild
+will
+win
+window
+wine
+wing
+wink
+winner
+winter
+wire
+wisdom
+wise
+wish
+witness
+wolf
+woman
+wonder
+wood
+wool
+word
+work
+world
+worry
+worth
+wrap
+wreck
+wrestle
+wrist
+write
+wrong
+yard
+year
+yellow
+you
+young
+youth
+zebra
+zero
+zone
+zoo`.split(`
+`);
+
+// src/vault/hd.ts
+init_errors();
+
+// ../../node_modules/@noble/hashes/esm/sha512.js
+init_sha2();
+var sha5123 = sha512;
+
+// src/vault/slip10.ts
+init_errors();
+var HARDENED_OFFSET = 2147483648;
+var ED25519_SEED_KEY = new TextEncoder().encode("ed25519 seed");
+function masterFromSeed(seed) {
+  const i = hmac2(sha5123, ED25519_SEED_KEY, seed);
+  try {
+    return { key: ownSecret(i.slice(0, 32)), chainCode: ownSecret(i.slice(32)) };
+  } finally {
+    wipe(i);
+  }
+}
+function deriveChild(node, index) {
+  if (!Number.isInteger(index) || index < HARDENED_OFFSET || index > 4294967295) {
+    throw new VaultError("VAULT_INDEX_INVALID", `SLIP-0010 Ed25519 has no non-hardened children; refusing index ${index}.`);
+  }
+  const data = new Uint8Array(1 + 32 + 4);
+  data[0] = 0;
+  data.set(node.key, 1);
+  new DataView(data.buffer).setUint32(33, index >>> 0, false);
+  const i = hmac2(sha5123, node.chainCode, data);
+  try {
+    return { key: ownSecret(i.slice(0, 32)), chainCode: ownSecret(i.slice(32)) };
+  } finally {
+    wipe(data, i);
+  }
+}
+function parsePath(path) {
+  const parts = path.split("/");
+  if (parts[0] !== "m")
+    throw new VaultError("VAULT_INDEX_INVALID", `Not a derivation path: ${path}`);
+  return parts.slice(1).map((part) => {
+    const hardened = part.endsWith("'") || part.endsWith("h");
+    const raw = hardened ? part.slice(0, -1) : part;
+    if (!/^\d+$/.test(raw))
+      throw new VaultError("VAULT_INDEX_INVALID", `Not a derivation path element: ${part}`);
+    const index = Number(raw);
+    if (!hardened) {
+      throw new VaultError("VAULT_INDEX_INVALID", `SLIP-0010 Ed25519 has no non-hardened children; ${path} asks for one.`);
+    }
+    if (index >= HARDENED_OFFSET)
+      throw new VaultError("VAULT_INDEX_INVALID", `Derivation index out of range: ${part}`);
+    return index + HARDENED_OFFSET;
+  });
+}
+function derivePath(seed, path) {
+  const indices = parsePath(path);
+  let node = masterFromSeed(seed);
+  const spent = [node];
+  try {
+    for (const index of indices) {
+      node = deriveChild(node, index);
+      spent.push(node);
+    }
+    return ownSecret(node.key.slice());
+  } finally {
+    for (const used of spent)
+      wipe(used.key, used.chainCode);
+  }
+}
+
+// src/vault/hd.ts
+var ROOT_ENTROPY_BYTES = 32;
+var PHRASE_WORDS = 24;
+var DERIVATION_SCHEME = "slip10-ed25519";
+function solanaVaultPath(index) {
+  return `m/44'/501'/${assertIndex(index)}'/0'`;
+}
+function solanaTeePath(index) {
+  return `m/44'/501'/${assertIndex(index)}'/1'`;
+}
+function evmPath(index) {
+  return `m/44'/60'/${assertIndex(index)}'/0/0`;
+}
+function pathForBranch(branch, index) {
+  if (branch === "solanaVault")
+    return solanaVaultPath(index);
+  if (branch === "solanaTee")
+    return solanaTeePath(index);
+  return evmPath(index);
+}
+function assertIndex(index) {
+  if (!Number.isInteger(index) || index < 0 || index >= 2147483648) {
+    throw new VaultError("VAULT_INDEX_INVALID", `Derivation index out of range: ${index}`);
+  }
+  return index;
+}
+function phraseFromEntropy(entropy) {
+  if (entropy.length !== ROOT_ENTROPY_BYTES) {
+    throw new VaultError("VAULT_BLOB_TAMPERED", `The root blob holds ${entropy.length} bytes, expected ${ROOT_ENTROPY_BYTES}.`);
+  }
+  return entropyToMnemonic(entropy, wordlist);
+}
+function entropyFromPhrase(phrase) {
+  const normalized = normalizePhrase(phrase);
+  if (normalized.split(" ").length !== PHRASE_WORDS) {
+    throw new VaultError("PHRASE_INVALID", `A recovery phrase is ${PHRASE_WORDS} words; that is not.`);
+  }
+  if (!validateMnemonic(normalized, wordlist)) {
+    throw new VaultError("PHRASE_INVALID", "That is not a valid recovery phrase: the checksum does not match.", {
+      suggestion: "Nothing was written. Check the word order and try again."
+    });
+  }
+  return ownSecret(mnemonicToEntropy(normalized, wordlist));
+}
+function normalizePhrase(phrase) {
+  return phrase.trim().toLowerCase().split(/\s+/u).filter(Boolean).join(" ");
+}
+function isValidPhrase(phrase) {
+  return validateMnemonic(normalizePhrase(phrase), wordlist);
+}
+async function seedFromEntropy(entropy) {
+  const phrase = phraseFromEntropy(entropy);
+  return ownSecret(await mnemonicToSeed(phrase, ""));
+}
+async function deriveSolanaKey(entropy, path) {
+  const seed = await seedFromEntropy(entropy);
+  try {
+    const leaf = derivePath(seed, path);
+    try {
+      const { secret64, address } = pubkeyFromSecretSeed(leaf);
+      return { secret64, address, path };
+    } finally {
+      wipe(leaf);
+    }
+  } finally {
+    wipe(seed);
+  }
+}
+
+// src/vault/verify.ts
+init_store();
+function fail(step, message, entry) {
+  throw new VaultError("VAULT_VERIFY_FAILED", `Verification failed at step ${step}${entry ? ` on entry ${entry}` : ""}: ${message}`, {
+    suggestion: "Nothing was recorded and the file was left in place for inspection."
+  });
+}
+async function verifyVaultIntegrity(copy, opts = {}) {
+  const observer = opts.observer;
+  observer?.onStep?.(1);
+  observer?.onStep?.(2);
+  observer?.onStep?.(3);
+  const declared = new Set(copy.file.keyIds);
+  const present = new Set(copy.file.keys.map((blob) => blob.id));
+  if (declared.size !== present.size || [...declared].some((id) => !present.has(id))) {
+    fail(3, "the vault's keyIds and its key blobs are not the same set");
+  }
+  const indexed = new Set(copy.index.entries.map((entry) => entry.id));
+  for (const id of declared) {
+    if (!indexed.has(id))
+      fail(3, `key ${id} has a blob and a keyIds entry but no index entry`);
+  }
+  for (const id of indexed) {
+    if (!declared.has(id))
+      fail(3, `index entry ${id} has no key blob`);
+  }
+  observer?.onStep?.(4);
+  const root = await decryptRoot(copy);
+  const report = { addressChecked: [], rederived: [], notRederived: [], comparedAgainstLive: false };
+  try {
+    if (root.length !== ROOT_ENTROPY_BYTES) {
+      fail(4, `the root blob holds ${root.length} bytes, expected ${ROOT_ENTROPY_BYTES}`);
+    }
+    if (!isValidPhrase(phraseFromEntropy(root))) {
+      fail(4, "the root entropy does not render a recovery phrase with a valid checksum");
+    }
+    observer?.onStep?.(5);
+    for (const entry of copy.index.entries) {
+      await verifyEntry(copy, entry, root, report, observer);
+    }
+  } finally {
+    wipe(root);
+    observer?.onStep?.(6);
+    observer?.onRootZeroed?.();
+  }
+  observer?.onStep?.(7);
+  for (const entry of copy.index.entries) {
+    const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
+    if (located === undefined)
+      continue;
+    if (copy.index.hd.nextIndex[located.branch] <= located.index) {
+      fail(7, `hd.nextIndex.${located.branch} is ${copy.index.hd.nextIndex[located.branch]}, at or below this entry's index ${located.index}`, entry.id);
+    }
+    if (entry.exposure.everRemoteExposed && !copy.index.hd.exposedIndexes[located.branch].includes(located.index)) {
+      fail(7, `it is flagged remotely exposed but index ${located.index} is missing from hd.exposedIndexes.${located.branch}`, entry.id);
+    }
+  }
+  if (opts.live) {
+    observer?.onStep?.(8);
+    report.comparedAgainstLive = true;
+    const copyAddresses = new Set(copy.index.entries.map((entry) => entry.address));
+    const liveAddresses = new Set(opts.live.index.entries.map((entry) => entry.address));
+    const missing = [...liveAddresses].filter((address) => !copyAddresses.has(address));
+    const extra = [...copyAddresses].filter((address) => !liveAddresses.has(address));
+    if (missing.length > 0 || extra.length > 0) {
+      fail(8, `this copy's address set does not match the live vault (${missing.length} address(es) in the vault and not in the copy, ${extra.length} the other way). It may be a stale copy, or a copy of a different vault`);
+    }
+  }
+  return report;
+}
+async function verifyEntry(copy, entry, root, report, observer) {
+  const secret = await decryptKey(copy, entry.id);
+  observer?.onLeafLive?.(1);
+  try {
+    const expectedLength = entry.curve === "ed25519" ? SOLANA_SECRET_BYTES : SECP256K1_SCALAR_BYTES;
+    if (secret.length !== expectedLength) {
+      fail(5, `its stored secret is ${secret.length} bytes, but a ${entry.curve} key is ${expectedLength}`, entry.id);
+    }
+    if (entry.curve === "ed25519") {
+      if (addressFromSecret64(secret) !== entry.address) {
+        fail(5, "its stored secret does not produce the address the index records", entry.id);
+      }
+    }
+    report.addressChecked.push(entry.id);
+    if (entry.origin !== "derived" || entry.derivation === undefined) {
+      report.notRederived.push(entry.id);
+      return;
+    }
+    if (entry.derivation.scheme !== "slip10-ed25519") {
+      report.notRederived.push(entry.id);
+      return;
+    }
+    const derived = await deriveSolanaKey(root, entry.derivation.path);
+    observer?.onLeafLive?.(2);
+    try {
+      if (!bytesEqual(derived.secret64, secret)) {
+        fail(5, `it does not re-derive from the root along its recorded path ${entry.derivation.path}`, entry.id);
+      }
+      report.rederived.push(entry.id);
+    } finally {
+      wipe(derived.secret64);
+      observer?.onLeafLive?.(1);
+    }
+  } finally {
+    wipe(secret);
+    observer?.onLeafLive?.(0);
+  }
+}
+
+// src/commands/vault-support.ts
+init_errors();
+init_sidecar();
+init_store();
+function refuseEnvPassphrase2(ctx) {
+  if (ctx.deps.env.CANDLE_KEYSTORE_PASSPHRASE === undefined)
+    return true;
+  writeVaultFailure(ctx, new VaultError("ENV_PASSPHRASE_REFUSED", "CANDLE_KEYSTORE_PASSPHRASE is set. No Candle command reads its value, and the vault never takes a passphrase from the environment.", {
+    suggestion: "Unset it and run again; the vault commands prompt for the passphrase with input hidden."
+  }));
+  return false;
+}
+function requireTty(ctx, what) {
+  if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stdout)
+    return true;
+  writeVaultFailure(ctx, new VaultError("VAULT_UNLOCK_FAILED", `${what} needs a terminal: this CLI reads a vault passphrase from a hidden prompt and from nowhere else.`, {
+    suggestion: "There is no environment variable and no flag that supplies one."
+  }));
+  return false;
+}
+function vaultPathFor(ctx, parsed) {
+  return parsed.values["--keystore"] ?? defaultVaultPath(ctx.deps.env);
+}
+async function requireVaultRaw(path) {
+  const raw = await readVaultRaw(path);
+  if (raw === null) {
+    throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" });
+  }
+  return raw;
+}
+async function unlockInteractively(ctx, path, raw, opts = {}) {
+  await assertNotOlderCopy(ctx, path, raw, opts.acceptOlderCopy ?? false);
+  const typed = await ctx.deps.promptSecret(opts.promptText ?? "Vault passphrase (input hidden): ");
+  const passphrase = typed.trim();
+  if (passphrase === "") {
+    throw new VaultError("VAULT_UNLOCK_FAILED", "A passphrase is required.");
+  }
+  const vault = await unlockWithPassphrase(path, raw, passphrase, { notice: (line) => ctx.deps.stderr.write(line) });
+  return { vault, passphrase };
+}
+async function assertNotOlderCopy(ctx, path, raw, accept) {
+  const sidecar = await readSidecar(sidecarPath(path));
+  if (sidecar === null) {
+    ctx.deps.stderr.write(`No vault.state.json beside this vault, so an older copy of it cannot be recognized here.
+`);
+    return;
+  }
+  let generation;
+  let vaultId;
+  let envelopeIds = [];
+  try {
+    const parsed = JSON.parse(raw);
+    generation = parsed.generation;
+    vaultId = parsed.vaultId;
+    envelopeIds = (parsed.envelopes ?? []).map((envelope) => String(envelope.id));
+  } catch {
+    return;
+  }
+  if (vaultId !== sidecar.vaultId)
+    return;
+  if (!Number.isInteger(generation) || generation >= sidecar.lastGeneration)
+    return;
+  const known = new Set(sidecar.envelopeIds);
+  const onlyHere = envelopeIds.filter((id) => !known.has(id));
+  const detail = onlyHere.length > 0 ? ` This copy carries envelope(s) the last one here did not: ${onlyHere.join(", ")}.` : "";
+  if (!accept) {
+    throw new VaultError("VAULT_OLDER_COPY", `This vault is generation ${String(generation)}, but this machine last saw generation ${sidecar.lastGeneration}, so it is an older copy.${detail}`, {
+      suggestion: "If you meant to restore an older backup, pass --accept-older-copy. Editing vault.state.json defeats this check and it is not a defense against anyone with access to this account."
+    });
+  }
+  ctx.deps.stderr.write(`Opening an older copy: generation ${String(generation)} against the ${sidecar.lastGeneration} this machine last saw.${detail}
+`);
+}
+function writeVaultFailure(ctx, error) {
+  if (isVaultError(error)) {
+    writeLocalFailure(ctx.deps, { code: error.code, message: error.message, ...error.suggestion ? { suggestion: error.suggestion } : {} }, ctx.json);
+    return error.exitCode;
+  }
+  writeLocalFailure(ctx.deps, { code: "VAULT_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, ctx.json);
+  return 1;
+}
+function usage2(ctx, line) {
+  writeUsageFailure(ctx.deps, line, ctx.json);
+  return 2;
+}
+async function runVaultCommand(ctx, body) {
+  const held = [];
+  try {
+    return await body({
+      hold: (vault) => {
+        held.push(vault);
+        return vault;
+      }
+    });
+  } catch (error) {
+    return writeVaultFailure(ctx, error);
+  } finally {
+    for (const vault of held)
+      closeVault(vault);
+  }
+}
+function writeJson(deps, value) {
+  deps.stdout.write(`${JSON.stringify(value)}
+`);
+}
+
+// src/commands/vault-backup.ts
+async function vaultBackup(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore", "--to"],
+    booleanFlags: ["--accept-shared-domain", "--accept-older-copy"]
+  });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  if (parsed.positionals.length > 0)
+    return usage2(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  const to = parsed.values["--to"];
+  if (to === undefined)
+    return usage2(ctx, "--to <path> is required.");
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault backup"))
+    return 1;
+  const { deps } = ctx;
+  const path = vaultPathFor(ctx, parsed);
+  const destination = resolve2(to);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(path);
+    assertOutsideConfigDir(destination, deps.env);
+    const file = JSON.parse(raw);
+    const { destination: domain, sharedDomain } = assertBackupDomainAllowed(file.envelopes, destination, {
+      acceptSharedDomain: parsed.booleans.has("--accept-shared-domain")
+    });
+    if (await exists(destination)) {
+      throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite a backup.`);
+    }
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    });
+    const live = hold(opened.vault);
+    await copyFile(path, destination);
+    const report = await verifyCopy(ctx, destination, opened.passphrase, live);
+    const sidecar = sidecarPath(path);
+    await writeSidecar(sidecar, {
+      ...nextSidecar(await readSidecar(sidecar), live.file),
+      lastVerifiedBackupAt: new Date(deps.now()).toISOString(),
+      lastBackupDomain: domain,
+      ...sharedDomain ? { lastBackupSharedDomainAccepted: true } : {}
+    });
+    if (ctx.json) {
+      writeJson(deps, {
+        ok: true,
+        destination,
+        destinationDomain: domain,
+        sharedDomainAccepted: sharedDomain,
+        verified: true,
+        ...reportJson(report, live)
+      });
+      return 0;
+    }
+    writeVerifiedReport(ctx, destination, domain, sharedDomain, report, live);
+    return 0;
+  });
+}
+async function vaultVerifyBackup(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  const copyPath = parsed.positionals[0];
+  if (copyPath === undefined)
+    return usage2(ctx, "Which file? Usage: candle vault verify-backup <path>");
+  if (parsed.positionals.length > 1)
+    return usage2(ctx, `Unexpected argument: ${parsed.positionals[1]}`);
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault verify-backup"))
+    return 1;
+  const { deps } = ctx;
+  const path = vaultPathFor(ctx, parsed);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(path);
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    });
+    const live = hold(opened.vault);
+    const report = await verifyCopy(ctx, resolve2(copyPath), opened.passphrase, live);
+    const sidecar = sidecarPath(path);
+    await writeSidecar(sidecar, {
+      ...nextSidecar(await readSidecar(sidecar), live.file),
+      lastVerifiedBackupAt: new Date(deps.now()).toISOString()
+    });
+    if (ctx.json) {
+      writeJson(deps, { ok: true, verified: resolve2(copyPath), ...reportJson(report, live) });
+      return 0;
+    }
+    writeVerifiedReport(ctx, resolve2(copyPath), undefined, false, report, live);
+    return 0;
+  });
+}
+async function verifyCopy(ctx, copyPath, passphrase, live) {
+  const raw = await readVaultRaw(copyPath);
+  if (raw === null)
+    throw new VaultError("VAULT_MISSING", `No file at ${copyPath}.`);
+  const copy = await unlockWithPassphrase(copyPath, raw, passphrase, { notice: (line) => ctx.deps.stderr.write(line) });
+  try {
+    return await verifyVaultIntegrity(copy, { live });
+  } finally {
+    closeVault(copy);
+  }
+}
+function assertOutsideConfigDir(destination, env) {
+  const config = resolve2(candleConfigDir2(env));
+  if (destination === config || destination.startsWith(`${config}/`)) {
+    throw new VaultError("VAULT_BACKUP_INSIDE_CONFIG", `${destination} is inside ${config}, where the vault itself lives.`, {
+      suggestion: "A copy beside the original is lost with it. Back up to another disk, another machine, or removable media."
+    });
+  }
+}
+async function exists(path) {
+  try {
+    await stat3(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function reportJson(report, live) {
+  return {
+    steps: 8,
+    addressChecked: report.addressChecked.length,
+    rederived: report.rederived.length,
+    notRederived: report.notRederived.length,
+    comparedAgainstLive: report.comparedAgainstLive,
+    nextIndex: live.index.hd.nextIndex,
+    phraseRestoresDerivedKeysOnly: true
+  };
+}
+function writeVerifiedReport(ctx, target, domain, sharedDomain, report, live) {
+  const { deps } = ctx;
+  deps.stdout.write(`Verified ${target}
+`);
+  if (domain)
+    deps.stdout.write(`  destination   ${domain}
+`);
+  deps.stdout.write(`  steps         all 8 passed, in order
+`);
+  deps.stdout.write(`  keys checked  ${report.addressChecked.length} (each secret produces the address the index records)
+`);
+  deps.stdout.write(`  re-derived    ${report.rederived.length} from the root along their recorded paths
+`);
+  if (report.notRederived.length > 0) {
+    deps.stdout.write(`  not derived   ${report.notRederived.length}: independent keys, so the address and length checks are the strongest available for them
+`);
+  }
+  if (report.comparedAgainstLive)
+    deps.stdout.write(`  address set   matches the live vault
+`);
+  if (sharedDomain) {
+    deps.stdout.write(`  shared domain this destination and a synced passkey envelope are one Apple account; you accepted that.
+`);
+  }
+  deps.stdout.write(`
+Derivation counters to keep with your recovery phrase:
+`);
+  for (const [branch, value] of Object.entries(live.index.hd.nextIndex)) {
+    deps.stdout.write(`  ${branch.padEnd(12)} ${value}
+`);
+  }
+  deps.stdout.write(`
+The recovery phrase restores derived keys only. It does not restore any key imported from the Phase 1 TEE wallet store; this file plus a factor does that.
+`);
+}
+
+// src/commands/vault-factor.ts
+init_crypto();
+init_errors();
+init_format();
+
+// src/vault/eff-wordlist.ts
+var EFF_LONG_WORDLIST = [
+  "abacus",
+  "abdomen",
+  "abdominal",
+  "abide",
+  "abiding",
+  "ability",
+  "ablaze",
+  "able",
+  "abnormal",
+  "abrasion",
+  "abrasive",
+  "abreast",
+  "abridge",
+  "abroad",
+  "abruptly",
+  "absence",
+  "absentee",
+  "absently",
+  "absinthe",
+  "absolute",
+  "absolve",
+  "abstain",
+  "abstract",
+  "absurd",
+  "accent",
+  "acclaim",
+  "acclimate",
+  "accompany",
+  "account",
+  "accuracy",
+  "accurate",
+  "accustom",
+  "acetone",
+  "achiness",
+  "aching",
+  "acid",
+  "acorn",
+  "acquaint",
+  "acquire",
+  "acre",
+  "acrobat",
+  "acronym",
+  "acting",
+  "action",
+  "activate",
+  "activator",
+  "active",
+  "activism",
+  "activist",
+  "activity",
+  "actress",
+  "acts",
+  "acutely",
+  "acuteness",
+  "aeration",
+  "aerobics",
+  "aerosol",
+  "aerospace",
+  "afar",
+  "affair",
+  "affected",
+  "affecting",
+  "affection",
+  "affidavit",
+  "affiliate",
+  "affirm",
+  "affix",
+  "afflicted",
+  "affluent",
+  "afford",
+  "affront",
+  "aflame",
+  "afloat",
+  "aflutter",
+  "afoot",
+  "afraid",
+  "afterglow",
+  "afterlife",
+  "aftermath",
+  "aftermost",
+  "afternoon",
+  "aged",
+  "ageless",
+  "agency",
+  "agenda",
+  "agent",
+  "aggregate",
+  "aghast",
+  "agile",
+  "agility",
+  "aging",
+  "agnostic",
+  "agonize",
+  "agonizing",
+  "agony",
+  "agreeable",
+  "agreeably",
+  "agreed",
+  "agreeing",
+  "agreement",
+  "aground",
+  "ahead",
+  "ahoy",
+  "aide",
+  "aids",
+  "aim",
+  "ajar",
+  "alabaster",
+  "alarm",
+  "albatross",
+  "album",
+  "alfalfa",
+  "algebra",
+  "algorithm",
+  "alias",
+  "alibi",
+  "alienable",
+  "alienate",
+  "aliens",
+  "alike",
+  "alive",
+  "alkaline",
+  "alkalize",
+  "almanac",
+  "almighty",
+  "almost",
+  "aloe",
+  "aloft",
+  "aloha",
+  "alone",
+  "alongside",
+  "aloof",
+  "alphabet",
+  "alright",
+  "although",
+  "altitude",
+  "alto",
+  "aluminum",
+  "alumni",
+  "always",
+  "amaretto",
+  "amaze",
+  "amazingly",
+  "amber",
+  "ambiance",
+  "ambiguity",
+  "ambiguous",
+  "ambition",
+  "ambitious",
+  "ambulance",
+  "ambush",
+  "amendable",
+  "amendment",
+  "amends",
+  "amenity",
+  "amiable",
+  "amicably",
+  "amid",
+  "amigo",
+  "amino",
+  "amiss",
+  "ammonia",
+  "ammonium",
+  "amnesty",
+  "amniotic",
+  "among",
+  "amount",
+  "amperage",
+  "ample",
+  "amplifier",
+  "amplify",
+  "amply",
+  "amuck",
+  "amulet",
+  "amusable",
+  "amused",
+  "amusement",
+  "amuser",
+  "amusing",
+  "anaconda",
+  "anaerobic",
+  "anagram",
+  "anatomist",
+  "anatomy",
+  "anchor",
+  "anchovy",
+  "ancient",
+  "android",
+  "anemia",
+  "anemic",
+  "aneurism",
+  "anew",
+  "angelfish",
+  "angelic",
+  "anger",
+  "angled",
+  "angler",
+  "angles",
+  "angling",
+  "angrily",
+  "angriness",
+  "anguished",
+  "angular",
+  "animal",
+  "animate",
+  "animating",
+  "animation",
+  "animator",
+  "anime",
+  "animosity",
+  "ankle",
+  "annex",
+  "annotate",
+  "announcer",
+  "annoying",
+  "annually",
+  "annuity",
+  "anointer",
+  "another",
+  "answering",
+  "antacid",
+  "antarctic",
+  "anteater",
+  "antelope",
+  "antennae",
+  "anthem",
+  "anthill",
+  "anthology",
+  "antibody",
+  "antics",
+  "antidote",
+  "antihero",
+  "antiquely",
+  "antiques",
+  "antiquity",
+  "antirust",
+  "antitoxic",
+  "antitrust",
+  "antiviral",
+  "antivirus",
+  "antler",
+  "antonym",
+  "antsy",
+  "anvil",
+  "anybody",
+  "anyhow",
+  "anymore",
+  "anyone",
+  "anyplace",
+  "anything",
+  "anytime",
+  "anyway",
+  "anywhere",
+  "aorta",
+  "apache",
+  "apostle",
+  "appealing",
+  "appear",
+  "appease",
+  "appeasing",
+  "appendage",
+  "appendix",
+  "appetite",
+  "appetizer",
+  "applaud",
+  "applause",
+  "apple",
+  "appliance",
+  "applicant",
+  "applied",
+  "apply",
+  "appointee",
+  "appraisal",
+  "appraiser",
+  "apprehend",
+  "approach",
+  "approval",
+  "approve",
+  "apricot",
+  "april",
+  "apron",
+  "aptitude",
+  "aptly",
+  "aqua",
+  "aqueduct",
+  "arbitrary",
+  "arbitrate",
+  "ardently",
+  "area",
+  "arena",
+  "arguable",
+  "arguably",
+  "argue",
+  "arise",
+  "armadillo",
+  "armband",
+  "armchair",
+  "armed",
+  "armful",
+  "armhole",
+  "arming",
+  "armless",
+  "armoire",
+  "armored",
+  "armory",
+  "armrest",
+  "army",
+  "aroma",
+  "arose",
+  "around",
+  "arousal",
+  "arrange",
+  "array",
+  "arrest",
+  "arrival",
+  "arrive",
+  "arrogance",
+  "arrogant",
+  "arson",
+  "art",
+  "ascend",
+  "ascension",
+  "ascent",
+  "ascertain",
+  "ashamed",
+  "ashen",
+  "ashes",
+  "ashy",
+  "aside",
+  "askew",
+  "asleep",
+  "asparagus",
+  "aspect",
+  "aspirate",
+  "aspire",
+  "aspirin",
+  "astonish",
+  "astound",
+  "astride",
+  "astrology",
+  "astronaut",
+  "astronomy",
+  "astute",
+  "atlantic",
+  "atlas",
+  "atom",
+  "atonable",
+  "atop",
+  "atrium",
+  "atrocious",
+  "atrophy",
+  "attach",
+  "attain",
+  "attempt",
+  "attendant",
+  "attendee",
+  "attention",
+  "attentive",
+  "attest",
+  "attic",
+  "attire",
+  "attitude",
+  "attractor",
+  "attribute",
+  "atypical",
+  "auction",
+  "audacious",
+  "audacity",
+  "audible",
+  "audibly",
+  "audience",
+  "audio",
+  "audition",
+  "augmented",
+  "august",
+  "authentic",
+  "author",
+  "autism",
+  "autistic",
+  "autograph",
+  "automaker",
+  "automated",
+  "automatic",
+  "autopilot",
+  "available",
+  "avalanche",
+  "avatar",
+  "avenge",
+  "avenging",
+  "avenue",
+  "average",
+  "aversion",
+  "avert",
+  "aviation",
+  "aviator",
+  "avid",
+  "avoid",
+  "await",
+  "awaken",
+  "award",
+  "aware",
+  "awhile",
+  "awkward",
+  "awning",
+  "awoke",
+  "awry",
+  "axis",
+  "babble",
+  "babbling",
+  "babied",
+  "baboon",
+  "backache",
+  "backboard",
+  "backboned",
+  "backdrop",
+  "backed",
+  "backer",
+  "backfield",
+  "backfire",
+  "backhand",
+  "backing",
+  "backlands",
+  "backlash",
+  "backless",
+  "backlight",
+  "backlit",
+  "backlog",
+  "backpack",
+  "backpedal",
+  "backrest",
+  "backroom",
+  "backshift",
+  "backside",
+  "backslid",
+  "backspace",
+  "backspin",
+  "backstab",
+  "backstage",
+  "backtalk",
+  "backtrack",
+  "backup",
+  "backward",
+  "backwash",
+  "backwater",
+  "backyard",
+  "bacon",
+  "bacteria",
+  "bacterium",
+  "badass",
+  "badge",
+  "badland",
+  "badly",
+  "badness",
+  "baffle",
+  "baffling",
+  "bagel",
+  "bagful",
+  "baggage",
+  "bagged",
+  "baggie",
+  "bagginess",
+  "bagging",
+  "baggy",
+  "bagpipe",
+  "baguette",
+  "baked",
+  "bakery",
+  "bakeshop",
+  "baking",
+  "balance",
+  "balancing",
+  "balcony",
+  "balmy",
+  "balsamic",
+  "bamboo",
+  "banana",
+  "banish",
+  "banister",
+  "banjo",
+  "bankable",
+  "bankbook",
+  "banked",
+  "banker",
+  "banking",
+  "banknote",
+  "bankroll",
+  "banner",
+  "bannister",
+  "banshee",
+  "banter",
+  "barbecue",
+  "barbed",
+  "barbell",
+  "barber",
+  "barcode",
+  "barge",
+  "bargraph",
+  "barista",
+  "baritone",
+  "barley",
+  "barmaid",
+  "barman",
+  "barn",
+  "barometer",
+  "barrack",
+  "barracuda",
+  "barrel",
+  "barrette",
+  "barricade",
+  "barrier",
+  "barstool",
+  "bartender",
+  "barterer",
+  "bash",
+  "basically",
+  "basics",
+  "basil",
+  "basin",
+  "basis",
+  "basket",
+  "batboy",
+  "batch",
+  "bath",
+  "baton",
+  "bats",
+  "battalion",
+  "battered",
+  "battering",
+  "battery",
+  "batting",
+  "battle",
+  "bauble",
+  "bazooka",
+  "blabber",
+  "bladder",
+  "blade",
+  "blah",
+  "blame",
+  "blaming",
+  "blanching",
+  "blandness",
+  "blank",
+  "blaspheme",
+  "blasphemy",
+  "blast",
+  "blatancy",
+  "blatantly",
+  "blazer",
+  "blazing",
+  "bleach",
+  "bleak",
+  "bleep",
+  "blemish",
+  "blend",
+  "bless",
+  "blighted",
+  "blimp",
+  "bling",
+  "blinked",
+  "blinker",
+  "blinking",
+  "blinks",
+  "blip",
+  "blissful",
+  "blitz",
+  "blizzard",
+  "bloated",
+  "bloating",
+  "blob",
+  "blog",
+  "bloomers",
+  "blooming",
+  "blooper",
+  "blot",
+  "blouse",
+  "blubber",
+  "bluff",
+  "bluish",
+  "blunderer",
+  "blunt",
+  "blurb",
+  "blurred",
+  "blurry",
+  "blurt",
+  "blush",
+  "blustery",
+  "boaster",
+  "boastful",
+  "boasting",
+  "boat",
+  "bobbed",
+  "bobbing",
+  "bobble",
+  "bobcat",
+  "bobsled",
+  "bobtail",
+  "bodacious",
+  "body",
+  "bogged",
+  "boggle",
+  "bogus",
+  "boil",
+  "bok",
+  "bolster",
+  "bolt",
+  "bonanza",
+  "bonded",
+  "bonding",
+  "bondless",
+  "boned",
+  "bonehead",
+  "boneless",
+  "bonelike",
+  "boney",
+  "bonfire",
+  "bonnet",
+  "bonsai",
+  "bonus",
+  "bony",
+  "boogeyman",
+  "boogieman",
+  "book",
+  "boondocks",
+  "booted",
+  "booth",
+  "bootie",
+  "booting",
+  "bootlace",
+  "bootleg",
+  "boots",
+  "boozy",
+  "borax",
+  "boring",
+  "borough",
+  "borrower",
+  "borrowing",
+  "boss",
+  "botanical",
+  "botanist",
+  "botany",
+  "botch",
+  "both",
+  "bottle",
+  "bottling",
+  "bottom",
+  "bounce",
+  "bouncing",
+  "bouncy",
+  "bounding",
+  "boundless",
+  "bountiful",
+  "bovine",
+  "boxcar",
+  "boxer",
+  "boxing",
+  "boxlike",
+  "boxy",
+  "breach",
+  "breath",
+  "breeches",
+  "breeching",
+  "breeder",
+  "breeding",
+  "breeze",
+  "breezy",
+  "brethren",
+  "brewery",
+  "brewing",
+  "briar",
+  "bribe",
+  "brick",
+  "bride",
+  "bridged",
+  "brigade",
+  "bright",
+  "brilliant",
+  "brim",
+  "bring",
+  "brink",
+  "brisket",
+  "briskly",
+  "briskness",
+  "bristle",
+  "brittle",
+  "broadband",
+  "broadcast",
+  "broaden",
+  "broadly",
+  "broadness",
+  "broadside",
+  "broadways",
+  "broiler",
+  "broiling",
+  "broken",
+  "broker",
+  "bronchial",
+  "bronco",
+  "bronze",
+  "bronzing",
+  "brook",
+  "broom",
+  "brought",
+  "browbeat",
+  "brownnose",
+  "browse",
+  "browsing",
+  "bruising",
+  "brunch",
+  "brunette",
+  "brunt",
+  "brush",
+  "brussels",
+  "brute",
+  "brutishly",
+  "bubble",
+  "bubbling",
+  "bubbly",
+  "buccaneer",
+  "bucked",
+  "bucket",
+  "buckle",
+  "buckshot",
+  "buckskin",
+  "bucktooth",
+  "buckwheat",
+  "buddhism",
+  "buddhist",
+  "budding",
+  "buddy",
+  "budget",
+  "buffalo",
+  "buffed",
+  "buffer",
+  "buffing",
+  "buffoon",
+  "buggy",
+  "bulb",
+  "bulge",
+  "bulginess",
+  "bulgur",
+  "bulk",
+  "bulldog",
+  "bulldozer",
+  "bullfight",
+  "bullfrog",
+  "bullhorn",
+  "bullion",
+  "bullish",
+  "bullpen",
+  "bullring",
+  "bullseye",
+  "bullwhip",
+  "bully",
+  "bunch",
+  "bundle",
+  "bungee",
+  "bunion",
+  "bunkbed",
+  "bunkhouse",
+  "bunkmate",
+  "bunny",
+  "bunt",
+  "busboy",
+  "bush",
+  "busily",
+  "busload",
+  "bust",
+  "busybody",
+  "buzz",
+  "cabana",
+  "cabbage",
+  "cabbie",
+  "cabdriver",
+  "cable",
+  "caboose",
+  "cache",
+  "cackle",
+  "cacti",
+  "cactus",
+  "caddie",
+  "caddy",
+  "cadet",
+  "cadillac",
+  "cadmium",
+  "cage",
+  "cahoots",
+  "cake",
+  "calamari",
+  "calamity",
+  "calcium",
+  "calculate",
+  "calculus",
+  "caliber",
+  "calibrate",
+  "calm",
+  "caloric",
+  "calorie",
+  "calzone",
+  "camcorder",
+  "cameo",
+  "camera",
+  "camisole",
+  "camper",
+  "campfire",
+  "camping",
+  "campsite",
+  "campus",
+  "canal",
+  "canary",
+  "cancel",
+  "candied",
+  "candle",
+  "candy",
+  "cane",
+  "canine",
+  "canister",
+  "cannabis",
+  "canned",
+  "canning",
+  "cannon",
+  "cannot",
+  "canola",
+  "canon",
+  "canopener",
+  "canopy",
+  "canteen",
+  "canyon",
+  "capable",
+  "capably",
+  "capacity",
+  "cape",
+  "capillary",
+  "capital",
+  "capitol",
+  "capped",
+  "capricorn",
+  "capsize",
+  "capsule",
+  "caption",
+  "captivate",
+  "captive",
+  "captivity",
+  "capture",
+  "caramel",
+  "carat",
+  "caravan",
+  "carbon",
+  "cardboard",
+  "carded",
+  "cardiac",
+  "cardigan",
+  "cardinal",
+  "cardstock",
+  "carefully",
+  "caregiver",
+  "careless",
+  "caress",
+  "caretaker",
+  "cargo",
+  "caring",
+  "carless",
+  "carload",
+  "carmaker",
+  "carnage",
+  "carnation",
+  "carnival",
+  "carnivore",
+  "carol",
+  "carpenter",
+  "carpentry",
+  "carpool",
+  "carport",
+  "carried",
+  "carrot",
+  "carrousel",
+  "carry",
+  "cartel",
+  "cartload",
+  "carton",
+  "cartoon",
+  "cartridge",
+  "cartwheel",
+  "carve",
+  "carving",
+  "carwash",
+  "cascade",
+  "case",
+  "cash",
+  "casing",
+  "casino",
+  "casket",
+  "cassette",
+  "casually",
+  "casualty",
+  "catacomb",
+  "catalog",
+  "catalyst",
+  "catalyze",
+  "catapult",
+  "cataract",
+  "catatonic",
+  "catcall",
+  "catchable",
+  "catcher",
+  "catching",
+  "catchy",
+  "caterer",
+  "catering",
+  "catfight",
+  "catfish",
+  "cathedral",
+  "cathouse",
+  "catlike",
+  "catnap",
+  "catnip",
+  "catsup",
+  "cattail",
+  "cattishly",
+  "cattle",
+  "catty",
+  "catwalk",
+  "caucasian",
+  "caucus",
+  "causal",
+  "causation",
+  "cause",
+  "causing",
+  "cauterize",
+  "caution",
+  "cautious",
+  "cavalier",
+  "cavalry",
+  "caviar",
+  "cavity",
+  "cedar",
+  "celery",
+  "celestial",
+  "celibacy",
+  "celibate",
+  "celtic",
+  "cement",
+  "census",
+  "ceramics",
+  "ceremony",
+  "certainly",
+  "certainty",
+  "certified",
+  "certify",
+  "cesarean",
+  "cesspool",
+  "chafe",
+  "chaffing",
+  "chain",
+  "chair",
+  "chalice",
+  "challenge",
+  "chamber",
+  "chamomile",
+  "champion",
+  "chance",
+  "change",
+  "channel",
+  "chant",
+  "chaos",
+  "chaperone",
+  "chaplain",
+  "chapped",
+  "chaps",
+  "chapter",
+  "character",
+  "charbroil",
+  "charcoal",
+  "charger",
+  "charging",
+  "chariot",
+  "charity",
+  "charm",
+  "charred",
+  "charter",
+  "charting",
+  "chase",
+  "chasing",
+  "chaste",
+  "chastise",
+  "chastity",
+  "chatroom",
+  "chatter",
+  "chatting",
+  "chatty",
+  "cheating",
+  "cheddar",
+  "cheek",
+  "cheer",
+  "cheese",
+  "cheesy",
+  "chef",
+  "chemicals",
+  "chemist",
+  "chemo",
+  "cherisher",
+  "cherub",
+  "chess",
+  "chest",
+  "chevron",
+  "chevy",
+  "chewable",
+  "chewer",
+  "chewing",
+  "chewy",
+  "chief",
+  "chihuahua",
+  "childcare",
+  "childhood",
+  "childish",
+  "childless",
+  "childlike",
+  "chili",
+  "chill",
+  "chimp",
+  "chip",
+  "chirping",
+  "chirpy",
+  "chitchat",
+  "chivalry",
+  "chive",
+  "chloride",
+  "chlorine",
+  "choice",
+  "chokehold",
+  "choking",
+  "chomp",
+  "chooser",
+  "choosing",
+  "choosy",
+  "chop",
+  "chosen",
+  "chowder",
+  "chowtime",
+  "chrome",
+  "chubby",
+  "chuck",
+  "chug",
+  "chummy",
+  "chump",
+  "chunk",
+  "churn",
+  "chute",
+  "cider",
+  "cilantro",
+  "cinch",
+  "cinema",
+  "cinnamon",
+  "circle",
+  "circling",
+  "circular",
+  "circulate",
+  "circus",
+  "citable",
+  "citadel",
+  "citation",
+  "citizen",
+  "citric",
+  "citrus",
+  "city",
+  "civic",
+  "civil",
+  "clad",
+  "claim",
+  "clambake",
+  "clammy",
+  "clamor",
+  "clamp",
+  "clamshell",
+  "clang",
+  "clanking",
+  "clapped",
+  "clapper",
+  "clapping",
+  "clarify",
+  "clarinet",
+  "clarity",
+  "clash",
+  "clasp",
+  "class",
+  "clatter",
+  "clause",
+  "clavicle",
+  "claw",
+  "clay",
+  "clean",
+  "clear",
+  "cleat",
+  "cleaver",
+  "cleft",
+  "clench",
+  "clergyman",
+  "clerical",
+  "clerk",
+  "clever",
+  "clicker",
+  "client",
+  "climate",
+  "climatic",
+  "cling",
+  "clinic",
+  "clinking",
+  "clip",
+  "clique",
+  "cloak",
+  "clobber",
+  "clock",
+  "clone",
+  "cloning",
+  "closable",
+  "closure",
+  "clothes",
+  "clothing",
+  "cloud",
+  "clover",
+  "clubbed",
+  "clubbing",
+  "clubhouse",
+  "clump",
+  "clumsily",
+  "clumsy",
+  "clunky",
+  "clustered",
+  "clutch",
+  "clutter",
+  "coach",
+  "coagulant",
+  "coastal",
+  "coaster",
+  "coasting",
+  "coastland",
+  "coastline",
+  "coat",
+  "coauthor",
+  "cobalt",
+  "cobbler",
+  "cobweb",
+  "cocoa",
+  "coconut",
+  "cod",
+  "coeditor",
+  "coerce",
+  "coexist",
+  "coffee",
+  "cofounder",
+  "cognition",
+  "cognitive",
+  "cogwheel",
+  "coherence",
+  "coherent",
+  "cohesive",
+  "coil",
+  "coke",
+  "cola",
+  "cold",
+  "coleslaw",
+  "coliseum",
+  "collage",
+  "collapse",
+  "collar",
+  "collected",
+  "collector",
+  "collide",
+  "collie",
+  "collision",
+  "colonial",
+  "colonist",
+  "colonize",
+  "colony",
+  "colossal",
+  "colt",
+  "coma",
+  "come",
+  "comfort",
+  "comfy",
+  "comic",
+  "coming",
+  "comma",
+  "commence",
+  "commend",
+  "comment",
+  "commerce",
+  "commode",
+  "commodity",
+  "commodore",
+  "common",
+  "commotion",
+  "commute",
+  "commuting",
+  "compacted",
+  "compacter",
+  "compactly",
+  "compactor",
+  "companion",
+  "company",
+  "compare",
+  "compel",
+  "compile",
+  "comply",
+  "component",
+  "composed",
+  "composer",
+  "composite",
+  "compost",
+  "composure",
+  "compound",
+  "compress",
+  "comprised",
+  "computer",
+  "computing",
+  "comrade",
+  "concave",
+  "conceal",
+  "conceded",
+  "concept",
+  "concerned",
+  "concert",
+  "conch",
+  "concierge",
+  "concise",
+  "conclude",
+  "concrete",
+  "concur",
+  "condense",
+  "condiment",
+  "condition",
+  "condone",
+  "conducive",
+  "conductor",
+  "conduit",
+  "cone",
+  "confess",
+  "confetti",
+  "confidant",
+  "confident",
+  "confider",
+  "confiding",
+  "configure",
+  "confined",
+  "confining",
+  "confirm",
+  "conflict",
+  "conform",
+  "confound",
+  "confront",
+  "confused",
+  "confusing",
+  "confusion",
+  "congenial",
+  "congested",
+  "congrats",
+  "congress",
+  "conical",
+  "conjoined",
+  "conjure",
+  "conjuror",
+  "connected",
+  "connector",
+  "consensus",
+  "consent",
+  "console",
+  "consoling",
+  "consonant",
+  "constable",
+  "constant",
+  "constrain",
+  "constrict",
+  "construct",
+  "consult",
+  "consumer",
+  "consuming",
+  "contact",
+  "container",
+  "contempt",
+  "contend",
+  "contented",
+  "contently",
+  "contents",
+  "contest",
+  "context",
+  "contort",
+  "contour",
+  "contrite",
+  "control",
+  "contusion",
+  "convene",
+  "convent",
+  "copartner",
+  "cope",
+  "copied",
+  "copier",
+  "copilot",
+  "coping",
+  "copious",
+  "copper",
+  "copy",
+  "coral",
+  "cork",
+  "cornball",
+  "cornbread",
+  "corncob",
+  "cornea",
+  "corned",
+  "corner",
+  "cornfield",
+  "cornflake",
+  "cornhusk",
+  "cornmeal",
+  "cornstalk",
+  "corny",
+  "coronary",
+  "coroner",
+  "corporal",
+  "corporate",
+  "corral",
+  "correct",
+  "corridor",
+  "corrode",
+  "corroding",
+  "corrosive",
+  "corsage",
+  "corset",
+  "cortex",
+  "cosigner",
+  "cosmetics",
+  "cosmic",
+  "cosmos",
+  "cosponsor",
+  "cost",
+  "cottage",
+  "cotton",
+  "couch",
+  "cough",
+  "could",
+  "countable",
+  "countdown",
+  "counting",
+  "countless",
+  "country",
+  "county",
+  "courier",
+  "covenant",
+  "cover",
+  "coveted",
+  "coveting",
+  "coyness",
+  "cozily",
+  "coziness",
+  "cozy",
+  "crabbing",
+  "crabgrass",
+  "crablike",
+  "crabmeat",
+  "cradle",
+  "cradling",
+  "crafter",
+  "craftily",
+  "craftsman",
+  "craftwork",
+  "crafty",
+  "cramp",
+  "cranberry",
+  "crane",
+  "cranial",
+  "cranium",
+  "crank",
+  "crate",
+  "crave",
+  "craving",
+  "crawfish",
+  "crawlers",
+  "crawling",
+  "crayfish",
+  "crayon",
+  "crazed",
+  "crazily",
+  "craziness",
+  "crazy",
+  "creamed",
+  "creamer",
+  "creamlike",
+  "crease",
+  "creasing",
+  "creatable",
+  "create",
+  "creation",
+  "creative",
+  "creature",
+  "credible",
+  "credibly",
+  "credit",
+  "creed",
+  "creme",
+  "creole",
+  "crepe",
+  "crept",
+  "crescent",
+  "crested",
+  "cresting",
+  "crestless",
+  "crevice",
+  "crewless",
+  "crewman",
+  "crewmate",
+  "crib",
+  "cricket",
+  "cried",
+  "crier",
+  "crimp",
+  "crimson",
+  "cringe",
+  "cringing",
+  "crinkle",
+  "crinkly",
+  "crisped",
+  "crisping",
+  "crisply",
+  "crispness",
+  "crispy",
+  "criteria",
+  "critter",
+  "croak",
+  "crock",
+  "crook",
+  "croon",
+  "crop",
+  "cross",
+  "crouch",
+  "crouton",
+  "crowbar",
+  "crowd",
+  "crown",
+  "crucial",
+  "crudely",
+  "crudeness",
+  "cruelly",
+  "cruelness",
+  "cruelty",
+  "crumb",
+  "crummiest",
+  "crummy",
+  "crumpet",
+  "crumpled",
+  "cruncher",
+  "crunching",
+  "crunchy",
+  "crusader",
+  "crushable",
+  "crushed",
+  "crusher",
+  "crushing",
+  "crust",
+  "crux",
+  "crying",
+  "cryptic",
+  "crystal",
+  "cubbyhole",
+  "cube",
+  "cubical",
+  "cubicle",
+  "cucumber",
+  "cuddle",
+  "cuddly",
+  "cufflink",
+  "culinary",
+  "culminate",
+  "culpable",
+  "culprit",
+  "cultivate",
+  "cultural",
+  "culture",
+  "cupbearer",
+  "cupcake",
+  "cupid",
+  "cupped",
+  "cupping",
+  "curable",
+  "curator",
+  "curdle",
+  "cure",
+  "curfew",
+  "curing",
+  "curled",
+  "curler",
+  "curliness",
+  "curling",
+  "curly",
+  "curry",
+  "curse",
+  "cursive",
+  "cursor",
+  "curtain",
+  "curtly",
+  "curtsy",
+  "curvature",
+  "curve",
+  "curvy",
+  "cushy",
+  "cusp",
+  "cussed",
+  "custard",
+  "custodian",
+  "custody",
+  "customary",
+  "customer",
+  "customize",
+  "customs",
+  "cut",
+  "cycle",
+  "cyclic",
+  "cycling",
+  "cyclist",
+  "cylinder",
+  "cymbal",
+  "cytoplasm",
+  "cytoplast",
+  "dab",
+  "dad",
+  "daffodil",
+  "dagger",
+  "daily",
+  "daintily",
+  "dainty",
+  "dairy",
+  "daisy",
+  "dallying",
+  "dance",
+  "dancing",
+  "dandelion",
+  "dander",
+  "dandruff",
+  "dandy",
+  "danger",
+  "dangle",
+  "dangling",
+  "daredevil",
+  "dares",
+  "daringly",
+  "darkened",
+  "darkening",
+  "darkish",
+  "darkness",
+  "darkroom",
+  "darling",
+  "darn",
+  "dart",
+  "darwinism",
+  "dash",
+  "dastardly",
+  "data",
+  "datebook",
+  "dating",
+  "daughter",
+  "daunting",
+  "dawdler",
+  "dawn",
+  "daybed",
+  "daybreak",
+  "daycare",
+  "daydream",
+  "daylight",
+  "daylong",
+  "dayroom",
+  "daytime",
+  "dazzler",
+  "dazzling",
+  "deacon",
+  "deafening",
+  "deafness",
+  "dealer",
+  "dealing",
+  "dealmaker",
+  "dealt",
+  "dean",
+  "debatable",
+  "debate",
+  "debating",
+  "debit",
+  "debrief",
+  "debtless",
+  "debtor",
+  "debug",
+  "debunk",
+  "decade",
+  "decaf",
+  "decal",
+  "decathlon",
+  "decay",
+  "deceased",
+  "deceit",
+  "deceiver",
+  "deceiving",
+  "december",
+  "decency",
+  "decent",
+  "deception",
+  "deceptive",
+  "decibel",
+  "decidable",
+  "decimal",
+  "decimeter",
+  "decipher",
+  "deck",
+  "declared",
+  "decline",
+  "decode",
+  "decompose",
+  "decorated",
+  "decorator",
+  "decoy",
+  "decrease",
+  "decree",
+  "dedicate",
+  "dedicator",
+  "deduce",
+  "deduct",
+  "deed",
+  "deem",
+  "deepen",
+  "deeply",
+  "deepness",
+  "deface",
+  "defacing",
+  "defame",
+  "default",
+  "defeat",
+  "defection",
+  "defective",
+  "defendant",
+  "defender",
+  "defense",
+  "defensive",
+  "deferral",
+  "deferred",
+  "defiance",
+  "defiant",
+  "defile",
+  "defiling",
+  "define",
+  "definite",
+  "deflate",
+  "deflation",
+  "deflator",
+  "deflected",
+  "deflector",
+  "defog",
+  "deforest",
+  "defraud",
+  "defrost",
+  "deftly",
+  "defuse",
+  "defy",
+  "degraded",
+  "degrading",
+  "degrease",
+  "degree",
+  "dehydrate",
+  "deity",
+  "dejected",
+  "delay",
+  "delegate",
+  "delegator",
+  "delete",
+  "deletion",
+  "delicacy",
+  "delicate",
+  "delicious",
+  "delighted",
+  "delirious",
+  "delirium",
+  "deliverer",
+  "delivery",
+  "delouse",
+  "delta",
+  "deluge",
+  "delusion",
+  "deluxe",
+  "demanding",
+  "demeaning",
+  "demeanor",
+  "demise",
+  "democracy",
+  "democrat",
+  "demote",
+  "demotion",
+  "demystify",
+  "denatured",
+  "deniable",
+  "denial",
+  "denim",
+  "denote",
+  "dense",
+  "density",
+  "dental",
+  "dentist",
+  "denture",
+  "deny",
+  "deodorant",
+  "deodorize",
+  "departed",
+  "departure",
+  "depict",
+  "deplete",
+  "depletion",
+  "deplored",
+  "deploy",
+  "deport",
+  "depose",
+  "depraved",
+  "depravity",
+  "deprecate",
+  "depress",
+  "deprive",
+  "depth",
+  "deputize",
+  "deputy",
+  "derail",
+  "deranged",
+  "derby",
+  "derived",
+  "desecrate",
+  "deserve",
+  "deserving",
+  "designate",
+  "designed",
+  "designer",
+  "designing",
+  "deskbound",
+  "desktop",
+  "deskwork",
+  "desolate",
+  "despair",
+  "despise",
+  "despite",
+  "destiny",
+  "destitute",
+  "destruct",
+  "detached",
+  "detail",
+  "detection",
+  "detective",
+  "detector",
+  "detention",
+  "detergent",
+  "detest",
+  "detonate",
+  "detonator",
+  "detoxify",
+  "detract",
+  "deuce",
+  "devalue",
+  "deviancy",
+  "deviant",
+  "deviate",
+  "deviation",
+  "deviator",
+  "device",
+  "devious",
+  "devotedly",
+  "devotee",
+  "devotion",
+  "devourer",
+  "devouring",
+  "devoutly",
+  "dexterity",
+  "dexterous",
+  "diabetes",
+  "diabetic",
+  "diabolic",
+  "diagnoses",
+  "diagnosis",
+  "diagram",
+  "dial",
+  "diameter",
+  "diaper",
+  "diaphragm",
+  "diary",
+  "dice",
+  "dicing",
+  "dictate",
+  "dictation",
+  "dictator",
+  "difficult",
+  "diffused",
+  "diffuser",
+  "diffusion",
+  "diffusive",
+  "dig",
+  "dilation",
+  "diligence",
+  "diligent",
+  "dill",
+  "dilute",
+  "dime",
+  "diminish",
+  "dimly",
+  "dimmed",
+  "dimmer",
+  "dimness",
+  "dimple",
+  "diner",
+  "dingbat",
+  "dinghy",
+  "dinginess",
+  "dingo",
+  "dingy",
+  "dining",
+  "dinner",
+  "diocese",
+  "dioxide",
+  "diploma",
+  "dipped",
+  "dipper",
+  "dipping",
+  "directed",
+  "direction",
+  "directive",
+  "directly",
+  "directory",
+  "direness",
+  "dirtiness",
+  "disabled",
+  "disagree",
+  "disallow",
+  "disarm",
+  "disarray",
+  "disaster",
+  "disband",
+  "disbelief",
+  "disburse",
+  "discard",
+  "discern",
+  "discharge",
+  "disclose",
+  "discolor",
+  "discount",
+  "discourse",
+  "discover",
+  "discuss",
+  "disdain",
+  "disengage",
+  "disfigure",
+  "disgrace",
+  "dish",
+  "disinfect",
+  "disjoin",
+  "disk",
+  "dislike",
+  "disliking",
+  "dislocate",
+  "dislodge",
+  "disloyal",
+  "dismantle",
+  "dismay",
+  "dismiss",
+  "dismount",
+  "disobey",
+  "disorder",
+  "disown",
+  "disparate",
+  "disparity",
+  "dispatch",
+  "dispense",
+  "dispersal",
+  "dispersed",
+  "disperser",
+  "displace",
+  "display",
+  "displease",
+  "disposal",
+  "dispose",
+  "disprove",
+  "dispute",
+  "disregard",
+  "disrupt",
+  "dissuade",
+  "distance",
+  "distant",
+  "distaste",
+  "distill",
+  "distinct",
+  "distort",
+  "distract",
+  "distress",
+  "district",
+  "distrust",
+  "ditch",
+  "ditto",
+  "ditzy",
+  "dividable",
+  "divided",
+  "dividend",
+  "dividers",
+  "dividing",
+  "divinely",
+  "diving",
+  "divinity",
+  "divisible",
+  "divisibly",
+  "division",
+  "divisive",
+  "divorcee",
+  "dizziness",
+  "dizzy",
+  "doable",
+  "docile",
+  "dock",
+  "doctrine",
+  "document",
+  "dodge",
+  "dodgy",
+  "doily",
+  "doing",
+  "dole",
+  "dollar",
+  "dollhouse",
+  "dollop",
+  "dolly",
+  "dolphin",
+  "domain",
+  "domelike",
+  "domestic",
+  "dominion",
+  "dominoes",
+  "donated",
+  "donation",
+  "donator",
+  "donor",
+  "donut",
+  "doodle",
+  "doorbell",
+  "doorframe",
+  "doorknob",
+  "doorman",
+  "doormat",
+  "doornail",
+  "doorpost",
+  "doorstep",
+  "doorstop",
+  "doorway",
+  "doozy",
+  "dork",
+  "dormitory",
+  "dorsal",
+  "dosage",
+  "dose",
+  "dotted",
+  "doubling",
+  "douche",
+  "dove",
+  "down",
+  "dowry",
+  "doze",
+  "drab",
+  "dragging",
+  "dragonfly",
+  "dragonish",
+  "dragster",
+  "drainable",
+  "drainage",
+  "drained",
+  "drainer",
+  "drainpipe",
+  "dramatic",
+  "dramatize",
+  "drank",
+  "drapery",
+  "drastic",
+  "draw",
+  "dreaded",
+  "dreadful",
+  "dreadlock",
+  "dreamboat",
+  "dreamily",
+  "dreamland",
+  "dreamless",
+  "dreamlike",
+  "dreamt",
+  "dreamy",
+  "drearily",
+  "dreary",
+  "drench",
+  "dress",
+  "drew",
+  "dribble",
+  "dried",
+  "drier",
+  "drift",
+  "driller",
+  "drilling",
+  "drinkable",
+  "drinking",
+  "dripping",
+  "drippy",
+  "drivable",
+  "driven",
+  "driver",
+  "driveway",
+  "driving",
+  "drizzle",
+  "drizzly",
+  "drone",
+  "drool",
+  "droop",
+  "drop-down",
+  "dropbox",
+  "dropkick",
+  "droplet",
+  "dropout",
+  "dropper",
+  "drove",
+  "drown",
+  "drowsily",
+  "drudge",
+  "drum",
+  "dry",
+  "dubbed",
+  "dubiously",
+  "duchess",
+  "duckbill",
+  "ducking",
+  "duckling",
+  "ducktail",
+  "ducky",
+  "duct",
+  "dude",
+  "duffel",
+  "dugout",
+  "duh",
+  "duke",
+  "duller",
+  "dullness",
+  "duly",
+  "dumping",
+  "dumpling",
+  "dumpster",
+  "duo",
+  "dupe",
+  "duplex",
+  "duplicate",
+  "duplicity",
+  "durable",
+  "durably",
+  "duration",
+  "duress",
+  "during",
+  "dusk",
+  "dust",
+  "dutiful",
+  "duty",
+  "duvet",
+  "dwarf",
+  "dweeb",
+  "dwelled",
+  "dweller",
+  "dwelling",
+  "dwindle",
+  "dwindling",
+  "dynamic",
+  "dynamite",
+  "dynasty",
+  "dyslexia",
+  "dyslexic",
+  "each",
+  "eagle",
+  "earache",
+  "eardrum",
+  "earflap",
+  "earful",
+  "earlobe",
+  "early",
+  "earmark",
+  "earmuff",
+  "earphone",
+  "earpiece",
+  "earplugs",
+  "earring",
+  "earshot",
+  "earthen",
+  "earthlike",
+  "earthling",
+  "earthly",
+  "earthworm",
+  "earthy",
+  "earwig",
+  "easeful",
+  "easel",
+  "easiest",
+  "easily",
+  "easiness",
+  "easing",
+  "eastbound",
+  "eastcoast",
+  "easter",
+  "eastward",
+  "eatable",
+  "eaten",
+  "eatery",
+  "eating",
+  "eats",
+  "ebay",
+  "ebony",
+  "ebook",
+  "ecard",
+  "eccentric",
+  "echo",
+  "eclair",
+  "eclipse",
+  "ecologist",
+  "ecology",
+  "economic",
+  "economist",
+  "economy",
+  "ecosphere",
+  "ecosystem",
+  "edge",
+  "edginess",
+  "edging",
+  "edgy",
+  "edition",
+  "editor",
+  "educated",
+  "education",
+  "educator",
+  "eel",
+  "effective",
+  "effects",
+  "efficient",
+  "effort",
+  "eggbeater",
+  "egging",
+  "eggnog",
+  "eggplant",
+  "eggshell",
+  "egomaniac",
+  "egotism",
+  "egotistic",
+  "either",
+  "eject",
+  "elaborate",
+  "elastic",
+  "elated",
+  "elbow",
+  "eldercare",
+  "elderly",
+  "eldest",
+  "electable",
+  "election",
+  "elective",
+  "elephant",
+  "elevate",
+  "elevating",
+  "elevation",
+  "elevator",
+  "eleven",
+  "elf",
+  "eligible",
+  "eligibly",
+  "eliminate",
+  "elite",
+  "elitism",
+  "elixir",
+  "elk",
+  "ellipse",
+  "elliptic",
+  "elm",
+  "elongated",
+  "elope",
+  "eloquence",
+  "eloquent",
+  "elsewhere",
+  "elude",
+  "elusive",
+  "elves",
+  "email",
+  "embargo",
+  "embark",
+  "embassy",
+  "embattled",
+  "embellish",
+  "ember",
+  "embezzle",
+  "emblaze",
+  "emblem",
+  "embody",
+  "embolism",
+  "emboss",
+  "embroider",
+  "emcee",
+  "emerald",
+  "emergency",
+  "emission",
+  "emit",
+  "emote",
+  "emoticon",
+  "emotion",
+  "empathic",
+  "empathy",
+  "emperor",
+  "emphases",
+  "emphasis",
+  "emphasize",
+  "emphatic",
+  "empirical",
+  "employed",
+  "employee",
+  "employer",
+  "emporium",
+  "empower",
+  "emptier",
+  "emptiness",
+  "empty",
+  "emu",
+  "enable",
+  "enactment",
+  "enamel",
+  "enchanted",
+  "enchilada",
+  "encircle",
+  "enclose",
+  "enclosure",
+  "encode",
+  "encore",
+  "encounter",
+  "encourage",
+  "encroach",
+  "encrust",
+  "encrypt",
+  "endanger",
+  "endeared",
+  "endearing",
+  "ended",
+  "ending",
+  "endless",
+  "endnote",
+  "endocrine",
+  "endorphin",
+  "endorse",
+  "endowment",
+  "endpoint",
+  "endurable",
+  "endurance",
+  "enduring",
+  "energetic",
+  "energize",
+  "energy",
+  "enforced",
+  "enforcer",
+  "engaged",
+  "engaging",
+  "engine",
+  "engorge",
+  "engraved",
+  "engraver",
+  "engraving",
+  "engross",
+  "engulf",
+  "enhance",
+  "enigmatic",
+  "enjoyable",
+  "enjoyably",
+  "enjoyer",
+  "enjoying",
+  "enjoyment",
+  "enlarged",
+  "enlarging",
+  "enlighten",
+  "enlisted",
+  "enquirer",
+  "enrage",
+  "enrich",
+  "enroll",
+  "enslave",
+  "ensnare",
+  "ensure",
+  "entail",
+  "entangled",
+  "entering",
+  "entertain",
+  "enticing",
+  "entire",
+  "entitle",
+  "entity",
+  "entomb",
+  "entourage",
+  "entrap",
+  "entree",
+  "entrench",
+  "entrust",
+  "entryway",
+  "entwine",
+  "enunciate",
+  "envelope",
+  "enviable",
+  "enviably",
+  "envious",
+  "envision",
+  "envoy",
+  "envy",
+  "enzyme",
+  "epic",
+  "epidemic",
+  "epidermal",
+  "epidermis",
+  "epidural",
+  "epilepsy",
+  "epileptic",
+  "epilogue",
+  "epiphany",
+  "episode",
+  "equal",
+  "equate",
+  "equation",
+  "equator",
+  "equinox",
+  "equipment",
+  "equity",
+  "equivocal",
+  "eradicate",
+  "erasable",
+  "erased",
+  "eraser",
+  "erasure",
+  "ergonomic",
+  "errand",
+  "errant",
+  "erratic",
+  "error",
+  "erupt",
+  "escalate",
+  "escalator",
+  "escapable",
+  "escapade",
+  "escapist",
+  "escargot",
+  "eskimo",
+  "esophagus",
+  "espionage",
+  "espresso",
+  "esquire",
+  "essay",
+  "essence",
+  "essential",
+  "establish",
+  "estate",
+  "esteemed",
+  "estimate",
+  "estimator",
+  "estranged",
+  "estrogen",
+  "etching",
+  "eternal",
+  "eternity",
+  "ethanol",
+  "ether",
+  "ethically",
+  "ethics",
+  "euphemism",
+  "evacuate",
+  "evacuee",
+  "evade",
+  "evaluate",
+  "evaluator",
+  "evaporate",
+  "evasion",
+  "evasive",
+  "even",
+  "everglade",
+  "evergreen",
+  "everybody",
+  "everyday",
+  "everyone",
+  "evict",
+  "evidence",
+  "evident",
+  "evil",
+  "evoke",
+  "evolution",
+  "evolve",
+  "exact",
+  "exalted",
+  "example",
+  "excavate",
+  "excavator",
+  "exceeding",
+  "exception",
+  "excess",
+  "exchange",
+  "excitable",
+  "exciting",
+  "exclaim",
+  "exclude",
+  "excluding",
+  "exclusion",
+  "exclusive",
+  "excretion",
+  "excretory",
+  "excursion",
+  "excusable",
+  "excusably",
+  "excuse",
+  "exemplary",
+  "exemplify",
+  "exemption",
+  "exerciser",
+  "exert",
+  "exes",
+  "exfoliate",
+  "exhale",
+  "exhaust",
+  "exhume",
+  "exile",
+  "existing",
+  "exit",
+  "exodus",
+  "exonerate",
+  "exorcism",
+  "exorcist",
+  "expand",
+  "expanse",
+  "expansion",
+  "expansive",
+  "expectant",
+  "expedited",
+  "expediter",
+  "expel",
+  "expend",
+  "expenses",
+  "expensive",
+  "expert",
+  "expire",
+  "expiring",
+  "explain",
+  "expletive",
+  "explicit",
+  "explode",
+  "exploit",
+  "explore",
+  "exploring",
+  "exponent",
+  "exporter",
+  "exposable",
+  "expose",
+  "exposure",
+  "express",
+  "expulsion",
+  "exquisite",
+  "extended",
+  "extending",
+  "extent",
+  "extenuate",
+  "exterior",
+  "external",
+  "extinct",
+  "extortion",
+  "extradite",
+  "extras",
+  "extrovert",
+  "extrude",
+  "extruding",
+  "exuberant",
+  "fable",
+  "fabric",
+  "fabulous",
+  "facebook",
+  "facecloth",
+  "facedown",
+  "faceless",
+  "facelift",
+  "faceplate",
+  "faceted",
+  "facial",
+  "facility",
+  "facing",
+  "facsimile",
+  "faction",
+  "factoid",
+  "factor",
+  "factsheet",
+  "factual",
+  "faculty",
+  "fade",
+  "fading",
+  "failing",
+  "falcon",
+  "fall",
+  "false",
+  "falsify",
+  "fame",
+  "familiar",
+  "family",
+  "famine",
+  "famished",
+  "fanatic",
+  "fancied",
+  "fanciness",
+  "fancy",
+  "fanfare",
+  "fang",
+  "fanning",
+  "fantasize",
+  "fantastic",
+  "fantasy",
+  "fascism",
+  "fastball",
+  "faster",
+  "fasting",
+  "fastness",
+  "faucet",
+  "favorable",
+  "favorably",
+  "favored",
+  "favoring",
+  "favorite",
+  "fax",
+  "feast",
+  "federal",
+  "fedora",
+  "feeble",
+  "feed",
+  "feel",
+  "feisty",
+  "feline",
+  "felt-tip",
+  "feminine",
+  "feminism",
+  "feminist",
+  "feminize",
+  "femur",
+  "fence",
+  "fencing",
+  "fender",
+  "ferment",
+  "fernlike",
+  "ferocious",
+  "ferocity",
+  "ferret",
+  "ferris",
+  "ferry",
+  "fervor",
+  "fester",
+  "festival",
+  "festive",
+  "festivity",
+  "fetal",
+  "fetch",
+  "fever",
+  "fiber",
+  "fiction",
+  "fiddle",
+  "fiddling",
+  "fidelity",
+  "fidgeting",
+  "fidgety",
+  "fifteen",
+  "fifth",
+  "fiftieth",
+  "fifty",
+  "figment",
+  "figure",
+  "figurine",
+  "filing",
+  "filled",
+  "filler",
+  "filling",
+  "film",
+  "filter",
+  "filth",
+  "filtrate",
+  "finale",
+  "finalist",
+  "finalize",
+  "finally",
+  "finance",
+  "financial",
+  "finch",
+  "fineness",
+  "finer",
+  "finicky",
+  "finished",
+  "finisher",
+  "finishing",
+  "finite",
+  "finless",
+  "finlike",
+  "fiscally",
+  "fit",
+  "five",
+  "flaccid",
+  "flagman",
+  "flagpole",
+  "flagship",
+  "flagstick",
+  "flagstone",
+  "flail",
+  "flakily",
+  "flaky",
+  "flame",
+  "flammable",
+  "flanked",
+  "flanking",
+  "flannels",
+  "flap",
+  "flaring",
+  "flashback",
+  "flashbulb",
+  "flashcard",
+  "flashily",
+  "flashing",
+  "flashy",
+  "flask",
+  "flatbed",
+  "flatfoot",
+  "flatly",
+  "flatness",
+  "flatten",
+  "flattered",
+  "flatterer",
+  "flattery",
+  "flattop",
+  "flatware",
+  "flatworm",
+  "flavored",
+  "flavorful",
+  "flavoring",
+  "flaxseed",
+  "fled",
+  "fleshed",
+  "fleshy",
+  "flick",
+  "flier",
+  "flight",
+  "flinch",
+  "fling",
+  "flint",
+  "flip",
+  "flirt",
+  "float",
+  "flock",
+  "flogging",
+  "flop",
+  "floral",
+  "florist",
+  "floss",
+  "flounder",
+  "flyable",
+  "flyaway",
+  "flyer",
+  "flying",
+  "flyover",
+  "flypaper",
+  "foam",
+  "foe",
+  "fog",
+  "foil",
+  "folic",
+  "folk",
+  "follicle",
+  "follow",
+  "fondling",
+  "fondly",
+  "fondness",
+  "fondue",
+  "font",
+  "food",
+  "fool",
+  "footage",
+  "football",
+  "footbath",
+  "footboard",
+  "footer",
+  "footgear",
+  "foothill",
+  "foothold",
+  "footing",
+  "footless",
+  "footman",
+  "footnote",
+  "footpad",
+  "footpath",
+  "footprint",
+  "footrest",
+  "footsie",
+  "footsore",
+  "footwear",
+  "footwork",
+  "fossil",
+  "foster",
+  "founder",
+  "founding",
+  "fountain",
+  "fox",
+  "foyer",
+  "fraction",
+  "fracture",
+  "fragile",
+  "fragility",
+  "fragment",
+  "fragrance",
+  "fragrant",
+  "frail",
+  "frame",
+  "framing",
+  "frantic",
+  "fraternal",
+  "frayed",
+  "fraying",
+  "frays",
+  "freckled",
+  "freckles",
+  "freebase",
+  "freebee",
+  "freebie",
+  "freedom",
+  "freefall",
+  "freehand",
+  "freeing",
+  "freeload",
+  "freely",
+  "freemason",
+  "freeness",
+  "freestyle",
+  "freeware",
+  "freeway",
+  "freewill",
+  "freezable",
+  "freezing",
+  "freight",
+  "french",
+  "frenzied",
+  "frenzy",
+  "frequency",
+  "frequent",
+  "fresh",
+  "fretful",
+  "fretted",
+  "friction",
+  "friday",
+  "fridge",
+  "fried",
+  "friend",
+  "frighten",
+  "frightful",
+  "frigidity",
+  "frigidly",
+  "frill",
+  "fringe",
+  "frisbee",
+  "frisk",
+  "fritter",
+  "frivolous",
+  "frolic",
+  "from",
+  "front",
+  "frostbite",
+  "frosted",
+  "frostily",
+  "frosting",
+  "frostlike",
+  "frosty",
+  "froth",
+  "frown",
+  "frozen",
+  "fructose",
+  "frugality",
+  "frugally",
+  "fruit",
+  "frustrate",
+  "frying",
+  "gab",
+  "gaffe",
+  "gag",
+  "gainfully",
+  "gaining",
+  "gains",
+  "gala",
+  "gallantly",
+  "galleria",
+  "gallery",
+  "galley",
+  "gallon",
+  "gallows",
+  "gallstone",
+  "galore",
+  "galvanize",
+  "gambling",
+  "game",
+  "gaming",
+  "gamma",
+  "gander",
+  "gangly",
+  "gangrene",
+  "gangway",
+  "gap",
+  "garage",
+  "garbage",
+  "garden",
+  "gargle",
+  "garland",
+  "garlic",
+  "garment",
+  "garnet",
+  "garnish",
+  "garter",
+  "gas",
+  "gatherer",
+  "gathering",
+  "gating",
+  "gauging",
+  "gauntlet",
+  "gauze",
+  "gave",
+  "gawk",
+  "gazing",
+  "gear",
+  "gecko",
+  "geek",
+  "geiger",
+  "gem",
+  "gender",
+  "generic",
+  "generous",
+  "genetics",
+  "genre",
+  "gentile",
+  "gentleman",
+  "gently",
+  "gents",
+  "geography",
+  "geologic",
+  "geologist",
+  "geology",
+  "geometric",
+  "geometry",
+  "geranium",
+  "gerbil",
+  "geriatric",
+  "germicide",
+  "germinate",
+  "germless",
+  "germproof",
+  "gestate",
+  "gestation",
+  "gesture",
+  "getaway",
+  "getting",
+  "getup",
+  "giant",
+  "gibberish",
+  "giblet",
+  "giddily",
+  "giddiness",
+  "giddy",
+  "gift",
+  "gigabyte",
+  "gigahertz",
+  "gigantic",
+  "giggle",
+  "giggling",
+  "giggly",
+  "gigolo",
+  "gilled",
+  "gills",
+  "gimmick",
+  "girdle",
+  "giveaway",
+  "given",
+  "giver",
+  "giving",
+  "gizmo",
+  "gizzard",
+  "glacial",
+  "glacier",
+  "glade",
+  "gladiator",
+  "gladly",
+  "glamorous",
+  "glamour",
+  "glance",
+  "glancing",
+  "glandular",
+  "glare",
+  "glaring",
+  "glass",
+  "glaucoma",
+  "glazing",
+  "gleaming",
+  "gleeful",
+  "glider",
+  "gliding",
+  "glimmer",
+  "glimpse",
+  "glisten",
+  "glitch",
+  "glitter",
+  "glitzy",
+  "gloater",
+  "gloating",
+  "gloomily",
+  "gloomy",
+  "glorified",
+  "glorifier",
+  "glorify",
+  "glorious",
+  "glory",
+  "gloss",
+  "glove",
+  "glowing",
+  "glowworm",
+  "glucose",
+  "glue",
+  "gluten",
+  "glutinous",
+  "glutton",
+  "gnarly",
+  "gnat",
+  "goal",
+  "goatskin",
+  "goes",
+  "goggles",
+  "going",
+  "goldfish",
+  "goldmine",
+  "goldsmith",
+  "golf",
+  "goliath",
+  "gonad",
+  "gondola",
+  "gone",
+  "gong",
+  "good",
+  "gooey",
+  "goofball",
+  "goofiness",
+  "goofy",
+  "google",
+  "goon",
+  "gopher",
+  "gore",
+  "gorged",
+  "gorgeous",
+  "gory",
+  "gosling",
+  "gossip",
+  "gothic",
+  "gotten",
+  "gout",
+  "gown",
+  "grab",
+  "graceful",
+  "graceless",
+  "gracious",
+  "gradation",
+  "graded",
+  "grader",
+  "gradient",
+  "grading",
+  "gradually",
+  "graduate",
+  "graffiti",
+  "grafted",
+  "grafting",
+  "grain",
+  "granddad",
+  "grandkid",
+  "grandly",
+  "grandma",
+  "grandpa",
+  "grandson",
+  "granite",
+  "granny",
+  "granola",
+  "grant",
+  "granular",
+  "grape",
+  "graph",
+  "grapple",
+  "grappling",
+  "grasp",
+  "grass",
+  "gratified",
+  "gratify",
+  "grating",
+  "gratitude",
+  "gratuity",
+  "gravel",
+  "graveness",
+  "graves",
+  "graveyard",
+  "gravitate",
+  "gravity",
+  "gravy",
+  "gray",
+  "grazing",
+  "greasily",
+  "greedily",
+  "greedless",
+  "greedy",
+  "green",
+  "greeter",
+  "greeting",
+  "grew",
+  "greyhound",
+  "grid",
+  "grief",
+  "grievance",
+  "grieving",
+  "grievous",
+  "grill",
+  "grimace",
+  "grimacing",
+  "grime",
+  "griminess",
+  "grimy",
+  "grinch",
+  "grinning",
+  "grip",
+  "gristle",
+  "grit",
+  "groggily",
+  "groggy",
+  "groin",
+  "groom",
+  "groove",
+  "grooving",
+  "groovy",
+  "grope",
+  "ground",
+  "grouped",
+  "grout",
+  "grove",
+  "grower",
+  "growing",
+  "growl",
+  "grub",
+  "grudge",
+  "grudging",
+  "grueling",
+  "gruffly",
+  "grumble",
+  "grumbling",
+  "grumbly",
+  "grumpily",
+  "grunge",
+  "grunt",
+  "guacamole",
+  "guidable",
+  "guidance",
+  "guide",
+  "guiding",
+  "guileless",
+  "guise",
+  "gulf",
+  "gullible",
+  "gully",
+  "gulp",
+  "gumball",
+  "gumdrop",
+  "gumminess",
+  "gumming",
+  "gummy",
+  "gurgle",
+  "gurgling",
+  "guru",
+  "gush",
+  "gusto",
+  "gusty",
+  "gutless",
+  "guts",
+  "gutter",
+  "guy",
+  "guzzler",
+  "gyration",
+  "habitable",
+  "habitant",
+  "habitat",
+  "habitual",
+  "hacked",
+  "hacker",
+  "hacking",
+  "hacksaw",
+  "had",
+  "haggler",
+  "haiku",
+  "half",
+  "halogen",
+  "halt",
+  "halved",
+  "halves",
+  "hamburger",
+  "hamlet",
+  "hammock",
+  "hamper",
+  "hamster",
+  "hamstring",
+  "handbag",
+  "handball",
+  "handbook",
+  "handbrake",
+  "handcart",
+  "handclap",
+  "handclasp",
+  "handcraft",
+  "handcuff",
+  "handed",
+  "handful",
+  "handgrip",
+  "handgun",
+  "handheld",
+  "handiness",
+  "handiwork",
+  "handlebar",
+  "handled",
+  "handler",
+  "handling",
+  "handmade",
+  "handoff",
+  "handpick",
+  "handprint",
+  "handrail",
+  "handsaw",
+  "handset",
+  "handsfree",
+  "handshake",
+  "handstand",
+  "handwash",
+  "handwork",
+  "handwoven",
+  "handwrite",
+  "handyman",
+  "hangnail",
+  "hangout",
+  "hangover",
+  "hangup",
+  "hankering",
+  "hankie",
+  "hanky",
+  "haphazard",
+  "happening",
+  "happier",
+  "happiest",
+  "happily",
+  "happiness",
+  "happy",
+  "harbor",
+  "hardcopy",
+  "hardcore",
+  "hardcover",
+  "harddisk",
+  "hardened",
+  "hardener",
+  "hardening",
+  "hardhat",
+  "hardhead",
+  "hardiness",
+  "hardly",
+  "hardness",
+  "hardship",
+  "hardware",
+  "hardwired",
+  "hardwood",
+  "hardy",
+  "harmful",
+  "harmless",
+  "harmonica",
+  "harmonics",
+  "harmonize",
+  "harmony",
+  "harness",
+  "harpist",
+  "harsh",
+  "harvest",
+  "hash",
+  "hassle",
+  "haste",
+  "hastily",
+  "hastiness",
+  "hasty",
+  "hatbox",
+  "hatchback",
+  "hatchery",
+  "hatchet",
+  "hatching",
+  "hatchling",
+  "hate",
+  "hatless",
+  "hatred",
+  "haunt",
+  "haven",
+  "hazard",
+  "hazelnut",
+  "hazily",
+  "haziness",
+  "hazing",
+  "hazy",
+  "headache",
+  "headband",
+  "headboard",
+  "headcount",
+  "headdress",
+  "headed",
+  "header",
+  "headfirst",
+  "headgear",
+  "heading",
+  "headlamp",
+  "headless",
+  "headlock",
+  "headphone",
+  "headpiece",
+  "headrest",
+  "headroom",
+  "headscarf",
+  "headset",
+  "headsman",
+  "headstand",
+  "headstone",
+  "headway",
+  "headwear",
+  "heap",
+  "heat",
+  "heave",
+  "heavily",
+  "heaviness",
+  "heaving",
+  "hedge",
+  "hedging",
+  "heftiness",
+  "hefty",
+  "helium",
+  "helmet",
+  "helper",
+  "helpful",
+  "helping",
+  "helpless",
+  "helpline",
+  "hemlock",
+  "hemstitch",
+  "hence",
+  "henchman",
+  "henna",
+  "herald",
+  "herbal",
+  "herbicide",
+  "herbs",
+  "heritage",
+  "hermit",
+  "heroics",
+  "heroism",
+  "herring",
+  "herself",
+  "hertz",
+  "hesitancy",
+  "hesitant",
+  "hesitate",
+  "hexagon",
+  "hexagram",
+  "hubcap",
+  "huddle",
+  "huddling",
+  "huff",
+  "hug",
+  "hula",
+  "hulk",
+  "hull",
+  "human",
+  "humble",
+  "humbling",
+  "humbly",
+  "humid",
+  "humiliate",
+  "humility",
+  "humming",
+  "hummus",
+  "humongous",
+  "humorist",
+  "humorless",
+  "humorous",
+  "humpback",
+  "humped",
+  "humvee",
+  "hunchback",
+  "hundredth",
+  "hunger",
+  "hungrily",
+  "hungry",
+  "hunk",
+  "hunter",
+  "hunting",
+  "huntress",
+  "huntsman",
+  "hurdle",
+  "hurled",
+  "hurler",
+  "hurling",
+  "hurray",
+  "hurricane",
+  "hurried",
+  "hurry",
+  "hurt",
+  "husband",
+  "hush",
+  "husked",
+  "huskiness",
+  "hut",
+  "hybrid",
+  "hydrant",
+  "hydrated",
+  "hydration",
+  "hydrogen",
+  "hydroxide",
+  "hyperlink",
+  "hypertext",
+  "hyphen",
+  "hypnoses",
+  "hypnosis",
+  "hypnotic",
+  "hypnotism",
+  "hypnotist",
+  "hypnotize",
+  "hypocrisy",
+  "hypocrite",
+  "ibuprofen",
+  "ice",
+  "iciness",
+  "icing",
+  "icky",
+  "icon",
+  "icy",
+  "idealism",
+  "idealist",
+  "idealize",
+  "ideally",
+  "idealness",
+  "identical",
+  "identify",
+  "identity",
+  "ideology",
+  "idiocy",
+  "idiom",
+  "idly",
+  "igloo",
+  "ignition",
+  "ignore",
+  "iguana",
+  "illicitly",
+  "illusion",
+  "illusive",
+  "image",
+  "imaginary",
+  "imagines",
+  "imaging",
+  "imbecile",
+  "imitate",
+  "imitation",
+  "immature",
+  "immerse",
+  "immersion",
+  "imminent",
+  "immobile",
+  "immodest",
+  "immorally",
+  "immortal",
+  "immovable",
+  "immovably",
+  "immunity",
+  "immunize",
+  "impaired",
+  "impale",
+  "impart",
+  "impatient",
+  "impeach",
+  "impeding",
+  "impending",
+  "imperfect",
+  "imperial",
+  "impish",
+  "implant",
+  "implement",
+  "implicate",
+  "implicit",
+  "implode",
+  "implosion",
+  "implosive",
+  "imply",
+  "impolite",
+  "important",
+  "importer",
+  "impose",
+  "imposing",
+  "impotence",
+  "impotency",
+  "impotent",
+  "impound",
+  "imprecise",
+  "imprint",
+  "imprison",
+  "impromptu",
+  "improper",
+  "improve",
+  "improving",
+  "improvise",
+  "imprudent",
+  "impulse",
+  "impulsive",
+  "impure",
+  "impurity",
+  "iodine",
+  "iodize",
+  "ion",
+  "ipad",
+  "iphone",
+  "ipod",
+  "irate",
+  "irk",
+  "iron",
+  "irregular",
+  "irrigate",
+  "irritable",
+  "irritably",
+  "irritant",
+  "irritate",
+  "islamic",
+  "islamist",
+  "isolated",
+  "isolating",
+  "isolation",
+  "isotope",
+  "issue",
+  "issuing",
+  "italicize",
+  "italics",
+  "item",
+  "itinerary",
+  "itunes",
+  "ivory",
+  "ivy",
+  "jab",
+  "jackal",
+  "jacket",
+  "jackknife",
+  "jackpot",
+  "jailbird",
+  "jailbreak",
+  "jailer",
+  "jailhouse",
+  "jalapeno",
+  "jam",
+  "janitor",
+  "january",
+  "jargon",
+  "jarring",
+  "jasmine",
+  "jaundice",
+  "jaunt",
+  "java",
+  "jawed",
+  "jawless",
+  "jawline",
+  "jaws",
+  "jaybird",
+  "jaywalker",
+  "jazz",
+  "jeep",
+  "jeeringly",
+  "jellied",
+  "jelly",
+  "jersey",
+  "jester",
+  "jet",
+  "jiffy",
+  "jigsaw",
+  "jimmy",
+  "jingle",
+  "jingling",
+  "jinx",
+  "jitters",
+  "jittery",
+  "job",
+  "jockey",
+  "jockstrap",
+  "jogger",
+  "jogging",
+  "john",
+  "joining",
+  "jokester",
+  "jokingly",
+  "jolliness",
+  "jolly",
+  "jolt",
+  "jot",
+  "jovial",
+  "joyfully",
+  "joylessly",
+  "joyous",
+  "joyride",
+  "joystick",
+  "jubilance",
+  "jubilant",
+  "judge",
+  "judgingly",
+  "judicial",
+  "judiciary",
+  "judo",
+  "juggle",
+  "juggling",
+  "jugular",
+  "juice",
+  "juiciness",
+  "juicy",
+  "jujitsu",
+  "jukebox",
+  "july",
+  "jumble",
+  "jumbo",
+  "jump",
+  "junction",
+  "juncture",
+  "june",
+  "junior",
+  "juniper",
+  "junkie",
+  "junkman",
+  "junkyard",
+  "jurist",
+  "juror",
+  "jury",
+  "justice",
+  "justifier",
+  "justify",
+  "justly",
+  "justness",
+  "juvenile",
+  "kabob",
+  "kangaroo",
+  "karaoke",
+  "karate",
+  "karma",
+  "kebab",
+  "keenly",
+  "keenness",
+  "keep",
+  "keg",
+  "kelp",
+  "kennel",
+  "kept",
+  "kerchief",
+  "kerosene",
+  "kettle",
+  "kick",
+  "kiln",
+  "kilobyte",
+  "kilogram",
+  "kilometer",
+  "kilowatt",
+  "kilt",
+  "kimono",
+  "kindle",
+  "kindling",
+  "kindly",
+  "kindness",
+  "kindred",
+  "kinetic",
+  "kinfolk",
+  "king",
+  "kinship",
+  "kinsman",
+  "kinswoman",
+  "kissable",
+  "kisser",
+  "kissing",
+  "kitchen",
+  "kite",
+  "kitten",
+  "kitty",
+  "kiwi",
+  "kleenex",
+  "knapsack",
+  "knee",
+  "knelt",
+  "knickers",
+  "knoll",
+  "koala",
+  "kooky",
+  "kosher",
+  "krypton",
+  "kudos",
+  "kung",
+  "labored",
+  "laborer",
+  "laboring",
+  "laborious",
+  "labrador",
+  "ladder",
+  "ladies",
+  "ladle",
+  "ladybug",
+  "ladylike",
+  "lagged",
+  "lagging",
+  "lagoon",
+  "lair",
+  "lake",
+  "lance",
+  "landed",
+  "landfall",
+  "landfill",
+  "landing",
+  "landlady",
+  "landless",
+  "landline",
+  "landlord",
+  "landmark",
+  "landmass",
+  "landmine",
+  "landowner",
+  "landscape",
+  "landside",
+  "landslide",
+  "language",
+  "lankiness",
+  "lanky",
+  "lantern",
+  "lapdog",
+  "lapel",
+  "lapped",
+  "lapping",
+  "laptop",
+  "lard",
+  "large",
+  "lark",
+  "lash",
+  "lasso",
+  "last",
+  "latch",
+  "late",
+  "lather",
+  "latitude",
+  "latrine",
+  "latter",
+  "latticed",
+  "launch",
+  "launder",
+  "laundry",
+  "laurel",
+  "lavender",
+  "lavish",
+  "laxative",
+  "lazily",
+  "laziness",
+  "lazy",
+  "lecturer",
+  "left",
+  "legacy",
+  "legal",
+  "legend",
+  "legged",
+  "leggings",
+  "legible",
+  "legibly",
+  "legislate",
+  "lego",
+  "legroom",
+  "legume",
+  "legwarmer",
+  "legwork",
+  "lemon",
+  "lend",
+  "length",
+  "lens",
+  "lent",
+  "leotard",
+  "lesser",
+  "letdown",
+  "lethargic",
+  "lethargy",
+  "letter",
+  "lettuce",
+  "level",
+  "leverage",
+  "levers",
+  "levitate",
+  "levitator",
+  "liability",
+  "liable",
+  "liberty",
+  "librarian",
+  "library",
+  "licking",
+  "licorice",
+  "lid",
+  "life",
+  "lifter",
+  "lifting",
+  "liftoff",
+  "ligament",
+  "likely",
+  "likeness",
+  "likewise",
+  "liking",
+  "lilac",
+  "lilly",
+  "lily",
+  "limb",
+  "limeade",
+  "limelight",
+  "limes",
+  "limit",
+  "limping",
+  "limpness",
+  "line",
+  "lingo",
+  "linguini",
+  "linguist",
+  "lining",
+  "linked",
+  "linoleum",
+  "linseed",
+  "lint",
+  "lion",
+  "lip",
+  "liquefy",
+  "liqueur",
+  "liquid",
+  "lisp",
+  "list",
+  "litigate",
+  "litigator",
+  "litmus",
+  "litter",
+  "little",
+  "livable",
+  "lived",
+  "lively",
+  "liver",
+  "livestock",
+  "lividly",
+  "living",
+  "lizard",
+  "lubricant",
+  "lubricate",
+  "lucid",
+  "luckily",
+  "luckiness",
+  "luckless",
+  "lucrative",
+  "ludicrous",
+  "lugged",
+  "lukewarm",
+  "lullaby",
+  "lumber",
+  "luminance",
+  "luminous",
+  "lumpiness",
+  "lumping",
+  "lumpish",
+  "lunacy",
+  "lunar",
+  "lunchbox",
+  "luncheon",
+  "lunchroom",
+  "lunchtime",
+  "lung",
+  "lurch",
+  "lure",
+  "luridness",
+  "lurk",
+  "lushly",
+  "lushness",
+  "luster",
+  "lustfully",
+  "lustily",
+  "lustiness",
+  "lustrous",
+  "lusty",
+  "luxurious",
+  "luxury",
+  "lying",
+  "lyrically",
+  "lyricism",
+  "lyricist",
+  "lyrics",
+  "macarena",
+  "macaroni",
+  "macaw",
+  "mace",
+  "machine",
+  "machinist",
+  "magazine",
+  "magenta",
+  "maggot",
+  "magical",
+  "magician",
+  "magma",
+  "magnesium",
+  "magnetic",
+  "magnetism",
+  "magnetize",
+  "magnifier",
+  "magnify",
+  "magnitude",
+  "magnolia",
+  "mahogany",
+  "maimed",
+  "majestic",
+  "majesty",
+  "majorette",
+  "majority",
+  "makeover",
+  "maker",
+  "makeshift",
+  "making",
+  "malformed",
+  "malt",
+  "mama",
+  "mammal",
+  "mammary",
+  "mammogram",
+  "manager",
+  "managing",
+  "manatee",
+  "mandarin",
+  "mandate",
+  "mandatory",
+  "mandolin",
+  "manger",
+  "mangle",
+  "mango",
+  "mangy",
+  "manhandle",
+  "manhole",
+  "manhood",
+  "manhunt",
+  "manicotti",
+  "manicure",
+  "manifesto",
+  "manila",
+  "mankind",
+  "manlike",
+  "manliness",
+  "manly",
+  "manmade",
+  "manned",
+  "mannish",
+  "manor",
+  "manpower",
+  "mantis",
+  "mantra",
+  "manual",
+  "many",
+  "map",
+  "marathon",
+  "marauding",
+  "marbled",
+  "marbles",
+  "marbling",
+  "march",
+  "mardi",
+  "margarine",
+  "margarita",
+  "margin",
+  "marigold",
+  "marina",
+  "marine",
+  "marital",
+  "maritime",
+  "marlin",
+  "marmalade",
+  "maroon",
+  "married",
+  "marrow",
+  "marry",
+  "marshland",
+  "marshy",
+  "marsupial",
+  "marvelous",
+  "marxism",
+  "mascot",
+  "masculine",
+  "mashed",
+  "mashing",
+  "massager",
+  "masses",
+  "massive",
+  "mastiff",
+  "matador",
+  "matchbook",
+  "matchbox",
+  "matcher",
+  "matching",
+  "matchless",
+  "material",
+  "maternal",
+  "maternity",
+  "math",
+  "mating",
+  "matriarch",
+  "matrimony",
+  "matrix",
+  "matron",
+  "matted",
+  "matter",
+  "maturely",
+  "maturing",
+  "maturity",
+  "mauve",
+  "maverick",
+  "maximize",
+  "maximum",
+  "maybe",
+  "mayday",
+  "mayflower",
+  "moaner",
+  "moaning",
+  "mobile",
+  "mobility",
+  "mobilize",
+  "mobster",
+  "mocha",
+  "mocker",
+  "mockup",
+  "modified",
+  "modify",
+  "modular",
+  "modulator",
+  "module",
+  "moisten",
+  "moistness",
+  "moisture",
+  "molar",
+  "molasses",
+  "mold",
+  "molecular",
+  "molecule",
+  "molehill",
+  "mollusk",
+  "mom",
+  "monastery",
+  "monday",
+  "monetary",
+  "monetize",
+  "moneybags",
+  "moneyless",
+  "moneywise",
+  "mongoose",
+  "mongrel",
+  "monitor",
+  "monkhood",
+  "monogamy",
+  "monogram",
+  "monologue",
+  "monopoly",
+  "monorail",
+  "monotone",
+  "monotype",
+  "monoxide",
+  "monsieur",
+  "monsoon",
+  "monstrous",
+  "monthly",
+  "monument",
+  "moocher",
+  "moodiness",
+  "moody",
+  "mooing",
+  "moonbeam",
+  "mooned",
+  "moonlight",
+  "moonlike",
+  "moonlit",
+  "moonrise",
+  "moonscape",
+  "moonshine",
+  "moonstone",
+  "moonwalk",
+  "mop",
+  "morale",
+  "morality",
+  "morally",
+  "morbidity",
+  "morbidly",
+  "morphine",
+  "morphing",
+  "morse",
+  "mortality",
+  "mortally",
+  "mortician",
+  "mortified",
+  "mortify",
+  "mortuary",
+  "mosaic",
+  "mossy",
+  "most",
+  "mothball",
+  "mothproof",
+  "motion",
+  "motivate",
+  "motivator",
+  "motive",
+  "motocross",
+  "motor",
+  "motto",
+  "mountable",
+  "mountain",
+  "mounted",
+  "mounting",
+  "mourner",
+  "mournful",
+  "mouse",
+  "mousiness",
+  "moustache",
+  "mousy",
+  "mouth",
+  "movable",
+  "move",
+  "movie",
+  "moving",
+  "mower",
+  "mowing",
+  "much",
+  "muck",
+  "mud",
+  "mug",
+  "mulberry",
+  "mulch",
+  "mule",
+  "mulled",
+  "mullets",
+  "multiple",
+  "multiply",
+  "multitask",
+  "multitude",
+  "mumble",
+  "mumbling",
+  "mumbo",
+  "mummified",
+  "mummify",
+  "mummy",
+  "mumps",
+  "munchkin",
+  "mundane",
+  "municipal",
+  "muppet",
+  "mural",
+  "murkiness",
+  "murky",
+  "murmuring",
+  "muscular",
+  "museum",
+  "mushily",
+  "mushiness",
+  "mushroom",
+  "mushy",
+  "music",
+  "musket",
+  "muskiness",
+  "musky",
+  "mustang",
+  "mustard",
+  "muster",
+  "mustiness",
+  "musty",
+  "mutable",
+  "mutate",
+  "mutation",
+  "mute",
+  "mutilated",
+  "mutilator",
+  "mutiny",
+  "mutt",
+  "mutual",
+  "muzzle",
+  "myself",
+  "myspace",
+  "mystified",
+  "mystify",
+  "myth",
+  "nacho",
+  "nag",
+  "nail",
+  "name",
+  "naming",
+  "nanny",
+  "nanometer",
+  "nape",
+  "napkin",
+  "napped",
+  "napping",
+  "nappy",
+  "narrow",
+  "nastily",
+  "nastiness",
+  "national",
+  "native",
+  "nativity",
+  "natural",
+  "nature",
+  "naturist",
+  "nautical",
+  "navigate",
+  "navigator",
+  "navy",
+  "nearby",
+  "nearest",
+  "nearly",
+  "nearness",
+  "neatly",
+  "neatness",
+  "nebula",
+  "nebulizer",
+  "nectar",
+  "negate",
+  "negation",
+  "negative",
+  "neglector",
+  "negligee",
+  "negligent",
+  "negotiate",
+  "nemeses",
+  "nemesis",
+  "neon",
+  "nephew",
+  "nerd",
+  "nervous",
+  "nervy",
+  "nest",
+  "net",
+  "neurology",
+  "neuron",
+  "neurosis",
+  "neurotic",
+  "neuter",
+  "neutron",
+  "never",
+  "next",
+  "nibble",
+  "nickname",
+  "nicotine",
+  "niece",
+  "nifty",
+  "nimble",
+  "nimbly",
+  "nineteen",
+  "ninetieth",
+  "ninja",
+  "nintendo",
+  "ninth",
+  "nuclear",
+  "nuclei",
+  "nucleus",
+  "nugget",
+  "nullify",
+  "number",
+  "numbing",
+  "numbly",
+  "numbness",
+  "numeral",
+  "numerate",
+  "numerator",
+  "numeric",
+  "numerous",
+  "nuptials",
+  "nursery",
+  "nursing",
+  "nurture",
+  "nutcase",
+  "nutlike",
+  "nutmeg",
+  "nutrient",
+  "nutshell",
+  "nuttiness",
+  "nutty",
+  "nuzzle",
+  "nylon",
+  "oaf",
+  "oak",
+  "oasis",
+  "oat",
+  "obedience",
+  "obedient",
+  "obituary",
+  "object",
+  "obligate",
+  "obliged",
+  "oblivion",
+  "oblivious",
+  "oblong",
+  "obnoxious",
+  "oboe",
+  "obscure",
+  "obscurity",
+  "observant",
+  "observer",
+  "observing",
+  "obsessed",
+  "obsession",
+  "obsessive",
+  "obsolete",
+  "obstacle",
+  "obstinate",
+  "obstruct",
+  "obtain",
+  "obtrusive",
+  "obtuse",
+  "obvious",
+  "occultist",
+  "occupancy",
+  "occupant",
+  "occupier",
+  "occupy",
+  "ocean",
+  "ocelot",
+  "octagon",
+  "octane",
+  "october",
+  "octopus",
+  "ogle",
+  "oil",
+  "oink",
+  "ointment",
+  "okay",
+  "old",
+  "olive",
+  "olympics",
+  "omega",
+  "omen",
+  "ominous",
+  "omission",
+  "omit",
+  "omnivore",
+  "onboard",
+  "oncoming",
+  "ongoing",
+  "onion",
+  "online",
+  "onlooker",
+  "only",
+  "onscreen",
+  "onset",
+  "onshore",
+  "onslaught",
+  "onstage",
+  "onto",
+  "onward",
+  "onyx",
+  "oops",
+  "ooze",
+  "oozy",
+  "opacity",
+  "opal",
+  "open",
+  "operable",
+  "operate",
+  "operating",
+  "operation",
+  "operative",
+  "operator",
+  "opium",
+  "opossum",
+  "opponent",
+  "oppose",
+  "opposing",
+  "opposite",
+  "oppressed",
+  "oppressor",
+  "opt",
+  "opulently",
+  "osmosis",
+  "other",
+  "otter",
+  "ouch",
+  "ought",
+  "ounce",
+  "outage",
+  "outback",
+  "outbid",
+  "outboard",
+  "outbound",
+  "outbreak",
+  "outburst",
+  "outcast",
+  "outclass",
+  "outcome",
+  "outdated",
+  "outdoors",
+  "outer",
+  "outfield",
+  "outfit",
+  "outflank",
+  "outgoing",
+  "outgrow",
+  "outhouse",
+  "outing",
+  "outlast",
+  "outlet",
+  "outline",
+  "outlook",
+  "outlying",
+  "outmatch",
+  "outmost",
+  "outnumber",
+  "outplayed",
+  "outpost",
+  "outpour",
+  "output",
+  "outrage",
+  "outrank",
+  "outreach",
+  "outright",
+  "outscore",
+  "outsell",
+  "outshine",
+  "outshoot",
+  "outsider",
+  "outskirts",
+  "outsmart",
+  "outsource",
+  "outspoken",
+  "outtakes",
+  "outthink",
+  "outward",
+  "outweigh",
+  "outwit",
+  "oval",
+  "ovary",
+  "oven",
+  "overact",
+  "overall",
+  "overarch",
+  "overbid",
+  "overbill",
+  "overbite",
+  "overblown",
+  "overboard",
+  "overbook",
+  "overbuilt",
+  "overcast",
+  "overcoat",
+  "overcome",
+  "overcook",
+  "overcrowd",
+  "overdraft",
+  "overdrawn",
+  "overdress",
+  "overdrive",
+  "overdue",
+  "overeager",
+  "overeater",
+  "overexert",
+  "overfed",
+  "overfeed",
+  "overfill",
+  "overflow",
+  "overfull",
+  "overgrown",
+  "overhand",
+  "overhang",
+  "overhaul",
+  "overhead",
+  "overhear",
+  "overheat",
+  "overhung",
+  "overjoyed",
+  "overkill",
+  "overlabor",
+  "overlaid",
+  "overlap",
+  "overlay",
+  "overload",
+  "overlook",
+  "overlord",
+  "overlying",
+  "overnight",
+  "overpass",
+  "overpay",
+  "overplant",
+  "overplay",
+  "overpower",
+  "overprice",
+  "overrate",
+  "overreach",
+  "overreact",
+  "override",
+  "overripe",
+  "overrule",
+  "overrun",
+  "overshoot",
+  "overshot",
+  "oversight",
+  "oversized",
+  "oversleep",
+  "oversold",
+  "overspend",
+  "overstate",
+  "overstay",
+  "overstep",
+  "overstock",
+  "overstuff",
+  "oversweet",
+  "overtake",
+  "overthrow",
+  "overtime",
+  "overtly",
+  "overtone",
+  "overture",
+  "overturn",
+  "overuse",
+  "overvalue",
+  "overview",
+  "overwrite",
+  "owl",
+  "oxford",
+  "oxidant",
+  "oxidation",
+  "oxidize",
+  "oxidizing",
+  "oxygen",
+  "oxymoron",
+  "oyster",
+  "ozone",
+  "paced",
+  "pacemaker",
+  "pacific",
+  "pacifier",
+  "pacifism",
+  "pacifist",
+  "pacify",
+  "padded",
+  "padding",
+  "paddle",
+  "paddling",
+  "padlock",
+  "pagan",
+  "pager",
+  "paging",
+  "pajamas",
+  "palace",
+  "palatable",
+  "palm",
+  "palpable",
+  "palpitate",
+  "paltry",
+  "pampered",
+  "pamperer",
+  "pampers",
+  "pamphlet",
+  "panama",
+  "pancake",
+  "pancreas",
+  "panda",
+  "pandemic",
+  "pang",
+  "panhandle",
+  "panic",
+  "panning",
+  "panorama",
+  "panoramic",
+  "panther",
+  "pantomime",
+  "pantry",
+  "pants",
+  "pantyhose",
+  "paparazzi",
+  "papaya",
+  "paper",
+  "paprika",
+  "papyrus",
+  "parabola",
+  "parachute",
+  "parade",
+  "paradox",
+  "paragraph",
+  "parakeet",
+  "paralegal",
+  "paralyses",
+  "paralysis",
+  "paralyze",
+  "paramedic",
+  "parameter",
+  "paramount",
+  "parasail",
+  "parasite",
+  "parasitic",
+  "parcel",
+  "parched",
+  "parchment",
+  "pardon",
+  "parish",
+  "parka",
+  "parking",
+  "parkway",
+  "parlor",
+  "parmesan",
+  "parole",
+  "parrot",
+  "parsley",
+  "parsnip",
+  "partake",
+  "parted",
+  "parting",
+  "partition",
+  "partly",
+  "partner",
+  "partridge",
+  "party",
+  "passable",
+  "passably",
+  "passage",
+  "passcode",
+  "passenger",
+  "passerby",
+  "passing",
+  "passion",
+  "passive",
+  "passivism",
+  "passover",
+  "passport",
+  "password",
+  "pasta",
+  "pasted",
+  "pastel",
+  "pastime",
+  "pastor",
+  "pastrami",
+  "pasture",
+  "pasty",
+  "patchwork",
+  "patchy",
+  "paternal",
+  "paternity",
+  "path",
+  "patience",
+  "patient",
+  "patio",
+  "patriarch",
+  "patriot",
+  "patrol",
+  "patronage",
+  "patronize",
+  "pauper",
+  "pavement",
+  "paver",
+  "pavestone",
+  "pavilion",
+  "paving",
+  "pawing",
+  "payable",
+  "payback",
+  "paycheck",
+  "payday",
+  "payee",
+  "payer",
+  "paying",
+  "payment",
+  "payphone",
+  "payroll",
+  "pebble",
+  "pebbly",
+  "pecan",
+  "pectin",
+  "peculiar",
+  "peddling",
+  "pediatric",
+  "pedicure",
+  "pedigree",
+  "pedometer",
+  "pegboard",
+  "pelican",
+  "pellet",
+  "pelt",
+  "pelvis",
+  "penalize",
+  "penalty",
+  "pencil",
+  "pendant",
+  "pending",
+  "penholder",
+  "penknife",
+  "pennant",
+  "penniless",
+  "penny",
+  "penpal",
+  "pension",
+  "pentagon",
+  "pentagram",
+  "pep",
+  "perceive",
+  "percent",
+  "perch",
+  "percolate",
+  "perennial",
+  "perfected",
+  "perfectly",
+  "perfume",
+  "periscope",
+  "perish",
+  "perjurer",
+  "perjury",
+  "perkiness",
+  "perky",
+  "perm",
+  "peroxide",
+  "perpetual",
+  "perplexed",
+  "persecute",
+  "persevere",
+  "persuaded",
+  "persuader",
+  "pesky",
+  "peso",
+  "pessimism",
+  "pessimist",
+  "pester",
+  "pesticide",
+  "petal",
+  "petite",
+  "petition",
+  "petri",
+  "petroleum",
+  "petted",
+  "petticoat",
+  "pettiness",
+  "petty",
+  "petunia",
+  "phantom",
+  "phobia",
+  "phoenix",
+  "phonebook",
+  "phoney",
+  "phonics",
+  "phoniness",
+  "phony",
+  "phosphate",
+  "photo",
+  "phrase",
+  "phrasing",
+  "placard",
+  "placate",
+  "placidly",
+  "plank",
+  "planner",
+  "plant",
+  "plasma",
+  "plaster",
+  "plastic",
+  "plated",
+  "platform",
+  "plating",
+  "platinum",
+  "platonic",
+  "platter",
+  "platypus",
+  "plausible",
+  "plausibly",
+  "playable",
+  "playback",
+  "player",
+  "playful",
+  "playgroup",
+  "playhouse",
+  "playing",
+  "playlist",
+  "playmaker",
+  "playmate",
+  "playoff",
+  "playpen",
+  "playroom",
+  "playset",
+  "plaything",
+  "playtime",
+  "plaza",
+  "pleading",
+  "pleat",
+  "pledge",
+  "plentiful",
+  "plenty",
+  "plethora",
+  "plexiglas",
+  "pliable",
+  "plod",
+  "plop",
+  "plot",
+  "plow",
+  "ploy",
+  "pluck",
+  "plug",
+  "plunder",
+  "plunging",
+  "plural",
+  "plus",
+  "plutonium",
+  "plywood",
+  "poach",
+  "pod",
+  "poem",
+  "poet",
+  "pogo",
+  "pointed",
+  "pointer",
+  "pointing",
+  "pointless",
+  "pointy",
+  "poise",
+  "poison",
+  "poker",
+  "poking",
+  "polar",
+  "police",
+  "policy",
+  "polio",
+  "polish",
+  "politely",
+  "polka",
+  "polo",
+  "polyester",
+  "polygon",
+  "polygraph",
+  "polymer",
+  "poncho",
+  "pond",
+  "pony",
+  "popcorn",
+  "pope",
+  "poplar",
+  "popper",
+  "poppy",
+  "popsicle",
+  "populace",
+  "popular",
+  "populate",
+  "porcupine",
+  "pork",
+  "porous",
+  "porridge",
+  "portable",
+  "portal",
+  "portfolio",
+  "porthole",
+  "portion",
+  "portly",
+  "portside",
+  "poser",
+  "posh",
+  "posing",
+  "possible",
+  "possibly",
+  "possum",
+  "postage",
+  "postal",
+  "postbox",
+  "postcard",
+  "posted",
+  "poster",
+  "posting",
+  "postnasal",
+  "posture",
+  "postwar",
+  "pouch",
+  "pounce",
+  "pouncing",
+  "pound",
+  "pouring",
+  "pout",
+  "powdered",
+  "powdering",
+  "powdery",
+  "power",
+  "powwow",
+  "pox",
+  "praising",
+  "prance",
+  "prancing",
+  "pranker",
+  "prankish",
+  "prankster",
+  "prayer",
+  "praying",
+  "preacher",
+  "preaching",
+  "preachy",
+  "preamble",
+  "precinct",
+  "precise",
+  "precision",
+  "precook",
+  "precut",
+  "predator",
+  "predefine",
+  "predict",
+  "preface",
+  "prefix",
+  "preflight",
+  "preformed",
+  "pregame",
+  "pregnancy",
+  "pregnant",
+  "preheated",
+  "prelaunch",
+  "prelaw",
+  "prelude",
+  "premiere",
+  "premises",
+  "premium",
+  "prenatal",
+  "preoccupy",
+  "preorder",
+  "prepaid",
+  "prepay",
+  "preplan",
+  "preppy",
+  "preschool",
+  "prescribe",
+  "preseason",
+  "preset",
+  "preshow",
+  "president",
+  "presoak",
+  "press",
+  "presume",
+  "presuming",
+  "preteen",
+  "pretended",
+  "pretender",
+  "pretense",
+  "pretext",
+  "pretty",
+  "pretzel",
+  "prevail",
+  "prevalent",
+  "prevent",
+  "preview",
+  "previous",
+  "prewar",
+  "prewashed",
+  "prideful",
+  "pried",
+  "primal",
+  "primarily",
+  "primary",
+  "primate",
+  "primer",
+  "primp",
+  "princess",
+  "print",
+  "prior",
+  "prism",
+  "prison",
+  "prissy",
+  "pristine",
+  "privacy",
+  "private",
+  "privatize",
+  "prize",
+  "proactive",
+  "probable",
+  "probably",
+  "probation",
+  "probe",
+  "probing",
+  "probiotic",
+  "problem",
+  "procedure",
+  "process",
+  "proclaim",
+  "procreate",
+  "procurer",
+  "prodigal",
+  "prodigy",
+  "produce",
+  "product",
+  "profane",
+  "profanity",
+  "professed",
+  "professor",
+  "profile",
+  "profound",
+  "profusely",
+  "progeny",
+  "prognosis",
+  "program",
+  "progress",
+  "projector",
+  "prologue",
+  "prolonged",
+  "promenade",
+  "prominent",
+  "promoter",
+  "promotion",
+  "prompter",
+  "promptly",
+  "prone",
+  "prong",
+  "pronounce",
+  "pronto",
+  "proofing",
+  "proofread",
+  "proofs",
+  "propeller",
+  "properly",
+  "property",
+  "proponent",
+  "proposal",
+  "propose",
+  "props",
+  "prorate",
+  "protector",
+  "protegee",
+  "proton",
+  "prototype",
+  "protozoan",
+  "protract",
+  "protrude",
+  "proud",
+  "provable",
+  "proved",
+  "proven",
+  "provided",
+  "provider",
+  "providing",
+  "province",
+  "proving",
+  "provoke",
+  "provoking",
+  "provolone",
+  "prowess",
+  "prowler",
+  "prowling",
+  "proximity",
+  "proxy",
+  "prozac",
+  "prude",
+  "prudishly",
+  "prune",
+  "pruning",
+  "pry",
+  "psychic",
+  "public",
+  "publisher",
+  "pucker",
+  "pueblo",
+  "pug",
+  "pull",
+  "pulmonary",
+  "pulp",
+  "pulsate",
+  "pulse",
+  "pulverize",
+  "puma",
+  "pumice",
+  "pummel",
+  "punch",
+  "punctual",
+  "punctuate",
+  "punctured",
+  "pungent",
+  "punisher",
+  "punk",
+  "pupil",
+  "puppet",
+  "puppy",
+  "purchase",
+  "pureblood",
+  "purebred",
+  "purely",
+  "pureness",
+  "purgatory",
+  "purge",
+  "purging",
+  "purifier",
+  "purify",
+  "purist",
+  "puritan",
+  "purity",
+  "purple",
+  "purplish",
+  "purposely",
+  "purr",
+  "purse",
+  "pursuable",
+  "pursuant",
+  "pursuit",
+  "purveyor",
+  "pushcart",
+  "pushchair",
+  "pusher",
+  "pushiness",
+  "pushing",
+  "pushover",
+  "pushpin",
+  "pushup",
+  "pushy",
+  "putdown",
+  "putt",
+  "puzzle",
+  "puzzling",
+  "pyramid",
+  "pyromania",
+  "python",
+  "quack",
+  "quadrant",
+  "quail",
+  "quaintly",
+  "quake",
+  "quaking",
+  "qualified",
+  "qualifier",
+  "qualify",
+  "quality",
+  "qualm",
+  "quantum",
+  "quarrel",
+  "quarry",
+  "quartered",
+  "quarterly",
+  "quarters",
+  "quartet",
+  "quench",
+  "query",
+  "quicken",
+  "quickly",
+  "quickness",
+  "quicksand",
+  "quickstep",
+  "quiet",
+  "quill",
+  "quilt",
+  "quintet",
+  "quintuple",
+  "quirk",
+  "quit",
+  "quiver",
+  "quizzical",
+  "quotable",
+  "quotation",
+  "quote",
+  "rabid",
+  "race",
+  "racing",
+  "racism",
+  "rack",
+  "racoon",
+  "radar",
+  "radial",
+  "radiance",
+  "radiantly",
+  "radiated",
+  "radiation",
+  "radiator",
+  "radio",
+  "radish",
+  "raffle",
+  "raft",
+  "rage",
+  "ragged",
+  "raging",
+  "ragweed",
+  "raider",
+  "railcar",
+  "railing",
+  "railroad",
+  "railway",
+  "raisin",
+  "rake",
+  "raking",
+  "rally",
+  "ramble",
+  "rambling",
+  "ramp",
+  "ramrod",
+  "ranch",
+  "rancidity",
+  "random",
+  "ranged",
+  "ranger",
+  "ranging",
+  "ranked",
+  "ranking",
+  "ransack",
+  "ranting",
+  "rants",
+  "rare",
+  "rarity",
+  "rascal",
+  "rash",
+  "rasping",
+  "ravage",
+  "raven",
+  "ravine",
+  "raving",
+  "ravioli",
+  "ravishing",
+  "reabsorb",
+  "reach",
+  "reacquire",
+  "reaction",
+  "reactive",
+  "reactor",
+  "reaffirm",
+  "ream",
+  "reanalyze",
+  "reappear",
+  "reapply",
+  "reappoint",
+  "reapprove",
+  "rearrange",
+  "rearview",
+  "reason",
+  "reassign",
+  "reassure",
+  "reattach",
+  "reawake",
+  "rebalance",
+  "rebate",
+  "rebel",
+  "rebirth",
+  "reboot",
+  "reborn",
+  "rebound",
+  "rebuff",
+  "rebuild",
+  "rebuilt",
+  "reburial",
+  "rebuttal",
+  "recall",
+  "recant",
+  "recapture",
+  "recast",
+  "recede",
+  "recent",
+  "recess",
+  "recharger",
+  "recipient",
+  "recital",
+  "recite",
+  "reckless",
+  "reclaim",
+  "recliner",
+  "reclining",
+  "recluse",
+  "reclusive",
+  "recognize",
+  "recoil",
+  "recollect",
+  "recolor",
+  "reconcile",
+  "reconfirm",
+  "reconvene",
+  "recopy",
+  "record",
+  "recount",
+  "recoup",
+  "recovery",
+  "recreate",
+  "rectal",
+  "rectangle",
+  "rectified",
+  "rectify",
+  "recycled",
+  "recycler",
+  "recycling",
+  "reemerge",
+  "reenact",
+  "reenter",
+  "reentry",
+  "reexamine",
+  "referable",
+  "referee",
+  "reference",
+  "refill",
+  "refinance",
+  "refined",
+  "refinery",
+  "refining",
+  "refinish",
+  "reflected",
+  "reflector",
+  "reflex",
+  "reflux",
+  "refocus",
+  "refold",
+  "reforest",
+  "reformat",
+  "reformed",
+  "reformer",
+  "reformist",
+  "refract",
+  "refrain",
+  "refreeze",
+  "refresh",
+  "refried",
+  "refueling",
+  "refund",
+  "refurbish",
+  "refurnish",
+  "refusal",
+  "refuse",
+  "refusing",
+  "refutable",
+  "refute",
+  "regain",
+  "regalia",
+  "regally",
+  "reggae",
+  "regime",
+  "region",
+  "register",
+  "registrar",
+  "registry",
+  "regress",
+  "regretful",
+  "regroup",
+  "regular",
+  "regulate",
+  "regulator",
+  "rehab",
+  "reheat",
+  "rehire",
+  "rehydrate",
+  "reimburse",
+  "reissue",
+  "reiterate",
+  "rejoice",
+  "rejoicing",
+  "rejoin",
+  "rekindle",
+  "relapse",
+  "relapsing",
+  "relatable",
+  "related",
+  "relation",
+  "relative",
+  "relax",
+  "relay",
+  "relearn",
+  "release",
+  "relenting",
+  "reliable",
+  "reliably",
+  "reliance",
+  "reliant",
+  "relic",
+  "relieve",
+  "relieving",
+  "relight",
+  "relish",
+  "relive",
+  "reload",
+  "relocate",
+  "relock",
+  "reluctant",
+  "rely",
+  "remake",
+  "remark",
+  "remarry",
+  "rematch",
+  "remedial",
+  "remedy",
+  "remember",
+  "reminder",
+  "remindful",
+  "remission",
+  "remix",
+  "remnant",
+  "remodeler",
+  "remold",
+  "remorse",
+  "remote",
+  "removable",
+  "removal",
+  "removed",
+  "remover",
+  "removing",
+  "rename",
+  "renderer",
+  "rendering",
+  "rendition",
+  "renegade",
+  "renewable",
+  "renewably",
+  "renewal",
+  "renewed",
+  "renounce",
+  "renovate",
+  "renovator",
+  "rentable",
+  "rental",
+  "rented",
+  "renter",
+  "reoccupy",
+  "reoccur",
+  "reopen",
+  "reorder",
+  "repackage",
+  "repacking",
+  "repaint",
+  "repair",
+  "repave",
+  "repaying",
+  "repayment",
+  "repeal",
+  "repeated",
+  "repeater",
+  "repent",
+  "rephrase",
+  "replace",
+  "replay",
+  "replica",
+  "reply",
+  "reporter",
+  "repose",
+  "repossess",
+  "repost",
+  "repressed",
+  "reprimand",
+  "reprint",
+  "reprise",
+  "reproach",
+  "reprocess",
+  "reproduce",
+  "reprogram",
+  "reps",
+  "reptile",
+  "reptilian",
+  "repugnant",
+  "repulsion",
+  "repulsive",
+  "repurpose",
+  "reputable",
+  "reputably",
+  "request",
+  "require",
+  "requisite",
+  "reroute",
+  "rerun",
+  "resale",
+  "resample",
+  "rescuer",
+  "reseal",
+  "research",
+  "reselect",
+  "reseller",
+  "resemble",
+  "resend",
+  "resent",
+  "reset",
+  "reshape",
+  "reshoot",
+  "reshuffle",
+  "residence",
+  "residency",
+  "resident",
+  "residual",
+  "residue",
+  "resigned",
+  "resilient",
+  "resistant",
+  "resisting",
+  "resize",
+  "resolute",
+  "resolved",
+  "resonant",
+  "resonate",
+  "resort",
+  "resource",
+  "respect",
+  "resubmit",
+  "result",
+  "resume",
+  "resupply",
+  "resurface",
+  "resurrect",
+  "retail",
+  "retainer",
+  "retaining",
+  "retake",
+  "retaliate",
+  "retention",
+  "rethink",
+  "retinal",
+  "retired",
+  "retiree",
+  "retiring",
+  "retold",
+  "retool",
+  "retorted",
+  "retouch",
+  "retrace",
+  "retract",
+  "retrain",
+  "retread",
+  "retreat",
+  "retrial",
+  "retrieval",
+  "retriever",
+  "retry",
+  "return",
+  "retying",
+  "retype",
+  "reunion",
+  "reunite",
+  "reusable",
+  "reuse",
+  "reveal",
+  "reveler",
+  "revenge",
+  "revenue",
+  "reverb",
+  "revered",
+  "reverence",
+  "reverend",
+  "reversal",
+  "reverse",
+  "reversing",
+  "reversion",
+  "revert",
+  "revisable",
+  "revise",
+  "revision",
+  "revisit",
+  "revivable",
+  "revival",
+  "reviver",
+  "reviving",
+  "revocable",
+  "revoke",
+  "revolt",
+  "revolver",
+  "revolving",
+  "reward",
+  "rewash",
+  "rewind",
+  "rewire",
+  "reword",
+  "rework",
+  "rewrap",
+  "rewrite",
+  "rhyme",
+  "ribbon",
+  "ribcage",
+  "rice",
+  "riches",
+  "richly",
+  "richness",
+  "rickety",
+  "ricotta",
+  "riddance",
+  "ridden",
+  "ride",
+  "riding",
+  "rifling",
+  "rift",
+  "rigging",
+  "rigid",
+  "rigor",
+  "rimless",
+  "rimmed",
+  "rind",
+  "rink",
+  "rinse",
+  "rinsing",
+  "riot",
+  "ripcord",
+  "ripeness",
+  "ripening",
+  "ripping",
+  "ripple",
+  "rippling",
+  "riptide",
+  "rise",
+  "rising",
+  "risk",
+  "risotto",
+  "ritalin",
+  "ritzy",
+  "rival",
+  "riverbank",
+  "riverbed",
+  "riverboat",
+  "riverside",
+  "riveter",
+  "riveting",
+  "roamer",
+  "roaming",
+  "roast",
+  "robbing",
+  "robe",
+  "robin",
+  "robotics",
+  "robust",
+  "rockband",
+  "rocker",
+  "rocket",
+  "rockfish",
+  "rockiness",
+  "rocking",
+  "rocklike",
+  "rockslide",
+  "rockstar",
+  "rocky",
+  "rogue",
+  "roman",
+  "romp",
+  "rope",
+  "roping",
+  "roster",
+  "rosy",
+  "rotten",
+  "rotting",
+  "rotunda",
+  "roulette",
+  "rounding",
+  "roundish",
+  "roundness",
+  "roundup",
+  "roundworm",
+  "routine",
+  "routing",
+  "rover",
+  "roving",
+  "royal",
+  "rubbed",
+  "rubber",
+  "rubbing",
+  "rubble",
+  "rubdown",
+  "ruby",
+  "ruckus",
+  "rudder",
+  "rug",
+  "ruined",
+  "rule",
+  "rumble",
+  "rumbling",
+  "rummage",
+  "rumor",
+  "runaround",
+  "rundown",
+  "runner",
+  "running",
+  "runny",
+  "runt",
+  "runway",
+  "rupture",
+  "rural",
+  "ruse",
+  "rush",
+  "rust",
+  "rut",
+  "sabbath",
+  "sabotage",
+  "sacrament",
+  "sacred",
+  "sacrifice",
+  "sadden",
+  "saddlebag",
+  "saddled",
+  "saddling",
+  "sadly",
+  "sadness",
+  "safari",
+  "safeguard",
+  "safehouse",
+  "safely",
+  "safeness",
+  "saffron",
+  "saga",
+  "sage",
+  "sagging",
+  "saggy",
+  "said",
+  "saint",
+  "sake",
+  "salad",
+  "salami",
+  "salaried",
+  "salary",
+  "saline",
+  "salon",
+  "saloon",
+  "salsa",
+  "salt",
+  "salutary",
+  "salute",
+  "salvage",
+  "salvaging",
+  "salvation",
+  "same",
+  "sample",
+  "sampling",
+  "sanction",
+  "sanctity",
+  "sanctuary",
+  "sandal",
+  "sandbag",
+  "sandbank",
+  "sandbar",
+  "sandblast",
+  "sandbox",
+  "sanded",
+  "sandfish",
+  "sanding",
+  "sandlot",
+  "sandpaper",
+  "sandpit",
+  "sandstone",
+  "sandstorm",
+  "sandworm",
+  "sandy",
+  "sanitary",
+  "sanitizer",
+  "sank",
+  "santa",
+  "sapling",
+  "sappiness",
+  "sappy",
+  "sarcasm",
+  "sarcastic",
+  "sardine",
+  "sash",
+  "sasquatch",
+  "sassy",
+  "satchel",
+  "satiable",
+  "satin",
+  "satirical",
+  "satisfied",
+  "satisfy",
+  "saturate",
+  "saturday",
+  "sauciness",
+  "saucy",
+  "sauna",
+  "savage",
+  "savanna",
+  "saved",
+  "savings",
+  "savior",
+  "savor",
+  "saxophone",
+  "say",
+  "scabbed",
+  "scabby",
+  "scalded",
+  "scalding",
+  "scale",
+  "scaling",
+  "scallion",
+  "scallop",
+  "scalping",
+  "scam",
+  "scandal",
+  "scanner",
+  "scanning",
+  "scant",
+  "scapegoat",
+  "scarce",
+  "scarcity",
+  "scarecrow",
+  "scared",
+  "scarf",
+  "scarily",
+  "scariness",
+  "scarring",
+  "scary",
+  "scavenger",
+  "scenic",
+  "schedule",
+  "schematic",
+  "scheme",
+  "scheming",
+  "schilling",
+  "schnapps",
+  "scholar",
+  "science",
+  "scientist",
+  "scion",
+  "scoff",
+  "scolding",
+  "scone",
+  "scoop",
+  "scooter",
+  "scope",
+  "scorch",
+  "scorebook",
+  "scorecard",
+  "scored",
+  "scoreless",
+  "scorer",
+  "scoring",
+  "scorn",
+  "scorpion",
+  "scotch",
+  "scoundrel",
+  "scoured",
+  "scouring",
+  "scouting",
+  "scouts",
+  "scowling",
+  "scrabble",
+  "scraggly",
+  "scrambled",
+  "scrambler",
+  "scrap",
+  "scratch",
+  "scrawny",
+  "screen",
+  "scribble",
+  "scribe",
+  "scribing",
+  "scrimmage",
+  "script",
+  "scroll",
+  "scrooge",
+  "scrounger",
+  "scrubbed",
+  "scrubber",
+  "scruffy",
+  "scrunch",
+  "scrutiny",
+  "scuba",
+  "scuff",
+  "sculptor",
+  "sculpture",
+  "scurvy",
+  "scuttle",
+  "secluded",
+  "secluding",
+  "seclusion",
+  "second",
+  "secrecy",
+  "secret",
+  "sectional",
+  "sector",
+  "secular",
+  "securely",
+  "security",
+  "sedan",
+  "sedate",
+  "sedation",
+  "sedative",
+  "sediment",
+  "seduce",
+  "seducing",
+  "segment",
+  "seismic",
+  "seizing",
+  "seldom",
+  "selected",
+  "selection",
+  "selective",
+  "selector",
+  "self",
+  "seltzer",
+  "semantic",
+  "semester",
+  "semicolon",
+  "semifinal",
+  "seminar",
+  "semisoft",
+  "semisweet",
+  "senate",
+  "senator",
+  "send",
+  "senior",
+  "senorita",
+  "sensation",
+  "sensitive",
+  "sensitize",
+  "sensually",
+  "sensuous",
+  "sepia",
+  "september",
+  "septic",
+  "septum",
+  "sequel",
+  "sequence",
+  "sequester",
+  "series",
+  "sermon",
+  "serotonin",
+  "serpent",
+  "serrated",
+  "serve",
+  "service",
+  "serving",
+  "sesame",
+  "sessions",
+  "setback",
+  "setting",
+  "settle",
+  "settling",
+  "setup",
+  "sevenfold",
+  "seventeen",
+  "seventh",
+  "seventy",
+  "severity",
+  "shabby",
+  "shack",
+  "shaded",
+  "shadily",
+  "shadiness",
+  "shading",
+  "shadow",
+  "shady",
+  "shaft",
+  "shakable",
+  "shakily",
+  "shakiness",
+  "shaking",
+  "shaky",
+  "shale",
+  "shallot",
+  "shallow",
+  "shame",
+  "shampoo",
+  "shamrock",
+  "shank",
+  "shanty",
+  "shape",
+  "shaping",
+  "share",
+  "sharpener",
+  "sharper",
+  "sharpie",
+  "sharply",
+  "sharpness",
+  "shawl",
+  "sheath",
+  "shed",
+  "sheep",
+  "sheet",
+  "shelf",
+  "shell",
+  "shelter",
+  "shelve",
+  "shelving",
+  "sherry",
+  "shield",
+  "shifter",
+  "shifting",
+  "shiftless",
+  "shifty",
+  "shimmer",
+  "shimmy",
+  "shindig",
+  "shine",
+  "shingle",
+  "shininess",
+  "shining",
+  "shiny",
+  "ship",
+  "shirt",
+  "shivering",
+  "shock",
+  "shone",
+  "shoplift",
+  "shopper",
+  "shopping",
+  "shoptalk",
+  "shore",
+  "shortage",
+  "shortcake",
+  "shortcut",
+  "shorten",
+  "shorter",
+  "shorthand",
+  "shortlist",
+  "shortly",
+  "shortness",
+  "shorts",
+  "shortwave",
+  "shorty",
+  "shout",
+  "shove",
+  "showbiz",
+  "showcase",
+  "showdown",
+  "shower",
+  "showgirl",
+  "showing",
+  "showman",
+  "shown",
+  "showoff",
+  "showpiece",
+  "showplace",
+  "showroom",
+  "showy",
+  "shrank",
+  "shrapnel",
+  "shredder",
+  "shredding",
+  "shrewdly",
+  "shriek",
+  "shrill",
+  "shrimp",
+  "shrine",
+  "shrink",
+  "shrivel",
+  "shrouded",
+  "shrubbery",
+  "shrubs",
+  "shrug",
+  "shrunk",
+  "shucking",
+  "shudder",
+  "shuffle",
+  "shuffling",
+  "shun",
+  "shush",
+  "shut",
+  "shy",
+  "siamese",
+  "siberian",
+  "sibling",
+  "siding",
+  "sierra",
+  "siesta",
+  "sift",
+  "sighing",
+  "silenced",
+  "silencer",
+  "silent",
+  "silica",
+  "silicon",
+  "silk",
+  "silliness",
+  "silly",
+  "silo",
+  "silt",
+  "silver",
+  "similarly",
+  "simile",
+  "simmering",
+  "simple",
+  "simplify",
+  "simply",
+  "sincere",
+  "sincerity",
+  "singer",
+  "singing",
+  "single",
+  "singular",
+  "sinister",
+  "sinless",
+  "sinner",
+  "sinuous",
+  "sip",
+  "siren",
+  "sister",
+  "sitcom",
+  "sitter",
+  "sitting",
+  "situated",
+  "situation",
+  "sixfold",
+  "sixteen",
+  "sixth",
+  "sixties",
+  "sixtieth",
+  "sixtyfold",
+  "sizable",
+  "sizably",
+  "size",
+  "sizing",
+  "sizzle",
+  "sizzling",
+  "skater",
+  "skating",
+  "skedaddle",
+  "skeletal",
+  "skeleton",
+  "skeptic",
+  "sketch",
+  "skewed",
+  "skewer",
+  "skid",
+  "skied",
+  "skier",
+  "skies",
+  "skiing",
+  "skilled",
+  "skillet",
+  "skillful",
+  "skimmed",
+  "skimmer",
+  "skimming",
+  "skimpily",
+  "skincare",
+  "skinhead",
+  "skinless",
+  "skinning",
+  "skinny",
+  "skintight",
+  "skipper",
+  "skipping",
+  "skirmish",
+  "skirt",
+  "skittle",
+  "skydiver",
+  "skylight",
+  "skyline",
+  "skype",
+  "skyrocket",
+  "skyward",
+  "slab",
+  "slacked",
+  "slacker",
+  "slacking",
+  "slackness",
+  "slacks",
+  "slain",
+  "slam",
+  "slander",
+  "slang",
+  "slapping",
+  "slapstick",
+  "slashed",
+  "slashing",
+  "slate",
+  "slather",
+  "slaw",
+  "sled",
+  "sleek",
+  "sleep",
+  "sleet",
+  "sleeve",
+  "slept",
+  "sliceable",
+  "sliced",
+  "slicer",
+  "slicing",
+  "slick",
+  "slider",
+  "slideshow",
+  "sliding",
+  "slighted",
+  "slighting",
+  "slightly",
+  "slimness",
+  "slimy",
+  "slinging",
+  "slingshot",
+  "slinky",
+  "slip",
+  "slit",
+  "sliver",
+  "slobbery",
+  "slogan",
+  "sloped",
+  "sloping",
+  "sloppily",
+  "sloppy",
+  "slot",
+  "slouching",
+  "slouchy",
+  "sludge",
+  "slug",
+  "slum",
+  "slurp",
+  "slush",
+  "sly",
+  "small",
+  "smartly",
+  "smartness",
+  "smasher",
+  "smashing",
+  "smashup",
+  "smell",
+  "smelting",
+  "smile",
+  "smilingly",
+  "smirk",
+  "smite",
+  "smith",
+  "smitten",
+  "smock",
+  "smog",
+  "smoked",
+  "smokeless",
+  "smokiness",
+  "smoking",
+  "smoky",
+  "smolder",
+  "smooth",
+  "smother",
+  "smudge",
+  "smudgy",
+  "smuggler",
+  "smuggling",
+  "smugly",
+  "smugness",
+  "snack",
+  "snagged",
+  "snaking",
+  "snap",
+  "snare",
+  "snarl",
+  "snazzy",
+  "sneak",
+  "sneer",
+  "sneeze",
+  "sneezing",
+  "snide",
+  "sniff",
+  "snippet",
+  "snipping",
+  "snitch",
+  "snooper",
+  "snooze",
+  "snore",
+  "snoring",
+  "snorkel",
+  "snort",
+  "snout",
+  "snowbird",
+  "snowboard",
+  "snowbound",
+  "snowcap",
+  "snowdrift",
+  "snowdrop",
+  "snowfall",
+  "snowfield",
+  "snowflake",
+  "snowiness",
+  "snowless",
+  "snowman",
+  "snowplow",
+  "snowshoe",
+  "snowstorm",
+  "snowsuit",
+  "snowy",
+  "snub",
+  "snuff",
+  "snuggle",
+  "snugly",
+  "snugness",
+  "speak",
+  "spearfish",
+  "spearhead",
+  "spearman",
+  "spearmint",
+  "species",
+  "specimen",
+  "specked",
+  "speckled",
+  "specks",
+  "spectacle",
+  "spectator",
+  "spectrum",
+  "speculate",
+  "speech",
+  "speed",
+  "spellbind",
+  "speller",
+  "spelling",
+  "spendable",
+  "spender",
+  "spending",
+  "spent",
+  "spew",
+  "sphere",
+  "spherical",
+  "sphinx",
+  "spider",
+  "spied",
+  "spiffy",
+  "spill",
+  "spilt",
+  "spinach",
+  "spinal",
+  "spindle",
+  "spinner",
+  "spinning",
+  "spinout",
+  "spinster",
+  "spiny",
+  "spiral",
+  "spirited",
+  "spiritism",
+  "spirits",
+  "spiritual",
+  "splashed",
+  "splashing",
+  "splashy",
+  "splatter",
+  "spleen",
+  "splendid",
+  "splendor",
+  "splice",
+  "splicing",
+  "splinter",
+  "splotchy",
+  "splurge",
+  "spoilage",
+  "spoiled",
+  "spoiler",
+  "spoiling",
+  "spoils",
+  "spoken",
+  "spokesman",
+  "sponge",
+  "spongy",
+  "sponsor",
+  "spoof",
+  "spookily",
+  "spooky",
+  "spool",
+  "spoon",
+  "spore",
+  "sporting",
+  "sports",
+  "sporty",
+  "spotless",
+  "spotlight",
+  "spotted",
+  "spotter",
+  "spotting",
+  "spotty",
+  "spousal",
+  "spouse",
+  "spout",
+  "sprain",
+  "sprang",
+  "sprawl",
+  "spray",
+  "spree",
+  "sprig",
+  "spring",
+  "sprinkled",
+  "sprinkler",
+  "sprint",
+  "sprite",
+  "sprout",
+  "spruce",
+  "sprung",
+  "spry",
+  "spud",
+  "spur",
+  "sputter",
+  "spyglass",
+  "squabble",
+  "squad",
+  "squall",
+  "squander",
+  "squash",
+  "squatted",
+  "squatter",
+  "squatting",
+  "squeak",
+  "squealer",
+  "squealing",
+  "squeamish",
+  "squeegee",
+  "squeeze",
+  "squeezing",
+  "squid",
+  "squiggle",
+  "squiggly",
+  "squint",
+  "squire",
+  "squirt",
+  "squishier",
+  "squishy",
+  "stability",
+  "stabilize",
+  "stable",
+  "stack",
+  "stadium",
+  "staff",
+  "stage",
+  "staging",
+  "stagnant",
+  "stagnate",
+  "stainable",
+  "stained",
+  "staining",
+  "stainless",
+  "stalemate",
+  "staleness",
+  "stalling",
+  "stallion",
+  "stamina",
+  "stammer",
+  "stamp",
+  "stand",
+  "stank",
+  "staple",
+  "stapling",
+  "starboard",
+  "starch",
+  "stardom",
+  "stardust",
+  "starfish",
+  "stargazer",
+  "staring",
+  "stark",
+  "starless",
+  "starlet",
+  "starlight",
+  "starlit",
+  "starring",
+  "starry",
+  "starship",
+  "starter",
+  "starting",
+  "startle",
+  "startling",
+  "startup",
+  "starved",
+  "starving",
+  "stash",
+  "state",
+  "static",
+  "statistic",
+  "statue",
+  "stature",
+  "status",
+  "statute",
+  "statutory",
+  "staunch",
+  "stays",
+  "steadfast",
+  "steadier",
+  "steadily",
+  "steadying",
+  "steam",
+  "steed",
+  "steep",
+  "steerable",
+  "steering",
+  "steersman",
+  "stegosaur",
+  "stellar",
+  "stem",
+  "stench",
+  "stencil",
+  "step",
+  "stereo",
+  "sterile",
+  "sterility",
+  "sterilize",
+  "sterling",
+  "sternness",
+  "sternum",
+  "stew",
+  "stick",
+  "stiffen",
+  "stiffly",
+  "stiffness",
+  "stifle",
+  "stifling",
+  "stillness",
+  "stilt",
+  "stimulant",
+  "stimulate",
+  "stimuli",
+  "stimulus",
+  "stinger",
+  "stingily",
+  "stinging",
+  "stingray",
+  "stingy",
+  "stinking",
+  "stinky",
+  "stipend",
+  "stipulate",
+  "stir",
+  "stitch",
+  "stock",
+  "stoic",
+  "stoke",
+  "stole",
+  "stomp",
+  "stonewall",
+  "stoneware",
+  "stonework",
+  "stoning",
+  "stony",
+  "stood",
+  "stooge",
+  "stool",
+  "stoop",
+  "stoplight",
+  "stoppable",
+  "stoppage",
+  "stopped",
+  "stopper",
+  "stopping",
+  "stopwatch",
+  "storable",
+  "storage",
+  "storeroom",
+  "storewide",
+  "storm",
+  "stout",
+  "stove",
+  "stowaway",
+  "stowing",
+  "straddle",
+  "straggler",
+  "strained",
+  "strainer",
+  "straining",
+  "strangely",
+  "stranger",
+  "strangle",
+  "strategic",
+  "strategy",
+  "stratus",
+  "straw",
+  "stray",
+  "streak",
+  "stream",
+  "street",
+  "strength",
+  "strenuous",
+  "strep",
+  "stress",
+  "stretch",
+  "strewn",
+  "stricken",
+  "strict",
+  "stride",
+  "strife",
+  "strike",
+  "striking",
+  "strive",
+  "striving",
+  "strobe",
+  "strode",
+  "stroller",
+  "strongbox",
+  "strongly",
+  "strongman",
+  "struck",
+  "structure",
+  "strudel",
+  "struggle",
+  "strum",
+  "strung",
+  "strut",
+  "stubbed",
+  "stubble",
+  "stubbly",
+  "stubborn",
+  "stucco",
+  "stuck",
+  "student",
+  "studied",
+  "studio",
+  "study",
+  "stuffed",
+  "stuffing",
+  "stuffy",
+  "stumble",
+  "stumbling",
+  "stump",
+  "stung",
+  "stunned",
+  "stunner",
+  "stunning",
+  "stunt",
+  "stupor",
+  "sturdily",
+  "sturdy",
+  "styling",
+  "stylishly",
+  "stylist",
+  "stylized",
+  "stylus",
+  "suave",
+  "subarctic",
+  "subatomic",
+  "subdivide",
+  "subdued",
+  "subduing",
+  "subfloor",
+  "subgroup",
+  "subheader",
+  "subject",
+  "sublease",
+  "sublet",
+  "sublevel",
+  "sublime",
+  "submarine",
+  "submerge",
+  "submersed",
+  "submitter",
+  "subpanel",
+  "subpar",
+  "subplot",
+  "subprime",
+  "subscribe",
+  "subscript",
+  "subsector",
+  "subside",
+  "subsiding",
+  "subsidize",
+  "subsidy",
+  "subsoil",
+  "subsonic",
+  "substance",
+  "subsystem",
+  "subtext",
+  "subtitle",
+  "subtly",
+  "subtotal",
+  "subtract",
+  "subtype",
+  "suburb",
+  "subway",
+  "subwoofer",
+  "subzero",
+  "succulent",
+  "such",
+  "suction",
+  "sudden",
+  "sudoku",
+  "suds",
+  "sufferer",
+  "suffering",
+  "suffice",
+  "suffix",
+  "suffocate",
+  "suffrage",
+  "sugar",
+  "suggest",
+  "suing",
+  "suitable",
+  "suitably",
+  "suitcase",
+  "suitor",
+  "sulfate",
+  "sulfide",
+  "sulfite",
+  "sulfur",
+  "sulk",
+  "sullen",
+  "sulphate",
+  "sulphuric",
+  "sultry",
+  "superbowl",
+  "superglue",
+  "superhero",
+  "superior",
+  "superjet",
+  "superman",
+  "supermom",
+  "supernova",
+  "supervise",
+  "supper",
+  "supplier",
+  "supply",
+  "support",
+  "supremacy",
+  "supreme",
+  "surcharge",
+  "surely",
+  "sureness",
+  "surface",
+  "surfacing",
+  "surfboard",
+  "surfer",
+  "surgery",
+  "surgical",
+  "surging",
+  "surname",
+  "surpass",
+  "surplus",
+  "surprise",
+  "surreal",
+  "surrender",
+  "surrogate",
+  "surround",
+  "survey",
+  "survival",
+  "survive",
+  "surviving",
+  "survivor",
+  "sushi",
+  "suspect",
+  "suspend",
+  "suspense",
+  "sustained",
+  "sustainer",
+  "swab",
+  "swaddling",
+  "swagger",
+  "swampland",
+  "swan",
+  "swapping",
+  "swarm",
+  "sway",
+  "swear",
+  "sweat",
+  "sweep",
+  "swell",
+  "swept",
+  "swerve",
+  "swifter",
+  "swiftly",
+  "swiftness",
+  "swimmable",
+  "swimmer",
+  "swimming",
+  "swimsuit",
+  "swimwear",
+  "swinger",
+  "swinging",
+  "swipe",
+  "swirl",
+  "switch",
+  "swivel",
+  "swizzle",
+  "swooned",
+  "swoop",
+  "swoosh",
+  "swore",
+  "sworn",
+  "swung",
+  "sycamore",
+  "sympathy",
+  "symphonic",
+  "symphony",
+  "symptom",
+  "synapse",
+  "syndrome",
+  "synergy",
+  "synopses",
+  "synopsis",
+  "synthesis",
+  "synthetic",
+  "syrup",
+  "system",
+  "t-shirt",
+  "tabasco",
+  "tabby",
+  "tableful",
+  "tables",
+  "tablet",
+  "tableware",
+  "tabloid",
+  "tackiness",
+  "tacking",
+  "tackle",
+  "tackling",
+  "tacky",
+  "taco",
+  "tactful",
+  "tactical",
+  "tactics",
+  "tactile",
+  "tactless",
+  "tadpole",
+  "taekwondo",
+  "tag",
+  "tainted",
+  "take",
+  "taking",
+  "talcum",
+  "talisman",
+  "tall",
+  "talon",
+  "tamale",
+  "tameness",
+  "tamer",
+  "tamper",
+  "tank",
+  "tanned",
+  "tannery",
+  "tanning",
+  "tantrum",
+  "tapeless",
+  "tapered",
+  "tapering",
+  "tapestry",
+  "tapioca",
+  "tapping",
+  "taps",
+  "tarantula",
+  "target",
+  "tarmac",
+  "tarnish",
+  "tarot",
+  "tartar",
+  "tartly",
+  "tartness",
+  "task",
+  "tassel",
+  "taste",
+  "tastiness",
+  "tasting",
+  "tasty",
+  "tattered",
+  "tattle",
+  "tattling",
+  "tattoo",
+  "taunt",
+  "tavern",
+  "thank",
+  "that",
+  "thaw",
+  "theater",
+  "theatrics",
+  "thee",
+  "theft",
+  "theme",
+  "theology",
+  "theorize",
+  "thermal",
+  "thermos",
+  "thesaurus",
+  "these",
+  "thesis",
+  "thespian",
+  "thicken",
+  "thicket",
+  "thickness",
+  "thieving",
+  "thievish",
+  "thigh",
+  "thimble",
+  "thing",
+  "think",
+  "thinly",
+  "thinner",
+  "thinness",
+  "thinning",
+  "thirstily",
+  "thirsting",
+  "thirsty",
+  "thirteen",
+  "thirty",
+  "thong",
+  "thorn",
+  "those",
+  "thousand",
+  "thrash",
+  "thread",
+  "threaten",
+  "threefold",
+  "thrift",
+  "thrill",
+  "thrive",
+  "thriving",
+  "throat",
+  "throbbing",
+  "throng",
+  "throttle",
+  "throwaway",
+  "throwback",
+  "thrower",
+  "throwing",
+  "thud",
+  "thumb",
+  "thumping",
+  "thursday",
+  "thus",
+  "thwarting",
+  "thyself",
+  "tiara",
+  "tibia",
+  "tidal",
+  "tidbit",
+  "tidiness",
+  "tidings",
+  "tidy",
+  "tiger",
+  "tighten",
+  "tightly",
+  "tightness",
+  "tightrope",
+  "tightwad",
+  "tigress",
+  "tile",
+  "tiling",
+  "till",
+  "tilt",
+  "timid",
+  "timing",
+  "timothy",
+  "tinderbox",
+  "tinfoil",
+  "tingle",
+  "tingling",
+  "tingly",
+  "tinker",
+  "tinkling",
+  "tinsel",
+  "tinsmith",
+  "tint",
+  "tinwork",
+  "tiny",
+  "tipoff",
+  "tipped",
+  "tipper",
+  "tipping",
+  "tiptoeing",
+  "tiptop",
+  "tiring",
+  "tissue",
+  "trace",
+  "tracing",
+  "track",
+  "traction",
+  "tractor",
+  "trade",
+  "trading",
+  "tradition",
+  "traffic",
+  "tragedy",
+  "trailing",
+  "trailside",
+  "train",
+  "traitor",
+  "trance",
+  "tranquil",
+  "transfer",
+  "transform",
+  "translate",
+  "transpire",
+  "transport",
+  "transpose",
+  "trapdoor",
+  "trapeze",
+  "trapezoid",
+  "trapped",
+  "trapper",
+  "trapping",
+  "traps",
+  "trash",
+  "travel",
+  "traverse",
+  "travesty",
+  "tray",
+  "treachery",
+  "treading",
+  "treadmill",
+  "treason",
+  "treat",
+  "treble",
+  "tree",
+  "trekker",
+  "tremble",
+  "trembling",
+  "tremor",
+  "trench",
+  "trend",
+  "trespass",
+  "triage",
+  "trial",
+  "triangle",
+  "tribesman",
+  "tribunal",
+  "tribune",
+  "tributary",
+  "tribute",
+  "triceps",
+  "trickery",
+  "trickily",
+  "tricking",
+  "trickle",
+  "trickster",
+  "tricky",
+  "tricolor",
+  "tricycle",
+  "trident",
+  "tried",
+  "trifle",
+  "trifocals",
+  "trillion",
+  "trilogy",
+  "trimester",
+  "trimmer",
+  "trimming",
+  "trimness",
+  "trinity",
+  "trio",
+  "tripod",
+  "tripping",
+  "triumph",
+  "trivial",
+  "trodden",
+  "trolling",
+  "trombone",
+  "trophy",
+  "tropical",
+  "tropics",
+  "trouble",
+  "troubling",
+  "trough",
+  "trousers",
+  "trout",
+  "trowel",
+  "truce",
+  "truck",
+  "truffle",
+  "trump",
+  "trunks",
+  "trustable",
+  "trustee",
+  "trustful",
+  "trusting",
+  "trustless",
+  "truth",
+  "try",
+  "tubby",
+  "tubeless",
+  "tubular",
+  "tucking",
+  "tuesday",
+  "tug",
+  "tuition",
+  "tulip",
+  "tumble",
+  "tumbling",
+  "tummy",
+  "turban",
+  "turbine",
+  "turbofan",
+  "turbojet",
+  "turbulent",
+  "turf",
+  "turkey",
+  "turmoil",
+  "turret",
+  "turtle",
+  "tusk",
+  "tutor",
+  "tutu",
+  "tux",
+  "tweak",
+  "tweed",
+  "tweet",
+  "tweezers",
+  "twelve",
+  "twentieth",
+  "twenty",
+  "twerp",
+  "twice",
+  "twiddle",
+  "twiddling",
+  "twig",
+  "twilight",
+  "twine",
+  "twins",
+  "twirl",
+  "twistable",
+  "twisted",
+  "twister",
+  "twisting",
+  "twisty",
+  "twitch",
+  "twitter",
+  "tycoon",
+  "tying",
+  "tyke",
+  "udder",
+  "ultimate",
+  "ultimatum",
+  "ultra",
+  "umbilical",
+  "umbrella",
+  "umpire",
+  "unabashed",
+  "unable",
+  "unadorned",
+  "unadvised",
+  "unafraid",
+  "unaired",
+  "unaligned",
+  "unaltered",
+  "unarmored",
+  "unashamed",
+  "unaudited",
+  "unawake",
+  "unaware",
+  "unbaked",
+  "unbalance",
+  "unbeaten",
+  "unbend",
+  "unbent",
+  "unbiased",
+  "unbitten",
+  "unblended",
+  "unblessed",
+  "unblock",
+  "unbolted",
+  "unbounded",
+  "unboxed",
+  "unbraided",
+  "unbridle",
+  "unbroken",
+  "unbuckled",
+  "unbundle",
+  "unburned",
+  "unbutton",
+  "uncanny",
+  "uncapped",
+  "uncaring",
+  "uncertain",
+  "unchain",
+  "unchanged",
+  "uncharted",
+  "uncheck",
+  "uncivil",
+  "unclad",
+  "unclaimed",
+  "unclamped",
+  "unclasp",
+  "uncle",
+  "unclip",
+  "uncloak",
+  "unclog",
+  "unclothed",
+  "uncoated",
+  "uncoiled",
+  "uncolored",
+  "uncombed",
+  "uncommon",
+  "uncooked",
+  "uncork",
+  "uncorrupt",
+  "uncounted",
+  "uncouple",
+  "uncouth",
+  "uncover",
+  "uncross",
+  "uncrown",
+  "uncrushed",
+  "uncured",
+  "uncurious",
+  "uncurled",
+  "uncut",
+  "undamaged",
+  "undated",
+  "undaunted",
+  "undead",
+  "undecided",
+  "undefined",
+  "underage",
+  "underarm",
+  "undercoat",
+  "undercook",
+  "undercut",
+  "underdog",
+  "underdone",
+  "underfed",
+  "underfeed",
+  "underfoot",
+  "undergo",
+  "undergrad",
+  "underhand",
+  "underline",
+  "underling",
+  "undermine",
+  "undermost",
+  "underpaid",
+  "underpass",
+  "underpay",
+  "underrate",
+  "undertake",
+  "undertone",
+  "undertook",
+  "undertow",
+  "underuse",
+  "underwear",
+  "underwent",
+  "underwire",
+  "undesired",
+  "undiluted",
+  "undivided",
+  "undocked",
+  "undoing",
+  "undone",
+  "undrafted",
+  "undress",
+  "undrilled",
+  "undusted",
+  "undying",
+  "unearned",
+  "unearth",
+  "unease",
+  "uneasily",
+  "uneasy",
+  "uneatable",
+  "uneaten",
+  "unedited",
+  "unelected",
+  "unending",
+  "unengaged",
+  "unenvied",
+  "unequal",
+  "unethical",
+  "uneven",
+  "unexpired",
+  "unexposed",
+  "unfailing",
+  "unfair",
+  "unfasten",
+  "unfazed",
+  "unfeeling",
+  "unfiled",
+  "unfilled",
+  "unfitted",
+  "unfitting",
+  "unfixable",
+  "unfixed",
+  "unflawed",
+  "unfocused",
+  "unfold",
+  "unfounded",
+  "unframed",
+  "unfreeze",
+  "unfrosted",
+  "unfrozen",
+  "unfunded",
+  "unglazed",
+  "ungloved",
+  "unglue",
+  "ungodly",
+  "ungraded",
+  "ungreased",
+  "unguarded",
+  "unguided",
+  "unhappily",
+  "unhappy",
+  "unharmed",
+  "unhealthy",
+  "unheard",
+  "unhearing",
+  "unheated",
+  "unhelpful",
+  "unhidden",
+  "unhinge",
+  "unhitched",
+  "unholy",
+  "unhook",
+  "unicorn",
+  "unicycle",
+  "unified",
+  "unifier",
+  "uniformed",
+  "uniformly",
+  "unify",
+  "unimpeded",
+  "uninjured",
+  "uninstall",
+  "uninsured",
+  "uninvited",
+  "union",
+  "uniquely",
+  "unisexual",
+  "unison",
+  "unissued",
+  "unit",
+  "universal",
+  "universe",
+  "unjustly",
+  "unkempt",
+  "unkind",
+  "unknotted",
+  "unknowing",
+  "unknown",
+  "unlaced",
+  "unlatch",
+  "unlawful",
+  "unleaded",
+  "unlearned",
+  "unleash",
+  "unless",
+  "unleveled",
+  "unlighted",
+  "unlikable",
+  "unlimited",
+  "unlined",
+  "unlinked",
+  "unlisted",
+  "unlit",
+  "unlivable",
+  "unloaded",
+  "unloader",
+  "unlocked",
+  "unlocking",
+  "unlovable",
+  "unloved",
+  "unlovely",
+  "unloving",
+  "unluckily",
+  "unlucky",
+  "unmade",
+  "unmanaged",
+  "unmanned",
+  "unmapped",
+  "unmarked",
+  "unmasked",
+  "unmasking",
+  "unmatched",
+  "unmindful",
+  "unmixable",
+  "unmixed",
+  "unmolded",
+  "unmoral",
+  "unmovable",
+  "unmoved",
+  "unmoving",
+  "unnamable",
+  "unnamed",
+  "unnatural",
+  "unneeded",
+  "unnerve",
+  "unnerving",
+  "unnoticed",
+  "unopened",
+  "unopposed",
+  "unpack",
+  "unpadded",
+  "unpaid",
+  "unpainted",
+  "unpaired",
+  "unpaved",
+  "unpeeled",
+  "unpicked",
+  "unpiloted",
+  "unpinned",
+  "unplanned",
+  "unplanted",
+  "unpleased",
+  "unpledged",
+  "unplowed",
+  "unplug",
+  "unpopular",
+  "unproven",
+  "unquote",
+  "unranked",
+  "unrated",
+  "unraveled",
+  "unreached",
+  "unread",
+  "unreal",
+  "unreeling",
+  "unrefined",
+  "unrelated",
+  "unrented",
+  "unrest",
+  "unretired",
+  "unrevised",
+  "unrigged",
+  "unripe",
+  "unrivaled",
+  "unroasted",
+  "unrobed",
+  "unroll",
+  "unruffled",
+  "unruly",
+  "unrushed",
+  "unsaddle",
+  "unsafe",
+  "unsaid",
+  "unsalted",
+  "unsaved",
+  "unsavory",
+  "unscathed",
+  "unscented",
+  "unscrew",
+  "unsealed",
+  "unseated",
+  "unsecured",
+  "unseeing",
+  "unseemly",
+  "unseen",
+  "unselect",
+  "unselfish",
+  "unsent",
+  "unsettled",
+  "unshackle",
+  "unshaken",
+  "unshaved",
+  "unshaven",
+  "unsheathe",
+  "unshipped",
+  "unsightly",
+  "unsigned",
+  "unskilled",
+  "unsliced",
+  "unsmooth",
+  "unsnap",
+  "unsocial",
+  "unsoiled",
+  "unsold",
+  "unsolved",
+  "unsorted",
+  "unspoiled",
+  "unspoken",
+  "unstable",
+  "unstaffed",
+  "unstamped",
+  "unsteady",
+  "unsterile",
+  "unstirred",
+  "unstitch",
+  "unstopped",
+  "unstuck",
+  "unstuffed",
+  "unstylish",
+  "unsubtle",
+  "unsubtly",
+  "unsuited",
+  "unsure",
+  "unsworn",
+  "untagged",
+  "untainted",
+  "untaken",
+  "untamed",
+  "untangled",
+  "untapped",
+  "untaxed",
+  "unthawed",
+  "unthread",
+  "untidy",
+  "untie",
+  "until",
+  "untimed",
+  "untimely",
+  "untitled",
+  "untoasted",
+  "untold",
+  "untouched",
+  "untracked",
+  "untrained",
+  "untreated",
+  "untried",
+  "untrimmed",
+  "untrue",
+  "untruth",
+  "unturned",
+  "untwist",
+  "untying",
+  "unusable",
+  "unused",
+  "unusual",
+  "unvalued",
+  "unvaried",
+  "unvarying",
+  "unveiled",
+  "unveiling",
+  "unvented",
+  "unviable",
+  "unvisited",
+  "unvocal",
+  "unwanted",
+  "unwarlike",
+  "unwary",
+  "unwashed",
+  "unwatched",
+  "unweave",
+  "unwed",
+  "unwelcome",
+  "unwell",
+  "unwieldy",
+  "unwilling",
+  "unwind",
+  "unwired",
+  "unwitting",
+  "unwomanly",
+  "unworldly",
+  "unworn",
+  "unworried",
+  "unworthy",
+  "unwound",
+  "unwoven",
+  "unwrapped",
+  "unwritten",
+  "unzip",
+  "upbeat",
+  "upchuck",
+  "upcoming",
+  "upcountry",
+  "update",
+  "upfront",
+  "upgrade",
+  "upheaval",
+  "upheld",
+  "uphill",
+  "uphold",
+  "uplifted",
+  "uplifting",
+  "upload",
+  "upon",
+  "upper",
+  "upright",
+  "uprising",
+  "upriver",
+  "uproar",
+  "uproot",
+  "upscale",
+  "upside",
+  "upstage",
+  "upstairs",
+  "upstart",
+  "upstate",
+  "upstream",
+  "upstroke",
+  "upswing",
+  "uptake",
+  "uptight",
+  "uptown",
+  "upturned",
+  "upward",
+  "upwind",
+  "uranium",
+  "urban",
+  "urchin",
+  "urethane",
+  "urgency",
+  "urgent",
+  "urging",
+  "urologist",
+  "urology",
+  "usable",
+  "usage",
+  "useable",
+  "used",
+  "uselessly",
+  "user",
+  "usher",
+  "usual",
+  "utensil",
+  "utility",
+  "utilize",
+  "utmost",
+  "utopia",
+  "utter",
+  "vacancy",
+  "vacant",
+  "vacate",
+  "vacation",
+  "vagabond",
+  "vagrancy",
+  "vagrantly",
+  "vaguely",
+  "vagueness",
+  "valiant",
+  "valid",
+  "valium",
+  "valley",
+  "valuables",
+  "value",
+  "vanilla",
+  "vanish",
+  "vanity",
+  "vanquish",
+  "vantage",
+  "vaporizer",
+  "variable",
+  "variably",
+  "varied",
+  "variety",
+  "various",
+  "varmint",
+  "varnish",
+  "varsity",
+  "varying",
+  "vascular",
+  "vaseline",
+  "vastly",
+  "vastness",
+  "veal",
+  "vegan",
+  "veggie",
+  "vehicular",
+  "velcro",
+  "velocity",
+  "velvet",
+  "vendetta",
+  "vending",
+  "vendor",
+  "veneering",
+  "vengeful",
+  "venomous",
+  "ventricle",
+  "venture",
+  "venue",
+  "venus",
+  "verbalize",
+  "verbally",
+  "verbose",
+  "verdict",
+  "verify",
+  "verse",
+  "version",
+  "versus",
+  "vertebrae",
+  "vertical",
+  "vertigo",
+  "very",
+  "vessel",
+  "vest",
+  "veteran",
+  "veto",
+  "vexingly",
+  "viability",
+  "viable",
+  "vibes",
+  "vice",
+  "vicinity",
+  "victory",
+  "video",
+  "viewable",
+  "viewer",
+  "viewing",
+  "viewless",
+  "viewpoint",
+  "vigorous",
+  "village",
+  "villain",
+  "vindicate",
+  "vineyard",
+  "vintage",
+  "violate",
+  "violation",
+  "violator",
+  "violet",
+  "violin",
+  "viper",
+  "viral",
+  "virtual",
+  "virtuous",
+  "virus",
+  "visa",
+  "viscosity",
+  "viscous",
+  "viselike",
+  "visible",
+  "visibly",
+  "vision",
+  "visiting",
+  "visitor",
+  "visor",
+  "vista",
+  "vitality",
+  "vitalize",
+  "vitally",
+  "vitamins",
+  "vivacious",
+  "vividly",
+  "vividness",
+  "vixen",
+  "vocalist",
+  "vocalize",
+  "vocally",
+  "vocation",
+  "voice",
+  "voicing",
+  "void",
+  "volatile",
+  "volley",
+  "voltage",
+  "volumes",
+  "voter",
+  "voting",
+  "voucher",
+  "vowed",
+  "vowel",
+  "voyage",
+  "wackiness",
+  "wad",
+  "wafer",
+  "waffle",
+  "waged",
+  "wager",
+  "wages",
+  "waggle",
+  "wagon",
+  "wake",
+  "waking",
+  "walk",
+  "walmart",
+  "walnut",
+  "walrus",
+  "waltz",
+  "wand",
+  "wannabe",
+  "wanted",
+  "wanting",
+  "wasabi",
+  "washable",
+  "washbasin",
+  "washboard",
+  "washbowl",
+  "washcloth",
+  "washday",
+  "washed",
+  "washer",
+  "washhouse",
+  "washing",
+  "washout",
+  "washroom",
+  "washstand",
+  "washtub",
+  "wasp",
+  "wasting",
+  "watch",
+  "water",
+  "waviness",
+  "waving",
+  "wavy",
+  "whacking",
+  "whacky",
+  "wham",
+  "wharf",
+  "wheat",
+  "whenever",
+  "whiff",
+  "whimsical",
+  "whinny",
+  "whiny",
+  "whisking",
+  "whoever",
+  "whole",
+  "whomever",
+  "whoopee",
+  "whooping",
+  "whoops",
+  "why",
+  "wick",
+  "widely",
+  "widen",
+  "widget",
+  "widow",
+  "width",
+  "wieldable",
+  "wielder",
+  "wife",
+  "wifi",
+  "wikipedia",
+  "wildcard",
+  "wildcat",
+  "wilder",
+  "wildfire",
+  "wildfowl",
+  "wildland",
+  "wildlife",
+  "wildly",
+  "wildness",
+  "willed",
+  "willfully",
+  "willing",
+  "willow",
+  "willpower",
+  "wilt",
+  "wimp",
+  "wince",
+  "wincing",
+  "wind",
+  "wing",
+  "winking",
+  "winner",
+  "winnings",
+  "winter",
+  "wipe",
+  "wired",
+  "wireless",
+  "wiring",
+  "wiry",
+  "wisdom",
+  "wise",
+  "wish",
+  "wisplike",
+  "wispy",
+  "wistful",
+  "wizard",
+  "wobble",
+  "wobbling",
+  "wobbly",
+  "wok",
+  "wolf",
+  "wolverine",
+  "womanhood",
+  "womankind",
+  "womanless",
+  "womanlike",
+  "womanly",
+  "womb",
+  "woof",
+  "wooing",
+  "wool",
+  "woozy",
+  "word",
+  "work",
+  "worried",
+  "worrier",
+  "worrisome",
+  "worry",
+  "worsening",
+  "worshiper",
+  "worst",
+  "wound",
+  "woven",
+  "wow",
+  "wrangle",
+  "wrath",
+  "wreath",
+  "wreckage",
+  "wrecker",
+  "wrecking",
+  "wrench",
+  "wriggle",
+  "wriggly",
+  "wrinkle",
+  "wrinkly",
+  "wrist",
+  "writing",
+  "written",
+  "wrongdoer",
+  "wronged",
+  "wrongful",
+  "wrongly",
+  "wrongness",
+  "wrought",
+  "xbox",
+  "xerox",
+  "yahoo",
+  "yam",
+  "yanking",
+  "yapping",
+  "yard",
+  "yarn",
+  "yeah",
+  "yearbook",
+  "yearling",
+  "yearly",
+  "yearning",
+  "yeast",
+  "yelling",
+  "yelp",
+  "yen",
+  "yesterday",
+  "yiddish",
+  "yield",
+  "yin",
+  "yippee",
+  "yo-yo",
+  "yodel",
+  "yoga",
+  "yogurt",
+  "yonder",
+  "yoyo",
+  "yummy",
+  "zap",
+  "zealous",
+  "zebra",
+  "zen",
+  "zeppelin",
+  "zero",
+  "zestfully",
+  "zesty",
+  "zigzagged",
+  "zipfile",
+  "zipping",
+  "zippy",
+  "zips",
+  "zit",
+  "zodiac",
+  "zombie",
+  "zone",
+  "zoning",
+  "zookeeper",
+  "zoologist",
+  "zoology",
+  "zoom"
+];
+
+// src/vault/passphrase.ts
+init_errors();
+var GENERATED_WORD_COUNT = 8;
+var OWN_PASSPHRASE_MIN_LENGTH = 16;
+function generatePassphrase(words = GENERATED_WORD_COUNT) {
+  const size = EFF_LONG_WORDLIST.length;
+  const limit = Math.floor(4294967296 / size) * size;
+  const chosen = [];
+  const scratch = new Uint32Array(1);
+  while (chosen.length < words) {
+    crypto.getRandomValues(scratch);
+    const draw = scratch[0] ?? 0;
+    if (draw >= limit)
+      continue;
+    chosen.push(EFF_LONG_WORDLIST[draw % size]);
+  }
+  scratch.fill(0);
+  return chosen.join(" ");
+}
+function generatedEntropyBits(words = GENERATED_WORD_COUNT) {
+  return Math.round(words * Math.log2(EFF_LONG_WORDLIST.length));
+}
+var DENYLIST = [
+  "correct horse battery staple",
+  "correcthorsebatterystaple",
+  "passwordpassword",
+  "password123456789",
+  "qwertyuiopasdfgh",
+  "1234567890123456",
+  "iloveyouiloveyou",
+  "letmeinletmeinletmein",
+  "administratoradmin",
+  "candlecandlecandle",
+  "thisisapassphrase",
+  "changemechangeme",
+  "abcdefghijklmnop",
+  "aaaaaaaaaaaaaaaa",
+  "keyboardkeyboard",
+  "trustnoonetrustnoone"
+];
+function normalize3(value) {
+  return value.trim().toLowerCase().replace(/\s+/gu, " ");
+}
+function isOnDenylist(passphrase) {
+  const normalized = normalize3(passphrase);
+  return DENYLIST.includes(normalized) || DENYLIST.includes(normalized.replace(/\s/gu, ""));
+}
+function assertOwnPassphraseAcceptable(passphrase) {
+  if (passphrase.length < OWN_PASSPHRASE_MIN_LENGTH) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", `A passphrase you choose must be at least ${OWN_PASSPHRASE_MIN_LENGTH} characters; that one is ${passphrase.length}.`, { suggestion: "Nothing was written. Run without --own-passphrase to have one generated instead." });
+  }
+  if (isOnDenylist(passphrase)) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", "That passphrase is on this CLI's list of common passphrases.", {
+      suggestion: "Nothing was written. Choose another, or run without --own-passphrase to have one generated."
+    });
+  }
+}
+function strengthFor(ownPassphrase) {
+  return ownPassphrase ? "user-chosen" : "generated-103";
+}
+function strengthLabel(strength) {
+  return strength === "generated-103" ? `generated, ${GENERATED_WORD_COUNT} words (about ${generatedEntropyBits()} bits)` : "chosen by you (this CLI cannot know its entropy)";
+}
+var APPLE_ACCOUNT_NOTICE = "Keep this passphrase and your recovery phrase outside the Apple account that holds a synced passkey: an Apple-generated password saved to iCloud Keychain lands in that account.";
+
+// src/vault/platform.ts
+init_errors();
+function realPlatformFacts(env) {
+  return {
+    platform: process.platform,
+    arch: process.arch,
+    helper: "absent",
+    ...env.CANDLE_VAULT_FAKE_OS_MAJOR ? { osMajor: Number(env.CANDLE_VAULT_FAKE_OS_MAJOR) } : {}
+  };
+}
+function factorAvailability(factor, facts) {
+  if (factor === "passphrase")
+    return { state: "available" };
+  const mac = facts.platform === "darwin";
+  switch (factor) {
+    case "passkey-prf":
+      return {
+        state: "unsupported-on-this-platform",
+        reason: "this release has no security key or passkey transport; the security key factor arrives in CLI 0.11.0 and the synced passkey factor in 0.13.0"
+      };
+    case "secure-enclave":
+      return {
+        state: "unsupported-on-this-platform",
+        reason: mac ? "this release ships no signed macOS helper; the Secure Enclave factor arrives in CLI 0.12.0" : "the Secure Enclave is macOS only"
+      };
+    default:
+      return { state: "unsupported-on-this-platform", reason: `this CLI does not know the factor ${factor}` };
+  }
+}
+function envelopeAvailability(envelope, facts) {
+  return factorAvailability(envelope.factor, facts);
+}
+function assertFactorAddable(factor, facts) {
+  const availability = factorAvailability(factor, facts);
+  if (availability.state === "available")
+    return;
+  const code = availability.state === "unavailable-on-this-device" ? "VAULT_FACTOR_UNAVAILABLE" : "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM";
+  throw new VaultError(code, `This CLI cannot add a ${factor} factor here: ${availability.reason}.`, {
+    suggestion: "No other factor is substituted and nothing was written."
+  });
+}
+function availabilityLabel(availability) {
+  switch (availability.state) {
+    case "available":
+      return "available";
+    case "unavailable-on-this-device":
+      return "unavailable-on-this-device";
+    default:
+      return "unsupported-on-this-platform";
+  }
+}
+
+// src/commands/vault-factor.ts
+init_store();
+
+// src/vault/create.ts
+init_crypto();
+init_errors();
+init_format();
+init_sidecar();
+init_store();
+function freshHdRecord(patch = {}) {
+  return {
+    scheme: "bip39-24/slip10",
+    nextIndex: { solanaVault: 0, solanaTee: 0, evm: 0 },
+    rootExported: false,
+    exposedIndexes: { solanaVault: [], solanaTee: [], evm: [] },
+    ...patch
+  };
+}
+async function createVault(request, clock) {
+  if (await fileExists(request.path)) {
+    throw new VaultError("VAULT_EXISTS", `A vault already exists at ${request.path}.`, {
+      suggestion: "This CLI never overwrites one. Move it aside first if you really mean to start over."
+    });
+  }
+  const vaultId = freshVaultId();
+  const createdAt = new Date(clock.now()).toISOString();
+  const envelope = {
+    id: freshEnvelopeId(),
+    factor: "passphrase",
+    domain: "human-memory",
+    label: request.label ?? "passphrase",
+    createdAt,
+    kdf: freshArgon2Params(),
+    strength: request.strength,
+    wrap: { alg: VAULT_CIPHER, iv: "", ciphertext: "" }
+  };
+  const dek = freshDek();
+  const file = await withSecret(dek, async (dekBytes) => {
+    const wrap = await wrapDekForPassphrase(dekBytes, request.passphrase, envelope, { vaultId }, request.notice);
+    const sealedEnvelope = { ...envelope, wrap };
+    const payloadKey = await derivePayloadKey(dekBytes, unb64u(vaultId, "vaultId"));
+    const root = await seal(payloadKey, request.rootEntropy, rootAad(vaultId));
+    const index = { hd: request.hd ?? freshHdRecord(), entries: [] };
+    const header = {
+      format: VAULT_FORMAT,
+      version: VAULT_VERSION,
+      vaultId,
+      generation: 1,
+      createdAt,
+      updatedAt: createdAt,
+      cipher: VAULT_CIPHER,
+      envelopes: [sealedEnvelope],
+      keyIds: [],
+      root,
+      keys: []
+    };
+    return sealIndex(header, index, payloadKey);
+  });
+  await writeNewVault(request.path, serializeVault(file));
+  const path = sidecarPath(request.path);
+  await writeSidecar(path, nextSidecar(await readSidecar(path), file)).catch(() => {});
+  const raw = await readVaultRaw(request.path);
+  if (raw === null) {
+    throw new VaultError("VAULT_WRITE_FAILED", `The vault was written to ${request.path} but could not be read back.`);
+  }
+  return unlockWithPassphrase(request.path, raw, request.passphrase, { notice: request.notice });
+}
+
+// src/commands/vault-init.ts
+init_crypto();
+init_errors();
+init_sidecar();
+init_store();
+
+// src/commands/vault-phrase.ts
+init_errors();
+init_store();
+var ACKNOWLEDGEMENT = "understood";
+async function vaultPhraseShow(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  if (parsed.positionals.length > 0)
+    return usage2(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  if (ctx.json) {
+    return usage2(ctx, "The recovery phrase ceremony is interactive only and has no --json form. Run it without --json, on a terminal.");
+  }
+  if (!assertPhraseTty(ctx))
+    return 1;
+  const path = vaultPathFor(ctx, parsed);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(path);
+    const vault = hold((await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      promptText: "Vault passphrase (input hidden): "
+    })).vault);
+    return runPhraseCeremony(ctx, vault, { alreadyUnlockedWithFreshFactor: true });
+  });
+}
+function assertPhraseTty(ctx) {
+  if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stdout)
+    return true;
+  ctx.deps.stderr.write(`The recovery phrase is shown only on a terminal, on both ends. Nothing was rendered, and the vault was not read.
+`);
+  ctx.deps.stderr.write(`PHRASE_REQUIRES_TTY
+`);
+  return false;
+}
+async function runPhraseCeremony(ctx, vault, opts = {}) {
+  const { deps } = ctx;
+  if (!ctx.deps.isTTY.stdin || !ctx.deps.isTTY.stdout) {
+    throw new VaultError("PHRASE_REQUIRES_TTY", "The recovery phrase is shown only on a terminal, on both ends. Nothing was rendered.");
+  }
+  if (!opts.alreadyUnlockedWithFreshFactor) {
+    const typed = await deps.promptSecret("Vault passphrase, again, to show the recovery phrase (input hidden): ");
+    const envelope = vault.file.envelopes.find((candidate) => candidate.factor === "passphrase");
+    if (!envelope)
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
+    const { unlockWithPassphrase: unlockWithPassphrase2 } = await Promise.resolve().then(() => (init_store(), exports_store));
+    const reopened = await unlockWithPassphrase2(vault.path, vault.raw, typed.trim(), {
+      notice: (line) => deps.stderr.write(line)
+    });
+    const { closeVault: closeVault2 } = await Promise.resolve().then(() => (init_store(), exports_store));
+    closeVault2(reopened);
+  }
+  deps.stdout.write(`
+The 24 words below re-derive every key this vault derives, on any BIP-39 wallet, with no passphrase and no server.
+They do NOT restore any key imported from the Phase 1 TEE wallet store; the vault file plus a factor does that.
+Anyone who reads them can move every derived key's funds.
+
+`);
+  const acknowledgement = (await deps.promptLine(`Type ${ACKNOWLEDGEMENT} to continue, or anything else to stop: `)).trim().toLowerCase();
+  if (acknowledgement !== ACKNOWLEDGEMENT) {
+    deps.stdout.write(`Stopped. Nothing was displayed and nothing was written.
+`);
+    return 1;
+  }
+  const at = new Date(deps.now()).toISOString();
+  const written = await commitVault(vault, { index: { ...vault.index, hd: { ...vault.index.hd, rootExported: true, rootExportedAt: at } } }, deps);
+  const entropy = await decryptRoot(written);
+  let words;
+  try {
+    words = phraseFromEntropy(entropy).split(" ");
+  } finally {
+    wipe(entropy);
+  }
+  deps.stdout.write(`
+`);
+  for (let i = 0;i < words.length; i += 4) {
+    const row = words.slice(i, i + 4).map((word, offset) => `${String(i + offset + 1).padStart(2, " ")}. ${word.padEnd(9, " ")}`).join("  ");
+    deps.stdout.write(`    ${row.trimEnd()}
+`);
+  }
+  deps.stdout.write(`
+`);
+  const positions = randomPositions(3, words.length);
+  let confirmed = true;
+  for (const position of positions) {
+    const typed = (await deps.promptLine(`Type word ${position + 1}: `)).trim().toLowerCase();
+    if (typed !== words[position])
+      confirmed = false;
+  }
+  deps.stdout.write("\x1B[2J\x1B[H");
+  deps.stdout.write(`The phrase is no longer on screen. Clear your terminal's scrollback: the words were rendered there and this CLI cannot remove them.
+`);
+  deps.stdout.write(`This vault now records that the recovery phrase was exported; that record never resets.
+`);
+  words.fill("");
+  if (!confirmed) {
+    throw new VaultError("PHRASE_NOT_CONFIRMED", "One of the words you typed back did not match, so the copy you wrote down may be wrong.", {
+      suggestion: "The export is already recorded, because the words were on the screen. Run `candle vault phrase show` again and check your copy."
+    });
+  }
+  deps.stdout.write(`Read-back matched.
+`);
+  return 0;
+}
+function randomPositions(count, of = PHRASE_WORDS) {
+  const chosen = new Set;
+  const scratch = new Uint32Array(1);
+  const limit = Math.floor(4294967296 / of) * of;
+  while (chosen.size < count) {
+    crypto.getRandomValues(scratch);
+    const draw = scratch[0] ?? 0;
+    if (draw >= limit)
+      continue;
+    chosen.add(draw % of);
+  }
+  scratch.fill(0);
+  return [...chosen].sort((a, b) => a - b);
+}
+
+// src/commands/vault-init.ts
+var GENERATED_PASSPHRASE_NEEDS_TERMINAL = "A generated passphrase is shown once on the terminal, and --json reserves stdout for one JSON value that never carries a secret. Under --json pass --own-passphrase (typed at a hidden prompt, nothing shown), or run without --json.";
+async function vaultInit(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore", "--label"],
+    booleanFlags: ["--own-passphrase", "--high-value"]
+  });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  if (parsed.positionals.length > 0)
+    return usage2(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  const ownPassphrase = parsed.booleans.has("--own-passphrase");
+  if (ctx.json && !ownPassphrase)
+    return usage2(ctx, GENERATED_PASSPHRASE_NEEDS_TERMINAL);
+  if (!requireTty(ctx, "vault init"))
+    return 1;
+  const { deps } = ctx;
+  const path = vaultPathFor(ctx, parsed);
+  const highValue = parsed.booleans.has("--high-value");
+  return runVaultCommand(ctx, async () => {
+    if (await fileExists(path)) {
+      throw new VaultError("VAULT_EXISTS", `A vault already exists at ${path}.`, {
+        suggestion: "This CLI never overwrites one, including after an interrupted init. Move it aside if you really mean to start over."
+      });
+    }
+    const passphrase = ownPassphrase ? await collectOwnPassphrase(ctx) : await collectGeneratedPassphrase(ctx);
+    const entropy = randomBytes3(ROOT_ENTROPY_BYTES);
+    const vault = await withSecret(entropy, async (rootEntropy) => createVault({
+      path,
+      passphrase,
+      strength: strengthFor(ownPassphrase),
+      rootEntropy,
+      label: parsed.values["--label"],
+      notice: (line) => deps.stderr.write(line)
+    }, deps));
+    try {
+      if (highValue) {
+        const sidecar = sidecarPath(path);
+        await writeSidecar(sidecar, {
+          ...nextSidecar(await readSidecar(sidecar), vault.file),
+          highValue: true
+        });
+      }
+      if (ctx.json) {
+        writeJson(deps, {
+          ok: true,
+          path,
+          vaultId: vault.file.vaultId,
+          generation: vault.file.generation,
+          envelopes: vault.file.envelopes.map((envelope) => ({
+            id: envelope.id,
+            factor: envelope.factor,
+            domain: envelope.domain
+          })),
+          highValue,
+          phraseCeremonyOffered: false
+        });
+        deps.stderr.write(`The recovery phrase ceremony is interactive only and was not offered under --json. Run: candle vault phrase show
+`);
+        return 0;
+      }
+      deps.stdout.write(`Vault created at ${path}
+`);
+      deps.stdout.write(`  vault id     ${vault.file.vaultId}
+`);
+      deps.stdout.write(`  factors      1 (passphrase, human-memory)
+`);
+      deps.stdout.write(`  keys         0 -- create one with: candle vault new-key --chain solana
+`);
+      if (highValue)
+        deps.stdout.write(`  high value   yes: new-key needs a generated passphrase, or two recoverable factors in different domains
+`);
+      deps.stdout.write(`
+Verified: the file was re-read and opened with the passphrase you set, and its root blob decrypted.
+`);
+      deps.stdout.write(`
+${APPLE_ACCOUNT_NOTICE}
+`);
+      deps.stdout.write(`
+This vault has a 24-word recovery phrase. It re-derives every key this vault derives, on any BIP-39 wallet, and it is the only way back if you lose both the file and your backups.
+`);
+      const answer = (await deps.promptLine("Show the recovery phrase now? Type yes to see it, anything else to skip: ")).trim().toLowerCase();
+      if (answer === "yes") {
+        await runPhraseCeremony(ctx, vault);
+      } else {
+        deps.stdout.write(`Skipped. You can run the ceremony later with: candle vault phrase show
+`);
+      }
+      return 0;
+    } finally {
+      closeVault(vault);
+    }
+  });
+}
+async function collectGeneratedPassphrase(ctx) {
+  const passphrase = generatePassphrase();
+  ctx.deps.stdout.write(`
+Your vault passphrase, ${GENERATED_WORD_COUNT} words, about ${generatedEntropyBits()} bits. Write it down now; it is shown once and this CLI keeps no copy.
+
+`);
+  ctx.deps.stdout.write(`    ${passphrase}
+
+`);
+  const typed = await ctx.deps.promptSecret("Type it back in full to confirm (input hidden): ");
+  if (typed.trim() !== passphrase) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", "That did not match the passphrase shown above. Nothing was written.", {
+      suggestion: "Run `candle vault init` again for a new one."
+    });
+  }
+  return passphrase;
+}
+async function collectOwnPassphrase(ctx) {
+  const first = await ctx.deps.promptSecret("Choose a vault passphrase, 16 characters or more (input hidden): ");
+  assertOwnPassphraseAcceptable(first);
+  const again = await ctx.deps.promptSecret("Type it again to confirm: ");
+  if (again !== first) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", "The passphrases did not match. Nothing was written.");
+  }
+  if (!ctx.json) {
+    ctx.deps.stdout.write("Recorded as chosen by you: this CLI cannot know its entropy and `vault status` says so.\n");
+  }
+  return first;
+}
+
+// src/commands/vault-factor.ts
+async function vaultFactorList(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: [] });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  if (parsed.positionals.length > 0)
+    return usage2(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  const { deps } = ctx;
+  const path = vaultPathFor(ctx, parsed);
+  return runVaultCommand(ctx, async () => {
+    const raw = await readVaultRaw(path);
+    if (raw === null)
+      throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" });
+    const file = parseVaultFile(raw);
+    const facts = realPlatformFacts(deps.env);
+    const rows = file.envelopes.map((envelope) => {
+      const availability = envelopeAvailability(envelope, facts);
+      return {
+        id: envelope.id,
+        factor: envelope.factor,
+        transport: typeof envelope.transport === "string" ? envelope.transport : undefined,
+        domain: envelope.domain,
+        label: envelope.label,
+        availability: availabilityLabel(availability),
+        reason: availability.state === "available" ? undefined : availability.reason
+      };
+    });
+    if (ctx.json) {
+      writeJson(deps, { ok: true, envelopes: rows, recoverableFactors: countRecoverableFactors(file.envelopes) });
+      return 0;
+    }
+    for (const row of rows) {
+      deps.stdout.write(`${row.id}  ${row.factor}${row.transport ? `/${row.transport}` : ""}  ${row.domain}  ${row.label || "(no label)"}
+`);
+      deps.stdout.write(`    ${row.availability}${row.reason ? `: ${row.reason}` : ""}
+`);
+    }
+    deps.stdout.write(`
+${countRecoverableFactors(file.envelopes)} recoverable factor(s), domains counted once.
+`);
+    return 0;
+  });
+}
+async function vaultFactorAdd(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore", "--label"],
+    booleanFlags: ["--own-passphrase", "--accept-older-copy"]
+  });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  const kind = parsed.positionals[0];
+  if (kind === undefined)
+    return usage2(ctx, "Which factor? This release adds: candle vault factor add passphrase");
+  if (parsed.positionals.length > 1)
+    return usage2(ctx, `Unexpected argument: ${parsed.positionals[1]}`);
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  if (ctx.json && kind === "passphrase" && !parsed.booleans.has("--own-passphrase")) {
+    return usage2(ctx, GENERATED_PASSPHRASE_NEEDS_TERMINAL);
+  }
+  if (!requireTty(ctx, "vault factor add"))
+    return 1;
+  const { deps } = ctx;
+  const path = vaultPathFor(ctx, parsed);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const facts = realPlatformFacts(deps.env);
+    if (kind !== "passphrase") {
+      if (kind === "security-key" || kind === "touch-id" || kind === "passkey") {
+        assertFactorAddable(kind === "security-key" ? "passkey-prf" : kind === "touch-id" ? "secure-enclave" : "passkey-prf", facts);
+      }
+      return usage2(ctx, `Unknown factor: ${kind}. This release adds: passphrase`);
+    }
+    const raw = await requireVaultRaw(path);
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      promptText: "Current vault passphrase, to unlock (input hidden): "
+    });
+    const vault = hold(opened.vault);
+    const ownPassphrase = parsed.booleans.has("--own-passphrase");
+    const passphrase = ownPassphrase ? await collectOwn(ctx) : await collectGenerated(ctx);
+    const envelope = {
+      id: freshEnvelopeId(),
+      factor: "passphrase",
+      domain: "human-memory",
+      label: parsed.values["--label"] ?? "passphrase",
+      createdAt: new Date(deps.now()).toISOString(),
+      kdf: freshArgon2Params(),
+      strength: strengthFor(ownPassphrase),
+      wrap: { alg: VAULT_CIPHER, iv: "", ciphertext: "" }
+    };
+    const wrap = await wrapDekForPassphrase(vault.dek, passphrase, envelope, vault.file, (line) => deps.stderr.write(line));
+    const sealed = { ...envelope, wrap };
+    await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps);
+    const written = await readVaultRaw(path);
+    if (written === null)
+      throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${path} could not be read back.`);
+    closeVault(await unlockWithPassphrase(path, written, passphrase, { notice: (line) => deps.stderr.write(line) }));
+    if (ctx.json) {
+      writeJson(deps, {
+        ok: true,
+        envelopeId: sealed.id,
+        factor: "passphrase",
+        domain: "human-memory",
+        strength: envelope.strength
+      });
+      return 0;
+    }
+    deps.stdout.write(`Added passphrase factor ${sealed.id}.
+`);
+    deps.stdout.write(`  strength   ${strengthLabel(envelope.strength)}
+`);
+    deps.stdout.write(`  verified   the vault was re-read and opened with the new passphrase
+`);
+    deps.stdout.write(`
+${APPLE_ACCOUNT_NOTICE}
+`);
+    return 0;
+  });
+}
+async function vaultFactorRemove(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  const id = parsed.positionals[0];
+  if (id === undefined)
+    return usage2(ctx, "Which envelope? Run `candle vault factor list` for the ids.");
+  if (parsed.positionals.length > 1)
+    return usage2(ctx, `Unexpected argument: ${parsed.positionals[1]}`);
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault factor remove"))
+    return 1;
+  const { deps } = ctx;
+  const path = vaultPathFor(ctx, parsed);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(path);
+    const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
+    const target = vault.file.envelopes.find((envelope) => envelope.id === id);
+    if (!target)
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no envelope with id ${id}.`);
+    const remaining = vault.file.envelopes.filter((envelope) => envelope.id !== id);
+    if (target.factor === "passphrase" && !remaining.some((envelope) => envelope.factor === "passphrase")) {
+      throw new VaultError("VAULT_LAST_PASSPHRASE", "That is this vault's only passphrase factor, and every vault keeps one as its recovery floor.", {
+        suggestion: "Add another passphrase factor first: candle vault factor add passphrase"
+      });
+    }
+    if (countRecoverableFactors(remaining) === 0) {
+      throw new VaultError("VAULT_NO_RECOVERABLE_FACTOR", "Removing that envelope would leave this vault with no recoverable factor.", {
+        suggestion: "Add a recoverable factor first: candle vault factor add passphrase"
+      });
+    }
+    await commitVault(vault, { index: vault.index, envelopes: remaining }, deps);
+    const notice = [
+      "Removing a factor is not revocation.",
+      `Envelope ${id} is gone from this file, and nothing else changed.`,
+      "The data key never rotates, so any copy of this vault made while that envelope existed still opens with that factor, and the key it yields opens every key blob in the current file, including keys created after this removal.",
+      "The only revocation of a compromised factor is a new vault (candle vault init) and moving the funds to its keys."
+    ];
+    if (ctx.json) {
+      writeJson(deps, { ok: true, removedEnvelopeId: id, notRevocation: notice.join(" ") });
+      return 0;
+    }
+    deps.stdout.write(`Removed envelope ${id}.
+
+`);
+    for (const line of notice)
+      deps.stdout.write(`${line}
+`);
+    deps.stdout.write(`
+\`candle vault status\` lists this id from now on, so you can tell which copies it still opens.
+`);
+    return 0;
+  });
+}
+async function collectGenerated(ctx) {
+  const passphrase = generatePassphrase();
+  ctx.deps.stdout.write(`
+The new passphrase, ${GENERATED_WORD_COUNT} words, about ${generatedEntropyBits()} bits. Written down now; it is shown once.
+
+    ${passphrase}
+
+`);
+  const typed = await ctx.deps.promptSecret("Type it back in full to confirm (input hidden): ");
+  if (typed.trim() !== passphrase) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", "That did not match the passphrase shown above. Nothing was written.");
+  }
+  return passphrase;
+}
+async function collectOwn(ctx) {
+  const first = await ctx.deps.promptSecret("Choose a new vault passphrase, 16 characters or more (input hidden): ");
+  assertOwnPassphraseAcceptable(first);
+  const again = await ctx.deps.promptSecret("Type it again to confirm: ");
+  if (again !== first)
+    throw new VaultError("VAULT_UNLOCK_FAILED", "The passphrases did not match. Nothing was written.");
+  return first;
+}
+
+// src/commands/vault-factor-dispatch.ts
+async function vaultFactor(args, ctx) {
+  const [word, ...rest] = args;
+  switch (word) {
+    case "list":
+      return vaultFactorList(rest, ctx);
+    case "add":
+      return vaultFactorAdd(rest, ctx);
+    case "remove":
+      return vaultFactorRemove(rest, ctx);
+    case undefined:
+      return usage2(ctx, "Usage: candle vault factor <list | add passphrase | remove <id>>");
+    default:
+      return usage2(ctx, `Unknown subcommand: vault factor ${word}. Try: list, add, remove`);
+  }
+}
+
+// src/commands/vault-new-key.ts
+init_errors();
+init_sidecar();
+init_store();
+async function vaultNewKey(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore", "--chain", "--label"],
+    booleanFlags: ["--accept-older-copy"]
+  });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  if (parsed.positionals.length > 0)
+    return usage2(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  const chain2 = parsed.values["--chain"];
+  if (chain2 === undefined)
+    return usage2(ctx, "--chain solana is required.");
+  if (chain2 === "evm") {
+    return usage2(ctx, "CHAIN_NOT_OFFERED: EVM keys arrive in Phase 4. This release derives Solana keys only.");
+  }
+  if (chain2 !== "solana")
+    return usage2(ctx, `Unknown chain: ${chain2}. This release derives Solana keys only.`);
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault new-key"))
+    return 1;
+  const { deps } = ctx;
+  const path = vaultPathFor(ctx, parsed);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(path);
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    });
+    const vault = hold(opened.vault);
+    assertRecoverableFactorExists(vault.file.envelopes);
+    await assertHighValueSatisfied(path, vault.file.envelopes);
+    if (vault.index.hd.discovery !== undefined) {
+      throw new VaultError("VAULT_ALLOCATION_BOUNDARY_UNKNOWN", "This vault was built by `vault restore --phrase`, so the highest index its root ever allocated was never established and claiming a new one could re-derive an address that is already in use elsewhere.", {
+        suggestion: "Create a second vault with a fresh root (`candle vault init`) and move the funds across with `candle vault transfer`. There is no flag for this: no fact you could assert would make the old boundary known."
+      });
+    }
+    const index = nextAllocatableIndex(vault.index.hd.nextIndex.solanaVault, vault.index.hd.exposedIndexes.solanaVault);
+    const derivationPath = solanaVaultPath(index);
+    const root = await decryptRoot(vault);
+    let address;
+    let keyId;
+    let blob;
+    try {
+      const derived = await deriveSolanaKey(root, derivationPath);
+      try {
+        address = derived.address;
+        keyId = freshKeyId();
+        blob = await sealKeyBlob(vault, keyId, derived.secret64);
+      } finally {
+        wipe(derived.secret64);
+      }
+    } finally {
+      wipe(root);
+    }
+    const entry = {
+      id: keyId,
+      chain: "solana",
+      curve: "ed25519",
+      address,
+      label: parsed.values["--label"] ?? `key-${index}`,
+      createdAt: new Date(deps.now()).toISOString(),
+      role: "vault",
+      origin: "derived",
+      derivation: { scheme: DERIVATION_SCHEME, path: derivationPath },
+      exposure: { everRemoteExposed: false, everExported: false }
+    };
+    await commitVault(vault, {
+      index: {
+        hd: { ...vault.index.hd, nextIndex: { ...vault.index.hd.nextIndex, solanaVault: index + 1 } },
+        entries: [...vault.index.entries, entry]
+      },
+      addKeys: [blob]
+    }, deps);
+    await verifyWritten(path, address, keyId, opened.passphrase, ctx);
+    if (ctx.json) {
+      writeJson(deps, { ok: true, address, label: entry.label, path: derivationPath, index, keyId });
+      return 0;
+    }
+    deps.stdout.write(`${address}
+`);
+    deps.stdout.write(`  label       ${entry.label}
+`);
+    deps.stdout.write(`  derivation  ${derivationPath}
+`);
+    deps.stdout.write(`  verified    re-read from the vault and re-derived from its root
+`);
+    return 0;
+  });
+}
+function nextAllocatableIndex(counter, exposed) {
+  let index = counter;
+  while (exposed.includes(index))
+    index++;
+  return index;
+}
+async function assertHighValueSatisfied(path, envelopes) {
+  const sidecar = await readSidecar(sidecarPath(path));
+  if (sidecar?.highValue !== true)
+    return;
+  const generated = envelopes.some((envelope) => envelope.factor === "passphrase" && envelope.strength === "generated-103");
+  if (generated)
+    return;
+  if (countRecoverableFactors(envelopes) >= 2)
+    return;
+  throw new VaultError("VAULT_NO_RECOVERABLE_FACTOR", "This vault was created with --high-value, which needs either a generated passphrase or two recoverable factors in different domains before a key is created in it.", { suggestion: "Add a second recoverable factor: candle vault factor add passphrase" });
+}
+async function verifyWritten(path, address, keyId, passphrase, ctx) {
+  const raw = await readVaultRaw(path);
+  if (raw === null)
+    throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${path} could not be read back after the write.`);
+  const reopened = await unlockWithPassphrase(path, raw, passphrase, { notice: (line) => ctx.deps.stderr.write(line) });
+  try {
+    const secret = await decryptKey(reopened, keyId);
+    try {
+      if (addressFromSecret64(secret) !== address) {
+        throw new VaultError("VAULT_VERIFY_FAILED", "The key written to the vault does not produce the address just derived.");
+      }
+    } finally {
+      wipe(secret);
+    }
+  } finally {
+    const { closeVault: closeVault2 } = await Promise.resolve().then(() => (init_store(), exports_store));
+    closeVault2(reopened);
+  }
+}
+
+// src/commands/vault-phrase-dispatch.ts
+async function vaultPhrase(args, ctx) {
+  const [word, ...rest] = args;
+  if (word === "show")
+    return vaultPhraseShow(rest, ctx);
+  if (word === undefined)
+    return usage2(ctx, "Usage: candle vault phrase show");
+  return usage2(ctx, `Unknown subcommand: vault phrase ${word}. The only one is: show`);
+}
+
+// src/commands/vault-restore.ts
+import { rm as rm3 } from "node:fs/promises";
+init_crypto();
+init_errors();
+init_format();
+// src/vault/linked-wallets.ts
+var MAX_PAGES = 100;
+var PAGE_LIMIT = 100;
+async function completeLinkedWalletRead(ctx, apiKey) {
+  const call = (path) => apiRequest(path, {
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl: ctx.apiUrl,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  const identity = await call("/api/v1/agent/wallets/embedded");
+  if (!identity.ok) {
+    return {
+      account: "",
+      rows: [],
+      complete: false,
+      incompleteReason: `the account identity could not be read (${identity.message})`
+    };
+  }
+  const account = identity.body.account;
+  if (typeof account !== "string" || account === "") {
+    return {
+      account: "",
+      rows: [],
+      complete: false,
+      incompleteReason: "the account identity response carried no account"
+    };
+  }
+  const rows = [];
+  let cursor;
+  for (let page = 0;page < MAX_PAGES; page++) {
+    const query = new URLSearchParams({ includeRevoked: "true", limit: String(PAGE_LIMIT) });
+    if (cursor !== undefined)
+      query.set("cursor", cursor);
+    const result = await call(`/api/v1/agent/wallets?${query.toString()}`);
+    if (!result.ok) {
+      return {
+        account,
+        rows: [],
+        complete: false,
+        incompleteReason: `page ${page + 1} of the wallet list failed (${result.message})`
+      };
+    }
+    const body = result.body;
+    if (!Array.isArray(body.page) || typeof body.isDone !== "boolean") {
+      return {
+        account,
+        rows: [],
+        complete: false,
+        incompleteReason: `page ${page + 1} of the wallet list was malformed`
+      };
+    }
+    rows.push(...body.page);
+    if (body.isDone)
+      return { account, rows, complete: true };
+    if (typeof body.continueCursor !== "string" || body.continueCursor === "") {
+      return {
+        account,
+        rows: [],
+        complete: false,
+        incompleteReason: `page ${page + 1} was not the last one but carried no cursor`
+      };
+    }
+    cursor = body.continueCursor;
+  }
+  return {
+    account,
+    rows: [],
+    complete: false,
+    incompleteReason: `the wallet list did not finish within ${MAX_PAGES} pages`
+  };
+}
+
+// src/commands/vault-restore.ts
+init_sidecar();
+init_store();
+var GAP_LIMIT = 20;
+var SCAN_CEILING = 500;
+async function vaultRestore(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore", "--count", "--tee-count", "--rpc-url"],
+    booleanFlags: ["--phrase", "--own-passphrase"]
+  });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  if (parsed.positionals.length > 0)
+    return usage2(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  if (!parsed.booleans.has("--phrase"))
+    return usage2(ctx, "--phrase is required: this command restores from a 24-word recovery phrase.");
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  if (ctx.json) {
+    return usage2(ctx, "Restoring reads a recovery phrase from a hidden prompt and has no --json form. Run it without --json, on a terminal.");
+  }
+  if (!requireTty(ctx, "vault restore"))
+    return 1;
+  const counts = parseCounts(parsed.values["--count"], parsed.values["--tee-count"], parsed.values["--rpc-url"]);
+  if ("error" in counts)
+    return usage2(ctx, counts.error);
+  const { deps } = ctx;
+  const path = vaultPathFor(ctx, parsed);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    if (await fileExists(path)) {
+      throw new VaultError("VAULT_EXISTS", `A vault already exists at ${path}.`, {
+        suggestion: "Restoring builds a new vault and never merges into one. Move the existing file aside first."
+      });
+    }
+    const sidecarExisted = await fileExists(sidecarPath(path));
+    deps.stdout.write(`Type your ${PHRASE_WORDS}-word recovery phrase. It is not echoed, and nothing is written until its checksum checks out.
+`);
+    const typed = await deps.promptSecret(`Recovery phrase (${PHRASE_WORDS} words, input hidden): `);
+    const entropy = entropyFromPhrase(typed);
+    const vault = await withSecret(entropy, async (rootEntropy) => {
+      if (rootEntropy.length !== ROOT_ENTROPY_BYTES) {
+        throw new VaultError("PHRASE_INVALID", `That phrase carries ${rootEntropy.length} bytes of entropy, not ${ROOT_ENTROPY_BYTES}.`);
+      }
+      const ownPassphrase = parsed.booleans.has("--own-passphrase");
+      const passphrase = ownPassphrase ? await collectOwn2(ctx) : await collectGenerated2(ctx);
+      return createVault({
+        path,
+        passphrase,
+        strength: strengthFor(ownPassphrase),
+        rootEntropy,
+        hd: restoreSeedHd(counts, new Date(deps.now()).toISOString()),
+        notice: (line) => deps.stderr.write(line)
+      }, deps);
+    });
+    hold(vault);
+    let committed = false;
+    try {
+      await verifyVaultIntegrity(vault);
+      deps.stdout.write(`
+New vault at ${path}, verified in full (all eight steps).
+`);
+      deps.stdout.write(`${APPLE_ACCOUNT_NOTICE}
+
+`);
+      const rpc = parsed.values["--rpc-url"] ? createSolanaRpc(parsed.values["--rpc-url"], deps.fetch) : undefined;
+      const derived = await deriveWithinBounds(ctx, vault, counts, rpc);
+      const apiKey = await resolveApiKey(deps, ctx.profile);
+      let matches = {
+        matched: [],
+        unmatched: [],
+        account: undefined,
+        complete: false,
+        reason: "no API key is stored, so no exposure could be read"
+      };
+      if (apiKey !== undefined) {
+        matches = await matchAgainstAccount(ctx, apiKey, derived);
+      } else {
+        deps.stderr.write(`No API key is stored for this profile, so this restore read no exposure at all.
+`);
+      }
+      const outcome = await writeRestoredIndex(ctx, vault, derived, matches, counts);
+      committed = true;
+      return reportRestore(ctx, vault, derived, matches, outcome, counts);
+    } catch (error) {
+      if (!committed)
+        await discardIncompleteRestore(ctx, path, sidecarExisted);
+      throw error;
+    }
+  });
+}
+function restoreSeedHd(counts, restoredAt) {
+  return freshHdRecord({
+    discovery: {
+      restoredAt,
+      account: "",
+      requestedCounts: counts.requested,
+      highestMatched: { solanaVault: -1, solanaTee: -1 },
+      complete: false
+    }
+  });
+}
+async function discardIncompleteRestore(ctx, path, sidecarExisted) {
+  try {
+    await rm3(path, { force: true });
+    if (!sidecarExisted)
+      await rm3(sidecarPath(path), { force: true });
+    ctx.deps.stderr.write(`The vault this run had written at ${path} was removed because the restore did not complete, so a retry starts clean.
+`);
+  } catch {
+    ctx.deps.stderr.write(`The vault this run had written at ${path} could not be removed; it holds no key entry, and a retry needs it moved aside.
+`);
+  }
+}
+function parseCounts(count, teeCount, rpcUrl) {
+  const parse = (raw, flag) => {
+    if (raw === undefined)
+      return;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0)
+      return { error: `${flag} must be a whole number, zero or greater.` };
+    return value;
+  };
+  const vaultCount = parse(count, "--count");
+  if (typeof vaultCount === "object" && vaultCount !== null)
+    return vaultCount;
+  const teeParsed = parse(teeCount, "--tee-count");
+  if (typeof teeParsed === "object" && teeParsed !== null)
+    return teeParsed;
+  const bothOmitted = vaultCount === undefined && teeParsed === undefined;
+  const scan = rpcUrl !== undefined;
+  const resolve3 = (value) => {
+    if (value !== undefined)
+      return value;
+    return scan ? undefined : 1;
+  };
+  const solanaVault = bothOmitted && !scan ? 1 : resolve3(vaultCount);
+  const solanaTee = bothOmitted && !scan ? 1 : resolve3(teeParsed);
+  return {
+    solanaVault,
+    solanaTee,
+    requested: { solanaVault: solanaVault ?? -1, solanaTee: solanaTee ?? -1 }
+  };
+}
+async function deriveWithinBounds(ctx, vault, counts, rpc) {
+  const { decryptRoot: decryptRoot2 } = await Promise.resolve().then(() => (init_store(), exports_store));
+  const root = await decryptRoot2(vault);
+  const set = { entries: [], byAddress: new Map, scanStoppedAt: {} };
+  try {
+    for (const branch of ["solanaVault", "solanaTee"]) {
+      const bound = counts[branch];
+      if (bound !== undefined) {
+        for (let index2 = 0;index2 < bound; index2++) {
+          set.entries.push(await deriveOne(vault, root, branch, index2));
+        }
+        continue;
+      }
+      if (rpc === undefined)
+        continue;
+      let consecutiveUnused = 0;
+      let index = 0;
+      for (;index < SCAN_CEILING && consecutiveUnused < GAP_LIMIT; index++) {
+        const entry = await deriveOne(vault, root, branch, index);
+        set.entries.push(entry);
+        consecutiveUnused = await addressLooksUsed(rpc, entry.address) ? 0 : consecutiveUnused + 1;
+      }
+      set.scanStoppedAt[branch] = index;
+      ctx.deps.stdout.write(`Gap scan on ${branch} stopped at index ${index - 1} after ${GAP_LIMIT} consecutive indices with no balance, no token account and no signature history.
+`);
+    }
+  } finally {
+    wipe(root);
+  }
+  for (const entry of set.entries)
+    set.byAddress.set(entry.address, entry);
+  return set;
+}
+async function deriveOne(vault, root, branch, index) {
+  const path = pathForBranch(branch, index);
+  const derived = await deriveSolanaKey(root, path);
+  try {
+    const keyId = freshKeyId();
+    return {
+      branch,
+      index,
+      address: derived.address,
+      path,
+      keyId,
+      blob: await sealKeyBlob(vault, keyId, derived.secret64)
+    };
+  } finally {
+    wipe(derived.secret64);
+  }
+}
+async function addressLooksUsed(rpc, address) {
+  if (await rpc.getBalance(address) > 0n)
+    return true;
+  if ((await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)).length > 0)
+    return true;
+  return rpc.hasSignatureHistory(address);
+}
+async function matchAgainstAccount(ctx, apiKey, derived) {
+  const read = await completeLinkedWalletRead(ctx, apiKey);
+  if (!read.complete) {
+    return {
+      matched: [],
+      unmatched: [],
+      account: read.account || undefined,
+      complete: false,
+      reason: read.incompleteReason
+    };
+  }
+  ctx.deps.stdout.write(`
+This profile acts as account ${read.account}.
+`);
+  const typed = (await ctx.deps.promptLine(`Type the last six characters of that account to confirm before any exposure is recorded: `)).trim();
+  if (typed !== read.account.slice(-6)) {
+    return {
+      matched: [],
+      unmatched: [],
+      account: undefined,
+      complete: false,
+      reason: "that is not the last six characters of the account this profile acts as, so it was not confirmed",
+      refused: "EXPOSURE_ACCOUNT_MISMATCH"
+    };
+  }
+  const matched = [];
+  const unmatched = [];
+  for (const row of read.rows) {
+    if (typeof row.address !== "string")
+      continue;
+    const entry = derived.byAddress.get(row.address);
+    if (entry)
+      matched.push({ entry, row });
+    else
+      unmatched.push(row.address);
+  }
+  return { matched, unmatched, account: read.account, complete: true };
+}
+async function writeRestoredIndex(ctx, vault, derived, matches, counts) {
+  const now = new Date(ctx.deps.now()).toISOString();
+  const matchByAddress = new Map(matches.matched.map((match) => [match.entry.address, match.row]));
+  const entries = derived.entries.map((entry) => {
+    const row = matchByAddress.get(entry.address);
+    const base = {
+      id: entry.keyId,
+      chain: "solana",
+      curve: "ed25519",
+      address: entry.address,
+      label: row?.label ?? `${entry.branch === "solanaTee" ? "tee" : "key"}-${entry.index}`,
+      createdAt: now,
+      role: "vault",
+      origin: "derived",
+      derivation: { scheme: DERIVATION_SCHEME, path: entry.path },
+      exposure: { everRemoteExposed: false, everExported: false, exposureUnknown: true }
+    };
+    if (row === undefined)
+      return base;
+    return { ...base, ...teeFieldsFor(row, ctx), exposure: { ...base.exposure, everRemoteExposed: true } };
+  });
+  const highest = { solanaVault: -1, solanaTee: -1, evm: -1 };
+  const exposed = { solanaVault: [], solanaTee: [], evm: [] };
+  for (const entry of entries) {
+    const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
+    if (located === undefined)
+      continue;
+    highest[located.branch] = Math.max(highest[located.branch], located.index);
+    if (entry.exposure.everRemoteExposed)
+      exposed[located.branch].push(located.index);
+  }
+  const highestMatched = { solanaVault: -1, solanaTee: -1 };
+  for (const match of matches.matched) {
+    if (match.entry.branch === "solanaVault")
+      highestMatched.solanaVault = Math.max(highestMatched.solanaVault, match.entry.index);
+    if (match.entry.branch === "solanaTee")
+      highestMatched.solanaTee = Math.max(highestMatched.solanaTee, match.entry.index);
+  }
+  const hd = {
+    scheme: "bip39-24/slip10",
+    nextIndex: { solanaVault: highest.solanaVault + 1, solanaTee: highest.solanaTee + 1, evm: 0 },
+    rootExported: false,
+    exposedIndexes: {
+      solanaVault: exposed.solanaVault.sort((a, b) => a - b),
+      solanaTee: exposed.solanaTee.sort((a, b) => a - b),
+      evm: []
+    },
+    discovery: {
+      restoredAt: now,
+      account: matches.account ?? "",
+      requestedCounts: counts.requested,
+      highestMatched,
+      complete: false
+    },
+    ...matches.complete ? { exposureReconciledAt: now } : {}
+  };
+  await commitVault(vault, { index: { hd, entries }, addKeys: derived.entries.map((entry) => entry.blob) }, ctx.deps);
+  return { entries, hd };
+}
+function teeFieldsFor(row, ctx) {
+  const remoteState = row.sweptAt !== undefined ? "swept" : row.revokedAt !== undefined ? "quarantined" : "enabled";
+  const grantIdentity = {
+    account: "",
+    apiBaseUrl: ctx.apiUrl,
+    source: "recorded-at-operation"
+  };
+  const common = {
+    network: "solana-mainnet",
+    ...row.vaultDestination !== undefined ? { vaultDestination: row.vaultDestination } : {},
+    ...row.boundKeyPrefix !== undefined ? { boundKeyPrefix: row.boundKeyPrefix } : {},
+    ...row.remoteAuthority !== undefined ? { remoteAuthority: row.remoteAuthority } : {},
+    ...row.sweptAt !== undefined ? { sweptAt: new Date(row.sweptAt).toISOString() } : {},
+    remoteState
+  };
+  if (row.sweptAt !== undefined && row.vaultDestination !== undefined) {
+    return { role: "tee-wallet", tee: { ...common, lifecycle: "retired" } };
+  }
+  if (row.vaultDestination !== undefined) {
+    return { role: "tee-wallet", linkedWalletId: row._id, tee: { ...common, lifecycle: "enabled", grantIdentity } };
+  }
+  return { role: "tee-wallet", tee: { ...common, lifecycle: "stranded", grantIdentity } };
+}
+function reportRestore(ctx, vault, derived, matches, outcome, counts) {
+  const { deps } = ctx;
+  deps.stdout.write(`
+Recovered ${outcome.entries.length} address(es) from the phrase.
+`);
+  for (const entry of outcome.entries) {
+    deps.stdout.write(`  ${entry.address}  ${entry.derivation?.path}  ${entry.role}${entry.exposure.everRemoteExposed ? "  (this account imported it)" : ""}
+`);
+  }
+  deps.stdout.write(`
+Every one of them is recorded with an unknown history and stays that way: this phrase may have been restored under another account, under another deployment, or outside Candle entirely, and no read can rule that out.
+`);
+  deps.stdout.write(`This vault does not allocate. \`vault new-key\` and \`vault promote --from\` refuse here; the exit is \`candle vault init\` for a fresh root and \`candle vault transfer\` to move funds across.
+`);
+  deps.stdout.write(`The Phase 1 TEE wallet store was not read, and no migrated-tee entry was restored: the phrase does not restore those keys, and the vault file plus a factor does.
+`);
+  for (const branch of ["solanaVault", "solanaTee"]) {
+    const bound = counts[branch];
+    if (bound === undefined) {
+      deps.stdout.write(`  ${branch}: gap-scanned to index ${(derived.scanStoppedAt[branch] ?? 1) - 1}
+`);
+    } else if (bound <= 1) {
+      deps.stdout.write(`  ${branch}: index 0 only. If you derived more, re-run with --count/--tee-count, or with --rpc-url to gap-scan.
+`);
+    }
+  }
+  if (!matches.complete) {
+    if (matches.refused !== undefined)
+      deps.stdout.write(`
+${matches.refused}: the account was not confirmed.
+`);
+    deps.stdout.write(`
+No exposure was recorded: ${matches.reason ?? "the linked-wallet read did not complete"}.
+`);
+    deps.stdout.write(matches.refused !== undefined ? `The vault was created, verified and written in full; nothing in it is flagged. Run \`candle vault reconcile-exposure\` once you are on the right profile.
+` : `A partial list that happened to be empty would read as good news, so nothing was flagged at all. Run \`candle vault reconcile-exposure\` once the read succeeds.
+`);
+    return 3;
+  }
+  if (matches.unmatched.length > 0) {
+    deps.stdout.write(`
+${matches.unmatched.length} address(es) this account imported were NOT derived by this restore:
+`);
+    for (const address of matches.unmatched)
+      deps.stdout.write(`  ${address}
+`);
+    deps.stdout.write(`
+Either this root derives them at an index beyond the bounds used here, in which case a higher --count or --tee-count finds them;
+`);
+    deps.stdout.write(`or they are independent keys this root never produced (a \`wallets import\` of an outside keypair, or a Phase 1 \`tee new\` key), in which case no count will ever find them and only a vault backup plus a factor recovers them.
+`);
+    return 3;
+  }
+  closeVault(vault);
+  deps.stdout.write(`
+${matches.matched.length} of them are addresses this account imported, and each is flagged as remotely exposed.
+`);
+  return 0;
+}
+async function vaultReconcileExposure(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  if (parsed.positionals.length > 0)
+    return usage2(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault reconcile-exposure"))
+    return 1;
+  const { deps } = ctx;
+  const path = vaultPathFor(ctx, parsed);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(path);
+    const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
+    const apiKey = await resolveApiKey(deps, ctx.profile);
+    if (apiKey === undefined) {
+      throw new VaultError("VAULT_UNREADABLE", "No API key is stored for this profile, so there is no account to reconcile against.", {
+        suggestion: "Run: candle auth login"
+      });
+    }
+    const read = await completeLinkedWalletRead(ctx, apiKey);
+    if (!read.complete) {
+      throw new VaultError("VAULT_UNREADABLE", `The linked-wallet read did not complete: ${read.incompleteReason}. Nothing was flagged.`, {
+        suggestion: "A partial list that happened to list nothing would read as good news, so no exposure is recorded from an incomplete read."
+      });
+    }
+    const recorded = vault.index.hd.discovery?.account;
+    if (recorded !== undefined && recorded !== "" && recorded !== read.account) {
+      throw new VaultError("EXPOSURE_ACCOUNT_MISMATCH", `This vault recorded its discovery against account ${recorded}, and this profile acts as ${read.account}.`, { suggestion: "Switch profile and run it again. Nothing was flagged." });
+    }
+    const listed = new Set(read.rows.map((row) => row.address));
+    const entries = vault.index.entries.map((entry) => listed.has(entry.address) && !entry.exposure.everRemoteExposed ? { ...entry, exposure: { ...entry.exposure, everRemoteExposed: true } } : entry);
+    const added = entries.filter((entry, i) => entry !== vault.index.entries[i]);
+    const exposedIndexes = { ...vault.index.hd.exposedIndexes };
+    for (const entry of entries) {
+      const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
+      if (located === undefined || !entry.exposure.everRemoteExposed)
+        continue;
+      if (!exposedIndexes[located.branch].includes(located.index)) {
+        exposedIndexes[located.branch] = [...exposedIndexes[located.branch], located.index].sort((a, b) => a - b);
+      }
+    }
+    const now = new Date(deps.now()).toISOString();
+    const highestMatched = { ...vault.index.hd.discovery?.highestMatched ?? { solanaVault: -1, solanaTee: -1 } };
+    for (const entry of entries) {
+      if (!entry.exposure.everRemoteExposed)
+        continue;
+      const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
+      if (located?.branch === "solanaVault")
+        highestMatched.solanaVault = Math.max(highestMatched.solanaVault, located.index);
+      if (located?.branch === "solanaTee")
+        highestMatched.solanaTee = Math.max(highestMatched.solanaTee, located.index);
+    }
+    await commitVault(vault, {
+      index: {
+        hd: {
+          ...vault.index.hd,
+          exposedIndexes,
+          exposureReconciledAt: now,
+          ...vault.index.hd.discovery ? { discovery: { ...vault.index.hd.discovery, highestMatched } } : {}
+        },
+        entries
+      }
+    }, deps);
+    if (ctx.json) {
+      writeJson(deps, {
+        ok: true,
+        account: read.account,
+        listed: read.rows.length,
+        newlyFlagged: added.length,
+        cleared: 0,
+        exposureReconciledAt: now
+      });
+      return 0;
+    }
+    deps.stdout.write(`Reconciled against account ${read.account}: ${read.rows.length} linked wallet(s) read, ${added.length} vault address(es) newly flagged as remotely exposed.
+`);
+    deps.stdout.write(`Nothing was cleared. This command only ever adds exposure: no read can establish that an address is cold.
+`);
+    return 0;
+  });
+}
+async function collectGenerated2(ctx) {
+  const passphrase = generatePassphrase();
+  ctx.deps.stdout.write(`
+The new vault's passphrase, ${GENERATED_WORD_COUNT} words, about ${generatedEntropyBits()} bits. Write it down now; it is shown once.
+
+    ${passphrase}
+
+`);
+  const typed = await ctx.deps.promptSecret("Type it back in full to confirm (input hidden): ");
+  if (typed.trim() !== passphrase) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", "That did not match the passphrase shown above. Nothing was written.");
+  }
+  return passphrase;
+}
+async function collectOwn2(ctx) {
+  const first = await ctx.deps.promptSecret("Choose a passphrase for the new vault, 16 characters or more (input hidden): ");
+  assertOwnPassphraseAcceptable(first);
+  const again = await ctx.deps.promptSecret("Type it again to confirm: ");
+  if (again !== first)
+    throw new VaultError("VAULT_UNLOCK_FAILED", "The passphrases did not match. Nothing was written.");
+  return first;
+}
+
+// src/commands/vault-status.ts
+init_errors();
+init_format();
+init_sidecar();
+init_store();
+async function vaultStatus(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--unlock", "--accept-older-copy"] });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  if (parsed.positionals.length > 0)
+    return usage2(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  const { deps } = ctx;
+  const path = vaultPathFor(ctx, parsed);
+  const unlock = parsed.booleans.has("--unlock");
+  if (unlock && !requireTty(ctx, "vault status --unlock"))
+    return 1;
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await readVaultRaw(path);
+    if (raw === null) {
+      throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" });
+    }
+    const file = parseVaultFile(raw);
+    const facts = realPlatformFacts(deps.env);
+    const sidecar = await readSidecar(sidecarPath(path));
+    const legacy = legacyWalletsPath(deps.env);
+    const legacyPresent = await fileExists(legacy);
+    const envelopes = file.envelopes.map((envelope) => describeEnvelope(envelope, facts));
+    const recoverable = countRecoverableFactors(file.envelopes);
+    let unlocked;
+    if (unlock) {
+      const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
+      unlocked = {
+        entries: vault.index.entries.map(describeEntry),
+        nextIndex: vault.index.hd.nextIndex,
+        exposedIndexes: vault.index.hd.exposedIndexes,
+        rootExported: vault.index.hd.rootExported,
+        restored: vault.index.hd.discovery !== undefined
+      };
+    }
+    if (ctx.json) {
+      writeJson(deps, {
+        ok: true,
+        path,
+        version: file.version,
+        generation: file.generation,
+        createdAt: file.createdAt,
+        updatedAt: file.updatedAt,
+        envelopes,
+        recoverableFactors: recoverable,
+        sidecar: sidecar ? {
+          lastGeneration: sidecar.lastGeneration,
+          removedEnvelopeIds: sidecar.removedEnvelopeIds,
+          lastVerifiedBackupAt: sidecar.lastVerifiedBackupAt,
+          lastBackupDomain: sidecar.lastBackupDomain,
+          lastBackupSharedDomainAccepted: sidecar.lastBackupSharedDomainAccepted
+        } : null,
+        legacyWalletsEnc: legacyPresent ? legacy : null,
+        ...unlocked ? { unlocked } : {}
+      });
+      return 0;
+    }
+    deps.stdout.write(`${path}
+`);
+    deps.stdout.write(`  version      ${file.version}
+`);
+    deps.stdout.write(`  generation   ${file.generation}
+`);
+    deps.stdout.write(`  updated      ${file.updatedAt}
+`);
+    deps.stdout.write(`
+Factors (${envelopes.length}), ${recoverable} recoverable (domains counted once):
+`);
+    for (const envelope of envelopes) {
+      deps.stdout.write(`  ${envelope.id}  ${envelope.factor}${envelope.transport ? `/${envelope.transport}` : ""}  ${envelope.domain}  ${envelope.availability}
+`);
+      deps.stdout.write(`      label      ${envelope.label || "(none)"}
+`);
+      if (envelope.strength)
+        deps.stdout.write(`      strength   ${envelope.strengthLabel}
+`);
+      if (envelope.sharedDomainNote)
+        deps.stdout.write(`      note       ${envelope.sharedDomainNote}
+`);
+    }
+    if (recoverable === 1) {
+      deps.stdout.write(`
+This vault has exactly one recoverable factor. Lose it and no copy of this file can be opened; the recovery phrase is then the only route, and it restores derived keys only.
+`);
+    }
+    if (sidecar) {
+      deps.stdout.write(`
+This machine's record (vault.state.json, cleartext, best effort):
+`);
+      deps.stdout.write(`  last generation seen   ${sidecar.lastGeneration}
+`);
+      if (sidecar.lastVerifiedBackupAt) {
+        deps.stdout.write(`  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "unknown"})
+`);
+      }
+      if (sidecar.lastBackupSharedDomainAccepted) {
+        deps.stdout.write(`  shared domain          accepted for the last backup destination
+`);
+      }
+      if (sidecar.removedEnvelopeIds.length > 0) {
+        deps.stdout.write(`  removed envelopes      ${sidecar.removedEnvelopeIds.join(", ")}
+`);
+        deps.stdout.write(`                         any copy of this file made while one existed still opens with that factor.
+`);
+      }
+    } else {
+      deps.stdout.write(`
+No vault.state.json beside this vault, so an older copy of it cannot be recognized on this machine.
+`);
+    }
+    if (legacyPresent) {
+      deps.stdout.write(`
+A legacy wallets.enc exists at ${legacy}; this CLI does not read it.
+`);
+      deps.stdout.write(`  A key it holds that was imported is already a linked wallet, managed with: candle wallets
+`);
+      deps.stdout.write(`  A key it holds that was never imported opens with an earlier release's \`wallets export\`; move those funds on chain to a vault key.
+`);
+    }
+    if (!unlocked) {
+      deps.stdout.write(`
+Run with --unlock to list the keys, the derivation counters and the exposure flags, which are inside the encrypted index.
+`);
+      return 0;
+    }
+    deps.stdout.write(`
+Keys (${unlocked.entries.length}):
+`);
+    for (const entry of unlocked.entries) {
+      deps.stdout.write(`  ${entry.address}
+`);
+      deps.stdout.write(`      label       ${entry.label || "(none)"}
+`);
+      deps.stdout.write(`      role        ${entry.role} (${entry.origin})
+`);
+      if (entry.derivation)
+        deps.stdout.write(`      derivation  ${entry.derivation}
+`);
+      deps.stdout.write(`      exposure    ${entry.exposure}
+`);
+      if (entry.teeLifecycle)
+        deps.stdout.write(`      tee         ${entry.teeLifecycle}${entry.teeRemoteState ? ` (server: ${entry.teeRemoteState})` : ""}
+`);
+      if (entry.destinationExposureAccepted) {
+        deps.stdout.write(`      accepted    an operator asserted this pinned destination's history despite exposureUnknown
+`);
+      }
+    }
+    deps.stdout.write(`
+Derivation counters (next index per branch):
+`);
+    for (const [branch, value] of Object.entries(unlocked.nextIndex)) {
+      const exposed = unlocked.exposedIndexes[branch] ?? [];
+      deps.stdout.write(`  ${branch.padEnd(12)} ${value}${exposed.length > 0 ? `   known exposed: ${exposed.join(", ")}` : ""}
+`);
+    }
+    deps.stdout.write(`  recovery phrase exported: ${unlocked.rootExported ? "yes" : "no"}
+`);
+    if (unlocked.restored) {
+      deps.stdout.write(`
+This vault was built by \`vault restore --phrase\`. Its keys are recovery artifacts, not fresh cold keys, and it does not allocate new addresses; \`vault new-key\` and \`vault promote --from\` refuse here.
+`);
+    }
+    deps.stdout.write(`
+The recovery phrase restores derived keys only. It does not restore any key imported from the Phase 1 TEE wallet store; the vault file plus a factor does that.
+`);
+    return 0;
+  });
+}
+function describeEnvelope(envelope, facts) {
+  const availability = envelopeAvailability(envelope, facts);
+  const strength = typeof envelope.strength === "string" ? envelope.strength : undefined;
+  return {
+    id: envelope.id,
+    factor: envelope.factor,
+    transport: typeof envelope.transport === "string" ? envelope.transport : undefined,
+    domain: envelope.domain,
+    label: envelope.label,
+    createdAt: envelope.createdAt,
+    availability: availabilityLabel(availability),
+    availabilityReason: availability.state === "available" ? undefined : availability.reason,
+    strength,
+    strengthLabel: strength === "generated-103" || strength === "user-chosen" ? strengthLabel(strength) : undefined,
+    sharedDomainNote: envelope.domain === "apple-account" ? "lives in your Apple account; never counted as independent of any other Apple-account item" : undefined
+  };
+}
+function describeEntry(entry) {
+  return describeEntryInner(entry);
+}
+function describeEntryInner(entry) {
+  const flags = [];
+  if (entry.exposure.everRemoteExposed)
+    flags.push("remotely exposed");
+  if (entry.exposure.everExported)
+    flags.push("exported");
+  if (entry.exposure.exposureUnknown)
+    flags.push("history unknown (restored)");
+  return {
+    address: entry.address,
+    label: entry.label,
+    role: entry.role,
+    origin: entry.origin,
+    derivation: entry.derivation?.path,
+    exposure: flags.length > 0 ? flags.join(", ") : "cold in this vault's record",
+    teeLifecycle: entry.tee?.lifecycle,
+    teeRemoteState: entry.tee?.remoteState,
+    destinationExposureAccepted: entry.tee?.destinationExposureAccepted === true
+  };
+}
+
 // src/commands/verify.ts
-import { dirname as dirname3, join as join5 } from "node:path";
+import { dirname as dirname4, join as join6 } from "node:path";
 var USAGE = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
   let version;
   try {
-    const manifest = JSON.parse(await deps.readFile(join5(dirname3(bundlePath), "latest.json")));
+    const manifest = JSON.parse(await deps.readFile(join6(dirname4(bundlePath), "latest.json")));
     if (typeof manifest.version !== "string" || manifest.version.length === 0)
       return { kind: "absent" };
     version = manifest.version;
@@ -31022,380 +45088,36 @@ function messageOf2(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
-// src/commands/wallets-export.ts
-async function walletsExport(args, ctx) {
-  const { deps, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--index", "--keystore"], booleanFlags: ["--yes"] });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
-    return 2;
-  }
-  const indexFlag = parsed.values["--index"];
-  if (indexFlag === undefined) {
-    writeUsageFailure(deps, "--index <n> is required. Export prints one key at a time, by design.", json);
-    return 2;
-  }
-  const index = Number.parseInt(indexFlag, 10);
-  if (!Number.isInteger(index) || index < 0) {
-    writeUsageFailure(deps, "--index must be a whole number, zero or greater.", json);
-    return 2;
-  }
-  const keystorePath = parsed.values["--keystore"] ?? defaultKeystorePath(deps.env);
-  let raw;
-  try {
-    raw = await deps.readFile(keystorePath);
-  } catch {
-    writeLocalFailure(deps, { code: "KEYSTORE_MISSING", message: `No keystore at ${keystorePath}.` }, json);
-    return 1;
-  }
-  const fromEnv = deps.env.CANDLE_KEYSTORE_PASSPHRASE;
-  const passphrase = fromEnv !== undefined && fromEnv !== "" ? fromEnv : (await deps.promptSecret("Keystore passphrase (input hidden): ")).trim();
-  if (passphrase === "") {
-    writeLocalFailure(deps, { code: "KEYSTORE_PASSPHRASE", message: "A keystore passphrase is required." }, json);
-    return 1;
-  }
-  let entries;
-  try {
-    entries = (await readKeystore(raw, passphrase, { expectPurpose: "wallets" })).entries;
-  } catch (error) {
-    writeLocalFailure(deps, { code: "KEYSTORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, json);
-    return 1;
-  }
-  const entry = entries.find((e) => e.index === index);
-  if (!entry) {
-    writeLocalFailure(deps, {
-      code: "NO_SUCH_WALLET",
-      message: `This keystore has no wallet at index ${index}. It holds ${entries.length}.`
-    }, json);
-    return 1;
-  }
-  if (!parsed.booleans.has("--yes")) {
-    deps.stdout.write(`Would export the private key for:
-`);
-    deps.stdout.write(`  [${entry.index}] ${entry.address}  ${entry.label}  (${entry.chain})
-`);
-    deps.stdout.write(`
-This prints a private key to your terminal. Re-run with --yes to confirm.
-`);
-    return 1;
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify({
-      index: entry.index,
-      chain: entry.chain,
-      address: entry.address,
-      label: entry.label,
-      privateKey: entry.privateKey
-    })}
-`);
-    return 0;
-  }
-  deps.stdout.write(`${entry.address}  (${entry.chain}, ${entry.label})
-`);
-  deps.stdout.write(`${entry.privateKey}
-`);
-  return 0;
+// src/commands/wallets-removed.ts
+var LAST_RELEASE_WITH_EXPORT = "0.9.2";
+function removed(ctx, command, replacement, extra) {
+  writeLocalFailure(ctx.deps, {
+    code: "COMMAND_REMOVED",
+    message: `\`candle ${command}\` was removed in CLI 0.10.0. ${replacement}`,
+    suggestion: `${extra ? `${extra} ` : ""}A wallets.enc already on disk is left exactly as it is: no command in this release reads, writes or deletes it. ` + `To open one, use CLI ${LAST_RELEASE_WITH_EXPORT} (candle update --to cli-v${LAST_RELEASE_WITH_EXPORT}) and move the funds on chain to a vault key.`
+  }, ctx.json);
+  return 2;
 }
-
-// src/commands/wallets-generate.ts
-var MAX_COUNT = 50;
-var CHAIN_WORDS = { solana: "solana", hood: "evm", evm: "evm" };
-async function resolvePassphrase(ctx, creating) {
-  const fromEnv = ctx.deps.env.CANDLE_KEYSTORE_PASSPHRASE;
-  if (fromEnv !== undefined && fromEnv !== "")
-    return { ok: true, passphrase: fromEnv };
-  const first = (await ctx.deps.promptSecret("Keystore passphrase (input hidden): ")).trim();
-  if (first === "")
-    return { ok: false, message: "A keystore passphrase is required." };
-  if (!creating)
-    return { ok: true, passphrase: first };
-  const again = (await ctx.deps.promptSecret("Confirm keystore passphrase: ")).trim();
-  if (again !== first)
-    return { ok: false, message: "The passphrases did not match. Nothing was generated." };
-  return { ok: true, passphrase: first };
+async function walletsGenerateRemoved(_args, ctx) {
+  return removed(ctx, "wallets generate", "Keys are now derived inside the vault, from one recovery phrase: candle vault new-key --chain solana.", "Create a vault first with `candle vault init`.");
 }
-async function walletsGenerate(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {
-    valueFlags: ["--count", "--chain", "--label", "--keystore"],
-    booleanFlags: ["--resume"]
-  });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
-    return 2;
-  }
-  const resuming = parsed.booleans.has("--resume");
-  const countFlag = parsed.values["--count"];
-  if (resuming && countFlag !== undefined) {
-    writeUsageFailure(deps, "--count cannot be combined with --resume: resume never generates new keys.", json);
-    return 2;
-  }
-  const keystorePath = parsed.values["--keystore"] ?? defaultKeystorePath(deps.env);
-  let existingRaw = null;
-  try {
-    existingRaw = await deps.readFile(keystorePath);
-  } catch (error) {
-    const code = error?.code;
-    if (code !== undefined && code !== "ENOENT") {
-      writeLocalFailure(deps, {
-        code: "KEYSTORE_UNREADABLE",
-        message: `Could not read ${keystorePath}: ${error instanceof Error ? error.message : error}`,
-        suggestion: "Refusing to continue: a keystore may exist at that path, and overwriting it would destroy the only copy of its keys."
-      }, json);
-      return 1;
-    }
-    existingRaw = null;
-  }
-  if (existingRaw !== null && !resuming) {
-    writeLocalFailure(deps, {
-      code: "KEYSTORE_EXISTS",
-      message: `A keystore already exists at ${keystorePath}.`,
-      suggestion: "Run with --resume to import the wallets it already holds, or pass --keystore <path> for a new one."
-    }, json);
-    return 1;
-  }
-  if (existingRaw === null && resuming) {
-    writeLocalFailure(deps, { code: "KEYSTORE_MISSING", message: `No keystore at ${keystorePath} to resume.` }, json);
-    return 1;
-  }
-  let chain2;
-  let count = 0;
-  if (!resuming) {
-    const chainFlag = parsed.values["--chain"];
-    const mapped = chainFlag === undefined ? undefined : CHAIN_WORDS[chainFlag];
-    const missing = [];
-    if (mapped === undefined)
-      missing.push("--chain <solana|hood|evm>");
-    if (countFlag === undefined)
-      missing.push("--count <n>");
-    if (missing.length > 0) {
-      deps.stderr.write(`Missing required: ${missing.join(", ")}
-`);
-      deps.stderr.write(`Example: candle wallets generate --chain solana --count 5
-`);
-      return 2;
-    }
-    count = Number.parseInt(countFlag, 10);
-    if (!Number.isInteger(count) || count < 1 || count > MAX_COUNT) {
-      writeUsageFailure(deps, `--count must be a whole number between 1 and ${MAX_COUNT}.`, json);
-      return 2;
-    }
-    chain2 = mapped;
-  }
-  await printIdentity(ctx);
-  const passphrase = await resolvePassphrase(ctx, existingRaw === null);
-  if (!passphrase.ok) {
-    writeLocalFailure(deps, { code: "KEYSTORE_PASSPHRASE", message: passphrase.message }, json);
-    return 1;
-  }
-  let store;
-  if (existingRaw !== null) {
-    try {
-      store = await readKeystore(existingRaw, passphrase.passphrase, { expectPurpose: "wallets" });
-    } catch (error) {
-      writeLocalFailure(deps, { code: "KEYSTORE_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, json);
-      return 1;
-    }
-  } else {
-    const created = await createKeystore(passphrase.passphrase);
-    const now = new Date().toISOString();
-    const labelPrefix = parsed.values["--label"] ?? "wallet";
-    const entries = Array.from({ length: count }, (_, i) => {
-      const w = generateWallet(chain2);
-      return {
-        index: i,
-        chain: chain2,
-        address: w.address,
-        label: `${labelPrefix}-${i}`,
-        createdAt: now,
-        privateKey: w.privateKey,
-        imported: false
-      };
-    });
-    store = { ...created, entries };
-    try {
-      await writeKeystoreFile(keystorePath, await serializeKeystore(entries, store.key, store.salt, store.iterations));
-    } catch (error) {
-      writeLocalFailure(deps, {
-        code: "KEYSTORE_WRITE_FAILED",
-        message: `Could not write the keystore: ${error instanceof Error ? error.message : error}`,
-        suggestion: "Nothing was imported and no key left this process. Fix the error above and run again."
-      }, json);
-      return 1;
-    }
-    if (!json) {
-      deps.stdout.write(`Generated ${entries.length} ${chain2 === "solana" ? "Solana" : "EVM"} wallet(s):
-`);
-      for (const e of entries)
-        deps.stdout.write(`  [${e.index}] ${e.address}  ${e.label}
-`);
-      deps.stdout.write(`
-Sealed to ${keystorePath}
-`);
-      deps.stdout.write(`BACK UP THIS FILE. These keys are independent and it is the only copy of them.
-`);
-      if (chain2 === "evm") {
-        deps.stdout.write(`This is an ordinary EVM wallet: the same key works on Hood and every other EVM chain.
-`);
-      }
-      deps.stdout.write(`
-`);
-    }
-  }
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  if (!apiKey) {
-    writeLocalFailure(deps, {
-      code: "NO_API_KEY",
-      message: "No API key available.",
-      suggestion: `The keys are sealed at ${keystorePath}. Run: candle keys create, then: candle wallets generate --resume`
-    }, json);
-    return 1;
-  }
-  const pending = store.entries.filter((e) => !e.imported);
-  let failures = 0;
-  for (const entry of pending) {
-    const flow = await runImportFlow({
-      chain: entry.chain,
-      address: entry.address,
-      privateKey: entry.privateKey,
-      label: entry.label,
-      apiKey,
-      apiUrl,
-      deps
-    });
-    if (!flow.ok) {
-      const failure = flow.failure;
-      const alreadyExists = failure.kind === "api" && /already exists/i.test(`${failure.response.message} ${JSON.stringify(failure.response.raw ?? "")}`);
-      if (alreadyExists) {
-        const found = await lookupByAddress(entry.address, apiKey, ctx);
-        if (found) {
-          const promoted = await promoteStagedSigner(deps, entry, found._id);
-          entry.imported = true;
-          entry.linkedWalletId = found._id;
-          entry.importedAt = new Date().toISOString();
-          await persist(store, keystorePath);
-          if (promoted.ok) {
-            if (!json) {
-              deps.stdout.write(`  [${entry.index}] ${entry.address} already imported, reconciled as ${found._id}
-`);
-            }
-            continue;
-          }
-          failures++;
-          writeLocalFailure(deps, {
-            code: "SIGNER_MISSING",
-            message: `Wallet ${entry.address} exists as ${found._id}, but ${promoted.message}.`,
-            suggestion: `Revoke it (candle wallets revoke ${found._id}) and run: candle wallets generate --resume`
-          }, json);
-          break;
-        }
-      }
-      failures++;
-      if (failure.kind === "api") {
-        writeFailure(deps, failure.response, { apiUrl, authType: "key" }, json);
-      } else {
-        writeLocalFailure(deps, {
-          code: failure.kind === "signer-store" ? "SIGNER_STORE_FAILED" : "SIGNER_COMMIT_FAILED",
-          message: `Wallet ${entry.address}: ${failure.error instanceof Error ? failure.error.message : failure.error}`,
-          suggestion: `The keys are sealed at ${keystorePath}. Fix the error above and run: candle wallets generate --resume`
-        }, json);
-      }
-      break;
-    }
-    entry.imported = true;
-    entry.linkedWalletId = flow.submitted.id;
-    entry.privyWalletId = flow.submitted.privyWalletId;
-    entry.importedAt = new Date().toISOString();
-    await persist(store, keystorePath);
-    if (!json)
-      deps.stdout.write(`  [${entry.index}] ${entry.address} imported as ${flow.submitted.id}
-`);
-  }
-  const imported = store.entries.filter((e) => e.imported).length;
-  if (json) {
-    deps.stdout.write(`${JSON.stringify({
-      keystore: keystorePath,
-      total: store.entries.length,
-      imported,
-      wallets: store.entries.map((e) => ({
-        index: e.index,
-        chain: e.chain,
-        address: e.address,
-        label: e.label,
-        imported: e.imported,
-        ...e.privyWalletId !== undefined ? { privyWalletId: e.privyWalletId } : {}
-      }))
-    })}
-`);
-    return failures > 0 ? 1 : 0;
-  }
-  deps.stdout.write(`
-${imported}/${store.entries.length} imported.
-`);
-  if (failures > 0) {
-    deps.stdout.write(`Run again with --resume to continue. Every key is still sealed at ${keystorePath}.
-`);
-    return 1;
-  }
-  deps.stdout.write(`Each wallet is owned by its own agent key quorum with the spend policy on the wallet, and no
-` + `user identity was sent to Privy, so none of these is a way to sign in to your account.
-`);
-  return 0;
-}
-async function promoteStagedSigner(deps, entry, linkedWalletId) {
-  const committedRef = walletSignerRef(linkedWalletId);
-  if (await deps.store.get(committedRef) !== null)
-    return { ok: true };
-  const pendingRef = importPendingSignerRef(entry.chain, entry.address);
-  const staged = await deps.store.get(pendingRef);
-  if (staged === null) {
-    return {
-      ok: false,
-      message: `its signer is on neither "${committedRef}" nor "${pendingRef}" in the ${deps.backend} store`
-    };
-  }
-  await deps.store.set(committedRef, staged);
-  await deps.store.delete(pendingRef).catch(() => {});
-  return { ok: true };
-}
-async function persist(store, path) {
-  await writeKeystoreFile(path, await serializeKeystore(store.entries, store.key, store.salt, store.iterations));
-}
-async function lookupByAddress(address, apiKey, ctx) {
-  const res = await apiRequest("/api/v1/agent/wallets", {
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl: ctx.apiUrl,
-    fetch: ctx.deps.fetch,
-    env: ctx.deps.env
-  });
-  if (!res.ok)
-    return;
-  const rows = res.body.page ?? [];
-  return rows.find((r) => r.address?.toLowerCase() === address.toLowerCase());
+async function walletsExportRemoved(_args, ctx) {
+  return removed(ctx, "wallets export", "No command in this release prints a private key to stdout or to --json.", "The vault's only plaintext routes are two interactive ceremonies: `candle vault phrase show` for the recovery phrase, and `candle vault export-key` for one key, which ships in the same 0.10.0 release (AD-10).");
 }
 
 // src/config.ts
-import { chmod as chmod3, mkdir as mkdir3, readFile as readFile3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
-import { homedir as homedir4 } from "node:os";
-import { join as join6 } from "node:path";
+import { chmod as chmod5, mkdir as mkdir5, readFile as readFile5, rm as rm4, writeFile as writeFile4 } from "node:fs/promises";
+import { homedir as homedir6 } from "node:os";
+import { join as join7 } from "node:path";
 function configDir2() {
-  return process.env.CANDLE_CONFIG_DIR?.trim() || join6(homedir4(), ".config", "candle");
+  return process.env.CANDLE_CONFIG_DIR?.trim() || join7(homedir6(), ".config", "candle");
 }
 function configFilePath() {
-  return join6(configDir2(), "config.json");
+  return join7(configDir2(), "config.json");
 }
 async function readConfig() {
   try {
-    const raw = await readFile3(configFilePath(), "utf8");
+    const raw = await readFile5(configFilePath(), "utf8");
     return JSON.parse(raw);
   } catch (err) {
     if (err.code === "ENOENT")
@@ -31407,9 +45129,9 @@ async function writeConfig(patch) {
   const current = await readConfig();
   const next = { ...current, ...patch };
   const dir = configDir2();
-  await mkdir3(dir, { recursive: true });
-  await chmod3(dir, 448);
-  await writeFile3(configFilePath(), JSON.stringify(next, null, 2), "utf8");
+  await mkdir5(dir, { recursive: true });
+  await chmod5(dir, 448);
+  await writeFile4(configFilePath(), JSON.stringify(next, null, 2), "utf8");
 }
 async function updateProfile(name, patch) {
   const current = await readConfig();
@@ -31419,7 +45141,7 @@ async function updateProfile(name, patch) {
 }
 async function clearConfig() {
   try {
-    await rm3(configFilePath());
+    await rm4(configFilePath());
   } catch (err) {
     if (err.code !== "ENOENT")
       throw err;
@@ -31475,7 +45197,7 @@ function assertSafeRef(ref) {
 }
 var RUN_TIMEOUT_MS = 1e4;
 function run(bin, args, stdin) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve3, reject) => {
     const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"], env: process.env });
     let stdout = "";
     let stderr = "";
@@ -31504,7 +45226,7 @@ function run(bin, args, stdin) {
         return;
       settled = true;
       clearTimeout(timeout);
-      resolve({ status: code ?? -1, stdout, stderr });
+      resolve3({ status: code ?? -1, stdout, stderr });
     });
     if (stdin !== undefined)
       child.stdin.write(stdin);
@@ -31670,9 +45392,19 @@ Commands:
     scope <prefix> --scope <all|selected>                         Limit a profile to assigned wallets
   wallet                                                          Show launch and linked wallets (wallets is an alias)
   wallet import --chain <solana|evm> [options]                    Import a wallet you own (key via --key-file or hidden prompt)
-  wallet generate --chain <solana|hood|evm> --count <n>            Generate wallets, seal them locally, then import
-  wallet export --index <n> [--yes]                                Print one generated key from the keystore
   wallet revoke <wallet-id>                                       Revoke a linked wallet
+  wallet generate                                                 Removed in 0.10.0: use vault new-key
+  wallet export                                                   Removed in 0.10.0: no command prints a private key
+  vault init [--own-passphrase] [--high-value]                    Create the vault: one passphrase factor and an HD root
+  vault status [--unlock]                                         What the vault holds, and what opens it
+  vault new-key --chain solana [--label <name>]                   Derive the next Solana key inside the vault
+  vault phrase show                                               Show the 24-word recovery phrase (terminal only)
+  vault restore --phrase [--count <n>] [--tee-count <k>]          Rebuild a vault from the recovery phrase
+                [--rpc-url <url>]
+  vault reconcile-exposure                                        Re-read this account and add exposure; clears nothing
+  vault factor list | add passphrase | remove <id>                Manage the factors that open the vault
+  vault backup --to <path> [--accept-shared-domain]               Copy the vault and verify the copy in full
+  vault verify-backup <path>                                      Verify a copy in full (all eight steps)
   tee new [--label <name>]                                        Seal a fresh dedicated Solana TEE wallet key locally
   tee enable <address> --vault <address>                          Delegate a TEE wallet key to this profile's agent, pin the sweep vault
   tee fund <address> --amount <n> [--asset SOL|USDC]              Print the funding instruction for your vault to sign
@@ -31705,10 +45437,23 @@ var COMMANDS = {
     subcommands: {
       import: walletsImport,
       revoke: walletsRevoke,
-      generate: walletsGenerate,
-      export: walletsExport
+      generate: walletsGenerateRemoved,
+      export: walletsExportRemoved
     },
     bare: wallets
+  },
+  vault: {
+    subcommands: {
+      init: vaultInit,
+      status: vaultStatus,
+      "new-key": vaultNewKey,
+      phrase: vaultPhrase,
+      restore: vaultRestore,
+      "reconcile-exposure": vaultReconcileExposure,
+      factor: vaultFactor,
+      backup: vaultBackup,
+      "verify-backup": vaultVerifyBackup
+    }
   },
   tee: {
     subcommands: {
@@ -31895,7 +45640,7 @@ async function buildRealDeps() {
       }
     },
     now: () => Date.now(),
-    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    sleep: (ms) => new Promise((resolve3) => setTimeout(resolve3, ms)),
     openBrowser: realOpenBrowser,
     env: process.env,
     nodeVersion: process.versions.node,
@@ -31904,17 +45649,19 @@ async function buildRealDeps() {
       const { runStdioServer: runStdioServer2 } = await Promise.resolve().then(() => (init_server2(), exports_server));
       await runStdioServer2(env);
     },
-    readFile: (path) => readFile4(path, "utf8"),
-    readBytes: (path) => readFile4(path),
-    writeFile: (path, content) => writeFile4(path, content, { mode: 384 }),
+    readFile: (path) => readFile6(path, "utf8"),
+    readBytes: (path) => readFile6(path),
+    writeFile: (path, content) => writeFile5(path, content, { mode: 384 }),
     promptSecret: promptHiddenSecret,
+    promptLine: promptVisibleLine,
+    isTTY: { stdin: Boolean(process.stdin.isTTY), stdout: Boolean(process.stdout.isTTY) },
     execPath: process.execPath,
     argv1: process.argv[1] ?? "",
     platformKey: platformKey(process.platform, process.arch),
     realpath: (path) => realpath(path),
     writeBytes: async (path, bytes) => {
-      await writeFile4(path, bytes, { flag: "wx", mode: 493 });
-      await chmod4(path, 493);
+      await writeFile5(path, bytes, { flag: "wx", mode: 493 });
+      await chmod6(path, 493);
     },
     rename: (from, to) => rename3(from, to),
     unlink: (path) => unlink(path)
@@ -31934,7 +45681,7 @@ function entryHref(argv1) {
 }
 var isMainModule = process.argv[1] !== undefined && import.meta.url === entryHref(process.argv[1]);
 if (isMainModule) {
-  main().catch((err) => {
+  await main().catch((err) => {
     process.stderr.write(`Unexpected error: ${err instanceof Error ? err.message : String(err)}
 `);
     process.exit(1);

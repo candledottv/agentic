@@ -1,5 +1,10 @@
 /**
- * The encrypted keystore behind `wallets generate`.
+ * The v1 encrypted keystore: `tee-wallets.enc` today, and `wallets.enc` historically.
+ *
+ * It was written for `wallets generate`, which AD-3 removed in CLI 0.10.0 (Ember Phase 2) along with
+ * `wallets export`. No command in this release reads, writes or deletes a `wallets.enc`; the TEE
+ * wallet store is the live user of this format, and `vault.enc` (version 2) is the format that
+ * replaces it for new keys.
  *
  * A SEPARATE file from credentials.enc on purpose. That one holds the device token and API key:
  * operational secrets you rotate freely and that are useless once revoked. This one holds
@@ -38,8 +43,9 @@ export function defaultKeystorePath(env: Record<string, string | undefined>): st
 
 /**
  * Ember Phase 1 (BE-94, D3): the dedicated TEE wallet store, a SEPARATE file from wallets.enc with
- * its own passphrase and a `purpose` marker in the header, so the legacy readers (`wallets export`,
- * `wallets generate --resume`) refuse it and the `tee` commands refuse anything else.
+ * its own passphrase and a `purpose` marker in the header, so the legacy readers refused it and the
+ * `tee` commands refuse anything else. Those legacy readers are gone as of 0.10.0 (AD-3); the
+ * marker stays, because a file written under it is still opened by the `tee` commands.
  */
 export function defaultTeeKeystorePath(env: Record<string, string | undefined>): string {
   return join(candleConfigDir(env), "tee-wallets.enc")

@@ -123,6 +123,12 @@ guarantee is unconfirmed: a wallet stop whose remote enforcement is still pendin
 enabled without verified signing authority, or a sweep that left a residual). Treat `3` as not
 done: follow the printed next step, usually re-running the same command.
 
+A generated vault passphrase is shown once on the terminal and never inside a JSON value, so
+`vault init` and `vault factor add passphrase` under `--json` take `--own-passphrase` (typed at a
+hidden prompt, nothing shown) and refuse the generated form with exit `2`. Prompts themselves are
+rendered on stderr, so a command that unlocks a vault on a terminal still leaves stdout as one
+JSON value.
+
 The failure envelope is stable:
 
 ```json

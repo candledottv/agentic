@@ -1,6 +1,7 @@
 /**
  * The network-and-store sequence that turns a private key into a linked wallet, shared by
- * `wallets import` (one key the operator supplies) and `wallets generate` (N keys the CLI made).
+ * `wallets import` (one key the operator supplies) and `candle tee new` (a dedicated key the CLI
+ * made). It was also shared with `wallets generate` until AD-3 removed that command in CLI 0.10.0.
  *
  * Extracted rather than copied. This repo has been bitten repeatedly by one truth restated by
  * hand in two places and drifting invisibly, and this particular sequence is the worst candidate

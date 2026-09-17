@@ -31,10 +31,16 @@ import { profileAdd, profileList, profileRemove, profileRename, profileUse } fro
 import { setup } from "./commands/setup"
 import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./commands/tee"
 import { update } from "./commands/update"
+import { vaultBackup, vaultVerifyBackup } from "./commands/vault-backup"
+import { vaultFactor } from "./commands/vault-factor-dispatch"
+import { vaultInit } from "./commands/vault-init"
+import { vaultNewKey } from "./commands/vault-new-key"
+import { vaultPhrase } from "./commands/vault-phrase-dispatch"
+import { vaultReconcileExposure, vaultRestore } from "./commands/vault-restore"
+import { vaultStatus } from "./commands/vault-status"
 import { verify } from "./commands/verify"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
-import { walletsExport } from "./commands/wallets-export"
-import { walletsGenerate } from "./commands/wallets-generate"
+import { walletsExportRemoved, walletsGenerateRemoved } from "./commands/wallets-removed"
 import type { CliConfig } from "./config"
 import { clearConfig, readConfig, updateProfile, writeConfig } from "./config"
 import type { CommandContext, Deps } from "./deps"
@@ -43,7 +49,7 @@ import { resolveSecretStore } from "./keychain"
 import { migratedConfig, profileSecretRef, resolveProfileName, resolveProfileNameForLogin } from "./profiles"
 import { platformKey } from "./release"
 import { writeLocalFailure, writeUsageFailure } from "./render"
-import { promptHiddenSecret, SECRET_REFS } from "./secret-store"
+import { promptHiddenSecret, promptVisibleLine, SECRET_REFS } from "./secret-store"
 import { maybeWriteUpdateNotice } from "./update-notice"
 import { CLI_VERSION } from "./version"
 
@@ -98,9 +104,19 @@ Commands:
     scope <prefix> --scope <all|selected>                         Limit a profile to assigned wallets
   wallet                                                          Show launch and linked wallets (wallets is an alias)
   wallet import --chain <solana|evm> [options]                    Import a wallet you own (key via --key-file or hidden prompt)
-  wallet generate --chain <solana|hood|evm> --count <n>            Generate wallets, seal them locally, then import
-  wallet export --index <n> [--yes]                                Print one generated key from the keystore
   wallet revoke <wallet-id>                                       Revoke a linked wallet
+  wallet generate                                                 Removed in 0.10.0: use vault new-key
+  wallet export                                                   Removed in 0.10.0: no command prints a private key
+  vault init [--own-passphrase] [--high-value]                    Create the vault: one passphrase factor and an HD root
+  vault status [--unlock]                                         What the vault holds, and what opens it
+  vault new-key --chain solana [--label <name>]                   Derive the next Solana key inside the vault
+  vault phrase show                                               Show the 24-word recovery phrase (terminal only)
+  vault restore --phrase [--count <n>] [--tee-count <k>]          Rebuild a vault from the recovery phrase
+                [--rpc-url <url>]
+  vault reconcile-exposure                                        Re-read this account and add exposure; clears nothing
+  vault factor list | add passphrase | remove <id>                Manage the factors that open the vault
+  vault backup --to <path> [--accept-shared-domain]               Copy the vault and verify the copy in full
+  vault verify-backup <path>                                      Verify a copy in full (all eight steps)
   tee new [--label <name>]                                        Seal a fresh dedicated Solana TEE wallet key locally
   tee enable <address> --vault <address>                          Delegate a TEE wallet key to this profile's agent, pin the sweep vault
   tee fund <address> --amount <n> [--asset SOL|USDC]              Print the funding instruction for your vault to sign
@@ -152,10 +168,28 @@ const COMMANDS: Record<string, CommandRoute> = {
     subcommands: {
       import: walletsImport,
       revoke: walletsRevoke,
-      generate: walletsGenerate,
-      export: walletsExport,
+      // AD-3: removed in 0.10.0, still ROUTED so the refusal can name the replacement and the
+      // release that still opens a wallets.enc. Exit 2 with COMMAND_REMOVED.
+      generate: walletsGenerateRemoved,
+      export: walletsExportRemoved,
     },
     bare: wallets,
+  },
+  // Ember Phase 2 (BE-136). Local custody: every one of these reads or writes `vault.enc` on this
+  // machine, and no API, relay or server ever sees a vault key (CC-08). `factor` and `phrase` take
+  // a second word of their own, which their handlers route from the tokens dispatch hands them.
+  vault: {
+    subcommands: {
+      init: vaultInit,
+      status: vaultStatus,
+      "new-key": vaultNewKey,
+      phrase: vaultPhrase,
+      restore: vaultRestore,
+      "reconcile-exposure": vaultReconcileExposure,
+      factor: vaultFactor,
+      backup: vaultBackup,
+      "verify-backup": vaultVerifyBackup,
+    },
   },
   tee: {
     subcommands: {
@@ -533,6 +567,8 @@ export async function buildRealDeps(): Promise<Deps> {
     // private key.
     writeFile: (path: string, content: string) => writeFile(path, content, { mode: 0o600 }),
     promptSecret: promptHiddenSecret,
+    promptLine: promptVisibleLine,
+    isTTY: { stdin: Boolean(process.stdin.isTTY), stdout: Boolean(process.stdout.isTTY) },
     execPath: process.execPath,
     argv1: process.argv[1] ?? "",
     platformKey: platformKey(process.platform, process.arch),
@@ -579,7 +615,16 @@ function entryHref(argv1: string): string {
 }
 const isMainModule = process.argv[1] !== undefined && import.meta.url === entryHref(process.argv[1])
 if (isMainModule) {
-  main().catch((err) => {
+  // AWAITED at the top level, not fired and forgotten (Ember Phase 2, BE-136, T49). Under Bun a
+  // pending WebCrypto operation does not by itself keep the process alive, and a hidden prompt
+  // leaves stdin paused once it closes, so a command that prompts and then awaits `crypto.subtle`
+  // (every vault unlock does: the KDF, then the key unwrap) had nothing holding the process open
+  // and exited 0 mid-command with nothing printed -- on a real terminal, in the compiled binary
+  // and under `bun run` alike, while every in-process test passed because the test runner's own
+  // work kept the loop alive. A pending top-level await holds the process until `main` settles,
+  // whatever handles the loop happens to have. The parity test drives the compiled binary on a
+  // pseudo-terminal and is the check that this line stays.
+  await main().catch((err) => {
     process.stderr.write(`Unexpected error: ${err instanceof Error ? err.message : String(err)}\n`)
     process.exit(1)
   })

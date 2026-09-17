@@ -256,7 +256,7 @@ export class EncryptedFileSecretStore implements SecretStore {
     }
 
     if (process.stdin.isTTY) {
-      const prompted = await promptHiddenPassphrase("Passphrase for Candle credential store: ")
+      const prompted = await readHiddenLine("Passphrase for Candle credential store: ", realPromptStreams())
       this.cachedPassphrase = prompted
       return prompted
     }
@@ -320,13 +320,56 @@ export async function promptHiddenSecret(promptText: string): Promise<string> {
   if (!process.stdin.isTTY) {
     throw new Error("No TTY available for interactive input; pass --key-file instead")
   }
-  return promptHiddenPassphrase(promptText)
+  return readHiddenLine(promptText, realPromptStreams())
 }
 
-async function promptHiddenPassphrase(promptText: string): Promise<string> {
+/**
+ * Where a prompt is rendered. The prompt text, the echo of a visible answer and the newline after
+ * a hidden one all go to STDERR, never stdout: on a terminal they land on the same screen either
+ * way, and stdout stays the command's own output, which under `--json` must be exactly one JSON
+ * value (Ember Phase 2, BE-136, T39). A prompt written to stdout ahead of that value would make
+ * every `--json` command that unlocks a vault on a terminal emit something no parser accepts.
+ */
+export interface PromptStreams {
+  input: NodeJS.ReadableStream
+  output: NodeJS.WritableStream
+}
+
+function realPromptStreams(): PromptStreams {
+  return { input: process.stdin, output: process.stderr }
+}
+
+/**
+ * TTY-guarded VISIBLE prompt for `Deps.promptLine` (Ember Phase 2, BE-136). The vault's
+ * confirmations ask the operator to type back something already on their screen -- a destination's
+ * last six characters, an acknowledgement word, three words of a rendered phrase -- and hiding
+ * that input would turn a deliberate check into a guess. Refuses without a TTY for the same reason
+ * `promptHiddenSecret` does: a piped invocation should get an actionable error, never a hang.
+ */
+export async function promptVisibleLine(promptText: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    throw new Error("No TTY available for interactive input; this command cannot run unattended")
+  }
+  return readVisibleLine(promptText, realPromptStreams())
+}
+
+/** The visible prompt on explicit streams: exported so the stream choice above is testable. */
+export async function readVisibleLine(promptText: string, io: PromptStreams): Promise<string> {
   const readline = await import("node:readline")
   return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true })
+    const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true })
+    rl.question(promptText, (answer) => {
+      rl.close()
+      resolve(answer)
+    })
+  })
+}
+
+/** The hidden prompt on explicit streams: exported so the echo guard and the stream choice are testable. */
+export async function readHiddenLine(promptText: string, io: PromptStreams): Promise<string> {
+  const readline = await import("node:readline")
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true })
     const rlInternals = rl as unknown as { _writeToOutput?: (text: string) => void }
     // Fail CLOSED: echo only a write that is exactly the prompt text itself. Everything else --
     // every typed character and its newline echo -- is swallowed unconditionally. (An earlier
@@ -334,11 +377,11 @@ async function promptHiddenPassphrase(promptText: string): Promise<string> {
     // readline ever emits something else first, keystrokes would be echoed before that guard ever
     // triggers.)
     rlInternals._writeToOutput = (text: string) => {
-      if (text === promptText) process.stdout.write(text)
+      if (text === promptText) io.output.write(text)
     }
     rl.question(promptText, (answer) => {
       rl.close()
-      process.stdout.write("\n")
+      io.output.write("\n")
       resolve(answer)
     })
   })

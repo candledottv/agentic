@@ -1,0 +1,50 @@
+{
+  "format": "candle-vault",
+  "version": 2,
+  "vaultId": "sLu1827woTa6NP_aWvK04A",
+  "generation": 2,
+  "createdAt": "2026-09-17T12:00:00.000Z",
+  "updatedAt": "2026-09-17T12:00:00.000Z",
+  "cipher": "AES-256-GCM",
+  "envelopes": [
+    {
+      "id": "EfpkGDfuLtI",
+      "factor": "passphrase",
+      "domain": "human-memory",
+      "label": "passphrase",
+      "createdAt": "2026-09-17T12:00:00.000Z",
+      "kdf": {
+        "name": "argon2id",
+        "version": 19,
+        "m": 65536,
+        "t": 3,
+        "p": 1,
+        "salt": "6eeRWvo4zDdAScCfhJAPqg"
+      },
+      "strength": "generated-103",
+      "wrap": {
+        "alg": "AES-256-GCM",
+        "iv": "VraQOrEQqUNTDvcb",
+        "ciphertext": "msD3YNphZUBwLvGrkvkrF4sDwjWZCd4e32RLxjJ5k7zCzz3YrdUqCrrRVpfgta3u"
+      }
+    }
+  ],
+  "keyIds": [
+    "djKfdVRHsnk"
+  ],
+  "root": {
+    "iv": "dvKzrbq2vT9O8KUn",
+    "ciphertext": "hHWK4u7sXakEXcGD3kvhx0kk9HdrIldiWh2LnfiRIpUQRU6hCaTr4WPeeVES-r3a"
+  },
+  "keys": [
+    {
+      "id": "djKfdVRHsnk",
+      "iv": "DxgBbhJfxw3qMU2S",
+      "ciphertext": "Sk8PNoDvZSciyFWAuCij1qZtqCvBy7YSIa8tc9OJ7M0Rts83de-HLOmqfrBMiwPoDJQuHn9E2S-wN2STjWluoVsHrqi4EF-XqBey5Gh7Yj8"
+    }
+  ],
+  "index": {
+    "iv": "MGTNpbbJo1wHp9Gq",
+    "ciphertext": "6G5S6pLVNJ3mWJYFFsvB2T63inztFT82uiIvb1uB6Gno063l0fD7Gl07jsF9e5wtxO_T-BjDy3eGwadsyqmnbMaZbhUtJzer5GEf8BfcRp9yZ21A9xYd3r5URuFtR4Wr5_w2Q24RzdZ1ZyJRl9fOrcXa3FQJT-KPTt4HEBq9gtON2FcOCGGw5yDBSpBXFUsp1jt0ezBqo56JITYw5MOtaUScELPjVmfARupwSYlx_dmyjHABKLTPkzdg_xZb-S4Y6br1vA7P-UtfBIF1vWpCQ0lBthw_W4p6qAceWSzOwPBmfSfF8DSOPTP6MPbGQcAZfSibDy-hynBtK0mSaPdIATU7dTUvNY3g1CekREM-WQCXoDpfj6-ZOC1-tE3vrSyJ0dP9ClyUVp5WOfZjOa5DVBI6D5qmVtaapUQ_wlM1AlcloIbJUJR0LoUrNcKkpz3Lae6X6pFLkwVzZy78L4fTqAAl4WobmhlEgZ-ejFOaokPaQjgnjTmALD1OE9wOan_C_AKmgFWTgbuSbRHOpMAhtcAeh_nxdevgCuCpy_m16H9H27kFsa3Pe3LzZKajqvvOKoE1wkDZSFXBk90kDB3YEhE7vfqCqIm1OttuH7Kf7pSRPzNH2nkRxjxiwINoAjMobtt-zTT57AMDlkPcVhbVXPL3-RNMbqHBZkTMU1Mh7jMngTvxwh8tO2vQrLs46nqTT54WYzk"
+  }
+}

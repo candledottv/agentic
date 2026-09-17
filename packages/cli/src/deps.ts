@@ -70,6 +70,25 @@ export interface Deps {
    * `--key-file` is given). The real implementation needs a TTY and throws without one, which is
    * the signal to use `--key-file` in scripts. */
   promptSecret: (promptText: string) => Promise<string>
+  /**
+   * Reads a VISIBLE line (Ember Phase 2, BE-136). The vault's ceremonies ask the operator to type
+   * things back that are not secrets and must be readable as they are typed: a destination's last
+   * six characters, an acknowledgement word, three words of a phrase already on the screen. Echoing
+   * those is the point -- a hidden prompt for a value the operator is copying off their own screen
+   * is how a confirmation becomes a coin flip.
+   *
+   * Separate from `promptSecret` rather than a flag on it so that "is this input echoed?" is
+   * decided by which function a command calls, and a test's fake for one is never silently reused
+   * for the other.
+   */
+  promptLine: (promptText: string) => Promise<string>
+  /**
+   * Whether stdin and stdout are terminals (Ember Phase 2, BE-136). Injected rather than read from
+   * `process` at the call site because the refusals that depend on it are the point of two tests:
+   * the phrase ceremony must refuse BEFORE it renders anything when either end is not a TTY (T54),
+   * and every vault command that collects a secret refuses without one rather than falling back.
+   */
+  isTTY: { stdin: boolean; stdout: boolean }
   /** This process's executable. A compiled binary reports itself; node or bun report the runtime.
    * Injected so update's install-method detection is testable without running a real binary. */
   execPath: string

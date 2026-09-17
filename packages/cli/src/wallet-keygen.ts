@@ -1,5 +1,8 @@
 /**
- * Key generation for `wallets generate`.
+ * Key generation for `candle tee new`.
+ *
+ * It was written for `wallets generate`, which AD-3 removed in CLI 0.10.0 (Ember Phase 2); the TEE
+ * wallet path is the remaining caller, and the output forms below are still exactly what it needs.
  *
  * Deliberately NOT added to wallet-import.ts: that file is a byte-identical vendored copy of the
  * SDK's module of the same name, and wallet-import.drift.test.ts fails the build if it diverges.

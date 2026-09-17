@@ -332,6 +332,15 @@ export interface SolanaRpc {
   getSignatureStatus(signature: string): Promise<{ confirmationStatus: string | null; err: unknown } | null>
   /** Whether a transaction built on this blockhash can still land (finalized commitment). */
   isBlockhashValid(blockhash: string): Promise<boolean>
+  /**
+   * Whether this address has ever signed or been touched by a confirmed transaction (Ember Phase 2,
+   * BE-136, CC-11). Read-only, and used by exactly one caller: `vault restore --phrase`'s gap scan,
+   * which stops after twenty consecutive indices with no lamports, no token account and no
+   * signature history. A balance alone is not enough there -- an address that received and then
+   * sent everything has a zero balance and a history, and treating it as unused would end the scan
+   * one index early.
+   */
+  hasSignatureHistory(address: string): Promise<boolean>
 }
 
 /**
@@ -405,6 +414,10 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch): SolanaRpc {
         [[signature], { searchTransactionHistory: true }],
       )
       return r.value[0] ?? null
+    },
+    async hasSignatureHistory(address) {
+      const r = await call<Array<unknown>>("getSignaturesForAddress", [address, { limit: 1 }])
+      return Array.isArray(r) && r.length > 0
     },
     async isBlockhashValid(blockhash) {
       const r = await call<{ value?: unknown }>("isBlockhashValid", [blockhash, { commitment: "finalized" }])
