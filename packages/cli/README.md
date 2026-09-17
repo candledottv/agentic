@@ -57,6 +57,7 @@ node packages/cli/dist/index.js auth login
 | `candle keys create [--scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily\|weekly\|monthly\|never]]` | Creates a new API key and prints the plaintext exactly once, with the same optional name, expiration, and USD transaction limit the portal's create form takes. Stored locally only if the CLI does not already hold a working key. |
 | `candle keys revoke <prefix>` | Revokes an API key by prefix. Revoking the CLI's own stored key also clears it locally. |
 | `candle wallets` | Shows the account's embedded (launch) wallets and any linked wallets, using the API key, with a `Signer` column saying whether this machine holds each linked wallet's signing key. |
+| `candle tee new\|enable\|fund\|status\|disable\|sweep` | A dedicated, capped TEE wallet for one agent: the CLI generates the key and seals it locally in `tee-wallets.enc`, `enable` delegates it to this profile's API key with a pinned sweep vault, `fund` prints what your vault signs, and `disable` then `sweep` stop the agent and move everything back to the vault, signed locally. Solana only. See [TEE wallets](https://docs.candle.tv/developers/cli#tee-wallets). |
 | `candle profile list` | Lists profiles on this machine, with cached accounts. |
 | `candle profile add <name> --api-url <url>` | Creates a profile before authenticating it. |
 | `candle profile use <name>` | Makes a profile the active one. |
@@ -117,7 +118,10 @@ transparency log: [Verify a Candle release](https://docs.candle.tv/developers/ve
 For agents and scripts, `--json` guarantees: **stdout carries exactly one JSON value** -- the
 result on success, or a failure envelope -- and stderr carries diagnostics only. Exit codes:
 `0` success, `1` failure (the envelope says why), `2` usage error (the arguments themselves were
-wrong; nothing ran).
+wrong; nothing ran), `3` not yet verified (the command did its part, but the outcome it exists to
+guarantee is unconfirmed: a wallet stop whose remote enforcement is still pending, a TEE wallet
+enabled without verified signing authority, or a sweep that left a residual). Treat `3` as not
+done: follow the printed next step, usually re-running the same command.
 
 The failure envelope is stable:
 
