@@ -297,18 +297,19 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
     return registered[name] ?? ""
   }
 
-  test("the feed says a row it returns may have no Candle market", () => {
+  test("the feed documents external discovery flags and drain as signal not block", () => {
     const d = describeOf("candle_get_feed")
-    expect(d).toContain("MARKET_NOT_FOUND")
+    expect(d).toContain("organic0LiveOk")
     // Case-insensitive: the copy capitalises WIDER for emphasis, and the assertion is about the
     // claim being present, not about how it is typeset.
     expect(d.toLowerCase()).toContain("wider market")
+    expect(d).toContain("liquidityDrawdownBps")
   })
 
-  test("get_market explains MARKET_NOT_FOUND as a boundary rather than a fault", () => {
+  test("get_market clarifies MARKET_NOT_FOUND is not untradeable when jupiterOk", () => {
     const d = describeOf("candle_get_market")
-    expect(d).toContain("coverage boundary")
-    expect(d.toLowerCase()).toContain("not a reason to retry")
+    expect(d).toContain("error.discovery")
+    expect(d.toLowerCase()).toContain("not untradeable")
   })
 
   test("forensics refuses to let MARKET_NOT_FOUND read as clean", () => {

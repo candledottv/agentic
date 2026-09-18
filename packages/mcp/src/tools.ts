@@ -616,10 +616,10 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       description:
         "Read the current market state for a token: lifecycle, pool address, whether buys are " +
         "open. Reads only; moves nothing. No key needed.\n\n" +
-        "COVERAGE: this answers for tokens that have a CANDLE market. candle_get_feed indexes " +
-        "the wider market too (pump.fun, pons.family), so a mint that feed just returned can " +
-        "still come back MARKET_NOT_FOUND here. That is a coverage boundary, not a fault and " +
-        "not a reason to retry or re-authenticate -- say Candle has no market for it and move on.",
+        "COVERAGE: answers for Candle-launched markets AND Jupiter-indexed externals the feed " +
+        "knows (external: true, jupiterOk). MARKET_NOT_FOUND means no Candle-native tokens row — " +
+        "not unindexed, not untradeable. Read error.discovery (indexed, jupiterOk, chain, note); " +
+        "a common case is chain mismatch (feed row on solana, you asked hood).",
       inputSchema: getMarketShape,
     },
     async (args) => callAndRelay("candle_get_market", args, cfg),
@@ -643,10 +643,11 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       description:
         "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip. Reads " +
         "only; moves nothing. No key needed. Start here when nobody has named a token.\n\n" +
-        "This indexes the WIDER market, not just Candle's own launches, so rows carry a " +
-        "`launchpad` (pump.fun, pons.family, ...). A row appearing here does NOT mean Candle " +
-        "has a market for it: candle_get_market and candle_token_forensics can legitimately " +
-        "answer MARKET_NOT_FOUND for a mint this returned.\n\n" +
+        "This indexes the WIDER market, not just Candle's own launches. Rows carry launchpad and " +
+        "discovery flags (jupiterOk, externalTradeable, paperDiscoveryOk, organic0LiveOk). " +
+        "candle_get_market resolves Jupiter-indexed rows; do not hard-skip organicScore=0 on live " +
+        "when organic0LiveOk is true. liquidityDrawdownBps is a signal only — nothing here blocks " +
+        "resolve or trade on drain; filter with where if you want to avoid draining pools.\n\n" +
         "Filter, sort and pick fields SERVER-SIDE rather than reading the whole feed: an " +
         "unfiltered response is around 135KB and will not fit in a tool result. See `where`, " +
         "`sort` and `fields`.\n\n" +

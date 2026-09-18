@@ -50,10 +50,14 @@ START HERE — five tools need NO credential. Call these first to confirm the se
 
 COVERAGE — read this before you treat an error as a broken server.
 candle_get_feed indexes the wider market (pump.fun, pons.family and other external launchpads).
-Feed rows carry jupiterOk / externalTradeable / paperDiscoveryOk on external Solana mints; use
-discovery=paper on candle_get_feed when rehearsing and do NOT hard-skip organicScore=0 there.
-candle_get_market and candle_resolve_token now also answer for Jupiter-indexed external mints
-the feed knows (or Solana mints Jupiter can name) with external: true and jupiterOk: true.
+Feed rows carry jupiterOk / externalTradeable / paperDiscoveryOk / organic0LiveOk on external
+Solana mints. Use discovery=paper on candle_get_feed when rehearsing; on live screens do NOT
+hard-skip organicScore=0 when organic0LiveOk is true (visible m5 momentum). Hard-skip organic0
+only when organic0LiveOk is false.
+candle_get_market and candle_resolve_token answer for Jupiter-indexed external mints the feed
+knows (or Solana mints Jupiter can name) with external: true and jupiterOk: true. MARKET_NOT_FOUND
+there means no Candle-native market row — read error.discovery before treating 404 as skip; it is
+not untradeable when jupiterOk is true.
 candle_token_forensics also answers for Solana tokens the feed already knows, with a partial
 report: on-chain developer (never a launchpad shared authority), went-to-zero record, holder
 concentration, same-funder insiders and cluster. Deploy-window stays unavailable without a
