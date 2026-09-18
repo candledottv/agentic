@@ -224,6 +224,12 @@ async function readMarket(mint, cfg, doFetch, extra) {
     return { status: res.status, err: relayRead(text, extra) };
   return { market: JSON.parse(text).market ?? {} };
 }
+function isPaperFlag(value) {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+function heldPaperPosition(positions, mint) {
+  return positions.find((p) => p.mint === mint && p.amountRaw !== "0");
+}
 async function readPaperInventory(cfg, doFetch, extra) {
   const res = await doFetch(`${base(cfg)}/api/v1/trade/agent/paper/inventory`, {
     method: "GET",
@@ -248,7 +254,8 @@ async function executeTrade(args, cfg, doFetch) {
     return errText("percent is only valid on sells; buys take a quote-asset amount", { clientTradeId });
   }
   let amountRaw;
-  let resolved;
+  let resolved = {};
+  let paper = isPaperFlag(args.paper);
   try {
     if (args.side === "buy") {
       const amount = args.amount;
@@ -281,15 +288,20 @@ async function executeTrade(args, cfg, doFetch) {
           return errText(`could not resolve decimals for mint ${args.mint}; pass a raw-ready amount via the SDK instead`, { clientTradeId });
         }
         decimals = read.market.decimals;
-      } else if (read.status === 404 && args.paper === true) {
+      } else if (read.status === 404) {
         const inventory = await readPaperInventory(cfg, doFetch, { clientTradeId });
-        if ("err" in inventory)
-          return inventory.err;
-        const held = inventory.positions.find((p) => p.mint === args.mint);
+        if ("err" in inventory) {
+          return paper ? inventory.err : read.err;
+        }
+        const held = heldPaperPosition(inventory.positions, args.mint);
         if (typeof held?.tokenDecimals !== "number") {
-          return errText(`could not resolve decimals for mint ${args.mint}; no Candle market and no paper position with a known scale. Buy it in paper first, or pass a raw amount via the SDK`, { clientTradeId });
+          if (paper) {
+            return errText(`could not resolve decimals for mint ${args.mint}; no Candle market and no paper position with a known scale. Buy it in paper first, or pass a raw amount via the SDK`, { clientTradeId });
+          }
+          return read.err;
         }
         decimals = held.tokenDecimals;
+        paper = true;
       } else {
         return read.err;
       }
@@ -298,7 +310,7 @@ async function executeTrade(args, cfg, doFetch) {
         return converted.err;
       amountRaw = converted.raw;
       resolved = { amountDecimal: args.amount, decimals, amountRaw };
-    } else if (args.paper === true) {
+    } else if (paper) {
       resolved = { percent: args.percent };
     } else {
       const percent = args.percent;
@@ -312,23 +324,37 @@ async function executeTrade(args, cfg, doFetch) {
       const walletsBody = JSON.parse(walletsText);
       const chain = chainForMint(args.mint);
       const address = chain === "hood" ? walletsBody.wallets?.evm?.address : walletsBody.wallets?.solana?.address;
+      let walletEmpty;
       if (!address) {
-        return errText(`percent sells need an embedded ${chain === "hood" ? "EVM" : "Solana"} wallet, and this account has none`, { clientTradeId });
+        walletEmpty = errText(`percent sells need an embedded ${chain === "hood" ? "EVM" : "Solana"} wallet, and this account has none`, { clientTradeId });
+      } else {
+        const balRes = await doFetch(`${base(cfg)}/api/v1/tokens/${encodeURIComponent(args.mint)}/balance/${encodeURIComponent(address)}`, {
+          method: "GET",
+          headers: headers()
+        });
+        const balText = await balRes.text();
+        if (!balRes.ok)
+          return relayRead(balText, { clientTradeId });
+        const balBody = JSON.parse(balText);
+        const balance = balBody.payload?.balance;
+        if (balance) {
+          amountRaw = percentOfBalance(balance, percent);
+          resolved = { percent, balanceRaw: balance, amountRaw };
+        } else {
+          walletEmpty = errText(`the embedded wallet ${address} holds no ${args.mint}; nothing to sell`, {
+            clientTradeId
+          });
+        }
       }
-      const balRes = await doFetch(`${base(cfg)}/api/v1/tokens/${encodeURIComponent(args.mint)}/balance/${encodeURIComponent(address)}`, {
-        method: "GET",
-        headers: headers()
-      });
-      const balText = await balRes.text();
-      if (!balRes.ok)
-        return relayRead(balText, { clientTradeId });
-      const balBody = JSON.parse(balText);
-      const balance = balBody.payload?.balance;
-      if (!balance) {
-        return errText(`the embedded wallet ${address} holds no ${args.mint}; nothing to sell`, { clientTradeId });
+      if (walletEmpty) {
+        const inventory = await readPaperInventory(cfg, doFetch, { clientTradeId });
+        if (!("err" in inventory) && heldPaperPosition(inventory.positions, args.mint)) {
+          paper = true;
+          resolved = { percent };
+        } else {
+          return walletEmpty;
+        }
       }
-      amountRaw = percentOfBalance(balance, percent);
-      resolved = { percent, balanceRaw: balance, amountRaw };
     }
   } catch (err) {
     return errText(err instanceof Error ? err.message : String(err), { clientTradeId });
@@ -341,7 +367,7 @@ async function executeTrade(args, cfg, doFetch) {
     payer: { type: "main" },
     ...args.quoteAsset !== undefined ? { quoteAsset: args.quoteAsset } : {},
     ...args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {},
-    ...args.paper === true ? { paper: true } : {}
+    ...paper ? { paper: true } : {}
   }, doFetch);
   if ("thrown" in posted)
     return transportError("clientTradeId", clientTradeId, posted.thrown);
@@ -779,7 +805,7 @@ var tradeShape = {
   quoteAsset: z.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' + "to an arbitrary mint Candle never launched (Pro/Max) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
   maxSlippageBps: z.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
   clientTradeId: z.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade."),
-  paper: z.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost.")
+  paper: z.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, z.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost. " + "A sell of a mint this key already paper-bought also closes that paper book when the " + "live wallet is empty, even if this flag is omitted."))
 };
 var { buyAmount: _rawBuyAmount, ...seedableLaunchShape } = launchTokenShape;
 var launchAndSeedShape = {
@@ -938,7 +964,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 
 ` + "Arguments: `mint` and `side` are required. Amounts are DECIMAL, never raw base units " + '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' + `position.
 
-` + "Pass `paper: true` to rehearse: every admission rule runs and the quote is recorded, but " + "nothing broadcasts and no funds move. A paper buy credits this key's paper inventory, " + "including for external Solana mints routed through Jupiter, so a later paper sell by " + "amount or percent can close that position without MARKET_NOT_FOUND. Do this before the " + "first live trade of a new strategy, and whenever you are unsure a trade would be " + `admitted at all.
+` + "Pass `paper: true` to rehearse: every admission rule runs and the quote is recorded, but " + "nothing broadcasts and no funds move. A paper buy credits this key's paper inventory, " + "including for external Solana mints routed through Jupiter. A later sell by amount or " + "percent closes that book without reading the live wallet and without MARKET_NOT_FOUND " + "-- including when `paper` is omitted on the exit, as long as the paper position exists. " + "Do this before the first live trade of a new strategy, and whenever you are unsure a " + `trade would be admitted at all.
 
 ` + `After the call:
 ` + "- A timeout is not a failure. Retry with the SAME clientTradeId from the result -- it " + `coalesces the duplicate. A NEW id is a SECOND trade, and that is how you double-spend.

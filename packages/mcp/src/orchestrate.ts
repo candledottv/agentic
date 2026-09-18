@@ -196,6 +196,22 @@ interface PaperInventoryPosition {
 }
 
 /**
+ * MCP hosts and models pass `paper` as a boolean, the string "true", or 1. Only `=== true`
+ * treated those last two as live, so a paper sell then read the embedded wallet (always empty
+ * after a paper buy) and returned MCP_VALIDATION instead of closing the paper book.
+ */
+export function isPaperFlag(value: unknown): boolean {
+  return value === true || value === "true" || value === 1 || value === "1"
+}
+
+function heldPaperPosition(
+  positions: readonly PaperInventoryPosition[],
+  mint: string,
+): PaperInventoryPosition | undefined {
+  return positions.find((p) => p.mint === mint && p.amountRaw !== "0")
+}
+
+/**
  * GET /api/v1/trade/agent/paper/inventory -- this key's paper book. Used to convert a paper
  * amount sell of an external mint (no Candle market, so no decimals on the market read) and
  * documented so an agent can inspect what a later percent sell will close.
@@ -224,7 +240,7 @@ export interface TradeArgs {
   maxSlippageBps?: number
   clientTradeId?: string
   /** Rehearse: run every admission rule, record the quote, broadcast nothing. */
-  paper?: boolean
+  paper?: unknown
 }
 
 export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch: FetchLike): Promise<ToolText> {
@@ -241,7 +257,13 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
     return errText("percent is only valid on sells; buys take a quote-asset amount", { clientTradeId })
   }
   let amountRaw: string | undefined
-  let resolved: Record<string, unknown>
+  // Assigned on every path that reaches the /build POST. Initialized so tsc (target-aware
+  // definite-assignment) does not treat the wallet-empty → paper-inventory branch as unassigned.
+  let resolved: Record<string, unknown> = {}
+  // Set when the caller asked for paper, or when a sell that looked live has no on-chain
+  // holding but this key does have a paper position for the mint (Cented / SOLCAT: the sell
+  // omitted `paper: true` after a paper buy, then MCP checked the wallet and 404'd the market).
+  let paper = isPaperFlag(args.paper)
   try {
     if (args.side === "buy") {
       const amount = args.amount as string
@@ -289,20 +311,26 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
           )
         }
         decimals = read.market.decimals
-      } else if (read.status === 404 && args.paper === true) {
-        // No Candle market: the live path still 404s (unchanged). Paper can convert from the
-        // position the matching paper buy just credited, which is how an external mint (pump.fun
-        // / Jupiter) exits without MARKET_NOT_FOUND.
+      } else if (read.status === 404) {
+        // No Candle market. Live used to stop here (MARKET_NOT_FOUND). A paper buy of a
+        // Jupiter / pump.fun mint leaves a position on the paper book, so consult that
+        // before giving up -- including when the caller forgot `paper: true` on the exit.
         const inventory = await readPaperInventory(cfg, doFetch, { clientTradeId })
-        if ("err" in inventory) return inventory.err
-        const held = inventory.positions.find((p) => p.mint === args.mint)
+        if ("err" in inventory) {
+          return paper ? inventory.err : read.err
+        }
+        const held = heldPaperPosition(inventory.positions, args.mint)
         if (typeof held?.tokenDecimals !== "number") {
-          return errText(
-            `could not resolve decimals for mint ${args.mint}; no Candle market and no paper position with a known scale. Buy it in paper first, or pass a raw amount via the SDK`,
-            { clientTradeId },
-          )
+          if (paper) {
+            return errText(
+              `could not resolve decimals for mint ${args.mint}; no Candle market and no paper position with a known scale. Buy it in paper first, or pass a raw amount via the SDK`,
+              { clientTradeId },
+            )
+          }
+          return read.err
         }
         decimals = held.tokenDecimals
+        paper = true
       } else {
         return read.err
       }
@@ -310,7 +338,7 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       if ("err" in converted) return converted.err
       amountRaw = converted.raw
       resolved = { amountDecimal: args.amount, decimals, amountRaw }
-    } else if (args.paper === true) {
+    } else if (paper) {
       // Paper percent: the API sizes against paper inventory. Do not read the live wallet --
       // paper never credits it, so that path always looks empty after a paper buy.
       resolved = { percent: args.percent }
@@ -330,28 +358,43 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       // docs/reference/chain-vocabulary.md.
       const chain = chainForMint(args.mint)
       const address = chain === "hood" ? walletsBody.wallets?.evm?.address : walletsBody.wallets?.solana?.address
+      let walletEmpty: ToolText | undefined
       if (!address) {
-        return errText(
+        walletEmpty = errText(
           `percent sells need an embedded ${chain === "hood" ? "EVM" : "Solana"} wallet, and this account has none`,
           { clientTradeId },
         )
+      } else {
+        const balRes = await doFetch(
+          `${base(cfg)}/api/v1/tokens/${encodeURIComponent(args.mint)}/balance/${encodeURIComponent(address)}`,
+          {
+            method: "GET",
+            headers: headers(),
+          },
+        )
+        const balText = await balRes.text()
+        if (!balRes.ok) return relayRead(balText, { clientTradeId })
+        const balBody = JSON.parse(balText) as { payload?: { balance: string } | null }
+        const balance = balBody.payload?.balance
+        if (balance) {
+          amountRaw = percentOfBalance(balance, percent)
+          resolved = { percent, balanceRaw: balance, amountRaw }
+        } else {
+          walletEmpty = errText(`the embedded wallet ${address} holds no ${args.mint}; nothing to sell`, {
+            clientTradeId,
+          })
+        }
       }
-      const balRes = await doFetch(
-        `${base(cfg)}/api/v1/tokens/${encodeURIComponent(args.mint)}/balance/${encodeURIComponent(address)}`,
-        {
-          method: "GET",
-          headers: headers(),
-        },
-      )
-      const balText = await balRes.text()
-      if (!balRes.ok) return relayRead(balText, { clientTradeId })
-      const balBody = JSON.parse(balText) as { payload?: { balance: string } | null }
-      const balance = balBody.payload?.balance
-      if (!balance) {
-        return errText(`the embedded wallet ${address} holds no ${args.mint}; nothing to sell`, { clientTradeId })
+      if (walletEmpty) {
+        // On-chain is empty (the paper-buy case). Close the paper book instead of blocking.
+        const inventory = await readPaperInventory(cfg, doFetch, { clientTradeId })
+        if (!("err" in inventory) && heldPaperPosition(inventory.positions, args.mint)) {
+          paper = true
+          resolved = { percent }
+        } else {
+          return walletEmpty
+        }
       }
-      amountRaw = percentOfBalance(balance, percent)
-      resolved = { percent, balanceRaw: balance, amountRaw }
     }
   } catch (err) {
     return errText(err instanceof Error ? err.message : String(err), { clientTradeId })
@@ -374,7 +417,7 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       // would be identical in effect but would put the word "paper" in the body of every live
       // trade, which is exactly the string someone greps for when working out whether real money
       // moved.
-      ...(args.paper === true ? { paper: true } : {}),
+      ...(paper ? { paper: true } : {}),
     },
     doFetch,
   )

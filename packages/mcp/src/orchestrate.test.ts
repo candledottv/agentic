@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { executeLaunchAndSeed, executeSweep, executeTrade, executionStatus, type FetchLike } from "./orchestrate"
+import {
+  executeLaunchAndSeed,
+  executeSweep,
+  executeTrade,
+  executionStatus,
+  type FetchLike,
+  isPaperFlag,
+} from "./orchestrate"
 import { __resetUpdateNoticeForTest, noteVersionHeaders } from "./update-notice"
 
 const CFG = { apiUrl: "https://api.test", apiKey: "cndl_live_k" }
@@ -301,6 +308,9 @@ describe("executeTrade: paper mode", () => {
           error: { code: "MARKET_NOT_FOUND", message: "No solana market found for mint ExtMint" },
         },
       },
+      "https://api.test/api/v1/trade/agent/paper/inventory": {
+        body: { success: true, paper: true, positions: [] },
+      },
     })
     const result = await executeTrade(
       { mint: "ExtMint", side: "sell", amount: "5", clientTradeId: "live-404" },
@@ -309,7 +319,95 @@ describe("executeTrade: paper mode", () => {
     )
     expect(result.isError).toBe(true)
     expect(JSON.parse(result.text).api.error.code).toBe("MARKET_NOT_FOUND")
+    expect(calls.length).toBe(2)
+  })
+
+  test('paper: "true" (string) is treated as paper on a percent sell — never reads the wallet', async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/trade/agent/build": { body: { success: true, paper: true } },
+    })
+    const result = await executeTrade(
+      { mint: "ExtMint", side: "sell", percent: 100, clientTradeId: "p-str", paper: "true" },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).not.toBe(true)
     expect(calls.length).toBe(1)
+    expect(JSON.parse(String(calls[0]?.init?.body))).toMatchObject({ percent: 100, paper: true })
+  })
+
+  test("a percent sell with no paper flag still closes paper inventory when the wallet is empty", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/agent/wallets/embedded": {
+        body: { success: true, wallets: { solana: { address: "Hba1Empty", delegated: true }, evm: null } },
+      },
+      "https://api.test/api/v1/tokens/ExtMint/balance/Hba1Empty": { body: { payload: null } },
+      "https://api.test/api/v1/trade/agent/paper/inventory": {
+        body: {
+          success: true,
+          paper: true,
+          positions: [{ mint: "ExtMint", amountRaw: "2286574413", tokenDecimals: 6 }],
+        },
+      },
+      "https://api.test/api/v1/trade/agent/build": { body: { success: true, paper: true } },
+    })
+    const result = await executeTrade(
+      { mint: "ExtMint", side: "sell", percent: 100, clientTradeId: "p-infer-pct" },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).not.toBe(true)
+    expect(JSON.parse(result.text).error).toBeUndefined()
+    const build = calls.find((c) => c.url.endsWith("/trade/agent/build"))
+    expect(JSON.parse(String(build?.init?.body))).toMatchObject({
+      side: "sell",
+      percent: 100,
+      paper: true,
+      mint: "ExtMint",
+    })
+  })
+
+  test("an amount sell of an external mint with no paper flag uses paper inventory instead of MARKET_NOT_FOUND", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/markets/solana/ExtMint": {
+        status: 404,
+        body: {
+          success: false,
+          error: { code: "MARKET_NOT_FOUND", message: "No solana market found for mint ExtMint" },
+        },
+      },
+      "https://api.test/api/v1/trade/agent/paper/inventory": {
+        body: {
+          success: true,
+          paper: true,
+          positions: [{ mint: "ExtMint", amountRaw: "2286574413", tokenDecimals: 6 }],
+        },
+      },
+      "https://api.test/api/v1/trade/agent/build": { body: { success: true, paper: true } },
+    })
+    const result = await executeTrade(
+      { mint: "ExtMint", side: "sell", amount: "2286.574413", clientTradeId: "p-infer-amt" },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).not.toBe(true)
+    expect(JSON.parse(String(calls[2]?.init?.body))).toMatchObject({
+      side: "sell",
+      amountRaw: "2286574413",
+      paper: true,
+    })
+  })
+})
+
+describe("isPaperFlag", () => {
+  test("accepts boolean true, the string true, and 1", () => {
+    expect(isPaperFlag(true)).toBe(true)
+    expect(isPaperFlag("true")).toBe(true)
+    expect(isPaperFlag(1)).toBe(true)
+    expect(isPaperFlag("1")).toBe(true)
+    expect(isPaperFlag(false)).toBe(false)
+    expect(isPaperFlag("false")).toBe(false)
+    expect(isPaperFlag(undefined)).toBe(false)
   })
 })
 
@@ -363,6 +461,9 @@ describe("executeTrade: sells", () => {
       "https://api.test/api/v1/agent/wallets/embedded": {
         body: { success: true, wallets: { solana: null, evm: null } },
       },
+      "https://api.test/api/v1/trade/agent/paper/inventory": {
+        body: { success: true, paper: true, positions: [] },
+      },
     })
     const result = await executeTrade(
       { mint: "M1nt", side: "sell", percent: 50, clientTradeId: "t-no-wallet" },
@@ -371,7 +472,7 @@ describe("executeTrade: sells", () => {
     )
     expect(result.isError).toBe(true)
     expect(result.text).toMatch(/embedded/i)
-    expect(calls.length).toBe(1)
+    expect(calls.length).toBe(2)
     expect(JSON.parse(result.text).clientTradeId).toBe("t-no-wallet")
   })
 
@@ -381,6 +482,9 @@ describe("executeTrade: sells", () => {
         body: { success: true, wallets: { solana: { address: "Emb1", delegated: true }, evm: null } },
       },
       "https://api.test/api/v1/tokens/M1nt/balance/Emb1": { body: { payload: null } },
+      "https://api.test/api/v1/trade/agent/paper/inventory": {
+        body: { success: true, paper: true, positions: [] },
+      },
     })
     const result = await executeTrade(
       { mint: "M1nt", side: "sell", percent: 50, clientTradeId: "t-zero-bal" },
@@ -388,7 +492,7 @@ describe("executeTrade: sells", () => {
       fetch,
     )
     expect(result.isError).toBe(true)
-    expect(calls.length).toBe(2)
+    expect(calls.length).toBe(3)
     expect(JSON.parse(result.text).clientTradeId).toBe("t-zero-bal")
   })
 
@@ -421,6 +525,9 @@ describe("executeTrade: sells", () => {
       "https://api.test/api/v1/agent/wallets/embedded": {
         body: { success: true, wallets: { solana: { address: "Emb1", delegated: true }, evm: null } },
       },
+      "https://api.test/api/v1/trade/agent/paper/inventory": {
+        body: { success: true, paper: true, positions: [] },
+      },
     })
     const result = await executeTrade(
       { mint: "0xAbC123", side: "sell", percent: 50, clientTradeId: "t-hood-no-evm" },
@@ -429,7 +536,7 @@ describe("executeTrade: sells", () => {
     )
     expect(result.isError).toBe(true)
     expect(result.text).toMatch(/EVM/)
-    expect(calls.length).toBe(1)
+    expect(calls.length).toBe(2)
   })
 
   test("a non-ok wallet read is relayed verbatim, not reported as a missing wallet", async () => {

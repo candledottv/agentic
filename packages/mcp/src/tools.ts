@@ -502,16 +502,26 @@ const tradeShape = {
       "Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " +
         "SAME id is safe (idempotent replay); a new id is a SECOND trade.",
     ),
-  paper: z
-    .boolean()
-    .optional()
-    .describe(
-      "Rehearse instead of trading. The request passes every admission rule a live trade passes " +
-        "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " +
-        "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " +
-        "before risking anything on it. A paper fill is optimistic by construction: it books the " +
-        "quoted price, so the gap between a paper arm and a live one IS the execution cost.",
-    ),
+  paper: z.preprocess(
+    (value) =>
+      value === "true" || value === 1 || value === "1"
+        ? true
+        : value === "false" || value === 0 || value === "0"
+          ? false
+          : value,
+    z
+      .boolean()
+      .optional()
+      .describe(
+        "Rehearse instead of trading. The request passes every admission rule a live trade passes " +
+          "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " +
+          "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " +
+          "before risking anything on it. A paper fill is optimistic by construction: it books the " +
+          "quoted price, so the gap between a paper arm and a live one IS the execution cost. " +
+          "A sell of a mint this key already paper-bought also closes that paper book when the " +
+          "live wallet is empty, even if this flag is omitted.",
+      ),
+  ),
 }
 
 // `buyAmount` (raw base units) is destructured out rather than spread in: this tool's one seed
@@ -874,10 +884,11 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "position.\n\n" +
         "Pass `paper: true` to rehearse: every admission rule runs and the quote is recorded, but " +
         "nothing broadcasts and no funds move. A paper buy credits this key's paper inventory, " +
-        "including for external Solana mints routed through Jupiter, so a later paper sell by " +
-        "amount or percent can close that position without MARKET_NOT_FOUND. Do this before the " +
-        "first live trade of a new strategy, and whenever you are unsure a trade would be " +
-        "admitted at all.\n\n" +
+        "including for external Solana mints routed through Jupiter. A later sell by amount or " +
+        "percent closes that book without reading the live wallet and without MARKET_NOT_FOUND " +
+        "-- including when `paper` is omitted on the exit, as long as the paper position exists. " +
+        "Do this before the first live trade of a new strategy, and whenever you are unsure a " +
+        "trade would be admitted at all.\n\n" +
         "After the call:\n" +
         "- A timeout is not a failure. Retry with the SAME clientTradeId from the result -- it " +
         "coalesces the duplicate. A NEW id is a SECOND trade, and that is how you double-spend.\n" +
