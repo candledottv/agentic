@@ -50,14 +50,17 @@ START HERE — five tools need NO credential. Call these first to confirm the se
 
 COVERAGE — read this before you treat an error as a broken server.
 candle_get_feed indexes the wider market (pump.fun, pons.family and other external launchpads).
-candle_get_market answers for tokens that have a CANDLE market. candle_token_forensics also
-answers for Solana tokens the feed already knows, with a partial report: on-chain developer
-(never a launchpad shared authority), went-to-zero record, holder concentration, same-funder
-insiders and cluster. Deploy-window stays unavailable without a Candle launch record. Hood
-tokens Candle did not launch, and unknown mints, still come back MARKET_NOT_FOUND. That is a
-coverage boundary, not a fault and not a reason to retry, re-auth, or tell the human the
-integration is down. Report MARKET_NOT_FOUND as "Candle has no market for this token, so I
-could not run forensics on it" and let the human decide.
+Feed rows carry jupiterOk / externalTradeable / paperDiscoveryOk on external Solana mints; use
+discovery=paper on candle_get_feed when rehearsing and do NOT hard-skip organicScore=0 there.
+candle_get_market and candle_resolve_token now also answer for Jupiter-indexed external mints
+the feed knows (or Solana mints Jupiter can name) with external: true and jupiterOk: true.
+candle_token_forensics also answers for Solana tokens the feed already knows, with a partial
+report: on-chain developer (never a launchpad shared authority), went-to-zero record, holder
+concentration, same-funder insiders and cluster. Deploy-window stays unavailable without a
+Candle launch record. Hood tokens Candle did not launch, and unknown mints, still come back
+MARKET_NOT_FOUND. That remaining gap is a coverage boundary, not a fault and not a reason to
+retry, re-auth, or tell the human the integration is down. Report MARKET_NOT_FOUND as "Candle
+has no market for this token, so I could not run forensics on it" and let the human decide.
 
 Never let a MARKET_NOT_FOUND stand in for a clean bill of health. The same rule governs the
 coverage note on every forensics measurement: "unavailable" is NOT "clean" — say so rather than
