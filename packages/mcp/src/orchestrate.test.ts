@@ -1003,3 +1003,30 @@ describe("executionStatus update notice", () => {
     __resetUpdateNoticeForTest()
   })
 })
+
+describe("paper mint matching", () => {
+  for (const [mint, heldMint] of [
+    ["0xabcdefabcdefabcdefabcdefabcdefabcdefabcd", "0xAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCdEfAbCd"],
+    ["  ExtMint  ", "ExtMint"],
+  ] as const) {
+    test(`matches canonical inventory for ${mint}`, async () => {
+      const { calls, fetch } = fakeFetch({
+        "https://api.test/api/v1/markets/": {
+          status: 404,
+          body: { success: false, error: { code: "MARKET_NOT_FOUND" } },
+        },
+        "https://api.test/api/v1/trade/agent/paper/inventory": {
+          body: { success: true, paper: true, positions: [{ mint: heldMint, amountRaw: "5000000", tokenDecimals: 6 }] },
+        },
+        "https://api.test/api/v1/trade/agent/build": { body: { success: true, paper: true } },
+      })
+      const result = await executeTrade(
+        { mint, side: "sell", amount: "5", clientTradeId: "canonical-paper", paper: true },
+        CFG,
+        fetch,
+      )
+      expect(result.isError).not.toBe(true)
+      expect(JSON.parse(String(calls.at(-1)?.init?.body))).toMatchObject({ amountRaw: "5000000", paper: true })
+    })
+  }
+})

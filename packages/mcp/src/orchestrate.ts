@@ -208,7 +208,12 @@ function heldPaperPosition(
   positions: readonly PaperInventoryPosition[],
   mint: string,
 ): PaperInventoryPosition | undefined {
-  return positions.find((p) => p.mint === mint && p.amountRaw !== "0")
+  // EVM checksum casing is not identity; Solana base58 is case-sensitive.
+  const key = (value: string) => {
+    const trimmed = value.trim()
+    return /^0x[0-9a-fA-F]{40}$/.test(trimmed) ? trimmed.toLowerCase() : trimmed
+  }
+  return positions.find((p) => key(p.mint) === key(mint) && p.amountRaw !== "0")
 }
 
 /**

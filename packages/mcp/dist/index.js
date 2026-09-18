@@ -228,7 +228,11 @@ function isPaperFlag(value) {
   return value === true || value === "true" || value === 1 || value === "1";
 }
 function heldPaperPosition(positions, mint) {
-  return positions.find((p) => p.mint === mint && p.amountRaw !== "0");
+  const key = (value) => {
+    const trimmed = value.trim();
+    return /^0x[0-9a-fA-F]{40}$/.test(trimmed) ? trimmed.toLowerCase() : trimmed;
+  };
+  return positions.find((p) => key(p.mint) === key(mint) && p.amountRaw !== "0");
 }
 async function readPaperInventory(cfg, doFetch, extra) {
   const res = await doFetch(`${base(cfg)}/api/v1/trade/agent/paper/inventory`, {
