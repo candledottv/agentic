@@ -10,6 +10,11 @@ export function assetName(platform) {
   return ["candle", platform].join("-")
 }
 
+/** The security key helper beside each binary (Ember Phase 2 PR E): one per target, same job. */
+export function helperName(platform) {
+  return ["candle-fido2", platform].join("-")
+}
+
 export function buildManifest(version, sha256sums, sizes) {
   const bySum = new Map(
     sha256sums
@@ -21,14 +26,20 @@ export function buildManifest(version, sha256sums, sizes) {
       }),
   )
   const assets = {}
+  const helpers = {}
   for (const platform of PLATFORMS) {
-    const name = assetName(platform)
-    const sha256 = bySum.get(name)
-    if (!sha256) throw new Error(`SHA256SUMS has no entry for ${name}`)
-    if (sizes[name] === undefined) throw new Error(`no size for ${name}`)
-    assets[platform] = { name, sha256, size: sizes[name] }
+    for (const [table, name] of [
+      [assets, assetName(platform)],
+      [helpers, helperName(platform)],
+    ]) {
+      const sha256 = bySum.get(name)
+      if (!sha256) throw new Error(`SHA256SUMS has no entry for ${name}`)
+      if (sizes[name] === undefined) throw new Error(`no size for ${name}`)
+      table[platform] = { name, sha256, size: sizes[name] }
+    }
   }
-  return { version, tag: `cli-v${version}`, assets }
+  // `assets` keeps its shape (the CLI's `update` and install.sh read it); `helpers` sits beside it.
+  return { version, tag: `cli-v${version}`, assets, helpers }
 }
 
 if (import.meta.main) {
@@ -38,7 +49,12 @@ if (import.meta.main) {
     process.exit(2)
   }
   const sums = readFileSync(join(dir, "SHA256SUMS"), "utf8")
-  const sizes = Object.fromEntries(PLATFORMS.map((p) => [assetName(p), statSync(join(dir, assetName(p))).size]))
+  const sizes = Object.fromEntries(
+    PLATFORMS.flatMap((p) => [
+      [assetName(p), statSync(join(dir, assetName(p))).size],
+      [helperName(p), statSync(join(dir, helperName(p))).size],
+    ]),
+  )
   writeFileSync(join(dir, "latest.json"), `${JSON.stringify(buildManifest(version, sums, sizes), null, 2)}\n`)
   console.log(`wrote ${join(dir, "latest.json")}`)
 }

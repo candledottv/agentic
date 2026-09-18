@@ -4,6 +4,9 @@ class Candle < Formula
   version "__VERSION__"
   license "MIT"
 
+  # The security key helper (candle-fido2) loads libfido2 at run time; Homebrew's is the one it finds.
+  depends_on "libfido2"
+
   on_macos do
     on_arm do
       url "https://github.com/candledottv/agentic/releases/download/cli-v__VERSION__/candle-__VERSION__-darwin-arm64.tar.gz"
@@ -28,9 +31,12 @@ class Candle < Formula
 
   def install
     bin.install "candle"
+    # Beside candle in the Cellar, which is where the CLI looks after resolving its own real path.
+    bin.install "candle-fido2"
   end
 
   test do
     assert_match version.to_s, shell_output("#{bin}/candle --version")
+    assert_match version.to_s, shell_output("#{bin}/candle-fido2 --version")
   end
 end

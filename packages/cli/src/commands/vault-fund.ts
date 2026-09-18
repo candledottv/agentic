@@ -109,12 +109,8 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
     displayTransferPlan(ctx, plan, feeQuote)
     await confirmLastSix(ctx, teeAddress, "the TEE wallet destination")
 
-    const typed = await ctx.deps.promptSecret(
-      `Vault passphrase to fund ${plan.amount} ${plan.asset} to ${teeAddress} (input hidden): `,
-    )
-    if (typed.trim() !== opened.passphrase) {
-      throw new VaultError("VAULT_UNLOCK_FAILED", "Passphrase did not match; nothing was signed.")
-    }
+    // The factor a second time before anything is signed (passphrase re-typed, or key re-touched).
+    await opened.confirm(`fund ${plan.amount} ${plan.asset} to ${teeAddress}`)
 
     const secret = await decryptKey(vault, fromEntry.id)
     try {

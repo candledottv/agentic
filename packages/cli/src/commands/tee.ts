@@ -613,7 +613,9 @@ export async function teeEnable(args: string[], ctx: CommandContext): Promise<nu
   let vault = vaultFlag
   if (vaultKey !== undefined) {
     const { assertColdVaultDestination } = await import("../vault/promote-support")
-    const { defaultVaultPath, readVaultRaw, unlockWithPassphrase, closeVault } = await import("../vault/store")
+    const { defaultVaultPath, readVaultRaw, closeVault } = await import("../vault/store")
+    const { unlockInteractively } = await import("./vault-support")
+    const { isVaultError } = await import("../vault/errors")
     const vaultPath = parsed.values["--keystore"] ?? defaultVaultPath(deps.env)
     const raw = await readVaultRaw(vaultPath)
     if (raw === null) {
@@ -624,8 +626,23 @@ export async function teeEnable(args: string[], ctx: CommandContext): Promise<nu
       )
       return 1
     }
-    const passphrase = (await deps.promptSecret("Vault passphrase (input hidden): ")).trim()
-    const opened = await unlockWithPassphrase(vaultPath, raw, passphrase)
+    // The shared factor-aware open (BE-140): `--factor` and `--device` apply here as on every
+    // vault command, so a security key names the destination and no passphrase is substituted.
+    // An older whole-file copy warns rather than refuses, as the tee commands always have.
+    let opened: import("../vault/store").UnlockedVault
+    try {
+      opened = (await unlockInteractively(ctx, vaultPath, raw, { acceptOlderCopy: true })).vault
+    } catch (error) {
+      if (isVaultError(error)) {
+        writeLocalFailure(
+          deps,
+          { code: error.code, message: error.message, ...(error.suggestion ? { suggestion: error.suggestion } : {}) },
+          json,
+        )
+        return error.exitCode
+      }
+      throw error
+    }
     try {
       const destination = assertColdVaultDestination(opened.index, vaultKey, {
         acceptUnknownExposure: parsed.booleans.has("--accept-unknown-exposure"),

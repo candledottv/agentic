@@ -4,8 +4,9 @@
  * `test-support.ts`'s fakes) and is what the bin entry at the bottom of this file calls with real
  * deps and `process.argv.slice(2)`.
  *
- * Global flags (`--api-url`, `--json`, `--help`, `--version`) are stripped out of `argv` wherever
- * they appear, so `candle keys list --json` and `candle --json keys list` behave identically. One
+ * Global flags (`--api-url`, `--json`, `--help`, `--version`, and the vault's `--factor` and
+ * `--device`) are stripped out of `argv` wherever they appear, so `candle keys list --json` and
+ * `candle --json keys list` behave identically. One
  * leading `candle` token is dropped too (bunx passes the bin's own name through as argv[0]; see
  * the comment at that line). The remaining tokens are the command path: `auth
  * <login|status|logout>`, `keys <list|create|revoke>`, `wallets`, `doctor`.
@@ -58,11 +59,15 @@ import { platformKey } from "./release"
 import { writeLocalFailure, writeUsageFailure } from "./render"
 import { promptHiddenSecret, promptVisibleLine, SECRET_REFS } from "./secret-store"
 import { maybeWriteUpdateNotice } from "./update-notice"
+import type { HelperRun } from "./vault/fido2"
 import { CLI_VERSION } from "./version"
 
 interface GlobalFlags {
   apiUrl?: string
   profile?: string
+  /** Ember Phase 2 (BE-140): which envelope a vault command unlocks with, and which security key. */
+  vaultFactor?: string
+  vaultDevice?: string
   json: boolean
   help: boolean
   version: boolean
@@ -88,6 +93,16 @@ function extractGlobalFlags(argv: string[]): { rest: string[]; flags: GlobalFlag
       if (value === undefined) return { error: "--profile requires a value" }
       flags.profile = value
     } else if (arg?.startsWith("--profile=")) flags.profile = arg.slice("--profile=".length)
+    else if (arg === "--factor") {
+      const value = argv[++i]
+      if (value === undefined) return { error: "--factor requires a value" }
+      flags.vaultFactor = value
+    } else if (arg?.startsWith("--factor=")) flags.vaultFactor = arg.slice("--factor=".length)
+    else if (arg === "--device") {
+      const value = argv[++i]
+      if (value === undefined) return { error: "--device requires a value" }
+      flags.vaultDevice = value
+    } else if (arg?.startsWith("--device=")) flags.vaultDevice = arg.slice("--device=".length)
     else if (arg !== undefined) rest.push(arg)
   }
   return { rest, flags }
@@ -121,7 +136,7 @@ Commands:
   vault restore --phrase [--count <n>] [--tee-count <k>]          Rebuild a vault from the recovery phrase
                 [--rpc-url <url>]
   vault reconcile-exposure                                        Re-read this account and add exposure; clears nothing
-  vault factor list | add passphrase | remove <id>                Manage the factors that open the vault
+  vault factor list | add passphrase|security-key | remove <id>   Manage the factors that open the vault
   vault backup --to <path> [--accept-shared-domain]               Copy the vault and verify the copy in full
   vault verify-backup <path>                                      Verify a copy in full (all eight steps)
   vault import-legacy --tee [--from <path>]                       Migrate tee-wallets.enc into the vault
@@ -155,6 +170,8 @@ Global options:
   --api-url <url>         Override the API base URL
   --profile <name>        Act as a named profile (see: candle auth login --profile)
   --no-verify-account     Skip the check that the stored key belongs to the profile's account
+  --factor <id|kind>      Vault commands: unlock with this envelope id, or "passphrase" or "security-key"
+  --device <id>           Vault commands: the security key to use, by the id vault factor list prints
   --json                  Machine-readable output
   --help, -h              Show this help
   --version, -v           Show the CLI version
@@ -425,6 +442,8 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
     profile,
     profileFlag: flags.profile,
     verifyAccount: !flags.noVerifyAccount,
+    vaultFactor: flags.vaultFactor,
+    vaultDevice: flags.vaultDevice,
   }
 
   // The strict account guard (guard.ts), run once here rather than inside each command: a command
@@ -546,6 +565,59 @@ function realOpenBrowser(url: string): void {
   }
 }
 
+/**
+ * Runs `candle-fido2` once (Ember Phase 2, BE-140). Three stdio pipes and nothing inherited, so the
+ * helper can never see the terminal: its one request, PIN included, is written to its stdin and
+ * the pipe is closed; its one response is read off stdout. Past `timeoutMs` it gets SIGTERM, then
+ * SIGKILL two seconds later, and the caller reports the signal as a cancellation with nothing
+ * derived. A process that cannot be started at all is reported as `spawnError` rather than thrown,
+ * so the vault code can turn it into `VAULT_HELPER_MISSING` with the install instruction.
+ */
+export function realSpawnHelper(path: string, requestLine: string, opts: { timeoutMs: number }): Promise<HelperRun> {
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(path, [], { stdio: ["pipe", "pipe", "pipe"] })
+    } catch (error) {
+      resolve({ stdout: "", stderr: "", exitCode: null, signal: null, spawnError: messageOf(error) })
+      return
+    }
+    const out: Buffer[] = []
+    const err: Buffer[] = []
+    child.stdout?.on("data", (chunk: Buffer) => out.push(chunk))
+    child.stderr?.on("data", (chunk: Buffer) => err.push(chunk))
+    let settled = false
+    const finish = (result: { exitCode: number | null; signal: string | null; spawnError?: string }) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve({ stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), ...result })
+    }
+    // `close` (every pipe drained) is the normal end. After the timeout the process is told to
+    // stop, and if its pipes are still held open two seconds later (a grandchild it left behind),
+    // the run is settled on what `exit` reported rather than waiting on a pipe nothing will close.
+    let exited: { exitCode: number | null; signal: string | null } | undefined
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM")
+      setTimeout(() => {
+        child.kill("SIGKILL")
+        finish(exited ?? { exitCode: null, signal: "SIGTERM" })
+      }, 2_000).unref()
+    }, opts.timeoutMs)
+    child.on("error", (error) => finish({ exitCode: null, signal: null, spawnError: messageOf(error) }))
+    child.on("exit", (code, signal) => {
+      exited = { exitCode: code, signal }
+    })
+    child.on("close", (code, signal) => finish({ exitCode: code, signal }))
+    child.stdin?.on("error", () => {})
+    child.stdin?.end(`${requestLine}\n`)
+  })
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 /** The real `Deps` the bin entry runs with. Exported for index.test.ts: the update path's own
  * guarantees live in these implementations rather than in any command (the verifier seam stays
  * unset; `writeBytes` is 0755 and refuses an existing path), and a suite built entirely on fakes
@@ -596,7 +668,10 @@ export async function buildRealDeps(): Promise<Deps> {
     execPath: process.execPath,
     argv1: process.argv[1] ?? "",
     platformKey: platformKey(process.platform, process.arch),
+    platform: process.platform,
+    arch: process.arch,
     realpath: (path) => realpath(path),
+    spawnHelper: realSpawnHelper,
     // `flag: "wx"` refuses an existing path instead of truncating it. The only caller is
     // `update`, writing a fresh random temp name beside the binary: a path that already exists
     // there is either a collision or somebody else's file, and neither is ours to overwrite and

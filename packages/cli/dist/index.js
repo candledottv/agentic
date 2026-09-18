@@ -47,6 +47,197 @@ var __export = (target, all) => {
 var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
+// src/render.ts
+function formatScopesForSummary(scopes) {
+  return scopes.map((scope) => scope === "swap:write" ? `${scope} (${SWAP_WRITE_NOTE})` : scope === "transfer:write" ? `${scope} (${TRANSFER_WRITE_NOTE})` : scope).join(", ");
+}
+function renderTable(headers, rows) {
+  const widths = headers.map((header, col) => Math.max(header.length, ...rows.map((row) => (row[col] ?? "").length)));
+  const line = (cells) => cells.map((cell, col) => col === cells.length - 1 ? cell ?? "" : (cell ?? "").padEnd(widths[col] ?? 0)).join("  ");
+  const separator = widths.map((width) => "-".repeat(width)).join("  ");
+  return [line(headers), separator, ...rows.map(line)].join(`
+`);
+}
+function formatTimestamp(ms, whenAbsent = "never") {
+  return ms === undefined ? whenAbsent : new Date(ms).toISOString();
+}
+function renderError(result, ctx) {
+  if (result.code === "DEVICE_TOKEN_INVALID") {
+    return "This device was revoked or its token is stale. Run: candle auth login";
+  }
+  if (result.status === 403 && result.code === "SCOPE_MISSING") {
+    return `${result.message}. Mint one that has it with: candle keys create --scopes <a,b,c>, or check an existing key's scopes with: candle keys list`;
+  }
+  if (result.status === 401 && ctx.authType === "key") {
+    return "API key invalid or revoked. Run: candle keys create";
+  }
+  if (result.status === 0) {
+    return `Could not reach ${ctx.apiUrl}. Set CANDLE_API_URL to override the API endpoint.`;
+  }
+  return result.message;
+}
+function suggestionFor(result, ctx) {
+  if (result.code === "DEVICE_TOKEN_INVALID")
+    return "Run: candle auth login";
+  if (result.status === 403 && result.code === "SCOPE_MISSING") {
+    return "Mint a key that has it: candle keys create --scopes <a,b,c>, or check an existing key's scopes: candle keys list";
+  }
+  if (result.status === 401 && ctx.authType === "key")
+    return "Run: candle keys create";
+  if (result.status === 0)
+    return "Set CANDLE_API_URL to override the API endpoint.";
+  return result.uiHint;
+}
+function errorEnvelope(result, ctx) {
+  const code = result.code ?? result.rfcError ?? (result.status === 0 ? "NETWORK_UNREACHABLE" : `HTTP_${result.status}`);
+  const message = result.status === 0 ? `Could not reach ${ctx.apiUrl}.` : result.message;
+  const suggestion = suggestionFor(result, ctx);
+  const docsUrl = result.docsPath ? `https://docs.candle.tv/${result.docsPath}` : undefined;
+  return {
+    ok: false,
+    code,
+    status: result.status,
+    message,
+    ...suggestion ? { suggestion } : {},
+    ...docsUrl ? { docsUrl } : {}
+  };
+}
+function writeFailure(deps, result, ctx, json) {
+  if (json)
+    deps.stdout.write(`${JSON.stringify(errorEnvelope(result, ctx))}
+`);
+  else
+    deps.stderr.write(`${renderError(result, ctx)}
+`);
+}
+function writeLocalFailure(deps, failure, json) {
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ok: false, ...failure })}
+`);
+    return;
+  }
+  const separator = failure.suggestion?.includes(`
+`) ? `
+` : " ";
+  deps.stderr.write(`${failure.suggestion ? `${failure.message}${separator}${failure.suggestion}` : failure.message}
+`);
+}
+function writeUsageFailure(deps, message, json) {
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ ok: false, code: "USAGE", message })}
+`);
+  else
+    deps.stderr.write(`${message}
+`);
+}
+function portalDeviceUrl(apiUrl, portalOrigin) {
+  if (portalOrigin) {
+    try {
+      return `${new URL(portalOrigin).origin}/agents`;
+    } catch {}
+  }
+  try {
+    const url = new URL(apiUrl);
+    const labels = url.hostname.split(".");
+    const apiLabel = labels.indexOf("api");
+    if (apiLabel !== -1 && labels.length > 1) {
+      labels.splice(apiLabel, 1);
+      url.hostname = labels.join(".");
+    }
+    return `${url.origin}/agents`;
+  } catch {
+    return `${apiUrl}/agents`;
+  }
+}
+var ALL_AGENT_SCOPES, DEFAULT_AGENT_SCOPES, SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf", TRANSFER_WRITE_NOTE = "moves funds -- this key can transfer assets between your wallets";
+var init_render = __esm(() => {
+  ALL_AGENT_SCOPES = [
+    "launch:write",
+    "launch:read",
+    "activity:write",
+    "swap:write",
+    "transfer:write"
+  ];
+  DEFAULT_AGENT_SCOPES = ALL_AGENT_SCOPES.filter((scope) => scope !== "swap:write" && scope !== "transfer:write");
+});
+
+// src/release.ts
+function isPlainVersion(value) {
+  return VERSION.test(value);
+}
+function releaseIdentityUri(version) {
+  if (!VERSION.test(version))
+    throw new Error(`invalid release version: ${version}`);
+  return `https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v${version}`;
+}
+function compareVersions(a, b) {
+  const pa = a.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const pb = b.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  for (let i = 0;i < 3; i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x < y)
+      return -1;
+    if (x > y)
+      return 1;
+  }
+  return 0;
+}
+function platformKey(platform, arch) {
+  const os = platform === "darwin" ? "darwin" : platform === "linux" ? "linux" : null;
+  const cpu = arch === "arm64" ? "arm64" : arch === "x64" ? "x64" : null;
+  if (!os || !cpu)
+    return null;
+  return `${os}-${cpu}`;
+}
+function detectInstall(execPath, realExecPath) {
+  const base = execPath.split("/").pop() ?? "";
+  if (base === "node" || base === "bun" || base === "node.exe" || base === "bun.exe")
+    return "script";
+  if (/\/Cellar\/candle\//.test(realExecPath))
+    return "homebrew";
+  return "binary";
+}
+function latestUrl(baseUrl) {
+  return `${baseUrl}/releases/latest/download/latest.json`;
+}
+function assetUrl(baseUrl, tag, name) {
+  return `${baseUrl}/releases/download/${tag}/${name}`;
+}
+async function fetchLatest(deps, baseUrl) {
+  let res;
+  try {
+    res = await deps.fetch(latestUrl(baseUrl), { redirect: "follow" });
+  } catch (error) {
+    return {
+      ok: false,
+      kind: "unreachable",
+      message: `Could not reach ${latestUrl(baseUrl)}: ${error instanceof Error ? error.message : String(error)}`
+    };
+  }
+  if (!res.ok)
+    return { ok: false, kind: "unreachable", message: `${latestUrl(baseUrl)} answered ${res.status}` };
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    return { ok: false, kind: "invalid", message: "The release manifest is not JSON" };
+  }
+  const manifest = body;
+  if (typeof manifest.version !== "string" || typeof manifest.tag !== "string" || typeof manifest.assets !== "object" || manifest.assets === null) {
+    return { ok: false, kind: "invalid", message: "The release manifest has no version, tag or assets" };
+  }
+  return { ok: true, manifest };
+}
+function releaseBaseUrl(env) {
+  const override = env.CANDLE_RELEASE_BASE_URL?.trim();
+  return override ? override.replace(/\/$/, "") : RELEASE_BASE_URL;
+}
+var RELEASE_BASE_URL = "https://github.com/candledottv/agentic", RELEASE_ISSUER = "https://token.actions.githubusercontent.com", VERSION;
+var init_release = __esm(() => {
+  VERSION = /^\d+\.\d+\.\d+$/;
+});
+
 // ../../node_modules/@scure/base/lib/esm/index.js
 function isBytes(a) {
   return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
@@ -1202,11 +1393,77 @@ var init_sha256 = __esm(() => {
 });
 
 // src/vault/errors.ts
+var exports_errors = {};
+__export(exports_errors, {
+  isVaultError: () => isVaultError,
+  VaultError: () => VaultError,
+  VAULT_ERROR_CODES: () => VAULT_ERROR_CODES
+});
 function isVaultError(error) {
   return error instanceof VaultError;
 }
-var VaultError;
+var VAULT_ERROR_CODES, VaultError;
 var init_errors = __esm(() => {
+  VAULT_ERROR_CODES = [
+    "VAULT_MISSING",
+    "VAULT_EXISTS",
+    "VAULT_UNREADABLE",
+    "VAULT_FORMAT_UNKNOWN",
+    "VAULT_VERSION_UNSUPPORTED",
+    "VAULT_FIELD_UNKNOWN",
+    "VAULT_KDF_OUT_OF_BOUNDS",
+    "VAULT_UNLOCK_FAILED",
+    "VAULT_BLOB_TAMPERED",
+    "VAULT_INDEX_INVALID",
+    "VAULT_OLDER_COPY",
+    "VAULT_LOCKED",
+    "VAULT_CHANGED",
+    "VAULT_WRITE_FAILED",
+    "VAULT_VERIFY_FAILED",
+    "VAULT_NO_RECOVERABLE_FACTOR",
+    "VAULT_LAST_PASSPHRASE",
+    "VAULT_FACTOR_UNAVAILABLE",
+    "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM",
+    "VAULT_AUTHENTICATOR_NOT_READABLE",
+    "VAULT_PRF_UNSUPPORTED",
+    "VAULT_UV_UNSUPPORTED",
+    "VAULT_PIN_REQUIRED",
+    "VAULT_PIN_INVALID",
+    "VAULT_AUTHENTICATOR_BLOCKED",
+    "VAULT_AUTHENTICATOR_CANCELLED",
+    "VAULT_CREDENTIAL_NOT_PRESENT",
+    "VAULT_AUTHENTICATOR_AMBIGUOUS",
+    "VAULT_AUTHENTICATOR_CHANGED",
+    "VAULT_HELPER_MISSING",
+    "VAULT_HELPER_UNTRUSTED",
+    "VAULT_SHARED_DOMAIN",
+    "VAULT_BACKUP_INSIDE_CONFIG",
+    "ENV_PASSPHRASE_REFUSED",
+    "COMMAND_REMOVED",
+    "CHAIN_NOT_OFFERED",
+    "DESTINATION_NOT_CONFIRMED",
+    "PHRASE_REQUIRES_TTY",
+    "PHRASE_INVALID",
+    "PHRASE_NOT_CONFIRMED",
+    "PROMOTE_NOT_VAULT_KEY",
+    "PROMOTE_ALREADY_TEE_WALLET",
+    "PROMOTE_SAME_KEY_DESTINATION",
+    "PROMOTE_KEY_IS_PINNED_DESTINATION",
+    "PROMOTE_DESTINATION_NOT_COLD",
+    "PROMOTE_SUBJECT_EXPOSURE_UNKNOWN",
+    "PROMOTE_RECONCILE_INCOMPLETE",
+    "PROMOTE_OUTCOME_UNRESOLVED",
+    "PROMOTE_NOT_ACKNOWLEDGED",
+    "GRANT_IDENTITY_MISMATCH",
+    "GRANT_BINDING_MISMATCH",
+    "GRANT_DESTINATION_UNRESOLVED",
+    "VAULT_ALLOCATION_BOUNDARY_UNKNOWN",
+    "EXPOSURE_ACCOUNT_MISMATCH",
+    "EXPORT_TARGET_EXISTS",
+    "EXPORT_TARGET_SYMLINK",
+    "LEGACY_INCOMPLETE",
+    "LEGACY_UNVERIFIED_BACKUP"
+  ];
   VaultError = class VaultError extends Error {
     code;
     suggestion;
@@ -1217,6 +1474,63 @@ var init_errors = __esm(() => {
       this.code = code;
       this.suggestion = opts.suggestion;
       this.exitCode = opts.exitCode ?? 1;
+    }
+  };
+});
+
+// src/fido2-helper/protocol.ts
+var HELPER_PROTOCOL = 1, RP_ID = "cli.candle.tv", AUTHDATA_FLAG_UV = 4, AUTHDATA_MIN_LENGTH = 37;
+var init_protocol = () => {};
+
+// src/vault/canonical-json.ts
+function canonicalJson(value) {
+  return encode(value, "$");
+}
+function canonicalBytes(value) {
+  return new TextEncoder().encode(canonicalJson(value));
+}
+function encode(value, path) {
+  if (value === null)
+    throw new CanonicalJsonError(`null at ${path}: canonical JSON has no nulls`);
+  switch (typeof value) {
+    case "string":
+      return JSON.stringify(value);
+    case "boolean":
+      return value ? "true" : "false";
+    case "number":
+      if (!Number.isInteger(value)) {
+        throw new CanonicalJsonError(`non-integer number at ${path}: canonical JSON carries integers only`);
+      }
+      if (!Number.isSafeInteger(value)) {
+        throw new CanonicalJsonError(`integer at ${path} is outside the safe range`);
+      }
+      if (Object.is(value, -0))
+        throw new CanonicalJsonError(`negative zero at ${path}`);
+      return String(value);
+    case "object":
+      break;
+    default:
+      throw new CanonicalJsonError(`${typeof value} at ${path} cannot appear in canonical JSON`);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item, i) => encode(item, `${path}[${i}]`)).join(",")}]`;
+  }
+  const record = value;
+  const parts = [];
+  for (const key of Object.keys(record).sort()) {
+    const child = record[key];
+    if (child === undefined)
+      continue;
+    parts.push(`${JSON.stringify(key)}:${encode(child, `${path}.${key}`)}`);
+  }
+  return `{${parts.join(",")}}`;
+}
+var CanonicalJsonError;
+var init_canonical_json = __esm(() => {
+  CanonicalJsonError = class CanonicalJsonError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "CanonicalJsonError";
     }
   };
 });
@@ -2059,59 +2373,6 @@ var init_argon2 = __esm(() => {
   maxUint32 = Math.pow(2, 32);
 });
 
-// src/vault/canonical-json.ts
-function canonicalJson(value) {
-  return encode(value, "$");
-}
-function canonicalBytes(value) {
-  return new TextEncoder().encode(canonicalJson(value));
-}
-function encode(value, path) {
-  if (value === null)
-    throw new CanonicalJsonError(`null at ${path}: canonical JSON has no nulls`);
-  switch (typeof value) {
-    case "string":
-      return JSON.stringify(value);
-    case "boolean":
-      return value ? "true" : "false";
-    case "number":
-      if (!Number.isInteger(value)) {
-        throw new CanonicalJsonError(`non-integer number at ${path}: canonical JSON carries integers only`);
-      }
-      if (!Number.isSafeInteger(value)) {
-        throw new CanonicalJsonError(`integer at ${path} is outside the safe range`);
-      }
-      if (Object.is(value, -0))
-        throw new CanonicalJsonError(`negative zero at ${path}`);
-      return String(value);
-    case "object":
-      break;
-    default:
-      throw new CanonicalJsonError(`${typeof value} at ${path} cannot appear in canonical JSON`);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item, i) => encode(item, `${path}[${i}]`)).join(",")}]`;
-  }
-  const record = value;
-  const parts = [];
-  for (const key of Object.keys(record).sort()) {
-    const child = record[key];
-    if (child === undefined)
-      continue;
-    parts.push(`${JSON.stringify(key)}:${encode(child, `${path}.${key}`)}`);
-  }
-  return `{${parts.join(",")}}`;
-}
-var CanonicalJsonError;
-var init_canonical_json = __esm(() => {
-  CanonicalJsonError = class CanonicalJsonError extends Error {
-    constructor(message) {
-      super(message);
-      this.name = "CanonicalJsonError";
-    }
-  };
-});
-
 // src/vault/hygiene.ts
 function wipe(...buffers) {
   for (const buffer of buffers) {
@@ -2222,6 +2483,18 @@ async function derivePayloadKey(dek, vaultId) {
     info: new TextEncoder().encode("candle-vault/v2/payload")
   }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
 }
+async function derivePrfKek(prfOutput, vaultId) {
+  if (prfOutput.length !== PRF_OUTPUT_BYTES) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", `The security key returned ${prfOutput.length} bytes of hmac-secret output; this factor needs ${PRF_OUTPUT_BYTES}.`);
+  }
+  const material = await crypto.subtle.importKey("raw", prfOutput, "HKDF", false, ["deriveKey"]);
+  return crypto.subtle.deriveKey({
+    name: "HKDF",
+    hash: "SHA-256",
+    salt: vaultId,
+    info: new TextEncoder().encode("candle-vault/v2/prf")
+  }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
 async function seal(key, plaintext, aad) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: aad }, key, plaintext);
@@ -2248,7 +2521,7 @@ async function sealJson(key, value, aad) {
     wipe(bytes);
   }
 }
-var ARGON2_DEFAULTS, ARGON2_SALT_BYTES = 16, DEK_BYTES = 32, ARGON2_BOUNDS, testCostOverride = null;
+var ARGON2_DEFAULTS, ARGON2_SALT_BYTES = 16, DEK_BYTES = 32, ARGON2_BOUNDS, testCostOverride = null, PRF_OUTPUT_BYTES = 32;
 var init_crypto = __esm(() => {
   init_argon2();
   init_esm();
@@ -2265,208 +2538,371 @@ var init_crypto = __esm(() => {
   };
 });
 
-// src/vault/sidecar.ts
-import { chmod as chmod2, mkdir as mkdir2, readFile as readFile2, writeFile as writeFile2 } from "node:fs/promises";
-import { dirname as dirname2 } from "node:path";
-function sidecarPath(vaultPath) {
-  return vaultPath.replace(/\.enc$/, "") + ".state.json";
-}
-function sourceDigest(vaultId, bytes) {
-  const id = new TextEncoder().encode(vaultId);
-  const joined = new Uint8Array(id.length + bytes.length);
-  joined.set(id, 0);
-  joined.set(bytes, id.length);
-  return b64u(sha2562(joined));
-}
-async function readSidecar(path) {
-  let raw;
-  try {
-    raw = await readFile2(path, "utf8");
-  } catch {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed?.vaultId !== "string" || !Number.isInteger(parsed?.lastGeneration))
-      return null;
-    return {
-      ...parsed,
-      envelopeIds: Array.isArray(parsed.envelopeIds) ? parsed.envelopeIds : [],
-      removedEnvelopeIds: Array.isArray(parsed.removedEnvelopeIds) ? parsed.removedEnvelopeIds : []
-    };
-  } catch {
-    return null;
-  }
-}
-async function writeSidecar(path, state) {
-  const dir = dirname2(path);
-  await mkdir2(dir, { recursive: true });
-  await chmod2(dir, 448).catch(() => {});
-  await writeFile2(path, `${JSON.stringify(state, null, 2)}
-`, { encoding: "utf8", mode: 384 });
-  await chmod2(path, 384).catch(() => {});
-}
-function nextSidecar(previous, file, patch = {}) {
-  const currentIds = file.envelopes.map((envelope) => envelope.id);
-  const known = previous?.envelopeIds ?? [];
-  const removed = new Set(previous?.removedEnvelopeIds ?? []);
-  for (const id of known)
-    if (!currentIds.includes(id))
-      removed.add(id);
+// src/vault/platform.ts
+function platformFactsFor(deps, fido2Helper) {
   return {
-    ...previous ?? {},
-    vaultId: file.vaultId,
-    lastGeneration: file.generation,
-    envelopeIds: currentIds,
-    removedEnvelopeIds: [...removed].sort(),
-    ...patch
+    platform: deps.platform,
+    arch: deps.arch,
+    helper: "absent",
+    fido2Helper,
+    ...deps.env.CANDLE_VAULT_FAKE_OS_MAJOR ? { osMajor: Number(deps.env.CANDLE_VAULT_FAKE_OS_MAJOR) } : {}
   };
 }
-var init_sidecar = __esm(() => {
-  init_sha256();
-  init_crypto();
+function shippingPlatform(facts) {
+  return facts.platform === "darwin" || facts.platform === "linux";
+}
+function factorAvailability(factor, facts, transport) {
+  if (factor === "passphrase")
+    return { state: "available" };
+  const mac = facts.platform === "darwin";
+  switch (factor) {
+    case "passkey-prf": {
+      if (transport === undefined || transport === "ctap2") {
+        if (!shippingPlatform(facts)) {
+          return {
+            state: "unsupported-on-this-platform",
+            reason: `this CLI ships no binary for ${facts.platform}, and security keys there belong to the platform spec (BE-124)`
+          };
+        }
+        const helper = facts.fido2Helper ?? { state: "absent", reason: "the candle-fido2 helper was not looked for" };
+        if (helper.state === "absent") {
+          return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_MISSING" };
+        }
+        return { state: "available" };
+      }
+      if (transport === "platform-macos") {
+        return {
+          state: "unsupported-on-this-platform",
+          reason: mac ? "the synced passkey factor arrives in CLI 0.13.0 (PR G)" : "the synced passkey transport is macOS only"
+        };
+      }
+      return { state: "unsupported-on-this-platform", reason: `this CLI does not know the transport ${transport}` };
+    }
+    case "secure-enclave":
+      return {
+        state: "unsupported-on-this-platform",
+        reason: mac ? "this release ships no signed macOS helper; the Secure Enclave factor arrives in CLI 0.12.0 (PR F)" : "the Secure Enclave is macOS only"
+      };
+    default:
+      return { state: "unsupported-on-this-platform", reason: `this CLI does not know the factor ${factor}` };
+  }
+}
+function envelopeAvailability(envelope, facts) {
+  return factorAvailability(envelope.factor, facts, typeof envelope.transport === "string" ? envelope.transport : undefined);
+}
+function canDrive(envelope, facts) {
+  return envelopeAvailability(envelope, facts).state === "available";
+}
+function refusalCodeFor(availability) {
+  return availability.state === "unavailable-on-this-device" ? availability.code : "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM";
+}
+function assertFactorAddable(factor, facts, transport) {
+  const availability = factorAvailability(factor, facts, transport);
+  if (availability.state === "available")
+    return;
+  const name = transport ? `${factor}/${transport}` : factor;
+  throw new VaultError(refusalCodeFor(availability), `This CLI cannot add a ${name} factor here: ${availability.reason}.`, {
+    suggestion: availability.state === "unavailable-on-this-device" && availability.code === "VAULT_HELPER_MISSING" ? "Install a release build of the CLI (which places candle-fido2 beside candle) or set CANDLE_FIDO2_HELPER. No other factor is substituted and nothing was written." : "No other factor is substituted and nothing was written."
+  });
+}
+function availabilityLabel(availability) {
+  switch (availability.state) {
+    case "available":
+      return "available";
+    case "unavailable-on-this-device":
+      return "unavailable-on-this-device";
+    default:
+      return "unsupported-on-this-platform";
+  }
+}
+var HIDRAW_MESSAGE = "A security key is attached but this user cannot open its hidraw device. Install libfido2's udev rules (70-u2f.rules) or add a rule for this key, unplug and replug it, then retry.";
+var init_platform = __esm(() => {
+  init_errors();
 });
 
-// src/wallet-keystore.ts
-import { chmod as chmod3, mkdir as mkdir3, readFile as readFile3, rename as rename2, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
-import { homedir as homedir3 } from "node:os";
-import { dirname as dirname3, join as join4 } from "node:path";
-function defaultTeeKeystorePath(env) {
-  return join4(candleConfigDir(env), "tee-wallets.enc");
-}
-function legacyTeeKeystorePath(env) {
-  return join4(candleConfigDir(env), "hot-wallets.enc");
-}
-function candleConfigDir(env) {
-  return env.CANDLE_CONFIG_DIR?.trim() || join4(homedir3(), ".config", "candle");
-}
-async function deriveKeystoreKey(passphrase, salt, iterations) {
-  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
-    "deriveKey"
-  ]);
-  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-}
-async function createKeystore(passphrase) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  return { key: await deriveKeystoreKey(passphrase, salt, KEYSTORE_ITERATIONS), salt, iterations: KEYSTORE_ITERATIONS };
-}
-async function serializeKeystore(entries, key, salt, iterations, purpose) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(entries)));
-  const file = {
-    version: KEYSTORE_VERSION,
-    createdAt: new Date().toISOString(),
-    kdf: "PBKDF2-HMAC-SHA256",
-    iterations,
-    salt: b64(salt),
-    cipher: "AES-256-GCM",
-    iv: b64(iv),
-    ciphertext: b64(new Uint8Array(sealed)),
-    ...purpose !== undefined && purpose !== "wallets" ? { purpose } : {}
-  };
-  return `${JSON.stringify(file, null, 2)}
-`;
-}
-async function readKeystore(raw, passphrase, opts = {}) {
-  let file;
+// src/vault/fido2.ts
+import { access, constants } from "node:fs/promises";
+import { dirname as dirname2, join as join4 } from "node:path";
+async function isExecutable(path) {
   try {
-    file = JSON.parse(raw);
+    await access(path, constants.X_OK);
+    return true;
   } catch {
-    throw new Error("The keystore file is not valid JSON.");
+    return false;
   }
-  if (file.version !== KEYSTORE_VERSION) {
-    throw new Error(`Unsupported keystore version ${file.version}: this CLI writes version ${KEYSTORE_VERSION}.`);
+}
+async function locateFido2Helper(deps) {
+  const fromEnv = deps.env[HELPER_ENV]?.trim();
+  if (fromEnv) {
+    if (await isExecutable(fromEnv))
+      return { state: "ready", path: fromEnv, source: "env" };
+    return { state: "absent", reason: `${HELPER_ENV} points at ${fromEnv}, which is not an executable file` };
   }
-  const purpose = file.purpose === TEE_KEYSTORE_PURPOSE || file.purpose === LEGACY_TEE_PURPOSE ? TEE_KEYSTORE_PURPOSE : "wallets";
-  if (opts.expectPurpose !== undefined && purpose !== opts.expectPurpose) {
-    throw new Error(purpose === TEE_KEYSTORE_PURPOSE ? "This is a TEE wallet store (tee-wallets.enc). It has no export path; use: candle tee sweep." : "This is not a TEE wallet store. The tee commands only open tee-wallets.enc.");
+  const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath);
+  if (detectInstall(deps.execPath, realExec) === "script") {
+    return {
+      state: "absent",
+      reason: "this CLI is running from the npm package (or a source checkout), which ships no candle-fido2 executable"
+    };
   }
-  if (purpose === TEE_KEYSTORE_PURPOSE) {
-    if (file.kdf !== "PBKDF2-HMAC-SHA256" || file.cipher !== "AES-256-GCM") {
-      throw new Error("The TEE wallet store names an unsupported KDF or cipher; refusing to open it.");
-    }
-    if (!Number.isInteger(file.iterations) || file.iterations < TEE_KEYSTORE_MIN_ITERATIONS || file.iterations > TEE_KEYSTORE_MAX_ITERATIONS) {
-      throw new Error(`The TEE wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` + `${TEE_KEYSTORE_MIN_ITERATIONS}-${TEE_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`);
-    }
-  }
-  const salt = unb64(file.salt);
-  const key = await deriveKeystoreKey(passphrase, salt, file.iterations);
-  let plain;
-  try {
-    plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(file.iv) }, key, unb64(file.ciphertext));
-  } catch {
-    throw new Error("Could not decrypt the keystore: wrong passphrase, or the file is corrupt.");
-  }
-  const decoded = JSON.parse(new TextDecoder().decode(plain));
-  return {
-    entries: decoded.map(({ [LEGACY_TEE_FIELD]: legacy, ...entry }) => legacy !== undefined && entry.tee === undefined ? { ...entry, tee: legacy } : entry),
-    key,
-    salt,
-    iterations: file.iterations
+  const beside = join4(dirname2(realExec), HELPER_NAME);
+  if (await isExecutable(beside))
+    return { state: "ready", path: beside, source: "beside-binary" };
+  return { state: "absent", reason: `no ${HELPER_NAME} executable beside ${realExec}` };
+}
+async function currentPlatformFacts(deps) {
+  const location = await locateFido2Helper(deps);
+  return platformFactsFor(deps, location.state === "ready" ? { state: "ready", path: location.path } : { state: "absent", reason: location.reason });
+}
+function helperMissing(location) {
+  return new VaultError("VAULT_HELPER_MISSING", `The security key helper is not available: ${location.reason}.`, {
+    suggestion: HELPER_INSTALL_SUGGESTION
+  });
+}
+function translateHelperFailure(code, message, platform) {
+  const table = {
+    NO_DEVICE: "VAULT_FACTOR_UNAVAILABLE",
+    DEVICE_NOT_READABLE: "VAULT_AUTHENTICATOR_NOT_READABLE",
+    DEVICE_NOT_FOUND: "VAULT_AUTHENTICATOR_CHANGED",
+    SNAPSHOT_CHANGED: "VAULT_AUTHENTICATOR_CHANGED",
+    PRF_UNSUPPORTED: "VAULT_PRF_UNSUPPORTED",
+    UV_UNSUPPORTED: "VAULT_UV_UNSUPPORTED",
+    PIN_REQUIRED: "VAULT_PIN_REQUIRED",
+    PIN_INVALID: "VAULT_PIN_INVALID",
+    BLOCKED: "VAULT_AUTHENTICATOR_BLOCKED",
+    CANCELLED: "VAULT_AUTHENTICATOR_CANCELLED",
+    NO_CREDENTIAL: "VAULT_CREDENTIAL_NOT_PRESENT",
+    DEVICE_IO: "VAULT_FACTOR_UNAVAILABLE",
+    LIBRARY_MISSING: "VAULT_HELPER_MISSING"
   };
+  const suggestion = "Nothing was derived and no other factor was tried.";
+  if (code === "DEVICE_NOT_READABLE") {
+    return new VaultError("VAULT_AUTHENTICATOR_NOT_READABLE", platform === "linux" ? HIDRAW_MESSAGE : `A security key is attached but this user cannot open it: ${message}.`, { suggestion: "No other factor is substituted." });
+  }
+  const mapped = table[code];
+  if (mapped === undefined) {
+    return new VaultError("VAULT_UNLOCK_FAILED", `The security key helper reported ${code}: ${message}.`, {
+      suggestion
+    });
+  }
+  const detail = {
+    NO_DEVICE: "No security key is attached.",
+    PRF_UNSUPPORTED: `This security key cannot serve this factor: ${message}.`,
+    UV_UNSUPPORTED: `This security key cannot serve this factor: ${message}.`,
+    PIN_REQUIRED: `This security key needs its PIN: ${message}.`,
+    PIN_INVALID: `The security key rejected the PIN: ${message}.`,
+    BLOCKED: `The security key is blocked: ${message}.`,
+    CANCELLED: `The security key operation did not complete: ${message}.`,
+    NO_CREDENTIAL: `The named security key does not hold this vault's credential: ${message}.`,
+    DEVICE_NOT_FOUND: `The attached security keys changed: ${message}.`,
+    SNAPSHOT_CHANGED: `The attached security keys changed: ${message}.`,
+    DEVICE_IO: `The security key stopped answering: ${message}.`,
+    LIBRARY_MISSING: `The security key helper cannot run: ${message}.`
+  };
+  return new VaultError(mapped, detail[code] ?? `${message}.`, {
+    suggestion: mapped === "VAULT_HELPER_MISSING" ? HELPER_INSTALL_SUGGESTION : suggestion
+  });
 }
-async function writeKeystoreFile(path, contents) {
-  const dir = dirname3(path);
-  await mkdir3(dir, { recursive: true });
-  await chmod3(dir, 448);
-  const tmpPath = `${path}.${crypto.randomUUID()}.tmp`;
-  await writeFile3(tmpPath, contents, { encoding: "utf8", mode: 384 });
-  await chmod3(tmpPath, 384);
-  await rename2(tmpPath, path);
-}
-function keystoreLockPath(path) {
-  return `${path}.lock`;
-}
-async function withKeystoreLock(path, clock, fn, opts = {}) {
-  const lockPath = keystoreLockPath(path);
-  const waitMs = opts.waitMs ?? 1e4;
-  const pollMs = opts.pollMs ?? 100;
-  await mkdir3(dirname3(path), { recursive: true });
-  const started = clock.now();
-  for (;; ) {
+async function callHelper(deps, helperPath, request) {
+  const run = await deps.spawnHelper(helperPath, JSON.stringify(request), { timeoutMs: HELPER_TIMEOUT_MS });
+  if (run.spawnError !== undefined) {
+    throw new VaultError("VAULT_HELPER_MISSING", `Could not run the security key helper at ${helperPath}: ${run.spawnError}.`, {
+      suggestion: HELPER_INSTALL_SUGGESTION
+    });
+  }
+  const line = run.stdout.split(`
+`).find((candidate) => candidate.trim() !== "");
+  let response;
+  if (line !== undefined) {
     try {
-      await mkdir3(lockPath);
-      break;
-    } catch (error) {
-      if (error?.code !== "EEXIST")
-        throw error;
-      if (clock.now() - started >= waitMs) {
-        let owner = null;
-        try {
-          owner = (await readFile3(join4(lockPath, "owner"), "utf8")).trim() || null;
-        } catch {
-          owner = null;
-        }
-        throw new KeystoreLockedError(lockPath, owner);
-      }
-      await clock.sleep(pollMs);
+      response = JSON.parse(line);
+    } catch {
+      response = undefined;
     }
   }
-  try {
-    await writeFile3(join4(lockPath, "owner"), `${opts.owner ?? `pid ${process.pid}`} since ${new Date().toISOString()}
-`, { encoding: "utf8", mode: 384 }).catch(() => {});
-    return await fn();
-  } finally {
-    await rm2(lockPath, { recursive: true, force: true });
+  if (response === undefined) {
+    if (run.signal !== null) {
+      throw new VaultError("VAULT_AUTHENTICATOR_CANCELLED", `The security key operation was cancelled (helper terminated by ${run.signal}) and nothing was derived.`, { suggestion: "Run the command again and touch the key when it blinks." });
+    }
+    const diagnostic = run.stderr.trim().split(`
+`)[0]?.slice(0, 200);
+    throw new VaultError("VAULT_UNLOCK_FAILED", `The security key helper at ${helperPath} exited (${run.exitCode ?? "no code"}) without a response${diagnostic ? `: ${diagnostic}` : ""}.`, { suggestion: "Nothing was derived and no other factor was tried." });
+  }
+  if (typeof response !== "object" || response === null || response.protocol !== HELPER_PROTOCOL) {
+    throw new VaultError("VAULT_HELPER_MISSING", `The security key helper at ${helperPath} speaks protocol ${String(response?.protocol)}; this CLI needs protocol ${HELPER_PROTOCOL}.`, { suggestion: "Reinstall the CLI so candle and candle-fido2 come from the same release." });
+  }
+  if (!response.ok)
+    throw translateHelperFailure(String(response.code), String(response.message), deps.platform);
+  return response;
+}
+function describeDeviceForList(device) {
+  const product = device.product || "security key";
+  return `--device ${device.deviceId}  ${product}${device.manufacturer ? ` (${device.manufacturer})` : ""}${device.readable ? "" : "  [not readable by this user]"}`;
+}
+function selectDevice(devices, named, platform) {
+  if (devices.length === 0) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "No security key is attached.", {
+      suggestion: "Plug the key in and run the command again. No other factor is substituted."
+    });
+  }
+  const listing = devices.map((device) => `  ${describeDeviceForList(device)}`).join(`
+`);
+  let chosen;
+  if (named !== undefined) {
+    chosen = devices.find((device) => device.deviceId === named);
+    if (!chosen) {
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `No attached security key has the id ${named}. Ids are valid for one listing only; attached now:
+${listing}`, { suggestion: "Name one of the ids above with --device. No other key was tried." });
+    }
+  } else if (devices.length > 1) {
+    throw new VaultError("VAULT_AUTHENTICATOR_AMBIGUOUS", `${devices.length} security keys are attached and none was named, so nothing was sent to any of them:
+${listing}`, { suggestion: "Run again with --device <id> naming the key to use." });
+  } else {
+    chosen = devices[0];
+  }
+  if (!chosen.readable)
+    throw translateHelperFailure("DEVICE_NOT_READABLE", chosen.reason ?? "", platform);
+  return chosen;
+}
+function prfSaltForAuthenticator(prfSalt) {
+  const prefix = new TextEncoder().encode("WebAuthn PRF");
+  const input = new Uint8Array(prefix.length + 1 + prfSalt.length);
+  input.set(prefix, 0);
+  input[prefix.length] = 0;
+  input.set(prfSalt, prefix.length + 1);
+  return sha2562(input);
+}
+function operationDigest(fields) {
+  return sha2562(canonicalBytes({ purpose: "candle-fido2/operation", ...fields }));
+}
+function userIdFor(vaultId, envelopeId) {
+  return sha2562(new TextEncoder().encode(`candle-vault/v2/user|${vaultId}|${envelopeId}`));
+}
+function userNameFor(vaultId, envelopeId) {
+  return `candle vault ${vaultId.slice(0, 8)} ${envelopeId}`;
+}
+function assertAuthenticatorData(authData, rpId, what) {
+  if (authData.length < AUTHDATA_MIN_LENGTH) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", `The security key's ${what} returned truncated authenticator data; nothing was derived.`);
+  }
+  const expected = sha2562(new TextEncoder().encode(rpId));
+  let diff = 0;
+  for (let i = 0;i < 32; i++)
+    diff |= (authData[i] ?? 0) ^ (expected[i] ?? 0);
+  if (diff !== 0) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", `The security key's ${what} is for a different relying party than ${rpId}; nothing was derived.`);
+  }
+  if (((authData[32] ?? 0) & AUTHDATA_FLAG_UV) === 0) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", `The security key's ${what} was made without user verification (the UV flag is clear), so its output is not this envelope's key; nothing was derived.`, { suggestion: "This factor never falls back to the non-verified secret. Set a PIN on the key and retry." });
   }
 }
-var TEE_KEYSTORE_PURPOSE = "ember-tee", LEGACY_TEE_PURPOSE = "ember-hot", LEGACY_TEE_FIELD = "hot", TEE_KEYSTORE_MIN_ITERATIONS = 210000, TEE_KEYSTORE_MAX_ITERATIONS = 2100000, KEYSTORE_VERSION = 1, KEYSTORE_ITERATIONS = 210000, b64 = (bytes) => Buffer.from(bytes).toString("base64"), unb64 = (s) => new Uint8Array(Buffer.from(s, "base64")), KeystoreLockedError;
-var init_wallet_keystore = __esm(() => {
-  KeystoreLockedError = class KeystoreLockedError extends Error {
-    lockPath;
-    owner;
-    constructor(lockPath, owner) {
-      super(`Another command holds the TEE wallet store lock at ${lockPath}` + `${owner ? ` (${owner})` : ""}. If no other candle tee command is running, remove that directory and retry.`);
-      this.lockPath = lockPath;
-      this.owner = owner;
-      this.name = "KeystoreLockedError";
+async function openSecurityKeySession(deps, opts) {
+  const location = await locateFido2Helper(deps);
+  if (location.state === "absent")
+    throw helperMissing(location);
+  const info = await callHelper(deps, location.path, {
+    op: "info",
+    vaultId: opts.vaultId,
+    envelopeId: opts.envelopeId,
+    digest: base64.encode(operationDigest({ vaultId: opts.vaultId, envelopeId: opts.envelopeId, op: "info", nonce: b64u(randomBytes2(16)) }))
+  });
+  const device = selectDevice(info.devices, opts.deviceFlag, deps.platform);
+  if (opts.deviceFlag === undefined) {
+    deps.stderr.write(`Using the attached security key: ${device.product || "security key"} (--device ${device.deviceId})
+`);
+  }
+  if (opts.requireFeatures) {
+    if (!device.extensions.includes("hmac-secret")) {
+      throw new VaultError("VAULT_PRF_UNSUPPORTED", `${device.product || "This security key"} does not support the hmac-secret extension, which this factor needs.`, { suggestion: "Use a key that supports hmac-secret (FIDO2 with PRF). No other derivation is substituted." });
     }
+    if (device.options.clientPin !== true && device.options.uv !== true) {
+      throw new VaultError("VAULT_UV_UNSUPPORTED", `${device.product || "This security key"} has no PIN set and no built-in user verification, and this factor uses the user-verified secret only.`, { suggestion: "Set a PIN on this key (its vendor's tool does that) and retry. Nothing was written." });
+    }
+  }
+  const session = { helperPath: location.path, device, snapshotId: info.snapshotId };
+  if (device.options.clientPin === true) {
+    const typed = await deps.promptSecret(`PIN for ${device.product || "the security key"} (input hidden): `);
+    if (typed === "") {
+      throw new VaultError("VAULT_PIN_REQUIRED", "This security key needs its PIN and none was typed; nothing was sent to it.");
+    }
+    session.pin = typed;
+  }
+  return session;
+}
+async function registerCredential(deps, session, opts) {
+  deps.stderr.write(`Touch ${session.device.product || "the security key"} to register the vault's credential on it.
+`);
+  const digest = operationDigest({ ...opts, op: "register", nonce: b64u(randomBytes2(16)) });
+  const response = await callHelper(deps, session.helperPath, {
+    op: "register",
+    vaultId: opts.vaultId,
+    envelopeId: opts.envelopeId,
+    digest: base64.encode(digest),
+    deviceId: session.device.deviceId,
+    expectSnapshot: session.snapshotId,
+    rpId: RP_ID,
+    userId: base64.encode(userIdFor(opts.vaultId, opts.envelopeId)),
+    userName: userNameFor(opts.vaultId, opts.envelopeId),
+    clientDataHash: base64.encode(digest),
+    ...session.pin !== undefined ? { pin: session.pin } : {}
+  });
+  const authData = base64.decode(response.authData);
+  assertAuthenticatorData(authData, RP_ID, "registration");
+  return {
+    credentialId: b64u(base64.decode(response.credentialId)),
+    aaguid: response.aaguid,
+    backupEligible: response.attFlags.be,
+    backupState: response.attFlags.bs
   };
+}
+async function assertPrf(deps, session, envelope, vaultId, purpose) {
+  deps.stderr.write(`Touch ${session.device.product || "the security key"} to ${purpose}.
+`);
+  const digest = operationDigest({ vaultId, envelopeId: envelope.id, op: "assert", nonce: b64u(randomBytes2(16)) });
+  const salt = prfSaltForAuthenticator(unb64u(envelope.prfSalt, "prfSalt"));
+  const response = await callHelper(deps, session.helperPath, {
+    op: "assert",
+    vaultId,
+    envelopeId: envelope.id,
+    digest: base64.encode(digest),
+    deviceId: session.device.deviceId,
+    expectSnapshot: session.snapshotId,
+    rpId: envelope.rpId,
+    credentialId: base64.encode(unb64u(envelope.credentialId, "credentialId")),
+    clientDataHash: base64.encode(digest),
+    salt: base64.encode(salt),
+    ...session.pin !== undefined ? { pin: session.pin } : {}
+  });
+  const prfOutput = ownSecret(base64.decode(response.hmacSecret));
+  try {
+    assertAuthenticatorData(base64.decode(response.authData), envelope.rpId, "assertion");
+    if (prfOutput.length !== PRF_OUTPUT_BYTES) {
+      throw new VaultError("VAULT_UNLOCK_FAILED", `The security key returned ${prfOutput.length} bytes of hmac-secret output; this factor needs ${PRF_OUTPUT_BYTES}. Nothing was derived.`);
+    }
+  } catch (error) {
+    wipe(prfOutput);
+    throw error;
+  }
+  return prfOutput;
+}
+var HELPER_NAME = "candle-fido2", HELPER_ENV = "CANDLE_FIDO2_HELPER", HELPER_TIMEOUT_MS = 90000, HELPER_INSTALL_SUGGESTION = "Install a release build of the CLI (the installer script or Homebrew place candle-fido2 beside candle), or set CANDLE_FIDO2_HELPER to the path of a candle-fido2 executable. No other factor is substituted.";
+var init_fido2 = __esm(() => {
+  init_sha256();
+  init_esm();
+  init_protocol();
+  init_release();
+  init_canonical_json();
+  init_crypto();
+  init_errors();
+  init_platform();
 });
 
 // src/vault/format.ts
 function isPassphraseEnvelope(envelope) {
   return envelope.factor === "passphrase";
+}
+function isCtap2Envelope(envelope) {
+  return envelope.factor === "passkey-prf" && envelope.transport === "ctap2";
 }
 function passphraseKdf(envelope) {
   if (!isPassphraseEnvelope(envelope)) {
@@ -2491,7 +2927,20 @@ function envelopeAad(file, envelope) {
   if (isPassphraseEnvelope(envelope)) {
     return canonicalBytes({ ...base, kdf: envelope.kdf, strength: envelope.strength });
   }
-  throw new VaultError("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM", `This CLI cannot unwrap a ${envelope.factor} envelope.`);
+  if (isCtap2Envelope(envelope)) {
+    return canonicalBytes({
+      ...base,
+      transport: envelope.transport,
+      rpId: envelope.rpId,
+      credentialId: envelope.credentialId,
+      prfSalt: envelope.prfSalt,
+      userVerification: envelope.userVerification,
+      backupEligible: envelope.backupEligible,
+      backupState: envelope.backupState,
+      saltDerivation: envelope.saltDerivation
+    });
+  }
+  throw new VaultError("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM", `This CLI cannot unwrap a ${envelope.factor}${typeof envelope.transport === "string" ? `/${envelope.transport}` : ""} envelope.`);
 }
 function rootAad(vaultId) {
   return canonicalBytes({ format: VAULT_FORMAT, version: VAULT_VERSION, vaultId, purpose: "root" });
@@ -2573,6 +3022,9 @@ function parseVaultFile(raw) {
       }
       assertKdfInBounds(envelope.kdf);
     }
+    if (envelope.factor === "passkey-prf" && envelope.transport === "ctap2") {
+      assertCtap2EnvelopeShape(envelope);
+    }
   }
   const ids = new Set;
   for (const envelope of value.envelopes) {
@@ -2581,6 +3033,30 @@ function parseVaultFile(raw) {
     ids.add(envelope.id);
   }
   return value;
+}
+function assertCtap2EnvelopeShape(envelope) {
+  const id = String(envelope.id);
+  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (security key) ${detail}.`);
+  if (envelope.domain !== "hardware-token")
+    bad(`has domain ${JSON.stringify(envelope.domain)}, expected hardware-token`);
+  if (envelope.rpId !== CTAP2_RP_ID)
+    bad(`has rpId ${JSON.stringify(envelope.rpId)}, expected ${CTAP2_RP_ID}`);
+  if (typeof envelope.credentialId !== "string" || envelope.credentialId === "")
+    bad("has no credentialId");
+  if (typeof envelope.prfSalt !== "string" || envelope.prfSalt === "")
+    bad("has no prfSalt");
+  if (envelope.userVerification !== "required")
+    bad("does not record userVerification: required");
+  if (typeof envelope.backupEligible !== "boolean")
+    bad("has no backupEligible flag");
+  if (typeof envelope.backupState !== "boolean")
+    bad("has no backupState flag");
+  if (envelope.saltDerivation !== "webauthn-prf")
+    bad("does not record saltDerivation: webauthn-prf");
+  if (typeof envelope.aaguid !== "string")
+    bad("has no aaguid");
+  if (typeof envelope.product !== "string")
+    bad("has no product");
 }
 function assertKeyIdsAgree(file) {
   const declared = new Set(file.keyIds);
@@ -2818,7 +3294,7 @@ function branchOfPath(path) {
     return { branch: "evm", index: Number(match[1]) };
   return;
 }
-var VAULT_FORMAT = "candle-vault", VAULT_VERSION = 2, VAULT_CIPHER = "AES-256-GCM", NON_HEADER_FIELDS, HEADER_FIELDS, TOP_LEVEL_FIELDS, BRANCHES, TEE_LIFECYCLES, TEE_REMOTE_STATES, KEY_ENTRY_FIELDS, LIFECYCLE_TABLE, isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value), isBlob = (value) => isRecord(value) && typeof value.iv === "string" && typeof value.ciphertext === "string", TEE_FIELDS;
+var VAULT_FORMAT = "candle-vault", VAULT_VERSION = 2, VAULT_CIPHER = "AES-256-GCM", CTAP2_RP_ID = "cli.candle.tv", NON_HEADER_FIELDS, HEADER_FIELDS, TOP_LEVEL_FIELDS, BRANCHES, TEE_LIFECYCLES, TEE_REMOTE_STATES, KEY_ENTRY_FIELDS, LIFECYCLE_TABLE, isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value), isBlob = (value) => isRecord(value) && typeof value.iv === "string" && typeof value.ciphertext === "string", TEE_FIELDS;
 var init_format = __esm(() => {
   init_crypto();
   init_errors();
@@ -2885,10 +3361,210 @@ var init_format = __esm(() => {
   ];
 });
 
+// src/vault/sidecar.ts
+import { chmod as chmod2, mkdir as mkdir2, readFile as readFile2, writeFile as writeFile2 } from "node:fs/promises";
+import { dirname as dirname3 } from "node:path";
+function sidecarPath(vaultPath) {
+  return vaultPath.replace(/\.enc$/, "") + ".state.json";
+}
+function sourceDigest(vaultId, bytes) {
+  const id = new TextEncoder().encode(vaultId);
+  const joined = new Uint8Array(id.length + bytes.length);
+  joined.set(id, 0);
+  joined.set(bytes, id.length);
+  return b64u(sha2562(joined));
+}
+async function readSidecar(path) {
+  let raw;
+  try {
+    raw = await readFile2(path, "utf8");
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.vaultId !== "string" || !Number.isInteger(parsed?.lastGeneration))
+      return null;
+    return {
+      ...parsed,
+      envelopeIds: Array.isArray(parsed.envelopeIds) ? parsed.envelopeIds : [],
+      removedEnvelopeIds: Array.isArray(parsed.removedEnvelopeIds) ? parsed.removedEnvelopeIds : []
+    };
+  } catch {
+    return null;
+  }
+}
+async function writeSidecar(path, state) {
+  const dir = dirname3(path);
+  await mkdir2(dir, { recursive: true });
+  await chmod2(dir, 448).catch(() => {});
+  await writeFile2(path, `${JSON.stringify(state, null, 2)}
+`, { encoding: "utf8", mode: 384 });
+  await chmod2(path, 384).catch(() => {});
+}
+function nextSidecar(previous, file, patch = {}) {
+  const currentIds = file.envelopes.map((envelope) => envelope.id);
+  const known = previous?.envelopeIds ?? [];
+  const removed = new Set(previous?.removedEnvelopeIds ?? []);
+  for (const id of known)
+    if (!currentIds.includes(id))
+      removed.add(id);
+  return {
+    ...previous ?? {},
+    vaultId: file.vaultId,
+    lastGeneration: file.generation,
+    envelopeIds: currentIds,
+    removedEnvelopeIds: [...removed].sort(),
+    ...patch
+  };
+}
+var init_sidecar = __esm(() => {
+  init_sha256();
+  init_crypto();
+});
+
+// src/wallet-keystore.ts
+import { chmod as chmod3, mkdir as mkdir3, readFile as readFile3, rename as rename2, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
+import { homedir as homedir3 } from "node:os";
+import { dirname as dirname4, join as join5 } from "node:path";
+function defaultTeeKeystorePath(env) {
+  return join5(candleConfigDir(env), "tee-wallets.enc");
+}
+function legacyTeeKeystorePath(env) {
+  return join5(candleConfigDir(env), "hot-wallets.enc");
+}
+function candleConfigDir(env) {
+  return env.CANDLE_CONFIG_DIR?.trim() || join5(homedir3(), ".config", "candle");
+}
+async function deriveKeystoreKey(passphrase, salt, iterations) {
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
+    "deriveKey"
+  ]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function createKeystore(passphrase) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  return { key: await deriveKeystoreKey(passphrase, salt, KEYSTORE_ITERATIONS), salt, iterations: KEYSTORE_ITERATIONS };
+}
+async function serializeKeystore(entries, key, salt, iterations, purpose) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(entries)));
+  const file = {
+    version: KEYSTORE_VERSION,
+    createdAt: new Date().toISOString(),
+    kdf: "PBKDF2-HMAC-SHA256",
+    iterations,
+    salt: b64(salt),
+    cipher: "AES-256-GCM",
+    iv: b64(iv),
+    ciphertext: b64(new Uint8Array(sealed)),
+    ...purpose !== undefined && purpose !== "wallets" ? { purpose } : {}
+  };
+  return `${JSON.stringify(file, null, 2)}
+`;
+}
+async function readKeystore(raw, passphrase, opts = {}) {
+  let file;
+  try {
+    file = JSON.parse(raw);
+  } catch {
+    throw new Error("The keystore file is not valid JSON.");
+  }
+  if (file.version !== KEYSTORE_VERSION) {
+    throw new Error(`Unsupported keystore version ${file.version}: this CLI writes version ${KEYSTORE_VERSION}.`);
+  }
+  const purpose = file.purpose === TEE_KEYSTORE_PURPOSE || file.purpose === LEGACY_TEE_PURPOSE ? TEE_KEYSTORE_PURPOSE : "wallets";
+  if (opts.expectPurpose !== undefined && purpose !== opts.expectPurpose) {
+    throw new Error(purpose === TEE_KEYSTORE_PURPOSE ? "This is a TEE wallet store (tee-wallets.enc). It has no export path; use: candle tee sweep." : "This is not a TEE wallet store. The tee commands only open tee-wallets.enc.");
+  }
+  if (purpose === TEE_KEYSTORE_PURPOSE) {
+    if (file.kdf !== "PBKDF2-HMAC-SHA256" || file.cipher !== "AES-256-GCM") {
+      throw new Error("The TEE wallet store names an unsupported KDF or cipher; refusing to open it.");
+    }
+    if (!Number.isInteger(file.iterations) || file.iterations < TEE_KEYSTORE_MIN_ITERATIONS || file.iterations > TEE_KEYSTORE_MAX_ITERATIONS) {
+      throw new Error(`The TEE wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` + `${TEE_KEYSTORE_MIN_ITERATIONS}-${TEE_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`);
+    }
+  }
+  const salt = unb64(file.salt);
+  const key = await deriveKeystoreKey(passphrase, salt, file.iterations);
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(file.iv) }, key, unb64(file.ciphertext));
+  } catch {
+    throw new Error("Could not decrypt the keystore: wrong passphrase, or the file is corrupt.");
+  }
+  const decoded = JSON.parse(new TextDecoder().decode(plain));
+  return {
+    entries: decoded.map(({ [LEGACY_TEE_FIELD]: legacy, ...entry }) => legacy !== undefined && entry.tee === undefined ? { ...entry, tee: legacy } : entry),
+    key,
+    salt,
+    iterations: file.iterations
+  };
+}
+async function writeKeystoreFile(path, contents) {
+  const dir = dirname4(path);
+  await mkdir3(dir, { recursive: true });
+  await chmod3(dir, 448);
+  const tmpPath = `${path}.${crypto.randomUUID()}.tmp`;
+  await writeFile3(tmpPath, contents, { encoding: "utf8", mode: 384 });
+  await chmod3(tmpPath, 384);
+  await rename2(tmpPath, path);
+}
+function keystoreLockPath(path) {
+  return `${path}.lock`;
+}
+async function withKeystoreLock(path, clock, fn, opts = {}) {
+  const lockPath = keystoreLockPath(path);
+  const waitMs = opts.waitMs ?? 1e4;
+  const pollMs = opts.pollMs ?? 100;
+  await mkdir3(dirname4(path), { recursive: true });
+  const started = clock.now();
+  for (;; ) {
+    try {
+      await mkdir3(lockPath);
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST")
+        throw error;
+      if (clock.now() - started >= waitMs) {
+        let owner = null;
+        try {
+          owner = (await readFile3(join5(lockPath, "owner"), "utf8")).trim() || null;
+        } catch {
+          owner = null;
+        }
+        throw new KeystoreLockedError(lockPath, owner);
+      }
+      await clock.sleep(pollMs);
+    }
+  }
+  try {
+    await writeFile3(join5(lockPath, "owner"), `${opts.owner ?? `pid ${process.pid}`} since ${new Date().toISOString()}
+`, { encoding: "utf8", mode: 384 }).catch(() => {});
+    return await fn();
+  } finally {
+    await rm2(lockPath, { recursive: true, force: true });
+  }
+}
+var TEE_KEYSTORE_PURPOSE = "ember-tee", LEGACY_TEE_PURPOSE = "ember-hot", LEGACY_TEE_FIELD = "hot", TEE_KEYSTORE_MIN_ITERATIONS = 210000, TEE_KEYSTORE_MAX_ITERATIONS = 2100000, KEYSTORE_VERSION = 1, KEYSTORE_ITERATIONS = 210000, b64 = (bytes) => Buffer.from(bytes).toString("base64"), unb64 = (s) => new Uint8Array(Buffer.from(s, "base64")), KeystoreLockedError;
+var init_wallet_keystore = __esm(() => {
+  KeystoreLockedError = class KeystoreLockedError extends Error {
+    lockPath;
+    owner;
+    constructor(lockPath, owner) {
+      super(`Another command holds the TEE wallet store lock at ${lockPath}` + `${owner ? ` (${owner})` : ""}. If no other candle tee command is running, remove that directory and retry.`);
+      this.lockPath = lockPath;
+      this.owner = owner;
+      this.name = "KeystoreLockedError";
+    }
+  };
+});
+
 // src/vault/store.ts
 var exports_store = {};
 __export(exports_store, {
   writeNewVault: () => writeNewVault,
+  wrapDekForPrf: () => wrapDekForPrf,
   wrapDekForPassphrase: () => wrapDekForPassphrase,
   withVaultLock: () => withVaultLock,
   unlockWithPassphrase: () => unlockWithPassphrase,
@@ -2914,15 +3590,15 @@ __export(exports_store, {
 });
 import { chmod as chmod4, mkdir as mkdir4, readFile as readFile4, stat as stat2 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
-import { join as join5 } from "node:path";
+import { join as join6 } from "node:path";
 function candleConfigDir2(env) {
-  return env.CANDLE_CONFIG_DIR?.trim() || join5(homedir4(), ".config", "candle");
+  return env.CANDLE_CONFIG_DIR?.trim() || join6(homedir4(), ".config", "candle");
 }
 function defaultVaultPath(env) {
-  return join5(candleConfigDir2(env), "vault.enc");
+  return join6(candleConfigDir2(env), "vault.enc");
 }
 function legacyWalletsPath(env) {
-  return join5(candleConfigDir2(env), "wallets.enc");
+  return join6(candleConfigDir2(env), "wallets.enc");
 }
 async function readVaultRaw(path) {
   try {
@@ -2947,14 +3623,7 @@ function closeVault(vault) {
 async function unlockVault(path, raw, request, opts = {}) {
   const file = parseVaultFile(raw);
   const envelope = pickEnvelope(file, request);
-  const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), opts.notice);
-  const dek = await withSecret(kek, async (kekBytes) => {
-    const kekKey = await importAesKey(kekBytes);
-    return open2(kekKey, envelope.wrap, envelopeAad(file, envelope), {
-      code: "VAULT_UNLOCK_FAILED",
-      message: "Could not open the vault: wrong passphrase, or the file is corrupt."
-    });
-  });
+  const dek = await unwrapDek(file, envelope, request, opts.notice);
   if (dek.length !== DEK_BYTES) {
     wipe(dek);
     throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.");
@@ -2978,6 +3647,27 @@ async function unlockVault(path, raw, request, opts = {}) {
     wipe(dek);
     throw error;
   }
+}
+async function unwrapDek(file, envelope, request, notice) {
+  if (request.factor === "passphrase") {
+    const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), notice);
+    return withSecret(kek, async (kekBytes) => {
+      const kekKey2 = await importAesKey(kekBytes);
+      return open2(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
+        code: "VAULT_UNLOCK_FAILED",
+        message: "Could not open the vault: wrong passphrase, or the file is corrupt."
+      });
+    });
+  }
+  if (!isCtap2Envelope(envelope)) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a security key one.`);
+  }
+  const kekKey = await derivePrfKek(request.prfOutput, unb64u(file.vaultId, "vaultId"));
+  return open2(kekKey, envelope.wrap, envelopeAad(file, envelope), {
+    code: "VAULT_UNLOCK_FAILED",
+    message: "Could not open the vault with this security key: the assertion did not yield this envelope's key, or the file is corrupt.",
+    suggestion: "Nothing was derived from it and no other factor was tried."
+  });
 }
 function pickEnvelope(file, request) {
   const candidates = file.envelopes.filter((envelope) => envelope.factor === request.factor);
@@ -3057,6 +3747,11 @@ async function wrapDekForPassphrase(dek, passphrase, envelope, header, notice) {
     return { alg: VAULT_CIPHER, ...blob };
   });
 }
+async function wrapDekForPrf(dek, prfOutput, envelope, header) {
+  const kekKey = await derivePrfKek(prfOutput, unb64u(header.vaultId, "vaultId"));
+  const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
+  return { alg: VAULT_CIPHER, ...blob };
+}
 function serializeVault(file) {
   return `${JSON.stringify(file, null, 2)}
 `;
@@ -3122,7 +3817,7 @@ async function writeNewVault(path, contents) {
   await writeKeystoreFile(path, contents);
 }
 function candleConfigDirOf(path) {
-  return join5(path, "..");
+  return join6(path, "..");
 }
 function entriesOf(vault) {
   return vault.index.entries;
@@ -3133,6 +3828,254 @@ var init_store = __esm(() => {
   init_errors();
   init_format();
   init_sidecar();
+});
+
+// src/commands/vault-support.ts
+var exports_vault_support = {};
+__export(exports_vault_support, {
+  writeVaultFailure: () => writeVaultFailure,
+  writeJson: () => writeJson,
+  vaultPathFor: () => vaultPathFor,
+  usage: () => usage,
+  unlockInteractively: () => unlockInteractively,
+  runVaultCommand: () => runVaultCommand,
+  requireVaultRaw: () => requireVaultRaw,
+  requireTty: () => requireTty,
+  refuseEnvPassphrase: () => refuseEnvPassphrase,
+  confirmLastSix: () => confirmLastSix,
+  assertNotOlderCopy: () => assertNotOlderCopy
+});
+function refuseEnvPassphrase(ctx) {
+  if (ctx.deps.env.CANDLE_KEYSTORE_PASSPHRASE === undefined)
+    return true;
+  writeVaultFailure(ctx, new VaultError("ENV_PASSPHRASE_REFUSED", "CANDLE_KEYSTORE_PASSPHRASE is set. No Candle command reads its value, and the vault never takes a passphrase from the environment.", {
+    suggestion: "Unset it and run again; the vault commands prompt for the passphrase with input hidden."
+  }));
+  return false;
+}
+function requireTty(ctx, what) {
+  if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stdout)
+    return true;
+  writeVaultFailure(ctx, new VaultError("VAULT_UNLOCK_FAILED", `${what} needs a terminal: this CLI reads a vault passphrase or a security key PIN from a hidden prompt and from nowhere else.`, {
+    suggestion: "There is no environment variable and no flag that supplies one."
+  }));
+  return false;
+}
+function vaultPathFor(ctx, parsed) {
+  return parsed.values["--keystore"] ?? defaultVaultPath(ctx.deps.env);
+}
+async function requireVaultRaw(path) {
+  const raw = await readVaultRaw(path);
+  if (raw === null) {
+    throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" });
+  }
+  return raw;
+}
+async function unlockInteractively(ctx, path, raw, opts = {}) {
+  await assertNotOlderCopy(ctx, path, raw, opts.acceptOlderCopy ?? false);
+  const { deps } = ctx;
+  const file = parseVaultFile(raw);
+  const facts = await currentPlatformFacts(deps);
+  const choice = await chooseFactor(ctx, file.envelopes, facts, opts.factor ?? ctx.vaultFactor);
+  const notice = (line) => deps.stderr.write(line);
+  if (choice.kind === "passphrase") {
+    const typed = await deps.promptSecret(opts.promptText ?? "Vault passphrase (input hidden): ");
+    const passphrase = typed.trim();
+    if (passphrase === "") {
+      throw new VaultError("VAULT_UNLOCK_FAILED", "A passphrase is required.");
+    }
+    const open4 = (p, r) => choice.envelopeId === undefined ? unlockWithPassphrase(p, r, passphrase, { notice }) : unlockVault(p, r, { factor: "passphrase", passphrase, envelopeId: choice.envelopeId }, { notice });
+    const vault2 = await open4(path, raw);
+    return {
+      vault: vault2,
+      factor: { kind: "passphrase", envelopeId: vault2.envelope.id },
+      reopen: open4,
+      confirm: async (what) => {
+        const again = await deps.promptSecret(`Vault passphrase to ${what} (input hidden): `);
+        if (again.trim() !== passphrase) {
+          throw new VaultError("VAULT_UNLOCK_FAILED", "The passphrase did not match; nothing was signed.");
+        }
+      }
+    };
+  }
+  const envelope = choice.envelope;
+  const session = await openSecurityKeySession(deps, {
+    vaultId: file.vaultId,
+    envelopeId: envelope.id,
+    deviceFlag: ctx.vaultDevice,
+    requireFeatures: false
+  });
+  const open3 = async (p, r) => {
+    const current = parseVaultFile(r);
+    const target = current.envelopes.find((candidate) => candidate.id === envelope.id);
+    if (target === undefined || !isCtap2Envelope(target)) {
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `The file at ${p} has no security key envelope ${envelope.id}.`);
+    }
+    const prfOutput = await assertPrf(deps, session, target, current.vaultId, "unlock the vault");
+    try {
+      return await unlockVault(p, r, { factor: "passkey-prf", envelopeId: target.id, prfOutput }, { notice });
+    } finally {
+      wipe(prfOutput);
+    }
+  };
+  const vault = await open3(path, raw);
+  return {
+    vault,
+    factor: { kind: "security-key", envelopeId: envelope.id, session },
+    reopen: open3,
+    confirm: async (what) => {
+      deps.stderr.write(`Present the security key again to ${what}.
+`);
+      closeVault(await open3(path, raw));
+    }
+  };
+}
+async function chooseFactor(ctx, envelopes, facts, flag) {
+  const passphrases = envelopes.filter(isPassphraseEnvelope);
+  const keys = envelopes.filter(isCtap2Envelope);
+  const drivableKeys = keys.filter((envelope) => canDrive(envelope, facts));
+  const listKeys = (candidates) => candidates.map((envelope) => `  ${envelope.id}  security key  ${envelope.label || "(no label)"}`).join(`
+`);
+  if (flag === undefined) {
+    if (drivableKeys.length === 0) {
+      if (passphrases.length === 0) {
+        throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope, and no other envelope on it can be driven on this machine.", { suggestion: "Run `candle vault status` to see each factor and why it is not available here." });
+      }
+      return { kind: "passphrase" };
+    }
+    if (passphrases.length === 0 && drivableKeys.length === 1)
+      return { kind: "security-key", envelope: drivableKeys[0] };
+    const answer = (await ctx.deps.promptLine(`This vault opens with${passphrases.length > 0 ? " a passphrase or" : ""} a security key. Type passphrase, or the id of a security key envelope:
+${listKeys(drivableKeys)}
+> `)).trim();
+    if (answer === "passphrase" && passphrases.length > 0)
+      return { kind: "passphrase" };
+    const chosen = drivableKeys.find((envelope) => envelope.id === answer);
+    if (chosen)
+      return { kind: "security-key", envelope: chosen };
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `No factor named ${JSON.stringify(answer)}; nothing was tried.`, {
+      suggestion: "Answer passphrase, or one of the envelope ids listed, or pass --factor."
+    });
+  }
+  if (flag === "passphrase") {
+    if (passphrases.length === 0)
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
+    return { kind: "passphrase" };
+  }
+  if (flag === "security-key") {
+    if (keys.length === 0) {
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no security key envelope.", {
+        suggestion: "Add one: candle vault factor add security-key"
+      });
+    }
+    if (keys.length > 1) {
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has ${keys.length} security key envelopes; name one with --factor <id>:
+${listKeys(keys)}`);
+    }
+    return { kind: "security-key", envelope: assertDrivable(keys[0], facts) };
+  }
+  const named = envelopes.find((envelope) => envelope.id === flag);
+  if (named === undefined) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no envelope with id ${flag}.`, {
+      suggestion: "Run `candle vault factor list` for the ids."
+    });
+  }
+  if (isPassphraseEnvelope(named))
+    return { kind: "passphrase", envelopeId: named.id };
+  if (isCtap2Envelope(named))
+    return { kind: "security-key", envelope: assertDrivable(named, facts) };
+  const availability = envelopeAvailability(named, facts);
+  if (availability.state === "available") {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${named.id} is a ${named.factor} envelope this release cannot open.`);
+  }
+  throw new VaultError(refusalCodeFor(availability), `Envelope ${named.id} (${named.factor}${typeof named.transport === "string" ? `/${named.transport}` : ""}) cannot open the vault here: ${availability.reason}.`, { suggestion: "No other envelope was tried. Run `candle vault status` to see which factors can open it here." });
+}
+function assertDrivable(envelope, facts) {
+  const availability = envelopeAvailability(envelope, facts);
+  if (availability.state === "available")
+    return envelope;
+  throw new VaultError(refusalCodeFor(availability), `The security key envelope ${envelope.id} cannot open the vault here: ${availability.reason}.`, { suggestion: "No other envelope was tried. Run `candle vault status` to see which factors can open it here." });
+}
+async function assertNotOlderCopy(ctx, path, raw, accept) {
+  const sidecar = await readSidecar(sidecarPath(path));
+  if (sidecar === null) {
+    ctx.deps.stderr.write(`No vault.state.json beside this vault, so an older copy of it cannot be recognized here.
+`);
+    return;
+  }
+  let generation;
+  let vaultId;
+  let envelopeIds = [];
+  try {
+    const parsed = JSON.parse(raw);
+    generation = parsed.generation;
+    vaultId = parsed.vaultId;
+    envelopeIds = (parsed.envelopes ?? []).map((envelope) => String(envelope.id));
+  } catch {
+    return;
+  }
+  if (vaultId !== sidecar.vaultId)
+    return;
+  if (!Number.isInteger(generation) || generation >= sidecar.lastGeneration)
+    return;
+  const known = new Set(sidecar.envelopeIds);
+  const onlyHere = envelopeIds.filter((id) => !known.has(id));
+  const detail = onlyHere.length > 0 ? ` This copy carries envelope(s) the last one here did not: ${onlyHere.join(", ")}.` : "";
+  if (!accept) {
+    throw new VaultError("VAULT_OLDER_COPY", `This vault is generation ${String(generation)}, but this machine last saw generation ${sidecar.lastGeneration}, so it is an older copy.${detail}`, {
+      suggestion: "If you meant to restore an older backup, pass --accept-older-copy. Editing vault.state.json defeats this check and it is not a defense against anyone with access to this account."
+    });
+  }
+  ctx.deps.stderr.write(`Opening an older copy: generation ${String(generation)} against the ${sidecar.lastGeneration} this machine last saw.${detail}
+`);
+}
+async function confirmLastSix(ctx, address, what) {
+  const expected = address.slice(-6);
+  const typed = (await ctx.deps.promptLine(`Type the last six characters of ${what} (${address}) to confirm: `)).trim();
+  if (typed !== expected) {
+    throw new VaultError("DESTINATION_NOT_CONFIRMED", "That is not the last six characters of that address; nothing was done.");
+  }
+}
+function writeVaultFailure(ctx, error) {
+  if (isVaultError(error)) {
+    writeLocalFailure(ctx.deps, { code: error.code, message: error.message, ...error.suggestion ? { suggestion: error.suggestion } : {} }, ctx.json);
+    return error.exitCode;
+  }
+  writeLocalFailure(ctx.deps, { code: "VAULT_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, ctx.json);
+  return 1;
+}
+function usage(ctx, line) {
+  writeUsageFailure(ctx.deps, line, ctx.json);
+  return 2;
+}
+async function runVaultCommand(ctx, body) {
+  const held = [];
+  try {
+    return await body({
+      hold: (vault) => {
+        held.push(vault);
+        return vault;
+      }
+    });
+  } catch (error) {
+    return writeVaultFailure(ctx, error);
+  } finally {
+    for (const vault of held)
+      closeVault(vault);
+  }
+}
+function writeJson(deps, value) {
+  deps.stdout.write(`${JSON.stringify(value)}
+`);
+}
+var init_vault_support = __esm(() => {
+  init_render();
+  init_errors();
+  init_fido2();
+  init_format();
+  init_platform();
+  init_sidecar();
+  init_store();
 });
 
 // src/vault/tee-lookup.ts
@@ -3146,38 +4089,20 @@ async function findTeeInVault(ctx, address, opts = {}) {
   const raw = await readVaultRaw(path);
   if (raw === null)
     return { hit: false };
-  let passphrase = opts.passphrase;
-  if (passphrase === undefined) {
-    passphrase = (await ctx.deps.promptSecret("Vault passphrase (input hidden): ")).trim();
-    if (passphrase === "") {
-      throw new Error("A passphrase is required.");
-    }
-  }
-  const sidecar = await readSidecar(sidecarPath(path));
-  if (sidecar !== null) {
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed.vaultId === sidecar.vaultId && typeof parsed.generation === "number" && parsed.generation < sidecar.lastGeneration) {
-        ctx.deps.stderr.write(`Opening an older vault copy (generation ${parsed.generation} against ${sidecar.lastGeneration}).
-`);
-      }
-    } catch {}
-  }
-  const vault = await unlockWithPassphrase(path, raw, passphrase, {
-    notice: (line) => ctx.deps.stderr.write(line)
-  });
+  const opened = await unlockInteractively(ctx, path, raw, { acceptOlderCopy: true });
+  const vault = opened.vault;
   const entry = vault.index.entries.find((candidate) => candidate.address === address && candidate.role === "tee-wallet");
   if (entry === undefined) {
     closeVault(vault);
     return { hit: false };
   }
-  return { hit: true, vault, entry, passphrase };
+  return { hit: true, vault, entry, reopen: opened.reopen };
 }
 function vaultOwnsTeeAddress(vault, address) {
   return vault.index.entries.some((entry) => entry.address === address && entry.role === "tee-wallet");
 }
 var init_tee_lookup = __esm(() => {
-  init_sidecar();
+  init_vault_support();
   init_store();
 });
 
@@ -12960,7 +13885,7 @@ function mergeCapabilities(base, additional) {
   return result;
 }
 var DEFAULT_REQUEST_TIMEOUT_MSEC = 60000;
-var init_protocol = __esm(() => {
+var init_protocol2 = __esm(() => {
   init_types2();
 });
 
@@ -13342,11 +14267,11 @@ var require_codegen = __commonJS((exports) => {
       const rhs = this.rhs === undefined ? "" : ` = ${this.rhs}`;
       return `${varKind} ${this.name}${rhs};` + _n;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       if (!names[this.name.str])
         return;
       if (this.rhs)
-        this.rhs = optimizeExpr(this.rhs, names, constants2);
+        this.rhs = optimizeExpr(this.rhs, names, constants3);
       return this;
     }
     get names() {
@@ -13364,10 +14289,10 @@ var require_codegen = __commonJS((exports) => {
     render({ _n }) {
       return `${this.lhs} = ${this.rhs};` + _n;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
         return;
-      this.rhs = optimizeExpr(this.rhs, names, constants2);
+      this.rhs = optimizeExpr(this.rhs, names, constants3);
       return this;
     }
     get names() {
@@ -13433,8 +14358,8 @@ var require_codegen = __commonJS((exports) => {
     optimizeNodes() {
       return `${this.code}` ? this : undefined;
     }
-    optimizeNames(names, constants2) {
-      this.code = optimizeExpr(this.code, names, constants2);
+    optimizeNames(names, constants3) {
+      this.code = optimizeExpr(this.code, names, constants3);
       return this;
     }
     get names() {
@@ -13464,12 +14389,12 @@ var require_codegen = __commonJS((exports) => {
       }
       return nodes.length > 0 ? this : undefined;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       const { nodes } = this;
       let i = nodes.length;
       while (i--) {
         const n = nodes[i];
-        if (n.optimizeNames(names, constants2))
+        if (n.optimizeNames(names, constants3))
           continue;
         subtractNames(names, n.names);
         nodes.splice(i, 1);
@@ -13526,12 +14451,12 @@ var require_codegen = __commonJS((exports) => {
         return;
       return this;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       var _a;
-      this.else = (_a = this.else) === null || _a === undefined ? undefined : _a.optimizeNames(names, constants2);
-      if (!(super.optimizeNames(names, constants2) || this.else))
+      this.else = (_a = this.else) === null || _a === undefined ? undefined : _a.optimizeNames(names, constants3);
+      if (!(super.optimizeNames(names, constants3) || this.else))
         return;
-      this.condition = optimizeExpr(this.condition, names, constants2);
+      this.condition = optimizeExpr(this.condition, names, constants3);
       return this;
     }
     get names() {
@@ -13556,10 +14481,10 @@ var require_codegen = __commonJS((exports) => {
     render(opts) {
       return `for(${this.iteration})` + super.render(opts);
     }
-    optimizeNames(names, constants2) {
-      if (!super.optimizeNames(names, constants2))
+    optimizeNames(names, constants3) {
+      if (!super.optimizeNames(names, constants3))
         return;
-      this.iteration = optimizeExpr(this.iteration, names, constants2);
+      this.iteration = optimizeExpr(this.iteration, names, constants3);
       return this;
     }
     get names() {
@@ -13597,10 +14522,10 @@ var require_codegen = __commonJS((exports) => {
     render(opts) {
       return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
     }
-    optimizeNames(names, constants2) {
-      if (!super.optimizeNames(names, constants2))
+    optimizeNames(names, constants3) {
+      if (!super.optimizeNames(names, constants3))
         return;
-      this.iterable = optimizeExpr(this.iterable, names, constants2);
+      this.iterable = optimizeExpr(this.iterable, names, constants3);
       return this;
     }
     get names() {
@@ -13645,11 +14570,11 @@ var require_codegen = __commonJS((exports) => {
       (_b = this.finally) === null || _b === undefined || _b.optimizeNodes();
       return this;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       var _a, _b;
-      super.optimizeNames(names, constants2);
-      (_a = this.catch) === null || _a === undefined || _a.optimizeNames(names, constants2);
-      (_b = this.finally) === null || _b === undefined || _b.optimizeNames(names, constants2);
+      super.optimizeNames(names, constants3);
+      (_a = this.catch) === null || _a === undefined || _a.optimizeNames(names, constants3);
+      (_b = this.finally) === null || _b === undefined || _b.optimizeNames(names, constants3);
       return this;
     }
     get names() {
@@ -13923,7 +14848,7 @@ var require_codegen = __commonJS((exports) => {
   function addExprNames(names, from) {
     return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
   }
-  function optimizeExpr(expr, names, constants2) {
+  function optimizeExpr(expr, names, constants3) {
     if (expr instanceof code_1.Name)
       return replaceName(expr);
     if (!canOptimize(expr))
@@ -13938,14 +14863,14 @@ var require_codegen = __commonJS((exports) => {
       return items;
     }, []));
     function replaceName(n) {
-      const c = constants2[n.str];
+      const c = constants3[n.str];
       if (c === undefined || names[n.str] !== 1)
         return n;
       delete names[n.str];
       return c;
     }
     function canOptimize(e) {
-      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants2[c.str] !== undefined);
+      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants3[c.str] !== undefined);
     }
   }
   function subtractNames(names, from) {
@@ -19596,7 +20521,7 @@ var init_ajv_provider = __esm(() => {
 // ../../node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js
 var Server;
 var init_server = __esm(() => {
-  init_protocol();
+  init_protocol2();
   init_types2();
   init_ajv_provider();
   Server = class Server extends Protocol {
@@ -23212,120 +24137,8 @@ function parseExpiresInDays(raw) {
   return { ok: true, days };
 }
 
-// src/render.ts
-var ALL_AGENT_SCOPES = [
-  "launch:write",
-  "launch:read",
-  "activity:write",
-  "swap:write",
-  "transfer:write"
-];
-var DEFAULT_AGENT_SCOPES = ALL_AGENT_SCOPES.filter((scope) => scope !== "swap:write" && scope !== "transfer:write");
-var SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf";
-var TRANSFER_WRITE_NOTE = "moves funds -- this key can transfer assets between your wallets";
-function formatScopesForSummary(scopes) {
-  return scopes.map((scope) => scope === "swap:write" ? `${scope} (${SWAP_WRITE_NOTE})` : scope === "transfer:write" ? `${scope} (${TRANSFER_WRITE_NOTE})` : scope).join(", ");
-}
-function renderTable(headers, rows) {
-  const widths = headers.map((header, col) => Math.max(header.length, ...rows.map((row) => (row[col] ?? "").length)));
-  const line = (cells) => cells.map((cell, col) => col === cells.length - 1 ? cell ?? "" : (cell ?? "").padEnd(widths[col] ?? 0)).join("  ");
-  const separator = widths.map((width) => "-".repeat(width)).join("  ");
-  return [line(headers), separator, ...rows.map(line)].join(`
-`);
-}
-function formatTimestamp(ms, whenAbsent = "never") {
-  return ms === undefined ? whenAbsent : new Date(ms).toISOString();
-}
-function renderError(result, ctx) {
-  if (result.code === "DEVICE_TOKEN_INVALID") {
-    return "This device was revoked or its token is stale. Run: candle auth login";
-  }
-  if (result.status === 403 && result.code === "SCOPE_MISSING") {
-    return `${result.message}. Mint one that has it with: candle keys create --scopes <a,b,c>, or check an existing key's scopes with: candle keys list`;
-  }
-  if (result.status === 401 && ctx.authType === "key") {
-    return "API key invalid or revoked. Run: candle keys create";
-  }
-  if (result.status === 0) {
-    return `Could not reach ${ctx.apiUrl}. Set CANDLE_API_URL to override the API endpoint.`;
-  }
-  return result.message;
-}
-function suggestionFor(result, ctx) {
-  if (result.code === "DEVICE_TOKEN_INVALID")
-    return "Run: candle auth login";
-  if (result.status === 403 && result.code === "SCOPE_MISSING") {
-    return "Mint a key that has it: candle keys create --scopes <a,b,c>, or check an existing key's scopes: candle keys list";
-  }
-  if (result.status === 401 && ctx.authType === "key")
-    return "Run: candle keys create";
-  if (result.status === 0)
-    return "Set CANDLE_API_URL to override the API endpoint.";
-  return result.uiHint;
-}
-function errorEnvelope(result, ctx) {
-  const code = result.code ?? result.rfcError ?? (result.status === 0 ? "NETWORK_UNREACHABLE" : `HTTP_${result.status}`);
-  const message = result.status === 0 ? `Could not reach ${ctx.apiUrl}.` : result.message;
-  const suggestion = suggestionFor(result, ctx);
-  const docsUrl = result.docsPath ? `https://docs.candle.tv/${result.docsPath}` : undefined;
-  return {
-    ok: false,
-    code,
-    status: result.status,
-    message,
-    ...suggestion ? { suggestion } : {},
-    ...docsUrl ? { docsUrl } : {}
-  };
-}
-function writeFailure(deps, result, ctx, json) {
-  if (json)
-    deps.stdout.write(`${JSON.stringify(errorEnvelope(result, ctx))}
-`);
-  else
-    deps.stderr.write(`${renderError(result, ctx)}
-`);
-}
-function writeLocalFailure(deps, failure, json) {
-  if (json) {
-    deps.stdout.write(`${JSON.stringify({ ok: false, ...failure })}
-`);
-    return;
-  }
-  const separator = failure.suggestion?.includes(`
-`) ? `
-` : " ";
-  deps.stderr.write(`${failure.suggestion ? `${failure.message}${separator}${failure.suggestion}` : failure.message}
-`);
-}
-function writeUsageFailure(deps, message, json) {
-  if (json)
-    deps.stdout.write(`${JSON.stringify({ ok: false, code: "USAGE", message })}
-`);
-  else
-    deps.stderr.write(`${message}
-`);
-}
-function portalDeviceUrl(apiUrl, portalOrigin) {
-  if (portalOrigin) {
-    try {
-      return `${new URL(portalOrigin).origin}/agents`;
-    } catch {}
-  }
-  try {
-    const url = new URL(apiUrl);
-    const labels = url.hostname.split(".");
-    const apiLabel = labels.indexOf("api");
-    if (apiLabel !== -1 && labels.length > 1) {
-      labels.splice(apiLabel, 1);
-      url.hostname = labels.join(".");
-    }
-    return `${url.origin}/agents`;
-  } catch {
-    return `${apiUrl}/agents`;
-  }
-}
-
 // src/checks.ts
+init_render();
 async function runLiveCheck(params) {
   const { deps, apiUrl, path, auth, credential, check, passDetail } = params;
   const result = await apiRequest(path, {
@@ -23707,6 +24520,9 @@ async function resolveApiKey(deps, profile) {
   return stored ?? undefined;
 }
 
+// src/commands/auth.ts
+init_render();
+
 // src/version.ts
 var CLI_VERSION = "0.10.0";
 
@@ -24046,83 +24862,9 @@ async function authStatus(args, ctx) {
   return exitCode;
 }
 
-// src/release.ts
-var RELEASE_BASE_URL = "https://github.com/candledottv/agentic";
-var RELEASE_ISSUER = "https://token.actions.githubusercontent.com";
-var VERSION = /^\d+\.\d+\.\d+$/;
-function isPlainVersion(value) {
-  return VERSION.test(value);
-}
-function releaseIdentityUri(version) {
-  if (!VERSION.test(version))
-    throw new Error(`invalid release version: ${version}`);
-  return `https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v${version}`;
-}
-function compareVersions(a, b) {
-  const pa = a.split(".").map((n) => Number.parseInt(n, 10) || 0);
-  const pb = b.split(".").map((n) => Number.parseInt(n, 10) || 0);
-  for (let i = 0;i < 3; i++) {
-    const x = pa[i] ?? 0;
-    const y = pb[i] ?? 0;
-    if (x < y)
-      return -1;
-    if (x > y)
-      return 1;
-  }
-  return 0;
-}
-function platformKey(platform, arch) {
-  const os = platform === "darwin" ? "darwin" : platform === "linux" ? "linux" : null;
-  const cpu = arch === "arm64" ? "arm64" : arch === "x64" ? "x64" : null;
-  if (!os || !cpu)
-    return null;
-  return `${os}-${cpu}`;
-}
-function detectInstall(execPath, realExecPath) {
-  const base = execPath.split("/").pop() ?? "";
-  if (base === "node" || base === "bun" || base === "node.exe" || base === "bun.exe")
-    return "script";
-  if (/\/Cellar\/candle\//.test(realExecPath))
-    return "homebrew";
-  return "binary";
-}
-function latestUrl(baseUrl) {
-  return `${baseUrl}/releases/latest/download/latest.json`;
-}
-function assetUrl(baseUrl, tag, name) {
-  return `${baseUrl}/releases/download/${tag}/${name}`;
-}
-async function fetchLatest(deps, baseUrl) {
-  let res;
-  try {
-    res = await deps.fetch(latestUrl(baseUrl), { redirect: "follow" });
-  } catch (error) {
-    return {
-      ok: false,
-      kind: "unreachable",
-      message: `Could not reach ${latestUrl(baseUrl)}: ${error instanceof Error ? error.message : String(error)}`
-    };
-  }
-  if (!res.ok)
-    return { ok: false, kind: "unreachable", message: `${latestUrl(baseUrl)} answered ${res.status}` };
-  let body;
-  try {
-    body = await res.json();
-  } catch {
-    return { ok: false, kind: "invalid", message: "The release manifest is not JSON" };
-  }
-  const manifest = body;
-  if (typeof manifest.version !== "string" || typeof manifest.tag !== "string" || typeof manifest.assets !== "object" || manifest.assets === null) {
-    return { ok: false, kind: "invalid", message: "The release manifest has no version, tag or assets" };
-  }
-  return { ok: true, manifest };
-}
-function releaseBaseUrl(env) {
-  const override = env.CANDLE_RELEASE_BASE_URL?.trim();
-  return override ? override.replace(/\/$/, "") : RELEASE_BASE_URL;
-}
-
 // src/commands/doctor.ts
+init_release();
+init_render();
 var MIN_NODE_MAJOR = 18;
 var API_KEY_CHECK = "API key valid (launch:write)";
 async function doctor(args, ctx) {
@@ -24281,6 +25023,7 @@ async function doctor(args, ctx) {
 }
 
 // src/commands/keys.ts
+init_render();
 var KEYS_PATH = "/api/v1/agent/keys";
 var NO_DEVICE_TOKEN = {
   code: "NO_DEVICE_TOKEN",
@@ -24521,6 +25264,7 @@ async function keysRevoke(args, ctx) {
 }
 
 // src/commands/keys-wallets.ts
+init_render();
 var NO_API_KEY = {
   code: "NO_API_KEY",
   message: "No API key for this profile.",
@@ -24686,6 +25430,8 @@ async function keysWallets(args, ctx) {
 }
 
 // src/commands/mcp.ts
+init_release();
+init_render();
 var MCP_TOOL_NAMES = [
   "candle_launch_token",
   "candle_launch_and_seed",
@@ -24814,6 +25560,7 @@ async function mcp(args, ctx) {
 }
 
 // src/commands/profile.ts
+init_render();
 async function profileList(args, ctx) {
   const { deps, json } = ctx;
   const parsed = parseArgs(args, {});
@@ -25041,6 +25788,7 @@ async function profileRemove(args, ctx) {
 }
 
 // src/commands/setup.ts
+init_render();
 var SKILLS_CLAUDE_COMMAND = "/plugin marketplace add candledottv/agentic";
 var CODING_AGENTS_DOCS = "https://docs.candle.tv/developers/coding-agents";
 function section(deps, title) {
@@ -25157,6 +25905,7 @@ Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl,
 
 // src/commands/tee.ts
 init_esm();
+init_render();
 
 // ../../node_modules/@noble/curves/esm/ed25519.js
 init_sha2();
@@ -27013,119 +27762,8 @@ function settle(observation, signature) {
 
 // src/vault/tee-resolve.ts
 init_esm();
-
-// src/commands/vault-support.ts
-init_errors();
-init_sidecar();
-init_store();
-function refuseEnvPassphrase(ctx) {
-  if (ctx.deps.env.CANDLE_KEYSTORE_PASSPHRASE === undefined)
-    return true;
-  writeVaultFailure(ctx, new VaultError("ENV_PASSPHRASE_REFUSED", "CANDLE_KEYSTORE_PASSPHRASE is set. No Candle command reads its value, and the vault never takes a passphrase from the environment.", {
-    suggestion: "Unset it and run again; the vault commands prompt for the passphrase with input hidden."
-  }));
-  return false;
-}
-function requireTty(ctx, what) {
-  if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stdout)
-    return true;
-  writeVaultFailure(ctx, new VaultError("VAULT_UNLOCK_FAILED", `${what} needs a terminal: this CLI reads a vault passphrase from a hidden prompt and from nowhere else.`, {
-    suggestion: "There is no environment variable and no flag that supplies one."
-  }));
-  return false;
-}
-function vaultPathFor(ctx, parsed) {
-  return parsed.values["--keystore"] ?? defaultVaultPath(ctx.deps.env);
-}
-async function requireVaultRaw(path) {
-  const raw = await readVaultRaw(path);
-  if (raw === null) {
-    throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" });
-  }
-  return raw;
-}
-async function unlockInteractively(ctx, path, raw, opts = {}) {
-  await assertNotOlderCopy(ctx, path, raw, opts.acceptOlderCopy ?? false);
-  const typed = await ctx.deps.promptSecret(opts.promptText ?? "Vault passphrase (input hidden): ");
-  const passphrase = typed.trim();
-  if (passphrase === "") {
-    throw new VaultError("VAULT_UNLOCK_FAILED", "A passphrase is required.");
-  }
-  const vault = await unlockWithPassphrase(path, raw, passphrase, { notice: (line) => ctx.deps.stderr.write(line) });
-  return { vault, passphrase };
-}
-async function assertNotOlderCopy(ctx, path, raw, accept) {
-  const sidecar = await readSidecar(sidecarPath(path));
-  if (sidecar === null) {
-    ctx.deps.stderr.write(`No vault.state.json beside this vault, so an older copy of it cannot be recognized here.
-`);
-    return;
-  }
-  let generation;
-  let vaultId;
-  let envelopeIds = [];
-  try {
-    const parsed = JSON.parse(raw);
-    generation = parsed.generation;
-    vaultId = parsed.vaultId;
-    envelopeIds = (parsed.envelopes ?? []).map((envelope) => String(envelope.id));
-  } catch {
-    return;
-  }
-  if (vaultId !== sidecar.vaultId)
-    return;
-  if (!Number.isInteger(generation) || generation >= sidecar.lastGeneration)
-    return;
-  const known = new Set(sidecar.envelopeIds);
-  const onlyHere = envelopeIds.filter((id) => !known.has(id));
-  const detail = onlyHere.length > 0 ? ` This copy carries envelope(s) the last one here did not: ${onlyHere.join(", ")}.` : "";
-  if (!accept) {
-    throw new VaultError("VAULT_OLDER_COPY", `This vault is generation ${String(generation)}, but this machine last saw generation ${sidecar.lastGeneration}, so it is an older copy.${detail}`, {
-      suggestion: "If you meant to restore an older backup, pass --accept-older-copy. Editing vault.state.json defeats this check and it is not a defense against anyone with access to this account."
-    });
-  }
-  ctx.deps.stderr.write(`Opening an older copy: generation ${String(generation)} against the ${sidecar.lastGeneration} this machine last saw.${detail}
-`);
-}
-async function confirmLastSix(ctx, address, what) {
-  const expected = address.slice(-6);
-  const typed = (await ctx.deps.promptLine(`Type the last six characters of ${what} (${address}) to confirm: `)).trim();
-  if (typed !== expected) {
-    throw new VaultError("DESTINATION_NOT_CONFIRMED", "That is not the last six characters of that address; nothing was done.");
-  }
-}
-function writeVaultFailure(ctx, error) {
-  if (isVaultError(error)) {
-    writeLocalFailure(ctx.deps, { code: error.code, message: error.message, ...error.suggestion ? { suggestion: error.suggestion } : {} }, ctx.json);
-    return error.exitCode;
-  }
-  writeLocalFailure(ctx.deps, { code: "VAULT_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, ctx.json);
-  return 1;
-}
-function usage(ctx, line) {
-  writeUsageFailure(ctx.deps, line, ctx.json);
-  return 2;
-}
-async function runVaultCommand(ctx, body) {
-  const held = [];
-  try {
-    return await body({
-      hold: (vault) => {
-        held.push(vault);
-        return vault;
-      }
-    });
-  } catch (error) {
-    return writeVaultFailure(ctx, error);
-  } finally {
-    for (const vault of held)
-      closeVault(vault);
-  }
-}
-function writeJson(deps, value) {
-  deps.stdout.write(`${JSON.stringify(value)}
-`);
-}
+init_vault_support();
+init_render();
 
 // src/vault/ed25519.ts
 init_esm();
@@ -27425,7 +28063,7 @@ async function resolveTeeAddress(ctx, _parsed, address, openLegacy) {
           vault: hit.vault,
           entry: hit.entry,
           legacyView: keyEntryAsKeystore(hit.entry, privateKeyBase58),
-          passphrase: hit.passphrase,
+          reopen: hit.reopen,
           privateKeyBase58
         }
       };
@@ -27435,10 +28073,7 @@ async function resolveTeeAddress(ctx, _parsed, address, openLegacy) {
       writeLocalFailure(ctx.deps, { code: error.code, message: error.message, ...error.suggestion ? { suggestion: error.suggestion } : {} }, ctx.json);
       return { ok: false, code: error.exitCode };
     }
-    if (error instanceof Error && error.message === "A passphrase is required.") {
-      writeLocalFailure(ctx.deps, { code: "VAULT_UNLOCK_FAILED", message: error.message }, ctx.json);
-      return { ok: false, code: 1 };
-    }
+    throw error;
   }
   const opened = await openLegacy();
   if (!opened.ok)
@@ -31461,6 +32096,7 @@ init_wallet_keystore();
 
 // src/commands/wallets.ts
 init_esm();
+init_render();
 var NONE_HINT = `A wallet marked none has no signer on this machine, so a trade from here cannot sign with it.
 ` + `Import it here (candle wallets import), or run the trade from the machine that imported it.
 `;
@@ -32256,15 +32892,25 @@ async function teeEnable(args, ctx) {
   let vault = vaultFlag;
   if (vaultKey !== undefined) {
     const { assertColdVaultDestination: assertColdVaultDestination2 } = await Promise.resolve().then(() => (init_promote_support(), exports_promote_support));
-    const { defaultVaultPath: defaultVaultPath2, readVaultRaw: readVaultRaw2, unlockWithPassphrase: unlockWithPassphrase2, closeVault: closeVault2 } = await Promise.resolve().then(() => (init_store(), exports_store));
+    const { defaultVaultPath: defaultVaultPath2, readVaultRaw: readVaultRaw2, closeVault: closeVault2 } = await Promise.resolve().then(() => (init_store(), exports_store));
+    const { unlockInteractively: unlockInteractively2 } = await Promise.resolve().then(() => (init_vault_support(), exports_vault_support));
+    const { isVaultError: isVaultError2 } = await Promise.resolve().then(() => (init_errors(), exports_errors));
     const vaultPath = parsed.values["--keystore"] ?? defaultVaultPath2(deps.env);
     const raw = await readVaultRaw2(vaultPath);
     if (raw === null) {
       writeLocalFailure(deps, { code: "VAULT_MISSING", message: `No vault at ${vaultPath}.`, suggestion: "Create one: candle vault init" }, json);
       return 1;
     }
-    const passphrase = (await deps.promptSecret("Vault passphrase (input hidden): ")).trim();
-    const opened2 = await unlockWithPassphrase2(vaultPath, raw, passphrase);
+    let opened2;
+    try {
+      opened2 = (await unlockInteractively2(ctx, vaultPath, raw, { acceptOlderCopy: true })).vault;
+    } catch (error) {
+      if (isVaultError2(error)) {
+        writeLocalFailure(deps, { code: error.code, message: error.message, ...error.suggestion ? { suggestion: error.suggestion } : {} }, json);
+        return error.exitCode;
+      }
+      throw error;
+    }
     try {
       const destination = assertColdVaultDestination2(opened2.index, vaultKey, {
         acceptUnknownExposure: parsed.booleans.has("--accept-unknown-exposure")
@@ -33324,6 +33970,9 @@ function formatBytes(n) {
   return `${Math.max(1, Math.round(n / 1024))} KB`;
 }
 
+// src/commands/update.ts
+init_release();
+
 // src/bun-crypto-shim.ts
 import crypto3, { KeyObject } from "node:crypto";
 var original = crypto3.verify.bind(crypto3);
@@ -33555,6 +34204,7 @@ function verifyReleaseAsset(bytes, bundleJson, identityUri, issuer) {
 }
 
 // src/commands/update.ts
+init_render();
 var INSTALLER_LINE = "curl -fsSL https://candle.tv/install.sh | bash";
 async function update(args, ctx) {
   const { deps, json } = ctx;
@@ -36299,6 +36949,7 @@ async function verifyEntry(copy, entry, root, report, observer) {
 }
 
 // src/commands/vault-backup.ts
+init_vault_support();
 async function vaultBackup(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--to"],
@@ -36333,7 +36984,7 @@ async function vaultBackup(args, ctx) {
     });
     const live = hold(opened.vault);
     await copyFile(path, destination);
-    const report = await verifyCopy(ctx, destination, opened.passphrase, live);
+    const report = await verifyCopy(ctx, destination, opened.reopen, live);
     const sidecar = sidecarPath(path);
     await writeSidecar(sidecar, {
       ...nextSidecar(await readSidecar(sidecar), live.file),
@@ -36377,7 +37028,7 @@ async function vaultVerifyBackup(args, ctx) {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const live = hold(opened.vault);
-    const report = await verifyCopy(ctx, resolve2(copyPath), opened.passphrase, live);
+    const report = await verifyCopy(ctx, resolve2(copyPath), opened.reopen, live);
     const sidecar = sidecarPath(path);
     await writeSidecar(sidecar, {
       ...nextSidecar(await readSidecar(sidecar), live.file),
@@ -36391,11 +37042,11 @@ async function vaultVerifyBackup(args, ctx) {
     return 0;
   });
 }
-async function verifyCopy(ctx, copyPath, passphrase, live) {
+async function verifyCopy(_ctx, copyPath, reopen, live) {
   const raw = await readVaultRaw(copyPath);
   if (raw === null)
     throw new VaultError("VAULT_MISSING", `No file at ${copyPath}.`);
-  const copy = await unlockWithPassphrase(copyPath, raw, passphrase, { notice: (line) => ctx.deps.stderr.write(line) });
+  const copy = await reopen(copyPath, raw);
   try {
     return await verifyVaultIntegrity(copy, { live });
   } finally {
@@ -36466,9 +37117,11 @@ The recovery phrase restores derived keys only. It does not restore any key impo
 }
 
 // src/commands/vault-demote.ts
+init_render();
 init_errors();
 init_promote_support();
 init_store();
+init_vault_support();
 async function vaultDemote(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--rpc-url", "--sweep-to", "--keystore"],
@@ -36584,11 +37237,12 @@ async function demoteWithAdapter(ctx, entry, address, rpcUrl, emergency) {
 }
 
 // src/commands/vault-export-key.ts
-import { access, chmod as chmod5, constants, lstat, writeFile as writeFile4 } from "node:fs/promises";
-import { dirname as dirname4, resolve as resolve3 } from "node:path";
+import { access as access2, chmod as chmod5, constants as constants2, lstat, writeFile as writeFile4 } from "node:fs/promises";
+import { dirname as dirname5, resolve as resolve3 } from "node:path";
 init_errors();
 init_promote_support();
 init_store();
+init_vault_support();
 async function vaultExportKey(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--to"],
@@ -36696,7 +37350,7 @@ async function assertExportTargetWritable(destination) {
     if (error.code !== "ENOENT")
       throw error;
   }
-  const parent = dirname4(destination);
+  const parent = dirname5(destination);
   try {
     const parentInfo = await lstat(parent);
     if (parentInfo.isSymbolicLink()) {
@@ -36718,7 +37372,7 @@ async function assertExportTargetWritable(destination) {
     throw error;
   }
   try {
-    await access(parent, constants.W_OK);
+    await access2(parent, constants2.W_OK);
   } catch {
     throw new VaultError("VAULT_WRITE_FAILED", `${parent} is not writable.`, {
       suggestion: "Choose a directory you can write to, or fix its permissions, then retry."
@@ -36748,6 +37402,7 @@ async function writeExportFile(destination, body) {
 // src/commands/vault-factor.ts
 init_crypto();
 init_errors();
+init_fido2();
 init_format();
 
 // src/vault/eff-wordlist.ts
@@ -44595,60 +45250,114 @@ function strengthLabel(strength) {
 }
 var APPLE_ACCOUNT_NOTICE = "Keep this passphrase and your recovery phrase outside the Apple account that holds a synced passkey: an Apple-generated password saved to iCloud Keychain lands in that account.";
 
-// src/vault/platform.ts
-init_errors();
-function realPlatformFacts(env) {
-  return {
-    platform: process.platform,
-    arch: process.arch,
-    helper: "absent",
-    ...env.CANDLE_VAULT_FAKE_OS_MAJOR ? { osMajor: Number(env.CANDLE_VAULT_FAKE_OS_MAJOR) } : {}
-  };
-}
-function factorAvailability(factor, facts) {
-  if (factor === "passphrase")
-    return { state: "available" };
-  const mac = facts.platform === "darwin";
-  switch (factor) {
-    case "passkey-prf":
-      return {
-        state: "unsupported-on-this-platform",
-        reason: "this release has no security key or passkey transport; the security key factor arrives in CLI 0.11.0 and the synced passkey factor in 0.13.0"
-      };
-    case "secure-enclave":
-      return {
-        state: "unsupported-on-this-platform",
-        reason: mac ? "this release ships no signed macOS helper; the Secure Enclave factor arrives in CLI 0.12.0" : "the Secure Enclave is macOS only"
-      };
-    default:
-      return { state: "unsupported-on-this-platform", reason: `this CLI does not know the factor ${factor}` };
-  }
-}
-function envelopeAvailability(envelope, facts) {
-  return factorAvailability(envelope.factor, facts);
-}
-function assertFactorAddable(factor, facts) {
-  const availability = factorAvailability(factor, facts);
-  if (availability.state === "available")
-    return;
-  const code = availability.state === "unavailable-on-this-device" ? "VAULT_FACTOR_UNAVAILABLE" : "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM";
-  throw new VaultError(code, `This CLI cannot add a ${factor} factor here: ${availability.reason}.`, {
-    suggestion: "No other factor is substituted and nothing was written."
-  });
-}
-function availabilityLabel(availability) {
-  switch (availability.state) {
-    case "available":
-      return "available";
-    case "unavailable-on-this-device":
-      return "unavailable-on-this-device";
-    default:
-      return "unsupported-on-this-platform";
-  }
-}
-
 // src/commands/vault-factor.ts
+init_platform();
 init_store();
+
+// src/commands/vault-factor-security-key.ts
+init_crypto();
+init_errors();
+init_fido2();
+init_format();
+init_platform();
+init_store();
+init_vault_support();
+var SECURITY_KEY_PAIR_NOTE = "One security key is not a recoverable factor: a lost key is a lost factor. Two security key envelopes on two different keys are a recoverable pair. The passphrase remains this vault's recovery floor.";
+async function addSecurityKeyFactor(ctx, parsed, path, hold) {
+  const { deps } = ctx;
+  const facts = await currentPlatformFacts(deps);
+  assertFactorAddable("passkey-prf", facts, "ctap2");
+  const raw = await requireVaultRaw(path);
+  const file = parseVaultFile(raw);
+  const envelopeId = freshEnvelopeId();
+  const session = await openSecurityKeySession(deps, {
+    vaultId: file.vaultId,
+    envelopeId,
+    deviceFlag: ctx.vaultDevice,
+    requireFeatures: true
+  });
+  const opened = await unlockInteractively(ctx, path, raw, {
+    acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+    promptText: "Current vault passphrase, to unlock (input hidden): ",
+    factor: "passphrase"
+  });
+  const vault = hold(opened.vault);
+  const registered = await registerCredential(deps, session, { vaultId: vault.file.vaultId, envelopeId });
+  if (registered.backupEligible) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `${session.device.product || "This authenticator"} reports the credential it created as backup-eligible (synced), so it is not a hardware-bound security key credential and cannot be recorded as a hardware-token factor.`, {
+      suggestion: "Nothing was written to the vault. The credential now on the authenticator can be removed with its vendor's tool. Use a hardware security key for this factor."
+    });
+  }
+  const envelope = {
+    id: envelopeId,
+    factor: "passkey-prf",
+    transport: "ctap2",
+    domain: "hardware-token",
+    label: parsed.values["--label"] ?? (session.device.product || "security key"),
+    createdAt: new Date(deps.now()).toISOString(),
+    rpId: CTAP2_RP_ID,
+    credentialId: registered.credentialId,
+    prfSalt: b64u(randomBytes2(32)),
+    userVerification: "required",
+    backupEligible: false,
+    backupState: registered.backupState,
+    saltDerivation: "webauthn-prf",
+    aaguid: registered.aaguid,
+    product: session.device.product,
+    wrap: { alg: VAULT_CIPHER, iv: "", ciphertext: "" }
+  };
+  const prfOutput = await assertPrf(deps, session, envelope, vault.file.vaultId, "derive this vault's key on it");
+  let wrap;
+  try {
+    wrap = await wrapDekForPrf(vault.dek, prfOutput, envelope, vault.file);
+  } finally {
+    wipe(prfOutput);
+  }
+  const sealed = { ...envelope, wrap };
+  await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps);
+  const written = await readVaultRaw(path);
+  if (written === null)
+    throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${path} could not be read back.`);
+  const proof = await assertPrf(deps, session, sealed, vault.file.vaultId, "prove the new factor opens the vault");
+  try {
+    closeVault(await unlockVault(path, written, { factor: "passkey-prf", envelopeId, prfOutput: proof }));
+  } finally {
+    wipe(proof);
+  }
+  const recoverable = countRecoverableFactors([...vault.file.envelopes, sealed]);
+  if (ctx.json) {
+    writeJson(deps, {
+      ok: true,
+      envelopeId,
+      factor: "passkey-prf",
+      transport: "ctap2",
+      domain: "hardware-token",
+      label: envelope.label,
+      product: envelope.product,
+      aaguid: envelope.aaguid,
+      backupEligible: false,
+      backupState: envelope.backupState,
+      userVerification: "required",
+      recoverableFactors: recoverable,
+      verified: true
+    });
+    return 0;
+  }
+  deps.stdout.write(`Added security key factor ${envelopeId} (${envelope.product || "security key"}).
+`);
+  deps.stdout.write(`  domain     hardware-token (backup-eligible: no)
+`);
+  deps.stdout.write(`  verified   the vault was re-read and opened with the new key
+`);
+  deps.stdout.write(`  unlock     candle vault status --unlock --factor ${envelopeId}
+`);
+  deps.stdout.write(`
+${SECURITY_KEY_PAIR_NOTE}
+`);
+  deps.stdout.write(`This vault now has ${recoverable} recoverable factor(s), domains counted once.
+`);
+  return 0;
+}
 
 // src/vault/create.ts
 init_crypto();
@@ -44724,6 +45433,7 @@ init_store();
 // src/commands/vault-phrase.ts
 init_errors();
 init_store();
+init_vault_support();
 var ACKNOWLEDGEMENT = "understood";
 async function vaultPhraseShow(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] });
@@ -44767,8 +45477,8 @@ async function runPhraseCeremony(ctx, vault, opts = {}) {
     const envelope = vault.file.envelopes.find((candidate) => candidate.factor === "passphrase");
     if (!envelope)
       throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
-    const { unlockWithPassphrase: unlockWithPassphrase2 } = await Promise.resolve().then(() => (init_store(), exports_store));
-    const reopened = await unlockWithPassphrase2(vault.path, vault.raw, typed.trim(), {
+    const { unlockWithPassphrase: unlockWithPassphrase3 } = await Promise.resolve().then(() => (init_store(), exports_store));
+    const reopened = await unlockWithPassphrase3(vault.path, vault.raw, typed.trim(), {
       notice: (line) => deps.stderr.write(line)
     });
     const { closeVault: closeVault2 } = await Promise.resolve().then(() => (init_store(), exports_store));
@@ -44842,6 +45552,7 @@ function randomPositions(count, of = PHRASE_WORDS) {
 }
 
 // src/commands/vault-init.ts
+init_vault_support();
 var GENERATED_PASSPHRASE_NEEDS_TERMINAL = "A generated passphrase is shown once on the terminal, and --json reserves stdout for one JSON value that never carries a secret. Under --json pass --own-passphrase (typed at a hidden prompt, nothing shown), or run without --json.";
 async function vaultInit(args, ctx) {
   const parsed = parseArgs(args, {
@@ -44968,6 +45679,7 @@ async function collectOwnPassphrase(ctx) {
 }
 
 // src/commands/vault-factor.ts
+init_vault_support();
 async function vaultFactorList(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: [] });
   if ("error" in parsed)
@@ -44983,7 +45695,7 @@ async function vaultFactorList(args, ctx) {
     if (raw === null)
       throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" });
     const file = parseVaultFile(raw);
-    const facts = realPlatformFacts(deps.env);
+    const facts = await currentPlatformFacts(deps);
     const rows = file.envelopes.map((envelope) => {
       const availability = envelopeAvailability(envelope, facts);
       return {
@@ -45020,8 +45732,9 @@ async function vaultFactorAdd(args, ctx) {
   if ("error" in parsed)
     return usage(ctx, parsed.error);
   const kind = parsed.positionals[0];
-  if (kind === undefined)
-    return usage(ctx, "Which factor? This release adds: candle vault factor add passphrase");
+  if (kind === undefined) {
+    return usage(ctx, "Which factor? This release adds: candle vault factor add passphrase | security-key");
+  }
   if (parsed.positionals.length > 1)
     return usage(ctx, `Unexpected argument: ${parsed.positionals[1]}`);
   if (!refuseEnvPassphrase(ctx))
@@ -45034,12 +45747,15 @@ async function vaultFactorAdd(args, ctx) {
   const { deps } = ctx;
   const path = vaultPathFor(ctx, parsed);
   return runVaultCommand(ctx, async ({ hold }) => {
-    const facts = realPlatformFacts(deps.env);
+    if (kind === "security-key")
+      return addSecurityKeyFactor(ctx, parsed, path, hold);
     if (kind !== "passphrase") {
-      if (kind === "security-key" || kind === "touch-id" || kind === "passkey") {
-        assertFactorAddable(kind === "security-key" ? "passkey-prf" : kind === "touch-id" ? "secure-enclave" : "passkey-prf", facts);
-      }
-      return usage(ctx, `Unknown factor: ${kind}. This release adds: passphrase`);
+      const facts = await currentPlatformFacts(deps);
+      if (kind === "touch-id")
+        assertFactorAddable("secure-enclave", facts);
+      if (kind === "passkey")
+        assertFactorAddable("passkey-prf", facts, "platform-macos");
+      return usage(ctx, `Unknown factor: ${kind}. This release adds: passphrase, security-key`);
     }
     const raw = await requireVaultRaw(path);
     const opened = await unlockInteractively(ctx, path, raw, {
@@ -45167,6 +45883,7 @@ async function collectOwn(ctx) {
 }
 
 // src/commands/vault-factor-dispatch.ts
+init_vault_support();
 async function vaultFactor(args, ctx) {
   const [word, ...rest] = args;
   switch (word) {
@@ -45177,13 +45894,14 @@ async function vaultFactor(args, ctx) {
     case "remove":
       return vaultFactorRemove(rest, ctx);
     case undefined:
-      return usage(ctx, "Usage: candle vault factor <list | add passphrase | remove <id>>");
+      return usage(ctx, "Usage: candle vault factor <list | add passphrase | add security-key | remove <id>>");
     default:
       return usage(ctx, `Unknown subcommand: vault factor ${word}. Try: list, add, remove`);
   }
 }
 
 // src/commands/vault-fund.ts
+init_render();
 init_errors();
 init_store();
 
@@ -45347,6 +46065,7 @@ async function signAndBroadcastTransfer(input) {
 }
 
 // src/commands/vault-fund.ts
+init_vault_support();
 async function vaultFund(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--asset", "--rpc-url", "--keystore"],
@@ -45416,10 +46135,7 @@ async function vaultFund(args, ctx) {
     const feeQuote = await quoteTransferFee(rpcUrl, ctx.deps.fetch, plan.from, plan.instructions);
     displayTransferPlan(ctx, plan, feeQuote);
     await confirmLastSix(ctx, teeAddress, "the TEE wallet destination");
-    const typed = await ctx.deps.promptSecret(`Vault passphrase to fund ${plan.amount} ${plan.asset} to ${teeAddress} (input hidden): `);
-    if (typed.trim() !== opened.passphrase) {
-      throw new VaultError("VAULT_UNLOCK_FAILED", "Passphrase did not match; nothing was signed.");
-    }
+    await opened.confirm(`fund ${plan.amount} ${plan.asset} to ${teeAddress}`);
     const secret = await decryptKey(vault, fromEntry.id);
     try {
       const result = await signAndBroadcastTransfer({ ctx, rpcUrl, secret64: secret, plan });
@@ -45598,6 +46314,7 @@ function carryOptional(target, source, fields) {
 init_sidecar();
 init_store();
 init_wallet_keystore();
+init_vault_support();
 async function vaultImportLegacy(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--from"],
@@ -45693,7 +46410,7 @@ async function vaultImportLegacy(args, ctx) {
         ]
       }
     }, deps);
-    await verifyMigratedOnDisk(vaultPath, opened.passphrase, newEntries, ctx);
+    await verifyMigratedOnDisk(vaultPath, opened.reopen, newEntries, ctx);
     return reportDone(ctx, {
       path: fromPath,
       vaultPath,
@@ -45738,14 +46455,12 @@ async function recordMigrationSidecar(vaultPath, vault, fromPath, digest, now) {
     migratedFrom: [...existing, { path: fromPath, at: new Date(now).toISOString(), sourceDigest: digest }]
   })).catch(() => {});
 }
-async function verifyMigratedOnDisk(path, passphrase, entries, ctx) {
+async function verifyMigratedOnDisk(path, reopen, entries, _ctx) {
   const raw = await readVaultRaw(path);
   if (raw === null) {
     throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${path} could not be read back after the migration.`);
   }
-  const reopened = await unlockWithPassphrase(path, raw, passphrase, {
-    notice: (line) => ctx.deps.stderr.write(line)
-  });
+  const reopened = await reopen(path, raw);
   try {
     for (const entry of entries) {
       const secret = await decryptKey(reopened, entry.id);
@@ -45809,6 +46524,7 @@ The Phase 1 file was left in place. A 0.9.x binary reading it still sees that st
 init_errors();
 init_sidecar();
 init_store();
+init_vault_support();
 async function vaultNewKey(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--chain", "--label"],
@@ -45882,7 +46598,7 @@ async function vaultNewKey(args, ctx) {
       },
       addKeys: [blob]
     }, deps);
-    await verifyWritten(path, address, keyId, opened.passphrase, ctx);
+    await verifyWritten(path, address, keyId, opened.reopen, ctx);
     if (ctx.json) {
       writeJson(deps, { ok: true, address, label: entry.label, path: derivationPath, index, keyId });
       return 0;
@@ -45915,11 +46631,11 @@ async function assertHighValueSatisfied(path, envelopes) {
     return;
   throw new VaultError("VAULT_NO_RECOVERABLE_FACTOR", "This vault was created with --high-value, which needs either a generated passphrase or two recoverable factors in different domains before a key is created in it.", { suggestion: "Add a second recoverable factor: candle vault factor add passphrase" });
 }
-async function verifyWritten(path, address, keyId, passphrase, ctx) {
+async function verifyWritten(path, address, keyId, reopen, _ctx) {
   const raw = await readVaultRaw(path);
   if (raw === null)
     throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${path} could not be read back after the write.`);
-  const reopened = await unlockWithPassphrase(path, raw, passphrase, { notice: (line) => ctx.deps.stderr.write(line) });
+  const reopened = await reopen(path, raw);
   try {
     const secret = await decryptKey(reopened, keyId);
     try {
@@ -45936,6 +46652,7 @@ async function verifyWritten(path, address, keyId, passphrase, ctx) {
 }
 
 // src/commands/vault-phrase-dispatch.ts
+init_vault_support();
 async function vaultPhrase(args, ctx) {
   const [word, ...rest] = args;
   if (word === "show")
@@ -45947,9 +46664,11 @@ async function vaultPhrase(args, ctx) {
 
 // src/commands/vault-promote.ts
 init_esm();
+init_render();
 init_errors();
 init_promote_support();
 init_store();
+init_vault_support();
 async function vaultPromote(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--from", "--in-place", "--sweep-to", "--label", "--rpc-url", "--keystore"],
@@ -46062,7 +46781,7 @@ async function promoteFresh(ctx, parsed, fromLabel) {
       privateKey,
       label: entry.label,
       vaultDestination: destination.address,
-      passphrase: opened.passphrase,
+      reopen: opened.reopen,
       vaultPath: path,
       onImport: () => {
         importCount.n += 1;
@@ -46071,7 +46790,7 @@ async function promoteFresh(ctx, parsed, fromLabel) {
     if (code !== 0 && code !== 3) {
       return code;
     }
-    vault = hold(await reopen(path, opened.passphrase, vault));
+    vault = hold(await reopenFromDisk(path, opened.reopen, vault));
     const target = vault.index.entries.find((e) => e.id === keyId);
     if (target === undefined) {
       throw new VaultError("VAULT_INDEX_INVALID", `Entry ${keyId} missing after import.`);
@@ -46094,12 +46813,12 @@ async function promoteFresh(ctx, parsed, fromLabel) {
     return code;
   });
 }
-async function reopen(path, passphrase, previous) {
+async function reopenFromDisk(path, reopen, previous) {
   closeVault(previous);
   const raw = await readVaultRaw(path);
   if (raw === null)
     throw new VaultError("VAULT_MISSING", `No vault at ${path}.`);
-  return unlockWithPassphrase(path, raw, passphrase);
+  return reopen(path, raw);
 }
 async function promoteInPlace(ctx, parsed, subjectLabel) {
   if ("error" in parsed)
@@ -46123,7 +46842,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
       if (sweepTo !== undefined) {
         return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).");
       }
-      return resumePromote(ctx, vault, existing, opened.passphrase, path, hold);
+      return resumePromote(ctx, vault, existing, opened.reopen, path, hold);
     }
     if (sweepTo === undefined || rpcUrl === undefined) {
       return usage(ctx, "Usage: candle vault promote --in-place <label> --sweep-to <label> --rpc-url <url> [--label] [--accept-unknown-exposure]");
@@ -46139,7 +46858,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
     if (!ctx.json) {}
     await confirmLastSix(ctx, first.subject.address, "the address being promoted");
     await confirmAd8Acknowledgement(ctx);
-    vault = hold(await reopen(path, opened.passphrase, vault));
+    vault = hold(await reopenFromDisk(path, opened.reopen, vault));
     const second = assertInPlacePreconditions(vault.index, subjectLabel, sweepTo, {
       acceptUnknownExposure: acceptUnknown
     });
@@ -46204,11 +46923,11 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
       privateKey,
       label: parsed.values["--label"] ?? subject.label,
       vaultDestination: destination.address,
-      passphrase: opened.passphrase,
+      reopen: opened.reopen,
       vaultPath: path
     });
     if (ctx.json) {
-      const reopened = hold(await reopen(path, opened.passphrase, vault));
+      const reopened = hold(await reopenFromDisk(path, opened.reopen, vault));
       const updated = reopened.index.entries.find((e) => e.id === subject.id);
       writeJson(ctx.deps, {
         ok: code === 0 || code === 3,
@@ -46225,7 +46944,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
     return code;
   });
 }
-async function resumePromote(ctx, vault, entry, passphrase, path, hold) {
+async function resumePromote(ctx, vault, entry, reopen, path, hold) {
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
     writeLocalFailure(ctx.deps, {
@@ -46393,7 +47112,7 @@ async function runTeeImport(ctx, opts) {
   const account = name !== undefined ? config.profiles?.[name]?.account ?? "" : "";
   const importedAt = new Date(ctx.deps.now()).toISOString();
   const raw = await requireVaultRaw(opts.vaultPath);
-  const vault = await unlockWithPassphrase(opts.vaultPath, raw, opts.passphrase);
+  const vault = await opts.reopen(opts.vaultPath, raw);
   try {
     await commitVault(vault, {
       index: {
@@ -46445,6 +47164,7 @@ init_errors();
 init_format();
 init_sidecar();
 init_store();
+init_vault_support();
 var GAP_LIMIT = 20;
 var SCAN_CEILING = 500;
 async function vaultRestore(args, ctx) {
@@ -46932,6 +47652,7 @@ import { rename as rename3, stat as stat4 } from "node:fs/promises";
 init_errors();
 init_sidecar();
 init_wallet_keystore();
+init_vault_support();
 async function vaultRetireLegacy(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--from"],
@@ -47027,9 +47748,12 @@ async function resolveLegacyPath(env) {
 
 // src/commands/vault-status.ts
 init_errors();
+init_fido2();
 init_format();
+init_platform();
 init_sidecar();
 init_store();
+init_vault_support();
 async function vaultStatus(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--unlock", "--accept-older-copy"] });
   if ("error" in parsed)
@@ -47049,7 +47773,7 @@ async function vaultStatus(args, ctx) {
       throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" });
     }
     const file = parseVaultFile(raw);
-    const facts = realPlatformFacts(deps.env);
+    const facts = await currentPlatformFacts(deps);
     const sidecar = await readSidecar(sidecarPath(path));
     const legacy = legacyWalletsPath(deps.env);
     const legacyPresent = await fileExists(legacy);
@@ -47244,6 +47968,7 @@ function describeEntryInner(entry) {
 // src/commands/vault-transfer.ts
 init_promote_support();
 init_store();
+init_vault_support();
 async function vaultTransfer(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--asset", "--from", "--rpc-url", "--keystore"],
@@ -47295,10 +48020,7 @@ async function vaultTransfer(args, ctx) {
     const feeQuote = await quoteTransferFee(rpcUrl, ctx.deps.fetch, plan.from, plan.instructions);
     displayTransferPlan(ctx, plan, feeQuote);
     await confirmLastSix(ctx, to, "the destination");
-    const typed = await ctx.deps.promptSecret(`Vault passphrase to sign transfer of ${plan.amount} ${plan.asset} to ${to} (input hidden): `);
-    if (typed.trim() !== opened.passphrase) {
-      throw new Error("VAULT_UNLOCK_FAILED: passphrase did not match; nothing was signed.");
-    }
+    await opened.confirm(`sign transfer of ${plan.amount} ${plan.asset} to ${to}`);
     const secret = await decryptKey(vault, fromEntry.id);
     try {
       const result = await signAndBroadcastTransfer({ ctx, rpcUrl, secret64: secret, plan });
@@ -47326,14 +48048,16 @@ async function vaultTransfer(args, ctx) {
 }
 
 // src/commands/verify.ts
-import { dirname as dirname5, join as join6 } from "node:path";
+import { dirname as dirname6, join as join7 } from "node:path";
+init_release();
+init_render();
 var USAGE = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
   let version;
   try {
-    const manifest = JSON.parse(await deps.readFile(join6(dirname5(bundlePath), "latest.json")));
+    const manifest = JSON.parse(await deps.readFile(join7(dirname6(bundlePath), "latest.json")));
     if (typeof manifest.version !== "string" || manifest.version.length === 0)
       return { kind: "absent" };
     version = manifest.version;
@@ -47423,6 +48147,7 @@ function messageOf2(error) {
 }
 
 // src/commands/wallets-removed.ts
+init_render();
 var LAST_RELEASE_WITH_EXPORT = "0.9.2";
 function removed(ctx, command, replacement, extra) {
   writeLocalFailure(ctx.deps, {
@@ -47442,12 +48167,12 @@ async function walletsExportRemoved(_args, ctx) {
 // src/config.ts
 import { chmod as chmod6, mkdir as mkdir5, readFile as readFile6, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
 import { homedir as homedir6 } from "node:os";
-import { join as join7 } from "node:path";
+import { join as join8 } from "node:path";
 function configDir2() {
-  return process.env.CANDLE_CONFIG_DIR?.trim() || join7(homedir6(), ".config", "candle");
+  return process.env.CANDLE_CONFIG_DIR?.trim() || join8(homedir6(), ".config", "candle");
 }
 function configFilePath() {
-  return join7(configDir2(), "config.json");
+  return join8(configDir2(), "config.json");
 }
 async function readConfig() {
   try {
@@ -47651,7 +48376,12 @@ async function resolveSecretStore(platform = process.platform) {
   return { store: new EncryptedFileSecretStore, backend: "encrypted-file" };
 }
 
+// src/index.ts
+init_release();
+init_render();
+
 // src/update-notice.ts
+init_release();
 var DAY_MS = 24 * 60 * 60 * 1000;
 async function maybeWriteUpdateNotice(deps, opts = {}) {
   try {
@@ -47703,6 +48433,20 @@ function extractGlobalFlags(argv) {
       flags.profile = value;
     } else if (arg?.startsWith("--profile="))
       flags.profile = arg.slice("--profile=".length);
+    else if (arg === "--factor") {
+      const value = argv[++i];
+      if (value === undefined)
+        return { error: "--factor requires a value" };
+      flags.vaultFactor = value;
+    } else if (arg?.startsWith("--factor="))
+      flags.vaultFactor = arg.slice("--factor=".length);
+    else if (arg === "--device") {
+      const value = argv[++i];
+      if (value === undefined)
+        return { error: "--device requires a value" };
+      flags.vaultDevice = value;
+    } else if (arg?.startsWith("--device="))
+      flags.vaultDevice = arg.slice("--device=".length);
     else if (arg !== undefined)
       rest.push(arg);
   }
@@ -47736,7 +48480,7 @@ Commands:
   vault restore --phrase [--count <n>] [--tee-count <k>]          Rebuild a vault from the recovery phrase
                 [--rpc-url <url>]
   vault reconcile-exposure                                        Re-read this account and add exposure; clears nothing
-  vault factor list | add passphrase | remove <id>                Manage the factors that open the vault
+  vault factor list | add passphrase|security-key | remove <id>   Manage the factors that open the vault
   vault backup --to <path> [--accept-shared-domain]               Copy the vault and verify the copy in full
   vault verify-backup <path>                                      Verify a copy in full (all eight steps)
   vault import-legacy --tee [--from <path>]                       Migrate tee-wallets.enc into the vault
@@ -47770,6 +48514,8 @@ Global options:
   --api-url <url>         Override the API base URL
   --profile <name>        Act as a named profile (see: candle auth login --profile)
   --no-verify-account     Skip the check that the stored key belongs to the profile's account
+  --factor <id|kind>      Vault commands: unlock with this envelope id, or "passphrase" or "security-key"
+  --device <id>           Vault commands: the security key to use, by the id vault factor list prints
   --json                  Machine-readable output
   --help, -h              Show this help
   --version, -v           Show the CLI version
@@ -47904,7 +48650,9 @@ async function runCommand(argv, deps) {
     apiUrlFlag: flags.apiUrl,
     profile,
     profileFlag: flags.profile,
-    verifyAccount: !flags.noVerifyAccount
+    verifyAccount: !flags.noVerifyAccount,
+    vaultFactor: flags.vaultFactor,
+    vaultDevice: flags.vaultDevice
   };
   const word = cmd ?? "";
   const actsAsIdentity = word !== "mcp" || mcpActsAsIdentity(tokens.slice(1));
@@ -47970,6 +48718,48 @@ function realOpenBrowser(url) {
     child.unref();
   } catch {}
 }
+function realSpawnHelper(path, requestLine, opts) {
+  return new Promise((resolve4) => {
+    let child;
+    try {
+      child = spawn2(path, [], { stdio: ["pipe", "pipe", "pipe"] });
+    } catch (error) {
+      resolve4({ stdout: "", stderr: "", exitCode: null, signal: null, spawnError: messageOf3(error) });
+      return;
+    }
+    const out = [];
+    const err = [];
+    child.stdout?.on("data", (chunk) => out.push(chunk));
+    child.stderr?.on("data", (chunk) => err.push(chunk));
+    let settled = false;
+    const finish = (result) => {
+      if (settled)
+        return;
+      settled = true;
+      clearTimeout(timer);
+      resolve4({ stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), ...result });
+    };
+    let exited;
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        child.kill("SIGKILL");
+        finish(exited ?? { exitCode: null, signal: "SIGTERM" });
+      }, 2000).unref();
+    }, opts.timeoutMs);
+    child.on("error", (error) => finish({ exitCode: null, signal: null, spawnError: messageOf3(error) }));
+    child.on("exit", (code, signal) => {
+      exited = { exitCode: code, signal };
+    });
+    child.on("close", (code, signal) => finish({ exitCode: code, signal }));
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(`${requestLine}
+`);
+  });
+}
+function messageOf3(error) {
+  return error instanceof Error ? error.message : String(error);
+}
 async function buildRealDeps() {
   const { store, backend } = await resolveSecretStore();
   return {
@@ -48009,7 +48799,10 @@ async function buildRealDeps() {
     execPath: process.execPath,
     argv1: process.argv[1] ?? "",
     platformKey: platformKey(process.platform, process.arch),
+    platform: process.platform,
+    arch: process.arch,
     realpath: (path) => realpath(path),
+    spawnHelper: realSpawnHelper,
     writeBytes: async (path, bytes) => {
       await writeFile6(path, bytes, { flag: "wx", mode: 493 });
       await chmod7(path, 493);
@@ -48040,6 +48833,7 @@ if (isMainModule) {
 }
 export {
   run2 as run,
+  realSpawnHelper,
   buildRealDeps,
   ROUTED_SUBCOMMANDS,
   ROUTED_COMMANDS,

@@ -98,6 +98,26 @@ export interface Deps {
   argv1: string
   /** The release target this machine maps to (release.ts platformKey), or null off the four. */
   platformKey: string | null
+  /**
+   * `process.platform` and `process.arch`, injected (Ember Phase 2, BE-140, CC-12). The platform
+   * seam reads these rather than `process` so T58 can drive every row of the refusal table on one
+   * host, including the Windows row this CLI ships no binary for.
+   */
+  platform: string
+  arch: string
+  /**
+   * Runs the `candle-fido2` helper once (Ember Phase 2, BE-140, helper protocols): spawns `path`
+   * with a pipe on stdin and stdout, writes `requestLine` followed by a newline, closes stdin, and
+   * resolves with everything the process printed and how it ended. Past `timeoutMs` the process is
+   * terminated and the result reports the signal. The real implementation never gives the helper
+   * the terminal; a test's fake answers from a script, and the subprocess test spawns a scripted
+   * helper over a real pipe so the plumbing itself is exercised.
+   */
+  spawnHelper: (
+    path: string,
+    requestLine: string,
+    opts: { timeoutMs: number },
+  ) => Promise<{ stdout: string; stderr: string; exitCode: number | null; signal: string | null; spawnError?: string }>
   /** Resolves symlinks; Homebrew installs a symlink in bin/ pointing into the Cellar. */
   realpath: (path: string) => Promise<string>
   /** Writes bytes with mode 0755: the only writer of a new binary. */
@@ -141,6 +161,15 @@ export interface CommandContext {
   profileFlag?: string
   /** False when --no-verify-account was given: the strict account guard (guard.ts) is skipped. */
   verifyAccount: boolean
+  /**
+   * `--factor <envelope id | passphrase | security-key>` (Ember Phase 2, BE-140, CC-12): which
+   * envelope a vault command unlocks with. Global, so every command that opens the vault honours
+   * it the same way. Absent, the CLI asks when more than one kind can open the vault here, and
+   * never picks a different envelope on the operator's behalf.
+   */
+  vaultFactor?: string
+  /** `--device <id>` (BE-140): the security key an operation names, from `candle vault factor list`'s ids. */
+  vaultDevice?: string
 }
 
 /** Resolves the device token: `CANDLE_DEVICE_TOKEN` env override first, then the named profile's

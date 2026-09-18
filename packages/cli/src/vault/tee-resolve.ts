@@ -5,7 +5,7 @@
  */
 import { base58 } from "@scure/base"
 import type { ParsedArgs } from "../args"
-import { confirmLastSix } from "../commands/vault-support"
+import { confirmLastSix, type OpenedVault } from "../commands/vault-support"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
 import { writeLocalFailure } from "../render"
@@ -25,7 +25,8 @@ export type ResolvedTee =
       entry: KeyEntry
       /** Phase 1-shaped view for read paths that still speak KeystoreEntry. */
       legacyView: KeystoreEntry
-      passphrase: string
+      /** Re-opens the vault with the factor that opened it (BE-140), whichever kind that was. */
+      reopen: OpenedVault["reopen"]
       privateKeyBase58: string
     }
   | {
@@ -80,7 +81,7 @@ export async function resolveTeeAddress(
           vault: hit.vault,
           entry: hit.entry,
           legacyView: keyEntryAsKeystore(hit.entry, privateKeyBase58),
-          passphrase: hit.passphrase,
+          reopen: hit.reopen,
           privateKeyBase58,
         },
       }
@@ -94,11 +95,7 @@ export async function resolveTeeAddress(
       )
       return { ok: false, code: error.exitCode }
     }
-    // No vault, or the operator cancelled before a vault existed: fall through to the legacy store.
-    if (error instanceof Error && error.message === "A passphrase is required.") {
-      writeLocalFailure(ctx.deps, { code: "VAULT_UNLOCK_FAILED", message: error.message }, ctx.json)
-      return { ok: false, code: 1 }
-    }
+    throw error
   }
 
   const opened = await openLegacy()

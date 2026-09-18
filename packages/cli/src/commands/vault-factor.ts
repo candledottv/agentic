@@ -19,6 +19,7 @@ import type { CommandContext } from "../deps"
 import { freshArgon2Params } from "../vault/crypto"
 import { countRecoverableFactors } from "../vault/domains"
 import { VaultError } from "../vault/errors"
+import { currentPlatformFacts } from "../vault/fido2"
 import type { Envelope, PassphraseEnvelope } from "../vault/format"
 import { parseVaultFile, VAULT_CIPHER } from "../vault/format"
 import {
@@ -30,7 +31,7 @@ import {
   strengthFor,
   strengthLabel,
 } from "../vault/passphrase"
-import { assertFactorAddable, availabilityLabel, envelopeAvailability, realPlatformFacts } from "../vault/platform"
+import { assertFactorAddable, availabilityLabel, envelopeAvailability } from "../vault/platform"
 import {
   closeVault,
   commitVault,
@@ -39,6 +40,7 @@ import {
   unlockWithPassphrase,
   wrapDekForPassphrase,
 } from "../vault/store"
+import { addSecurityKeyFactor } from "./vault-factor-security-key"
 import { GENERATED_PASSPHRASE_NEEDS_TERMINAL } from "./vault-init"
 import {
   refuseEnvPassphrase,
@@ -64,7 +66,7 @@ export async function vaultFactorList(args: string[], ctx: CommandContext): Prom
     if (raw === null)
       throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" })
     const file = parseVaultFile(raw)
-    const facts = realPlatformFacts(deps.env)
+    const facts = await currentPlatformFacts(deps)
     const rows = file.envelopes.map((envelope) => {
       const availability = envelopeAvailability(envelope, facts)
       return {
@@ -99,7 +101,9 @@ export async function vaultFactorAdd(args: string[], ctx: CommandContext): Promi
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const kind = parsed.positionals[0]
-  if (kind === undefined) return usage(ctx, "Which factor? This release adds: candle vault factor add passphrase")
+  if (kind === undefined) {
+    return usage(ctx, "Which factor? This release adds: candle vault factor add passphrase | security-key")
+  }
   if (parsed.positionals.length > 1) return usage(ctx, `Unexpected argument: ${parsed.positionals[1]}`)
   if (!refuseEnvPassphrase(ctx)) return 1
   // Same rule as `init`: the generated passphrase renders only on a terminal, never inside the one
@@ -113,16 +117,13 @@ export async function vaultFactorAdd(args: string[], ctx: CommandContext): Promi
   const path = vaultPathFor(ctx, parsed)
 
   return runVaultCommand(ctx, async ({ hold }) => {
-    const facts = realPlatformFacts(deps.env)
+    if (kind === "security-key") return addSecurityKeyFactor(ctx, parsed, path, hold)
     if (kind !== "passphrase") {
       // CC-12: a typed refusal naming the reason, never a silent substitution of another factor.
-      if (kind === "security-key" || kind === "touch-id" || kind === "passkey") {
-        assertFactorAddable(
-          kind === "security-key" ? "passkey-prf" : kind === "touch-id" ? "secure-enclave" : "passkey-prf",
-          facts,
-        )
-      }
-      return usage(ctx, `Unknown factor: ${kind}. This release adds: passphrase`)
+      const facts = await currentPlatformFacts(deps)
+      if (kind === "touch-id") assertFactorAddable("secure-enclave", facts)
+      if (kind === "passkey") assertFactorAddable("passkey-prf", facts, "platform-macos")
+      return usage(ctx, `Unknown factor: ${kind}. This release adds: passphrase, security-key`)
     }
 
     const raw = await requireVaultRaw(path)

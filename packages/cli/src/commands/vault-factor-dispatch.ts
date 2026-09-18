@@ -19,7 +19,7 @@ export async function vaultFactor(args: string[], ctx: CommandContext): Promise<
     case "remove":
       return vaultFactorRemove(rest, ctx)
     case undefined:
-      return usage(ctx, "Usage: candle vault factor <list | add passphrase | remove <id>>")
+      return usage(ctx, "Usage: candle vault factor <list | add passphrase | add security-key | remove <id>>")
     default:
       return usage(ctx, `Unknown subcommand: vault factor ${word}. Try: list, add, remove`)
   }

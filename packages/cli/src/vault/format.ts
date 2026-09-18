@@ -54,6 +54,38 @@ export interface PassphraseEnvelope extends EnvelopeCommon {
 /** AD-6: generated 8 words (about 103 bits), or 16+ characters the operator chose. */
 export type PassphraseStrength = "generated-103" | "user-chosen"
 
+/** The `passkey-prf` transports the format names. PR E drives `ctap2`; `platform-macos` is PR G's. */
+export const KNOWN_TRANSPORTS = ["ctap2", "platform-macos"] as const
+export type KnownTransport = (typeof KNOWN_TRANSPORTS)[number]
+
+/**
+ * A security key over CTAP2 `hmac-secret` (BE-140, ED-11, CC-01). Every field below `label` is
+ * inside the envelope AAD, so editing `userVerification` out of the envelope, or changing the salt
+ * or the credential id, is a tag failure rather than a silently different derivation. `aaguid` and
+ * `product` are model information for display only: they are authenticated through the header
+ * like the rest of the envelope but are never consulted to choose or admit a device.
+ */
+export interface Ctap2Envelope extends EnvelopeCommon {
+  factor: "passkey-prf"
+  transport: "ctap2"
+  domain: "hardware-token"
+  rpId: string
+  /** base64url */
+  credentialId: string
+  /** base64url, 32 bytes */
+  prfSalt: string
+  userVerification: "required"
+  backupEligible: boolean
+  backupState: boolean
+  saltDerivation: "webauthn-prf"
+  /** hex, 16 bytes; display only. */
+  aaguid: string
+  /** Display only. */
+  product: string
+}
+
+export const CTAP2_RP_ID = "cli.candle.tv" as const
+
 /**
  * Any envelope as read off disk. ED-7: a build that does not know a factor still carries the
  * envelope through canonicalization verbatim and still reads its `domain`, because CC-03's domain
@@ -63,6 +95,10 @@ export type Envelope = EnvelopeCommon & Record<string, unknown>
 
 export function isPassphraseEnvelope(envelope: Envelope): envelope is PassphraseEnvelope & Record<string, unknown> {
   return envelope.factor === "passphrase"
+}
+
+export function isCtap2Envelope(envelope: Envelope): envelope is Ctap2Envelope & Record<string, unknown> {
+  return envelope.factor === "passkey-prf" && envelope.transport === "ctap2"
 }
 
 /**
@@ -285,9 +321,27 @@ export function envelopeAad(file: Pick<VaultHeader, "vaultId">, envelope: Envelo
   if (isPassphraseEnvelope(envelope)) {
     return canonicalBytes({ ...base, kdf: envelope.kdf, strength: envelope.strength })
   }
-  // No other factor is created or unwrapped by this release; PRs E to G add their parameter sets
-  // here beside the passphrase one. An unknown envelope is never unwrapped, so it never needs one.
-  throw new VaultError("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM", `This CLI cannot unwrap a ${envelope.factor} envelope.`)
+  if (isCtap2Envelope(envelope)) {
+    // CC-01's passkey-prf row, every parameter in the AAD. `aaguid` and `product` are display
+    // only and are deliberately NOT here: a vendor string is not a derivation parameter.
+    return canonicalBytes({
+      ...base,
+      transport: envelope.transport,
+      rpId: envelope.rpId,
+      credentialId: envelope.credentialId,
+      prfSalt: envelope.prfSalt,
+      userVerification: envelope.userVerification,
+      backupEligible: envelope.backupEligible,
+      backupState: envelope.backupState,
+      saltDerivation: envelope.saltDerivation,
+    })
+  }
+  // PRs F and G add their parameter sets here. An unknown envelope is never unwrapped (ED-7), so
+  // it never needs one.
+  throw new VaultError(
+    "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM",
+    `This CLI cannot unwrap a ${envelope.factor}${typeof envelope.transport === "string" ? `/${envelope.transport}` : ""} envelope.`,
+  )
 }
 
 export function rootAad(vaultId: string): Uint8Array {
@@ -390,6 +444,12 @@ export function parseVaultFile(raw: string): VaultFile {
       }
       assertKdfInBounds(envelope.kdf as unknown as Argon2Params)
     }
+    // A ctap2 envelope this build CAN drive is checked for the fields the derivation needs, so a
+    // malformed one is refused here rather than mid-assertion. Any other transport of the same
+    // factor is kept verbatim (ED-7): this build never derives from it.
+    if (envelope.factor === "passkey-prf" && envelope.transport === "ctap2") {
+      assertCtap2EnvelopeShape(envelope)
+    }
   }
 
   const ids = new Set<string>()
@@ -399,6 +459,25 @@ export function parseVaultFile(raw: string): VaultFile {
   }
 
   return value as unknown as VaultFile
+}
+
+/** CC-01's passkey-prf row for the `ctap2` transport: the fields a derivation needs, typed. */
+function assertCtap2EnvelopeShape(envelope: Record<string, unknown>): void {
+  const id = String(envelope.id)
+  const bad = (detail: string): never => refuse("VAULT_UNREADABLE", `Envelope ${id} (security key) ${detail}.`)
+  if (envelope.domain !== "hardware-token")
+    bad(`has domain ${JSON.stringify(envelope.domain)}, expected hardware-token`)
+  if (envelope.rpId !== CTAP2_RP_ID) bad(`has rpId ${JSON.stringify(envelope.rpId)}, expected ${CTAP2_RP_ID}`)
+  if (typeof envelope.credentialId !== "string" || envelope.credentialId === "") bad("has no credentialId")
+  if (typeof envelope.prfSalt !== "string" || envelope.prfSalt === "") bad("has no prfSalt")
+  // ED-11: the user-verified variant only. An envelope claiming anything else is not one this
+  // CLI wrote, and is not one it will derive from.
+  if (envelope.userVerification !== "required") bad("does not record userVerification: required")
+  if (typeof envelope.backupEligible !== "boolean") bad("has no backupEligible flag")
+  if (typeof envelope.backupState !== "boolean") bad("has no backupState flag")
+  if (envelope.saltDerivation !== "webauthn-prf") bad("does not record saltDerivation: webauthn-prf")
+  if (typeof envelope.aaguid !== "string") bad("has no aaguid")
+  if (typeof envelope.product !== "string") bad("has no product")
 }
 
 /**

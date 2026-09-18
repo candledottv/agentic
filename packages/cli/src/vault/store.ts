@@ -30,6 +30,7 @@ import {
   DEK_BYTES,
   derivePassphraseKek,
   derivePayloadKey,
+  derivePrfKek,
   importAesKey,
   open as openBlob,
   randomBytes,
@@ -44,6 +45,7 @@ import {
   type Envelope,
   envelopeAad,
   type IndexPlaintext,
+  isCtap2Envelope,
   type KeyEntry,
   keyAad,
   parseIndexPlaintext,
@@ -98,8 +100,14 @@ export async function fileExists(path: string): Promise<boolean> {
 
 // ── Unlocking ─────────────────────────────────────────────────────────────────────────────────
 
-/** How a caller supplies a factor. PR A has exactly one; PRs E to G add their own here. */
-export type UnlockRequest = { factor: "passphrase"; passphrase: string; envelopeId?: string }
+/**
+ * How a caller supplies a factor. The passphrase is typed; a security key's factor is the 32-byte
+ * user-verified `hmac-secret` output the helper returned for THIS envelope (BE-140, ED-11), which
+ * the caller owns and zeroes. PRs F and G add their own shapes here.
+ */
+export type UnlockRequest =
+  | { factor: "passphrase"; passphrase: string; envelopeId?: string }
+  | { factor: "passkey-prf"; envelopeId: string; prfOutput: Uint8Array }
 
 /**
  * An opened vault. `dek` is the raw data-encryption key and is the caller's to release through
@@ -140,14 +148,7 @@ export async function unlockVault(
   const file = parseVaultFile(raw)
   const envelope = pickEnvelope(file, request)
 
-  const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), opts.notice)
-  const dek = await withSecret(kek, async (kekBytes) => {
-    const kekKey = await importAesKey(kekBytes)
-    return openBlob(kekKey, envelope.wrap, envelopeAad(file, envelope), {
-      code: "VAULT_UNLOCK_FAILED",
-      message: "Could not open the vault: wrong passphrase, or the file is corrupt.",
-    })
-  })
+  const dek = await unwrapDek(file, envelope, request, opts.notice)
   if (dek.length !== DEK_BYTES) {
     wipe(dek)
     throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.")
@@ -174,6 +175,42 @@ export async function unlockVault(
     wipe(dek)
     throw error
   }
+}
+
+/**
+ * ED-4's one wrapping construction, unwrapped with whichever KEK construction the request names.
+ * The factors differ only here: Argon2id over the passphrase, HKDF over the PRF output. A wrong
+ * factor and a tampered envelope stay indistinguishable and share one message per factor.
+ */
+async function unwrapDek(
+  file: VaultFile,
+  envelope: Envelope,
+  request: UnlockRequest,
+  notice?: (line: string) => void,
+): Promise<Uint8Array> {
+  if (request.factor === "passphrase") {
+    const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), notice)
+    return withSecret(kek, async (kekBytes) => {
+      const kekKey = await importAesKey(kekBytes)
+      return openBlob(kekKey, envelope.wrap, envelopeAad(file, envelope), {
+        code: "VAULT_UNLOCK_FAILED",
+        message: "Could not open the vault: wrong passphrase, or the file is corrupt.",
+      })
+    })
+  }
+  if (!isCtap2Envelope(envelope)) {
+    throw new VaultError(
+      "VAULT_FACTOR_UNAVAILABLE",
+      `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a security key one.`,
+    )
+  }
+  const kekKey = await derivePrfKek(request.prfOutput, unb64u(file.vaultId, "vaultId"))
+  return openBlob(kekKey, envelope.wrap, envelopeAad(file, envelope), {
+    code: "VAULT_UNLOCK_FAILED",
+    message:
+      "Could not open the vault with this security key: the assertion did not yield this envelope's key, or the file is corrupt.",
+    suggestion: "Nothing was derived from it and no other factor was tried.",
+  })
 }
 
 function pickEnvelope(file: VaultFile, request: UnlockRequest): Envelope {
@@ -303,6 +340,21 @@ export async function wrapDekForPassphrase(
     const blob = await seal(kekKey, dek, envelopeAad(header, envelope))
     return { alg: VAULT_CIPHER, ...blob }
   })
+}
+
+/**
+ * Wraps `dek` under the KEK a security key's PRF output derives (ED-4, ED-11). The caller owns
+ * both `dek` and `prfOutput` and zeroes them; the KEK itself never exists as bytes here.
+ */
+export async function wrapDekForPrf(
+  dek: Uint8Array,
+  prfOutput: Uint8Array,
+  envelope: Envelope,
+  header: Pick<VaultFile, "vaultId">,
+): Promise<{ alg: typeof VAULT_CIPHER } & Blob> {
+  const kekKey = await derivePrfKek(prfOutput, unb64u(header.vaultId, "vaultId"))
+  const blob = await seal(kekKey, dek, envelopeAad(header, envelope))
+  return { alg: VAULT_CIPHER, ...blob }
 }
 
 /** Serializes a vault file for disk: pretty-printed, as every other store in this CLI is. */

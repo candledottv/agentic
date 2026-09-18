@@ -40,6 +40,7 @@ import { runImportFlow, TEE_PROFILE } from "../wallet-import-flow"
 import { nextAllocatableIndex } from "./vault-new-key"
 import {
   confirmLastSix,
+  type OpenedVault,
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
@@ -186,7 +187,7 @@ async function promoteFresh(
       privateKey,
       label: entry.label,
       vaultDestination: destination.address,
-      passphrase: opened.passphrase,
+      reopen: opened.reopen,
       vaultPath: path,
       onImport: () => {
         importCount.n += 1
@@ -197,7 +198,7 @@ async function promoteFresh(
       return code
     }
 
-    vault = hold(await reopen(path, opened.passphrase, vault))
+    vault = hold(await reopenFromDisk(path, opened.reopen, vault))
     const target = vault.index.entries.find((e) => e.id === keyId)
     if (target === undefined) {
       throw new VaultError("VAULT_INDEX_INVALID", `Entry ${keyId} missing after import.`)
@@ -221,11 +222,15 @@ async function promoteFresh(
   })
 }
 
-async function reopen(path: string, passphrase: string, previous: UnlockedVault): Promise<UnlockedVault> {
+async function reopenFromDisk(
+  path: string,
+  reopen: OpenedVault["reopen"],
+  previous: UnlockedVault,
+): Promise<UnlockedVault> {
   closeVault(previous)
   const raw = await readVaultRaw(path)
   if (raw === null) throw new VaultError("VAULT_MISSING", `No vault at ${path}.`)
-  return unlockWithPassphrase(path, raw, passphrase)
+  return reopen(path, raw)
 }
 
 async function promoteInPlace(
@@ -260,7 +265,7 @@ async function promoteInPlace(
       if (sweepTo !== undefined) {
         return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).")
       }
-      return resumePromote(ctx, vault, existing, opened.passphrase, path, hold)
+      return resumePromote(ctx, vault, existing, opened.reopen, path, hold)
     }
 
     if (sweepTo === undefined || rpcUrl === undefined) {
@@ -292,7 +297,7 @@ async function promoteInPlace(
     await confirmAd8Acknowledgement(ctx)
 
     // Re-open under the lock and re-run steps 1-3 before the write.
-    vault = hold(await reopen(path, opened.passphrase, vault))
+    vault = hold(await reopenFromDisk(path, opened.reopen, vault))
     const second = assertInPlacePreconditions(vault.index, subjectLabel, sweepTo, {
       acceptUnknownExposure: acceptUnknown,
     })
@@ -366,11 +371,11 @@ async function promoteInPlace(
       privateKey,
       label: parsed.values["--label"] ?? subject.label,
       vaultDestination: destination.address,
-      passphrase: opened.passphrase,
+      reopen: opened.reopen,
       vaultPath: path,
     })
     if (ctx.json) {
-      const reopened = hold(await reopen(path, opened.passphrase, vault))
+      const reopened = hold(await reopenFromDisk(path, opened.reopen, vault))
       const updated = reopened.index.entries.find((e) => e.id === subject.id)
       writeJson(ctx.deps, {
         ok: code === 0 || code === 3,
@@ -393,7 +398,7 @@ async function resumePromote(
   ctx: CommandContext,
   vault: UnlockedVault,
   entry: KeyEntry,
-  passphrase: string,
+  reopen: OpenedVault["reopen"],
   path: string,
   hold: (v: UnlockedVault) => UnlockedVault,
 ): Promise<number> {
@@ -534,7 +539,7 @@ async function resumePromote(
   } else {
     ctx.deps.stdout.write(`Resumed ${entry.address}: grant adopted; no re-import.\n`)
   }
-  void passphrase
+  void reopen
   void path
   return 0
 }
@@ -559,7 +564,7 @@ async function runTeeImport(
     privateKey: string
     label?: string
     vaultDestination: string
-    passphrase: string
+    reopen: OpenedVault["reopen"]
     vaultPath: string
     onImport?: () => void
   },
@@ -609,7 +614,7 @@ async function runTeeImport(
   const account = name !== undefined ? (config.profiles?.[name]?.account ?? "") : ""
   const importedAt = new Date(ctx.deps.now()).toISOString()
   const raw = await requireVaultRaw(opts.vaultPath)
-  const vault = await unlockWithPassphrase(opts.vaultPath, raw, opts.passphrase)
+  const vault = await opts.reopen(opts.vaultPath, raw)
   try {
     await commitVault(
       vault,

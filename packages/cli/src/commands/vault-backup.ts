@@ -24,6 +24,7 @@ import { nextSidecar, readSidecar, sidecarPath, writeSidecar } from "../vault/si
 import { candleConfigDir, closeVault, readVaultRaw, type UnlockedVault, unlockWithPassphrase } from "../vault/store"
 import { type VerifyReport, verifyVaultIntegrity } from "../vault/verify"
 import {
+  type OpenedVault,
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
@@ -78,7 +79,7 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
 
     // The copy is opened and verified as its OWN file, from its own bytes, so what is verified is
     // what actually landed at the destination rather than what this process believes it wrote.
-    const report = await verifyCopy(ctx, destination, opened.passphrase, live)
+    const report = await verifyCopy(ctx, destination, opened.reopen, live)
 
     const sidecar = sidecarPath(path)
     await writeSidecar(sidecar, {
@@ -122,7 +123,7 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
     const live = hold(opened.vault)
-    const report = await verifyCopy(ctx, resolve(copyPath), opened.passphrase, live)
+    const report = await verifyCopy(ctx, resolve(copyPath), opened.reopen, live)
 
     const sidecar = sidecarPath(path)
     await writeSidecar(sidecar, {
@@ -141,14 +142,16 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
 
 /** Opens the copy as its own file and runs all eight steps against it. */
 async function verifyCopy(
-  ctx: CommandContext,
+  _ctx: CommandContext,
   copyPath: string,
-  passphrase: string,
+  reopen: OpenedVault["reopen"],
   live: UnlockedVault,
 ): Promise<VerifyReport> {
   const raw = await readVaultRaw(copyPath)
   if (raw === null) throw new VaultError("VAULT_MISSING", `No file at ${copyPath}.`)
-  const copy = await unlockWithPassphrase(copyPath, raw, passphrase, { notice: (line) => ctx.deps.stderr.write(line) })
+  // The copy is opened with the SAME factor that opened the live vault (a passphrase re-derived,
+  // or a security key asserted again), so what is verified is that this factor opens this copy.
+  const copy = await reopen(copyPath, raw)
   try {
     return await verifyVaultIntegrity(copy, { live })
   } finally {

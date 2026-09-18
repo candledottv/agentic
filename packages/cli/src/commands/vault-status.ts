@@ -17,10 +17,11 @@ import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { countRecoverableFactors } from "../vault/domains"
 import { VaultError } from "../vault/errors"
+import { currentPlatformFacts } from "../vault/fido2"
 import type { Envelope } from "../vault/format"
 import { parseVaultFile } from "../vault/format"
 import { strengthLabel } from "../vault/passphrase"
-import { availabilityLabel, envelopeAvailability, realPlatformFacts } from "../vault/platform"
+import { availabilityLabel, envelopeAvailability, type PlatformFacts } from "../vault/platform"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
 import { fileExists, legacyWalletsPath, readVaultRaw } from "../vault/store"
 import {
@@ -50,7 +51,7 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
       throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" })
     }
     const file = parseVaultFile(raw)
-    const facts = realPlatformFacts(deps.env)
+    const facts = await currentPlatformFacts(deps)
     const sidecar = await readSidecar(sidecarPath(path))
     // CC-05 / AD-3: named if present, never opened, never read. The vault has no code path that
     // touches this file at all.
@@ -205,7 +206,7 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
   })
 }
 
-function describeEnvelope(envelope: Envelope, facts: ReturnType<typeof realPlatformFacts>) {
+function describeEnvelope(envelope: Envelope, facts: PlatformFacts) {
   const availability = envelopeAvailability(envelope, facts)
   const strength = typeof envelope.strength === "string" ? envelope.strength : undefined
   return {

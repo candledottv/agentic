@@ -30,7 +30,9 @@ const SCRIPT = join(import.meta.dir, "..", "install.sh")
 const os = process.platform === "darwin" ? "darwin" : "linux"
 const arch = process.arch === "arm64" ? "arm64" : "x64"
 const ASSET = `candle-${os}-${arch}`
+const HELPER = `candle-fido2-${os}-${arch}`
 const FAKE_BINARY = '#!/bin/sh\necho "candle 9.9.9"\n'
+const FAKE_HELPER = '#!/bin/sh\necho "candle-fido2 9.9.9 (protocol 1)"\n'
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex")
 
 let server: ReturnType<typeof Bun.serve>
@@ -43,7 +45,8 @@ let requestPaths: string[] = []
 beforeAll(() => {
   fixtures = {
     [ASSET]: FAKE_BINARY,
-    SHA256SUMS: `${sha256(FAKE_BINARY)}  ${ASSET}\n`,
+    [HELPER]: FAKE_HELPER,
+    SHA256SUMS: `${sha256(FAKE_BINARY)}  ${ASSET}\n${sha256(FAKE_HELPER)}  ${HELPER}\n`,
     // Pretty-printed, matching the real release workflow (JSON.stringify(manifest, null, 2)): the
     // asset's "name" and "sha256" land on different lines, which is the shape that broke a
     // line-oriented sed extraction of the manifest checksum (see install.sh's step 5 comment).
@@ -52,11 +55,14 @@ beforeAll(() => {
         version: "9.9.9",
         tag: "cli-v9.9.9",
         assets: { [`${os}-${arch}`]: { name: ASSET, sha256: sha256(FAKE_BINARY), size: FAKE_BINARY.length } },
+        // The security key helper (Ember Phase 2 PR E) sits beside the assets in its own map.
+        helpers: { [`${os}-${arch}`]: { name: HELPER, sha256: sha256(FAKE_HELPER), size: FAKE_HELPER.length } },
       },
       null,
       2,
     ),
     [`${ASSET}.sigstore.json`]: "{}",
+    [`${HELPER}.sigstore.json`]: "{}",
   }
   server = Bun.serve({
     port: 0,
@@ -158,6 +164,54 @@ describe("install.sh", () => {
     await rm(first.home, { recursive: true, force: true })
   })
 
+  test("the security key helper is installed beside the binary, fetched and checked like it", async () => {
+    requestPaths = []
+    const r = await runInstaller([])
+    expect(r.code).toBe(0)
+    expect(await readFile(join(r.binDir, "candle-fido2"), "utf8")).toBe(FAKE_HELPER)
+    expect(r.stdout).toContain("Installed candle-fido2")
+    expect(r.stdout).toContain("libfido2")
+    // Both the helper and its bundle were fetched, and the unsigned warning names each asset.
+    expect(requestPaths).toContain(`/releases/latest/download/${HELPER}`)
+    expect(requestPaths).toContain(`/releases/latest/download/${HELPER}.sigstore.json`)
+    expect(r.stdout).toContain(`signature not verified for ${HELPER}`)
+    await rm(r.home, { recursive: true, force: true })
+  })
+
+  test("a release before the helper existed installs the binary alone and says so", async () => {
+    const helperBody = fixtures[HELPER]
+    const bundle = fixtures[`${HELPER}.sigstore.json`]
+    delete fixtures[HELPER]
+    delete fixtures[`${HELPER}.sigstore.json`]
+    try {
+      const r = await runInstaller([])
+      expect(r.code).toBe(0)
+      expect(r.stdout).toContain(`has no ${HELPER} asset`)
+      expect(r.stdout).toContain("CLI 0.11.0 or newer")
+      await expect(readFile(join(r.binDir, "candle-fido2"), "utf8")).rejects.toThrow()
+      expect(await readFile(join(r.binDir, "candle"), "utf8")).toBe(FAKE_BINARY)
+      await rm(r.home, { recursive: true, force: true })
+    } finally {
+      fixtures[HELPER] = helperBody as string
+      fixtures[`${HELPER}.sigstore.json`] = bundle as string
+    }
+  })
+
+  test("a helper whose checksum does not match installs nothing, binary included", async () => {
+    const original = fixtures[HELPER]
+    fixtures[HELPER] = '#!/bin/sh\necho "tampered"\n'
+    try {
+      const r = await runInstaller([])
+      expect(r.code).toBe(1)
+      expect(r.stderr).toContain(`checksum mismatch for ${HELPER}`)
+      await expect(readFile(join(r.binDir, "candle"), "utf8")).rejects.toThrow()
+      await expect(readFile(join(r.binDir, "candle-fido2"), "utf8")).rejects.toThrow()
+      await rm(r.home, { recursive: true, force: true })
+    } finally {
+      fixtures[HELPER] = original as string
+    }
+  })
+
   test("the rc block prepends: ~/.local/bin beats /usr/local/bin in a shell that sourced it (bash)", async () => {
     const { finalPath, binDir } = await sourcedPath("bash", ".bashrc")
     expect(finalPath.indexOf(binDir)).toBeGreaterThanOrEqual(0)
@@ -204,6 +258,9 @@ describe("install.sh", () => {
     expect(r.code).toBe(0)
     const calls = await readFile(log, "utf8")
     expect(calls).toContain("verify-blob")
+    // The helper is verified by the same verifier, against the same pinned identity.
+    expect(calls.split("\n").filter((line) => line.includes("verify-blob"))).toHaveLength(2)
+    expect(calls).toContain(`/${HELPER}`)
     // Without --new-bundle-format cosign also accepts its own LEGACY bundle shape
     // ({"base64Signature","cert","rekorBundle"}), which candle's in-process verifier refuses.
     // That gap is what let 0.6.0 ship assets this installer took and `candle verify` would not.

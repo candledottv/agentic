@@ -198,7 +198,14 @@ export function createTestDeps(overrides: Partial<Deps> & { fetch: typeof fetch 
     execPath: "/usr/local/bin/node",
     argv1: "/usr/local/lib/node_modules/@candledottv/cli/dist/index.js",
     platformKey: "linux-x64",
+    platform: "linux",
+    arch: "x64",
     realpath: async (path: string) => path,
+    // Throwing by default, like the file fakes: a test that reaches the security key helper says
+    // so by scripting it, and one that reaches it by accident fails loud.
+    spawnHelper: async (path: string) => {
+      throw new Error(`no spawnHelper fake configured (asked to run ${path})`)
+    },
     writeBytes: async (path: string) => {
       throw new Error(`no writeBytes fake configured (asked for ${path})`)
     },

@@ -58,7 +58,7 @@ node packages/cli/dist/index.js auth login
 | `candle keys revoke <prefix>` | Revokes an API key by prefix. Revoking the CLI's own stored key also clears it locally. |
 | `candle wallets` | Shows the account's embedded (launch) wallets and any linked wallets, using the API key, with a `Signer` column saying whether this machine holds each linked wallet's signing key. |
 | `candle vault init\|status\|new-key\|phrase show\|restore` | The encrypted local vault, `vault.enc`. `init` creates it with a passphrase factor and a 24-word recovery phrase, `new-key` derives a key inside it, `phrase show` displays the phrase on a terminal (never in `--json`, a log or a pipe), and `restore --phrase` rebuilds the derived keys on another machine. No key ever leaves the vault to reach Candle. See [The vault](https://docs.candle.tv/developers/cli#the-vault). |
-| `candle vault factor list\|add passphrase\|remove`, `vault backup --to <path>`, `vault verify-backup <path>` | What can open the vault, and proving a copy of it works: `backup` verifies the copy in full before reporting, and `verify-backup` re-checks an existing one against this vault's key and address set. |
+| `candle vault factor list\|add passphrase\|add security-key\|remove`, `vault backup --to <path>`, `vault verify-backup <path>` | What can open the vault, and proving a copy of it works: `backup` verifies the copy in full before reporting, and `verify-backup` re-checks an existing one against this vault's key and address set. `add security-key` enrolls a FIDO2 security key (CTAP2 `hmac-secret`, user-verified with the key's PIN or biometric) through the bundled `candle-fido2` helper; one key is not a recoverable factor, two keys are a pair, and the passphrase stays the recovery floor. Every vault command then takes `--factor <id\|passphrase\|security-key>` to say which envelope opens it and `--device <id>` to name the key when several are attached. |
 | `candle vault transfer\|promote\|fund\|demote\|export-key` | Moving value and authority. `transfer` and `fund` sign locally from a vault key after showing the decoded transaction; `promote` turns a vault key into a delegated TEE wallet (fresh, or the key's own address after a typed warning) and `demote` sweeps it back; `export-key` is the one ceremony that writes a single private key to a file you name. |
 | `candle vault import-legacy --tee`, `candle vault retire-legacy` | Moves an existing `tee-wallets.enc` into the vault without deleting it, then retires the old file once the vault holds everything and a backup has been verified. |
 | `candle tee new\|enable\|fund\|status\|disable\|sweep` | A dedicated, capped TEE wallet for one agent: the CLI generates the key and seals it locally in `tee-wallets.enc`, `enable` delegates it to this profile's API key with a pinned sweep vault, `fund` prints what your vault signs, and `disable` then `sweep` stop the agent and move everything back to the vault, signed locally. Solana only. See [TEE wallets](https://docs.candle.tv/developers/cli#tee-wallets). |
@@ -131,7 +131,16 @@ A generated vault passphrase is shown once on the terminal and never inside a JS
 `vault init` and `vault factor add passphrase` under `--json` take `--own-passphrase` (typed at a
 hidden prompt, nothing shown) and refuse the generated form with exit `2`. Prompts themselves are
 rendered on stderr, so a command that unlocks a vault on a terminal still leaves stdout as one
-JSON value.
+JSON value. A security key's PIN is read the same way, by the CLI on its own hidden prompt, and
+reaches the `candle-fido2` helper only inside a request piped to it; the helper never reads the
+terminal and the PIN never appears in any output.
+
+The security key factor needs the `candle-fido2` helper beside the `candle` binary, which the
+installer script and Homebrew put there (Homebrew also installs `libfido2`, which the helper loads
+at run time; the installer names the package to add), and it needs libfido2's udev rule on Linux.
+The npm package ships no native helper: there the factor is refused with `VAULT_HELPER_MISSING`
+until a release build's `candle-fido2` is installed and `CANDLE_FIDO2_HELPER` points at it. No
+other factor is ever substituted for one that is refused.
 
 The failure envelope is stable:
 

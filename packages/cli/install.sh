@@ -2,7 +2,9 @@
 # Candle CLI installer. Downloads the signed release binary for this machine into ~/.local/bin,
 # checks its SHA-256 against the release's SHA256SUMS and manifest (consistency), verifies its
 # Sigstore signature with cosign or gh (the actual verification; the install fails closed without
-# one unless CANDLE_INSTALL_ALLOW_UNSIGNED=1), and prepends the bin dir to PATH. Usage:
+# one unless CANDLE_INSTALL_ALLOW_UNSIGNED=1), and prepends the bin dir to PATH. The security key
+# helper (candle-fido2, Ember Phase 2 PR E) is fetched and verified the same way and installed
+# beside the binary; a release that predates it is installed without one, and says so. Usage:
 #   curl -fsSL https://candle.tv/install.sh | bash
 #   curl -fsSL https://candle.tv/install.sh | bash -s -- --to cli-v0.6.0 --no-modify-path
 # Never uses sudo. Writes only the bin dir, a temp dir, and (unless --no-modify-path) one rc file.
@@ -70,6 +72,7 @@ case "$machine" in
   *) fail "Unsupported architecture: $machine. Supported: darwin-arm64, darwin-x64, linux-x64, linux-arm64" ;;
 esac
 asset="candle-${os}-${arch}"
+helper="candle-fido2-${os}-${arch}"
 
 # 2. Tools.
 command -v curl >/dev/null 2>&1 || fail "curl is required"
@@ -132,55 +135,75 @@ fi
 identity_regex_pinned="${IDENTITY_REGEX}$(printf '%s' "$version" | sed 's/\./\\./g')\$"
 identity_exact="https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v${version}"
 
-# 4. Download.
-curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/${asset}" -o "$tmp/$asset" || fail "no release binary for ${os}-${arch} at ${download_base}/${asset}"
+# 4 and 5. Download and verify: the checksum against SHA256SUMS and the manifest, then the
+# signature where a verifier exists. One function, run for the binary and again for the helper, so
+# the two cannot drift apart in what they check.
 curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/SHA256SUMS" -o "$tmp/SHA256SUMS" || fail "could not fetch SHA256SUMS"
-curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/${asset}.sigstore.json" -o "$tmp/$asset.sigstore.json" || fail "could not fetch the signature bundle"
 
-# 5. Verify: the checksum against SHA256SUMS and the manifest, then the signature where a verifier exists.
-actual="$(sha256 "$tmp/$asset")"
-expected_sums="$(awk -v a="$asset" '$2 == a {print $1}' "$tmp/SHA256SUMS")"
-# The release workflow pretty-prints latest.json, so an asset's "name" and "sha256" fields usually
-# sit on different lines and a line-oriented sed can't see them together. Strip all whitespace
-# first so the whole file collapses to one line, regardless of how it was printed.
-expected_manifest="$(tr -d '[:space:]' < "$tmp/latest.json" | sed -n "s/.*\"${asset}\"[^}]*\"sha256\":\"\([0-9a-f]*\)\".*/\1/p")"
-[ "$actual" = "$expected_sums" ] || fail "checksum mismatch for $asset (SHA256SUMS says $expected_sums, file is $actual); nothing installed"
-[ -n "$expected_manifest" ] || fail "latest.json has no sha256 for $asset"
-[ "$actual" = "$expected_manifest" ] || fail "checksum mismatch between SHA256SUMS and latest.json; nothing installed"
+# $1: the asset name. Downloads it and its bundle into $tmp, checks both checksums, and verifies
+# the signature. Sets verified=1 when a verifier ran, 0 when the install rests on the checksum.
+verify_asset() {
+  local name="$1"
+  curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/${name}.sigstore.json" -o "$tmp/$name.sigstore.json" || fail "could not fetch the signature bundle for $name"
+  local actual expected_sums expected_manifest
+  actual="$(sha256 "$tmp/$name")"
+  expected_sums="$(awk -v a="$name" '$2 == a {print $1}' "$tmp/SHA256SUMS")"
+  # The release workflow pretty-prints latest.json, so an asset's "name" and "sha256" fields usually
+  # sit on different lines and a line-oriented sed can't see them together. Strip all whitespace
+  # first so the whole file collapses to one line, regardless of how it was printed.
+  expected_manifest="$(tr -d '[:space:]' < "$tmp/latest.json" | sed -n "s/.*\"${name}\"[^}]*\"sha256\":\"\([0-9a-f]*\)\".*/\1/p")"
+  [ "$actual" = "$expected_sums" ] || fail "checksum mismatch for $name (SHA256SUMS says $expected_sums, file is $actual); nothing installed"
+  [ -n "$expected_manifest" ] || fail "latest.json has no sha256 for $name"
+  [ "$actual" = "$expected_manifest" ] || fail "checksum mismatch between SHA256SUMS and latest.json for $name; nothing installed"
 
-verified=0
-if command -v cosign >/dev/null 2>&1; then
-  # --new-bundle-format says "expect a Sigstore protobuf bundle", which is what the release
-  # workflow signs and the only shape candle's own in-process verifier reads. Without the flag
-  # cosign also accepts its legacy {"base64Signature","cert","rekorBundle"} shape, so a release
-  # mis-signed that way (0.6.0 was) would install here and then fail every `candle update`.
-  # The flag needs cosign 2.2 or newer; an older cosign rejects the unknown flag and the install
-  # stops, which is the right way to be wrong.
-  if ! verify_output="$(cosign verify-blob --new-bundle-format --bundle "$tmp/$asset.sigstore.json" --certificate-identity-regexp "$identity_regex_pinned" --certificate-oidc-issuer "$ISSUER" "$tmp/$asset" 2>&1)"; then
-    echo "$verify_output" >&2
-    fail "signature verification failed for $asset; nothing installed"
+  verified=0
+  if command -v cosign >/dev/null 2>&1; then
+    # --new-bundle-format says "expect a Sigstore protobuf bundle", which is what the release
+    # workflow signs and the only shape candle's own in-process verifier reads. Without the flag
+    # cosign also accepts its legacy {"base64Signature","cert","rekorBundle"} shape, so a release
+    # mis-signed that way (0.6.0 was) would install here and then fail every `candle update`.
+    # The flag needs cosign 2.2 or newer; an older cosign rejects the unknown flag and the install
+    # stops, which is the right way to be wrong.
+    if ! verify_output="$(cosign verify-blob --new-bundle-format --bundle "$tmp/$name.sigstore.json" --certificate-identity-regexp "$identity_regex_pinned" --certificate-oidc-issuer "$ISSUER" "$tmp/$name" 2>&1)"; then
+      echo "$verify_output" >&2
+      fail "signature verification failed for $name; nothing installed"
+    fi
+    verified=1
+  elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    # --signer-workflow, not just --repo: the repo alone accepts an attestation from ANY workflow in
+    # candledottv/agentic that can mint one, while the cosign branch above pins the workflow FILE.
+    # --cert-identity additionally pins the TAG, matching what the cosign branch now does, so the two
+    # verifiers keep checking the same thing rather than drifting apart on which one is stricter.
+    if ! verify_output="$(gh attestation verify "$tmp/$name" --repo candledottv/agentic --signer-workflow candledottv/agentic/.github/workflows/release.yaml --cert-identity "$identity_exact" 2>&1)"; then
+      echo "$verify_output" >&2
+      fail "signature verification failed for $name (gh attestation verify); nothing installed"
+    fi
+    verified=1
   fi
-  verified=1
-elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-  # --signer-workflow, not just --repo: the repo alone accepts an attestation from ANY workflow in
-  # candledottv/agentic that can mint one, while the cosign branch above pins the workflow FILE.
-  # --cert-identity additionally pins the TAG, matching what the cosign branch now does, so the two
-  # verifiers keep checking the same thing rather than drifting apart on which one is stricter.
-  if ! verify_output="$(gh attestation verify "$tmp/$asset" --repo candledottv/agentic --signer-workflow candledottv/agentic/.github/workflows/release.yaml --cert-identity "$identity_exact" 2>&1)"; then
-    echo "$verify_output" >&2
-    fail "signature verification failed for $asset (gh attestation verify); nothing installed"
+  if [ "$verified" -eq 0 ]; then
+    if [ "${CANDLE_INSTALL_ALLOW_UNSIGNED:-}" != "1" ]; then
+      # Named per platform, and only ways that work. This used to say "apt/dnf install cosign";
+      # cosign is packaged in neither Debian/Ubuntu nor Fedora, so the one instruction a Linux user
+      # was handed could only fail. Upstream ships a single static binary, and gh is the other route.
+      fail "no signature verifier found, so the download is not verified and nothing was installed. This binary will hold API keys and wallet signers, so the installer stops here by default. Install one and rerun: on macOS, brew install cosign; on Linux, download cosign from https://github.com/sigstore/cosign/releases (a single binary) or run gh auth login for the GitHub CLI. To install on the checksum alone: CANDLE_INSTALL_ALLOW_UNSIGNED=1 curl -fsSL https://candle.tv/install.sh | bash"
+    fi
+    echo "Warning: signature not verified for $name (CANDLE_INSTALL_ALLOW_UNSIGNED=1); the checksum matched. To verify later:"
+    echo "  cosign verify-blob --new-bundle-format --bundle ${name}.sigstore.json --certificate-identity-regexp '${IDENTITY_REGEX}' --certificate-oidc-issuer ${ISSUER} ${name}"
   fi
-  verified=1
-fi
-if [ "$verified" -eq 0 ]; then
-  if [ "${CANDLE_INSTALL_ALLOW_UNSIGNED:-}" != "1" ]; then
-    # Named per platform, and only ways that work. This used to say "apt/dnf install cosign";
-    # cosign is packaged in neither Debian/Ubuntu nor Fedora, so the one instruction a Linux user
-    # was handed could only fail. Upstream ships a single static binary, and gh is the other route.
-    fail "no signature verifier found, so the download is not verified and nothing was installed. This binary will hold API keys and wallet signers, so the installer stops here by default. Install one and rerun: on macOS, brew install cosign; on Linux, download cosign from https://github.com/sigstore/cosign/releases (a single binary) or run gh auth login for the GitHub CLI. To install on the checksum alone: CANDLE_INSTALL_ALLOW_UNSIGNED=1 curl -fsSL https://candle.tv/install.sh | bash"
-  fi
-  echo "Warning: signature not verified (CANDLE_INSTALL_ALLOW_UNSIGNED=1); the checksum matched. To verify later:"
-  echo "  cosign verify-blob --new-bundle-format --bundle ${asset}.sigstore.json --certificate-identity-regexp '${IDENTITY_REGEX}' --certificate-oidc-issuer ${ISSUER} ${asset}"
+}
+
+curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/${asset}" -o "$tmp/$asset" || fail "no release binary for ${os}-${arch} at ${download_base}/${asset}"
+verify_asset "$asset"
+
+# The security key helper. A release before CLI 0.11.0 has none, and that is an older release
+# rather than a broken one, so a missing helper asset is reported and the install goes on; a helper
+# that IS there is verified exactly like the binary, and never installed on a failed check.
+helper_present=0
+if curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/${helper}" -o "$tmp/$helper" 2>/dev/null; then
+  verify_asset "$helper"
+  helper_present=1
+else
+  echo "Note: release ${version} has no ${helper} asset, so the security key factor is not installed (it needs CLI 0.11.0 or newer)."
 fi
 
 # 6. Install atomically. $tmp is often a different filesystem than $BIN_DIR (tmpfs on Linux), and
@@ -192,10 +215,18 @@ mkdir -p "$BIN_DIR"
 # group-writable bin dir somebody can create that exact path first and have `mv` move THEIR file
 # over candle. mktemp creates the file itself and fails rather than reusing one that exists.
 staged="$(mktemp "$BIN_DIR/.candle.new.XXXXXX")"
-trap 'rm -rf "$tmp" "$staged"' EXIT
+staged_helper=""
+if [ "$helper_present" -eq 1 ]; then staged_helper="$(mktemp "$BIN_DIR/.candle-fido2.new.XXXXXX")"; fi
+trap 'rm -rf "$tmp" "$staged" "$staged_helper"' EXIT
 cp "$tmp/$asset" "$staged"
 chmod 755 "$staged"
 mv -f "$staged" "$BIN_DIR/candle"
+if [ "$helper_present" -eq 1 ]; then
+  # Beside the binary, which is where the CLI looks (or set CANDLE_FIDO2_HELPER to point elsewhere).
+  cp "$tmp/$helper" "$staged_helper"
+  chmod 755 "$staged_helper"
+  mv -f "$staged_helper" "$BIN_DIR/candle-fido2"
+fi
 
 # 7. An npm-global candle elsewhere on PATH: say which one wins.
 if command -v candle >/dev/null 2>&1; then
@@ -239,4 +270,7 @@ fi
 # 9. Prove it.
 echo "Installed candle $version to $BIN_DIR/candle"
 "$BIN_DIR/candle" --version
+if [ "$helper_present" -eq 1 ]; then
+  echo "Installed candle-fido2 to $BIN_DIR/candle-fido2 (security keys need libfido2: brew install libfido2, or your distribution's libfido2 package)"
+fi
 echo "Next: candle setup"

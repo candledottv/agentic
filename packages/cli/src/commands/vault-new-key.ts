@@ -32,6 +32,7 @@ import {
   unlockWithPassphrase,
 } from "../vault/store"
 import {
+  type OpenedVault,
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
@@ -137,7 +138,7 @@ export async function vaultNewKey(args: string[], ctx: CommandContext): Promise<
     // Re-open and verify the address derives from what was actually WRITTEN, for the same reason
     // `init` re-reads itself: the guarantee is about the bytes on disk, not about the object this
     // process just built.
-    await verifyWritten(path, address, keyId, opened.passphrase, ctx)
+    await verifyWritten(path, address, keyId, opened.reopen, ctx)
 
     if (ctx.json) {
       writeJson(deps, { ok: true, address, label: entry.label, path: derivationPath, index, keyId })
@@ -190,13 +191,13 @@ async function verifyWritten(
   path: string,
   address: string,
   keyId: string,
-  passphrase: string,
-  ctx: CommandContext,
+  reopen: OpenedVault["reopen"],
+  _ctx: CommandContext,
 ): Promise<void> {
   const raw = await readVaultRaw(path)
   if (raw === null)
     throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${path} could not be read back after the write.`)
-  const reopened = await unlockWithPassphrase(path, raw, passphrase, { notice: (line) => ctx.deps.stderr.write(line) })
+  const reopened = await reopen(path, raw)
   try {
     const secret = await decryptKey(reopened, keyId)
     try {

@@ -33,6 +33,7 @@ import {
   TEE_KEYSTORE_PURPOSE,
 } from "../wallet-keystore"
 import {
+  type OpenedVault,
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
@@ -163,7 +164,7 @@ export async function vaultImportLegacy(args: string[], ctx: CommandContext): Pr
     )
 
     // Re-open from disk and verify every migrated address against what actually landed.
-    await verifyMigratedOnDisk(vaultPath, opened.passphrase, newEntries, ctx)
+    await verifyMigratedOnDisk(vaultPath, opened.reopen, newEntries, ctx)
 
     return reportDone(ctx, {
       path: fromPath,
@@ -225,17 +226,15 @@ async function recordMigrationSidecar(
 
 async function verifyMigratedOnDisk(
   path: string,
-  passphrase: string,
+  reopen: OpenedVault["reopen"],
   entries: KeyEntry[],
-  ctx: CommandContext,
+  _ctx: CommandContext,
 ): Promise<void> {
   const raw = await readVaultRaw(path)
   if (raw === null) {
     throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${path} could not be read back after the migration.`)
   }
-  const reopened = await unlockWithPassphrase(path, raw, passphrase, {
-    notice: (line) => ctx.deps.stderr.write(line),
-  })
+  const reopened = await reopen(path, raw)
   try {
     for (const entry of entries) {
       const secret = await decryptKey(reopened, entry.id)

@@ -207,6 +207,38 @@ export async function derivePayloadKey(dek: Uint8Array, vaultId: Uint8Array): Pr
   )
 }
 
+/** The `hmac-secret` output is 32 bytes for one salt; ED-11 sends exactly one. */
+export const PRF_OUTPUT_BYTES = 32
+
+/**
+ * ED-4's security key KEK: HKDF-SHA-256 over the user-verified `hmac-secret` output, salted with
+ * the vault id and labelled for this format version, the same derivation a platform passkey's PRF
+ * output will get in PR G. Returned as a non-extractable `CryptoKey`, so the KEK bytes never exist
+ * as a buffer this code could leak; `prfOutput` stays the caller's to zero, and every caller does
+ * it the moment this returns.
+ */
+export async function derivePrfKek(prfOutput: Uint8Array, vaultId: Uint8Array): Promise<CryptoKey> {
+  if (prfOutput.length !== PRF_OUTPUT_BYTES) {
+    throw new VaultError(
+      "VAULT_UNLOCK_FAILED",
+      `The security key returned ${prfOutput.length} bytes of hmac-secret output; this factor needs ${PRF_OUTPUT_BYTES}.`,
+    )
+  }
+  const material = await crypto.subtle.importKey("raw", prfOutput as BufferSource, "HKDF", false, ["deriveKey"])
+  return crypto.subtle.deriveKey(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: vaultId as BufferSource,
+      info: new TextEncoder().encode("candle-vault/v2/prf"),
+    },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  )
+}
+
 /**
  * Seals `plaintext` under `key` with `aad` as the associated data, always under a FRESH random IV.
  * Every write generates its own, so an IV is never reused under one key, which for GCM is not a

@@ -78,13 +78,9 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
     displayTransferPlan(ctx, plan, feeQuote)
     await confirmLastSix(ctx, to, "the destination")
 
-    const typed = await ctx.deps.promptSecret(
-      `Vault passphrase to sign transfer of ${plan.amount} ${plan.asset} to ${to} (input hidden): `,
-    )
-    if (typed.trim() !== opened.passphrase) {
-      // Wrong passphrase: refuse without signing. The vault is already open; we only check match.
-      throw new Error("VAULT_UNLOCK_FAILED: passphrase did not match; nothing was signed.")
-    }
+    // The factor a second time before anything is signed: the passphrase typed again, or the
+    // security key touched again. A mismatch refuses without signing; the vault is already open.
+    await opened.confirm(`sign transfer of ${plan.amount} ${plan.asset} to ${to}`)
 
     const secret = await decryptKey(vault, fromEntry.id)
     try {
