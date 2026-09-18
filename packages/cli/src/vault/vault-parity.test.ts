@@ -303,7 +303,10 @@ describe("T49: the same fixture, through the COMPILED binary, on a real terminal
     const text = transcript()
     expect(`restore exited ${code}:\n${text}`).toStartWith("restore exited 3:")
     expect(text).toContain("verified in full (all eight steps)")
-    expect(text).toContain("No API key is stored")
+    // Either no key at all, or a stored key the API refuses: both paths leave exposure unrecorded,
+    // and that is the claim this check needs. Naming only the empty-store sentence failed on a
+    // machine whose keyring held an invalid key under the test passphrase.
+    expect(text).toContain("No exposure was recorded")
     expect(text).toContain(FIXTURE_ADDRESS)
     // Neither secret typed at a hidden prompt was echoed.
     expect(text).not.toContain(FIXTURE_PHRASE)

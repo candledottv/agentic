@@ -33,6 +33,7 @@ import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./c
 import { update } from "./commands/update"
 import { vaultBackup, vaultVerifyBackup } from "./commands/vault-backup"
 import { vaultDemote } from "./commands/vault-demote"
+import { vaultExportKey } from "./commands/vault-export-key"
 import { vaultFactor } from "./commands/vault-factor-dispatch"
 import { vaultFund } from "./commands/vault-fund"
 import { vaultImportLegacy } from "./commands/vault-import-legacy"
@@ -132,6 +133,7 @@ Commands:
   vault fund <tee-address> --amount <n> --asset SOL|USDC --rpc-url <url>
                                                                   Fund a TEE wallet from its pinned vault key
   vault demote <tee-address> --rpc-url <url> [--emergency]        Disable then sweep a TEE wallet back to its pin
+  vault export-key <label> --to <new-file>                        Export one key as plaintext (interactive ceremony)
   tee new [--label <name>]                                        Seal a fresh dedicated Solana TEE wallet key locally
   tee enable <address> --vault <address>                          Delegate a TEE wallet key; pin the sweep vault (--vault-key <label> also)
   tee fund <address> --amount <n> [--asset SOL|USDC]              Print the funding instruction for your vault to sign
@@ -210,6 +212,7 @@ const COMMANDS: Record<string, CommandRoute> = {
       promote: vaultPromote,
       fund: vaultFund,
       demote: vaultDemote,
+      "export-key": vaultExportKey,
     },
   },
   tee: {

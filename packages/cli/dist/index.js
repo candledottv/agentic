@@ -12816,7 +12816,7 @@ class Protocol {
   }
   request(request, resultSchema, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken } = options !== null && options !== undefined ? options : {};
-    return new Promise((resolve3, reject) => {
+    return new Promise((resolve4, reject) => {
       var _a, _b, _c, _d, _e, _f;
       if (!this._transport) {
         reject(new Error("Not connected"));
@@ -12867,7 +12867,7 @@ class Protocol {
         }
         try {
           const result = resultSchema.parse(response.result);
-          resolve3(result);
+          resolve4(result);
         } catch (error) {
           reject(error);
         }
@@ -13342,11 +13342,11 @@ var require_codegen = __commonJS((exports) => {
       const rhs = this.rhs === undefined ? "" : ` = ${this.rhs}`;
       return `${varKind} ${this.name}${rhs};` + _n;
     }
-    optimizeNames(names, constants) {
+    optimizeNames(names, constants2) {
       if (!names[this.name.str])
         return;
       if (this.rhs)
-        this.rhs = optimizeExpr(this.rhs, names, constants);
+        this.rhs = optimizeExpr(this.rhs, names, constants2);
       return this;
     }
     get names() {
@@ -13364,10 +13364,10 @@ var require_codegen = __commonJS((exports) => {
     render({ _n }) {
       return `${this.lhs} = ${this.rhs};` + _n;
     }
-    optimizeNames(names, constants) {
+    optimizeNames(names, constants2) {
       if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
         return;
-      this.rhs = optimizeExpr(this.rhs, names, constants);
+      this.rhs = optimizeExpr(this.rhs, names, constants2);
       return this;
     }
     get names() {
@@ -13433,8 +13433,8 @@ var require_codegen = __commonJS((exports) => {
     optimizeNodes() {
       return `${this.code}` ? this : undefined;
     }
-    optimizeNames(names, constants) {
-      this.code = optimizeExpr(this.code, names, constants);
+    optimizeNames(names, constants2) {
+      this.code = optimizeExpr(this.code, names, constants2);
       return this;
     }
     get names() {
@@ -13464,12 +13464,12 @@ var require_codegen = __commonJS((exports) => {
       }
       return nodes.length > 0 ? this : undefined;
     }
-    optimizeNames(names, constants) {
+    optimizeNames(names, constants2) {
       const { nodes } = this;
       let i = nodes.length;
       while (i--) {
         const n = nodes[i];
-        if (n.optimizeNames(names, constants))
+        if (n.optimizeNames(names, constants2))
           continue;
         subtractNames(names, n.names);
         nodes.splice(i, 1);
@@ -13526,12 +13526,12 @@ var require_codegen = __commonJS((exports) => {
         return;
       return this;
     }
-    optimizeNames(names, constants) {
+    optimizeNames(names, constants2) {
       var _a;
-      this.else = (_a = this.else) === null || _a === undefined ? undefined : _a.optimizeNames(names, constants);
-      if (!(super.optimizeNames(names, constants) || this.else))
+      this.else = (_a = this.else) === null || _a === undefined ? undefined : _a.optimizeNames(names, constants2);
+      if (!(super.optimizeNames(names, constants2) || this.else))
         return;
-      this.condition = optimizeExpr(this.condition, names, constants);
+      this.condition = optimizeExpr(this.condition, names, constants2);
       return this;
     }
     get names() {
@@ -13556,10 +13556,10 @@ var require_codegen = __commonJS((exports) => {
     render(opts) {
       return `for(${this.iteration})` + super.render(opts);
     }
-    optimizeNames(names, constants) {
-      if (!super.optimizeNames(names, constants))
+    optimizeNames(names, constants2) {
+      if (!super.optimizeNames(names, constants2))
         return;
-      this.iteration = optimizeExpr(this.iteration, names, constants);
+      this.iteration = optimizeExpr(this.iteration, names, constants2);
       return this;
     }
     get names() {
@@ -13597,10 +13597,10 @@ var require_codegen = __commonJS((exports) => {
     render(opts) {
       return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
     }
-    optimizeNames(names, constants) {
-      if (!super.optimizeNames(names, constants))
+    optimizeNames(names, constants2) {
+      if (!super.optimizeNames(names, constants2))
         return;
-      this.iterable = optimizeExpr(this.iterable, names, constants);
+      this.iterable = optimizeExpr(this.iterable, names, constants2);
       return this;
     }
     get names() {
@@ -13645,11 +13645,11 @@ var require_codegen = __commonJS((exports) => {
       (_b = this.finally) === null || _b === undefined || _b.optimizeNodes();
       return this;
     }
-    optimizeNames(names, constants) {
+    optimizeNames(names, constants2) {
       var _a, _b;
-      super.optimizeNames(names, constants);
-      (_a = this.catch) === null || _a === undefined || _a.optimizeNames(names, constants);
-      (_b = this.finally) === null || _b === undefined || _b.optimizeNames(names, constants);
+      super.optimizeNames(names, constants2);
+      (_a = this.catch) === null || _a === undefined || _a.optimizeNames(names, constants2);
+      (_b = this.finally) === null || _b === undefined || _b.optimizeNames(names, constants2);
       return this;
     }
     get names() {
@@ -13923,7 +13923,7 @@ var require_codegen = __commonJS((exports) => {
   function addExprNames(names, from) {
     return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
   }
-  function optimizeExpr(expr, names, constants) {
+  function optimizeExpr(expr, names, constants2) {
     if (expr instanceof code_1.Name)
       return replaceName(expr);
     if (!canOptimize(expr))
@@ -13938,14 +13938,14 @@ var require_codegen = __commonJS((exports) => {
       return items;
     }, []));
     function replaceName(n) {
-      const c = constants[n.str];
+      const c = constants2[n.str];
       if (c === undefined || names[n.str] !== 1)
         return n;
       delete names[n.str];
       return c;
     }
     function canOptimize(e) {
-      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants[c.str] !== undefined);
+      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants2[c.str] !== undefined);
     }
   }
   function subtractNames(names, from) {
@@ -15850,7 +15850,7 @@ var require_compile = __commonJS((exports) => {
     const schOrFunc = root.refs[ref];
     if (schOrFunc)
       return schOrFunc;
-    let _sch = resolve3.call(this, root, ref);
+    let _sch = resolve4.call(this, root, ref);
     if (_sch === undefined) {
       const schema = (_a = root.localRefs) === null || _a === undefined ? undefined : _a[ref];
       const { schemaId } = this.opts;
@@ -15877,7 +15877,7 @@ var require_compile = __commonJS((exports) => {
   function sameSchemaEnv(s1, s2) {
     return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
   }
-  function resolve3(root, ref) {
+  function resolve4(root, ref) {
     let sch;
     while (typeof (sch = this.refs[ref]) == "string")
       ref = sch;
@@ -16463,7 +16463,7 @@ var require_fast_uri = __commonJS((exports, module) => {
     }
     return uri;
   }
-  function resolve3(baseURI, relativeURI, options) {
+  function resolve4(baseURI, relativeURI, options) {
     const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
     const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
     const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
@@ -16748,7 +16748,7 @@ var require_fast_uri = __commonJS((exports, module) => {
   var fastUri = {
     SCHEMES,
     normalize: normalize4,
-    resolve: resolve3,
+    resolve: resolve4,
     resolveComponent,
     equal,
     serialize,
@@ -21986,12 +21986,12 @@ class StdioServerTransport {
     (_a = this.onclose) === null || _a === undefined || _a.call(this);
   }
   send(message) {
-    return new Promise((resolve3) => {
+    return new Promise((resolve4) => {
       const json = serializeMessage(message);
       if (this._stdout.write(json)) {
-        resolve3();
+        resolve4();
       } else {
-        this._stdout.once("drain", resolve3);
+        this._stdout.once("drain", resolve4);
       }
     });
   }
@@ -22954,11 +22954,11 @@ function createCandleMcpServer(env = process.env) {
 async function runStdioServer(env = process.env, transport = new StdioServerTransport) {
   const server = createCandleMcpServer(env);
   await server.connect(transport);
-  await new Promise((resolve3) => {
+  await new Promise((resolve4) => {
     const sdkOnClose = transport.onclose;
     transport.onclose = () => {
       sdkOnClose?.();
-      resolve3();
+      resolve4();
     };
   });
 }
@@ -23002,7 +23002,7 @@ var init_server2 = __esm(() => {
 // src/index.ts
 import { spawn as spawn2 } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod as chmod6, readFile as readFile7, realpath, rename as rename4, unlink, writeFile as writeFile5 } from "node:fs/promises";
+import { chmod as chmod7, readFile as readFile7, realpath, rename as rename4, unlink, writeFile as writeFile6 } from "node:fs/promises";
 import { hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -23708,7 +23708,7 @@ async function resolveApiKey(deps, profile) {
 }
 
 // src/version.ts
-var CLI_VERSION = "0.9.2";
+var CLI_VERSION = "0.10.0";
 
 // src/commands/auth.ts
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
@@ -36583,6 +36583,168 @@ async function demoteWithAdapter(ctx, entry, address, rpcUrl, emergency) {
   return teeSweep(sweepArgs, ctx);
 }
 
+// src/commands/vault-export-key.ts
+import { access, chmod as chmod5, constants, lstat, writeFile as writeFile4 } from "node:fs/promises";
+import { dirname as dirname4, resolve as resolve3 } from "node:path";
+init_errors();
+init_promote_support();
+init_store();
+async function vaultExportKey(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore", "--to"],
+    booleanFlags: ["--accept-older-copy"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  const [label, extra] = parsed.positionals;
+  if (label === undefined || extra !== undefined) {
+    return usage(ctx, "Usage: candle vault export-key <label> --to <new-file>");
+  }
+  const to = parsed.values["--to"];
+  if (to === undefined)
+    return usage(ctx, "--to <new-file> is required.");
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault export-key"))
+    return 1;
+  const destination = resolve3(to);
+  const path = vaultPathFor(ctx, parsed);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    await assertExportTargetWritable(destination);
+    const raw = await requireVaultRaw(path);
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      promptText: "Vault passphrase (input hidden): "
+    });
+    let vault = hold(opened.vault);
+    const entry = findEntryByLabelOrAddress(vault.index, label);
+    if (entry === undefined) {
+      return usage(ctx, `No vault key matches ${label}.`);
+    }
+    const warning = `This writes the private key for ${entry.label ?? entry.address} to ${destination} as plaintext.
+` + `That file sits outside every vault guarantee: anyone who can read it can move the funds.
+` + `The vault will record that this key was exported, and that record never resets.
+`;
+    if (ctx.json)
+      ctx.deps.stderr.write(`${warning}
+`);
+    else
+      ctx.deps.stdout.write(`
+${warning}
+`);
+    await confirmLastSix(ctx, entry.address, "the key being exported");
+    vault = hold(await markEverExported(vault, entry, ctx));
+    const secret = await decryptKey(vault, entry.id);
+    try {
+      const body = nativeKeyFileContents(entry, secret);
+      await writeExportFile(destination, body);
+    } finally {
+      wipe(secret);
+    }
+    if (ctx.json) {
+      writeJson(ctx.deps, {
+        ok: true,
+        path: destination,
+        address: entry.address,
+        ...entry.label !== undefined ? { label: entry.label } : {},
+        everExported: true
+      });
+      return 0;
+    }
+    ctx.deps.stdout.write(`Wrote the key for ${entry.label ?? entry.address} to ${destination} (mode 0600).
+` + `This vault now records that the key was exported; that record never resets.
+` + `Treat the file as a secret. This CLI will not print its contents.
+`);
+    return 0;
+  });
+}
+function nativeKeyFileContents(entry, secret) {
+  if (entry.curve === "ed25519") {
+    if (secret.length !== 64) {
+      throw new VaultError("VAULT_INDEX_INVALID", `Key ${entry.id} is ed25519 but its secret is ${secret.length} bytes, not 64.`);
+    }
+    return `${JSON.stringify([...secret])}
+`;
+  }
+  if (secret.length !== 32) {
+    throw new VaultError("VAULT_INDEX_INVALID", `Key ${entry.id} is secp256k1 but its secret is ${secret.length} bytes, not 32.`);
+  }
+  const hex3 = Array.from(secret, (b) => b.toString(16).padStart(2, "0")).join("");
+  return `0x${hex3}
+`;
+}
+async function markEverExported(vault, entry, ctx) {
+  const entries = vault.index.entries.map((candidate) => candidate.id === entry.id ? {
+    ...candidate,
+    exposure: {
+      ...candidate.exposure,
+      everExported: true
+    }
+  } : candidate);
+  return commitVault(vault, { index: { ...vault.index, entries } }, ctx.deps);
+}
+async function assertExportTargetWritable(destination) {
+  try {
+    const info = await lstat(destination);
+    if (info.isSymbolicLink()) {
+      throw new VaultError("EXPORT_TARGET_SYMLINK", `${destination} is a symlink; this CLI refuses to write a private key through one.`);
+    }
+    throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite an export.`);
+  } catch (error) {
+    if (error instanceof VaultError)
+      throw error;
+    if (error.code !== "ENOENT")
+      throw error;
+  }
+  const parent = dirname4(destination);
+  try {
+    const parentInfo = await lstat(parent);
+    if (parentInfo.isSymbolicLink()) {
+      throw new VaultError("EXPORT_TARGET_SYMLINK", `${parent} is a symlink; this CLI refuses to write a private key into a symlinked directory.`);
+    }
+    if (!parentInfo.isDirectory()) {
+      throw new VaultError("VAULT_WRITE_FAILED", `${parent} is not a directory.`, {
+        suggestion: "Create the directory yourself, then run this command again."
+      });
+    }
+  } catch (error) {
+    if (error instanceof VaultError)
+      throw error;
+    if (error.code === "ENOENT") {
+      throw new VaultError("VAULT_WRITE_FAILED", `${parent} does not exist; this CLI does not create the directory for an export.`, {
+        suggestion: "Create the directory yourself, then run this command again."
+      });
+    }
+    throw error;
+  }
+  try {
+    await access(parent, constants.W_OK);
+  } catch {
+    throw new VaultError("VAULT_WRITE_FAILED", `${parent} is not writable.`, {
+      suggestion: "Choose a directory you can write to, or fix its permissions, then retry."
+    });
+  }
+}
+async function writeExportFile(destination, body) {
+  try {
+    await writeFile4(destination, body, { encoding: "utf8", flag: "wx", mode: 384 });
+    await chmod5(destination, 384);
+  } catch (error) {
+    const code = error.code;
+    if (code === "EEXIST") {
+      throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite an export.`);
+    }
+    if (code === "EACCES" || code === "EPERM") {
+      throw new VaultError("VAULT_WRITE_FAILED", `Could not write ${destination}: permission denied.`, {
+        suggestion: "The vault already records that this key was exported. Fix the destination permissions and run the ceremony again."
+      });
+    }
+    throw new VaultError("VAULT_WRITE_FAILED", `Could not write ${destination}: ${error instanceof Error ? error.message : String(error)}`, {
+      suggestion: "The vault already records that this key was exported. Fix the destination and run the ceremony again."
+    });
+  }
+}
+
 // src/commands/vault-factor.ts
 init_crypto();
 init_errors();
@@ -46410,13 +46572,13 @@ function parseCounts(count, teeCount, rpcUrl) {
     return teeParsed;
   const bothOmitted = vaultCount === undefined && teeParsed === undefined;
   const scan = rpcUrl !== undefined;
-  const resolve3 = (value) => {
+  const resolve4 = (value) => {
     if (value !== undefined)
       return value;
     return scan ? undefined : 1;
   };
-  const solanaVault = bothOmitted && !scan ? 1 : resolve3(vaultCount);
-  const solanaTee = bothOmitted && !scan ? 1 : resolve3(teeParsed);
+  const solanaVault = bothOmitted && !scan ? 1 : resolve4(vaultCount);
+  const solanaTee = bothOmitted && !scan ? 1 : resolve4(teeParsed);
   return {
     solanaVault,
     solanaTee,
@@ -47164,14 +47326,14 @@ async function vaultTransfer(args, ctx) {
 }
 
 // src/commands/verify.ts
-import { dirname as dirname4, join as join6 } from "node:path";
+import { dirname as dirname5, join as join6 } from "node:path";
 var USAGE = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
   let version;
   try {
-    const manifest = JSON.parse(await deps.readFile(join6(dirname4(bundlePath), "latest.json")));
+    const manifest = JSON.parse(await deps.readFile(join6(dirname5(bundlePath), "latest.json")));
     if (typeof manifest.version !== "string" || manifest.version.length === 0)
       return { kind: "absent" };
     version = manifest.version;
@@ -47278,7 +47440,7 @@ async function walletsExportRemoved(_args, ctx) {
 }
 
 // src/config.ts
-import { chmod as chmod5, mkdir as mkdir5, readFile as readFile6, rm as rm4, writeFile as writeFile4 } from "node:fs/promises";
+import { chmod as chmod6, mkdir as mkdir5, readFile as readFile6, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
 import { homedir as homedir6 } from "node:os";
 import { join as join7 } from "node:path";
 function configDir2() {
@@ -47302,8 +47464,8 @@ async function writeConfig(patch) {
   const next = { ...current, ...patch };
   const dir = configDir2();
   await mkdir5(dir, { recursive: true });
-  await chmod5(dir, 448);
-  await writeFile4(configFilePath(), JSON.stringify(next, null, 2), "utf8");
+  await chmod6(dir, 448);
+  await writeFile5(configFilePath(), JSON.stringify(next, null, 2), "utf8");
 }
 async function updateProfile(name, patch) {
   const current = await readConfig();
@@ -47369,7 +47531,7 @@ function assertSafeRef(ref) {
 }
 var RUN_TIMEOUT_MS = 1e4;
 function run(bin, args, stdin) {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve4, reject) => {
     const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"], env: process.env });
     let stdout = "";
     let stderr = "";
@@ -47398,7 +47560,7 @@ function run(bin, args, stdin) {
         return;
       settled = true;
       clearTimeout(timeout);
-      resolve3({ status: code ?? -1, stdout, stderr });
+      resolve4({ status: code ?? -1, stdout, stderr });
     });
     if (stdin !== undefined)
       child.stdin.write(stdin);
@@ -47586,6 +47748,7 @@ Commands:
   vault fund <tee-address> --amount <n> --asset SOL|USDC --rpc-url <url>
                                                                   Fund a TEE wallet from its pinned vault key
   vault demote <tee-address> --rpc-url <url> [--emergency]        Disable then sweep a TEE wallet back to its pin
+  vault export-key <label> --to <new-file>                        Export one key as plaintext (interactive ceremony)
   tee new [--label <name>]                                        Seal a fresh dedicated Solana TEE wallet key locally
   tee enable <address> --vault <address>                          Delegate a TEE wallet key; pin the sweep vault (--vault-key <label> also)
   tee fund <address> --amount <n> [--asset SOL|USDC]              Print the funding instruction for your vault to sign
@@ -47639,7 +47802,8 @@ var COMMANDS = {
       transfer: vaultTransfer,
       promote: vaultPromote,
       fund: vaultFund,
-      demote: vaultDemote
+      demote: vaultDemote,
+      "export-key": vaultExportKey
     }
   },
   tee: {
@@ -47827,7 +47991,7 @@ async function buildRealDeps() {
       }
     },
     now: () => Date.now(),
-    sleep: (ms) => new Promise((resolve3) => setTimeout(resolve3, ms)),
+    sleep: (ms) => new Promise((resolve4) => setTimeout(resolve4, ms)),
     openBrowser: realOpenBrowser,
     env: process.env,
     nodeVersion: process.versions.node,
@@ -47838,7 +48002,7 @@ async function buildRealDeps() {
     },
     readFile: (path) => readFile7(path, "utf8"),
     readBytes: (path) => readFile7(path),
-    writeFile: (path, content) => writeFile5(path, content, { mode: 384 }),
+    writeFile: (path, content) => writeFile6(path, content, { mode: 384 }),
     promptSecret: promptHiddenSecret,
     promptLine: promptVisibleLine,
     isTTY: { stdin: Boolean(process.stdin.isTTY), stdout: Boolean(process.stdout.isTTY) },
@@ -47847,8 +48011,8 @@ async function buildRealDeps() {
     platformKey: platformKey(process.platform, process.arch),
     realpath: (path) => realpath(path),
     writeBytes: async (path, bytes) => {
-      await writeFile5(path, bytes, { flag: "wx", mode: 493 });
-      await chmod6(path, 493);
+      await writeFile6(path, bytes, { flag: "wx", mode: 493 });
+      await chmod7(path, 493);
     },
     rename: (from, to) => rename4(from, to),
     unlink: (path) => unlink(path)
