@@ -38,11 +38,41 @@ const sha256 = (s: string) => createHash("sha256").update(s).digest("hex")
 let server: ReturnType<typeof Bun.serve>
 let base: string
 let fixtures: Record<string, string | Uint8Array>
+let fixtureTools: string
 // Every request path the fixture server has seen, in order. Tests that care reset it first
 // (requestPaths = []) so a later assertion is about their own run, not an earlier test's.
 let requestPaths: string[] = []
 
-beforeAll(() => {
+beforeAll(async () => {
+  // Keep host credentials and installed verifiers out of local release fixtures. Tests that
+  // verify signatures explicitly supply a stub cosign or gh ahead of this tool-only PATH.
+  fixtureTools = await mkdtemp(join(tmpdir(), "candle-install-tools-"))
+  for (const name of [
+    "awk",
+    "basename",
+    "bash",
+    "cat",
+    "chmod",
+    "cp",
+    "curl",
+    "dirname",
+    "grep",
+    "head",
+    "mkdir",
+    "mktemp",
+    "mv",
+    "python3",
+    "readlink",
+    "rm",
+    "sed",
+    "sha256sum",
+    "shasum",
+    "tr",
+    "uname",
+  ]) {
+    const executable = Bun.which(name)
+    if (executable) await symlink(executable, join(fixtureTools, name))
+  }
   fixtures = {
     [ASSET]: FAKE_BINARY,
     [HELPER]: FAKE_HELPER,
@@ -78,7 +108,10 @@ beforeAll(() => {
   })
   base = `http://127.0.0.1:${server.port}`
 })
-afterAll(() => server.stop())
+afterAll(async () => {
+  server.stop()
+  await rm(fixtureTools, { recursive: true, force: true })
+})
 
 async function runInstaller(
   args: string[],
@@ -89,7 +122,7 @@ async function runInstaller(
   const home = await mkdtemp(join(tmpdir(), "candle-install-"))
   if (beforeRun) await beforeRun(home)
   const binDir = join(home, ".local", "bin")
-  const path = stubDir ? `${stubDir}:/usr/bin:/bin:/usr/local/bin` : "/usr/bin:/bin:/usr/local/bin"
+  const path = stubDir ? `${stubDir}:${fixtureTools}` : fixtureTools
   // Most cases install on the checksum alone through the explicit escape hatch; the fail-closed
   // test clears it, and the cosign cases exercise the real default path with a stub verifier.
   const proc = Bun.spawn(["bash", SCRIPT, ...args], {
@@ -150,7 +183,7 @@ describe("install.sh", () => {
     const proc = Bun.spawn(["bash", SCRIPT], {
       env: {
         HOME: first.home,
-        PATH: "/usr/bin:/bin",
+        PATH: fixtureTools,
         SHELL: "/bin/zsh",
         CANDLE_RELEASE_BASE_URL: base,
         CANDLE_INSTALL_DIR: first.binDir,
@@ -180,6 +213,11 @@ describe("install.sh", () => {
   })
 
   test("a release before the helper existed installs the binary alone and says so", async () => {
+    const manifestBody = fixtures["latest.json"] as string
+    const manifest = JSON.parse(manifestBody)
+    delete manifest.helpers
+    fixtures["latest.json"] = JSON.stringify(manifest)
+    requestPaths = []
     const helperBody = fixtures[HELPER]
     const bundle = fixtures[`${HELPER}.sigstore.json`]
     delete fixtures[HELPER]
@@ -188,14 +226,48 @@ describe("install.sh", () => {
       const r = await runInstaller([])
       expect(r.code).toBe(0)
       expect(r.stdout).toContain(`has no ${HELPER} asset`)
+      expect(requestPaths.some((path) => path.endsWith(HELPER))).toBe(false)
       expect(r.stdout).toContain("CLI 0.11.0 or newer")
       await expect(readFile(join(r.binDir, "candle-fido2"), "utf8")).rejects.toThrow()
       expect(await readFile(join(r.binDir, "candle"), "utf8")).toBe(FAKE_BINARY)
       await rm(r.home, { recursive: true, force: true })
     } finally {
+      fixtures["latest.json"] = manifestBody
       fixtures[HELPER] = helperBody as string
       fixtures[`${HELPER}.sigstore.json`] = bundle as string
     }
+  })
+
+  test("a declared security key helper whose download fails installs nothing", async () => {
+    const original = fixtures[HELPER]
+    delete fixtures[HELPER]
+    try {
+      const r = await runInstaller([])
+      expect(r.code).toBe(1)
+      expect(r.stderr).toContain(`declares the security key helper ${HELPER} but it could not be downloaded`)
+      await expect(readFile(join(r.binDir, "candle"), "utf8")).rejects.toThrow()
+      await expect(readFile(join(r.binDir, "candle-fido2"), "utf8")).rejects.toThrow()
+      await rm(r.home, { recursive: true, force: true })
+    } finally {
+      fixtures[HELPER] = original as string
+    }
+  })
+
+  test("a declared security key helper with a rejected signature leaves an existing install unchanged", async () => {
+    const stubDir = await mkdtemp(join(tmpdir(), "candle-helper-verifier-"))
+    await writeFile(join(stubDir, "cosign"), `#!/bin/sh\ncase "$*" in *candle-fido2*) exit 1;; *) exit 0;; esac\n`)
+    await chmod(join(stubDir, "cosign"), 0o755)
+    const r = await runInstaller([], {}, stubDir, async (home) => {
+      await mkdir(join(home, ".local", "bin"), { recursive: true })
+      await writeFile(join(home, ".local", "bin", "candle"), "old CLI")
+      await writeFile(join(home, ".local", "bin", "candle-fido2"), "old helper")
+    })
+    expect(r.code).toBe(1)
+    expect(r.stderr).toContain(`signature verification failed for ${HELPER}`)
+    expect(await readFile(join(r.binDir, "candle"), "utf8")).toBe("old CLI")
+    expect(await readFile(join(r.binDir, "candle-fido2"), "utf8")).toBe("old helper")
+    await rm(r.home, { recursive: true, force: true })
+    await rm(stubDir, { recursive: true, force: true })
   })
 
   test("a helper whose checksum does not match installs nothing, binary included", async () => {
@@ -293,7 +365,7 @@ describe("install.sh", () => {
     // Only what bash/curl/shasum need, and nothing more: a machine with a real cosign or gh
     // sitting in /usr/local/bin (a common Homebrew/local-install location) must not turn this
     // green by accident.
-    const NO_VERIFIER_PATH = "/usr/bin:/bin"
+    const NO_VERIFIER_PATH = fixtureTools
     const closed = await runInstaller([], { CANDLE_INSTALL_ALLOW_UNSIGNED: "", PATH: NO_VERIFIER_PATH })
     expect(closed.code).toBe(1)
     // Remedies that actually work, named per platform. `apt install cosign` and `dnf install
@@ -358,7 +430,7 @@ describe("install.sh", () => {
     await chmod(join(stubDir, "gh"), 0o755)
     // No cosign anywhere on this PATH (a real one in /usr/local/bin would take the other branch),
     // and no escape hatch: this install only succeeds if the stub gh actually verified it.
-    const r = await runInstaller([], { CANDLE_INSTALL_ALLOW_UNSIGNED: "", PATH: `${stubDir}:/usr/bin:/bin` }, stubDir)
+    const r = await runInstaller([], { CANDLE_INSTALL_ALLOW_UNSIGNED: "", PATH: `${stubDir}:${fixtureTools}` }, stubDir)
     expect(r.code).toBe(0)
     const calls = await readFile(log, "utf8")
     expect(calls).toContain("attestation verify")

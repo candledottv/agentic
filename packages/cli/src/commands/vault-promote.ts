@@ -34,7 +34,6 @@ import {
   readVaultRaw,
   sealKeyBlob,
   type UnlockedVault,
-  unlockWithPassphrase,
 } from "../vault/store"
 import { runImportFlow, TEE_PROFILE } from "../wallet-import-flow"
 import { nextAllocatableIndex } from "./vault-new-key"

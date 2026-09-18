@@ -5,8 +5,9 @@ import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { writeLocalFailure } from "../render"
 import { VaultError } from "../vault/errors"
+import { type FundingReceipt, reconcileFundingReceipts, saveFundingReceipt } from "../vault/funding-receipts"
 import { wipe } from "../vault/hygiene"
-import { commitVault, decryptKey } from "../vault/store"
+import { decryptKey } from "../vault/store"
 import {
   assertVaultSigner,
   displayTransferPlan,
@@ -66,6 +67,13 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
       )
       return 1
     }
+    const reconciled = await reconcileFundingReceipts(
+      vault,
+      [teeAddress, ...(teeEntry.tee?.vaultDestination ? [teeEntry.tee.vaultDestination] : [])],
+      rpcUrl,
+      ctx,
+    )
+    if (reconciled !== null) return reconciled
     if (teeEntry.tee?.remoteAuthority !== "verified-active" || teeEntry.tee.stopRequestedAt !== undefined) {
       writeLocalFailure(
         ctx.deps,
@@ -114,21 +122,29 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
 
     const secret = await decryptKey(vault, fromEntry.id)
     try {
-      const result = await signAndBroadcastTransfer({ ctx, rpcUrl, secret64: secret, plan })
-      const receipt = {
-        signature: result.signature,
-        amount: plan.amount,
-        asset: plan.asset,
-        amountRaw: plan.amountRaw.toString(),
-        at: new Date(ctx.deps.now()).toISOString(),
-        finalized: result.finalized,
-      }
-      const entries = vault.index.entries.map((entry) => {
-        if (entry.id !== teeEntry.id || entry.tee === undefined) return entry
-        const tee = { ...entry.tee, fundingReceipts: [...(entry.tee.fundingReceipts ?? []), receipt] }
-        return { ...entry, tee }
+      let receipt: FundingReceipt | undefined
+      const result = await signAndBroadcastTransfer({
+        ctx,
+        rpcUrl,
+        secret64: secret,
+        plan,
+        beforeBroadcast: async ({ signature, blockhash }) => {
+          receipt = {
+            signature,
+            blockhash,
+            from: plan.from,
+            amount: plan.amount,
+            asset: plan.asset,
+            amountRaw: plan.amountRaw.toString(),
+            at: new Date(ctx.deps.now()).toISOString(),
+            finalized: false,
+          }
+          await saveFundingReceipt(vault, teeEntry.id, receipt, ctx)
+        },
       })
-      await commitVault(vault, { index: { hd: vault.index.hd, entries } }, ctx.deps)
+      if (result.finalized && receipt) {
+        await saveFundingReceipt(vault, teeEntry.id, { ...receipt, finalized: true }, ctx)
+      }
 
       if (ctx.json) {
         writeJson(ctx.deps, {

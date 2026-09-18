@@ -276,19 +276,9 @@ function applyKeystoreViewToVaultEntry(entry: KeyEntry, view: KeystoreEntry): vo
   let lifecycle = prior?.lifecycle ?? "enabled"
   if (meta.sweptAt !== undefined && lifecycle !== "stranded") lifecycle = "retired"
   entry.tee = {
-    network: meta.network,
+    ...prior,
+    ...meta,
     lifecycle,
-    ...(prior?.grantIdentity !== undefined ? { grantIdentity: prior.grantIdentity } : {}),
-    ...(prior?.remoteState !== undefined ? { remoteState: prior.remoteState } : {}),
-    ...(prior?.promotedInPlaceAt !== undefined ? { promotedInPlaceAt: prior.promotedInPlaceAt } : {}),
-    ...(meta.vaultDestination !== undefined ? { vaultDestination: meta.vaultDestination } : {}),
-    ...(meta.boundKeyPrefix !== undefined ? { boundKeyPrefix: meta.boundKeyPrefix } : {}),
-    ...(meta.remoteAuthority !== undefined ? { remoteAuthority: meta.remoteAuthority } : {}),
-    ...(meta.enabledAt !== undefined ? { enabledAt: meta.enabledAt } : {}),
-    ...(meta.stopRequestedAt !== undefined ? { stopRequestedAt: meta.stopRequestedAt } : {}),
-    ...(meta.sweepReceipts !== undefined ? { sweepReceipts: meta.sweepReceipts } : {}),
-    ...(meta.sweepPending !== undefined ? { sweepPending: meta.sweepPending } : {}),
-    ...(meta.sweptAt !== undefined ? { sweptAt: meta.sweptAt } : {}),
   }
 }
 

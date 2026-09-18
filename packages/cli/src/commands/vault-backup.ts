@@ -21,7 +21,7 @@ import type { CommandContext } from "../deps"
 import { assertBackupDomainAllowed } from "../vault/domains"
 import { VaultError } from "../vault/errors"
 import { nextSidecar, readSidecar, sidecarPath, writeSidecar } from "../vault/sidecar"
-import { candleConfigDir, closeVault, readVaultRaw, type UnlockedVault, unlockWithPassphrase } from "../vault/store"
+import { candleConfigDir, closeVault, readVaultRaw, type UnlockedVault } from "../vault/store"
 import { type VerifyReport, verifyVaultIntegrity } from "../vault/verify"
 import {
   type OpenedVault,

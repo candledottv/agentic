@@ -195,15 +195,16 @@ verify_asset() {
 curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/${asset}" -o "$tmp/$asset" || fail "no release binary for ${os}-${arch} at ${download_base}/${asset}"
 verify_asset "$asset"
 
-# The security key helper. A release before CLI 0.11.0 has none, and that is an older release
-# rather than a broken one, so a missing helper asset is reported and the install goes on; a helper
-# that IS there is verified exactly like the binary, and never installed on a failed check.
+# The manifest decides whether this platform ships a security key helper. A declared helper
+# must download and verify before any install is written, just like the Secure Enclave helper.
 helper_present=0
-if curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/${helper}" -o "$tmp/$helper" 2>/dev/null; then
+if tr -d '[:space:]' < "$tmp/latest.json" | grep -Fq "\"name\":\"${helper}\""; then
+  curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/${helper}" -o "$tmp/$helper" \
+    || fail "the release manifest declares the security key helper ${helper} but it could not be downloaded; nothing installed"
   verify_asset "$helper"
   helper_present=1
 else
-  echo "Note: release ${version} has no ${helper} asset, so the security key factor is not installed (it needs CLI 0.11.0 or newer)."
+  echo "Note: release ${version} has no ${helper} asset in its manifest, so the security key factor is not installed (it needs CLI 0.11.0 or newer)."
 fi
 
 # The signed Secure Enclave helper (Ember Phase 2 PR F), macOS only. Whether a release carries it

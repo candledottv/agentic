@@ -22,15 +22,7 @@ import type { KeyEntry } from "../vault/format"
 import { DERIVATION_SCHEME, deriveSolanaKey, solanaVaultPath } from "../vault/hd"
 import { wipe } from "../vault/hygiene"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
-import {
-  commitVault,
-  decryptKey,
-  decryptRoot,
-  freshKeyId,
-  readVaultRaw,
-  sealKeyBlob,
-  unlockWithPassphrase,
-} from "../vault/store"
+import { commitVault, decryptKey, decryptRoot, freshKeyId, readVaultRaw, sealKeyBlob } from "../vault/store"
 import {
   type OpenedVault,
   refuseEnvPassphrase,

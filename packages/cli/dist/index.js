@@ -33516,7 +33516,11 @@ function isPaperFlag(value) {
   return value === true || value === "true" || value === 1 || value === "1";
 }
 function heldPaperPosition(positions, mint) {
-  return positions.find((p) => p.mint === mint && p.amountRaw !== "0");
+  const key = (value) => {
+    const trimmed = value.trim();
+    return /^0x[0-9a-fA-F]{40}$/.test(trimmed) ? trimmed.toLowerCase() : trimmed;
+  };
+  return positions.find((p) => key(p.mint) === key(mint) && p.amountRaw !== "0");
 }
 async function readPaperInventory(cfg, doFetch, extra) {
   const res = await doFetch(`${base(cfg)}/api/v1/trade/agent/paper/inventory`, {
@@ -34317,14 +34321,17 @@ START HERE — five tools need NO credential. Call these first to confirm the se
 
 COVERAGE — read this before you treat an error as a broken server.
 candle_get_feed indexes the wider market (pump.fun, pons.family and other external launchpads).
-candle_get_market answers for tokens that have a CANDLE market. candle_token_forensics also
-answers for Solana tokens the feed already knows, with a partial report: on-chain developer
-(never a launchpad shared authority), went-to-zero record, holder concentration, same-funder
-insiders and cluster. Deploy-window stays unavailable without a Candle launch record. Hood
-tokens Candle did not launch, and unknown mints, still come back MARKET_NOT_FOUND. That is a
-coverage boundary, not a fault and not a reason to retry, re-auth, or tell the human the
-integration is down. Report MARKET_NOT_FOUND as "Candle has no market for this token, so I
-could not run forensics on it" and let the human decide.
+Feed rows carry jupiterOk / externalTradeable / paperDiscoveryOk on external Solana mints; use
+discovery=paper on candle_get_feed when rehearsing and do NOT hard-skip organicScore=0 there.
+candle_get_market and candle_resolve_token now also answer for Jupiter-indexed external mints
+the feed knows (or Solana mints Jupiter can name) with external: true and jupiterOk: true.
+candle_token_forensics also answers for Solana tokens the feed already knows, with a partial
+report: on-chain developer (never a launchpad shared authority), went-to-zero record, holder
+concentration, same-funder insiders and cluster. Deploy-window stays unavailable without a
+Candle launch record. Hood tokens Candle did not launch, and unknown mints, still come back
+MARKET_NOT_FOUND. That remaining gap is a coverage boundary, not a fault and not a reason to
+retry, re-auth, or tell the human the integration is down. Report MARKET_NOT_FOUND as "Candle
+has no market for this token, so I could not run forensics on it" and let the human decide.
 
 Never let a MARKET_NOT_FOUND stand in for a clean bill of health. The same rule governs the
 coverage note on every forensics measurement: "unavailable" is NOT "clean" — say so rather than
@@ -37328,6 +37335,12 @@ function createSolanaRpc(url, fetchFn) {
     async getFeeForMessage(messageBase64) {
       const r = await call("getFeeForMessage", [messageBase64, { commitment: "finalized" }]);
       return r.value === null ? null : BigInt(r.value);
+    },
+    async getMinimumBalanceForRentExemption(size) {
+      const rent = await call("getMinimumBalanceForRentExemption", [size, { commitment: "finalized" }]);
+      if (!Number.isSafeInteger(rent) || rent < 0)
+        throw new Error("Invalid rent exemption quote");
+      return BigInt(rent);
     },
     async accountExists(address) {
       const r = await call("getAccountInfo", [
@@ -41249,19 +41262,9 @@ function applyKeystoreViewToVaultEntry(entry, view) {
   if (meta.sweptAt !== undefined && lifecycle !== "stranded")
     lifecycle = "retired";
   entry.tee = {
-    network: meta.network,
-    lifecycle,
-    ...prior?.grantIdentity !== undefined ? { grantIdentity: prior.grantIdentity } : {},
-    ...prior?.remoteState !== undefined ? { remoteState: prior.remoteState } : {},
-    ...prior?.promotedInPlaceAt !== undefined ? { promotedInPlaceAt: prior.promotedInPlaceAt } : {},
-    ...meta.vaultDestination !== undefined ? { vaultDestination: meta.vaultDestination } : {},
-    ...meta.boundKeyPrefix !== undefined ? { boundKeyPrefix: meta.boundKeyPrefix } : {},
-    ...meta.remoteAuthority !== undefined ? { remoteAuthority: meta.remoteAuthority } : {},
-    ...meta.enabledAt !== undefined ? { enabledAt: meta.enabledAt } : {},
-    ...meta.stopRequestedAt !== undefined ? { stopRequestedAt: meta.stopRequestedAt } : {},
-    ...meta.sweepReceipts !== undefined ? { sweepReceipts: meta.sweepReceipts } : {},
-    ...meta.sweepPending !== undefined ? { sweepPending: meta.sweepPending } : {},
-    ...meta.sweptAt !== undefined ? { sweptAt: meta.sweptAt } : {}
+    ...prior,
+    ...meta,
+    lifecycle
   };
 }
 async function commitActiveTee(active, mutate) {
@@ -46413,9 +46416,9 @@ async function runPhraseCeremony(ctx, vault, opts = {}) {
     const envelope = vault.file.envelopes.find((candidate) => candidate.factor === "passphrase");
     if (!envelope)
       throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
-    const { unlockWithPassphrase: unlockWithPassphrase3 } = await Promise.resolve().then(() => (init_store(), exports_store));
+    const { unlockWithPassphrase: unlockWithPassphrase2 } = await Promise.resolve().then(() => (init_store(), exports_store));
     const { openWithTypedPassphrase: openWithTypedPassphrase2 } = await Promise.resolve().then(() => (init_vault_support(), exports_vault_support));
-    const { vault: reopened } = await openWithTypedPassphrase2(typed, (candidate) => unlockWithPassphrase3(vault.path, vault.raw, candidate, { notice: (line) => deps.stderr.write(line) }));
+    const { vault: reopened } = await openWithTypedPassphrase2(typed, (candidate) => unlockWithPassphrase2(vault.path, vault.raw, candidate, { notice: (line) => deps.stderr.write(line) }));
     const { closeVault: closeVault2 } = await Promise.resolve().then(() => (init_store(), exports_store));
     closeVault2(reopened);
   }
@@ -46838,6 +46841,70 @@ async function vaultFactor(args, ctx) {
 // src/commands/vault-fund.ts
 init_render();
 init_errors();
+
+// src/vault/funding-receipts.ts
+init_errors();
+init_store();
+function readReceipt(value) {
+  if (value === null || typeof value !== "object" || !("signature" in value) || typeof value.signature !== "string" || !("finalized" in value) || typeof value.finalized !== "boolean") {
+    throw new VaultError("VAULT_INDEX_INVALID", "Malformed funding receipt; refusing to sign another transfer.");
+  }
+  return value;
+}
+async function saveFundingReceipt(vault, teeId, receipt, ctx) {
+  const entries = vault.index.entries.map((entry) => {
+    if (entry.id !== teeId || !entry.tee)
+      return entry;
+    const prior = entry.tee.fundingReceipts ?? [];
+    const exists2 = prior.some((value) => readReceipt(value).signature === receipt.signature);
+    const fundingReceipts = exists2 ? prior.map((value) => readReceipt(value).signature === receipt.signature ? receipt : value) : [...prior, receipt];
+    return { ...entry, tee: { ...entry.tee, fundingReceipts } };
+  });
+  const next = await commitVault(vault, { index: { ...vault.index, entries } }, ctx.deps);
+  Object.assign(vault, next);
+}
+async function reconcileFundingReceipts(vault, addresses, rpcUrl, ctx) {
+  const rpc = createSolanaRpc(rpcUrl, ctx.deps.fetch);
+  const results = [];
+  for (const entry of vault.index.entries) {
+    if (!entry.tee)
+      continue;
+    for (const value of entry.tee.fundingReceipts ?? []) {
+      const receipt = readReceipt(value);
+      if (receipt.finalized || receipt.outcome)
+        continue;
+      const from = receipt.from ?? entry.tee.vaultDestination;
+      if (!addresses.includes(entry.address) && (from === undefined || !addresses.includes(from)))
+        continue;
+      const resolution = await resolvePending({
+        status: (signature) => rpc.getSignatureStatus(signature),
+        blockhashValid: (blockhash) => receipt.blockhash ? rpc.isBlockhashValid(blockhash) : Promise.resolve(true)
+      }, { signature: receipt.signature, blockhash: receipt.blockhash ?? "" });
+      if (resolution.kind === "finalized") {
+        await saveFundingReceipt(vault, entry.id, { ...receipt, finalized: true }, ctx);
+      } else if (resolution.kind === "failed" || resolution.kind === "expired") {
+        await saveFundingReceipt(vault, entry.id, { ...receipt, outcome: resolution.kind }, ctx);
+      }
+      results.push({ signature: receipt.signature, outcome: resolution.kind });
+    }
+  }
+  if (results.length === 0)
+    return null;
+  const finalized = results.every((result) => result.outcome === "finalized");
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: finalized, reconciled: results, signed: false })}
+`);
+  } else {
+    for (const result of results)
+      ctx.deps.stdout.write(`Funding ${result.signature}: ${result.outcome}.
+`);
+    ctx.deps.stdout.write(`No new transfer signed. Run again only if you intend a new transfer after pending funding resolves.
+`);
+  }
+  return finalized ? 0 : 3;
+}
+
+// src/commands/vault-fund.ts
 init_store();
 
 // src/vault/vault-transfer-sign.ts
@@ -46883,7 +46950,7 @@ async function planTransfer(input) {
     };
   }
   const mintAddress = asset === "USDC" ? USDC_MINT2 : input.asset;
-  const decimals = asset === "USDC" ? 6 : await readMintDecimals(rpcUrlish(input.rpcUrl), mintAddress, input.fetch);
+  const decimals = asset === "USDC" ? 6 : await readMintDecimals(input.rpcUrl, mintAddress, input.fetch);
   const raw = decimalToRaw2(input.amount, decimals);
   if (raw === null || raw === 0n) {
     throw new VaultError("VAULT_INDEX_INVALID", `--amount must be a positive decimal with at most ${decimals} decimal places.`);
@@ -46893,8 +46960,11 @@ async function planTransfer(input) {
   const destination = associatedTokenAddress(toKey, mint);
   const rpc = createSolanaRpc(input.rpcUrl, input.fetch);
   const instructions = [];
+  const accountCreationLines = [];
   if (!await rpc.accountExists(encodePubkey(destination))) {
+    const rent = await rpc.getMinimumBalanceForRentExemption(165);
     instructions.push(createAssociatedTokenAccountIdempotent({ payer: fromKey, owner: toKey, mint }));
+    accountCreationLines.push(`create associated token account ${encodePubkey(destination)} (idempotent)`, `account owner ${input.to}`, `account rent ${rent} lamports, paid by ${input.from} if created`);
   }
   instructions.push(tokenTransferChecked({
     source,
@@ -46917,12 +46987,10 @@ async function planTransfer(input) {
       `fee payer   ${input.from}`,
       `destination ${input.to}`,
       `amount      ${input.amount} (${raw} raw, ${decimals} dp)`,
-      `mint        ${mintAddress}`
+      `mint        ${mintAddress}`,
+      ...accountCreationLines
     ]
   };
-}
-function rpcUrlish(url) {
-  return url;
 }
 async function readMintDecimals(rpcUrl, mint, fetchFn) {
   const res = await fetchFn(rpcUrl, {
@@ -46982,21 +47050,28 @@ async function signAndBroadcastTransfer(input) {
   const signature = signMessage(message, input.secret64);
   const wire = serializeSignedTransaction(message, signature);
   const sigB58 = base58.encode(signature);
-  const echoed = await rpc.sendTransaction(toBase642(wire));
-  const submitted = typeof echoed === "string" && echoed.length > 0 ? echoed : sigB58;
-  let finalized = false;
+  await input.beforeBroadcast?.({ signature: sigB58, blockhash });
+  try {
+    await rpc.sendTransaction(toBase642(wire));
+  } catch {
+    return { signature: sigB58, finalized: false };
+  }
   for (let i = 0;i < 30; i++) {
     await input.ctx.deps.sleep(500);
-    const status = await rpc.getSignatureStatus(submitted);
-    if (status?.err) {
-      throw new VaultError("VAULT_WRITE_FAILED", `Transfer failed on chain: ${JSON.stringify(status.err)}`);
+    let status;
+    try {
+      status = await rpc.getSignatureStatus(sigB58);
+    } catch {
+      return { signature: sigB58, finalized: false };
     }
     if (status?.confirmationStatus === "finalized") {
-      finalized = true;
-      break;
+      if (status.err) {
+        throw new VaultError("VAULT_WRITE_FAILED", "Transfer failed on chain. Any pending funding receipt will be reconciled on a rerun.");
+      }
+      return { signature: sigB58, finalized: true };
     }
   }
-  return { signature: submitted, finalized };
+  return { signature: sigB58, finalized: false };
 }
 
 // src/commands/vault-fund.ts
@@ -47041,6 +47116,9 @@ async function vaultFund(args, ctx) {
       }, ctx.json);
       return 1;
     }
+    const reconciled = await reconcileFundingReceipts(vault, [teeAddress, ...teeEntry.tee?.vaultDestination ? [teeEntry.tee.vaultDestination] : []], rpcUrl, ctx);
+    if (reconciled !== null)
+      return reconciled;
     if (teeEntry.tee?.remoteAuthority !== "verified-active" || teeEntry.tee.stopRequestedAt !== undefined) {
       writeLocalFailure(ctx.deps, {
         code: "TEE_WALLET_NOT_VERIFIED",
@@ -47073,22 +47151,29 @@ async function vaultFund(args, ctx) {
     await opened.confirm(`fund ${plan.amount} ${plan.asset} to ${teeAddress}`);
     const secret = await decryptKey(vault, fromEntry.id);
     try {
-      const result = await signAndBroadcastTransfer({ ctx, rpcUrl, secret64: secret, plan });
-      const receipt = {
-        signature: result.signature,
-        amount: plan.amount,
-        asset: plan.asset,
-        amountRaw: plan.amountRaw.toString(),
-        at: new Date(ctx.deps.now()).toISOString(),
-        finalized: result.finalized
-      };
-      const entries = vault.index.entries.map((entry) => {
-        if (entry.id !== teeEntry.id || entry.tee === undefined)
-          return entry;
-        const tee = { ...entry.tee, fundingReceipts: [...entry.tee.fundingReceipts ?? [], receipt] };
-        return { ...entry, tee };
+      let receipt;
+      const result = await signAndBroadcastTransfer({
+        ctx,
+        rpcUrl,
+        secret64: secret,
+        plan,
+        beforeBroadcast: async ({ signature, blockhash }) => {
+          receipt = {
+            signature,
+            blockhash,
+            from: plan.from,
+            amount: plan.amount,
+            asset: plan.asset,
+            amountRaw: plan.amountRaw.toString(),
+            at: new Date(ctx.deps.now()).toISOString(),
+            finalized: false
+          };
+          await saveFundingReceipt(vault, teeEntry.id, receipt, ctx);
+        }
       });
-      await commitVault(vault, { index: { hd: vault.index.hd, entries } }, ctx.deps);
+      if (result.finalized && receipt) {
+        await saveFundingReceipt(vault, teeEntry.id, { ...receipt, finalized: true }, ctx);
+      }
       if (ctx.json) {
         writeJson(ctx.deps, {
           ok: result.finalized,
@@ -48946,6 +49031,9 @@ async function vaultTransfer(args, ctx) {
       return usage(ctx, `No vault key matches --from ${fromLabel}.`);
     }
     assertVaultSigner(fromEntry);
+    const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, to], rpcUrl, ctx);
+    if (reconciled !== null)
+      return reconciled;
     const plan = await planTransfer({
       from: fromEntry.address,
       to,

@@ -6,6 +6,7 @@
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { reconcileFundingReceipts } from "../vault/funding-receipts"
 import { wipe } from "../vault/hygiene"
 import { findVaultRoleEntry } from "../vault/promote-support"
 import { decryptKey } from "../vault/store"
@@ -65,6 +66,8 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
       return usage(ctx, `No vault key matches --from ${fromLabel}.`)
     }
     assertVaultSigner(fromEntry)
+    const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, to], rpcUrl, ctx)
+    if (reconciled !== null) return reconciled
 
     const plan = await planTransfer({
       from: fromEntry.address,

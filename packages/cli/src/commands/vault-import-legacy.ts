@@ -24,7 +24,7 @@ import type { KeyEntry } from "../vault/format"
 import { wipe } from "../vault/hygiene"
 import { type MigrationGrantContext, mapLegacyTeeEntry } from "../vault/migrate-tee"
 import { nextSidecar, readSidecar, sidecarPath, sourceDigest, writeSidecar } from "../vault/sidecar"
-import { commitVault, decryptKey, freshKeyId, readVaultRaw, sealKeyBlob, unlockWithPassphrase } from "../vault/store"
+import { commitVault, decryptKey, freshKeyId, readVaultRaw, sealKeyBlob } from "../vault/store"
 import {
   defaultTeeKeystorePath,
   type KeystoreEntry,

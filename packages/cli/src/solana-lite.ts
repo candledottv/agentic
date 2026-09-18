@@ -327,6 +327,7 @@ export interface SolanaRpc {
   getBalance(address: string): Promise<bigint>
   getTokenAccountsByOwner(owner: string, programId: string): Promise<TokenAccountView[]>
   getFeeForMessage(messageBase64: string): Promise<bigint | null>
+  getMinimumBalanceForRentExemption(size: number): Promise<bigint>
   accountExists(address: string): Promise<boolean>
   sendTransaction(txBase64: string): Promise<string>
   getSignatureStatus(signature: string): Promise<{ confirmationStatus: string | null; err: unknown } | null>
@@ -394,6 +395,11 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch): SolanaRpc {
     async getFeeForMessage(messageBase64) {
       const r = await call<{ value: number | null }>("getFeeForMessage", [messageBase64, { commitment: "finalized" }])
       return r.value === null ? null : BigInt(r.value)
+    },
+    async getMinimumBalanceForRentExemption(size) {
+      const rent = await call<number>("getMinimumBalanceForRentExemption", [size, { commitment: "finalized" }])
+      if (!Number.isSafeInteger(rent) || rent < 0) throw new Error("Invalid rent exemption quote")
+      return BigInt(rent)
     },
     async accountExists(address) {
       const r = await call<{ value: unknown | null }>("getAccountInfo", [

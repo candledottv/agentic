@@ -86,7 +86,7 @@ export async function planTransfer(input: {
   }
 
   const mintAddress = asset === "USDC" ? USDC_MINT : input.asset
-  const decimals = asset === "USDC" ? 6 : await readMintDecimals(rpcUrlish(input.rpcUrl), mintAddress, input.fetch)
+  const decimals = asset === "USDC" ? 6 : await readMintDecimals(input.rpcUrl, mintAddress, input.fetch)
   const raw = decimalToRaw(input.amount, decimals)
   if (raw === null || raw === 0n) {
     throw new VaultError(
@@ -99,8 +99,15 @@ export async function planTransfer(input: {
   const destination = associatedTokenAddress(toKey, mint)
   const rpc = createSolanaRpc(input.rpcUrl, input.fetch)
   const instructions: Instruction[] = []
+  const accountCreationLines: string[] = []
   if (!(await rpc.accountExists(encodePubkey(destination)))) {
+    const rent = await rpc.getMinimumBalanceForRentExemption(165)
     instructions.push(createAssociatedTokenAccountIdempotent({ payer: fromKey, owner: toKey, mint }))
+    accountCreationLines.push(
+      `create associated token account ${encodePubkey(destination)} (idempotent)`,
+      `account owner ${input.to}`,
+      `account rent ${rent} lamports, paid by ${input.from} if created`,
+    )
   }
   instructions.push(
     tokenTransferChecked({
@@ -126,12 +133,9 @@ export async function planTransfer(input: {
       `destination ${input.to}`,
       `amount      ${input.amount} (${raw} raw, ${decimals} dp)`,
       `mint        ${mintAddress}`,
+      ...accountCreationLines,
     ],
   }
-}
-
-function rpcUrlish(url: string): string {
-  return url
 }
 
 async function readMintDecimals(rpcUrl: string, mint: string, fetchFn: typeof fetch): Promise<number> {
@@ -184,6 +188,7 @@ export async function signAndBroadcastTransfer(input: {
   rpcUrl: string
   secret64: Uint8Array
   plan: TransferPlan
+  beforeBroadcast?: (pending: { signature: string; blockhash: string }) => Promise<void>
 }): Promise<{ signature: string; finalized: boolean }> {
   const rpc = createSolanaRpc(input.rpcUrl, input.ctx.deps.fetch)
   const feePayer = pubkeyFromSecret(input.secret64)
@@ -199,19 +204,31 @@ export async function signAndBroadcastTransfer(input: {
   const signature = signMessage(message, input.secret64)
   const wire = serializeSignedTransaction(message, signature)
   const sigB58 = base58.encode(signature)
-  const echoed = await rpc.sendTransaction(toBase64(wire))
-  const submitted = typeof echoed === "string" && echoed.length > 0 ? echoed : sigB58
-  let finalized = false
+  // The locally computed signature is the transaction identity, even if the RPC lies or times out.
+  await input.beforeBroadcast?.({ signature: sigB58, blockhash })
+  try {
+    await rpc.sendTransaction(toBase64(wire))
+  } catch {
+    // A failed response cannot prove the transaction was not accepted. Keep its pending receipt.
+    return { signature: sigB58, finalized: false }
+  }
   for (let i = 0; i < 30; i++) {
     await input.ctx.deps.sleep(500)
-    const status = await rpc.getSignatureStatus(submitted)
-    if (status?.err) {
-      throw new VaultError("VAULT_WRITE_FAILED", `Transfer failed on chain: ${JSON.stringify(status.err)}`)
+    let status: Awaited<ReturnType<typeof rpc.getSignatureStatus>>
+    try {
+      status = await rpc.getSignatureStatus(sigB58)
+    } catch {
+      return { signature: sigB58, finalized: false }
     }
     if (status?.confirmationStatus === "finalized") {
-      finalized = true
-      break
+      if (status.err) {
+        throw new VaultError(
+          "VAULT_WRITE_FAILED",
+          "Transfer failed on chain. Any pending funding receipt will be reconciled on a rerun.",
+        )
+      }
+      return { signature: sigB58, finalized: true }
     }
   }
-  return { signature: submitted, finalized }
+  return { signature: sigB58, finalized: false }
 }
