@@ -33,10 +33,12 @@ import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./c
 import { update } from "./commands/update"
 import { vaultBackup, vaultVerifyBackup } from "./commands/vault-backup"
 import { vaultFactor } from "./commands/vault-factor-dispatch"
+import { vaultImportLegacy } from "./commands/vault-import-legacy"
 import { vaultInit } from "./commands/vault-init"
 import { vaultNewKey } from "./commands/vault-new-key"
 import { vaultPhrase } from "./commands/vault-phrase-dispatch"
 import { vaultReconcileExposure, vaultRestore } from "./commands/vault-restore"
+import { vaultRetireLegacy } from "./commands/vault-retire-legacy"
 import { vaultStatus } from "./commands/vault-status"
 import { verify } from "./commands/verify"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
@@ -117,6 +119,8 @@ Commands:
   vault factor list | add passphrase | remove <id>                Manage the factors that open the vault
   vault backup --to <path> [--accept-shared-domain]               Copy the vault and verify the copy in full
   vault verify-backup <path>                                      Verify a copy in full (all eight steps)
+  vault import-legacy --tee [--from <path>]                       Migrate tee-wallets.enc into the vault
+  vault retire-legacy [--from <path>]                             Rename the Phase 1 store after a verified backup
   tee new [--label <name>]                                        Seal a fresh dedicated Solana TEE wallet key locally
   tee enable <address> --vault <address>                          Delegate a TEE wallet key to this profile's agent, pin the sweep vault
   tee fund <address> --amount <n> [--asset SOL|USDC]              Print the funding instruction for your vault to sign
@@ -189,6 +193,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       factor: vaultFactor,
       backup: vaultBackup,
       "verify-backup": vaultVerifyBackup,
+      "import-legacy": vaultImportLegacy,
+      "retire-legacy": vaultRetireLegacy,
     },
   },
   tee: {

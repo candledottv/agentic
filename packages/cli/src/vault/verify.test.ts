@@ -360,8 +360,8 @@ describe("T43: step 5 holds at most one leaf plaintext at a time", () => {
 })
 
 describe("T43: one verifier, shared by every caller that claims 'verified'", () => {
-  test("backup, verify-backup and restore all reach the same function", async () => {
-    // Asserted at the seam by source inspection rather than by running three commands: the claim
+  test("backup, verify-backup, restore and retire-legacy all reach the same function", async () => {
+    // Asserted at the seam by source inspection rather than by running four commands: the claim
     // is that there is ONE implementation and one meaning of "verified" in this document, and the
     // way that stops being true is a second call site growing its own weaker check.
     const { readFileSync } = await import("node:fs")
@@ -369,9 +369,11 @@ describe("T43: one verifier, shared by every caller that claims 'verified'", () 
     const commands = resolve(import.meta.dir, "..", "commands")
     const backup = readFileSync(resolve(commands, "vault-backup.ts"), "utf8")
     const restore = readFileSync(resolve(commands, "vault-restore.ts"), "utf8")
+    const retire = readFileSync(resolve(commands, "vault-retire-legacy.ts"), "utf8")
     for (const [name, source] of [
       ["vault-backup.ts", backup],
       ["vault-restore.ts", restore],
+      ["vault-retire-legacy.ts", retire],
     ] as const) {
       expect(`${name} imports verifyVaultIntegrity: ${source.includes("verifyVaultIntegrity")}`).toBe(
         `${name} imports verifyVaultIntegrity: true`,
@@ -379,6 +381,8 @@ describe("T43: one verifier, shared by every caller that claims 'verified'", () 
     }
     // `backup` and `verify-backup` share one helper inside that file, so both reach it.
     expect(backup.match(/verifyCopy\(/g)?.length).toBeGreaterThanOrEqual(3)
+    // retire-legacy must call the verifier on the live vault, not only check the sidecar stamp.
+    expect(retire.includes("await verifyVaultIntegrity(")).toBe(true)
   })
 })
 

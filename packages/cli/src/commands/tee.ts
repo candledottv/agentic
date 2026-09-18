@@ -43,6 +43,12 @@ import {
   tokenTransferChecked,
 } from "../solana-lite"
 import { classifyStatus, resolvePending } from "../sweep-pending"
+import {
+  maybeReconcileVaultTee,
+  refuseLegacyWriteForVaultAddress,
+  releaseResolvedTee,
+  resolveTeeAddress,
+} from "../vault/tee-resolve"
 import { runImportFlow, TEE_PROFILE } from "../wallet-import-flow"
 import { generateWallet } from "../wallet-keygen"
 import {
@@ -295,6 +301,32 @@ function findEntry(store: OpenKeystore, address: string): KeystoreEntry | undefi
   return store.entries.find((e) => e.address === address)
 }
 
+/**
+ * Returns whether `address` is a TEE wallet inside the vault. Prompts for the vault passphrase
+ * when a vault exists. `false` when there is no vault or the address is not in it; `"error"` when
+ * the unlock failed.
+ */
+async function addressOwnedByVault(ctx: CommandContext, address: string): Promise<boolean | "error"> {
+  const { findTeeInVault } = await import("../vault/tee-lookup")
+  const { closeVault } = await import("../vault/store")
+  try {
+    const hit = await findTeeInVault(ctx, address)
+    if (!hit.hit) return false
+    closeVault(hit.vault)
+    return true
+  } catch (error) {
+    writeLocalFailure(
+      ctx.deps,
+      {
+        code: "VAULT_UNLOCK_FAILED",
+        message: error instanceof Error ? error.message : String(error),
+      },
+      ctx.json,
+    )
+    return "error"
+  }
+}
+
 function noSuchEntry(ctx: CommandContext, address: string, path: string): number {
   writeLocalFailure(
     ctx.deps,
@@ -457,6 +489,11 @@ export async function teeEnable(args: string[], ctx: CommandContext): Promise<nu
   if (!vault) return usage(ctx, "--vault <address> is required: the destination every sweep sends to.")
   if (!isSolanaAddress(vault)) return usage(ctx, "--vault is not a valid Solana address.")
   if (vault === address) return usage(ctx, "--vault must be a different address from the TEE wallet.")
+
+  // CC-05: a migrated address is owned by the vault; never rewrite tee-wallets.enc for it.
+  const vaultOwned = await addressOwnedByVault(ctx, address)
+  if (vaultOwned === "error") return 1
+  if (vaultOwned === true) return refuseLegacyWriteForVaultAddress(ctx, address)
 
   await printIdentity(ctx)
   const apiKey = await resolveApiKey(deps, ctx.profile)
@@ -624,54 +661,58 @@ export async function teeFund(args: string[], ctx: CommandContext): Promise<numb
   if (raw === null || raw === 0n)
     return usage(ctx, `--amount must be a positive decimal with at most ${decimals} decimal places.`)
 
-  const opened = await openExistingTeeStore(ctx, parsed)
-  if (!opened.ok) return opened.code
-  const entry = findEntry(opened.store, address)
-  if (!entry) return noSuchEntry(ctx, address, opened.path)
-  if (!entry.linkedWalletId || entry.tee?.remoteAuthority !== "verified-active") {
-    writeLocalFailure(
-      deps,
-      {
-        code: "TEE_WALLET_NOT_VERIFIED",
-        message: `${address} is not an enabled TEE wallet with verified remote authority; do not fund it.`,
-        suggestion: "Run: candle tee enable <address> --vault <address>, and fund only after it reports verified.",
-      },
-      json,
-    )
-    return 1
-  }
-  if (entry.tee?.stopRequestedAt) {
-    writeLocalFailure(
-      deps,
-      { code: "TEE_WALLET_STOPPED", message: `${address} has been stopped; a retired address is never refunded.` },
-      json,
-    )
-    return 1
-  }
+  // Vault first (PR split B / CC-05): a migrated entry wins over a stale tee-wallets.enc row.
+  const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed))
+  if (!resolved.ok) return resolved.code
+  try {
+    const entry = resolved.resolved.source === "vault" ? resolved.resolved.legacyView : resolved.resolved.entry
+    if (!entry.linkedWalletId || entry.tee?.remoteAuthority !== "verified-active") {
+      writeLocalFailure(
+        deps,
+        {
+          code: "TEE_WALLET_NOT_VERIFIED",
+          message: `${address} is not an enabled TEE wallet with verified remote authority; do not fund it.`,
+          suggestion: "Run: candle tee enable <address> --vault <address>, and fund only after it reports verified.",
+        },
+        json,
+      )
+      return 1
+    }
+    if (entry.tee?.stopRequestedAt) {
+      writeLocalFailure(
+        deps,
+        { code: "TEE_WALLET_STOPPED", message: `${address} has been stopped; a retired address is never refunded.` },
+        json,
+      )
+      return 1
+    }
 
-  const instruction = {
-    action: "fund-tee-wallet",
-    network: "solana-mainnet",
-    asset,
-    ...(asset === "USDC" ? { mint: USDC_MINT } : {}),
-    amount,
-    amountRaw: raw.toString(),
-    destination: address,
-    from: "your vault wallet (sign it there; this CLI signs nothing)",
-    note: "Every funded unit adds to the TEE wallet exposure. The initial float is not a maximum loss.",
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(instruction)}\n`)
+    const instruction = {
+      action: "fund-tee-wallet",
+      network: "solana-mainnet",
+      asset,
+      ...(asset === "USDC" ? { mint: USDC_MINT } : {}),
+      amount,
+      amountRaw: raw.toString(),
+      destination: address,
+      from: "your vault wallet (sign it there; this CLI signs nothing)",
+      note: "Every funded unit adds to the TEE wallet exposure. The initial float is not a maximum loss.",
+    }
+    if (json) {
+      deps.stdout.write(`${JSON.stringify(instruction)}\n`)
+      return 0
+    }
+    deps.stdout.write(`Funding instruction (sign this from your VAULT wallet; this CLI signs nothing):\n`)
+    deps.stdout.write(
+      `  send      ${amount} ${asset}${asset === "USDC" ? ` (mint ${USDC_MINT})` : ""}  = ${raw} raw units\n`,
+    )
+    deps.stdout.write(`  to        ${address}\n`)
+    deps.stdout.write(`  network   solana-mainnet\n`)
+    deps.stdout.write(`Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.\n`)
     return 0
+  } finally {
+    releaseResolvedTee(resolved.resolved)
   }
-  deps.stdout.write(`Funding instruction (sign this from your VAULT wallet; this CLI signs nothing):\n`)
-  deps.stdout.write(
-    `  send      ${amount} ${asset}${asset === "USDC" ? ` (mint ${USDC_MINT})` : ""}  = ${raw} raw units\n`,
-  )
-  deps.stdout.write(`  to        ${address}\n`)
-  deps.stdout.write(`  network   solana-mainnet\n`)
-  deps.stdout.write(`Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.\n`)
-  return 0
 }
 
 // ── tee status ──────────────────────────────────────────────────────────────────────────────
@@ -712,102 +753,117 @@ export async function teeStatus(args: string[], ctx: CommandContext): Promise<nu
   const [address, extra] = parsed.positionals
   if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee status <address> [--rpc-url <url>]")
 
-  const opened = await openExistingTeeStore(ctx, parsed)
-  if (!opened.ok) return opened.code
-  const entry = findEntry(opened.store, address)
-  if (!entry) return noSuchEntry(ctx, address, opened.path)
+  const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed))
+  if (!resolved.ok) return resolved.code
+  try {
+    if (resolved.resolved.source === "vault") {
+      const reconciled = await maybeReconcileVaultTee(ctx, resolved.resolved)
+      if (reconciled.code !== null) return reconciled.code
+    }
+    const entry = resolved.resolved.source === "vault" ? resolved.resolved.legacyView : resolved.resolved.entry
 
-  const report: Record<string, unknown> = {
-    address,
-    label: entry.label,
-    linkedWalletId: entry.linkedWalletId ?? null,
-    vaultDestination: entry.tee?.vaultDestination ?? null,
-    localState: entry.tee?.sweptAt
-      ? "swept"
-      : entry.tee?.stopRequestedAt
-        ? "stop-requested"
-        : entry.linkedWalletId
-          ? "enabled"
-          : "local-only",
-    retainedSweepReceipts: entry.tee?.sweepReceipts?.length ?? 0,
-    pendingSweepTransactions: entry.tee?.sweepPending?.length ?? 0,
-    observedAt: new Date(deps.now()).toISOString(),
-  }
+    const report: Record<string, unknown> = {
+      address,
+      label: entry.label,
+      source: resolved.resolved.source,
+      linkedWalletId: entry.linkedWalletId ?? null,
+      vaultDestination: entry.tee?.vaultDestination ?? null,
+      localState: entry.tee?.sweptAt
+        ? "swept"
+        : entry.tee?.stopRequestedAt
+          ? "stop-requested"
+          : entry.linkedWalletId
+            ? "enabled"
+            : "local-only",
+      retainedSweepReceipts: entry.tee?.sweepReceipts?.length ?? 0,
+      pendingSweepTransactions: entry.tee?.sweepPending?.length ?? 0,
+      observedAt: new Date(deps.now()).toISOString(),
+    }
+    if (resolved.resolved.source === "vault") {
+      report.vaultLifecycle = resolved.resolved.entry.tee?.lifecycle ?? null
+    }
 
-  if (entry.linkedWalletId) {
-    const apiKey = await resolveApiKey(deps, ctx.profile)
-    if (apiKey) {
-      const lifecycle = await readLifecycle(ctx, apiKey, entry.linkedWalletId)
-      if (lifecycle.ok) {
-        report.server = lifecycle.body
+    if (entry.linkedWalletId) {
+      const apiKey = await resolveApiKey(deps, ctx.profile)
+      if (apiKey) {
+        const lifecycle = await readLifecycle(ctx, apiKey, entry.linkedWalletId)
+        if (lifecycle.ok) {
+          report.server = lifecycle.body
+        } else {
+          report.server = { error: lifecycle.result.message ?? `HTTP ${lifecycle.result.status}` }
+        }
       } else {
-        report.server = { error: lifecycle.result.message ?? `HTTP ${lifecycle.result.status}` }
+        report.server = { error: "no API key available; server state not read" }
       }
-    } else {
-      report.server = { error: "no API key available; server state not read" }
     }
-  }
 
-  const rpcUrl = parsed.values["--rpc-url"] ?? deps.env[RPC_URL_ENV]?.trim()
-  if (rpcUrl) {
-    const checked = rpcUrlFrom(ctx, parsed)
-    if (typeof checked !== "string") return usage(ctx, checked.error)
-    const rpc = createSolanaRpc(checked, deps.fetch)
-    try {
-      const lamports = await rpc.getBalance(address)
-      const tokens = [
-        ...(await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)),
-        ...(await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)),
-      ]
-      report.balances = {
-        lamports: lamports.toString(),
-        tokens: tokens.map((t) => ({
-          mint: t.mint,
-          amountRaw: t.amountRaw,
-          decimals: t.decimals,
-          state: t.state,
-          program: t.programId === TOKEN_PROGRAM_ID ? "token" : "token-2022",
-          // Never priced here: an unpriced balance is reported as unknown, not as zero (HW-04).
-          usdValue: "unknown",
-        })),
+    const rpcUrl = parsed.values["--rpc-url"] ?? deps.env[RPC_URL_ENV]?.trim()
+    if (rpcUrl) {
+      const checked = rpcUrlFrom(ctx, parsed)
+      if (typeof checked !== "string") return usage(ctx, checked.error)
+      const rpc = createSolanaRpc(checked, deps.fetch)
+      try {
+        const lamports = await rpc.getBalance(address)
+        const tokens = [
+          ...(await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)),
+          ...(await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)),
+        ]
+        report.balances = {
+          lamports: lamports.toString(),
+          tokens: tokens.map((t) => ({
+            mint: t.mint,
+            amountRaw: t.amountRaw,
+            decimals: t.decimals,
+            state: t.state,
+            program: t.programId === TOKEN_PROGRAM_ID ? "token" : "token-2022",
+            // Never priced here: an unpriced balance is reported as unknown, not as zero (HW-04).
+            usdValue: "unknown",
+          })),
+        }
+      } catch (error) {
+        report.balances = { error: error instanceof Error ? error.message : String(error) }
       }
-    } catch (error) {
-      report.balances = { error: error instanceof Error ? error.message : String(error) }
     }
-  }
 
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(report)}\n`)
+    if (json) {
+      deps.stdout.write(`${JSON.stringify(report)}\n`)
+      return 0
+    }
+    deps.stdout.write(`${address}  ${entry.label}\n`)
+    if (resolved.resolved.source === "vault") {
+      deps.stdout.write(`  source        vault (Phase 1 store is read-only for this address)\n`)
+      deps.stdout.write(`  vault life    ${resolved.resolved.entry.tee?.lifecycle ?? "?"}\n`)
+    }
+    deps.stdout.write(`  local state   ${report.localState}\n`)
+    if (entry.tee?.vaultDestination) deps.stdout.write(`  vault         ${entry.tee.vaultDestination}\n`)
+    const server = report.server as LifecycleResponse | { error: string } | undefined
+    if (server) {
+      if ("error" in server) deps.stdout.write(`  server        (unavailable: ${server.error})\n`)
+      else {
+        deps.stdout.write(`  server state  ${server.state ?? "?"}  remote authority ${server.remoteAuthority ?? "?"}\n`)
+        if (server.evidenceObservedAt)
+          deps.stdout.write(`  evidence at   ${new Date(server.evidenceObservedAt).toISOString()}\n`)
+      }
+    }
+    const balances = report.balances as
+      | { lamports?: string; tokens?: Array<Record<string, unknown>>; error?: string }
+      | undefined
+    if (balances) {
+      if (balances.error) deps.stdout.write(`  balances      (unavailable: ${balances.error})\n`)
+      else {
+        deps.stdout.write(`  SOL           ${balances.lamports} lamports\n`)
+        for (const t of balances.tokens ?? []) {
+          deps.stdout.write(
+            `  token         ${t.mint}  ${t.amountRaw} raw (${t.decimals} dp, ${t.state}, ${t.program})  USD unknown\n`,
+          )
+        }
+      }
+    }
+    deps.stdout.write(`  observed at   ${report.observedAt}\n`)
     return 0
+  } finally {
+    releaseResolvedTee(resolved.resolved)
   }
-  deps.stdout.write(`${address}  ${entry.label}\n`)
-  deps.stdout.write(`  local state   ${report.localState}\n`)
-  if (entry.tee?.vaultDestination) deps.stdout.write(`  vault         ${entry.tee.vaultDestination}\n`)
-  const server = report.server as LifecycleResponse | { error: string } | undefined
-  if (server) {
-    if ("error" in server) deps.stdout.write(`  server        (unavailable: ${server.error})\n`)
-    else {
-      deps.stdout.write(`  server state  ${server.state ?? "?"}  remote authority ${server.remoteAuthority ?? "?"}\n`)
-      if (server.evidenceObservedAt)
-        deps.stdout.write(`  evidence at   ${new Date(server.evidenceObservedAt).toISOString()}\n`)
-    }
-  }
-  const balances = report.balances as
-    | { lamports?: string; tokens?: Array<Record<string, unknown>>; error?: string }
-    | undefined
-  if (balances) {
-    if (balances.error) deps.stdout.write(`  balances      (unavailable: ${balances.error})\n`)
-    else {
-      deps.stdout.write(`  SOL           ${balances.lamports} lamports\n`)
-      for (const t of balances.tokens ?? []) {
-        deps.stdout.write(
-          `  token         ${t.mint}  ${t.amountRaw} raw (${t.decimals} dp, ${t.state}, ${t.program})  USD unknown\n`,
-        )
-      }
-    }
-  }
-  deps.stdout.write(`  observed at   ${report.observedAt}\n`)
-  return 0
 }
 
 // ── tee disable ─────────────────────────────────────────────────────────────────────────────
@@ -819,6 +875,10 @@ export async function teeDisable(args: string[], ctx: CommandContext): Promise<n
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
   if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee disable <address>")
+
+  const vaultOwned = await addressOwnedByVault(ctx, address)
+  if (vaultOwned === "error") return 1
+  if (vaultOwned === true) return refuseLegacyWriteForVaultAddress(ctx, address)
 
   await printIdentity(ctx)
   const opened = await openExistingTeeStore(ctx, parsed)
@@ -1045,6 +1105,10 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
   const rpcUrl = rpcUrlFrom(ctx, parsed)
   if (typeof rpcUrl !== "string") return usage(ctx, rpcUrl.error)
   const emergency = parsed.booleans.has("--emergency")
+
+  const vaultOwned = await addressOwnedByVault(ctx, address)
+  if (vaultOwned === "error") return 1
+  if (vaultOwned === true) return refuseLegacyWriteForVaultAddress(ctx, address)
 
   const opened = await openExistingTeeStore(ctx, parsed)
   if (!opened.ok) return opened.code
