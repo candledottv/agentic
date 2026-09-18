@@ -478,7 +478,11 @@ const tradeShape = {
   percent: z
     .number()
     .optional()
-    .describe("Sells only: sell this percent (integer 1-100) of the wallet's holding, on either chain."),
+    .describe(
+      "Sells only: sell this percent (integer 1-100) of the holding. Live trades size against the " +
+        "embedded wallet. Paper trades (`paper: true`) size against this key's paper inventory -- " +
+        "the position a previous paper buy credited -- because paper never moves the live wallet.",
+    ),
   quoteAsset: z
     .string()
     .optional()
@@ -869,8 +873,11 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' +
         "position.\n\n" +
         "Pass `paper: true` to rehearse: every admission rule runs and the quote is recorded, but " +
-        "nothing broadcasts and no funds move. Do this before the first live trade of a new " +
-        "strategy, and whenever you are unsure a trade would be admitted at all.\n\n" +
+        "nothing broadcasts and no funds move. A paper buy credits this key's paper inventory, " +
+        "including for external Solana mints routed through Jupiter, so a later paper sell by " +
+        "amount or percent can close that position without MARKET_NOT_FOUND. Do this before the " +
+        "first live trade of a new strategy, and whenever you are unsure a trade would be " +
+        "admitted at all.\n\n" +
         "After the call:\n" +
         "- A timeout is not a failure. Retry with the SAME clientTradeId from the result -- it " +
         "coalesces the duplicate. A NEW id is a SECOND trade, and that is how you double-spend.\n" +

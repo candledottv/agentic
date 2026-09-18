@@ -224,6 +224,17 @@ async function readMarket(mint, cfg, doFetch, extra) {
     return { status: res.status, err: relayRead(text, extra) };
   return { market: JSON.parse(text).market ?? {} };
 }
+async function readPaperInventory(cfg, doFetch, extra) {
+  const res = await doFetch(`${base(cfg)}/api/v1/trade/agent/paper/inventory`, {
+    method: "GET",
+    headers: headers(cfg.apiKey)
+  });
+  const text = await res.text();
+  if (!res.ok)
+    return { err: relayRead(text, extra) };
+  const body = JSON.parse(text);
+  return { positions: body.positions ?? [] };
+}
 async function executeTrade(args, cfg, doFetch) {
   const apiKey = requireApiKey(cfg);
   const clientTradeId = args.clientTradeId ?? randomUUID();
@@ -264,17 +275,31 @@ async function executeTrade(args, cfg, doFetch) {
       resolved = { amountDecimal: amount, decimals, amountRaw };
     } else if (args.amount !== undefined) {
       const read = await readMarket(args.mint, cfg, doFetch, { clientTradeId });
-      if (!("market" in read))
+      let decimals;
+      if ("market" in read) {
+        if (typeof read.market.decimals !== "number") {
+          return errText(`could not resolve decimals for mint ${args.mint}; pass a raw-ready amount via the SDK instead`, { clientTradeId });
+        }
+        decimals = read.market.decimals;
+      } else if (read.status === 404 && args.paper === true) {
+        const inventory = await readPaperInventory(cfg, doFetch, { clientTradeId });
+        if ("err" in inventory)
+          return inventory.err;
+        const held = inventory.positions.find((p) => p.mint === args.mint);
+        if (typeof held?.tokenDecimals !== "number") {
+          return errText(`could not resolve decimals for mint ${args.mint}; no Candle market and no paper position with a known scale. Buy it in paper first, or pass a raw amount via the SDK`, { clientTradeId });
+        }
+        decimals = held.tokenDecimals;
+      } else {
         return read.err;
-      const decimals = read.market.decimals;
-      if (typeof decimals !== "number") {
-        return errText(`could not resolve decimals for mint ${args.mint}; pass a raw-ready amount via the SDK instead`, { clientTradeId });
       }
       const converted = rawOrError(args.amount, decimals, { clientTradeId });
       if ("err" in converted)
         return converted.err;
       amountRaw = converted.raw;
       resolved = { amountDecimal: args.amount, decimals, amountRaw };
+    } else if (args.paper === true) {
+      resolved = { percent: args.percent };
     } else {
       const percent = args.percent;
       const walletsRes = await doFetch(`${base(cfg)}/api/v1/agent/wallets/embedded`, {
@@ -312,7 +337,7 @@ async function executeTrade(args, cfg, doFetch) {
     clientTradeId,
     mint: args.mint,
     side: args.side,
-    amountRaw,
+    ...amountRaw !== undefined ? { amountRaw } : { percent: args.percent },
     payer: { type: "main" },
     ...args.quoteAsset !== undefined ? { quoteAsset: args.quoteAsset } : {},
     ...args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {},
@@ -750,7 +775,7 @@ var tradeShape = {
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
   side: z.enum(["buy", "sell"]),
   amount: z.string().optional().describe("Decimal amount. Buys: how much of THIS TOKEN'S OWN quote asset to spend (SOL for a " + 'SOL-launched token, USDC for a USDC-quoted one, and so on: e.g. "0.5"). Sells: how many ' + "TOKENS to sell. Pass exactly one of amount or percent."),
-  percent: z.number().optional().describe("Sells only: sell this percent (integer 1-100) of the wallet's holding, on either chain."),
+  percent: z.number().optional().describe("Sells only: sell this percent (integer 1-100) of the holding. Live trades size against the " + "embedded wallet. Paper trades (`paper: true`) size against this key's paper inventory -- " + "the position a previous paper buy credited -- because paper never moves the live wallet."),
   quoteAsset: z.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' + "to an arbitrary mint Candle never launched (Pro/Max) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
   maxSlippageBps: z.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
   clientTradeId: z.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade."),
@@ -913,7 +938,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 
 ` + "Arguments: `mint` and `side` are required. Amounts are DECIMAL, never raw base units " + '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' + `position.
 
-` + "Pass `paper: true` to rehearse: every admission rule runs and the quote is recorded, but " + "nothing broadcasts and no funds move. Do this before the first live trade of a new " + `strategy, and whenever you are unsure a trade would be admitted at all.
+` + "Pass `paper: true` to rehearse: every admission rule runs and the quote is recorded, but " + "nothing broadcasts and no funds move. A paper buy credits this key's paper inventory, " + "including for external Solana mints routed through Jupiter, so a later paper sell by " + "amount or percent can close that position without MARKET_NOT_FOUND. Do this before the " + "first live trade of a new strategy, and whenever you are unsure a trade would be " + `admitted at all.
 
 ` + `After the call:
 ` + "- A timeout is not a failure. Retry with the SAME clientTradeId from the result -- it " + `coalesces the duplicate. A NEW id is a SECOND trade, and that is how you double-spend.

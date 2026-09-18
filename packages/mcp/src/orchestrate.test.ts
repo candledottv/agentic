@@ -242,6 +242,75 @@ describe("executeTrade: paper mode", () => {
     const body = JSON.parse(String(calls[1]?.init?.body))
     expect(body).toMatchObject({ side: "sell", paper: true })
   })
+
+  test("a paper percent sell forwards percent and never reads the live wallet", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/trade/agent/build": { body: { success: true, paper: true } },
+    })
+    const result = await executeTrade(
+      { mint: "ExtMint", side: "sell", percent: 100, clientTradeId: "p-pct", paper: true },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).not.toBe(true)
+    expect(calls.length).toBe(1)
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/trade/agent/build")
+    const body = JSON.parse(String(calls[0]?.init?.body))
+    expect(body).toMatchObject({ side: "sell", percent: 100, paper: true, mint: "ExtMint" })
+    expect(body).not.toHaveProperty("amountRaw")
+  })
+
+  test("a paper amount sell of an external mint uses paper inventory decimals, not MARKET_NOT_FOUND", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/markets/solana/ExtMint": {
+        status: 404,
+        body: {
+          success: false,
+          error: { code: "MARKET_NOT_FOUND", message: "No solana market found for mint ExtMint" },
+        },
+      },
+      "https://api.test/api/v1/trade/agent/paper/inventory": {
+        body: { success: true, paper: true, positions: [{ mint: "ExtMint", amountRaw: "5000000", tokenDecimals: 6 }] },
+      },
+      "https://api.test/api/v1/trade/agent/build": { body: { success: true, paper: true } },
+    })
+    const result = await executeTrade(
+      { mint: "ExtMint", side: "sell", amount: "5", clientTradeId: "p-amt", paper: true },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).not.toBe(true)
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://api.test/api/v1/markets/solana/ExtMint",
+      "https://api.test/api/v1/trade/agent/paper/inventory",
+      "https://api.test/api/v1/trade/agent/build",
+    ])
+    expect(JSON.parse(String(calls[2]?.init?.body))).toMatchObject({
+      side: "sell",
+      amountRaw: "5000000",
+      paper: true,
+    })
+  })
+
+  test("a live amount sell of an external mint still relays MARKET_NOT_FOUND", async () => {
+    const { calls, fetch } = fakeFetch({
+      "https://api.test/api/v1/markets/solana/ExtMint": {
+        status: 404,
+        body: {
+          success: false,
+          error: { code: "MARKET_NOT_FOUND", message: "No solana market found for mint ExtMint" },
+        },
+      },
+    })
+    const result = await executeTrade(
+      { mint: "ExtMint", side: "sell", amount: "5", clientTradeId: "live-404" },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(result.text).api.error.code).toBe("MARKET_NOT_FOUND")
+    expect(calls.length).toBe(1)
+  })
 })
 
 describe("executeTrade: sells", () => {

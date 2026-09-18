@@ -189,6 +189,32 @@ async function readMarket(
   return { market: (JSON.parse(text) as { market?: MarketRead }).market ?? {} }
 }
 
+interface PaperInventoryPosition {
+  mint: string
+  amountRaw: string
+  tokenDecimals?: number
+}
+
+/**
+ * GET /api/v1/trade/agent/paper/inventory -- this key's paper book. Used to convert a paper
+ * amount sell of an external mint (no Candle market, so no decimals on the market read) and
+ * documented so an agent can inspect what a later percent sell will close.
+ */
+async function readPaperInventory(
+  cfg: RequestConfig,
+  doFetch: FetchLike,
+  extra: Record<string, unknown>,
+): Promise<{ positions: PaperInventoryPosition[] } | { err: ToolText }> {
+  const res = await doFetch(`${base(cfg)}/api/v1/trade/agent/paper/inventory`, {
+    method: "GET",
+    headers: headers(cfg.apiKey),
+  })
+  const text = await res.text()
+  if (!res.ok) return { err: relayRead(text, extra) }
+  const body = JSON.parse(text) as { positions?: PaperInventoryPosition[] }
+  return { positions: body.positions ?? [] }
+}
+
 export interface TradeArgs {
   mint: string
   side: "buy" | "sell"
@@ -214,7 +240,7 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
   if (args.percent !== undefined && args.side !== "sell") {
     return errText("percent is only valid on sells; buys take a quote-asset amount", { clientTradeId })
   }
-  let amountRaw: string
+  let amountRaw: string | undefined
   let resolved: Record<string, unknown>
   try {
     if (args.side === "buy") {
@@ -253,19 +279,41 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       resolved = { amountDecimal: amount, decimals, amountRaw }
     } else if (args.amount !== undefined) {
       const read = await readMarket(args.mint, cfg, doFetch, { clientTradeId })
-      if (!("market" in read)) return read.err
-      // A sell is denominated in TOKENS, so this side reads the token's own decimals.
-      const decimals = read.market.decimals
-      if (typeof decimals !== "number") {
-        return errText(
-          `could not resolve decimals for mint ${args.mint}; pass a raw-ready amount via the SDK instead`,
-          { clientTradeId },
-        )
+      let decimals: number
+      if ("market" in read) {
+        // A sell is denominated in TOKENS, so this side reads the token's own decimals.
+        if (typeof read.market.decimals !== "number") {
+          return errText(
+            `could not resolve decimals for mint ${args.mint}; pass a raw-ready amount via the SDK instead`,
+            { clientTradeId },
+          )
+        }
+        decimals = read.market.decimals
+      } else if (read.status === 404 && args.paper === true) {
+        // No Candle market: the live path still 404s (unchanged). Paper can convert from the
+        // position the matching paper buy just credited, which is how an external mint (pump.fun
+        // / Jupiter) exits without MARKET_NOT_FOUND.
+        const inventory = await readPaperInventory(cfg, doFetch, { clientTradeId })
+        if ("err" in inventory) return inventory.err
+        const held = inventory.positions.find((p) => p.mint === args.mint)
+        if (typeof held?.tokenDecimals !== "number") {
+          return errText(
+            `could not resolve decimals for mint ${args.mint}; no Candle market and no paper position with a known scale. Buy it in paper first, or pass a raw amount via the SDK`,
+            { clientTradeId },
+          )
+        }
+        decimals = held.tokenDecimals
+      } else {
+        return read.err
       }
       const converted = rawOrError(args.amount, decimals, { clientTradeId })
       if ("err" in converted) return converted.err
       amountRaw = converted.raw
       resolved = { amountDecimal: args.amount, decimals, amountRaw }
+    } else if (args.paper === true) {
+      // Paper percent: the API sizes against paper inventory. Do not read the live wallet --
+      // paper never credits it, so that path always looks empty after a paper buy.
+      resolved = { percent: args.percent }
     } else {
       const percent = args.percent as number
       const walletsRes = await doFetch(`${base(cfg)}/api/v1/agent/wallets/embedded`, {
@@ -318,7 +366,7 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       clientTradeId,
       mint: args.mint,
       side: args.side,
-      amountRaw,
+      ...(amountRaw !== undefined ? { amountRaw } : { percent: args.percent }),
       payer: { type: "main" },
       ...(args.quoteAsset !== undefined ? { quoteAsset: args.quoteAsset } : {}),
       ...(args.maxSlippageBps !== undefined ? { maxSlippageBps: args.maxSlippageBps } : {}),
