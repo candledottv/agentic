@@ -201,22 +201,30 @@ describe("T34: invariant 1, a recoverable factor exists before any key is create
 
   test("new-key refuses on a vault with no recoverable envelope", async () => {
     const h = await initVault()
-    // A constructed fixture: the passphrase envelope replaced by an unknown factor, which ED-7
-    // keeps but which counts for nothing recoverable.
+    // A constructed fixture: the passphrase envelope replaced by a Secure Enclave one, which this
+    // Linux host cannot drive (CC-12) and which counts for nothing recoverable.
     const { reopen } = await import("../vault/test-vault")
     const { commitVault } = await import("../vault/store")
     const vault = await reopen(h.vaultPath, h.passphrase)
+    const first = vault.file.envelopes[0] as (typeof vault.file.envelopes)[0]
     await commitVault(
       vault,
       {
         index: vault.index,
         envelopes: [
           {
-            ...vault.file.envelopes[0],
             id: "ZZZZZZZZZZZ",
             factor: "secure-enclave",
             domain: "this-device",
-          } as (typeof vault.file.envelopes)[0],
+            label: "",
+            createdAt: first.createdAt,
+            wrap: first.wrap,
+            helper: { teamId: "ABCDE12345", bundleId: "tv.candle.cli.enclave", minVersion: "0.12.0" },
+            publicKey: "not-a-key",
+            keyTag: "tv.candle.cli.vault.fixture",
+            accessControl: "biometryCurrentSet",
+            kek: { alg: "ECIES-P256-SHA256-AESGCM", ciphertext: "not-a-packet" },
+          } as unknown as (typeof vault.file.envelopes)[0],
         ],
       },
       h.deps,

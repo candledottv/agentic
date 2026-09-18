@@ -37,7 +37,7 @@ const sha256 = (s: string) => createHash("sha256").update(s).digest("hex")
 
 let server: ReturnType<typeof Bun.serve>
 let base: string
-let fixtures: Record<string, string>
+let fixtures: Record<string, string | Uint8Array>
 // Every request path the fixture server has seen, in order. Tests that care reset it first
 // (requestPaths = []) so a later assertion is about their own run, not an earlier test's.
 let requestPaths: string[] = []
@@ -72,7 +72,8 @@ beforeAll(() => {
       requestPaths.push(pathname)
       const name = pathname.split("/").pop() ?? ""
       const body = fixtures[name]
-      return body === undefined ? new Response("not found", { status: 404 }) : new Response(body)
+      // A zip fixture is bytes; the rest are text. Either is a valid body, whatever the lib typings say.
+      return body === undefined ? new Response("not found", { status: 404 }) : new Response(body as BodyInit)
     },
   })
   base = `http://127.0.0.1:${server.port}`
@@ -424,5 +425,187 @@ describe("install.sh", () => {
     expect(r.stderr).toContain("linux-arm64")
     await rm(r.home, { recursive: true, force: true })
     await rm(stubDir, { recursive: true, force: true })
+  })
+})
+
+/**
+ * The signed Secure Enclave helper (Ember Phase 2 PR F). Whether a release carries it is the
+ * manifest's word: `macosHelper` absent is a valid omission; present, the installer must deliver
+ * exactly that archive or install nothing. These run on any host by stubbing `uname` (Darwin,
+ * arm64) and `ditto` (python3's zipfile, which is what a Mac and an Ubuntu runner both have) on
+ * the harness's stub PATH; the archive is a real zip built the same way.
+ */
+describe("install.sh: the Secure Enclave helper follows the manifest", () => {
+  const DARWIN_ASSET = "candle-darwin-arm64"
+  const DARWIN_HELPER = "candle-fido2-darwin-arm64"
+  const ENCLAVE_ZIP = "candle-enclave-9.9.9.app.zip"
+  const FAKE_ENCLAVE = '#!/bin/sh\necho "candle-enclave 9.9.9 (protocol 1)"\n'
+  let zipBytes: Uint8Array
+  let zipSha: string
+  let darwinStub: string
+
+  beforeAll(async () => {
+    const dir = await mkdtemp(join(tmpdir(), "candle-enclave-zip-"))
+    const zipPath = join(dir, ENCLAVE_ZIP)
+    const build = Bun.spawnSync([
+      "python3",
+      "-c",
+      [
+        "import sys, zipfile",
+        "z = zipfile.ZipFile(sys.argv[1], 'w')",
+        "z.writestr('candle-enclave.app/Contents/Info.plist', '<plist/>')",
+        "z.writestr('candle-enclave.app/Contents/MacOS/candle-enclave', sys.argv[2])",
+        "z.close()",
+      ].join("\n"),
+      zipPath,
+      FAKE_ENCLAVE,
+    ])
+    if (build.exitCode !== 0) throw new Error(`could not build the zip fixture: ${build.stderr.toString()}`)
+    zipBytes = new Uint8Array(await Bun.file(zipPath).arrayBuffer())
+    zipSha = createHash("sha256").update(zipBytes).digest("hex")
+
+    darwinStub = await mkdtemp(join(tmpdir(), "candle-darwin-stub-"))
+    await writeFile(
+      join(darwinStub, "uname"),
+      '#!/bin/sh\ncase "$1" in\n  -s) echo Darwin ;;\n  -m) echo arm64 ;;\n  *) exec /usr/bin/uname "$@" ;;\nesac\n',
+    )
+    await chmod(join(darwinStub, "uname"), 0o755)
+    // ditto -x -k <zip> <dir>: extract, then restore the executable bit zipfile does not keep.
+    await writeFile(
+      join(darwinStub, "ditto"),
+      '#!/bin/sh\n[ "$1" = "-x" ] && [ "$2" = "-k" ] || exit 2\npython3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$3" "$4" || exit 1\nchmod -R u+x "$4"/*/Contents/MacOS 2>/dev/null\nexit 0\n',
+    )
+    await chmod(join(darwinStub, "ditto"), 0o755)
+  })
+
+  /** Serves a darwin-arm64 release; `declared` writes macosHelper into the manifest, `served` publishes the archive. */
+  async function withDarwinRelease(
+    opts: { declared: boolean; served: boolean; zipBody?: Uint8Array | string },
+    run: () => Promise<void>,
+  ) {
+    const saved = { ...fixtures }
+    fixtures[DARWIN_ASSET] = FAKE_BINARY
+    fixtures[DARWIN_HELPER] = FAKE_HELPER
+    fixtures[`${DARWIN_ASSET}.sigstore.json`] = "{}"
+    fixtures[`${DARWIN_HELPER}.sigstore.json`] = "{}"
+    fixtures[`${ENCLAVE_ZIP}.sigstore.json`] = "{}"
+    if (opts.served) fixtures[ENCLAVE_ZIP] = opts.zipBody ?? zipBytes
+    else delete fixtures[ENCLAVE_ZIP]
+    fixtures.SHA256SUMS = [
+      `${sha256(FAKE_BINARY)}  ${DARWIN_ASSET}`,
+      `${sha256(FAKE_HELPER)}  ${DARWIN_HELPER}`,
+      `${zipSha}  ${ENCLAVE_ZIP}`,
+      `${sha256(FAKE_BINARY)}  ${ASSET}`,
+      `${sha256(FAKE_HELPER)}  ${HELPER}`,
+    ].join("\n")
+    fixtures["latest.json"] = JSON.stringify(
+      {
+        version: "9.9.9",
+        tag: "cli-v9.9.9",
+        assets: { "darwin-arm64": { name: DARWIN_ASSET, sha256: sha256(FAKE_BINARY), size: FAKE_BINARY.length } },
+        helpers: { "darwin-arm64": { name: DARWIN_HELPER, sha256: sha256(FAKE_HELPER), size: FAKE_HELPER.length } },
+        ...(opts.declared ? { macosHelper: { name: ENCLAVE_ZIP, sha256: zipSha, size: zipBytes.length } } : {}),
+      },
+      null,
+      2,
+    )
+    try {
+      await run()
+    } finally {
+      for (const key of Object.keys(fixtures)) delete fixtures[key]
+      Object.assign(fixtures, saved)
+    }
+  }
+
+  test("a manifest that declares the helper: it is fetched, verified and installed as a bundle beside candle", async () => {
+    await withDarwinRelease({ declared: true, served: true }, async () => {
+      requestPaths = []
+      const r = await runInstaller([], {}, darwinStub)
+      expect(r.stderr).toBe("")
+      expect(r.code).toBe(0)
+      expect(requestPaths).toContain(`/releases/latest/download/${ENCLAVE_ZIP}`)
+      expect(requestPaths).toContain(`/releases/latest/download/${ENCLAVE_ZIP}.sigstore.json`)
+      expect(await readFile(join(r.binDir, "candle-enclave.app", "Contents", "MacOS", "candle-enclave"), "utf8")).toBe(
+        FAKE_ENCLAVE,
+      )
+      expect(await readFile(join(r.binDir, "candle"), "utf8")).toBe(FAKE_BINARY)
+      expect(r.stdout).toContain("Installed the signed Secure Enclave helper")
+      expect(r.stdout).toContain("candle vault factor add touch-id")
+      await rm(r.home, { recursive: true, force: true })
+    })
+  })
+
+  test("a declared helper whose download fails stops the install with nothing installed", async () => {
+    await withDarwinRelease({ declared: true, served: false }, async () => {
+      const r = await runInstaller([], {}, darwinStub)
+      expect(r.code).toBe(1)
+      expect(r.stderr).toContain(`declares the Secure Enclave helper ${ENCLAVE_ZIP} but it could not be downloaded`)
+      expect(r.stderr).toContain("nothing installed")
+      await expect(readFile(join(r.binDir, "candle"), "utf8")).rejects.toThrow()
+      await expect(readFile(join(r.binDir, "candle-fido2"), "utf8")).rejects.toThrow()
+      await rm(r.home, { recursive: true, force: true })
+    })
+  })
+
+  test("a declared helper whose checksum does not match installs nothing, binary included", async () => {
+    await withDarwinRelease({ declared: true, served: true, zipBody: "not the archive" }, async () => {
+      const r = await runInstaller([], {}, darwinStub)
+      expect(r.code).toBe(1)
+      expect(r.stderr).toContain(`checksum mismatch for ${ENCLAVE_ZIP}`)
+      await expect(readFile(join(r.binDir, "candle"), "utf8")).rejects.toThrow()
+      await rm(r.home, { recursive: true, force: true })
+    })
+  })
+
+  test("a manifest without the helper is a valid omission: the binary installs, the archive is never requested, and the note says so", async () => {
+    await withDarwinRelease({ declared: false, served: true }, async () => {
+      requestPaths = []
+      const r = await runInstaller([], {}, darwinStub)
+      expect(r.stderr).toBe("")
+      expect(r.code).toBe(0)
+      expect(requestPaths.some((path) => path.includes("candle-enclave"))).toBe(false)
+      expect(r.stdout).toContain("ships no signed Secure Enclave helper (its manifest declares none)")
+      expect(r.stdout).toContain("CLI 0.12.0")
+      await expect(
+        readFile(join(r.binDir, "candle-enclave.app", "Contents", "MacOS", "candle-enclave")),
+      ).rejects.toThrow()
+      expect(await readFile(join(r.binDir, "candle"), "utf8")).toBe(FAKE_BINARY)
+      await rm(r.home, { recursive: true, force: true })
+    })
+  })
+
+  test("a manifest declaring a helper under another name is refused before any download", async () => {
+    const original = fixtures["latest.json"]
+    await withDarwinRelease({ declared: true, served: true }, async () => {
+      fixtures["latest.json"] = (fixtures["latest.json"] as string).replace(ENCLAVE_ZIP, "candle-enclave-9.9.8.app.zip")
+      requestPaths = []
+      const r = await runInstaller([], {}, darwinStub)
+      expect(r.code).toBe(1)
+      expect(r.stderr).toContain("declares a Secure Enclave helper named candle-enclave-9.9.8.app.zip")
+      expect(requestPaths.some((path) => path.includes("candle-enclave"))).toBe(false)
+      await expect(readFile(join(r.binDir, "candle"), "utf8")).rejects.toThrow()
+      await rm(r.home, { recursive: true, force: true })
+    })
+    fixtures["latest.json"] = original as string
+  })
+
+  test("on Linux a declared helper is not this platform's and is never requested", async () => {
+    const saved = fixtures["latest.json"]
+    const manifest = JSON.parse(saved as string) as Record<string, unknown>
+    fixtures["latest.json"] = JSON.stringify(
+      { ...manifest, macosHelper: { name: ENCLAVE_ZIP, sha256: zipSha, size: zipBytes.length } },
+      null,
+      2,
+    )
+    try {
+      requestPaths = []
+      const r = await runInstaller([])
+      expect(r.code).toBe(0)
+      expect(requestPaths.some((path) => path.includes("candle-enclave"))).toBe(false)
+      expect(await readFile(join(r.binDir, "candle"), "utf8")).toBe(FAKE_BINARY)
+      await rm(r.home, { recursive: true, force: true })
+    } finally {
+      fixtures["latest.json"] = saved as string
+    }
   })
 })

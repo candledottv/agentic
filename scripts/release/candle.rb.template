@@ -33,6 +33,9 @@ class Candle < Formula
     bin.install "candle"
     # Beside candle in the Cellar, which is where the CLI looks after resolving its own real path.
     bin.install "candle-fido2"
+    # The signed Secure Enclave helper (Ember Phase 2 PR F) is in the darwin tarballs only when the
+    # release's policy said "signed"; the CLI looks for it in libexec beside bin.
+    libexec.install "candle-enclave.app" if File.exist?("candle-enclave.app")
   end
 
   test do

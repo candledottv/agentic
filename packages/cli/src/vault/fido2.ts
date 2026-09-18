@@ -37,6 +37,7 @@ import {
 import { detectInstall } from "../release"
 import { canonicalBytes } from "./canonical-json"
 import { b64u, PRF_OUTPUT_BYTES, randomBytes, unb64u } from "./crypto"
+import { currentEnclaveHelper } from "./enclave"
 import { VaultError, type VaultErrorCode } from "./errors"
 import type { Ctap2Envelope } from "./format"
 import { ownSecret, wipe } from "./hygiene"
@@ -92,14 +93,20 @@ export async function locateFido2Helper(deps: Pick<Deps, "env" | "execPath" | "r
   return { state: "absent", reason: `no ${HELPER_NAME} executable beside ${realExec}` }
 }
 
-/** The platform facts for this run, with the helper looked for. Every vault command reads these. */
+/**
+ * The platform facts for this run, with both helpers looked for. Every vault command reads these.
+ * The signed Secure Enclave helper (BE-141) is looked for on macOS only: everywhere else the
+ * factor is CC-12's typed refusal before any helper is a question.
+ */
 export async function currentPlatformFacts(
-  deps: Pick<Deps, "platform" | "arch" | "env" | "execPath" | "realpath">,
+  deps: Pick<Deps, "platform" | "arch" | "env" | "execPath" | "realpath" | "spawnHelper" | "releasePolicy">,
 ): Promise<PlatformFacts> {
   const location = await locateFido2Helper(deps)
+  const enclave = deps.platform === "darwin" ? await currentEnclaveHelper(deps) : undefined
   return platformFactsFor(
     deps,
     location.state === "ready" ? { state: "ready", path: location.path } : { state: "absent", reason: location.reason },
+    enclave,
   )
 }
 

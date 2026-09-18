@@ -206,6 +206,29 @@ else
   echo "Note: release ${version} has no ${helper} asset, so the security key factor is not installed (it needs CLI 0.11.0 or newer)."
 fi
 
+# The signed Secure Enclave helper (Ember Phase 2 PR F), macOS only. Whether a release carries it
+# is the MANIFEST's word, not a download's: a release cut with the helper omitted
+# (release-policy.json "omit", the state until Apple approves the enrolment) has no macosHelper
+# entry in latest.json, and that is a valid omission; a release whose manifest declares one must
+# deliver it, so a failed download or a failed check of a declared helper stops the install with
+# nothing installed, rather than quietly installing a CLI without the helper its release promised.
+# The declared name must be exactly the archive this version's release job produces. It installs
+# as a bundle beside candle, which is where the CLI looks.
+enclave_zip="$(tr -d '[:space:]' < "$tmp/latest.json" | sed -n 's/.*"macosHelper":{"name":"\([^"]*\)".*/\1/p')"
+enclave_present=0
+if [ "$os" = "darwin" ]; then
+  if [ -n "$enclave_zip" ]; then
+    [ "$enclave_zip" = "candle-enclave-${version}.app.zip" ] \
+      || fail "the release manifest declares a Secure Enclave helper named ${enclave_zip}, not candle-enclave-${version}.app.zip; nothing installed"
+    curl "${CURL_OPTS[@]+"${CURL_OPTS[@]}"}" -fsSL "${download_base}/${enclave_zip}" -o "$tmp/$enclave_zip" \
+      || fail "the release manifest declares the Secure Enclave helper ${enclave_zip} but it could not be downloaded from ${download_base}; nothing installed"
+    verify_asset "$enclave_zip"
+    enclave_present=1
+  else
+    echo "Note: release ${version} ships no signed Secure Enclave helper (its manifest declares none), so the Touch ID factor is not installed (it arrives with CLI 0.12.0, once Apple has approved the signing enrolment)."
+  fi
+fi
+
 # 6. Install atomically. $tmp is often a different filesystem than $BIN_DIR (tmpfs on Linux), and
 # mv across filesystems is a copy, not a rename, so it is not atomic and a rerun over an existing
 # install could leave candle missing or truncated if interrupted mid-copy. Stage the final bytes
@@ -217,7 +240,9 @@ mkdir -p "$BIN_DIR"
 staged="$(mktemp "$BIN_DIR/.candle.new.XXXXXX")"
 staged_helper=""
 if [ "$helper_present" -eq 1 ]; then staged_helper="$(mktemp "$BIN_DIR/.candle-fido2.new.XXXXXX")"; fi
-trap 'rm -rf "$tmp" "$staged" "$staged_helper"' EXIT
+staged_enclave=""
+if [ "$enclave_present" -eq 1 ]; then staged_enclave="$(mktemp -d "$BIN_DIR/.candle-enclave.new.XXXXXX")"; fi
+trap 'rm -rf "$tmp" "$staged" "$staged_helper" "$staged_enclave"' EXIT
 cp "$tmp/$asset" "$staged"
 chmod 755 "$staged"
 mv -f "$staged" "$BIN_DIR/candle"
@@ -226,6 +251,14 @@ if [ "$helper_present" -eq 1 ]; then
   cp "$tmp/$helper" "$staged_helper"
   chmod 755 "$staged_helper"
   mv -f "$staged_helper" "$BIN_DIR/candle-fido2"
+fi
+if [ "$enclave_present" -eq 1 ]; then
+  # ditto keeps the bundle's signature and notarization ticket intact; the staged directory is
+  # on BIN_DIR's filesystem so the final step is one rename of the bundle directory.
+  ditto -x -k "$tmp/$enclave_zip" "$staged_enclave"
+  [ -x "$staged_enclave/candle-enclave.app/Contents/MacOS/candle-enclave" ] || fail "the Secure Enclave helper archive does not contain candle-enclave.app; nothing installed for it"
+  rm -rf "$BIN_DIR/candle-enclave.app"
+  mv "$staged_enclave/candle-enclave.app" "$BIN_DIR/candle-enclave.app"
 fi
 
 # 7. An npm-global candle elsewhere on PATH: say which one wins.
@@ -272,5 +305,8 @@ echo "Installed candle $version to $BIN_DIR/candle"
 "$BIN_DIR/candle" --version
 if [ "$helper_present" -eq 1 ]; then
   echo "Installed candle-fido2 to $BIN_DIR/candle-fido2 (security keys need libfido2: brew install libfido2, or your distribution's libfido2 package)"
+fi
+if [ "$enclave_present" -eq 1 ]; then
+  echo "Installed the signed Secure Enclave helper to $BIN_DIR/candle-enclave.app (the Touch ID factor: candle vault factor add touch-id)"
 fi
 echo "Next: candle setup"

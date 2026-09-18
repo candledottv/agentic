@@ -46,6 +46,7 @@ import {
   envelopeAad,
   type IndexPlaintext,
   isCtap2Envelope,
+  isSecureEnclaveEnvelope,
   type KeyEntry,
   keyAad,
   parseIndexPlaintext,
@@ -103,11 +104,13 @@ export async function fileExists(path: string): Promise<boolean> {
 /**
  * How a caller supplies a factor. The passphrase is typed; a security key's factor is the 32-byte
  * user-verified `hmac-secret` output the helper returned for THIS envelope (BE-140, ED-11), which
- * the caller owns and zeroes. PRs F and G add their own shapes here.
+ * the caller owns and zeroes; the Secure Enclave's is the 32-byte intermediate KEK the Enclave
+ * unwrapped behind Touch ID (BE-141, ED-12), likewise the caller's to zero. PR G adds its shape.
  */
 export type UnlockRequest =
   | { factor: "passphrase"; passphrase: string; envelopeId?: string }
   | { factor: "passkey-prf"; envelopeId: string; prfOutput: Uint8Array }
+  | { factor: "secure-enclave"; envelopeId: string; kek: Uint8Array }
 
 /**
  * An opened vault. `dek` is the raw data-encryption key and is the caller's to release through
@@ -196,6 +199,23 @@ async function unwrapDek(
         code: "VAULT_UNLOCK_FAILED",
         message: "Could not open the vault: wrong passphrase, or the file is corrupt.",
       })
+    })
+  }
+  if (request.factor === "secure-enclave") {
+    if (!isSecureEnclaveEnvelope(envelope)) {
+      throw new VaultError(
+        "VAULT_FACTOR_UNAVAILABLE",
+        `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a Secure Enclave one.`,
+      )
+    }
+    // ED-4: the Enclave's KEK is the random intermediate itself, unwrapped by the Enclave, so
+    // there is nothing to derive; it is imported non-extractable and the caller zeroes the bytes.
+    const kekKey = await importAesKey(request.kek)
+    return openBlob(kekKey, envelope.wrap, envelopeAad(file, envelope), {
+      code: "VAULT_UNLOCK_FAILED",
+      message:
+        "Could not open the vault with the Secure Enclave: what it unwrapped is not this envelope's key, or the file is corrupt.",
+      suggestion: "Nothing was derived from it and no other factor was tried.",
     })
   }
   if (!isCtap2Envelope(envelope)) {
@@ -353,6 +373,22 @@ export async function wrapDekForPrf(
   header: Pick<VaultFile, "vaultId">,
 ): Promise<{ alg: typeof VAULT_CIPHER } & Blob> {
   const kekKey = await derivePrfKek(prfOutput, unb64u(header.vaultId, "vaultId"))
+  const blob = await seal(kekKey, dek, envelopeAad(header, envelope))
+  return { alg: VAULT_CIPHER, ...blob }
+}
+
+/**
+ * Wraps `dek` under a KEK that already exists as bytes: the Secure Enclave's random intermediate
+ * (ED-4, ED-12). The caller owns `dek` and `kek` and zeroes both; the imported key is
+ * non-extractable.
+ */
+export async function wrapDekForKek(
+  dek: Uint8Array,
+  kek: Uint8Array,
+  envelope: Envelope,
+  header: Pick<VaultFile, "vaultId">,
+): Promise<{ alg: typeof VAULT_CIPHER } & Blob> {
+  const kekKey = await importAesKey(kek)
   const blob = await seal(kekKey, dek, envelopeAad(header, envelope))
   return { alg: VAULT_CIPHER, ...blob }
 }

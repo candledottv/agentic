@@ -9,6 +9,7 @@
 import type { CliConfig, ProfileConfig } from "./config"
 import type { Deps } from "./deps"
 import type { SecretStore } from "./secret-store"
+import { RELEASE_POLICY } from "./vault/release-policy"
 
 export function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -206,6 +207,9 @@ export function createTestDeps(overrides: Partial<Deps> & { fetch: typeof fetch 
     spawnHelper: async (path: string) => {
       throw new Error(`no spawnHelper fake configured (asked to run ${path})`)
     },
+    // The checked-in policy, exactly as the real deps read it: `omit` until Apple approves. A
+    // test of the signed path injects its own.
+    releasePolicy: RELEASE_POLICY,
     writeBytes: async (path: string) => {
       throw new Error(`no writeBytes fake configured (asked for ${path})`)
     },

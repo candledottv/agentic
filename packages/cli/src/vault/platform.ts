@@ -9,10 +9,11 @@
  * state) goes through `PlatformFacts`, built from injected `Deps`, so the whole refusal matrix is
  * exercisable under `bun test` on any host (T58). The real-hardware rows stay T47, T48 and T57.
  *
- * As of PR E two factors exist: the passphrase everywhere, and the security key over CTAP2 on the
- * four shipping targets wherever the `candle-fido2` helper is present. The Secure Enclave and the
- * synced passkey are named by the format (ED-7 keeps their envelopes) and reported as not yet
- * available, with the PR that adds each one named in the reason.
+ * Three factors exist as of PR F: the passphrase everywhere; the security key over CTAP2 on the
+ * four shipping targets wherever the `candle-fido2` helper is present; and the Secure Enclave on
+ * macOS, only in a build whose release policy ships the signed helper, only where that helper is
+ * present, passes its code signature check and reports an Enclave. The synced passkey is named
+ * by the format (ED-7 keeps its envelope) and reported as not yet available, with PR G named.
  */
 import type { Deps } from "../deps"
 import { VaultError, type VaultErrorCode } from "./errors"
@@ -25,6 +26,29 @@ export const HIDRAW_MESSAGE =
 /** The release targets E24 records. T58 asserts the release workflow has not silently gained one. */
 export const SHIPPING_TARGETS = ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"] as const
 
+/**
+ * The AD-1 signed macOS helper, as `vault/enclave.ts` found it for this run (BE-141). `omitted`
+ * is the checked-in release policy saying this build ships no signed helper; `absent` is a
+ * `signed` build with no bundle on disk; `untrusted` is a bundle that failed the codesign
+ * requirement or whose own signature names another team or bundle id; `ready` carries what the
+ * verified helper reported about this Mac.
+ */
+export type EnclaveHelperState =
+  | { state: "omitted"; reason: string }
+  | { state: "absent"; reason: string }
+  | { state: "untrusted"; reason: string }
+  | {
+      state: "ready"
+      appPath: string
+      path: string
+      source: "env" | "beside-binary" | "libexec"
+      identity: { teamId: string; bundleId: string }
+      version: string
+      secureEnclave: boolean
+      biometry: "available" | "unavailable" | "none"
+      biometryReason?: string
+    }
+
 export interface PlatformFacts {
   /** `process.platform`. */
   platform: string
@@ -32,11 +56,13 @@ export interface PlatformFacts {
   arch: string
   /** The major OS version, when it can be read; undefined when it cannot. */
   osMajor?: number
-  /** The AD-1 signed macOS helper (PRs F and G). Always absent in PR E. */
+  /** The AD-1 signed macOS helper (PRs F and G), summarized; `enclaveHelper` has the detail. */
   helper?: "absent" | "untrusted" | "ready"
   /** The `candle-fido2` helper (PR E): where it was found, or why it was not. */
   fido2Helper?: { state: "ready"; path: string } | { state: "absent"; reason: string }
-  /** Whether this machine has a Secure Enclave, as the AD-1 helper would report it. */
+  /** The signed Secure Enclave helper (PR F): policy, location, signature and what it reported. */
+  enclaveHelper?: EnclaveHelperState
+  /** Whether this machine has a Secure Enclave, as the AD-1 helper reported it. */
   secureEnclave?: boolean
 }
 
@@ -49,12 +75,15 @@ export interface PlatformFacts {
 export function platformFactsFor(
   deps: Pick<Deps, "platform" | "arch" | "env">,
   fido2Helper: PlatformFacts["fido2Helper"],
+  enclaveHelper?: EnclaveHelperState,
 ): PlatformFacts {
   return {
     platform: deps.platform,
     arch: deps.arch,
-    helper: "absent",
+    helper: enclaveHelper?.state === "ready" ? "ready" : enclaveHelper?.state === "untrusted" ? "untrusted" : "absent",
     fido2Helper,
+    ...(enclaveHelper !== undefined ? { enclaveHelper } : {}),
+    ...(enclaveHelper?.state === "ready" ? { secureEnclave: enclaveHelper.secureEnclave } : {}),
     ...(deps.env.CANDLE_VAULT_FAKE_OS_MAJOR ? { osMajor: Number(deps.env.CANDLE_VAULT_FAKE_OS_MAJOR) } : {}),
   }
 }
@@ -65,7 +94,11 @@ export type FactorAvailability =
    * Supported on this platform in principle; not drivable on this machine right now. `code` says
    * which typed refusal asking for it explicitly gets: the helper is missing, or the device is.
    */
-  | { state: "unavailable-on-this-device"; reason: string; code: "VAULT_HELPER_MISSING" | "VAULT_FACTOR_UNAVAILABLE" }
+  | {
+      state: "unavailable-on-this-device"
+      reason: string
+      code: "VAULT_HELPER_MISSING" | "VAULT_HELPER_UNTRUSTED" | "VAULT_FACTOR_UNAVAILABLE"
+    }
   /** This platform cannot drive the factor at all. */
   | { state: "unsupported-on-this-platform"; reason: string }
 
@@ -110,14 +143,37 @@ export function factorAvailability(factor: string, facts: PlatformFacts, transpo
       return { state: "unsupported-on-this-platform", reason: `this CLI does not know the transport ${transport}` }
     }
     case "secure-enclave":
-      return {
-        state: "unsupported-on-this-platform",
-        reason: mac
-          ? "this release ships no signed macOS helper; the Secure Enclave factor arrives in CLI 0.12.0 (PR F)"
-          : "the Secure Enclave is macOS only",
-      }
+      return secureEnclaveAvailability(facts)
     default:
       return { state: "unsupported-on-this-platform", reason: `this CLI does not know the factor ${factor}` }
+  }
+}
+
+/**
+ * CC-12's Secure Enclave column: macOS only; a build whose policy omits the signed helper cannot
+ * drive it anywhere; a signed build needs the helper present and trusted; and the helper decides
+ * whether this Mac has an Enclave (every Apple silicon Mac; Intel only with a T2 chip).
+ */
+function secureEnclaveAvailability(facts: PlatformFacts): FactorAvailability {
+  if (facts.platform !== "darwin") {
+    return { state: "unsupported-on-this-platform", reason: "the Secure Enclave is macOS only" }
+  }
+  const helper = facts.enclaveHelper ?? { state: "omitted" as const, reason: "the signed helper was not looked for" }
+  switch (helper.state) {
+    case "omitted":
+      return { state: "unsupported-on-this-platform", reason: helper.reason }
+    case "absent":
+      return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_MISSING" }
+    case "untrusted":
+      return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_UNTRUSTED" }
+    default:
+      if (!helper.secureEnclave) {
+        return {
+          state: "unsupported-on-this-platform",
+          reason: "this Mac has no Secure Enclave (an Intel Mac without a T2 chip)",
+        }
+      }
+      return { state: "available" }
   }
 }
 
@@ -153,13 +209,18 @@ export function assertFactorAddable(factor: KnownFactor, facts: PlatformFacts, t
   throw new VaultError(
     refusalCodeFor(availability),
     `This CLI cannot add a ${name} factor here: ${availability.reason}.`,
-    {
-      suggestion:
-        availability.state === "unavailable-on-this-device" && availability.code === "VAULT_HELPER_MISSING"
-          ? "Install a release build of the CLI (which places candle-fido2 beside candle) or set CANDLE_FIDO2_HELPER. No other factor is substituted and nothing was written."
-          : "No other factor is substituted and nothing was written.",
-    },
+    { suggestion: `${addSuggestion(factor, availability)} No other factor is substituted and nothing was written.` },
   )
+}
+
+function addSuggestion(factor: KnownFactor, availability: Exclude<FactorAvailability, { state: "available" }>): string {
+  if (availability.state !== "unavailable-on-this-device") return ""
+  if (factor === "secure-enclave") {
+    return availability.code === "VAULT_HELPER_UNTRUSTED"
+      ? "Reinstall the CLI from a release so candle-enclave.app carries the release's signature."
+      : "Install a release build of the CLI that ships the signed helper (the darwin tarball and Homebrew place candle-enclave.app beside candle), or set CANDLE_ENCLAVE_HELPER to the path of a signed candle-enclave.app."
+  }
+  return "Install a release build of the CLI (which places candle-fido2 beside candle) or set CANDLE_FIDO2_HELPER."
 }
 
 /** The word `status` and `factor list` print for an envelope's availability. */

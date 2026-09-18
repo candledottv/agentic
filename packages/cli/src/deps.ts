@@ -20,6 +20,7 @@ import { profileSecretRef } from "./profiles"
 import type { VerifyResult } from "./release-verify"
 import type { SecretStore } from "./secret-store"
 import { SECRET_REFS } from "./secret-store"
+import type { ReleasePolicy } from "./vault/enclave"
 
 export interface Writer {
   write(chunk: string): void
@@ -108,7 +109,9 @@ export interface Deps {
   /**
    * Runs the `candle-fido2` helper once (Ember Phase 2, BE-140, helper protocols): spawns `path`
    * with a pipe on stdin and stdout, writes `requestLine` followed by a newline, closes stdin, and
-   * resolves with everything the process printed and how it ended. Past `timeoutMs` the process is
+   * resolves with everything the process printed and how it ended. `args` is for the two other
+   * things the vault spawns the same way (BE-141): the Secure Enclave helper's executable takes
+   * none, and `/usr/bin/codesign` takes its verification flags there and reads nothing. Past `timeoutMs` the process is
    * terminated and the result reports the signal. The real implementation never gives the helper
    * the terminal; a test's fake answers from a script, and the subprocess test spawns a scripted
    * helper over a real pipe so the plumbing itself is exercised.
@@ -116,8 +119,16 @@ export interface Deps {
   spawnHelper: (
     path: string,
     requestLine: string,
-    opts: { timeoutMs: number },
+    opts: { timeoutMs: number; args?: string[] },
   ) => Promise<{ stdout: string; stderr: string; exitCode: number | null; signal: string | null; spawnError?: string }>
+  /**
+   * The checked-in release policy (Ember Phase 2, BE-141): whether this build ships the signed
+   * Secure Enclave helper, and the team id and bundle id its code signature must carry. The real
+   * deps read `packages/cli/release-policy.json`, the same file the release job reads; tests
+   * inject either state, so the `omit` refusal and the `signed` path are both exercised on any
+   * host.
+   */
+  releasePolicy: ReleasePolicy
   /** Resolves symlinks; Homebrew installs a symlink in bin/ pointing into the Cellar. */
   realpath: (path: string) => Promise<string>
   /** Writes bytes with mode 0755: the only writer of a new binary. */

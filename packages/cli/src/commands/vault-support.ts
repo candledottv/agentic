@@ -9,6 +9,7 @@
 import type { ParsedArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
 import { writeLocalFailure, writeUsageFailure } from "../render"
+import { type EnclaveSession, openEnclaveSession, unwrapKekWithEnclave } from "../vault/enclave"
 import { isVaultError, VaultError } from "../vault/errors"
 import { assertPrf, currentPlatformFacts, openSecurityKeySession, type SecurityKeySession } from "../vault/fido2"
 import {
@@ -16,7 +17,9 @@ import {
   type Envelope,
   isCtap2Envelope,
   isPassphraseEnvelope,
+  isSecureEnclaveEnvelope,
   parseVaultFile,
+  type SecureEnclaveEnvelope,
 } from "../vault/format"
 import { wipe } from "../vault/hygiene"
 import { passphraseAttempts } from "../vault/passphrase"
@@ -95,6 +98,12 @@ export interface UnlockOptions {
    * key unlocks with the passphrase, so the key being added is the only key the ceremony names.
    */
   factor?: string
+  /**
+   * What the Touch ID prompt says this unlock is for (ED-12: the reason string names the
+   * operation). Commands that move value name the amount, the asset and the destination through
+   * `confirm` instead; this is the first open's line, and it defaults to unlocking the vault.
+   */
+  reason?: string
 }
 
 /**
@@ -110,6 +119,7 @@ export interface OpenedVault {
   factor:
     | { kind: "passphrase"; envelopeId: string }
     | { kind: "security-key"; envelopeId: string; session: SecurityKeySession }
+    | { kind: "touch-id"; envelopeId: string; session: EnclaveSession }
   /** Opens `raw` (the bytes of `path`) with the same factor. The caller closes what it gets. */
   reopen: (path: string, raw: string) => Promise<UnlockedVault>
   /**
@@ -119,7 +129,10 @@ export interface OpenedVault {
   confirm: (what: string) => Promise<void>
 }
 
-type FactorChoice = { kind: "passphrase"; envelopeId?: string } | { kind: "security-key"; envelope: Ctap2Envelope }
+type FactorChoice =
+  | { kind: "passphrase"; envelopeId?: string }
+  | { kind: "security-key"; envelope: Ctap2Envelope }
+  | { kind: "touch-id"; envelope: SecureEnclaveEnvelope }
 
 /**
  * Prompts for the factor and opens the vault, having first applied ED-6's whole-file rollback
@@ -130,11 +143,11 @@ type FactorChoice = { kind: "passphrase"; envelopeId?: string } | { kind: "secur
  * construction and says so: a same-user attacker can edit the sidecar, and a missing sidecar is a
  * warning rather than a refusal, because a vault legitimately arrives on a new machine without one.
  *
- * Which factor: `--factor` (or the command's own override) names an envelope id, `passphrase` or
- * `security-key`; an envelope this machine cannot drive is refused with CC-12's typed code. With no
- * flag, the vault's passphrase is used when it is the only kind this machine can drive, and when a
- * security key could also open it the operator is asked, on a visible prompt, which to use. The
- * CLI never picks a different envelope on the operator's behalf.
+ * Which factor: `--factor` (or the command's own override) names an envelope id, `passphrase`,
+ * `security-key` or `touch-id`; an envelope this machine cannot drive is refused with CC-12's typed
+ * code. With no flag, the vault's passphrase is used when it is the only kind this machine can
+ * drive, and when a security key or Touch ID could also open it the operator is asked, on a
+ * visible prompt, which to use. The CLI never picks a different envelope on the operator's behalf.
  */
 export async function unlockInteractively(
   ctx: CommandContext,
@@ -173,6 +186,40 @@ export async function unlockInteractively(
         if (!passphraseAttempts(again).includes(passphrase)) {
           throw new VaultError("VAULT_UNLOCK_FAILED", "The passphrase did not match; nothing was signed.")
         }
+      },
+    }
+  }
+
+  if (choice.kind === "touch-id") {
+    // The Secure Enclave. The policy, the helper and its signature (against what THIS envelope
+    // recorded) are settled before the vault is touched; the Touch ID prompt is the unwrap itself.
+    const envelope = choice.envelope
+    const session = await openEnclaveSession(deps, envelope.helper)
+    const open = async (p: string, r: string, reason: string): Promise<UnlockedVault> => {
+      const current = parseVaultFile(r)
+      const target = current.envelopes.find((candidate) => candidate.id === envelope.id)
+      if (target === undefined || !isSecureEnclaveEnvelope(target)) {
+        throw new VaultError(
+          "VAULT_FACTOR_UNAVAILABLE",
+          `The file at ${p} has no Secure Enclave envelope ${envelope.id}.`,
+        )
+      }
+      const kek = await unwrapKekWithEnclave(deps, session, target, current.vaultId, reason)
+      try {
+        return await unlockVault(p, r, { factor: "secure-enclave", envelopeId: target.id, kek }, { notice })
+      } finally {
+        wipe(kek)
+      }
+    }
+    const reason = opts.reason ?? "unlock the Candle vault"
+    const vault = await open(path, raw, reason)
+    return {
+      vault,
+      factor: { kind: "touch-id", envelopeId: envelope.id, session },
+      reopen: (p, r) => open(p, r, reason),
+      // ED-12: the second presentation puts the operation itself in the Touch ID prompt.
+      confirm: async (what) => {
+        closeVault(await open(path, raw, what))
       },
     }
   }
@@ -248,12 +295,20 @@ async function chooseFactor(
 ): Promise<FactorChoice> {
   const passphrases = envelopes.filter(isPassphraseEnvelope)
   const keys = envelopes.filter(isCtap2Envelope)
+  const enclaves = envelopes.filter(isSecureEnclaveEnvelope)
   const drivableKeys = keys.filter((envelope) => canDrive(envelope, facts))
-  const listKeys = (candidates: Ctap2Envelope[]) =>
-    candidates.map((envelope) => `  ${envelope.id}  security key  ${envelope.label || "(no label)"}`).join("\n")
+  const drivableEnclaves = enclaves.filter((envelope) => canDrive(envelope, facts))
+  const wordFor = (envelope: Envelope) => (isSecureEnclaveEnvelope(envelope) ? "Touch ID" : "security key")
+  const list = (candidates: Envelope[]) =>
+    candidates.map((envelope) => `  ${envelope.id}  ${wordFor(envelope)}  ${envelope.label || "(no label)"}`).join("\n")
+  const choiceFor = (envelope: Ctap2Envelope | SecureEnclaveEnvelope): FactorChoice =>
+    isSecureEnclaveEnvelope(envelope as unknown as Envelope)
+      ? { kind: "touch-id", envelope: envelope as SecureEnclaveEnvelope }
+      : { kind: "security-key", envelope: envelope as Ctap2Envelope }
 
   if (flag === undefined) {
-    if (drivableKeys.length === 0) {
+    const drivable: Array<Ctap2Envelope | SecureEnclaveEnvelope> = [...drivableKeys, ...drivableEnclaves]
+    if (drivable.length === 0) {
       if (passphrases.length === 0) {
         throw new VaultError(
           "VAULT_FACTOR_UNAVAILABLE",
@@ -263,17 +318,22 @@ async function chooseFactor(
       }
       return { kind: "passphrase" }
     }
-    if (passphrases.length === 0 && drivableKeys.length === 1)
-      return { kind: "security-key", envelope: drivableKeys[0] as Ctap2Envelope }
+    if (passphrases.length === 0 && drivable.length === 1) return choiceFor(drivable[0] as Ctap2Envelope)
     // More than one kind can open it here: the operator says which. Visible prompt, nothing secret.
+    const kinds = [
+      ...(passphrases.length > 0 ? ["a passphrase"] : []),
+      ...(drivableKeys.length > 0 ? ["a security key"] : []),
+      ...(drivableEnclaves.length > 0 ? ["Touch ID"] : []),
+    ]
+    const noun = drivableEnclaves.length > 0 ? "an" : "a security key"
     const answer = (
       await ctx.deps.promptLine(
-        `This vault opens with${passphrases.length > 0 ? " a passphrase or" : ""} a security key. Type passphrase, or the id of a security key envelope:\n${listKeys(drivableKeys)}\n> `,
+        `This vault opens with ${kinds.join(" or ")}. Type passphrase, or the id of ${noun} envelope:\n${list(drivable as unknown as Envelope[])}\n> `,
       )
     ).trim()
     if (answer === "passphrase" && passphrases.length > 0) return { kind: "passphrase" }
-    const chosen = drivableKeys.find((envelope) => envelope.id === answer)
-    if (chosen) return { kind: "security-key", envelope: chosen }
+    const chosen = drivable.find((envelope) => envelope.id === answer)
+    if (chosen) return choiceFor(chosen)
     throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `No factor named ${JSON.stringify(answer)}; nothing was tried.`, {
       suggestion: "Answer passphrase, or one of the envelope ids listed, or pass --factor.",
     })
@@ -293,10 +353,24 @@ async function chooseFactor(
     if (keys.length > 1) {
       throw new VaultError(
         "VAULT_FACTOR_UNAVAILABLE",
-        `This vault has ${keys.length} security key envelopes; name one with --factor <id>:\n${listKeys(keys)}`,
+        `This vault has ${keys.length} security key envelopes; name one with --factor <id>:\n${list(keys as unknown as Envelope[])}`,
       )
     }
     return { kind: "security-key", envelope: assertDrivable(keys[0] as Ctap2Envelope, facts) }
+  }
+  if (flag === "touch-id") {
+    if (enclaves.length === 0) {
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no Touch ID (Secure Enclave) envelope.", {
+        suggestion: "Add one on this Mac: candle vault factor add touch-id",
+      })
+    }
+    if (enclaves.length > 1) {
+      throw new VaultError(
+        "VAULT_FACTOR_UNAVAILABLE",
+        `This vault has ${enclaves.length} Touch ID envelopes; name one with --factor <id>:\n${list(enclaves as unknown as Envelope[])}`,
+      )
+    }
+    return { kind: "touch-id", envelope: assertDrivable(enclaves[0] as SecureEnclaveEnvelope, facts) }
   }
   const named = envelopes.find((envelope) => envelope.id === flag)
   if (named === undefined) {
@@ -306,6 +380,7 @@ async function chooseFactor(
   }
   if (isPassphraseEnvelope(named)) return { kind: "passphrase", envelopeId: named.id }
   if (isCtap2Envelope(named)) return { kind: "security-key", envelope: assertDrivable(named, facts) }
+  if (isSecureEnclaveEnvelope(named)) return { kind: "touch-id", envelope: assertDrivable(named, facts) }
   // CC-12: an envelope this platform cannot drive, asked for by name, is the typed refusal and
   // never a substitution.
   const availability = envelopeAvailability(named, facts)
@@ -322,12 +397,12 @@ async function chooseFactor(
   )
 }
 
-function assertDrivable(envelope: Ctap2Envelope, facts: PlatformFacts): Ctap2Envelope {
+function assertDrivable<T extends Ctap2Envelope | SecureEnclaveEnvelope>(envelope: T, facts: PlatformFacts): T {
   const availability = envelopeAvailability(envelope as unknown as Envelope, facts)
   if (availability.state === "available") return envelope
   throw new VaultError(
     refusalCodeFor(availability),
-    `The security key envelope ${envelope.id} cannot open the vault here: ${availability.reason}.`,
+    `The ${isSecureEnclaveEnvelope(envelope as unknown as Envelope) ? "Touch ID" : "security key"} envelope ${envelope.id} cannot open the vault here: ${availability.reason}.`,
     { suggestion: "No other envelope was tried. Run `candle vault status` to see which factors can open it here." },
   )
 }

@@ -32,6 +32,7 @@
     "build": "bun build src/index.ts --target=node --format=esm --outfile=dist/index.js",
     "build:binary": "bun build --compile --minify src/index.ts --outfile dist-bin/candle",
     "build:helper": "bun build --compile --minify src/fido2-helper/main.ts --outfile dist-bin/candle-fido2",
+    "build:enclave-helper": "bash src/enclave-helper/app/build.sh",
     "refresh-sigstore-root": "bun scripts/refresh-sigstore-root.mjs",
     "prepublishOnly": "bun run build",
     "test": "bun test",

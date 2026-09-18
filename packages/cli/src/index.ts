@@ -60,6 +60,7 @@ import { writeLocalFailure, writeUsageFailure } from "./render"
 import { promptHiddenSecret, promptVisibleLine, SECRET_REFS } from "./secret-store"
 import { maybeWriteUpdateNotice } from "./update-notice"
 import type { HelperRun } from "./vault/fido2"
+import { RELEASE_POLICY } from "./vault/release-policy"
 import { CLI_VERSION } from "./version"
 
 interface GlobalFlags {
@@ -136,7 +137,8 @@ Commands:
   vault restore --phrase [--count <n>] [--tee-count <k>]          Rebuild a vault from the recovery phrase
                 [--rpc-url <url>]
   vault reconcile-exposure                                        Re-read this account and add exposure; clears nothing
-  vault factor list | add passphrase|security-key | remove <id>   Manage the factors that open the vault
+  vault factor list | add passphrase|security-key|touch-id | remove <id>
+                                                                  Manage the factors that open the vault
   vault backup --to <path> [--accept-shared-domain]               Copy the vault and verify the copy in full
   vault verify-backup <path>                                      Verify a copy in full (all eight steps)
   vault import-legacy --tee [--from <path>]                       Migrate tee-wallets.enc into the vault
@@ -170,7 +172,7 @@ Global options:
   --api-url <url>         Override the API base URL
   --profile <name>        Act as a named profile (see: candle auth login --profile)
   --no-verify-account     Skip the check that the stored key belongs to the profile's account
-  --factor <id|kind>      Vault commands: unlock with this envelope id, or "passphrase" or "security-key"
+  --factor <id|kind>      Vault commands: unlock with this envelope id, or "passphrase", "security-key" or "touch-id"
   --device <id>           Vault commands: the security key to use, by the id vault factor list prints
   --json                  Machine-readable output
   --help, -h              Show this help
@@ -573,11 +575,14 @@ function realOpenBrowser(url: string): void {
  * derived. A process that cannot be started at all is reported as `spawnError` rather than thrown,
  * so the vault code can turn it into `VAULT_HELPER_MISSING` with the install instruction.
  */
-export function realSpawnHelper(path: string, requestLine: string, opts: { timeoutMs: number }): Promise<HelperRun> {
+/** What `spawnHelper` takes: the timeout, and argv for the two callers that pass one (BE-141). */
+type SpawnOptions = { timeoutMs: number; args?: string[] }
+
+export function realSpawnHelper(path: string, requestLine: string, opts: SpawnOptions): Promise<HelperRun> {
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(path, [], { stdio: ["pipe", "pipe", "pipe"] })
+      child = spawn(path, opts.args ?? [], { stdio: ["pipe", "pipe", "pipe"] })
     } catch (error) {
       resolve({ stdout: "", stderr: "", exitCode: null, signal: null, spawnError: messageOf(error) })
       return
@@ -672,6 +677,7 @@ export async function buildRealDeps(): Promise<Deps> {
     arch: process.arch,
     realpath: (path) => realpath(path),
     spawnHelper: realSpawnHelper,
+    releasePolicy: RELEASE_POLICY,
     // `flag: "wx"` refuses an existing path instead of truncating it. The only caller is
     // `update`, writing a fresh random temp name beside the binary: a path that already exists
     // there is either a collision or somebody else's file, and neither is ours to overwrite and

@@ -86,6 +86,29 @@ export interface Ctap2Envelope extends EnvelopeCommon {
 
 export const CTAP2_RP_ID = "cli.candle.tv" as const
 
+/** CC-01's `kek.alg` for the `secure-enclave` row: Apple's ECIES over P-256 with SHA-256 and AES-GCM. */
+export const SECURE_ENCLAVE_KEK_ALG = "ECIES-P256-SHA256-AESGCM" as const
+
+/**
+ * The Secure Enclave factor (BE-141, ED-12, CC-01). Every field below `label` is inside the
+ * envelope AAD. `helper` pins the signed helper the CLI verifies before trusting an unwrap (team
+ * id and bundle id go into the codesign requirement; `minVersion` is the helper the envelope was
+ * made with). `publicKey` is the Enclave key's public half as SPKI; `keyTag` is the keychain tag
+ * the key lives under; `kek.ciphertext` is the random intermediate KEK wrapped to that public key,
+ * which only the Enclave can open, behind Touch ID (`accessControl`). The domain is `this-device`:
+ * the key never leaves the Mac, and the factor is never recoverable.
+ */
+export interface SecureEnclaveEnvelope extends EnvelopeCommon {
+  factor: "secure-enclave"
+  domain: "this-device"
+  helper: { teamId: string; bundleId: string; minVersion: string }
+  /** base64url, DER SubjectPublicKeyInfo of an uncompressed P-256 point. */
+  publicKey: string
+  keyTag: string
+  accessControl: "biometryCurrentSet"
+  kek: { alg: typeof SECURE_ENCLAVE_KEK_ALG; ciphertext: string }
+}
+
 /**
  * Any envelope as read off disk. ED-7: a build that does not know a factor still carries the
  * envelope through canonicalization verbatim and still reads its `domain`, because CC-03's domain
@@ -99,6 +122,12 @@ export function isPassphraseEnvelope(envelope: Envelope): envelope is Passphrase
 
 export function isCtap2Envelope(envelope: Envelope): envelope is Ctap2Envelope & Record<string, unknown> {
   return envelope.factor === "passkey-prf" && envelope.transport === "ctap2"
+}
+
+export function isSecureEnclaveEnvelope(
+  envelope: Envelope,
+): envelope is SecureEnclaveEnvelope & Record<string, unknown> {
+  return envelope.factor === "secure-enclave"
 }
 
 /**
@@ -336,8 +365,21 @@ export function envelopeAad(file: Pick<VaultHeader, "vaultId">, envelope: Envelo
       saltDerivation: envelope.saltDerivation,
     })
   }
-  // PRs F and G add their parameter sets here. An unknown envelope is never unwrapped (ED-7), so
-  // it never needs one.
+  if (isSecureEnclaveEnvelope(envelope)) {
+    // CC-01's secure-enclave row, every parameter in the AAD: the pinned helper identity, the
+    // public key, the tag, the access control and the wrapped KEK. Editing any of them out of the
+    // envelope is a tag failure, never a silently different unwrap.
+    return canonicalBytes({
+      ...base,
+      helper: envelope.helper,
+      publicKey: envelope.publicKey,
+      keyTag: envelope.keyTag,
+      accessControl: envelope.accessControl,
+      kek: envelope.kek,
+    })
+  }
+  // PR G adds the platform passkey's parameter set here. An unknown envelope is never unwrapped
+  // (ED-7), so it never needs one.
   throw new VaultError(
     "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM",
     `This CLI cannot unwrap a ${envelope.factor}${typeof envelope.transport === "string" ? `/${envelope.transport}` : ""} envelope.`,
@@ -450,6 +492,9 @@ export function parseVaultFile(raw: string): VaultFile {
     if (envelope.factor === "passkey-prf" && envelope.transport === "ctap2") {
       assertCtap2EnvelopeShape(envelope)
     }
+    if (envelope.factor === "secure-enclave") {
+      assertSecureEnclaveEnvelopeShape(envelope)
+    }
   }
 
   const ids = new Set<string>()
@@ -478,6 +523,32 @@ function assertCtap2EnvelopeShape(envelope: Record<string, unknown>): void {
   if (envelope.saltDerivation !== "webauthn-prf") bad("does not record saltDerivation: webauthn-prf")
   if (typeof envelope.aaguid !== "string") bad("has no aaguid")
   if (typeof envelope.product !== "string") bad("has no product")
+}
+
+/** CC-01's secure-enclave row: the fields an unwrap needs, typed, refused here rather than mid-prompt. */
+function assertSecureEnclaveEnvelopeShape(envelope: Record<string, unknown>): void {
+  const id = String(envelope.id)
+  const bad = (detail: string): never => refuse("VAULT_UNREADABLE", `Envelope ${id} (Secure Enclave) ${detail}.`)
+  if (envelope.domain !== "this-device") bad(`has domain ${JSON.stringify(envelope.domain)}, expected this-device`)
+  const helper = envelope.helper
+  if (!isRecord(helper)) {
+    bad("has no helper record")
+    return
+  }
+  for (const field of ["teamId", "bundleId", "minVersion"] as const) {
+    if (typeof helper[field] !== "string" || helper[field] === "") bad(`has no helper.${field}`)
+  }
+  if (typeof envelope.publicKey !== "string" || envelope.publicKey === "") bad("has no publicKey")
+  if (typeof envelope.keyTag !== "string" || envelope.keyTag === "") bad("has no keyTag")
+  if (envelope.accessControl !== "biometryCurrentSet") bad("does not record accessControl: biometryCurrentSet")
+  const kek = envelope.kek
+  if (!isRecord(kek)) {
+    bad("has no kek record")
+    return
+  }
+  if (kek.alg !== SECURE_ENCLAVE_KEK_ALG)
+    bad(`has kek.alg ${JSON.stringify(kek.alg)}, expected ${SECURE_ENCLAVE_KEK_ALG}`)
+  if (typeof kek.ciphertext !== "string" || kek.ciphertext === "") bad("has no kek.ciphertext")
 }
 
 /**

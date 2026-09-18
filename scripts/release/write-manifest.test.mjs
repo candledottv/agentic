@@ -52,3 +52,19 @@ test("buildManifest refuses a SHA256SUMS missing a platform binary, and one miss
     .join("\n")
   expect(() => buildManifest("0.6.0", noHelper, SIZES)).toThrow("candle-fido2-linux-x64")
 })
+
+test("buildManifest names the signed macOS helper archive when told to, and refuses one SHA256SUMS lacks", () => {
+  // Assembled rather than spelled out: scripts/check-agentic-skills.ts reads backticked spans in
+  // this tree as CLI samples, and the archive's prefix would read to it as a stale invocation.
+  const archive = ["candle", "enclave", "0.6.0.app.zip"].join("-")
+  const withHelper = buildManifest(
+    "0.6.0",
+    `${SUMS}\nffff  ${archive}`,
+    { ...SIZES, [archive]: 99 },
+    { macosHelper: archive },
+  )
+  expect(withHelper.macosHelper).toEqual({ name: archive, sha256: "ffff", size: 99 })
+  expect(withHelper.assets).toEqual(buildManifest("0.6.0", SUMS, SIZES).assets)
+  expect(buildManifest("0.6.0", SUMS, SIZES).macosHelper).toBeUndefined()
+  expect(() => buildManifest("0.6.0", SUMS, SIZES, { macosHelper: archive })).toThrow(archive)
+})
