@@ -15,6 +15,13 @@ name: Release CLI
 # gains candle-enclave-<version>.app.zip and its Sigstore bundle, the darwin tarballs carry the
 # bundle, and latest.json names it; a missing secret, a failed signature, notarization or staple
 # fails the release, so an unsigned helper is never published.
+#
+# Ember Phase 2 PR G (BE-135, AD-2) adds the synced passkey factor to the same helper, which needs
+# the associated-domains entitlement (webcredentials:cli.candle.tv) and, under Developer ID, a
+# provisioning profile embedded in the bundle. Under "signed" that profile is one more required
+# input, APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64; it is checked against the team, the
+# bundle id, the entitlement and its expiry before the build, and a missing or wrong one fails
+# the job like the other six. Under "omit" nothing changes.
 on:
   push:
     tags: ["cli-v*"]
@@ -73,14 +80,43 @@ jobs:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
           APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64 }}
           POLICY_TEAM_ID: ${{ steps.policy.outputs.team_id }}
         run: |
           missing=""
-          for name in APPLE_DEVELOPER_ID_CERT_P12_BASE64 APPLE_DEVELOPER_ID_CERT_PASSWORD APPLE_TEAM_ID APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID APPLE_NOTARY_KEY_P8_BASE64; do
+          for name in APPLE_DEVELOPER_ID_CERT_P12_BASE64 APPLE_DEVELOPER_ID_CERT_PASSWORD APPLE_TEAM_ID APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID APPLE_NOTARY_KEY_P8_BASE64 APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64; do
             [ -n "${!name}" ] || missing="${missing} ${name}"
           done
           [ -z "$missing" ] || { echo "release-policy.json says signed, and these secrets are not set on this repository:${missing}"; exit 1; }
           [ "${APPLE_TEAM_ID}" = "${POLICY_TEAM_ID}" ] || { echo "APPLE_TEAM_ID does not match release-policy.json macosHelper.teamId (${POLICY_TEAM_ID})"; exit 1; }
+      # The Developer ID provisioning profile the associated-domains entitlement needs (PR G). It
+      # is decoded once, checked against the team, the bundle id, the entitlement and its expiry,
+      # and embedded by build.sh as Contents/embedded.provisionprofile. A profile for another
+      # team or bundle, or one without the webcredentials domain, would sign cleanly and fail
+      # only on a user's Mac at the first passkey ceremony, so it is refused here instead.
+      - name: Decode and check the provisioning profile
+        if: steps.policy.outputs.policy == 'signed'
+        id: profile
+        env:
+          APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUNDLE_ID: ${{ steps.policy.outputs.bundle_id }}
+        run: |
+          profile="${RUNNER_TEMP}/candle-enclave.provisionprofile"
+          printf '%s' "$APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$profile"
+          plist="${RUNNER_TEMP}/candle-enclave.provisionprofile.plist"
+          security cms -D -i "$profile" > "$plist"
+          app_id="$(/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.application-identifier' "$plist")"
+          [ "$app_id" = "${APPLE_TEAM_ID}.${BUNDLE_ID}" ] || { echo "the provisioning profile is for ${app_id}, not ${APPLE_TEAM_ID}.${BUNDLE_ID}"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.developer.associated-domains' "$plist" | grep -q 'webcredentials:cli.candle.tv' \
+            || { echo "the provisioning profile's associated-domains entitlement does not include webcredentials:cli.candle.tv"; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :TeamIdentifier' "$plist" | grep -q "$APPLE_TEAM_ID" \
+            || { echo "the provisioning profile's TeamIdentifier does not include ${APPLE_TEAM_ID}"; exit 1; }
+          expires="$(/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$plist")"
+          expires_epoch="$(date -j -f '%a %b %d %H:%M:%S %Z %Y' "$expires" '+%s' 2>/dev/null || python3 -c 'import sys,datetime;print(int(datetime.datetime.strptime(sys.argv[1],"%a %b %d %H:%M:%S %Z %Y").timestamp()))' "$expires")"
+          [ "$expires_epoch" -gt "$(date '+%s')" ] || { echo "the provisioning profile expired on ${expires}"; exit 1; }
+          echo "the provisioning profile is for ${app_id}, expires ${expires}"
+          echo "path=${profile}" >> "$GITHUB_OUTPUT"
       - name: Import the Developer ID certificate into a temporary keychain
         if: steps.policy.outputs.policy == 'signed'
         id: cert
@@ -115,16 +151,22 @@ jobs:
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
           APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          PROFILE: ${{ steps.profile.outputs.path }}
         run: |
           out="${RUNNER_TEMP}/helper"
-          bash packages/cli/src/enclave-helper/app/build.sh "$VERSION" "$BUNDLE_ID" "$out" "$TEAM_ID"
+          bash packages/cli/src/enclave-helper/app/build.sh "$VERSION" "$BUNDLE_ID" "$out" "$TEAM_ID" "$PROFILE"
           app="${out}/candle-enclave.app"
+          [ -f "${app}/Contents/embedded.provisionprofile" ] || { echo "build.sh did not embed the provisioning profile"; exit 1; }
           /usr/bin/codesign --force --options runtime --timestamp --entitlements "${out}/candle-enclave.entitlements" --sign "$IDENTITY" "$app"
           # The same requirement the CLI pins at every unlock (packages/cli/src/vault/enclave.ts):
           # Apple's anchor, a Developer ID leaf, this team, this bundle id.
           requirement="=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = \"${TEAM_ID}\" and identifier \"${BUNDLE_ID}\""
           /usr/bin/codesign --verify --strict --deep --verbose=2 -R "$requirement" "$app"
           /usr/bin/codesign -d --entitlements - "$app"
+          # The signed entitlements must carry the associated domain the passkey factor needs (PR G).
+          /usr/bin/codesign -d --entitlements - "$app" 2>&1 | grep -q 'webcredentials:cli.candle.tv' \
+            || { echo "the signed helper's entitlements do not carry webcredentials:cli.candle.tv"; exit 1; }
+          rm -f "$PROFILE"
           printf '%s' "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "${RUNNER_TEMP}/notary.p8"
           ditto -c -k --keepParent "$app" "${RUNNER_TEMP}/notarize.zip"
           xcrun notarytool submit "${RUNNER_TEMP}/notarize.zip" --key "${RUNNER_TEMP}/notary.p8" --key-id "$APPLE_NOTARY_KEY_ID" --issuer "$APPLE_NOTARY_ISSUER_ID" --wait --timeout 45m --output-format json > "${RUNNER_TEMP}/notary.json"
@@ -146,7 +188,7 @@ jobs:
           ditto -c -k --keepParent "$app" "macos-helper/${asset}"
           sha="$(shasum -a 256 "macos-helper/${asset}" | awk '{print $1}')"
           jq -n --arg tag "${GITHUB_REF_NAME}" --arg commit "${GITHUB_SHA}" --arg asset "$asset" --arg sha "$sha" --arg team "$TEAM_ID" --arg bundle "$BUNDLE_ID" \
-            '{status: "included", policy: "signed", tag: $tag, commit: $commit, asset: $asset, sha256: $sha, teamId: $team, bundleId: $bundle}' > macos-helper/macos-helper-state.json
+            '{status: "included", policy: "signed", tag: $tag, commit: $commit, asset: $asset, sha256: $sha, teamId: $team, bundleId: $bundle, associatedDomains: ["webcredentials:cli.candle.tv"], provisioningProfile: true}' > macos-helper/macos-helper-state.json
           cat macos-helper/macos-helper-state.json
       - name: Remove the temporary keychain
         if: always() && steps.cert.outputs.keychain != ''

@@ -28,6 +28,7 @@ import { countRecoverableFactors } from "../vault/domains"
 import {
   createEnclaveKey,
   deleteEnclaveKey,
+  describeBiometry,
   type EnclaveSession,
   keyTagFor,
   unwrapKekWithEnclave,
@@ -68,16 +69,10 @@ export async function addTouchIdFactor(
     throw new VaultError("VAULT_HELPER_MISSING", "The Secure Enclave helper was not found after the platform check.")
   }
   if (helper.biometry !== "available") {
-    throw new VaultError(
-      "VAULT_FACTOR_UNAVAILABLE",
-      `Touch ID is not available right now${helper.biometryReason ? `: ${helper.biometryReason}` : ""}.`,
-      {
-        suggestion:
-          helper.biometry === "none"
-            ? "Enrol a fingerprint in System Settings, Touch ID & Password, then retry. Nothing was written and no other factor is substituted."
-            : "Open the lid, or use a keyboard with Touch ID, or unlock the Mac with its password first, then retry. Nothing was written and no other factor is substituted.",
-      },
-    )
+    // BE-135: the five states are worded apart. "Not available from this session" (SSH, a
+    // background agent, the lid closed) names the LAError and is not "no Touch ID hardware".
+    const described = describeBiometry(helper)
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", described.message, { suggestion: described.suggestion })
   }
   const session: EnclaveSession = {
     path: helper.path,

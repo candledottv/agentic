@@ -752,7 +752,9 @@ describe("T58: CC-12's refusal matrix, every row with the platform injected", ()
 
   test("an envelope of an unsupported transport is listed unsupported-on-this-platform, not offered, and refused by name", async () => {
     const v = await initVault()
-    // A platform-macos envelope written by a later CLI (PR G), kept verbatim (ED-7).
+    // A platform-macos envelope (PR G, BE-135) in CC-01's shape. This build's policy is `omit`,
+    // so on macOS the factor is not in the build and on Linux it is macOS only; either way the
+    // envelope is kept verbatim (ED-7) and never offered.
     const file = JSON.parse(await readFile(v.vaultPath, "utf8")) as VaultJson
     file.envelopes.push({
       id: "g1g1g1g1",
@@ -761,6 +763,14 @@ describe("T58: CC-12's refusal matrix, every row with the platform injected", ()
       domain: "apple-account",
       label: "synced",
       createdAt: "2026-09-18T00:00:00.000Z",
+      rpId: "cli.candle.tv",
+      credentialId: "AQIDBAUGBwgJCgsMDQ4PEA",
+      prfSalt: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      userVerification: "required",
+      backupEligible: true,
+      backupState: true,
+      saltDerivation: "platform",
+      helper: { teamId: "ABCDE12345", bundleId: "tv.candle.cli.enclave", minVersion: "0.13.0" },
       wrap: {
         alg: "AES-256-GCM",
         iv: "AAAAAAAAAAAAAAAA",

@@ -26,6 +26,7 @@ import { base64 } from "@scure/base"
 import type { Deps } from "../deps"
 import {
   type BiometryState,
+  type BiometryType,
   ENCLAVE_ACCESS_CONTROL,
   ENCLAVE_BUNDLE_NAME,
   ENCLAVE_EXECUTABLE_RELATIVE,
@@ -36,6 +37,7 @@ import {
   type EnclaveDeleteResponse,
   type EnclaveInfoResponse,
   type EnclaveResponse,
+  type LaErrorReport,
 } from "../enclave-helper/protocol"
 import { detectInstall } from "../release"
 import { canonicalBytes } from "./canonical-json"
@@ -54,6 +56,14 @@ export const CODESIGN_PATH = "/usr/bin/codesign"
  */
 export const ENCLAVE_HELPER_TIMEOUT_MS = 120_000
 export const CODESIGN_TIMEOUT_MS = 30_000
+
+/**
+ * What the RP id domain must serve for the synced passkey factor (BE-135, AD-2). A web asset no
+ * CLI package can ship, so it is a deployment prerequisite recorded in T57; the CLI checks it
+ * before the registration ceremony and says this when the association fails.
+ */
+export const AASA_URL = "https://cli.candle.tv/.well-known/apple-app-site-association"
+export const AASA_REQUIREMENT = `The domain must serve ${AASA_URL} over HTTPS with status 200, no redirect, Content-Type application/json, and a body of {"webcredentials":{"apps":["<TEAM ID>.<bundle id>"]}} listing the signed helper's application identifier.`
 
 export const ENCLAVE_INSTALL_SUGGESTION =
   "Install a release build of the CLI that ships the signed helper (the darwin tarball and Homebrew place candle-enclave.app beside candle), or set CANDLE_ENCLAVE_HELPER to the path of a signed candle-enclave.app. No other factor is substituted."
@@ -204,11 +214,80 @@ export async function verifyHelperSignature(
 
 // ── Running one operation ─────────────────────────────────────────────────────────────────────
 
+/** What the CLI says about Touch ID from the session's point of view (BE-135, constraint 5). */
+export const NOT_INTERACTIVE_SUGGESTION =
+  "Run the command from a Terminal window inside the logged-in session on that Mac (not over SSH, not from a background agent, not with the lid closed and no display), then retry. Nothing was derived and no other factor is substituted; the passphrase still opens the vault."
+
+/**
+ * Touch ID's state in words, from what the helper's `info` reported (BE-135). The five states are
+ * kept apart on purpose: "not available from this session" (`LAError` `systemCancel` or
+ * `notInteractive`, which is what a process outside the interactive login session gets on a Mac
+ * that has Touch ID) is neither "no sensor", nor "not enrolled", nor "locked out", and PR F's
+ * helper reported it as the first of those with the reason "Authentication canceled".
+ */
+export function describeBiometry(report: {
+  biometry: BiometryState
+  biometryReason?: string
+  biometryType?: BiometryType
+  laError?: LaErrorReport
+}): { message: string; suggestion: string } {
+  const la = report.laError ? ` (LAError ${report.laError.name}, ${report.laError.code})` : ""
+  const reason = report.biometryReason ? `: ${report.biometryReason.replace(/\.$/, "")}` : ""
+  switch (report.biometry) {
+    case "available":
+      return { message: "Touch ID is available.", suggestion: "" }
+    case "none":
+      return {
+        message: `No fingerprint is enrolled on this Mac${reason}${la}.`,
+        suggestion:
+          "Enrol a fingerprint in System Settings, Touch ID & Password, then retry. Nothing was written and no other factor is substituted.",
+      }
+    case "locked-out":
+      return {
+        message: `Touch ID is locked out after too many failed attempts${reason}${la}.`,
+        suggestion:
+          "Unlock the Mac with its password to reset Touch ID, then retry. Nothing was written and no other factor is substituted.",
+      }
+    case "not-interactive":
+      return {
+        message: `Touch ID is not available from this session${la}: this Mac ${report.biometryType && report.biometryType !== "none" ? `has ${biometryTypeWord(report.biometryType)}, but` : "may have Touch ID, but"} no prompt can be shown to a process outside the interactive login session (SSH, a background agent, the lid closed with no display)${reason}.`,
+        suggestion: NOT_INTERACTIVE_SUGGESTION,
+      }
+    default:
+      if (report.biometryType === "none") {
+        return {
+          message: `This Mac has no Touch ID sensor${reason}${la}.`,
+          suggestion:
+            "Use a Mac with Touch ID, or a Magic Keyboard with Touch ID paired to this Mac. Nothing was written and no other factor is substituted.",
+        }
+      }
+      return {
+        message: `Touch ID is present but not usable right now${reason}${la}.`,
+        suggestion:
+          "Open the lid, or use a keyboard with Touch ID, or unlock the Mac with its password first, then retry. Nothing was written and no other factor is substituted.",
+      }
+  }
+}
+
+function biometryTypeWord(type: BiometryType): string {
+  switch (type) {
+    case "touchID":
+      return "Touch ID"
+    case "faceID":
+      return "Face ID"
+    case "opticID":
+      return "Optic ID"
+    default:
+      return "no biometric sensor"
+  }
+}
+
 /** The translation table from the helper's codes into the spec's; the contract, not a note. */
 export function translateEnclaveFailure(code: string, message: string): VaultError {
   const table: Partial<Record<EnclaveCode, VaultErrorCode>> = {
     NO_ENCLAVE: "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM",
     BIOMETRY_UNAVAILABLE: "VAULT_FACTOR_UNAVAILABLE",
+    NOT_INTERACTIVE: "VAULT_FACTOR_UNAVAILABLE",
     KEY_NOT_FOUND: "VAULT_FACTOR_UNAVAILABLE",
     KEY_EXISTS: "VAULT_FACTOR_UNAVAILABLE",
     CANCELLED: "VAULT_AUTHENTICATOR_CANCELLED",
@@ -216,27 +295,44 @@ export function translateEnclaveFailure(code: string, message: string): VaultErr
     LOCKED: "VAULT_AUTHENTICATOR_BLOCKED",
     DECRYPT_FAILED: "VAULT_UNLOCK_FAILED",
     KEYCHAIN_IO: "VAULT_FACTOR_UNAVAILABLE",
+    PASSKEY_UNSUPPORTED: "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM",
+    PRF_UNSUPPORTED: "VAULT_PRF_UNSUPPORTED",
+    DOMAIN_NOT_ASSOCIATED: "VAULT_FACTOR_UNAVAILABLE",
+    NO_CREDENTIAL: "VAULT_CREDENTIAL_NOT_PRESENT",
   }
   const detail: Partial<Record<EnclaveCode, string>> = {
     NO_ENCLAVE: `This Mac has no Secure Enclave: ${message}.`,
     BIOMETRY_UNAVAILABLE: `Touch ID is not available right now: ${message}.`,
+    NOT_INTERACTIVE: `Touch ID is not available from this session (no prompt can be shown to a process outside the interactive login session): ${message}.`,
     KEY_NOT_FOUND: `This Mac's Secure Enclave does not hold this envelope's key: ${message}.`,
     KEY_EXISTS: `The Secure Enclave already holds a key under this envelope's tag: ${message}.`,
-    CANCELLED: `The Touch ID prompt did not complete: ${message}.`,
+    CANCELLED: `The prompt did not complete: ${message}.`,
     AUTH_FAILED: `Touch ID did not verify, or this Mac's enrolled fingerprints changed since the factor was added (the key is bound to the fingerprint set that existed then): ${message}.`,
     LOCKED: `Touch ID is locked out: ${message}.`,
     DECRYPT_FAILED: `The Secure Enclave could not unwrap this envelope's key: ${message}.`,
     KEYCHAIN_IO: `The keychain refused the Secure Enclave operation: ${message}.`,
+    PASSKEY_UNSUPPORTED: `The platform passkey API is not available here: ${message}.`,
+    PRF_UNSUPPORTED: `The platform authenticator cannot serve this factor: ${message}.`,
+    DOMAIN_NOT_ASSOCIATED: `macOS did not associate the helper with cli.candle.tv: ${message}. ${AASA_REQUIREMENT}`,
+    NO_CREDENTIAL: `No synced passkey with this envelope's credential id is available to this Mac or this Apple account: ${message}.`,
   }
   const suggestion: Partial<Record<EnclaveCode, string>> = {
     BIOMETRY_UNAVAILABLE:
       "Open the lid, or use a keyboard with Touch ID, or unlock the Mac with its password first. Nothing was derived and no other factor was tried; the passphrase still opens the vault.",
+    NOT_INTERACTIVE: NOT_INTERACTIVE_SUGGESTION,
     KEY_NOT_FOUND:
       "An Enclave key never leaves the Mac that created it. On another Mac, open the vault with the passphrase and add a new Touch ID factor there. No other factor was tried.",
     AUTH_FAILED:
       "If the fingerprint set changed, remove this factor (candle vault factor remove <id>, with the passphrase) and add it again. No other factor was tried.",
     LOCKED: "Unlock the Mac with its password to reset Touch ID, then retry. No other factor was tried.",
-    CANCELLED: "Run the command again and confirm with Touch ID when the prompt appears.",
+    CANCELLED: "Run the command again and confirm when the prompt appears. No other factor was tried.",
+    PASSKEY_UNSUPPORTED: "The synced passkey factor needs macOS 15 or later. No other factor is substituted.",
+    PRF_UNSUPPORTED:
+      "Nothing was written. The passkey this attempt created remains in your Passwords (System Settings, Passwords) and can be removed there. No other factor is substituted and no other derivation is tried.",
+    DOMAIN_NOT_ASSOCIATED:
+      "Until the domain association holds, the synced passkey factor is refused; no other factor is substituted.",
+    NO_CREDENTIAL:
+      "Sign in to the Apple account that holds the passkey, or open the vault with the passphrase. No other factor was tried.",
   }
   const mapped = table[code as EnclaveCode]
   if (mapped === undefined) {
@@ -307,7 +403,7 @@ export function enclaveOperationDigest(fields: {
   return base64.encode(sha256(canonicalBytes({ purpose: "candle-enclave/operation", ...fields })))
 }
 
-function requestCommon(vaultId: string, envelopeId: string, op: string): Record<string, unknown> {
+export function requestCommon(vaultId: string, envelopeId: string, op: string): Record<string, unknown> {
   // The nonce is not a secret, but every random buffer is tracked by the T36 seam, so it is
   // zeroed once encoded rather than left for the collector.
   const nonce = randomBytes(16)
@@ -361,8 +457,32 @@ export async function currentEnclaveHelper(deps: HelperDeps): Promise<EnclaveHel
     identity,
     version: info.version,
     secureEnclave: info.secureEnclave,
+    ...helperReport(info),
+  }
+}
+
+/** What a verified helper's `info` said about this Mac, tolerant of a PR F helper that says less (BE-135). */
+export function helperReport(info: EnclaveInfoResponse): {
+  biometry: BiometryState
+  biometryReason?: string
+  biometryType?: BiometryType
+  laError?: LaErrorReport
+  osMajor?: number
+  associatedDomains: string[]
+  provisioningProfile: boolean
+} {
+  const osMajor =
+    typeof info.osVersion === "string" ? Number.parseInt(info.osVersion.split(".")[0] ?? "", 10) : Number.NaN
+  return {
     biometry: info.biometry,
     ...(info.biometryReason !== undefined ? { biometryReason: info.biometryReason } : {}),
+    ...(info.biometryType !== undefined ? { biometryType: info.biometryType } : {}),
+    ...(info.laError !== undefined
+      ? { laError: { code: Number(info.laError.code), name: String(info.laError.name) } }
+      : {}),
+    ...(Number.isInteger(osMajor) ? { osMajor } : {}),
+    associatedDomains: Array.isArray(info.associatedDomains) ? info.associatedDomains.map(String) : [],
+    provisioningProfile: info.provisioningProfile === true,
   }
 }
 

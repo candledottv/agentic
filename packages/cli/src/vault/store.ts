@@ -45,7 +45,7 @@ import {
   type Envelope,
   envelopeAad,
   type IndexPlaintext,
-  isCtap2Envelope,
+  isPrfEnvelope,
   isSecureEnclaveEnvelope,
   type KeyEntry,
   keyAad,
@@ -102,10 +102,11 @@ export async function fileExists(path: string): Promise<boolean> {
 // ── Unlocking ─────────────────────────────────────────────────────────────────────────────────
 
 /**
- * How a caller supplies a factor. The passphrase is typed; a security key's factor is the 32-byte
- * user-verified `hmac-secret` output the helper returned for THIS envelope (BE-140, ED-11), which
- * the caller owns and zeroes; the Secure Enclave's is the 32-byte intermediate KEK the Enclave
- * unwrapped behind Touch ID (BE-141, ED-12), likewise the caller's to zero. PR G adds its shape.
+ * How a caller supplies a factor. The passphrase is typed; a passkey's factor is the 32-byte
+ * user-verified PRF output the helper returned for THIS envelope, over CTAP2 `hmac-secret`
+ * (BE-140, ED-11) or the platform authenticator's PRF extension (BE-135, the same derivation,
+ * ED-4), which the caller owns and zeroes; the Secure Enclave's is the 32-byte intermediate KEK
+ * the Enclave unwrapped behind Touch ID (BE-141, ED-12), likewise the caller's to zero.
  */
 export type UnlockRequest =
   | { factor: "passphrase"; passphrase: string; envelopeId?: string }
@@ -218,17 +219,17 @@ async function unwrapDek(
       suggestion: "Nothing was derived from it and no other factor was tried.",
     })
   }
-  if (!isCtap2Envelope(envelope)) {
+  if (!isPrfEnvelope(envelope)) {
     throw new VaultError(
       "VAULT_FACTOR_UNAVAILABLE",
-      `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a security key one.`,
+      `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passkey one.`,
     )
   }
   const kekKey = await derivePrfKek(request.prfOutput, unb64u(file.vaultId, "vaultId"))
+  const what = envelope.transport === "platform-macos" ? "this synced passkey" : "this security key"
   return openBlob(kekKey, envelope.wrap, envelopeAad(file, envelope), {
     code: "VAULT_UNLOCK_FAILED",
-    message:
-      "Could not open the vault with this security key: the assertion did not yield this envelope's key, or the file is corrupt.",
+    message: `Could not open the vault with ${what}: the assertion did not yield this envelope's key, or the file is corrupt.`,
     suggestion: "Nothing was derived from it and no other factor was tried.",
   })
 }

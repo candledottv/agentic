@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { p256 } from "@noble/curves/p256"
 import { base64, hex } from "@scure/base"
 import { eciesEncrypt } from "../vault/ecies"
@@ -256,5 +256,221 @@ describe("the scripted helper over a real pipe", () => {
     const empty = spawnSync("bun", [helper, scriptPath], { input: "", encoding: "utf8" })
     expect(empty.status).toBe(2)
     expect(JSON.parse(empty.stdout)).toMatchObject({ ok: false, code: "BAD_REQUEST" })
+  })
+})
+
+// ── BE-135: the two passkey operations ────────────────────────────────────────────────────────
+
+describe("passkey-register and passkey-assert (BE-135)", () => {
+  const SALT = base64.encode(new Uint8Array(32).fill(9))
+  const passkeyScript = (overrides: Partial<EnclaveScript> = {}) =>
+    script({
+      osVersion: "15.1.0",
+      associatedDomains: ["webcredentials:cli.candle.tv"],
+      provisioningProfile: true,
+      ...overrides,
+    })
+
+  test("validation: the relying party is fixed, the hash and the salt are 32 bytes, and the ids are base64", () => {
+    const rows: Array<[Record<string, unknown>, RegExp]> = [
+      [{ op: "passkey-register", ...common }, /rpId is missing/],
+      [{ op: "passkey-register", ...common, rpId: "example.com" }, /rpId must be cli.candle.tv/],
+      [
+        { op: "passkey-register", ...common, rpId: "cli.candle.tv", clientDataHash: "AA==" },
+        /clientDataHash is 1 bytes/,
+      ],
+      [
+        { op: "passkey-register", ...common, rpId: "cli.candle.tv", clientDataHash: DIGEST, userId: "***" },
+        /userId is not base64/,
+      ],
+      [
+        { op: "passkey-register", ...common, rpId: "cli.candle.tv", clientDataHash: DIGEST, userId: "AA==" },
+        /userName is missing/,
+      ],
+      [{ op: "passkey-assert", ...common, rpId: "cli.candle.tv", clientDataHash: DIGEST }, /credentialId is missing/],
+      [
+        {
+          op: "passkey-assert",
+          ...common,
+          rpId: "cli.candle.tv",
+          clientDataHash: DIGEST,
+          credentialId: "AA==",
+          prfSalt: "AA==",
+        },
+        /prfSalt is 1 bytes/,
+      ],
+    ]
+    for (const [request, message] of rows) {
+      let thrown: unknown
+      try {
+        parseEnclaveRequest(JSON.stringify(request))
+      } catch (error) {
+        thrown = error
+      }
+      expect((thrown as { code?: string })?.code).toBe("BAD_REQUEST")
+      expect((thrown as { message?: string })?.message).toMatch(message)
+    }
+    const registerLine = JSON.stringify({
+      op: "passkey-register",
+      ...common,
+      rpId: "cli.candle.tv",
+      userId: "AQID",
+      userName: "candle vault",
+      clientDataHash: DIGEST,
+      extra: "ignored",
+    })
+    expect(parseEnclaveRequest(registerLine)).toEqual({
+      op: "passkey-register",
+      ...common,
+      rpId: "cli.candle.tv",
+      userId: "AQID",
+      userName: "candle vault",
+      clientDataHash: DIGEST,
+    })
+  })
+
+  test("info reports the gates, register answers an attestation object with the flags, assert answers 32 bytes of PRF", async () => {
+    const s = await passkeyScript({
+      biometryType: "touchID",
+      laError: { code: -4, name: "systemCancel" },
+      biometry: "not-interactive",
+    })
+    const backend = () => scriptedEnclaveBackend(s)
+    const info = await handleEnclaveLine(JSON.stringify({ op: "info", ...common }), backend)
+    expect(info).toMatchObject({
+      ok: true,
+      op: "info",
+      osVersion: "15.1.0",
+      associatedDomains: ["webcredentials:cli.candle.tv"],
+      provisioningProfile: true,
+      biometry: "not-interactive",
+      biometryType: "touchID",
+      laError: { code: -4, name: "systemCancel" },
+    })
+
+    const registered = await handleEnclaveLine(
+      JSON.stringify({
+        op: "passkey-register",
+        ...common,
+        rpId: "cli.candle.tv",
+        userId: "AQID",
+        userName: "candle vault",
+        clientDataHash: DIGEST,
+      }),
+      backend,
+    )
+    expect(registered).toMatchObject({ ok: true, op: "passkey-register", prfSupported: true })
+    const { credentialId, attestationObject } = registered as { credentialId: string; attestationObject: string }
+    const { authDataFromAttestationObject, authDataFlags } = await import("../vault/webauthn-cbor")
+    const authData = authDataFromAttestationObject(base64.decode(attestationObject))
+    expect(authDataFlags(authData)).toEqual({
+      userPresent: true,
+      userVerified: true,
+      backupEligible: true,
+      backupState: true,
+    })
+
+    const asserted = await handleEnclaveLine(
+      JSON.stringify({
+        op: "passkey-assert",
+        ...common,
+        rpId: "cli.candle.tv",
+        credentialId,
+        clientDataHash: DIGEST,
+        prfSalt: SALT,
+      }),
+      backend,
+    )
+    expect(asserted).toMatchObject({ ok: true, op: "passkey-assert" })
+    const prf = base64.decode((asserted as { prfOutput: string }).prfOutput)
+    expect(prf).toHaveLength(32)
+    // Deterministic per credential and salt; different for another salt.
+    const again = await handleEnclaveLine(
+      JSON.stringify({
+        op: "passkey-assert",
+        ...common,
+        rpId: "cli.candle.tv",
+        credentialId,
+        clientDataHash: DIGEST,
+        prfSalt: SALT,
+      }),
+      backend,
+    )
+    expect((again as { prfOutput: string }).prfOutput).toBe((asserted as { prfOutput: string }).prfOutput)
+    const other = await handleEnclaveLine(
+      JSON.stringify({
+        op: "passkey-assert",
+        ...common,
+        rpId: "cli.candle.tv",
+        credentialId,
+        clientDataHash: DIGEST,
+        prfSalt: base64.encode(new Uint8Array(32).fill(8)),
+      }),
+      backend,
+    )
+    expect((other as { prfOutput: string }).prfOutput).not.toBe((asserted as { prfOutput: string }).prfOutput)
+  })
+
+  test("macOS 14, no associated domain, an unknown credential and a scripted failure are each their own typed code", async () => {
+    const register = (s: EnclaveScript) =>
+      handleEnclaveLine(
+        JSON.stringify({
+          op: "passkey-register",
+          ...common,
+          rpId: "cli.candle.tv",
+          userId: "AQID",
+          userName: "u",
+          clientDataHash: DIGEST,
+        }),
+        () => scriptedEnclaveBackend(s),
+      )
+    expect(await register(await passkeyScript({ osVersion: "14.7.1" }))).toMatchObject({
+      ok: false,
+      code: "PASSKEY_UNSUPPORTED",
+    })
+    expect(await register(await passkeyScript({ associatedDomains: [] }))).toMatchObject({
+      ok: false,
+      code: "DOMAIN_NOT_ASSOCIATED",
+    })
+    expect(
+      await register(
+        await passkeyScript({ fail: { passkeyRegister: { code: "CANCELLED", message: "sheet dismissed" } } }),
+      ),
+    ).toMatchObject({ ok: false, code: "CANCELLED", message: "sheet dismissed" })
+    const s = await passkeyScript()
+    expect(
+      await handleEnclaveLine(
+        JSON.stringify({
+          op: "passkey-assert",
+          ...common,
+          rpId: "cli.candle.tv",
+          credentialId: "AQID",
+          clientDataHash: DIGEST,
+          prfSalt: SALT,
+        }),
+        () => scriptedEnclaveBackend(s),
+      ),
+    ).toMatchObject({ ok: false, code: "NO_CREDENTIAL" })
+  })
+
+  test("the scripted helper over a real pipe answers a passkey registration then an assertion in a later process", async () => {
+    const s = await passkeyScript()
+    const scriptPath = join(dirname(s.store), "script.json")
+    await writeFile(scriptPath, JSON.stringify(s))
+    const helper = join(import.meta.dir, "scripted-helper.ts")
+    const first = spawnSync("bun", [helper, scriptPath], {
+      input: `${JSON.stringify({ op: "passkey-register", ...common, rpId: "cli.candle.tv", userId: "AQID", userName: "u", clientDataHash: DIGEST })}\n`,
+      encoding: "utf8",
+    })
+    expect(first.status).toBe(0)
+    const registered = JSON.parse(first.stdout.trim()) as { ok: boolean; credentialId: string }
+    expect(registered.ok).toBe(true)
+    const second = spawnSync("bun", [helper, scriptPath], {
+      input: `${JSON.stringify({ op: "passkey-assert", ...common, rpId: "cli.candle.tv", credentialId: registered.credentialId, clientDataHash: DIGEST, prfSalt: SALT })}\n`,
+      encoding: "utf8",
+    })
+    expect(second.status).toBe(0)
+    expect(second.stdout.trim().split("\n")).toHaveLength(1)
+    expect(JSON.parse(second.stdout)).toMatchObject({ ok: true, protocol: ENCLAVE_PROTOCOL, op: "passkey-assert" })
   })
 })

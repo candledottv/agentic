@@ -137,7 +137,7 @@ Commands:
   vault restore --phrase [--count <n>] [--tee-count <k>]          Rebuild a vault from the recovery phrase
                 [--rpc-url <url>]
   vault reconcile-exposure                                        Re-read this account and add exposure; clears nothing
-  vault factor list | add passphrase|security-key|touch-id | remove <id>
+  vault factor list | add passphrase|security-key|touch-id|passkey | remove <id>
                                                                   Manage the factors that open the vault
   vault backup --to <path> [--accept-shared-domain]               Copy the vault and verify the copy in full
   vault verify-backup <path>                                      Verify a copy in full (all eight steps)
@@ -172,7 +172,7 @@ Global options:
   --api-url <url>         Override the API base URL
   --profile <name>        Act as a named profile (see: candle auth login --profile)
   --no-verify-account     Skip the check that the stored key belongs to the profile's account
-  --factor <id|kind>      Vault commands: unlock with this envelope id, or "passphrase", "security-key" or "touch-id"
+  --factor <id|kind>      Vault commands: unlock with this envelope id, or "passphrase", "security-key", "touch-id" or "passkey"
   --device <id>           Vault commands: the security key to use, by the id vault factor list prints
   --json                  Machine-readable output
   --help, -h              Show this help

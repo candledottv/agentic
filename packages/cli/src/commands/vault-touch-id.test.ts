@@ -456,6 +456,66 @@ describe("factor add touch-id: every refusal is typed, before the passphrase, an
       message: "No fingerprints are enrolled",
       helperRun: true,
     },
+    // BE-135 (constraint 5): the report a process outside the interactive session gets on a Mac
+    // that HAS Touch ID (LAError -4, systemCancel) is worded as "not available from this session",
+    // names the LAError, and is not "no Touch ID hardware".
+    {
+      name: "not available from this session (SSH, a background agent, the lid closed): LAError systemCancel",
+      opts: {
+        script: {
+          biometry: "not-interactive",
+          biometryReason: "Authentication canceled.",
+          biometryType: "touchID",
+          laError: { code: -4, name: "systemCancel" },
+        },
+      },
+      code: "VAULT_FACTOR_UNAVAILABLE",
+      message: "Touch ID is not available from this session (LAError systemCancel, -4): this Mac has Touch ID, but",
+      helperRun: true,
+    },
+    {
+      name: "not available from this session: LAError notInteractive",
+      opts: {
+        script: {
+          biometry: "not-interactive",
+          biometryType: "touchID",
+          laError: { code: -1004, name: "notInteractive" },
+        },
+      },
+      code: "VAULT_FACTOR_UNAVAILABLE",
+      message: "not available from this session (LAError notInteractive, -1004)",
+      helperRun: true,
+    },
+    {
+      name: "locked out after failed attempts: LAError biometryLockout",
+      opts: {
+        script: {
+          biometry: "locked-out",
+          biometryReason: "Biometry is locked out.",
+          biometryType: "touchID",
+          laError: { code: -8, name: "biometryLockout" },
+        },
+      },
+      code: "VAULT_FACTOR_UNAVAILABLE",
+      message:
+        "Touch ID is locked out after too many failed attempts: Biometry is locked out (LAError biometryLockout, -8)",
+      helperRun: true,
+    },
+    {
+      name: "no Touch ID sensor at all: LAError biometryNotAvailable with biometryType none",
+      opts: {
+        script: {
+          biometry: "unavailable",
+          biometryReason: "Biometry is not available on this device.",
+          biometryType: "none",
+          laError: { code: -6, name: "biometryNotAvailable" },
+        },
+      },
+      code: "VAULT_FACTOR_UNAVAILABLE",
+      message:
+        "This Mac has no Touch ID sensor: Biometry is not available on this device (LAError biometryNotAvailable, -6)",
+      helperRun: true,
+    },
   ]
   for (const row of rows) {
     test(row.name, async () => {
@@ -484,6 +544,82 @@ describe("factor add touch-id: every refusal is typed, before the passphrase, an
     expect(failure(add)).toMatchObject({ code: "VAULT_HELPER_MISSING" })
     expect(failure(add).message).toContain("protocol 2")
     expect(add.asked).toEqual([])
+  })
+})
+
+describe("BE-135: the biometry report is worded by state, not collapsed to unavailable", () => {
+  test("each state maps to its own sentence, the session states carry the LAError name, and none claims missing hardware wrongly", async () => {
+    const { describeBiometry, translateEnclaveFailure } = await import("../vault/enclave")
+    const session = describeBiometry({
+      biometry: "not-interactive",
+      biometryReason: "Authentication canceled.",
+      biometryType: "touchID",
+      laError: { code: -4, name: "systemCancel" },
+    })
+    expect(session.message).toContain("not available from this session")
+    expect(session.message).toContain("LAError systemCancel, -4")
+    expect(session.message).toContain("this Mac has Touch ID")
+    expect(session.message).not.toContain("no Touch ID sensor")
+    expect(session.suggestion).toContain("Terminal window inside the logged-in session")
+    expect(session.suggestion).toMatch(/no other factor is substituted/)
+
+    const unknownType = describeBiometry({
+      biometry: "not-interactive",
+      laError: { code: -1004, name: "notInteractive" },
+    })
+    expect(unknownType.message).toContain("may have Touch ID")
+
+    const none = describeBiometry({ biometry: "none", biometryReason: "No fingerprints are enrolled." })
+    expect(none.message).toContain("No fingerprint is enrolled")
+    expect(none.suggestion).toContain("Enrol a fingerprint")
+
+    const locked = describeBiometry({ biometry: "locked-out", laError: { code: -8, name: "biometryLockout" } })
+    expect(locked.message).toContain("locked out")
+    expect(locked.suggestion).toContain("Unlock the Mac with its password")
+
+    const noSensor = describeBiometry({
+      biometry: "unavailable",
+      biometryType: "none",
+      laError: { code: -6, name: "biometryNotAvailable" },
+    })
+    expect(noSensor.message).toContain("no Touch ID sensor")
+    const lidClosed = describeBiometry({
+      biometry: "unavailable",
+      biometryType: "touchID",
+      laError: { code: -6, name: "biometryNotAvailable" },
+    })
+    expect(lidClosed.message).toContain("present but not usable right now")
+    expect(lidClosed.suggestion).toContain("Open the lid")
+
+    // A PR F helper that reports neither the type nor the LAError still gets a sentence, not a crash.
+    expect(describeBiometry({ biometry: "unavailable", biometryReason: "Authentication canceled." }).message).toContain(
+      "present but not usable right now: Authentication canceled.",
+    )
+    expect(
+      describeBiometry({ biometry: "unavailable", biometryReason: "Authentication canceled." }).message,
+    ).not.toContain("..")
+
+    // The helper's own NOT_INTERACTIVE at decrypt time is the same typed code and wording.
+    const translated = translateEnclaveFailure(
+      "NOT_INTERACTIVE",
+      "LAErrorDomain -4: Authentication canceled. (LAError systemCancel)",
+    )
+    expect(translated.code).toBe("VAULT_FACTOR_UNAVAILABLE")
+    expect(translated.message).toContain("not available from this session")
+    expect(translated.suggestion).toContain("Terminal window inside the logged-in session")
+  })
+
+  test("status --json carries the biometry type and the LAError from the helper's report", async () => {
+    const v = await initVault({
+      script: { biometry: "not-interactive", biometryType: "touchID", laError: { code: -4, name: "systemCancel" } },
+    })
+    const status = await harness({
+      env: { CANDLE_CONFIG_DIR: v.dir },
+      script: { biometry: "not-interactive", biometryType: "touchID", laError: { code: -4, name: "systemCancel" } },
+    })
+    expect(await run(["vault", "factor", "add", "touch-id", "--json", "--keystore", v.vaultPath], status.deps)).toBe(1)
+    expect(failure(status).message).toContain("LAError systemCancel, -4")
+    expect(status.asked).toEqual([])
   })
 })
 

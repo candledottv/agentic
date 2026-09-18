@@ -56,9 +56,19 @@ describe("release-policy.json", () => {
       "APPLE_NOTARY_KEY_ID",
       "APPLE_NOTARY_ISSUER_ID",
       "APPLE_NOTARY_KEY_P8_BASE64",
+      // PR G (BE-135): the Developer ID provisioning profile the associated-domains entitlement
+      // needs, required under `signed` like the six above.
+      "APPLE_DEVELOPER_ID_PROVISIONING_PROFILE_BASE64",
     ]) {
       expect(workflow).toContain(`secrets.${secret}`)
+      // Each is in the "require every signing input" loop, so a missing one fails the job.
+      expect(workflow).toMatch(new RegExp(`for name in [^\\n]*\\b${secret}\\b`))
     }
+    // The profile is embedded by build.sh (fifth argument) and the signed entitlements are checked
+    // for the passkey factor's associated domain.
+    expect(workflow).toContain('"$TEAM_ID" "$PROFILE"')
+    expect(workflow).toContain("embedded.provisionprofile")
+    expect(workflow).toContain("webcredentials:cli.candle.tv")
     // The policy is the only switch: the job never reads a credential to decide.
     expect(workflow).toContain('"omit"')
     expect(workflow).toContain('"signed"')

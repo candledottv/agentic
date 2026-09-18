@@ -86,6 +86,33 @@ export interface Ctap2Envelope extends EnvelopeCommon {
 
 export const CTAP2_RP_ID = "cli.candle.tv" as const
 
+/**
+ * A synced platform passkey over the native macOS API (BE-135, AD-2, CC-01's passkey-prf row with
+ * `transport: "platform-macos"`). The same factor type and the same KEK derivation as the security
+ * key (ED-4); what differs is recorded: `saltDerivation: "platform"` says the platform applied its
+ * own salt hashing, `backupEligible` is true by construction (a credential the platform reports as
+ * not synced is refused at `factor add` rather than recorded under a domain it does not belong
+ * to), and `helper` pins the signed helper the CLI verifies before trusting an assertion, exactly
+ * as the Enclave envelope does. Every field below `label` is inside the envelope AAD. The domain
+ * is `apple-account`: recoverable (the credential follows the account to a new Mac) and never
+ * independent of any other Apple-account item (AD-2).
+ */
+export interface PlatformPasskeyEnvelope extends EnvelopeCommon {
+  factor: "passkey-prf"
+  transport: "platform-macos"
+  domain: "apple-account"
+  rpId: string
+  /** base64url */
+  credentialId: string
+  /** base64url, 32 bytes */
+  prfSalt: string
+  userVerification: "required"
+  backupEligible: true
+  backupState: boolean
+  saltDerivation: "platform"
+  helper: { teamId: string; bundleId: string; minVersion: string }
+}
+
 /** CC-01's `kek.alg` for the `secure-enclave` row: Apple's ECIES over P-256 with SHA-256 and AES-GCM. */
 export const SECURE_ENCLAVE_KEK_ALG = "ECIES-P256-SHA256-AESGCM" as const
 
@@ -128,6 +155,19 @@ export function isSecureEnclaveEnvelope(
   envelope: Envelope,
 ): envelope is SecureEnclaveEnvelope & Record<string, unknown> {
   return envelope.factor === "secure-enclave"
+}
+
+export function isPlatformPasskeyEnvelope(
+  envelope: Envelope,
+): envelope is PlatformPasskeyEnvelope & Record<string, unknown> {
+  return envelope.factor === "passkey-prf" && envelope.transport === "platform-macos"
+}
+
+/** Either `passkey-prf` transport: the KEK derivation is the same for both (ED-4). */
+export function isPrfEnvelope(
+  envelope: Envelope,
+): envelope is (Ctap2Envelope | PlatformPasskeyEnvelope) & Record<string, unknown> {
+  return isCtap2Envelope(envelope) || isPlatformPasskeyEnvelope(envelope)
 }
 
 /**
@@ -378,8 +418,23 @@ export function envelopeAad(file: Pick<VaultHeader, "vaultId">, envelope: Envelo
       kek: envelope.kek,
     })
   }
-  // PR G adds the platform passkey's parameter set here. An unknown envelope is never unwrapped
-  // (ED-7), so it never needs one.
+  if (isPlatformPasskeyEnvelope(envelope)) {
+    // CC-01's passkey-prf row for the platform transport (BE-135): the same parameters as ctap2
+    // plus the pinned helper identity, so editing any of them is a tag failure.
+    return canonicalBytes({
+      ...base,
+      transport: envelope.transport,
+      rpId: envelope.rpId,
+      credentialId: envelope.credentialId,
+      prfSalt: envelope.prfSalt,
+      userVerification: envelope.userVerification,
+      backupEligible: envelope.backupEligible,
+      backupState: envelope.backupState,
+      saltDerivation: envelope.saltDerivation,
+      helper: envelope.helper,
+    })
+  }
+  // An unknown envelope is never unwrapped (ED-7), so it never needs an AAD.
   throw new VaultError(
     "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM",
     `This CLI cannot unwrap a ${envelope.factor}${typeof envelope.transport === "string" ? `/${envelope.transport}` : ""} envelope.`,
@@ -492,6 +547,9 @@ export function parseVaultFile(raw: string): VaultFile {
     if (envelope.factor === "passkey-prf" && envelope.transport === "ctap2") {
       assertCtap2EnvelopeShape(envelope)
     }
+    if (envelope.factor === "passkey-prf" && envelope.transport === "platform-macos") {
+      assertPlatformPasskeyEnvelopeShape(envelope)
+    }
     if (envelope.factor === "secure-enclave") {
       assertSecureEnclaveEnvelopeShape(envelope)
     }
@@ -523,6 +581,30 @@ function assertCtap2EnvelopeShape(envelope: Record<string, unknown>): void {
   if (envelope.saltDerivation !== "webauthn-prf") bad("does not record saltDerivation: webauthn-prf")
   if (typeof envelope.aaguid !== "string") bad("has no aaguid")
   if (typeof envelope.product !== "string") bad("has no product")
+}
+
+/** CC-01's passkey-prf row for the `platform-macos` transport (BE-135): the fields an assertion needs. */
+function assertPlatformPasskeyEnvelopeShape(envelope: Record<string, unknown>): void {
+  const id = String(envelope.id)
+  const bad = (detail: string): never => refuse("VAULT_UNREADABLE", `Envelope ${id} (synced passkey) ${detail}.`)
+  if (envelope.domain !== "apple-account") bad(`has domain ${JSON.stringify(envelope.domain)}, expected apple-account`)
+  if (envelope.rpId !== CTAP2_RP_ID) bad(`has rpId ${JSON.stringify(envelope.rpId)}, expected ${CTAP2_RP_ID}`)
+  if (typeof envelope.credentialId !== "string" || envelope.credentialId === "") bad("has no credentialId")
+  if (typeof envelope.prfSalt !== "string" || envelope.prfSalt === "") bad("has no prfSalt")
+  if (envelope.userVerification !== "required") bad("does not record userVerification: required")
+  // A synced credential has BE set by construction (AD-2); an envelope claiming otherwise is not
+  // one this CLI wrote, and its domain would be wrong.
+  if (envelope.backupEligible !== true) bad("does not record backupEligible: true")
+  if (typeof envelope.backupState !== "boolean") bad("has no backupState flag")
+  if (envelope.saltDerivation !== "platform") bad("does not record saltDerivation: platform")
+  const helper = envelope.helper
+  if (!isRecord(helper)) {
+    bad("has no helper record")
+    return
+  }
+  for (const field of ["teamId", "bundleId", "minVersion"] as const) {
+    if (typeof helper[field] !== "string" || helper[field] === "") bad(`has no helper.${field}`)
+  }
 }
 
 /** CC-01's secure-enclave row: the fields an unwrap needs, typed, refused here rather than mid-prompt. */

@@ -31,7 +31,7 @@ import {
   strengthFor,
   strengthLabel,
 } from "../vault/passphrase"
-import { assertFactorAddable, availabilityLabel, envelopeAvailability } from "../vault/platform"
+import { availabilityLabel, envelopeAvailability } from "../vault/platform"
 import {
   closeVault,
   commitVault,
@@ -40,6 +40,7 @@ import {
   unlockWithPassphrase,
   wrapDekForPassphrase,
 } from "../vault/store"
+import { addPasskeyFactor } from "./vault-factor-passkey"
 import { addSecurityKeyFactor } from "./vault-factor-security-key"
 import { addTouchIdFactor } from "./vault-factor-touch-id"
 import { GENERATED_PASSPHRASE_NEEDS_TERMINAL } from "./vault-init"
@@ -103,7 +104,10 @@ export async function vaultFactorAdd(args: string[], ctx: CommandContext): Promi
   if ("error" in parsed) return usage(ctx, parsed.error)
   const kind = parsed.positionals[0]
   if (kind === undefined) {
-    return usage(ctx, "Which factor? This release adds: candle vault factor add passphrase | security-key | touch-id")
+    return usage(
+      ctx,
+      "Which factor? This release adds: candle vault factor add passphrase | security-key | touch-id | passkey",
+    )
   }
   if (parsed.positionals.length > 1) return usage(ctx, `Unexpected argument: ${parsed.positionals[1]}`)
   if (!refuseEnvPassphrase(ctx)) return 1
@@ -120,11 +124,9 @@ export async function vaultFactorAdd(args: string[], ctx: CommandContext): Promi
   return runVaultCommand(ctx, async ({ hold }) => {
     if (kind === "security-key") return addSecurityKeyFactor(ctx, parsed, path, hold)
     if (kind === "touch-id") return addTouchIdFactor(ctx, parsed, path, hold)
+    if (kind === "passkey") return addPasskeyFactor(ctx, parsed, path, hold)
     if (kind !== "passphrase") {
-      // CC-12: a typed refusal naming the reason, never a silent substitution of another factor.
-      const facts = await currentPlatformFacts(deps)
-      if (kind === "passkey") assertFactorAddable("passkey-prf", facts, "platform-macos")
-      return usage(ctx, `Unknown factor: ${kind}. This release adds: passphrase, security-key, touch-id`)
+      return usage(ctx, `Unknown factor: ${kind}. This release adds: passphrase, security-key, touch-id, passkey`)
     }
 
     const raw = await requireVaultRaw(path)

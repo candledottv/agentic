@@ -2205,8 +2205,10 @@ var init_sha256 = __esm(() => {
 });
 
 // src/enclave-helper/protocol.ts
-var ENCLAVE_PROTOCOL = 1, ENCLAVE_BUNDLE_NAME = "candle-enclave.app", ENCLAVE_EXECUTABLE_RELATIVE = "Contents/MacOS/candle-enclave", ENCLAVE_ACCESS_CONTROL = "biometryCurrentSet";
-var init_protocol = () => {};
+var ENCLAVE_PROTOCOL = 1, ENCLAVE_BUNDLE_NAME = "candle-enclave.app", ENCLAVE_EXECUTABLE_RELATIVE = "Contents/MacOS/candle-enclave", PASSKEY_RP_ID = "cli.candle.tv", PASSKEY_ASSOCIATED_DOMAIN, PASSKEY_MIN_OS_MAJOR = 15, ENCLAVE_ACCESS_CONTROL = "biometryCurrentSet";
+var init_protocol = __esm(() => {
+  PASSKEY_ASSOCIATED_DOMAIN = `webcredentials:${PASSKEY_RP_ID}`;
+});
 
 // src/vault/canonical-json.ts
 function canonicalJson(value) {
@@ -4658,35 +4660,96 @@ async function verifyHelperSignature(deps, appPath, identity) {
     });
   }
 }
+function describeBiometry(report) {
+  const la = report.laError ? ` (LAError ${report.laError.name}, ${report.laError.code})` : "";
+  const reason = report.biometryReason ? `: ${report.biometryReason.replace(/\.$/, "")}` : "";
+  switch (report.biometry) {
+    case "available":
+      return { message: "Touch ID is available.", suggestion: "" };
+    case "none":
+      return {
+        message: `No fingerprint is enrolled on this Mac${reason}${la}.`,
+        suggestion: "Enrol a fingerprint in System Settings, Touch ID & Password, then retry. Nothing was written and no other factor is substituted."
+      };
+    case "locked-out":
+      return {
+        message: `Touch ID is locked out after too many failed attempts${reason}${la}.`,
+        suggestion: "Unlock the Mac with its password to reset Touch ID, then retry. Nothing was written and no other factor is substituted."
+      };
+    case "not-interactive":
+      return {
+        message: `Touch ID is not available from this session${la}: this Mac ${report.biometryType && report.biometryType !== "none" ? `has ${biometryTypeWord(report.biometryType)}, but` : "may have Touch ID, but"} no prompt can be shown to a process outside the interactive login session (SSH, a background agent, the lid closed with no display)${reason}.`,
+        suggestion: NOT_INTERACTIVE_SUGGESTION
+      };
+    default:
+      if (report.biometryType === "none") {
+        return {
+          message: `This Mac has no Touch ID sensor${reason}${la}.`,
+          suggestion: "Use a Mac with Touch ID, or a Magic Keyboard with Touch ID paired to this Mac. Nothing was written and no other factor is substituted."
+        };
+      }
+      return {
+        message: `Touch ID is present but not usable right now${reason}${la}.`,
+        suggestion: "Open the lid, or use a keyboard with Touch ID, or unlock the Mac with its password first, then retry. Nothing was written and no other factor is substituted."
+      };
+  }
+}
+function biometryTypeWord(type) {
+  switch (type) {
+    case "touchID":
+      return "Touch ID";
+    case "faceID":
+      return "Face ID";
+    case "opticID":
+      return "Optic ID";
+    default:
+      return "no biometric sensor";
+  }
+}
 function translateEnclaveFailure(code, message) {
   const table = {
     NO_ENCLAVE: "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM",
     BIOMETRY_UNAVAILABLE: "VAULT_FACTOR_UNAVAILABLE",
+    NOT_INTERACTIVE: "VAULT_FACTOR_UNAVAILABLE",
     KEY_NOT_FOUND: "VAULT_FACTOR_UNAVAILABLE",
     KEY_EXISTS: "VAULT_FACTOR_UNAVAILABLE",
     CANCELLED: "VAULT_AUTHENTICATOR_CANCELLED",
     AUTH_FAILED: "VAULT_UNLOCK_FAILED",
     LOCKED: "VAULT_AUTHENTICATOR_BLOCKED",
     DECRYPT_FAILED: "VAULT_UNLOCK_FAILED",
-    KEYCHAIN_IO: "VAULT_FACTOR_UNAVAILABLE"
+    KEYCHAIN_IO: "VAULT_FACTOR_UNAVAILABLE",
+    PASSKEY_UNSUPPORTED: "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM",
+    PRF_UNSUPPORTED: "VAULT_PRF_UNSUPPORTED",
+    DOMAIN_NOT_ASSOCIATED: "VAULT_FACTOR_UNAVAILABLE",
+    NO_CREDENTIAL: "VAULT_CREDENTIAL_NOT_PRESENT"
   };
   const detail = {
     NO_ENCLAVE: `This Mac has no Secure Enclave: ${message}.`,
     BIOMETRY_UNAVAILABLE: `Touch ID is not available right now: ${message}.`,
+    NOT_INTERACTIVE: `Touch ID is not available from this session (no prompt can be shown to a process outside the interactive login session): ${message}.`,
     KEY_NOT_FOUND: `This Mac's Secure Enclave does not hold this envelope's key: ${message}.`,
     KEY_EXISTS: `The Secure Enclave already holds a key under this envelope's tag: ${message}.`,
-    CANCELLED: `The Touch ID prompt did not complete: ${message}.`,
+    CANCELLED: `The prompt did not complete: ${message}.`,
     AUTH_FAILED: `Touch ID did not verify, or this Mac's enrolled fingerprints changed since the factor was added (the key is bound to the fingerprint set that existed then): ${message}.`,
     LOCKED: `Touch ID is locked out: ${message}.`,
     DECRYPT_FAILED: `The Secure Enclave could not unwrap this envelope's key: ${message}.`,
-    KEYCHAIN_IO: `The keychain refused the Secure Enclave operation: ${message}.`
+    KEYCHAIN_IO: `The keychain refused the Secure Enclave operation: ${message}.`,
+    PASSKEY_UNSUPPORTED: `The platform passkey API is not available here: ${message}.`,
+    PRF_UNSUPPORTED: `The platform authenticator cannot serve this factor: ${message}.`,
+    DOMAIN_NOT_ASSOCIATED: `macOS did not associate the helper with cli.candle.tv: ${message}. ${AASA_REQUIREMENT}`,
+    NO_CREDENTIAL: `No synced passkey with this envelope's credential id is available to this Mac or this Apple account: ${message}.`
   };
   const suggestion = {
     BIOMETRY_UNAVAILABLE: "Open the lid, or use a keyboard with Touch ID, or unlock the Mac with its password first. Nothing was derived and no other factor was tried; the passphrase still opens the vault.",
+    NOT_INTERACTIVE: NOT_INTERACTIVE_SUGGESTION,
     KEY_NOT_FOUND: "An Enclave key never leaves the Mac that created it. On another Mac, open the vault with the passphrase and add a new Touch ID factor there. No other factor was tried.",
     AUTH_FAILED: "If the fingerprint set changed, remove this factor (candle vault factor remove <id>, with the passphrase) and add it again. No other factor was tried.",
     LOCKED: "Unlock the Mac with its password to reset Touch ID, then retry. No other factor was tried.",
-    CANCELLED: "Run the command again and confirm with Touch ID when the prompt appears."
+    CANCELLED: "Run the command again and confirm when the prompt appears. No other factor was tried.",
+    PASSKEY_UNSUPPORTED: "The synced passkey factor needs macOS 15 or later. No other factor is substituted.",
+    PRF_UNSUPPORTED: "Nothing was written. The passkey this attempt created remains in your Passwords (System Settings, Passwords) and can be removed there. No other factor is substituted and no other derivation is tried.",
+    DOMAIN_NOT_ASSOCIATED: "Until the domain association holds, the synced passkey factor is refused; no other factor is substituted.",
+    NO_CREDENTIAL: "Sign in to the Apple account that holds the passkey, or open the vault with the passphrase. No other factor was tried."
   };
   const mapped = table[code];
   if (mapped === undefined) {
@@ -4772,8 +4835,19 @@ async function currentEnclaveHelper(deps) {
     identity,
     version: info.version,
     secureEnclave: info.secureEnclave,
+    ...helperReport(info)
+  };
+}
+function helperReport(info) {
+  const osMajor = typeof info.osVersion === "string" ? Number.parseInt(info.osVersion.split(".")[0] ?? "", 10) : Number.NaN;
+  return {
     biometry: info.biometry,
-    ...info.biometryReason !== undefined ? { biometryReason: info.biometryReason } : {}
+    ...info.biometryReason !== undefined ? { biometryReason: info.biometryReason } : {},
+    ...info.biometryType !== undefined ? { biometryType: info.biometryType } : {},
+    ...info.laError !== undefined ? { laError: { code: Number(info.laError.code), name: String(info.laError.name) } } : {},
+    ...Number.isInteger(osMajor) ? { osMajor } : {},
+    associatedDomains: Array.isArray(info.associatedDomains) ? info.associatedDomains.map(String) : [],
+    provisioningProfile: info.provisioningProfile === true
   };
 }
 function compareVersions2(a, b) {
@@ -4865,7 +4939,7 @@ async function deleteEnclaveKey(deps, session, opts) {
     return false;
   }
 }
-var ENCLAVE_HELPER_ENV = "CANDLE_ENCLAVE_HELPER", CODESIGN_PATH = "/usr/bin/codesign", ENCLAVE_HELPER_TIMEOUT_MS = 120000, CODESIGN_TIMEOUT_MS = 30000, ENCLAVE_INSTALL_SUGGESTION = "Install a release build of the CLI that ships the signed helper (the darwin tarball and Homebrew place candle-enclave.app beside candle), or set CANDLE_ENCLAVE_HELPER to the path of a signed candle-enclave.app. No other factor is substituted.";
+var ENCLAVE_HELPER_ENV = "CANDLE_ENCLAVE_HELPER", CODESIGN_PATH = "/usr/bin/codesign", ENCLAVE_HELPER_TIMEOUT_MS = 120000, CODESIGN_TIMEOUT_MS = 30000, AASA_URL = "https://cli.candle.tv/.well-known/apple-app-site-association", AASA_REQUIREMENT, ENCLAVE_INSTALL_SUGGESTION = "Install a release build of the CLI that ships the signed helper (the darwin tarball and Homebrew place candle-enclave.app beside candle), or set CANDLE_ENCLAVE_HELPER to the path of a signed candle-enclave.app. No other factor is substituted.", NOT_INTERACTIVE_SUGGESTION = "Run the command from a Terminal window inside the logged-in session on that Mac (not over SSH, not from a background agent, not with the lid closed and no display), then retry. Nothing was derived and no other factor is substituted; the passphrase still opens the vault.";
 var init_enclave = __esm(() => {
   init_sha256();
   init_esm();
@@ -4875,6 +4949,7 @@ var init_enclave = __esm(() => {
   init_crypto();
   init_ecies();
   init_errors();
+  AASA_REQUIREMENT = `The domain must serve ${AASA_URL} over HTTPS with status 200, no redirect, Content-Type application/json, and a body of {"webcredentials":{"apps":["<TEAM ID>.<bundle id>"]}} listing the signed helper's application identifier.`;
 });
 
 // src/fido2-helper/protocol.ts
@@ -4890,6 +4965,7 @@ function platformFactsFor(deps, fido2Helper, enclaveHelper) {
     fido2Helper,
     ...enclaveHelper !== undefined ? { enclaveHelper } : {},
     ...enclaveHelper?.state === "ready" ? { secureEnclave: enclaveHelper.secureEnclave } : {},
+    ...enclaveHelper?.state === "ready" && enclaveHelper.osMajor !== undefined ? { osMajor: enclaveHelper.osMajor } : {},
     ...deps.env.CANDLE_VAULT_FAKE_OS_MAJOR ? { osMajor: Number(deps.env.CANDLE_VAULT_FAKE_OS_MAJOR) } : {}
   };
 }
@@ -4899,7 +4975,6 @@ function shippingPlatform(facts) {
 function factorAvailability(factor, facts, transport) {
   if (factor === "passphrase")
     return { state: "available" };
-  const mac = facts.platform === "darwin";
   switch (factor) {
     case "passkey-prf": {
       if (transport === undefined || transport === "ctap2") {
@@ -4915,12 +4990,8 @@ function factorAvailability(factor, facts, transport) {
         }
         return { state: "available" };
       }
-      if (transport === "platform-macos") {
-        return {
-          state: "unsupported-on-this-platform",
-          reason: mac ? "the synced passkey factor arrives in CLI 0.13.0 (PR G)" : "the synced passkey transport is macOS only"
-        };
-      }
+      if (transport === "platform-macos")
+        return platformPasskeyAvailability(facts);
       return { state: "unsupported-on-this-platform", reason: `this CLI does not know the transport ${transport}` };
     }
     case "secure-enclave":
@@ -4951,6 +5022,51 @@ function secureEnclaveAvailability(facts) {
       return { state: "available" };
   }
 }
+function platformPasskeyAvailability(facts) {
+  if (facts.platform !== "darwin") {
+    return { state: "unsupported-on-this-platform", reason: "the synced passkey transport is macOS only" };
+  }
+  const helper = facts.enclaveHelper ?? { state: "omitted", reason: "the signed helper was not looked for" };
+  switch (helper.state) {
+    case "omitted":
+      return {
+        state: "unsupported-on-this-platform",
+        reason: "this build's release policy omits the signed macOS helper (release-policy.json: macosHelper.release is omit), so the synced passkey factor is not in this build; it arrives in CLI 0.13.0 (PR G) once Apple approves the Developer ID enrolment and T57 has passed"
+      };
+    case "absent":
+      return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_MISSING" };
+    case "untrusted":
+      return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_UNTRUSTED" };
+    default: {
+      const osMajor = facts.osMajor ?? helper.osMajor;
+      if (osMajor === undefined) {
+        return {
+          state: "unsupported-on-this-platform",
+          reason: `the helper at ${helper.appPath} (version ${helper.version}) does not report the macOS version, so this CLI cannot establish macOS ${PASSKEY_MIN_OS_MAJOR} or later; reinstall the CLI so candle and candle-enclave.app come from the same release`
+        };
+      }
+      if (osMajor < PASSKEY_MIN_OS_MAJOR) {
+        return {
+          state: "unsupported-on-this-platform",
+          reason: `the synced passkey factor needs macOS ${PASSKEY_MIN_OS_MAJOR} or later (the platform PRF extension arrived there); this Mac runs macOS ${osMajor}`
+        };
+      }
+      if (!helper.associatedDomains.includes(PASSKEY_ASSOCIATED_DOMAIN)) {
+        return {
+          state: "unsupported-on-this-platform",
+          reason: `the helper at ${helper.appPath} lacks the associated-domains entitlement for ${PASSKEY_ASSOCIATED_DOMAIN} (its entitlements list ${helper.associatedDomains.length > 0 ? helper.associatedDomains.join(", ") : "no associated domain"}); a release built with the entitlement and a provisioning profile is required`
+        };
+      }
+      if (!helper.provisioningProfile) {
+        return {
+          state: "unsupported-on-this-platform",
+          reason: `the helper at ${helper.appPath} embeds no provisioning profile (Contents/embedded.provisionprofile), which the associated-domains entitlement needs under Developer ID; a release built with the profile is required`
+        };
+      }
+      return { state: "available" };
+    }
+  }
+}
 function envelopeAvailability(envelope, facts) {
   return factorAvailability(envelope.factor, facts, typeof envelope.transport === "string" ? envelope.transport : undefined);
 }
@@ -4965,12 +5081,15 @@ function assertFactorAddable(factor, facts, transport) {
   if (availability.state === "available")
     return;
   const name = transport ? `${factor}/${transport}` : factor;
-  throw new VaultError(refusalCodeFor(availability), `This CLI cannot add a ${name} factor here: ${availability.reason}.`, { suggestion: `${addSuggestion(factor, availability)} No other factor is substituted and nothing was written.` });
+  throw new VaultError(refusalCodeFor(availability), `This CLI cannot add a ${name} factor here: ${availability.reason}.`, {
+    suggestion: `${addSuggestion(factor, transport, availability)} No other factor is substituted and nothing was written.`
+  });
 }
-function addSuggestion(factor, availability) {
+function addSuggestion(factor, transport, availability) {
   if (availability.state !== "unavailable-on-this-device")
     return "";
-  if (factor === "secure-enclave") {
+  const signedHelper = factor === "secure-enclave" || factor === "passkey-prf" && transport === "platform-macos";
+  if (signedHelper) {
     return availability.code === "VAULT_HELPER_UNTRUSTED" ? "Reinstall the CLI from a release so candle-enclave.app carries the release's signature." : "Install a release build of the CLI that ships the signed helper (the darwin tarball and Homebrew place candle-enclave.app beside candle), or set CANDLE_ENCLAVE_HELPER to the path of a signed candle-enclave.app.";
   }
   return "Install a release build of the CLI (which places candle-fido2 beside candle) or set CANDLE_FIDO2_HELPER.";
@@ -4987,6 +5106,7 @@ function availabilityLabel(availability) {
 }
 var HIDRAW_MESSAGE = "A security key is attached but this user cannot open its hidraw device. Install libfido2's udev rules (70-u2f.rules) or add a rule for this key, unplug and replug it, then retry.";
 var init_platform = __esm(() => {
+  init_protocol();
   init_errors();
 });
 
@@ -5279,6 +5399,12 @@ function isCtap2Envelope(envelope) {
 function isSecureEnclaveEnvelope(envelope) {
   return envelope.factor === "secure-enclave";
 }
+function isPlatformPasskeyEnvelope(envelope) {
+  return envelope.factor === "passkey-prf" && envelope.transport === "platform-macos";
+}
+function isPrfEnvelope(envelope) {
+  return isCtap2Envelope(envelope) || isPlatformPasskeyEnvelope(envelope);
+}
 function passphraseKdf(envelope) {
   if (!isPassphraseEnvelope(envelope)) {
     throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passphrase one.`);
@@ -5323,6 +5449,20 @@ function envelopeAad(file, envelope) {
       keyTag: envelope.keyTag,
       accessControl: envelope.accessControl,
       kek: envelope.kek
+    });
+  }
+  if (isPlatformPasskeyEnvelope(envelope)) {
+    return canonicalBytes({
+      ...base,
+      transport: envelope.transport,
+      rpId: envelope.rpId,
+      credentialId: envelope.credentialId,
+      prfSalt: envelope.prfSalt,
+      userVerification: envelope.userVerification,
+      backupEligible: envelope.backupEligible,
+      backupState: envelope.backupState,
+      saltDerivation: envelope.saltDerivation,
+      helper: envelope.helper
     });
   }
   throw new VaultError("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM", `This CLI cannot unwrap a ${envelope.factor}${typeof envelope.transport === "string" ? `/${envelope.transport}` : ""} envelope.`);
@@ -5410,6 +5550,9 @@ function parseVaultFile(raw) {
     if (envelope.factor === "passkey-prf" && envelope.transport === "ctap2") {
       assertCtap2EnvelopeShape(envelope);
     }
+    if (envelope.factor === "passkey-prf" && envelope.transport === "platform-macos") {
+      assertPlatformPasskeyEnvelopeShape(envelope);
+    }
     if (envelope.factor === "secure-enclave") {
       assertSecureEnclaveEnvelopeShape(envelope);
     }
@@ -5445,6 +5588,35 @@ function assertCtap2EnvelopeShape(envelope) {
     bad("has no aaguid");
   if (typeof envelope.product !== "string")
     bad("has no product");
+}
+function assertPlatformPasskeyEnvelopeShape(envelope) {
+  const id = String(envelope.id);
+  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (synced passkey) ${detail}.`);
+  if (envelope.domain !== "apple-account")
+    bad(`has domain ${JSON.stringify(envelope.domain)}, expected apple-account`);
+  if (envelope.rpId !== CTAP2_RP_ID)
+    bad(`has rpId ${JSON.stringify(envelope.rpId)}, expected ${CTAP2_RP_ID}`);
+  if (typeof envelope.credentialId !== "string" || envelope.credentialId === "")
+    bad("has no credentialId");
+  if (typeof envelope.prfSalt !== "string" || envelope.prfSalt === "")
+    bad("has no prfSalt");
+  if (envelope.userVerification !== "required")
+    bad("does not record userVerification: required");
+  if (envelope.backupEligible !== true)
+    bad("does not record backupEligible: true");
+  if (typeof envelope.backupState !== "boolean")
+    bad("has no backupState flag");
+  if (envelope.saltDerivation !== "platform")
+    bad("does not record saltDerivation: platform");
+  const helper = envelope.helper;
+  if (!isRecord(helper)) {
+    bad("has no helper record");
+    return;
+  }
+  for (const field of ["teamId", "bundleId", "minVersion"]) {
+    if (typeof helper[field] !== "string" || helper[field] === "")
+      bad(`has no helper.${field}`);
+  }
 }
 function assertSecureEnclaveEnvelopeShape(envelope) {
   const id = String(envelope.id);
@@ -5777,6 +5949,274 @@ var init_format = __esm(() => {
     "destinationExposureAccepted",
     "remoteState"
   ];
+});
+
+// src/vault/webauthn-cbor.ts
+class Reader {
+  bytes;
+  offset = 0;
+  constructor(bytes) {
+    this.bytes = bytes;
+  }
+  need(count) {
+    if (this.offset + count > this.bytes.length) {
+      throw new VaultError("VAULT_UNLOCK_FAILED", "The registration's attestation object is truncated; nothing was written.");
+    }
+  }
+  byte() {
+    this.need(1);
+    return this.bytes[this.offset++];
+  }
+  uint(size) {
+    this.need(size);
+    let value = 0;
+    for (let i = 0;i < size; i++)
+      value = value * 256 + this.bytes[this.offset++];
+    return value;
+  }
+  argument(additional) {
+    if (additional < 24)
+      return additional;
+    if (additional === 24)
+      return this.uint(1);
+    if (additional === 25)
+      return this.uint(2);
+    if (additional === 26)
+      return this.uint(4);
+    if (additional === 27)
+      return this.uint(8);
+    throw new VaultError("VAULT_UNLOCK_FAILED", "The registration's attestation object uses an indefinite-length or reserved CBOR item; nothing was written.");
+  }
+  slice(length) {
+    this.need(length);
+    const out = this.bytes.slice(this.offset, this.offset + length);
+    this.offset += length;
+    return out;
+  }
+  value(depth = 0) {
+    if (depth > 16) {
+      throw new VaultError("VAULT_UNLOCK_FAILED", "The registration's attestation object nests too deeply; nothing was written.");
+    }
+    const initial = this.byte();
+    const major = initial >> 5;
+    const additional = initial & 31;
+    switch (major) {
+      case 0:
+        return this.argument(additional);
+      case 1:
+        return -1 - this.argument(additional);
+      case 2:
+        return this.slice(this.argument(additional));
+      case 3:
+        return new TextDecoder("utf-8", { fatal: true }).decode(this.slice(this.argument(additional)));
+      case 4: {
+        const length = this.argument(additional);
+        const items = [];
+        for (let i = 0;i < length; i++)
+          items.push(this.value(depth + 1));
+        return items;
+      }
+      case 5: {
+        const length = this.argument(additional);
+        const map = new Map;
+        for (let i = 0;i < length; i++) {
+          const key = this.value(depth + 1);
+          map.set(key, this.value(depth + 1));
+        }
+        return map;
+      }
+      case 7:
+        if (additional === 20)
+          return false;
+        if (additional === 21)
+          return true;
+        if (additional === 22)
+          return null;
+        throw new VaultError("VAULT_UNLOCK_FAILED", "The registration's attestation object holds a CBOR simple value this CLI does not read; nothing was written.");
+      default:
+        throw new VaultError("VAULT_UNLOCK_FAILED", "The registration's attestation object holds a CBOR tag this CLI does not read; nothing was written.");
+    }
+  }
+  get done() {
+    return this.offset === this.bytes.length;
+  }
+}
+function authDataFromAttestationObject(attestationObject) {
+  const reader = new Reader(attestationObject);
+  const value = reader.value();
+  if (!(value instanceof Map)) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", "The registration's attestation object is not a CBOR map; nothing was written.");
+  }
+  const authData = value.get("authData");
+  if (!(authData instanceof Uint8Array)) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", "The registration's attestation object carries no authenticator data; nothing was written.");
+  }
+  return authData;
+}
+function authDataFlags(authData) {
+  if (authData.length < 37) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", "The authenticator data is truncated; nothing was derived.");
+  }
+  const flags = authData[32];
+  return {
+    userPresent: (flags & AUTHDATA_FLAG_UP) !== 0,
+    userVerified: (flags & AUTHDATA_FLAG_UV_BIT) !== 0,
+    backupEligible: (flags & AUTHDATA_FLAG_BE) !== 0,
+    backupState: (flags & AUTHDATA_FLAG_BS) !== 0
+  };
+}
+var AUTHDATA_FLAG_UP = 1, AUTHDATA_FLAG_UV_BIT = 4, AUTHDATA_FLAG_BE = 8, AUTHDATA_FLAG_BS = 16;
+var init_webauthn_cbor = __esm(() => {
+  init_errors();
+});
+
+// src/vault/passkey.ts
+async function openPasskeySession(deps, helper) {
+  const policy = deps.releasePolicy.macosHelper;
+  if (policy.release === "omit") {
+    throw new VaultError("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM", "This build's release policy omits the signed macOS helper, so it cannot drive a synced passkey factor.", { suggestion: "Open the vault with its passphrase. No other envelope was tried." });
+  }
+  const location = await locateEnclaveHelper(deps);
+  if (location.state === "absent") {
+    throw new VaultError("VAULT_HELPER_MISSING", `The signed macOS helper is not available: ${location.reason}.`, {
+      suggestion: ENCLAVE_INSTALL_SUGGESTION
+    });
+  }
+  const identity = { teamId: helper.teamId, bundleId: helper.bundleId };
+  await verifyHelperSignature(deps, location.appPath, identity);
+  const info = await callEnclaveHelper(deps, location.path, requestCommon("-", "-", "info"));
+  if (info.teamId !== identity.teamId || info.bundleId !== identity.bundleId) {
+    throw new VaultError("VAULT_HELPER_UNTRUSTED", `The helper at ${location.appPath} reports team ${info.teamId || "(none)"} and bundle id ${info.bundleId || "(none)"}, not the ${identity.teamId} / ${identity.bundleId} this envelope recorded.`, { suggestion: "Reinstall the CLI from a release. No other factor is substituted." });
+  }
+  if (helper.minVersion !== undefined && compareVersions2(info.version, helper.minVersion) < 0) {
+    throw new VaultError("VAULT_HELPER_MISSING", `The signed macOS helper at ${location.appPath} is version ${info.version}; this envelope needs ${helper.minVersion} or newer.`, { suggestion: "Reinstall the CLI so candle and candle-enclave.app come from the same release." });
+  }
+  const ready = {
+    state: "ready",
+    appPath: location.appPath,
+    path: location.path,
+    source: location.source,
+    identity,
+    version: info.version,
+    secureEnclave: info.secureEnclave,
+    ...helperReport(info)
+  };
+  assertFactorAddable("passkey-prf", platformFactsFor(deps, undefined, ready), "platform-macos");
+  return { path: location.path, appPath: location.appPath, identity, version: info.version };
+}
+async function checkAppleAppSiteAssociation(deps, identity) {
+  const appId = `${identity.teamId}.${identity.bundleId}`;
+  const refuse2 = (detail) => {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `The domain association for the synced passkey factor is not in place: ${detail}. ${AASA_REQUIREMENT} This build's helper is ${appId}.`, {
+      suggestion: "That file is a deployment prerequisite, not something this CLI can create. No other factor is substituted and nothing was written."
+    });
+  };
+  let response;
+  try {
+    response = await deps.fetch(AASA_URL, {
+      method: "GET",
+      redirect: "manual",
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(AASA_TIMEOUT_MS)
+    });
+  } catch (error) {
+    return refuse2(`${AASA_URL} could not be fetched (${error instanceof Error ? error.message : String(error)})`);
+  }
+  if (response.type === "opaqueredirect" || response.status >= 300 && response.status < 400) {
+    return refuse2(`${AASA_URL} redirects (status ${response.status || "3xx"}), and macOS does not follow a redirect for this file`);
+  }
+  if (response.status !== 200)
+    return refuse2(`${AASA_URL} answered status ${response.status}`);
+  const contentType = (response.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+  if (contentType !== "application/json") {
+    return refuse2(`${AASA_URL} is served as ${contentType || "no Content-Type"}, not application/json`);
+  }
+  let body;
+  try {
+    body = JSON.parse(await response.text());
+  } catch {
+    return refuse2(`${AASA_URL} is not valid JSON`);
+  }
+  const apps = body?.webcredentials?.apps;
+  if (!Array.isArray(apps))
+    return refuse2(`${AASA_URL} has no webcredentials.apps list`);
+  if (!apps.includes(appId)) {
+    return refuse2(`${AASA_URL} lists ${apps.length > 0 ? apps.map(String).join(", ") : "no application"} under webcredentials.apps, not ${appId}`);
+  }
+  return { appId };
+}
+function assertPlatformAuthData(authData, rpId, what) {
+  if (authData.length < 37) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", `The synced passkey's ${what} returned truncated authenticator data; nothing was derived.`);
+  }
+  const expected = sha2562(new TextEncoder().encode(rpId));
+  let diff = 0;
+  for (let i = 0;i < 32; i++)
+    diff |= (authData[i] ?? 0) ^ (expected[i] ?? 0);
+  if (diff !== 0) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", `The synced passkey's ${what} is for a different relying party than ${rpId}; nothing was derived.`);
+  }
+  if (!authDataFlags(authData).userVerified) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", `The synced passkey's ${what} was made without user verification (the UV flag is clear), so its output is not this envelope's key; nothing was derived.`, {
+      suggestion: "This factor never falls back to a non-verified secret. Confirm with Touch ID or the account password and retry."
+    });
+  }
+}
+async function registerPlatformPasskey(deps, session, opts) {
+  deps.stderr.write(`Confirm in the passkey sheet to create this vault's synced passkey (Touch ID or the account password).
+`);
+  const common = requestCommon(opts.vaultId, opts.envelopeId, "passkey-register");
+  const response = await callEnclaveHelper(deps, session.path, {
+    ...common,
+    rpId: PASSKEY_RP_ID,
+    userId: base64.encode(userIdFor(opts.vaultId, opts.envelopeId)),
+    userName: userNameFor(opts.vaultId, opts.envelopeId),
+    clientDataHash: common.digest
+  });
+  const authData = authDataFromAttestationObject(base64.decode(response.attestationObject));
+  assertPlatformAuthData(authData, PASSKEY_RP_ID, "registration");
+  const flags = authDataFlags(authData);
+  return {
+    credentialId: b64u(base64.decode(response.credentialId)),
+    backupEligible: flags.backupEligible,
+    backupState: flags.backupState,
+    prfSupported: response.prfSupported === true
+  };
+}
+async function assertPlatformPrf(deps, session, envelope, vaultId, purpose) {
+  deps.stderr.write(`Confirm the synced passkey to ${purpose}.
+`);
+  const common = requestCommon(vaultId, envelope.id, "passkey-assert");
+  const response = await callEnclaveHelper(deps, session.path, {
+    ...common,
+    rpId: envelope.rpId,
+    credentialId: base64.encode(unb64u(envelope.credentialId, "credentialId")),
+    clientDataHash: common.digest,
+    prfSalt: base64.encode(unb64u(envelope.prfSalt, "prfSalt"))
+  });
+  const prfOutput = ownSecret(base64.decode(response.prfOutput));
+  try {
+    assertPlatformAuthData(base64.decode(response.authenticatorData), envelope.rpId, "assertion");
+    if (prfOutput.length !== PRF_OUTPUT_BYTES) {
+      throw new VaultError("VAULT_UNLOCK_FAILED", `The platform authenticator returned ${prfOutput.length} bytes of PRF output; this factor needs ${PRF_OUTPUT_BYTES}. Nothing was derived.`);
+    }
+  } catch (error) {
+    wipe(prfOutput);
+    throw error;
+  }
+  return prfOutput;
+}
+var AASA_TIMEOUT_MS = 1e4;
+var init_passkey = __esm(() => {
+  init_sha256();
+  init_esm();
+  init_protocol();
+  init_crypto();
+  init_enclave();
+  init_errors();
+  init_fido2();
+  init_platform();
+  init_webauthn_cbor();
 });
 
 // src/vault/eff-wordlist.ts
@@ -13953,13 +14393,14 @@ async function unwrapDek(file, envelope, request, notice) {
       suggestion: "Nothing was derived from it and no other factor was tried."
     });
   }
-  if (!isCtap2Envelope(envelope)) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a security key one.`);
+  if (!isPrfEnvelope(envelope)) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passkey one.`);
   }
   const kekKey = await derivePrfKek(request.prfOutput, unb64u(file.vaultId, "vaultId"));
+  const what = envelope.transport === "platform-macos" ? "this synced passkey" : "this security key";
   return open2(kekKey, envelope.wrap, envelopeAad(file, envelope), {
     code: "VAULT_UNLOCK_FAILED",
-    message: "Could not open the vault with this security key: the assertion did not yield this envelope's key, or the file is corrupt.",
+    message: `Could not open the vault with ${what}: the assertion did not yield this envelope's key, or the file is corrupt.`,
     suggestion: "Nothing was derived from it and no other factor was tried."
   });
 }
@@ -14222,6 +14663,33 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
       }
     };
   }
+  if (choice.kind === "passkey") {
+    const envelope2 = choice.envelope;
+    const session2 = await openPasskeySession(deps, envelope2.helper);
+    const open4 = async (p, r, purpose) => {
+      const current = parseVaultFile(r);
+      const target = current.envelopes.find((candidate) => candidate.id === envelope2.id);
+      if (target === undefined || !isPlatformPasskeyEnvelope(target)) {
+        throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `The file at ${p} has no synced passkey envelope ${envelope2.id}.`);
+      }
+      const prfOutput = await assertPlatformPrf(deps, session2, target, current.vaultId, purpose);
+      try {
+        return await unlockVault(p, r, { factor: "passkey-prf", envelopeId: target.id, prfOutput }, { notice });
+      } finally {
+        wipe(prfOutput);
+      }
+    };
+    const reason = opts.reason ?? "unlock the Candle vault";
+    const vault2 = await open4(path, raw, reason);
+    return {
+      vault: vault2,
+      factor: { kind: "passkey", envelopeId: envelope2.id, session: session2 },
+      reopen: (p, r) => open4(p, r, reason),
+      confirm: async (what) => {
+        closeVault(await open4(path, raw, what));
+      }
+    };
+  }
   const envelope = choice.envelope;
   const session = await openSecurityKeySession(deps, {
     vaultId: file.vaultId,
@@ -14275,14 +14743,14 @@ async function chooseFactor(ctx, envelopes, facts, flag) {
   const passphrases = envelopes.filter(isPassphraseEnvelope);
   const keys = envelopes.filter(isCtap2Envelope);
   const enclaves = envelopes.filter(isSecureEnclaveEnvelope);
+  const passkeys = envelopes.filter(isPlatformPasskeyEnvelope);
   const drivableKeys = keys.filter((envelope) => canDrive(envelope, facts));
   const drivableEnclaves = enclaves.filter((envelope) => canDrive(envelope, facts));
-  const wordFor = (envelope) => isSecureEnclaveEnvelope(envelope) ? "Touch ID" : "security key";
+  const drivablePasskeys = passkeys.filter((envelope) => canDrive(envelope, facts));
   const list = (candidates) => candidates.map((envelope) => `  ${envelope.id}  ${wordFor(envelope)}  ${envelope.label || "(no label)"}`).join(`
 `);
-  const choiceFor = (envelope) => isSecureEnclaveEnvelope(envelope) ? { kind: "touch-id", envelope } : { kind: "security-key", envelope };
   if (flag === undefined) {
-    const drivable = [...drivableKeys, ...drivableEnclaves];
+    const drivable = [...drivableKeys, ...drivableEnclaves, ...drivablePasskeys];
     if (drivable.length === 0) {
       if (passphrases.length === 0) {
         throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope, and no other envelope on it can be driven on this machine.", { suggestion: "Run `candle vault status` to see each factor and why it is not available here." });
@@ -14294,9 +14762,10 @@ async function chooseFactor(ctx, envelopes, facts, flag) {
     const kinds = [
       ...passphrases.length > 0 ? ["a passphrase"] : [],
       ...drivableKeys.length > 0 ? ["a security key"] : [],
-      ...drivableEnclaves.length > 0 ? ["Touch ID"] : []
+      ...drivableEnclaves.length > 0 ? ["Touch ID"] : [],
+      ...drivablePasskeys.length > 0 ? ["a synced passkey"] : []
     ];
-    const noun = drivableEnclaves.length > 0 ? "an" : "a security key";
+    const noun = drivableEnclaves.length > 0 || drivablePasskeys.length > 0 ? "an" : "a security key";
     const answer = (await ctx.deps.promptLine(`This vault opens with ${kinds.join(" or ")}. Type passphrase, or the id of ${noun} envelope:
 ${list(drivable)}
 > `)).trim();
@@ -14314,29 +14783,23 @@ ${list(drivable)}
       throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
     return { kind: "passphrase" };
   }
-  if (flag === "security-key") {
-    if (keys.length === 0) {
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no security key envelope.", {
-        suggestion: "Add one: candle vault factor add security-key"
+  const byKind = {
+    "security-key": { candidates: keys, word: "security key", add: "candle vault factor add security-key" },
+    "touch-id": { candidates: enclaves, word: "Touch ID (Secure Enclave)", add: "candle vault factor add touch-id" },
+    passkey: { candidates: passkeys, word: "synced passkey", add: "candle vault factor add passkey" }
+  };
+  const kind = byKind[flag];
+  if (kind !== undefined) {
+    if (kind.candidates.length === 0) {
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${kind.word} envelope.`, {
+        suggestion: `Add one: ${kind.add}`
       });
     }
-    if (keys.length > 1) {
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has ${keys.length} security key envelopes; name one with --factor <id>:
-${list(keys)}`);
+    if (kind.candidates.length > 1) {
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has ${kind.candidates.length} ${kind.word} envelopes; name one with --factor <id>:
+${list(kind.candidates)}`);
     }
-    return { kind: "security-key", envelope: assertDrivable(keys[0], facts) };
-  }
-  if (flag === "touch-id") {
-    if (enclaves.length === 0) {
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no Touch ID (Secure Enclave) envelope.", {
-        suggestion: "Add one on this Mac: candle vault factor add touch-id"
-      });
-    }
-    if (enclaves.length > 1) {
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has ${enclaves.length} Touch ID envelopes; name one with --factor <id>:
-${list(enclaves)}`);
-    }
-    return { kind: "touch-id", envelope: assertDrivable(enclaves[0], facts) };
+    return choiceFor(assertDrivable(kind.candidates[0], facts));
   }
   const named = envelopes.find((envelope) => envelope.id === flag);
   if (named === undefined) {
@@ -14346,21 +14809,35 @@ ${list(enclaves)}`);
   }
   if (isPassphraseEnvelope(named))
     return { kind: "passphrase", envelopeId: named.id };
-  if (isCtap2Envelope(named))
-    return { kind: "security-key", envelope: assertDrivable(named, facts) };
-  if (isSecureEnclaveEnvelope(named))
-    return { kind: "touch-id", envelope: assertDrivable(named, facts) };
+  if (isCtap2Envelope(named) || isSecureEnclaveEnvelope(named) || isPlatformPasskeyEnvelope(named)) {
+    return choiceFor(assertDrivable(named, facts));
+  }
   const availability = envelopeAvailability(named, facts);
   if (availability.state === "available") {
     throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${named.id} is a ${named.factor} envelope this release cannot open.`);
   }
   throw new VaultError(refusalCodeFor(availability), `Envelope ${named.id} (${named.factor}${typeof named.transport === "string" ? `/${named.transport}` : ""}) cannot open the vault here: ${availability.reason}.`, { suggestion: "No other envelope was tried. Run `candle vault status` to see which factors can open it here." });
 }
+function wordFor(envelope) {
+  if (isSecureEnclaveEnvelope(envelope))
+    return "Touch ID";
+  if (isPlatformPasskeyEnvelope(envelope))
+    return "synced passkey";
+  return "security key";
+}
+function choiceFor(envelope) {
+  const any = envelope;
+  if (isSecureEnclaveEnvelope(any))
+    return { kind: "touch-id", envelope };
+  if (isPlatformPasskeyEnvelope(any))
+    return { kind: "passkey", envelope };
+  return { kind: "security-key", envelope };
+}
 function assertDrivable(envelope, facts) {
   const availability = envelopeAvailability(envelope, facts);
   if (availability.state === "available")
     return envelope;
-  throw new VaultError(refusalCodeFor(availability), `The ${isSecureEnclaveEnvelope(envelope) ? "Touch ID" : "security key"} envelope ${envelope.id} cannot open the vault here: ${availability.reason}.`, { suggestion: "No other envelope was tried. Run `candle vault status` to see which factors can open it here." });
+  throw new VaultError(refusalCodeFor(availability), `The ${wordFor(envelope)} envelope ${envelope.id} cannot open the vault here: ${availability.reason}.`, { suggestion: "No other envelope was tried. Run `candle vault status` to see which factors can open it here." });
 }
 async function assertNotOlderCopy(ctx, path, raw, accept) {
   const sidecar = await readSidecar(sidecarPath(path));
@@ -14440,6 +14917,7 @@ var init_vault_support = __esm(() => {
   init_errors();
   init_fido2();
   init_format();
+  init_passkey();
   init_passphrase();
   init_platform();
   init_sidecar();
@@ -43144,6 +43622,9 @@ function assertRecoverableFactorExists(envelopes) {
     return;
   throw new VaultError("VAULT_NO_RECOVERABLE_FACTOR", "This vault has no recoverable factor, so creating a key in it would create one nobody can recover.", { suggestion: "Add a passphrase factor first: candle vault factor add passphrase" });
 }
+function sealedEnvelopes(envelopes) {
+  return envelopes.filter((envelope) => envelope.factor === "passphrase");
+}
 function assertBackupDomainAllowed(envelopes, destinationPath, opts) {
   const destination = classifyDestination(destinationPath, opts.home);
   const destinationAccount = accountDomainOf(destination);
@@ -43158,16 +43639,17 @@ function assertBackupDomainAllowed(envelopes, destinationPath, opts) {
       suggestion: "One compromise would yield both the backup and a factor that opens it. Back up somewhere else, or add a factor in another domain."
     });
   }
+  const cloud = destinationAccount !== undefined;
   const appleEnvelope = envelopes.some((envelope) => envelope.domain === "apple-account");
   const sharedDomain = appleEnvelope && destination === "icloud-drive";
-  if (sharedDomain && !opts.acceptSharedDomain) {
-    throw new VaultError("VAULT_SHARED_DOMAIN", `${destinationPath} is in iCloud Drive and this vault has a synced passkey envelope, so one Apple account would hold both the backup and a factor that opens it.`, { suggestion: "Back it up outside iCloud Drive, or pass --accept-shared-domain to record that you accept this." });
-  }
-  return { destination, sharedDomain };
+  const sharedDomainAccepted = cloud && opts.acceptSharedDomain;
+  return { destination, cloud, sharedDomain, sealed: cloud && !opts.acceptSharedDomain, sharedDomainAccepted };
 }
 
 // src/commands/vault-backup.ts
 init_errors();
+init_format();
+init_passphrase();
 init_sidecar();
 init_store();
 
@@ -45582,6 +46064,7 @@ async function verifyEntry(copy, entry, root, report, observer) {
 }
 
 // src/commands/vault-backup.ts
+init_wallet_keystore();
 init_vault_support();
 async function vaultBackup(args, ctx) {
   const parsed = parseArgs(args, {
@@ -45605,40 +46088,78 @@ async function vaultBackup(args, ctx) {
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(path);
     assertOutsideConfigDir(destination, deps.env);
-    const file = JSON.parse(raw);
-    const { destination: domain, sharedDomain } = assertBackupDomainAllowed(file.envelopes, destination, {
+    const file = parseVaultFile(raw);
+    const verdict = assertBackupDomainAllowed(file.envelopes, destination, {
       acceptSharedDomain: parsed.booleans.has("--accept-shared-domain")
     });
     if (await exists(destination)) {
       throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite a backup.`);
     }
+    if (verdict.sealed && ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase") {
+      deps.stderr.write(`${destination} is a ${verdict.destination} destination, so this backup is a sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor ${ctx.vaultFactor}.
+`);
+    }
     const opened = await unlockInteractively(ctx, path, raw, {
-      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      ...verdict.sealed ? { factor: "passphrase" } : {}
     });
     const live = hold(opened.vault);
-    await copyFile(path, destination);
+    if (verdict.sealed) {
+      await writeSealedCopy(live, destination);
+    } else {
+      await copyFile(path, destination);
+    }
     const report = await verifyCopy(ctx, destination, opened.reopen, live);
     const sidecar = sidecarPath(path);
     await writeSidecar(sidecar, {
       ...nextSidecar(await readSidecar(sidecar), live.file),
       lastVerifiedBackupAt: new Date(deps.now()).toISOString(),
-      lastBackupDomain: domain,
-      ...sharedDomain ? { lastBackupSharedDomainAccepted: true } : {}
+      lastBackupDomain: verdict.destination,
+      lastBackupSealed: verdict.sealed,
+      ...verdict.sharedDomainAccepted ? { lastBackupSharedDomainAccepted: true } : {}
     });
+    const copyEnvelopes = verdict.sealed ? sealedEnvelopes(live.file.envelopes) : live.file.envelopes;
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
         destination,
-        destinationDomain: domain,
-        sharedDomainAccepted: sharedDomain,
+        destinationDomain: verdict.destination,
+        sealed: verdict.sealed,
+        envelopesInCopy: copyEnvelopes.map((envelope) => envelope.id),
+        envelopesLeftOut: live.file.envelopes.filter((envelope) => !copyEnvelopes.includes(envelope)).map((envelope) => envelope.id),
+        sharedDomainAccepted: verdict.sharedDomainAccepted,
+        sharedDomain: verdict.sharedDomain,
         verified: true,
         ...reportJson(report, live)
       });
       return 0;
     }
-    writeVerifiedReport(ctx, destination, domain, sharedDomain, report, live);
+    writeVerifiedReport(ctx, destination, verdict, report, live);
     return 0;
   });
+}
+async function writeSealedCopy(live, destination) {
+  const { index: _index, ...header } = live.file;
+  const sealed = await sealIndex({ ...header, envelopes: sealedEnvelopes(live.file.envelopes) }, live.index, live.payloadKey);
+  try {
+    await writeKeystoreFile(destination, serializeVault(sealed));
+  } catch {
+    throw new VaultError("VAULT_WRITE_FAILED", `Could not write the sealed copy at ${destination}.`);
+  }
+}
+function isSealedCopyOf(copyRaw, liveEnvelopes) {
+  let copy;
+  try {
+    copy = JSON.parse(copyRaw);
+  } catch {
+    return false;
+  }
+  const copyEnvelopes = Array.isArray(copy.envelopes) ? copy.envelopes : [];
+  if (copyEnvelopes.length === 0)
+    return false;
+  const liveIds = new Set(liveEnvelopes.map((envelope) => envelope.id));
+  const allPassphrase = copyEnvelopes.every((envelope) => envelope.factor === "passphrase" && typeof envelope.id === "string" && liveIds.has(envelope.id));
+  return allPassphrase && liveEnvelopes.some((envelope) => envelope.factor !== "passphrase");
 }
 async function vaultVerifyBackup(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] });
@@ -45657,8 +46178,17 @@ async function vaultVerifyBackup(args, ctx) {
   const path = vaultPathFor(ctx, parsed);
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(path);
+    const copyRaw = await readVaultRaw(resolve2(copyPath));
+    if (copyRaw === null)
+      throw new VaultError("VAULT_MISSING", `No file at ${resolve2(copyPath)}.`);
+    const sealed = isSealedCopyOf(copyRaw, parseVaultFile(raw).envelopes);
+    if (sealed && ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase") {
+      deps.stderr.write(`${resolve2(copyPath)} is a sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor ${ctx.vaultFactor}.
+`);
+    }
     const opened = await unlockInteractively(ctx, path, raw, {
-      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      ...sealed ? { factor: "passphrase" } : {}
     });
     const live = hold(opened.vault);
     const report = await verifyCopy(ctx, resolve2(copyPath), opened.reopen, live);
@@ -45668,10 +46198,10 @@ async function vaultVerifyBackup(args, ctx) {
       lastVerifiedBackupAt: new Date(deps.now()).toISOString()
     });
     if (ctx.json) {
-      writeJson(deps, { ok: true, verified: resolve2(copyPath), ...reportJson(report, live) });
+      writeJson(deps, { ok: true, verified: resolve2(copyPath), sealed, ...reportJson(report, live) });
       return 0;
     }
-    writeVerifiedReport(ctx, resolve2(copyPath), undefined, false, report, live);
+    writeVerifiedReport(ctx, resolve2(copyPath), sealed ? { sealed: true } : undefined, report, live);
     return 0;
   });
 }
@@ -45721,13 +46251,23 @@ function reportJson(report, live) {
     phraseRestoresDerivedKeysOnly: true
   };
 }
-function writeVerifiedReport(ctx, target, domain, sharedDomain, report, live) {
+var SEALED_COPY_NOTE = "This copy opens only with the passphrase: its synced passkey, Touch ID and security key envelopes were left out (the live vault keeps them). Keep the passphrase somewhere outside the Apple account that holds a synced passkey. The live vault plus the recovery phrase remain the everyday path; this copy is for the day both are gone.";
+function writeVerifiedReport(ctx, target, verdict, report, live) {
   const { deps } = ctx;
   deps.stdout.write(`Verified ${target}
 `);
-  if (domain)
-    deps.stdout.write(`  destination   ${domain}
+  if (verdict?.destination)
+    deps.stdout.write(`  destination   ${verdict.destination}
 `);
+  if (verdict?.sealed) {
+    const kept = live.file.envelopes.filter(isPassphraseEnvelope).map((envelope) => envelope.id);
+    const leftOut = live.file.envelopes.filter((envelope) => !isPassphraseEnvelope(envelope)).map((envelope) => envelope.id);
+    deps.stdout.write(`  sealed        yes: passphrase envelope(s) ${kept.join(", ")} only${leftOut.length > 0 ? `; left out ${leftOut.join(", ")}` : ""}
+`);
+  } else if (verdict?.sharedDomainAccepted) {
+    deps.stdout.write(`  sealed        no: every envelope is in this copy (--accept-shared-domain)
+`);
+  }
   deps.stdout.write(`  steps         all 8 passed, in order
 `);
   deps.stdout.write(`  keys checked  ${report.addressChecked.length} (each secret produces the address the index records)
@@ -45741,10 +46281,16 @@ function writeVerifiedReport(ctx, target, domain, sharedDomain, report, live) {
   if (report.comparedAgainstLive)
     deps.stdout.write(`  address set   matches the live vault
 `);
-  if (sharedDomain) {
-    deps.stdout.write(`  shared domain this destination and a synced passkey envelope are one Apple account; you accepted that.
+  if (verdict?.sharedDomainAccepted) {
+    deps.stdout.write(verdict.sharedDomain ? `  shared domain this destination and a synced passkey envelope are one Apple account, and this unsealed copy carries that passkey's envelope; you accepted that.
+` : `  shared domain this unsealed copy carries every envelope into a cloud account; you accepted that.
 `);
   }
+  if (verdict?.sealed)
+    deps.stdout.write(`
+${SEALED_COPY_NOTE}
+${APPLE_ACCOUNT_NOTICE}
+`);
   deps.stdout.write(`
 Derivation counters to keep with your recovery phrase:
 `);
@@ -46049,6 +46595,161 @@ init_passphrase();
 init_platform();
 init_store();
 
+// src/commands/vault-factor-passkey.ts
+init_protocol();
+init_crypto();
+init_errors();
+init_fido2();
+init_format();
+init_passkey();
+init_platform();
+init_store();
+init_vault_support();
+var PASSKEY_NOTE = "A synced passkey lives in your Apple account: it follows the account to a new Mac, so it is a recoverable factor, and it is never counted as independent of any other Apple-account item (two synced passkeys are one factor). What syncs through iCloud Keychain is the credential's private key; the PRF output and this vault's key never leave this Mac. Keep the passphrase and the recovery phrase outside that Apple account.";
+var PASSKEY_LEFTOVER_NOTE = "The passkey this attempt created remains in your Passwords (System Settings, Passwords, cli.candle.tv) and opens nothing without its envelope; remove it there. Nothing was written to the vault.";
+async function addPasskeyFactor(ctx, parsed, path, hold) {
+  const { deps } = ctx;
+  const facts = await currentPlatformFacts(deps);
+  assertFactorAddable("passkey-prf", facts, "platform-macos");
+  const helper = facts.enclaveHelper;
+  if (helper === undefined || helper.state !== "ready") {
+    throw new VaultError("VAULT_HELPER_MISSING", "The signed macOS helper was not found after the platform check.");
+  }
+  const session = {
+    path: helper.path,
+    appPath: helper.appPath,
+    identity: helper.identity,
+    version: helper.version
+  };
+  const association = await checkAppleAppSiteAssociation(deps, helper.identity);
+  const raw = await requireVaultRaw(path);
+  const envelopeId = freshEnvelopeId();
+  const label = parsed.values["--label"] ?? "synced passkey";
+  const opened = await unlockInteractively(ctx, path, raw, {
+    acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+    promptText: "Current vault passphrase, to unlock (input hidden): ",
+    factor: "passphrase"
+  });
+  const vault = hold(opened.vault);
+  const vaultId = vault.file.vaultId;
+  let registered;
+  try {
+    registered = await registerPlatformPasskey(deps, session, { vaultId, envelopeId });
+  } catch (error) {
+    deps.stderr.write(`Nothing was written to the vault.
+`);
+    throw error;
+  }
+  if (!registered.prfSupported) {
+    throw new VaultError("VAULT_PRF_UNSUPPORTED", "The platform authenticator reports the PRF extension unsupported for the passkey it created, so no key can be derived from it.", { suggestion: `${PASSKEY_LEFTOVER_NOTE} No other derivation is substituted.` });
+  }
+  if (!registered.backupEligible) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "The platform authenticator reports the passkey it created as not backup-eligible (not synced: iCloud Keychain is off for this Apple account), so it is not a synced passkey and cannot be recorded under the apple-account domain.", {
+      suggestion: `Turn on iCloud Keychain (System Settings, Apple Account, iCloud, Passwords & Keychain) and retry, or use a security key or Touch ID for a device-bound factor. ${PASSKEY_LEFTOVER_NOTE}`
+    });
+  }
+  const salt = randomBytes2(32);
+  const prfSalt = b64u(salt);
+  wipe(salt);
+  const envelope = {
+    id: envelopeId,
+    factor: "passkey-prf",
+    transport: "platform-macos",
+    domain: "apple-account",
+    label,
+    createdAt: new Date(deps.now()).toISOString(),
+    rpId: PASSKEY_RP_ID,
+    credentialId: registered.credentialId,
+    prfSalt,
+    userVerification: "required",
+    backupEligible: true,
+    backupState: registered.backupState,
+    saltDerivation: "platform",
+    helper: { teamId: session.identity.teamId, bundleId: session.identity.bundleId, minVersion: session.version },
+    wrap: { alg: VAULT_CIPHER, iv: "", ciphertext: "" }
+  };
+  let sealed;
+  let committed;
+  try {
+    const prfOutput = await assertPlatformPrf(deps, session, envelope, vaultId, "derive this vault's key on it");
+    let wrap;
+    try {
+      wrap = await wrapDekForPrf(vault.dek, prfOutput, envelope, vault.file);
+    } finally {
+      wipe(prfOutput);
+    }
+    sealed = { ...envelope, wrap };
+    committed = hold(await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps));
+  } catch (error) {
+    deps.stderr.write(`${PASSKEY_LEFTOVER_NOTE}
+`);
+    throw error;
+  }
+  try {
+    const written = await readVaultRaw(path);
+    if (written === null)
+      throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${path} could not be read back.`);
+    const proof = await assertPlatformPrf(deps, session, sealed, vaultId, "prove the new synced passkey opens the vault");
+    try {
+      closeVault(await unlockVault(path, written, { factor: "passkey-prf", envelopeId, prfOutput: proof }));
+    } finally {
+      wipe(proof);
+    }
+  } catch (error) {
+    try {
+      await commitVault(committed, {
+        index: committed.index,
+        envelopes: committed.file.envelopes.filter((candidate) => candidate.id !== envelopeId)
+      }, deps);
+      deps.stderr.write(`The unproven envelope ${envelopeId} was removed from the vault again.
+`);
+    } catch {
+      deps.stderr.write(`Envelope ${envelopeId} could not be removed from the vault; remove it with: candle vault factor remove ${envelopeId}
+`);
+    }
+    deps.stderr.write(`${PASSKEY_LEFTOVER_NOTE}
+`);
+    throw error;
+  }
+  const recoverable = countRecoverableFactors(committed.file.envelopes);
+  if (ctx.json) {
+    writeJson(deps, {
+      ok: true,
+      envelopeId,
+      factor: "passkey-prf",
+      transport: "platform-macos",
+      domain: "apple-account",
+      label,
+      rpId: PASSKEY_RP_ID,
+      appId: association.appId,
+      backupEligible: true,
+      backupState: registered.backupState,
+      userVerification: "required",
+      saltDerivation: "platform",
+      helper: envelope.helper,
+      recoverableFactors: recoverable,
+      verified: true
+    });
+    return 0;
+  }
+  deps.stdout.write(`Added synced passkey factor ${envelopeId} (${PASSKEY_RP_ID}, this Apple account).
+`);
+  deps.stdout.write(`  domain     apple-account (backup-eligible: yes, backed up now: ${registered.backupState ? "yes" : "no"})
+`);
+  deps.stdout.write(`  helper     ${session.identity.bundleId} ${session.version}, signed by team ${session.identity.teamId}
+`);
+  deps.stdout.write(`  verified   the vault was re-read and opened with the new passkey
+`);
+  deps.stdout.write(`  unlock     candle vault status --unlock --factor ${envelopeId}
+`);
+  deps.stdout.write(`
+${PASSKEY_NOTE}
+`);
+  deps.stdout.write(`This vault now has ${recoverable} recoverable factor(s), domains counted once.
+`);
+  return 0;
+}
+
 // src/commands/vault-factor-security-key.ts
 init_crypto();
 init_errors();
@@ -46172,9 +46873,8 @@ async function addTouchIdFactor(ctx, parsed, path, hold) {
     throw new VaultError("VAULT_HELPER_MISSING", "The Secure Enclave helper was not found after the platform check.");
   }
   if (helper.biometry !== "available") {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Touch ID is not available right now${helper.biometryReason ? `: ${helper.biometryReason}` : ""}.`, {
-      suggestion: helper.biometry === "none" ? "Enrol a fingerprint in System Settings, Touch ID & Password, then retry. Nothing was written and no other factor is substituted." : "Open the lid, or use a keyboard with Touch ID, or unlock the Mac with its password first, then retry. Nothing was written and no other factor is substituted."
-    });
+    const described = describeBiometry(helper);
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", described.message, { suggestion: described.suggestion });
   }
   const session = {
     path: helper.path,
@@ -46671,7 +47371,7 @@ async function vaultFactorAdd(args, ctx) {
     return usage(ctx, parsed.error);
   const kind = parsed.positionals[0];
   if (kind === undefined) {
-    return usage(ctx, "Which factor? This release adds: candle vault factor add passphrase | security-key | touch-id");
+    return usage(ctx, "Which factor? This release adds: candle vault factor add passphrase | security-key | touch-id | passkey");
   }
   if (parsed.positionals.length > 1)
     return usage(ctx, `Unexpected argument: ${parsed.positionals[1]}`);
@@ -46689,11 +47389,10 @@ async function vaultFactorAdd(args, ctx) {
       return addSecurityKeyFactor(ctx, parsed, path, hold);
     if (kind === "touch-id")
       return addTouchIdFactor(ctx, parsed, path, hold);
+    if (kind === "passkey")
+      return addPasskeyFactor(ctx, parsed, path, hold);
     if (kind !== "passphrase") {
-      const facts = await currentPlatformFacts(deps);
-      if (kind === "passkey")
-        assertFactorAddable("passkey-prf", facts, "platform-macos");
-      return usage(ctx, `Unknown factor: ${kind}. This release adds: passphrase, security-key, touch-id`);
+      return usage(ctx, `Unknown factor: ${kind}. This release adds: passphrase, security-key, touch-id, passkey`);
     }
     const raw = await requireVaultRaw(path);
     const opened = await unlockInteractively(ctx, path, raw, {
@@ -46832,7 +47531,7 @@ async function vaultFactor(args, ctx) {
     case "remove":
       return vaultFactorRemove(rest, ctx);
     case undefined:
-      return usage(ctx, "Usage: candle vault factor <list | add passphrase | add security-key | add touch-id | remove <id>>");
+      return usage(ctx, "Usage: candle vault factor <list | add passphrase | add security-key | add touch-id | add passkey | remove <id>>");
     default:
       return usage(ctx, `Unknown subcommand: vault factor ${word}. Try: list, add, remove`);
   }
@@ -48827,7 +49526,8 @@ async function vaultStatus(args, ctx) {
           removedEnvelopeIds: sidecar.removedEnvelopeIds,
           lastVerifiedBackupAt: sidecar.lastVerifiedBackupAt,
           lastBackupDomain: sidecar.lastBackupDomain,
-          lastBackupSharedDomainAccepted: sidecar.lastBackupSharedDomainAccepted
+          lastBackupSharedDomainAccepted: sidecar.lastBackupSharedDomainAccepted,
+          lastBackupSealed: sidecar.lastBackupSealed
         } : null,
         legacyWalletsEnc: legacyPresent ? legacy : null,
         ...unlocked ? { unlocked } : {}
@@ -48869,11 +49569,11 @@ This machine's record (vault.state.json, cleartext, best effort):
       deps.stdout.write(`  last generation seen   ${sidecar.lastGeneration}
 `);
       if (sidecar.lastVerifiedBackupAt) {
-        deps.stdout.write(`  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "unknown"})
+        deps.stdout.write(`  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "unknown"}${sidecar.lastBackupSealed ? ", sealed: opens with the passphrase only" : ""})
 `);
       }
       if (sidecar.lastBackupSharedDomainAccepted) {
-        deps.stdout.write(`  shared domain          accepted for the last backup destination
+        deps.stdout.write(`  shared domain          accepted for the last backup destination (an unsealed copy, every envelope included)
 `);
       }
       if (sidecar.removedEnvelopeIds.length > 0) {
@@ -49517,7 +50217,7 @@ Commands:
   vault restore --phrase [--count <n>] [--tee-count <k>]          Rebuild a vault from the recovery phrase
                 [--rpc-url <url>]
   vault reconcile-exposure                                        Re-read this account and add exposure; clears nothing
-  vault factor list | add passphrase|security-key|touch-id | remove <id>
+  vault factor list | add passphrase|security-key|touch-id|passkey | remove <id>
                                                                   Manage the factors that open the vault
   vault backup --to <path> [--accept-shared-domain]               Copy the vault and verify the copy in full
   vault verify-backup <path>                                      Verify a copy in full (all eight steps)
@@ -49552,7 +50252,7 @@ Global options:
   --api-url <url>         Override the API base URL
   --profile <name>        Act as a named profile (see: candle auth login --profile)
   --no-verify-account     Skip the check that the stored key belongs to the profile's account
-  --factor <id|kind>      Vault commands: unlock with this envelope id, or "passphrase", "security-key" or "touch-id"
+  --factor <id|kind>      Vault commands: unlock with this envelope id, or "passphrase", "security-key", "touch-id" or "passkey"
   --device <id>           Vault commands: the security key to use, by the id vault factor list prints
   --json                  Machine-readable output
   --help, -h              Show this help

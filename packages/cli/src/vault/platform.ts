@@ -9,13 +9,22 @@
  * state) goes through `PlatformFacts`, built from injected `Deps`, so the whole refusal matrix is
  * exercisable under `bun test` on any host (T58). The real-hardware rows stay T47, T48 and T57.
  *
- * Three factors exist as of PR F: the passphrase everywhere; the security key over CTAP2 on the
- * four shipping targets wherever the `candle-fido2` helper is present; and the Secure Enclave on
+ * Four factors exist as of PR G: the passphrase everywhere; the security key over CTAP2 on the
+ * four shipping targets wherever the `candle-fido2` helper is present; the Secure Enclave on
  * macOS, only in a build whose release policy ships the signed helper, only where that helper is
- * present, passes its code signature check and reports an Enclave. The synced passkey is named
- * by the format (ED-7 keeps its envelope) and reported as not yet available, with PR G named.
+ * present, passes its code signature check and reports an Enclave; and the synced passkey over
+ * the native macOS API (BE-135, AD-2), which needs everything the Enclave needs plus macOS 15 or
+ * later and a helper whose own entitlements carry the associated domain and whose bundle embeds
+ * a provisioning profile. Each missing gate is its own typed reason, before any ceremony.
  */
 import type { Deps } from "../deps"
+import {
+  type BiometryState,
+  type BiometryType,
+  type LaErrorReport,
+  PASSKEY_ASSOCIATED_DOMAIN,
+  PASSKEY_MIN_OS_MAJOR,
+} from "../enclave-helper/protocol"
 import { VaultError, type VaultErrorCode } from "./errors"
 import type { Envelope, KnownFactor } from "./format"
 
@@ -45,8 +54,16 @@ export type EnclaveHelperState =
       identity: { teamId: string; bundleId: string }
       version: string
       secureEnclave: boolean
-      biometry: "available" | "unavailable" | "none"
+      biometry: BiometryState
       biometryReason?: string
+      biometryType?: BiometryType
+      laError?: LaErrorReport
+      /** The macOS major version the helper reported (BE-135); undefined from a helper that reports none. */
+      osMajor?: number
+      /** The helper's own associated-domains entitlement (BE-135); empty from an unsigned or PR F helper. */
+      associatedDomains: string[]
+      /** Whether the bundle embeds a provisioning profile (BE-135). */
+      provisioningProfile: boolean
     }
 
 export interface PlatformFacts {
@@ -84,6 +101,10 @@ export function platformFactsFor(
     fido2Helper,
     ...(enclaveHelper !== undefined ? { enclaveHelper } : {}),
     ...(enclaveHelper?.state === "ready" ? { secureEnclave: enclaveHelper.secureEnclave } : {}),
+    // The OS version comes from the verified helper (BE-135); the fake overrides it for T58.
+    ...(enclaveHelper?.state === "ready" && enclaveHelper.osMajor !== undefined
+      ? { osMajor: enclaveHelper.osMajor }
+      : {}),
     ...(deps.env.CANDLE_VAULT_FAKE_OS_MAJOR ? { osMajor: Number(deps.env.CANDLE_VAULT_FAKE_OS_MAJOR) } : {}),
   }
 }
@@ -114,7 +135,6 @@ function shippingPlatform(facts: PlatformFacts): boolean {
 export function factorAvailability(factor: string, facts: PlatformFacts, transport?: string): FactorAvailability {
   if (factor === "passphrase") return { state: "available" }
 
-  const mac = facts.platform === "darwin"
   switch (factor) {
     case "passkey-prf": {
       if (transport === undefined || transport === "ctap2") {
@@ -132,14 +152,7 @@ export function factorAvailability(factor: string, facts: PlatformFacts, transpo
         }
         return { state: "available" }
       }
-      if (transport === "platform-macos") {
-        return {
-          state: "unsupported-on-this-platform",
-          reason: mac
-            ? "the synced passkey factor arrives in CLI 0.13.0 (PR G)"
-            : "the synced passkey transport is macOS only",
-        }
-      }
+      if (transport === "platform-macos") return platformPasskeyAvailability(facts)
       return { state: "unsupported-on-this-platform", reason: `this CLI does not know the transport ${transport}` }
     }
     case "secure-enclave":
@@ -177,6 +190,62 @@ function secureEnclaveAvailability(facts: PlatformFacts): FactorAvailability {
   }
 }
 
+/**
+ * CC-12's synced passkey column (BE-135, AD-2's gates): macOS only; a build whose policy omits the
+ * signed helper cannot drive it; the helper must be present and trusted; and then, from what the
+ * verified helper reported about itself and this Mac, macOS 15 or later, the associated-domains
+ * entitlement for `webcredentials:cli.candle.tv`, and an embedded provisioning profile. Each
+ * missing gate is its own reason. The `apple-app-site-association` on the domain is the one gate
+ * not decided here: `factor add passkey` checks it before the ceremony, and at unlock the system's
+ * own association check answers, translated to a typed refusal that says what must be served.
+ */
+function platformPasskeyAvailability(facts: PlatformFacts): FactorAvailability {
+  if (facts.platform !== "darwin") {
+    return { state: "unsupported-on-this-platform", reason: "the synced passkey transport is macOS only" }
+  }
+  const helper = facts.enclaveHelper ?? { state: "omitted" as const, reason: "the signed helper was not looked for" }
+  switch (helper.state) {
+    case "omitted":
+      return {
+        state: "unsupported-on-this-platform",
+        reason:
+          "this build's release policy omits the signed macOS helper (release-policy.json: macosHelper.release is omit), so the synced passkey factor is not in this build; it arrives in CLI 0.13.0 (PR G) once Apple approves the Developer ID enrolment and T57 has passed",
+      }
+    case "absent":
+      return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_MISSING" }
+    case "untrusted":
+      return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_UNTRUSTED" }
+    default: {
+      const osMajor = facts.osMajor ?? helper.osMajor
+      if (osMajor === undefined) {
+        return {
+          state: "unsupported-on-this-platform",
+          reason: `the helper at ${helper.appPath} (version ${helper.version}) does not report the macOS version, so this CLI cannot establish macOS ${PASSKEY_MIN_OS_MAJOR} or later; reinstall the CLI so candle and candle-enclave.app come from the same release`,
+        }
+      }
+      if (osMajor < PASSKEY_MIN_OS_MAJOR) {
+        return {
+          state: "unsupported-on-this-platform",
+          reason: `the synced passkey factor needs macOS ${PASSKEY_MIN_OS_MAJOR} or later (the platform PRF extension arrived there); this Mac runs macOS ${osMajor}`,
+        }
+      }
+      if (!helper.associatedDomains.includes(PASSKEY_ASSOCIATED_DOMAIN)) {
+        return {
+          state: "unsupported-on-this-platform",
+          reason: `the helper at ${helper.appPath} lacks the associated-domains entitlement for ${PASSKEY_ASSOCIATED_DOMAIN} (its entitlements list ${helper.associatedDomains.length > 0 ? helper.associatedDomains.join(", ") : "no associated domain"}); a release built with the entitlement and a provisioning profile is required`,
+        }
+      }
+      if (!helper.provisioningProfile) {
+        return {
+          state: "unsupported-on-this-platform",
+          reason: `the helper at ${helper.appPath} embeds no provisioning profile (Contents/embedded.provisionprofile), which the associated-domains entitlement needs under Developer ID; a release built with the profile is required`,
+        }
+      }
+      return { state: "available" }
+    }
+  }
+}
+
 /** The availability of the factor an envelope names, for `status`, `factor list` and unlock. */
 export function envelopeAvailability(envelope: Envelope, facts: PlatformFacts): FactorAvailability {
   return factorAvailability(
@@ -209,13 +278,21 @@ export function assertFactorAddable(factor: KnownFactor, facts: PlatformFacts, t
   throw new VaultError(
     refusalCodeFor(availability),
     `This CLI cannot add a ${name} factor here: ${availability.reason}.`,
-    { suggestion: `${addSuggestion(factor, availability)} No other factor is substituted and nothing was written.` },
+    {
+      suggestion: `${addSuggestion(factor, transport, availability)} No other factor is substituted and nothing was written.`,
+    },
   )
 }
 
-function addSuggestion(factor: KnownFactor, availability: Exclude<FactorAvailability, { state: "available" }>): string {
+function addSuggestion(
+  factor: KnownFactor,
+  transport: string | undefined,
+  availability: Exclude<FactorAvailability, { state: "available" }>,
+): string {
   if (availability.state !== "unavailable-on-this-device") return ""
-  if (factor === "secure-enclave") {
+  // The Enclave and the synced passkey share the signed helper; the security key has its own.
+  const signedHelper = factor === "secure-enclave" || (factor === "passkey-prf" && transport === "platform-macos")
+  if (signedHelper) {
     return availability.code === "VAULT_HELPER_UNTRUSTED"
       ? "Reinstall the CLI from a release so candle-enclave.app carries the release's signature."
       : "Install a release build of the CLI that ships the signed helper (the darwin tarball and Homebrew place candle-enclave.app beside candle), or set CANDLE_ENCLAVE_HELPER to the path of a signed candle-enclave.app."

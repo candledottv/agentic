@@ -8,11 +8,14 @@
  * passphrase removal is ever allowed: an invariant enforced only by another rule is an invariant
  * that disappears silently when that rule changes.
  *
- * Beside it sits AD-2's confidentiality rule, which is a different claim and deliberately kept
- * separate: an `icloud-drive` destination while an `apple-account` envelope exists is refused
- * unless `--accept-shared-domain` is passed. Recoverability is fine there (the passphrase still
- * holds); what is not fine is that one Apple-account compromise then yields both the blob and a
- * factor that opens it.
+ * Beside it sits AD-9's confidentiality rule (Andrew, 2026-09-17, replacing AD-2's proposed
+ * refusal), which is a different claim and deliberately kept separate: a copy written to a
+ * destination classified `icloud-drive` or `other-cloud` is SEALED by default, a copy whose only
+ * unlock envelope is the mandatory passphrase one; the synced-passkey, Enclave and security-key
+ * envelopes are left out of the copy, never out of the live vault. Recoverability is fine either
+ * way (the passphrase still holds); what sealing removes is one Apple account holding both the
+ * blob and a factor that opens it. `--accept-shared-domain` survives as the way to write an
+ * unsealed copy (the full envelope set) to a cloud destination, and the acceptance is recorded.
  */
 import { homedir } from "node:os"
 import { isAbsolute, resolve, sep } from "node:path"
@@ -109,15 +112,33 @@ export function assertRecoverableFactorExists(envelopes: Envelope[]): void {
   )
 }
 
+export interface BackupDomainVerdict {
+  destination: DestinationDomain
+  /** Whether the destination belongs to a cloud account (`icloud-drive` or `other-cloud`). */
+  cloud: boolean
+  /** AD-2's label: a synced passkey envelope and an iCloud Drive destination are one Apple account. */
+  sharedDomain: boolean
+  /** AD-9: the copy carries the passphrase envelope(s) only. */
+  sealed: boolean
+  /** AD-9: `--accept-shared-domain` was passed for a cloud destination, so the copy is unsealed. */
+  sharedDomainAccepted: boolean
+}
+
+/** AD-9: the envelopes a sealed copy keeps, which is every passphrase envelope and nothing else. */
+export function sealedEnvelopes(envelopes: Envelope[]): Envelope[] {
+  return envelopes.filter((envelope) => envelope.factor === "passphrase")
+}
+
 /**
- * Invariant 2 plus AD-2, in the order the spec states them. Returns the classification and whether
- * a shared-domain label should be printed, and throws when a rule refuses.
+ * Invariant 2 plus AD-9, in the order the spec states them. Returns the classification, whether
+ * the copy is sealed, and whether a shared-domain label should be printed; throws when invariant 2
+ * refuses.
  */
 export function assertBackupDomainAllowed(
   envelopes: Envelope[],
   destinationPath: string,
   opts: { acceptSharedDomain: boolean; home?: string },
-): { destination: DestinationDomain; sharedDomain: boolean } {
+): BackupDomainVerdict {
   const destination = classifyDestination(destinationPath, opts.home)
   const destinationAccount = accountDomainOf(destination)
 
@@ -143,15 +164,11 @@ export function assertBackupDomainAllowed(
     )
   }
 
-  // AD-2's confidentiality rule, which is about a specific pairing rather than about recovery.
+  // AD-9's confidentiality rule, which is about a specific pairing rather than about recovery: a
+  // cloud destination gets a sealed copy unless the operator accepts the shared domain.
+  const cloud = destinationAccount !== undefined
   const appleEnvelope = envelopes.some((envelope) => envelope.domain === "apple-account")
   const sharedDomain = appleEnvelope && destination === "icloud-drive"
-  if (sharedDomain && !opts.acceptSharedDomain) {
-    throw new VaultError(
-      "VAULT_SHARED_DOMAIN",
-      `${destinationPath} is in iCloud Drive and this vault has a synced passkey envelope, so one Apple account would hold both the backup and a factor that opens it.`,
-      { suggestion: "Back it up outside iCloud Drive, or pass --accept-shared-domain to record that you accept this." },
-    )
-  }
-  return { destination, sharedDomain }
+  const sharedDomainAccepted = cloud && opts.acceptSharedDomain
+  return { destination, cloud, sharedDomain, sealed: cloud && !opts.acceptSharedDomain, sharedDomainAccepted }
 }

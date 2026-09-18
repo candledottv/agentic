@@ -1,4 +1,5 @@
-// candle-enclave: the Secure Enclave helper for the Candle CLI (Ember Phase 2, BE-141, ED-12).
+// candle-enclave: the Secure Enclave and synced passkey helper for the Candle CLI (Ember Phase 2,
+// BE-141, ED-12; BE-135 for the passkey path, AD-2).
 //
 // Built into candle-enclave.app by build.sh; Developer ID-signed with the hardened runtime,
 // notarized and stapled by the release job (release.yaml, job "macos-helper") when
@@ -17,7 +18,18 @@
 // which is why every unwrap is behind Touch ID with the operation in the prompt. The CLI verifies
 // this helper's code signature (team id and bundle id) before trusting its output; this helper
 // does not check its caller, because the Bun-compiled CLI has no Apple identity to check.
+//
+// The passkey path (BE-135, PR G) uses AuthenticationServices on macOS 15 or later: one
+// registration of a discoverable, user-verified credential under the relying party cli.candle.tv
+// with the PRF extension checked for support, and one assertion per unlock with the envelope's PRF
+// salt. Both need this bundle to carry the associated-domains entitlement for
+// webcredentials:cli.candle.tv, an embedded provisioning profile for that entitlement, and an
+// apple-app-site-association served on the domain; the helper reports the first two in `info` so
+// the CLI can refuse before any ceremony (CC-12), and the system decides the third. The passkey
+// sheet is the system's; this helper has no UI of its own beyond an invisible anchor window.
 
+import AppKit
+import AuthenticationServices
 import CryptoKit
 import Foundation
 import LocalAuthentication
@@ -56,32 +68,118 @@ func bundleIdentifier() -> String {
     return Bundle.main.bundleIdentifier ?? ""
 }
 
-/// The team id from this process's own code signature, as the CLI's codesign check will see it.
-func teamIdentifier() -> String {
+/// This process's own code signing information, as the CLI's codesign check will see it.
+func signingInformation() -> [String: Any] {
     var code: SecCode?
-    guard SecCodeCopySelf(SecCSFlags(), &code) == errSecSuccess, let running = code else { return "" }
+    guard SecCodeCopySelf(SecCSFlags(), &code) == errSecSuccess, let running = code else { return [:] }
     var staticCode: SecStaticCode?
     guard SecCodeCopyStaticCode(running, SecCSFlags(), &staticCode) == errSecSuccess, let fixed = staticCode else {
-        return ""
+        return [:]
     }
     var info: CFDictionary?
     let flags = SecCSFlags(rawValue: kSecCSSigningInformation)
     guard SecCodeCopySigningInformation(fixed, flags, &info) == errSecSuccess,
-          let dictionary = info as? [String: Any] else { return "" }
-    return dictionary[kSecCodeInfoTeamIdentifier as String] as? String ?? ""
+          let dictionary = info as? [String: Any] else { return [:] }
+    return dictionary
 }
 
-/// Touch ID right now: "available", "unavailable" (lid closed, no sensor, locked out), or "none" (not enrolled).
-func biometryState() -> (state: String, reason: String?) {
+/// The team id from this process's own code signature.
+func teamIdentifier() -> String {
+    return signingInformation()[kSecCodeInfoTeamIdentifier as String] as? String ?? ""
+}
+
+/// `com.apple.developer.associated-domains` from this process's own entitlements (BE-135). An
+/// unsigned build has none, and a build signed without the entitlement has none either.
+func associatedDomains() -> [String] {
+    guard let entitlements = signingInformation()[kSecCodeInfoEntitlementsDict as String] as? [String: Any] else {
+        return []
+    }
+    return entitlements["com.apple.developer.associated-domains"] as? [String] ?? []
+}
+
+/// Whether the bundle embeds a provisioning profile, which the associated-domains entitlement needs
+/// under Developer ID (BE-135). The release job embeds it as Contents/embedded.provisionprofile.
+func provisioningProfileEmbedded() -> Bool {
+    let url = Bundle.main.bundleURL.appendingPathComponent("Contents/embedded.provisionprofile")
+    return FileManager.default.fileExists(atPath: url.path)
+}
+
+func osVersionString() -> String {
+    let version = ProcessInfo.processInfo.operatingSystemVersion
+    return "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+}
+
+/// LocalAuthentication's `LAError` codes by their Swift case names, so the CLI and an operator
+/// reading `info` see `systemCancel` rather than `-4` (BE-135).
+func laErrorName(_ code: Int) -> String {
+    switch code {
+    case LAError.authenticationFailed.rawValue: return "authenticationFailed"
+    case LAError.userCancel.rawValue: return "userCancel"
+    case LAError.userFallback.rawValue: return "userFallback"
+    case LAError.systemCancel.rawValue: return "systemCancel"
+    case LAError.passcodeNotSet.rawValue: return "passcodeNotSet"
+    case LAError.biometryNotAvailable.rawValue: return "biometryNotAvailable"
+    case LAError.biometryNotEnrolled.rawValue: return "biometryNotEnrolled"
+    case LAError.biometryLockout.rawValue: return "biometryLockout"
+    case LAError.appCancel.rawValue: return "appCancel"
+    case LAError.invalidContext.rawValue: return "invalidContext"
+    case LAError.notInteractive.rawValue: return "notInteractive"
+    default: return "unknown"
+    }
+}
+
+func biometryTypeName(_ type: LABiometryType) -> String {
+    switch type {
+    case .touchID: return "touchID"
+    case .faceID: return "faceID"
+    case LABiometryType.none: return "none"
+    default: return "opticID"
+    }
+}
+
+struct Biometry {
+    /// "available", "none" (not enrolled), "locked-out", "not-interactive" (no prompt can be shown
+    /// from this session: SSH, a background agent, the lid closed), or "unavailable" (no sensor or
+    /// anything else). See protocol.ts's BiometryState.
+    let state: String
+    let reason: String?
+    let laError: (code: Int, name: String)?
+    /// Which sensor this Mac has, whatever the state says about using it now.
+    let type: String
+}
+
+/// Touch ID right now, as `canEvaluatePolicy` answers it. PR F reported every failure that was not
+/// "not enrolled" as "unavailable", so a process outside the user's interactive session (which
+/// gets `LAError` -4, `systemCancel`) told the operator Touch ID was unavailable on a Mac that has
+/// it (BE-135). The verdict now carries the `LAError` by name and the biometry type, and the two
+/// session codes are their own state.
+func biometryState() -> Biometry {
     let context = LAContext()
     var error: NSError?
-    if context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) {
-        return ("available", nil)
+    let usable = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+    let type = biometryTypeName(context.biometryType)
+    if usable {
+        return Biometry(state: "available", reason: nil, laError: nil, type: type)
     }
-    if let error = error, error.domain == LAErrorDomain, error.code == LAError.biometryNotEnrolled.rawValue {
-        return ("none", error.localizedDescription)
+    guard let error = error, error.domain == LAErrorDomain else {
+        return Biometry(
+            state: "unavailable",
+            reason: error?.localizedDescription ?? "Touch ID is not available",
+            laError: nil,
+            type: type
+        )
     }
-    return ("unavailable", error?.localizedDescription ?? "Touch ID is not available")
+    let la = (code: error.code, name: laErrorName(error.code))
+    switch error.code {
+    case LAError.biometryNotEnrolled.rawValue:
+        return Biometry(state: "none", reason: error.localizedDescription, laError: la, type: type)
+    case LAError.biometryLockout.rawValue:
+        return Biometry(state: "locked-out", reason: error.localizedDescription, laError: la, type: type)
+    case LAError.systemCancel.rawValue, LAError.notInteractive.rawValue:
+        return Biometry(state: "not-interactive", reason: error.localizedDescription, laError: la, type: type)
+    default:
+        return Biometry(state: "unavailable", reason: error.localizedDescription, laError: la, type: type)
+    }
 }
 
 // MARK: - Error translation (the helper's typed codes; the CLI maps them to the vault's)
@@ -109,8 +207,11 @@ func failure(fromNSError nsError: NSError, fallback: String) -> Failure {
     let message = "\(nsError.domain) \(nsError.code): \(nsError.localizedDescription)"
     if nsError.domain == LAErrorDomain {
         switch nsError.code {
-        case LAError.userCancel.rawValue, LAError.systemCancel.rawValue, LAError.appCancel.rawValue:
+        case LAError.userCancel.rawValue, LAError.appCancel.rawValue:
             return Failure(code: "CANCELLED", message: message)
+        case LAError.systemCancel.rawValue, LAError.notInteractive.rawValue:
+            // The system, not the operator, ended it: no prompt can be shown from this session.
+            return Failure(code: "NOT_INTERACTIVE", message: "\(message) (LAError \(laErrorName(nsError.code)))")
         case LAError.authenticationFailed.rawValue:
             return Failure(code: "AUTH_FAILED", message: message)
         case LAError.biometryLockout.rawValue:
@@ -174,7 +275,14 @@ func createKey(tag: Data, label: String) throws -> Data {
     }
     let biometry = biometryState()
     guard biometry.state == "available" else {
-        throw Failure(code: "BIOMETRY_UNAVAILABLE", message: biometry.reason ?? "Touch ID is not available right now")
+        let code: String
+        switch biometry.state {
+        case "not-interactive": code = "NOT_INTERACTIVE"
+        case "locked-out": code = "LOCKED"
+        default: code = "BIOMETRY_UNAVAILABLE"
+        }
+        let detail = biometry.laError.map { " (LAError \($0.name))" } ?? ""
+        throw Failure(code: code, message: (biometry.reason ?? "Touch ID is not available right now") + detail)
     }
     if try findKey(tag: tag, context: nil) != nil {
         throw Failure(code: "KEY_EXISTS", message: "a Secure Enclave key with this tag already exists on this Mac")
@@ -248,6 +356,167 @@ func deleteKey(tag: Data) throws -> Bool {
     throw failure(fromStatus: status, fallback: "KEYCHAIN_IO")
 }
 
+// MARK: - The synced passkey (BE-135, AD-2, macOS 15 or later)
+
+let passkeyRelyingParty = "cli.candle.tv"
+/// Past this the CLI has already terminated the helper (its own timeout is 120 s); this is the
+/// helper's own bound so a sheet nobody answers never leaves a process spinning.
+let passkeyCeremonyTimeout: TimeInterval = 115
+
+/// Runs one ASAuthorizationController request to completion on the main run loop. The system's
+/// passkey sheet is out of process; this process only needs an anchor window (invisible, one
+/// pixel) and a turning run loop to receive the result.
+@available(macOS 15.0, *)
+final class PasskeyCeremony: NSObject, ASAuthorizationControllerDelegate,
+    ASAuthorizationControllerPresentationContextProviding
+{
+    private var outcome: Result<ASAuthorization, Error>?
+    private var anchor: NSWindow?
+
+    func run(_ request: ASAuthorizationRequest) throws -> ASAuthorization {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        app.finishLaunching()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1, height: 1),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.alphaValue = 0
+        window.makeKeyAndOrderFront(nil)
+        anchor = window
+        app.activate(ignoringOtherApps: true)
+
+        let controller = ASAuthorizationController(authorizationRequests: [request])
+        controller.delegate = self
+        controller.presentationContextProvider = self
+        controller.performRequests()
+
+        let deadline = Date(timeIntervalSinceNow: passkeyCeremonyTimeout)
+        while outcome == nil, Date() < deadline {
+            RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.05))
+        }
+        window.close()
+        anchor = nil
+        guard let result = outcome else {
+            throw Failure(code: "CANCELLED", message: "the passkey sheet was not answered in time")
+        }
+        return try result.get()
+    }
+
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+        return anchor ?? NSWindow()
+    }
+
+    func authorizationController(
+        controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization
+    ) {
+        outcome = .success(authorization)
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        outcome = .failure(error)
+    }
+}
+
+/// AuthenticationServices' verdict into the helper's typed codes. `ASAuthorizationError.failed`
+/// carries the domain association failure ("application ... is not associated with domain") and
+/// the no-credential case in its description; both are named here rather than left as INTERNAL,
+/// and T57 records what the real framework says for each.
+@available(macOS 15.0, *)
+func passkeyFailure(_ error: Error) -> Failure {
+    let nsError = error as NSError
+    if let failure = error as? Failure { return failure }
+    let message = "\(nsError.domain) \(nsError.code): \(nsError.localizedDescription)"
+    let text = nsError.localizedDescription.lowercased()
+    if nsError.domain == ASAuthorizationError.errorDomain {
+        switch nsError.code {
+        case ASAuthorizationError.canceled.rawValue:
+            return Failure(code: "CANCELLED", message: message)
+        case ASAuthorizationError.notInteractive.rawValue:
+            return Failure(code: "NOT_INTERACTIVE", message: message)
+        case ASAuthorizationError.matchedExcludedCredential.rawValue:
+            return Failure(code: "KEY_EXISTS", message: message)
+        default:
+            break
+        }
+    }
+    if text.contains("not associated") || text.contains("associated domain") || text.contains("apple-app-site-association") {
+        return Failure(code: "DOMAIN_NOT_ASSOCIATED", message: message)
+    }
+    if text.contains("no credentials") || text.contains("no passkey") {
+        return Failure(code: "NO_CREDENTIAL", message: message)
+    }
+    if nsError.domain == LAErrorDomain {
+        return failure(fromNSError: nsError, fallback: "AUTH_FAILED")
+    }
+    return Failure(code: "INTERNAL", message: message)
+}
+
+@available(macOS 15.0, *)
+func passkeyRegister(rpId: String, userId: Data, userName: String, clientDataHash: Data) throws -> [String: Any] {
+    let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: rpId)
+    // The operation digest is the challenge: the platform builds the client data around it, so the
+    // ceremony is bound to this request the way candle-fido2's clientDataHash binds its own.
+    let request = provider.createCredentialRegistrationRequest(challenge: clientDataHash, name: userName, userID: userId)
+    request.userVerificationPreference = .required
+    request.prf = .checkForSupport
+    let authorization: ASAuthorization
+    do {
+        authorization = try PasskeyCeremony().run(request)
+    } catch {
+        throw passkeyFailure(error)
+    }
+    guard let registration = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration else {
+        throw Failure(code: "INTERNAL", message: "the platform authenticator answered with an unexpected credential type")
+    }
+    guard let attestation = registration.rawAttestationObject else {
+        throw Failure(code: "INTERNAL", message: "the registration carried no attestation object")
+    }
+    return [
+        "credentialId": registration.credentialID.base64EncodedString(),
+        "attestationObject": attestation.base64EncodedString(),
+        "prfSupported": registration.prf?.isSupported ?? false,
+    ]
+}
+
+@available(macOS 15.0, *)
+func passkeyAssert(rpId: String, credentialId: Data, clientDataHash: Data, prfSalt: Data) throws -> [String: Any] {
+    let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: rpId)
+    let request = provider.createCredentialAssertionRequest(challenge: clientDataHash)
+    request.userVerificationPreference = .required
+    request.allowedCredentials = [ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: credentialId)]
+    // The raw 32-byte salt from the envelope; the platform applies its own derivation
+    // (saltDerivation: "platform"), and T57 records how that compares with a browser's.
+    // The assertion input is an enum in the Swift overlay, not a constructible class.
+    request.prf = .inputValues(.init(saltInput1: prfSalt, saltInput2: nil))
+    let authorization: ASAuthorization
+    do {
+        authorization = try PasskeyCeremony().run(request)
+    } catch {
+        throw passkeyFailure(error)
+    }
+    guard let assertion = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion else {
+        throw Failure(code: "INTERNAL", message: "the platform authenticator answered with an unexpected credential type")
+    }
+    guard let first = assertion.prf?.first else {
+        throw Failure(code: "PRF_UNSUPPORTED", message: "the assertion returned no PRF output for this credential")
+    }
+    // The helper's own UV check (CC-03); the CLI re-checks the same flag before deriving anything.
+    // rawAuthenticatorData is optional; a missing value is the same AUTH_FAILED refusal as a clear UV flag.
+    guard let authData = assertion.rawAuthenticatorData, authData.count >= 37,
+          (authData[authData.startIndex + 32] & 0x04) != 0 else {
+        throw Failure(code: "AUTH_FAILED", message: "the assertion was made without user verification (the UV flag is clear)")
+    }
+    let prfOutput = first.withUnsafeBytes { Data($0) }
+    return [
+        "authenticatorData": authData.base64EncodedString(),
+        "prfOutput": prfOutput.base64EncodedString(),
+    ]
+}
+
 // MARK: - The request
 
 func requiredString(_ object: [String: Any], _ field: String) throws -> String {
@@ -285,8 +554,13 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
             "teamId": teamIdentifier(),
             "secureEnclave": SecureEnclave.isAvailable,
             "biometry": biometry.state,
+            "biometryType": biometry.type,
+            "osVersion": osVersionString(),
+            "associatedDomains": associatedDomains(),
+            "provisioningProfile": provisioningProfileEmbedded(),
         ]
         if let reason = biometry.reason { response["biometryReason"] = reason }
+        if let la = biometry.laError { response["laError"] = ["code": la.code, "name": la.name] }
         return response
     case "create":
         let tag = try requiredString(request, "keyTag")
@@ -308,8 +582,39 @@ func handle(_ request: [String: Any]) throws -> [String: Any] {
         let tag = try requiredString(request, "keyTag")
         let removed = try deleteKey(tag: tag.data(using: .utf8)!)
         return ["ok": true, "protocol": protocolVersion, "op": "delete", "removed": removed]
+    case "passkey-register", "passkey-assert":
+        let rpId = try requiredString(request, "rpId")
+        guard rpId == passkeyRelyingParty else {
+            throw Failure(code: "BAD_REQUEST", message: "rpId must be \(passkeyRelyingParty); this helper serves no other relying party")
+        }
+        let clientDataHash = try base64Field(request, "clientDataHash", expected: 32)
+        guard #available(macOS 15.0, *) else {
+            throw Failure(
+                code: "PASSKEY_UNSUPPORTED",
+                message: "the platform passkey API needs macOS 15 or later; this Mac runs \(osVersionString())"
+            )
+        }
+        if op == "passkey-register" {
+            let userId = try base64Field(request, "userId")
+            let userName = try requiredString(request, "userName")
+            var response = try passkeyRegister(rpId: rpId, userId: userId, userName: userName, clientDataHash: clientDataHash)
+            response["ok"] = true
+            response["protocol"] = protocolVersion
+            response["op"] = "passkey-register"
+            return response
+        }
+        let credentialId = try base64Field(request, "credentialId")
+        let prfSalt = try base64Field(request, "prfSalt", expected: 32)
+        var response = try passkeyAssert(rpId: rpId, credentialId: credentialId, clientDataHash: clientDataHash, prfSalt: prfSalt)
+        response["ok"] = true
+        response["protocol"] = protocolVersion
+        response["op"] = "passkey-assert"
+        return response
     default:
-        throw Failure(code: "BAD_REQUEST", message: "unknown op \(op); this helper knows info, create, decrypt and delete")
+        throw Failure(
+            code: "BAD_REQUEST",
+            message: "unknown op \(op); this helper knows info, create, decrypt, delete, passkey-register and passkey-assert"
+        )
     }
 }
 

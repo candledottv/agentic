@@ -1,5 +1,6 @@
 /**
- * Ember Phase 2 (BE-136, CC-07, AD-2): `candle vault backup --to` and `candle vault verify-backup`.
+ * Ember Phase 2 (BE-136, CC-07, AD-2; BE-135, AD-9): `candle vault backup --to` and
+ * `candle vault verify-backup`.
  *
  * Both run `verifyVaultIntegrity` and nothing weaker, and that is the whole point of the pair. A
  * backup is NOT verified by opening it: opening authenticates the header and the index and nothing
@@ -13,16 +14,38 @@
  *
  * A destination inside `CANDLE_CONFIG_DIR` is refused: a backup that lives beside the thing it
  * backs up is not one.
+ *
+ * AD-9 (Andrew, 2026-09-17; BE-135): a copy written to a destination classified `icloud-drive` or
+ * `other-cloud` is SEALED by default: it carries the passphrase envelope(s) only, and its index is
+ * re-encrypted under that smaller header exactly as the format already does when the envelope set
+ * changes (ED-1). Same DEK, same keys, same addresses; the synced-passkey, Enclave and security-key
+ * envelopes are left out of the copy and never out of the live vault. A synced passkey lives in
+ * the user's Apple account and an iCloud Drive copy lives in the same account, so one account
+ * would otherwise hold both the blob and a factor that opens it. Invariant 2 still holds through
+ * the mandatory passphrase, so this is confidentiality, not recoverability, and sealing removes
+ * the conflict instead of blocking the backup. `--accept-shared-domain` writes an unsealed copy
+ * (the full envelope set) and the acceptance is recorded in the sidecar. The output says which,
+ * and a sealed copy is verified through the same eight-step verifier with the passphrase.
  */
 import { copyFile, stat } from "node:fs/promises"
 import nodePath, { resolve } from "node:path"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
-import { assertBackupDomainAllowed } from "../vault/domains"
+import { assertBackupDomainAllowed, type BackupDomainVerdict, sealedEnvelopes } from "../vault/domains"
 import { VaultError } from "../vault/errors"
+import { isPassphraseEnvelope, parseVaultFile } from "../vault/format"
+import { APPLE_ACCOUNT_NOTICE } from "../vault/passphrase"
 import { nextSidecar, readSidecar, sidecarPath, writeSidecar } from "../vault/sidecar"
-import { candleConfigDir, closeVault, readVaultRaw, type UnlockedVault } from "../vault/store"
+import {
+  candleConfigDir,
+  closeVault,
+  readVaultRaw,
+  sealIndex,
+  serializeVault,
+  type UnlockedVault,
+} from "../vault/store"
 import { type VerifyReport, verifyVaultIntegrity } from "../vault/verify"
+import { writeKeystoreFile } from "../wallet-keystore"
 import {
   type OpenedVault,
   refuseEnvPassphrase,
@@ -58,8 +81,8 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
     // refused should learn that without having typed a vault passphrase for a copy that is not
     // going to be made.
     assertOutsideConfigDir(destination, deps.env)
-    const file = JSON.parse(raw) as { envelopes: Parameters<typeof assertBackupDomainAllowed>[0] }
-    const { destination: domain, sharedDomain } = assertBackupDomainAllowed(file.envelopes, destination, {
+    const file = parseVaultFile(raw)
+    const verdict = assertBackupDomainAllowed(file.envelopes, destination, {
       acceptSharedDomain: parsed.booleans.has("--accept-shared-domain"),
     })
 
@@ -70,12 +93,26 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
       )
     }
 
+    // AD-9: a sealed copy opens only with the passphrase, so the live vault is opened with the
+    // passphrase here too: the operator proves they hold the one factor the copy will answer to,
+    // and the copy is verified with that same factor. `--factor` naming anything else is not
+    // honoured for a sealed backup, and the line below says so before the prompt.
+    if (verdict.sealed && ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase") {
+      deps.stderr.write(
+        `${destination} is a ${verdict.destination} destination, so this backup is a sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor ${ctx.vaultFactor}.\n`,
+      )
+    }
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      ...(verdict.sealed ? { factor: "passphrase" } : {}),
     })
     const live = hold(opened.vault)
 
-    await copyFile(path, destination)
+    if (verdict.sealed) {
+      await writeSealedCopy(live, destination)
+    } else {
+      await copyFile(path, destination)
+    }
 
     // The copy is opened and verified as its OWN file, from its own bytes, so what is verified is
     // what actually landed at the destination rather than what this process believes it wrote.
@@ -85,24 +122,73 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
     await writeSidecar(sidecar, {
       ...nextSidecar(await readSidecar(sidecar), live.file),
       lastVerifiedBackupAt: new Date(deps.now()).toISOString(),
-      lastBackupDomain: domain,
-      ...(sharedDomain ? { lastBackupSharedDomainAccepted: true } : {}),
+      lastBackupDomain: verdict.destination,
+      lastBackupSealed: verdict.sealed,
+      ...(verdict.sharedDomainAccepted ? { lastBackupSharedDomainAccepted: true } : {}),
     })
 
+    const copyEnvelopes = verdict.sealed ? sealedEnvelopes(live.file.envelopes) : live.file.envelopes
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
         destination,
-        destinationDomain: domain,
-        sharedDomainAccepted: sharedDomain,
+        destinationDomain: verdict.destination,
+        sealed: verdict.sealed,
+        envelopesInCopy: copyEnvelopes.map((envelope) => envelope.id),
+        envelopesLeftOut: live.file.envelopes
+          .filter((envelope) => !copyEnvelopes.includes(envelope))
+          .map((envelope) => envelope.id),
+        sharedDomainAccepted: verdict.sharedDomainAccepted,
+        sharedDomain: verdict.sharedDomain,
         verified: true,
         ...reportJson(report, live),
       })
       return 0
     }
-    writeVerifiedReport(ctx, destination, domain, sharedDomain, report, live)
+    writeVerifiedReport(ctx, destination, verdict, report, live)
     return 0
   })
+}
+
+/**
+ * AD-9's sealed copy: the live vault's header with every non-passphrase envelope left out, its
+ * index re-sealed under that header with the live payload key (a fresh IV, ED-1), and the root
+ * blob and every key blob copied through untouched. The generation is the live vault's, because
+ * this is a copy of the same state and not a new write. Written atomically, mode 0600.
+ */
+export async function writeSealedCopy(live: UnlockedVault, destination: string): Promise<void> {
+  const { index: _index, ...header } = live.file
+  const sealed = await sealIndex(
+    { ...header, envelopes: sealedEnvelopes(live.file.envelopes) },
+    live.index,
+    live.payloadKey,
+  )
+  try {
+    await writeKeystoreFile(destination, serializeVault(sealed))
+  } catch {
+    throw new VaultError("VAULT_WRITE_FAILED", `Could not write the sealed copy at ${destination}.`)
+  }
+}
+
+/**
+ * Whether `copyRaw` is a sealed copy of the vault whose envelopes are `liveEnvelopes` (AD-9):
+ * every envelope in the copy is a passphrase envelope the live vault also has, and the live
+ * vault has at least one envelope the copy does not.
+ */
+export function isSealedCopyOf(copyRaw: string, liveEnvelopes: Array<{ id: string; factor: string }>): boolean {
+  let copy: { envelopes?: Array<{ id?: unknown; factor?: unknown }> }
+  try {
+    copy = JSON.parse(copyRaw) as typeof copy
+  } catch {
+    return false
+  }
+  const copyEnvelopes = Array.isArray(copy.envelopes) ? copy.envelopes : []
+  if (copyEnvelopes.length === 0) return false
+  const liveIds = new Set(liveEnvelopes.map((envelope) => envelope.id))
+  const allPassphrase = copyEnvelopes.every(
+    (envelope) => envelope.factor === "passphrase" && typeof envelope.id === "string" && liveIds.has(envelope.id),
+  )
+  return allPassphrase && liveEnvelopes.some((envelope) => envelope.factor !== "passphrase")
 }
 
 export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Promise<number> {
@@ -119,8 +205,20 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
 
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(path)
+    // AD-9: a sealed copy has only the passphrase envelope(s), so it is verified with the
+    // passphrase whatever else opens the live vault. Decided from the copy's cleartext header
+    // before any prompt, so the one prompt is the right one.
+    const copyRaw = await readVaultRaw(resolve(copyPath))
+    if (copyRaw === null) throw new VaultError("VAULT_MISSING", `No file at ${resolve(copyPath)}.`)
+    const sealed = isSealedCopyOf(copyRaw, parseVaultFile(raw).envelopes)
+    if (sealed && ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase") {
+      deps.stderr.write(
+        `${resolve(copyPath)} is a sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor ${ctx.vaultFactor}.\n`,
+      )
+    }
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      ...(sealed ? { factor: "passphrase" } : {}),
     })
     const live = hold(opened.vault)
     const report = await verifyCopy(ctx, resolve(copyPath), opened.reopen, live)
@@ -132,10 +230,10 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
     })
 
     if (ctx.json) {
-      writeJson(deps, { ok: true, verified: resolve(copyPath), ...reportJson(report, live) })
+      writeJson(deps, { ok: true, verified: resolve(copyPath), sealed, ...reportJson(report, live) })
       return 0
     }
-    writeVerifiedReport(ctx, resolve(copyPath), undefined, false, report, live)
+    writeVerifiedReport(ctx, resolve(copyPath), sealed ? { sealed: true } : undefined, report, live)
     return 0
   })
 }
@@ -213,17 +311,31 @@ function reportJson(report: VerifyReport, live: UnlockedVault) {
   }
 }
 
+/** AD-9's consequence, printed on every sealed copy so the operator knows what the copy answers to. */
+export const SEALED_COPY_NOTE =
+  "This copy opens only with the passphrase: its synced passkey, Touch ID and security key envelopes were left out (the live vault keeps them). Keep the passphrase somewhere outside the Apple account that holds a synced passkey. The live vault plus the recovery phrase remain the everyday path; this copy is for the day both are gone."
+
 function writeVerifiedReport(
   ctx: CommandContext,
   target: string,
-  domain: string | undefined,
-  sharedDomain: boolean,
+  verdict: Partial<BackupDomainVerdict> | undefined,
   report: VerifyReport,
   live: UnlockedVault,
 ): void {
   const { deps } = ctx
   deps.stdout.write(`Verified ${target}\n`)
-  if (domain) deps.stdout.write(`  destination   ${domain}\n`)
+  if (verdict?.destination) deps.stdout.write(`  destination   ${verdict.destination}\n`)
+  if (verdict?.sealed) {
+    const kept = live.file.envelopes.filter(isPassphraseEnvelope).map((envelope) => envelope.id)
+    const leftOut = live.file.envelopes
+      .filter((envelope) => !isPassphraseEnvelope(envelope))
+      .map((envelope) => envelope.id)
+    deps.stdout.write(
+      `  sealed        yes: passphrase envelope(s) ${kept.join(", ")} only${leftOut.length > 0 ? `; left out ${leftOut.join(", ")}` : ""}\n`,
+    )
+  } else if (verdict?.sharedDomainAccepted) {
+    deps.stdout.write(`  sealed        no: every envelope is in this copy (--accept-shared-domain)\n`)
+  }
   deps.stdout.write(`  steps         all 8 passed, in order\n`)
   deps.stdout.write(
     `  keys checked  ${report.addressChecked.length} (each secret produces the address the index records)\n`,
@@ -235,11 +347,14 @@ function writeVerifiedReport(
     )
   }
   if (report.comparedAgainstLive) deps.stdout.write(`  address set   matches the live vault\n`)
-  if (sharedDomain) {
+  if (verdict?.sharedDomainAccepted) {
     deps.stdout.write(
-      `  shared domain this destination and a synced passkey envelope are one Apple account; you accepted that.\n`,
+      verdict.sharedDomain
+        ? `  shared domain this destination and a synced passkey envelope are one Apple account, and this unsealed copy carries that passkey's envelope; you accepted that.\n`
+        : `  shared domain this unsealed copy carries every envelope into a cloud account; you accepted that.\n`,
     )
   }
+  if (verdict?.sealed) deps.stdout.write(`\n${SEALED_COPY_NOTE}\n${APPLE_ACCOUNT_NOTICE}\n`)
   // Every backup output prints the counters, because an operator who kept the phrase needs these
   // two numbers beside it to bound a restore (CC-11).
   deps.stdout.write(`\nDerivation counters to keep with your recovery phrase:\n`)

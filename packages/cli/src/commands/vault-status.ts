@@ -101,6 +101,7 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
               lastVerifiedBackupAt: sidecar.lastVerifiedBackupAt,
               lastBackupDomain: sidecar.lastBackupDomain,
               lastBackupSharedDomainAccepted: sidecar.lastBackupSharedDomainAccepted,
+              lastBackupSealed: sidecar.lastBackupSealed,
             }
           : null,
         legacyWalletsEnc: legacyPresent ? legacy : null,
@@ -134,11 +135,15 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
       deps.stdout.write(`  last generation seen   ${sidecar.lastGeneration}\n`)
       if (sidecar.lastVerifiedBackupAt) {
         deps.stdout.write(
-          `  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "unknown"})\n`,
+          `  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "unknown"}${sidecar.lastBackupSealed ? ", sealed: opens with the passphrase only" : ""})\n`,
         )
       }
       if (sidecar.lastBackupSharedDomainAccepted) {
-        deps.stdout.write(`  shared domain          accepted for the last backup destination\n`)
+        // AD-9: an unsealed copy went to a cloud destination; with a synced passkey on this vault
+        // one account holds both, and this line stays for as long as the record does.
+        deps.stdout.write(
+          `  shared domain          accepted for the last backup destination (an unsealed copy, every envelope included)\n`,
+        )
       }
       if (sidecar.removedEnvelopeIds.length > 0) {
         // N1: removing a factor is not revocation, and these are the ids that still open older

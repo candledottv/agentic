@@ -30,6 +30,8 @@ export interface VaultSidecar {
   lastVerifiedBackupAt?: string
   lastBackupDomain?: string
   lastBackupSharedDomainAccepted?: boolean
+  /** AD-9 (BE-135): whether the last backup was a sealed copy (passphrase envelope only). */
+  lastBackupSealed?: boolean
   migratedFrom?: Array<{ path: string; at: string; sourceDigest: string }>
 }
 

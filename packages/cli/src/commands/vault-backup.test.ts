@@ -6,11 +6,13 @@
  * cannot exist on the machine running the suite (an iCloud Drive path on a Linux runner), and a
  * test that could only run on a Mac would be a test that never runs.
  *
- * The AD-2 rule and invariant 2 are deliberately tested apart. They are different claims: invariant
+ * The AD-9 rule and invariant 2 are deliberately tested apart. They are different claims: invariant
  * 2 is about RECOVERABILITY (some recoverable factor must live outside the destination's account),
- * and AD-2's rule is about CONFIDENTIALITY (an Apple-account compromise must not yield both the
- * blob and a factor that opens it). In Phase 2 the first holds by construction through the
- * mandatory passphrase, which is exactly why the second needs its own fixture.
+ * and AD-9's rule is about CONFIDENTIALITY (an Apple-account compromise must not yield both the
+ * blob and a factor that opens it, so a cloud copy is sealed to the passphrase envelope by default).
+ * In Phase 2 the first holds by construction through the mandatory passphrase, which is exactly
+ * why the second needs its own fixture. The end-to-end sealed backup, on a vault carrying a synced
+ * passkey envelope, is in `vault-passkey.test.ts`.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
@@ -24,6 +26,7 @@ import {
   assertBackupDomainAllowed,
   classifyDestination,
   countRecoverableFactors,
+  sealedEnvelopes,
 } from "../vault/domains"
 import type { Envelope } from "../vault/format"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
@@ -112,7 +115,7 @@ describe("T35: destination classification", () => {
   })
 })
 
-describe("T35: invariant 2 and AD-2's refusal", () => {
+describe("T35: invariant 2 and AD-9's sealing", () => {
   const passphraseEnvelope = {
     id: "p1",
     factor: "passphrase",
@@ -124,14 +127,24 @@ describe("T35: invariant 2 and AD-2's refusal", () => {
   const appleEnvelope = {
     id: "a1",
     factor: "passkey-prf",
+    transport: "platform-macos",
     domain: "apple-account",
     label: "",
     createdAt: "",
     backupEligible: true,
     wrap: { alg: "AES-256-GCM", iv: "", ciphertext: "" },
   } as unknown as Envelope
+  const enclaveEnvelope = {
+    id: "e1",
+    factor: "secure-enclave",
+    domain: "this-device",
+    label: "",
+    createdAt: "",
+    wrap: { alg: "AES-256-GCM", iv: "", ciphertext: "" },
+  } as unknown as Envelope
   const home = "/Users/someone"
   const icloud = `${home}/Library/Mobile Documents/com~apple~CloudDocs/vault.enc`
+  const dropbox = `${home}/Dropbox/vault.enc`
 
   test("in Phase 2 invariant 2 holds by construction, because a passphrase is mandatory", () => {
     const result = assertBackupDomainAllowed([passphraseEnvelope], icloud, { acceptSharedDomain: true, home })
@@ -150,31 +163,66 @@ describe("T35: invariant 2 and AD-2's refusal", () => {
     )
   })
 
-  test("AD-2: an iCloud destination beside an apple-account envelope is refused without the flag", () => {
-    let thrown: unknown
-    try {
-      assertBackupDomainAllowed([passphraseEnvelope, appleEnvelope], icloud, { acceptSharedDomain: false, home })
-    } catch (error) {
-      thrown = error
-    }
-    expect((thrown as { code?: string })?.code).toBe("VAULT_SHARED_DOMAIN")
-    expect((thrown as { message?: string })?.message).toContain("one Apple account would hold both")
+  test("AD-9: an iCloud destination beside an apple-account envelope is not refused; the copy is sealed by default", () => {
+    const verdict = assertBackupDomainAllowed([passphraseEnvelope, appleEnvelope, enclaveEnvelope], icloud, {
+      acceptSharedDomain: false,
+      home,
+    })
+    expect(verdict).toEqual({
+      destination: "icloud-drive",
+      cloud: true,
+      sharedDomain: true,
+      sealed: true,
+      sharedDomainAccepted: false,
+    })
+    // The sealed copy keeps every passphrase envelope and nothing else.
+    expect(sealedEnvelopes([passphraseEnvelope, appleEnvelope, enclaveEnvelope]).map((e) => e.id)).toEqual(["p1"])
+    expect(
+      sealedEnvelopes([passphraseEnvelope, { ...passphraseEnvelope, id: "p2" }, appleEnvelope]).map((e) => e.id),
+    ).toEqual(["p1", "p2"])
+  })
 
-    // With the flag it is accepted, and the acceptance is what `status` prints afterwards.
+  test("AD-9: --accept-shared-domain writes an unsealed copy to a cloud destination and records the acceptance", () => {
     const accepted = assertBackupDomainAllowed([passphraseEnvelope, appleEnvelope], icloud, {
       acceptSharedDomain: true,
       home,
     })
-    expect(accepted.sharedDomain).toBe(true)
+    expect(accepted).toMatchObject({ sealed: false, sharedDomain: true, sharedDomainAccepted: true, cloud: true })
   })
 
-  test("a local destination beside the same envelope is not a shared domain", () => {
-    const result = assertBackupDomainAllowed([passphraseEnvelope, appleEnvelope], `${home}/backups/vault.enc`, {
-      acceptSharedDomain: false,
-      home,
+  test("AD-9: any other cloud destination is sealed too, even with no apple-account envelope", () => {
+    expect(assertBackupDomainAllowed([passphraseEnvelope], dropbox, { acceptSharedDomain: false, home })).toEqual({
+      destination: "other-cloud",
+      cloud: true,
+      sharedDomain: false,
+      sealed: true,
+      sharedDomainAccepted: false,
     })
-    expect(result.sharedDomain).toBe(false)
-    expect(result.destination).toBe("local-disk")
+    expect(
+      assertBackupDomainAllowed([passphraseEnvelope, enclaveEnvelope], dropbox, { acceptSharedDomain: true, home }),
+    ).toMatchObject({ sealed: false, sharedDomainAccepted: true })
+  })
+
+  test("a local destination beside the same envelope is neither sealed nor a shared domain, flag or no flag", () => {
+    for (const acceptSharedDomain of [false, true]) {
+      const result = assertBackupDomainAllowed([passphraseEnvelope, appleEnvelope], `${home}/backups/vault.enc`, {
+        acceptSharedDomain,
+        home,
+      })
+      expect(result).toEqual({
+        destination: "local-disk",
+        cloud: false,
+        sharedDomain: false,
+        sealed: false,
+        sharedDomainAccepted: false,
+      })
+    }
+    expect(
+      assertBackupDomainAllowed([passphraseEnvelope, appleEnvelope], "/Volumes/BACKUP/vault.enc", {
+        acceptSharedDomain: false,
+        home,
+      }).sealed,
+    ).toBe(false)
   })
 })
 
