@@ -34499,7 +34499,7 @@ function registerTools(server, env = process.env) {
     title: "Get market state",
     description: "Read the current market state for a token: lifecycle, pool address, whether buys are " + `open. Reads only; moves nothing. No key needed.
 
-` + "COVERAGE: this answers for tokens that have a CANDLE market. candle_get_feed indexes " + "the wider market too (pump.fun, pons.family), so a mint that feed just returned can " + "still come back MARKET_NOT_FOUND here. That is a coverage boundary, not a fault and " + "not a reason to retry or re-authenticate -- say Candle has no market for it and move on.",
+` + "COVERAGE: answers for Candle-launched markets AND Jupiter-indexed externals the feed " + "knows (external: true, jupiterOk). MARKET_NOT_FOUND means no Candle-native tokens row — " + "not unindexed, not untradeable. Read error.discovery (indexed, jupiterOk, chain, note); " + "a common case is chain mismatch (feed row on solana, you asked hood).",
     inputSchema: getMarketShape
   }, async (args) => callAndRelay("candle_get_market", args, cfg));
   register("candle_token_forensics", {
@@ -34513,7 +34513,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     title: "Get a token feed",
     description: "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip. Reads " + `only; moves nothing. No key needed. Start here when nobody has named a token.
 
-` + "This indexes the WIDER market, not just Candle's own launches, so rows carry a " + "`launchpad` (pump.fun, pons.family, ...). A row appearing here does NOT mean Candle " + "has a market for it: candle_get_market and candle_token_forensics can legitimately " + `answer MARKET_NOT_FOUND for a mint this returned.
+` + "This indexes the WIDER market, not just Candle's own launches. Rows carry launchpad and " + "discovery flags (jupiterOk, externalTradeable, paperDiscoveryOk, organic0LiveOk). " + "candle_get_market resolves Jupiter-indexed rows; do not hard-skip organicScore=0 on live " + "when organic0LiveOk is true. liquidityDrawdownBps is a signal only — nothing here blocks " + `resolve or trade on drain; filter with where if you want to avoid draining pools.
 
 ` + "Filter, sort and pick fields SERVER-SIDE rather than reading the whole feed: an " + "unfiltered response is around 135KB and will not fit in a tool result. See `where`, " + "`sort` and `fields`.\n\n" + "One rule to know before screening on safety: a missing field is NOT a false one. " + "mintAuthorityDisabled and freezeAuthorityDisabled are absent on a real share of rows, " + "and absent means nobody checked, not that the authority is disabled. `where` never lets " + 'an absent field satisfy a comparison, so {"mintAuthorityDisabled":{"eq":true}} returns ' + "only tokens that actually say so.",
     inputSchema: getFeedShape
@@ -34799,10 +34799,14 @@ START HERE — five tools need NO credential. Call these first to confirm the se
 
 COVERAGE — read this before you treat an error as a broken server.
 candle_get_feed indexes the wider market (pump.fun, pons.family and other external launchpads).
-Feed rows carry jupiterOk / externalTradeable / paperDiscoveryOk on external Solana mints; use
-discovery=paper on candle_get_feed when rehearsing and do NOT hard-skip organicScore=0 there.
-candle_get_market and candle_resolve_token now also answer for Jupiter-indexed external mints
-the feed knows (or Solana mints Jupiter can name) with external: true and jupiterOk: true.
+Feed rows carry jupiterOk / externalTradeable / paperDiscoveryOk / organic0LiveOk on external
+Solana mints. Use discovery=paper on candle_get_feed when rehearsing; on live screens do NOT
+hard-skip organicScore=0 when organic0LiveOk is true (visible m5 momentum). Hard-skip organic0
+only when organic0LiveOk is false.
+candle_get_market and candle_resolve_token answer for Jupiter-indexed external mints the feed
+knows (or Solana mints Jupiter can name) with external: true and jupiterOk: true. MARKET_NOT_FOUND
+there means no Candle-native market row — read error.discovery before treating 404 as skip; it is
+not untradeable when jupiterOk is true.
 candle_token_forensics also answers for Solana tokens the feed already knows, with a partial
 report: on-chain developer (never a launchpad shared authority), went-to-zero record, holder
 concentration, same-funder insiders and cluster. Deploy-window stays unavailable without a
