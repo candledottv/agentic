@@ -43,8 +43,11 @@ import {
   tokenTransferChecked,
 } from "../solana-lite"
 import { classifyStatus, resolvePending } from "../sweep-pending"
+import type { KeyEntry } from "../vault/format"
 import {
+  commitVaultTeeEntry,
   maybeReconcileVaultTee,
+  type ResolvedTee,
   refuseLegacyWriteForVaultAddress,
   releaseResolvedTee,
   resolveTeeAddress,
@@ -247,6 +250,118 @@ async function commitTee(
 }
 
 class StoreChangedError extends Error {}
+
+/**
+ * Phase 1 disable/sweep write target: either the legacy `tee-wallets.enc` store or a vault TEE
+ * entry (CC-06 demote). Mutations are expressed against a KeystoreEntry view; vault commits map
+ * tee fields back onto the KeyEntry without rewriting Phase 1 files.
+ */
+type ActiveTee =
+  | { source: "legacy"; opened: OpenedTee; entry: KeystoreEntry; path: string; deps: Deps }
+  | {
+      source: "vault"
+      resolved: Extract<ResolvedTee, { source: "vault" }>
+      entry: KeystoreEntry
+      path: string
+      ctx: CommandContext
+    }
+
+function applyKeystoreViewToVaultEntry(entry: KeyEntry, view: KeystoreEntry): void {
+  if (view.linkedWalletId !== undefined) entry.linkedWalletId = view.linkedWalletId
+  else delete entry.linkedWalletId
+  const meta = view.tee
+  if (meta === undefined) return
+  const prior = entry.tee
+  let lifecycle = prior?.lifecycle ?? "enabled"
+  if (meta.sweptAt !== undefined && lifecycle !== "stranded") lifecycle = "retired"
+  entry.tee = {
+    network: meta.network,
+    lifecycle,
+    ...(prior?.grantIdentity !== undefined ? { grantIdentity: prior.grantIdentity } : {}),
+    ...(prior?.remoteState !== undefined ? { remoteState: prior.remoteState } : {}),
+    ...(prior?.promotedInPlaceAt !== undefined ? { promotedInPlaceAt: prior.promotedInPlaceAt } : {}),
+    ...(meta.vaultDestination !== undefined ? { vaultDestination: meta.vaultDestination } : {}),
+    ...(meta.boundKeyPrefix !== undefined ? { boundKeyPrefix: meta.boundKeyPrefix } : {}),
+    ...(meta.remoteAuthority !== undefined ? { remoteAuthority: meta.remoteAuthority } : {}),
+    ...(meta.enabledAt !== undefined ? { enabledAt: meta.enabledAt } : {}),
+    ...(meta.stopRequestedAt !== undefined ? { stopRequestedAt: meta.stopRequestedAt } : {}),
+    ...(meta.sweepReceipts !== undefined ? { sweepReceipts: meta.sweepReceipts } : {}),
+    ...(meta.sweepPending !== undefined ? { sweepPending: meta.sweepPending } : {}),
+    ...(meta.sweptAt !== undefined ? { sweptAt: meta.sweptAt } : {}),
+  }
+}
+
+async function commitActiveTee(active: ActiveTee, mutate: (entry: KeystoreEntry) => void): Promise<CommitResult> {
+  if (active.source === "legacy") {
+    return commitTee(active.deps, active.opened, (entries) => {
+      const target = entries.find((e) => e.address === active.entry.address)
+      if (!target) throw new Error(`${active.entry.address} is no longer in ${active.path}`)
+      mutate(target)
+      active.entry = target
+    })
+  }
+  mutate(active.entry)
+  try {
+    const next = await commitVaultTeeEntry(active.ctx, active.resolved.vault, active.resolved.entry.id, (entry) => {
+      applyKeystoreViewToVaultEntry(entry, active.entry)
+    })
+    active.resolved.vault.raw = next.raw
+    active.resolved.vault.file = next.file
+    active.resolved.vault.index = next.index
+    const updated = next.index.entries.find((e) => e.id === active.resolved.entry.id)
+    if (updated === undefined) {
+      return { ok: false, code: "TEE_STORE_WRITE_FAILED", message: "vault entry vanished after write" }
+    }
+    active.resolved.entry = updated
+    return { ok: true, store: { entries: [active.entry] } as OpenKeystore }
+  } catch (error) {
+    return {
+      ok: false,
+      code: "TEE_STORE_WRITE_FAILED",
+      message: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+async function openActiveTee(
+  ctx: CommandContext,
+  parsed: ParsedArgs,
+  address: string,
+): Promise<{ ok: true; active: ActiveTee } | { ok: false; code: number }> {
+  const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed))
+  if (!resolved.ok) return { ok: false, code: resolved.code }
+  if (resolved.resolved.source === "vault") {
+    return {
+      ok: true,
+      active: {
+        source: "vault",
+        resolved: resolved.resolved,
+        entry: resolved.resolved.legacyView,
+        path: "vault",
+        ctx,
+      },
+    }
+  }
+  return {
+    ok: true,
+    active: {
+      source: "legacy",
+      opened: {
+        store: resolved.resolved.store,
+        path: resolved.resolved.path,
+        passphrase: resolved.resolved.passphrase,
+        raw: resolved.resolved.raw,
+      },
+      entry: resolved.resolved.entry,
+      path: resolved.resolved.path,
+      deps: ctx.deps,
+    },
+  }
+}
+
+function releaseActiveTee(active: ActiveTee): void {
+  if (active.source === "vault") releaseResolvedTee(active.resolved)
+}
 
 function writeCommitFailure(ctx: CommandContext, failure: Extract<CommitResult, { ok: false }>, consequence: string) {
   writeLocalFailure(ctx.deps, { code: failure.code, message: failure.message, suggestion: consequence }, ctx.json)
@@ -481,12 +596,62 @@ export async function teeNew(args: string[], ctx: CommandContext): Promise<numbe
 export async function teeEnable(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
   if (!refuseEnvPassphrase(ctx)) return 1
-  const parsed = parseArgs(args, { valueFlags: ["--vault", "--label", "--keystore"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--vault", "--vault-key", "--label", "--keystore"],
+    booleanFlags: ["--accept-unknown-exposure"],
+  })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
-  if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee enable <address> --vault <address>")
-  const vault = parsed.values["--vault"]
-  if (!vault) return usage(ctx, "--vault <address> is required: the destination every sweep sends to.")
+  if (!address || extra !== undefined) {
+    return usage(ctx, "Usage: candle tee enable <address> --vault <address> | --vault-key <label>")
+  }
+  const vaultFlag = parsed.values["--vault"]
+  const vaultKey = parsed.values["--vault-key"]
+  if (vaultFlag !== undefined && vaultKey !== undefined) {
+    return usage(ctx, "Use either --vault or --vault-key, not both.")
+  }
+  let vault = vaultFlag
+  if (vaultKey !== undefined) {
+    const { assertColdVaultDestination } = await import("../vault/promote-support")
+    const { defaultVaultPath, readVaultRaw, unlockWithPassphrase, closeVault } = await import("../vault/store")
+    const vaultPath = parsed.values["--keystore"] ?? defaultVaultPath(deps.env)
+    const raw = await readVaultRaw(vaultPath)
+    if (raw === null) {
+      writeLocalFailure(
+        deps,
+        { code: "VAULT_MISSING", message: `No vault at ${vaultPath}.`, suggestion: "Create one: candle vault init" },
+        json,
+      )
+      return 1
+    }
+    const passphrase = (await deps.promptSecret("Vault passphrase (input hidden): ")).trim()
+    const opened = await unlockWithPassphrase(vaultPath, raw, passphrase)
+    try {
+      const destination = assertColdVaultDestination(opened.index, vaultKey, {
+        acceptUnknownExposure: parsed.booleans.has("--accept-unknown-exposure"),
+      })
+      vault = destination.address
+    } catch (error) {
+      if (error instanceof Error && "code" in error) {
+        const coded = error as Error & { code: string; suggestion?: string }
+        writeLocalFailure(
+          deps,
+          {
+            code: String(coded.code),
+            message: coded.message,
+            ...(coded.suggestion ? { suggestion: coded.suggestion } : {}),
+          },
+          json,
+        )
+        return 1
+      }
+      throw error
+    } finally {
+      closeVault(opened)
+    }
+  }
+  if (!vault)
+    return usage(ctx, "--vault <address> or --vault-key <label> is required: the destination every sweep sends to.")
   if (!isSolanaAddress(vault)) return usage(ctx, "--vault is not a valid Solana address.")
   if (vault === address) return usage(ctx, "--vault must be a different address from the TEE wallet.")
 
@@ -876,111 +1041,108 @@ export async function teeDisable(args: string[], ctx: CommandContext): Promise<n
   const [address, extra] = parsed.positionals
   if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee disable <address>")
 
-  const vaultOwned = await addressOwnedByVault(ctx, address)
-  if (vaultOwned === "error") return 1
-  if (vaultOwned === true) return refuseLegacyWriteForVaultAddress(ctx, address)
-
   await printIdentity(ctx)
-  const opened = await openExistingTeeStore(ctx, parsed)
-  if (!opened.ok) return opened.code
-  const { store, path } = opened
-  const entry = findEntry(store, address)
-  if (!entry) return noSuchEntry(ctx, address, path)
-  if (!entry.linkedWalletId) {
-    writeLocalFailure(
-      deps,
-      { code: "TEE_WALLET_NOT_ENABLED", message: `${address} was never enabled; there is nothing to stop.` },
-      json,
-    )
-    return 1
-  }
-  const linkedWalletId = entry.linkedWalletId
+  const openedActive = await openActiveTee(ctx, parsed, address)
+  if (!openedActive.ok) return openedActive.code
+  const { active } = openedActive
+  try {
+    const entry = active.entry
+    if (!entry.linkedWalletId) {
+      writeLocalFailure(
+        deps,
+        { code: "TEE_WALLET_NOT_ENABLED", message: `${address} was never enabled; there is nothing to stop.` },
+        json,
+      )
+      return 1
+    }
+    const linkedWalletId = entry.linkedWalletId
 
-  // HW-06: the stop intent is durable BEFORE the server is asked. From here on this CLI refuses to
-  // fund the address whatever the server answers; a failed or unavailable acknowledgement is
-  // reported as remote enforcement unconfirmed, never as "nothing happened".
-  const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString()
-  const committed = await commitTee(deps, opened, (entries) => {
-    const target = entries.find((e) => e.address === address)
-    if (!target) throw new Error(`${address} is no longer in ${path}`)
-    target.tee = { ...(target.tee ?? { network: "solana-mainnet" }), stopRequestedAt }
-  })
-  if (!committed.ok) {
-    writeCommitFailure(
-      ctx,
-      committed,
-      `The stop was NOT recorded locally and the server was not asked. Retry: candle tee disable ${address}`,
-    )
-    return 1
-  }
+    // HW-06: the stop intent is durable BEFORE the server is asked. From here on this CLI refuses to
+    // fund the address whatever the server answers; a failed or unavailable acknowledgement is
+    // reported as remote enforcement unconfirmed, never as "nothing happened".
+    const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString()
+    const committed = await commitActiveTee(active, (target) => {
+      target.tee = { ...(target.tee ?? { network: "solana-mainnet" }), stopRequestedAt }
+    })
+    if (!committed.ok) {
+      writeCommitFailure(
+        ctx,
+        committed,
+        `The stop was NOT recorded locally and the server was not asked. Retry: candle tee disable ${address}`,
+      )
+      return 1
+    }
 
-  const unconfirmed = (detail: string, suggestion: string) => {
+    const unconfirmed = (detail: string, suggestion: string) => {
+      if (json) {
+        deps.stdout.write(
+          `${JSON.stringify({
+            ok: false,
+            code: "STOP_UNCONFIRMED",
+            message: detail,
+            address,
+            linkedWalletId,
+            stopRequestedAt,
+            remoteEnforcement: "unconfirmed",
+            suggestion,
+          })}\n`,
+        )
+        return
+      }
+      deps.stderr.write(`${detail}\n`)
+      deps.stderr.write(
+        `Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${address} again. ` +
+          `Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.\n${suggestion}\n`,
+      )
+    }
+
+    const apiKey = await resolveApiKey(deps, ctx.profile)
+    if (!apiKey) {
+      unconfirmed(
+        "No API key available, so the server was not asked to stop the agent.",
+        `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle tee disable ${address}`,
+      )
+      return 1
+    }
+
+    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(linkedWalletId)}`, {
+      method: "DELETE",
+      auth: "key",
+      credentials: { apiKey },
+      apiUrl,
+      fetch: deps.fetch,
+      env: deps.env,
+    })
+    if (!result.ok) {
+      unconfirmed(
+        `The stop request failed: ${result.message ?? `HTTP ${result.status}`}${result.status === 401 ? " (this API key no longer works)" : ""}.`,
+        `Re-run: candle tee disable ${address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`,
+      )
+      return 1
+    }
+    const outcome = readDisableOutcome(result.body)
+
     if (json) {
       deps.stdout.write(
-        `${JSON.stringify({
-          ok: false,
-          code: "STOP_UNCONFIRMED",
-          message: detail,
-          address,
-          linkedWalletId,
-          stopRequestedAt,
-          remoteEnforcement: "unconfirmed",
-          suggestion,
-        })}\n`,
+        `${JSON.stringify({ address, linkedWalletId: entry.linkedWalletId, ...(result.body as object) })}\n`,
       )
-      return
+      return outcome.complete ? 0 : 3
     }
-    deps.stderr.write(`${detail}\n`)
-    deps.stderr.write(
-      `Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${address} again. ` +
-        `Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.\n${suggestion}\n`,
-    )
-  }
-
-  const apiKey = await resolveApiKey(deps, ctx.profile)
-  if (!apiKey) {
-    unconfirmed(
-      "No API key available, so the server was not asked to stop the agent.",
-      `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle tee disable ${address}`,
-    )
-    return 1
-  }
-
-  const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(linkedWalletId)}`, {
-    method: "DELETE",
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env,
-  })
-  if (!result.ok) {
-    unconfirmed(
-      `The stop request failed: ${result.message ?? `HTTP ${result.status}`}${result.status === 401 ? " (this API key no longer works)" : ""}.`,
-      `Re-run: candle tee disable ${address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`,
-    )
-    return 1
-  }
-  const outcome = readDisableOutcome(result.body)
-
-  if (json) {
+    if (outcome.complete) {
+      deps.stdout.write(`Stopped ${address}. Remote signing denial verified; the wallet is quarantined.\n`)
+      deps.stdout.write(`Recover the funds: candle tee sweep ${address} --rpc-url <url>\n`)
+      return 0
+    }
     deps.stdout.write(
-      `${JSON.stringify({ address, linkedWalletId: entry.linkedWalletId, ...(result.body as object) })}\n`,
+      `Agent trading stopped at Candle for ${address}. Remote policy verification is pending` +
+        `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.\n` +
+        `Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${address}\n` +
+        `If the provider is down or theft is suspected: candle tee sweep ${address} --rpc-url <url> --emergency\n`,
     )
-    return outcome.complete ? 0 : 3
+    return 3
+  } finally {
+    releaseActiveTee(active)
   }
-  if (outcome.complete) {
-    deps.stdout.write(`Stopped ${address}. Remote signing denial verified; the wallet is quarantined.\n`)
-    deps.stdout.write(`Recover the funds: candle tee sweep ${address} --rpc-url <url>\n`)
-    return 0
-  }
-  deps.stdout.write(
-    `Agent trading stopped at Candle for ${address}. Remote policy verification is pending` +
-      `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.\n` +
-      `Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${address}\n` +
-      `If the provider is down or theft is suspected: candle tee sweep ${address} --rpc-url <url> --emergency\n`,
-  )
-  return 3
 }
 
 // ── tee sweep ───────────────────────────────────────────────────────────────────────────────
@@ -1106,591 +1268,582 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
   if (typeof rpcUrl !== "string") return usage(ctx, rpcUrl.error)
   const emergency = parsed.booleans.has("--emergency")
 
-  const vaultOwned = await addressOwnedByVault(ctx, address)
-  if (vaultOwned === "error") return 1
-  if (vaultOwned === true) return refuseLegacyWriteForVaultAddress(ctx, address)
-
-  const opened = await openExistingTeeStore(ctx, parsed)
-  if (!opened.ok) return opened.code
-  const { store, path } = opened
-  const entry = findEntry(store, address)
-  if (!entry) return noSuchEntry(ctx, address, path)
-  const vault = entry.tee?.vaultDestination
-  if (!vault) {
-    writeLocalFailure(
-      deps,
-      {
-        code: "TEE_WALLET_NO_VAULT",
-        message: `${address} has no pinned vault (it was never enabled), so there is nothing a sweep may send to.`,
-      },
-      json,
-    )
-    return 1
-  }
-
-  // Gate on the SERVER's derived state (HW-07): ordinary sweep waits for quarantine; only
-  // --emergency proceeds from disable-pending, and it says what that means.
-  //
-  // HW-08 / T25: recovery must not depend on the operational credential. When the lifecycle
-  // cannot be read at all (no API key, a revoked key, the API down), the server state is `unread`
-  // and the sweep is allowed ONLY with --emergency, under the same race warning as a
-  // disable-pending sweep: the local key and the pinned vault are all the recovery needs, and the
-  // remote authority stays explicitly unknown until a later disable read-back verifies it.
-  let serverState = "local-only"
-  let apiKey: string | undefined
-  let unreadReason: string | null = null
-  if (entry.linkedWalletId) {
-    apiKey = await resolveApiKey(deps, ctx.profile)
-    if (!apiKey) unreadReason = "no API key available"
-    else {
-      const lifecycle = await readLifecycle(ctx, apiKey, entry.linkedWalletId)
-      if (!lifecycle.ok) {
-        unreadReason = `the lifecycle read failed: ${lifecycle.result.message ?? `HTTP ${lifecycle.result.status}`}`
-        if (lifecycle.result.status === 401 || lifecycle.result.status === 403) apiKey = undefined
-      } else serverState = lifecycle.body.state ?? "unknown"
+  const openedActive = await openActiveTee(ctx, parsed, address)
+  if (!openedActive.ok) return openedActive.code
+  const { active } = openedActive
+  try {
+    const entry = active.entry
+    const vault = entry.tee?.vaultDestination
+    if (!vault) {
+      writeLocalFailure(
+        deps,
+        {
+          code: "TEE_WALLET_NO_VAULT",
+          message: `${address} has no pinned vault (it was never enabled), so there is nothing a sweep may send to.`,
+        },
+        json,
+      )
+      return 1
     }
-    if (unreadReason !== null) {
-      serverState = "unread"
-      if (!emergency) {
+
+    // Gate on the SERVER's derived state (HW-07): ordinary sweep waits for quarantine; only
+    // --emergency proceeds from disable-pending, and it says what that means.
+    //
+    // HW-08 / T25: recovery must not depend on the operational credential. When the lifecycle
+    // cannot be read at all (no API key, a revoked key, the API down), the server state is `unread`
+    // and the sweep is allowed ONLY with --emergency, under the same race warning as a
+    // disable-pending sweep: the local key and the pinned vault are all the recovery needs, and the
+    // remote authority stays explicitly unknown until a later disable read-back verifies it.
+    let serverState = "local-only"
+    let apiKey: string | undefined
+    let unreadReason: string | null = null
+    if (entry.linkedWalletId) {
+      apiKey = await resolveApiKey(deps, ctx.profile)
+      if (!apiKey) unreadReason = "no API key available"
+      else {
+        const lifecycle = await readLifecycle(ctx, apiKey, entry.linkedWalletId)
+        if (!lifecycle.ok) {
+          unreadReason = `the lifecycle read failed: ${lifecycle.result.message ?? `HTTP ${lifecycle.result.status}`}`
+          if (lifecycle.result.status === 401 || lifecycle.result.status === 403) apiKey = undefined
+        } else serverState = lifecycle.body.state ?? "unknown"
+      }
+      if (unreadReason !== null) {
+        serverState = "unread"
+        if (!emergency) {
+          writeLocalFailure(
+            deps,
+            {
+              code: "TEE_WALLET_STATE_UNREAD",
+              message: `Could not read ${address}'s lifecycle from the server (${unreadReason}); its remote signing authority is unverified.`,
+              suggestion:
+                `Restore the API key or connectivity and re-run, or stop it from your Candle session first. ` +
+                `If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address} --rpc-url <url> --emergency ` +
+                `(remote authority stays pending and a still-authorized agent signer may race the sweep).`,
+            },
+            json,
+          )
+          return 3
+        }
+      } else if (serverState === "enabled") {
         writeLocalFailure(
           deps,
           {
-            code: "TEE_WALLET_STATE_UNREAD",
-            message: `Could not read ${address}'s lifecycle from the server (${unreadReason}); its remote signing authority is unverified.`,
-            suggestion:
-              `Restore the API key or connectivity and re-run, or stop it from your Candle session first. ` +
-              `If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address} --rpc-url <url> --emergency ` +
-              `(remote authority stays pending and a still-authorized agent signer may race the sweep).`,
+            code: "TEE_WALLET_STILL_ENABLED",
+            message: `${address} is still enabled for the agent.`,
+            suggestion: `Stop it first: candle tee disable ${address}`,
+          },
+          json,
+        )
+        return 1
+      }
+      if (serverState === "disable-pending" && !emergency) {
+        writeLocalFailure(
+          deps,
+          {
+            code: "TEE_WALLET_DISABLE_PENDING",
+            message: `${address}'s remote signing authority is not yet verified denied.`,
+            suggestion: `Re-run: candle tee disable ${address}. If the provider is down or theft is suspected, add --emergency (the agent signer may still race you).`,
           },
           json,
         )
         return 3
       }
-    } else if (serverState === "enabled") {
-      writeLocalFailure(
-        deps,
-        {
-          code: "TEE_WALLET_STILL_ENABLED",
-          message: `${address} is still enabled for the agent.`,
-          suggestion: `Stop it first: candle tee disable ${address}`,
-        },
-        json,
-      )
-      return 1
+      if (
+        serverState !== "quarantined" &&
+        serverState !== "swept" &&
+        serverState !== "disable-pending" &&
+        serverState !== "unread"
+      ) {
+        writeLocalFailure(
+          deps,
+          { code: "TEE_WALLET_STATE_UNKNOWN", message: `Server reports state "${serverState}"; refusing to sweep.` },
+          json,
+        )
+        return 1
+      }
     }
-    if (serverState === "disable-pending" && !emergency) {
-      writeLocalFailure(
-        deps,
-        {
-          code: "TEE_WALLET_DISABLE_PENDING",
-          message: `${address}'s remote signing authority is not yet verified denied.`,
-          suggestion: `Re-run: candle tee disable ${address}. If the provider is down or theft is suspected, add --emergency (the agent signer may still race you).`,
-        },
-        json,
-      )
-      return 3
-    }
-    if (
-      serverState !== "quarantined" &&
-      serverState !== "swept" &&
-      serverState !== "disable-pending" &&
-      serverState !== "unread"
-    ) {
-      writeLocalFailure(
-        deps,
-        { code: "TEE_WALLET_STATE_UNKNOWN", message: `Server reports state "${serverState}"; refusing to sweep.` },
-        json,
-      )
-      return 1
-    }
-  }
-  if (emergency && !json) {
-    deps.stdout.write(
-      `EMERGENCY SWEEP: remote signing authority is NOT verified denied. A still-authorized agent signer or\n`,
-    )
-    deps.stdout.write(
-      `any holder of a raw key copy can race these transactions. Recovered funds are recorded; remote authority stays pending.\n`,
-    )
-    if (unreadReason !== null) {
+    if (emergency && !json) {
       deps.stdout.write(
-        `The server's lifecycle state was NOT read (${unreadReason}): this recovery uses only the local key and the pinned vault.\n` +
-          `Stop the agent from your Candle session if you have not, and re-run candle tee disable once a key is available.\n`,
+        `EMERGENCY SWEEP: remote signing authority is NOT verified denied. A still-authorized agent signer or\n`,
       )
-    }
-  }
-
-  if (!json) {
-    deps.stdout.write(`Sweep ${address} -> vault ${vault} (solana-mainnet)\n`)
-  }
-  if (!(await confirmVault(deps, vault))) {
-    writeLocalFailure(
-      deps,
-      { code: "VAULT_NOT_CONFIRMED", message: "The vault confirmation did not match. Nothing was signed." },
-      json,
-    )
-    return 1
-  }
-
-  const secret = base58.decode(entry.privateKey)
-  const teePubkey = pubkeyFromSecret(secret)
-  if (encodePubkey(teePubkey) !== address) {
-    writeLocalFailure(
-      deps,
-      { code: "TEE_KEY_MISMATCH", message: "The stored secret does not derive this address; refusing to sign." },
-      json,
-    )
-    return 1
-  }
-  // A sweep retires the address whatever else happens (SC-06): record the stop intent locally
-  // before the first signature, so `tee fund` refuses this address from now on even if the sweep
-  // is interrupted, and even when the server could not be told (HW-06, HW-08).
-  const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString()
-  const marked = await commitTee(deps, opened, (entries) => {
-    const target = entries.find((e) => e.address === address)
-    if (!target) throw new Error(`${address} is no longer in ${path}`)
-    target.tee = { ...(target.tee ?? { network: "solana-mainnet" }), stopRequestedAt }
-  })
-  if (!marked.ok) {
-    writeCommitFailure(
-      ctx,
-      marked,
-      "Nothing was signed: the sweep needs to record the retirement of this address first.",
-    )
-    return 1
-  }
-
-  const vaultKey = decodePubkey(vault)
-  const rpc = createSolanaRpc(rpcUrl, deps.fetch)
-  // HW-07 operation evidence: receipts from EARLIER runs of this sweep are retained in the sealed
-  // entry and reconciled here; every receipt this run finalizes is persisted before the next
-  // transaction is signed, so an outage or an interrupted run never loses what already moved.
-  const retained: SweepReceipt[] = entry.tee?.sweepReceipts ?? []
-  const receipts: SweepReceipt[] = []
-  const residuals: SweepResidual[] = []
-  let solHandledAsResidual = false
-  const alreadyRecordedLocally = entry.tee?.sweptAt !== undefined
-  const pendingStill: SweepPendingRecord[] = []
-  const retainReceipt = async (receipt: SweepReceipt): Promise<void> => {
-    receipts.push(receipt)
-    const kept = await commitTee(deps, opened, (entries) => {
-      const target = entries.find((e) => e.address === address)
-      if (!target) throw new Error(`${address} is no longer in ${path}`)
-      const existing = target.tee?.sweepReceipts ?? []
-      target.tee = {
-        ...(target.tee ?? { network: "solana-mainnet" }),
-        sweepReceipts: existing.some((r) => r.signature === receipt.signature) ? existing : [...existing, receipt],
-        sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== receipt.signature),
-      }
-    })
-    if (!kept.ok) {
-      residuals.push({
-        kind: "local-record-failed",
-        detail: `finalized ${receipt.signature} but could not retain the receipt locally: ${kept.message}`,
-      })
-    }
-  }
-  const recordPending = async (record: SweepPendingRecord): Promise<boolean> => {
-    const kept = await commitTee(deps, opened, (entries) => {
-      const target = entries.find((e) => e.address === address)
-      if (!target) throw new Error(`${address} is no longer in ${path}`)
-      const existing = target.tee?.sweepPending ?? []
-      if (existing.some((p) => p.signature === record.signature)) return
-      target.tee = { ...(target.tee ?? { network: "solana-mainnet" }), sweepPending: [...existing, record] }
-    })
-    if (!kept.ok) residuals.push({ kind: "local-record-failed", detail: kept.message })
-    return kept.ok
-  }
-  const clearPending = async (signature: string): Promise<void> => {
-    const kept = await commitTee(deps, opened, (entries) => {
-      const target = entries.find((e) => e.address === address)
-      if (!target) throw new Error(`${address} is no longer in ${path}`)
-      target.tee = {
-        ...(target.tee ?? { network: "solana-mainnet" }),
-        sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== signature),
-      }
-    })
-    if (!kept.ok) residuals.push({ kind: "local-record-failed", detail: kept.message })
-  }
-  const broadcast = (
-    instructions: Instruction[],
-    pending: Omit<SweepPendingRecord, "signature" | "blockhash" | "submittedAt">,
-  ) => broadcastAndFinalize(rpc, deps, secret, teePubkey, instructions, pending, recordPending, clearPending)
-  /** Records a non-finalized broadcast outcome; true when this run may keep signing. */
-  const settle = (
-    outcome: Exclude<BroadcastOutcome, { status: "finalized" }>,
-    pending: Omit<SweepPendingRecord, "signature" | "blockhash" | "submittedAt">,
-    describe: string,
-  ): boolean => {
-    if (outcome.status === "failed") {
-      residuals.push({
-        kind: `${describe}-failed`,
-        detail: outcome.error,
-        ...(pending.mint ? { mint: pending.mint } : {}),
-      })
-      return true
-    }
-    if (outcome.status === "not-sent") {
-      residuals.push({ kind: `${describe}-not-sent`, detail: outcome.error })
-      return false
-    }
-    residuals.push({
-      kind: "finality-uncertain",
-      detail: outcome.error,
-      ...(pending.mint ? { mint: pending.mint } : {}),
-      amountRaw: pending.amountRaw,
-    })
-    pendingStill.push({ ...pending, signature: outcome.signature, blockhash: "", submittedAt: "" })
-    return false
-  }
-
-  // 0. Resolve what an EARLIER run left pending (HW-07 operation evidence). A signature that
-  //    finalized after that run's deadline becomes a receipt; one that failed, or whose blockhash
-  //    can no longer land, is dropped and its balance is swept again below; one still in flight
-  //    keeps this run from signing anything new (a competing transfer of the same balance would
-  //    race it), and the address stays residual until it resolves.
-  let signingBlocked = false
-  const reads = {
-    status: (signature: string) => rpc.getSignatureStatus(signature),
-    blockhashValid: (blockhash: string) => rpc.isBlockhashValid(blockhash),
-  }
-  for (const p of entry.tee?.sweepPending ?? []) {
-    const resolution = await resolvePending(reads, p)
-    if (resolution.kind === "finalized") {
-      await retainReceipt({
-        kind: p.kind,
-        ...(p.mint ? { mint: p.mint } : {}),
-        amountRaw: p.amountRaw,
-        signature: p.signature,
-        finalizedAt: new Date(deps.now()).toISOString(),
-      })
-      if (!json) deps.stdout.write(`  pending ${p.signature} from an earlier run finalized: receipt retained\n`)
-      continue
-    }
-    if (resolution.kind === "failed" || resolution.kind === "expired") {
-      await clearPending(p.signature)
-      if (!json) deps.stdout.write(`  pending ${p.signature}: ${resolution.detail}; its balance is swept again\n`)
-      continue
-    }
-    residuals.push({
-      kind: "finality-uncertain",
-      detail: `pending ${p.signature} from an earlier run: ${resolution.detail}; nothing new is signed until it resolves`,
-      ...(p.mint ? { mint: p.mint } : {}),
-      amountRaw: p.amountRaw,
-    })
-    pendingStill.push(p)
-    signingBlocked = true
-  }
-
-  // 1. Classic Token accounts: tokens first, closing each account for its rent (HW-07).
-  let tokenAccounts: Awaited<ReturnType<SolanaRpc["getTokenAccountsByOwner"]>> = []
-  try {
-    tokenAccounts = await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)
-  } catch (error) {
-    residuals.push({
-      kind: "inventory",
-      detail: `could not list token accounts: ${error instanceof Error ? error.message : error}`,
-    })
-  }
-  for (const acct of tokenAccounts) {
-    if (signingBlocked) break
-    if (acct.state !== "initialized") {
-      residuals.push({
-        kind: "frozen-or-uninitialized",
-        detail: `token account state ${acct.state}`,
-        mint: acct.mint,
-        account: acct.pubkey,
-        amountRaw: acct.amountRaw,
-      })
-      continue
-    }
-    try {
-      const mint = decodePubkey(acct.mint)
-      const source = decodePubkey(acct.pubkey)
-      const destination = associatedTokenAddress(vaultKey, mint)
-      const instructions: Instruction[] = []
-      const amount = BigInt(acct.amountRaw)
-      if (amount > 0n) {
-        if (!(await rpc.accountExists(encodePubkey(destination)))) {
-          instructions.push(createAssociatedTokenAccountIdempotent({ payer: teePubkey, owner: vaultKey, mint }))
-        }
-        instructions.push(
-          tokenTransferChecked({ source, mint, destination, owner: teePubkey, amount, decimals: acct.decimals }),
+      deps.stdout.write(
+        `any holder of a raw key copy can race these transactions. Recovered funds are recorded; remote authority stays pending.\n`,
+      )
+      if (unreadReason !== null) {
+        deps.stdout.write(
+          `The server's lifecycle state was NOT read (${unreadReason}): this recovery uses only the local key and the pinned vault.\n` +
+            `Stop the agent from your Candle session if you have not, and re-run candle tee disable once a key is available.\n`,
         )
       }
-      instructions.push(tokenCloseAccount({ account: source, destination: teePubkey, owner: teePubkey }))
-      const pending = {
-        kind: amount > 0n ? ("token" as const) : ("close" as const),
-        mint: acct.mint,
-        account: acct.pubkey,
-        amountRaw: acct.amountRaw,
-      }
-      const outcome = await broadcast(instructions, pending)
-      if (outcome.status !== "finalized") {
-        if (!settle(outcome, pending, "token-transfer")) {
-          signingBlocked = true
-          break
+    }
+
+    if (!json) {
+      deps.stdout.write(`Sweep ${address} -> vault ${vault} (solana-mainnet)\n`)
+    }
+    if (!(await confirmVault(deps, vault))) {
+      writeLocalFailure(
+        deps,
+        { code: "VAULT_NOT_CONFIRMED", message: "The vault confirmation did not match. Nothing was signed." },
+        json,
+      )
+      return 1
+    }
+
+    const secret = base58.decode(entry.privateKey)
+    const teePubkey = pubkeyFromSecret(secret)
+    if (encodePubkey(teePubkey) !== address) {
+      writeLocalFailure(
+        deps,
+        { code: "TEE_KEY_MISMATCH", message: "The stored secret does not derive this address; refusing to sign." },
+        json,
+      )
+      return 1
+    }
+    // A sweep retires the address whatever else happens (SC-06): record the stop intent locally
+    // before the first signature, so `tee fund` refuses this address from now on even if the sweep
+    // is interrupted, and even when the server could not be told (HW-06, HW-08).
+    const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString()
+    const marked = await commitActiveTee(active, (target) => {
+      target.tee = { ...(target.tee ?? { network: "solana-mainnet" }), stopRequestedAt }
+    })
+    if (!marked.ok) {
+      writeCommitFailure(
+        ctx,
+        marked,
+        "Nothing was signed: the sweep needs to record the retirement of this address first.",
+      )
+      return 1
+    }
+
+    const vaultKey = decodePubkey(vault)
+    const rpc = createSolanaRpc(rpcUrl, deps.fetch)
+    // HW-07 operation evidence: receipts from EARLIER runs of this sweep are retained in the sealed
+    // entry and reconciled here; every receipt this run finalizes is persisted before the next
+    // transaction is signed, so an outage or an interrupted run never loses what already moved.
+    const retained: SweepReceipt[] = entry.tee?.sweepReceipts ?? []
+    const receipts: SweepReceipt[] = []
+    const residuals: SweepResidual[] = []
+    let solHandledAsResidual = false
+    const alreadyRecordedLocally = entry.tee?.sweptAt !== undefined
+    const pendingStill: SweepPendingRecord[] = []
+    const retainReceipt = async (receipt: SweepReceipt): Promise<void> => {
+      receipts.push(receipt)
+      const kept = await commitActiveTee(active, (target) => {
+        const existing = target.tee?.sweepReceipts ?? []
+        target.tee = {
+          ...(target.tee ?? { network: "solana-mainnet" }),
+          sweepReceipts: existing.some((r) => r.signature === receipt.signature) ? existing : [...existing, receipt],
+          sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== receipt.signature),
         }
-        continue
+      })
+      if (!kept.ok) {
+        residuals.push({
+          kind: "local-record-failed",
+          detail: `finalized ${receipt.signature} but could not retain the receipt locally: ${kept.message}`,
+        })
       }
-      const signature = outcome.signature
-      await retainReceipt({
-        kind: pending.kind,
-        mint: acct.mint,
-        amountRaw: acct.amountRaw,
-        signature,
-        finalizedAt: new Date(deps.now()).toISOString(),
-      })
-      if (!json)
-        deps.stdout.write(`  moved ${acct.amountRaw} raw of ${acct.mint} and closed its account: ${signature}\n`)
-    } catch (error) {
-      residuals.push({
-        kind: "token-transfer-failed",
-        detail: error instanceof Error ? error.message : String(error),
-        mint: acct.mint,
-        account: acct.pubkey,
-        amountRaw: acct.amountRaw,
-      })
     }
-  }
-
-  // 2. Token-2022 balances are not modeled: listed, never touched (SC-06).
-  try {
-    for (const acct of await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)) {
-      residuals.push({
-        kind: "token-2022-unsupported",
-        detail: "Token-2022 accounts are not swept yet",
-        mint: acct.mint,
-        account: acct.pubkey,
-        amountRaw: acct.amountRaw,
+    const recordPending = async (record: SweepPendingRecord): Promise<boolean> => {
+      const kept = await commitActiveTee(active, (target) => {
+        const existing = target.tee?.sweepPending ?? []
+        if (existing.some((p) => p.signature === record.signature)) return
+        target.tee = { ...(target.tee ?? { network: "solana-mainnet" }), sweepPending: [...existing, record] }
       })
+      if (!kept.ok) residuals.push({ kind: "local-record-failed", detail: kept.message })
+      return kept.ok
     }
-  } catch (error) {
-    residuals.push({
-      kind: "inventory",
-      detail: `could not list Token-2022 accounts: ${error instanceof Error ? error.message : error}`,
-    })
-  }
-
-  // 3. Native SOL last, minus the fee this exact transfer will cost. Skipped while an earlier
-  //    transaction is still in flight: its fee and its transfer would change this balance.
-  try {
-    const balance = signingBlocked ? 0n : await rpc.getBalance(address)
-    if (balance > 0n) {
-      const blockhash = await rpc.getLatestBlockhash()
-      const probe = compileLegacyMessage({
-        feePayer: teePubkey,
-        recentBlockhash: blockhash,
-        instructions: [systemTransfer(teePubkey, vaultKey, 1n)],
-      })
-      const fee = await rpc.getFeeForMessage(toBase64(probe))
-      if (fee === null) {
-        solHandledAsResidual = true
-        residuals.push({
-          kind: "sol-fee-unknown",
-          detail: "the RPC could not quote the transfer fee",
-          amountRaw: balance.toString(),
-        })
-      } else if (balance <= fee) {
-        solHandledAsResidual = true
-        residuals.push({
-          kind: "sol-dust",
-          detail: `balance ${balance} lamports does not cover the ${fee} lamport fee`,
-          amountRaw: balance.toString(),
-        })
-      } else {
-        const amount = balance - fee
-        const pending = { kind: "sol" as const, amountRaw: amount.toString() }
-        const outcome = await broadcast([systemTransfer(teePubkey, vaultKey, amount)], pending)
-        if (outcome.status !== "finalized") {
-          solHandledAsResidual = true
-          if (!settle(outcome, pending, "sol-transfer")) signingBlocked = true
-        } else {
-          const signature = outcome.signature
-          await retainReceipt({
-            kind: "sol",
-            amountRaw: amount.toString(),
-            signature,
-            finalizedAt: new Date(deps.now()).toISOString(),
-          })
-          if (!json) deps.stdout.write(`  moved ${amount} lamports (fee ${fee}): ${signature}\n`)
+    const clearPending = async (signature: string): Promise<void> => {
+      const kept = await commitActiveTee(active, (target) => {
+        target.tee = {
+          ...(target.tee ?? { network: "solana-mainnet" }),
+          sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== signature),
         }
-      }
-    }
-  } catch (error) {
-    solHandledAsResidual = true
-    residuals.push({ kind: "sol-transfer-failed", detail: error instanceof Error ? error.message : String(error) })
-  }
-
-  // 4. Post-finality inventory (SC-06, HW-07): completion is decided from what the chain holds
-  //    AFTER the receipts finalized, never from the pre-transfer inventory. A deposit that landed
-  //    while the transfers confirmed, a token account the earlier pass did not see, or an
-  //    inventory read that fails all keep the address residual-present; `swept` needs an
-  //    observed-empty wallet.
-  const inventory: {
-    observedAt: string
-    verified: boolean
-    lamports: string | null
-    tokenAccounts: number | null
-  } = { observedAt: new Date(deps.now()).toISOString(), verified: false, lamports: null, tokenAccounts: null }
-  try {
-    const listed = new Set(residuals.map((r) => r.account).filter((a): a is string => a !== undefined))
-    const lamports = await rpc.getBalance(address)
-    inventory.lamports = lamports.toString()
-    if (lamports > 0n && !solHandledAsResidual) {
-      residuals.push({
-        kind: "sol-remaining",
-        detail: `${lamports} lamports remain after finality (a late deposit or an unswept balance); re-run the sweep`,
-        amountRaw: lamports.toString(),
       })
+      if (!kept.ok) residuals.push({ kind: "local-record-failed", detail: kept.message })
     }
-    const remaining = [
-      ...(await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)),
-      ...(await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)),
-    ]
-    inventory.tokenAccounts = remaining.length
-    for (const acct of remaining) {
-      if (listed.has(acct.pubkey)) continue
-      residuals.push({
-        kind: "token-account-remaining",
-        detail: `token account still open after finality (${acct.state}, ${acct.programId === TOKEN_PROGRAM_ID ? "token" : "token-2022"}); re-run the sweep`,
-        mint: acct.mint,
-        account: acct.pubkey,
-        amountRaw: acct.amountRaw,
-      })
-    }
-    inventory.verified = true
-  } catch (error) {
-    residuals.push({
-      kind: "inventory-unverified",
-      detail: `the post-sweep balance inventory could not be read: ${error instanceof Error ? error.message : error}`,
-    })
-  }
-
-  // 5. Completion (SC-06): swept only with receipts (this run's or retained from an earlier one),
-  //    no residuals, a verified-empty inventory, a QUARANTINED grant (never from --emergency, never
-  //    when the server's state was not read), and the server's own record accepted (the server
-  //    refuses a disable-pending row, and its refusal carries the NEWER state, which replaces the
-  //    one read before the transfers). Recorded on the server as the operator's own claim, then
-  //    locally. A record that already exists (local `sweptAt`, or the server deriving `swept`) is
-  //    not re-posted: the reconcile is idempotent.
-  const allReceipts = [...retained, ...receipts]
-  let recordedOnServer = alreadyRecordedLocally || serverState === "swept"
-  const complete =
-    residuals.length === 0 &&
-    allReceipts.length > 0 &&
-    inventory.verified &&
-    !emergency &&
-    (serverState === "quarantined" ||
-      serverState === "swept" ||
-      (serverState === "local-only" && !entry.linkedWalletId))
-  if (complete && entry.linkedWalletId && apiKey && !recordedOnServer) {
-    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/swept`, {
-      method: "POST",
-      auth: "key",
-      credentials: { apiKey },
-      apiUrl,
-      fetch: deps.fetch,
-      env: deps.env,
-      body: { signatures: allReceipts.map((r) => r.signature), residuals: [] },
-    })
-    recordedOnServer = result.ok
-    if (!result.ok) {
-      const refusedState = refusalState(result.raw)
-      if (refusedState !== null) {
-        // The server's answer is a newer observation than the lifecycle read before the transfers.
-        serverState = refusedState
+    const broadcast = (
+      instructions: Instruction[],
+      pending: Omit<SweepPendingRecord, "signature" | "blockhash" | "submittedAt">,
+    ) => broadcastAndFinalize(rpc, deps, secret, teePubkey, instructions, pending, recordPending, clearPending)
+    /** Records a non-finalized broadcast outcome; true when this run may keep signing. */
+    const settle = (
+      outcome: Exclude<BroadcastOutcome, { status: "finalized" }>,
+      pending: Omit<SweepPendingRecord, "signature" | "blockhash" | "submittedAt">,
+      describe: string,
+    ): boolean => {
+      if (outcome.status === "failed") {
         residuals.push({
-          kind: "server-record-refused",
-          detail: `${result.message ?? `HTTP ${result.status}`} (server state now ${refusedState}); the receipts are retained locally, re-run after the stop is verified`,
+          kind: `${describe}-failed`,
+          detail: outcome.error,
+          ...(pending.mint ? { mint: pending.mint } : {}),
         })
-      } else {
-        residuals.push({
-          kind: "server-record-failed",
-          detail: `${result.message ?? `HTTP ${result.status}`}; the receipts are retained locally, re-run to record`,
-        })
+        return true
       }
-    }
-  }
-  let sweptLocally = false
-  if (complete && (recordedOnServer || !entry.linkedWalletId)) {
-    if (alreadyRecordedLocally) sweptLocally = true
-    else {
-      const sweptAt = new Date().toISOString()
-      const recorded = await commitTee(deps, opened, (entries) => {
-        const target = entries.find((e) => e.address === address)
-        if (!target) throw new Error(`${address} is no longer in ${path}`)
-        target.tee = { ...(target.tee ?? { network: "solana-mainnet" }), sweptAt }
+      if (outcome.status === "not-sent") {
+        residuals.push({ kind: `${describe}-not-sent`, detail: outcome.error })
+        return false
+      }
+      residuals.push({
+        kind: "finality-uncertain",
+        detail: outcome.error,
+        ...(pending.mint ? { mint: pending.mint } : {}),
+        amountRaw: pending.amountRaw,
       })
-      sweptLocally = recorded.ok
-      if (!recorded.ok) residuals.push({ kind: "local-record-failed", detail: recorded.message })
+      pendingStill.push({ ...pending, signature: outcome.signature, blockhash: "", submittedAt: "" })
+      return false
     }
-  }
 
-  // The state this command can honestly report, from the NEWEST server observation. `unread` is
-  // reported as disable-pending: a stop was recorded locally and remote enforcement is unconfirmed.
-  const finalState = sweptLocally
-    ? "swept"
-    : emergency || serverState === "disable-pending" || serverState === "unread"
-      ? "disable-pending"
-      : serverState === "local-only"
-        ? "local-only"
-        : "quarantined"
-  if (json) {
-    deps.stdout.write(
-      `${JSON.stringify({
-        address,
-        vaultDestination: vault,
-        state: finalState,
-        serverState,
-        emergency,
-        receipts: allReceipts,
-        newReceipts: receipts.length,
-        retainedReceipts: retained.length,
-        residuals,
-        pending: pendingStill.map((p) => ({
+    // 0. Resolve what an EARLIER run left pending (HW-07 operation evidence). A signature that
+    //    finalized after that run's deadline becomes a receipt; one that failed, or whose blockhash
+    //    can no longer land, is dropped and its balance is swept again below; one still in flight
+    //    keeps this run from signing anything new (a competing transfer of the same balance would
+    //    race it), and the address stays residual until it resolves.
+    let signingBlocked = false
+    const reads = {
+      status: (signature: string) => rpc.getSignatureStatus(signature),
+      blockhashValid: (blockhash: string) => rpc.isBlockhashValid(blockhash),
+    }
+    for (const p of entry.tee?.sweepPending ?? []) {
+      const resolution = await resolvePending(reads, p)
+      if (resolution.kind === "finalized") {
+        await retainReceipt({
           kind: p.kind,
           ...(p.mint ? { mint: p.mint } : {}),
           amountRaw: p.amountRaw,
           signature: p.signature,
-        })),
-        inventory,
-        recordedOnServer,
-      })}\n`,
-    )
-    return finalState === "swept" ? 0 : 3
-  }
-  if (retained.length > 0)
-    deps.stdout.write(`  ${retained.length} receipt(s) retained from an earlier run are included in this reconcile.\n`)
-  if (finalState === "swept") {
-    deps.stdout.write(
-      `Swept. ${allReceipts.length} transaction(s) finalized; this address is retired and must not be reused.\n`,
-    )
-    return 0
-  }
-  if (residuals.length > 0) {
-    deps.stdout.write(
-      `Sweep incomplete: ${residuals.length} residual(s) remain. This address stays ${finalState}; no new agent trades are allowed.\n`,
-    )
-    for (const r of residuals)
+          finalizedAt: new Date(deps.now()).toISOString(),
+        })
+        if (!json) deps.stdout.write(`  pending ${p.signature} from an earlier run finalized: receipt retained\n`)
+        continue
+      }
+      if (resolution.kind === "failed" || resolution.kind === "expired") {
+        await clearPending(p.signature)
+        if (!json) deps.stdout.write(`  pending ${p.signature}: ${resolution.detail}; its balance is swept again\n`)
+        continue
+      }
+      residuals.push({
+        kind: "finality-uncertain",
+        detail: `pending ${p.signature} from an earlier run: ${resolution.detail}; nothing new is signed until it resolves`,
+        ...(p.mint ? { mint: p.mint } : {}),
+        amountRaw: p.amountRaw,
+      })
+      pendingStill.push(p)
+      signingBlocked = true
+    }
+
+    // 1. Classic Token accounts: tokens first, closing each account for its rent (HW-07).
+    let tokenAccounts: Awaited<ReturnType<SolanaRpc["getTokenAccountsByOwner"]>> = []
+    try {
+      tokenAccounts = await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)
+    } catch (error) {
+      residuals.push({
+        kind: "inventory",
+        detail: `could not list token accounts: ${error instanceof Error ? error.message : error}`,
+      })
+    }
+    for (const acct of tokenAccounts) {
+      if (signingBlocked) break
+      if (acct.state !== "initialized") {
+        residuals.push({
+          kind: "frozen-or-uninitialized",
+          detail: `token account state ${acct.state}`,
+          mint: acct.mint,
+          account: acct.pubkey,
+          amountRaw: acct.amountRaw,
+        })
+        continue
+      }
+      try {
+        const mint = decodePubkey(acct.mint)
+        const source = decodePubkey(acct.pubkey)
+        const destination = associatedTokenAddress(vaultKey, mint)
+        const instructions: Instruction[] = []
+        const amount = BigInt(acct.amountRaw)
+        if (amount > 0n) {
+          if (!(await rpc.accountExists(encodePubkey(destination)))) {
+            instructions.push(createAssociatedTokenAccountIdempotent({ payer: teePubkey, owner: vaultKey, mint }))
+          }
+          instructions.push(
+            tokenTransferChecked({ source, mint, destination, owner: teePubkey, amount, decimals: acct.decimals }),
+          )
+        }
+        instructions.push(tokenCloseAccount({ account: source, destination: teePubkey, owner: teePubkey }))
+        const pending = {
+          kind: amount > 0n ? ("token" as const) : ("close" as const),
+          mint: acct.mint,
+          account: acct.pubkey,
+          amountRaw: acct.amountRaw,
+        }
+        const outcome = await broadcast(instructions, pending)
+        if (outcome.status !== "finalized") {
+          if (!settle(outcome, pending, "token-transfer")) {
+            signingBlocked = true
+            break
+          }
+          continue
+        }
+        const signature = outcome.signature
+        await retainReceipt({
+          kind: pending.kind,
+          mint: acct.mint,
+          amountRaw: acct.amountRaw,
+          signature,
+          finalizedAt: new Date(deps.now()).toISOString(),
+        })
+        if (!json)
+          deps.stdout.write(`  moved ${acct.amountRaw} raw of ${acct.mint} and closed its account: ${signature}\n`)
+      } catch (error) {
+        residuals.push({
+          kind: "token-transfer-failed",
+          detail: error instanceof Error ? error.message : String(error),
+          mint: acct.mint,
+          account: acct.pubkey,
+          amountRaw: acct.amountRaw,
+        })
+      }
+    }
+
+    // 2. Token-2022 balances are not modeled: listed, never touched (SC-06).
+    try {
+      for (const acct of await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)) {
+        residuals.push({
+          kind: "token-2022-unsupported",
+          detail: "Token-2022 accounts are not swept yet",
+          mint: acct.mint,
+          account: acct.pubkey,
+          amountRaw: acct.amountRaw,
+        })
+      }
+    } catch (error) {
+      residuals.push({
+        kind: "inventory",
+        detail: `could not list Token-2022 accounts: ${error instanceof Error ? error.message : error}`,
+      })
+    }
+
+    // 3. Native SOL last, minus the fee this exact transfer will cost. Skipped while an earlier
+    //    transaction is still in flight: its fee and its transfer would change this balance.
+    try {
+      const balance = signingBlocked ? 0n : await rpc.getBalance(address)
+      if (balance > 0n) {
+        const blockhash = await rpc.getLatestBlockhash()
+        const probe = compileLegacyMessage({
+          feePayer: teePubkey,
+          recentBlockhash: blockhash,
+          instructions: [systemTransfer(teePubkey, vaultKey, 1n)],
+        })
+        const fee = await rpc.getFeeForMessage(toBase64(probe))
+        if (fee === null) {
+          solHandledAsResidual = true
+          residuals.push({
+            kind: "sol-fee-unknown",
+            detail: "the RPC could not quote the transfer fee",
+            amountRaw: balance.toString(),
+          })
+        } else if (balance <= fee) {
+          solHandledAsResidual = true
+          residuals.push({
+            kind: "sol-dust",
+            detail: `balance ${balance} lamports does not cover the ${fee} lamport fee`,
+            amountRaw: balance.toString(),
+          })
+        } else {
+          const amount = balance - fee
+          const pending = { kind: "sol" as const, amountRaw: amount.toString() }
+          const outcome = await broadcast([systemTransfer(teePubkey, vaultKey, amount)], pending)
+          if (outcome.status !== "finalized") {
+            solHandledAsResidual = true
+            if (!settle(outcome, pending, "sol-transfer")) signingBlocked = true
+          } else {
+            const signature = outcome.signature
+            await retainReceipt({
+              kind: "sol",
+              amountRaw: amount.toString(),
+              signature,
+              finalizedAt: new Date(deps.now()).toISOString(),
+            })
+            if (!json) deps.stdout.write(`  moved ${amount} lamports (fee ${fee}): ${signature}\n`)
+          }
+        }
+      }
+    } catch (error) {
+      solHandledAsResidual = true
+      residuals.push({ kind: "sol-transfer-failed", detail: error instanceof Error ? error.message : String(error) })
+    }
+
+    // 4. Post-finality inventory (SC-06, HW-07): completion is decided from what the chain holds
+    //    AFTER the receipts finalized, never from the pre-transfer inventory. A deposit that landed
+    //    while the transfers confirmed, a token account the earlier pass did not see, or an
+    //    inventory read that fails all keep the address residual-present; `swept` needs an
+    //    observed-empty wallet.
+    const inventory: {
+      observedAt: string
+      verified: boolean
+      lamports: string | null
+      tokenAccounts: number | null
+    } = { observedAt: new Date(deps.now()).toISOString(), verified: false, lamports: null, tokenAccounts: null }
+    try {
+      const listed = new Set(residuals.map((r) => r.account).filter((a): a is string => a !== undefined))
+      const lamports = await rpc.getBalance(address)
+      inventory.lamports = lamports.toString()
+      if (lamports > 0n && !solHandledAsResidual) {
+        residuals.push({
+          kind: "sol-remaining",
+          detail: `${lamports} lamports remain after finality (a late deposit or an unswept balance); re-run the sweep`,
+          amountRaw: lamports.toString(),
+        })
+      }
+      const remaining = [
+        ...(await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)),
+        ...(await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)),
+      ]
+      inventory.tokenAccounts = remaining.length
+      for (const acct of remaining) {
+        if (listed.has(acct.pubkey)) continue
+        residuals.push({
+          kind: "token-account-remaining",
+          detail: `token account still open after finality (${acct.state}, ${acct.programId === TOKEN_PROGRAM_ID ? "token" : "token-2022"}); re-run the sweep`,
+          mint: acct.mint,
+          account: acct.pubkey,
+          amountRaw: acct.amountRaw,
+        })
+      }
+      inventory.verified = true
+    } catch (error) {
+      residuals.push({
+        kind: "inventory-unverified",
+        detail: `the post-sweep balance inventory could not be read: ${error instanceof Error ? error.message : error}`,
+      })
+    }
+
+    // 5. Completion (SC-06): swept only with receipts (this run's or retained from an earlier one),
+    //    no residuals, a verified-empty inventory, a QUARANTINED grant (never from --emergency, never
+    //    when the server's state was not read), and the server's own record accepted (the server
+    //    refuses a disable-pending row, and its refusal carries the NEWER state, which replaces the
+    //    one read before the transfers). Recorded on the server as the operator's own claim, then
+    //    locally. A record that already exists (local `sweptAt`, or the server deriving `swept`) is
+    //    not re-posted: the reconcile is idempotent.
+    const allReceipts = [...retained, ...receipts]
+    let recordedOnServer = alreadyRecordedLocally || serverState === "swept"
+    const complete =
+      residuals.length === 0 &&
+      allReceipts.length > 0 &&
+      inventory.verified &&
+      !emergency &&
+      (serverState === "quarantined" ||
+        serverState === "swept" ||
+        (serverState === "local-only" && !entry.linkedWalletId))
+    if (complete && entry.linkedWalletId && apiKey && !recordedOnServer) {
+      const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/swept`, {
+        method: "POST",
+        auth: "key",
+        credentials: { apiKey },
+        apiUrl,
+        fetch: deps.fetch,
+        env: deps.env,
+        body: { signatures: allReceipts.map((r) => r.signature), residuals: [] },
+      })
+      recordedOnServer = result.ok
+      if (!result.ok) {
+        const refusedState = refusalState(result.raw)
+        if (refusedState !== null) {
+          // The server's answer is a newer observation than the lifecycle read before the transfers.
+          serverState = refusedState
+          residuals.push({
+            kind: "server-record-refused",
+            detail: `${result.message ?? `HTTP ${result.status}`} (server state now ${refusedState}); the receipts are retained locally, re-run after the stop is verified`,
+          })
+        } else {
+          residuals.push({
+            kind: "server-record-failed",
+            detail: `${result.message ?? `HTTP ${result.status}`}; the receipts are retained locally, re-run to record`,
+          })
+        }
+      }
+    }
+    let sweptLocally = false
+    if (complete && (recordedOnServer || !entry.linkedWalletId)) {
+      if (alreadyRecordedLocally) sweptLocally = true
+      else {
+        const sweptAt = new Date().toISOString()
+        const recorded = await commitActiveTee(active, (target) => {
+          target.tee = { ...(target.tee ?? { network: "solana-mainnet" }), sweptAt }
+        })
+        sweptLocally = recorded.ok
+        if (!recorded.ok) residuals.push({ kind: "local-record-failed", detail: recorded.message })
+      }
+    }
+
+    // The state this command can honestly report, from the NEWEST server observation. `unread` is
+    // reported as disable-pending: a stop was recorded locally and remote enforcement is unconfirmed.
+    const finalState = sweptLocally
+      ? "swept"
+      : emergency || serverState === "disable-pending" || serverState === "unread"
+        ? "disable-pending"
+        : serverState === "local-only"
+          ? "local-only"
+          : "quarantined"
+    if (json) {
       deps.stdout.write(
-        `  - ${r.kind}${r.mint ? ` ${r.mint}` : ""}${r.amountRaw ? ` (${r.amountRaw} raw)` : ""}: ${r.detail}\n`,
+        `${JSON.stringify({
+          address,
+          vaultDestination: vault,
+          state: finalState,
+          serverState,
+          emergency,
+          receipts: allReceipts,
+          newReceipts: receipts.length,
+          retainedReceipts: retained.length,
+          residuals,
+          pending: pendingStill.map((p) => ({
+            kind: p.kind,
+            ...(p.mint ? { mint: p.mint } : {}),
+            amountRaw: p.amountRaw,
+            signature: p.signature,
+          })),
+          inventory,
+          recordedOnServer,
+        })}\n`,
       )
+      return finalState === "swept" ? 0 : 3
+    }
+    if (retained.length > 0)
+      deps.stdout.write(
+        `  ${retained.length} receipt(s) retained from an earlier run are included in this reconcile.\n`,
+      )
+    if (finalState === "swept") {
+      deps.stdout.write(
+        `Swept. ${allReceipts.length} transaction(s) finalized; this address is retired and must not be reused.\n`,
+      )
+      return 0
+    }
+    if (residuals.length > 0) {
+      deps.stdout.write(
+        `Sweep incomplete: ${residuals.length} residual(s) remain. This address stays ${finalState}; no new agent trades are allowed.\n`,
+      )
+      for (const r of residuals)
+        deps.stdout.write(
+          `  - ${r.kind}${r.mint ? ` ${r.mint}` : ""}${r.amountRaw ? ` (${r.amountRaw} raw)` : ""}: ${r.detail}\n`,
+        )
+    }
+    if (emergency)
+      deps.stdout.write(
+        `Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}\n`,
+      )
+    if (pendingStill.length > 0)
+      deps.stdout.write(
+        `${pendingStill.length} transaction(s) still in flight (${pendingStill.map((p) => p.signature).join(", ")}). Re-run this sweep: a finalized one becomes a receipt, an expired one is swept again.\n`,
+      )
+    if (serverState === "disable-pending" && !emergency)
+      deps.stdout.write(
+        `Remote signing authority is not verified denied. Re-run: candle tee disable ${address}, then re-run this sweep to record it.\n`,
+      )
+    if (allReceipts.length === 0 && residuals.length === 0) deps.stdout.write(`Nothing to sweep: no balances found.\n`)
+    deps.stdout.write(
+      `Inventory at ${inventory.observedAt}: ${inventory.verified ? `${inventory.lamports} lamports, ${inventory.tokenAccounts} token account(s)` : "NOT verified"}.\n`,
+    )
+    return 3
+  } finally {
+    releaseActiveTee(active)
   }
-  if (emergency)
-    deps.stdout.write(
-      `Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}\n`,
-    )
-  if (pendingStill.length > 0)
-    deps.stdout.write(
-      `${pendingStill.length} transaction(s) still in flight (${pendingStill.map((p) => p.signature).join(", ")}). Re-run this sweep: a finalized one becomes a receipt, an expired one is swept again.\n`,
-    )
-  if (serverState === "disable-pending" && !emergency)
-    deps.stdout.write(
-      `Remote signing authority is not verified denied. Re-run: candle tee disable ${address}, then re-run this sweep to record it.\n`,
-    )
-  if (allReceipts.length === 0 && residuals.length === 0) deps.stdout.write(`Nothing to sweep: no balances found.\n`)
-  deps.stdout.write(
-    `Inventory at ${inventory.observedAt}: ${inventory.verified ? `${inventory.lamports} lamports, ${inventory.tokenAccounts} token account(s)` : "NOT verified"}.\n`,
-  )
-  return 3
 }

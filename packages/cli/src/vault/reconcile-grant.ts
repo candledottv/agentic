@@ -250,7 +250,7 @@ interface StrandedRead {
 }
 
 /**
- * PR C owns the real route. Until it ships, a 404 or transport failure is `complete: false`
+ * PR C's stranded-import route. A 404 or transport failure is `complete: false`
  * (`unreadable`), never an empty list treated as "no stranding happened".
  */
 async function completeStrandedImportRead(ctx: CommandContext, apiKey: string): Promise<StrandedRead> {

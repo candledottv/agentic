@@ -32,14 +32,18 @@ import { setup } from "./commands/setup"
 import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./commands/tee"
 import { update } from "./commands/update"
 import { vaultBackup, vaultVerifyBackup } from "./commands/vault-backup"
+import { vaultDemote } from "./commands/vault-demote"
 import { vaultFactor } from "./commands/vault-factor-dispatch"
+import { vaultFund } from "./commands/vault-fund"
 import { vaultImportLegacy } from "./commands/vault-import-legacy"
 import { vaultInit } from "./commands/vault-init"
 import { vaultNewKey } from "./commands/vault-new-key"
 import { vaultPhrase } from "./commands/vault-phrase-dispatch"
+import { vaultPromote } from "./commands/vault-promote"
 import { vaultReconcileExposure, vaultRestore } from "./commands/vault-restore"
 import { vaultRetireLegacy } from "./commands/vault-retire-legacy"
 import { vaultStatus } from "./commands/vault-status"
+import { vaultTransfer } from "./commands/vault-transfer"
 import { verify } from "./commands/verify"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
 import { walletsExportRemoved, walletsGenerateRemoved } from "./commands/wallets-removed"
@@ -121,8 +125,15 @@ Commands:
   vault verify-backup <path>                                      Verify a copy in full (all eight steps)
   vault import-legacy --tee [--from <path>]                       Migrate tee-wallets.enc into the vault
   vault retire-legacy [--from <path>]                             Rename the Phase 1 store after a verified backup
+  vault transfer <to> --amount <n> --asset SOL|<mint> --from <label> --rpc-url <url>
+                                                                  Sign a vault-key transfer locally
+  vault promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>]
+                                                                  Fresh TEE key, or promote one vault key in place (AD-8)
+  vault fund <tee-address> --amount <n> --asset SOL|USDC --rpc-url <url>
+                                                                  Fund a TEE wallet from its pinned vault key
+  vault demote <tee-address> --rpc-url <url> [--emergency]        Disable then sweep a TEE wallet back to its pin
   tee new [--label <name>]                                        Seal a fresh dedicated Solana TEE wallet key locally
-  tee enable <address> --vault <address>                          Delegate a TEE wallet key to this profile's agent, pin the sweep vault
+  tee enable <address> --vault <address>                          Delegate a TEE wallet key; pin the sweep vault (--vault-key <label> also)
   tee fund <address> --amount <n> [--asset SOL|USDC]              Print the funding instruction for your vault to sign
   tee status <address> [--rpc-url <url>]                          Server lifecycle state and on-chain balances
   tee disable <address>                                           Stop the agent; verified stop or pending, never "done" on a 200
@@ -195,6 +206,10 @@ const COMMANDS: Record<string, CommandRoute> = {
       "verify-backup": vaultVerifyBackup,
       "import-legacy": vaultImportLegacy,
       "retire-legacy": vaultRetireLegacy,
+      transfer: vaultTransfer,
+      promote: vaultPromote,
+      fund: vaultFund,
+      demote: vaultDemote,
     },
   },
   tee: {

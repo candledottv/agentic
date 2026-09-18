@@ -152,10 +152,22 @@ export interface EncryptWalletKeyResult {
  * this function call; only the returned ciphertext and encapsulated key are meant to travel
  * further.
  */
+/**
+ * T56 (CC-10 / AD-4): optional observer at the HPKE seal boundary. Production never sets this.
+ * Tests install one to assert the sealed plaintext is exactly the entry's secret bytes and that
+ * no root, seed, chain code or path value is reachable from this call.
+ */
+let sealPlaintextObserver: ((plaintext: Uint8Array) => void) | null = null
+
+export function setSealPlaintextObserver(observer: ((plaintext: Uint8Array) => void) | null): void {
+  sealPlaintextObserver = observer
+}
+
 export async function encryptWalletKeyForImport(params: EncryptWalletKeyParams): Promise<EncryptWalletKeyResult> {
   // Decode first: a malformed key fails loud before any HPKE setup runs, instead of getting
   // sealed (wrongly) or masked by a later, unrelated crypto error.
   const plaintext = decodeWalletPrivateKey(params.chain, params.privateKey)
+  if (sealPlaintextObserver !== null) sealPlaintextObserver(Uint8Array.from(plaintext))
   const suite = buildCipherSuite()
   const recipientPublicKey = await suite.kem.deserializePublicKey(base64ToArrayBuffer(params.encryptionPublicKey))
   const sender = await suite.createSenderContext({ recipientPublicKey })

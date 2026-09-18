@@ -3181,6 +3181,120 @@ var init_tee_lookup = __esm(() => {
   init_store();
 });
 
+// src/vault/promote-support.ts
+var exports_promote_support = {};
+__export(exports_promote_support, {
+  printAd8Warning: () => printAd8Warning,
+  findVaultRoleEntry: () => findVaultRoleEntry,
+  findEntryByLabelOrAddress: () => findEntryByLabelOrAddress,
+  confirmAd8Acknowledgement: () => confirmAd8Acknowledgement,
+  assertNotPinnedDestination: () => assertNotPinnedDestination,
+  assertInPlacePreconditions: () => assertInPlacePreconditions,
+  assertColdVaultDestination: () => assertColdVaultDestination,
+  AD8_WARNING: () => AD8_WARNING,
+  AD8_ACK_WORD: () => AD8_ACK_WORD
+});
+function assertColdVaultDestination(index, destinationLabelOrAddress, opts = {}) {
+  const destination = findVaultRoleEntry(index, destinationLabelOrAddress);
+  if (destination === undefined) {
+    throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `No vault key matches ${destinationLabelOrAddress}.`, {
+      suggestion: "Create a cold vault key with `candle vault new-key --chain solana`, or name an existing one that has never been remotely exposed or exported."
+    });
+  }
+  if (destination.role !== "vault") {
+    throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${destination.label ?? destination.address} is not a role:vault key.`);
+  }
+  if (opts.subjectAddress !== undefined && destination.address === opts.subjectAddress) {
+    throw new VaultError("PROMOTE_SAME_KEY_DESTINATION", "The sweep destination must be a different vault key from the one being promoted.");
+  }
+  const exposed = destination.exposure?.everRemoteExposed === true;
+  const exported = destination.exposure?.everExported === true;
+  const unknown = destination.exposure?.exposureUnknown === true;
+  if (exposed || exported) {
+    throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${destination.label ?? destination.address} is not cold: everRemoteExposed=${exposed}, everExported=${exported}.`, {
+      suggestion: "Pin a vault key that has never been remotely exposed or exported (`candle vault new-key`)."
+    });
+  }
+  if (unknown && !opts.acceptUnknownExposure) {
+    throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${destination.label ?? destination.address} carries exposureUnknown and is refused as a recovery destination.`, {
+      suggestion: "Pass --accept-unknown-exposure to admit only this case (never an everRemoteExposed or everExported key), or create a fresh cold key."
+    });
+  }
+  return destination;
+}
+function findVaultRoleEntry(index, labelOrAddress) {
+  const byLabel = index.entries.find((entry) => entry.role === "vault" && entry.label !== undefined && entry.label === labelOrAddress);
+  if (byLabel !== undefined)
+    return byLabel;
+  return index.entries.find((entry) => entry.address === labelOrAddress);
+}
+function findEntryByLabelOrAddress(index, labelOrAddress) {
+  const byLabel = index.entries.find((entry) => entry.label !== undefined && entry.label === labelOrAddress);
+  if (byLabel !== undefined)
+    return byLabel;
+  return index.entries.find((entry) => entry.address === labelOrAddress);
+}
+function assertNotPinnedDestination(index, subjectAddress) {
+  const pinners = index.entries.filter((entry) => entry.tee?.vaultDestination === subjectAddress);
+  if (pinners.length === 0)
+    return;
+  throw new VaultError("PROMOTE_KEY_IS_PINNED_DESTINATION", `${subjectAddress} is the pinned sweep destination for: ${pinners.map((e) => e.label ?? e.address).join(", ")}.`, {
+    suggestion: "Demote those TEE wallets to this key first, then promote fresh ones against a different cold destination."
+  });
+}
+function assertInPlacePreconditions(index, subjectLabel, sweepToLabel, opts) {
+  const subject = findEntryByLabelOrAddress(index, subjectLabel);
+  if (subject === undefined) {
+    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`);
+  }
+  if (subject.role === "tee-wallet") {
+    const lifecycle = subject.tee?.lifecycle;
+    if (lifecycle === "local-candidate" || lifecycle === "import-pending") {
+      return {
+        subject,
+        destination: assertColdVaultDestination(index, sweepToLabel, {
+          subjectAddress: subject.address,
+          acceptUnknownExposure: opts.acceptUnknownExposure
+        }),
+        resume: true
+      };
+    }
+    throw new VaultError("PROMOTE_ALREADY_TEE_WALLET", `${subject.label ?? subject.address} is already a TEE wallet (${lifecycle ?? "unknown"}).`);
+  }
+  if (subject.role !== "vault" || subject.tee !== undefined) {
+    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${subjectLabel} is not a role:vault key without tee metadata.`);
+  }
+  if (subject.exposure?.exposureUnknown === true) {
+    throw new VaultError("PROMOTE_SUBJECT_EXPOSURE_UNKNOWN", `${subject.label ?? subject.address} carries exposureUnknown and cannot be promoted in place.`);
+  }
+  assertNotPinnedDestination(index, subject.address);
+  const destination = assertColdVaultDestination(index, sweepToLabel, {
+    subjectAddress: subject.address,
+    acceptUnknownExposure: opts.acceptUnknownExposure
+  });
+  return { subject, destination, resume: false };
+}
+function printAd8Warning(ctx) {
+  ctx.deps.stdout.write(`
+${AD8_WARNING}
+
+`);
+}
+async function confirmAd8Acknowledgement(ctx) {
+  const typed = (await ctx.deps.promptLine(`Type ${AD8_ACK_WORD} to acknowledge: I have read the warning above, this address never returns to cold, and I accept what it may control: `)).trim();
+  if (typed !== AD8_ACK_WORD) {
+    throw new VaultError("PROMOTE_NOT_ACKNOWLEDGED", "The acknowledgement word did not match; nothing was promoted.");
+  }
+}
+var AD8_WARNING = `This key may sign for a multisig, for a program upgrade authority, or for a token mint or freeze authority. The CLI does not know which, and does not check.
+Promoting leaves a copy of this key inside Privy's TEE for good.
+The key itself, its multisig membership and its authorities are unchanged: the operator keeps the key and can keep signing with it, and whatever it signs for keeps working exactly as before.
+If Privy's TEE or its signing policy were compromised, whatever this key controls is at risk, and how much depends on the setup: a multisig's threshold, or whether this key is a sole authority, decides what an attacker could actually do.
+Demoting does not remove that copy. The only way to end this exposure is to replace this key in the multisig, or to move the authority to another key.`, AD8_ACK_WORD = "EXPOSE";
+var init_promote_support = __esm(() => {
+  init_errors();
+});
+
 // ../../node_modules/@sigstore/protobuf-specs/dist/__generated__/envelope.js
 var require_envelope = __commonJS((exports) => {
   Object.defineProperty(exports, "__esModule", { value: true });
@@ -21943,7 +22057,7 @@ var DEFAULT_API_URL2 = "https://api.alpha.candle.tv";
 function defaultQuoteId(chain2) {
   return chain2 === "hood" ? "eth" : "sol";
 }
-function decimalToRaw2(amount, decimals) {
+function decimalToRaw3(amount, decimals) {
   if (!Number.isInteger(decimals) || decimals < 0) {
     throw new Error(`decimals must be a non-negative integer, got ${decimals}`);
   }
@@ -22082,7 +22196,7 @@ function quoteIdDecimals(quoteAsset, chain2, extra) {
 }
 function rawOrError(amount, decimals, extra) {
   try {
-    return { raw: decimalToRaw2(amount, decimals) };
+    return { raw: decimalToRaw3(amount, decimals) };
   } catch (err) {
     return { err: errText(err instanceof Error ? err.message : String(err), extra) };
   }
@@ -22413,7 +22527,7 @@ function swapBody(args) {
   if (decimals === undefined) {
     throw new Error(`Unknown decimals for base asset "${from}". Pass amountRaw instead.`);
   }
-  return { ...rest, amountRaw: decimalToRaw2(amount, decimals) };
+  return { ...rest, amountRaw: decimalToRaw3(amount, decimals) };
 }
 function buildRequest(name, args, cfg) {
   const base2 = cfg.apiUrl.replace(/\/$/, "");
@@ -27272,6 +27386,15 @@ async function completeStrandedImportRead(ctx, apiKey) {
   }
   return { failures: body.failures, complete: true };
 }
+function requireTeeDestination(entry) {
+  const destination = entry.tee?.vaultDestination;
+  if (destination === undefined || destination === "") {
+    throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${entry.address} has no pinned vault destination.`, {
+      suggestion: "Adopt the server's pin (the first operation that reconciles a grant will ask), or choose a vault key with `vault demote --sweep-to`."
+    });
+  }
+  return destination;
+}
 
 // src/vault/tee-resolve.ts
 init_store();
@@ -27362,7 +27485,7 @@ async function commitVaultTeeEntry(ctx, vault, entryId, mutate) {
   mutate(target);
   return commitVault(vault, { index: { hd: vault.index.hd, entries } }, ctx.deps);
 }
-async function maybeReconcileVaultTee(ctx, resolved) {
+async function maybeReconcileVaultTee(ctx, resolved, caller = "default") {
   const lifecycle = resolved.entry.tee?.lifecycle;
   if (lifecycle !== "local-candidate" && lifecycle !== "import-pending") {
     return { entry: resolved.entry, code: null };
@@ -27413,10 +27536,16 @@ async function maybeReconcileVaultTee(ctx, resolved) {
     throw error;
   }
   if (verdict.kind === "unreadable") {
+    if (caller === "demote") {
+      return { entry: resolved.entry, code: null };
+    }
     writeLocalFailure(ctx.deps, { code: "PROMOTE_RECONCILE_INCOMPLETE", message: verdict.reason }, ctx.json);
     return { entry: resolved.entry, code: 1 };
   }
   if (verdict.kind === "unresolved") {
+    if (caller === "demote") {
+      return { entry: resolved.entry, code: null };
+    }
     writeLocalFailure(ctx.deps, {
       code: "PROMOTE_OUTCOME_UNRESOLVED",
       message: `No authoritative grant or stranding record for ${resolved.entry.address}; the outcome is not established.`,
@@ -27425,6 +27554,7 @@ async function maybeReconcileVaultTee(ctx, resolved) {
     return { entry: resolved.entry, code: 3 };
   }
   if (verdict.kind === "strand-final") {
+    const priorTee = resolved.entry.tee;
     const next2 = await commitVaultTeeEntry(ctx, resolved.vault, resolved.entry.id, (entry) => {
       entry.tee = {
         network: "solana-mainnet",
@@ -27433,7 +27563,10 @@ async function maybeReconcileVaultTee(ctx, resolved) {
           account: verdict.account,
           apiBaseUrl: ctx.apiUrl,
           source: "recorded-at-operation"
-        }
+        },
+        ...priorTee?.vaultDestination !== undefined ? { vaultDestination: priorTee.vaultDestination } : {},
+        ...priorTee?.sweepReceipts !== undefined ? { sweepReceipts: priorTee.sweepReceipts } : {},
+        ...priorTee?.sweepPending !== undefined ? { sweepPending: priorTee.sweepPending } : {}
       };
       delete entry.linkedWalletId;
     });
@@ -29926,8 +30059,11 @@ function decodeWalletPrivateKey(chain2, privateKey) {
   }
   return parseSolanaSecret(privateKey);
 }
+var sealPlaintextObserver = null;
 async function encryptWalletKeyForImport(params) {
   const plaintext = decodeWalletPrivateKey(params.chain, params.privateKey);
+  if (sealPlaintextObserver !== null)
+    sealPlaintextObserver(Uint8Array.from(plaintext));
   const suite = buildCipherSuite();
   const recipientPublicKey = await suite.kem.deserializePublicKey(base64ToArrayBuffer(params.encryptionPublicKey));
   const sender = await suite.createSenderContext({ recipientPublicKey });
@@ -31838,6 +31974,102 @@ async function commitTee(deps, opened, mutate, opts = {}) {
 
 class StoreChangedError extends Error {
 }
+function applyKeystoreViewToVaultEntry(entry, view) {
+  if (view.linkedWalletId !== undefined)
+    entry.linkedWalletId = view.linkedWalletId;
+  else
+    delete entry.linkedWalletId;
+  const meta = view.tee;
+  if (meta === undefined)
+    return;
+  const prior = entry.tee;
+  let lifecycle = prior?.lifecycle ?? "enabled";
+  if (meta.sweptAt !== undefined && lifecycle !== "stranded")
+    lifecycle = "retired";
+  entry.tee = {
+    network: meta.network,
+    lifecycle,
+    ...prior?.grantIdentity !== undefined ? { grantIdentity: prior.grantIdentity } : {},
+    ...prior?.remoteState !== undefined ? { remoteState: prior.remoteState } : {},
+    ...prior?.promotedInPlaceAt !== undefined ? { promotedInPlaceAt: prior.promotedInPlaceAt } : {},
+    ...meta.vaultDestination !== undefined ? { vaultDestination: meta.vaultDestination } : {},
+    ...meta.boundKeyPrefix !== undefined ? { boundKeyPrefix: meta.boundKeyPrefix } : {},
+    ...meta.remoteAuthority !== undefined ? { remoteAuthority: meta.remoteAuthority } : {},
+    ...meta.enabledAt !== undefined ? { enabledAt: meta.enabledAt } : {},
+    ...meta.stopRequestedAt !== undefined ? { stopRequestedAt: meta.stopRequestedAt } : {},
+    ...meta.sweepReceipts !== undefined ? { sweepReceipts: meta.sweepReceipts } : {},
+    ...meta.sweepPending !== undefined ? { sweepPending: meta.sweepPending } : {},
+    ...meta.sweptAt !== undefined ? { sweptAt: meta.sweptAt } : {}
+  };
+}
+async function commitActiveTee(active, mutate) {
+  if (active.source === "legacy") {
+    return commitTee(active.deps, active.opened, (entries) => {
+      const target = entries.find((e) => e.address === active.entry.address);
+      if (!target)
+        throw new Error(`${active.entry.address} is no longer in ${active.path}`);
+      mutate(target);
+      active.entry = target;
+    });
+  }
+  mutate(active.entry);
+  try {
+    const next = await commitVaultTeeEntry(active.ctx, active.resolved.vault, active.resolved.entry.id, (entry) => {
+      applyKeystoreViewToVaultEntry(entry, active.entry);
+    });
+    active.resolved.vault.raw = next.raw;
+    active.resolved.vault.file = next.file;
+    active.resolved.vault.index = next.index;
+    const updated = next.index.entries.find((e) => e.id === active.resolved.entry.id);
+    if (updated === undefined) {
+      return { ok: false, code: "TEE_STORE_WRITE_FAILED", message: "vault entry vanished after write" };
+    }
+    active.resolved.entry = updated;
+    return { ok: true, store: { entries: [active.entry] } };
+  } catch (error) {
+    return {
+      ok: false,
+      code: "TEE_STORE_WRITE_FAILED",
+      message: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+async function openActiveTee(ctx, parsed, address) {
+  const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed));
+  if (!resolved.ok)
+    return { ok: false, code: resolved.code };
+  if (resolved.resolved.source === "vault") {
+    return {
+      ok: true,
+      active: {
+        source: "vault",
+        resolved: resolved.resolved,
+        entry: resolved.resolved.legacyView,
+        path: "vault",
+        ctx
+      }
+    };
+  }
+  return {
+    ok: true,
+    active: {
+      source: "legacy",
+      opened: {
+        store: resolved.resolved.store,
+        path: resolved.resolved.path,
+        passphrase: resolved.resolved.passphrase,
+        raw: resolved.resolved.raw
+      },
+      entry: resolved.resolved.entry,
+      path: resolved.resolved.path,
+      deps: ctx.deps
+    }
+  };
+}
+function releaseActiveTee(active) {
+  if (active.source === "vault")
+    releaseResolvedTee(active.resolved);
+}
 function writeCommitFailure(ctx, failure, consequence) {
   writeLocalFailure(ctx.deps, { code: failure.code, message: failure.message, suggestion: consequence }, ctx.json);
 }
@@ -32006,15 +32238,55 @@ async function teeEnable(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   if (!refuseEnvPassphrase2(ctx))
     return 1;
-  const parsed = parseArgs(args, { valueFlags: ["--vault", "--label", "--keystore"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--vault", "--vault-key", "--label", "--keystore"],
+    booleanFlags: ["--accept-unknown-exposure"]
+  });
   if ("error" in parsed)
     return usage2(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
-  if (!address || extra !== undefined)
-    return usage2(ctx, "Usage: candle tee enable <address> --vault <address>");
-  const vault = parsed.values["--vault"];
+  if (!address || extra !== undefined) {
+    return usage2(ctx, "Usage: candle tee enable <address> --vault <address> | --vault-key <label>");
+  }
+  const vaultFlag = parsed.values["--vault"];
+  const vaultKey = parsed.values["--vault-key"];
+  if (vaultFlag !== undefined && vaultKey !== undefined) {
+    return usage2(ctx, "Use either --vault or --vault-key, not both.");
+  }
+  let vault = vaultFlag;
+  if (vaultKey !== undefined) {
+    const { assertColdVaultDestination: assertColdVaultDestination2 } = await Promise.resolve().then(() => (init_promote_support(), exports_promote_support));
+    const { defaultVaultPath: defaultVaultPath2, readVaultRaw: readVaultRaw2, unlockWithPassphrase: unlockWithPassphrase2, closeVault: closeVault2 } = await Promise.resolve().then(() => (init_store(), exports_store));
+    const vaultPath = parsed.values["--keystore"] ?? defaultVaultPath2(deps.env);
+    const raw = await readVaultRaw2(vaultPath);
+    if (raw === null) {
+      writeLocalFailure(deps, { code: "VAULT_MISSING", message: `No vault at ${vaultPath}.`, suggestion: "Create one: candle vault init" }, json);
+      return 1;
+    }
+    const passphrase = (await deps.promptSecret("Vault passphrase (input hidden): ")).trim();
+    const opened2 = await unlockWithPassphrase2(vaultPath, raw, passphrase);
+    try {
+      const destination = assertColdVaultDestination2(opened2.index, vaultKey, {
+        acceptUnknownExposure: parsed.booleans.has("--accept-unknown-exposure")
+      });
+      vault = destination.address;
+    } catch (error) {
+      if (error instanceof Error && "code" in error) {
+        const coded = error;
+        writeLocalFailure(deps, {
+          code: String(coded.code),
+          message: coded.message,
+          ...coded.suggestion ? { suggestion: coded.suggestion } : {}
+        }, json);
+        return 1;
+      }
+      throw error;
+    } finally {
+      closeVault2(opened2);
+    }
+  }
   if (!vault)
-    return usage2(ctx, "--vault <address> is required: the destination every sweep sends to.");
+    return usage2(ctx, "--vault <address> or --vault-key <label> is required: the destination every sweep sends to.");
   if (!isSolanaAddress(vault))
     return usage2(ctx, "--vault is not a valid Solana address.");
   if (vault === address)
@@ -32363,91 +32635,85 @@ async function teeDisable(args, ctx) {
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
     return usage2(ctx, "Usage: candle tee disable <address>");
-  const vaultOwned = await addressOwnedByVault(ctx, address);
-  if (vaultOwned === "error")
-    return 1;
-  if (vaultOwned === true)
-    return refuseLegacyWriteForVaultAddress(ctx, address);
   await printIdentity(ctx);
-  const opened = await openExistingTeeStore(ctx, parsed);
-  if (!opened.ok)
-    return opened.code;
-  const { store, path } = opened;
-  const entry = findEntry(store, address);
-  if (!entry)
-    return noSuchEntry(ctx, address, path);
-  if (!entry.linkedWalletId) {
-    writeLocalFailure(deps, { code: "TEE_WALLET_NOT_ENABLED", message: `${address} was never enabled; there is nothing to stop.` }, json);
-    return 1;
-  }
-  const linkedWalletId = entry.linkedWalletId;
-  const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString();
-  const committed = await commitTee(deps, opened, (entries) => {
-    const target = entries.find((e) => e.address === address);
-    if (!target)
-      throw new Error(`${address} is no longer in ${path}`);
-    target.tee = { ...target.tee ?? { network: "solana-mainnet" }, stopRequestedAt };
-  });
-  if (!committed.ok) {
-    writeCommitFailure(ctx, committed, `The stop was NOT recorded locally and the server was not asked. Retry: candle tee disable ${address}`);
-    return 1;
-  }
-  const unconfirmed = (detail, suggestion) => {
-    if (json) {
-      deps.stdout.write(`${JSON.stringify({
-        ok: false,
-        code: "STOP_UNCONFIRMED",
-        message: detail,
-        address,
-        linkedWalletId,
-        stopRequestedAt,
-        remoteEnforcement: "unconfirmed",
-        suggestion
-      })}
-`);
-      return;
+  const openedActive = await openActiveTee(ctx, parsed, address);
+  if (!openedActive.ok)
+    return openedActive.code;
+  const { active } = openedActive;
+  try {
+    const entry = active.entry;
+    if (!entry.linkedWalletId) {
+      writeLocalFailure(deps, { code: "TEE_WALLET_NOT_ENABLED", message: `${address} was never enabled; there is nothing to stop.` }, json);
+      return 1;
     }
-    deps.stderr.write(`${detail}
+    const linkedWalletId = entry.linkedWalletId;
+    const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString();
+    const committed = await commitActiveTee(active, (target) => {
+      target.tee = { ...target.tee ?? { network: "solana-mainnet" }, stopRequestedAt };
+    });
+    if (!committed.ok) {
+      writeCommitFailure(ctx, committed, `The stop was NOT recorded locally and the server was not asked. Retry: candle tee disable ${address}`);
+      return 1;
+    }
+    const unconfirmed = (detail, suggestion) => {
+      if (json) {
+        deps.stdout.write(`${JSON.stringify({
+          ok: false,
+          code: "STOP_UNCONFIRMED",
+          message: detail,
+          address,
+          linkedWalletId,
+          stopRequestedAt,
+          remoteEnforcement: "unconfirmed",
+          suggestion
+        })}
 `);
-    deps.stderr.write(`Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${address} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.
+        return;
+      }
+      deps.stderr.write(`${detail}
+`);
+      deps.stderr.write(`Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${address} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.
 ${suggestion}
 `);
-  };
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  if (!apiKey) {
-    unconfirmed("No API key available, so the server was not asked to stop the agent.", `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle tee disable ${address}`);
-    return 1;
-  }
-  const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(linkedWalletId)}`, {
-    method: "DELETE",
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!result.ok) {
-    unconfirmed(`The stop request failed: ${result.message ?? `HTTP ${result.status}`}${result.status === 401 ? " (this API key no longer works)" : ""}.`, `Re-run: candle tee disable ${address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`);
-    return 1;
-  }
-  const outcome = readDisableOutcome(result.body);
-  if (json) {
-    deps.stdout.write(`${JSON.stringify({ address, linkedWalletId: entry.linkedWalletId, ...result.body })}
+    };
+    const apiKey = await resolveApiKey(deps, ctx.profile);
+    if (!apiKey) {
+      unconfirmed("No API key available, so the server was not asked to stop the agent.", `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle tee disable ${address}`);
+      return 1;
+    }
+    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(linkedWalletId)}`, {
+      method: "DELETE",
+      auth: "key",
+      credentials: { apiKey },
+      apiUrl,
+      fetch: deps.fetch,
+      env: deps.env
+    });
+    if (!result.ok) {
+      unconfirmed(`The stop request failed: ${result.message ?? `HTTP ${result.status}`}${result.status === 401 ? " (this API key no longer works)" : ""}.`, `Re-run: candle tee disable ${address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`);
+      return 1;
+    }
+    const outcome = readDisableOutcome(result.body);
+    if (json) {
+      deps.stdout.write(`${JSON.stringify({ address, linkedWalletId: entry.linkedWalletId, ...result.body })}
 `);
-    return outcome.complete ? 0 : 3;
-  }
-  if (outcome.complete) {
-    deps.stdout.write(`Stopped ${address}. Remote signing denial verified; the wallet is quarantined.
+      return outcome.complete ? 0 : 3;
+    }
+    if (outcome.complete) {
+      deps.stdout.write(`Stopped ${address}. Remote signing denial verified; the wallet is quarantined.
 `);
-    deps.stdout.write(`Recover the funds: candle tee sweep ${address} --rpc-url <url>
+      deps.stdout.write(`Recover the funds: candle tee sweep ${address} --rpc-url <url>
 `);
-    return 0;
-  }
-  deps.stdout.write(`Agent trading stopped at Candle for ${address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
+      return 0;
+    }
+    deps.stdout.write(`Agent trading stopped at Candle for ${address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
 Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${address}
 If the provider is down or theft is suspected: candle tee sweep ${address} --rpc-url <url> --emergency
 `);
-  return 3;
+    return 3;
+  } finally {
+    releaseActiveTee(active);
+  }
 }
 function refusalState(raw) {
   if (!raw || typeof raw !== "object")
@@ -32530,495 +32796,477 @@ async function teeSweep(args, ctx) {
   if (typeof rpcUrl !== "string")
     return usage2(ctx, rpcUrl.error);
   const emergency = parsed.booleans.has("--emergency");
-  const vaultOwned = await addressOwnedByVault(ctx, address);
-  if (vaultOwned === "error")
-    return 1;
-  if (vaultOwned === true)
-    return refuseLegacyWriteForVaultAddress(ctx, address);
-  const opened = await openExistingTeeStore(ctx, parsed);
-  if (!opened.ok)
-    return opened.code;
-  const { store, path } = opened;
-  const entry = findEntry(store, address);
-  if (!entry)
-    return noSuchEntry(ctx, address, path);
-  const vault = entry.tee?.vaultDestination;
-  if (!vault) {
-    writeLocalFailure(deps, {
-      code: "TEE_WALLET_NO_VAULT",
-      message: `${address} has no pinned vault (it was never enabled), so there is nothing a sweep may send to.`
-    }, json);
-    return 1;
-  }
-  let serverState = "local-only";
-  let apiKey;
-  let unreadReason = null;
-  if (entry.linkedWalletId) {
-    apiKey = await resolveApiKey(deps, ctx.profile);
-    if (!apiKey)
-      unreadReason = "no API key available";
-    else {
-      const lifecycle = await readLifecycle(ctx, apiKey, entry.linkedWalletId);
-      if (!lifecycle.ok) {
-        unreadReason = `the lifecycle read failed: ${lifecycle.result.message ?? `HTTP ${lifecycle.result.status}`}`;
-        if (lifecycle.result.status === 401 || lifecycle.result.status === 403)
-          apiKey = undefined;
-      } else
-        serverState = lifecycle.body.state ?? "unknown";
+  const openedActive = await openActiveTee(ctx, parsed, address);
+  if (!openedActive.ok)
+    return openedActive.code;
+  const { active } = openedActive;
+  try {
+    const entry = active.entry;
+    const vault = entry.tee?.vaultDestination;
+    if (!vault) {
+      writeLocalFailure(deps, {
+        code: "TEE_WALLET_NO_VAULT",
+        message: `${address} has no pinned vault (it was never enabled), so there is nothing a sweep may send to.`
+      }, json);
+      return 1;
     }
-    if (unreadReason !== null) {
-      serverState = "unread";
-      if (!emergency) {
+    let serverState = "local-only";
+    let apiKey;
+    let unreadReason = null;
+    if (entry.linkedWalletId) {
+      apiKey = await resolveApiKey(deps, ctx.profile);
+      if (!apiKey)
+        unreadReason = "no API key available";
+      else {
+        const lifecycle = await readLifecycle(ctx, apiKey, entry.linkedWalletId);
+        if (!lifecycle.ok) {
+          unreadReason = `the lifecycle read failed: ${lifecycle.result.message ?? `HTTP ${lifecycle.result.status}`}`;
+          if (lifecycle.result.status === 401 || lifecycle.result.status === 403)
+            apiKey = undefined;
+        } else
+          serverState = lifecycle.body.state ?? "unknown";
+      }
+      if (unreadReason !== null) {
+        serverState = "unread";
+        if (!emergency) {
+          writeLocalFailure(deps, {
+            code: "TEE_WALLET_STATE_UNREAD",
+            message: `Could not read ${address}'s lifecycle from the server (${unreadReason}); its remote signing authority is unverified.`,
+            suggestion: `Restore the API key or connectivity and re-run, or stop it from your Candle session first. If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address} --rpc-url <url> --emergency (remote authority stays pending and a still-authorized agent signer may race the sweep).`
+          }, json);
+          return 3;
+        }
+      } else if (serverState === "enabled") {
         writeLocalFailure(deps, {
-          code: "TEE_WALLET_STATE_UNREAD",
-          message: `Could not read ${address}'s lifecycle from the server (${unreadReason}); its remote signing authority is unverified.`,
-          suggestion: `Restore the API key or connectivity and re-run, or stop it from your Candle session first. If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address} --rpc-url <url> --emergency (remote authority stays pending and a still-authorized agent signer may race the sweep).`
+          code: "TEE_WALLET_STILL_ENABLED",
+          message: `${address} is still enabled for the agent.`,
+          suggestion: `Stop it first: candle tee disable ${address}`
+        }, json);
+        return 1;
+      }
+      if (serverState === "disable-pending" && !emergency) {
+        writeLocalFailure(deps, {
+          code: "TEE_WALLET_DISABLE_PENDING",
+          message: `${address}'s remote signing authority is not yet verified denied.`,
+          suggestion: `Re-run: candle tee disable ${address}. If the provider is down or theft is suspected, add --emergency (the agent signer may still race you).`
         }, json);
         return 3;
       }
-    } else if (serverState === "enabled") {
-      writeLocalFailure(deps, {
-        code: "TEE_WALLET_STILL_ENABLED",
-        message: `${address} is still enabled for the agent.`,
-        suggestion: `Stop it first: candle tee disable ${address}`
-      }, json);
-      return 1;
+      if (serverState !== "quarantined" && serverState !== "swept" && serverState !== "disable-pending" && serverState !== "unread") {
+        writeLocalFailure(deps, { code: "TEE_WALLET_STATE_UNKNOWN", message: `Server reports state "${serverState}"; refusing to sweep.` }, json);
+        return 1;
+      }
     }
-    if (serverState === "disable-pending" && !emergency) {
-      writeLocalFailure(deps, {
-        code: "TEE_WALLET_DISABLE_PENDING",
-        message: `${address}'s remote signing authority is not yet verified denied.`,
-        suggestion: `Re-run: candle tee disable ${address}. If the provider is down or theft is suspected, add --emergency (the agent signer may still race you).`
-      }, json);
-      return 3;
-    }
-    if (serverState !== "quarantined" && serverState !== "swept" && serverState !== "disable-pending" && serverState !== "unread") {
-      writeLocalFailure(deps, { code: "TEE_WALLET_STATE_UNKNOWN", message: `Server reports state "${serverState}"; refusing to sweep.` }, json);
-      return 1;
-    }
-  }
-  if (emergency && !json) {
-    deps.stdout.write(`EMERGENCY SWEEP: remote signing authority is NOT verified denied. A still-authorized agent signer or
+    if (emergency && !json) {
+      deps.stdout.write(`EMERGENCY SWEEP: remote signing authority is NOT verified denied. A still-authorized agent signer or
 `);
-    deps.stdout.write(`any holder of a raw key copy can race these transactions. Recovered funds are recorded; remote authority stays pending.
+      deps.stdout.write(`any holder of a raw key copy can race these transactions. Recovered funds are recorded; remote authority stays pending.
 `);
-    if (unreadReason !== null) {
-      deps.stdout.write(`The server's lifecycle state was NOT read (${unreadReason}): this recovery uses only the local key and the pinned vault.
+      if (unreadReason !== null) {
+        deps.stdout.write(`The server's lifecycle state was NOT read (${unreadReason}): this recovery uses only the local key and the pinned vault.
 Stop the agent from your Candle session if you have not, and re-run candle tee disable once a key is available.
 `);
-    }
-  }
-  if (!json) {
-    deps.stdout.write(`Sweep ${address} -> vault ${vault} (solana-mainnet)
-`);
-  }
-  if (!await confirmVault(deps, vault)) {
-    writeLocalFailure(deps, { code: "VAULT_NOT_CONFIRMED", message: "The vault confirmation did not match. Nothing was signed." }, json);
-    return 1;
-  }
-  const secret = base58.decode(entry.privateKey);
-  const teePubkey = pubkeyFromSecret(secret);
-  if (encodePubkey(teePubkey) !== address) {
-    writeLocalFailure(deps, { code: "TEE_KEY_MISMATCH", message: "The stored secret does not derive this address; refusing to sign." }, json);
-    return 1;
-  }
-  const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString();
-  const marked = await commitTee(deps, opened, (entries) => {
-    const target = entries.find((e) => e.address === address);
-    if (!target)
-      throw new Error(`${address} is no longer in ${path}`);
-    target.tee = { ...target.tee ?? { network: "solana-mainnet" }, stopRequestedAt };
-  });
-  if (!marked.ok) {
-    writeCommitFailure(ctx, marked, "Nothing was signed: the sweep needs to record the retirement of this address first.");
-    return 1;
-  }
-  const vaultKey = decodePubkey(vault);
-  const rpc = createSolanaRpc(rpcUrl, deps.fetch);
-  const retained = entry.tee?.sweepReceipts ?? [];
-  const receipts = [];
-  const residuals = [];
-  let solHandledAsResidual = false;
-  const alreadyRecordedLocally = entry.tee?.sweptAt !== undefined;
-  const pendingStill = [];
-  const retainReceipt = async (receipt) => {
-    receipts.push(receipt);
-    const kept = await commitTee(deps, opened, (entries) => {
-      const target = entries.find((e) => e.address === address);
-      if (!target)
-        throw new Error(`${address} is no longer in ${path}`);
-      const existing = target.tee?.sweepReceipts ?? [];
-      target.tee = {
-        ...target.tee ?? { network: "solana-mainnet" },
-        sweepReceipts: existing.some((r) => r.signature === receipt.signature) ? existing : [...existing, receipt],
-        sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== receipt.signature)
-      };
-    });
-    if (!kept.ok) {
-      residuals.push({
-        kind: "local-record-failed",
-        detail: `finalized ${receipt.signature} but could not retain the receipt locally: ${kept.message}`
-      });
-    }
-  };
-  const recordPending = async (record) => {
-    const kept = await commitTee(deps, opened, (entries) => {
-      const target = entries.find((e) => e.address === address);
-      if (!target)
-        throw new Error(`${address} is no longer in ${path}`);
-      const existing = target.tee?.sweepPending ?? [];
-      if (existing.some((p) => p.signature === record.signature))
-        return;
-      target.tee = { ...target.tee ?? { network: "solana-mainnet" }, sweepPending: [...existing, record] };
-    });
-    if (!kept.ok)
-      residuals.push({ kind: "local-record-failed", detail: kept.message });
-    return kept.ok;
-  };
-  const clearPending = async (signature) => {
-    const kept = await commitTee(deps, opened, (entries) => {
-      const target = entries.find((e) => e.address === address);
-      if (!target)
-        throw new Error(`${address} is no longer in ${path}`);
-      target.tee = {
-        ...target.tee ?? { network: "solana-mainnet" },
-        sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== signature)
-      };
-    });
-    if (!kept.ok)
-      residuals.push({ kind: "local-record-failed", detail: kept.message });
-  };
-  const broadcast = (instructions, pending) => broadcastAndFinalize(rpc, deps, secret, teePubkey, instructions, pending, recordPending, clearPending);
-  const settle2 = (outcome, pending, describe2) => {
-    if (outcome.status === "failed") {
-      residuals.push({
-        kind: `${describe2}-failed`,
-        detail: outcome.error,
-        ...pending.mint ? { mint: pending.mint } : {}
-      });
-      return true;
-    }
-    if (outcome.status === "not-sent") {
-      residuals.push({ kind: `${describe2}-not-sent`, detail: outcome.error });
-      return false;
-    }
-    residuals.push({
-      kind: "finality-uncertain",
-      detail: outcome.error,
-      ...pending.mint ? { mint: pending.mint } : {},
-      amountRaw: pending.amountRaw
-    });
-    pendingStill.push({ ...pending, signature: outcome.signature, blockhash: "", submittedAt: "" });
-    return false;
-  };
-  let signingBlocked = false;
-  const reads = {
-    status: (signature) => rpc.getSignatureStatus(signature),
-    blockhashValid: (blockhash) => rpc.isBlockhashValid(blockhash)
-  };
-  for (const p of entry.tee?.sweepPending ?? []) {
-    const resolution = await resolvePending(reads, p);
-    if (resolution.kind === "finalized") {
-      await retainReceipt({
-        kind: p.kind,
-        ...p.mint ? { mint: p.mint } : {},
-        amountRaw: p.amountRaw,
-        signature: p.signature,
-        finalizedAt: new Date(deps.now()).toISOString()
-      });
-      if (!json)
-        deps.stdout.write(`  pending ${p.signature} from an earlier run finalized: receipt retained
-`);
-      continue;
-    }
-    if (resolution.kind === "failed" || resolution.kind === "expired") {
-      await clearPending(p.signature);
-      if (!json)
-        deps.stdout.write(`  pending ${p.signature}: ${resolution.detail}; its balance is swept again
-`);
-      continue;
-    }
-    residuals.push({
-      kind: "finality-uncertain",
-      detail: `pending ${p.signature} from an earlier run: ${resolution.detail}; nothing new is signed until it resolves`,
-      ...p.mint ? { mint: p.mint } : {},
-      amountRaw: p.amountRaw
-    });
-    pendingStill.push(p);
-    signingBlocked = true;
-  }
-  let tokenAccounts = [];
-  try {
-    tokenAccounts = await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID);
-  } catch (error) {
-    residuals.push({
-      kind: "inventory",
-      detail: `could not list token accounts: ${error instanceof Error ? error.message : error}`
-    });
-  }
-  for (const acct of tokenAccounts) {
-    if (signingBlocked)
-      break;
-    if (acct.state !== "initialized") {
-      residuals.push({
-        kind: "frozen-or-uninitialized",
-        detail: `token account state ${acct.state}`,
-        mint: acct.mint,
-        account: acct.pubkey,
-        amountRaw: acct.amountRaw
-      });
-      continue;
-    }
-    try {
-      const mint = decodePubkey(acct.mint);
-      const source = decodePubkey(acct.pubkey);
-      const destination = associatedTokenAddress(vaultKey, mint);
-      const instructions = [];
-      const amount = BigInt(acct.amountRaw);
-      if (amount > 0n) {
-        if (!await rpc.accountExists(encodePubkey(destination))) {
-          instructions.push(createAssociatedTokenAccountIdempotent({ payer: teePubkey, owner: vaultKey, mint }));
-        }
-        instructions.push(tokenTransferChecked({ source, mint, destination, owner: teePubkey, amount, decimals: acct.decimals }));
       }
-      instructions.push(tokenCloseAccount({ account: source, destination: teePubkey, owner: teePubkey }));
-      const pending = {
-        kind: amount > 0n ? "token" : "close",
-        mint: acct.mint,
-        account: acct.pubkey,
-        amountRaw: acct.amountRaw
-      };
-      const outcome = await broadcast(instructions, pending);
-      if (outcome.status !== "finalized") {
-        if (!settle2(outcome, pending, "token-transfer")) {
-          signingBlocked = true;
-          break;
-        }
+    }
+    if (!json) {
+      deps.stdout.write(`Sweep ${address} -> vault ${vault} (solana-mainnet)
+`);
+    }
+    if (!await confirmVault(deps, vault)) {
+      writeLocalFailure(deps, { code: "VAULT_NOT_CONFIRMED", message: "The vault confirmation did not match. Nothing was signed." }, json);
+      return 1;
+    }
+    const secret = base58.decode(entry.privateKey);
+    const teePubkey = pubkeyFromSecret(secret);
+    if (encodePubkey(teePubkey) !== address) {
+      writeLocalFailure(deps, { code: "TEE_KEY_MISMATCH", message: "The stored secret does not derive this address; refusing to sign." }, json);
+      return 1;
+    }
+    const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date().toISOString();
+    const marked = await commitActiveTee(active, (target) => {
+      target.tee = { ...target.tee ?? { network: "solana-mainnet" }, stopRequestedAt };
+    });
+    if (!marked.ok) {
+      writeCommitFailure(ctx, marked, "Nothing was signed: the sweep needs to record the retirement of this address first.");
+      return 1;
+    }
+    const vaultKey = decodePubkey(vault);
+    const rpc = createSolanaRpc(rpcUrl, deps.fetch);
+    const retained = entry.tee?.sweepReceipts ?? [];
+    const receipts = [];
+    const residuals = [];
+    let solHandledAsResidual = false;
+    const alreadyRecordedLocally = entry.tee?.sweptAt !== undefined;
+    const pendingStill = [];
+    const retainReceipt = async (receipt) => {
+      receipts.push(receipt);
+      const kept = await commitActiveTee(active, (target) => {
+        const existing = target.tee?.sweepReceipts ?? [];
+        target.tee = {
+          ...target.tee ?? { network: "solana-mainnet" },
+          sweepReceipts: existing.some((r) => r.signature === receipt.signature) ? existing : [...existing, receipt],
+          sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== receipt.signature)
+        };
+      });
+      if (!kept.ok) {
+        residuals.push({
+          kind: "local-record-failed",
+          detail: `finalized ${receipt.signature} but could not retain the receipt locally: ${kept.message}`
+        });
+      }
+    };
+    const recordPending = async (record) => {
+      const kept = await commitActiveTee(active, (target) => {
+        const existing = target.tee?.sweepPending ?? [];
+        if (existing.some((p) => p.signature === record.signature))
+          return;
+        target.tee = { ...target.tee ?? { network: "solana-mainnet" }, sweepPending: [...existing, record] };
+      });
+      if (!kept.ok)
+        residuals.push({ kind: "local-record-failed", detail: kept.message });
+      return kept.ok;
+    };
+    const clearPending = async (signature) => {
+      const kept = await commitActiveTee(active, (target) => {
+        target.tee = {
+          ...target.tee ?? { network: "solana-mainnet" },
+          sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== signature)
+        };
+      });
+      if (!kept.ok)
+        residuals.push({ kind: "local-record-failed", detail: kept.message });
+    };
+    const broadcast = (instructions, pending) => broadcastAndFinalize(rpc, deps, secret, teePubkey, instructions, pending, recordPending, clearPending);
+    const settle2 = (outcome, pending, describe2) => {
+      if (outcome.status === "failed") {
+        residuals.push({
+          kind: `${describe2}-failed`,
+          detail: outcome.error,
+          ...pending.mint ? { mint: pending.mint } : {}
+        });
+        return true;
+      }
+      if (outcome.status === "not-sent") {
+        residuals.push({ kind: `${describe2}-not-sent`, detail: outcome.error });
+        return false;
+      }
+      residuals.push({
+        kind: "finality-uncertain",
+        detail: outcome.error,
+        ...pending.mint ? { mint: pending.mint } : {},
+        amountRaw: pending.amountRaw
+      });
+      pendingStill.push({ ...pending, signature: outcome.signature, blockhash: "", submittedAt: "" });
+      return false;
+    };
+    let signingBlocked = false;
+    const reads = {
+      status: (signature) => rpc.getSignatureStatus(signature),
+      blockhashValid: (blockhash) => rpc.isBlockhashValid(blockhash)
+    };
+    for (const p of entry.tee?.sweepPending ?? []) {
+      const resolution = await resolvePending(reads, p);
+      if (resolution.kind === "finalized") {
+        await retainReceipt({
+          kind: p.kind,
+          ...p.mint ? { mint: p.mint } : {},
+          amountRaw: p.amountRaw,
+          signature: p.signature,
+          finalizedAt: new Date(deps.now()).toISOString()
+        });
+        if (!json)
+          deps.stdout.write(`  pending ${p.signature} from an earlier run finalized: receipt retained
+`);
         continue;
       }
-      const signature = outcome.signature;
-      await retainReceipt({
-        kind: pending.kind,
-        mint: acct.mint,
-        amountRaw: acct.amountRaw,
-        signature,
-        finalizedAt: new Date(deps.now()).toISOString()
-      });
-      if (!json)
-        deps.stdout.write(`  moved ${acct.amountRaw} raw of ${acct.mint} and closed its account: ${signature}
+      if (resolution.kind === "failed" || resolution.kind === "expired") {
+        await clearPending(p.signature);
+        if (!json)
+          deps.stdout.write(`  pending ${p.signature}: ${resolution.detail}; its balance is swept again
 `);
+        continue;
+      }
+      residuals.push({
+        kind: "finality-uncertain",
+        detail: `pending ${p.signature} from an earlier run: ${resolution.detail}; nothing new is signed until it resolves`,
+        ...p.mint ? { mint: p.mint } : {},
+        amountRaw: p.amountRaw
+      });
+      pendingStill.push(p);
+      signingBlocked = true;
+    }
+    let tokenAccounts = [];
+    try {
+      tokenAccounts = await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID);
     } catch (error) {
       residuals.push({
-        kind: "token-transfer-failed",
-        detail: error instanceof Error ? error.message : String(error),
-        mint: acct.mint,
-        account: acct.pubkey,
-        amountRaw: acct.amountRaw
+        kind: "inventory",
+        detail: `could not list token accounts: ${error instanceof Error ? error.message : error}`
       });
     }
-  }
-  try {
-    for (const acct of await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)) {
-      residuals.push({
-        kind: "token-2022-unsupported",
-        detail: "Token-2022 accounts are not swept yet",
-        mint: acct.mint,
-        account: acct.pubkey,
-        amountRaw: acct.amountRaw
-      });
-    }
-  } catch (error) {
-    residuals.push({
-      kind: "inventory",
-      detail: `could not list Token-2022 accounts: ${error instanceof Error ? error.message : error}`
-    });
-  }
-  try {
-    const balance = signingBlocked ? 0n : await rpc.getBalance(address);
-    if (balance > 0n) {
-      const blockhash = await rpc.getLatestBlockhash();
-      const probe = compileLegacyMessage({
-        feePayer: teePubkey,
-        recentBlockhash: blockhash,
-        instructions: [systemTransfer(teePubkey, vaultKey, 1n)]
-      });
-      const fee = await rpc.getFeeForMessage(toBase642(probe));
-      if (fee === null) {
-        solHandledAsResidual = true;
+    for (const acct of tokenAccounts) {
+      if (signingBlocked)
+        break;
+      if (acct.state !== "initialized") {
         residuals.push({
-          kind: "sol-fee-unknown",
-          detail: "the RPC could not quote the transfer fee",
-          amountRaw: balance.toString()
+          kind: "frozen-or-uninitialized",
+          detail: `token account state ${acct.state}`,
+          mint: acct.mint,
+          account: acct.pubkey,
+          amountRaw: acct.amountRaw
         });
-      } else if (balance <= fee) {
-        solHandledAsResidual = true;
-        residuals.push({
-          kind: "sol-dust",
-          detail: `balance ${balance} lamports does not cover the ${fee} lamport fee`,
-          amountRaw: balance.toString()
-        });
-      } else {
-        const amount = balance - fee;
-        const pending = { kind: "sol", amountRaw: amount.toString() };
-        const outcome = await broadcast([systemTransfer(teePubkey, vaultKey, amount)], pending);
+        continue;
+      }
+      try {
+        const mint = decodePubkey(acct.mint);
+        const source = decodePubkey(acct.pubkey);
+        const destination = associatedTokenAddress(vaultKey, mint);
+        const instructions = [];
+        const amount = BigInt(acct.amountRaw);
+        if (amount > 0n) {
+          if (!await rpc.accountExists(encodePubkey(destination))) {
+            instructions.push(createAssociatedTokenAccountIdempotent({ payer: teePubkey, owner: vaultKey, mint }));
+          }
+          instructions.push(tokenTransferChecked({ source, mint, destination, owner: teePubkey, amount, decimals: acct.decimals }));
+        }
+        instructions.push(tokenCloseAccount({ account: source, destination: teePubkey, owner: teePubkey }));
+        const pending = {
+          kind: amount > 0n ? "token" : "close",
+          mint: acct.mint,
+          account: acct.pubkey,
+          amountRaw: acct.amountRaw
+        };
+        const outcome = await broadcast(instructions, pending);
         if (outcome.status !== "finalized") {
-          solHandledAsResidual = true;
-          if (!settle2(outcome, pending, "sol-transfer"))
+          if (!settle2(outcome, pending, "token-transfer")) {
             signingBlocked = true;
-        } else {
-          const signature = outcome.signature;
-          await retainReceipt({
-            kind: "sol",
-            amountRaw: amount.toString(),
-            signature,
-            finalizedAt: new Date(deps.now()).toISOString()
-          });
-          if (!json)
-            deps.stdout.write(`  moved ${amount} lamports (fee ${fee}): ${signature}
+            break;
+          }
+          continue;
+        }
+        const signature = outcome.signature;
+        await retainReceipt({
+          kind: pending.kind,
+          mint: acct.mint,
+          amountRaw: acct.amountRaw,
+          signature,
+          finalizedAt: new Date(deps.now()).toISOString()
+        });
+        if (!json)
+          deps.stdout.write(`  moved ${acct.amountRaw} raw of ${acct.mint} and closed its account: ${signature}
 `);
+      } catch (error) {
+        residuals.push({
+          kind: "token-transfer-failed",
+          detail: error instanceof Error ? error.message : String(error),
+          mint: acct.mint,
+          account: acct.pubkey,
+          amountRaw: acct.amountRaw
+        });
+      }
+    }
+    try {
+      for (const acct of await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)) {
+        residuals.push({
+          kind: "token-2022-unsupported",
+          detail: "Token-2022 accounts are not swept yet",
+          mint: acct.mint,
+          account: acct.pubkey,
+          amountRaw: acct.amountRaw
+        });
+      }
+    } catch (error) {
+      residuals.push({
+        kind: "inventory",
+        detail: `could not list Token-2022 accounts: ${error instanceof Error ? error.message : error}`
+      });
+    }
+    try {
+      const balance = signingBlocked ? 0n : await rpc.getBalance(address);
+      if (balance > 0n) {
+        const blockhash = await rpc.getLatestBlockhash();
+        const probe = compileLegacyMessage({
+          feePayer: teePubkey,
+          recentBlockhash: blockhash,
+          instructions: [systemTransfer(teePubkey, vaultKey, 1n)]
+        });
+        const fee = await rpc.getFeeForMessage(toBase642(probe));
+        if (fee === null) {
+          solHandledAsResidual = true;
+          residuals.push({
+            kind: "sol-fee-unknown",
+            detail: "the RPC could not quote the transfer fee",
+            amountRaw: balance.toString()
+          });
+        } else if (balance <= fee) {
+          solHandledAsResidual = true;
+          residuals.push({
+            kind: "sol-dust",
+            detail: `balance ${balance} lamports does not cover the ${fee} lamport fee`,
+            amountRaw: balance.toString()
+          });
+        } else {
+          const amount = balance - fee;
+          const pending = { kind: "sol", amountRaw: amount.toString() };
+          const outcome = await broadcast([systemTransfer(teePubkey, vaultKey, amount)], pending);
+          if (outcome.status !== "finalized") {
+            solHandledAsResidual = true;
+            if (!settle2(outcome, pending, "sol-transfer"))
+              signingBlocked = true;
+          } else {
+            const signature = outcome.signature;
+            await retainReceipt({
+              kind: "sol",
+              amountRaw: amount.toString(),
+              signature,
+              finalizedAt: new Date(deps.now()).toISOString()
+            });
+            if (!json)
+              deps.stdout.write(`  moved ${amount} lamports (fee ${fee}): ${signature}
+`);
+          }
+        }
+      }
+    } catch (error) {
+      solHandledAsResidual = true;
+      residuals.push({ kind: "sol-transfer-failed", detail: error instanceof Error ? error.message : String(error) });
+    }
+    const inventory = { observedAt: new Date(deps.now()).toISOString(), verified: false, lamports: null, tokenAccounts: null };
+    try {
+      const listed = new Set(residuals.map((r) => r.account).filter((a) => a !== undefined));
+      const lamports = await rpc.getBalance(address);
+      inventory.lamports = lamports.toString();
+      if (lamports > 0n && !solHandledAsResidual) {
+        residuals.push({
+          kind: "sol-remaining",
+          detail: `${lamports} lamports remain after finality (a late deposit or an unswept balance); re-run the sweep`,
+          amountRaw: lamports.toString()
+        });
+      }
+      const remaining = [
+        ...await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
+        ...await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
+      ];
+      inventory.tokenAccounts = remaining.length;
+      for (const acct of remaining) {
+        if (listed.has(acct.pubkey))
+          continue;
+        residuals.push({
+          kind: "token-account-remaining",
+          detail: `token account still open after finality (${acct.state}, ${acct.programId === TOKEN_PROGRAM_ID ? "token" : "token-2022"}); re-run the sweep`,
+          mint: acct.mint,
+          account: acct.pubkey,
+          amountRaw: acct.amountRaw
+        });
+      }
+      inventory.verified = true;
+    } catch (error) {
+      residuals.push({
+        kind: "inventory-unverified",
+        detail: `the post-sweep balance inventory could not be read: ${error instanceof Error ? error.message : error}`
+      });
+    }
+    const allReceipts = [...retained, ...receipts];
+    let recordedOnServer = alreadyRecordedLocally || serverState === "swept";
+    const complete = residuals.length === 0 && allReceipts.length > 0 && inventory.verified && !emergency && (serverState === "quarantined" || serverState === "swept" || serverState === "local-only" && !entry.linkedWalletId);
+    if (complete && entry.linkedWalletId && apiKey && !recordedOnServer) {
+      const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/swept`, {
+        method: "POST",
+        auth: "key",
+        credentials: { apiKey },
+        apiUrl,
+        fetch: deps.fetch,
+        env: deps.env,
+        body: { signatures: allReceipts.map((r) => r.signature), residuals: [] }
+      });
+      recordedOnServer = result.ok;
+      if (!result.ok) {
+        const refusedState = refusalState(result.raw);
+        if (refusedState !== null) {
+          serverState = refusedState;
+          residuals.push({
+            kind: "server-record-refused",
+            detail: `${result.message ?? `HTTP ${result.status}`} (server state now ${refusedState}); the receipts are retained locally, re-run after the stop is verified`
+          });
+        } else {
+          residuals.push({
+            kind: "server-record-failed",
+            detail: `${result.message ?? `HTTP ${result.status}`}; the receipts are retained locally, re-run to record`
+          });
         }
       }
     }
-  } catch (error) {
-    solHandledAsResidual = true;
-    residuals.push({ kind: "sol-transfer-failed", detail: error instanceof Error ? error.message : String(error) });
-  }
-  const inventory = { observedAt: new Date(deps.now()).toISOString(), verified: false, lamports: null, tokenAccounts: null };
-  try {
-    const listed = new Set(residuals.map((r) => r.account).filter((a) => a !== undefined));
-    const lamports = await rpc.getBalance(address);
-    inventory.lamports = lamports.toString();
-    if (lamports > 0n && !solHandledAsResidual) {
-      residuals.push({
-        kind: "sol-remaining",
-        detail: `${lamports} lamports remain after finality (a late deposit or an unswept balance); re-run the sweep`,
-        amountRaw: lamports.toString()
-      });
-    }
-    const remaining = [
-      ...await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
-      ...await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
-    ];
-    inventory.tokenAccounts = remaining.length;
-    for (const acct of remaining) {
-      if (listed.has(acct.pubkey))
-        continue;
-      residuals.push({
-        kind: "token-account-remaining",
-        detail: `token account still open after finality (${acct.state}, ${acct.programId === TOKEN_PROGRAM_ID ? "token" : "token-2022"}); re-run the sweep`,
-        mint: acct.mint,
-        account: acct.pubkey,
-        amountRaw: acct.amountRaw
-      });
-    }
-    inventory.verified = true;
-  } catch (error) {
-    residuals.push({
-      kind: "inventory-unverified",
-      detail: `the post-sweep balance inventory could not be read: ${error instanceof Error ? error.message : error}`
-    });
-  }
-  const allReceipts = [...retained, ...receipts];
-  let recordedOnServer = alreadyRecordedLocally || serverState === "swept";
-  const complete = residuals.length === 0 && allReceipts.length > 0 && inventory.verified && !emergency && (serverState === "quarantined" || serverState === "swept" || serverState === "local-only" && !entry.linkedWalletId);
-  if (complete && entry.linkedWalletId && apiKey && !recordedOnServer) {
-    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/swept`, {
-      method: "POST",
-      auth: "key",
-      credentials: { apiKey },
-      apiUrl,
-      fetch: deps.fetch,
-      env: deps.env,
-      body: { signatures: allReceipts.map((r) => r.signature), residuals: [] }
-    });
-    recordedOnServer = result.ok;
-    if (!result.ok) {
-      const refusedState = refusalState(result.raw);
-      if (refusedState !== null) {
-        serverState = refusedState;
-        residuals.push({
-          kind: "server-record-refused",
-          detail: `${result.message ?? `HTTP ${result.status}`} (server state now ${refusedState}); the receipts are retained locally, re-run after the stop is verified`
+    let sweptLocally = false;
+    if (complete && (recordedOnServer || !entry.linkedWalletId)) {
+      if (alreadyRecordedLocally)
+        sweptLocally = true;
+      else {
+        const sweptAt = new Date().toISOString();
+        const recorded = await commitActiveTee(active, (target) => {
+          target.tee = { ...target.tee ?? { network: "solana-mainnet" }, sweptAt };
         });
-      } else {
-        residuals.push({
-          kind: "server-record-failed",
-          detail: `${result.message ?? `HTTP ${result.status}`}; the receipts are retained locally, re-run to record`
-        });
+        sweptLocally = recorded.ok;
+        if (!recorded.ok)
+          residuals.push({ kind: "local-record-failed", detail: recorded.message });
       }
     }
-  }
-  let sweptLocally = false;
-  if (complete && (recordedOnServer || !entry.linkedWalletId)) {
-    if (alreadyRecordedLocally)
-      sweptLocally = true;
-    else {
-      const sweptAt = new Date().toISOString();
-      const recorded = await commitTee(deps, opened, (entries) => {
-        const target = entries.find((e) => e.address === address);
-        if (!target)
-          throw new Error(`${address} is no longer in ${path}`);
-        target.tee = { ...target.tee ?? { network: "solana-mainnet" }, sweptAt };
-      });
-      sweptLocally = recorded.ok;
-      if (!recorded.ok)
-        residuals.push({ kind: "local-record-failed", detail: recorded.message });
+    const finalState = sweptLocally ? "swept" : emergency || serverState === "disable-pending" || serverState === "unread" ? "disable-pending" : serverState === "local-only" ? "local-only" : "quarantined";
+    if (json) {
+      deps.stdout.write(`${JSON.stringify({
+        address,
+        vaultDestination: vault,
+        state: finalState,
+        serverState,
+        emergency,
+        receipts: allReceipts,
+        newReceipts: receipts.length,
+        retainedReceipts: retained.length,
+        residuals,
+        pending: pendingStill.map((p) => ({
+          kind: p.kind,
+          ...p.mint ? { mint: p.mint } : {},
+          amountRaw: p.amountRaw,
+          signature: p.signature
+        })),
+        inventory,
+        recordedOnServer
+      })}
+`);
+      return finalState === "swept" ? 0 : 3;
     }
+    if (retained.length > 0)
+      deps.stdout.write(`  ${retained.length} receipt(s) retained from an earlier run are included in this reconcile.
+`);
+    if (finalState === "swept") {
+      deps.stdout.write(`Swept. ${allReceipts.length} transaction(s) finalized; this address is retired and must not be reused.
+`);
+      return 0;
+    }
+    if (residuals.length > 0) {
+      deps.stdout.write(`Sweep incomplete: ${residuals.length} residual(s) remain. This address stays ${finalState}; no new agent trades are allowed.
+`);
+      for (const r of residuals)
+        deps.stdout.write(`  - ${r.kind}${r.mint ? ` ${r.mint}` : ""}${r.amountRaw ? ` (${r.amountRaw} raw)` : ""}: ${r.detail}
+`);
+    }
+    if (emergency)
+      deps.stdout.write(`Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}
+`);
+    if (pendingStill.length > 0)
+      deps.stdout.write(`${pendingStill.length} transaction(s) still in flight (${pendingStill.map((p) => p.signature).join(", ")}). Re-run this sweep: a finalized one becomes a receipt, an expired one is swept again.
+`);
+    if (serverState === "disable-pending" && !emergency)
+      deps.stdout.write(`Remote signing authority is not verified denied. Re-run: candle tee disable ${address}, then re-run this sweep to record it.
+`);
+    if (allReceipts.length === 0 && residuals.length === 0)
+      deps.stdout.write(`Nothing to sweep: no balances found.
+`);
+    deps.stdout.write(`Inventory at ${inventory.observedAt}: ${inventory.verified ? `${inventory.lamports} lamports, ${inventory.tokenAccounts} token account(s)` : "NOT verified"}.
+`);
+    return 3;
+  } finally {
+    releaseActiveTee(active);
   }
-  const finalState = sweptLocally ? "swept" : emergency || serverState === "disable-pending" || serverState === "unread" ? "disable-pending" : serverState === "local-only" ? "local-only" : "quarantined";
-  if (json) {
-    deps.stdout.write(`${JSON.stringify({
-      address,
-      vaultDestination: vault,
-      state: finalState,
-      serverState,
-      emergency,
-      receipts: allReceipts,
-      newReceipts: receipts.length,
-      retainedReceipts: retained.length,
-      residuals,
-      pending: pendingStill.map((p) => ({
-        kind: p.kind,
-        ...p.mint ? { mint: p.mint } : {},
-        amountRaw: p.amountRaw,
-        signature: p.signature
-      })),
-      inventory,
-      recordedOnServer
-    })}
-`);
-    return finalState === "swept" ? 0 : 3;
-  }
-  if (retained.length > 0)
-    deps.stdout.write(`  ${retained.length} receipt(s) retained from an earlier run are included in this reconcile.
-`);
-  if (finalState === "swept") {
-    deps.stdout.write(`Swept. ${allReceipts.length} transaction(s) finalized; this address is retired and must not be reused.
-`);
-    return 0;
-  }
-  if (residuals.length > 0) {
-    deps.stdout.write(`Sweep incomplete: ${residuals.length} residual(s) remain. This address stays ${finalState}; no new agent trades are allowed.
-`);
-    for (const r of residuals)
-      deps.stdout.write(`  - ${r.kind}${r.mint ? ` ${r.mint}` : ""}${r.amountRaw ? ` (${r.amountRaw} raw)` : ""}: ${r.detail}
-`);
-  }
-  if (emergency)
-    deps.stdout.write(`Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}
-`);
-  if (pendingStill.length > 0)
-    deps.stdout.write(`${pendingStill.length} transaction(s) still in flight (${pendingStill.map((p) => p.signature).join(", ")}). Re-run this sweep: a finalized one becomes a receipt, an expired one is swept again.
-`);
-  if (serverState === "disable-pending" && !emergency)
-    deps.stdout.write(`Remote signing authority is not verified denied. Re-run: candle tee disable ${address}, then re-run this sweep to record it.
-`);
-  if (allReceipts.length === 0 && residuals.length === 0)
-    deps.stdout.write(`Nothing to sweep: no balances found.
-`);
-  deps.stdout.write(`Inventory at ${inventory.observedAt}: ${inventory.verified ? `${inventory.lamports} lamports, ${inventory.tokenAccounts} token account(s)` : "NOT verified"}.
-`);
-  return 3;
 }
 
 // src/commands/update.ts
@@ -36215,6 +36463,124 @@ Derivation counters to keep with your recovery phrase:
   deps.stdout.write(`
 The recovery phrase restores derived keys only. It does not restore any key imported from the Phase 1 TEE wallet store; this file plus a factor does that.
 `);
+}
+
+// src/commands/vault-demote.ts
+init_errors();
+init_promote_support();
+init_store();
+async function vaultDemote(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--rpc-url", "--sweep-to", "--keystore"],
+    booleanFlags: ["--emergency", "--accept-older-copy"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  const [address, extra] = parsed.positionals;
+  if (!address || extra !== undefined) {
+    return usage(ctx, "Usage: candle vault demote <tee-address> --rpc-url <url> [--emergency] [--sweep-to <label>]");
+  }
+  const rpcUrl = parsed.values["--rpc-url"];
+  if (!rpcUrl)
+    return usage(ctx, "--rpc-url <url> is required.");
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault demote"))
+    return 1;
+  const path = vaultPathFor(ctx, parsed);
+  const emergency = parsed.booleans.has("--emergency");
+  const sweepTo = parsed.values["--sweep-to"];
+  const resolved = await resolveTeeAddress(ctx, parsed, address, async () => ({
+    ok: false,
+    code: 1
+  }));
+  if (!resolved.ok) {
+    writeLocalFailure(ctx.deps, {
+      code: "TEE_WALLET_UNKNOWN",
+      message: `${address} is not a TEE wallet in the vault.`,
+      suggestion: "Demote only addresses this vault holds as role:tee-wallet."
+    }, ctx.json);
+    return 1;
+  }
+  if (resolved.resolved.source !== "vault") {
+    releaseResolvedTee(resolved.resolved);
+    writeLocalFailure(ctx.deps, {
+      code: "TEE_WALLET_UNKNOWN",
+      message: `${address} is not in the vault; use candle tee disable / tee sweep for the Phase 1 store.`
+    }, ctx.json);
+    return 1;
+  }
+  let released = false;
+  try {
+    const vaultResolved = resolved.resolved;
+    const reconciled = await maybeReconcileVaultTee(ctx, vaultResolved, "demote");
+    if (reconciled.code !== null)
+      return reconciled.code;
+    const entry = reconciled.entry;
+    if (entry.tee?.vaultDestination === undefined) {
+      if (sweepTo === undefined) {
+        throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${address} has no pinned vault destination.`, {
+          suggestion: "Pass --sweep-to <vault-key-label> (subject to the recovery destination rule), or adopt the server's pin."
+        });
+      }
+      releaseResolvedTee(resolved.resolved);
+      released = true;
+      return await runVaultCommand(ctx, async ({ hold }) => {
+        const raw = await requireVaultRaw(path);
+        const opened = await unlockInteractively(ctx, path, raw, {
+          acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+        });
+        const vault = hold(opened.vault);
+        const destination = assertColdVaultDestination(vault.index, sweepTo, {});
+        await commitVault(vault, {
+          index: {
+            hd: vault.index.hd,
+            entries: vault.index.entries.map((e) => e.address === address ? {
+              ...e,
+              tee: {
+                ...e.tee ?? { network: "solana-mainnet", lifecycle: "local-candidate" },
+                vaultDestination: destination.address
+              }
+            } : e)
+          }
+        }, ctx.deps);
+        return demoteWithAdapter(ctx, { linkedWalletId: entry.linkedWalletId }, address, rpcUrl, true);
+      });
+    }
+    requireTeeDestination(entry);
+    const needsEmergency = emergency || entry.linkedWalletId === undefined || entry.tee?.lifecycle === "stranded";
+    const snapshot = { linkedWalletId: entry.linkedWalletId };
+    releaseResolvedTee(resolved.resolved);
+    released = true;
+    return demoteWithAdapter(ctx, snapshot, address, rpcUrl, needsEmergency);
+  } catch (error) {
+    if (error instanceof VaultError) {
+      writeLocalFailure(ctx.deps, {
+        code: error.code,
+        message: error.message,
+        ...error.suggestion ? { suggestion: error.suggestion } : {}
+      }, ctx.json);
+      return error.exitCode;
+    }
+    throw error;
+  } finally {
+    if (!released)
+      releaseResolvedTee(resolved.resolved);
+  }
+}
+async function demoteWithAdapter(ctx, entry, address, rpcUrl, emergency) {
+  if (entry.linkedWalletId !== undefined) {
+    const disableCode = await teeDisable([address], ctx);
+    if (disableCode !== 0 && disableCode !== 3 && !emergency)
+      return disableCode;
+  } else {
+    ctx.deps.stdout.write(`No linkedWalletId is recorded for ${address}; the grant could not be identified, so disable was not called and remote authority stays unknown.
+`);
+  }
+  const sweepArgs = [address, "--rpc-url", rpcUrl];
+  if (emergency || entry.linkedWalletId === undefined)
+    sweepArgs.push("--emergency");
+  return teeSweep(sweepArgs, ctx);
 }
 
 // src/commands/vault-factor.ts
@@ -44655,6 +45021,283 @@ async function vaultFactor(args, ctx) {
   }
 }
 
+// src/commands/vault-fund.ts
+init_errors();
+init_store();
+
+// src/vault/vault-transfer-sign.ts
+init_esm();
+init_errors();
+var USDC_MINT2 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+function decimalToRaw2(decimal, decimals) {
+  if (!/^\d+(\.\d+)?$/.test(decimal))
+    return null;
+  const [whole, frac = ""] = decimal.split(".");
+  if (frac.length > decimals)
+    return null;
+  return BigInt((whole ?? "0") + frac.padEnd(decimals, "0"));
+}
+function assertVaultSigner(entry) {
+  if (entry.role !== "vault") {
+    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry.label ?? entry.address} is a TEE wallet entry and cannot sign vault transfer or fund shapes (ED-10 / N3).`);
+  }
+}
+async function planTransfer(input) {
+  const asset = input.asset.toUpperCase();
+  const fromKey = decodePubkey(input.from);
+  const toKey = decodePubkey(input.to);
+  if (asset === "SOL") {
+    const raw2 = decimalToRaw2(input.amount, 9);
+    if (raw2 === null || raw2 === 0n) {
+      throw new VaultError("VAULT_INDEX_INVALID", "--amount must be a positive SOL decimal with at most 9 places.");
+    }
+    return {
+      asset: "SOL",
+      amount: input.amount,
+      amountRaw: raw2,
+      decimals: 9,
+      from: input.from,
+      to: input.to,
+      instructions: [systemTransfer(fromKey, toKey, raw2)],
+      displayLines: [
+        `fee payer   ${input.from}`,
+        `destination ${input.to}`,
+        `amount      ${input.amount} SOL = ${raw2} lamports`,
+        `mint        (native SOL)`
+      ]
+    };
+  }
+  const mintAddress = asset === "USDC" ? USDC_MINT2 : input.asset;
+  const decimals = asset === "USDC" ? 6 : await readMintDecimals(rpcUrlish(input.rpcUrl), mintAddress, input.fetch);
+  const raw = decimalToRaw2(input.amount, decimals);
+  if (raw === null || raw === 0n) {
+    throw new VaultError("VAULT_INDEX_INVALID", `--amount must be a positive decimal with at most ${decimals} decimal places.`);
+  }
+  const mint = decodePubkey(mintAddress);
+  const source = associatedTokenAddress(fromKey, mint);
+  const destination = associatedTokenAddress(toKey, mint);
+  const rpc = createSolanaRpc(input.rpcUrl, input.fetch);
+  const instructions = [];
+  if (!await rpc.accountExists(encodePubkey(destination))) {
+    instructions.push(createAssociatedTokenAccountIdempotent({ payer: fromKey, owner: toKey, mint }));
+  }
+  instructions.push(tokenTransferChecked({
+    source,
+    mint,
+    destination,
+    owner: fromKey,
+    amount: raw,
+    decimals
+  }));
+  return {
+    asset: asset === "USDC" ? "USDC" : mintAddress,
+    amount: input.amount,
+    amountRaw: raw,
+    decimals,
+    mint: mintAddress,
+    from: input.from,
+    to: input.to,
+    instructions,
+    displayLines: [
+      `fee payer   ${input.from}`,
+      `destination ${input.to}`,
+      `amount      ${input.amount} (${raw} raw, ${decimals} dp)`,
+      `mint        ${mintAddress}`
+    ]
+  };
+}
+function rpcUrlish(url) {
+  return url;
+}
+async function readMintDecimals(rpcUrl, mint, fetchFn) {
+  const res = await fetchFn(rpcUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getAccountInfo",
+      params: [mint, { encoding: "jsonParsed", commitment: "finalized" }]
+    })
+  });
+  if (!res.ok)
+    throw new VaultError("VAULT_UNREADABLE", `RPC getAccountInfo failed for mint ${mint}`);
+  const json = await res.json();
+  const decimals = json.result?.value?.data?.parsed?.info?.decimals;
+  if (typeof decimals !== "number") {
+    throw new VaultError("VAULT_UNREADABLE", `Could not read decimals for mint ${mint}.`);
+  }
+  return decimals;
+}
+async function quoteTransferFee(rpcUrl, fetchFn, from, instructions) {
+  const rpc = createSolanaRpc(rpcUrl, fetchFn);
+  const blockhash = await rpc.getLatestBlockhash();
+  const message = compileLegacyMessage({
+    feePayer: decodePubkey(from),
+    recentBlockhash: blockhash,
+    instructions
+  });
+  return rpc.getFeeForMessage(toBase642(message));
+}
+function displayTransferPlan(ctx, plan, feeQuote) {
+  ctx.deps.stdout.write(`Decoded transfer (local signing only):
+`);
+  for (const line of plan.displayLines)
+    ctx.deps.stdout.write(`  ${line}
+`);
+  if (feeQuote !== null)
+    ctx.deps.stdout.write(`  fee quote  ${feeQuote} lamports
+`);
+  else
+    ctx.deps.stdout.write(`  fee quote  (unavailable)
+`);
+}
+async function signAndBroadcastTransfer(input) {
+  const rpc = createSolanaRpc(input.rpcUrl, input.ctx.deps.fetch);
+  const feePayer = pubkeyFromSecret(input.secret64);
+  if (encodePubkey(feePayer) !== input.plan.from) {
+    throw new VaultError("VAULT_VERIFY_FAILED", "The decrypted key does not match the planned fee payer.");
+  }
+  const blockhash = await rpc.getLatestBlockhash();
+  const message = compileLegacyMessage({
+    feePayer,
+    recentBlockhash: blockhash,
+    instructions: input.plan.instructions
+  });
+  const signature = signMessage(message, input.secret64);
+  const wire = serializeSignedTransaction(message, signature);
+  const sigB58 = base58.encode(signature);
+  const echoed = await rpc.sendTransaction(toBase642(wire));
+  const submitted = typeof echoed === "string" && echoed.length > 0 ? echoed : sigB58;
+  let finalized = false;
+  for (let i = 0;i < 30; i++) {
+    await input.ctx.deps.sleep(500);
+    const status = await rpc.getSignatureStatus(submitted);
+    if (status?.err) {
+      throw new VaultError("VAULT_WRITE_FAILED", `Transfer failed on chain: ${JSON.stringify(status.err)}`);
+    }
+    if (status?.confirmationStatus === "finalized") {
+      finalized = true;
+      break;
+    }
+  }
+  return { signature: submitted, finalized };
+}
+
+// src/commands/vault-fund.ts
+async function vaultFund(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--amount", "--asset", "--rpc-url", "--keystore"],
+    booleanFlags: ["--accept-older-copy"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  const [teeAddress, extra] = parsed.positionals;
+  if (!teeAddress || extra !== undefined) {
+    return usage(ctx, "Usage: candle vault fund <tee-address> --amount <n> --asset SOL|USDC --rpc-url <url>");
+  }
+  const amount = parsed.values["--amount"];
+  const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase();
+  const rpcUrl = parsed.values["--rpc-url"];
+  if (!amount)
+    return usage(ctx, "--amount <n> is required.");
+  if (asset !== "SOL" && asset !== "USDC")
+    return usage(ctx, "--asset must be SOL or USDC.");
+  if (!rpcUrl)
+    return usage(ctx, "--rpc-url <url> is required.");
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault fund"))
+    return 1;
+  const path = vaultPathFor(ctx, parsed);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(path);
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    });
+    const vault = hold(opened.vault);
+    const teeEntry = vault.index.entries.find((entry) => entry.address === teeAddress && entry.role === "tee-wallet");
+    if (teeEntry === undefined) {
+      writeLocalFailure(ctx.deps, {
+        code: "TEE_WALLET_UNKNOWN",
+        message: `${teeAddress} is not a TEE wallet in this vault.`,
+        suggestion: "Promote one with candle vault promote --from <vault-key-label>."
+      }, ctx.json);
+      return 1;
+    }
+    if (teeEntry.tee?.remoteAuthority !== "verified-active" || teeEntry.tee.stopRequestedAt !== undefined) {
+      writeLocalFailure(ctx.deps, {
+        code: "TEE_WALLET_NOT_VERIFIED",
+        message: `${teeAddress} is not an enabled TEE wallet with verified remote authority; do not fund it.`
+      }, ctx.json);
+      return 1;
+    }
+    const destination = teeEntry.tee.vaultDestination;
+    if (destination === undefined) {
+      throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${teeAddress} has no pinned vault destination to fund from.`);
+    }
+    const fromEntry = vault.index.entries.find((entry) => entry.address === destination && entry.role === "vault");
+    if (fromEntry === undefined) {
+      throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `Pinned destination ${destination} is not a vault key in this vault.`);
+    }
+    assertVaultSigner(fromEntry);
+    ctx.deps.stdout.write(`Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
+`);
+    const plan = await planTransfer({
+      from: fromEntry.address,
+      to: teeAddress,
+      amount,
+      asset,
+      rpcUrl,
+      fetch: ctx.deps.fetch
+    });
+    const feeQuote = await quoteTransferFee(rpcUrl, ctx.deps.fetch, plan.from, plan.instructions);
+    displayTransferPlan(ctx, plan, feeQuote);
+    await confirmLastSix(ctx, teeAddress, "the TEE wallet destination");
+    const typed = await ctx.deps.promptSecret(`Vault passphrase to fund ${plan.amount} ${plan.asset} to ${teeAddress} (input hidden): `);
+    if (typed.trim() !== opened.passphrase) {
+      throw new VaultError("VAULT_UNLOCK_FAILED", "Passphrase did not match; nothing was signed.");
+    }
+    const secret = await decryptKey(vault, fromEntry.id);
+    try {
+      const result = await signAndBroadcastTransfer({ ctx, rpcUrl, secret64: secret, plan });
+      const receipt = {
+        signature: result.signature,
+        amount: plan.amount,
+        asset: plan.asset,
+        amountRaw: plan.amountRaw.toString(),
+        at: new Date(ctx.deps.now()).toISOString(),
+        finalized: result.finalized
+      };
+      const entries = vault.index.entries.map((entry) => {
+        if (entry.id !== teeEntry.id || entry.tee === undefined)
+          return entry;
+        const tee = { ...entry.tee, fundingReceipts: [...entry.tee.fundingReceipts ?? [], receipt] };
+        return { ...entry, tee };
+      });
+      await commitVault(vault, { index: { hd: vault.index.hd, entries } }, ctx.deps);
+      if (ctx.json) {
+        writeJson(ctx.deps, {
+          ok: result.finalized,
+          signature: result.signature,
+          tee: teeAddress,
+          from: plan.from,
+          amount: plan.amount,
+          asset: plan.asset,
+          finalized: result.finalized
+        });
+      } else {
+        ctx.deps.stdout.write(result.finalized ? `Funded ${teeAddress} with ${plan.amount} ${plan.asset}: ${result.signature}
+` : `Submitted ${result.signature}; finality is not yet confirmed. Receipt recorded.
+`);
+      }
+      return result.finalized ? 0 : 3;
+    } finally {
+      wipe(secret);
+    }
+  });
+}
+
 // src/commands/vault-import-legacy.ts
 import { readFile as readFile5 } from "node:fs/promises";
 init_errors();
@@ -45138,6 +45781,499 @@ async function vaultPhrase(args, ctx) {
   if (word === undefined)
     return usage(ctx, "Usage: candle vault phrase show");
   return usage(ctx, `Unknown subcommand: vault phrase ${word}. The only one is: show`);
+}
+
+// src/commands/vault-promote.ts
+init_esm();
+init_errors();
+init_promote_support();
+init_store();
+async function vaultPromote(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--from", "--in-place", "--sweep-to", "--label", "--rpc-url", "--keystore"],
+    booleanFlags: ["--accept-unknown-exposure", "--accept-older-copy"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  if (parsed.positionals.length > 0)
+    return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  const fromLabel = parsed.values["--from"];
+  const inPlaceLabel = parsed.values["--in-place"];
+  if (fromLabel !== undefined && inPlaceLabel !== undefined) {
+    return usage(ctx, "Use either --from or --in-place, not both.");
+  }
+  if (fromLabel === undefined && inPlaceLabel === undefined) {
+    return usage(ctx, "Usage: candle vault promote --from <vault-key-label> | --in-place <vault-key-label> --sweep-to <label> --rpc-url <url>");
+  }
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault promote"))
+    return 1;
+  if (fromLabel !== undefined) {
+    if (parsed.values["--sweep-to"] !== undefined) {
+      return usage(ctx, "Fresh-key promote takes --from, not --sweep-to.");
+    }
+    return promoteFresh(ctx, parsed, fromLabel);
+  }
+  return promoteInPlace(ctx, parsed, inPlaceLabel);
+}
+async function promoteFresh(ctx, parsed, fromLabel) {
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  const path = vaultPathFor(ctx, parsed);
+  const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(path);
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    });
+    let vault = hold(opened.vault);
+    assertRecoverableFactorExists(vault.file.envelopes);
+    if (vault.index.hd.discovery !== undefined) {
+      throw new VaultError("VAULT_ALLOCATION_BOUNDARY_UNKNOWN", "This vault was built by `vault restore --phrase`, so deriving a fresh TEE key is refused.", {
+        suggestion: "Create a second vault with a fresh root (`candle vault init`) and move funds with `candle vault transfer`."
+      });
+    }
+    const destination = assertColdVaultDestination(vault.index, fromLabel, {
+      acceptUnknownExposure: acceptUnknown
+    });
+    const teeIndex = nextAllocatableIndex(vault.index.hd.nextIndex.solanaTee, vault.index.hd.exposedIndexes.solanaTee);
+    const derivationPath = solanaTeePath(teeIndex);
+    const root = await decryptRoot(vault);
+    let address;
+    let keyId;
+    let blob;
+    let secret64;
+    try {
+      const derived = await deriveSolanaKey(root, derivationPath);
+      try {
+        address = derived.address;
+        keyId = freshKeyId();
+        secret64 = Uint8Array.from(derived.secret64);
+        blob = await sealKeyBlob(vault, keyId, derived.secret64);
+      } finally {
+        wipe(derived.secret64);
+      }
+    } finally {
+      wipe(root);
+    }
+    const now = new Date(ctx.deps.now()).toISOString();
+    const entry = {
+      id: keyId,
+      chain: "solana",
+      curve: "ed25519",
+      address,
+      label: parsed.values["--label"] ?? `tee-${teeIndex}`,
+      createdAt: now,
+      role: "tee-wallet",
+      origin: "derived",
+      derivation: { scheme: DERIVATION_SCHEME, path: derivationPath },
+      exposure: { everRemoteExposed: true, everExported: false },
+      tee: {
+        network: "solana-mainnet",
+        lifecycle: "import-pending",
+        vaultDestination: destination.address,
+        ...acceptUnknown && destination.exposure?.exposureUnknown ? { destinationExposureAccepted: true } : {}
+      }
+    };
+    const exposedTee = [...vault.index.hd.exposedIndexes.solanaTee];
+    if (!exposedTee.includes(teeIndex))
+      exposedTee.push(teeIndex);
+    exposedTee.sort((a, b) => a - b);
+    vault = hold(await commitVault(vault, {
+      index: {
+        hd: {
+          ...vault.index.hd,
+          nextIndex: { ...vault.index.hd.nextIndex, solanaTee: teeIndex + 1 },
+          exposedIndexes: { ...vault.index.hd.exposedIndexes, solanaTee: exposedTee }
+        },
+        entries: [...vault.index.entries, entry]
+      },
+      addKeys: [blob]
+    }, ctx.deps));
+    await confirmLastSix(ctx, destination.address, "the sweep vault destination");
+    const privateKey = base58.encode(secret64);
+    wipe(secret64);
+    const importCount = { n: 0 };
+    const code = await runTeeImport(ctx, {
+      address,
+      privateKey,
+      label: entry.label,
+      vaultDestination: destination.address,
+      passphrase: opened.passphrase,
+      vaultPath: path,
+      onImport: () => {
+        importCount.n += 1;
+      }
+    });
+    if (code !== 0 && code !== 3) {
+      return code;
+    }
+    vault = hold(await reopen(path, opened.passphrase, vault));
+    const target = vault.index.entries.find((e) => e.id === keyId);
+    if (target === undefined) {
+      throw new VaultError("VAULT_INDEX_INVALID", `Entry ${keyId} missing after import.`);
+    }
+    if (ctx.json) {
+      writeJson(ctx.deps, {
+        ok: true,
+        mode: "fresh",
+        address,
+        label: entry.label,
+        vaultDestination: destination.address,
+        lifecycle: target.tee?.lifecycle,
+        linkedWalletId: target.linkedWalletId ?? null,
+        importCalls: importCount.n
+      });
+    } else {
+      ctx.deps.stdout.write(`Promoted fresh TEE wallet ${address} (sweep to ${destination.address}).
+`);
+    }
+    return code;
+  });
+}
+async function reopen(path, passphrase, previous) {
+  closeVault(previous);
+  const raw = await readVaultRaw(path);
+  if (raw === null)
+    throw new VaultError("VAULT_MISSING", `No vault at ${path}.`);
+  return unlockWithPassphrase(path, raw, passphrase);
+}
+async function promoteInPlace(ctx, parsed, subjectLabel) {
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  const path = vaultPathFor(ctx, parsed);
+  const sweepTo = parsed.values["--sweep-to"];
+  const rpcUrl = parsed.values["--rpc-url"];
+  const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(path);
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    });
+    let vault = hold(opened.vault);
+    assertRecoverableFactorExists(vault.file.envelopes);
+    const existing = findEntryByLabelOrAddress(vault.index, subjectLabel);
+    if (existing === undefined) {
+      throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`);
+    }
+    if (existing.role === "tee-wallet" && (existing.tee?.lifecycle === "import-pending" || existing.tee?.lifecycle === "local-candidate")) {
+      if (sweepTo !== undefined) {
+        return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).");
+      }
+      return resumePromote(ctx, vault, existing, opened.passphrase, path, hold);
+    }
+    if (sweepTo === undefined || rpcUrl === undefined) {
+      return usage(ctx, "Usage: candle vault promote --in-place <label> --sweep-to <label> --rpc-url <url> [--label] [--accept-unknown-exposure]");
+    }
+    const first = assertInPlacePreconditions(vault.index, subjectLabel, sweepTo, {
+      acceptUnknownExposure: acceptUnknown
+    });
+    if (first.resume) {
+      return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).");
+    }
+    await displayHoldings(ctx, rpcUrl, first.subject.address);
+    printAd8Warning(ctx);
+    if (!ctx.json) {}
+    await confirmLastSix(ctx, first.subject.address, "the address being promoted");
+    await confirmAd8Acknowledgement(ctx);
+    vault = hold(await reopen(path, opened.passphrase, vault));
+    const second = assertInPlacePreconditions(vault.index, subjectLabel, sweepTo, {
+      acceptUnknownExposure: acceptUnknown
+    });
+    if (second.resume) {
+      throw new VaultError("PROMOTE_ALREADY_TEE_WALLET", "The entry changed under the lock; nothing was written.");
+    }
+    assertNotPinnedDestination(vault.index, second.subject.address);
+    const now = new Date(ctx.deps.now()).toISOString();
+    const subject = second.subject;
+    const destination = second.destination;
+    const entries = vault.index.entries.map((entry) => {
+      if (entry.id !== subject.id)
+        return entry;
+      const next = {
+        ...entry,
+        role: "tee-wallet",
+        label: parsed.values["--label"] ?? entry.label,
+        exposure: {
+          everRemoteExposed: true,
+          everExported: entry.exposure?.everExported === true,
+          ...entry.exposure?.exposureUnknown ? { exposureUnknown: true } : {}
+        },
+        tee: {
+          network: "solana-mainnet",
+          lifecycle: "import-pending",
+          vaultDestination: destination.address,
+          promotedInPlaceAt: now,
+          ...acceptUnknown && destination.exposure?.exposureUnknown ? { destinationExposureAccepted: true } : {}
+        }
+      };
+      return next;
+    });
+    const exposedVault = [...vault.index.hd.exposedIndexes.solanaVault];
+    const derivedIndex = subject.derivation?.path.match(/m\/44'\/501'\/(\d+)'\/0'/);
+    if (derivedIndex?.[1] !== undefined) {
+      const idx = Number(derivedIndex[1]);
+      if (!exposedVault.includes(idx))
+        exposedVault.push(idx);
+      exposedVault.sort((a, b) => a - b);
+    }
+    vault = hold(await commitVault(vault, {
+      index: {
+        hd: {
+          ...vault.index.hd,
+          exposedIndexes: { ...vault.index.hd.exposedIndexes, solanaVault: exposedVault }
+        },
+        entries
+      }
+    }, ctx.deps));
+    const secret = await decryptKey(vault, subject.id);
+    let privateKey;
+    try {
+      if (addressFromSecret64(secret) !== subject.address) {
+        throw new VaultError("VAULT_VERIFY_FAILED", "Stored secret does not match the subject address.");
+      }
+      privateKey = base58.encode(secret);
+    } finally {
+      wipe(secret);
+    }
+    const code = await runTeeImport(ctx, {
+      address: subject.address,
+      privateKey,
+      label: parsed.values["--label"] ?? subject.label,
+      vaultDestination: destination.address,
+      passphrase: opened.passphrase,
+      vaultPath: path
+    });
+    if (ctx.json) {
+      const reopened = hold(await reopen(path, opened.passphrase, vault));
+      const updated = reopened.index.entries.find((e) => e.id === subject.id);
+      writeJson(ctx.deps, {
+        ok: code === 0 || code === 3,
+        mode: "in-place",
+        address: subject.address,
+        vaultDestination: destination.address,
+        lifecycle: updated?.tee?.lifecycle ?? null,
+        linkedWalletId: updated?.linkedWalletId ?? null
+      });
+    } else if (code === 0 || code === 3) {
+      ctx.deps.stdout.write(`Promoted ${subject.address} in place (sweep to ${destination.address}). This address never returns to cold.
+`);
+    }
+    return code;
+  });
+}
+async function resumePromote(ctx, vault, entry, passphrase, path, hold) {
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(ctx.deps, {
+      code: "PROMOTE_RECONCILE_INCOMPLETE",
+      message: "No API key is available; reconciliation cannot run.",
+      suggestion: "Run: candle keys create"
+    }, ctx.json);
+    return 1;
+  }
+  let assertedAccount;
+  if (entry.tee?.grantIdentity === undefined) {
+    const config = await ctx.deps.readConfig();
+    const name = ctx.profile ?? config.activeProfile;
+    const cached = name !== undefined ? config.profiles?.[name]?.account : undefined;
+    if (cached === undefined || cached === "") {
+      writeLocalFailure(ctx.deps, {
+        code: "PROMOTE_RECONCILE_INCOMPLETE",
+        message: "This entry has no grant identity, and this profile has no cached account to assert."
+      }, ctx.json);
+      return 1;
+    }
+    ctx.deps.stdout.write(`This profile acts as account ${cached}.
+`);
+    await confirmLastSix(ctx, cached, "that account");
+    assertedAccount = cached;
+  }
+  const verdict = await reconcileGrant(ctx, entry, { assertedAccount });
+  if (verdict.kind === "unreadable") {
+    writeLocalFailure(ctx.deps, { code: "PROMOTE_RECONCILE_INCOMPLETE", message: verdict.reason }, ctx.json);
+    return 1;
+  }
+  if (verdict.kind === "unresolved") {
+    writeLocalFailure(ctx.deps, {
+      code: "PROMOTE_OUTCOME_UNRESOLVED",
+      message: `No authoritative grant or stranding record for ${entry.address}; the outcome is not established.`,
+      suggestion: "Nothing was written. Demote under --emergency if funds must move, then promote a fresh key."
+    }, ctx.json);
+    return 3;
+  }
+  if (verdict.kind === "strand-final") {
+    const next2 = await commitVault(vault, {
+      index: {
+        hd: vault.index.hd,
+        entries: vault.index.entries.map((e) => e.id === entry.id ? {
+          ...e,
+          linkedWalletId: undefined,
+          tee: {
+            network: "solana-mainnet",
+            lifecycle: "stranded",
+            grantIdentity: {
+              account: verdict.account,
+              apiBaseUrl: ctx.apiUrl,
+              source: "recorded-at-operation"
+            },
+            ...e.tee?.vaultDestination ? { vaultDestination: e.tee.vaultDestination } : {}
+          }
+        } : e)
+      }
+    }, ctx.deps);
+    hold(next2);
+    if (ctx.json)
+      writeJson(ctx.deps, { ok: false, lifecycle: "stranded", address: entry.address });
+    else
+      ctx.deps.stdout.write(`${entry.address} is stranded; it is never re-promotable.
+`);
+    return 1;
+  }
+  const adoption = await adoptGrantedRow(ctx, entry, verdict.row, verdict.account, {
+    confirmDestination: async (destination) => {
+      try {
+        await confirmLastSix(ctx, destination, "the server-reported vault destination");
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  });
+  if (adoption.outcome === "declined") {
+    writeLocalFailure(ctx.deps, {
+      code: "GRANT_DESTINATION_UNRESOLVED",
+      message: `Adoption of the server grant for ${entry.address} was declined; the entry was left unchanged.`
+    }, ctx.json);
+    return 1;
+  }
+  const next = await commitVault(vault, {
+    index: {
+      hd: vault.index.hd,
+      entries: vault.index.entries.map((e) => {
+        if (e.id !== entry.id)
+          return e;
+        return {
+          ...e,
+          ...adoption.patch.linkedWalletId !== undefined ? { linkedWalletId: adoption.patch.linkedWalletId } : {},
+          tee: adoption.patch.tee ?? e.tee
+        };
+      })
+    }
+  }, ctx.deps);
+  hold(next);
+  if (ctx.json) {
+    writeJson(ctx.deps, {
+      ok: true,
+      mode: "resume",
+      address: entry.address,
+      lifecycle: "enabled",
+      importCalls: 0
+    });
+  } else {
+    ctx.deps.stdout.write(`Resumed ${entry.address}: grant adopted; no re-import.
+`);
+  }
+  return 0;
+}
+async function displayHoldings(ctx, rpcUrl, address) {
+  const rpc = createSolanaRpc(rpcUrl, ctx.deps.fetch);
+  const observedAt = new Date(ctx.deps.now()).toISOString();
+  const lamports = await rpc.getBalance(address);
+  const tokens = await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID);
+  ctx.deps.stdout.write(`Holdings at ${address} (observed ${observedAt}):
+`);
+  ctx.deps.stdout.write(`  SOL   ${lamports} lamports
+`);
+  for (const t of tokens) {
+    ctx.deps.stdout.write(`  token ${t.mint}  ${t.amountRaw} raw (${t.decimals} dp)
+`);
+  }
+  if (tokens.length === 0)
+    ctx.deps.stdout.write(`  (no classic Token accounts)
+`);
+}
+async function runTeeImport(ctx, opts) {
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(ctx.deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }, ctx.json);
+    return 1;
+  }
+  opts.onImport?.();
+  const flow = await runImportFlow({
+    chain: "solana",
+    address: opts.address,
+    privateKey: opts.privateKey,
+    label: opts.label,
+    apiKey,
+    apiUrl: ctx.apiUrl,
+    deps: ctx.deps,
+    profile: TEE_PROFILE,
+    vaultDestination: opts.vaultDestination
+  });
+  if (!flow.ok) {
+    const failure = flow.failure;
+    if (failure.kind === "api")
+      writeFailure(ctx.deps, failure.response, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
+    else {
+      writeLocalFailure(ctx.deps, {
+        code: failure.kind === "signer-store" ? "SIGNER_STORE_FAILED" : "SIGNER_COMMIT_FAILED",
+        message: `${opts.address}: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`,
+        suggestion: "The vault entry is import-pending. Fix the error and re-run promote to resume."
+      }, ctx.json);
+    }
+    return 1;
+  }
+  const submitted = flow.submitted;
+  const config = await ctx.deps.readConfig();
+  const name = ctx.profile ?? config.activeProfile;
+  const account = name !== undefined ? config.profiles?.[name]?.account ?? "" : "";
+  const importedAt = new Date(ctx.deps.now()).toISOString();
+  const raw = await requireVaultRaw(opts.vaultPath);
+  const vault = await unlockWithPassphrase(opts.vaultPath, raw, opts.passphrase);
+  try {
+    await commitVault(vault, {
+      index: {
+        hd: vault.index.hd,
+        entries: vault.index.entries.map((entry) => {
+          if (entry.address !== opts.address)
+            return entry;
+          return {
+            ...entry,
+            linkedWalletId: submitted.id,
+            exposure: {
+              everRemoteExposed: true,
+              everExported: entry.exposure?.everExported === true,
+              ...entry.exposure?.exposureUnknown ? { exposureUnknown: true } : {}
+            },
+            tee: {
+              network: "solana-mainnet",
+              lifecycle: "enabled",
+              vaultDestination: opts.vaultDestination,
+              ...entry.tee?.promotedInPlaceAt ? { promotedInPlaceAt: entry.tee.promotedInPlaceAt } : {},
+              ...entry.tee?.destinationExposureAccepted ? { destinationExposureAccepted: true } : {},
+              ...submitted.boundKeyPrefix ? { boundKeyPrefix: submitted.boundKeyPrefix } : {},
+              remoteAuthority: submitted.remoteAuthority ?? "unknown",
+              enabledAt: importedAt,
+              grantIdentity: {
+                account,
+                apiBaseUrl: ctx.apiUrl,
+                source: "recorded-at-operation"
+              },
+              remoteState: "enabled",
+              ...entry.tee?.fundingReceipts ? { fundingReceipts: entry.tee.fundingReceipts } : {},
+              ...entry.tee?.sweepPending ? { sweepPending: entry.tee.sweepPending } : {},
+              ...entry.tee?.sweepReceipts ? { sweepReceipts: entry.tee.sweepReceipts } : {}
+            }
+          };
+        })
+      }
+    }, ctx.deps);
+  } finally {
+    closeVault(vault);
+  }
+  return submitted.remoteAuthority === "verified-active" ? 0 : 3;
 }
 
 // src/commands/vault-restore.ts
@@ -45943,6 +47079,90 @@ function describeEntryInner(entry) {
   };
 }
 
+// src/commands/vault-transfer.ts
+init_promote_support();
+init_store();
+async function vaultTransfer(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--amount", "--asset", "--from", "--rpc-url", "--keystore"],
+    booleanFlags: ["--accept-older-copy"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  const [to, extra] = parsed.positionals;
+  if (!to || extra !== undefined) {
+    return usage(ctx, "Usage: candle vault transfer <to> --amount <n> --asset SOL|<mint> --from <label> --rpc-url <url>");
+  }
+  const amount = parsed.values["--amount"];
+  const asset = parsed.values["--asset"];
+  const fromLabel = parsed.values["--from"];
+  const rpcUrl = parsed.values["--rpc-url"];
+  if (!amount)
+    return usage(ctx, "--amount <n> is required.");
+  if (!asset)
+    return usage(ctx, "--asset SOL|<mint> is required.");
+  if (!fromLabel)
+    return usage(ctx, "--from <label> is required.");
+  if (!rpcUrl)
+    return usage(ctx, "--rpc-url <url> is required.");
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault transfer"))
+    return 1;
+  const path = vaultPathFor(ctx, parsed);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(path);
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      promptText: "Vault passphrase (input hidden): "
+    });
+    const vault = hold(opened.vault);
+    const fromEntry = findVaultRoleEntry(vault.index, fromLabel);
+    if (fromEntry === undefined) {
+      return usage(ctx, `No vault key matches --from ${fromLabel}.`);
+    }
+    assertVaultSigner(fromEntry);
+    const plan = await planTransfer({
+      from: fromEntry.address,
+      to,
+      amount,
+      asset,
+      rpcUrl,
+      fetch: ctx.deps.fetch
+    });
+    const feeQuote = await quoteTransferFee(rpcUrl, ctx.deps.fetch, plan.from, plan.instructions);
+    displayTransferPlan(ctx, plan, feeQuote);
+    await confirmLastSix(ctx, to, "the destination");
+    const typed = await ctx.deps.promptSecret(`Vault passphrase to sign transfer of ${plan.amount} ${plan.asset} to ${to} (input hidden): `);
+    if (typed.trim() !== opened.passphrase) {
+      throw new Error("VAULT_UNLOCK_FAILED: passphrase did not match; nothing was signed.");
+    }
+    const secret = await decryptKey(vault, fromEntry.id);
+    try {
+      const result = await signAndBroadcastTransfer({ ctx, rpcUrl, secret64: secret, plan });
+      if (ctx.json) {
+        writeJson(ctx.deps, {
+          ok: result.finalized,
+          signature: result.signature,
+          from: plan.from,
+          to: plan.to,
+          amount: plan.amount,
+          asset: plan.asset,
+          amountRaw: plan.amountRaw.toString(),
+          finalized: result.finalized
+        });
+      } else {
+        ctx.deps.stdout.write(result.finalized ? `Transferred ${plan.amount} ${plan.asset} to ${to}: ${result.signature}
+` : `Submitted ${result.signature}; finality is not yet confirmed.
+`);
+      }
+      return result.finalized ? 0 : 3;
+    } finally {
+      wipe(secret);
+    }
+  });
+}
+
 // src/commands/verify.ts
 import { dirname as dirname4, join as join6 } from "node:path";
 var USAGE = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
@@ -46359,8 +47579,15 @@ Commands:
   vault verify-backup <path>                                      Verify a copy in full (all eight steps)
   vault import-legacy --tee [--from <path>]                       Migrate tee-wallets.enc into the vault
   vault retire-legacy [--from <path>]                             Rename the Phase 1 store after a verified backup
+  vault transfer <to> --amount <n> --asset SOL|<mint> --from <label> --rpc-url <url>
+                                                                  Sign a vault-key transfer locally
+  vault promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>]
+                                                                  Fresh TEE key, or promote one vault key in place (AD-8)
+  vault fund <tee-address> --amount <n> --asset SOL|USDC --rpc-url <url>
+                                                                  Fund a TEE wallet from its pinned vault key
+  vault demote <tee-address> --rpc-url <url> [--emergency]        Disable then sweep a TEE wallet back to its pin
   tee new [--label <name>]                                        Seal a fresh dedicated Solana TEE wallet key locally
-  tee enable <address> --vault <address>                          Delegate a TEE wallet key to this profile's agent, pin the sweep vault
+  tee enable <address> --vault <address>                          Delegate a TEE wallet key; pin the sweep vault (--vault-key <label> also)
   tee fund <address> --amount <n> [--asset SOL|USDC]              Print the funding instruction for your vault to sign
   tee status <address> [--rpc-url <url>]                          Server lifecycle state and on-chain balances
   tee disable <address>                                           Stop the agent; verified stop or pending, never "done" on a 200
@@ -46408,7 +47635,11 @@ var COMMANDS = {
       backup: vaultBackup,
       "verify-backup": vaultVerifyBackup,
       "import-legacy": vaultImportLegacy,
-      "retire-legacy": vaultRetireLegacy
+      "retire-legacy": vaultRetireLegacy,
+      transfer: vaultTransfer,
+      promote: vaultPromote,
+      fund: vaultFund,
+      demote: vaultDemote
     }
   },
   tee: {

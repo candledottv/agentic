@@ -165,12 +165,21 @@ export async function commitVaultTeeEntry(
 }
 
 /**
+ * Caller of the shared reconcile path. CC-10's transition table differs: resume / status /
+ * migrated-first-op hold on `unresolved` and refuse `unreadable`, while `vault demote` must
+ * continue into adapter recovery (emergency sweep to a pinned destination) for both.
+ */
+export type VaultReconcileCaller = "default" | "demote"
+
+/**
  * First operation on a migrated `local-candidate` / `import-pending`: reconcile, and adopt when
  * the server shows a grant. A declined confirmation leaves the entry byte-identical.
+ * Pass `caller: "demote"` so `unresolved` / `unreadable` proceed to recovery instead of holding.
  */
 export async function maybeReconcileVaultTee(
   ctx: CommandContext,
   resolved: Extract<ResolvedTee, { source: "vault" }>,
+  caller: VaultReconcileCaller = "default",
 ): Promise<{ entry: KeyEntry; code: number | null }> {
   const lifecycle = resolved.entry.tee?.lifecycle
   if (lifecycle !== "local-candidate" && lifecycle !== "import-pending") {
@@ -238,10 +247,18 @@ export async function maybeReconcileVaultTee(
   }
 
   if (verdict.kind === "unreadable") {
+    if (caller === "demote") {
+      // CC-10: recovery is not refused. No grant create/adopt; emergency sweep may proceed.
+      return { entry: resolved.entry, code: null }
+    }
     writeLocalFailure(ctx.deps, { code: "PROMOTE_RECONCILE_INCOMPLETE", message: verdict.reason }, ctx.json)
     return { entry: resolved.entry, code: 1 }
   }
   if (verdict.kind === "unresolved") {
+    if (caller === "demote") {
+      // CC-10: adapter recovery. A missing local id is not evidence of a missing grant.
+      return { entry: resolved.entry, code: null }
+    }
     writeLocalFailure(
       ctx.deps,
       {
@@ -255,6 +272,7 @@ export async function maybeReconcileVaultTee(
     return { entry: resolved.entry, code: 3 }
   }
   if (verdict.kind === "strand-final") {
+    const priorTee = resolved.entry.tee
     const next = await commitVaultTeeEntry(ctx, resolved.vault, resolved.entry.id, (entry) => {
       entry.tee = {
         network: "solana-mainnet",
@@ -264,6 +282,11 @@ export async function maybeReconcileVaultTee(
           apiBaseUrl: ctx.apiUrl,
           source: "recorded-at-operation",
         },
+        // Preserve an already pinned destination (and Phase 1 sweep evidence) so demote adapter
+        // recovery can still reach GRANT_DESTINATION_UNRESOLVED only when no pin exists.
+        ...(priorTee?.vaultDestination !== undefined ? { vaultDestination: priorTee.vaultDestination } : {}),
+        ...(priorTee?.sweepReceipts !== undefined ? { sweepReceipts: priorTee.sweepReceipts } : {}),
+        ...(priorTee?.sweepPending !== undefined ? { sweepPending: priorTee.sweepPending } : {}),
       }
       delete entry.linkedWalletId
     })
