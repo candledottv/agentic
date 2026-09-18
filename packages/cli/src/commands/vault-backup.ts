@@ -15,7 +15,7 @@
  * backs up is not one.
  */
 import { copyFile, stat } from "node:fs/promises"
-import { resolve } from "node:path"
+import nodePath, { resolve } from "node:path"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { assertBackupDomainAllowed } from "../vault/domains"
@@ -159,9 +159,28 @@ async function verifyCopy(
   }
 }
 
-function assertOutsideConfigDir(destination: string, env: Record<string, string | undefined>): void {
-  const config = resolve(candleConfigDir(env))
-  if (destination === config || destination.startsWith(`${config}/`)) {
+/** The subset of `node:path` the guard needs, so a test can hand it `path.win32` on a Linux runner. */
+export type PathApi = Pick<typeof nodePath, "resolve" | "relative" | "isAbsolute" | "sep">
+
+/**
+ * Whether `target` is `dir` itself or anything beneath it, on the platform `api` describes.
+ * `path.relative` rather than a string prefix, because a prefix test written with `/` never
+ * matches a Windows path, and the npm package runs on Windows (BE-178, finding 5).
+ */
+export function isInsideDir(dir: string, target: string, api: PathApi = nodePath): boolean {
+  const between = api.relative(api.resolve(dir), api.resolve(target))
+  if (between === "") return true
+  if (api.isAbsolute(between)) return false
+  return between !== ".." && !between.startsWith(`..${api.sep}`)
+}
+
+export function assertOutsideConfigDir(
+  destination: string,
+  env: Record<string, string | undefined>,
+  api: PathApi = nodePath,
+): void {
+  const config = api.resolve(candleConfigDir(env))
+  if (isInsideDir(config, destination, api)) {
     throw new VaultError(
       "VAULT_BACKUP_INSIDE_CONFIG",
       `${destination} is inside ${config}, where the vault itself lives.`,

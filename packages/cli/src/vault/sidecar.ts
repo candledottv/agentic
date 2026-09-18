@@ -85,22 +85,33 @@ export async function writeSidecar(path: string, state: VaultSidecar): Promise<v
  * write does not change, and `removedEnvelopeIds` only ever grows: an envelope this machine has
  * seen and no longer sees is one older copies may still open with, and forgetting that is exactly
  * the thing N1 asks `status` to be able to say.
+ *
+ * Two things are never carried (BE-178, findings 2 and 3). A previous sidecar that belongs to a
+ * DIFFERENT vault (the old `vault.enc` was moved aside and a new one created at the same path)
+ * contributes nothing: its `lastVerifiedBackupAt` describes a backup of some other file, and
+ * `retire-legacy` would otherwise retire the Phase 1 store on the strength of a backup this vault
+ * never had. And `lastGeneration` never decreases for the same vault: the `tee` commands open an
+ * older copy on purpose (`acceptOlderCopy`) so a recovery is never stranded, and a write committed
+ * onto that copy must not lower the anchor ED-6's rollback check relies on.
  */
 export function nextSidecar(
   previous: VaultSidecar | null,
   file: { vaultId: string; generation: number; envelopes: Array<{ id: string }> },
   patch: Partial<VaultSidecar> = {},
 ): VaultSidecar {
+  const carried = previous !== null && previous.vaultId === file.vaultId ? previous : null
   const currentIds = file.envelopes.map((envelope) => envelope.id)
-  const known = previous?.envelopeIds ?? []
-  const removed = new Set(previous?.removedEnvelopeIds ?? [])
+  const known = carried?.envelopeIds ?? []
+  const removed = new Set(carried?.removedEnvelopeIds ?? [])
   for (const id of known) if (!currentIds.includes(id)) removed.add(id)
-  return {
-    ...(previous ?? {}),
+  const next: VaultSidecar = {
+    ...(carried ?? {}),
     vaultId: file.vaultId,
     lastGeneration: file.generation,
     envelopeIds: currentIds,
     removedEnvelopeIds: [...removed].sort(),
     ...patch,
   }
+  next.lastGeneration = Math.max(next.lastGeneration, file.generation, carried?.lastGeneration ?? 0)
+  return next
 }

@@ -79,10 +79,13 @@ export function isOnDenylist(passphrase: string): boolean {
 }
 
 /**
- * AD-6's `--own-passphrase` rule. Throws the refusal rather than returning a verdict, because
- * every caller does the same thing with a rejection and the message is the whole value.
+ * AD-6's `--own-passphrase` rule, plus the whitespace rule above. Throws the refusal rather than
+ * returning a verdict, because every caller does the same thing with a rejection and the message
+ * is the whole value. `vault init`, `factor add passphrase` and `restore` all call this before
+ * anything is written.
  */
 export function assertOwnPassphraseAcceptable(passphrase: string): void {
+  assertNoSurroundingWhitespace(passphrase)
   if (passphrase.length < OWN_PASSPHRASE_MIN_LENGTH) {
     throw new VaultError(
       "VAULT_UNLOCK_FAILED",
@@ -95,6 +98,37 @@ export function assertOwnPassphraseAcceptable(passphrase: string): void {
       suggestion: "Nothing was written. Choose another, or run without --own-passphrase to have one generated.",
     })
   }
+}
+
+/**
+ * The ONE whitespace rule (BE-178, finding 1). A vault passphrase is its trimmed form: a chosen
+ * one may not begin or end with whitespace, and every generated one is words joined by single
+ * spaces, so the string wrapped around the key always equals its own `trim()`.
+ *
+ * The rule is applied in two places and nowhere else. `assertOwnPassphraseAcceptable` refuses a
+ * chosen passphrase that breaks it BEFORE anything is written, with a message that says so, rather
+ * than silently changing what the operator typed. `passphraseAttempts` applies it when a passphrase
+ * is typed to unlock: the input exactly as typed is tried first, and when that fails and the
+ * trimmed form differs, the trimmed form is tried too. Exact-first is what rescues a vault CLI
+ * 0.10.0 created with surrounding spaces kept (creation stored the string as typed while every
+ * unlock trimmed it, so such a vault could never be opened); trimmed-second is what lets a normal
+ * vault open when a stray trailing space is typed at the prompt.
+ */
+export function assertNoSurroundingWhitespace(passphrase: string): void {
+  if (passphrase !== passphrase.trim()) {
+    throw new VaultError(
+      "VAULT_UNLOCK_FAILED",
+      "A passphrase you choose must not begin or end with a space or other whitespace; the vault would keep it exactly as typed, and it could not be reproduced at the unlock prompt.",
+      { suggestion: "Nothing was written. Choose it again without the leading or trailing whitespace." },
+    )
+  }
+}
+
+/** The strings to try, in order, when `typed` is entered at an unlock prompt. Empty means nothing typed. */
+export function passphraseAttempts(typed: string): string[] {
+  const trimmed = typed.trim()
+  if (trimmed === "") return []
+  return trimmed === typed ? [typed] : [typed, trimmed]
 }
 
 export function strengthFor(ownPassphrase: boolean): PassphraseStrength {

@@ -283,7 +283,13 @@ export async function open(
   return ownSecret(new Uint8Array(plain))
 }
 
-/** Seals a JSON document canonically. Used for the index plaintext, which has no secrets in it. */
+/**
+ * Seals a JSON document as `JSON.stringify` renders it: key order as constructed, not canonical
+ * form. That is deliberate and is the sealed format, so it is not changed here. Canonical JSON is
+ * for ASSOCIATED DATA, where two encoders that disagree by a space produce two different tags;
+ * the plaintext inside a blob is parsed by this CLI alone, and the AEAD tag covers whatever bytes
+ * were sealed. Used for the index plaintext, which has no secrets in it.
+ */
 export async function sealJson(key: CryptoKey, value: unknown, aad: Uint8Array): Promise<Blob> {
   const bytes = new TextEncoder().encode(JSON.stringify(value))
   try {

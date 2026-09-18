@@ -9,7 +9,7 @@
  * the test scripted fails loudly instead of hanging.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Deps } from "../deps"
@@ -17,7 +17,7 @@ import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 import { GENERATED_WORD_COUNT } from "../vault/passphrase"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
-import { generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
+import { generatedPassphraseFrom, makeVault, useCheapKdf } from "../vault/test-vault"
 
 /**
  * These tests run REAL Argon2id, which is the point of them: a vault suite that stubbed the KDF
@@ -473,6 +473,123 @@ describe("T44: ED-6's two rollback shapes", () => {
     const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)).toBe(0)
     expect(s.stderr.text).toContain("cannot be recognized here")
+  })
+
+  test("BE-178 finding 3: a write committed onto an accepted older copy does not lower the anchor", async () => {
+    const h = await initVault()
+    const older = await readFile(h.vaultPath, "utf8")
+
+    // Two more writes: generation 3, and the sidecar remembers it.
+    const second = "a second passphrase entirely"
+    const third = "a third passphrase entirely"
+    for (const extra of [second, third]) {
+      const add = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase, extra, extra] })
+      expect(
+        await run(["vault", "factor", "add", "passphrase", "--own-passphrase", "--keystore", h.vaultPath], add.deps),
+      ).toBe(0)
+    }
+    expect((await readSidecar(sidecarPath(h.vaultPath)))?.lastGeneration).toBe(3)
+
+    // Restore the generation-1 copy and commit onto it, as the tee commands do when they accept an
+    // older copy so a recovery is never stranded. The file becomes generation 2.
+    await writeFile(h.vaultPath, older, "utf8")
+    const onto = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase, second, second] })
+    expect(
+      await run(
+        ["vault", "factor", "add", "passphrase", "--own-passphrase", "--accept-older-copy", "--keystore", h.vaultPath],
+        onto.deps,
+      ),
+    ).toBe(0)
+    expect((JSON.parse(await readFile(h.vaultPath, "utf8")) as { generation: number }).generation).toBe(2)
+    expect((await readSidecar(sidecarPath(h.vaultPath)))?.lastGeneration).toBe(3)
+
+    // A normal open still reports it as an older copy.
+    const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)).toBe(1)
+    expect(s.stderr.text).toContain("older copy")
+  })
+})
+
+describe("BE-178 finding 1: passphrases and surrounding whitespace", () => {
+  test("a chosen passphrase with surrounding whitespace is refused before anything is written", async () => {
+    const h = await harness({ secrets: [" sixteen characters long "] })
+    expect(await run(["vault", "init", "--own-passphrase", "--keystore", h.vaultPath], h.deps)).toBe(1)
+    expect(h.stderr.text).toContain("must not begin or end with a space")
+    expect(h.stderr.text).toContain("Nothing was written")
+    // Refused at the first prompt: the confirmation was never asked for.
+    expect(h.asked).toHaveLength(1)
+    await expect(stat(h.vaultPath)).rejects.toThrow()
+    await expect(stat(sidecarPath(h.vaultPath))).rejects.toThrow()
+  })
+
+  test("factor add passphrase --own-passphrase refuses it too, and the file is untouched", async () => {
+    const h = await initVault()
+    const before = await readFile(h.vaultPath, "utf8")
+    const add = await harness({
+      env: { CANDLE_CONFIG_DIR: h.dir },
+      secrets: [h.passphrase, "sixteen characters long "],
+    })
+    expect(
+      await run(["vault", "factor", "add", "passphrase", "--own-passphrase", "--keystore", h.vaultPath], add.deps),
+    ).toBe(1)
+    expect(add.stderr.text).toContain("must not begin or end with a space")
+    expect(await readFile(h.vaultPath, "utf8")).toBe(before)
+  })
+
+  test("a vault CLI 0.10.0 created with a trailing space re-opens with the passphrase typed as it was", async () => {
+    // 0.10.0 wrapped the key with the passphrase exactly as typed and trimmed every unlock, so this
+    // vault could never be opened. The creation path now refuses the shape, so the fixture is built
+    // through the store directly, which is what that release did.
+    const kept = "sixteen characters long "
+    const made = await makeVault({ passphrase: kept, strength: "user-chosen" })
+    const { closeVault } = await import("../vault/store")
+    closeVault(made.vault)
+
+    const s = await harness({ env: { CANDLE_CONFIG_DIR: made.dir }, secrets: [kept] })
+    expect(await run(["vault", "status", "--unlock", "--keystore", made.path], s.deps)).toBe(0)
+    expect(s.stdout.text).toContain("chosen by you")
+  })
+
+  test("a normal vault re-opens when the unlock is typed with a stray trailing space", async () => {
+    const h = await initVault()
+    const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [`${h.passphrase} `] })
+    expect(await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)).toBe(0)
+
+    // Trimming is not a second guess at the content: a wrong passphrase stays wrong.
+    const w = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [`${h.passphrase}x `] })
+    expect(await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], w.deps)).toBe(1)
+    expect(w.stderr.text).toContain("wrong passphrase")
+  })
+})
+
+describe("BE-178 finding 2: a new vault does not inherit another vault's verified-backup stamp", () => {
+  test("retire-legacy refuses after the old vault.enc was moved aside and a new vault made at the path", async () => {
+    const h = await initVault()
+    const backupPath = join(h.dir, "..", `be178-backup-${Date.now()}.enc`)
+    const b = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(await run(["vault", "backup", "--to", backupPath, "--keystore", h.vaultPath], b.deps)).toBe(0)
+    const stamped = await readSidecar(sidecarPath(h.vaultPath))
+    expect(stamped?.lastVerifiedBackupAt).toBeDefined()
+
+    // The operator moves the vault aside and starts over at the same path; the sidecar stays.
+    await rename(h.vaultPath, `${h.vaultPath}.moved-aside`)
+    const n = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, lines: ["no"] })
+    n.deps.promptSecret = async () => generatedPassphraseFrom(n.stdout.text)
+    expect(await run(["vault", "init", "--keystore", h.vaultPath], n.deps)).toBe(0)
+    const fresh = await readSidecar(sidecarPath(h.vaultPath))
+    expect(fresh?.vaultId).toBeDefined()
+    expect(fresh?.vaultId).not.toBe(stamped?.vaultId)
+    expect(fresh?.lastVerifiedBackupAt).toBeUndefined()
+
+    // So retire-legacy refuses before it reads the Phase 1 store or asks for anything.
+    const r = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
+    const code = await run(
+      ["vault", "retire-legacy", "--from", join(h.dir, "tee-wallets.enc"), "--keystore", h.vaultPath, "--json"],
+      r.deps,
+    )
+    expect(code).toBe(1)
+    expect(JSON.parse(r.stdout.text.trim()).code).toBe("LEGACY_UNVERIFIED_BACKUP")
+    expect(r.asked).toHaveLength(0)
   })
 })
 

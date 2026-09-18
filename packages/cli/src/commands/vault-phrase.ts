@@ -105,9 +105,10 @@ export async function runPhraseCeremony(
     const envelope = vault.file.envelopes.find((candidate) => candidate.factor === "passphrase")
     if (!envelope) throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.")
     const { unlockWithPassphrase } = await import("../vault/store")
-    const reopened = await unlockWithPassphrase(vault.path, vault.raw, typed.trim(), {
-      notice: (line) => deps.stderr.write(line),
-    })
+    const { openWithTypedPassphrase } = await import("./vault-support")
+    const { vault: reopened } = await openWithTypedPassphrase(typed, (candidate) =>
+      unlockWithPassphrase(vault.path, vault.raw, candidate, { notice: (line) => deps.stderr.write(line) }),
+    )
     // Only the proof was wanted; the caller's handle stays the one that gets closed.
     const { closeVault } = await import("../vault/store")
     closeVault(reopened)

@@ -19,6 +19,7 @@ import {
   parseVaultFile,
 } from "../vault/format"
 import { wipe } from "../vault/hygiene"
+import { passphraseAttempts } from "../vault/passphrase"
 import { canDrive, envelopeAvailability, type PlatformFacts, refusalCodeFor } from "../vault/platform"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
 import {
@@ -150,26 +151,26 @@ export async function unlockInteractively(
 
   if (choice.kind === "passphrase") {
     const typed = await deps.promptSecret(opts.promptText ?? "Vault passphrase (input hidden): ")
-    const passphrase = typed.trim()
-    if (passphrase === "") {
-      throw new VaultError("VAULT_UNLOCK_FAILED", "A passphrase is required.")
-    }
-    // The passphrase is kept so a command that must RE-OPEN the file it just wrote (new-key's
-    // verification, init's invariant 1 step) can do it without a second prompt. It is a JavaScript
-    // string with CC-04's stated lifetime caveat either way; asking for it twice would not shorten
-    // that and would train an operator to type a vault passphrase on demand.
-    const open = (p: string, r: string) =>
+    const openWith = (p: string, r: string, candidate: string) =>
       choice.envelopeId === undefined
-        ? unlockWithPassphrase(p, r, passphrase, { notice })
-        : unlockVault(p, r, { factor: "passphrase", passphrase, envelopeId: choice.envelopeId }, { notice })
-    const vault = await open(path, raw)
+        ? unlockWithPassphrase(p, r, candidate, { notice })
+        : unlockVault(p, r, { factor: "passphrase", passphrase: candidate, envelopeId: choice.envelopeId }, { notice })
+    const { vault, passphrase } = await openWithTypedPassphrase(typed, (candidate) => openWith(path, raw, candidate))
+    // The passphrase that OPENED the file is kept, so a command that must re-open what it just
+    // wrote (new-key's verification, init's invariant 1 step) can do it without a second prompt.
+    // It is a JavaScript string with CC-04's stated lifetime caveat either way; asking for it
+    // twice would not shorten that and would train an operator to type a vault passphrase on
+    // demand.
+    const open = (p: string, r: string) => openWith(p, r, passphrase)
     return {
       vault,
       factor: { kind: "passphrase", envelopeId: vault.envelope.id },
       reopen: open,
       confirm: async (what) => {
         const again = await deps.promptSecret(`Vault passphrase to ${what} (input hidden): `)
-        if (again.trim() !== passphrase) {
+        // The same rule as the first prompt: the string that opened the vault, typed again, with a
+        // stray edge space tolerated. A rescued 0.10.0 vault's passphrase includes its spaces.
+        if (!passphraseAttempts(again).includes(passphrase)) {
           throw new VaultError("VAULT_UNLOCK_FAILED", "The passphrase did not match; nothing was signed.")
         }
       },
@@ -209,6 +210,33 @@ export async function unlockInteractively(
       closeVault(await open(path, raw))
     },
   }
+}
+
+/**
+ * Opens with a passphrase as typed at a hidden prompt, under the one whitespace rule in
+ * `passphrase.ts`: the exact input first, then its trimmed form when that differs. Returns the
+ * string that actually opened the vault, which is the one a re-open or a confirmation must use.
+ * A refusal that is not "wrong passphrase" (a tampered index, a missing envelope) is a property of
+ * the file and stops the attempts rather than being repeated under the next candidate.
+ */
+export async function openWithTypedPassphrase(
+  typed: string,
+  open: (candidate: string) => Promise<UnlockedVault>,
+): Promise<{ vault: UnlockedVault; passphrase: string }> {
+  const attempts = passphraseAttempts(typed)
+  if (attempts.length === 0) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", "A passphrase is required.")
+  }
+  let last: unknown
+  for (const candidate of attempts) {
+    try {
+      return { vault: await open(candidate), passphrase: candidate }
+    } catch (error) {
+      if (!(error instanceof VaultError) || error.code !== "VAULT_UNLOCK_FAILED") throw error
+      last = error
+    }
+  }
+  throw last
 }
 
 /** Which envelope kinds are on the file, which of them this machine can drive, and the choice. */

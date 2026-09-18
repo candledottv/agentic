@@ -15,8 +15,8 @@ import type { CommandContext } from "../deps"
 import { createVault } from "../vault/create"
 import { randomBytes } from "../vault/crypto"
 import { VaultError } from "../vault/errors"
-import { phraseFromEntropy, ROOT_ENTROPY_BYTES } from "../vault/hd"
-import { wipe, withSecret } from "../vault/hygiene"
+import { ROOT_ENTROPY_BYTES } from "../vault/hd"
+import { withSecret } from "../vault/hygiene"
 import {
   APPLE_ACCOUNT_NOTICE,
   assertOwnPassphraseAcceptable,
@@ -183,13 +183,6 @@ async function collectOwnPassphrase(ctx: CommandContext): Promise<string> {
     ctx.deps.stdout.write("Recorded as chosen by you: this CLI cannot know its entropy and `vault status` says so.\n")
   }
   return first
-}
-
-/** Exported for the fixture builder and the tests: the words a given entropy renders. */
-export function phraseForFixture(entropy: Uint8Array): string {
-  const phrase = phraseFromEntropy(entropy)
-  wipe()
-  return phrase
 }
 
 export { defaultVaultPath }

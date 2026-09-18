@@ -23,11 +23,15 @@ export type ResolvedTee =
       source: "vault"
       vault: UnlockedVault
       entry: KeyEntry
-      /** Phase 1-shaped view for read paths that still speak KeystoreEntry. */
+      /**
+       * Phase 1-shaped view for paths that still speak KeystoreEntry. Its `privateKey` is the
+       * decoded secret only under `access: "sign"`; a read resolve leaves it empty.
+       */
       legacyView: KeystoreEntry
       /** Re-opens the vault with the factor that opened it (BE-140), whichever kind that was. */
       reopen: OpenedVault["reopen"]
-      privateKeyBase58: string
+      /** The secret, base58, only when resolved with `access: "sign"`; `null` otherwise. */
+      privateKeyBase58: string | null
     }
   | {
       source: "legacy"
@@ -43,36 +47,58 @@ type LegacyOpen =
   | { ok: false; code: number }
 
 /**
- * Looks in the vault first. On a vault hit, decrypts the secret once for the caller's use and
- * builds a Phase 1-shaped view. The caller must `releaseResolvedTee` in a finally block.
+ * What the caller will do with the entry (BE-178, finding 8). EVERY resolve decrypts the key blob
+ * into a wipeable buffer, checks that it re-derives the entry's address, and zeroes it: a TEE
+ * wallet whose sealed key is corrupt or tampered must be refused by `tee fund` before an operator
+ * is told to send funds to it, and by `tee status` before it reports the wallet as usable. What
+ * differs is what survives that check. Only a command that SIGNS with the key (`tee sweep`) may
+ * ask for `"sign"`, which keeps the secret as a base58 string for the signer; `"read"` (`tee
+ * status`, `tee fund`, `tee disable`, `vault demote`) keeps nothing, so no immutable copy of the
+ * secret is made for a command that has no use for one.
+ */
+export type TeeAccess = "read" | "sign"
+
+/**
+ * Looks in the vault first. On a vault hit, decrypts and verifies the secret, keeps it as a
+ * string only under `access: "sign"`, and builds a Phase 1-shaped view. The caller must
+ * `releaseResolvedTee` in a finally block; on any failure inside this function the vault it
+ * opened is closed here, on every path (finding 4).
  */
 export async function resolveTeeAddress(
   ctx: CommandContext,
   _parsed: ParsedArgs,
   address: string,
   openLegacy: () => Promise<LegacyOpen>,
+  access: TeeAccess = "read",
 ): Promise<{ ok: true; resolved: ResolvedTee } | { ok: false; code: number }> {
   try {
     const hit = await findTeeInVault(ctx, address)
     if (hit.hit) {
-      const secret = await decryptKey(hit.vault, hit.entry.id)
-      let privateKeyBase58: string
+      let privateKeyBase58: string | null = null
       try {
-        if (addressFromSecret64(secret) !== hit.entry.address) {
-          writeLocalFailure(
-            ctx.deps,
-            {
-              code: "VAULT_VERIFY_FAILED",
-              message: `${address} in the vault does not re-derive from its stored secret.`,
-            },
-            ctx.json,
-          )
-          closeVault(hit.vault)
-          return { ok: false, code: 1 }
+        const secret = await decryptKey(hit.vault, hit.entry.id)
+        try {
+          if (addressFromSecret64(secret) !== hit.entry.address) {
+            writeLocalFailure(
+              ctx.deps,
+              {
+                code: "VAULT_VERIFY_FAILED",
+                message: `${address} in the vault does not re-derive from its stored secret.`,
+              },
+              ctx.json,
+            )
+            closeVault(hit.vault)
+            return { ok: false, code: 1 }
+          }
+          // The one thing that cannot be wiped is made only for the command that signs.
+          if (access === "sign") privateKeyBase58 = base58.encode(secret)
+        } finally {
+          wipe(secret)
         }
-        privateKeyBase58 = base58.encode(secret)
-      } finally {
-        wipe(secret)
+      } catch (error) {
+        // A throw from decryptKey or addressFromSecret64 must not leave the DEK readable.
+        closeVault(hit.vault)
+        throw error
       }
       return {
         ok: true,
@@ -335,7 +361,7 @@ function applyVault(resolved: Extract<ResolvedTee, { source: "vault" }>, next: U
   resolved.legacyView = keyEntryAsKeystore(updated, resolved.privateKeyBase58)
 }
 
-function keyEntryAsKeystore(entry: KeyEntry, privateKeyBase58: string): KeystoreEntry {
+function keyEntryAsKeystore(entry: KeyEntry, privateKeyBase58: string | null): KeystoreEntry {
   const tee = entry.tee
   const meta: TeeWalletMeta | undefined =
     tee === undefined
@@ -361,7 +387,8 @@ function keyEntryAsKeystore(entry: KeyEntry, privateKeyBase58: string): Keystore
     address: entry.address,
     label: entry.label,
     createdAt: entry.createdAt,
-    privateKey: privateKeyBase58,
+    // Empty under a read resolve: no command that reads may see the secret (finding 8).
+    privateKey: privateKeyBase58 ?? "",
     imported: entry.linkedWalletId !== undefined || tee?.lifecycle === "enabled" || tee?.lifecycle === "retired",
     ...(entry.linkedWalletId !== undefined ? { linkedWalletId: entry.linkedWalletId } : {}),
     ...(meta !== undefined ? { tee: meta } : {}),

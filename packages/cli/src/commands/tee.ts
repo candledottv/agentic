@@ -51,6 +51,7 @@ import {
   refuseLegacyWriteForVaultAddress,
   releaseResolvedTee,
   resolveTeeAddress,
+  type TeeAccess,
 } from "../vault/tee-resolve"
 import { runImportFlow, TEE_PROFILE } from "../wallet-import-flow"
 import { generateWallet } from "../wallet-keygen"
@@ -327,8 +328,9 @@ async function openActiveTee(
   ctx: CommandContext,
   parsed: ParsedArgs,
   address: string,
+  access: TeeAccess,
 ): Promise<{ ok: true; active: ActiveTee } | { ok: false; code: number }> {
-  const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed))
+  const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed), access)
   if (!resolved.ok) return { ok: false, code: resolved.code }
   if (resolved.resolved.source === "vault") {
     return {
@@ -1059,7 +1061,8 @@ export async function teeDisable(args: string[], ctx: CommandContext): Promise<n
   if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee disable <address>")
 
   await printIdentity(ctx)
-  const openedActive = await openActiveTee(ctx, parsed, address)
+  // Disable reads the grant handle and never signs: the key is verified, not kept.
+  const openedActive = await openActiveTee(ctx, parsed, address, "read")
   if (!openedActive.ok) return openedActive.code
   const { active } = openedActive
   try {
@@ -1285,7 +1288,8 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
   if (typeof rpcUrl !== "string") return usage(ctx, rpcUrl.error)
   const emergency = parsed.booleans.has("--emergency")
 
-  const openedActive = await openActiveTee(ctx, parsed, address)
+  // The one tee command that signs with the key, so the one that may keep it after the verify.
+  const openedActive = await openActiveTee(ctx, parsed, address, "sign")
   if (!openedActive.ok) return openedActive.code
   const { active } = openedActive
   try {

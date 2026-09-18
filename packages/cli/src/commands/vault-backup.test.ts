@@ -15,7 +15,7 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, posix, win32 } from "node:path"
 import type { Deps } from "../deps"
 import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
@@ -28,6 +28,7 @@ import {
 import type { Envelope } from "../vault/format"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
 import { flipByte, generatedPassphraseFrom, tamper, useCheapKdf } from "../vault/test-vault"
+import { assertOutsideConfigDir, isInsideDir } from "./vault-backup"
 
 /**
  * These tests run REAL Argon2id, which is the point of them: a vault suite that stubbed the KDF
@@ -259,5 +260,34 @@ describe("backup runs the full verifier, and records only on a full pass", () =>
     const body = JSON.parse(b.stdout.text) as Record<string, unknown>
     expect(body).toMatchObject({ ok: true, verified: true, steps: 8, comparedAgainstLive: true })
     expect(b.stdout.text).not.toContain(h.passphrase)
+  })
+})
+
+describe("BE-178 finding 5: the config-dir guard on Windows-shaped paths", () => {
+  test("isInsideDir follows path.relative on both platforms", () => {
+    const config = "C:\\Users\\me\\.config\\candle"
+    expect(isInsideDir(config, "C:\\Users\\me\\.config\\candle\\copy.enc", win32)).toBe(true)
+    expect(isInsideDir(config, "C:\\Users\\me\\.config\\candle", win32)).toBe(true)
+    expect(isInsideDir(config, "C:\\Users\\me\\.config\\candle\\deep\\copy.enc", win32)).toBe(true)
+    expect(isInsideDir(config, "c:\\users\\ME\\.config\\Candle\\copy.enc", win32)).toBe(true)
+    expect(isInsideDir(config, "C:\\Users\\me\\.config\\candle-backups\\copy.enc", win32)).toBe(false)
+    expect(isInsideDir(config, "C:\\Users\\me\\.config\\copy.enc", win32)).toBe(false)
+    expect(isInsideDir(config, "D:\\backups\\copy.enc", win32)).toBe(false)
+
+    expect(isInsideDir("/home/me/.config/candle", "/home/me/.config/candle/copy.enc", posix)).toBe(true)
+    expect(isInsideDir("/home/me/.config/candle", "/home/me/.config/candle", posix)).toBe(true)
+    expect(isInsideDir("/home/me/.config/candle", "/home/me/.config/candle-backups/copy.enc", posix)).toBe(false)
+    expect(isInsideDir("/home/me/.config/candle", "/home/me/.config/copy.enc", posix)).toBe(false)
+    // A name that merely starts with two dots is a child, not a parent.
+    expect(isInsideDir("/home/me/.config/candle", "/home/me/.config/candle/..copy.enc", posix)).toBe(true)
+  })
+
+  test("assertOutsideConfigDir refuses a Windows destination inside CANDLE_CONFIG_DIR", () => {
+    const env = { CANDLE_CONFIG_DIR: "C:\\Users\\me\\.config\\candle" }
+    expect(() => assertOutsideConfigDir("C:\\Users\\me\\.config\\candle\\copy.enc", env, win32)).toThrow(
+      /where the vault itself lives/,
+    )
+    expect(() => assertOutsideConfigDir("D:\\backups\\copy.enc", env, win32)).not.toThrow()
+    expect(() => assertOutsideConfigDir("C:\\Users\\me\\.config\\candle-backups\\copy.enc", env, win32)).not.toThrow()
   })
 })
