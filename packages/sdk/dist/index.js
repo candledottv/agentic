@@ -77,6 +77,11 @@ class CandleApiError extends Error {
   status;
   retryable;
   field;
+  routing;
+  discovery;
+  coverage;
+  uiHint;
+  docsPath;
   constructor(args) {
     super(args.message);
     this.name = "CandleApiError";
@@ -85,6 +90,11 @@ class CandleApiError extends Error {
     this.retryable = args.retryable;
     if (args.field !== undefined)
       this.field = args.field;
+    this.routing = args.routing;
+    this.discovery = args.discovery;
+    this.coverage = args.coverage;
+    this.uiHint = args.uiHint;
+    this.docsPath = args.docsPath;
   }
 }
 function isSolanaRpcErrorData(data) {
@@ -118,6 +128,11 @@ function envelopeError(body) {
   if (typeof error.code !== "string" || typeof error.message !== "string")
     return null;
   return {
+    ...typeof error.routing === "object" && error.routing !== null && typeof error.routing.reason === "string" ? { routing: error.routing } : {},
+    ...typeof error.discovery === "object" && error.discovery !== null ? { discovery: error.discovery } : {},
+    ...error.coverage !== undefined ? { coverage: error.coverage } : {},
+    ...typeof error.uiHint === "string" ? { uiHint: error.uiHint } : {},
+    ...typeof error.docsPath === "string" ? { docsPath: error.docsPath } : {},
     code: error.code,
     message: error.message,
     ...typeof error.field === "string" ? { field: error.field } : {},
@@ -134,6 +149,7 @@ function candleApiErrorFromResponse(status, bodyText) {
   const payload = envelopeError(parsed);
   if (payload) {
     return new CandleApiError({
+      ...payload,
       code: payload.code,
       message: payload.message,
       status,

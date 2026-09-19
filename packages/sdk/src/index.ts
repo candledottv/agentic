@@ -78,7 +78,7 @@ export type {
   VerifyResult,
 } from "./client"
 export { CandleClient } from "./client"
-export type { CandleErrorPayload, SolanaRpcErrorData } from "./errors"
+export type { CandleErrorPayload, CandleRoutingDetail, SolanaRpcErrorData } from "./errors"
 export { CandleApiError, isSolanaRpcErrorData, JsonRpcError } from "./errors"
 export { KeychainSecretStore } from "./keychain-secret-store"
 export type { SecretStore } from "./secret-store"

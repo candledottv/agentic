@@ -373,3 +373,32 @@ describe("insecureApiUrlFault: the escape hatch reaches private hosts only", () 
     expect(insecureApiUrlFault("http://127.0.0.5:3001", {})).toBeUndefined()
   })
 })
+
+test("Release A error routing survives HTTP parsing and CLI JSON rendering", async () => {
+  const { errorEnvelope } = await import("./render")
+  const error = {
+    code: "MARKET_NOT_FOUND",
+    message: "use the general quote",
+    retryable: false,
+    routing: { reason: "not_candle_market" },
+    discovery: { indexed: true, chain: "solana" },
+    uiHint: "POST /api/v1/trade/agent/quote",
+    docsPath: "developers/agent-trading",
+  }
+  const result = await apiRequest("/api/v1/markets/solana/External/quote", {
+    auth: "none",
+    credentials: {},
+    apiUrl: "https://api.test",
+    fetch: (async () =>
+      new Response(JSON.stringify({ success: false, error }), { status: 404 })) as unknown as typeof fetch,
+  })
+  if (result.ok) throw new Error("expected refusal")
+  expect(errorEnvelope(result, { apiUrl: "https://api.test" })).toMatchObject({
+    code: error.code,
+    retryable: false,
+    routing: error.routing,
+    discovery: error.discovery,
+    suggestion: error.uiHint,
+    docsUrl: "https://docs.candle.tv/developers/agent-trading",
+  })
+})

@@ -27,6 +27,9 @@ export type ApiResult =
       status: number
       code?: string
       message: string
+      retryable?: boolean
+      routing?: Record<string, unknown>
+      discovery?: Record<string, unknown>
       rfcError?: string
       /** The API's plain-language fix for this error (ERROR_UI_CATALOG's uiHint), when it sent
        * one -- surfaced so `--json` failures can carry a `suggestion` an agent can act on. */
@@ -220,7 +223,16 @@ function parseBody(text: string): unknown {
 function classifyError(
   status: number,
   raw: unknown,
-): { code?: string; message: string; rfcError?: string; uiHint?: string; docsPath?: string } {
+): {
+  code?: string
+  message: string
+  rfcError?: string
+  uiHint?: string
+  docsPath?: string
+  retryable?: boolean
+  routing?: Record<string, unknown>
+  discovery?: Record<string, unknown>
+} {
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     const obj = raw as Record<string, unknown>
 
@@ -238,7 +250,19 @@ function classifyError(
       // "what do I do about it".
       const uiHint = typeof errorObj.uiHint === "string" ? errorObj.uiHint : undefined
       const docsPath = typeof errorObj.docsPath === "string" ? errorObj.docsPath : undefined
-      return { code, message, ...(uiHint ? { uiHint } : {}), ...(docsPath ? { docsPath } : {}) }
+      return {
+        code,
+        message,
+        ...(typeof errorObj.retryable === "boolean" ? { retryable: errorObj.retryable } : {}),
+        ...(typeof errorObj.routing === "object" && errorObj.routing !== null
+          ? { routing: errorObj.routing as Record<string, unknown> }
+          : {}),
+        ...(typeof errorObj.discovery === "object" && errorObj.discovery !== null
+          ? { discovery: errorObj.discovery as Record<string, unknown> }
+          : {}),
+        ...(uiHint ? { uiHint } : {}),
+        ...(docsPath ? { docsPath } : {}),
+      }
     }
   }
 

@@ -72,6 +72,9 @@ export interface ErrorRenderContext {
 }
 
 interface FailureLike {
+  retryable?: boolean
+  routing?: Record<string, unknown>
+  discovery?: Record<string, unknown>
   status: number
   code?: string
   message: string
@@ -135,6 +138,9 @@ export function suggestionFor(result: FailureLike, ctx: ErrorRenderContext): str
 /** The stable machine failure shape. `code` is always present so a caller can switch on it
  * without probing; `suggestion`/`docsUrl` appear only when there is a real one to give. */
 export interface ErrorEnvelope {
+  retryable?: boolean
+  routing?: Record<string, unknown>
+  discovery?: Record<string, unknown>
   ok: false
   code: string
   status: number
@@ -156,6 +162,9 @@ export function errorEnvelope(result: FailureLike, ctx: ErrorRenderContext): Err
   const docsUrl = result.docsPath ? `https://docs.candle.tv/${result.docsPath}` : undefined
   return {
     ok: false,
+    ...(result.retryable !== undefined ? { retryable: result.retryable } : {}),
+    ...(result.routing ? { routing: result.routing } : {}),
+    ...(result.discovery ? { discovery: result.discovery } : {}),
     code,
     status: result.status,
     message,

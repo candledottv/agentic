@@ -4,9 +4,10 @@
     "without parsing prose. Branch on `code`, never on `message`: the code is stable, the message",
     "is written for humans and will change.",
     "",
-    "`retryable` means the SAME request may succeed later, unchanged. A category marked false will",
-    "fail identically forever until something about the request, the key, or the account changes.",
-    "Retrying it is how an agent burns its rate limit and reaches nothing.",
+    "`retryable` means the SAME request may succeed later, unchanged. Explicit error.retryable",
+    "overrides category defaults for market and transient responses. Read error.routing.reason.",
+    "Release A retains MARKET_NOT_FOUND/404 and baseline retryability; finer reasons disambiguate it.",
+    "MARKET_NOT_FOUND is deprecated on migrating surfaces; forensics retains its coverage refusal.",
     "",
     "Source of truth is LAUNCH_ERROR_CODES in the monorepo. Coverage is asserted in CI, so a new",
     "code cannot ship without landing in a category here."
@@ -73,7 +74,7 @@
     },
     "market": {
       "retryable": false,
-      "action": "The market or pair cannot serve this request. Re-read with `candle_get_market` before trying another route.",
+      "action": "Read error.routing.reason and error.discovery. Explicit error.retryable overrides this default (graduation/no_candidates can retry). For a refusal from a Candle-only endpoint, request POST /api/v1/trade/agent/quote; that guidance does not promise liquidity, access or external limit orders.",
       "codes": [
         "MARKET_NOT_FOUND",
         "MARKET_NOT_TRADABLE",
@@ -96,7 +97,7 @@
     },
     "transient": {
       "retryable": true,
-      "action": "Something upstream was slow or failed. Retry with backoff, reusing the SAME idempotency id so a retry cannot double-execute.",
+      "action": "Honor explicit error.retryable before this default. Back off only when retryable, reusing the SAME idempotency id. hood_market_unavailable is a twice-failed address and remains retryable:false; wait for a changed condition, never spin or pause all Hood tokens.",
       "codes": [
         "BUILD_TIMEOUT",
         "LAUNCH_FAILED",

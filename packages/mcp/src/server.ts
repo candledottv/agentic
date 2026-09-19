@@ -54,10 +54,13 @@ Feed rows carry jupiterOk / externalTradeable / paperDiscoveryOk / organic0LiveO
 Solana mints. Use discovery=paper on candle_get_feed when rehearsing; on live screens do NOT
 hard-skip organicScore=0 when organic0LiveOk is true (visible m5 momentum). Hard-skip organic0
 only when organic0LiveOk is false.
-candle_get_market and candle_resolve_token answer for Jupiter-indexed external mints the feed
-knows (or Solana mints Jupiter can name) with external: true and jupiterOk: true. MARKET_NOT_FOUND
-there means no Candle-native market row — read error.discovery before treating 404 as skip; it is
-not untradeable when jupiterOk is true.
+candle_get_market and candle_resolve_token answer for same-chain indexed external mints even
+when trade.routable is false. Read candleLaunched, launchpad, venue and trade; jupiterOk and
+paperDiscoveryOk are separate signals. Identity-only Solana reads have route_unverified.
+General quotes use POST /api/v1/trade/agent/quote; curve quotes/lifecycle describe Candle launches.
+Stored eligibility is not a successful quote or permission. MARKET_NOT_FOUND remains a legacy
+code: read error.routing.reason, error.discovery and sibling error.retryable. A curve-only
+404 is endpoint guidance, not a verdict that Candle cannot trade external tokens.
 candle_token_forensics also answers for Solana tokens the feed already knows, with a partial
 report: on-chain developer (never a launchpad shared authority), went-to-zero record, holder
 concentration, same-funder insiders and cluster. Deploy-window stays unavailable without a

@@ -304,6 +304,19 @@ export interface MigrationStatus {
 
 /** GET /api/v1/markets/:chain/:mint, unwrapped from `{ success, market }`. */
 export interface MarketState {
+  /** Additive Release A fields are optional when connected to an older API. */
+  candleLaunched?: boolean
+  launchpad?: string | null
+  venue?: "candle-curve" | "jupiter" | "dex" | "hood-dex" | null
+  trade?: { endpoint: "POST /api/v1/trade/agent/quote"; routable: boolean; reason?: string }
+  /** Legacy lifecycle/curve/fee fields are non-authoritative for external tokens. */
+  external?: boolean
+  decimals?: number
+  quoteDecimals?: number
+  jupiterOk?: boolean
+  externalTradeable?: boolean
+  paperDiscoveryOk?: boolean
+  organic0LiveOk?: boolean
   chain: Chain
   mint: string
   lifecycle: "trading" | "completed" | "migrated" | "recovery"

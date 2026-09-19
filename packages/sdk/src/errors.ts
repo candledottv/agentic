@@ -10,7 +10,19 @@
  * catch one error type and always branch on `code`, never on `message`.
  */
 
+export interface CandleRoutingDetail {
+  /** Open string vocabulary for compatibility with additive server reasons. */
+  reason: string
+  adaptersAttempted?: string[]
+  kyberAttempt?: string
+}
+
 export interface CandleErrorPayload {
+  routing?: CandleRoutingDetail
+  discovery?: Record<string, unknown>
+  coverage?: unknown
+  uiHint?: string
+  docsPath?: string
   code: string
   message: string
   field?: string
@@ -26,14 +38,24 @@ export class CandleApiError extends Error {
   readonly retryable: boolean
   /** Present only for field-level validation errors. */
   readonly field?: string
+  readonly routing?: CandleRoutingDetail
+  readonly discovery?: Record<string, unknown>
+  readonly coverage?: unknown
+  readonly uiHint?: string
+  readonly docsPath?: string
 
-  constructor(args: { code: string; message: string; status: number; retryable: boolean; field?: string }) {
+  constructor(args: CandleErrorPayload & { status: number; retryable: boolean }) {
     super(args.message)
     this.name = "CandleApiError"
     this.code = args.code
     this.status = args.status
     this.retryable = args.retryable
     if (args.field !== undefined) this.field = args.field
+    this.routing = args.routing
+    this.discovery = args.discovery
+    this.coverage = args.coverage
+    this.uiHint = args.uiHint
+    this.docsPath = args.docsPath
   }
 }
 
@@ -99,9 +121,20 @@ function envelopeError(body: unknown): CandleErrorPayload | null {
   const candidate = body as { success?: unknown; error?: unknown }
   if (candidate.success !== false) return null
   if (typeof candidate.error !== "object" || candidate.error === null) return null
-  const error = candidate.error as { code?: unknown; message?: unknown; field?: unknown; retryable?: unknown }
+  const error = candidate.error as Record<string, unknown>
   if (typeof error.code !== "string" || typeof error.message !== "string") return null
   return {
+    ...(typeof error.routing === "object" &&
+    error.routing !== null &&
+    typeof (error.routing as CandleRoutingDetail).reason === "string"
+      ? { routing: error.routing as CandleRoutingDetail }
+      : {}),
+    ...(typeof error.discovery === "object" && error.discovery !== null
+      ? { discovery: error.discovery as Record<string, unknown> }
+      : {}),
+    ...(error.coverage !== undefined ? { coverage: error.coverage } : {}),
+    ...(typeof error.uiHint === "string" ? { uiHint: error.uiHint } : {}),
+    ...(typeof error.docsPath === "string" ? { docsPath: error.docsPath } : {}),
     code: error.code,
     message: error.message,
     ...(typeof error.field === "string" ? { field: error.field } : {}),
@@ -120,6 +153,7 @@ export function candleApiErrorFromResponse(status: number, bodyText: string): Ca
   const payload = envelopeError(parsed)
   if (payload) {
     return new CandleApiError({
+      ...payload,
       code: payload.code,
       message: payload.message,
       status,

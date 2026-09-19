@@ -165,6 +165,8 @@ async function postJson(
 
 /** The market fields this module reads: the token's own scale, and its quote asset's scale. */
 interface MarketRead {
+  external?: boolean
+  candleLaunched?: boolean
   decimals?: number
   quoteDecimals?: number
 }
@@ -179,13 +181,21 @@ async function readMarket(
   cfg: RequestConfig,
   doFetch: FetchLike,
   extra: Record<string, unknown>,
-): Promise<{ market: MarketRead } | { status: number; err: ToolText }> {
+): Promise<{ market: MarketRead } | { status: number; err: ToolText; reason?: string }> {
   const res = await doFetch(`${base(cfg)}/api/v1/markets/${chainForMint(mint)}/${encodeURIComponent(mint)}`, {
     method: "GET",
     headers: headers(),
   })
   const text = await res.text()
-  if (!res.ok) return { status: res.status, err: relayRead(text, extra) }
+  if (!res.ok) {
+    let reason: string | undefined
+    try {
+      reason = JSON.parse(text)?.error?.routing?.reason
+    } catch {
+      /* relay the original body */
+    }
+    return { status: res.status, err: relayRead(text, extra), reason }
+  }
   return { market: (JSON.parse(text) as { market?: MarketRead }).market ?? {} }
 }
 
@@ -280,7 +290,11 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
       // come from the market read, never from the caller.
       const read = await readMarket(args.mint, cfg, doFetch, { clientTradeId })
       let decimals: number
-      if ("market" in read) {
+      if ("market" in read && (read.market.external === true || read.market.candleLaunched === false)) {
+        const q = quoteIdDecimals(args.quoteAsset, chainForMint(args.mint), { clientTradeId })
+        if ("err" in q) return q.err
+        decimals = q.decimals
+      } else if ("market" in read) {
         const quoteDecimals = read.market.quoteDecimals
         if (typeof quoteDecimals !== "number") {
           return errText(
@@ -289,7 +303,7 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
           )
         }
         decimals = quoteDecimals
-      } else if (read.status === 404) {
+      } else if (read.status === 404 && read.reason !== "chain_mismatch") {
         // No Candle market for this mint at all: a Pro/Max key trading an arbitrary token through
         // Jupiter. That is the one path where the API does honor the caller's quoteAsset
         // (token-trade.ts's planArbitrarySolanaJupiterTrade: `req.quoteAsset ?? "sol"`), so the
@@ -316,7 +330,7 @@ export async function executeTrade(args: TradeArgs, cfg: RequestConfig, doFetch:
           )
         }
         decimals = read.market.decimals
-      } else if (read.status === 404) {
+      } else if (read.status === 404 && read.reason !== "chain_mismatch") {
         // No Candle market. Live used to stop here (MARKET_NOT_FOUND). A paper buy of a
         // Jupiter / pump.fun mint leaves a position on the paper book, so consult that
         // before giving up -- including when the caller forgot `paper: true` on the exit.

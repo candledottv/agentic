@@ -2681,3 +2681,22 @@ describe("maxRetries is validated, not trusted", () => {
     expect(() => new CandleClient({ apiUrl: "https://api.test", maxRetries: 0 })).not.toThrow()
   })
 })
+
+test.each([
+  "So11111111111111111111111111111111111111112",
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",
+])("base asset %s verifies false and keeps additive market routing", async (mint) => {
+  const market = {
+    candleLaunched: false,
+    launchpad: null,
+    venue: "jupiter",
+    trade: { endpoint: "POST /api/v1/trade/agent/quote", routable: false, reason: "not_routable_yet" },
+  }
+  const { client } = makeClient({}, [
+    json(200, { success: true, candleLaunched: false, chain: "solana", mint }),
+    json(200, { success: true, market }),
+  ])
+  expect((await client.verify("solana", mint)).candleLaunched).toBe(false)
+  expect(await client.getMarket("solana", mint)).toMatchObject(market)
+})

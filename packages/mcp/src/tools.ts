@@ -614,12 +614,11 @@ export function registerTools(server: McpServer, env: Record<string, string | un
     {
       title: "Get market state",
       description:
-        "Read the current market state for a token: lifecycle, pool address, whether buys are " +
-        "open. Reads only; moves nothing. No key needed.\n\n" +
-        "COVERAGE: answers for Candle-launched markets AND Jupiter-indexed externals the feed " +
-        "knows (external: true, jupiterOk). MARKET_NOT_FOUND means no Candle-native tokens row — " +
-        "not unindexed, not untradeable. Read error.discovery (indexed, jupiterOk, chain, note); " +
-        "a common case is chain mismatch (feed row on solana, you asked hood).",
+        "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. " +
+        "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " +
+        "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " +
+        "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " +
+        "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
       inputSchema: getMarketShape,
     },
     async (args) => callAndRelay("candle_get_market", args, cfg),

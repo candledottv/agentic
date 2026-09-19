@@ -306,10 +306,12 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
     expect(d).toContain("liquidityDrawdownBps")
   })
 
-  test("get_market clarifies MARKET_NOT_FOUND is not untradeable when jupiterOk", () => {
+  test("get_market explains routing, provenance and the general quote endpoint", () => {
     const d = describeOf("candle_get_market")
     expect(d).toContain("error.discovery")
-    expect(d.toLowerCase()).toContain("not untradeable")
+    expect(d).toContain("trade.routable")
+    expect(d).toContain("POST /api/v1/trade/agent/quote")
+    expect(d).toContain("error.routing.reason")
   })
 
   test("forensics refuses to let MARKET_NOT_FOUND read as clean", () => {

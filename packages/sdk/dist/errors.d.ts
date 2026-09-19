@@ -9,7 +9,18 @@
  * `CandleApiError`, with `code: "HTTP_" + status` and `retryable: false`, so callers always
  * catch one error type and always branch on `code`, never on `message`.
  */
+export interface CandleRoutingDetail {
+    /** Open string vocabulary for compatibility with additive server reasons. */
+    reason: string;
+    adaptersAttempted?: string[];
+    kyberAttempt?: string;
+}
 export interface CandleErrorPayload {
+    routing?: CandleRoutingDetail;
+    discovery?: Record<string, unknown>;
+    coverage?: unknown;
+    uiHint?: string;
+    docsPath?: string;
     code: string;
     message: string;
     field?: string;
@@ -24,12 +35,14 @@ export declare class CandleApiError extends Error {
     readonly retryable: boolean;
     /** Present only for field-level validation errors. */
     readonly field?: string;
-    constructor(args: {
-        code: string;
-        message: string;
+    readonly routing?: CandleRoutingDetail;
+    readonly discovery?: Record<string, unknown>;
+    readonly coverage?: unknown;
+    readonly uiHint?: string;
+    readonly docsPath?: string;
+    constructor(args: CandleErrorPayload & {
         status: number;
         retryable: boolean;
-        field?: string;
     });
 }
 /**

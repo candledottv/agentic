@@ -1030,3 +1030,39 @@ describe("paper mint matching", () => {
     })
   }
 })
+
+test("live sell forwards wrong-chain discovery and explicit retryability without inventory fallback", async () => {
+  const error = {
+    code: "MARKET_NOT_FOUND",
+    message: "try hood",
+    retryable: false,
+    routing: { reason: "chain_mismatch" },
+    discovery: { indexed: true, chain: "hood" },
+  }
+  const { calls, fetch } = fakeFetch({
+    "https://api.test/api/v1/markets/solana/ExtMint": { status: 404, body: { success: false, error } },
+  })
+  const result = await executeTrade(
+    { mint: "ExtMint", side: "sell", amount: "5", clientTradeId: "wrong-chain" },
+    CFG,
+    fetch,
+  )
+  expect(JSON.parse(result.text).api.error).toEqual(error)
+  expect(calls.length).toBe(1)
+})
+
+test("external market 200 uses the selected quote asset scale for a buy", async () => {
+  const { calls, fetch } = fakeFetch({
+    "https://api.test/api/v1/markets/solana/ExtMint": {
+      body: { success: true, market: { candleLaunched: false, external: true, quoteDecimals: 9, decimals: 6 } },
+    },
+    "https://api.test/api/v1/trade/agent/build": { body: EXECUTED },
+  })
+  const result = await executeTrade(
+    { mint: "ExtMint", side: "buy", amount: "1", quoteAsset: "usdc", clientTradeId: "external-usdc" },
+    CFG,
+    fetch,
+  )
+  expect(result.isError).toBeUndefined()
+  expect(JSON.parse(String(calls[1]?.init?.body)).amountRaw).toBe("1000000")
+})

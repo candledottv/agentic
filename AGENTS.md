@@ -98,15 +98,17 @@ Prefer these over scraping prose:
 
 **The feed is wider than Candle's markets, and this is the first thing you will hit.**
 `candle_get_feed` indexes the whole market -- pump.fun, pons.family and other launchpads, which is
-why rows carry a `launchpad`. `candle_get_market` answers for tokens that have a **Candle**
-market. `candle_token_forensics` also answers for Solana tokens the feed already knows, with a
+why rows carry a `launchpad`. `candle_get_market` answers for every same-chain indexed token, including external and
+non-routable rows. Read the candleLaunched flag, `launchpad`, `venue` and `trade.routable`. General
+quotes use `POST /api/v1/trade/agent/quote`; curve-only quotes describe Candle launches. `candle_token_forensics` also answers for Solana tokens the feed already knows, with a
 partial report (on-chain developer, went-to-zero record, concentration, same-funder insiders and
 cluster). Deploy-window stays unavailable without a Candle launch record. Hood tokens Candle did
 not launch, and unknown mints, can still come back `MARKET_NOT_FOUND`.
 
-That is a coverage boundary, not an outage. Do not retry it, do not ask the human to
-re-authenticate, and do not report the rail as down. Say Candle has no market for that token and
-move on.
+Forensics refusals are a coverage boundary. On other surfaces, Release A still uses the legacy
+`MARKET_NOT_FOUND`: read `error.routing.reason`, discovery and explicit `retryable`, which
+overrides catalog defaults. A curve-only 404 directs callers to the general quote endpoint;
+it is not proof a token cannot trade. `hood_market_unavailable` stays non-retryable per address.
 
 It is also **not a clean bill of health.** `MARKET_NOT_FOUND` from forensics means the check could
 not run, so report that you could not check the token rather than reporting the token as safe.

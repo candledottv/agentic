@@ -220,8 +220,13 @@ async function readMarket(mint, cfg, doFetch, extra) {
     headers: headers()
   });
   const text = await res.text();
-  if (!res.ok)
-    return { status: res.status, err: relayRead(text, extra) };
+  if (!res.ok) {
+    let reason;
+    try {
+      reason = JSON.parse(text)?.error?.routing?.reason;
+    } catch {}
+    return { status: res.status, err: relayRead(text, extra), reason };
+  }
   return { market: JSON.parse(text).market ?? {} };
 }
 function isPaperFlag(value) {
@@ -265,13 +270,18 @@ async function executeTrade(args, cfg, doFetch) {
       const amount = args.amount;
       const read = await readMarket(args.mint, cfg, doFetch, { clientTradeId });
       let decimals;
-      if ("market" in read) {
+      if ("market" in read && (read.market.external === true || read.market.candleLaunched === false)) {
+        const q = quoteIdDecimals(args.quoteAsset, chainForMint(args.mint), { clientTradeId });
+        if ("err" in q)
+          return q.err;
+        decimals = q.decimals;
+      } else if ("market" in read) {
         const quoteDecimals = read.market.quoteDecimals;
         if (typeof quoteDecimals !== "number") {
           return errText(`could not resolve the quote decimals for mint ${args.mint}; a buy is denominated in that token's own quote asset and this market does not report its scale. Read the market with candle_get_market, then trade a raw amount via the SDK instead`, { clientTradeId });
         }
         decimals = quoteDecimals;
-      } else if (read.status === 404) {
+      } else if (read.status === 404 && read.reason !== "chain_mismatch") {
         const q = quoteIdDecimals(args.quoteAsset, chainForMint(args.mint), { clientTradeId });
         if ("err" in q)
           return q.err;
@@ -292,7 +302,7 @@ async function executeTrade(args, cfg, doFetch) {
           return errText(`could not resolve decimals for mint ${args.mint}; pass a raw-ready amount via the SDK instead`, { clientTradeId });
         }
         decimals = read.market.decimals;
-      } else if (read.status === 404) {
+      } else if (read.status === 404 && read.reason !== "chain_mismatch") {
         const inventory = await readPaperInventory(cfg, doFetch, { clientTradeId });
         if ("err" in inventory) {
           return paper ? inventory.err : read.err;
@@ -845,9 +855,7 @@ function registerTools(server, env = process.env) {
   }, async (args) => callAndRelay("candle_launch_token", args, cfg));
   register("candle_get_market", {
     title: "Get market state",
-    description: "Read the current market state for a token: lifecycle, pool address, whether buys are " + `open. Reads only; moves nothing. No key needed.
-
-` + "COVERAGE: answers for Candle-launched markets AND Jupiter-indexed externals the feed " + "knows (external: true, jupiterOk). MARKET_NOT_FOUND means no Candle-native tokens row — " + "not unindexed, not untradeable. Read error.discovery (indexed, jupiterOk, chain, note); " + "a common case is chain mismatch (feed row on solana, you asked hood).",
+    description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
     inputSchema: getMarketShape
   }, async (args) => callAndRelay("candle_get_market", args, cfg));
   register("candle_token_forensics", {
@@ -1004,10 +1012,13 @@ Feed rows carry jupiterOk / externalTradeable / paperDiscoveryOk / organic0LiveO
 Solana mints. Use discovery=paper on candle_get_feed when rehearsing; on live screens do NOT
 hard-skip organicScore=0 when organic0LiveOk is true (visible m5 momentum). Hard-skip organic0
 only when organic0LiveOk is false.
-candle_get_market and candle_resolve_token answer for Jupiter-indexed external mints the feed
-knows (or Solana mints Jupiter can name) with external: true and jupiterOk: true. MARKET_NOT_FOUND
-there means no Candle-native market row — read error.discovery before treating 404 as skip; it is
-not untradeable when jupiterOk is true.
+candle_get_market and candle_resolve_token answer for same-chain indexed external mints even
+when trade.routable is false. Read candleLaunched, launchpad, venue and trade; jupiterOk and
+paperDiscoveryOk are separate signals. Identity-only Solana reads have route_unverified.
+General quotes use POST /api/v1/trade/agent/quote; curve quotes/lifecycle describe Candle launches.
+Stored eligibility is not a successful quote or permission. MARKET_NOT_FOUND remains a legacy
+code: read error.routing.reason, error.discovery and sibling error.retryable. A curve-only
+404 is endpoint guidance, not a verdict that Candle cannot trade external tokens.
 candle_token_forensics also answers for Solana tokens the feed already knows, with a partial
 report: on-chain developer (never a launchpad shared authority), went-to-zero record, holder
 concentration, same-funder insiders and cluster. Deploy-window stays unavailable without a
