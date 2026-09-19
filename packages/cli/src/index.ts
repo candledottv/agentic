@@ -27,9 +27,11 @@ import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { doctor } from "./commands/doctor"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { keysWallets } from "./commands/keys-wallets"
+import { launch } from "./commands/launch"
 import { mcp, mcpActsAsIdentity } from "./commands/mcp"
 import { profileAdd, profileList, profileRemove, profileRename, profileUse } from "./commands/profile"
 import { setup } from "./commands/setup"
+import { swap, swapStatus } from "./commands/swap"
 import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./commands/tee"
 import { update } from "./commands/update"
 import { vaultBackup, vaultVerifyBackup } from "./commands/vault-backup"
@@ -114,6 +116,10 @@ const HELP_TEXT = `candle: manage Candle agent credentials from the terminal
 Usage: candle <command> [subcommand] [options]
 
 Commands:
+  swap <from> <to> --amount <n>|--percent <n> --wallet <tee>   Quote, confirm and swap on Solana
+  swap status <id> [--kind trade|swap|launch]                    Read an operation without resending it
+  launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee>
+                                                                  Create a Solana token; first buy is a separate swap
   auth login [--scopes <a,b,c>] [--label <name>] [--no-browser]   Authorize this device
              [--profile <name>]
   auth status                                                     Show credential status
@@ -198,6 +204,8 @@ interface CommandRoute {
  * listed and gated in one edit.
  */
 const COMMANDS: Record<string, CommandRoute> = {
+  swap: { bare: swap, subcommands: { status: swapStatus } },
+  launch: { bare: launch },
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
   keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke, wallets: keysWallets } },
   wallets: {

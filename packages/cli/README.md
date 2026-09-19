@@ -64,6 +64,9 @@ node packages/cli/dist/index.js auth login
 | `candle vault transfer\|promote\|fund\|demote\|export-key` | Moving value and authority. `transfer` and `fund` sign locally from a vault key after showing the decoded transaction; `promote` turns a vault key into a delegated TEE wallet (fresh, or the key's own address after a typed warning) and `demote` sweeps it back; `export-key` is the one ceremony that writes a single private key to a file you name. |
 | `candle vault import-legacy --tee`, `candle vault retire-legacy` | Moves an existing `tee-wallets.enc` into the vault without deleting it, then retires the old file once the vault holds everything and a backup has been verified. |
 | `candle tee new\|enable\|fund\|status\|disable\|sweep` | A dedicated, capped TEE wallet for one agent: the CLI generates the key and seals it locally in `tee-wallets.enc`, `enable` delegates it to this profile's API key with a pinned sweep vault, `fund` prints what your vault signs, and `disable` then `sweep` stop the agent and move everything back to the vault, signed locally. Solana only. See [TEE wallets](https://docs.candle.tv/developers/cli#tee-wallets). |
+| `candle swap <from> <to> --amount <n>\|--percent <n> --wallet <tee>` | Quote, confirm and swap on Solana through the TEE wallet's bound key; first buy after a launch is this command. |
+| `candle swap status <id> [--kind trade\|swap\|launch]` | Read an operation without resending it. |
+| `candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee>` | Create a Solana token with no first buy; needs `launch:write` and operator-enabled `allowLaunch`. |
 | `candle profile list` | Lists profiles on this machine, with cached accounts. |
 | `candle profile add <name> --api-url <url>` | Creates a profile before authenticating it. |
 | `candle profile use <name>` | Makes a profile the active one. |
@@ -272,10 +275,11 @@ both and every command works without ever touching a keychain or the encrypted f
 
 ## What this CLI deliberately does not do
 
-**Launch, trade, and order commands.** Executing trades and launches belongs to the SDK and MCP
-server, not this CLI. This CLI's whole job is credential management plus a handful of read-only or
-administrative operations; anything that moves an agent's actual workload stays with the packages
-built to run one.
+**Launch, trade, and order commands.** `candle swap`, `candle launch`, and `candle swap status`
+execute same-chain Solana swaps and token launches for a TEE wallet. They never open a vault or
+locally sign with a TEE private key; Candle builds the transaction and Privy signs it through the
+relay. See TEE swaps and launches below. Order-book commands stay with the SDK and MCP, not this
+CLI.
 
 **`keys limits`.** There is no command for setting per-key spend limits, because the API route
 that sets them (`PUT /keys/:prefix/limits`) structurally rejects a device token. It only accepts
@@ -290,3 +294,55 @@ a sibling device. A device token cannot list or revoke devices, including itself
 device token. Sibling device prefixes are not themselves secret: they appear in `keys list`'s
 "minted by" column, which is attribution and grants no capability. Device management is the
 portal's job, not this CLI's.
+
+### TEE swaps and launches (Phase 3)
+
+Use the profile holding the TEE wallet's bound API key and the machine that holds its
+relay authorization key. `--wallet` accepts its id, address or unique label. These commands
+never open or locally sign with a vault or TEE private key. Candle builds the transaction,
+and Privy signs it through Candle's relay. The server's scopes, raw/USD caps and atomic
+budget reservation apply to the human and the agent alike. Wide routes require the server's
+`TEE_WIDE_ROUTES_ENABLED=1`; it remains off by default.
+
+```sh
+candle swap SOL USDC --amount 0.1 --wallet trading --client-trade-id lunch-1
+candle swap <mint> SOL --percent 25 --wallet trading --rpc-url https://your-solana-rpc --yes --json
+candle launch --name Example --symbol EX --image-url https://example.com/token.png \
+  --wallet trading --rpc-url https://your-solana-rpc --client-trade-id example-launch
+candle swap status lunch-1
+candle swap status example-launch --kind launch --json
+```
+
+A same-chain SOL/USDC/CNDL pair uses the base-swap rail. A Solana mint paired with one
+of those assets uses the token rail, whether on Candle's curve or graduated to Jupiter/DFlow.
+Cross-chain and EVM pairs are refused. Token-to-token pairs without a supported quote asset
+are not available. Mint precision and percentage balances use `--rpc-url` or
+`CANDLE_SOLANA_RPC_URL`; balances include both classic SPL and Token-2022 accounts.
+Amounts use exact decimal arithmetic. `--slippage-bps` defaults to 50.
+
+Before signing, the command displays venue, price impact, tier fee, minimum received and
+all returned token warnings. Missing price impact is explicitly **unavailable**, never zero.
+`--yes` skips the ordinary prompt but still prints warnings. With `--json`, stdout is one
+JSON result containing the quote; the preview and operation id go to stderr. Launch creation
+has no price impact or token receipt, shows its maximum SOL debit, and makes no first buy.
+Use a separate swap for that buy.
+
+Swaps require `swap:write`. Launch requires `launch:write` **and** operator-enabled
+`allowLaunch` on the wallet. The operator sets or clears it through the shipped
+`PUT /api/v1/agent/wallets/<id>/capabilities` endpoint with device/session authentication and
+`{"capability":"allowLaunch","enabled":true}`. An agent key cannot grant itself this permission.
+
+For scripts, always supply a stable `--client-trade-id` for each intention. Otherwise the CLI
+generates and prints one. Reusing an existing id reads its status instead of rebuilding.
+The local operation marker survives restarts and prevents concurrent CLI invocations from
+starting the same id twice. Base swaps additionally claim build and submission atomically in
+Convex and keep the payer signature before broadcast, surviving an API restart. A timeout
+or an unconfirmed signature is **not** permission to create a replacement transaction.
+`swap status` never resends writes. Use `--kind trade|swap|launch` when an id exists on
+multiple rails or when querying from another machine with limited scopes.
+
+For a launch whose broadcast/confirm response was lost, rerunning the same launch id on the
+original machine retries **confirmation only** using its saved signature. It never rebuilds
+or rebroadcasts. A failed or abandoned build needs a new id after checking the old operation.
+Keep the CLI's `operations` directory with its configuration; deleting it removes the local
+record of an attempt whose request may not have reached the server.
