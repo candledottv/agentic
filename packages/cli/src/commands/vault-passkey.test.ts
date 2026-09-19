@@ -511,7 +511,7 @@ describe("factor add passkey: the ceremony", () => {
 describe("factor add passkey: every gate is a typed refusal, before the passphrase, and substitutes nothing", () => {
   const rows: Array<{ name: string; opts: HarnessOptions; code: string; message: string; helperRun: boolean }> = [
     {
-      name: "the release policy omits the signed helper (the state until Apple approves): names 0.13.0",
+      name: "the release policy omits the signed helper (the state until Apple approves): says it arrives in a later release",
       opts: { policy: "omit" },
       code: "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM",
       message: "release policy omits the signed macOS helper",
@@ -597,7 +597,7 @@ describe("factor add passkey: every gate is a typed refusal, before the passphra
       if (!row.helperRun) expect(add.calls).toEqual([])
       expect(await readVault(v.vaultPath)).toEqual(before)
       if (row.opts.policy === "omit" && (row.opts.platform ?? "darwin") === "darwin")
-        expect(refusal.message).toContain("0.13.0")
+        expect(refusal.message).toContain("a later release")
     })
   }
 
@@ -608,7 +608,7 @@ describe("factor add passkey: every gate is a typed refusal, before the passphra
     expect(list.calls).toEqual([])
     const touchId = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, policy: "omit" })
     expect(await run(["vault", "factor", "add", "touch-id", "--json", "--keystore", v.vaultPath], touchId.deps)).toBe(1)
-    expect(failure(touchId).message).toContain("0.12.0")
+    expect(failure(touchId).message).toContain("a later release")
   })
 })
 

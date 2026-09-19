@@ -212,7 +212,7 @@ function platformPasskeyAvailability(facts: PlatformFacts): FactorAvailability {
       return {
         state: "unsupported-on-this-platform",
         reason:
-          "this build's release policy omits the signed macOS helper (release-policy.json: macosHelper.release is omit), so the synced passkey factor is not in this build; it arrives in CLI 0.13.0 (PR G) once Apple approves the Developer ID enrolment and T57 has passed",
+          "this build's release policy omits the signed macOS helper (release-policy.json: macosHelper.release is omit), so the synced passkey factor is not in this build; it arrives in a later release once Apple approves the Developer ID enrolment and T57 has passed",
       }
     case "absent":
       return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_MISSING" }

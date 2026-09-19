@@ -642,7 +642,7 @@ describe("install.sh on macOS: the Secure Enclave helper and the version floor",
       expect(r.code).toBe(0)
       expect(requestPaths.some((path) => path.includes("candle-enclave"))).toBe(false)
       expect(r.stdout).toContain("ships no signed Secure Enclave helper (its manifest declares none)")
-      expect(r.stdout).toContain("CLI 0.12.0")
+      expect(r.stdout).toContain("arrives in a later release")
       await expect(
         readFile(join(r.binDir, "candle-enclave.app", "Contents", "MacOS", "candle-enclave")),
       ).rejects.toThrow()

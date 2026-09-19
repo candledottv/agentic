@@ -435,7 +435,7 @@ export async function currentEnclaveHelper(deps: HelperDeps): Promise<EnclaveHel
     return {
       state: "omitted",
       reason:
-        "this build's release policy omits the signed Secure Enclave helper (release-policy.json: macosHelper.release is omit), so the Touch ID factor is not in this build; it arrives in CLI 0.12.0 (PR F) once Apple approves the Developer ID enrolment and T48 has passed",
+        "this build's release policy omits the signed Secure Enclave helper (release-policy.json: macosHelper.release is omit), so the Touch ID factor is not in this build; it arrives in a later release once Apple approves the Developer ID enrolment and T48 has passed",
     }
   }
   const identity: HelperIdentity = { teamId: policy.teamId, bundleId: policy.bundleId }

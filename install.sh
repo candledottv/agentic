@@ -239,7 +239,7 @@ if [ "$os" = "darwin" ]; then
     verify_asset "$enclave_zip"
     enclave_present=1
   else
-    echo "Note: release ${version} ships no signed Secure Enclave helper (its manifest declares none), so the Touch ID factor is not installed (it arrives with CLI 0.12.0, once Apple has approved the signing enrolment)."
+    echo "Note: release ${version} ships no signed Secure Enclave helper (its manifest declares none), so the Touch ID factor is not installed (it arrives in a later release, once Apple has approved the signing enrolment)."
   fi
 fi
 

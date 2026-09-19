@@ -728,7 +728,7 @@ describe("T58: CC-12's refusal matrix, every row with the platform injected", ()
       )
       const enclave = JSON.parse(touchId.stdout.text) as { code: string; message: string }
       expect(enclave.code).toBe("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM")
-      expect(enclave.message).toContain(row.platform === "darwin" ? "0.12.0" : "macOS only")
+      expect(enclave.message).toContain(row.platform === "darwin" ? "a later release" : "macOS only")
 
       const passkey = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, ...facts })
       expect(await run(["vault", "factor", "add", "passkey", "--json", "--keystore", v.vaultPath], passkey.deps)).toBe(
@@ -736,7 +736,7 @@ describe("T58: CC-12's refusal matrix, every row with the platform injected", ()
       )
       const synced = JSON.parse(passkey.stdout.text) as { code: string; message: string }
       expect(synced.code).toBe("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM")
-      expect(synced.message).toContain(row.platform === "darwin" ? "0.13.0" : "macOS only")
+      expect(synced.message).toContain(row.platform === "darwin" ? "a later release" : "macOS only")
 
       // A supported factor with the helper present and no device attached.
       if (row.shipping) {
@@ -787,7 +787,7 @@ describe("T58: CC-12's refusal matrix, every row with the platform injected", ()
       }
       const synced = listed.envelopes.find((envelope) => envelope.id === "g1g1g1g1")
       expect(synced?.availability).toBe("unsupported-on-this-platform")
-      expect(synced?.availabilityReason).toContain(platform === "darwin" ? "0.13.0" : "macOS only")
+      expect(synced?.availabilityReason).toContain(platform === "darwin" ? "a later release" : "macOS only")
 
       // Asked for explicitly: the typed code, before any prompt, and no other envelope tried.
       const explicit = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, platform })
