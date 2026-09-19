@@ -4572,6 +4572,14 @@ var init_ecies = __esm(() => {
   ]);
 });
 
+// src/vault/helper-identity.ts
+function isHelperTeamId(value) {
+  return typeof value === "string" && /^[A-Z0-9]{10}$/.test(value);
+}
+function isHelperBundleId(value) {
+  return typeof value === "string" && /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?:\.[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)+$/.test(value);
+}
+
 // src/vault/enclave.ts
 import { access, constants } from "node:fs/promises";
 import { dirname as dirname2, join as join4 } from "node:path";
@@ -4639,6 +4647,11 @@ async function locateEnclaveHelper(deps) {
   return { state: "absent", reason: `no ${ENCLAVE_BUNDLE_NAME} beside ${realExec} or in its libexec` };
 }
 function codesignRequirement(identity) {
+  if (!isHelperTeamId(identity.teamId) || !isHelperBundleId(identity.bundleId)) {
+    throw new VaultError("VAULT_HELPER_UNTRUSTED", "The helper identity has an invalid team id or bundle id.", {
+      suggestion: "No helper was run and no other factor was tried."
+    });
+  }
   return `=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = "${identity.teamId}" and identifier "${identity.bundleId}"`;
 }
 function codesignArguments(appPath, identity) {
@@ -4789,6 +4802,9 @@ async function callEnclaveHelper(deps, helperPath, request) {
   }
   if (!response.ok)
     throw translateEnclaveFailure(String(response.code), String(response.message));
+  if (run.exitCode !== 0) {
+    throw new VaultError("VAULT_HELPER_MISSING", "The signed macOS helper did not complete successfully.");
+  }
   return response;
 }
 function enclaveOperationDigest(fields) {
@@ -4820,7 +4836,21 @@ async function currentEnclaveHelper(deps) {
     }
     throw error;
   }
-  const info = await callEnclaveHelper(deps, location.path, requestCommon("-", "-", "info"));
+  let info;
+  try {
+    info = await callEnclaveHelper(deps, location.path, requestCommon("-", "-", "info"));
+    if (info.op !== "info" || typeof info.version !== "string" || typeof info.secureEnclave !== "boolean" || !["available", "none", "locked-out", "not-interactive", "unavailable"].includes(info.biometry)) {
+      throw new VaultError("VAULT_HELPER_MISSING", "Invalid helper info response.");
+    }
+  } catch (error) {
+    if (!(error instanceof VaultError))
+      throw error;
+    return {
+      state: "unavailable",
+      code: error.code === "VAULT_HELPER_MISSING" ? "VAULT_HELPER_MISSING" : "VAULT_FACTOR_UNAVAILABLE",
+      reason: `the signed macOS helper could not report its availability (${error.code}); reinstall the CLI or retry from an interactive session`
+    };
+  }
   if (info.teamId !== identity.teamId || info.bundleId !== identity.bundleId) {
     return {
       state: "untrusted",
@@ -4850,35 +4880,32 @@ function helperReport(info) {
     provisioningProfile: info.provisioningProfile === true
   };
 }
-function compareVersions2(a, b) {
-  const parse = (value) => value.split(".").map((part) => Number.parseInt(part, 10) || 0);
-  const left = parse(a);
-  const right = parse(b);
-  for (let i = 0;i < Math.max(left.length, right.length); i++) {
-    const diff = (left[i] ?? 0) - (right[i] ?? 0);
-    if (diff !== 0)
-      return diff < 0 ? -1 : 1;
+function pinnedHelperIdentity(deps, helper) {
+  const policy = deps.releasePolicy.macosHelper;
+  const identity = { teamId: policy.teamId, bundleId: policy.bundleId };
+  if (helper.teamId !== identity.teamId || helper.bundleId !== identity.bundleId) {
+    throw new VaultError("VAULT_HELPER_UNTRUSTED", `This envelope recorded helper ${helper.teamId} / ${helper.bundleId}; this build trusts ${identity.teamId} / ${identity.bundleId}.`, { suggestion: "No helper was run and no other factor was tried." });
   }
-  return 0;
+  return identity;
 }
 async function openEnclaveSession(deps, helper) {
   const policy = deps.releasePolicy.macosHelper;
   if (policy.release === "omit") {
     throw new VaultError("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM", "This build's release policy omits the signed Secure Enclave helper, so it cannot drive a Touch ID factor.", { suggestion: "Open the vault with its passphrase. No other envelope was tried." });
   }
+  const identity = pinnedHelperIdentity(deps, helper);
   const location = await locateEnclaveHelper(deps);
   if (location.state === "absent") {
     throw new VaultError("VAULT_HELPER_MISSING", `The Secure Enclave helper is not available: ${location.reason}.`, {
       suggestion: ENCLAVE_INSTALL_SUGGESTION
     });
   }
-  const identity = { teamId: helper.teamId, bundleId: helper.bundleId };
   await verifyHelperSignature(deps, location.appPath, identity);
   const info = await callEnclaveHelper(deps, location.path, requestCommon("-", "-", "info"));
   if (info.teamId !== identity.teamId || info.bundleId !== identity.bundleId) {
-    throw new VaultError("VAULT_HELPER_UNTRUSTED", `The helper at ${location.appPath} reports team ${info.teamId || "(none)"} and bundle id ${info.bundleId || "(none)"}, not the ${identity.teamId} / ${identity.bundleId} this envelope recorded.`, { suggestion: "Reinstall the CLI from a release. No other factor is substituted." });
+    throw new VaultError("VAULT_HELPER_UNTRUSTED", `The helper at ${location.appPath} reports team ${info.teamId || "(none)"} and bundle id ${info.bundleId || "(none)"}, not the ${identity.teamId} / ${identity.bundleId} this build trusts.`, { suggestion: "Reinstall the CLI from a release. No other factor is substituted." });
   }
-  if (helper.minVersion !== undefined && compareVersions2(info.version, helper.minVersion) < 0) {
+  if (helper.minVersion !== undefined && compareVersions(info.version, helper.minVersion) < 0) {
     throw new VaultError("VAULT_HELPER_MISSING", `The Secure Enclave helper at ${location.appPath} is version ${info.version}; this envelope needs ${helper.minVersion} or newer.`, { suggestion: "Reinstall the CLI so candle and candle-enclave.app come from the same release." });
   }
   if (!info.secureEnclave) {
@@ -5015,6 +5042,8 @@ function secureEnclaveAvailability(facts) {
       return { state: "unsupported-on-this-platform", reason: helper.reason };
     case "absent":
       return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_MISSING" };
+    case "unavailable":
+      return { state: "unavailable-on-this-device", reason: helper.reason, code: helper.code };
     case "untrusted":
       return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_UNTRUSTED" };
     default:
@@ -5040,6 +5069,8 @@ function platformPasskeyAvailability(facts) {
       };
     case "absent":
       return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_MISSING" };
+    case "unavailable":
+      return { state: "unavailable-on-this-device", reason: helper.reason, code: helper.code };
     case "untrusted":
       return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_UNTRUSTED" };
     default: {
@@ -5619,10 +5650,12 @@ function assertPlatformPasskeyEnvelopeShape(envelope) {
     bad("has no helper record");
     return;
   }
-  for (const field of ["teamId", "bundleId", "minVersion"]) {
-    if (typeof helper[field] !== "string" || helper[field] === "")
-      bad(`has no helper.${field}`);
-  }
+  if (!isHelperTeamId(helper.teamId))
+    bad("has an invalid helper.teamId");
+  if (!isHelperBundleId(helper.bundleId))
+    bad("has an invalid helper.bundleId");
+  if (typeof helper.minVersion !== "string" || helper.minVersion === "")
+    bad("has no helper.minVersion");
 }
 function assertSecureEnclaveEnvelopeShape(envelope) {
   const id = String(envelope.id);
@@ -5634,10 +5667,12 @@ function assertSecureEnclaveEnvelopeShape(envelope) {
     bad("has no helper record");
     return;
   }
-  for (const field of ["teamId", "bundleId", "minVersion"]) {
-    if (typeof helper[field] !== "string" || helper[field] === "")
-      bad(`has no helper.${field}`);
-  }
+  if (!isHelperTeamId(helper.teamId))
+    bad("has an invalid helper.teamId");
+  if (!isHelperBundleId(helper.bundleId))
+    bad("has an invalid helper.bundleId");
+  if (typeof helper.minVersion !== "string" || helper.minVersion === "")
+    bad("has no helper.minVersion");
   if (typeof envelope.publicKey !== "string" || envelope.publicKey === "")
     bad("has no publicKey");
   if (typeof envelope.keyTag !== "string" || envelope.keyTag === "")
@@ -6082,19 +6117,19 @@ async function openPasskeySession(deps, helper) {
   if (policy.release === "omit") {
     throw new VaultError("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM", "This build's release policy omits the signed macOS helper, so it cannot drive a synced passkey factor.", { suggestion: "Open the vault with its passphrase. No other envelope was tried." });
   }
+  const identity = pinnedHelperIdentity(deps, helper);
   const location = await locateEnclaveHelper(deps);
   if (location.state === "absent") {
     throw new VaultError("VAULT_HELPER_MISSING", `The signed macOS helper is not available: ${location.reason}.`, {
       suggestion: ENCLAVE_INSTALL_SUGGESTION
     });
   }
-  const identity = { teamId: helper.teamId, bundleId: helper.bundleId };
   await verifyHelperSignature(deps, location.appPath, identity);
   const info = await callEnclaveHelper(deps, location.path, requestCommon("-", "-", "info"));
   if (info.teamId !== identity.teamId || info.bundleId !== identity.bundleId) {
-    throw new VaultError("VAULT_HELPER_UNTRUSTED", `The helper at ${location.appPath} reports team ${info.teamId || "(none)"} and bundle id ${info.bundleId || "(none)"}, not the ${identity.teamId} / ${identity.bundleId} this envelope recorded.`, { suggestion: "Reinstall the CLI from a release. No other factor is substituted." });
+    throw new VaultError("VAULT_HELPER_UNTRUSTED", `The helper at ${location.appPath} reports team ${info.teamId || "(none)"} and bundle id ${info.bundleId || "(none)"}, not the ${identity.teamId} / ${identity.bundleId} this build trusts.`, { suggestion: "Reinstall the CLI from a release. No other factor is substituted." });
   }
-  if (helper.minVersion !== undefined && compareVersions2(info.version, helper.minVersion) < 0) {
+  if (helper.minVersion !== undefined && compareVersions(info.version, helper.minVersion) < 0) {
     throw new VaultError("VAULT_HELPER_MISSING", `The signed macOS helper at ${location.appPath} is version ${info.version}; this envelope needs ${helper.minVersion} or newer.`, { suggestion: "Reinstall the CLI so candle and candle-enclave.app come from the same release." });
   }
   const ready = {
@@ -6217,6 +6252,7 @@ var init_passkey = __esm(() => {
   init_sha256();
   init_esm();
   init_protocol();
+  init_release();
   init_crypto();
   init_enclave();
   init_errors();
@@ -14590,6 +14626,7 @@ __export(exports_vault_support, {
   refuseEnvPassphrase: () => refuseEnvPassphrase,
   openWithTypedPassphrase: () => openWithTypedPassphrase,
   confirmLastSix: () => confirmLastSix,
+  assertVaultHelperIdentities: () => assertVaultHelperIdentities,
   assertNotOlderCopy: () => assertNotOlderCopy
 });
 function refuseEnvPassphrase(ctx) {
@@ -14618,10 +14655,20 @@ async function requireVaultRaw(path) {
   }
   return raw;
 }
+function assertVaultHelperIdentities(deps, envelopes) {
+  if (deps.releasePolicy.macosHelper.release === "signed") {
+    for (const envelope of envelopes) {
+      if (isSecureEnclaveEnvelope(envelope) || isPlatformPasskeyEnvelope(envelope)) {
+        pinnedHelperIdentity(deps, envelope.helper);
+      }
+    }
+  }
+}
 async function unlockInteractively(ctx, path, raw, opts = {}) {
   await assertNotOlderCopy(ctx, path, raw, opts.acceptOlderCopy ?? false);
   const { deps } = ctx;
   const file = parseVaultFile(raw);
+  assertVaultHelperIdentities(deps, file.envelopes);
   const facts = await currentPlatformFacts(deps);
   const choice = await chooseFactor(ctx, file.envelopes, facts, opts.factor ?? ctx.vaultFactor);
   const notice = (line) => deps.stderr.write(line);
@@ -14651,6 +14698,7 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
       if (target === undefined || !isSecureEnclaveEnvelope(target)) {
         throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `The file at ${p} has no Secure Enclave envelope ${envelope2.id}.`);
       }
+      pinnedHelperIdentity(deps, target.helper);
       const kek = await unwrapKekWithEnclave(deps, session2, target, current.vaultId, reason2);
       try {
         return await unlockVault(p, r, { factor: "secure-enclave", envelopeId: target.id, kek }, { notice });
@@ -14678,6 +14726,7 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
       if (target === undefined || !isPlatformPasskeyEnvelope(target)) {
         throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `The file at ${p} has no synced passkey envelope ${envelope2.id}.`);
       }
+      pinnedHelperIdentity(deps, target.helper);
       const prfOutput = await assertPlatformPrf(deps, session2, target, current.vaultId, purpose);
       try {
         return await unlockVault(p, r, { factor: "passkey-prf", envelopeId: target.id, prfOutput }, { notice });
@@ -46157,19 +46206,9 @@ async function writeSealedCopy(live, destination) {
     throw new VaultError("VAULT_WRITE_FAILED", `Could not write the sealed copy at ${destination}.`);
   }
 }
-function isSealedCopyOf(copyRaw, liveEnvelopes) {
-  let copy;
-  try {
-    copy = JSON.parse(copyRaw);
-  } catch {
-    return false;
-  }
-  const copyEnvelopes = Array.isArray(copy.envelopes) ? copy.envelopes : [];
-  if (copyEnvelopes.length === 0)
-    return false;
-  const liveIds = new Set(liveEnvelopes.map((envelope) => envelope.id));
-  const allPassphrase = copyEnvelopes.every((envelope) => envelope.factor === "passphrase" && typeof envelope.id === "string" && liveIds.has(envelope.id));
-  return allPassphrase && liveEnvelopes.some((envelope) => envelope.factor !== "passphrase");
+function isSealedCopy(copyRaw) {
+  const envelopes = parseVaultFile(copyRaw).envelopes;
+  return envelopes.length > 0 && envelopes.every(isPassphraseEnvelope);
 }
 async function vaultVerifyBackup(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] });
@@ -46191,9 +46230,9 @@ async function vaultVerifyBackup(args, ctx) {
     const copyRaw = await readVaultRaw(resolve2(copyPath));
     if (copyRaw === null)
       throw new VaultError("VAULT_MISSING", `No file at ${resolve2(copyPath)}.`);
-    const sealed = isSealedCopyOf(copyRaw, parseVaultFile(raw).envelopes);
-    if (sealed && ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase") {
-      deps.stderr.write(`${resolve2(copyPath)} is a sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor ${ctx.vaultFactor}.
+    const sealed = isSealedCopy(copyRaw);
+    if (sealed) {
+      deps.stderr.write(`${resolve2(copyPath)} is a sealed copy that opens only with the passphrase it was sealed under, which may predate a passphrase rotation.${ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase" ? ` The passphrase is used here rather than --factor ${ctx.vaultFactor}.` : ""}
 `);
     }
     const opened = await unlockInteractively(ctx, path, raw, {
@@ -46201,7 +46240,18 @@ async function vaultVerifyBackup(args, ctx) {
       ...sealed ? { factor: "passphrase" } : {}
     });
     const live = hold(opened.vault);
-    const report = await verifyCopy(ctx, resolve2(copyPath), opened.reopen, live);
+    const sameEnvelope = parseVaultFile(copyRaw).envelopes.some((envelope) => JSON.stringify(envelope) === JSON.stringify(live.envelope));
+    let report;
+    if (sealed && !sameEnvelope) {
+      const copy = hold((await unlockInteractively(ctx, resolve2(copyPath), copyRaw, {
+        factor: "passphrase",
+        acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+        promptText: "Passphrase this backup was sealed under (input hidden): "
+      })).vault);
+      report = await verifyVaultIntegrity(copy, { live });
+    } else {
+      report = await verifyCopy(ctx, resolve2(copyPath), opened.reopen, live);
+    }
     const sidecar = sidecarPath(path);
     await writeSidecar(sidecar, {
       ...nextSidecar(await readSidecar(sidecar), live.file),
@@ -46211,7 +46261,7 @@ async function vaultVerifyBackup(args, ctx) {
       writeJson(deps, { ok: true, verified: resolve2(copyPath), sealed, ...reportJson(report, live) });
       return 0;
     }
-    writeVerifiedReport(ctx, resolve2(copyPath), sealed ? { sealed: true } : undefined, report, live);
+    writeVerifiedReport(ctx, resolve2(copyPath), sealed ? { sealed: true } : undefined, report, live, parseVaultFile(copyRaw).envelopes);
     return 0;
   });
 }
@@ -46261,8 +46311,8 @@ function reportJson(report, live) {
     phraseRestoresDerivedKeysOnly: true
   };
 }
-var SEALED_COPY_NOTE = "This copy opens only with the passphrase: its synced passkey, Touch ID and security key envelopes were left out (the live vault keeps them). Keep the passphrase somewhere outside the Apple account that holds a synced passkey. The live vault plus the recovery phrase remain the everyday path; this copy is for the day both are gone.";
-function writeVerifiedReport(ctx, target, verdict, report, live) {
+var SEALED_COPY_NOTE = "This copy opens only with the passphrase it was sealed under, which may predate a passphrase rotation. It contains no synced passkey, Touch ID or security key envelope. Keep the passphrase somewhere outside the Apple account that holds a synced passkey. The live vault plus the recovery phrase remain the everyday path; this copy is for the day both are gone.";
+function writeVerifiedReport(ctx, target, verdict, report, live, copyEnvelopes) {
   const { deps } = ctx;
   deps.stdout.write(`Verified ${target}
 `);
@@ -46270,8 +46320,8 @@ function writeVerifiedReport(ctx, target, verdict, report, live) {
     deps.stdout.write(`  destination   ${verdict.destination}
 `);
   if (verdict?.sealed) {
-    const kept = live.file.envelopes.filter(isPassphraseEnvelope).map((envelope) => envelope.id);
-    const leftOut = live.file.envelopes.filter((envelope) => !isPassphraseEnvelope(envelope)).map((envelope) => envelope.id);
+    const kept = (copyEnvelopes ?? live.file.envelopes).filter(isPassphraseEnvelope).map((envelope) => envelope.id);
+    const leftOut = (copyEnvelopes === undefined ? live.file.envelopes : []).filter((envelope) => !isPassphraseEnvelope(envelope)).map((envelope) => envelope.id);
     deps.stdout.write(`  sealed        yes: passphrase envelope(s) ${kept.join(", ")} only${leftOut.length > 0 ? `; left out ${leftOut.join(", ")}` : ""}
 `);
   } else if (verdict?.sharedDomainAccepted) {
@@ -49504,6 +49554,8 @@ async function vaultStatus(args, ctx) {
       throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" });
     }
     const file = parseVaultFile(raw);
+    if (unlock)
+      assertVaultHelperIdentities(deps, file.envelopes);
     const facts = await currentPlatformFacts(deps);
     const sidecar = await readSidecar(sidecarPath(path));
     const legacy = legacyWalletsPath(deps.env);

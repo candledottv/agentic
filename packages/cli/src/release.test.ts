@@ -16,6 +16,7 @@ import { createRoutedFetch, createTestDeps } from "./test-support"
 
 describe("compareVersions", () => {
   test("orders major, minor and patch numerically", () => {
+    expect(compareVersions("1.2.3.4", "1.2.3.9")).toBe(0)
     expect(compareVersions("0.5.0", "0.6.0")).toBe(-1)
     expect(compareVersions("0.10.0", "0.9.0")).toBe(1)
     expect(compareVersions("1.0.0", "1.0.0")).toBe(0)

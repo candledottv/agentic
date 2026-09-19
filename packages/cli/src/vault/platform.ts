@@ -46,6 +46,7 @@ export type EnclaveHelperState =
   | { state: "omitted"; reason: string }
   | { state: "absent"; reason: string }
   | { state: "untrusted"; reason: string }
+  | { state: "unavailable"; reason: string; code: "VAULT_HELPER_MISSING" | "VAULT_FACTOR_UNAVAILABLE" }
   | {
       state: "ready"
       appPath: string
@@ -177,6 +178,8 @@ function secureEnclaveAvailability(facts: PlatformFacts): FactorAvailability {
       return { state: "unsupported-on-this-platform", reason: helper.reason }
     case "absent":
       return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_MISSING" }
+    case "unavailable":
+      return { state: "unavailable-on-this-device", reason: helper.reason, code: helper.code }
     case "untrusted":
       return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_UNTRUSTED" }
     default:
@@ -213,6 +216,8 @@ function platformPasskeyAvailability(facts: PlatformFacts): FactorAvailability {
       }
     case "absent":
       return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_MISSING" }
+    case "unavailable":
+      return { state: "unavailable-on-this-device", reason: helper.reason, code: helper.code }
     case "untrusted":
       return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_UNTRUSTED" }
     default: {

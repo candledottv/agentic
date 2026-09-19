@@ -25,6 +25,7 @@ import { availabilityLabel, envelopeAvailability, type PlatformFacts } from "../
 import { readSidecar, sidecarPath } from "../vault/sidecar"
 import { fileExists, legacyWalletsPath, readVaultRaw } from "../vault/store"
 import {
+  assertVaultHelperIdentities,
   refuseEnvPassphrase,
   requireTty,
   runVaultCommand,
@@ -51,6 +52,7 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
       throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" })
     }
     const file = parseVaultFile(raw)
+    if (unlock) assertVaultHelperIdentities(deps, file.envelopes)
     const facts = await currentPlatformFacts(deps)
     const sidecar = await readSidecar(sidecarPath(path))
     // CC-05 / AD-3: named if present, never opened, never read. The vault has no code path that

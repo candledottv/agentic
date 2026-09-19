@@ -9,7 +9,7 @@
 import type { ParsedArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
 import { writeLocalFailure, writeUsageFailure } from "../render"
-import { type EnclaveSession, openEnclaveSession, unwrapKekWithEnclave } from "../vault/enclave"
+import { type EnclaveSession, openEnclaveSession, pinnedHelperIdentity, unwrapKekWithEnclave } from "../vault/enclave"
 import { isVaultError, VaultError } from "../vault/errors"
 import { assertPrf, currentPlatformFacts, openSecurityKeySession, type SecurityKeySession } from "../vault/fido2"
 import {
@@ -141,6 +141,18 @@ type FactorChoice =
 
 type DrivableEnvelope = Ctap2Envelope | SecureEnclaveEnvelope | PlatformPasskeyEnvelope
 
+export function assertVaultHelperIdentities(deps: Pick<Deps, "releasePolicy">, envelopes: Envelope[]): void {
+  // The header is not authenticated yet. Refuse a foreign identity before even the info probe.
+  // Omitted builds can still open native-factor vaults with their passphrase on other platforms.
+  if (deps.releasePolicy.macosHelper.release === "signed") {
+    for (const envelope of envelopes) {
+      if (isSecureEnclaveEnvelope(envelope) || isPlatformPasskeyEnvelope(envelope)) {
+        pinnedHelperIdentity(deps, envelope.helper)
+      }
+    }
+  }
+}
+
 /**
  * Prompts for the factor and opens the vault, having first applied ED-6's whole-file rollback
  * check against the sidecar.
@@ -166,6 +178,7 @@ export async function unlockInteractively(
   await assertNotOlderCopy(ctx, path, raw, opts.acceptOlderCopy ?? false)
   const { deps } = ctx
   const file = parseVaultFile(raw)
+  assertVaultHelperIdentities(deps, file.envelopes)
   const facts = await currentPlatformFacts(deps)
   const choice = await chooseFactor(ctx, file.envelopes, facts, opts.factor ?? ctx.vaultFactor)
   const notice = (line: string) => deps.stderr.write(line)
@@ -199,8 +212,7 @@ export async function unlockInteractively(
   }
 
   if (choice.kind === "touch-id") {
-    // The Secure Enclave. The policy, the helper and its signature (against what THIS envelope
-    // recorded) are settled before the vault is touched; the Touch ID prompt is the unwrap itself.
+    // The Secure Enclave. The policy, the helper and its signature (against this build's release policy) are settled before the vault is touched; the Touch ID prompt is the unwrap itself.
     const envelope = choice.envelope
     const session = await openEnclaveSession(deps, envelope.helper)
     const open = async (p: string, r: string, reason: string): Promise<UnlockedVault> => {
@@ -212,6 +224,7 @@ export async function unlockInteractively(
           `The file at ${p} has no Secure Enclave envelope ${envelope.id}.`,
         )
       }
+      pinnedHelperIdentity(deps, target.helper)
       const kek = await unwrapKekWithEnclave(deps, session, target, current.vaultId, reason)
       try {
         return await unlockVault(p, r, { factor: "secure-enclave", envelopeId: target.id, kek }, { notice })
@@ -233,8 +246,7 @@ export async function unlockInteractively(
   }
 
   if (choice.kind === "passkey") {
-    // The synced passkey (BE-135). The policy, the helper, its signature (against what THIS
-    // envelope recorded) and the AD-2 gates are settled before the vault is touched; the passkey
+    // The synced passkey (BE-135). The policy, the helper, its signature (against this build's release policy) and the AD-2 gates are settled before the vault is touched; the passkey
     // sheet is the assertion itself. No network: the system's own association check answers.
     const envelope = choice.envelope
     const session = await openPasskeySession(deps, envelope.helper)
@@ -247,6 +259,7 @@ export async function unlockInteractively(
           `The file at ${p} has no synced passkey envelope ${envelope.id}.`,
         )
       }
+      pinnedHelperIdentity(deps, target.helper)
       const prfOutput = await assertPlatformPrf(deps, session, target, current.vaultId, purpose)
       try {
         return await unlockVault(p, r, { factor: "passkey-prf", envelopeId: target.id, prfOutput }, { notice })

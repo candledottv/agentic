@@ -20,6 +20,7 @@
 import type { Blob } from "./crypto"
 import { type Argon2Params, assertKdfInBounds, canonicalBytes } from "./crypto"
 import { VaultError } from "./errors"
+import { isHelperBundleId, isHelperTeamId } from "./helper-identity"
 
 export const VAULT_FORMAT = "candle-vault" as const
 export const VAULT_VERSION = 2 as const
@@ -602,9 +603,9 @@ function assertPlatformPasskeyEnvelopeShape(envelope: Record<string, unknown>): 
     bad("has no helper record")
     return
   }
-  for (const field of ["teamId", "bundleId", "minVersion"] as const) {
-    if (typeof helper[field] !== "string" || helper[field] === "") bad(`has no helper.${field}`)
-  }
+  if (!isHelperTeamId(helper.teamId)) bad("has an invalid helper.teamId")
+  if (!isHelperBundleId(helper.bundleId)) bad("has an invalid helper.bundleId")
+  if (typeof helper.minVersion !== "string" || helper.minVersion === "") bad("has no helper.minVersion")
 }
 
 /** CC-01's secure-enclave row: the fields an unwrap needs, typed, refused here rather than mid-prompt. */
@@ -617,9 +618,9 @@ function assertSecureEnclaveEnvelopeShape(envelope: Record<string, unknown>): vo
     bad("has no helper record")
     return
   }
-  for (const field of ["teamId", "bundleId", "minVersion"] as const) {
-    if (typeof helper[field] !== "string" || helper[field] === "") bad(`has no helper.${field}`)
-  }
+  if (!isHelperTeamId(helper.teamId)) bad("has an invalid helper.teamId")
+  if (!isHelperBundleId(helper.bundleId)) bad("has an invalid helper.bundleId")
+  if (typeof helper.minVersion !== "string" || helper.minVersion === "") bad("has no helper.minVersion")
   if (typeof envelope.publicKey !== "string" || envelope.publicKey === "") bad("has no publicKey")
   if (typeof envelope.keyTag !== "string" || envelope.keyTag === "") bad("has no keyTag")
   if (envelope.accessControl !== "biometryCurrentSet") bad("does not record accessControl: biometryCurrentSet")

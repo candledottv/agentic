@@ -542,7 +542,7 @@ describe("factor add touch-id: every refusal is typed, before the passphrase, an
     })
     expect(await run(["vault", "factor", "add", "touch-id", "--json", "--keystore", v.vaultPath], add.deps)).toBe(1)
     expect(failure(add)).toMatchObject({ code: "VAULT_HELPER_MISSING" })
-    expect(failure(add).message).toContain("protocol 2")
+    expect(failure(add).message).toContain("could not report its availability (VAULT_HELPER_MISSING)")
     expect(add.asked).toEqual([])
   })
 })
@@ -773,7 +773,7 @@ describe("unlocking with Touch ID", () => {
     expect(failure(killed)).toMatchObject({ code: "VAULT_AUTHENTICATOR_CANCELLED" })
   })
 
-  test("at unlock the codesign requirement pins what the ENVELOPE recorded, and a failing helper is refused before any prompt", async () => {
+  test("at unlock the codesign requirement pins the build identity, and a failing helper is refused before any prompt", async () => {
     const t = await vaultWithTouchId()
     const untrusted = await harness({
       env: { CANDLE_CONFIG_DIR: t.dir },
@@ -790,7 +790,7 @@ describe("unlocking with Touch ID", () => {
     expect(untrusted.calls.filter((call) => call.op === "decrypt")).toHaveLength(0)
     expect(untrusted.asked).toEqual([])
 
-    // The requirement string carries the envelope's helper identity, not only the build's.
+    // The requirement string carries the build's trusted helper identity.
     const ok = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, script: { store: t.add.script.store } })
     expect(await run(["vault", "status", "--unlock", "--factor", "touch-id", "--keystore", t.vaultPath], ok.deps)).toBe(
       0,
@@ -798,12 +798,10 @@ describe("unlocking with Touch ID", () => {
     const requirement = ok.codesign.map((args) => args[4])
     expect(requirement.every((r) => r === codesignRequirement({ teamId: TEAM, bundleId: BUNDLE }))).toBe(true)
 
-    // An envelope whose recorded helper identity was edited names a team the pinned helper is not:
-    // the requirement built from the envelope is what the helper must satisfy, and it is refused
-    // before any Touch ID sheet.
+    // A foreign identity is refused before codesign or any helper operation.
     const edited = JSON.parse(await readFile(t.vaultPath, "utf8")) as VaultJson
     const env = edited.envelopes.find((candidate) => candidate.factor === "secure-enclave") as Record<string, unknown>
-    ;(env.helper as { teamId: string }).teamId = "EDITED00000"
+    ;(env.helper as { teamId: string }).teamId = "ZZZZZ99999"
     const editedPath = join(t.dir, "edited.enc")
     await writeFile(editedPath, JSON.stringify(edited))
     const h = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, script: { store: t.add.script.store } })
@@ -811,7 +809,10 @@ describe("unlocking with Touch ID", () => {
       await run(["vault", "status", "--unlock", "--factor", "touch-id", "--json", "--keystore", editedPath], h.deps),
     ).toBe(1)
     expect(failure(h)).toMatchObject({ code: "VAULT_HELPER_UNTRUSTED" })
-    expect(failure(h).message).toContain("this envelope recorded")
+    expect(failure(h).message).toContain("This envelope recorded helper ZZZZZ99999")
+    expect(failure(h).message).toContain(`${TEAM} / ${BUNDLE}`)
+    expect(h.codesign).toEqual([])
+    expect(h.calls).toEqual([])
     expect(h.calls.filter((call) => call.op === "decrypt")).toHaveLength(0)
 
     // Every helper field is inside the envelope AAD: editing minVersion changes nothing the helper
@@ -921,4 +922,22 @@ describe("unlocking with Touch ID", () => {
     expect(remove.stdout.text).toContain("Removing a factor is not revocation")
     expect((await readVault(t.vaultPath)).envelopes).toHaveLength(1)
   })
+})
+
+test("native helper identity quotes are refused at parse time without a spawn or prompt", async () => {
+  const t = await vaultWithTouchId()
+  const original = await readFile(t.vaultPath, "utf8")
+  for (const field of ["teamId", "bundleId"] as const) {
+    const file = JSON.parse(original) as VaultJson
+    const envelope = file.envelopes.find((e) => e.factor === "secure-enclave") as Record<string, unknown>
+    const helper = envelope.helper as Record<string, string>
+    helper[field] += '" or true'
+    await writeFile(t.vaultPath, JSON.stringify(file))
+    const h = await harness({ env: { CANDLE_CONFIG_DIR: t.dir } })
+    expect(await run(["vault", "status", "--unlock", "--json", "--keystore", t.vaultPath], h.deps)).toBe(1)
+    expect(failure(h).code).toBe("VAULT_UNREADABLE")
+    expect(h.codesign).toEqual([])
+    expect(h.calls).toEqual([])
+    expect(h.asked).toEqual([])
+  }
 })

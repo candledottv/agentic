@@ -39,12 +39,13 @@ import {
   type EnclaveResponse,
   type LaErrorReport,
 } from "../enclave-helper/protocol"
-import { detectInstall } from "../release"
+import { compareVersions, detectInstall } from "../release"
 import { canonicalBytes } from "./canonical-json"
 import { b64u, KEK_BYTES, randomBytes, unb64u } from "./crypto"
 import { eciesEncrypt, pointFromSpki, spkiFromPoint } from "./ecies"
 import { VaultError, type VaultErrorCode } from "./errors"
 import type { SecureEnclaveEnvelope } from "./format"
+import { isHelperBundleId, isHelperTeamId } from "./helper-identity"
 import { ownSecret, wipe } from "./hygiene"
 import type { EnclaveHelperState } from "./platform"
 
@@ -171,6 +172,11 @@ export interface HelperIdentity {
  * App Store signature, another team's Developer ID, or an ad hoc signature all fail it.
  */
 export function codesignRequirement(identity: HelperIdentity): string {
+  if (!isHelperTeamId(identity.teamId) || !isHelperBundleId(identity.bundleId)) {
+    throw new VaultError("VAULT_HELPER_UNTRUSTED", "The helper identity has an invalid team id or bundle id.", {
+      suggestion: "No helper was run and no other factor was tried.",
+    })
+  }
   return `=anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = "${identity.teamId}" and identifier "${identity.bundleId}"`
 }
 
@@ -390,6 +396,9 @@ export async function callEnclaveHelper<T extends Exclude<EnclaveResponse, { ok:
     )
   }
   if (!response.ok) throw translateEnclaveFailure(String(response.code), String(response.message))
+  if (run.exitCode !== 0) {
+    throw new VaultError("VAULT_HELPER_MISSING", "The signed macOS helper did not complete successfully.")
+  }
   return response as T
 }
 
@@ -440,7 +449,26 @@ export async function currentEnclaveHelper(deps: HelperDeps): Promise<EnclaveHel
     }
     throw error
   }
-  const info = await callEnclaveHelper<EnclaveInfoResponse>(deps, location.path, requestCommon("-", "-", "info"))
+  let info: EnclaveInfoResponse
+  try {
+    info = await callEnclaveHelper<EnclaveInfoResponse>(deps, location.path, requestCommon("-", "-", "info"))
+    if (
+      info.op !== "info" ||
+      typeof info.version !== "string" ||
+      typeof info.secureEnclave !== "boolean" ||
+      !["available", "none", "locked-out", "not-interactive", "unavailable"].includes(info.biometry)
+    ) {
+      throw new VaultError("VAULT_HELPER_MISSING", "Invalid helper info response.")
+    }
+  } catch (error) {
+    if (!(error instanceof VaultError)) throw error
+    // Availability is non-fatal. Never echo the helper's arbitrary output into status or JSON.
+    return {
+      state: "unavailable",
+      code: error.code === "VAULT_HELPER_MISSING" ? "VAULT_HELPER_MISSING" : "VAULT_FACTOR_UNAVAILABLE",
+      reason: `the signed macOS helper could not report its availability (${error.code}); reinstall the CLI or retry from an interactive session`,
+    }
+  }
   // The helper's own signature says who it is; the CLI pinned who it must be. Both must agree
   // before its answers about this Mac are believed.
   if (info.teamId !== identity.teamId || info.bundleId !== identity.bundleId) {
@@ -496,24 +524,21 @@ export interface EnclaveSession {
   biometry: BiometryState
 }
 
-/** `1.2.3` against `1.10.0`, numerically per component; anything unparsable compares low. */
-export function compareVersions(a: string, b: string): number {
-  const parse = (value: string) => value.split(".").map((part) => Number.parseInt(part, 10) || 0)
-  const left = parse(a)
-  const right = parse(b)
-  for (let i = 0; i < Math.max(left.length, right.length); i++) {
-    const diff = (left[i] ?? 0) - (right[i] ?? 0)
-    if (diff !== 0) return diff < 0 ? -1 : 1
+/** Refuse an envelope's untrusted identity before locating or spawning a helper. */
+export function pinnedHelperIdentity(deps: Pick<Deps, "releasePolicy">, helper: HelperIdentity): HelperIdentity {
+  const policy = deps.releasePolicy.macosHelper
+  const identity = { teamId: policy.teamId, bundleId: policy.bundleId }
+  if (helper.teamId !== identity.teamId || helper.bundleId !== identity.bundleId) {
+    throw new VaultError(
+      "VAULT_HELPER_UNTRUSTED",
+      `This envelope recorded helper ${helper.teamId} / ${helper.bundleId}; this build trusts ${identity.teamId} / ${identity.bundleId}.`,
+      { suggestion: "No helper was run and no other factor was tried." },
+    )
   }
-  return 0
+  return identity
 }
 
-/**
- * Prepares to drive an ENVELOPE's factor: the policy must be `signed`, the helper present, its
- * signature must satisfy the team id and bundle id THE ENVELOPE recorded (ED-12: the requirement
- * pins what the envelope's `helper` field says, not only what this build expected), and its
- * version must be at least the envelope's `minVersion`. Nothing here touches the vault or prompts.
- */
+/** Open only with this build's pinned identity and the envelope's minimum helper version. */
 export async function openEnclaveSession(
   deps: HelperDeps,
   helper: { teamId: string; bundleId: string; minVersion?: string },
@@ -526,19 +551,19 @@ export async function openEnclaveSession(
       { suggestion: "Open the vault with its passphrase. No other envelope was tried." },
     )
   }
+  const identity = pinnedHelperIdentity(deps, helper)
   const location = await locateEnclaveHelper(deps)
   if (location.state === "absent") {
     throw new VaultError("VAULT_HELPER_MISSING", `The Secure Enclave helper is not available: ${location.reason}.`, {
       suggestion: ENCLAVE_INSTALL_SUGGESTION,
     })
   }
-  const identity: HelperIdentity = { teamId: helper.teamId, bundleId: helper.bundleId }
   await verifyHelperSignature(deps, location.appPath, identity)
   const info = await callEnclaveHelper<EnclaveInfoResponse>(deps, location.path, requestCommon("-", "-", "info"))
   if (info.teamId !== identity.teamId || info.bundleId !== identity.bundleId) {
     throw new VaultError(
       "VAULT_HELPER_UNTRUSTED",
-      `The helper at ${location.appPath} reports team ${info.teamId || "(none)"} and bundle id ${info.bundleId || "(none)"}, not the ${identity.teamId} / ${identity.bundleId} this envelope recorded.`,
+      `The helper at ${location.appPath} reports team ${info.teamId || "(none)"} and bundle id ${info.bundleId || "(none)"}, not the ${identity.teamId} / ${identity.bundleId} this build trusts.`,
       { suggestion: "Reinstall the CLI from a release. No other factor is substituted." },
     )
   }

@@ -818,7 +818,7 @@ describe("unlocking with a synced passkey", () => {
     }
   })
 
-  test("at unlock the AD-2 gates are re-checked from the helper's report, and an envelope whose helper identity was edited fails the header tag", async () => {
+  test("at unlock the AD-2 gates are re-checked from the helper's report, and an envelope whose helper identity was edited is refused before any spawn", async () => {
     const t = await vaultWithPasskey()
     const older = await harness({
       env: { CANDLE_CONFIG_DIR: t.dir },
@@ -848,8 +848,7 @@ describe("unlocking with a synced passkey", () => {
       "associated-domains entitlement",
     )
 
-    // helper.teamId edited in the file: the codesign requirement is built from the edited value and
-    // the helper's own report contradicts it, before any sheet.
+    // An edited helper.teamId is refused before codesign or any helper operation.
     const file = await readVault(t.vaultPath)
     const envelope = file.envelopes.find((e) => e.id === t.envelopeId) as Record<string, unknown>
     envelope.helper = { ...(envelope.helper as Record<string, string>), teamId: "ZZZZZ99999" }
@@ -862,7 +861,10 @@ describe("unlocking with a synced passkey", () => {
       ),
     ).toBe(1)
     expect(failure(edited)).toMatchObject({ code: "VAULT_HELPER_UNTRUSTED" })
-    expect(edited.codesign.some((args) => args[4]?.includes('subject.OU] = "ZZZZZ99999"'))).toBe(true)
+    expect(edited.codesign).toEqual([])
+    expect(edited.calls).toEqual([])
+    expect(failure(edited).message).toContain(`ZZZZZ99999 / ${BUNDLE}`)
+    expect(failure(edited).message).toContain(`${TEAM} / ${BUNDLE}`)
     expect(ops(edited)).not.toContain("passkey-assert")
   })
 
@@ -1079,7 +1081,7 @@ describe("AD-9: sealed cloud backups", () => {
     })
     expect(await run(["vault", "verify-backup", to, "--factor", "passkey", "--keystore", t.vaultPath], v.deps)).toBe(0)
     expect(v.stderr.text).toContain(
-      "is a sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor passkey",
+      "is a sealed copy that opens only with the passphrase it was sealed under, which may predate a passphrase rotation. The passphrase is used here rather than --factor passkey",
     )
     expect(v.asked).toEqual([expect.stringContaining("Vault passphrase")])
     expect(ops(v)).not.toContain("passkey-assert")
@@ -1124,4 +1126,92 @@ describe("AD-9: sealed cloud backups", () => {
     expect(JSON.parse(uv.stdout.text)).toMatchObject({ ok: true, sealed: false })
     expect(ops(uv).filter((op) => op === "passkey-assert")).toHaveLength(2)
   })
+})
+
+test("native helper identity quotes are refused at parse time without a spawn or prompt", async () => {
+  const t = await vaultWithPasskey()
+  const original = await readFile(t.vaultPath, "utf8")
+  for (const field of ["teamId", "bundleId"] as const) {
+    const file = JSON.parse(original) as VaultJson
+    const envelope = file.envelopes.find((e) => e.factor === "passkey-prf") as Record<string, unknown>
+    const helper = envelope.helper as Record<string, string>
+    helper[field] += '" or true'
+    await writeFile(t.vaultPath, JSON.stringify(file))
+    const h = await harness({ env: { CANDLE_CONFIG_DIR: t.dir } })
+    expect(await run(["vault", "status", "--unlock", "--json", "--keystore", t.vaultPath], h.deps)).toBe(1)
+    expect(failure(h).code).toBe("VAULT_UNREADABLE")
+    expect(h.codesign).toEqual([])
+    expect(h.calls).toEqual([])
+    expect(h.asked).toEqual([])
+  }
+})
+
+test("signed helper info failures leave status, factor list and passphrase enrollment usable", async () => {
+  const t = await vaultWithPasskey()
+  const touch = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [t.passphrase] })
+  expect(await run(["vault", "factor", "add", "touch-id", "--keystore", t.vaultPath], touch.deps)).toBe(0)
+  for (const failed of [
+    { stdout: "", stderr: "secret-canary", exitCode: null, signal: null, spawnError: "ENOENT" },
+    { stdout: "not json secret-canary", stderr: "", exitCode: 0, signal: null },
+    { stdout: "", stderr: "secret-canary", exitCode: 1, signal: null },
+    { stdout: '{"protocol":1,"ok":true,"op":"info"}', stderr: "", exitCode: 0, signal: null },
+  ]) {
+    for (const command of [["status"], ["factor", "list"], ["factor", "add", "passphrase", "--own-passphrase"]]) {
+      const fresh = "synthetic newly added passphrase"
+      const h = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [t.passphrase, fresh, fresh] })
+      const spawn = h.deps.spawnHelper
+      h.deps.spawnHelper = (path, line, opts) =>
+        path === CODESIGN_PATH ? spawn(path, line, opts) : Promise.resolve(failed)
+      expect(
+        await run(["vault", ...command, "--factor", "passphrase", "--json", "--keystore", t.vaultPath], h.deps),
+      ).toBe(0)
+      if (command.length < 3) {
+        expect(h.stdout.text).toContain("unavailable-on-this-device")
+        expect(h.stdout.text).toContain("could not report its availability")
+        const envelopes = JSON.parse(h.stdout.text).envelopes as Array<{ factor: string; availability: string }>
+        for (const factor of ["secure-enclave", "passkey-prf"]) {
+          expect(envelopes.find((e) => e.factor === factor)?.availability).toBe("unavailable-on-this-device")
+        }
+        expect(envelopes.find((e) => e.factor === "passphrase")?.availability).toBe("available")
+      }
+      expect(h.stdout.text + h.stderr.text).not.toContain("secret-canary")
+      expect(h.stdout.text + h.stderr.text).not.toContain(fresh)
+    }
+  }
+})
+
+test("a sealed backup retains its old passphrase after rotation", async () => {
+  const t = await vaultWithPasskey()
+  const cloud = join(t.dir, "..", "Library", "Mobile Documents", t.dir.split("/").pop() as string)
+  await mkdir(cloud, { recursive: true })
+  const to = join(cloud, "before-rotation.enc")
+  const b = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [t.passphrase] })
+  expect(await run(["vault", "backup", "--to", to, "--keystore", t.vaultPath], b.deps)).toBe(0)
+  const oldId = (await readVault(to)).envelopes[0]?.id as string
+  const fresh = "synthetic rotated passphrase"
+  const add = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [t.passphrase, fresh, fresh] })
+  expect(
+    await run(
+      ["vault", "factor", "add", "passphrase", "--own-passphrase", "--factor", "passphrase", "--keystore", t.vaultPath],
+      add.deps,
+    ),
+  ).toBe(0)
+  const remove = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [fresh] })
+  expect(
+    await run(["vault", "factor", "remove", oldId, "--factor", "passphrase", "--keystore", t.vaultPath], remove.deps),
+  ).toBe(0)
+  expect((await readVault(t.vaultPath)).envelopes.some((e) => e.id === oldId)).toBe(false)
+  const v = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [fresh, t.passphrase] })
+  expect(
+    await run(["vault", "verify-backup", to, "--factor", "passkey", "--json", "--keystore", t.vaultPath], v.deps),
+  ).toBe(0)
+  expect(JSON.parse(v.stdout.text)).toMatchObject({ ok: true, sealed: true, steps: 8, comparedAgainstLive: true })
+  expect(v.asked).toEqual([
+    expect.stringContaining("Vault passphrase"),
+    expect.stringContaining("Passphrase this backup was sealed under"),
+  ])
+  expect(v.stderr.text).toContain("may predate a passphrase rotation")
+  expect(ops(v)).not.toContain("passkey-assert")
+  expect(v.stdout.text + v.stderr.text).not.toContain(t.passphrase)
+  expect(v.stdout.text + v.stderr.text).not.toContain(fresh)
 })

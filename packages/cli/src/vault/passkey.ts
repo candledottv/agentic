@@ -3,8 +3,8 @@
  * CLI's side of the synced passkey over the native macOS API.
  *
  * The passkey rides the same signed helper as the Secure Enclave (`enclave.ts`): the same release
- * policy gate, the same location rules, the same `/usr/bin/codesign` requirement pinned to what
- * the envelope recorded, the same one-operation-per-process pipe and the same typed translation,
+ * policy gate, the same location rules, the same `/usr/bin/codesign` requirement pinned to this build's
+ * release policy, the same one-operation-per-process pipe and the same typed translation,
  * never a fallback. What is added here is the gate set AD-2 names, each a typed refusal before any
  * ceremony (CC-12): macOS 15 or later, the helper's associated-domains entitlement for
  * `webcredentials:cli.candle.tv`, an embedded provisioning profile, and, at `factor add` only, a
@@ -27,16 +27,17 @@ import {
   type EnclavePasskeyRegisterResponse,
   PASSKEY_RP_ID,
 } from "../enclave-helper/protocol"
+import { compareVersions } from "../release"
 import { b64u, PRF_OUTPUT_BYTES, unb64u } from "./crypto"
 import {
   AASA_REQUIREMENT,
   AASA_URL,
   callEnclaveHelper,
-  compareVersions,
   ENCLAVE_INSTALL_SUGGESTION,
   type HelperIdentity,
   helperReport,
   locateEnclaveHelper,
+  pinnedHelperIdentity,
   requestCommon,
   verifyHelperSignature,
 } from "./enclave"
@@ -60,8 +61,8 @@ type HelperDeps = Pick<Deps, "env" | "execPath" | "realpath" | "spawnHelper" | "
 
 /**
  * Prepares to drive an ENVELOPE's synced passkey: the policy must be `signed`, the helper present,
- * its signature must satisfy the team id and bundle id THE ENVELOPE recorded, its version at least
- * the envelope's `minVersion`, and what it reports about this Mac must pass every AD-2 gate.
+ * its signature must satisfy this build's trusted team id and bundle id, matching the envelope.
+ * Its version must meet the envelope's `minVersion`, and its report must pass every AD-2 gate.
  * Nothing here touches the vault, prompts, or the network.
  */
 export async function openPasskeySession(
@@ -76,19 +77,19 @@ export async function openPasskeySession(
       { suggestion: "Open the vault with its passphrase. No other envelope was tried." },
     )
   }
+  const identity = pinnedHelperIdentity(deps, helper)
   const location = await locateEnclaveHelper(deps)
   if (location.state === "absent") {
     throw new VaultError("VAULT_HELPER_MISSING", `The signed macOS helper is not available: ${location.reason}.`, {
       suggestion: ENCLAVE_INSTALL_SUGGESTION,
     })
   }
-  const identity: HelperIdentity = { teamId: helper.teamId, bundleId: helper.bundleId }
   await verifyHelperSignature(deps, location.appPath, identity)
   const info = await callEnclaveHelper<EnclaveInfoResponse>(deps, location.path, requestCommon("-", "-", "info"))
   if (info.teamId !== identity.teamId || info.bundleId !== identity.bundleId) {
     throw new VaultError(
       "VAULT_HELPER_UNTRUSTED",
-      `The helper at ${location.appPath} reports team ${info.teamId || "(none)"} and bundle id ${info.bundleId || "(none)"}, not the ${identity.teamId} / ${identity.bundleId} this envelope recorded.`,
+      `The helper at ${location.appPath} reports team ${info.teamId || "(none)"} and bundle id ${info.bundleId || "(none)"}, not the ${identity.teamId} / ${identity.bundleId} this build trusts.`,
       { suggestion: "Reinstall the CLI from a release. No other factor is substituted." },
     )
   }

@@ -33,7 +33,7 @@ import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { assertBackupDomainAllowed, type BackupDomainVerdict, sealedEnvelopes } from "../vault/domains"
 import { VaultError } from "../vault/errors"
-import { isPassphraseEnvelope, parseVaultFile } from "../vault/format"
+import { type Envelope, isPassphraseEnvelope, parseVaultFile } from "../vault/format"
 import { APPLE_ACCOUNT_NOTICE } from "../vault/passphrase"
 import { nextSidecar, readSidecar, sidecarPath, writeSidecar } from "../vault/sidecar"
 import {
@@ -170,25 +170,10 @@ export async function writeSealedCopy(live: UnlockedVault, destination: string):
   }
 }
 
-/**
- * Whether `copyRaw` is a sealed copy of the vault whose envelopes are `liveEnvelopes` (AD-9):
- * every envelope in the copy is a passphrase envelope the live vault also has, and the live
- * vault has at least one envelope the copy does not.
- */
-export function isSealedCopyOf(copyRaw: string, liveEnvelopes: Array<{ id: string; factor: string }>): boolean {
-  let copy: { envelopes?: Array<{ id?: unknown; factor?: unknown }> }
-  try {
-    copy = JSON.parse(copyRaw) as typeof copy
-  } catch {
-    return false
-  }
-  const copyEnvelopes = Array.isArray(copy.envelopes) ? copy.envelopes : []
-  if (copyEnvelopes.length === 0) return false
-  const liveIds = new Set(liveEnvelopes.map((envelope) => envelope.id))
-  const allPassphrase = copyEnvelopes.every(
-    (envelope) => envelope.factor === "passphrase" && typeof envelope.id === "string" && liveIds.has(envelope.id),
-  )
-  return allPassphrase && liveEnvelopes.some((envelope) => envelope.factor !== "passphrase")
+/** A passphrase-only copy has sealed-copy semantics, regardless of the live vault's history. */
+export function isSealedCopy(copyRaw: string): boolean {
+  const envelopes = parseVaultFile(copyRaw).envelopes
+  return envelopes.length > 0 && envelopes.every(isPassphraseEnvelope)
 }
 
 export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Promise<number> {
@@ -207,13 +192,13 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
     const raw = await requireVaultRaw(path)
     // AD-9: a sealed copy has only the passphrase envelope(s), so it is verified with the
     // passphrase whatever else opens the live vault. Decided from the copy's cleartext header
-    // before any prompt, so the one prompt is the right one.
+    // before any prompt, independent of rotations or restores of the live vault.
     const copyRaw = await readVaultRaw(resolve(copyPath))
     if (copyRaw === null) throw new VaultError("VAULT_MISSING", `No file at ${resolve(copyPath)}.`)
-    const sealed = isSealedCopyOf(copyRaw, parseVaultFile(raw).envelopes)
-    if (sealed && ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase") {
+    const sealed = isSealedCopy(copyRaw)
+    if (sealed) {
       deps.stderr.write(
-        `${resolve(copyPath)} is a sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor ${ctx.vaultFactor}.\n`,
+        `${resolve(copyPath)} is a sealed copy that opens only with the passphrase it was sealed under, which may predate a passphrase rotation.${ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase" ? ` The passphrase is used here rather than --factor ${ctx.vaultFactor}.` : ""}\n`,
       )
     }
     const opened = await unlockInteractively(ctx, path, raw, {
@@ -221,7 +206,26 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
       ...(sealed ? { factor: "passphrase" } : {}),
     })
     const live = hold(opened.vault)
-    const report = await verifyCopy(ctx, resolve(copyPath), opened.reopen, live)
+    // Reuse the live passphrase only when the exact envelope it opened also exists in the copy.
+    // A rotation or restore needs the old copy's passphrase, not another factor or a retry.
+    const sameEnvelope = parseVaultFile(copyRaw).envelopes.some(
+      (envelope) => JSON.stringify(envelope) === JSON.stringify(live.envelope),
+    )
+    let report: VerifyReport
+    if (sealed && !sameEnvelope) {
+      const copy = hold(
+        (
+          await unlockInteractively(ctx, resolve(copyPath), copyRaw, {
+            factor: "passphrase",
+            acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+            promptText: "Passphrase this backup was sealed under (input hidden): ",
+          })
+        ).vault,
+      )
+      report = await verifyVaultIntegrity(copy, { live })
+    } else {
+      report = await verifyCopy(ctx, resolve(copyPath), opened.reopen, live)
+    }
 
     const sidecar = sidecarPath(path)
     await writeSidecar(sidecar, {
@@ -233,7 +237,14 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
       writeJson(deps, { ok: true, verified: resolve(copyPath), sealed, ...reportJson(report, live) })
       return 0
     }
-    writeVerifiedReport(ctx, resolve(copyPath), sealed ? { sealed: true } : undefined, report, live)
+    writeVerifiedReport(
+      ctx,
+      resolve(copyPath),
+      sealed ? { sealed: true } : undefined,
+      report,
+      live,
+      parseVaultFile(copyRaw).envelopes,
+    )
     return 0
   })
 }
@@ -313,7 +324,7 @@ function reportJson(report: VerifyReport, live: UnlockedVault) {
 
 /** AD-9's consequence, printed on every sealed copy so the operator knows what the copy answers to. */
 export const SEALED_COPY_NOTE =
-  "This copy opens only with the passphrase: its synced passkey, Touch ID and security key envelopes were left out (the live vault keeps them). Keep the passphrase somewhere outside the Apple account that holds a synced passkey. The live vault plus the recovery phrase remain the everyday path; this copy is for the day both are gone."
+  "This copy opens only with the passphrase it was sealed under, which may predate a passphrase rotation. It contains no synced passkey, Touch ID or security key envelope. Keep the passphrase somewhere outside the Apple account that holds a synced passkey. The live vault plus the recovery phrase remain the everyday path; this copy is for the day both are gone."
 
 function writeVerifiedReport(
   ctx: CommandContext,
@@ -321,13 +332,14 @@ function writeVerifiedReport(
   verdict: Partial<BackupDomainVerdict> | undefined,
   report: VerifyReport,
   live: UnlockedVault,
+  copyEnvelopes?: Envelope[],
 ): void {
   const { deps } = ctx
   deps.stdout.write(`Verified ${target}\n`)
   if (verdict?.destination) deps.stdout.write(`  destination   ${verdict.destination}\n`)
   if (verdict?.sealed) {
-    const kept = live.file.envelopes.filter(isPassphraseEnvelope).map((envelope) => envelope.id)
-    const leftOut = live.file.envelopes
+    const kept = (copyEnvelopes ?? live.file.envelopes).filter(isPassphraseEnvelope).map((envelope) => envelope.id)
+    const leftOut = (copyEnvelopes === undefined ? live.file.envelopes : [])
       .filter((envelope) => !isPassphraseEnvelope(envelope))
       .map((envelope) => envelope.id)
     deps.stdout.write(

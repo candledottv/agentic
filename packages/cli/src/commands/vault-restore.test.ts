@@ -548,3 +548,37 @@ describe("T55: reconcile-exposure adds and never clears", () => {
     expect(body.suggestion).toContain("Nothing was flagged")
   })
 })
+
+test("verify-backup recognizes a sealed copy after phrase restore replaces every envelope", async () => {
+  const original = await harness()
+  expect(await restore(original, ["--count", "1"])).toBe(0)
+  const oldPassphrase = generatedPassphraseFrom(original.stdout.text)
+  const backupPath = join(original.dir, "..", "Library", "Mobile Documents", `${original.dir.split("/").pop()}.enc`)
+  const { mkdir } = await import("node:fs/promises")
+  await mkdir(join(original.dir, "..", "Library", "Mobile Documents"), { recursive: true })
+  original.deps.promptSecret = async () => oldPassphrase
+  expect(await run(["vault", "backup", "--to", backupPath, "--keystore", original.vaultPath], original.deps)).toBe(0)
+
+  const restored = await harness()
+  expect(await restore(restored, ["--count", "1"])).toBe(0)
+  const newPassphrase = generatedPassphraseFrom(restored.stdout.text)
+  const oldFile = JSON.parse(await readFile(backupPath, "utf8"))
+  const newFile = JSON.parse(await readFile(restored.vaultPath, "utf8"))
+  expect(oldFile.vaultId).not.toBe(newFile.vaultId)
+  expect(oldFile.envelopes[0].id).not.toBe(newFile.envelopes[0].id)
+  const stdout = createCapture()
+  const stderr = createCapture()
+  const secrets = [newPassphrase, oldPassphrase]
+  const deps = { ...restored.deps, stdout, stderr, promptSecret: async () => secrets.shift() as string }
+  expect(
+    await run(
+      ["vault", "verify-backup", backupPath, "--factor", "passkey", "--json", "--keystore", restored.vaultPath],
+      deps,
+    ),
+  ).toBe(0)
+  expect(JSON.parse(stdout.text)).toMatchObject({ ok: true, sealed: true, steps: 8, comparedAgainstLive: true })
+  expect(secrets).toHaveLength(0)
+  expect(stderr.text).toContain("passphrase it was sealed under")
+  expect(stdout.text + stderr.text).not.toContain(oldPassphrase)
+  expect(stdout.text + stderr.text).not.toContain(newPassphrase)
+})
