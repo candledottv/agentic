@@ -26,12 +26,22 @@
  * the conflict instead of blocking the backup. `--accept-shared-domain` writes an unsealed copy
  * (the full envelope set) and the acceptance is recorded in the sidecar. The output says which,
  * and a sealed copy is verified through the same eight-step verifier with the passphrase.
+ *
+ * AD-9 amendment (Andrew, 2026-09-19; BE-205): a destination classified `unknown` is sealed the
+ * same way, because the CLI cannot tell whether that path syncs to an account. The output says
+ * that in those words rather than naming the class, since "unknown destination" reads as a
+ * failure of the tool instead of as the reason the copy is smaller.
  */
 import { copyFile, stat } from "node:fs/promises"
 import nodePath, { resolve } from "node:path"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
-import { assertBackupDomainAllowed, type BackupDomainVerdict, sealedEnvelopes } from "../vault/domains"
+import {
+  assertBackupDomainAllowed,
+  type BackupDomainVerdict,
+  type DestinationDomain,
+  sealedEnvelopes,
+} from "../vault/domains"
 import { VaultError } from "../vault/errors"
 import { type Envelope, isPassphraseEnvelope, parseVaultFile } from "../vault/format"
 import { APPLE_ACCOUNT_NOTICE } from "../vault/passphrase"
@@ -99,7 +109,7 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
     // honoured for a sealed backup, and the line below says so before the prompt.
     if (verdict.sealed && ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase") {
       deps.stderr.write(
-        `${destination} is a ${verdict.destination} destination, so this backup is a sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor ${ctx.vaultFactor}.\n`,
+        `${sealReason(verdict.destination, destination)}, so this backup is a sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor ${ctx.vaultFactor}.\n`,
       )
     }
     const opened = await unlockInteractively(ctx, path, raw, {
@@ -322,9 +332,65 @@ function reportJson(report: VerifyReport, live: UnlockedVault) {
   }
 }
 
+/**
+ * Why this copy is sealed, as a clause the caller finishes. A recognised cloud folder names its
+ * own class; a destination the CLI cannot place says what it cannot tell instead, which is the
+ * fact the operator needs (AD-9 amendment, Andrew, 2026-09-19).
+ */
+export function sealReason(destination: DestinationDomain, target: string): string {
+  return destination === "unknown"
+    ? `Candle cannot tell whether ${target} syncs to an account`
+    : `${target} is a ${destination} destination`
+}
+
+/**
+ * AD-9 amendment: printed whenever a copy is sealed because the destination could not be placed,
+ * so the operator learns it was the not-knowing that sealed the copy, and what to pass instead.
+ */
+export const UNPLACEABLE_DESTINATION_NOTE =
+  "Candle cannot tell whether this path syncs to an account, so this copy opens only with the passphrase. Pass --accept-shared-domain to write a full copy there instead."
+
 /** AD-9's consequence, printed on every sealed copy so the operator knows what the copy answers to. */
 export const SEALED_COPY_NOTE =
   "This copy opens only with the passphrase it was sealed under, which may predate a passphrase rotation. It contains no synced passkey, Touch ID or security key envelope. Keep the passphrase somewhere outside the Apple account that holds a synced passkey. The live vault plus the recovery phrase remain the everyday path; this copy is for the day both are gone."
+
+/**
+ * The lines between "Verified <path>" and the step count: the destination class, which kind of
+ * copy was written, and (AD-9 amendment) why a copy to a path Candle cannot place is sealed. Pure,
+ * so the wording an operator acts on is asserted directly rather than through a captured stream.
+ */
+export function backupVerdictLines(
+  verdict: Partial<BackupDomainVerdict> | undefined,
+  kept: string[],
+  leftOut: string[],
+): string[] {
+  const lines: string[] = []
+  if (verdict?.destination) lines.push(`  destination   ${verdict.destination}`)
+  if (verdict?.sealed) {
+    lines.push(
+      `  sealed        yes: passphrase envelope(s) ${kept.join(", ")} only${leftOut.length > 0 ? `; left out ${leftOut.join(", ")}` : ""}`,
+    )
+    if (verdict.destination === "unknown") lines.push(`  why sealed    ${UNPLACEABLE_DESTINATION_NOTE}`)
+  } else if (verdict?.sharedDomainAccepted) {
+    lines.push(`  sealed        no: every envelope is in this copy (--accept-shared-domain)`)
+  }
+  return lines
+}
+
+/**
+ * The line an accepted unsealed copy ends on. Three cases, because the thing the operator accepted
+ * differs: one Apple account holding both halves, a cloud account, or (AD-9 amendment) a path the
+ * CLI could not place at all.
+ */
+export function sharedDomainLine(verdict: Partial<BackupDomainVerdict>): string {
+  if (verdict.sharedDomain) {
+    return `  shared domain this destination and a synced passkey envelope are one Apple account, and this unsealed copy carries that passkey's envelope; you accepted that.`
+  }
+  if (verdict.destination === "unknown") {
+    return `  shared domain this unsealed copy carries every envelope to a path Candle cannot place, which may sync to an account; you accepted that.`
+  }
+  return `  shared domain this unsealed copy carries every envelope into a cloud account; you accepted that.`
+}
 
 function writeVerifiedReport(
   ctx: CommandContext,
@@ -335,19 +401,12 @@ function writeVerifiedReport(
   copyEnvelopes?: Envelope[],
 ): void {
   const { deps } = ctx
+  const kept = (copyEnvelopes ?? live.file.envelopes).filter(isPassphraseEnvelope).map((envelope) => envelope.id)
+  const leftOut = (copyEnvelopes === undefined ? live.file.envelopes : [])
+    .filter((envelope) => !isPassphraseEnvelope(envelope))
+    .map((envelope) => envelope.id)
   deps.stdout.write(`Verified ${target}\n`)
-  if (verdict?.destination) deps.stdout.write(`  destination   ${verdict.destination}\n`)
-  if (verdict?.sealed) {
-    const kept = (copyEnvelopes ?? live.file.envelopes).filter(isPassphraseEnvelope).map((envelope) => envelope.id)
-    const leftOut = (copyEnvelopes === undefined ? live.file.envelopes : [])
-      .filter((envelope) => !isPassphraseEnvelope(envelope))
-      .map((envelope) => envelope.id)
-    deps.stdout.write(
-      `  sealed        yes: passphrase envelope(s) ${kept.join(", ")} only${leftOut.length > 0 ? `; left out ${leftOut.join(", ")}` : ""}\n`,
-    )
-  } else if (verdict?.sharedDomainAccepted) {
-    deps.stdout.write(`  sealed        no: every envelope is in this copy (--accept-shared-domain)\n`)
-  }
+  for (const line of backupVerdictLines(verdict, kept, leftOut)) deps.stdout.write(`${line}\n`)
   deps.stdout.write(`  steps         all 8 passed, in order\n`)
   deps.stdout.write(
     `  keys checked  ${report.addressChecked.length} (each secret produces the address the index records)\n`,
@@ -359,13 +418,7 @@ function writeVerifiedReport(
     )
   }
   if (report.comparedAgainstLive) deps.stdout.write(`  address set   matches the live vault\n`)
-  if (verdict?.sharedDomainAccepted) {
-    deps.stdout.write(
-      verdict.sharedDomain
-        ? `  shared domain this destination and a synced passkey envelope are one Apple account, and this unsealed copy carries that passkey's envelope; you accepted that.\n`
-        : `  shared domain this unsealed copy carries every envelope into a cloud account; you accepted that.\n`,
-    )
-  }
+  if (verdict?.sharedDomainAccepted) deps.stdout.write(`${sharedDomainLine(verdict)}\n`)
   if (verdict?.sealed) deps.stdout.write(`\n${SEALED_COPY_NOTE}\n${APPLE_ACCOUNT_NOTICE}\n`)
   // Every backup output prints the counters, because an operator who kept the phrase needs these
   // two numbers beside it to bound a restore (CC-11).

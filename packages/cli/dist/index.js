@@ -43675,6 +43675,9 @@ function classifyDestination(path, home = homedir5()) {
   }
   return "unknown";
 }
+function sealsByDefault(destination) {
+  return destination === "icloud-drive" || destination === "other-cloud" || destination === "unknown";
+}
 function accountDomainOf(destination) {
   if (destination === "icloud-drive")
     return "apple-account";
@@ -43721,10 +43724,18 @@ function assertBackupDomainAllowed(envelopes, destinationPath, opts) {
     });
   }
   const cloud = destinationAccount !== undefined;
+  const seals = sealsByDefault(destination);
   const appleEnvelope = envelopes.some((envelope) => envelope.domain === "apple-account");
   const sharedDomain = appleEnvelope && destination === "icloud-drive";
-  const sharedDomainAccepted = cloud && opts.acceptSharedDomain;
-  return { destination, cloud, sharedDomain, sealed: cloud && !opts.acceptSharedDomain, sharedDomainAccepted };
+  const sharedDomainAccepted = seals && opts.acceptSharedDomain;
+  return {
+    destination,
+    cloud,
+    sealsByDefault: seals,
+    sharedDomain,
+    sealed: seals && !opts.acceptSharedDomain,
+    sharedDomainAccepted
+  };
 }
 
 // src/commands/vault-backup.ts
@@ -46177,7 +46188,7 @@ async function vaultBackup(args, ctx) {
       throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite a backup.`);
     }
     if (verdict.sealed && ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase") {
-      deps.stderr.write(`${destination} is a ${verdict.destination} destination, so this backup is a sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor ${ctx.vaultFactor}.
+      deps.stderr.write(`${sealReason(verdict.destination, destination)}, so this backup is a sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor ${ctx.vaultFactor}.
 `);
     }
     const opened = await unlockInteractively(ctx, path, raw, {
@@ -46333,23 +46344,42 @@ function reportJson(report, live) {
     phraseRestoresDerivedKeysOnly: true
   };
 }
+function sealReason(destination, target) {
+  return destination === "unknown" ? `Candle cannot tell whether ${target} syncs to an account` : `${target} is a ${destination} destination`;
+}
+var UNPLACEABLE_DESTINATION_NOTE = "Candle cannot tell whether this path syncs to an account, so this copy opens only with the passphrase. Pass --accept-shared-domain to write a full copy there instead.";
 var SEALED_COPY_NOTE = "This copy opens only with the passphrase it was sealed under, which may predate a passphrase rotation. It contains no synced passkey, Touch ID or security key envelope. Keep the passphrase somewhere outside the Apple account that holds a synced passkey. The live vault plus the recovery phrase remain the everyday path; this copy is for the day both are gone.";
+function backupVerdictLines(verdict, kept, leftOut) {
+  const lines = [];
+  if (verdict?.destination)
+    lines.push(`  destination   ${verdict.destination}`);
+  if (verdict?.sealed) {
+    lines.push(`  sealed        yes: passphrase envelope(s) ${kept.join(", ")} only${leftOut.length > 0 ? `; left out ${leftOut.join(", ")}` : ""}`);
+    if (verdict.destination === "unknown")
+      lines.push(`  why sealed    ${UNPLACEABLE_DESTINATION_NOTE}`);
+  } else if (verdict?.sharedDomainAccepted) {
+    lines.push(`  sealed        no: every envelope is in this copy (--accept-shared-domain)`);
+  }
+  return lines;
+}
+function sharedDomainLine(verdict) {
+  if (verdict.sharedDomain) {
+    return `  shared domain this destination and a synced passkey envelope are one Apple account, and this unsealed copy carries that passkey's envelope; you accepted that.`;
+  }
+  if (verdict.destination === "unknown") {
+    return `  shared domain this unsealed copy carries every envelope to a path Candle cannot place, which may sync to an account; you accepted that.`;
+  }
+  return `  shared domain this unsealed copy carries every envelope into a cloud account; you accepted that.`;
+}
 function writeVerifiedReport(ctx, target, verdict, report, live, copyEnvelopes) {
   const { deps } = ctx;
+  const kept = (copyEnvelopes ?? live.file.envelopes).filter(isPassphraseEnvelope).map((envelope) => envelope.id);
+  const leftOut = (copyEnvelopes === undefined ? live.file.envelopes : []).filter((envelope) => !isPassphraseEnvelope(envelope)).map((envelope) => envelope.id);
   deps.stdout.write(`Verified ${target}
 `);
-  if (verdict?.destination)
-    deps.stdout.write(`  destination   ${verdict.destination}
+  for (const line of backupVerdictLines(verdict, kept, leftOut))
+    deps.stdout.write(`${line}
 `);
-  if (verdict?.sealed) {
-    const kept = (copyEnvelopes ?? live.file.envelopes).filter(isPassphraseEnvelope).map((envelope) => envelope.id);
-    const leftOut = (copyEnvelopes === undefined ? live.file.envelopes : []).filter((envelope) => !isPassphraseEnvelope(envelope)).map((envelope) => envelope.id);
-    deps.stdout.write(`  sealed        yes: passphrase envelope(s) ${kept.join(", ")} only${leftOut.length > 0 ? `; left out ${leftOut.join(", ")}` : ""}
-`);
-  } else if (verdict?.sharedDomainAccepted) {
-    deps.stdout.write(`  sealed        no: every envelope is in this copy (--accept-shared-domain)
-`);
-  }
   deps.stdout.write(`  steps         all 8 passed, in order
 `);
   deps.stdout.write(`  keys checked  ${report.addressChecked.length} (each secret produces the address the index records)
@@ -46363,11 +46393,9 @@ function writeVerifiedReport(ctx, target, verdict, report, live, copyEnvelopes) 
   if (report.comparedAgainstLive)
     deps.stdout.write(`  address set   matches the live vault
 `);
-  if (verdict?.sharedDomainAccepted) {
-    deps.stdout.write(verdict.sharedDomain ? `  shared domain this destination and a synced passkey envelope are one Apple account, and this unsealed copy carries that passkey's envelope; you accepted that.
-` : `  shared domain this unsealed copy carries every envelope into a cloud account; you accepted that.
+  if (verdict?.sharedDomainAccepted)
+    deps.stdout.write(`${sharedDomainLine(verdict)}
 `);
-  }
   if (verdict?.sealed)
     deps.stdout.write(`
 ${SEALED_COPY_NOTE}
@@ -49653,7 +49681,7 @@ This machine's record (vault.state.json, cleartext, best effort):
       deps.stdout.write(`  last generation seen   ${sidecar.lastGeneration}
 `);
       if (sidecar.lastVerifiedBackupAt) {
-        deps.stdout.write(`  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "unknown"}${sidecar.lastBackupSealed ? ", sealed: opens with the passphrase only" : ""})
+        deps.stdout.write(`  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "not recorded"}${sidecar.lastBackupSealed ? ", sealed: opens with the passphrase only" : ""})
 `);
       }
       if (sidecar.lastBackupSharedDomainAccepted) {

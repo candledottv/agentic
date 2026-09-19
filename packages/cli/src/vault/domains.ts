@@ -16,6 +16,15 @@
  * way (the passphrase still holds); what sealing removes is one Apple account holding both the
  * blob and a factor that opens it. `--accept-shared-domain` survives as the way to write an
  * unsealed copy (the full envelope set) to a cloud destination, and the acceptance is recorded.
+ *
+ * AD-9 amendment (Andrew, 2026-09-19; BE-205): `unknown` seals exactly as a cloud destination
+ * does. Only a recognised `local-disk` or `removable-media` destination gets the full envelope
+ * set by default. A path the CLI cannot place may be a network share, an rclone or WebDAV mount,
+ * or a sync client missing from the marker list, and an unsealed copy there is the exposure AD-9
+ * closed for recognised cloud folders. A sealed copy always opens with the passphrase, so the
+ * cost of sealing a destination that turned out to be an ordinary disk is small. This amendment
+ * touches the confidentiality rule only: `unknown` has no account domain, so invariant 2 below is
+ * unchanged, and `cloud` keeps meaning what it has always meant.
  */
 import { homedir } from "node:os"
 import { isAbsolute, resolve, sep } from "node:path"
@@ -72,6 +81,16 @@ export function classifyDestination(path: string, home = homedir()): Destination
   return "unknown"
 }
 
+/**
+ * AD-9 amendment (Andrew, 2026-09-19): which destinations seal by default. Deliberately not
+ * `cloud`: a cloud destination belongs to an account (`accountDomainOf`), and an `unknown` one
+ * belongs to nothing the CLI can name, which is precisely why it seals. One boolean standing for
+ * both would make invariant 2 and the confidentiality rule read off the same fact again.
+ */
+export function sealsByDefault(destination: DestinationDomain): boolean {
+  return destination === "icloud-drive" || destination === "other-cloud" || destination === "unknown"
+}
+
 /** The account domain a destination belongs to, or undefined for one that belongs to no account. */
 export function accountDomainOf(destination: DestinationDomain): string | undefined {
   if (destination === "icloud-drive") return "apple-account"
@@ -116,6 +135,11 @@ export interface BackupDomainVerdict {
   destination: DestinationDomain
   /** Whether the destination belongs to a cloud account (`icloud-drive` or `other-cloud`). */
   cloud: boolean
+  /**
+   * AD-9 as amended: whether this destination seals unless the operator accepts otherwise, which
+   * is every destination except a recognised local disk or removable drive.
+   */
+  sealsByDefault: boolean
   /** AD-2's label: a synced passkey envelope and an iCloud Drive destination are one Apple account. */
   sharedDomain: boolean
   /** AD-9: the copy carries the passphrase envelope(s) only. */
@@ -165,10 +189,19 @@ export function assertBackupDomainAllowed(
   }
 
   // AD-9's confidentiality rule, which is about a specific pairing rather than about recovery: a
-  // cloud destination gets a sealed copy unless the operator accepts the shared domain.
+  // cloud destination, or one Candle cannot place, gets a sealed copy unless the operator accepts
+  // the shared domain. `cloud` stays the account-domain fact invariant 2 above reads.
   const cloud = destinationAccount !== undefined
+  const seals = sealsByDefault(destination)
   const appleEnvelope = envelopes.some((envelope) => envelope.domain === "apple-account")
   const sharedDomain = appleEnvelope && destination === "icloud-drive"
-  const sharedDomainAccepted = cloud && opts.acceptSharedDomain
-  return { destination, cloud, sharedDomain, sealed: cloud && !opts.acceptSharedDomain, sharedDomainAccepted }
+  const sharedDomainAccepted = seals && opts.acceptSharedDomain
+  return {
+    destination,
+    cloud,
+    sealsByDefault: seals,
+    sharedDomain,
+    sealed: seals && !opts.acceptSharedDomain,
+    sharedDomainAccepted,
+  }
 }

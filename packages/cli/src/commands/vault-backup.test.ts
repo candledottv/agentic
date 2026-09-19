@@ -10,6 +10,8 @@
  * 2 is about RECOVERABILITY (some recoverable factor must live outside the destination's account),
  * and AD-9's rule is about CONFIDENTIALITY (an Apple-account compromise must not yield both the
  * blob and a factor that opens it, so a cloud copy is sealed to the passphrase envelope by default).
+ * The AD-9 amendment (Andrew, 2026-09-19; BE-205) extends the second rule to `unknown` and leaves
+ * the first alone, which is why the `unknown` cases below assert a sealed copy and no refusal.
  * In Phase 2 the first holds by construction through the mandatory passphrase, which is exactly
  * why the second needs its own fixture. The end-to-end sealed backup, on a vault carrying a synced
  * passkey envelope, is in `vault-passkey.test.ts`.
@@ -27,11 +29,19 @@ import {
   classifyDestination,
   countRecoverableFactors,
   sealedEnvelopes,
+  sealsByDefault,
 } from "../vault/domains"
 import type { Envelope } from "../vault/format"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
 import { flipByte, generatedPassphraseFrom, tamper, useCheapKdf } from "../vault/test-vault"
-import { assertOutsideConfigDir, isInsideDir } from "./vault-backup"
+import {
+  assertOutsideConfigDir,
+  backupVerdictLines,
+  isInsideDir,
+  sealReason,
+  sharedDomainLine,
+  UNPLACEABLE_DESTINATION_NOTE,
+} from "./vault-backup"
 
 /**
  * These tests run REAL Argon2id, which is the point of them: a vault suite that stubbed the KDF
@@ -171,6 +181,7 @@ describe("T35: invariant 2 and AD-9's sealing", () => {
     expect(verdict).toEqual({
       destination: "icloud-drive",
       cloud: true,
+      sealsByDefault: true,
       sharedDomain: true,
       sealed: true,
       sharedDomainAccepted: false,
@@ -194,6 +205,7 @@ describe("T35: invariant 2 and AD-9's sealing", () => {
     expect(assertBackupDomainAllowed([passphraseEnvelope], dropbox, { acceptSharedDomain: false, home })).toEqual({
       destination: "other-cloud",
       cloud: true,
+      sealsByDefault: true,
       sharedDomain: false,
       sealed: true,
       sharedDomainAccepted: false,
@@ -212,6 +224,7 @@ describe("T35: invariant 2 and AD-9's sealing", () => {
       expect(result).toEqual({
         destination: "local-disk",
         cloud: false,
+        sealsByDefault: false,
         sharedDomain: false,
         sealed: false,
         sharedDomainAccepted: false,
@@ -223,6 +236,120 @@ describe("T35: invariant 2 and AD-9's sealing", () => {
         home,
       }).sealed,
     ).toBe(false)
+  })
+
+  // BE-205, the AD-9 amendment (Andrew, 2026-09-19). The two paths below are the same ones the
+  // classification test above calls `unknown`: a network share and an NFS mount. Before this
+  // amendment each received an unsealed copy carrying every envelope, including the synced-passkey
+  // and Enclave wraps, which is the exposure AD-9 closed for a recognised cloud folder.
+  describe("AD-9 amendment: a destination Candle cannot place seals like a cloud one", () => {
+    const unplaceable = ["/net/fileserver/backups/vault.enc", "/srv/nfs/vault.enc"]
+
+    test("the default copy holds the passphrase envelopes and nothing else", () => {
+      for (const path of unplaceable) {
+        expect(classifyDestination(path, home)).toBe("unknown")
+        expect(
+          assertBackupDomainAllowed([passphraseEnvelope, appleEnvelope, enclaveEnvelope], path, {
+            acceptSharedDomain: false,
+            home,
+          }),
+        ).toEqual({
+          destination: "unknown",
+          // `unknown` has no account domain, so invariant 2 and its label are untouched: only the
+          // confidentiality rule reads the amendment.
+          cloud: false,
+          sealsByDefault: true,
+          sharedDomain: false,
+          sealed: true,
+          sharedDomainAccepted: false,
+        })
+      }
+      expect(sealedEnvelopes([passphraseEnvelope, appleEnvelope, enclaveEnvelope]).map((e) => e.id)).toEqual(["p1"])
+    })
+
+    test("--accept-shared-domain writes the full set and records the acceptance", () => {
+      for (const path of unplaceable) {
+        expect(
+          assertBackupDomainAllowed([passphraseEnvelope, appleEnvelope, enclaveEnvelope], path, {
+            acceptSharedDomain: true,
+            home,
+          }),
+        ).toEqual({
+          destination: "unknown",
+          cloud: false,
+          sealsByDefault: true,
+          sharedDomain: false,
+          sealed: false,
+          // What `vault backup` writes to the sidecar as `lastBackupSharedDomainAccepted`.
+          sharedDomainAccepted: true,
+        })
+      }
+    })
+
+    test("an unknown destination never refuses: invariant 2 has no account domain to compare", () => {
+      // The vault carrying only the apple-account envelope is refused for iCloud Drive above. The
+      // same vault is allowed here, sealed, because `unknown` belongs to no account.
+      expect(accountDomainOf("unknown")).toBeUndefined()
+      expect(
+        assertBackupDomainAllowed([appleEnvelope], "/srv/nfs/vault.enc", { acceptSharedDomain: false, home }).sealed,
+      ).toBe(true)
+    })
+
+    test("only a recognised local disk or removable drive still gets the full set by default", () => {
+      expect(sealsByDefault("local-disk")).toBe(false)
+      expect(sealsByDefault("removable-media")).toBe(false)
+      expect(sealsByDefault("icloud-drive")).toBe(true)
+      expect(sealsByDefault("other-cloud")).toBe(true)
+      expect(sealsByDefault("unknown")).toBe(true)
+      for (const path of [`${home}/backups/vault.enc`, "/Volumes/BACKUP/vault.enc"]) {
+        expect(
+          assertBackupDomainAllowed([passphraseEnvelope, appleEnvelope, enclaveEnvelope], path, {
+            acceptSharedDomain: false,
+            home,
+          }),
+        ).toMatchObject({ sealsByDefault: false, sealed: false, sharedDomainAccepted: false })
+      }
+    })
+
+    test("the copy says what could not be told, not that a class was unknown", () => {
+      // "unknown destination" reads as a failure of the tool. What the operator needs is the fact
+      // that produced the smaller copy, and the flag that writes the full one instead.
+      expect(sealReason("unknown", "/srv/nfs/vault.enc")).toBe(
+        "Candle cannot tell whether /srv/nfs/vault.enc syncs to an account",
+      )
+      expect(sealReason("icloud-drive", "/i/vault.enc")).toBe("/i/vault.enc is a icloud-drive destination")
+      expect(UNPLACEABLE_DESTINATION_NOTE).toContain("cannot tell whether this path syncs to an account")
+      expect(UNPLACEABLE_DESTINATION_NOTE).toContain("opens only with the passphrase")
+      expect(UNPLACEABLE_DESTINATION_NOTE).toContain("--accept-shared-domain")
+    })
+
+    test("the report states the class, the sealed envelope set, and why it was sealed", () => {
+      expect(backupVerdictLines({ destination: "unknown", sealed: true }, ["p1"], ["a1", "e1"])).toEqual([
+        "  destination   unknown",
+        "  sealed        yes: passphrase envelope(s) p1 only; left out a1, e1",
+        `  why sealed    ${UNPLACEABLE_DESTINATION_NOTE}`,
+      ])
+      // A cloud destination names itself and gains no extra line, so the existing output is intact.
+      expect(backupVerdictLines({ destination: "icloud-drive", sealed: true }, ["p1"], ["a1"])).toEqual([
+        "  destination   icloud-drive",
+        "  sealed        yes: passphrase envelope(s) p1 only; left out a1",
+      ])
+      expect(backupVerdictLines({ destination: "local-disk", sealed: false }, ["p1"], [])).toEqual([
+        "  destination   local-disk",
+      ])
+    })
+
+    test("an accepted unsealed copy to an unplaceable path says what was accepted", () => {
+      expect(sharedDomainLine({ destination: "unknown", sharedDomain: false, sharedDomainAccepted: true })).toContain(
+        "carries every envelope to a path Candle cannot place, which may sync to an account",
+      )
+      expect(
+        sharedDomainLine({ destination: "other-cloud", sharedDomain: false, sharedDomainAccepted: true }),
+      ).toContain("carries every envelope into a cloud account")
+      expect(
+        sharedDomainLine({ destination: "icloud-drive", sharedDomain: true, sharedDomainAccepted: true }),
+      ).toContain("are one Apple account")
+    })
   })
 })
 

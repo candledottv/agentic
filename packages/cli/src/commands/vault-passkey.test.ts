@@ -1126,6 +1126,34 @@ describe("AD-9: sealed cloud backups", () => {
     expect(JSON.parse(uv.stdout.text)).toMatchObject({ ok: true, sealed: false })
     expect(ops(uv).filter((op) => op === "passkey-assert")).toHaveLength(2)
   })
+
+  test("verify-backup reads sealing off the copy, so a sealed copy anywhere asks for the passphrase", async () => {
+    // BE-205, the AD-9 amendment: a copy sealed because Candle could not place the destination is
+    // the same file as one sealed for iCloud Drive, and `verify-backup` never classifies the path
+    // it is handed. This is why extending the rule to `unknown` needs no change here: the sealed
+    // copy below is moved to a local-disk path, a class that never seals, and is still verified
+    // with the passphrase rather than with the passkey `--factor` names.
+    const t = await vaultWithPasskey()
+    const to = await icloudPath(t.dir, `moved-${Date.now()}.enc`)
+    const b = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [t.passphrase] })
+    expect(await run(["vault", "backup", "--to", to, "--keystore", t.vaultPath], b.deps)).toBe(0)
+
+    const moved = join(t.dir, "..", `moved-local-${Date.now()}.enc`)
+    await writeFile(moved, await readFile(to, "utf8"))
+
+    const v = await harness({
+      env: { CANDLE_CONFIG_DIR: t.dir },
+      secrets: [t.passphrase],
+      script: { store: t.add.script.store },
+    })
+    expect(await run(["vault", "verify-backup", moved, "--factor", "passkey", "--keystore", t.vaultPath], v.deps)).toBe(
+      0,
+    )
+    expect(v.asked).toEqual([expect.stringContaining("Vault passphrase")])
+    expect(ops(v)).not.toContain("passkey-assert")
+    expect(v.stdout.text).toContain("sealed        yes")
+    expect(v.stdout.text).toContain("all 8 passed, in order")
+  })
 })
 
 test("native helper identity quotes are refused at parse time without a spawn or prompt", async () => {

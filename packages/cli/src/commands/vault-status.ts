@@ -136,8 +136,10 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
       deps.stdout.write(`\nThis machine's record (vault.state.json, cleartext, best effort):\n`)
       deps.stdout.write(`  last generation seen   ${sidecar.lastGeneration}\n`)
       if (sidecar.lastVerifiedBackupAt) {
+        // "not recorded" rather than "unknown": since the AD-9 amendment (2026-09-19) `unknown` is
+        // a destination class this field really carries, so it cannot double as the empty case.
         deps.stdout.write(
-          `  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "unknown"}${sidecar.lastBackupSealed ? ", sealed: opens with the passphrase only" : ""})\n`,
+          `  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "not recorded"}${sidecar.lastBackupSealed ? ", sealed: opens with the passphrase only" : ""})\n`,
         )
       }
       if (sidecar.lastBackupSharedDomainAccepted) {
