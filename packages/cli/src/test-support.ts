@@ -8,6 +8,7 @@
 
 import type { CliConfig, ProfileConfig } from "./config"
 import type { Deps } from "./deps"
+import { realRunPlugin } from "./plugins"
 import type { SecretStore } from "./secret-store"
 import { RELEASE_POLICY } from "./vault/release-policy"
 
@@ -158,6 +159,8 @@ export function createTestDeps(overrides: Partial<Deps> & { fetch: typeof fetch 
   const clock = createFakeClock()
   return {
     store: createFakeStore(),
+    // Its own fake, never the credential store's: the two namespaces are the point (R6).
+    secretsStore: createFakeStore(),
     backend: "encrypted-file",
     readConfig: configStore.readConfig,
     writeConfig: configStore.writeConfig,
@@ -184,6 +187,12 @@ export function createTestDeps(overrides: Partial<Deps> & { fetch: typeof fetch 
     readBytes: async (path: string) => {
       throw new Error(`no readBytes fake configured (asked for ${path})`)
     },
+    readStdin: async () => {
+      throw new Error("no readStdin fake configured")
+    },
+    // The REAL runner: a plug-in test spawns a real child so the environment it receives is the
+    // environment a real plug-in receives, not a fake's account of it.
+    runPlugin: realRunPlugin,
     writeFile: async (path: string) => {
       throw new Error(`no writeFile fake configured (asked for ${path})`)
     },

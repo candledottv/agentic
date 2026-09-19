@@ -69,7 +69,7 @@ const SCAN_CEILING = 500
 
 export async function vaultRestore(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
-    valueFlags: ["--keystore", "--count", "--tee-count", "--rpc-url"],
+    valueFlags: ["--keystore", "--count", "--tee-count", "--external-count", "--rpc-url"],
     booleanFlags: ["--phrase", "--own-passphrase"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
@@ -85,7 +85,12 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
   }
   if (!requireTty(ctx, "vault restore")) return 1
 
-  const counts = parseCounts(parsed.values["--count"], parsed.values["--tee-count"], parsed.values["--rpc-url"])
+  const counts = parseCounts(
+    parsed.values["--count"],
+    parsed.values["--tee-count"],
+    parsed.values["--external-count"],
+    parsed.values["--rpc-url"],
+  )
   if ("error" in counts) return usage(ctx, counts.error)
 
   const { deps } = ctx
@@ -195,7 +200,7 @@ export function restoreSeedHd(counts: Pick<Counts, "requested">, restoredAt: str
       restoredAt,
       account: "",
       requestedCounts: counts.requested,
-      highestMatched: { solanaVault: -1, solanaTee: -1 },
+      highestMatched: { solanaVault: -1, solanaTee: -1, solanaExternal: -1 },
       complete: false,
     },
   })
@@ -222,22 +227,29 @@ async function discardIncompleteRestore(ctx: CommandContext, path: string, sidec
 
 // ── Bounds and derivation ─────────────────────────────────────────────────────────────────────
 
+/** The three Solana branches a restore derives, in the order they are derived and reported. */
+const RESTORED_BRANCHES = ["solanaVault", "solanaTee", "solanaExternal"] as const
+type RestoredBranch = (typeof RESTORED_BRANCHES)[number]
+
 interface Counts {
   /** undefined means "gap scan this branch", which is only reachable with an `--rpc-url`. */
   solanaVault: number | undefined
   solanaTee: number | undefined
-  requested: { solanaVault: number; solanaTee: number }
+  /** R6: the external branch, on exactly the same rules as the other two. */
+  solanaExternal: number | undefined
+  requested: Record<RestoredBranch, number>
 }
 
 /**
  * CC-11's defaults, which are fiddlier than they look and are therefore in one function: each
- * count defaults to 1 when it is omitted and the OTHER is given, and both default to 1 when
- * neither is given and no `--rpc-url` is supplied. With an `--rpc-url` and no explicit count for a
- * branch, that branch is gap-scanned.
+ * count defaults to 1 when it is omitted and ANOTHER is given, and all default to 1 when none is
+ * given and no `--rpc-url` is supplied. With an `--rpc-url` and no explicit count for a branch,
+ * that branch is gap-scanned. R6 adds `--external-count` as a third count on the same rules.
  */
 export function parseCounts(
   count: string | undefined,
   teeCount: string | undefined,
+  externalCount: string | undefined,
   rpcUrl: string | undefined,
 ): Counts | { error: string } {
   const parse = (raw: string | undefined, flag: string): number | undefined | { error: string } => {
@@ -250,20 +262,24 @@ export function parseCounts(
   if (typeof vaultCount === "object" && vaultCount !== null) return vaultCount
   const teeParsed = parse(teeCount, "--tee-count")
   if (typeof teeParsed === "object" && teeParsed !== null) return teeParsed
+  const externalParsed = parse(externalCount, "--external-count")
+  if (typeof externalParsed === "object" && externalParsed !== null) return externalParsed
 
-  const bothOmitted = vaultCount === undefined && teeParsed === undefined
+  const allOmitted = vaultCount === undefined && teeParsed === undefined && externalParsed === undefined
   const scan = rpcUrl !== undefined
   const resolve = (value: number | undefined): number | undefined => {
     if (value !== undefined) return value
     // Omitted: gap-scan it when an RPC was given, otherwise fall back to 1.
     return scan ? undefined : 1
   }
-  const solanaVault = bothOmitted && !scan ? 1 : resolve(vaultCount)
-  const solanaTee = bothOmitted && !scan ? 1 : resolve(teeParsed)
+  const solanaVault = allOmitted && !scan ? 1 : resolve(vaultCount)
+  const solanaTee = allOmitted && !scan ? 1 : resolve(teeParsed)
+  const solanaExternal = allOmitted && !scan ? 1 : resolve(externalParsed)
   return {
     solanaVault,
     solanaTee,
-    requested: { solanaVault: solanaVault ?? -1, solanaTee: solanaTee ?? -1 },
+    solanaExternal,
+    requested: { solanaVault: solanaVault ?? -1, solanaTee: solanaTee ?? -1, solanaExternal: solanaExternal ?? -1 },
   }
 }
 
@@ -278,7 +294,14 @@ interface DerivedEntry {
 
 interface DerivedSet {
   entries: DerivedEntry[]
+  /** The vault- and TEE-branch entries, which the linked-wallet read is matched against. */
   byAddress: Map<string, DerivedEntry>
+  /**
+   * The external-branch entries, kept apart (R6): an external key is never registered with Candle,
+   * so the linked-wallet read says nothing about it and cannot raise its exposure. It is recovered
+   * by derivation inside the bound, and by nothing else.
+   */
+  externalByAddress: Map<string, DerivedEntry>
   scanStoppedAt: Partial<Record<Branch, number>>
 }
 
@@ -295,9 +318,9 @@ async function deriveWithinBounds(
 ): Promise<DerivedSet> {
   const { decryptRoot } = await import("../vault/store")
   const root = await decryptRoot(vault)
-  const set: DerivedSet = { entries: [], byAddress: new Map(), scanStoppedAt: {} }
+  const set: DerivedSet = { entries: [], byAddress: new Map(), externalByAddress: new Map(), scanStoppedAt: {} }
   try {
-    for (const branch of ["solanaVault", "solanaTee"] as const) {
+    for (const branch of RESTORED_BRANCHES) {
       const bound = counts[branch]
       if (bound !== undefined) {
         for (let index = 0; index < bound; index++) {
@@ -322,7 +345,10 @@ async function deriveWithinBounds(
   } finally {
     wipe(root)
   }
-  for (const entry of set.entries) set.byAddress.set(entry.address, entry)
+  for (const entry of set.entries) {
+    if (entry.branch === "solanaExternal") set.externalByAddress.set(entry.address, entry)
+    else set.byAddress.set(entry.address, entry)
+  }
   return set
 }
 
@@ -362,6 +388,11 @@ interface MatchOutcome {
   matched: Array<{ entry: DerivedEntry; row: LinkedWalletRow }>
   /** Listed addresses this restore did not derive: the ambiguity CC-11 refuses to resolve. */
   unmatched: string[]
+  /**
+   * Listed addresses that ARE external-branch keys of this root (R6). Not a match (the read cannot
+   * raise an external key's exposure) and not the CC-11 ambiguity either; reported in words.
+   */
+  externalListed?: string[]
   account: string | undefined
   complete: boolean
   reason?: string
@@ -407,13 +438,15 @@ async function matchAgainstAccount(ctx: CommandContext, apiKey: string, derived:
 
   const matched: MatchOutcome["matched"] = []
   const unmatched: string[] = []
+  const externalListed: string[] = []
   for (const row of read.rows) {
     if (typeof row.address !== "string") continue
     const entry = derived.byAddress.get(row.address)
     if (entry) matched.push({ entry, row })
+    else if (derived.externalByAddress.has(row.address)) externalListed.push(row.address)
     else unmatched.push(row.address)
   }
-  return { matched, unmatched, account: read.account, complete: true }
+  return { matched, unmatched, externalListed, account: read.account, complete: true }
 }
 
 // ── Writing the restored index ────────────────────────────────────────────────────────────────
@@ -435,14 +468,17 @@ async function writeRestoredIndex(
 
   const entries: KeyEntry[] = derived.entries.map((entry) => {
     const row = matchByAddress.get(entry.address)
+    const external = entry.branch === "solanaExternal"
     const base: KeyEntry = {
       id: entry.keyId,
       chain: "solana",
       curve: "ed25519",
       address: entry.address,
-      label: row?.label ?? `${entry.branch === "solanaTee" ? "tee" : "key"}-${entry.index}`,
+      label: row?.label ?? `${external ? "external" : entry.branch === "solanaTee" ? "tee" : "key"}-${entry.index}`,
       createdAt: now,
-      role: "vault",
+      // R6: an external-branch key is recovered AS an external key, on which every non-allocating
+      // command keeps working (`vault fund`, `external sweep`, `candle sign`, listing, backup).
+      role: external ? "external" : "vault",
       origin: "derived",
       derivation: { scheme: DERIVATION_SCHEME, path: entry.path },
       // Every derived entry a restore creates is exposureUnknown, permanently. A match ADDS
@@ -456,15 +492,16 @@ async function writeRestoredIndex(
   // `nextIndex` lands one past the highest index this restore derived OR matched, with no reserve.
   // In a restored vault it is a record of what was recovered, not a license to allocate, and the
   // allocation refusal rather than this number is what enforces CC-10's no-reuse contract.
-  const highest: Record<Branch, number> = { solanaVault: -1, solanaTee: -1, evm: -1 }
-  const exposed: Record<Branch, number[]> = { solanaVault: [], solanaTee: [], evm: [] }
+  const highest: Record<Branch, number> = { solanaVault: -1, solanaTee: -1, solanaExternal: -1, evm: -1 }
+  const exposed: Record<Branch, number[]> = { solanaVault: [], solanaTee: [], solanaExternal: [], evm: [] }
   for (const entry of entries) {
     const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined
     if (located === undefined) continue
     highest[located.branch] = Math.max(highest[located.branch], located.index)
     if (entry.exposure.everRemoteExposed) exposed[located.branch].push(located.index)
   }
-  const highestMatched = { solanaVault: -1, solanaTee: -1 }
+  // The external branch is never matched (R6), so its highest match stays -1 by construction.
+  const highestMatched = { solanaVault: -1, solanaTee: -1, solanaExternal: -1 }
   for (const match of matches.matched) {
     if (match.entry.branch === "solanaVault")
       highestMatched.solanaVault = Math.max(highestMatched.solanaVault, match.entry.index)
@@ -474,11 +511,17 @@ async function writeRestoredIndex(
 
   const hd: HdRecord = {
     scheme: "bip39-24/slip10",
-    nextIndex: { solanaVault: highest.solanaVault + 1, solanaTee: highest.solanaTee + 1, evm: 0 },
+    nextIndex: {
+      solanaVault: highest.solanaVault + 1,
+      solanaTee: highest.solanaTee + 1,
+      solanaExternal: highest.solanaExternal + 1,
+      evm: 0,
+    },
     rootExported: false,
     exposedIndexes: {
       solanaVault: exposed.solanaVault.sort((a, b) => a - b),
       solanaTee: exposed.solanaTee.sort((a, b) => a - b),
+      solanaExternal: exposed.solanaExternal.sort((a, b) => a - b),
       evm: [],
     },
     // Present, with `complete: false`, permanently. Its presence is what refuses allocation.
@@ -558,21 +601,28 @@ function reportRestore(
     `\nEvery one of them is recorded with an unknown history and stays that way: this phrase may have been restored under another account, under another deployment, or outside Candle entirely, and no read can rule that out.\n`,
   )
   deps.stdout.write(
-    `This vault does not allocate. \`vault new-key\` and \`vault promote --from\` refuse here; the exit is \`candle vault init\` for a fresh root and \`candle vault transfer\` to move funds across.\n`,
+    `This vault does not allocate. \`vault new-key\`, \`vault promote --from\` and \`candle external new\` refuse here; the exit is \`candle vault init\` for a fresh root and \`candle vault transfer\` to move funds across.\n`,
   )
   deps.stdout.write(
     `The Phase 1 TEE wallet store was not read, and no migrated-tee entry was restored: the phrase does not restore those keys, and the vault file plus a factor does.\n`,
   )
 
-  for (const branch of ["solanaVault", "solanaTee"] as const) {
+  for (const branch of RESTORED_BRANCHES) {
     const bound = counts[branch]
     if (bound === undefined) {
       deps.stdout.write(`  ${branch}: gap-scanned to index ${(derived.scanStoppedAt[branch] ?? 1) - 1}\n`)
     } else if (bound <= 1) {
       deps.stdout.write(
-        `  ${branch}: index 0 only. If you derived more, re-run with --count/--tee-count, or with --rpc-url to gap-scan.\n`,
+        `  ${branch}: index 0 only. If you derived more, re-run with --count/--tee-count/--external-count, or with --rpc-url to gap-scan.\n`,
       )
     }
+  }
+  if ((matches.externalListed?.length ?? 0) > 0) {
+    // R6: an external key is never registered with Candle, so a listed address that is one of this
+    // root's external keys is a fact worth stating, and not one the read is allowed to act on.
+    deps.stdout.write(
+      `\n${matches.externalListed?.length} address(es) this account imported are external-branch keys of this root. An external key is never registered with Candle, so this read does not flag them; their history is unknown like every other recovered key's.\n`,
+    )
   }
 
   if (!matches.complete) {
@@ -668,8 +718,9 @@ export async function vaultReconcileExposure(args: string[], ctx: CommandContext
     }
 
     const listed = new Set(read.rows.map((row) => row.address))
+    // R6: the read cannot raise an external key's exposure; those entries pass through untouched.
     const entries = vault.index.entries.map((entry) =>
-      listed.has(entry.address) && !entry.exposure.everRemoteExposed
+      entry.role !== "external" && listed.has(entry.address) && !entry.exposure.everRemoteExposed
         ? { ...entry, exposure: { ...entry.exposure, everRemoteExposed: true } }
         : entry,
     )
@@ -685,7 +736,9 @@ export async function vaultReconcileExposure(args: string[], ctx: CommandContext
     }
 
     const now = new Date(deps.now()).toISOString()
-    const highestMatched = { ...(vault.index.hd.discovery?.highestMatched ?? { solanaVault: -1, solanaTee: -1 }) }
+    const highestMatched = {
+      ...(vault.index.hd.discovery?.highestMatched ?? { solanaVault: -1, solanaTee: -1, solanaExternal: -1 }),
+    }
     for (const entry of entries) {
       if (!entry.exposure.everRemoteExposed) continue
       const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined

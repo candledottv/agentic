@@ -25,6 +25,7 @@ import {
   evmPath,
   phraseFromEntropy,
   seedFromEntropy,
+  solanaExternalPath,
   solanaTeePath,
   solanaVaultPath,
 } from "./hd"
@@ -226,6 +227,22 @@ describe("the spec-fixed paths, for fixture entropy", () => {
     expect(tee0.address).toBe(FIXTURE_TEE_0)
   })
 
+  test("R6: the external branch is m/44'/501'/n'/2', and the three Solana branches are disjoint from one root", async () => {
+    expect(solanaExternalPath(0)).toBe("m/44'/501'/0'/2'")
+    expect(solanaExternalPath(3)).toBe("m/44'/501'/3'/2'")
+    const addresses = new Set<string>()
+    for (let index = 0; index < 3; index++) {
+      for (const path of [solanaVaultPath(index), solanaTeePath(index), solanaExternalPath(index)]) {
+        const derived = await deriveSolanaKey(entropy, path)
+        expect(addresses.has(derived.address)).toBe(false)
+        addresses.add(derived.address)
+      }
+    }
+    expect(addresses.size).toBe(9)
+    // The fixture root's external index 0, recorded so a change to the path moves it.
+    expect((await deriveSolanaKey(entropy, solanaExternalPath(0))).address).toBe(FIXTURE_EXTERNAL_0)
+  })
+
   test("the EVM path is the Ledger Live layout, fixed now and derived by nothing in Phase 2", () => {
     expect(evmPath(0)).toBe("m/44'/60'/0'/0/0")
     expect(evmPath(3)).toBe("m/44'/60'/3'/0/0")
@@ -243,6 +260,8 @@ describe("the spec-fixed paths, for fixture entropy", () => {
 /** The fixture's index-0 addresses, recorded so a derivation change is a test failure. */
 export const FIXTURE_VAULT_0 = "5Pobwp6d9ihN9Nz38f87gVCEBFMgipFiSM2VtUhVit6w"
 export const FIXTURE_TEE_0 = "FKhHHGpQ52Wcf446ANQL9vmuxLjjfuKYfFpZiKRbS63J"
+/** R6: the fixture root's external index 0, `m/44'/501'/0'/2'`. */
+export const FIXTURE_EXTERNAL_0 = "9xUo4nK6C3isRd3kqqGuYKJALTuGGdXGxQBoebaerFea"
 
 test("the BIP-32 secp256k1 half of T53 is recorded as Phase 4's, not silently skipped", () => {
   // Phase 2 adds no secp256k1 derivation code (ED-13), so there is nothing here to run the BIP-32

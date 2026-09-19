@@ -31,6 +31,14 @@ export interface ProfileConfig {
   scopes?: string[]
   label?: string
   portalOrigin?: string
+  /**
+   * Ember Phase 3 PR F (BE-226, R6): the NAMES of the secrets `candle secrets set` stored for this
+   * profile. Names only, so `secrets list` needs no keychain read; every value lives in the
+   * secrets keychain namespace under `secretRef(profile, name)`.
+   */
+  secretNames?: string[]
+  /** The user's own Solana RPC for this profile, passed to a plug-in as `CANDLE_PLUGIN_RPC_URL` (R6). */
+  rpcUrl?: string
 }
 
 /** Plain, non-secret CLI state. See this file's header comment: no credential fields belong here. */
@@ -39,6 +47,8 @@ export interface CliConfig {
   profiles?: Record<string, ProfileConfig>
   /** The profile a command acts as when neither --profile nor CANDLE_PROFILE names one. */
   activeProfile?: string
+  /** `candle secrets` names in the pre-profile mode (R6); see `ProfileConfig.secretNames`. */
+  secretNames?: string[]
   // The fields below are the PRE-PROFILE shape. They stay readable for migration and are left in
   // place afterwards (a rollback to the previous CLI must keep working); nothing writes them
   // once `profiles` exists.

@@ -18,6 +18,8 @@ import {
   type Envelope,
   type HdRecord,
   type IndexPlaintext,
+  indexRequiresVersion3,
+  LEGACY_VAULT_VERSION,
   type PassphraseEnvelope,
   type PassphraseStrength,
   rootAad,
@@ -46,9 +48,9 @@ import {
 export function freshHdRecord(patch: Partial<HdRecord> = {}): HdRecord {
   return {
     scheme: "bip39-24/slip10",
-    nextIndex: { solanaVault: 0, solanaTee: 0, evm: 0 },
+    nextIndex: { solanaVault: 0, solanaTee: 0, solanaExternal: 0, evm: 0 },
     rootExported: false,
-    exposedIndexes: { solanaVault: [], solanaTee: [], evm: [] },
+    exposedIndexes: { solanaVault: [], solanaTee: [], solanaExternal: [], evm: [] },
     ...patch,
   }
 }
@@ -103,9 +105,12 @@ export async function createVault(request: CreateVaultRequest, clock: Pick<Deps,
     const payloadKey = await derivePayloadKey(dekBytes, unb64u(vaultId, "vaultId"))
     const root: Blob = await seal(payloadKey, request.rootEntropy, rootAad(vaultId))
     const index: IndexPlaintext = { hd: request.hd ?? freshHdRecord(), entries: [] }
+    // R6: a new vault is written as version 2 unless its index already needs the external branch
+    // (a restore bounded on it). `init` therefore still writes a file a 0.10.x CLI opens; the
+    // version moves to 3 on the first write that allocates or recovers an external key.
     const header: Omit<VaultFile, "index"> = {
       format: VAULT_FORMAT,
-      version: VAULT_VERSION,
+      version: indexRequiresVersion3(index) ? VAULT_VERSION : LEGACY_VAULT_VERSION,
       vaultId,
       generation: 1,
       createdAt,

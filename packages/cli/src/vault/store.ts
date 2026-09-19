@@ -45,6 +45,7 @@ import {
   type Envelope,
   envelopeAad,
   type IndexPlaintext,
+  indexRequiresVersion3,
   isPrfEnvelope,
   isSecureEnclaveEnvelope,
   type KeyEntry,
@@ -53,6 +54,7 @@ import {
   parseVaultFile,
   passphraseKdf,
   rootAad,
+  serializeIndexPlaintext,
   VAULT_CIPHER,
   VAULT_FORMAT,
   VAULT_VERSION,
@@ -70,7 +72,8 @@ export function candleConfigDir(env: Record<string, string | undefined>): string
 /**
  * `vault.enc`, beside `tee-wallets.enc` and `credentials.enc`. `version: 2` is on purpose: a 0.9.x
  * reader pointed at this file refuses it with "Unsupported keystore version 2" rather than
- * misreading it (T50).
+ * misreading it (T50). A `version: 3` file (R6, the external branch) is refused the same way by a
+ * 0.10.x or 0.11.x vault reader, with `VAULT_VERSION_UNSUPPORTED`.
  */
 export function defaultVaultPath(env: Record<string, string | undefined>): string {
   return join(candleConfigDir(env), "vault.enc")
@@ -169,7 +172,9 @@ export async function unlockVault(
     })
     let index: IndexPlaintext
     try {
-      index = parseIndexPlaintext(indexBytes)
+      // The file's version selects the index rules (R6): it is inside the canonical header, so by
+      // this line it has been authenticated by the tag check above.
+      index = parseIndexPlaintext(indexBytes, file.version)
     } finally {
       wipe(indexBytes)
     }
@@ -411,8 +416,14 @@ export async function sealIndex(
 ): Promise<VaultFile> {
   const withoutIndex = { ...header }
   // The canonical header excludes `index`, `root` and `keys`; `canonicalHeader` picks the fields
-  // it needs by name, so passing the whole record is safe and keeps one source of that list.
-  const blob = await sealJson(payloadKey, index, canonicalHeader(withoutIndex as unknown as VaultFile))
+  // it needs by name, so passing the whole record is safe and keeps one source of that list. The
+  // index is written in the shape the header's version defines (R6): a version 2 file never
+  // carries the external branch on disk.
+  const blob = await sealJson(
+    payloadKey,
+    serializeIndexPlaintext(index, header.version),
+    canonicalHeader(withoutIndex as unknown as VaultFile),
+  )
   return { ...withoutIndex, index: blob } as VaultFile
 }
 
@@ -455,9 +466,12 @@ export async function commitVault(
 
     const envelopes = plan.envelopes ?? vault.file.envelopes
     const keys = [...vault.file.keys, ...(plan.addKeys ?? [])]
+    // R6: the file keeps the version it had, and moves from 2 to 3 on exactly one kind of write,
+    // the one whose index needs the external branch. It never moves back.
+    const version = indexRequiresVersion3(plan.index) ? VAULT_VERSION : vault.file.version
     const header: Omit<VaultFile, "index"> = {
       format: VAULT_FORMAT,
-      version: VAULT_VERSION,
+      version,
       vaultId: vault.file.vaultId,
       generation: vault.file.generation + 1,
       createdAt: vault.file.createdAt,

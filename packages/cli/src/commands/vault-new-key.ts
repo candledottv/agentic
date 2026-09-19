@@ -158,9 +158,9 @@ export function nextAllocatableIndex(counter: number, exposed: readonly number[]
 /**
  * CC-03's `--high-value` rule. The flag has no authenticated home in CC-01's schema, so it is read
  * from the sidecar; a lost sidecar therefore loses the constraint, which is recorded in the PR
- * rather than hidden here.
+ * rather than hidden here. Shared with `candle external new` (R6), the other allocating command.
  */
-async function assertHighValueSatisfied(
+export async function assertHighValueSatisfied(
   path: string,
   envelopes: Parameters<typeof countRecoverableFactors>[0],
 ): Promise<void> {
@@ -179,7 +179,7 @@ async function assertHighValueSatisfied(
 }
 
 /** Re-opens the written file and checks the new blob decrypts to the address just reported. */
-async function verifyWritten(
+export async function verifyWritten(
   path: string,
   address: string,
   keyId: string,

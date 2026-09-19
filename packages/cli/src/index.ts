@@ -25,12 +25,16 @@ import { pathToFileURL } from "node:url"
 import { resolveApiUrl } from "./client"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { doctor } from "./commands/doctor"
+import { externalList, externalNew, externalSweep } from "./commands/external"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { keysWallets } from "./commands/keys-wallets"
 import { launch } from "./commands/launch"
 import { mcp, mcpActsAsIdentity } from "./commands/mcp"
+import { plugins, runPlugin } from "./commands/plugins"
 import { profileAdd, profileList, profileRemove, profileRename, profileUse } from "./commands/profile"
+import { secretsList, secretsRemove, secretsSet } from "./commands/secrets"
 import { setup } from "./commands/setup"
+import { sign, signMessage } from "./commands/sign"
 import { swap, swapStatus } from "./commands/swap"
 import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./commands/tee"
 import { update } from "./commands/update"
@@ -55,11 +59,12 @@ import type { CliConfig } from "./config"
 import { clearConfig, readConfig, updateProfile, writeConfig } from "./config"
 import type { CommandContext, Deps } from "./deps"
 import { verifyProfileAccount } from "./guard"
-import { resolveSecretStore } from "./keychain"
+import { resolveSecretStore, SECRETS_SERVICE } from "./keychain"
+import { pluginInvocation, realRunPlugin } from "./plugins"
 import { migratedConfig, profileSecretRef, resolveProfileName, resolveProfileNameForLogin } from "./profiles"
 import { platformKey } from "./release"
 import { writeLocalFailure, writeUsageFailure } from "./render"
-import { promptHiddenSecret, promptVisibleLine, SECRET_REFS } from "./secret-store"
+import { defaultSecretsPath, promptHiddenSecret, promptVisibleLine, SECRET_REFS } from "./secret-store"
 import { maybeWriteUpdateNotice } from "./update-notice"
 import type { HelperRun } from "./vault/fido2"
 import { RELEASE_POLICY } from "./vault/release-policy"
@@ -141,7 +146,7 @@ Commands:
   vault new-key --chain solana [--label <name>]                   Derive the next Solana key inside the vault
   vault phrase show                                               Show the 24-word recovery phrase (terminal only)
   vault restore --phrase [--count <n>] [--tee-count <k>]          Rebuild a vault from the recovery phrase
-                [--rpc-url <url>]
+                [--external-count <e>] [--rpc-url <url>]
   vault reconcile-exposure                                        Re-read this account and add exposure; clears nothing
   vault factor list | add passphrase|security-key|touch-id|passkey | remove <id>
                                                                   Manage the factors that open the vault
@@ -153,8 +158,8 @@ Commands:
                                                                   Sign a vault-key transfer locally
   vault promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>]
                                                                   Fresh TEE key, or promote one vault key in place (AD-8)
-  vault fund <tee-address> --amount <n> --asset SOL|USDC --rpc-url <url>
-                                                                  Fund a TEE wallet from its pinned vault key
+  vault fund <tee-address|external> --amount <n> --asset SOL|USDC --rpc-url <url> [--from <label>]
+                                                                  Fund a TEE wallet from its pinned vault key, or an external wallet from a vault key
   vault demote <tee-address> --rpc-url <url> [--emergency]        Disable then sweep a TEE wallet back to its pin
   vault export-key <label> --to <new-file>                        Export one key as plaintext (interactive ceremony)
   tee new [--label <name>]                                        Seal a fresh dedicated Solana TEE wallet key locally
@@ -163,6 +168,16 @@ Commands:
   tee status <address> [--rpc-url <url>]                          Server lifecycle state and on-chain balances
   tee disable <address>                                           Stop the agent; verified stop or pending, never "done" on a 200
   tee sweep <address> --rpc-url <url> [--emergency]               Sign locally and move everything to the pinned vault
+  external new [--label <name>]                                   Derive an external wallet for outside tools (never delegated, never registered)
+  external list                                                   The external wallets in the vault
+  external sweep <external> --to <vault> --rpc-url <url>          Send everything an external wallet holds back to a vault key
+  sign [--file <path>] --wallet <external>... [--broadcast] [--yes]
+                                                                  Decode, simulate and sign a base64 transaction with an external wallet
+  sign message --wallet <external> [--file <path>] [--yes]        Sign an off-chain message (the exact bytes of the file or stdin)
+  secrets set <name>                                              Store one of your own third-party API keys (hidden prompt, never sent to Candle)
+  secrets list                                                    The names of your stored secrets
+  secrets remove <name>                                           Delete a stored secret
+  plugins                                                         List the candle-<name> plug-ins on your PATH
   profile list                                                    Profiles on this machine, with cached accounts
   profile add <name> --api-url <url>                              Create a profile before authenticating it
   profile use <name>                                              Make a profile the active one
@@ -183,6 +198,11 @@ Global options:
   --json                  Machine-readable output
   --help, -h              Show this help
   --version, -v           Show the CLI version
+
+Plug-ins:
+  candle <name> [--secret <name>]... [--wallet <label>]... [args]
+                          Runs the executable candle-<name> from your PATH with an allowlist environment:
+                          only the secrets and external wallet addresses named here, never a Candle credential.
 `
 
 type CommandHandler = (args: string[], ctx: CommandContext) => Promise<number>
@@ -255,6 +275,13 @@ const COMMANDS: Record<string, CommandRoute> = {
   profile: {
     subcommands: { list: profileList, add: profileAdd, use: profileUse, rename: profileRename, remove: profileRemove },
   },
+  // Ember Phase 3 PR F (BE-226, R6): bring your own services. None of these acts as the Candle
+  // identity or reaches Candle's API: the vault's external branch, the generic signer, the user's
+  // own secrets, and the plug-ins that receive them.
+  external: { subcommands: { new: externalNew, list: externalList, sweep: externalSweep } },
+  sign: { subcommands: { message: signMessage }, bare: sign },
+  secrets: { subcommands: { set: secretsSet, list: secretsList, remove: secretsRemove } },
+  plugins: { bare: plugins },
   doctor: { bare: doctor },
   mcp: { bare: mcp },
   setup: { bare: setup },
@@ -342,7 +369,20 @@ function routesToCommand(cmd: string | undefined, sub: string | undefined): bool
  *
  * `update` acts as no identity and must work before any login.
  */
-export const NEVER_GUARDED = new Set(["auth", "profile", "doctor", "verify", "update"])
+export const NEVER_GUARDED = new Set([
+  "auth",
+  "profile",
+  "doctor",
+  "verify",
+  "update",
+  // R6 (P3-AD-10): Candle is never a party to what these do. `external`, `sign`, `secrets` and
+  // `plugins` act as no Candle identity and make no Candle request, and the guard's own request
+  // would be one; a plug-in invocation is exempt for the same reason (`pluginInvocation`, plugins.ts).
+  "external",
+  "sign",
+  "secrets",
+  "plugins",
+])
 
 export async function run(argv: string[], deps: Deps): Promise<number> {
   const code = await runCommand(argv, deps)
@@ -368,6 +408,33 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
     return 2
   }
   const { rest, flags } = extracted
+
+  // A plug-in (R6) takes the rest of the command line verbatim, so it is recognized on the raw argv
+  // before the global-flag handling below can claim a `--json` or `--help` that belongs to it.
+  const plugin = pluginInvocation(argv, deps.env, (word) => ROUTED_COMMANDS.has(canonicalCommand(word) ?? ""))
+  if (plugin !== undefined) {
+    const leading = extractGlobalFlags(argv.slice(0, argv.length - plugin.args.length - 1))
+    const pluginFlags = "error" in leading ? flags : leading.flags
+    const config = await migrateProfiles(deps)
+    const resolution = resolveProfileName(config, { flag: pluginFlags.profile, env: deps.env })
+    if (!resolution.ok) {
+      writeLocalFailure(deps, { code: "PROFILE_UNRESOLVED", ...splitFix(resolution.message) }, pluginFlags.json)
+      return 1
+    }
+    const profile = resolution.name
+    const profileApiUrl = profile ? config.profiles?.[profile]?.apiUrl : config.apiUrl
+    return runPlugin(plugin.name, plugin.args, {
+      deps,
+      json: pluginFlags.json,
+      apiUrl: pluginFlags.apiUrl ?? resolveApiUrl(profileApiUrl, deps.env),
+      apiUrlFlag: pluginFlags.apiUrl,
+      profile,
+      profileFlag: pluginFlags.profile,
+      verifyAccount: false,
+      vaultFactor: pluginFlags.vaultFactor,
+      vaultDevice: pluginFlags.vaultDevice,
+    })
+  }
 
   // `bunx github:candledottv/agentic candle auth login` uses "candle" to RESOLVE the bin and then
   // passes that same token through as the CLI's own first argument, so argv here starts with the
@@ -649,9 +716,16 @@ function messageOf(error: unknown): string {
  * cannot see them. */
 export async function buildRealDeps(): Promise<Deps> {
   const { store, backend } = await resolveSecretStore()
+  // R6: the user's own secrets, in a namespace of their own (a separate keychain service, or a
+  // separate encrypted file), resolved on the same backend rule as the credential store.
+  const { store: secretsStore } = await resolveSecretStore(process.platform, {
+    service: SECRETS_SERVICE,
+    filePath: defaultSecretsPath(process.env),
+  })
   return {
     fetch: globalThis.fetch,
     store,
+    secretsStore,
     backend,
     readConfig,
     writeConfig,
@@ -684,6 +758,15 @@ export async function buildRealDeps(): Promise<Deps> {
     },
     readFile: (path: string) => readFile(path, "utf8"),
     readBytes: (path: string) => readFile(path),
+    readStdin: () =>
+      new Promise<Uint8Array>((resolve, reject) => {
+        const chunks: Buffer[] = []
+        process.stdin.on("data", (chunk: Buffer) => chunks.push(chunk))
+        process.stdin.on("end", () => resolve(new Uint8Array(Buffer.concat(chunks))))
+        process.stdin.on("error", reject)
+        process.stdin.resume()
+      }),
+    runPlugin: realRunPlugin,
     // 0600: the only caller is wallets import's --signer-out, and the content is a signing
     // private key.
     writeFile: (path: string, content: string) => writeFile(path, content, { mode: 0o600 }),

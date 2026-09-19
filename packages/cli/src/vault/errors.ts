@@ -71,6 +71,14 @@ export const VAULT_ERROR_CODES = [
   "EXPORT_TARGET_SYMLINK",
   "LEGACY_INCOMPLETE",
   "LEGACY_UNVERIFIED_BACKUP",
+  // Ember Phase 3 PR F (BE-226, R6): `candle sign` and `candle sign message`. The refusals are
+  // structural and run before any prompt; `--yes` skips the confirmation and none of them.
+  "SIGN_SIGNER_NOT_EXTERNAL",
+  "SIGN_SIGNER_NOT_PROVIDED",
+  "SIGN_SIMULATION_FAILED",
+  "SIGN_LOOKUP_TABLE_UNRESOLVED",
+  "SIGN_TRANSACTION_UNDECODABLE",
+  "SIGN_BROADCAST_FAILED",
 ] as const
 
 export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number]

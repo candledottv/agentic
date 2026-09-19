@@ -15,7 +15,15 @@
 import { spawn, spawnSync } from "node:child_process"
 import { EncryptedFileSecretStore, type SecretStore } from "./secret-store"
 
-const SERVICE = "tv.candle.cli"
+/** The keychain service Candle's own credentials live under (the device token and API key). */
+export const CREDENTIAL_SERVICE = "tv.candle.cli"
+/**
+ * Ember Phase 3 PR F (BE-226, R6): the SEPARATE service the user's own third-party API keys live
+ * under (`candle secrets`). Not "beside the Candle credentials": a keychain grant, a `security`-
+ * style helper, or a prompt the user approves for one service does not thereby reach the other.
+ */
+export const SECRETS_SERVICE = "tv.candle.cli.secrets"
+const SERVICE = CREDENTIAL_SERVICE
 const PROBE_ACCOUNT = "tv.candle.cli.probe"
 
 // `KeychainSecretStore.set` interpolates the secret into a quoted `-w "<value>"` token on a command
@@ -125,10 +133,13 @@ function binaryResolvable(bin: string): boolean {
  * `PATH` instead of using it.
  */
 export class KeychainSecretStore implements SecretStore {
-  constructor(private readonly binary: string = "security") {}
+  constructor(
+    private readonly binary: string = "security",
+    private readonly service: string = SERVICE,
+  ) {}
 
   async get(ref: string): Promise<string | null> {
-    const result = await run(this.binary, ["find-generic-password", "-s", SERVICE, "-a", ref, "-w"])
+    const result = await run(this.binary, ["find-generic-password", "-s", this.service, "-a", ref, "-w"])
     if (result.status !== 0) return null
     return result.stdout.replace(/\n$/, "")
   }
@@ -144,7 +155,7 @@ export class KeychainSecretStore implements SecretStore {
     // The secret is base64url (SDK-issued device tokens and API keys never contain spaces or
     // quotes), so embedding it in a quoted `-w` argument is safe -- the guard above makes that
     // invariant true by construction rather than merely documented.
-    const command = `add-generic-password -U -s "${SERVICE}" -a "${ref}" -w "${value}"\n`
+    const command = `add-generic-password -U -s "${this.service}" -a "${ref}" -w "${value}"\n`
     const result = await run(this.binary, ["-i"], command)
     if (result.status !== 0) {
       throw new Error(`Failed to store credential in the macOS Keychain (security exited ${result.status})`)
@@ -155,7 +166,7 @@ export class KeychainSecretStore implements SecretStore {
     // Throws rather than degrading to best-effort: an unsafe ref injects a second command here
     // exactly as it would on the write path, which is not something to swallow.
     assertSafeRef(ref)
-    const command = `delete-generic-password -s "${SERVICE}" -a "${ref}"\n`
+    const command = `delete-generic-password -s "${this.service}" -a "${ref}"\n`
     // Best-effort: deleting an entry that was never stored is a no-op, matching SecretStore's
     // contract, so a nonzero exit here (e.g. "could not be found") is not treated as failure.
     await run(this.binary, ["-i"], command)
@@ -168,17 +179,24 @@ export class KeychainSecretStore implements SecretStore {
  * tests prefer the `PATH` seam over this override.
  */
 export class SecretToolSecretStore implements SecretStore {
-  constructor(private readonly binary: string = "secret-tool") {}
+  constructor(
+    private readonly binary: string = "secret-tool",
+    private readonly service: string = SERVICE,
+  ) {}
 
   async get(ref: string): Promise<string | null> {
-    const result = await run(this.binary, ["lookup", "service", SERVICE, "account", ref])
+    const result = await run(this.binary, ["lookup", "service", this.service, "account", ref])
     if (result.status !== 0) return null
     const value = result.stdout.replace(/\n$/, "")
     return value.length > 0 ? value : null
   }
 
   async set(ref: string, value: string): Promise<void> {
-    const result = await run(this.binary, ["store", "--label=Candle CLI", "service", SERVICE, "account", ref], value)
+    const result = await run(
+      this.binary,
+      ["store", "--label=Candle CLI", "service", this.service, "account", ref],
+      value,
+    )
     if (result.status !== 0) {
       throw new Error(`Failed to store credential via secret-tool (exited ${result.status})`)
     }
@@ -186,7 +204,7 @@ export class SecretToolSecretStore implements SecretStore {
 
   async delete(ref: string): Promise<void> {
     // Best-effort, same rationale as KeychainSecretStore.delete.
-    await run(this.binary, ["clear", "service", SERVICE, "account", ref])
+    await run(this.binary, ["clear", "service", this.service, "account", ref])
   }
 }
 
@@ -224,17 +242,25 @@ async function probeSecretTool(store: SecretToolSecretStore): Promise<boolean> {
  */
 export async function resolveSecretStore(
   platform: NodeJS.Platform = process.platform,
+  /**
+   * Which namespace (R6): Candle's credentials by default, or the user's own secrets under
+   * `SECRETS_SERVICE` and, on the encrypted-file fallback, a separate `secrets.enc` file.
+   */
+  namespace: { service: string; filePath?: string } = { service: CREDENTIAL_SERVICE },
 ): Promise<{ store: SecretStore; backend: "keychain" | "secret-tool" | "encrypted-file" }> {
   if (platform === "darwin" && binaryResolvable("security")) {
-    return { store: new KeychainSecretStore(), backend: "keychain" }
+    return { store: new KeychainSecretStore("security", namespace.service), backend: "keychain" }
   }
 
   if (platform === "linux" && binaryResolvable("secret-tool")) {
-    const candidate = new SecretToolSecretStore()
+    const candidate = new SecretToolSecretStore("secret-tool", namespace.service)
     if (await probeSecretTool(candidate)) {
       return { store: candidate, backend: "secret-tool" }
     }
   }
 
-  return { store: new EncryptedFileSecretStore(), backend: "encrypted-file" }
+  return {
+    store: new EncryptedFileSecretStore(namespace.filePath ? { path: namespace.filePath } : {}),
+    backend: "encrypted-file",
+  }
 }

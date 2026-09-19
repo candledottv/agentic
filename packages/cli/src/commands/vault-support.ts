@@ -15,10 +15,12 @@ import { assertPrf, currentPlatformFacts, openSecurityKeySession, type SecurityK
 import {
   type Ctap2Envelope,
   type Envelope,
+  type IndexPlaintext,
   isCtap2Envelope,
   isPassphraseEnvelope,
   isPlatformPasskeyEnvelope,
   isSecureEnclaveEnvelope,
+  type KeyEntry,
   type PlatformPasskeyEnvelope,
   parseVaultFile,
   type SecureEnclaveEnvelope,
@@ -579,4 +581,65 @@ export async function runVaultCommand(
 /** One JSON value on stdout, as the CLI's agent contract requires. Never carries a secret. */
 export function writeJson(deps: Deps, value: unknown): void {
   deps.stdout.write(`${JSON.stringify(value)}\n`)
+}
+
+/** The user's own Solana RPC: `--rpc-url`, else `CANDLE_SOLANA_RPC_URL` (the rule `candle tee` uses). */
+export const RPC_URL_ENV = "CANDLE_SOLANA_RPC_URL"
+
+export function rpcUrlFrom(ctx: CommandContext, parsed: ParsedArgs): string | { error: string } {
+  const url = parsed.values["--rpc-url"] ?? ctx.deps.env[RPC_URL_ENV]?.trim()
+  if (!url) return { error: `--rpc-url <url> is required (or set ${RPC_URL_ENV}).` }
+  let parsedUrl: URL
+  try {
+    parsedUrl = new URL(url)
+  } catch {
+    return { error: `--rpc-url is not a valid URL: ${url}` }
+  }
+  const local = parsedUrl.hostname === "127.0.0.1" || parsedUrl.hostname === "localhost"
+  if (parsedUrl.protocol !== "https:" && !(parsedUrl.protocol === "http:" && local)) {
+    return { error: "--rpc-url must be https:// (plain http is allowed only for 127.0.0.1 / localhost)." }
+  }
+  return url
+}
+
+/**
+ * A `role: "external"` entry by label or address (R6). Only external entries answer: a vault key
+ * or a TEE wallet named here is `undefined`, so the caller's refusal can say what it was.
+ */
+export function findExternalEntry(index: IndexPlaintext, labelOrAddress: string): KeyEntry | undefined {
+  const byLabel = index.entries.find((entry) => entry.role === "external" && entry.label === labelOrAddress)
+  if (byLabel !== undefined) return byLabel
+  return index.entries.find((entry) => entry.role === "external" && entry.address === labelOrAddress)
+}
+
+/** What a named entry is, for a refusal that has to say why it was not admitted. */
+export function describeRole(entry: KeyEntry): string {
+  if (entry.role === "vault") return "a vault key"
+  if (entry.role === "tee-wallet") return "a TEE wallet"
+  return "an external wallet"
+}
+
+/**
+ * A `--wallet`-style flag that may be given more than once. `parseArgs` keeps the last value of a
+ * flag, so the repeats are lifted out first and the remaining tokens go through it unchanged.
+ */
+export function takeRepeatedFlag(
+  args: string[],
+  flag: string,
+): { values: string[]; rest: string[] } | { error: string } {
+  const values: string[] = []
+  const rest: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === flag) {
+      const value = args[++i]
+      if (!value || value.startsWith("-")) return { error: `${flag} requires a value` }
+      values.push(value)
+    } else if (arg !== undefined && arg.startsWith(`${flag}=`)) {
+      const value = arg.slice(flag.length + 1)
+      if (!value) return { error: `${flag} requires a value` }
+      values.push(value)
+    } else if (arg !== undefined) rest.push(arg)
+  }
+  return { values, rest }
 }

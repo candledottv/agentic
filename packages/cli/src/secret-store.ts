@@ -98,6 +98,15 @@ function defaultCredentialsPath(): string {
   return join(configDir(), "credentials.enc")
 }
 
+/**
+ * Ember Phase 3 PR F (BE-226, R6): the encrypted-file fallback for the user's own secrets, a file
+ * of its own beside `credentials.enc` so the two namespaces stay two files here as they are two
+ * keychain services elsewhere. Both are opened with `CANDLE_KEYRING_PASSPHRASE`.
+ */
+export function defaultSecretsPath(env: Record<string, string | undefined> = process.env): string {
+  return join(env.CANDLE_CONFIG_DIR?.trim() || join(homedir(), ".config", "candle"), "secrets.enc")
+}
+
 // AES-256-GCM with a PBKDF2-derived key. This deliberately re-implements roughly 80 lines of the
 // SDK's EncryptedFileSecretStore pattern instead of importing it: the CLI has zero runtime
 // dependencies by design (spec decision 4; the bunx distribution depends on a self-contained

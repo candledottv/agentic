@@ -16,6 +16,21 @@
  * an envelope whose `factor` or `transport` this build does not know is CANONICALIZED INTO THE
  * HEADER like any other and simply never offered for unlock, while an unknown TOP-LEVEL field, an
  * unknown KEY-ENTRY field, and an unknown `format` or `version` are all refused.
+ *
+ * Ember Phase 3 PR F (BE-226, R6, P3-AD-13): `version: 3` adds the external branch. The index
+ * gains `hd.nextIndex.solanaExternal`, the external branch in `hd.exposedIndexes` and in the
+ * discovery record, and `role: "external"`; CC-11 gains the row `m/44'/501'/n'/2'`. Nothing else
+ * changes: the same canonical-header-as-index-AAD construction, the same envelopes, key blobs and
+ * root blob, byte for byte. This reader opens BOTH versions and applies each version's own index
+ * rules, so a `version: 2` file stays a `version: 2` file (its index never carries the external
+ * branch on disk) until the write that allocates the first external key, and a 0.10.x or 0.11.x
+ * reader meeting a `version: 3` file refuses it with `VAULT_VERSION_UNSUPPORTED` and writes nothing.
+ *
+ * The envelope, root and key blob AADs keep `version: 2` in both file versions (`BLOB_AAD_VERSION`).
+ * Those blobs are never re-encrypted (ED-1), and a Touch ID or security-key envelope COULD not be
+ * re-wrapped without the device present, so the version bump must not change the bytes they were
+ * sealed under. The file's `version` is authenticated by the index AAD instead: the canonical header
+ * carries it, so editing a `3` to a `2` (or the reverse) is an index tag failure, never a downgrade.
  */
 import type { Blob } from "./crypto"
 import { type Argon2Params, assertKdfInBounds, canonicalBytes } from "./crypto"
@@ -23,7 +38,18 @@ import { VaultError } from "./errors"
 import { isHelperBundleId, isHelperTeamId } from "./helper-identity"
 
 export const VAULT_FORMAT = "candle-vault" as const
-export const VAULT_VERSION = 2 as const
+/** The current format version: what a vault carrying the external branch is written as. */
+export const VAULT_VERSION = 3 as const
+/** Phase 2's version: what a vault with no external branch keeps, so an older CLI still opens it. */
+export const LEGACY_VAULT_VERSION = 2 as const
+export type VaultVersion = typeof LEGACY_VAULT_VERSION | typeof VAULT_VERSION
+export const SUPPORTED_VAULT_VERSIONS: readonly VaultVersion[] = [LEGACY_VAULT_VERSION, VAULT_VERSION]
+/**
+ * The `version` inside every envelope, root and key blob AAD, in BOTH file versions. Those blobs
+ * are sealed once and never re-encrypted (ED-1), so the value they were sealed under is the value
+ * they are opened under; the file's own version is authenticated through the canonical header.
+ */
+export const BLOB_AAD_VERSION = 2 as const
 export const VAULT_CIPHER = "AES-256-GCM" as const
 
 // ── Envelopes ─────────────────────────────────────────────────────────────────────────────────
@@ -191,7 +217,7 @@ export function passphraseKdf(envelope: Envelope): Argon2Params {
 /** Every top-level field except `index`, `root` and `keys`: exactly what the canonical header is. */
 export interface VaultHeader {
   format: typeof VAULT_FORMAT
-  version: typeof VAULT_VERSION
+  version: VaultVersion
   vaultId: string
   generation: number
   createdAt: string
@@ -225,8 +251,18 @@ const TOP_LEVEL_FIELDS: readonly string[] = [...HEADER_FIELDS, ...NON_HEADER_FIE
 
 // ── Index plaintext ───────────────────────────────────────────────────────────────────────────
 
-export type Branch = "solanaVault" | "solanaTee" | "evm"
-export const BRANCHES: readonly Branch[] = ["solanaVault", "solanaTee", "evm"]
+export type Branch = "solanaVault" | "solanaTee" | "solanaExternal" | "evm"
+/** Every branch a `version: 3` index carries. */
+export const BRANCHES: readonly Branch[] = ["solanaVault", "solanaTee", "solanaExternal", "evm"]
+/** The three a `version: 2` index carries; `solanaExternal` is what version 3 adds (R6). */
+export const LEGACY_BRANCHES: readonly Branch[] = ["solanaVault", "solanaTee", "evm"]
+/** The branches a discovery record counts: the Solana ones a restore can be bounded on. */
+export const DISCOVERY_BRANCHES = ["solanaVault", "solanaTee", "solanaExternal"] as const
+export type DiscoveryBranch = (typeof DISCOVERY_BRANCHES)[number]
+
+export function branchesForVersion(version: VaultVersion): readonly Branch[] {
+  return version === LEGACY_VAULT_VERSION ? LEGACY_BRANCHES : BRANCHES
+}
 
 export interface HdRecord {
   scheme: "bip39-24/slip10"
@@ -245,8 +281,9 @@ export interface HdRecord {
 export interface HdDiscovery {
   restoredAt: string
   account: string
-  requestedCounts: { solanaVault: number; solanaTee: number }
-  highestMatched: { solanaVault: number; solanaTee: number }
+  /** In memory every discovery record carries the external branch; a `version: 2` file omits it on disk. */
+  requestedCounts: Record<DiscoveryBranch, number>
+  highestMatched: Record<DiscoveryBranch, number>
   /**
    * Written `false` and never written `true` by any command, because no procedure can establish
    * that a phrase was never used outside this vault (CC-11). The strict reader refuses `true`.
@@ -313,7 +350,13 @@ export interface KeyEntry {
   address: string
   label: string
   createdAt: string
-  role: "vault" | "tee-wallet"
+  /**
+   * `"external"` (R6, P3-AD-13, `version: 3` only): a key on the external branch that signs only
+   * through `candle sign`, `candle sign message` and `candle external sweep`, is never delegated
+   * to Privy and is never registered with Candle. Always `derived`, never carrying `tee` or a
+   * `linkedWalletId`, exactly as a `role: "vault"` entry may not.
+   */
+  role: "vault" | "tee-wallet" | "external"
   origin: "derived" | "migrated-tee"
   derivation?: KeyDerivation
   exposure: KeyExposure
@@ -330,6 +373,9 @@ export interface IndexPlaintext {
   hd: HdRecord
   entries: KeyEntry[]
 }
+
+/** The index a command reads after unlock: the same shape, named for the callers that only look. */
+export type UnlockedVaultIndex = IndexPlaintext
 
 /** CC-01: exactly the fields an entry may carry. The strict reader refuses any other. */
 const KEY_ENTRY_FIELDS: readonly string[] = [
@@ -383,7 +429,7 @@ export function canonicalHeader(file: VaultHeader): Uint8Array {
 export function envelopeAad(file: Pick<VaultHeader, "vaultId">, envelope: Envelope): Uint8Array {
   const base = {
     format: VAULT_FORMAT,
-    version: VAULT_VERSION,
+    version: BLOB_AAD_VERSION,
     vaultId: file.vaultId,
     envelopeId: envelope.id,
     factor: envelope.factor,
@@ -443,11 +489,11 @@ export function envelopeAad(file: Pick<VaultHeader, "vaultId">, envelope: Envelo
 }
 
 export function rootAad(vaultId: string): Uint8Array {
-  return canonicalBytes({ format: VAULT_FORMAT, version: VAULT_VERSION, vaultId, purpose: "root" })
+  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "root" })
 }
 
 export function keyAad(vaultId: string, keyId: string): Uint8Array {
-  return canonicalBytes({ format: VAULT_FORMAT, version: VAULT_VERSION, vaultId, purpose: "key", keyId })
+  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "key", keyId })
 }
 
 // ── The strict reader ─────────────────────────────────────────────────────────────────────────
@@ -464,8 +510,8 @@ function refuse(code: "VAULT_UNREADABLE" | "VAULT_FIELD_UNKNOWN" | "VAULT_INDEX_
 
 /**
  * Parses and structurally validates a vault file, applying CC-01's fail-closed rules IN THE ORDER
- * that section lists them: not JSON, unknown `format`, `version` other than 2, `cipher` other than
- * AES-256-GCM, unknown top-level field, then KDF parameters outside ED-3's bounds.
+ * that section lists them: not JSON, unknown `format`, `version` other than 2 or 3, `cipher` other
+ * than AES-256-GCM, unknown top-level field, then KDF parameters outside ED-3's bounds.
  *
  * Nothing here decrypts. Everything past this point (a wrong envelope, an index tag failure, an
  * invalid index) needs a factor, and this function runs before one has been asked for.
@@ -482,10 +528,10 @@ export function parseVaultFile(raw: string): VaultFile {
   if (value.format !== VAULT_FORMAT) {
     throw new VaultError("VAULT_FORMAT_UNKNOWN", `Not a Candle vault: format is ${JSON.stringify(value.format)}.`)
   }
-  if (value.version !== VAULT_VERSION) {
+  if (!SUPPORTED_VAULT_VERSIONS.includes(value.version as VaultVersion)) {
     throw new VaultError(
       "VAULT_VERSION_UNSUPPORTED",
-      `Unsupported vault version ${JSON.stringify(value.version)}: this CLI writes version ${VAULT_VERSION}.`,
+      `Unsupported vault version ${JSON.stringify(value.version)}: this CLI reads versions ${SUPPORTED_VAULT_VERSIONS.join(" and ")} and writes version ${VAULT_VERSION}.`,
     )
   }
   if (value.cipher !== VAULT_CIPHER) {
@@ -511,9 +557,12 @@ export function parseVaultFile(raw: string): VaultFile {
     refuse("VAULT_UNREADABLE", "keyIds is missing or is not an array of strings.")
   }
   if (!isBlob(value.index)) refuse("VAULT_UNREADABLE", "index is missing or malformed.")
-  // Required in EVERY version 2 file, so its absence is checked at every open (CC-01).
+  // Required in EVERY version 2 and version 3 file, so its absence is checked at every open (CC-01).
   if (!isBlob(value.root)) {
-    throw new VaultError("VAULT_INDEX_INVALID", "The vault has no root blob; every version 2 vault must carry one.")
+    throw new VaultError(
+      "VAULT_INDEX_INVALID",
+      `The vault has no root blob; every version ${String(value.version)} vault must carry one.`,
+    )
   }
   if (!Array.isArray(value.keys)) refuse("VAULT_UNREADABLE", "keys is missing or not an array.")
   for (const blob of value.keys) {
@@ -654,8 +703,15 @@ export function assertKeyIdsAgree(file: VaultFile): void {
  * The index plaintext's schema, which is where most of CC-01's refusals live. Every one of them is
  * `VAULT_INDEX_INVALID`: the index decrypted (so the header authenticated and the factor was
  * right) and what came out does not describe a vault this CLI can operate on.
+ *
+ * `version` is the FILE's version, read off the authenticated header, and selects that version's
+ * index rules (R6): a `version: 2` index must not carry the external branch or a `role: "external"`
+ * entry (a 0.10.x reader would refuse it, and this CLI never writes one), and a `version: 3` index
+ * must carry `hd.nextIndex.solanaExternal` and the branch's exposure list. A version 2 index is
+ * widened IN MEMORY to the version 3 shape (`solanaExternal: 0`, an empty exposure list), so every
+ * command reads one shape; `serializeIndexPlaintext` narrows it again on a version 2 write.
  */
-export function parseIndexPlaintext(bytes: Uint8Array): IndexPlaintext {
+export function parseIndexPlaintext(bytes: Uint8Array, version: VaultVersion = LEGACY_VAULT_VERSION): IndexPlaintext {
   let value: unknown
   try {
     value = JSON.parse(new TextDecoder().decode(bytes))
@@ -668,9 +724,9 @@ export function parseIndexPlaintext(bytes: Uint8Array): IndexPlaintext {
       refuse("VAULT_INDEX_INVALID", `The index carries an unknown field: ${field}.`)
   }
 
-  const hd = parseHd(value.hd)
+  const hd = parseHd(value.hd, version)
   if (!Array.isArray(value.entries)) refuse("VAULT_INDEX_INVALID", "The index has no entries array.")
-  const entries = (value.entries as unknown[]).map(parseEntry)
+  const entries = (value.entries as unknown[]).map((entry) => parseEntry(entry, version))
 
   const seen = new Set<string>()
   for (const entry of entries) {
@@ -695,7 +751,47 @@ export function parseIndexPlaintext(bytes: Uint8Array): IndexPlaintext {
   return { hd, entries }
 }
 
-function parseHd(value: unknown): HdRecord {
+/**
+ * Whether an index can only be written as `version: 3`: it holds external state a version 2 file
+ * has no field for. A write of such an index rewrites a version 2 file as version 3, and that is
+ * the ONLY thing that does (R6): every other write keeps the version the file already had.
+ */
+export function indexRequiresVersion3(index: IndexPlaintext): boolean {
+  if (index.entries.some((entry) => entry.role === "external")) return true
+  if (index.hd.nextIndex.solanaExternal > 0) return true
+  if (index.hd.exposedIndexes.solanaExternal.length > 0) return true
+  const discovery = index.hd.discovery
+  if (discovery === undefined) return false
+  return discovery.requestedCounts.solanaExternal !== 0 || discovery.highestMatched.solanaExternal !== -1
+}
+
+/**
+ * The index as it is written under `version`. A version 3 write is the in-memory shape verbatim.
+ * A version 2 write drops the external branch from the counters, the exposure lists and the
+ * discovery record, so the file stays one a 0.10.x reader opens; it refuses to drop anything that
+ * carries information, which is what `indexRequiresVersion3` decides, because silently narrowing
+ * an external key out of a file is exactly the loss a strict reader exists to prevent.
+ */
+export function serializeIndexPlaintext(index: IndexPlaintext, version: VaultVersion): unknown {
+  if (version === VAULT_VERSION) return index
+  if (indexRequiresVersion3(index)) {
+    throw new VaultError(
+      "VAULT_INDEX_INVALID",
+      "This index carries the external branch and cannot be written as a version 2 vault.",
+    )
+  }
+  const { solanaExternal: _nextExternal, ...nextIndex } = index.hd.nextIndex
+  const { solanaExternal: _exposedExternal, ...exposedIndexes } = index.hd.exposedIndexes
+  const hd: Record<string, unknown> = { ...index.hd, nextIndex, exposedIndexes }
+  if (index.hd.discovery !== undefined) {
+    const { solanaExternal: _requested, ...requestedCounts } = index.hd.discovery.requestedCounts
+    const { solanaExternal: _matched, ...highestMatched } = index.hd.discovery.highestMatched
+    hd.discovery = { ...index.hd.discovery, requestedCounts, highestMatched }
+  }
+  return { hd, entries: index.entries }
+}
+
+function parseHd(value: unknown, version: VaultVersion): HdRecord {
   if (!isRecord(value)) refuse("VAULT_INDEX_INVALID", "The index has no hd record.")
   for (const field of Object.keys(value)) {
     const allowed = [
@@ -718,7 +814,25 @@ function parseHd(value: unknown): HdRecord {
   if (!isRecord(exposed)) refuse("VAULT_INDEX_INVALID", "hd.exposedIndexes is missing.")
   const nextIndex = {} as Record<Branch, number>
   const exposedIndexes = {} as Record<Branch, number[]>
+  const onDisk = branchesForVersion(version)
+  for (const field of Object.keys(counters)) {
+    if (!onDisk.includes(field as Branch)) {
+      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${field} is not a branch a version ${version} vault carries.`)
+    }
+  }
+  for (const field of Object.keys(exposed)) {
+    if (!onDisk.includes(field as Branch)) {
+      refuse("VAULT_INDEX_INVALID", `hd.exposedIndexes.${field} is not a branch a version ${version} vault carries.`)
+    }
+  }
   for (const branch of BRANCHES) {
+    if (!onDisk.includes(branch)) {
+      // A version 2 file has no external branch on disk (R6). In memory it reads as unallocated
+      // and unexposed, the shape a fresh vault starts from, so every command sees one shape.
+      nextIndex[branch] = 0
+      exposedIndexes[branch] = []
+      continue
+    }
     const counter = counters[branch]
     if (!Number.isInteger(counter) || (counter as number) < 0) {
       refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${branch} is missing or is not a whole number.`)
@@ -742,13 +856,36 @@ function parseHd(value: unknown): HdRecord {
     if (typeof record.restoredAt !== "string" || typeof record.account !== "string") {
       refuse("VAULT_INDEX_INVALID", "hd.discovery is missing restoredAt or account.")
     }
+    const parsedCounts = {} as Record<"requestedCounts" | "highestMatched", Record<DiscoveryBranch, number>>
     for (const field of ["requestedCounts", "highestMatched"] as const) {
       const counts = record[field]
       if (!isRecord(counts) || !Number.isInteger(counts.solanaVault) || !Number.isInteger(counts.solanaTee)) {
         refuse("VAULT_INDEX_INVALID", `hd.discovery.${field} is missing or malformed.`)
       }
+      // The external branch: required in version 3, absent in version 2 (R6). Read as "nothing
+      // requested, nothing matched" from a version 2 file, which is the truth of that file.
+      if (onDisk.includes("solanaExternal")) {
+        if (!Number.isInteger(counts.solanaExternal)) {
+          refuse("VAULT_INDEX_INVALID", `hd.discovery.${field}.solanaExternal is missing or malformed.`)
+        }
+      } else if (counts.solanaExternal !== undefined) {
+        refuse("VAULT_INDEX_INVALID", `hd.discovery.${field}.solanaExternal is not a field a version 2 vault carries.`)
+      }
+      parsedCounts[field] = {
+        solanaVault: counts.solanaVault as number,
+        solanaTee: counts.solanaTee as number,
+        solanaExternal: onDisk.includes("solanaExternal")
+          ? (counts.solanaExternal as number)
+          : field === "requestedCounts"
+            ? 0
+            : -1,
+      }
     }
-    discovery = record as unknown as HdDiscovery
+    discovery = {
+      ...(record as unknown as HdDiscovery),
+      requestedCounts: parsedCounts.requestedCounts,
+      highestMatched: parsedCounts.highestMatched,
+    }
   }
 
   return {
@@ -762,7 +899,7 @@ function parseHd(value: unknown): HdRecord {
   }
 }
 
-function parseEntry(value: unknown): KeyEntry {
+function parseEntry(value: unknown, version: VaultVersion): KeyEntry {
   if (!isRecord(value)) refuse("VAULT_INDEX_INVALID", "An index entry is not a JSON object.")
   for (const field of Object.keys(value)) {
     if (!KEY_ENTRY_FIELDS.includes(field)) {
@@ -778,8 +915,13 @@ function parseEntry(value: unknown): KeyEntry {
   if (value.curve !== "ed25519" && value.curve !== "secp256k1") {
     refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized curve.`)
   }
-  if (value.role !== "vault" && value.role !== "tee-wallet") {
+  if (value.role !== "vault" && value.role !== "tee-wallet" && value.role !== "external") {
     refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized role.`)
+  }
+  // R6: the external role is what version 3 adds. A version 2 file recording one is a file this
+  // CLI never wrote and an older reader would refuse; it is refused here rather than read.
+  if (value.role === "external" && version === LEGACY_VAULT_VERSION) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is role:external, which a version 2 vault cannot carry.`)
   }
   if (value.origin !== "derived" && value.origin !== "migrated-tee") {
     refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized origin.`)
@@ -832,12 +974,17 @@ function parseEntry(value: unknown): KeyEntry {
   }
 
   // N3 / CC-01: a vault key is a vault key. Carrying TEE metadata or a link id would make it
-  // reachable from a path ED-10 keeps it out of.
-  if (value.role === "vault") {
+  // reachable from a path ED-10 keeps it out of. R6 applies the same rule to an external key,
+  // which is additionally always derived: it exists on the external branch and nowhere else.
+  if (value.role === "vault" || value.role === "external") {
+    const what = value.role === "vault" ? "a vault key" : "an external key"
     if (value.tee !== undefined)
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is a vault key carrying tee metadata.`)
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is ${what} carrying tee metadata.`)
     if (value.linkedWalletId !== undefined) {
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is a vault key carrying a linkedWalletId.`)
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is ${what} carrying a linkedWalletId.`)
+    }
+    if (value.role === "external" && value.origin !== "derived") {
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is an external key that is not derived.`)
     }
   } else {
     if (value.tee === undefined)
@@ -936,6 +1083,8 @@ export function branchOfPath(path: string): { branch: Branch; index: number } | 
   if (match?.[1] !== undefined) return { branch: "solanaVault", index: Number(match[1]) }
   match = /^m\/44'\/501'\/(\d+)'\/1'$/.exec(path)
   if (match?.[1] !== undefined) return { branch: "solanaTee", index: Number(match[1]) }
+  match = /^m\/44'\/501'\/(\d+)'\/2'$/.exec(path)
+  if (match?.[1] !== undefined) return { branch: "solanaExternal", index: Number(match[1]) }
   match = /^m\/44'\/60'\/(\d+)'\/0\/0$/.exec(path)
   if (match?.[1] !== undefined) return { branch: "evm", index: Number(match[1]) }
   return undefined

@@ -12,7 +12,7 @@ import { Keypair } from "@solana/web3.js"
 import { run } from "../index"
 import { createCapture, createFakeStore, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
 import { addressFromSecret64 } from "../vault/ed25519"
-import { parseIndexPlaintext, parseVaultFile } from "../vault/format"
+import { parseIndexPlaintext, parseVaultFile, serializeIndexPlaintext } from "../vault/format"
 import { wipe } from "../vault/hygiene"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
 import { decryptKey, unlockWithPassphrase } from "../vault/store"
@@ -285,8 +285,11 @@ describe("T37: CC-05 TEE store migration", () => {
           wipe(secret)
         }
       }
-      // Round-trip the index through the strict reader again.
-      parseIndexPlaintext(new TextEncoder().encode(JSON.stringify(opened.index)))
+      // Round-trip the index through the strict reader again, in the shape the file's version writes.
+      parseIndexPlaintext(
+        new TextEncoder().encode(JSON.stringify(serializeIndexPlaintext(opened.index, opened.file.version))),
+        opened.file.version,
+      )
     } finally {
       const { closeVault } = await import("../vault/store")
       closeVault(opened)

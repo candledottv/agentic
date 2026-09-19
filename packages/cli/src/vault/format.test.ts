@@ -72,7 +72,7 @@ describe("T31: the strict reader refuses everything CC-01 lists, in order, and w
     await writeFile(made.path, original, "utf8")
   })
 
-  test("an unknown format, and a version other than 2, each with their own code", async () => {
+  test("an unknown format, and a version other than 2 or 3, each with their own code", async () => {
     await tamper(made.path, (file) => {
       ;(file as unknown as Record<string, unknown>).format = "candle-keystore"
     })
@@ -80,9 +80,18 @@ describe("T31: the strict reader refuses everything CC-01 lists, in order, and w
 
     await writeFile(made.path, original, "utf8")
     await tamper(made.path, (file) => {
-      ;(file as unknown as Record<string, unknown>).version = 3
+      ;(file as unknown as Record<string, unknown>).version = 4
     })
     expect((await refusal(() => reopen(made.path))).code).toBe("VAULT_VERSION_UNSUPPORTED")
+
+    // R6: version 3 is a version this reader opens, so the number alone is not refused; but the
+    // version is inside the canonical header, so a version 2 file EDITED to say 3 fails the index
+    // tag rather than being read under the other version's rules. The reverse edit is the same.
+    await writeFile(made.path, original, "utf8")
+    await tamper(made.path, (file) => {
+      ;(file as unknown as Record<string, unknown>).version = 3
+    })
+    expect((await refusal(() => reopen(made.path))).code).toBe("VAULT_BLOB_TAMPERED")
     await writeFile(made.path, original, "utf8")
   })
 
@@ -454,6 +463,129 @@ describe("T51: the format accepts a secp256k1 entry, and Phase 2 derives none", 
     expect(parsed.entries[0]?.curve).toBe("secp256k1")
     // And the path is located on the EVM branch, so the counter check applies to it too.
     expect(branchOfPath("m/44'/60'/0'/0/0")).toEqual({ branch: "evm", index: 0 })
+  })
+})
+
+describe("R6: the version 3 index rules, and the version 2 index that stays version 2", () => {
+  const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value))
+  const externalEntry = {
+    id: "x1",
+    chain: "solana",
+    curve: "ed25519",
+    address: "ExternalAddress111111111111111111111111111",
+    label: "trader",
+    createdAt: "2026-09-19T12:00:00.000Z",
+    role: "external",
+    origin: "derived",
+    derivation: { scheme: "slip10-ed25519", path: "m/44'/501'/0'/2'" },
+    exposure: { everRemoteExposed: false, everExported: false },
+  }
+  const v3Hd = {
+    scheme: "bip39-24/slip10",
+    nextIndex: { solanaVault: 0, solanaTee: 0, solanaExternal: 1, evm: 0 },
+    rootExported: false,
+    exposedIndexes: { solanaVault: [], solanaTee: [], solanaExternal: [], evm: [] },
+  }
+  const v2Hd = {
+    scheme: "bip39-24/slip10",
+    nextIndex: { solanaVault: 0, solanaTee: 0, evm: 0 },
+    rootExported: false,
+    exposedIndexes: { solanaVault: [], solanaTee: [], evm: [] },
+  }
+  const refusal = (body: () => unknown): string => {
+    try {
+      body()
+    } catch (error) {
+      if (error instanceof VaultError) return `${error.code}: ${error.message}`
+      throw error
+    }
+    throw new Error("expected a refusal")
+  }
+
+  test("a version 3 index carries the external branch and an external entry; a version 2 index reads as the same shape in memory", () => {
+    const v3 = parseIndexPlaintext(encode({ hd: v3Hd, entries: [externalEntry] }), 3)
+    expect(v3.entries[0]?.role).toBe("external")
+    expect(v3.hd.nextIndex.solanaExternal).toBe(1)
+    expect(branchOfPath("m/44'/501'/0'/2'")).toEqual({ branch: "solanaExternal", index: 0 })
+    const v2 = parseIndexPlaintext(encode({ hd: v2Hd, entries: [] }), 2)
+    expect(v2.hd.nextIndex).toEqual({ solanaVault: 0, solanaTee: 0, solanaExternal: 0, evm: 0 })
+    expect(v2.hd.exposedIndexes.solanaExternal).toEqual([])
+  })
+
+  test("a version 2 index must not carry the branch or an external entry; a version 3 index must carry the branch", () => {
+    expect(refusal(() => parseIndexPlaintext(encode({ hd: v3Hd, entries: [] }), 2))).toContain(
+      "hd.nextIndex.solanaExternal is not a branch a version 2 vault carries",
+    )
+    expect(refusal(() => parseIndexPlaintext(encode({ hd: v2Hd, entries: [externalEntry] }), 2))).toContain(
+      "role:external, which a version 2 vault cannot carry",
+    )
+    expect(refusal(() => parseIndexPlaintext(encode({ hd: v2Hd, entries: [] }), 3))).toContain(
+      "hd.nextIndex.solanaExternal is missing",
+    )
+  })
+
+  test("an external entry carrying tee or linkedWalletId, or not derived, is VAULT_INDEX_INVALID", () => {
+    const withTee = { ...externalEntry, tee: { network: "solana-mainnet", lifecycle: "local-candidate" } }
+    expect(refusal(() => parseIndexPlaintext(encode({ hd: v3Hd, entries: [withTee] }), 3))).toContain(
+      "VAULT_INDEX_INVALID: Entry x1 is an external key carrying tee metadata",
+    )
+    const withLink = { ...externalEntry, linkedWalletId: "lw_1" }
+    expect(refusal(() => parseIndexPlaintext(encode({ hd: v3Hd, entries: [withLink] }), 3))).toContain(
+      "an external key carrying a linkedWalletId",
+    )
+    const migrated = { ...externalEntry, origin: "migrated-tee", derivation: undefined }
+    expect(refusal(() => parseIndexPlaintext(encode({ hd: v3Hd, entries: [migrated] }), 3))).toContain(
+      "VAULT_INDEX_INVALID",
+    )
+  })
+
+  test("hd.nextIndex.solanaExternal at or below a recorded external derivation index is VAULT_INDEX_INVALID", () => {
+    const hd = { ...v3Hd, nextIndex: { ...v3Hd.nextIndex, solanaExternal: 0 } }
+    expect(refusal(() => parseIndexPlaintext(encode({ hd, entries: [externalEntry] }), 3))).toContain(
+      "hd.nextIndex.solanaExternal is 0, at or below the index 0",
+    )
+  })
+
+  test("a version 2 write narrows the branch away, and refuses to narrow anything that carries information", () => {
+    const { serializeIndexPlaintext, indexRequiresVersion3 } = require("./format") as typeof import("./format")
+    const empty = parseIndexPlaintext(encode({ hd: v2Hd, entries: [] }), 2)
+    expect(indexRequiresVersion3(empty)).toBe(false)
+    expect(serializeIndexPlaintext(empty, 2)).toEqual({ hd: v2Hd, entries: [] })
+    expect(serializeIndexPlaintext(empty, 3)).toBe(empty)
+    const allocated = parseIndexPlaintext(encode({ hd: v3Hd, entries: [externalEntry] }), 3)
+    expect(indexRequiresVersion3(allocated)).toBe(true)
+    expect(refusal(() => serializeIndexPlaintext(allocated, 2))).toContain("cannot be written as a version 2 vault")
+    // A counter that moved, an exposed index, or a discovery count on the branch is information too.
+    const counter = { ...empty, hd: { ...empty.hd, nextIndex: { ...empty.hd.nextIndex, solanaExternal: 1 } } }
+    expect(indexRequiresVersion3(counter)).toBe(true)
+    const exposed = {
+      ...empty,
+      hd: { ...empty.hd, exposedIndexes: { ...empty.hd.exposedIndexes, solanaExternal: [0] } },
+    }
+    expect(indexRequiresVersion3(exposed)).toBe(true)
+  })
+
+  test("the discovery record carries the branch in version 3 and not in version 2", () => {
+    const discovery = {
+      restoredAt: "2026-09-19T12:00:00.000Z",
+      account: "",
+      requestedCounts: { solanaVault: 1, solanaTee: 1, solanaExternal: 2 },
+      highestMatched: { solanaVault: -1, solanaTee: -1, solanaExternal: -1 },
+      complete: false,
+    }
+    const v3 = parseIndexPlaintext(encode({ hd: { ...v3Hd, discovery }, entries: [] }), 3)
+    expect(v3.hd.discovery?.requestedCounts.solanaExternal).toBe(2)
+    const { solanaExternal: _r, ...requestedCounts } = discovery.requestedCounts
+    const { solanaExternal: _m, ...highestMatched } = discovery.highestMatched
+    const v2 = parseIndexPlaintext(
+      encode({ hd: { ...v2Hd, discovery: { ...discovery, requestedCounts, highestMatched } }, entries: [] }),
+      2,
+    )
+    expect(v2.hd.discovery?.requestedCounts).toEqual({ solanaVault: 1, solanaTee: 1, solanaExternal: 0 })
+    expect(v2.hd.discovery?.highestMatched.solanaExternal).toBe(-1)
+    expect(refusal(() => parseIndexPlaintext(encode({ hd: { ...v2Hd, discovery }, entries: [] }), 2))).toContain(
+      "not a field a version 2 vault carries",
+    )
   })
 })
 

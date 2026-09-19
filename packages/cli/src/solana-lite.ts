@@ -360,6 +360,16 @@ export interface AccountView {
   data: Uint8Array
 }
 
+/** What `simulateTransaction` answers: the outcome, the logs, and the requested accounts after it. */
+export interface SimulationResult {
+  /** `null` when the simulation succeeded; the program error object otherwise. */
+  err: unknown
+  logs: string[]
+  /** One per requested address, in order; `null` for an account that does not exist afterwards. */
+  accounts: Array<AccountView | null>
+  unitsConsumed?: number
+}
+
 export interface SolanaRpc {
   getLatestBlockhash(): Promise<string>
   getBalance(address: string): Promise<bigint>
@@ -375,6 +385,16 @@ export interface SolanaRpc {
   getAccountInfo(address: string): Promise<AccountView | null>
   /** The current epoch, which selects a transfer-fee schedule (older vs newer). */
   getEpoch(): Promise<bigint>
+  /**
+   * Ember Phase 3 PR F (BE-226, R6): the two reads `candle sign` needs and nothing else here does.
+   * `getMultipleAccounts` is the PRE-simulation state of the accounts a transaction writes (and the
+   * lookup tables a v0 message names); `simulateTransaction`, with signature verification off,
+   * returns the program error and logs plus the POST-simulation state of the same accounts, which
+   * is what the displayed deltas are computed from. Decoding, lookup-table reconstruction and the
+   * delta arithmetic live in `solana-alt.ts` (P3-ED-6), not here.
+   */
+  getMultipleAccounts(addresses: string[]): Promise<Array<AccountView | null>>
+  simulateTransaction(txBase64: string, addresses: string[]): Promise<SimulationResult>
   getFeeForMessage(messageBase64: string): Promise<bigint | null>
   getMinimumBalanceForRentExemption(size: number): Promise<bigint>
   sendTransaction(txBase64: string): Promise<string>
@@ -390,6 +410,23 @@ export interface SolanaRpc {
    * one index early.
    */
   hasSignatureHistory(address: string): Promise<boolean>
+}
+
+/** One account as the RPC answers it under `encoding: "base64"`. */
+interface RawAccount {
+  owner?: string
+  lamports?: number
+  data?: [string, string]
+}
+
+function rawAccountView(value: RawAccount | null, address: string): AccountView | null {
+  if (!value) return null
+  const owner = value.owner
+  const encoded = value.data?.[0]
+  if (typeof owner !== "string" || typeof encoded !== "string") {
+    throw new Error(`RPC answered without a base64 owner/data pair for ${address}`)
+  }
+  return { owner, lamports: BigInt(value.lamports ?? 0), data: new Uint8Array(Buffer.from(encoded, "base64")) }
 }
 
 /**
@@ -470,6 +507,53 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch): SolanaRpc {
       const r = await call<{ epoch?: number }>("getEpochInfo", [{ commitment: "finalized" }])
       if (!Number.isSafeInteger(r?.epoch)) throw new Error("RPC getEpochInfo answered without an epoch")
       return BigInt(r.epoch as number)
+    },
+    async getMultipleAccounts(addresses) {
+      const out: Array<AccountView | null> = []
+      // The RPC caps one request at 100 addresses.
+      for (let at = 0; at < addresses.length; at += 100) {
+        const chunk = addresses.slice(at, at + 100)
+        const r = await call<{ value?: Array<RawAccount | null> }>("getMultipleAccounts", [
+          chunk,
+          { encoding: "base64", commitment: "finalized" },
+        ])
+        if (!Array.isArray(r?.value) || r.value.length !== chunk.length) {
+          throw new Error("RPC getMultipleAccounts answered with the wrong number of accounts")
+        }
+        for (const [i, value] of r.value.entries()) out.push(rawAccountView(value, chunk[i] ?? ""))
+      }
+      return out
+    },
+    async simulateTransaction(txBase64, addresses) {
+      const r = await call<{
+        value?: { err?: unknown; logs?: unknown; accounts?: Array<RawAccount | null> | null; unitsConsumed?: unknown }
+      }>("simulateTransaction", [
+        txBase64,
+        {
+          sigVerify: false,
+          // The transaction is simulated as it will be signed, but against a blockhash the RPC can
+          // still evaluate; the blockhash the tool put in the message is what is signed and sent.
+          replaceRecentBlockhash: true,
+          commitment: "finalized",
+          encoding: "base64",
+          accounts: { encoding: "base64", addresses },
+        },
+      ])
+      const value = r?.value
+      if (!value || typeof value !== "object") throw new Error("RPC simulateTransaction answered without a value")
+      const accounts = Array.isArray(value.accounts) ? value.accounts : []
+      if (value.accounts !== null && value.accounts !== undefined && accounts.length !== addresses.length) {
+        throw new Error("RPC simulateTransaction answered with the wrong number of accounts")
+      }
+      return {
+        err: value.err ?? null,
+        logs: Array.isArray(value.logs) ? value.logs.filter((line): line is string => typeof line === "string") : [],
+        accounts:
+          value.accounts === null || value.accounts === undefined
+            ? addresses.map(() => null)
+            : accounts.map((account, i) => rawAccountView(account, addresses[i] ?? "")),
+        ...(Number.isSafeInteger(value.unitsConsumed) ? { unitsConsumed: value.unitsConsumed as number } : {}),
+      }
     },
     async sendTransaction(txBase64) {
       return await call<string>("sendTransaction", [

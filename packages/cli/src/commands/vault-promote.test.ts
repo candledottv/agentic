@@ -20,7 +20,7 @@ import {
   type RouteHandler,
 } from "../test-support"
 import { addressFromSecret64 } from "../vault/ed25519"
-import { parseIndexPlaintext } from "../vault/format"
+import { parseIndexPlaintext, serializeIndexPlaintext } from "../vault/format"
 import { wipe } from "../vault/hygiene"
 import { AD8_WARNING, assertInPlacePreconditions, assertNotPinnedDestination } from "../vault/promote-support"
 import { reconcileGrant } from "../vault/reconcile-grant"
@@ -760,7 +760,10 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
 
     const again = await unlockWithPassphrase(vaultPath, await readFile(vaultPath, "utf8"), passphrase)
     try {
-      parseIndexPlaintext(new TextEncoder().encode(JSON.stringify(again.index)))
+      parseIndexPlaintext(
+        new TextEncoder().encode(JSON.stringify(serializeIndexPlaintext(again.index, again.file.version))),
+        again.file.version,
+      )
       for (const life of ["local-candidate", "import-pending", "enabled", "stranded", "retired"] as const) {
         expect(again.index.entries.some((e) => e.tee?.lifecycle === life)).toBe(true)
       }

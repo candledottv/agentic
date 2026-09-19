@@ -30,6 +30,13 @@ export interface Deps {
   fetch: typeof fetch
   store: SecretStore
   backend: "keychain" | "secret-tool" | "encrypted-file"
+  /**
+   * Ember Phase 3 PR F (BE-226, R6): where `candle secrets` keeps the user's OWN third-party keys.
+   * A separate keychain service (or, on the encrypted-file fallback, a separate file) from `store`,
+   * which holds Candle's credentials: a keychain grant or an approved prompt for one namespace
+   * never reaches the other, and a plug-in process reads neither.
+   */
+  secretsStore: SecretStore
   readConfig: () => Promise<CliConfig>
   writeConfig: (patch: Partial<CliConfig>) => Promise<void>
   clearConfig: () => Promise<void>
@@ -64,6 +71,19 @@ export interface Deps {
    * from `readFile` rather than an option on it: what a signature covers is the byte sequence,
    * and a UTF-8 decode of a binary does not round trip, so the two must not share a path. */
   readBytes: (path: string) => Promise<Uint8Array>
+  /**
+   * Reads standard input to its end, as raw bytes (R6: `candle sign` and `candle sign message`
+   * without `--file`). Bytes rather than text for the same reason as `readBytes`: a signed message
+   * is the exact byte stream, and a decode that dropped or replaced a byte would sign something
+   * other than what was piped in.
+   */
+  readStdin: () => Promise<Uint8Array>
+  /**
+   * Runs a plug-in (R6): `path` with `args`, on THIS terminal (stdio inherited), with exactly
+   * `env` and nothing the parent process holds. Resolves with the exit code. Injected so the
+   * allowlist can be asserted against a real child in one test and left out of every other.
+   */
+  runPlugin: (path: string, args: string[], env: Record<string, string>) => Promise<number>
   /** Writes a UTF-8 file with owner-only permissions (wallets import's `--signer-out`). The real
    * implementation writes mode 0600: the content is a signing private key. */
   writeFile: (path: string, content: string) => Promise<void>

@@ -1,10 +1,20 @@
 /**
  * Ember Phase 2 PR C (CC-06, ED-10): `candle vault fund`.
+ *
+ * Ember Phase 3 PR F (BE-226, R6, P3-AD-13): the destination may also be an EXTERNAL wallet, by
+ * label or address. That path is the Phase 2 ED-10 amendment's `role: "vault"` clause verbatim: a
+ * vault-signed local transfer, decoded and displayed, with the operator typing the last six
+ * characters of the destination external address before anything is signed. There is no `--yes`
+ * (the shared parser refuses the flag): funding is the single place an external wallet's balance is
+ * set, and that balance is the whole bound on `candle sign --yes`, so an unattended path here would
+ * remove the bound that one depends on. The source is `--from <vault-label>`, or the vault's only
+ * receive key when it has exactly one; with several, none is chosen silently.
  */
-import { parseArgs } from "../args"
+import { type ParsedArgs, parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { writeLocalFailure } from "../render"
 import { VaultError } from "../vault/errors"
+import type { KeyEntry } from "../vault/format"
 import { type FundingReceipt, reconcileFundingReceipts, saveFundingReceipt } from "../vault/funding-receipts"
 import { wipe } from "../vault/hygiene"
 import { decryptKey } from "../vault/store"
@@ -17,6 +27,8 @@ import {
 } from "../vault/vault-transfer-sign"
 import {
   confirmLastSix,
+  findExternalEntry,
+  type OpenedVault,
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
@@ -27,15 +39,99 @@ import {
   writeJson,
 } from "./vault-support"
 
+/**
+ * R6: fund an external wallet from a vault receive key. The `role: "vault"` clause of the Phase 2
+ * ED-10 amendment, unchanged: decoded, displayed, the destination's last six typed, the factor
+ * presented again, then signed locally. No funding receipt is kept (an external entry has no `tee`
+ * record to hold one); an uncertain send reports its signature and exits 3.
+ */
+async function fundExternal(
+  ctx: CommandContext,
+  opened: OpenedVault,
+  vault: OpenedVault["vault"],
+  external: KeyEntry,
+  input: { amount: string; asset: string; rpcUrl: string; parsed: ParsedArgs },
+): Promise<number> {
+  const vaultKeys = vault.index.entries.filter((entry) => entry.role === "vault")
+  const fromFlag = input.parsed.values["--from"]
+  let fromEntry: KeyEntry | undefined
+  if (fromFlag !== undefined) {
+    fromEntry =
+      vaultKeys.find((entry) => entry.label === fromFlag) ?? vaultKeys.find((entry) => entry.address === fromFlag)
+    if (fromEntry === undefined) return usage(ctx, `No vault key matches --from ${fromFlag}.`)
+  } else if (vaultKeys.length === 1) {
+    fromEntry = vaultKeys[0]
+  } else if (vaultKeys.length === 0) {
+    return usage(
+      ctx,
+      "This vault has no vault receive key to fund from; create one: candle vault new-key --chain solana",
+    )
+  } else {
+    return usage(
+      ctx,
+      `This vault has ${vaultKeys.length} vault keys; name the source with --from <label>: ${vaultKeys.map((entry) => entry.label).join(", ")}`,
+    )
+  }
+  if (fromEntry === undefined) return usage(ctx, "No source vault key.")
+  assertVaultSigner(fromEntry)
+  const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, external.address], input.rpcUrl, ctx)
+  if (reconciled !== null) return reconciled
+
+  ctx.deps.stdout.write(
+    `Funding external wallet ${external.label} (${external.address}) from vault key ${fromEntry.label}. What this wallet holds is what candle sign can spend; fund a session, not a float.\n`,
+  )
+  const plan = await planTransfer({
+    from: fromEntry.address,
+    to: external.address,
+    amount: input.amount,
+    asset: input.asset,
+    rpcUrl: input.rpcUrl,
+    fetch: ctx.deps.fetch,
+  })
+  const feeQuote = await quoteTransferFee(input.rpcUrl, ctx.deps.fetch, plan.from, plan.instructions)
+  displayTransferPlan(ctx, plan, feeQuote)
+  await confirmLastSix(ctx, external.address, "the external wallet destination")
+  await opened.confirm(`fund ${plan.amount} ${plan.asset} to external wallet ${external.label}`)
+
+  const secret = await decryptKey(vault, fromEntry.id)
+  try {
+    const result = await signAndBroadcastTransfer({ ctx, rpcUrl: input.rpcUrl, secret64: secret, plan })
+    if (ctx.json) {
+      writeJson(ctx.deps, {
+        ok: result.finalized,
+        signature: result.signature,
+        external: external.address,
+        externalLabel: external.label,
+        from: plan.from,
+        amount: plan.amount,
+        asset: plan.asset,
+        finalized: result.finalized,
+      })
+    } else {
+      ctx.deps.stdout.write(
+        result.finalized
+          ? `Funded ${external.label} (${external.address}) with ${plan.amount} ${plan.asset}: ${result.signature}\n`
+          : `Submitted ${result.signature}; finality is not yet confirmed.\n`,
+      )
+    }
+    return result.finalized ? 0 : 3
+  } finally {
+    wipe(secret)
+  }
+}
+
 export async function vaultFund(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
-    valueFlags: ["--amount", "--asset", "--rpc-url", "--keystore"],
+    valueFlags: ["--amount", "--asset", "--rpc-url", "--keystore", "--from"],
     booleanFlags: ["--accept-older-copy"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [teeAddress, extra] = parsed.positionals
   if (!teeAddress || extra !== undefined) {
-    return usage(ctx, "Usage: candle vault fund <tee-address> --amount <n> --asset SOL|USDC --rpc-url <url>")
+    return usage(
+      ctx,
+      "Usage: candle vault fund <tee-address | external-label> --amount <n> --asset SOL|USDC --rpc-url <url> [--from <vault-label>]",
+    )
   }
   const amount = parsed.values["--amount"]
   const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase()
@@ -56,16 +152,22 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
 
     const teeEntry = vault.index.entries.find((entry) => entry.address === teeAddress && entry.role === "tee-wallet")
     if (teeEntry === undefined) {
+      const external = findExternalEntry(vault.index, teeAddress)
+      if (external !== undefined) return fundExternal(ctx, opened, vault, external, { amount, asset, rpcUrl, parsed })
       writeLocalFailure(
         ctx.deps,
         {
           code: "TEE_WALLET_UNKNOWN",
-          message: `${teeAddress} is not a TEE wallet in this vault.`,
-          suggestion: "Promote one with candle vault promote --from <vault-key-label>.",
+          message: `${teeAddress} is neither a TEE wallet nor an external wallet in this vault.`,
+          suggestion:
+            "Promote a TEE wallet with candle vault promote --from <vault-key-label>, or create an external wallet with candle external new.",
         },
         ctx.json,
       )
       return 1
+    }
+    if (parsed.values["--from"] !== undefined) {
+      return usage(ctx, "--from applies to an external wallet only; a TEE wallet is funded from its pinned vault key.")
     }
     const reconciled = await reconcileFundingReceipts(
       vault,

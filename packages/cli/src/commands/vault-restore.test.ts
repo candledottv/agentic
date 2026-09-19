@@ -27,7 +27,7 @@ import {
   jsonResponse,
   type RouteHandler,
 } from "../test-support"
-import { deriveSolanaKey, solanaTeePath, solanaVaultPath } from "../vault/hd"
+import { deriveSolanaKey, solanaExternalPath, solanaTeePath, solanaVaultPath } from "../vault/hd"
 import { FIXTURE_ENTROPY, FIXTURE_PHRASE, generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
 
 /**
@@ -49,6 +49,8 @@ const derived = {
   vault0: (await deriveSolanaKey(Uint8Array.from(FIXTURE_ENTROPY), solanaVaultPath(0))).address,
   vault1: (await deriveSolanaKey(Uint8Array.from(FIXTURE_ENTROPY), solanaVaultPath(1))).address,
   tee0: (await deriveSolanaKey(Uint8Array.from(FIXTURE_ENTROPY), solanaTeePath(0))).address,
+  external0: (await deriveSolanaKey(Uint8Array.from(FIXTURE_ENTROPY), solanaExternalPath(0))).address,
+  external2: (await deriveSolanaKey(Uint8Array.from(FIXTURE_ENTROPY), solanaExternalPath(2))).address,
 }
 
 function row(address: string, extra: Record<string, unknown> = {}) {
@@ -139,7 +141,8 @@ describe("T55: a valid phrase builds a new vault, and a bad one writes nothing",
 
     const { reopen } = await import("../vault/test-vault")
     const vault = await reopen(h.vaultPath, generatedPassphraseFrom(h.stdout.text))
-    expect(vault.index.entries).toHaveLength(3)
+    // vault 0 and 1, TEE 0, and (R6) external 0: the third branch defaults to 1 like the other two.
+    expect(vault.index.entries).toHaveLength(4)
     for (const entry of vault.index.entries) expect(entry.exposure.exposureUnknown).toBe(true)
   })
 
@@ -162,18 +165,42 @@ describe("T55: bounds", () => {
     expect(h.stdout.text).toContain(derived.tee0)
   })
 
-  test("each count defaults to 1 when the other is given, and both do when neither is", async () => {
+  test("each count defaults to 1 when another is given, and all three do when none is", async () => {
     const { parseCounts } = await import("./vault-restore")
-    expect(parseCounts(undefined, undefined, undefined)).toMatchObject({ solanaVault: 1, solanaTee: 1 })
-    expect(parseCounts("5", undefined, undefined)).toMatchObject({ solanaVault: 5, solanaTee: 1 })
-    expect(parseCounts(undefined, "3", undefined)).toMatchObject({ solanaVault: 1, solanaTee: 3 })
+    expect(parseCounts(undefined, undefined, undefined, undefined)).toMatchObject({
+      solanaVault: 1,
+      solanaTee: 1,
+      solanaExternal: 1,
+    })
+    expect(parseCounts("5", undefined, undefined, undefined)).toMatchObject({
+      solanaVault: 5,
+      solanaTee: 1,
+      solanaExternal: 1,
+    })
+    expect(parseCounts(undefined, "3", undefined, undefined)).toMatchObject({ solanaVault: 1, solanaTee: 3 })
+    // R6: the third branch, on the same rules.
+    expect(parseCounts(undefined, undefined, "2", undefined)).toMatchObject({
+      solanaVault: 1,
+      solanaTee: 1,
+      solanaExternal: 2,
+    })
     // With an --rpc-url and no explicit count, a branch is gap-scanned (undefined = scan).
-    expect(parseCounts(undefined, undefined, "https://rpc.test")).toMatchObject({
+    expect(parseCounts(undefined, undefined, undefined, "https://rpc.test")).toMatchObject({
       solanaVault: undefined,
       solanaTee: undefined,
+      solanaExternal: undefined,
     })
-    expect(parseCounts("4", undefined, "https://rpc.test")).toMatchObject({ solanaVault: 4, solanaTee: undefined })
-    expect(parseCounts("x", undefined, undefined)).toMatchObject({ error: expect.stringContaining("--count") })
+    expect(parseCounts("4", undefined, undefined, "https://rpc.test")).toMatchObject({
+      solanaVault: 4,
+      solanaTee: undefined,
+      solanaExternal: undefined,
+    })
+    expect(parseCounts("x", undefined, undefined, undefined)).toMatchObject({
+      error: expect.stringContaining("--count"),
+    })
+    expect(parseCounts(undefined, undefined, "-1", undefined)).toMatchObject({
+      error: expect.stringContaining("--external-count"),
+    })
   })
 
   test("with neither count and no RPC, index 0 of each branch and the stated note", async () => {
@@ -182,7 +209,68 @@ describe("T55: bounds", () => {
     expect(h.stdout.text).toContain(derived.vault0)
     expect(h.stdout.text).not.toContain(derived.vault1)
     expect(h.stdout.text).toContain("index 0 only")
-    expect(h.stdout.text).toContain("re-run with --count/--tee-count")
+    expect(h.stdout.text).toContain("re-run with --count/--tee-count/--external-count")
+  })
+
+  test("R6: --external-count derives external indices 0 to e-1 as role external, and the vault is version 3", async () => {
+    const h = await harness()
+    expect(await restore(h, ["--count", "1", "--tee-count", "0", "--external-count", "2"])).toBe(0)
+    const external1 = (await deriveSolanaKey(Uint8Array.from(FIXTURE_ENTROPY), solanaExternalPath(1))).address
+    expect(h.stdout.text).toContain(`${derived.external0}  m/44'/501'/0'/2'  external`)
+    expect(h.stdout.text).toContain(external1)
+    expect(h.stdout.text).not.toContain(derived.tee0)
+    const { reopen } = await import("../vault/test-vault")
+    const vault = await reopen(h.vaultPath, generatedPassphraseFrom(h.stdout.text))
+    const externals = vault.index.entries.filter((entry) => entry.role === "external")
+    expect(externals.map((entry) => entry.label)).toEqual(["external-0", "external-1"])
+    for (const entry of externals)
+      expect(entry.exposure).toEqual({ everRemoteExposed: false, everExported: false, exposureUnknown: true })
+    expect(vault.index.hd.nextIndex).toMatchObject({ solanaVault: 1, solanaTee: 0, solanaExternal: 2 })
+    expect(vault.index.hd.discovery).toMatchObject({
+      requestedCounts: { solanaVault: 1, solanaTee: 0, solanaExternal: 2 },
+      highestMatched: { solanaVault: -1, solanaTee: -1, solanaExternal: -1 },
+    })
+    expect(vault.file.version).toBe(3)
+  })
+
+  test("R6: a listed address that is an external-branch key is reported in words and never flagged", async () => {
+    const h = await harness({
+      pages: [() => jsonResponse(200, { success: true, page: [row(derived.external0)], isDone: true })],
+    })
+    expect(await restore(h, ["--count", "1"])).toBe(0)
+    expect(h.stdout.text).toContain("1 address(es) this account imported are external-branch keys of this root")
+    expect(h.stdout.text).not.toContain("were NOT derived by this restore")
+    const { reopen } = await import("../vault/test-vault")
+    const vault = await reopen(h.vaultPath, generatedPassphraseFrom(h.stdout.text))
+    const external = vault.index.entries.find((entry) => entry.address === derived.external0)
+    expect(external?.role).toBe("external")
+    expect(external?.exposure.everRemoteExposed).toBe(false)
+    expect(vault.index.hd.exposedIndexes.solanaExternal).toEqual([])
+  })
+
+  test("R6: the external branch gap-scans on the same twenty-index rule, and the output says where it stopped", async () => {
+    const h = await harness({
+      rpc: (req) => {
+        const body = JSON.parse(String(req.init.body)) as { id: number; method: string; params: unknown[] }
+        const reply = (result: unknown) => jsonResponse(200, { jsonrpc: "2.0", id: body.id, result })
+        if (body.method === "getBalance") {
+          // External index 2 holds lamports; everything else on chain is empty.
+          const external2 = derived.external2
+          return reply({ value: (body.params[0] as string) === external2 ? 5 : 0 })
+        }
+        if (body.method === "getSignaturesForAddress") return reply([])
+        if (body.method === "getTokenAccountsByOwner") return reply({ value: [] })
+        throw new Error(`unexpected RPC method ${body.method}`)
+      },
+    })
+    expect(await restore(h, ["--count", "1", "--tee-count", "1", "--rpc-url", "https://rpc.test/rpc"])).toBe(0)
+    // Index 2 was used, so the scan runs twenty more and stops at index 22.
+    expect(h.stdout.text).toContain("Gap scan on solanaExternal stopped at index 22")
+    expect(h.stdout.text).toContain("solanaExternal: gap-scanned to index 22")
+    const { reopen } = await import("../vault/test-vault")
+    const vault = await reopen(h.vaultPath, generatedPassphraseFrom(h.stdout.text))
+    expect(vault.index.entries.filter((entry) => entry.role === "external")).toHaveLength(23)
+    expect(vault.index.hd.nextIndex.solanaExternal).toBe(23)
   })
 
   test("R5: an index whose only holding is a Token-2022 account is USED, so the scan continues past it", async () => {
@@ -344,14 +432,16 @@ describe("T55: completeness of the read, which is the defect this covers", () =>
     const passphrase = generatedPassphraseFrom(h.stdout.text)
     const { reopen } = await import("../vault/test-vault")
     const vault = await reopen(h.vaultPath, passphrase)
-    expect(vault.index.entries.map((entry) => entry.address).sort()).toEqual([derived.vault0, derived.tee0].sort())
+    expect(vault.index.entries.map((entry) => entry.address).sort()).toEqual(
+      [derived.vault0, derived.tee0, derived.external0].sort(),
+    )
     for (const entry of vault.index.entries) {
       expect(entry.exposure.exposureUnknown).toBe(true)
       expect(entry.exposure.everRemoteExposed).toBe(false)
     }
     expect(vault.index.hd.discovery).toMatchObject({ complete: false, account: "" })
     expect(vault.index.hd.exposureReconciledAt).toBeUndefined()
-    expect(vault.index.hd.nextIndex).toMatchObject({ solanaVault: 1, solanaTee: 1 })
+    expect(vault.index.hd.nextIndex).toMatchObject({ solanaVault: 1, solanaTee: 1, solanaExternal: 1 })
 
     const k = await harness()
     k.deps.promptSecret = async () => passphrase
@@ -417,7 +507,10 @@ describe("T55: a restore that fails after the file is written does not strand it
         passphrase,
         strength: "user-chosen",
         rootEntropy: Uint8Array.from(FIXTURE_ENTROPY),
-        hd: restoreSeedHd({ requested: { solanaVault: 1, solanaTee: 1 } }, "2026-09-18T00:00:00.000Z"),
+        hd: restoreSeedHd(
+          { requested: { solanaVault: 1, solanaTee: 1, solanaExternal: 0 } },
+          "2026-09-18T00:00:00.000Z",
+        ),
       },
       h.deps,
     )

@@ -109,9 +109,9 @@ async function makeVerifiableVault() {
   const index: IndexPlaintext = {
     hd: {
       scheme: "bip39-24/slip10",
-      nextIndex: { solanaVault: 2, solanaTee: 0, evm: 0 },
+      nextIndex: { solanaVault: 2, solanaTee: 0, solanaExternal: 0, evm: 0 },
       rootExported: false,
-      exposedIndexes: { solanaVault: [], solanaTee: [], evm: [] },
+      exposedIndexes: { solanaVault: [], solanaTee: [], solanaExternal: [], evm: [] },
     },
     entries,
   }
@@ -124,8 +124,14 @@ async function makeVerifiableVault() {
 async function replaceIndex(vault: UnlockedVault, path: string, index: IndexPlaintext): Promise<void> {
   const file = await readVaultJson(path)
   const { sealJson } = await import("./crypto")
+  const { serializeIndexPlaintext } = await import("./format")
   const header = { ...file }
-  const blob = await sealJson(vault.payloadKey, index, canonicalHeader(header as VaultFile))
+  // In the shape the file's version writes (R6): a version 2 file carries no external branch.
+  const blob = await sealJson(
+    vault.payloadKey,
+    serializeIndexPlaintext(index, file.version),
+    canonicalHeader(header as VaultFile),
+  )
   await writeFile(path, `${JSON.stringify({ ...file, index: blob }, null, 2)}\n`, "utf8")
 }
 
@@ -257,7 +263,12 @@ describe("T43: consistency failures with no tag failure anywhere", () => {
     const next: VaultFile = { ...file, keyIds: [...file.keyIds, orphanId], keys: [...file.keys, orphan] }
     // The header changed, so the index must be re-sealed under it for the file to open at all.
     const { sealJson } = await import("./crypto")
-    const blob = await sealJson(vault.payloadKey, vault.index, canonicalHeader(next))
+    const { serializeIndexPlaintext } = await import("./format")
+    const blob = await sealJson(
+      vault.payloadKey,
+      serializeIndexPlaintext(vault.index, next.version),
+      canonicalHeader(next),
+    )
     await writeFile(made.path, `${JSON.stringify({ ...next, index: blob }, null, 2)}\n`, "utf8")
     closeVault(vault)
 

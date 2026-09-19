@@ -39,6 +39,16 @@ export function solanaTeePath(index: number): string {
   return `m/44'/501'/${assertIndex(index)}'/1'`
 }
 
+/**
+ * The external-wallet branch (Ember Phase 3 PR F, R6, P3-AD-13; CC-11's third Solana row). Change
+ * index `2'` is a third change index that neither the vault branch (`0'`) nor the TEE branch
+ * (`1'`) can reach, and, like `1'`, it is on no published scan list of Phantom, Solflare or
+ * Ledger Live. A key here signs only through `candle sign` and `candle external sweep`.
+ */
+export function solanaExternalPath(index: number): string {
+  return `m/44'/501'/${assertIndex(index)}'/2'`
+}
+
 /** Phase 4's path, fixed now so the format and the reader agree before any code derives one. */
 export function evmPath(index: number): string {
   return `m/44'/60'/${assertIndex(index)}'/0/0`
@@ -47,6 +57,7 @@ export function evmPath(index: number): string {
 export function pathForBranch(branch: Branch, index: number): string {
   if (branch === "solanaVault") return solanaVaultPath(index)
   if (branch === "solanaTee") return solanaTeePath(index)
+  if (branch === "solanaExternal") return solanaExternalPath(index)
   return evmPath(index)
 }
 
