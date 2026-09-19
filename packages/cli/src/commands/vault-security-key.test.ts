@@ -883,14 +883,20 @@ describe("T58: CC-12's refusal matrix, every row with the platform injected", ()
       }
     }
     if (workflow === undefined) throw new Error(`release.yaml not found at any of: ${candidates.join(", ")}`)
-    const loops = [...workflow.matchAll(/for target in ([^;]+); do/g)].map((match) =>
-      (match[1] ?? "").trim().split(/\s+/),
-    )
+    const listed = workflow
+      .match(/^\s+RELEASE_TARGETS:\s*(.+)$/m)?.[1]
+      ?.trim()
+      .split(/\s+/)
+    expect(listed?.slice().sort()).toEqual([...SHIPPING_TARGETS].sort())
+    const loops = [...workflow.matchAll(/for target in ([^;]+); do/g)].map((match) => (match[1] ?? "").trim())
     expect(loops.length).toBeGreaterThan(0)
-    for (const targets of loops) expect([...targets].sort()).toEqual([...SHIPPING_TARGETS].sort())
+    for (const loop of loops) {
+      const targets = loop === `\${RELEASE_TARGETS}` || loop === "$RELEASE_TARGETS" ? listed : loop.split(/\s+/)
+      expect([...(targets ?? [])].sort()).toEqual([...SHIPPING_TARGETS].sort())
+    }
     expect(workflow).not.toMatch(/windows|win32|\.exe/i)
     // The helper is built in the same loop, and signed by the same step, as the four binaries.
-    expect(workflow).toContain("candle-fido2-${target}")
+    expect(workflow).toContain(`candle-fido2-\${target}`)
     expect(workflow).toMatch(/cosign sign-blob[^\n]*\n/)
     expect(workflow).toContain(
       "candle-fido2-darwin-arm64 candle-fido2-darwin-x64 candle-fido2-linux-x64 candle-fido2-linux-arm64",

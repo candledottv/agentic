@@ -203,6 +203,11 @@ jobs:
   release:
     runs-on: ubuntu-latest
     needs: [macos-helper]
+    # One list for the compile loop, the pack loop, and the expected-asset list. Adding a target
+    # means editing this value (and PLATFORMS in scripts/release/write-manifest.mjs); the three
+    # loops read it rather than restating the names.
+    env:
+      RELEASE_TARGETS: darwin-arm64 darwin-x64 linux-x64 linux-arm64
     # Every third-party action here is pinned to a full commit SHA, with its tag in a trailing
     # comment. A tag is a moving pointer its owner can repoint at any commit, and this job holds
     # `id-token: write` and signs the binaries users install: what runs in it has to be a fixed
@@ -249,8 +254,12 @@ jobs:
       - name: Build the binaries
         working-directory: packages/cli
         run: |
-          mkdir -p dist-bin
-          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+          # Tests just ran in this working directory. Wipe so a compile-in-test leftover cannot
+          # sit under `candle-*` when the pack step globs the directory. Recreate before the
+          # compile; the macos-helper artifact is downloaded into this directory AFTER this step.
+          rm -rf dist-bin && mkdir -p dist-bin
+          # shellcheck disable=SC2086
+          for target in ${RELEASE_TARGETS}; do
             bun build --compile --minify --target="bun-${target}" src/index.ts --outfile "dist-bin/candle-${target}"
             # The security key helper (Ember Phase 2 PR E): the same compile, the same target, the
             # same job. It loads libfido2 at run time through bun:ffi, so it needs no cross toolchain.
@@ -308,7 +317,8 @@ jobs:
           HELPER_ASSET: ${{ steps.helper.outputs.asset }}
         run: |
           cd dist-bin
-          for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+          # shellcheck disable=SC2086
+          for target in ${RELEASE_TARGETS}; do
             mkdir -p "pack/${target}" && cp "candle-${target}" "pack/${target}/candle" && cp "candle-fido2-${target}" "pack/${target}/candle-fido2" && cp ../LICENSE "pack/${target}/LICENSE"
             contents="candle candle-fido2 LICENSE"
             # The signed Secure Enclave helper rides in the darwin tarballs when the policy included it.
@@ -332,9 +342,12 @@ jobs:
           # the same four letters: it shipped in 0.10.0 and 0.11.0, listed in SHA256SUMS, named by
           # nothing else. (Spelling that name in backticks here would trip check-agentic-skills,
           # which reads a code span starting with those letters as an invented command.) The
-          # diff is two-sided on purpose, so a MISSING expected asset fails just as loudly.
+          # diff is two-sided on purpose, so a MISSING expected asset fails just as loudly. Names
+          # come from RELEASE_TARGETS plus the helper file the validate step actually moved
+          # (HELPER_ASSET is empty under omit, the archive name under signed).
           {
-            for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+            # shellcheck disable=SC2086
+            for target in ${RELEASE_TARGETS}; do
               printf '%s\n%s\n%s\n' "candle-${target}" "candle-fido2-${target}" "candle-${VERSION}-${target}.tar.gz"
             done
             if [ -n "${HELPER_ASSET}" ]; then printf '%s\n' "${HELPER_ASSET}"; fi
