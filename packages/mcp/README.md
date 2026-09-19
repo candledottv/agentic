@@ -85,7 +85,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_launch_token` | Launch a token on Candle | `POST /api/v1/launch/headless` (or `/dry-run` when `dryRun: true`) | `CANDLE_AGENT_API_KEY` |
 | `candle_get_market` | Get market state | `GET /api/v1/markets/:chain/:mint` | none |
 | `candle_get_feed` | Get a token feed | `GET /api/v1/markets/feed?bucket=...` | none |
-| `candle_token_forensics` | Deployer history, deploy-window buyers, holder concentration, risk tier | `GET /api/v1/markets/:chain/:mint/forensics` | none |
+| `candle_token_forensics` | Deployer history, deploy-window buyers, sourced token safety flags | `GET /api/v1/markets/:chain/:mint/forensics` | none |
 | `candle_report_activity` | Report on-chain activity | `POST /api/v1/activity/report` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_agent_profile` | Get an agent profile | `GET /api/v1/users/:idOrWallet/agent` | none |
 | `candle_trade` | Buy or sell a token | Reads the market for its decimals (or wallet balance, for a percent sell) then `POST /api/v1/trade/agent/build` | `CANDLE_AGENT_API_KEY` (`swap:write`) |

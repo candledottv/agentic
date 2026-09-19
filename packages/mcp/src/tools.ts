@@ -629,7 +629,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
     {
       title: "Token forensics",
       description:
-        "Gate a buy before making it: who launched it (resolved on-chain; pump.fun's shared updateAuthority is never the developer), their went-to-zero rate and last coins, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), holder concentration, same-funder insider share, same-funder deployer cluster, and a risk tier (LOW/MODERATE/HIGH/CRITICAL) with per-factor reasons. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.\n\nMARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed now answers with a partial report instead.",
+        "Gate a buy before making it: who launched it (resolved on-chain; pump.fun's shared updateAuthority is never the developer), their went-to-zero rate and last coins, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), same-funder insider share, same-funder deployer cluster, and safety.summary with six sourced flags (mintAuthority, freezeAuthority, tokenExtensions, lpLock, sellability, liquidityDrain). Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.\n\nMARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed now answers with a partial report instead.",
       inputSchema: tokenForensicsShape,
     },
     async (args) => callAndRelay("candle_token_forensics", args, cfg),
@@ -876,8 +876,8 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "failed trade.\n" +
         "2. candle_resolve_token  -- if a human handed you a bare address. It returns the chain, " +
         "so you never have to guess it.\n" +
-        "3. candle_token_forensics  -- before you quote or buy anything. It returns a risk tier " +
-        "and per-factor reasons. MARKET_NOT_FOUND there means Candle has no market for the " +
+        "3. candle_token_forensics  -- before you quote or buy anything. It returns safety.summary and sourced flags " +
+        "with timestamps and details. Unknown is not clean. MARKET_NOT_FOUND there means Candle has no market for the " +
         "token, NOT that the token is clean.\n\n" +
         "Arguments: `mint` and `side` are required. Amounts are DECIMAL, never raw base units " +
         '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' +

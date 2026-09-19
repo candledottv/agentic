@@ -20,42 +20,39 @@ that answer is deliberately shaped so it cannot be mistaken for "we looked and i
 Reading the first as the second is the cheapest way to lose money on this platform, and it is
 cheap precisely because nothing errors: the response is a normal 200 with a field set to null.
 
-So: a `null` is never a zero. An `unavailable` coverage is never a pass. A missing concentration
-figure does not mean supply is well distributed, it means nobody counted.
+So: a `null` is never a zero. An `unavailable` coverage is never a pass.
 
 ## 1. Gate the buy
 
-`candle_token_forensics` with `{ chain, mint }` returns who launched it (resolved on-chain;
-pump.fun's shared `updateAuthority` is never the developer), the deployer's other launches and
-how they ended (went-to-zero rate and last coins), who bought in the deploy window, holder
-concentration, same-funder insider share, same-funder deployer cluster, and `risk.tier`, which is
-one of LOW, MODERATE, HIGH or CRITICAL with a reason per factor.
+`candle_token_forensics` with `{ chain, mint }` returns deployer history, deploy-window buyers,
+same-funder insiders and cluster, plus `safety.summary` and six flags: `mintAuthority`,
+`freezeAuthority`, `tokenExtensions`, `lpLock`, `sellability`, and `liquidityDrain`.
+Each flag carries `status` (`flagged`, `clear`, or `unknown`), `value`, `source`, `checkedAt`,
+and `detail`. Preserve detail even on a clear authority: revocation can follow a recorded freeze.
+Sellability is a verdict from runner evidence or Jupiter Shield, not a holder-side simulation.
 
-**Refuse an unprompted buy at HIGH or CRITICAL, and say which factor drove it.** The tier is
-additive and every factor reports its own points and reason, so you can always name the reason
-rather than citing a number nobody can argue with.
+**Refuse an unprompted buy when `safety.summary` is `flagged`, and name the flag and its detail.**
+`clear` means all six flags are clear, not that a trade is guaranteed safe. `incomplete` means
+at least one reading is unknown; do not treat that as clearance. Read every flag even when the
+summary is incomplete: a hacc outage leaves that summary incomplete while feed liquidity can
+still be flagged. `not_applicable` has no flags and applies to base assets only.
 
-### Read the coverage before you read the findings
+`launch.deployerLaunches` is informational: the inclusive number of launches from this deployer,
+including this mint. Do not subtract one, turn it into a warning, or use it as a flag.
+`haccVerdicts` carries the runner's recorded sentences, kinds and times.
 
-`coverage.checked` lists what actually ran. `coverage.unavailable` lists what did not. A finding is
-only evidence if its check is in the first list.
+### Read coverage alongside the findings
 
-Tokens Candle did not launch now get a real report rather than a refusal when the mint is already
-in the Solana feed. Holder concentration and on-chain developer resolution need only the mint.
-`deploy_window` stays unavailable (it is anchored to a launch record Candle never saw).
-`deployer_history` runs when a real person-sized developer can be named; it stays unavailable
-when the only credited account is a launchpad program. The coverage reason is
-`external_launchpad`, which means the token is fine and nothing is broken.
+`coverage.checked` lists what ran; `coverage.unavailable` lists what did not. `token_safety`
+is checked when hacc answered, even if an individual vendor reading remains unknown. Inspect
+the flags themselves. A failed hacc call returns unknown flags with reasons and an incomplete
+summary, never clearance. `liquidityDrain` is still measured from Candle's feed: absent is unknown.
 
-That is a genuinely weaker report than a Candle launch: deploy-window is missing, and the
-went-to-zero peak is estimated from recent Jupiter windows rather than a true ATH. Size
-accordingly. A LOW tier computed from two factors is not the same claim as a LOW tier computed
-from four, and the coverage object is how you tell them apart.
-
-### What concentration means here
-
-Program-controlled accounts are excluded, so a pool vault is not reported as a whale. What is left
-is wallets. A top-10 share above roughly half the supply is a position that can be exited into you.
+External indexed tokens get a partial report. `deploy_window` and `disclosed_wallets` stay
+unavailable without a Candle launch record. `deployer_history` runs only when the developer
+and their history can be read. Hood gets no hacc call in v1; Candle-launched Hood tokens have
+clear mint/freeze flags from their contract, and external Hood tokens have unknown authorities.
+Size for the checks that actually ran or skip the trade; do not infer safety from missing data.
 
 ## 2. Never hold a position with no way out
 
@@ -155,8 +152,8 @@ chose not to have its trading read. Do not treat it as a data gap to route aroun
 
 "Buy me some of this token."
 
-1. `candle_token_forensics` → `risk.tier` is HIGH, driven by `undisclosed_deploy_buyers`.
-2. Say so, name the factor, and do not buy.
+1. `candle_token_forensics` → `safety.summary` is `flagged`, with `sellability.status: "flagged"` and runner revert evidence.
+2. Say so, name the flag, and do not buy.
 
 "It's fine, buy it."
 

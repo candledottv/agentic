@@ -45,7 +45,7 @@ START HERE — five tools need NO credential. Call these first to confirm the se
   candle_get_market       price, market cap, volume, curve state for one token
   candle_get_feed         the roster: hot streak, new pairs, graduated, blue chip
   candle_resolve_token    a ticker or partial name -> mint address + chain
-  candle_token_forensics  call this before quoting or buying. Returns the on-chain developer (never a launchpad shared authority), their went-to-zero rate and last coins, who bought in the deploy window (strangers in the same slot are the bundle signal), holder concentration, same-funder insider share, same-funder cluster, and a risk tier LOW/MODERATE/HIGH/CRITICAL with per-factor reasons
+  candle_token_forensics  call this before quoting or buying. Returns the on-chain developer (never a launchpad shared authority), their went-to-zero rate and last coins, who bought in the deploy window (strangers in the same slot are the bundle signal), same-funder insider share, same-funder cluster, and safety.summary with six sourced flags. Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning
   candle_get_agent_profile  your own tier, caps and verified activity
 
 COVERAGE — read this before you treat an error as a broken server.
@@ -62,12 +62,13 @@ Stored eligibility is not a successful quote or permission. MARKET_NOT_FOUND rem
 code: read error.routing.reason, error.discovery and sibling error.retryable. A curve-only
 404 is endpoint guidance, not a verdict that Candle cannot trade external tokens.
 candle_token_forensics also answers for Solana tokens the feed already knows, with a partial
-report: on-chain developer (never a launchpad shared authority), went-to-zero record, holder
-concentration, same-funder insiders and cluster. Deploy-window stays unavailable without a
-Candle launch record. Hood tokens Candle did not launch, and unknown mints, still come back
-MARKET_NOT_FOUND. That remaining gap is a coverage boundary, not a fault and not a reason to
-retry, re-auth, or tell the human the integration is down. Report MARKET_NOT_FOUND as "Candle
-has no market for this token, so I could not run forensics on it" and let the human decide.
+report: on-chain developer (never a launchpad shared authority), went-to-zero record, token
+safety flags, same-funder insiders and cluster. Deploy-window stays unavailable without a
+Candle launch record. Indexed external Hood tokens also answer, with unknown hacc flags.
+Unknown mints can still come back MARKET_NOT_FOUND. That remaining gap is a coverage boundary,
+not a fault and not a reason to retry, re-auth, or tell the human the integration is down.
+Report MARKET_NOT_FOUND as "Candle has no market for this token, so I could not run forensics
+on it" and let the human decide.
 
 Never let a MARKET_NOT_FOUND stand in for a clean bill of health. The same rule governs the
 coverage note on every forensics measurement: "unavailable" is NOT "clean" — say so rather than

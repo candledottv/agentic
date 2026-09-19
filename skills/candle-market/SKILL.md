@@ -30,11 +30,13 @@ trade, or report activity, see the candle-setup skill to get an agent key.
 3. `candle_token_forensics` with `{ chain, mint }` is the pre-buy gate: who launched it (on-chain;
    a launchpad shared authority is never the developer), the deployer's other launches and how
    they ended, who bought in the deploy window (the creator's own wallets are marked
-   `disclosed`; strangers in the same slot are the bundle signal), holder concentration,
-   same-funder insider share, same-funder cluster, and `risk.tier` (LOW / MODERATE / HIGH /
-   CRITICAL) with a reason per factor. Read the `coverage` on each measurement: `unavailable`
-   means "could not see", never "clean". A sane default is to refuse an unprompted buy at HIGH
-   or CRITICAL and to say why.
+   `disclosed`; strangers in the same slot are the bundle signal), same-funder insiders and
+   cluster, plus `safety.summary` and six sourced flags: `mintAuthority`, `freezeAuthority`,
+   `tokenExtensions`, `lpLock`, `sellability`, and `liquidityDrain`. Refuse an unprompted buy
+   when flagged and name the flag, source and detail. `unknown` or `incomplete` is not clearance;
+   inspect all flags and `coverage` before proceeding. `not_applicable` has no flags for base
+   assets. `launch.deployerLaunches` counts launches including this mint, is informational only,
+   and never drives a warning. Sellability is a verdict, not a holder-side simulation.
 4. `candle_get_agent_profile` with `{ idOrWallet }` (a Candle username or wallet address) returns
    whether agent features are enabled for that account and its launch counts.
 

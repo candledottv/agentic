@@ -114,12 +114,12 @@ describe("server instructions", () => {
   /*
    * The coverage boundary is load-bearing, and it was found by actually connecting.
    *
-   * candle_get_feed indexes external launchpads; candle_get_market and candle_token_forensics
-   * only answer for tokens with a Candle market. So the very first thing a connected agent does
-   * -- take a mint off the feed and run the gating call the instructions demand -- returns
-   * MARKET_NOT_FOUND. Without this paragraph a model reads that as a broken integration and
-   * either retries, asks the human to re-authenticate, or reports the rail as down. All three
-   * are wrong, and all three are what "the agent doesn't understand it" looked like.
+   * candle_get_feed indexes external launchpads; candle_get_market answers for same-chain
+   * indexed tokens; candle_token_forensics answers for those plus indexed external Hood with
+   * unknown hacc flags. Unknown mints can still 404. Without this paragraph a model reads that
+   * as a broken integration and either retries, asks the human to re-authenticate, or reports
+   * the rail as down. All three are wrong, and all three are what "the agent doesn't understand
+   * it" looked like.
    */
   test("the feed/market coverage boundary is explained, and MARKET_NOT_FOUND is not 'clean'", () => {
     expect(instructions).toContain("MARKET_NOT_FOUND")
@@ -128,5 +128,20 @@ describe("server instructions", () => {
     expect(instructions?.toLowerCase()).toContain("coverage boundary")
     // And it must not let that error be read as a pass.
     expect(instructions?.toLowerCase()).toContain("clean bill of health")
+  })
+
+  /*
+   * Spec C21: the session preamble is a second string from tools.ts. Updating the tool
+   * description (or only START HERE) still leaves every session gating on deleted fields
+   * if this paragraph is stale. Pin the two lies that were still shipping after the
+   * safety-flag rewrite: holder concentration is gone, and indexed external Hood tokens
+   * return 200 with unknown hacc flags rather than 404.
+   */
+  test("INSTRUCTIONS does not promise concentration or Hood-unlaunched indexed 404", () => {
+    expect(instructions).toBeTruthy()
+    expect(instructions?.toLowerCase()).not.toContain("concentration")
+    expect(instructions).not.toMatch(/Hood tokens Candle did not launch[\s\S]{0,120}MARKET_NOT_FOUND/)
+    expect(instructions).toContain("Indexed external Hood tokens also answer")
+    expect(instructions).toContain("unknown hacc flags")
   })
 })

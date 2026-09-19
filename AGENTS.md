@@ -101,9 +101,9 @@ Prefer these over scraping prose:
 why rows carry a `launchpad`. `candle_get_market` answers for every same-chain indexed token, including external and
 non-routable rows. Read the candleLaunched flag, `launchpad`, `venue` and `trade.routable`. General
 quotes use `POST /api/v1/trade/agent/quote`; curve-only quotes describe Candle launches. `candle_token_forensics` also answers for Solana tokens the feed already knows, with a
-partial report (on-chain developer, went-to-zero record, concentration, same-funder insiders and
-cluster). Deploy-window stays unavailable without a Candle launch record. Hood tokens Candle did
-not launch, and unknown mints, can still come back `MARKET_NOT_FOUND`.
+partial report (on-chain developer, went-to-zero record, token safety flags, same-funder insiders and
+cluster). Deploy-window stays unavailable without a Candle launch record. Indexed external Hood tokens also answer, with unknown hacc flags. Unknown mints can still
+come back `MARKET_NOT_FOUND`.
 
 Forensics refusals are a coverage boundary. On other surfaces, Release A still uses the legacy
 `MARKET_NOT_FOUND`: read `error.routing.reason`, discovery and explicit `retryable`, which
