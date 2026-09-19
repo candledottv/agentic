@@ -10,8 +10,12 @@
  * Skipped, and named as skipped, on a machine without libfido2; the PR records whether it ran.
  */
 import { describe, expect, test } from "bun:test"
+import { mkdtempSync, realpathSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { basename, isAbsolute, join, resolve } from "node:path"
 import { base64 } from "@scure/base"
-import { helperErrorForRc, libraryCandidates, libraryInstallInstruction, openLibfido2 } from "./libfido2"
+import { helperErrorForRc, openLibfido2 } from "./libfido2"
+import { libraryCandidates, libraryInstallInstruction, libraryMissingMessage } from "./library-paths"
 import { type Fido2Backend, type HelperCode, HelperError, handleRequest } from "./protocol"
 
 let backend: Fido2Backend | null = null
@@ -21,6 +25,9 @@ try {
 } catch (error) {
   missing = error instanceof Error ? error.message : String(error)
 }
+
+/** The two platforms this backend is built for, as literals `openLibfido2` accepts. */
+const PLATFORMS = ["darwin", "linux"] as const
 
 describe("libfido2 through bun:ffi", () => {
   test.skipIf(backend === null)("every declared symbol resolves and an empty enumeration is NO_DEVICE", () => {
@@ -57,8 +64,78 @@ describe("libfido2 through bun:ffi", () => {
     }
     expect(thrown).toBeInstanceOf(HelperError)
     expect((thrown as HelperError).code).toBe("LIBRARY_MISSING")
-    expect(libraryCandidates("darwin")[0]).toBe("libfido2.dylib")
     expect(libraryInstallInstruction("darwin")).toContain("brew install libfido2")
+  })
+
+  // BE-198. The bare sonames this list used to start with went through the loader's own search,
+  // and on macOS that search reads the working directory the helper inherited from the CLI.
+  test("every candidate on both platforms is an absolute path, so no loader search is ever used", () => {
+    for (const platform of PLATFORMS) {
+      const candidates = libraryCandidates(platform)
+      expect(candidates.length, platform).toBeGreaterThan(0)
+      for (const candidate of candidates) {
+        expect(isAbsolute(candidate), `${platform}: ${candidate}`).toBe(true)
+        // An absolute path that still contains a traversal segment would resolve elsewhere.
+        expect(resolve(candidate), `${platform}: ${candidate}`).toBe(candidate)
+      }
+    }
+    expect(libraryCandidates("darwin")).toContain("/opt/homebrew/lib/libfido2.dylib")
+    expect(libraryCandidates("linux")).toContain("/usr/local/lib/libfido2.so.1")
+  })
+
+  test("a library planted in the working directory is never one of the paths handed to the loader", () => {
+    const planted = realpathSync(mkdtempSync(join(tmpdir(), "candle-fido2-cwd-")))
+    const previousCwd = process.cwd()
+    const attempted: string[] = []
+    try {
+      // One file per candidate leaf name, exactly what an attacker would drop into a repo or a
+      // downloads folder the operator runs `candle vault` from.
+      for (const platform of PLATFORMS) {
+        for (const candidate of libraryCandidates(platform)) {
+          writeFileSync(join(planted, basename(candidate)), "planted")
+        }
+      }
+      process.chdir(planted)
+      for (const platform of PLATFORMS) {
+        expect(() =>
+          openLibfido2(platform, libraryCandidates(platform), (path) => {
+            attempted.push(path)
+            throw new Error("not loaded by this test")
+          }),
+        ).toThrow(HelperError)
+      }
+    } finally {
+      process.chdir(previousCwd)
+    }
+    expect(attempted.length).toBe(libraryCandidates("darwin").length + libraryCandidates("linux").length)
+    for (const path of attempted) {
+      expect(isAbsolute(path), path).toBe(true)
+      expect(resolve(path).startsWith(`${planted}/`), path).toBe(false)
+    }
+  })
+
+  test("the missing-library refusal is the install instruction and the paths checked, and nothing else", () => {
+    for (const platform of PLATFORMS) {
+      let thrown: unknown
+      try {
+        openLibfido2(platform, libraryCandidates(platform), () => {
+          // A loader failure carries pages of `tried:` lines; none of it may reach the operator.
+          throw new Error(
+            `dlopen failed\n${libraryCandidates(platform)
+              .map((c) => `  tried: ${c}`)
+              .join("\n")}`,
+          )
+        })
+      } catch (error) {
+        thrown = error
+      }
+      const message = (thrown as HelperError).message
+      expect(message, platform).toBe(libraryMissingMessage(platform))
+      expect(message, platform).toContain(libraryInstallInstruction(platform))
+      for (const candidate of libraryCandidates(platform)) expect(message, platform).toContain(candidate)
+      expect(message, platform).not.toContain("tried:")
+      expect(message.length, platform).toBeLessThan(600)
+    }
   })
 
   test("the return-code translation is the spec's table", () => {

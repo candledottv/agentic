@@ -19,6 +19,7 @@
 
 import { CString, dlopen, FFIType, type Pointer, ptr, toArrayBuffer } from "bun:ffi"
 import { accessSync, constants } from "node:fs"
+import { libraryCandidates, libraryMissingMessage } from "./library-paths"
 import {
   type DeviceCapabilities,
   type EnumeratedDevice,
@@ -137,51 +138,38 @@ const SYMBOLS = {
 
 type Lib = ReturnType<typeof dlopen<typeof SYMBOLS>>["symbols"]
 
-/** Where the library is looked for, in order. The bare names go through the loader's own search. */
-export function libraryCandidates(platform: string): string[] {
-  if (platform === "darwin") {
-    return [
-      "libfido2.dylib",
-      "libfido2.1.dylib",
-      "/opt/homebrew/lib/libfido2.dylib",
-      "/opt/homebrew/opt/libfido2/lib/libfido2.dylib",
-      "/usr/local/lib/libfido2.dylib",
-      "/usr/local/opt/libfido2/lib/libfido2.dylib",
-    ]
-  }
-  return [
-    "libfido2.so.1",
-    "libfido2.so",
-    "/usr/lib/x86_64-linux-gnu/libfido2.so.1",
-    "/usr/lib/aarch64-linux-gnu/libfido2.so.1",
-    "/usr/lib64/libfido2.so.1",
-    "/usr/lib/libfido2.so.1",
-    "/usr/local/lib/libfido2.so.1",
-  ]
-}
+/**
+ * Loads one candidate. A seam only so the regression test can record exactly which paths were
+ * handed to the loader from a working directory holding a file named like a candidate; the helper
+ * itself always runs with the real one.
+ */
+export type LibraryOpener = (path: string) => Lib
 
-export function libraryInstallInstruction(platform: string): string {
-  return platform === "darwin"
-    ? "Install it with: brew install libfido2"
-    : "Install your distribution's libfido2 package (Debian and Ubuntu: apt install libfido2-1; Fedora: dnf install libfido2; Arch: pacman -S libfido2)"
-}
+const dlopenLibfido2: LibraryOpener = (path) => dlopen(path, SYMBOLS).symbols
 
-/** Opens the first library candidate that loads, or refuses with `LIBRARY_MISSING`. */
-export function openLibfido2(platform = process.platform, candidates = libraryCandidates(platform)): Fido2Backend {
-  const failures: string[] = []
+/**
+ * Opens the first library candidate that loads, or refuses with `LIBRARY_MISSING`.
+ *
+ * Only the absolute paths in `libraryCandidates` are ever tried. No bare soname is passed to the
+ * loader, so neither dyld nor `ld.so` consults the working directory this process inherited from
+ * the CLI (BE-198).
+ */
+export function openLibfido2(
+  platform = process.platform,
+  candidates = libraryCandidates(platform),
+  open: LibraryOpener = dlopenLibfido2,
+): Fido2Backend {
   for (const candidate of candidates) {
     try {
-      const { symbols } = dlopen(candidate, SYMBOLS)
+      const symbols = open(candidate)
       symbols.fido_init(0)
       return new Libfido2Backend(symbols, platform)
-    } catch (error) {
-      failures.push(`${candidate}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`)
+    } catch {
+      // Which candidate failed, and why, is the loader's diagnostic and not the operator's
+      // problem: the refusal below names the install command instead.
     }
   }
-  throw new HelperError(
-    "LIBRARY_MISSING",
-    `candle-fido2 could not load libfido2 on this machine. ${libraryInstallInstruction(platform)}. Tried: ${failures.join("; ")}`,
-  )
+  throw new HelperError("LIBRARY_MISSING", libraryMissingMessage(platform, candidates))
 }
 
 // ── Pointer helpers ───────────────────────────────────────────────────────────────────────────

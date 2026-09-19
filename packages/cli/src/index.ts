@@ -578,11 +578,23 @@ function realOpenBrowser(url: string): void {
 /** What `spawnHelper` takes: the timeout, and argv for the two callers that pass one (BE-141). */
 type SpawnOptions = { timeoutMs: number; args?: string[] }
 
+/**
+ * The working directory every helper is started in (BE-198). The root directory is chosen because
+ * it is the one directory on both platforms that an unprivileged user cannot write into, and
+ * because it is not inherited: a helper started here cannot be reached by anything the operator's
+ * own folder happens to contain, whichever loader or library later resolves a relative path.
+ *
+ * Defense in depth, not the fix. The fix is that `candle-fido2` hands its loader absolute paths
+ * only (`fido2-helper/library-paths.ts`); this makes the working directory worthless to a planted
+ * file even if some future dependency of either helper does consult it.
+ */
+export const HELPER_WORKING_DIRECTORY = "/"
+
 export function realSpawnHelper(path: string, requestLine: string, opts: SpawnOptions): Promise<HelperRun> {
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(path, opts.args ?? [], { stdio: ["pipe", "pipe", "pipe"] })
+      child = spawn(path, opts.args ?? [], { stdio: ["pipe", "pipe", "pipe"], cwd: HELPER_WORKING_DIRECTORY })
     } catch (error) {
       resolve({ stdout: "", stderr: "", exitCode: null, signal: null, spawnError: messageOf(error) })
       return

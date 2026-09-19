@@ -23,6 +23,7 @@ import { dirname, join } from "node:path"
 import { sha256 } from "@noble/hashes/sha256"
 import { base64 } from "@scure/base"
 import type { Deps } from "../deps"
+import { libraryInstallInstruction } from "../fido2-helper/library-paths"
 import {
   AUTHDATA_FLAG_UV,
   AUTHDATA_MIN_LENGTH,
@@ -176,10 +177,15 @@ export function translateHelperFailure(code: string, message: string, platform: 
     DEVICE_NOT_FOUND: `The attached security keys changed: ${message}.`,
     SNAPSHOT_CHANGED: `The attached security keys changed: ${message}.`,
     DEVICE_IO: `The security key stopped answering: ${message}.`,
-    LIBRARY_MISSING: `The security key helper cannot run: ${message}.`,
+    // The helper itself ran; only libfido2 is absent. So the line is the helper's own (the install
+    // command plus the short list of paths it checked), and the way out is that install command,
+    // not a reinstall of the CLI (BE-198).
+    LIBRARY_MISSING: message,
   }
+  const helperSuggestion =
+    code === "LIBRARY_MISSING" ? `${libraryInstallInstruction(platform)}.` : HELPER_INSTALL_SUGGESTION
   return new VaultError(mapped, detail[code as HelperCode] ?? `${message}.`, {
-    suggestion: mapped === "VAULT_HELPER_MISSING" ? HELPER_INSTALL_SUGGESTION : suggestion,
+    suggestion: mapped === "VAULT_HELPER_MISSING" ? helperSuggestion : suggestion,
   })
 }
 

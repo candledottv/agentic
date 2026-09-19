@@ -13,6 +13,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { sha256 } from "@noble/hashes/sha256"
 import { base64 } from "@scure/base"
+import { libraryInstallInstruction, libraryMissingMessage } from "../fido2-helper/library-paths"
 import {
   AUTHDATA_FLAG_UP,
   AUTHDATA_FLAG_UV,
@@ -22,7 +23,7 @@ import {
   RP_ID,
 } from "../fido2-helper/protocol"
 import type { HelperScript } from "../fido2-helper/test-backend"
-import { realSpawnHelper } from "../index"
+import { HELPER_WORKING_DIRECTORY, realSpawnHelper } from "../index"
 import { createTestDeps } from "../test-support"
 import { VAULT_ERROR_CODES, VaultError } from "./errors"
 import {
@@ -101,6 +102,21 @@ describe("the typed translation table (helper protocols)", () => {
     expect(translated.code).toBe("VAULT_UNLOCK_FAILED")
     expect(translated.message).toContain("SOMETHING_NEW")
     expect(translated.suggestion).toContain("no other factor was tried")
+  })
+
+  // BE-198: the helper ran and only libfido2 is absent, so the way out is that install command,
+  // not a reinstall of the CLI, and the human line stays the helper's own short one.
+  test("LIBRARY_MISSING carries the install instruction, not the CLI reinstall advice", () => {
+    for (const platform of ["darwin", "linux"]) {
+      const translated = translateHelperFailure("LIBRARY_MISSING", libraryMissingMessage(platform), platform)
+      expect(translated.code, platform).toBe("VAULT_HELPER_MISSING")
+      expect(translated.suggestion, platform).toBe(`${libraryInstallInstruction(platform)}.`)
+      expect(translated.suggestion, platform).not.toContain("CANDLE_FIDO2_HELPER")
+      expect(translated.message, platform).toBe(libraryMissingMessage(platform))
+      // Nothing of the loader's own diagnostics, and nothing near the 3 KB the old one printed.
+      expect(translated.message, platform).not.toContain("tried:")
+      expect(`${translated.message} ${translated.suggestion}`.length, platform).toBeLessThan(700)
+    }
   })
 
   test("the Linux hidraw refusal prints CC-12's sentence verbatim; other platforms name the device", () => {
@@ -297,6 +313,26 @@ describe("running the helper over a real pipe", () => {
     }
     expect((thrown as VaultError).code).toBe("VAULT_HELPER_MISSING")
     expect((thrown as VaultError).suggestion).toContain("CANDLE_FIDO2_HELPER")
+  })
+
+  // BE-198, defense in depth: whatever folder the operator ran `candle` from, the helper does not
+  // start in it, so nothing planted there is on any relative path a loader could resolve.
+  test("the helper starts in the root directory, never the working directory the CLI was run from", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "candle-fido2-cwd-"))
+    const helper = join(dir, "candle-fido2")
+    await writeFile(helper, "#!/bin/sh\npwd >&2\nexit 0\n")
+    await chmod(helper, 0o755)
+    const previousCwd = process.cwd()
+    process.chdir(dir)
+    let run: Awaited<ReturnType<typeof realSpawnHelper>>
+    try {
+      run = await realSpawnHelper(helper, "{}", { timeoutMs: 5_000 })
+    } finally {
+      process.chdir(previousCwd)
+    }
+    expect(HELPER_WORKING_DIRECTORY).toBe("/")
+    expect(run.stderr.trim()).toBe(HELPER_WORKING_DIRECTORY)
+    expect(run.stderr).not.toContain(dir)
   })
 
   test("a helper that prints no response is VAULT_UNLOCK_FAILED, never a fallback", async () => {

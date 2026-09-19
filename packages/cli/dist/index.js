@@ -4952,6 +4952,11 @@ var init_enclave = __esm(() => {
   AASA_REQUIREMENT = `The domain must serve ${AASA_URL} over HTTPS with status 200, no redirect, Content-Type application/json, and a body of {"webcredentials":{"apps":["<TEAM ID>.<bundle id>"]}} listing the signed helper's application identifier.`;
 });
 
+// src/fido2-helper/library-paths.ts
+function libraryInstallInstruction(platform) {
+  return platform === "darwin" ? "Install it with: brew install libfido2" : "Install your distribution's libfido2 package (Debian and Ubuntu: apt install libfido2-1; Fedora: dnf install libfido2; Arch: pacman -S libfido2)";
+}
+
 // src/fido2-helper/protocol.ts
 var HELPER_PROTOCOL = 1, RP_ID = "cli.candle.tv", AUTHDATA_FLAG_UV = 4, AUTHDATA_MIN_LENGTH = 37;
 var init_protocol2 = () => {};
@@ -5188,10 +5193,11 @@ function translateHelperFailure(code, message, platform) {
     DEVICE_NOT_FOUND: `The attached security keys changed: ${message}.`,
     SNAPSHOT_CHANGED: `The attached security keys changed: ${message}.`,
     DEVICE_IO: `The security key stopped answering: ${message}.`,
-    LIBRARY_MISSING: `The security key helper cannot run: ${message}.`
+    LIBRARY_MISSING: message
   };
+  const helperSuggestion = code === "LIBRARY_MISSING" ? `${libraryInstallInstruction(platform)}.` : HELPER_INSTALL_SUGGESTION;
   return new VaultError(mapped, detail[code] ?? `${message}.`, {
-    suggestion: mapped === "VAULT_HELPER_MISSING" ? HELPER_INSTALL_SUGGESTION : suggestion
+    suggestion: mapped === "VAULT_HELPER_MISSING" ? helperSuggestion : suggestion
   });
 }
 async function callHelper(deps, helperPath, request) {
@@ -50460,11 +50466,12 @@ function realOpenBrowser(url) {
     child.unref();
   } catch {}
 }
+var HELPER_WORKING_DIRECTORY = "/";
 function realSpawnHelper(path, requestLine, opts) {
   return new Promise((resolve4) => {
     let child;
     try {
-      child = spawn2(path, opts.args ?? [], { stdio: ["pipe", "pipe", "pipe"] });
+      child = spawn2(path, opts.args ?? [], { stdio: ["pipe", "pipe", "pipe"], cwd: HELPER_WORKING_DIRECTORY });
     } catch (error) {
       resolve4({ stdout: "", stderr: "", exitCode: null, signal: null, spawnError: messageOf3(error) });
       return;
@@ -50581,5 +50588,6 @@ export {
   ROUTED_SUBCOMMANDS,
   ROUTED_COMMANDS,
   NEVER_GUARDED,
+  HELPER_WORKING_DIRECTORY,
   ALIASES
 };
