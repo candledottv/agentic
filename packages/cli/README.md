@@ -7,7 +7,7 @@ health from the terminal. Zero runtime dependencies; the whole thing is one self
 ## Quick start
 
 ```
-Install the Candle CLI (macOS or Linux):
+Install the Candle CLI (macOS 13 or later, or Linux):
 
     curl -fsSL https://candle.tv/install.sh | bash
 
@@ -24,6 +24,8 @@ login` on its own does just the authorization step.
 
 The npm package `@candledottv/cli` stays published for CI, programmatic use, and Windows until
 `install.ps1` ships; `npx -y @candledottv/cli@latest <command>` runs it once without installing.
+It is also the way in on macOS 12 or earlier: the release binaries need macOS 13, and `install.sh`
+and Homebrew refuse an older Mac rather than install a binary not built for it.
 
 ### No-npm fallback
 

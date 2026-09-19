@@ -505,9 +505,10 @@ describe("install.sh", () => {
  * manifest's word: `macosHelper` absent is a valid omission; present, the installer must deliver
  * exactly that archive or install nothing. These run on any host by stubbing `uname` (Darwin,
  * arm64) and `ditto` (python3's zipfile, which is what a Mac and an Ubuntu runner both have) on
- * the harness's stub PATH; the archive is a real zip built the same way.
+ * the harness's stub PATH; the archive is a real zip built the same way. The macOS version floor
+ * is tested here too, since this is where a Darwin release is served.
  */
-describe("install.sh: the Secure Enclave helper follows the manifest", () => {
+describe("install.sh on macOS: the Secure Enclave helper and the version floor", () => {
   const DARWIN_ASSET = "candle-darwin-arm64"
   const DARWIN_HELPER = "candle-fido2-darwin-arm64"
   const ENCLAVE_ZIP = "candle-enclave-9.9.9.app.zip"
@@ -563,12 +564,16 @@ describe("install.sh: the Secure Enclave helper follows the manifest", () => {
     fixtures[`${ENCLAVE_ZIP}.sigstore.json`] = "{}"
     if (opts.served) fixtures[ENCLAVE_ZIP] = opts.zipBody ?? zipBytes
     else delete fixtures[ENCLAVE_ZIP]
+    // Deduplicated: on an arm64 Mac the host's ASSET and HELPER ARE the Darwin ones, and a name
+    // listed twice makes the installer's lookup return two checksums and refuse its own file.
     fixtures.SHA256SUMS = [
-      `${sha256(FAKE_BINARY)}  ${DARWIN_ASSET}`,
-      `${sha256(FAKE_HELPER)}  ${DARWIN_HELPER}`,
-      `${zipSha}  ${ENCLAVE_ZIP}`,
-      `${sha256(FAKE_BINARY)}  ${ASSET}`,
-      `${sha256(FAKE_HELPER)}  ${HELPER}`,
+      ...new Set([
+        `${sha256(FAKE_BINARY)}  ${DARWIN_ASSET}`,
+        `${sha256(FAKE_HELPER)}  ${DARWIN_HELPER}`,
+        `${zipSha}  ${ENCLAVE_ZIP}`,
+        `${sha256(FAKE_BINARY)}  ${ASSET}`,
+        `${sha256(FAKE_HELPER)}  ${HELPER}`,
+      ]),
     ].join("\n")
     fixtures["latest.json"] = JSON.stringify(
       {
@@ -661,7 +666,52 @@ describe("install.sh: the Secure Enclave helper follows the manifest", () => {
     fixtures["latest.json"] = original as string
   })
 
-  test("on Linux a declared helper is not this platform's and is never requested", async () => {
+  /** Runs `run` with a stub `sw_vers` reporting `version` on the PATH ahead of the Darwin stubs.
+   * runInstaller puts its stubDir argument on PATH verbatim, so two colon-joined dirs work. */
+  async function withMacosVersion(version: string, run: (stubPath: string) => Promise<void>) {
+    const dir = await mkdtemp(join(tmpdir(), "candle-sw-vers-"))
+    await writeFile(join(dir, "sw_vers"), `#!/bin/sh\n[ "$1" = "-productVersion" ] && echo ${version}\n`)
+    await chmod(join(dir, "sw_vers"), 0o755)
+    try {
+      await run(`${dir}:${darwinStub}`)
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  }
+
+  test("macOS 12 is refused before any download, naming the floor and the npm package", async () => {
+    // The release is served, so without the floor this install would succeed: the refusal is the check's.
+    await withDarwinRelease({ declared: false, served: true }, async () => {
+      await withMacosVersion("12.7.6", async (stubPath) => {
+        requestPaths = []
+        const r = await runInstaller([], {}, stubPath)
+        expect(r.code).toBe(1)
+        expect(r.stderr).toContain("macOS 12.7.6 is too old")
+        expect(r.stderr).toContain("macOS 13 (Ventura) or later")
+        expect(r.stderr).toContain("npm i -g @candledottv/cli")
+        expect(requestPaths).toEqual([])
+        await expect(readFile(join(r.binDir, "candle"), "utf8")).rejects.toThrow()
+        await rm(r.home, { recursive: true, force: true })
+      })
+    })
+  })
+
+  test("macOS 13 and later install, two-digit majors included", async () => {
+    await withDarwinRelease({ declared: false, served: true }, async () => {
+      for (const version of ["13.0", "26.0.1"]) {
+        await withMacosVersion(version, async (stubPath) => {
+          const r = await runInstaller([], {}, stubPath)
+          expect(r.stderr).toBe("")
+          expect(r.code).toBe(0)
+          expect(await readFile(join(r.binDir, "candle"), "utf8")).toBe(FAKE_BINARY)
+          await rm(r.home, { recursive: true, force: true })
+        })
+      }
+    })
+  })
+
+  // It runs the host's own platform, so only a Linux host is testing Linux here.
+  test.skipIf(os !== "linux")("on Linux a declared helper is not this platform's and is never requested", async () => {
     const saved = fixtures["latest.json"]
     const manifest = JSON.parse(saved as string) as Record<string, unknown>
     fixtures["latest.json"] = JSON.stringify(

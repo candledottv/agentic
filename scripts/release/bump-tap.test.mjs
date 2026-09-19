@@ -69,6 +69,8 @@ test("writes the formula with all four checksums substituted and commits it", ()
     expect(formula).not.toContain("__SHA_")
     expect(formula).not.toContain("__VERSION__")
     expect(formula).toContain(`version "${VERSION}"`)
+    // The release binaries need macOS 13; without this brew installs a candle that cannot start.
+    expect(formula).toContain("depends_on macos: :ventura")
     for (const target of TARGETS) {
       // Each checksum sits under its own platform's url, not merely somewhere in the file.
       expect(formula).toContain(`${tarball(target)}"\n      sha256 "${sumFor(target)}"`)

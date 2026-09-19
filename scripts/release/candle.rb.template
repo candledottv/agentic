@@ -8,6 +8,11 @@ class Candle < Formula
   depends_on "libfido2"
 
   on_macos do
+    # The darwin binaries are linked for macOS 13 or later (minos 13.0) and are not built to run on
+    # macOS 12. Inside on_macos on purpose: a top-level `depends_on macos:` makes Homebrew treat the
+    # whole formula as macOS-only (Formula#supports_linux? turns false).
+    depends_on macos: :ventura
+
     on_arm do
       url "https://github.com/candledottv/agentic/releases/download/cli-v__VERSION__/candle-__VERSION__-darwin-arm64.tar.gz"
       sha256 "__SHA_darwin_arm64__"

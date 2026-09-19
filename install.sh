@@ -71,6 +71,19 @@ case "$machine" in
   x86_64|amd64) arch="x64" ;;
   *) fail "Unsupported architecture: $machine. Supported: darwin-arm64, darwin-x64, linux-x64, linux-arm64" ;;
 esac
+# The darwin binaries are Bun builds linked for macOS 13 or later: `otool -l` reads `minos 13.0` on
+# both architectures of every release from cli-v0.6.0 to cli-v0.10.0, and on candle-fido2. They are
+# not built to run on macOS 12, so an install there would succeed and then fail at run time. Refuse
+# before downloading anything, and name the package that does run there (npm, on Node). An
+# unreadable version proceeds: the check exists to save a wasted install, not to guess.
+if [ "$os" = "darwin" ] && command -v sw_vers >/dev/null 2>&1; then
+  macos_version="$(sw_vers -productVersion 2>/dev/null || true)"
+  macos_major="${macos_version%%.*}"
+  case "$macos_major" in
+    ''|*[!0-9]*) ;;
+    *) [ "$macos_major" -ge 13 ] || fail "macOS $macos_version is too old: the Candle CLI binary needs macOS 13 (Ventura) or later. On this Mac, install the npm package instead, which runs on Node 18 or later: npm i -g @candledottv/cli" ;;
+  esac
+fi
 asset="candle-${os}-${arch}"
 helper="candle-fido2-${os}-${arch}"
 

@@ -125,7 +125,7 @@ Once you are ready to launch, trade, or report activity, install the Candle CLI 
 device from the browser:
 
 ```
-Install the Candle CLI (macOS or Linux):
+Install the Candle CLI (macOS 13 or later, or Linux):
 
     curl -fsSL https://candle.tv/install.sh | bash
 
@@ -139,6 +139,7 @@ Then: candle setup
 (or, with no npm and no install.sh: `bunx github:candledottv/agentic candle auth login`). The npm
 package `@candledottv/cli` stays published for CI, programmatic use, and Windows until
 `install.ps1` ships; `npx -y @candledottv/cli@latest <command>` runs it once without installing.
+It is also the way in on macOS 12 or earlier, which the release binaries are not built for.
 The CLI already defaults to the alpha API (`https://api.alpha.candle.tv`); pass `--api-url` only
 to point at a different deployment, and it is remembered. Nothing installs permanently beyond the
 binary itself: one browser approval later, this machine holds a device token and an agent API key

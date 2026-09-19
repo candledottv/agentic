@@ -17,8 +17,10 @@ never need any of this: they work with no key at all.
 
 ## The workflow
 
-1. Install the Candle CLI (macOS or Linux): `curl -fsSL https://candle.tv/install.sh | bash`, or
-   with Homebrew: `brew install candledottv/tap/candle`. With no npm and no install.sh:
+1. Install the Candle CLI (macOS 13 or later, or Linux):
+   `curl -fsSL https://candle.tv/install.sh | bash`, or with Homebrew:
+   `brew install candledottv/tap/candle`. On macOS 12 or earlier use the npm package, which runs on
+   Node: `npm i -g @candledottv/cli`. With no npm and no install.sh:
    `bunx github:candledottv/agentic candle auth login`. Then run `candle auth login`. The CLI
    defaults to the alpha API (`https://api.alpha.candle.tv`), where the device flow runs today;
    pass `--api-url` only to target a different deployment. Omitting `--scopes` requests all five
