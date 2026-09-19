@@ -9,6 +9,7 @@ import {
   createCloseAccountInstruction,
   createTransferCheckedInstruction,
   getAssociatedTokenAddressSync,
+  TOKEN_2022_PROGRAM_ID as SPL_TOKEN_2022_PROGRAM_ID,
   createAssociatedTokenAccountIdempotentInstruction as splCreateAta,
 } from "@solana/spl-token"
 import { Keypair, PublicKey, SystemProgram, Transaction, type TransactionInstruction } from "@solana/web3.js"
@@ -25,6 +26,7 @@ import {
   serializeSignedTransaction,
   signMessage,
   systemTransfer,
+  TOKEN_2022_PROGRAM_ID,
   toBase64,
   tokenCloseAccount,
   tokenTransferChecked,
@@ -113,6 +115,106 @@ describe("instructions match spl-token / web3.js byte for byte", () => {
       mint: mint.toBytes(),
     })
     expect(ours).toEqual(fromWeb3(splCreateAta(payer.publicKey, ata, vault.publicKey, mint)))
+  })
+
+  // Ember Phase 3 PR A (BE-218, R5): the same three instructions under Token-2022. spl-token takes
+  // the program as its last argument, so these pin OUR program plumbing rather than restating the
+  // classic tests: a `tokenProgram` that failed to reach the encoder would produce the classic
+  // program id and fail here.
+  test("Token-2022 TransferChecked, with and without a transfer hook's extra accounts", () => {
+    const source = getAssociatedTokenAddressSync(mint, payer.publicKey, false, SPL_TOKEN_2022_PROGRAM_ID)
+    const dest = getAssociatedTokenAddressSync(mint, vault.publicKey, false, SPL_TOKEN_2022_PROGRAM_ID)
+    const ours = tokenTransferChecked({
+      source: source.toBytes(),
+      mint: mint.toBytes(),
+      destination: dest.toBytes(),
+      owner: payer.publicKey.toBytes(),
+      amount: 5_000_000n,
+      decimals: 6,
+      tokenProgram: decodePubkey(TOKEN_2022_PROGRAM_ID),
+    })
+    const theirs = fromWeb3(
+      createTransferCheckedInstruction(
+        source,
+        mint,
+        dest,
+        payer.publicKey,
+        5_000_000n,
+        6,
+        [],
+        SPL_TOKEN_2022_PROGRAM_ID,
+      ),
+    )
+    expect(ours).toEqual(theirs)
+    expect(encodePubkey(ours.programId)).toBe(TOKEN_2022_PROGRAM_ID)
+
+    // The hook tail is appended after the four fixed keys, in order, and changes nothing else.
+    const hookProgram = Keypair.generate().publicKey
+    const extra = Keypair.generate().publicKey
+    const withHook = tokenTransferChecked({
+      source: source.toBytes(),
+      mint: mint.toBytes(),
+      destination: dest.toBytes(),
+      owner: payer.publicKey.toBytes(),
+      amount: 5_000_000n,
+      decimals: 6,
+      tokenProgram: decodePubkey(TOKEN_2022_PROGRAM_ID),
+      extraAccounts: [
+        { pubkey: extra.toBytes(), isSigner: false, isWritable: true },
+        { pubkey: hookProgram.toBytes(), isSigner: false, isWritable: false },
+      ],
+    })
+    expect(withHook.data).toEqual(ours.data)
+    expect(withHook.keys.slice(0, 4)).toEqual(ours.keys)
+    expect(withHook.keys.slice(4).map((k) => encodePubkey(k.pubkey))).toEqual([
+      extra.toBase58(),
+      hookProgram.toBase58(),
+    ])
+  })
+
+  test("Token-2022 CloseAccount runs under Token-2022", () => {
+    const source = getAssociatedTokenAddressSync(mint, payer.publicKey, false, SPL_TOKEN_2022_PROGRAM_ID)
+    const ours = tokenCloseAccount({
+      account: source.toBytes(),
+      destination: payer.publicKey.toBytes(),
+      owner: payer.publicKey.toBytes(),
+      tokenProgram: decodePubkey(TOKEN_2022_PROGRAM_ID),
+    })
+    expect(ours).toEqual(
+      fromWeb3(createCloseAccountInstruction(source, payer.publicKey, payer.publicKey, [], SPL_TOKEN_2022_PROGRAM_ID)),
+    )
+  })
+
+  test("the Token-2022 ATA is a DIFFERENT address, and the program is a seed of it", () => {
+    const classic = getAssociatedTokenAddressSync(mint, vault.publicKey)
+    const ata = getAssociatedTokenAddressSync(mint, vault.publicKey, false, SPL_TOKEN_2022_PROGRAM_ID)
+    expect(ata.toBase58()).not.toBe(classic.toBase58())
+    expect(
+      encodePubkey(
+        associatedTokenAddress(vault.publicKey.toBytes(), mint.toBytes(), decodePubkey(TOKEN_2022_PROGRAM_ID)),
+      ),
+    ).toBe(ata.toBase58())
+    const ours = createAssociatedTokenAccountIdempotent({
+      payer: payer.publicKey.toBytes(),
+      owner: vault.publicKey.toBytes(),
+      mint: mint.toBytes(),
+      tokenProgram: decodePubkey(TOKEN_2022_PROGRAM_ID),
+    })
+    expect(ours).toEqual(fromWeb3(splCreateAta(payer.publicKey, ata, vault.publicKey, mint, SPL_TOKEN_2022_PROGRAM_ID)))
+    // The derived account is the Token-2022 one, not the classic one it would otherwise create.
+    expect(encodePubkey(ours.keys[1]?.pubkey ?? new Uint8Array())).toBe(ata.toBase58())
+  })
+
+  test("P3-ED-6: solana-lite models no program position, no versioned message and no lookup table", async () => {
+    // The scope guard for the file itself. `tee sweep`'s DAMM v2 position handling is PR D, and it
+    // lands in a sibling; a v0 message or an ALT appearing HERE is the thing this refuses.
+    const source = await Bun.file(new URL("./solana-lite.ts", import.meta.url)).text()
+    // Identifiers, not prose: the file's own doc comment says the word "non-versioned".
+    for (const forbidden of ["MessageV0", "ddressLookupTable", "cp-amm", "compileV0", "@meteora"]) {
+      expect(`${forbidden}: ${source.includes(forbidden)}`).toBe(`${forbidden}: false`)
+    }
+    const exported = await import("./solana-lite")
+    expect(Object.keys(exported).filter((k) => /position|damm|lookup/i.test(k))).toEqual([])
   })
 })
 
@@ -203,7 +305,7 @@ describe("createSolanaRpc", () => {
         getLatestBlockhash: { value: { blockhash: BLOCKHASH } },
         getBalance: { value: 5000 },
         getFeeForMessage: { value: 5000 },
-        getAccountInfo: { value: null },
+        getAccountInfo: { value: { owner: "o1", lamports: 9, data: ["AQI=", "base64"] } },
         sendTransaction: "sig111",
         getSignatureStatuses: { value: [{ confirmationStatus: "finalized", err: null }] },
         getTokenAccountsByOwner: {
@@ -230,7 +332,7 @@ describe("createSolanaRpc", () => {
     expect(await rpc.getLatestBlockhash()).toBe(BLOCKHASH)
     expect(await rpc.getBalance("x")).toBe(5000n)
     expect(await rpc.getFeeForMessage("m")).toBe(5000n)
-    expect(await rpc.accountExists("x")).toBe(false)
+    expect(await rpc.getAccountInfo("x")).toEqual({ owner: "o1", lamports: 9n, data: new Uint8Array([1, 2]) })
     expect(await rpc.sendTransaction("dHg=")).toBe("sig111")
     expect(await rpc.getSignatureStatus("sig111")).toEqual({ confirmationStatus: "finalized", err: null })
     expect(await rpc.getTokenAccountsByOwner("o", "p")).toEqual([

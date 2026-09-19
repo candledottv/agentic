@@ -1,11 +1,15 @@
 /**
  * Ember Phase 2 PR C (ED-10, CC-08): build, display and locally sign the two vault transfer
  * shapes. Vault keys only; TEE wallet entries must never reach this path.
+ *
+ * Ember Phase 3 PR A (BE-218) applies the Phase 2 ED-10 amendment: the token shape is built under
+ * the MINT's owning program, classic or Token-2022, with idempotent ATA creation under that same
+ * program, a transfer hook's extra accounts appended, and the post-fee amount shown before the
+ * factor prompt. Nothing else is admitted: still no arbitrary program, no message signing, no EVM.
  */
 import { base58 } from "@scure/base"
 import type { CommandContext } from "../deps"
 import {
-  associatedTokenAddress,
   compileLegacyMessage,
   createAssociatedTokenAccountIdempotent,
   createSolanaRpc,
@@ -13,12 +17,23 @@ import {
   encodePubkey,
   type Instruction,
   pubkeyFromSecret,
+  type SolanaRpc,
   serializeSignedTransaction,
   signMessage,
   systemTransfer,
   toBase64,
   tokenTransferChecked,
 } from "../solana-lite"
+import {
+  ataFor,
+  classifyTokenSendFailure,
+  type MintProfile,
+  MintReadError,
+  readMintProfile,
+  resolveTransferHookAccounts,
+  type Token2022LeftoverKind,
+  transferFeeFor,
+} from "../token-2022"
 import { VaultError } from "./errors"
 import type { KeyEntry } from "./format"
 
@@ -50,6 +65,38 @@ export interface TransferPlan {
   to: string
   instructions: Instruction[]
   displayLines: string[]
+  /**
+   * What a failed send needs to earn one of R5's four names. Present for every token move, so that
+   * a classic mint answers `undefined` from one code path rather than two.
+   */
+  token?: {
+    profile: MintProfile
+    /** The hook tail could not be resolved; the transfer was built and sent without it. */
+    extraAccountsMissing: boolean
+    /** Source or destination is frozen, or the destination will be created frozen. */
+    frozen: boolean
+  }
+}
+
+/** The name R5 gives this plan's failure, or undefined when the mint explains nothing. */
+export function namedSendFailure(plan: TransferPlan): Token2022LeftoverKind | undefined {
+  if (!plan.token) return undefined
+  return classifyTokenSendFailure({
+    profile: plan.token.profile,
+    frozen: plan.token.frozen,
+    extraAccountsMissing: plan.token.extraAccountsMissing,
+  })
+}
+
+/** SPL token account layout: mint(32) owner(32) amount(8) delegate COption(36), then state. */
+const TOKEN_ACCOUNT_STATE_OFFSET = 108
+const TOKEN_ACCOUNT_STATE_FROZEN = 2
+
+/** Whether an existing token account is frozen. A missing account is not frozen; it is missing. */
+async function tokenAccountFrozen(rpc: SolanaRpc, address: string): Promise<{ exists: boolean; frozen: boolean }> {
+  const account = await rpc.getAccountInfo(address)
+  if (account === null) return { exists: false, frozen: false }
+  return { exists: true, frozen: account.data[TOKEN_ACCOUNT_STATE_OFFSET] === TOKEN_ACCOUNT_STATE_FROZEN }
 }
 
 export async function planTransfer(input: {
@@ -86,7 +133,18 @@ export async function planTransfer(input: {
   }
 
   const mintAddress = asset === "USDC" ? USDC_MINT : input.asset
-  const decimals = asset === "USDC" ? 6 : await readMintDecimals(input.rpcUrl, mintAddress, input.fetch)
+  const rpc = createSolanaRpc(input.rpcUrl, input.fetch)
+  // The mint account is read, never assumed -- including for USDC. Its OWNER is the program the
+  // transfer, the close and the ATA derivation all run under (P3-ED-7), and reading decimals from
+  // a table while reading the program from the chain is how the two come apart.
+  let profile: MintProfile
+  try {
+    profile = await readMintProfile(rpc, mintAddress)
+  } catch (error) {
+    if (error instanceof MintReadError) throw new VaultError("VAULT_UNREADABLE", error.message)
+    throw new VaultError("VAULT_UNREADABLE", `Could not read mint ${mintAddress}: ${asMessage(error)}`)
+  }
+  const decimals = profile.decimals
   const raw = decimalToRaw(input.amount, decimals)
   if (raw === null || raw === 0n) {
     throw new VaultError(
@@ -95,19 +153,40 @@ export async function planTransfer(input: {
     )
   }
   const mint = decodePubkey(mintAddress)
-  const source = associatedTokenAddress(fromKey, mint)
-  const destination = associatedTokenAddress(toKey, mint)
-  const rpc = createSolanaRpc(input.rpcUrl, input.fetch)
+  const tokenProgram = decodePubkey(profile.tokenProgram)
+  const source = ataFor(profile, fromKey)
+  const destination = ataFor(profile, toKey)
   const instructions: Instruction[] = []
   const accountCreationLines: string[] = []
-  if (!(await rpc.accountExists(encodePubkey(destination)))) {
+  const destinationState = await tokenAccountFrozen(rpc, encodePubkey(destination))
+  if (!destinationState.exists) {
     const rent = await rpc.getMinimumBalanceForRentExemption(165)
-    instructions.push(createAssociatedTokenAccountIdempotent({ payer: fromKey, owner: toKey, mint }))
+    instructions.push(createAssociatedTokenAccountIdempotent({ payer: fromKey, owner: toKey, mint, tokenProgram }))
     accountCreationLines.push(
       `create associated token account ${encodePubkey(destination)} (idempotent)`,
       `account owner ${input.to}`,
       `account rent ${rent} lamports, paid by ${input.from} if created`,
     )
+  }
+  const sourceState = await tokenAccountFrozen(rpc, encodePubkey(source))
+
+  // Warnings, then the hook tail, then the post-fee amount: what the operator reads before the
+  // factor prompt. None of them refuses the move (P3-AD-9); they are what the confirmation is for.
+  const riskLines = profile.risks.map((risk) => `warning     ${risk.message}`)
+  const hook = await resolveTransferHookAccounts(rpc, { profile, source, destination, owner: fromKey, amount: raw })
+  const hookLines: string[] = []
+  if (profile.transferHookProgram) {
+    hookLines.push(
+      hook.ok
+        ? `hook        ${profile.transferHookProgram}: ${hook.accounts.length} extra account(s) resolved`
+        : `hook        ${profile.transferHookProgram}: extra accounts could NOT be resolved (${hook.reason}); the send is expected to fail as TOKEN_2022_EXTRA_ACCOUNTS_MISSING`,
+    )
+  }
+  const feeLines: string[] = []
+  if (profile.newerTransferFee || profile.olderTransferFee) {
+    const epoch = await rpc.getEpoch()
+    const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, raw, epoch)
+    feeLines.push(`post-fee    ${postFeeAmountRaw} raw arrives (${feeRaw} raw withheld by the mint at epoch ${epoch})`)
   }
   instructions.push(
     tokenTransferChecked({
@@ -117,6 +196,8 @@ export async function planTransfer(input: {
       owner: fromKey,
       amount: raw,
       decimals,
+      tokenProgram,
+      extraAccounts: hook.ok ? hook.accounts : [],
     }),
   )
   return {
@@ -128,36 +209,27 @@ export async function planTransfer(input: {
     from: input.from,
     to: input.to,
     instructions,
+    token: {
+      profile,
+      extraAccountsMissing: !hook.ok,
+      frozen: sourceState.frozen || destinationState.frozen || (!destinationState.exists && profile.defaultFrozen),
+    },
     displayLines: [
       `fee payer   ${input.from}`,
       `destination ${input.to}`,
       `amount      ${input.amount} (${raw} raw, ${decimals} dp)`,
       `mint        ${mintAddress}`,
+      `program     ${profile.tokenProgram}${profile.token2022 ? " (Token-2022)" : ""}`,
       ...accountCreationLines,
+      ...riskLines,
+      ...hookLines,
+      ...feeLines,
     ],
   }
 }
 
-async function readMintDecimals(rpcUrl: string, mint: string, fetchFn: typeof fetch): Promise<number> {
-  const res = await fetchFn(rpcUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "getAccountInfo",
-      params: [mint, { encoding: "jsonParsed", commitment: "finalized" }],
-    }),
-  })
-  if (!res.ok) throw new VaultError("VAULT_UNREADABLE", `RPC getAccountInfo failed for mint ${mint}`)
-  const json = (await res.json()) as {
-    result?: { value?: { data?: { parsed?: { info?: { decimals?: number } } } } }
-  }
-  const decimals = json.result?.value?.data?.parsed?.info?.decimals
-  if (typeof decimals !== "number") {
-    throw new VaultError("VAULT_UNREADABLE", `Could not read decimals for mint ${mint}.`)
-  }
-  return decimals
+function asMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 export async function quoteTransferFee(
@@ -222,9 +294,13 @@ export async function signAndBroadcastTransfer(input: {
     }
     if (status?.confirmationStatus === "finalized") {
       if (status.err) {
+        // Finalized with an error is the one unambiguous failed send, so it is the one place R5's
+        // four names are earned. A send that merely did not confirm is uncertain, not refused, and
+        // naming it would be a guess.
+        const named = namedSendFailure(input.plan)
         throw new VaultError(
           "VAULT_WRITE_FAILED",
-          "Transfer failed on chain. Any pending funding receipt will be reconciled on a rerun.",
+          `Transfer failed on chain${named ? ` (${named})` : ""}. Any pending funding receipt will be reconciled on a rerun.`,
         )
       }
       return { signature: sigB58, finalized: true }

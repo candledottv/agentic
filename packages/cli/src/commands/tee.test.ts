@@ -10,9 +10,10 @@ import { mkdir, mkdtemp, readFile as realReadFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { base58 } from "@scure/base"
-import { getAssociatedTokenAddressSync } from "@solana/spl-token"
+import { getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID as SPL_TOKEN_2022 } from "@solana/spl-token"
 import { Keypair, PublicKey, Transaction } from "@solana/web3.js"
 import { run } from "../index"
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import {
   createCapture,
   createFakeStore,
@@ -128,7 +129,13 @@ interface RpcState {
   token2022Accounts: Array<{ pubkey: string; mint: string; amount: string; decimals: number; state: string }>
   lamports: number
   fee: number | null
-  vaultAtaExists: boolean
+  /**
+   * Raw accounts for `getAccountInfo`: mint accounts (whose owner decides the program and whose
+   * TLV carries the extensions), destination ATAs, and a transfer hook's validation account. An
+   * address absent from here does not exist, which is what makes the sweep create the vault's ATA.
+   */
+  accounts: Record<string, { owner: string; data: Uint8Array }>
+  epoch: number
   sent: string[]
   /** Scripted answers, consumed in order; an explicit `null` means "not found". Empty = finalized. */
   statuses: Array<{ confirmationStatus: string | null; err: unknown } | null>
@@ -146,8 +153,19 @@ function rpcHandler(state: RpcState): RouteHandler {
         return reply({ value: state.lamports })
       case "getFeeForMessage":
         return reply({ value: state.fee })
-      case "getAccountInfo":
-        return reply({ value: state.vaultAtaExists ? { lamports: 1 } : null })
+      case "getAccountInfo": {
+        const account = state.accounts[body.params[0] as string]
+        if (!account) return reply({ value: null })
+        return reply({
+          value: {
+            owner: account.owner,
+            lamports: 1,
+            data: [Buffer.from(account.data).toString("base64"), "base64"],
+          },
+        })
+      }
+      case "getEpochInfo":
+        return reply({ epoch: state.epoch })
       case "getTokenAccountsByOwner": {
         const programId = (body.params[1] as { programId: string }).programId
         const list =
@@ -201,12 +219,13 @@ function applySent(state: RpcState, wire: string): void {
     if (program === "11111111111111111111111111111111" && ix.data.readUInt32LE(0) === 2) {
       const amount = Number(Buffer.from(ix.data.subarray(4, 12)).readBigUInt64LE())
       state.lamports = Math.max(0, state.lamports - amount)
-    } else if (program === "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") {
+    } else if (program === TOKEN_PROGRAM_ID || program === TOKEN_2022_PROGRAM_ID) {
+      const list = program === TOKEN_PROGRAM_ID ? "tokenAccounts" : "token2022Accounts"
       const account = ix.keys[0]?.pubkey.toBase58()
       if (ix.data[0] === 12) {
-        for (const t of state.tokenAccounts) if (t.pubkey === account) t.amount = "0"
+        for (const t of state[list]) if (t.pubkey === account) t.amount = "0"
       } else if (ix.data[0] === 9) {
-        state.tokenAccounts = state.tokenAccounts.filter((t) => t.pubkey !== account)
+        state[list] = state[list].filter((t) => t.pubkey !== account)
       }
     }
   }
@@ -217,13 +236,69 @@ function sigOf(wire: string): string {
   return base58.encode(Transaction.from(Buffer.from(wire, "base64")).signature ?? new Uint8Array())
 }
 
+// ── Mint fixtures (BE-218, R5). Same byte layout `token-2022.test.ts` pins against spl-token. ──
+
+function baseMint(decimals: number): Uint8Array {
+  const data = new Uint8Array(82)
+  data[44] = decimals
+  data[45] = 1
+  return data
+}
+
+function extendedMint(decimals: number, extensions: Array<{ type: number; body: Uint8Array }>): Uint8Array {
+  const parts = extensions.flatMap(({ type, body }) => {
+    const header = new Uint8Array(4)
+    const view = new DataView(header.buffer)
+    view.setUint16(0, type, true)
+    view.setUint16(2, body.length, true)
+    return [header, body]
+  })
+  const data = new Uint8Array(166 + parts.reduce((n, p) => n + p.length, 0))
+  data.set(baseMint(decimals), 0)
+  data[165] = 1
+  let at = 166
+  for (const part of parts) {
+    data.set(part, at)
+    at += part.length
+  }
+  return data
+}
+
+function transferFeeBody(bps: number, max: bigint): Uint8Array {
+  const body = new Uint8Array(108)
+  const view = new DataView(body.buffer)
+  view.setBigUint64(80, max, true)
+  view.setUint16(88, bps, true)
+  view.setBigUint64(98, max, true)
+  view.setUint16(106, bps, true)
+  return body
+}
+
+function transferHookBody(program: PublicKey): Uint8Array {
+  const body = new Uint8Array(64)
+  body.set(program.toBytes(), 32)
+  return body
+}
+
+/** A raw SPL token account, for the frozen-state byte the sweep reads at offset 108. */
+function tokenAccountBytes(frozen: boolean): Uint8Array {
+  const data = new Uint8Array(165)
+  data[108] = frozen ? 2 : 1
+  return data
+}
+
+function mint2022(data: Uint8Array) {
+  return { [MINT_2022.toBase58()]: { owner: TOKEN_2022_PROGRAM_ID, data } }
+}
+
 function defaultRpcState(overrides: Partial<RpcState> = {}): RpcState {
   return {
     tokenAccounts: [],
     token2022Accounts: [],
     lamports: 1_000_000,
     fee: 5_000,
-    vaultAtaExists: false,
+    accounts: {},
+    epoch: 100,
     sent: [],
     statuses: [],
     blockhashValid: true,
@@ -715,30 +790,275 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
     expect(typeof opened.entries[0]?.tee?.sweptAt).toBe("string")
   })
 
-  test("SC-06: a Token-2022 balance is a residual: SOL still moves, but nothing is marked swept and exit is 3", async () => {
+  // ── Token-2022 (BE-218, R5, Phase 2 ED-10 amendment). Phase 1 listed these as residuals. ──
+
+  test("a Token-2022 balance is SWEPT: TransferChecked then CloseAccount, both under Token-2022", async () => {
     const dir = await tempDir()
     await seedTeeStore(dir, [enabledEntry()])
+    const source = getAssociatedTokenAddressSync(MINT_2022, teeKey.publicKey, false, SPL_TOKEN_2022)
+    const vaultAta = getAssociatedTokenAddressSync(MINT_2022, new PublicKey(VAULT), false, SPL_TOKEN_2022)
     const rpc = defaultRpcState({
       token2022Accounts: [
-        { pubkey: "acct2022", mint: MINT_2022.toBase58(), amount: "5", decimals: 0, state: "initialized" },
+        { pubkey: source.toBase58(), mint: MINT_2022.toBase58(), amount: "5", decimals: 0, state: "initialized" },
       ],
+      accounts: mint2022(baseMint(0)),
     })
     const swept: unknown[] = []
     const { fetch } = createRoutedFetch({
       "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
-      "/api/v1/agent/wallets/lw_tee1/swept": () => {
-        swept.push(true)
-        return jsonResponse(200, { success: true })
+      "/api/v1/agent/wallets/lw_tee1/swept": (req) => {
+        swept.push(JSON.parse(String(req.init.body)))
+        return jsonResponse(200, { success: true, id: "lw_tee1", state: "swept", sweptAt: 1 })
       },
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    const tx = decodeSent(rpc.sent[0] as string)
+    expect(tx.instructions).toHaveLength(3)
+    // The vault's ATA is derived under Token-2022, and the create names Token-2022 as its program.
+    expect(tx.instructions[0]?.keys[1]?.pubkey.toBase58()).toBe(vaultAta.toBase58())
+    expect(tx.instructions[0]?.keys[5]?.pubkey.toBase58()).toBe(TOKEN_2022_PROGRAM_ID)
+    expect(vaultAta.toBase58()).not.toBe(getAssociatedTokenAddressSync(MINT_2022, new PublicKey(VAULT)).toBase58())
+    // Transfer and close BOTH run under Token-2022, in one transaction.
+    expect(tx.instructions[1]?.programId.toBase58()).toBe(TOKEN_2022_PROGRAM_ID)
+    expect(tx.instructions[1]?.data[0]).toBe(12)
+    expect(tx.instructions[2]?.programId.toBase58()).toBe(TOKEN_2022_PROGRAM_ID)
+    expect(tx.instructions[2]?.data[0]).toBe(9)
+    expect(tx.instructions[2]?.keys[0]?.pubkey.toBase58()).toBe(source.toBase58())
+    expect(tx.instructions[2]?.keys[1]?.pubkey.toBase58()).toBe(TEE)
+
+    const parsed = JSON.parse(stdout.text.trim())
+    expect(parsed.state).toBe("swept")
+    expect(parsed.residuals).toEqual([])
+    expect(parsed.receipts.map((r: { kind: string }) => r.kind)).toEqual(["token", "sol"])
+    expect(swept).toHaveLength(1)
+  })
+
+  test("both programs in one sweep: a classic account and a Token-2022 account each under their own", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const classicSource = getAssociatedTokenAddressSync(MINT, teeKey.publicKey)
+    const source2022 = getAssociatedTokenAddressSync(MINT_2022, teeKey.publicKey, false, SPL_TOKEN_2022)
+    const rpc = defaultRpcState({
+      tokenAccounts: [
+        {
+          pubkey: classicSource.toBase58(),
+          mint: MINT.toBase58(),
+          amount: "700000",
+          decimals: 6,
+          state: "initialized",
+        },
+      ],
+      token2022Accounts: [
+        { pubkey: source2022.toBase58(), mint: MINT_2022.toBase58(), amount: "5", decimals: 0, state: "initialized" },
+      ],
+      accounts: mint2022(baseMint(0)),
+    })
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": () => jsonResponse(200, { success: true, state: "swept", sweptAt: 1 }),
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    expect(rpc.sent).toHaveLength(3)
+    // Classic first (the order the inventory reads the two programs), then Token-2022, then SOL.
+    expect(decodeSent(rpc.sent[0] as string).instructions[1]?.programId.toBase58()).toBe(TOKEN_PROGRAM_ID)
+    expect(decodeSent(rpc.sent[1] as string).instructions[1]?.programId.toBase58()).toBe(TOKEN_2022_PROGRAM_ID)
+    const parsed = JSON.parse(stdout.text.trim())
+    expect(parsed.state).toBe("swept")
+    expect(parsed.residuals).toEqual([])
+  })
+
+  test("a transfer-fee mint: the post-fee amount is shown, and the full raw balance still moves", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const source = getAssociatedTokenAddressSync(MINT_2022, teeKey.publicKey, false, SPL_TOKEN_2022)
+    const rpc = defaultRpcState({
+      token2022Accounts: [
+        {
+          pubkey: source.toBase58(),
+          mint: MINT_2022.toBase58(),
+          amount: "100000000",
+          decimals: 6,
+          state: "initialized",
+        },
+      ],
+      accounts: mint2022(extendedMint(6, [{ type: 1, body: transferFeeBody(150, 1_000_000n) }])),
+      epoch: 42,
+    })
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": () => jsonResponse(200, { success: true, state: "swept", sweptAt: 1 }),
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], deps)).toBe(0)
+    // The instruction carries the full raw amount; the mint withholds its own cut on the way.
+    const transfer = decodeSent(rpc.sent[0] as string).instructions[1]
+    expect(Buffer.from(transfer?.data.subarray(1, 9) ?? []).readBigUInt64LE()).toBe(100_000_000n)
+    expect(stdout.text).toContain("99000000 raw will arrive; 1000000 raw is withheld by the mint at epoch 42")
+    expect(stdout.text).toContain("Transfer fee: 1.5% capped at 1000000 raw units")
+  })
+
+  test("a transfer hook's extra accounts are resolved and appended before the TEE key signs", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const source = getAssociatedTokenAddressSync(MINT_2022, teeKey.publicKey, false, SPL_TOKEN_2022)
+    const hookProgram = Keypair.generate().publicKey
+    const literal = Keypair.generate().publicKey
+    const validateState = PublicKey.findProgramAddressSync(
+      [Buffer.from("extra-account-metas"), MINT_2022.toBuffer()],
+      hookProgram,
+    )[0]
+    const validation = new Uint8Array(16 + 35)
+    validation.set([105, 37, 101, 197, 75, 251, 102, 26], 0)
+    const view = new DataView(validation.buffer)
+    view.setUint32(8, 39, true)
+    view.setUint32(12, 1, true)
+    validation.set(literal.toBytes(), 17)
+    validation[50] = 1
+    const rpc = defaultRpcState({
+      token2022Accounts: [
+        { pubkey: source.toBase58(), mint: MINT_2022.toBase58(), amount: "5", decimals: 0, state: "initialized" },
+      ],
+      accounts: {
+        ...mint2022(extendedMint(0, [{ type: 14, body: transferHookBody(hookProgram) }])),
+        [validateState.toBase58()]: { owner: hookProgram.toBase58(), data: validation },
+      },
+    })
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": () => jsonResponse(200, { success: true, state: "swept", sweptAt: 1 }),
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    const transfer = decodeSent(rpc.sent[0] as string).instructions[1]
+    expect(transfer?.keys.slice(4).map((k) => k.pubkey.toBase58())).toEqual([
+      literal.toBase58(),
+      hookProgram.toBase58(),
+      validateState.toBase58(),
+    ])
+  })
+
+  test("R5's four names: a failed Token-2022 send is a NAMED leftover, and the rest of the sweep runs", async () => {
+    const cases: Array<{
+      name: string
+      mint: Uint8Array
+      extra?: Record<string, { owner: string; data: Uint8Array }>
+    }> = [
+      { name: "TOKEN_2022_NOT_TRANSFERABLE", mint: extendedMint(0, [{ type: 9, body: new Uint8Array(0) }]) },
+      { name: "TOKEN_2022_FROZEN", mint: extendedMint(0, [{ type: 6, body: new Uint8Array([2]) }]) },
+      {
+        name: "TOKEN_2022_HOOK_REFUSED",
+        mint: extendedMint(0, [{ type: 14, body: transferHookBody(Keypair.generate().publicKey) }]),
+      },
+      {
+        // Nothing wrong with the mint: the vault's EXISTING destination account is frozen.
+        name: "TOKEN_2022_FROZEN",
+        mint: baseMint(0),
+        extra: {
+          [getAssociatedTokenAddressSync(MINT_2022, new PublicKey(VAULT), false, SPL_TOKEN_2022).toBase58()]: {
+            owner: TOKEN_2022_PROGRAM_ID,
+            data: tokenAccountBytes(true),
+          },
+        },
+      },
+    ]
+    for (const { name, mint, extra } of cases) {
+      const dir = await tempDir()
+      await seedTeeStore(dir, [enabledEntry()])
+      const source = getAssociatedTokenAddressSync(MINT_2022, teeKey.publicKey, false, SPL_TOKEN_2022)
+      const rpc = defaultRpcState({
+        token2022Accounts: [
+          { pubkey: source.toBase58(), mint: MINT_2022.toBase58(), amount: "1", decimals: 0, state: "initialized" },
+        ],
+        accounts: { ...mint2022(mint), ...extra },
+        lamports: 1_000_000,
+      })
+      const { fetch } = createRoutedFetch({
+        "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+        "/rpc": (req) => {
+          const body = JSON.parse(String(req.init.body)) as { method: string; id: number }
+          // The token transaction finalizes WITH an error: the one unambiguous failed send.
+          if (body.method === "getSignatureStatuses" && rpc.sent.length === 1) {
+            return jsonResponse(200, {
+              jsonrpc: "2.0",
+              id: body.id,
+              result: { value: [{ confirmationStatus: "finalized", err: { InstructionError: [1, "Custom"] } }] },
+            })
+          }
+          return rpcHandler(rpc)(req)
+        },
+      })
+      const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+      expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+      const parsed = JSON.parse(stdout.text.trim())
+      const named = parsed.residuals.find((r: { kind: string }) => r.kind === name)
+      expect(`${name}: ${JSON.stringify(named ?? parsed.residuals)}`).toContain(`${name}: {`)
+      expect(named.mint).toBe(MINT_2022.toBase58())
+      expect(named.amountRaw).toBe("1")
+      // The leftover does not abort the sweep: SOL still moved.
+      expect(parsed.receipts.map((r: { kind: string }) => r.kind)).toContain("sol")
+    }
+  })
+
+  test("a frozen Token-2022 account is named TOKEN_2022_FROZEN before anything is signed for it", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const rpc = defaultRpcState({
+      token2022Accounts: [
+        { pubkey: "frozen2022", mint: MINT_2022.toBase58(), amount: "9", decimals: 0, state: "frozen" },
+      ],
+      tokenAccounts: [{ pubkey: "frozenClassic", mint: MINT.toBase58(), amount: "9", decimals: 6, state: "frozen" }],
+      accounts: mint2022(baseMint(0)),
+    })
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
       "/rpc": rpcHandler(rpc),
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
     const parsed = JSON.parse(stdout.text.trim())
-    expect(parsed.state).toBe("quarantined")
-    expect(parsed.receipts).toHaveLength(1)
-    expect(parsed.residuals[0].kind).toBe("token-2022-unsupported")
-    expect(swept).toEqual([])
+    // The classic account keeps Phase 1's kind; the Token-2022 one earns R5's name.
+    expect(parsed.residuals.map((r: { kind: string }) => r.kind)).toContain("frozen-or-uninitialized")
+    expect(parsed.residuals.map((r: { kind: string }) => r.kind)).toContain("TOKEN_2022_FROZEN")
+  })
+
+  test("--emergency sweeps Token-2022 locally, with no API call at all", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const source = getAssociatedTokenAddressSync(MINT_2022, teeKey.publicKey, false, SPL_TOKEN_2022)
+    const rpc = defaultRpcState({
+      token2022Accounts: [
+        { pubkey: source.toBase58(), mint: MINT_2022.toBase58(), amount: "1", decimals: 0, state: "initialized" },
+      ],
+      accounts: mint2022(baseMint(0)),
+    })
+    const apiCalls: string[] = []
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => {
+        apiCalls.push("lifecycle")
+        return jsonResponse(200, LIFECYCLE("disable-pending"))
+      },
+      "/api/v1/agent/wallets/lw_tee1/swept": () => {
+        apiCalls.push("swept")
+        return jsonResponse(200, { success: true })
+      },
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency", "--json"], deps)).toBe(3)
+    // The NFT moved to the pinned vault under Token-2022, signed by the local key alone.
+    const tx = decodeSent(rpc.sent[0] as string)
+    expect(tx.instructions[1]?.programId.toBase58()).toBe(TOKEN_2022_PROGRAM_ID)
+    expect(tx.instructions[1]?.keys[2]?.pubkey.toBase58()).toBe(
+      getAssociatedTokenAddressSync(MINT_2022, new PublicKey(VAULT), false, SPL_TOKEN_2022).toBase58(),
+    )
+    // Emergency never records a sweep: the authority is still unverified.
+    expect(apiCalls).not.toContain("swept")
   })
 
   test("a frozen token account and SOL dust are residuals, listed with amounts, never touched", async () => {

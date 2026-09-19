@@ -24,6 +24,7 @@ import { resolveApiKey } from "../deps"
 import { printIdentity } from "../profiles"
 import { writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import {
+  type AccountMeta,
   associatedTokenAddress,
   compileLegacyMessage,
   createAssociatedTokenAccountIdempotent,
@@ -43,6 +44,13 @@ import {
   tokenTransferChecked,
 } from "../solana-lite"
 import { classifyStatus, resolvePending } from "../sweep-pending"
+import {
+  classifyTokenSendFailure,
+  type MintProfile,
+  readMintProfile,
+  resolveTransferHookAccounts,
+  transferFeeFor,
+} from "../token-2022"
 import type { KeyEntry } from "../vault/format"
 import {
   commitVaultTeeEntry,
@@ -1158,6 +1166,11 @@ export async function teeDisable(args: string[], ctx: CommandContext): Promise<n
 // ── tee sweep ───────────────────────────────────────────────────────────────────────────────
 
 type SweepReceipt = SweepReceiptRecord
+
+/** SPL token account layout: mint(32) owner(32) amount(8) delegate COption(36), then state. */
+const TOKEN_ACCOUNT_STATE_OFFSET = 108
+const TOKEN_ACCOUNT_STATE_FROZEN = 2
+
 interface SweepResidual {
   kind: string
   detail: string
@@ -1476,17 +1489,24 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
       instructions: Instruction[],
       pending: Omit<SweepPendingRecord, "signature" | "blockhash" | "submittedAt">,
     ) => broadcastAndFinalize(rpc, deps, secret, teePubkey, instructions, pending, recordPending, clearPending)
-    /** Records a non-finalized broadcast outcome; true when this run may keep signing. */
+    /**
+     * Records a non-finalized broadcast outcome; true when this run may keep signing. `failedKind`
+     * is R5's name for this move, used only for a FINALIZED failure: that is the one outcome that
+     * proves the send was refused rather than merely unconfirmed.
+     */
     const settle = (
       outcome: Exclude<BroadcastOutcome, { status: "finalized" }>,
       pending: Omit<SweepPendingRecord, "signature" | "blockhash" | "submittedAt">,
       describe: string,
+      failedKind?: string,
     ): boolean => {
       if (outcome.status === "failed") {
         residuals.push({
-          kind: `${describe}-failed`,
+          kind: failedKind ?? `${describe}-failed`,
           detail: outcome.error,
           ...(pending.mint ? { mint: pending.mint } : {}),
+          ...(pending.account ? { account: pending.account } : {}),
+          ...(failedKind ? { amountRaw: pending.amountRaw } : {}),
         })
         return true
       }
@@ -1542,21 +1562,31 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
       signingBlocked = true
     }
 
-    // 1. Classic Token accounts: tokens first, closing each account for its rent (HW-07).
-    let tokenAccounts: Awaited<ReturnType<SolanaRpc["getTokenAccountsByOwner"]>> = []
-    try {
-      tokenAccounts = await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)
-    } catch (error) {
-      residuals.push({
-        kind: "inventory",
-        detail: `could not list token accounts: ${error instanceof Error ? error.message : error}`,
-      })
+    // 1. Token accounts under BOTH programs (R5): tokens first, closing each account for its rent
+    //    (HW-07). Every instruction for an account runs under the program that OWNS its mint --
+    //    the transfer, the destination ATA derivation, and the close. Phase 1 swept the classic
+    //    program and listed Token-2022 as an untouched residual (SC-06); the Phase 2 ED-10
+    //    amendment in this spec is what lets the TEE key sign the Token-2022 shapes too.
+    const tokenAccounts: Awaited<ReturnType<SolanaRpc["getTokenAccountsByOwner"]>> = []
+    for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+      try {
+        tokenAccounts.push(...(await rpc.getTokenAccountsByOwner(address, programId)))
+      } catch (error) {
+        residuals.push({
+          kind: "inventory",
+          detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${error instanceof Error ? error.message : error}`,
+        })
+      }
     }
+    // One epoch read for the whole sweep, and only when a transfer-fee mint needs it.
+    let epoch: bigint | undefined
     for (const acct of tokenAccounts) {
       if (signingBlocked) break
+      const token2022 = acct.programId === TOKEN_2022_PROGRAM_ID
       if (acct.state !== "initialized") {
         residuals.push({
-          kind: "frozen-or-uninitialized",
+          // A frozen Token-2022 account earns R5's name; a classic one keeps Phase 1's.
+          kind: token2022 && acct.state === "frozen" ? "TOKEN_2022_FROZEN" : "frozen-or-uninitialized",
           detail: `token account state ${acct.state}`,
           mint: acct.mint,
           account: acct.pubkey,
@@ -1565,20 +1595,75 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
         continue
       }
       try {
+        const tokenProgram = decodePubkey(acct.programId)
         const mint = decodePubkey(acct.mint)
         const source = decodePubkey(acct.pubkey)
-        const destination = associatedTokenAddress(vaultKey, mint)
+        const destination = associatedTokenAddress(vaultKey, mint, tokenProgram)
         const instructions: Instruction[] = []
         const amount = BigInt(acct.amountRaw)
+        let profile: MintProfile | undefined
+        let extraAccountsMissing = false
+        let destinationFrozen = false
         if (amount > 0n) {
-          if (!(await rpc.accountExists(encodePubkey(destination)))) {
-            instructions.push(createAssociatedTokenAccountIdempotent({ payer: teePubkey, owner: vaultKey, mint }))
+          let extraAccounts: AccountMeta[] = []
+          if (token2022) {
+            // The mint is read for its extensions, not for its program: this account is already
+            // known to be Token-2022 because Token-2022 listed it.
+            profile = await readMintProfile(rpc, acct.mint)
+            const hook = await resolveTransferHookAccounts(rpc, {
+              profile,
+              source,
+              destination,
+              owner: teePubkey,
+              amount,
+            })
+            if (hook.ok) extraAccounts = hook.accounts
+            else {
+              // Never a refusal (P3-AD-9): the transfer is sent without the tail it could not
+              // resolve, and a chain refusal is then named TOKEN_2022_EXTRA_ACCOUNTS_MISSING.
+              extraAccountsMissing = true
+              if (!json)
+                deps.stdout.write(
+                  `  ${acct.mint}: the transfer hook's extra accounts could not be resolved (${hook.reason})\n`,
+                )
+            }
+            if (!json) for (const risk of profile.risks) deps.stdout.write(`  ${acct.mint}: ${risk.message}\n`)
+            if (profile.newerTransferFee || profile.olderTransferFee) {
+              epoch ??= await rpc.getEpoch()
+              const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, amount, epoch)
+              if (!json)
+                deps.stdout.write(
+                  `  ${acct.mint}: ${postFeeAmountRaw} raw will arrive; ${feeRaw} raw is withheld by the mint at epoch ${epoch}\n`,
+                )
+            }
+          }
+          const existing = await rpc.getAccountInfo(encodePubkey(destination))
+          if (existing === null) {
+            instructions.push(
+              createAssociatedTokenAccountIdempotent({ payer: teePubkey, owner: vaultKey, mint, tokenProgram }),
+            )
+            destinationFrozen = profile?.defaultFrozen ?? false
+          } else {
+            destinationFrozen = existing.data[TOKEN_ACCOUNT_STATE_OFFSET] === TOKEN_ACCOUNT_STATE_FROZEN
           }
           instructions.push(
-            tokenTransferChecked({ source, mint, destination, owner: teePubkey, amount, decimals: acct.decimals }),
+            tokenTransferChecked({
+              source,
+              mint,
+              destination,
+              owner: teePubkey,
+              amount,
+              decimals: acct.decimals,
+              tokenProgram,
+              extraAccounts,
+            }),
           )
         }
-        instructions.push(tokenCloseAccount({ account: source, destination: teePubkey, owner: teePubkey }))
+        // The close runs under the SAME program as the transfer, in the same transaction: either
+        // both land or neither does, so a refused transfer never leaves an emptied-and-closed ATA.
+        instructions.push(
+          tokenCloseAccount({ account: source, destination: teePubkey, owner: teePubkey, tokenProgram }),
+        )
         const pending = {
           kind: amount > 0n ? ("token" as const) : ("close" as const),
           mint: acct.mint,
@@ -1587,7 +1672,10 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
         }
         const outcome = await broadcast(instructions, pending)
         if (outcome.status !== "finalized") {
-          if (!settle(outcome, pending, "token-transfer")) {
+          const named = profile
+            ? classifyTokenSendFailure({ profile, frozen: destinationFrozen, extraAccountsMissing })
+            : undefined
+          if (!settle(outcome, pending, "token-transfer", named)) {
             signingBlocked = true
             break
           }
@@ -1612,24 +1700,6 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
           amountRaw: acct.amountRaw,
         })
       }
-    }
-
-    // 2. Token-2022 balances are not modeled: listed, never touched (SC-06).
-    try {
-      for (const acct of await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)) {
-        residuals.push({
-          kind: "token-2022-unsupported",
-          detail: "Token-2022 accounts are not swept yet",
-          mint: acct.mint,
-          account: acct.pubkey,
-          amountRaw: acct.amountRaw,
-        })
-      }
-    } catch (error) {
-      residuals.push({
-        kind: "inventory",
-        detail: `could not list Token-2022 accounts: ${error instanceof Error ? error.message : error}`,
-      })
     }
 
     // 3. Native SOL last, minus the fee this exact transfer will cost. Skipped while an earlier

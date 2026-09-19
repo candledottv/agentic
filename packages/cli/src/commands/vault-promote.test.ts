@@ -37,6 +37,11 @@ const T52_PENDING = "T52 pending: synthetic lifecycle on devnet with isolated Co
 const ACCOUNT = "PRCAccountABCDEFGH1234567890xyzabc"
 const API = "https://api.prc.test"
 const RPC = "https://rpc.prc.test/rpc"
+// Public mint addresses, not secrets. Named `MINT_*` rather than `*_TOKEN_MINT` on purpose: a
+// base58 address beside an identifier carrying the word "token" is gitleaks' `generic-api-key`
+// shape, and the scan is worth more than the naming.
+const MINT_CLASSIC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+const MINT_2022 = "9BVcYqEQxyccuwznvxXqDkSJFavvTyheiTYk231T1A8S"
 const BLOCKHASH = "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
 
 const ENCRYPTION_PUBLIC_KEY = await (async () => {
@@ -56,7 +61,28 @@ function rpcHandler(overrides: Record<string, unknown> = {}): RouteHandler {
       return jsonResponse(200, { jsonrpc: "2.0", id: body.id, result: { value } })
     }
     if (method === "getTokenAccountsByOwner") {
-      return jsonResponse(200, { jsonrpc: "2.0", id: body.id, result: { value: [] } })
+      // Keyed by the program asked for (BE-218, R5): a holdings read covers both.
+      const programId = (body.params[1] as { programId: string }).programId
+      const byProgram = overrides.tokens as
+        | Record<string, Array<{ mint: string; amount: string; decimals: number }>>
+        | undefined
+      const tokens = byProgram?.[programId] ?? []
+      return jsonResponse(200, {
+        jsonrpc: "2.0",
+        id: body.id,
+        result: {
+          value: tokens.map((t, i) => ({
+            pubkey: `acct-${programId.slice(0, 4)}-${i}`,
+            account: {
+              data: {
+                parsed: {
+                  info: { mint: t.mint, state: "initialized", tokenAmount: { amount: t.amount, decimals: t.decimals } },
+                },
+              },
+            },
+          })),
+        },
+      })
     }
     if (method === "getFeeForMessage") {
       return jsonResponse(200, { jsonrpc: "2.0", id: body.id, result: { value: 5000 } })
@@ -309,7 +335,13 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
       const importCalls = { n: 0 }
       const routes = {
         ...importRoutes({ address: subject, vaultDestination: cold, importCalls }),
-        "/rpc": rpcHandler({ balance: 42 }),
+        "/rpc": rpcHandler({
+          balance: 42,
+          tokens: {
+            TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA: [{ mint: MINT_CLASSIC, amount: "700000", decimals: 6 }],
+            TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb: [{ mint: MINT_2022, amount: "1", decimals: 0 }],
+          },
+        }),
       }
       const { fetch } = createRoutedFetch(routes)
       const out = createCapture()
@@ -337,6 +369,10 @@ describe("T56: in-place promote, AD-8, seal boundary, reconcile verdicts", () =>
         deps,
       )
       expect(code).toBe(0)
+      // R5: the holdings display covers BOTH programs, and names which is which. A read that only
+      // listed classic Token accounts would promote this key while hiding what it holds.
+      expect(out.text).toContain(`token ${MINT_CLASSIC}  700000 raw (6 dp, token)`)
+      expect(out.text).toContain(`token ${MINT_2022}  1 raw (0 dp, token-2022)`)
       // Warning before both confirmations: all five points present; no reserved-address / signer lookup route hit.
       for (const point of AD8_WARNING.split("\n")) {
         expect(out.text).toContain(point)

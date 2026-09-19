@@ -8,7 +8,7 @@ import { base58 } from "@scure/base"
 import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { writeFailure, writeLocalFailure } from "../render"
-import { createSolanaRpc, TOKEN_PROGRAM_ID } from "../solana-lite"
+import { createSolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { addressFromSecret64 } from "../vault/ed25519"
 import { VaultError } from "../vault/errors"
@@ -547,13 +547,19 @@ async function displayHoldings(ctx: CommandContext, rpcUrl: string, address: str
   const rpc = createSolanaRpc(rpcUrl, ctx.deps.fetch)
   const observedAt = new Date(ctx.deps.now()).toISOString()
   const lamports = await rpc.getBalance(address)
-  const tokens = await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)
+  // Both programs (R5): a holdings read that showed only classic Token accounts would promote a
+  // key while silently omitting whatever it holds under Token-2022.
+  const tokens = [
+    ...(await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)),
+    ...(await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)),
+  ]
   ctx.deps.stdout.write(`Holdings at ${address} (observed ${observedAt}):\n`)
   ctx.deps.stdout.write(`  SOL   ${lamports} lamports\n`)
   for (const t of tokens) {
-    ctx.deps.stdout.write(`  token ${t.mint}  ${t.amountRaw} raw (${t.decimals} dp)\n`)
+    const program = t.programId === TOKEN_PROGRAM_ID ? "token" : "token-2022"
+    ctx.deps.stdout.write(`  token ${t.mint}  ${t.amountRaw} raw (${t.decimals} dp, ${program})\n`)
   }
-  if (tokens.length === 0) ctx.deps.stdout.write(`  (no classic Token accounts)\n`)
+  if (tokens.length === 0) ctx.deps.stdout.write(`  (no token accounts under either program)\n`)
 }
 
 async function runTeeImport(

@@ -59,6 +59,8 @@ interface ApiScript {
   /** One handler per `GET /wallets` call, in order; the last repeats. */
   pages?: RouteHandler[]
   embedded?: RouteHandler
+  /** A Solana JSON-RPC for the gap scan; absent means no `/rpc` route exists at all. */
+  rpc?: RouteHandler
 }
 
 async function harness(script: ApiScript = {}) {
@@ -70,6 +72,7 @@ async function harness(script: ApiScript = {}) {
   const routed = createRoutedFetch({
     "/api/v1/agent/wallets/embedded": script.embedded ?? (() => jsonResponse(200, { success: true, account: ACCOUNT })),
     "/api/v1/agent/wallets": script.pages ?? [() => jsonResponse(200, { success: true, page: [], isDone: true })],
+    ...(script.rpc ? { "/rpc": script.rpc } : {}),
   })
   const deps: Deps = createTestDeps({
     fetch: routed.fetch,
@@ -180,6 +183,58 @@ describe("T55: bounds", () => {
     expect(h.stdout.text).not.toContain(derived.vault1)
     expect(h.stdout.text).toContain("index 0 only")
     expect(h.stdout.text).toContain("re-run with --count/--tee-count")
+  })
+
+  test("R5: an index whose only holding is a Token-2022 account is USED, so the scan continues past it", async () => {
+    // BE-218: `addressLooksUsed` read only the classic program, so a vault index holding nothing
+    // but a Token-2022 balance looked empty. With twenty empty indices after it, the gap scan
+    // would stop one index early and every key past it would be lost to the restore.
+    const scanned: string[] = []
+    const h = await harness({
+      rpc: (req) => {
+        const body = JSON.parse(String(req.init.body)) as { id: number; method: string; params: unknown[] }
+        const reply = (result: unknown) => jsonResponse(200, { jsonrpc: "2.0", id: body.id, result })
+        if (body.method === "getBalance") return reply({ value: 0 })
+        if (body.method === "getSignaturesForAddress") return reply([])
+        if (body.method === "getTokenAccountsByOwner") {
+          const address = body.params[0] as string
+          const programId = (body.params[1] as { programId: string }).programId
+          scanned.push(`${address}:${programId}`)
+          const holds = address === derived.vault0 && programId === "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+          return reply({
+            value: holds
+              ? [
+                  {
+                    pubkey: "acct2022",
+                    account: {
+                      data: {
+                        parsed: {
+                          info: {
+                            mint: "So11111111111111111111111111111111111111112",
+                            state: "initialized",
+                            tokenAmount: { amount: "1", decimals: 0 },
+                          },
+                        },
+                      },
+                    },
+                  },
+                ]
+              : [],
+          })
+        }
+        return reply(null)
+      },
+    })
+    expect(await restore(h, ["--rpc-url", "https://rpc.test/rpc"])).toBe(0)
+    const { reopen } = await import("../vault/test-vault")
+    const vault = await reopen(h.vaultPath, generatedPassphraseFrom(h.stdout.text))
+    // Index 0 counted as used, so twenty EMPTY indices (1..20) had to follow before the stop.
+    expect(vault.index.hd.nextIndex.solanaVault).toBe(21)
+    // The TEE branch held nothing under either program and stopped at twenty.
+    expect(vault.index.hd.nextIndex.solanaTee).toBe(20)
+    // Both programs were actually asked about, not just the classic one.
+    expect(scanned).toContain(`${derived.vault0}:TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`)
+    expect(scanned).toContain(`${derived.vault0}:TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb`)
   })
 
   test("nextIndex lands one past the highest derived index, with NO reserve", async () => {

@@ -5,12 +5,19 @@
  * with the TEE wallet key on the operator's machine after the remote signer has been neutralized, so it
  * cannot lean on the API to build or sign anything.
  *
- * Scope, deliberately: legacy (non-versioned) messages; SystemProgram transfer; SPL Token
- * (classic program) TransferChecked and CloseAccount; the associated-token-account idempotent
- * create; the JSON-RPC calls a sweep needs. Nothing else. Token-2022 and program positions are
- * NOT modeled and are reported as residuals by the sweep (SC-06). `solana-lite.test.ts` pins
- * every byte this produces against `@solana/web3.js` and `@solana/spl-token` as an independent
- * oracle.
+ * Scope, deliberately: legacy (non-versioned) messages; SystemProgram transfer; TransferChecked,
+ * CloseAccount and the associated-token-account idempotent create under EITHER token program
+ * (classic SPL Token or Token-2022, chosen by the caller from the mint's owner); the JSON-RPC
+ * calls a sweep needs. Nothing else.
+ *
+ * Ember Phase 3 PR A (BE-218, R5 / P3-ED-7 / the Phase 2 ED-10 amendment) widened that list by
+ * exactly three instructions' worth of program parameter and one extra-account tail. Program
+ * POSITIONS are still not modeled and never will be here (P3-ED-6): no versioned messages, no
+ * address-lookup tables, no DAMM v2. Reading a mint's extensions and resolving a transfer hook's
+ * extra accounts live in the sibling `token-2022.ts`, not here, for the same reason.
+ *
+ * `solana-lite.test.ts` pins every byte this produces against `@solana/web3.js` and
+ * `@solana/spl-token` as an independent oracle.
  */
 import { ed25519 } from "@noble/curves/ed25519"
 import { sha256 } from "@noble/hashes/sha256"
@@ -70,7 +77,7 @@ export function findProgramAddress(seeds: Uint8Array[], programId: Pubkey): { ad
   throw new Error("Unable to find a viable program address bump seed")
 }
 
-/** The associated token account for (owner, mint) under the classic Token program. */
+/** The associated token account for (owner, mint), under the classic Token program by default. */
 export function associatedTokenAddress(
   owner: Pubkey,
   mint: Pubkey,
@@ -125,7 +132,13 @@ export function systemTransfer(from: Pubkey, to: Pubkey, lamports: bigint): Inst
   }
 }
 
-/** SPL Token TransferChecked (instruction 12): amount u64, decimals u8. */
+/**
+ * TransferChecked (instruction 12): amount u64, decimals u8. `tokenProgram` is the MINT's owning
+ * program, which the caller reads from the mint account -- never assumed (P3-ED-7). The opcode and
+ * the four fixed keys are identical under both programs; Token-2022 differs only in what it does
+ * with them, and in `extraAccounts`, the transfer hook's resolved tail (resolved extras, then the
+ * hook program, then its validation account), which `token-2022.ts` produces.
+ */
 export function tokenTransferChecked(input: {
   source: Pubkey
   mint: Pubkey
@@ -133,23 +146,35 @@ export function tokenTransferChecked(input: {
   owner: Pubkey
   amount: bigint
   decimals: number
+  tokenProgram?: Pubkey
+  extraAccounts?: readonly AccountMeta[]
 }): Instruction {
   return {
-    programId: decodePubkey(TOKEN_PROGRAM_ID),
+    programId: input.tokenProgram ?? decodePubkey(TOKEN_PROGRAM_ID),
     keys: [
       { pubkey: input.source, isSigner: false, isWritable: true },
       { pubkey: input.mint, isSigner: false, isWritable: false },
       { pubkey: input.destination, isSigner: false, isWritable: true },
       { pubkey: input.owner, isSigner: true, isWritable: false },
+      ...(input.extraAccounts ?? []),
     ],
     data: concat(new Uint8Array([12]), u64le(input.amount), new Uint8Array([input.decimals])),
   }
 }
 
-/** SPL Token CloseAccount (instruction 9): rent goes to `destination`. */
-export function tokenCloseAccount(input: { account: Pubkey; destination: Pubkey; owner: Pubkey }): Instruction {
+/**
+ * CloseAccount (instruction 9): rent goes to `destination`, under the MINT's owning program. A
+ * Token-2022 account must be closed under Token-2022, exactly as a classic one is closed under the
+ * classic program (R5).
+ */
+export function tokenCloseAccount(input: {
+  account: Pubkey
+  destination: Pubkey
+  owner: Pubkey
+  tokenProgram?: Pubkey
+}): Instruction {
   return {
-    programId: decodePubkey(TOKEN_PROGRAM_ID),
+    programId: input.tokenProgram ?? decodePubkey(TOKEN_PROGRAM_ID),
     keys: [
       { pubkey: input.account, isSigner: false, isWritable: true },
       { pubkey: input.destination, isSigner: false, isWritable: true },
@@ -159,13 +184,19 @@ export function tokenCloseAccount(input: { account: Pubkey; destination: Pubkey;
   }
 }
 
-/** Associated Token Program CreateIdempotent (instruction 1). */
+/**
+ * Associated Token Program CreateIdempotent (instruction 1). `tokenProgram` is the mint's owning
+ * program: it is BOTH a seed of the derived address and the last key, so passing the wrong one
+ * derives a different account under a program that will refuse it.
+ */
 export function createAssociatedTokenAccountIdempotent(input: {
   payer: Pubkey
   owner: Pubkey
   mint: Pubkey
+  tokenProgram?: Pubkey
 }): Instruction {
-  const ata = associatedTokenAddress(input.owner, input.mint)
+  const tokenProgram = input.tokenProgram ?? decodePubkey(TOKEN_PROGRAM_ID)
+  const ata = associatedTokenAddress(input.owner, input.mint, tokenProgram)
   return {
     programId: decodePubkey(ASSOCIATED_TOKEN_PROGRAM_ID),
     keys: [
@@ -174,7 +205,7 @@ export function createAssociatedTokenAccountIdempotent(input: {
       { pubkey: input.owner, isSigner: false, isWritable: false },
       { pubkey: input.mint, isSigner: false, isWritable: false },
       { pubkey: decodePubkey(SYSTEM_PROGRAM_ID), isSigner: false, isWritable: false },
-      { pubkey: decodePubkey(TOKEN_PROGRAM_ID), isSigner: false, isWritable: false },
+      { pubkey: tokenProgram, isSigner: false, isWritable: false },
     ],
     data: new Uint8Array([1]),
   }
@@ -322,13 +353,30 @@ export interface TokenAccountView {
   programId: string
 }
 
+/** A raw account read: its owning program and its data. `null` when the account does not exist. */
+export interface AccountView {
+  owner: string
+  lamports: bigint
+  data: Uint8Array
+}
+
 export interface SolanaRpc {
   getLatestBlockhash(): Promise<string>
   getBalance(address: string): Promise<bigint>
   getTokenAccountsByOwner(owner: string, programId: string): Promise<TokenAccountView[]>
+  /**
+   * Ember Phase 3 (BE-218, P3-ED-7). One base64 `getAccountInfo`, which is what a Token-2022 move
+   * needs and a classic one does not: the MINT's owning program (so the transfer, the close and the
+   * ATA derivation all happen under it) and its raw TLV, which `token-2022.ts` reads for the fee
+   * schedule, the transfer hook and the non-transferable flag. Also the hook's own validation
+   * account and any account a seed configuration names. It replaced Phase 1's `accountExists`,
+   * whose only callers now need the account's state and owner as well as its existence.
+   */
+  getAccountInfo(address: string): Promise<AccountView | null>
+  /** The current epoch, which selects a transfer-fee schedule (older vs newer). */
+  getEpoch(): Promise<bigint>
   getFeeForMessage(messageBase64: string): Promise<bigint | null>
   getMinimumBalanceForRentExemption(size: number): Promise<bigint>
-  accountExists(address: string): Promise<boolean>
   sendTransaction(txBase64: string): Promise<string>
   getSignatureStatus(signature: string): Promise<{ confirmationStatus: string | null; err: unknown } | null>
   /** Whether a transaction built on this blockhash can still land (finalized commitment). */
@@ -401,12 +449,27 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch): SolanaRpc {
       if (!Number.isSafeInteger(rent) || rent < 0) throw new Error("Invalid rent exemption quote")
       return BigInt(rent)
     },
-    async accountExists(address) {
-      const r = await call<{ value: unknown | null }>("getAccountInfo", [
-        address,
-        { encoding: "base64", commitment: "finalized" },
-      ])
-      return r.value !== null
+    async getAccountInfo(address) {
+      const r = await call<{
+        value: { owner?: string; lamports?: number; data?: [string, string] } | null
+      }>("getAccountInfo", [address, { encoding: "base64", commitment: "finalized" }])
+      const value = r.value
+      if (!value) return null
+      const owner = value.owner
+      const encoded = value.data?.[0]
+      if (typeof owner !== "string" || typeof encoded !== "string") {
+        throw new Error(`RPC getAccountInfo answered without a base64 owner/data pair for ${address}`)
+      }
+      return {
+        owner,
+        lamports: BigInt(value.lamports ?? 0),
+        data: new Uint8Array(Buffer.from(encoded, "base64")),
+      }
+    },
+    async getEpoch() {
+      const r = await call<{ epoch?: number }>("getEpochInfo", [{ commitment: "finalized" }])
+      if (!Number.isSafeInteger(r?.epoch)) throw new Error("RPC getEpochInfo answered without an epoch")
+      return BigInt(r.epoch as number)
     },
     async sendTransaction(txBase64) {
       return await call<string>("sendTransaction", [

@@ -24,7 +24,7 @@ import { rm } from "node:fs/promises"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
-import { createSolanaRpc, type SolanaRpc, TOKEN_PROGRAM_ID } from "../solana-lite"
+import { createSolanaRpc, type SolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import { createVault, freshHdRecord } from "../vault/create"
 import { randomBytes } from "../vault/crypto"
 import { VaultError } from "../vault/errors"
@@ -344,10 +344,15 @@ async function deriveOne(vault: UnlockedVault, root: Uint8Array, branch: Branch,
   }
 }
 
-/** "Used" means anything on chain: lamports, a token account, or a signature in its history. */
+/**
+ * "Used" means anything on chain: lamports, a token account under EITHER program (R5), or a
+ * signature in its history. An index whose only holding is a Token-2022 account used to read as
+ * unused, which would end the twenty-index gap scan early and lose every key past it.
+ */
 async function addressLooksUsed(rpc: SolanaRpc, address: string): Promise<boolean> {
   if ((await rpc.getBalance(address)) > 0n) return true
   if ((await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)).length > 0) return true
+  if ((await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)).length > 0) return true
   return rpc.hasSignatureHistory(address)
 }
 

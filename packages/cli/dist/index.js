@@ -37709,19 +37709,20 @@ function systemTransfer(from, to, lamports) {
 }
 function tokenTransferChecked(input) {
   return {
-    programId: decodePubkey(TOKEN_PROGRAM_ID),
+    programId: input.tokenProgram ?? decodePubkey(TOKEN_PROGRAM_ID),
     keys: [
       { pubkey: input.source, isSigner: false, isWritable: true },
       { pubkey: input.mint, isSigner: false, isWritable: false },
       { pubkey: input.destination, isSigner: false, isWritable: true },
-      { pubkey: input.owner, isSigner: true, isWritable: false }
+      { pubkey: input.owner, isSigner: true, isWritable: false },
+      ...input.extraAccounts ?? []
     ],
     data: concat(new Uint8Array([12]), u64le(input.amount), new Uint8Array([input.decimals]))
   };
 }
 function tokenCloseAccount(input) {
   return {
-    programId: decodePubkey(TOKEN_PROGRAM_ID),
+    programId: input.tokenProgram ?? decodePubkey(TOKEN_PROGRAM_ID),
     keys: [
       { pubkey: input.account, isSigner: false, isWritable: true },
       { pubkey: input.destination, isSigner: false, isWritable: true },
@@ -37731,7 +37732,8 @@ function tokenCloseAccount(input) {
   };
 }
 function createAssociatedTokenAccountIdempotent(input) {
-  const ata = associatedTokenAddress(input.owner, input.mint);
+  const tokenProgram = input.tokenProgram ?? decodePubkey(TOKEN_PROGRAM_ID);
+  const ata = associatedTokenAddress(input.owner, input.mint, tokenProgram);
   return {
     programId: decodePubkey(ASSOCIATED_TOKEN_PROGRAM_ID),
     keys: [
@@ -37740,7 +37742,7 @@ function createAssociatedTokenAccountIdempotent(input) {
       { pubkey: input.owner, isSigner: false, isWritable: false },
       { pubkey: input.mint, isSigner: false, isWritable: false },
       { pubkey: decodePubkey(SYSTEM_PROGRAM_ID), isSigner: false, isWritable: false },
-      { pubkey: decodePubkey(TOKEN_PROGRAM_ID), isSigner: false, isWritable: false }
+      { pubkey: tokenProgram, isSigner: false, isWritable: false }
     ],
     data: new Uint8Array([1])
   };
@@ -37902,12 +37904,27 @@ function createSolanaRpc(url, fetchFn) {
         throw new Error("Invalid rent exemption quote");
       return BigInt(rent);
     },
-    async accountExists(address) {
-      const r = await call("getAccountInfo", [
-        address,
-        { encoding: "base64", commitment: "finalized" }
-      ]);
-      return r.value !== null;
+    async getAccountInfo(address) {
+      const r = await call("getAccountInfo", [address, { encoding: "base64", commitment: "finalized" }]);
+      const value = r.value;
+      if (!value)
+        return null;
+      const owner = value.owner;
+      const encoded = value.data?.[0];
+      if (typeof owner !== "string" || typeof encoded !== "string") {
+        throw new Error(`RPC getAccountInfo answered without a base64 owner/data pair for ${address}`);
+      }
+      return {
+        owner,
+        lamports: BigInt(value.lamports ?? 0),
+        data: new Uint8Array(Buffer.from(encoded, "base64"))
+      };
+    },
+    async getEpoch() {
+      const r = await call("getEpochInfo", [{ commitment: "finalized" }]);
+      if (!Number.isSafeInteger(r?.epoch))
+        throw new Error("RPC getEpochInfo answered without an epoch");
+      return BigInt(r.epoch);
     },
     async sendTransaction(txBase64) {
       return await call("sendTransaction", [
@@ -37992,6 +38009,367 @@ function settle(observation, signature) {
     return { kind: "failed", detail: `transaction ${signature} failed on chain: ${JSON.stringify(observation.err)}` };
   }
   return null;
+}
+
+// src/token-2022.ts
+class MintReadError extends Error {
+}
+var MINT_DECIMALS_OFFSET = 44;
+var MINT_IS_INITIALIZED_OFFSET = 45;
+var MINT_BASE_SIZE = 82;
+var ACCOUNT_TYPE_OFFSET = 165;
+var TLV_START = 166;
+var MULTISIG_SIZE = 355;
+var EXT_TRANSFER_FEE_CONFIG = 1;
+var EXT_DEFAULT_ACCOUNT_STATE = 6;
+var EXT_NON_TRANSFERABLE = 9;
+var EXT_PERMANENT_DELEGATE = 12;
+var EXT_TRANSFER_HOOK = 14;
+var EXT_PAUSABLE = 26;
+var EXECUTE_DISCRIMINATOR = new Uint8Array([105, 37, 101, 197, 75, 251, 102, 26]);
+var EXTRA_ACCOUNT_METAS_SEED = new TextEncoder().encode("extra-account-metas");
+var EXTRA_ACCOUNT_META_SIZE = 35;
+function readKey(data, offset) {
+  const bytes = data.subarray(offset, offset + 32);
+  return bytes.some((b) => b !== 0) ? encodePubkey(bytes) : undefined;
+}
+function readFeeSchedule(view, offset) {
+  const basisPoints = view.getUint16(offset + 16, true);
+  if (basisPoints > 1e4)
+    throw new MintReadError("Invalid transfer fee rate");
+  return {
+    epoch: view.getBigUint64(offset, true),
+    maximumFeeRaw: view.getBigUint64(offset + 8, true),
+    basisPoints
+  };
+}
+function parseMintAccount(mint, owner, data) {
+  if (data.length < MINT_BASE_SIZE || data[MINT_IS_INITIALIZED_OFFSET] !== 1) {
+    throw new MintReadError(`${mint} is not an initialized mint account`);
+  }
+  const decimals = data[MINT_DECIMALS_OFFSET];
+  if (decimals === undefined)
+    throw new MintReadError(`${mint} is not an initialized mint account`);
+  const profile = {
+    mint,
+    tokenProgram: owner,
+    token2022: owner === TOKEN_2022_PROGRAM_ID,
+    decimals,
+    nonTransferable: false,
+    defaultFrozen: false,
+    paused: false,
+    risks: []
+  };
+  if (!profile.token2022 || data.length === MINT_BASE_SIZE)
+    return profile;
+  if (data.length < TLV_START || data.length === MULTISIG_SIZE || data[ACCOUNT_TYPE_OFFSET] !== 1) {
+    throw new MintReadError(`${mint} has an invalid mint extension header`);
+  }
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const seen = new Set;
+  for (let offset = TLV_START;offset < data.length; ) {
+    if (data.subarray(offset).every((b) => b === 0))
+      break;
+    if (offset + 4 > data.length)
+      throw new MintReadError(`${mint} has a truncated mint extension header`);
+    const type = view.getUint16(offset, true);
+    const length = view.getUint16(offset + 2, true);
+    offset += 4;
+    if (offset + length > data.length || seen.has(type)) {
+      throw new MintReadError(`${mint} has an invalid mint extension length or a duplicate extension`);
+    }
+    seen.add(type);
+    const requireLength = (expected) => {
+      if (length !== expected)
+        throw new MintReadError(`${mint} has an invalid extension ${type} length`);
+    };
+    switch (type) {
+      case EXT_PERMANENT_DELEGATE: {
+        requireLength(32);
+        const authority = readKey(data, offset);
+        if (authority) {
+          profile.risks.push({
+            kind: "permanent_delegate",
+            message: `Permanent delegate ${authority} can move or burn your tokens.`
+          });
+        }
+        break;
+      }
+      case EXT_TRANSFER_HOOK: {
+        requireLength(64);
+        const hookProgram = readKey(data, offset + 32);
+        if (hookProgram) {
+          profile.transferHookProgram = hookProgram;
+          profile.risks.push({
+            kind: "transfer_hook",
+            message: `Transfer hook ${hookProgram} (unknown program) runs code on every transfer.`
+          });
+        }
+        break;
+      }
+      case EXT_TRANSFER_FEE_CONFIG: {
+        requireLength(108);
+        const older = readFeeSchedule(view, offset + 72);
+        const newer = readFeeSchedule(view, offset + 90);
+        profile.olderTransferFee = older;
+        profile.newerTransferFee = newer;
+        profile.risks.push({
+          kind: "transfer_fee",
+          message: `Transfer fee: ${older.basisPoints / 100}% capped at ${older.maximumFeeRaw} raw units; from epoch ${newer.epoch}, ${newer.basisPoints / 100}% capped at ${newer.maximumFeeRaw} raw units.`
+        });
+        break;
+      }
+      case EXT_DEFAULT_ACCOUNT_STATE: {
+        requireLength(1);
+        const state = data[offset];
+        if (state !== 1 && state !== 2)
+          throw new MintReadError(`${mint} has an invalid default account state`);
+        if (state === 2) {
+          profile.defaultFrozen = true;
+          profile.risks.push({ kind: "default_frozen", message: "New token accounts are frozen by default." });
+        }
+        break;
+      }
+      case EXT_PAUSABLE: {
+        requireLength(33);
+        const authority = readKey(data, offset);
+        const pauseByte = data[offset + 32];
+        if (pauseByte !== 0 && pauseByte !== 1)
+          throw new MintReadError(`${mint} has an invalid pause state`);
+        const paused = pauseByte === 1;
+        profile.paused = paused;
+        if (authority || paused) {
+          profile.risks.push({
+            kind: "pausable",
+            message: `Token ${paused ? "is paused" : "can be paused"}${authority ? ` by ${authority}` : ""}.`
+          });
+        }
+        break;
+      }
+      case EXT_NON_TRANSFERABLE: {
+        requireLength(0);
+        profile.nonTransferable = true;
+        profile.risks.push({ kind: "non_transferable", message: "This token is non-transferable." });
+        break;
+      }
+    }
+    offset += length;
+  }
+  return profile;
+}
+async function readMintProfile(rpc, mint) {
+  const account = await rpc.getAccountInfo(mint);
+  if (account === null)
+    throw new MintReadError(`Mint ${mint} does not exist`);
+  if (account.owner !== TOKEN_PROGRAM_ID && account.owner !== TOKEN_2022_PROGRAM_ID) {
+    throw new MintReadError(`Mint ${mint} is owned by ${account.owner}, which is not a token program`);
+  }
+  return parseMintAccount(mint, account.owner, account.data);
+}
+function transferFeeFor(profile, amount, epoch) {
+  const { olderTransferFee: older, newerTransferFee: newer } = profile;
+  const schedule = newer && epoch >= newer.epoch ? newer : older;
+  if (!schedule)
+    return { feeRaw: 0n, postFeeAmountRaw: amount };
+  const rounded = (amount * BigInt(schedule.basisPoints) + 9999n) / 10000n;
+  const fee = rounded < schedule.maximumFeeRaw ? rounded : schedule.maximumFeeRaw;
+  return { feeRaw: fee, postFeeAmountRaw: amount - fee };
+}
+function extraAccountMetaAddress(mint, hookProgram) {
+  return findProgramAddress([EXTRA_ACCOUNT_METAS_SEED, mint], hookProgram).address;
+}
+
+class HookResolutionError extends Error {
+}
+function parseExtraAccountMetas(data) {
+  if (data.length < 16)
+    throw new HookResolutionError("the hook's validation account is too short to decode");
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const count = view.getUint32(12, true);
+  if (16 + count * EXTRA_ACCOUNT_META_SIZE > data.length) {
+    throw new HookResolutionError("the hook's validation account declares more extra accounts than it holds");
+  }
+  const metas = [];
+  for (let i = 0;i < count; i++) {
+    const at = 16 + i * EXTRA_ACCOUNT_META_SIZE;
+    const discriminator = data[at];
+    const isSigner = data[at + 33];
+    const isWritable = data[at + 34];
+    if (discriminator === undefined || isSigner === undefined || isWritable === undefined) {
+      throw new HookResolutionError("the hook's validation account holds a truncated extra account");
+    }
+    metas.push({
+      discriminator,
+      addressConfig: data.subarray(at + 1, at + 33),
+      isSigner: isSigner === 1,
+      isWritable: isWritable === 1
+    });
+  }
+  return metas;
+}
+function executeInstructionData(amount) {
+  const data = new Uint8Array(16);
+  data.set(EXECUTE_DISCRIMINATOR, 0);
+  new DataView(data.buffer).setBigUint64(8, amount, true);
+  return data;
+}
+async function unpackSeeds(rpc, config, previous, instructionData) {
+  const seeds = [];
+  let i = 0;
+  while (i < 32) {
+    const discriminator = config[i];
+    const rest = config.subarray(i + 1);
+    if (discriminator === undefined || discriminator === 0)
+      break;
+    if (discriminator === 1) {
+      const length = rest[0];
+      if (length === undefined || rest.length - 1 < length)
+        throw new HookResolutionError("invalid literal seed");
+      seeds.push(rest.subarray(1, 1 + length));
+      i += 2 + length;
+    } else if (discriminator === 2) {
+      const offset = rest[0];
+      const length = rest[1];
+      if (offset === undefined || length === undefined || instructionData.length < offset + length) {
+        throw new HookResolutionError("invalid instruction-data seed");
+      }
+      seeds.push(instructionData.subarray(offset, offset + length));
+      i += 3;
+    } else if (discriminator === 3) {
+      const index = rest[0];
+      const meta = index === undefined ? undefined : previous[index];
+      if (!meta)
+        throw new HookResolutionError("invalid account-key seed");
+      seeds.push(meta.pubkey);
+      i += 2;
+    } else if (discriminator === 4) {
+      const accountIndex = rest[0];
+      const dataIndex = rest[1];
+      const length = rest[2];
+      const meta = accountIndex === undefined ? undefined : previous[accountIndex];
+      if (!meta || dataIndex === undefined || length === undefined) {
+        throw new HookResolutionError("invalid account-data seed");
+      }
+      const account = await rpc.getAccountInfo(encodePubkey(meta.pubkey));
+      if (account === null)
+        throw new HookResolutionError("a seed names an account that does not exist");
+      if (account.data.length < dataIndex + length)
+        throw new HookResolutionError("invalid account-data seed range");
+      seeds.push(account.data.subarray(dataIndex, dataIndex + length));
+      i += 4;
+    } else {
+      throw new HookResolutionError(`unknown seed type ${discriminator}`);
+    }
+  }
+  return seeds;
+}
+async function unpackPubkeyData(rpc, config, previous, instructionData) {
+  const discriminator = config[0];
+  if (discriminator === 1) {
+    const offset = config[1];
+    if (offset === undefined || instructionData.length < offset + 32) {
+      throw new HookResolutionError("a pubkey-data configuration points outside the instruction data");
+    }
+    return instructionData.subarray(offset, offset + 32);
+  }
+  if (discriminator === 2) {
+    const accountIndex = config[1];
+    const dataIndex = config[2];
+    const meta = accountIndex === undefined ? undefined : previous[accountIndex];
+    if (!meta || dataIndex === undefined)
+      throw new HookResolutionError("invalid pubkey-data configuration");
+    const account = await rpc.getAccountInfo(encodePubkey(meta.pubkey));
+    if (account === null)
+      throw new HookResolutionError("a pubkey-data configuration names a missing account");
+    if (account.data.length < dataIndex + 32)
+      throw new HookResolutionError("invalid pubkey-data range");
+    return account.data.subarray(dataIndex, dataIndex + 32);
+  }
+  throw new HookResolutionError(`unknown pubkey-data type ${discriminator ?? "(absent)"}`);
+}
+function deEscalate(meta, previous) {
+  const same = previous.filter((x) => encodePubkey(x.pubkey) === encodePubkey(meta.pubkey));
+  if (same.length === 0)
+    return meta;
+  const isSigner = same.some((x) => x.isSigner);
+  const isWritable = same.some((x) => x.isWritable);
+  return {
+    pubkey: meta.pubkey,
+    isSigner: isSigner ? meta.isSigner : false,
+    isWritable: isWritable ? meta.isWritable : false
+  };
+}
+async function resolveTransferHookAccounts(rpc, input) {
+  const hook = input.profile.transferHookProgram;
+  if (!hook)
+    return { ok: true, accounts: [] };
+  try {
+    const hookProgram = decodePubkey(hook);
+    const mint = decodePubkey(input.profile.mint);
+    const validateState = extraAccountMetaAddress(mint, hookProgram);
+    const validateAccount = await rpc.getAccountInfo(encodePubkey(validateState));
+    if (validateAccount === null)
+      return { ok: true, accounts: [] };
+    const configs = parseExtraAccountMetas(validateAccount.data);
+    const instructionData = executeInstructionData(input.amount);
+    const resolved = [input.source, mint, input.destination, input.owner, validateState].map((pubkey) => ({ pubkey, isSigner: false, isWritable: false }));
+    for (const config of configs) {
+      let meta;
+      if (config.discriminator === 0) {
+        meta = { pubkey: config.addressConfig, isSigner: config.isSigner, isWritable: config.isWritable };
+      } else if (config.discriminator === 2) {
+        meta = {
+          pubkey: await unpackPubkeyData(rpc, config.addressConfig, resolved, instructionData),
+          isSigner: config.isSigner,
+          isWritable: config.isWritable
+        };
+      } else {
+        let programId;
+        if (config.discriminator === 1) {
+          programId = hookProgram;
+        } else {
+          const index = config.discriminator - 128;
+          const owner = index < 0 ? undefined : resolved[index];
+          if (!owner)
+            throw new HookResolutionError(`extra account ${config.discriminator} names no earlier account`);
+          programId = owner.pubkey;
+        }
+        const seeds = await unpackSeeds(rpc, config.addressConfig, resolved, instructionData);
+        meta = {
+          pubkey: findProgramAddress(seeds, programId).address,
+          isSigner: config.isSigner,
+          isWritable: config.isWritable
+        };
+      }
+      resolved.push(deEscalate(meta, resolved));
+    }
+    return {
+      ok: true,
+      accounts: [
+        ...resolved.slice(5),
+        { pubkey: hookProgram, isSigner: false, isWritable: false },
+        { pubkey: validateState, isSigner: false, isWritable: false }
+      ]
+    };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+function ataFor(profile, owner) {
+  return associatedTokenAddress(owner, decodePubkey(profile.mint), decodePubkey(profile.tokenProgram));
+}
+function classifyTokenSendFailure(input) {
+  if (!input.profile.token2022)
+    return;
+  if (input.profile.nonTransferable)
+    return "TOKEN_2022_NOT_TRANSFERABLE";
+  if (input.frozen)
+    return "TOKEN_2022_FROZEN";
+  if (input.extraAccountsMissing)
+    return "TOKEN_2022_EXTRA_ACCOUNTS_MISSING";
+  if (input.profile.transferHookProgram)
+    return "TOKEN_2022_HOOK_REFUSED";
+  return;
 }
 
 // src/vault/tee-resolve.ts
@@ -42550,6 +42928,8 @@ If the provider is down or theft is suspected: candle tee sweep ${address} --rpc
     releaseActiveTee(active);
   }
 }
+var TOKEN_ACCOUNT_STATE_OFFSET = 108;
+var TOKEN_ACCOUNT_STATE_FROZEN = 2;
 function refusalState(raw) {
   if (!raw || typeof raw !== "object")
     return null;
@@ -42772,12 +43152,14 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         residuals.push({ kind: "local-record-failed", detail: kept.message });
     };
     const broadcast = (instructions, pending) => broadcastAndFinalize(rpc, deps, secret, teePubkey, instructions, pending, recordPending, clearPending);
-    const settle2 = (outcome, pending, describe2) => {
+    const settle2 = (outcome, pending, describe2, failedKind) => {
       if (outcome.status === "failed") {
         residuals.push({
-          kind: `${describe2}-failed`,
+          kind: failedKind ?? `${describe2}-failed`,
           detail: outcome.error,
-          ...pending.mint ? { mint: pending.mint } : {}
+          ...pending.mint ? { mint: pending.mint } : {},
+          ...pending.account ? { account: pending.account } : {},
+          ...failedKind ? { amountRaw: pending.amountRaw } : {}
         });
         return true;
       }
@@ -42830,21 +43212,25 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       pendingStill.push(p);
       signingBlocked = true;
     }
-    let tokenAccounts = [];
-    try {
-      tokenAccounts = await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID);
-    } catch (error) {
-      residuals.push({
-        kind: "inventory",
-        detail: `could not list token accounts: ${error instanceof Error ? error.message : error}`
-      });
+    const tokenAccounts = [];
+    for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+      try {
+        tokenAccounts.push(...await rpc.getTokenAccountsByOwner(address, programId));
+      } catch (error) {
+        residuals.push({
+          kind: "inventory",
+          detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${error instanceof Error ? error.message : error}`
+        });
+      }
     }
+    let epoch;
     for (const acct of tokenAccounts) {
       if (signingBlocked)
         break;
+      const token2022 = acct.programId === TOKEN_2022_PROGRAM_ID;
       if (acct.state !== "initialized") {
         residuals.push({
-          kind: "frozen-or-uninitialized",
+          kind: token2022 && acct.state === "frozen" ? "TOKEN_2022_FROZEN" : "frozen-or-uninitialized",
           detail: `token account state ${acct.state}`,
           mint: acct.mint,
           account: acct.pubkey,
@@ -42853,18 +43239,65 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         continue;
       }
       try {
+        const tokenProgram = decodePubkey(acct.programId);
         const mint = decodePubkey(acct.mint);
         const source = decodePubkey(acct.pubkey);
-        const destination = associatedTokenAddress(vaultKey, mint);
+        const destination = associatedTokenAddress(vaultKey, mint, tokenProgram);
         const instructions = [];
         const amount = BigInt(acct.amountRaw);
+        let profile;
+        let extraAccountsMissing = false;
+        let destinationFrozen = false;
         if (amount > 0n) {
-          if (!await rpc.accountExists(encodePubkey(destination))) {
-            instructions.push(createAssociatedTokenAccountIdempotent({ payer: teePubkey, owner: vaultKey, mint }));
+          let extraAccounts = [];
+          if (token2022) {
+            profile = await readMintProfile(rpc, acct.mint);
+            const hook = await resolveTransferHookAccounts(rpc, {
+              profile,
+              source,
+              destination,
+              owner: teePubkey,
+              amount
+            });
+            if (hook.ok)
+              extraAccounts = hook.accounts;
+            else {
+              extraAccountsMissing = true;
+              if (!json)
+                deps.stdout.write(`  ${acct.mint}: the transfer hook's extra accounts could not be resolved (${hook.reason})
+`);
+            }
+            if (!json)
+              for (const risk of profile.risks)
+                deps.stdout.write(`  ${acct.mint}: ${risk.message}
+`);
+            if (profile.newerTransferFee || profile.olderTransferFee) {
+              epoch ??= await rpc.getEpoch();
+              const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, amount, epoch);
+              if (!json)
+                deps.stdout.write(`  ${acct.mint}: ${postFeeAmountRaw} raw will arrive; ${feeRaw} raw is withheld by the mint at epoch ${epoch}
+`);
+            }
           }
-          instructions.push(tokenTransferChecked({ source, mint, destination, owner: teePubkey, amount, decimals: acct.decimals }));
+          const existing = await rpc.getAccountInfo(encodePubkey(destination));
+          if (existing === null) {
+            instructions.push(createAssociatedTokenAccountIdempotent({ payer: teePubkey, owner: vaultKey, mint, tokenProgram }));
+            destinationFrozen = profile?.defaultFrozen ?? false;
+          } else {
+            destinationFrozen = existing.data[TOKEN_ACCOUNT_STATE_OFFSET] === TOKEN_ACCOUNT_STATE_FROZEN;
+          }
+          instructions.push(tokenTransferChecked({
+            source,
+            mint,
+            destination,
+            owner: teePubkey,
+            amount,
+            decimals: acct.decimals,
+            tokenProgram,
+            extraAccounts
+          }));
         }
-        instructions.push(tokenCloseAccount({ account: source, destination: teePubkey, owner: teePubkey }));
+        instructions.push(tokenCloseAccount({ account: source, destination: teePubkey, owner: teePubkey, tokenProgram }));
         const pending = {
           kind: amount > 0n ? "token" : "close",
           mint: acct.mint,
@@ -42873,7 +43306,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         };
         const outcome = await broadcast(instructions, pending);
         if (outcome.status !== "finalized") {
-          if (!settle2(outcome, pending, "token-transfer")) {
+          const named = profile ? classifyTokenSendFailure({ profile, frozen: destinationFrozen, extraAccountsMissing }) : undefined;
+          if (!settle2(outcome, pending, "token-transfer", named)) {
             signingBlocked = true;
             break;
           }
@@ -42899,22 +43333,6 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           amountRaw: acct.amountRaw
         });
       }
-    }
-    try {
-      for (const acct of await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)) {
-        residuals.push({
-          kind: "token-2022-unsupported",
-          detail: "Token-2022 accounts are not swept yet",
-          mint: acct.mint,
-          account: acct.pubkey,
-          amountRaw: acct.amountRaw
-        });
-      }
-    } catch (error) {
-      residuals.push({
-        kind: "inventory",
-        detail: `could not list Token-2022 accounts: ${error instanceof Error ? error.message : error}`
-      });
     }
     try {
       const balance = signingBlocked ? 0n : await rpc.getBalance(address);
@@ -47734,6 +48152,23 @@ function assertVaultSigner(entry) {
     throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry.label ?? entry.address} is a TEE wallet entry and cannot sign vault transfer or fund shapes (ED-10 / N3).`);
   }
 }
+function namedSendFailure(plan) {
+  if (!plan.token)
+    return;
+  return classifyTokenSendFailure({
+    profile: plan.token.profile,
+    frozen: plan.token.frozen,
+    extraAccountsMissing: plan.token.extraAccountsMissing
+  });
+}
+var TOKEN_ACCOUNT_STATE_OFFSET2 = 108;
+var TOKEN_ACCOUNT_STATE_FROZEN2 = 2;
+async function tokenAccountFrozen(rpc, address) {
+  const account = await rpc.getAccountInfo(address);
+  if (account === null)
+    return { exists: false, frozen: false };
+  return { exists: true, frozen: account.data[TOKEN_ACCOUNT_STATE_OFFSET2] === TOKEN_ACCOUNT_STATE_FROZEN2 };
+}
 async function planTransfer(input) {
   const asset = input.asset.toUpperCase();
   const fromKey = decodePubkey(input.from);
@@ -47760,21 +48195,44 @@ async function planTransfer(input) {
     };
   }
   const mintAddress = asset === "USDC" ? USDC_MINT2 : input.asset;
-  const decimals = asset === "USDC" ? 6 : await readMintDecimals(input.rpcUrl, mintAddress, input.fetch);
+  const rpc = createSolanaRpc(input.rpcUrl, input.fetch);
+  let profile;
+  try {
+    profile = await readMintProfile(rpc, mintAddress);
+  } catch (error) {
+    if (error instanceof MintReadError)
+      throw new VaultError("VAULT_UNREADABLE", error.message);
+    throw new VaultError("VAULT_UNREADABLE", `Could not read mint ${mintAddress}: ${asMessage(error)}`);
+  }
+  const decimals = profile.decimals;
   const raw = decimalToRaw2(input.amount, decimals);
   if (raw === null || raw === 0n) {
     throw new VaultError("VAULT_INDEX_INVALID", `--amount must be a positive decimal with at most ${decimals} decimal places.`);
   }
   const mint = decodePubkey(mintAddress);
-  const source = associatedTokenAddress(fromKey, mint);
-  const destination = associatedTokenAddress(toKey, mint);
-  const rpc = createSolanaRpc(input.rpcUrl, input.fetch);
+  const tokenProgram = decodePubkey(profile.tokenProgram);
+  const source = ataFor(profile, fromKey);
+  const destination = ataFor(profile, toKey);
   const instructions = [];
   const accountCreationLines = [];
-  if (!await rpc.accountExists(encodePubkey(destination))) {
+  const destinationState = await tokenAccountFrozen(rpc, encodePubkey(destination));
+  if (!destinationState.exists) {
     const rent = await rpc.getMinimumBalanceForRentExemption(165);
-    instructions.push(createAssociatedTokenAccountIdempotent({ payer: fromKey, owner: toKey, mint }));
+    instructions.push(createAssociatedTokenAccountIdempotent({ payer: fromKey, owner: toKey, mint, tokenProgram }));
     accountCreationLines.push(`create associated token account ${encodePubkey(destination)} (idempotent)`, `account owner ${input.to}`, `account rent ${rent} lamports, paid by ${input.from} if created`);
+  }
+  const sourceState = await tokenAccountFrozen(rpc, encodePubkey(source));
+  const riskLines = profile.risks.map((risk) => `warning     ${risk.message}`);
+  const hook = await resolveTransferHookAccounts(rpc, { profile, source, destination, owner: fromKey, amount: raw });
+  const hookLines = [];
+  if (profile.transferHookProgram) {
+    hookLines.push(hook.ok ? `hook        ${profile.transferHookProgram}: ${hook.accounts.length} extra account(s) resolved` : `hook        ${profile.transferHookProgram}: extra accounts could NOT be resolved (${hook.reason}); the send is expected to fail as TOKEN_2022_EXTRA_ACCOUNTS_MISSING`);
+  }
+  const feeLines = [];
+  if (profile.newerTransferFee || profile.olderTransferFee) {
+    const epoch = await rpc.getEpoch();
+    const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, raw, epoch);
+    feeLines.push(`post-fee    ${postFeeAmountRaw} raw arrives (${feeRaw} raw withheld by the mint at epoch ${epoch})`);
   }
   instructions.push(tokenTransferChecked({
     source,
@@ -47782,7 +48240,9 @@ async function planTransfer(input) {
     destination,
     owner: fromKey,
     amount: raw,
-    decimals
+    decimals,
+    tokenProgram,
+    extraAccounts: hook.ok ? hook.accounts : []
   }));
   return {
     asset: asset === "USDC" ? "USDC" : mintAddress,
@@ -47793,34 +48253,26 @@ async function planTransfer(input) {
     from: input.from,
     to: input.to,
     instructions,
+    token: {
+      profile,
+      extraAccountsMissing: !hook.ok,
+      frozen: sourceState.frozen || destinationState.frozen || !destinationState.exists && profile.defaultFrozen
+    },
     displayLines: [
       `fee payer   ${input.from}`,
       `destination ${input.to}`,
       `amount      ${input.amount} (${raw} raw, ${decimals} dp)`,
       `mint        ${mintAddress}`,
-      ...accountCreationLines
+      `program     ${profile.tokenProgram}${profile.token2022 ? " (Token-2022)" : ""}`,
+      ...accountCreationLines,
+      ...riskLines,
+      ...hookLines,
+      ...feeLines
     ]
   };
 }
-async function readMintDecimals(rpcUrl, mint, fetchFn) {
-  const res = await fetchFn(rpcUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "getAccountInfo",
-      params: [mint, { encoding: "jsonParsed", commitment: "finalized" }]
-    })
-  });
-  if (!res.ok)
-    throw new VaultError("VAULT_UNREADABLE", `RPC getAccountInfo failed for mint ${mint}`);
-  const json = await res.json();
-  const decimals = json.result?.value?.data?.parsed?.info?.decimals;
-  if (typeof decimals !== "number") {
-    throw new VaultError("VAULT_UNREADABLE", `Could not read decimals for mint ${mint}.`);
-  }
-  return decimals;
+function asMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 async function quoteTransferFee(rpcUrl, fetchFn, from, instructions) {
   const rpc = createSolanaRpc(rpcUrl, fetchFn);
@@ -47876,7 +48328,8 @@ async function signAndBroadcastTransfer(input) {
     }
     if (status?.confirmationStatus === "finalized") {
       if (status.err) {
-        throw new VaultError("VAULT_WRITE_FAILED", "Transfer failed on chain. Any pending funding receipt will be reconciled on a rerun.");
+        const named = namedSendFailure(input.plan);
+        throw new VaultError("VAULT_WRITE_FAILED", `Transfer failed on chain${named ? ` (${named})` : ""}. Any pending funding receipt will be reconciled on a rerun.`);
       }
       return { signature: sigB58, finalized: true };
     }
@@ -48892,17 +49345,21 @@ async function displayHoldings(ctx, rpcUrl, address) {
   const rpc = createSolanaRpc(rpcUrl, ctx.deps.fetch);
   const observedAt = new Date(ctx.deps.now()).toISOString();
   const lamports = await rpc.getBalance(address);
-  const tokens = await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID);
+  const tokens = [
+    ...await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
+    ...await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
+  ];
   ctx.deps.stdout.write(`Holdings at ${address} (observed ${observedAt}):
 `);
   ctx.deps.stdout.write(`  SOL   ${lamports} lamports
 `);
   for (const t of tokens) {
-    ctx.deps.stdout.write(`  token ${t.mint}  ${t.amountRaw} raw (${t.decimals} dp)
+    const program = t.programId === TOKEN_PROGRAM_ID ? "token" : "token-2022";
+    ctx.deps.stdout.write(`  token ${t.mint}  ${t.amountRaw} raw (${t.decimals} dp, ${program})
 `);
   }
   if (tokens.length === 0)
-    ctx.deps.stdout.write(`  (no classic Token accounts)
+    ctx.deps.stdout.write(`  (no token accounts under either program)
 `);
 }
 async function runTeeImport(ctx, opts) {
@@ -49190,6 +49647,8 @@ async function addressLooksUsed(rpc, address) {
   if (await rpc.getBalance(address) > 0n)
     return true;
   if ((await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)).length > 0)
+    return true;
+  if ((await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)).length > 0)
     return true;
   return rpc.hasSignatureHistory(address);
 }
