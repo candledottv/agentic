@@ -325,6 +325,26 @@ jobs:
           done
           rm -rf pack
           cp ../install.sh install.sh
+          # Only this release's own artifacts may match `candle-*`. The checksum line below and the
+          # upload step both take the whole glob, so any other file sitting in this directory
+          # becomes a published asset. `bun test` runs before the build in this same job, and T49's
+          # vault parity test used to compile its 96 MB binary here, under a name beginning with
+          # the same four letters: it shipped in 0.10.0 and 0.11.0, listed in SHA256SUMS, named by
+          # nothing else. (Spelling that name in backticks here would trip check-agentic-skills,
+          # which reads a code span starting with those letters as an invented command.) The
+          # diff is two-sided on purpose, so a MISSING expected asset fails just as loudly.
+          {
+            for target in darwin-arm64 darwin-x64 linux-x64 linux-arm64; do
+              printf '%s\n%s\n%s\n' "candle-${target}" "candle-fido2-${target}" "candle-${VERSION}-${target}.tar.gz"
+            done
+            if [ -n "${HELPER_ASSET}" ]; then printf '%s\n' "${HELPER_ASSET}"; fi
+          } | sort > ../expected-assets.txt
+          for asset in candle-*; do printf '%s\n' "$asset"; done | sort > ../actual-assets.txt
+          if ! diff -u ../expected-assets.txt ../actual-assets.txt; then
+            echo "dist-bin does not hold exactly the assets this release publishes (see the diff above)"
+            exit 1
+          fi
+          rm -f ../expected-assets.txt ../actual-assets.txt
           sha256sum candle-* install.sh > SHA256SUMS
           cat SHA256SUMS
           cd ..

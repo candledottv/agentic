@@ -102,7 +102,6 @@ describe("T49: the committed fixture, under bun test in the monorepo", () => {
 describe("T49: the same fixture, through the COMPILED binary, on a real terminal", () => {
   // `release-verify.compiled.test.ts` is the precedent for compiling inside a test. It costs a few
   // seconds and it is the only way to see a bundler or runtime difference before a release does.
-  const binary = join(pkgDir, "dist-bin", "candle-vault-parity")
 
   /**
    * A copy of the fixture in a private config dir: the binary's `new-key` writes to the vault it
@@ -110,6 +109,14 @@ describe("T49: the same fixture, through the COMPILED binary, on a real terminal
    * bytes. The copy IS the committed bytes, which is what makes the open below a parity check.
    */
   const workDir = mkdtempSync(join(tmpdir(), "candle-vault-parity-"))
+
+  /**
+   * The compiled binary goes in that same private dir, NOT in `dist-bin`. The release workflow
+   * runs `bun test` before it builds, then packs and uploads everything matching `candle-*` out
+   * of `dist-bin`, so a binary left there by a test becomes a release asset: `candle-vault-parity`
+   * shipped in 0.10.0 and 0.11.0 that way, 96 MB of test scaffolding on a signed release.
+   */
+  const binary = join(workDir, "candle-vault-parity")
   const copy = join(workDir, "vault.enc")
   copyFileSync(fixturePath, copy)
   const teeIndexSeenBefore = readFileSync(fixturePath)
