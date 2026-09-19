@@ -95,6 +95,16 @@
         "TRANSFER_AMOUNT_UNAVAILABLE"
       ]
     },
+    "token_transfer": {
+      "retryable": false,
+      "action": "Report the token left behind after the failed send. Non-transferable tokens cannot move; frozen accounts need the issuer to thaw them. For hook refusal or missing extra accounts, resolve the hook requirements and rebuild before retrying. These codes never refuse a quote.",
+      "codes": [
+        "TOKEN_2022_NOT_TRANSFERABLE",
+        "TOKEN_2022_HOOK_REFUSED",
+        "TOKEN_2022_EXTRA_ACCOUNTS_MISSING",
+        "TOKEN_2022_FROZEN"
+      ]
+    },
     "transient": {
       "retryable": true,
       "action": "Honor explicit error.retryable before this default. Back off only when retryable, reusing the SAME idempotency id. hood_market_unavailable is a twice-failed address and remains retryable:false; wait for a changed condition, never spin or pause all Hood tokens.",
