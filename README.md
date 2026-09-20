@@ -21,6 +21,7 @@ one place.
 
 - [Try it with no account](#try-it-with-no-account)
 - [The tool surface](#the-tool-surface)
+- [The CLI](#the-cli)
 - [Full setup](#full-setup)
 - [Install as a skill package](#install-as-a-skill-package)
 - [The skills](#the-skills)
@@ -119,6 +120,47 @@ up front:
    A 404 means Candle never saw the id, so nothing moved and the request is safe to send again.
 
 Selling a fraction is the same shape with `{ "side": "sell", "percent": 50 }`.
+
+## The CLI
+
+`candle` is the terminal half of all of this: it authorizes a device, holds your API key in the OS
+keychain, runs the MCP server with no config file, and keeps a local encrypted vault of keys.
+
+```
+Install (macOS 13 or later, or Linux):
+
+    curl -fsSL https://candle.tv/install.sh | bash
+
+or with Homebrew:
+
+    brew install candledottv/tap/candle
+
+Then: candle setup
+```
+
+On macOS 12 or earlier the release binaries will not run; `npm i -g @candledottv/cli` works there
+on Node 18 or later.
+
+If you want keys of your own on the machine rather than only an API key, the vault is five
+commands:
+
+```
+candle vault init                                  # prints 8 words: your passphrase, shown once
+candle vault phrase show                           # prints 24 words: your recovery phrase, on paper
+candle vault new-key --chain solana --label main   # derives your first key
+candle vault backup --to /Volumes/<drive>/candle-vault.enc
+candle vault status --unlock
+```
+
+The two word lists are different things, and it is the one idea worth getting right on day one:
+**the eight words open the file on this machine, and the 24 words are the keys themselves.** The
+phrase rebuilds your keys anywhere, with or without that file, which is why it belongs on paper
+rather than on the disk it protects.
+
+[**CLI quick start and FAQ**](https://docs.candle.tv/developers/cli-quickstart) answers what those
+words are, what encrypts the vault and where the passphrase lives, whether anything syncs to
+iCloud, what a recovery phrase does and does not restore, and the errors people hit on a first
+run. [Candle CLI](https://docs.candle.tv/developers/cli) is the full command reference.
 
 ## Full setup
 
