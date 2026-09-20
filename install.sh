@@ -323,4 +323,5 @@ fi
 if [ "$enclave_present" -eq 1 ]; then
   echo "Installed the signed Secure Enclave helper to $BIN_DIR/candle-enclave.app (the Touch ID factor: candle vault factor add touch-id)"
 fi
+echo "Shell completions: candle completion zsh|bash|fish"
 echo "Next: candle setup"

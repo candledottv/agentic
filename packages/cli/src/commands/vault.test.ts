@@ -698,27 +698,23 @@ describe("T54: the phrase ceremony", () => {
 })
 
 describe("T39: AD-3's removals", () => {
-  test("wallets generate and wallets export exit 2 and name the replacement", async () => {
-    for (const [args, expected] of [
-      [["wallets", "generate", "--chain", "solana", "--count", "2"], "vault new-key"],
-      [["wallets", "export", "--index", "0", "--yes"], "No command in this release prints a private key"],
+  // The two commands are still gone; what changed in 0.11.1 (BE-238, D6) is that the TOMBSTONE is
+  // gone too. Andrew's 2026-09-19 call: nobody ran the releases between 0.10.0 and 0.11.0, so the
+  // refusal had no audience, and a routed word documented nowhere is a state no drift test can
+  // see. `index.test.ts`'s T14 pins what they answer now; the assertion that belongs HERE is the
+  // AD-3 half this file owns -- neither word reaches a handler that could open a wallets.enc.
+  test("wallets generate and wallets export reach no handler at all", async () => {
+    for (const args of [
+      ["wallets", "generate", "--chain", "solana", "--count", "2"],
+      ["wallets", "export", "--index", "0", "--yes"],
     ] as const) {
       const h = await harness()
-      const code = await run([...args], h.deps)
-      expect(code).toBe(2)
-      expect(h.stderr.text).toContain("was removed in CLI 0.10.0")
-      expect(h.stderr.text).toContain(expected)
-      // It names the earlier release that still opens a wallets.enc, which is the one thing an
-      // operator holding such a file needs.
-      expect(h.stderr.text).toContain("cli-v0.9.2")
+      expect(await run([...args], h.deps)).toBe(2)
+      // No key material, no file, and none of the tombstone's own wording.
+      expect(h.stdout.text).toBe("")
+      expect(h.stderr.text).not.toContain("was removed in CLI 0.10.0")
+      expect(h.stderr.text).not.toContain("cli-v0.9.2")
     }
-  })
-
-  test("the same refusal under --json carries the stable code", async () => {
-    const h = await harness()
-    expect(await run(["wallets", "export", "--json"], h.deps)).toBe(2)
-    const body = JSON.parse(h.stdout.text) as { ok: boolean; code: string }
-    expect(body).toMatchObject({ ok: false, code: "COMMAND_REMOVED" })
   })
 
   test("no shipping code path reads CANDLE_KEYSTORE_PASSPHRASE's value", async () => {

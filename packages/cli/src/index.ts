@@ -24,8 +24,10 @@ import { hostname } from "node:os"
 import { pathToFileURL } from "node:url"
 import { resolveApiUrl } from "./client"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
+import { completion, completionBash, completionFish, completionZsh } from "./commands/completion"
 import { doctor } from "./commands/doctor"
 import { externalList, externalNew, externalSweep } from "./commands/external"
+import { help } from "./commands/help"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { keysWallets } from "./commands/keys-wallets"
 import { launch } from "./commands/launch"
@@ -54,11 +56,11 @@ import { vaultStatus } from "./commands/vault-status"
 import { vaultTransfer } from "./commands/vault-transfer"
 import { verify } from "./commands/verify"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
-import { walletsExportRemoved, walletsGenerateRemoved } from "./commands/wallets-removed"
 import type { CliConfig } from "./config"
 import { clearConfig, readConfig, updateProfile, writeConfig } from "./config"
 import type { CommandContext, Deps } from "./deps"
 import { verifyProfileAccount } from "./guard"
+import { renderTopic, renderTopLevel } from "./help"
 import { resolveSecretStore, SECRETS_SERVICE } from "./keychain"
 import { pluginInvocation, realRunPlugin } from "./plugins"
 import { migratedConfig, profileSecretRef, resolveProfileName, resolveProfileNameForLogin } from "./profiles"
@@ -116,95 +118,6 @@ function extractGlobalFlags(argv: string[]): { rest: string[]; flags: GlobalFlag
   return { rest, flags }
 }
 
-const HELP_TEXT = `candle: manage Candle agent credentials from the terminal
-
-Usage: candle <command> [subcommand] [options]
-
-Commands:
-  swap <from> <to> --amount <n>|--percent <n> --wallet <tee>   Quote, confirm and swap on Solana
-  swap status <id> [--kind trade|swap|launch]                    Read an operation without resending it
-  launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee>
-                                                                  Create a Solana token; first buy is a separate swap
-  auth login [--scopes <a,b,c>] [--label <name>] [--no-browser]   Authorize this device
-             [--profile <name>]
-  auth status                                                     Show credential status
-  auth logout [--keep-key]                                        Clear local credentials
-  keys list                                                       List API keys
-  keys create [--scopes <a,b,c>] [--label <name>]                 Create an API key
-              [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]
-  keys revoke <prefix>                                            Revoke an API key
-  keys wallets <prefix>                                           Wallets an agent profile can use
-    set <prefix> --wallets <id,id>                                Replace the profile's wallet set
-    scope <prefix> --scope <all|selected>                         Limit a profile to assigned wallets
-  wallet                                                          Show launch and linked wallets (wallets is an alias)
-  wallet import --chain <solana|evm> [options]                    Import a wallet you own (key via --key-file or hidden prompt)
-  wallet revoke <wallet-id>                                       Revoke a linked wallet
-  wallet generate                                                 Removed in 0.10.0: use vault new-key
-  wallet export                                                   Removed in 0.10.0: no command prints a private key
-  vault init [--own-passphrase] [--high-value]                    Create the vault: one passphrase factor and an HD root
-  vault status [--unlock]                                         What the vault holds, and what opens it
-  vault new-key --chain solana [--label <name>]                   Derive the next Solana key inside the vault
-  vault phrase show                                               Show the 24-word recovery phrase (terminal only)
-  vault restore --phrase [--count <n>] [--tee-count <k>]          Rebuild a vault from the recovery phrase
-                [--external-count <e>] [--rpc-url <url>]
-  vault reconcile-exposure                                        Re-read this account and add exposure; clears nothing
-  vault factor list | add passphrase|security-key|touch-id|passkey | remove <id>
-                                                                  Manage the factors that open the vault
-  vault backup --to <path> [--accept-shared-domain]               Copy the vault and verify the copy in full
-  vault verify-backup <path>                                      Verify a copy in full (all eight steps)
-  vault import-legacy --tee [--from <path>]                       Migrate tee-wallets.enc into the vault
-  vault retire-legacy [--from <path>]                             Rename the Phase 1 store after a verified backup
-  vault transfer <to> --amount <n> --asset SOL|<mint> --from <label> --rpc-url <url>
-                                                                  Sign a vault-key transfer locally
-  vault promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>]
-                                                                  Fresh TEE key, or promote one vault key in place (AD-8)
-  vault fund <tee-address|external> --amount <n> --asset SOL|USDC --rpc-url <url> [--from <label>]
-                                                                  Fund a TEE wallet from its pinned vault key, or an external wallet from a vault key
-  vault demote <tee-address> --rpc-url <url> [--emergency]        Disable then sweep a TEE wallet back to its pin
-  vault export-key <label> --to <new-file>                        Export one key as plaintext (interactive ceremony)
-  tee new [--label <name>]                                        Seal a fresh dedicated Solana TEE wallet key locally
-  tee enable <address> --vault <address>                          Delegate a TEE wallet key; pin the sweep vault (--vault-key <label> also)
-  tee fund <address> --amount <n> [--asset SOL|USDC]              Print the funding instruction for your vault to sign
-  tee status <address> [--rpc-url <url>]                          Server lifecycle state and on-chain balances
-  tee disable <address>                                           Stop the agent; verified stop or pending, never "done" on a 200
-  tee sweep <address> --rpc-url <url> [--emergency]               Sign locally and move everything to the pinned vault
-  external new [--label <name>]                                   Derive an external wallet for outside tools (never delegated, never registered)
-  external list                                                   The external wallets in the vault
-  external sweep <external> --to <vault> --rpc-url <url>          Send everything an external wallet holds back to a vault key
-  sign [--file <path>] --wallet <external>... [--broadcast] [--yes]
-                                                                  Decode, simulate and sign a base64 transaction with an external wallet
-  sign message --wallet <external> [--file <path>] [--yes]        Sign an off-chain message (the exact bytes of the file or stdin)
-  secrets set <name>                                              Store one of your own third-party API keys (hidden prompt, never sent to Candle)
-  secrets list                                                    The names of your stored secrets
-  secrets remove <name>                                           Delete a stored secret
-  plugins                                                         List the candle-<name> plug-ins on your PATH
-  profile list                                                    Profiles on this machine, with cached accounts
-  profile add <name> --api-url <url>                              Create a profile before authenticating it
-  profile use <name>                                              Make a profile the active one
-  profile rename <old> <new>                                      Rename a profile
-  profile remove <name> --yes                                     Delete a profile and its stored credentials
-  setup [--no-browser]                                            One wizard: authorize, fund, connect, verify
-  mcp [--tools <a,b,c>] [--read-only] [--print-config]            Run the Candle MCP server with stored credentials
-  doctor                                                          Diagnose CLI setup
-  verify <file> --bundle <path>                                   Verify a release asset's Sigstore bundle
-  update [--check] [--to <tag>]                                   Update the CLI to the latest signed release
-
-Global options:
-  --api-url <url>         Override the API base URL
-  --profile <name>        Act as a named profile (see: candle auth login --profile)
-  --no-verify-account     Skip the check that the stored key belongs to the profile's account
-  --factor <id|kind>      Vault commands: unlock with this envelope id, or "passphrase", "security-key", "touch-id" or "passkey"
-  --device <id>           Vault commands: the security key to use, by the id vault factor list prints
-  --json                  Machine-readable output
-  --help, -h              Show this help
-  --version, -v           Show the CLI version
-
-Plug-ins:
-  candle <name> [--secret <name>]... [--wallet <label>]... [args]
-                          Runs the executable candle-<name> from your PATH with an allowlist environment:
-                          only the secrets and external wallet addresses named here, never a Candle credential.
-`
-
 type CommandHandler = (args: string[], ctx: CommandContext) => Promise<number>
 
 interface CommandRoute {
@@ -228,15 +141,13 @@ const COMMANDS: Record<string, CommandRoute> = {
   launch: { bare: launch },
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
   keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke, wallets: keysWallets } },
+  // D6 (BE-238): `wallets generate` and `wallets export` were tombstoned in 0.10.0 and are gone
+  // in 0.11.1. Nobody ran the releases in between (BE-235, item 3), so the tombstone had no
+  // audience, and a routed word documented nowhere is the half-state the drift test cannot see.
+  // `wallets` has a bare form, so those two words never reach unknownCommand. They answer as
+  // any other leftover positional after wallet: Unexpected argument, exit 2 (T14).
   wallets: {
-    subcommands: {
-      import: walletsImport,
-      revoke: walletsRevoke,
-      // AD-3: removed in 0.10.0, still ROUTED so the refusal can name the replacement and the
-      // release that still opens a wallets.enc. Exit 2 with COMMAND_REMOVED.
-      generate: walletsGenerateRemoved,
-      export: walletsExportRemoved,
-    },
+    subcommands: { import: walletsImport, revoke: walletsRevoke },
     bare: wallets,
   },
   // Ember Phase 2 (BE-136). Local custody: every one of these reads or writes `vault.enc` on this
@@ -287,24 +198,33 @@ const COMMANDS: Record<string, CommandRoute> = {
   setup: { bare: setup },
   verify: { bare: verify },
   update: { bare: update },
+  // D1/D7 (BE-238). Both are in the table so the drift test sees them and so `ROUTED_COMMANDS`
+  // covers them, but neither is dispatched from the walk at the bottom of `runCommand`: they are
+  // answered earlier, before any config is read. See the comment at that branch.
+  completion: {
+    subcommands: { zsh: completionZsh, bash: completionBash, fish: completionFish },
+    bare: completion,
+  },
+  help: { bare: help },
 }
 
 /** Every command word the dispatch table routes. The guard's gate reads it so that an
- * unrecognized word prints usage without a network call. `index.test.ts` asserts it against the
- * Commands: block of HELP_TEXT, which enforces exactly this: a command DOCUMENTED in HELP_TEXT
- * must appear here. A command added to dispatch with no help entry satisfies the test and still
- * runs unguarded; what prevents that is the convention that every command is documented, not the
- * test. */
+ * unrecognized word prints usage without a network call. `index.test.ts`'s T1 asserts it against
+ * `Object.keys(HELP)` (help.ts) in BOTH directions: every routed word has a topic screen, and
+ * every topic screen routes. The old version of that test compared against the rendered help and
+ * could only enforce one direction, so a command added to dispatch and documented nowhere passed
+ * it and still ran unguarded. Reading the data rather than the rendering is what closes that. */
 export const ROUTED_COMMANDS = new Set(Object.keys(COMMANDS))
 
 /**
  * Command-word aliases, resolved to the canonical word BEFORE routing and before the guard reads
- * the command word. `wallet` -> `wallets`: the singular is the friendlier primary (HELP_TEXT
- * documents it), but `wallets` is released and referenced by docs, skills and the MCP surface, so
+ * the command word. `wallet` -> `wallets`: the singular is the friendlier primary (the topic's
+ * `display` in help.ts is it), but `wallets` is released and referenced by docs, skills and the MCP surface, so
  * it stays the canonical word every derived set (`ROUTED_COMMANDS`, `ROUTED_SUBCOMMANDS`, the
  * guard, dispatch) reasons about. An alias therefore inherits the canonical command's subcommands
- * and its guard for free. `index.test.ts`'s drift test maps documented words through this before
- * comparing, so a documented alias is allowed precisely when its target is a routed command.
+ * and its guard for free. T1 maps `HELP`'s keys through this before comparing, and pins every
+ * `display` to an alias entry, so the friendlier spelling on screen and the word dispatch accepts
+ * can never come apart.
  */
 export const ALIASES: Record<string, string> = { wallet: "wallets" }
 
@@ -318,7 +238,7 @@ function canonicalCommand(word: string | undefined): string | undefined {
  * take none and are absent). The guard reads it to tell an invocation that is about to RUN from
  * one that is about to print usage: `candle keys bogus` names no subcommand dispatch has, so it
  * gets usage without a verification request first. Derived from the table above, so it cannot
- * drift from the chain; the help-text test pins it against the documented subcommands. */
+ * drift from the chain; T2 pins it against each topic's documented rows. */
 export const ROUTED_SUBCOMMANDS: Record<string, readonly string[]> = Object.fromEntries(
   Object.entries(COMMANDS)
     .filter(([, route]) => route.subcommands !== undefined)
@@ -343,8 +263,9 @@ function subHandlerFor(route: CommandRoute | undefined, sub: string | undefined)
 }
 
 /** Whether dispatch will hand this invocation to a command at all. False means the chain answers
- * `unknownCommand`, which needs no identity and must cost no request. */
-function routesToCommand(cmd: string | undefined, sub: string | undefined): boolean {
+ * `unknownCommand`, which needs no identity and must cost no request. Exported for T7, which
+ * checks that every example on every topic screen names a command that actually runs. */
+export function routesToCommand(cmd: string | undefined, sub: string | undefined): boolean {
   const route = routeFor(cmd)
   if (!route) return false
   if (subHandlerFor(route, sub) !== undefined) return true
@@ -368,6 +289,11 @@ function routesToCommand(cmd: string | undefined, sub: string | undefined): bool
  * stored (setup.ts) and then mints keys as whoever those credentials belong to.
  *
  * `update` acts as no identity and must work before any login.
+ *
+ * `help` and `completion` (BE-238, D1/D7) read nothing and make no request, the same reason
+ * `verify` is here. Membership alone is not what makes them work on a machine with no profile
+ * selected -- this set only skips `verifyProfileAccount` below, and profile resolution runs
+ * before it -- so they are also dispatched ahead of that resolution. Both halves are needed.
  */
 export const NEVER_GUARDED = new Set([
   "auth",
@@ -375,6 +301,8 @@ export const NEVER_GUARDED = new Set([
   "doctor",
   "verify",
   "update",
+  "help",
+  "completion",
   // R6 (P3-AD-10): Candle is never a party to what these do. `external`, `sign`, `secrets` and
   // `plugins` act as no Candle identity and make no Candle request, and the guard's own request
   // would be one; a plug-in invocation is exempt for the same reason (`pluginInvocation`, plugins.ts).
@@ -459,8 +387,13 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
     deps.stdout.write(`${CLI_VERSION}\n`)
     return 0
   }
+  // D1 (BE-238): the `--help` short-circuit stays exactly where it is -- BEFORE `migrateProfiles`
+  // and `resolveProfileName` below -- which is why `candle --help` and `candle vault --help` have
+  // always worked on a machine with several profiles and none selected. What changes is WHICH
+  // screen: the command word that survived flag stripping selects its topic, and a word that is
+  // not a command falls back to the top level, as a bare `candle --help` does.
   if (flags.help) {
-    deps.stdout.write(HELP_TEXT)
+    deps.stdout.write(renderTopic(canonicalCommand(tokens[0]) ?? "") ?? renderTopLevel())
     return 0
   }
 
@@ -469,6 +402,29 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
   // typed `wallet`. `sub` is untouched, so `wallet import` dispatches as `wallets import`.
   const [rawCmd, sub, ...cmdArgs] = tokens
   const cmd = canonicalCommand(rawCmd)
+
+  // D1/D7 (BE-238): `help` and `completion` are answered HERE -- after the command word is known,
+  // before `migrateProfiles` and `resolveProfileName` below. Being in `NEVER_GUARDED` is not
+  // enough on its own: that set only skips `verifyProfileAccount`, and resolution runs first, so
+  // on a machine with several profiles and none selected a routed `help vault` would be
+  // `PROFILE_UNRESOLVED` while `vault --help` kept working. `isProfileCommand`'s skip below is
+  // not the shape either -- it avoids `resolveProfileName` but still runs `migrateProfiles`,
+  // which WRITES config. Help and completion must read and write nothing: they are how the
+  // operator with no identity yet discovers CANDLE_CONFIG_DIR in the first place (BE-235, item 4).
+  if (cmd === "help" || cmd === "completion") {
+    return dispatch(cmd, sub, cmdArgs, tokens, {
+      deps,
+      json: flags.json,
+      apiUrl: flags.apiUrl ?? resolveApiUrl(undefined, deps.env),
+      apiUrlFlag: flags.apiUrl,
+      profile: undefined,
+      profileFlag: flags.profile,
+      verifyAccount: !flags.noVerifyAccount,
+      vaultFactor: flags.vaultFactor,
+      vaultDevice: flags.vaultDevice,
+    })
+  }
+
   const config = await migrateProfiles(deps)
   // `auth login` resolves LENIENTLY about EXISTENCE (resolveProfileNameForLogin): its `--profile`
   // may name a profile to CREATE, so it must not be gated by resolveProfileName's "does this name
@@ -556,6 +512,21 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
     if (verdict.warning) deps.stderr.write(`${verdict.warning}\n`)
   }
 
+  return dispatch(cmd, sub, cmdArgs, tokens, ctx)
+}
+
+/**
+ * The dispatch walk itself: the command's subcommand, then its bare form, then the routing
+ * failure. One copy, called from the end of `runCommand` and from the early `help`/`completion`
+ * branch above, so the two cannot come to route the same invocation differently.
+ */
+async function dispatch(
+  cmd: string | undefined,
+  sub: string | undefined,
+  cmdArgs: string[],
+  tokens: string[],
+  ctx: CommandContext,
+): Promise<number> {
   const route = routeFor(cmd)
   const handler = subHandlerFor(route, sub)
   if (handler) return handler(cmdArgs, ctx)
@@ -563,9 +534,10 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
   // destructured away as one (`candle mcp --read-only`, `candle wallets --json`).
   if (route?.bare) return route.bare(tokens.slice(1), ctx)
   // A known word with a subcommand it does not have names the pair; with none typed, there is
-  // nothing to be wrong about and help alone is the answer.
-  if (route) return unknownCommand(deps, sub === undefined ? undefined : `${cmd} ${sub}`)
-  return unknownCommand(deps, cmd)
+  // nothing to be wrong about and help alone is the answer. Either way the screen is that
+  // command's own topic, not the whole surface (D1).
+  if (route) return unknownCommand(ctx.deps, sub === undefined ? undefined : `${cmd} ${sub}`, cmd)
+  return unknownCommand(ctx.deps, cmd)
 }
 
 /**
@@ -592,10 +564,15 @@ function splitFix(message: string): { message: string; suggestion?: string } {
 /** Names the offending token before printing help, so "it printed usage" and "it did not
  * recognize THIS word" are distinguishable -- the runbook's bunx diagnostic reads the token back.
  * `undefined` means nothing was typed to be wrong about (a bare `candle`, or `candle auth` with
- * no subcommand), which gets help alone. Exit 1 either way: a routing failure, nothing ran. */
-function unknownCommand(deps: Deps, token: string | undefined): number {
+ * no subcommand), which gets help alone. Exit 1 either way: a routing failure, nothing ran.
+ *
+ * `word` is the command whose topic to print (D1): a routing failure INSIDE a known command shows
+ * that command's screen, which is where the subcommand that was meant is listed. An unknown
+ * command word has no topic, so the top level is the answer -- that is the screen listing the
+ * words there are. Both go to stderr, as they always have. */
+function unknownCommand(deps: Deps, token: string | undefined, word?: string): number {
   if (token !== undefined) deps.stderr.write(`Unknown command: ${token}\n`)
-  deps.stderr.write(HELP_TEXT)
+  deps.stderr.write((word === undefined ? undefined : renderTopic(word)) ?? renderTopLevel())
   return 1
 }
 

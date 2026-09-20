@@ -6,10 +6,11 @@
  */
 
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { ALIASES, buildRealDeps, NEVER_GUARDED, ROUTED_COMMANDS, ROUTED_SUBCOMMANDS, run } from "./index"
+import { GROUPS, HELP } from "./help"
+import { buildRealDeps, NEVER_GUARDED, ROUTED_COMMANDS, ROUTED_SUBCOMMANDS, run } from "./index"
 import {
   createCapture,
   createFakeConfigStore,
@@ -18,6 +19,7 @@ import {
   createTestDeps,
   jsonResponse,
 } from "./test-support"
+import { VAULT_ERROR_CODES } from "./vault/errors"
 import { CLI_VERSION } from "./version"
 
 describe("dispatch", () => {
@@ -37,16 +39,27 @@ describe("dispatch", () => {
     const control = createCapture()
     expect(await run(["frobnicate"], createTestDeps({ fetch: unusedFetch, stderr: control }))).toBe(1)
 
+    // An unknown COMMAND WORD reads exactly like any other unknown word, top level and all.
     for (const [argv, token] of [
       [["toString"], "toString"],
       [["constructor", "foo"], "constructor"],
-      [["keys", "toString"], "keys toString"],
     ] as const) {
       const stderr = createCapture()
       // unusedFetch throws, so this also pins that none of them pays for a verification request.
       expect(await run([...argv], createTestDeps({ fetch: unusedFetch, stderr }))).toBe(1)
       expect(stderr.text).toBe(control.text.replace("frobnicate", token))
     }
+
+    // A prototype member in SUBCOMMAND position is the same refusal one level down: the pair is
+    // named and the screen is that command's own topic (D1), not a handler that is not one being
+    // found on Object.prototype and called.
+    const keysControl = createCapture()
+    expect(await run(["keys", "frobnicate"], createTestDeps({ fetch: unusedFetch, stderr: keysControl }))).toBe(1)
+    const sub = createCapture()
+    expect(await run(["keys", "toString"], createTestDeps({ fetch: unusedFetch, stderr: sub }))).toBe(1)
+    expect(sub.text).toBe(keysControl.text.replace("frobnicate", "toString"))
+    expect(sub.text).toContain("Unknown command: keys toString")
+    expect(sub.text).toContain("candle keys:")
   })
 
   // `bunx github:candledottv/agentic candle auth login` resolves the bin by name and then hands
@@ -146,10 +159,12 @@ describe("dispatch", () => {
     expect(stdoutVersion.text.trim()).toBe(CLI_VERSION)
   })
 
-  test("every global option's description starts in the same column, --profile included", async () => {
+  test("every global flag's description starts in the same column, --profile included", async () => {
     const stdout = createCapture()
     await run(["--help"], createTestDeps({ fetch: unusedFetch, stdout }))
-    const globals = stdout.text.slice(stdout.text.indexOf("Global options:")).split("\n")
+    const globals = stdout.text
+      .slice(stdout.text.indexOf("Global flags"), stdout.text.indexOf("Environment"))
+      .split("\n")
     const columns = globals
       .filter((line) => line.startsWith("  --"))
       .map((line) => (line.match(/^ {2}.*? {2,}(?=\S)/) as RegExpMatchArray)[0].length)
@@ -836,58 +851,166 @@ describe("the account guard at dispatch", () => {
     expect(calls).toHaveLength(1)
   })
 
-  test("the guarded set stays in step with the commands dispatch routes", async () => {
-    // ROUTED_COMMANDS duplicates the dispatch chain, so a command added there and left out here
-    // would be silently unguarded. The help text's Commands: block is the third copy, and what
-    // this compares against. What it enforces is one direction: a command DOCUMENTED in the help
-    // must be in the set. A command added to dispatch and documented nowhere passes this test and
-    // still runs unguarded; the convention that every command is documented is what closes that.
+  /**
+   * T4 (spec 0.11.1). The RENDERED top level, as against the data drift T1 checks in
+   * help.drift.test.ts: a group can silently drop a word without T1 noticing, because the word
+   * would still be in `HELP`. This is what notices.
+   */
+  test("T4: the top level lists every command word exactly once, under the six groups, with ENVIRONMENT", async () => {
     const stdout = createCapture()
-    await run(["--help"], createTestDeps({ fetch: unusedFetch, stdout }))
-    const block = stdout.text.slice(
-      stdout.text.indexOf("Commands:") + "Commands:".length,
-      stdout.text.indexOf("Global options:"),
-    )
-    // A documented word is mapped through ALIASES before the comparison: a documented ALIAS
-    // (`wallet`) is legitimate precisely when it resolves to a routed command (`wallets`). This
-    // keeps the invariant intact -- every documented word resolves to something dispatch routes,
-    // and every routed command is documented -- without exempting the alias by hand.
-    const documented = new Set(
-      block
-        .split("\n")
-        .map((line) => line.match(/^ {2}(\S+)/)?.[1])
-        .filter((word): word is string => word !== undefined)
-        .map((word) => ALIASES[word] ?? word),
-    )
-    expect([...documented].sort()).toEqual([...ROUTED_COMMANDS].sort())
-    // Every alias points at a command that is actually routed, or the mapping above would launder
-    // a documented word into a routed one that dispatch cannot reach.
-    expect(Object.values(ALIASES).filter((target) => !ROUTED_COMMANDS.has(target))).toEqual([])
-    // A typo here would silently guard a command the ruling exempts, or exempt nothing at all.
-    expect([...NEVER_GUARDED].filter((word) => !ROUTED_COMMANDS.has(word))).toEqual([])
-    // `update` replaces this binary and acts as no identity, so it must keep working on a machine
-    // whose stored key belongs to another account -- that is precisely when an upgrade is wanted.
-    expect(NEVER_GUARDED.has("update")).toBe(true)
+    expect(await run(["--help"], createTestDeps({ fetch: unusedFetch, stdout }))).toBe(0)
+    const text = stdout.text
 
-    // The same block documents SUBCOMMANDS ("auth login", "keys create"), and the guard now reads
-    // them: an invocation whose subcommand is not one dispatch routes is about to print usage, so
-    // it is not verified. A subcommand documented here and missing from the map would therefore
-    // run its command with no verification at all.
-    const documentedSubs: Record<string, string[]> = {}
-    for (const line of block.split("\n")) {
-      // The second token only counts when it is a plain word: `setup [--no-browser]` and `keys
-      // revoke <prefix>` document a flag and an argument, not a subcommand.
-      const match = line.match(/^ {2}(\S+) ([a-z][a-z-]*)(?:\s|$)/)
-      if (!match?.[1] || !match[2]) continue
-      // The word is mapped through ALIASES too, so `wallet import` is recorded against the routed
-      // `wallets`, matching ROUTED_SUBCOMMANDS which is keyed by the canonical word.
-      const word = ALIASES[match[1]] ?? match[1]
-      documentedSubs[word] = [...(documentedSubs[word] ?? []), match[2]]
+    // The rows live between the first group heading and the global flags block. Bounding the scan
+    // matters: `  --profile <name>` below it starts a row too, and is not a command word.
+    const region = text.slice(text.indexOf(`\n${GROUPS[0]}\n`), text.indexOf("\nGlobal flags\n"))
+    const rowWords = region
+      .split("\n")
+      .map((line) => line.match(/^ {2}(\S+)/)?.[1])
+      .filter((word): word is string => word !== undefined)
+    const displayed = Object.entries(HELP).map(([word, topic]) => topic.display ?? word)
+    expect([...rowWords].sort()).toEqual([...displayed].sort())
+    // Exactly once each: a word listed under two groups would pass the sort above only if another
+    // were missing, but saying it directly is what makes the failure readable.
+    expect(new Set(rowWords).size).toBe(rowWords.length)
+
+    let previous = -1
+    for (const group of GROUPS) {
+      const at = text.indexOf(`\n${group}\n`)
+      expect(at).toBeGreaterThan(previous)
+      previous = at
     }
-    const sorted = (map: Record<string, readonly string[]>) =>
-      Object.fromEntries(Object.entries(map).map(([word, subs]) => [word, [...subs].sort()]))
-    expect(sorted(documentedSubs)).toEqual(sorted(ROUTED_SUBCOMMANDS))
-    expect(Object.keys(ROUTED_SUBCOMMANDS).filter((word) => !ROUTED_COMMANDS.has(word))).toEqual([])
+    // The section whose absence stranded the operator in BE-235's item 4.
+    expect(text).toContain("\nEnvironment\n")
+    expect(text).toContain("CANDLE_CONFIG_DIR")
+  })
+
+  /**
+   * T5. The two ways of asking for one command's help are the same screen, for every routed word.
+   * The several-profiles half is the point of D1's early dispatch: `--help` short-circuits before
+   * profile resolution and always has, so without it `vault --help` would work on that machine
+   * and `help vault` would not, and this test would be comparing one screen against a refusal.
+   */
+  test("T5: `<word> --help` and `help <word>` are one screen, and both answer with no profile selected", async () => {
+    for (const word of ROUTED_COMMANDS) {
+      const display = HELP[word]?.display ?? word
+      const viaFlag = createCapture()
+      expect(await run([word, "--help"], createTestDeps({ fetch: unusedFetch, stdout: viaFlag }))).toBe(0)
+      const viaWord = createCapture()
+      expect(await run(["help", word], createTestDeps({ fetch: unusedFetch, stdout: viaWord }))).toBe(0)
+
+      expect(viaWord.text).toBe(viaFlag.text)
+      expect(viaFlag.text.startsWith(`candle ${display}:`)).toBe(true)
+      for (const subcommand of ROUTED_SUBCOMMANDS[word] ?? []) {
+        // At the start of a row, not merely somewhere in the prose.
+        expect(viaFlag.text).toMatch(new RegExp(`^ {2}${subcommand}(?:\\s|$)`, "m"))
+      }
+    }
+
+    // index.test.ts's own several-profiles fixture: any routed word that reaches profile
+    // resolution is PROFILE_UNRESOLVED here.
+    for (const argv of [["help"], ["help", "vault"], ["vault", "--help"], ["completion", "zsh"]]) {
+      const stdout = createCapture()
+      const stderr = createCapture()
+      const code = await run(
+        argv,
+        createTestDeps({
+          fetch: unusedFetch,
+          stdout,
+          stderr,
+          ...createFakeConfigStore({ profiles: { staging: {}, production: {} } }),
+        }),
+      )
+      expect([argv.join(" "), code]).toEqual([argv.join(" "), 0])
+      expect(stdout.text.length).toBeGreaterThan(0)
+      expect(stderr.text).not.toContain("Several profiles")
+      expect(stdout.text).not.toContain("PROFILE_UNRESOLVED")
+    }
+  })
+
+  /** T6. A routing failure prints the NEAREST topic, which is the screen listing what was meant. */
+  test("T6: a routing failure prints the nearest topic, on stderr, exit 1", async () => {
+    // A known word with no bare form and no subcommand typed: nothing to be wrong about, so the
+    // topic alone. This is index.test.ts:100's meaning, one screen narrower.
+    const bare = createCapture()
+    expect(await run(["vault"], createTestDeps({ fetch: unusedFetch, stderr: bare }))).toBe(1)
+    expect(bare.text).not.toContain("Unknown command")
+    expect(bare.text).toContain("candle vault:")
+
+    const badSub = createCapture()
+    expect(await run(["vault", "bogus"], createTestDeps({ fetch: unusedFetch, stderr: badSub }))).toBe(1)
+    expect(badSub.text).toContain("Unknown command: vault bogus")
+    expect(badSub.text).toContain("candle vault:")
+    // The whole surface is what it used to print. It does not any more.
+    expect(badSub.text).not.toContain("Start here")
+
+    for (const argv of [["bogus"], ["help", "bogus"]]) {
+      const stderr = createCapture()
+      expect(await run(argv, createTestDeps({ fetch: unusedFetch, stderr }))).toBe(1)
+      expect(stderr.text).toContain("Unknown command: bogus")
+      expect(stderr.text).toContain("Start here")
+    }
+
+    // Same fixture as T5: `help bogus` is still the unknown-command path, not a profile refusal.
+    const stdout = createCapture()
+    const stderr = createCapture()
+    expect(
+      await run(
+        ["help", "bogus"],
+        createTestDeps({
+          fetch: unusedFetch,
+          stdout,
+          stderr,
+          ...createFakeConfigStore({ profiles: { staging: {}, production: {} } }),
+        }),
+      ),
+    ).toBe(1)
+    expect(stderr.text).toContain("Unknown command: bogus")
+    expect(stderr.text).not.toContain("Several profiles")
+  })
+
+  /**
+   * T14 (D6). The 0.10.0 tombstones are gone, both pieces. Removing the help rows alone would
+   * have left two reachable, undocumented handlers, which is the worse half-state: the drift test
+   * accepts a routed command with no row, but not a row that does not route.
+   */
+  test("T14: wallet generate and wallet export answer exactly as any other word after wallet does", async () => {
+    // The spec's D6 predicts `Unknown command: wallets generate` + the wallets topic, exit 1.
+    // That is not reachable here and the implementation does not fake it: `wallets` has a BARE
+    // form, so dispatch hands it every token after the word and `unknownCommand` is never
+    // reached -- which is why `candle wallet bogus` has always been `Unexpected argument`, exit
+    // 2, and still is. Making the two removed words exit 1 would mean changing that refusal for
+    // every word after `wallet`, and the spec's own section 1.1 freezes exit codes. So the
+    // tombstone is what goes, and these two become indistinguishable from any other stray word,
+    // which is the outcome D6 actually asks for. `control` is what "indistinguishable" means.
+    const control = createCapture()
+    expect(await run(["wallet", "bogus"], createTestDeps({ fetch: unusedFetch, stderr: control }))).toBe(2)
+
+    for (const argv of [
+      ["wallet", "generate"],
+      ["wallets", "export"],
+    ]) {
+      const stdout = createCapture()
+      const stderr = createCapture()
+      expect([argv.join(" "), await run(argv, createTestDeps({ fetch: unusedFetch, stdout, stderr }))]).toEqual([
+        argv.join(" "),
+        2,
+      ])
+      expect(stderr.text).toBe(control.text.replace("bogus", argv[1] as string))
+      // The tombstone's wording and its typed code are what is being retired.
+      expect(stderr.text).not.toContain("was removed in CLI 0.10.0")
+      expect(stderr.text).not.toContain("cli-v0.9.2")
+      expect(stdout.text).toBe("")
+    }
+
+    // Under --json too: the envelope carries USAGE, never the retired code.
+    const jsonOut = createCapture()
+    expect(await run(["wallets", "export", "--json"], createTestDeps({ fetch: unusedFetch, stdout: jsonOut }))).toBe(2)
+    expect(JSON.parse(jsonOut.text)).toMatchObject({ ok: false, code: "USAGE" })
+
+    // A code nothing throws is a code nothing can be tested against (vault/errors.ts's own rule).
+    expect([...VAULT_ERROR_CODES]).not.toContain("COMMAND_REMOVED")
+    expect(existsSync(join(import.meta.dir, "commands", "wallets-removed.ts"))).toBe(false)
   })
 })
 

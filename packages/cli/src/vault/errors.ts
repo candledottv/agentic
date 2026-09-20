@@ -47,7 +47,9 @@ export const VAULT_ERROR_CODES = [
   "VAULT_SHARED_DOMAIN",
   "VAULT_BACKUP_INSIDE_CONFIG",
   "ENV_PASSPHRASE_REFUSED",
-  "COMMAND_REMOVED",
+  // "COMMAND_REMOVED" was the 0.10.0 tombstone for `wallets generate` / `wallets export`. Both
+  // handlers were removed in 0.11.1 (BE-238, D6), so nothing throws it -- and by this file's own
+  // rule, a code nothing throws is a code nothing can be tested against.
   "CHAIN_NOT_OFFERED",
   "DESTINATION_NOT_CONFIRMED",
   "PHRASE_REQUIRES_TTY",

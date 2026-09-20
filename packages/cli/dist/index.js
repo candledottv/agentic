@@ -1813,9 +1813,9 @@ function anumArr(label, input) {
 }
 function chain(...args) {
   const id = (a) => a;
-  const wrap = (a, b) => (c) => a(b(c));
-  const encode = args.map((x) => x.encode).reduceRight(wrap, id);
-  const decode = args.map((x) => x.decode).reduce(wrap, id);
+  const wrap2 = (a, b) => (c) => a(b(c));
+  const encode = args.map((x) => x.encode).reduceRight(wrap2, id);
+  const decode = args.map((x) => x.decode).reduce(wrap2, id);
   return { encode, decode };
 }
 function alphabet(letters) {
@@ -2254,7 +2254,6 @@ var init_errors = __esm(() => {
     "VAULT_SHARED_DOMAIN",
     "VAULT_BACKUP_INSIDE_CONFIG",
     "ENV_PASSPHRASE_REFUSED",
-    "COMMAND_REMOVED",
     "CHAIN_NOT_OFFERED",
     "DESTINATION_NOT_CONFIRMED",
     "PHRASE_REQUIRES_TTY",
@@ -3834,8 +3833,8 @@ function parseVaultFile(raw) {
         refuse("VAULT_UNREADABLE", `An envelope is missing its ${field}, which every factor carries.`);
       }
     }
-    const wrap = envelope.wrap;
-    if (!isBlob(wrap) || wrap.alg !== VAULT_CIPHER) {
+    const wrap2 = envelope.wrap;
+    if (!isBlob(wrap2) || wrap2.alg !== VAULT_CIPHER) {
       refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has a malformed wrap.`);
     }
     if (envelope.factor === "passphrase") {
@@ -35997,6 +35996,741 @@ async function authStatus(args, ctx) {
   return exitCode;
 }
 
+// src/help.ts
+var GROUPS = [
+  "Start here",
+  "Trade",
+  "Account",
+  "Custody, on this machine",
+  "Your own services",
+  "Maintain"
+];
+var ENVIRONMENT = [
+  {
+    name: "CANDLE_CONFIG_DIR",
+    description: "Where vault.enc, tee-wallets.enc, credentials and config live (default ~/.config/candle). Set it once instead of passing --keystore."
+  },
+  { name: "CANDLE_PROFILE", description: "The profile to act as, when --profile is not given" },
+  { name: "CANDLE_API_URL", description: "API base URL, when --api-url is not given" },
+  { name: "CANDLE_API_KEY", description: "An agent API key; beats the stored one" },
+  { name: "CANDLE_DEVICE_TOKEN", description: "A device token, for key-management commands" },
+  {
+    name: "CANDLE_KEYRING_PASSPHRASE",
+    description: "Unlocks the encrypted-file backend where no OS keychain exists"
+  },
+  { name: "CANDLE_SOLANA_RPC_URL", description: "Solana RPC endpoint, when --rpc-url is not given" },
+  {
+    name: "CANDLE_FIDO2_HELPER",
+    description: "Path to the candle-fido2 helper, when it is not beside the binary"
+  },
+  {
+    name: "CANDLE_ENCLAVE_HELPER",
+    description: "Path to the signed candle-enclave.app helper (macOS)"
+  },
+  { name: "CANDLE_NO_UPDATE_NOTIFIER", description: "Set to 1 to silence the update notice" },
+  {
+    name: "CANDLE_KEYSTORE_PASSPHRASE",
+    description: "Refused: no command reads it; vault and tee commands stop while it is set"
+  }
+];
+var ENV_API = [
+  "CANDLE_PROFILE",
+  "CANDLE_API_URL",
+  "CANDLE_API_KEY",
+  "CANDLE_DEVICE_TOKEN",
+  "CANDLE_KEYRING_PASSPHRASE"
+];
+var ENV_LOCAL_SIGNING = ["CANDLE_CONFIG_DIR", "CANDLE_SOLANA_RPC_URL", "CANDLE_KEYSTORE_PASSPHRASE"];
+var FACTOR_KINDS = ["passphrase", "security-key", "touch-id", "passkey"];
+var COMPLETION_SHELLS = ["zsh", "bash", "fish"];
+var KEYSTORE_FLAG = {
+  invocation: "-k, --keystore <path>",
+  description: "The vault file for this invocation. For a permanent location set CANDLE_CONFIG_DIR instead."
+};
+var GLOBAL_FLAGS = [
+  { invocation: "--profile <name>", description: "Act as a named profile" },
+  { invocation: "--api-url <url>", description: "Override the API base URL" },
+  { invocation: "--json", description: "Machine-readable output: exactly one JSON value on stdout" },
+  { invocation: "--factor <id|kind>", description: "Vault commands: unlock with this envelope" },
+  { invocation: "--device <id>", description: "Vault commands: the security key to use, by id" },
+  {
+    invocation: "--no-verify-account",
+    description: "Skip the check that the stored key belongs to the profile's account"
+  },
+  { invocation: "--help, -h", description: "Show help; after a command word, that command's help" },
+  { invocation: "--version, -v", description: "Show the CLI version" }
+];
+var PLUGIN_LINE = {
+  invocation: "candle <name> [--secret <name>]... [--wallet <label>]... [args]",
+  description: "Runs candle-<name> from your PATH with an allowlist environment: only the secrets and external wallet addresses named here, never a Candle credential."
+};
+var HELP = {
+  setup: {
+    group: "Start here",
+    summary: "One wizard: authorize, fund, connect, verify",
+    description: "The onboarding wizard, safe to re-run: it authorizes this device when it is not already authorized, prints the agent wallets as funding destinations, shows the skill and MCP install lines, and finishes with the full doctor check.",
+    usage: ["candle setup [--no-browser]"],
+    rows: [],
+    flags: [{ invocation: "--no-browser", description: "Print the approval URL instead of opening a browser" }],
+    examples: ["candle setup", "candle setup --no-browser"],
+    env: ENV_API
+  },
+  auth: {
+    group: "Start here",
+    summary: "Authorize this device, or show and clear its credentials",
+    description: "Device authorization: a code is printed, an approval URL is opened or printed, and the device token and API key it returns are stored in this machine's keychain. Nothing here is ever written to a plaintext dotfile.",
+    usage: ["candle auth <subcommand> [flags]"],
+    rows: [
+      {
+        invocation: "login [--scopes <a,b,c>] [--label <name>] [--no-browser] [--profile <name>]",
+        description: "Authorize this device"
+      },
+      { invocation: "status", description: "Show credential status" },
+      { invocation: "logout [--keep-key]", description: "Clear local credentials" }
+    ],
+    examples: [
+      "candle auth login",
+      "candle auth login --no-browser --profile staging",
+      "candle auth status",
+      "candle auth logout --keep-key"
+    ],
+    env: ENV_API
+  },
+  doctor: {
+    group: "Start here",
+    summary: "Diagnose CLI setup: credentials, storage backend, API reachability",
+    description: "One PASS/FAIL/SKIP table over the runtime, the storage backend, both credentials, API reachability and wallet delegation. Its output is meant to be pasted into a bug report. Exits nonzero on any FAIL.",
+    usage: ["candle doctor"],
+    rows: [],
+    examples: ["candle doctor", "candle doctor --json"],
+    env: ENV_API
+  },
+  swap: {
+    group: "Trade",
+    summary: "Quote, confirm and swap on Solana; read an operation by id",
+    description: "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch.",
+    usage: ["candle swap <from> <to> [flags]", "candle swap status <id>"],
+    rows: [
+      {
+        invocation: "<from> <to> --amount <n>|--percent <n> --wallet <tee>",
+        description: "Quote, confirm and swap on Solana"
+      },
+      {
+        invocation: "status <id> [--kind trade|swap|launch]",
+        description: "Read an operation without resending it"
+      }
+    ],
+    examples: [
+      "candle swap SOL USDC --amount 0.5 --wallet AgentOne",
+      "candle swap USDC SOL --percent 100 --wallet AgentOne",
+      "candle swap status op_123 --kind swap"
+    ],
+    env: ENV_API
+  },
+  launch: {
+    group: "Trade",
+    summary: "Create a Solana token (the first buy is a separate swap)",
+    description: "Creates a Solana token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and an operator-enabled allowLaunch.",
+    usage: ["candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee>"],
+    rows: [],
+    flags: [
+      { invocation: "--name <name>", description: "The token's name" },
+      { invocation: "--symbol <symbol>", description: "The token's ticker" },
+      { invocation: "--image-url <url>", description: "The token image, already hosted" },
+      { invocation: "--wallet <tee>", description: "The TEE wallet that creates it" }
+    ],
+    examples: ["candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne"],
+    env: ENV_API
+  },
+  keys: {
+    group: "Account",
+    summary: "API keys, and the wallets each key may use",
+    description: "API keys are minted over the device token and shown exactly once. A key's wallet set and scope decide which wallets an agent holding it may act on.",
+    usage: ["candle keys <subcommand> [flags]"],
+    rows: [
+      { invocation: "list", description: "List API keys" },
+      {
+        invocation: "create [--scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]",
+        description: "Create an API key"
+      },
+      { invocation: "revoke <prefix>", description: "Revoke an API key" },
+      { invocation: "wallets <prefix>", description: "Wallets an agent profile can use" },
+      { invocation: "  set <prefix> --wallets <id,id>", description: "Replace the profile's wallet set" },
+      {
+        invocation: "  scope <prefix> --scope <all|selected>",
+        description: "Limit a profile to assigned wallets"
+      }
+    ],
+    examples: [
+      "candle keys list",
+      "candle keys create --scopes trade:write --label agent-one",
+      "candle keys wallets ck_live_ab12",
+      "candle keys revoke ck_live_ab12"
+    ],
+    env: ENV_API
+  },
+  wallets: {
+    group: "Account",
+    display: "wallet",
+    summary: "Launch and linked wallets; import or revoke one (wallets is an alias)",
+    description: "The account's embedded launch wallets and any wallet you linked, with a Signer column saying whether this machine holds the signing key. Keys are derived in the vault now: this command links and revokes, it never generates or prints one.",
+    usage: ["candle wallet [flags]", "candle wallet <subcommand> [flags]"],
+    rows: [
+      {
+        invocation: "import --chain <solana|evm> [options]",
+        description: "Import a wallet you own (key via --key-file or hidden prompt)"
+      },
+      { invocation: "revoke <wallet-id>", description: "Revoke a linked wallet" }
+    ],
+    examples: [
+      "candle wallet",
+      "candle wallet import --chain solana --key-file ./signer.json",
+      "candle wallet revoke wal_123"
+    ],
+    env: ENV_API
+  },
+  profile: {
+    group: "Account",
+    summary: "Named profiles, one per account or environment",
+    description: "A profile is a named set of credentials and an API URL: one per account, or one per environment. Every other command acts as the selected profile, and these manage the map itself.",
+    usage: ["candle profile <subcommand> [flags]"],
+    rows: [
+      { invocation: "list", description: "Profiles on this machine, with cached accounts" },
+      { invocation: "add <name> --api-url <url>", description: "Create a profile before authenticating it" },
+      { invocation: "use <name>", description: "Make a profile the active one" },
+      { invocation: "rename <old> <new>", description: "Rename a profile" },
+      { invocation: "remove <name> --yes", description: "Delete a profile and its stored credentials" }
+    ],
+    examples: [
+      "candle profile list",
+      "candle profile add staging --api-url https://staging.api.candle.tv",
+      "candle profile use staging",
+      "candle profile remove old --yes"
+    ]
+  },
+  vault: {
+    group: "Custody, on this machine",
+    summary: "Your vault: factors, keys, backup, restore, transfer, promote",
+    description: "Self-custody on this machine. vault.enc holds one data key wrapped once per factor, one encrypted blob per private key, and a 24-word root every derived key comes from. No API, relay or server ever sees a vault key.",
+    usage: ["candle vault <subcommand> [flags]"],
+    rows: [
+      {
+        invocation: "init [--own-passphrase] [--high-value]",
+        description: "Create the vault: one passphrase factor and an HD root"
+      },
+      { invocation: "status [--unlock]", description: "What the vault holds, and what opens it" },
+      {
+        invocation: "new-key --chain solana [--label <name>]",
+        description: "Derive the next Solana key inside the vault"
+      },
+      { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
+      {
+        invocation: "restore --phrase [--count <n>] [--tee-count <k>] [--external-count <e>] [--rpc-url <url>]",
+        description: "Rebuild a vault from the recovery phrase"
+      },
+      {
+        invocation: "reconcile-exposure",
+        description: "Re-read this account and add exposure; clears nothing"
+      },
+      {
+        invocation: "factor list | add <kind> | remove <id>",
+        description: `Manage the factors that open the vault: ${FACTOR_KINDS.join(", ")}`
+      },
+      {
+        invocation: "backup --to <path> [--accept-shared-domain]",
+        description: "Copy the vault and verify the copy in full"
+      },
+      { invocation: "verify-backup <path>", description: "Verify a copy in full (all eight steps)" },
+      { invocation: "import-legacy --tee [--from <path>]", description: "Migrate tee-wallets.enc into the vault" },
+      {
+        invocation: "retire-legacy [--from <path>]",
+        description: "Rename the Phase 1 store after a verified backup"
+      },
+      {
+        invocation: "transfer <to> --amount <n> --asset SOL|<mint> --from <label> --rpc-url <url>",
+        description: "Sign a vault-key transfer locally"
+      },
+      {
+        invocation: "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>]",
+        description: "Fresh TEE key, or promote one vault key in place"
+      },
+      {
+        invocation: "fund <tee-address|external> --amount <n> --asset SOL|USDC --rpc-url <url> [--from <label>]",
+        description: "Fund a TEE or external wallet from a vault key"
+      },
+      {
+        invocation: "demote <tee-address> --rpc-url <url> [--emergency]",
+        description: "Disable then sweep a TEE wallet back to its pin"
+      },
+      {
+        invocation: "export-key <label> --to <new-file>",
+        description: "Export one key as plaintext (interactive ceremony)"
+      }
+    ],
+    flags: [
+      KEYSTORE_FLAG,
+      {
+        invocation: "--factor <id|kind>",
+        description: "Unlock with this envelope: an id from factor list, or passphrase, security-key, touch-id, passkey"
+      },
+      { invocation: "--device <id>", description: "The security key to use when more than one is attached" }
+    ],
+    examples: [
+      "candle vault init",
+      "candle vault new-key --chain solana --label treasury",
+      "candle vault factor add security-key --label yubikey-a",
+      "candle vault backup --to /Volumes/BACKUP/vault.enc",
+      "CANDLE_CONFIG_DIR=$HOME/t47 candle vault status"
+    ],
+    env: ["CANDLE_CONFIG_DIR", "CANDLE_FIDO2_HELPER", "CANDLE_ENCLAVE_HELPER", "CANDLE_KEYSTORE_PASSPHRASE"]
+  },
+  tee: {
+    group: "Custody, on this machine",
+    summary: "Dedicated TEE wallet keys for agents: seal, delegate, fund, sweep",
+    description: "A dedicated, capped Solana wallet for one agent. The key is generated and sealed on this machine; enable delegates it to this profile's API key with a sweep vault pinned, and sweep moves everything back to that vault, signed locally.",
+    usage: ["candle tee <subcommand> [flags]"],
+    rows: [
+      { invocation: "new [--label <name>]", description: "Seal a fresh dedicated Solana TEE wallet key locally" },
+      {
+        invocation: "enable <address> --vault <address>",
+        description: "Delegate a TEE wallet key; pin the sweep vault (--vault-key <label> also)"
+      },
+      {
+        invocation: "fund <address> --amount <n> [--asset SOL|USDC]",
+        description: "Print the funding instruction for your vault to sign"
+      },
+      {
+        invocation: "status <address> [--rpc-url <url>]",
+        description: "Server lifecycle state and on-chain balances"
+      },
+      {
+        invocation: "disable <address>",
+        description: 'Stop the agent; verified stop or pending, never "done" on a 200'
+      },
+      {
+        invocation: "sweep <address> --rpc-url <url> [--emergency]",
+        description: "Sign locally and move everything to the pinned vault"
+      }
+    ],
+    flags: [KEYSTORE_FLAG],
+    examples: [
+      "candle tee new --label AgentOne",
+      "candle tee status AgentOneAddress",
+      "candle tee sweep AgentOneAddress --rpc-url https://api.mainnet-beta.solana.com"
+    ],
+    env: ENV_LOCAL_SIGNING
+  },
+  external: {
+    group: "Custody, on this machine",
+    summary: "External wallets for outside tools, never delegated",
+    description: "Keys on the vault's third branch, for tools that are not Candle: never delegated to an agent, never registered with Candle. Sweep sends everything back to a named vault key, signed locally.",
+    usage: ["candle external <subcommand> [flags]"],
+    rows: [
+      {
+        invocation: "new [--label <name>]",
+        description: "Derive an external wallet for outside tools (never delegated, never registered)"
+      },
+      { invocation: "list", description: "The external wallets in the vault" },
+      {
+        invocation: "sweep <external> --to <vault> --rpc-url <url>",
+        description: "Send everything an external wallet holds back to a vault key"
+      }
+    ],
+    flags: [KEYSTORE_FLAG],
+    examples: [
+      "candle external new --label defi-tool",
+      "candle external list",
+      "candle external sweep defi-tool --to treasury --rpc-url https://api.mainnet-beta.solana.com"
+    ],
+    env: ENV_LOCAL_SIGNING
+  },
+  sign: {
+    group: "Custody, on this machine",
+    summary: "Sign a transaction or a message with an external wallet",
+    description: "The generic signer: a base64 transaction any tool built, decoded and simulated over your own RPC before it is displayed and signed. External wallets only; a vault key or a TEE wallet is refused.",
+    usage: ["candle sign [--file <path>] --wallet <external>... [flags]", "candle sign message --wallet <external>"],
+    rows: [
+      {
+        invocation: "[--file <path>] --wallet <external>... [--broadcast] [--yes]",
+        description: "Decode, simulate and sign a base64 transaction with an external wallet"
+      },
+      {
+        invocation: "message --wallet <external> [--file <path>] [--yes]",
+        description: "Sign an off-chain message (the exact bytes of the file or stdin)"
+      }
+    ],
+    flags: [KEYSTORE_FLAG],
+    examples: [
+      "candle sign --file ./tx.b64 --wallet defi-tool",
+      "candle sign message --wallet defi-tool --file ./message.txt"
+    ],
+    env: ENV_LOCAL_SIGNING
+  },
+  secrets: {
+    group: "Your own services",
+    summary: "Your third-party API keys, in their own keychain namespace",
+    description: "Your own API keys, stored in a keychain namespace separate from Candle's credentials, typed on a hidden prompt and never shown again. A plug-in receives one as CANDLE_SECRET_<NAME> only when you name it with --secret.",
+    usage: ["candle secrets <subcommand> [flags]"],
+    rows: [
+      {
+        invocation: "set <name>",
+        description: "Store one of your own third-party API keys (hidden prompt, never sent to Candle)"
+      },
+      { invocation: "list", description: "The names of your stored secrets" },
+      { invocation: "remove <name>", description: "Delete a stored secret" }
+    ],
+    examples: ["candle secrets set helius", "candle secrets list", "candle secrets remove helius"]
+  },
+  plugins: {
+    group: "Your own services",
+    summary: "The candle-<name> executables on your PATH",
+    description: "Git-style plug-ins: an executable candle-<name> on your PATH runs as candle <name>, with an environment built from empty. No parent CANDLE_* variable, no Candle credential and no private key ever reaches it.",
+    usage: ["candle plugins"],
+    rows: [],
+    examples: ["candle plugins"]
+  },
+  mcp: {
+    group: "Maintain",
+    summary: "Run the Candle MCP server with stored credentials",
+    description: "Runs the Candle MCP server, which is built into this binary, with this CLI's stored API key and API URL in its environment. The host needs nothing else installed.",
+    usage: ["candle mcp [flags]"],
+    rows: [],
+    flags: [
+      { invocation: "--tools <a,b,c>", description: "Pin an explicit tool allowlist" },
+      { invocation: "--read-only", description: "Start with no key and only the keyless read tools" },
+      { invocation: "--print-config", description: "Print the MCP client config block for this install" }
+    ],
+    examples: ["candle mcp", "candle mcp --print-config", "candle mcp --read-only"],
+    env: ENV_API
+  },
+  update: {
+    group: "Maintain",
+    summary: "Update the CLI to the latest signed release",
+    description: "Replaces this binary with the latest signed release. The download is renamed over the running binary only after its checksum matches and its Sigstore bundle verifies in process against that exact version's release workflow.",
+    usage: ["candle update [flags]"],
+    rows: [],
+    flags: [
+      { invocation: "--check", description: "Report what is available and install nothing" },
+      { invocation: "--to <tag>", description: "Pin a release (an older one installs, with a warning)" }
+    ],
+    examples: ["candle update", "candle update --check", "candle update --to cli-v0.11.0"],
+    env: ["CANDLE_NO_UPDATE_NOTIFIER"]
+  },
+  verify: {
+    group: "Maintain",
+    summary: "Verify a release asset's Sigstore bundle",
+    description: "Verifies a release asset against the trusted root compiled into this binary. No network, no credentials, and nothing else installed: the bundle carries the certificate and the transparency-log entry.",
+    usage: ["candle verify <file> --bundle <path>"],
+    rows: [],
+    flags: [{ invocation: "--bundle <path>", description: "The .sigstore.json bundle beside the asset" }],
+    examples: ["candle verify ./candle-darwin-arm64 --bundle ./candle-darwin-arm64.sigstore.json"]
+  },
+  completion: {
+    group: "Maintain",
+    summary: "Shell completions for zsh, bash or fish",
+    description: "Prints a completion script for one shell to stdout. The script is generated from this help, so it offers exactly the commands, subcommands and flags the help documents, and nothing that does not route.",
+    usage: ["candle completion <zsh|bash|fish>"],
+    rows: [
+      {
+        invocation: "zsh",
+        description: 'candle completion zsh > "${fpath[1]}/_candle"'
+      },
+      { invocation: "bash", description: "candle completion bash > ~/.local/share/bash-completion/completions/candle" },
+      { invocation: "fish", description: "candle completion fish > ~/.config/fish/completions/candle.fish" }
+    ],
+    examples: ["candle completion zsh", "candle completion bash", "candle completion fish"]
+  },
+  help: {
+    group: "Maintain",
+    summary: "This screen, or a command's own: candle help vault",
+    description: "The top-level screen, or one command's own: its subcommands, the flags they share, examples, and the environment it reads. Reads no config and makes no request, so it answers on a machine with no profile selected.",
+    usage: ["candle help", "candle help <command>"],
+    rows: [],
+    examples: ["candle help", "candle help vault", "candle help completion"]
+  }
+};
+function topicFor(word) {
+  if (Object.hasOwn(HELP, word))
+    return HELP[word];
+  return Object.values(HELP).find((topic) => topic.display === word);
+}
+function displayName(canonical) {
+  return HELP[canonical]?.display ?? canonical;
+}
+function documentedSubcommands(topic) {
+  const words = [];
+  for (const row of topic.rows) {
+    if (row.invocation.startsWith(" "))
+      continue;
+    const first = row.invocation.split(" ")[0];
+    if (first !== undefined && /^[a-z][a-z-]*$/.test(first))
+      words.push(first);
+  }
+  return words;
+}
+function documentedFlags(topic) {
+  const flags = new Set;
+  for (const row of [...topic.rows, ...topic.flags ?? []]) {
+    for (const match of row.invocation.matchAll(/--[a-z][a-z-]*/g))
+      flags.add(match[0]);
+    if (/(^|[\s,])-k([\s,]|$)/.test(row.invocation))
+      flags.add("-k");
+  }
+  return [...flags].sort();
+}
+var WIDTH = 118;
+function wrap(text, width) {
+  if (text === "")
+    return [""];
+  if (width < 20)
+    return [text];
+  const lines = [];
+  let line = "";
+  for (const word of text.split(" ")) {
+    if (line === "")
+      line = word;
+    else if (`${line} ${word}`.length <= width)
+      line = `${line} ${word}`;
+    else {
+      lines.push(line);
+      line = word;
+    }
+  }
+  if (line !== "")
+    lines.push(line);
+  return lines;
+}
+function renderRows(rows, maxColumn) {
+  if (rows.length === 0)
+    return [];
+  const longest = Math.max(...rows.map((row) => row.invocation.length));
+  const column = Math.min(2 + longest + 2, maxColumn);
+  const pad = " ".repeat(column);
+  const out = [];
+  for (const row of rows) {
+    const [first = "", ...rest] = wrap(row.description, WIDTH - column);
+    if (2 + row.invocation.length + 2 <= column)
+      out.push(`  ${row.invocation.padEnd(column - 2)}${first}`);
+    else
+      out.push(`  ${row.invocation}`, `${pad}${first}`);
+    for (const line of rest)
+      out.push(`${pad}${line}`);
+  }
+  return out;
+}
+function renderEnv(names) {
+  const vars = names.map((name) => ENVIRONMENT.find((entry) => entry.name === name)).filter((entry) => entry !== undefined);
+  return renderRows(vars.map((entry) => ({ invocation: entry.name, description: entry.description })), 32);
+}
+function renderTopLevel() {
+  const out = [
+    "candle: Candle from the terminal: trade, launch, and hold your keys on your own machine",
+    "",
+    "Usage: candle <command> [<subcommand>] [flags]",
+    "       candle help <command>                a command's subcommands, flags and examples"
+  ];
+  const entries = Object.entries(HELP);
+  const longest = Math.max(...entries.map(([word]) => displayName(word).length));
+  const column = 2 + longest + 2;
+  for (const group of GROUPS) {
+    out.push("", group);
+    for (const [word, topic] of entries) {
+      if (topic.group !== group)
+        continue;
+      out.push(`  ${displayName(word).padEnd(column - 2)}${topic.summary}`);
+    }
+  }
+  out.push("", "Global flags", ...renderRows(GLOBAL_FLAGS, 28));
+  out.push("", "Environment", ...renderEnv(ENVIRONMENT.map((entry) => entry.name)));
+  out.push("", "Plug-ins", ...renderRows([PLUGIN_LINE], 26));
+  return `${out.join(`
+`)}
+`;
+}
+function renderTopic(word) {
+  const topic = topicFor(word);
+  if (!topic)
+    return;
+  const canonical = Object.keys(HELP).find((key) => HELP[key] === topic) ?? word;
+  const display = displayName(canonical);
+  const out = [wrap(`candle ${display}: ${topic.description}`, WIDTH).join(`
+`)];
+  out.push("", `Usage: ${topic.usage.join(`
+       `)}`);
+  if (topic.rows.length > 0)
+    out.push("", ...renderRows(topic.rows, 58));
+  if (topic.flags && topic.flags.length > 0) {
+    out.push("", `Flags every ${display} subcommand takes`, ...renderRows(topic.flags, 28));
+  }
+  out.push("", "Examples", ...topic.examples.map((example) => `  ${example}`));
+  if (topic.env && topic.env.length > 0)
+    out.push("", "Environment", ...renderEnv(topic.env));
+  return `${out.join(`
+`)}
+`;
+}
+
+// src/commands/completion.ts
+init_render();
+var USAGE = `Usage: candle completion <${COMPLETION_SHELLS.join("|")}>`;
+var VAULT_FACTOR_VALUES = ["list", "add", "remove", ...FACTOR_KINDS];
+function completableWords() {
+  const words = new Set;
+  for (const [canonical, topic] of Object.entries(HELP)) {
+    words.add(canonical);
+    if (topic.display)
+      words.add(topic.display);
+  }
+  return [...words].sort();
+}
+function globalFlagTokens() {
+  const tokens = new Set;
+  for (const row of GLOBAL_FLAGS) {
+    for (const token of row.invocation.split(/[\s,]+/))
+      if (token.startsWith("-"))
+        tokens.add(token);
+  }
+  return [...tokens].sort();
+}
+function perWord() {
+  const out = [];
+  for (const [canonical, topic] of Object.entries(HELP)) {
+    const entry = { subcommands: documentedSubcommands(topic), flags: documentedFlags(topic) };
+    out.push({ word: canonical, ...entry });
+    if (topic.display)
+      out.push({ word: topic.display, ...entry });
+  }
+  return out.sort((a, b) => a.word.localeCompare(b.word));
+}
+function safe(text) {
+  return text.replace(/['`$\\]/g, "").replace(/:/g, " -").replace(/\s+/g, " ").trim();
+}
+function zshScript() {
+  const lines = [
+    "#compdef candle",
+    "# Generated by: candle completion zsh",
+    "# Regenerate after every candle update.",
+    "",
+    "_candle() {",
+    "  local -a _candle_words _candle_subs _candle_flags _candle_globals",
+    `  _candle_words=(${completableWords().join(" ")})`,
+    `  _candle_globals=(${globalFlagTokens().join(" ")})`,
+    "  _candle_subs=()",
+    "  _candle_flags=()",
+    '  case "${words[2]}" in'
+  ];
+  for (const { word, subcommands, flags } of perWord()) {
+    lines.push(`    ${word})`);
+    if (subcommands.length > 0)
+      lines.push(`      _candle_subs=(${subcommands.join(" ")})`);
+    if (flags.length > 0)
+      lines.push(`      _candle_flags=(${flags.join(" ")})`);
+    lines.push("      ;;");
+  }
+  lines.push("  esac", '  case "${words[2]} ${words[3]}" in', `    "vault factor") _candle_subs=(${VAULT_FACTOR_VALUES.join(" ")}) ;;`, "  esac", "  if (( CURRENT == 2 )); then", "    compadd -- $_candle_words", "  else", "    compadd -- $_candle_subs $_candle_flags $_candle_globals", "  fi", "}", "", "compdef _candle candle", "");
+  return lines.join(`
+`);
+}
+function bashScript() {
+  const lines = [
+    "# Generated by: candle completion bash",
+    "# Regenerate after every candle update.",
+    "",
+    "_candle() {",
+    "  local cur candle_words candle_subs candle_flags candle_globals",
+    '  cur="${COMP_WORDS[COMP_CWORD]}"',
+    `  candle_words="${completableWords().join(" ")}"`,
+    `  candle_globals="${globalFlagTokens().join(" ")}"`,
+    '  candle_subs=""',
+    '  candle_flags=""',
+    '  if [ "$COMP_CWORD" -eq 1 ]; then',
+    '    COMPREPLY=( $(compgen -W "$candle_words" -- "$cur") )',
+    "    return 0",
+    "  fi",
+    '  case "${COMP_WORDS[1]}" in'
+  ];
+  for (const { word, subcommands, flags } of perWord()) {
+    lines.push(`    ${word})`);
+    if (subcommands.length > 0)
+      lines.push(`      candle_subs="${subcommands.join(" ")}"`);
+    if (flags.length > 0)
+      lines.push(`      candle_flags="${flags.join(" ")}"`);
+    lines.push("      ;;");
+  }
+  lines.push("  esac", '  if [ "$COMP_CWORD" -ge 3 ] && [ "${COMP_WORDS[1]}" = "vault" ] && [ "${COMP_WORDS[2]}" = "factor" ]; then', `    candle_subs="${VAULT_FACTOR_VALUES.join(" ")}"`, "  fi", '  COMPREPLY=( $(compgen -W "$candle_subs $candle_flags $candle_globals" -- "$cur") )', "}", "", "complete -F _candle candle", "");
+  return lines.join(`
+`);
+}
+function fishScript() {
+  const lines = [
+    "# Generated by: candle completion fish",
+    "# Regenerate after every candle update.",
+    "",
+    "complete -c candle -f",
+    ""
+  ];
+  for (const [canonical, topic] of Object.entries(HELP)) {
+    for (const word of topic.display ? [canonical, topic.display] : [canonical]) {
+      lines.push(`complete -c candle -n '__fish_use_subcommand' -a '${word}' -d '${safe(topic.summary)}'`);
+    }
+  }
+  lines.push("");
+  for (const row of GLOBAL_FLAGS) {
+    for (const token of row.invocation.split(/[\s,]+/)) {
+      if (token.startsWith("--"))
+        lines.push(`complete -c candle -l '${token.slice(2)}' -d '${safe(row.description)}'`);
+      else if (token.startsWith("-") && token.length === 2) {
+        lines.push(`complete -c candle -s '${token.slice(1)}' -d '${safe(row.description)}'`);
+      }
+    }
+  }
+  for (const { word, subcommands, flags } of perWord()) {
+    if (subcommands.length === 0 && flags.length === 0)
+      continue;
+    lines.push("");
+    for (const sub of subcommands) {
+      lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word}' -a '${sub}'`);
+    }
+    for (const flag of flags) {
+      if (flag.startsWith("--")) {
+        lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word}' -l '${flag.slice(2)}'`);
+      } else
+        lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word}' -s '${flag.slice(1)}'`);
+    }
+  }
+  lines.push("");
+  for (const kind of VAULT_FACTOR_VALUES) {
+    lines.push(`complete -c candle -n '__fish_seen_subcommand_from factor' -a '${kind}'`);
+  }
+  lines.push("");
+  return lines.join(`
+`);
+}
+var SCRIPTS = { zsh: zshScript, bash: bashScript, fish: fishScript };
+async function writeScript(shell, ctx) {
+  if (ctx.json) {
+    writeUsageFailure(ctx.deps, `candle completion ${shell} has no --json form: the completion script is the output. Redirect it instead: candle completion ${shell} > <path>`, true);
+    return 2;
+  }
+  ctx.deps.stdout.write(SCRIPTS[shell]());
+  return 0;
+}
+async function completionZsh(_args, ctx) {
+  return writeScript("zsh", ctx);
+}
+async function completionBash(_args, ctx) {
+  return writeScript("bash", ctx);
+}
+async function completionFish(_args, ctx) {
+  return writeScript("fish", ctx);
+}
+async function completion(args, ctx) {
+  const typed = args.find((arg) => !arg.startsWith("-"));
+  const named = typed === undefined ? "No shell named." : `Unknown shell: ${typed}.`;
+  writeUsageFailure(ctx.deps, `${named} ${USAGE}`, ctx.json);
+  return 2;
+}
+
 // src/commands/doctor.ts
 init_release();
 init_render();
@@ -40726,6 +41460,24 @@ async function externalSweep(args, ctx) {
       wipe(secret);
     }
   });
+}
+
+// src/commands/help.ts
+async function help(args, ctx) {
+  const word = args[0];
+  if (word === undefined) {
+    ctx.deps.stdout.write(renderTopLevel());
+    return 0;
+  }
+  const topic = renderTopic(word);
+  if (topic === undefined) {
+    ctx.deps.stderr.write(`Unknown command: ${word}
+`);
+    ctx.deps.stderr.write(renderTopLevel());
+    return 1;
+  }
+  ctx.deps.stdout.write(topic);
+  return 0;
 }
 
 // src/commands/keys.ts
@@ -49654,13 +50406,13 @@ async function addPasskeyFactor(ctx, parsed, path, hold) {
   let committed;
   try {
     const prfOutput = await assertPlatformPrf(deps, session, envelope, vaultId, "derive this vault's key on it");
-    let wrap;
+    let wrap2;
     try {
-      wrap = await wrapDekForPrf(vault.dek, prfOutput, envelope, vault.file);
+      wrap2 = await wrapDekForPrf(vault.dek, prfOutput, envelope, vault.file);
     } finally {
       wipe(prfOutput);
     }
-    sealed = { ...envelope, wrap };
+    sealed = { ...envelope, wrap: wrap2 };
     committed = hold(await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps));
   } catch (error) {
     deps.stderr.write(`${PASSKEY_LEFTOVER_NOTE}
@@ -49785,13 +50537,13 @@ async function addSecurityKeyFactor(ctx, parsed, path, hold) {
     wrap: { alg: VAULT_CIPHER, iv: "", ciphertext: "" }
   };
   const prfOutput = await assertPrf(deps, session, envelope, vault.file.vaultId, "derive this vault's key on it");
-  let wrap;
+  let wrap2;
   try {
-    wrap = await wrapDekForPrf(vault.dek, prfOutput, envelope, vault.file);
+    wrap2 = await wrapDekForPrf(vault.dek, prfOutput, envelope, vault.file);
   } finally {
     wipe(prfOutput);
   }
-  const sealed = { ...envelope, wrap };
+  const sealed = { ...envelope, wrap: wrap2 };
   await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps);
   const written = await readVaultRaw(path);
   if (written === null)
@@ -49907,13 +50659,13 @@ async function addTouchIdFactor(ctx, parsed, path, hold) {
       kek: { alg: SECURE_ENCLAVE_KEK_ALG, ciphertext },
       wrap: { alg: VAULT_CIPHER, iv: "", ciphertext: "" }
     };
-    let wrap;
+    let wrap2;
     try {
-      wrap = await wrapDekForKek(vault.dek, kek, envelope, vault.file);
+      wrap2 = await wrapDekForKek(vault.dek, kek, envelope, vault.file);
     } finally {
       wipe(kek);
     }
-    sealed = { ...envelope, wrap };
+    sealed = { ...envelope, wrap: wrap2 };
     committed = hold(await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps));
   } catch (error) {
     await removeKey();
@@ -50014,8 +50766,8 @@ async function createVault(request2, clock) {
   };
   const dek = freshDek();
   const file = await withSecret(dek, async (dekBytes) => {
-    const wrap = await wrapDekForPassphrase(dekBytes, request2.passphrase, envelope, { vaultId }, request2.notice);
-    const sealedEnvelope = { ...envelope, wrap };
+    const wrap2 = await wrapDekForPassphrase(dekBytes, request2.passphrase, envelope, { vaultId }, request2.notice);
+    const sealedEnvelope = { ...envelope, wrap: wrap2 };
     const payloadKey = await derivePayloadKey(dekBytes, unb64u(vaultId, "vaultId"));
     const root = await seal(payloadKey, request2.rootEntropy, rootAad(vaultId));
     const index = { hd: request2.hd ?? freshHdRecord(), entries: [] };
@@ -50394,8 +51146,8 @@ async function vaultFactorAdd(args, ctx) {
       strength: strengthFor(ownPassphrase),
       wrap: { alg: VAULT_CIPHER, iv: "", ciphertext: "" }
     };
-    const wrap = await wrapDekForPassphrase(vault.dek, passphrase, envelope, vault.file, (line) => deps.stderr.write(line));
-    const sealed = { ...envelope, wrap };
+    const wrap2 = await wrapDekForPassphrase(vault.dek, passphrase, envelope, vault.file, (line) => deps.stderr.write(line));
+    const sealed = { ...envelope, wrap: wrap2 };
     await commitVault(vault, { index: vault.index, envelopes: [...vault.file.envelopes, sealed] }, deps);
     const written = await readVaultRaw(path);
     if (written === null)
@@ -52762,7 +53514,7 @@ async function vaultTransfer(args, ctx) {
 import { dirname as dirname8, join as join11 } from "node:path";
 init_release();
 init_render();
-var USAGE = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE2 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -52790,19 +53542,19 @@ async function verify(args, ctx) {
   const parsed = parseArgs(args, { valueFlags: ["--bundle", "--identity", "--issuer"] });
   if ("error" in parsed) {
     writeUsageFailure(deps, `${parsed.error}
-${USAGE}`, json);
+${USAGE2}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeUsageFailure(deps, `verify takes exactly one file.
-${USAGE}`, json);
+${USAGE2}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeUsageFailure(deps, `--bundle is required.
-${USAGE}`, json);
+${USAGE2}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -52816,7 +53568,7 @@ ${USAGE}`, json);
   }
   if (resolved.kind === "absent") {
     writeUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE}`, json);
+${USAGE2}`, json);
     return 2;
   }
   const identity = resolved.uri;
@@ -52855,24 +53607,6 @@ ${USAGE}`, json);
 }
 function messageOf2(error) {
   return error instanceof Error ? error.message : String(error);
-}
-
-// src/commands/wallets-removed.ts
-init_render();
-var LAST_RELEASE_WITH_EXPORT = "0.9.2";
-function removed(ctx, command, replacement, extra) {
-  writeLocalFailure(ctx.deps, {
-    code: "COMMAND_REMOVED",
-    message: `\`candle ${command}\` was removed in CLI 0.10.0. ${replacement}`,
-    suggestion: `${extra ? `${extra} ` : ""}A wallets.enc already on disk is left exactly as it is: no command in this release reads, writes or deletes it. ` + `To open one, use CLI ${LAST_RELEASE_WITH_EXPORT} (candle update --to cli-v${LAST_RELEASE_WITH_EXPORT}) and move the funds on chain to a vault key.`
-  }, ctx.json);
-  return 2;
-}
-async function walletsGenerateRemoved(_args, ctx) {
-  return removed(ctx, "wallets generate", "Keys are now derived inside the vault, from one recovery phrase: candle vault new-key --chain solana.", "Create a vault first with `candle vault init`.");
-}
-async function walletsExportRemoved(_args, ctx) {
-  return removed(ctx, "wallets export", "No command in this release prints a private key to stdout or to --json.", "The vault's only plaintext routes are two interactive ceremonies: `candle vault phrase show` for the recovery phrase, and `candle vault export-key` for one key, which ships in the same 0.10.0 release (AD-10).");
 }
 
 // src/config.ts
@@ -53184,106 +53918,13 @@ function extractGlobalFlags(argv) {
   }
   return { rest, flags };
 }
-var HELP_TEXT = `candle: manage Candle agent credentials from the terminal
-
-Usage: candle <command> [subcommand] [options]
-
-Commands:
-  swap <from> <to> --amount <n>|--percent <n> --wallet <tee>   Quote, confirm and swap on Solana
-  swap status <id> [--kind trade|swap|launch]                    Read an operation without resending it
-  launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee>
-                                                                  Create a Solana token; first buy is a separate swap
-  auth login [--scopes <a,b,c>] [--label <name>] [--no-browser]   Authorize this device
-             [--profile <name>]
-  auth status                                                     Show credential status
-  auth logout [--keep-key]                                        Clear local credentials
-  keys list                                                       List API keys
-  keys create [--scopes <a,b,c>] [--label <name>]                 Create an API key
-              [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]
-  keys revoke <prefix>                                            Revoke an API key
-  keys wallets <prefix>                                           Wallets an agent profile can use
-    set <prefix> --wallets <id,id>                                Replace the profile's wallet set
-    scope <prefix> --scope <all|selected>                         Limit a profile to assigned wallets
-  wallet                                                          Show launch and linked wallets (wallets is an alias)
-  wallet import --chain <solana|evm> [options]                    Import a wallet you own (key via --key-file or hidden prompt)
-  wallet revoke <wallet-id>                                       Revoke a linked wallet
-  wallet generate                                                 Removed in 0.10.0: use vault new-key
-  wallet export                                                   Removed in 0.10.0: no command prints a private key
-  vault init [--own-passphrase] [--high-value]                    Create the vault: one passphrase factor and an HD root
-  vault status [--unlock]                                         What the vault holds, and what opens it
-  vault new-key --chain solana [--label <name>]                   Derive the next Solana key inside the vault
-  vault phrase show                                               Show the 24-word recovery phrase (terminal only)
-  vault restore --phrase [--count <n>] [--tee-count <k>]          Rebuild a vault from the recovery phrase
-                [--external-count <e>] [--rpc-url <url>]
-  vault reconcile-exposure                                        Re-read this account and add exposure; clears nothing
-  vault factor list | add passphrase|security-key|touch-id|passkey | remove <id>
-                                                                  Manage the factors that open the vault
-  vault backup --to <path> [--accept-shared-domain]               Copy the vault and verify the copy in full
-  vault verify-backup <path>                                      Verify a copy in full (all eight steps)
-  vault import-legacy --tee [--from <path>]                       Migrate tee-wallets.enc into the vault
-  vault retire-legacy [--from <path>]                             Rename the Phase 1 store after a verified backup
-  vault transfer <to> --amount <n> --asset SOL|<mint> --from <label> --rpc-url <url>
-                                                                  Sign a vault-key transfer locally
-  vault promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>]
-                                                                  Fresh TEE key, or promote one vault key in place (AD-8)
-  vault fund <tee-address|external> --amount <n> --asset SOL|USDC --rpc-url <url> [--from <label>]
-                                                                  Fund a TEE wallet from its pinned vault key, or an external wallet from a vault key
-  vault demote <tee-address> --rpc-url <url> [--emergency]        Disable then sweep a TEE wallet back to its pin
-  vault export-key <label> --to <new-file>                        Export one key as plaintext (interactive ceremony)
-  tee new [--label <name>]                                        Seal a fresh dedicated Solana TEE wallet key locally
-  tee enable <address> --vault <address>                          Delegate a TEE wallet key; pin the sweep vault (--vault-key <label> also)
-  tee fund <address> --amount <n> [--asset SOL|USDC]              Print the funding instruction for your vault to sign
-  tee status <address> [--rpc-url <url>]                          Server lifecycle state and on-chain balances
-  tee disable <address>                                           Stop the agent; verified stop or pending, never "done" on a 200
-  tee sweep <address> --rpc-url <url> [--emergency]               Sign locally and move everything to the pinned vault
-  external new [--label <name>]                                   Derive an external wallet for outside tools (never delegated, never registered)
-  external list                                                   The external wallets in the vault
-  external sweep <external> --to <vault> --rpc-url <url>          Send everything an external wallet holds back to a vault key
-  sign [--file <path>] --wallet <external>... [--broadcast] [--yes]
-                                                                  Decode, simulate and sign a base64 transaction with an external wallet
-  sign message --wallet <external> [--file <path>] [--yes]        Sign an off-chain message (the exact bytes of the file or stdin)
-  secrets set <name>                                              Store one of your own third-party API keys (hidden prompt, never sent to Candle)
-  secrets list                                                    The names of your stored secrets
-  secrets remove <name>                                           Delete a stored secret
-  plugins                                                         List the candle-<name> plug-ins on your PATH
-  profile list                                                    Profiles on this machine, with cached accounts
-  profile add <name> --api-url <url>                              Create a profile before authenticating it
-  profile use <name>                                              Make a profile the active one
-  profile rename <old> <new>                                      Rename a profile
-  profile remove <name> --yes                                     Delete a profile and its stored credentials
-  setup [--no-browser]                                            One wizard: authorize, fund, connect, verify
-  mcp [--tools <a,b,c>] [--read-only] [--print-config]            Run the Candle MCP server with stored credentials
-  doctor                                                          Diagnose CLI setup
-  verify <file> --bundle <path>                                   Verify a release asset's Sigstore bundle
-  update [--check] [--to <tag>]                                   Update the CLI to the latest signed release
-
-Global options:
-  --api-url <url>         Override the API base URL
-  --profile <name>        Act as a named profile (see: candle auth login --profile)
-  --no-verify-account     Skip the check that the stored key belongs to the profile's account
-  --factor <id|kind>      Vault commands: unlock with this envelope id, or "passphrase", "security-key", "touch-id" or "passkey"
-  --device <id>           Vault commands: the security key to use, by the id vault factor list prints
-  --json                  Machine-readable output
-  --help, -h              Show this help
-  --version, -v           Show the CLI version
-
-Plug-ins:
-  candle <name> [--secret <name>]... [--wallet <label>]... [args]
-                          Runs the executable candle-<name> from your PATH with an allowlist environment:
-                          only the secrets and external wallet addresses named here, never a Candle credential.
-`;
 var COMMANDS = {
   swap: { bare: swap, subcommands: { status: swapStatus } },
   launch: { bare: launch },
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
   keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke, wallets: keysWallets } },
   wallets: {
-    subcommands: {
-      import: walletsImport,
-      revoke: walletsRevoke,
-      generate: walletsGenerateRemoved,
-      export: walletsExportRemoved
-    },
+    subcommands: { import: walletsImport, revoke: walletsRevoke },
     bare: wallets
   },
   vault: {
@@ -53327,7 +53968,12 @@ var COMMANDS = {
   mcp: { bare: mcp },
   setup: { bare: setup },
   verify: { bare: verify },
-  update: { bare: update }
+  update: { bare: update },
+  completion: {
+    subcommands: { zsh: completionZsh, bash: completionBash, fish: completionFish },
+    bare: completion
+  },
+  help: { bare: help }
 };
 var ROUTED_COMMANDS = new Set(Object.keys(COMMANDS));
 var ALIASES = { wallet: "wallets" };
@@ -53358,6 +54004,8 @@ var NEVER_GUARDED = new Set([
   "doctor",
   "verify",
   "update",
+  "help",
+  "completion",
   "external",
   "sign",
   "secrets",
@@ -53415,11 +54063,24 @@ async function runCommand(argv, deps) {
     return 0;
   }
   if (flags.help) {
-    deps.stdout.write(HELP_TEXT);
+    deps.stdout.write(renderTopic(canonicalCommand(tokens[0]) ?? "") ?? renderTopLevel());
     return 0;
   }
   const [rawCmd, sub, ...cmdArgs] = tokens;
   const cmd = canonicalCommand(rawCmd);
+  if (cmd === "help" || cmd === "completion") {
+    return dispatch(cmd, sub, cmdArgs, tokens, {
+      deps,
+      json: flags.json,
+      apiUrl: flags.apiUrl ?? resolveApiUrl(undefined, deps.env),
+      apiUrlFlag: flags.apiUrl,
+      profile: undefined,
+      profileFlag: flags.profile,
+      verifyAccount: !flags.noVerifyAccount,
+      vaultFactor: flags.vaultFactor,
+      vaultDevice: flags.vaultDevice
+    });
+  }
   const config = await migrateProfiles(deps);
   const isAuthLogin = cmd === "auth" && sub === "login";
   const isProfileCommand = cmd === "profile";
@@ -53458,6 +54119,9 @@ async function runCommand(argv, deps) {
       deps.stderr.write(`${verdict.warning}
 `);
   }
+  return dispatch(cmd, sub, cmdArgs, tokens, ctx);
+}
+async function dispatch(cmd, sub, cmdArgs, tokens, ctx) {
   const route = routeFor(cmd);
   const handler = subHandlerFor(route, sub);
   if (handler)
@@ -53465,8 +54129,8 @@ async function runCommand(argv, deps) {
   if (route?.bare)
     return route.bare(tokens.slice(1), ctx);
   if (route)
-    return unknownCommand(deps, sub === undefined ? undefined : `${cmd} ${sub}`);
-  return unknownCommand(deps, cmd);
+    return unknownCommand(ctx.deps, sub === undefined ? undefined : `${cmd} ${sub}`, cmd);
+  return unknownCommand(ctx.deps, cmd);
 }
 function splitFix(message) {
   const newline = message.indexOf(`
@@ -53479,11 +54143,11 @@ function splitFix(message) {
   const fixAt = message.indexOf(" Run: ");
   return fixAt === -1 ? { message } : { message: message.slice(0, fixAt), suggestion: message.slice(fixAt + 1) };
 }
-function unknownCommand(deps, token) {
+function unknownCommand(deps, token, word) {
   if (token !== undefined)
     deps.stderr.write(`Unknown command: ${token}
 `);
-  deps.stderr.write(HELP_TEXT);
+  deps.stderr.write((word === undefined ? undefined : renderTopic(word)) ?? renderTopLevel());
   return 1;
 }
 async function migrateProfiles(deps) {
@@ -53640,6 +54304,7 @@ if (isMainModule) {
 }
 export {
   run2 as run,
+  routesToCommand,
   realSpawnHelper,
   buildRealDeps,
   ROUTED_SUBCOMMANDS,
