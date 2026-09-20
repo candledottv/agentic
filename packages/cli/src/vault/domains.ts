@@ -25,9 +25,21 @@
  * cost of sealing a destination that turned out to be an ordinary disk is small. This amendment
  * touches the confidentiality rule only: `unknown` has no account domain, so invariant 2 below is
  * unchanged, and `cloud` keeps meaning what it has always meant.
+ *
+ * BE-236: the classification reads the REAL path, not its spelling. `node:path.resolve` is purely
+ * lexical and never follows a link, so `~/Documents/vault.enc` on a Mac with "Desktop & Documents
+ * Folders in iCloud" -- where `~/Documents` is a symlink into `~/Library/Mobile Documents` --
+ * classified `local-disk` and received an UNSEALED copy, carrying the synced-passkey and Enclave
+ * envelopes into the same Apple account that holds those factors. That is the exposure AD-9 was
+ * written to close, reached by the most common iCloud configuration there is. Any symlink, alias
+ * or bind mount into a synced folder reaches the same state. The destination file does not exist
+ * yet (this command refuses to overwrite one that does), so what gets resolved is the directory
+ * that will hold it, with the basename rejoined afterwards. When that resolve fails there is no
+ * fall back to the lexical answer: a fallback would rebuild the same hole, and a path the CLI
+ * cannot place is `unknown` under the 2026-09-19 amendment, therefore sealed.
  */
 import { homedir } from "node:os"
-import { isAbsolute, resolve, sep } from "node:path"
+import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path"
 import { VaultError } from "./errors"
 import type { Envelope } from "./format"
 
@@ -49,13 +61,24 @@ const OTHER_CLOUD_MARKERS = [
 
 const REMOVABLE_PREFIXES = ["/Volumes/", "/media/", "/mnt/", "/run/media/"]
 
+/** Resolves symlinks. `Deps.realpath` on the real CLI; a fake in tests, which is the whole seam. */
+export type RealpathFn = (path: string) => Promise<string>
+
+/** What `classifyDestination` needs: how to resolve a link, and where home is. */
+export interface ClassifyOptions {
+  realpath: RealpathFn
+  home?: string
+}
+
 /**
- * Classifies a destination path. Everything it cannot place is `unknown` rather than `local-disk`:
- * the two rules below both treat `unknown` as "cannot rule out a shared domain", and guessing
- * "local" for an unfamiliar mount is how a network share would pass silently.
+ * Places an ALREADY-RESOLVED absolute path. Everything it cannot place is `unknown` rather than
+ * `local-disk`: the two rules below both treat `unknown` as "cannot rule out a shared domain", and
+ * guessing "local" for an unfamiliar mount is how a network share would pass silently.
+ *
+ * Deliberately not exported (BE-236). Every caller must go through `classifyDestination`, which
+ * resolves first; an exported lexical classifier is the footgun that produced this bug.
  */
-export function classifyDestination(path: string, home = homedir()): DestinationDomain {
-  const absolute = isAbsolute(path) ? path : resolve(path)
+function placeResolvedPath(absolute: string, home: string): DestinationDomain {
   // iCloud Drive's on-disk location, which is what a `~/iCloud Drive` alias resolves into.
   if (absolute.includes(`${sep}Library${sep}Mobile Documents`)) return "icloud-drive"
   for (const marker of OTHER_CLOUD_MARKERS) {
@@ -79,6 +102,37 @@ export function classifyDestination(path: string, home = homedir()): Destination
     return "local-disk"
   }
   return "unknown"
+}
+
+/**
+ * Classifies a destination by where its bytes will actually land (BE-236).
+ *
+ * The file itself does not exist yet, so the containing directory is what can be resolved and the
+ * basename is rejoined onto the resolved result. Every directory component is therefore real,
+ * which is what the iCloud symlink shape needs. Home is resolved the same way, so that a resolved
+ * destination and the marker prefixes it is compared against are both real paths; if home cannot
+ * be resolved the given spelling is used, since home is not the thing being placed.
+ *
+ * An unresolvable destination -- a missing parent directory, a symlink loop, a directory that
+ * cannot be read -- is `unknown`, therefore sealed. It is NOT the lexical answer: falling back to
+ * a path's spelling is exactly the classification this function exists to stop making.
+ */
+export async function classifyDestination(path: string, opts: ClassifyOptions): Promise<DestinationDomain> {
+  const absolute = isAbsolute(path) ? path : resolve(path)
+  const spelledHome = opts.home ?? homedir()
+  let home: string
+  try {
+    home = await opts.realpath(spelledHome)
+  } catch {
+    home = spelledHome
+  }
+  let parent: string
+  try {
+    parent = await opts.realpath(dirname(absolute))
+  } catch {
+    return "unknown"
+  }
+  return placeResolvedPath(join(parent, basename(absolute)), home)
 }
 
 /**
@@ -158,12 +212,13 @@ export function sealedEnvelopes(envelopes: Envelope[]): Envelope[] {
  * the copy is sealed, and whether a shared-domain label should be printed; throws when invariant 2
  * refuses.
  */
-export function assertBackupDomainAllowed(
+export async function assertBackupDomainAllowed(
   envelopes: Envelope[],
   destinationPath: string,
-  opts: { acceptSharedDomain: boolean; home?: string },
-): BackupDomainVerdict {
-  const destination = classifyDestination(destinationPath, opts.home)
+  opts: { acceptSharedDomain: boolean } & ClassifyOptions,
+): Promise<BackupDomainVerdict> {
+  // BE-236: resolved, not spelled. The message below still quotes the path the operator typed.
+  const destination = await classifyDestination(destinationPath, opts)
   const destinationAccount = accountDomainOf(destination)
 
   // Invariant 2: at least one recoverable envelope must sit in a domain the destination does not.

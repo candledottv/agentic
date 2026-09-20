@@ -2513,15 +2513,15 @@ var init_promote_support = __esm(() => {
 // src/wallet-keystore.ts
 import { chmod as chmod2, mkdir as mkdir2, readFile as readFile2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
-import { dirname as dirname2, join as join4 } from "node:path";
+import { dirname as dirname3, join as join5 } from "node:path";
 function defaultTeeKeystorePath(env) {
-  return join4(candleConfigDir(env), "tee-wallets.enc");
+  return join5(candleConfigDir(env), "tee-wallets.enc");
 }
 function legacyTeeKeystorePath(env) {
-  return join4(candleConfigDir(env), "hot-wallets.enc");
+  return join5(candleConfigDir(env), "hot-wallets.enc");
 }
 function candleConfigDir(env) {
-  return env.CANDLE_CONFIG_DIR?.trim() || join4(homedir4(), ".config", "candle");
+  return env.CANDLE_CONFIG_DIR?.trim() || join5(homedir4(), ".config", "candle");
 }
 async function deriveKeystoreKey(passphrase, salt, iterations) {
   const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
@@ -2589,7 +2589,7 @@ async function readKeystore(raw, passphrase, opts = {}) {
   };
 }
 async function writeKeystoreFile(path, contents) {
-  const dir = dirname2(path);
+  const dir = dirname3(path);
   await mkdir2(dir, { recursive: true });
   await chmod2(dir, 448);
   const tmpPath = `${path}.${crypto.randomUUID()}.tmp`;
@@ -2604,7 +2604,7 @@ async function withKeystoreLock(path, clock, fn, opts = {}) {
   const lockPath = keystoreLockPath(path);
   const waitMs = opts.waitMs ?? 1e4;
   const pollMs = opts.pollMs ?? 100;
-  await mkdir2(dirname2(path), { recursive: true });
+  await mkdir2(dirname3(path), { recursive: true });
   const started = clock.now();
   for (;; ) {
     try {
@@ -2616,7 +2616,7 @@ async function withKeystoreLock(path, clock, fn, opts = {}) {
       if (clock.now() - started >= waitMs) {
         let owner = null;
         try {
-          owner = (await readFile2(join4(lockPath, "owner"), "utf8")).trim() || null;
+          owner = (await readFile2(join5(lockPath, "owner"), "utf8")).trim() || null;
         } catch {
           owner = null;
         }
@@ -2626,7 +2626,7 @@ async function withKeystoreLock(path, clock, fn, opts = {}) {
     }
   }
   try {
-    await writeFile2(join4(lockPath, "owner"), `${opts.owner ?? `pid ${process.pid}`} since ${new Date().toISOString()}
+    await writeFile2(join5(lockPath, "owner"), `${opts.owner ?? `pid ${process.pid}`} since ${new Date().toISOString()}
 `, { encoding: "utf8", mode: 384 }).catch(() => {});
     return await fn();
   } finally {
@@ -4329,7 +4329,7 @@ var init_format = __esm(() => {
 
 // src/vault/sidecar.ts
 import { chmod as chmod3, mkdir as mkdir3, readFile as readFile3, writeFile as writeFile3 } from "node:fs/promises";
-import { dirname as dirname3 } from "node:path";
+import { dirname as dirname4 } from "node:path";
 function sidecarPath(vaultPath) {
   return vaultPath.replace(/\.enc$/, "") + ".state.json";
 }
@@ -4361,7 +4361,7 @@ async function readSidecar(path) {
   }
 }
 async function writeSidecar(path, state) {
-  const dir = dirname3(path);
+  const dir = dirname4(path);
   await mkdir3(dir, { recursive: true });
   await chmod3(dir, 448).catch(() => {});
   await writeFile3(path, `${JSON.stringify(state, null, 2)}
@@ -4423,15 +4423,15 @@ __export(exports_store, {
 });
 import { chmod as chmod4, mkdir as mkdir4, readFile as readFile4, stat as stat2 } from "node:fs/promises";
 import { homedir as homedir5 } from "node:os";
-import { join as join5 } from "node:path";
+import { join as join6 } from "node:path";
 function candleConfigDir2(env) {
-  return env.CANDLE_CONFIG_DIR?.trim() || join5(homedir5(), ".config", "candle");
+  return env.CANDLE_CONFIG_DIR?.trim() || join6(homedir5(), ".config", "candle");
 }
 function defaultVaultPath(env) {
-  return join5(candleConfigDir2(env), "vault.enc");
+  return join6(candleConfigDir2(env), "vault.enc");
 }
 function legacyWalletsPath(env) {
-  return join5(candleConfigDir2(env), "wallets.enc");
+  return join6(candleConfigDir2(env), "wallets.enc");
 }
 async function readVaultRaw(path) {
   try {
@@ -4668,7 +4668,7 @@ async function writeNewVault(path, contents) {
   await writeKeystoreFile(path, contents);
 }
 function candleConfigDirOf(path) {
-  return join5(path, "..");
+  return join6(path, "..");
 }
 function entriesOf(vault) {
   return vault.index.entries;
@@ -5838,7 +5838,7 @@ var init_ecies = __esm(() => {
 
 // src/vault/enclave.ts
 import { access, constants } from "node:fs/promises";
-import { dirname as dirname4, join as join6 } from "node:path";
+import { dirname as dirname5, join as join7 } from "node:path";
 function parseReleasePolicy(value) {
   const bad = (detail) => {
     throw new Error(`release-policy.json is malformed: ${detail}`);
@@ -5873,7 +5873,7 @@ async function isExecutable(path) {
 }
 async function asBundle(candidate) {
   const appPath = candidate.endsWith(`/${ENCLAVE_EXECUTABLE_RELATIVE}`) ? candidate.slice(0, -(ENCLAVE_EXECUTABLE_RELATIVE.length + 1)) : candidate;
-  const path = join6(appPath, ENCLAVE_EXECUTABLE_RELATIVE);
+  const path = join7(appPath, ENCLAVE_EXECUTABLE_RELATIVE);
   return await isExecutable(path) ? { appPath, path } : null;
 }
 async function locateEnclaveHelper(deps) {
@@ -5894,10 +5894,10 @@ async function locateEnclaveHelper(deps) {
       reason: `this CLI is running from the npm package (or a source checkout), which ships no ${ENCLAVE_BUNDLE_NAME}`
     };
   }
-  const beside = await asBundle(join6(dirname4(realExec), ENCLAVE_BUNDLE_NAME));
+  const beside = await asBundle(join7(dirname5(realExec), ENCLAVE_BUNDLE_NAME));
   if (beside)
     return { state: "ready", ...beside, source: "beside-binary" };
-  const libexec = await asBundle(join6(dirname4(dirname4(realExec)), "libexec", ENCLAVE_BUNDLE_NAME));
+  const libexec = await asBundle(join7(dirname5(dirname5(realExec)), "libexec", ENCLAVE_BUNDLE_NAME));
   if (libexec)
     return { state: "ready", ...libexec, source: "libexec" };
   return { state: "absent", reason: `no ${ENCLAVE_BUNDLE_NAME} beside ${realExec} or in its libexec` };
@@ -6404,7 +6404,7 @@ var init_platform = __esm(() => {
 
 // src/vault/fido2.ts
 import { access as access2, constants as constants2 } from "node:fs/promises";
-import { dirname as dirname5, join as join7 } from "node:path";
+import { dirname as dirname6, join as join8 } from "node:path";
 async function isExecutable2(path) {
   try {
     await access2(path, constants2.X_OK);
@@ -6427,7 +6427,7 @@ async function locateFido2Helper(deps) {
       reason: "this CLI is running from the npm package (or a source checkout), which ships no candle-fido2 executable"
     };
   }
-  const beside = join7(dirname5(realExec), HELPER_NAME);
+  const beside = join8(dirname6(realExec), HELPER_NAME);
   if (await isExecutable2(beside))
     return { state: "ready", path: beside, source: "beside-binary" };
   return { state: "absent", reason: `no ${HELPER_NAME} executable beside ${realExec}` };
@@ -37267,7 +37267,7 @@ function createSolanaRpc(url, fetchFn) {
 // src/vault/domains.ts
 init_errors();
 import { homedir as homedir3 } from "node:os";
-import { isAbsolute, resolve, sep } from "node:path";
+import { basename, dirname as dirname2, isAbsolute, join as join4, resolve, sep } from "node:path";
 var OTHER_CLOUD_MARKERS = [
   "Library/CloudStorage",
   "Dropbox",
@@ -37281,8 +37281,7 @@ var OTHER_CLOUD_MARKERS = [
   "MEGA"
 ];
 var REMOVABLE_PREFIXES = ["/Volumes/", "/media/", "/mnt/", "/run/media/"];
-function classifyDestination(path, home = homedir3()) {
-  const absolute = isAbsolute(path) ? path : resolve(path);
+function placeResolvedPath(absolute, home) {
   if (absolute.includes(`${sep}Library${sep}Mobile Documents`))
     return "icloud-drive";
   for (const marker of OTHER_CLOUD_MARKERS) {
@@ -37300,6 +37299,23 @@ function classifyDestination(path, home = homedir3()) {
     return "local-disk";
   }
   return "unknown";
+}
+async function classifyDestination(path, opts) {
+  const absolute = isAbsolute(path) ? path : resolve(path);
+  const spelledHome = opts.home ?? homedir3();
+  let home;
+  try {
+    home = await opts.realpath(spelledHome);
+  } catch {
+    home = spelledHome;
+  }
+  let parent;
+  try {
+    parent = await opts.realpath(dirname2(absolute));
+  } catch {
+    return "unknown";
+  }
+  return placeResolvedPath(join4(parent, basename(absolute)), home);
 }
 function sealsByDefault(destination) {
   return destination === "icloud-drive" || destination === "other-cloud" || destination === "unknown";
@@ -37335,8 +37351,8 @@ function assertRecoverableFactorExists(envelopes) {
 function sealedEnvelopes(envelopes) {
   return envelopes.filter((envelope) => envelope.factor === "passphrase");
 }
-function assertBackupDomainAllowed(envelopes, destinationPath, opts) {
-  const destination = classifyDestination(destinationPath, opts.home);
+async function assertBackupDomainAllowed(envelopes, destinationPath, opts) {
+  const destination = await classifyDestination(destinationPath, opts);
   const destinationAccount = accountDomainOf(destination);
   const domains = new Set(recoverableDomains(envelopes));
   if (domains.size === 0) {
@@ -41129,7 +41145,7 @@ init_zod();
 import { createHash, sign } from "node:crypto";
 import { mkdir as mkdir5, open as open3, readFile as readFile5, rename as rename3, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir6 } from "node:os";
-import { join as join8 } from "node:path";
+import { join as join9 } from "node:path";
 class TradingError extends Error {
   code;
   constructor(code, message) {
@@ -41319,9 +41335,9 @@ function jobPath(kind, id) {
   return `/api/v1/${rail}/jobs/${encodeURIComponent(id)}`;
 }
 function operationPath(ctx, key, id) {
-  const dir = ctx.deps.env.CANDLE_CONFIG_DIR || join8(ctx.deps.env.HOME || homedir6(), ".config", "candle");
+  const dir = ctx.deps.env.CANDLE_CONFIG_DIR || join9(ctx.deps.env.HOME || homedir6(), ".config", "candle");
   const hash = createHash("sha256").update(JSON.stringify([ctx.apiUrl, key, id])).digest("hex");
-  return join8(dir, "operations", `${hash}.json`);
+  return join9(dir, "operations", `${hash}.json`);
 }
 async function savedOperation(ctx, key, id) {
   try {
@@ -41334,7 +41350,7 @@ async function savedOperation(ctx, key, id) {
 }
 async function claimOperation(ctx, key, id, kind) {
   const path = operationPath(ctx, key, id);
-  await mkdir5(join8(path, ".."), { recursive: true, mode: 448 });
+  await mkdir5(join9(path, ".."), { recursive: true, mode: 448 });
   let file;
   try {
     file = await open3(path, "wx", 384);
@@ -41823,7 +41839,7 @@ async function mcp(args, ctx) {
 // src/plugins.ts
 import { spawn } from "node:child_process";
 import { accessSync, constants as constants3, readdirSync, statSync } from "node:fs";
-import { delimiter, join as join9 } from "node:path";
+import { delimiter, join as join10 } from "node:path";
 var PLUGIN_PREFIX = "candle-";
 var RESERVED_HELPER_NAMES = ["fido2", "enclave"];
 function isPluginName(name) {
@@ -41845,7 +41861,7 @@ function findPlugin(name, pathEnv) {
   for (const dir of (pathEnv ?? "").split(delimiter)) {
     if (dir === "")
       continue;
-    const candidate = join9(dir, `${PLUGIN_PREFIX}${name}`);
+    const candidate = join10(dir, `${PLUGIN_PREFIX}${name}`);
     if (executableAt(candidate))
       return candidate;
   }
@@ -41868,7 +41884,7 @@ function listPlugins(pathEnv) {
       const name = file.slice(PLUGIN_PREFIX.length);
       if (!isPluginName(name) || found.has(name))
         continue;
-      const path = join9(dir, file);
+      const path = join10(dir, file);
       if (executableAt(path))
         found.set(name, path);
     }
@@ -49036,8 +49052,9 @@ async function vaultBackup(args, ctx) {
     const raw = await requireVaultRaw(path);
     assertOutsideConfigDir(destination, deps.env);
     const file = parseVaultFile(raw);
-    const verdict = assertBackupDomainAllowed(file.envelopes, destination, {
-      acceptSharedDomain: parsed.booleans.has("--accept-shared-domain")
+    const verdict = await assertBackupDomainAllowed(file.envelopes, destination, {
+      acceptSharedDomain: parsed.booleans.has("--accept-shared-domain"),
+      realpath: deps.realpath
     });
     if (await exists(destination)) {
       throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite a backup.`);
@@ -49390,7 +49407,7 @@ async function demoteWithAdapter(ctx, entry, address, rpcUrl2, emergency) {
 
 // src/commands/vault-export-key.ts
 import { access as access3, chmod as chmod5, constants as constants4, lstat, writeFile as writeFile5 } from "node:fs/promises";
-import { dirname as dirname6, resolve as resolve3 } from "node:path";
+import { dirname as dirname7, resolve as resolve3 } from "node:path";
 init_errors();
 init_promote_support();
 init_store();
@@ -49502,7 +49519,7 @@ async function assertExportTargetWritable(destination) {
     if (error.code !== "ENOENT")
       throw error;
   }
-  const parent = dirname6(destination);
+  const parent = dirname7(destination);
   try {
     const parentInfo = await lstat(parent);
     if (parentInfo.isSymbolicLink()) {
@@ -52742,7 +52759,7 @@ async function vaultTransfer(args, ctx) {
 }
 
 // src/commands/verify.ts
-import { dirname as dirname7, join as join10 } from "node:path";
+import { dirname as dirname8, join as join11 } from "node:path";
 init_release();
 init_render();
 var USAGE = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
@@ -52751,7 +52768,7 @@ async function resolveIdentity(deps, bundlePath, flag) {
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
   let version;
   try {
-    const manifest = JSON.parse(await deps.readFile(join10(dirname7(bundlePath), "latest.json")));
+    const manifest = JSON.parse(await deps.readFile(join11(dirname8(bundlePath), "latest.json")));
     if (typeof manifest.version !== "string" || manifest.version.length === 0)
       return { kind: "absent" };
     version = manifest.version;
@@ -52861,12 +52878,12 @@ async function walletsExportRemoved(_args, ctx) {
 // src/config.ts
 import { chmod as chmod6, mkdir as mkdir6, readFile as readFile7, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
 import { homedir as homedir7 } from "node:os";
-import { join as join11 } from "node:path";
+import { join as join12 } from "node:path";
 function configDir2() {
-  return process.env.CANDLE_CONFIG_DIR?.trim() || join11(homedir7(), ".config", "candle");
+  return process.env.CANDLE_CONFIG_DIR?.trim() || join12(homedir7(), ".config", "candle");
 }
 function configFilePath() {
-  return join11(configDir2(), "config.json");
+  return join12(configDir2(), "config.json");
 }
 async function readConfig() {
   try {

@@ -92,8 +92,11 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
     // going to be made.
     assertOutsideConfigDir(destination, deps.env)
     const file = parseVaultFile(raw)
-    const verdict = assertBackupDomainAllowed(file.envelopes, destination, {
+    const verdict = await assertBackupDomainAllowed(file.envelopes, destination, {
       acceptSharedDomain: parsed.booleans.has("--accept-shared-domain"),
+      // BE-236: the classifier follows links, so `~/Documents` pointing into iCloud is seen as
+      // iCloud rather than as a local disk. `destination` stays the path the operator asked for.
+      realpath: deps.realpath,
     })
 
     if (await exists(destination)) {
