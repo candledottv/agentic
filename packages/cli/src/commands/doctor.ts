@@ -1,16 +1,16 @@
 /**
- * `doctor`: a PASS/FAIL/SKIP table over ten checks, in order (task-3-brief.md, then task-9):
- * runtime version, keychain backend detected, credentials present, API reachable, device token
- * valid, agent key valid for launch:write (see API_KEY_CHECK for why the scope is named in the
- * row label), launch wallet delegated, account, install method, and whether a newer signed
- * release exists. Exits nonzero on any FAIL. A missing credential SKIPs the checks that need it
+ * `doctor`: a PASS/FAIL/SKIP/WARN table, in order (task-3-brief.md, then task-9): runtime version,
+ * keychain backend detected, the config directory and whether a vault sits in it (BE-241, D10),
+ * credentials present, API reachable, device token valid, agent key valid for launch:write (see
+ * API_KEY_CHECK for why the scope is named in the row label), the plan, launch wallet delegated,
+ * account, install method, and whether a newer signed release exists. Exits nonzero on any FAIL. A missing credential SKIPs the checks that need it
  * rather than failing them (matching `auth status`); "credentials present" itself still FAILs
  * when there is no device token at all, since nothing past it can meaningfully run. Install and
  * Update never move the exit code either: an available update is PASS with the fix in its
  * detail, and offline is SKIP (see the rows themselves for why).
  */
 
-import { parseArgs } from "../args"
+import { isUsageError, parseArgs } from "../args"
 import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
@@ -18,6 +18,7 @@ import { resolveApiKey, resolveDeviceToken } from "../deps"
 import { credentialEnvOverrides, effectiveProfileFields, printIdentity } from "../profiles"
 import { compareVersions, detectInstall, fetchLatest, releaseBaseUrl } from "../release"
 import { renderError, renderTable, writeUsageFailure } from "../render"
+import { CONFIG_DIR_ENV, candleConfigDir, defaultVaultPath, fileExists } from "../vault/store"
 import { CLI_VERSION } from "../version"
 
 // Matches packages/mcp's own `engines.node` floor (">=18"); doctor needs an actual number to
@@ -65,6 +66,45 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
   )
 
   rows.push({ check: "Keychain backend", state: "PASS", detail: deps.backend })
+
+  // D10 (BE-241): the two local-custody facts, before any network row. The operator in BE-235
+  // item 4 could not see either one: they passed --keystore to `init` and not to `factor add`, got
+  // "no vault" from one command and "already exists" from the next, and had nowhere to ask where
+  // each had looked. The recommendation there was NOT to add remembered state, so these two rows
+  // and D3's parentheticals are what make the flag-or-variable rule visible instead.
+  //
+  // Both are pure local reads. A `CANDLE_CONFIG_DIR` that still begins with a literal `~` is the
+  // one refusal `candleConfigDir` can raise (D4), and doctor is where that is reported rather than
+  // discovered on the next vault command.
+  let configDir: string | undefined
+  try {
+    configDir = candleConfigDir(deps.env)
+    rows.push({
+      check: "Config directory",
+      state: "PASS",
+      detail: deps.env[CONFIG_DIR_ENV]?.trim() ? `${configDir} (from ${CONFIG_DIR_ENV})` : `${configDir} (the default)`,
+    })
+  } catch (error) {
+    rows.push({
+      check: "Config directory",
+      state: "FAIL",
+      detail: isUsageError(error) ? error.message : String(error),
+    })
+  }
+  if (configDir === undefined) {
+    rows.push({ check: "Vault", state: "SKIP", detail: `${CONFIG_DIR_ENV} is not usable, so no path to check` })
+  } else {
+    const vaultPath = defaultVaultPath(deps.env)
+    rows.push(
+      (await fileExists(vaultPath))
+        ? { check: "Vault", state: "PASS", detail: vaultPath }
+        : {
+            check: "Vault",
+            state: "SKIP",
+            detail: `no vault at ${vaultPath}. Create one with candle vault init, or point at an existing one with -k <path> or ${CONFIG_DIR_ENV}.`,
+          },
+    )
+  }
 
   const deviceToken = await resolveDeviceToken(deps, ctx.profile)
   const apiKey = await resolveApiKey(deps, ctx.profile)

@@ -24,6 +24,7 @@ import {
   requireVaultRaw,
   runVaultCommand,
   unlockInteractively,
+  usage,
   vaultPathFor,
 } from "./vault-support"
 
@@ -105,9 +106,13 @@ export async function runPlugin(name: string, rawArgs: string[], ctx: CommandCon
     // vault is closed again before the child starts: it receives addresses and nothing else.
     if (!refuseEnvPassphrase(ctx)) return 1
     if (!requireTty(ctx, "candle <plugin> --wallet")) return 1
-    const vaultPath = vaultPathFor(ctx, { values: {}, booleans: new Set(), positionals: [] })
+    // No `--keystore` on a plug-in invocation: the vault is wherever CANDLE_CONFIG_DIR or the
+    // default puts it, and a `~`-prefixed CANDLE_CONFIG_DIR is refused here as anywhere (D4).
+    const resolvedVault = vaultPathFor(ctx, { values: {}, booleans: new Set(), positionals: [] })
+    if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+    const vaultPath = resolvedVault.path
     const resolved = await runVaultCommand(ctx, async ({ hold }) => {
-      const raw = await requireVaultRaw(vaultPath)
+      const raw = await requireVaultRaw(ctx, resolvedVault)
       const vault = hold((await unlockInteractively(ctx, vaultPath, raw)).vault)
       for (const requested of split.wallets) {
         const entry = findExternalEntry(vault.index, requested)

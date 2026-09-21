@@ -57,17 +57,23 @@ export function requireExternalEntry(index: Parameters<typeof findExternalEntry>
 }
 
 export async function externalNew(args: string[], ctx: CommandContext): Promise<number> {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore", "--label"], booleanFlags: ["--accept-older-copy"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore", "--label"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"],
+  })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "external new")) return 1
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
 
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
@@ -171,16 +177,22 @@ export async function externalNew(args: string[], ctx: CommandContext): Promise<
 }
 
 export async function externalList(args: string[], ctx: CommandContext): Promise<number> {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"],
+  })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "external list")) return 1
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const vault = hold(
       (await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") }))
         .vault,
@@ -217,6 +229,7 @@ export async function externalSweep(args: string[], ctx: CommandContext): Promis
   const parsed = parseArgs(args, {
     valueFlags: ["--to", "--rpc-url", "--keystore"],
     booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [source, extra] = parsed.positionals
@@ -233,9 +246,11 @@ export async function externalSweep(args: string[], ctx: CommandContext): Promis
   if (!requireTty(ctx, "external sweep")) return 1
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })

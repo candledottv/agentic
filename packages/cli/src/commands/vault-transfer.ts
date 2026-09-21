@@ -33,6 +33,7 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--asset", "--from", "--rpc-url", "--keystore"],
     booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [to, extra] = parsed.positionals
@@ -53,9 +54,13 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "vault transfer")) return 1
 
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+
+  const path = resolvedVault.path
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       promptText: "Vault passphrase (input hidden): ",

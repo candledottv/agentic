@@ -40,6 +40,7 @@ import { nextAllocatableIndex } from "./vault-new-key"
 import {
   confirmLastSix,
   type OpenedVault,
+  type ResolvedVaultPath,
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
@@ -54,6 +55,7 @@ export async function vaultPromote(args: string[], ctx: CommandContext): Promise
   const parsed = parseArgs(args, {
     valueFlags: ["--from", "--in-place", "--sweep-to", "--label", "--rpc-url", "--keystore"],
     booleanFlags: ["--accept-unknown-exposure", "--accept-older-copy"],
+    pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
@@ -87,11 +89,13 @@ async function promoteFresh(
   fromLabel: string,
 ): Promise<number> {
   if ("error" in parsed) return usage(ctx, parsed.error)
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure")
 
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
@@ -187,7 +191,7 @@ async function promoteFresh(
       label: entry.label,
       vaultDestination: destination.address,
       reopen: opened.reopen,
-      vaultPath: path,
+      resolvedVault,
       onImport: () => {
         importCount.n += 1
       },
@@ -228,7 +232,11 @@ async function reopenFromDisk(
 ): Promise<UnlockedVault> {
   closeVault(previous)
   const raw = await readVaultRaw(path)
-  if (raw === null) throw new VaultError("VAULT_MISSING", `No vault at ${path}.`)
+  if (raw === null)
+    throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, {
+      suggestion:
+        "The vault was there when this run started. Check nothing moved or removed it, then: candle vault status",
+    })
   return reopen(path, raw)
 }
 
@@ -238,13 +246,15 @@ async function promoteInPlace(
   subjectLabel: string,
 ): Promise<number> {
   if ("error" in parsed) return usage(ctx, parsed.error)
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
   const sweepTo = parsed.values["--sweep-to"]
   const rpcUrl = parsed.values["--rpc-url"]
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure")
 
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
@@ -253,7 +263,10 @@ async function promoteInPlace(
 
     const existing = findEntryByLabelOrAddress(vault.index, subjectLabel)
     if (existing === undefined) {
-      throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`)
+      throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`, {
+        suggestion:
+          "Nothing was written. Run: candle vault status (which lists every label and address this vault holds)",
+      })
     }
 
     // Resume path: import-pending / local-candidate. Takes no --sweep-to.
@@ -301,7 +314,9 @@ async function promoteInPlace(
       acceptUnknownExposure: acceptUnknown,
     })
     if (second.resume) {
-      throw new VaultError("PROMOTE_ALREADY_TEE_WALLET", "The entry changed under the lock; nothing was written.")
+      throw new VaultError("PROMOTE_ALREADY_TEE_WALLET", "The entry changed under the lock; nothing was written.", {
+        suggestion: "Run: candle vault status --unlock to see where the entry is now, then re-run promote to resume.",
+      })
     }
     assertNotPinnedDestination(vault.index, second.subject.address)
 
@@ -371,7 +386,7 @@ async function promoteInPlace(
       label: parsed.values["--label"] ?? subject.label,
       vaultDestination: destination.address,
       reopen: opened.reopen,
-      vaultPath: path,
+      resolvedVault,
     })
     if (ctx.json) {
       const reopened = hold(await reopenFromDisk(path, opened.reopen, vault))
@@ -570,7 +585,7 @@ async function runTeeImport(
     label?: string
     vaultDestination: string
     reopen: OpenedVault["reopen"]
-    vaultPath: string
+    resolvedVault: ResolvedVaultPath
     onImport?: () => void
   },
 ): Promise<number> {
@@ -618,8 +633,8 @@ async function runTeeImport(
   const name = ctx.profile ?? config.activeProfile
   const account = name !== undefined ? (config.profiles?.[name]?.account ?? "") : ""
   const importedAt = new Date(ctx.deps.now()).toISOString()
-  const raw = await requireVaultRaw(opts.vaultPath)
-  const vault = await opts.reopen(opts.vaultPath, raw)
+  const raw = await requireVaultRaw(ctx, opts.resolvedVault)
+  const vault = await opts.reopen(opts.resolvedVault.path, raw)
   try {
     await commitVault(
       vault,

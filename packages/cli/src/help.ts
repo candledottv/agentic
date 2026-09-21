@@ -344,13 +344,14 @@ export const HELP: Record<string, Topic> = {
       },
       { invocation: "status [--unlock]", description: "What the vault holds, and what opens it" },
       {
-        invocation: "new-key --chain solana [--label <name>]",
-        description: "Derive the next Solana key inside the vault",
+        invocation: "new-key --chain solana [--label <name>] [--count <n>] [--labels-from <file>]",
+        description: "Derive the next Solana key, or n of them under one unlock",
       },
       { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
       {
-        invocation: "restore --phrase [--count <n>] [--tee-count <k>] [--external-count <e>] [--rpc-url <url>]",
-        description: "Rebuild a vault from the recovery phrase",
+        invocation:
+          "restore --phrase [--own-passphrase] [--count <n>] [--tee-count <k>] [--external-count <e>] [--rpc-url <url>]",
+        description: "Rebuild a vault from the recovery phrase; it gets a new passphrase",
       },
       {
         invocation: "reconcile-exposure",
@@ -359,6 +360,10 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "factor list | add <kind> | remove <id>",
         description: `Manage the factors that open the vault: ${FACTOR_KINDS.join(", ")}`,
+      },
+      {
+        invocation: "enroll <kind> [--label <name>]",
+        description: `Same as factor add: ${FACTOR_KINDS.join(", ")}`,
       },
       {
         invocation: "backup --to <path> [--accept-shared-domain]",
@@ -399,11 +404,17 @@ export const HELP: Record<string, Topic> = {
           "Unlock with this envelope: an id from factor list, or passphrase, security-key, touch-id, passkey",
       },
       { invocation: "--device <id>", description: "The security key to use when more than one is attached" },
+      {
+        invocation: "--labels-from <file>",
+        description:
+          "new-key: one name per line, one key each, one unlock (max 256). Each key is committed on its own, so a batch that is interrupted keeps every key that landed and you re-run for the rest.",
+      },
     ],
     examples: [
       "candle vault init",
       "candle vault new-key --chain solana --label treasury",
-      "candle vault factor add security-key --label yubikey-a",
+      "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
+      "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
       "CANDLE_CONFIG_DIR=$HOME/t47 candle vault status",
     ],

@@ -71,7 +71,11 @@ async function resolveIdentity(deps: Deps, bundlePath: string, flag: string | un
 
 export async function verify(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, json } = ctx
-  const parsed = parseArgs(args, { valueFlags: ["--bundle", "--identity", "--issuer"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--bundle", "--identity", "--issuer"],
+    pathFlags: ["--bundle"],
+    pathPositionals: ["<file>"],
+  })
   if ("error" in parsed) {
     writeUsageFailure(deps, `${parsed.error}\n${USAGE}`, json)
     return 2

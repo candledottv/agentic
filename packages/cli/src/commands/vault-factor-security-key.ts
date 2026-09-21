@@ -27,7 +27,7 @@ import { CTAP2_RP_ID, type Ctap2Envelope, type Envelope, parseVaultFile, VAULT_C
 import { wipe } from "../vault/hygiene"
 import { assertFactorAddable } from "../vault/platform"
 import { closeVault, commitVault, freshEnvelopeId, readVaultRaw, unlockVault, wrapDekForPrf } from "../vault/store"
-import { requireVaultRaw, unlockInteractively, writeJson } from "./vault-support"
+import { type ResolvedVaultPath, requireVaultRaw, unlockInteractively, writeJson } from "./vault-support"
 
 export const SECURITY_KEY_PAIR_NOTE =
   "One security key is not a recoverable factor: a lost key is a lost factor. Two security key envelopes on two different keys are a recoverable pair. The passphrase remains this vault's recovery floor."
@@ -35,16 +35,17 @@ export const SECURITY_KEY_PAIR_NOTE =
 export async function addSecurityKeyFactor(
   ctx: CommandContext,
   parsed: ParsedArgs,
-  path: string,
+  resolvedVault: ResolvedVaultPath,
   hold: (vault: Parameters<typeof closeVault>[0]) => Parameters<typeof closeVault>[0],
 ): Promise<number> {
+  const path = resolvedVault.path
   const { deps } = ctx
   // CC-12 first: a platform or a machine that cannot drive the factor is a typed refusal before
   // any device is enumerated, and never a substitution.
   const facts = await currentPlatformFacts(deps)
   assertFactorAddable("passkey-prf", facts, "ctap2")
 
-  const raw = await requireVaultRaw(path)
+  const raw = await requireVaultRaw(ctx, resolvedVault)
   const file = parseVaultFile(raw)
   const envelopeId = freshEnvelopeId()
 

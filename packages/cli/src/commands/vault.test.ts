@@ -914,3 +914,305 @@ describe("the TTY rule, and what answers without one", () => {
     }
   })
 })
+
+/**
+ * T17 (BE-241, D8): `init` says the passphrase is about to be generated and shown once, BEFORE the
+ * ceremony rather than beside the words, and it names the non-default location on the way out.
+ *
+ * No new prompt here, deliberately: the copy-back is itself the proof of capture, and a mismatch
+ * costs nothing because no file exists yet. BE-235 item 5 asked whether a first-ever `init` should
+ * say so louder, before the words; this is that answer.
+ */
+describe("T17: D8's init copy and footer", () => {
+  test("the notice precedes the eight words on stdout", async () => {
+    const h = await initVault()
+    const notice = h.stdout.text.indexOf("Your vault passphrase is about to be generated and shown once.")
+    expect(notice).toBeGreaterThan(-1)
+    expect(h.stdout.text).toContain("This CLI keeps no copy and cannot recover it.")
+    expect(h.stdout.text).toContain("To choose your own instead: candle vault init --own-passphrase")
+    expect(h.stdout.text.indexOf(h.passphrase)).toBeGreaterThan(notice)
+  })
+
+  test("it is not printed with --own-passphrase, where nothing is generated", async () => {
+    const h = await harness({
+      secrets: ["a-long-enough-chosen-passphrase", "a-long-enough-chosen-passphrase"],
+      lines: ["no"],
+    })
+    expect(await run(["vault", "init", "--own-passphrase", "--keystore", h.vaultPath], h.deps)).toBe(0)
+    expect(h.stdout.text).not.toContain("about to be generated")
+  })
+
+  test("the footer names the non-default location, and where to set it once", async () => {
+    const h = await initVault()
+    expect(h.stdout.text).toContain(`This vault is at ${h.vaultPath}, not the default location.`)
+    expect(h.stdout.text).toContain(`Every vault command needs -k ${h.vaultPath}`)
+    expect(h.stdout.text).toContain(`export CANDLE_CONFIG_DIR=${h.dir}`)
+  })
+
+  test("there is no footer when CANDLE_CONFIG_DIR is what located the vault", async () => {
+    const h = await harness({ lines: ["no"] })
+    h.deps.promptSecret = async () => generatedPassphraseFrom(h.stdout.text)
+    // No --keystore: the vault lands at the config dir the environment already names.
+    expect(await run(["vault", "init"], h.deps)).toBe(0)
+    expect(h.stdout.text).not.toContain("not the default location")
+  })
+
+  test("the --json payload is unchanged: no footer, no notice, and the same keys", async () => {
+    const h = await harness({ secrets: ["a-long-enough-chosen-passphrase", "a-long-enough-chosen-passphrase"] })
+    expect(await run(["vault", "init", "--own-passphrase", "--json", "--keystore", h.vaultPath], h.deps)).toBe(0)
+    const body = JSON.parse(h.stdout.text) as Record<string, unknown>
+    expect(Object.keys(body).sort()).toEqual(
+      ["envelopes", "generation", "highValue", "ok", "path", "phraseCeremonyOffered", "vaultId"].sort(),
+    )
+    expect(h.stdout.text.trimEnd().split("\n")).toHaveLength(1)
+    expect(h.stdout.text).not.toContain("not the default location")
+  })
+})
+
+/**
+ * BE-242: `--count` and `--labels-from`. One unlock, n keys.
+ *
+ * The migration that asked for this needs 160 fresh keys, one per wallet being replaced. Without
+ * a batch flag that is 160 processes and 160 unlocks -- with no Secure Enclave factor available
+ * (Apple Developer enrollment still pending), 160 typed passphrases, and 160 chances to stop
+ * halfway and leave the job half done.
+ *
+ * What these pin hardest is what a batch must NOT become. It is one interactive unlock for many
+ * keys and never a way to derive keys unattended, so the refusals are asserted against `--count`
+ * exactly as they hold for a single key.
+ */
+describe("new-key --count: one unlock, many keys", () => {
+  test("--count 3 derives three consecutive indexes, advances the counter once per key, and prompts once", async () => {
+    const h = await initVault()
+    const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    const code = await run(["vault", "new-key", "--chain", "solana", "--count", "3", "--keystore", h.vaultPath], k.deps)
+
+    expect(code).toBe(0)
+    expect(k.stdout.text).toContain("m/44'/501'/0'/0'")
+    expect(k.stdout.text).toContain("m/44'/501'/1'/0'")
+    expect(k.stdout.text).toContain("m/44'/501'/2'/0'")
+    expect(k.stdout.text).toContain("3 keys created under one unlock")
+    // The whole point: ONE passphrase prompt for three keys. The harness throws if a run asks
+    // for more input than the test scripted, so a second prompt would fail this outright -- but
+    // asserted explicitly too, since that is the property the flag exists for.
+    expect(k.asked.filter((line) => line.startsWith("secret:"))).toHaveLength(1)
+
+    const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)
+    expect(s.stdout.text).toContain("solanaVault  3")
+  })
+
+  test("three distinct addresses land in the vault and each re-derives from the root", async () => {
+    const h = await initVault()
+    const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(
+      await run(["vault", "new-key", "--chain", "solana", "--count", "3", "--json", "--keystore", h.vaultPath], k.deps),
+    ).toBe(0)
+    const body = JSON.parse(k.stdout.text) as { ok: boolean; count: number; keys: { address: string; index: number }[] }
+    expect(body.count).toBe(3)
+    expect(body.keys.map((key) => key.index)).toEqual([0, 1, 2])
+    // Three keys, not one key written three times. A batch that reused a derivation would pass
+    // every count assertion above and be worthless.
+    expect(new Set(body.keys.map((key) => key.address)).size).toBe(3)
+
+    const { reopen } = await import("../vault/test-vault")
+    const { closeVault } = await import("../vault/store")
+    const vault = await reopen(h.vaultPath, h.passphrase)
+    try {
+      for (const key of body.keys) {
+        expect(vault.index.entries.some((entry) => entry.address === key.address)).toBe(true)
+      }
+      expect(vault.index.entries).toHaveLength(3)
+    } finally {
+      closeVault(vault)
+    }
+  })
+
+  test("the allocation guard runs per index: an exposed index inside the batch is skipped, not just at its head", async () => {
+    const h = await initVault()
+    // Index 1 marked exposed. A batch that checked `exposedIndexes` once, for its first index,
+    // would allocate 0, 1, 2 and hand back a key at an index positively known to be exposed.
+    const { reopen } = await import("../vault/test-vault")
+    const { commitVault } = await import("../vault/store")
+    const seeded = await reopen(h.vaultPath, h.passphrase)
+    await commitVault(
+      seeded,
+      {
+        index: {
+          ...seeded.index,
+          hd: { ...seeded.index.hd, exposedIndexes: { ...seeded.index.hd.exposedIndexes, solanaVault: [1] } },
+        },
+      },
+      h.deps,
+    )
+
+    const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(
+      await run(["vault", "new-key", "--chain", "solana", "--count", "3", "--json", "--keystore", h.vaultPath], k.deps),
+    ).toBe(0)
+    const body = JSON.parse(k.stdout.text) as { keys: { index: number }[] }
+    expect(body.keys.map((key) => key.index)).toEqual([0, 2, 3])
+  })
+
+  test("--labels-from names each key from the file, and the count falls out of its length", async () => {
+    const h = await initVault()
+    const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    // Names that are NOT sequential, which is the whole reason this flag exists rather than a
+    // --label-prefix: a 1:1 migration reuses the old wallets' names.
+    k.deps.readFile = async () => "treasury-eu\n\n  ops-payer  \nmarket-maker-3\n"
+    expect(
+      await run(
+        ["vault", "new-key", "--chain", "solana", "--labels-from", "/names", "--json", "--keystore", h.vaultPath],
+        k.deps,
+      ),
+    ).toBe(0)
+    const body = JSON.parse(k.stdout.text) as { count: number; keys: { label: string }[] }
+    expect(body.count).toBe(3)
+    // Blank lines dropped, surrounding whitespace trimmed, order preserved.
+    expect(body.keys.map((key) => key.label)).toEqual(["treasury-eu", "ops-payer", "market-maker-3"])
+  })
+
+  test("a --labels-from name that already exists in the vault is refused BEFORE anything is derived", async () => {
+    const h = await initVault()
+    const first = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(
+      await run(
+        ["vault", "new-key", "--chain", "solana", "--label", "treasury", "--keystore", h.vaultPath],
+        first.deps,
+      ),
+    ).toBe(0)
+
+    const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    k.deps.readFile = async () => "alpha\ntreasury\nomega\n"
+    expect(
+      await run(
+        ["vault", "new-key", "--chain", "solana", "--labels-from", "/names", "--keystore", h.vaultPath],
+        k.deps,
+      ),
+    ).toBe(2)
+    expect(k.stderr.text).toContain("treasury")
+
+    // Nothing was derived: the vault still holds exactly the one key from before. A collision
+    // found at key 2 of 3 would otherwise leave `alpha` committed and the mapping half made.
+    const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)
+    expect(s.stdout.text).toContain("solanaVault  1")
+  })
+
+  test("the batch flags are validated before the unlock, so a bad one never costs a passphrase", async () => {
+    const h = await initVault()
+    for (const args of [
+      ["--count", "0"],
+      ["--count", "2.5"],
+      ["--count", "257"],
+      ["--count", "2", "--label", "one-name"],
+    ]) {
+      const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
+      expect([
+        args,
+        await run(["vault", "new-key", "--chain", "solana", ...args, "--keystore", h.vaultPath], k.deps),
+      ]).toEqual([args, 2])
+      // No secret was collected. The harness has none scripted, so a prompt would throw anyway.
+      expect([args, k.asked]).toEqual([args, []])
+    }
+  })
+
+  test("--count is capped, and a duplicate or empty --labels-from is refused with its reason", async () => {
+    const h = await initVault()
+    const cap = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
+    expect(
+      await run(["vault", "new-key", "--chain", "solana", "--count", "9999", "--keystore", h.vaultPath], cap.deps),
+    ).toBe(2)
+    expect(cap.stderr.text).toContain("capped at 256")
+
+    const dup = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
+    dup.deps.readFile = async () => "a\nb\na\n"
+    expect(
+      await run(["vault", "new-key", "--chain", "solana", "--labels-from", "/n", "--keystore", h.vaultPath], dup.deps),
+    ).toBe(2)
+    expect(dup.stderr.text).toContain("more than once")
+
+    const empty = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
+    empty.deps.readFile = async () => "\n  \n"
+    expect(
+      await run(
+        ["vault", "new-key", "--chain", "solana", "--labels-from", "/n", "--keystore", h.vaultPath],
+        empty.deps,
+      ),
+    ).toBe(2)
+    expect(empty.stderr.text).toContain("empty file")
+
+    const disagree = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
+    disagree.deps.readFile = async () => "a\nb\n"
+    expect(
+      await run(
+        ["vault", "new-key", "--chain", "solana", "--labels-from", "/n", "--count", "5", "--keystore", h.vaultPath],
+        disagree.deps,
+      ),
+    ).toBe(2)
+    expect(disagree.stderr.text).toContain("disagrees with --labels-from")
+  })
+
+  test("a single key with no batch flag answers in the shape it always did", async () => {
+    const h = await initVault()
+    const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    await run(["vault", "new-key", "--chain", "solana", "--json", "--keystore", h.vaultPath], k.deps)
+    // No `keys` array and no `count`: every existing --json caller keeps parsing what it parsed
+    // before. A batch document is what the BATCH FLAGS select, not what n happens to be.
+    expect(Object.keys(JSON.parse(k.stdout.text) as object).sort()).toEqual([
+      "address",
+      "index",
+      "keyId",
+      "label",
+      "ok",
+      "path",
+    ])
+
+    // And `--count 1` DOES select it, so a script never has to branch on n.
+    const one = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    await run(["vault", "new-key", "--chain", "solana", "--count", "1", "--json", "--keystore", h.vaultPath], one.deps)
+    const body = JSON.parse(one.stdout.text) as { count: number; keys: unknown[] }
+    expect(body.count).toBe(1)
+    expect(body.keys).toHaveLength(1)
+  })
+})
+
+describe("--count is a convenience for one unlock, never a way to derive keys unattended", () => {
+  test("it still refuses without a terminal, and asks for nothing", async () => {
+    const h = await initVault()
+    const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, tty: false })
+    expect(
+      await run(["vault", "new-key", "--chain", "solana", "--count", "10", "--keystore", h.vaultPath], k.deps),
+    ).toBe(1)
+    expect(k.stderr.text).toContain("needs a terminal")
+    expect(k.asked).toEqual([])
+  })
+
+  test("it still refuses while CANDLE_KEYSTORE_PASSPHRASE is set: a batch is not the reason to want it back", async () => {
+    const h = await initVault()
+    const k = await harness({
+      env: { CANDLE_CONFIG_DIR: h.dir, CANDLE_KEYSTORE_PASSPHRASE: "anything at all" },
+    })
+    expect(
+      await run(["vault", "new-key", "--chain", "solana", "--count", "10", "--keystore", h.vaultPath], k.deps),
+    ).toBe(1)
+    expect(k.stderr.text).toContain("CANDLE_KEYSTORE_PASSPHRASE is set")
+    expect(k.asked).toEqual([])
+  })
+
+  test("--high-value still gates the batch, and allocates none of it", async () => {
+    const chosen = "a passphrase I picked myself"
+    const h = await harness({ secrets: [chosen, chosen], lines: ["no"] })
+    expect(await run(["vault", "init", "--own-passphrase", "--high-value", "--keystore", h.vaultPath], h.deps)).toBe(0)
+
+    const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [chosen] })
+    expect(
+      await run(["vault", "new-key", "--chain", "solana", "--count", "5", "--keystore", h.vaultPath], k.deps),
+    ).toBe(1)
+    expect(k.stderr.text).toContain("--high-value")
+
+    const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [chosen] })
+    await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)
+    expect(s.stdout.text).toContain("solanaVault  0")
+  })
+})

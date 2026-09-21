@@ -28,8 +28,8 @@
  * dependency on this CLI continuing to exist.
  */
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
-import { homedir } from "node:os"
 import { dirname, join } from "node:path"
+import { candleConfigDir } from "./vault/store"
 import type { WalletChain } from "./wallet-import"
 
 /**
@@ -58,10 +58,6 @@ export function defaultTeeKeystorePath(env: Record<string, string | undefined>):
  */
 export function legacyTeeKeystorePath(env: Record<string, string | undefined>): string {
   return join(candleConfigDir(env), "hot-wallets.enc")
-}
-
-function candleConfigDir(env: Record<string, string | undefined>): string {
-  return env.CANDLE_CONFIG_DIR?.trim() || join(homedir(), ".config", "candle")
 }
 
 /** The header marker of a TEE wallet store. One constant, so the value is spelled in one place. */

@@ -52,12 +52,14 @@ import { sidecarPath } from "../vault/sidecar"
 import { closeVault, commitVault, fileExists, freshKeyId, sealKeyBlob, type UnlockedVault } from "../vault/store"
 import { verifyVaultIntegrity } from "../vault/verify"
 import {
+  nonDefaultVaultFooter,
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
   runVaultCommand,
   unlockInteractively,
   usage,
+  vaultAlreadyExists,
   vaultPathFor,
   writeJson,
 } from "./vault-support"
@@ -71,6 +73,7 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--count", "--tee-count", "--external-count", "--rpc-url"],
     booleanFlags: ["--phrase", "--own-passphrase"],
+    pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
@@ -94,16 +97,24 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
   if ("error" in counts) return usage(ctx, counts.error)
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
 
   return runVaultCommand(ctx, async ({ hold }) => {
     if (await fileExists(path)) {
-      throw new VaultError("VAULT_EXISTS", `A vault already exists at ${path}.`, {
-        suggestion: "Restoring builds a new vault and never merges into one. Move the existing file aside first.",
-      })
+      throw vaultAlreadyExists(
+        ctx,
+        resolvedVault,
+        "Restoring builds a new vault and never merges into one. Move the existing file aside first.",
+      )
     }
     const sidecarExisted = await fileExists(sidecarPath(path))
 
+    // D8 (BE-241): said BEFORE anything has been typed. The operator in BE-235 item 5 typed the
+    // SOURCE vault's passphrase at the copy-back prompt, the AD-6 gate refused correctly, nothing
+    // was written, and it read as being stuck. The gate is right; what was missing was this line.
+    deps.stdout.write(`${RESTORE_NEW_PASSPHRASE_NOTICE}\n\n`)
     deps.stdout.write(
       `Type your ${PHRASE_WORDS}-word recovery phrase. It is not echoed, and nothing is written until its checksum checks out.\n`,
     )
@@ -116,10 +127,14 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
         throw new VaultError(
           "PHRASE_INVALID",
           `That phrase carries ${rootEntropy.length} bytes of entropy, not ${ROOT_ENTROPY_BYTES}.`,
+          { suggestion: "Nothing was written. Check the word count and order, then run it again." },
         )
       }
-      const ownPassphrase = parsed.booleans.has("--own-passphrase")
-      const passphrase = ownPassphrase ? await collectOwn(ctx) : await collectGenerated(ctx)
+      // D8: the choice is offered HERE -- after the phrase is validated, before the passphrase
+      // step -- so an answer typed wrong costs one re-prompt rather than retyping 24 words.
+      const own = parsed.booleans.has("--own-passphrase") || (await askForOwnPassphrase(ctx))
+      const passphrase = own ? await collectOwn(ctx) : await collectGenerated(ctx)
+      const ownPassphrase = own
       // A NEW vaultId and a NEW DEK: nothing from the old vault is needed, and nothing from it is
       // reused, so a leaked copy of the old file gains nothing from this one existing.
       //
@@ -181,7 +196,13 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
 
       const outcome = await writeRestoredIndex(ctx, vault, derived, matches, counts)
       committed = true
-      return reportRestore(ctx, vault, derived, matches, outcome, counts)
+      const result = reportRestore(ctx, vault, derived, matches, outcome, counts)
+      // D8/D10, last: the moment the non-default vault is born is the moment to say that every
+      // later vault command needs the flag, or the variable that moves every file together. Human
+      // mode only, which is every mode here: restore has no --json form at all.
+      const footer = nonDefaultVaultFooter(resolvedVault)
+      if (footer !== undefined) deps.stdout.write(footer)
+      return result
     } catch (error) {
       if (!committed) await discardIncompleteRestore(ctx, path, sidecarExisted)
       throw error
@@ -669,17 +690,23 @@ function reportRestore(
  * nothing would otherwise read as good news.
  */
 export async function vaultReconcileExposure(args: string[], ctx: CommandContext): Promise<number> {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"],
+  })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "vault reconcile-exposure")) return 1
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
 
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const vault = hold(
       (await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") }))
         .vault,
@@ -782,6 +809,31 @@ export async function vaultReconcileExposure(args: string[], ctx: CommandContext
     )
     return 0
   })
+}
+
+/**
+ * D8's first line, printed before the phrase prompt. The words carry the KEYS; a passphrase belongs
+ * to one file, so the restored vault's is new and the source vault's does not carry over.
+ */
+export const RESTORE_NEW_PASSPHRASE_NOTICE =
+  "This builds a NEW vault from your 24 words, and it gets a NEW passphrase: the one that opened the vault the words came from does not carry over. The words carry the keys; a passphrase belongs to one file."
+
+export const RESTORE_PASSPHRASE_PROMPT =
+  "Passphrase for the new vault. Press Enter to have one generated (8 words, shown once, typed back), or type own to choose your own (16+ characters, typed twice, never shown): "
+
+/**
+ * D8's prompt: Enter for the generated passphrase, `own` to choose one. Anything else is asked once
+ * more and then treated as Enter, because the generated branch is AD-6's default and a third
+ * reading of the same question teaches nothing. `--own-passphrase` never reaches here.
+ * `vault restore` is already refused under `--json`, so this prompt has no machine form to answer.
+ */
+async function askForOwnPassphrase(ctx: CommandContext): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const answer = (await ctx.deps.promptLine(RESTORE_PASSPHRASE_PROMPT)).trim().toLowerCase()
+    if (answer === "own") return true
+    if (answer === "") return false
+  }
+  return false
 }
 
 async function collectGenerated(ctx: CommandContext): Promise<string> {

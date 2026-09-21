@@ -6,7 +6,8 @@
  * function here: refuse while `CANDLE_KEYSTORE_PASSPHRASE` is set; hidden prompt only; refuse
  * without a TTY when a secret has to be collected; `--json` output never contains a secret.
  */
-import type { ParsedArgs } from "../args"
+import { dirname } from "node:path"
+import { isUsageError, type ParsedArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 import { type EnclaveSession, openEnclaveSession, pinnedHelperIdentity, unwrapKekWithEnclave } from "../vault/enclave"
@@ -31,6 +32,7 @@ import { passphraseAttempts } from "../vault/passphrase"
 import { canDrive, envelopeAvailability, type PlatformFacts, refusalCodeFor } from "../vault/platform"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
 import {
+  CONFIG_DIR_ENV,
   closeVault,
   defaultVaultPath,
   readVaultRaw,
@@ -80,16 +82,120 @@ export function requireTty(ctx: CommandContext, what: string): boolean {
   return false
 }
 
-export function vaultPathFor(ctx: CommandContext, parsed: ParsedArgs): string {
-  return parsed.values["--keystore"] ?? defaultVaultPath(ctx.deps.env)
+/** Where the vault path this invocation uses came from (D3). */
+export type VaultPathSource = "flag" | "env" | "default"
+
+/** A vault path together with WHY it is that path. The `source` is the whole point: the operator
+ * in BE-235 item 4 passed `--keystore` to `init` and not to `factor add`, and got "no vault" from
+ * one command and "already exists" from the next, both true, neither saying where it looked. */
+export interface ResolvedVaultPath {
+  path: string
+  source: VaultPathSource
 }
 
-/** Reads the vault, turning "no file" into the typed refusal that names how to make one. */
-export async function requireVaultRaw(path: string): Promise<string> {
-  const raw = await readVaultRaw(path)
-  if (raw === null) {
-    throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" })
+/**
+ * The vault file for this invocation: `--keystore` (or `-k`), else `CANDLE_CONFIG_DIR`, else the
+ * default. Returns `{ error }` rather than throwing for the one refusal that can happen here, a
+ * `CANDLE_CONFIG_DIR` beginning with a literal `~` (D4): every caller already returns `usage(ctx,
+ * ...)` on a parse error, so that is exit 2 and the `USAGE` envelope, decided before any file is
+ * opened.
+ */
+export function vaultPathFor(ctx: CommandContext, parsed: ParsedArgs): ResolvedVaultPath | { error: string } {
+  const flag = parsed.values["--keystore"]
+  // Already checked for a literal `~` at parse time, by the `pathFlags` entry on every spec that
+  // takes `--keystore`.
+  if (flag !== undefined) return { path: flag, source: "flag" }
+  try {
+    const path = defaultVaultPath(ctx.deps.env)
+    return { path, source: ctx.deps.env[CONFIG_DIR_ENV]?.trim() ? "env" : "default" }
+  } catch (error) {
+    if (isUsageError(error)) return { error: error.message }
+    throw error
   }
+}
+
+/**
+ * D3's parenthetical: why THIS path. One clause, appended to the message of the two refusals an
+ * operator meets while setting a vault up, and the thing that makes them self-correcting -- someone
+ * who passed `--keystore` last time and not this time reads "the default" and understands before
+ * reading any suggestion.
+ */
+function pathSourceNote(ctx: CommandContext, resolved: ResolvedVaultPath): string {
+  switch (resolved.source) {
+    case "flag":
+      return "(from --keystore)"
+    case "env":
+      return `(from ${CONFIG_DIR_ENV}=${ctx.deps.env[CONFIG_DIR_ENV]?.trim()})`
+    default:
+      return `(the default: no --keystore given and ${CONFIG_DIR_ENV} is unset)`
+  }
+}
+
+/** The machine-readable half of the same two facts, for an agent that would otherwise have to
+ * parse the parenthetical out of `message`. */
+function pathDetails(resolved: ResolvedVaultPath): Record<string, string> {
+  return { path: resolved.path, pathSource: resolved.source }
+}
+
+/**
+ * `VAULT_MISSING`, from one place (D3). The three throw sites this replaces all carried the single
+ * branch `Create one: candle vault init`, which is the wrong branch on a machine whose vault is
+ * somewhere else -- and on a machine with real funds it is how someone ends up with two vaults and
+ * trusts the empty one.
+ *
+ * So the suggestion names EVERY branch the operator might be on, cheapest-if-wrong first: checking
+ * a path costs nothing, while creating a vault first is the branch that costs a second vault. The
+ * human form is an aligned two-line block; under `--json` the same two branches are one sentence,
+ * because an envelope's `suggestion` is read, not laid out.
+ */
+export function missingVault(ctx: CommandContext, resolved: ResolvedVaultPath): VaultError {
+  const { path } = resolved
+  const suggestion =
+    resolved.source === "default"
+      ? ctx.json
+        ? `If your vault is somewhere else, point at it: candle vault status -k <path>, or export ${CONFIG_DIR_ENV}=<its directory>. If you have never made one: candle vault init`
+        : `  If your vault is somewhere else, point at it:   candle vault status -k <path>   or   export ${CONFIG_DIR_ENV}=<its directory>\n  If you have never made one:                     candle vault init`
+      : ctx.json
+        ? `If the path is wrong, check it: ls -l ${path}. If you have never made one: candle vault init -k ${path}`
+        : `  If the path is wrong, check it:   ls -l ${path}\n  If you have never made one:       candle vault init -k ${path}`
+  return new VaultError("VAULT_MISSING", `No vault at ${path} ${pathSourceNote(ctx, resolved)}.`, {
+    suggestion,
+    details: pathDetails(resolved),
+  })
+}
+
+/**
+ * `VAULT_EXISTS`, the other half of the contradiction the operator saw. It keeps each caller's own
+ * suggestion and gains the same parenthetical and the same `details`, so the two messages read
+ * together as "the first command looked at the default and found nothing; the second looked at the
+ * default and found the vault made minutes earlier".
+ */
+export function vaultAlreadyExists(ctx: CommandContext, resolved: ResolvedVaultPath, suggestion: string): VaultError {
+  return new VaultError(
+    "VAULT_EXISTS",
+    `A vault already exists at ${resolved.path} ${pathSourceNote(ctx, resolved)}.`,
+    {
+      suggestion,
+      details: pathDetails(resolved),
+    },
+  )
+}
+
+/**
+ * D8/D10's footer, printed by `init` and `restore` when `-k`/`--keystore` put the vault somewhere
+ * other than the default: the moment the non-default vault is BORN is the moment to say that every
+ * later command needs the flag, or the variable that moves every file together. Human mode only;
+ * the `--json` payloads of both commands already carry `path`.
+ */
+export function nonDefaultVaultFooter(resolved: ResolvedVaultPath): string | undefined {
+  if (resolved.source !== "flag") return undefined
+  return `\nThis vault is at ${resolved.path}, not the default location. Every vault command needs -k ${resolved.path}, or set it once: export ${CONFIG_DIR_ENV}=${dirname(resolved.path)}\n`
+}
+
+/** Reads the vault, turning "no file" into the typed refusal that names where it looked and why. */
+export async function requireVaultRaw(ctx: CommandContext, resolved: ResolvedVaultPath): Promise<string> {
+  const raw = await readVaultRaw(resolved.path)
+  if (raw === null) throw missingVault(ctx, resolved)
   return raw
 }
 
@@ -224,6 +330,7 @@ export async function unlockInteractively(
         throw new VaultError(
           "VAULT_FACTOR_UNAVAILABLE",
           `The file at ${p} has no Secure Enclave envelope ${envelope.id}.`,
+          { suggestion: "Run: candle vault status (which lists each factor and why it is not available here)" },
         )
       }
       pinnedHelperIdentity(deps, target.helper)
@@ -259,6 +366,7 @@ export async function unlockInteractively(
         throw new VaultError(
           "VAULT_FACTOR_UNAVAILABLE",
           `The file at ${p} has no synced passkey envelope ${envelope.id}.`,
+          { suggestion: "Run: candle vault status (which lists each factor and why it is not available here)" },
         )
       }
       pinnedHelperIdentity(deps, target.helper)
@@ -295,7 +403,11 @@ export async function unlockInteractively(
     const current = parseVaultFile(r)
     const target = current.envelopes.find((candidate) => candidate.id === envelope.id)
     if (target === undefined || !isCtap2Envelope(target)) {
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `The file at ${p} has no security key envelope ${envelope.id}.`)
+      throw new VaultError(
+        "VAULT_FACTOR_UNAVAILABLE",
+        `The file at ${p} has no security key envelope ${envelope.id}.`,
+        { suggestion: "Run: candle vault status (which lists each factor and why it is not available here)" },
+      )
     }
     const prfOutput = await assertPrf(deps, session, target, current.vaultId, "unlock the vault")
     try {
@@ -398,7 +510,9 @@ async function chooseFactor(
 
   if (flag === "passphrase") {
     if (passphrases.length === 0)
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.")
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.", {
+        suggestion: "Run: candle vault status (which lists each factor and why it is not available here)",
+      })
     return { kind: "passphrase" }
   }
   const byKind: Record<string, { candidates: DrivableEnvelope[]; word: string; add: string }> = {
@@ -417,6 +531,7 @@ async function chooseFactor(
       throw new VaultError(
         "VAULT_FACTOR_UNAVAILABLE",
         `This vault has ${kind.candidates.length} ${kind.word} envelopes; name one with --factor <id>:\n${list(kind.candidates as unknown as Envelope[])}`,
+        { suggestion: "Run `candle vault factor list` for the ids." },
       )
     }
     return choiceFor(assertDrivable(kind.candidates[0] as DrivableEnvelope, facts))
@@ -438,6 +553,7 @@ async function chooseFactor(
     throw new VaultError(
       "VAULT_FACTOR_UNAVAILABLE",
       `Envelope ${named.id} is a ${named.factor} envelope this release cannot open.`,
+      { suggestion: "Run: candle vault status (which lists each factor and why it is not available here)" },
     )
   }
   throw new VaultError(
@@ -528,16 +644,26 @@ export async function confirmLastSix(ctx: CommandContext, address: string, what:
     throw new VaultError(
       "DESTINATION_NOT_CONFIRMED",
       "That is not the last six characters of that address; nothing was done.",
+      { suggestion: "Nothing was signed. Run it again and type the last six characters exactly as shown." },
     )
   }
 }
 
 /** Writes a vault failure in whichever mode this invocation is in, and answers its exit code. */
 export function writeVaultFailure(ctx: CommandContext, error: unknown): number {
+  // A `CANDLE_CONFIG_DIR` refusal raised from inside `candleConfigDir` (D4) is a usage error, not a
+  // vault one: same exit 2 and same `USAGE` envelope a mistyped flag gets.
+  if (isUsageError(error)) return usage(ctx, error.message)
   if (isVaultError(error)) {
     writeLocalFailure(
       ctx.deps,
-      { code: error.code, message: error.message, ...(error.suggestion ? { suggestion: error.suggestion } : {}) },
+      {
+        code: error.code,
+        message: error.message,
+        ...(error.suggestion ? { suggestion: error.suggestion } : {}),
+        // D3's additive optional key: present only where a refusal carries facts worth acting on.
+        ...(error.details ? { details: error.details } : {}),
+      },
       ctx.json,
     )
     return error.exitCode

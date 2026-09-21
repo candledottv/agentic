@@ -6,11 +6,12 @@
  * honoured here exactly as on every other command that opens the vault, so a security key opens a
  * migrated TEE entry and a passphrase is never substituted for an explicitly selected factor.
  */
+import { UsageError } from "../args"
 import type { OpenedVault } from "../commands/vault-support"
-import { unlockInteractively } from "../commands/vault-support"
+import { unlockInteractively, vaultPathFor } from "../commands/vault-support"
 import type { CommandContext } from "../deps"
 import type { KeyEntry } from "./format"
-import { closeVault, defaultVaultPath, readVaultRaw, type UnlockedVault } from "./store"
+import { closeVault, readVaultRaw, type UnlockedVault } from "./store"
 
 export type VaultTeeHit =
   | { hit: false }
@@ -29,7 +30,16 @@ export async function findTeeInVault(
   address: string,
   opts: { vaultPath?: string } = {},
 ): Promise<VaultTeeHit> {
-  const path = opts.vaultPath ?? defaultVaultPath(ctx.deps.env)
+  let path: string
+  if (opts.vaultPath !== undefined) {
+    path = opts.vaultPath
+  } else {
+    // Same helper as every vault command: a literal-`~` `CANDLE_CONFIG_DIR` becomes `{ error }`,
+    // rethrown as `UsageError` so `resolveTeeAddress` / `addressOwnedByVault` map it to USAGE.
+    const resolved = vaultPathFor(ctx, { values: {}, booleans: new Set(), positionals: [] })
+    if ("error" in resolved) throw new UsageError(resolved.error)
+    path = resolved.path
+  }
   const raw = await readVaultRaw(path)
   if (raw === null) return { hit: false }
 

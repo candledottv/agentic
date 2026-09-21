@@ -138,6 +138,12 @@ guarantee is unconfirmed: a wallet stop whose remote enforcement is still pendin
 enabled without verified signing authority, or a sweep that left a residual). Treat `3` as not
 done: follow the printed next step, usually re-running the same command.
 
+A failure envelope is `{ ok: false, code, message }`, with an optional one-line `suggestion` and,
+where a refusal carries facts worth acting on, an optional nested `details`. A vault that is not
+where the command looked answers with `details: { path, pathSource: "flag" | "env" | "default" }`,
+so an agent can retry against the right file without parsing the message. Keys are added, never
+removed, and `code` values never change; `message` and `suggestion` are prose and may.
+
 A generated vault passphrase is shown once on the terminal and never inside a JSON value, so
 `vault init` and `vault factor add passphrase` under `--json` take `--own-passphrase` (typed at a
 hidden prompt, nothing shown) and refuse the generated form with exit `2`. Prompts themselves are

@@ -47,6 +47,94 @@ var __export = (target, all) => {
 var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
+// src/args.ts
+function refuseUnexpandedTilde(name, value) {
+  if (!value.startsWith("~"))
+    return;
+  const isEnvVar = /^[A-Z][A-Z0-9_]*$/.test(name);
+  const subject = isEnvVar ? "the value" : "the path";
+  return `${isEnvVar ? `${name}=${value}` : `${name} ${value}`}: ${subject} ${TILDE_TAIL}`;
+}
+function isUsageError(error) {
+  return error instanceof UsageError;
+}
+function parseArgs(args, spec) {
+  const valueFlags = new Set(spec.valueFlags ?? []);
+  const booleanFlags = new Set(spec.booleanFlags ?? []);
+  const values = {};
+  const booleans = new Set;
+  const positionals = [];
+  for (let i = 0;i < args.length; i++) {
+    const typed = args[i];
+    if (typed === undefined)
+      continue;
+    const long = SHORT_FLAGS[typed];
+    const arg = long !== undefined && valueFlags.has(long) ? long : typed;
+    if (valueFlags.has(arg)) {
+      const value = args[++i];
+      if (!value || value.startsWith("-"))
+        return { error: `${typed} requires a value` };
+      values[arg] = value;
+    } else if (booleanFlags.has(arg)) {
+      booleans.add(arg);
+    } else if (typed.startsWith("-")) {
+      return { error: `Unknown flag: ${typed}` };
+    } else {
+      positionals.push(typed);
+    }
+  }
+  for (const flag of spec.pathFlags ?? []) {
+    const value = values[flag];
+    if (value === undefined)
+      continue;
+    const refusal = refuseUnexpandedTilde(flag, value);
+    if (refusal !== undefined)
+      return { error: refusal };
+  }
+  for (const [index, name] of (spec.pathPositionals ?? []).entries()) {
+    const value = positionals[index];
+    if (name === "" || value === undefined)
+      continue;
+    const refusal = refuseUnexpandedTilde(name, value);
+    if (refusal !== undefined)
+      return { error: refusal };
+  }
+  return { values, booleans, positionals };
+}
+function parseScopesList(raw) {
+  return raw.split(",").map((scope) => scope.trim()).filter(Boolean);
+}
+function parseUsdToMicros(raw) {
+  const cleaned = raw.trim().replace(/^\$/, "").replace(/,/g, "");
+  if (cleaned.length === 0)
+    return { ok: false, message: "--tx-limit requires a dollar amount, for example 100." };
+  const usd = Number(cleaned);
+  if (!Number.isFinite(usd))
+    return { ok: false, message: `--tx-limit is not a dollar amount: ${raw}` };
+  const usdMicros = Math.round(usd * 1e6);
+  if (usdMicros <= 0)
+    return { ok: false, message: "--tx-limit must be greater than $0." };
+  return { ok: true, usdMicros };
+}
+function parseExpiresInDays(raw) {
+  const days = Number(raw.trim());
+  if (!Number.isInteger(days) || days <= 0) {
+    return { ok: false, message: `--expires-in must be a positive whole number of days, got: ${raw}` };
+  }
+  return { ok: true, days };
+}
+var SHORT_FLAGS, TILDE_TAIL = 'begins with a literal "~", which the shell did not expand and candle will not guess at. Use an absolute path, or set CANDLE_CONFIG_DIR. Nothing was read or written.', UsageError, TX_LIMIT_RESETS;
+var init_args = __esm(() => {
+  SHORT_FLAGS = { "-k": "--keystore" };
+  UsageError = class UsageError extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "UsageError";
+    }
+  };
+  TX_LIMIT_RESETS = ["daily", "weekly", "monthly", "never"];
+});
+
 // src/render.ts
 function formatScopesForSummary(scopes) {
   return scopes.map((scope) => scope === "swap:write" ? `${scope} (${SWAP_WRITE_NOTE})` : scope === "transfer:write" ? `${scope} (${TRANSFER_WRITE_NOTE})` : scope).join(", ");
@@ -239,6 +327,166 @@ function releaseBaseUrl(env) {
 var RELEASE_BASE_URL = "https://github.com/candledottv/agentic", RELEASE_ISSUER = "https://token.actions.githubusercontent.com", VERSION;
 var init_release = __esm(() => {
   VERSION = /^\d+\.\d+\.\d+$/;
+});
+
+// src/wallet-keystore.ts
+import { chmod as chmod2, mkdir as mkdir2, readFile as readFile2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
+import { dirname as dirname2, join as join3 } from "node:path";
+function defaultTeeKeystorePath(env) {
+  return join3(candleConfigDir(env), "tee-wallets.enc");
+}
+function legacyTeeKeystorePath(env) {
+  return join3(candleConfigDir(env), "hot-wallets.enc");
+}
+async function deriveKeystoreKey(passphrase, salt, iterations) {
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
+    "deriveKey"
+  ]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function createKeystore(passphrase) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  return { key: await deriveKeystoreKey(passphrase, salt, KEYSTORE_ITERATIONS), salt, iterations: KEYSTORE_ITERATIONS };
+}
+async function serializeKeystore(entries, key, salt, iterations, purpose) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(entries)));
+  const file = {
+    version: KEYSTORE_VERSION,
+    createdAt: new Date().toISOString(),
+    kdf: "PBKDF2-HMAC-SHA256",
+    iterations,
+    salt: b64(salt),
+    cipher: "AES-256-GCM",
+    iv: b64(iv),
+    ciphertext: b64(new Uint8Array(sealed)),
+    ...purpose !== undefined && purpose !== "wallets" ? { purpose } : {}
+  };
+  return `${JSON.stringify(file, null, 2)}
+`;
+}
+async function readKeystore(raw, passphrase, opts = {}) {
+  let file;
+  try {
+    file = JSON.parse(raw);
+  } catch {
+    throw new Error("The keystore file is not valid JSON.");
+  }
+  if (file.version !== KEYSTORE_VERSION) {
+    throw new Error(`Unsupported keystore version ${file.version}: this CLI writes version ${KEYSTORE_VERSION}.`);
+  }
+  const purpose = file.purpose === TEE_KEYSTORE_PURPOSE || file.purpose === LEGACY_TEE_PURPOSE ? TEE_KEYSTORE_PURPOSE : "wallets";
+  if (opts.expectPurpose !== undefined && purpose !== opts.expectPurpose) {
+    throw new Error(purpose === TEE_KEYSTORE_PURPOSE ? "This is a TEE wallet store (tee-wallets.enc). It has no export path; use: candle tee sweep." : "This is not a TEE wallet store. The tee commands only open tee-wallets.enc.");
+  }
+  if (purpose === TEE_KEYSTORE_PURPOSE) {
+    if (file.kdf !== "PBKDF2-HMAC-SHA256" || file.cipher !== "AES-256-GCM") {
+      throw new Error("The TEE wallet store names an unsupported KDF or cipher; refusing to open it.");
+    }
+    if (!Number.isInteger(file.iterations) || file.iterations < TEE_KEYSTORE_MIN_ITERATIONS || file.iterations > TEE_KEYSTORE_MAX_ITERATIONS) {
+      throw new Error(`The TEE wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` + `${TEE_KEYSTORE_MIN_ITERATIONS}-${TEE_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`);
+    }
+  }
+  const salt = unb64(file.salt);
+  const key = await deriveKeystoreKey(passphrase, salt, file.iterations);
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(file.iv) }, key, unb64(file.ciphertext));
+  } catch {
+    throw new Error("Could not decrypt the keystore: wrong passphrase, or the file is corrupt.");
+  }
+  const decoded = JSON.parse(new TextDecoder().decode(plain));
+  return {
+    entries: decoded.map(({ [LEGACY_TEE_FIELD]: legacy, ...entry }) => legacy !== undefined && entry.tee === undefined ? { ...entry, tee: legacy } : entry),
+    key,
+    salt,
+    iterations: file.iterations
+  };
+}
+async function writeKeystoreFile(path, contents) {
+  const dir = dirname2(path);
+  await mkdir2(dir, { recursive: true });
+  await chmod2(dir, 448);
+  const tmpPath = `${path}.${crypto.randomUUID()}.tmp`;
+  await writeFile2(tmpPath, contents, { encoding: "utf8", mode: 384 });
+  await chmod2(tmpPath, 384);
+  await rename2(tmpPath, path);
+}
+function keystoreLockPath(path) {
+  return `${path}.lock`;
+}
+async function withKeystoreLock(path, clock, fn, opts = {}) {
+  const lockPath = keystoreLockPath(path);
+  const waitMs = opts.waitMs ?? 1e4;
+  const pollMs = opts.pollMs ?? 100;
+  await mkdir2(dirname2(path), { recursive: true });
+  const started = clock.now();
+  for (;; ) {
+    try {
+      await mkdir2(lockPath);
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST")
+        throw error;
+      if (clock.now() - started >= waitMs) {
+        let owner = null;
+        try {
+          owner = (await readFile2(join3(lockPath, "owner"), "utf8")).trim() || null;
+        } catch {
+          owner = null;
+        }
+        throw new KeystoreLockedError(lockPath, owner);
+      }
+      await clock.sleep(pollMs);
+    }
+  }
+  try {
+    await writeFile2(join3(lockPath, "owner"), `${opts.owner ?? `pid ${process.pid}`} since ${new Date().toISOString()}
+`, { encoding: "utf8", mode: 384 }).catch(() => {});
+    return await fn();
+  } finally {
+    await rm2(lockPath, { recursive: true, force: true });
+  }
+}
+var TEE_KEYSTORE_PURPOSE = "ember-tee", LEGACY_TEE_PURPOSE = "ember-hot", LEGACY_TEE_FIELD = "hot", TEE_KEYSTORE_MIN_ITERATIONS = 210000, TEE_KEYSTORE_MAX_ITERATIONS = 2100000, KEYSTORE_VERSION = 1, KEYSTORE_ITERATIONS = 210000, b64 = (bytes) => Buffer.from(bytes).toString("base64"), unb64 = (s) => new Uint8Array(Buffer.from(s, "base64")), KeystoreLockedError;
+var init_wallet_keystore = __esm(() => {
+  init_store();
+  KeystoreLockedError = class KeystoreLockedError extends Error {
+    lockPath;
+    owner;
+    constructor(lockPath, owner) {
+      super(`Another command holds the TEE wallet store lock at ${lockPath}` + `${owner ? ` (${owner})` : ""}. If no other candle tee command is running, remove that directory and retry.`);
+      this.lockPath = lockPath;
+      this.owner = owner;
+      this.name = "KeystoreLockedError";
+    }
+  };
+});
+
+// ../../node_modules/@noble/hashes/esm/_u64.js
+function fromBig(n, le = false) {
+  if (le)
+    return { h: Number(n & U32_MASK64), l: Number(n >> _32n & U32_MASK64) };
+  return { h: Number(n >> _32n & U32_MASK64) | 0, l: Number(n & U32_MASK64) | 0 };
+}
+function split(lst, le = false) {
+  const len = lst.length;
+  let Ah = new Uint32Array(len);
+  let Al = new Uint32Array(len);
+  for (let i = 0;i < len; i++) {
+    const { h, l } = fromBig(lst[i], le);
+    [Ah[i], Al[i]] = [h, l];
+  }
+  return [Ah, Al];
+}
+function add(Ah, Al, Bh, Bl) {
+  const l = (Al >>> 0) + (Bl >>> 0);
+  return { h: Ah + Bh + (l / 2 ** 32 | 0) | 0, l: l | 0 };
+}
+var U32_MASK64, _32n, shrSH = (h, _l, s) => h >>> s, shrSL = (h, l, s) => h << 32 - s | l >>> s, rotrSH = (h, l, s) => h >>> s | l << 32 - s, rotrSL = (h, l, s) => h << 32 - s | l >>> s, rotrBH = (h, l, s) => h << 64 - s | l >>> s - 32, rotrBL = (h, l, s) => h >>> s - 32 | l << 64 - s, rotr32H = (_h, l) => l, rotr32L = (h, _l) => h, rotlSH = (h, l, s) => h << s | l >>> 32 - s, rotlSL = (h, l, s) => l << s | h >>> 32 - s, rotlBH = (h, l, s) => l << s - 32 | h >>> 64 - s, rotlBL = (h, l, s) => h << s - 32 | l >>> 64 - s, add3L = (Al, Bl, Cl) => (Al >>> 0) + (Bl >>> 0) + (Cl >>> 0), add3H = (low, Ah, Bh, Ch) => Ah + Bh + Ch + (low / 2 ** 32 | 0) | 0, add4L = (Al, Bl, Cl, Dl) => (Al >>> 0) + (Bl >>> 0) + (Cl >>> 0) + (Dl >>> 0), add4H = (low, Ah, Bh, Ch, Dh) => Ah + Bh + Ch + Dh + (low / 2 ** 32 | 0) | 0, add5L = (Al, Bl, Cl, Dl, El) => (Al >>> 0) + (Bl >>> 0) + (Cl >>> 0) + (Dl >>> 0) + (El >>> 0), add5H = (low, Ah, Bh, Ch, Dh, Eh) => Ah + Bh + Ch + Dh + Eh + (low / 2 ** 32 | 0) | 0;
+var init__u64 = __esm(() => {
+  U32_MASK64 = /* @__PURE__ */ BigInt(2 ** 32 - 1);
+  _32n = /* @__PURE__ */ BigInt(32);
 });
 
 // ../../node_modules/@noble/hashes/esm/cryptoNode.js
@@ -434,2216 +682,6 @@ var init_utils = __esm(() => {
   hasHexBuiltin = /* @__PURE__ */ (() => typeof Uint8Array.from([]).toHex === "function" && typeof Uint8Array.fromHex === "function")();
   hexes = /* @__PURE__ */ Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, "0"));
   asciis = { _0: 48, _9: 57, A: 65, F: 70, a: 97, f: 102 };
-});
-
-// ../../node_modules/@noble/hashes/esm/_md.js
-function setBigUint64(view, byteOffset, value, isLE2) {
-  if (typeof view.setBigUint64 === "function")
-    return view.setBigUint64(byteOffset, value, isLE2);
-  const _32n = BigInt(32);
-  const _u32_max = BigInt(4294967295);
-  const wh = Number(value >> _32n & _u32_max);
-  const wl = Number(value & _u32_max);
-  const h = isLE2 ? 4 : 0;
-  const l = isLE2 ? 0 : 4;
-  view.setUint32(byteOffset + h, wh, isLE2);
-  view.setUint32(byteOffset + l, wl, isLE2);
-}
-function Chi(a, b, c) {
-  return a & b ^ ~a & c;
-}
-function Maj(a, b, c) {
-  return a & b ^ a & c ^ b & c;
-}
-var HashMD, SHA256_IV, SHA384_IV, SHA512_IV;
-var init__md = __esm(() => {
-  init_utils();
-  HashMD = class HashMD extends Hash {
-    constructor(blockLen, outputLen, padOffset, isLE2) {
-      super();
-      this.finished = false;
-      this.length = 0;
-      this.pos = 0;
-      this.destroyed = false;
-      this.blockLen = blockLen;
-      this.outputLen = outputLen;
-      this.padOffset = padOffset;
-      this.isLE = isLE2;
-      this.buffer = new Uint8Array(blockLen);
-      this.view = createView(this.buffer);
-    }
-    update(data) {
-      aexists(this);
-      data = toBytes(data);
-      abytes(data);
-      const { view, buffer, blockLen } = this;
-      const len = data.length;
-      for (let pos = 0;pos < len; ) {
-        const take = Math.min(blockLen - this.pos, len - pos);
-        if (take === blockLen) {
-          const dataView = createView(data);
-          for (;blockLen <= len - pos; pos += blockLen)
-            this.process(dataView, pos);
-          continue;
-        }
-        buffer.set(data.subarray(pos, pos + take), this.pos);
-        this.pos += take;
-        pos += take;
-        if (this.pos === blockLen) {
-          this.process(view, 0);
-          this.pos = 0;
-        }
-      }
-      this.length += data.length;
-      this.roundClean();
-      return this;
-    }
-    digestInto(out) {
-      aexists(this);
-      aoutput(out, this);
-      this.finished = true;
-      const { buffer, view, blockLen, isLE: isLE2 } = this;
-      let { pos } = this;
-      buffer[pos++] = 128;
-      clean(this.buffer.subarray(pos));
-      if (this.padOffset > blockLen - pos) {
-        this.process(view, 0);
-        pos = 0;
-      }
-      for (let i = pos;i < blockLen; i++)
-        buffer[i] = 0;
-      setBigUint64(view, blockLen - 8, BigInt(this.length * 8), isLE2);
-      this.process(view, 0);
-      const oview = createView(out);
-      const len = this.outputLen;
-      if (len % 4)
-        throw new Error("_sha2: outputLen should be aligned to 32bit");
-      const outLen = len / 4;
-      const state = this.get();
-      if (outLen > state.length)
-        throw new Error("_sha2: outputLen bigger than state");
-      for (let i = 0;i < outLen; i++)
-        oview.setUint32(4 * i, state[i], isLE2);
-    }
-    digest() {
-      const { buffer, outputLen } = this;
-      this.digestInto(buffer);
-      const res = buffer.slice(0, outputLen);
-      this.destroy();
-      return res;
-    }
-    _cloneInto(to) {
-      to || (to = new this.constructor);
-      to.set(...this.get());
-      const { blockLen, buffer, length, finished, destroyed, pos } = this;
-      to.destroyed = destroyed;
-      to.finished = finished;
-      to.length = length;
-      to.pos = pos;
-      if (length % blockLen)
-        to.buffer.set(buffer);
-      return to;
-    }
-    clone() {
-      return this._cloneInto();
-    }
-  };
-  SHA256_IV = /* @__PURE__ */ Uint32Array.from([
-    1779033703,
-    3144134277,
-    1013904242,
-    2773480762,
-    1359893119,
-    2600822924,
-    528734635,
-    1541459225
-  ]);
-  SHA384_IV = /* @__PURE__ */ Uint32Array.from([
-    3418070365,
-    3238371032,
-    1654270250,
-    914150663,
-    2438529370,
-    812702999,
-    355462360,
-    4144912697,
-    1731405415,
-    4290775857,
-    2394180231,
-    1750603025,
-    3675008525,
-    1694076839,
-    1203062813,
-    3204075428
-  ]);
-  SHA512_IV = /* @__PURE__ */ Uint32Array.from([
-    1779033703,
-    4089235720,
-    3144134277,
-    2227873595,
-    1013904242,
-    4271175723,
-    2773480762,
-    1595750129,
-    1359893119,
-    2917565137,
-    2600822924,
-    725511199,
-    528734635,
-    4215389547,
-    1541459225,
-    327033209
-  ]);
-});
-
-// ../../node_modules/@noble/hashes/esm/_u64.js
-function fromBig(n, le = false) {
-  if (le)
-    return { h: Number(n & U32_MASK64), l: Number(n >> _32n & U32_MASK64) };
-  return { h: Number(n >> _32n & U32_MASK64) | 0, l: Number(n & U32_MASK64) | 0 };
-}
-function split(lst, le = false) {
-  const len = lst.length;
-  let Ah = new Uint32Array(len);
-  let Al = new Uint32Array(len);
-  for (let i = 0;i < len; i++) {
-    const { h, l } = fromBig(lst[i], le);
-    [Ah[i], Al[i]] = [h, l];
-  }
-  return [Ah, Al];
-}
-function add(Ah, Al, Bh, Bl) {
-  const l = (Al >>> 0) + (Bl >>> 0);
-  return { h: Ah + Bh + (l / 2 ** 32 | 0) | 0, l: l | 0 };
-}
-var U32_MASK64, _32n, shrSH = (h, _l, s) => h >>> s, shrSL = (h, l, s) => h << 32 - s | l >>> s, rotrSH = (h, l, s) => h >>> s | l << 32 - s, rotrSL = (h, l, s) => h << 32 - s | l >>> s, rotrBH = (h, l, s) => h << 64 - s | l >>> s - 32, rotrBL = (h, l, s) => h >>> s - 32 | l << 64 - s, rotr32H = (_h, l) => l, rotr32L = (h, _l) => h, rotlSH = (h, l, s) => h << s | l >>> 32 - s, rotlSL = (h, l, s) => l << s | h >>> 32 - s, rotlBH = (h, l, s) => l << s - 32 | h >>> 64 - s, rotlBL = (h, l, s) => h << s - 32 | l >>> 64 - s, add3L = (Al, Bl, Cl) => (Al >>> 0) + (Bl >>> 0) + (Cl >>> 0), add3H = (low, Ah, Bh, Ch) => Ah + Bh + Ch + (low / 2 ** 32 | 0) | 0, add4L = (Al, Bl, Cl, Dl) => (Al >>> 0) + (Bl >>> 0) + (Cl >>> 0) + (Dl >>> 0), add4H = (low, Ah, Bh, Ch, Dh) => Ah + Bh + Ch + Dh + (low / 2 ** 32 | 0) | 0, add5L = (Al, Bl, Cl, Dl, El) => (Al >>> 0) + (Bl >>> 0) + (Cl >>> 0) + (Dl >>> 0) + (El >>> 0), add5H = (low, Ah, Bh, Ch, Dh, Eh) => Ah + Bh + Ch + Dh + Eh + (low / 2 ** 32 | 0) | 0;
-var init__u64 = __esm(() => {
-  U32_MASK64 = /* @__PURE__ */ BigInt(2 ** 32 - 1);
-  _32n = /* @__PURE__ */ BigInt(32);
-});
-
-// ../../node_modules/@noble/hashes/esm/sha2.js
-var SHA256_K, SHA256_W, SHA256, K512, SHA512_Kh, SHA512_Kl, SHA512_W_H, SHA512_W_L, SHA512, SHA384, sha256, sha512, sha384;
-var init_sha2 = __esm(() => {
-  init__md();
-  init__u64();
-  init_utils();
-  SHA256_K = /* @__PURE__ */ Uint32Array.from([
-    1116352408,
-    1899447441,
-    3049323471,
-    3921009573,
-    961987163,
-    1508970993,
-    2453635748,
-    2870763221,
-    3624381080,
-    310598401,
-    607225278,
-    1426881987,
-    1925078388,
-    2162078206,
-    2614888103,
-    3248222580,
-    3835390401,
-    4022224774,
-    264347078,
-    604807628,
-    770255983,
-    1249150122,
-    1555081692,
-    1996064986,
-    2554220882,
-    2821834349,
-    2952996808,
-    3210313671,
-    3336571891,
-    3584528711,
-    113926993,
-    338241895,
-    666307205,
-    773529912,
-    1294757372,
-    1396182291,
-    1695183700,
-    1986661051,
-    2177026350,
-    2456956037,
-    2730485921,
-    2820302411,
-    3259730800,
-    3345764771,
-    3516065817,
-    3600352804,
-    4094571909,
-    275423344,
-    430227734,
-    506948616,
-    659060556,
-    883997877,
-    958139571,
-    1322822218,
-    1537002063,
-    1747873779,
-    1955562222,
-    2024104815,
-    2227730452,
-    2361852424,
-    2428436474,
-    2756734187,
-    3204031479,
-    3329325298
-  ]);
-  SHA256_W = /* @__PURE__ */ new Uint32Array(64);
-  SHA256 = class SHA256 extends HashMD {
-    constructor(outputLen = 32) {
-      super(64, outputLen, 8, false);
-      this.A = SHA256_IV[0] | 0;
-      this.B = SHA256_IV[1] | 0;
-      this.C = SHA256_IV[2] | 0;
-      this.D = SHA256_IV[3] | 0;
-      this.E = SHA256_IV[4] | 0;
-      this.F = SHA256_IV[5] | 0;
-      this.G = SHA256_IV[6] | 0;
-      this.H = SHA256_IV[7] | 0;
-    }
-    get() {
-      const { A, B, C, D, E, F, G, H } = this;
-      return [A, B, C, D, E, F, G, H];
-    }
-    set(A, B, C, D, E, F, G, H) {
-      this.A = A | 0;
-      this.B = B | 0;
-      this.C = C | 0;
-      this.D = D | 0;
-      this.E = E | 0;
-      this.F = F | 0;
-      this.G = G | 0;
-      this.H = H | 0;
-    }
-    process(view, offset) {
-      for (let i = 0;i < 16; i++, offset += 4)
-        SHA256_W[i] = view.getUint32(offset, false);
-      for (let i = 16;i < 64; i++) {
-        const W15 = SHA256_W[i - 15];
-        const W2 = SHA256_W[i - 2];
-        const s0 = rotr(W15, 7) ^ rotr(W15, 18) ^ W15 >>> 3;
-        const s1 = rotr(W2, 17) ^ rotr(W2, 19) ^ W2 >>> 10;
-        SHA256_W[i] = s1 + SHA256_W[i - 7] + s0 + SHA256_W[i - 16] | 0;
-      }
-      let { A, B, C, D, E, F, G, H } = this;
-      for (let i = 0;i < 64; i++) {
-        const sigma1 = rotr(E, 6) ^ rotr(E, 11) ^ rotr(E, 25);
-        const T1 = H + sigma1 + Chi(E, F, G) + SHA256_K[i] + SHA256_W[i] | 0;
-        const sigma0 = rotr(A, 2) ^ rotr(A, 13) ^ rotr(A, 22);
-        const T2 = sigma0 + Maj(A, B, C) | 0;
-        H = G;
-        G = F;
-        F = E;
-        E = D + T1 | 0;
-        D = C;
-        C = B;
-        B = A;
-        A = T1 + T2 | 0;
-      }
-      A = A + this.A | 0;
-      B = B + this.B | 0;
-      C = C + this.C | 0;
-      D = D + this.D | 0;
-      E = E + this.E | 0;
-      F = F + this.F | 0;
-      G = G + this.G | 0;
-      H = H + this.H | 0;
-      this.set(A, B, C, D, E, F, G, H);
-    }
-    roundClean() {
-      clean(SHA256_W);
-    }
-    destroy() {
-      this.set(0, 0, 0, 0, 0, 0, 0, 0);
-      clean(this.buffer);
-    }
-  };
-  K512 = /* @__PURE__ */ (() => split([
-    "0x428a2f98d728ae22",
-    "0x7137449123ef65cd",
-    "0xb5c0fbcfec4d3b2f",
-    "0xe9b5dba58189dbbc",
-    "0x3956c25bf348b538",
-    "0x59f111f1b605d019",
-    "0x923f82a4af194f9b",
-    "0xab1c5ed5da6d8118",
-    "0xd807aa98a3030242",
-    "0x12835b0145706fbe",
-    "0x243185be4ee4b28c",
-    "0x550c7dc3d5ffb4e2",
-    "0x72be5d74f27b896f",
-    "0x80deb1fe3b1696b1",
-    "0x9bdc06a725c71235",
-    "0xc19bf174cf692694",
-    "0xe49b69c19ef14ad2",
-    "0xefbe4786384f25e3",
-    "0x0fc19dc68b8cd5b5",
-    "0x240ca1cc77ac9c65",
-    "0x2de92c6f592b0275",
-    "0x4a7484aa6ea6e483",
-    "0x5cb0a9dcbd41fbd4",
-    "0x76f988da831153b5",
-    "0x983e5152ee66dfab",
-    "0xa831c66d2db43210",
-    "0xb00327c898fb213f",
-    "0xbf597fc7beef0ee4",
-    "0xc6e00bf33da88fc2",
-    "0xd5a79147930aa725",
-    "0x06ca6351e003826f",
-    "0x142929670a0e6e70",
-    "0x27b70a8546d22ffc",
-    "0x2e1b21385c26c926",
-    "0x4d2c6dfc5ac42aed",
-    "0x53380d139d95b3df",
-    "0x650a73548baf63de",
-    "0x766a0abb3c77b2a8",
-    "0x81c2c92e47edaee6",
-    "0x92722c851482353b",
-    "0xa2bfe8a14cf10364",
-    "0xa81a664bbc423001",
-    "0xc24b8b70d0f89791",
-    "0xc76c51a30654be30",
-    "0xd192e819d6ef5218",
-    "0xd69906245565a910",
-    "0xf40e35855771202a",
-    "0x106aa07032bbd1b8",
-    "0x19a4c116b8d2d0c8",
-    "0x1e376c085141ab53",
-    "0x2748774cdf8eeb99",
-    "0x34b0bcb5e19b48a8",
-    "0x391c0cb3c5c95a63",
-    "0x4ed8aa4ae3418acb",
-    "0x5b9cca4f7763e373",
-    "0x682e6ff3d6b2b8a3",
-    "0x748f82ee5defb2fc",
-    "0x78a5636f43172f60",
-    "0x84c87814a1f0ab72",
-    "0x8cc702081a6439ec",
-    "0x90befffa23631e28",
-    "0xa4506cebde82bde9",
-    "0xbef9a3f7b2c67915",
-    "0xc67178f2e372532b",
-    "0xca273eceea26619c",
-    "0xd186b8c721c0c207",
-    "0xeada7dd6cde0eb1e",
-    "0xf57d4f7fee6ed178",
-    "0x06f067aa72176fba",
-    "0x0a637dc5a2c898a6",
-    "0x113f9804bef90dae",
-    "0x1b710b35131c471b",
-    "0x28db77f523047d84",
-    "0x32caab7b40c72493",
-    "0x3c9ebe0a15c9bebc",
-    "0x431d67c49c100d4c",
-    "0x4cc5d4becb3e42b6",
-    "0x597f299cfc657e2a",
-    "0x5fcb6fab3ad6faec",
-    "0x6c44198c4a475817"
-  ].map((n) => BigInt(n))))();
-  SHA512_Kh = /* @__PURE__ */ (() => K512[0])();
-  SHA512_Kl = /* @__PURE__ */ (() => K512[1])();
-  SHA512_W_H = /* @__PURE__ */ new Uint32Array(80);
-  SHA512_W_L = /* @__PURE__ */ new Uint32Array(80);
-  SHA512 = class SHA512 extends HashMD {
-    constructor(outputLen = 64) {
-      super(128, outputLen, 16, false);
-      this.Ah = SHA512_IV[0] | 0;
-      this.Al = SHA512_IV[1] | 0;
-      this.Bh = SHA512_IV[2] | 0;
-      this.Bl = SHA512_IV[3] | 0;
-      this.Ch = SHA512_IV[4] | 0;
-      this.Cl = SHA512_IV[5] | 0;
-      this.Dh = SHA512_IV[6] | 0;
-      this.Dl = SHA512_IV[7] | 0;
-      this.Eh = SHA512_IV[8] | 0;
-      this.El = SHA512_IV[9] | 0;
-      this.Fh = SHA512_IV[10] | 0;
-      this.Fl = SHA512_IV[11] | 0;
-      this.Gh = SHA512_IV[12] | 0;
-      this.Gl = SHA512_IV[13] | 0;
-      this.Hh = SHA512_IV[14] | 0;
-      this.Hl = SHA512_IV[15] | 0;
-    }
-    get() {
-      const { Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl } = this;
-      return [Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl];
-    }
-    set(Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl) {
-      this.Ah = Ah | 0;
-      this.Al = Al | 0;
-      this.Bh = Bh | 0;
-      this.Bl = Bl | 0;
-      this.Ch = Ch | 0;
-      this.Cl = Cl | 0;
-      this.Dh = Dh | 0;
-      this.Dl = Dl | 0;
-      this.Eh = Eh | 0;
-      this.El = El | 0;
-      this.Fh = Fh | 0;
-      this.Fl = Fl | 0;
-      this.Gh = Gh | 0;
-      this.Gl = Gl | 0;
-      this.Hh = Hh | 0;
-      this.Hl = Hl | 0;
-    }
-    process(view, offset) {
-      for (let i = 0;i < 16; i++, offset += 4) {
-        SHA512_W_H[i] = view.getUint32(offset);
-        SHA512_W_L[i] = view.getUint32(offset += 4);
-      }
-      for (let i = 16;i < 80; i++) {
-        const W15h = SHA512_W_H[i - 15] | 0;
-        const W15l = SHA512_W_L[i - 15] | 0;
-        const s0h = rotrSH(W15h, W15l, 1) ^ rotrSH(W15h, W15l, 8) ^ shrSH(W15h, W15l, 7);
-        const s0l = rotrSL(W15h, W15l, 1) ^ rotrSL(W15h, W15l, 8) ^ shrSL(W15h, W15l, 7);
-        const W2h = SHA512_W_H[i - 2] | 0;
-        const W2l = SHA512_W_L[i - 2] | 0;
-        const s1h = rotrSH(W2h, W2l, 19) ^ rotrBH(W2h, W2l, 61) ^ shrSH(W2h, W2l, 6);
-        const s1l = rotrSL(W2h, W2l, 19) ^ rotrBL(W2h, W2l, 61) ^ shrSL(W2h, W2l, 6);
-        const SUMl = add4L(s0l, s1l, SHA512_W_L[i - 7], SHA512_W_L[i - 16]);
-        const SUMh = add4H(SUMl, s0h, s1h, SHA512_W_H[i - 7], SHA512_W_H[i - 16]);
-        SHA512_W_H[i] = SUMh | 0;
-        SHA512_W_L[i] = SUMl | 0;
-      }
-      let { Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl } = this;
-      for (let i = 0;i < 80; i++) {
-        const sigma1h = rotrSH(Eh, El, 14) ^ rotrSH(Eh, El, 18) ^ rotrBH(Eh, El, 41);
-        const sigma1l = rotrSL(Eh, El, 14) ^ rotrSL(Eh, El, 18) ^ rotrBL(Eh, El, 41);
-        const CHIh = Eh & Fh ^ ~Eh & Gh;
-        const CHIl = El & Fl ^ ~El & Gl;
-        const T1ll = add5L(Hl, sigma1l, CHIl, SHA512_Kl[i], SHA512_W_L[i]);
-        const T1h = add5H(T1ll, Hh, sigma1h, CHIh, SHA512_Kh[i], SHA512_W_H[i]);
-        const T1l = T1ll | 0;
-        const sigma0h = rotrSH(Ah, Al, 28) ^ rotrBH(Ah, Al, 34) ^ rotrBH(Ah, Al, 39);
-        const sigma0l = rotrSL(Ah, Al, 28) ^ rotrBL(Ah, Al, 34) ^ rotrBL(Ah, Al, 39);
-        const MAJh = Ah & Bh ^ Ah & Ch ^ Bh & Ch;
-        const MAJl = Al & Bl ^ Al & Cl ^ Bl & Cl;
-        Hh = Gh | 0;
-        Hl = Gl | 0;
-        Gh = Fh | 0;
-        Gl = Fl | 0;
-        Fh = Eh | 0;
-        Fl = El | 0;
-        ({ h: Eh, l: El } = add(Dh | 0, Dl | 0, T1h | 0, T1l | 0));
-        Dh = Ch | 0;
-        Dl = Cl | 0;
-        Ch = Bh | 0;
-        Cl = Bl | 0;
-        Bh = Ah | 0;
-        Bl = Al | 0;
-        const All = add3L(T1l, sigma0l, MAJl);
-        Ah = add3H(All, T1h, sigma0h, MAJh);
-        Al = All | 0;
-      }
-      ({ h: Ah, l: Al } = add(this.Ah | 0, this.Al | 0, Ah | 0, Al | 0));
-      ({ h: Bh, l: Bl } = add(this.Bh | 0, this.Bl | 0, Bh | 0, Bl | 0));
-      ({ h: Ch, l: Cl } = add(this.Ch | 0, this.Cl | 0, Ch | 0, Cl | 0));
-      ({ h: Dh, l: Dl } = add(this.Dh | 0, this.Dl | 0, Dh | 0, Dl | 0));
-      ({ h: Eh, l: El } = add(this.Eh | 0, this.El | 0, Eh | 0, El | 0));
-      ({ h: Fh, l: Fl } = add(this.Fh | 0, this.Fl | 0, Fh | 0, Fl | 0));
-      ({ h: Gh, l: Gl } = add(this.Gh | 0, this.Gl | 0, Gh | 0, Gl | 0));
-      ({ h: Hh, l: Hl } = add(this.Hh | 0, this.Hl | 0, Hh | 0, Hl | 0));
-      this.set(Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl);
-    }
-    roundClean() {
-      clean(SHA512_W_H, SHA512_W_L);
-    }
-    destroy() {
-      clean(this.buffer);
-      this.set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-    }
-  };
-  SHA384 = class SHA384 extends SHA512 {
-    constructor() {
-      super(48);
-      this.Ah = SHA384_IV[0] | 0;
-      this.Al = SHA384_IV[1] | 0;
-      this.Bh = SHA384_IV[2] | 0;
-      this.Bl = SHA384_IV[3] | 0;
-      this.Ch = SHA384_IV[4] | 0;
-      this.Cl = SHA384_IV[5] | 0;
-      this.Dh = SHA384_IV[6] | 0;
-      this.Dl = SHA384_IV[7] | 0;
-      this.Eh = SHA384_IV[8] | 0;
-      this.El = SHA384_IV[9] | 0;
-      this.Fh = SHA384_IV[10] | 0;
-      this.Fl = SHA384_IV[11] | 0;
-      this.Gh = SHA384_IV[12] | 0;
-      this.Gl = SHA384_IV[13] | 0;
-      this.Hh = SHA384_IV[14] | 0;
-      this.Hl = SHA384_IV[15] | 0;
-    }
-  };
-  sha256 = /* @__PURE__ */ createHasher(() => new SHA256);
-  sha512 = /* @__PURE__ */ createHasher(() => new SHA512);
-  sha384 = /* @__PURE__ */ createHasher(() => new SHA384);
-});
-
-// ../../node_modules/@noble/curves/esm/utils.js
-function _abool2(value, title = "") {
-  if (typeof value !== "boolean") {
-    const prefix = title && `"${title}"`;
-    throw new Error(prefix + "expected boolean, got type=" + typeof value);
-  }
-  return value;
-}
-function _abytes2(value, length, title = "") {
-  const bytes = isBytes(value);
-  const len = value?.length;
-  const needsLen = length !== undefined;
-  if (!bytes || needsLen && len !== length) {
-    const prefix = title && `"${title}" `;
-    const ofLen = needsLen ? ` of length ${length}` : "";
-    const got = bytes ? `length=${len}` : `type=${typeof value}`;
-    throw new Error(prefix + "expected Uint8Array" + ofLen + ", got " + got);
-  }
-  return value;
-}
-function numberToHexUnpadded(num) {
-  const hex = num.toString(16);
-  return hex.length & 1 ? "0" + hex : hex;
-}
-function hexToNumber(hex) {
-  if (typeof hex !== "string")
-    throw new Error("hex string expected, got " + typeof hex);
-  return hex === "" ? _0n : BigInt("0x" + hex);
-}
-function bytesToNumberBE(bytes) {
-  return hexToNumber(bytesToHex(bytes));
-}
-function bytesToNumberLE(bytes) {
-  abytes(bytes);
-  return hexToNumber(bytesToHex(Uint8Array.from(bytes).reverse()));
-}
-function numberToBytesBE(n, len) {
-  return hexToBytes(n.toString(16).padStart(len * 2, "0"));
-}
-function numberToBytesLE(n, len) {
-  return numberToBytesBE(n, len).reverse();
-}
-function ensureBytes(title, hex, expectedLength) {
-  let res;
-  if (typeof hex === "string") {
-    try {
-      res = hexToBytes(hex);
-    } catch (e) {
-      throw new Error(title + " must be hex string or Uint8Array, cause: " + e);
-    }
-  } else if (isBytes(hex)) {
-    res = Uint8Array.from(hex);
-  } else {
-    throw new Error(title + " must be hex string or Uint8Array");
-  }
-  const len = res.length;
-  if (typeof expectedLength === "number" && len !== expectedLength)
-    throw new Error(title + " of length " + expectedLength + " expected, got " + len);
-  return res;
-}
-function equalBytes(a, b) {
-  if (a.length !== b.length)
-    return false;
-  let diff = 0;
-  for (let i = 0;i < a.length; i++)
-    diff |= a[i] ^ b[i];
-  return diff === 0;
-}
-function copyBytes(bytes) {
-  return Uint8Array.from(bytes);
-}
-function inRange(n, min, max) {
-  return isPosBig(n) && isPosBig(min) && isPosBig(max) && min <= n && n < max;
-}
-function aInRange(title, n, min, max) {
-  if (!inRange(n, min, max))
-    throw new Error("expected valid " + title + ": " + min + " <= n < " + max + ", got " + n);
-}
-function bitLen(n) {
-  let len;
-  for (len = 0;n > _0n; n >>= _1n, len += 1)
-    ;
-  return len;
-}
-function createHmacDrbg(hashLen, qByteLen, hmacFn) {
-  if (typeof hashLen !== "number" || hashLen < 2)
-    throw new Error("hashLen must be a number");
-  if (typeof qByteLen !== "number" || qByteLen < 2)
-    throw new Error("qByteLen must be a number");
-  if (typeof hmacFn !== "function")
-    throw new Error("hmacFn must be a function");
-  const u8n = (len) => new Uint8Array(len);
-  const u8of = (byte) => Uint8Array.of(byte);
-  let v = u8n(hashLen);
-  let k = u8n(hashLen);
-  let i = 0;
-  const reset = () => {
-    v.fill(1);
-    k.fill(0);
-    i = 0;
-  };
-  const h = (...b) => hmacFn(k, v, ...b);
-  const reseed = (seed = u8n(0)) => {
-    k = h(u8of(0), seed);
-    v = h();
-    if (seed.length === 0)
-      return;
-    k = h(u8of(1), seed);
-    v = h();
-  };
-  const gen = () => {
-    if (i++ >= 1000)
-      throw new Error("drbg: tried 1000 values");
-    let len = 0;
-    const out = [];
-    while (len < qByteLen) {
-      v = h();
-      const sl = v.slice();
-      out.push(sl);
-      len += v.length;
-    }
-    return concatBytes(...out);
-  };
-  const genUntil = (seed, pred) => {
-    reset();
-    reseed(seed);
-    let res = undefined;
-    while (!(res = pred(gen())))
-      reseed();
-    reset();
-    return res;
-  };
-  return genUntil;
-}
-function _validateObject(object, fields, optFields = {}) {
-  if (!object || typeof object !== "object")
-    throw new Error("expected valid options object");
-  function checkField(fieldName, expectedType, isOpt) {
-    const val = object[fieldName];
-    if (isOpt && val === undefined)
-      return;
-    const current = typeof val;
-    if (current !== expectedType || val === null)
-      throw new Error(`param "${fieldName}" is invalid: expected ${expectedType}, got ${current}`);
-  }
-  Object.entries(fields).forEach(([k, v]) => checkField(k, v, false));
-  Object.entries(optFields).forEach(([k, v]) => checkField(k, v, true));
-}
-function memoized(fn) {
-  const map = new WeakMap;
-  return (arg, ...args) => {
-    const val = map.get(arg);
-    if (val !== undefined)
-      return val;
-    const computed = fn(arg, ...args);
-    map.set(arg, computed);
-    return computed;
-  };
-}
-var _0n, _1n, isPosBig = (n) => typeof n === "bigint" && _0n <= n, bitMask = (n) => (_1n << BigInt(n)) - _1n, notImplemented = () => {
-  throw new Error("not implemented");
-};
-var init_utils2 = __esm(() => {
-  init_utils();
-  init_utils();
-  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-  _0n = /* @__PURE__ */ BigInt(0);
-  _1n = /* @__PURE__ */ BigInt(1);
-});
-
-// ../../node_modules/@noble/curves/esm/abstract/modular.js
-function mod(a, b) {
-  const result = a % b;
-  return result >= _0n2 ? result : b + result;
-}
-function pow2(x, power, modulo) {
-  let res = x;
-  while (power-- > _0n2) {
-    res *= res;
-    res %= modulo;
-  }
-  return res;
-}
-function invert(number, modulo) {
-  if (number === _0n2)
-    throw new Error("invert: expected non-zero number");
-  if (modulo <= _0n2)
-    throw new Error("invert: expected positive modulus, got " + modulo);
-  let a = mod(number, modulo);
-  let b = modulo;
-  let x = _0n2, y = _1n2, u = _1n2, v = _0n2;
-  while (a !== _0n2) {
-    const q = b / a;
-    const r = b % a;
-    const m = x - u * q;
-    const n = y - v * q;
-    b = a, a = r, x = u, y = v, u = m, v = n;
-  }
-  const gcd = b;
-  if (gcd !== _1n2)
-    throw new Error("invert: does not exist");
-  return mod(x, modulo);
-}
-function assertIsSquare(Fp, root, n) {
-  if (!Fp.eql(Fp.sqr(root), n))
-    throw new Error("Cannot find square root");
-}
-function sqrt3mod4(Fp, n) {
-  const p1div4 = (Fp.ORDER + _1n2) / _4n;
-  const root = Fp.pow(n, p1div4);
-  assertIsSquare(Fp, root, n);
-  return root;
-}
-function sqrt5mod8(Fp, n) {
-  const p5div8 = (Fp.ORDER - _5n) / _8n;
-  const n2 = Fp.mul(n, _2n);
-  const v = Fp.pow(n2, p5div8);
-  const nv = Fp.mul(n, v);
-  const i = Fp.mul(Fp.mul(nv, _2n), v);
-  const root = Fp.mul(nv, Fp.sub(i, Fp.ONE));
-  assertIsSquare(Fp, root, n);
-  return root;
-}
-function sqrt9mod16(P) {
-  const Fp_ = Field(P);
-  const tn = tonelliShanks(P);
-  const c1 = tn(Fp_, Fp_.neg(Fp_.ONE));
-  const c2 = tn(Fp_, c1);
-  const c3 = tn(Fp_, Fp_.neg(c1));
-  const c4 = (P + _7n) / _16n;
-  return (Fp, n) => {
-    let tv1 = Fp.pow(n, c4);
-    let tv2 = Fp.mul(tv1, c1);
-    const tv3 = Fp.mul(tv1, c2);
-    const tv4 = Fp.mul(tv1, c3);
-    const e1 = Fp.eql(Fp.sqr(tv2), n);
-    const e2 = Fp.eql(Fp.sqr(tv3), n);
-    tv1 = Fp.cmov(tv1, tv2, e1);
-    tv2 = Fp.cmov(tv4, tv3, e2);
-    const e3 = Fp.eql(Fp.sqr(tv2), n);
-    const root = Fp.cmov(tv1, tv2, e3);
-    assertIsSquare(Fp, root, n);
-    return root;
-  };
-}
-function tonelliShanks(P) {
-  if (P < _3n)
-    throw new Error("sqrt is not defined for small field");
-  let Q = P - _1n2;
-  let S = 0;
-  while (Q % _2n === _0n2) {
-    Q /= _2n;
-    S++;
-  }
-  let Z = _2n;
-  const _Fp = Field(P);
-  while (FpLegendre(_Fp, Z) === 1) {
-    if (Z++ > 1000)
-      throw new Error("Cannot find square root: probably non-prime P");
-  }
-  if (S === 1)
-    return sqrt3mod4;
-  let cc = _Fp.pow(Z, Q);
-  const Q1div2 = (Q + _1n2) / _2n;
-  return function tonelliSlow(Fp, n) {
-    if (Fp.is0(n))
-      return n;
-    if (FpLegendre(Fp, n) !== 1)
-      throw new Error("Cannot find square root");
-    let M = S;
-    let c = Fp.mul(Fp.ONE, cc);
-    let t = Fp.pow(n, Q);
-    let R = Fp.pow(n, Q1div2);
-    while (!Fp.eql(t, Fp.ONE)) {
-      if (Fp.is0(t))
-        return Fp.ZERO;
-      let i = 1;
-      let t_tmp = Fp.sqr(t);
-      while (!Fp.eql(t_tmp, Fp.ONE)) {
-        i++;
-        t_tmp = Fp.sqr(t_tmp);
-        if (i === M)
-          throw new Error("Cannot find square root");
-      }
-      const exponent = _1n2 << BigInt(M - i - 1);
-      const b = Fp.pow(c, exponent);
-      M = i;
-      c = Fp.sqr(b);
-      t = Fp.mul(t, c);
-      R = Fp.mul(R, b);
-    }
-    return R;
-  };
-}
-function FpSqrt(P) {
-  if (P % _4n === _3n)
-    return sqrt3mod4;
-  if (P % _8n === _5n)
-    return sqrt5mod8;
-  if (P % _16n === _9n)
-    return sqrt9mod16(P);
-  return tonelliShanks(P);
-}
-function validateField(field) {
-  const initial = {
-    ORDER: "bigint",
-    MASK: "bigint",
-    BYTES: "number",
-    BITS: "number"
-  };
-  const opts = FIELD_FIELDS.reduce((map, val) => {
-    map[val] = "function";
-    return map;
-  }, initial);
-  _validateObject(field, opts);
-  return field;
-}
-function FpPow(Fp, num, power) {
-  if (power < _0n2)
-    throw new Error("invalid exponent, negatives unsupported");
-  if (power === _0n2)
-    return Fp.ONE;
-  if (power === _1n2)
-    return num;
-  let p = Fp.ONE;
-  let d = num;
-  while (power > _0n2) {
-    if (power & _1n2)
-      p = Fp.mul(p, d);
-    d = Fp.sqr(d);
-    power >>= _1n2;
-  }
-  return p;
-}
-function FpInvertBatch(Fp, nums, passZero = false) {
-  const inverted = new Array(nums.length).fill(passZero ? Fp.ZERO : undefined);
-  const multipliedAcc = nums.reduce((acc, num, i) => {
-    if (Fp.is0(num))
-      return acc;
-    inverted[i] = acc;
-    return Fp.mul(acc, num);
-  }, Fp.ONE);
-  const invertedAcc = Fp.inv(multipliedAcc);
-  nums.reduceRight((acc, num, i) => {
-    if (Fp.is0(num))
-      return acc;
-    inverted[i] = Fp.mul(acc, inverted[i]);
-    return Fp.mul(acc, num);
-  }, invertedAcc);
-  return inverted;
-}
-function FpLegendre(Fp, n) {
-  const p1mod2 = (Fp.ORDER - _1n2) / _2n;
-  const powered = Fp.pow(n, p1mod2);
-  const yes = Fp.eql(powered, Fp.ONE);
-  const zero = Fp.eql(powered, Fp.ZERO);
-  const no = Fp.eql(powered, Fp.neg(Fp.ONE));
-  if (!yes && !zero && !no)
-    throw new Error("invalid Legendre symbol result");
-  return yes ? 1 : zero ? 0 : -1;
-}
-function nLength(n, nBitLength) {
-  if (nBitLength !== undefined)
-    anumber(nBitLength);
-  const _nBitLength = nBitLength !== undefined ? nBitLength : n.toString(2).length;
-  const nByteLength = Math.ceil(_nBitLength / 8);
-  return { nBitLength: _nBitLength, nByteLength };
-}
-function Field(ORDER, bitLenOrOpts, isLE2 = false, opts = {}) {
-  if (ORDER <= _0n2)
-    throw new Error("invalid field: expected ORDER > 0, got " + ORDER);
-  let _nbitLength = undefined;
-  let _sqrt = undefined;
-  let modFromBytes = false;
-  let allowedLengths = undefined;
-  if (typeof bitLenOrOpts === "object" && bitLenOrOpts != null) {
-    if (opts.sqrt || isLE2)
-      throw new Error("cannot specify opts in two arguments");
-    const _opts = bitLenOrOpts;
-    if (_opts.BITS)
-      _nbitLength = _opts.BITS;
-    if (_opts.sqrt)
-      _sqrt = _opts.sqrt;
-    if (typeof _opts.isLE === "boolean")
-      isLE2 = _opts.isLE;
-    if (typeof _opts.modFromBytes === "boolean")
-      modFromBytes = _opts.modFromBytes;
-    allowedLengths = _opts.allowedLengths;
-  } else {
-    if (typeof bitLenOrOpts === "number")
-      _nbitLength = bitLenOrOpts;
-    if (opts.sqrt)
-      _sqrt = opts.sqrt;
-  }
-  const { nBitLength: BITS, nByteLength: BYTES } = nLength(ORDER, _nbitLength);
-  if (BYTES > 2048)
-    throw new Error("invalid field: expected ORDER of <= 2048 bytes");
-  let sqrtP;
-  const f = Object.freeze({
-    ORDER,
-    isLE: isLE2,
-    BITS,
-    BYTES,
-    MASK: bitMask(BITS),
-    ZERO: _0n2,
-    ONE: _1n2,
-    allowedLengths,
-    create: (num) => mod(num, ORDER),
-    isValid: (num) => {
-      if (typeof num !== "bigint")
-        throw new Error("invalid field element: expected bigint, got " + typeof num);
-      return _0n2 <= num && num < ORDER;
-    },
-    is0: (num) => num === _0n2,
-    isValidNot0: (num) => !f.is0(num) && f.isValid(num),
-    isOdd: (num) => (num & _1n2) === _1n2,
-    neg: (num) => mod(-num, ORDER),
-    eql: (lhs, rhs) => lhs === rhs,
-    sqr: (num) => mod(num * num, ORDER),
-    add: (lhs, rhs) => mod(lhs + rhs, ORDER),
-    sub: (lhs, rhs) => mod(lhs - rhs, ORDER),
-    mul: (lhs, rhs) => mod(lhs * rhs, ORDER),
-    pow: (num, power) => FpPow(f, num, power),
-    div: (lhs, rhs) => mod(lhs * invert(rhs, ORDER), ORDER),
-    sqrN: (num) => num * num,
-    addN: (lhs, rhs) => lhs + rhs,
-    subN: (lhs, rhs) => lhs - rhs,
-    mulN: (lhs, rhs) => lhs * rhs,
-    inv: (num) => invert(num, ORDER),
-    sqrt: _sqrt || ((n) => {
-      if (!sqrtP)
-        sqrtP = FpSqrt(ORDER);
-      return sqrtP(f, n);
-    }),
-    toBytes: (num) => isLE2 ? numberToBytesLE(num, BYTES) : numberToBytesBE(num, BYTES),
-    fromBytes: (bytes, skipValidation = true) => {
-      if (allowedLengths) {
-        if (!allowedLengths.includes(bytes.length) || bytes.length > BYTES) {
-          throw new Error("Field.fromBytes: expected " + allowedLengths + " bytes, got " + bytes.length);
-        }
-        const padded = new Uint8Array(BYTES);
-        padded.set(bytes, isLE2 ? 0 : padded.length - bytes.length);
-        bytes = padded;
-      }
-      if (bytes.length !== BYTES)
-        throw new Error("Field.fromBytes: expected " + BYTES + " bytes, got " + bytes.length);
-      let scalar = isLE2 ? bytesToNumberLE(bytes) : bytesToNumberBE(bytes);
-      if (modFromBytes)
-        scalar = mod(scalar, ORDER);
-      if (!skipValidation) {
-        if (!f.isValid(scalar))
-          throw new Error("invalid field element: outside of range 0..ORDER");
-      }
-      return scalar;
-    },
-    invertBatch: (lst) => FpInvertBatch(f, lst),
-    cmov: (a, b, c) => c ? b : a
-  });
-  return Object.freeze(f);
-}
-function getFieldBytesLength(fieldOrder) {
-  if (typeof fieldOrder !== "bigint")
-    throw new Error("field order must be bigint");
-  const bitLength = fieldOrder.toString(2).length;
-  return Math.ceil(bitLength / 8);
-}
-function getMinHashLength(fieldOrder) {
-  const length = getFieldBytesLength(fieldOrder);
-  return length + Math.ceil(length / 2);
-}
-function mapHashToField(key, fieldOrder, isLE2 = false) {
-  const len = key.length;
-  const fieldLen = getFieldBytesLength(fieldOrder);
-  const minLen = getMinHashLength(fieldOrder);
-  if (len < 16 || len < minLen || len > 1024)
-    throw new Error("expected " + minLen + "-1024 bytes of input, got " + len);
-  const num = isLE2 ? bytesToNumberLE(key) : bytesToNumberBE(key);
-  const reduced = mod(num, fieldOrder - _1n2) + _1n2;
-  return isLE2 ? numberToBytesLE(reduced, fieldLen) : numberToBytesBE(reduced, fieldLen);
-}
-var _0n2, _1n2, _2n, _3n, _4n, _5n, _7n, _8n, _9n, _16n, isNegativeLE = (num, modulo) => (mod(num, modulo) & _1n2) === _1n2, FIELD_FIELDS;
-var init_modular = __esm(() => {
-  init_utils2();
-  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-  _0n2 = BigInt(0);
-  _1n2 = BigInt(1);
-  _2n = /* @__PURE__ */ BigInt(2);
-  _3n = /* @__PURE__ */ BigInt(3);
-  _4n = /* @__PURE__ */ BigInt(4);
-  _5n = /* @__PURE__ */ BigInt(5);
-  _7n = /* @__PURE__ */ BigInt(7);
-  _8n = /* @__PURE__ */ BigInt(8);
-  _9n = /* @__PURE__ */ BigInt(9);
-  _16n = /* @__PURE__ */ BigInt(16);
-  FIELD_FIELDS = [
-    "create",
-    "isValid",
-    "is0",
-    "neg",
-    "inv",
-    "sqrt",
-    "sqr",
-    "eql",
-    "add",
-    "sub",
-    "mul",
-    "pow",
-    "div",
-    "addN",
-    "subN",
-    "mulN",
-    "sqrN"
-  ];
-});
-
-// ../../node_modules/@noble/curves/esm/abstract/curve.js
-function negateCt(condition, item) {
-  const neg = item.negate();
-  return condition ? neg : item;
-}
-function normalizeZ(c, points) {
-  const invertedZs = FpInvertBatch(c.Fp, points.map((p) => p.Z));
-  return points.map((p, i) => c.fromAffine(p.toAffine(invertedZs[i])));
-}
-function validateW(W, bits) {
-  if (!Number.isSafeInteger(W) || W <= 0 || W > bits)
-    throw new Error("invalid window size, expected [1.." + bits + "], got W=" + W);
-}
-function calcWOpts(W, scalarBits) {
-  validateW(W, scalarBits);
-  const windows = Math.ceil(scalarBits / W) + 1;
-  const windowSize = 2 ** (W - 1);
-  const maxNumber = 2 ** W;
-  const mask = bitMask(W);
-  const shiftBy = BigInt(W);
-  return { windows, windowSize, mask, maxNumber, shiftBy };
-}
-function calcOffsets(n, window, wOpts) {
-  const { windowSize, mask, maxNumber, shiftBy } = wOpts;
-  let wbits = Number(n & mask);
-  let nextN = n >> shiftBy;
-  if (wbits > windowSize) {
-    wbits -= maxNumber;
-    nextN += _1n3;
-  }
-  const offsetStart = window * windowSize;
-  const offset = offsetStart + Math.abs(wbits) - 1;
-  const isZero = wbits === 0;
-  const isNeg = wbits < 0;
-  const isNegF = window % 2 !== 0;
-  const offsetF = offsetStart;
-  return { nextN, offset, isZero, isNeg, isNegF, offsetF };
-}
-function validateMSMPoints(points, c) {
-  if (!Array.isArray(points))
-    throw new Error("array expected");
-  points.forEach((p, i) => {
-    if (!(p instanceof c))
-      throw new Error("invalid point at index " + i);
-  });
-}
-function validateMSMScalars(scalars, field) {
-  if (!Array.isArray(scalars))
-    throw new Error("array of scalars expected");
-  scalars.forEach((s, i) => {
-    if (!field.isValid(s))
-      throw new Error("invalid scalar at index " + i);
-  });
-}
-function getW(P) {
-  return pointWindowSizes.get(P) || 1;
-}
-function assert0(n) {
-  if (n !== _0n3)
-    throw new Error("invalid wNAF");
-}
-
-class wNAF {
-  constructor(Point, bits) {
-    this.BASE = Point.BASE;
-    this.ZERO = Point.ZERO;
-    this.Fn = Point.Fn;
-    this.bits = bits;
-  }
-  _unsafeLadder(elm, n, p = this.ZERO) {
-    let d = elm;
-    while (n > _0n3) {
-      if (n & _1n3)
-        p = p.add(d);
-      d = d.double();
-      n >>= _1n3;
-    }
-    return p;
-  }
-  precomputeWindow(point, W) {
-    const { windows, windowSize } = calcWOpts(W, this.bits);
-    const points = [];
-    let p = point;
-    let base = p;
-    for (let window = 0;window < windows; window++) {
-      base = p;
-      points.push(base);
-      for (let i = 1;i < windowSize; i++) {
-        base = base.add(p);
-        points.push(base);
-      }
-      p = base.double();
-    }
-    return points;
-  }
-  wNAF(W, precomputes, n) {
-    if (!this.Fn.isValid(n))
-      throw new Error("invalid scalar");
-    let p = this.ZERO;
-    let f = this.BASE;
-    const wo = calcWOpts(W, this.bits);
-    for (let window = 0;window < wo.windows; window++) {
-      const { nextN, offset, isZero, isNeg, isNegF, offsetF } = calcOffsets(n, window, wo);
-      n = nextN;
-      if (isZero) {
-        f = f.add(negateCt(isNegF, precomputes[offsetF]));
-      } else {
-        p = p.add(negateCt(isNeg, precomputes[offset]));
-      }
-    }
-    assert0(n);
-    return { p, f };
-  }
-  wNAFUnsafe(W, precomputes, n, acc = this.ZERO) {
-    const wo = calcWOpts(W, this.bits);
-    for (let window = 0;window < wo.windows; window++) {
-      if (n === _0n3)
-        break;
-      const { nextN, offset, isZero, isNeg } = calcOffsets(n, window, wo);
-      n = nextN;
-      if (isZero) {
-        continue;
-      } else {
-        const item = precomputes[offset];
-        acc = acc.add(isNeg ? item.negate() : item);
-      }
-    }
-    assert0(n);
-    return acc;
-  }
-  getPrecomputes(W, point, transform) {
-    let comp = pointPrecomputes.get(point);
-    if (!comp) {
-      comp = this.precomputeWindow(point, W);
-      if (W !== 1) {
-        if (typeof transform === "function")
-          comp = transform(comp);
-        pointPrecomputes.set(point, comp);
-      }
-    }
-    return comp;
-  }
-  cached(point, scalar, transform) {
-    const W = getW(point);
-    return this.wNAF(W, this.getPrecomputes(W, point, transform), scalar);
-  }
-  unsafe(point, scalar, transform, prev) {
-    const W = getW(point);
-    if (W === 1)
-      return this._unsafeLadder(point, scalar, prev);
-    return this.wNAFUnsafe(W, this.getPrecomputes(W, point, transform), scalar, prev);
-  }
-  createCache(P, W) {
-    validateW(W, this.bits);
-    pointWindowSizes.set(P, W);
-    pointPrecomputes.delete(P);
-  }
-  hasCache(elm) {
-    return getW(elm) !== 1;
-  }
-}
-function mulEndoUnsafe(Point, point, k1, k2) {
-  let acc = point;
-  let p1 = Point.ZERO;
-  let p2 = Point.ZERO;
-  while (k1 > _0n3 || k2 > _0n3) {
-    if (k1 & _1n3)
-      p1 = p1.add(acc);
-    if (k2 & _1n3)
-      p2 = p2.add(acc);
-    acc = acc.double();
-    k1 >>= _1n3;
-    k2 >>= _1n3;
-  }
-  return { p1, p2 };
-}
-function pippenger(c, fieldN, points, scalars) {
-  validateMSMPoints(points, c);
-  validateMSMScalars(scalars, fieldN);
-  const plength = points.length;
-  const slength = scalars.length;
-  if (plength !== slength)
-    throw new Error("arrays of points and scalars must have equal length");
-  const zero = c.ZERO;
-  const wbits = bitLen(BigInt(plength));
-  let windowSize = 1;
-  if (wbits > 12)
-    windowSize = wbits - 3;
-  else if (wbits > 4)
-    windowSize = wbits - 2;
-  else if (wbits > 0)
-    windowSize = 2;
-  const MASK = bitMask(windowSize);
-  const buckets = new Array(Number(MASK) + 1).fill(zero);
-  const lastBits = Math.floor((fieldN.BITS - 1) / windowSize) * windowSize;
-  let sum = zero;
-  for (let i = lastBits;i >= 0; i -= windowSize) {
-    buckets.fill(zero);
-    for (let j = 0;j < slength; j++) {
-      const scalar = scalars[j];
-      const wbits2 = Number(scalar >> BigInt(i) & MASK);
-      buckets[wbits2] = buckets[wbits2].add(points[j]);
-    }
-    let resI = zero;
-    for (let j = buckets.length - 1, sumI = zero;j > 0; j--) {
-      sumI = sumI.add(buckets[j]);
-      resI = resI.add(sumI);
-    }
-    sum = sum.add(resI);
-    if (i !== 0)
-      for (let j = 0;j < windowSize; j++)
-        sum = sum.double();
-  }
-  return sum;
-}
-function createField(order, field, isLE2) {
-  if (field) {
-    if (field.ORDER !== order)
-      throw new Error("Field.ORDER must match order: Fp == p, Fn == n");
-    validateField(field);
-    return field;
-  } else {
-    return Field(order, { isLE: isLE2 });
-  }
-}
-function _createCurveFields(type, CURVE, curveOpts = {}, FpFnLE) {
-  if (FpFnLE === undefined)
-    FpFnLE = type === "edwards";
-  if (!CURVE || typeof CURVE !== "object")
-    throw new Error(`expected valid ${type} CURVE object`);
-  for (const p of ["p", "n", "h"]) {
-    const val = CURVE[p];
-    if (!(typeof val === "bigint" && val > _0n3))
-      throw new Error(`CURVE.${p} must be positive bigint`);
-  }
-  const Fp = createField(CURVE.p, curveOpts.Fp, FpFnLE);
-  const Fn = createField(CURVE.n, curveOpts.Fn, FpFnLE);
-  const _b = type === "weierstrass" ? "b" : "d";
-  const params = ["Gx", "Gy", "a", _b];
-  for (const p of params) {
-    if (!Fp.isValid(CURVE[p]))
-      throw new Error(`CURVE.${p} must be valid field element of CURVE.Fp`);
-  }
-  CURVE = Object.freeze(Object.assign({}, CURVE));
-  return { CURVE, Fp, Fn };
-}
-var _0n3, _1n3, pointPrecomputes, pointWindowSizes;
-var init_curve = __esm(() => {
-  init_utils2();
-  init_modular();
-  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-  _0n3 = BigInt(0);
-  _1n3 = BigInt(1);
-  pointPrecomputes = new WeakMap;
-  pointWindowSizes = new WeakMap;
-});
-
-// ../../node_modules/@noble/hashes/esm/sha256.js
-var sha2562;
-var init_sha256 = __esm(() => {
-  init_sha2();
-  sha2562 = sha256;
-});
-
-// ../../node_modules/@scure/base/lib/esm/index.js
-function isBytes2(a) {
-  return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
-}
-function abytes2(b, ...lengths) {
-  if (!isBytes2(b))
-    throw new Error("Uint8Array expected");
-  if (lengths.length > 0 && !lengths.includes(b.length))
-    throw new Error("Uint8Array expected of length " + lengths + ", got length=" + b.length);
-}
-function isArrayOf(isString, arr) {
-  if (!Array.isArray(arr))
-    return false;
-  if (arr.length === 0)
-    return true;
-  if (isString) {
-    return arr.every((item) => typeof item === "string");
-  } else {
-    return arr.every((item) => Number.isSafeInteger(item));
-  }
-}
-function afn(input) {
-  if (typeof input !== "function")
-    throw new Error("function expected");
-  return true;
-}
-function astr(label, input) {
-  if (typeof input !== "string")
-    throw new Error(`${label}: string expected`);
-  return true;
-}
-function anumber2(n) {
-  if (!Number.isSafeInteger(n))
-    throw new Error(`invalid integer: ${n}`);
-}
-function aArr(input) {
-  if (!Array.isArray(input))
-    throw new Error("array expected");
-}
-function astrArr(label, input) {
-  if (!isArrayOf(true, input))
-    throw new Error(`${label}: array of strings expected`);
-}
-function anumArr(label, input) {
-  if (!isArrayOf(false, input))
-    throw new Error(`${label}: array of numbers expected`);
-}
-function chain(...args) {
-  const id = (a) => a;
-  const wrap2 = (a, b) => (c) => a(b(c));
-  const encode = args.map((x) => x.encode).reduceRight(wrap2, id);
-  const decode = args.map((x) => x.decode).reduce(wrap2, id);
-  return { encode, decode };
-}
-function alphabet(letters) {
-  const lettersA = typeof letters === "string" ? letters.split("") : letters;
-  const len = lettersA.length;
-  astrArr("alphabet", lettersA);
-  const indexes = new Map(lettersA.map((l, i) => [l, i]));
-  return {
-    encode: (digits) => {
-      aArr(digits);
-      return digits.map((i) => {
-        if (!Number.isSafeInteger(i) || i < 0 || i >= len)
-          throw new Error(`alphabet.encode: digit index outside alphabet "${i}". Allowed: ${letters}`);
-        return lettersA[i];
-      });
-    },
-    decode: (input) => {
-      aArr(input);
-      return input.map((letter) => {
-        astr("alphabet.decode", letter);
-        const i = indexes.get(letter);
-        if (i === undefined)
-          throw new Error(`Unknown letter: "${letter}". Allowed: ${letters}`);
-        return i;
-      });
-    }
-  };
-}
-function join3(separator = "") {
-  astr("join", separator);
-  return {
-    encode: (from) => {
-      astrArr("join.decode", from);
-      return from.join(separator);
-    },
-    decode: (to) => {
-      astr("join.decode", to);
-      return to.split(separator);
-    }
-  };
-}
-function padding(bits, chr = "=") {
-  anumber2(bits);
-  astr("padding", chr);
-  return {
-    encode(data) {
-      astrArr("padding.encode", data);
-      while (data.length * bits % 8)
-        data.push(chr);
-      return data;
-    },
-    decode(input) {
-      astrArr("padding.decode", input);
-      let end = input.length;
-      if (end * bits % 8)
-        throw new Error("padding: invalid, string should have whole number of bytes");
-      for (;end > 0 && input[end - 1] === chr; end--) {
-        const last = end - 1;
-        const byte = last * bits;
-        if (byte % 8 === 0)
-          throw new Error("padding: invalid, string has too much padding");
-      }
-      return input.slice(0, end);
-    }
-  };
-}
-function normalize(fn) {
-  afn(fn);
-  return { encode: (from) => from, decode: (to) => fn(to) };
-}
-function convertRadix(data, from, to) {
-  if (from < 2)
-    throw new Error(`convertRadix: invalid from=${from}, base cannot be less than 2`);
-  if (to < 2)
-    throw new Error(`convertRadix: invalid to=${to}, base cannot be less than 2`);
-  aArr(data);
-  if (!data.length)
-    return [];
-  let pos = 0;
-  const res = [];
-  const digits = Array.from(data, (d) => {
-    anumber2(d);
-    if (d < 0 || d >= from)
-      throw new Error(`invalid integer: ${d}`);
-    return d;
-  });
-  const dlen = digits.length;
-  while (true) {
-    let carry = 0;
-    let done = true;
-    for (let i = pos;i < dlen; i++) {
-      const digit = digits[i];
-      const fromCarry = from * carry;
-      const digitBase = fromCarry + digit;
-      if (!Number.isSafeInteger(digitBase) || fromCarry / from !== carry || digitBase - digit !== fromCarry) {
-        throw new Error("convertRadix: carry overflow");
-      }
-      const div = digitBase / to;
-      carry = digitBase % to;
-      const rounded = Math.floor(div);
-      digits[i] = rounded;
-      if (!Number.isSafeInteger(rounded) || rounded * to + carry !== digitBase)
-        throw new Error("convertRadix: carry overflow");
-      if (!done)
-        continue;
-      else if (!rounded)
-        pos = i;
-      else
-        done = false;
-    }
-    res.push(carry);
-    if (done)
-      break;
-  }
-  for (let i = 0;i < data.length - 1 && data[i] === 0; i++)
-    res.push(0);
-  return res.reverse();
-}
-function convertRadix2(data, from, to, padding2) {
-  aArr(data);
-  if (from <= 0 || from > 32)
-    throw new Error(`convertRadix2: wrong from=${from}`);
-  if (to <= 0 || to > 32)
-    throw new Error(`convertRadix2: wrong to=${to}`);
-  if (radix2carry(from, to) > 32) {
-    throw new Error(`convertRadix2: carry overflow from=${from} to=${to} carryBits=${radix2carry(from, to)}`);
-  }
-  let carry = 0;
-  let pos = 0;
-  const max = powers[from];
-  const mask = powers[to] - 1;
-  const res = [];
-  for (const n of data) {
-    anumber2(n);
-    if (n >= max)
-      throw new Error(`convertRadix2: invalid data word=${n} from=${from}`);
-    carry = carry << from | n;
-    if (pos + from > 32)
-      throw new Error(`convertRadix2: carry overflow pos=${pos} from=${from}`);
-    pos += from;
-    for (;pos >= to; pos -= to)
-      res.push((carry >> pos - to & mask) >>> 0);
-    const pow = powers[pos];
-    if (pow === undefined)
-      throw new Error("invalid carry");
-    carry &= pow - 1;
-  }
-  carry = carry << to - pos & mask;
-  if (!padding2 && pos >= from)
-    throw new Error("Excess padding");
-  if (!padding2 && carry > 0)
-    throw new Error(`Non-zero padding: ${carry}`);
-  if (padding2 && pos > 0)
-    res.push(carry >>> 0);
-  return res;
-}
-function radix(num) {
-  anumber2(num);
-  const _256 = 2 ** 8;
-  return {
-    encode: (bytes) => {
-      if (!isBytes2(bytes))
-        throw new Error("radix.encode input should be Uint8Array");
-      return convertRadix(Array.from(bytes), _256, num);
-    },
-    decode: (digits) => {
-      anumArr("radix.decode", digits);
-      return Uint8Array.from(convertRadix(digits, num, _256));
-    }
-  };
-}
-function radix2(bits, revPadding = false) {
-  anumber2(bits);
-  if (bits <= 0 || bits > 32)
-    throw new Error("radix2: bits should be in (0..32]");
-  if (radix2carry(8, bits) > 32 || radix2carry(bits, 8) > 32)
-    throw new Error("radix2: carry overflow");
-  return {
-    encode: (bytes) => {
-      if (!isBytes2(bytes))
-        throw new Error("radix2.encode input should be Uint8Array");
-      return convertRadix2(Array.from(bytes), 8, bits, !revPadding);
-    },
-    decode: (digits) => {
-      anumArr("radix2.decode", digits);
-      return Uint8Array.from(convertRadix2(digits, bits, 8, revPadding));
-    }
-  };
-}
-function unsafeWrapper(fn) {
-  afn(fn);
-  return function(...args) {
-    try {
-      return fn.apply(null, args);
-    } catch (e) {}
-  };
-}
-function checksum(len, fn) {
-  anumber2(len);
-  afn(fn);
-  return {
-    encode(data) {
-      if (!isBytes2(data))
-        throw new Error("checksum.encode: input should be Uint8Array");
-      const sum = fn(data).slice(0, len);
-      const res = new Uint8Array(data.length + len);
-      res.set(data);
-      res.set(sum, data.length);
-      return res;
-    },
-    decode(data) {
-      if (!isBytes2(data))
-        throw new Error("checksum.decode: input should be Uint8Array");
-      const payload = data.slice(0, -len);
-      const oldChecksum = data.slice(-len);
-      const newChecksum = fn(payload).slice(0, len);
-      for (let i = 0;i < len; i++)
-        if (newChecksum[i] !== oldChecksum[i])
-          throw new Error("Invalid checksum");
-      return payload;
-    }
-  };
-}
-function bech32Polymod(pre) {
-  const b = pre >> 25;
-  let chk = (pre & 33554431) << 5;
-  for (let i = 0;i < POLYMOD_GENERATORS.length; i++) {
-    if ((b >> i & 1) === 1)
-      chk ^= POLYMOD_GENERATORS[i];
-  }
-  return chk;
-}
-function bechChecksum(prefix, words, encodingConst = 1) {
-  const len = prefix.length;
-  let chk = 1;
-  for (let i = 0;i < len; i++) {
-    const c = prefix.charCodeAt(i);
-    if (c < 33 || c > 126)
-      throw new Error(`Invalid prefix (${prefix})`);
-    chk = bech32Polymod(chk) ^ c >> 5;
-  }
-  chk = bech32Polymod(chk);
-  for (let i = 0;i < len; i++)
-    chk = bech32Polymod(chk) ^ prefix.charCodeAt(i) & 31;
-  for (let v of words)
-    chk = bech32Polymod(chk) ^ v;
-  for (let i = 0;i < 6; i++)
-    chk = bech32Polymod(chk);
-  chk ^= encodingConst;
-  return BECH_ALPHABET.encode(convertRadix2([chk % powers[30]], 30, 5, false));
-}
-function genBech32(encoding) {
-  const ENCODING_CONST = encoding === "bech32" ? 1 : 734539939;
-  const _words = radix2(5);
-  const fromWords = _words.decode;
-  const toWords = _words.encode;
-  const fromWordsUnsafe = unsafeWrapper(fromWords);
-  function encode(prefix, words, limit = 90) {
-    astr("bech32.encode prefix", prefix);
-    if (isBytes2(words))
-      words = Array.from(words);
-    anumArr("bech32.encode", words);
-    const plen = prefix.length;
-    if (plen === 0)
-      throw new TypeError(`Invalid prefix length ${plen}`);
-    const actualLength = plen + 7 + words.length;
-    if (limit !== false && actualLength > limit)
-      throw new TypeError(`Length ${actualLength} exceeds limit ${limit}`);
-    const lowered = prefix.toLowerCase();
-    const sum = bechChecksum(lowered, words, ENCODING_CONST);
-    return `${lowered}1${BECH_ALPHABET.encode(words)}${sum}`;
-  }
-  function decode(str, limit = 90) {
-    astr("bech32.decode input", str);
-    const slen = str.length;
-    if (slen < 8 || limit !== false && slen > limit)
-      throw new TypeError(`invalid string length: ${slen} (${str}). Expected (8..${limit})`);
-    const lowered = str.toLowerCase();
-    if (str !== lowered && str !== str.toUpperCase())
-      throw new Error(`String must be lowercase or uppercase`);
-    const sepIndex = lowered.lastIndexOf("1");
-    if (sepIndex === 0 || sepIndex === -1)
-      throw new Error(`Letter "1" must be present between prefix and data only`);
-    const prefix = lowered.slice(0, sepIndex);
-    const data = lowered.slice(sepIndex + 1);
-    if (data.length < 6)
-      throw new Error("Data must be at least 6 characters long");
-    const words = BECH_ALPHABET.decode(data).slice(0, -6);
-    const sum = bechChecksum(prefix, words, ENCODING_CONST);
-    if (!data.endsWith(sum))
-      throw new Error(`Invalid checksum in ${str}: expected "${sum}"`);
-    return { prefix, words };
-  }
-  const decodeUnsafe = unsafeWrapper(decode);
-  function decodeToBytes(str) {
-    const { prefix, words } = decode(str, false);
-    return { prefix, words, bytes: fromWords(words) };
-  }
-  function encodeFromBytes(prefix, bytes) {
-    return encode(prefix, toWords(bytes));
-  }
-  return {
-    encode,
-    decode,
-    encodeFromBytes,
-    decodeToBytes,
-    decodeUnsafe,
-    fromWords,
-    fromWordsUnsafe,
-    toWords
-  };
-}
-var gcd = (a, b) => b === 0 ? a : gcd(b, a % b), radix2carry = (from, to) => from + (to - gcd(from, to)), powers, utils, base16, base32, base32nopad, base32hex, base32hexnopad, base32crockford, hasBase64Builtin, decodeBase64Builtin = (s, isUrl) => {
-  astr("base64", s);
-  const re = isUrl ? /^[A-Za-z0-9=_-]+$/ : /^[A-Za-z0-9=+/]+$/;
-  const alphabet2 = isUrl ? "base64url" : "base64";
-  if (s.length > 0 && !re.test(s))
-    throw new Error("invalid base64");
-  return Uint8Array.fromBase64(s, { alphabet: alphabet2, lastChunkHandling: "strict" });
-}, base64, base64nopad, base64url, base64urlnopad, genBase58 = (abc) => chain(radix(58), alphabet(abc), join3("")), base58, base58flickr, base58xrp, BECH_ALPHABET, POLYMOD_GENERATORS, bech32, bech32m, hasHexBuiltin2, hexBuiltin, hex;
-var init_esm = __esm(() => {
-  /*! scure-base - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-  powers = /* @__PURE__ */ (() => {
-    let res = [];
-    for (let i = 0;i < 40; i++)
-      res.push(2 ** i);
-    return res;
-  })();
-  utils = {
-    alphabet,
-    chain,
-    checksum,
-    convertRadix,
-    convertRadix2,
-    radix,
-    radix2,
-    join: join3,
-    padding
-  };
-  base16 = chain(radix2(4), alphabet("0123456789ABCDEF"), join3(""));
-  base32 = chain(radix2(5), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"), padding(5), join3(""));
-  base32nopad = chain(radix2(5), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"), join3(""));
-  base32hex = chain(radix2(5), alphabet("0123456789ABCDEFGHIJKLMNOPQRSTUV"), padding(5), join3(""));
-  base32hexnopad = chain(radix2(5), alphabet("0123456789ABCDEFGHIJKLMNOPQRSTUV"), join3(""));
-  base32crockford = chain(radix2(5), alphabet("0123456789ABCDEFGHJKMNPQRSTVWXYZ"), join3(""), normalize((s) => s.toUpperCase().replace(/O/g, "0").replace(/[IL]/g, "1")));
-  hasBase64Builtin = /* @__PURE__ */ (() => typeof Uint8Array.from([]).toBase64 === "function" && typeof Uint8Array.fromBase64 === "function")();
-  base64 = hasBase64Builtin ? {
-    encode(b) {
-      abytes2(b);
-      return b.toBase64();
-    },
-    decode(s) {
-      return decodeBase64Builtin(s, false);
-    }
-  } : chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"), padding(6), join3(""));
-  base64nopad = chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"), join3(""));
-  base64url = hasBase64Builtin ? {
-    encode(b) {
-      abytes2(b);
-      return b.toBase64({ alphabet: "base64url" });
-    },
-    decode(s) {
-      return decodeBase64Builtin(s, true);
-    }
-  } : chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"), padding(6), join3(""));
-  base64urlnopad = chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"), join3(""));
-  base58 = genBase58("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz");
-  base58flickr = genBase58("123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ");
-  base58xrp = genBase58("rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz");
-  BECH_ALPHABET = chain(alphabet("qpzry9x8gf2tvdw0s3jn54khce6mua7l"), join3(""));
-  POLYMOD_GENERATORS = [996825010, 642813549, 513874426, 1027748829, 705979059];
-  bech32 = genBech32("bech32");
-  bech32m = genBech32("bech32m");
-  hasHexBuiltin2 = /* @__PURE__ */ (() => typeof Uint8Array.from([]).toHex === "function" && typeof Uint8Array.fromHex === "function")();
-  hexBuiltin = {
-    encode(data) {
-      abytes2(data);
-      return data.toHex();
-    },
-    decode(s) {
-      astr("hex", s);
-      return Uint8Array.fromHex(s);
-    }
-  };
-  hex = hasHexBuiltin2 ? hexBuiltin : chain(radix2(4), alphabet("0123456789abcdef"), join3(""), normalize((s) => {
-    if (typeof s !== "string" || s.length % 2 !== 0)
-      throw new TypeError(`hex.decode: expected string, got ${typeof s} with length ${s.length}`);
-    return s.toLowerCase();
-  }));
-});
-
-// src/vault/errors.ts
-var exports_errors = {};
-__export(exports_errors, {
-  isVaultError: () => isVaultError,
-  VaultError: () => VaultError,
-  VAULT_ERROR_CODES: () => VAULT_ERROR_CODES
-});
-function isVaultError(error) {
-  return error instanceof VaultError;
-}
-var VAULT_ERROR_CODES, VaultError;
-var init_errors = __esm(() => {
-  VAULT_ERROR_CODES = [
-    "VAULT_MISSING",
-    "VAULT_EXISTS",
-    "VAULT_UNREADABLE",
-    "VAULT_FORMAT_UNKNOWN",
-    "VAULT_VERSION_UNSUPPORTED",
-    "VAULT_FIELD_UNKNOWN",
-    "VAULT_KDF_OUT_OF_BOUNDS",
-    "VAULT_UNLOCK_FAILED",
-    "VAULT_BLOB_TAMPERED",
-    "VAULT_INDEX_INVALID",
-    "VAULT_OLDER_COPY",
-    "VAULT_LOCKED",
-    "VAULT_CHANGED",
-    "VAULT_WRITE_FAILED",
-    "VAULT_VERIFY_FAILED",
-    "VAULT_NO_RECOVERABLE_FACTOR",
-    "VAULT_LAST_PASSPHRASE",
-    "VAULT_FACTOR_UNAVAILABLE",
-    "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM",
-    "VAULT_AUTHENTICATOR_NOT_READABLE",
-    "VAULT_PRF_UNSUPPORTED",
-    "VAULT_UV_UNSUPPORTED",
-    "VAULT_PIN_REQUIRED",
-    "VAULT_PIN_INVALID",
-    "VAULT_AUTHENTICATOR_BLOCKED",
-    "VAULT_AUTHENTICATOR_CANCELLED",
-    "VAULT_CREDENTIAL_NOT_PRESENT",
-    "VAULT_AUTHENTICATOR_AMBIGUOUS",
-    "VAULT_AUTHENTICATOR_CHANGED",
-    "VAULT_HELPER_MISSING",
-    "VAULT_HELPER_UNTRUSTED",
-    "VAULT_SHARED_DOMAIN",
-    "VAULT_BACKUP_INSIDE_CONFIG",
-    "ENV_PASSPHRASE_REFUSED",
-    "CHAIN_NOT_OFFERED",
-    "DESTINATION_NOT_CONFIRMED",
-    "PHRASE_REQUIRES_TTY",
-    "PHRASE_INVALID",
-    "PHRASE_NOT_CONFIRMED",
-    "PROMOTE_NOT_VAULT_KEY",
-    "PROMOTE_ALREADY_TEE_WALLET",
-    "PROMOTE_SAME_KEY_DESTINATION",
-    "PROMOTE_KEY_IS_PINNED_DESTINATION",
-    "PROMOTE_DESTINATION_NOT_COLD",
-    "PROMOTE_SUBJECT_EXPOSURE_UNKNOWN",
-    "PROMOTE_RECONCILE_INCOMPLETE",
-    "PROMOTE_OUTCOME_UNRESOLVED",
-    "PROMOTE_NOT_ACKNOWLEDGED",
-    "GRANT_IDENTITY_MISMATCH",
-    "GRANT_BINDING_MISMATCH",
-    "GRANT_DESTINATION_UNRESOLVED",
-    "VAULT_ALLOCATION_BOUNDARY_UNKNOWN",
-    "EXPOSURE_ACCOUNT_MISMATCH",
-    "EXPORT_TARGET_EXISTS",
-    "EXPORT_TARGET_SYMLINK",
-    "LEGACY_INCOMPLETE",
-    "LEGACY_UNVERIFIED_BACKUP",
-    "SIGN_SIGNER_NOT_EXTERNAL",
-    "SIGN_SIGNER_NOT_PROVIDED",
-    "SIGN_SIMULATION_FAILED",
-    "SIGN_LOOKUP_TABLE_UNRESOLVED",
-    "SIGN_TRANSACTION_UNDECODABLE",
-    "SIGN_BROADCAST_FAILED"
-  ];
-  VaultError = class VaultError extends Error {
-    code;
-    suggestion;
-    exitCode;
-    constructor(code, message, opts = {}) {
-      super(message);
-      this.name = "VaultError";
-      this.code = code;
-      this.suggestion = opts.suggestion;
-      this.exitCode = opts.exitCode ?? 1;
-    }
-  };
-});
-
-// ../../node_modules/@noble/hashes/esm/hmac.js
-var HMAC, hmac = (hash, key, message) => new HMAC(hash, key).update(message).digest();
-var init_hmac = __esm(() => {
-  init_utils();
-  HMAC = class HMAC extends Hash {
-    constructor(hash, _key) {
-      super();
-      this.finished = false;
-      this.destroyed = false;
-      ahash(hash);
-      const key = toBytes(_key);
-      this.iHash = hash.create();
-      if (typeof this.iHash.update !== "function")
-        throw new Error("Expected instance of class which extends utils.Hash");
-      this.blockLen = this.iHash.blockLen;
-      this.outputLen = this.iHash.outputLen;
-      const blockLen = this.blockLen;
-      const pad = new Uint8Array(blockLen);
-      pad.set(key.length > blockLen ? hash.create().update(key).digest() : key);
-      for (let i = 0;i < pad.length; i++)
-        pad[i] ^= 54;
-      this.iHash.update(pad);
-      this.oHash = hash.create();
-      for (let i = 0;i < pad.length; i++)
-        pad[i] ^= 54 ^ 92;
-      this.oHash.update(pad);
-      clean(pad);
-    }
-    update(buf) {
-      aexists(this);
-      this.iHash.update(buf);
-      return this;
-    }
-    digestInto(out) {
-      aexists(this);
-      abytes(out, this.outputLen);
-      this.finished = true;
-      this.iHash.digestInto(out);
-      this.oHash.update(out);
-      this.oHash.digestInto(out);
-      this.destroy();
-    }
-    digest() {
-      const out = new Uint8Array(this.oHash.outputLen);
-      this.digestInto(out);
-      return out;
-    }
-    _cloneInto(to) {
-      to || (to = Object.create(Object.getPrototypeOf(this), {}));
-      const { oHash, iHash, finished, destroyed, blockLen, outputLen } = this;
-      to = to;
-      to.finished = finished;
-      to.destroyed = destroyed;
-      to.blockLen = blockLen;
-      to.outputLen = outputLen;
-      to.oHash = oHash._cloneInto(to.oHash);
-      to.iHash = iHash._cloneInto(to.iHash);
-      return to;
-    }
-    clone() {
-      return this._cloneInto();
-    }
-    destroy() {
-      this.destroyed = true;
-      this.oHash.destroy();
-      this.iHash.destroy();
-    }
-  };
-  hmac.create = (hash, key) => new HMAC(hash, key);
-});
-
-// src/vault/hygiene.ts
-function wipe(...buffers) {
-  for (const buffer of buffers) {
-    if (buffer)
-      buffer.fill(0);
-  }
-}
-function secretBuffer(length) {
-  const buffer = new Uint8Array(length);
-  registry?.allocated.push(buffer);
-  return buffer;
-}
-function ownSecret(bytes) {
-  registry?.allocated.push(bytes);
-  return bytes;
-}
-async function withSecret(secret, use) {
-  ownSecret(secret);
-  try {
-    return await use(secret);
-  } finally {
-    wipe(secret);
-  }
-}
-var registry = null;
-
-// src/vault/promote-support.ts
-var exports_promote_support = {};
-__export(exports_promote_support, {
-  printAd8Warning: () => printAd8Warning,
-  findVaultRoleEntry: () => findVaultRoleEntry,
-  findEntryByLabelOrAddress: () => findEntryByLabelOrAddress,
-  confirmAd8Acknowledgement: () => confirmAd8Acknowledgement,
-  assertNotPinnedDestination: () => assertNotPinnedDestination,
-  assertInPlacePreconditions: () => assertInPlacePreconditions,
-  assertColdVaultDestination: () => assertColdVaultDestination,
-  AD8_WARNING: () => AD8_WARNING,
-  AD8_ACK_WORD: () => AD8_ACK_WORD
-});
-function assertColdVaultDestination(index, destinationLabelOrAddress, opts = {}) {
-  const destination = findVaultRoleEntry(index, destinationLabelOrAddress);
-  if (destination === undefined) {
-    throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `No vault key matches ${destinationLabelOrAddress}.`, {
-      suggestion: "Create a cold vault key with `candle vault new-key --chain solana`, or name an existing one that has never been remotely exposed or exported."
-    });
-  }
-  if (destination.role !== "vault") {
-    throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${destination.label ?? destination.address} is not a role:vault key.`);
-  }
-  if (opts.subjectAddress !== undefined && destination.address === opts.subjectAddress) {
-    throw new VaultError("PROMOTE_SAME_KEY_DESTINATION", "The sweep destination must be a different vault key from the one being promoted.");
-  }
-  const exposed = destination.exposure?.everRemoteExposed === true;
-  const exported = destination.exposure?.everExported === true;
-  const unknown = destination.exposure?.exposureUnknown === true;
-  if (exposed || exported) {
-    throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${destination.label ?? destination.address} is not cold: everRemoteExposed=${exposed}, everExported=${exported}.`, {
-      suggestion: "Pin a vault key that has never been remotely exposed or exported (`candle vault new-key`)."
-    });
-  }
-  if (unknown && !opts.acceptUnknownExposure) {
-    throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${destination.label ?? destination.address} carries exposureUnknown and is refused as a recovery destination.`, {
-      suggestion: "Pass --accept-unknown-exposure to admit only this case (never an everRemoteExposed or everExported key), or create a fresh cold key."
-    });
-  }
-  return destination;
-}
-function findVaultRoleEntry(index, labelOrAddress) {
-  const byLabel = index.entries.find((entry) => entry.role === "vault" && entry.label !== undefined && entry.label === labelOrAddress);
-  if (byLabel !== undefined)
-    return byLabel;
-  return index.entries.find((entry) => entry.address === labelOrAddress);
-}
-function findEntryByLabelOrAddress(index, labelOrAddress) {
-  const byLabel = index.entries.find((entry) => entry.label !== undefined && entry.label === labelOrAddress);
-  if (byLabel !== undefined)
-    return byLabel;
-  return index.entries.find((entry) => entry.address === labelOrAddress);
-}
-function assertNotPinnedDestination(index, subjectAddress) {
-  const pinners = index.entries.filter((entry) => entry.tee?.vaultDestination === subjectAddress);
-  if (pinners.length === 0)
-    return;
-  throw new VaultError("PROMOTE_KEY_IS_PINNED_DESTINATION", `${subjectAddress} is the pinned sweep destination for: ${pinners.map((e) => e.label ?? e.address).join(", ")}.`, {
-    suggestion: "Demote those TEE wallets to this key first, then promote fresh ones against a different cold destination."
-  });
-}
-function assertInPlacePreconditions(index, subjectLabel, sweepToLabel, opts) {
-  const subject = findEntryByLabelOrAddress(index, subjectLabel);
-  if (subject === undefined) {
-    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`);
-  }
-  if (subject.role === "tee-wallet") {
-    const lifecycle = subject.tee?.lifecycle;
-    if (lifecycle === "local-candidate" || lifecycle === "import-pending") {
-      return {
-        subject,
-        destination: assertColdVaultDestination(index, sweepToLabel, {
-          subjectAddress: subject.address,
-          acceptUnknownExposure: opts.acceptUnknownExposure
-        }),
-        resume: true
-      };
-    }
-    throw new VaultError("PROMOTE_ALREADY_TEE_WALLET", `${subject.label ?? subject.address} is already a TEE wallet (${lifecycle ?? "unknown"}).`);
-  }
-  if (subject.role !== "vault" || subject.tee !== undefined) {
-    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${subjectLabel} is not a role:vault key without tee metadata.`);
-  }
-  if (subject.exposure?.exposureUnknown === true) {
-    throw new VaultError("PROMOTE_SUBJECT_EXPOSURE_UNKNOWN", `${subject.label ?? subject.address} carries exposureUnknown and cannot be promoted in place.`);
-  }
-  assertNotPinnedDestination(index, subject.address);
-  const destination = assertColdVaultDestination(index, sweepToLabel, {
-    subjectAddress: subject.address,
-    acceptUnknownExposure: opts.acceptUnknownExposure
-  });
-  return { subject, destination, resume: false };
-}
-function printAd8Warning(ctx) {
-  ctx.deps.stdout.write(`
-${AD8_WARNING}
-
-`);
-}
-async function confirmAd8Acknowledgement(ctx) {
-  const typed = (await ctx.deps.promptLine(`Type ${AD8_ACK_WORD} to acknowledge: I have read the warning above, this address never returns to cold, and I accept what it may control: `)).trim();
-  if (typed !== AD8_ACK_WORD) {
-    throw new VaultError("PROMOTE_NOT_ACKNOWLEDGED", "The acknowledgement word did not match; nothing was promoted.");
-  }
-}
-var AD8_WARNING = `This key may sign for a multisig, for a program upgrade authority, or for a token mint or freeze authority. The CLI does not know which, and does not check.
-Promoting leaves a copy of this key inside Privy's TEE for good.
-The key itself, its multisig membership and its authorities are unchanged: the operator keeps the key and can keep signing with it, and whatever it signs for keeps working exactly as before.
-If Privy's TEE or its signing policy were compromised, whatever this key controls is at risk, and how much depends on the setup: a multisig's threshold, or whether this key is a sole authority, decides what an attacker could actually do.
-Demoting does not remove that copy. The only way to end this exposure is to replace this key in the multisig, or to move the authority to another key.`, AD8_ACK_WORD = "EXPOSE";
-var init_promote_support = __esm(() => {
-  init_errors();
-});
-
-// src/wallet-keystore.ts
-import { chmod as chmod2, mkdir as mkdir2, readFile as readFile2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
-import { homedir as homedir4 } from "node:os";
-import { dirname as dirname3, join as join5 } from "node:path";
-function defaultTeeKeystorePath(env) {
-  return join5(candleConfigDir(env), "tee-wallets.enc");
-}
-function legacyTeeKeystorePath(env) {
-  return join5(candleConfigDir(env), "hot-wallets.enc");
-}
-function candleConfigDir(env) {
-  return env.CANDLE_CONFIG_DIR?.trim() || join5(homedir4(), ".config", "candle");
-}
-async function deriveKeystoreKey(passphrase, salt, iterations) {
-  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
-    "deriveKey"
-  ]);
-  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-}
-async function createKeystore(passphrase) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  return { key: await deriveKeystoreKey(passphrase, salt, KEYSTORE_ITERATIONS), salt, iterations: KEYSTORE_ITERATIONS };
-}
-async function serializeKeystore(entries, key, salt, iterations, purpose) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(entries)));
-  const file = {
-    version: KEYSTORE_VERSION,
-    createdAt: new Date().toISOString(),
-    kdf: "PBKDF2-HMAC-SHA256",
-    iterations,
-    salt: b64(salt),
-    cipher: "AES-256-GCM",
-    iv: b64(iv),
-    ciphertext: b64(new Uint8Array(sealed)),
-    ...purpose !== undefined && purpose !== "wallets" ? { purpose } : {}
-  };
-  return `${JSON.stringify(file, null, 2)}
-`;
-}
-async function readKeystore(raw, passphrase, opts = {}) {
-  let file;
-  try {
-    file = JSON.parse(raw);
-  } catch {
-    throw new Error("The keystore file is not valid JSON.");
-  }
-  if (file.version !== KEYSTORE_VERSION) {
-    throw new Error(`Unsupported keystore version ${file.version}: this CLI writes version ${KEYSTORE_VERSION}.`);
-  }
-  const purpose = file.purpose === TEE_KEYSTORE_PURPOSE || file.purpose === LEGACY_TEE_PURPOSE ? TEE_KEYSTORE_PURPOSE : "wallets";
-  if (opts.expectPurpose !== undefined && purpose !== opts.expectPurpose) {
-    throw new Error(purpose === TEE_KEYSTORE_PURPOSE ? "This is a TEE wallet store (tee-wallets.enc). It has no export path; use: candle tee sweep." : "This is not a TEE wallet store. The tee commands only open tee-wallets.enc.");
-  }
-  if (purpose === TEE_KEYSTORE_PURPOSE) {
-    if (file.kdf !== "PBKDF2-HMAC-SHA256" || file.cipher !== "AES-256-GCM") {
-      throw new Error("The TEE wallet store names an unsupported KDF or cipher; refusing to open it.");
-    }
-    if (!Number.isInteger(file.iterations) || file.iterations < TEE_KEYSTORE_MIN_ITERATIONS || file.iterations > TEE_KEYSTORE_MAX_ITERATIONS) {
-      throw new Error(`The TEE wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` + `${TEE_KEYSTORE_MIN_ITERATIONS}-${TEE_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`);
-    }
-  }
-  const salt = unb64(file.salt);
-  const key = await deriveKeystoreKey(passphrase, salt, file.iterations);
-  let plain;
-  try {
-    plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(file.iv) }, key, unb64(file.ciphertext));
-  } catch {
-    throw new Error("Could not decrypt the keystore: wrong passphrase, or the file is corrupt.");
-  }
-  const decoded = JSON.parse(new TextDecoder().decode(plain));
-  return {
-    entries: decoded.map(({ [LEGACY_TEE_FIELD]: legacy, ...entry }) => legacy !== undefined && entry.tee === undefined ? { ...entry, tee: legacy } : entry),
-    key,
-    salt,
-    iterations: file.iterations
-  };
-}
-async function writeKeystoreFile(path, contents) {
-  const dir = dirname3(path);
-  await mkdir2(dir, { recursive: true });
-  await chmod2(dir, 448);
-  const tmpPath = `${path}.${crypto.randomUUID()}.tmp`;
-  await writeFile2(tmpPath, contents, { encoding: "utf8", mode: 384 });
-  await chmod2(tmpPath, 384);
-  await rename2(tmpPath, path);
-}
-function keystoreLockPath(path) {
-  return `${path}.lock`;
-}
-async function withKeystoreLock(path, clock, fn, opts = {}) {
-  const lockPath = keystoreLockPath(path);
-  const waitMs = opts.waitMs ?? 1e4;
-  const pollMs = opts.pollMs ?? 100;
-  await mkdir2(dirname3(path), { recursive: true });
-  const started = clock.now();
-  for (;; ) {
-    try {
-      await mkdir2(lockPath);
-      break;
-    } catch (error) {
-      if (error?.code !== "EEXIST")
-        throw error;
-      if (clock.now() - started >= waitMs) {
-        let owner = null;
-        try {
-          owner = (await readFile2(join5(lockPath, "owner"), "utf8")).trim() || null;
-        } catch {
-          owner = null;
-        }
-        throw new KeystoreLockedError(lockPath, owner);
-      }
-      await clock.sleep(pollMs);
-    }
-  }
-  try {
-    await writeFile2(join5(lockPath, "owner"), `${opts.owner ?? `pid ${process.pid}`} since ${new Date().toISOString()}
-`, { encoding: "utf8", mode: 384 }).catch(() => {});
-    return await fn();
-  } finally {
-    await rm2(lockPath, { recursive: true, force: true });
-  }
-}
-var TEE_KEYSTORE_PURPOSE = "ember-tee", LEGACY_TEE_PURPOSE = "ember-hot", LEGACY_TEE_FIELD = "hot", TEE_KEYSTORE_MIN_ITERATIONS = 210000, TEE_KEYSTORE_MAX_ITERATIONS = 2100000, KEYSTORE_VERSION = 1, KEYSTORE_ITERATIONS = 210000, b64 = (bytes) => Buffer.from(bytes).toString("base64"), unb64 = (s) => new Uint8Array(Buffer.from(s, "base64")), KeystoreLockedError;
-var init_wallet_keystore = __esm(() => {
-  KeystoreLockedError = class KeystoreLockedError extends Error {
-    lockPath;
-    owner;
-    constructor(lockPath, owner) {
-      super(`Another command holds the TEE wallet store lock at ${lockPath}` + `${owner ? ` (${owner})` : ""}. If no other candle tee command is running, remove that directory and retry.`);
-      this.lockPath = lockPath;
-      this.owner = owner;
-      this.name = "KeystoreLockedError";
-    }
-  };
 });
 
 // ../../node_modules/@noble/hashes/esm/_blake.js
@@ -2906,6 +944,166 @@ var init__blake = __esm(() => {
     14,
     1,
     9
+  ]);
+});
+
+// ../../node_modules/@noble/hashes/esm/_md.js
+function setBigUint64(view, byteOffset, value, isLE2) {
+  if (typeof view.setBigUint64 === "function")
+    return view.setBigUint64(byteOffset, value, isLE2);
+  const _32n2 = BigInt(32);
+  const _u32_max = BigInt(4294967295);
+  const wh = Number(value >> _32n2 & _u32_max);
+  const wl = Number(value & _u32_max);
+  const h = isLE2 ? 4 : 0;
+  const l = isLE2 ? 0 : 4;
+  view.setUint32(byteOffset + h, wh, isLE2);
+  view.setUint32(byteOffset + l, wl, isLE2);
+}
+function Chi(a, b, c) {
+  return a & b ^ ~a & c;
+}
+function Maj(a, b, c) {
+  return a & b ^ a & c ^ b & c;
+}
+var HashMD, SHA256_IV, SHA384_IV, SHA512_IV;
+var init__md = __esm(() => {
+  init_utils();
+  HashMD = class HashMD extends Hash {
+    constructor(blockLen, outputLen, padOffset, isLE2) {
+      super();
+      this.finished = false;
+      this.length = 0;
+      this.pos = 0;
+      this.destroyed = false;
+      this.blockLen = blockLen;
+      this.outputLen = outputLen;
+      this.padOffset = padOffset;
+      this.isLE = isLE2;
+      this.buffer = new Uint8Array(blockLen);
+      this.view = createView(this.buffer);
+    }
+    update(data) {
+      aexists(this);
+      data = toBytes(data);
+      abytes(data);
+      const { view, buffer, blockLen } = this;
+      const len = data.length;
+      for (let pos = 0;pos < len; ) {
+        const take = Math.min(blockLen - this.pos, len - pos);
+        if (take === blockLen) {
+          const dataView = createView(data);
+          for (;blockLen <= len - pos; pos += blockLen)
+            this.process(dataView, pos);
+          continue;
+        }
+        buffer.set(data.subarray(pos, pos + take), this.pos);
+        this.pos += take;
+        pos += take;
+        if (this.pos === blockLen) {
+          this.process(view, 0);
+          this.pos = 0;
+        }
+      }
+      this.length += data.length;
+      this.roundClean();
+      return this;
+    }
+    digestInto(out) {
+      aexists(this);
+      aoutput(out, this);
+      this.finished = true;
+      const { buffer, view, blockLen, isLE: isLE2 } = this;
+      let { pos } = this;
+      buffer[pos++] = 128;
+      clean(this.buffer.subarray(pos));
+      if (this.padOffset > blockLen - pos) {
+        this.process(view, 0);
+        pos = 0;
+      }
+      for (let i = pos;i < blockLen; i++)
+        buffer[i] = 0;
+      setBigUint64(view, blockLen - 8, BigInt(this.length * 8), isLE2);
+      this.process(view, 0);
+      const oview = createView(out);
+      const len = this.outputLen;
+      if (len % 4)
+        throw new Error("_sha2: outputLen should be aligned to 32bit");
+      const outLen = len / 4;
+      const state = this.get();
+      if (outLen > state.length)
+        throw new Error("_sha2: outputLen bigger than state");
+      for (let i = 0;i < outLen; i++)
+        oview.setUint32(4 * i, state[i], isLE2);
+    }
+    digest() {
+      const { buffer, outputLen } = this;
+      this.digestInto(buffer);
+      const res = buffer.slice(0, outputLen);
+      this.destroy();
+      return res;
+    }
+    _cloneInto(to) {
+      to || (to = new this.constructor);
+      to.set(...this.get());
+      const { blockLen, buffer, length, finished, destroyed, pos } = this;
+      to.destroyed = destroyed;
+      to.finished = finished;
+      to.length = length;
+      to.pos = pos;
+      if (length % blockLen)
+        to.buffer.set(buffer);
+      return to;
+    }
+    clone() {
+      return this._cloneInto();
+    }
+  };
+  SHA256_IV = /* @__PURE__ */ Uint32Array.from([
+    1779033703,
+    3144134277,
+    1013904242,
+    2773480762,
+    1359893119,
+    2600822924,
+    528734635,
+    1541459225
+  ]);
+  SHA384_IV = /* @__PURE__ */ Uint32Array.from([
+    3418070365,
+    3238371032,
+    1654270250,
+    914150663,
+    2438529370,
+    812702999,
+    355462360,
+    4144912697,
+    1731405415,
+    4290775857,
+    2394180231,
+    1750603025,
+    3675008525,
+    1694076839,
+    1203062813,
+    3204075428
+  ]);
+  SHA512_IV = /* @__PURE__ */ Uint32Array.from([
+    1779033703,
+    4089235720,
+    3144134277,
+    2227873595,
+    1013904242,
+    4271175723,
+    2773480762,
+    1595750129,
+    1359893119,
+    2917565137,
+    2600822924,
+    725511199,
+    528734635,
+    4215389547,
+    1541459225,
+    327033209
   ]);
 });
 
@@ -3484,6 +1682,449 @@ var init_argon2 = __esm(() => {
   maxUint32 = Math.pow(2, 32);
 });
 
+// ../../node_modules/@scure/base/lib/esm/index.js
+function isBytes2(a) {
+  return a instanceof Uint8Array || ArrayBuffer.isView(a) && a.constructor.name === "Uint8Array";
+}
+function abytes2(b, ...lengths) {
+  if (!isBytes2(b))
+    throw new Error("Uint8Array expected");
+  if (lengths.length > 0 && !lengths.includes(b.length))
+    throw new Error("Uint8Array expected of length " + lengths + ", got length=" + b.length);
+}
+function isArrayOf(isString, arr) {
+  if (!Array.isArray(arr))
+    return false;
+  if (arr.length === 0)
+    return true;
+  if (isString) {
+    return arr.every((item) => typeof item === "string");
+  } else {
+    return arr.every((item) => Number.isSafeInteger(item));
+  }
+}
+function afn(input) {
+  if (typeof input !== "function")
+    throw new Error("function expected");
+  return true;
+}
+function astr(label, input) {
+  if (typeof input !== "string")
+    throw new Error(`${label}: string expected`);
+  return true;
+}
+function anumber2(n) {
+  if (!Number.isSafeInteger(n))
+    throw new Error(`invalid integer: ${n}`);
+}
+function aArr(input) {
+  if (!Array.isArray(input))
+    throw new Error("array expected");
+}
+function astrArr(label, input) {
+  if (!isArrayOf(true, input))
+    throw new Error(`${label}: array of strings expected`);
+}
+function anumArr(label, input) {
+  if (!isArrayOf(false, input))
+    throw new Error(`${label}: array of numbers expected`);
+}
+function chain(...args) {
+  const id = (a) => a;
+  const wrap2 = (a, b) => (c) => a(b(c));
+  const encode = args.map((x) => x.encode).reduceRight(wrap2, id);
+  const decode = args.map((x) => x.decode).reduce(wrap2, id);
+  return { encode, decode };
+}
+function alphabet(letters) {
+  const lettersA = typeof letters === "string" ? letters.split("") : letters;
+  const len = lettersA.length;
+  astrArr("alphabet", lettersA);
+  const indexes = new Map(lettersA.map((l, i) => [l, i]));
+  return {
+    encode: (digits) => {
+      aArr(digits);
+      return digits.map((i) => {
+        if (!Number.isSafeInteger(i) || i < 0 || i >= len)
+          throw new Error(`alphabet.encode: digit index outside alphabet "${i}". Allowed: ${letters}`);
+        return lettersA[i];
+      });
+    },
+    decode: (input) => {
+      aArr(input);
+      return input.map((letter) => {
+        astr("alphabet.decode", letter);
+        const i = indexes.get(letter);
+        if (i === undefined)
+          throw new Error(`Unknown letter: "${letter}". Allowed: ${letters}`);
+        return i;
+      });
+    }
+  };
+}
+function join4(separator = "") {
+  astr("join", separator);
+  return {
+    encode: (from) => {
+      astrArr("join.decode", from);
+      return from.join(separator);
+    },
+    decode: (to) => {
+      astr("join.decode", to);
+      return to.split(separator);
+    }
+  };
+}
+function padding(bits, chr = "=") {
+  anumber2(bits);
+  astr("padding", chr);
+  return {
+    encode(data) {
+      astrArr("padding.encode", data);
+      while (data.length * bits % 8)
+        data.push(chr);
+      return data;
+    },
+    decode(input) {
+      astrArr("padding.decode", input);
+      let end = input.length;
+      if (end * bits % 8)
+        throw new Error("padding: invalid, string should have whole number of bytes");
+      for (;end > 0 && input[end - 1] === chr; end--) {
+        const last = end - 1;
+        const byte = last * bits;
+        if (byte % 8 === 0)
+          throw new Error("padding: invalid, string has too much padding");
+      }
+      return input.slice(0, end);
+    }
+  };
+}
+function normalize(fn) {
+  afn(fn);
+  return { encode: (from) => from, decode: (to) => fn(to) };
+}
+function convertRadix(data, from, to) {
+  if (from < 2)
+    throw new Error(`convertRadix: invalid from=${from}, base cannot be less than 2`);
+  if (to < 2)
+    throw new Error(`convertRadix: invalid to=${to}, base cannot be less than 2`);
+  aArr(data);
+  if (!data.length)
+    return [];
+  let pos = 0;
+  const res = [];
+  const digits = Array.from(data, (d) => {
+    anumber2(d);
+    if (d < 0 || d >= from)
+      throw new Error(`invalid integer: ${d}`);
+    return d;
+  });
+  const dlen = digits.length;
+  while (true) {
+    let carry = 0;
+    let done = true;
+    for (let i = pos;i < dlen; i++) {
+      const digit = digits[i];
+      const fromCarry = from * carry;
+      const digitBase = fromCarry + digit;
+      if (!Number.isSafeInteger(digitBase) || fromCarry / from !== carry || digitBase - digit !== fromCarry) {
+        throw new Error("convertRadix: carry overflow");
+      }
+      const div = digitBase / to;
+      carry = digitBase % to;
+      const rounded = Math.floor(div);
+      digits[i] = rounded;
+      if (!Number.isSafeInteger(rounded) || rounded * to + carry !== digitBase)
+        throw new Error("convertRadix: carry overflow");
+      if (!done)
+        continue;
+      else if (!rounded)
+        pos = i;
+      else
+        done = false;
+    }
+    res.push(carry);
+    if (done)
+      break;
+  }
+  for (let i = 0;i < data.length - 1 && data[i] === 0; i++)
+    res.push(0);
+  return res.reverse();
+}
+function convertRadix2(data, from, to, padding2) {
+  aArr(data);
+  if (from <= 0 || from > 32)
+    throw new Error(`convertRadix2: wrong from=${from}`);
+  if (to <= 0 || to > 32)
+    throw new Error(`convertRadix2: wrong to=${to}`);
+  if (radix2carry(from, to) > 32) {
+    throw new Error(`convertRadix2: carry overflow from=${from} to=${to} carryBits=${radix2carry(from, to)}`);
+  }
+  let carry = 0;
+  let pos = 0;
+  const max = powers[from];
+  const mask = powers[to] - 1;
+  const res = [];
+  for (const n of data) {
+    anumber2(n);
+    if (n >= max)
+      throw new Error(`convertRadix2: invalid data word=${n} from=${from}`);
+    carry = carry << from | n;
+    if (pos + from > 32)
+      throw new Error(`convertRadix2: carry overflow pos=${pos} from=${from}`);
+    pos += from;
+    for (;pos >= to; pos -= to)
+      res.push((carry >> pos - to & mask) >>> 0);
+    const pow = powers[pos];
+    if (pow === undefined)
+      throw new Error("invalid carry");
+    carry &= pow - 1;
+  }
+  carry = carry << to - pos & mask;
+  if (!padding2 && pos >= from)
+    throw new Error("Excess padding");
+  if (!padding2 && carry > 0)
+    throw new Error(`Non-zero padding: ${carry}`);
+  if (padding2 && pos > 0)
+    res.push(carry >>> 0);
+  return res;
+}
+function radix(num) {
+  anumber2(num);
+  const _256 = 2 ** 8;
+  return {
+    encode: (bytes) => {
+      if (!isBytes2(bytes))
+        throw new Error("radix.encode input should be Uint8Array");
+      return convertRadix(Array.from(bytes), _256, num);
+    },
+    decode: (digits) => {
+      anumArr("radix.decode", digits);
+      return Uint8Array.from(convertRadix(digits, num, _256));
+    }
+  };
+}
+function radix2(bits, revPadding = false) {
+  anumber2(bits);
+  if (bits <= 0 || bits > 32)
+    throw new Error("radix2: bits should be in (0..32]");
+  if (radix2carry(8, bits) > 32 || radix2carry(bits, 8) > 32)
+    throw new Error("radix2: carry overflow");
+  return {
+    encode: (bytes) => {
+      if (!isBytes2(bytes))
+        throw new Error("radix2.encode input should be Uint8Array");
+      return convertRadix2(Array.from(bytes), 8, bits, !revPadding);
+    },
+    decode: (digits) => {
+      anumArr("radix2.decode", digits);
+      return Uint8Array.from(convertRadix2(digits, bits, 8, revPadding));
+    }
+  };
+}
+function unsafeWrapper(fn) {
+  afn(fn);
+  return function(...args) {
+    try {
+      return fn.apply(null, args);
+    } catch (e) {}
+  };
+}
+function checksum(len, fn) {
+  anumber2(len);
+  afn(fn);
+  return {
+    encode(data) {
+      if (!isBytes2(data))
+        throw new Error("checksum.encode: input should be Uint8Array");
+      const sum = fn(data).slice(0, len);
+      const res = new Uint8Array(data.length + len);
+      res.set(data);
+      res.set(sum, data.length);
+      return res;
+    },
+    decode(data) {
+      if (!isBytes2(data))
+        throw new Error("checksum.decode: input should be Uint8Array");
+      const payload = data.slice(0, -len);
+      const oldChecksum = data.slice(-len);
+      const newChecksum = fn(payload).slice(0, len);
+      for (let i = 0;i < len; i++)
+        if (newChecksum[i] !== oldChecksum[i])
+          throw new Error("Invalid checksum");
+      return payload;
+    }
+  };
+}
+function bech32Polymod(pre) {
+  const b = pre >> 25;
+  let chk = (pre & 33554431) << 5;
+  for (let i = 0;i < POLYMOD_GENERATORS.length; i++) {
+    if ((b >> i & 1) === 1)
+      chk ^= POLYMOD_GENERATORS[i];
+  }
+  return chk;
+}
+function bechChecksum(prefix, words, encodingConst = 1) {
+  const len = prefix.length;
+  let chk = 1;
+  for (let i = 0;i < len; i++) {
+    const c = prefix.charCodeAt(i);
+    if (c < 33 || c > 126)
+      throw new Error(`Invalid prefix (${prefix})`);
+    chk = bech32Polymod(chk) ^ c >> 5;
+  }
+  chk = bech32Polymod(chk);
+  for (let i = 0;i < len; i++)
+    chk = bech32Polymod(chk) ^ prefix.charCodeAt(i) & 31;
+  for (let v of words)
+    chk = bech32Polymod(chk) ^ v;
+  for (let i = 0;i < 6; i++)
+    chk = bech32Polymod(chk);
+  chk ^= encodingConst;
+  return BECH_ALPHABET.encode(convertRadix2([chk % powers[30]], 30, 5, false));
+}
+function genBech32(encoding) {
+  const ENCODING_CONST = encoding === "bech32" ? 1 : 734539939;
+  const _words = radix2(5);
+  const fromWords = _words.decode;
+  const toWords = _words.encode;
+  const fromWordsUnsafe = unsafeWrapper(fromWords);
+  function encode(prefix, words, limit = 90) {
+    astr("bech32.encode prefix", prefix);
+    if (isBytes2(words))
+      words = Array.from(words);
+    anumArr("bech32.encode", words);
+    const plen = prefix.length;
+    if (plen === 0)
+      throw new TypeError(`Invalid prefix length ${plen}`);
+    const actualLength = plen + 7 + words.length;
+    if (limit !== false && actualLength > limit)
+      throw new TypeError(`Length ${actualLength} exceeds limit ${limit}`);
+    const lowered = prefix.toLowerCase();
+    const sum = bechChecksum(lowered, words, ENCODING_CONST);
+    return `${lowered}1${BECH_ALPHABET.encode(words)}${sum}`;
+  }
+  function decode(str, limit = 90) {
+    astr("bech32.decode input", str);
+    const slen = str.length;
+    if (slen < 8 || limit !== false && slen > limit)
+      throw new TypeError(`invalid string length: ${slen} (${str}). Expected (8..${limit})`);
+    const lowered = str.toLowerCase();
+    if (str !== lowered && str !== str.toUpperCase())
+      throw new Error(`String must be lowercase or uppercase`);
+    const sepIndex = lowered.lastIndexOf("1");
+    if (sepIndex === 0 || sepIndex === -1)
+      throw new Error(`Letter "1" must be present between prefix and data only`);
+    const prefix = lowered.slice(0, sepIndex);
+    const data = lowered.slice(sepIndex + 1);
+    if (data.length < 6)
+      throw new Error("Data must be at least 6 characters long");
+    const words = BECH_ALPHABET.decode(data).slice(0, -6);
+    const sum = bechChecksum(prefix, words, ENCODING_CONST);
+    if (!data.endsWith(sum))
+      throw new Error(`Invalid checksum in ${str}: expected "${sum}"`);
+    return { prefix, words };
+  }
+  const decodeUnsafe = unsafeWrapper(decode);
+  function decodeToBytes(str) {
+    const { prefix, words } = decode(str, false);
+    return { prefix, words, bytes: fromWords(words) };
+  }
+  function encodeFromBytes(prefix, bytes) {
+    return encode(prefix, toWords(bytes));
+  }
+  return {
+    encode,
+    decode,
+    encodeFromBytes,
+    decodeToBytes,
+    decodeUnsafe,
+    fromWords,
+    fromWordsUnsafe,
+    toWords
+  };
+}
+var gcd = (a, b) => b === 0 ? a : gcd(b, a % b), radix2carry = (from, to) => from + (to - gcd(from, to)), powers, utils, base16, base32, base32nopad, base32hex, base32hexnopad, base32crockford, hasBase64Builtin, decodeBase64Builtin = (s, isUrl) => {
+  astr("base64", s);
+  const re = isUrl ? /^[A-Za-z0-9=_-]+$/ : /^[A-Za-z0-9=+/]+$/;
+  const alphabet2 = isUrl ? "base64url" : "base64";
+  if (s.length > 0 && !re.test(s))
+    throw new Error("invalid base64");
+  return Uint8Array.fromBase64(s, { alphabet: alphabet2, lastChunkHandling: "strict" });
+}, base64, base64nopad, base64url, base64urlnopad, genBase58 = (abc) => chain(radix(58), alphabet(abc), join4("")), base58, base58flickr, base58xrp, BECH_ALPHABET, POLYMOD_GENERATORS, bech32, bech32m, hasHexBuiltin2, hexBuiltin, hex;
+var init_esm = __esm(() => {
+  /*! scure-base - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+  powers = /* @__PURE__ */ (() => {
+    let res = [];
+    for (let i = 0;i < 40; i++)
+      res.push(2 ** i);
+    return res;
+  })();
+  utils = {
+    alphabet,
+    chain,
+    checksum,
+    convertRadix,
+    convertRadix2,
+    radix,
+    radix2,
+    join: join4,
+    padding
+  };
+  base16 = chain(radix2(4), alphabet("0123456789ABCDEF"), join4(""));
+  base32 = chain(radix2(5), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"), padding(5), join4(""));
+  base32nopad = chain(radix2(5), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"), join4(""));
+  base32hex = chain(radix2(5), alphabet("0123456789ABCDEFGHIJKLMNOPQRSTUV"), padding(5), join4(""));
+  base32hexnopad = chain(radix2(5), alphabet("0123456789ABCDEFGHIJKLMNOPQRSTUV"), join4(""));
+  base32crockford = chain(radix2(5), alphabet("0123456789ABCDEFGHJKMNPQRSTVWXYZ"), join4(""), normalize((s) => s.toUpperCase().replace(/O/g, "0").replace(/[IL]/g, "1")));
+  hasBase64Builtin = /* @__PURE__ */ (() => typeof Uint8Array.from([]).toBase64 === "function" && typeof Uint8Array.fromBase64 === "function")();
+  base64 = hasBase64Builtin ? {
+    encode(b) {
+      abytes2(b);
+      return b.toBase64();
+    },
+    decode(s) {
+      return decodeBase64Builtin(s, false);
+    }
+  } : chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"), padding(6), join4(""));
+  base64nopad = chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"), join4(""));
+  base64url = hasBase64Builtin ? {
+    encode(b) {
+      abytes2(b);
+      return b.toBase64({ alphabet: "base64url" });
+    },
+    decode(s) {
+      return decodeBase64Builtin(s, true);
+    }
+  } : chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"), padding(6), join4(""));
+  base64urlnopad = chain(radix2(6), alphabet("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"), join4(""));
+  base58 = genBase58("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz");
+  base58flickr = genBase58("123456789abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ");
+  base58xrp = genBase58("rpshnaf39wBUDNEGHJKLM4PQRST7VWXYZ2bcdeCg65jkm8oFqi1tuvAxyz");
+  BECH_ALPHABET = chain(alphabet("qpzry9x8gf2tvdw0s3jn54khce6mua7l"), join4(""));
+  POLYMOD_GENERATORS = [996825010, 642813549, 513874426, 1027748829, 705979059];
+  bech32 = genBech32("bech32");
+  bech32m = genBech32("bech32m");
+  hasHexBuiltin2 = /* @__PURE__ */ (() => typeof Uint8Array.from([]).toHex === "function" && typeof Uint8Array.fromHex === "function")();
+  hexBuiltin = {
+    encode(data) {
+      abytes2(data);
+      return data.toHex();
+    },
+    decode(s) {
+      astr("hex", s);
+      return Uint8Array.fromHex(s);
+    }
+  };
+  hex = hasHexBuiltin2 ? hexBuiltin : chain(radix2(4), alphabet("0123456789abcdef"), join4(""), normalize((s) => {
+    if (typeof s !== "string" || s.length % 2 !== 0)
+      throw new TypeError(`hex.decode: expected string, got ${typeof s} with length ${s.length}`);
+    return s.toLowerCase();
+  }));
+});
+
 // src/vault/canonical-json.ts
 function canonicalJson(value) {
   return encode(value, "$");
@@ -3536,6 +2177,125 @@ var init_canonical_json = __esm(() => {
     }
   };
 });
+
+// src/vault/errors.ts
+var exports_errors = {};
+__export(exports_errors, {
+  isVaultError: () => isVaultError,
+  VaultError: () => VaultError,
+  VAULT_ERROR_CODES: () => VAULT_ERROR_CODES
+});
+function isVaultError(error) {
+  return error instanceof VaultError;
+}
+var VAULT_ERROR_CODES, VaultError;
+var init_errors = __esm(() => {
+  VAULT_ERROR_CODES = [
+    "VAULT_MISSING",
+    "VAULT_EXISTS",
+    "VAULT_UNREADABLE",
+    "VAULT_FORMAT_UNKNOWN",
+    "VAULT_VERSION_UNSUPPORTED",
+    "VAULT_FIELD_UNKNOWN",
+    "VAULT_KDF_OUT_OF_BOUNDS",
+    "VAULT_UNLOCK_FAILED",
+    "VAULT_BLOB_TAMPERED",
+    "VAULT_INDEX_INVALID",
+    "VAULT_OLDER_COPY",
+    "VAULT_LOCKED",
+    "VAULT_CHANGED",
+    "VAULT_WRITE_FAILED",
+    "VAULT_VERIFY_FAILED",
+    "VAULT_NO_RECOVERABLE_FACTOR",
+    "VAULT_LAST_PASSPHRASE",
+    "VAULT_FACTOR_UNAVAILABLE",
+    "VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM",
+    "VAULT_AUTHENTICATOR_NOT_READABLE",
+    "VAULT_PRF_UNSUPPORTED",
+    "VAULT_UV_UNSUPPORTED",
+    "VAULT_PIN_REQUIRED",
+    "VAULT_PIN_INVALID",
+    "VAULT_AUTHENTICATOR_BLOCKED",
+    "VAULT_AUTHENTICATOR_CANCELLED",
+    "VAULT_CREDENTIAL_NOT_PRESENT",
+    "VAULT_AUTHENTICATOR_AMBIGUOUS",
+    "VAULT_AUTHENTICATOR_CHANGED",
+    "VAULT_HELPER_MISSING",
+    "VAULT_HELPER_UNTRUSTED",
+    "VAULT_SHARED_DOMAIN",
+    "VAULT_BACKUP_INSIDE_CONFIG",
+    "ENV_PASSPHRASE_REFUSED",
+    "CHAIN_NOT_OFFERED",
+    "DESTINATION_NOT_CONFIRMED",
+    "PHRASE_REQUIRES_TTY",
+    "PHRASE_INVALID",
+    "PHRASE_NOT_CONFIRMED",
+    "PROMOTE_NOT_VAULT_KEY",
+    "PROMOTE_ALREADY_TEE_WALLET",
+    "PROMOTE_SAME_KEY_DESTINATION",
+    "PROMOTE_KEY_IS_PINNED_DESTINATION",
+    "PROMOTE_DESTINATION_NOT_COLD",
+    "PROMOTE_SUBJECT_EXPOSURE_UNKNOWN",
+    "PROMOTE_RECONCILE_INCOMPLETE",
+    "PROMOTE_OUTCOME_UNRESOLVED",
+    "PROMOTE_NOT_ACKNOWLEDGED",
+    "GRANT_IDENTITY_MISMATCH",
+    "GRANT_BINDING_MISMATCH",
+    "GRANT_DESTINATION_UNRESOLVED",
+    "VAULT_ALLOCATION_BOUNDARY_UNKNOWN",
+    "EXPOSURE_ACCOUNT_MISMATCH",
+    "EXPORT_TARGET_EXISTS",
+    "EXPORT_TARGET_SYMLINK",
+    "LEGACY_INCOMPLETE",
+    "LEGACY_UNVERIFIED_BACKUP",
+    "SIGN_SIGNER_NOT_EXTERNAL",
+    "SIGN_SIGNER_NOT_PROVIDED",
+    "SIGN_SIMULATION_FAILED",
+    "SIGN_LOOKUP_TABLE_UNRESOLVED",
+    "SIGN_TRANSACTION_UNDECODABLE",
+    "SIGN_BROADCAST_FAILED"
+  ];
+  VaultError = class VaultError extends Error {
+    code;
+    suggestion;
+    exitCode;
+    details;
+    constructor(code, message, opts = {}) {
+      super(message);
+      this.name = "VaultError";
+      this.code = code;
+      this.suggestion = opts.suggestion;
+      this.exitCode = opts.exitCode ?? 1;
+      this.details = opts.details;
+    }
+  };
+});
+
+// src/vault/hygiene.ts
+function wipe(...buffers) {
+  for (const buffer of buffers) {
+    if (buffer)
+      buffer.fill(0);
+  }
+}
+function secretBuffer(length) {
+  const buffer = new Uint8Array(length);
+  registry?.allocated.push(buffer);
+  return buffer;
+}
+function ownSecret(bytes) {
+  registry?.allocated.push(bytes);
+  return bytes;
+}
+async function withSecret(secret, use) {
+  ownSecret(secret);
+  try {
+    return await use(secret);
+  } finally {
+    wipe(secret);
+  }
+}
+var registry = null;
 
 // src/vault/crypto.ts
 function b64u(bytes) {
@@ -4326,9 +3086,379 @@ var init_format = __esm(() => {
   ];
 });
 
+// ../../node_modules/@noble/hashes/esm/sha2.js
+var SHA256_K, SHA256_W, SHA256, K512, SHA512_Kh, SHA512_Kl, SHA512_W_H, SHA512_W_L, SHA512, SHA384, sha256, sha512, sha384;
+var init_sha2 = __esm(() => {
+  init__md();
+  init__u64();
+  init_utils();
+  SHA256_K = /* @__PURE__ */ Uint32Array.from([
+    1116352408,
+    1899447441,
+    3049323471,
+    3921009573,
+    961987163,
+    1508970993,
+    2453635748,
+    2870763221,
+    3624381080,
+    310598401,
+    607225278,
+    1426881987,
+    1925078388,
+    2162078206,
+    2614888103,
+    3248222580,
+    3835390401,
+    4022224774,
+    264347078,
+    604807628,
+    770255983,
+    1249150122,
+    1555081692,
+    1996064986,
+    2554220882,
+    2821834349,
+    2952996808,
+    3210313671,
+    3336571891,
+    3584528711,
+    113926993,
+    338241895,
+    666307205,
+    773529912,
+    1294757372,
+    1396182291,
+    1695183700,
+    1986661051,
+    2177026350,
+    2456956037,
+    2730485921,
+    2820302411,
+    3259730800,
+    3345764771,
+    3516065817,
+    3600352804,
+    4094571909,
+    275423344,
+    430227734,
+    506948616,
+    659060556,
+    883997877,
+    958139571,
+    1322822218,
+    1537002063,
+    1747873779,
+    1955562222,
+    2024104815,
+    2227730452,
+    2361852424,
+    2428436474,
+    2756734187,
+    3204031479,
+    3329325298
+  ]);
+  SHA256_W = /* @__PURE__ */ new Uint32Array(64);
+  SHA256 = class SHA256 extends HashMD {
+    constructor(outputLen = 32) {
+      super(64, outputLen, 8, false);
+      this.A = SHA256_IV[0] | 0;
+      this.B = SHA256_IV[1] | 0;
+      this.C = SHA256_IV[2] | 0;
+      this.D = SHA256_IV[3] | 0;
+      this.E = SHA256_IV[4] | 0;
+      this.F = SHA256_IV[5] | 0;
+      this.G = SHA256_IV[6] | 0;
+      this.H = SHA256_IV[7] | 0;
+    }
+    get() {
+      const { A, B, C, D, E, F, G: G2, H } = this;
+      return [A, B, C, D, E, F, G2, H];
+    }
+    set(A, B, C, D, E, F, G2, H) {
+      this.A = A | 0;
+      this.B = B | 0;
+      this.C = C | 0;
+      this.D = D | 0;
+      this.E = E | 0;
+      this.F = F | 0;
+      this.G = G2 | 0;
+      this.H = H | 0;
+    }
+    process(view, offset) {
+      for (let i = 0;i < 16; i++, offset += 4)
+        SHA256_W[i] = view.getUint32(offset, false);
+      for (let i = 16;i < 64; i++) {
+        const W15 = SHA256_W[i - 15];
+        const W2 = SHA256_W[i - 2];
+        const s0 = rotr(W15, 7) ^ rotr(W15, 18) ^ W15 >>> 3;
+        const s1 = rotr(W2, 17) ^ rotr(W2, 19) ^ W2 >>> 10;
+        SHA256_W[i] = s1 + SHA256_W[i - 7] + s0 + SHA256_W[i - 16] | 0;
+      }
+      let { A, B, C, D, E, F, G: G2, H } = this;
+      for (let i = 0;i < 64; i++) {
+        const sigma1 = rotr(E, 6) ^ rotr(E, 11) ^ rotr(E, 25);
+        const T1 = H + sigma1 + Chi(E, F, G2) + SHA256_K[i] + SHA256_W[i] | 0;
+        const sigma0 = rotr(A, 2) ^ rotr(A, 13) ^ rotr(A, 22);
+        const T2 = sigma0 + Maj(A, B, C) | 0;
+        H = G2;
+        G2 = F;
+        F = E;
+        E = D + T1 | 0;
+        D = C;
+        C = B;
+        B = A;
+        A = T1 + T2 | 0;
+      }
+      A = A + this.A | 0;
+      B = B + this.B | 0;
+      C = C + this.C | 0;
+      D = D + this.D | 0;
+      E = E + this.E | 0;
+      F = F + this.F | 0;
+      G2 = G2 + this.G | 0;
+      H = H + this.H | 0;
+      this.set(A, B, C, D, E, F, G2, H);
+    }
+    roundClean() {
+      clean(SHA256_W);
+    }
+    destroy() {
+      this.set(0, 0, 0, 0, 0, 0, 0, 0);
+      clean(this.buffer);
+    }
+  };
+  K512 = /* @__PURE__ */ (() => split([
+    "0x428a2f98d728ae22",
+    "0x7137449123ef65cd",
+    "0xb5c0fbcfec4d3b2f",
+    "0xe9b5dba58189dbbc",
+    "0x3956c25bf348b538",
+    "0x59f111f1b605d019",
+    "0x923f82a4af194f9b",
+    "0xab1c5ed5da6d8118",
+    "0xd807aa98a3030242",
+    "0x12835b0145706fbe",
+    "0x243185be4ee4b28c",
+    "0x550c7dc3d5ffb4e2",
+    "0x72be5d74f27b896f",
+    "0x80deb1fe3b1696b1",
+    "0x9bdc06a725c71235",
+    "0xc19bf174cf692694",
+    "0xe49b69c19ef14ad2",
+    "0xefbe4786384f25e3",
+    "0x0fc19dc68b8cd5b5",
+    "0x240ca1cc77ac9c65",
+    "0x2de92c6f592b0275",
+    "0x4a7484aa6ea6e483",
+    "0x5cb0a9dcbd41fbd4",
+    "0x76f988da831153b5",
+    "0x983e5152ee66dfab",
+    "0xa831c66d2db43210",
+    "0xb00327c898fb213f",
+    "0xbf597fc7beef0ee4",
+    "0xc6e00bf33da88fc2",
+    "0xd5a79147930aa725",
+    "0x06ca6351e003826f",
+    "0x142929670a0e6e70",
+    "0x27b70a8546d22ffc",
+    "0x2e1b21385c26c926",
+    "0x4d2c6dfc5ac42aed",
+    "0x53380d139d95b3df",
+    "0x650a73548baf63de",
+    "0x766a0abb3c77b2a8",
+    "0x81c2c92e47edaee6",
+    "0x92722c851482353b",
+    "0xa2bfe8a14cf10364",
+    "0xa81a664bbc423001",
+    "0xc24b8b70d0f89791",
+    "0xc76c51a30654be30",
+    "0xd192e819d6ef5218",
+    "0xd69906245565a910",
+    "0xf40e35855771202a",
+    "0x106aa07032bbd1b8",
+    "0x19a4c116b8d2d0c8",
+    "0x1e376c085141ab53",
+    "0x2748774cdf8eeb99",
+    "0x34b0bcb5e19b48a8",
+    "0x391c0cb3c5c95a63",
+    "0x4ed8aa4ae3418acb",
+    "0x5b9cca4f7763e373",
+    "0x682e6ff3d6b2b8a3",
+    "0x748f82ee5defb2fc",
+    "0x78a5636f43172f60",
+    "0x84c87814a1f0ab72",
+    "0x8cc702081a6439ec",
+    "0x90befffa23631e28",
+    "0xa4506cebde82bde9",
+    "0xbef9a3f7b2c67915",
+    "0xc67178f2e372532b",
+    "0xca273eceea26619c",
+    "0xd186b8c721c0c207",
+    "0xeada7dd6cde0eb1e",
+    "0xf57d4f7fee6ed178",
+    "0x06f067aa72176fba",
+    "0x0a637dc5a2c898a6",
+    "0x113f9804bef90dae",
+    "0x1b710b35131c471b",
+    "0x28db77f523047d84",
+    "0x32caab7b40c72493",
+    "0x3c9ebe0a15c9bebc",
+    "0x431d67c49c100d4c",
+    "0x4cc5d4becb3e42b6",
+    "0x597f299cfc657e2a",
+    "0x5fcb6fab3ad6faec",
+    "0x6c44198c4a475817"
+  ].map((n) => BigInt(n))))();
+  SHA512_Kh = /* @__PURE__ */ (() => K512[0])();
+  SHA512_Kl = /* @__PURE__ */ (() => K512[1])();
+  SHA512_W_H = /* @__PURE__ */ new Uint32Array(80);
+  SHA512_W_L = /* @__PURE__ */ new Uint32Array(80);
+  SHA512 = class SHA512 extends HashMD {
+    constructor(outputLen = 64) {
+      super(128, outputLen, 16, false);
+      this.Ah = SHA512_IV[0] | 0;
+      this.Al = SHA512_IV[1] | 0;
+      this.Bh = SHA512_IV[2] | 0;
+      this.Bl = SHA512_IV[3] | 0;
+      this.Ch = SHA512_IV[4] | 0;
+      this.Cl = SHA512_IV[5] | 0;
+      this.Dh = SHA512_IV[6] | 0;
+      this.Dl = SHA512_IV[7] | 0;
+      this.Eh = SHA512_IV[8] | 0;
+      this.El = SHA512_IV[9] | 0;
+      this.Fh = SHA512_IV[10] | 0;
+      this.Fl = SHA512_IV[11] | 0;
+      this.Gh = SHA512_IV[12] | 0;
+      this.Gl = SHA512_IV[13] | 0;
+      this.Hh = SHA512_IV[14] | 0;
+      this.Hl = SHA512_IV[15] | 0;
+    }
+    get() {
+      const { Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl } = this;
+      return [Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl];
+    }
+    set(Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl) {
+      this.Ah = Ah | 0;
+      this.Al = Al | 0;
+      this.Bh = Bh | 0;
+      this.Bl = Bl | 0;
+      this.Ch = Ch | 0;
+      this.Cl = Cl | 0;
+      this.Dh = Dh | 0;
+      this.Dl = Dl | 0;
+      this.Eh = Eh | 0;
+      this.El = El | 0;
+      this.Fh = Fh | 0;
+      this.Fl = Fl | 0;
+      this.Gh = Gh | 0;
+      this.Gl = Gl | 0;
+      this.Hh = Hh | 0;
+      this.Hl = Hl | 0;
+    }
+    process(view, offset) {
+      for (let i = 0;i < 16; i++, offset += 4) {
+        SHA512_W_H[i] = view.getUint32(offset);
+        SHA512_W_L[i] = view.getUint32(offset += 4);
+      }
+      for (let i = 16;i < 80; i++) {
+        const W15h = SHA512_W_H[i - 15] | 0;
+        const W15l = SHA512_W_L[i - 15] | 0;
+        const s0h = rotrSH(W15h, W15l, 1) ^ rotrSH(W15h, W15l, 8) ^ shrSH(W15h, W15l, 7);
+        const s0l = rotrSL(W15h, W15l, 1) ^ rotrSL(W15h, W15l, 8) ^ shrSL(W15h, W15l, 7);
+        const W2h = SHA512_W_H[i - 2] | 0;
+        const W2l = SHA512_W_L[i - 2] | 0;
+        const s1h = rotrSH(W2h, W2l, 19) ^ rotrBH(W2h, W2l, 61) ^ shrSH(W2h, W2l, 6);
+        const s1l = rotrSL(W2h, W2l, 19) ^ rotrBL(W2h, W2l, 61) ^ shrSL(W2h, W2l, 6);
+        const SUMl = add4L(s0l, s1l, SHA512_W_L[i - 7], SHA512_W_L[i - 16]);
+        const SUMh = add4H(SUMl, s0h, s1h, SHA512_W_H[i - 7], SHA512_W_H[i - 16]);
+        SHA512_W_H[i] = SUMh | 0;
+        SHA512_W_L[i] = SUMl | 0;
+      }
+      let { Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl } = this;
+      for (let i = 0;i < 80; i++) {
+        const sigma1h = rotrSH(Eh, El, 14) ^ rotrSH(Eh, El, 18) ^ rotrBH(Eh, El, 41);
+        const sigma1l = rotrSL(Eh, El, 14) ^ rotrSL(Eh, El, 18) ^ rotrBL(Eh, El, 41);
+        const CHIh = Eh & Fh ^ ~Eh & Gh;
+        const CHIl = El & Fl ^ ~El & Gl;
+        const T1ll = add5L(Hl, sigma1l, CHIl, SHA512_Kl[i], SHA512_W_L[i]);
+        const T1h = add5H(T1ll, Hh, sigma1h, CHIh, SHA512_Kh[i], SHA512_W_H[i]);
+        const T1l = T1ll | 0;
+        const sigma0h = rotrSH(Ah, Al, 28) ^ rotrBH(Ah, Al, 34) ^ rotrBH(Ah, Al, 39);
+        const sigma0l = rotrSL(Ah, Al, 28) ^ rotrBL(Ah, Al, 34) ^ rotrBL(Ah, Al, 39);
+        const MAJh = Ah & Bh ^ Ah & Ch ^ Bh & Ch;
+        const MAJl = Al & Bl ^ Al & Cl ^ Bl & Cl;
+        Hh = Gh | 0;
+        Hl = Gl | 0;
+        Gh = Fh | 0;
+        Gl = Fl | 0;
+        Fh = Eh | 0;
+        Fl = El | 0;
+        ({ h: Eh, l: El } = add(Dh | 0, Dl | 0, T1h | 0, T1l | 0));
+        Dh = Ch | 0;
+        Dl = Cl | 0;
+        Ch = Bh | 0;
+        Cl = Bl | 0;
+        Bh = Ah | 0;
+        Bl = Al | 0;
+        const All = add3L(T1l, sigma0l, MAJl);
+        Ah = add3H(All, T1h, sigma0h, MAJh);
+        Al = All | 0;
+      }
+      ({ h: Ah, l: Al } = add(this.Ah | 0, this.Al | 0, Ah | 0, Al | 0));
+      ({ h: Bh, l: Bl } = add(this.Bh | 0, this.Bl | 0, Bh | 0, Bl | 0));
+      ({ h: Ch, l: Cl } = add(this.Ch | 0, this.Cl | 0, Ch | 0, Cl | 0));
+      ({ h: Dh, l: Dl } = add(this.Dh | 0, this.Dl | 0, Dh | 0, Dl | 0));
+      ({ h: Eh, l: El } = add(this.Eh | 0, this.El | 0, Eh | 0, El | 0));
+      ({ h: Fh, l: Fl } = add(this.Fh | 0, this.Fl | 0, Fh | 0, Fl | 0));
+      ({ h: Gh, l: Gl } = add(this.Gh | 0, this.Gl | 0, Gh | 0, Gl | 0));
+      ({ h: Hh, l: Hl } = add(this.Hh | 0, this.Hl | 0, Hh | 0, Hl | 0));
+      this.set(Ah, Al, Bh, Bl, Ch, Cl, Dh, Dl, Eh, El, Fh, Fl, Gh, Gl, Hh, Hl);
+    }
+    roundClean() {
+      clean(SHA512_W_H, SHA512_W_L);
+    }
+    destroy() {
+      clean(this.buffer);
+      this.set(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    }
+  };
+  SHA384 = class SHA384 extends SHA512 {
+    constructor() {
+      super(48);
+      this.Ah = SHA384_IV[0] | 0;
+      this.Al = SHA384_IV[1] | 0;
+      this.Bh = SHA384_IV[2] | 0;
+      this.Bl = SHA384_IV[3] | 0;
+      this.Ch = SHA384_IV[4] | 0;
+      this.Cl = SHA384_IV[5] | 0;
+      this.Dh = SHA384_IV[6] | 0;
+      this.Dl = SHA384_IV[7] | 0;
+      this.Eh = SHA384_IV[8] | 0;
+      this.El = SHA384_IV[9] | 0;
+      this.Fh = SHA384_IV[10] | 0;
+      this.Fl = SHA384_IV[11] | 0;
+      this.Gh = SHA384_IV[12] | 0;
+      this.Gl = SHA384_IV[13] | 0;
+      this.Hh = SHA384_IV[14] | 0;
+      this.Hl = SHA384_IV[15] | 0;
+    }
+  };
+  sha256 = /* @__PURE__ */ createHasher(() => new SHA256);
+  sha512 = /* @__PURE__ */ createHasher(() => new SHA512);
+  sha384 = /* @__PURE__ */ createHasher(() => new SHA384);
+});
+
+// ../../node_modules/@noble/hashes/esm/sha256.js
+var sha2562;
+var init_sha256 = __esm(() => {
+  init_sha2();
+  sha2562 = sha256;
+});
+
 // src/vault/sidecar.ts
 import { chmod as chmod3, mkdir as mkdir3, readFile as readFile3, writeFile as writeFile3 } from "node:fs/promises";
-import { dirname as dirname4 } from "node:path";
+import { dirname as dirname3 } from "node:path";
 function sidecarPath(vaultPath) {
   return vaultPath.replace(/\.enc$/, "") + ".state.json";
 }
@@ -4360,7 +3490,7 @@ async function readSidecar(path) {
   }
 }
 async function writeSidecar(path, state) {
-  const dir = dirname4(path);
+  const dir = dirname3(path);
   await mkdir3(dir, { recursive: true });
   await chmod3(dir, 448).catch(() => {});
   await writeFile3(path, `${JSON.stringify(state, null, 2)}
@@ -4418,19 +3548,27 @@ __export(exports_store, {
   decryptKey: () => decryptKey,
   commitVault: () => commitVault,
   closeVault: () => closeVault,
-  candleConfigDir: () => candleConfigDir2
+  candleConfigDir: () => candleConfigDir,
+  CONFIG_DIR_ENV: () => CONFIG_DIR_ENV
 });
 import { chmod as chmod4, mkdir as mkdir4, readFile as readFile4, stat as stat2 } from "node:fs/promises";
-import { homedir as homedir5 } from "node:os";
-import { join as join6 } from "node:path";
-function candleConfigDir2(env) {
-  return env.CANDLE_CONFIG_DIR?.trim() || join6(homedir5(), ".config", "candle");
+import { homedir as homedir3 } from "node:os";
+import { join as join5 } from "node:path";
+function candleConfigDir(env) {
+  const configured = env.CANDLE_CONFIG_DIR?.trim();
+  if (configured) {
+    const refusal = refuseUnexpandedTilde(CONFIG_DIR_ENV, configured);
+    if (refusal !== undefined)
+      throw new UsageError(refusal);
+    return configured;
+  }
+  return join5(homedir3(), ".config", "candle");
 }
 function defaultVaultPath(env) {
-  return join6(candleConfigDir2(env), "vault.enc");
+  return join5(candleConfigDir(env), "vault.enc");
 }
 function legacyWalletsPath(env) {
-  return join6(candleConfigDir2(env), "wallets.enc");
+  return join5(candleConfigDir(env), "wallets.enc");
 }
 async function readVaultRaw(path) {
   try {
@@ -4667,17 +3805,976 @@ async function writeNewVault(path, contents) {
   await writeKeystoreFile(path, contents);
 }
 function candleConfigDirOf(path) {
-  return join6(path, "..");
+  return join5(path, "..");
 }
 function entriesOf(vault) {
   return vault.index.entries;
 }
+var CONFIG_DIR_ENV = "CANDLE_CONFIG_DIR";
 var init_store = __esm(() => {
+  init_args();
   init_wallet_keystore();
   init_crypto();
   init_errors();
   init_format();
   init_sidecar();
+});
+
+// ../../node_modules/@noble/curves/esm/utils.js
+function _abool2(value, title = "") {
+  if (typeof value !== "boolean") {
+    const prefix = title && `"${title}"`;
+    throw new Error(prefix + "expected boolean, got type=" + typeof value);
+  }
+  return value;
+}
+function _abytes2(value, length, title = "") {
+  const bytes = isBytes(value);
+  const len = value?.length;
+  const needsLen = length !== undefined;
+  if (!bytes || needsLen && len !== length) {
+    const prefix = title && `"${title}" `;
+    const ofLen = needsLen ? ` of length ${length}` : "";
+    const got = bytes ? `length=${len}` : `type=${typeof value}`;
+    throw new Error(prefix + "expected Uint8Array" + ofLen + ", got " + got);
+  }
+  return value;
+}
+function numberToHexUnpadded(num) {
+  const hex2 = num.toString(16);
+  return hex2.length & 1 ? "0" + hex2 : hex2;
+}
+function hexToNumber(hex2) {
+  if (typeof hex2 !== "string")
+    throw new Error("hex string expected, got " + typeof hex2);
+  return hex2 === "" ? _0n : BigInt("0x" + hex2);
+}
+function bytesToNumberBE(bytes) {
+  return hexToNumber(bytesToHex(bytes));
+}
+function bytesToNumberLE(bytes) {
+  abytes(bytes);
+  return hexToNumber(bytesToHex(Uint8Array.from(bytes).reverse()));
+}
+function numberToBytesBE(n, len) {
+  return hexToBytes(n.toString(16).padStart(len * 2, "0"));
+}
+function numberToBytesLE(n, len) {
+  return numberToBytesBE(n, len).reverse();
+}
+function ensureBytes(title, hex2, expectedLength) {
+  let res;
+  if (typeof hex2 === "string") {
+    try {
+      res = hexToBytes(hex2);
+    } catch (e) {
+      throw new Error(title + " must be hex string or Uint8Array, cause: " + e);
+    }
+  } else if (isBytes(hex2)) {
+    res = Uint8Array.from(hex2);
+  } else {
+    throw new Error(title + " must be hex string or Uint8Array");
+  }
+  const len = res.length;
+  if (typeof expectedLength === "number" && len !== expectedLength)
+    throw new Error(title + " of length " + expectedLength + " expected, got " + len);
+  return res;
+}
+function equalBytes(a, b) {
+  if (a.length !== b.length)
+    return false;
+  let diff = 0;
+  for (let i = 0;i < a.length; i++)
+    diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+function copyBytes(bytes) {
+  return Uint8Array.from(bytes);
+}
+function inRange(n, min, max) {
+  return isPosBig(n) && isPosBig(min) && isPosBig(max) && min <= n && n < max;
+}
+function aInRange(title, n, min, max) {
+  if (!inRange(n, min, max))
+    throw new Error("expected valid " + title + ": " + min + " <= n < " + max + ", got " + n);
+}
+function bitLen(n) {
+  let len;
+  for (len = 0;n > _0n; n >>= _1n, len += 1)
+    ;
+  return len;
+}
+function createHmacDrbg(hashLen, qByteLen, hmacFn) {
+  if (typeof hashLen !== "number" || hashLen < 2)
+    throw new Error("hashLen must be a number");
+  if (typeof qByteLen !== "number" || qByteLen < 2)
+    throw new Error("qByteLen must be a number");
+  if (typeof hmacFn !== "function")
+    throw new Error("hmacFn must be a function");
+  const u8n = (len) => new Uint8Array(len);
+  const u8of = (byte) => Uint8Array.of(byte);
+  let v = u8n(hashLen);
+  let k = u8n(hashLen);
+  let i = 0;
+  const reset = () => {
+    v.fill(1);
+    k.fill(0);
+    i = 0;
+  };
+  const h = (...b) => hmacFn(k, v, ...b);
+  const reseed = (seed = u8n(0)) => {
+    k = h(u8of(0), seed);
+    v = h();
+    if (seed.length === 0)
+      return;
+    k = h(u8of(1), seed);
+    v = h();
+  };
+  const gen = () => {
+    if (i++ >= 1000)
+      throw new Error("drbg: tried 1000 values");
+    let len = 0;
+    const out = [];
+    while (len < qByteLen) {
+      v = h();
+      const sl = v.slice();
+      out.push(sl);
+      len += v.length;
+    }
+    return concatBytes(...out);
+  };
+  const genUntil = (seed, pred) => {
+    reset();
+    reseed(seed);
+    let res = undefined;
+    while (!(res = pred(gen())))
+      reseed();
+    reset();
+    return res;
+  };
+  return genUntil;
+}
+function _validateObject(object, fields, optFields = {}) {
+  if (!object || typeof object !== "object")
+    throw new Error("expected valid options object");
+  function checkField(fieldName, expectedType, isOpt) {
+    const val = object[fieldName];
+    if (isOpt && val === undefined)
+      return;
+    const current = typeof val;
+    if (current !== expectedType || val === null)
+      throw new Error(`param "${fieldName}" is invalid: expected ${expectedType}, got ${current}`);
+  }
+  Object.entries(fields).forEach(([k, v]) => checkField(k, v, false));
+  Object.entries(optFields).forEach(([k, v]) => checkField(k, v, true));
+}
+function memoized(fn) {
+  const map = new WeakMap;
+  return (arg, ...args) => {
+    const val = map.get(arg);
+    if (val !== undefined)
+      return val;
+    const computed = fn(arg, ...args);
+    map.set(arg, computed);
+    return computed;
+  };
+}
+var _0n, _1n, isPosBig = (n) => typeof n === "bigint" && _0n <= n, bitMask = (n) => (_1n << BigInt(n)) - _1n, notImplemented = () => {
+  throw new Error("not implemented");
+};
+var init_utils2 = __esm(() => {
+  init_utils();
+  init_utils();
+  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+  _0n = /* @__PURE__ */ BigInt(0);
+  _1n = /* @__PURE__ */ BigInt(1);
+});
+
+// ../../node_modules/@noble/curves/esm/abstract/modular.js
+function mod(a, b) {
+  const result = a % b;
+  return result >= _0n2 ? result : b + result;
+}
+function pow2(x, power, modulo) {
+  let res = x;
+  while (power-- > _0n2) {
+    res *= res;
+    res %= modulo;
+  }
+  return res;
+}
+function invert(number, modulo) {
+  if (number === _0n2)
+    throw new Error("invert: expected non-zero number");
+  if (modulo <= _0n2)
+    throw new Error("invert: expected positive modulus, got " + modulo);
+  let a = mod(number, modulo);
+  let b = modulo;
+  let x = _0n2, y = _1n2, u = _1n2, v = _0n2;
+  while (a !== _0n2) {
+    const q = b / a;
+    const r = b % a;
+    const m = x - u * q;
+    const n = y - v * q;
+    b = a, a = r, x = u, y = v, u = m, v = n;
+  }
+  const gcd2 = b;
+  if (gcd2 !== _1n2)
+    throw new Error("invert: does not exist");
+  return mod(x, modulo);
+}
+function assertIsSquare(Fp, root, n) {
+  if (!Fp.eql(Fp.sqr(root), n))
+    throw new Error("Cannot find square root");
+}
+function sqrt3mod4(Fp, n) {
+  const p1div4 = (Fp.ORDER + _1n2) / _4n;
+  const root = Fp.pow(n, p1div4);
+  assertIsSquare(Fp, root, n);
+  return root;
+}
+function sqrt5mod8(Fp, n) {
+  const p5div8 = (Fp.ORDER - _5n) / _8n;
+  const n2 = Fp.mul(n, _2n);
+  const v = Fp.pow(n2, p5div8);
+  const nv = Fp.mul(n, v);
+  const i = Fp.mul(Fp.mul(nv, _2n), v);
+  const root = Fp.mul(nv, Fp.sub(i, Fp.ONE));
+  assertIsSquare(Fp, root, n);
+  return root;
+}
+function sqrt9mod16(P2) {
+  const Fp_ = Field(P2);
+  const tn = tonelliShanks(P2);
+  const c1 = tn(Fp_, Fp_.neg(Fp_.ONE));
+  const c2 = tn(Fp_, c1);
+  const c3 = tn(Fp_, Fp_.neg(c1));
+  const c4 = (P2 + _7n) / _16n;
+  return (Fp, n) => {
+    let tv1 = Fp.pow(n, c4);
+    let tv2 = Fp.mul(tv1, c1);
+    const tv3 = Fp.mul(tv1, c2);
+    const tv4 = Fp.mul(tv1, c3);
+    const e1 = Fp.eql(Fp.sqr(tv2), n);
+    const e2 = Fp.eql(Fp.sqr(tv3), n);
+    tv1 = Fp.cmov(tv1, tv2, e1);
+    tv2 = Fp.cmov(tv4, tv3, e2);
+    const e3 = Fp.eql(Fp.sqr(tv2), n);
+    const root = Fp.cmov(tv1, tv2, e3);
+    assertIsSquare(Fp, root, n);
+    return root;
+  };
+}
+function tonelliShanks(P2) {
+  if (P2 < _3n)
+    throw new Error("sqrt is not defined for small field");
+  let Q = P2 - _1n2;
+  let S = 0;
+  while (Q % _2n === _0n2) {
+    Q /= _2n;
+    S++;
+  }
+  let Z = _2n;
+  const _Fp = Field(P2);
+  while (FpLegendre(_Fp, Z) === 1) {
+    if (Z++ > 1000)
+      throw new Error("Cannot find square root: probably non-prime P");
+  }
+  if (S === 1)
+    return sqrt3mod4;
+  let cc = _Fp.pow(Z, Q);
+  const Q1div2 = (Q + _1n2) / _2n;
+  return function tonelliSlow(Fp, n) {
+    if (Fp.is0(n))
+      return n;
+    if (FpLegendre(Fp, n) !== 1)
+      throw new Error("Cannot find square root");
+    let M = S;
+    let c = Fp.mul(Fp.ONE, cc);
+    let t = Fp.pow(n, Q);
+    let R = Fp.pow(n, Q1div2);
+    while (!Fp.eql(t, Fp.ONE)) {
+      if (Fp.is0(t))
+        return Fp.ZERO;
+      let i = 1;
+      let t_tmp = Fp.sqr(t);
+      while (!Fp.eql(t_tmp, Fp.ONE)) {
+        i++;
+        t_tmp = Fp.sqr(t_tmp);
+        if (i === M)
+          throw new Error("Cannot find square root");
+      }
+      const exponent = _1n2 << BigInt(M - i - 1);
+      const b = Fp.pow(c, exponent);
+      M = i;
+      c = Fp.sqr(b);
+      t = Fp.mul(t, c);
+      R = Fp.mul(R, b);
+    }
+    return R;
+  };
+}
+function FpSqrt(P2) {
+  if (P2 % _4n === _3n)
+    return sqrt3mod4;
+  if (P2 % _8n === _5n)
+    return sqrt5mod8;
+  if (P2 % _16n === _9n)
+    return sqrt9mod16(P2);
+  return tonelliShanks(P2);
+}
+function validateField(field) {
+  const initial = {
+    ORDER: "bigint",
+    MASK: "bigint",
+    BYTES: "number",
+    BITS: "number"
+  };
+  const opts = FIELD_FIELDS.reduce((map, val) => {
+    map[val] = "function";
+    return map;
+  }, initial);
+  _validateObject(field, opts);
+  return field;
+}
+function FpPow(Fp, num, power) {
+  if (power < _0n2)
+    throw new Error("invalid exponent, negatives unsupported");
+  if (power === _0n2)
+    return Fp.ONE;
+  if (power === _1n2)
+    return num;
+  let p = Fp.ONE;
+  let d = num;
+  while (power > _0n2) {
+    if (power & _1n2)
+      p = Fp.mul(p, d);
+    d = Fp.sqr(d);
+    power >>= _1n2;
+  }
+  return p;
+}
+function FpInvertBatch(Fp, nums, passZero = false) {
+  const inverted = new Array(nums.length).fill(passZero ? Fp.ZERO : undefined);
+  const multipliedAcc = nums.reduce((acc, num, i) => {
+    if (Fp.is0(num))
+      return acc;
+    inverted[i] = acc;
+    return Fp.mul(acc, num);
+  }, Fp.ONE);
+  const invertedAcc = Fp.inv(multipliedAcc);
+  nums.reduceRight((acc, num, i) => {
+    if (Fp.is0(num))
+      return acc;
+    inverted[i] = Fp.mul(acc, inverted[i]);
+    return Fp.mul(acc, num);
+  }, invertedAcc);
+  return inverted;
+}
+function FpLegendre(Fp, n) {
+  const p1mod2 = (Fp.ORDER - _1n2) / _2n;
+  const powered = Fp.pow(n, p1mod2);
+  const yes = Fp.eql(powered, Fp.ONE);
+  const zero = Fp.eql(powered, Fp.ZERO);
+  const no = Fp.eql(powered, Fp.neg(Fp.ONE));
+  if (!yes && !zero && !no)
+    throw new Error("invalid Legendre symbol result");
+  return yes ? 1 : zero ? 0 : -1;
+}
+function nLength(n, nBitLength) {
+  if (nBitLength !== undefined)
+    anumber(nBitLength);
+  const _nBitLength = nBitLength !== undefined ? nBitLength : n.toString(2).length;
+  const nByteLength = Math.ceil(_nBitLength / 8);
+  return { nBitLength: _nBitLength, nByteLength };
+}
+function Field(ORDER, bitLenOrOpts, isLE2 = false, opts = {}) {
+  if (ORDER <= _0n2)
+    throw new Error("invalid field: expected ORDER > 0, got " + ORDER);
+  let _nbitLength = undefined;
+  let _sqrt = undefined;
+  let modFromBytes = false;
+  let allowedLengths = undefined;
+  if (typeof bitLenOrOpts === "object" && bitLenOrOpts != null) {
+    if (opts.sqrt || isLE2)
+      throw new Error("cannot specify opts in two arguments");
+    const _opts = bitLenOrOpts;
+    if (_opts.BITS)
+      _nbitLength = _opts.BITS;
+    if (_opts.sqrt)
+      _sqrt = _opts.sqrt;
+    if (typeof _opts.isLE === "boolean")
+      isLE2 = _opts.isLE;
+    if (typeof _opts.modFromBytes === "boolean")
+      modFromBytes = _opts.modFromBytes;
+    allowedLengths = _opts.allowedLengths;
+  } else {
+    if (typeof bitLenOrOpts === "number")
+      _nbitLength = bitLenOrOpts;
+    if (opts.sqrt)
+      _sqrt = opts.sqrt;
+  }
+  const { nBitLength: BITS, nByteLength: BYTES } = nLength(ORDER, _nbitLength);
+  if (BYTES > 2048)
+    throw new Error("invalid field: expected ORDER of <= 2048 bytes");
+  let sqrtP;
+  const f = Object.freeze({
+    ORDER,
+    isLE: isLE2,
+    BITS,
+    BYTES,
+    MASK: bitMask(BITS),
+    ZERO: _0n2,
+    ONE: _1n2,
+    allowedLengths,
+    create: (num) => mod(num, ORDER),
+    isValid: (num) => {
+      if (typeof num !== "bigint")
+        throw new Error("invalid field element: expected bigint, got " + typeof num);
+      return _0n2 <= num && num < ORDER;
+    },
+    is0: (num) => num === _0n2,
+    isValidNot0: (num) => !f.is0(num) && f.isValid(num),
+    isOdd: (num) => (num & _1n2) === _1n2,
+    neg: (num) => mod(-num, ORDER),
+    eql: (lhs, rhs) => lhs === rhs,
+    sqr: (num) => mod(num * num, ORDER),
+    add: (lhs, rhs) => mod(lhs + rhs, ORDER),
+    sub: (lhs, rhs) => mod(lhs - rhs, ORDER),
+    mul: (lhs, rhs) => mod(lhs * rhs, ORDER),
+    pow: (num, power) => FpPow(f, num, power),
+    div: (lhs, rhs) => mod(lhs * invert(rhs, ORDER), ORDER),
+    sqrN: (num) => num * num,
+    addN: (lhs, rhs) => lhs + rhs,
+    subN: (lhs, rhs) => lhs - rhs,
+    mulN: (lhs, rhs) => lhs * rhs,
+    inv: (num) => invert(num, ORDER),
+    sqrt: _sqrt || ((n) => {
+      if (!sqrtP)
+        sqrtP = FpSqrt(ORDER);
+      return sqrtP(f, n);
+    }),
+    toBytes: (num) => isLE2 ? numberToBytesLE(num, BYTES) : numberToBytesBE(num, BYTES),
+    fromBytes: (bytes, skipValidation = true) => {
+      if (allowedLengths) {
+        if (!allowedLengths.includes(bytes.length) || bytes.length > BYTES) {
+          throw new Error("Field.fromBytes: expected " + allowedLengths + " bytes, got " + bytes.length);
+        }
+        const padded = new Uint8Array(BYTES);
+        padded.set(bytes, isLE2 ? 0 : padded.length - bytes.length);
+        bytes = padded;
+      }
+      if (bytes.length !== BYTES)
+        throw new Error("Field.fromBytes: expected " + BYTES + " bytes, got " + bytes.length);
+      let scalar = isLE2 ? bytesToNumberLE(bytes) : bytesToNumberBE(bytes);
+      if (modFromBytes)
+        scalar = mod(scalar, ORDER);
+      if (!skipValidation) {
+        if (!f.isValid(scalar))
+          throw new Error("invalid field element: outside of range 0..ORDER");
+      }
+      return scalar;
+    },
+    invertBatch: (lst) => FpInvertBatch(f, lst),
+    cmov: (a, b, c) => c ? b : a
+  });
+  return Object.freeze(f);
+}
+function getFieldBytesLength(fieldOrder) {
+  if (typeof fieldOrder !== "bigint")
+    throw new Error("field order must be bigint");
+  const bitLength = fieldOrder.toString(2).length;
+  return Math.ceil(bitLength / 8);
+}
+function getMinHashLength(fieldOrder) {
+  const length = getFieldBytesLength(fieldOrder);
+  return length + Math.ceil(length / 2);
+}
+function mapHashToField(key, fieldOrder, isLE2 = false) {
+  const len = key.length;
+  const fieldLen = getFieldBytesLength(fieldOrder);
+  const minLen = getMinHashLength(fieldOrder);
+  if (len < 16 || len < minLen || len > 1024)
+    throw new Error("expected " + minLen + "-1024 bytes of input, got " + len);
+  const num = isLE2 ? bytesToNumberLE(key) : bytesToNumberBE(key);
+  const reduced = mod(num, fieldOrder - _1n2) + _1n2;
+  return isLE2 ? numberToBytesLE(reduced, fieldLen) : numberToBytesBE(reduced, fieldLen);
+}
+var _0n2, _1n2, _2n, _3n, _4n, _5n, _7n, _8n, _9n, _16n, isNegativeLE = (num, modulo) => (mod(num, modulo) & _1n2) === _1n2, FIELD_FIELDS;
+var init_modular = __esm(() => {
+  init_utils2();
+  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+  _0n2 = BigInt(0);
+  _1n2 = BigInt(1);
+  _2n = /* @__PURE__ */ BigInt(2);
+  _3n = /* @__PURE__ */ BigInt(3);
+  _4n = /* @__PURE__ */ BigInt(4);
+  _5n = /* @__PURE__ */ BigInt(5);
+  _7n = /* @__PURE__ */ BigInt(7);
+  _8n = /* @__PURE__ */ BigInt(8);
+  _9n = /* @__PURE__ */ BigInt(9);
+  _16n = /* @__PURE__ */ BigInt(16);
+  FIELD_FIELDS = [
+    "create",
+    "isValid",
+    "is0",
+    "neg",
+    "inv",
+    "sqrt",
+    "sqr",
+    "eql",
+    "add",
+    "sub",
+    "mul",
+    "pow",
+    "div",
+    "addN",
+    "subN",
+    "mulN",
+    "sqrN"
+  ];
+});
+
+// ../../node_modules/@noble/curves/esm/abstract/curve.js
+function negateCt(condition, item) {
+  const neg = item.negate();
+  return condition ? neg : item;
+}
+function normalizeZ(c, points) {
+  const invertedZs = FpInvertBatch(c.Fp, points.map((p) => p.Z));
+  return points.map((p, i) => c.fromAffine(p.toAffine(invertedZs[i])));
+}
+function validateW(W, bits) {
+  if (!Number.isSafeInteger(W) || W <= 0 || W > bits)
+    throw new Error("invalid window size, expected [1.." + bits + "], got W=" + W);
+}
+function calcWOpts(W, scalarBits) {
+  validateW(W, scalarBits);
+  const windows = Math.ceil(scalarBits / W) + 1;
+  const windowSize = 2 ** (W - 1);
+  const maxNumber = 2 ** W;
+  const mask = bitMask(W);
+  const shiftBy = BigInt(W);
+  return { windows, windowSize, mask, maxNumber, shiftBy };
+}
+function calcOffsets(n, window, wOpts) {
+  const { windowSize, mask, maxNumber, shiftBy } = wOpts;
+  let wbits = Number(n & mask);
+  let nextN = n >> shiftBy;
+  if (wbits > windowSize) {
+    wbits -= maxNumber;
+    nextN += _1n3;
+  }
+  const offsetStart = window * windowSize;
+  const offset = offsetStart + Math.abs(wbits) - 1;
+  const isZero = wbits === 0;
+  const isNeg = wbits < 0;
+  const isNegF = window % 2 !== 0;
+  const offsetF = offsetStart;
+  return { nextN, offset, isZero, isNeg, isNegF, offsetF };
+}
+function validateMSMPoints(points, c) {
+  if (!Array.isArray(points))
+    throw new Error("array expected");
+  points.forEach((p, i) => {
+    if (!(p instanceof c))
+      throw new Error("invalid point at index " + i);
+  });
+}
+function validateMSMScalars(scalars, field) {
+  if (!Array.isArray(scalars))
+    throw new Error("array of scalars expected");
+  scalars.forEach((s, i) => {
+    if (!field.isValid(s))
+      throw new Error("invalid scalar at index " + i);
+  });
+}
+function getW(P2) {
+  return pointWindowSizes.get(P2) || 1;
+}
+function assert0(n) {
+  if (n !== _0n3)
+    throw new Error("invalid wNAF");
+}
+
+class wNAF {
+  constructor(Point, bits) {
+    this.BASE = Point.BASE;
+    this.ZERO = Point.ZERO;
+    this.Fn = Point.Fn;
+    this.bits = bits;
+  }
+  _unsafeLadder(elm, n, p = this.ZERO) {
+    let d = elm;
+    while (n > _0n3) {
+      if (n & _1n3)
+        p = p.add(d);
+      d = d.double();
+      n >>= _1n3;
+    }
+    return p;
+  }
+  precomputeWindow(point, W) {
+    const { windows, windowSize } = calcWOpts(W, this.bits);
+    const points = [];
+    let p = point;
+    let base = p;
+    for (let window = 0;window < windows; window++) {
+      base = p;
+      points.push(base);
+      for (let i = 1;i < windowSize; i++) {
+        base = base.add(p);
+        points.push(base);
+      }
+      p = base.double();
+    }
+    return points;
+  }
+  wNAF(W, precomputes, n) {
+    if (!this.Fn.isValid(n))
+      throw new Error("invalid scalar");
+    let p = this.ZERO;
+    let f = this.BASE;
+    const wo = calcWOpts(W, this.bits);
+    for (let window = 0;window < wo.windows; window++) {
+      const { nextN, offset, isZero, isNeg, isNegF, offsetF } = calcOffsets(n, window, wo);
+      n = nextN;
+      if (isZero) {
+        f = f.add(negateCt(isNegF, precomputes[offsetF]));
+      } else {
+        p = p.add(negateCt(isNeg, precomputes[offset]));
+      }
+    }
+    assert0(n);
+    return { p, f };
+  }
+  wNAFUnsafe(W, precomputes, n, acc = this.ZERO) {
+    const wo = calcWOpts(W, this.bits);
+    for (let window = 0;window < wo.windows; window++) {
+      if (n === _0n3)
+        break;
+      const { nextN, offset, isZero, isNeg } = calcOffsets(n, window, wo);
+      n = nextN;
+      if (isZero) {
+        continue;
+      } else {
+        const item = precomputes[offset];
+        acc = acc.add(isNeg ? item.negate() : item);
+      }
+    }
+    assert0(n);
+    return acc;
+  }
+  getPrecomputes(W, point, transform) {
+    let comp = pointPrecomputes.get(point);
+    if (!comp) {
+      comp = this.precomputeWindow(point, W);
+      if (W !== 1) {
+        if (typeof transform === "function")
+          comp = transform(comp);
+        pointPrecomputes.set(point, comp);
+      }
+    }
+    return comp;
+  }
+  cached(point, scalar, transform) {
+    const W = getW(point);
+    return this.wNAF(W, this.getPrecomputes(W, point, transform), scalar);
+  }
+  unsafe(point, scalar, transform, prev) {
+    const W = getW(point);
+    if (W === 1)
+      return this._unsafeLadder(point, scalar, prev);
+    return this.wNAFUnsafe(W, this.getPrecomputes(W, point, transform), scalar, prev);
+  }
+  createCache(P2, W) {
+    validateW(W, this.bits);
+    pointWindowSizes.set(P2, W);
+    pointPrecomputes.delete(P2);
+  }
+  hasCache(elm) {
+    return getW(elm) !== 1;
+  }
+}
+function mulEndoUnsafe(Point, point, k1, k2) {
+  let acc = point;
+  let p1 = Point.ZERO;
+  let p2 = Point.ZERO;
+  while (k1 > _0n3 || k2 > _0n3) {
+    if (k1 & _1n3)
+      p1 = p1.add(acc);
+    if (k2 & _1n3)
+      p2 = p2.add(acc);
+    acc = acc.double();
+    k1 >>= _1n3;
+    k2 >>= _1n3;
+  }
+  return { p1, p2 };
+}
+function pippenger(c, fieldN, points, scalars) {
+  validateMSMPoints(points, c);
+  validateMSMScalars(scalars, fieldN);
+  const plength = points.length;
+  const slength = scalars.length;
+  if (plength !== slength)
+    throw new Error("arrays of points and scalars must have equal length");
+  const zero = c.ZERO;
+  const wbits = bitLen(BigInt(plength));
+  let windowSize = 1;
+  if (wbits > 12)
+    windowSize = wbits - 3;
+  else if (wbits > 4)
+    windowSize = wbits - 2;
+  else if (wbits > 0)
+    windowSize = 2;
+  const MASK = bitMask(windowSize);
+  const buckets = new Array(Number(MASK) + 1).fill(zero);
+  const lastBits = Math.floor((fieldN.BITS - 1) / windowSize) * windowSize;
+  let sum = zero;
+  for (let i = lastBits;i >= 0; i -= windowSize) {
+    buckets.fill(zero);
+    for (let j = 0;j < slength; j++) {
+      const scalar = scalars[j];
+      const wbits2 = Number(scalar >> BigInt(i) & MASK);
+      buckets[wbits2] = buckets[wbits2].add(points[j]);
+    }
+    let resI = zero;
+    for (let j = buckets.length - 1, sumI = zero;j > 0; j--) {
+      sumI = sumI.add(buckets[j]);
+      resI = resI.add(sumI);
+    }
+    sum = sum.add(resI);
+    if (i !== 0)
+      for (let j = 0;j < windowSize; j++)
+        sum = sum.double();
+  }
+  return sum;
+}
+function createField(order, field, isLE2) {
+  if (field) {
+    if (field.ORDER !== order)
+      throw new Error("Field.ORDER must match order: Fp == p, Fn == n");
+    validateField(field);
+    return field;
+  } else {
+    return Field(order, { isLE: isLE2 });
+  }
+}
+function _createCurveFields(type, CURVE, curveOpts = {}, FpFnLE) {
+  if (FpFnLE === undefined)
+    FpFnLE = type === "edwards";
+  if (!CURVE || typeof CURVE !== "object")
+    throw new Error(`expected valid ${type} CURVE object`);
+  for (const p of ["p", "n", "h"]) {
+    const val = CURVE[p];
+    if (!(typeof val === "bigint" && val > _0n3))
+      throw new Error(`CURVE.${p} must be positive bigint`);
+  }
+  const Fp = createField(CURVE.p, curveOpts.Fp, FpFnLE);
+  const Fn = createField(CURVE.n, curveOpts.Fn, FpFnLE);
+  const _b = type === "weierstrass" ? "b" : "d";
+  const params = ["Gx", "Gy", "a", _b];
+  for (const p of params) {
+    if (!Fp.isValid(CURVE[p]))
+      throw new Error(`CURVE.${p} must be valid field element of CURVE.Fp`);
+  }
+  CURVE = Object.freeze(Object.assign({}, CURVE));
+  return { CURVE, Fp, Fn };
+}
+var _0n3, _1n3, pointPrecomputes, pointWindowSizes;
+var init_curve = __esm(() => {
+  init_utils2();
+  init_modular();
+  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+  _0n3 = BigInt(0);
+  _1n3 = BigInt(1);
+  pointPrecomputes = new WeakMap;
+  pointWindowSizes = new WeakMap;
+});
+
+// ../../node_modules/@noble/hashes/esm/hmac.js
+var HMAC, hmac = (hash, key, message) => new HMAC(hash, key).update(message).digest();
+var init_hmac = __esm(() => {
+  init_utils();
+  HMAC = class HMAC extends Hash {
+    constructor(hash, _key) {
+      super();
+      this.finished = false;
+      this.destroyed = false;
+      ahash(hash);
+      const key = toBytes(_key);
+      this.iHash = hash.create();
+      if (typeof this.iHash.update !== "function")
+        throw new Error("Expected instance of class which extends utils.Hash");
+      this.blockLen = this.iHash.blockLen;
+      this.outputLen = this.iHash.outputLen;
+      const blockLen = this.blockLen;
+      const pad = new Uint8Array(blockLen);
+      pad.set(key.length > blockLen ? hash.create().update(key).digest() : key);
+      for (let i = 0;i < pad.length; i++)
+        pad[i] ^= 54;
+      this.iHash.update(pad);
+      this.oHash = hash.create();
+      for (let i = 0;i < pad.length; i++)
+        pad[i] ^= 54 ^ 92;
+      this.oHash.update(pad);
+      clean(pad);
+    }
+    update(buf) {
+      aexists(this);
+      this.iHash.update(buf);
+      return this;
+    }
+    digestInto(out) {
+      aexists(this);
+      abytes(out, this.outputLen);
+      this.finished = true;
+      this.iHash.digestInto(out);
+      this.oHash.update(out);
+      this.oHash.digestInto(out);
+      this.destroy();
+    }
+    digest() {
+      const out = new Uint8Array(this.oHash.outputLen);
+      this.digestInto(out);
+      return out;
+    }
+    _cloneInto(to) {
+      to || (to = Object.create(Object.getPrototypeOf(this), {}));
+      const { oHash, iHash, finished, destroyed, blockLen, outputLen } = this;
+      to = to;
+      to.finished = finished;
+      to.destroyed = destroyed;
+      to.blockLen = blockLen;
+      to.outputLen = outputLen;
+      to.oHash = oHash._cloneInto(to.oHash);
+      to.iHash = iHash._cloneInto(to.iHash);
+      return to;
+    }
+    clone() {
+      return this._cloneInto();
+    }
+    destroy() {
+      this.destroyed = true;
+      this.oHash.destroy();
+      this.iHash.destroy();
+    }
+  };
+  hmac.create = (hash, key) => new HMAC(hash, key);
+});
+
+// src/vault/promote-support.ts
+var exports_promote_support = {};
+__export(exports_promote_support, {
+  printAd8Warning: () => printAd8Warning,
+  findVaultRoleEntry: () => findVaultRoleEntry,
+  findEntryByLabelOrAddress: () => findEntryByLabelOrAddress,
+  confirmAd8Acknowledgement: () => confirmAd8Acknowledgement,
+  assertNotPinnedDestination: () => assertNotPinnedDestination,
+  assertInPlacePreconditions: () => assertInPlacePreconditions,
+  assertColdVaultDestination: () => assertColdVaultDestination,
+  AD8_WARNING: () => AD8_WARNING,
+  AD8_ACK_WORD: () => AD8_ACK_WORD
+});
+function assertColdVaultDestination(index, destinationLabelOrAddress, opts = {}) {
+  const destination = findVaultRoleEntry(index, destinationLabelOrAddress);
+  if (destination === undefined) {
+    throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `No vault key matches ${destinationLabelOrAddress}.`, {
+      suggestion: "Create a cold vault key with `candle vault new-key --chain solana`, or name an existing one that has never been remotely exposed or exported."
+    });
+  }
+  if (destination.role !== "vault") {
+    throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${destination.label ?? destination.address} is not a role:vault key.`);
+  }
+  if (opts.subjectAddress !== undefined && destination.address === opts.subjectAddress) {
+    throw new VaultError("PROMOTE_SAME_KEY_DESTINATION", "The sweep destination must be a different vault key from the one being promoted.");
+  }
+  const exposed = destination.exposure?.everRemoteExposed === true;
+  const exported = destination.exposure?.everExported === true;
+  const unknown = destination.exposure?.exposureUnknown === true;
+  if (exposed || exported) {
+    throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${destination.label ?? destination.address} is not cold: everRemoteExposed=${exposed}, everExported=${exported}.`, {
+      suggestion: "Pin a vault key that has never been remotely exposed or exported (`candle vault new-key`)."
+    });
+  }
+  if (unknown && !opts.acceptUnknownExposure) {
+    throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${destination.label ?? destination.address} carries exposureUnknown and is refused as a recovery destination.`, {
+      suggestion: "Pass --accept-unknown-exposure to admit only this case (never an everRemoteExposed or everExported key), or create a fresh cold key."
+    });
+  }
+  return destination;
+}
+function findVaultRoleEntry(index, labelOrAddress) {
+  const byLabel = index.entries.find((entry) => entry.role === "vault" && entry.label !== undefined && entry.label === labelOrAddress);
+  if (byLabel !== undefined)
+    return byLabel;
+  return index.entries.find((entry) => entry.address === labelOrAddress);
+}
+function findEntryByLabelOrAddress(index, labelOrAddress) {
+  const byLabel = index.entries.find((entry) => entry.label !== undefined && entry.label === labelOrAddress);
+  if (byLabel !== undefined)
+    return byLabel;
+  return index.entries.find((entry) => entry.address === labelOrAddress);
+}
+function assertNotPinnedDestination(index, subjectAddress) {
+  const pinners = index.entries.filter((entry) => entry.tee?.vaultDestination === subjectAddress);
+  if (pinners.length === 0)
+    return;
+  throw new VaultError("PROMOTE_KEY_IS_PINNED_DESTINATION", `${subjectAddress} is the pinned sweep destination for: ${pinners.map((e) => e.label ?? e.address).join(", ")}.`, {
+    suggestion: "Demote those TEE wallets to this key first, then promote fresh ones against a different cold destination."
+  });
+}
+function assertInPlacePreconditions(index, subjectLabel, sweepToLabel, opts) {
+  const subject = findEntryByLabelOrAddress(index, subjectLabel);
+  if (subject === undefined) {
+    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`);
+  }
+  if (subject.role === "tee-wallet") {
+    const lifecycle = subject.tee?.lifecycle;
+    if (lifecycle === "local-candidate" || lifecycle === "import-pending") {
+      return {
+        subject,
+        destination: assertColdVaultDestination(index, sweepToLabel, {
+          subjectAddress: subject.address,
+          acceptUnknownExposure: opts.acceptUnknownExposure
+        }),
+        resume: true
+      };
+    }
+    throw new VaultError("PROMOTE_ALREADY_TEE_WALLET", `${subject.label ?? subject.address} is already a TEE wallet (${lifecycle ?? "unknown"}).`);
+  }
+  if (subject.role !== "vault" || subject.tee !== undefined) {
+    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${subjectLabel} is not a role:vault key without tee metadata.`);
+  }
+  if (subject.exposure?.exposureUnknown === true) {
+    throw new VaultError("PROMOTE_SUBJECT_EXPOSURE_UNKNOWN", `${subject.label ?? subject.address} carries exposureUnknown and cannot be promoted in place.`);
+  }
+  assertNotPinnedDestination(index, subject.address);
+  const destination = assertColdVaultDestination(index, sweepToLabel, {
+    subjectAddress: subject.address,
+    acceptUnknownExposure: opts.acceptUnknownExposure
+  });
+  return { subject, destination, resume: false };
+}
+function printAd8Warning(ctx) {
+  ctx.deps.stdout.write(`
+${AD8_WARNING}
+
+`);
+}
+async function confirmAd8Acknowledgement(ctx) {
+  const typed = (await ctx.deps.promptLine(`Type ${AD8_ACK_WORD} to acknowledge: I have read the warning above, this address never returns to cold, and I accept what it may control: `)).trim();
+  if (typed !== AD8_ACK_WORD) {
+    throw new VaultError("PROMOTE_NOT_ACKNOWLEDGED", "The acknowledgement word did not match; nothing was promoted.");
+  }
+}
+var AD8_WARNING = `This key may sign for a multisig, for a program upgrade authority, or for a token mint or freeze authority. The CLI does not know which, and does not check.
+Promoting leaves a copy of this key inside Privy's TEE for good.
+The key itself, its multisig membership and its authorities are unchanged: the operator keeps the key and can keep signing with it, and whatever it signs for keeps working exactly as before.
+If Privy's TEE or its signing policy were compromised, whatever this key controls is at risk, and how much depends on the setup: a multisig's threshold, or whether this key is a sole authority, decides what an attacker could actually do.
+Demoting does not remove that copy. The only way to end this exposure is to replace this key in the multisig, or to move the authority to another key.`, AD8_ACK_WORD = "EXPOSE";
+var init_promote_support = __esm(() => {
+  init_errors();
 });
 
 // src/enclave-helper/protocol.ts
@@ -14817,6 +14914,7 @@ __export(exports_vault_support, {
   writeVaultFailure: () => writeVaultFailure,
   writeJson: () => writeJson,
   vaultPathFor: () => vaultPathFor,
+  vaultAlreadyExists: () => vaultAlreadyExists,
   usage: () => usage,
   unlockInteractively: () => unlockInteractively,
   takeRepeatedFlag: () => takeRepeatedFlag,
@@ -14826,6 +14924,8 @@ __export(exports_vault_support, {
   requireTty: () => requireTty,
   refuseEnvPassphrase: () => refuseEnvPassphrase,
   openWithTypedPassphrase: () => openWithTypedPassphrase,
+  nonDefaultVaultFooter: () => nonDefaultVaultFooter,
+  missingVault: () => missingVault,
   findExternalEntry: () => findExternalEntry,
   describeRole: () => describeRole,
   confirmLastSix: () => confirmLastSix,
@@ -14833,6 +14933,7 @@ __export(exports_vault_support, {
   assertNotOlderCopy: () => assertNotOlderCopy,
   RPC_URL_ENV: () => RPC_URL_ENV
 });
+import { dirname as dirname7 } from "node:path";
 function refuseEnvPassphrase(ctx) {
   if (ctx.deps.env.CANDLE_KEYSTORE_PASSPHRASE === undefined)
     return true;
@@ -14850,13 +14951,58 @@ function requireTty(ctx, what) {
   return false;
 }
 function vaultPathFor(ctx, parsed) {
-  return parsed.values["--keystore"] ?? defaultVaultPath(ctx.deps.env);
-}
-async function requireVaultRaw(path) {
-  const raw = await readVaultRaw(path);
-  if (raw === null) {
-    throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" });
+  const flag = parsed.values["--keystore"];
+  if (flag !== undefined)
+    return { path: flag, source: "flag" };
+  try {
+    const path = defaultVaultPath(ctx.deps.env);
+    return { path, source: ctx.deps.env[CONFIG_DIR_ENV]?.trim() ? "env" : "default" };
+  } catch (error) {
+    if (isUsageError(error))
+      return { error: error.message };
+    throw error;
   }
+}
+function pathSourceNote(ctx, resolved) {
+  switch (resolved.source) {
+    case "flag":
+      return "(from --keystore)";
+    case "env":
+      return `(from ${CONFIG_DIR_ENV}=${ctx.deps.env[CONFIG_DIR_ENV]?.trim()})`;
+    default:
+      return `(the default: no --keystore given and ${CONFIG_DIR_ENV} is unset)`;
+  }
+}
+function pathDetails(resolved) {
+  return { path: resolved.path, pathSource: resolved.source };
+}
+function missingVault(ctx, resolved) {
+  const { path } = resolved;
+  const suggestion = resolved.source === "default" ? ctx.json ? `If your vault is somewhere else, point at it: candle vault status -k <path>, or export ${CONFIG_DIR_ENV}=<its directory>. If you have never made one: candle vault init` : `  If your vault is somewhere else, point at it:   candle vault status -k <path>   or   export ${CONFIG_DIR_ENV}=<its directory>
+  If you have never made one:                     candle vault init` : ctx.json ? `If the path is wrong, check it: ls -l ${path}. If you have never made one: candle vault init -k ${path}` : `  If the path is wrong, check it:   ls -l ${path}
+  If you have never made one:       candle vault init -k ${path}`;
+  return new VaultError("VAULT_MISSING", `No vault at ${path} ${pathSourceNote(ctx, resolved)}.`, {
+    suggestion,
+    details: pathDetails(resolved)
+  });
+}
+function vaultAlreadyExists(ctx, resolved, suggestion) {
+  return new VaultError("VAULT_EXISTS", `A vault already exists at ${resolved.path} ${pathSourceNote(ctx, resolved)}.`, {
+    suggestion,
+    details: pathDetails(resolved)
+  });
+}
+function nonDefaultVaultFooter(resolved) {
+  if (resolved.source !== "flag")
+    return;
+  return `
+This vault is at ${resolved.path}, not the default location. Every vault command needs -k ${resolved.path}, or set it once: export ${CONFIG_DIR_ENV}=${dirname7(resolved.path)}
+`;
+}
+async function requireVaultRaw(ctx, resolved) {
+  const raw = await readVaultRaw(resolved.path);
+  if (raw === null)
+    throw missingVault(ctx, resolved);
   return raw;
 }
 function assertVaultHelperIdentities(deps, envelopes) {
@@ -14900,7 +15046,7 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
       const current = parseVaultFile(r);
       const target = current.envelopes.find((candidate) => candidate.id === envelope2.id);
       if (target === undefined || !isSecureEnclaveEnvelope(target)) {
-        throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `The file at ${p} has no Secure Enclave envelope ${envelope2.id}.`);
+        throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `The file at ${p} has no Secure Enclave envelope ${envelope2.id}.`, { suggestion: "Run: candle vault status (which lists each factor and why it is not available here)" });
       }
       pinnedHelperIdentity(deps, target.helper);
       const kek = await unwrapKekWithEnclave(deps, session2, target, current.vaultId, reason2);
@@ -14928,7 +15074,7 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
       const current = parseVaultFile(r);
       const target = current.envelopes.find((candidate) => candidate.id === envelope2.id);
       if (target === undefined || !isPlatformPasskeyEnvelope(target)) {
-        throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `The file at ${p} has no synced passkey envelope ${envelope2.id}.`);
+        throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `The file at ${p} has no synced passkey envelope ${envelope2.id}.`, { suggestion: "Run: candle vault status (which lists each factor and why it is not available here)" });
       }
       pinnedHelperIdentity(deps, target.helper);
       const prfOutput = await assertPlatformPrf(deps, session2, target, current.vaultId, purpose);
@@ -14960,7 +15106,7 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
     const current = parseVaultFile(r);
     const target = current.envelopes.find((candidate) => candidate.id === envelope.id);
     if (target === undefined || !isCtap2Envelope(target)) {
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `The file at ${p} has no security key envelope ${envelope.id}.`);
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `The file at ${p} has no security key envelope ${envelope.id}.`, { suggestion: "Run: candle vault status (which lists each factor and why it is not available here)" });
     }
     const prfOutput = await assertPrf(deps, session, target, current.vaultId, "unlock the vault");
     try {
@@ -15039,7 +15185,9 @@ ${list(drivable)}
   }
   if (flag === "passphrase") {
     if (passphrases.length === 0)
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.", {
+        suggestion: "Run: candle vault status (which lists each factor and why it is not available here)"
+      });
     return { kind: "passphrase" };
   }
   const byKind = {
@@ -15056,7 +15204,7 @@ ${list(drivable)}
     }
     if (kind.candidates.length > 1) {
       throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has ${kind.candidates.length} ${kind.word} envelopes; name one with --factor <id>:
-${list(kind.candidates)}`);
+${list(kind.candidates)}`, { suggestion: "Run `candle vault factor list` for the ids." });
     }
     return choiceFor(assertDrivable(kind.candidates[0], facts));
   }
@@ -15073,7 +15221,7 @@ ${list(kind.candidates)}`);
   }
   const availability = envelopeAvailability(named, facts);
   if (availability.state === "available") {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${named.id} is a ${named.factor} envelope this release cannot open.`);
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${named.id} is a ${named.factor} envelope this release cannot open.`, { suggestion: "Run: candle vault status (which lists each factor and why it is not available here)" });
   }
   throw new VaultError(refusalCodeFor(availability), `Envelope ${named.id} (${named.factor}${typeof named.transport === "string" ? `/${named.transport}` : ""}) cannot open the vault here: ${availability.reason}.`, { suggestion: "No other envelope was tried. Run `candle vault status` to see which factors can open it here." });
 }
@@ -15135,12 +15283,19 @@ async function confirmLastSix(ctx, address, what) {
   const expected = address.slice(-6);
   const typed = (await ctx.deps.promptLine(`Type the last six characters of ${what} (${address}) to confirm: `)).trim();
   if (typed !== expected) {
-    throw new VaultError("DESTINATION_NOT_CONFIRMED", "That is not the last six characters of that address; nothing was done.");
+    throw new VaultError("DESTINATION_NOT_CONFIRMED", "That is not the last six characters of that address; nothing was done.", { suggestion: "Nothing was signed. Run it again and type the last six characters exactly as shown." });
   }
 }
 function writeVaultFailure(ctx, error) {
+  if (isUsageError(error))
+    return usage(ctx, error.message);
   if (isVaultError(error)) {
-    writeLocalFailure(ctx.deps, { code: error.code, message: error.message, ...error.suggestion ? { suggestion: error.suggestion } : {} }, ctx.json);
+    writeLocalFailure(ctx.deps, {
+      code: error.code,
+      message: error.message,
+      ...error.suggestion ? { suggestion: error.suggestion } : {},
+      ...error.details ? { details: error.details } : {}
+    }, ctx.json);
     return error.exitCode;
   }
   writeLocalFailure(ctx.deps, { code: "VAULT_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, ctx.json);
@@ -15221,6 +15376,7 @@ function takeRepeatedFlag(args, flag) {
 }
 var RPC_URL_ENV = "CANDLE_SOLANA_RPC_URL";
 var init_vault_support = __esm(() => {
+  init_args();
   init_render();
   init_enclave();
   init_errors();
@@ -19206,7 +19362,15 @@ __export(exports_tee_lookup, {
   findTeeInVault: () => findTeeInVault
 });
 async function findTeeInVault(ctx, address, opts = {}) {
-  const path = opts.vaultPath ?? defaultVaultPath(ctx.deps.env);
+  let path;
+  if (opts.vaultPath !== undefined) {
+    path = opts.vaultPath;
+  } else {
+    const resolved = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
+    if ("error" in resolved)
+      throw new UsageError(resolved.error);
+    path = resolved.path;
+  }
   const raw = await readVaultRaw(path);
   if (raw === null)
     return { hit: false };
@@ -19223,6 +19387,7 @@ function vaultOwnsTeeAddress(vault, address) {
   return vault.index.entries.some((entry) => entry.address === address && entry.role === "tee-wallet");
 }
 var init_tee_lookup = __esm(() => {
+  init_args();
   init_vault_support();
   init_store();
 });
@@ -35210,55 +35375,8 @@ async function fetchAccount(deps, apiUrl, apiKey) {
   return { failure: identity.ok ? "no account in the response" : identity.message };
 }
 
-// src/args.ts
-function parseArgs(args, spec) {
-  const valueFlags = new Set(spec.valueFlags ?? []);
-  const booleanFlags = new Set(spec.booleanFlags ?? []);
-  const values = {};
-  const booleans = new Set;
-  const positionals = [];
-  for (let i = 0;i < args.length; i++) {
-    const arg = args[i];
-    if (arg === undefined)
-      continue;
-    if (valueFlags.has(arg)) {
-      const value = args[++i];
-      if (!value || value.startsWith("-"))
-        return { error: `${arg} requires a value` };
-      values[arg] = value;
-    } else if (booleanFlags.has(arg)) {
-      booleans.add(arg);
-    } else if (arg.startsWith("-")) {
-      return { error: `Unknown flag: ${arg}` };
-    } else {
-      positionals.push(arg);
-    }
-  }
-  return { values, booleans, positionals };
-}
-function parseScopesList(raw) {
-  return raw.split(",").map((scope) => scope.trim()).filter(Boolean);
-}
-function parseUsdToMicros(raw) {
-  const cleaned = raw.trim().replace(/^\$/, "").replace(/,/g, "");
-  if (cleaned.length === 0)
-    return { ok: false, message: "--tx-limit requires a dollar amount, for example 100." };
-  const usd = Number(cleaned);
-  if (!Number.isFinite(usd))
-    return { ok: false, message: `--tx-limit is not a dollar amount: ${raw}` };
-  const usdMicros = Math.round(usd * 1e6);
-  if (usdMicros <= 0)
-    return { ok: false, message: "--tx-limit must be greater than $0." };
-  return { ok: true, usdMicros };
-}
-var TX_LIMIT_RESETS = ["daily", "weekly", "monthly", "never"];
-function parseExpiresInDays(raw) {
-  const days = Number(raw.trim());
-  if (!Number.isInteger(days) || days <= 0) {
-    return { ok: false, message: `--expires-in must be a positive whole number of days, got: ${raw}` };
-  }
-  return { ok: true, days };
-}
+// src/commands/auth.ts
+init_args();
 
 // src/checks.ts
 init_render();
@@ -35658,7 +35776,7 @@ async function resolveApiKey(deps, profile) {
 init_render();
 
 // src/version.ts
-var CLI_VERSION = "0.11.0";
+var CLI_VERSION = "0.11.1";
 
 // src/commands/auth.ts
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
@@ -36220,13 +36338,13 @@ var HELP = {
       },
       { invocation: "status [--unlock]", description: "What the vault holds, and what opens it" },
       {
-        invocation: "new-key --chain solana [--label <name>]",
-        description: "Derive the next Solana key inside the vault"
+        invocation: "new-key --chain solana [--label <name>] [--count <n>] [--labels-from <file>]",
+        description: "Derive the next Solana key, or n of them under one unlock"
       },
       { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
       {
-        invocation: "restore --phrase [--count <n>] [--tee-count <k>] [--external-count <e>] [--rpc-url <url>]",
-        description: "Rebuild a vault from the recovery phrase"
+        invocation: "restore --phrase [--own-passphrase] [--count <n>] [--tee-count <k>] [--external-count <e>] [--rpc-url <url>]",
+        description: "Rebuild a vault from the recovery phrase; it gets a new passphrase"
       },
       {
         invocation: "reconcile-exposure",
@@ -36235,6 +36353,10 @@ var HELP = {
       {
         invocation: "factor list | add <kind> | remove <id>",
         description: `Manage the factors that open the vault: ${FACTOR_KINDS.join(", ")}`
+      },
+      {
+        invocation: "enroll <kind> [--label <name>]",
+        description: `Same as factor add: ${FACTOR_KINDS.join(", ")}`
       },
       {
         invocation: "backup --to <path> [--accept-shared-domain]",
@@ -36273,12 +36395,17 @@ var HELP = {
         invocation: "--factor <id|kind>",
         description: "Unlock with this envelope: an id from factor list, or passphrase, security-key, touch-id, passkey"
       },
-      { invocation: "--device <id>", description: "The security key to use when more than one is attached" }
+      { invocation: "--device <id>", description: "The security key to use when more than one is attached" },
+      {
+        invocation: "--labels-from <file>",
+        description: "new-key: one name per line, one key each, one unlock (max 256). Each key is committed on its own, so a batch that is interrupted keeps every key that landed and you re-run for the rest."
+      }
     ],
     examples: [
       "candle vault init",
       "candle vault new-key --chain solana --label treasury",
-      "candle vault factor add security-key --label yubikey-a",
+      "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
+      "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
       "CANDLE_CONFIG_DIR=$HOME/t47 candle vault status"
     ],
@@ -36732,8 +36859,10 @@ async function completion(args, ctx) {
 }
 
 // src/commands/doctor.ts
+init_args();
 init_release();
 init_render();
+init_store();
 var MIN_NODE_MAJOR = 18;
 var API_KEY_CHECK = "API key valid (launch:write)";
 async function doctor(args, ctx) {
@@ -36756,6 +36885,31 @@ async function doctor(args, ctx) {
     detail: `node ${deps.nodeVersion} is below the minimum (${MIN_NODE_MAJOR}). Fix: upgrade Node.js to ${MIN_NODE_MAJOR} or later.`
   });
   rows.push({ check: "Keychain backend", state: "PASS", detail: deps.backend });
+  let configDir2;
+  try {
+    configDir2 = candleConfigDir(deps.env);
+    rows.push({
+      check: "Config directory",
+      state: "PASS",
+      detail: deps.env[CONFIG_DIR_ENV]?.trim() ? `${configDir2} (from ${CONFIG_DIR_ENV})` : `${configDir2} (the default)`
+    });
+  } catch (error) {
+    rows.push({
+      check: "Config directory",
+      state: "FAIL",
+      detail: isUsageError(error) ? error.message : String(error)
+    });
+  }
+  if (configDir2 === undefined) {
+    rows.push({ check: "Vault", state: "SKIP", detail: `${CONFIG_DIR_ENV} is not usable, so no path to check` });
+  } else {
+    const vaultPath = defaultVaultPath(deps.env);
+    rows.push(await fileExists(vaultPath) ? { check: "Vault", state: "PASS", detail: vaultPath } : {
+      check: "Vault",
+      state: "SKIP",
+      detail: `no vault at ${vaultPath}. Create one with candle vault init, or point at an existing one with -k <path> or ${CONFIG_DIR_ENV}.`
+    });
+  }
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   const apiKey = await resolveApiKey(deps, ctx.profile);
   rows.push(deviceToken ? {
@@ -36890,6 +37044,9 @@ async function doctor(args, ctx) {
 `);
   return exitCode;
 }
+
+// src/commands/external.ts
+init_args();
 
 // ../../node_modules/@noble/curves/esm/ed25519.js
 init_sha2();
@@ -37060,13 +37217,13 @@ function edwards(params, extraOpts = {}) {
       const D = modP(a * A);
       const x1y1 = X1 + Y1;
       const E = modP(modP(x1y1 * x1y1) - A - B);
-      const G = D + B;
-      const F = G - C;
+      const G2 = D + B;
+      const F = G2 - C;
       const H = D - B;
       const X3 = modP(E * F);
-      const Y3 = modP(G * H);
+      const Y3 = modP(G2 * H);
       const T3 = modP(E * H);
-      const Z3 = modP(F * G);
+      const Z3 = modP(F * G2);
       return new Point(X3, Y3, Z3, T3);
     }
     add(other) {
@@ -37080,12 +37237,12 @@ function edwards(params, extraOpts = {}) {
       const D = modP(Z1 * Z2);
       const E = modP((X1 + Y1) * (X2 + Y2) - A - B);
       const F = D - C;
-      const G = D + C;
+      const G2 = D + C;
       const H = modP(B - a * A);
       const X3 = modP(E * F);
-      const Y3 = modP(G * H);
+      const Y3 = modP(G2 * H);
       const T3 = modP(E * H);
-      const Z3 = modP(F * G);
+      const Z3 = modP(F * G2);
       return new Point(X3, Y3, Z3, T3);
     }
     subtract(other) {
@@ -37242,7 +37399,7 @@ function eddsa(Point, cHash, eddsaOpts = {}) {
   });
   const { prehash } = eddsaOpts;
   const { BASE, Fp, Fn } = Point;
-  const randomBytes2 = eddsaOpts.randomBytes || randomBytes;
+  const randomBytes3 = eddsaOpts.randomBytes || randomBytes;
   const adjustScalarBytes = eddsaOpts.adjustScalarBytes || ((bytes) => bytes);
   const domain = eddsaOpts.domain || ((data, ctx, phflag) => {
     _abool2(phflag, "phflag");
@@ -37324,11 +37481,11 @@ function eddsa(Point, cHash, eddsaOpts = {}) {
     signature: 2 * _size,
     seed: _size
   };
-  function randomSecretKey(seed = randomBytes2(lengths.seed)) {
+  function randomSecretKey(seed = randomBytes3(lengths.seed)) {
     return _abytes2(seed, lengths.seed, "seed");
   }
   function keygen(seed) {
-    const secretKey = utils.randomSecretKey(seed);
+    const secretKey = utils2.randomSecretKey(seed);
     return { secretKey, publicKey: getPublicKey(secretKey) };
   }
   function isValidSecretKey(key) {
@@ -37341,7 +37498,7 @@ function eddsa(Point, cHash, eddsaOpts = {}) {
       return false;
     }
   }
-  const utils = {
+  const utils2 = {
     getExtendedPublicKey,
     randomSecretKey,
     isValidSecretKey,
@@ -37371,7 +37528,7 @@ function eddsa(Point, cHash, eddsaOpts = {}) {
     getPublicKey,
     sign,
     verify,
-    utils,
+    utils: utils2,
     Point,
     lengths
   });
@@ -37437,19 +37594,19 @@ var ed25519_CURVE = /* @__PURE__ */ (() => ({
 }))();
 function ed25519_pow_2_252_3(x) {
   const _10n = BigInt(10), _20n = BigInt(20), _40n = BigInt(40), _80n = BigInt(80);
-  const P = ed25519_CURVE_p;
-  const x2 = x * x % P;
-  const b2 = x2 * x % P;
-  const b4 = pow2(b2, _2n3, P) * b2 % P;
-  const b5 = pow2(b4, _1n5, P) * x % P;
-  const b10 = pow2(b5, _5n2, P) * b5 % P;
-  const b20 = pow2(b10, _10n, P) * b10 % P;
-  const b40 = pow2(b20, _20n, P) * b20 % P;
-  const b80 = pow2(b40, _40n, P) * b40 % P;
-  const b160 = pow2(b80, _80n, P) * b80 % P;
-  const b240 = pow2(b160, _80n, P) * b80 % P;
-  const b250 = pow2(b240, _10n, P) * b10 % P;
-  const pow_p_5_8 = pow2(b250, _2n3, P) * x % P;
+  const P2 = ed25519_CURVE_p;
+  const x2 = x * x % P2;
+  const b2 = x2 * x % P2;
+  const b4 = pow2(b2, _2n3, P2) * b2 % P2;
+  const b5 = pow2(b4, _1n5, P2) * x % P2;
+  const b10 = pow2(b5, _5n2, P2) * b5 % P2;
+  const b20 = pow2(b10, _10n, P2) * b10 % P2;
+  const b40 = pow2(b20, _20n, P2) * b20 % P2;
+  const b80 = pow2(b40, _40n, P2) * b40 % P2;
+  const b160 = pow2(b80, _80n, P2) * b80 % P2;
+  const b240 = pow2(b160, _80n, P2) * b80 % P2;
+  const b250 = pow2(b240, _10n, P2) * b10 % P2;
+  const pow_p_5_8 = pow2(b250, _2n3, P2) * x % P2;
   return { pow_p_5_8, b2 };
 }
 function adjustScalarBytes(bytes) {
@@ -37460,23 +37617,23 @@ function adjustScalarBytes(bytes) {
 }
 var ED25519_SQRT_M1 = /* @__PURE__ */ BigInt("19681161376707505956807079304988542015446066515923890162744021073123829784752");
 function uvRatio(u, v) {
-  const P = ed25519_CURVE_p;
-  const v3 = mod(v * v * v, P);
-  const v7 = mod(v3 * v3 * v, P);
+  const P2 = ed25519_CURVE_p;
+  const v3 = mod(v * v * v, P2);
+  const v7 = mod(v3 * v3 * v, P2);
   const pow = ed25519_pow_2_252_3(u * v7).pow_p_5_8;
-  let x = mod(u * v3 * pow, P);
-  const vx2 = mod(v * x * x, P);
+  let x = mod(u * v3 * pow, P2);
+  const vx2 = mod(v * x * x, P2);
   const root1 = x;
-  const root2 = mod(x * ED25519_SQRT_M1, P);
+  const root2 = mod(x * ED25519_SQRT_M1, P2);
   const useRoot1 = vx2 === u;
-  const useRoot2 = vx2 === mod(-u, P);
-  const noRoot = vx2 === mod(-u * ED25519_SQRT_M1, P);
+  const useRoot2 = vx2 === mod(-u, P2);
+  const noRoot = vx2 === mod(-u * ED25519_SQRT_M1, P2);
   if (useRoot1)
     x = root1;
   if (useRoot2 || noRoot)
     x = root2;
-  if (isNegativeLE(x, P))
-    x = mod(-x, P);
+  if (isNegativeLE(x, P2))
+    x = mod(-x, P2);
   return { isValid: useRoot1 || useRoot2, value: x };
 }
 var Fp = /* @__PURE__ */ (() => Field(ed25519_CURVE.p, { isLE: true }))();
@@ -37499,7 +37656,7 @@ var MAX_255B = /* @__PURE__ */ BigInt("0x7ffffffffffffffffffffffffffffffffffffff
 var bytes255ToNumberLE = (bytes) => ed25519.Point.Fp.create(bytesToNumberLE(bytes) & MAX_255B);
 function calcElligatorRistrettoMap(r0) {
   const { d } = ed25519_CURVE;
-  const P = ed25519_CURVE_p;
+  const P2 = ed25519_CURVE_p;
   const mod2 = (n) => Fp.create(n);
   const r = mod2(SQRT_M1 * r0 * r0);
   const Ns = mod2((r + _1n5) * ONE_MINUS_D_SQ);
@@ -37507,7 +37664,7 @@ function calcElligatorRistrettoMap(r0) {
   const D = mod2((c - d * r) * mod2(r + d));
   let { isValid: Ns_D_is_sq, value: s } = uvRatio(Ns, D);
   let s_ = mod2(s * r0);
-  if (!isNegativeLE(s_, P))
+  if (!isNegativeLE(s_, P2))
     s_ = mod2(-s_);
   if (!Ns_D_is_sq)
     s = s_;
@@ -37544,16 +37701,16 @@ class _RistrettoPoint extends PrimeEdwardsPoint {
   init(ep) {
     return new _RistrettoPoint(ep);
   }
-  static hashToCurve(hex) {
-    return ristretto255_map(ensureBytes("ristrettoHash", hex, 64));
+  static hashToCurve(hex2) {
+    return ristretto255_map(ensureBytes("ristrettoHash", hex2, 64));
   }
   static fromBytes(bytes) {
     abytes(bytes, 32);
     const { a, d } = ed25519_CURVE;
-    const P = ed25519_CURVE_p;
+    const P2 = ed25519_CURVE_p;
     const mod2 = (n) => Fp.create(n);
     const s = bytes255ToNumberLE(bytes);
-    if (!equalBytes(Fp.toBytes(s), bytes) || isNegativeLE(s, P))
+    if (!equalBytes(Fp.toBytes(s), bytes) || isNegativeLE(s, P2))
       throw new Error("invalid ristretto255 encoding 1");
     const s2 = mod2(s * s);
     const u1 = mod2(_1n5 + a * s2);
@@ -37565,23 +37722,23 @@ class _RistrettoPoint extends PrimeEdwardsPoint {
     const Dx = mod2(I * u2);
     const Dy = mod2(I * Dx * v);
     let x = mod2((s + s) * Dx);
-    if (isNegativeLE(x, P))
+    if (isNegativeLE(x, P2))
       x = mod2(-x);
     const y = mod2(u1 * Dy);
     const t = mod2(x * y);
-    if (!isValid || isNegativeLE(t, P) || y === _0n5)
+    if (!isValid || isNegativeLE(t, P2) || y === _0n5)
       throw new Error("invalid ristretto255 encoding 2");
     return new _RistrettoPoint(new ed25519.Point(x, y, _1n5, t));
   }
-  static fromHex(hex) {
-    return _RistrettoPoint.fromBytes(ensureBytes("ristrettoHex", hex, 32));
+  static fromHex(hex2) {
+    return _RistrettoPoint.fromBytes(ensureBytes("ristrettoHex", hex2, 32));
   }
   static msm(points, scalars) {
     return pippenger(_RistrettoPoint, ed25519.Point.Fn, points, scalars);
   }
   toBytes() {
     let { X, Y, Z, T } = this.ep;
-    const P = ed25519_CURVE_p;
+    const P2 = ed25519_CURVE_p;
     const mod2 = (n) => Fp.create(n);
     const u1 = mod2(mod2(Z + Y) * mod2(Z - Y));
     const u2 = mod2(X * Y);
@@ -37591,7 +37748,7 @@ class _RistrettoPoint extends PrimeEdwardsPoint {
     const D2 = mod2(invsqrt * u2);
     const zInv = mod2(D1 * D2 * T);
     let D;
-    if (isNegativeLE(T * zInv, P)) {
+    if (isNegativeLE(T * zInv, P2)) {
       let _x = mod2(Y * SQRT_M1);
       let _y = mod2(X * SQRT_M1);
       X = _x;
@@ -37600,10 +37757,10 @@ class _RistrettoPoint extends PrimeEdwardsPoint {
     } else {
       D = D2;
     }
-    if (isNegativeLE(X * zInv, P))
+    if (isNegativeLE(X * zInv, P2))
       Y = mod2(-Y);
     let s = mod2((Z - Y) * D);
-    if (isNegativeLE(s, P))
+    if (isNegativeLE(s, P2))
       s = mod2(-s);
     return Fp.toBytes(s);
   }
@@ -38000,8 +38157,8 @@ function createSolanaRpc(url, fetchFn) {
 
 // src/vault/domains.ts
 init_errors();
-import { homedir as homedir3 } from "node:os";
-import { basename, dirname as dirname2, isAbsolute, join as join4, resolve, sep } from "node:path";
+import { homedir as homedir4 } from "node:os";
+import { basename, dirname as dirname4, isAbsolute, join as join6, resolve, sep } from "node:path";
 var OTHER_CLOUD_MARKERS = [
   "Library/CloudStorage",
   "Dropbox",
@@ -38036,7 +38193,7 @@ function placeResolvedPath(absolute, home) {
 }
 async function classifyDestination(path, opts) {
   const absolute = isAbsolute(path) ? path : resolve(path);
-  const spelledHome = opts.home ?? homedir3();
+  const spelledHome = opts.home ?? homedir4();
   let home;
   try {
     home = await opts.realpath(spelledHome);
@@ -38045,11 +38202,11 @@ async function classifyDestination(path, opts) {
   }
   let parent;
   try {
-    parent = await opts.realpath(dirname2(absolute));
+    parent = await opts.realpath(dirname4(absolute));
   } catch {
     return "unknown";
   }
-  return placeResolvedPath(join4(parent, basename(absolute)), home);
+  return placeResolvedPath(join6(parent, basename(absolute)), home);
 }
 function sealsByDefault(destination) {
   return destination === "icloud-drive" || destination === "other-cloud" || destination === "unknown";
@@ -41074,14 +41231,52 @@ init_promote_support();
 init_store();
 
 // src/commands/vault-new-key.ts
+init_args();
 init_errors();
+init_format();
 init_sidecar();
 init_store();
 init_vault_support();
+var MAX_NEW_KEY_COUNT = 256;
+function resolveBatch(countFlag, labelFlag, labelsFileContents) {
+  let count;
+  if (countFlag !== undefined) {
+    const value = Number(countFlag);
+    if (!Number.isInteger(value) || value < 1)
+      return { error: `--count must be a whole number, 1 or greater.` };
+    if (value > MAX_NEW_KEY_COUNT) {
+      return { error: `--count is capped at ${MAX_NEW_KEY_COUNT}; run the command again for more.` };
+    }
+    count = value;
+  }
+  if (labelsFileContents === undefined) {
+    if (labelFlag !== undefined && (count ?? 1) > 1) {
+      return { error: "--label names one key. For a batch use --labels-from <file>, one name per line." };
+    }
+    return { count: count ?? 1 };
+  }
+  if (labelFlag !== undefined)
+    return { error: "--labels-from and --label cannot both be given." };
+  const labels = labelsFileContents.split(`
+`).map((line) => line.trim()).filter((line) => line.length > 0);
+  if (labels.length === 0)
+    return { error: "--labels-from names an empty file; there is nothing to derive." };
+  if (labels.length > MAX_NEW_KEY_COUNT) {
+    return { error: `--labels-from holds ${labels.length} names; --count is capped at ${MAX_NEW_KEY_COUNT}.` };
+  }
+  const duplicate = labels.find((label, at) => labels.indexOf(label) !== at);
+  if (duplicate !== undefined)
+    return { error: `--labels-from lists ${duplicate} more than once.` };
+  if (count !== undefined && count !== labels.length) {
+    return { error: `--count ${count} disagrees with --labels-from, which holds ${labels.length} names.` };
+  }
+  return { count: labels.length, labels };
+}
 async function vaultNewKey(args, ctx) {
   const parsed = parseArgs(args, {
-    valueFlags: ["--keystore", "--chain", "--label"],
-    booleanFlags: ["--accept-older-copy"]
+    valueFlags: ["--keystore", "--chain", "--label", "--count", "--labels-from"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore", "--labels-from"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -41100,9 +41295,25 @@ async function vaultNewKey(args, ctx) {
   if (!requireTty(ctx, "vault new-key"))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
+  const labelsFile = parsed.values["--labels-from"];
+  let labelsFileContents;
+  if (labelsFile !== undefined) {
+    try {
+      labelsFileContents = await deps.readFile(labelsFile);
+    } catch (error) {
+      return usage(ctx, `Could not read --labels-from: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+  const batch = resolveBatch(parsed.values["--count"], parsed.values["--label"], labelsFileContents);
+  if ("error" in batch)
+    return usage(ctx, batch.error);
+  const batchRequested = parsed.values["--count"] !== undefined || labelsFile !== undefined;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
@@ -41114,58 +41325,106 @@ async function vaultNewKey(args, ctx) {
         suggestion: "Create a second vault with a fresh root (`candle vault init`) and move the funds across with `candle vault transfer`. There is no flag for this: no fact you could assert would make the old boundary known."
       });
     }
-    const index = nextAllocatableIndex(vault.index.hd.nextIndex.solanaVault, vault.index.hd.exposedIndexes.solanaVault);
-    const derivationPath = solanaVaultPath(index);
-    const root = await decryptRoot(vault);
-    let address;
-    let keyId;
-    let blob;
-    try {
-      const derived = await deriveSolanaKey(root, derivationPath);
-      try {
-        address = derived.address;
-        keyId = freshKeyId();
-        blob = await sealKeyBlob(vault, keyId, derived.secret64);
-      } finally {
-        wipe(derived.secret64);
+    if (batch.labels !== undefined) {
+      const taken = new Set(vault.index.entries.map((entry) => entry.label));
+      const clash = batch.labels.find((label) => taken.has(label));
+      if (clash !== undefined) {
+        return usage(ctx, `A key labelled ${clash} already exists in this vault; every --labels-from name must be new.`);
       }
+    }
+    const derived = [];
+    let last;
+    let current = vault;
+    const root = await decryptRoot(vault);
+    try {
+      for (let made = 0;made < batch.count; made++) {
+        const index = nextAllocatableIndex(current.index.hd.nextIndex.solanaVault, current.index.hd.exposedIndexes.solanaVault);
+        const derivationPath = solanaVaultPath(index);
+        const label = batch.labels?.[made] ?? parsed.values["--label"] ?? `key-${index}`;
+        let address;
+        let keyId;
+        let blob;
+        const key = await deriveSolanaKey(root, derivationPath);
+        try {
+          address = key.address;
+          keyId = freshKeyId();
+          blob = await sealKeyBlob(current, keyId, key.secret64);
+        } finally {
+          wipe(key.secret64);
+        }
+        const entry = {
+          id: keyId,
+          chain: "solana",
+          curve: "ed25519",
+          address,
+          label,
+          createdAt: new Date(deps.now()).toISOString(),
+          role: "vault",
+          origin: "derived",
+          derivation: { scheme: DERIVATION_SCHEME, path: derivationPath },
+          exposure: { everRemoteExposed: false, everExported: false }
+        };
+        current = await commitVault(current, {
+          index: {
+            hd: { ...current.index.hd, nextIndex: { ...current.index.hd.nextIndex, solanaVault: index + 1 } },
+            entries: [...current.index.entries, entry]
+          },
+          addKeys: [blob]
+        }, deps);
+        derived.push({ address, label, path: derivationPath, index, keyId });
+        await verifyWrittenFromDisk(current, address, keyId);
+        last = { address, keyId };
+        if (!ctx.json && batchRequested)
+          deps.stdout.write(`${address}  ${label}  ${derivationPath}
+`);
+      }
+    } catch (error) {
+      reportPartialBatch(ctx, derived, batch.count);
+      throw error;
     } finally {
       wipe(root);
     }
-    const entry = {
-      id: keyId,
-      chain: "solana",
-      curve: "ed25519",
-      address,
-      label: parsed.values["--label"] ?? `key-${index}`,
-      createdAt: new Date(deps.now()).toISOString(),
-      role: "vault",
-      origin: "derived",
-      derivation: { scheme: DERIVATION_SCHEME, path: derivationPath },
-      exposure: { everRemoteExposed: false, everExported: false }
-    };
-    await commitVault(vault, {
-      index: {
-        hd: { ...vault.index.hd, nextIndex: { ...vault.index.hd.nextIndex, solanaVault: index + 1 } },
-        entries: [...vault.index.entries, entry]
-      },
-      addKeys: [blob]
-    }, deps);
-    await verifyWritten(path, address, keyId, opened.reopen, ctx);
+    const only = derived[0];
+    if (only === undefined || last === undefined)
+      throw new VaultError("VAULT_WRITE_FAILED", "No key was derived.");
+    await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx);
     if (ctx.json) {
-      writeJson(deps, { ok: true, address, label: entry.label, path: derivationPath, index, keyId });
+      if (batchRequested)
+        writeJson(deps, { ok: true, count: derived.length, keys: derived });
+      else
+        writeJson(deps, {
+          ok: true,
+          address: only.address,
+          label: only.label,
+          path: only.path,
+          index: only.index,
+          keyId: only.keyId
+        });
       return 0;
     }
-    deps.stdout.write(`${address}
+    if (batchRequested) {
+      deps.stdout.write(`${derived.length} key${derived.length === 1 ? "" : "s"} created under one unlock, each committed on its own and re-read from the vault and re-derived from its root.
 `);
-    deps.stdout.write(`  label       ${entry.label}
+      return 0;
+    }
+    deps.stdout.write(`${only.address}
 `);
-    deps.stdout.write(`  derivation  ${derivationPath}
+    deps.stdout.write(`  label       ${only.label}
+`);
+    deps.stdout.write(`  derivation  ${only.path}
 `);
     deps.stdout.write(`  verified    re-read from the vault and re-derived from its root
 `);
     return 0;
   });
+}
+function reportPartialBatch(ctx, derived, requested) {
+  if (requested <= 1 || derived.length === 0)
+    return;
+  ctx.deps.stderr.write(`
+${derived.length} of ${requested} keys were created and ARE in the vault; the vault is intact and its counter is past them.
+` + `Re-run for the remaining ${requested - derived.length}${derived.length > 0 ? " (with a --labels-from file holding the names that did not land)" : ""}.
+`);
 }
 function nextAllocatableIndex(counter, exposed) {
   let index = counter;
@@ -41183,6 +41442,21 @@ async function assertHighValueSatisfied(path, envelopes) {
   if (countRecoverableFactors(envelopes) >= 2)
     return;
   throw new VaultError("VAULT_NO_RECOVERABLE_FACTOR", "This vault was created with --high-value, which needs either a generated passphrase or two recoverable factors in different domains before a key is created in it.", { suggestion: "Add a second recoverable factor: candle vault factor add passphrase" });
+}
+async function verifyWrittenFromDisk(vault, address, keyId) {
+  const raw = await readVaultRaw(vault.path);
+  if (raw === null) {
+    throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${vault.path} could not be read back after the write.`);
+  }
+  const onDisk = { ...vault, raw, file: parseVaultFile(raw) };
+  const secret = await decryptKey(onDisk, keyId);
+  try {
+    if (addressFromSecret64(secret) !== address) {
+      throw new VaultError("VAULT_VERIFY_FAILED", "The key written to the vault does not produce the address just derived.");
+    }
+  } finally {
+    wipe(secret);
+  }
 }
 async function verifyWritten(path, address, keyId, reopen, _ctx) {
   const raw = await readVaultRaw(path);
@@ -41214,7 +41488,11 @@ function requireExternalEntry(index, named) {
   throw new VaultError("VAULT_INDEX_INVALID", other === undefined ? `No external wallet in this vault matches ${named}.` : `${named} is ${describeRole(other)}, not an external wallet.`, { suggestion: "List them: candle external list. Create one: candle external new --label <name>", exitCode: 2 });
 }
 async function externalNew(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore", "--label"], booleanFlags: ["--accept-older-copy"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore", "--label"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"]
+  });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
   if (parsed.positionals.length > 0)
@@ -41224,9 +41502,12 @@ async function externalNew(args, ctx) {
   if (!requireTty(ctx, "external new"))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
@@ -41314,7 +41595,11 @@ async function externalNew(args, ctx) {
   });
 }
 async function externalList(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"]
+  });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
   if (parsed.positionals.length > 0)
@@ -41324,9 +41609,12 @@ async function externalList(args, ctx) {
   if (!requireTty(ctx, "external list"))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
     const externals = vault.index.entries.filter((entry) => entry.role === "external");
     const rows = externals.map((entry) => ({
@@ -41364,7 +41652,8 @@ async function externalList(args, ctx) {
 async function externalSweep(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--to", "--rpc-url", "--keystore"],
-    booleanFlags: ["--accept-older-copy"]
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -41383,9 +41672,12 @@ async function externalSweep(args, ctx) {
   if (!requireTty(ctx, "external sweep"))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
@@ -41481,6 +41773,7 @@ async function help(args, ctx) {
 }
 
 // src/commands/keys.ts
+init_args();
 init_render();
 var KEYS_PATH = "/api/v1/agent/keys";
 var NO_DEVICE_TOKEN = {
@@ -41722,6 +42015,7 @@ async function keysRevoke(args, ctx) {
 }
 
 // src/commands/keys-wallets.ts
+init_args();
 init_render();
 var NO_API_KEY = {
   code: "NO_API_KEY",
@@ -41888,15 +42182,16 @@ async function keysWallets(args, ctx) {
 }
 
 // src/commands/launch.ts
-import { randomUUID as randomUUID2 } from "node:crypto";
+init_args();
 init_render();
+import { randomUUID as randomUUID2 } from "node:crypto";
 
 // src/trading.ts
 init_esm();
 init_zod();
 import { createHash, sign } from "node:crypto";
 import { mkdir as mkdir5, open as open3, readFile as readFile5, rename as rename3, writeFile as writeFile4 } from "node:fs/promises";
-import { homedir as homedir6 } from "node:os";
+import { homedir as homedir5 } from "node:os";
 import { join as join9 } from "node:path";
 class TradingError extends Error {
   code;
@@ -42087,7 +42382,7 @@ function jobPath(kind, id) {
   return `/api/v1/${rail}/jobs/${encodeURIComponent(id)}`;
 }
 function operationPath(ctx, key, id) {
-  const dir = ctx.deps.env.CANDLE_CONFIG_DIR || join9(ctx.deps.env.HOME || homedir6(), ".config", "candle");
+  const dir = ctx.deps.env.CANDLE_CONFIG_DIR || join9(ctx.deps.env.HOME || homedir5(), ".config", "candle");
   const hash = createHash("sha256").update(JSON.stringify([ctx.apiUrl, key, id])).digest("hex");
   return join9(dir, "operations", `${hash}.json`);
 }
@@ -42176,8 +42471,9 @@ async function saveLaunchSignature(ctx, key, id, transaction) {
 }
 
 // src/commands/swap.ts
-import { randomUUID } from "node:crypto";
+init_args();
 init_render();
+import { randomUUID } from "node:crypto";
 function tradingFailure(ctx, error, id) {
   writeLocalFailure(ctx.deps, {
     code: error instanceof TradingError ? error.code : "TRADING_FAILED",
@@ -42459,6 +42755,7 @@ async function launch(args, ctx) {
 }
 
 // src/commands/mcp.ts
+init_args();
 init_release();
 init_render();
 var MCP_TOOL_NAMES = [
@@ -42587,6 +42884,9 @@ async function mcp(args, ctx) {
     return 1;
   }
 }
+
+// src/commands/plugins.ts
+init_args();
 
 // src/plugins.ts
 import { spawn } from "node:child_process";
@@ -42754,6 +43054,7 @@ init_render();
 init_store();
 
 // src/commands/secrets.ts
+init_args();
 init_render();
 var NAME_SHAPE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 function canonicalSecretName(raw) {
@@ -42923,9 +43224,12 @@ async function runPlugin(name, rawArgs, ctx) {
       return 1;
     if (!requireTty(ctx, "candle <plugin> --wallet"))
       return 1;
-    const vaultPath = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
+    const resolvedVault = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
+    if ("error" in resolvedVault)
+      return usage(ctx, resolvedVault.error);
+    const vaultPath = resolvedVault.path;
     const resolved = await runVaultCommand(ctx, async ({ hold }) => {
-      const raw = await requireVaultRaw(vaultPath);
+      const raw = await requireVaultRaw(ctx, resolvedVault);
       const vault = hold((await unlockInteractively(ctx, vaultPath, raw)).vault);
       for (const requested of split2.wallets) {
         const entry = findExternalEntry(vault.index, requested);
@@ -42958,6 +43262,7 @@ async function runPlugin(name, rawArgs, ctx) {
 }
 
 // src/commands/profile.ts
+init_args();
 init_render();
 async function profileList(args, ctx) {
   const { deps, json } = ctx;
@@ -43186,6 +43491,7 @@ async function profileRemove(args, ctx) {
 }
 
 // src/commands/setup.ts
+init_args();
 init_render();
 var SKILLS_CLAUDE_COMMAND = "/plugin marketplace add candledottv/agentic";
 var CODING_AGENTS_DOCS = "https://docs.candle.tv/developers/coding-agents";
@@ -43304,6 +43610,7 @@ Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl,
 // src/commands/sign.ts
 init_sha256();
 init_esm();
+init_args();
 
 // src/solana-alt.ts
 init_esm();
@@ -43640,10 +43947,14 @@ function assertExternalSigners(index, compiled, numRequiredSignatures, named) {
     const entry = index.entries.find((candidate) => candidate.address === address);
     const role = i === 0 ? "the fee payer" : `signer ${i}`;
     if (entry === undefined) {
-      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address} (${role}) is not an address this vault holds. candle sign signs only with this vault's external wallets.`);
+      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address} (${role}) is not an address this vault holds. candle sign signs only with this vault's external wallets.`, {
+        suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
+      });
     }
     if (entry.role !== "external") {
-      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address} (${role}) is ${describeRole(entry)}${entry.label ? ` "${entry.label}"` : ""}, which never signs for an outside tool. Only an external wallet does (candle external new).`);
+      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address} (${role}) is ${describeRole(entry)}${entry.label ? ` "${entry.label}"` : ""}, which never signs for an outside tool. Only an external wallet does (candle external new).`, {
+        suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
+      });
     }
     const provided = named.find((candidate) => candidate.id === entry.id);
     if (provided === undefined) {
@@ -43748,7 +44059,8 @@ async function sign2(args, ctx) {
     return usage(ctx, lifted.error);
   const parsed = parseArgs(lifted.rest, {
     valueFlags: ["--file", "--rpc-url", "--keystore"],
-    booleanFlags: ["--broadcast", "--yes", "--accept-older-copy"]
+    booleanFlags: ["--broadcast", "--yes", "--accept-older-copy"],
+    pathFlags: ["--keystore", "--file"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -43765,7 +44077,10 @@ async function sign2(args, ctx) {
   if (!requireTty(ctx, "candle sign"))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   const yes = parsed.booleans.has("--yes");
   return runVaultCommand(ctx, async ({ hold }) => {
     let tx;
@@ -43774,9 +44089,9 @@ async function sign2(args, ctx) {
       tx = decodeTransaction(decodeStrictBase64(new TextDecoder().decode(raw2)));
     } catch (error) {
       if (error instanceof TransactionDecodeError) {
-        throw new VaultError("SIGN_TRANSACTION_UNDECODABLE", `The input is not one base64 legacy or v0 transaction: ${error.message}.`);
+        throw new VaultError("SIGN_TRANSACTION_UNDECODABLE", `The input is not one base64 legacy or v0 transaction: ${error.message}.`, { suggestion: "Nothing was signed. Pass one base64 transaction through --file <path> or stdin." });
       }
-      throw new VaultError("SIGN_TRANSACTION_UNDECODABLE", `The input could not be read: ${error instanceof Error ? error.message : error}.`);
+      throw new VaultError("SIGN_TRANSACTION_UNDECODABLE", `The input could not be read: ${error instanceof Error ? error.message : error}.`, { suggestion: "Nothing was signed. Check --file <path>, or pipe the transaction on stdin." });
     }
     const rpc2 = createSolanaRpc(rpcUrl2, deps.fetch);
     let compiled;
@@ -43784,10 +44099,12 @@ async function sign2(args, ctx) {
       compiled = await resolveCompiledKeys(tx.message, rpc2);
     } catch (error) {
       if (error instanceof LookupTableError)
-        throw new VaultError("SIGN_LOOKUP_TABLE_UNRESOLVED", `${error.message}. Nothing was displayed or signed.`);
+        throw new VaultError("SIGN_LOOKUP_TABLE_UNRESOLVED", `${error.message}. Nothing was displayed or signed.`, {
+          suggestion: "Point --rpc-url at an endpoint that has the lookup table, then run it again."
+        });
       throw error;
     }
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
@@ -43798,7 +44115,9 @@ async function sign2(args, ctx) {
       if (entry === undefined) {
         const other = vault.index.entries.find((candidate) => candidate.label === requested || candidate.address === requested);
         if (other !== undefined) {
-          throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `--wallet ${requested} is ${describeRole(other)}, which never signs for an outside tool.`);
+          throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `--wallet ${requested} is ${describeRole(other)}, which never signs for an outside tool.`, {
+            suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
+          });
         }
         return usage(ctx, `No external wallet in this vault matches --wallet ${requested}.`);
       }
@@ -43815,13 +44134,15 @@ async function sign2(args, ctx) {
     try {
       simulation = await simulateWithSnapshots(rpc2, unsignedBase64, compiled);
     } catch (error) {
-      throw new VaultError("SIGN_SIMULATION_FAILED", `The simulation could not be run over ${rpcUrl2}: ${error instanceof Error ? error.message : error}. Nothing was signed.`);
+      throw new VaultError("SIGN_SIMULATION_FAILED", `The simulation could not be run over ${rpcUrl2}: ${error instanceof Error ? error.message : error}. Nothing was signed.`, {
+        suggestion: "Point --rpc-url at a reachable endpoint and run it again; there is no way to skip the simulation."
+      });
     }
     if (simulation.result.err !== null && simulation.result.err !== undefined) {
       const logs = simulation.result.logs.length > 0 ? `
 ${simulation.result.logs.map((line) => `  ${line}`).join(`
 `)}` : "";
-      throw new VaultError("SIGN_SIMULATION_FAILED", `The simulation failed: ${JSON.stringify(simulation.result.err)}. Nothing was signed; there is no override.${logs}`);
+      throw new VaultError("SIGN_SIMULATION_FAILED", `The simulation failed: ${JSON.stringify(simulation.result.err)}. Nothing was signed; there is no override.${logs}`, { suggestion: "Fix what the transaction does, then sign the corrected one." });
     }
     const mints = await readMints(rpc2, [
       ...new Set(computeDeltas(simulation.snapshots).tokens.map((token) => token.mint))
@@ -43913,7 +44234,8 @@ async function signMessage2(args, ctx) {
     return usage(ctx, lifted.error);
   const parsed = parseArgs(lifted.rest, {
     valueFlags: ["--file", "--keystore"],
-    booleanFlags: ["--yes", "--accept-older-copy"]
+    booleanFlags: ["--yes", "--accept-older-copy"],
+    pathFlags: ["--keystore", "--file"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -43928,7 +44250,10 @@ async function signMessage2(args, ctx) {
   if (!requireTty(ctx, "candle sign message"))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
     let bytes;
     try {
@@ -43936,7 +44261,7 @@ async function signMessage2(args, ctx) {
     } catch (error) {
       throw new VaultError("VAULT_UNREADABLE", `The message could not be read: ${error instanceof Error ? error.message : error}.`);
     }
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
@@ -43945,7 +44270,9 @@ async function signMessage2(args, ctx) {
     if (entry === undefined) {
       const other = vault.index.entries.find((candidate) => candidate.label === requested || candidate.address === requested);
       if (other !== undefined) {
-        throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `--wallet ${requested} is ${describeRole(other)}, which never signs a message for an outside tool.`);
+        throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `--wallet ${requested} is ${describeRole(other)}, which never signs a message for an outside tool.`, {
+          suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
+        });
       }
       return usage(ctx, `No external wallet in this vault matches --wallet ${requested}.`);
     }
@@ -43998,10 +44325,13 @@ async function signMessage2(args, ctx) {
 
 // src/commands/tee.ts
 init_esm();
+init_args();
 init_render();
+init_store();
 
 // src/vault/tee-resolve.ts
 init_esm();
+init_args();
 init_vault_support();
 init_render();
 init_errors();
@@ -44291,6 +44621,10 @@ async function resolveTeeAddress(ctx, _parsed, address, openLegacy, access3 = "r
       };
     }
   } catch (error) {
+    if (isUsageError(error)) {
+      writeUsageFailure(ctx.deps, error.message, ctx.json);
+      return { ok: false, code: 2 };
+    }
     if (isVaultError(error)) {
       writeLocalFailure(ctx.deps, { code: error.code, message: error.message, ...error.suggestion ? { suggestion: error.suggestion } : {} }, ctx.json);
       return { ok: false, code: error.exitCode };
@@ -47277,7 +47611,48 @@ init_wallet_keystore();
 
 // src/commands/wallets.ts
 init_esm();
+init_args();
 init_render();
+var LINKED_WALLETS_PAGE_LIMIT = 100;
+var LINKED_WALLETS_PAGE_CAP = 25;
+async function readAllLinkedWallets(args) {
+  const rows = [];
+  let firstPageBody;
+  let account;
+  let cursor = null;
+  for (let pageCount = 0;pageCount < LINKED_WALLETS_PAGE_CAP; pageCount++) {
+    const query = cursor === null ? `?limit=${LINKED_WALLETS_PAGE_LIMIT}` : `?limit=${LINKED_WALLETS_PAGE_LIMIT}&cursor=${encodeURIComponent(cursor)}`;
+    const listed = await apiRequest(`/api/v1/agent/wallets${query}`, {
+      method: "GET",
+      auth: "key",
+      credentials: { apiKey: args.apiKey },
+      apiUrl: args.apiUrl,
+      fetch: args.deps.fetch,
+      env: args.deps.env
+    });
+    if (!listed.ok)
+      return { ok: false, response: listed };
+    const body = listed.body;
+    if (pageCount === 0)
+      firstPageBody = listed.body;
+    if (!Array.isArray(body.page)) {
+      return { ok: true, listing: { rows, firstPageBody, incomplete: "malformed-page", continueCursor: null, account } };
+    }
+    const pageRows = body.page;
+    rows.push(...pageRows);
+    account ??= pageRows.find((row) => typeof row.userAddress === "string")?.userAddress;
+    if (body.isDone !== false || typeof body.continueCursor !== "string") {
+      return { ok: true, listing: { rows, firstPageBody, continueCursor: null, account } };
+    }
+    cursor = body.continueCursor;
+  }
+  return { ok: true, listing: { rows, firstPageBody, incomplete: "page-cap", continueCursor: cursor, account } };
+}
+function incompleteNotice(listing) {
+  return listing.incomplete === "page-cap" ? `Warning: stopped after ${LINKED_WALLETS_PAGE_CAP} pages of ${LINKED_WALLETS_PAGE_LIMIT}; this list is NOT complete. ` + `Continue from cursor ${listing.continueCursor}.
+` : `Warning: the server sent a page without a wallet list; this list is NOT complete.
+`;
+}
 var NONE_HINT = `A wallet marked none has no signer on this machine, so a trade from here cannot sign with it.
 ` + `Import it here (candle wallets import), or run the trade from the machine that imported it.
 `;
@@ -47332,28 +47707,31 @@ async function wallets(args, ctx) {
     writeFailure(deps, embedded, { apiUrl, authType: "key" }, json);
     return 1;
   }
-  const linked = await apiRequest("/api/v1/agent/wallets", {
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
+  const linked = await readAllLinkedWallets({ apiKey, apiUrl, deps });
   if (!linked.ok) {
-    writeFailure(deps, linked, { apiUrl, authType: "key" }, json);
+    writeFailure(deps, linked.response, { apiUrl, authType: "key" }, json);
     return 1;
   }
-  const linkedBody = linked.body;
-  const linkedRows = Array.isArray(linkedBody.page) ? linkedBody.page : [];
+  const listing = linked.listing;
+  const linkedRows = listing.rows;
   const { states: signerStates, storeError } = await probeSignerStates(linkedRows, deps.store);
   if (storeError !== undefined)
     deps.stderr.write(`Could not read the signer store: ${storeError}
 `);
+  if (listing.incomplete !== undefined)
+    deps.stderr.write(incompleteNotice(listing));
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       embedded: embedded.body,
-      linked: linked.body,
-      signers: Object.fromEntries(signerStates)
+      linked: {
+        ...typeof listing.firstPageBody === "object" && listing.firstPageBody !== null ? listing.firstPageBody : {},
+        page: linkedRows,
+        isDone: listing.incomplete === undefined,
+        continueCursor: listing.continueCursor
+      },
+      signers: Object.fromEntries(signerStates),
+      walletCount: linkedRows.length,
+      truncated: listing.incomplete !== undefined
     })}
 `);
     return 0;
@@ -47377,7 +47755,7 @@ async function wallets(args, ctx) {
   ])}
 `);
   deps.stdout.write(`
-Linked wallets:
+Linked wallets (${linkedRows.length}):
 `);
   if (linkedRows.length === 0) {
     deps.stdout.write(`(none)
@@ -47450,7 +47828,8 @@ function resolveImportAddress(chain2, privateKey, addressFlag) {
 async function walletsImport(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {
-    valueFlags: ["--chain", "--address", "--label", "--key-file", "--signer-out"]
+    valueFlags: ["--chain", "--address", "--label", "--key-file", "--signer-out"],
+    pathFlags: ["--key-file", "--signer-out"]
   });
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json);
@@ -47580,32 +47959,17 @@ async function walletsImport(args, ctx) {
 }
 async function verifyImportLanded(args) {
   const { deps } = args.ctx;
-  let cursor = null;
-  let account;
-  for (let pageCount = 0;pageCount < 25; pageCount++) {
-    const query = cursor === null ? "?limit=100" : `?limit=100&cursor=${encodeURIComponent(cursor)}`;
-    const listed = await apiRequest(`/api/v1/agent/wallets${query}`, {
-      method: "GET",
-      auth: "key",
-      credentials: { apiKey: args.apiKey },
-      apiUrl: args.apiUrl,
-      fetch: deps.fetch,
-      env: deps.env
-    });
-    if (!listed.ok)
-      return { status: "unchecked", ...account !== undefined ? { account } : {} };
-    const body = listed.body;
-    if (!Array.isArray(body.page))
-      return { status: "unchecked", ...account !== undefined ? { account } : {} };
-    account ??= body.page.find((row) => typeof row.userAddress === "string")?.userAddress;
-    if (body.page.some((row) => row._id === args.id)) {
-      return { status: "verified", ...account !== undefined ? { account } : {} };
-    }
-    if (body.isDone !== false || typeof body.continueCursor !== "string")
-      break;
-    cursor = body.continueCursor;
-  }
-  return { status: "missing", ...account !== undefined ? { account } : {} };
+  const read = await readAllLinkedWallets({ apiKey: args.apiKey, apiUrl: args.apiUrl, deps });
+  if (!read.ok)
+    return { status: "unchecked" };
+  const { rows, account, incomplete } = read.listing;
+  const found = rows.some((row) => row._id === args.id);
+  const withAccount = account !== undefined ? { account } : {};
+  if (found)
+    return { status: "verified", ...withAccount };
+  if (incomplete !== undefined)
+    return { status: "unchecked", ...withAccount };
+  return { status: "missing", ...withAccount };
 }
 async function walletsRevoke(args, ctx) {
   const { deps, apiUrl, json } = ctx;
@@ -47689,7 +48053,22 @@ function usage3(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
+function teeStorePathsFor(ctx, parsed) {
+  const flag = parsed.values["--keystore"];
+  if (flag !== undefined)
+    return { current: flag, legacy: flag };
+  try {
+    return { current: defaultTeeKeystorePath(ctx.deps.env), legacy: legacyTeeKeystorePath(ctx.deps.env) };
+  } catch (error) {
+    if (isUsageError(error))
+      return { error: error.message };
+    throw error;
+  }
+}
 async function readTeeStore(ctx, parsed) {
+  const paths = teeStorePathsFor(ctx, parsed);
+  if ("error" in paths)
+    return { usage: paths.error };
   const attempt = async (path) => {
     try {
       return { path, raw: await readTeeStoreRaw(ctx.deps, path) };
@@ -47697,14 +48076,19 @@ async function readTeeStore(ctx, parsed) {
       return { path, error };
     }
   };
-  const explicit = parsed.values["--keystore"];
-  if (explicit !== undefined)
-    return attempt(explicit);
-  const current = await attempt(defaultTeeKeystorePath(ctx.deps.env));
+  const current = await attempt(paths.current);
   if ("error" in current || current.raw !== null)
     return current;
-  const legacy = await attempt(legacyTeeKeystorePath(ctx.deps.env));
+  if (paths.legacy === paths.current)
+    return current;
+  const legacy = await attempt(paths.legacy);
   return "error" in legacy || legacy.raw !== null ? legacy : current;
+}
+function teePathSourceNote(ctx, parsed) {
+  if (parsed.values["--keystore"] !== undefined)
+    return "(from --keystore)";
+  const configured = ctx.deps.env[CONFIG_DIR_ENV]?.trim();
+  return configured ? `(from ${CONFIG_DIR_ENV}=${configured})` : `(the default: no --keystore given and ${CONFIG_DIR_ENV} is unset)`;
 }
 async function readTeeStoreRaw(deps, path) {
   try {
@@ -47883,6 +48267,8 @@ function writeCommitFailure(ctx, failure, consequence) {
 async function openExistingTeeStore(ctx, parsed) {
   const { deps, json } = ctx;
   const found = await readTeeStore(ctx, parsed);
+  if ("usage" in found)
+    return { ok: false, code: usage3(ctx, found.usage) };
   const { path } = found;
   if ("error" in found) {
     writeLocalFailure(deps, {
@@ -47893,7 +48279,11 @@ async function openExistingTeeStore(ctx, parsed) {
   }
   const { raw } = found;
   if (raw === null) {
-    writeLocalFailure(deps, { code: "TEE_STORE_MISSING", message: `No TEE wallet store at ${path}.`, suggestion: "Run: candle tee new" }, json);
+    writeLocalFailure(deps, {
+      code: "TEE_STORE_MISSING",
+      message: `No TEE wallet store at ${path} ${teePathSourceNote(ctx, parsed)}.`,
+      suggestion: "Run: candle tee new"
+    }, json);
     return { ok: false, code: 1 };
   }
   const passphrase = await promptPassphrase(deps, false);
@@ -47922,6 +48312,10 @@ async function addressOwnedByVault(ctx, address) {
     closeVault2(hit.vault);
     return true;
   } catch (error) {
+    if (isUsageError(error)) {
+      writeUsageFailure(ctx.deps, error.message, ctx.json);
+      return "usage";
+    }
     writeLocalFailure(ctx.deps, {
       code: "VAULT_UNLOCK_FAILED",
       message: error instanceof Error ? error.message : String(error)
@@ -47969,12 +48363,14 @@ async function teeNew(args, ctx) {
   const { deps, json } = ctx;
   if (!refuseEnvPassphrase2(ctx))
     return 1;
-  const parsed = parseArgs(args, { valueFlags: ["--label", "--keystore"] });
+  const parsed = parseArgs(args, { valueFlags: ["--label", "--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
     return usage3(ctx, parsed.error);
   if (parsed.positionals.length > 0)
     return usage3(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
   const found = await readTeeStore(ctx, parsed);
+  if ("usage" in found)
+    return usage3(ctx, found.usage);
   const { path } = found;
   if ("error" in found) {
     writeLocalFailure(deps, {
@@ -48047,7 +48443,8 @@ async function teeEnable(args, ctx) {
     return 1;
   const parsed = parseArgs(args, {
     valueFlags: ["--vault", "--vault-key", "--label", "--keystore"],
-    booleanFlags: ["--accept-unknown-exposure"]
+    booleanFlags: ["--accept-unknown-exposure"],
+    pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
     return usage3(ctx, parsed.error);
@@ -48063,10 +48460,13 @@ async function teeEnable(args, ctx) {
   let vault = vaultFlag;
   if (vaultKey !== undefined) {
     const { assertColdVaultDestination: assertColdVaultDestination2 } = await Promise.resolve().then(() => (init_promote_support(), exports_promote_support));
-    const { defaultVaultPath: defaultVaultPath2, readVaultRaw: readVaultRaw2, closeVault: closeVault2 } = await Promise.resolve().then(() => (init_store(), exports_store));
-    const { unlockInteractively: unlockInteractively2 } = await Promise.resolve().then(() => (init_vault_support(), exports_vault_support));
+    const { readVaultRaw: readVaultRaw2, closeVault: closeVault2 } = await Promise.resolve().then(() => (init_store(), exports_store));
+    const { unlockInteractively: unlockInteractively2, vaultPathFor: vaultPathFor2 } = await Promise.resolve().then(() => (init_vault_support(), exports_vault_support));
     const { isVaultError: isVaultError2 } = await Promise.resolve().then(() => (init_errors(), exports_errors));
-    const vaultPath = parsed.values["--keystore"] ?? defaultVaultPath2(deps.env);
+    const resolvedVault = vaultPathFor2(ctx, parsed);
+    if ("error" in resolvedVault)
+      return usage3(ctx, resolvedVault.error);
+    const vaultPath = resolvedVault.path;
     const raw = await readVaultRaw2(vaultPath);
     if (raw === null) {
       writeLocalFailure(deps, { code: "VAULT_MISSING", message: `No vault at ${vaultPath}.`, suggestion: "Create one: candle vault init" }, json);
@@ -48109,6 +48509,8 @@ async function teeEnable(args, ctx) {
   if (vault === address)
     return usage3(ctx, "--vault must be a different address from the TEE wallet.");
   const vaultOwned = await addressOwnedByVault(ctx, address);
+  if (vaultOwned === "usage")
+    return 2;
   if (vaultOwned === "error")
     return 1;
   if (vaultOwned === true)
@@ -48240,7 +48642,7 @@ async function teeFund(args, ctx) {
   const { deps, json } = ctx;
   if (!refuseEnvPassphrase2(ctx))
     return 1;
-  const parsed = parseArgs(args, { valueFlags: ["--amount", "--asset", "--keystore"] });
+  const parsed = parseArgs(args, { valueFlags: ["--amount", "--asset", "--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
     return usage3(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
@@ -48320,7 +48722,7 @@ async function teeStatus(args, ctx) {
   const { deps, json } = ctx;
   if (!refuseEnvPassphrase2(ctx))
     return 1;
-  const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"] });
+  const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
     return usage3(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
@@ -48446,7 +48848,7 @@ async function teeDisable(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   if (!refuseEnvPassphrase2(ctx))
     return 1;
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"] });
+  const parsed = parseArgs(args, { valueFlags: ["--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
     return usage3(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
@@ -48605,7 +49007,11 @@ async function teeSweep(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   if (!refuseEnvPassphrase2(ctx))
     return 1;
-  const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"], booleanFlags: ["--emergency"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--rpc-url", "--keystore"],
+    booleanFlags: ["--emergency"],
+    pathFlags: ["--keystore"]
+  });
   if ("error" in parsed)
     return usage3(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
@@ -49127,6 +49533,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
 }
 
 // src/commands/update.ts
+init_args();
 import { createHash as createHash3, randomBytes as randomBytes3 } from "node:crypto";
 
 // src/progress.ts
@@ -49416,6 +49823,7 @@ function verifyReleaseAsset(bytes, bundleJson, identityUri, issuer) {
 
 // src/commands/update.ts
 init_render();
+var SIGNATURE_VERIFIED = "signature verified (Sigstore, keyless; signer pinned to the release workflow)";
 var INSTALLER_LINE = "curl -fsSL https://candle.tv/install.sh | bash";
 async function update(args, ctx) {
   const { deps, json } = ctx;
@@ -49529,7 +49937,7 @@ async function update(args, ctx) {
   }
   const steps = json ? stepReporter(() => {}, false) : stepReporter((text) => deps.stderr.write(text), process.stderr.isTTY === true);
   if (!json)
-    deps.stderr.write(`Updating candle ${CLI_VERSION} -> ${target.version}
+    deps.stderr.write(`Updating candle ${CLI_VERSION} -> ${target.version} (${formatBytes(asset.size)})
 `);
   steps.start(`downloading ${expectedName}`);
   const download = await fetchAll(deps, base, target.tag, expectedName);
@@ -49575,7 +49983,7 @@ async function update(args, ctx) {
     }, json);
     return 1;
   }
-  steps.done("signature verified");
+  steps.done(SIGNATURE_VERIFIED);
   steps.start("installing");
   try {
     await deps.rename(tmpPath, realExec);
@@ -49658,6 +50066,7 @@ function messageOf(error) {
 }
 
 // src/commands/vault-backup.ts
+init_args();
 import { copyFile, stat as stat3 } from "node:fs/promises";
 import nodePath, { resolve as resolve2 } from "node:path";
 init_errors();
@@ -49784,7 +50193,8 @@ init_vault_support();
 async function vaultBackup(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--to"],
-    booleanFlags: ["--accept-shared-domain", "--accept-older-copy"]
+    booleanFlags: ["--accept-shared-domain", "--accept-older-copy"],
+    pathFlags: ["--keystore", "--to"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -49798,10 +50208,13 @@ async function vaultBackup(args, ctx) {
   if (!requireTty(ctx, "vault backup"))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   const destination = resolve2(to);
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     assertOutsideConfigDir(destination, deps.env);
     const file = parseVaultFile(raw);
     const verdict = await assertBackupDomainAllowed(file.envelopes, destination, {
@@ -49809,7 +50222,7 @@ async function vaultBackup(args, ctx) {
       realpath: deps.realpath
     });
     if (await exists(destination)) {
-      throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite a backup.`);
+      throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite a backup.`, { suggestion: "Nothing was written. Choose a path that does not exist yet." });
     }
     if (verdict.sealed && ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase") {
       deps.stderr.write(`${sealReason(verdict.destination, destination)}, so this backup is a sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor ${ctx.vaultFactor}.
@@ -49868,7 +50281,12 @@ function isSealedCopy(copyRaw) {
   return envelopes.length > 0 && envelopes.every(isPassphraseEnvelope);
 }
 async function vaultVerifyBackup(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"],
+    pathPositionals: ["<path>"]
+  });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
   const copyPath = parsed.positionals[0];
@@ -49881,12 +50299,17 @@ async function vaultVerifyBackup(args, ctx) {
   if (!requireTty(ctx, "vault verify-backup"))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const copyRaw = await readVaultRaw(resolve2(copyPath));
     if (copyRaw === null)
-      throw new VaultError("VAULT_MISSING", `No file at ${resolve2(copyPath)}.`);
+      throw new VaultError("VAULT_MISSING", `No file at ${resolve2(copyPath)}.`, {
+        suggestion: `Check the path: ls -l ${resolve2(copyPath)}. This is the COPY to verify, not the live vault.`
+      });
     const sealed = isSealedCopy(copyRaw);
     if (sealed) {
       deps.stderr.write(`${resolve2(copyPath)} is a sealed copy that opens only with the passphrase it was sealed under, which may predate a passphrase rotation.${ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase" ? ` The passphrase is used here rather than --factor ${ctx.vaultFactor}.` : ""}
@@ -49925,7 +50348,9 @@ async function vaultVerifyBackup(args, ctx) {
 async function verifyCopy(_ctx, copyPath, reopen, live) {
   const raw = await readVaultRaw(copyPath);
   if (raw === null)
-    throw new VaultError("VAULT_MISSING", `No file at ${copyPath}.`);
+    throw new VaultError("VAULT_MISSING", `No file at ${copyPath}.`, {
+      suggestion: `The copy this run just wrote is not there. Check the path and the volume: ls -l ${copyPath}`
+    });
   const copy = await reopen(copyPath, raw);
   try {
     return await verifyVaultIntegrity(copy, { live });
@@ -49942,7 +50367,7 @@ function isInsideDir(dir, target, api = nodePath) {
   return between !== ".." && !between.startsWith(`..${api.sep}`);
 }
 function assertOutsideConfigDir(destination, env, api = nodePath) {
-  const config = api.resolve(candleConfigDir2(env));
+  const config = api.resolve(candleConfigDir(env));
   if (isInsideDir(config, destination, api)) {
     throw new VaultError("VAULT_BACKUP_INSIDE_CONFIG", `${destination} is inside ${config}, where the vault itself lives.`, {
       suggestion: "A copy beside the original is lost with it. Back up to another disk, another machine, or removable media."
@@ -50038,6 +50463,7 @@ The recovery phrase restores derived keys only. It does not restore any key impo
 }
 
 // src/commands/vault-demote.ts
+init_args();
 init_render();
 init_errors();
 init_promote_support();
@@ -50046,7 +50472,8 @@ init_vault_support();
 async function vaultDemote(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--rpc-url", "--sweep-to", "--keystore"],
-    booleanFlags: ["--emergency", "--accept-older-copy"]
+    booleanFlags: ["--emergency", "--accept-older-copy"],
+    pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -50061,7 +50488,10 @@ async function vaultDemote(args, ctx) {
     return 1;
   if (!requireTty(ctx, "vault demote"))
     return 1;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   const emergency = parsed.booleans.has("--emergency");
   const sweepTo = parsed.values["--sweep-to"];
   const resolved = await resolveTeeAddress(ctx, parsed, address, async () => ({
@@ -50100,7 +50530,7 @@ async function vaultDemote(args, ctx) {
       releaseResolvedTee(resolved.resolved);
       released = true;
       return await runVaultCommand(ctx, async ({ hold }) => {
-        const raw = await requireVaultRaw(path);
+        const raw = await requireVaultRaw(ctx, resolvedVault);
         const opened = await unlockInteractively(ctx, path, raw, {
           acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
         });
@@ -50158,16 +50588,18 @@ async function demoteWithAdapter(ctx, entry, address, rpcUrl2, emergency) {
 }
 
 // src/commands/vault-export-key.ts
-import { access as access3, chmod as chmod5, constants as constants4, lstat, writeFile as writeFile5 } from "node:fs/promises";
-import { dirname as dirname7, resolve as resolve3 } from "node:path";
+init_args();
 init_errors();
 init_promote_support();
 init_store();
 init_vault_support();
+import { access as access3, chmod as chmod5, constants as constants4, lstat, writeFile as writeFile5 } from "node:fs/promises";
+import { dirname as dirname8, resolve as resolve3 } from "node:path";
 async function vaultExportKey(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--to"],
-    booleanFlags: ["--accept-older-copy"]
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore", "--to"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -50183,10 +50615,13 @@ async function vaultExportKey(args, ctx) {
   if (!requireTty(ctx, "vault export-key"))
     return 1;
   const destination = resolve3(to);
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
     await assertExportTargetWritable(destination);
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       promptText: "Vault passphrase (input hidden): "
@@ -50262,20 +50697,20 @@ async function assertExportTargetWritable(destination) {
   try {
     const info = await lstat(destination);
     if (info.isSymbolicLink()) {
-      throw new VaultError("EXPORT_TARGET_SYMLINK", `${destination} is a symlink; this CLI refuses to write a private key through one.`);
+      throw new VaultError("EXPORT_TARGET_SYMLINK", `${destination} is a symlink; this CLI refuses to write a private key through one.`, { suggestion: "Nothing was written. Choose a path that does not exist yet." });
     }
-    throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite an export.`);
+    throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite an export.`, { suggestion: "Nothing was written. Choose a path that does not exist yet." });
   } catch (error) {
     if (error instanceof VaultError)
       throw error;
     if (error.code !== "ENOENT")
       throw error;
   }
-  const parent = dirname7(destination);
+  const parent = dirname8(destination);
   try {
     const parentInfo = await lstat(parent);
     if (parentInfo.isSymbolicLink()) {
-      throw new VaultError("EXPORT_TARGET_SYMLINK", `${parent} is a symlink; this CLI refuses to write a private key into a symlinked directory.`);
+      throw new VaultError("EXPORT_TARGET_SYMLINK", `${parent} is a symlink; this CLI refuses to write a private key into a symlinked directory.`, { suggestion: "Nothing was written. Choose a --to path whose parent directory is a real directory." });
     }
     if (!parentInfo.isDirectory()) {
       throw new VaultError("VAULT_WRITE_FAILED", `${parent} is not a directory.`, {
@@ -50307,7 +50742,7 @@ async function writeExportFile(destination, body) {
   } catch (error) {
     const code = error.code;
     if (code === "EEXIST") {
-      throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite an export.`);
+      throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite an export.`, { suggestion: "Nothing was written. Choose a path that does not exist yet." });
     }
     if (code === "EACCES" || code === "EPERM") {
       throw new VaultError("VAULT_WRITE_FAILED", `Could not write ${destination}: permission denied.`, {
@@ -50321,6 +50756,7 @@ async function writeExportFile(destination, body) {
 }
 
 // src/commands/vault-factor.ts
+init_args();
 init_crypto();
 init_errors();
 init_fido2();
@@ -50341,13 +50777,16 @@ init_store();
 init_vault_support();
 var PASSKEY_NOTE = "A synced passkey lives in your Apple account: it follows the account to a new Mac, so it is a recoverable factor, and it is never counted as independent of any other Apple-account item (two synced passkeys are one factor). What syncs through iCloud Keychain is the credential's private key; the PRF output and this vault's key never leave this Mac. Keep the passphrase and the recovery phrase outside that Apple account.";
 var PASSKEY_LEFTOVER_NOTE = "The passkey this attempt created remains in your Passwords (System Settings, Passwords, cli.candle.tv) and opens nothing without its envelope; remove it there. Nothing was written to the vault.";
-async function addPasskeyFactor(ctx, parsed, path, hold) {
+async function addPasskeyFactor(ctx, parsed, resolvedVault, hold) {
+  const path = resolvedVault.path;
   const { deps } = ctx;
   const facts = await currentPlatformFacts(deps);
   assertFactorAddable("passkey-prf", facts, "platform-macos");
   const helper = facts.enclaveHelper;
   if (helper === undefined || helper.state !== "ready") {
-    throw new VaultError("VAULT_HELPER_MISSING", "The signed macOS helper was not found after the platform check.");
+    throw new VaultError("VAULT_HELPER_MISSING", "The signed macOS helper was not found after the platform check.", {
+      suggestion: "Install a release build (candle update), or point CANDLE_ENCLAVE_HELPER at the signed helper."
+    });
   }
   const session = {
     path: helper.path,
@@ -50356,7 +50795,7 @@ async function addPasskeyFactor(ctx, parsed, path, hold) {
     version: helper.version
   };
   const association = await checkAppleAppSiteAssociation(deps, helper.identity);
-  const raw = await requireVaultRaw(path);
+  const raw = await requireVaultRaw(ctx, resolvedVault);
   const envelopeId = freshEnvelopeId();
   const label = parsed.values["--label"] ?? "synced passkey";
   const opened = await unlockInteractively(ctx, path, raw, {
@@ -50493,11 +50932,12 @@ init_platform();
 init_store();
 init_vault_support();
 var SECURITY_KEY_PAIR_NOTE = "One security key is not a recoverable factor: a lost key is a lost factor. Two security key envelopes on two different keys are a recoverable pair. The passphrase remains this vault's recovery floor.";
-async function addSecurityKeyFactor(ctx, parsed, path, hold) {
+async function addSecurityKeyFactor(ctx, parsed, resolvedVault, hold) {
+  const path = resolvedVault.path;
   const { deps } = ctx;
   const facts = await currentPlatformFacts(deps);
   assertFactorAddable("passkey-prf", facts, "ctap2");
-  const raw = await requireVaultRaw(path);
+  const raw = await requireVaultRaw(ctx, resolvedVault);
   const file = parseVaultFile(raw);
   const envelopeId = freshEnvelopeId();
   const session = await openSecurityKeySession(deps, {
@@ -50598,13 +51038,16 @@ init_platform();
 init_store();
 init_vault_support();
 var TOUCH_ID_NOTE = "Touch ID is a daily-use factor, not a recovery factor: it opens this vault on this Mac only, and a wiped Mac, a changed fingerprint set or a lost Mac loses it. The passphrase remains this vault's recovery floor. The Secure Enclave resists extraction of its key; it does not stop a process running as you from asking the helper to unwrap, which is why every unlock names its operation in the Touch ID prompt.";
-async function addTouchIdFactor(ctx, parsed, path, hold) {
+async function addTouchIdFactor(ctx, parsed, resolvedVault, hold) {
+  const path = resolvedVault.path;
   const { deps } = ctx;
   const facts = await currentPlatformFacts(deps);
   assertFactorAddable("secure-enclave", facts);
   const helper = facts.enclaveHelper;
   if (helper === undefined || helper.state !== "ready") {
-    throw new VaultError("VAULT_HELPER_MISSING", "The Secure Enclave helper was not found after the platform check.");
+    throw new VaultError("VAULT_HELPER_MISSING", "The Secure Enclave helper was not found after the platform check.", {
+      suggestion: "Install a release build (candle update), or point CANDLE_ENCLAVE_HELPER at the signed helper."
+    });
   }
   if (helper.biometry !== "available") {
     const described = describeBiometry(helper);
@@ -50617,7 +51060,7 @@ async function addTouchIdFactor(ctx, parsed, path, hold) {
     version: helper.version,
     biometry: helper.biometry
   };
-  const raw = await requireVaultRaw(path);
+  const raw = await requireVaultRaw(ctx, resolvedVault);
   const envelopeId = freshEnvelopeId();
   const label = parsed.values["--label"] ?? "Touch ID";
   const opened = await unlockInteractively(ctx, path, raw, {
@@ -50731,6 +51174,9 @@ ${TOUCH_ID_NOTE}
   return 0;
 }
 
+// src/commands/vault-init.ts
+init_args();
+
 // src/vault/create.ts
 init_crypto();
 init_errors();
@@ -50804,12 +51250,17 @@ init_sidecar();
 init_store();
 
 // src/commands/vault-phrase.ts
+init_args();
 init_errors();
 init_store();
 init_vault_support();
 var ACKNOWLEDGEMENT = "understood";
 async function vaultPhraseShow(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"]
+  });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
   if (parsed.positionals.length > 0)
@@ -50821,9 +51272,12 @@ async function vaultPhraseShow(args, ctx) {
   }
   if (!assertPhraseTty(ctx))
     return 1;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const vault = hold((await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       promptText: "Vault passphrase (input hidden): "
@@ -50843,13 +51297,15 @@ function assertPhraseTty(ctx) {
 async function runPhraseCeremony(ctx, vault, opts = {}) {
   const { deps } = ctx;
   if (!ctx.deps.isTTY.stdin || !ctx.deps.isTTY.stdout) {
-    throw new VaultError("PHRASE_REQUIRES_TTY", "The recovery phrase is shown only on a terminal, on both ends. Nothing was rendered.");
+    throw new VaultError("PHRASE_REQUIRES_TTY", "The recovery phrase is shown only on a terminal, on both ends. Nothing was rendered.", { suggestion: "Run it in a terminal, not through a pipe, an agent or --json." });
   }
   if (!opts.alreadyUnlockedWithFreshFactor) {
     const typed = await deps.promptSecret("Vault passphrase, again, to show the recovery phrase (input hidden): ");
     const envelope = vault.file.envelopes.find((candidate) => candidate.factor === "passphrase");
     if (!envelope)
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.", {
+        suggestion: "Run: candle vault status (which lists each factor and why it is not available here)"
+      });
     const { unlockWithPassphrase: unlockWithPassphrase2 } = await Promise.resolve().then(() => (init_store(), exports_store));
     const { openWithTypedPassphrase: openWithTypedPassphrase2 } = await Promise.resolve().then(() => (init_vault_support(), exports_vault_support));
     const { vault: reopened } = await openWithTypedPassphrase2(typed, (candidate) => unlockWithPassphrase2(vault.path, vault.raw, candidate, { notice: (line) => deps.stderr.write(line) }));
@@ -50925,11 +51381,13 @@ function randomPositions(count, of = PHRASE_WORDS) {
 
 // src/commands/vault-init.ts
 init_vault_support();
+var INIT_GENERATED_PASSPHRASE_NOTICE = "Your vault passphrase is about to be generated and shown once. This CLI keeps no copy and cannot recover it. To choose your own instead: candle vault init --own-passphrase";
 var GENERATED_PASSPHRASE_NEEDS_TERMINAL = "A generated passphrase is shown once on the terminal, and --json reserves stdout for one JSON value that never carries a secret. Under --json pass --own-passphrase (typed at a hidden prompt, nothing shown), or run without --json.";
 async function vaultInit(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--label"],
-    booleanFlags: ["--own-passphrase", "--high-value"]
+    booleanFlags: ["--own-passphrase", "--high-value"],
+    pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -50943,14 +51401,18 @@ async function vaultInit(args, ctx) {
   if (!requireTty(ctx, "vault init"))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   const highValue = parsed.booleans.has("--high-value");
   return runVaultCommand(ctx, async () => {
     if (await fileExists(path)) {
-      throw new VaultError("VAULT_EXISTS", `A vault already exists at ${path}.`, {
-        suggestion: "This CLI never overwrites one, including after an interrupted init. Move it aside if you really mean to start over."
-      });
+      throw vaultAlreadyExists(ctx, resolvedVault, "This CLI never overwrites one, including after an interrupted init. Move it aside if you really mean to start over.");
     }
+    if (!ownPassphrase)
+      deps.stdout.write(`${INIT_GENERATED_PASSPHRASE_NOTICE}
+`);
     const passphrase = ownPassphrase ? await collectOwnPassphrase(ctx) : await collectGeneratedPassphrase(ctx);
     const entropy = randomBytes2(ROOT_ENTROPY_BYTES);
     const vault = await withSecret(entropy, async (rootEntropy) => createVault({
@@ -51014,6 +51476,9 @@ This vault has a 24-word recovery phrase. It re-derives every key this vault der
         deps.stdout.write(`Skipped. You can run the ceremony later with: candle vault phrase show
 `);
       }
+      const footer = nonDefaultVaultFooter(resolvedVault);
+      if (footer !== undefined)
+        deps.stdout.write(footer);
       return 0;
     } finally {
       closeVault(vault);
@@ -51053,7 +51518,7 @@ async function collectOwnPassphrase(ctx) {
 // src/commands/vault-factor.ts
 init_vault_support();
 async function vaultFactorList(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: [] });
+  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: [], pathFlags: ["--keystore"] });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
   if (parsed.positionals.length > 0)
@@ -51061,11 +51526,14 @@ async function vaultFactorList(args, ctx) {
   if (!refuseEnvPassphrase(ctx))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async () => {
     const raw = await readVaultRaw(path);
     if (raw === null)
-      throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" });
+      throw missingVault(ctx, resolvedVault);
     const file = parseVaultFile(raw);
     const facts = await currentPlatformFacts(deps);
     const rows = file.envelopes.map((envelope) => {
@@ -51099,7 +51567,8 @@ ${countRecoverableFactors(file.envelopes)} recoverable factor(s), domains counte
 async function vaultFactorAdd(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--label"],
-    booleanFlags: ["--own-passphrase", "--accept-older-copy"]
+    booleanFlags: ["--own-passphrase", "--accept-older-copy"],
+    pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -51117,18 +51586,21 @@ async function vaultFactorAdd(args, ctx) {
   if (!requireTty(ctx, "vault factor add"))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
     if (kind === "security-key")
-      return addSecurityKeyFactor(ctx, parsed, path, hold);
+      return addSecurityKeyFactor(ctx, parsed, resolvedVault, hold);
     if (kind === "touch-id")
-      return addTouchIdFactor(ctx, parsed, path, hold);
+      return addTouchIdFactor(ctx, parsed, resolvedVault, hold);
     if (kind === "passkey")
-      return addPasskeyFactor(ctx, parsed, path, hold);
+      return addPasskeyFactor(ctx, parsed, resolvedVault, hold);
     if (kind !== "passphrase") {
       return usage(ctx, `Unknown factor: ${kind}. This release adds: passphrase, security-key, touch-id, passkey`);
     }
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       promptText: "Current vault passphrase, to unlock (input hidden): "
@@ -51176,7 +51648,11 @@ ${APPLE_ACCOUNT_NOTICE}
   });
 }
 async function vaultFactorRemove(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"]
+  });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
   const id = parsed.positionals[0];
@@ -51189,13 +51665,18 @@ async function vaultFactorRemove(args, ctx) {
   if (!requireTty(ctx, "vault factor remove"))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
     const target = vault.file.envelopes.find((envelope) => envelope.id === id);
     if (!target)
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no envelope with id ${id}.`);
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no envelope with id ${id}.`, {
+        suggestion: "Run: candle vault factor list (which prints every envelope id this vault has)"
+      });
     const remaining = vault.file.envelopes.filter((envelope) => envelope.id !== id);
     if (target.factor === "passphrase" && !remaining.some((envelope) => envelope.factor === "passphrase")) {
       throw new VaultError("VAULT_LAST_PASSPHRASE", "That is this vault's only passphrase factor, and every vault keeps one as its recovery floor.", {
@@ -51272,6 +51753,7 @@ async function vaultFactor(args, ctx) {
 }
 
 // src/commands/vault-fund.ts
+init_args();
 init_render();
 init_errors();
 
@@ -51606,7 +52088,8 @@ async function fundExternal(ctx, opened, vault, external2, input) {
 async function vaultFund(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--asset", "--rpc-url", "--keystore", "--from"],
-    booleanFlags: ["--accept-older-copy"]
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -51627,9 +52110,12 @@ async function vaultFund(args, ctx) {
     return 1;
   if (!requireTty(ctx, "vault fund"))
     return 1;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
@@ -51661,11 +52147,15 @@ async function vaultFund(args, ctx) {
     }
     const destination = teeEntry.tee.vaultDestination;
     if (destination === undefined) {
-      throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${teeAddress} has no pinned vault destination to fund from.`);
+      throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${teeAddress} has no pinned vault destination to fund from.`, {
+        suggestion: "Nothing was signed. Name the source key with --from <label>, or pin one: candle tee enable <address> --vault <address>"
+      });
     }
     const fromEntry = vault.index.entries.find((entry) => entry.address === destination && entry.role === "vault");
     if (fromEntry === undefined) {
-      throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `Pinned destination ${destination} is not a vault key in this vault.`);
+      throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `Pinned destination ${destination} is not a vault key in this vault.`, {
+        suggestion: "Nothing was signed. Name the source key with --from <label>; candle vault status lists this vault's keys."
+      });
     }
     assertVaultSigner(fromEntry);
     ctx.deps.stdout.write(`Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
@@ -51730,6 +52220,7 @@ async function vaultFund(args, ctx) {
 }
 
 // src/commands/vault-import-legacy.ts
+init_args();
 import { readFile as readFile6 } from "node:fs/promises";
 init_errors();
 
@@ -51871,7 +52362,8 @@ init_vault_support();
 async function vaultImportLegacy(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--from"],
-    booleanFlags: ["--tee", "--accept-older-copy"]
+    booleanFlags: ["--tee", "--accept-older-copy"],
+    pathFlags: ["--keystore", "--from"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -51885,10 +52377,22 @@ async function vaultImportLegacy(args, ctx) {
   if (!requireTty(ctx, "vault import-legacy"))
     return 1;
   const { deps } = ctx;
-  const vaultPath = vaultPathFor(ctx, parsed);
-  const fromPath = parsed.values["--from"] ?? await resolveDefaultTeePath(deps.env);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const vaultPath = resolvedVault.path;
+  let fromPath = parsed.values["--from"];
+  if (fromPath === undefined) {
+    try {
+      fromPath = await resolveDefaultTeePath(deps.env);
+    } catch (error) {
+      if (isUsageError(error))
+        return usage(ctx, error.message);
+      throw error;
+    }
+  }
   return runVaultCommand(ctx, async ({ hold }) => {
-    const vaultRaw = await requireVaultRaw(vaultPath);
+    const vaultRaw = await requireVaultRaw(ctx, resolvedVault);
     let legacyRaw;
     try {
       legacyRaw = await readFile6(fromPath, "utf8");
@@ -52086,6 +52590,7 @@ async function vaultPhrase(args, ctx) {
 
 // src/commands/vault-promote.ts
 init_esm();
+init_args();
 init_render();
 init_errors();
 init_promote_support();
@@ -52094,7 +52599,8 @@ init_vault_support();
 async function vaultPromote(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--from", "--in-place", "--sweep-to", "--label", "--rpc-url", "--keystore"],
-    booleanFlags: ["--accept-unknown-exposure", "--accept-older-copy"]
+    booleanFlags: ["--accept-unknown-exposure", "--accept-older-copy"],
+    pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -52123,10 +52629,13 @@ async function vaultPromote(args, ctx) {
 async function promoteFresh(ctx, parsed, fromLabel) {
   if ("error" in parsed)
     return usage(ctx, parsed.error);
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
@@ -52204,7 +52713,7 @@ async function promoteFresh(ctx, parsed, fromLabel) {
       label: entry.label,
       vaultDestination: destination.address,
       reopen: opened.reopen,
-      vaultPath: path,
+      resolvedVault,
       onImport: () => {
         importCount.n += 1;
       }
@@ -52239,18 +52748,23 @@ async function reopenFromDisk(path, reopen, previous) {
   closeVault(previous);
   const raw = await readVaultRaw(path);
   if (raw === null)
-    throw new VaultError("VAULT_MISSING", `No vault at ${path}.`);
+    throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, {
+      suggestion: "The vault was there when this run started. Check nothing moved or removed it, then: candle vault status"
+    });
   return reopen(path, raw);
 }
 async function promoteInPlace(ctx, parsed, subjectLabel) {
   if ("error" in parsed)
     return usage(ctx, parsed.error);
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   const sweepTo = parsed.values["--sweep-to"];
   const rpcUrl2 = parsed.values["--rpc-url"];
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
@@ -52258,7 +52772,9 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
     assertRecoverableFactorExists(vault.file.envelopes);
     const existing = findEntryByLabelOrAddress(vault.index, subjectLabel);
     if (existing === undefined) {
-      throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`);
+      throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`, {
+        suggestion: "Nothing was written. Run: candle vault status (which lists every label and address this vault holds)"
+      });
     }
     if (existing.role === "tee-wallet" && (existing.tee?.lifecycle === "import-pending" || existing.tee?.lifecycle === "local-candidate")) {
       if (sweepTo !== undefined) {
@@ -52285,7 +52801,9 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
       acceptUnknownExposure: acceptUnknown
     });
     if (second.resume) {
-      throw new VaultError("PROMOTE_ALREADY_TEE_WALLET", "The entry changed under the lock; nothing was written.");
+      throw new VaultError("PROMOTE_ALREADY_TEE_WALLET", "The entry changed under the lock; nothing was written.", {
+        suggestion: "Run: candle vault status --unlock to see where the entry is now, then re-run promote to resume."
+      });
     }
     assertNotPinnedDestination(vault.index, second.subject.address);
     const now = new Date(ctx.deps.now()).toISOString();
@@ -52346,7 +52864,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
       label: parsed.values["--label"] ?? subject.label,
       vaultDestination: destination.address,
       reopen: opened.reopen,
-      vaultPath: path
+      resolvedVault
     });
     if (ctx.json) {
       const reopened = hold(await reopenFromDisk(path, opened.reopen, vault));
@@ -52537,8 +53055,8 @@ async function runTeeImport(ctx, opts) {
   const name = ctx.profile ?? config.activeProfile;
   const account = name !== undefined ? config.profiles?.[name]?.account ?? "" : "";
   const importedAt = new Date(ctx.deps.now()).toISOString();
-  const raw = await requireVaultRaw(opts.vaultPath);
-  const vault = await opts.reopen(opts.vaultPath, raw);
+  const raw = await requireVaultRaw(ctx, opts.resolvedVault);
+  const vault = await opts.reopen(opts.resolvedVault.path, raw);
   try {
     await commitVault(vault, {
       index: {
@@ -52584,6 +53102,7 @@ async function runTeeImport(ctx, opts) {
 }
 
 // src/commands/vault-restore.ts
+init_args();
 import { rm as rm3 } from "node:fs/promises";
 init_crypto();
 init_errors();
@@ -52597,7 +53116,8 @@ var SCAN_CEILING = 500;
 async function vaultRestore(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--count", "--tee-count", "--external-count", "--rpc-url"],
-    booleanFlags: ["--phrase", "--own-passphrase"]
+    booleanFlags: ["--phrase", "--own-passphrase"],
+    pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -52616,24 +53136,29 @@ async function vaultRestore(args, ctx) {
   if ("error" in counts)
     return usage(ctx, counts.error);
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
     if (await fileExists(path)) {
-      throw new VaultError("VAULT_EXISTS", `A vault already exists at ${path}.`, {
-        suggestion: "Restoring builds a new vault and never merges into one. Move the existing file aside first."
-      });
+      throw vaultAlreadyExists(ctx, resolvedVault, "Restoring builds a new vault and never merges into one. Move the existing file aside first.");
     }
     const sidecarExisted = await fileExists(sidecarPath(path));
+    deps.stdout.write(`${RESTORE_NEW_PASSPHRASE_NOTICE}
+
+`);
     deps.stdout.write(`Type your ${PHRASE_WORDS}-word recovery phrase. It is not echoed, and nothing is written until its checksum checks out.
 `);
     const typed = await deps.promptSecret(`Recovery phrase (${PHRASE_WORDS} words, input hidden): `);
     const entropy = entropyFromPhrase(typed);
     const vault = await withSecret(entropy, async (rootEntropy) => {
       if (rootEntropy.length !== ROOT_ENTROPY_BYTES) {
-        throw new VaultError("PHRASE_INVALID", `That phrase carries ${rootEntropy.length} bytes of entropy, not ${ROOT_ENTROPY_BYTES}.`);
+        throw new VaultError("PHRASE_INVALID", `That phrase carries ${rootEntropy.length} bytes of entropy, not ${ROOT_ENTROPY_BYTES}.`, { suggestion: "Nothing was written. Check the word count and order, then run it again." });
       }
-      const ownPassphrase = parsed.booleans.has("--own-passphrase");
-      const passphrase = ownPassphrase ? await collectOwn2(ctx) : await collectGenerated2(ctx);
+      const own = parsed.booleans.has("--own-passphrase") || await askForOwnPassphrase(ctx);
+      const passphrase = own ? await collectOwn2(ctx) : await collectGenerated2(ctx);
+      const ownPassphrase = own;
       return createVault({
         path,
         passphrase,
@@ -52671,7 +53196,11 @@ New vault at ${path}, verified in full (all eight steps).
       }
       const outcome = await writeRestoredIndex(ctx, vault, derived, matches, counts);
       committed = true;
-      return reportRestore(ctx, vault, derived, matches, outcome, counts);
+      const result = reportRestore(ctx, vault, derived, matches, outcome, counts);
+      const footer = nonDefaultVaultFooter(resolvedVault);
+      if (footer !== undefined)
+        deps.stdout.write(footer);
+      return result;
     } catch (error) {
       if (!committed)
         await discardIncompleteRestore(ctx, path, sidecarExisted);
@@ -52996,7 +53525,11 @@ ${matches.matched.length} of them are addresses this account imported, and each 
   return 0;
 }
 async function vaultReconcileExposure(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"]
+  });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
   if (parsed.positionals.length > 0)
@@ -53006,9 +53539,12 @@ async function vaultReconcileExposure(args, ctx) {
   if (!requireTty(ctx, "vault reconcile-exposure"))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
     const apiKey = await resolveApiKey(deps, ctx.profile);
     if (apiKey === undefined) {
@@ -53080,6 +53616,18 @@ async function vaultReconcileExposure(args, ctx) {
     return 0;
   });
 }
+var RESTORE_NEW_PASSPHRASE_NOTICE = "This builds a NEW vault from your 24 words, and it gets a NEW passphrase: the one that opened the vault the words came from does not carry over. The words carry the keys; a passphrase belongs to one file.";
+var RESTORE_PASSPHRASE_PROMPT = "Passphrase for the new vault. Press Enter to have one generated (8 words, shown once, typed back), or type own to choose your own (16+ characters, typed twice, never shown): ";
+async function askForOwnPassphrase(ctx) {
+  for (let attempt = 0;attempt < 2; attempt++) {
+    const answer = (await ctx.deps.promptLine(RESTORE_PASSPHRASE_PROMPT)).trim().toLowerCase();
+    if (answer === "own")
+      return true;
+    if (answer === "")
+      return false;
+  }
+  return false;
+}
 async function collectGenerated2(ctx) {
   const passphrase = generatePassphrase();
   ctx.deps.stdout.write(`
@@ -53104,15 +53652,17 @@ async function collectOwn2(ctx) {
 }
 
 // src/commands/vault-retire-legacy.ts
-import { rename as rename4, stat as stat4 } from "node:fs/promises";
+init_args();
 init_errors();
 init_sidecar();
+import { rename as rename4, stat as stat4 } from "node:fs/promises";
 init_wallet_keystore();
 init_vault_support();
 async function vaultRetireLegacy(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--from"],
-    booleanFlags: ["--accept-older-copy"]
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore", "--from"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -53123,10 +53673,22 @@ async function vaultRetireLegacy(args, ctx) {
   if (!requireTty(ctx, "vault retire-legacy"))
     return 1;
   const { deps } = ctx;
-  const vaultPath = vaultPathFor(ctx, parsed);
-  const fromPath = parsed.values["--from"] ?? await resolveLegacyPath(deps.env);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const vaultPath = resolvedVault.path;
+  let fromPath = parsed.values["--from"];
+  if (fromPath === undefined) {
+    try {
+      fromPath = await resolveLegacyPath(deps.env);
+    } catch (error) {
+      if (isUsageError(error))
+        return usage(ctx, error.message);
+      throw error;
+    }
+  }
   return runVaultCommand(ctx, async ({ hold }) => {
-    const vaultRaw = await requireVaultRaw(vaultPath);
+    const vaultRaw = await requireVaultRaw(ctx, resolvedVault);
     const sidecar = await readSidecar(sidecarPath(vaultPath));
     if (sidecar?.lastVerifiedBackupAt === undefined) {
       throw new VaultError("LEGACY_UNVERIFIED_BACKUP", "No verified backup of this vault is recorded on this machine.", {
@@ -53139,7 +53701,9 @@ async function vaultRetireLegacy(args, ctx) {
     } catch (error) {
       const code = error?.code;
       if (code === "ENOENT") {
-        throw new VaultError("VAULT_MISSING", `No TEE wallet store at ${fromPath}.`);
+        throw new VaultError("VAULT_MISSING", `No TEE wallet store at ${fromPath}.`, {
+          suggestion: `Nothing was renamed. Point at it with --from <path>, or check: ls -l ${fromPath}`
+        });
       }
       throw new VaultError("VAULT_UNREADABLE", `Could not read ${fromPath}.`);
     }
@@ -53203,7 +53767,7 @@ async function resolveLegacyPath(env) {
 }
 
 // src/commands/vault-status.ts
-init_errors();
+init_args();
 init_fido2();
 init_format();
 init_passphrase();
@@ -53212,7 +53776,11 @@ init_sidecar();
 init_store();
 init_vault_support();
 async function vaultStatus(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--unlock", "--accept-older-copy"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore"],
+    booleanFlags: ["--unlock", "--accept-older-copy"],
+    pathFlags: ["--keystore"]
+  });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
   if (parsed.positionals.length > 0)
@@ -53220,15 +53788,17 @@ async function vaultStatus(args, ctx) {
   if (!refuseEnvPassphrase(ctx))
     return 1;
   const { deps } = ctx;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   const unlock = parsed.booleans.has("--unlock");
   if (unlock && !requireTty(ctx, "vault status --unlock"))
     return 1;
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await readVaultRaw(path);
-    if (raw === null) {
-      throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" });
-    }
+    if (raw === null)
+      throw missingVault(ctx, resolvedVault);
     const file = parseVaultFile(raw);
     if (unlock)
       assertVaultHelperIdentities(deps, file.envelopes);
@@ -53426,13 +53996,15 @@ function describeEntryInner(entry) {
 }
 
 // src/commands/vault-transfer.ts
+init_args();
 init_promote_support();
 init_store();
 init_vault_support();
 async function vaultTransfer(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--asset", "--from", "--rpc-url", "--keystore"],
-    booleanFlags: ["--accept-older-copy"]
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
@@ -53456,9 +54028,12 @@ async function vaultTransfer(args, ctx) {
     return 1;
   if (!requireTty(ctx, "vault transfer"))
     return 1;
-  const path = vaultPathFor(ctx, parsed);
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path);
+    const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       promptText: "Vault passphrase (input hidden): "
@@ -53511,8 +54086,9 @@ async function vaultTransfer(args, ctx) {
 }
 
 // src/commands/verify.ts
-import { dirname as dirname8, join as join11 } from "node:path";
+init_args();
 init_release();
+import { dirname as dirname9, join as join11 } from "node:path";
 init_render();
 var USAGE2 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
@@ -53520,7 +54096,7 @@ async function resolveIdentity(deps, bundlePath, flag) {
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
   let version;
   try {
-    const manifest = JSON.parse(await deps.readFile(join11(dirname8(bundlePath), "latest.json")));
+    const manifest = JSON.parse(await deps.readFile(join11(dirname9(bundlePath), "latest.json")));
     if (typeof manifest.version !== "string" || manifest.version.length === 0)
       return { kind: "absent" };
     version = manifest.version;
@@ -53539,7 +54115,11 @@ async function resolveIdentity(deps, bundlePath, flag) {
 }
 async function verify(args, ctx) {
   const { deps, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--bundle", "--identity", "--issuer"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--bundle", "--identity", "--issuer"],
+    pathFlags: ["--bundle"],
+    pathPositionals: ["<file>"]
+  });
   if ("error" in parsed) {
     writeUsageFailure(deps, `${parsed.error}
 ${USAGE2}`, json);
@@ -53611,10 +54191,10 @@ function messageOf2(error) {
 
 // src/config.ts
 import { chmod as chmod6, mkdir as mkdir6, readFile as readFile7, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
-import { homedir as homedir7 } from "node:os";
+import { homedir as homedir6 } from "node:os";
 import { join as join12 } from "node:path";
 function configDir2() {
-  return process.env.CANDLE_CONFIG_DIR?.trim() || join12(homedir7(), ".config", "candle");
+  return process.env.CANDLE_CONFIG_DIR?.trim() || join12(homedir6(), ".config", "candle");
 }
 function configFilePath() {
   return join12(configDir2(), "config.json");
@@ -53936,6 +54516,7 @@ var COMMANDS = {
       restore: vaultRestore,
       "reconcile-exposure": vaultReconcileExposure,
       factor: vaultFactor,
+      enroll: vaultFactorAdd,
       backup: vaultBackup,
       "verify-backup": vaultVerifyBackup,
       "import-legacy": vaultImportLegacy,

@@ -12,7 +12,7 @@
  * through `vault backup` / `vault verify-backup` is `LEGACY_UNVERIFIED_BACKUP`.
  */
 import { rename, stat } from "node:fs/promises"
-import { parseArgs } from "../args"
+import { isUsageError, parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { VaultError } from "../vault/errors"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
@@ -33,6 +33,7 @@ export async function vaultRetireLegacy(args: string[], ctx: CommandContext): Pr
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--from"],
     booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore", "--from"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
@@ -40,11 +41,21 @@ export async function vaultRetireLegacy(args: string[], ctx: CommandContext): Pr
   if (!requireTty(ctx, "vault retire-legacy")) return 1
 
   const { deps } = ctx
-  const vaultPath = vaultPathFor(ctx, parsed)
-  const fromPath = parsed.values["--from"] ?? (await resolveLegacyPath(deps.env))
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const vaultPath = resolvedVault.path
+  let fromPath = parsed.values["--from"]
+  if (fromPath === undefined) {
+    try {
+      fromPath = await resolveLegacyPath(deps.env)
+    } catch (error) {
+      if (isUsageError(error)) return usage(ctx, error.message)
+      throw error
+    }
+  }
 
   return runVaultCommand(ctx, async ({ hold }) => {
-    const vaultRaw = await requireVaultRaw(vaultPath)
+    const vaultRaw = await requireVaultRaw(ctx, resolvedVault)
     const sidecar = await readSidecar(sidecarPath(vaultPath))
     if (sidecar?.lastVerifiedBackupAt === undefined) {
       throw new VaultError(
@@ -63,7 +74,9 @@ export async function vaultRetireLegacy(args: string[], ctx: CommandContext): Pr
     } catch (error) {
       const code = (error as NodeJS.ErrnoException | undefined)?.code
       if (code === "ENOENT") {
-        throw new VaultError("VAULT_MISSING", `No TEE wallet store at ${fromPath}.`)
+        throw new VaultError("VAULT_MISSING", `No TEE wallet store at ${fromPath}.`, {
+          suggestion: `Nothing was renamed. Point at it with --from <path>, or check: ls -l ${fromPath}`,
+        })
       }
       throw new VaultError("VAULT_UNREADABLE", `Could not read ${fromPath}.`)
     }

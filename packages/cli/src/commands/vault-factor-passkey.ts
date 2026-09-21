@@ -52,7 +52,7 @@ import {
   unlockVault,
   wrapDekForPrf,
 } from "../vault/store"
-import { requireVaultRaw, unlockInteractively, writeJson } from "./vault-support"
+import { type ResolvedVaultPath, requireVaultRaw, unlockInteractively, writeJson } from "./vault-support"
 
 export const PASSKEY_NOTE =
   "A synced passkey lives in your Apple account: it follows the account to a new Mac, so it is a recoverable factor, and it is never counted as independent of any other Apple-account item (two synced passkeys are one factor). What syncs through iCloud Keychain is the credential's private key; the PRF output and this vault's key never leave this Mac. Keep the passphrase and the recovery phrase outside that Apple account."
@@ -63,9 +63,10 @@ export const PASSKEY_LEFTOVER_NOTE =
 export async function addPasskeyFactor(
   ctx: CommandContext,
   parsed: ParsedArgs,
-  path: string,
+  resolvedVault: ResolvedVaultPath,
   hold: (vault: UnlockedVault) => UnlockedVault,
 ): Promise<number> {
+  const path = resolvedVault.path
   const { deps } = ctx
   // CC-12 first: the policy, the helper, its signature, macOS 15, the entitlement and the profile,
   // each a typed refusal before the vault is read and never a substitution.
@@ -73,7 +74,9 @@ export async function addPasskeyFactor(
   assertFactorAddable("passkey-prf", facts, "platform-macos")
   const helper = facts.enclaveHelper
   if (helper === undefined || helper.state !== "ready") {
-    throw new VaultError("VAULT_HELPER_MISSING", "The signed macOS helper was not found after the platform check.")
+    throw new VaultError("VAULT_HELPER_MISSING", "The signed macOS helper was not found after the platform check.", {
+      suggestion: "Install a release build (candle update), or point CANDLE_ENCLAVE_HELPER at the signed helper.",
+    })
   }
   const session: PasskeySession = {
     path: helper.path,
@@ -85,7 +88,7 @@ export async function addPasskeyFactor(
   // before the passphrase so a missing deployment prerequisite costs no secret.
   const association = await checkAppleAppSiteAssociation(deps, helper.identity)
 
-  const raw = await requireVaultRaw(path)
+  const raw = await requireVaultRaw(ctx, resolvedVault)
   const envelopeId = freshEnvelopeId()
   const label = parsed.values["--label"] ?? "synced passkey"
 

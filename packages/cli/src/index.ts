@@ -43,6 +43,7 @@ import { update } from "./commands/update"
 import { vaultBackup, vaultVerifyBackup } from "./commands/vault-backup"
 import { vaultDemote } from "./commands/vault-demote"
 import { vaultExportKey } from "./commands/vault-export-key"
+import { vaultFactorAdd } from "./commands/vault-factor"
 import { vaultFactor } from "./commands/vault-factor-dispatch"
 import { vaultFund } from "./commands/vault-fund"
 import { vaultImportLegacy } from "./commands/vault-import-legacy"
@@ -162,6 +163,11 @@ const COMMANDS: Record<string, CommandRoute> = {
       restore: vaultRestore,
       "reconcile-exposure": vaultReconcileExposure,
       factor: vaultFactor,
+      // D5 (BE-241): `vault enroll <kind>` IS `vault factor add <kind>` -- the same handler, so it
+      // inherits every flag, refusal and `--json` behaviour rather than reimplementing them. Four
+      // words before an argument is what the operator typing from memory on a first-vault machine
+      // pays, and that machine is exactly the one with no completions installed yet.
+      enroll: vaultFactorAdd,
       backup: vaultBackup,
       "verify-backup": vaultVerifyBackup,
       "import-legacy": vaultImportLegacy,

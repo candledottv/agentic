@@ -288,9 +288,16 @@ describe("wallets import", () => {
     expect(new URL(listCalls[1]?.url ?? "").searchParams.get("cursor")).toBe("20")
   })
 
-  test("a server that never finishes its list cannot hold the verification forever", async () => {
+  test("a server that never finishes its list is bounded, and reports unchecked rather than missing", async () => {
     // Termination belongs to the read-back, not to the server: a wedge that repeats
-    // isDone: false with a cursor forever must end as a bounded "missing", not an infinite loop.
+    // isDone: false with a cursor forever must end bounded, not in an infinite loop.
+    //
+    // The VERDICT changed in BE-242 and the change is the point of the second half here. A read
+    // that hit the page cap never reached the end of the list, so it is not evidence the wallet
+    // is absent -- and "missing" prints the wrong-account refusal, telling an operator their CLI
+    // is logged in as somebody else on the strength of a list nobody finished reading. That is
+    // the same silent truncation this issue is about, wearing the costume of a hard failure.
+    // Unchecked says what is actually known: the import succeeded, the read-back did not finish.
     const { fetch, calls } = importRoutes({
       "/api/v1/agent/wallets": () =>
         jsonResponse(200, {
@@ -300,18 +307,22 @@ describe("wallets import", () => {
           continueCursor: "1",
         }),
     })
+    const stdout = createCapture()
     const stderr = createCapture()
     const deps = createTestDeps({
       fetch,
       store: createFakeStore({ api_key: "ck_live_x" }),
+      stdout,
       stderr,
       readFile: async () => SOL_ID_JSON,
     })
     const code = await run(["wallets", "import", "--chain", "solana", "--key-file", "/k"], deps)
-    expect(code).toBe(1)
+    expect(code).toBe(0)
     const listCalls = calls.filter((c) => new URL(c.url).pathname === "/api/v1/agent/wallets")
     expect(listCalls.length).toBeLessThanOrEqual(25)
-    expect(stderr.text).toContain("not on the account")
+    expect(stdout.text).toContain("could not read the wallet back")
+    // And it does NOT accuse the operator of being on the wrong account.
+    expect(stderr.text).not.toContain("not on the account")
   })
 
   test("a read-back that itself fails does NOT fail an import that already succeeded", async () => {

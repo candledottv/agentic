@@ -91,18 +91,31 @@ export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number]
  *
  * `exitCode` follows the Phase 1 convention the spec's Interfaces section restates: 1 failure,
  * 2 usage, 3 pending or partial. It defaults to 1 because that is what almost every refusal is.
+ *
+ * `details` (D3, BE-241) carries the FACTS a caller can act on, machine-readable: for
+ * `VAULT_MISSING` and `VAULT_EXISTS`, `{ path, pathSource }`. `writeVaultFailure` spreads it into
+ * the `--json` envelope as a nested `details` key, which is the additive optional key the `--json`
+ * contract allows; the human rendering is untouched, because the same facts are already in
+ * `message` as the parenthetical that says WHY that path. It exists so an agent can self-correct
+ * the same way a human reading the parenthetical does, without parsing prose.
  */
 export class VaultError extends Error {
   readonly code: VaultErrorCode
   readonly suggestion?: string
   readonly exitCode: 1 | 2 | 3
+  readonly details?: Record<string, string>
 
-  constructor(code: VaultErrorCode, message: string, opts: { suggestion?: string; exitCode?: 1 | 2 | 3 } = {}) {
+  constructor(
+    code: VaultErrorCode,
+    message: string,
+    opts: { suggestion?: string; exitCode?: 1 | 2 | 3; details?: Record<string, string> } = {},
+  ) {
     super(message)
     this.name = "VaultError"
     this.code = code
     this.suggestion = opts.suggestion
     this.exitCode = opts.exitCode ?? 1
+    this.details = opts.details
   }
 }
 

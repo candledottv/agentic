@@ -15,7 +15,7 @@
  * (sweep records written into the vault are not mirrored back). The output says so.
  */
 import { readFile } from "node:fs/promises"
-import { parseArgs } from "../args"
+import { isUsageError, parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { addressFromSecret64 } from "../vault/ed25519"
@@ -48,6 +48,7 @@ export async function vaultImportLegacy(args: string[], ctx: CommandContext): Pr
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--from"],
     booleanFlags: ["--tee", "--accept-older-copy"],
+    pathFlags: ["--keystore", "--from"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
@@ -61,11 +62,21 @@ export async function vaultImportLegacy(args: string[], ctx: CommandContext): Pr
   if (!requireTty(ctx, "vault import-legacy")) return 1
 
   const { deps } = ctx
-  const vaultPath = vaultPathFor(ctx, parsed)
-  const fromPath = parsed.values["--from"] ?? (await resolveDefaultTeePath(deps.env))
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const vaultPath = resolvedVault.path
+  let fromPath = parsed.values["--from"]
+  if (fromPath === undefined) {
+    try {
+      fromPath = await resolveDefaultTeePath(deps.env)
+    } catch (error) {
+      if (isUsageError(error)) return usage(ctx, error.message)
+      throw error
+    }
+  }
 
   return runVaultCommand(ctx, async ({ hold }) => {
-    const vaultRaw = await requireVaultRaw(vaultPath)
+    const vaultRaw = await requireVaultRaw(ctx, resolvedVault)
     let legacyRaw: string
     try {
       legacyRaw = await readFile(fromPath, "utf8")

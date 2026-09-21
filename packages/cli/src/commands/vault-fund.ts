@@ -124,6 +124,7 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--asset", "--rpc-url", "--keystore", "--from"],
     booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [teeAddress, extra] = parsed.positionals
@@ -142,9 +143,13 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "vault fund")) return 1
 
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+
+  const path = resolvedVault.path
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
@@ -192,6 +197,10 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
       throw new VaultError(
         "GRANT_DESTINATION_UNRESOLVED",
         `${teeAddress} has no pinned vault destination to fund from.`,
+        {
+          suggestion:
+            "Nothing was signed. Name the source key with --from <label>, or pin one: candle tee enable <address> --vault <address>",
+        },
       )
     }
     const fromEntry = vault.index.entries.find((entry) => entry.address === destination && entry.role === "vault")
@@ -199,6 +208,10 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
       throw new VaultError(
         "GRANT_DESTINATION_UNRESOLVED",
         `Pinned destination ${destination} is not a vault key in this vault.`,
+        {
+          suggestion:
+            "Nothing was signed. Name the source key with --from <label>; candle vault status lists this vault's keys.",
+        },
       )
     }
     assertVaultSigner(fromEntry)

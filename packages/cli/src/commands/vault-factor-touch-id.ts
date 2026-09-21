@@ -48,7 +48,7 @@ import {
   unlockVault,
   wrapDekForKek,
 } from "../vault/store"
-import { requireVaultRaw, unlockInteractively, writeJson } from "./vault-support"
+import { type ResolvedVaultPath, requireVaultRaw, unlockInteractively, writeJson } from "./vault-support"
 
 export const TOUCH_ID_NOTE =
   "Touch ID is a daily-use factor, not a recovery factor: it opens this vault on this Mac only, and a wiped Mac, a changed fingerprint set or a lost Mac loses it. The passphrase remains this vault's recovery floor. The Secure Enclave resists extraction of its key; it does not stop a process running as you from asking the helper to unwrap, which is why every unlock names its operation in the Touch ID prompt."
@@ -56,9 +56,10 @@ export const TOUCH_ID_NOTE =
 export async function addTouchIdFactor(
   ctx: CommandContext,
   parsed: ParsedArgs,
-  path: string,
+  resolvedVault: ResolvedVaultPath,
   hold: (vault: UnlockedVault) => UnlockedVault,
 ): Promise<number> {
+  const path = resolvedVault.path
   const { deps } = ctx
   // CC-12 first: the policy, the helper, its signature and the Enclave, each a typed refusal
   // before the vault is read and never a substitution.
@@ -66,7 +67,9 @@ export async function addTouchIdFactor(
   assertFactorAddable("secure-enclave", facts)
   const helper = facts.enclaveHelper
   if (helper === undefined || helper.state !== "ready") {
-    throw new VaultError("VAULT_HELPER_MISSING", "The Secure Enclave helper was not found after the platform check.")
+    throw new VaultError("VAULT_HELPER_MISSING", "The Secure Enclave helper was not found after the platform check.", {
+      suggestion: "Install a release build (candle update), or point CANDLE_ENCLAVE_HELPER at the signed helper.",
+    })
   }
   if (helper.biometry !== "available") {
     // BE-135: the five states are worded apart. "Not available from this session" (SSH, a
@@ -82,7 +85,7 @@ export async function addTouchIdFactor(
     biometry: helper.biometry,
   }
 
-  const raw = await requireVaultRaw(path)
+  const raw = await requireVaultRaw(ctx, resolvedVault)
   const envelopeId = freshEnvelopeId()
   const label = parsed.values["--label"] ?? "Touch ID"
 

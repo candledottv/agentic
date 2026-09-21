@@ -4,11 +4,11 @@
  * rewrite `tee-wallets.enc` for that address.
  */
 import { base58 } from "@scure/base"
-import type { ParsedArgs } from "../args"
+import { isUsageError, type ParsedArgs } from "../args"
 import { confirmLastSix, type OpenedVault } from "../commands/vault-support"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
-import { writeLocalFailure } from "../render"
+import { writeLocalFailure, writeUsageFailure } from "../render"
 import type { KeystoreEntry, OpenKeystore, TeeWalletMeta } from "../wallet-keystore"
 import { addressFromSecret64 } from "./ed25519"
 import { isVaultError, VaultError } from "./errors"
@@ -113,6 +113,13 @@ export async function resolveTeeAddress(
       }
     }
   } catch (error) {
+    // `findTeeInVault` → `defaultVaultPath` → `candleConfigDir` (D4): a literal-`~`
+    // `CANDLE_CONFIG_DIR` is a usage error, not a vault failure. Same exit 2 / USAGE envelope as
+    // `vaultPathFor`. Do not rethrow: a real binary would print `Unexpected error:` and exit 1.
+    if (isUsageError(error)) {
+      writeUsageFailure(ctx.deps, error.message, ctx.json)
+      return { ok: false, code: 2 }
+    }
     if (isVaultError(error)) {
       writeLocalFailure(
         ctx.deps,

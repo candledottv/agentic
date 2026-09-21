@@ -12,9 +12,11 @@ import { describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import type { Deps } from "../deps"
 import { run } from "../index"
+import { formatBytes } from "../progress"
 import { RELEASE_ISSUER } from "../release"
 import { createCapture, createRoutedFetch, createTestDeps, jsonResponse, type RouteHandler } from "../test-support"
 import { CLI_VERSION } from "../version"
+import { SIGNATURE_VERIFIED } from "./update"
 
 const NEWER = "99.0.0"
 const BINARY = new TextEncoder().encode("#!/bin/sh\necho new\n")
@@ -347,5 +349,59 @@ describe("update", () => {
     expect(await run(["update", "--json"], down.deps)).toBe(1)
     expect(JSON.parse(down.stdout.text).code).toBe("UPDATE_UNREACHABLE")
     expect(down.stderr.text).toBe("")
+  })
+})
+
+/**
+ * T18 (BE-241, D9): the two copy changes on the progress output. The staged output itself is not
+ * new -- it shipped in 0.8.4 (`8019923d`, PR #878), and Andrew's 0.8.3 binary was the one
+ * performing the 0.8.3 to 0.11.0 update, which is why BE-235 read it as silent. What is new is that
+ * the first line carries the download size, and the signature line says what kind of signature.
+ */
+describe("T18: D9's two lines", () => {
+  test("the first line carries the asset's size, straight off the manifest", async () => {
+    const f = fixture()
+    const { deps, stderr } = binaryDeps(f.fetch, { verify: () => ({ ok: true }) })
+    expect(await run(["update"], deps)).toBe(0)
+    expect(stderr.text).toContain(
+      `Updating candle ${CLI_VERSION} -> ${NEWER} (${formatBytes(f.manifest.assets["linux-x64"].size)})`,
+    )
+  })
+
+  test("a multi-megabyte asset reads in MB, so a slow link is legible from the first second", async () => {
+    const f = fixture()
+    // The manifest's `size` is what the line reports; the fetched bytes stay small so the test is
+    // fast, which also proves the line is not measuring the download.
+    f.manifest.assets["linux-x64"] = { name: "candle-linux-x64", sha256: f.sum, size: 13_002_342 }
+    const { deps, stderr } = binaryDeps(f.fetch, { verify: () => ({ ok: true }) })
+    expect(await run(["update"], deps)).toBe(0)
+    expect(stderr.text).toContain(`Updating candle ${CLI_VERSION} -> ${NEWER} (12.4 MB)`)
+  })
+
+  test("the signature step names the scheme and the pin", async () => {
+    const f = fixture()
+    const { deps, stderr } = binaryDeps(f.fetch, { verify: () => ({ ok: true }) })
+    expect(await run(["update"], deps)).toBe(0)
+    expect(stderr.text).toContain(SIGNATURE_VERIFIED)
+    expect(stderr.text).toContain("signature verified (Sigstore, keyless; signer pinned to the release workflow)")
+    // Still its own stage, separate from the checksum: BE-235 read them as folded together, and
+    // this is the assertion that says otherwise.
+    expect(stderr.text).toContain("checksum verified")
+    expect(stderr.text.indexOf("verifying signature")).toBeGreaterThan(stderr.text.indexOf("checksum verified"))
+  })
+
+  test("--json prints neither: progress is human commentary and stdout is the payload", async () => {
+    const f = fixture()
+    const { deps, stdout, stderr } = binaryDeps(f.fetch, { verify: () => ({ ok: true }) })
+    expect(await run(["update", "--json"], deps)).toBe(0)
+    expect(stderr.text).toBe("")
+    expect(stdout.text).not.toContain("Updating candle")
+    expect(stdout.text).not.toContain("Sigstore")
+    expect(stdout.text.trimEnd().split("\n")).toHaveLength(1)
+    // Exactly one JSON value, and it is update's own payload rather than progress commentary.
+    const body = JSON.parse(stdout.text) as Record<string, unknown>
+    expect(body.updated).toBe(true)
+    expect(body.latest).toBe(NEWER)
+    expect(body.current).toBe(CLI_VERSION)
   })
 })

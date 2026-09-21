@@ -17,7 +17,7 @@
  * these commands refuse anything else. The API never sees the TEE wallet private key or the passphrase.
  */
 import { base58 } from "@scure/base"
-import { type ParsedArgs, parseArgs } from "../args"
+import { isUsageError, type ParsedArgs, parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext, Deps } from "../deps"
 import { resolveApiKey } from "../deps"
@@ -52,6 +52,7 @@ import {
   transferFeeFor,
 } from "../token-2022"
 import type { KeyEntry } from "../vault/format"
+import { CONFIG_DIR_ENV } from "../vault/store"
 import {
   commitVaultTeeEntry,
   maybeReconcileVaultTee,
@@ -110,28 +111,64 @@ function usage(ctx: CommandContext, line: string): number {
   return 2
 }
 
-type StoreRead = { path: string; raw: string | null } | { path: string; error: unknown }
+type StoreRead = { path: string; raw: string | null } | { path: string; error: unknown } | { usage: string }
+
+/**
+ * The TEE store for this invocation: `--keystore`, else `CANDLE_CONFIG_DIR`, else the default
+ * (and the pre-rename fallback). Returns `{ error }` rather than throwing for the one refusal
+ * that can happen here, a `CANDLE_CONFIG_DIR` beginning with a literal `~` (D4): same exit 2 and
+ * `USAGE` envelope as `vaultPathFor`. `--keystore` is already tilde-checked at parse time.
+ */
+function teeStorePathsFor(
+  ctx: CommandContext,
+  parsed: ParsedArgs,
+): { current: string; legacy: string } | { error: string } {
+  const flag = parsed.values["--keystore"]
+  if (flag !== undefined) return { current: flag, legacy: flag }
+  try {
+    return { current: defaultTeeKeystorePath(ctx.deps.env), legacy: legacyTeeKeystorePath(ctx.deps.env) }
+  } catch (error) {
+    if (isUsageError(error)) return { error: error.message }
+    throw error
+  }
+}
 
 /**
  * Finds the TEE wallet store and reads it, once. `--keystore` wins. Otherwise the current store, or,
  * only when that file does not exist, the store a source-built CLI wrote before the rename
  * (`hot-wallets.enc`). `raw` is null when neither exists (reported against the current path); any
- * other read failure comes back as `error` with the path it happened on.
+ * other read failure comes back as `error` with the path it happened on. A `CANDLE_CONFIG_DIR`
+ * refusal comes back as `{ usage }` so the caller can exit 2 before any prompt or write.
  */
 async function readTeeStore(ctx: CommandContext, parsed: ParsedArgs): Promise<StoreRead> {
-  const attempt = async (path: string): Promise<StoreRead> => {
+  const paths = teeStorePathsFor(ctx, parsed)
+  if ("error" in paths) return { usage: paths.error }
+  const attempt = async (path: string): Promise<Exclude<StoreRead, { usage: string }>> => {
     try {
       return { path, raw: await readTeeStoreRaw(ctx.deps, path) }
     } catch (error) {
       return { path, error }
     }
   }
-  const explicit = parsed.values["--keystore"]
-  if (explicit !== undefined) return attempt(explicit)
-  const current = await attempt(defaultTeeKeystorePath(ctx.deps.env))
+  const current = await attempt(paths.current)
   if ("error" in current || current.raw !== null) return current
-  const legacy = await attempt(legacyTeeKeystorePath(ctx.deps.env))
+  if (paths.legacy === paths.current) return current
+  const legacy = await attempt(paths.legacy)
   return "error" in legacy || legacy.raw !== null ? legacy : current
+}
+
+/**
+ * Why THIS store path, in the same words the vault's `VAULT_MISSING` uses (D3). `tee` resolves its
+ * own path (`--keystore`, else the current default, else the pre-rename name), so it cannot reuse
+ * `vaultPathFor`'s result -- but the operator reading the message cannot tell the two commands apart,
+ * and should not have to.
+ */
+function teePathSourceNote(ctx: CommandContext, parsed: ParsedArgs): string {
+  if (parsed.values["--keystore"] !== undefined) return "(from --keystore)"
+  const configured = ctx.deps.env[CONFIG_DIR_ENV]?.trim()
+  return configured
+    ? `(from ${CONFIG_DIR_ENV}=${configured})`
+    : `(the default: no --keystore given and ${CONFIG_DIR_ENV} is unset)`
 }
 
 /** null = no store here (ENOENT); throws for every other read failure (see wallets-generate). */
@@ -373,6 +410,7 @@ type Opened = ({ ok: true } & OpenedTee) | { ok: false; code: number }
 async function openExistingTeeStore(ctx: CommandContext, parsed: ParsedArgs): Promise<Opened> {
   const { deps, json } = ctx
   const found = await readTeeStore(ctx, parsed)
+  if ("usage" in found) return { ok: false, code: usage(ctx, found.usage) }
   const { path } = found
   if ("error" in found) {
     writeLocalFailure(
@@ -389,7 +427,14 @@ async function openExistingTeeStore(ctx: CommandContext, parsed: ParsedArgs): Pr
   if (raw === null) {
     writeLocalFailure(
       deps,
-      { code: "TEE_STORE_MISSING", message: `No TEE wallet store at ${path}.`, suggestion: "Run: candle tee new" },
+      {
+        // D3 (BE-241): the same source parenthetical the vault's own refusals carry. The code is
+        // unchanged; what is added is WHY this path, which is the half that was missing when an
+        // operator passed --keystore to one command and not the next.
+        code: "TEE_STORE_MISSING",
+        message: `No TEE wallet store at ${path} ${teePathSourceNote(ctx, parsed)}.`,
+        suggestion: "Run: candle tee new",
+      },
       json,
     )
     return { ok: false, code: 1 }
@@ -421,7 +466,7 @@ function findEntry(store: OpenKeystore, address: string): KeystoreEntry | undefi
  * when a vault exists. `false` when there is no vault or the address is not in it; `"error"` when
  * the unlock failed.
  */
-async function addressOwnedByVault(ctx: CommandContext, address: string): Promise<boolean | "error"> {
+async function addressOwnedByVault(ctx: CommandContext, address: string): Promise<boolean | "error" | "usage"> {
   const { findTeeInVault } = await import("../vault/tee-lookup")
   const { closeVault } = await import("../vault/store")
   try {
@@ -430,6 +475,10 @@ async function addressOwnedByVault(ctx: CommandContext, address: string): Promis
     closeVault(hit.vault)
     return true
   } catch (error) {
+    if (isUsageError(error)) {
+      writeUsageFailure(ctx.deps, error.message, ctx.json)
+      return "usage"
+    }
     writeLocalFailure(
       ctx.deps,
       {
@@ -497,11 +546,12 @@ function rpcUrlFrom(ctx: CommandContext, parsed: ParsedArgs): string | { error: 
 export async function teeNew(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, json } = ctx
   if (!refuseEnvPassphrase(ctx)) return 1
-  const parsed = parseArgs(args, { valueFlags: ["--label", "--keystore"] })
+  const parsed = parseArgs(args, { valueFlags: ["--label", "--keystore"], pathFlags: ["--keystore"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
 
   const found = await readTeeStore(ctx, parsed)
+  if ("usage" in found) return usage(ctx, found.usage)
   const { path } = found
   if ("error" in found) {
     writeLocalFailure(
@@ -599,6 +649,7 @@ export async function teeEnable(args: string[], ctx: CommandContext): Promise<nu
   const parsed = parseArgs(args, {
     valueFlags: ["--vault", "--vault-key", "--label", "--keystore"],
     booleanFlags: ["--accept-unknown-exposure"],
+    pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
@@ -613,10 +664,12 @@ export async function teeEnable(args: string[], ctx: CommandContext): Promise<nu
   let vault = vaultFlag
   if (vaultKey !== undefined) {
     const { assertColdVaultDestination } = await import("../vault/promote-support")
-    const { defaultVaultPath, readVaultRaw, closeVault } = await import("../vault/store")
-    const { unlockInteractively } = await import("./vault-support")
+    const { readVaultRaw, closeVault } = await import("../vault/store")
+    const { unlockInteractively, vaultPathFor } = await import("./vault-support")
     const { isVaultError } = await import("../vault/errors")
-    const vaultPath = parsed.values["--keystore"] ?? defaultVaultPath(deps.env)
+    const resolvedVault = vaultPathFor(ctx, parsed)
+    if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+    const vaultPath = resolvedVault.path
     const raw = await readVaultRaw(vaultPath)
     if (raw === null) {
       writeLocalFailure(
@@ -674,6 +727,7 @@ export async function teeEnable(args: string[], ctx: CommandContext): Promise<nu
 
   // CC-05: a migrated address is owned by the vault; never rewrite tee-wallets.enc for it.
   const vaultOwned = await addressOwnedByVault(ctx, address)
+  if (vaultOwned === "usage") return 2
   if (vaultOwned === "error") return 1
   if (vaultOwned === true) return refuseLegacyWriteForVaultAddress(ctx, address)
 
@@ -829,7 +883,7 @@ function decimalToRaw(decimal: string, decimals: number): bigint | null {
 export async function teeFund(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, json } = ctx
   if (!refuseEnvPassphrase(ctx)) return 1
-  const parsed = parseArgs(args, { valueFlags: ["--amount", "--asset", "--keystore"] })
+  const parsed = parseArgs(args, { valueFlags: ["--amount", "--asset", "--keystore"], pathFlags: ["--keystore"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
   if (!address || extra !== undefined)
@@ -930,7 +984,7 @@ async function readLifecycle(
 export async function teeStatus(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, json } = ctx
   if (!refuseEnvPassphrase(ctx)) return 1
-  const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"] })
+  const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"], pathFlags: ["--keystore"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
   if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee status <address> [--rpc-url <url>]")
@@ -1053,7 +1107,7 @@ export async function teeStatus(args: string[], ctx: CommandContext): Promise<nu
 export async function teeDisable(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
   if (!refuseEnvPassphrase(ctx)) return 1
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"] })
+  const parsed = parseArgs(args, { valueFlags: ["--keystore"], pathFlags: ["--keystore"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
   if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee disable <address>")
@@ -1282,7 +1336,11 @@ async function broadcastAndFinalize(
 export async function teeSweep(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
   if (!refuseEnvPassphrase(ctx)) return 1
-  const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"], booleanFlags: ["--emergency"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--rpc-url", "--keystore"],
+    booleanFlags: ["--emergency"],
+    pathFlags: ["--keystore"],
+  })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
   if (!address || extra !== undefined)

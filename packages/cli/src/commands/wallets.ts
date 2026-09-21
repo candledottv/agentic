@@ -20,8 +20,8 @@
 
 import { base58 } from "@scure/base"
 import { parseArgs } from "../args"
-import { apiRequest } from "../client"
-import type { CommandContext } from "../deps"
+import { type ApiResult, apiRequest } from "../client"
+import type { CommandContext, Deps } from "../deps"
 import { resolveApiKey } from "../deps"
 import { printIdentity } from "../profiles"
 import { renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
@@ -44,10 +44,115 @@ interface LinkedWalletRow {
   chain: string
   label?: string
   revokedAt?: number
+  /** The account the row belongs to. Read only to name the account in `wallets import`'s
+   * verification failure, never rendered in the listing. */
+  userAddress?: string
 }
 
-interface LinkedWalletsResponse {
-  page: LinkedWalletRow[]
+/**
+ * One page of `GET /wallets`. The three fields are the whole pagination contract, and the reason
+ * this interface exists is that reading only `page` is exactly the bug BE-242 is about: the
+ * payload carried `isDone: false` and `continueCursor: "20"` and both renderings threw them away.
+ */
+interface LinkedWalletsPage {
+  page?: unknown
+  isDone?: boolean
+  continueCursor?: string | null
+}
+
+/** The page size every full read asks for; the server clamps `limit` to 100 (linkedWallets.listByUser). */
+export const LINKED_WALLETS_PAGE_LIMIT = 100
+
+/**
+ * How many pages one full read will walk before it stops and says so. Only ever bounds a
+ * misbehaving server: 25 pages of 100 is 2,500 rows against a Max tier ceiling of 1,000.
+ */
+export const LINKED_WALLETS_PAGE_CAP = 25
+
+/**
+ * A complete read of an account's linked wallets: every page, in server order (active rows
+ * first), with the first page's envelope kept verbatim so `--json` can still echo what the
+ * server actually said.
+ *
+ * `incomplete` is the honest half. A read that stopped short is not a shorter list, it is a list
+ * whose end is unknown, and every caller here has to treat it differently from a finished one --
+ * the listing prints a notice, and `verifyImportLanded` declines to call a wallet missing.
+ */
+interface LinkedWalletsListing {
+  rows: LinkedWalletRow[]
+  /** The first page's body, untouched, for the `--json` echo. */
+  firstPageBody: unknown
+  /** Why the walk stopped before the server said `isDone`, when it did. */
+  incomplete?: "page-cap" | "malformed-page"
+  /** Where a `page-cap` walk stopped, so a caller can carry on from it. `null` otherwise. */
+  continueCursor: string | null
+  /** The account the server says these rows belong to, from the first row that names one. */
+  account?: string
+}
+
+type LinkedWalletsRead =
+  | { ok: true; listing: LinkedWalletsListing }
+  | { ok: false; response: Extract<ApiResult, { ok: false }> }
+
+/**
+ * Walks `GET /wallets` to the END of the list.
+ *
+ * This is the one place that follows the cursor, and it is shared on purpose. The walk used to
+ * exist only inside `verifyImportLanded` -- the import-verification path -- while the LISTING,
+ * the thing operators actually read, took a single default page and discarded the `isDone: false`
+ * sitting in the same payload. Past an account's 20th wallet that printed 20 rows with no sign
+ * there were more. Two copies of this loop is how that happened, so there is now one.
+ */
+async function readAllLinkedWallets(args: {
+  apiKey: string
+  apiUrl: string
+  deps: Pick<Deps, "fetch" | "env">
+}): Promise<LinkedWalletsRead> {
+  const rows: LinkedWalletRow[] = []
+  let firstPageBody: unknown
+  let account: string | undefined
+  let cursor: string | null = null
+
+  for (let pageCount = 0; pageCount < LINKED_WALLETS_PAGE_CAP; pageCount++) {
+    const query =
+      cursor === null
+        ? `?limit=${LINKED_WALLETS_PAGE_LIMIT}`
+        : `?limit=${LINKED_WALLETS_PAGE_LIMIT}&cursor=${encodeURIComponent(cursor)}`
+    const listed = await apiRequest(`/api/v1/agent/wallets${query}`, {
+      method: "GET",
+      auth: "key",
+      credentials: { apiKey: args.apiKey },
+      apiUrl: args.apiUrl,
+      fetch: args.deps.fetch,
+      env: args.deps.env,
+    })
+    // A failed page fails the whole read: half a wallet list reported as a wallet list is the
+    // defect this function exists to remove, not a degraded mode worth offering.
+    if (!listed.ok) return { ok: false, response: listed }
+
+    const body = listed.body as LinkedWalletsPage
+    if (pageCount === 0) firstPageBody = listed.body
+    if (!Array.isArray(body.page)) {
+      return { ok: true, listing: { rows, firstPageBody, incomplete: "malformed-page", continueCursor: null, account } }
+    }
+    const pageRows = body.page as LinkedWalletRow[]
+    rows.push(...pageRows)
+    account ??= pageRows.find((row) => typeof row.userAddress === "string")?.userAddress
+
+    if (body.isDone !== false || typeof body.continueCursor !== "string") {
+      return { ok: true, listing: { rows, firstPageBody, continueCursor: null, account } }
+    }
+    cursor = body.continueCursor
+  }
+  return { ok: true, listing: { rows, firstPageBody, incomplete: "page-cap", continueCursor: cursor, account } }
+}
+
+/** The stderr notice a read that stopped short prints, in BOTH renderings. */
+function incompleteNotice(listing: LinkedWalletsListing): string {
+  return listing.incomplete === "page-cap"
+    ? `Warning: stopped after ${LINKED_WALLETS_PAGE_CAP} pages of ${LINKED_WALLETS_PAGE_LIMIT}; this list is NOT complete. ` +
+        `Continue from cursor ${listing.continueCursor}.\n`
+    : "Warning: the server sent a page without a wallet list; this list is NOT complete.\n"
 }
 
 /**
@@ -149,35 +254,42 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
     return 1
   }
 
-  const linked = await apiRequest("/api/v1/agent/wallets", {
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env,
-  })
+  // Every page, not the default first 20. See `readAllLinkedWallets`.
+  const linked = await readAllLinkedWallets({ apiKey, apiUrl, deps })
   if (!linked.ok) {
-    writeFailure(deps, linked, { apiUrl, authType: "key" }, json)
+    writeFailure(deps, linked.response, { apiUrl, authType: "key" }, json)
     return 1
   }
-
-  const linkedBody = linked.body as LinkedWalletsResponse
-  // Guarded rather than trusted: `body` is `unknown` until this cast, and the JSON branch below
-  // now reads the rows where before it only echoed the body.
-  const linkedRows = Array.isArray(linkedBody.page) ? linkedBody.page : []
+  const listing = linked.listing
+  const linkedRows = listing.rows
   const { states: signerStates, storeError } = await probeSignerStates(linkedRows, deps.store)
   // On STDERR in both modes: a warning must never land in the middle of the JSON document
   // stdout is contracted to carry, and it is not a failure of the listing either way.
   if (storeError !== undefined) deps.stderr.write(`Could not read the signer store: ${storeError}\n`)
+  // Item 3: a bounded fetch that stopped short says so, rather than truncating silently a second
+  // time. On stderr in both modes, for the same reason the store warning is: stdout is the JSON
+  // document, and this is not a failure of the listing either way.
+  if (listing.incomplete !== undefined) deps.stderr.write(incompleteNotice(listing))
 
   if (json) {
-    // Both API bodies stay verbatim and `signers` sits beside them, so a consumer can still tell
-    // what the API said from what the CLI worked out about this machine.
+    // `linked` keeps the server's own envelope, with `page` replaced by EVERY row and `isDone` /
+    // `continueCursor` restated for the whole read rather than for its first page. That is the
+    // deliberate contract choice in item 2: the table and the JSON must not disagree about what
+    // "your wallets" means, and the shape stays the one callers already parse, so a consumer
+    // reading `linked.page` gets more rows rather than a different document. `truncated` is the
+    // flat assertion a script can check without reasoning about the cursor.
     deps.stdout.write(
       `${JSON.stringify({
         embedded: embedded.body,
-        linked: linked.body,
+        linked: {
+          ...(typeof listing.firstPageBody === "object" && listing.firstPageBody !== null ? listing.firstPageBody : {}),
+          page: linkedRows,
+          isDone: listing.incomplete === undefined,
+          continueCursor: listing.continueCursor,
+        },
         signers: Object.fromEntries(signerStates),
+        walletCount: linkedRows.length,
+        truncated: listing.incomplete !== undefined,
       })}\n`,
     )
     return 0
@@ -211,7 +323,10 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
     )}\n`,
   )
 
-  deps.stdout.write("\nLinked wallets:\n")
+  // The count is on the heading because the old failure was invisible: 20 rows looked exactly
+  // like an account with 20 wallets. A number the operator can check against what they expect is
+  // what makes a wrong list say so.
+  deps.stdout.write(`\nLinked wallets (${linkedRows.length}):\n`)
   if (linkedRows.length === 0) {
     deps.stdout.write("(none)\n")
   } else {
@@ -313,6 +428,7 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, {
     valueFlags: ["--chain", "--address", "--label", "--key-file", "--signer-out"],
+    pathFlags: ["--key-file", "--signer-out"],
   })
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json)
@@ -501,41 +617,24 @@ async function verifyImportLanded(args: {
   ctx: CommandContext
 }): Promise<{ status: "verified" | "missing" | "unchecked"; account?: string }> {
   const { deps } = args.ctx
-  // Follow the cursor to the END of the list, never just the first page. The list serves 20
-  // rows by default, active rows first in insertion order, so a freshly imported wallet is
-  // always the LAST active row -- which put every import past an account's 20th onto page 2,
-  // where the old single-page read could not see it. That fired a false IMPORT_NOT_VISIBLE on
-  // a healthy import, and the "account these credentials belong to" it printed came from page
-  // one of the caller's own list, so the message named the very account the wallet was on.
-  // The page cap only bounds a misbehaving server: 25 pages of 100 comfortably covers the
-  // 1,000-wallet Max tier ceiling.
-  let cursor: string | null = null
-  let account: string | undefined
-  for (let pageCount = 0; pageCount < 25; pageCount++) {
-    const query = cursor === null ? "?limit=100" : `?limit=100&cursor=${encodeURIComponent(cursor)}`
-    const listed = await apiRequest(`/api/v1/agent/wallets${query}`, {
-      method: "GET",
-      auth: "key",
-      credentials: { apiKey: args.apiKey },
-      apiUrl: args.apiUrl,
-      fetch: deps.fetch,
-      env: deps.env,
-    })
-    if (!listed.ok) return { status: "unchecked", ...(account !== undefined ? { account } : {}) }
-    const body = listed.body as {
-      page?: Array<{ _id?: string; userAddress?: string }>
-      isDone?: boolean
-      continueCursor?: string | null
-    }
-    if (!Array.isArray(body.page)) return { status: "unchecked", ...(account !== undefined ? { account } : {}) }
-    account ??= body.page.find((row) => typeof row.userAddress === "string")?.userAddress
-    if (body.page.some((row) => row._id === args.id)) {
-      return { status: "verified", ...(account !== undefined ? { account } : {}) }
-    }
-    if (body.isDone !== false || typeof body.continueCursor !== "string") break
-    cursor = body.continueCursor
-  }
-  return { status: "missing", ...(account !== undefined ? { account } : {}) }
+  // Reads the END of the list, never just the first page, through the same walker the listing
+  // uses. The list serves 20 rows by default, active rows first in insertion order, so a freshly
+  // imported wallet is always the LAST active row -- which put every import past an account's
+  // 20th onto page 2, where the old single-page read could not see it. That fired a false
+  // IMPORT_NOT_VISIBLE on a healthy import, and the "account these credentials belong to" it
+  // printed came from page one of the caller's own list, so the message named the very account
+  // the wallet was on.
+  const read = await readAllLinkedWallets({ apiKey: args.apiKey, apiUrl: args.apiUrl, deps })
+  if (!read.ok) return { status: "unchecked" }
+  const { rows, account, incomplete } = read.listing
+  const found = rows.some((row) => row._id === args.id)
+  const withAccount = account !== undefined ? { account } : {}
+  if (found) return { status: "verified", ...withAccount }
+  // A list that stopped short is not evidence of absence. Reporting "missing" off a truncated
+  // read would print the wrong-account refusal for a wallet that is simply on a page nobody
+  // reached -- the same silent truncation in a second costume.
+  if (incomplete !== undefined) return { status: "unchecked", ...withAccount }
+  return { status: "missing", ...withAccount }
 }
 
 export async function walletsRevoke(args: string[], ctx: CommandContext): Promise<number> {

@@ -28,6 +28,7 @@ export async function vaultDemote(args: string[], ctx: CommandContext): Promise<
   const parsed = parseArgs(args, {
     valueFlags: ["--rpc-url", "--sweep-to", "--keystore"],
     booleanFlags: ["--emergency", "--accept-older-copy"],
+    pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
@@ -39,7 +40,11 @@ export async function vaultDemote(args: string[], ctx: CommandContext): Promise<
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "vault demote")) return 1
 
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+
+  const path = resolvedVault.path
   const emergency = parsed.booleans.has("--emergency")
   const sweepTo = parsed.values["--sweep-to"]
 
@@ -90,7 +95,7 @@ export async function vaultDemote(args: string[], ctx: CommandContext): Promise<
       releaseResolvedTee(resolved.resolved)
       released = true
       return await runVaultCommand(ctx, async ({ hold }) => {
-        const raw = await requireVaultRaw(path)
+        const raw = await requireVaultRaw(ctx, resolvedVault)
         const opened = await unlockInteractively(ctx, path, raw, {
           acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
         })

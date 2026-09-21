@@ -26,6 +26,7 @@ import { readSidecar, sidecarPath } from "../vault/sidecar"
 import { fileExists, legacyWalletsPath, readVaultRaw } from "../vault/store"
 import {
   assertVaultHelperIdentities,
+  missingVault,
   refuseEnvPassphrase,
   requireTty,
   runVaultCommand,
@@ -36,21 +37,25 @@ import {
 } from "./vault-support"
 
 export async function vaultStatus(args: string[], ctx: CommandContext): Promise<number> {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--unlock", "--accept-older-copy"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore"],
+    booleanFlags: ["--unlock", "--accept-older-copy"],
+    pathFlags: ["--keystore"],
+  })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
   if (!refuseEnvPassphrase(ctx)) return 1
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
   const unlock = parsed.booleans.has("--unlock")
   if (unlock && !requireTty(ctx, "vault status --unlock")) return 1
 
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await readVaultRaw(path)
-    if (raw === null) {
-      throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" })
-    }
+    if (raw === null) throw missingVault(ctx, resolvedVault)
     const file = parseVaultFile(raw)
     if (unlock) assertVaultHelperIdentities(deps, file.envelopes)
     const facts = await currentPlatformFacts(deps)

@@ -45,6 +45,7 @@ import { addSecurityKeyFactor } from "./vault-factor-security-key"
 import { addTouchIdFactor } from "./vault-factor-touch-id"
 import { GENERATED_PASSPHRASE_NEEDS_TERMINAL } from "./vault-init"
 import {
+  missingVault,
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
@@ -56,17 +57,18 @@ import {
 } from "./vault-support"
 
 export async function vaultFactorList(args: string[], ctx: CommandContext): Promise<number> {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: [] })
+  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: [], pathFlags: ["--keystore"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
   if (!refuseEnvPassphrase(ctx)) return 1
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
   return runVaultCommand(ctx, async () => {
     const raw = await readVaultRaw(path)
-    if (raw === null)
-      throw new VaultError("VAULT_MISSING", `No vault at ${path}.`, { suggestion: "Create one: candle vault init" })
+    if (raw === null) throw missingVault(ctx, resolvedVault)
     const file = parseVaultFile(raw)
     const facts = await currentPlatformFacts(deps)
     const rows = file.envelopes.map((envelope) => {
@@ -100,6 +102,7 @@ export async function vaultFactorAdd(args: string[], ctx: CommandContext): Promi
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--label"],
     booleanFlags: ["--own-passphrase", "--accept-older-copy"],
+    pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const kind = parsed.positionals[0]
@@ -119,17 +122,19 @@ export async function vaultFactorAdd(args: string[], ctx: CommandContext): Promi
   if (!requireTty(ctx, "vault factor add")) return 1
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
 
   return runVaultCommand(ctx, async ({ hold }) => {
-    if (kind === "security-key") return addSecurityKeyFactor(ctx, parsed, path, hold)
-    if (kind === "touch-id") return addTouchIdFactor(ctx, parsed, path, hold)
-    if (kind === "passkey") return addPasskeyFactor(ctx, parsed, path, hold)
+    if (kind === "security-key") return addSecurityKeyFactor(ctx, parsed, resolvedVault, hold)
+    if (kind === "touch-id") return addTouchIdFactor(ctx, parsed, resolvedVault, hold)
+    if (kind === "passkey") return addPasskeyFactor(ctx, parsed, resolvedVault, hold)
     if (kind !== "passphrase") {
       return usage(ctx, `Unknown factor: ${kind}. This release adds: passphrase, security-key, touch-id, passkey`)
     }
 
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       promptText: "Current vault passphrase, to unlock (input hidden): ",
@@ -187,7 +192,11 @@ export async function vaultFactorAdd(args: string[], ctx: CommandContext): Promi
 }
 
 export async function vaultFactorRemove(args: string[], ctx: CommandContext): Promise<number> {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"],
+  })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const id = parsed.positionals[0]
   if (id === undefined) return usage(ctx, "Which envelope? Run `candle vault factor list` for the ids.")
@@ -196,17 +205,22 @@ export async function vaultFactorRemove(args: string[], ctx: CommandContext): Pr
   if (!requireTty(ctx, "vault factor remove")) return 1
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
 
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const vault = hold(
       (await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") }))
         .vault,
     )
 
     const target = vault.file.envelopes.find((envelope) => envelope.id === id)
-    if (!target) throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no envelope with id ${id}.`)
+    if (!target)
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no envelope with id ${id}.`, {
+        suggestion: "Run: candle vault factor list (which prints every envelope id this vault has)",
+      })
 
     const remaining = vault.file.envelopes.filter((envelope) => envelope.id !== id)
     // CC-03: the passphrase envelope is the recovery FLOOR. Removing the last one would leave a

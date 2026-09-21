@@ -99,12 +99,20 @@ export function assertExternalSigners(
       throw new VaultError(
         "SIGN_SIGNER_NOT_EXTERNAL",
         `${address} (${role}) is not an address this vault holds. candle sign signs only with this vault's external wallets.`,
+        {
+          suggestion:
+            "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have.",
+        },
       )
     }
     if (entry.role !== "external") {
       throw new VaultError(
         "SIGN_SIGNER_NOT_EXTERNAL",
         `${address} (${role}) is ${describeRole(entry)}${entry.label ? ` "${entry.label}"` : ""}, which never signs for an outside tool. Only an external wallet does (candle external new).`,
+        {
+          suggestion:
+            "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have.",
+        },
       )
     }
     const provided = named.find((candidate) => candidate.id === entry.id)
@@ -231,6 +239,7 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
   const parsed = parseArgs(lifted.rest, {
     valueFlags: ["--file", "--rpc-url", "--keystore"],
     booleanFlags: ["--broadcast", "--yes", "--accept-older-copy"],
+    pathFlags: ["--keystore", "--file"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) {
@@ -247,7 +256,9 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
   if (!requireTty(ctx, "candle sign")) return 1
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
   const yes = parsed.booleans.has("--yes")
 
   return runVaultCommand(ctx, async ({ hold }) => {
@@ -262,11 +273,13 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
         throw new VaultError(
           "SIGN_TRANSACTION_UNDECODABLE",
           `The input is not one base64 legacy or v0 transaction: ${error.message}.`,
+          { suggestion: "Nothing was signed. Pass one base64 transaction through --file <path> or stdin." },
         )
       }
       throw new VaultError(
         "SIGN_TRANSACTION_UNDECODABLE",
         `The input could not be read: ${error instanceof Error ? error.message : error}.`,
+        { suggestion: "Nothing was signed. Check --file <path>, or pipe the transaction on stdin." },
       )
     }
     const rpc = createSolanaRpc(rpcUrl, deps.fetch)
@@ -275,12 +288,14 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
       compiled = await resolveCompiledKeys(tx.message, rpc)
     } catch (error) {
       if (error instanceof LookupTableError)
-        throw new VaultError("SIGN_LOOKUP_TABLE_UNRESOLVED", `${error.message}. Nothing was displayed or signed.`)
+        throw new VaultError("SIGN_LOOKUP_TABLE_UNRESOLVED", `${error.message}. Nothing was displayed or signed.`, {
+          suggestion: "Point --rpc-url at an endpoint that has the lookup table, then run it again.",
+        })
       throw error
     }
 
     // Step 2: the vault, and the signer refusals.
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
@@ -296,6 +311,10 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
           throw new VaultError(
             "SIGN_SIGNER_NOT_EXTERNAL",
             `--wallet ${requested} is ${describeRole(other)}, which never signs for an outside tool.`,
+            {
+              suggestion:
+                "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have.",
+            },
           )
         }
         return usage(ctx, `No external wallet in this vault matches --wallet ${requested}.`)
@@ -320,6 +339,10 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
       throw new VaultError(
         "SIGN_SIMULATION_FAILED",
         `The simulation could not be run over ${rpcUrl}: ${error instanceof Error ? error.message : error}. Nothing was signed.`,
+        {
+          suggestion:
+            "Point --rpc-url at a reachable endpoint and run it again; there is no way to skip the simulation.",
+        },
       )
     }
     if (simulation.result.err !== null && simulation.result.err !== undefined) {
@@ -328,6 +351,7 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
       throw new VaultError(
         "SIGN_SIMULATION_FAILED",
         `The simulation failed: ${JSON.stringify(simulation.result.err)}. Nothing was signed; there is no override.${logs}`,
+        { suggestion: "Fix what the transaction does, then sign the corrected one." },
       )
     }
 
@@ -424,6 +448,7 @@ export async function signMessage(args: string[], ctx: CommandContext): Promise<
   const parsed = parseArgs(lifted.rest, {
     valueFlags: ["--file", "--keystore"],
     booleanFlags: ["--yes", "--accept-older-copy"],
+    pathFlags: ["--keystore", "--file"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) {
@@ -439,7 +464,9 @@ export async function signMessage(args: string[], ctx: CommandContext): Promise<
   if (!requireTty(ctx, "candle sign message")) return 1
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
   return runVaultCommand(ctx, async ({ hold }) => {
     let bytes: Uint8Array
     try {
@@ -450,7 +477,7 @@ export async function signMessage(args: string[], ctx: CommandContext): Promise<
         `The message could not be read: ${error instanceof Error ? error.message : error}.`,
       )
     }
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
@@ -464,6 +491,10 @@ export async function signMessage(args: string[], ctx: CommandContext): Promise<
         throw new VaultError(
           "SIGN_SIGNER_NOT_EXTERNAL",
           `--wallet ${requested} is ${describeRole(other)}, which never signs a message for an outside tool.`,
+          {
+            suggestion:
+              "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have.",
+          },
         )
       }
       return usage(ctx, `No external wallet in this vault matches --wallet ${requested}.`)

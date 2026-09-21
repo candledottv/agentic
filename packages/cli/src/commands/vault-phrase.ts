@@ -36,7 +36,11 @@ import {
 const ACKNOWLEDGEMENT = "understood"
 
 export async function vaultPhraseShow(args: string[], ctx: CommandContext): Promise<number> {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"],
+  })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
   if (!refuseEnvPassphrase(ctx)) return 1
@@ -50,9 +54,13 @@ export async function vaultPhraseShow(args: string[], ctx: CommandContext): Prom
   }
   if (!assertPhraseTty(ctx)) return 1
 
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+
+  const path = resolvedVault.path
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const vault = hold(
       (
         await unlockInteractively(ctx, path, raw, {
@@ -97,13 +105,17 @@ export async function runPhraseCeremony(
     throw new VaultError(
       "PHRASE_REQUIRES_TTY",
       "The recovery phrase is shown only on a terminal, on both ends. Nothing was rendered.",
+      { suggestion: "Run it in a terminal, not through a pipe, an agent or --json." },
     )
   }
 
   if (!opts.alreadyUnlockedWithFreshFactor) {
     const typed = await deps.promptSecret("Vault passphrase, again, to show the recovery phrase (input hidden): ")
     const envelope = vault.file.envelopes.find((candidate) => candidate.factor === "passphrase")
-    if (!envelope) throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.")
+    if (!envelope)
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.", {
+        suggestion: "Run: candle vault status (which lists each factor and why it is not available here)",
+      })
     const { unlockWithPassphrase } = await import("../vault/store")
     const { openWithTypedPassphrase } = await import("./vault-support")
     const { vault: reopened } = await openWithTypedPassphrase(typed, (candidate) =>

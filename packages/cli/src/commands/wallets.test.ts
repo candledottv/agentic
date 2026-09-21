@@ -507,3 +507,146 @@ describe("profiles", () => {
     expect(stdout.text.startsWith("Profile: staging   Account: A at ")).toBe(true)
   })
 })
+
+/**
+ * BE-242. `candle wallet` served the default first page -- 20 rows -- and discarded the
+ * `isDone: false` / `continueCursor: "20"` sitting in the same payload, in BOTH renderings. The
+ * cursor walk existed in this very file, inside `verifyImportLanded`, and never reached the
+ * listing operators actually read. These pin the listing itself, since that is where the defect
+ * was and where a second copy of the loop would put it back.
+ */
+describe("the listing follows the cursor to the end of the list", () => {
+  const embedded = () => jsonResponse(200, { success: true, wallets: { solana: null, evm: null } })
+  const row = (n: number) => ({ _id: `lw_${n}`, address: `Addr${n}`, chain: "solana" })
+  /** Three pages: 100, 100, then 7. The shape a Max-tier account past the ceiling actually has. */
+  const threePages = () => [
+    () =>
+      jsonResponse(200, {
+        success: true,
+        page: Array.from({ length: 100 }, (_, i) => row(i)),
+        isDone: false,
+        continueCursor: "100",
+      }),
+    () =>
+      jsonResponse(200, {
+        success: true,
+        page: Array.from({ length: 100 }, (_, i) => row(100 + i)),
+        isDone: false,
+        continueCursor: "200",
+      }),
+    () =>
+      jsonResponse(200, {
+        success: true,
+        page: Array.from({ length: 7 }, (_, i) => row(200 + i)),
+        isDone: true,
+        continueCursor: null,
+      }),
+  ]
+
+  test("the table prints every row across every page, and heads it with the count", async () => {
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/wallets/embedded": embedded,
+      "/api/v1/agent/wallets": threePages(),
+    })
+    const stdout = createCapture()
+    const code = await run(["wallets"], createTestDeps({ fetch, store: createFakeStore({ api_key: "ck_x" }), stdout }))
+
+    expect(code).toBe(0)
+    expect(stdout.text).toContain("Linked wallets (207):")
+    // The first row, one from page two, and the LAST row -- the one the old single-page read
+    // could never reach.
+    expect(stdout.text).toContain("Addr0")
+    expect(stdout.text).toContain("Addr150")
+    expect(stdout.text).toContain("Addr206")
+
+    // It asked for 100 at a time and carried each cursor it was handed, rather than taking the
+    // default 20 once.
+    const listCalls = calls.filter((c) => new URL(c.url).pathname === "/api/v1/agent/wallets")
+    expect(listCalls).toHaveLength(3)
+    expect(listCalls.map((c) => new URL(c.url).searchParams.get("limit"))).toEqual(["100", "100", "100"])
+    expect(listCalls.map((c) => new URL(c.url).searchParams.get("cursor"))).toEqual([null, "100", "200"])
+  })
+
+  test("--json carries every row, says isDone, and states the count and truncation flatly", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/embedded": embedded,
+      "/api/v1/agent/wallets": threePages(),
+    })
+    const stdout = createCapture()
+    const code = await run(
+      ["wallets", "--json"],
+      createTestDeps({ fetch, store: createFakeStore({ api_key: "ck_x" }), stdout }),
+    )
+
+    expect(code).toBe(0)
+    const parsed = JSON.parse(stdout.text) as {
+      linked: { page: { _id: string }[]; isDone: boolean; continueCursor: string | null; success?: boolean }
+      walletCount: number
+      truncated: boolean
+    }
+    // The contract chosen in item 2: `page` is the WHOLE list, not its first page, so the table
+    // and the JSON cannot disagree about what "your wallets" means. The shape is the one callers
+    // already parse, so an existing consumer gets more rows rather than a different document.
+    expect(parsed.linked.page).toHaveLength(207)
+    expect(parsed.linked.page[206]?._id).toBe("lw_206")
+    expect(parsed.linked.isDone).toBe(true)
+    expect(parsed.linked.continueCursor).toBe(null)
+    expect(parsed.walletCount).toBe(207)
+    expect(parsed.truncated).toBe(false)
+    // The server's own envelope survives around the replaced fields.
+    expect(parsed.linked.success).toBe(true)
+  })
+
+  test("a page cap reached says so on stderr and in the JSON, rather than truncating silently", async () => {
+    // A server that never says it is done. The walk is bounded, and item 3's rule is that a
+    // bounded fetch must ANNOUNCE itself rather than hand back a short list as if it were whole.
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/wallets/embedded": embedded,
+      "/api/v1/agent/wallets": () =>
+        jsonResponse(200, { success: true, page: [row(1)], isDone: false, continueCursor: "9" }),
+    })
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const code = await run(
+      ["wallets", "--json"],
+      createTestDeps({ fetch, store: createFakeStore({ api_key: "ck_x" }), stdout, stderr }),
+    )
+
+    expect(code).toBe(0)
+    const listCalls = calls.filter((c) => new URL(c.url).pathname === "/api/v1/agent/wallets")
+    expect(listCalls).toHaveLength(25)
+    expect(stderr.text).toContain("NOT complete")
+    expect(stderr.text).toContain("cursor 9")
+    const parsed = JSON.parse(stdout.text) as {
+      linked: { isDone: boolean; continueCursor: string | null }
+      truncated: boolean
+    }
+    expect(parsed.truncated).toBe(true)
+    expect(parsed.linked.isDone).toBe(false)
+    // And it hands back where to continue from, so the list is finishable rather than merely
+    // known to be short.
+    expect(parsed.linked.continueCursor).toBe("9")
+    // The warning must never land inside the document stdout is contracted to carry.
+    expect(() => JSON.parse(stdout.text)).not.toThrow()
+  })
+
+  test("a failure on a LATER page fails the whole read; half a wallet list is never reported as one", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/embedded": embedded,
+      "/api/v1/agent/wallets": [
+        () => jsonResponse(200, { success: true, page: [row(0)], isDone: false, continueCursor: "1" }),
+        () => jsonResponse(500, { success: false, error: { code: "BOOM", message: "down" } }),
+      ],
+    })
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const code = await run(
+      ["wallets"],
+      createTestDeps({ fetch, store: createFakeStore({ api_key: "ck_x" }), stdout, stderr }),
+    )
+
+    expect(code).toBe(1)
+    // Not "Linked wallets (1):" -- one row it happened to have is not the account's wallet list.
+    expect(stdout.text).not.toContain("Linked wallets")
+  })
+})

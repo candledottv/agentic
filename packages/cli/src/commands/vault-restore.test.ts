@@ -596,6 +596,29 @@ describe("T55: a restored vault does not allocate, on the FIRST call", () => {
     expect(JSON.parse(j.stdout.text)).toMatchObject({ ok: false, code: "VAULT_ALLOCATION_BOUNDARY_UNKNOWN" })
   })
 
+  test("BE-242: --count does not weaken it; allocating n unknown indexes is worse than allocating one", async () => {
+    const h = await harness()
+    expect(await restore(h, ["--count", "1"])).toBe(0)
+    const passphrase = generatedPassphraseFrom(h.stdout.text)
+
+    const k = await harness()
+    k.deps.promptSecret = async () => passphrase
+    expect(
+      await run(
+        ["vault", "new-key", "--chain", "solana", "--count", "160", "--json", "--keystore", h.vaultPath],
+        k.deps,
+      ),
+    ).toBe(1)
+    expect(JSON.parse(k.stdout.text)).toMatchObject({ ok: false, code: "VAULT_ALLOCATION_BOUNDARY_UNKNOWN" })
+
+    // The refusal is still the FIRST thing that happens after the unlock, so a batch cannot
+    // allocate a single index on its way to being refused.
+    const s = await harness()
+    s.deps.promptSecret = async () => passphrase
+    await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)
+    expect(s.stdout.text).toContain("solanaVault  1")
+  })
+
   test("status labels the vault as a recovery vault", async () => {
     const h = await harness()
     expect(await restore(h, ["--count", "1"])).toBe(0)
@@ -729,4 +752,166 @@ test("verify-backup recognizes a sealed copy after phrase restore replaces every
   expect(stderr.text).toContain("passphrase it was sealed under")
   expect(stdout.text + stderr.text).not.toContain(oldPassphrase)
   expect(stdout.text + stderr.text).not.toContain(newPassphrase)
+})
+
+/**
+ * T16 (BE-241, D8): restore says what the passphrase IS, before it asks for anything.
+ *
+ * The operator in BE-235 item 5 typed the SOURCE vault's passphrase at the copy-back prompt. The
+ * AD-6 gate refused correctly and wrote nothing, and it read as being stuck. Every assertion below
+ * is about copy around that gate; the gate itself is unchanged, which the existing mismatch test in
+ * this file is what proves.
+ */
+describe("T16: D8's restore copy and passphrase prompt", () => {
+  test("the new-passphrase line is on stdout before the phrase is asked for", async () => {
+    const h = await harness()
+    let stdoutAtPrompt = ""
+    h.deps.promptSecret = async () => {
+      stdoutAtPrompt = h.stdout.text
+      throw new Error("stop here: the line is what this test reads")
+    }
+    await run(["vault", "restore", "--phrase", "--keystore", h.vaultPath], h.deps).catch(() => {})
+    expect(stdoutAtPrompt).toContain("This builds a NEW vault from your 24 words, and it gets a NEW passphrase")
+    expect(stdoutAtPrompt).toContain("does not carry over")
+    expect(stdoutAtPrompt).toContain("The words carry the keys; a passphrase belongs to one file.")
+  })
+
+  test("Enter at the prompt takes the generated passphrase, shown once and typed back", async () => {
+    const h = await harness()
+    const asked: string[] = []
+    let askedPhrase = false
+    h.deps.promptSecret = async (text: string) => {
+      asked.push(text)
+      if (!askedPhrase) {
+        askedPhrase = true
+        return FIXTURE_PHRASE
+      }
+      return generatedPassphraseFrom(h.stdout.text)
+    }
+    h.deps.promptLine = async (text: string) => {
+      asked.push(text)
+      if (text.includes("last six characters")) return ACCOUNT.slice(-6)
+      // D8's prompt: empty is Enter.
+      if (text.startsWith("Passphrase for the new vault.")) return ""
+      return "no"
+    }
+    expect(await run(["vault", "restore", "--phrase", "--keystore", h.vaultPath], h.deps)).toBe(0)
+    // Asked in this order: the phrase, then the choice, then the copy-back of the generated one.
+    const choice = asked.findIndex((text) => text.startsWith("Passphrase for the new vault."))
+    expect(choice).toBeGreaterThan(0)
+    expect(asked[choice]).toContain("Press Enter to have one generated (8 words, shown once, typed back)")
+    expect(asked[choice]).toContain("or type own to choose your own (16+ characters, typed twice, never shown)")
+    expect(asked.slice(choice + 1).some((text) => text.includes("Type it back in full"))).toBe(true)
+    expect(h.stdout.text).toContain("The new vault's passphrase")
+  })
+
+  test("typing own takes the chosen-passphrase branch instead", async () => {
+    const h = await harness()
+    const asked: string[] = []
+    let askedPhrase = false
+    h.deps.promptSecret = async (text: string) => {
+      asked.push(text)
+      if (!askedPhrase) {
+        askedPhrase = true
+        return FIXTURE_PHRASE
+      }
+      return "a-long-enough-chosen-passphrase"
+    }
+    h.deps.promptLine = async (text: string) => {
+      if (text.includes("last six characters")) return ACCOUNT.slice(-6)
+      if (text.startsWith("Passphrase for the new vault.")) return "own"
+      return "no"
+    }
+    expect(await run(["vault", "restore", "--phrase", "--keystore", h.vaultPath], h.deps)).toBe(0)
+    expect(asked.some((text) => text.includes("Choose a passphrase for the new vault"))).toBe(true)
+    // Nothing generated was shown, so nothing had to be typed back.
+    expect(h.stdout.text).not.toContain("The new vault's passphrase")
+  })
+
+  test("an answer that is neither is asked once more, then treated as Enter", async () => {
+    const h = await harness()
+    const choices: string[] = []
+    let askedPhrase = false
+    h.deps.promptSecret = async () => {
+      if (!askedPhrase) {
+        askedPhrase = true
+        return FIXTURE_PHRASE
+      }
+      return generatedPassphraseFrom(h.stdout.text)
+    }
+    h.deps.promptLine = async (text: string) => {
+      if (text.includes("last six characters")) return ACCOUNT.slice(-6)
+      if (text.startsWith("Passphrase for the new vault.")) {
+        choices.push(text)
+        return "yes please"
+      }
+      return "no"
+    }
+    expect(await run(["vault", "restore", "--phrase", "--keystore", h.vaultPath], h.deps)).toBe(0)
+    expect(choices.length).toBe(2)
+    expect(h.stdout.text).toContain("The new vault's passphrase")
+  })
+
+  test("--own-passphrase skips the prompt entirely", async () => {
+    const h = await harness()
+    let askedPhrase = false
+    let choiceAsked = false
+    h.deps.promptSecret = async () => {
+      if (!askedPhrase) {
+        askedPhrase = true
+        return FIXTURE_PHRASE
+      }
+      return "a-long-enough-chosen-passphrase"
+    }
+    h.deps.promptLine = async (text: string) => {
+      if (text.startsWith("Passphrase for the new vault.")) choiceAsked = true
+      return text.includes("last six characters") ? ACCOUNT.slice(-6) : "no"
+    }
+    expect(await run(["vault", "restore", "--phrase", "--own-passphrase", "--keystore", h.vaultPath], h.deps)).toBe(0)
+    expect(choiceAsked).toBe(false)
+  })
+
+  test("the footer names the non-default location, and only when -k put it there", async () => {
+    const h = await harness()
+    expect(await restore(h, [])).toBe(0)
+    expect(h.stdout.text).toContain(`This vault is at ${h.vaultPath}, not the default location.`)
+    expect(h.stdout.text).toContain(`Every vault command needs -k ${h.vaultPath}`)
+    expect(h.stdout.text).toContain(`export CANDLE_CONFIG_DIR=${h.dir}`)
+
+    // The same restore, located by CANDLE_CONFIG_DIR rather than by the flag: the default location
+    // for that shell, so there is nothing to warn about.
+    const viaEnv = await harness()
+    let askedPhrase = false
+    viaEnv.deps.promptSecret = async () => {
+      if (!askedPhrase) {
+        askedPhrase = true
+        return FIXTURE_PHRASE
+      }
+      return generatedPassphraseFrom(viaEnv.stdout.text)
+    }
+    viaEnv.deps.promptLine = async (text: string) =>
+      text.includes("last six characters")
+        ? ACCOUNT.slice(-6)
+        : text.startsWith("Passphrase for the new vault.")
+          ? ""
+          : "no"
+    expect(await run(["vault", "restore", "--phrase"], viaEnv.deps)).toBe(0)
+    expect(viaEnv.stdout.text).not.toContain("not the default location")
+  })
+
+  test("--own-passphrase is documented on the help row and in cli.md", async () => {
+    const { HELP } = await import("../help")
+    const restoreRow = HELP.vault?.rows.find((row) => row.invocation.startsWith("restore "))
+    expect(restoreRow?.invocation).toContain("[--own-passphrase]")
+    expect(restoreRow?.description).toContain("new passphrase")
+
+    const docs = await readFile(
+      join(import.meta.dir, "../../../../apps/docs/src/content/docs/developers/cli.md"),
+      "utf8",
+    )
+    const row = docs.split("\n").find((line) => line.startsWith("| `vault restore --phrase"))
+    expect(row).toBeDefined()
+    expect(row).toContain("--own-passphrase")
+    expect(row).toContain("NEW passphrase")
+  })
 })

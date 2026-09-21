@@ -72,6 +72,7 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--to"],
     booleanFlags: ["--accept-shared-domain", "--accept-older-copy"],
+    pathFlags: ["--keystore", "--to"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
@@ -81,11 +82,13 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
   if (!requireTty(ctx, "vault backup")) return 1
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
   const destination = resolve(to)
 
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
 
     // Both destination rules run BEFORE the passphrase prompt: an operator whose destination is
     // refused should learn that without having typed a vault passphrase for a copy that is not
@@ -103,6 +106,7 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
       throw new VaultError(
         "EXPORT_TARGET_EXISTS",
         `${destination} already exists; this CLI does not overwrite a backup.`,
+        { suggestion: "Nothing was written. Choose a path that does not exist yet." },
       )
     }
 
@@ -190,7 +194,12 @@ export function isSealedCopy(copyRaw: string): boolean {
 }
 
 export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Promise<number> {
-  const parsed = parseArgs(args, { valueFlags: ["--keystore"], booleanFlags: ["--accept-older-copy"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"],
+    pathPositionals: ["<path>"],
+  })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const copyPath = parsed.positionals[0]
   if (copyPath === undefined) return usage(ctx, "Which file? Usage: candle vault verify-backup <path>")
@@ -199,15 +208,20 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
   if (!requireTty(ctx, "vault verify-backup")) return 1
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
 
   return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     // AD-9: a sealed copy has only the passphrase envelope(s), so it is verified with the
     // passphrase whatever else opens the live vault. Decided from the copy's cleartext header
     // before any prompt, independent of rotations or restores of the live vault.
     const copyRaw = await readVaultRaw(resolve(copyPath))
-    if (copyRaw === null) throw new VaultError("VAULT_MISSING", `No file at ${resolve(copyPath)}.`)
+    if (copyRaw === null)
+      throw new VaultError("VAULT_MISSING", `No file at ${resolve(copyPath)}.`, {
+        suggestion: `Check the path: ls -l ${resolve(copyPath)}. This is the COPY to verify, not the live vault.`,
+      })
     const sealed = isSealedCopy(copyRaw)
     if (sealed) {
       deps.stderr.write(
@@ -270,7 +284,10 @@ async function verifyCopy(
   live: UnlockedVault,
 ): Promise<VerifyReport> {
   const raw = await readVaultRaw(copyPath)
-  if (raw === null) throw new VaultError("VAULT_MISSING", `No file at ${copyPath}.`)
+  if (raw === null)
+    throw new VaultError("VAULT_MISSING", `No file at ${copyPath}.`, {
+      suggestion: `The copy this run just wrote is not there. Check the path and the volume: ls -l ${copyPath}`,
+    })
   // The copy is opened with the SAME factor that opened the live vault (a passphrase re-derived,
   // or a security key asserted again), so what is verified is that this factor opens this copy.
   const copy = await reopen(copyPath, raw)

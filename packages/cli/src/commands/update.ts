@@ -23,6 +23,10 @@ import { verifyReleaseAsset } from "../release-verify"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 import { CLI_VERSION } from "../version"
 
+/** D9's second copy change. `verifying signature` has been its own stage since 0.8.4 (`8019923d`);
+ * what this adds is naming the scheme and the pin, which is the fact a reader wants here. */
+export const SIGNATURE_VERIFIED = "signature verified (Sigstore, keyless; signer pinned to the release workflow)"
+
 const INSTALLER_LINE = "curl -fsSL https://candle.tv/install.sh | bash"
 
 export async function update(args: string[], ctx: CommandContext): Promise<number> {
@@ -174,8 +178,10 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
   const steps = json
     ? stepReporter(() => {}, false)
     : stepReporter((text) => deps.stderr.write(text), process.stderr.isTTY === true)
+  // D9 (BE-241): the size comes free from the manifest (`latest.json` carries `size` per asset), and
+  // it makes a slow link legible from the first second rather than after the download finishes.
   if (!json)
-    deps.stderr.write(`Updating candle ${CLI_VERSION} -> ${target.version}
+    deps.stderr.write(`Updating candle ${CLI_VERSION} -> ${target.version} (${formatBytes(asset.size)})
 `)
 
   // Download the binary, SHA256SUMS and the bundle, by `expectedName`: the check above is what
@@ -253,7 +259,9 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
     return 1
   }
 
-  steps.done("signature verified")
+  // D9: the done line says WHAT KIND of signature, because that is the differentiator and this is
+  // where a reader looks for it. The step itself is not new; it has been its own stage since 0.8.4.
+  steps.done(SIGNATURE_VERIFIED)
   steps.start("installing")
   try {
     await deps.rename(tmpPath, realExec)

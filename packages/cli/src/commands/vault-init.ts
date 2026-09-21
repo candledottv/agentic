@@ -28,7 +28,23 @@ import {
 import { nextSidecar, readSidecar, sidecarPath, writeSidecar } from "../vault/sidecar"
 import { closeVault, defaultVaultPath, fileExists } from "../vault/store"
 import { runPhraseCeremony } from "./vault-phrase"
-import { refuseEnvPassphrase, requireTty, runVaultCommand, usage, vaultPathFor, writeJson } from "./vault-support"
+import {
+  nonDefaultVaultFooter,
+  refuseEnvPassphrase,
+  requireTty,
+  runVaultCommand,
+  usage,
+  vaultAlreadyExists,
+  vaultPathFor,
+  writeJson,
+} from "./vault-support"
+
+/**
+ * D8's init line (BE-241). Printed before the ceremony, only where a passphrase is about to be
+ * GENERATED: with `--own-passphrase` nothing is shown and there is nothing to warn about.
+ */
+export const INIT_GENERATED_PASSPHRASE_NOTICE =
+  "Your vault passphrase is about to be generated and shown once. This CLI keeps no copy and cannot recover it. To choose your own instead: candle vault init --own-passphrase"
 
 /**
  * The generated passphrase is a secret that exists nowhere but the operator's screen, so the only
@@ -45,6 +61,7 @@ export async function vaultInit(args: string[], ctx: CommandContext): Promise<nu
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--label"],
     booleanFlags: ["--own-passphrase", "--high-value"],
+    pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
@@ -54,17 +71,25 @@ export async function vaultInit(args: string[], ctx: CommandContext): Promise<nu
   if (!requireTty(ctx, "vault init")) return 1
 
   const { deps } = ctx
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
   const highValue = parsed.booleans.has("--high-value")
 
   return runVaultCommand(ctx, async () => {
     if (await fileExists(path)) {
-      throw new VaultError("VAULT_EXISTS", `A vault already exists at ${path}.`, {
-        suggestion:
-          "This CLI never overwrites one, including after an interrupted init. Move it aside if you really mean to start over.",
-      })
+      throw vaultAlreadyExists(
+        ctx,
+        resolvedVault,
+        "This CLI never overwrites one, including after an interrupted init. Move it aside if you really mean to start over.",
+      )
     }
 
+    // D8 (BE-241): said before the ceremony rather than beside the words. BE-235 item 5 asked
+    // whether a first-ever init should say so LOUDER, before the words; this is that answer. No new
+    // prompt: the copy-back is itself the proof of capture, and a mismatch costs nothing because no
+    // file exists yet.
+    if (!ownPassphrase) deps.stdout.write(`${INIT_GENERATED_PASSPHRASE_NOTICE}\n`)
     const passphrase = ownPassphrase ? await collectOwnPassphrase(ctx) : await collectGeneratedPassphrase(ctx)
 
     // 256 bits from WebCrypto. Held as ENTROPY and never as words until a ceremony renders them.
@@ -143,6 +168,10 @@ export async function vaultInit(args: string[], ctx: CommandContext): Promise<nu
       } else {
         deps.stdout.write("Skipped. You can run the ceremony later with: candle vault phrase show\n")
       }
+      // D8/D10's footer, last: this vault is not at the default path, so every later vault command
+      // needs -k or the variable. Human mode only; the --json payload above already carries `path`.
+      const footer = nonDefaultVaultFooter(resolvedVault)
+      if (footer !== undefined) deps.stdout.write(footer)
       return 0
     } finally {
       closeVault(vault)

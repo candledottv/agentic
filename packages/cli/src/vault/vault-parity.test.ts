@@ -302,7 +302,13 @@ describe("T49: the same fixture, through the COMPILED binary, on a real terminal
       }
     }
     let cursor = await waitFor("Recovery phrase (24 words, input hidden): ", 0)
+    // D8's line is printed before this prompt, so a real terminal sees it first.
+    expect(transcript()).toContain("it gets a NEW passphrase")
     proc.terminal?.write(`${FIXTURE_PHRASE}\r`)
+    // D8's choice, after the phrase checks out: Enter is the generated passphrase, which is the
+    // branch this test scrapes off the terminal.
+    cursor = await waitFor("Passphrase for the new vault.", cursor)
+    proc.terminal?.write("\r")
     cursor = await waitFor(typedBack.at, cursor)
     // The passphrase the binary generated and showed, scraped from the terminal exactly as the
     // command tests scrape it from a captured stdout.

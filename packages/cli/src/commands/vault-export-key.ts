@@ -40,6 +40,7 @@ export async function vaultExportKey(args: string[], ctx: CommandContext): Promi
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--to"],
     booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore", "--to"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [label, extra] = parsed.positionals
@@ -52,13 +53,15 @@ export async function vaultExportKey(args: string[], ctx: CommandContext): Promi
   if (!requireTty(ctx, "vault export-key")) return 1
 
   const destination = resolve(to)
-  const path = vaultPathFor(ctx, parsed)
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
   return runVaultCommand(ctx, async ({ hold }) => {
     // Destination rules before the passphrase prompt: an operator whose path is refused should
     // learn that without having typed a vault passphrase for a file that is not going to be made.
     await assertExportTargetWritable(destination)
 
-    const raw = await requireVaultRaw(path)
+    const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       promptText: "Vault passphrase (input hidden): ",
@@ -166,11 +169,13 @@ export async function assertExportTargetWritable(destination: string): Promise<v
       throw new VaultError(
         "EXPORT_TARGET_SYMLINK",
         `${destination} is a symlink; this CLI refuses to write a private key through one.`,
+        { suggestion: "Nothing was written. Choose a path that does not exist yet." },
       )
     }
     throw new VaultError(
       "EXPORT_TARGET_EXISTS",
       `${destination} already exists; this CLI does not overwrite an export.`,
+      { suggestion: "Nothing was written. Choose a path that does not exist yet." },
     )
   } catch (error) {
     if (error instanceof VaultError) throw error
@@ -184,6 +189,7 @@ export async function assertExportTargetWritable(destination: string): Promise<v
       throw new VaultError(
         "EXPORT_TARGET_SYMLINK",
         `${parent} is a symlink; this CLI refuses to write a private key into a symlinked directory.`,
+        { suggestion: "Nothing was written. Choose a --to path whose parent directory is a real directory." },
       )
     }
     if (!parentInfo.isDirectory()) {
@@ -231,6 +237,7 @@ async function writeExportFile(destination: string, body: string): Promise<void>
       throw new VaultError(
         "EXPORT_TARGET_EXISTS",
         `${destination} already exists; this CLI does not overwrite an export.`,
+        { suggestion: "Nothing was written. Choose a path that does not exist yet." },
       )
     }
     if (code === "EACCES" || code === "EPERM") {

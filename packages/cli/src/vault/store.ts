@@ -22,6 +22,7 @@
 import { chmod, mkdir, readFile, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { refuseUnexpandedTilde, UsageError } from "../args"
 import type { Deps } from "../deps"
 import { KeystoreLockedError, withKeystoreLock, writeKeystoreFile } from "../wallet-keystore"
 import {
@@ -65,8 +66,28 @@ import { nextSidecar, readSidecar, sidecarPath, type VaultSidecar, writeSidecar 
 
 // ── Location (ED-8) ───────────────────────────────────────────────────────────────────────────
 
+/** Named as a constant, not only read as a property, so D2's env drift test (T8) sees it whichever
+ * way it scans. */
+export const CONFIG_DIR_ENV = "CANDLE_CONFIG_DIR"
+
+/**
+ * D4 (BE-241): `CANDLE_CONFIG_DIR=~t47` is refused here rather than turned into a directory named
+ * `~t47`, because this is the one place every default path is built from -- the vault, the TEE
+ * store, the legacy wallets file and the credentials all move together with it (ED-8), so one
+ * check covers all of them, including the TEE store builders in `wallet-keystore.ts`. It throws
+ * rather than returning an error because the ~40 callers of the path builders below take a string:
+ * `vaultPathFor` turns it back into the usage refusal the command returns (exit 2, USAGE envelope);
+ * `writeVaultFailure` and the tee lookup / TEE-store path helpers catch the rest so it never
+ * escapes `run()`.
+ */
 export function candleConfigDir(env: Record<string, string | undefined>): string {
-  return env.CANDLE_CONFIG_DIR?.trim() || join(homedir(), ".config", "candle")
+  const configured = env.CANDLE_CONFIG_DIR?.trim()
+  if (configured) {
+    const refusal = refuseUnexpandedTilde(CONFIG_DIR_ENV, configured)
+    if (refusal !== undefined) throw new UsageError(refusal)
+    return configured
+  }
+  return join(homedir(), ".config", "candle")
 }
 
 /**
