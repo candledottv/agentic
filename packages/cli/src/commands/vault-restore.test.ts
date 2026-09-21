@@ -13,6 +13,7 @@
  * flag that survives: no sequence of `new-key` calls may reach an index the restore did not see.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
+import { existsSync } from "node:fs"
 import { mkdtemp, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -899,19 +900,15 @@ describe("T16: D8's restore copy and passphrase prompt", () => {
     expect(viaEnv.stdout.text).not.toContain("not the default location")
   })
 
-  test("--own-passphrase is documented on the help row and in cli.md", async () => {
+  // This also read the docs reference out of the apps directory, four levels up. That package is
+  // mirrored to candledottv/agentic, which carries cli, mcp and sdk and no apps at all, and the
+  // RELEASE runs this suite there: the read is how cli-v0.11.1's release job died of ENOENT after
+  // npm had already published, leaving the signed release and the Homebrew tap a version behind.
+  // The docs assertion now lives in scripts/cli-docs.test.ts, which is never exported.
+  test("--own-passphrase is documented on the help row", async () => {
     const { HELP } = await import("../help")
     const restoreRow = HELP.vault?.rows.find((row) => row.invocation.startsWith("restore "))
     expect(restoreRow?.invocation).toContain("[--own-passphrase]")
     expect(restoreRow?.description).toContain("new passphrase")
-
-    const docs = await readFile(
-      join(import.meta.dir, "../../../../apps/docs/src/content/docs/developers/cli.md"),
-      "utf8",
-    )
-    const row = docs.split("\n").find((line) => line.startsWith("| `vault restore --phrase"))
-    expect(row).toBeDefined()
-    expect(row).toContain("--own-passphrase")
-    expect(row).toContain("NEW passphrase")
   })
 })
