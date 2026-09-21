@@ -31,15 +31,38 @@
  * same way, because the CLI cannot tell whether that path syncs to an account. The output says
  * that in those words rather than naming the class, since "unknown destination" reads as a
  * failure of the tool instead of as the reason the copy is smaller.
+ *
+ * BE-245: two things, both about a backup an operator can actually take.
+ *
+ * `--to icloud` is a shorthand for iCloud Drive (`resolveBackupDestination`). It resolves to a
+ * path and changes no rule: the resolved path is classified and sealed exactly as if it had been
+ * typed in full. The shorthand's `Candle/` folder is created before that classify, because the
+ * classifier realpaths the parent and a missing parent is `unknown` (BE-236); inventing the
+ * folder and then classifying it as unplaceable is how a first `--to icloud` invited an
+ * unsealed write into the same Apple account.
+ *
+ * And every write failure now NAMES its errno. `writeSealedCopy` was a bare `catch {}` reporting
+ * only the destination, which is how a backup to a real iCloud Drive folder came to be impossible
+ * without anyone being able to see why: `writeKeystoreFile` chmodded the destination DIRECTORY
+ * 0700 and macOS refuses any chmod on a file-provider root, so the write died EPERM asking for a
+ * permission `com~apple~CloudDocs` already had (it is `drwx------`). Every other step succeeded,
+ * rename included, and the keystore file is written 0600 regardless. That chmod is best effort now
+ * (see `writeKeystoreFile`), and the reason any remaining failure gives is in the sentence and in
+ * `details` for `--json`, because an error that names the path but not the reason is a dead end
+ * for whoever hits it at 2am.
  */
-import { copyFile, stat } from "node:fs/promises"
-import nodePath, { resolve } from "node:path"
+import { chmod, copyFile, mkdir, stat } from "node:fs/promises"
+import nodePath, { dirname, resolve } from "node:path"
 import { parseArgs } from "../args"
-import type { CommandContext } from "../deps"
+import type { CommandContext, Deps } from "../deps"
 import {
   assertBackupDomainAllowed,
   type BackupDomainVerdict,
   type DestinationDomain,
+  homeDirOf,
+  ICLOUD_SHORTHAND,
+  icloudBackupPath,
+  icloudDriveDir,
   sealedEnvelopes,
 } from "../vault/domains"
 import { VaultError } from "../vault/errors"
@@ -85,7 +108,20 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
   const resolvedVault = vaultPathFor(ctx, parsed)
   if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
   const path = resolvedVault.path
-  const destination = resolve(to)
+  const target = resolveBackupDestination(to, deps)
+  // The shorthand's folder must be real before a passphrase is asked for, and this is the one
+  // destination the CLI names rather than the operator, so it is on the CLI to say when it is not
+  // there rather than to fail five syscalls later.
+  if (target.requires !== undefined && !(await exists(target.requires))) {
+    return usage(
+      ctx,
+      `There is no iCloud Drive folder at ${target.requires} on this machine. Sign in to iCloud and turn on iCloud Drive, or pass --to <path> with somewhere else to write.`,
+    )
+  }
+  const destination = target.path
+  // Said before the unlock: an operator who typed four characters should see the path those four
+  // characters became before they type a passphrase for a copy that lands there.
+  if (target.requires !== undefined) deps.stderr.write(`--to ${ICLOUD_SHORTHAND} is ${destination}\n`)
 
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault)
@@ -95,6 +131,22 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
     // going to be made.
     assertOutsideConfigDir(destination, deps.env)
     const file = parseVaultFile(raw)
+    // `--to icloud` writes `CloudDocs/Candle/vault-<stamp>.enc`. Candle/ is created at write
+    // time. classifyDestination realpaths that parent first; if iCloud Drive exists and Candle
+    // never has, the resolve is ENOENT and the destination is `unknown`. A successful first
+    // backup then prints UNPLACEABLE_DESTINATION_NOTE, which tells the operator to pass
+    // `--accept-shared-domain` and write a full copy into the same Apple account. The folder
+    // is ours; creating it first means the resolve is of a directory that exists. No lexical
+    // fallback: that is the hole BE-236 closed.
+    if (target.requires !== undefined) {
+      const folder = dirname(destination)
+      try {
+        const created = await mkdir(folder, { recursive: true })
+        if (created !== undefined) await chmod(folder, 0o700).catch(() => {})
+      } catch (error) {
+        throw copyWriteFailed(destination, error, "copy")
+      }
+    }
     const verdict = await assertBackupDomainAllowed(file.envelopes, destination, {
       acceptSharedDomain: parsed.booleans.has("--accept-shared-domain"),
       // BE-236: the classifier follows links, so `~/Documents` pointing into iCloud is seen as
@@ -128,7 +180,14 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
     if (verdict.sealed) {
       await writeSealedCopy(live, destination)
     } else {
-      await copyFile(path, destination)
+      // BE-245: the unsealed branch names its reason too. An `fs` rejection escaping here used to
+      // reach `writeVaultFailure`'s fallback and render as VAULT_UNREADABLE, which is the wrong
+      // code for a write and reads as a problem with the vault rather than with the destination.
+      try {
+        await copyFile(path, destination)
+      } catch (error) {
+        throw copyWriteFailed(destination, error, "copy")
+      }
     }
 
     // The copy is opened and verified as its OWN file, from its own bytes, so what is verified is
@@ -168,6 +227,31 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
 }
 
 /**
+ * `--to`, resolved (BE-245). Anything but the shorthand is the path the operator typed, resolved
+ * exactly as before.
+ *
+ * `--to icloud` is the one destination the CLI names for itself, and it exists because the literal
+ * path -- `~/Library/Mobile Documents/com~apple~CloudDocs`, tildes inside the folder name included
+ * -- is hostile to type and is most of why nobody backs up. It resolves into a folder of Candle's
+ * own, with one timestamped file per backup: `vault backup` refuses to overwrite an existing copy,
+ * and a vault is meant to be backed up again after keys are created, so a fixed name would turn
+ * the second and more useful backup into a refusal. `requires` is the folder that must already
+ * exist for the shorthand to mean anything, and is undefined for a path the operator chose: the
+ * CLI creates directories under a path you named, and does not pretend iCloud Drive is set up.
+ *
+ * Nothing here decides sealing. The resolved path goes through `classifyDestination` like any
+ * other, lands in `icloud-drive`, and is sealed by AD-9's rule rather than by its spelling.
+ */
+export function resolveBackupDestination(
+  to: string,
+  deps: Pick<Deps, "env" | "now">,
+): { path: string; requires?: string } {
+  if (to.trim().toLowerCase() !== ICLOUD_SHORTHAND) return { path: resolve(to) }
+  const home = homeDirOf(deps.env)
+  return { path: icloudBackupPath(home, deps.now()), requires: icloudDriveDir(home) }
+}
+
+/**
  * AD-9's sealed copy: the live vault's header with every non-passphrase envelope left out, its
  * index re-sealed under that header with the live payload key (a fresh IV, ED-1), and the root
  * blob and every key blob copied through untouched. The generation is the live vault's, because
@@ -182,9 +266,49 @@ export async function writeSealedCopy(live: UnlockedVault, destination: string):
   )
   try {
     await writeKeystoreFile(destination, serializeVault(sealed))
-  } catch {
-    throw new VaultError("VAULT_WRITE_FAILED", `Could not write the sealed copy at ${destination}.`)
+  } catch (error) {
+    throw copyWriteFailed(destination, error, "sealed copy")
   }
+}
+
+/** The `code` an `fs` rejection carries (`EPERM`, `ENOSPC`, ...), or undefined for anything else. */
+export function errnoCodeOf(error: unknown): string | undefined {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code
+  return typeof code === "string" && code.length > 0 ? code : undefined
+}
+
+/**
+ * What to do about each errno this write realistically hits. Deliberately keyed on the CODE rather
+ * than on the message: the codes are stable across platforms and the messages are not.
+ */
+function suggestionForErrno(code: string | undefined): string {
+  if (code === "ENOSPC") return "The volume is full. Free space there, or back up somewhere else. Nothing was written."
+  if (code === "EROFS") return "That volume is mounted read-only. Nothing was written."
+  if (code === "ENOENT")
+    return "A directory on that path does not exist and could not be created. Check the path, and that the volume is mounted. Nothing was written."
+  if (code === "EACCES" || code === "EPERM")
+    return "Check that you can write there, and that the volume or sync folder is mounted and not locked. Nothing was written."
+  return "Nothing was written. Try another destination, or run the same write by hand to see what the filesystem says."
+}
+
+/**
+ * A write failure that NAMES the reason (BE-245). This was a bare `catch {}` reporting only the
+ * path, so an operator was told a write failed and given no way to learn why; diagnosing the
+ * iCloud Drive EPERM above took a hand-run probe of the five syscalls the write makes. The errno
+ * goes in the sentence for a human and in `details` for `--json`, which is the additive optional
+ * key D3 already defined for exactly this.
+ */
+export function copyWriteFailed(destination: string, error: unknown, what: string): VaultError {
+  const code = errnoCodeOf(error)
+  const reason = error instanceof Error ? error.message : String(error)
+  return new VaultError(
+    "VAULT_WRITE_FAILED",
+    `Could not write the ${what} at ${destination}: ${code ?? "no error code"} -- ${reason}`,
+    {
+      suggestion: suggestionForErrno(code),
+      details: { path: destination, reason, ...(code === undefined ? {} : { code }) },
+    },
+  )
 }
 
 /** A passphrase-only copy has sealed-copy semantics, regardless of the live vault's history. */

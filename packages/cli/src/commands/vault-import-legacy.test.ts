@@ -162,7 +162,7 @@ async function initVault(dir: string): Promise<{ passphrase: string; vaultPath: 
     fetch: unreachableFetch,
     stdout,
     stderr,
-    env: { CANDLE_CONFIG_DIR: dir },
+    env: { CANDLE_CONFIG_DIR: dir, HOME: dir },
     promptSecret: async () => generatedPassphraseFrom(stdout.text),
     promptLine: async () => "no",
     readFile: (path) => readFile(path, "utf8"),

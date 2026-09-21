@@ -9,15 +9,17 @@
  * the test scripted fails loudly instead of hanging.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Deps } from "../deps"
 import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
-import { GENERATED_WORD_COUNT } from "../vault/passphrase"
+import { GENERATED_WORD_COUNT, SAVE_THE_PASSPHRASE, SAVED_IT_PROMPT } from "../vault/passphrase"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
 import { generatedPassphraseFrom, makeVault, useCheapKdf } from "../vault/test-vault"
+import { INIT_PASSPHRASE_PROMPT } from "./vault-init"
+import { NO_VERIFIED_BACKUP_NOTE } from "./vault-status"
 
 /**
  * These tests run REAL Argon2id, which is the point of them: a vault suite that stubbed the KDF
@@ -58,7 +60,10 @@ async function harness(
     fetch: unreachableFetch,
     stdout,
     stderr,
-    env: { CANDLE_CONFIG_DIR: dir, ...(opts.env ?? {}) },
+    // HOME is the harness's own temp dir, never the developer's (BE-245). `vault init` offers an
+    // iCloud Drive backup when `$HOME/Library/Mobile Documents/com~apple~CloudDocs` exists, so a
+    // suite that inherited the real home would prompt on a Mac and not on CI.
+    env: { CANDLE_CONFIG_DIR: dir, HOME: dir, ...(opts.env ?? {}) },
     isTTY: { stdin: opts.tty ?? true, stdout: opts.tty ?? true },
     promptSecret: async (text: string) => {
       asked.push(`secret: ${text}`)
@@ -77,37 +82,65 @@ async function harness(
 }
 
 /**
- * `init` with the generated passphrase typed back correctly, and the phrase ceremony declined.
+ * `init` on the generated default, with the phrase ceremony declined.
  *
- * The passphrase is generated INSIDE the run, so the typed-back answer is only knowable once it
- * has been printed. The prompt therefore reads it off the captured stdout, which is exactly what
- * an operator does: it is on their screen, and they copy it. A second run would generate a
- * different passphrase and prove nothing.
+ * Three lines and NO secret, which is the shape BE-245 left behind: Enter at D8's passphrase
+ * choice (the generated branch), Enter to acknowledge having saved it, and "no" at the recovery
+ * phrase ceremony. The passphrase is generated inside the run, so it is read off the captured
+ * stdout afterwards -- exactly where the operator reads it.
  */
 async function initVault(
   opts: { args?: string[]; env?: Record<string, string> } = {},
 ): Promise<Harness & { passphrase: string }> {
-  const h = await harness({ env: opts.env, lines: ["no"] })
-  h.deps.promptSecret = async (text: string) => {
-    h.asked.push(`secret: ${text}`)
-    return generatedPassphraseFrom(h.stdout.text)
-  }
+  const h = await harness({ env: opts.env, lines: ["", "", "no"] })
   const code = await run(["vault", "init", ...(opts.args ?? []), "--keystore", h.vaultPath], h.deps)
   if (code !== 0) throw new Error(`init failed (${code}): ${h.stderr.text}${h.stdout.text}`)
   return { ...h, passphrase: generatedPassphraseFrom(h.stdout.text) }
 }
 
 describe("T33: AD-6's passphrase policy", () => {
-  test("the generated passphrase is 8 words, and a typed-back mismatch writes nothing", async () => {
-    const h = await harness({ secrets: ["not what was shown"] })
-    const code = await run(["vault", "init", "--keystore", h.vaultPath], h.deps)
+  test("the generated passphrase is 8 words, and nothing hidden is ever typed for it (BE-245)", async () => {
+    const h = await initVault()
 
-    expect(code).toBe(1)
-    expect(generatedPassphraseFrom(h.stdout.text).split(" ")).toHaveLength(GENERATED_WORD_COUNT)
-    expect(h.stderr.text).toContain("did not match the passphrase shown above")
-    expect(h.stderr.text).toContain("Nothing was written")
-    // Nothing written means nothing on disk, which is what makes a mistyped passphrase free.
-    await expect(stat(h.vaultPath)).rejects.toThrow()
+    expect(h.passphrase.split(" ")).toHaveLength(GENERATED_WORD_COUNT)
+    // The copy-back is gone, and with it the reason an operator reached for the clipboard. The
+    // generated branch asks for NO hidden input at all: every prompt it raises is a visible line.
+    expect(h.asked.filter((text) => text.startsWith("secret: "))).toEqual([])
+    expect(h.stdout.text).not.toContain("Type it back in full")
+  })
+
+  test("the words are followed by where to save them, and by an acknowledgement (BE-245)", async () => {
+    const h = await initVault()
+
+    // The sentence that was missing: where it goes, that this CLI cannot get it back, and what
+    // the fallback is. Below the words, so it is read with them in view.
+    const words = h.stdout.text.indexOf(h.passphrase)
+    const save = h.stdout.text.indexOf(SAVE_THE_PASSPHRASE)
+    expect(words).toBeGreaterThan(-1)
+    expect(save).toBeGreaterThan(words)
+    expect(SAVE_THE_PASSPHRASE).toContain("password manager or on paper")
+    expect(SAVE_THE_PASSPHRASE).toContain("cannot recover it")
+    expect(SAVE_THE_PASSPHRASE).toContain("24-word recovery phrase")
+    // And the acknowledgement says what it is. It checks nothing, and claims nothing.
+    expect(h.asked).toContain(`line: ${SAVED_IT_PROMPT}`)
+    expect(SAVED_IT_PROMPT).toContain("when you have saved it")
+  })
+
+  test("D8's choice is offered at init too: Enter generates, own chooses (BE-245)", async () => {
+    // `restore` shipped this prompt in 0.11.1 and `init` did not, which left the same decision
+    // discoverable through one command and invisible through the other.
+    const h = await initVault()
+    expect(h.asked[0]).toBe(`line: ${INIT_PASSPHRASE_PROMPT}`)
+    expect(INIT_PASSPHRASE_PROMPT).toContain("Press Enter to have one generated")
+    expect(INIT_PASSPHRASE_PROMPT).toContain("type own")
+    // "typed back" went with the retype: the prompt may not promise a step that no longer runs.
+    expect(INIT_PASSPHRASE_PROMPT).not.toContain("typed back")
+
+    const chosen = "a passphrase I picked myself"
+    const own = await harness({ secrets: [chosen, chosen], lines: ["own", "no"] })
+    expect(await run(["vault", "init", "--keystore", own.vaultPath], own.deps)).toBe(0)
+    const file = JSON.parse(await readFile(own.vaultPath, "utf8")) as { envelopes: Array<{ strength: string }> }
+    expect(file.envelopes[0]?.strength).toBe("user-chosen")
   })
 
   test("the generated passphrase is drawn from a 7776-word list and is shown once", async () => {
@@ -276,22 +309,35 @@ describe("T34: invariant 1, a recoverable factor exists before any key is create
     expect(countRecoverableFactors([hardware("a"), hardware("b")])).toBe(1)
   })
 
-  test("--high-value needs a generated passphrase or two recoverable domains before new-key runs", async () => {
+  test("--high-value is gone, and a vault a chosen passphrase opens still allocates (BE-245)", async () => {
+    // Removed outright on 2026-09-21: it lived in the unauthenticated sidecar, so `rm` switched it
+    // off; a generated passphrase satisfied it and generated is the default, so it was inert on
+    // every path but one; and it fired at `new-key`, after the vault was built. Passing it now
+    // fails as the unknown flag it is, which is the right answer for a flag nobody has in a script.
     const chosen = "a passphrase I picked myself"
+    const rejected = await harness({ secrets: [], lines: [] })
+    expect(await run(["vault", "init", "--high-value", "--keystore", rejected.vaultPath], rejected.deps)).toBe(2)
+    expect(rejected.stderr.text).toContain("--high-value")
+    await expect(stat(rejected.vaultPath)).rejects.toThrow()
+
+    // The one case the gate ever bit -- a chosen passphrase, one recoverable factor -- allocates.
     const h = await harness({ secrets: [chosen, chosen], lines: ["no"] })
-    expect(await run(["vault", "init", "--own-passphrase", "--high-value", "--keystore", h.vaultPath], h.deps)).toBe(0)
-    expect(h.stdout.text).toContain("high value")
-
+    expect(await run(["vault", "init", "--own-passphrase", "--keystore", h.vaultPath], h.deps)).toBe(0)
     const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [chosen] })
-    const code = await run(["vault", "new-key", "--chain", "solana", "--keystore", h.vaultPath], k.deps)
-    expect(code).toBe(1)
-    expect(k.stderr.text).toContain("--high-value")
-    expect(k.stderr.text).toContain("two recoverable factors")
+    expect(await run(["vault", "new-key", "--chain", "solana", "--keystore", h.vaultPath], k.deps)).toBe(0)
+  })
 
-    // A generated passphrase satisfies it on its own.
-    const g = await initVault({ args: ["--high-value"] })
-    const gk = await harness({ env: { CANDLE_CONFIG_DIR: g.dir }, secrets: [g.passphrase] })
-    expect(await run(["vault", "new-key", "--chain", "solana", "--keystore", g.vaultPath], gk.deps)).toBe(0)
+  test("a leftover highValue in a sidecar is an ignored field, not a migration (BE-245)", async () => {
+    // Nothing reads it any more, so a vault created by 0.11.2 with the flag keeps working and no
+    // vault needs migrating. Deliberately NOT cleaned up: code to erase a field nothing reads is
+    // code with nothing to do.
+    const h = await initVault()
+    const sidecar = sidecarPath(h.vaultPath)
+    const before = JSON.parse(await readFile(sidecar, "utf8")) as Record<string, unknown>
+    await writeFile(sidecar, JSON.stringify({ ...before, highValue: true }, null, 2))
+
+    const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(await run(["vault", "new-key", "--chain", "solana", "--keystore", h.vaultPath], k.deps)).toBe(0)
   })
 })
 
@@ -581,8 +627,7 @@ describe("BE-178 finding 2: a new vault does not inherit another vault's verifie
 
     // The operator moves the vault aside and starts over at the same path; the sidecar stays.
     await rename(h.vaultPath, `${h.vaultPath}.moved-aside`)
-    const n = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, lines: ["no"] })
-    n.deps.promptSecret = async () => generatedPassphraseFrom(n.stdout.text)
+    const n = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, lines: ["", "", "no"] })
     expect(await run(["vault", "init", "--keystore", h.vaultPath], n.deps)).toBe(0)
     const fresh = await readSidecar(sidecarPath(h.vaultPath))
     expect(fresh?.vaultId).toBeDefined()
@@ -929,7 +974,7 @@ describe("T17: D8's init copy and footer", () => {
     const notice = h.stdout.text.indexOf("Your vault passphrase is about to be generated and shown once.")
     expect(notice).toBeGreaterThan(-1)
     expect(h.stdout.text).toContain("This CLI keeps no copy and cannot recover it.")
-    expect(h.stdout.text).toContain("To choose your own instead: candle vault init --own-passphrase")
+    expect(h.stdout.text).toContain("To choose your own instead, type own at the prompt below.")
     expect(h.stdout.text.indexOf(h.passphrase)).toBeGreaterThan(notice)
   })
 
@@ -950,8 +995,7 @@ describe("T17: D8's init copy and footer", () => {
   })
 
   test("there is no footer when CANDLE_CONFIG_DIR is what located the vault", async () => {
-    const h = await harness({ lines: ["no"] })
-    h.deps.promptSecret = async () => generatedPassphraseFrom(h.stdout.text)
+    const h = await harness({ lines: ["", "", "no"] })
     // No --keystore: the vault lands at the config dir the environment already names.
     expect(await run(["vault", "init"], h.deps)).toBe(0)
     expect(h.stdout.text).not.toContain("not the default location")
@@ -962,7 +1006,7 @@ describe("T17: D8's init copy and footer", () => {
     expect(await run(["vault", "init", "--own-passphrase", "--json", "--keystore", h.vaultPath], h.deps)).toBe(0)
     const body = JSON.parse(h.stdout.text) as Record<string, unknown>
     expect(Object.keys(body).sort()).toEqual(
-      ["envelopes", "generation", "highValue", "ok", "path", "phraseCeremonyOffered", "vaultId"].sort(),
+      ["envelopes", "generation", "ok", "path", "phraseCeremonyOffered", "vaultId"].sort(),
     )
     expect(h.stdout.text.trimEnd().split("\n")).toHaveLength(1)
     expect(h.stdout.text).not.toContain("not the default location")
@@ -1178,7 +1222,7 @@ describe("new-key --count: one unlock, many keys", () => {
 })
 
 describe("--count is a convenience for one unlock, never a way to derive keys unattended", () => {
-  test("it still refuses without a terminal, and asks for nothing", async () => {
+  test("it still refuses without a terminal, asks for nothing, and allocates none of it", async () => {
     const h = await initVault()
     const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, tty: false })
     expect(
@@ -1186,6 +1230,13 @@ describe("--count is a convenience for one unlock, never a way to derive keys un
     ).toBe(1)
     expect(k.stderr.text).toContain("needs a terminal")
     expect(k.asked).toEqual([])
+
+    // A refusal above the loop fails the WHOLE batch: the counter has not moved. (This assertion
+    // used to ride on `--high-value`, which BE-245 removed; the property it pinned is the batch's,
+    // not the flag's, so it moved here rather than going with it.)
+    const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)
+    expect(s.stdout.text).toContain("solanaVault  0")
   })
 
   test("it still refuses while CANDLE_KEYSTORE_PASSPHRASE is set: a batch is not the reason to want it back", async () => {
@@ -1199,20 +1250,89 @@ describe("--count is a convenience for one unlock, never a way to derive keys un
     expect(k.stderr.text).toContain("CANDLE_KEYSTORE_PASSPHRASE is set")
     expect(k.asked).toEqual([])
   })
+})
 
-  test("--high-value still gates the batch, and allocates none of it", async () => {
-    const chosen = "a passphrase I picked myself"
-    const h = await harness({ secrets: [chosen, chosen], lines: ["no"] })
-    expect(await run(["vault", "init", "--own-passphrase", "--high-value", "--keystore", h.vaultPath], h.deps)).toBe(0)
+/**
+ * BE-245: the backup offer `init` never made, and the nag `status` never printed.
+ *
+ * Nothing in `init` mentioned backup at all, and the moment after `init` is exactly when it
+ * matters: the vault exists, nothing else has a copy of it, and the operator is still sitting
+ * there. The offer is a prompt and a path, not new crypto -- answering yes runs `vault backup`,
+ * with the same AD-9 sealing and the same eight-step verification. It appears only where iCloud
+ * Drive actually exists, so a Linux VPS never reads a word about it.
+ */
+describe("BE-245: init offers a backup, and status nags until there is one", () => {
+  /** A home of the test's own with iCloud Drive in it, separate from CANDLE_CONFIG_DIR. */
+  async function homeWithIcloud(): Promise<string> {
+    const home = await mkdtemp(join(tmpdir(), "candle-vault-home-"))
+    await mkdir(join(home, "Library", "Mobile Documents", "com~apple~CloudDocs"), { recursive: true })
+    return home
+  }
 
-    const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [chosen] })
+  test("no iCloud Drive on this machine, no offer and no mention of one", async () => {
+    const h = await initVault()
+    expect(h.asked.some((text) => text.includes("Back up your encrypted vault"))).toBe(false)
+    expect(h.stdout.text).not.toContain("iCloud Drive")
+  })
+
+  test("yes writes a sealed, verified copy, and the sidecar records it", async () => {
+    const home = await homeWithIcloud()
+    // Enter (generated), Enter (saved it), no (phrase ceremony), yes (back it up).
+    const h = await harness({ env: { HOME: home }, lines: ["", "", "no", "yes"] })
+    h.deps.promptSecret = async (text: string) => {
+      h.asked.push(`secret: ${text}`)
+      return generatedPassphraseFrom(h.stdout.text)
+    }
+    expect(await run(["vault", "init", "--keystore", h.vaultPath], h.deps)).toBe(0)
+
+    // The copy is `vault backup`'s: same command, same sealing, same eight steps.
+    const destination = `${join(home, "Library", "Mobile Documents", "com~apple~CloudDocs", "Candle")}/`
+    expect(h.stdout.text).toContain(`Verified ${destination}`)
+    expect(h.stdout.text).toContain("steps         all 8 passed, in order")
+    expect(h.stdout.text).toContain("sealed        yes")
+
+    const sidecar = await readSidecar(sidecarPath(h.vaultPath))
+    expect(sidecar?.lastVerifiedBackupAt).toBeDefined()
+    expect(sidecar?.lastBackupDomain).toBe("icloud-drive")
+    expect(sidecar?.lastBackupSealed).toBe(true)
+  })
+
+  test("the offer is honest about going stale, and skipping leaves the command to run", async () => {
+    const home = await homeWithIcloud()
+    const h = await harness({ env: { HOME: home }, lines: ["", "", "no", "later"] })
+    expect(await run(["vault", "init", "--keystore", h.vaultPath], h.deps)).toBe(0)
+
+    // `init` allocates no key, so `verify-backup` calls a copy taken here stale the moment the
+    // first `new-key` lands. Said out loud rather than papered over, because the copy is still
+    // worth taking: what it protects is the root every key comes back from.
+    expect(h.stdout.text).toContain("Back it up again after your first `vault new-key`")
+    expect(h.stdout.text).toContain("candle vault backup --to icloud")
+    // Anything but yes skips, and skipping costs nothing: the vault is already created.
+    const sidecar = await readSidecar(sidecarPath(h.vaultPath))
+    expect(sidecar?.lastVerifiedBackupAt).toBeUndefined()
+  })
+
+  test("status says a vault has never been backed up, every time, until it has been", async () => {
+    const h = await initVault()
+
+    const before = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
+    await run(["vault", "status", "--keystore", h.vaultPath], before.deps)
+    expect(before.stdout.text).toContain(NO_VERIFIED_BACKUP_NOTE)
+
+    // Twice, because "every time" is the point: the fact does not scroll away after one reading.
+    const again = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
+    await run(["vault", "status", "--keystore", h.vaultPath], again.deps)
+    expect(again.stdout.text).toContain(NO_VERIFIED_BACKUP_NOTE)
+
+    const elsewhere = await mkdtemp(join(tmpdir(), "candle-vault-backup-to-"))
+    const b = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
     expect(
-      await run(["vault", "new-key", "--chain", "solana", "--count", "5", "--keystore", h.vaultPath], k.deps),
-    ).toBe(1)
-    expect(k.stderr.text).toContain("--high-value")
+      await run(["vault", "backup", "--to", join(elsewhere, "vault.enc"), "--keystore", h.vaultPath], b.deps),
+    ).toBe(0)
 
-    const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [chosen] })
-    await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)
-    expect(s.stdout.text).toContain("solanaVault  0")
+    const after = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
+    await run(["vault", "status", "--keystore", h.vaultPath], after.deps)
+    expect(after.stdout.text).not.toContain("has ever been verified from this machine")
+    expect(after.stdout.text).toContain("last verified backup")
   })
 })

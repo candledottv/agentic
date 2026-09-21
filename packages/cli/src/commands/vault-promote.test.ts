@@ -154,7 +154,7 @@ async function initVault(dir: string): Promise<{ passphrase: string; vaultPath: 
     fetch: deps.fetch,
     stdout: out,
     stderr: err,
-    env: { CANDLE_CONFIG_DIR: dir },
+    env: { CANDLE_CONFIG_DIR: dir, HOME: dir },
     promptSecret: async (text: string) => {
       asked.push(text)
       if (secretQueue.length === 0) {

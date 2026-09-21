@@ -52,6 +52,7 @@ import { sidecarPath } from "../vault/sidecar"
 import { closeVault, commitVault, fileExists, freshKeyId, sealKeyBlob, type UnlockedVault } from "../vault/store"
 import { verifyVaultIntegrity } from "../vault/verify"
 import {
+  askForOwnPassphrase,
   nonDefaultVaultFooter,
   refuseEnvPassphrase,
   requireTty,
@@ -132,7 +133,7 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
       }
       // D8: the choice is offered HERE -- after the phrase is validated, before the passphrase
       // step -- so an answer typed wrong costs one re-prompt rather than retyping 24 words.
-      const own = parsed.booleans.has("--own-passphrase") || (await askForOwnPassphrase(ctx))
+      const own = parsed.booleans.has("--own-passphrase") || (await askForOwnPassphrase(ctx, RESTORE_PASSPHRASE_PROMPT))
       const passphrase = own ? await collectOwn(ctx) : await collectGenerated(ctx)
       const ownPassphrase = own
       // A NEW vaultId and a NEW DEK: nothing from the old vault is needed, and nothing from it is
@@ -820,21 +821,6 @@ export const RESTORE_NEW_PASSPHRASE_NOTICE =
 
 export const RESTORE_PASSPHRASE_PROMPT =
   "Passphrase for the new vault. Press Enter to have one generated (8 words, shown once, typed back), or type own to choose your own (16+ characters, typed twice, never shown): "
-
-/**
- * D8's prompt: Enter for the generated passphrase, `own` to choose one. Anything else is asked once
- * more and then treated as Enter, because the generated branch is AD-6's default and a third
- * reading of the same question teaches nothing. `--own-passphrase` never reaches here.
- * `vault restore` is already refused under `--json`, so this prompt has no machine form to answer.
- */
-async function askForOwnPassphrase(ctx: CommandContext): Promise<boolean> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const answer = (await ctx.deps.promptLine(RESTORE_PASSPHRASE_PROMPT)).trim().toLowerCase()
-    if (answer === "own") return true
-    if (answer === "") return false
-  }
-  return false
-}
 
 async function collectGenerated(ctx: CommandContext): Promise<string> {
   const passphrase = generatePassphrase()

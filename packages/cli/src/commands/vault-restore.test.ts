@@ -83,7 +83,7 @@ async function harness(script: ApiScript = {}) {
     stderr,
     // An API key must be stored, or the restore reads no exposure at all.
     store: createFakeStore({ [SECRET_REFS.apiKey]: "ck_live_testkey" }),
-    env: { CANDLE_CONFIG_DIR: dir },
+    env: { CANDLE_CONFIG_DIR: dir, HOME: dir },
     isTTY: { stdin: true, stdout: true },
     promptSecret: async () => {
       const next = secrets.shift()

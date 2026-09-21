@@ -405,8 +405,9 @@ async function readKeystore(raw, passphrase, opts = {}) {
 }
 async function writeKeystoreFile(path, contents) {
   const dir = dirname2(path);
-  await mkdir2(dir, { recursive: true });
-  await chmod2(dir, 448);
+  const created = await mkdir2(dir, { recursive: true });
+  if (created !== undefined)
+    await chmod2(dir, 448).catch(() => {});
   const tmpPath = `${path}.${crypto.randomUUID()}.tmp`;
   await writeFile2(tmpPath, contents, { encoding: "utf8", mode: 384 });
   await chmod2(tmpPath, 384);
@@ -14884,7 +14885,7 @@ function strengthFor(ownPassphrase) {
 function strengthLabel(strength) {
   return strength === "generated-103" ? `generated, ${GENERATED_WORD_COUNT} words (about ${generatedEntropyBits()} bits)` : "chosen by you (this CLI cannot know its entropy)";
 }
-var GENERATED_WORD_COUNT = 8, OWN_PASSPHRASE_MIN_LENGTH = 16, DENYLIST, APPLE_ACCOUNT_NOTICE = "Keep this passphrase and your recovery phrase outside the Apple account that holds a synced passkey: an Apple-generated password saved to iCloud Keychain lands in that account.";
+var GENERATED_WORD_COUNT = 8, OWN_PASSPHRASE_MIN_LENGTH = 16, DENYLIST, APPLE_ACCOUNT_NOTICE = "Keep this passphrase and your recovery phrase outside the Apple account that holds a synced passkey: an Apple-generated password saved to iCloud Keychain lands in that account.", SAVE_THE_PASSPHRASE = "Save it now, in your password manager or on paper. This CLI keeps no copy and cannot recover it. If you lose it, your 24-word recovery phrase is the way back in.", SAVED_IT_PROMPT = "Press Enter when you have saved it: ";
 var init_passphrase = __esm(() => {
   init_eff_wordlist();
   init_errors();
@@ -14931,6 +14932,7 @@ __export(exports_vault_support, {
   confirmLastSix: () => confirmLastSix,
   assertVaultHelperIdentities: () => assertVaultHelperIdentities,
   assertNotOlderCopy: () => assertNotOlderCopy,
+  askForOwnPassphrase: () => askForOwnPassphrase,
   RPC_URL_ENV: () => RPC_URL_ENV
 });
 import { dirname as dirname7 } from "node:path";
@@ -14940,6 +14942,16 @@ function refuseEnvPassphrase(ctx) {
   writeVaultFailure(ctx, new VaultError("ENV_PASSPHRASE_REFUSED", "CANDLE_KEYSTORE_PASSPHRASE is set. No Candle command reads its value, and the vault never takes a passphrase from the environment.", {
     suggestion: "Unset it and run again; the vault commands prompt for the passphrase with input hidden."
   }));
+  return false;
+}
+async function askForOwnPassphrase(ctx, promptText) {
+  for (let attempt = 0;attempt < 2; attempt++) {
+    const answer = (await ctx.deps.promptLine(promptText)).trim().toLowerCase();
+    if (answer === "own")
+      return true;
+    if (answer === "")
+      return false;
+  }
   return false;
 }
 function requireTty(ctx, what) {
@@ -35207,7 +35219,7 @@ var init_server2 = __esm(() => {
 // src/index.ts
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod as chmod7, readFile as readFile8, realpath, rename as rename5, unlink, writeFile as writeFile7 } from "node:fs/promises";
+import { chmod as chmod8, readFile as readFile8, realpath, rename as rename5, unlink, writeFile as writeFile7 } from "node:fs/promises";
 import { hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -35776,7 +35788,7 @@ async function resolveApiKey(deps, profile) {
 init_render();
 
 // src/version.ts
-var CLI_VERSION = "0.11.2";
+var CLI_VERSION = "0.11.3";
 
 // src/commands/auth.ts
 var DEVICE_CODE_PATH = "/api/v1/agent/device/code";
@@ -36333,7 +36345,7 @@ var HELP = {
     usage: ["candle vault <subcommand> [flags]"],
     rows: [
       {
-        invocation: "init [--own-passphrase] [--high-value]",
+        invocation: "init [--own-passphrase]",
         description: "Create the vault: one passphrase factor and an HD root"
       },
       { invocation: "status [--unlock]", description: "What the vault holds, and what opens it" },
@@ -36359,8 +36371,8 @@ var HELP = {
         description: `Same as factor add: ${FACTOR_KINDS.join(", ")}`
       },
       {
-        invocation: "backup --to <path> [--accept-shared-domain]",
-        description: "Copy the vault and verify the copy in full"
+        invocation: "backup --to <path>|icloud [--accept-shared-domain]",
+        description: "Copy the vault and verify the copy in full; icloud is iCloud Drive"
       },
       { invocation: "verify-backup <path>", description: "Verify a copy in full (all eight steps)" },
       { invocation: "import-legacy --tee [--from <path>]", description: "Migrate tee-wallets.enc into the vault" },
@@ -36407,6 +36419,7 @@ var HELP = {
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
       "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
+      "candle vault backup --to icloud",
       "CANDLE_CONFIG_DIR=$HOME/t47 candle vault status"
     ],
     env: ["CANDLE_CONFIG_DIR", "CANDLE_FIDO2_HELPER", "CANDLE_ENCLAVE_HELPER", "CANDLE_KEYSTORE_PASSPHRASE"]
@@ -38159,6 +38172,21 @@ function createSolanaRpc(url, fetchFn) {
 init_errors();
 import { homedir as homedir4 } from "node:os";
 import { basename, dirname as dirname4, isAbsolute, join as join6, resolve, sep } from "node:path";
+var ICLOUD_DRIVE_SEGMENTS = ["Library", "Mobile Documents", "com~apple~CloudDocs"];
+var ICLOUD_SHORTHAND = "icloud";
+var ICLOUD_BACKUP_FOLDER = "Candle";
+function icloudDriveDir(home) {
+  return join6(home, ...ICLOUD_DRIVE_SEGMENTS);
+}
+function icloudBackupPath(home, at) {
+  return join6(icloudDriveDir(home), ICLOUD_BACKUP_FOLDER, `vault-${backupStamp(at)}.enc`);
+}
+function backupStamp(at) {
+  return new Date(at).toISOString().replace(/[-:]/gu, "").replace(/\.\d+Z$/u, "Z");
+}
+function homeDirOf(env) {
+  return env.HOME?.trim() || homedir4();
+}
 var OTHER_CLOUD_MARKERS = [
   "Library/CloudStorage",
   "Dropbox",
@@ -41234,7 +41262,6 @@ init_store();
 init_args();
 init_errors();
 init_format();
-init_sidecar();
 init_store();
 init_vault_support();
 var MAX_NEW_KEY_COUNT = 256;
@@ -41319,7 +41346,6 @@ async function vaultNewKey(args, ctx) {
     });
     const vault = hold(opened.vault);
     assertRecoverableFactorExists(vault.file.envelopes);
-    await assertHighValueSatisfied(path, vault.file.envelopes);
     if (vault.index.hd.discovery !== undefined) {
       throw new VaultError("VAULT_ALLOCATION_BOUNDARY_UNKNOWN", "This vault was built by `vault restore --phrase`, so the highest index its root ever allocated was never established and claiming a new one could re-derive an address that is already in use elsewhere.", {
         suggestion: "Create a second vault with a fresh root (`candle vault init`) and move the funds across with `candle vault transfer`. There is no flag for this: no fact you could assert would make the old boundary known."
@@ -41432,17 +41458,6 @@ function nextAllocatableIndex(counter, exposed) {
     index++;
   return index;
 }
-async function assertHighValueSatisfied(path, envelopes) {
-  const sidecar = await readSidecar(sidecarPath(path));
-  if (sidecar?.highValue !== true)
-    return;
-  const generated = envelopes.some((envelope) => envelope.factor === "passphrase" && envelope.strength === "generated-103");
-  if (generated)
-    return;
-  if (countRecoverableFactors(envelopes) >= 2)
-    return;
-  throw new VaultError("VAULT_NO_RECOVERABLE_FACTOR", "This vault was created with --high-value, which needs either a generated passphrase or two recoverable factors in different domains before a key is created in it.", { suggestion: "Add a second recoverable factor: candle vault factor add passphrase" });
-}
 async function verifyWrittenFromDisk(vault, address, keyId) {
   const raw = await readVaultRaw(vault.path);
   if (raw === null) {
@@ -41513,7 +41528,6 @@ async function externalNew(args, ctx) {
     });
     const vault = hold(opened.vault);
     assertRecoverableFactorExists(vault.file.envelopes);
-    await assertHighValueSatisfied(path, vault.file.envelopes);
     if (vault.index.hd.discovery !== undefined) {
       throw new VaultError("VAULT_ALLOCATION_BOUNDARY_UNKNOWN", "This vault was built by `vault restore --phrase`, so the highest index its root ever allocated was never established and claiming a new external index could re-derive an address that is already in use elsewhere.", {
         suggestion: "Create a second vault with a fresh root (`candle vault init`) and move the funds across with `candle vault transfer`. Recovered external keys still fund, sweep and sign here; only allocation is refused."
@@ -50067,8 +50081,8 @@ function messageOf(error) {
 
 // src/commands/vault-backup.ts
 init_args();
-import { copyFile, stat as stat3 } from "node:fs/promises";
-import nodePath, { resolve as resolve2 } from "node:path";
+import { chmod as chmod5, copyFile, mkdir as mkdir6, stat as stat3 } from "node:fs/promises";
+import nodePath, { dirname as dirname8, resolve as resolve2 } from "node:path";
 init_errors();
 init_format();
 init_passphrase();
@@ -50212,11 +50226,28 @@ async function vaultBackup(args, ctx) {
   if ("error" in resolvedVault)
     return usage(ctx, resolvedVault.error);
   const path = resolvedVault.path;
-  const destination = resolve2(to);
+  const target = resolveBackupDestination(to, deps);
+  if (target.requires !== undefined && !await exists(target.requires)) {
+    return usage(ctx, `There is no iCloud Drive folder at ${target.requires} on this machine. Sign in to iCloud and turn on iCloud Drive, or pass --to <path> with somewhere else to write.`);
+  }
+  const destination = target.path;
+  if (target.requires !== undefined)
+    deps.stderr.write(`--to ${ICLOUD_SHORTHAND} is ${destination}
+`);
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
     assertOutsideConfigDir(destination, deps.env);
     const file = parseVaultFile(raw);
+    if (target.requires !== undefined) {
+      const folder = dirname8(destination);
+      try {
+        const created = await mkdir6(folder, { recursive: true });
+        if (created !== undefined)
+          await chmod5(folder, 448).catch(() => {});
+      } catch (error) {
+        throw copyWriteFailed(destination, error, "copy");
+      }
+    }
     const verdict = await assertBackupDomainAllowed(file.envelopes, destination, {
       acceptSharedDomain: parsed.booleans.has("--accept-shared-domain"),
       realpath: deps.realpath
@@ -50236,7 +50267,11 @@ async function vaultBackup(args, ctx) {
     if (verdict.sealed) {
       await writeSealedCopy(live, destination);
     } else {
-      await copyFile(path, destination);
+      try {
+        await copyFile(path, destination);
+      } catch (error) {
+        throw copyWriteFailed(destination, error, "copy");
+      }
     }
     const report = await verifyCopy(ctx, destination, opened.reopen, live);
     const sidecar = sidecarPath(path);
@@ -50267,14 +50302,43 @@ async function vaultBackup(args, ctx) {
     return 0;
   });
 }
+function resolveBackupDestination(to, deps) {
+  if (to.trim().toLowerCase() !== ICLOUD_SHORTHAND)
+    return { path: resolve2(to) };
+  const home = homeDirOf(deps.env);
+  return { path: icloudBackupPath(home, deps.now()), requires: icloudDriveDir(home) };
+}
 async function writeSealedCopy(live, destination) {
   const { index: _index, ...header } = live.file;
   const sealed = await sealIndex({ ...header, envelopes: sealedEnvelopes(live.file.envelopes) }, live.index, live.payloadKey);
   try {
     await writeKeystoreFile(destination, serializeVault(sealed));
-  } catch {
-    throw new VaultError("VAULT_WRITE_FAILED", `Could not write the sealed copy at ${destination}.`);
+  } catch (error) {
+    throw copyWriteFailed(destination, error, "sealed copy");
   }
+}
+function errnoCodeOf(error) {
+  const code = error?.code;
+  return typeof code === "string" && code.length > 0 ? code : undefined;
+}
+function suggestionForErrno(code) {
+  if (code === "ENOSPC")
+    return "The volume is full. Free space there, or back up somewhere else. Nothing was written.";
+  if (code === "EROFS")
+    return "That volume is mounted read-only. Nothing was written.";
+  if (code === "ENOENT")
+    return "A directory on that path does not exist and could not be created. Check the path, and that the volume is mounted. Nothing was written.";
+  if (code === "EACCES" || code === "EPERM")
+    return "Check that you can write there, and that the volume or sync folder is mounted and not locked. Nothing was written.";
+  return "Nothing was written. Try another destination, or run the same write by hand to see what the filesystem says.";
+}
+function copyWriteFailed(destination, error, what) {
+  const code = errnoCodeOf(error);
+  const reason = error instanceof Error ? error.message : String(error);
+  return new VaultError("VAULT_WRITE_FAILED", `Could not write the ${what} at ${destination}: ${code ?? "no error code"} -- ${reason}`, {
+    suggestion: suggestionForErrno(code),
+    details: { path: destination, reason, ...code === undefined ? {} : { code } }
+  });
 }
 function isSealedCopy(copyRaw) {
   const envelopes = parseVaultFile(copyRaw).envelopes;
@@ -50593,8 +50657,8 @@ init_errors();
 init_promote_support();
 init_store();
 init_vault_support();
-import { access as access3, chmod as chmod5, constants as constants4, lstat, writeFile as writeFile5 } from "node:fs/promises";
-import { dirname as dirname8, resolve as resolve3 } from "node:path";
+import { access as access3, chmod as chmod6, constants as constants4, lstat, writeFile as writeFile5 } from "node:fs/promises";
+import { dirname as dirname9, resolve as resolve3 } from "node:path";
 async function vaultExportKey(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--to"],
@@ -50706,7 +50770,7 @@ async function assertExportTargetWritable(destination) {
     if (error.code !== "ENOENT")
       throw error;
   }
-  const parent = dirname8(destination);
+  const parent = dirname9(destination);
   try {
     const parentInfo = await lstat(parent);
     if (parentInfo.isSymbolicLink()) {
@@ -50738,7 +50802,7 @@ async function assertExportTargetWritable(destination) {
 async function writeExportFile(destination, body) {
   try {
     await writeFile5(destination, body, { encoding: "utf8", flag: "wx", mode: 384 });
-    await chmod5(destination, 384);
+    await chmod6(destination, 384);
   } catch (error) {
     const code = error.code;
     if (code === "EEXIST") {
@@ -51246,7 +51310,6 @@ async function createVault(request2, clock) {
 init_crypto();
 init_errors();
 init_passphrase();
-init_sidecar();
 init_store();
 
 // src/commands/vault-phrase.ts
@@ -51381,12 +51444,13 @@ function randomPositions(count, of = PHRASE_WORDS) {
 
 // src/commands/vault-init.ts
 init_vault_support();
-var INIT_GENERATED_PASSPHRASE_NOTICE = "Your vault passphrase is about to be generated and shown once. This CLI keeps no copy and cannot recover it. To choose your own instead: candle vault init --own-passphrase";
+var INIT_GENERATED_PASSPHRASE_NOTICE = "Your vault passphrase is about to be generated and shown once. This CLI keeps no copy and cannot recover it. To choose your own instead, type own at the prompt below.";
+var INIT_PASSPHRASE_PROMPT = "Passphrase for this vault. Press Enter to have one generated (8 words, shown once), or type own to choose your own (16+ characters, typed twice, never shown): ";
 var GENERATED_PASSPHRASE_NEEDS_TERMINAL = "A generated passphrase is shown once on the terminal, and --json reserves stdout for one JSON value that never carries a secret. Under --json pass --own-passphrase (typed at a hidden prompt, nothing shown), or run without --json.";
 async function vaultInit(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--label"],
-    booleanFlags: ["--own-passphrase", "--high-value"],
+    booleanFlags: ["--own-passphrase"],
     pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
@@ -51395,8 +51459,8 @@ async function vaultInit(args, ctx) {
     return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
   if (!refuseEnvPassphrase(ctx))
     return 1;
-  const ownPassphrase = parsed.booleans.has("--own-passphrase");
-  if (ctx.json && !ownPassphrase)
+  const ownFlag = parsed.booleans.has("--own-passphrase");
+  if (ctx.json && !ownFlag)
     return usage(ctx, GENERATED_PASSPHRASE_NEEDS_TERMINAL);
   if (!requireTty(ctx, "vault init"))
     return 1;
@@ -51405,32 +51469,25 @@ async function vaultInit(args, ctx) {
   if ("error" in resolvedVault)
     return usage(ctx, resolvedVault.error);
   const path = resolvedVault.path;
-  const highValue = parsed.booleans.has("--high-value");
   return runVaultCommand(ctx, async () => {
     if (await fileExists(path)) {
       throw vaultAlreadyExists(ctx, resolvedVault, "This CLI never overwrites one, including after an interrupted init. Move it aside if you really mean to start over.");
     }
-    if (!ownPassphrase)
+    if (!ownFlag)
       deps.stdout.write(`${INIT_GENERATED_PASSPHRASE_NOTICE}
 `);
-    const passphrase = ownPassphrase ? await collectOwnPassphrase(ctx) : await collectGeneratedPassphrase(ctx);
+    const own = ownFlag || await askForOwnPassphrase(ctx, INIT_PASSPHRASE_PROMPT);
+    const passphrase = own ? await collectOwnPassphrase(ctx) : await collectGeneratedPassphrase(ctx);
     const entropy = randomBytes2(ROOT_ENTROPY_BYTES);
     const vault = await withSecret(entropy, async (rootEntropy) => createVault({
       path,
       passphrase,
-      strength: strengthFor(ownPassphrase),
+      strength: strengthFor(own),
       rootEntropy,
       label: parsed.values["--label"],
       notice: (line) => deps.stderr.write(line)
     }, deps));
     try {
-      if (highValue) {
-        const sidecar = sidecarPath(path);
-        await writeSidecar(sidecar, {
-          ...nextSidecar(await readSidecar(sidecar), vault.file),
-          highValue: true
-        });
-      }
       if (ctx.json) {
         writeJson(deps, {
           ok: true,
@@ -51442,7 +51499,6 @@ async function vaultInit(args, ctx) {
             factor: envelope.factor,
             domain: envelope.domain
           })),
-          highValue,
           phraseCeremonyOffered: false
         });
         deps.stderr.write(`The recovery phrase ceremony is interactive only and was not offered under --json. Run: candle vault phrase show
@@ -51457,15 +51513,17 @@ async function vaultInit(args, ctx) {
 `);
       deps.stdout.write(`  keys         0 -- create one with: candle vault new-key --chain solana
 `);
-      if (highValue)
-        deps.stdout.write(`  high value   yes: new-key needs a generated passphrase, or two recoverable factors in different domains
-`);
       deps.stdout.write(`
 Verified: the file was re-read and opened with the passphrase you set, and its root blob decrypted.
 `);
       deps.stdout.write(`
 ${APPLE_ACCOUNT_NOTICE}
 `);
+      if (countRecoverableFactors(vault.file.envelopes) === 1) {
+        deps.stdout.write(`
+This vault has exactly one recoverable factor: the passphrase. Lose it and no copy of this file can be opened, and the recovery phrase becomes the only route back. Add a second when you can: candle vault enroll security-key
+`);
+      }
       deps.stdout.write(`
 This vault has a 24-word recovery phrase. It re-derives every key this vault derives, on any BIP-39 wallet, and it is the only way back if you lose both the file and your backups.
 `);
@@ -51476,6 +51534,7 @@ This vault has a 24-word recovery phrase. It re-derives every key this vault der
         deps.stdout.write(`Skipped. You can run the ceremony later with: candle vault phrase show
 `);
       }
+      await offerIcloudBackup(ctx, resolvedVault);
       const footer = nonDefaultVaultFooter(resolvedVault);
       if (footer !== undefined)
         deps.stdout.write(footer);
@@ -51486,20 +51545,19 @@ This vault has a 24-word recovery phrase. It re-derives every key this vault der
   });
 }
 async function collectGeneratedPassphrase(ctx) {
+  const { deps } = ctx;
   const passphrase = generatePassphrase();
-  ctx.deps.stdout.write(`
-Your vault passphrase, ${GENERATED_WORD_COUNT} words, about ${generatedEntropyBits()} bits. Write it down now; it is shown once and this CLI keeps no copy.
+  deps.stdout.write(`
+Your vault passphrase, ${GENERATED_WORD_COUNT} words, about ${generatedEntropyBits()} bits.
 
 `);
-  ctx.deps.stdout.write(`    ${passphrase}
+  deps.stdout.write(`    ${passphrase}
 
 `);
-  const typed = await ctx.deps.promptSecret("Type it back in full to confirm (input hidden): ");
-  if (typed.trim() !== passphrase) {
-    throw new VaultError("VAULT_UNLOCK_FAILED", "That did not match the passphrase shown above. Nothing was written.", {
-      suggestion: "Run `candle vault init` again for a new one."
-    });
-  }
+  deps.stdout.write(`${SAVE_THE_PASSPHRASE}
+
+`);
+  await deps.promptLine(SAVED_IT_PROMPT);
   return passphrase;
 }
 async function collectOwnPassphrase(ctx) {
@@ -51513,6 +51571,28 @@ async function collectOwnPassphrase(ctx) {
     ctx.deps.stdout.write("Recorded as chosen by you: this CLI cannot know its entropy and `vault status` says so.\n");
   }
   return first;
+}
+async function offerIcloudBackup(ctx, resolved) {
+  const { deps } = ctx;
+  if (!await fileExists(icloudDriveDir(homeDirOf(deps.env))))
+    return;
+  deps.stdout.write(`
+Nothing has a copy of this vault yet. A copy in iCloud Drive is a copy of the ciphertext, and Candle seals it: it opens with the passphrase only, and carries no Touch ID, security key or synced passkey envelope, so one Apple account never holds both the blob and a factor that opens it.
+`);
+  deps.stdout.write(`This vault holds no keys yet, so what a copy taken now protects is the root every key comes back from. Back it up again after your first \`vault new-key\`: until then \`verify-backup\` will report this copy as stale, correctly.
+`);
+  const answer = (await deps.promptLine("Back up your encrypted vault to iCloud Drive now? Type yes to back it up, anything else to skip: ")).trim().toLowerCase();
+  if (answer !== "yes") {
+    deps.stdout.write(`Skipped. Back it up whenever you like with: candle vault backup --to ${ICLOUD_SHORTHAND}
+`);
+    return;
+  }
+  const code = await vaultBackup(["--to", ICLOUD_SHORTHAND, "--keystore", resolved.path], ctx);
+  if (code !== 0) {
+    deps.stdout.write(`
+The vault itself is created and verified; only the copy failed. Run it again when you have dealt with the reason above: candle vault backup --to ${ICLOUD_SHORTHAND}
+`);
+  }
 }
 
 // src/commands/vault-factor.ts
@@ -53156,7 +53236,7 @@ async function vaultRestore(args, ctx) {
       if (rootEntropy.length !== ROOT_ENTROPY_BYTES) {
         throw new VaultError("PHRASE_INVALID", `That phrase carries ${rootEntropy.length} bytes of entropy, not ${ROOT_ENTROPY_BYTES}.`, { suggestion: "Nothing was written. Check the word count and order, then run it again." });
       }
-      const own = parsed.booleans.has("--own-passphrase") || await askForOwnPassphrase(ctx);
+      const own = parsed.booleans.has("--own-passphrase") || await askForOwnPassphrase(ctx, RESTORE_PASSPHRASE_PROMPT);
       const passphrase = own ? await collectOwn2(ctx) : await collectGenerated2(ctx);
       const ownPassphrase = own;
       return createVault({
@@ -53618,16 +53698,6 @@ async function vaultReconcileExposure(args, ctx) {
 }
 var RESTORE_NEW_PASSPHRASE_NOTICE = "This builds a NEW vault from your 24 words, and it gets a NEW passphrase: the one that opened the vault the words came from does not carry over. The words carry the keys; a passphrase belongs to one file.";
 var RESTORE_PASSPHRASE_PROMPT = "Passphrase for the new vault. Press Enter to have one generated (8 words, shown once, typed back), or type own to choose your own (16+ characters, typed twice, never shown): ";
-async function askForOwnPassphrase(ctx) {
-  for (let attempt = 0;attempt < 2; attempt++) {
-    const answer = (await ctx.deps.promptLine(RESTORE_PASSPHRASE_PROMPT)).trim().toLowerCase();
-    if (answer === "own")
-      return true;
-    if (answer === "")
-      return false;
-  }
-  return false;
-}
 async function collectGenerated2(ctx) {
   const passphrase = generatePassphrase();
   ctx.deps.stdout.write(`
@@ -53775,6 +53845,7 @@ init_platform();
 init_sidecar();
 init_store();
 init_vault_support();
+var NO_VERIFIED_BACKUP_NOTE = "No backup of this vault has ever been verified from this machine. If this file is lost, only the 24-word recovery phrase can rebuild it, and it rebuilds derived keys only. Take one now: candle vault backup --to <path>   (on a Mac with iCloud Drive: candle vault backup --to icloud)";
 async function vaultStatus(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore"],
@@ -53893,6 +53964,11 @@ This machine's record (vault.state.json, cleartext, best effort):
     } else {
       deps.stdout.write(`
 No vault.state.json beside this vault, so an older copy of it cannot be recognized on this machine.
+`);
+    }
+    if (sidecar?.lastVerifiedBackupAt === undefined) {
+      deps.stdout.write(`
+${NO_VERIFIED_BACKUP_NOTE}
 `);
     }
     if (legacyPresent) {
@@ -54088,7 +54164,7 @@ async function vaultTransfer(args, ctx) {
 // src/commands/verify.ts
 init_args();
 init_release();
-import { dirname as dirname9, join as join11 } from "node:path";
+import { dirname as dirname10, join as join11 } from "node:path";
 init_render();
 var USAGE2 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
@@ -54096,7 +54172,7 @@ async function resolveIdentity(deps, bundlePath, flag) {
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
   let version;
   try {
-    const manifest = JSON.parse(await deps.readFile(join11(dirname9(bundlePath), "latest.json")));
+    const manifest = JSON.parse(await deps.readFile(join11(dirname10(bundlePath), "latest.json")));
     if (typeof manifest.version !== "string" || manifest.version.length === 0)
       return { kind: "absent" };
     version = manifest.version;
@@ -54190,7 +54266,7 @@ function messageOf2(error) {
 }
 
 // src/config.ts
-import { chmod as chmod6, mkdir as mkdir6, readFile as readFile7, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
+import { chmod as chmod7, mkdir as mkdir7, readFile as readFile7, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
 import { homedir as homedir6 } from "node:os";
 import { join as join12 } from "node:path";
 function configDir2() {
@@ -54213,8 +54289,8 @@ async function writeConfig(patch) {
   const current = await readConfig();
   const next = { ...current, ...patch };
   const dir = configDir2();
-  await mkdir6(dir, { recursive: true });
-  await chmod6(dir, 448);
+  await mkdir7(dir, { recursive: true });
+  await chmod7(dir, 448);
   await writeFile6(configFilePath(), JSON.stringify(next, null, 2), "utf8");
 }
 async function updateProfile(name, patch) {
@@ -54857,7 +54933,7 @@ async function buildRealDeps() {
     releasePolicy: RELEASE_POLICY,
     writeBytes: async (path, bytes) => {
       await writeFile7(path, bytes, { flag: "wx", mode: 493 });
-      await chmod7(path, 493);
+      await chmod8(path, 493);
     },
     rename: (from, to) => rename5(from, to),
     unlink: (path) => unlink(path)

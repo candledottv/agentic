@@ -45,6 +45,59 @@ import type { Envelope } from "./format"
 
 export type DestinationDomain = "local-disk" | "removable-media" | "icloud-drive" | "other-cloud" | "unknown"
 
+/**
+ * iCloud Drive's on-disk location, named (BE-245).
+ *
+ * `placeResolvedPath` below has always recognised `Library/Mobile Documents`, so the constant
+ * existed in spirit; what was missing was a NAME the rest of the CLI could reach for. The literal
+ * path is hostile to type -- `~/Library/Mobile Documents/com~apple~CloudDocs`, tildes inside the
+ * folder name and all -- and that is most of why nobody backs up to it. `vault backup --to icloud`
+ * and the post-`init` offer both build their destination from here, so there is one spelling of
+ * it rather than one per caller.
+ */
+export const ICLOUD_DRIVE_SEGMENTS = ["Library", "Mobile Documents", "com~apple~CloudDocs"] as const
+
+/** The shorthand `--to` accepts in place of that path. Compared case-insensitively. */
+export const ICLOUD_SHORTHAND = "icloud"
+
+/**
+ * A folder of Candle's own inside iCloud Drive, rather than the provider root. Two reasons, both
+ * real: a backup that lands beside a user's documents is a backup they lose track of, and the
+ * provider root is a file-provider mount whose permissions the CLI may not change (BE-245's
+ * chmod EPERM), so a directory Candle creates is the shape every step of the write can handle.
+ */
+export const ICLOUD_BACKUP_FOLDER = "Candle"
+
+/** `~/Library/Mobile Documents/com~apple~CloudDocs` for the given home. */
+export function icloudDriveDir(home: string): string {
+  return join(home, ...ICLOUD_DRIVE_SEGMENTS)
+}
+
+/**
+ * Where `--to icloud` writes: one timestamped file per backup, inside Candle's own folder.
+ *
+ * Timestamped rather than fixed, because `vault backup` refuses to overwrite an existing copy and
+ * a vault is meant to be backed up AGAIN after keys are created (a copy taken at `init` records no
+ * key, so `verify-backup` reports it stale once the first `new-key` lands). A fixed name would
+ * turn the second, more useful backup into a refusal the operator has to work around by hand.
+ */
+export function icloudBackupPath(home: string, at: number): string {
+  return join(icloudDriveDir(home), ICLOUD_BACKUP_FOLDER, `vault-${backupStamp(at)}.enc`)
+}
+
+/** `20260921T015648Z`: sorts, survives every filesystem, and carries no address or label (N2). */
+export function backupStamp(at: number): string {
+  return new Date(at)
+    .toISOString()
+    .replace(/[-:]/gu, "")
+    .replace(/\.\d+Z$/u, "Z")
+}
+
+/** The home directory this CLI works from. `HOME` is honoured so a test can stand one up. */
+export function homeDirOf(env: Record<string, string | undefined>): string {
+  return env.HOME?.trim() || homedir()
+}
+
 /** Folder names the common sync clients create under the home directory. */
 const OTHER_CLOUD_MARKERS = [
   "Library/CloudStorage",

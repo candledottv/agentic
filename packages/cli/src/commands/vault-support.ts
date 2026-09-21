@@ -62,6 +62,26 @@ export function refuseEnvPassphrase(ctx: CommandContext): boolean {
 }
 
 /**
+ * D8's passphrase choice: Enter for the generated passphrase, `own` to choose one. Anything else
+ * is asked once more and then treated as Enter, because the generated branch is AD-6's default and
+ * a third reading of the same question teaches nothing. `--own-passphrase` never reaches here.
+ *
+ * One implementation, two callers (BE-245). `restore` shipped this prompt in 0.11.1 and `init`
+ * shipped without it, which is how the same decision came to have one discoverable interface and
+ * one undiscoverable one. The two prompts still read differently -- a restored vault's passphrase
+ * is NEW and says so -- so the wording is the caller's and only the behaviour is shared. Neither
+ * command has a machine form: both are refused under `--json` unless `--own-passphrase` is passed.
+ */
+export async function askForOwnPassphrase(ctx: CommandContext, promptText: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const answer = (await ctx.deps.promptLine(promptText)).trim().toLowerCase()
+    if (answer === "own") return true
+    if (answer === "") return false
+  }
+  return false
+}
+
+/**
  * The TTY rule, applied where a secret must actually be collected. `vault status` without
  * `--unlock` and `vault factor list` collect nothing, so they answer under `--json` for an agent
  * checking whether a vault exists; every command that prompts refuses here rather than hanging on

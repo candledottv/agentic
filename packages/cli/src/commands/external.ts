@@ -26,7 +26,7 @@ import { wipe } from "../vault/hygiene"
 import { sweepEverythingTo } from "../vault/local-sweep"
 import { findVaultRoleEntry } from "../vault/promote-support"
 import { commitVault, decryptKey, decryptRoot, freshKeyId, sealKeyBlob } from "../vault/store"
-import { assertHighValueSatisfied, nextAllocatableIndex, verifyWritten } from "./vault-new-key"
+import { nextAllocatableIndex, verifyWritten } from "./vault-new-key"
 import {
   confirmLastSix,
   describeRole,
@@ -80,7 +80,6 @@ export async function externalNew(args: string[], ctx: CommandContext): Promise<
     const vault = hold(opened.vault)
 
     assertRecoverableFactorExists(vault.file.envelopes)
-    await assertHighValueSatisfied(path, vault.file.envelopes)
 
     // CC-11: allocation claims an index as new, and a restored vault cannot know its boundary. The
     // same code and the same exit as `vault new-key` and `vault promote --from`.

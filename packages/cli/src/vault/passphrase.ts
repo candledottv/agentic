@@ -145,3 +145,21 @@ export function strengthLabel(strength: PassphraseStrength): string {
 /** AD-6's line, printed by `vault init` and by `factor add passphrase`. One copy, one wording. */
 export const APPLE_ACCOUNT_NOTICE =
   "Keep this passphrase and your recovery phrase outside the Apple account that holds a synced passkey: an Apple-generated password saved to iCloud Keychain lands in that account."
+
+/**
+ * Where a generated passphrase should GO, printed immediately under the words (BE-245).
+ *
+ * `init` used to end that screen with a type-it-back prompt whose stated reason was proving the
+ * operator had captured the passphrase. It proved no such thing: the words are on screen while you
+ * type them, so what it established is that they are on your display, which you already knew.
+ * Worse, eight random words is exactly enough friction that people select-and-paste, which puts a
+ * ~103-bit root passphrase through the clipboard and into any clipboard manager's history. What
+ * was missing was never a check; it was this sentence -- WHERE to put it, that this CLI cannot get
+ * it back, and what the fallback is. The acknowledgement that follows is honestly a nudge, not a
+ * test, and the prompt says "when you have saved it" rather than claiming to verify anything.
+ */
+export const SAVE_THE_PASSPHRASE =
+  "Save it now, in your password manager or on paper. This CLI keeps no copy and cannot recover it. If you lose it, your 24-word recovery phrase is the way back in."
+
+/** The acknowledgement under `SAVE_THE_PASSPHRASE`. A nudge, deliberately: it checks nothing. */
+export const SAVED_IT_PROMPT = "Press Enter when you have saved it: "

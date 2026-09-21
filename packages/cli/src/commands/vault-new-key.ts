@@ -16,21 +16,21 @@
  * BE-242 adds `--count` and `--labels-from`: n keys under ONE unlock, for a migration that needs a
  * fresh key per wallet (160 of them, in the case that asked for this). It is a convenience for one
  * interactive unlock and nothing more. Every refusal above the loop still runs exactly once and
- * still fails the whole batch -- `requireTty`, `refuseEnvPassphrase`, `assertRecoverableFactorExists`,
- * `assertHighValueSatisfied`, and CC-11's `VAULT_ALLOCATION_BOUNDARY_UNKNOWN` -- and the allocation
- * guard below runs per INDEX rather than once for the batch, because `hd.exposedIndexes` has to be
- * honoured for indexes 2..n exactly as it is for the first. There is no unattended derivation here
- * and no flag that makes one: a batch still costs a terminal and a typed passphrase.
+ * still fails the whole batch -- `requireTty`, `refuseEnvPassphrase`, `assertRecoverableFactorExists`
+ * and CC-11's `VAULT_ALLOCATION_BOUNDARY_UNKNOWN` -- and the allocation guard below runs per INDEX
+ * rather than once for the batch, because `hd.exposedIndexes` has to be honoured for indexes 2..n
+ * exactly as it is for the first. There is no unattended derivation here and no flag that makes
+ * one: a batch still costs a terminal and a typed passphrase. (`assertHighValueSatisfied` was a
+ * fourth refusal above the loop until BE-245 removed `--high-value` outright.)
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
-import { assertRecoverableFactorExists, countRecoverableFactors } from "../vault/domains"
+import { assertRecoverableFactorExists } from "../vault/domains"
 import { addressFromSecret64 } from "../vault/ed25519"
 import { VaultError } from "../vault/errors"
 import { type KeyEntry, parseVaultFile } from "../vault/format"
 import { DERIVATION_SCHEME, deriveSolanaKey, solanaVaultPath } from "../vault/hd"
 import { wipe } from "../vault/hygiene"
-import { readSidecar, sidecarPath } from "../vault/sidecar"
 import {
   commitVault,
   decryptKey,
@@ -179,7 +179,6 @@ export async function vaultNewKey(args: string[], ctx: CommandContext): Promise<
     // Invariant 1, checked against the OPENED vault: a key created in a vault with no recoverable
     // factor is a key nobody can recover.
     assertRecoverableFactorExists(vault.file.envelopes)
-    await assertHighValueSatisfied(path, vault.file.envelopes)
 
     // CC-11: a restored vault is a recovery vault. It opens, lists, signs, backs up and exports by
     // ceremony; it does not mint new addresses from a root whose history it cannot bound.
@@ -356,29 +355,6 @@ export function nextAllocatableIndex(counter: number, exposed: readonly number[]
   let index = counter
   while (exposed.includes(index)) index++
   return index
-}
-
-/**
- * CC-03's `--high-value` rule. The flag has no authenticated home in CC-01's schema, so it is read
- * from the sidecar; a lost sidecar therefore loses the constraint, which is recorded in the PR
- * rather than hidden here. Shared with `candle external new` (R6), the other allocating command.
- */
-export async function assertHighValueSatisfied(
-  path: string,
-  envelopes: Parameters<typeof countRecoverableFactors>[0],
-): Promise<void> {
-  const sidecar = (await readSidecar(sidecarPath(path))) as { highValue?: boolean } | null
-  if (sidecar?.highValue !== true) return
-  const generated = envelopes.some(
-    (envelope) => envelope.factor === "passphrase" && envelope.strength === "generated-103",
-  )
-  if (generated) return
-  if (countRecoverableFactors(envelopes) >= 2) return
-  throw new VaultError(
-    "VAULT_NO_RECOVERABLE_FACTOR",
-    "This vault was created with --high-value, which needs either a generated passphrase or two recoverable factors in different domains before a key is created in it.",
-    { suggestion: "Add a second recoverable factor: candle vault factor add passphrase" },
-  )
 }
 
 /**

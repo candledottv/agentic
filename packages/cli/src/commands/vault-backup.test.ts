@@ -39,8 +39,10 @@ import { flipByte, generatedPassphraseFrom, tamper, useCheapKdf } from "../vault
 import {
   assertOutsideConfigDir,
   backupVerdictLines,
+  errnoCodeOf,
   isInsideDir,
   isSealedCopy,
+  resolveBackupDestination,
   sealReason,
   sharedDomainLine,
   UNPLACEABLE_DESTINATION_NOTE,
@@ -71,7 +73,7 @@ async function harness(opts: { secrets?: string[]; env?: Record<string, string> 
     fetch: unreachableFetch,
     stdout,
     stderr,
-    env: { CANDLE_CONFIG_DIR: dir, ...(opts.env ?? {}) },
+    env: { CANDLE_CONFIG_DIR: dir, HOME: dir, ...(opts.env ?? {}) },
     isTTY: { stdin: true, stdout: true },
     promptSecret: async () => {
       const next = secrets.shift()
@@ -714,5 +716,151 @@ describe("BE-178 finding 5: the config-dir guard on Windows-shaped paths", () =>
     )
     expect(() => assertOutsideConfigDir("D:\\backups\\copy.enc", env, win32)).not.toThrow()
     expect(() => assertOutsideConfigDir("C:\\Users\\me\\.config\\candle-backups\\copy.enc", env, win32)).not.toThrow()
+  })
+})
+
+/**
+ * BE-245: a backup an operator can actually take, and an error they can actually read.
+ *
+ * Two things are pinned here. `--to icloud` resolves to iCloud Drive without changing a single
+ * rule about what lands there: the resolved path goes through the same classifier and comes back
+ * sealed because of WHERE it is, not because of how it was spelled. And a failed write names its
+ * errno, which is the whole difference between "could not write the sealed copy at <path>" and a
+ * message someone can act on at 2am.
+ */
+describe("BE-245: the iCloud shorthand, and a write failure that says why", () => {
+  /**
+   * A home of the test's own, with iCloud Drive in it. Separate from `CANDLE_CONFIG_DIR` on
+   * purpose: a backup inside the config dir is refused before any of this is reached, and the two
+   * being the same directory is a fixture artefact rather than anything a real machine looks like.
+   */
+  async function icloudHome(): Promise<{ home: string; drive: string }> {
+    const home = await mkdtemp(join(tmpdir(), "candle-vault-home-"))
+    const drive = join(home, "Library", "Mobile Documents", "com~apple~CloudDocs")
+    await mkdir(drive, { recursive: true })
+    return { home, drive }
+  }
+
+  test("resolveBackupDestination: only the shorthand is special, and it names what it needs", () => {
+    const deps = { env: { HOME: "/home/tester" }, now: () => Date.parse("2026-09-21T01:56:48.000Z") }
+    const shorthand = resolveBackupDestination("icloud", deps)
+    expect(shorthand.path).toBe(
+      "/home/tester/Library/Mobile Documents/com~apple~CloudDocs/Candle/vault-20260921T015648Z.enc",
+    )
+    expect(shorthand.requires).toBe("/home/tester/Library/Mobile Documents/com~apple~CloudDocs")
+    // Case is not the operator's problem; a path is.
+    expect(resolveBackupDestination("iCloud", deps).path).toBe(shorthand.path)
+    const plain = resolveBackupDestination("/Volumes/BACKUP/vault.enc", deps)
+    expect(plain).toEqual({ path: "/Volumes/BACKUP/vault.enc" })
+
+    // Timestamped, because `vault backup` refuses to overwrite and a vault is meant to be backed
+    // up AGAIN after keys exist. A fixed name would make the second backup a refusal.
+    const later = resolveBackupDestination("icloud", { ...deps, now: () => Date.parse("2026-09-22T01:56:48.000Z") })
+    expect(later.path).not.toBe(shorthand.path)
+  })
+
+  test("first --to icloud, Candle/ missing, is icloud-drive through real realpath", async () => {
+    // The command-test harness's identity `realpath` hid this: CloudDocs exists, Candle/ does
+    // not, and `classifyDestination` realpaths that parent. Real `fs.realpath` is ENOENT there,
+    // which BE-236 pins as `unknown`, which prints `--accept-shared-domain`. The first copy is
+    // still sealed; the invitation is the hole. icloudHome() creates CloudDocs and not Candle/.
+    const v = await vaultWithKey()
+    const { home, drive } = await icloudHome()
+    await expect(stat(join(drive, "Candle"))).rejects.toThrow()
+
+    const b = await harness({ env: { CANDLE_CONFIG_DIR: v.dir, HOME: home }, secrets: [v.passphrase] })
+    b.deps.realpath = realLinks
+    expect(await run(["vault", "backup", "--to", "icloud", "--keystore", v.vaultPath], b.deps)).toBe(0)
+
+    expect(b.stdout.text).toContain("destination   icloud-drive")
+    expect(b.stdout.text).toContain("sealed        yes")
+    expect(b.stdout.text).not.toContain("--accept-shared-domain")
+    expect(b.stdout.text).not.toContain(UNPLACEABLE_DESTINATION_NOTE)
+    const sidecar = await readSidecar(sidecarPath(v.vaultPath))
+    expect(sidecar?.lastBackupDomain).toBe("icloud-drive")
+    expect(sidecar?.lastBackupSealed).toBe(true)
+    const verified = b.stdout.text.match(/^Verified (.+)$/m)?.[1]
+    if (verified === undefined) throw new Error(`no Verified line in:\n${b.stdout.text}`)
+    expect(verified.startsWith(join(drive, "Candle"))).toBe(true)
+    expect(isSealedCopy(await readFile(verified, "utf8"))).toBe(true)
+  })
+
+  test("--to icloud writes a sealed, verified copy into iCloud Drive", async () => {
+    const v = await vaultWithKey()
+    const { home, drive } = await icloudHome()
+
+    const b = await harness({ env: { CANDLE_CONFIG_DIR: v.dir, HOME: home }, secrets: [v.passphrase] })
+    expect(await run(["vault", "backup", "--to", "icloud", "--json", "--keystore", v.vaultPath], b.deps)).toBe(0)
+
+    const body = JSON.parse(b.stdout.text) as {
+      ok: boolean
+      destination: string
+      destinationDomain: string
+      sealed: boolean
+      verified: boolean
+    }
+    expect(body.ok).toBe(true)
+    expect(body.destination.startsWith(join(drive, "Candle"))).toBe(true)
+    // Nothing about the shorthand decides this: the resolved path is classified like any other.
+    expect(body.destinationDomain).toBe("icloud-drive")
+    expect(body.sealed).toBe(true)
+    expect(body.verified).toBe(true)
+    // The copy really is there, at 0600, and really is passphrase-only.
+    expect(((await stat(body.destination)).mode & 0o777).toString(8)).toBe("600")
+    expect(isSealedCopy(await readFile(body.destination, "utf8"))).toBe(true)
+    // And the path it became was said out loud before the passphrase prompt.
+    expect(b.stderr.text).toContain(`--to icloud is ${body.destination}`)
+  })
+
+  test("--to icloud on a machine without iCloud Drive refuses, before any prompt", async () => {
+    const v = await vaultWithKey()
+    const empty = await mkdtemp(join(tmpdir(), "candle-vault-home-"))
+    const b = await harness({ env: { CANDLE_CONFIG_DIR: v.dir, HOME: empty }, secrets: [] })
+    // Usage, not a vault failure: nothing about the vault is wrong, and nothing was asked for.
+    expect(await run(["vault", "backup", "--to", "icloud", "--keystore", v.vaultPath], b.deps)).toBe(2)
+    expect(b.stderr.text).toContain("no iCloud Drive folder at")
+    expect(b.stderr.text).toContain("pass --to <path>")
+  })
+
+  test("a write that fails names its errno, in the message and in --json", async () => {
+    const v = await vaultWithKey()
+    const { home, drive } = await icloudHome()
+    // A destination whose parent is a regular FILE: `mkdir` cannot create it and rejects ENOTDIR.
+    // Deterministic on every platform and for every user, which a permissions fixture is not.
+    const blocked = join(drive, "not-a-directory")
+    await writeFile(blocked, "occupied")
+
+    const b = await harness({ env: { CANDLE_CONFIG_DIR: v.dir, HOME: home }, secrets: [v.passphrase] })
+    const code = await run(
+      ["vault", "backup", "--to", join(blocked, "vault.enc"), "--json", "--keystore", v.vaultPath],
+      b.deps,
+    )
+
+    expect(code).toBe(1)
+    const failure = JSON.parse(b.stdout.text) as {
+      ok: boolean
+      code: string
+      message: string
+      suggestion: string
+      details: { path: string; code: string; reason: string }
+    }
+    expect(failure.ok).toBe(false)
+    expect(failure.code).toBe("VAULT_WRITE_FAILED")
+    // The reason, not just the path. This was a bare `catch {}`, and diagnosing the iCloud EPERM
+    // behind it took a hand-run probe of five syscalls. WHICH errno a blocked `mkdir` gives is the
+    // platform's business (EEXIST here, ENOTDIR elsewhere); that the operator is told it is not.
+    expect(failure.details.code).toMatch(/^E[A-Z]+$/)
+    expect(failure.message).toContain(failure.details.code)
+    expect(failure.message).toContain("sealed copy")
+    expect(failure.details.path).toBe(join(blocked, "vault.enc"))
+    expect(failure.details.reason).toContain(failure.details.code)
+    expect(failure.suggestion).toContain("Nothing was written")
+  })
+
+  test("errnoCodeOf reads a code off an fs rejection and nothing off anything else", () => {
+    expect(errnoCodeOf(Object.assign(new Error("boom"), { code: "EPERM" }))).toBe("EPERM")
+    expect(errnoCodeOf(new Error("boom"))).toBeUndefined()
+    expect(errnoCodeOf("boom")).toBeUndefined()
+    expect(errnoCodeOf(Object.assign(new Error("boom"), { code: "" }))).toBeUndefined()
   })
 })

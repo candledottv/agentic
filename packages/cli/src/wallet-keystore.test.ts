@@ -5,7 +5,7 @@
  * written under a different iteration count is still readable after the default is raised.
  */
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, stat } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -91,6 +91,33 @@ describe("wallet keystore", () => {
     expect(((await stat(path)).mode & 0o777).toString(8)).toBe("600")
     await expect(stat(`${path}.tmp`)).rejects.toThrow()
     // And it is readable back off disk, not just in memory.
+    expect((await readKeystore(await readFile(path, "utf8"), "pw")).entries).toEqual([entry])
+  })
+
+  test("a directory it creates is hardened to 0700 (BE-245)", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "candle-keystore-"))
+    const nested = join(dir, "made-by-candle")
+    await writeKeystoreFile(join(nested, "wallets.enc"), await seal([entry], "pw"))
+    // This one IS Candle's: it did not exist a moment ago, so tightening it is its own business.
+    expect(((await stat(nested)).mode & 0o777).toString(8)).toBe("700")
+  })
+
+  test("a directory that already exists is left exactly as it was (BE-245)", async () => {
+    // The iCloud Drive failure, in the one form a test can hold: a destination directory the CLI
+    // did not create. `com~apple~CloudDocs` is already `drwx------`, and macOS refuses any chmod
+    // on a file-provider root, so asking for a permission it already had killed the whole backup.
+    // A pre-existing directory belongs to whoever made it; the CLI does not restyle it and does
+    // not fail over it. The file mode is the control, and it is 0600 either way.
+    const dir = await mkdtemp(join(tmpdir(), "candle-keystore-"))
+    const theirs = join(dir, "not-ours")
+    await mkdir(theirs, { recursive: true })
+    await chmod(theirs, 0o755)
+    const path = join(theirs, "wallets.enc")
+
+    await writeKeystoreFile(path, await seal([entry], "pw"))
+
+    expect(((await stat(theirs)).mode & 0o777).toString(8)).toBe("755")
+    expect(((await stat(path)).mode & 0o777).toString(8)).toBe("600")
     expect((await readKeystore(await readFile(path, "utf8"), "pw")).entries).toEqual([entry])
   })
 })

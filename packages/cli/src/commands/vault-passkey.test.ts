@@ -111,7 +111,7 @@ async function harness(opts: HarnessOptions = {}): Promise<Harness> {
     store: join(dir, "enclave-keys.json"),
     ...opts.script,
   }
-  const env: Record<string, string> = { CANDLE_CONFIG_DIR: dir, ...(opts.env ?? {}) }
+  const env: Record<string, string> = { CANDLE_CONFIG_DIR: dir, HOME: dir, ...(opts.env ?? {}) }
   const appPath = join(dir, ENCLAVE_BUNDLE_NAME)
   const executable = join(appPath, ENCLAVE_EXECUTABLE_RELATIVE)
   if ((opts.helper ?? "ready") === "ready") {
@@ -209,11 +209,9 @@ async function harness(opts: HarnessOptions = {}): Promise<Harness> {
 }
 
 async function initVault(opts: HarnessOptions = {}): Promise<Harness & { passphrase: string }> {
-  const h = await harness({ lines: ["no"], ...opts })
-  h.deps.promptSecret = async (text: string) => {
-    h.asked.push(`secret: ${text}`)
-    return generatedPassphraseFrom(h.stdout.text)
-  }
+  // BE-245: three lines and no secret. Enter at D8's passphrase choice, Enter to acknowledge
+  // having saved the words, "no" at the recovery-phrase ceremony. The copy-back is gone.
+  const h = await harness({ lines: ["", "", "no"], ...opts })
   const code = await run(["vault", "init", "--keystore", h.vaultPath], h.deps)
   if (code !== 0) throw new Error(`init failed (${code}): ${h.stderr.text}${h.stdout.text}`)
   return { ...h, passphrase: generatedPassphraseFrom(h.stdout.text) }

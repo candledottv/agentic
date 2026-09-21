@@ -36,6 +36,15 @@ import {
   writeJson,
 } from "./vault-support"
 
+/**
+ * BE-245's nag. One sentence, said on every `status` until a backup has been verified from this
+ * machine, because "no copy of this file exists anywhere" is the fact a vault holder most needs
+ * and the one this command used to leave to inference. It names both destinations: a path, and
+ * the iCloud Drive shorthand for the Macs where the literal path is why nobody bothers.
+ */
+export const NO_VERIFIED_BACKUP_NOTE =
+  "No backup of this vault has ever been verified from this machine. If this file is lost, only the 24-word recovery phrase can rebuild it, and it rebuilds derived keys only. Take one now: candle vault backup --to <path>   (on a Mac with iCloud Drive: candle vault backup --to icloud)"
+
 export async function vaultStatus(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore"],
@@ -166,6 +175,14 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
       deps.stdout.write(
         `\nNo vault.state.json beside this vault, so an older copy of it cannot be recognized on this machine.\n`,
       )
+    }
+
+    // BE-245: a vault with no verified backup says so EVERY time, rather than staying silent until
+    // the day it matters. The sidecar already carried the fact and only ever printed it when there
+    // was something to print, so the one state worth shouting about was the one state that said
+    // nothing. Both shapes of "never" land here: a sidecar without the field, and no sidecar at all.
+    if (sidecar?.lastVerifiedBackupAt === undefined) {
+      deps.stdout.write(`\n${NO_VERIFIED_BACKUP_NOTE}\n`)
     }
 
     if (legacyPresent) {

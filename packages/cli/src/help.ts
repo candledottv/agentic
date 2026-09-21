@@ -339,7 +339,7 @@ export const HELP: Record<string, Topic> = {
     usage: ["candle vault <subcommand> [flags]"],
     rows: [
       {
-        invocation: "init [--own-passphrase] [--high-value]",
+        invocation: "init [--own-passphrase]",
         description: "Create the vault: one passphrase factor and an HD root",
       },
       { invocation: "status [--unlock]", description: "What the vault holds, and what opens it" },
@@ -366,8 +366,8 @@ export const HELP: Record<string, Topic> = {
         description: `Same as factor add: ${FACTOR_KINDS.join(", ")}`,
       },
       {
-        invocation: "backup --to <path> [--accept-shared-domain]",
-        description: "Copy the vault and verify the copy in full",
+        invocation: "backup --to <path>|icloud [--accept-shared-domain]",
+        description: "Copy the vault and verify the copy in full; icloud is iCloud Drive",
       },
       { invocation: "verify-backup <path>", description: "Verify a copy in full (all eight steps)" },
       { invocation: "import-legacy --tee [--from <path>]", description: "Migrate tee-wallets.enc into the vault" },
@@ -416,6 +416,7 @@ export const HELP: Record<string, Topic> = {
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
       "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
+      "candle vault backup --to icloud",
       "CANDLE_CONFIG_DIR=$HOME/t47 candle vault status",
     ],
     env: ["CANDLE_CONFIG_DIR", "CANDLE_FIDO2_HELPER", "CANDLE_ENCLAVE_HELPER", "CANDLE_KEYSTORE_PASSPHRASE"],

@@ -305,11 +305,29 @@ export async function readKeystore(
  * Writes the keystore atomically, mirroring EncryptedFileSecretStore's approach: temp file in the
  * same directory, then rename. A crash mid-write must never truncate an existing keystore, because
  * for independently generated keys that file is the only copy of every one of them.
+ *
+ * The directory is hardened ONLY WHEN THIS CALL CREATED IT, and even then best effort (BE-245).
+ *
+ * It used to be chmodded 0700 unconditionally, and fatally, which made `vault backup --to` a real
+ * iCloud Drive folder impossible. `~/Library/Mobile Documents/com~apple~CloudDocs` is already
+ * `drwx------` -- already 0700 -- and macOS refuses any chmod on a file-provider root, so the write
+ * died EPERM asking for a permission the directory already had. Probing the five syscalls by hand
+ * showed every other step succeeding against that folder, rename included.
+ *
+ * A directory that already exists belongs to someone else: a file provider, a shared volume, a
+ * removable disk, the operator. Changing its mode was never this function's business, and failing
+ * a whole backup when the change is refused is worse still. `mkdir` reports whether it created
+ * anything, which is exactly the "is this ours?" question, so the hardening now follows that; the
+ * `.catch` behind it covers a filesystem that accepts the directory and refuses the mode anyway.
+ *
+ * The FILE mode is the control that matters and it is untouched by all of this: the temp is
+ * created 0600, chmodded 0600, and renamed into place. `writeSidecar` in `vault/sidecar.ts` has
+ * always treated its own directory chmod as best effort, for the same reason.
  */
 export async function writeKeystoreFile(path: string, contents: string): Promise<void> {
   const dir = dirname(path)
-  await mkdir(dir, { recursive: true })
-  await chmod(dir, 0o700)
+  const created = await mkdir(dir, { recursive: true })
+  if (created !== undefined) await chmod(dir, 0o700).catch(() => {})
   // A unique temp per write. A shared `${path}.tmp` meant two concurrent generators raced on one
   // file and whichever renamed second won, so a run could believe it had sealed keys that the
   // other run's bytes had replaced, and then import them. That is the half of the audit's NEW-02

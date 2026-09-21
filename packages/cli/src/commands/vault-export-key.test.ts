@@ -36,7 +36,7 @@ async function harness(
     fetch: unreachableFetch,
     stdout,
     stderr,
-    env: { CANDLE_CONFIG_DIR: dir, ...(opts.env ?? {}) },
+    env: { CANDLE_CONFIG_DIR: dir, HOME: dir, ...(opts.env ?? {}) },
     isTTY: { stdin: true, stdout: true },
     promptSecret: async () => {
       const next = secrets.shift()
