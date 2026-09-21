@@ -122,7 +122,7 @@
     },
     "state_conflict": {
       "retryable": false,
-      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice.",
+      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale.",
       "codes": [
         "IDEMPOTENCY_CONFLICT",
         "TRADE_ALREADY_CLAIMED",
@@ -131,6 +131,7 @@
         "ORDER_NOT_FOUND",
         "ORDER_NOT_TRIGGERED",
         "JOB_NOT_FOUND",
+        "QUOTE_EXPIRED",
         "UNRECOGNIZED_TRANSACTION",
         "WALLET_ALREADY_LINKED",
         "WALLET_ALREADY_REGISTERED"

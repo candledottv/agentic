@@ -13,6 +13,8 @@ import { authorizationSignature, rawAmount } from "../trading"
 const pair = generateKeyPairSync("ec", { namedCurve: "P-256" })
 const pem = pair.privateKey.export({ type: "pkcs8", format: "pem" }).toString()
 const mint = "7ZL9FvkpCMgdvzfoMSYZSuCXLCYN25dfgtDXej1BBJaB"
+/** The account's embedded (main) Solana wallet, distinct from the TEE wallet's address. */
+const embedded = "9dXSV8VWuYvGfTzqvkBeoFwH9ihVTybDuWo5VaJPCNDL"
 const signed = Buffer.concat([Buffer.from([1]), Buffer.alloc(64, 5), Buffer.alloc(40)]).toString("base64")
 const signature = base58.encode(Buffer.alloc(64, 5))
 const folders: string[] = []
@@ -29,6 +31,14 @@ async function fixture(
     failure?: string
     venue?: string
     quoteAsset?: string
+    /** BE-249: drop the TEE wallet, so the account's only payer is its embedded one. */
+    teeWallets?: number
+    /** BE-249: no embedded wallet on the account at all. */
+    noEmbedded?: boolean
+    /** BE-249: an API that predates /execute -- the shape a stale deployment answers with. */
+    noExecuteRoute?: boolean
+    /** BE-249: what a deferred build hands back. Defaults to the deferred (built) shape. */
+    mainBuildStatus?: string
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "candle-trade-"))
@@ -49,19 +59,27 @@ async function fixture(
       return ok({
         scopes: opts.scopes ?? ["swap:write", "launch:write"],
         privyAppId: "app",
-        page: [
-          {
-            id: "wallet",
-            address: mint,
-            label: "tee",
-            chain: "solana",
-            active: opts.active ?? true,
-            allowLaunch: opts.allowLaunch ?? true,
-            privyWalletId: "privy",
-          },
-        ],
+        page: Array.from({ length: opts.teeWallets ?? 1 }, (_unused, index) => ({
+          id: index === 0 ? "wallet" : `wallet-${index}`,
+          address: index === 0 ? mint : `${index}`.repeat(32),
+          label: index === 0 ? "tee" : `tee-${index}`,
+          chain: "solana",
+          active: opts.active ?? true,
+          allowLaunch: opts.allowLaunch ?? true,
+          privyWalletId: "privy",
+        })),
         isDone: true,
       })
+    if (path === "/api/v1/agent/wallets/embedded")
+      return ok({ success: true, wallets: { solana: opts.noEmbedded ? null : { address: embedded }, evm: null } })
+    if (path === "/api/v1/trade/agent/execute") {
+      if (opts.noExecuteRoute) return new Response("404 Not Found", { status: 404 })
+      // The support probe: no row for this id yet, so the real route answers JOB_NOT_FOUND. A
+      // second call, after a build, is the execution itself.
+      return built
+        ? ok({ success: true, status: "executed", signature })
+        : Response.json({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, { status: 404 })
+    }
     if (path.endsWith("/build")) {
       built = true
       if (path.includes("launch"))
@@ -78,11 +96,13 @@ async function fixture(
         tokenRisks: opts.risks ?? [],
         transactionsBase64: ["unsigned"],
       }
+      const main = body?.payer?.type === "main"
       return path.includes("trade/agent")
         ? ok({
             ...quote,
+            ...(main && opts.mainBuildStatus ? { status: opts.mainBuildStatus } : {}),
             chain: "solana",
-            walletAddress: mint,
+            walletAddress: main ? embedded : mint,
             artifacts: { ...quote, quoteAsset: opts.quoteAsset ?? body.quoteAsset, transactionBase64: "unsigned" },
           })
         : ok({ success: true, payload: quote })
@@ -335,6 +355,73 @@ describe("TEE CLI trading", () => {
     const f = await fixture()
     expect(await run([...swapArgs, "--buy-amount", "1"], f.deps)).toBe(2)
     expect(f.calls).toHaveLength(0)
+  })
+  // ── BE-249: the embedded wallet as a payer ─────────────────────────────────────────────────
+  test("a named embedded wallet builds deferred and executes only after the prompt", async () => {
+    const f = await fixture()
+    expect(await run(["swap", "SOL", mint, "--amount", "1", "--wallet", embedded, "--yes", "--json"], f.deps)).toBe(0)
+    const build = f.calls.find((call) => call.path.endsWith("trade/agent/build"))
+    expect(build?.body).toMatchObject({ payer: { type: "main" }, deferExecution: true })
+    // Nothing is relay-signed: Candle holds this wallet's delegation and signs server-side.
+    expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
+    expect(f.calls.some((call) => call.path.endsWith("trade/agent/submit"))).toBe(false)
+    const executes = f.calls.filter((call) => call.path === "/api/v1/trade/agent/execute")
+    // Two: the pre-build support probe, then the execution itself, after the quote was shown.
+    expect(executes).toHaveLength(2)
+    expect(JSON.parse(f.stdout.text)).toMatchObject({ status: "executed", wallet: expect.any(String) })
+  })
+  test("declining an embedded quote executes nothing", async () => {
+    const f = await fixture({ prompt: "n" })
+    expect(await run(["swap", "SOL", mint, "--amount", "1", "--wallet", embedded, "--json"], f.deps)).toBe(0)
+    // The probe is the only /execute call: it answers JOB_NOT_FOUND and writes nothing.
+    expect(f.calls.filter((call) => call.path === "/api/v1/trade/agent/execute")).toHaveLength(1)
+    expect(JSON.parse(f.stdout.text).status).toBe("cancelled")
+  })
+  test("an account whose only payer is embedded needs no --wallet", async () => {
+    const f = await fixture({ teeWallets: 0 })
+    expect(await run(["swap", "SOL", mint, "--amount", "1", "--yes", "--json"], f.deps)).toBe(0)
+    expect(f.calls.find((call) => call.path.endsWith("trade/agent/build"))?.body).toMatchObject({
+      payer: { type: "main" },
+      deferExecution: true,
+    })
+  })
+  test("with both kinds of payer available, an unnamed wallet refuses and names them", async () => {
+    const f = await fixture()
+    expect(await run(["swap", "SOL", mint, "--amount", "1", "--yes", "--json"], f.deps)).toBe(1)
+    expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
+    const failure = JSON.parse(f.stdout.text)
+    expect(failure.code).toBe("PAYER_REQUIRED")
+    expect(failure.message).toContain(embedded)
+    expect(failure.message).toContain("tee")
+  })
+  test("a wallet name that matches nothing lists what the account can actually pay from", async () => {
+    const f = await fixture()
+    expect(await run(["swap", "SOL", mint, "--amount", "1", "--wallet", "nope", "--yes", "--json"], f.deps)).toBe(1)
+    const message = JSON.parse(f.stdout.text).message
+    expect(message).toContain(embedded)
+    expect(message).toContain("wallet")
+    expect(message).not.toContain("Name exactly one TEE wallet")
+  })
+  test("a base pair refuses the embedded payer rather than executing one-shot", async () => {
+    const f = await fixture()
+    expect(
+      await run(["swap", "SOL", "USDC", "--amount", "0.25", "--wallet", embedded, "--yes", "--json"], f.deps),
+    ).toBe(1)
+    expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
+    expect(JSON.parse(f.stdout.text).code).toBe("PAIR_UNSUPPORTED")
+  })
+  test("a deployment without /execute never builds an embedded trade", async () => {
+    const f = await fixture({ noExecuteRoute: true })
+    expect(await run(["swap", "SOL", mint, "--amount", "1", "--wallet", embedded, "--yes", "--json"], f.deps)).toBe(1)
+    expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
+    expect(JSON.parse(f.stdout.text).code).toBe("EMBEDDED_PAYER_UNSUPPORTED")
+  })
+  test("an account with no embedded wallet keeps naming its TEE wallet", async () => {
+    const f = await fixture({ noEmbedded: true })
+    expect(await run(["swap", "SOL", mint, "--amount", "1", "--yes", "--json"], f.deps)).toBe(0)
+    expect(f.calls.find((call) => call.path.endsWith("trade/agent/build"))?.body).toMatchObject({
+      payer: { type: "linked", linkedWalletId: "wallet" },
+    })
   })
   test("raw sizing never passes through floating point", () => {
     expect(rawAmount("9007199254740993", 0)).toBe("9007199254740993")

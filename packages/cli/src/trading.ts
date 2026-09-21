@@ -65,6 +65,15 @@ const walletPageSchema = z.object({
   isDone: z.boolean(),
   continueCursor: z.string().nullable().optional(),
 })
+/** `GET /wallets/embedded`: the account's own launch wallets, per chain. Solana is the only one `candle swap` can pay from. */
+const embeddedSchema = z
+  .object({
+    wallets: z
+      .object({ solana: z.object({ address: z.string() }).passthrough().nullable().optional() })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough()
 export const operationSchema = z.object({ job: z.object({ status: z.string() }).passthrough() }).passthrough()
 export interface QuoteDisplay {
   intent?: string
@@ -141,14 +150,22 @@ export interface TradingWallet {
   appId: string
   signer: string
 }
-export async function tradingWallet(
+type WalletRow = z.infer<typeof walletSchema>
+
+/**
+ * Every page of `/wallets/trading`, kept whole rather than filtered down to the caller's match.
+ *
+ * Keeping the full list is the point. The refusals below name what IS usable on this account, and
+ * that answer cannot be assembled from a match that did not happen -- which is the same family of
+ * problem as BE-242's truncated listing: the CLI knew and did not say.
+ */
+async function teeWallets(
   ctx: CommandContext,
   key: string,
-  name: string,
   scope: string,
-): Promise<TradingWallet> {
+): Promise<{ rows: WalletRow[]; appId: string }> {
   let cursor: string | undefined
-  const matches: z.infer<typeof walletSchema>[] = []
+  const rows: WalletRow[] = []
   const cursors = new Set<string>()
   let appId = ""
   for (;;) {
@@ -159,18 +176,34 @@ export async function tradingWallet(
     appId = response.privyAppId ?? ""
     if (!Array.isArray(response.page))
       throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not return a page.")
-    matches.push(...response.page.filter((row) => row.id === name || row.address === name || row.label === name))
+    rows.push(...response.page)
     if (response.isDone === true) break
     cursor = response.continueCursor ?? undefined
     if (!cursor || cursors.has(cursor)) throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not complete.")
     cursors.add(cursor)
   }
-  if (matches.length !== 1)
-    throw new TradingError(
-      "TEE_WALLET_REQUIRED",
-      "Name exactly one TEE wallet bound to the active profile's key, by id, address or unique label.",
-    )
-  const row = matches[0] as z.infer<typeof walletSchema>
+  return { rows, appId }
+}
+
+function matchesName(row: WalletRow, name: string): boolean {
+  return row.id === name || row.address === name || row.label === name
+}
+
+/** How a TEE wallet is named back to someone who has to pick one: label first, then id and address. */
+function describeWallet(row: WalletRow): string {
+  return `${row.label ? `${row.label} ` : ""}(${row.id}, ${row.address})`
+}
+
+function teeWalletList(rows: WalletRow[]): string {
+  return rows.map(describeWallet).join("; ")
+}
+
+async function completeTradingWallet(
+  ctx: CommandContext,
+  row: WalletRow,
+  appId: string,
+  scope: string,
+): Promise<TradingWallet> {
   if (!row.active || row.chain !== "solana")
     throw new TradingError("TEE_WALLET_INACTIVE", "The payer must be a verified-active Solana TEE wallet.")
   if (scope === "launch:write" && row.allowLaunch !== true)
@@ -194,6 +227,92 @@ export async function tradingWallet(
     signer: storedSignerToPem(signer),
   }
 }
+/**
+ * Resolve one TEE wallet by id, address or label. The launch rail's resolver: a launch pays from a
+ * TEE wallet with `allowLaunch`, and nothing else, so it stays narrow on purpose.
+ *
+ * Only its REFUSALS changed with BE-249. "Name exactly one TEE wallet" answered a question nobody
+ * asked -- the caller knew they had to name one, they did not know which names existed. Both
+ * refusals below now say.
+ */
+export async function tradingWallet(
+  ctx: CommandContext,
+  key: string,
+  name: string,
+  scope: string,
+): Promise<TradingWallet> {
+  const { rows, appId } = await teeWallets(ctx, key, scope)
+  const matches = rows.filter((row) => matchesName(row, name))
+  if (matches.length !== 1) {
+    throw new TradingError(
+      "TEE_WALLET_REQUIRED",
+      matches.length > 1
+        ? `"${name}" matches ${matches.length} TEE wallets on this key: ${teeWalletList(matches)}. Name one by id or address.`
+        : rows.length === 0
+          ? "This key has no TEE wallets bound to it. Enrol one, or select the profile whose key holds it."
+          : `No TEE wallet on this key is called "${name}". Bound to this key: ${teeWalletList(rows)}.`,
+    )
+  }
+  return await completeTradingWallet(ctx, matches[0] as WalletRow, appId, scope)
+}
+
+/**
+ * Who will pay for a `candle swap`, resolved across BOTH payer kinds the trade API accepts.
+ *
+ * The bug BE-249 is about lived here: this command only ever looked at `/wallets/trading`, which
+ * is TEE-only by construction, so the account's embedded wallet -- which the API has always
+ * accepted as `payer.type: "main"`, and which launches and one-shot swaps already use -- could not
+ * be named at all, and the refusal insisted a TEE wallet was the only possible answer.
+ *
+ * `name` is optional. Omitted, this resolves when the account has exactly ONE payer of any kind:
+ * a single-wallet account should not have to name the only wallet it has. With more than one, it
+ * refuses and lists them, because guessing which wallet spends someone's money is not a default
+ * worth having.
+ */
+export type SwapPayer =
+  | { kind: "tee"; wallet: TradingWallet }
+  /** The account's own embedded (main) Solana wallet. Candle holds its delegation and signs server-side. */
+  | { kind: "embedded"; address: string }
+
+export async function tradingPayer(ctx: CommandContext, key: string, name: string | undefined): Promise<SwapPayer> {
+  const scope = "swap:write"
+  const { rows, appId } = await teeWallets(ctx, key, scope)
+  // Read even when a name was given: it is what lets a miss say "here is what you could have
+  // meant" instead of naming only half the account.
+  const embedded = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded")).wallets?.solana
+    ?.address
+  const asEmbedded = (): SwapPayer => ({ kind: "embedded", address: embedded as string })
+  const options = [
+    ...rows.map((row) => `TEE ${describeWallet(row)}`),
+    ...(embedded ? [`embedded (${embedded})`] : []),
+  ].join("; ")
+
+  if (name === undefined) {
+    if (rows.length === 1 && !embedded)
+      return { kind: "tee", wallet: await completeTradingWallet(ctx, rows[0] as WalletRow, appId, scope) }
+    if (rows.length === 0 && embedded) return asEmbedded()
+    throw new TradingError(
+      "PAYER_REQUIRED",
+      options.length === 0
+        ? "This account has no wallet that can pay for a swap. Enrol a TEE wallet, or create an embedded wallet in the app."
+        : `Name the payer with --wallet. This account can pay from: ${options}.`,
+    )
+  }
+
+  const matches = rows.filter((row) => matchesName(row, name))
+  if (matches.length === 1)
+    return { kind: "tee", wallet: await completeTradingWallet(ctx, matches[0] as WalletRow, appId, scope) }
+  if (matches.length === 0 && embedded === name) return asEmbedded()
+  throw new TradingError(
+    "TEE_WALLET_REQUIRED",
+    matches.length > 1
+      ? `"${name}" matches ${matches.length} TEE wallets on this key: ${teeWalletList(matches)}. Name one by id or address.`
+      : options.length === 0
+        ? `"${name}" is not a wallet this account can pay from, and it has none: enrol a TEE wallet, or create an embedded wallet in the app.`
+        : `"${name}" is not a wallet this account can pay from. It can pay from: ${options}.`,
+  )
+}
+
 export function authorizationSignature(
   wallet: TradingWallet,
   transaction: string,

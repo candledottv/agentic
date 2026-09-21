@@ -314,8 +314,58 @@ describe("wallets signer column", () => {
 
     expect(code).toBe(0)
     const header = stdout.text.split("\n").find((line) => line.startsWith("Id "))
-    expect(header?.split(/\s{2,}/)).toEqual(["Id", "Wallet", "Address", "Label", "Revoked", "Signer"])
-    expect(cellsFor(stdout.text, "lw_listed01")).toEqual(["lw_listed01", "evm", "0xLinked", "my wallet", "no", "none"])
+    expect(header?.split(/\s{2,}/)).toEqual(["Id", "Wallet", "Address", "Label", "Kind", "Revoked", "Signer"])
+    expect(cellsFor(stdout.text, "lw_listed01")).toEqual([
+      "lw_listed01",
+      "evm",
+      "0xLinked",
+      "my wallet",
+      "linked",
+      "no",
+      "none",
+    ])
+  })
+
+  // BE-249: someone refused by `candle swap --wallet` had no command that answered "then which
+  // wallet CAN I use?" -- `/wallets` was already returning `profile` and the listing threw it away.
+  test("a TEE trading wallet is marked as one, and the hint names the command that takes it", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/embedded": noEmbeddedWallets,
+      "/api/v1/agent/wallets": linkedPage([
+        { _id: "lw_tee01", address: "So1Tee", chain: "solana", label: "desk", profile: "ember-tee" },
+        // The pre-2026-09-17 name, still on rows written before the rename.
+        { _id: "lw_tee02", address: "So1TeeOld", chain: "solana", profile: "ember-hot" },
+        // A profile this CLI has never heard of renders as a plain linked wallet, not a TEE one.
+        { _id: "lw_future", address: "So1Future", chain: "solana", profile: "something-new" },
+        { _id: "lw_plain1", address: "So1Plain", chain: "solana" },
+      ]),
+    })
+    const stdout = createCapture()
+
+    const code = await run(
+      ["wallets"],
+      createTestDeps({ fetch, store: createFakeStore({ api_key: "ck_live_x" }), stdout }),
+    )
+
+    expect(code).toBe(0)
+    expect(cellsFor(stdout.text, "lw_tee01")?.[4]).toBe("tee")
+    expect(cellsFor(stdout.text, "lw_tee02")?.[4]).toBe("tee")
+    expect(cellsFor(stdout.text, "lw_future")?.[4]).toBe("linked")
+    expect(cellsFor(stdout.text, "lw_plain1")?.[4]).toBe("linked")
+    expect(stdout.text).toContain("candle swap --wallet")
+  })
+
+  test("an all-linked listing says nothing about TEE wallets", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/embedded": noEmbeddedWallets,
+      "/api/v1/agent/wallets": linkedPage([{ _id: "lw_plain1", address: "So1Plain", chain: "solana" }]),
+    })
+    const stdout = createCapture()
+
+    expect(
+      await run(["wallets"], createTestDeps({ fetch, store: createFakeStore({ api_key: "ck_live_x" }), stdout })),
+    ).toBe(0)
+    expect(stdout.text).not.toContain("candle swap --wallet")
   })
 
   test("a row without an _id is printed as - and never probed for, in either mode", async () => {

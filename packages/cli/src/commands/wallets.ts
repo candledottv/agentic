@@ -47,6 +47,30 @@ interface LinkedWalletRow {
   /** The account the row belongs to. Read only to name the account in `wallets import`'s
    * verification failure, never rendered in the listing. */
   userAddress?: string
+  /**
+   * BE-249: which Ember profile a row carries, and therefore whether it is a TEE trading wallet.
+   *
+   * `GET /wallets` is a passthrough, so this field was already arriving and simply was not shown.
+   * That was the gap: `candle swap --wallet` wants a TEE wallet, `tee status` needs an address you
+   * already know, and `vault status` is local and misses wallets enrolled elsewhere -- so someone
+   * refused by the payer resolver had no command that answered "then which one?". This listing is
+   * now that command.
+   */
+  profile?: string
+}
+
+/**
+ * The two profile values the server treats as TEE -- `TEE_PROFILE` and `LEGACY_TEE_PROFILE` in
+ * `packages/db/convex/lib/emberAccess.ts`, whose `isTeeProfile` is the one real test. Duplicated
+ * rather than imported because the CLI ships to npm standalone and takes no dependency on the
+ * Convex package; keep the two in step. `ember-hot` is the pre-2026-09-17 name, still carried by
+ * rows written before the rename. A profile this list does not know renders as a plain linked
+ * wallet, which is the truthful answer for a value this CLI has never heard of.
+ */
+const TEE_PROFILES = new Set(["ember-tee", "ember-hot"])
+
+function isTeeRow(row: LinkedWalletRow): boolean {
+  return row.profile !== undefined && TEE_PROFILES.has(row.profile)
 }
 
 /**
@@ -171,6 +195,11 @@ type SignerState = "stored" | "none" | "stale"
 const NONE_HINT =
   "A wallet marked none has no signer on this machine, so a trade from here cannot sign with it.\n" +
   "Import it here (candle wallets import), or run the trade from the machine that imported it.\n"
+
+/** The line printed under the table when any row is a TEE trading wallet. */
+const TEE_HINT =
+  "A wallet marked tee is a TEE trading wallet: pass its id, address or label to candle swap --wallet.\n" +
+  "This account's embedded wallet, shown above, can pay for a token trade too.\n"
 
 /** The line printed under the table when any row reads `stale`. */
 const STALE_HINT =
@@ -335,12 +364,16 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
     const cells = linkedRows.map((wallet) => signerCell(signerStates.get(wallet._id), wallet))
     deps.stdout.write(
       `${renderTable(
-        ["Id", "Wallet", "Address", "Label", "Revoked", "Signer"],
+        // "Kind" rather than a bare TEE flag: the column has to be readable by someone who does
+        // not know what Ember is, and "tee" / "linked" is the distinction that decides which
+        // wallets `candle swap --wallet` and `candle launch --wallet` will accept.
+        ["Id", "Wallet", "Address", "Label", "Kind", "Revoked", "Signer"],
         linkedRows.map((wallet, index) => [
           wallet._id,
           wallet.chain,
           wallet.address,
           wallet.label ?? "-",
+          isTeeRow(wallet) ? "tee" : "linked",
           wallet.revokedAt ? "yes" : "no",
           cells[index] ?? "-",
         ]),
@@ -350,7 +383,9 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
     // nothing extra.
     const anyNone = cells.includes("none")
     const anyStale = cells.includes("stale")
-    if (anyNone || anyStale) deps.stdout.write("\n")
+    const anyTee = linkedRows.some(isTeeRow)
+    if (anyNone || anyStale || anyTee) deps.stdout.write("\n")
+    if (anyTee) deps.stdout.write(TEE_HINT)
     if (anyNone) deps.stdout.write(NONE_HINT)
     if (anyStale) deps.stdout.write(STALE_HINT)
   }

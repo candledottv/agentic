@@ -24,7 +24,7 @@ import {
   swapBuildSchema,
   TradingError,
   tradingKey,
-  tradingWallet,
+  tradingPayer,
 } from "../trading"
 
 export function tradingFailure(ctx: CommandContext, error: unknown, id?: string): number {
@@ -106,6 +106,33 @@ async function decimalsFor(ctx: CommandContext, asset: string, url?: string): Pr
     throw new TradingError("INVALID_RESPONSE", "RPC returned invalid mint decimals.")
   return decimals
 }
+/**
+ * Prove, BEFORE anything is built, that this deployment can defer an embedded-wallet trade.
+ *
+ * The one failure this cannot recover from is an API that predates `deferExecution`: it ignores
+ * the flag and executes inline, so by the time the response arrives the money has moved and the
+ * confirmation prompt would be printing a receipt. Alpha runs behind staging by design, so this is
+ * a real deployment to be pointed at, not a hypothetical one.
+ *
+ * Probing with THIS trade's own id is free and writes nothing. The prior-operation lookup has just
+ * established that no row exists for it, so a deployment that has the route can only answer
+ * JOB_NOT_FOUND, and one that does not answers without a Candle error code at all.
+ */
+async function assertDeferredExecuteSupported(ctx: CommandContext, key: string, id: string): Promise<void> {
+  try {
+    await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id })
+  } catch (error) {
+    if (error instanceof TradingError && error.code === "JOB_NOT_FOUND") return
+    throw new TradingError(
+      "EMBEDDED_PAYER_UNSUPPORTED",
+      "This Candle deployment cannot hold an embedded-wallet trade back for confirmation, so the quote could not be shown before the money moved. Nothing was built. Name a TEE wallet with --wallet, or point at a deployment that has it.",
+    )
+  }
+  // Unreachable against a correct server: there is no row for this id yet, so a 200 means the
+  // route did something other than look one up, and nothing further should be built on it.
+  throw new TradingError("INVALID_RESPONSE", "The execute route answered for a trade that does not exist.")
+}
+
 export async function swap(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--percent", "--wallet", "--client-trade-id", "--slippage-bps", "--rpc-url"],
@@ -120,7 +147,6 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
   const slippage = Number(flags["--slippage-bps"] ?? "50")
   if (
     parsed.positionals.length !== 2 ||
-    !flags["--wallet"] ||
     Boolean(flags["--amount"]) === Boolean(flags["--percent"]) ||
     !validClientId(id) ||
     !Number.isInteger(slippage) ||
@@ -129,7 +155,9 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
   ) {
     writeUsageFailure(
       ctx.deps,
-      "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> --wallet <tee> [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]",
+      // --wallet is optional since BE-249: an account with exactly one payer does not have to name
+      // it, and the payer may now be the embedded wallet as well as a TEE one.
+      "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]",
       ctx.json,
     )
     return 2
@@ -157,7 +185,20 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
     const key = await tradingKey(ctx)
     const prior = await lookupOperation(ctx, key, id, kind)
     if (prior) return printTradingResult(ctx, prior)
-    const wallet = await tradingWallet(ctx, key, flags["--wallet"], "swap:write")
+    const payerWallet = await tradingPayer(ctx, key, flags["--wallet"])
+    // BE-249's one scope boundary, stated where it bites. A base-asset pair (SOL/USDC/CNDL both
+    // sides) is `kind: "swap"`, which goes to /agent/swap/build -- a route that refuses a main
+    // payer outright, because the embedded rail's base-pair path is the one-shot POST /agent/swap,
+    // and that executes inside the request with no quote handed back. The deferred build/execute
+    // shape this command now uses exists on the TOKEN rail only. Refusing plainly is the honest
+    // answer: routing to the one-shot would turn the confirmation prompt below into a prompt about
+    // a trade that already happened, which is exactly the trap this card was opened to close.
+    if (payerWallet.kind === "embedded" && kind === "swap")
+      throw new TradingError(
+        "PAIR_UNSUPPORTED",
+        "The embedded wallet cannot swap between base assets from this command yet: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a TEE wallet for a base pair.",
+      )
+    const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address }
     const decimals = await decimalsFor(ctx, from, flags["--rpc-url"])
     const outDecimals = await decimalsFor(ctx, to, flags["--rpc-url"])
     let amountRaw: string
@@ -183,10 +224,12 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
     } else amountRaw = rawAmount(flags["--amount"] as string, decimals)
     if (BigInt(amountRaw) > BigInt(Number.MAX_SAFE_INTEGER))
       throw new TradingError("INVALID_AMOUNT", "Amount exceeds the venue's exact integer range.")
+    if (payerWallet.kind === "embedded") await assertDeferredExecuteSupported(ctx, key, id)
     if (!(await claimOperation(ctx, key, id, kind)))
       throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.")
     ctx.deps.stderr.write(`Operation: ${id}\n`)
-    const payer = { type: "linked", linkedWalletId: wallet.id }
+    const payer =
+      payerWallet.kind === "tee" ? { type: "linked", linkedWalletId: payerWallet.wallet.id } : { type: "main" }
     const built =
       kind === "swap"
         ? await request(ctx, key, "/api/v1/agent/swap/build", {
@@ -206,6 +249,11 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
             amountRaw,
             maxSlippageBps: slippage,
             payer,
+            // BE-249. An embedded payer's /build executes inline unless it is asked not to, so
+            // sending this is what keeps the prompt below a real dry run rather than a receipt.
+            // Sent only for the embedded payer: a TEE payer's build never executed anyway, and
+            // the route refuses the flag alongside a linked payer.
+            ...(payerWallet.kind === "embedded" ? { deferExecution: true } : {}),
           })
     if (built.job || built.status === "executed") return printTradingResult(ctx, { ...built, clientTradeId: id, kind })
     const data = swapBuildSchema.parse(kind === "swap" ? built.payload : built)
@@ -253,13 +301,31 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
     }
     if (!(await confirmQuote(ctx, quote, parsed.booleans.has("--yes"))))
       return printTradingResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind, quote })
+    // Checked for both payers, and before either second call. The server enforces the same window
+    // (QUOTE_EXPIRED from /execute, the sign relay's own claim expiry for a TEE wallet); this is
+    // the local half, which costs nothing and answers before a round trip.
+    if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
+      throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.")
+    // BE-249: the embedded payer's second call. Candle already holds this wallet's delegation, so
+    // there is nothing for this machine to sign and nothing to hand back -- /execute takes the id
+    // and signs the plan the build kept. That asymmetry is the whole reason the build above had to
+    // ask to defer: without it, this line would be printing a receipt for a trade the QUOTE call
+    // had already made.
+    if (payerWallet.kind === "embedded") {
+      const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id })
+      return printTradingResult(ctx, {
+        ...executed,
+        clientTradeId: id,
+        kind,
+        quote,
+        wallet: safeText(payerWallet.address),
+      })
+    }
     const transaction = kind === "swap" ? data.transactionsBase64?.[0] : artifacts.transactionBase64
     if (kind === "swap" && data.transactionsBase64?.length !== 1)
       throw new TradingError("INVALID_RESPONSE", "A TEE swap must contain exactly one same-chain transaction.")
-    if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
-      throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.")
     if (!transaction) throw new TradingError("INVALID_RESPONSE", "Missing transaction.")
-    const signed = await relaySign(ctx, key, wallet, transaction)
+    const signed = await relaySign(ctx, key, payerWallet.wallet, transaction)
     const result =
       kind === "swap"
         ? await request(ctx, key, "/api/v1/agent/swap/submit", {

@@ -42259,6 +42259,9 @@ var walletPageSchema = exports_external.object({
   isDone: exports_external.boolean(),
   continueCursor: exports_external.string().nullable().optional()
 });
+var embeddedSchema = exports_external.object({
+  wallets: exports_external.object({ solana: exports_external.object({ address: exports_external.string() }).passthrough().nullable().optional() }).passthrough().optional()
+}).passthrough();
 var operationSchema = exports_external.object({ job: exports_external.object({ status: exports_external.string() }).passthrough() }).passthrough();
 var BASES = {
   SOL: { mint: "So11111111111111111111111111111111111111112", decimals: 9 },
@@ -42313,9 +42316,9 @@ async function request(ctx, key, path, body) {
     throw new TradingError("INVALID_RESPONSE", "Candle returned an invalid response.");
   return result.body;
 }
-async function tradingWallet(ctx, key, name, scope) {
+async function teeWallets(ctx, key, scope) {
   let cursor;
-  const matches = [];
+  const rows = [];
   const cursors = new Set;
   let appId = "";
   for (;; ) {
@@ -42325,7 +42328,7 @@ async function tradingWallet(ctx, key, name, scope) {
     appId = response.privyAppId ?? "";
     if (!Array.isArray(response.page))
       throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not return a page.");
-    matches.push(...response.page.filter((row2) => row2.id === name || row2.address === name || row2.label === name));
+    rows.push(...response.page);
     if (response.isDone === true)
       break;
     cursor = response.continueCursor ?? undefined;
@@ -42333,9 +42336,18 @@ async function tradingWallet(ctx, key, name, scope) {
       throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not complete.");
     cursors.add(cursor);
   }
-  if (matches.length !== 1)
-    throw new TradingError("TEE_WALLET_REQUIRED", "Name exactly one TEE wallet bound to the active profile's key, by id, address or unique label.");
-  const row = matches[0];
+  return { rows, appId };
+}
+function matchesName(row, name) {
+  return row.id === name || row.address === name || row.label === name;
+}
+function describeWallet(row) {
+  return `${row.label ? `${row.label} ` : ""}(${row.id}, ${row.address})`;
+}
+function teeWalletList(rows) {
+  return rows.map(describeWallet).join("; ");
+}
+async function completeTradingWallet(ctx, row, appId, scope) {
   if (!row.active || row.chain !== "solana")
     throw new TradingError("TEE_WALLET_INACTIVE", "The payer must be a verified-active Solana TEE wallet.");
   if (scope === "launch:write" && row.allowLaunch !== true)
@@ -42352,6 +42364,37 @@ async function tradingWallet(ctx, key, name, scope) {
     appId,
     signer: storedSignerToPem(signer)
   };
+}
+async function tradingWallet(ctx, key, name, scope) {
+  const { rows, appId } = await teeWallets(ctx, key, scope);
+  const matches = rows.filter((row) => matchesName(row, name));
+  if (matches.length !== 1) {
+    throw new TradingError("TEE_WALLET_REQUIRED", matches.length > 1 ? `"${name}" matches ${matches.length} TEE wallets on this key: ${teeWalletList(matches)}. Name one by id or address.` : rows.length === 0 ? "This key has no TEE wallets bound to it. Enrol one, or select the profile whose key holds it." : `No TEE wallet on this key is called "${name}". Bound to this key: ${teeWalletList(rows)}.`);
+  }
+  return await completeTradingWallet(ctx, matches[0], appId, scope);
+}
+async function tradingPayer(ctx, key, name) {
+  const scope = "swap:write";
+  const { rows, appId } = await teeWallets(ctx, key, scope);
+  const embedded = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded")).wallets?.solana?.address;
+  const asEmbedded = () => ({ kind: "embedded", address: embedded });
+  const options = [
+    ...rows.map((row) => `TEE ${describeWallet(row)}`),
+    ...embedded ? [`embedded (${embedded})`] : []
+  ].join("; ");
+  if (name === undefined) {
+    if (rows.length === 1 && !embedded)
+      return { kind: "tee", wallet: await completeTradingWallet(ctx, rows[0], appId, scope) };
+    if (rows.length === 0 && embedded)
+      return asEmbedded();
+    throw new TradingError("PAYER_REQUIRED", options.length === 0 ? "This account has no wallet that can pay for a swap. Enrol a TEE wallet, or create an embedded wallet in the app." : `Name the payer with --wallet. This account can pay from: ${options}.`);
+  }
+  const matches = rows.filter((row) => matchesName(row, name));
+  if (matches.length === 1)
+    return { kind: "tee", wallet: await completeTradingWallet(ctx, matches[0], appId, scope) };
+  if (matches.length === 0 && embedded === name)
+    return asEmbedded();
+  throw new TradingError("TEE_WALLET_REQUIRED", matches.length > 1 ? `"${name}" matches ${matches.length} TEE wallets on this key: ${teeWalletList(matches)}. Name one by id or address.` : options.length === 0 ? `"${name}" is not a wallet this account can pay from, and it has none: enrol a TEE wallet, or create an embedded wallet in the app.` : `"${name}" is not a wallet this account can pay from. It can pay from: ${options}.`);
 }
 function authorizationSignature(wallet, transaction) {
   const body = { method: "signTransaction", params: { encoding: "base64", transaction } };
@@ -42550,6 +42593,16 @@ async function decimalsFor(ctx, asset, url) {
     throw new TradingError("INVALID_RESPONSE", "RPC returned invalid mint decimals.");
   return decimals;
 }
+async function assertDeferredExecuteSupported(ctx, key, id) {
+  try {
+    await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
+  } catch (error) {
+    if (error instanceof TradingError && error.code === "JOB_NOT_FOUND")
+      return;
+    throw new TradingError("EMBEDDED_PAYER_UNSUPPORTED", "This Candle deployment cannot hold an embedded-wallet trade back for confirmation, so the quote could not be shown before the money moved. Nothing was built. Name a TEE wallet with --wallet, or point at a deployment that has it.");
+  }
+  throw new TradingError("INVALID_RESPONSE", "The execute route answered for a trade that does not exist.");
+}
 async function swap(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: ["--amount", "--percent", "--wallet", "--client-trade-id", "--slippage-bps", "--rpc-url"],
@@ -42562,8 +42615,8 @@ async function swap(args, ctx) {
   const flags = parsed.values;
   const id = flags["--client-trade-id"] ?? `swap-${randomUUID()}`;
   const slippage = Number(flags["--slippage-bps"] ?? "50");
-  if (parsed.positionals.length !== 2 || !flags["--wallet"] || Boolean(flags["--amount"]) === Boolean(flags["--percent"]) || !validClientId(id) || !Number.isInteger(slippage) || slippage < 0 || slippage > 1e4) {
-    writeUsageFailure(ctx.deps, "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> --wallet <tee> [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]", ctx.json);
+  if (parsed.positionals.length !== 2 || Boolean(flags["--amount"]) === Boolean(flags["--percent"]) || !validClientId(id) || !Number.isInteger(slippage) || slippage < 0 || slippage > 1e4) {
+    writeUsageFailure(ctx.deps, "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]", ctx.json);
     return 2;
   }
   try {
@@ -42585,7 +42638,10 @@ async function swap(args, ctx) {
     const prior = await lookupOperation(ctx, key, id, kind);
     if (prior)
       return printTradingResult(ctx, prior);
-    const wallet = await tradingWallet(ctx, key, flags["--wallet"], "swap:write");
+    const payerWallet = await tradingPayer(ctx, key, flags["--wallet"]);
+    if (payerWallet.kind === "embedded" && kind === "swap")
+      throw new TradingError("PAIR_UNSUPPORTED", "The embedded wallet cannot swap between base assets from this command yet: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a TEE wallet for a base pair.");
+    const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address };
     const decimals = await decimalsFor(ctx, from, flags["--rpc-url"]);
     const outDecimals = await decimalsFor(ctx, to, flags["--rpc-url"]);
     let amountRaw;
@@ -42609,11 +42665,13 @@ async function swap(args, ctx) {
       amountRaw = rawAmount(flags["--amount"], decimals);
     if (BigInt(amountRaw) > BigInt(Number.MAX_SAFE_INTEGER))
       throw new TradingError("INVALID_AMOUNT", "Amount exceeds the venue's exact integer range.");
+    if (payerWallet.kind === "embedded")
+      await assertDeferredExecuteSupported(ctx, key, id);
     if (!await claimOperation(ctx, key, id, kind))
       throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
     ctx.deps.stderr.write(`Operation: ${id}
 `);
-    const payer = { type: "linked", linkedWalletId: wallet.id };
+    const payer = payerWallet.kind === "tee" ? { type: "linked", linkedWalletId: payerWallet.wallet.id } : { type: "main" };
     const built = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/build", {
       clientTradeId: id,
       from,
@@ -42629,7 +42687,8 @@ async function swap(args, ctx) {
       quoteAsset: (fromBase ?? toBase)?.toLowerCase(),
       amountRaw,
       maxSlippageBps: slippage,
-      payer
+      payer,
+      ...payerWallet.kind === "embedded" ? { deferExecution: true } : {}
     });
     if (built.job || built.status === "executed")
       return printTradingResult(ctx, { ...built, clientTradeId: id, kind });
@@ -42659,14 +42718,24 @@ async function swap(args, ctx) {
     };
     if (!await confirmQuote(ctx, quote, parsed.booleans.has("--yes")))
       return printTradingResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind, quote });
+    if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
+      throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
+    if (payerWallet.kind === "embedded") {
+      const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
+      return printTradingResult(ctx, {
+        ...executed,
+        clientTradeId: id,
+        kind,
+        quote,
+        wallet: safeText(payerWallet.address)
+      });
+    }
     const transaction = kind === "swap" ? data.transactionsBase64?.[0] : artifacts.transactionBase64;
     if (kind === "swap" && data.transactionsBase64?.length !== 1)
       throw new TradingError("INVALID_RESPONSE", "A TEE swap must contain exactly one same-chain transaction.");
-    if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
-      throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
     if (!transaction)
       throw new TradingError("INVALID_RESPONSE", "Missing transaction.");
-    const signed = await relaySign(ctx, key, wallet, transaction);
+    const signed = await relaySign(ctx, key, payerWallet.wallet, transaction);
     const result = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/submit", {
       clientTradeId: id,
       swapId: data.swapId,
@@ -47627,6 +47696,10 @@ init_wallet_keystore();
 init_esm();
 init_args();
 init_render();
+var TEE_PROFILES = new Set(["ember-tee", "ember-hot"]);
+function isTeeRow(row) {
+  return row.profile !== undefined && TEE_PROFILES.has(row.profile);
+}
 var LINKED_WALLETS_PAGE_LIMIT = 100;
 var LINKED_WALLETS_PAGE_CAP = 25;
 async function readAllLinkedWallets(args) {
@@ -47669,6 +47742,9 @@ function incompleteNotice(listing) {
 }
 var NONE_HINT = `A wallet marked none has no signer on this machine, so a trade from here cannot sign with it.
 ` + `Import it here (candle wallets import), or run the trade from the machine that imported it.
+`;
+var TEE_HINT = `A wallet marked tee is a TEE trading wallet: pass its id, address or label to candle swap --wallet.
+` + `This account's embedded wallet, shown above, can pay for a token trade too.
 `;
 var STALE_HINT = `A wallet marked stale is revoked but its signer is still stored here. Run: candle wallets revoke <id>
 `;
@@ -47776,20 +47852,24 @@ Linked wallets (${linkedRows.length}):
 `);
   } else {
     const cells = linkedRows.map((wallet) => signerCell(signerStates.get(wallet._id), wallet));
-    deps.stdout.write(`${renderTable(["Id", "Wallet", "Address", "Label", "Revoked", "Signer"], linkedRows.map((wallet, index) => [
+    deps.stdout.write(`${renderTable(["Id", "Wallet", "Address", "Label", "Kind", "Revoked", "Signer"], linkedRows.map((wallet, index) => [
       wallet._id,
       wallet.chain,
       wallet.address,
       wallet.label ?? "-",
+      isTeeRow(wallet) ? "tee" : "linked",
       wallet.revokedAt ? "yes" : "no",
       cells[index] ?? "-"
     ]))}
 `);
     const anyNone = cells.includes("none");
     const anyStale = cells.includes("stale");
-    if (anyNone || anyStale)
+    const anyTee = linkedRows.some(isTeeRow);
+    if (anyNone || anyStale || anyTee)
       deps.stdout.write(`
 `);
+    if (anyTee)
+      deps.stdout.write(TEE_HINT);
     if (anyNone)
       deps.stdout.write(NONE_HINT);
     if (anyStale)
