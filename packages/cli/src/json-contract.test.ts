@@ -212,6 +212,8 @@ const JSON_ANSWERING: { name: string; argv: string[] }[] = [
   { name: "vault factor list", argv: ["vault", "factor", "list"] },
   { name: "vault init", argv: ["vault", "init"] },
   { name: "vault new-key", argv: ["vault", "new-key", "--chain", "solana"] },
+  // BE-259: new surface. Without a terminal it is the unlock refusal, like every other writer.
+  { name: "vault rename", argv: ["vault", "rename", "treasury", "treasury-cold"] },
   { name: "vault phrase show", argv: ["vault", "phrase", "show"] },
   { name: "vault restore", argv: ["vault", "restore", "--phrase"] },
   { name: "vault enroll", argv: ["vault", "enroll", "passphrase"] },

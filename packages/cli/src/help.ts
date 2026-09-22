@@ -345,7 +345,11 @@ export const HELP: Record<string, Topic> = {
       { invocation: "status [--unlock]", description: "What the vault holds, and what opens it" },
       {
         invocation: "new-key --chain solana [--label <name>] [--count <n>] [--labels-from <file>]",
-        description: "Derive the next Solana key, or n of them under one unlock",
+        description: "Derive the next Solana key, or n of them under one unlock; the name must be free",
+      },
+      {
+        invocation: "rename <label|address> <new-label> [--id <entry-id>]",
+        description: "Rename one key. The address, the derivation and the key blob do not change",
       },
       { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
       {
@@ -413,6 +417,7 @@ export const HELP: Record<string, Topic> = {
     examples: [
       "candle vault init",
       "candle vault new-key --chain solana --label treasury",
+      "candle vault rename key-7 treasury-cold",
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
       "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",

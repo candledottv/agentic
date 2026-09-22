@@ -28,7 +28,7 @@ import type { CommandContext } from "../deps"
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { addressFromSecret64 } from "../vault/ed25519"
 import { VaultError } from "../vault/errors"
-import { type KeyEntry, parseVaultFile } from "../vault/format"
+import { type IndexPlaintext, type KeyEntry, parseVaultFile } from "../vault/format"
 import { DERIVATION_SCHEME, deriveSolanaKey, solanaVaultPath } from "../vault/hd"
 import { wipe } from "../vault/hygiene"
 import {
@@ -193,15 +193,24 @@ export async function vaultNewKey(args: string[], ctx: CommandContext): Promise<
       )
     }
 
-    // Every requested name checked against the vault BEFORE a single derivation. A collision
-    // found at key 90 would leave 89 keys committed and the mapping this batch exists to produce
-    // half made; found here it costs nothing.
-    if (batch.labels !== undefined) {
-      const taken = new Set(vault.index.entries.map((entry) => entry.label))
-      const clash = batch.labels.find((label) => taken.has(label))
-      if (clash !== undefined) {
-        return usage(ctx, `A key labelled ${clash} already exists in this vault; every --labels-from name must be new.`)
-      }
+    // Every name this run will WRITE, checked against the vault BEFORE a single derivation,
+    // whatever produced it (BE-259, D9): the file's names, the one `--label`, or the defaulted
+    // `key-<index>` names, which are computable up front because `exposedIndexes` does not change
+    // inside the loop and the counter advances to `index + 1` on every commit. A collision found
+    // at key 90 would leave 89 keys committed and the mapping this batch exists to produce half
+    // made; found here it costs nothing. The refusal keeps the shipped wording, exit 2 and the
+    // `USAGE` code (D10): two of the three label-taken sites ship with that code, and §1.1
+    // freezes an existing refusal's code.
+    const clash = labelClash(vault.index, plannedLabels(vault.index.hd, batch, parsed.values["--label"]))
+    if (clash !== undefined) {
+      return usage(
+        ctx,
+        batch.labels !== undefined
+          ? `A key labelled ${clash} already exists in this vault; every --labels-from name must be new.`
+          : parsed.values["--label"] !== undefined
+            ? `A key labelled ${clash} already exists in this vault; choose another --label.`
+            : `A key labelled ${clash} already exists in this vault; pass --label <name> to choose a different name for this key.`,
+      )
     }
 
     const derived: DerivedKey[] = []
@@ -344,6 +353,44 @@ function reportPartialBatch(ctx: CommandContext, derived: DerivedKey[], requeste
         derived.length > 0 ? " (with a --labels-from file holding the names that did not land)" : ""
       }.\n`,
   )
+}
+
+/**
+ * Every label this run will write, in allocation order (D9): the file's names, the one `--label`,
+ * or `key-<index>` for each index the run will claim. The index sequence is what the loop below
+ * computes one commit at a time -- `nextAllocatableIndex` over a counter that moves to
+ * `index + 1` on each commit, with `exposedIndexes` fixed -- so the defaults are known before
+ * anything is derived. An operator who labelled a key `key-7` by hand at index 3 collides with
+ * the default name of index 7 later; checking only the flags would let a 160-key run refuse at
+ * key 90 with 89 already committed, or not refuse at all.
+ */
+export function plannedLabels(
+  hd: Pick<IndexPlaintext["hd"], "nextIndex" | "exposedIndexes">,
+  batch: { count: number; labels?: string[] },
+  labelFlag: string | undefined,
+): string[] {
+  const labels: string[] = []
+  let counter = hd.nextIndex.solanaVault
+  for (let made = 0; made < batch.count; made++) {
+    const index = nextAllocatableIndex(counter, hd.exposedIndexes.solanaVault)
+    labels.push(batch.labels?.[made] ?? labelFlag ?? `key-${index}`)
+    counter = index + 1
+  }
+  return labels
+}
+
+/**
+ * The first planned name that is already in the vault, or that the run itself would write twice,
+ * in one pass (D9). `undefined` means every name is new.
+ */
+export function labelClash(index: Pick<IndexPlaintext, "entries">, planned: string[]): string | undefined {
+  const taken = new Set(index.entries.map((entry) => entry.label))
+  const seen = new Set<string>()
+  for (const label of planned) {
+    if (taken.has(label) || seen.has(label)) return label
+    seen.add(label)
+  }
+  return undefined
 }
 
 /**

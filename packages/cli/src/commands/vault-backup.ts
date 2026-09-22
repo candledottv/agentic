@@ -55,6 +55,7 @@ import { chmod, copyFile, mkdir, stat } from "node:fs/promises"
 import nodePath, { dirname, resolve } from "node:path"
 import { parseArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
+import { formatBytes } from "../progress"
 import {
   assertBackupDomainAllowed,
   type BackupDomainVerdict,
@@ -174,6 +175,9 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       ...(verdict.sealed ? { factor: "passphrase" } : {}),
+      // BE-259 (D2): the two Argon2id lines a backup prints are the live open and the copy's
+      // reopen, and neither used to say which.
+      purpose: "opening the vault",
     })
     const live = hold(opened.vault)
 
@@ -190,9 +194,14 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
       }
     }
 
+    // BE-259 (D1): the size and the mode come from the FILE, after the write and before the
+    // verify, for the same reason `verifyWrittenFromDisk` re-reads the vault it just wrote: the
+    // guarantee is about the bytes on disk, not about what this process believes it wrote.
+    const written = await stat(destination)
+
     // The copy is opened and verified as its OWN file, from its own bytes, so what is verified is
     // what actually landed at the destination rather than what this process believes it wrote.
-    const report = await verifyCopy(ctx, destination, opened.reopen, live)
+    const report = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it")
 
     const sidecar = sidecarPath(path)
     await writeSidecar(sidecar, {
@@ -204,6 +213,7 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
     })
 
     const copyEnvelopes = verdict.sealed ? sealedEnvelopes(live.file.envelopes) : live.file.envelopes
+    const mode = fileModeOctal(written.mode)
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
@@ -218,12 +228,35 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
         sharedDomain: verdict.sharedDomain,
         verified: true,
         ...reportJson(report, live),
+        // BE-259 (D1): two additive keys, on this document only.
+        bytesWritten: written.size,
+        mode,
       })
       return 0
     }
+    // D1: the write, said first and on success only. `Wrote <path>` and `Verified <path>` are two
+    // different claims about the same file, and that they were indistinguishable was the defect:
+    // the operator read `Verified` as "I checked something that was already there". A verify
+    // failure raises above this line, because a `Wrote` above a failure envelope reads as success.
+    for (const line of wroteLines(destination, written.size, mode)) deps.stdout.write(`${line}\n`)
     writeVerifiedReport(ctx, destination, verdict, report, live)
     return 0
   })
+}
+
+/** The file's permission bits as four octal digits, `0600` for the keystore write. */
+export function fileModeOctal(mode: number): string {
+  return (mode & 0o777).toString(8).padStart(4, "0")
+}
+
+/**
+ * The three-line block above the verified report (D1, §4.1): the human number for reading and
+ * the exact byte count for a record, in the report's own two-space indent and 14-character label
+ * field so `size` and `mode` line up with `destination` and `steps`. Pure, so the wording an
+ * operator acts on is asserted directly rather than through a captured stream.
+ */
+export function wroteLines(destination: string, size: number, mode: string): string[] {
+  return [`Wrote ${destination}`, `  size          ${formatBytes(size)} (${size} bytes)`, `  mode          ${mode}`]
 }
 
 /**
@@ -355,6 +388,9 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       ...(sealed ? { factor: "passphrase" } : {}),
+      // BE-259 (D2): the only bytes of this command that move are its two stderr Argon2id lines;
+      // the stdout report and the `--json` document stay byte for byte (T3).
+      purpose: "opening the live vault",
     })
     const live = hold(opened.vault)
     // Reuse the live passphrase only when the exact envelope it opened also exists in the copy.
@@ -370,12 +406,13 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
             factor: "passphrase",
             acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
             promptText: "Passphrase this backup was sealed under (input hidden): ",
+            purpose: "opening the copy",
           })
         ).vault,
       )
       report = await verifyVaultIntegrity(copy, { live })
     } else {
-      report = await verifyCopy(ctx, resolve(copyPath), opened.reopen, live)
+      report = await verifyCopy(ctx, resolve(copyPath), opened.reopen, live, "opening the copy")
     }
 
     const sidecar = sidecarPath(path)
@@ -400,12 +437,14 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
   })
 }
 
-/** Opens the copy as its own file and runs all eight steps against it. */
+/** Opens the copy as its own file and runs all eight steps against it. `purpose` is what the
+ * copy's derivation line says this open is for (D2). */
 async function verifyCopy(
   _ctx: CommandContext,
   copyPath: string,
   reopen: OpenedVault["reopen"],
   live: UnlockedVault,
+  purpose: string,
 ): Promise<VerifyReport> {
   const raw = await readVaultRaw(copyPath)
   if (raw === null)
@@ -414,7 +453,7 @@ async function verifyCopy(
     })
   // The copy is opened with the SAME factor that opened the live vault (a passphrase re-derived,
   // or a security key asserted again), so what is verified is that this factor opens this copy.
-  const copy = await reopen(copyPath, raw)
+  const copy = await reopen(copyPath, raw, purpose)
   try {
     return await verifyVaultIntegrity(copy, { live })
   } finally {

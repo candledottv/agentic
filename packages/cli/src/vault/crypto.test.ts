@@ -167,6 +167,10 @@ describe("T32: ED-3's bounds are enforced before any derivation runs", () => {
     const kdf = { ...base(), m: ARGON2_BOUNDS.m.min, t: 2 }
     const kek = await derivePassphraseKek("hunter2 but sixteen chars", kdf, (line) => lines.push(line))
     expect(lines.join("")).toContain("Deriving the vault key (Argon2id, 19 MiB)")
+    // BE-259 (D2, T4): the notice is ONE string with its newline inside it, and nothing about it
+    // moved. A caller that wants a purpose on the line inserts it before this newline
+    // (`derivationNotice` in `commands/vault-support.ts`); this file is not edited for that.
+    expect(lines).toEqual(["Deriving the vault key (Argon2id, 19 MiB)\n"])
     expect(lines.join("")).not.toContain("hunter2")
     expect(lines.join("")).not.toContain(b64u(kek).slice(0, 8))
   })

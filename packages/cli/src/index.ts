@@ -51,6 +51,7 @@ import { vaultInit } from "./commands/vault-init"
 import { vaultNewKey } from "./commands/vault-new-key"
 import { vaultPhrase } from "./commands/vault-phrase-dispatch"
 import { vaultPromote } from "./commands/vault-promote"
+import { vaultRename } from "./commands/vault-rename"
 import { vaultReconcileExposure, vaultRestore } from "./commands/vault-restore"
 import { vaultRetireLegacy } from "./commands/vault-retire-legacy"
 import { vaultStatus } from "./commands/vault-status"
@@ -159,6 +160,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       init: vaultInit,
       status: vaultStatus,
       "new-key": vaultNewKey,
+      // BE-259: one entry's label, and nothing else in the file, changes.
+      rename: vaultRename,
       phrase: vaultPhrase,
       restore: vaultRestore,
       "reconcile-exposure": vaultReconcileExposure,

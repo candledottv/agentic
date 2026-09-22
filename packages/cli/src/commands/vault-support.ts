@@ -235,6 +235,24 @@ export interface UnlockOptions {
    * `confirm` instead; this is the first open's line, and it defaults to unlocking the vault.
    */
   reason?: string
+  /**
+   * BE-259 (D2): what the Argon2id derivation line says this open is FOR. `derivePassphraseKek`
+   * writes `Deriving the vault key (Argon2id, <m> MiB)` plus a trailing newline inside one string;
+   * with a purpose the wrapper here inserts ` -- <purpose>` before that newline, so the suffix
+   * stays on the same line and `crypto.ts` is not edited. With no purpose the string is written
+   * unchanged, newline included. Not the passkey PRF reason named `purpose` further down: that is
+   * what the platform's sheet asserts for, this is the derivation-line suffix.
+   */
+  purpose?: string
+}
+
+/**
+ * The derivation notice with its purpose, inserted before the newline `derivePassphraseKek`
+ * already includes (D2, §4.2). Exported so T4 can pin the bytes without a vault.
+ */
+export function derivationNotice(line: string, purpose: string | undefined): string {
+  if (purpose === undefined) return line
+  return line.endsWith("\n") ? `${line.slice(0, -1)} -- ${purpose}\n` : `${line} -- ${purpose}`
 }
 
 /**
@@ -252,8 +270,9 @@ export interface OpenedVault {
     | { kind: "security-key"; envelopeId: string; session: SecurityKeySession }
     | { kind: "touch-id"; envelopeId: string; session: EnclaveSession }
     | { kind: "passkey"; envelopeId: string; session: PasskeySession }
-  /** Opens `raw` (the bytes of `path`) with the same factor. The caller closes what it gets. */
-  reopen: (path: string, raw: string) => Promise<UnlockedVault>
+  /** Opens `raw` (the bytes of `path`) with the same factor. The caller closes what it gets.
+   * `purpose` is this open's derivation-line suffix (D2), independent of the first open's. */
+  reopen: (path: string, raw: string, purpose?: string) => Promise<UnlockedVault>
   /**
    * The second presentation of the factor before value moves: the passphrase typed again on a
    * hidden prompt, or the key touched again. `what` names the operation ("sign transfer of ...").
@@ -309,21 +328,30 @@ export async function unlockInteractively(
   assertVaultHelperIdentities(deps, file.envelopes)
   const facts = await currentPlatformFacts(deps)
   const choice = await chooseFactor(ctx, file.envelopes, facts, opts.factor ?? ctx.vaultFactor)
-  const notice = (line: string) => deps.stderr.write(line)
+  const noticeFor = (purpose: string | undefined) => (line: string) =>
+    deps.stderr.write(derivationNotice(line, purpose))
+  const notice = noticeFor(opts.purpose)
 
   if (choice.kind === "passphrase") {
     const typed = await deps.promptSecret(opts.promptText ?? "Vault passphrase (input hidden): ")
-    const openWith = (p: string, r: string, candidate: string) =>
+    const openWith = (p: string, r: string, candidate: string, purpose: string | undefined) =>
       choice.envelopeId === undefined
-        ? unlockWithPassphrase(p, r, candidate, { notice })
-        : unlockVault(p, r, { factor: "passphrase", passphrase: candidate, envelopeId: choice.envelopeId }, { notice })
-    const { vault, passphrase } = await openWithTypedPassphrase(typed, (candidate) => openWith(path, raw, candidate))
+        ? unlockWithPassphrase(p, r, candidate, { notice: noticeFor(purpose) })
+        : unlockVault(
+            p,
+            r,
+            { factor: "passphrase", passphrase: candidate, envelopeId: choice.envelopeId },
+            { notice: noticeFor(purpose) },
+          )
+    const { vault, passphrase } = await openWithTypedPassphrase(typed, (candidate) =>
+      openWith(path, raw, candidate, opts.purpose),
+    )
     // The passphrase that OPENED the file is kept, so a command that must re-open what it just
     // wrote (new-key's verification, init's invariant 1 step) can do it without a second prompt.
     // It is a JavaScript string with CC-04's stated lifetime caveat either way; asking for it
     // twice would not shorten that and would train an operator to type a vault passphrase on
     // demand.
-    const open = (p: string, r: string) => openWith(p, r, passphrase)
+    const open = (p: string, r: string, purpose?: string) => openWith(p, r, passphrase, purpose)
     return {
       vault,
       factor: { kind: "passphrase", envelopeId: vault.envelope.id },
@@ -338,6 +366,9 @@ export async function unlockInteractively(
       },
     }
   }
+  // The three native factors below derive no Argon2 key, so `notice` never fires for them and
+  // the derivation-line purpose has nothing to attach to; `reopen` still accepts it so a caller
+  // does not have to know which factor opened the vault.
 
   if (choice.kind === "touch-id") {
     // The Secure Enclave. The policy, the helper and its signature (against this build's release policy) are settled before the vault is touched; the Touch ID prompt is the unwrap itself.

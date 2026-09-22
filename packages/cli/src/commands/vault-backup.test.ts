@@ -24,6 +24,7 @@ import { tmpdir } from "node:os"
 import { join, posix, win32 } from "node:path"
 import type { Deps } from "../deps"
 import { run } from "../index"
+import { formatBytes } from "../progress"
 import { createCapture, createTestDeps } from "../test-support"
 import {
   accountDomainOf,
@@ -40,13 +41,16 @@ import {
   assertOutsideConfigDir,
   backupVerdictLines,
   errnoCodeOf,
+  fileModeOctal,
   isInsideDir,
   isSealedCopy,
   resolveBackupDestination,
   sealReason,
   sharedDomainLine,
   UNPLACEABLE_DESTINATION_NOTE,
+  wroteLines,
 } from "./vault-backup"
+import { derivationNotice } from "./vault-support"
 
 /**
  * These tests run REAL Argon2id, which is the point of them: a vault suite that stubbed the KDF
@@ -862,5 +866,157 @@ describe("BE-245: the iCloud shorthand, and a write failure that says why", () =
     expect(errnoCodeOf(new Error("boom"))).toBeUndefined()
     expect(errnoCodeOf("boom")).toBeUndefined()
     expect(errnoCodeOf(Object.assign(new Error("boom"), { code: "" }))).toBeUndefined()
+  })
+})
+
+/**
+ * BE-259 (spec `2026-09-22-cli-vault-key-naming-design.md`, D1, D2): `vault backup` says it wrote
+ * the file, and the two Argon2id lines say what each open was for.
+ *
+ * T1: `Wrote <path>`, `size` and `mode` above `Verified <path>`, in that order, with the size from a
+ * `stat` of the destination and the mode as four octal digits. T3: `vault verify-backup`'s two
+ * stderr Argon2id lines gain their purposes and nothing else about it moves -- no `Wrote` block,
+ * and the `--json` document has no size to report. T4: the derivation notice with no purpose is
+ * byte for byte today's line and the wrapper inserts ` -- <purpose>` before its newline.
+ */
+describe("BE-259: the backup says it wrote the file, and each Argon2id line says what it opened", () => {
+  const ARGON2_LINE = /^Deriving the vault key \(Argon2id, \d+ MiB\)( -- (.+))?$/
+
+  /** The purposes on the Argon2id lines of a captured stderr, in order. */
+  function purposesIn(stderr: string): (string | undefined)[] {
+    return stderr
+      .split("\n")
+      .map((line) => ARGON2_LINE.exec(line))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => match[2])
+  }
+
+  test("T4: derivationNotice leaves the line alone with no purpose, and keeps the suffix on the same line", () => {
+    const line = "Deriving the vault key (Argon2id, 64 MiB)\n"
+    expect(derivationNotice(line, undefined)).toBe(line)
+    expect(derivationNotice(line, "opening the vault")).toBe(
+      "Deriving the vault key (Argon2id, 64 MiB) -- opening the vault\n",
+    )
+    // A notice without the trailing newline (nothing in this CLI writes one, but the wrapper does
+    // not depend on it) gets the suffix appended rather than a newline invented.
+    expect(derivationNotice("x", "p")).toBe("x -- p")
+  })
+
+  test("wroteLines and fileModeOctal: the block's literal text, aligned with the report", () => {
+    expect(fileModeOctal(0o100600)).toBe("0600")
+    expect(fileModeOctal(0o644)).toBe("0644")
+    expect(wroteLines("/Volumes/BACKUP/vault.enc", 107845, "0600")).toEqual([
+      "Wrote /Volumes/BACKUP/vault.enc",
+      "  size          105 KB (107845 bytes)",
+      "  mode          0600",
+    ])
+    // The label field is the report's own 14 characters, so `size` lines up with `destination`.
+    expect("  size          ".length).toBe("  destination   ".length)
+  })
+
+  test("T1 and T4: vault backup leads with Wrote, size and mode, then Verified, and its two lines carry the purposes in order", async () => {
+    const v = await vaultWithKey()
+    const to = join(await mkdtemp(join(tmpdir(), "candle-vault-wrote-")), "copy.enc")
+    const b = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [v.passphrase] })
+    expect(await run(["vault", "backup", "--to", to, "--keystore", v.vaultPath], b.deps)).toBe(0)
+
+    const written = await stat(to)
+    const lines = b.stdout.text.split("\n")
+    const wrote = lines.indexOf(`Wrote ${to}`)
+    const verified = lines.indexOf(`Verified ${to}`)
+    expect(wrote).toBe(0)
+    expect(verified).toBeGreaterThan(wrote)
+    expect(lines[1]).toBe(`  size          ${formatBytes(written.size)} (${written.size} bytes)`)
+    expect(lines[2]).toBe("  mode          0600")
+    expect(lines[2]).toBe(`  mode          ${fileModeOctal(written.mode)}`)
+    // The size is the file's, not this process's idea of it.
+    expect(written.size).toBe(Buffer.byteLength(await readFile(to, "utf8")))
+    // Everything from `Verified` down is the shared report, untouched.
+    expect(lines.slice(verified)).toContain("  steps         all 8 passed, in order")
+
+    // The two Argon2id lines, in order: the live open, then the copy's reopen. Each on one line.
+    expect(purposesIn(b.stderr.text)).toEqual(["opening the vault", "re-opening the copy to verify it"])
+    expect(b.stderr.text).toContain("Deriving the vault key (Argon2id, 19 MiB) -- opening the vault\n")
+  })
+
+  test("T2: vault backup --json carries bytesWritten and mode beside every key it carried before", async () => {
+    const v = await vaultWithKey()
+    const to = join(await mkdtemp(join(tmpdir(), "candle-vault-wrote-json-")), "copy.enc")
+    const b = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [v.passphrase] })
+    expect(await run(["vault", "backup", "--to", to, "--json", "--keystore", v.vaultPath], b.deps)).toBe(0)
+    const body = JSON.parse(b.stdout.text) as Record<string, unknown>
+    expect(Object.keys(body).sort()).toEqual(
+      [
+        "ok",
+        "destination",
+        "destinationDomain",
+        "sealed",
+        "envelopesInCopy",
+        "envelopesLeftOut",
+        "sharedDomainAccepted",
+        "sharedDomain",
+        "verified",
+        "steps",
+        "addressChecked",
+        "rederived",
+        "notRederived",
+        "comparedAgainstLive",
+        "nextIndex",
+        "phraseRestoresDerivedKeysOnly",
+        "bytesWritten",
+        "mode",
+      ].sort(),
+    )
+    expect(body.bytesWritten).toBe((await stat(to)).size)
+    expect(body.mode).toBe("0600")
+    // stdout is the one JSON value; the Wrote block is human mode only.
+    expect(b.stdout.text.trimEnd().split("\n")).toHaveLength(1)
+  })
+
+  test("T3: verify-backup's two Argon2id lines gain their purposes; its stdout report and --json document do not move", async () => {
+    const v = await vaultWithKey()
+    const to = join(await mkdtemp(join(tmpdir(), "candle-vault-verify-purpose-")), "copy.enc")
+    const b = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [v.passphrase] })
+    expect(await run(["vault", "backup", "--to", to, "--keystore", v.vaultPath], b.deps)).toBe(0)
+
+    const h = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [v.passphrase] })
+    expect(await run(["vault", "verify-backup", to, "--keystore", v.vaultPath], h.deps)).toBe(0)
+    expect(purposesIn(h.stderr.text)).toEqual(["opening the live vault", "opening the copy"])
+    // The stdout report: no `Wrote` block, the headline first, the shared report as it was.
+    const lines = h.stdout.text.split("\n")
+    expect(lines[0]).toBe(`Verified ${to}`)
+    expect(h.stdout.text).not.toContain("Wrote ")
+    expect(h.stdout.text).not.toContain("  size ")
+    expect(h.stdout.text).not.toContain("  mode ")
+    expect(h.stdout.text).toContain("  steps         all 8 passed, in order")
+
+    const j = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [v.passphrase] })
+    expect(await run(["vault", "verify-backup", to, "--json", "--keystore", v.vaultPath], j.deps)).toBe(0)
+    const body = JSON.parse(j.stdout.text) as Record<string, unknown>
+    expect(Object.keys(body).sort()).toEqual(
+      [
+        "ok",
+        "verified",
+        "sealed",
+        "steps",
+        "addressChecked",
+        "rederived",
+        "notRederived",
+        "comparedAgainstLive",
+        "nextIndex",
+        "phraseRestoresDerivedKeysOnly",
+      ].sort(),
+    )
+    expect(body).not.toHaveProperty("bytesWritten")
+    expect(body).not.toHaveProperty("mode")
+  })
+
+  test("every other vault command's Argon2id line is byte for byte what it was: no purpose", async () => {
+    const v = await vaultWithKey()
+    const s = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [v.passphrase] })
+    expect(await run(["vault", "status", "--unlock", "--keystore", v.vaultPath], s.deps)).toBe(0)
+    expect(purposesIn(s.stderr.text)).toEqual([undefined])
+    expect(s.stderr.text).toContain("Deriving the vault key (Argon2id, 19 MiB)\n")
+    expect(s.stderr.text).not.toContain(" -- ")
   })
 })

@@ -20,6 +20,7 @@ import { VaultError } from "../vault/errors"
 import { currentPlatformFacts } from "../vault/fido2"
 import type { Envelope } from "../vault/format"
 import { parseVaultFile } from "../vault/format"
+import { duplicateLabels } from "../vault/labels"
 import { strengthLabel } from "../vault/passphrase"
 import { availabilityLabel, envelopeAvailability, type PlatformFacts } from "../vault/platform"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
@@ -80,6 +81,8 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
     let unlocked:
       | {
           entries: ReturnType<typeof describeEntry>[]
+          /** BE-259 (D5): every label more than one key carries; `[]` when none, never absent. */
+          duplicateLabels: { label: string; entries: { address: string; id: string }[] }[]
           nextIndex: Record<string, number>
           exposedIndexes: Record<string, number[]>
           rootExported: boolean
@@ -93,6 +96,10 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
       )
       unlocked = {
         entries: vault.index.entries.map(describeEntry),
+        duplicateLabels: duplicateLabels(vault.index).map((duplicate) => ({
+          label: duplicate.label,
+          entries: duplicate.entries.map((entry) => ({ address: entry.address, id: entry.id })),
+        })),
         nextIndex: vault.index.hd.nextIndex,
         exposedIndexes: vault.index.hd.exposedIndexes,
         rootExported: vault.index.hd.rootExported,
@@ -217,6 +224,13 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
         )
       }
     }
+    // BE-259 (D5): the finding `rename` is the repair for. Every resolver is first-wins, so the
+    // second key under a shared name is unreachable by it, and this block is the only place an
+    // operator learns that. Absent when there are none.
+    if (unlocked.duplicateLabels.length > 0) {
+      deps.stdout.write(`\nDuplicate labels (${unlocked.duplicateLabels.length}):\n`)
+      for (const line of duplicateLabelLines(unlocked.duplicateLabels)) deps.stdout.write(`${line}\n`)
+    }
     deps.stdout.write(`\nDerivation counters (next index per branch):\n`)
     for (const [branch, value] of Object.entries(unlocked.nextIndex)) {
       const exposed = unlocked.exposedIndexes[branch] ?? []
@@ -235,6 +249,25 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
     )
     return 0
   })
+}
+
+/**
+ * The rows of the duplicate block (§4.5): each label with the address and id of every entry that
+ * carries it, and the line that says what `--from <label>` does about it. Pure, so the wording is
+ * asserted directly rather than through a captured stream.
+ */
+export function duplicateLabelLines(
+  duplicates: { label: string; entries: { address: string; id: string }[] }[],
+): string[] {
+  const lines: string[] = []
+  for (const duplicate of duplicates) {
+    const holders = duplicate.entries.map((entry) => `${entry.address} (${entry.id})`).join(", ")
+    lines.push(`  ${duplicate.label.padEnd(14)}${duplicate.entries.length} keys: ${holders}`)
+    lines.push(
+      `                --from ${duplicate.label} always picks the first; rename one: candle vault rename <address> <new-label>`,
+    )
+  }
+  return lines
 }
 
 function describeEnvelope(envelope: Envelope, facts: PlatformFacts) {
@@ -272,6 +305,10 @@ function describeEntryInner(entry: import("../vault/format").KeyEntry) {
   return {
     address: entry.address,
     label: entry.label,
+    // BE-259 (D5): the `--json` entry document gains its id, so `rename --json`'s receipt and the
+    // `--id` flag refer to something a caller can read. Not in the human listing, where the
+    // label and the address are the addressing surface.
+    id: entry.id,
     role: entry.role,
     origin: entry.origin,
     derivation: entry.derivation?.path,

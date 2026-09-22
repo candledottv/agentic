@@ -2254,7 +2254,12 @@ var init_errors = __esm(() => {
     "SIGN_SIMULATION_FAILED",
     "SIGN_LOOKUP_TABLE_UNRESOLVED",
     "SIGN_TRANSACTION_UNDECODABLE",
-    "SIGN_BROADCAST_FAILED"
+    "SIGN_BROADCAST_FAILED",
+    "VAULT_LABEL_NOT_FOUND",
+    "VAULT_LABEL_AMBIGUOUS",
+    "VAULT_LABEL_TAKEN",
+    "VAULT_LABEL_UNCHANGED",
+    "VAULT_RENAME_ROLE_REFUSED"
   ];
   VaultError = class VaultError extends Error {
     code;
@@ -14929,6 +14934,7 @@ __export(exports_vault_support, {
   missingVault: () => missingVault,
   findExternalEntry: () => findExternalEntry,
   describeRole: () => describeRole,
+  derivationNotice: () => derivationNotice,
   confirmLastSix: () => confirmLastSix,
   assertVaultHelperIdentities: () => assertVaultHelperIdentities,
   assertNotOlderCopy: () => assertNotOlderCopy,
@@ -15017,6 +15023,13 @@ async function requireVaultRaw(ctx, resolved) {
     throw missingVault(ctx, resolved);
   return raw;
 }
+function derivationNotice(line, purpose) {
+  if (purpose === undefined)
+    return line;
+  return line.endsWith(`
+`) ? `${line.slice(0, -1)} -- ${purpose}
+` : `${line} -- ${purpose}`;
+}
 function assertVaultHelperIdentities(deps, envelopes) {
   if (deps.releasePolicy.macosHelper.release === "signed") {
     for (const envelope of envelopes) {
@@ -15033,12 +15046,13 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
   assertVaultHelperIdentities(deps, file.envelopes);
   const facts = await currentPlatformFacts(deps);
   const choice = await chooseFactor(ctx, file.envelopes, facts, opts.factor ?? ctx.vaultFactor);
-  const notice = (line) => deps.stderr.write(line);
+  const noticeFor = (purpose) => (line) => deps.stderr.write(derivationNotice(line, purpose));
+  const notice = noticeFor(opts.purpose);
   if (choice.kind === "passphrase") {
     const typed = await deps.promptSecret(opts.promptText ?? "Vault passphrase (input hidden): ");
-    const openWith = (p, r, candidate) => choice.envelopeId === undefined ? unlockWithPassphrase(p, r, candidate, { notice }) : unlockVault(p, r, { factor: "passphrase", passphrase: candidate, envelopeId: choice.envelopeId }, { notice });
-    const { vault: vault2, passphrase } = await openWithTypedPassphrase(typed, (candidate) => openWith(path, raw, candidate));
-    const open4 = (p, r) => openWith(p, r, passphrase);
+    const openWith = (p, r, candidate, purpose) => choice.envelopeId === undefined ? unlockWithPassphrase(p, r, candidate, { notice: noticeFor(purpose) }) : unlockVault(p, r, { factor: "passphrase", passphrase: candidate, envelopeId: choice.envelopeId }, { notice: noticeFor(purpose) });
+    const { vault: vault2, passphrase } = await openWithTypedPassphrase(typed, (candidate) => openWith(path, raw, candidate, opts.purpose));
+    const open4 = (p, r, purpose) => openWith(p, r, passphrase, purpose);
     return {
       vault: vault2,
       factor: { kind: "passphrase", envelopeId: vault2.envelope.id },
@@ -36351,7 +36365,11 @@ var HELP = {
       { invocation: "status [--unlock]", description: "What the vault holds, and what opens it" },
       {
         invocation: "new-key --chain solana [--label <name>] [--count <n>] [--labels-from <file>]",
-        description: "Derive the next Solana key, or n of them under one unlock"
+        description: "Derive the next Solana key, or n of them under one unlock; the name must be free"
+      },
+      {
+        invocation: "rename <label|address> <new-label> [--id <entry-id>]",
+        description: "Rename one key. The address, the derivation and the key blob do not change"
       },
       { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
       {
@@ -36416,6 +36434,7 @@ var HELP = {
     examples: [
       "candle vault init",
       "candle vault new-key --chain solana --label treasury",
+      "candle vault rename key-7 treasury-cold",
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
       "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
@@ -41351,12 +41370,9 @@ async function vaultNewKey(args, ctx) {
         suggestion: "Create a second vault with a fresh root (`candle vault init`) and move the funds across with `candle vault transfer`. There is no flag for this: no fact you could assert would make the old boundary known."
       });
     }
-    if (batch.labels !== undefined) {
-      const taken = new Set(vault.index.entries.map((entry) => entry.label));
-      const clash = batch.labels.find((label) => taken.has(label));
-      if (clash !== undefined) {
-        return usage(ctx, `A key labelled ${clash} already exists in this vault; every --labels-from name must be new.`);
-      }
+    const clash = labelClash(vault.index, plannedLabels(vault.index.hd, batch, parsed.values["--label"]));
+    if (clash !== undefined) {
+      return usage(ctx, batch.labels !== undefined ? `A key labelled ${clash} already exists in this vault; every --labels-from name must be new.` : parsed.values["--label"] !== undefined ? `A key labelled ${clash} already exists in this vault; choose another --label.` : `A key labelled ${clash} already exists in this vault; pass --label <name> to choose a different name for this key.`);
     }
     const derived = [];
     let last;
@@ -41451,6 +41467,26 @@ function reportPartialBatch(ctx, derived, requested) {
 ${derived.length} of ${requested} keys were created and ARE in the vault; the vault is intact and its counter is past them.
 ` + `Re-run for the remaining ${requested - derived.length}${derived.length > 0 ? " (with a --labels-from file holding the names that did not land)" : ""}.
 `);
+}
+function plannedLabels(hd, batch, labelFlag) {
+  const labels = [];
+  let counter = hd.nextIndex.solanaVault;
+  for (let made = 0;made < batch.count; made++) {
+    const index = nextAllocatableIndex(counter, hd.exposedIndexes.solanaVault);
+    labels.push(batch.labels?.[made] ?? labelFlag ?? `key-${index}`);
+    counter = index + 1;
+  }
+  return labels;
+}
+function labelClash(index, planned) {
+  const taken = new Set(index.entries.map((entry) => entry.label));
+  const seen = new Set;
+  for (const label of planned) {
+    if (taken.has(label) || seen.has(label))
+      return label;
+    seen.add(label);
+  }
+  return;
 }
 function nextAllocatableIndex(counter, exposed) {
   let index = counter;
@@ -50341,7 +50377,8 @@ async function vaultBackup(args, ctx) {
     }
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
-      ...verdict.sealed ? { factor: "passphrase" } : {}
+      ...verdict.sealed ? { factor: "passphrase" } : {},
+      purpose: "opening the vault"
     });
     const live = hold(opened.vault);
     if (verdict.sealed) {
@@ -50353,7 +50390,8 @@ async function vaultBackup(args, ctx) {
         throw copyWriteFailed(destination, error, "copy");
       }
     }
-    const report = await verifyCopy(ctx, destination, opened.reopen, live);
+    const written = await stat3(destination);
+    const report = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it");
     const sidecar = sidecarPath(path);
     await writeSidecar(sidecar, {
       ...nextSidecar(await readSidecar(sidecar), live.file),
@@ -50363,6 +50401,7 @@ async function vaultBackup(args, ctx) {
       ...verdict.sharedDomainAccepted ? { lastBackupSharedDomainAccepted: true } : {}
     });
     const copyEnvelopes = verdict.sealed ? sealedEnvelopes(live.file.envelopes) : live.file.envelopes;
+    const mode = fileModeOctal(written.mode);
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
@@ -50374,13 +50413,24 @@ async function vaultBackup(args, ctx) {
         sharedDomainAccepted: verdict.sharedDomainAccepted,
         sharedDomain: verdict.sharedDomain,
         verified: true,
-        ...reportJson(report, live)
+        ...reportJson(report, live),
+        bytesWritten: written.size,
+        mode
       });
       return 0;
     }
+    for (const line of wroteLines(destination, written.size, mode))
+      deps.stdout.write(`${line}
+`);
     writeVerifiedReport(ctx, destination, verdict, report, live);
     return 0;
   });
+}
+function fileModeOctal(mode) {
+  return (mode & 511).toString(8).padStart(4, "0");
+}
+function wroteLines(destination, size, mode) {
+  return [`Wrote ${destination}`, `  size          ${formatBytes(size)} (${size} bytes)`, `  mode          ${mode}`];
 }
 function resolveBackupDestination(to, deps) {
   if (to.trim().toLowerCase() !== ICLOUD_SHORTHAND)
@@ -50461,7 +50511,8 @@ async function vaultVerifyBackup(args, ctx) {
     }
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
-      ...sealed ? { factor: "passphrase" } : {}
+      ...sealed ? { factor: "passphrase" } : {},
+      purpose: "opening the live vault"
     });
     const live = hold(opened.vault);
     const sameEnvelope = parseVaultFile(copyRaw).envelopes.some((envelope) => JSON.stringify(envelope) === JSON.stringify(live.envelope));
@@ -50470,11 +50521,12 @@ async function vaultVerifyBackup(args, ctx) {
       const copy = hold((await unlockInteractively(ctx, resolve2(copyPath), copyRaw, {
         factor: "passphrase",
         acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
-        promptText: "Passphrase this backup was sealed under (input hidden): "
+        promptText: "Passphrase this backup was sealed under (input hidden): ",
+        purpose: "opening the copy"
       })).vault);
       report = await verifyVaultIntegrity(copy, { live });
     } else {
-      report = await verifyCopy(ctx, resolve2(copyPath), opened.reopen, live);
+      report = await verifyCopy(ctx, resolve2(copyPath), opened.reopen, live, "opening the copy");
     }
     const sidecar = sidecarPath(path);
     await writeSidecar(sidecar, {
@@ -50489,13 +50541,13 @@ async function vaultVerifyBackup(args, ctx) {
     return 0;
   });
 }
-async function verifyCopy(_ctx, copyPath, reopen, live) {
+async function verifyCopy(_ctx, copyPath, reopen, live, purpose) {
   const raw = await readVaultRaw(copyPath);
   if (raw === null)
     throw new VaultError("VAULT_MISSING", `No file at ${copyPath}.`, {
       suggestion: `The copy this run just wrote is not there. Check the path and the volume: ls -l ${copyPath}`
     });
-  const copy = await reopen(copyPath, raw);
+  const copy = await reopen(copyPath, raw, purpose);
   try {
     return await verifyVaultIntegrity(copy, { live });
   } finally {
@@ -53261,6 +53313,159 @@ async function runTeeImport(ctx, opts) {
   return submitted.remoteAuthority === "verified-active" ? 0 : 3;
 }
 
+// src/commands/vault-rename.ts
+init_args();
+init_errors();
+
+// src/vault/labels.ts
+function entriesWithLabel(index, label) {
+  return index.entries.filter((entry) => entry.label === label);
+}
+function duplicateLabels(index) {
+  const byLabel = new Map;
+  for (const entry of index.entries) {
+    const holders = byLabel.get(entry.label);
+    if (holders === undefined)
+      byLabel.set(entry.label, [entry]);
+    else
+      holders.push(entry);
+  }
+  const out = [];
+  for (const [label, entries] of byLabel) {
+    if (entries.length > 1)
+      out.push({ label, entries });
+  }
+  return out;
+}
+function hasControlCharacter(label) {
+  for (const char of label) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code < 32 || code === 127)
+      return true;
+  }
+  return false;
+}
+function validateLabel(label) {
+  if (label.trim().length === 0)
+    return "A key's label cannot be empty.";
+  if (hasControlCharacter(label)) {
+    return "A key's label cannot contain a newline, a tab or a control character.";
+  }
+  if (label.startsWith("-")) {
+    return `A key's label cannot begin with "-": it would be read as a flag everywhere a label is typed.`;
+  }
+  return;
+}
+function resolveRenameTarget(index, old, id) {
+  if (id !== undefined) {
+    const entry = index.entries.find((candidate) => candidate.id === id);
+    return entry === undefined ? { kind: "none" } : { kind: "found", entry, by: "id" };
+  }
+  const byLabel = entriesWithLabel(index, old);
+  if (byLabel.length === 1)
+    return { kind: "found", entry: byLabel[0], by: "label" };
+  if (byLabel.length > 1)
+    return { kind: "ambiguous", by: "label", candidates: byLabel };
+  const byAddress = index.entries.filter((entry) => entry.address === old);
+  if (byAddress.length === 1)
+    return { kind: "found", entry: byAddress[0], by: "address" };
+  if (byAddress.length > 1)
+    return { kind: "ambiguous", by: "address", candidates: byAddress };
+  return { kind: "none" };
+}
+
+// src/commands/vault-rename.ts
+init_store();
+init_vault_support();
+var RENAME_USAGE = "Usage: candle vault rename <label|address> <new-label> [--id <entry-id>]";
+var SAME_STRING_LINE = "The two arguments are the same string; nothing to do.";
+async function vaultRename(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore", "--id"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  const [old, next, extra] = parsed.positionals;
+  if (old === undefined || next === undefined || extra !== undefined)
+    return usage(ctx, RENAME_USAGE);
+  const invalid = validateLabel(next);
+  if (invalid !== undefined)
+    return usage(ctx, invalid);
+  if (old === next)
+    return usage(ctx, SAME_STRING_LINE);
+  const id = parsed.values["--id"];
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault rename"))
+    return 1;
+  const { deps } = ctx;
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    });
+    const vault = hold(opened.vault);
+    const entry = resolveTarget(vault.index, old, id);
+    if (entry.role === "tee-wallet") {
+      throw new VaultError("VAULT_RENAME_ROLE_REFUSED", `${entry.label} is a TEE wallet. Its label was sent to Candle when it was enabled and \`candle wallets\` lists that copy, so renaming it here would give one wallet two names and nothing reconciles them.`, {
+        suggestion: "A vault key or an external wallet renames here. For a TEE wallet, nothing in this release changes the name on either side."
+      });
+    }
+    if (entry.label === next) {
+      throw new VaultError("VAULT_LABEL_UNCHANGED", `${next} is already this key's label. Nothing was written.`, {
+        suggestion: "Nothing to rename. `candle vault status --unlock` lists every label."
+      });
+    }
+    if (entriesWithLabel(vault.index, next).length > 0) {
+      throw new VaultError("VAULT_LABEL_TAKEN", `A key labelled ${next} already exists in this vault. Nothing was written.`, {
+        suggestion: "Choose a name no key has, or rename that key first: `candle vault status --unlock` lists them."
+      });
+    }
+    const from = entry.label;
+    await commitVault(vault, {
+      index: {
+        hd: vault.index.hd,
+        entries: vault.index.entries.map((candidate) => candidate.id === entry.id ? { ...candidate, label: next } : candidate)
+      }
+    }, deps);
+    if (ctx.json) {
+      writeJson(deps, { ok: true, id: entry.id, address: entry.address, role: entry.role, from, to: next });
+      return 0;
+    }
+    deps.stdout.write(`Renamed ${from} to ${next}.
+`);
+    deps.stdout.write(`  address     ${entry.address}
+`);
+    deps.stdout.write(`  id          ${entry.id}
+`);
+    deps.stdout.write(`  role        ${entry.role}
+`);
+    deps.stdout.write(`  unchanged   address, derivation path, key blob, every envelope
+`);
+    return 0;
+  });
+}
+function resolveTarget(index, old, id) {
+  const match = resolveRenameTarget(index, old, id);
+  if (match.kind === "found")
+    return match.entry;
+  if (match.kind === "none") {
+    throw new VaultError("VAULT_LABEL_NOT_FOUND", id === undefined ? `No key in this vault is called ${old}, and no key has that address or id.` : `No key in this vault has the id ${id}.`, { suggestion: "List them with their labels: `candle vault status --unlock`" });
+  }
+  const candidates = match.candidates.map((entry) => `${entry.address} (${entry.id})`).join(", ");
+  const count = match.candidates.length;
+  const first = match.candidates[0];
+  throw new VaultError("VAULT_LABEL_AMBIGUOUS", match.by === "label" ? `${count} keys in this vault are called ${old}, so this rename would not say which one it meant. Nothing was written.` : `${count} keys in this vault have the address ${old}, so this rename would not say which one it meant. Nothing was written.`, {
+    suggestion: match.by === "label" ? `Name one by address or id. The candidates are ${candidates}.` : `Name one by id. The candidates are ${candidates}. Re-run: \`candle vault rename ${old} <new-label> --id ${first.id}\`.`
+  });
+}
+
 // src/commands/vault-restore.ts
 init_args();
 import { rm as rm3 } from "node:fs/promises";
@@ -53964,6 +54169,10 @@ async function vaultStatus(args, ctx) {
       const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
       unlocked = {
         entries: vault.index.entries.map(describeEntry),
+        duplicateLabels: duplicateLabels(vault.index).map((duplicate) => ({
+          label: duplicate.label,
+          entries: duplicate.entries.map((entry) => ({ address: entry.address, id: entry.id }))
+        })),
         nextIndex: vault.index.hd.nextIndex,
         exposedIndexes: vault.index.hd.exposedIndexes,
         rootExported: vault.index.hd.rootExported,
@@ -54089,6 +54298,14 @@ Keys (${unlocked.entries.length}):
 `);
       }
     }
+    if (unlocked.duplicateLabels.length > 0) {
+      deps.stdout.write(`
+Duplicate labels (${unlocked.duplicateLabels.length}):
+`);
+      for (const line of duplicateLabelLines(unlocked.duplicateLabels))
+        deps.stdout.write(`${line}
+`);
+    }
     deps.stdout.write(`
 Derivation counters (next index per branch):
 `);
@@ -54109,6 +54326,15 @@ The recovery phrase restores derived keys only. It does not restore any key impo
 `);
     return 0;
   });
+}
+function duplicateLabelLines(duplicates) {
+  const lines = [];
+  for (const duplicate of duplicates) {
+    const holders = duplicate.entries.map((entry) => `${entry.address} (${entry.id})`).join(", ");
+    lines.push(`  ${duplicate.label.padEnd(14)}${duplicate.entries.length} keys: ${holders}`);
+    lines.push(`                --from ${duplicate.label} always picks the first; rename one: candle vault rename <address> <new-label>`);
+  }
+  return lines;
 }
 function describeEnvelope(envelope, facts) {
   const availability = envelopeAvailability(envelope, facts);
@@ -54141,6 +54367,7 @@ function describeEntryInner(entry) {
   return {
     address: entry.address,
     label: entry.label,
+    id: entry.id,
     role: entry.role,
     origin: entry.origin,
     derivation: entry.derivation?.path,
@@ -54668,6 +54895,7 @@ var COMMANDS = {
       init: vaultInit,
       status: vaultStatus,
       "new-key": vaultNewKey,
+      rename: vaultRename,
       phrase: vaultPhrase,
       restore: vaultRestore,
       "reconcile-exposure": vaultReconcileExposure,

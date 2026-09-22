@@ -81,6 +81,14 @@ export const VAULT_ERROR_CODES = [
   "SIGN_LOOKUP_TABLE_UNRESOLVED",
   "SIGN_TRANSACTION_UNDECODABLE",
   "SIGN_BROADCAST_FAILED",
+  // BE-259 (spec 2026-09-22-cli-vault-key-naming-design.md, D11): `candle vault rename`. Every one
+  // is decided after the unlock, about the vault's state, so every one is exit 1; each is thrown
+  // by exactly one site in `commands/vault-rename.ts`.
+  "VAULT_LABEL_NOT_FOUND",
+  "VAULT_LABEL_AMBIGUOUS",
+  "VAULT_LABEL_TAKEN",
+  "VAULT_LABEL_UNCHANGED",
+  "VAULT_RENAME_ROLE_REFUSED",
 ] as const
 
 export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number]

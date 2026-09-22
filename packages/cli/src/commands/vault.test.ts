@@ -17,9 +17,9 @@ import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 import { GENERATED_WORD_COUNT, SAVE_THE_PASSPHRASE, SAVED_IT_PROMPT } from "../vault/passphrase"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
-import { generatedPassphraseFrom, makeVault, useCheapKdf } from "../vault/test-vault"
+import { generatedPassphraseFrom, makeVault, relabelEntries, useCheapKdf } from "../vault/test-vault"
 import { INIT_PASSPHRASE_PROMPT } from "./vault-init"
-import { NO_VERIFIED_BACKUP_NOTE } from "./vault-status"
+import { duplicateLabelLines, NO_VERIFIED_BACKUP_NOTE } from "./vault-status"
 
 /**
  * These tests run REAL Argon2id, which is the point of them: a vault suite that stubbed the KDF
@@ -1334,5 +1334,91 @@ describe("BE-245: init offers a backup, and status nags until there is one", () 
     await run(["vault", "status", "--keystore", h.vaultPath], after.deps)
     expect(after.stdout.text).not.toContain("has ever been verified from this machine")
     expect(after.stdout.text).toContain("last verified backup")
+  })
+})
+
+/**
+ * BE-259 (D5, T19): `vault status --unlock` reports duplicate labels, and the `--json` entry
+ * document gains its id. The duplicates are written through `relabelEntries`, with none of the
+ * commands' guards, because that is the state §2 of the spec says a vault can already be in and
+ * `new-key` now refuses to produce it.
+ */
+describe("T19: vault status --unlock reports duplicate labels", () => {
+  test("the block is printed when a label is shared, and omitted when none is", async () => {
+    const h = await initVault()
+    const a = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(
+      await run(["vault", "new-key", "--chain", "solana", "--label", "a", "--json", "--keystore", h.vaultPath], a.deps),
+    ).toBe(0)
+    const addressA = (JSON.parse(a.stdout.text) as { address: string }).address
+    const b = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(
+      await run(["vault", "new-key", "--chain", "solana", "--label", "b", "--json", "--keystore", h.vaultPath], b.deps),
+    ).toBe(0)
+    const addressB = (JSON.parse(b.stdout.text) as { address: string }).address
+
+    // Unique labels: no block, and an empty array rather than an absent key.
+    const clean = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], clean.deps)).toBe(0)
+    expect(clean.stdout.text).not.toContain("Duplicate labels")
+    const cleanJson = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(await run(["vault", "status", "--unlock", "--json", "--keystore", h.vaultPath], cleanJson.deps)).toBe(0)
+    const before = JSON.parse(cleanJson.stdout.text) as {
+      unlocked: { duplicateLabels: unknown[]; entries: { id: string; address: string; label: string }[] }
+    }
+    expect(before.unlocked.duplicateLabels).toEqual([])
+    // Every entry document carries its id, beside the keys it carried before.
+    expect(before.unlocked.entries.map((entry) => typeof entry.id)).toEqual(["string", "string"])
+    const ids = before.unlocked.entries.map((entry) => entry.id)
+
+    await relabelEntries(h.vaultPath, h.passphrase, { [addressA]: "treasury", [addressB]: "treasury" })
+
+    const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)).toBe(0)
+    const expected = duplicateLabelLines([
+      {
+        label: "treasury",
+        entries: [
+          { address: addressA, id: ids[0] as string },
+          { address: addressB, id: ids[1] as string },
+        ],
+      },
+    ])
+    expect(s.stdout.text).toContain(`\nDuplicate labels (1):\n${expected.join("\n")}\n`)
+    expect(expected[0]).toBe(`  treasury      2 keys: ${addressA} (${ids[0]}), ${addressB} (${ids[1]})`)
+    expect(expected[1]).toBe(
+      "                --from treasury always picks the first; rename one: candle vault rename <address> <new-label>",
+    )
+    // After the Keys block and before the derivation counters.
+    const at = s.stdout.text.indexOf("Duplicate labels (1):")
+    expect(at).toBeGreaterThan(s.stdout.text.indexOf("Keys (2):"))
+    expect(at).toBeLessThan(s.stdout.text.indexOf("Derivation counters"))
+
+    const j = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(await run(["vault", "status", "--unlock", "--json", "--keystore", h.vaultPath], j.deps)).toBe(0)
+    const body = JSON.parse(j.stdout.text) as {
+      unlocked: { duplicateLabels: unknown[]; entries: { id: string; label: string }[] }
+    }
+    expect(body.unlocked.duplicateLabels).toEqual([
+      {
+        label: "treasury",
+        entries: [
+          { address: addressA, id: ids[0] },
+          { address: addressB, id: ids[1] },
+        ],
+      },
+    ])
+    expect(body.unlocked.entries.map((entry) => [entry.id, entry.label])).toEqual([
+      [ids[0] as string, "treasury"],
+      [ids[1] as string, "treasury"],
+    ])
+  })
+
+  test("without --unlock nothing about duplicates is said or carried: labels live inside the index", async () => {
+    const h = await initVault()
+    const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
+    expect(await run(["vault", "status", "--json", "--keystore", h.vaultPath], s.deps)).toBe(0)
+    expect(JSON.parse(s.stdout.text)).not.toHaveProperty("unlocked")
+    expect(s.stdout.text).not.toContain("duplicateLabels")
   })
 })

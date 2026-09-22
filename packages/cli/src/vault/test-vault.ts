@@ -18,7 +18,14 @@ import type { Deps } from "../deps"
 import { type CreateVaultRequest, createVault } from "./create"
 import { ARGON2_BOUNDS, setTestKdfCost } from "./crypto"
 import type { VaultFile } from "./format"
-import { defaultVaultPath, readVaultRaw, type UnlockedVault, unlockWithPassphrase } from "./store"
+import {
+  closeVault,
+  commitVault,
+  defaultVaultPath,
+  readVaultRaw,
+  type UnlockedVault,
+  unlockWithPassphrase,
+} from "./store"
 
 /** ED-3's accepted floor: the cheapest parameters the reader will open at all. */
 export const CHEAP_KDF = { version: ARGON2_BOUNDS.version, m: ARGON2_BOUNDS.m.min, t: ARGON2_BOUNDS.t.min, p: 1 }
@@ -109,6 +116,33 @@ export async function tamper(path: string, mutate: (file: VaultFile) => void | V
   const file = await readVaultJson(path)
   const next = mutate(file) ?? file
   await writeFile(path, `${JSON.stringify(next, null, 2)}\n`, "utf8")
+}
+
+/**
+ * Rewrites labels by address through the real index write path, with none of the commands'
+ * guards (BE-259). This is how a test produces the state §2 of the key-naming spec says a vault
+ * can already be in -- two keys called `X`, written before `vault new-key` checked names, or by
+ * a route that still does not -- now that the command refuses to create one. Same `commitVault`
+ * a rename uses, so the fixture is a vault this CLI could have written, not a hand-assembled file.
+ */
+export async function relabelEntries(path: string, passphrase: string, labels: Record<string, string>): Promise<void> {
+  const vault = await reopen(path, passphrase)
+  try {
+    await commitVault(
+      vault,
+      {
+        index: {
+          hd: vault.index.hd,
+          entries: vault.index.entries.map((entry) =>
+            labels[entry.address] === undefined ? entry : { ...entry, label: labels[entry.address] as string },
+          ),
+        },
+      },
+      testClock,
+    )
+  } finally {
+    closeVault(vault)
+  }
 }
 
 /** Flips one byte inside a base64url ciphertext, leaving it decodable and its tag wrong. */
