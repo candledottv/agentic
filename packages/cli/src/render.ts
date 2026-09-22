@@ -15,6 +15,9 @@
 export const ALL_AGENT_SCOPES = [
   "launch:write",
   "launch:read",
+  // Read the whole account and write nothing; the whole of the portal's "Read" preset (Read and
+  // Read:Write agent key scopes, 2026-09-22 spec). Read-only, so it is in the default too.
+  "account:read",
   "activity:write",
   "swap:write",
   "transfer:write",

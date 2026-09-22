@@ -249,7 +249,10 @@ describe("formatScopesForSummary", () => {
 
   test("DEFAULT_AGENT_SCOPES excludes swap:write", () => {
     expect(DEFAULT_AGENT_SCOPES).not.toContain("swap:write")
-    expect(DEFAULT_AGENT_SCOPES.length).toBe(3)
+    expect(DEFAULT_AGENT_SCOPES).not.toContain("transfer:write")
+    // launch:write, launch:read, account:read, activity:write -- account:read is read-only, so it
+    // rides in the omission default exactly as the API's DEFAULT_AGENT_KEY_SCOPES does.
+    expect([...DEFAULT_AGENT_SCOPES]).toEqual(["launch:write", "launch:read", "account:read", "activity:write"])
   })
 })
 

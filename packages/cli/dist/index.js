@@ -245,6 +245,7 @@ var init_render = __esm(() => {
   ALL_AGENT_SCOPES = [
     "launch:write",
     "launch:read",
+    "account:read",
     "activity:write",
     "swap:write",
     "transfer:write"
