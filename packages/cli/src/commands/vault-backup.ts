@@ -130,7 +130,7 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
     // Both destination rules run BEFORE the passphrase prompt: an operator whose destination is
     // refused should learn that without having typed a vault passphrase for a copy that is not
     // going to be made.
-    assertOutsideConfigDir(destination, deps.env)
+    assertOutsideConfigDir(destination, deps.env, deps.homedir())
     const file = parseVaultFile(raw)
     // `--to icloud` writes `CloudDocs/Candle/vault-<stamp>.enc`. Candle/ is created at write
     // time. classifyDestination realpaths that parent first; if iCloud Drive exists and Candle
@@ -479,9 +479,10 @@ export function isInsideDir(dir: string, target: string, api: PathApi = nodePath
 export function assertOutsideConfigDir(
   destination: string,
   env: Record<string, string | undefined>,
+  home: string,
   api: PathApi = nodePath,
 ): void {
-  const config = api.resolve(candleConfigDir(env))
+  const config = api.resolve(candleConfigDir(env, home))
   if (isInsideDir(config, destination, api)) {
     throw new VaultError(
       "VAULT_BACKUP_INSIDE_CONFIG",

@@ -21,6 +21,7 @@ import {
   createTestDeps,
   jsonResponse,
   type RouteHandler,
+  TEST_HOME,
 } from "../test-support"
 import {
   createKeystore,
@@ -62,14 +63,14 @@ function prompts(answers: string[]) {
 
 async function seedTeeStore(dir: string, entries: KeystoreEntry[], passphrase = PASSPHRASE): Promise<string> {
   const ks = await createKeystore(passphrase)
-  const path = defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir })
+  const path = defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME)
   await writeKeystoreFile(path, await serializeKeystore(entries, ks.key, ks.salt, ks.iterations, "ember-tee"))
   return path
 }
 
 async function openStore(dir: string, passphrase = PASSPHRASE) {
   return await readKeystore(
-    await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8"),
+    await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME), "utf8"),
     passphrase,
     {
       expectPurpose: "ember-tee",
@@ -349,7 +350,7 @@ describe("tee new (T19, HW-01)", () => {
     const code = await run(["tee", "new", "--label", "scalper"], deps)
     expect(code).toBe(0)
     expect(calls).toHaveLength(0)
-    const path = defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir })
+    const path = defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME)
     const raw = await realReadFile(path, "utf8")
     expect(JSON.parse(raw).purpose).toBe("ember-tee")
     const opened = await readKeystore(raw, PASSPHRASE, { expectPurpose: "ember-tee" })
@@ -373,7 +374,7 @@ describe("tee new (T19, HW-01)", () => {
     expect(short.stderr.text).toContain("at least 12")
     const mismatch = depsFor(dir, fetch, [PASSPHRASE, "something else entirely"])
     expect(await run(["tee", "new"], mismatch.deps)).toBe(1)
-    await expect(realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8")).rejects.toThrow()
+    await expect(realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME), "utf8")).rejects.toThrow()
   })
 
   test("a second `tee new` appends to the existing store under the same passphrase", async () => {
@@ -402,7 +403,7 @@ describe("the store written before the tee rename (hot-wallets.enc)", () => {
     )
     const file = JSON.parse(sealed)
     file.purpose = "ember-hot"
-    const path = legacyTeeKeystorePath({ CANDLE_CONFIG_DIR: dir })
+    const path = legacyTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME)
     await writeKeystoreFile(path, JSON.stringify(file))
     return path
   }
@@ -502,7 +503,7 @@ describe("tee enable (T19/T20, HW-02/HW-03)", () => {
     expect(JSON.stringify(api.submits[0])).not.toContain(base58.encode(teeKey.secretKey))
     expect(stdout.text).toContain("Remote authority verified")
     const opened = await readKeystore(
-      await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8"),
+      await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME), "utf8"),
       PASSPHRASE,
       {
         expectPurpose: "ember-tee",
@@ -678,7 +679,7 @@ describe("tee disable (T23, HW-06)", () => {
     expect(stdout.text).toContain("verification is pending")
     expect(stdout.text).toContain("--emergency")
     const opened = await readKeystore(
-      await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8"),
+      await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME), "utf8"),
       PASSPHRASE,
       {
         expectPurpose: "ember-tee",
@@ -781,7 +782,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
     expect(swept).toEqual([{ signatures: rpc.sent.map(sigOf), residuals: [] }])
     expect(parsed.receipts.map((r: { signature: string }) => r.signature)).toEqual(rpc.sent.map(sigOf))
     const opened = await readKeystore(
-      await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }), "utf8"),
+      await realReadFile(defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME), "utf8"),
       PASSPHRASE,
       {
         expectPurpose: "ember-tee",
@@ -1281,7 +1282,7 @@ describe("T28: two writers cannot lose keys (TEE wallet store lock + merge on co
             tee: { network: "solana-mainnet" },
           })
           await writeKeystoreFile(
-            defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }),
+            defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME),
             await serializeKeystore(current.entries, current.key, current.salt, current.iterations, "ember-tee"),
           )
         }

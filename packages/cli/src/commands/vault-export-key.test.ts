@@ -37,7 +37,7 @@ async function harness(
     stdout,
     stderr,
     env: { CANDLE_CONFIG_DIR: dir, HOME: dir, ...(opts.env ?? {}) },
-    isTTY: { stdin: true, stdout: true },
+    isTTY: { stdin: true, stdout: true, stderr: true },
     promptSecret: async () => {
       const next = secrets.shift()
       if (next === undefined) throw new Error("promptSecret asked for more than the test scripted")

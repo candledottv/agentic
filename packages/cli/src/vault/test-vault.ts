@@ -81,7 +81,9 @@ export async function makeVault(
   opts: Partial<Pick<CreateVaultRequest, "passphrase" | "strength" | "rootEntropy" | "hd" | "label">> = {},
 ): Promise<MadeVault> {
   const dir = await tempDir()
-  const path = defaultVaultPath({ CANDLE_CONFIG_DIR: dir })
+  // The fixture's own temp dir is both the config dir and the home it would fall back to, so
+  // `makeVault` never resolves the developer's home (BE-274, D1).
+  const path = defaultVaultPath({ CANDLE_CONFIG_DIR: dir }, dir)
   const passphrase = opts.passphrase ?? FIXTURE_PASSPHRASE
   const vault = await createVault(
     {

@@ -78,7 +78,7 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
   // discovered on the next vault command.
   let configDir: string | undefined
   try {
-    configDir = candleConfigDir(deps.env)
+    configDir = candleConfigDir(deps.env, deps.homedir())
     rows.push({
       check: "Config directory",
       state: "PASS",
@@ -94,7 +94,7 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
   if (configDir === undefined) {
     rows.push({ check: "Vault", state: "SKIP", detail: `${CONFIG_DIR_ENV} is not usable, so no path to check` })
   } else {
-    const vaultPath = defaultVaultPath(deps.env)
+    const vaultPath = defaultVaultPath(deps.env, deps.homedir())
     rows.push(
       (await fileExists(vaultPath))
         ? { check: "Vault", state: "PASS", detail: vaultPath }

@@ -10,7 +10,14 @@ import { join } from "node:path"
 import { base58 } from "@scure/base"
 import { Keypair } from "@solana/web3.js"
 import { run } from "../index"
-import { createCapture, createFakeStore, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
+import {
+  createCapture,
+  createFakeStore,
+  createRoutedFetch,
+  createTestDeps,
+  jsonResponse,
+  TEST_HOME,
+} from "../test-support"
 import { addressFromSecret64 } from "../vault/ed25519"
 import { parseIndexPlaintext, parseVaultFile, serializeIndexPlaintext } from "../vault/format"
 import { wipe } from "../vault/hygiene"
@@ -146,7 +153,7 @@ function mixedFixtureEntries(): {
 
 async function seedTeeStore(dir: string, entries: KeystoreEntry[], path?: string): Promise<string> {
   const ks = await createKeystore(TEE_PASS)
-  const target = path ?? defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir })
+  const target = path ?? defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME)
   await writeKeystoreFile(
     target,
     await serializeKeystore(entries, ks.key, ks.salt, ks.iterations, TEE_KEYSTORE_PURPOSE),
@@ -730,7 +737,7 @@ describe("T37: CC-05 TEE store migration", () => {
           ],
         },
       }).entry
-      const hotPath = legacyTeeKeystorePath({ CANDLE_CONFIG_DIR: hotDir })
+      const hotPath = legacyTeeKeystorePath({ CANDLE_CONFIG_DIR: hotDir }, TEST_HOME)
       // Write with the legacy purpose marker so readKeystore accepts it as ember-tee.
       const ks = await createKeystore(TEE_PASS)
       const sealed = await serializeKeystore([hotEntry], ks.key, ks.salt, ks.iterations, TEE_KEYSTORE_PURPOSE)

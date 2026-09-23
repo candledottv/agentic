@@ -176,7 +176,7 @@ async function harness(opts: HarnessOptions = {}): Promise<Harness> {
     env,
     platform: opts.platform ?? "darwin",
     arch: opts.arch ?? "arm64",
-    isTTY: { stdin: opts.tty ?? true, stdout: opts.tty ?? true },
+    isTTY: { stdin: opts.tty ?? true, stdout: opts.tty ?? true, stderr: opts.tty ?? true },
     spawnHelper,
     releasePolicy: (opts.policy ?? "signed") === "signed" ? SIGNED : RELEASE_POLICY,
     promptSecret: async (text: string) => {

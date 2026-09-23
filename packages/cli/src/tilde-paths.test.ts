@@ -45,7 +45,7 @@ async function ran(argv: string[], opts: { env?: Record<string, string> } = {}):
     stdout,
     stderr,
     env: { CANDLE_CONFIG_DIR: dir, ...(opts.env ?? {}) },
-    isTTY: { stdin: true, stdout: true },
+    isTTY: { stdin: true, stdout: true, stderr: true },
     readFile: (async (path: string) => {
       reads.push(path)
       throw Object.assign(new Error("ENOENT"), { code: "ENOENT" })

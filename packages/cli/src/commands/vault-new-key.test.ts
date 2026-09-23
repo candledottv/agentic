@@ -36,7 +36,7 @@ async function newKey(fx: Awaited<ReturnType<typeof fixture>>, args: string[]) {
     stdout,
     stderr,
     env: { CANDLE_CONFIG_DIR: fx.dir, HOME: fx.dir },
-    isTTY: { stdin: true, stdout: true },
+    isTTY: { stdin: true, stdout: true, stderr: true },
     promptSecret: async () => {
       prompted++
       return fx.passphrase

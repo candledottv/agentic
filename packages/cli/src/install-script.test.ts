@@ -61,7 +61,6 @@ beforeAll(async () => {
     "mkdir",
     "mktemp",
     "mv",
-    "python3",
     "readlink",
     "rm",
     "sed",
@@ -72,6 +71,24 @@ beforeAll(async () => {
   ]) {
     const executable = Bun.which(name)
     if (executable) await symlink(executable, join(fixtureTools, name))
+  }
+  // D3 (BE-274): python is the one of these that is routinely a pyenv SHIM -- a shell script whose
+  // own resolution needs `pyenv` on the PATH, which the tool-only PATH above deliberately is not.
+  // Symlinking `Bun.which("python3")` therefore produced a `python3` that could not run: the
+  // `ditto` stub exited 1 three describes later, with no hint of why. So ask python where its
+  // interpreter actually is and symlink THAT, which runs with no PATH at all.
+  const interpreter = Bun.spawnSync(["python3", "-c", "import sys; print(sys.executable)"])
+  if (interpreter.exitCode !== 0) {
+    throw new Error(`python3 -c is required by the ditto stub and did not run: ${interpreter.stderr.toString()}`)
+  }
+  const pythonPath = interpreter.stdout.toString().trim()
+  if (pythonPath === "") throw new Error("python3 answered with no sys.executable")
+  await symlink(pythonPath, join(fixtureTools, "python3"))
+  // One smoke check, before any test uses it: a named failure at setup beats `ditto` exiting 1
+  // three describes later.
+  const smoke = Bun.spawnSync([join(fixtureTools, "python3"), "-c", "print(1)"], { env: { PATH: fixtureTools } })
+  if (smoke.exitCode !== 0) {
+    throw new Error(`the resolved python3 does not run on the stub PATH: ${smoke.stderr.toString()}`)
   }
   fixtures = {
     [ASSET]: FAKE_BINARY,
@@ -166,6 +183,23 @@ async function sourcedPath(shell: "bash" | "zsh", rcFile: string) {
   await rm(r.home, { recursive: true, force: true })
   return { finalPath, binDir: r.binDir }
 }
+
+/**
+ * T3 (BE-274, D3): the fixture's `python3` runs on the tool-only PATH the `ditto` stub gives it.
+ *
+ * The stub extracts the macOS helper's zip with `python3 -c "import zipfile..."` and `PATH` set to
+ * the tool directory alone. A pyenv `python3` is a SHIM -- a shell script that re-resolves through
+ * `pyenv`, which is not on that PATH -- so symlinking whatever is first on the developer's PATH
+ * produced a `python3` that could not run, and the failure surfaced as `ditto` exiting 1 inside an
+ * unrelated assertion. `beforeAll` resolves `sys.executable` instead; this pins that it worked.
+ */
+describe("T3: the stub PATH's python3", () => {
+  test("is an interpreter that runs with the tool directory as its whole PATH", () => {
+    const ran = Bun.spawnSync([join(fixtureTools, "python3"), "-c", "print('ok')"], { env: { PATH: fixtureTools } })
+    expect(ran.exitCode, ran.stderr.toString()).toBe(0)
+    expect(ran.stdout.toString().trim()).toBe("ok")
+  })
+})
 
 describe("install.sh", () => {
   test("installs the platform binary, verifies its checksum, and writes the PATH block once", async () => {

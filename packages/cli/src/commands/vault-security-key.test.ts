@@ -26,7 +26,14 @@ import type { Deps } from "../deps"
 import { AUTHDATA_FLAG_BE, AUTHDATA_FLAG_UP, AUTHDATA_FLAG_UV, handleLine, RP_ID } from "../fido2-helper/protocol"
 import { type BackendLogEntry, type HelperScript, scriptedBackend } from "../fido2-helper/test-backend"
 import { realSpawnHelper, run } from "../index"
-import { createCapture, createFakeStore, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
+import {
+  createCapture,
+  createFakeStore,
+  createRoutedFetch,
+  createTestDeps,
+  jsonResponse,
+  TEST_HOME,
+} from "../test-support"
 import { HELPER_ENV } from "../vault/fido2"
 import { HIDRAW_MESSAGE, SHIPPING_TARGETS } from "../vault/platform"
 import { generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
@@ -149,7 +156,7 @@ async function harness(opts: HarnessOptions = {}): Promise<Harness> {
     env,
     platform: opts.platform ?? "linux",
     arch: opts.arch ?? "x64",
-    isTTY: { stdin: opts.tty ?? true, stdout: opts.tty ?? true },
+    isTTY: { stdin: opts.tty ?? true, stdout: opts.tty ?? true, stderr: opts.tty ?? true },
     spawnHelper,
     promptSecret: async (text: string) => {
       asked.push(`secret: ${text}`)
@@ -957,7 +964,7 @@ describe("TEE paths honour --factor and --device (the vault-backed TEE lifecycle
 
   async function seedTeeStore(dir: string, entries: KeystoreEntry[]): Promise<string> {
     const ks = await createKeystore(TEE_PASS)
-    const path = defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir })
+    const path = defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: dir }, TEST_HOME)
     await writeKeystoreFile(
       path,
       await serializeKeystore(entries, ks.key, ks.salt, ks.iterations, TEE_KEYSTORE_PURPOSE),

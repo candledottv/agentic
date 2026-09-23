@@ -68,7 +68,7 @@ export async function vaultImportLegacy(args: string[], ctx: CommandContext): Pr
   let fromPath = parsed.values["--from"]
   if (fromPath === undefined) {
     try {
-      fromPath = await resolveDefaultTeePath(deps.env)
+      fromPath = await resolveDefaultTeePath(deps.env, deps.homedir())
     } catch (error) {
       if (isUsageError(error)) return usage(ctx, error.message)
       throw error
@@ -193,15 +193,15 @@ export async function vaultImportLegacy(args: string[], ctx: CommandContext): Pr
   })
 }
 
-async function resolveDefaultTeePath(env: Record<string, string | undefined>): Promise<string> {
-  const current = defaultTeeKeystorePath(env)
+async function resolveDefaultTeePath(env: Record<string, string | undefined>, home: string): Promise<string> {
+  const current = defaultTeeKeystorePath(env, home)
   try {
     await readFile(current)
     return current
   } catch {
     // Fall through to the pre-rename path only when the current one is absent, matching tee.ts.
   }
-  return legacyTeeKeystorePath(env)
+  return legacyTeeKeystorePath(env, home)
 }
 
 async function migrationGrantContext(ctx: CommandContext): Promise<MigrationGrantContext | null> {

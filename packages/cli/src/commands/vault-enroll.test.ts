@@ -31,7 +31,7 @@ async function ran(argv: string[], vaultPath: string): Promise<{ code: number; s
     stdout,
     stderr,
     env: {},
-    isTTY: { stdin: true, stdout: true },
+    isTTY: { stdin: true, stdout: true, stderr: true },
     promptSecret: async (text: string) => {
       throw new Error(`nothing in this test should prompt: ${text}`)
     },

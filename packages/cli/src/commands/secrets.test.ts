@@ -32,7 +32,7 @@ function harness(opts: { tty?: boolean; profile?: boolean } = {}) {
     stderr,
     store,
     secretsStore,
-    isTTY: { stdin: opts.tty ?? true, stdout: opts.tty ?? true },
+    isTTY: { stdin: opts.tty ?? true, stdout: opts.tty ?? true, stderr: opts.tty ?? true },
     promptSecret: async (text) => {
       asked.push(text)
       return "sk-live-very-secret"

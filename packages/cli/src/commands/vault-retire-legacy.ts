@@ -47,7 +47,7 @@ export async function vaultRetireLegacy(args: string[], ctx: CommandContext): Pr
   let fromPath = parsed.values["--from"]
   if (fromPath === undefined) {
     try {
-      fromPath = await resolveLegacyPath(deps.env)
+      fromPath = await resolveLegacyPath(deps.env, deps.homedir())
     } catch (error) {
       if (isUsageError(error)) return usage(ctx, error.message)
       throw error
@@ -146,12 +146,12 @@ export async function vaultRetireLegacy(args: string[], ctx: CommandContext): Pr
   })
 }
 
-async function resolveLegacyPath(env: Record<string, string | undefined>): Promise<string> {
-  const current = defaultTeeKeystorePath(env)
+async function resolveLegacyPath(env: Record<string, string | undefined>, home: string): Promise<string> {
+  const current = defaultTeeKeystorePath(env, home)
   try {
     await stat(current)
     return current
   } catch {
-    return legacyTeeKeystorePath(env)
+    return legacyTeeKeystorePath(env, home)
   }
 }

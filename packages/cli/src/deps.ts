@@ -59,6 +59,17 @@ export interface Deps {
    * reading `process.versions.node` directly) so that check's FAIL branch is testable without
    * actually running the CLI under an old Node. */
   nodeVersion: string
+  /**
+   * This machine's home directory, for the ONE question that reads it: where the config directory
+   * is when `CANDLE_CONFIG_DIR` is unset. `index.ts` binds `node:os`'s `homedir`, beside `hostname`
+   * and `nodeVersion`, which are injected for the same reason.
+   *
+   * The vault's default path is built from this (BE-274, D1), so a test that resolved it read the
+   * DEVELOPER's home: the "no vault here" branch passed on CI, where nothing has run `vault init`,
+   * and failed on every machine that had. `createTestDeps` defaults it to a path that cannot exist,
+   * so that branch is the same branch everywhere.
+   */
+  homedir: () => string
   /** This machine's hostname, which `auth login` puts in the default `clientName` shown on the
    * approval screen. Injected for the same reason `nodeVersion` is: the interesting branch is a
    * hostname long enough to push the default name past the API's 64-character cap, and that is
@@ -104,12 +115,18 @@ export interface Deps {
    */
   promptLine: (promptText: string) => Promise<string>
   /**
-   * Whether stdin and stdout are terminals (Ember Phase 2, BE-136). Injected rather than read from
-   * `process` at the call site because the refusals that depend on it are the point of two tests:
-   * the phrase ceremony must refuse BEFORE it renders anything when either end is not a TTY (T54),
-   * and every vault command that collects a secret refuses without one rather than falling back.
+   * Whether stdin, stdout and stderr are terminals (Ember Phase 2, BE-136). Injected rather than
+   * read from `process` at the call site because the refusals that depend on it are the point of
+   * two tests: the phrase ceremony must refuse BEFORE it renders anything when either end is not a
+   * TTY (T54), and every vault command that collects a secret refuses without one rather than
+   * falling back.
+   *
+   * `stderr` is here because the prompt writes THERE, not to stdout (`prompt-streams.ts`'s
+   * `realPromptStreams` names `output: process.stderr`). `requireTty` demands stdin and stdout and
+   * is unchanged; `requirePromptStreams` (BE-274, D7) demands the two streams the prompt actually
+   * uses, so a listing whose whole output is a document can be redirected to a file.
    */
-  isTTY: { stdin: boolean; stdout: boolean }
+  isTTY: { stdin: boolean; stdout: boolean; stderr: boolean }
   /** This process's executable. A compiled binary reports itself; node or bun report the runtime.
    * Injected so update's install-method detection is testable without running a real binary. */
   execPath: string

@@ -25,7 +25,7 @@ import { join, posix, win32 } from "node:path"
 import type { Deps } from "../deps"
 import { run } from "../index"
 import { formatBytes } from "../progress"
-import { createCapture, createTestDeps } from "../test-support"
+import { createCapture, createTestDeps, TEST_HOME } from "../test-support"
 import {
   accountDomainOf,
   assertBackupDomainAllowed,
@@ -78,7 +78,7 @@ async function harness(opts: { secrets?: string[]; env?: Record<string, string> 
     stdout,
     stderr,
     env: { CANDLE_CONFIG_DIR: dir, HOME: dir, ...(opts.env ?? {}) },
-    isTTY: { stdin: true, stdout: true },
+    isTTY: { stdin: true, stdout: true, stderr: true },
     promptSecret: async () => {
       const next = secrets.shift()
       if (next === undefined) throw new Error("promptSecret asked for more than the test scripted")
@@ -715,11 +715,13 @@ describe("BE-178 finding 5: the config-dir guard on Windows-shaped paths", () =>
 
   test("assertOutsideConfigDir refuses a Windows destination inside CANDLE_CONFIG_DIR", () => {
     const env = { CANDLE_CONFIG_DIR: "C:\\Users\\me\\.config\\candle" }
-    expect(() => assertOutsideConfigDir("C:\\Users\\me\\.config\\candle\\copy.enc", env, win32)).toThrow(
+    expect(() => assertOutsideConfigDir("C:\\Users\\me\\.config\\candle\\copy.enc", env, TEST_HOME, win32)).toThrow(
       /where the vault itself lives/,
     )
-    expect(() => assertOutsideConfigDir("D:\\backups\\copy.enc", env, win32)).not.toThrow()
-    expect(() => assertOutsideConfigDir("C:\\Users\\me\\.config\\candle-backups\\copy.enc", env, win32)).not.toThrow()
+    expect(() => assertOutsideConfigDir("D:\\backups\\copy.enc", env, TEST_HOME, win32)).not.toThrow()
+    expect(() =>
+      assertOutsideConfigDir("C:\\Users\\me\\.config\\candle-backups\\copy.enc", env, TEST_HOME, win32),
+    ).not.toThrow()
   })
 })
 

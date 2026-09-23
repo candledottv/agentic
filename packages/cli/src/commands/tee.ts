@@ -126,7 +126,8 @@ function teeStorePathsFor(
   const flag = parsed.values["--keystore"]
   if (flag !== undefined) return { current: flag, legacy: flag }
   try {
-    return { current: defaultTeeKeystorePath(ctx.deps.env), legacy: legacyTeeKeystorePath(ctx.deps.env) }
+    const home = ctx.deps.homedir()
+    return { current: defaultTeeKeystorePath(ctx.deps.env, home), legacy: legacyTeeKeystorePath(ctx.deps.env, home) }
   } catch (error) {
     if (isUsageError(error)) return { error: error.message }
     throw error

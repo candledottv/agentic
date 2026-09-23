@@ -12,6 +12,14 @@ import { realRunPlugin } from "./plugins"
 import type { SecretStore } from "./secret-store"
 import { RELEASE_POLICY } from "./vault/release-policy"
 
+/**
+ * The home every test resolves the default config directory from (BE-274, D1). Never the machine's
+ * real one: the vault's default path is built from it, and a developer who has run `vault init`
+ * would otherwise make the "no vault here" branch untestable locally -- green on CI, red at home,
+ * which is the bug this seam exists for. A test that wants a home it can write to passes its own.
+ */
+export const TEST_HOME = "/nonexistent/candle-test-home"
+
 export function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -178,6 +186,7 @@ export function createTestDeps(overrides: Partial<Deps> & { fetch: typeof fetch 
     env: {},
     nodeVersion: process.versions.node,
     hostname: "test-host",
+    homedir: () => TEST_HOME,
     // Throwing defaults, like fetch's must-be-supplied rule but softer: only tests that
     // exercise wallets import's file/prompt paths need these, and a test that hits one
     // unexpectedly should fail loud, not silently read something.
@@ -204,7 +213,7 @@ export function createTestDeps(overrides: Partial<Deps> & { fetch: typeof fetch 
     },
     // TTY by default: the vault commands refuse without one, and a test that means to exercise
     // that refusal says so explicitly rather than getting it by accident from an inert default.
-    isTTY: { stdin: true, stdout: true },
+    isTTY: { stdin: true, stdout: true, stderr: true },
     execPath: "/usr/local/bin/node",
     argv1: "/usr/local/lib/node_modules/@candledottv/cli/dist/index.js",
     platformKey: "linux-x64",

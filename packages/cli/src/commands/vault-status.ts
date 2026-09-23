@@ -72,7 +72,7 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
     const sidecar = await readSidecar(sidecarPath(path))
     // CC-05 / AD-3: named if present, never opened, never read. The vault has no code path that
     // touches this file at all.
-    const legacy = legacyWalletsPath(deps.env)
+    const legacy = legacyWalletsPath(deps.env, deps.homedir())
     const legacyPresent = await fileExists(legacy)
 
     const envelopes = file.envelopes.map((envelope) => describeEnvelope(envelope, facts))

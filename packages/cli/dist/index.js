@@ -333,11 +333,11 @@ var init_release = __esm(() => {
 // src/wallet-keystore.ts
 import { chmod as chmod2, mkdir as mkdir2, readFile as readFile2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
 import { dirname as dirname2, join as join3 } from "node:path";
-function defaultTeeKeystorePath(env) {
-  return join3(candleConfigDir(env), "tee-wallets.enc");
+function defaultTeeKeystorePath(env, home) {
+  return join3(candleConfigDir(env, home), "tee-wallets.enc");
 }
-function legacyTeeKeystorePath(env) {
-  return join3(candleConfigDir(env), "hot-wallets.enc");
+function legacyTeeKeystorePath(env, home) {
+  return join3(candleConfigDir(env, home), "hot-wallets.enc");
 }
 async function deriveKeystoreKey(passphrase, salt, iterations) {
   const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
@@ -3559,9 +3559,8 @@ __export(exports_store, {
   CONFIG_DIR_ENV: () => CONFIG_DIR_ENV
 });
 import { chmod as chmod4, mkdir as mkdir4, readFile as readFile4, stat as stat2 } from "node:fs/promises";
-import { homedir as homedir3 } from "node:os";
 import { join as join5 } from "node:path";
-function candleConfigDir(env) {
+function candleConfigDir(env, home) {
   const configured = env.CANDLE_CONFIG_DIR?.trim();
   if (configured) {
     const refusal = refuseUnexpandedTilde(CONFIG_DIR_ENV, configured);
@@ -3569,13 +3568,13 @@ function candleConfigDir(env) {
       throw new UsageError(refusal);
     return configured;
   }
-  return join5(homedir3(), ".config", "candle");
+  return join5(home, ".config", "candle");
 }
-function defaultVaultPath(env) {
-  return join5(candleConfigDir(env), "vault.enc");
+function defaultVaultPath(env, home) {
+  return join5(candleConfigDir(env, home), "vault.enc");
 }
-function legacyWalletsPath(env) {
-  return join5(candleConfigDir(env), "wallets.enc");
+function legacyWalletsPath(env, home) {
+  return join5(candleConfigDir(env, home), "wallets.enc");
 }
 async function readVaultRaw(path) {
   try {
@@ -14974,7 +14973,7 @@ function vaultPathFor(ctx, parsed) {
   if (flag !== undefined)
     return { path: flag, source: "flag" };
   try {
-    const path = defaultVaultPath(ctx.deps.env);
+    const path = defaultVaultPath(ctx.deps.env, ctx.deps.homedir());
     return { path, source: ctx.deps.env[CONFIG_DIR_ENV]?.trim() ? "env" : "default" };
   } catch (error) {
     if (isUsageError(error))
@@ -35235,7 +35234,7 @@ var init_server2 = __esm(() => {
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { chmod as chmod8, readFile as readFile8, realpath, rename as rename5, unlink, writeFile as writeFile7 } from "node:fs/promises";
-import { hostname } from "node:os";
+import { homedir as homedir6, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
 // src/client.ts
@@ -36920,7 +36919,7 @@ async function doctor(args, ctx) {
   rows.push({ check: "Keychain backend", state: "PASS", detail: deps.backend });
   let configDir2;
   try {
-    configDir2 = candleConfigDir(deps.env);
+    configDir2 = candleConfigDir(deps.env, deps.homedir());
     rows.push({
       check: "Config directory",
       state: "PASS",
@@ -36936,7 +36935,7 @@ async function doctor(args, ctx) {
   if (configDir2 === undefined) {
     rows.push({ check: "Vault", state: "SKIP", detail: `${CONFIG_DIR_ENV} is not usable, so no path to check` });
   } else {
-    const vaultPath = defaultVaultPath(deps.env);
+    const vaultPath = defaultVaultPath(deps.env, deps.homedir());
     rows.push(await fileExists(vaultPath) ? { check: "Vault", state: "PASS", detail: vaultPath } : {
       check: "Vault",
       state: "SKIP",
@@ -38190,7 +38189,7 @@ function createSolanaRpc(url, fetchFn) {
 
 // src/vault/domains.ts
 init_errors();
-import { homedir as homedir4 } from "node:os";
+import { homedir as homedir3 } from "node:os";
 import { basename, dirname as dirname4, isAbsolute, join as join6, resolve, sep } from "node:path";
 var ICLOUD_DRIVE_SEGMENTS = ["Library", "Mobile Documents", "com~apple~CloudDocs"];
 var ICLOUD_SHORTHAND = "icloud";
@@ -38205,7 +38204,7 @@ function backupStamp(at) {
   return new Date(at).toISOString().replace(/[-:]/gu, "").replace(/\.\d+Z$/u, "Z");
 }
 function homeDirOf(env) {
-  return env.HOME?.trim() || homedir4();
+  return env.HOME?.trim() || homedir3();
 }
 var OTHER_CLOUD_MARKERS = [
   "Library/CloudStorage",
@@ -38241,7 +38240,7 @@ function placeResolvedPath(absolute, home) {
 }
 async function classifyDestination(path, opts) {
   const absolute = isAbsolute(path) ? path : resolve(path);
-  const spelledHome = opts.home ?? homedir4();
+  const spelledHome = opts.home ?? homedir3();
   let home;
   try {
     home = await opts.realpath(spelledHome);
@@ -42242,7 +42241,7 @@ init_esm();
 init_zod();
 import { createHash, sign } from "node:crypto";
 import { mkdir as mkdir5, open as open3, readFile as readFile5, rename as rename3, writeFile as writeFile4 } from "node:fs/promises";
-import { homedir as homedir5 } from "node:os";
+import { homedir as homedir4 } from "node:os";
 import { join as join9 } from "node:path";
 class TradingError extends Error {
   code;
@@ -42476,7 +42475,7 @@ function jobPath(kind, id) {
   return `/api/v1/${rail}/jobs/${encodeURIComponent(id)}`;
 }
 function operationPath(ctx, key, id) {
-  const dir = ctx.deps.env.CANDLE_CONFIG_DIR || join9(ctx.deps.env.HOME || homedir5(), ".config", "candle");
+  const dir = ctx.deps.env.CANDLE_CONFIG_DIR || join9(ctx.deps.env.HOME || homedir4(), ".config", "candle");
   const hash = createHash("sha256").update(JSON.stringify([ctx.apiUrl, key, id])).digest("hex");
   return join9(dir, "operations", `${hash}.json`);
 }
@@ -48189,7 +48188,8 @@ function teeStorePathsFor(ctx, parsed) {
   if (flag !== undefined)
     return { current: flag, legacy: flag };
   try {
-    return { current: defaultTeeKeystorePath(ctx.deps.env), legacy: legacyTeeKeystorePath(ctx.deps.env) };
+    const home = ctx.deps.homedir();
+    return { current: defaultTeeKeystorePath(ctx.deps.env, home), legacy: legacyTeeKeystorePath(ctx.deps.env, home) };
   } catch (error) {
     if (isUsageError(error))
       return { error: error.message };
@@ -50353,7 +50353,7 @@ async function vaultBackup(args, ctx) {
 `);
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
-    assertOutsideConfigDir(destination, deps.env);
+    assertOutsideConfigDir(destination, deps.env, deps.homedir());
     const file = parseVaultFile(raw);
     if (target.requires !== undefined) {
       const folder = dirname8(destination);
@@ -50563,8 +50563,8 @@ function isInsideDir(dir, target, api = nodePath) {
     return false;
   return between !== ".." && !between.startsWith(`..${api.sep}`);
 }
-function assertOutsideConfigDir(destination, env, api = nodePath) {
-  const config = api.resolve(candleConfigDir(env));
+function assertOutsideConfigDir(destination, env, home, api = nodePath) {
+  const config = api.resolve(candleConfigDir(env, home));
   if (isInsideDir(config, destination, api)) {
     throw new VaultError("VAULT_BACKUP_INSIDE_CONFIG", `${destination} is inside ${config}, where the vault itself lives.`, {
       suggestion: "A copy beside the original is lost with it. Back up to another disk, another machine, or removable media."
@@ -52597,7 +52597,7 @@ async function vaultImportLegacy(args, ctx) {
   let fromPath = parsed.values["--from"];
   if (fromPath === undefined) {
     try {
-      fromPath = await resolveDefaultTeePath(deps.env);
+      fromPath = await resolveDefaultTeePath(deps.env, deps.homedir());
     } catch (error) {
       if (isUsageError(error))
         return usage(ctx, error.message);
@@ -52696,13 +52696,13 @@ async function vaultImportLegacy(args, ctx) {
     });
   });
 }
-async function resolveDefaultTeePath(env) {
-  const current = defaultTeeKeystorePath(env);
+async function resolveDefaultTeePath(env, home) {
+  const current = defaultTeeKeystorePath(env, home);
   try {
     await readFile6(current);
     return current;
   } catch {}
-  return legacyTeeKeystorePath(env);
+  return legacyTeeKeystorePath(env, home);
 }
 async function migrationGrantContext(ctx) {
   const config = await ctx.deps.readConfig();
@@ -54036,7 +54036,7 @@ async function vaultRetireLegacy(args, ctx) {
   let fromPath = parsed.values["--from"];
   if (fromPath === undefined) {
     try {
-      fromPath = await resolveLegacyPath(deps.env);
+      fromPath = await resolveLegacyPath(deps.env, deps.homedir());
     } catch (error) {
       if (isUsageError(error))
         return usage(ctx, error.message);
@@ -54112,13 +54112,13 @@ async function vaultRetireLegacy(args, ctx) {
     return 0;
   });
 }
-async function resolveLegacyPath(env) {
-  const current = defaultTeeKeystorePath(env);
+async function resolveLegacyPath(env, home) {
+  const current = defaultTeeKeystorePath(env, home);
   try {
     await stat4(current);
     return current;
   } catch {
-    return legacyTeeKeystorePath(env);
+    return legacyTeeKeystorePath(env, home);
   }
 }
 
@@ -54161,7 +54161,7 @@ async function vaultStatus(args, ctx) {
       assertVaultHelperIdentities(deps, file.envelopes);
     const facts = await currentPlatformFacts(deps);
     const sidecar = await readSidecar(sidecarPath(path));
-    const legacy = legacyWalletsPath(deps.env);
+    const legacy = legacyWalletsPath(deps.env, deps.homedir());
     const legacyPresent = await fileExists(legacy);
     const envelopes = file.envelopes.map((envelope) => describeEnvelope(envelope, facts));
     const recoverable = countRecoverableFactors(file.envelopes);
@@ -54575,10 +54575,10 @@ function messageOf2(error) {
 
 // src/config.ts
 import { chmod as chmod7, mkdir as mkdir7, readFile as readFile7, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
-import { homedir as homedir6 } from "node:os";
+import { homedir as homedir5 } from "node:os";
 import { join as join12 } from "node:path";
 function configDir2() {
-  return process.env.CANDLE_CONFIG_DIR?.trim() || join12(homedir6(), ".config", "candle");
+  return process.env.CANDLE_CONFIG_DIR?.trim() || join12(homedir5(), ".config", "candle");
 }
 function configFilePath() {
   return join12(configDir2(), "config.json");
@@ -55214,6 +55214,7 @@ async function buildRealDeps() {
     env: process.env,
     nodeVersion: process.versions.node,
     hostname: hostname(),
+    homedir: homedir6,
     runMcpServer: async (env) => {
       const { runStdioServer: runStdioServer2 } = await Promise.resolve().then(() => (init_server2(), exports_server));
       await runStdioServer2(env);
@@ -55231,7 +55232,11 @@ async function buildRealDeps() {
     writeFile: (path, content) => writeFile7(path, content, { mode: 384 }),
     promptSecret: promptHiddenSecret,
     promptLine: promptVisibleLine,
-    isTTY: { stdin: Boolean(process.stdin.isTTY), stdout: Boolean(process.stdout.isTTY) },
+    isTTY: {
+      stdin: Boolean(process.stdin.isTTY),
+      stdout: Boolean(process.stdout.isTTY),
+      stderr: Boolean(process.stderr.isTTY)
+    },
     execPath: process.execPath,
     argv1: process.argv[1] ?? "",
     platformKey: platformKey(process.platform, process.arch),

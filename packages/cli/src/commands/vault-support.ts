@@ -126,7 +126,7 @@ export function vaultPathFor(ctx: CommandContext, parsed: ParsedArgs): ResolvedV
   // takes `--keystore`.
   if (flag !== undefined) return { path: flag, source: "flag" }
   try {
-    const path = defaultVaultPath(ctx.deps.env)
+    const path = defaultVaultPath(ctx.deps.env, ctx.deps.homedir())
     return { path, source: ctx.deps.env[CONFIG_DIR_ENV]?.trim() ? "env" : "default" }
   } catch (error) {
     if (isUsageError(error)) return { error: error.message }

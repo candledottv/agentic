@@ -20,7 +20,6 @@
  * does not authenticate), so it refuses with `VAULT_CHANGED` and writes nothing.
  */
 import { chmod, mkdir, readFile, stat } from "node:fs/promises"
-import { homedir } from "node:os"
 import { join } from "node:path"
 import { refuseUnexpandedTilde, UsageError } from "../args"
 import type { Deps } from "../deps"
@@ -80,14 +79,14 @@ export const CONFIG_DIR_ENV = "CANDLE_CONFIG_DIR"
  * `writeVaultFailure` and the tee lookup / TEE-store path helpers catch the rest so it never
  * escapes `run()`.
  */
-export function candleConfigDir(env: Record<string, string | undefined>): string {
+export function candleConfigDir(env: Record<string, string | undefined>, home: string): string {
   const configured = env.CANDLE_CONFIG_DIR?.trim()
   if (configured) {
     const refusal = refuseUnexpandedTilde(CONFIG_DIR_ENV, configured)
     if (refusal !== undefined) throw new UsageError(refusal)
     return configured
   }
-  return join(homedir(), ".config", "candle")
+  return join(home, ".config", "candle")
 }
 
 /**
@@ -96,12 +95,12 @@ export function candleConfigDir(env: Record<string, string | undefined>): string
  * misreading it (T50). A `version: 3` file (R6, the external branch) is refused the same way by a
  * 0.10.x or 0.11.x vault reader, with `VAULT_VERSION_UNSUPPORTED`.
  */
-export function defaultVaultPath(env: Record<string, string | undefined>): string {
-  return join(candleConfigDir(env), "vault.enc")
+export function defaultVaultPath(env: Record<string, string | undefined>, home: string): string {
+  return join(candleConfigDir(env, home), "vault.enc")
 }
 
-export function legacyWalletsPath(env: Record<string, string | undefined>): string {
-  return join(candleConfigDir(env), "wallets.enc")
+export function legacyWalletsPath(env: Record<string, string | undefined>, home: string): string {
+  return join(candleConfigDir(env, home), "wallets.enc")
 }
 
 /** Reads the raw file; null when there is none. Any other read failure is `VAULT_UNREADABLE`. */

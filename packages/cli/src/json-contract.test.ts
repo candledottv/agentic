@@ -254,7 +254,7 @@ async function jsonRun(argv: string[]): Promise<{ code: number; stdout: string }
     stdout,
     stderr,
     env: { CANDLE_CONFIG_DIR: dir },
-    isTTY: { stdin: false, stdout: false },
+    isTTY: { stdin: false, stdout: false, stderr: false },
     promptSecret: async (text: string) => {
       throw new Error(`--json must never prompt: ${text}`)
     },

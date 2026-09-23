@@ -20,7 +20,7 @@
 import { spawn } from "node:child_process"
 import { realpathSync } from "node:fs"
 import { chmod, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises"
-import { hostname } from "node:os"
+import { homedir, hostname } from "node:os"
 import { pathToFileURL } from "node:url"
 import { resolveApiUrl } from "./client"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
@@ -733,6 +733,9 @@ export async function buildRealDeps(): Promise<Deps> {
     env: process.env,
     nodeVersion: process.versions.node,
     hostname: hostname(),
+    // The real home, so every default path is the path this CLI has always built (BE-274, D1).
+    // Only `createTestDeps` injects anything else.
+    homedir,
     // Imported lazily so the MCP server and its transport are only pulled in when `candle mcp`
     // actually runs. The module is bundled into this binary either way, but `./server` connects a
     // transport the moment it is asked to run, and every other command should stay untouched by
@@ -758,7 +761,11 @@ export async function buildRealDeps(): Promise<Deps> {
     writeFile: (path: string, content: string) => writeFile(path, content, { mode: 0o600 }),
     promptSecret: promptHiddenSecret,
     promptLine: promptVisibleLine,
-    isTTY: { stdin: Boolean(process.stdin.isTTY), stdout: Boolean(process.stdout.isTTY) },
+    isTTY: {
+      stdin: Boolean(process.stdin.isTTY),
+      stdout: Boolean(process.stdout.isTTY),
+      stderr: Boolean(process.stderr.isTTY),
+    },
     execPath: process.execPath,
     argv1: process.argv[1] ?? "",
     platformKey: platformKey(process.platform, process.arch),

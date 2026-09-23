@@ -64,7 +64,7 @@ async function harness(
     // iCloud Drive backup when `$HOME/Library/Mobile Documents/com~apple~CloudDocs` exists, so a
     // suite that inherited the real home would prompt on a Mac and not on CI.
     env: { CANDLE_CONFIG_DIR: dir, HOME: dir, ...(opts.env ?? {}) },
-    isTTY: { stdin: opts.tty ?? true, stdout: opts.tty ?? true },
+    isTTY: { stdin: opts.tty ?? true, stdout: opts.tty ?? true, stderr: opts.tty ?? true },
     promptSecret: async (text: string) => {
       asked.push(`secret: ${text}`)
       const next = secrets.shift()
@@ -650,8 +650,8 @@ describe("T54: the phrase ceremony", () => {
   test("non-TTY stdin or stdout is refused BEFORE any render, and the vault is not read", async () => {
     const h = await initVault()
     for (const tty of [
-      { stdin: false, stdout: true },
-      { stdin: true, stdout: false },
+      { stdin: false, stdout: true, stderr: true },
+      { stdin: true, stdout: false, stderr: true },
     ]) {
       const p = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
       p.deps.isTTY = tty

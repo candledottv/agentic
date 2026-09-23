@@ -34,11 +34,12 @@ import type { WalletChain } from "./wallet-import"
 
 /**
  * Default location, alongside credentials.enc but a distinct file. Mirrors secret-store's own
- * configDir (CANDLE_CONFIG_DIR, else ~/.config/candle), which is module-private there; the env is
- * passed in rather than read from process so a test can point this somewhere disposable.
+ * configDir (CANDLE_CONFIG_DIR, else <home>/.config/candle), which is module-private there; the
+ * env and the home are both passed in rather than read from the process, so a test can point this
+ * somewhere disposable and never resolves the developer's own home (BE-274, D1).
  */
-export function defaultKeystorePath(env: Record<string, string | undefined>): string {
-  return join(candleConfigDir(env), "wallets.enc")
+export function defaultKeystorePath(env: Record<string, string | undefined>, home: string): string {
+  return join(candleConfigDir(env, home), "wallets.enc")
 }
 
 /**
@@ -47,8 +48,8 @@ export function defaultKeystorePath(env: Record<string, string | undefined>): st
  * `tee` commands refuse anything else. Those legacy readers are gone as of 0.10.0 (AD-3); the
  * marker stays, because a file written under it is still opened by the `tee` commands.
  */
-export function defaultTeeKeystorePath(env: Record<string, string | undefined>): string {
-  return join(candleConfigDir(env), "tee-wallets.enc")
+export function defaultTeeKeystorePath(env: Record<string, string | undefined>, home: string): string {
+  return join(candleConfigDir(env, home), "tee-wallets.enc")
 }
 
 /**
@@ -56,8 +57,8 @@ export function defaultTeeKeystorePath(env: Record<string, string | undefined>):
  * only when no store exists at `defaultTeeKeystorePath`, so a source-built user's funded key is found
  * without a flag; the next write rewrites that file under the current marker (LEGACY_TEE_PURPOSE).
  */
-export function legacyTeeKeystorePath(env: Record<string, string | undefined>): string {
-  return join(candleConfigDir(env), "hot-wallets.enc")
+export function legacyTeeKeystorePath(env: Record<string, string | undefined>, home: string): string {
+  return join(candleConfigDir(env, home), "hot-wallets.enc")
 }
 
 /** The header marker of a TEE wallet store. One constant, so the value is spelled in one place. */

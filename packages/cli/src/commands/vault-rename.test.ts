@@ -19,7 +19,14 @@ import { Keypair } from "@solana/web3.js"
 import type { Deps } from "../deps"
 import { run } from "../index"
 import { SECRET_REFS } from "../secret-store"
-import { createCapture, createFakeStore, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
+import {
+  createCapture,
+  createFakeStore,
+  createRoutedFetch,
+  createTestDeps,
+  jsonResponse,
+  TEST_HOME,
+} from "../test-support"
 import type { KeyEntry } from "../vault/format"
 import { findVaultRoleEntry } from "../vault/promote-support"
 import { closeVault, commitVault, decryptKey, sealKeyBlob } from "../vault/store"
@@ -85,7 +92,7 @@ async function cmd(
     stdout,
     stderr,
     env: { CANDLE_CONFIG_DIR: fx.dir, HOME: fx.dir },
-    isTTY: { stdin: true, stdout: true },
+    isTTY: { stdin: true, stdout: true, stderr: true },
     promptSecret: async () => {
       prompted++
       await opts.beforeSecret?.()
@@ -429,7 +436,7 @@ describe("T10: a restored vault renames, because rename is not an allocation", (
       stderr,
       store: createFakeStore({ [SECRET_REFS.apiKey]: "ck_live_testkey" }),
       env: { CANDLE_CONFIG_DIR: dir, HOME: dir },
-      isTTY: { stdin: true, stdout: true },
+      isTTY: { stdin: true, stdout: true, stderr: true },
       promptSecret: async () => {
         if (!askedPhrase) {
           askedPhrase = true
@@ -586,7 +593,7 @@ describe("the argument-shape refusals: exit 2, before any prompt", () => {
   test("no terminal: the unlock is refused before anything is asked, in both modes", async () => {
     const fx = await fixture()
     const out = await cmd(fx, ["vault", "rename", "treasury", "cold", "--json"], {
-      deps: { isTTY: { stdin: false, stdout: false } },
+      deps: { isTTY: { stdin: false, stdout: false, stderr: false } },
     })
     expect(out.code).toBe(1)
     expect(out.prompted).toBe(0)
@@ -624,7 +631,7 @@ function legacyEntry(
 /** Seeds `tee-wallets.enc` beside the vault and migrates it with `vault import-legacy --tee`. */
 async function importLegacy(fx: Fixture, legacy: KeystoreEntry[]): Promise<void> {
   const ks = await createKeystore(TEE_PASS)
-  const teePath = defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: fx.dir })
+  const teePath = defaultTeeKeystorePath({ CANDLE_CONFIG_DIR: fx.dir }, TEST_HOME)
   await writeKeystoreFile(
     teePath,
     await serializeKeystore(legacy, ks.key, ks.salt, ks.iterations, TEE_KEYSTORE_PURPOSE),
@@ -637,7 +644,7 @@ async function importLegacy(fx: Fixture, legacy: KeystoreEntry[]): Promise<void>
     stdout,
     stderr,
     env: { CANDLE_CONFIG_DIR: fx.dir, HOME: fx.dir },
-    isTTY: { stdin: true, stdout: true },
+    isTTY: { stdin: true, stdout: true, stderr: true },
     promptSecret: async () => {
       const next = secrets.shift()
       if (next === undefined) throw new Error("import-legacy asked for more than the test scripted")

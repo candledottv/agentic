@@ -120,7 +120,7 @@ async function refuse(
     stdout,
     stderr,
     env: { CANDLE_CONFIG_DIR: dir, ...(opts.env ?? {}) },
-    isTTY: { stdin: true, stdout: true },
+    isTTY: { stdin: true, stdout: true, stderr: true },
   })
   const code = await run(opts.json ? [...argv, "--json"] : argv, deps)
   return { code, stdout: stdout.text, stderr: stderr.text }
@@ -128,9 +128,12 @@ async function refuse(
 
 describe("T9: VAULT_MISSING says where it looked and why", () => {
   test("the default path: the parenthetical names both reasons it is the default", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "candle-default-"))
-    // `vaultPathFor` reads CANDLE_CONFIG_DIR, so "the default" here means the test's own temp dir
-    // is not set through it: the flagless, envless branch is exercised by unsetting it.
+    // T1 (BE-274, D1/D2): `vaultPathFor` reads CANDLE_CONFIG_DIR, so "the default" here means the
+    // flagless, envless branch -- which falls back to the HOME, and read the developer's own until
+    // `homedir` became a dep. This case then passed on CI, where nothing has run `vault init`, and
+    // failed on every machine that had. The temp home below is the seam: empty, so the branch
+    // refuses with VAULT_MISSING whatever is in the operator's real ~/.config/candle.
+    const home = await mkdtemp(join(tmpdir(), "candle-default-"))
     const stdout = createCapture()
     const stderr = createCapture()
     const deps = createTestDeps({
@@ -138,11 +141,13 @@ describe("T9: VAULT_MISSING says where it looked and why", () => {
       stdout,
       stderr,
       env: {},
-      isTTY: { stdin: true, stdout: true },
+      homedir: () => home,
+      isTTY: { stdin: true, stdout: true, stderr: true },
     })
-    void dir
     const code = await run(["vault", "status"], deps)
     expect(code).toBe(1)
+    // The path it looked at is the one built from THIS test's home, not from anyone's real one.
+    expect(stderr.text).toContain(`No vault at ${join(home, ".config", "candle", "vault.enc")} `)
     expect(stderr.text).toContain("(the default: no --keystore given and CANDLE_CONFIG_DIR is unset)")
     // Cheapest-if-wrong branch first: checking a path costs nothing, a second vault costs a vault.
     const wrongPath = stderr.text.indexOf("If your vault is somewhere else")
