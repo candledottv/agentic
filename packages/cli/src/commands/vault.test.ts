@@ -294,11 +294,14 @@ describe("T34: invariant 1, a recoverable factor exists before any key is create
       wrap: {},
     } as never
     expect(countRecoverableFactors([apple("a"), apple("b"), passphrase])).toBe(2)
-    // One hardware key is not recoverable; two on distinct credentials are.
-    const hardware = (id: string) =>
+    // One hardware key is not recoverable; two on distinct credentials are. BE-292 (§4.2): the
+    // pair is counted by the exact security-key shape, so the transport is part of the fixture,
+    // and two envelopes of a transport this build does not know are not a pair.
+    const hardware = (id: string, transport = "ctap2") =>
       ({
         id,
         factor: "passkey-prf",
+        transport,
         domain: "hardware-token",
         label: "",
         createdAt: "",
@@ -307,6 +310,7 @@ describe("T34: invariant 1, a recoverable factor exists before any key is create
       }) as never
     expect(countRecoverableFactors([hardware("a")])).toBe(0)
     expect(countRecoverableFactors([hardware("a"), hardware("b")])).toBe(1)
+    expect(countRecoverableFactors([hardware("a", "usb-future"), hardware("b", "usb-future")])).toBe(0)
   })
 
   test("--high-value is gone, and a vault a chosen passphrase opens still allocates (BE-245)", async () => {

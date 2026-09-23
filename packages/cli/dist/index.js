@@ -1609,7 +1609,7 @@ function libraryInstallInstruction(platform) {
 }
 
 // src/fido2-helper/protocol.ts
-var HELPER_PROTOCOL = 1, RP_ID = "cli.candle.tv", AUTHDATA_FLAG_UV = 4, AUTHDATA_MIN_LENGTH = 37;
+var HELPER_PROTOCOL = 1, RP_ID = "cli.candle.tv", AUTHDATA_FLAG_UP = 1, AUTHDATA_FLAG_UV = 4, AUTHDATA_MIN_LENGTH = 37;
 var init_protocol = () => {};
 
 // src/vault/canonical-json.ts
@@ -5520,6 +5520,11 @@ function assertAuthenticatorData(authData, rpId, what) {
   if (((authData[32] ?? 0) & AUTHDATA_FLAG_UV) === 0) {
     throw new VaultError("VAULT_UNLOCK_FAILED", `The security key's ${what} was made without user verification (the UV flag is clear), so its output is not this envelope's key; nothing was derived.`, { suggestion: "This factor never falls back to the non-verified secret. Set a PIN on the key and retry." });
   }
+  if (what === "assertion" && ((authData[32] ?? 0) & AUTHDATA_FLAG_UP) === 0) {
+    throw new VaultError("VAULT_UNLOCK_FAILED", `The security key's ${what} was made without user presence (the UP flag is clear); nothing was derived.`, {
+      suggestion: "A vault assertion needs a touch at the key as well as its PIN. Retry and touch the key when it blinks."
+    });
+  }
 }
 async function openSecurityKeySession(deps, opts) {
   const location = await locateFido2Helper(deps);
@@ -7024,13 +7029,13 @@ function authDataFlags(authData) {
   }
   const flags = authData[32];
   return {
-    userPresent: (flags & AUTHDATA_FLAG_UP) !== 0,
+    userPresent: (flags & AUTHDATA_FLAG_UP2) !== 0,
     userVerified: (flags & AUTHDATA_FLAG_UV_BIT) !== 0,
     backupEligible: (flags & AUTHDATA_FLAG_BE) !== 0,
     backupState: (flags & AUTHDATA_FLAG_BS) !== 0
   };
 }
-var AUTHDATA_FLAG_UP = 1, AUTHDATA_FLAG_UV_BIT = 4, AUTHDATA_FLAG_BE = 8, AUTHDATA_FLAG_BS = 16;
+var AUTHDATA_FLAG_UP2 = 1, AUTHDATA_FLAG_UV_BIT = 4, AUTHDATA_FLAG_BE = 8, AUTHDATA_FLAG_BS = 16;
 var init_webauthn_cbor = __esm(() => {
   init_errors();
 });
@@ -15051,6 +15056,7 @@ var exports_vault_support = {};
 __export(exports_vault_support, {
   writeVaultFailure: () => writeVaultFailure,
   writeJson: () => writeJson,
+  wordFor: () => wordFor,
   vaultPathFor: () => vaultPathFor,
   vaultAlreadyExists: () => vaultAlreadyExists,
   usage: () => usage,
@@ -15073,7 +15079,8 @@ __export(exports_vault_support, {
   assertVaultHelperIdentities: () => assertVaultHelperIdentities,
   assertNotOlderCopy: () => assertNotOlderCopy,
   askForOwnPassphrase: () => askForOwnPassphrase,
-  RPC_URL_ENV: () => RPC_URL_ENV
+  RPC_URL_ENV: () => RPC_URL_ENV,
+  PASSPHRASE_ONLY_PREFIX: () => PASSPHRASE_ONLY_PREFIX
 });
 import { dirname as dirname7 } from "node:path";
 function refuseEnvPassphrase(ctx) {
@@ -15185,10 +15192,13 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
   const file = parseVaultFile(raw);
   assertVaultHelperIdentities(deps, file.envelopes);
   const facts = await currentPlatformFacts(deps);
-  const choice = await chooseFactor(ctx, file.envelopes, facts, opts.factor ?? ctx.vaultFactor);
+  const choice = await chooseFactor(ctx, file.envelopes, facts, opts.factor ?? ctx.vaultFactor, opts);
   const noticeFor = (purpose) => (line) => deps.stderr.write(derivationNotice(line, purpose));
   const notice = noticeFor(opts.purpose);
   if (choice.kind === "passphrase") {
+    if (choice.onlyBecause !== undefined)
+      deps.stderr.write(`${PASSPHRASE_ONLY_PREFIX}${choice.onlyBecause}
+`);
     const typed = await deps.promptSecret(opts.promptText ?? "Vault passphrase (input hidden): ");
     const openWith = (p, r, candidate, purpose) => choice.envelopeId === undefined ? unlockWithPassphrase(p, r, candidate, { notice: noticeFor(purpose) }) : unlockVault(p, r, { factor: "passphrase", passphrase: candidate, envelopeId: choice.envelopeId }, { notice: noticeFor(purpose) });
     const { vault: vault2, passphrase } = await openWithTypedPassphrase(typed, (candidate) => openWith(path, raw, candidate, opts.purpose));
@@ -15274,7 +15284,7 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
     if (target === undefined || !isCtap2Envelope(target)) {
       throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `The file at ${p} has no security key envelope ${envelope.id}.`, { suggestion: "Run: candle vault status (which lists each factor and why it is not available here)" });
     }
-    const prfOutput = await assertPrf(deps, session, target, current.vaultId, "unlock the vault");
+    const prfOutput = await assertPrf(deps, session, target, current.vaultId, opts.reason ?? "unlock the vault");
     try {
       return await unlockVault(p, r, { factor: "passkey-prf", envelopeId: target.id, prfOutput }, { notice });
     } finally {
@@ -15310,7 +15320,23 @@ async function openWithTypedPassphrase(typed, open3) {
   }
   throw last;
 }
-async function chooseFactor(ctx, envelopes, facts, flag) {
+function availabilityText(envelope, facts) {
+  const availability = envelopeAvailability(envelope, facts);
+  return availability.state === "available" ? availabilityLabel(availability) : `${availabilityLabel(availability)}: ${availability.reason}`;
+}
+async function chooseFactor(ctx, allEnvelopes, facts, requested, opts = {}) {
+  const among = opts.among;
+  const envelopes = among === undefined ? allEnvelopes : allEnvelopes.filter((envelope) => among.envelopeIds.includes(envelope.id));
+  const hasOtherFactor = allEnvelopes.some((envelope) => !isPassphraseEnvelope(envelope));
+  let flag = requested;
+  if (among !== undefined && flag !== undefined && flag !== "passphrase") {
+    const namesExcluded = envelopes.every((envelope) => !matchesFlag(envelope, flag)) && allEnvelopes.some((envelope) => matchesFlag(envelope, flag));
+    if (namesExcluded) {
+      ctx.deps.stderr.write(`--factor ${flag} is not used here: ${among.excludedBecause}
+`);
+      flag = undefined;
+    }
+  }
   const passphrases = envelopes.filter(isPassphraseEnvelope);
   const keys = envelopes.filter(isCtap2Envelope);
   const enclaves = envelopes.filter(isSecureEnclaveEnvelope);
@@ -15320,13 +15346,26 @@ async function chooseFactor(ctx, envelopes, facts, flag) {
   const drivablePasskeys = passkeys.filter((envelope) => canDrive(envelope, facts));
   const list = (candidates) => candidates.map((envelope) => `  ${envelope.id}  ${wordFor(envelope)}  ${envelope.label || "(no label)"}`).join(`
 `);
+  const unusable = () => envelopes.filter((envelope) => !isPassphraseEnvelope(envelope) && !canDrive(envelope, facts)).map((envelope) => ({
+    id: envelope.id,
+    word: wordFor(envelope),
+    availability: availabilityText(envelope, facts)
+  }));
   if (flag === undefined) {
     const drivable = [...drivableKeys, ...drivableEnclaves, ...drivablePasskeys];
     if (drivable.length === 0) {
       if (passphrases.length === 0) {
         throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope, and no other envelope on it can be driven on this machine.", { suggestion: "Run `candle vault status` to see each factor and why it is not available here." });
       }
-      return { kind: "passphrase" };
+      if (!hasOtherFactor)
+        return { kind: "passphrase" };
+      if (among !== undefined)
+        return { kind: "passphrase", onlyBecause: among.because(unusable()) };
+      const detail = unusable().map((entry) => `${entry.id} ${entry.word}: ${entry.availability}`).join("; ");
+      return {
+        kind: "passphrase",
+        onlyBecause: `no other factor on this vault can be used on this machine (${detail}). Details: candle vault status`
+      };
     }
     if (passphrases.length === 0 && drivable.length === 1)
       return choiceFor(drivable[0]);
@@ -15354,6 +15393,9 @@ ${list(drivable)}
       throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.", {
         suggestion: "Run: candle vault status (which lists each factor and why it is not available here)"
       });
+    if (opts.passphraseOnlyBecause !== undefined && (hasOtherFactor || opts.passphraseOnlyEvenIfSole)) {
+      return { kind: "passphrase", onlyBecause: opts.passphraseOnlyBecause };
+    }
     return { kind: "passphrase" };
   }
   const byKind = {
@@ -15392,11 +15434,26 @@ ${list(kind.candidates)}`, { suggestion: "Run `candle vault factor list` for the
   throw new VaultError(refusalCodeFor(availability), `Envelope ${named.id} (${named.factor}${typeof named.transport === "string" ? `/${named.transport}` : ""}) cannot open the vault here: ${availability.reason}.`, { suggestion: "No other envelope was tried. Run `candle vault status` to see which factors can open it here." });
 }
 function wordFor(envelope) {
+  if (isPassphraseEnvelope(envelope))
+    return "passphrase";
   if (isSecureEnclaveEnvelope(envelope))
     return "Touch ID";
   if (isPlatformPasskeyEnvelope(envelope))
     return "synced passkey";
-  return "security key";
+  if (isCtap2Envelope(envelope))
+    return "security key";
+  return `${envelope.factor}${typeof envelope.transport === "string" ? `/${envelope.transport}` : ""} envelope`;
+}
+function matchesFlag(envelope, flag) {
+  if (envelope.id === flag)
+    return true;
+  if (flag === "security-key")
+    return isCtap2Envelope(envelope);
+  if (flag === "touch-id")
+    return isSecureEnclaveEnvelope(envelope);
+  if (flag === "passkey")
+    return isPlatformPasskeyEnvelope(envelope);
+  return false;
 }
 function choiceFor(envelope) {
   const any = envelope;
@@ -15561,7 +15618,7 @@ function takeRepeatedFlag(args, flag) {
   }
   return { values, rest };
 }
-var RPC_URL_ENV = "CANDLE_SOLANA_RPC_URL";
+var PASSPHRASE_ONLY_PREFIX = "Passphrase only: ", RPC_URL_ENV = "CANDLE_SOLANA_RPC_URL";
 var init_vault_support = __esm(() => {
   init_args();
   init_render();
@@ -36588,7 +36645,7 @@ var HELP = {
       },
       {
         invocation: "backup --to <path>|icloud [--accept-shared-domain]",
-        description: "Copy the vault and verify the copy in full; icloud is iCloud Drive"
+        description: "Copy the vault and verify the copy in full; icloud is iCloud Drive; sealed copies carry the passphrase and security keys"
       },
       { invocation: "verify-backup <path>", description: "Verify a copy in full (all eight steps)" },
       { invocation: "import-legacy --tee [--from <path>]", description: "Migrate tee-wallets.enc into the vault" },
@@ -38521,10 +38578,13 @@ function recoverableDomains(envelopes) {
     else if (envelope.factor === "passkey-prf" && envelope.backupEligible === true)
       domains.push(String(envelope.domain));
   }
-  const hardware = envelopes.filter((e) => e.factor === "passkey-prf" && e.backupEligible !== true);
+  const hardware = envelopes.filter(isSecurityKeyEnvelope);
   if (hardware.length >= 2)
     domains.push("hardware-token");
   return domains;
+}
+function isSecurityKeyEnvelope(envelope) {
+  return envelope.factor === "passkey-prf" && envelope.transport === "ctap2" && envelope.domain === "hardware-token" && envelope.backupEligible === false;
 }
 function countRecoverableFactors(envelopes) {
   return new Set(recoverableDomains(envelopes)).size;
@@ -38534,13 +38594,21 @@ function assertRecoverableFactorExists(envelopes) {
     return;
   throw new VaultError("VAULT_NO_RECOVERABLE_FACTOR", "This vault has no recoverable factor, so creating a key in it would create one nobody can recover.", { suggestion: "Add a passphrase factor first: candle vault factor add passphrase" });
 }
+function keptInSealedCopy(envelope) {
+  if (envelope.factor === "passphrase")
+    return envelope.domain === "human-memory";
+  return isSecurityKeyEnvelope(envelope);
+}
 function sealedEnvelopes(envelopes) {
-  return envelopes.filter((envelope) => envelope.factor === "passphrase");
+  return envelopes.filter(keptInSealedCopy);
 }
 async function assertBackupDomainAllowed(envelopes, destinationPath, opts) {
   const destination = await classifyDestination(destinationPath, opts);
   const destinationAccount = accountDomainOf(destination);
-  const domains = new Set(recoverableDomains(envelopes));
+  const seals = sealsByDefault(destination);
+  const sealed = seals && !opts.acceptSharedDomain;
+  const copyEnvelopes = sealed ? sealedEnvelopes(envelopes) : envelopes;
+  const domains = new Set(recoverableDomains(copyEnvelopes));
   if (domains.size === 0) {
     throw new VaultError("VAULT_NO_RECOVERABLE_FACTOR", "This vault has no recoverable factor, so a backup of it could not be opened.", {
       suggestion: "Add a passphrase factor first: candle vault factor add passphrase"
@@ -38552,7 +38620,6 @@ async function assertBackupDomainAllowed(envelopes, destinationPath, opts) {
     });
   }
   const cloud = destinationAccount !== undefined;
-  const seals = sealsByDefault(destination);
   const appleEnvelope = envelopes.some((envelope) => envelope.domain === "apple-account");
   const sharedDomain = appleEnvelope && destination === "icloud-drive";
   const sharedDomainAccepted = seals && opts.acceptSharedDomain;
@@ -38561,8 +38628,10 @@ async function assertBackupDomainAllowed(envelopes, destinationPath, opts) {
     cloud,
     sealsByDefault: seals,
     sharedDomain,
-    sealed: seals && !opts.acceptSharedDomain,
-    sharedDomainAccepted
+    sealed,
+    sharedDomainAccepted,
+    copyEnvelopeIds: copyEnvelopes.map((envelope) => envelope.id),
+    recoverableFactorsInCopy: domains.size
   };
 }
 
@@ -50580,9 +50649,12 @@ async function discard(deps, path) {
 init_args();
 import { chmod as chmod5, copyFile, mkdir as mkdir6, stat as stat3 } from "node:fs/promises";
 import nodePath, { dirname as dirname8, resolve as resolve2 } from "node:path";
+init_crypto();
 init_errors();
+init_fido2();
 init_format();
 init_passphrase();
+init_platform();
 init_sidecar();
 init_store();
 
@@ -50747,18 +50819,25 @@ async function vaultBackup(args, ctx) {
     }
     const verdict = await assertBackupDomainAllowed(file.envelopes, destination, {
       acceptSharedDomain: parsed.booleans.has("--accept-shared-domain"),
-      realpath: deps.realpath
+      realpath: deps.realpath,
+      home: homeDirOf(deps.env)
     });
     if (await exists(destination)) {
       throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite a backup.`, { suggestion: "Nothing was written. Choose a path that does not exist yet." });
     }
-    if (verdict.sealed && ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase") {
-      deps.stderr.write(`${sealReason(verdict.destination, destination)}, so this backup is a sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor ${ctx.vaultFactor}.
+    if (verdict.sealed) {
+      deps.stderr.write(`${sealedBackupLine(verdict.destination, destination)}
 `);
     }
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
-      ...verdict.sealed ? { factor: "passphrase" } : {},
+      ...verdict.sealed ? {
+        among: {
+          envelopeIds: verdict.copyEnvelopeIds,
+          because: sealedPassphraseOnlyReason,
+          excludedBecause: SEALED_FACTOR_NOT_USED
+        }
+      } : {},
       purpose: "opening the vault"
     });
     const live = hold(opened.vault);
@@ -50772,16 +50851,24 @@ async function vaultBackup(args, ctx) {
       }
     }
     const written = await stat3(destination);
-    const report = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it");
+    const { report, copyHeader } = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it");
+    assertFloorCarried(copyHeader, live.file);
+    const verifiedAt = new Date(deps.now()).toISOString();
+    const copyEnvelopeIds = copyHeader.envelopes.map((envelope) => envelope.id);
     const sidecar = sidecarPath(path);
     await writeSidecar(sidecar, {
       ...nextSidecar(await readSidecar(sidecar), live.file),
-      lastVerifiedBackupAt: new Date(deps.now()).toISOString(),
+      lastVerifiedBackupAt: verifiedAt,
       lastBackupDomain: verdict.destination,
       lastBackupSealed: verdict.sealed,
-      ...verdict.sharedDomainAccepted ? { lastBackupSharedDomainAccepted: true } : {}
+      ...verdict.sharedDomainAccepted ? { lastBackupSharedDomainAccepted: true } : {},
+      lastBackupAt: verifiedAt,
+      lastBackupEnvelopeIds: copyEnvelopeIds,
+      lastBackupEnvelopeIdsAt: verifiedAt,
+      lastBackupIdsVerifiedAt: verifiedAt
     });
-    const copyEnvelopes = verdict.sealed ? sealedEnvelopes(live.file.envelopes) : live.file.envelopes;
+    const copyEnvelopes = live.file.envelopes.filter((envelope) => copyEnvelopeIds.includes(envelope.id));
+    const leftOut = live.file.envelopes.filter((envelope) => !copyEnvelopeIds.includes(envelope.id));
     const mode = fileModeOctal(written.mode);
     if (ctx.json) {
       writeJson(deps, {
@@ -50789,24 +50876,63 @@ async function vaultBackup(args, ctx) {
         destination,
         destinationDomain: verdict.destination,
         sealed: verdict.sealed,
-        envelopesInCopy: copyEnvelopes.map((envelope) => envelope.id),
-        envelopesLeftOut: live.file.envelopes.filter((envelope) => !copyEnvelopes.includes(envelope)).map((envelope) => envelope.id),
+        envelopesInCopy: copyEnvelopeIds,
+        envelopesLeftOut: leftOut.map((envelope) => envelope.id),
         sharedDomainAccepted: verdict.sharedDomainAccepted,
         sharedDomain: verdict.sharedDomain,
         verified: true,
         ...reportJson(report, live),
         bytesWritten: written.size,
-        mode
+        mode,
+        openedWith: { factor: opened.factor.kind, envelopeId: opened.factor.envelopeId },
+        recoverableFactorsInCopy: verdict.recoverableFactorsInCopy
       });
       return 0;
     }
     for (const line of wroteLines(destination, written.size, mode))
       deps.stdout.write(`${line}
 `);
-    writeVerifiedReport(ctx, destination, verdict, report, live);
+    writeVerifiedReport(ctx, destination, verdict, report, live, {
+      copyEnvelopes,
+      leftOut,
+      verifiedWith: verifiedWithLine(wordFor(live.envelope), live.envelope.id, "the copy was re-opened with it", carriedClause(live.file.envelopes.filter(isPassphraseEnvelope).map((envelope) => envelope.id)))
+    });
     return 0;
   });
 }
+function sealedBackupLine(destination, target) {
+  return `${sealReason(destination, target)}, so this backup is a sealed copy: it carries the passphrase and any security key, and leaves out synced passkey and Touch ID envelopes.`;
+}
+var SEALED_FACTOR_NOT_USED = "a sealed copy carries no Touch ID or synced passkey envelope.";
+function sealedPassphraseOnlyReason(unusable) {
+  if (unusable.length === 0) {
+    return "a sealed copy opens with the passphrase or a security key, and this vault has no security key. Add one with: candle vault enroll security-key";
+  }
+  const keys = unusable.map((entry) => `${entry.word} ${entry.id} cannot be used on this machine: ${entry.availability}`);
+  return `a sealed copy opens with the passphrase or a security key, and ${keys.join("; ")}.`;
+}
+function sameEnvelopeBytes(a, b) {
+  const x = canonicalBytes(a);
+  const y = canonicalBytes(b);
+  return x.length === y.length && x.every((byte, i) => byte === y[i]);
+}
+function assertFloorCarried(copy, live) {
+  const missing = live.envelopes.filter(isPassphraseEnvelope).filter((envelope) => !copy.envelopes.some((candidate) => sameEnvelopeBytes(candidate, envelope)));
+  if (missing.length === 0)
+    return;
+  const ids = missing.map((envelope) => envelope.id).join(", ");
+  throw new VaultError("VAULT_VERIFY_FAILED", `The copy does not carry passphrase envelope ${ids} byte for byte, so the recovery floor is not in it; nothing was recorded.`, {
+    suggestion: "This is a defect in the writer, not in your vault. The copy is left in place for inspection; do not rely on it.",
+    details: { step: "floor", missing: ids }
+  });
+}
+function verifiedWithLine(word, envelopeId, how, floorClause) {
+  return `  verified with ${word} ${envelopeId} (${how}); ${floorClause}`;
+}
+function carriedClause(passphraseIds) {
+  return `passphrase ${passphraseIds.join(", ")} carried byte for byte`;
+}
+var PASSPHRASE_NOT_EXERCISED = "passphrase not exercised (run with --factor passphrase to prove it)";
 function fileModeOctal(mode) {
   return (mode & 511).toString(8).padStart(4, "0");
 }
@@ -50821,7 +50947,7 @@ function resolveBackupDestination(to, deps) {
 }
 async function writeSealedCopy(live, destination) {
   const { index: _index, ...header } = live.file;
-  const sealed = await sealIndex({ ...header, envelopes: sealedEnvelopes(live.file.envelopes) }, live.index, live.payloadKey);
+  const sealed = await sealIndex({ ...header, envelopes: live.file.envelopes.filter(keptInSealedCopy) }, live.index, live.payloadKey);
   try {
     await writeKeystoreFile(destination, serializeVault(sealed));
   } catch (error) {
@@ -50853,7 +50979,21 @@ function copyWriteFailed(destination, error, what) {
 }
 function isSealedCopy(copyRaw) {
   const envelopes = parseVaultFile(copyRaw).envelopes;
-  return envelopes.length > 0 && envelopes.every(isPassphraseEnvelope);
+  return envelopes.some(isPassphraseEnvelope) && envelopes.every(keptInSealedCopy);
+}
+function verifyPassphraseOnlyReason(copyPath, copyHasKey, unusable) {
+  if (!copyHasKey) {
+    return `${copyPath} carries no security key envelope (a copy sealed by an earlier CLI, or from a vault that had none then), so only the passphrase opens it.`;
+  }
+  if (unusable.length > 0) {
+    const keys = unusable.map((entry) => `${entry.word} ${entry.id} in ${copyPath} cannot be used on this machine: ${entry.availability}`);
+    return `${keys.join("; ")}.`;
+  }
+  return `no security key in ${copyPath} is still on this vault as it is now, so the passphrase is the carried factor that opens it here.`;
+}
+function copyPassphraseReason(copyPath, keyUsable = false) {
+  const noKey = keyUsable ? "" : ", and no security key in it can be used here";
+  return `the factor that opened this vault is not in ${copyPath} as it is now${noKey}, so the copy opens with the passphrase it was sealed under, which may predate a rotation.`;
 }
 async function vaultVerifyBackup(args, ctx) {
   const parsed = parseArgs(args, {
@@ -50880,47 +51020,104 @@ async function vaultVerifyBackup(args, ctx) {
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
-    const copyRaw = await readVaultRaw(resolve2(copyPath));
+    const target = resolve2(copyPath);
+    const copyRaw = await readVaultRaw(target);
     if (copyRaw === null)
-      throw new VaultError("VAULT_MISSING", `No file at ${resolve2(copyPath)}.`, {
-        suggestion: `Check the path: ls -l ${resolve2(copyPath)}. This is the COPY to verify, not the live vault.`
+      throw new VaultError("VAULT_MISSING", `No file at ${target}.`, {
+        suggestion: `Check the path: ls -l ${target}. This is the COPY to verify, not the live vault.`
       });
+    const copyHeader = parseVaultFile(copyRaw);
     const sealed = isSealedCopy(copyRaw);
-    if (sealed) {
-      deps.stderr.write(`${resolve2(copyPath)} is a sealed copy that opens only with the passphrase it was sealed under, which may predate a passphrase rotation.${ctx.vaultFactor !== undefined && ctx.vaultFactor !== "passphrase" ? ` The passphrase is used here rather than --factor ${ctx.vaultFactor}.` : ""}
-`);
-    }
+    const liveFile = parseVaultFile(raw);
+    const carried = liveFile.envelopes.filter((envelope) => copyHeader.envelopes.some((candidate) => sameEnvelopeBytes(candidate, envelope)));
+    const facts = await currentPlatformFacts(deps);
+    const usable = carried.filter((envelope) => isPassphraseEnvelope(envelope) || canDrive(envelope, facts));
+    const copyHasKey = copyHeader.envelopes.some(isSecurityKeyEnvelope);
+    const requested = ctx.vaultFactor;
+    const requestsPassphrase = requested === "passphrase" || liveFile.envelopes.some((envelope) => envelope.id === requested && isPassphraseEnvelope(envelope));
+    const restrict = usable.length > 0 && !(requestsPassphrase && !carried.some(isPassphraseEnvelope));
+    const keyUsable = usable.some(isSecurityKeyEnvelope);
+    const securityKeysNotInCopy = liveFile.envelopes.filter(isSecurityKeyEnvelope).filter((key) => !copyHeader.envelopes.some((candidate) => candidate.id === key.id)).map((key) => key.id);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
-      ...sealed ? { factor: "passphrase" } : {},
+      ...restrict ? {
+        among: {
+          envelopeIds: carried.map((envelope) => envelope.id),
+          because: (unusable) => verifyPassphraseOnlyReason(target, copyHasKey, unusable),
+          excludedBecause: `${target} does not carry it as it is now.`
+        }
+      } : {},
       purpose: "opening the live vault"
     });
     const live = hold(opened.vault);
-    const sameEnvelope = parseVaultFile(copyRaw).envelopes.some((envelope) => JSON.stringify(envelope) === JSON.stringify(live.envelope));
+    const openedInCopy = carried.some((envelope) => envelope.id === opened.factor.envelopeId);
     let report;
-    if (sealed && !sameEnvelope) {
-      const copy = hold((await unlockInteractively(ctx, resolve2(copyPath), copyRaw, {
+    let copyOpened;
+    if (openedInCopy) {
+      report = (await verifyCopy(ctx, target, opened.reopen, live, "opening the copy")).report;
+      copyOpened = {
+        word: wordFor(live.envelope),
+        envelopeId: opened.factor.envelopeId,
+        factor: opened.factor.kind,
+        how: "the copy was re-opened with it"
+      };
+    } else {
+      const copy = hold((await unlockInteractively(ctx, target, copyRaw, {
         factor: "passphrase",
         acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
         promptText: "Passphrase this backup was sealed under (input hidden): ",
-        purpose: "opening the copy"
+        purpose: "opening the copy",
+        passphraseOnlyBecause: copyPassphraseReason(target, keyUsable),
+        passphraseOnlyEvenIfSole: true
       })).vault);
       report = await verifyVaultIntegrity(copy, { live });
-    } else {
-      report = await verifyCopy(ctx, resolve2(copyPath), opened.reopen, live, "opening the copy");
+      copyOpened = {
+        word: "passphrase",
+        envelopeId: copy.envelope.id,
+        factor: "passphrase",
+        how: "the copy's own passphrase, typed"
+      };
     }
+    const passphraseExercised = copyOpened.factor === "passphrase";
+    const carriedPassphrases = carried.filter(isPassphraseEnvelope).map((envelope) => envelope.id);
+    const floorClause = passphraseExercised ? `passphrase ${copyOpened.envelopeId} exercised` : carriedPassphrases.length > 0 ? carriedClause(carriedPassphrases) : PASSPHRASE_NOT_EXERCISED;
+    const verifiedAt = new Date(deps.now()).toISOString();
     const sidecar = sidecarPath(path);
+    const stored = await readSidecar(sidecar);
+    const boundBefore = typeof stored?.lastBackupEnvelopeIdsAt === "string" && stored.lastBackupEnvelopeIdsAt === stored.lastBackupAt && typeof stored.lastBackupIdsVerifiedAt === "string" && stored.lastBackupIdsVerifiedAt === stored.lastVerifiedBackupAt;
     await writeSidecar(sidecar, {
-      ...nextSidecar(await readSidecar(sidecar), live.file),
-      lastVerifiedBackupAt: new Date(deps.now()).toISOString()
+      ...nextSidecar(stored, live.file),
+      lastVerifiedBackupAt: verifiedAt,
+      ...boundBefore ? { lastBackupIdsVerifiedAt: verifiedAt } : {}
     });
     if (ctx.json) {
-      writeJson(deps, { ok: true, verified: resolve2(copyPath), sealed, ...reportJson(report, live) });
+      writeJson(deps, {
+        ok: true,
+        verified: target,
+        sealed,
+        ...reportJson(report, live),
+        openedWith: { factor: copyOpened.factor, envelopeId: copyOpened.envelopeId },
+        envelopesInCopy: copyHeader.envelopes.map((envelope) => envelope.id),
+        passphraseExercised,
+        ...securityKeysNotInCopy.length > 0 ? { securityKeysNotInCopy } : {}
+      });
       return 0;
     }
-    writeVerifiedReport(ctx, resolve2(copyPath), sealed ? { sealed: true } : undefined, report, live, parseVaultFile(copyRaw).envelopes);
+    writeVerifiedReport(ctx, target, sealed ? { sealed: true } : undefined, report, live, {
+      copyEnvelopes: copyHeader.envelopes,
+      leftOut: [],
+      verifiedWith: verifiedWithLine(copyOpened.word, copyOpened.envelopeId, copyOpened.how, floorClause)
+    });
+    if (securityKeysNotInCopy.length > 0) {
+      deps.stdout.write(`
+${freshBackupAdvice(target, securityKeysNotInCopy)}
+`);
+    }
     return 0;
   });
+}
+function freshBackupAdvice(copyPath, keyIds) {
+  return `Fresh backup advised: ${copyPath} does not carry security key ${keyIds.join(", ")}; a new \`candle vault backup\` would open with it too.`;
 }
 async function verifyCopy(_ctx, copyPath, reopen, live, purpose) {
   const raw = await readVaultRaw(copyPath);
@@ -50930,7 +51127,7 @@ async function verifyCopy(_ctx, copyPath, reopen, live, purpose) {
     });
   const copy = await reopen(copyPath, raw, purpose);
   try {
-    return await verifyVaultIntegrity(copy, { live });
+    return { report: await verifyVaultIntegrity(copy, { live }), copyHeader: copy.file };
   } finally {
     closeVault(copy);
   }
@@ -50973,14 +51170,21 @@ function reportJson(report, live) {
 function sealReason(destination, target) {
   return destination === "unknown" ? `Candle cannot tell whether ${target} syncs to an account` : `${target} is a ${destination} destination`;
 }
-var UNPLACEABLE_DESTINATION_NOTE = "Candle cannot tell whether this path syncs to an account, so this copy opens only with the passphrase. Pass --accept-shared-domain to write a full copy there instead.";
-var SEALED_COPY_NOTE = "This copy opens only with the passphrase it was sealed under, which may predate a passphrase rotation. It contains no synced passkey, Touch ID or security key envelope. Keep the passphrase somewhere outside the Apple account that holds a synced passkey. The live vault plus the recovery phrase remain the everyday path; this copy is for the day both are gone.";
+var UNPLACEABLE_DESTINATION_NOTE = "Candle cannot tell whether this path syncs to an account, so this copy carries only the passphrase and any security key, and no synced passkey or Touch ID envelope. Pass --accept-shared-domain to write a full copy there instead.";
+var SEALED_COPY_REMAINDER = "It contains no synced passkey or Touch ID envelope. Keep the passphrase somewhere outside the Apple account that holds a synced passkey. The live vault plus the recovery phrase remain the everyday path; this copy is for the day both are gone.";
+function sealedCopyNote(securityKeyIds) {
+  const lead = securityKeyIds.length > 0 ? `This copy opens with the passphrase it was sealed under, which may predate a passphrase rotation, or with security key ${securityKeyIds.join(", ")} (its PIN and a touch). Removing a key from this vault later does not remove it from this copy.` : "This copy opens only with the passphrase it was sealed under, which may predate a passphrase rotation. This vault had no security key for it to carry.";
+  return `${lead} ${SEALED_COPY_REMAINDER}`;
+}
+function labelEnvelope(envelope) {
+  return `${wordFor(envelope)} ${envelope.id}`;
+}
 function backupVerdictLines(verdict, kept, leftOut) {
   const lines = [];
   if (verdict?.destination)
     lines.push(`  destination   ${verdict.destination}`);
   if (verdict?.sealed) {
-    lines.push(`  sealed        yes: passphrase envelope(s) ${kept.join(", ")} only${leftOut.length > 0 ? `; left out ${leftOut.join(", ")}` : ""}`);
+    lines.push(`  sealed        yes: carries ${kept.join(", ")}${leftOut.length > 0 ? `; left out ${leftOut.join(", ")}` : ""}`);
     if (verdict.destination === "unknown")
       lines.push(`  why sealed    ${UNPLACEABLE_DESTINATION_NOTE}`);
   } else if (verdict?.sharedDomainAccepted) {
@@ -50997,14 +51201,16 @@ function sharedDomainLine(verdict) {
   }
   return `  shared domain this unsealed copy carries every envelope into a cloud account; you accepted that.`;
 }
-function writeVerifiedReport(ctx, target, verdict, report, live, copyEnvelopes) {
+function writeVerifiedReport(ctx, target, verdict, report, live, opts) {
   const { deps } = ctx;
-  const kept = (copyEnvelopes ?? live.file.envelopes).filter(isPassphraseEnvelope).map((envelope) => envelope.id);
-  const leftOut = (copyEnvelopes === undefined ? live.file.envelopes : []).filter((envelope) => !isPassphraseEnvelope(envelope)).map((envelope) => envelope.id);
+  const kept = opts.copyEnvelopes.map(labelEnvelope);
+  const leftOut = opts.leftOut.map(labelEnvelope);
   deps.stdout.write(`Verified ${target}
 `);
   for (const line of backupVerdictLines(verdict, kept, leftOut))
     deps.stdout.write(`${line}
+`);
+  deps.stdout.write(`${opts.verifiedWith}
 `);
   deps.stdout.write(`  steps         all 8 passed, in order
 `);
@@ -51022,11 +51228,13 @@ function writeVerifiedReport(ctx, target, verdict, report, live, copyEnvelopes) 
   if (verdict?.sharedDomainAccepted)
     deps.stdout.write(`${sharedDomainLine(verdict)}
 `);
-  if (verdict?.sealed)
+  if (verdict?.sealed) {
+    const keys = opts.copyEnvelopes.filter(isSecurityKeyEnvelope).map((envelope) => envelope.id);
     deps.stdout.write(`
-${SEALED_COPY_NOTE}
+${sealedCopyNote(keys)}
 ${APPLE_ACCOUNT_NOTICE}
 `);
+  }
   deps.stdout.write(`
 Derivation counters to keep with your recovery phrase:
 `);
@@ -51378,7 +51586,8 @@ async function addPasskeyFactor(ctx, parsed, resolvedVault, hold) {
   const opened = await unlockInteractively(ctx, path, raw, {
     acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     promptText: "Current vault passphrase, to unlock (input hidden): ",
-    factor: "passphrase"
+    factor: "passphrase",
+    passphraseOnlyBecause: "adding a factor opens the vault with the passphrase. A security key does not authorise enrollment: adding a second key while one is plugged in needs a device-selection rule this command does not have (D10)."
   });
   const vault = hold(opened.vault);
   const vaultId = vault.file.vaultId;
@@ -51633,7 +51842,8 @@ async function addSecurityKeyFactor(ctx, parsed, resolvedVault, hold) {
   const opened = await unlockInteractively(ctx, path, raw, {
     acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     promptText: "Current vault passphrase, to unlock (input hidden): ",
-    factor: "passphrase"
+    factor: "passphrase",
+    passphraseOnlyBecause: "this command's security key session is for the key being added, so the vault opens with the passphrase here."
   });
   const vault = hold(opened.vault);
   const registered = await registerCredential(deps, session, { vaultId: vault.file.vaultId, envelopeId });
@@ -51750,7 +51960,8 @@ async function addTouchIdFactor(ctx, parsed, resolvedVault, hold) {
   const opened = await unlockInteractively(ctx, path, raw, {
     acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     promptText: "Current vault passphrase, to unlock (input hidden): ",
-    factor: "passphrase"
+    factor: "passphrase",
+    passphraseOnlyBecause: "adding a factor opens the vault with the passphrase. A security key does not authorise enrollment: adding a second key while one is plugged in needs a device-selection rule this command does not have (D10)."
   });
   const vault = hold(opened.vault);
   const vaultId = vault.file.vaultId;
@@ -51963,7 +52174,8 @@ async function vaultPhraseShow(args, ctx) {
     const raw = await requireVaultRaw(ctx, resolvedVault);
     const vault = hold((await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
-      promptText: "Vault passphrase (input hidden): "
+      promptText: "Vault passphrase (input hidden): ",
+      reason: "show the recovery phrase"
     })).vault);
     return runPhraseCeremony(ctx, vault, { alreadyUnlockedWithFreshFactor: true });
   });
@@ -55880,6 +56092,7 @@ async function vaultStatus(args, ctx) {
     const legacyPresent = await fileExists(legacy);
     const envelopes = file.envelopes.map((envelope) => describeEnvelope(envelope, facts));
     const recoverable = countRecoverableFactors(file.envelopes);
+    const backup = sidecar ? describeLastBackup(sidecar, file.envelopes) : undefined;
     let unlocked;
     if (unlock) {
       const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
@@ -55911,7 +56124,12 @@ async function vaultStatus(args, ctx) {
           lastVerifiedBackupAt: sidecar.lastVerifiedBackupAt,
           lastBackupDomain: sidecar.lastBackupDomain,
           lastBackupSharedDomainAccepted: sidecar.lastBackupSharedDomainAccepted,
-          lastBackupSealed: sidecar.lastBackupSealed
+          lastBackupSealed: sidecar.lastBackupSealed,
+          lastBackupAt: sidecar.lastBackupAt,
+          lastBackupEnvelopeIds: sidecar.lastBackupEnvelopeIds,
+          lastBackupEnvelopeIdsAt: sidecar.lastBackupEnvelopeIdsAt,
+          lastBackupIdsVerifiedAt: sidecar.lastBackupIdsVerifiedAt,
+          lastBackupEnvelopeIdsBound: backup?.bound ?? false
         } : null,
         legacyWalletsEnc: legacyPresent ? legacy : null,
         ...unlocked ? { unlocked } : {}
@@ -55952,8 +56170,9 @@ This machine's record (vault.state.json, cleartext, best effort):
 `);
       deps.stdout.write(`  last generation seen   ${sidecar.lastGeneration}
 `);
-      if (sidecar.lastVerifiedBackupAt) {
-        deps.stdout.write(`  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "not recorded"}${sidecar.lastBackupSealed ? ", sealed: opens with the passphrase only" : ""})
+      if (sidecar.lastVerifiedBackupAt && backup) {
+        for (const line of lastBackupLines(sidecar, backup))
+          deps.stdout.write(`${line}
 `);
       }
       if (sidecar.lastBackupSharedDomainAccepted) {
@@ -56052,6 +56271,33 @@ function duplicateLabelLines(duplicates) {
     const holders = duplicate.entries.map((entry) => `${entry.address} (${entry.id})`).join(", ");
     lines.push(`  ${duplicate.label.padEnd(14)}${duplicate.entries.length} keys: ${holders}`);
     lines.push(`                --from ${duplicate.label} always picks the first; rename one: candle vault rename <address> <new-label>`);
+  }
+  return lines;
+}
+function describeLastBackup(sidecar, live) {
+  const bound = typeof sidecar.lastBackupEnvelopeIdsAt === "string" && sidecar.lastBackupEnvelopeIdsAt === sidecar.lastBackupAt && typeof sidecar.lastBackupIdsVerifiedAt === "string" && sidecar.lastBackupIdsVerifiedAt === sidecar.lastVerifiedBackupAt;
+  const ids = bound ? sidecar.lastBackupEnvelopeIds ?? [] : [];
+  const liveKeys = live.filter(isSecurityKeyEnvelope).map((envelope) => envelope.id);
+  const keyIds = ids.filter((id) => liveKeys.includes(id));
+  const removedIds = ids.filter((id) => !live.some((envelope) => envelope.id === id));
+  const freshBackupAdvised = sidecar.lastBackupSealed ? liveKeys.filter((id) => !ids.includes(id)) : bound ? liveKeys.filter((id) => !ids.includes(id)) : [];
+  return { bound, keyIds, removedIds, freshBackupAdvised };
+}
+function lastBackupLines(sidecar, backup) {
+  const opensWith = () => {
+    if (!sidecar.lastBackupSealed)
+      return "";
+    const factors = [
+      ...backup.keyIds.map((id) => `security key ${id}`),
+      ...backup.removedIds.map((id) => `removed envelope ${id}`)
+    ];
+    return factors.length > 0 ? `, sealed: opens with the passphrase or ${factors.join(", ")}` : ", sealed: opens with the passphrase only";
+  };
+  const lines = [
+    `  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "not recorded"}${opensWith()})`
+  ];
+  if (backup.freshBackupAdvised.length > 0) {
+    lines.push(`  fresh backup advised   the last ${sidecar.lastBackupSealed ? "sealed " : ""}copy does not carry security key ${backup.freshBackupAdvised.join(", ")}; a new \`candle vault backup\` to the same destination would open with it too.`);
   }
   return lines;
 }

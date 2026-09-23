@@ -15,7 +15,7 @@
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
-import { countRecoverableFactors } from "../vault/domains"
+import { countRecoverableFactors, isSecurityKeyEnvelope } from "../vault/domains"
 import { VaultError } from "../vault/errors"
 import { currentPlatformFacts } from "../vault/fido2"
 import type { Envelope } from "../vault/format"
@@ -23,7 +23,7 @@ import { parseVaultFile } from "../vault/format"
 import { duplicateLabels } from "../vault/labels"
 import { strengthLabel } from "../vault/passphrase"
 import { availabilityLabel, envelopeAvailability, type PlatformFacts } from "../vault/platform"
-import { readSidecar, sidecarPath } from "../vault/sidecar"
+import { readSidecar, sidecarPath, type VaultSidecar } from "../vault/sidecar"
 import { fileExists, legacyWalletsPath, readVaultRaw } from "../vault/store"
 import {
   assertVaultHelperIdentities,
@@ -81,6 +81,7 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
 
     const envelopes = file.envelopes.map((envelope) => describeEnvelope(envelope, facts))
     const recoverable = countRecoverableFactors(file.envelopes)
+    const backup = sidecar ? describeLastBackup(sidecar, file.envelopes) : undefined
 
     let unlocked:
       | {
@@ -129,6 +130,13 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
               lastBackupDomain: sidecar.lastBackupDomain,
               lastBackupSharedDomainAccepted: sidecar.lastBackupSharedDomainAccepted,
               lastBackupSealed: sidecar.lastBackupSealed,
+              // BE-292 (D8, D9): the raw fields as stored, and the one flag a reader must follow
+              // before treating the ids as a description of the newest copy.
+              lastBackupAt: sidecar.lastBackupAt,
+              lastBackupEnvelopeIds: sidecar.lastBackupEnvelopeIds,
+              lastBackupEnvelopeIdsAt: sidecar.lastBackupEnvelopeIdsAt,
+              lastBackupIdsVerifiedAt: sidecar.lastBackupIdsVerifiedAt,
+              lastBackupEnvelopeIdsBound: backup?.bound ?? false,
             }
           : null,
         legacyWalletsEnc: legacyPresent ? legacy : null,
@@ -160,12 +168,10 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
     if (sidecar) {
       deps.stdout.write(`\nThis machine's record (vault.state.json, cleartext, best effort):\n`)
       deps.stdout.write(`  last generation seen   ${sidecar.lastGeneration}\n`)
-      if (sidecar.lastVerifiedBackupAt) {
+      if (sidecar.lastVerifiedBackupAt && backup) {
         // "not recorded" rather than "unknown": since the AD-9 amendment (2026-09-19) `unknown` is
         // a destination class this field really carries, so it cannot double as the empty case.
-        deps.stdout.write(
-          `  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "not recorded"}${sidecar.lastBackupSealed ? ", sealed: opens with the passphrase only" : ""})\n`,
-        )
+        for (const line of lastBackupLines(sidecar, backup)) deps.stdout.write(`${line}\n`)
       }
       if (sidecar.lastBackupSharedDomainAccepted) {
         // AD-9: an unsealed copy went to a cloud destination; with a synced passkey on this vault
@@ -275,6 +281,62 @@ export function duplicateLabelLines(
     lines.push(`  ${duplicate.label.padEnd(14)}${duplicate.entries.length} keys: ${holders}`)
     lines.push(
       `                --from ${duplicate.label} always picks the first; rename one: candle vault rename <address> <new-label>`,
+    )
+  }
+  return lines
+}
+
+/**
+ * BE-292 (D8): what the sidecar says about the last backup's factors. The ids are BOUND to the
+ * receipt only when both clauses hold: they were written with the backup (`lastBackupEnvelopeIdsAt
+ * === lastBackupAt`) and the verification time still belongs to that receipt
+ * (`lastBackupIdsVerifiedAt === lastVerifiedBackupAt`). Each side of each comparison must be a
+ * string; a missing field is not bound. A 0.11.5 backup carries the first pair forward and
+ * moves `lastVerifiedBackupAt` without the second stamp, which is what unbinds ids that describe
+ * an older copy. Unbound ids are never named and never decide the advice.
+ */
+export function describeLastBackup(
+  sidecar: VaultSidecar,
+  live: Envelope[],
+): { bound: boolean; keyIds: string[]; removedIds: string[]; freshBackupAdvised: string[] } {
+  const bound =
+    typeof sidecar.lastBackupEnvelopeIdsAt === "string" &&
+    sidecar.lastBackupEnvelopeIdsAt === sidecar.lastBackupAt &&
+    typeof sidecar.lastBackupIdsVerifiedAt === "string" &&
+    sidecar.lastBackupIdsVerifiedAt === sidecar.lastVerifiedBackupAt
+  const ids = bound ? (sidecar.lastBackupEnvelopeIds ?? []) : []
+  const liveKeys = live.filter(isSecurityKeyEnvelope).map((envelope) => envelope.id)
+  const keyIds = ids.filter((id) => liveKeys.includes(id))
+  const removedIds = ids.filter((id) => !live.some((envelope) => envelope.id === id))
+  // Sealed and unbound: an older writer kept passphrase envelopes only, so every live key is
+  // missing from that copy. Bound: exactly the live keys the ids lack. Unsealed and unbound: the
+  // ids say nothing about that copy, so nothing is advised (as on 0.11.5).
+  const freshBackupAdvised = sidecar.lastBackupSealed
+    ? liveKeys.filter((id) => !ids.includes(id))
+    : bound
+      ? liveKeys.filter((id) => !ids.includes(id))
+      : []
+  return { bound, keyIds, removedIds, freshBackupAdvised }
+}
+
+/** The `last verified backup` line, and the advice line when the live vault has a key the copy lacks (§6.4). */
+export function lastBackupLines(sidecar: VaultSidecar, backup: ReturnType<typeof describeLastBackup>): string[] {
+  const opensWith = () => {
+    if (!sidecar.lastBackupSealed) return ""
+    const factors = [
+      ...backup.keyIds.map((id) => `security key ${id}`),
+      ...backup.removedIds.map((id) => `removed envelope ${id}`),
+    ]
+    return factors.length > 0
+      ? `, sealed: opens with the passphrase or ${factors.join(", ")}`
+      : ", sealed: opens with the passphrase only"
+  }
+  const lines = [
+    `  last verified backup   ${sidecar.lastVerifiedBackupAt} (${sidecar.lastBackupDomain ?? "not recorded"}${opensWith()})`,
+  ]
+  if (backup.freshBackupAdvised.length > 0) {
+    lines.push(
+      `  fresh backup advised   the last ${sidecar.lastBackupSealed ? "sealed " : ""}copy does not carry security key ${backup.freshBackupAdvised.join(", ")}; a new \`candle vault backup\` to the same destination would open with it too.`,
     )
   }
   return lines

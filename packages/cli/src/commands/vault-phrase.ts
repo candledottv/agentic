@@ -66,6 +66,9 @@ export async function vaultPhraseShow(args: string[], ctx: CommandContext): Prom
         await unlockInteractively(ctx, path, raw, {
           acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
           promptText: "Vault passphrase (input hidden): ",
+          // BE-292 (D6): this open is the fresh factor CC-11 wants, whichever factor it is; a
+          // security key's line names the purpose.
+          reason: "show the recovery phrase",
         })
       ).vault,
     )

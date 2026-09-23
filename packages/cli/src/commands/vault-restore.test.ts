@@ -742,13 +742,19 @@ test("verify-backup recognizes a sealed copy after phrase restore replaces every
   const stderr = createCapture()
   const secrets = [newPassphrase, oldPassphrase]
   const deps = { ...restored.deps, stdout, stderr, promptSecret: async () => secrets.shift() as string }
-  expect(
-    await run(
-      ["vault", "verify-backup", backupPath, "--factor", "passkey", "--json", "--keystore", restored.vaultPath],
-      deps,
-    ),
-  ).toBe(0)
-  expect(JSON.parse(stdout.text)).toMatchObject({ ok: true, sealed: true, steps: 8, comparedAgainstLive: true })
+  // BE-292 (D5): nothing the copy carries is on the restored vault, so the live vault opens with
+  // whatever the operator holds (here the new passphrase, the vault's only factor) and the copy
+  // with its own. `--factor passkey` is no longer silently replaced by the passphrase here: the
+  // restored vault has no passkey, so that flag gets the CLI's usual VAULT_FACTOR_UNAVAILABLE.
+  expect(await run(["vault", "verify-backup", backupPath, "--json", "--keystore", restored.vaultPath], deps)).toBe(0)
+  expect(JSON.parse(stdout.text)).toMatchObject({
+    ok: true,
+    sealed: true,
+    steps: 8,
+    comparedAgainstLive: true,
+    passphraseExercised: true,
+    openedWith: { factor: "passphrase", envelopeId: oldFile.envelopes[0].id },
+  })
   expect(secrets).toHaveLength(0)
   expect(stderr.text).toContain("passphrase it was sealed under")
   expect(stdout.text + stderr.text).not.toContain(oldPassphrase)

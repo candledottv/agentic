@@ -25,6 +25,7 @@ import { base64 } from "@scure/base"
 import type { Deps } from "../deps"
 import { libraryInstallInstruction } from "../fido2-helper/library-paths"
 import {
+  AUTHDATA_FLAG_UP,
   AUTHDATA_FLAG_UV,
   AUTHDATA_MIN_LENGTH,
   type DeviceReport,
@@ -347,6 +348,12 @@ export function userNameFor(vaultId: string, envelopeId: string): string {
  * ED-11's independent check, before anything is derived: the authenticator data must be long
  * enough to carry flags, must be for THIS relying party, and must have the UV flag set. The helper
  * already refused to proceed without user verification; this is the side that does not trust it.
+ *
+ * BE-292 (D6): an ASSERTION must also carry the UP flag. "PIN plus touch" was a property of
+ * libfido2's default `up`, not of the CLI; now the CLI refuses an assertion made without user
+ * presence, so a same-user process that captured the PIN still cannot supply the touch from
+ * software. Every real authenticator sets UP on a default `getAssertion`, biometric keys
+ * included, where the fingerprint is the presence. The registration call is unchanged.
  */
 export function assertAuthenticatorData(authData: Uint8Array, rpId: string, what: string): void {
   if (authData.length < AUTHDATA_MIN_LENGTH) {
@@ -369,6 +376,16 @@ export function assertAuthenticatorData(authData: Uint8Array, rpId: string, what
       "VAULT_UNLOCK_FAILED",
       `The security key's ${what} was made without user verification (the UV flag is clear), so its output is not this envelope's key; nothing was derived.`,
       { suggestion: "This factor never falls back to the non-verified secret. Set a PIN on the key and retry." },
+    )
+  }
+  if (what === "assertion" && ((authData[32] ?? 0) & AUTHDATA_FLAG_UP) === 0) {
+    throw new VaultError(
+      "VAULT_UNLOCK_FAILED",
+      `The security key's ${what} was made without user presence (the UP flag is clear); nothing was derived.`,
+      {
+        suggestion:
+          "A vault assertion needs a touch at the key as well as its PIN. Retry and touch the key when it blinks.",
+      },
     )
   }
 }

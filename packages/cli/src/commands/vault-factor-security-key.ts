@@ -96,6 +96,9 @@ export async function addSecurityKeyFactor(
     acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     promptText: "Current vault passphrase, to unlock (input hidden): ",
     factor: "passphrase",
+    // BE-292 (D7, row F1; D10): said before the prompt when the vault has another factor.
+    passphraseOnlyBecause:
+      "this command's security key session is for the key being added, so the vault opens with the passphrase here.",
   })
   const vault = hold(opened.vault)
 

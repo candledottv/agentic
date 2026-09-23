@@ -30,8 +30,24 @@ export interface VaultSidecar {
   lastVerifiedBackupAt?: string
   lastBackupDomain?: string
   lastBackupSharedDomainAccepted?: boolean
-  /** AD-9 (BE-135): whether the last backup was a sealed copy (passphrase envelope only). */
+  /** AD-9 (BE-135): whether the last backup was a sealed copy (passphrase and, since 2026-09-23, security keys). */
   lastBackupSealed?: boolean
+  /**
+   * BE-292 (D8): written by `vault backup` only, from the same timestamp string as that run's
+   * `lastVerifiedBackupAt`. `lastVerifiedBackupAt` stays the time a copy was last VERIFIED and is
+   * moved by `verify-backup` too, so it is not the binding key.
+   */
+  lastBackupAt?: string
+  /** The envelope ids of the copy `vault backup` last wrote: the kept set when sealed, all otherwise. */
+  lastBackupEnvelopeIds?: string[]
+  /** When those ids were written; bound to the receipt when it equals `lastBackupAt`. */
+  lastBackupEnvelopeIdsAt?: string
+  /**
+   * The verification the ids belong to; bound when it equals `lastVerifiedBackupAt`. An older CLI
+   * moves `lastVerifiedBackupAt` without moving this, which is what unbinds ids that no longer
+   * describe the newest copy. No address, label or path in any of these (N2).
+   */
+  lastBackupIdsVerifiedAt?: string
   migratedFrom?: Array<{ path: string; at: string; sourceDigest: string }>
 }
 

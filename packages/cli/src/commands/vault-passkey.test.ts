@@ -947,7 +947,7 @@ describe("AD-9: sealed cloud backups", () => {
     expect(ops(b)).not.toContain("passkey-assert")
     expect(b.stdout.text).toContain("destination   icloud-drive")
     expect(b.stdout.text).toContain(
-      `sealed        yes: passphrase envelope(s) ${live.envelopes[0]?.id} only; left out ${t.envelopeId}`,
+      `sealed        yes: carries passphrase ${live.envelopes[0]?.id}; left out synced passkey ${t.envelopeId}`,
     )
     expect(b.stdout.text).toContain("all 8 passed, in order")
     expect(b.stdout.text).toContain("address set   matches the live vault")
@@ -985,7 +985,7 @@ describe("AD-9: sealed cloud backups", () => {
     expect(status.stdout.text).toContain("lives in your Apple account")
   })
 
-  test("--factor passkey on a sealed backup is not honoured: the passphrase is used and the output says why", async () => {
+  test("--factor passkey on a sealed backup is not used: the passphrase is used and the output says why", async () => {
     const t = await vaultWithPasskey()
     const to = await icloudPath(t.dir, `sealed-factor-${Date.now()}.enc`)
     const b = await harness({
@@ -996,8 +996,16 @@ describe("AD-9: sealed cloud backups", () => {
     expect(
       await run(["vault", "backup", "--to", to, "--factor", "passkey", "--json", "--keystore", t.vaultPath], b.deps),
     ).toBe(0)
+    // BE-292 (rows B1, B3, B2): the destination line, the not-used line, and the reason the
+    // passphrase is the only answer, in that order and all before the prompt.
     expect(b.stderr.text).toContain(
-      "sealed copy that opens only with the passphrase; the passphrase is used here rather than --factor passkey",
+      "so this backup is a sealed copy: it carries the passphrase and any security key, and leaves out synced passkey and Touch ID envelopes.",
+    )
+    expect(b.stderr.text).toContain(
+      "--factor passkey is not used here: a sealed copy carries no Touch ID or synced passkey envelope.",
+    )
+    expect(b.stderr.text).toContain(
+      "Passphrase only: a sealed copy opens with the passphrase or a security key, and this vault has no security key. Add one with: candle vault enroll security-key",
     )
     expect(ops(b)).not.toContain("passkey-assert")
     const body = JSON.parse(b.stdout.text) as Record<string, unknown>
@@ -1078,8 +1086,11 @@ describe("AD-9: sealed cloud backups", () => {
       script: { store: t.add.script.store },
     })
     expect(await run(["vault", "verify-backup", to, "--factor", "passkey", "--keystore", t.vaultPath], v.deps)).toBe(0)
+    // BE-292 (D5, row V1): the copy carries only the passphrase, so `--factor passkey` is not
+    // used and the line before the prompt says why only the passphrase opens it.
+    expect(v.stderr.text).toContain(`--factor passkey is not used here: ${to} does not carry it as it is now.`)
     expect(v.stderr.text).toContain(
-      "is a sealed copy that opens only with the passphrase it was sealed under, which may predate a passphrase rotation. The passphrase is used here rather than --factor passkey",
+      `Passphrase only: ${to} carries no security key envelope (a copy sealed by an earlier CLI, or from a vault that had none then), so only the passphrase opens it.`,
     )
     expect(v.asked).toEqual([expect.stringContaining("Vault passphrase")])
     expect(ops(v)).not.toContain("passkey-assert")
@@ -1206,6 +1217,35 @@ test("signed helper info failures leave status, factor list and passphrase enrol
   }
 })
 
+/**
+ * BE-292 (D7, row F2; D10): `factor add touch-id` and `factor add passkey` open the vault with the
+ * passphrase and say why before the prompt, when the vault has another factor. This harness is the
+ * only one that can run those two commands, so the row is pinned here rather than beside T12.
+ */
+test("F2: factor add touch-id and passkey say why the passphrase opens the vault, only when it has another factor", async () => {
+  const t = await vaultWithPasskey()
+  const F2 =
+    "Passphrase only: adding a factor opens the vault with the passphrase. A security key does not authorise enrollment: adding a second key while one is plugged in needs a device-selection rule this command does not have (D10)."
+  const touch = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [t.passphrase] })
+  expect(await run(["vault", "factor", "add", "touch-id", "--keystore", t.vaultPath], touch.deps)).toBe(0)
+  expect(touch.stderr.text).toContain(F2)
+  expect(touch.stderr.text.indexOf(F2)).toBeLessThan(touch.stderr.text.length)
+  expect(touch.asked).toEqual([expect.stringContaining("Current vault passphrase")])
+  const second = await harness({
+    env: { CANDLE_CONFIG_DIR: t.dir },
+    secrets: [t.passphrase],
+    script: { store: t.add.script.store },
+  })
+  expect(await run(["vault", "factor", "add", "passkey", "--keystore", t.vaultPath], second.deps)).toBe(0)
+  expect(second.stderr.text).toContain(F2)
+
+  // On a vault whose only envelope is the passphrase, nothing needs explaining.
+  const fresh = await initVault()
+  const first = await harness({ env: { CANDLE_CONFIG_DIR: fresh.dir }, secrets: [fresh.passphrase] })
+  expect(await run(["vault", "factor", "add", "passkey", "--keystore", fresh.vaultPath], first.deps)).toBe(0)
+  expect(first.stderr.text).not.toContain("Passphrase only:")
+})
+
 test("a sealed backup retains its old passphrase after rotation", async () => {
   const t = await vaultWithPasskey()
   const cloud = join(t.dir, "..", "Library", "Mobile Documents", t.dir.split("/").pop() as string)
@@ -1227,17 +1267,41 @@ test("a sealed backup retains its old passphrase after rotation", async () => {
     await run(["vault", "factor", "remove", oldId, "--factor", "passphrase", "--keystore", t.vaultPath], remove.deps),
   ).toBe(0)
   expect((await readVault(t.vaultPath)).envelopes.some((e) => e.id === oldId)).toBe(false)
-  const v = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [fresh, t.passphrase] })
+  // BE-292 (D5, row V2): nothing the copy carries is on the live vault any more, so the live
+  // vault opens with whatever the operator holds (`--factor passkey` is honoured here), and the
+  // copy is opened with its own passphrase, after the line that says why.
+  const v = await harness({
+    env: { CANDLE_CONFIG_DIR: t.dir },
+    secrets: [t.passphrase],
+    script: { store: t.add.script.store },
+  })
   expect(
     await run(["vault", "verify-backup", to, "--factor", "passkey", "--json", "--keystore", t.vaultPath], v.deps),
   ).toBe(0)
-  expect(JSON.parse(v.stdout.text)).toMatchObject({ ok: true, sealed: true, steps: 8, comparedAgainstLive: true })
-  expect(v.asked).toEqual([
+  expect(JSON.parse(v.stdout.text)).toMatchObject({
+    ok: true,
+    sealed: true,
+    steps: 8,
+    comparedAgainstLive: true,
+    passphraseExercised: true,
+    openedWith: { factor: "passphrase", envelopeId: oldId },
+  })
+  expect(v.asked).toEqual([expect.stringContaining("Passphrase this backup was sealed under")])
+  expect(v.stderr.text).toContain(
+    `Passphrase only: the factor that opened this vault is not in ${to} as it is now, and no security key in it can be used here, so the copy opens with the passphrase it was sealed under, which may predate a rotation.`,
+  )
+  expect(ops(v).filter((op) => op === "passkey-assert")).toHaveLength(1)
+  expect(v.stdout.text + v.stderr.text).not.toContain(t.passphrase)
+  expect(v.stdout.text + v.stderr.text).not.toContain(fresh)
+
+  // And with the passphrase on the live vault: the rotated one opens the vault, the old one the copy.
+  const p = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [fresh, t.passphrase] })
+  expect(
+    await run(["vault", "verify-backup", to, "--factor", "passphrase", "--json", "--keystore", t.vaultPath], p.deps),
+  ).toBe(0)
+  expect(p.asked).toEqual([
     expect.stringContaining("Vault passphrase"),
     expect.stringContaining("Passphrase this backup was sealed under"),
   ])
-  expect(v.stderr.text).toContain("may predate a passphrase rotation")
-  expect(ops(v)).not.toContain("passkey-assert")
-  expect(v.stdout.text + v.stderr.text).not.toContain(t.passphrase)
-  expect(v.stdout.text + v.stderr.text).not.toContain(fresh)
+  expect(ops(p)).not.toContain("passkey-assert")
 })

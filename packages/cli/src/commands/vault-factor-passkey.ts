@@ -98,6 +98,9 @@ export async function addPasskeyFactor(
     acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     promptText: "Current vault passphrase, to unlock (input hidden): ",
     factor: "passphrase",
+    // BE-292 (D7, row F2; D10): said before the prompt when the vault has another factor.
+    passphraseOnlyBecause:
+      "adding a factor opens the vault with the passphrase. A security key does not authorise enrollment: adding a second key while one is plugged in needs a device-selection rule this command does not have (D10).",
   })
   const vault = hold(opened.vault)
   const vaultId = vault.file.vaultId

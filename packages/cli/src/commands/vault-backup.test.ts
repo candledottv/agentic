@@ -235,8 +235,11 @@ describe("T35: invariant 2 and AD-9's sealing", () => {
       sharedDomain: true,
       sealed: true,
       sharedDomainAccepted: false,
+      copyEnvelopeIds: ["p1"],
+      recoverableFactorsInCopy: 1,
     })
-    // The sealed copy keeps every passphrase envelope and nothing else.
+    // The sealed copy keeps every passphrase envelope, and (BE-292) every security key; a synced
+    // passkey and a Secure Enclave wrap are left out.
     expect(sealedEnvelopes([passphraseEnvelope, appleEnvelope, enclaveEnvelope]).map((e) => e.id)).toEqual(["p1"])
     expect(
       sealedEnvelopes([passphraseEnvelope, { ...passphraseEnvelope, id: "p2" }, appleEnvelope]).map((e) => e.id),
@@ -261,6 +264,8 @@ describe("T35: invariant 2 and AD-9's sealing", () => {
       sharedDomain: false,
       sealed: true,
       sharedDomainAccepted: false,
+      copyEnvelopeIds: ["p1"],
+      recoverableFactorsInCopy: 1,
     })
     expect(
       await assertBackupDomainAllowed([passphraseEnvelope, enclaveEnvelope], dropbox, {
@@ -283,6 +288,8 @@ describe("T35: invariant 2 and AD-9's sealing", () => {
         sharedDomain: false,
         sealed: false,
         sharedDomainAccepted: false,
+        copyEnvelopeIds: ["p1", "a1"],
+        recoverableFactorsInCopy: 2,
       })
     }
     expect(
@@ -319,6 +326,8 @@ describe("T35: invariant 2 and AD-9's sealing", () => {
           sharedDomain: false,
           sealed: true,
           sharedDomainAccepted: false,
+          copyEnvelopeIds: ["p1"],
+          recoverableFactorsInCopy: 1,
         })
       }
       expect(sealedEnvelopes([passphraseEnvelope, appleEnvelope, enclaveEnvelope]).map((e) => e.id)).toEqual(["p1"])
@@ -339,22 +348,29 @@ describe("T35: invariant 2 and AD-9's sealing", () => {
           sealed: false,
           // What `vault backup` writes to the sidecar as `lastBackupSharedDomainAccepted`.
           sharedDomainAccepted: true,
+          copyEnvelopeIds: ["p1", "a1", "e1"],
+          recoverableFactorsInCopy: 2,
         })
       }
     })
 
-    test("an unknown destination never refuses: invariant 2 has no account domain to compare", async () => {
-      // The vault carrying only the apple-account envelope is refused for iCloud Drive above. The
-      // same vault is allowed here, sealed, because `unknown` belongs to no account.
+    test("an unknown destination has no account domain to compare, and the check reads the copy set", async () => {
+      // The vault carrying only the apple-account envelope is refused for iCloud Drive above. An
+      // unsealed copy of it is allowed here, because `unknown` belongs to no account. A SEALED
+      // copy of it is refused (BE-292, D2): the copy would carry no envelope at all, and invariant
+      // 2 is evaluated against the envelopes that protect the copy, not the live vault's.
       expect(accountDomainOf("unknown")).toBeUndefined()
       expect(
         (
           await assertBackupDomainAllowed([appleEnvelope], "/srv/nfs/vault.enc", {
-            acceptSharedDomain: false,
+            acceptSharedDomain: true,
             ...lexical,
           })
         ).sealed,
-      ).toBe(true)
+      ).toBe(false)
+      await expect(
+        assertBackupDomainAllowed([appleEnvelope], "/srv/nfs/vault.enc", { acceptSharedDomain: false, ...lexical }),
+      ).rejects.toMatchObject({ code: "VAULT_NO_RECOVERABLE_FACTOR" })
     })
 
     test("only a recognised local disk or removable drive still gets the full set by default", async () => {
@@ -381,22 +397,34 @@ describe("T35: invariant 2 and AD-9's sealing", () => {
       )
       expect(sealReason("icloud-drive", "/i/vault.enc")).toBe("/i/vault.enc is a icloud-drive destination")
       expect(UNPLACEABLE_DESTINATION_NOTE).toContain("cannot tell whether this path syncs to an account")
-      expect(UNPLACEABLE_DESTINATION_NOTE).toContain("opens only with the passphrase")
+      expect(UNPLACEABLE_DESTINATION_NOTE).toContain("carries only the passphrase and any security key")
       expect(UNPLACEABLE_DESTINATION_NOTE).toContain("--accept-shared-domain")
     })
 
     test("the report states the class, the sealed envelope set, and why it was sealed", () => {
-      expect(backupVerdictLines({ destination: "unknown", sealed: true }, ["p1"], ["a1", "e1"])).toEqual([
+      expect(
+        backupVerdictLines(
+          { destination: "unknown", sealed: true },
+          ["passphrase p1"],
+          ["synced passkey a1", "Touch ID e1"],
+        ),
+      ).toEqual([
         "  destination   unknown",
-        "  sealed        yes: passphrase envelope(s) p1 only; left out a1, e1",
+        "  sealed        yes: carries passphrase p1; left out synced passkey a1, Touch ID e1",
         `  why sealed    ${UNPLACEABLE_DESTINATION_NOTE}`,
       ])
       // A cloud destination names itself and gains no extra line, so the existing output is intact.
-      expect(backupVerdictLines({ destination: "icloud-drive", sealed: true }, ["p1"], ["a1"])).toEqual([
+      expect(
+        backupVerdictLines(
+          { destination: "icloud-drive", sealed: true },
+          ["passphrase p1", "security key k1"],
+          ["synced passkey a1"],
+        ),
+      ).toEqual([
         "  destination   icloud-drive",
-        "  sealed        yes: passphrase envelope(s) p1 only; left out a1",
+        "  sealed        yes: carries passphrase p1, security key k1; left out synced passkey a1",
       ])
-      expect(backupVerdictLines({ destination: "local-disk", sealed: false }, ["p1"], [])).toEqual([
+      expect(backupVerdictLines({ destination: "local-disk", sealed: false }, ["passphrase p1"], [])).toEqual([
         "  destination   local-disk",
       ])
     })
@@ -531,6 +559,8 @@ describe("BE-236: the destination is classified from the real path, not its spel
       sharedDomain: true,
       sealed: true,
       sharedDomainAccepted: false,
+      copyEnvelopeIds: ["p1"],
+      recoverableFactorsInCopy: 1,
     })
     // Identical to the verdict on the real path, which is the property that was broken.
     expect(verdict).toEqual(
@@ -967,6 +997,9 @@ describe("BE-259: the backup says it wrote the file, and each Argon2id line says
         "phraseRestoresDerivedKeysOnly",
         "bytesWritten",
         "mode",
+        // BE-292 (D9): the two additive keys.
+        "openedWith",
+        "recoverableFactorsInCopy",
       ].sort(),
     )
     expect(body.bytesWritten).toBe((await stat(to)).size)
@@ -1007,6 +1040,10 @@ describe("BE-259: the backup says it wrote the file, and each Argon2id line says
         "comparedAgainstLive",
         "nextIndex",
         "phraseRestoresDerivedKeysOnly",
+        // BE-292 (D9): additive keys. `securityKeysNotInCopy` is absent when the copy lacks none.
+        "openedWith",
+        "envelopesInCopy",
+        "passphraseExercised",
       ].sort(),
     )
     expect(body).not.toHaveProperty("bytesWritten")

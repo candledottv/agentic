@@ -26,6 +26,15 @@
  * touches the confidentiality rule only: `unknown` has no account domain, so invariant 2 below is
  * unchanged, and `cloud` keeps meaning what it has always meant.
  *
+ * AD-9 second amendment (Andrew, 2026-09-23; BE-292): a sealed copy keeps every security-key
+ * envelope beside every passphrase envelope. Synced-passkey and Secure Enclave envelopes stay
+ * out, and so does any envelope this build does not recognise. The reason is AD-9's own: its
+ * claim is confidentiality, that no single account should hold both the blob and a factor that
+ * opens it, and a security key's domain is `hardware-token`, which is not an account domain, so
+ * carrying its envelope into a cloud copy does not recreate that conflict. `keptInSealedCopy`
+ * below is the allow-list, and invariant 2 is evaluated against the envelopes that actually
+ * protect the copy rather than against the live vault's.
+ *
  * BE-236: the classification reads the REAL path, not its spelling. `node:path.resolve` is purely
  * lexical and never follows a link, so `~/Documents/vault.enc` on a Mac with "Desktop & Documents
  * Folders in iCloud" -- where `~/Documents` is a symlink into `~/Library/Mobile Documents` --
@@ -214,10 +223,27 @@ export function recoverableDomains(envelopes: Envelope[]): string[] {
     else if (envelope.factor === "passkey-prf" && envelope.backupEligible === true)
       domains.push(String(envelope.domain))
   }
-  // Two hardware credentials on distinct keys are a recoverable PAIR; one is not (CC-03).
-  const hardware = envelopes.filter((e) => e.factor === "passkey-prf" && e.backupEligible !== true)
+  // Two hardware credentials on distinct keys are a recoverable PAIR; one is not (CC-03). The
+  // pair is counted by the exact security-key shape `keptInSealedCopy` reads (BE-292, §4.2): a
+  // `passkey-prf` envelope with a transport this build does not know is not a hardware token,
+  // and a missing `backupEligible` flag is not a security key.
+  const hardware = envelopes.filter(isSecurityKeyEnvelope)
   if (hardware.length >= 2) domains.push("hardware-token")
   return domains
+}
+
+/**
+ * The security-key row of the sealed allow-list (BE-292, §3.1): CTAP2 transport, the
+ * `hardware-token` domain and `backupEligible: false`, all of which are inside the envelope AAD
+ * (CC-01), so editing one to get an envelope kept is a tag failure rather than a different copy.
+ */
+export function isSecurityKeyEnvelope(envelope: Envelope): boolean {
+  return (
+    envelope.factor === "passkey-prf" &&
+    envelope.transport === "ctap2" &&
+    envelope.domain === "hardware-token" &&
+    envelope.backupEligible === false
+  )
 }
 
 /**
@@ -249,15 +275,30 @@ export interface BackupDomainVerdict {
   sealsByDefault: boolean
   /** AD-2's label: a synced passkey envelope and an iCloud Drive destination are one Apple account. */
   sharedDomain: boolean
-  /** AD-9: the copy carries the passphrase envelope(s) only. */
+  /** AD-9 as amended 2026-09-23: the copy carries the passphrase and security-key envelopes only. */
   sealed: boolean
   /** AD-9: `--accept-shared-domain` was passed for a cloud destination, so the copy is unsealed. */
   sharedDomainAccepted: boolean
+  /** The ids of the envelopes the copy will carry: the kept set when sealed, every envelope otherwise. */
+  copyEnvelopeIds: string[]
+  /** `countRecoverableFactors` of that copy set, which is what the copy can be recovered with. */
+  recoverableFactorsInCopy: number
 }
 
-/** AD-9: the envelopes a sealed copy keeps, which is every passphrase envelope and nothing else. */
+/**
+ * AD-9 as amended 2026-09-23: what a sealed copy keeps. An allow-list over two exact shapes, the
+ * passphrase and the security key; every field read here is in the envelope AAD. A synced
+ * passkey, a Secure Enclave wrap, a backup-eligible PRF envelope on any transport, and any
+ * envelope this build does not know are all left out.
+ */
+export function keptInSealedCopy(envelope: Envelope): boolean {
+  if (envelope.factor === "passphrase") return envelope.domain === "human-memory"
+  return isSecurityKeyEnvelope(envelope)
+}
+
+/** AD-9 as amended: the envelopes a sealed copy keeps. */
 export function sealedEnvelopes(envelopes: Envelope[]): Envelope[] {
-  return envelopes.filter((envelope) => envelope.factor === "passphrase")
+  return envelopes.filter(keptInSealedCopy)
 }
 
 /**
@@ -274,8 +315,15 @@ export async function assertBackupDomainAllowed(
   const destination = await classifyDestination(destinationPath, opts)
   const destinationAccount = accountDomainOf(destination)
 
+  // AD-9's confidentiality rule decides the copy's envelope set first, because invariant 2 is a
+  // statement about "the backup it protects" (BE-292, D2): a sealed copy is protected by the kept
+  // set, an unsealed one by every envelope, and the check reads whichever the copy will carry.
+  const seals = sealsByDefault(destination)
+  const sealed = seals && !opts.acceptSharedDomain
+  const copyEnvelopes = sealed ? sealedEnvelopes(envelopes) : envelopes
+
   // Invariant 2: at least one recoverable envelope must sit in a domain the destination does not.
-  const domains = new Set(recoverableDomains(envelopes))
+  const domains = new Set(recoverableDomains(copyEnvelopes))
   if (domains.size === 0) {
     throw new VaultError(
       "VAULT_NO_RECOVERABLE_FACTOR",
@@ -300,7 +348,8 @@ export async function assertBackupDomainAllowed(
   // cloud destination, or one Candle cannot place, gets a sealed copy unless the operator accepts
   // the shared domain. `cloud` stays the account-domain fact invariant 2 above reads.
   const cloud = destinationAccount !== undefined
-  const seals = sealsByDefault(destination)
+  // `sharedDomain` is a label about the vault, not the copy: an `apple-account` envelope on the
+  // live vault and an iCloud Drive destination are one account whether or not the copy carries it.
   const appleEnvelope = envelopes.some((envelope) => envelope.domain === "apple-account")
   const sharedDomain = appleEnvelope && destination === "icloud-drive"
   const sharedDomainAccepted = seals && opts.acceptSharedDomain
@@ -309,7 +358,9 @@ export async function assertBackupDomainAllowed(
     cloud,
     sealsByDefault: seals,
     sharedDomain,
-    sealed: seals && !opts.acceptSharedDomain,
+    sealed,
     sharedDomainAccepted,
+    copyEnvelopeIds: copyEnvelopes.map((envelope) => envelope.id),
+    recoverableFactorsInCopy: domains.size,
   }
 }

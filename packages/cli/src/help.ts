@@ -378,7 +378,8 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation: "backup --to <path>|icloud [--accept-shared-domain]",
-        description: "Copy the vault and verify the copy in full; icloud is iCloud Drive",
+        description:
+          "Copy the vault and verify the copy in full; icloud is iCloud Drive; sealed copies carry the passphrase and security keys",
       },
       { invocation: "verify-backup <path>", description: "Verify a copy in full (all eight steps)" },
       { invocation: "import-legacy --tee [--from <path>]", description: "Migrate tee-wallets.enc into the vault" },

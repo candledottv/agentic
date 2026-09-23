@@ -29,7 +29,13 @@ import {
 import { wipe } from "../vault/hygiene"
 import { assertPlatformPrf, openPasskeySession, type PasskeySession } from "../vault/passkey"
 import { passphraseAttempts } from "../vault/passphrase"
-import { canDrive, envelopeAvailability, type PlatformFacts, refusalCodeFor } from "../vault/platform"
+import {
+  availabilityLabel,
+  canDrive,
+  envelopeAvailability,
+  type PlatformFacts,
+  refusalCodeFor,
+} from "../vault/platform"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
 import {
   CONFIG_DIR_ENV,
@@ -258,6 +264,37 @@ export interface UnlockOptions {
    */
   factor?: string
   /**
+   * BE-292 (D3, D5): restricts the factors this open will accept to the envelopes whose ids are
+   * listed, so a sealed backup opens the live vault with a factor the copy will carry, and
+   * `verify-backup` with one the copy carries byte for byte. The chooser, `--factor <kind>` and
+   * `--factor <id>` all read the restricted list and keep their own refusal wording. `--factor`
+   * naming an envelope the vault has but the list leaves out prints one line
+   * (`--factor <value> is not used here: <excludedBecause>`) and falls through to the restricted
+   * chooser rather than refusing, because the operator's intent is still achievable. When the
+   * restricted list allows only the passphrase and the vault has another envelope, `because`
+   * is the `Passphrase only:` reason (D7, case a); it is handed the restricted envelopes this
+   * machine cannot drive, so a call site can name them and their availability.
+   */
+  among?: {
+    envelopeIds: string[]
+    because: (unusable: UnusableEnvelope[]) => string
+    excludedBecause: string
+  }
+  /**
+   * BE-292 (D7, case a): the `Passphrase only:` reason for a command whose `factor` override is
+   * the passphrase (the three `factor add` sites). Printed before the passphrase prompt when the
+   * vault has an envelope other than the passphrase; on a vault whose only envelope is the
+   * passphrase there is nothing to explain and no line is printed.
+   */
+  passphraseOnlyBecause?: string
+  /**
+   * With `passphraseOnlyBecause`: print the line even when the file being opened holds only a
+   * passphrase envelope. `verify-backup`'s prompt for the COPY's own passphrase is the one
+   * case (row V2): the file is the copy, the vault the operator holds has other factors, and the
+   * line explains a second passphrase prompt that would otherwise be a mystery.
+   */
+  passphraseOnlyEvenIfSole?: boolean
+  /**
    * What the Touch ID prompt says this unlock is for (ED-12: the reason string names the
    * operation). Commands that move value name the amount, the asset and the destination through
    * `confirm` instead; this is the first open's line, and it defaults to unlocking the vault.
@@ -308,8 +345,17 @@ export interface OpenedVault {
   confirm: (what: string) => Promise<void>
 }
 
+/** A restricted envelope this machine cannot drive, as `among.because` receives it (D7, row B2). */
+export interface UnusableEnvelope {
+  id: string
+  /** `security key`, `Touch ID` or `synced passkey`, as the chooser prints it. */
+  word: string
+  /** The availability text `vault status` and `factor list` print: the label, then the reason. */
+  availability: string
+}
+
 type FactorChoice =
-  | { kind: "passphrase"; envelopeId?: string }
+  | { kind: "passphrase"; envelopeId?: string; onlyBecause?: string }
   | { kind: "security-key"; envelope: Ctap2Envelope }
   | { kind: "touch-id"; envelope: SecureEnclaveEnvelope }
   | { kind: "passkey"; envelope: PlatformPasskeyEnvelope }
@@ -355,12 +401,15 @@ export async function unlockInteractively(
   const file = parseVaultFile(raw)
   assertVaultHelperIdentities(deps, file.envelopes)
   const facts = await currentPlatformFacts(deps)
-  const choice = await chooseFactor(ctx, file.envelopes, facts, opts.factor ?? ctx.vaultFactor)
+  const choice = await chooseFactor(ctx, file.envelopes, facts, opts.factor ?? ctx.vaultFactor, opts)
   const noticeFor = (purpose: string | undefined) => (line: string) =>
     deps.stderr.write(derivationNotice(line, purpose))
   const notice = noticeFor(opts.purpose)
 
   if (choice.kind === "passphrase") {
+    // BE-292 (D7): one line, immediately before the prompt, whenever the passphrase is the only
+    // answer and there was another factor the operator might have expected to use.
+    if (choice.onlyBecause !== undefined) deps.stderr.write(`${PASSPHRASE_ONLY_PREFIX}${choice.onlyBecause}\n`)
     const typed = await deps.promptSecret(opts.promptText ?? "Vault passphrase (input hidden): ")
     const openWith = (p: string, r: string, candidate: string, purpose: string | undefined) =>
       choice.envelopeId === undefined
@@ -488,7 +537,8 @@ export async function unlockInteractively(
         { suggestion: "Run: candle vault status (which lists each factor and why it is not available here)" },
       )
     }
-    const prfOutput = await assertPrf(deps, session, target, current.vaultId, "unlock the vault")
+    // BE-292 (D6): the key's line names the operation, as the Touch ID and passkey lines do.
+    const prfOutput = await assertPrf(deps, session, target, current.vaultId, opts.reason ?? "unlock the vault")
     try {
       return await unlockVault(p, r, { factor: "passkey-prf", envelopeId: target.id, prfOutput }, { notice })
     } finally {
@@ -536,13 +586,50 @@ export async function openWithTypedPassphrase(
   throw last
 }
 
-/** Which envelope kinds are on the file, which of them this machine can drive, and the choice. */
+/** The fixed prefix of D7's line, so tests and operators can find it. */
+export const PASSPHRASE_ONLY_PREFIX = "Passphrase only: "
+
+/** The availability text `factor list` prints for an envelope: the label, then the reason. */
+function availabilityText(envelope: Envelope, facts: PlatformFacts): string {
+  const availability = envelopeAvailability(envelope, facts)
+  return availability.state === "available"
+    ? availabilityLabel(availability)
+    : `${availabilityLabel(availability)}: ${availability.reason}`
+}
+
+/**
+ * Which envelope kinds are on the file, which of them this machine can drive, and the choice.
+ *
+ * BE-292: with `opts.among` the choice is made among the listed envelopes only (D3, D5). The
+ * passphrase variant carries `onlyBecause` when D7 wants a line before the prompt: case (a), the
+ * command limited the factors and only the passphrase is left; case (b), no flag, the vault has
+ * other envelopes and none of them can be driven here. Neither fires on a vault whose only
+ * envelope is the passphrase, and neither fires when the operator chose the passphrase.
+ */
 async function chooseFactor(
   ctx: CommandContext,
-  envelopes: Envelope[],
+  allEnvelopes: Envelope[],
   facts: PlatformFacts,
-  flag: string | undefined,
+  requested: string | undefined,
+  opts: Pick<UnlockOptions, "among" | "passphraseOnlyBecause" | "passphraseOnlyEvenIfSole"> = {},
 ): Promise<FactorChoice> {
+  const among = opts.among
+  const envelopes =
+    among === undefined ? allEnvelopes : allEnvelopes.filter((envelope) => among.envelopeIds.includes(envelope.id))
+  // D7's narrowing: a vault whose only envelope is the passphrase has nothing to explain.
+  const hasOtherFactor = allEnvelopes.some((envelope) => !isPassphraseEnvelope(envelope))
+  let flag = requested
+  if (among !== undefined && flag !== undefined && flag !== "passphrase") {
+    // `--factor` names a kind or an id the vault has but the restriction leaves out: say so once,
+    // then choose among what is allowed. The operator's intent is still achievable.
+    const namesExcluded =
+      envelopes.every((envelope) => !matchesFlag(envelope, flag as string)) &&
+      allEnvelopes.some((envelope) => matchesFlag(envelope, flag as string))
+    if (namesExcluded) {
+      ctx.deps.stderr.write(`--factor ${flag} is not used here: ${among.excludedBecause}\n`)
+      flag = undefined
+    }
+  }
   const passphrases = envelopes.filter(isPassphraseEnvelope)
   const keys = envelopes.filter(isCtap2Envelope)
   const enclaves = envelopes.filter(isSecureEnclaveEnvelope)
@@ -552,6 +639,14 @@ async function chooseFactor(
   const drivablePasskeys = passkeys.filter((envelope) => canDrive(envelope, facts))
   const list = (candidates: Envelope[]) =>
     candidates.map((envelope) => `  ${envelope.id}  ${wordFor(envelope)}  ${envelope.label || "(no label)"}`).join("\n")
+  const unusable = (): UnusableEnvelope[] =>
+    envelopes
+      .filter((envelope) => !isPassphraseEnvelope(envelope) && !canDrive(envelope, facts))
+      .map((envelope) => ({
+        id: envelope.id,
+        word: wordFor(envelope),
+        availability: availabilityText(envelope, facts),
+      }))
 
   if (flag === undefined) {
     const drivable: DrivableEnvelope[] = [...drivableKeys, ...drivableEnclaves, ...drivablePasskeys]
@@ -563,7 +658,16 @@ async function chooseFactor(
           { suggestion: "Run `candle vault status` to see each factor and why it is not available here." },
         )
       }
-      return { kind: "passphrase" }
+      if (!hasOtherFactor) return { kind: "passphrase" }
+      if (among !== undefined) return { kind: "passphrase", onlyBecause: among.because(unusable()) }
+      // Case (b), row C1: other envelopes exist and none can be driven here.
+      const detail = unusable()
+        .map((entry) => `${entry.id} ${entry.word}: ${entry.availability}`)
+        .join("; ")
+      return {
+        kind: "passphrase",
+        onlyBecause: `no other factor on this vault can be used on this machine (${detail}). Details: candle vault status`,
+      }
     }
     if (passphrases.length === 0 && drivable.length === 1) return choiceFor(drivable[0] as DrivableEnvelope)
     // More than one kind can open it here: the operator says which. Visible prompt, nothing secret.
@@ -592,6 +696,12 @@ async function chooseFactor(
       throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.", {
         suggestion: "Run: candle vault status (which lists each factor and why it is not available here)",
       })
+    // Case (a) for a command that forced the passphrase (the `factor add` sites, and the copy's
+    // own prompt in `verify-backup`). An operator who passed `--factor passphrase` chose it, and
+    // sees no line.
+    if (opts.passphraseOnlyBecause !== undefined && (hasOtherFactor || opts.passphraseOnlyEvenIfSole)) {
+      return { kind: "passphrase", onlyBecause: opts.passphraseOnlyBecause }
+    }
     return { kind: "passphrase" }
   }
   const byKind: Record<string, { candidates: DrivableEnvelope[]; word: string; add: string }> = {
@@ -642,10 +752,22 @@ async function chooseFactor(
   )
 }
 
-function wordFor(envelope: Envelope): string {
+/** The kind word the chooser and the backup report print for an envelope. Exported for the report. */
+export function wordFor(envelope: Envelope): string {
+  if (isPassphraseEnvelope(envelope)) return "passphrase"
   if (isSecureEnclaveEnvelope(envelope)) return "Touch ID"
   if (isPlatformPasskeyEnvelope(envelope)) return "synced passkey"
-  return "security key"
+  if (isCtap2Envelope(envelope)) return "security key"
+  return `${envelope.factor}${typeof envelope.transport === "string" ? `/${envelope.transport}` : ""} envelope`
+}
+
+/** Whether `--factor <flag>` names this envelope, by kind word or by id. */
+function matchesFlag(envelope: Envelope, flag: string): boolean {
+  if (envelope.id === flag) return true
+  if (flag === "security-key") return isCtap2Envelope(envelope)
+  if (flag === "touch-id") return isSecureEnclaveEnvelope(envelope)
+  if (flag === "passkey") return isPlatformPasskeyEnvelope(envelope)
+  return false
 }
 
 function choiceFor(envelope: DrivableEnvelope): FactorChoice {
