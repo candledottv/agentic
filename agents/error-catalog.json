@@ -107,7 +107,7 @@
     },
     "transient": {
       "retryable": true,
-      "action": "Honor explicit error.retryable before this default. Back off only when retryable, reusing the SAME idempotency id. hood_market_unavailable is a twice-failed address and remains retryable:false; wait for a changed condition, never spin or pause all Hood tokens.",
+      "action": "Honor explicit error.retryable before this default. Back off only when retryable, reusing the SAME idempotency id. hood_market_unavailable is a twice-failed address and remains retryable:false; wait for a changed condition, never spin or pause all Hood tokens. Do not reuse the id when `stage` is `executed`, or when `stage` is `unconfirmed` and `retryable` is false. An unconfirmed approval that did not send the trade has `retryable: true` and may reuse the id.",
       "codes": [
         "BUILD_TIMEOUT",
         "LAUNCH_FAILED",
@@ -122,7 +122,7 @@
     },
     "state_conflict": {
       "retryable": false,
-      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale.",
+      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id.",
       "codes": [
         "IDEMPOTENCY_CONFLICT",
         "TRADE_ALREADY_CLAIMED",
@@ -132,6 +132,7 @@
         "ORDER_NOT_TRIGGERED",
         "JOB_NOT_FOUND",
         "QUOTE_EXPIRED",
+        "TRADE_REVERTED",
         "UNRECOGNIZED_TRANSACTION",
         "WALLET_ALREADY_LINKED",
         "WALLET_ALREADY_REGISTERED"
