@@ -134,10 +134,10 @@ version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$t
 # holes, and verification passes. `candle verify` and `candle update` already pin the exact tag
 # through releaseIdentityUri(); this is the installer catching up.
 #
-# The version is VALIDATED before it reaches a regex, not trusted. It comes out of a downloaded
-# latest.json, which is exactly the input an attacker controls, and release.ts records what an
-# unvalidated one does: `{"version": "x|"}` yields an identity whose alternation matches every
-# identity there is, so a file signed by an unrelated project verifies.
+# The version is VALIDATED before it reaches the identity, not trusted. It comes out of a
+# downloaded latest.json, which is exactly the input an attacker controls, and release.ts records
+# what an unvalidated one does: `{"version": "x|"}` yields an identity whose alternation matches
+# every identity there is, so a file signed by an unrelated project verifies.
 printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
   || fail "the release manifest has a malformed version: ${version}"
 # A manifest describing a different version than the tag we asked for is a mismatch worth stopping
@@ -145,7 +145,11 @@ printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
 if [ -n "$VERSION_TAG" ] && [ "$VERSION_TAG" != "cli-v${version}" ]; then
   fail "requested ${VERSION_TAG} but the manifest at that tag describes cli-v${version}; nothing installed"
 fi
-identity_regex_pinned="${IDENTITY_REGEX}$(printf '%s' "$version" | sed 's/\./\\./g')\$"
+# The ONE pin, consumed by both verifier branches below. The signing certificate's SAN is
+# `<workflow file>@<tag ref>`, a single string that carries the workflow and the tag together, so
+# pinning it exactly pins both with no regex and no escaping step in between. It is the same
+# string releaseIdentityUri() builds for `candle update` and `candle verify`, and the same one the
+# release job self-verifies against, so three verifiers check one value.
 identity_exact="https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v${version}"
 
 # 4 and 5. Download and verify: the checksum against SHA256SUMS and the manifest, then the
@@ -177,17 +181,26 @@ verify_asset() {
     # mis-signed that way (0.6.0 was) would install here and then fail every `candle update`.
     # The flag needs cosign 2.2 or newer; an older cosign rejects the unknown flag and the install
     # stops, which is the right way to be wrong.
-    if ! verify_output="$(cosign verify-blob --new-bundle-format --bundle "$tmp/$name.sigstore.json" --certificate-identity-regexp "$identity_regex_pinned" --certificate-oidc-issuer "$ISSUER" "$tmp/$name" 2>&1)"; then
+    if ! verify_output="$(cosign verify-blob --new-bundle-format --bundle "$tmp/$name.sigstore.json" --certificate-identity "$identity_exact" --certificate-oidc-issuer "$ISSUER" "$tmp/$name" 2>&1)"; then
       echo "$verify_output" >&2
       fail "signature verification failed for $name; nothing installed"
     fi
     verified=1
   elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-    # --signer-workflow, not just --repo: the repo alone accepts an attestation from ANY workflow in
-    # candledottv/agentic that can mint one, while the cosign branch above pins the workflow FILE.
-    # --cert-identity additionally pins the TAG, matching what the cosign branch now does, so the two
-    # verifiers keep checking the same thing rather than drifting apart on which one is stricter.
-    if ! verify_output="$(gh attestation verify "$tmp/$name" --repo candledottv/agentic --signer-workflow candledottv/agentic/.github/workflows/release.yaml --cert-identity "$identity_exact" 2>&1)"; then
+    # --cert-identity, not just --repo: the repo alone accepts an attestation from ANY workflow in
+    # candledottv/agentic that can mint one. The exact identity is the certificate's SAN, which
+    # names the workflow FILE and the TAG in one string, so this branch checks exactly what the
+    # cosign branch above checks: the same $identity_exact, passed to a different verifier.
+    #
+    # Nothing else from gh's identity flag group beside it: gh puts --cert-identity, its regex
+    # form and the two signer-* flags in one mutually exclusive group, and has since the
+    # signer-workflow flag first shipped (gh 2.52.0). Passing two of them is refused before a
+    # byte is read, which is what broke every install on a machine with gh and without cosign.
+    # And the signer-workflow flag alone would be weaker, not equivalent: it asserts the workflow
+    # file, a prefix of the SAN, and accepts any tag's attestation. release.test.ts greps this
+    # file for that flag, and install-script.test.ts replays this exact argv against the real gh,
+    # so the pair cannot come back.
+    if ! verify_output="$(gh attestation verify "$tmp/$name" --repo candledottv/agentic --cert-identity "$identity_exact" 2>&1)"; then
       echo "$verify_output" >&2
       fail "signature verification failed for $name (gh attestation verify); nothing installed"
     fi

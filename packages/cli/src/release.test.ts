@@ -77,6 +77,36 @@ describe("release identity", () => {
     expect(script).toContain(`IDENTITY_REGEX='${RELEASE_IDENTITY_REGEX}'`)
     expect(script).toContain(`ISSUER='${RELEASE_ISSUER}'`)
   })
+
+  /**
+   * BE-275 / BE-279. The gh branch of install.sh once passed `--signer-workflow` together with
+   * `--cert-identity`. gh keeps those two, `--cert-identity-regex` and `--signer-repo` in one
+   * mutually exclusive flag group, and has since `--signer-workflow` first shipped (2.52.0; 2.50
+   * and earlier do not know the flag at all), so no released gh ever accepted the pair: every
+   * install on a machine with gh and without cosign died on argument validation before reading a
+   * byte. The exact identity already names the workflow file and the tag in one string, so the
+   * dropped flag asserted a strict prefix of what `--cert-identity` asserts, and nothing is lost.
+   *
+   * The installer and the package README (its npm landing page, which teaches the same command
+   * by hand) must not grow the flag back. The replay against the real gh lives in
+   * install-script.test.ts; this grep is the cheap layer that runs everywhere, including the
+   * mirrored release job.
+   */
+  test("install.sh and the README verify with the exact identity and never name the incompatible signer flag", () => {
+    const script = readFileSync(join(import.meta.dir, "..", "install.sh"), "utf8")
+    expect(script).not.toContain("--signer-workflow")
+    expect(script).not.toContain("--signer-repo")
+    // One pin expression, consumed by both branches, so the two verifiers cannot drift apart.
+    expect(script).toContain('--cert-identity "$identity_exact"')
+    expect(script).toContain('--certificate-identity "$identity_exact"')
+    expect(script).not.toContain("identity_regex_pinned")
+
+    const readme = readFileSync(join(import.meta.dir, "..", "README.md"), "utf8")
+    expect(readme).not.toContain("--signer-workflow")
+    expect(readme).toContain(
+      "gh attestation verify candle-darwin-arm64 --repo candledottv/agentic \\\n  --cert-identity https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v",
+    )
+  })
 })
 
 describe("fetchLatest", () => {

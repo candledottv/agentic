@@ -373,12 +373,15 @@ describe("install.sh", () => {
     // That gap is what let 0.6.0 ship assets this installer took and `candle verify` would not.
     expect(calls).toContain("--new-bundle-format")
     expect(calls).toContain("--certificate-oidc-issuer https://token.actions.githubusercontent.com")
-    // Pinned to the RESOLVED version and anchored, not merely prefixed with `cli-v`. A bare
-    // prefix accepts a signature minted for any cli-v tag, which is a signed downgrade: ask for
-    // 9.9.9, be handed a legitimately signed 0.3.0, and verification passes.
+    // Pinned to the RESOLVED version, exactly, not merely prefixed with `cli-v`. A bare prefix
+    // accepts a signature minted for any cli-v tag, which is a signed downgrade: ask for 9.9.9,
+    // be handed a legitimately signed 0.3.0, and verification passes. Exact, not a regexp: the
+    // SAN is one string naming the workflow file and the tag, and an escaping step between the
+    // version and a pattern is one more place to be silently wrong (BE-275 D2).
     expect(calls).toContain(
-      "--certificate-identity-regexp ^https://github.com/candledottv/agentic/\\.github/workflows/release\\.yaml@refs/tags/cli-v9\\.9\\.9$",
+      "--certificate-identity https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v9.9.9",
     )
+    expect(calls).not.toContain("--certificate-identity-regexp")
     await rm(r.home, { recursive: true, force: true })
     await rm(stubDir, { recursive: true, force: true })
   })
@@ -453,11 +456,15 @@ describe("install.sh", () => {
     expect(help.stdout).toContain("--version")
   })
 
-  test("the gh fallback pins the signing workflow, not just the repo", async () => {
+  test("the gh fallback pins the exact certificate identity, not just the repo", async () => {
     // `--repo` alone accepts any attestation from candledottv/agentic, and this repo runs more
-    // than one workflow with `id-token: write` reachable from it. The certificate identity the
-    // cosign path checks names the workflow FILE; the gh path has to check the same thing or the
-    // two verifiers do not mean the same thing.
+    // than one workflow with `id-token: write` reachable from it. The exact identity is the
+    // certificate's SAN, which names the workflow FILE and the TAG in one string, so this branch
+    // checks what the cosign path checks. It is the ONLY identity flag passed: gh keeps
+    // --cert-identity, --cert-identity-regex, --signer-repo and --signer-workflow in one mutually
+    // exclusive group, and passing two of them was the bug that broke every gh-only install
+    // (BE-275 §1.1). This stub accepts anything, so the flag-compatibility check itself is the
+    // real-gh replay further down; this test only pins WHAT the script asks for.
     const stubDir = await mkdtemp(join(tmpdir(), "candle-stub-gh-"))
     const log = join(stubDir, "gh.log")
     await writeFile(join(stubDir, "gh"), `#!/bin/sh\necho "$@" >> "${log}"\nexit 0\n`)
@@ -469,11 +476,16 @@ describe("install.sh", () => {
     const calls = await readFile(log, "utf8")
     expect(calls).toContain("attestation verify")
     expect(calls).toContain("--repo candledottv/agentic")
-    expect(calls).toContain("--signer-workflow candledottv/agentic/.github/workflows/release.yaml")
-    // And the tag, so this branch is not weaker than the cosign one above.
+    // The tag, so this branch is not weaker than the cosign one above.
     expect(calls).toContain(
       "--cert-identity https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v9.9.9",
     )
+    expect(calls).not.toContain("--signer-workflow")
+    expect(calls).not.toContain("--signer-repo")
+    expect(calls).not.toContain("--cert-identity-regex")
+    // The helper goes through the same branch with the same pin.
+    expect(calls.split("\n").filter((line) => line.includes("attestation verify"))).toHaveLength(2)
+    expect(calls).toContain(`/${HELPER}`)
     await rm(r.home, { recursive: true, force: true })
     await rm(stubDir, { recursive: true, force: true })
   })
@@ -762,6 +774,175 @@ describe("install.sh on macOS: the Secure Enclave helper and the version floor",
       await rm(r.home, { recursive: true, force: true })
     } finally {
       fixtures["latest.json"] = saved as string
+    }
+  })
+})
+
+/**
+ * BE-275 D3 and D4 (spec `2026-09-22-cli-install-and-update-integrity-design.md`), tests 1-3.
+ *
+ * The stub-verifier tests above record what install.sh asks a verifier for and accept anything.
+ * That is the right shape for "is the pin present", and it is structurally blind to the bug that
+ * broke the public one-liner: install.sh passed `--signer-workflow` together with
+ * `--cert-identity`, gh refuses that pair on argument validation before it reads a byte, and a
+ * stub that exits 0 cannot see a refusal. No mock of gh can. So these tests capture the
+ * installer's own verbatim argv from the stub run and replay it against whatever real `gh` is on
+ * PATH, unpinned: GitHub runners preinstall one, its version floats, and the point is to notice
+ * the day gh changes its mind about this flag group again, in CI and in the mirrored release job,
+ * before a user does.
+ *
+ * Offline, no auth, no real release. The captured artifact path is gone by the time the installer
+ * exits (its trap removes the temp dir), so the operand is swapped for a dummy file and a dummy
+ * `--bundle` is appended: cobra validates the flag group in PreRun, and a bundle on disk keeps gh
+ * from stopping at its auth check first, so the run reaches validation and then fails on the
+ * bundle's bytes. That downstream failure is expected and is the proof that validation passed.
+ */
+describe("install.sh against the real gh", () => {
+  const REAL_GH = Bun.which("gh")
+  const SIGNER_WORKFLOW = "candledottv/agentic/.github/workflows/release.yaml"
+  /** What gh prints when a flag fails validation: the flag-group refusal, an unknown flag, or a usage dump. */
+  const VALIDATION_FAILURE = /none of the others can be|unknown flag|^Usage:/m
+
+  /**
+   * Runs the installer with a recording stub for `tool` (and nothing else verifying), and returns
+   * every argv the stub saw for its verify subcommand, one array per invocation, verbatim. The
+   * stub logs one invocation per line with a tab between arguments; no path or flag here contains
+   * either.
+   */
+  async function captureVerifierArgv(tool: "gh" | "cosign"): Promise<string[][]> {
+    const stubDir = await mkdtemp(join(tmpdir(), `candle-capture-${tool}-`))
+    const log = join(stubDir, `${tool}.log`)
+    await writeFile(
+      join(stubDir, tool),
+      `#!/bin/sh\nprintf '%s\\t' "$@" >> "${log}"\nprintf '\\n' >> "${log}"\nexit 0\n`,
+    )
+    await chmod(join(stubDir, tool), 0o755)
+    const r = await runInstaller([], { CANDLE_INSTALL_ALLOW_UNSIGNED: "", PATH: `${stubDir}:${fixtureTools}` }, stubDir)
+    expect(r.stderr).toBe("")
+    expect(r.code).toBe(0)
+    const verb = tool === "gh" ? "attestation" : "verify-blob"
+    const invocations = (await readFile(log, "utf8"))
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => line.split("\t").filter((arg, i, all) => i < all.length - 1 || arg.length > 0))
+      .filter((argv) => argv[0] === verb)
+    await rm(r.home, { recursive: true, force: true })
+    await rm(stubDir, { recursive: true, force: true })
+    return invocations
+  }
+
+  /** The asset the invocation verifies: its one positional operand, by basename. */
+  function assetOf(argv: string[]): string {
+    const operand = argv.find((arg) => arg.endsWith(`/${ASSET}`) || arg.endsWith(`/${HELPER}`))
+    expect(operand).toBeDefined()
+    return (operand as string).split("/").pop() as string
+  }
+
+  /** The value install.sh passed for `flag`. */
+  function flagValue(argv: string[], flag: string): string {
+    const i = argv.indexOf(flag)
+    expect(i).toBeGreaterThan(-1)
+    return argv[i + 1] as string
+  }
+
+  /**
+   * Replays a captured gh argv against the real gh, offline and logged out. Only the operand
+   * changes (to a dummy artifact) and `--bundle <dummy>` is appended; every flag is verbatim.
+   */
+  async function replayAgainstRealGh(argv: string[]) {
+    const home = await mkdtemp(join(tmpdir(), "candle-real-gh-"))
+    const artifact = join(home, assetOf(argv))
+    const bundle = join(home, "dummy.sigstore.json")
+    await writeFile(artifact, "not a release asset\n")
+    await writeFile(bundle, "{}\n")
+    await mkdir(join(home, "gh-config"), { recursive: true })
+    const replayed = argv.map((arg) => (arg.endsWith(`/${assetOf(argv)}`) ? artifact : arg))
+    const proc = Bun.spawn([REAL_GH as string, ...replayed, "--bundle", bundle], {
+      env: {
+        HOME: home,
+        PATH: process.env.PATH ?? "",
+        GH_CONFIG_DIR: join(home, "gh-config"),
+        GH_NO_UPDATE_NOTIFIER: "1",
+        GH_PROMPT_DISABLED: "1",
+        NO_COLOR: "1",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [stdout, stderr] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()])
+    const code = await proc.exited
+    await rm(home, { recursive: true, force: true })
+    return { code, stdout, stderr }
+  }
+
+  async function ghVersion(): Promise<string> {
+    const proc = Bun.spawn([REAL_GH as string, "--version"], { stdout: "pipe", stderr: "pipe" })
+    const out = await new Response(proc.stdout).text()
+    await proc.exited
+    return out.split("\n")[0] ?? "gh (version unknown)"
+  }
+
+  test.skipIf(!REAL_GH)(
+    "the argv install.sh passes to gh survives the real gh's argument validation, for the binary and the helper",
+    async () => {
+      const invocations = await captureVerifierArgv("gh")
+      expect(invocations.map(assetOf).sort()).toEqual([ASSET, HELPER].sort())
+      const version = await ghVersion()
+      for (const argv of invocations) {
+        const r = await replayAgainstRealGh(argv)
+        // gh is expected to fail here, on the dummy bundle or on being logged out: that is
+        // downstream of validation and is what proves the flags parsed. What it must NOT do is
+        // refuse the flags. The failure message leads with the gh version so a red run on an
+        // unrelated PR names which gh changed its flag group, in its first line.
+        const refused = VALIDATION_FAILURE.test(r.stderr) || VALIDATION_FAILURE.test(r.stdout)
+        const report = refused
+          ? `${version} refused install.sh's own gh argv for ${assetOf(argv)}:\n  gh ${argv.join(" ")}\n${r.stderr}${r.stdout}`
+          : ""
+        expect(report).toBe("")
+      }
+    },
+  )
+
+  test.skipIf(!REAL_GH)("control: the flag pair install.sh used to pass is refused by the same gh", async () => {
+    // Today's shipped command until BE-279, reconstructed from the live argv plus the flag it
+    // carried: --signer-workflow beside --cert-identity. If a future gh stops emitting this
+    // refusal, the test above could not fail any more, and this one says so.
+    const [argv] = await captureVerifierArgv("gh")
+    expect(argv).toBeDefined()
+    const repoAt = (argv as string[]).indexOf("--repo")
+    expect(repoAt).toBeGreaterThan(-1)
+    const withPair = [...(argv as string[])]
+    withPair.splice(repoAt + 2, 0, "--signer-workflow", SIGNER_WORKFLOW)
+    expect(withPair).toContain("--cert-identity")
+    const r = await replayAgainstRealGh(withPair)
+    expect(r.code).not.toBe(0)
+    // Named on failure: a gh that no longer refuses the pair, or a `gh` on PATH that is not the
+    // GitHub CLI (a policy wrapper that never reaches the real binary looks exactly like this).
+    const report = (r.stderr + r.stdout).includes("none of the others can be")
+      ? ""
+      : `${await ghVersion()} did not refuse the incompatible pair:\n  gh ${withPair.join(" ")}\n${r.stderr}${r.stdout}`
+    expect(report).toBe("")
+  })
+
+  test("the cosign branch and the gh branch pin the same identity, for the binary and the helper", async () => {
+    // D3: the two branches are compared to each other, never to a literal. One variable feeds
+    // both in install.sh today; this is what fails if a future edit gives one branch its own
+    // spelling of the pin again. No real verifier is needed, only what each branch is asked.
+    const cosign = await captureVerifierArgv("cosign")
+    const gh = await captureVerifierArgv("gh")
+    expect(cosign.map(assetOf).sort()).toEqual([ASSET, HELPER].sort())
+    expect(gh.map(assetOf).sort()).toEqual([ASSET, HELPER].sort())
+    for (const asset of [ASSET, HELPER]) {
+      const cosignArgv = cosign.find((argv) => assetOf(argv) === asset) as string[]
+      const ghArgv = gh.find((argv) => assetOf(argv) === asset) as string[]
+      const cosignIdentity = flagValue(cosignArgv, "--certificate-identity")
+      const ghIdentity = flagValue(ghArgv, "--cert-identity")
+      expect(ghIdentity).toBe(cosignIdentity)
+      // And it is the resolved release's identity, not a prefix: the fixture manifest says 9.9.9.
+      expect(cosignIdentity.endsWith("@refs/tags/cli-v9.9.9")).toBe(true)
+      expect(cosignIdentity.startsWith("https://github.com/candledottv/agentic/.github/workflows/release.yaml@")).toBe(
+        true,
+      )
     }
   })
 })

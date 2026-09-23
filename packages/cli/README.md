@@ -108,8 +108,14 @@ grep candle-darwin-arm64 SHA256SUMS | shasum -a 256 -c
 
 ```
 gh attestation verify candle-darwin-arm64 --repo candledottv/agentic \
-  --signer-workflow candledottv/agentic/.github/workflows/release.yaml
+  --cert-identity https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v0.6.1
 ```
+
+`--cert-identity` is the signing certificate's subject, the workflow file and the release tag in
+one string, so it pins both: an attestation minted by the same workflow for a different tag does
+not verify. Pass it on its own: `gh` treats its identity flags (`--cert-identity`, its regex form
+and the two signer flags) as mutually exclusive, and the signer-workflow flag alone would accept
+any tag's attestation.
 
 ```
 curl -fsSLO https://github.com/candledottv/agentic/releases/download/cli-v0.6.1/candle-darwin-arm64.sigstore.json
