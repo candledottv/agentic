@@ -27,6 +27,16 @@ import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { renderTable } from "../render"
 import { createSolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
+import {
+  type AccountRoom,
+  batchRoomRefusal,
+  RESTORED_SENTENCE,
+  readAccountRoom,
+  restoreRefusedFailure,
+  restoresPreImportEntry,
+  tierName,
+  unreadableRoomRefusal,
+} from "../vault/account-room"
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { addressFromSecret64 } from "../vault/ed25519"
 import { isVaultError, VaultError } from "../vault/errors"
@@ -177,6 +187,18 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     const destinations = actingDestinations(planned)
     deps.stderr.write(`✓ preflight: ${rows.length} rows, ${destinations.length} destinations, no conflicts\n`)
 
+    // ── The room (BE-288, D7): after the unlock (the number of `promote` rows is only known once
+    // the index is classified), before the SOL read, the table, the warning and any commitVault.
+    // Only `promote` rows take a slot; a `resume` row that passed Phase B is already linked.
+    // Unreadable refuses, on the same reasoning as the failed SOL read below: the batch never
+    // starts a run it already knows it cannot finish.
+    const promotes = planned.filter((item) => item.kind === "promote").length
+    const roomRead = await readAccountRoom(ctx)
+    if (!roomRead.ok) throw unreadableRoomRefusal(roomRead.reason)
+    const roomRefusal = batchRoomRefusal(roomRead.room, promotes)
+    if (roomRefusal !== null) throw roomRefusal
+    const room = roomRead.room
+
     // ── Holdings (D8): SOL for every address, always; tokens only on request ──────────────
     const addresses = planned.map((item) => item.subject.address)
     const rpc = createSolanaRpc(rpcUrl, deps.fetch)
@@ -218,6 +240,8 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
       readError,
       tokensRead: tokenCounts !== undefined,
       hasValueUsd,
+      room,
+      promotes,
     })
 
     if (readError !== undefined) {
@@ -283,6 +307,9 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
         }
         if (item.kind === "promote") {
           const { subject, destination, row } = item
+          // The index immediately before this key's pre-import commit (BE-288, D9): what a
+          // definite init answer restores, because nothing has left this machine at init.
+          const preImportIndex = current.index
           current = hold(
             await commitVault(
               current,
@@ -314,10 +341,26 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
             resolvedVault,
           })
           if (imported.failure !== undefined || imported.submitted === undefined) {
+            let failure: ReturnedFailure = imported.failure ?? {
+              code: "VAULT_WRITE_FAILED",
+              message: "The import did not complete.",
+            }
+            if (restoresPreImportEntry(failure)) {
+              // D9: put the entry back, then say so inside the stopped message. A refused restore
+              // is caught HERE, not by the generic catch below, which would drop the init reason.
+              try {
+                current = hold(await commitVault(current, { index: preImportIndex }, deps))
+                failure = { ...failure, message: `${failure.message} ${RESTORED_SENTENCE}` }
+              } catch (error) {
+                failure = restoreRefusedFailure(failure, error)
+              }
+            }
             stopped = {
               line: row.line,
               exit: imported.exit,
-              ...(imported.failure ?? { code: "VAULT_WRITE_FAILED", message: "The import did not complete." }),
+              code: failure.code,
+              message: failure.message,
+              ...(failure.suggestion !== undefined ? { suggestion: failure.suggestion } : {}),
             }
             break
           }
@@ -606,6 +649,9 @@ function renderFooter(opts: {
   readError?: string
   tokensRead: boolean
   hasValueUsd: boolean
+  /** BE-288 (§4.3): the room this run was checked against, and the `promote` rows that take a slot. */
+  room: AccountRoom
+  promotes: number
 }): string {
   const skipped = opts.planned.filter((item) => item.kind === "skip").length
   const resumes = opts.planned.filter((item) => item.kind === "resume").length
@@ -620,6 +666,9 @@ function renderFooter(opts: {
         .join(" · ")}`,
     )
   }
+  lines.push(
+    `Linked wallets: ${opts.room.active} of ${opts.room.cap} active on the ${tierName(opts.room.tier)} tier; this run links ${opts.promotes}, leaving ${opts.room.room - opts.promotes}.`,
+  )
   if (opts.readError !== undefined) {
     lines.push(`SOL read over ${opts.host} FAILED: ${opts.readError}. The batch is refused.`)
   } else {

@@ -218,6 +218,9 @@ function importRoutes(opts: {
     "/api/v1/agent/wallets": () => jsonResponse(200, { page: [], isDone: true }),
     "/api/v1/agent/wallets/import-failures": () =>
       jsonResponse(200, { success: true, account: ACCOUNT, failures: [], complete: true }),
+    // BE-288 (D8): the room read before the holdings. A Max account with every slot free.
+    "/api/v1/agent/wallets/room": () =>
+      jsonResponse(200, { success: true, tier: "max", active: 0, cap: 1000, room: 1000 }),
   }
 }
 
@@ -931,5 +934,259 @@ describe("T41: vault demote adapter basics", () => {
 describe("T52 pending gate", () => {
   test("recorded as pending, not executed", () => {
     expect(T52_PENDING).toContain("pending")
+  })
+})
+
+/**
+ * BE-288 (spec `2026-09-23-linked-wallet-cap-before-import-design.md`, §6.3): single `vault
+ * promote` reads the room before the AD-8 warning (D8) and puts its pre-import entry back when
+ * init answers definitively (D9).
+ */
+describe("BE-288 C8 to C13: vault promote reads the room, and restores on a definite init answer", () => {
+  const RESTORED = "The vault entry is back as it was: nothing left this machine."
+  const LIMIT_MESSAGE =
+    "Active linked-wallet limit reached for this tier: 10 of 10 active. Nothing was sent to the wallet provider."
+  const LIMIT_HINT = "You have reached your trading-wallet limit for this tier. Revoke one or upgrade."
+  const IMPORT_FAILED_MESSAGE = "Wallet import could not be started. Please try again."
+  const roomOf =
+    (room: { tier: string; active: number; cap: number }): RouteHandler =>
+    () =>
+      jsonResponse(200, { success: true, ...room, room: Math.max(0, room.cap - room.active) })
+  const limitRefusal = () =>
+    jsonResponse(400, {
+      success: false,
+      error: {
+        code: "WALLET_LIMIT_REACHED",
+        message: LIMIT_MESSAGE,
+        retryable: false,
+        uiHint: LIMIT_HINT,
+        keyImported: false,
+      },
+    })
+
+  interface Fixture {
+    dir: string
+    passphrase: string
+    subject: string
+    cold: string
+    vaultPath: string
+  }
+  async function setup(tag: string): Promise<Fixture> {
+    const dir = await mkdtemp(join(tmpdir(), `candle-be288-${tag}-`))
+    const { passphrase } = await initVault(dir)
+    const subject = await newKey(dir, passphrase, "subject")
+    const cold = await newKey(dir, passphrase, "cold")
+    return { dir, passphrase, subject, cold, vaultPath: join(dir, "vault.enc") }
+  }
+  async function entries(f: Fixture) {
+    const opened = await unlockWithPassphrase(f.vaultPath, await readFile(f.vaultPath, "utf8"), f.passphrase)
+    try {
+      return { hd: opened.index.hd, entries: opened.index.entries }
+    } finally {
+      closeVault(opened)
+    }
+  }
+  async function runPromote(
+    f: Fixture,
+    opts: { routes: Record<string, RouteHandler>; args: string[]; json?: boolean; lines?: string[] },
+  ) {
+    const out = createCapture()
+    const err = createCapture()
+    const lines = [...(opts.lines ?? [f.subject.slice(-6), "EXPOSE"])]
+    const asked: string[] = []
+    let rpcCalls = 0
+    const base = rpcHandler({ balance: 42 })
+    const { fetch } = createRoutedFetch({
+      ...opts.routes,
+      "/rpc": (req) => {
+        rpcCalls += 1
+        return base(req)
+      },
+    })
+    const deps = createTestDeps({
+      fetch,
+      store: createFakeStore({ "profile:prc:api_key": "ck_live_prc" }),
+      stdout: out,
+      stderr: err,
+      env: { CANDLE_CONFIG_DIR: f.dir, CANDLE_API_URL: API },
+      promptSecret: async () => f.passphrase,
+      promptLine: async (text: string) => {
+        asked.push(text)
+        return lines.shift() ?? ""
+      },
+      readFile: (path) => readFile(path, "utf8"),
+      writeFile: (path, content) => writeFile(path, content, "utf8"),
+    })
+    await deps.writeConfig({
+      activeProfile: "prc",
+      profiles: { prc: { account: ACCOUNT, apiUrl: API, accountCachedAt: Date.now() } },
+    })
+    const code = await run(["vault", "promote", ...opts.args, ...(opts.json ? ["--json"] : [])], deps)
+    return { code, out: out.text, err: err.text, asked, rpcCalls }
+  }
+  const inPlace = ["--in-place", "subject", "--sweep-to", "cold", "--rpc-url", RPC]
+  /** Every JSON document on stdout (the AD-8 prose and the holdings lines are not JSON). */
+  const jsonDocs = (out: string) => out.split("\n").filter((line) => line.startsWith("{"))
+
+  test("C8: --in-place at cap is refused with WALLET_LIMIT_REACHED before the AD-8 warning, before any prompt, with the vault unchanged", async () => {
+    const f = await setup("c8")
+    const before = await readFile(f.vaultPath, "utf8")
+    const importCalls = { n: 0 }
+    const r = await runPromote(f, {
+      routes: {
+        ...importRoutes({ address: f.subject, vaultDestination: f.cold, importCalls }),
+        "/api/v1/agent/wallets/room": roomOf({ tier: "pro", active: 10, cap: 10 }),
+      },
+      args: inPlace,
+    })
+    expect(r.code).toBe(1)
+    expect(r.err).toContain(
+      "This promotion would link a wallet to this Candle account, and it has no room: 10 of 10 linked wallets are active on the Pro tier. Nothing was written. Upgrade to Max, or revoke linked wallets you no longer use.",
+    )
+    expect(r.out).not.toContain(AD8_WARNING.split("\n")[0] as string)
+    expect(r.asked).toEqual([])
+    expect(r.rpcCalls).toBe(0)
+    expect(importCalls.n).toBe(0)
+    expect(await readFile(f.vaultPath, "utf8")).toBe(before)
+  })
+
+  test("C9: --in-place with an unreadable room proceeds, prints the D8 line on stderr, and the --json document is unchanged", async () => {
+    const f = await setup("c9")
+    const importCalls = { n: 0 }
+    const r = await runPromote(f, {
+      routes: {
+        ...importRoutes({ address: f.subject, vaultDestination: f.cold, importCalls }),
+        "/api/v1/agent/wallets/room": () =>
+          jsonResponse(404, { success: false, error: { code: "NOT_FOUND", message: "Not Found" } }),
+      },
+      args: inPlace,
+      json: true,
+    })
+    expect(r.code).toBe(0)
+    expect(r.err).toContain(
+      "Could not read this account's linked-wallet room (HTTP 404); continuing. The server refuses before anything is sent if the account is full.",
+    )
+    expect(importCalls.n).toBe(1)
+    const docs = jsonDocs(r.out)
+    expect(docs).toHaveLength(1)
+    expect(JSON.parse(docs[0] as string)).toEqual({
+      ok: true,
+      mode: "in-place",
+      address: f.subject,
+      vaultDestination: f.cold,
+      lifecycle: "enabled",
+      linkedWalletId: "lw_promoted",
+    })
+  })
+
+  test("C10: --in-place init refusal restores the entry, and the caller writes once after the restore (human, then --json); a vault rewritten under it refuses the restore as VAULT_CHANGED", async () => {
+    const f = await setup("c10")
+    const before = await entries(f)
+    const subjectBefore = before.entries.find((e) => e.address === f.subject)
+    const importCalls = { n: 0 }
+    const routes = {
+      ...importRoutes({ address: f.subject, vaultDestination: f.cold, importCalls }),
+      "/api/v1/agent/wallets/room": roomOf({ tier: "pro", active: 9, cap: 10 }),
+      "/api/v1/agent/wallets/import/init": () => limitRefusal(),
+    }
+
+    const human = await runPromote(f, { routes, args: inPlace })
+    expect(human.code).toBe(1)
+    expect(human.err).toContain(`${LIMIT_MESSAGE} ${RESTORED} ${LIMIT_HINT}\n`)
+    expect(importCalls.n).toBe(0)
+    expect(jsonDocs(human.out)).toEqual([])
+    const afterHuman = await entries(f)
+    expect(afterHuman.entries.find((e) => e.address === f.subject)).toEqual(subjectBefore)
+    expect(afterHuman.hd).toEqual(before.hd)
+
+    const json = await runPromote(f, { routes, args: inPlace, json: true })
+    expect(json.code).toBe(1)
+    const docs = jsonDocs(json.out)
+    expect(docs).toHaveLength(1)
+    expect(JSON.parse(docs[0] as string)).toEqual({
+      ok: false,
+      code: "WALLET_LIMIT_REACHED",
+      message: `${LIMIT_MESSAGE} ${RESTORED}`,
+      suggestion: LIMIT_HINT,
+    })
+    expect((await entries(f)).entries.find((e) => e.address === f.subject)).toEqual(subjectBefore)
+
+    // The collision: another writer replaces the file after the pre-import commit landed and
+    // before init answers. The restore's commitVault refuses; one failure, VAULT_CHANGED.
+    const original = await readFile(f.vaultPath, "utf8")
+    const changed = await runPromote(f, {
+      routes: {
+        ...routes,
+        "/api/v1/agent/wallets/import/init": async () => {
+          await writeFile(f.vaultPath, original, "utf8")
+          return limitRefusal()
+        },
+      },
+      args: inPlace,
+      json: true,
+    })
+    expect(changed.code).toBe(1)
+    const changedDocs = jsonDocs(changed.out)
+    expect(changedDocs).toHaveLength(1)
+    expect(JSON.parse(changedDocs[0] as string)).toEqual({
+      ok: false,
+      code: "VAULT_CHANGED",
+      message: `${LIMIT_MESSAGE} The vault changed on disk while this command was running; the restore wrote nothing.`,
+      suggestion: "Another candle command wrote to it. Run this one again.",
+    })
+    expect(changed.out).not.toContain(RESTORED)
+    expect(await readFile(f.vaultPath, "utf8")).toBe(original)
+  })
+
+  test("C11: --from at cap is refused before the commit; nextIndex.solanaTee is unchanged", async () => {
+    const f = await setup("c11")
+    const before = await entries(f)
+    const importCalls = { n: 0 }
+    const r = await runPromote(f, {
+      routes: {
+        ...importRoutes({ address: f.subject, vaultDestination: f.cold, importCalls }),
+        "/api/v1/agent/wallets/room": roomOf({ tier: "pro", active: 10, cap: 10 }),
+      },
+      args: ["--from", "cold"],
+      lines: [],
+    })
+    expect(r.code).toBe(1)
+    expect(r.err).toContain("This promotion would link a wallet to this Candle account, and it has no room")
+    expect(r.asked).toEqual([])
+    expect(importCalls.n).toBe(0)
+    const after = await entries(f)
+    expect(after.hd.nextIndex.solanaTee).toBe(before.hd.nextIndex.solanaTee)
+    expect(after.hd).toEqual(before.hd)
+    expect(after.entries).toEqual(before.entries)
+  })
+
+  test("C13: --in-place init WALLET_IMPORT_FAILED (D3) restores: the D9 human line, and the D9 --json document with no suggestion key", async () => {
+    const f = await setup("c13")
+    const before = await entries(f)
+    const subjectBefore = before.entries.find((e) => e.address === f.subject)
+    const importCalls = { n: 0 }
+    const routes = {
+      ...importRoutes({ address: f.subject, vaultDestination: f.cold, importCalls }),
+      "/api/v1/agent/wallets/room": roomOf({ tier: "pro", active: 9, cap: 10 }),
+      "/api/v1/agent/wallets/import/init": () =>
+        jsonResponse(400, {
+          success: false,
+          error: { code: "WALLET_IMPORT_FAILED", message: IMPORT_FAILED_MESSAGE, retryable: true },
+        }),
+    }
+    const human = await runPromote(f, { routes, args: inPlace })
+    expect(human.code).toBe(1)
+    expect(human.err).toContain(`\n${IMPORT_FAILED_MESSAGE} ${RESTORED}\n`)
+    expect(importCalls.n).toBe(0)
+    expect((await entries(f)).entries.find((e) => e.address === f.subject)).toEqual(subjectBefore)
+
+    const json = await runPromote(f, { routes, args: inPlace, json: true })
+    expect(json.code).toBe(1)
+    const docs = jsonDocs(json.out)
+    expect(docs).toHaveLength(1)
+    expect(docs[0]).toBe(
+      JSON.stringify({ ok: false, code: "WALLET_IMPORT_FAILED", message: `${IMPORT_FAILED_MESSAGE} ${RESTORED}` }),
+    )
+    expect(importCalls.n).toBe(0)
   })
 })

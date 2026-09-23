@@ -9,6 +9,14 @@ import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { errorEnvelope, renderError, suggestionFor, writeFailure, writeLocalFailure } from "../render"
 import { createSolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
+import {
+  RESTORED_SENTENCE,
+  readAccountRoom,
+  restoreRefusedFailure,
+  restoresPreImportEntry,
+  singleRoomRefusal,
+  unreadableRoomLine,
+} from "../vault/account-room"
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { addressFromSecret64 } from "../vault/ed25519"
 import { VaultError } from "../vault/errors"
@@ -118,6 +126,9 @@ async function promoteFresh(
       acceptUnknownExposure: acceptUnknown,
     })
 
+    // The room, before the commit below (BE-288, D8): a refusal here consumes no derivation index.
+    await refuseWithoutRoom(ctx)
+
     const teeIndex = nextAllocatableIndex(vault.index.hd.nextIndex.solanaTee, vault.index.hd.exposedIndexes.solanaTee)
     const derivationPath = solanaTeePath(teeIndex)
     const root = await decryptRoot(vault)
@@ -226,6 +237,23 @@ async function promoteFresh(
   })
 }
 
+/**
+ * D8 (BE-288): the pre-read a single promotion makes. Refuses with `WALLET_LIMIT_REACHED` when the
+ * account has no room and `TIER_REQUIRED` when its cap is 0, both before any write. When the room
+ * cannot be read it proceeds with one stderr line, deliberately unlike the batch: one key has no
+ * "known in advance partial run" to avoid, and the server refuses a full account before anything
+ * is sent regardless. Under `--json` the line is on stderr, so the document is unchanged.
+ */
+async function refuseWithoutRoom(ctx: CommandContext): Promise<void> {
+  const read = await readAccountRoom(ctx)
+  if (!read.ok) {
+    ctx.deps.stderr.write(unreadableRoomLine(read.reason))
+    return
+  }
+  const refusal = singleRoomRefusal(read.room)
+  if (refusal !== null) throw refusal
+}
+
 async function reopenFromDisk(
   path: string,
   reopen: OpenedVault["reopen"],
@@ -307,6 +335,10 @@ async function promoteInPlace(
       return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).")
     }
 
+    // The room, before the holdings, the AD-8 warning and either typed confirmation (BE-288, D8):
+    // a full account is refused before anyone types EXPOSE, and before any write.
+    await refuseWithoutRoom(ctx)
+
     // Holdings (step 4): display what the subject holds.
     await displayHoldings(ctx, rpcUrl, first.subject.address)
 
@@ -335,6 +367,9 @@ async function promoteInPlace(
     const now = new Date(ctx.deps.now()).toISOString()
     const subject = second.subject
     const destination = second.destination
+    // The index as it is immediately before the pre-import commit (BE-288, D9): what the restore
+    // below writes back when init answers definitively, because nothing has left this machine yet.
+    const preImportIndex = vault.index
     // The one mutation, shared with the batch preflight's projection (BE-285, D6): the entry moves
     // to `tee-wallet` / `import-pending` with its pin, and its vault-branch index is recorded as
     // exposed. `promotedEntry` in promote-support.ts is the only producer of that entry shape.
@@ -363,14 +398,40 @@ async function promoteInPlace(
       wipe(secret)
     }
 
-    const { exit: code } = await runTeeImport(ctx, {
+    // `report: "return"` (BE-288, D9): the default mode writes an API failure itself and returns
+    // only `{ exit }`, so this caller could never restore the entry and say so. Here the failure
+    // comes back with its stage and status, the restore runs when it applies, and the failure is
+    // written ONCE, after that commit has succeeded or been refused. Never the success-shaped
+    // `mode: "in-place"` document on this path.
+    const imported = await runTeeImport(ctx, {
       address: subject.address,
       privateKey,
       label: parsed.values["--label"] ?? subject.label,
       vaultDestination: destination.address,
       reopenForWrite: opened.reopen,
+      report: "return",
       resolvedVault,
     })
+    const code = imported.exit
+    if (imported.failure !== undefined) {
+      let failure: ReturnedFailure = {
+        code: imported.failure.code,
+        message: imported.failure.message,
+        ...(imported.failure.suggestion !== undefined ? { suggestion: imported.failure.suggestion } : {}),
+      }
+      if (restoresPreImportEntry(imported.failure)) {
+        try {
+          vault = hold(await commitVault(vault, { index: preImportIndex }, ctx.deps))
+          failure = { ...failure, message: `${failure.message} ${RESTORED_SENTENCE}` }
+        } catch (error) {
+          // Caught here so it never reaches runVaultCommand, which would write only the vault
+          // error and drop the init failure. One failure is written, below.
+          failure = restoreRefusedFailure(failure, error)
+        }
+      }
+      writeLocalFailure(ctx.deps, failure, ctx.json)
+      return code
+    }
     if (ctx.json) {
       const reopened = hold(await reopenFromDisk(path, opened.reopen, vault))
       const updated = reopened.index.entries.find((e) => e.id === subject.id)
@@ -400,6 +461,13 @@ export interface ReturnedFailure {
   code: string
   message: string
   suggestion?: string
+  /**
+   * BE-288 (D9): which API call failed, and its HTTP status, copied from the import flow when the
+   * failure is an API answer. They decide whether the caller may put its pre-import vault entry
+   * back (a definite answer at `init`); they are never copied into the document the caller writes.
+   */
+  stage?: "init" | "submit"
+  status?: number
 }
 
 export interface ResumeOutcome {
@@ -672,6 +740,8 @@ export async function runTeeImport(
           code: errorEnvelope(failure.response, render).code,
           message: renderError(failure.response, render),
           ...(suggestion ? { suggestion } : {}),
+          stage: failure.stage,
+          status: failure.response.status,
         },
       }
     }

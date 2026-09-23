@@ -200,6 +200,10 @@ function rpcHandler(opts: { counts: RpcCounts; lamports?: number; failMultiple?:
 interface ApiOptions {
   /** Called for every import/submit, in order. Return a Response to override the default success. */
   submit?: (n: number, body: Record<string, unknown>) => Response | undefined
+  /** Called for every import/init, in order (BE-288). Return a Response to override the default success. */
+  init?: (n: number, body: Record<string, unknown>) => Response | undefined
+  /** `GET /agent/wallets/room` (BE-288, D7). Default: a Max account with every slot free. */
+  room?: RouteHandler
   /** The linked-wallet listing(s): one handler, or one per call in order. */
   wallets?: RouteHandler | RouteHandler[]
   remoteAuthority?: string | ((address: string) => string)
@@ -209,10 +213,18 @@ interface ApiOptions {
 function apiRoutes(
   opts: ApiOptions,
   submits: { n: number; addresses: string[] },
+  inits: { n: number },
 ): Record<string, RouteHandler | RouteHandler[]> {
   return {
-    "/api/v1/agent/wallets/import/init": () =>
-      jsonResponse(200, { success: true, encryptionPublicKey: ENCRYPTION_PUBLIC_KEY }),
+    "/api/v1/agent/wallets/room":
+      opts.room ?? (() => jsonResponse(200, { success: true, tier: "max", active: 0, cap: 1000, room: 1000 })),
+    "/api/v1/agent/wallets/import/init": async (req) => {
+      inits.n += 1
+      const body = (typeof req.init.body === "string" ? JSON.parse(req.init.body) : {}) as Record<string, unknown>
+      const override = opts.init?.(inits.n, body)
+      if (override !== undefined) return override
+      return jsonResponse(200, { success: true, encryptionPublicKey: ENCRYPTION_PUBLIC_KEY })
+    },
     "/api/v1/agent/wallets/import/submit": async (req) => {
       submits.n += 1
       const body = (typeof req.init.body === "string" ? JSON.parse(req.init.body) : {}) as Record<string, unknown>
@@ -286,6 +298,7 @@ interface Outcome {
   stdoutAtPrompt: string[]
   rpc: RpcCounts
   submits: { n: number; addresses: string[] }
+  inits: { n: number }
   deps: Deps
 }
 
@@ -304,8 +317,9 @@ async function runBatch(f: Fixture, opts: RunOptions): Promise<Outcome> {
   const err = createCapture()
   const counts: RpcCounts = { getMultipleAccounts: 0, getTokenAccountsByOwner: 0 }
   const submits = { n: 0, addresses: [] as string[] }
+  const inits = { n: 0 }
   const { fetch } = createRoutedFetch({
-    ...apiRoutes(opts.api ?? {}, submits),
+    ...apiRoutes(opts.api ?? {}, submits, inits),
     "/rpc": rpcHandler({ counts, ...(opts.rpc ?? {}) }),
   })
   const lines = [...(opts.lines ?? [])]
@@ -350,7 +364,18 @@ async function runBatch(f: Fixture, opts: RunOptions): Promise<Outcome> {
     ],
     deps,
   )
-  return { code, out: out.text, err: err.text, secretPrompts, linePrompts, stdoutAtPrompt, rpc: counts, submits, deps }
+  return {
+    code,
+    out: out.text,
+    err: err.text,
+    secretPrompts,
+    linePrompts,
+    stdoutAtPrompt,
+    rpc: counts,
+    submits,
+    inits,
+    deps,
+  }
 }
 
 /** stdout with the AD-8 prose (the inherited exception, §4.3) removed: what must be exactly one JSON value. */
@@ -1392,5 +1417,256 @@ describe("the projection helper the loop and the preflight share", () => {
     } finally {
       closeVault(v)
     }
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// BE-288 (spec `2026-09-23-linked-wallet-cap-before-import-design.md`, §6.2): the room is read
+// before the table, the whole batch is refused when its `promote` rows exceed it, and a definite
+// init answer puts the row's pre-import entry back.
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+
+const roomOf =
+  (room: { tier: string; active: number; cap: number }): RouteHandler =>
+  () =>
+    jsonResponse(200, { success: true, ...room, room: Math.max(0, room.cap - room.active) })
+
+const RESTORED = "The vault entry is back as it was: nothing left this machine."
+const LIMIT_MESSAGE =
+  "Active linked-wallet limit reached for this tier: 10 of 10 active. Nothing was sent to the wallet provider."
+const LIMIT_HINT = "You have reached your trading-wallet limit for this tier. Revoke one or upgrade."
+const limitRefusal = () =>
+  jsonResponse(400, {
+    success: false,
+    error: {
+      code: "WALLET_LIMIT_REACHED",
+      message: LIMIT_MESSAGE,
+      retryable: false,
+      uiHint: LIMIT_HINT,
+      linkedWallets: { active: 10, cap: 10 },
+      keyImported: false,
+    },
+  })
+const IMPORT_FAILED_MESSAGE = "Wallet import could not be started. Please try again."
+const importFailed = () =>
+  jsonResponse(400, {
+    success: false,
+    error: { code: "WALLET_IMPORT_FAILED", message: IMPORT_FAILED_MESSAGE, retryable: true },
+  })
+
+describe("BE-288 C1, C2: a Pro account with 146 promote rows is refused at preflight, zero writes", () => {
+  test("C1: the §4.1 stderr text exactly, exit 1, vault bytes identical, no import request, no RPC, no prompt; C2: the --json document is the only thing on stdout", async () => {
+    const made = await makeVault()
+    closeVault(made.vault)
+    const f: Fixture = { dir: made.dir, path: made.path, passphrase: made.passphrase, addresses: {} }
+    const keys = await newKeys(f.dir, f.passphrase, 151)
+    const labels = Object.keys(keys)
+    const dests = labels.slice(146, 151)
+    const file = await pairsFile(
+      f.dir,
+      `${labels
+        .slice(0, 146)
+        .map((label, i) => `${label} ${dests[i % 5]}`)
+        .join("\n")}\n`,
+    )
+    const before = await readFile(f.path, "utf8")
+    const message =
+      "This batch would link 146 wallets to this Candle account, and it has room for 10: 0 of 10 linked wallets are active on the Pro tier. Nothing was written."
+    const suggestion =
+      "Upgrade to Max, revoke linked wallets you no longer use, or split the file so this run acts on at most 10 rows. Promotion is irreversible, so no row runs until every row can link."
+
+    const o = await runBatch(f, { file, api: { room: roomOf({ tier: "pro", active: 0, cap: 10 }) } })
+    expect(o.code).toBe(1)
+    // §4.1's transcript starts after the unlock: everything from the first progress line on.
+    expect(o.err.slice(o.err.indexOf("✓"))).toBe(
+      `✓ 146 rows read from ${file}\n✓ preflight: 146 rows, 5 destinations, no conflicts\n${message} ${suggestion}\n`,
+    )
+    expect(o.out).toBe("")
+    expect(await readFile(f.path, "utf8")).toBe(before)
+    expect(o.inits.n).toBe(0)
+    expect(o.submits.n).toBe(0)
+    expect(o.rpc.getMultipleAccounts).toBe(0)
+    expect(o.rpc.getTokenAccountsByOwner).toBe(0)
+    expect(o.linePrompts).toEqual([])
+
+    const j = await runBatch(f, { file, json: true, api: { room: roomOf({ tier: "pro", active: 0, cap: 10 }) } })
+    expect(j.code).toBe(1)
+    expect(j.out).toBe(
+      `${JSON.stringify({
+        ok: false,
+        code: "WALLET_LIMIT_REACHED",
+        message,
+        suggestion,
+        details: { acting: "146", active: "0", cap: "10", room: "10", tier: "pro" },
+      })}\n`,
+    )
+    expect(await readFile(f.path, "utf8")).toBe(before)
+    expect(j.inits.n).toBe(0)
+    expect(j.linePrompts).toEqual([])
+  })
+})
+
+describe("BE-288 C3: only promote rows take room", () => {
+  test("140 skip rows and 6 promote rows pass with room 6, and the footer carries the §4.3 line", async () => {
+    const made = await makeVault()
+    closeVault(made.vault)
+    const f: Fixture = { dir: made.dir, path: made.path, passphrase: made.passphrase, addresses: {} }
+    const keys = await newKeys(f.dir, f.passphrase, 147)
+    const labels = Object.keys(keys)
+    const destLabel = labels[146] as string
+    const dest = keys[destLabel] as string
+    const skipped = new Set(labels.slice(0, 140))
+    await seed(f, (e) =>
+      skipped.has(e.label) ? { ...e, ...teeSeed("enabled", dest, { linked: true, grant: true }) } : e,
+    )
+    const file = await pairsFile(
+      f.dir,
+      `${labels
+        .slice(0, 146)
+        .map((label) => `${label} ${destLabel}`)
+        .join("\n")}\n`,
+    )
+    const o = await runBatch(f, { file, lines: ["no"], api: { room: roomOf({ tier: "pro", active: 4, cap: 10 }) } })
+    // The acknowledgement was refused, so nothing ran; the point is that the room check passed
+    // 146 rows against a room of 6, and said so in the footer.
+    expect(o.code).toBe(1)
+    expect(o.err).toContain("140 already promoted (skipped), 0 to resume, 6 to promote.")
+    expect(o.err).toContain("Linked wallets: 4 of 10 active on the Pro tier; this run links 6, leaving 0.")
+    expect(o.err).not.toContain("This batch would link")
+    expect(o.linePrompts).toEqual([ACK_PROMPT])
+    expect(o.inits.n).toBe(0)
+  })
+})
+
+describe("BE-288 C4, C5: an unreadable room refuses, and so does a tier with no cap", () => {
+  test("C4: a 404, a thrown fetch, and a body without numbers each refuse with LINKED_WALLET_ROOM_UNREADABLE and zero writes", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const before = await readFile(f.path, "utf8")
+    const rooms: Array<[string, RouteHandler]> = [
+      ["HTTP 404", () => jsonResponse(404, { success: false, error: { code: "NOT_FOUND", message: "Not Found" } })],
+      [
+        "Could not reach",
+        () => {
+          throw new Error("connection refused")
+        },
+      ],
+      ["the response carried no numeric active and cap", () => jsonResponse(200, { success: true })],
+    ]
+    for (const [reason, room] of rooms) {
+      const o = await runBatch(f, { file, json: true, api: { room } })
+      expect(o.code).toBe(1)
+      const docs = jsonDocuments(o.out)
+      expect(docs).toHaveLength(1)
+      const body = JSON.parse(docs[0] as string)
+      expect(body.code).toBe("LINKED_WALLET_ROOM_UNREADABLE")
+      expect(body.message).toContain("Could not read how many linked wallets this account has room for (")
+      expect(body.message).toContain(reason)
+      expect(body.message).toContain("Nothing was written.")
+      expect(body.suggestion).toContain("an API older than this CLI answers 404 here until it is updated")
+      expect(await readFile(f.path, "utf8")).toBe(before)
+      expect(o.inits.n).toBe(0)
+      expect(o.rpc.getMultipleAccounts).toBe(0)
+      expect(o.linePrompts).toEqual([])
+    }
+  })
+
+  test("C5: a Free account (cap 0) refuses with TIER_REQUIRED before any write", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const before = await readFile(f.path, "utf8")
+    const o = await runBatch(f, { file, api: { room: roomOf({ tier: "free", active: 0, cap: 0 }) } })
+    expect(o.code).toBe(1)
+    expect(o.err).toContain(
+      "Linked wallets need the Pro or Max tier, and this account is on Free. Nothing was written.",
+    )
+    expect(await readFile(f.path, "utf8")).toBe(before)
+    expect(o.inits.n).toBe(0)
+    expect(o.linePrompts).toEqual([])
+  })
+})
+
+describe("BE-288 C6, C7, C12: a mid-run refusal at init restores the row; at submit it does not", () => {
+  test("C6: row 3's init answers WALLET_LIMIT_REACHED: rows 1-2 enabled, row 3's entry back field for field, no submit for it, the restore sentence in the stopped message", async () => {
+    const f = await fixture(["a", "b", "c", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\nc cold\n")
+    const before = await readEntries(f)
+    const o = await runBatch(f, {
+      file,
+      ack: "correct",
+      api: { room: roomOf({ tier: "pro", active: 0, cap: 10 }), init: (n) => (n === 3 ? limitRefusal() : undefined) },
+    })
+    expect(o.code).toBe(1)
+    expect(o.inits.n).toBe(3)
+    expect(o.submits.addresses).toEqual([f.addresses.a as string, f.addresses.b as string])
+    expect(o.err).toContain("2 of 3 rows landed and ARE in the vault; the vault is intact. 1 remain.")
+    expect(o.err).toContain(`${LIMIT_MESSAGE} ${RESTORED} ${LIMIT_HINT}\n`)
+    const after = await readEntries(f)
+    const by = (entries: KeyEntry[], label: string) => entries.find((e) => e.label === label)
+    expect(["a", "b"].map((l) => by(after.entries, l)?.tee?.lifecycle)).toEqual(["enabled", "enabled"])
+    expect(by(after.entries, "c")).toEqual(by(before.entries, "c"))
+    expect(by(after.entries, "c")?.role).toBe("vault")
+    expect(by(after.entries, "c")?.tee).toBeUndefined()
+    expect(by(after.entries, "c")?.exposure).toEqual(by(before.entries, "c")?.exposure)
+  })
+
+  test("C7: row 3's submit answers WALLET_LIMIT_REACHED with keyImported false: the row stays import-pending, everRemoteExposed, and no restore sentence", async () => {
+    const f = await fixture(["a", "b", "c", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\nc cold\n")
+    const o = await runBatch(f, {
+      file,
+      ack: "correct",
+      api: { room: roomOf({ tier: "pro", active: 0, cap: 10 }), submit: (n) => (n === 3 ? limitRefusal() : undefined) },
+    })
+    expect(o.code).toBe(1)
+    expect(o.submits.n).toBe(3)
+    expect(o.err).toContain(LIMIT_MESSAGE)
+    expect(o.err).not.toContain(RESTORED)
+    const after = await readEntries(f)
+    const c = after.entries.find((e) => e.label === "c")
+    expect(c?.role).toBe("tee-wallet")
+    expect(c?.tee?.lifecycle).toBe("import-pending")
+    expect(c?.exposure?.everRemoteExposed).toBe(true)
+  })
+
+  test("C12: row 3's init answers WALLET_IMPORT_FAILED (D3): the row is back, the stopped line is the D9 sentence pair, no submit for it", async () => {
+    const f = await fixture(["a", "b", "c", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\nc cold\n")
+    const before = await readEntries(f)
+    const o = await runBatch(f, {
+      file,
+      ack: "correct",
+      api: { room: roomOf({ tier: "pro", active: 0, cap: 10 }), init: (n) => (n === 3 ? importFailed() : undefined) },
+    })
+    expect(o.code).toBe(1)
+    expect(o.submits.addresses).toEqual([f.addresses.a as string, f.addresses.b as string])
+    expect(o.err).toContain(`\n${IMPORT_FAILED_MESSAGE} ${RESTORED}\n`)
+    const after = await readEntries(f)
+    expect(after.entries.find((e) => e.label === "c")).toEqual(before.entries.find((e) => e.label === "c"))
+
+    // Under --json the stopped document carries the same message, and stage/status are not in it.
+    const g = await fixture(["x", "y", "cold"])
+    const file2 = await pairsFile(g.dir, "x cold\ny cold\n")
+    const j = await runBatch(g, {
+      file: file2,
+      ack: "correct",
+      json: true,
+      api: { room: roomOf({ tier: "pro", active: 0, cap: 10 }), init: (n) => (n === 1 ? importFailed() : undefined) },
+    })
+    expect(j.code).toBe(1)
+    const docs = jsonDocuments(j.out)
+    expect(docs).toHaveLength(1)
+    const body = JSON.parse(docs[0] as string)
+    expect(body).toMatchObject({
+      ok: false,
+      complete: false,
+      promoted: 0,
+      failedLine: 1,
+      code: "WALLET_IMPORT_FAILED",
+      message: `${IMPORT_FAILED_MESSAGE} ${RESTORED}`,
+    })
+    expect(body.stage).toBeUndefined()
+    expect(body.status).toBeUndefined()
+    expect(body.suggestion).toBeUndefined()
   })
 })

@@ -323,3 +323,17 @@ describe("T19: every command that answers under --json still answers", () => {
     expect(Object.keys(JSON.parse(usage.stdout)).sort()).toEqual(["code", "message", "ok"])
   })
 })
+
+/**
+ * BE-288 (spec `2026-09-23-linked-wallet-cap-before-import-design.md`, §6.4): the three codes the
+ * room read adds are declared, and `FROZEN_CODES` above is untouched (additions are allowed; a
+ * disappearance is what T19 catches).
+ */
+describe("BE-288: the linked-wallet room codes are declared", () => {
+  test("WALLET_LIMIT_REACHED, TIER_REQUIRED and LINKED_WALLET_ROOM_UNREADABLE are vault codes", () => {
+    const declared = new Set<string>(VAULT_ERROR_CODES)
+    for (const code of ["WALLET_LIMIT_REACHED", "TIER_REQUIRED", "LINKED_WALLET_ROOM_UNREADABLE"]) {
+      expect(declared.has(code), `${code} is not in VAULT_ERROR_CODES`).toBe(true)
+    }
+  })
+})

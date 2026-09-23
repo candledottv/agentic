@@ -2532,7 +2532,10 @@ var init_errors = __esm(() => {
     "VAULT_LABEL_TAKEN",
     "VAULT_LABEL_UNCHANGED",
     "VAULT_RENAME_ROLE_REFUSED",
-    "PROMOTE_BATCH_REFUSED"
+    "PROMOTE_BATCH_REFUSED",
+    "WALLET_LIMIT_REACHED",
+    "TIER_REQUIRED",
+    "LINKED_WALLET_ROOM_UNREADABLE"
   ];
   VaultError = class VaultError extends Error {
     code;
@@ -53327,6 +53330,107 @@ async function vaultPhrase(args, ctx) {
 init_esm();
 init_args();
 init_render();
+
+// src/vault/account-room.ts
+init_errors();
+async function readAccountRoom(ctx) {
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  if (!apiKey)
+    return { ok: false, reason: "no API key is available" };
+  const result = await apiRequest("/api/v1/agent/wallets/room", {
+    method: "GET",
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl: ctx.apiUrl,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result.ok) {
+    return { ok: false, reason: result.status === 0 ? result.message : `HTTP ${result.status}` };
+  }
+  const body = result.body ?? {};
+  const active = body.active;
+  const cap = body.cap;
+  if (typeof active !== "number" || typeof cap !== "number" || !Number.isFinite(active) || !Number.isFinite(cap)) {
+    return { ok: false, reason: "the response carried no numeric active and cap" };
+  }
+  const tier = typeof body.tier === "string" ? body.tier : "unknown";
+  return { ok: true, room: { tier, active, cap, room: Math.max(0, cap - active) } };
+}
+function tierName(tier) {
+  return tier.length === 0 ? tier : tier[0]?.toUpperCase() + tier.slice(1);
+}
+var IRREVERSIBLE = "Promotion is irreversible, so no row runs until every row can link.";
+function revokeOrUpgrade(tier) {
+  return tier === "max" ? "Revoke linked wallets you no longer use." : "Upgrade to Max, or revoke linked wallets you no longer use.";
+}
+function batchSuggestion(tier, room) {
+  if (room > 0) {
+    const split2 = `split the file so this run acts on at most ${room} rows`;
+    return tier === "max" ? `Revoke linked wallets you no longer use, or ${split2}. ${IRREVERSIBLE}` : `Upgrade to Max, revoke linked wallets you no longer use, or ${split2}. ${IRREVERSIBLE}`;
+  }
+  return `${revokeOrUpgrade(tier)} ${IRREVERSIBLE}`;
+}
+function tierRefusal(room) {
+  return new VaultError("TIER_REQUIRED", `Linked wallets need the Pro or Max tier, and this account is on ${tierName(room.tier)}. Nothing was written.`, { details: { active: String(room.active), cap: String(room.cap), room: String(room.room), tier: room.tier } });
+}
+function batchRoomRefusal(room, acting) {
+  if (room.cap === 0)
+    return tierRefusal(room);
+  if (acting <= room.room)
+    return null;
+  const noun = acting === 1 ? "wallet" : "wallets";
+  return new VaultError("WALLET_LIMIT_REACHED", `This batch would link ${acting} ${noun} to this Candle account, and it has room for ${room.room}: ${room.active} of ${room.cap} linked wallets are active on the ${tierName(room.tier)} tier. Nothing was written.`, {
+    suggestion: batchSuggestion(room.tier, room.room),
+    details: {
+      acting: String(acting),
+      active: String(room.active),
+      cap: String(room.cap),
+      room: String(room.room),
+      tier: room.tier
+    }
+  });
+}
+function singleRoomRefusal(room) {
+  if (room.cap === 0)
+    return tierRefusal(room);
+  if (room.room > 0)
+    return null;
+  return new VaultError("WALLET_LIMIT_REACHED", `This promotion would link a wallet to this Candle account, and it has no room: ${room.active} of ${room.cap} linked wallets are active on the ${tierName(room.tier)} tier. Nothing was written.`, {
+    suggestion: revokeOrUpgrade(room.tier),
+    details: { active: String(room.active), cap: String(room.cap), room: String(room.room), tier: room.tier }
+  });
+}
+function unreadableRoomRefusal(reason) {
+  return new VaultError("LINKED_WALLET_ROOM_UNREADABLE", `Could not read how many linked wallets this account has room for (${reason}). Nothing was written.`, {
+    suggestion: "The batch refuses without it, so it never starts promotions it cannot finish. Check the API key and run again; an API older than this CLI answers 404 here until it is updated."
+  });
+}
+function unreadableRoomLine(reason) {
+  return `Could not read this account's linked-wallet room (${reason}); continuing. The server refuses before anything is sent if the account is full.
+`;
+}
+var RESTORED_SENTENCE = "The vault entry is back as it was: nothing left this machine.";
+function restoresPreImportEntry(failure) {
+  return failure.stage === "init" && failure.status !== undefined && failure.status !== 0;
+}
+function restoreRefusedFailure(init, error) {
+  if (error instanceof VaultError && error.code === "VAULT_CHANGED") {
+    return {
+      code: "VAULT_CHANGED",
+      message: `${init.message} The vault changed on disk while this command was running; the restore wrote nothing.`,
+      suggestion: "Another candle command wrote to it. Run this one again."
+    };
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    code: error instanceof VaultError ? error.code : "VAULT_UNREADABLE",
+    message: `${init.message} ${message}`,
+    ...error instanceof VaultError && error.suggestion ? { suggestion: error.suggestion } : {}
+  };
+}
+
+// src/commands/vault-promote.ts
 init_errors();
 init_promote_support();
 init_store();
@@ -53384,6 +53488,7 @@ async function promoteFresh(ctx, parsed, fromLabel) {
     const destination = assertColdVaultDestination(vault.index, fromLabel, {
       acceptUnknownExposure: acceptUnknown
     });
+    await refuseWithoutRoom(ctx);
     const teeIndex = nextAllocatableIndex(vault.index.hd.nextIndex.solanaTee, vault.index.hd.exposedIndexes.solanaTee);
     const derivationPath = solanaTeePath(teeIndex);
     const root = await decryptRoot(vault);
@@ -53479,6 +53584,16 @@ async function promoteFresh(ctx, parsed, fromLabel) {
     return code;
   });
 }
+async function refuseWithoutRoom(ctx) {
+  const read = await readAccountRoom(ctx);
+  if (!read.ok) {
+    ctx.deps.stderr.write(unreadableRoomLine(read.reason));
+    return;
+  }
+  const refusal = singleRoomRefusal(read.room);
+  if (refusal !== null)
+    throw refusal;
+}
 async function reopenFromDisk(path, reopen, previous) {
   closeVault(previous);
   const raw = await readVaultRaw(path);
@@ -53537,6 +53652,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
     if (first.resume) {
       return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).");
     }
+    await refuseWithoutRoom(ctx);
     await displayHoldings(ctx, rpcUrl2, first.subject.address);
     printAd8Warning(ctx);
     if (!ctx.json) {}
@@ -53555,6 +53671,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
     const now = new Date(ctx.deps.now()).toISOString();
     const subject = second.subject;
     const destination = second.destination;
+    const preImportIndex = vault.index;
     vault = hold(await commitVault(vault, {
       index: applyPromotion(vault.index, subject, destination, {
         label: parsed.values["--label"],
@@ -53572,14 +53689,33 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
     } finally {
       wipe(secret);
     }
-    const { exit: code } = await runTeeImport(ctx, {
+    const imported = await runTeeImport(ctx, {
       address: subject.address,
       privateKey,
       label: parsed.values["--label"] ?? subject.label,
       vaultDestination: destination.address,
       reopenForWrite: opened.reopen,
+      report: "return",
       resolvedVault
     });
+    const code = imported.exit;
+    if (imported.failure !== undefined) {
+      let failure = {
+        code: imported.failure.code,
+        message: imported.failure.message,
+        ...imported.failure.suggestion !== undefined ? { suggestion: imported.failure.suggestion } : {}
+      };
+      if (restoresPreImportEntry(imported.failure)) {
+        try {
+          vault = hold(await commitVault(vault, { index: preImportIndex }, ctx.deps));
+          failure = { ...failure, message: `${failure.message} ${RESTORED_SENTENCE}` };
+        } catch (error) {
+          failure = restoreRefusedFailure(failure, error);
+        }
+      }
+      writeLocalFailure(ctx.deps, failure, ctx.json);
+      return code;
+    }
     if (ctx.json) {
       const reopened = hold(await reopenFromDisk(path, opened.reopen, vault));
       const updated = reopened.index.entries.find((e) => e.id === subject.id);
@@ -53777,7 +53913,9 @@ async function runTeeImport(ctx, opts) {
         failure: {
           code: errorEnvelope(failure.response, render).code,
           message: renderError(failure.response, render),
-          ...suggestion ? { suggestion } : {}
+          ...suggestion ? { suggestion } : {},
+          stage: failure.stage,
+          status: failure.response.status
         }
       };
     }
@@ -54303,6 +54441,14 @@ async function vaultPromoteBatch(args, ctx) {
     const destinations = actingDestinations(planned);
     deps.stderr.write(`✓ preflight: ${rows.length} rows, ${destinations.length} destinations, no conflicts
 `);
+    const promotes = planned.filter((item) => item.kind === "promote").length;
+    const roomRead = await readAccountRoom(ctx);
+    if (!roomRead.ok)
+      throw unreadableRoomRefusal(roomRead.reason);
+    const roomRefusal = batchRoomRefusal(roomRead.room, promotes);
+    if (roomRefusal !== null)
+      throw roomRefusal;
+    const room = roomRead.room;
     const addresses = planned.map((item) => item.subject.address);
     const rpc2 = createSolanaRpc(rpcUrl2, deps.fetch);
     const host = new URL(rpcUrl2).host;
@@ -54338,7 +54484,9 @@ async function vaultPromoteBatch(args, ctx) {
       host,
       readError,
       tokensRead: tokenCounts !== undefined,
-      hasValueUsd
+      hasValueUsd,
+      room,
+      promotes
     });
     if (readError !== undefined) {
       deps.stderr.write(`
@@ -54403,6 +54551,7 @@ This acknowledges permanent TEE exposure for ${acting.length} addresses; the ful
         }
         if (item.kind === "promote") {
           const { subject: subject2, destination, row: row2 } = item;
+          const preImportIndex = current.index;
           current = hold(await commitVault(current, {
             index: applyPromotion(current.index, subject2, destination, {
               now,
@@ -54428,10 +54577,24 @@ This acknowledges permanent TEE exposure for ${acting.length} addresses; the ful
             resolvedVault
           });
           if (imported.failure !== undefined || imported.submitted === undefined) {
+            let failure = imported.failure ?? {
+              code: "VAULT_WRITE_FAILED",
+              message: "The import did not complete."
+            };
+            if (restoresPreImportEntry(failure)) {
+              try {
+                current = hold(await commitVault(current, { index: preImportIndex }, deps));
+                failure = { ...failure, message: `${failure.message} ${RESTORED_SENTENCE}` };
+              } catch (error) {
+                failure = restoreRefusedFailure(failure, error);
+              }
+            }
             stopped = {
               line: row2.line,
               exit: imported.exit,
-              ...imported.failure ?? { code: "VAULT_WRITE_FAILED", message: "The import did not complete." }
+              code: failure.code,
+              message: failure.message,
+              ...failure.suggestion !== undefined ? { suggestion: failure.suggestion } : {}
             };
             break;
           }
@@ -54675,6 +54838,7 @@ function renderFooter(opts) {
   if (opts.destinations.length > 0) {
     lines.push(`${opts.destinations.length} destination${opts.destinations.length === 1 ? "" : "s"}, in this order: ${opts.destinations.map((d) => `${destinationCell(d.label, d.address)} ${d.keys} key${d.keys === 1 ? "" : "s"}`).join(" · ")}`);
   }
+  lines.push(`Linked wallets: ${opts.room.active} of ${opts.room.cap} active on the ${tierName(opts.room.tier)} tier; this run links ${opts.promotes}, leaving ${opts.room.room - opts.promotes}.`);
   if (opts.readError !== undefined) {
     lines.push(`SOL read over ${opts.host} FAILED: ${opts.readError}. The batch is refused.`);
   } else {

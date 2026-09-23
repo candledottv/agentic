@@ -94,6 +94,14 @@ export const VAULT_ERROR_CODES = [
   // carrying its OWN shipped `PROMOTE_*` code unchanged. Thrown nowhere: the report is returned and
   // rendered by `writeBatchRefusal`, because `VaultError.details` cannot carry a row list.
   "PROMOTE_BATCH_REFUSED",
+  // BE-288 (spec 2026-09-23-linked-wallet-cap-before-import-design.md, D7, D8): the room read
+  // `vault promote` and `vault promote-batch` make before they commit anything locally. The first
+  // two reuse the server's strings on purpose, so an agent that already branches on the server's
+  // `WALLET_LIMIT_REACHED` gets the same code whether the CLI or the server refused. All three are
+  // thrown from `vault/account-room.ts`.
+  "WALLET_LIMIT_REACHED",
+  "TIER_REQUIRED",
+  "LINKED_WALLET_ROOM_UNREADABLE",
 ] as const
 
 export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number]
