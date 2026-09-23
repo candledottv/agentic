@@ -20,28 +20,49 @@ import { SIGNATURE_VERIFIED } from "./update"
 
 const NEWER = "99.0.0"
 const BINARY = new TextEncoder().encode("#!/bin/sh\necho new\n")
+const HELPER_BYTES = new TextEncoder().encode("#!/bin/sh\necho candle-fido2 new\n")
+const HELPER_ASSET = "candle-fido2-linux-x64"
 
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex")
 
 /**
- * The four URLs an update reads, keyed by PATH the way `createRoutedFetch` routes them. The
- * `routes` object comes back alongside the fake fetch because the fetch reads it on every call,
- * so a test can rewrite one route after the fact (the checksum case swaps SHA256SUMS).
+ * The URLs an update reads, keyed by PATH the way `createRoutedFetch` routes them. The `routes`
+ * object comes back alongside the fake fetch because the fetch reads it on every call, so a test
+ * can rewrite one route after the fact (the checksum case swaps SHA256SUMS). With `helper`, the
+ * manifest also declares this platform's security key helper (BE-275 D5), the shape every release
+ * from 0.11.0 on has; without it, the manifest is a pre-helper release's (D6).
  */
-function fixture(version = NEWER) {
+function fixture(version = NEWER, opts: { helper?: boolean } = {}) {
   const sum = sha256(BINARY)
-  const manifest = {
+  const helperSum = sha256(HELPER_BYTES)
+  const manifest: {
+    version: string
+    tag: string
+    assets: { "linux-x64": { name: string; sha256: string; size: number } }
+    helpers?: Record<string, { name: string; sha256: string; size: number }>
+  } = {
     version,
     tag: `cli-v${version}`,
     assets: { "linux-x64": { name: "candle-linux-x64", sha256: sum, size: BINARY.length } },
+    ...(opts.helper
+      ? { helpers: { "linux-x64": { name: HELPER_ASSET, sha256: helperSum, size: HELPER_BYTES.length } } }
+      : {}),
   }
+  const sums = `${sum}  candle-linux-x64\n${opts.helper ? `${helperSum}  ${HELPER_ASSET}\n` : ""}`
   const routes: Record<string, RouteHandler | RouteHandler[]> = {
     "/releases/latest/download/latest.json": () => jsonResponse(200, manifest),
     [`/releases/download/cli-v${version}/candle-linux-x64`]: () => new Response(BINARY),
-    [`/releases/download/cli-v${version}/SHA256SUMS`]: () => new Response(`${sum}  candle-linux-x64\n`),
+    [`/releases/download/cli-v${version}/SHA256SUMS`]: () => new Response(sums),
     [`/releases/download/cli-v${version}/candle-linux-x64.sigstore.json`]: () => jsonResponse(200, { fixture: true }),
+    ...(opts.helper
+      ? {
+          [`/releases/download/cli-v${version}/${HELPER_ASSET}`]: () => new Response(HELPER_BYTES),
+          [`/releases/download/cli-v${version}/${HELPER_ASSET}.sigstore.json`]: () =>
+            jsonResponse(200, { fixture: true, helper: true }),
+        }
+      : {}),
   }
-  return { manifest, sum, routes, ...createRoutedFetch(routes) }
+  return { manifest, sum, helperSum, routes, ...createRoutedFetch(routes) }
 }
 
 /** A machine whose `candle` is a real binary in a writable bin dir, with every filesystem write
@@ -337,11 +358,14 @@ describe("update", () => {
     const f = fixture()
     const { deps, stdout } = binaryDeps(f.fetch, { verify: () => ({ ok: true }) })
     expect(await run(["update", "--json"], deps)).toBe(0)
+    // `helper` is null for a release that declares none for this platform (BE-275 D6): the key is
+    // always present, so a reader can tell "no helper in this release" from an older payload.
     expect(JSON.parse(stdout.text)).toEqual({
       current: CLI_VERSION,
       latest: NEWER,
       updated: true,
       path: "/home/u/.local/bin/candle",
+      helper: null,
     })
     const down = binaryDeps((async () => {
       throw new Error("ECONNREFUSED")
@@ -403,5 +427,178 @@ describe("T18: D9's two lines", () => {
     expect(body.updated).toBe(true)
     expect(body.latest).toBe(NEWER)
     expect(body.current).toBe(CLI_VERSION)
+  })
+})
+
+/**
+ * BE-275 D5 to D7 (spec `2026-09-22-cli-install-and-update-integrity-design.md`, tests 6 to 9):
+ * `update` installs two files, not one. The security key helper goes through the same download
+ * and the same two checks as the binary, nothing is renamed until both verify, and a helper that
+ * fails anything installs nothing, binary included. There is no "is it missing" branch: the
+ * helper is fetched whenever the manifest declares one, which is what repairs a machine that only
+ * ever ran an older `update` and so never had one.
+ */
+describe("BE-275: update installs the security key helper", () => {
+  const HELPER_PATH = "/home/u/.local/bin/candle-fido2"
+
+  test("6: a release that declares the helper installs it beside the binary, verified the same way, after the binary", async () => {
+    const f = fixture(NEWER, { helper: true })
+    const seen: { bytes: Uint8Array; bundle: unknown; identityUri: string }[] = []
+    const { deps, stdout, stderr, writes, renames, unlinks } = binaryDeps(f.fetch, {
+      verify: (bytes, bundle, identityUri) => {
+        seen.push({ bytes, bundle, identityUri })
+        return { ok: true }
+      },
+    })
+    expect(await run(["update"], deps)).toBe(0)
+    // Both assets, each against its own bundle and the SAME identity: the release workflow at
+    // that exact version, resolved once.
+    expect(seen).toHaveLength(2)
+    expect(Array.from(seen[0]?.bytes ?? [])).toEqual(Array.from(BINARY))
+    expect(Array.from(seen[1]?.bytes ?? [])).toEqual(Array.from(HELPER_BYTES))
+    expect(seen[1]?.bundle).toEqual({ fixture: true, helper: true })
+    expect(seen[1]?.identityUri).toBe(seen[0]?.identityUri)
+    expect(seen[0]?.identityUri).toContain(`cli-v${NEWER}`)
+    // Two temp files beside the real binary, then two renames in order: binary first, helper
+    // second (D5's window argument), and nothing discarded.
+    expect(writes).toHaveLength(2)
+    expect(writes.every((w) => w.path.startsWith("/home/u/.local/bin/.candle-update-"))).toBe(true)
+    expect(renames).toEqual([
+      { from: writes[0]?.path ?? "", to: "/home/u/.local/bin/candle" },
+      { from: writes[1]?.path ?? "", to: HELPER_PATH },
+    ])
+    expect(unlinks).toHaveLength(0)
+    expect(stdout.text).toContain(`Updated candle ${CLI_VERSION} -> ${NEWER}`)
+    expect(stdout.text).toContain(`Installed candle-fido2 ${NEWER} to ${HELPER_PATH}`)
+    // The size line sums both assets (D5): a line naming half of what then transfers reads as a
+    // hang. And the helper gets its own progress stages.
+    expect(stderr.text).toContain(
+      `Updating candle ${CLI_VERSION} -> ${NEWER} (${formatBytes(BINARY.length + HELPER_BYTES.length)})`,
+    )
+    expect(stderr.text).toContain(`downloading ${HELPER_ASSET}`)
+    expect(stderr.text).toContain(`${HELPER_ASSET} checksum verified`)
+    expect(stderr.text).toContain(`${HELPER_ASSET} ${SIGNATURE_VERIFIED}`)
+  })
+
+  test("6: --json reports the helper beside the binary", async () => {
+    const f = fixture(NEWER, { helper: true })
+    const { deps, stdout, stderr } = binaryDeps(f.fetch, { verify: () => ({ ok: true }) })
+    expect(await run(["update", "--json"], deps)).toBe(0)
+    expect(JSON.parse(stdout.text)).toEqual({
+      current: CLI_VERSION,
+      latest: NEWER,
+      updated: true,
+      path: "/home/u/.local/bin/candle",
+      helper: { name: "candle-fido2", updated: true },
+    })
+    expect(stderr.text).toBe("")
+  })
+
+  test("7: a helper whose checksum fails installs NOTHING, binary included; both temp files are discarded", async () => {
+    const f = fixture(NEWER, { helper: true })
+    f.routes[`/releases/download/cli-v${NEWER}/SHA256SUMS`] = () =>
+      new Response(`${f.sum}  candle-linux-x64\n${"0".repeat(64)}  ${HELPER_ASSET}\n`)
+    const { deps, stdout, renames, unlinks, writes } = binaryDeps(f.fetch, { verify: () => ({ ok: true }) })
+    expect(await run(["update", "--json"], deps)).toBe(1)
+    const envelope = JSON.parse(stdout.text)
+    expect(envelope.code).toBe("UPDATE_VERIFY_FAILED")
+    expect(envelope.message).toContain(HELPER_ASSET)
+    expect(envelope.message).toContain("checksum")
+    expect(envelope.message).toContain("nothing installed")
+    // The binary had already verified and been staged. It is discarded with the helper: a partial
+    // install is worse than none, and this matches install.sh exactly.
+    expect(writes).toHaveLength(2)
+    expect(renames).toHaveLength(0)
+    expect(unlinks.sort()).toEqual(writes.map((w) => w.path).sort())
+  })
+
+  test("7: a helper whose signature fails installs nothing either, and the message names the helper", async () => {
+    const f = fixture(NEWER, { helper: true })
+    const { deps, stderr, renames, unlinks } = binaryDeps(f.fetch, {
+      // The binary's bundle verifies; the helper's does not.
+      verify: (_bytes, bundle) =>
+        (bundle as { helper?: boolean }).helper
+          ? { ok: false, reason: "no matching certificate identity" }
+          : { ok: true },
+    })
+    expect(await run(["update"], deps)).toBe(1)
+    expect(stderr.text).toContain(`signature verification failed for ${HELPER_ASSET}`)
+    expect(stderr.text).toContain("no matching certificate identity")
+    expect(renames).toHaveLength(0)
+    expect(unlinks).toHaveLength(2)
+  })
+
+  test("7: a declared helper that cannot be downloaded installs nothing", async () => {
+    const f = fixture(NEWER, { helper: true })
+    delete f.routes[`/releases/download/cli-v${NEWER}/${HELPER_ASSET}`]
+    const { deps, stdout, renames, unlinks } = binaryDeps(f.fetch, { verify: () => ({ ok: true }) })
+    expect(await run(["update", "--json"], deps)).toBe(1)
+    const envelope = JSON.parse(stdout.text)
+    expect(envelope.code).toBe("UPDATE_UNREACHABLE")
+    expect(envelope.message).toContain(HELPER_ASSET)
+    expect(renames).toHaveLength(0)
+    expect(unlinks).toHaveLength(1)
+  })
+
+  test("8: a manifest with no helper for this platform updates the binary alone, requests no helper, and says nothing", async () => {
+    const f = fixture() // no `helpers` key: a release from before the helper shipped (D6)
+    const { deps, stdout, stderr, renames } = binaryDeps(f.fetch, { verify: () => ({ ok: true }) })
+    expect(await run(["update"], deps)).toBe(0)
+    expect(renames).toEqual([
+      { from: expect.stringContaining("/home/u/.local/bin/.candle-update-"), to: "/home/u/.local/bin/candle" },
+    ])
+    expect(paths(f.calls).some((path) => path.includes("candle-fido2"))).toBe(false)
+    // Silent: no warning, no note, no row. install.sh prints a Note here; update does not copy it,
+    // because on an unsupported platform it would print on every update (D6). doctor carries it.
+    expect(stdout.text).not.toContain("candle-fido2")
+    expect(stdout.text).not.toContain("helper")
+    expect(stderr.text).not.toContain("candle-fido2")
+    expect(stderr.text).not.toContain("helper")
+  })
+
+  test("9: a machine with no helper gets one on the next update, with no reinstall, no flag and no existence check", async () => {
+    // Nothing here says whether a helper is already beside the binary, and update never asks: the
+    // test deps' readBytes and readFile THROW if called, and realpath answers the path unchanged.
+    // The helper lands because the manifest declares it, and for no other reason (D7).
+    const f = fixture(NEWER, { helper: true })
+    const { deps, renames } = binaryDeps(f.fetch, { verify: () => ({ ok: true }) })
+    expect(await run(["update"], deps)).toBe(0)
+    expect(renames.map((r) => r.to)).toEqual(["/home/u/.local/bin/candle", HELPER_PATH])
+  })
+
+  test("a manifest naming a different file as the helper is refused before any download", async () => {
+    // Same rule and same reasoning as the binary: every asset in a release is signed under the same
+    // identity, so a manifest naming install.sh here would pass both checks and leave a shell
+    // script beside the binary as the helper.
+    const f = fixture(NEWER, { helper: true })
+    f.manifest.helpers = { "linux-x64": { name: "install.sh", sha256: f.helperSum, size: HELPER_BYTES.length } }
+    const { deps, stdout, writes, renames } = binaryDeps(f.fetch)
+    expect(await run(["update", "--json"], deps)).toBe(1)
+    const envelope = JSON.parse(stdout.text)
+    expect(envelope.code).toBe("MANIFEST_INVALID")
+    expect(envelope.message).toContain("install.sh")
+    expect(envelope.message).toContain(HELPER_ASSET)
+    expect(writes).toHaveLength(0)
+    expect(renames).toHaveLength(0)
+    expect(f.calls).toHaveLength(1)
+  })
+
+  test("a helper rename that fails after the binary moved reports the exact state", async () => {
+    const f = fixture(NEWER, { helper: true })
+    let renamesSeen = 0
+    const { deps, stdout, unlinks } = binaryDeps(f.fetch, {
+      verify: () => ({ ok: true }),
+      rename: async () => {
+        renamesSeen++
+        if (renamesSeen === 2) throw new Error("EACCES")
+      },
+    })
+    expect(await run(["update", "--json"], deps)).toBe(1)
+    const envelope = JSON.parse(stdout.text)
+    expect(envelope.code).toBe("UPDATE_NOT_WRITABLE")
+    // The operator is told which file is where, rather than left to infer it.
+    expect(envelope.message).toContain(`candle ${NEWER} was installed to /home/u/.local/bin/candle`)
+    expect(envelope.message).toContain(HELPER_PATH)
+    expect(unlinks).toHaveLength(1)
   })
 })

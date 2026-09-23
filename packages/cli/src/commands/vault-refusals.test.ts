@@ -19,6 +19,7 @@ import { join, resolve } from "node:path"
 import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 import { VAULT_ERROR_CODES } from "../vault/errors"
+import { INSTALL_HELPER_SENTENCE } from "../vault/platform"
 
 setDefaultTimeout(30_000)
 
@@ -242,5 +243,84 @@ describe("T9: VAULT_EXISTS is the other half of the same sentence", () => {
     const body = JSON.parse(out.stdout)
     expect(body.code).toBe("VAULT_EXISTS")
     expect(body.details).toEqual({ path, pathSource: "env" })
+  })
+})
+
+/**
+ * BE-275 D8 (test 11): the enrolment refusal a release binary gives when `candle-fido2` is not
+ * beside it. Every sentence it had survives, in order -- it names the file, the directory it
+ * searched, both remedies, and that nothing was written and no weaker factor was substituted --
+ * and exactly one sentence is added, naming `--install-helper`. The sentence is offered only where
+ * the flag can help: an npm install ships no helper to fetch (D10) and gets the refusal unchanged.
+ */
+describe("BE-275 D8: the enrolment refusal keeps every sentence and gains one", () => {
+  async function refuseEnrolment(argv: string[], execPath: string, json = false) {
+    const dir = await mkdtemp(join(tmpdir(), "candle-enrol-refusal-"))
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const deps = createTestDeps({
+      fetch: unreachableFetch,
+      stdout,
+      stderr,
+      env: { CANDLE_CONFIG_DIR: dir },
+      execPath: execPath.replace("<dir>", dir),
+      isTTY: { stdin: true, stdout: true, stderr: true },
+    })
+    const code = await run(json ? [...argv, "--json"] : argv, deps)
+    return { code, stdout: stdout.text, stderr: stderr.text, dir }
+  }
+
+  test("a release binary with no helper beside it: the four facts, then the new sentence, once", async () => {
+    const out = await refuseEnrolment(["vault", "factor", "add", "security-key"], "<dir>/candle")
+    expect(out.code).toBe(1)
+    const text = out.stderr
+    // The file and the directory it searched.
+    expect(text).toContain(
+      `This CLI cannot add a passkey-prf/ctap2 factor here: no candle-fido2 executable beside ${out.dir}/candle.`,
+    )
+    // Both remedies, unchanged.
+    const remedies =
+      "Install a release build of the CLI (which places candle-fido2 beside candle) or set CANDLE_FIDO2_HELPER."
+    expect(text).toContain(remedies)
+    // Nothing written, nothing substituted, unchanged.
+    const nothing = "No other factor is substituted and nothing was written."
+    expect(text).toContain(nothing)
+    // The one new sentence, exactly once, between the remedies and the closing sentence.
+    expect(text.split(INSTALL_HELPER_SENTENCE)).toHaveLength(2)
+    expect(text.indexOf(INSTALL_HELPER_SENTENCE)).toBeGreaterThan(text.indexOf(remedies))
+    expect(text.indexOf(INSTALL_HELPER_SENTENCE)).toBeLessThan(text.indexOf(nothing))
+    // And it was a refusal, not a partial run: no vault was created and no helper appeared.
+    expect(await readdir(out.dir)).toEqual([])
+  })
+
+  test("--json carries the code and the sentence in the suggestion", async () => {
+    const out = await refuseEnrolment(["vault", "factor", "add", "security-key"], "<dir>/candle", true)
+    expect(out.code).toBe(1)
+    const body = JSON.parse(out.stdout) as { ok: boolean; code: string; suggestion: string }
+    expect(body.ok).toBe(false)
+    expect(body.code).toBe("VAULT_HELPER_MISSING")
+    expect(body.suggestion).toContain("--install-helper")
+    expect(body.suggestion).toContain("nothing was written")
+  })
+
+  test("vault enroll security-key is the same refusal with the same sentence", async () => {
+    const out = await refuseEnrolment(["vault", "enroll", "security-key"], "<dir>/candle")
+    expect(out.code).toBe(1)
+    expect(out.stderr.split(INSTALL_HELPER_SENTENCE)).toHaveLength(2)
+  })
+
+  test("an npm install gets the refusal unchanged: no helper exists to fetch, so the flag is not offered", async () => {
+    const out = await refuseEnrolment(["vault", "factor", "add", "security-key"], "/usr/local/bin/node")
+    expect(out.code).toBe(1)
+    expect(out.stderr).toContain("ships no candle-fido2 executable")
+    expect(out.stderr).toContain("or set CANDLE_FIDO2_HELPER.")
+    expect(out.stderr).toContain("No other factor is substituted and nothing was written.")
+    expect(out.stderr).not.toContain("--install-helper")
+  })
+
+  test("--install-helper on any other factor is a usage error, before anything runs", async () => {
+    const out = await refuseEnrolment(["vault", "factor", "add", "passphrase", "--install-helper"], "<dir>/candle")
+    expect(out.code).toBe(2)
+    expect(out.stderr).toContain("--install-helper applies to the security-key factor only")
   })
 })

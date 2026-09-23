@@ -22,11 +22,19 @@ import type { CommandContext } from "../deps"
 import { b64u, randomBytes } from "../vault/crypto"
 import { countRecoverableFactors } from "../vault/domains"
 import { VaultError } from "../vault/errors"
-import { assertPrf, currentPlatformFacts, openSecurityKeySession, registerCredential } from "../vault/fido2"
+import {
+  assertPrf,
+  currentPlatformFacts,
+  HELPER_NAME,
+  openSecurityKeySession,
+  registerCredential,
+} from "../vault/fido2"
 import { CTAP2_RP_ID, type Ctap2Envelope, type Envelope, parseVaultFile, VAULT_CIPHER } from "../vault/format"
 import { wipe } from "../vault/hygiene"
+import { installHelperForThisRelease } from "../vault/install-helper"
 import { assertFactorAddable } from "../vault/platform"
 import { closeVault, commitVault, freshEnvelopeId, readVaultRaw, unlockVault, wrapDekForPrf } from "../vault/store"
+import { CLI_VERSION } from "../version"
 import { type ResolvedVaultPath, requireVaultRaw, unlockInteractively, writeJson } from "./vault-support"
 
 export const SECURITY_KEY_PAIR_NOTE =
@@ -40,6 +48,30 @@ export async function addSecurityKeyFactor(
 ): Promise<number> {
   const path = resolvedVault.path
   const { deps } = ctx
+  // `--install-helper` (BE-275 D8), before the platform facts are read: a release binary with no
+  // candle-fido2 beside it gets this release's own, downloaded and verified exactly as `update`
+  // does, and then the enrolment it was asked for proceeds. Anything short of a verified install
+  // installs nothing and is the same typed refusal as without the flag, with the reason named.
+  if (parsed.booleans.has("--install-helper")) {
+    const install = await installHelperForThisRelease(ctx)
+    if (!install.ok) {
+      throw new VaultError(
+        "VAULT_HELPER_MISSING",
+        `--install-helper could not install ${HELPER_NAME} ${CLI_VERSION}: ${install.message}.`,
+        {
+          suggestion:
+            "Nothing was installed. Install a release build of the CLI (which places candle-fido2 beside candle) or set CANDLE_FIDO2_HELPER. No other factor is substituted and nothing was written.",
+        },
+      )
+    }
+    if (!ctx.json) {
+      deps.stderr.write(
+        install.installed
+          ? `Installed ${HELPER_NAME} ${CLI_VERSION} to ${install.path}; enrolling.\n`
+          : `${HELPER_NAME} is already at ${install.path}; nothing downloaded.\n`,
+      )
+    }
+  }
   // CC-12 first: a platform or a machine that cannot drive the factor is a typed refusal before
   // any device is enumerated, and never a substitution.
   const facts = await currentPlatformFacts(deps)

@@ -16,7 +16,8 @@
  * facts injected.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises"
+import { createHash } from "node:crypto"
+import { access, chmod, constants, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { sha256 } from "@noble/hashes/sha256"
@@ -26,6 +27,7 @@ import type { Deps } from "../deps"
 import { AUTHDATA_FLAG_BE, AUTHDATA_FLAG_UP, AUTHDATA_FLAG_UV, handleLine, RP_ID } from "../fido2-helper/protocol"
 import { type BackendLogEntry, type HelperScript, scriptedBackend } from "../fido2-helper/test-backend"
 import { realSpawnHelper, run } from "../index"
+import { releaseIdentityUri } from "../release"
 import {
   createCapture,
   createFakeStore,
@@ -37,6 +39,7 @@ import {
 import { HELPER_ENV } from "../vault/fido2"
 import { HIDRAW_MESSAGE, SHIPPING_TARGETS } from "../vault/platform"
 import { generatedPassphraseFrom, useCheapKdf } from "../vault/test-vault"
+import { CLI_VERSION } from "../version"
 import {
   createKeystore,
   defaultTeeKeystorePath,
@@ -1170,5 +1173,176 @@ describe("TEE paths honour --factor and --device (the vault-backed TEE lifecycle
     expect(JSON.parse(enable.stdout.text)).toMatchObject({ code: "VAULT_CREDENTIAL_NOT_PRESENT" })
     expect(enable.asked).toEqual([expect.stringContaining("PIN for YubiKey 5 NFC")])
     expect(routes.calls).toHaveLength(0)
+  })
+})
+
+/**
+ * BE-275 D8 (test 10): `--install-helper` on a release binary with no helper beside it downloads,
+ * verifies and installs THIS binary's own `candle-fido2` (pinned to `releaseIdentityUri(CLI_VERSION)`,
+ * never the latest), then enrols in the same run. Anything short of a verified install installs
+ * nothing, asks for nothing, writes nothing, and is the typed refusal with the reason named.
+ *
+ * The filesystem is real here (a temp dir stands in for the bin dir) because the helper the
+ * install writes has to be found by `locateFido2Helper`'s real executable check; the download and
+ * the verifier are the injected seams, exactly as in update.test.ts.
+ */
+describe("BE-275 D8: --install-helper installs this release's helper, then enrols", () => {
+  const HELPER_BYTES = new TextEncoder().encode("#!/bin/sh\nexit 1\n")
+  const HELPER_ASSET = "candle-fido2-linux-x64"
+  const TAG = `cli-v${CLI_VERSION}`
+
+  /** The release's own manifest and assets, at the pinned tag: `--install-helper` reads
+   * `releases/download/<this version>/latest.json`, never `latest/`. */
+  function releaseRoutes(opts: { helper?: boolean } = { helper: true }) {
+    const sum = createHash("sha256").update(HELPER_BYTES).digest("hex")
+    const manifest = {
+      version: CLI_VERSION,
+      tag: TAG,
+      assets: { "linux-x64": { name: "candle-linux-x64", sha256: "00", size: 1 } },
+      ...(opts.helper
+        ? { helpers: { "linux-x64": { name: HELPER_ASSET, sha256: sum, size: HELPER_BYTES.length } } }
+        : {}),
+    }
+    return {
+      [`/releases/download/${TAG}/latest.json`]: () => jsonResponse(200, manifest),
+      [`/releases/download/${TAG}/SHA256SUMS`]: () => new Response(`${sum}  ${HELPER_ASSET}\n`),
+      [`/releases/download/${TAG}/${HELPER_ASSET}`]: () => new Response(HELPER_BYTES),
+      [`/releases/download/${TAG}/${HELPER_ASSET}.sigstore.json`]: () => jsonResponse(200, { fixture: true }),
+      // The unpinned manifest answers something else entirely, so a run that read it would fail
+      // on a missing asset rather than pass by accident.
+      "/releases/latest/download/latest.json": () =>
+        jsonResponse(200, { version: "99.0.0", tag: "cli-v99.0.0", assets: {} }),
+    }
+  }
+
+  /** A release-binary harness: `candle` lives in the vault's temp dir and no helper is beside it.
+   * Writes and renames are real, with the modes the real deps use. */
+  async function binaryHarness(
+    v: Awaited<ReturnType<typeof initVault>>,
+    fetch: typeof globalThis.fetch,
+    verify: Deps["verify"],
+  ) {
+    const h = await harness({
+      env: { CANDLE_CONFIG_DIR: v.dir, CANDLE_RELEASE_BASE_URL: "https://example.test" },
+      secrets: [PIN, v.passphrase],
+      helper: "absent",
+    })
+    // initVault's harness put its own stub helper in this dir (at CANDLE_FIDO2_HELPER); this
+    // machine is a release binary with NO helper beside it, so that file goes.
+    await rm(join(v.dir, "candle-fido2"), { force: true })
+    h.deps.fetch = fetch
+    h.deps.execPath = join(v.dir, "candle")
+    h.deps.verify = verify
+    h.deps.writeBytes = async (path, bytes) => {
+      await writeFile(path, bytes, { mode: 0o755, flag: "wx" })
+    }
+    h.deps.rename = rename
+    h.deps.unlink = async (path) => {
+      await rm(path)
+    }
+    return h
+  }
+
+  const isExecutable = (path: string) =>
+    access(path, constants.X_OK).then(
+      () => true,
+      () => false,
+    )
+
+  test("downloads, verifies against this binary's own identity, installs beside it, and enrols", async () => {
+    const v = await initVault()
+    const before = await readFile(v.vaultPath, "utf8")
+    const { fetch, calls } = createRoutedFetch(releaseRoutes())
+    const seen: { bytes: Uint8Array; identityUri: string }[] = []
+    const h = await binaryHarness(v, fetch, (bytes, _bundle, identityUri) => {
+      seen.push({ bytes, identityUri })
+      return { ok: true }
+    })
+    const code = await run(
+      ["vault", "factor", "add", "security-key", "--install-helper", "--label", "desk key", "--keystore", v.vaultPath],
+      h.deps,
+    )
+    expect(code, h.stderr.text + h.stdout.text).toBe(0)
+    // Pinned to THIS binary's version: the helper for a newer release is the protocol mismatch
+    // fido2.ts exists to refuse.
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.identityUri).toBe(releaseIdentityUri(CLI_VERSION))
+    expect(Array.from(seen[0]?.bytes ?? [])).toEqual(Array.from(HELPER_BYTES))
+    expect(calls.map((c) => new URL(c.url).pathname)).toContain(`/releases/download/${TAG}/latest.json`)
+    expect(calls.map((c) => new URL(c.url).pathname)).not.toContain("/releases/latest/download/latest.json")
+    // Installed beside the binary, executable, and no staged file left behind.
+    const helperPath = join(v.dir, "candle-fido2")
+    expect(await isExecutable(helperPath)).toBe(true)
+    expect(await readFile(helperPath, "utf8")).toBe(new TextDecoder().decode(HELPER_BYTES))
+    expect(h.stderr.text).toContain(`Installed candle-fido2 ${CLI_VERSION} to ${helperPath}; enrolling.`)
+    // Then the enrolment it was asked for, in the same run.
+    expect(h.stdout.text).toContain("Added security key factor")
+    const file = await readVault(v.vaultPath)
+    expect(file.envelopes.some((envelope) => envelope.factor === "passkey-prf")).toBe(true)
+    expect(await readFile(v.vaultPath, "utf8")).not.toBe(before)
+  })
+
+  test("a helper that fails verification installs nothing, asks nothing, writes nothing, and names why", async () => {
+    const v = await initVault()
+    const before = await readFile(v.vaultPath, "utf8")
+    const { fetch } = createRoutedFetch(releaseRoutes())
+    const h = await binaryHarness(v, fetch, () => ({ ok: false, reason: "no matching certificate identity" }))
+    const code = await run(
+      ["vault", "factor", "add", "security-key", "--install-helper", "--keystore", v.vaultPath, "--json"],
+      h.deps,
+    )
+    expect(code).toBe(1)
+    const body = JSON.parse(h.stdout.text) as { code: string; message: string; suggestion: string }
+    expect(body.code).toBe("VAULT_HELPER_MISSING")
+    expect(body.message).toContain(`--install-helper could not install candle-fido2 ${CLI_VERSION}`)
+    expect(body.message).toContain("signature verification failed")
+    expect(body.message).toContain("no matching certificate identity")
+    expect(body.suggestion).toContain("Nothing was installed.")
+    expect(body.suggestion).toContain("No other factor is substituted and nothing was written.")
+    expect(await isExecutable(join(v.dir, "candle-fido2"))).toBe(false)
+    expect(h.asked).toEqual([])
+    expect(await readFile(v.vaultPath, "utf8")).toBe(before)
+    // --json: progress is human commentary and stays off stderr.
+    expect(h.stderr.text).toBe("")
+  })
+
+  test("a release that declares no helper for this platform is the refusal, not a download", async () => {
+    const v = await initVault()
+    const { fetch, calls } = createRoutedFetch(releaseRoutes({ helper: false }))
+    const h = await binaryHarness(v, fetch, () => ({ ok: true }))
+    expect(
+      await run(["vault", "factor", "add", "security-key", "--install-helper", "--keystore", v.vaultPath], h.deps),
+    ).toBe(1)
+    expect(h.stderr.text).toContain(`release ${TAG} declares no ${HELPER_ASSET}`)
+    expect(calls.map((c) => new URL(c.url).pathname)).toEqual([`/releases/download/${TAG}/latest.json`])
+    expect(await isExecutable(join(v.dir, "candle-fido2"))).toBe(false)
+  })
+
+  test("with the helper already present, the flag downloads nothing and enrols", async () => {
+    const v = await initVault()
+    // The harness's default helper is at CANDLE_FIDO2_HELPER; fetch stays unreachable, so any
+    // network call would surface as a failure.
+    const h = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [PIN, v.passphrase] })
+    expect(await run(["vault", "enroll", "security-key", "--install-helper", "--keystore", v.vaultPath], h.deps)).toBe(
+      0,
+    )
+    expect(h.stderr.text).toContain("candle-fido2 is already at")
+    expect(h.stderr.text).toContain("nothing downloaded")
+    expect(h.stdout.text).toContain("Added security key factor")
+  })
+
+  test("on an npm install the flag cannot help and says so, without touching the network", async () => {
+    const v = await initVault()
+    const h = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, helper: "absent" })
+    // The harness default execPath is node: a script install (D10).
+    expect(
+      await run(
+        ["vault", "factor", "add", "security-key", "--install-helper", "--keystore", v.vaultPath, "--json"],
+        h.deps,
+      ),
+    ).toBe(1)
+    const body = JSON.parse(h.stdout.text) as { code: string; message: string }
+    expect(body.code).toBe("VAULT_HELPER_MISSING")
+    expect(body.message).toContain("ships no candle-fido2 executable")
   })
 })

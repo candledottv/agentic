@@ -208,9 +208,9 @@ export const HELP: Record<string, Topic> = {
   },
   doctor: {
     group: "Start here",
-    summary: "Diagnose CLI setup: credentials, storage backend, API reachability",
+    summary: "Diagnose CLI setup: credentials, storage backend, API reachability, security key helper",
     description:
-      "One PASS/FAIL/SKIP table over the runtime, the storage backend, both credentials, API reachability and wallet delegation. Its output is meant to be pasted into a bug report. Exits nonzero on any FAIL.",
+      "One PASS/FAIL/SKIP table over the runtime, the storage backend, both credentials, API reachability, wallet delegation, the install method and whether the security key helper (candle-fido2) is beside the binary. Its output is meant to be pasted into a bug report. Exits nonzero on any FAIL.",
     usage: ["candle doctor"],
     rows: [],
     examples: ["candle doctor", "candle doctor --json"],
@@ -366,11 +366,11 @@ export const HELP: Record<string, Topic> = {
         description: "Re-read this account and add exposure; clears nothing",
       },
       {
-        invocation: "factor list | add <kind> | remove <id>",
-        description: `Manage the factors that open the vault: ${FACTOR_KINDS.join(", ")}`,
+        invocation: "factor list | add <kind> [--install-helper] | remove <id>",
+        description: `Manage the factors that open the vault: ${FACTOR_KINDS.join(", ")}. --install-helper (security-key) fetches and verifies this release's candle-fido2 first`,
       },
       {
-        invocation: "enroll <kind> [--label <name>]",
+        invocation: "enroll <kind> [--label <name>] [--install-helper]",
         description: `Same as factor add: ${FACTOR_KINDS.join(", ")}`,
       },
       {
@@ -565,9 +565,9 @@ export const HELP: Record<string, Topic> = {
   },
   update: {
     group: "Maintain",
-    summary: "Update the CLI to the latest signed release",
+    summary: "Update the CLI and its security key helper to the latest signed release",
     description:
-      "Replaces this binary with the latest signed release. The download is renamed over the running binary only after its checksum matches and its Sigstore bundle verifies in process against that exact version's release workflow.",
+      "Replaces this binary, and the candle-fido2 security key helper beside it, with the latest signed release. Both downloads are checked the same way and nothing is renamed until both pass: the checksum must match and the Sigstore bundle must verify in process against that exact version's release workflow. A release that ships no helper for this platform updates the binary alone.",
     usage: ["candle update [flags]"],
     rows: [],
     flags: [

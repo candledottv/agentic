@@ -99,9 +99,11 @@ export async function vaultFactorList(args: string[], ctx: CommandContext): Prom
 }
 
 export async function vaultFactorAdd(args: string[], ctx: CommandContext): Promise<number> {
+  // `--install-helper` (BE-275 D8): security-key only, read in addSecurityKeyFactor. Parsed here
+  // because `vault enroll <kind>` is this same handler, so the flag is one flag on both spellings.
   const parsed = parseArgs(args, {
     valueFlags: ["--keystore", "--label"],
-    booleanFlags: ["--own-passphrase", "--accept-older-copy"],
+    booleanFlags: ["--own-passphrase", "--accept-older-copy", "--install-helper"],
     pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
@@ -125,6 +127,10 @@ export async function vaultFactorAdd(args: string[], ctx: CommandContext): Promi
   const resolvedVault = vaultPathFor(ctx, parsed)
   if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
   const path = resolvedVault.path
+
+  if (parsed.booleans.has("--install-helper") && kind !== "security-key") {
+    return usage(ctx, "--install-helper applies to the security-key factor only")
+  }
 
   return runVaultCommand(ctx, async ({ hold }) => {
     if (kind === "security-key") return addSecurityKeyFactor(ctx, parsed, resolvedVault, hold)

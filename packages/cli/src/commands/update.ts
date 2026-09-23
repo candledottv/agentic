@@ -3,24 +3,32 @@
  * install (Homebrew, npm). Verification is not optional here: a downloaded binary is renamed over
  * the running one only after its SHA-256 matches both SHA256SUMS and latest.json AND its Sigstore
  * bundle verifies in process against the release workflow's identity for that exact version.
+ *
+ * An install is two files, not one (BE-275 D5): the release's security key helper, `candle-fido2`,
+ * goes through the same download and the same two checks, and NOTHING is renamed until both assets
+ * verify. A helper that fails anything discards both temp files and installs nothing, which is
+ * exactly what install.sh does. The helper is fetched whenever the manifest declares one for this
+ * platform, whether or not one is already beside the binary: there is no "is it missing" branch
+ * and no remembered state, so a machine that only ever ran `candle update` (and so never had the
+ * helper) is repaired by the first update that runs this code (D7).
  */
-import { createHash, randomBytes } from "node:crypto"
+import { randomBytes } from "node:crypto"
 import { parseArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
-import { formatBytes, stepReporter } from "../progress"
+import { formatBytes, type StepReporter, stepReporter } from "../progress"
 import {
-  assetUrl,
   compareVersions,
   detectInstall,
-  type FetchLatestResult,
   fetchLatest,
-  RELEASE_ISSUER,
-  type ReleaseManifest,
+  fetchPinned,
+  helperAssetName,
+  type ReleaseAsset,
   releaseBaseUrl,
   releaseIdentityUri,
 } from "../release"
-import { verifyReleaseAsset } from "../release-verify"
+import { checkReleaseAsset, downloadReleaseAsset, downloadSums, messageOf } from "../release-assets"
 import { writeLocalFailure, writeUsageFailure } from "../render"
+import { HELPER_NAME } from "../vault/fido2"
 import { CLI_VERSION } from "../version"
 
 /** D9's second copy change. `verifying signature` has been its own stage since 0.8.4 (`8019923d`);
@@ -171,6 +179,25 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
     return 1
   }
 
+  // The security key helper, by the same rule: its name is derived from the platform and the
+  // manifest may only agree with it (D5). Absent from the manifest is silent (D6): the writer
+  // refuses a manifest with some helpers and not others, so "none for this platform" means the
+  // release predates the helper (reachable only with --to) and there is nothing to fetch.
+  const helperName = helperAssetName(deps.platformKey)
+  const helperAsset: ReleaseAsset | undefined = target.helpers?.[deps.platformKey]
+  if (helperAsset !== undefined && helperAsset.name !== helperName) {
+    writeLocalFailure(
+      deps,
+      {
+        code: "MANIFEST_INVALID",
+        message: `Release ${target.tag} names ${helperAsset.name} as the ${deps.platformKey} security key helper; this platform installs ${helperName}.`,
+        suggestion: "Nothing was downloaded or installed.",
+      },
+      json,
+    )
+    return 1
+  }
+
   // Staged progress from here down: this is where the command used to go silent for the whole
   // multi-megabyte download and both verifications -- long enough to look dead and invite a
   // Ctrl+C mid-install. Silent under --json (progress is human commentary; stdout stays owned
@@ -180,21 +207,24 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
     : stepReporter((text) => deps.stderr.write(text), process.stderr.isTTY === true)
   // D9 (BE-241): the size comes free from the manifest (`latest.json` carries `size` per asset), and
   // it makes a slow link legible from the first second rather than after the download finishes.
-  if (!json)
-    deps.stderr.write(`Updating candle ${CLI_VERSION} -> ${target.version} (${formatBytes(asset.size)})
-`)
+  // Both assets: the helper roughly doubles the bytes on the wire, and a line that names half of
+  // what then transfers is the kind of thing that looks like a hang (BE-275 D5).
+  if (!json) {
+    const total = asset.size + (helperAsset?.size ?? 0)
+    deps.stderr.write(`Updating candle ${CLI_VERSION} -> ${target.version} (${formatBytes(total)})\n`)
+  }
 
-  // Download the binary, SHA256SUMS and the bundle, by `expectedName`: the check above is what
-  // makes the manifest's own name safe to have agreed with, and this is the name that is used.
-  steps.start(`downloading ${expectedName}`)
-  const download = await fetchAll(deps, base, target.tag, expectedName)
-  if (!download.ok) {
-    steps.fail(`downloading ${expectedName}`)
-    writeLocalFailure(deps, { code: "UPDATE_UNREACHABLE", message: download.message }, json)
+  // SHA256SUMS once, for both assets. Then each asset and its bundle by its platform-derived
+  // name: the checks above are what make the manifest's own names safe to have agreed with, and
+  // those are the names that are used.
+  steps.start("downloading SHA256SUMS")
+  const sums = await downloadSums(deps, base, target.tag)
+  if (!sums.ok) {
+    steps.fail("downloading SHA256SUMS")
+    writeLocalFailure(deps, { code: "UPDATE_UNREACHABLE", message: sums.message }, json)
     return 1
   }
-  const { bytes, sums, bundle } = download
-  steps.done(`downloaded ${expectedName} (${formatBytes(bytes.length)})`)
+  steps.done("downloaded SHA256SUMS")
 
   // Beside the REAL file, and later renamed over it, rather than over `execPath`: a bin entry is
   // often a symlink into a versioned directory, and replacing the link would leave the file it
@@ -202,86 +232,186 @@ export async function update(args: string[], ctx: CommandContext): Promise<numbe
   // reports as `path` for the same reason. The write also has to land on the same filesystem as
   // the rename target for the rename to be atomic, which "beside the real file" guarantees.
   const dir = realExec.slice(0, realExec.lastIndexOf("/")) || "."
-  // Random, not derived from the version: a predictable name in a directory someone else can
-  // write is a file they can plant, and the rename moves whatever is at that path at that
-  // instant, not the bytes that were verified. The real `writeBytes` refuses an existing path
-  // (index.ts) so a collision fails the write instead of truncating someone's file.
-  const tmpPath = `${dir}/.candle-update-${target.version}-${randomBytes(6).toString("hex")}`
-  try {
-    await deps.writeBytes(tmpPath, bytes)
-  } catch (error) {
-    writeLocalFailure(deps, notWritable(dir, error), json)
+  // Every temp file written so far. From the first write on, every exit path below removes them
+  // all except the renames that succeed. Cleanup is best effort: a file being abandoned either
+  // way, and a failure to remove it must not replace the failure actually being reported.
+  const staged: string[] = []
+  const discardAll = async () => {
+    for (const path of staged) await discard(deps, path)
+  }
+
+  const binary = await stage(deps, steps, {
+    base,
+    tag: target.tag,
+    name: expectedName,
+    expectedSha256: asset.sha256,
+    sums: sums.sums,
+    identityUri,
+    dir,
+    version: target.version,
+    staged,
+    label: "",
+  })
+  if (!binary.ok) {
+    await discardAll()
+    writeLocalFailure(deps, binary.failure, json)
     return 1
   }
 
-  // From here the temp file exists, and every exit path below removes it except the rename that
-  // succeeds. Cleanup is best effort: it is a file being abandoned either way, and a failure to
-  // remove it must not replace the failure actually being reported.
-
-  steps.start("verifying checksum")
-  const actual = createHash("sha256").update(bytes).digest("hex")
-  const fromSums = sums
-    .split("\n")
-    .map((line) => line.trim().split(/\s+/))
-    .find((parts) => parts[1] === expectedName)?.[0]
-  if (actual !== asset.sha256 || actual !== fromSums) {
-    steps.fail("verifying checksum")
-    await discard(deps, tmpPath)
-    writeLocalFailure(
-      deps,
-      {
-        code: "UPDATE_VERIFY_FAILED",
-        message: `checksum mismatch for ${expectedName} (manifest ${asset.sha256}, SHA256SUMS ${fromSums ?? "missing"}, downloaded ${actual}); nothing installed.`,
-      },
-      json,
-    )
-    return 1
-  }
-  // `deps.verify` is the injected seam (deps.ts); the real deps leave it undefined and this is
-  // the in-process verifier from Task 6, running against the trusted root compiled into this
-  // binary -- no cosign, no gh, no network.
-  steps.done("checksum verified")
-  steps.start("verifying signature")
-  const verify = deps.verify ?? verifyReleaseAsset
-  const verdict = verify(bytes, bundle, identityUri, RELEASE_ISSUER)
-  if (!verdict.ok) {
-    steps.fail("verifying signature")
-    await discard(deps, tmpPath)
-    writeLocalFailure(
-      deps,
-      {
-        code: "UPDATE_VERIFY_FAILED",
-        message: `signature verification failed for ${expectedName}: ${verdict.reason}; nothing installed.`,
-        suggestion: `Checked against ${identityUri}.`,
-      },
-      json,
-    )
-    return 1
+  let helper: { tmpPath: string; target: string } | null = null
+  if (helperAsset !== undefined) {
+    // The declared helper must download and verify before anything is renamed (D5); a declared
+    // helper that cannot be fetched is the same "nothing installed" as one that fails a check.
+    const fetched = await stage(deps, steps, {
+      base,
+      tag: target.tag,
+      name: helperName,
+      expectedSha256: helperAsset.sha256,
+      sums: sums.sums,
+      identityUri,
+      dir,
+      version: target.version,
+      staged,
+      label: `${helperName} `,
+    })
+    if (!fetched.ok) {
+      await discardAll()
+      writeLocalFailure(deps, fetched.failure, json)
+      return 1
+    }
+    helper = { tmpPath: fetched.tmpPath, target: `${dir}/${HELPER_NAME}` }
   }
 
-  // D9: the done line says WHAT KIND of signature, because that is the differentiator and this is
-  // where a reader looks for it. The step itself is not new; it has been its own stage since 0.8.4.
-  steps.done(SIGNATURE_VERIFIED)
+  // Both verified. Binary first, helper second (D5): the window where the new binary sits beside
+  // the old helper is bounded and already handled -- the helper protocol carries a version and a
+  // mismatched pair is refused with "Reinstall the CLI so candle and candle-fido2 come from the
+  // same release" (fido2.ts). Renaming the helper first would invert the window without closing
+  // it, and would leave a machine whose primary deliverable did not move.
   steps.start("installing")
   try {
-    await deps.rename(tmpPath, realExec)
+    await deps.rename(binary.tmpPath, realExec)
   } catch (error) {
     steps.fail("installing")
     // A rename that fails is the same problem as a write that fails, reported the same way: the
     // directory is not ours to replace a file in. Letting it throw would exit through
     // `Unexpected error` with nothing on stdout and no envelope for a `--json` caller.
-    await discard(deps, tmpPath)
+    await discardAll()
     writeLocalFailure(deps, notWritable(dir, error), json)
     return 1
   }
-  steps.done(`installed to ${realExec}`)
+  if (helper !== null) {
+    try {
+      await deps.rename(helper.tmpPath, helper.target)
+    } catch (error) {
+      steps.fail("installing")
+      await discard(deps, helper.tmpPath)
+      // The exact state, rather than leaving it to be inferred: the binary moved, the helper did
+      // not, and the operator is told which file is where.
+      const failure = notWritable(dir, error)
+      writeLocalFailure(
+        deps,
+        {
+          ...failure,
+          message: `${failure.message} candle ${target.version} was installed to ${realExec}, but its security key helper could not be renamed to ${helper.target}.`,
+        },
+        json,
+      )
+      return 1
+    }
+  }
+  steps.done(`installed to ${realExec}${helper !== null ? ` and ${helper.target}` : ""}`)
+  // `helper` is one optional key on the payload, null when the release declares none for this
+  // platform; nothing existing changes type or disappears.
+  const helperReport = helper !== null ? { name: HELPER_NAME, updated: true } : null
   if (json) {
-    const payload = { current: CLI_VERSION, latest: target.version, updated: true, path: realExec }
+    const payload = {
+      current: CLI_VERSION,
+      latest: target.version,
+      updated: true,
+      path: realExec,
+      helper: helperReport,
+    }
     deps.stdout.write(`${JSON.stringify(payload)}\n`)
   } else {
     deps.stdout.write(`Updated candle ${CLI_VERSION} -> ${target.version}\n`)
+    if (helper !== null) deps.stdout.write(`Installed ${HELPER_NAME} ${target.version} to ${helper.target}\n`)
   }
   return 0
+}
+
+type Staged =
+  | { ok: true; tmpPath: string }
+  | { ok: false; failure: { code: string; message: string; suggestion?: string } }
+
+/**
+ * One asset, start to verified temp file: download, write beside the real binary, check the
+ * checksum, check the signature. The temp path is pushed onto `staged` as soon as it is written so
+ * the caller can discard every one of them on any later failure. `label` prefixes the progress
+ * lines for the second asset, so the two checksum and signature stages read apart.
+ */
+async function stage(
+  deps: Deps,
+  steps: StepReporter,
+  opts: {
+    base: string
+    tag: string
+    name: string
+    expectedSha256: string
+    sums: string
+    identityUri: string
+    dir: string
+    version: string
+    staged: string[]
+    label: string
+  },
+): Promise<Staged> {
+  const { name, label } = opts
+  steps.start(`downloading ${name}`)
+  const download = await downloadReleaseAsset(deps, opts.base, opts.tag, name)
+  if (!download.ok) {
+    steps.fail(`downloading ${name}`)
+    return { ok: false, failure: { code: "UPDATE_UNREACHABLE", message: download.message } }
+  }
+  steps.done(`downloaded ${name} (${formatBytes(download.bytes.length)})`)
+
+  // Random, not derived from the version: a predictable name in a directory someone else can
+  // write is a file they can plant, and the rename moves whatever is at that path at that
+  // instant, not the bytes that were verified. The real `writeBytes` refuses an existing path
+  // (index.ts) so a collision fails the write instead of truncating someone's file.
+  const tmpPath = `${opts.dir}/.candle-update-${opts.version}-${randomBytes(6).toString("hex")}`
+  try {
+    await deps.writeBytes(tmpPath, download.bytes)
+  } catch (error) {
+    return { ok: false, failure: notWritable(opts.dir, error) }
+  }
+  opts.staged.push(tmpPath)
+
+  steps.start(`verifying ${label}checksum`)
+  const checked = checkReleaseAsset(deps, {
+    name,
+    bytes: download.bytes,
+    sums: opts.sums,
+    bundle: download.bundle,
+    expectedSha256: opts.expectedSha256,
+    identityUri: opts.identityUri,
+  })
+  if (!checked.ok && checked.stage === "checksum") {
+    steps.fail(`verifying ${label}checksum`)
+    return { ok: false, failure: { code: "UPDATE_VERIFY_FAILED", message: checked.message } }
+  }
+  steps.done(`${label}checksum verified`)
+  steps.start(`verifying ${label}signature`)
+  if (!checked.ok) {
+    steps.fail(`verifying ${label}signature`)
+    return {
+      ok: false,
+      failure: { code: "UPDATE_VERIFY_FAILED", message: checked.message, suggestion: checked.suggestion },
+    }
+  }
+  // D9: the done line says WHAT KIND of signature, because that is the differentiator and this is
+  // where a reader looks for it. The step itself is not new; it has been its own stage since 0.8.4.
+  steps.done(`${label}${SIGNATURE_VERIFIED}`)
+  return { ok: true, tmpPath }
 }
 
 /** The one failure `update` reports for a directory it cannot replace a file in, whether that
@@ -302,61 +432,4 @@ async function discard(deps: Deps, path: string): Promise<void> {
   } catch {
     // Best effort by design; see above.
   }
-}
-
-/** A pinned tag's manifest lives beside its assets, so `--to cli-v1.2.3` reads that release's own
- * latest.json rather than the newest one. Same three-field shape check `fetchLatest` makes, and
- * for the same reason: a manifest missing `tag` builds asset URLs with "undefined" in them, and
- * one missing `assets` is a TypeError at the platform lookup. */
-async function fetchPinned(deps: Deps, base: string, tag: string): Promise<FetchLatestResult> {
-  const url = assetUrl(base, tag, "latest.json")
-  try {
-    const res = await deps.fetch(url, { redirect: "follow" })
-    if (!res.ok) return { ok: false, kind: "unreachable", message: `${url} answered ${res.status}` }
-    const manifest = (await res.json()) as Partial<ReleaseManifest>
-    const missing = [
-      typeof manifest.version === "string" ? null : "version",
-      typeof manifest.tag === "string" ? null : "tag",
-      typeof manifest.assets === "object" && manifest.assets !== null ? null : "assets",
-    ].filter((field): field is string => field !== null)
-    if (missing.length > 0) {
-      return { ok: false, kind: "invalid", message: `The release manifest at ${url} has no ${missing.join(", ")}` }
-    }
-    return { ok: true, manifest: manifest as ReleaseManifest }
-  } catch (error) {
-    return { ok: false, kind: "unreachable", message: `Could not reach ${url}: ${messageOf(error)}` }
-  }
-}
-
-type Download = { ok: true; bytes: Uint8Array; sums: string; bundle: unknown } | { ok: false; message: string }
-
-/** The three files one release asset needs: the binary, the checksum list it appears in, and its
- * Sigstore bundle. Fetched together because a missing one of them is the same failure. */
-async function fetchAll(deps: Deps, base: string, tag: string, name: string): Promise<Download> {
-  try {
-    const [bin, sums, bundle] = await Promise.all([
-      deps.fetch(assetUrl(base, tag, name), { redirect: "follow" }),
-      deps.fetch(assetUrl(base, tag, "SHA256SUMS"), { redirect: "follow" }),
-      deps.fetch(assetUrl(base, tag, `${name}.sigstore.json`), { redirect: "follow" }),
-    ])
-    for (const [label, res] of [
-      [name, bin],
-      ["SHA256SUMS", sums],
-      [`${name}.sigstore.json`, bundle],
-    ] as const) {
-      if (!res.ok) return { ok: false, message: `${label} answered ${res.status} at ${assetUrl(base, tag, label)}` }
-    }
-    return {
-      ok: true,
-      bytes: new Uint8Array(await bin.arrayBuffer()),
-      sums: await sums.text(),
-      bundle: (await bundle.json()) as unknown,
-    }
-  } catch (error) {
-    return { ok: false, message: `Could not download ${tag}: ${messageOf(error)}` }
-  }
-}
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
 }

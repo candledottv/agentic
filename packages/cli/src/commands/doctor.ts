@@ -3,11 +3,13 @@
  * keychain backend detected, the config directory and whether a vault sits in it (BE-241, D10),
  * credentials present, API reachable, device token valid, agent key valid for launch:write (see
  * API_KEY_CHECK for why the scope is named in the row label), the plan, launch wallet delegated,
- * account, install method, and whether a newer signed release exists. Exits nonzero on any FAIL. A missing credential SKIPs the checks that need it
- * rather than failing them (matching `auth status`); "credentials present" itself still FAILs
- * when there is no device token at all, since nothing past it can meaningfully run. Install and
- * Update never move the exit code either: an available update is PASS with the fix in its
- * detail, and offline is SKIP (see the rows themselves for why).
+ * account, install method, whether the security key helper is beside the binary (BE-275 D9), and
+ * whether a newer signed release exists. Exits nonzero on any FAIL. A missing credential SKIPs the
+ * checks that need it rather than failing them (matching `auth status`); "credentials present"
+ * itself still FAILs when there is no device token at all, since nothing past it can meaningfully
+ * run. Install and Update never move the exit code either: an available update is PASS with the
+ * fix in its detail, and offline is SKIP (see the rows themselves for why). The helper row does:
+ * a binary that cannot add the hardware factor it was told it could add is a broken setup.
  */
 
 import { isUsageError, parseArgs } from "../args"
@@ -16,8 +18,9 @@ import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey, resolveDeviceToken } from "../deps"
 import { credentialEnvOverrides, effectiveProfileFields, printIdentity } from "../profiles"
-import { compareVersions, detectInstall, fetchLatest, releaseBaseUrl } from "../release"
+import { compareVersions, detectInstall, fetchLatest, helperAssetName, releaseBaseUrl } from "../release"
 import { renderError, renderTable, writeUsageFailure } from "../render"
+import { HELPER_ENV, HELPER_NAME, locateFido2Helper } from "../vault/fido2"
 import { CONFIG_DIR_ENV, candleConfigDir, defaultVaultPath, fileExists } from "../vault/store"
 import { CLI_VERSION } from "../version"
 
@@ -288,6 +291,58 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
         : `script (${deps.execPath}); update with npm`
   rows.push({ check: "Install", state: "PASS", detail: installDetail })
   const latest = await fetchLatest(deps, releaseBaseUrl(deps.env))
+
+  // Security key helper (BE-275 D9): directly after Install, where the reader is already looking
+  // at what this install is. One `locateFido2Helper` call and no new network: the manifest read
+  // below is what says whether this platform ships a helper at all. PASS with the path; FAIL when a
+  // release build should have one and does not. The fix is `--install-helper` (D8) only when
+  // `installable` is true: a release binary with nothing beside it. A `CANDLE_FIDO2_HELPER` that
+  // names a non-executable is `installable: false` (the flag returns without installing), so the
+  // row names correcting or unsetting that variable instead. SKIP when there is nothing to install
+  // (npm ships no helper, D10; the release declares none for this platform, D6) or nothing to
+  // compare against (offline). It reports; it does not repair.
+  const helper = await locateFido2Helper(deps)
+  const declaredHelper = latest.ok && deps.platformKey ? latest.manifest.helpers?.[deps.platformKey] : undefined
+  if (helper.state === "ready") {
+    rows.push({
+      check: "Security key helper",
+      state: "PASS",
+      detail: `${helper.path} (${helper.source === "env" ? `from ${HELPER_ENV}` : "beside the binary"})`,
+    })
+  } else if (method === "script") {
+    rows.push({
+      check: "Security key helper",
+      state: "SKIP",
+      detail: `${helper.reason}; the factor needs a release build`,
+    })
+  } else if (!latest.ok) {
+    rows.push({
+      check: "Security key helper",
+      state: "SKIP",
+      detail: `${helper.reason}; could not read the release manifest to tell whether this platform ships one`,
+    })
+  } else if (declaredHelper === undefined) {
+    rows.push({
+      check: "Security key helper",
+      state: "SKIP",
+      detail: `${helper.reason}; release ${latest.manifest.version} ships no ${deps.platformKey ? helperAssetName(deps.platformKey) : HELPER_NAME} for this platform`,
+    })
+  } else {
+    // `installable` is false when `CANDLE_FIDO2_HELPER` names a non-executable: that path wins
+    // over anything beside the binary, so `--install-helper` (and `brew reinstall`) would not be
+    // what the next lookup finds. The operator has to correct the variable or unset it.
+    const fix = helper.installable
+      ? method === "homebrew"
+        ? "brew reinstall candle"
+        : "candle vault factor add security-key --install-helper"
+      : `correct or unset ${HELPER_ENV}`
+    rows.push({
+      check: "Security key helper",
+      state: "FAIL",
+      detail: `${helper.reason}. Fix: ${fix}`,
+    })
+  }
+
   const updateBody = latest.ok
     ? {
         current: CLI_VERSION,

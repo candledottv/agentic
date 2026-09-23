@@ -76,8 +76,9 @@ export interface PlatformFacts {
   osMajor?: number
   /** The AD-1 signed macOS helper (PRs F and G), summarized; `enclaveHelper` has the detail. */
   helper?: "absent" | "untrusted" | "ready"
-  /** The `candle-fido2` helper (PR E): where it was found, or why it was not. */
-  fido2Helper?: { state: "ready"; path: string } | { state: "absent"; reason: string }
+  /** The `candle-fido2` helper (PR E): where it was found, or why it was not. `installable` is
+   * whether `--install-helper` on the enrolment commands can put one there (BE-275 D8). */
+  fido2Helper?: { state: "ready"; path: string } | { state: "absent"; reason: string; installable?: boolean }
   /** The signed Secure Enclave helper (PR F): policy, location, signature and what it reported. */
   enclaveHelper?: EnclaveHelperState
   /** Whether this machine has a Secure Enclave, as the AD-1 helper reported it. */
@@ -120,6 +121,9 @@ export type FactorAvailability =
       state: "unavailable-on-this-device"
       reason: string
       code: "VAULT_HELPER_MISSING" | "VAULT_HELPER_UNTRUSTED" | "VAULT_FACTOR_UNAVAILABLE"
+      /** The security key helper is missing from a release binary's directory, where
+       * `vault factor add security-key --install-helper` can install it (BE-275 D8). */
+      installable?: boolean
     }
   /** This platform cannot drive the factor at all. */
   | { state: "unsupported-on-this-platform"; reason: string }
@@ -149,7 +153,12 @@ export function factorAvailability(factor: string, facts: PlatformFacts, transpo
         }
         const helper = facts.fido2Helper ?? { state: "absent", reason: "the candle-fido2 helper was not looked for" }
         if (helper.state === "absent") {
-          return { state: "unavailable-on-this-device", reason: helper.reason, code: "VAULT_HELPER_MISSING" }
+          return {
+            state: "unavailable-on-this-device",
+            reason: helper.reason,
+            code: "VAULT_HELPER_MISSING",
+            ...(helper.installable === true ? { installable: true } : {}),
+          }
         }
         return { state: "available" }
       }
@@ -302,8 +311,19 @@ function addSuggestion(
       ? "Reinstall the CLI from a release so candle-enclave.app carries the release's signature."
       : "Install a release build of the CLI that ships the signed helper (the darwin tarball and Homebrew place candle-enclave.app beside candle), or set CANDLE_ENCLAVE_HELPER to the path of a signed candle-enclave.app."
   }
-  return "Install a release build of the CLI (which places candle-fido2 beside candle) or set CANDLE_FIDO2_HELPER."
+  // BE-275 D8: one sentence added, and only where the flag can help -- a release binary with no
+  // helper beside it. Every sentence that was here before is still here, unchanged: the refusal
+  // names the file, the directory it searched, both remedies, and (from the caller) that nothing
+  // was written and no weaker factor was substituted. The npm path and a misdirected
+  // CANDLE_FIDO2_HELPER get no such offer, because there is nothing the flag could install there.
+  return `Install a release build of the CLI (which places candle-fido2 beside candle) or set CANDLE_FIDO2_HELPER.${
+    availability.installable === true ? ` ${INSTALL_HELPER_SENTENCE}` : ""
+  }`
 }
+
+/** The D8 sentence, one copy, asserted verbatim by vault-refusals.test.ts. */
+export const INSTALL_HELPER_SENTENCE =
+  "Or run this command again with --install-helper to download and verify the matching candle-fido2 for this release before enrolling."
 
 /** The word `status` and `factor list` print for an envelope's availability. */
 export function availabilityLabel(availability: FactorAvailability): string {

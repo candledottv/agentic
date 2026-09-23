@@ -6,6 +6,7 @@ import {
   compareVersions,
   detectInstall,
   fetchLatest,
+  fetchPinned,
   latestUrl,
   platformKey,
   RELEASE_IDENTITY_REGEX,
@@ -106,6 +107,34 @@ describe("release identity", () => {
     expect(readme).toContain(
       "gh attestation verify candle-darwin-arm64 --repo candledottv/agentic \\\n  --cert-identity https://github.com/candledottv/agentic/.github/workflows/release.yaml@refs/tags/cli-v",
     )
+  })
+})
+
+describe("fetchPinned", () => {
+  test("reads the tag's own manifest and passes `helpers` through untouched", async () => {
+    const manifest = {
+      version: "0.11.4",
+      tag: "cli-v0.11.4",
+      assets: { "linux-x64": { name: "candle-linux-x64", sha256: "ab", size: 1 } },
+      helpers: { "linux-x64": { name: "candle-fido2-linux-x64", sha256: "cd", size: 2 } },
+    }
+    const { fetch, calls } = createRoutedFetch({
+      "/releases/download/cli-v0.11.4/latest.json": () => Response.json(manifest),
+    })
+    const result = await fetchPinned(createTestDeps({ fetch }), "https://example.test", "cli-v0.11.4")
+    expect(result).toEqual({ ok: true, manifest })
+    expect(calls[0]?.url).toBe("https://example.test/releases/download/cli-v0.11.4/latest.json")
+  })
+  test("a manifest missing its fields is invalid, naming them", async () => {
+    const { fetch } = createRoutedFetch({
+      "/releases/download/cli-v0.11.4/latest.json": () => Response.json({ version: "0.11.4" }),
+    })
+    const result = await fetchPinned(createTestDeps({ fetch }), "https://example.test", "cli-v0.11.4")
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.kind).toBe("invalid")
+      expect(result.message).toContain("tag, assets")
+    }
   })
 })
 

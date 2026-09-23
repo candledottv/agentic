@@ -6,6 +6,9 @@
  */
 
 import { describe, expect, test } from "bun:test"
+import { chmod, mkdtemp, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { run } from "../index"
 import {
   createCapture,
@@ -407,5 +410,140 @@ describe("doctor install and update rows", () => {
     const body = JSON.parse(stdout.text)
     expect(body.install).toEqual({ method: "script", path: "/usr/local/bin/node" })
     expect(body.update).toEqual({ current: CLI_VERSION, latest: CLI_VERSION, available: false })
+  })
+})
+
+/**
+ * BE-275 D9 (test 12): the "Security key helper" row, directly after Install. PASS with the path,
+ * FAIL when a release build should have one and does not (with the D8 fix, which runs on THIS
+ * binary), SKIP when there is nothing to install or nothing to compare against. A
+ * `CANDLE_FIDO2_HELPER` that names a non-executable is still FAIL, and the fix is that variable:
+ * `--install-helper` installs nothing while it is set. FAIL moves the exit code: a binary that
+ * cannot add the hardware factor it was told it could add is a broken setup, not a remark.
+ */
+describe("BE-275 D9: the security key helper row", () => {
+  const withHelper = {
+    version: "99.0.0",
+    tag: "cli-v99.0.0",
+    assets: {},
+    helpers: { "linux-x64": { name: "candle-fido2-linux-x64", sha256: "ab", size: 1 } },
+  }
+  const manifestRoute = (manifest: unknown) => ({
+    ...HEALTHY_ROUTES,
+    "/releases/latest/download/latest.json": () => jsonResponse(200, manifest),
+  })
+  const env = { CANDLE_RELEASE_BASE_URL: "https://example.test" }
+
+  test("PASS names the path and where it came from, and the row sits directly after Install", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "candle-doctor-helper-"))
+    const helper = join(dir, "candle-fido2")
+    await writeFile(helper, "#!/bin/sh\nexit 1\n")
+    await chmod(helper, 0o755)
+    const { fetch } = createRoutedFetch(manifestRoute(withHelper))
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      stdout,
+      execPath: "/home/u/.local/bin/candle",
+      env: { ...env, CANDLE_FIDO2_HELPER: helper },
+      ...healthyStores(),
+    })
+    expect(await run(["doctor"], deps)).toBe(0)
+    expect(stdout.text).toMatch(new RegExp(`Security key helper\\s+PASS\\s+${helper} \\(from CANDLE_FIDO2_HELPER\\)`))
+    expect(stdout.text.indexOf("Security key helper")).toBeGreaterThan(stdout.text.indexOf("Install "))
+    expect(stdout.text.indexOf("Security key helper")).toBeLessThan(stdout.text.indexOf("Update "))
+  })
+
+  test("FAIL on a release binary with no helper beside it, when the release declares one: exit 1 and the D8 fix", async () => {
+    const { fetch } = createRoutedFetch(manifestRoute(withHelper))
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      stdout,
+      execPath: "/home/u/.local/bin/candle",
+      env,
+      ...healthyStores(),
+    })
+    // Every other row is healthy; this row alone moves the exit code.
+    expect(await run(["doctor"], deps)).toBe(1)
+    expect(stdout.text).toMatch(
+      /Security key helper\s+FAIL\s+no candle-fido2 executable beside \/home\/u\/\.local\/bin\/candle\. Fix: candle vault factor add security-key --install-helper/,
+    )
+  })
+
+  test("FAIL when CANDLE_FIDO2_HELPER names a non-executable: the flag installs nothing, so the fix is the variable", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "candle-doctor-helper-env-"))
+    const helper = join(dir, "not-executable")
+    await writeFile(helper, "not a binary\n")
+    await chmod(helper, 0o644)
+    const { fetch } = createRoutedFetch(manifestRoute(withHelper))
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      stdout,
+      execPath: "/home/u/.local/bin/candle",
+      env: { ...env, CANDLE_FIDO2_HELPER: helper },
+      ...healthyStores(),
+    })
+    expect(await run(["doctor"], deps)).toBe(1)
+    const escaped = helper.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    expect(stdout.text).toMatch(
+      new RegExp(
+        `Security key helper\\s+FAIL\\s+CANDLE_FIDO2_HELPER points at ${escaped}, which is not an executable file\\. Fix: correct or unset CANDLE_FIDO2_HELPER`,
+      ),
+    )
+    expect(stdout.text).not.toContain("--install-helper")
+  })
+
+  test("a Homebrew install with no helper is FAIL too, and the fix is brew's", async () => {
+    const { fetch } = createRoutedFetch(manifestRoute(withHelper))
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      stdout,
+      execPath: "/opt/homebrew/bin/candle",
+      realpath: async () => "/opt/homebrew/Cellar/candle/0.5.0/bin/candle",
+      env,
+      ...healthyStores(),
+    })
+    expect(await run(["doctor"], deps)).toBe(1)
+    expect(stdout.text).toMatch(/Security key helper\s+FAIL\s+.*Fix: brew reinstall candle/)
+  })
+
+  test("SKIP on an npm install: there is no helper to install, and the exit code does not move", async () => {
+    const { fetch } = createRoutedFetch(manifestRoute(withHelper))
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, stdout, execPath: "/usr/local/bin/node", env, ...healthyStores() })
+    expect(await run(["doctor"], deps)).toBe(0)
+    expect(stdout.text).toMatch(/Security key helper\s+SKIP\s+this CLI is running from the npm package.*release build/)
+  })
+
+  test("SKIP when the release declares no helper for this platform (D6), naming the release", async () => {
+    const { fetch } = createRoutedFetch(manifestRoute({ version: "99.0.0", tag: "cli-v99.0.0", assets: {} }))
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, stdout, execPath: "/home/u/.local/bin/candle", env, ...healthyStores() })
+    expect(await run(["doctor"], deps)).toBe(0)
+    expect(stdout.text).toMatch(
+      /Security key helper\s+SKIP\s+.*release 99\.0\.0 ships no candle-fido2-linux-x64 for this platform/,
+    )
+  })
+
+  test("SKIP offline: without the manifest the row cannot say whether this platform ships one", async () => {
+    const { fetch } = createRoutedFetch(HEALTHY_ROUTES) // no manifest route: the fetch throws
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, stdout, execPath: "/home/u/.local/bin/candle", env, ...healthyStores() })
+    expect(await run(["doctor"], deps)).toBe(0)
+    expect(stdout.text).toMatch(/Security key helper\s+SKIP\s+.*could not read the release manifest/)
+  })
+
+  test("--json carries the row like every other", async () => {
+    const { fetch } = createRoutedFetch(manifestRoute(withHelper))
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, stdout, execPath: "/home/u/.local/bin/candle", env, ...healthyStores() })
+    expect(await run(["doctor", "--json"], deps)).toBe(1)
+    const body = JSON.parse(stdout.text) as { rows: { check: string; state: string; detail: string }[] }
+    const row = body.rows.find((r) => r.check === "Security key helper")
+    expect(row?.state).toBe("FAIL")
+    expect(row?.detail).toContain("--install-helper")
   })
 })

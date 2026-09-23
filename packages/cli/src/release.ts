@@ -76,6 +76,19 @@ export interface ReleaseManifest {
   version: string
   tag: string
   assets: Record<string, ReleaseAsset>
+  /**
+   * The `candle-fido2` security key helper per platform (Ember Phase 2 PR E). Optional because a
+   * manifest from before PR E (0.10.x and earlier, reachable with `--to`) has none. The writer
+   * (`write-manifest.mjs`) refuses to produce a manifest with some helpers and not others, so a
+   * manifest either declares all four or predates the helper entirely (BE-275 D6).
+   */
+  helpers?: Record<string, ReleaseAsset>
+}
+
+/** The name the security key helper has for a platform, DERIVED from the platform rather than read
+ * off the manifest, for the same reason `update` derives the binary's (see update.ts). */
+export function helperAssetName(platformKey: string): string {
+  return `candle-fido2-${platformKey}`
 }
 
 export function latestUrl(baseUrl: string): string {
@@ -122,6 +135,35 @@ export async function fetchLatest(deps: Deps, baseUrl: string): Promise<FetchLat
     return { ok: false, kind: "invalid", message: "The release manifest has no version, tag or assets" }
   }
   return { ok: true, manifest: manifest as ReleaseManifest }
+}
+
+/** A pinned tag's manifest lives beside its assets, so `--to cli-v1.2.3` (and `--install-helper`,
+ * which pins this binary's own version) reads that release's own latest.json rather than the newest
+ * one. Same three-field shape check `fetchLatest` makes, and for the same reason: a manifest missing
+ * `tag` builds asset URLs with "undefined" in them, and one missing `assets` is a TypeError at the
+ * platform lookup. */
+export async function fetchPinned(deps: Deps, base: string, tag: string): Promise<FetchLatestResult> {
+  const url = assetUrl(base, tag, "latest.json")
+  try {
+    const res = await deps.fetch(url, { redirect: "follow" })
+    if (!res.ok) return { ok: false, kind: "unreachable", message: `${url} answered ${res.status}` }
+    const manifest = (await res.json()) as Partial<ReleaseManifest>
+    const missing = [
+      typeof manifest.version === "string" ? null : "version",
+      typeof manifest.tag === "string" ? null : "tag",
+      typeof manifest.assets === "object" && manifest.assets !== null ? null : "assets",
+    ].filter((field): field is string => field !== null)
+    if (missing.length > 0) {
+      return { ok: false, kind: "invalid", message: `The release manifest at ${url} has no ${missing.join(", ")}` }
+    }
+    return { ok: true, manifest: manifest as ReleaseManifest }
+  } catch (error) {
+    return {
+      ok: false,
+      kind: "unreachable",
+      message: `Could not reach ${url}: ${error instanceof Error ? error.message : String(error)}`,
+    }
+  }
 }
 
 /** The base URL, with the test-only override. */

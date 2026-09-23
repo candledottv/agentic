@@ -60,7 +60,14 @@ export const HELPER_INSTALL_SUGGESTION =
 
 export type HelperLocation =
   | { state: "ready"; path: string; source: "env" | "beside-binary" }
-  | { state: "absent"; reason: string }
+  /**
+   * `installable` (BE-275 D8): whether `vault factor add security-key --install-helper` can put
+   * one where this lookup would find it. True only when a release binary has no helper beside it.
+   * An npm or source install ships no helper to fetch (D10), and a `CANDLE_FIDO2_HELPER` that
+   * points at a non-executable wins over anything beside the binary, so installing there would
+   * not be found.
+   */
+  | { state: "absent"; reason: string; installable: boolean }
 
 async function isExecutable(path: string): Promise<boolean> {
   try {
@@ -80,18 +87,23 @@ export async function locateFido2Helper(deps: Pick<Deps, "env" | "execPath" | "r
   const fromEnv = deps.env[HELPER_ENV]?.trim()
   if (fromEnv) {
     if (await isExecutable(fromEnv)) return { state: "ready", path: fromEnv, source: "env" }
-    return { state: "absent", reason: `${HELPER_ENV} points at ${fromEnv}, which is not an executable file` }
+    return {
+      state: "absent",
+      reason: `${HELPER_ENV} points at ${fromEnv}, which is not an executable file`,
+      installable: false,
+    }
   }
   const realExec = await deps.realpath(deps.execPath).catch(() => deps.execPath)
   if (detectInstall(deps.execPath, realExec) === "script") {
     return {
       state: "absent",
       reason: "this CLI is running from the npm package (or a source checkout), which ships no candle-fido2 executable",
+      installable: false,
     }
   }
   const beside = join(dirname(realExec), HELPER_NAME)
   if (await isExecutable(beside)) return { state: "ready", path: beside, source: "beside-binary" }
-  return { state: "absent", reason: `no ${HELPER_NAME} executable beside ${realExec}` }
+  return { state: "absent", reason: `no ${HELPER_NAME} executable beside ${realExec}`, installable: true }
 }
 
 /**
@@ -106,7 +118,9 @@ export async function currentPlatformFacts(
   const enclave = deps.platform === "darwin" ? await currentEnclaveHelper(deps) : undefined
   return platformFactsFor(
     deps,
-    location.state === "ready" ? { state: "ready", path: location.path } : { state: "absent", reason: location.reason },
+    location.state === "ready"
+      ? { state: "ready", path: location.path }
+      : { state: "absent", reason: location.reason, installable: location.installable },
     enclave,
   )
 }
