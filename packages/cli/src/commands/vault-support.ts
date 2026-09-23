@@ -102,6 +102,34 @@ export function requireTty(ctx: CommandContext, what: string): boolean {
   return false
 }
 
+/**
+ * The streams the PROMPT uses, which is not the same set `requireTty` demands (BE-274, D7).
+ *
+ * `requireTty` asks for stdin AND stdout, and the stdout half is over-broad: the shipped prompts
+ * read stdin and write STDERR (`prompt-streams.ts`'s `realPromptStreams` names `output:
+ * process.stderr`, asserted at the source in `prompt-streams.test.ts`), which is exactly why a
+ * `--json` command that unlocks on a terminal still leaves one JSON value on stdout. So the stdout
+ * clause refuses the one shape every tool of this kind supports -- `candle vault list --json >
+ * file` -- and pushes operators to `script -q`, which the wallet migration got wrong twice in one
+ * sitting.
+ *
+ * `vault list` is the one command whose whole output is a document an operator redirects, so
+ * stdout is the payload channel and carries no part of the ceremony. Every other command keeps
+ * `requireTty` unchanged: relaxing `status --unlock --json`, `vault factor list` and `export-key`
+ * is a behaviour change on shipped commands and is its own card (the spec's §7).
+ */
+export function requirePromptStreams(ctx: CommandContext, what: string): boolean {
+  if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stderr) return true
+  writeVaultFailure(
+    ctx,
+    new VaultError(
+      "VAULT_UNLOCK_FAILED",
+      `${what} needs a terminal for the passphrase prompt: standard input and standard error must both be a terminal. Standard output may be redirected; that is where the listing goes.`,
+    ),
+  )
+  return false
+}
+
 /** Where the vault path this invocation uses came from (D3). */
 export type VaultPathSource = "flag" | "env" | "default"
 
@@ -777,6 +805,40 @@ export function rpcUrlFrom(ctx: CommandContext, parsed: ParsedArgs): string | { 
     return { error: "--rpc-url must be https:// (plain http is allowed only for 127.0.0.1 / localhost)." }
   }
   return url
+}
+
+/**
+ * The `--json` document for one key entry, shared by `vault status --unlock` and `vault list`
+ * (BE-274, D6).
+ *
+ * One shape, from one function, so an agent that parses one parses the other, and so `status`'s
+ * `unlocked.entries` is byte-identical to what it was before `list` existed -- which §1.1 of the
+ * 0.11.1 surface spec freezes. It moved here from `vault-status.ts` unchanged; when `status`
+ * eventually stops carrying entries, nothing about the document changes.
+ *
+ * `list --balances` adds exactly one optional key to this document, `lamports`, and only on a
+ * Solana entry. It is added by the caller, not here: `status` must not grow a key it never reads.
+ */
+export function describeEntry(entry: KeyEntry) {
+  const flags: string[] = []
+  if (entry.exposure.everRemoteExposed) flags.push("remotely exposed")
+  if (entry.exposure.everExported) flags.push("exported")
+  if (entry.exposure.exposureUnknown) flags.push("history unknown (restored)")
+  return {
+    address: entry.address,
+    label: entry.label,
+    // BE-259 (D5): the `--json` entry document gains its id, so `rename --json`'s receipt and the
+    // `--id` flag refer to something a caller can read. Not in the human listing, where the
+    // label and the address are the addressing surface.
+    id: entry.id,
+    role: entry.role,
+    origin: entry.origin,
+    derivation: entry.derivation?.path,
+    exposure: flags.length > 0 ? flags.join(", ") : "cold in this vault's record",
+    teeLifecycle: entry.tee?.lifecycle,
+    teeRemoteState: entry.tee?.remoteState,
+    destinationExposureAccepted: entry.tee?.destinationExposureAccepted === true,
+  }
 }
 
 /**

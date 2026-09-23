@@ -14928,12 +14928,14 @@ __export(exports_vault_support, {
   rpcUrlFrom: () => rpcUrlFrom,
   requireVaultRaw: () => requireVaultRaw,
   requireTty: () => requireTty,
+  requirePromptStreams: () => requirePromptStreams,
   refuseEnvPassphrase: () => refuseEnvPassphrase,
   openWithTypedPassphrase: () => openWithTypedPassphrase,
   nonDefaultVaultFooter: () => nonDefaultVaultFooter,
   missingVault: () => missingVault,
   findExternalEntry: () => findExternalEntry,
   describeRole: () => describeRole,
+  describeEntry: () => describeEntry,
   derivationNotice: () => derivationNotice,
   confirmLastSix: () => confirmLastSix,
   assertVaultHelperIdentities: () => assertVaultHelperIdentities,
@@ -14966,6 +14968,12 @@ function requireTty(ctx, what) {
   writeVaultFailure(ctx, new VaultError("VAULT_UNLOCK_FAILED", `${what} needs a terminal: this CLI reads a vault passphrase or a security key PIN from a hidden prompt and from nowhere else.`, {
     suggestion: "There is no environment variable and no flag that supplies one."
   }));
+  return false;
+}
+function requirePromptStreams(ctx, what) {
+  if (ctx.deps.isTTY.stdin && ctx.deps.isTTY.stderr)
+    return true;
+  writeVaultFailure(ctx, new VaultError("VAULT_UNLOCK_FAILED", `${what} needs a terminal for the passphrase prompt: standard input and standard error must both be a terminal. Standard output may be redirected; that is where the listing goes.`));
   return false;
 }
 function vaultPathFor(ctx, parsed) {
@@ -15366,6 +15374,27 @@ function rpcUrlFrom(ctx, parsed) {
     return { error: "--rpc-url must be https:// (plain http is allowed only for 127.0.0.1 / localhost)." };
   }
   return url;
+}
+function describeEntry(entry) {
+  const flags = [];
+  if (entry.exposure.everRemoteExposed)
+    flags.push("remotely exposed");
+  if (entry.exposure.everExported)
+    flags.push("exported");
+  if (entry.exposure.exposureUnknown)
+    flags.push("history unknown (restored)");
+  return {
+    address: entry.address,
+    label: entry.label,
+    id: entry.id,
+    role: entry.role,
+    origin: entry.origin,
+    derivation: entry.derivation?.path,
+    exposure: flags.length > 0 ? flags.join(", ") : "cold in this vault's record",
+    teeLifecycle: entry.tee?.lifecycle,
+    teeRemoteState: entry.tee?.remoteState,
+    destinationExposureAccepted: entry.tee?.destinationExposureAccepted === true
+  };
 }
 function findExternalEntry(index, labelOrAddress) {
   const byLabel = index.entries.find((entry) => entry.role === "external" && entry.label === labelOrAddress);
@@ -27824,11 +27853,11 @@ var require_validate2 = __commonJS((exports) => {
       jsonPointer = $data;
       data = names_1.default.rootData;
     } else {
-      const matches = RELATIVE_JSON_POINTER.exec($data);
-      if (!matches)
+      const matches2 = RELATIVE_JSON_POINTER.exec($data);
+      if (!matches2)
         throw new Error(`Invalid JSON-pointer: ${$data}`);
-      const up = +matches[1];
-      jsonPointer = matches[2];
+      const up = +matches2[1];
+      jsonPointer = matches2[2];
       if (jsonPointer === "#") {
         if (up >= dataLevel)
           throw new Error(errorMsg("property/index", up));
@@ -28505,11 +28534,11 @@ var require_schemes = __commonJS((exports, module) => {
       urnComponent.error = "URN can not be parsed";
       return urnComponent;
     }
-    const matches = urnComponent.path.match(URN_REG);
-    if (matches) {
+    const matches2 = urnComponent.path.match(URN_REG);
+    if (matches2) {
       const scheme = options.scheme || urnComponent.scheme || "urn";
-      urnComponent.nid = matches[1].toLowerCase();
-      urnComponent.nss = matches[2];
+      urnComponent.nid = matches2[1].toLowerCase();
+      urnComponent.nss = matches2[2];
       const urnScheme = `${scheme}:${options.nid || urnComponent.nid}`;
       const schemeHandler = getSchemeHandler(urnScheme);
       urnComponent.path = undefined;
@@ -28755,8 +28784,8 @@ var require_fast_uri = __commonJS((exports, module) => {
   var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
   var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
   var AUTHORITY_INTRODUCER_REGION = /^(?:[^#/:?]+:)?([/\\\t\n\r]*)/;
-  function getParseError(parsed, matches) {
-    if (matches[2] !== undefined && parsed.path && parsed.path[0] !== "/") {
+  function getParseError(parsed, matches2) {
+    if (matches2[2] !== undefined && parsed.path && parsed.path[0] !== "/") {
       return 'URI path must start with "/" when authority is present.';
     }
     if (typeof parsed.port === "number" && (parsed.port < 0 || parsed.port > 65535)) {
@@ -28803,19 +28832,19 @@ var require_fast_uri = __commonJS((exports, module) => {
         }
       }
     }
-    const matches = uri.match(URI_PARSE);
-    if (matches) {
-      parsed.scheme = matches[1];
-      parsed.userinfo = matches[3];
-      parsed.host = matches[4];
-      parsed.port = parseInt(matches[5], 10);
-      parsed.path = matches[6] || "";
-      parsed.query = matches[7];
-      parsed.fragment = matches[8];
+    const matches2 = uri.match(URI_PARSE);
+    if (matches2) {
+      parsed.scheme = matches2[1];
+      parsed.userinfo = matches2[3];
+      parsed.host = matches2[4];
+      parsed.port = parseInt(matches2[5], 10);
+      parsed.path = matches2[6] || "";
+      parsed.query = matches2[7];
+      parsed.fragment = matches2[8];
       if (isNaN(parsed.port)) {
-        parsed.port = matches[5];
+        parsed.port = matches2[5];
       }
-      const parseError = getParseError(parsed, matches);
+      const parseError = getParseError(parsed, matches2);
       if (parseError !== undefined) {
         parsed.error = parsed.error || parseError;
         malformedAuthorityOrPort = true;
@@ -31474,12 +31503,12 @@ var require_formats = __commonJS((exports) => {
   var DATE = /^(\d\d\d\d)-(\d\d)-(\d\d)$/;
   var DAYS = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   function date(str) {
-    const matches = DATE.exec(str);
-    if (!matches)
+    const matches2 = DATE.exec(str);
+    if (!matches2)
       return false;
-    const year = +matches[1];
-    const month = +matches[2];
-    const day = +matches[3];
+    const year = +matches2[1];
+    const month = +matches2[2];
+    const day = +matches2[3];
     return month >= 1 && month <= 12 && day >= 1 && day <= (month === 2 && isLeapYear(year) ? 29 : DAYS[month]);
   }
   function compareDate(d1, d2) {
@@ -31494,16 +31523,16 @@ var require_formats = __commonJS((exports) => {
   var TIME = /^(\d\d):(\d\d):(\d\d(?:\.\d+)?)(z|([+-])(\d\d)(?::?(\d\d))?)?$/i;
   function getTime(strictTimeZone) {
     return function time(str) {
-      const matches = TIME.exec(str);
-      if (!matches)
+      const matches2 = TIME.exec(str);
+      if (!matches2)
         return false;
-      const hr = +matches[1];
-      const min = +matches[2];
-      const sec = +matches[3];
-      const tz = matches[4];
-      const tzSign = matches[5] === "-" ? -1 : 1;
-      const tzH = +(matches[6] || 0);
-      const tzM = +(matches[7] || 0);
+      const hr = +matches2[1];
+      const min = +matches2[2];
+      const sec = +matches2[3];
+      const tz = matches2[4];
+      const tzSign = matches2[5] === "-" ? -1 : 1;
+      const tzH = +(matches2[6] || 0);
+      const tzM = +(matches2[7] || 0);
       if (tzH > 23 || tzM > 59 || strictTimeZone && !tz)
         return false;
       if (hr <= 23 && min <= 59 && sec < 60)
@@ -36364,6 +36393,10 @@ var HELP = {
       },
       { invocation: "status [--unlock]", description: "What the vault holds, and what opens it" },
       {
+        invocation: "list [<filter>] [--balances] [--rpc-url <url>]",
+        description: "One line per key: address, label, role, derivation. Prompts for the passphrase"
+      },
+      {
         invocation: "new-key --chain solana [--label <name>] [--count <n>] [--labels-from <file>]",
         description: "Derive the next Solana key, or n of them under one unlock; the name must be free"
       },
@@ -36427,6 +36460,10 @@ var HELP = {
       },
       { invocation: "--device <id>", description: "The security key to use when more than one is attached" },
       {
+        invocation: "--balances",
+        description: "list: SOL per matched key, read from your RPC (one request per 100 matched keys). Every matched address goes to that one endpoint together, which links them; tokens are never read"
+      },
+      {
         invocation: "--labels-from <file>",
         description: "new-key: one name per line, one key each, one unlock (max 256). Each key is committed on its own, so a batch that is interrupted keeps every key that landed and you re-run for the rest."
       }
@@ -36434,6 +36471,7 @@ var HELP = {
     examples: [
       "candle vault init",
       "candle vault new-key --chain solana --label treasury",
+      "candle vault list cn-s",
       "candle vault rename key-7 treasury-cold",
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
       "candle vault enroll security-key --label yubikey-a",
@@ -52790,6 +52828,159 @@ The Phase 1 file was left in place. A 0.9.x binary reading it still sees that st
   return 0;
 }
 
+// src/commands/vault-list.ts
+init_args();
+init_render();
+init_store();
+init_vault_support();
+var CHUNK = 100;
+var LAMPORTS_PER_SOL = 1000000000n;
+function formatSol2(lamports) {
+  const whole = lamports / LAMPORTS_PER_SOL;
+  const fraction = (lamports % LAMPORTS_PER_SOL).toString().padStart(9, "0").replace(/0+$/, "");
+  return fraction === "" ? whole.toString() : `${whole}.${fraction}`;
+}
+async function readLamports(addresses, rpcUrl2, fetchFn) {
+  const rpc2 = createSolanaRpc(rpcUrl2, fetchFn);
+  const lamports = new Map;
+  const unavailable = [];
+  let failure;
+  for (let at = 0;at < addresses.length; at += CHUNK) {
+    const chunk = addresses.slice(at, at + CHUNK);
+    try {
+      const accounts = await rpc2.getMultipleAccounts(chunk);
+      for (const [i, address] of chunk.entries())
+        lamports.set(address, accounts[i]?.lamports ?? 0n);
+    } catch (error) {
+      unavailable.push(...chunk);
+      failure ??= error instanceof Error ? error.message : String(error);
+    }
+  }
+  return { lamports, unavailable, ...failure === undefined ? {} : { failure } };
+}
+async function vaultList(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore", "--rpc-url"],
+    booleanFlags: ["--balances", "--accept-older-copy"],
+    pathFlags: ["--keystore"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  if (parsed.positionals.length > 1)
+    return usage(ctx, `Unexpected argument: ${parsed.positionals[1]}`);
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  const { deps } = ctx;
+  const filter = parsed.positionals[0];
+  const balances = parsed.booleans.has("--balances");
+  if (!balances && parsed.values["--rpc-url"] !== undefined) {
+    return usage(ctx, "--rpc-url has no effect without --balances; vault list is offline by default.");
+  }
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
+  let rpcUrl2;
+  if (balances) {
+    const resolved = rpcUrlFrom(ctx, parsed);
+    if (typeof resolved !== "string")
+      return usage(ctx, resolved.error);
+    rpcUrl2 = resolved;
+  }
+  if (!requirePromptStreams(ctx, "vault list"))
+    return 1;
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await readVaultRaw(path);
+    if (raw === null)
+      throw missingVault(ctx, resolvedVault);
+    const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
+    const all = vault.index.entries;
+    const matched = filter === undefined ? all : all.filter((entry) => matches(entry, filter));
+    const solana = balances ? matched.filter((entry) => entry.chain === "solana") : [];
+    const requests = Math.ceil(solana.length / CHUNK);
+    const rpcHost = rpcUrl2 === undefined ? undefined : new URL(rpcUrl2).host;
+    if (balances && solana.length > 0 && rpcHost !== undefined) {
+      deps.stderr.write(`Reading SOL for ${solana.length} addresses from ${rpcHost}, in ${requests} ${requests === 1 ? "request" : "requests"}. That endpoint sees all ${solana.length} together.
+`);
+    }
+    let lamports = new Map;
+    let unavailable = [];
+    let failure;
+    if (balances && solana.length > 0 && rpcUrl2 !== undefined) {
+      const outcome = await readLamports(solana.map((entry) => entry.address), rpcUrl2, deps.fetch);
+      lamports = outcome.lamports;
+      unavailable = outcome.unavailable;
+      failure = outcome.failure;
+    }
+    const complete = unavailable.length === 0;
+    const totalLamports = [...lamports.values()].reduce((sum, value) => sum + value, 0n);
+    if (!complete) {
+      deps.stderr.write(`${unavailable.length} ${unavailable.length === 1 ? "address" : "addresses"} could not be read: ${failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.
+`);
+    }
+    if (ctx.json) {
+      writeJson(deps, {
+        ok: true,
+        path,
+        total: all.length,
+        matched: matched.length,
+        ...filter === undefined ? {} : { filter },
+        entries: matched.map((entry) => {
+          const held = lamports.get(entry.address);
+          return {
+            ...describeEntry(entry),
+            ...balances && entry.chain === "solana" ? { lamports: held === undefined ? null : held.toString() } : {}
+          };
+        }),
+        ...balances && rpcHost !== undefined ? {
+          balances: {
+            rpcHost,
+            requests,
+            complete,
+            totalLamports: totalLamports.toString(),
+            unavailable
+          }
+        } : {}
+      });
+      return complete ? 0 : 3;
+    }
+    if (matched.length === 0 && filter !== undefined) {
+      deps.stdout.write(`No key matches "${filter}". ${all.length} keys in this vault; candle vault list with no filter lists them.
+`);
+      return 0;
+    }
+    deps.stdout.write(filter === undefined ? `${all.length} keys in ${path}
+` : `${matched.length} of ${all.length} keys match "${filter}" in ${path}
+`);
+    const headers = ["ADDRESS", "LABEL", "ROLE", "DERIVATION"];
+    if (balances)
+      headers.push("SOL");
+    const rows = matched.map((entry) => {
+      const row = [entry.address, entry.label || "(none)", entry.role, entry.derivation?.path ?? "-"];
+      if (balances) {
+        const held = lamports.get(entry.address);
+        row.push(entry.chain !== "solana" ? "-" : held === undefined ? "?" : formatSol2(held));
+      }
+      return row;
+    });
+    deps.stdout.write(`
+${renderTable(headers, rows)}
+`);
+    if (balances) {
+      deps.stdout.write(complete ? `
+total  ${formatSol2(totalLamports)} SOL across ${solana.length} keys
+` : `
+total  ${formatSol2(totalLamports)} SOL across ${solana.length - unavailable.length} of ${solana.length} keys read
+`);
+    }
+    return complete ? 0 : 3;
+  });
+}
+function matches(entry, filter) {
+  const needle = filter.toLowerCase();
+  return entry.label.toLowerCase().includes(needle) || entry.address.toLowerCase().includes(needle);
+}
+
 // src/commands/vault-phrase-dispatch.ts
 init_vault_support();
 async function vaultPhrase(args, ctx) {
@@ -53547,7 +53738,7 @@ New vault at ${path}, verified in full (all eight steps).
       const rpc2 = parsed.values["--rpc-url"] ? createSolanaRpc(parsed.values["--rpc-url"], deps.fetch) : undefined;
       const derived = await deriveWithinBounds(ctx, vault, counts, rpc2);
       const apiKey = await resolveApiKey(deps, ctx.profile);
-      let matches = {
+      let matches2 = {
         matched: [],
         unmatched: [],
         account: undefined,
@@ -53555,14 +53746,14 @@ New vault at ${path}, verified in full (all eight steps).
         reason: "no API key is stored, so no exposure could be read"
       };
       if (apiKey !== undefined) {
-        matches = await matchAgainstAccount(ctx, apiKey, derived);
+        matches2 = await matchAgainstAccount(ctx, apiKey, derived);
       } else {
         deps.stderr.write(`No API key is stored for this profile, so this restore read no exposure at all.
 `);
       }
-      const outcome = await writeRestoredIndex(ctx, vault, derived, matches, counts);
+      const outcome = await writeRestoredIndex(ctx, vault, derived, matches2, counts);
       committed = true;
-      const result = reportRestore(ctx, vault, derived, matches, outcome, counts);
+      const result = reportRestore(ctx, vault, derived, matches2, outcome, counts);
       const footer = nonDefaultVaultFooter(resolvedVault);
       if (footer !== undefined)
         deps.stdout.write(footer);
@@ -53737,9 +53928,9 @@ This profile acts as account ${read.account}.
   }
   return { matched, unmatched, externalListed, account: read.account, complete: true };
 }
-async function writeRestoredIndex(ctx, vault, derived, matches, counts) {
+async function writeRestoredIndex(ctx, vault, derived, matches2, counts) {
   const now = new Date(ctx.deps.now()).toISOString();
-  const matchByAddress = new Map(matches.matched.map((match) => [match.entry.address, match.row]));
+  const matchByAddress = new Map(matches2.matched.map((match) => [match.entry.address, match.row]));
   const entries = derived.entries.map((entry) => {
     const row = matchByAddress.get(entry.address);
     const external2 = entry.branch === "solanaExternal";
@@ -53770,7 +53961,7 @@ async function writeRestoredIndex(ctx, vault, derived, matches, counts) {
       exposed[located.branch].push(located.index);
   }
   const highestMatched = { solanaVault: -1, solanaTee: -1, solanaExternal: -1 };
-  for (const match of matches.matched) {
+  for (const match of matches2.matched) {
     if (match.entry.branch === "solanaVault")
       highestMatched.solanaVault = Math.max(highestMatched.solanaVault, match.entry.index);
     if (match.entry.branch === "solanaTee")
@@ -53793,12 +53984,12 @@ async function writeRestoredIndex(ctx, vault, derived, matches, counts) {
     },
     discovery: {
       restoredAt: now,
-      account: matches.account ?? "",
+      account: matches2.account ?? "",
       requestedCounts: counts.requested,
       highestMatched,
       complete: false
     },
-    ...matches.complete ? { exposureReconciledAt: now } : {}
+    ...matches2.complete ? { exposureReconciledAt: now } : {}
   };
   await commitVault(vault, { index: { hd, entries }, addKeys: derived.entries.map((entry) => entry.blob) }, ctx.deps);
   return { entries, hd };
@@ -53826,7 +54017,7 @@ function teeFieldsFor(row, ctx) {
   }
   return { role: "tee-wallet", tee: { ...common, lifecycle: "stranded", grantIdentity } };
 }
-function reportRestore(ctx, vault, derived, matches, outcome, counts) {
+function reportRestore(ctx, vault, derived, matches2, outcome, counts) {
   const { deps } = ctx;
   deps.stdout.write(`
 Recovered ${outcome.entries.length} address(es) from the phrase.
@@ -53852,29 +54043,29 @@ Every one of them is recorded with an unknown history and stays that way: this p
 `);
     }
   }
-  if ((matches.externalListed?.length ?? 0) > 0) {
+  if ((matches2.externalListed?.length ?? 0) > 0) {
     deps.stdout.write(`
-${matches.externalListed?.length} address(es) this account imported are external-branch keys of this root. An external key is never registered with Candle, so this read does not flag them; their history is unknown like every other recovered key's.
+${matches2.externalListed?.length} address(es) this account imported are external-branch keys of this root. An external key is never registered with Candle, so this read does not flag them; their history is unknown like every other recovered key's.
 `);
   }
-  if (!matches.complete) {
-    if (matches.refused !== undefined)
+  if (!matches2.complete) {
+    if (matches2.refused !== undefined)
       deps.stdout.write(`
-${matches.refused}: the account was not confirmed.
+${matches2.refused}: the account was not confirmed.
 `);
     deps.stdout.write(`
-No exposure was recorded: ${matches.reason ?? "the linked-wallet read did not complete"}.
+No exposure was recorded: ${matches2.reason ?? "the linked-wallet read did not complete"}.
 `);
-    deps.stdout.write(matches.refused !== undefined ? `The vault was created, verified and written in full; nothing in it is flagged. Run \`candle vault reconcile-exposure\` once you are on the right profile.
+    deps.stdout.write(matches2.refused !== undefined ? `The vault was created, verified and written in full; nothing in it is flagged. Run \`candle vault reconcile-exposure\` once you are on the right profile.
 ` : `A partial list that happened to be empty would read as good news, so nothing was flagged at all. Run \`candle vault reconcile-exposure\` once the read succeeds.
 `);
     return 3;
   }
-  if (matches.unmatched.length > 0) {
+  if (matches2.unmatched.length > 0) {
     deps.stdout.write(`
-${matches.unmatched.length} address(es) this account imported were NOT derived by this restore:
+${matches2.unmatched.length} address(es) this account imported were NOT derived by this restore:
 `);
-    for (const address of matches.unmatched)
+    for (const address of matches2.unmatched)
       deps.stdout.write(`  ${address}
 `);
     deps.stdout.write(`
@@ -53886,7 +54077,7 @@ Either this root derives them at an index beyond the bounds used here, in which 
   }
   closeVault(vault);
   deps.stdout.write(`
-${matches.matched.length} of them are addresses this account imported, and each is flagged as remotely exposed.
+${matches2.matched.length} of them are addresses this account imported, and each is flagged as remotely exposed.
 `);
   return 0;
 }
@@ -54131,6 +54322,7 @@ init_platform();
 init_sidecar();
 init_store();
 init_vault_support();
+var LIST_POINTER = "One line per key, with an optional SOL balance: candle vault list";
 var NO_VERIFIED_BACKUP_NOTE = "No backup of this vault has ever been verified from this machine. If this file is lost, only the 24-word recovery phrase can rebuild it, and it rebuilds derived keys only. Take one now: candle vault backup --to <path>   (on a Mac with iCloud Drive: candle vault backup --to icloud)";
 async function vaultStatus(args, ctx) {
   const parsed = parseArgs(args, {
@@ -54299,6 +54491,9 @@ Keys (${unlocked.entries.length}):
 `);
       }
     }
+    deps.stdout.write(`
+${LIST_POINTER}
+`);
     if (unlocked.duplicateLabels.length > 0) {
       deps.stdout.write(`
 Duplicate labels (${unlocked.duplicateLabels.length}):
@@ -54352,30 +54547,6 @@ function describeEnvelope(envelope, facts) {
     strength,
     strengthLabel: strength === "generated-103" || strength === "user-chosen" ? strengthLabel(strength) : undefined,
     sharedDomainNote: envelope.domain === "apple-account" ? "lives in your Apple account; never counted as independent of any other Apple-account item" : undefined
-  };
-}
-function describeEntry(entry) {
-  return describeEntryInner(entry);
-}
-function describeEntryInner(entry) {
-  const flags = [];
-  if (entry.exposure.everRemoteExposed)
-    flags.push("remotely exposed");
-  if (entry.exposure.everExported)
-    flags.push("exported");
-  if (entry.exposure.exposureUnknown)
-    flags.push("history unknown (restored)");
-  return {
-    address: entry.address,
-    label: entry.label,
-    id: entry.id,
-    role: entry.role,
-    origin: entry.origin,
-    derivation: entry.derivation?.path,
-    exposure: flags.length > 0 ? flags.join(", ") : "cold in this vault's record",
-    teeLifecycle: entry.tee?.lifecycle,
-    teeRemoteState: entry.tee?.remoteState,
-    destinationExposureAccepted: entry.tee?.destinationExposureAccepted === true
   };
 }
 
@@ -54895,6 +55066,7 @@ var COMMANDS = {
     subcommands: {
       init: vaultInit,
       status: vaultStatus,
+      list: vaultList,
       "new-key": vaultNewKey,
       rename: vaultRename,
       phrase: vaultPhrase,

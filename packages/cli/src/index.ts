@@ -48,6 +48,7 @@ import { vaultFactor } from "./commands/vault-factor-dispatch"
 import { vaultFund } from "./commands/vault-fund"
 import { vaultImportLegacy } from "./commands/vault-import-legacy"
 import { vaultInit } from "./commands/vault-init"
+import { vaultList } from "./commands/vault-list"
 import { vaultNewKey } from "./commands/vault-new-key"
 import { vaultPhrase } from "./commands/vault-phrase-dispatch"
 import { vaultPromote } from "./commands/vault-promote"
@@ -159,6 +160,9 @@ const COMMANDS: Record<string, CommandRoute> = {
     subcommands: {
       init: vaultInit,
       status: vaultStatus,
+      // BE-274 (D9): the listing. `status` is the report about the vault FILE and keeps printing
+      // its keys in this release, with a line pointing here.
+      list: vaultList,
       "new-key": vaultNewKey,
       // BE-259: one entry's label, and nothing else in the file, changes.
       rename: vaultRename,

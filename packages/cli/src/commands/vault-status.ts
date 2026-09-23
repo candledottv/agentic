@@ -27,6 +27,7 @@ import { readSidecar, sidecarPath } from "../vault/sidecar"
 import { fileExists, legacyWalletsPath, readVaultRaw } from "../vault/store"
 import {
   assertVaultHelperIdentities,
+  describeEntry,
   missingVault,
   refuseEnvPassphrase,
   requireTty,
@@ -36,6 +37,9 @@ import {
   vaultPathFor,
   writeJson,
 } from "./vault-support"
+
+/** BE-274 (D9)'s pointer, printed under `--unlock`'s key block. Exported so T13 pins the bytes. */
+export const LIST_POINTER = "One line per key, with an optional SOL balance: candle vault list"
 
 /**
  * BE-245's nag. One sentence, said on every `status` until a backup has been verified from this
@@ -224,6 +228,12 @@ export async function vaultStatus(args: string[], ctx: CommandContext): Promise<
         )
       }
     }
+    // BE-274 (D9): `list` owns the listing, and this is where an operator reading five lines per
+    // key meets the one-line-per-key form. The block above stays in this release: removing it is a
+    // breaking human-output change and a `--json` contract change (`unlocked.entries` is frozen),
+    // and doing both in the slice that introduces `list` would leave no version in which the two
+    // spellings overlap.
+    deps.stdout.write(`\n${LIST_POINTER}\n`)
     // BE-259 (D5): the finding `rename` is the repair for. Every resolver is first-wins, so the
     // second key under a shared name is unreachable by it, and this block is the only place an
     // operator learns that. Absent when there are none.
@@ -290,31 +300,5 @@ function describeEnvelope(envelope: Envelope, facts: PlatformFacts) {
       envelope.domain === "apple-account"
         ? "lives in your Apple account; never counted as independent of any other Apple-account item"
         : undefined,
-  }
-}
-
-function describeEntry(entry: Parameters<typeof describeEntryInner>[0]) {
-  return describeEntryInner(entry)
-}
-
-function describeEntryInner(entry: import("../vault/format").KeyEntry) {
-  const flags: string[] = []
-  if (entry.exposure.everRemoteExposed) flags.push("remotely exposed")
-  if (entry.exposure.everExported) flags.push("exported")
-  if (entry.exposure.exposureUnknown) flags.push("history unknown (restored)")
-  return {
-    address: entry.address,
-    label: entry.label,
-    // BE-259 (D5): the `--json` entry document gains its id, so `rename --json`'s receipt and the
-    // `--id` flag refer to something a caller can read. Not in the human listing, where the
-    // label and the address are the addressing surface.
-    id: entry.id,
-    role: entry.role,
-    origin: entry.origin,
-    derivation: entry.derivation?.path,
-    exposure: flags.length > 0 ? flags.join(", ") : "cold in this vault's record",
-    teeLifecycle: entry.tee?.lifecycle,
-    teeRemoteState: entry.tee?.remoteState,
-    destinationExposureAccepted: entry.tee?.destinationExposureAccepted === true,
   }
 }

@@ -209,6 +209,9 @@ const JSON_ANSWERING: { name: string; argv: string[] }[] = [
   { name: "swap status", argv: ["swap", "status"] },
   { name: "launch", argv: ["launch"] },
   { name: "vault status", argv: ["vault", "status"] },
+  // BE-274: new surface. Without a terminal it is D7's unlock refusal, exactly as every other
+  // command that prompts is.
+  { name: "vault list", argv: ["vault", "list"] },
   { name: "vault factor list", argv: ["vault", "factor", "list"] },
   { name: "vault init", argv: ["vault", "init"] },
   { name: "vault new-key", argv: ["vault", "new-key", "--chain", "solana"] },
@@ -282,6 +285,35 @@ describe("T19: every command that answers under --json still answers", () => {
       expect([0, 1, 2, 3]).toContain(out.code)
     })
   }
+
+  /**
+   * T12 (BE-274, §4.5): `vault list` mints no error code.
+   *
+   * Every refusal it can reach is one the vault surface already throws, from a shared helper, and
+   * the partial-balance state (D11) is not a refusal at all: it is a success-shaped document plus
+   * exit 3, with `balances.complete: false` carrying the machine-readable fact. So `VAULT_ERROR_CODES`
+   * is unchanged by this slice, and this is the assertion that says so rather than the diff.
+   */
+  test("T12: vault list adds no code, and every code it can answer with is already declared", async () => {
+    const declared = new Set<string>(VAULT_ERROR_CODES)
+    const source = await readFile(resolve(import.meta.dir, "commands", "vault-list.ts"), "utf8")
+    expect(source).not.toContain("new VaultError(")
+    for (const code of [
+      "ENV_PASSPHRASE_REFUSED",
+      "VAULT_UNLOCK_FAILED",
+      "VAULT_MISSING",
+      "VAULT_UNREADABLE",
+      "VAULT_FORMAT_UNKNOWN",
+      "VAULT_VERSION_UNSUPPORTED",
+      "VAULT_FIELD_UNKNOWN",
+      "VAULT_KDF_OUT_OF_BOUNDS",
+      "VAULT_INDEX_INVALID",
+      "VAULT_OLDER_COPY",
+      "VAULT_FACTOR_UNAVAILABLE",
+    ]) {
+      expect(declared.has(code), `${code} is not in VAULT_ERROR_CODES`).toBe(true)
+    }
+  })
 
   test("details is the only key this release adds, and it is present only where there is one", async () => {
     const missing = await jsonRun(["vault", "status"])

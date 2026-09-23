@@ -19,7 +19,7 @@ import { GENERATED_WORD_COUNT, SAVE_THE_PASSPHRASE, SAVED_IT_PROMPT } from "../v
 import { readSidecar, sidecarPath } from "../vault/sidecar"
 import { generatedPassphraseFrom, makeVault, relabelEntries, useCheapKdf } from "../vault/test-vault"
 import { INIT_PASSPHRASE_PROMPT } from "./vault-init"
-import { duplicateLabelLines, NO_VERIFIED_BACKUP_NOTE } from "./vault-status"
+import { duplicateLabelLines, LIST_POINTER, NO_VERIFIED_BACKUP_NOTE } from "./vault-status"
 
 /**
  * These tests run REAL Argon2id, which is the point of them: a vault suite that stubbed the KDF
@@ -1420,5 +1420,33 @@ describe("T19: vault status --unlock reports duplicate labels", () => {
     expect(await run(["vault", "status", "--json", "--keystore", h.vaultPath], s.deps)).toBe(0)
     expect(JSON.parse(s.stdout.text)).not.toHaveProperty("unlocked")
     expect(s.stdout.text).not.toContain("duplicateLabels")
+  })
+})
+
+/**
+ * T13 (BE-274, D9): `list` owns the listing, and `status --unlock` says so.
+ *
+ * The block itself stays in this release: removing it is a breaking human-output change AND a
+ * `--json` contract change (`unlocked.entries` is frozen), and doing both in the slice that
+ * introduces `list` would leave no version in which an operator's two habits both work.
+ */
+describe("T13: vault status --unlock keeps its keys and points at vault list", () => {
+  test("the pointer line follows the Keys block, and --json does not carry it", async () => {
+    const h = await initVault()
+    const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(
+      await run(["vault", "new-key", "--chain", "solana", "--label", "treasury", "--keystore", h.vaultPath], k.deps),
+    ).toBe(0)
+
+    const s = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(await run(["vault", "status", "--unlock", "--keystore", h.vaultPath], s.deps)).toBe(0)
+    expect(s.stdout.text).toContain("Keys (1):")
+    expect(s.stdout.text).toContain(`\n${LIST_POINTER}\n`)
+    expect(s.stdout.text.indexOf(LIST_POINTER)).toBeGreaterThan(s.stdout.text.indexOf("Keys (1):"))
+
+    const j = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(await run(["vault", "status", "--unlock", "--json", "--keystore", h.vaultPath], j.deps)).toBe(0)
+    expect(j.stdout.text).not.toContain(LIST_POINTER)
+    expect((JSON.parse(j.stdout.text) as { unlocked: { entries: unknown[] } }).unlocked.entries).toHaveLength(1)
   })
 })

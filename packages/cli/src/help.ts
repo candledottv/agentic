@@ -344,6 +344,10 @@ export const HELP: Record<string, Topic> = {
       },
       { invocation: "status [--unlock]", description: "What the vault holds, and what opens it" },
       {
+        invocation: "list [<filter>] [--balances] [--rpc-url <url>]",
+        description: "One line per key: address, label, role, derivation. Prompts for the passphrase",
+      },
+      {
         invocation: "new-key --chain solana [--label <name>] [--count <n>] [--labels-from <file>]",
         description: "Derive the next Solana key, or n of them under one unlock; the name must be free",
       },
@@ -409,6 +413,11 @@ export const HELP: Record<string, Topic> = {
       },
       { invocation: "--device <id>", description: "The security key to use when more than one is attached" },
       {
+        invocation: "--balances",
+        description:
+          "list: SOL per matched key, read from your RPC (one request per 100 matched keys). Every matched address goes to that one endpoint together, which links them; tokens are never read",
+      },
+      {
         invocation: "--labels-from <file>",
         description:
           "new-key: one name per line, one key each, one unlock (max 256). Each key is committed on its own, so a batch that is interrupted keeps every key that landed and you re-run for the rest.",
@@ -417,6 +426,7 @@ export const HELP: Record<string, Topic> = {
     examples: [
       "candle vault init",
       "candle vault new-key --chain solana --label treasury",
+      "candle vault list cn-s",
       "candle vault rename key-7 treasury-cold",
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
       "candle vault enroll security-key --label yubikey-a",
