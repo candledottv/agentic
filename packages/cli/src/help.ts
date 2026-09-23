@@ -193,7 +193,7 @@ export const HELP: Record<string, Topic> = {
     rows: [
       {
         invocation: "login [--scopes <a,b,c>] [--label <name>] [--no-browser] [--profile <name>]",
-        description: "Authorize this device",
+        description: "Authorize this device and mint its API key; --label names both",
       },
       { invocation: "status", description: "Show credential status" },
       { invocation: "logout [--keep-key]", description: "Clear local credentials" },
@@ -264,7 +264,10 @@ export const HELP: Record<string, Topic> = {
       "API keys are minted over the device token and shown exactly once. A key's wallet set and scope decide which wallets an agent holding it may act on.",
     usage: ["candle keys <subcommand> [flags]"],
     rows: [
-      { invocation: "list", description: "List API keys" },
+      {
+        invocation: "list [--scopes]",
+        description: "List API keys: name and Read or Read:Write access; --scopes adds the raw scopes",
+      },
       {
         invocation:
           "create [--scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]",

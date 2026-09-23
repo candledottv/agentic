@@ -244,6 +244,134 @@ describe("auth login: clientName length cap", () => {
   })
 })
 
+describe("auth login: --label names the key as well as the device", () => {
+  const KEY_PATH = "/api/v1/agent/keys/ck_livepr"
+  const LABEL_TOKEN = "cndl_dvc_LABEL_FIXTURE_TOKEN"
+
+  function labelRoutes(
+    patch: RouteHandler | undefined,
+    apiKey: { key: string; keyPrefix: string; scopes: string[] } | null = {
+      key: "ck_live_LABEL_FIXTURE_KEY",
+      keyPrefix: "ck_livepr",
+      // The device flow's stored order, so the summary's sort is visible.
+      scopes: ["launch:write", "launch:read", "account:read", "activity:write", "swap:write", "transfer:write"],
+    },
+  ): Record<string, RouteHandler> {
+    return {
+      "/api/v1/agent/device/code": () => jsonResponse(200, CODE_RESPONSE),
+      "/api/v1/agent/device/token": () =>
+        jsonResponse(200, {
+          deviceToken: LABEL_TOKEN,
+          tokenPrefix: "dvclabel",
+          apiKey,
+          ...(apiKey ? {} : { apiKeyError: "No delegated wallet yet." }),
+        }),
+      ...(patch ? { [KEY_PATH]: patch } : {}),
+    }
+  }
+
+  const patchCalls = (calls: Array<{ url: string; init: RequestInit }>) =>
+    calls.filter((call) => new URL(call.url).pathname.startsWith("/api/v1/agent/keys/"))
+
+  test("one PATCH { label } over the new device token, and the name is reported", async () => {
+    const { fetch, calls } = createRoutedFetch(labelRoutes(() => jsonResponse(200, { success: true })))
+    const store = createFakeStore()
+    const stdout = createCapture()
+
+    const code = await run(["auth", "login", "--label", "  vault-promote  "], createTestDeps({ fetch, store, stdout }))
+
+    expect(code).toBe(0)
+    const patches = patchCalls(calls)
+    expect(patches).toHaveLength(1)
+    expect(patches[0]?.init.method).toBe("PATCH")
+    expect(new URL(patches[0]?.url ?? "").pathname).toBe(KEY_PATH)
+    expect(JSON.parse(patches[0]?.init.body as string)).toEqual({ label: "vault-promote" })
+    expect((patches[0]?.init.headers as Record<string, string>).authorization).toBe(`Bearer ${LABEL_TOKEN}`)
+    // The device keeps the same name, trimmed like the key's.
+    const codeCall = calls.find((call) => call.url.includes("/device/code"))
+    expect((JSON.parse(codeCall?.init.body as string) as { clientName: string }).clientName).toBe("vault-promote")
+    expect(stdout.text).toContain("API key prefix: ck_livepr\nAPI key name: vault-promote\n")
+    expect(stdout.text).toContain(
+      "Granted scopes: account:read, activity:write, launch:read, launch:write, swap:write (",
+    )
+  })
+
+  test("--json carries apiKeyLabel", async () => {
+    const { fetch } = createRoutedFetch(labelRoutes(() => jsonResponse(200, { success: true })))
+    const stdout = createCapture()
+
+    const code = await run(["--json", "auth", "login", "--label", "vault-promote"], createTestDeps({ fetch, stdout }))
+
+    expect(code).toBe(0)
+    const out = JSON.parse(stdout.text) as Record<string, unknown>
+    expect(out.apiKeyLabel).toBe("vault-promote")
+    expect("apiKeyLabelError" in out).toBe(false)
+  })
+
+  test("a failed rename never fails the login: credentials stored, the reason and the key manager named", async () => {
+    const { fetch } = createRoutedFetch(
+      labelRoutes(() => jsonResponse(500, { success: false, error: { code: "INTERNAL", message: "boom" } })),
+    )
+    const store = createFakeStore()
+    const stdout = createCapture()
+
+    const code = await run(["auth", "login", "--label", "vault-promote"], createTestDeps({ fetch, store, stdout }))
+
+    expect(code).toBe(0)
+    expect(await store.get("profile:production:device_token")).toBe(LABEL_TOKEN)
+    expect(await store.get("profile:production:api_key")).toBe("ck_live_LABEL_FIXTURE_KEY")
+    expect(stdout.text).not.toContain("API key name:")
+    expect(stdout.text).toContain(
+      "API key prefix: ck_livepr\nCould not name the key: boom. Name it in the key manager: https://candle.tv/dev/agent\n",
+    )
+  })
+
+  test("a thrown rename (network) is reported in --json as apiKeyLabelError, never apiKeyLabel", async () => {
+    // No route for the PATCH: the fake fetch throws, which is what a dropped connection looks like.
+    const { fetch } = createRoutedFetch(labelRoutes(undefined))
+    const stdout = createCapture()
+
+    const code = await run(["--json", "auth", "login", "--label", "vault-promote"], createTestDeps({ fetch, stdout }))
+
+    expect(code).toBe(0)
+    const out = JSON.parse(stdout.text) as Record<string, unknown>
+    expect(typeof out.apiKeyLabelError).toBe("string")
+    expect("apiKeyLabel" in out).toBe(false)
+  })
+
+  test("no key in the exchange: no PATCH", async () => {
+    const { fetch, calls } = createRoutedFetch(labelRoutes(() => jsonResponse(200, { success: true }), null))
+
+    const code = await run(["auth", "login", "--label", "vault-promote"], createTestDeps({ fetch }))
+
+    expect(code).toBe(0)
+    expect(patchCalls(calls)).toHaveLength(0)
+  })
+
+  test("no --label: no PATCH, and neither new line nor field", async () => {
+    const { fetch, calls } = createRoutedFetch(labelRoutes(() => jsonResponse(200, { success: true })))
+    const stdout = createCapture()
+
+    const code = await run(["auth", "login"], createTestDeps({ fetch, stdout }))
+
+    expect(code).toBe(0)
+    expect(patchCalls(calls)).toHaveLength(0)
+    expect(stdout.text).not.toContain("API key name:")
+    expect(stdout.text).not.toContain("Could not name the key")
+  })
+
+  test("a blank --label is a usage error, exit 2, before any request", async () => {
+    const { fetch, calls } = createRoutedFetch({})
+    const stderr = createCapture()
+
+    const code = await run(["auth", "login", "--label", "   "], createTestDeps({ fetch, stderr }))
+
+    expect(code).toBe(2)
+    expect(calls).toHaveLength(0)
+    expect(stderr.text).toContain("--label must be 1 to 64 characters.")
+  })
+})
+
 describe("auth login: terminal paths", () => {
   async function runWithTerminalError(rfcError: string): Promise<{ code: number; stderr: string }> {
     const { fetch } = createRoutedFetch({

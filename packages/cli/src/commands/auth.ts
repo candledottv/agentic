@@ -17,7 +17,10 @@
  *      the device-code response's own verificationUri, so `auth logout` can point at the right
  *      portal on any backend), print backend + prefixes + scopes (swap:write called out
  *      explicitly when granted).
- *   5. apiKey:null + apiKeyError is NOT a failure: store the device token, print the reason and
+ *   5. `--label` names the minted key as well as the device: after credentials are stored, one
+ *      best-effort `PATCH /keys/<prefix> { label }` over the new device token. A failed rename
+ *      never fails the login (keys list Access and Name spec, 2026-09-23, D7).
+ *   6. apiKey:null + apiKeyError is NOT a failure: store the device token, print the reason and
  *      point at `candle keys create` (the API's own best-effort contract for this case). No key
  *      exists yet on this path, so nothing is "Granted": the summary shows what scopes the
  *      DEVICE authorized (informational only), and config.scopes is left unset rather than
@@ -60,9 +63,9 @@ const DEVICE_TOKEN_PATH = "/api/v1/agent/device/token"
  * sanitizes (agent-device.ts), so the cap has to be honored here or the very first command a user
  * ever runs fails with a validation error that never mentions `--label`. The default name embeds
  * the machine's hostname, which is unbounded in practice, so it is truncated; an explicit
- * `--label` is rejected up front instead, naming both the limit and the flag, because silently
- * truncating a name the user chose would put a different label than they typed on the approval
- * screen and on every `device/tokens` listing afterwards.
+ * `--label` is rejected up front instead, because silently truncating a name the user chose would
+ * put a different label than they typed on the approval screen and on every `device/tokens`
+ * listing afterwards. The key's label shares the same 1..64 rule, so one check covers both names.
  */
 const MAX_CLIENT_NAME_LENGTH = 64
 
@@ -100,13 +103,17 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
     return 2
   }
   const scopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined
-  const label = parsed.values["--label"]
+  // Trimmed, and 1..64 after trimming: the same rule and message as `keys create --label`, because
+  // this label now names a key too. Checked before `/code`, so a blank one never starts a flow
+  // (it used to reach the server and come back as the device name "Unknown client").
+  const label = parsed.values["--label"]?.trim()
   const noBrowser = parsed.booleans.has("--no-browser")
 
-  if (label !== undefined && label.length > MAX_CLIENT_NAME_LENGTH) {
-    deps.stderr.write(
-      `--label must be at most ${MAX_CLIENT_NAME_LENGTH} characters (got ${label.length}). Shorten it and run: candle auth login --label <name>\n`,
-    )
+  if (
+    parsed.values["--label"] !== undefined &&
+    (label === undefined || label.length < 1 || label.length > MAX_CLIENT_NAME_LENGTH)
+  ) {
+    writeUsageFailure(deps, `--label must be 1 to ${MAX_CLIENT_NAME_LENGTH} characters.`, json)
     return 2
   }
 
@@ -265,6 +272,31 @@ async function finishLogin(
   // already selected.
   if (!config.activeProfile) await deps.writeConfig({ activeProfile: profileName })
 
+  // `--label` names the key as well as the device. The exchange mints the key unnamed (the API's
+  // `issueAgentKey` takes no label there), so it is named here with the key manager's own rename,
+  // over the device token just issued. After everything above is stored, so nothing about the
+  // rename can lose the credentials; and best-effort, because an unnamed key is cosmetic and
+  // recoverable while a failed login is neither.
+  let apiKeyLabel: string | undefined
+  let apiKeyLabelError: string | undefined
+  if (requested.label && body.apiKey) {
+    try {
+      const renamed = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(body.apiKey.keyPrefix)}`, {
+        method: "PATCH",
+        auth: "device",
+        credentials: { deviceToken: body.deviceToken },
+        apiUrl: ctx.apiUrl,
+        fetch: deps.fetch,
+        env: deps.env,
+        body: { label: requested.label },
+      })
+      if (renamed.ok) apiKeyLabel = requested.label
+      else apiKeyLabelError = renamed.message
+    } catch (error) {
+      apiKeyLabelError = error instanceof Error ? error.message : String(error)
+    }
+  }
+
   if (json) {
     // Deliberately NOT the raw response: it carries the plaintext deviceToken and (when present)
     // the plaintext apiKey.key. Login never displays either plaintext value, in either render
@@ -277,6 +309,9 @@ async function finishLogin(
         account,
         deviceTokenPrefix: body.tokenPrefix,
         apiKeyPrefix: body.apiKey?.keyPrefix,
+        // Both optional and additive: present only when `--label` asked for a rename.
+        ...(apiKeyLabel !== undefined ? { apiKeyLabel } : {}),
+        ...(apiKeyLabelError !== undefined ? { apiKeyLabelError } : {}),
         scopes: body.apiKey?.scopes,
         apiKeyError: body.apiKeyError,
       })}\n`,
@@ -289,6 +324,11 @@ async function finishLogin(
   deps.stdout.write(`Device token prefix: ${body.tokenPrefix}\n`)
   if (body.apiKey) {
     deps.stdout.write(`API key prefix: ${body.apiKey.keyPrefix}\n`)
+    if (apiKeyLabel !== undefined) deps.stdout.write(`API key name: ${apiKeyLabel}\n`)
+    if (apiKeyLabelError !== undefined) {
+      const where = portalOrigin ? ` Name it in the key manager: ${portalOrigin}/dev/agent` : ""
+      deps.stdout.write(`Could not name the key: ${apiKeyLabelError}.${where}\n`)
+    }
     deps.stdout.write(`Granted scopes: ${formatScopesForSummary(body.apiKey.scopes)}\n`)
   } else if (body.apiKeyError) {
     const authorizedScopes = requested.scopes ?? [...ALL_AGENT_SCOPES]

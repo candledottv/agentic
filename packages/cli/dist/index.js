@@ -135,9 +135,60 @@ var init_args = __esm(() => {
   TX_LIMIT_RESETS = ["daily", "weekly", "monthly", "never"];
 });
 
+// src/agent-key-access.ts
+function sameSet(scopes, preset) {
+  const held = new Set(scopes);
+  return held.size === preset.length && preset.every((scope) => held.has(scope));
+}
+function presetForScopes(scopes) {
+  if (sameSet(scopes, READ_SCOPES))
+    return "read";
+  if (sameSet(scopes, READWRITE_SCOPES))
+    return "readwrite";
+  return null;
+}
+function agentKeyCapabilities(scopes) {
+  return {
+    read: scopes.includes("account:read"),
+    launch: scopes.includes("launch:write"),
+    trade: scopes.includes("swap:write"),
+    transfer: scopes.includes("transfer:write"),
+    report: scopes.includes("activity:write")
+  };
+}
+function agentKeyAccess(scopes) {
+  const preset = presetForScopes(scopes);
+  if (preset)
+    return { kind: "preset", preset, label: AGENT_KEY_PRESET_LABELS[preset] };
+  const caps = agentKeyCapabilities(scopes);
+  return { kind: "custom", can: AGENT_KEY_CAPABILITY_CHIPS.filter(([, cap]) => caps[cap]).map(([word]) => word) };
+}
+function sortAgentKeyScopes(scopes) {
+  return [...scopes].sort();
+}
+var READ_SCOPES, READWRITE_SCOPES, AGENT_KEY_PRESET_LABELS, AGENT_KEY_CAPABILITY_CHIPS;
+var init_agent_key_access = __esm(() => {
+  READ_SCOPES = ["account:read"];
+  READWRITE_SCOPES = [
+    "launch:write",
+    "launch:read",
+    "activity:write",
+    "swap:write",
+    "transfer:write",
+    "account:read"
+  ];
+  AGENT_KEY_PRESET_LABELS = { read: "Read", readwrite: "Read:Write" };
+  AGENT_KEY_CAPABILITY_CHIPS = [
+    ["Launch", "launch"],
+    ["Trade", "trade"],
+    ["Transfer", "transfer"],
+    ["Report", "report"]
+  ];
+});
+
 // src/render.ts
 function formatScopesForSummary(scopes) {
-  return scopes.map((scope) => scope === "swap:write" ? `${scope} (${SWAP_WRITE_NOTE})` : scope === "transfer:write" ? `${scope} (${TRANSFER_WRITE_NOTE})` : scope).join(", ");
+  return sortAgentKeyScopes(scopes).map((scope) => scope === "swap:write" ? `${scope} (${SWAP_WRITE_NOTE})` : scope === "transfer:write" ? `${scope} (${TRANSFER_WRITE_NOTE})` : scope).join(", ");
 }
 function renderTable(headers, rows) {
   const widths = headers.map((header, col) => Math.max(header.length, ...rows.map((row) => (row[col] ?? "").length)));
@@ -242,6 +293,7 @@ function portalDeviceUrl(apiUrl, portalOrigin) {
 }
 var ALL_AGENT_SCOPES, DEFAULT_AGENT_SCOPES, SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf", TRANSFER_WRITE_NOTE = "moves funds -- this key can transfer assets between your wallets";
 var init_render = __esm(() => {
+  init_agent_key_access();
   ALL_AGENT_SCOPES = [
     "launch:write",
     "launch:read",
@@ -35933,11 +35985,10 @@ async function authLogin(args, ctx) {
     return 2;
   }
   const scopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined;
-  const label = parsed.values["--label"];
+  const label = parsed.values["--label"]?.trim();
   const noBrowser = parsed.booleans.has("--no-browser");
-  if (label !== undefined && label.length > MAX_CLIENT_NAME_LENGTH) {
-    deps.stderr.write(`--label must be at most ${MAX_CLIENT_NAME_LENGTH} characters (got ${label.length}). Shorten it and run: candle auth login --label <name>
-`);
+  if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > MAX_CLIENT_NAME_LENGTH)) {
+    writeUsageFailure(deps, `--label must be 1 to ${MAX_CLIENT_NAME_LENGTH} characters.`, json);
     return 2;
   }
   const clientName = (label ?? `candle-cli/${CLI_VERSION}@${deps.hostname}`).slice(0, MAX_CLIENT_NAME_LENGTH);
@@ -36049,6 +36100,27 @@ async function finishLogin(rawBody, ctx, requested) {
   });
   if (!config.activeProfile)
     await deps.writeConfig({ activeProfile: profileName });
+  let apiKeyLabel;
+  let apiKeyLabelError;
+  if (requested.label && body.apiKey) {
+    try {
+      const renamed = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(body.apiKey.keyPrefix)}`, {
+        method: "PATCH",
+        auth: "device",
+        credentials: { deviceToken: body.deviceToken },
+        apiUrl: ctx.apiUrl,
+        fetch: deps.fetch,
+        env: deps.env,
+        body: { label: requested.label }
+      });
+      if (renamed.ok)
+        apiKeyLabel = requested.label;
+      else
+        apiKeyLabelError = renamed.message;
+    } catch (error) {
+      apiKeyLabelError = error instanceof Error ? error.message : String(error);
+    }
+  }
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       backend: deps.backend,
@@ -36056,6 +36128,8 @@ async function finishLogin(rawBody, ctx, requested) {
       account,
       deviceTokenPrefix: body.tokenPrefix,
       apiKeyPrefix: body.apiKey?.keyPrefix,
+      ...apiKeyLabel !== undefined ? { apiKeyLabel } : {},
+      ...apiKeyLabelError !== undefined ? { apiKeyLabelError } : {},
       scopes: body.apiKey?.scopes,
       apiKeyError: body.apiKeyError
     })}
@@ -36071,6 +36145,14 @@ async function finishLogin(rawBody, ctx, requested) {
   if (body.apiKey) {
     deps.stdout.write(`API key prefix: ${body.apiKey.keyPrefix}
 `);
+    if (apiKeyLabel !== undefined)
+      deps.stdout.write(`API key name: ${apiKeyLabel}
+`);
+    if (apiKeyLabelError !== undefined) {
+      const where = portalOrigin ? ` Name it in the key manager: ${portalOrigin}/dev/agent` : "";
+      deps.stdout.write(`Could not name the key: ${apiKeyLabelError}.${where}
+`);
+    }
     deps.stdout.write(`Granted scopes: ${formatScopesForSummary(body.apiKey.scopes)}
 `);
   } else if (body.apiKeyError) {
@@ -36336,7 +36418,7 @@ var HELP = {
     rows: [
       {
         invocation: "login [--scopes <a,b,c>] [--label <name>] [--no-browser] [--profile <name>]",
-        description: "Authorize this device"
+        description: "Authorize this device and mint its API key; --label names both"
       },
       { invocation: "status", description: "Show credential status" },
       { invocation: "logout [--keep-key]", description: "Clear local credentials" }
@@ -36401,7 +36483,10 @@ var HELP = {
     description: "API keys are minted over the device token and shown exactly once. A key's wallet set and scope decide which wallets an agent holding it may act on.",
     usage: ["candle keys <subcommand> [flags]"],
     rows: [
-      { invocation: "list", description: "List API keys" },
+      {
+        invocation: "list [--scopes]",
+        description: "List API keys: name and Read or Read:Write access; --scopes adds the raw scopes"
+      },
       {
         invocation: "create [--scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]",
         description: "Create an API key"
@@ -37018,6 +37103,7 @@ async function completion(args, ctx) {
 }
 
 // src/commands/doctor.ts
+init_agent_key_access();
 init_args();
 init_release();
 init_render();
@@ -37102,7 +37188,7 @@ async function doctor(args, ctx) {
     rows.push({ check: API_KEY_CHECK, state: "SKIP", detail: "no API key to check" });
   } else {
     const scopes = fields.scopes;
-    const passDetail = scopes ? `scopes: ${scopes.join(", ")}` : "valid";
+    const passDetail = scopes ? `scopes: ${sortAgentKeyScopes(scopes).join(", ")}` : "valid";
     rows.push(await runLiveCheck({
       deps,
       apiUrl,
@@ -41985,6 +42071,7 @@ async function help(args, ctx) {
 }
 
 // src/commands/keys.ts
+init_agent_key_access();
 init_args();
 init_render();
 var KEYS_PATH = "/api/v1/agent/keys";
@@ -42000,9 +42087,26 @@ function mintedByLabel(mintedBy, ownDeviceTokenPrefix) {
     return "this device";
   return mintedBy;
 }
+function labelCell(label) {
+  if (!label)
+    return "";
+  const cleaned = Array.from(label).map((ch) => {
+    const code = ch.codePointAt(0) ?? 0;
+    const isControl = code < 32 || code >= 127 && code <= 159;
+    const isBidiOrInvisible = code >= 8203 && code <= 8207 || code >= 8234 && code <= 8238 || code >= 8294 && code <= 8297 || code === 65279;
+    return isControl || isBidiOrInvisible ? " " : ch;
+  }).join("");
+  return cleaned.replace(/\s+/g, " ").trim();
+}
+function accessCell(scopes) {
+  const access3 = agentKeyAccess(scopes);
+  if (access3.kind === "preset")
+    return access3.label;
+  return access3.can.length > 0 ? access3.can.join(", ") : "–";
+}
 async function keysList(args, ctx) {
   const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {});
+  const parsed = parseArgs(args, { booleanFlags: ["--scopes"] });
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json);
     return 2;
@@ -42033,19 +42137,33 @@ async function keysList(args, ctx) {
 `);
     return 0;
   }
+  const withScopes = parsed.booleans.has("--scopes");
   const body = result.body;
   const config = await deps.readConfig();
   const ownDevicePrefix = effectiveProfileFields(config, ctx.profile).deviceTokenPrefix;
   const rows = body.keys.map((key) => [
     key.keyPrefix,
-    key.scopes.join(","),
+    labelCell(key.label),
+    accessCell(key.scopes),
+    ...withScopes ? [sortAgentKeyScopes(key.scopes).join(",")] : [],
     key.environment,
     formatTimestamp(key.createdAt),
     formatTimestamp(key.lastUsedAt),
     key.revokedAt ? formatTimestamp(key.revokedAt) : "no",
     mintedByLabel(key.mintedByDevicePrefix, ownDevicePrefix)
   ]);
-  deps.stdout.write(`${renderTable(["Prefix", "Scopes", "Environment", "Created", "Last used", "Revoked", "Minted by"], rows)}
+  const headers = [
+    "Prefix",
+    "Name",
+    "Access",
+    ...withScopes ? ["Scopes"] : [],
+    "Environment",
+    "Created",
+    "Last used",
+    "Revoked",
+    "Minted by"
+  ];
+  deps.stdout.write(`${renderTable(headers, rows)}
 `);
   return 0;
 }

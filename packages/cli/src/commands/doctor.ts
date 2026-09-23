@@ -12,6 +12,7 @@
  * a binary that cannot add the hardware factor it was told it could add is a broken setup.
  */
 
+import { sortAgentKeyScopes } from "../agent-key-access"
 import { isUsageError, parseArgs } from "../args"
 import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest } from "../client"
@@ -164,7 +165,7 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
     // PASS correctly (the key IS valid), just without a scopes list for a key the CLI never
     // minted itself.
     const scopes = fields.scopes
-    const passDetail = scopes ? `scopes: ${scopes.join(", ")}` : "valid"
+    const passDetail = scopes ? `scopes: ${sortAgentKeyScopes(scopes).join(", ")}` : "valid"
     rows.push(
       await runLiveCheck({
         deps,

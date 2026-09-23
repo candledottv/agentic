@@ -4,6 +4,7 @@
  * the latter). Credential resolution is env-first, then the store, via `resolveDeviceToken`.
  */
 
+import { agentKeyAccess, sortAgentKeyScopes } from "../agent-key-access"
 import {
   parseArgs,
   parseExpiresInDays,
@@ -39,6 +40,8 @@ const NO_DEVICE_TOKEN = {
 
 interface KeyRow {
   keyPrefix: string
+  /** The operator's name for the key; absent when it was never named. */
+  label?: string
   scopes: string[]
   environment: string
   createdAt: number
@@ -57,9 +60,46 @@ function mintedByLabel(mintedBy: string | undefined, ownDeviceTokenPrefix: strin
   return mintedBy
 }
 
+/**
+ * A key's name as one table cell. The API trims a label but does not strip control characters, so
+ * a newline would break the fixed-width table and a bidi override could make the row read as
+ * something else. Both become a space, runs of whitespace collapse, and the result is trimmed: the
+ * same classes `sanitizeClientName` in apps/api's agent-device route names, written as a code-point
+ * filter for the same reason (biome's `noControlCharactersInRegex`). Render-only; `--json` carries
+ * the stored value.
+ */
+export function labelCell(label: string | undefined): string {
+  if (!label) return ""
+  const cleaned = Array.from(label)
+    .map((ch) => {
+      const code = ch.codePointAt(0) ?? 0
+      const isControl = code < 0x20 || (code >= 0x7f && code <= 0x9f)
+      const isBidiOrInvisible =
+        (code >= 0x200b && code <= 0x200f) ||
+        (code >= 0x202a && code <= 0x202e) ||
+        (code >= 0x2066 && code <= 0x2069) ||
+        code === 0xfeff
+      return isControl || isBidiOrInvisible ? " " : ch
+    })
+    .join("")
+  return cleaned.replace(/\s+/g, " ").trim()
+}
+
+/**
+ * What a key IS, in one cell: `Read` or `Read:Write` when its stored scopes are exactly one of the
+ * web's two presets, otherwise the web key manager's chip words for what it holds, or `–` (the
+ * web's own "cannot" glyph) when it holds none. The same shared classification the web reads, so
+ * the two surfaces describe a key the same way (keys list Access and Name spec, 2026-09-23, D3).
+ */
+export function accessCell(scopes: readonly string[]): string {
+  const access = agentKeyAccess(scopes)
+  if (access.kind === "preset") return access.label
+  return access.can.length > 0 ? access.can.join(", ") : "–"
+}
+
 export async function keysList(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
-  const parsed = parseArgs(args, {})
+  const parsed = parseArgs(args, { booleanFlags: ["--scopes"] })
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json)
     return 2
@@ -89,29 +129,46 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
     return 1
   }
 
+  // `--scopes` changes the human table only. The JSON payload already carries every field, raw
+  // scopes in stored order included, and it is a frozen contract.
   if (json) {
     deps.stdout.write(`${JSON.stringify(result.body)}\n`)
     return 0
   }
 
+  const withScopes = parsed.booleans.has("--scopes")
   const body = result.body as { keys: KeyRow[] }
   const config = await deps.readConfig()
   // THIS profile's device prefix: reading the legacy top-level one (absent on any profile created
   // since the upgrade) printed this very device's own key as if another machine had minted it.
   const ownDevicePrefix = effectiveProfileFields(config, ctx.profile).deviceTokenPrefix
+  // Name and Access lead, raw scopes are opt-in. Two keys holding the same six scopes used to read
+  // as different because the table printed each in stored order; Access says what they are, and
+  // `--scopes` prints them in the one sorted order every surface uses.
   const rows = body.keys.map((key) => [
     key.keyPrefix,
-    key.scopes.join(","),
+    labelCell(key.label),
+    accessCell(key.scopes),
+    ...(withScopes ? [sortAgentKeyScopes(key.scopes).join(",")] : []),
     key.environment,
     formatTimestamp(key.createdAt),
     formatTimestamp(key.lastUsedAt),
     key.revokedAt ? formatTimestamp(key.revokedAt) : "no",
     mintedByLabel(key.mintedByDevicePrefix, ownDevicePrefix),
   ])
+  const headers = [
+    "Prefix",
+    "Name",
+    "Access",
+    ...(withScopes ? ["Scopes"] : []),
+    "Environment",
+    "Created",
+    "Last used",
+    "Revoked",
+    "Minted by",
+  ]
 
-  deps.stdout.write(
-    `${renderTable(["Prefix", "Scopes", "Environment", "Created", "Last used", "Revoked", "Minted by"], rows)}\n`,
-  )
+  deps.stdout.write(`${renderTable(headers, rows)}\n`)
   return 0
 }
 

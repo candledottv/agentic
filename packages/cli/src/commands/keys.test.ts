@@ -124,6 +124,119 @@ describe("keys list", () => {
   })
 })
 
+describe("keys list: Name and Access", () => {
+  // The operator's two keys from 2026-09-23, verbatim: the same six scopes stored in two orders
+  // (the web minted the first, the device flow the second), and only the first one named.
+  const JPVPY8GS = {
+    keyPrefix: "JpVPY8gs",
+    label: "cndl",
+    scopes: ["launch:write", "launch:read", "activity:write", "swap:write", "transfer:write", "account:read"],
+    environment: "production",
+    createdAt: Date.UTC(2026, 8, 20),
+  }
+  const B6P_TSRS = {
+    keyPrefix: "B6P-TSRs",
+    scopes: ["launch:write", "launch:read", "account:read", "activity:write", "swap:write", "transfer:write"],
+    environment: "production",
+    createdAt: Date.UTC(2026, 8, 23),
+    mintedByDevicePrefix: "dvcpref1",
+  }
+  const SORTED = "account:read,activity:write,launch:read,launch:write,swap:write,transfer:write"
+
+  async function list(keys: object[], argv: string[] = []) {
+    const payload = { success: true, tier: "free", keys }
+    const { fetch } = createRoutedFetch({ "/api/v1/agent/keys": () => jsonResponse(200, payload) })
+    const store = createFakeStore({ device_token: "cndl_dvc_x" })
+    const configStore = createFakeConfigStore({ deviceTokenPrefix: "dvcpref1" })
+    const stdout = createCapture()
+    const code = await run(
+      ["keys", "list", ...argv],
+      createTestDeps({
+        fetch,
+        store,
+        readConfig: configStore.readConfig,
+        writeConfig: configStore.writeConfig,
+        clearConfig: configStore.clearConfig,
+        stdout,
+      }),
+    )
+    expect(code).toBe(0)
+    return { payload, stdout: stdout.text }
+  }
+
+  /** The table's lines, identity line dropped, each split on the two-space column gap. */
+  function tableRows(stdout: string): string[][] {
+    const lines = stdout.split("\n").filter((line) => line.length > 0)
+    const headerAt = lines.findIndex((line) => line.startsWith("Prefix"))
+    return lines.slice(headerAt).map((line) => line.split(/ {2,}/).map((cell) => cell.trim()))
+  }
+
+  test("both of the operator's keys read Read:Write, the named one leads with its name, the other is blank", async () => {
+    const { stdout } = await list([JPVPY8GS, B6P_TSRS])
+    const lines = stdout.split("\n")
+    const header = lines.find((line) => line.startsWith("Prefix")) ?? ""
+    expect(header.split(/ {2,}/)).toEqual([
+      "Prefix",
+      "Name",
+      "Access",
+      "Environment",
+      "Created",
+      "Last used",
+      "Revoked",
+      "Minted by",
+    ])
+    const first = lines.find((line) => line.startsWith("JpVPY8gs")) ?? ""
+    const second = lines.find((line) => line.startsWith("B6P-TSRs")) ?? ""
+    expect(first).toMatch(/^JpVPY8gs {2}cndl {2}Read:Write {2}production /)
+    // Blank Name: the cell is padded to the column's width, so Access starts where it does above.
+    expect(second).toMatch(/^B6P-TSRs {8}Read:Write {2}production /)
+    expect(second.indexOf("Read:Write")).toBe(first.indexOf("Read:Write"))
+    expect(first.endsWith("browser session")).toBe(true)
+    expect(second.endsWith("this device")).toBe(true)
+    expect(stdout).not.toContain("account:read")
+  })
+
+  test("a key matching neither preset reads as the web's chip words, or – when it holds none", async () => {
+    const rows = tableRows(
+      (
+        await list([
+          { ...B6P_TSRS, keyPrefix: "legacyful", scopes: JPVPY8GS.scopes.filter((s) => s !== "account:read") },
+          { ...B6P_TSRS, keyPrefix: "readonly1", scopes: ["launch:read"] },
+          { ...B6P_TSRS, keyPrefix: "readkey01", scopes: ["account:read"] },
+        ])
+      ).stdout,
+    )
+    const access = (prefix: string) => rows.find((row) => row[0] === prefix)?.[1]
+    // No label on these rows, so the blank Name cell collapses and Access is the second cell.
+    expect(access("legacyful")).toBe("Launch, Trade, Transfer, Report")
+    expect(access("readonly1")).toBe("–")
+    expect(access("readkey01")).toBe("Read")
+  })
+
+  test("--scopes adds a sorted Scopes column after Access, and both keys print the same string", async () => {
+    const { stdout } = await list([JPVPY8GS, B6P_TSRS], ["--scopes"])
+    const rows = tableRows(stdout)
+    expect(rows[0]?.slice(0, 4)).toEqual(["Prefix", "Name", "Access", "Scopes"])
+    expect(rows.find((row) => row[0] === "JpVPY8gs")?.slice(1, 4)).toEqual(["cndl", "Read:Write", SORTED])
+    expect(rows.find((row) => row[0] === "B6P-TSRs")?.slice(1, 3)).toEqual(["Read:Write", SORTED])
+  })
+
+  test("a label carrying a newline and a bidi override renders on one line with neither", async () => {
+    const { stdout } = await list([{ ...JPVPY8GS, label: "evil\nname‮gnp.exe" }])
+    const row = stdout.split("\n").find((line) => line.startsWith("JpVPY8gs")) ?? ""
+    expect(row).toContain("evil name gnp.exe  Read:Write")
+    expect(stdout).not.toContain("‮")
+    expect(stdout.split("\n").some((line) => line.startsWith("name"))).toBe(false)
+  })
+
+  test("--json is the API's payload, byte for byte, with or without --scopes", async () => {
+    for (const argv of [["--json"], ["--json", "--scopes"]]) {
+      const { payload, stdout } = await list([JPVPY8GS, B6P_TSRS], argv)
+      expect(stdout).toBe(`${JSON.stringify(payload)}\n`)
+    }
+  })
+})
+
 describe("keys create", () => {
   test("prints the plaintext key exactly once and stores it when no api_key ref exists yet", async () => {
     const NEW_KEY = "ck_live_FIXTURE_NEW_KEY_VALUE"

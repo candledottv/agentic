@@ -254,6 +254,24 @@ describe("profiles", () => {
     expect(keyRow).toContain("scopes: launch:write")
   })
 
+  test("the agent-key row prints the profile's scopes sorted, not in stored order", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
+      "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
+      "/api/v1/agent/wallets/embedded": () =>
+        jsonResponse(200, { success: true, wallets: { solana: { address: "abc", delegated: true }, evm: null } }),
+    })
+    const store = createFakeStore({ "profile:staging:device_token": "d", "profile:staging:api_key": "k" })
+    const config = createFakeConfigStore({
+      profiles: { staging: { account: "A", scopes: ["swap:write", "launch:write", "account:read"] } },
+      activeProfile: "staging",
+    })
+    const stdout = createCapture()
+    await run(["doctor"], createTestDeps({ fetch, store, stdout, ...config }))
+    expect(stdout.text).toContain("scopes: account:read, launch:write, swap:write")
+  })
+
   // Fix wave item 1: doctor is where a mismatch is meant to be SEEN, so the row that reports the
   // live account has to report the profile's record of it too, and the cheap repair, rather than
   // leaving the operator to notice that the identity line above disagrees with the row below.

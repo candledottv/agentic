@@ -9,6 +9,8 @@
  * `{ok:false,...}` envelope on failure, with stderr reserved for diagnostics.
  */
 
+import { sortAgentKeyScopes } from "./agent-key-access"
+
 /** Mirrors `apps/api/src/lib/agent-keys.ts`'s `AGENT_KEY_SCOPES`, duplicated here since the CLI
  * has zero runtime dependencies and no cross-package import (spec decision 4: the CLI is
  * standalone). Order matches the API's own array. */
@@ -33,12 +35,12 @@ export const DEFAULT_AGENT_SCOPES: readonly AgentScope[] = ALL_AGENT_SCOPES.filt
 const SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf"
 const TRANSFER_WRITE_NOTE = "moves funds -- this key can transfer assets between your wallets"
 
-/** Renders a scope list for a human, calling `swap:write` out explicitly as fund-moving (the one
- * scope the design calls for plain-language treatment). Every other scope renders as its raw
- * name -- `keys list` shows raw scope strings for all of them, this function is only used where
- * the spec calls for the swap:write callout (the login summary). */
+/** Renders a scope list for a human, calling `swap:write` and `transfer:write` out explicitly as
+ * fund-moving. Every other scope renders as its raw name. Sorted first, in the one order raw
+ * scopes are shown to a person everywhere (`keys list --scopes`, the web key detail), so the same
+ * set never reads as two different lists (keys list Access and Name spec, 2026-09-23, D6). */
 export function formatScopesForSummary(scopes: readonly string[]): string {
-  return scopes
+  return sortAgentKeyScopes(scopes)
     .map((scope) =>
       scope === "swap:write"
         ? `${scope} (${SWAP_WRITE_NOTE})`

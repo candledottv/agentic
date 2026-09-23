@@ -52,10 +52,10 @@ node packages/cli/dist/index.js auth login
 | Command | What it does |
 | --- | --- |
 | `candle setup [--no-browser]` | The onboarding wizard: authorizes this device (skipped when already authorized), prints the agent wallets as funding destinations plus the paste-into-your-agent brief, shows the skill/MCP install lines, runs the full doctor check (setup's exit code is doctor's), and links the web console. Safe to re-run. |
-| `candle auth login [--profile <name>] [--scopes <a,b,c>] [--label <name>] [--no-browser]` | Authorizes this device: prints a code, opens (or prints) an approval URL, polls until approved, then stores the resulting device token and API key. |
+| `candle auth login [--profile <name>] [--scopes <a,b,c>] [--label <name>] [--no-browser]` | Authorizes this device: prints a code, opens (or prints) an approval URL, polls until approved, then stores the resulting device token and API key. `--label` names both the device and the key. |
 | `candle auth status` | Shows which storage backend is in use, both credential prefixes, the config file path, and a live validity check for each credential. |
 | `candle auth logout [--keep-key]` | Revokes the stored API key (skipped with `--keep-key`), clears local credentials and config, and prints the portal URL for revoking the device itself. |
-| `candle keys list` | Lists this account's API keys: prefix, scopes, environment, timestamps, and which device minted each one. |
+| `candle keys list [--scopes]` | Lists this account's API keys: prefix, name, Read or Read:Write access, environment, timestamps, and which device minted each one. `--scopes` adds the raw scopes, sorted. |
 | `candle keys create [--scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily\|weekly\|monthly\|never]]` | Creates a new API key and prints the plaintext exactly once, with the same optional name, expiration, and USD transaction limit the portal's create form takes. Stored locally only if the CLI does not already hold a working key. |
 | `candle keys revoke <prefix>` | Revokes an API key by prefix. Revoking the CLI's own stored key also clears it locally. |
 | `candle wallets` | Shows the account's embedded (launch) wallets and any linked wallets, using the API key, with a `Signer` column saying whether this machine holds each linked wallet's signing key. |
