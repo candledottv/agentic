@@ -112,7 +112,15 @@ export async function adoptGrantedRow(
   entry: KeyEntry,
   row: LinkedWalletRow,
   account: string,
-  opts: { confirmDestination: (destination: string) => Promise<boolean> },
+  opts: {
+    confirmDestination: (destination: string) => Promise<boolean>
+    /**
+     * Whether the server grant block below is written before the confirmation. Default true, the
+     * single-promote ceremony; `vault promote-batch` passes false because its table already
+     * printed the destination the callback will check (BE-285, D11).
+     */
+    announceGrant?: boolean
+  },
 ): Promise<AdoptionResult> {
   const tee = entry.tee
   if (tee === undefined) {
@@ -171,13 +179,15 @@ export async function adoptGrantedRow(
     )
   }
 
-  ctx.deps.stdout.write(
-    `Server grant for ${entry.address}:\n` +
-      `  linkedWalletId   ${row._id}\n` +
-      `  boundKeyPrefix   ${row.boundKeyPrefix ?? "(none)"}\n` +
-      `  vaultDestination ${row.vaultDestination}\n` +
-      `  account          ${account}\n`,
-  )
+  if (opts.announceGrant ?? true) {
+    ctx.deps.stdout.write(
+      `Server grant for ${entry.address}:\n` +
+        `  linkedWalletId   ${row._id}\n` +
+        `  boundKeyPrefix   ${row.boundKeyPrefix ?? "(none)"}\n` +
+        `  vaultDestination ${row.vaultDestination}\n` +
+        `  account          ${account}\n`,
+    )
+  }
   const accepted = await opts.confirmDestination(row.vaultDestination)
   if (!accepted) {
     return { patch: {}, outcome: "declined" }

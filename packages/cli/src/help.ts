@@ -392,6 +392,10 @@ export const HELP: Record<string, Topic> = {
         description: "Fresh TEE key, or promote one vault key in place",
       },
       {
+        invocation: "promote-batch --pairs-from <file> --rpc-url <url> [--token-holdings]",
+        description: "Promote many vault keys in place: one unlock, one reviewed acknowledgement",
+      },
+      {
         invocation: "fund <tee-address|external> --amount <n> --asset SOL|USDC --rpc-url <url> [--from <label>]",
         description: "Fund a TEE or external wallet from a vault key",
       },
@@ -422,6 +426,11 @@ export const HELP: Record<string, Topic> = {
         description:
           "new-key: one name per line, one key each, one unlock (max 256). Each key is committed on its own, so a batch that is interrupted keeps every key that landed and you re-run for the rest.",
       },
+      {
+        invocation: "--pairs-from <file>",
+        description:
+          "promote-batch: one '<label> <destination>' per line, or a CSV with label and sweep_to columns (max 256). Every row is checked against the whole set before anything is written, and each key is committed on its own, so an interrupted batch keeps what landed and re-running the same file resumes.",
+      },
     ],
     examples: [
       "candle vault init",
@@ -429,6 +438,7 @@ export const HELP: Record<string, Topic> = {
       "candle vault list cn-s",
       "candle vault rename key-7 treasury-cold",
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
+      "candle vault promote-batch --pairs-from ./promote-plan.csv --rpc-url https://<rpc>",
       "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
       "candle vault backup --to icloud",

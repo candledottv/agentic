@@ -144,6 +144,74 @@ export function assertInPlacePreconditions(
   return { subject, destination, resume: false }
 }
 
+/**
+ * The in-place promotion's entry mutation, extracted from `promoteInPlace` (BE-285, spec
+ * 2026-09-22-cli-vault-promote-batch-design.md, D6, §8 step 1) so that the loop that writes it and
+ * the batch preflight that PROJECTS it call the same function. If the two ever differed, the
+ * preflight would pass while looking correct and the loop would fail at row 91, which is the exact
+ * failure the batch exists to prevent. Two callers, one mutation: `promoteInPlace` and
+ * `applyPromotion`.
+ */
+export function promotedEntry(
+  entry: KeyEntry,
+  destination: KeyEntry,
+  label: string | undefined,
+  now: string,
+  acceptUnknown: boolean,
+): KeyEntry {
+  return {
+    ...entry,
+    role: "tee-wallet",
+    label: label ?? entry.label,
+    exposure: {
+      everRemoteExposed: true,
+      everExported: entry.exposure?.everExported === true,
+      ...(entry.exposure?.exposureUnknown ? { exposureUnknown: true } : {}),
+    },
+    tee: {
+      network: "solana-mainnet",
+      lifecycle: "import-pending",
+      vaultDestination: destination.address,
+      promotedInPlaceAt: now,
+      ...(acceptUnknown && destination.exposure?.exposureUnknown ? { destinationExposureAccepted: true } : {}),
+    },
+  }
+}
+
+/**
+ * The index as it is after one in-place promotion's pre-import write: the subject's entry replaced
+ * by `promotedEntry`, and the subject's vault-branch index recorded in `hd.exposedIndexes.solanaVault`.
+ * This is the whole of what `promoteInPlace` commits before the import, so the batch preflight can
+ * apply it to a projected index and check the next row against the vault as it WILL be (D6).
+ */
+export function applyPromotion(
+  index: IndexPlaintext,
+  subject: KeyEntry,
+  destination: KeyEntry,
+  opts: { label?: string; now: string; acceptUnknownExposure: boolean },
+): IndexPlaintext {
+  const entries = index.entries.map((entry) =>
+    entry.id === subject.id
+      ? promotedEntry(entry, destination, opts.label, opts.now, opts.acceptUnknownExposure)
+      : entry,
+  )
+  // Exposure index: record this vault-branch index as exposed.
+  const exposedVault = [...index.hd.exposedIndexes.solanaVault]
+  const derivedIndex = subject.derivation?.path.match(/m\/44'\/501'\/(\d+)'\/0'/)
+  if (derivedIndex?.[1] !== undefined) {
+    const idx = Number(derivedIndex[1])
+    if (!exposedVault.includes(idx)) exposedVault.push(idx)
+    exposedVault.sort((a, b) => a - b)
+  }
+  return {
+    hd: {
+      ...index.hd,
+      exposedIndexes: { ...index.hd.exposedIndexes, solanaVault: exposedVault },
+    },
+    entries,
+  }
+}
+
 export function printAd8Warning(ctx: CommandContext): void {
   ctx.deps.stdout.write(`\n${AD8_WARNING}\n\n`)
 }

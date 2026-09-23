@@ -52,6 +52,7 @@ import { vaultList } from "./commands/vault-list"
 import { vaultNewKey } from "./commands/vault-new-key"
 import { vaultPhrase } from "./commands/vault-phrase-dispatch"
 import { vaultPromote } from "./commands/vault-promote"
+import { vaultPromoteBatch } from "./commands/vault-promote-batch"
 import { vaultRename } from "./commands/vault-rename"
 import { vaultReconcileExposure, vaultRestore } from "./commands/vault-restore"
 import { vaultRetireLegacy } from "./commands/vault-retire-legacy"
@@ -181,6 +182,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       "retire-legacy": vaultRetireLegacy,
       transfer: vaultTransfer,
       promote: vaultPromote,
+      // BE-285: many in-place promotions under one unlock and one reviewed acknowledgement.
+      "promote-batch": vaultPromoteBatch,
       fund: vaultFund,
       demote: vaultDemote,
       "export-key": vaultExportKey,

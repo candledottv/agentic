@@ -89,6 +89,11 @@ export const VAULT_ERROR_CODES = [
   "VAULT_LABEL_TAKEN",
   "VAULT_LABEL_UNCHANGED",
   "VAULT_RENAME_ROLE_REFUSED",
+  // BE-285 (spec 2026-09-22-cli-vault-promote-batch-design.md, D7): `candle vault promote-batch`'s
+  // one new code. The whole-set preflight refuses with it and lists every failing row, each row
+  // carrying its OWN shipped `PROMOTE_*` code unchanged. Thrown nowhere: the report is returned and
+  // rendered by `writeBatchRefusal`, because `VaultError.details` cannot carry a row list.
+  "PROMOTE_BATCH_REFUSED",
 ] as const
 
 export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number]

@@ -7,7 +7,7 @@
 import { base58 } from "@scure/base"
 import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
-import { writeFailure, writeLocalFailure } from "../render"
+import { errorEnvelope, renderError, suggestionFor, writeFailure, writeLocalFailure } from "../render"
 import { createSolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { addressFromSecret64 } from "../vault/ed25519"
@@ -17,6 +17,7 @@ import { DERIVATION_SCHEME, deriveSolanaKey, solanaTeePath } from "../vault/hd"
 import { wipe } from "../vault/hygiene"
 import {
   AD8_WARNING,
+  applyPromotion,
   assertColdVaultDestination,
   assertInPlacePreconditions,
   assertNotPinnedDestination,
@@ -35,7 +36,7 @@ import {
   sealKeyBlob,
   type UnlockedVault,
 } from "../vault/store"
-import { runImportFlow, TEE_PROFILE } from "../wallet-import-flow"
+import { type ImportSubmitResponse, runImportFlow, TEE_PROFILE } from "../wallet-import-flow"
 import { nextAllocatableIndex } from "./vault-new-key"
 import {
   confirmLastSix,
@@ -185,12 +186,12 @@ async function promoteFresh(
     const privateKey = base58.encode(secret64)
     wipe(secret64)
     const importCount = { n: 0 }
-    const code = await runTeeImport(ctx, {
+    const { exit: code } = await runTeeImport(ctx, {
       address,
       privateKey,
       label: entry.label,
       vaultDestination: destination.address,
-      reopen: opened.reopen,
+      reopenForWrite: opened.reopen,
       resolvedVault,
       onImport: () => {
         importCount.n += 1
@@ -277,7 +278,18 @@ async function promoteInPlace(
       if (sweepTo !== undefined) {
         return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).")
       }
-      return resumePromote(ctx, vault, existing, opened.reopen, path, hold)
+      const { exit } = await resumePromote(ctx, vault, existing, opened.reopen, path, hold, {
+        confirmAccount: (account) => confirmLastSix(ctx, account, "that account"),
+        confirmDestination: async (destination) => {
+          try {
+            await confirmLastSix(ctx, destination, "the server-reported vault destination")
+            return true
+          } catch {
+            return false
+          }
+        },
+      })
+      return exit
     }
 
     if (sweepTo === undefined || rpcUrl === undefined) {
@@ -323,47 +335,18 @@ async function promoteInPlace(
     const now = new Date(ctx.deps.now()).toISOString()
     const subject = second.subject
     const destination = second.destination
-    const entries = vault.index.entries.map((entry) => {
-      if (entry.id !== subject.id) return entry
-      const next: KeyEntry = {
-        ...entry,
-        role: "tee-wallet",
-        label: parsed.values["--label"] ?? entry.label,
-        exposure: {
-          everRemoteExposed: true,
-          everExported: entry.exposure?.everExported === true,
-          ...(entry.exposure?.exposureUnknown ? { exposureUnknown: true } : {}),
-        },
-        tee: {
-          network: "solana-mainnet",
-          lifecycle: "import-pending",
-          vaultDestination: destination.address,
-          promotedInPlaceAt: now,
-          ...(acceptUnknown && destination.exposure?.exposureUnknown ? { destinationExposureAccepted: true } : {}),
-        },
-      }
-      return next
-    })
-    // Exposure index: record this vault-branch index as exposed.
-    const exposedVault = [...vault.index.hd.exposedIndexes.solanaVault]
-    const derivedIndex = subject.derivation?.path.match(/m\/44'\/501'\/(\d+)'\/0'/)
-    if (derivedIndex?.[1] !== undefined) {
-      const idx = Number(derivedIndex[1])
-      if (!exposedVault.includes(idx)) exposedVault.push(idx)
-      exposedVault.sort((a, b) => a - b)
-    }
-
+    // The one mutation, shared with the batch preflight's projection (BE-285, D6): the entry moves
+    // to `tee-wallet` / `import-pending` with its pin, and its vault-branch index is recorded as
+    // exposed. `promotedEntry` in promote-support.ts is the only producer of that entry shape.
     vault = hold(
       await commitVault(
         vault,
         {
-          index: {
-            hd: {
-              ...vault.index.hd,
-              exposedIndexes: { ...vault.index.hd.exposedIndexes, solanaVault: exposedVault },
-            },
-            entries,
-          },
+          index: applyPromotion(vault.index, subject, destination, {
+            label: parsed.values["--label"],
+            now,
+            acceptUnknownExposure: acceptUnknown,
+          }),
         },
         ctx.deps,
       ),
@@ -380,12 +363,12 @@ async function promoteInPlace(
       wipe(secret)
     }
 
-    const code = await runTeeImport(ctx, {
+    const { exit: code } = await runTeeImport(ctx, {
       address: subject.address,
       privateKey,
       label: parsed.values["--label"] ?? subject.label,
       vaultDestination: destination.address,
-      reopen: opened.reopen,
+      reopenForWrite: opened.reopen,
       resolvedVault,
     })
     if (ctx.json) {
@@ -408,26 +391,64 @@ async function promoteInPlace(
   })
 }
 
-async function resumePromote(
+/**
+ * A failure `runTeeImport` or `resumePromote` would have written, handed back instead when the
+ * caller asked for `report: "return"` (BE-285, §4.7 item 3). The batch is the only writer of its
+ * one `--json` document, so these functions must not write a second one on its path.
+ */
+export interface ReturnedFailure {
+  code: string
+  message: string
+  suggestion?: string
+}
+
+export interface ResumeOutcome {
+  exit: number
+  /** Present only under `report: "return"`, when the resume did not complete. */
+  failure?: ReturnedFailure
+  /** What the adopted grant recorded, for a caller that reports it without re-reading the vault. */
+  adopted?: { linkedWalletId?: string; remoteAuthority?: string }
+  /** The vault as committed by a successful adoption, sharing the caller's DEK. */
+  vault?: UnlockedVault
+}
+
+export interface ResumeConfirmations {
+  /** Asserts the account a grant-less entry acts as; throws to refuse. `vault promote` types the last six. */
+  confirmAccount: (account: string) => Promise<void>
+  /** Confirms a server-reported destination (`adoptGrantedRow`'s callback); `false` declines. */
+  confirmDestination: (destination: string) => Promise<boolean>
+  /** Whether `adoptGrantedRow` writes its grant block and this function its account line. Default true. */
+  announceGrant?: boolean
+  /** Who writes the failure envelopes and the `--json` document. Default `"write"`: this function. */
+  report?: "write" | "return"
+}
+
+export async function resumePromote(
   ctx: CommandContext,
   vault: UnlockedVault,
   entry: KeyEntry,
   reopen: OpenedVault["reopen"],
   path: string,
   hold: (v: UnlockedVault) => UnlockedVault,
-): Promise<number> {
+  confirmations: ResumeConfirmations,
+): Promise<ResumeOutcome> {
+  const announceGrant = confirmations.announceGrant ?? true
+  const report = confirmations.report ?? "write"
+  const fail = (failure: ReturnedFailure, exit: number): ResumeOutcome => {
+    if (report === "write") writeLocalFailure(ctx.deps, failure, ctx.json)
+    return { exit, ...(report === "return" ? { failure } : {}) }
+  }
+
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile)
   if (!apiKey) {
-    writeLocalFailure(
-      ctx.deps,
+    return fail(
       {
         code: "PROMOTE_RECONCILE_INCOMPLETE",
         message: "No API key is available; reconciliation cannot run.",
         suggestion: "Run: candle keys create",
       },
-      ctx.json,
+      1,
     )
-    return 1
   }
 
   let assertedAccount: string | undefined
@@ -436,37 +457,32 @@ async function resumePromote(
     const name = ctx.profile ?? config.activeProfile
     const cached = name !== undefined ? config.profiles?.[name]?.account : undefined
     if (cached === undefined || cached === "") {
-      writeLocalFailure(
-        ctx.deps,
+      return fail(
         {
           code: "PROMOTE_RECONCILE_INCOMPLETE",
           message: "This entry has no grant identity, and this profile has no cached account to assert.",
         },
-        ctx.json,
+        1,
       )
-      return 1
     }
-    ctx.deps.stdout.write(`This profile acts as account ${cached}.\n`)
-    await confirmLastSix(ctx, cached, "that account")
+    if (announceGrant) ctx.deps.stdout.write(`This profile acts as account ${cached}.\n`)
+    await confirmations.confirmAccount(cached)
     assertedAccount = cached
   }
 
   const verdict = await reconcileGrant(ctx, entry, { assertedAccount })
   if (verdict.kind === "unreadable") {
-    writeLocalFailure(ctx.deps, { code: "PROMOTE_RECONCILE_INCOMPLETE", message: verdict.reason }, ctx.json)
-    return 1
+    return fail({ code: "PROMOTE_RECONCILE_INCOMPLETE", message: verdict.reason }, 1)
   }
   if (verdict.kind === "unresolved") {
-    writeLocalFailure(
-      ctx.deps,
+    return fail(
       {
         code: "PROMOTE_OUTCOME_UNRESOLVED",
         message: `No authoritative grant or stranding record for ${entry.address}; the outcome is not established.`,
         suggestion: "Nothing was written. Demote under --emergency if funds must move, then promote a fresh key.",
       },
-      ctx.json,
+      3,
     )
-    return 3
   }
   if (verdict.kind === "strand-final") {
     const next = await commitVault(
@@ -497,32 +513,28 @@ async function resumePromote(
       ctx.deps,
     )
     hold(next)
+    const stranded = `${entry.address} is stranded; it is never re-promotable.`
+    if (report === "return") {
+      return { exit: 1, failure: { code: "PROMOTE_ALREADY_TEE_WALLET", message: stranded }, vault: next }
+    }
     if (ctx.json) writeJson(ctx.deps, { ok: false, lifecycle: "stranded", address: entry.address })
-    else ctx.deps.stdout.write(`${entry.address} is stranded; it is never re-promotable.\n`)
-    return 1
+    else ctx.deps.stdout.write(`${stranded}\n`)
+    return { exit: 1 }
   }
 
   // granted: adopt, import ZERO times.
   const adoption = await adoptGrantedRow(ctx, entry, verdict.row, verdict.account, {
-    confirmDestination: async (destination) => {
-      try {
-        await confirmLastSix(ctx, destination, "the server-reported vault destination")
-        return true
-      } catch {
-        return false
-      }
-    },
+    confirmDestination: confirmations.confirmDestination,
+    announceGrant,
   })
   if (adoption.outcome === "declined") {
-    writeLocalFailure(
-      ctx.deps,
+    return fail(
       {
         code: "GRANT_DESTINATION_UNRESOLVED",
         message: `Adoption of the server grant for ${entry.address} was declined; the entry was left unchanged.`,
       },
-      ctx.json,
+      1,
     )
-    return 1
   }
   const next = await commitVault(
     vault,
@@ -542,6 +554,15 @@ async function resumePromote(
     ctx.deps,
   )
   hold(next)
+  const adopted = {
+    linkedWalletId: adoption.patch.linkedWalletId ?? entry.linkedWalletId,
+    remoteAuthority: adoption.patch.tee?.remoteAuthority ?? entry.tee?.remoteAuthority,
+  }
+  if (report === "return") {
+    void reopen
+    void path
+    return { exit: 0, adopted, vault: next }
+  }
   if (ctx.json) {
     writeJson(ctx.deps, {
       ok: true,
@@ -555,7 +576,7 @@ async function resumePromote(
   }
   void reopen
   void path
-  return 0
+  return { exit: 0, adopted }
 }
 
 async function displayHoldings(ctx: CommandContext, rpcUrl: string, address: string): Promise<void> {
@@ -577,26 +598,52 @@ async function displayHoldings(ctx: CommandContext, rpcUrl: string, address: str
   if (tokens.length === 0) ctx.deps.stdout.write(`  (no token accounts under either program)\n`)
 }
 
-async function runTeeImport(
+export interface TeeImportOutcome {
+  exit: number
+  /** Present only under `report: "return"`, when the import did not complete. */
+  failure?: ReturnedFailure
+  /** The server's record of the import, when it completed. */
+  submitted?: ImportSubmitResponse
+  /**
+   * The vault as committed after the import, when `closeReopened` is `false`: the caller owns the
+   * DEK this object shares, and it needs the post-import bytes for its next write. Absent when the
+   * re-opened vault was closed here.
+   */
+  vault?: UnlockedVault
+}
+
+export async function runTeeImport(
   ctx: CommandContext,
   opts: {
     address: string
     privateKey: string
     label?: string
     vaultDestination: string
-    reopen: OpenedVault["reopen"]
+    /**
+     * Opens the vault's current bytes for the post-import commit. `vault promote` passes
+     * `opened.reopen`, the factor path; the batch passes a held-key re-open that shares its DEK
+     * (BE-285, D9), which is why `closeReopened` exists.
+     */
+    reopenForWrite: (path: string, raw: string) => Promise<UnlockedVault>
+    /**
+     * Whether the `finally` below closes what `reopenForWrite` returned. Default `true`: a vault
+     * opened through the factor is this call's to wipe. The batch passes `false`, because its
+     * re-open shares a DEK that `runVaultCommand` already owns and rows 2..n still need.
+     */
+    closeReopened?: boolean
+    /** Who writes a failure. Default `"write"`: this function, as `vault promote` expects. */
+    report?: "write" | "return"
     resolvedVault: ResolvedVaultPath
     onImport?: () => void
   },
-): Promise<number> {
+): Promise<TeeImportOutcome> {
+  const report = opts.report ?? "write"
+  const closeReopened = opts.closeReopened ?? true
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile)
   if (!apiKey) {
-    writeLocalFailure(
-      ctx.deps,
-      { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" },
-      ctx.json,
-    )
-    return 1
+    const failure = { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle keys create" }
+    if (report === "write") writeLocalFailure(ctx.deps, failure, ctx.json)
+    return { exit: 1, ...(report === "return" ? { failure } : {}) }
   }
   opts.onImport?.()
   const flow = await runImportFlow({
@@ -612,20 +659,29 @@ async function runTeeImport(
   })
   if (!flow.ok) {
     const failure = flow.failure
-    if (failure.kind === "api")
-      writeFailure(ctx.deps, failure.response, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json)
-    else {
-      writeLocalFailure(
-        ctx.deps,
-        {
-          code: failure.kind === "signer-store" ? "SIGNER_STORE_FAILED" : "SIGNER_COMMIT_FAILED",
-          message: `${opts.address}: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`,
-          suggestion: "The vault entry is import-pending. Fix the error and re-run promote to resume.",
+    if (failure.kind === "api") {
+      const render = { apiUrl: ctx.apiUrl, authType: "key" as const }
+      if (report === "write") {
+        writeFailure(ctx.deps, failure.response, render, ctx.json)
+        return { exit: 1 }
+      }
+      const suggestion = suggestionFor(failure.response, render)
+      return {
+        exit: 1,
+        failure: {
+          code: errorEnvelope(failure.response, render).code,
+          message: renderError(failure.response, render),
+          ...(suggestion ? { suggestion } : {}),
         },
-        ctx.json,
-      )
+      }
     }
-    return 1
+    const local = {
+      code: failure.kind === "signer-store" ? "SIGNER_STORE_FAILED" : "SIGNER_COMMIT_FAILED",
+      message: `${opts.address}: ${failure.error instanceof Error ? failure.error.message : String(failure.error)}`,
+      suggestion: "The vault entry is import-pending. Fix the error and re-run promote to resume.",
+    }
+    if (report === "write") writeLocalFailure(ctx.deps, local, ctx.json)
+    return { exit: 1, ...(report === "return" ? { failure: local } : {}) }
   }
 
   const submitted = flow.submitted
@@ -634,9 +690,10 @@ async function runTeeImport(
   const account = name !== undefined ? (config.profiles?.[name]?.account ?? "") : ""
   const importedAt = new Date(ctx.deps.now()).toISOString()
   const raw = await requireVaultRaw(ctx, opts.resolvedVault)
-  const vault = await opts.reopen(opts.resolvedVault.path, raw)
+  const vault = await opts.reopenForWrite(opts.resolvedVault.path, raw)
+  let committed: UnlockedVault | undefined
   try {
-    await commitVault(
+    committed = await commitVault(
       vault,
       {
         index: {
@@ -677,8 +734,14 @@ async function runTeeImport(
       ctx.deps,
     )
   } finally {
-    closeVault(vault)
+    // The wipe stays in the `finally`, so a throw on the factor path still wipes; the flag is how
+    // the batch says this DEK is not this call's to wipe (BE-285, §4.7 item 1).
+    if (closeReopened) closeVault(vault)
   }
 
-  return submitted.remoteAuthority === "verified-active" ? 0 : 3
+  return {
+    exit: submitted.remoteAuthority === "verified-active" ? 0 : 3,
+    submitted,
+    ...(closeReopened ? {} : { vault: committed }),
+  }
 }
