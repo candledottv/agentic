@@ -797,8 +797,13 @@ export async function buildRealDeps(): Promise<Deps> {
 
 async function main(): Promise<void> {
   const deps = await buildRealDeps()
-  const code = await run(process.argv.slice(2), deps)
-  process.exit(code)
+  // Set, not exited (BE-299). `process.exit` ends the process before a pending pipe write has
+  // drained: to a pipe, `process.stdout.write` hands the kernel one buffer (64 KiB) and finishes
+  // the rest from the event loop, and exiting in the same turn discarded everything past that
+  // buffer while still reporting the command's code. Returning lets the runtime exit once both
+  // streams are drained, which is the documented contract for `exitCode`. The compiled-binary
+  // test drives `candle` through a real pipe with a slow reader and is the check that this stays.
+  process.exitCode = await run(process.argv.slice(2), deps)
 }
 
 // Only run the bin entry when this module is executed directly, not when a test imports `run`.
@@ -823,6 +828,24 @@ function entryHref(argv1: string): string {
 }
 const isMainModule = process.argv[1] !== undefined && import.meta.url === entryHref(process.argv[1])
 if (isMainModule) {
+  // The reader went away (`candle ... | head`): nothing to report, and the command's own exit code
+  // stands. Under node an unhandled EPIPE would otherwise end the process with a stack trace and
+  // exit 1 now that the write outlives the command (BE-299, D3). Any other stream error is
+  // reported once, in the same form as the catch below, and is an exit 1. `reported` is shared by
+  // both listeners, so stdout and stderr together produce one line. A non-EPIPE error on stderr
+  // sets the code and does not write: the line would go back into the stream that just failed.
+  // T2 pins EPIPE only; a non-EPIPE error is not tested (§8).
+  let reported = false
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.on("error", (err: NodeJS.ErrnoException) => {
+      if (err?.code === "EPIPE") return
+      if (reported) return
+      reported = true
+      process.exitCode = 1
+      if (stream === process.stderr) return
+      process.stderr.write(`Unexpected error: ${err?.message ?? String(err)}\n`)
+    })
+  }
   // AWAITED at the top level, not fired and forgotten (Ember Phase 2, BE-136, T49). Under Bun a
   // pending WebCrypto operation does not by itself keep the process alive, and a hidden prompt
   // leaves stdin paused once it closes, so a command that prompts and then awaits `crypto.subtle`
@@ -834,6 +857,6 @@ if (isMainModule) {
   // pseudo-terminal and is the check that this line stays.
   await main().catch((err) => {
     process.stderr.write(`Unexpected error: ${err instanceof Error ? err.message : String(err)}\n`)
-    process.exit(1)
+    process.exitCode = 1
   })
 }

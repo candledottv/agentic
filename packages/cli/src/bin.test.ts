@@ -6,12 +6,13 @@
  * two unrealpath'd, so every bunx/npx invocation silently exited 0 having done nothing -- caught
  * live by the P4b-3 acceptance test after three review rounds of direct-path-only testing.
  */
-import { beforeAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { mkdtempSync, readFileSync, symlinkSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import pkg from "../package.json"
+import { fakeWalletsApi, pipeEnv, runPipeline, shellQuote } from "./test-support"
 
 const pkgDir = resolve(import.meta.dir, "..")
 const bundle = join(pkgDir, "dist", "index.js")
@@ -79,4 +80,48 @@ describe("the built bin entry", () => {
     expect(res.status).toBe(0)
     expect(res.stdout).toContain("Usage:")
   })
+})
+
+// BE-299, T5: T1 and T2 of stdout-drain.compiled.test.ts, through the npm shape. An agent running
+// `npx @candledottv/cli` gets this bundle under node, where the unfixed exit cut piped output at
+// 65,536 bytes and, once the write outlived the command, an early reader surfaced an unhandled EPIPE.
+// Spawned asynchronously (the fake API is served from this process), and through a pipe(2) that
+// bash makes, never the spawner's own socket. `node` is resolved here, before `pipeEnv` replaces
+// PATH with one that does not hold it, and invoked by that absolute path.
+describe("the built bin entry, through a real pipe", () => {
+  const ROWS = 1_200
+  let api: { url: string; stop(): void }
+  let node: string
+
+  beforeAll(() => {
+    const found = Bun.which("node")
+    if (!found) throw new Error("the pipe test needs node on PATH, and Bun.which could not find it")
+    node = found
+    api = fakeWalletsApi(ROWS)
+  })
+
+  afterAll(() => api?.stop())
+
+  function candle(args: string): string {
+    return `${shellQuote(node)} ${shellQuote(bundle)} --api-url ${shellQuote(api.url)} --no-verify-account ${args}`
+  }
+
+  test("wallets --json arrives whole to a slow reader", async () => {
+    const res = await runPipeline(`${candle("wallets --json")} | (sleep 0.5; cat)`, pipeEnv())
+    expect(res.err).toBe("")
+    expect(res.status).toBe(0)
+    expect(res.out.length).toBeGreaterThan(4 * 65_536)
+    expect(res.out.at(-1)).toBe(0x0a)
+    const doc = JSON.parse(res.out.toString("utf8"))
+    expect(doc.walletCount).toBe(ROWS)
+    expect(doc.linked.page.length).toBe(ROWS)
+    expect(doc.truncated).toBe(false)
+  }, 60_000)
+
+  test("a reader that closes early (| head) ends the output quietly with status 0", async () => {
+    const res = await runPipeline(`${candle("wallets --json")} 2>&1 | head -c 10; exit "\${PIPESTATUS[0]}"`, pipeEnv())
+    expect(res.err).toBe("")
+    expect(res.out.toString("utf8")).toBe('{"embedded')
+    expect(res.status).toBe(0)
+  }, 60_000)
 })

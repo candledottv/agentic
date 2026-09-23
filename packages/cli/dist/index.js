@@ -56833,8 +56833,7 @@ async function buildRealDeps() {
 }
 async function main() {
   const deps = await buildRealDeps();
-  const code = await run2(process.argv.slice(2), deps);
-  process.exit(code);
+  process.exitCode = await run2(process.argv.slice(2), deps);
 }
 function entryHref(argv1) {
   try {
@@ -56845,10 +56844,25 @@ function entryHref(argv1) {
 }
 var isMainModule = process.argv[1] !== undefined && import.meta.url === entryHref(process.argv[1]);
 if (isMainModule) {
+  let reported = false;
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.on("error", (err) => {
+      if (err?.code === "EPIPE")
+        return;
+      if (reported)
+        return;
+      reported = true;
+      process.exitCode = 1;
+      if (stream === process.stderr)
+        return;
+      process.stderr.write(`Unexpected error: ${err?.message ?? String(err)}
+`);
+    });
+  }
   await main().catch((err) => {
     process.stderr.write(`Unexpected error: ${err instanceof Error ? err.message : String(err)}
 `);
-    process.exit(1);
+    process.exitCode = 1;
   });
 }
 export {

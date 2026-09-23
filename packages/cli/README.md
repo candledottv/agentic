@@ -144,6 +144,10 @@ guarantee is unconfirmed: a wallet stop whose remote enforcement is still pendin
 enabled without verified signing authority, or a sweep that left a residual). Treat `3` as not
 done: follow the printed next step, usually re-running the same command.
 
+The value is complete when the process exits, whatever stdout is connected to: a file, a pipe
+into `jq`, a subprocess, or an MCP host. The CLI exits only after stdout has drained, and a
+reader that closes the pipe early (`| head`) ends the output without an error.
+
 A failure envelope is `{ ok: false, code, message }`, with an optional one-line `suggestion` and,
 where a refusal carries facts worth acting on, an optional nested `details`. A vault that is not
 where the command looked answers with `details: { path, pathSource: "flag" | "env" | "default" }`,
