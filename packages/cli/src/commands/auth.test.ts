@@ -1200,6 +1200,10 @@ describe("auth login never requests transfer:bound", () => {
     expect(calls).toHaveLength(0)
     expect(stderr.text).toContain("transfer:bound is not available on a device login")
     expect(stderr.text).toContain("candle keys create --access read-write-transfer")
+    // BE-361 (T-B12): or widen an existing key in place.
+    expect(stderr.text).toContain(
+      "or widen an existing key with: candle keys access <prefix> --access read-write-transfer",
+    )
   })
 
   test("a login that omits scopes sends none, so the server's device default (no transfer:bound) applies", async () => {

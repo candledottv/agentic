@@ -375,6 +375,11 @@ export const HELP: Record<string, Topic> = {
         description:
           "Create an API key; --access mints one of the three levels (read-write-transfer can move funds out of the wallet it runs)",
       },
+      {
+        invocation: "access <prefix|label|self> (--access read|read-write|read-write-transfer [--yes] | --history)",
+        description:
+          "Change an existing key's level in place (same key, wallets and caps). Widening needs the device token and the prefix typed back at a terminal; --yes skips the prompt when narrowing; self narrows the profile's own key. --history lists the key's changes and who made them",
+      },
       { invocation: "revoke <prefix>", description: "Revoke an API key" },
       {
         invocation: "wallets <prefix>",
@@ -397,6 +402,8 @@ export const HELP: Record<string, Topic> = {
       "candle keys list",
       "candle keys create --access read-write-transfer --label rebalancer",
       "candle keys create --scopes trade:write --label agent-one",
+      "candle keys access cndl --access read-write-transfer",
+      "candle keys access self --access read --yes",
       "candle keys wallets ck_live_ab12",
       "candle tee rebind --label-prefix dest- --to-key ck_live_ab12",
       "candle keys revoke ck_live_ab12",

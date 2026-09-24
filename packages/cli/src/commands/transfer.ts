@@ -16,6 +16,7 @@
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { apiKeyPrefix } from "../profiles"
 import { writeUsageFailure } from "../render"
 import {
   BASES,
@@ -180,7 +181,7 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
     if (!payer.scopes.includes("transfer:bound"))
       throw new TradingError(
         "SCOPE_MISSING",
-        "Moving funds out of a TEE wallet needs a Read:Write:Transfer key. Mint one with: candle keys create --access read-write-transfer, then bind the wallet to it with: candle tee rebind",
+        `Moving funds out of a TEE wallet needs a Read:Write:Transfer key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access read-write-transfer. Or mint one with: candle keys create --access read-write-transfer, then bind the wallet to it with: candle tee rebind`,
       )
     const wallet = payer.wallet
     const destination = await resolveDestination(ctx, key, wallet, to)

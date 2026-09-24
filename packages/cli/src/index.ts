@@ -29,6 +29,7 @@ import { doctor } from "./commands/doctor"
 import { externalList, externalNew, externalSweep } from "./commands/external"
 import { help } from "./commands/help"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
+import { keysAccess } from "./commands/keys-access"
 import { keysWallets } from "./commands/keys-wallets"
 import { launch } from "./commands/launch"
 import { lpAdd, lpClaim, lpPools, lpPositions, lpRemove } from "./commands/lp"
@@ -160,7 +161,10 @@ const COMMANDS: Record<string, CommandRoute> = {
   // rail under the bound key's opt-in `lp:write`. Server-built, relay-signed, never a vault key.
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
-  keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke, wallets: keysWallets } },
+  // BE-361: `keys access` moves an existing key between the three levels in place.
+  keys: {
+    subcommands: { list: keysList, create: keysCreate, access: keysAccess, revoke: keysRevoke, wallets: keysWallets },
+  },
   // D6 (BE-238): `wallets generate` and `wallets export` were tombstoned in 0.10.0 and are gone
   // in 0.11.1. Nobody ran the releases in between (BE-235, item 3), so the tombstone had no
   // audience, and a routed word documented nowhere is the half-state the drift test cannot see.

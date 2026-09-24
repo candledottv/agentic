@@ -109,7 +109,7 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
   if (scopes?.includes("transfer:bound")) {
     writeUsageFailure(
       deps,
-      "transfer:bound is not available on a device login. Mint a Read:Write:Transfer key with: candle keys create --access read-write-transfer",
+      "transfer:bound is not available on a device login. Mint a Read:Write:Transfer key with: candle keys create --access read-write-transfer, or widen an existing key with: candle keys access <prefix> --access read-write-transfer",
       json,
     )
     return 2

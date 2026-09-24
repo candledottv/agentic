@@ -38908,7 +38908,7 @@ async function authLogin(args, ctx) {
   }
   const scopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined;
   if (scopes?.includes("transfer:bound")) {
-    writeUsageFailure(deps, "transfer:bound is not available on a device login. Mint a Read:Write:Transfer key with: candle keys create --access read-write-transfer", json);
+    writeUsageFailure(deps, "transfer:bound is not available on a device login. Mint a Read:Write:Transfer key with: candle keys create --access read-write-transfer, or widen an existing key with: candle keys access <prefix> --access read-write-transfer", json);
     return 2;
   }
   const label = parsed.values["--label"]?.trim();
@@ -39511,6 +39511,10 @@ var HELP = {
         invocation: "create [--access read|read-write|read-write-transfer | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]",
         description: "Create an API key; --access mints one of the three levels (read-write-transfer can move funds out of the wallet it runs)"
       },
+      {
+        invocation: "access <prefix|label|self> (--access read|read-write|read-write-transfer [--yes] | --history)",
+        description: "Change an existing key's level in place (same key, wallets and caps). Widening needs the device token and the prefix typed back at a terminal; --yes skips the prompt when narrowing; self narrows the profile's own key. --history lists the key's changes and who made them"
+      },
       { invocation: "revoke <prefix>", description: "Revoke an API key" },
       {
         invocation: "wallets <prefix>",
@@ -39529,6 +39533,8 @@ var HELP = {
       "candle keys list",
       "candle keys create --access read-write-transfer --label rebalancer",
       "candle keys create --scopes trade:write --label agent-one",
+      "candle keys access cndl --access read-write-transfer",
+      "candle keys access self --access read --yes",
       "candle keys wallets ck_live_ab12",
       "candle tee rebind --label-prefix dest- --to-key ck_live_ab12",
       "candle keys revoke ck_live_ab12"
@@ -45099,2370 +45105,27 @@ async function help(args, ctx) {
 // src/index.ts
 init_keys();
 
-// src/commands/keys-wallets.ts
+// src/commands/keys-access.ts
+init_agent_key_access();
 init_args();
 init_deps();
 init_profiles();
 init_render();
-var NO_API_KEY = {
-  code: "NO_API_KEY",
-  message: "No API key for this profile.",
-  suggestion: "Set CANDLE_API_KEY, or run `candle keys create` and store one."
-};
-function widenRefusedHint(prefix, walletIds) {
-  const wallets = walletIds.length > 0 ? walletIds.join(" ") : "<wallet...>";
-  return `To move TEE wallets to this key, run: candle tee rebind ${wallets} --to-key ${prefix} ` + "(owner, device token; --label-prefix <p> names many at once). To grant a linked wallet to the key " + "instead, use the agent console's Agents tab in a signed-in session. If `tee rebind` says the wallets " + "are already bound, grant them to the key in the agent console's Agents tab (signed in).";
-}
-function formatTimestamp2(ms) {
-  return ms ? new Date(ms).toISOString().replace("T", " ").slice(0, 16) : "-";
-}
-async function keysWalletsList(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const prefix = parsed.positionals[0];
-  if (!prefix) {
-    writeUsageFailure(deps, "Usage: candle keys wallets <prefix>", json);
-    return 2;
-  }
-  await printIdentity(ctx);
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  if (!apiKey) {
-    writeLocalFailure(deps, NO_API_KEY, json);
-    return 1;
-  }
-  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallets`, {
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
-    return 1;
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(result.body)}
-`);
-    return 0;
-  }
-  const body = result.body;
-  deps.stdout.write(body.walletScope === "selected" ? `Scope: selected — this profile can only spend from the wallets below.
-` : `Scope: all — this profile can spend from every wallet on the account, listed here or not.
-`);
-  if (body.profileId)
-    deps.stdout.write(`Profile: ${body.profileId}
-`);
-  if (body.wallets.length === 0) {
-    deps.stdout.write(`No wallets assigned.
-`);
-    return 0;
-  }
-  const rows = body.wallets.map((w) => [
-    w.linkedWalletId,
-    w.chain,
-    w.address,
-    w.label ?? "-",
-    w.spendCapable ? "yes" : "no",
-    formatTimestamp2(w.assignedAt)
-  ]);
-  deps.stdout.write(`${renderTable(["Id", "Chain", "Address", "Label", "Can sign", "Assigned"], rows)}
-`);
-  return 0;
-}
-async function keysWalletsSet(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--wallets"] });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const prefix = parsed.positionals[0];
-  if (!prefix) {
-    writeUsageFailure(deps, "Usage: candle keys wallets set <prefix> --wallets <id,id,...>", json);
-    return 2;
-  }
-  const raw = parsed.values["--wallets"];
-  if (raw === undefined) {
-    writeUsageFailure(deps, 'Missing --wallets. Pass a comma-separated list, or "" to assign none.', json);
-    return 2;
-  }
-  const walletIds = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
-  await printIdentity(ctx);
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  if (!apiKey) {
-    writeLocalFailure(deps, NO_API_KEY, json);
-    return 1;
-  }
-  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallets`, {
-    method: "PUT",
-    body: { walletIds },
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!result.ok) {
-    if (result.code !== "LOOSEN_REQUIRES_SESSION") {
-      writeFailure(deps, result, { apiUrl, authType: "key" }, json);
-      return 1;
-    }
-    const hint = widenRefusedHint(prefix, walletIds);
-    writeFailure(deps, { ...result, uiHint: hint }, { apiUrl, authType: "key" }, json);
-    if (!json)
-      deps.stderr.write(`${hint}
-`);
-    return 1;
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(result.body)}
-`);
-    return 0;
-  }
-  deps.stdout.write(walletIds.length === 0 ? `Cleared every wallet assignment on ${prefix}.
-` : `Assigned ${walletIds.length} wallet${walletIds.length === 1 ? "" : "s"} to ${prefix}.
-`);
-  return 0;
-}
-async function keysWalletsScope(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { valueFlags: ["--scope"] });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const prefix = parsed.positionals[0];
-  const scope = parsed.values["--scope"];
-  if (!prefix || scope !== "all" && scope !== "selected") {
-    writeUsageFailure(deps, "Usage: candle keys wallets scope <prefix> --scope <all|selected>", json);
-    return 2;
-  }
-  await printIdentity(ctx);
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  if (!apiKey) {
-    writeLocalFailure(deps, NO_API_KEY, json);
-    return 1;
-  }
-  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallet-scope`, {
-    method: "PUT",
-    body: { scope },
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
-    return 1;
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(result.body)}
-`);
-    return 0;
-  }
-  deps.stdout.write(scope === "selected" ? `${prefix} is now limited to its assigned wallets.
-` : `${prefix} can now spend from every wallet on the account.
-`);
-  return 0;
-}
-async function keysWallets(args, ctx) {
-  const [verb, ...rest] = args;
-  if (verb === "set")
-    return keysWalletsSet(rest, ctx);
-  if (verb === "scope")
-    return keysWalletsScope(rest, ctx);
-  return keysWalletsList(args, ctx);
-}
+init_promote_support();
+init_keys();
 
-// src/commands/launch.ts
-init_args();
-init_render();
-init_solana_lite();
-init_trading();
-import { randomUUID as randomUUID2 } from "node:crypto";
-
-// src/commands/swap.ts
-init_args();
-init_render();
-init_solana_lite();
-init_trading();
-import { randomUUID } from "node:crypto";
-function tradingFailure(ctx, error, id) {
-  writeLocalFailure(ctx.deps, {
-    code: error instanceof TradingError ? error.code : "TRADING_FAILED",
-    message: `${error instanceof Error ? error.message : "Trading failed."}${id ? ` Operation ${id}; use candle swap status ${id} before another attempt.` : ""}`
-  }, ctx.json);
-  return 1;
-}
-function printTradingResult(ctx, result) {
-  ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(result)}
-` : `${JSON.stringify(result, null, 2)}
-`);
-  return 0;
-}
-function validClientId(id) {
-  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id);
-}
-async function lookupOperation(ctx, key, id, kind) {
-  const local = await savedOperation(ctx, key, id);
-  const kinds = kind ? [kind] : local && local.kind !== "lp" ? [local.kind] : ["trade", "swap", "launch"];
-  const found = [];
-  for (const candidate of kinds) {
-    try {
-      found.push({
-        ...operationSchema.parse(await request(ctx, key, jobPath(candidate, id))),
-        kind: candidate,
-        clientTradeId: id
-      });
-    } catch (error) {
-      if (!(error instanceof TradingError && error.code === "JOB_NOT_FOUND"))
-        throw error;
-    }
-  }
-  if (found.length > 1)
-    throw new TradingError("AMBIGUOUS_OPERATION", "This id exists on multiple rails; specify --kind trade, swap or launch.");
-  return found[0] ? { ...found[0], ...local?.signature ? { signature: local.signature } : {} } : null;
-}
-async function swapStatus(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--kind"] });
-  if ("error" in parsed || parsed.positionals.length !== 1 || !validClientId(parsed.positionals[0] ?? "") || parsed.values["--kind"] !== undefined && !["trade", "swap", "launch"].includes(parsed.values["--kind"])) {
-    writeUsageFailure(ctx.deps, "Usage: candle swap status <id> [--kind trade|swap|launch]", ctx.json);
-    return 2;
-  }
-  try {
-    const key = await tradingKey(ctx);
-    const id = parsed.positionals[0];
-    const result = await lookupOperation(ctx, key, id, parsed.values["--kind"]);
-    if (!result)
-      throw new TradingError("JOB_NOT_FOUND", "No operation found on the selected rail(s). This command does not resend a write.");
-    return printTradingResult(ctx, result);
-  } catch (error) {
-    return tradingFailure(ctx, error);
-  }
-}
-async function decimalsFor(ctx, asset, url) {
-  if (BASES[asset])
-    return BASES[asset].decimals;
-  const result = await rpc(ctx, rpcUrl(ctx, url), "getTokenSupply", [asset, { commitment: "confirmed" }]);
-  const decimals = result.value?.decimals;
-  if (typeof decimals !== "number" || !Number.isInteger(decimals) || decimals < 0 || decimals > 18)
-    throw new TradingError("INVALID_RESPONSE", "RPC returned invalid mint decimals.");
-  return decimals;
-}
-async function assertDeferredExecuteSupported(ctx, key, id) {
-  try {
-    await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
-  } catch (error) {
-    if (error instanceof TradingError && error.code === "JOB_NOT_FOUND")
-      return;
-    throw new TradingError("EMBEDDED_PAYER_UNSUPPORTED", "This Candle deployment cannot hold an embedded-wallet trade back for confirmation, so the quote could not be shown before the money moved. Nothing was built. Name a TEE wallet with --wallet, or point at a deployment that has it.");
-  }
-  throw new TradingError("INVALID_RESPONSE", "The execute route answered for a trade that does not exist.");
-}
-async function swap(args, ctx) {
-  const parsed = parseArgs(args, {
-    valueFlags: ["--amount", "--percent", "--wallet", "--client-trade-id", "--slippage-bps", "--rpc-url"],
-    booleanFlags: ["--yes"]
-  });
-  if ("error" in parsed) {
-    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
-    return 2;
-  }
-  const flags = parsed.values;
-  const id = flags["--client-trade-id"] ?? `swap-${randomUUID()}`;
-  const slippage = Number(flags["--slippage-bps"] ?? "50");
-  if (parsed.positionals.length !== 2 || Boolean(flags["--amount"]) === Boolean(flags["--percent"]) || !validClientId(id) || !Number.isInteger(slippage) || slippage < 0 || slippage > 1e4) {
-    writeUsageFailure(ctx.deps, "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]", ctx.json);
-    return 2;
-  }
-  try {
-    const from = solanaAsset(parsed.positionals[0]);
-    const to = solanaAsset(parsed.positionals[1]);
-    if (from === to)
-      throw new TradingError("PAIR_UNSUPPORTED", "Choose two distinct assets.");
-    const fromBase = baseAsset(from);
-    const toBase = baseAsset(to);
-    if (!fromBase && !toBase)
-      throw new TradingError("PAIR_UNSUPPORTED", "A token trade must have SOL, USDC or CNDL on one side; token-to-token routing is unavailable.");
-    if (flags["--amount"])
-      rawAmount(flags["--amount"], 18);
-    const percent = flags["--percent"] ? BigInt(rawAmount(flags["--percent"], 6)) : undefined;
-    if (percent !== undefined && percent > 100000000n)
-      throw new TradingError("INVALID_AMOUNT", "Percent must be greater than 0 and at most 100 (up to six decimal places).");
-    const kind = fromBase && toBase ? "swap" : "trade";
-    const key = await tradingKey(ctx);
-    const prior = await lookupOperation(ctx, key, id, kind);
-    if (prior)
-      return printTradingResult(ctx, prior);
-    const payerWallet = await tradingPayer(ctx, key, flags["--wallet"]);
-    if (payerWallet.kind === "embedded" && kind === "swap")
-      throw new TradingError("PAIR_UNSUPPORTED", "The embedded wallet cannot swap between base assets from this command yet: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a TEE wallet for a base pair.");
-    const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address };
-    const decimals = await decimalsFor(ctx, from, flags["--rpc-url"]);
-    const outDecimals = await decimalsFor(ctx, to, flags["--rpc-url"]);
-    let amountRaw;
-    if (percent !== undefined) {
-      const reader = createSolanaRpc(rpcUrl(ctx, flags["--rpc-url"]), ctx.deps.fetch);
-      let balance;
-      if (from === "SOL")
-        balance = await reader.getBalance(wallet.address);
-      else {
-        const mint = BASES[from]?.mint ?? from;
-        const accounts = (await Promise.all([
-          reader.getTokenAccountsByOwner(wallet.address, TOKEN_PROGRAM_ID),
-          reader.getTokenAccountsByOwner(wallet.address, TOKEN_2022_PROGRAM_ID)
-        ])).flat();
-        balance = accounts.filter((account) => account.mint === mint).reduce((sum, account) => sum + BigInt(account.amountRaw), 0n);
-      }
-      amountRaw = (balance * percent / 100000000n).toString();
-      if (amountRaw === "0")
-        throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.");
-    } else
-      amountRaw = rawAmount(flags["--amount"], decimals);
-    if (BigInt(amountRaw) > BigInt(Number.MAX_SAFE_INTEGER))
-      throw new TradingError("INVALID_AMOUNT", "Amount exceeds the venue's exact integer range.");
-    if (payerWallet.kind === "embedded")
-      await assertDeferredExecuteSupported(ctx, key, id);
-    if (!await claimOperation(ctx, key, id, kind))
-      throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
-    ctx.deps.stderr.write(`Operation: ${id}
-`);
-    const payer = payerWallet.kind === "tee" ? { type: "linked", linkedWalletId: payerWallet.wallet.id } : { type: "main" };
-    const built = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/build", {
-      clientTradeId: id,
-      from,
-      to,
-      amountRaw,
-      maxSlippageBps: slippage,
-      payer
-    }) : await request(ctx, key, "/api/v1/trade/agent/build", {
-      clientTradeId: id,
-      chain: "solana",
-      mint: fromBase ? to : from,
-      side: fromBase ? "buy" : "sell",
-      quoteAsset: (fromBase ?? toBase)?.toLowerCase(),
-      amountRaw,
-      maxSlippageBps: slippage,
-      payer,
-      ...payerWallet.kind === "embedded" ? { deferExecution: true } : {}
-    });
-    if (built.job || built.status === "executed")
-      return printTradingResult(ctx, { ...built, clientTradeId: id, kind });
-    const data = swapBuildSchema.parse(kind === "swap" ? built.payload : built);
-    if (kind === "swap" && (data.venue !== "jupiter" || data.recipient !== wallet.address))
-      throw new TradingError("INVALID_RESPONSE", "A TEE base swap must use Jupiter and return to its payer.");
-    if (kind === "trade" && (built.chain !== "solana" || built.walletAddress !== wallet.address))
-      throw new TradingError("INVALID_RESPONSE", "The token build does not name the requested Solana payer.");
-    const artifacts = kind === "swap" ? { ...data, transactionBase64: undefined, quoteSource: undefined, quoteAsset: undefined } : data.artifacts;
-    if (!artifacts)
-      throw new TradingError("INVALID_RESPONSE", "Missing quote artifacts.");
-    if (kind === "trade" && artifacts.quoteAsset !== (fromBase ?? toBase)?.toLowerCase())
-      throw new TradingError("PAIR_UNSUPPORTED", `This token settles in ${artifacts.quoteAsset ?? "an unknown asset"}, not the requested pair. Nothing was signed.`);
-    if (data?.status !== "built" || typeof data.minOutRaw !== "string" || !/^\d+$/.test(data.minOutRaw) || !data.fee || !Number.isFinite(data.fee.bps))
-      throw new TradingError("INVALID_RESPONSE", "Candle did not return a complete quote; nothing was signed.");
-    const minimumRaw = !fromBase && artifacts.venue === "curve" ? (BigInt(data.minOutRaw) > BigInt(data.fee.feeRaw) ? BigInt(data.minOutRaw) - BigInt(data.fee.feeRaw) : 0n).toString() : data.minOutRaw;
-    const quote = {
-      intent: `Swap ${decimalAmount(amountRaw, decimals)} ${from} to ${to}`,
-      wallet: wallet.address,
-      venue: artifacts.quoteSource ?? artifacts.venue,
-      priceImpactPct: artifacts.priceImpactPct ?? null,
-      fee: data.fee,
-      minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to}`,
-      minOutRaw: data.minOutRaw,
-      minimumReceivedRaw: minimumRaw,
-      tokenRisks: artifacts.tokenRisks ?? []
-    };
-    if (!await confirmQuote(ctx, quote, parsed.booleans.has("--yes")))
-      return printTradingResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind, quote });
-    if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
-      throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
-    if (payerWallet.kind === "embedded") {
-      const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
-      return printTradingResult(ctx, {
-        ...executed,
-        clientTradeId: id,
-        kind,
-        quote,
-        wallet: safeText(payerWallet.address)
-      });
-    }
-    const transaction = kind === "swap" ? data.transactionsBase64?.[0] : artifacts.transactionBase64;
-    if (kind === "swap" && data.transactionsBase64?.length !== 1)
-      throw new TradingError("INVALID_RESPONSE", "A TEE swap must contain exactly one same-chain transaction.");
-    if (!transaction)
-      throw new TradingError("INVALID_RESPONSE", "Missing transaction.");
-    const signed = await relaySign(ctx, key, payerWallet.wallet, transaction);
-    const result = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/submit", {
-      clientTradeId: id,
-      swapId: data.swapId,
-      signedTransactionsBase64: [signed]
-    }) : await request(ctx, key, "/api/v1/trade/agent/submit", { clientTradeId: id, signedTransactions: [signed] });
-    return printTradingResult(ctx, { ...result, clientTradeId: id, kind, quote, wallet: safeText(wallet.address) });
-  } catch (error) {
-    return tradingFailure(ctx, error, id);
-  }
-}
-
-// src/commands/launch.ts
-async function launch(args, ctx) {
-  const parsed = parseArgs(args, {
-    valueFlags: [
-      "--name",
-      "--symbol",
-      "--image-url",
-      "--description",
-      "--wallet",
-      "--client-trade-id",
-      "--rpc-url",
-      "--quote-asset",
-      "--mode"
-    ],
-    booleanFlags: ["--yes"]
-  });
-  if ("error" in parsed) {
-    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
-    return 2;
-  }
-  const flags = parsed.values;
-  const id = flags["--client-trade-id"] ?? `launch-${randomUUID2()}`;
-  if (parsed.positionals.length || !flags["--name"] || !flags["--symbol"] || !flags["--image-url"] || !flags["--wallet"] || !validClientId(id)) {
-    writeUsageFailure(ctx.deps, "Usage: candle launch --name <name> --symbol <symbol> --image-url <https-url> --wallet <tee> [--client-trade-id <id>] [--rpc-url <url>] [--quote-asset sol|usdc|cndl] [--mode <mode>] [--yes]", ctx.json);
-    return 2;
-  }
-  try {
-    const key = await tradingKey(ctx);
-    const prior = await lookupOperation(ctx, key, id, "launch");
-    if (prior) {
-      const local = await savedOperation(ctx, key, id);
-      if (local?.signature && prior.job?.status !== "confirmed" && prior.job?.status !== "failed") {
-        const result2 = await request(ctx, key, "/api/v1/launch/self/confirm", {
-          clientLaunchId: id,
-          signature: local.signature
-        });
-        return printTradingResult(ctx, { ...result2, clientTradeId: id, kind: "launch" });
-      }
-      return printTradingResult(ctx, prior);
-    }
-    const url = rpcUrl(ctx, flags["--rpc-url"]);
-    const wallet = await tradingWallet(ctx, key, flags["--wallet"], "launch:write");
-    if (!await claimOperation(ctx, key, id, "launch"))
-      throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
-    ctx.deps.stderr.write(`Operation: ${id}
-`);
-    const built = launchBuildSchema.parse(await request(ctx, key, "/api/v1/launch/self/build", {
-      clientLaunchId: id,
-      chain: "solana",
-      buyAmount: 0,
-      name: flags["--name"],
-      symbol: flags["--symbol"],
-      imageUrl: flags["--image-url"],
-      linkedWalletId: wallet.id,
-      ...flags["--description"] ? { description: flags["--description"] } : {},
-      ...flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {},
-      ...flags["--mode"] ? { mode: flags["--mode"] } : {}
-    }));
-    if (!built.transaction || !/^\d+$/.test(built.maxDebitLamports ?? ""))
-      throw new TradingError("INVALID_RESPONSE", "Candle did not return a launch transaction and maximum debit; nothing was signed.");
-    const quote = {
-      intent: `Launch ${flags["--name"]} (${flags["--symbol"]})`,
-      wallet: wallet.address,
-      venue: "curve launch",
-      priceImpactPct: null,
-      fee: built.fee ?? { bps: 0, feeRaw: "0" },
-      minimumReceived: "0 tokens (no first buy)",
-      maxDebitLamports: built.maxDebitLamports,
-      tokenRisks: []
-    };
-    ctx.deps.stderr.write(`Launch creates the token only. Make the first buy with a separate candle swap. Price impact does not apply to creation.
-`);
-    if (!await confirmQuote(ctx, quote, parsed.booleans.has("--yes")))
-      return printTradingResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind: "launch", quote });
-    if (!Number.isFinite(built.expiresAt) || built.expiresAt <= ctx.deps.now())
-      throw new TradingError("QUOTE_EXPIRED", "The launch build expired before signing.");
-    const signed = await relaySign(ctx, key, wallet, built.transaction);
-    const signature = await saveOperationSignature(ctx, key, id, "launch", signed);
-    const broadcastSignature = await createSolanaRpc(url, ctx.deps.fetch).sendTransaction(signed);
-    if (broadcastSignature !== signature)
-      throw new TradingError("RPC_FAILED", "RPC returned a different transaction signature; check the saved operation.");
-    ctx.deps.stderr.write(`Launch signature: ${signature}
-`);
-    const result = await request(ctx, key, "/api/v1/launch/self/confirm", { clientLaunchId: id, signature });
-    return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch", quote });
-  } catch (error) {
-    return tradingFailure(ctx, error, id);
-  }
-}
-
-// src/commands/lp.ts
-init_args();
-init_render();
-init_solana_lite();
-import { randomUUID as randomUUID3 } from "node:crypto";
-init_trading();
-var LP_SCOPE = "lp:write";
-var CONFIRM_POLL_MS2 = 2000;
-var CONFIRM_MAX_POLLS2 = 45;
-async function lpRequest(ctx, key, path, body) {
-  const result = await apiRequest(path, {
-    apiUrl: ctx.apiUrl,
-    credentials: { apiKey: key },
-    auth: "key",
-    method: body ? "POST" : "GET",
-    body,
-    fetch: ctx.deps.fetch,
-    env: ctx.deps.env
-  });
-  if (!result.ok) {
-    if (result.status === 404 && !result.code)
-      throw new TradingError("LP_NOT_ENABLED", "This Candle deployment does not serve LP routes (LP_ENABLED is off there, or the API predates them).");
-    throw new TradingError(result.code ?? "REQUEST_FAILED", result.message);
-  }
-  if (!result.body || typeof result.body !== "object")
-    throw new TradingError("INVALID_RESPONSE", "Candle returned an invalid response.");
-  return result.body;
-}
-function solanaAddress(value, what) {
-  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value))
-    throw new TradingError("INVALID_ADDRESS", `${what} must be a Solana address (base58).`);
-  return value;
-}
-function poolToken(value) {
-  const base = baseAsset(value);
-  if (base)
-    return BASES[base]?.mint;
-  return solanaAddress(value, "The token");
-}
-function matchesWallet(row, name) {
-  return row.id === name || row.address === name || row.label === name;
-}
-function usage2(ctx, line) {
-  writeUsageFailure(ctx.deps, line, ctx.json);
-  return 2;
-}
-function amountLine(amount) {
-  const base = Object.entries(BASES).find(([, asset]) => asset.mint === amount.mint)?.[0];
-  return `${decimalAmount(amount.raw, amount.decimals)} ${base ?? amount.mint}`;
-}
-async function lpPools(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--page"] });
-  const page = Number(parsed && !("error" in parsed) ? parsed.values["--page"] ?? "1" : "1");
-  if ("error" in parsed)
-    return usage2(ctx, parsed.error);
-  if (parsed.positionals.length !== 1 || !Number.isSafeInteger(page) || page < 1)
-    return usage2(ctx, "Usage: candle lp pools <token> [--page <n>]");
-  try {
-    const token = poolToken(parsed.positionals[0]);
-    const key = await tradingKey(ctx);
-    const pools = lpPoolsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/pools/${encodeURIComponent(token)}?page=${page}`));
-    if (ctx.json)
-      return printTradingResult(ctx, { success: true, token, ...pools });
-    const out = ctx.deps.stdout;
-    if (pools.pools.length === 0) {
-      out.write(`No DAMM v2 pool lists ${token} (page ${pools.page} of ${pools.pages}).
-`);
-      return 0;
-    }
-    const usd = (value) => value === null || value === undefined ? "unavailable" : `$${value.toFixed(2)}`;
-    const pct = (value) => value === null || value === undefined ? "unavailable" : `${value.toFixed(2)}%`;
-    out.write(`DAMM v2 pools for ${token} (page ${pools.page} of ${pools.pages}):
-`);
-    for (const pool of pools.pools) {
-      out.write(`  ${safeText(pool.pool)}
-    pair ${pool.tokens.map(safeText).join(" / ")}
-    liquidity ${usd(pool.liquidityUsd)}, fee ${pct(pool.baseFeePercent)}, 24h volume ${usd(pool.volume24hUsd)}, est. yield ${pct(pool.estimatedAprPercent)} APR (indexed, not a quote)
-`);
-    }
-    return 0;
-  } catch (error) {
-    return tradingFailure(ctx, error);
-  }
-}
-async function lpPositions(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--wallet"] });
-  if ("error" in parsed)
-    return usage2(ctx, parsed.error);
-  if (parsed.positionals.length !== 0)
-    return usage2(ctx, "Usage: candle lp positions [--wallet <tee>]");
-  try {
-    const key = await tradingKey(ctx);
-    const { rows } = await listTradingWallets(ctx, key);
-    const name = parsed.values["--wallet"];
-    const wallets = rows.filter((row) => row.chain === "solana" && (name === undefined || matchesWallet(row, name)));
-    if (name !== undefined && wallets.length === 0)
-      throw new TradingError("TEE_WALLET_REQUIRED", `No TEE wallet on this key is called "${name}".`);
-    const report = [];
-    for (const row of wallets) {
-      const positions = lpPositionsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/positions?linkedWalletId=${encodeURIComponent(row.id)}`));
-      report.push({
-        id: row.id,
-        address: row.address,
-        ...row.label ? { label: row.label } : {},
-        positions: positions.positions
-      });
-    }
-    if (ctx.json)
-      return printTradingResult(ctx, { success: true, wallets: report });
-    const out = ctx.deps.stdout;
-    const total = report.reduce((n, wallet) => n + wallet.positions.length, 0);
-    if (total === 0) {
-      out.write(`No DAMM v2 positions across ${report.length} TEE wallet(s).
-`);
-      return 0;
-    }
-    for (const wallet of report) {
-      if (wallet.positions.length === 0)
-        continue;
-      out.write(`${wallet.label ? `${safeText(wallet.label)} ` : ""}(${wallet.id}, ${safeText(wallet.address)})
-`);
-      for (const position of wallet.positions) {
-        out.write(`  position ${safeText(position.position)} in pool ${safeText(position.pool)}
-`);
-        for (const token of position.tokens) {
-          out.write(`    ${amountLine({ mint: token.mint, raw: token.amountRaw, decimals: token.decimals })}, unclaimed fees ${decimalAmount(token.unclaimedFeesRaw, token.decimals)}${token.valueUsd === null || token.valueUsd === undefined ? "" : ` ($${token.valueUsd.toFixed(2)})`}
-`);
-        }
-        out.write(`    value ${position.valueUsd === null || position.valueUsd === undefined ? "unpriced" : `$${position.valueUsd.toFixed(2)}`}${position.poolShare === undefined ? "" : `, ${(position.poolShare * 100).toFixed(4)}% of the pool`}
-`);
-      }
-    }
-    return 0;
-  } catch (error) {
-    return tradingFailure(ctx, error);
-  }
-}
-async function walletHolding(ctx, key, position, name) {
-  if (name !== undefined)
-    return tradingWallet(ctx, key, name, LP_SCOPE);
-  const { rows, appId } = await listTradingWallets(ctx, key, LP_SCOPE);
-  for (const row of rows) {
-    if (row.chain !== "solana")
-      continue;
-    const positions = lpPositionsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/positions?linkedWalletId=${encodeURIComponent(row.id)}`));
-    if (positions.positions.some((held) => held.position === position))
-      return completeTradingWallet(ctx, row, appId, LP_SCOPE);
-  }
-  throw new TradingError("LP_POSITION_NOT_FOUND", `No TEE wallet bound to this key holds position ${position}. See candle lp positions, or name the wallet with --wallet.`);
-}
-async function waitConfirmed(ctx, rpc2, signature, id) {
-  for (let i = 0;i < CONFIRM_MAX_POLLS2; i++) {
-    const observed = classifyStatus(await rpc2.getSignatureStatus(signature));
-    if (observed.kind === "finalized")
-      return;
-    if (observed.kind === "failed")
-      throw new TradingError("LP_TRANSACTION_FAILED", `Transaction ${signature} failed on chain: ${JSON.stringify(observed.err)}.`);
-    if (observed.kind === "nonfinal") {
-      if (observed.err !== null && observed.err !== undefined)
-        throw new TradingError("LP_TRANSACTION_FAILED", `Transaction ${signature} failed: ${JSON.stringify(observed.err)}.`);
-      if (observed.confirmationStatus === "confirmed")
-        return;
-    }
-    await ctx.deps.sleep(CONFIRM_POLL_MS2);
-  }
-  throw new TradingError("LP_CONFIRM_PENDING", `Transaction ${signature} was sent but not confirmed within ${CONFIRM_MAX_POLLS2 * CONFIRM_POLL_MS2 / 1000}s. Re-run the same command with --client-trade-id ${id}: it confirms the saved signature and sends nothing new.`);
-}
-async function confirmPreview(ctx, plan, built) {
-  const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
-  output.write(`${safeText(plan.intent)}
-Payer: ${safeText(plan.wallet.address)}
-`);
-  output.write(`Pool: ${safeText(built.build.pool)}
-Position: ${safeText(built.build.position)}
-`);
-  const preview = built.preview;
-  const amounts = preview?.amounts ?? [];
-  if (amounts.length > 0) {
-    const verb = plan.action === "add" ? "Deposit (maximum, at the pool's ratio)" : plan.action === "remove" ? "Withdraw (minimum)" : "Claim";
-    output.write(`${verb}: ${amounts.map(amountLine).join(" + ")}
-`);
-  }
-  output.write(`Candle LP fee: ${safeText(preview?.candleFeeBps ?? 0)} bps
-`);
-  for (const warning of preview?.warnings ?? [])
-    output.write(`Warning: ${safeText(warning)}
-`);
-  for (const risk of preview?.tokenRisks ?? [])
-    output.write(`Warning (${safeText(risk.mint)}): ${safeText(risk.message)}
-`);
-  if (built.replay)
-    output.write(`This client id was already built; the same artifact is shown again.
-`);
-  if (plan.yes)
-    return true;
-  if (!ctx.deps.isTTY.stdin)
-    throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes for an ordinary LP prompt.");
-  return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y";
-}
-async function runLpOperation(ctx, plan) {
-  const { id, key, wallet, action } = plan;
-  const confirm = async (signature2, extra) => {
-    const result = await lpRequest(ctx, key, "/api/v1/agent/lp/confirm", { clientTradeId: id, signature: signature2 });
-    return printTradingResult(ctx, {
-      ...result,
-      clientTradeId: id,
-      kind: "lp",
-      action,
-      signature: signature2,
-      wallet: safeText(wallet.address),
-      ...extra
-    });
-  };
-  const local = await savedOperation(ctx, key, id);
-  if (local?.signature)
-    return confirm(local.signature, { resumed: true });
-  if (!local && !await claimOperation(ctx, key, id, "lp"))
-    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
-  ctx.deps.stderr.write(`Operation: ${id}
-`);
-  const built = lpBuildSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/${action}/build`, {
-    linkedWalletId: wallet.id,
-    clientTradeId: id,
-    ...plan.body
-  }));
-  if (built.build.walletAddress !== wallet.address || built.build.action !== action)
-    throw new TradingError("INVALID_RESPONSE", "The LP build does not name the requested wallet and action; nothing was signed.");
-  if (built.build.signature)
-    return confirm(built.build.signature, { resumed: true });
-  const preview = {
-    pool: built.build.pool,
-    position: built.build.position,
-    amounts: built.preview?.amounts ?? [],
-    warnings: built.preview?.warnings ?? [],
-    tokenRisks: built.preview?.tokenRisks ?? [],
-    candleFeeBps: built.preview?.candleFeeBps ?? 0
-  };
-  if (!await confirmPreview(ctx, plan, built))
-    return printTradingResult(ctx, {
-      success: true,
-      status: "cancelled",
-      clientTradeId: id,
-      kind: "lp",
-      action,
-      preview
-    });
-  const signed = await relaySign(ctx, key, wallet, built.build.transaction);
-  const signature = await saveOperationSignature(ctx, key, id, "lp", signed);
-  const rpc2 = createSolanaRpc(plan.url, ctx.deps.fetch);
-  const echoed = await rpc2.sendTransaction(signed);
-  if (echoed !== signature)
-    throw new TradingError("RPC_FAILED", "RPC returned a different transaction signature; check the saved operation.");
-  ctx.deps.stderr.write(`LP ${action} signature: ${signature}
-`);
-  await waitConfirmed(ctx, rpc2, signature, id);
-  return confirm(signature, { preview });
-}
-function slippageOf(flag) {
-  const slippage = Number(flag ?? "100");
-  if (!Number.isInteger(slippage) || slippage < 0 || slippage > 1000)
-    throw new TradingError("INVALID_AMOUNT", "--slippage-bps must be an integer from 0 to 1000.");
-  return slippage;
-}
-async function lpAdd(args, ctx) {
-  const parsed = parseArgs(args, {
-    valueFlags: ["--amount", "--wallet", "--position", "--client-trade-id", "--slippage-bps", "--rpc-url"],
-    booleanFlags: ["--yes"]
-  });
-  if ("error" in parsed)
-    return usage2(ctx, parsed.error);
-  const flags = parsed.values;
-  const id = flags["--client-trade-id"] ?? `lp-${randomUUID3()}`;
-  if (parsed.positionals.length !== 2 || !flags["--amount"] || !flags["--wallet"] || !validClientId(id))
-    return usage2(ctx, "Usage: candle lp add <pool> --amount <decimal> <token> --wallet <tee> [--position <nft-mint>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
-  try {
-    const pool = solanaAddress(parsed.positionals[0], "The pool");
-    const token = poolToken(parsed.positionals[1]);
-    const position = flags["--position"] ? solanaAddress(flags["--position"], "--position") : undefined;
-    rawAmount(flags["--amount"], 18);
-    const slippageBps = slippageOf(flags["--slippage-bps"]);
-    const url = rpcUrl(ctx, flags["--rpc-url"]);
-    const key = await tradingKey(ctx);
-    const wallet = await tradingWallet(ctx, key, flags["--wallet"], LP_SCOPE);
-    const decimals = await decimalsFor(ctx, baseAsset(token) ?? token, flags["--rpc-url"]);
-    const amountRaw = rawAmount(flags["--amount"], decimals);
-    return await runLpOperation(ctx, {
-      action: "add",
-      id,
-      key,
-      wallet,
-      url,
-      yes: parsed.booleans.has("--yes"),
-      intent: `Add ${decimalAmount(amountRaw, decimals)} ${baseAsset(token) ?? token} of liquidity to DAMM v2 pool ${pool}${position ? ` (position ${position})` : " (new position)"}`,
-      body: { pool, token, amountRaw, slippageBps, ...position ? { position } : {} }
-    });
-  } catch (error) {
-    return tradingFailure(ctx, error, id);
-  }
-}
-async function lpRemove(args, ctx) {
-  const parsed = parseArgs(args, {
-    valueFlags: ["--percent", "--wallet", "--client-trade-id", "--slippage-bps", "--rpc-url"],
-    booleanFlags: ["--yes"]
-  });
-  if ("error" in parsed)
-    return usage2(ctx, parsed.error);
-  const flags = parsed.values;
-  const id = flags["--client-trade-id"] ?? `lp-${randomUUID3()}`;
-  const percent = Number(flags["--percent"]);
-  if (parsed.positionals.length !== 1 || !flags["--percent"] || !/^\d+(\.\d{1,2})?$/.test(flags["--percent"]) || !(percent > 0 && percent <= 100) || !validClientId(id))
-    return usage2(ctx, "Usage: candle lp remove <position> --percent <0.01-100> [--wallet <tee>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
-  try {
-    const position = solanaAddress(parsed.positionals[0], "The position");
-    const slippageBps = slippageOf(flags["--slippage-bps"]);
-    const url = rpcUrl(ctx, flags["--rpc-url"]);
-    const key = await tradingKey(ctx);
-    const wallet = await walletHolding(ctx, key, position, flags["--wallet"]);
-    return await runLpOperation(ctx, {
-      action: "remove",
-      id,
-      key,
-      wallet,
-      url,
-      yes: parsed.booleans.has("--yes"),
-      intent: percent === 100 ? `Remove all liquidity from position ${position}, claim its fees and close it (rent returns to the wallet)` : `Remove ${percent}% of the liquidity in position ${position}`,
-      body: { position, percent, slippageBps }
-    });
-  } catch (error) {
-    return tradingFailure(ctx, error, id);
-  }
-}
-async function lpClaim(args, ctx) {
-  const parsed = parseArgs(args, {
-    valueFlags: ["--wallet", "--client-trade-id", "--rpc-url"],
-    booleanFlags: ["--yes"]
-  });
-  if ("error" in parsed)
-    return usage2(ctx, parsed.error);
-  const flags = parsed.values;
-  const id = flags["--client-trade-id"] ?? `lp-${randomUUID3()}`;
-  if (parsed.positionals.length !== 1 || !validClientId(id))
-    return usage2(ctx, "Usage: candle lp claim <position> [--wallet <tee>] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
-  try {
-    const position = solanaAddress(parsed.positionals[0], "The position");
-    const url = rpcUrl(ctx, flags["--rpc-url"]);
-    const key = await tradingKey(ctx);
-    const wallet = await walletHolding(ctx, key, position, flags["--wallet"]);
-    return await runLpOperation(ctx, {
-      action: "claim",
-      id,
-      key,
-      wallet,
-      url,
-      yes: parsed.booleans.has("--yes"),
-      intent: `Claim the fees and any rewards of position ${position}`,
-      body: { position }
-    });
-  } catch (error) {
-    return tradingFailure(ctx, error, id);
-  }
-}
-
-// src/commands/mcp.ts
-init_args();
-init_deps();
-init_profiles();
-init_release();
-init_render();
-var MCP_TOOL_NAMES = [
-  "candle_launch_token",
-  "candle_launch_and_seed",
-  "candle_get_market",
-  "candle_get_feed",
-  "candle_token_forensics",
-  "candle_get_agent_profile",
-  "candle_report_activity",
-  "candle_trade",
-  "candle_swap",
-  "candle_transfer",
-  "candle_sweep",
-  "candle_get_wallets",
-  "candle_get_profile_wallets",
-  "candle_set_profile_wallets",
-  "candle_get_profile_pnl",
-  "candle_get_profile_trades",
-  "candle_resolve_token",
-  "candle_execution_status",
-  "candle_get_operation"
-];
-var READ_ONLY_TOOL_NAMES = [
-  "candle_get_market",
-  "candle_get_feed",
-  "candle_token_forensics",
-  "candle_get_agent_profile",
-  "candle_resolve_token"
-];
-var CREDENTIAL_ENV_NAMES = [
-  "CANDLE_API_KEY",
-  "CANDLE_AGENT_API_KEY",
-  "CANDLE_DEVICE_TOKEN",
-  "CANDLE_KEYRING_PASSPHRASE",
-  "CANDLE_MCP_TOOLS"
-];
-function clearedCredentialEnv() {
-  return Object.fromEntries(CREDENTIAL_ENV_NAMES.map((name) => [name, undefined]));
-}
-function mcpActsAsIdentity(args) {
-  return !args.includes("--read-only");
-}
-async function mcpCommandForHost(deps) {
-  const real = await deps.realpath(deps.execPath).catch(() => deps.execPath);
-  const method = detectInstall(deps.execPath, real);
-  if (method === "script")
-    return { command: deps.execPath, prefixArgs: [deps.argv1] };
-  if (method === "homebrew") {
-    const opt = real.replace(/\/Cellar\/candle\/[^/]+\/bin\/candle$/, "/opt/candle/bin/candle");
-    return { command: opt, prefixArgs: [] };
-  }
-  return { command: real, prefixArgs: [] };
-}
-async function mcpClientConfig(args, deps) {
-  const { command, prefixArgs } = await mcpCommandForHost(deps);
-  return JSON.stringify({ mcpServers: { candle: { command, args: [...prefixArgs, "mcp", ...args] } } }, null, 2);
-}
-async function mcp(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {
-    valueFlags: ["--tools"],
-    booleanFlags: ["--read-only", "--print-config"]
-  });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
-    return 2;
-  }
-  const readOnly = parsed.booleans.has("--read-only");
-  const toolsFlag = parsed.values["--tools"];
-  if (readOnly && toolsFlag !== undefined) {
-    writeUsageFailure(deps, "--read-only and --tools are mutually exclusive; --read-only IS a tool selection.", json);
-    return 2;
-  }
-  let toolAllowlist;
-  if (readOnly) {
-    toolAllowlist = READ_ONLY_TOOL_NAMES.join(",");
-  } else if (toolsFlag !== undefined) {
-    const requested = toolsFlag.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
-    const unknown = requested.filter((name) => !MCP_TOOL_NAMES.includes(name));
-    if (requested.length === 0 || unknown.length > 0) {
-      writeUsageFailure(deps, `--tools must be a comma-separated list of: ${MCP_TOOL_NAMES.join(", ")}${unknown.length > 0 ? ` (unknown: ${unknown.join(", ")})` : ""}`, json);
-      return 2;
-    }
-    toolAllowlist = requested.join(",");
-  }
-  const identityConfig = await deps.readConfig();
-  const identityFields = effectiveProfileFields(identityConfig, ctx.profile);
-  deps.stderr.write(`${identityLine(ctx.profile, identityFields.account, apiUrl, credentialEnvOverrides(deps.env), identityFields.username)}
-`);
-  if (parsed.booleans.has("--print-config")) {
-    const launchArgs = [
-      ...readOnly ? ["--read-only"] : [],
-      ...toolsFlag !== undefined ? ["--tools", toolsFlag] : []
-    ];
-    deps.stdout.write(`${await mcpClientConfig(launchArgs, deps)}
-`);
-    return 0;
-  }
-  const apiKey = readOnly ? undefined : await resolveApiKey(deps, ctx.profile);
-  if (!readOnly && !apiKey) {
-    writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle auth login" }, json);
-    return 1;
-  }
-  const serverEnv = {
-    ...deps.env,
-    ...clearedCredentialEnv(),
-    CANDLE_API_URL: apiUrl,
-    ...apiKey ? { CANDLE_AGENT_API_KEY: apiKey } : {},
-    ...toolAllowlist ? { CANDLE_MCP_TOOLS: toolAllowlist } : {}
-  };
-  deps.stderr.write(`Starting the Candle MCP server against ${apiUrl}${toolAllowlist ? ` (tools: ${toolAllowlist})` : ""}
-`);
-  try {
-    await deps.runMcpServer(serverEnv);
-    return 0;
-  } catch (error) {
-    writeLocalFailure(deps, {
-      code: "MCP_SERVER_FAILED",
-      message: `The MCP server could not start: ${error instanceof Error ? error.message : error}`
-    }, json);
-    return 1;
-  }
-}
-
-// src/commands/plugins.ts
-init_args();
-
-// src/plugins.ts
-import { spawn } from "node:child_process";
-import { accessSync, constants as constants3, readdirSync, statSync } from "node:fs";
-import { delimiter, join as join10 } from "node:path";
-var PLUGIN_PREFIX = "candle-";
-var RESERVED_HELPER_NAMES = ["fido2", "enclave"];
-function isPluginName(name) {
-  return /^[a-z0-9][a-z0-9-]{0,63}$/.test(name) && !RESERVED_HELPER_NAMES.includes(name);
-}
-function executableAt(path) {
-  try {
-    if (!statSync(path).isFile())
-      return false;
-    accessSync(path, constants3.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function findPlugin(name, pathEnv) {
-  if (!isPluginName(name))
-    return;
-  for (const dir of (pathEnv ?? "").split(delimiter)) {
-    if (dir === "")
-      continue;
-    const candidate = join10(dir, `${PLUGIN_PREFIX}${name}`);
-    if (executableAt(candidate))
-      return candidate;
-  }
-  return;
-}
-function listPlugins(pathEnv) {
-  const found = new Map;
-  for (const dir of (pathEnv ?? "").split(delimiter)) {
-    if (dir === "")
-      continue;
-    let names;
-    try {
-      names = readdirSync(dir);
-    } catch {
-      continue;
-    }
-    for (const file of names) {
-      if (!file.startsWith(PLUGIN_PREFIX))
-        continue;
-      const name = file.slice(PLUGIN_PREFIX.length);
-      if (!isPluginName(name) || found.has(name))
-        continue;
-      const path = join10(dir, file);
-      if (executableAt(path))
-        found.set(name, path);
-    }
-  }
-  return [...found.entries()].map(([name, path]) => ({ name, path })).sort((a, b) => a.name.localeCompare(b.name));
-}
-function splitPluginArgs(args) {
-  const secrets = [];
-  const wallets = [];
-  const passthrough = [];
-  for (let i = 0;i < args.length; i++) {
-    const arg = args[i];
-    if (arg === undefined)
-      continue;
-    if (arg === "--secret" || arg === "--wallet") {
-      const value = args[++i];
-      if (value === undefined || value === "" || value.startsWith("-"))
-        return { error: `${arg} requires a value` };
-      (arg === "--secret" ? secrets : wallets).push(value);
-    } else if (arg.startsWith("--secret=") || arg.startsWith("--wallet=")) {
-      const flag = arg.slice(0, arg.indexOf("="));
-      const value = arg.slice(flag.length + 1);
-      if (value === "")
-        return { error: `${flag} requires a value` };
-      (flag === "--secret" ? secrets : wallets).push(value);
-    } else {
-      passthrough.push(arg);
-    }
-  }
-  return { secrets, wallets, passthrough };
-}
-var PASSTHROUGH_NAMES = ["PATH", "HOME", "TMPDIR", "TERM", "TZ", "LANG"];
-var PROXY_NAMES = [
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "NO_PROXY",
-  "ALL_PROXY",
-  "http_proxy",
-  "https_proxy",
-  "no_proxy",
-  "all_proxy"
-];
-function envSuffix(name) {
-  return name.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
-}
-function pluginEnvironment(input) {
-  const env = {};
-  for (const name of PASSTHROUGH_NAMES) {
-    const value = input.parentEnv[name];
-    if (value !== undefined)
-      env[name] = value;
-  }
-  for (const [name, value] of Object.entries(input.parentEnv)) {
-    if (name.startsWith("LC_") && value !== undefined)
-      env[name] = value;
-  }
-  for (const name of PROXY_NAMES) {
-    const value = input.parentEnv[name];
-    if (value !== undefined)
-      env[name] = value;
-  }
-  if (input.rpcUrl !== undefined)
-    env.CANDLE_PLUGIN_RPC_URL = input.rpcUrl;
-  env.CANDLE_PLUGIN_NETWORK = input.network;
-  for (const [label, address] of Object.entries(input.wallets)) {
-    env[`CANDLE_PLUGIN_WALLET_${envSuffix(label)}`] = address;
-  }
-  for (const [name, value] of Object.entries(input.secrets)) {
-    env[`CANDLE_SECRET_${envSuffix(name)}`] = value;
-  }
-  return env;
-}
-function realRunPlugin(path, args, env) {
-  return new Promise((resolve2) => {
-    let child;
-    try {
-      child = spawn(path, args, { stdio: "inherit", env });
-    } catch {
-      resolve2(1);
-      return;
-    }
-    child.on("error", () => resolve2(1));
-    child.on("close", (code) => resolve2(code ?? 1));
-  });
-}
-function pluginInvocation(argv, env, isBuiltIn) {
-  const valued = new Set(["--api-url", "--profile", "--factor", "--device"]);
-  const bare = new Set(["--json", "--help", "-h", "--version", "-v", "--no-verify-account"]);
-  let droppedBin = false;
-  for (let i = 0;i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === undefined)
-      continue;
-    if (valued.has(arg)) {
-      i++;
-      continue;
-    }
-    if (bare.has(arg) || [...valued].some((flag) => arg.startsWith(`${flag}=`)))
-      continue;
-    if (arg === "candle" && !droppedBin) {
-      droppedBin = true;
-      continue;
-    }
-    if (isBuiltIn(arg) || !isPluginName(arg))
-      return;
-    if (findPlugin(arg, env.PATH) === undefined)
-      return;
-    return { name: arg, args: argv.slice(i + 1) };
-  }
-  return;
-}
-
-// src/commands/plugins.ts
-init_profiles();
-init_render();
-init_store();
-
-// src/commands/secrets.ts
-init_args();
-init_render();
-var NAME_SHAPE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
-function canonicalSecretName(raw) {
-  if (!NAME_SHAPE.test(raw))
-    return;
-  return raw.toUpperCase();
-}
-function secretRef(profile, name) {
-  return profile === undefined ? `secret:${name}` : `profile:${profile}:secret:${name}`;
-}
-async function storedSecretNames(deps, profile) {
-  const config = await deps.readConfig();
-  const names = profile === undefined ? config.secretNames : config.profiles?.[profile]?.secretNames;
-  return [...names ?? []].sort();
-}
-async function writeSecretNames(deps, profile, names) {
-  const sorted = [...new Set(names)].sort();
-  if (profile === undefined)
-    await deps.writeConfig({ secretNames: sorted });
-  else
-    await deps.updateProfile(profile, { secretNames: sorted });
-}
-function usage3(ctx, line) {
-  writeUsageFailure(ctx.deps, line, ctx.json);
-  return 2;
-}
-async function secretsSet(args, ctx) {
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed)
-    return usage3(ctx, parsed.error);
-  const [raw, extra] = parsed.positionals;
-  if (!raw || extra !== undefined)
-    return usage3(ctx, "Usage: candle secrets set <name>");
-  const name = canonicalSecretName(raw);
-  if (name === undefined) {
-    return usage3(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
-  }
-  if (!ctx.deps.isTTY.stdin || !ctx.deps.isTTY.stdout) {
-    writeLocalFailure(ctx.deps, {
-      code: "SECRET_REQUIRES_TTY",
-      message: "candle secrets set reads the value from a hidden prompt on a terminal and from nowhere else.",
-      suggestion: "There is no environment variable and no flag that supplies a secret's value."
-    }, ctx.json);
-    return 1;
-  }
-  const value = await ctx.deps.promptSecret(`Value for ${name} (input hidden): `);
-  if (value.length === 0)
-    return usage3(ctx, "An empty value was typed; nothing was stored.");
-  try {
-    await ctx.deps.secretsStore.set(secretRef(ctx.profile, name), value);
-  } catch (error) {
-    writeLocalFailure(ctx.deps, { code: "SECRET_STORE_FAILED", message: error instanceof Error ? error.message : String(error) }, ctx.json);
-    return 1;
-  }
-  await writeSecretNames(ctx.deps, ctx.profile, [...await storedSecretNames(ctx.deps, ctx.profile), name]);
-  if (ctx.json) {
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, name, backend: ctx.deps.backend })}
-`);
-    return 0;
-  }
-  ctx.deps.stdout.write(`Stored ${name} in the ${ctx.deps.backend} secrets namespace. It is never sent to Candle and never shown again; a plug-in receives it as CANDLE_SECRET_${name} only when you pass --secret ${name}.
-`);
-  return 0;
-}
-async function secretsList(args, ctx) {
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed)
-    return usage3(ctx, parsed.error);
-  if (parsed.positionals.length > 0)
-    return usage3(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
-  const names = await storedSecretNames(ctx.deps, ctx.profile);
-  if (ctx.json) {
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, names, backend: ctx.deps.backend })}
-`);
-    return 0;
-  }
-  if (names.length === 0) {
-    ctx.deps.stdout.write(`No secrets stored. Add one: candle secrets set <name>
-`);
-    return 0;
-  }
-  ctx.deps.stdout.write(`${renderTable(["Name", "Passed to a plug-in as"], names.map((n) => [n, `CANDLE_SECRET_${n}`]))}
-`);
-  return 0;
-}
-async function secretsRemove(args, ctx) {
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed)
-    return usage3(ctx, parsed.error);
-  const [raw, extra] = parsed.positionals;
-  if (!raw || extra !== undefined)
-    return usage3(ctx, "Usage: candle secrets remove <name>");
-  const name = canonicalSecretName(raw);
-  if (name === undefined) {
-    return usage3(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
-  }
-  await ctx.deps.secretsStore.delete(secretRef(ctx.profile, name));
-  const names = await storedSecretNames(ctx.deps, ctx.profile);
-  await writeSecretNames(ctx.deps, ctx.profile, names.filter((n) => n !== name));
-  if (ctx.json) {
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, name, removed: names.includes(name) })}
-`);
-    return 0;
-  }
-  ctx.deps.stdout.write(names.includes(name) ? `Removed ${name}.
-` : `No secret named ${name} was stored.
-`);
-  return 0;
-}
-
-// src/commands/plugins.ts
-init_vault_support();
-var PLUGIN_NETWORK = "solana-mainnet";
-async function plugins(args, ctx) {
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(ctx.deps, `Unexpected argument: ${parsed.positionals[0]}`, ctx.json);
-    return 2;
-  }
-  const found = listPlugins(ctx.deps.env.PATH);
-  if (ctx.json) {
-    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, plugins: found })}
-`);
-    return 0;
-  }
-  if (found.length === 0) {
-    ctx.deps.stdout.write(`No plug-ins found. An executable named candle-<name> on your PATH runs as: candle <name> [--secret <name>]... [--wallet <label>]... [args]
-`);
-    return 0;
-  }
-  ctx.deps.stdout.write(`${renderTable(["Command", "Executable"], found.map((plugin) => [`candle ${plugin.name}`, plugin.path]))}
-`);
-  return 0;
-}
-async function runPlugin(name, rawArgs, ctx) {
-  const path = findPlugin(name, ctx.deps.env.PATH);
-  if (path === undefined) {
-    writeLocalFailure(ctx.deps, { code: "PLUGIN_NOT_FOUND", message: `No candle-${name} executable on PATH.` }, ctx.json);
-    return 1;
-  }
-  const split2 = splitPluginArgs(rawArgs);
-  if ("error" in split2) {
-    writeUsageFailure(ctx.deps, split2.error, ctx.json);
-    return 2;
-  }
-  const secrets = {};
-  for (const requested of split2.secrets) {
-    const name2 = requested.toUpperCase();
-    const value = await ctx.deps.secretsStore.get(secretRef(ctx.profile, name2));
-    if (value === null) {
-      writeLocalFailure(ctx.deps, {
-        code: "SECRET_MISSING",
-        message: `No secret named ${name2} is stored for this profile.`,
-        suggestion: `Store it first: candle secrets set ${name2}`
-      }, ctx.json);
-      return 1;
-    }
-    secrets[name2] = value;
-  }
-  const wallets = {};
-  if (split2.wallets.length > 0) {
-    if (!refuseEnvPassphrase(ctx))
-      return 1;
-    if (!requireTty(ctx, "candle <plugin> --wallet"))
-      return 1;
-    const resolvedVault = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
-    if ("error" in resolvedVault)
-      return usage(ctx, resolvedVault.error);
-    const vaultPath = resolvedVault.path;
-    const resolved = await runVaultCommand(ctx, async ({ hold }) => {
-      const raw = await requireVaultRaw(ctx, resolvedVault);
-      const vault = hold((await unlockInteractively(ctx, vaultPath, raw)).vault);
-      for (const requested of split2.wallets) {
-        const entry = findExternalEntry(vault.index, requested);
-        if (entry === undefined) {
-          const other = vault.index.entries.find((e) => e.label === requested || e.address === requested);
-          writeLocalFailure(ctx.deps, {
-            code: "PLUGIN_WALLET_NOT_EXTERNAL",
-            message: other === undefined ? `No external wallet in this vault matches --wallet ${requested}.` : `${requested} is ${describeRole(other)}; only an external wallet's address is passed to a plug-in.`,
-            suggestion: "Create one: candle external new --label <name>"
-          }, ctx.json);
-          return 1;
-        }
-        wallets[entry.label] = entry.address;
-      }
-      closeVault(vault);
-      return 0;
-    });
-    if (resolved !== 0)
-      return resolved;
-  }
-  const profile = effectiveProfileFields(await ctx.deps.readConfig(), ctx.profile);
-  const env = pluginEnvironment({
-    parentEnv: ctx.deps.env,
-    rpcUrl: profile.rpcUrl ?? (ctx.deps.env.CANDLE_SOLANA_RPC_URL?.trim() || undefined),
-    network: PLUGIN_NETWORK,
-    wallets,
-    secrets
-  });
-  return ctx.deps.runPlugin(path, split2.passthrough, env);
-}
-
-// src/commands/pnl.ts
+// src/commands/tee-rebind.ts
 init_args();
 init_deps();
 init_profiles();
 init_render();
+init_promote_support();
+init_keys();
 
-// src/usd.ts
-function formatUsd(value) {
-  if (!Number.isFinite(value))
-    return "?";
-  const sign2 = value < 0 ? "-" : "";
-  const abs = Math.abs(value);
-  if (abs > 0 && abs < 0.005)
-    return `${sign2}<$0.01`;
-  return `${sign2}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-function formatPrice(value) {
-  if (!Number.isFinite(value) || value <= 0)
-    return "?";
-  if (value >= 1)
-    return formatUsd(value);
-  return `$${Number(value.toPrecision(4)).toLocaleString("en-US", { maximumFractionDigits: 12 })}`;
-}
-function formatAmount(raw, decimals) {
-  const digits = BigInt(raw).toString().padStart(decimals + 1, "0");
-  if (decimals === 0)
-    return digits;
-  const whole = digits.slice(0, -decimals);
-  const fraction = digits.slice(-decimals).replace(/0+$/, "");
-  return fraction ? `${whole}.${fraction}` : whole;
-}
-function formatQuantity(value) {
-  if (!Number.isFinite(value))
-    return "?";
-  return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
-}
-function shortAddress2(address) {
-  return address.length > 12 ? `${address.slice(0, 4)}…${address.slice(-4)}` : address;
-}
-
-// src/commands/pnl.ts
-var NO_API_KEY2 = {
-  code: "NO_API_KEY",
-  message: "No API key for this profile.",
-  suggestion: "Set CANDLE_API_KEY, or run `candle auth login` to store one."
-};
-async function pnl(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}. Usage: candle pnl [--profile <name>]`, json);
-    return 2;
-  }
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  if (!apiKey) {
-    writeLocalFailure(deps, NO_API_KEY2, json);
-    return 1;
-  }
-  const perProfile = ctx.profileFlag !== undefined;
-  let keyPrefix;
-  if (perProfile) {
-    keyPrefix = apiKeyPrefix(apiKey);
-    if (keyPrefix === undefined) {
-      writeLocalFailure(deps, {
-        code: "BAD_REQUEST",
-        message: `The API key for profile ${ctx.profileFlag} is not a Candle agent key, so it names no profile to read.`,
-        suggestion: "Run `candle auth login --profile <name>` to store a key for that profile."
-      }, json);
-      return 1;
-    }
-  }
-  await printIdentity(ctx);
-  const path = perProfile ? `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl` : "/api/v1/agent/books";
-  const result = await apiRequest(path, {
-    auth: "key",
-    credentials: { apiKey },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!result.ok) {
-    if (!perProfile && result.code === "SCOPE_MISSING") {
-      writeLocalFailure(deps, {
-        code: "SCOPE_MISSING",
-        message: "The account's P&L needs a key with the Read scope (account:read); this profile's key has none.",
-        suggestion: "Log in with a Read or Read:Write key, or read this key's own P&L: candle pnl --profile <name>"
-      }, json);
-      return 1;
-    }
-    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
-    return 1;
-  }
-  const body = result.body;
-  if (json) {
-    const { success: _success, ...rest } = body;
-    deps.stdout.write(`${JSON.stringify({ ok: true, scope: perProfile ? "profile" : "account", ...rest })}
-`);
-    return 0;
-  }
-  if (perProfile) {
-    const { pnl: p, lp } = body;
-    deps.stdout.write(`P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills
-
-`);
-    writeSummary(ctx, {
-      realizedNetUsd: p.realizedNetUsd,
-      realizedGrossUsd: p.realizedGrossUsd,
-      feesUsd: p.feesUsd,
-      unrealizedUsd: p.unrealizedUsd,
-      unmarked: p.unmarkedPositions,
-      unvalued: p.unvalued,
-      counted: p.counted,
-      positions: p.openPositions.length,
-      truncated: p.truncated,
-      lookback: p.lookback,
-      lookbackUnit: "trades",
-      oldestMarkAt: p.oldestMarkAt,
-      lp
-    });
-    writePositions(ctx, p.openPositions, false);
-    writeLpPositions(ctx, lp, false);
-    return 0;
-  }
-  const books = body;
-  deps.stdout.write(`P&L for the account: every profile, the web app and the CLI, one ledger
-
-`);
-  writeSummary(ctx, {
-    ...books.all,
-    positions: books.positions.length,
-    truncated: books.truncated,
-    lookback: books.lookback,
-    lookbackUnit: "ledger rows",
-    oldestMarkAt: books.oldestMarkAt,
-    lp: books.lp
-  });
-  writePositions(ctx, books.positions, true);
-  writeLpPositions(ctx, books.lp, true);
-  return 0;
-}
-function writeSummary(ctx, s) {
-  const marked = s.positions - s.unmarked;
-  const lines = [
-    [
-      "Realized net",
-      formatUsd(s.realizedNetUsd),
-      `gross ${formatUsd(s.realizedGrossUsd)}, fees ${formatUsd(s.feesUsd)}`
-    ],
-    [
-      "Unrealized",
-      formatUsd(s.unrealizedUsd),
-      `${marked} of ${s.positions} open ${s.positions === 1 ? "position" : "positions"} marked${s.unmarked > 0 ? `; ${s.unmarked} unpriced, not counted` : ""}`
-    ]
-  ];
-  const lp = s.lp;
-  if (lp?.read) {
-    const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
-    lines.push([
-      "LP realized",
-      formatUsd(lp.realizedUsd),
-      `withdrawn ${formatUsd(lp.withdrawnUsd)} against ${formatUsd(lp.realizedBasisUsd)} of cost basis, plus ${formatUsd(lp.claimedFeesUsd)} claimed fees`
-    ], [
-      "LP unrealized",
-      formatUsd(lp.unrealizedUsd),
-      `${lp.valued} of ${plural(lp.openPositions, "open LP position", "open LP positions")} valued${lp.unpriced > 0 ? `; ${lp.unpriced} unpriced, not counted` : ""}${lp.unreadable > 0 ? `; ${lp.unreadable} not read, not counted` : ""}${lp.closedOutsideLedger > 0 ? `; ${lp.closedOutsideLedger} closed outside the ledger, not counted` : ""}`
-    ], [
-      "LP vs holding",
-      lp.vsHoldingPositions > 0 ? formatUsd(lp.vsHoldingUsd) : "-",
-      lp.vsHoldingPositions > 0 ? `${lp.vsHoldingPositions} of ${lp.valued} valued, against holding the deposited tokens (now ${formatUsd(lp.holdValueUsd)})` : "no valued LP position with every deposit priced"
-    ], [
-      "Total",
-      formatUsd(s.realizedNetUsd + s.unrealizedUsd + lp.realizedUsd + lp.unrealizedUsd),
-      "realized net plus unrealized, tokens and LP"
-    ]);
-  } else if (lp) {
-    lines.push(["LP", "not read", `${terminalText(lp.reason)}; not in the total`], ["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized, tokens only"]);
-  } else {
-    lines.push(["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized"]);
-  }
-  const width = Math.max(...lines.map(([label]) => label.length));
-  const valueWidth = Math.max(...lines.map(([, value]) => value.length));
-  for (const [label, value, note] of lines) {
-    ctx.deps.stdout.write(`${label.padEnd(width)}  ${value.padStart(valueWidth)}  (${note})
-`);
-  }
-  if (s.oldestMarkAt !== undefined) {
-    ctx.deps.stdout.write(`Marks as old as ${new Date(s.oldestMarkAt).toISOString()}.
-`);
-  }
-  if (s.unvalued > 0 || (s.unresolved ?? 0) > 0) {
-    ctx.deps.stdout.write(`${s.unvalued} ${s.unvalued === 1 ? "fill" : "fills"} could not be valued and are not in these figures.
-`);
-  }
-  if (s.truncated) {
-    ctx.deps.stdout.write(`History is truncated: this covers the most recent ${s.lookback} ${s.lookbackUnit}, not the account's lifetime.
-`);
-  }
-  if (lp?.read) {
-    if (lp.unvalued > 0) {
-      ctx.deps.stdout.write(`${lp.unvalued} LP ledger ${lp.unvalued === 1 ? "leg" : "legs"} could not be valued and ${lp.unvalued === 1 ? "is" : "are"} not in these figures.
-`);
-    }
-    if (lp.closedOutsideLedger > 0) {
-      ctx.deps.stdout.write(`${lp.closedOutsideLedger} LP ${lp.closedOutsideLedger === 1 ? "position was" : "positions were"} closed outside the ledger (a sweep close writes no confirmation), so ${lp.closedOutsideLedger === 1 ? "its" : "their"} result is unknown and not in these figures.
-`);
-    }
-    if (lp.truncated) {
-      ctx.deps.stdout.write(`LP history is truncated: this covers the most recent ${lp.lookback} LP operations, not the account's lifetime.
-`);
-    }
-  }
-}
-function writeLpPositions(ctx, lp, withBook) {
-  if (!lp?.read || lp.positions.length === 0)
-    return;
-  const headers = ["POSITION", "POOL", "WALLET", "VALUE", "COST BASIS", "UNREALIZED", "VS HOLDING"];
-  if (withBook)
-    headers.push("BOOK");
-  const value = (p) => p.status === "valued" && p.valueUsd !== undefined ? formatUsd(p.valueUsd) : p.status === "unpriced" ? "unpriced" : p.status === "unreadable" ? "not read" : "closed outside the ledger";
-  const rows = lp.positions.map((p) => {
-    const row = [
-      shortAddress2(p.position),
-      shortAddress2(p.pool),
-      shortAddress2(p.wallet),
-      value(p),
-      formatUsd(p.costBasisUsd),
-      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd) : "-",
-      p.vsHoldingUsd !== undefined ? formatUsd(p.vsHoldingUsd) : "-"
-    ];
-    if (withBook)
-      row.push(p.book ?? "-");
-    return row;
-  });
-  ctx.deps.stdout.write(`
-Open LP positions
-${renderTable(headers, rows.map((row) => row.map(terminalText)))}
-`);
-}
-function writePositions(ctx, positions, withBook) {
-  if (positions.length === 0) {
-    ctx.deps.stdout.write(`
-No open positions.
-`);
-    return;
-  }
-  const headers = ["TOKEN", "QUANTITY", "AVG ENTRY", "MARK", "UNREALIZED"];
-  if (withBook)
-    headers.push("BOOK");
-  const rows = positions.map((p) => {
-    const row = [
-      p.symbol?.trim() || shortAddress2(p.mint),
-      formatQuantity(p.quantity),
-      formatPrice(p.avgEntryUsd),
-      p.markPriceUsd !== undefined ? formatPrice(p.markPriceUsd) : "unpriced",
-      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd) : "-"
-    ];
-    if (withBook)
-      row.push(p.book ?? "-");
-    return row;
-  });
-  ctx.deps.stdout.write(`
-Open positions
-${renderTable(headers, rows.map((row) => row.map(terminalText)))}
-`);
-}
-
-// src/commands/portfolio.ts
-init_args();
-init_deps();
-init_profiles();
-init_render();
-init_solana_lite();
-init_store();
-init_vault_support();
-var SOL_MINT = "So11111111111111111111111111111111111111112";
-var KNOWN_SYMBOLS = {
-  [SOL_MINT]: "SOL",
-  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: "USDC",
-  "9dXSV8VWuYvGfTzqvkBeoFwH9ihVTybDuWo5VaJPCNDL": "CNDL"
-};
-var CHUNK = 100;
-var TOKEN_READS_IN_FLIGHT = 8;
-var NO_API_KEY3 = {
-  code: "NO_API_KEY",
-  message: "No API key for this profile.",
-  suggestion: "Set CANDLE_API_KEY, or run `candle auth login` to store one."
-};
-async function portfolio(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"], pathFlags: ["--keystore"] });
-  if ("error" in parsed)
-    return usage(ctx, parsed.error);
-  if (parsed.positionals.length > 0)
-    return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
-  const { deps } = ctx;
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  if (!apiKey) {
-    writeLocalFailure(deps, NO_API_KEY3, ctx.json);
-    return 1;
-  }
-  const rpcGiven = parsed.values["--rpc-url"] !== undefined || Boolean(deps.env[RPC_URL_ENV]?.trim());
-  let rpcUrl2;
-  if (rpcGiven) {
-    const resolved = rpcUrlFrom(ctx, parsed);
-    if (typeof resolved !== "string")
-      return usage(ctx, resolved.error);
-    rpcUrl2 = resolved;
-  }
-  const resolvedVault = vaultPathFor(ctx, parsed);
-  if ("error" in resolvedVault)
-    return usage(ctx, resolvedVault.error);
-  return runVaultCommand(ctx, async ({ hold }) => {
-    let vaultEntries;
-    let vaultReason;
-    const raw = rpcUrl2 === undefined ? null : await readVaultRaw(resolvedVault.path);
-    if (rpcUrl2 === undefined) {
-      vaultReason = `not read: vault balances are read only over your own RPC; pass --rpc-url or set ${RPC_URL_ENV}`;
-    } else if (raw === null) {
-      vaultReason = `no vault at ${resolvedVault.path}`;
-    } else {
-      if (!refuseEnvPassphrase(ctx))
-        return 1;
-      if (!requirePromptStreams(ctx, "portfolio"))
-        return 1;
-      const vault = hold((await unlockInteractively(ctx, resolvedVault.path, raw)).vault);
-      vaultEntries = vault.index.entries.filter((entry) => entry.chain === "solana" && (entry.role === "vault" || entry.role === "external")).map((entry) => ({ address: entry.address, label: entry.label, role: entry.role }));
-    }
-    await printIdentity(ctx);
-    const rpcHost = rpcUrl2 === undefined ? undefined : new URL(rpcUrl2).host;
-    if (vaultEntries && vaultEntries.length > 0 && rpcHost !== undefined) {
-      const requests = Math.ceil(vaultEntries.length / CHUNK) + vaultEntries.length * 2;
-      deps.stderr.write(`Reading ${vaultEntries.length} vault ${vaultEntries.length === 1 ? "address" : "addresses"} from ${rpcHost} in ${requests} requests. That endpoint sees them together; Candle sees none of them.
-`);
-    }
-    const [candle, vaultRead] = await Promise.all([
-      apiRequest("/api/v1/agent/portfolio", {
-        auth: "key",
-        credentials: { apiKey },
-        apiUrl: ctx.apiUrl,
-        fetch: deps.fetch,
-        env: deps.env
-      }),
-      vaultEntries && rpcUrl2 ? readOwnRpc(vaultEntries.map((entry) => entry.address), rpcUrl2, deps.fetch) : Promise.resolve(undefined)
-    ]);
-    if (!candle.ok) {
-      writeFailure(deps, candle, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
-      return 1;
-    }
-    const fromCandle = candle.body;
-    const prices = { ...fromCandle.prices ?? {} };
-    let priceFailure;
-    if (vaultRead) {
-      const wanted = new Set;
-      for (const wallet2 of vaultRead.byAddress.values()) {
-        if (wallet2.lamports !== null)
-          wanted.add(SOL_MINT);
-        for (const token of wallet2.tokens ?? [])
-          wanted.add(token.mint);
-      }
-      const missing = [...wanted].filter((mint) => prices[mint] === undefined);
-      for (let at = 0;at < missing.length; at += CHUNK) {
-        const priced = await apiRequest("/api/v1/agent/prices", {
-          method: "POST",
-          body: { mints: missing.slice(at, at + CHUNK) },
-          auth: "key",
-          credentials: { apiKey },
-          apiUrl: ctx.apiUrl,
-          fetch: deps.fetch,
-          env: deps.env
-        });
-        if (priced.ok)
-          Object.assign(prices, priced.body.prices ?? {});
-        else
-          priceFailure ??= priced.message;
-      }
-    }
-    if (priceFailure !== undefined) {
-      deps.stderr.write(`Some vault holdings could not be priced: ${terminalText(priceFailure)}. They are shown as unpriced.
-`);
-    }
-    const lpByWallet = new Map;
-    const lpOf = (address) => {
-      const entry = lpByWallet.get(address) ?? { positions: [], unread: [] };
-      lpByWallet.set(address, entry);
-      return entry;
-    };
-    for (const position of fromCandle.lp?.positions ?? [])
-      lpOf(position.wallet).positions.push(lpRow(position, prices));
-    for (const unread of fromCandle.lp?.unreadable ?? [])
-      lpOf(unread.wallet).unread.push(unread.position);
-    const wallet = (address, read, extra) => {
-      const holdings = read === undefined ? null : valueHoldings(read, prices);
-      const unread = read === undefined ? [] : [...read.lamports === null ? ["sol"] : [], ...read.tokens === null ? ["tokens"] : []];
-      const lp2 = fromCandle.lp ? lpOf(address) : undefined;
-      return {
-        address,
-        ...extra,
-        holdings,
-        ...unread.length > 0 ? { unread } : {},
-        ...lp2 ? { lpPositions: lp2.positions } : {},
-        ...lp2 && lp2.unread.length > 0 ? { lpUnread: lp2.unread } : {},
-        valueUsd: (holdings ?? []).reduce((sum, h) => sum + (h.valueUsd ?? 0), 0) + (lp2?.positions ?? []).reduce((sum, p) => sum + (p.valueUsd ?? 0), 0),
-        unpriced: (holdings ?? []).filter((h) => h.priceUsd === null).length + (lp2?.positions ?? []).filter((p) => p.valueUsd === null).length
-      };
-    };
-    const group = (name, wallets, read, reason) => ({
-      group: name,
-      read,
-      ...reason !== undefined ? { reason } : {},
-      wallets,
-      valueUsd: wallets.reduce((sum, w) => sum + w.valueUsd, 0),
-      unpriced: wallets.reduce((sum, w) => sum + w.unpriced, 0)
-    });
-    const orNull = (read) => read.lamports === null && read.tokens === null ? undefined : read;
-    const groups = [
-      group("vault", (vaultEntries ?? []).map((entry) => {
-        const read = vaultRead?.byAddress.get(entry.address);
-        return wallet(entry.address, read ? orNull(read) : undefined, { label: entry.label, role: entry.role });
-      }), vaultEntries !== undefined, vaultReason),
-      group("tee", (fromCandle.tee ?? []).map((row) => wallet(row.address, orNull(row), {
-        id: row.id,
-        ...row.label ? { label: row.label } : {},
-        active: row.active
-      })), true),
-      group("embedded", (fromCandle.embedded ?? []).map((row) => wallet(row.address, orNull(row), {})), true)
-    ];
-    const unavailable = [...vaultRead?.unavailable ?? [], ...fromCandle.unavailable ?? []];
-    const lpUnread = (fromCandle.lp?.unreadable ?? []).length;
-    const complete = fromCandle.complete !== false && unavailable.length === 0 && lpUnread === 0;
-    const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0);
-    const unpriced = groups.reduce((sum, g) => sum + g.unpriced, 0);
-    const lp = fromCandle.lp ? {
-      positions: fromCandle.lp.positions.length,
-      unpriced: fromCandle.lp.positions.filter((p) => p.valueUsd === null).length,
-      unreadable: lpUnread,
-      valueUsd: fromCandle.lp.positions.reduce((sum, p) => sum + (p.valueUsd ?? 0), 0)
-    } : undefined;
-    if (ctx.json) {
-      writeJson(deps, {
-        ok: true,
-        totalUsd,
-        unpriced,
-        complete,
-        unavailable,
-        ...rpcHost !== undefined ? { rpcHost } : {},
-        ...lp ? { lp } : {},
-        groups
-      });
-      return complete ? 0 : 3;
-    }
-    writeTable(ctx, groups, { totalUsd, unpriced, unavailable: unavailable.length, lp });
-    return complete ? 0 : 3;
-  });
-}
-async function readOwnRpc(addresses, rpcUrl2, fetchFn) {
-  const rpc2 = createSolanaRpc(rpcUrl2, fetchFn);
-  const unique = [...new Set(addresses)];
-  const lamports = new Map;
-  for (let at = 0;at < unique.length; at += CHUNK) {
-    const chunk = unique.slice(at, at + CHUNK);
-    try {
-      const accounts = await rpc2.getMultipleAccounts(chunk);
-      for (const [i, address] of chunk.entries())
-        lamports.set(address, (accounts[i]?.lamports ?? 0n).toString());
-    } catch {
-      for (const address of chunk)
-        lamports.set(address, null);
-    }
-  }
-  const tokens = new Map;
-  const failed = new Set;
-  const reads = unique.flatMap((owner) => [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((programId) => ({ owner, programId })));
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(TOKEN_READS_IN_FLIGHT, reads.length) }, async () => {
-    while (next < reads.length) {
-      const { owner, programId } = reads[next++];
-      try {
-        const accounts = await rpc2.getTokenAccountsByOwner(owner, programId);
-        const held = tokens.get(owner) ?? new Map;
-        tokens.set(owner, held);
-        const program = programId === TOKEN_PROGRAM_ID ? "token" : "token-2022";
-        for (const account of accounts) {
-          if (!/^\d+$/.test(account.amountRaw) || BigInt(account.amountRaw) === 0n)
-            continue;
-          const key = `${program}:${account.mint}`;
-          const prior = held.get(key);
-          held.set(key, {
-            mint: account.mint,
-            amountRaw: (BigInt(prior?.amountRaw ?? "0") + BigInt(account.amountRaw)).toString(),
-            decimals: account.decimals,
-            program
-          });
-        }
-      } catch {
-        failed.add(owner);
-      }
-    }
-  }));
-  const byAddress = new Map;
-  const unavailable = [];
-  for (const address of unique) {
-    const sol = lamports.get(address) ?? null;
-    const held = failed.has(address) ? null : [...tokens.get(address)?.values() ?? []];
-    byAddress.set(address, { lamports: sol, tokens: held });
-    if (sol === null || held === null)
-      unavailable.push(address);
-  }
-  return { byAddress, unavailable };
-}
-function valueHoldings(read, prices) {
-  const raw = [];
-  if (read.lamports !== null && BigInt(read.lamports) > 0n) {
-    raw.push({ mint: SOL_MINT, amountRaw: read.lamports, decimals: 9, program: "native" });
-  }
-  for (const token of read.tokens ?? [])
-    raw.push(token);
-  return raw.map((h) => {
-    const price = prices[h.mint];
-    const priceUsd = price?.priceUsd ?? null;
-    const amount = formatAmount(h.amountRaw, h.decimals);
-    return {
-      ...h,
-      symbol: KNOWN_SYMBOLS[h.mint] ?? price?.symbol ?? null,
-      amount,
-      priceUsd,
-      valueUsd: priceUsd === null ? null : Number(amount) * priceUsd,
-      priceSource: price?.source ?? null
-    };
-  });
-}
-function lpRow(position, prices) {
-  return {
-    position: position.position,
-    pool: position.pool,
-    tokens: position.tokens.map((token) => ({
-      ...token,
-      symbol: KNOWN_SYMBOLS[token.mint] ?? token.symbol ?? prices[token.mint]?.symbol ?? null,
-      amount: formatAmount(token.amountRaw, token.decimals),
-      unclaimedFees: formatAmount(token.unclaimedFeesRaw, token.decimals)
-    })),
-    ...position.poolShare !== undefined ? { poolShare: position.poolShare } : {},
-    valueUsd: position.valueUsd,
-    unpriced: position.unpriced
-  };
-}
-function writeTable(ctx, groups, totals) {
-  const { deps } = ctx;
-  const rows = [];
-  const lpRows = [];
-  const notes = [];
-  for (const g of groups) {
-    const shown = g.wallets.filter((w) => w.holdings === null || w.holdings.length > 0 || (w.unread?.length ?? 0) > 0 || (w.lpPositions?.length ?? 0) > 0 || (w.lpUnread?.length ?? 0) > 0).sort((a, b) => b.valueUsd - a.valueUsd);
-    let lpCount = 0;
-    let lpUnread = 0;
-    for (const w of shown) {
-      const name = `${w.label ? `${w.label} ` : ""}(${shortAddress2(w.address)})${w.role === "external" ? " external" : ""}`;
-      const side = (t, amount) => `${amount} ${t.symbol ?? shortAddress2(t.mint)}`;
-      for (const p of [...w.lpPositions ?? []].sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1))) {
-        lpCount += 1;
-        lpRows.push([
-          g.group,
-          name,
-          shortAddress2(p.position),
-          shortAddress2(p.pool),
-          p.tokens.map((t) => side(t, t.amount)).join(" + "),
-          p.tokens.map((t) => side(t, t.unclaimedFees)).join(" + "),
-          p.valueUsd === null ? "unpriced" : formatUsd(p.valueUsd)
-        ]);
-      }
-      for (const position of w.lpUnread ?? []) {
-        lpUnread += 1;
-        lpRows.push([g.group, name, shortAddress2(position), "-", "not read", "-", "-"]);
-      }
-      if (w.holdings === null) {
-        rows.push([g.group, name, "-", "not read", "-", "-"]);
-        continue;
-      }
-      const sorted = [...w.holdings].sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1));
-      for (const h of sorted) {
-        rows.push([
-          g.group,
-          name,
-          h.symbol ?? shortAddress2(h.mint),
-          h.amount,
-          h.priceUsd === null ? "unpriced" : formatPrice(h.priceUsd),
-          h.valueUsd === null ? "-" : formatUsd(h.valueUsd)
-        ]);
-      }
-      for (const part of w.unread ?? [])
-        rows.push([g.group, name, part === "sol" ? "SOL" : "tokens", "not read", "-", "-"]);
-    }
-    const empty = g.wallets.length - shown.length;
-    const count = `${g.wallets.length} ${g.wallets.length === 1 ? "wallet" : "wallets"}`;
-    notes.push([
-      g.group,
-      g.read ? formatUsd(g.valueUsd) : "-",
-      g.read ? `${count}${empty > 0 ? `, ${empty} empty not shown` : ""}${lpCount > 0 ? `, ${lpCount} LP ${lpCount === 1 ? "position" : "positions"}` : ""}${lpUnread > 0 ? `, ${lpUnread} LP not read` : ""}${g.unpriced > 0 ? `, ${g.unpriced} unpriced` : ""}` : g.reason ?? "not read"
-    ]);
-  }
-  if (rows.length > 0)
-    deps.stdout.write(`
-${renderTable(["GROUP", "WALLET", "TOKEN", "AMOUNT", "PRICE", "VALUE"], rows.map((row) => row.map(terminalText)))}
-`);
-  else
-    deps.stdout.write(`
-Nothing held in any wallet read.
-`);
-  if (lpRows.length > 0)
-    deps.stdout.write(`
-LP positions
-${renderTable(["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEES", "VALUE"], lpRows.map((row) => row.map(terminalText)))}
-`);
-  notes.push([
-    "total",
-    formatUsd(totals.totalUsd),
-    totals.unpriced > 0 ? `${totals.unpriced} unpriced ${totals.unpriced === 1 ? "holding" : "holdings"} not counted` : "every holding priced"
-  ]);
-  const width = Math.max(...notes.map(([label]) => label.length));
-  const valueWidth = Math.max(...notes.map(([, value]) => value.length));
-  deps.stdout.write(`
-`);
-  for (const [label, value, note] of notes) {
-    deps.stdout.write(`${label.padEnd(width)}  ${value.padStart(valueWidth)}  ${note}
-`);
-  }
-  if (totals.unavailable > 0) {
-    deps.stdout.write(`${totals.unavailable} ${totals.unavailable === 1 ? "wallet" : "wallets"} could not be read in full. What was not read is marked "not read" and is not in the total.
-`);
-  }
-  if ((totals.lp?.unreadable ?? 0) > 0) {
-    const n = totals.lp?.unreadable ?? 0;
-    deps.stdout.write(`${n} LP ${n === 1 ? "position" : "positions"} could not be read (the pool did not answer). ${n === 1 ? "It is" : "They are"} marked "not read" and not in the total.
-`);
-  }
-}
-
-// src/commands/profile.ts
-init_args();
-init_profiles();
-init_render();
-async function profileList(args, ctx) {
-  const { deps, json } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const rows = profileTable(await deps.readConfig(), deps.now());
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(rows)}
-`);
-    return 0;
-  }
-  if (rows.length === 0) {
-    deps.stdout.write(`No profiles on this machine. Run: candle auth login
-`);
-    return 0;
-  }
-  deps.stdout.write(renderTable(["Profile", "Account", "Cached", "Host", "Key"], rows.map((r) => [
-    r.active ? `${r.name} (active)` : r.name,
-    r.account ?? "unknown",
-    r.cachedAge,
-    r.apiUrl ?? "-",
-    r.keyPrefix ?? "-"
-  ])));
-  return 0;
-}
-var NEEDS_SCHEME = (value) => `It needs a scheme, such as https://${value}`;
-var BAD_SCHEME = "The scheme must be http or https.";
-function apiUrlFault(value, env) {
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    return NEEDS_SCHEME(value);
-  }
-  if (url.host === "")
-    return NEEDS_SCHEME(value);
-  if (url.protocol !== "http:" && url.protocol !== "https:")
-    return BAD_SCHEME;
-  return insecureApiUrlFault(value, env);
-}
-async function profileAdd(args, ctx) {
-  const { deps, json, apiUrlFlag } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const name = parsed.positionals[0];
-  if (!name || parsed.positionals.length !== 1) {
-    writeUsageFailure(deps, "Usage: candle profile add <name> --api-url <url>", json);
-    return 2;
-  }
-  if (!isValidProfileName(name)) {
-    writeUsageFailure(deps, `Invalid profile name: ${name}`, json);
-    return 2;
-  }
-  if (!apiUrlFlag) {
-    writeUsageFailure(deps, "profile add needs --api-url <url>: the host this profile authenticates against", json);
-    return 2;
-  }
-  const fault = apiUrlFault(apiUrlFlag, deps.env);
-  if (fault) {
-    writeUsageFailure(deps, `Invalid --api-url: ${apiUrlFlag}. ${fault}`, json);
-    return 2;
-  }
-  const config = await deps.readConfig();
-  if (config.profiles !== undefined && Object.hasOwn(config.profiles, name)) {
-    writeLocalFailure(deps, {
-      code: "PROFILE_EXISTS",
-      message: `Profile "${name}" already exists.`,
-      suggestion: `Run: candle profile use ${name}`
-    }, json);
-    return 1;
-  }
-  await deps.updateProfile(name, { apiUrl: apiUrlFlag });
-  if (!config.activeProfile)
-    await deps.writeConfig({ activeProfile: name });
-  if (json)
-    deps.stdout.write(`${JSON.stringify({ name, apiUrl: apiUrlFlag })}
-`);
-  else
-    deps.stdout.write(`Created profile ${name} for ${apiUrlFlag}. Run: candle auth login --profile ${name}
-`);
-  return 0;
-}
-async function profileUse(args, ctx) {
-  const { deps, json } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const name = parsed.positionals[0];
-  if (!name || parsed.positionals.length !== 1) {
-    writeUsageFailure(deps, "Usage: candle profile use <name>", json);
-    return 2;
-  }
-  const config = await deps.readConfig();
-  const profile = config.profiles !== undefined && Object.hasOwn(config.profiles, name) ? config.profiles[name] : undefined;
-  if (!profile) {
-    const names = Object.keys(config.profiles ?? {}).join(", ") || "(none)";
-    writeLocalFailure(deps, {
-      code: "NO_SUCH_PROFILE",
-      message: `No profile named "${name}".`,
-      suggestion: `Profiles on this machine: ${names}`
-    }, json);
-    return 1;
-  }
-  await deps.writeConfig({ activeProfile: name });
-  const envProfile = deps.env.CANDLE_PROFILE?.trim();
-  if (envProfile && envProfile !== name) {
-    deps.stderr.write(`CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.
-`);
-  }
-  const apiUrl = ctx.apiUrlFlag ?? resolveApiUrl(profile.apiUrl, deps.env);
-  const apiKey = await deps.store.get(profileSecretRef(name, "apiKey"));
-  let account = profile.account;
-  let username = profile.username;
-  if (apiKey) {
-    const { account: live, username: liveUsername, failure } = await fetchAccount(deps, apiUrl, apiKey);
-    if (live) {
-      account = live;
-      username = liveUsername;
-      await deps.updateProfile(name, { account: live, username: liveUsername, accountCachedAt: deps.now() });
-    } else {
-      deps.stderr.write(`Could not refresh the account for ${name} (${failure}); keeping the cached value.
-`);
-    }
-  } else {
-    deps.stderr.write(`No stored credentials for ${name}. Run: candle auth login --profile ${name}
-`);
-  }
-  if (json)
-    deps.stdout.write(`${JSON.stringify({ name, account, apiUrl })}
-`);
-  else
-    deps.stdout.write(`${identityLine(name, account, apiUrl, undefined, username)}
-`);
-  return 0;
-}
-var SECRET_KINDS = ["deviceToken", "apiKey"];
-async function profileRename(args, ctx) {
-  const { deps, json } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const [from, to] = parsed.positionals;
-  if (!from || !to || parsed.positionals.length !== 2) {
-    writeUsageFailure(deps, "Usage: candle profile rename <old> <new>", json);
-    return 2;
-  }
-  if (!isValidProfileName(to)) {
-    writeUsageFailure(deps, `Invalid profile name: ${to}`, json);
-    return 2;
-  }
-  const config = await deps.readConfig();
-  const profiles = { ...config.profiles ?? {} };
-  if (!profiles[from]) {
-    writeLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${from}".` }, json);
-    return 1;
-  }
-  if (profiles[to]) {
-    writeLocalFailure(deps, { code: "PROFILE_EXISTS", message: `Profile "${to}" already exists.` }, json);
-    return 1;
-  }
-  for (const kind of SECRET_KINDS) {
-    const value = await deps.store.get(profileSecretRef(from, kind));
-    if (value) {
-      await deps.store.set(profileSecretRef(to, kind), value);
-      await deps.store.delete(profileSecretRef(from, kind));
-    }
-  }
-  profiles[to] = profiles[from];
-  delete profiles[from];
-  await deps.writeConfig({ profiles, ...config.activeProfile === from ? { activeProfile: to } : {} });
-  if (json)
-    deps.stdout.write(`${JSON.stringify({ from, to })}
-`);
-  else
-    deps.stdout.write(`Renamed profile ${from} to ${to}.
-`);
-  return 0;
-}
-async function profileRemove(args, ctx) {
-  const { deps, json } = ctx;
-  const parsed = parseArgs(args, { booleanFlags: ["--yes"] });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  const name = parsed.positionals[0];
-  if (!name || parsed.positionals.length !== 1) {
-    writeUsageFailure(deps, "Usage: candle profile remove <name> --yes", json);
-    return 2;
-  }
-  const config = await deps.readConfig();
-  const profiles = { ...config.profiles ?? {} };
-  const profile = profiles[name];
-  if (!profile) {
-    writeLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${name}".` }, json);
-    return 1;
-  }
-  if (!parsed.booleans.has("--yes")) {
-    writeUsageFailure(deps, `Would delete profile ${name} (${profile.account ?? "unknown"} at ${profile.apiUrl ?? "default host"}) and its stored credentials. Re-run with --yes to confirm.`, json);
-    return 2;
-  }
-  for (const kind of SECRET_KINDS)
-    await deps.store.delete(profileSecretRef(name, kind));
-  delete profiles[name];
-  const wasActive = config.activeProfile === name;
-  await deps.writeConfig({ profiles, ...wasActive ? { activeProfile: undefined } : {} });
-  if (json)
-    deps.stdout.write(`${JSON.stringify({ removed: name })}
-`);
-  else {
-    const needsPick = wasActive && Object.keys(profiles).length > 1;
-    deps.stdout.write(`Deleted profile ${name} and its stored credentials.${needsPick ? " Run: candle profile use <name>" : ""}
-`);
-  }
-  return 0;
-}
-
-// src/commands/setup.ts
-init_args();
-init_deps();
-init_profiles();
-init_render();
-var SKILLS_CLAUDE_COMMAND = "/plugin marketplace add candledottv/agentic";
-var CODING_AGENTS_DOCS = "https://docs.candle.tv/developers/coding-agents";
-function section(deps, title) {
-  deps.stdout.write(`
-== ${title} ==
-`);
-}
-async function setup(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { booleanFlags: ["--no-browser"] });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
-    return 2;
-  }
-  if (json) {
-    writeUsageFailure(deps, "setup is an interactive wizard; for machine use, compose `auth login --json` and `doctor --json` directly", json);
-    return 2;
-  }
-  await printIdentity(ctx);
-  deps.stdout.write(`candle setup: this wizard authorizes the device, shows funding, and verifies everything.
-`);
-  section(deps, "1/4 Authorize this device");
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  let nextCtx = ctx;
-  if (deviceToken && apiKey) {
-    deps.stdout.write(`Already authorized on this machine (device token + API key present). Skipping login.
-`);
-  } else {
-    const loginArgs = parsed.booleans.has("--no-browser") ? ["--no-browser"] : [];
-    const loginExit = await authLogin(loginArgs, ctx);
-    if (loginExit !== 0) {
-      deps.stderr.write(`Setup stopped: device authorization did not complete.
-`);
-      return loginExit;
-    }
-    const loginConfig = await deps.readConfig();
-    const resolution = resolveProfileName(loginConfig, { flag: ctx.profileFlag, env: deps.env });
-    if (!resolution.ok) {
-      deps.stderr.write(`${resolution.message}
-`);
-      return 1;
-    }
-    nextCtx = { ...ctx, profile: resolution.name };
-  }
-  section(deps, "2/4 Fund your agent's wallets");
-  const key = await resolveApiKey(deps, nextCtx.profile);
-  const walletsResult = key ? await apiRequest("/api/v1/agent/wallets/embedded", {
-    auth: "key",
-    credentials: { apiKey: key },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  }) : null;
-  if (walletsResult?.ok) {
-    const body = walletsResult.body;
-    const solana = body.wallets?.solana ?? null;
-    const evm = body.wallets?.evm ?? null;
-    if (body.account)
-      deps.stdout.write(`${identityLine(nextCtx.profile, body.account, apiUrl, undefined, body.username)}
-`);
-    if (solana)
-      deps.stdout.write(`Solana (send SOL here):    ${solana.address}
-`);
-    if (evm)
-      deps.stdout.write(`Hood    (send ETH here):    ${evm.address}
-`);
-    deps.stdout.write(`Launches and trades are paid from these wallets. There is no minimum, and read-only requests work unfunded.
-`);
-    deps.stdout.write(`
-Tell your agent (paste into its context):
-`);
-    deps.stdout.write(`  Install the Candle CLI: curl -fsSL https://candle.tv/install.sh | bash
-`);
-    deps.stdout.write(`  You operate a Candle agent account. API base URL: ${apiUrl} (send your API key in the x-api-key header).
-`);
-    if (solana)
-      deps.stdout.write(`  Your Solana wallet: ${solana.address}
-`);
-    if (evm)
-      deps.stdout.write(`  Your Hood Chain (EVM) wallet: ${evm.address}
-`);
-    deps.stdout.write(`  Check balances before trading, and ask me to fund whichever chain you need.
-`);
-  } else {
-    deps.stdout.write("Could not read the agent wallets right now; `candle wallets` shows them once the API is reachable.\n");
-  }
-  section(deps, "3/4 Connect your agent");
-  deps.stdout.write(`Claude Code skills:  ${SKILLS_CLAUDE_COMMAND}
-`);
-  deps.stdout.write(`MCP (any client), paste into the host's MCP config:
-`);
-  deps.stdout.write(`${await mcpClientConfig([], deps)}
-`);
-  deps.stdout.write(`The MCP server is built into this binary; the host needs nothing else installed.
-`);
-  deps.stdout.write(`Other platforms:     ${CODING_AGENTS_DOCS}
-`);
-  section(deps, "4/4 Health check");
-  const doctorExit = await doctor([], nextCtx);
-  const config = await deps.readConfig();
-  const { portalOrigin } = effectiveProfileFields(config, nextCtx.profile);
-  deps.stdout.write(`
-Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl, portalOrigin)}
-`);
-  deps.stdout.write(doctorExit === 0 ? `Setup complete. Your agent can launch, trade, and transfer the moment the wallets are funded.
-` : "Setup finished with failed checks above; fix them and re-run `candle doctor`.\n");
-  return doctorExit;
-}
-
-// src/commands/sign.ts
-init_sha256();
+// src/commands/tee.ts
 init_esm();
 init_args();
+init_deps();
 
 // src/solana-alt.ts
 init_esm();
@@ -47784,407 +45447,6 @@ function programNameOf(programId) {
   }
 }
 
-// src/commands/sign.ts
-init_solana_lite();
-init_errors();
-init_promote_support();
-init_store();
-init_vault_support();
-async function readInput(ctx, file) {
-  if (file !== undefined)
-    return ctx.deps.readBytes(file);
-  return ctx.deps.readStdin();
-}
-function assertExternalSigners(index, compiled, numRequiredSignatures, named) {
-  const required = compiled.keys.slice(0, numRequiredSignatures);
-  const signers = [];
-  for (const [i, address] of required.entries()) {
-    const entry = index.entries.find((candidate) => candidate.address === address);
-    const role = i === 0 ? "the fee payer" : `signer ${i}`;
-    if (entry === undefined) {
-      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address} (${role}) is not an address this vault holds. candle sign signs only with this vault's external wallets.`, {
-        suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
-      });
-    }
-    if (entry.role !== "external") {
-      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address} (${role}) is ${describeRole(entry)}${entry.label ? ` "${entry.label}"` : ""}, which never signs for an outside tool. Only an external wallet does (candle external new).`, {
-        suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
-      });
-    }
-    const provided = named.find((candidate) => candidate.id === entry.id);
-    if (provided === undefined) {
-      throw new VaultError("SIGN_SIGNER_NOT_PROVIDED", `${address} (${role}) is external wallet "${entry.label}", and this invocation did not name it. Nothing was signed rather than returning a half-signed transaction.`, { suggestion: `Add: --wallet ${entry.label}` });
-    }
-    signers.push(entry);
-  }
-  return signers;
-}
-async function readMints(rpc2, mints) {
-  const out = new Map;
-  if (mints.length === 0)
-    return out;
-  let accounts;
-  try {
-    accounts = await rpc2.getMultipleAccounts(mints);
-  } catch {
-    for (const mint of mints)
-      out.set(mint, { risks: ["the mint could not be read, so its decimals and warnings are unknown"] });
-    return out;
-  }
-  for (const [i, mint] of mints.entries()) {
-    const account = accounts[i];
-    if (!account) {
-      out.set(mint, { risks: ["the mint does not exist, so its decimals and warnings are unknown"] });
-      continue;
-    }
-    try {
-      const profile = parseMintAccount(mint, account.owner, account.data);
-      out.set(mint, { decimals: profile.decimals, risks: profile.risks.map((risk) => risk.message) });
-    } catch (error) {
-      out.set(mint, { risks: [`the mint could not be parsed (${error instanceof Error ? error.message : error})`] });
-    }
-  }
-  return out;
-}
-function formatAmount2(raw, decimals) {
-  if (decimals === undefined)
-    return `${raw} raw`;
-  const negative = raw < 0n;
-  const abs = negative ? -raw : raw;
-  const whole = abs / 10n ** BigInt(decimals);
-  const frac = (abs % 10n ** BigInt(decimals)).toString().padStart(decimals, "0").replace(/0+$/, "");
-  return `${negative ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`;
-}
-function formatSol(lamports) {
-  return `${formatAmount2(lamports, 9)} SOL`;
-}
-function displayLines(input) {
-  const { tx, compiled, signers, simulation, mints } = input;
-  const lines = [];
-  const feePayer = compiled.keys[0] ?? "(none)";
-  const signerAddresses = new Set(signers.map((entry) => entry.address));
-  lines.push(`message     ${tx.message.version === "legacy" ? "legacy" : "v0"}, ${tx.message.instructions.length} instruction(s), ${compiled.keys.length} account(s)${tx.message.lookups.length > 0 ? ` (${tx.message.lookups.length} lookup table(s) resolved)` : ""}`);
-  lines.push(`fee payer   ${feePayer}${signerAddresses.has(feePayer) ? "" : "  (NOT this vault's external wallet)"}`);
-  lines.push(`signers     ${signers.map((entry) => `${entry.label} (${entry.address})`).join(", ")}`);
-  const programs = [...new Set(tx.message.instructions.map((ix) => compiled.keys[ix.programIdIndex] ?? "?"))];
-  for (const program of programs)
-    lines.push(`program     ${programNameOf(program)}`);
-  const deltas = computeDeltas(simulation.snapshots);
-  for (const entry of signers) {
-    const sol = deltas.sol.find((delta) => delta.address === entry.address);
-    if (sol) {
-      lines.push(`${entry.label.padEnd(11)} ${formatSol(sol.before)} -> ${formatSol(sol.after)} (${sol.after >= sol.before ? "+" : ""}${formatSol(sol.after - sol.before)})`);
-    } else {
-      lines.push(`${entry.label.padEnd(11)} SOL unchanged (not a writable account of this transaction)`);
-    }
-    for (const token of deltas.tokens.filter((delta) => delta.owner === entry.address)) {
-      const info = mints.get(token.mint);
-      lines.push(`            ${token.mint}: ${formatAmount2(token.before, info?.decimals)} -> ${formatAmount2(token.after, info?.decimals)} (${token.after >= token.before ? "+" : ""}${formatAmount2(token.after - token.before, info?.decimals)}${info?.decimals === undefined ? "" : `, ${info.decimals} dp`}) in ${token.account}`);
-    }
-  }
-  const others = [];
-  for (const sol of deltas.sol) {
-    if (signerAddresses.has(sol.address) || sol.after <= sol.before)
-      continue;
-    if (deltas.tokens.some((token) => token.account === sol.address))
-      continue;
-    others.push(`${sol.address} receives +${formatSol(sol.after - sol.before)}`);
-  }
-  for (const token of deltas.tokens) {
-    if (signerAddresses.has(token.owner) || token.after <= token.before)
-      continue;
-    const info = mints.get(token.mint);
-    others.push(`${token.owner} receives +${formatAmount2(token.after - token.before, info?.decimals)} of ${token.mint} (account ${token.account})`);
-  }
-  if (others.length === 0)
-    lines.push("others      no other account gains a balance in the simulation");
-  for (const line of others)
-    lines.push(`receives    ${line}`);
-  for (const [mint, info] of mints)
-    for (const risk of info.risks)
-      lines.push(`warning     ${mint}: ${risk}`);
-  if (simulation.result.unitsConsumed !== undefined)
-    lines.push(`compute     ${simulation.result.unitsConsumed} units in simulation`);
-  lines.push("note        the simulation is evidence, not a guarantee: a program can behave differently once signed");
-  return lines;
-}
-async function sign2(args, ctx) {
-  const lifted = takeRepeatedFlag(args, "--wallet");
-  if ("error" in lifted)
-    return usage(ctx, lifted.error);
-  const parsed = parseArgs(lifted.rest, {
-    valueFlags: ["--file", "--rpc-url", "--keystore"],
-    booleanFlags: ["--broadcast", "--yes", "--accept-older-copy"],
-    pathFlags: ["--keystore", "--file"]
-  });
-  if ("error" in parsed)
-    return usage(ctx, parsed.error);
-  if (parsed.positionals.length > 0) {
-    return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}. The transaction comes from --file <path> or stdin.`);
-  }
-  if (lifted.values.length === 0)
-    return usage(ctx, "--wallet <external> is required (repeat it for a multi-signer transaction).");
-  const rpcUrl2 = rpcUrlFrom(ctx, parsed);
-  if (typeof rpcUrl2 !== "string")
-    return usage(ctx, rpcUrl2.error);
-  if (!refuseEnvPassphrase(ctx))
-    return 1;
-  if (!requireTty(ctx, "candle sign"))
-    return 1;
-  const { deps } = ctx;
-  const resolvedVault = vaultPathFor(ctx, parsed);
-  if ("error" in resolvedVault)
-    return usage(ctx, resolvedVault.error);
-  const path = resolvedVault.path;
-  const yes = parsed.booleans.has("--yes");
-  return runVaultCommand(ctx, async ({ hold }) => {
-    let tx;
-    try {
-      const raw2 = await readInput(ctx, parsed.values["--file"]);
-      tx = decodeTransaction(decodeStrictBase64(new TextDecoder().decode(raw2)));
-    } catch (error) {
-      if (error instanceof TransactionDecodeError) {
-        throw new VaultError("SIGN_TRANSACTION_UNDECODABLE", `The input is not one base64 legacy or v0 transaction: ${error.message}.`, { suggestion: "Nothing was signed. Pass one base64 transaction through --file <path> or stdin." });
-      }
-      throw new VaultError("SIGN_TRANSACTION_UNDECODABLE", `The input could not be read: ${error instanceof Error ? error.message : error}.`, { suggestion: "Nothing was signed. Check --file <path>, or pipe the transaction on stdin." });
-    }
-    const rpc2 = createSolanaRpc(rpcUrl2, deps.fetch);
-    let compiled;
-    try {
-      compiled = await resolveCompiledKeys(tx.message, rpc2);
-    } catch (error) {
-      if (error instanceof LookupTableError)
-        throw new VaultError("SIGN_LOOKUP_TABLE_UNRESOLVED", `${error.message}. Nothing was displayed or signed.`, {
-          suggestion: "Point --rpc-url at an endpoint that has the lookup table, then run it again."
-        });
-      throw error;
-    }
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
-      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
-    });
-    const vault = hold(opened.vault);
-    const named = [];
-    for (const requested of lifted.values) {
-      assertNotEvmEntry(vault.index, requested, "candle sign");
-      const entry = findExternalEntry(vault.index, requested);
-      if (entry === undefined) {
-        const other = vault.index.entries.find((candidate) => candidate.label === requested || candidate.address === requested);
-        if (other !== undefined) {
-          throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `--wallet ${requested} is ${describeRole(other)}, which never signs for an outside tool.`, {
-            suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
-          });
-        }
-        return usage(ctx, `No external wallet in this vault matches --wallet ${requested}.`);
-      }
-      if (!named.some((candidate) => candidate.id === entry.id))
-        named.push(entry);
-    }
-    const signers = assertExternalSigners(vault.index, compiled, tx.message.numRequiredSignatures, named);
-    const unused = named.filter((entry) => !signers.some((signer) => signer.id === entry.id));
-    if (unused.length > 0) {
-      return usage(ctx, `--wallet ${unused.map((entry) => entry.label).join(", ")}: not a required signer of this transaction.`);
-    }
-    const unsignedBase64 = toBase642(attachSignatures(tx, new Map));
-    let simulation;
-    try {
-      simulation = await simulateWithSnapshots(rpc2, unsignedBase64, compiled);
-    } catch (error) {
-      throw new VaultError("SIGN_SIMULATION_FAILED", `The simulation could not be run over ${rpcUrl2}: ${error instanceof Error ? error.message : error}. Nothing was signed.`, {
-        suggestion: "Point --rpc-url at a reachable endpoint and run it again; there is no way to skip the simulation."
-      });
-    }
-    if (simulation.result.err !== null && simulation.result.err !== undefined) {
-      const logs = simulation.result.logs.length > 0 ? `
-${simulation.result.logs.map((line) => `  ${line}`).join(`
-`)}` : "";
-      throw new VaultError("SIGN_SIMULATION_FAILED", `The simulation failed: ${JSON.stringify(simulation.result.err)}. Nothing was signed; there is no override.${logs}`, { suggestion: "Fix what the transaction does, then sign the corrected one." });
-    }
-    const mints = await readMints(rpc2, [
-      ...new Set(computeDeltas(simulation.snapshots).tokens.map((token) => token.mint))
-    ]);
-    const lines = displayLines({ tx, compiled, signers, simulation, mints });
-    if (!ctx.json) {
-      deps.stderr.write(`Decoded transaction (simulated, unsigned):
-`);
-      for (const line of lines)
-        deps.stderr.write(`  ${line}
-`);
-    }
-    if (!yes)
-      await opened.confirm(`sign with ${signers.map((entry) => entry.label).join(", ")}`);
-    const signed = new Map;
-    const signatures = [];
-    for (const [i, entry] of signers.entries()) {
-      const secret = await decryptKey(vault, entry.id);
-      try {
-        const signature = signMessage(tx.message.bytes, secret);
-        signed.set(i, signature);
-        signatures.push({ wallet: entry.label, address: entry.address, signature: base58.encode(signature) });
-      } finally {
-        wipe(secret);
-      }
-    }
-    const wire = attachSignatures(tx, signed);
-    const signedBase64 = toBase642(wire);
-    const txSignature = signatures[0]?.signature ?? "";
-    let broadcast;
-    if (parsed.booleans.has("--broadcast")) {
-      try {
-        await rpc2.sendTransaction(signedBase64);
-        broadcast = { ok: true, signature: txSignature };
-      } catch (error) {
-        broadcast = { ok: false, error: error instanceof Error ? error.message : String(error) };
-      }
-    }
-    if (ctx.json) {
-      writeJson(deps, {
-        ok: broadcast === undefined ? true : broadcast.ok,
-        ...broadcast?.ok === false ? { code: "SIGN_BROADCAST_FAILED", message: broadcast.error } : {},
-        signedTransaction: signedBase64,
-        signature: txSignature,
-        signers: signatures,
-        display: lines,
-        ...broadcast ? { broadcast } : {}
-      });
-      return broadcast?.ok === false ? 1 : 0;
-    }
-    deps.stdout.write(`${signedBase64}
-`);
-    for (const s of signatures)
-      deps.stderr.write(`signed by ${s.wallet}: ${s.signature}
-`);
-    if (broadcast?.ok)
-      deps.stderr.write(`broadcast: ${broadcast.signature}
-`);
-    if (broadcast?.ok === false) {
-      throw new VaultError("SIGN_BROADCAST_FAILED", `The signed transaction was printed above but could not be sent: ${broadcast.error}.`, {
-        suggestion: "Send it yourself, or run again with a fresh transaction if its blockhash expired."
-      });
-    }
-    return 0;
-  });
-}
-function renderableAsText(bytes) {
-  let text;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-  } catch {
-    return;
-  }
-  for (const char of text) {
-    const code = char.codePointAt(0) ?? 0;
-    if (code === 10)
-      continue;
-    if (code <= 31 || code >= 127 && code <= 159)
-      return;
-  }
-  return text;
-}
-function hex2(bytes) {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-async function signMessage2(args, ctx) {
-  const lifted = takeRepeatedFlag(args, "--wallet");
-  if ("error" in lifted)
-    return usage(ctx, lifted.error);
-  const parsed = parseArgs(lifted.rest, {
-    valueFlags: ["--file", "--keystore"],
-    booleanFlags: ["--yes", "--accept-older-copy"],
-    pathFlags: ["--keystore", "--file"]
-  });
-  if ("error" in parsed)
-    return usage(ctx, parsed.error);
-  if (parsed.positionals.length > 0) {
-    return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}. The message comes from --file <path> or stdin, never an argument.`);
-  }
-  if (lifted.values.length !== 1)
-    return usage(ctx, "--wallet <external> is required, exactly once.");
-  const requested = lifted.values[0];
-  if (!refuseEnvPassphrase(ctx))
-    return 1;
-  if (!requireTty(ctx, "candle sign message"))
-    return 1;
-  const { deps } = ctx;
-  const resolvedVault = vaultPathFor(ctx, parsed);
-  if ("error" in resolvedVault)
-    return usage(ctx, resolvedVault.error);
-  const path = resolvedVault.path;
-  return runVaultCommand(ctx, async ({ hold }) => {
-    let bytes;
-    try {
-      bytes = await readInput(ctx, parsed.values["--file"]);
-    } catch (error) {
-      throw new VaultError("VAULT_UNREADABLE", `The message could not be read: ${error instanceof Error ? error.message : error}.`);
-    }
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
-      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
-    });
-    const vault = hold(opened.vault);
-    assertNotEvmEntry(vault.index, requested, "candle sign message");
-    const entry = findExternalEntry(vault.index, requested);
-    if (entry === undefined) {
-      const other = vault.index.entries.find((candidate) => candidate.label === requested || candidate.address === requested);
-      if (other !== undefined) {
-        throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `--wallet ${requested} is ${describeRole(other)}, which never signs a message for an outside tool.`, {
-          suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
-        });
-      }
-      return usage(ctx, `No external wallet in this vault matches --wallet ${requested}.`);
-    }
-    const digest = hex2(sha2562(bytes));
-    const text = renderableAsText(bytes);
-    const lines = [
-      `wallet      ${entry.label} (${entry.address})`,
-      `bytes       ${bytes.length}`,
-      `sha256      ${digest}`,
-      text === undefined ? `form        not renderable as text (not UTF-8, or a control character other than newline); shown as hex` : `form        UTF-8 text with no control characters other than newline`,
-      text === undefined ? `hex         ${hex2(bytes)}` : `text        ${text.split(`
-`).join(`
-            `)}`
-    ];
-    if (!ctx.json) {
-      deps.stderr.write(`Message to sign (the exact bytes read; nothing was trimmed or normalized):
-`);
-      for (const line of lines)
-        deps.stderr.write(`  ${line}
-`);
-    }
-    if (!parsed.booleans.has("--yes"))
-      await opened.confirm(`sign this message with ${entry.label}`);
-    const secret = await decryptKey(vault, entry.id);
-    let signature;
-    try {
-      signature = signMessage(bytes, secret);
-    } finally {
-      wipe(secret);
-    }
-    const signatureBase58 = base58.encode(signature);
-    if (ctx.json) {
-      writeJson(deps, {
-        ok: true,
-        wallet: entry.label,
-        publicKey: entry.address,
-        byteLength: bytes.length,
-        sha256: digest,
-        renderedAs: text === undefined ? "hex" : "text",
-        signature: signatureBase58,
-        signatureBase64: toBase642(signature)
-      });
-      return 0;
-    }
-    deps.stdout.write(`${signatureBase58}
-`);
-    return 0;
-  });
-}
-
-// src/commands/tee.ts
-init_esm();
-init_args();
-init_deps();
-
 // src/lp-close.ts
 init_solana_lite();
 var DAMM_V2_PROGRAM_ID = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG";
@@ -48424,7 +45686,7 @@ async function verifyCloseArtifact(input) {
   }
   return { ok: true, tx, compiled, simulation };
 }
-function formatSol2(lamports) {
+function formatSol(lamports) {
   const negative = lamports < 0n;
   const abs = negative ? -lamports : lamports;
   const whole = abs / 1000000000n;
@@ -48446,7 +45708,7 @@ function describeClose(input) {
   for (const address of [tee, vault]) {
     const sol = deltas.sol.find((delta) => delta.address === address);
     if (sol && sol.after !== sol.before)
-      lines.push(`${who(address).padEnd(11)} ${formatSol2(sol.before)} -> ${formatSol2(sol.after)} (${sol.after >= sol.before ? "+" : ""}${formatSol2(sol.after - sol.before)})`);
+      lines.push(`${who(address).padEnd(11)} ${formatSol(sol.before)} -> ${formatSol(sol.after)} (${sol.after >= sol.before ? "+" : ""}${formatSol(sol.after - sol.before)})`);
     for (const token of deltas.tokens.filter((delta) => delta.owner === address && delta.after !== delta.before)) {
       lines.push(`${who(address).padEnd(11)} ${token.mint}: ${token.before} -> ${token.after} raw (${token.after >= token.before ? "+" : ""}${token.after - token.before}) in ${token.account}${token.account === nftAccount ? " (position NFT, burned)" : ""}`);
     }
@@ -51394,11 +48656,11 @@ function parseSolanaSecret(input) {
 }
 function decodeWalletPrivateKey(chain2, privateKey) {
   if (chain2 === "evm") {
-    const hex3 = privateKey.startsWith("0x") ? privateKey.slice(2) : privateKey;
-    if (hex3.length !== 64 || !/^[0-9a-fA-F]+$/.test(hex3)) {
-      throw new Error("Invalid EVM private key: expected 32 bytes as 64 hex characters " + `(optionally "0x"-prefixed), got ${hex3.length} characters`);
+    const hex2 = privateKey.startsWith("0x") ? privateKey.slice(2) : privateKey;
+    if (hex2.length !== 64 || !/^[0-9a-fA-F]+$/.test(hex2)) {
+      throw new Error("Invalid EVM private key: expected 32 bytes as 64 hex characters " + `(optionally "0x"-prefixed), got ${hex2.length} characters`);
     }
-    return Uint8Array.from(Buffer.from(hex3, "hex"));
+    return Uint8Array.from(Buffer.from(hex2, "hex"));
   }
   return parseSolanaSecret(privateKey);
 }
@@ -51498,9 +48760,9 @@ async function runImportFlow(params) {
 // src/wallet-keygen.ts
 import { generateKeyPairSync } from "node:crypto";
 init_esm();
-var hex3 = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+var hex2 = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 function toChecksumAddress2(lowercaseBody) {
-  const digest = hex3(keccak_256(new TextEncoder().encode(lowercaseBody)));
+  const digest = hex2(keccak_256(new TextEncoder().encode(lowercaseBody)));
   let out = "0x";
   for (let i = 0;i < lowercaseBody.length; i++) {
     const c = lowercaseBody[i];
@@ -51520,7 +48782,7 @@ function generateSolana() {
 function generateEvm() {
   const priv = secp256k1.utils.randomPrivateKey();
   const pub = secp256k1.getPublicKey(priv, false).slice(1);
-  return { address: toChecksumAddress2(hex3(keccak_256(pub)).slice(-40)), privateKey: `0x${hex3(priv)}` };
+  return { address: toChecksumAddress2(hex2(keccak_256(pub)).slice(-40)), privateKey: `0x${hex2(priv)}` };
 }
 function generateWallet(chain2) {
   return chain2 === "solana" ? generateSolana() : generateEvm();
@@ -51983,8 +49245,8 @@ function readDisableOutcome(body) {
 var MIN_PASSPHRASE_LENGTH = 12;
 var USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 var RPC_URL_ENV2 = "CANDLE_SOLANA_RPC_URL";
-var CONFIRM_POLL_MS3 = 2000;
-var CONFIRM_MAX_POLLS3 = 45;
+var CONFIRM_POLL_MS2 = 2000;
+var CONFIRM_MAX_POLLS2 = 45;
 function refuseEnvPassphrase2(ctx) {
   if (ctx.deps.env.CANDLE_KEYSTORE_PASSPHRASE === undefined)
     return true;
@@ -51995,7 +49257,7 @@ function refuseEnvPassphrase2(ctx) {
   }, ctx.json);
   return false;
 }
-function usage4(ctx, line) {
+function usage2(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
@@ -52215,7 +49477,7 @@ async function openExistingTeeStore(ctx, parsed) {
   const { deps, json } = ctx;
   const found = await readTeeStore(ctx, parsed);
   if ("usage" in found)
-    return { ok: false, code: usage4(ctx, found.usage) };
+    return { ok: false, code: usage2(ctx, found.usage) };
   const { path } = found;
   if ("error" in found) {
     writeLocalFailure(deps, {
@@ -52310,12 +49572,12 @@ async function teeNew(args, ctx) {
     return 1;
   const parsed = parseArgs(args, { valueFlags: ["--label", "--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage2(ctx, parsed.error);
   if (parsed.positionals.length > 0)
-    return usage4(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+    return usage2(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
   const found = await readTeeStore(ctx, parsed);
   if ("usage" in found)
-    return usage4(ctx, found.usage);
+    return usage2(ctx, found.usage);
   const { path } = found;
   if ("error" in found) {
     writeLocalFailure(deps, {
@@ -52392,15 +49654,15 @@ async function teeEnable(args, ctx) {
     pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage2(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined) {
-    return usage4(ctx, "Usage: candle tee enable <address> --vault <address> | --vault-key <label>");
+    return usage2(ctx, "Usage: candle tee enable <address> --vault <address> | --vault-key <label>");
   }
   const vaultFlag = parsed.values["--vault"];
   const vaultKey = parsed.values["--vault-key"];
   if (vaultFlag !== undefined && vaultKey !== undefined) {
-    return usage4(ctx, "Use either --vault or --vault-key, not both.");
+    return usage2(ctx, "Use either --vault or --vault-key, not both.");
   }
   let vault = vaultFlag;
   if (vaultKey !== undefined) {
@@ -52410,7 +49672,7 @@ async function teeEnable(args, ctx) {
     const { isVaultError: isVaultError2 } = await Promise.resolve().then(() => (init_errors(), exports_errors));
     const resolvedVault = vaultPathFor2(ctx, parsed);
     if ("error" in resolvedVault)
-      return usage4(ctx, resolvedVault.error);
+      return usage2(ctx, resolvedVault.error);
     const vaultPath = resolvedVault.path;
     const raw = await readVaultRaw2(vaultPath);
     if (raw === null) {
@@ -52448,11 +49710,11 @@ async function teeEnable(args, ctx) {
     }
   }
   if (!vault)
-    return usage4(ctx, "--vault <address> or --vault-key <label> is required: the destination every sweep sends to.");
+    return usage2(ctx, "--vault <address> or --vault-key <label> is required: the destination every sweep sends to.");
   if (!isSolanaAddress(vault))
-    return usage4(ctx, "--vault is not a valid Solana address.");
+    return usage2(ctx, "--vault is not a valid Solana address.");
   if (vault === address)
-    return usage4(ctx, "--vault must be a different address from the TEE wallet.");
+    return usage2(ctx, "--vault must be a different address from the TEE wallet.");
   const vaultOwned = await addressOwnedByVault(ctx, address);
   if (vaultOwned === "usage")
     return 2;
@@ -52589,20 +49851,20 @@ async function teeFund(args, ctx) {
     return 1;
   const parsed = parseArgs(args, { valueFlags: ["--amount", "--asset", "--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage2(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage4(ctx, "Usage: candle tee fund <address> --amount <n> [--asset SOL|USDC]");
+    return usage2(ctx, "Usage: candle tee fund <address> --amount <n> [--asset SOL|USDC]");
   const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase();
   if (asset !== "SOL" && asset !== "USDC")
-    return usage4(ctx, "--asset must be SOL or USDC.");
+    return usage2(ctx, "--asset must be SOL or USDC.");
   const amount = parsed.values["--amount"];
   if (!amount)
-    return usage4(ctx, "--amount <n> is required.");
+    return usage2(ctx, "--amount <n> is required.");
   const decimals = asset === "SOL" ? 9 : 6;
   const raw = decimalToRaw(amount, decimals);
   if (raw === null || raw === 0n)
-    return usage4(ctx, `--amount must be a positive decimal with at most ${decimals} decimal places.`);
+    return usage2(ctx, `--amount must be a positive decimal with at most ${decimals} decimal places.`);
   const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed));
   if (!resolved.ok)
     return resolved.code;
@@ -52669,10 +49931,10 @@ async function teeStatus(args, ctx) {
     return 1;
   const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage2(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage4(ctx, "Usage: candle tee status <address> [--rpc-url <url>]");
+    return usage2(ctx, "Usage: candle tee status <address> [--rpc-url <url>]");
   const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed));
   if (!resolved.ok)
     return resolved.code;
@@ -52714,7 +49976,7 @@ async function teeStatus(args, ctx) {
     if (rpcUrl2) {
       const checked = rpcUrlFrom2(ctx, parsed);
       if (typeof checked !== "string")
-        return usage4(ctx, checked.error);
+        return usage2(ctx, checked.error);
       const rpc2 = createSolanaRpc(checked, deps.fetch);
       try {
         const lamports = await rpc2.getBalance(address);
@@ -52795,10 +50057,10 @@ async function teeDisable(args, ctx) {
     return 1;
   const parsed = parseArgs(args, { valueFlags: ["--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage2(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage4(ctx, "Usage: candle tee disable <address>");
+    return usage2(ctx, "Usage: candle tee disable <address>");
   await printIdentity(ctx);
   const openedActive = await openActiveTee(ctx, parsed, address, "read");
   if (!openedActive.ok)
@@ -52921,7 +50183,7 @@ async function broadcastMessage(rpc2, deps, secret, message, blockhash, pending,
       error: `send did not answer cleanly (${error instanceof Error ? error.message : error}); it may still land`
     };
   }
-  for (let i = 0;i < CONFIRM_MAX_POLLS3; i++) {
+  for (let i = 0;i < CONFIRM_MAX_POLLS2; i++) {
     let status;
     try {
       status = await rpc2.getSignatureStatus(signature);
@@ -52943,12 +50205,12 @@ async function broadcastMessage(rpc2, deps, secret, message, blockhash, pending,
         error: `transaction ${signature} failed on chain: ${JSON.stringify(observed.err)}`
       };
     }
-    await deps.sleep(CONFIRM_POLL_MS3);
+    await deps.sleep(CONFIRM_POLL_MS2);
   }
   return {
     status: "uncertain",
     signature,
-    error: `transaction ${signature} was not finalized within ${CONFIRM_MAX_POLLS3 * CONFIRM_POLL_MS3 / 1000}s; it may still land${echoNote}`
+    error: `transaction ${signature} was not finalized within ${CONFIRM_MAX_POLLS2 * CONFIRM_POLL_MS2 / 1000}s; it may still land${echoNote}`
   };
 }
 async function teeSweep(args, ctx) {
@@ -52961,13 +50223,13 @@ async function teeSweep(args, ctx) {
     pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage2(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage4(ctx, "Usage: candle tee sweep <address> --rpc-url <url> [--emergency]");
+    return usage2(ctx, "Usage: candle tee sweep <address> --rpc-url <url> [--emergency]");
   const rpcUrl2 = rpcUrlFrom2(ctx, parsed);
   if (typeof rpcUrl2 !== "string")
-    return usage4(ctx, rpcUrl2.error);
+    return usage2(ctx, rpcUrl2.error);
   const emergency = parsed.booleans.has("--emergency");
   const openedActive = await openActiveTee(ctx, parsed, address, "sign");
   if (!openedActive.ok)
@@ -53599,12 +50861,6 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
 }
 
 // src/commands/tee-rebind.ts
-init_args();
-init_deps();
-init_profiles();
-init_render();
-init_promote_support();
-init_keys();
 var REBIND_PATH = "/api/v1/agent/tee-wallets/rebind";
 var REBINDS_PATH = "/api/v1/agent/tee-wallets/rebinds";
 var KEYS_PATH2 = "/api/v1/agent/keys";
@@ -53705,13 +50961,17 @@ async function postRebind(ctx, deviceToken, body) {
 }
 async function resolveTargetKey(ctx, deviceToken, raw, opts = {}) {
   const { deps, json } = ctx;
+  const codePrefix = opts.codePrefix ?? "REBIND";
   if (KEY_PREFIX_RE.test(raw))
     return { ok: true, keyPrefix: raw };
   let listed = opts.keys;
   if (listed === undefined) {
     const result = await listAccountKeys(ctx, deviceToken);
     if (!result.ok) {
-      return { ok: false, code: writeRebindFailure(ctx, result, {}) };
+      return {
+        ok: false,
+        code: opts.writeListFailure ? opts.writeListFailure(result) : writeRebindFailure(ctx, result, {})
+      };
     }
     listed = result.body?.keys ?? [];
   }
@@ -53722,7 +50982,7 @@ async function resolveTargetKey(ctx, deviceToken, raw, opts = {}) {
   if (matches.length === 0) {
     const labelled = keys.filter((key) => key.label).map((key) => `${key.keyPrefix} ${labelCell(key.label)}`);
     writeLocalFailure(deps, {
-      code: "REBIND_KEY_NOT_FOUND",
+      code: `${codePrefix}_KEY_NOT_FOUND`,
       message: `No active key on this account is named ${JSON.stringify(raw)}.`,
       suggestion: labelled.length > 0 ? `Named keys on this account:
 ${labelled.map((line) => `  ${line}`).join(`
@@ -53731,7 +50991,7 @@ ${labelled.map((line) => `  ${line}`).join(`
     return { ok: false, code: 1 };
   }
   writeLocalFailure(deps, {
-    code: "REBIND_KEY_AMBIGUOUS",
+    code: `${codePrefix}_KEY_AMBIGUOUS`,
     message: `${matches.length} active keys are named ${JSON.stringify(raw)}; pass a prefix instead.`,
     suggestion: `Matching prefixes: ${matches.map((key) => key.keyPrefix).join(", ")}`
   }, json);
@@ -53915,8 +51175,3080 @@ async function teeRebinds(args, ctx) {
   return 0;
 }
 
+// src/commands/keys-access.ts
+var KEYS_PATH3 = "/api/v1/agent/keys";
+var USAGE_ACCESS = `Usage: candle keys access <prefix|label|self> --access <read|read-write|read-write-transfer> [--yes] [--json]
+` + "       candle keys access <prefix|label> --history [--json]";
+var SELF = "self";
+var CLI_SPELLING = Object.fromEntries(Object.entries(ACCESS_LEVELS).map(([spelling, preset]) => [preset, spelling]));
+var NO_API_KEY = {
+  code: "API_KEY_REQUIRED",
+  message: "candle keys access self changes the profile's own API key, and this profile holds none.",
+  suggestion: "Select the profile holding the key with --profile, or name the key by prefix to use the device token."
+};
+var REQUIRES_TTY = {
+  code: "KEY_ACCESS_REQUIRES_TTY",
+  message: "Widening a key needs a terminal: the key prefix is typed back, and nothing else supplies it.",
+  suggestion: "Run it in an interactive shell; there is no flag and no environment variable to widen a key."
+};
+function levelName(side) {
+  const preset = side.access ?? presetForScopes(side.scopes);
+  if (preset)
+    return AGENT_KEY_PRESET_LABELS[preset];
+  return `custom (${accessCell(side.scopes)})`;
+}
+function keyName(keyPrefix, label) {
+  const cleaned = labelCell(label ?? undefined);
+  return cleaned ? `${keyPrefix} (${cleaned})` : keyPrefix;
+}
+function listWords(words) {
+  return words.length <= 1 ? words.join("") : `${words.slice(0, -1).join(", ")} and ${words[words.length - 1]}`;
+}
+function linkedTransferLine(ready) {
+  const assets = Object.entries(ready.assets);
+  const missing = assets.filter(([, ok]) => !ok).map(([asset]) => asset.toUpperCase());
+  const readyAssets = assets.filter(([, ok]) => ok).map(([asset]) => asset.toUpperCase());
+  const needs = [];
+  if (!ready.txLimit)
+    needs.push("a USD transaction limit");
+  if (missing.length > 0) {
+    needs.push(`${missing.map((asset) => `a ${asset}`).join(" and ")} spend cap`);
+  }
+  if (needs.length === 0)
+    return null;
+  const readyPart = readyAssets.length > 0 ? `; ${listWords(readyAssets)} ${readyAssets.length === 1 ? "is" : "are"} ready` : "";
+  return [
+    `Warning: to send to linked wallets it also needs ${needs.join(" and ")}${readyPart}.`,
+    "         Set them in the web key manager: Agents, Keys, this key, Spend limits."
+  ].join(`
+`);
+}
+var LOCALLY_RENDERED = new Set(["MOVES_FUNDS", "VAULT_TRANSFER_READY", "LINKED_TRANSFER_NEEDS_LIMITS"]);
+function accessScreen(shown, identity) {
+  const environment = candleEnvironment(identity.apiUrl) ?? "not a Candle host";
+  const label = labelCell(shown.label ?? undefined);
+  const lines = [
+    `Key             ${shown.keyPrefix}${label ? `  ${label}` : ""}`,
+    `Candle account  ${identity.account}`,
+    `API             ${identity.apiUrl}  (${environment})`,
+    "",
+    `Access          ${levelName(shown.from)}  ->  ${levelName(shown.to)}   (${shown.direction})`,
+    `Adds            ${shown.added.length > 0 ? formatScopesForSummary(shown.added) : "nothing"}`,
+    `Removes         ${shown.removed.length > 0 ? shown.removed.join(", ") : "nothing"}`,
+    ""
+  ];
+  const bound = shown.effects.boundTeeWallets;
+  if (bound && bound.count > 0) {
+    const names = bound.sample.map((w) => labelCell(w.label ?? undefined) || shortAddress(w.address));
+    const more = bound.count > names.length ? `, and ${bound.count - names.length} more` : "";
+    lines.push(`TEE wallets on this key: ${bound.count}  (${names.join(", ")}${more})`);
+    if (shown.direction === "widen" && shown.added.includes("transfer:bound")) {
+      lines.push("It can move these wallets' funds to their vaults as soon as you confirm.");
+    }
+  }
+  const ready = shown.effects.linkedTransferReady;
+  if (shown.direction === "widen" && ready) {
+    const line = linkedTransferLine(ready);
+    if (line)
+      lines.push(line);
+  }
+  for (const warning of shown.warnings) {
+    if (!LOCALLY_RENDERED.has(warning.code))
+      lines.push(`Warning: ${warning.message}`);
+  }
+  if (lines[lines.length - 1] !== "")
+    lines.push("");
+  return lines.join(`
+`);
+}
+function accessFailureDetails(result, context) {
+  let code = result.code;
+  let message = result.message;
+  let suggestion;
+  if (result.status === 404 && result.code === undefined) {
+    code = "KEY_ACCESS_UNSUPPORTED";
+    message = context.history ? "This Candle API has no key access history yet." : "This Candle API cannot change a key's access yet; nothing changed.";
+  } else if (result.code === "LOOSEN_REQUIRES_SESSION" && context.self) {
+    const level = context.preset ? CLI_SPELLING[context.preset] : "<level>";
+    suggestion = `Widen it from a signed-in session or with the device token: candle keys access <prefix> --access ${level}`;
+  } else if (result.code === "KEY_ACCESS_STALE") {
+    suggestion = "Run the command again; the preview will show the key's current access.";
+  } else if (result.code === "KEY_ACCESS_PARTNER_KEY") {
+    suggestion = "Partner keys are managed by Candle; ask your Candle contact to change one.";
+  } else if (result.status === 404 && result.code === "VALIDATION_FAILED") {
+    suggestion = "Run: candle keys list, to see this account's keys and their prefixes.";
+  }
+  return { code: code ?? `HTTP ${result.status}`, message, ...suggestion !== undefined ? { suggestion } : {} };
+}
+function writeAccessFailure(ctx, result, context) {
+  const { deps, apiUrl, json } = ctx;
+  const { code, message, suggestion } = accessFailureDetails(result, context);
+  const envelope = errorEnvelope({ ...result, code, message }, { apiUrl, authType: context.self ? "key" : "device" });
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ...envelope, ...suggestion ? { suggestion } : {} })}
+`);
+  } else {
+    deps.stderr.write(`${code}: ${message}${suggestion ? ` ${suggestion}` : ""}
+`);
+  }
+  return 1;
+}
+async function keysAccess(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { valueFlags: ["--access"], booleanFlags: ["--yes", "--history"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const [target, extra] = parsed.positionals;
+  if (target === undefined || extra !== undefined) {
+    writeUsageFailure(deps, `${extra !== undefined ? `Unexpected argument: ${extra}. ` : "Name one key. "}${USAGE_ACCESS}`, json);
+    return 2;
+  }
+  const accessFlag = parsed.values["--access"];
+  const history = parsed.booleans.has("--history");
+  const yes = parsed.booleans.has("--yes");
+  if (accessFlag === undefined === !history) {
+    writeUsageFailure(deps, `Pass exactly one of --access and --history. ${USAGE_ACCESS}`, json);
+    return 2;
+  }
+  if (history) {
+    if (yes) {
+      writeUsageFailure(deps, "--yes only applies to a change, not to --history.", json);
+      return 2;
+    }
+    if (target === SELF) {
+      writeUsageFailure(deps, "--history needs the device token: name the key by prefix or label, not self.", json);
+      return 2;
+    }
+    return keysAccessHistory(target, ctx);
+  }
+  const preset = ACCESS_LEVELS[accessFlag];
+  if (preset === undefined) {
+    writeUsageFailure(deps, `--access must be one of: ${Object.keys(ACCESS_LEVELS).join(", ")}.`, json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const self = target === SELF;
+  let path;
+  let auth;
+  let credentials;
+  if (self) {
+    const apiKey = await resolveApiKey(deps, ctx.profile);
+    if (!apiKey) {
+      writeLocalFailure(deps, NO_API_KEY, json);
+      return 1;
+    }
+    path = `${KEYS_PATH3}/self/access`;
+    auth = "key";
+    credentials = { apiKey };
+  } else {
+    const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+    if (!deviceToken) {
+      writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
+      return 1;
+    }
+    const resolved = await resolveTargetKey(ctx, deviceToken, target, {
+      codePrefix: "KEY_ACCESS",
+      writeListFailure: (result2) => writeAccessFailure(ctx, result2, { self: false })
+    });
+    if (!resolved.ok)
+      return resolved.code;
+    path = `${KEYS_PATH3}/${encodeURIComponent(resolved.keyPrefix)}/access`;
+    auth = "device";
+    credentials = { deviceToken };
+  }
+  const failureContext = { self, preset };
+  const call = (body) => apiRequest(path, { method: "PUT", body, auth, credentials, apiUrl, fetch: deps.fetch, env: deps.env });
+  const preview = await call({ access: preset, dryRun: true });
+  if (!preview.ok)
+    return writeAccessFailure(ctx, preview, failureContext);
+  const shown = preview.body;
+  const name = keyName(shown.keyPrefix, shown.label);
+  if (shown.direction === "unchanged") {
+    if (json)
+      deps.stdout.write(`${JSON.stringify({ ...shown, command: "keys access" })}
+`);
+    else
+      deps.stdout.write(`${name} is already ${levelName(shown.to)}. Nothing changed.
+`);
+    return 0;
+  }
+  const widen = shown.direction === "widen";
+  const interactive = deps.isTTY.stdin && deps.isTTY.stdout;
+  if (widen && yes) {
+    writeUsageFailure(deps, "--yes only skips the prompt when narrowing; nothing changed.", json);
+    return 2;
+  }
+  if (widen && !interactive) {
+    writeLocalFailure(deps, REQUIRES_TTY, json);
+    return 1;
+  }
+  if (!widen && !yes && !interactive) {
+    writeUsageFailure(deps, "Narrowing a key without a terminal needs --yes; nothing changed. Run it in an interactive shell, or pass --yes.", json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  const fields = effectiveProfileFields(config, ctx.profile);
+  const account = fields.account ? shortAddress(fields.account) : "unknown";
+  deps.stderr.write(`${accessScreen(shown, { account: fields.username ? `${fields.username}  (${account})` : account, apiUrl })}
+`);
+  if (widen) {
+    const typed = await deps.promptLine(`Type the key prefix ${shown.keyPrefix} to widen it: `);
+    if (typed.trim() !== shown.keyPrefix) {
+      writeLocalFailure(deps, {
+        code: "KEY_ACCESS_NOT_ACKNOWLEDGED",
+        message: `The acknowledgement is the key prefix ${shown.keyPrefix}; nothing changed.`,
+        suggestion: `Run the command again and type ${shown.keyPrefix} at the prompt.`
+      }, json);
+      return 1;
+    }
+  } else if (!yes) {
+    const answer = await deps.promptLine(`Change ${name} from ${levelName(shown.from)} to ${levelName(shown.to)}? [y/N] `);
+    if (!["y", "yes"].includes(answer.trim().toLowerCase())) {
+      writeLocalFailure(deps, {
+        code: "KEY_ACCESS_NOT_ACKNOWLEDGED",
+        message: "Not confirmed; nothing changed.",
+        suggestion: "Run the command again and answer y, or pass --yes."
+      }, json);
+      return 1;
+    }
+  }
+  const committed = await call({ access: preset, expectScopes: shown.from.scopes });
+  if (!committed.ok)
+    return writeAccessFailure(ctx, committed, failureContext);
+  const result = committed.body;
+  if (fields.keyPrefix !== undefined && fields.keyPrefix === result.keyPrefix && result.direction !== "unchanged") {
+    const scopes = scopesForPreset(result.to.access);
+    if (ctx.profile)
+      await deps.updateProfile(ctx.profile, { scopes });
+    else
+      await deps.writeConfig({ scopes });
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ...result, command: "keys access" })}
+`);
+    return 0;
+  }
+  if (result.direction === "unchanged") {
+    deps.stdout.write(`${keyName(result.keyPrefix, result.label)} is already ${levelName(result.to)}. Nothing changed.
+`);
+    return 0;
+  }
+  deps.stdout.write(`Changed ${keyName(result.keyPrefix, result.label)} to ${levelName(result.to)}.` + `${result.changeId ? ` Change id ${result.changeId}` : ""}
+`);
+  return 0;
+}
+async function keysAccessHistory(target, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    return 1;
+  }
+  const resolved = await resolveTargetKey(ctx, deviceToken, target, {
+    codePrefix: "KEY_ACCESS",
+    writeListFailure: (result2) => writeAccessFailure(ctx, result2, { self: false, history: true })
+  });
+  if (!resolved.ok)
+    return resolved.code;
+  const result = await apiRequest(`${KEYS_PATH3}/${encodeURIComponent(resolved.keyPrefix)}/access-changes`, {
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok)
+    return writeAccessFailure(ctx, result, { self: false, history: true });
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ...result.body, command: "keys access" })}
+`);
+    return 0;
+  }
+  const rows = result.body.changes ?? [];
+  if (rows.length === 0) {
+    deps.stdout.write(`No access changes on key ${resolved.keyPrefix}.
+`);
+    return 0;
+  }
+  deps.stdout.write(`${renderTable(["Time", "From", "To", "Actor", "Device or key"], rows.map((row) => [
+    formatTimestamp(row.at),
+    levelName(row.from),
+    levelName(row.to),
+    row.actor,
+    row.actorDevicePrefix ?? row.actorKeyPrefix ?? ""
+  ]))}
+`);
+  if (rows.some((row) => row.actor === "device"))
+    deps.stdout.write(`${PORTAL_REVOKE_LINE}
+`);
+  return 0;
+}
+
+// src/commands/keys-wallets.ts
+init_args();
+init_deps();
+init_profiles();
+init_render();
+var NO_API_KEY2 = {
+  code: "NO_API_KEY",
+  message: "No API key for this profile.",
+  suggestion: "Set CANDLE_API_KEY, or run `candle keys create` and store one."
+};
+function widenRefusedHint(prefix, walletIds) {
+  const wallets2 = walletIds.length > 0 ? walletIds.join(" ") : "<wallet...>";
+  return `To move TEE wallets to this key, run: candle tee rebind ${wallets2} --to-key ${prefix} ` + "(owner, device token; --label-prefix <p> names many at once). To grant a linked wallet to the key " + "instead, use the agent console's Agents tab in a signed-in session. If `tee rebind` says the wallets " + "are already bound, grant them to the key in the agent console's Agents tab (signed in).";
+}
+function formatTimestamp2(ms) {
+  return ms ? new Date(ms).toISOString().replace("T", " ").slice(0, 16) : "-";
+}
+async function keysWalletsList(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const prefix = parsed.positionals[0];
+  if (!prefix) {
+    writeUsageFailure(deps, "Usage: candle keys wallets <prefix>", json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(deps, NO_API_KEY2, json);
+    return 1;
+  }
+  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallets`, {
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(result.body)}
+`);
+    return 0;
+  }
+  const body = result.body;
+  deps.stdout.write(body.walletScope === "selected" ? `Scope: selected — this profile can only spend from the wallets below.
+` : `Scope: all — this profile can spend from every wallet on the account, listed here or not.
+`);
+  if (body.profileId)
+    deps.stdout.write(`Profile: ${body.profileId}
+`);
+  if (body.wallets.length === 0) {
+    deps.stdout.write(`No wallets assigned.
+`);
+    return 0;
+  }
+  const rows = body.wallets.map((w) => [
+    w.linkedWalletId,
+    w.chain,
+    w.address,
+    w.label ?? "-",
+    w.spendCapable ? "yes" : "no",
+    formatTimestamp2(w.assignedAt)
+  ]);
+  deps.stdout.write(`${renderTable(["Id", "Chain", "Address", "Label", "Can sign", "Assigned"], rows)}
+`);
+  return 0;
+}
+async function keysWalletsSet(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { valueFlags: ["--wallets"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const prefix = parsed.positionals[0];
+  if (!prefix) {
+    writeUsageFailure(deps, "Usage: candle keys wallets set <prefix> --wallets <id,id,...>", json);
+    return 2;
+  }
+  const raw = parsed.values["--wallets"];
+  if (raw === undefined) {
+    writeUsageFailure(deps, 'Missing --wallets. Pass a comma-separated list, or "" to assign none.', json);
+    return 2;
+  }
+  const walletIds = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  await printIdentity(ctx);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(deps, NO_API_KEY2, json);
+    return 1;
+  }
+  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallets`, {
+    method: "PUT",
+    body: { walletIds },
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    if (result.code !== "LOOSEN_REQUIRES_SESSION") {
+      writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+      return 1;
+    }
+    const hint = widenRefusedHint(prefix, walletIds);
+    writeFailure(deps, { ...result, uiHint: hint }, { apiUrl, authType: "key" }, json);
+    if (!json)
+      deps.stderr.write(`${hint}
+`);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(result.body)}
+`);
+    return 0;
+  }
+  deps.stdout.write(walletIds.length === 0 ? `Cleared every wallet assignment on ${prefix}.
+` : `Assigned ${walletIds.length} wallet${walletIds.length === 1 ? "" : "s"} to ${prefix}.
+`);
+  return 0;
+}
+async function keysWalletsScope(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { valueFlags: ["--scope"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const prefix = parsed.positionals[0];
+  const scope = parsed.values["--scope"];
+  if (!prefix || scope !== "all" && scope !== "selected") {
+    writeUsageFailure(deps, "Usage: candle keys wallets scope <prefix> --scope <all|selected>", json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(deps, NO_API_KEY2, json);
+    return 1;
+  }
+  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(prefix)}/wallet-scope`, {
+    method: "PUT",
+    body: { scope },
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(result.body)}
+`);
+    return 0;
+  }
+  deps.stdout.write(scope === "selected" ? `${prefix} is now limited to its assigned wallets.
+` : `${prefix} can now spend from every wallet on the account.
+`);
+  return 0;
+}
+async function keysWallets(args, ctx) {
+  const [verb, ...rest] = args;
+  if (verb === "set")
+    return keysWalletsSet(rest, ctx);
+  if (verb === "scope")
+    return keysWalletsScope(rest, ctx);
+  return keysWalletsList(args, ctx);
+}
+
+// src/commands/launch.ts
+init_args();
+init_render();
+init_solana_lite();
+init_trading();
+import { randomUUID as randomUUID2 } from "node:crypto";
+
+// src/commands/swap.ts
+init_args();
+init_render();
+init_solana_lite();
+init_trading();
+import { randomUUID } from "node:crypto";
+function tradingFailure(ctx, error, id) {
+  writeLocalFailure(ctx.deps, {
+    code: error instanceof TradingError ? error.code : "TRADING_FAILED",
+    message: `${error instanceof Error ? error.message : "Trading failed."}${id ? ` Operation ${id}; use candle swap status ${id} before another attempt.` : ""}`
+  }, ctx.json);
+  return 1;
+}
+function printTradingResult(ctx, result) {
+  ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result, null, 2)}
+`);
+  return 0;
+}
+function validClientId(id) {
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id);
+}
+async function lookupOperation(ctx, key, id, kind) {
+  const local = await savedOperation(ctx, key, id);
+  const kinds = kind ? [kind] : local && local.kind !== "lp" ? [local.kind] : ["trade", "swap", "launch"];
+  const found = [];
+  for (const candidate of kinds) {
+    try {
+      found.push({
+        ...operationSchema.parse(await request(ctx, key, jobPath(candidate, id))),
+        kind: candidate,
+        clientTradeId: id
+      });
+    } catch (error) {
+      if (!(error instanceof TradingError && error.code === "JOB_NOT_FOUND"))
+        throw error;
+    }
+  }
+  if (found.length > 1)
+    throw new TradingError("AMBIGUOUS_OPERATION", "This id exists on multiple rails; specify --kind trade, swap or launch.");
+  return found[0] ? { ...found[0], ...local?.signature ? { signature: local.signature } : {} } : null;
+}
+async function swapStatus(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--kind"] });
+  if ("error" in parsed || parsed.positionals.length !== 1 || !validClientId(parsed.positionals[0] ?? "") || parsed.values["--kind"] !== undefined && !["trade", "swap", "launch"].includes(parsed.values["--kind"])) {
+    writeUsageFailure(ctx.deps, "Usage: candle swap status <id> [--kind trade|swap|launch]", ctx.json);
+    return 2;
+  }
+  try {
+    const key = await tradingKey(ctx);
+    const id = parsed.positionals[0];
+    const result = await lookupOperation(ctx, key, id, parsed.values["--kind"]);
+    if (!result)
+      throw new TradingError("JOB_NOT_FOUND", "No operation found on the selected rail(s). This command does not resend a write.");
+    return printTradingResult(ctx, result);
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+async function decimalsFor(ctx, asset, url) {
+  if (BASES[asset])
+    return BASES[asset].decimals;
+  const result = await rpc(ctx, rpcUrl(ctx, url), "getTokenSupply", [asset, { commitment: "confirmed" }]);
+  const decimals = result.value?.decimals;
+  if (typeof decimals !== "number" || !Number.isInteger(decimals) || decimals < 0 || decimals > 18)
+    throw new TradingError("INVALID_RESPONSE", "RPC returned invalid mint decimals.");
+  return decimals;
+}
+async function assertDeferredExecuteSupported(ctx, key, id) {
+  try {
+    await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
+  } catch (error) {
+    if (error instanceof TradingError && error.code === "JOB_NOT_FOUND")
+      return;
+    throw new TradingError("EMBEDDED_PAYER_UNSUPPORTED", "This Candle deployment cannot hold an embedded-wallet trade back for confirmation, so the quote could not be shown before the money moved. Nothing was built. Name a TEE wallet with --wallet, or point at a deployment that has it.");
+  }
+  throw new TradingError("INVALID_RESPONSE", "The execute route answered for a trade that does not exist.");
+}
+async function swap(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--amount", "--percent", "--wallet", "--client-trade-id", "--slippage-bps", "--rpc-url"],
+    booleanFlags: ["--yes"]
+  });
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  const flags = parsed.values;
+  const id = flags["--client-trade-id"] ?? `swap-${randomUUID()}`;
+  const slippage = Number(flags["--slippage-bps"] ?? "50");
+  if (parsed.positionals.length !== 2 || Boolean(flags["--amount"]) === Boolean(flags["--percent"]) || !validClientId(id) || !Number.isInteger(slippage) || slippage < 0 || slippage > 1e4) {
+    writeUsageFailure(ctx.deps, "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]", ctx.json);
+    return 2;
+  }
+  try {
+    const from = solanaAsset(parsed.positionals[0]);
+    const to = solanaAsset(parsed.positionals[1]);
+    if (from === to)
+      throw new TradingError("PAIR_UNSUPPORTED", "Choose two distinct assets.");
+    const fromBase = baseAsset(from);
+    const toBase = baseAsset(to);
+    if (!fromBase && !toBase)
+      throw new TradingError("PAIR_UNSUPPORTED", "A token trade must have SOL, USDC or CNDL on one side; token-to-token routing is unavailable.");
+    if (flags["--amount"])
+      rawAmount(flags["--amount"], 18);
+    const percent = flags["--percent"] ? BigInt(rawAmount(flags["--percent"], 6)) : undefined;
+    if (percent !== undefined && percent > 100000000n)
+      throw new TradingError("INVALID_AMOUNT", "Percent must be greater than 0 and at most 100 (up to six decimal places).");
+    const kind = fromBase && toBase ? "swap" : "trade";
+    const key = await tradingKey(ctx);
+    const prior = await lookupOperation(ctx, key, id, kind);
+    if (prior)
+      return printTradingResult(ctx, prior);
+    const payerWallet = await tradingPayer(ctx, key, flags["--wallet"]);
+    if (payerWallet.kind === "embedded" && kind === "swap")
+      throw new TradingError("PAIR_UNSUPPORTED", "The embedded wallet cannot swap between base assets from this command yet: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a TEE wallet for a base pair.");
+    const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address };
+    const decimals = await decimalsFor(ctx, from, flags["--rpc-url"]);
+    const outDecimals = await decimalsFor(ctx, to, flags["--rpc-url"]);
+    let amountRaw;
+    if (percent !== undefined) {
+      const reader = createSolanaRpc(rpcUrl(ctx, flags["--rpc-url"]), ctx.deps.fetch);
+      let balance;
+      if (from === "SOL")
+        balance = await reader.getBalance(wallet.address);
+      else {
+        const mint = BASES[from]?.mint ?? from;
+        const accounts = (await Promise.all([
+          reader.getTokenAccountsByOwner(wallet.address, TOKEN_PROGRAM_ID),
+          reader.getTokenAccountsByOwner(wallet.address, TOKEN_2022_PROGRAM_ID)
+        ])).flat();
+        balance = accounts.filter((account) => account.mint === mint).reduce((sum, account) => sum + BigInt(account.amountRaw), 0n);
+      }
+      amountRaw = (balance * percent / 100000000n).toString();
+      if (amountRaw === "0")
+        throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.");
+    } else
+      amountRaw = rawAmount(flags["--amount"], decimals);
+    if (BigInt(amountRaw) > BigInt(Number.MAX_SAFE_INTEGER))
+      throw new TradingError("INVALID_AMOUNT", "Amount exceeds the venue's exact integer range.");
+    if (payerWallet.kind === "embedded")
+      await assertDeferredExecuteSupported(ctx, key, id);
+    if (!await claimOperation(ctx, key, id, kind))
+      throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
+    ctx.deps.stderr.write(`Operation: ${id}
+`);
+    const payer = payerWallet.kind === "tee" ? { type: "linked", linkedWalletId: payerWallet.wallet.id } : { type: "main" };
+    const built = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/build", {
+      clientTradeId: id,
+      from,
+      to,
+      amountRaw,
+      maxSlippageBps: slippage,
+      payer
+    }) : await request(ctx, key, "/api/v1/trade/agent/build", {
+      clientTradeId: id,
+      chain: "solana",
+      mint: fromBase ? to : from,
+      side: fromBase ? "buy" : "sell",
+      quoteAsset: (fromBase ?? toBase)?.toLowerCase(),
+      amountRaw,
+      maxSlippageBps: slippage,
+      payer,
+      ...payerWallet.kind === "embedded" ? { deferExecution: true } : {}
+    });
+    if (built.job || built.status === "executed")
+      return printTradingResult(ctx, { ...built, clientTradeId: id, kind });
+    const data = swapBuildSchema.parse(kind === "swap" ? built.payload : built);
+    if (kind === "swap" && (data.venue !== "jupiter" || data.recipient !== wallet.address))
+      throw new TradingError("INVALID_RESPONSE", "A TEE base swap must use Jupiter and return to its payer.");
+    if (kind === "trade" && (built.chain !== "solana" || built.walletAddress !== wallet.address))
+      throw new TradingError("INVALID_RESPONSE", "The token build does not name the requested Solana payer.");
+    const artifacts = kind === "swap" ? { ...data, transactionBase64: undefined, quoteSource: undefined, quoteAsset: undefined } : data.artifacts;
+    if (!artifacts)
+      throw new TradingError("INVALID_RESPONSE", "Missing quote artifacts.");
+    if (kind === "trade" && artifacts.quoteAsset !== (fromBase ?? toBase)?.toLowerCase())
+      throw new TradingError("PAIR_UNSUPPORTED", `This token settles in ${artifacts.quoteAsset ?? "an unknown asset"}, not the requested pair. Nothing was signed.`);
+    if (data?.status !== "built" || typeof data.minOutRaw !== "string" || !/^\d+$/.test(data.minOutRaw) || !data.fee || !Number.isFinite(data.fee.bps))
+      throw new TradingError("INVALID_RESPONSE", "Candle did not return a complete quote; nothing was signed.");
+    const minimumRaw = !fromBase && artifacts.venue === "curve" ? (BigInt(data.minOutRaw) > BigInt(data.fee.feeRaw) ? BigInt(data.minOutRaw) - BigInt(data.fee.feeRaw) : 0n).toString() : data.minOutRaw;
+    const quote = {
+      intent: `Swap ${decimalAmount(amountRaw, decimals)} ${from} to ${to}`,
+      wallet: wallet.address,
+      venue: artifacts.quoteSource ?? artifacts.venue,
+      priceImpactPct: artifacts.priceImpactPct ?? null,
+      fee: data.fee,
+      minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to}`,
+      minOutRaw: data.minOutRaw,
+      minimumReceivedRaw: minimumRaw,
+      tokenRisks: artifacts.tokenRisks ?? []
+    };
+    if (!await confirmQuote(ctx, quote, parsed.booleans.has("--yes")))
+      return printTradingResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind, quote });
+    if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
+      throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
+    if (payerWallet.kind === "embedded") {
+      const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
+      return printTradingResult(ctx, {
+        ...executed,
+        clientTradeId: id,
+        kind,
+        quote,
+        wallet: safeText(payerWallet.address)
+      });
+    }
+    const transaction = kind === "swap" ? data.transactionsBase64?.[0] : artifacts.transactionBase64;
+    if (kind === "swap" && data.transactionsBase64?.length !== 1)
+      throw new TradingError("INVALID_RESPONSE", "A TEE swap must contain exactly one same-chain transaction.");
+    if (!transaction)
+      throw new TradingError("INVALID_RESPONSE", "Missing transaction.");
+    const signed = await relaySign(ctx, key, payerWallet.wallet, transaction);
+    const result = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/submit", {
+      clientTradeId: id,
+      swapId: data.swapId,
+      signedTransactionsBase64: [signed]
+    }) : await request(ctx, key, "/api/v1/trade/agent/submit", { clientTradeId: id, signedTransactions: [signed] });
+    return printTradingResult(ctx, { ...result, clientTradeId: id, kind, quote, wallet: safeText(wallet.address) });
+  } catch (error) {
+    return tradingFailure(ctx, error, id);
+  }
+}
+
+// src/commands/launch.ts
+async function launch(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: [
+      "--name",
+      "--symbol",
+      "--image-url",
+      "--description",
+      "--wallet",
+      "--client-trade-id",
+      "--rpc-url",
+      "--quote-asset",
+      "--mode"
+    ],
+    booleanFlags: ["--yes"]
+  });
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  const flags = parsed.values;
+  const id = flags["--client-trade-id"] ?? `launch-${randomUUID2()}`;
+  if (parsed.positionals.length || !flags["--name"] || !flags["--symbol"] || !flags["--image-url"] || !flags["--wallet"] || !validClientId(id)) {
+    writeUsageFailure(ctx.deps, "Usage: candle launch --name <name> --symbol <symbol> --image-url <https-url> --wallet <tee> [--client-trade-id <id>] [--rpc-url <url>] [--quote-asset sol|usdc|cndl] [--mode <mode>] [--yes]", ctx.json);
+    return 2;
+  }
+  try {
+    const key = await tradingKey(ctx);
+    const prior = await lookupOperation(ctx, key, id, "launch");
+    if (prior) {
+      const local = await savedOperation(ctx, key, id);
+      if (local?.signature && prior.job?.status !== "confirmed" && prior.job?.status !== "failed") {
+        const result2 = await request(ctx, key, "/api/v1/launch/self/confirm", {
+          clientLaunchId: id,
+          signature: local.signature
+        });
+        return printTradingResult(ctx, { ...result2, clientTradeId: id, kind: "launch" });
+      }
+      return printTradingResult(ctx, prior);
+    }
+    const url = rpcUrl(ctx, flags["--rpc-url"]);
+    const wallet = await tradingWallet(ctx, key, flags["--wallet"], "launch:write");
+    if (!await claimOperation(ctx, key, id, "launch"))
+      throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
+    ctx.deps.stderr.write(`Operation: ${id}
+`);
+    const built = launchBuildSchema.parse(await request(ctx, key, "/api/v1/launch/self/build", {
+      clientLaunchId: id,
+      chain: "solana",
+      buyAmount: 0,
+      name: flags["--name"],
+      symbol: flags["--symbol"],
+      imageUrl: flags["--image-url"],
+      linkedWalletId: wallet.id,
+      ...flags["--description"] ? { description: flags["--description"] } : {},
+      ...flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {},
+      ...flags["--mode"] ? { mode: flags["--mode"] } : {}
+    }));
+    if (!built.transaction || !/^\d+$/.test(built.maxDebitLamports ?? ""))
+      throw new TradingError("INVALID_RESPONSE", "Candle did not return a launch transaction and maximum debit; nothing was signed.");
+    const quote = {
+      intent: `Launch ${flags["--name"]} (${flags["--symbol"]})`,
+      wallet: wallet.address,
+      venue: "curve launch",
+      priceImpactPct: null,
+      fee: built.fee ?? { bps: 0, feeRaw: "0" },
+      minimumReceived: "0 tokens (no first buy)",
+      maxDebitLamports: built.maxDebitLamports,
+      tokenRisks: []
+    };
+    ctx.deps.stderr.write(`Launch creates the token only. Make the first buy with a separate candle swap. Price impact does not apply to creation.
+`);
+    if (!await confirmQuote(ctx, quote, parsed.booleans.has("--yes")))
+      return printTradingResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind: "launch", quote });
+    if (!Number.isFinite(built.expiresAt) || built.expiresAt <= ctx.deps.now())
+      throw new TradingError("QUOTE_EXPIRED", "The launch build expired before signing.");
+    const signed = await relaySign(ctx, key, wallet, built.transaction);
+    const signature = await saveOperationSignature(ctx, key, id, "launch", signed);
+    const broadcastSignature = await createSolanaRpc(url, ctx.deps.fetch).sendTransaction(signed);
+    if (broadcastSignature !== signature)
+      throw new TradingError("RPC_FAILED", "RPC returned a different transaction signature; check the saved operation.");
+    ctx.deps.stderr.write(`Launch signature: ${signature}
+`);
+    const result = await request(ctx, key, "/api/v1/launch/self/confirm", { clientLaunchId: id, signature });
+    return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch", quote });
+  } catch (error) {
+    return tradingFailure(ctx, error, id);
+  }
+}
+
+// src/commands/lp.ts
+init_args();
+init_render();
+init_solana_lite();
+import { randomUUID as randomUUID3 } from "node:crypto";
+init_trading();
+var LP_SCOPE = "lp:write";
+var CONFIRM_POLL_MS3 = 2000;
+var CONFIRM_MAX_POLLS3 = 45;
+async function lpRequest(ctx, key, path, body) {
+  const result = await apiRequest(path, {
+    apiUrl: ctx.apiUrl,
+    credentials: { apiKey: key },
+    auth: "key",
+    method: body ? "POST" : "GET",
+    body,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result.ok) {
+    if (result.status === 404 && !result.code)
+      throw new TradingError("LP_NOT_ENABLED", "This Candle deployment does not serve LP routes (LP_ENABLED is off there, or the API predates them).");
+    throw new TradingError(result.code ?? "REQUEST_FAILED", result.message);
+  }
+  if (!result.body || typeof result.body !== "object")
+    throw new TradingError("INVALID_RESPONSE", "Candle returned an invalid response.");
+  return result.body;
+}
+function solanaAddress(value, what) {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value))
+    throw new TradingError("INVALID_ADDRESS", `${what} must be a Solana address (base58).`);
+  return value;
+}
+function poolToken(value) {
+  const base = baseAsset(value);
+  if (base)
+    return BASES[base]?.mint;
+  return solanaAddress(value, "The token");
+}
+function matchesWallet(row, name) {
+  return row.id === name || row.address === name || row.label === name;
+}
+function usage3(ctx, line) {
+  writeUsageFailure(ctx.deps, line, ctx.json);
+  return 2;
+}
+function amountLine(amount) {
+  const base = Object.entries(BASES).find(([, asset]) => asset.mint === amount.mint)?.[0];
+  return `${decimalAmount(amount.raw, amount.decimals)} ${base ?? amount.mint}`;
+}
+async function lpPools(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--page"] });
+  const page = Number(parsed && !("error" in parsed) ? parsed.values["--page"] ?? "1" : "1");
+  if ("error" in parsed)
+    return usage3(ctx, parsed.error);
+  if (parsed.positionals.length !== 1 || !Number.isSafeInteger(page) || page < 1)
+    return usage3(ctx, "Usage: candle lp pools <token> [--page <n>]");
+  try {
+    const token = poolToken(parsed.positionals[0]);
+    const key = await tradingKey(ctx);
+    const pools = lpPoolsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/pools/${encodeURIComponent(token)}?page=${page}`));
+    if (ctx.json)
+      return printTradingResult(ctx, { success: true, token, ...pools });
+    const out = ctx.deps.stdout;
+    if (pools.pools.length === 0) {
+      out.write(`No DAMM v2 pool lists ${token} (page ${pools.page} of ${pools.pages}).
+`);
+      return 0;
+    }
+    const usd = (value) => value === null || value === undefined ? "unavailable" : `$${value.toFixed(2)}`;
+    const pct = (value) => value === null || value === undefined ? "unavailable" : `${value.toFixed(2)}%`;
+    out.write(`DAMM v2 pools for ${token} (page ${pools.page} of ${pools.pages}):
+`);
+    for (const pool of pools.pools) {
+      out.write(`  ${safeText(pool.pool)}
+    pair ${pool.tokens.map(safeText).join(" / ")}
+    liquidity ${usd(pool.liquidityUsd)}, fee ${pct(pool.baseFeePercent)}, 24h volume ${usd(pool.volume24hUsd)}, est. yield ${pct(pool.estimatedAprPercent)} APR (indexed, not a quote)
+`);
+    }
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+async function lpPositions(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--wallet"] });
+  if ("error" in parsed)
+    return usage3(ctx, parsed.error);
+  if (parsed.positionals.length !== 0)
+    return usage3(ctx, "Usage: candle lp positions [--wallet <tee>]");
+  try {
+    const key = await tradingKey(ctx);
+    const { rows } = await listTradingWallets(ctx, key);
+    const name = parsed.values["--wallet"];
+    const wallets2 = rows.filter((row) => row.chain === "solana" && (name === undefined || matchesWallet(row, name)));
+    if (name !== undefined && wallets2.length === 0)
+      throw new TradingError("TEE_WALLET_REQUIRED", `No TEE wallet on this key is called "${name}".`);
+    const report = [];
+    for (const row of wallets2) {
+      const positions = lpPositionsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/positions?linkedWalletId=${encodeURIComponent(row.id)}`));
+      report.push({
+        id: row.id,
+        address: row.address,
+        ...row.label ? { label: row.label } : {},
+        positions: positions.positions
+      });
+    }
+    if (ctx.json)
+      return printTradingResult(ctx, { success: true, wallets: report });
+    const out = ctx.deps.stdout;
+    const total = report.reduce((n, wallet) => n + wallet.positions.length, 0);
+    if (total === 0) {
+      out.write(`No DAMM v2 positions across ${report.length} TEE wallet(s).
+`);
+      return 0;
+    }
+    for (const wallet of report) {
+      if (wallet.positions.length === 0)
+        continue;
+      out.write(`${wallet.label ? `${safeText(wallet.label)} ` : ""}(${wallet.id}, ${safeText(wallet.address)})
+`);
+      for (const position of wallet.positions) {
+        out.write(`  position ${safeText(position.position)} in pool ${safeText(position.pool)}
+`);
+        for (const token of position.tokens) {
+          out.write(`    ${amountLine({ mint: token.mint, raw: token.amountRaw, decimals: token.decimals })}, unclaimed fees ${decimalAmount(token.unclaimedFeesRaw, token.decimals)}${token.valueUsd === null || token.valueUsd === undefined ? "" : ` ($${token.valueUsd.toFixed(2)})`}
+`);
+        }
+        out.write(`    value ${position.valueUsd === null || position.valueUsd === undefined ? "unpriced" : `$${position.valueUsd.toFixed(2)}`}${position.poolShare === undefined ? "" : `, ${(position.poolShare * 100).toFixed(4)}% of the pool`}
+`);
+      }
+    }
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+async function walletHolding(ctx, key, position, name) {
+  if (name !== undefined)
+    return tradingWallet(ctx, key, name, LP_SCOPE);
+  const { rows, appId } = await listTradingWallets(ctx, key, LP_SCOPE);
+  for (const row of rows) {
+    if (row.chain !== "solana")
+      continue;
+    const positions = lpPositionsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/positions?linkedWalletId=${encodeURIComponent(row.id)}`));
+    if (positions.positions.some((held) => held.position === position))
+      return completeTradingWallet(ctx, row, appId, LP_SCOPE);
+  }
+  throw new TradingError("LP_POSITION_NOT_FOUND", `No TEE wallet bound to this key holds position ${position}. See candle lp positions, or name the wallet with --wallet.`);
+}
+async function waitConfirmed(ctx, rpc2, signature, id) {
+  for (let i = 0;i < CONFIRM_MAX_POLLS3; i++) {
+    const observed = classifyStatus(await rpc2.getSignatureStatus(signature));
+    if (observed.kind === "finalized")
+      return;
+    if (observed.kind === "failed")
+      throw new TradingError("LP_TRANSACTION_FAILED", `Transaction ${signature} failed on chain: ${JSON.stringify(observed.err)}.`);
+    if (observed.kind === "nonfinal") {
+      if (observed.err !== null && observed.err !== undefined)
+        throw new TradingError("LP_TRANSACTION_FAILED", `Transaction ${signature} failed: ${JSON.stringify(observed.err)}.`);
+      if (observed.confirmationStatus === "confirmed")
+        return;
+    }
+    await ctx.deps.sleep(CONFIRM_POLL_MS3);
+  }
+  throw new TradingError("LP_CONFIRM_PENDING", `Transaction ${signature} was sent but not confirmed within ${CONFIRM_MAX_POLLS3 * CONFIRM_POLL_MS3 / 1000}s. Re-run the same command with --client-trade-id ${id}: it confirms the saved signature and sends nothing new.`);
+}
+async function confirmPreview(ctx, plan, built) {
+  const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
+  output.write(`${safeText(plan.intent)}
+Payer: ${safeText(plan.wallet.address)}
+`);
+  output.write(`Pool: ${safeText(built.build.pool)}
+Position: ${safeText(built.build.position)}
+`);
+  const preview = built.preview;
+  const amounts = preview?.amounts ?? [];
+  if (amounts.length > 0) {
+    const verb = plan.action === "add" ? "Deposit (maximum, at the pool's ratio)" : plan.action === "remove" ? "Withdraw (minimum)" : "Claim";
+    output.write(`${verb}: ${amounts.map(amountLine).join(" + ")}
+`);
+  }
+  output.write(`Candle LP fee: ${safeText(preview?.candleFeeBps ?? 0)} bps
+`);
+  for (const warning of preview?.warnings ?? [])
+    output.write(`Warning: ${safeText(warning)}
+`);
+  for (const risk of preview?.tokenRisks ?? [])
+    output.write(`Warning (${safeText(risk.mint)}): ${safeText(risk.message)}
+`);
+  if (built.replay)
+    output.write(`This client id was already built; the same artifact is shown again.
+`);
+  if (plan.yes)
+    return true;
+  if (!ctx.deps.isTTY.stdin)
+    throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes for an ordinary LP prompt.");
+  return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y";
+}
+async function runLpOperation(ctx, plan) {
+  const { id, key, wallet, action } = plan;
+  const confirm = async (signature2, extra) => {
+    const result = await lpRequest(ctx, key, "/api/v1/agent/lp/confirm", { clientTradeId: id, signature: signature2 });
+    return printTradingResult(ctx, {
+      ...result,
+      clientTradeId: id,
+      kind: "lp",
+      action,
+      signature: signature2,
+      wallet: safeText(wallet.address),
+      ...extra
+    });
+  };
+  const local = await savedOperation(ctx, key, id);
+  if (local?.signature)
+    return confirm(local.signature, { resumed: true });
+  if (!local && !await claimOperation(ctx, key, id, "lp"))
+    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
+  ctx.deps.stderr.write(`Operation: ${id}
+`);
+  const built = lpBuildSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/${action}/build`, {
+    linkedWalletId: wallet.id,
+    clientTradeId: id,
+    ...plan.body
+  }));
+  if (built.build.walletAddress !== wallet.address || built.build.action !== action)
+    throw new TradingError("INVALID_RESPONSE", "The LP build does not name the requested wallet and action; nothing was signed.");
+  if (built.build.signature)
+    return confirm(built.build.signature, { resumed: true });
+  const preview = {
+    pool: built.build.pool,
+    position: built.build.position,
+    amounts: built.preview?.amounts ?? [],
+    warnings: built.preview?.warnings ?? [],
+    tokenRisks: built.preview?.tokenRisks ?? [],
+    candleFeeBps: built.preview?.candleFeeBps ?? 0
+  };
+  if (!await confirmPreview(ctx, plan, built))
+    return printTradingResult(ctx, {
+      success: true,
+      status: "cancelled",
+      clientTradeId: id,
+      kind: "lp",
+      action,
+      preview
+    });
+  const signed = await relaySign(ctx, key, wallet, built.build.transaction);
+  const signature = await saveOperationSignature(ctx, key, id, "lp", signed);
+  const rpc2 = createSolanaRpc(plan.url, ctx.deps.fetch);
+  const echoed = await rpc2.sendTransaction(signed);
+  if (echoed !== signature)
+    throw new TradingError("RPC_FAILED", "RPC returned a different transaction signature; check the saved operation.");
+  ctx.deps.stderr.write(`LP ${action} signature: ${signature}
+`);
+  await waitConfirmed(ctx, rpc2, signature, id);
+  return confirm(signature, { preview });
+}
+function slippageOf(flag) {
+  const slippage = Number(flag ?? "100");
+  if (!Number.isInteger(slippage) || slippage < 0 || slippage > 1000)
+    throw new TradingError("INVALID_AMOUNT", "--slippage-bps must be an integer from 0 to 1000.");
+  return slippage;
+}
+async function lpAdd(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--amount", "--wallet", "--position", "--client-trade-id", "--slippage-bps", "--rpc-url"],
+    booleanFlags: ["--yes"]
+  });
+  if ("error" in parsed)
+    return usage3(ctx, parsed.error);
+  const flags = parsed.values;
+  const id = flags["--client-trade-id"] ?? `lp-${randomUUID3()}`;
+  if (parsed.positionals.length !== 2 || !flags["--amount"] || !flags["--wallet"] || !validClientId(id))
+    return usage3(ctx, "Usage: candle lp add <pool> --amount <decimal> <token> --wallet <tee> [--position <nft-mint>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
+  try {
+    const pool = solanaAddress(parsed.positionals[0], "The pool");
+    const token = poolToken(parsed.positionals[1]);
+    const position = flags["--position"] ? solanaAddress(flags["--position"], "--position") : undefined;
+    rawAmount(flags["--amount"], 18);
+    const slippageBps = slippageOf(flags["--slippage-bps"]);
+    const url = rpcUrl(ctx, flags["--rpc-url"]);
+    const key = await tradingKey(ctx);
+    const wallet = await tradingWallet(ctx, key, flags["--wallet"], LP_SCOPE);
+    const decimals = await decimalsFor(ctx, baseAsset(token) ?? token, flags["--rpc-url"]);
+    const amountRaw = rawAmount(flags["--amount"], decimals);
+    return await runLpOperation(ctx, {
+      action: "add",
+      id,
+      key,
+      wallet,
+      url,
+      yes: parsed.booleans.has("--yes"),
+      intent: `Add ${decimalAmount(amountRaw, decimals)} ${baseAsset(token) ?? token} of liquidity to DAMM v2 pool ${pool}${position ? ` (position ${position})` : " (new position)"}`,
+      body: { pool, token, amountRaw, slippageBps, ...position ? { position } : {} }
+    });
+  } catch (error) {
+    return tradingFailure(ctx, error, id);
+  }
+}
+async function lpRemove(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--percent", "--wallet", "--client-trade-id", "--slippage-bps", "--rpc-url"],
+    booleanFlags: ["--yes"]
+  });
+  if ("error" in parsed)
+    return usage3(ctx, parsed.error);
+  const flags = parsed.values;
+  const id = flags["--client-trade-id"] ?? `lp-${randomUUID3()}`;
+  const percent = Number(flags["--percent"]);
+  if (parsed.positionals.length !== 1 || !flags["--percent"] || !/^\d+(\.\d{1,2})?$/.test(flags["--percent"]) || !(percent > 0 && percent <= 100) || !validClientId(id))
+    return usage3(ctx, "Usage: candle lp remove <position> --percent <0.01-100> [--wallet <tee>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
+  try {
+    const position = solanaAddress(parsed.positionals[0], "The position");
+    const slippageBps = slippageOf(flags["--slippage-bps"]);
+    const url = rpcUrl(ctx, flags["--rpc-url"]);
+    const key = await tradingKey(ctx);
+    const wallet = await walletHolding(ctx, key, position, flags["--wallet"]);
+    return await runLpOperation(ctx, {
+      action: "remove",
+      id,
+      key,
+      wallet,
+      url,
+      yes: parsed.booleans.has("--yes"),
+      intent: percent === 100 ? `Remove all liquidity from position ${position}, claim its fees and close it (rent returns to the wallet)` : `Remove ${percent}% of the liquidity in position ${position}`,
+      body: { position, percent, slippageBps }
+    });
+  } catch (error) {
+    return tradingFailure(ctx, error, id);
+  }
+}
+async function lpClaim(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--wallet", "--client-trade-id", "--rpc-url"],
+    booleanFlags: ["--yes"]
+  });
+  if ("error" in parsed)
+    return usage3(ctx, parsed.error);
+  const flags = parsed.values;
+  const id = flags["--client-trade-id"] ?? `lp-${randomUUID3()}`;
+  if (parsed.positionals.length !== 1 || !validClientId(id))
+    return usage3(ctx, "Usage: candle lp claim <position> [--wallet <tee>] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
+  try {
+    const position = solanaAddress(parsed.positionals[0], "The position");
+    const url = rpcUrl(ctx, flags["--rpc-url"]);
+    const key = await tradingKey(ctx);
+    const wallet = await walletHolding(ctx, key, position, flags["--wallet"]);
+    return await runLpOperation(ctx, {
+      action: "claim",
+      id,
+      key,
+      wallet,
+      url,
+      yes: parsed.booleans.has("--yes"),
+      intent: `Claim the fees and any rewards of position ${position}`,
+      body: { position }
+    });
+  } catch (error) {
+    return tradingFailure(ctx, error, id);
+  }
+}
+
+// src/commands/mcp.ts
+init_args();
+init_deps();
+init_profiles();
+init_release();
+init_render();
+var MCP_TOOL_NAMES = [
+  "candle_launch_token",
+  "candle_launch_and_seed",
+  "candle_get_market",
+  "candle_get_feed",
+  "candle_token_forensics",
+  "candle_get_agent_profile",
+  "candle_report_activity",
+  "candle_trade",
+  "candle_swap",
+  "candle_transfer",
+  "candle_sweep",
+  "candle_get_wallets",
+  "candle_get_profile_wallets",
+  "candle_set_profile_wallets",
+  "candle_get_profile_pnl",
+  "candle_get_profile_trades",
+  "candle_resolve_token",
+  "candle_execution_status",
+  "candle_get_operation"
+];
+var READ_ONLY_TOOL_NAMES = [
+  "candle_get_market",
+  "candle_get_feed",
+  "candle_token_forensics",
+  "candle_get_agent_profile",
+  "candle_resolve_token"
+];
+var CREDENTIAL_ENV_NAMES = [
+  "CANDLE_API_KEY",
+  "CANDLE_AGENT_API_KEY",
+  "CANDLE_DEVICE_TOKEN",
+  "CANDLE_KEYRING_PASSPHRASE",
+  "CANDLE_MCP_TOOLS"
+];
+function clearedCredentialEnv() {
+  return Object.fromEntries(CREDENTIAL_ENV_NAMES.map((name) => [name, undefined]));
+}
+function mcpActsAsIdentity(args) {
+  return !args.includes("--read-only");
+}
+async function mcpCommandForHost(deps) {
+  const real = await deps.realpath(deps.execPath).catch(() => deps.execPath);
+  const method = detectInstall(deps.execPath, real);
+  if (method === "script")
+    return { command: deps.execPath, prefixArgs: [deps.argv1] };
+  if (method === "homebrew") {
+    const opt = real.replace(/\/Cellar\/candle\/[^/]+\/bin\/candle$/, "/opt/candle/bin/candle");
+    return { command: opt, prefixArgs: [] };
+  }
+  return { command: real, prefixArgs: [] };
+}
+async function mcpClientConfig(args, deps) {
+  const { command, prefixArgs } = await mcpCommandForHost(deps);
+  return JSON.stringify({ mcpServers: { candle: { command, args: [...prefixArgs, "mcp", ...args] } } }, null, 2);
+}
+async function mcp(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {
+    valueFlags: ["--tools"],
+    booleanFlags: ["--read-only", "--print-config"]
+  });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  const readOnly = parsed.booleans.has("--read-only");
+  const toolsFlag = parsed.values["--tools"];
+  if (readOnly && toolsFlag !== undefined) {
+    writeUsageFailure(deps, "--read-only and --tools are mutually exclusive; --read-only IS a tool selection.", json);
+    return 2;
+  }
+  let toolAllowlist;
+  if (readOnly) {
+    toolAllowlist = READ_ONLY_TOOL_NAMES.join(",");
+  } else if (toolsFlag !== undefined) {
+    const requested = toolsFlag.split(",").map((name) => name.trim()).filter((name) => name.length > 0);
+    const unknown = requested.filter((name) => !MCP_TOOL_NAMES.includes(name));
+    if (requested.length === 0 || unknown.length > 0) {
+      writeUsageFailure(deps, `--tools must be a comma-separated list of: ${MCP_TOOL_NAMES.join(", ")}${unknown.length > 0 ? ` (unknown: ${unknown.join(", ")})` : ""}`, json);
+      return 2;
+    }
+    toolAllowlist = requested.join(",");
+  }
+  const identityConfig = await deps.readConfig();
+  const identityFields = effectiveProfileFields(identityConfig, ctx.profile);
+  deps.stderr.write(`${identityLine(ctx.profile, identityFields.account, apiUrl, credentialEnvOverrides(deps.env), identityFields.username)}
+`);
+  if (parsed.booleans.has("--print-config")) {
+    const launchArgs = [
+      ...readOnly ? ["--read-only"] : [],
+      ...toolsFlag !== undefined ? ["--tools", toolsFlag] : []
+    ];
+    deps.stdout.write(`${await mcpClientConfig(launchArgs, deps)}
+`);
+    return 0;
+  }
+  const apiKey = readOnly ? undefined : await resolveApiKey(deps, ctx.profile);
+  if (!readOnly && !apiKey) {
+    writeLocalFailure(deps, { code: "NO_API_KEY", message: "No API key available.", suggestion: "Run: candle auth login" }, json);
+    return 1;
+  }
+  const serverEnv = {
+    ...deps.env,
+    ...clearedCredentialEnv(),
+    CANDLE_API_URL: apiUrl,
+    ...apiKey ? { CANDLE_AGENT_API_KEY: apiKey } : {},
+    ...toolAllowlist ? { CANDLE_MCP_TOOLS: toolAllowlist } : {}
+  };
+  deps.stderr.write(`Starting the Candle MCP server against ${apiUrl}${toolAllowlist ? ` (tools: ${toolAllowlist})` : ""}
+`);
+  try {
+    await deps.runMcpServer(serverEnv);
+    return 0;
+  } catch (error) {
+    writeLocalFailure(deps, {
+      code: "MCP_SERVER_FAILED",
+      message: `The MCP server could not start: ${error instanceof Error ? error.message : error}`
+    }, json);
+    return 1;
+  }
+}
+
+// src/commands/plugins.ts
+init_args();
+
+// src/plugins.ts
+import { spawn } from "node:child_process";
+import { accessSync, constants as constants3, readdirSync, statSync } from "node:fs";
+import { delimiter, join as join10 } from "node:path";
+var PLUGIN_PREFIX = "candle-";
+var RESERVED_HELPER_NAMES = ["fido2", "enclave"];
+function isPluginName(name) {
+  return /^[a-z0-9][a-z0-9-]{0,63}$/.test(name) && !RESERVED_HELPER_NAMES.includes(name);
+}
+function executableAt(path) {
+  try {
+    if (!statSync(path).isFile())
+      return false;
+    accessSync(path, constants3.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function findPlugin(name, pathEnv) {
+  if (!isPluginName(name))
+    return;
+  for (const dir of (pathEnv ?? "").split(delimiter)) {
+    if (dir === "")
+      continue;
+    const candidate = join10(dir, `${PLUGIN_PREFIX}${name}`);
+    if (executableAt(candidate))
+      return candidate;
+  }
+  return;
+}
+function listPlugins(pathEnv) {
+  const found = new Map;
+  for (const dir of (pathEnv ?? "").split(delimiter)) {
+    if (dir === "")
+      continue;
+    let names;
+    try {
+      names = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const file of names) {
+      if (!file.startsWith(PLUGIN_PREFIX))
+        continue;
+      const name = file.slice(PLUGIN_PREFIX.length);
+      if (!isPluginName(name) || found.has(name))
+        continue;
+      const path = join10(dir, file);
+      if (executableAt(path))
+        found.set(name, path);
+    }
+  }
+  return [...found.entries()].map(([name, path]) => ({ name, path })).sort((a, b) => a.name.localeCompare(b.name));
+}
+function splitPluginArgs(args) {
+  const secrets = [];
+  const wallets2 = [];
+  const passthrough = [];
+  for (let i = 0;i < args.length; i++) {
+    const arg = args[i];
+    if (arg === undefined)
+      continue;
+    if (arg === "--secret" || arg === "--wallet") {
+      const value = args[++i];
+      if (value === undefined || value === "" || value.startsWith("-"))
+        return { error: `${arg} requires a value` };
+      (arg === "--secret" ? secrets : wallets2).push(value);
+    } else if (arg.startsWith("--secret=") || arg.startsWith("--wallet=")) {
+      const flag = arg.slice(0, arg.indexOf("="));
+      const value = arg.slice(flag.length + 1);
+      if (value === "")
+        return { error: `${flag} requires a value` };
+      (flag === "--secret" ? secrets : wallets2).push(value);
+    } else {
+      passthrough.push(arg);
+    }
+  }
+  return { secrets, wallets: wallets2, passthrough };
+}
+var PASSTHROUGH_NAMES = ["PATH", "HOME", "TMPDIR", "TERM", "TZ", "LANG"];
+var PROXY_NAMES = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "all_proxy"
+];
+function envSuffix(name) {
+  return name.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+function pluginEnvironment(input) {
+  const env = {};
+  for (const name of PASSTHROUGH_NAMES) {
+    const value = input.parentEnv[name];
+    if (value !== undefined)
+      env[name] = value;
+  }
+  for (const [name, value] of Object.entries(input.parentEnv)) {
+    if (name.startsWith("LC_") && value !== undefined)
+      env[name] = value;
+  }
+  for (const name of PROXY_NAMES) {
+    const value = input.parentEnv[name];
+    if (value !== undefined)
+      env[name] = value;
+  }
+  if (input.rpcUrl !== undefined)
+    env.CANDLE_PLUGIN_RPC_URL = input.rpcUrl;
+  env.CANDLE_PLUGIN_NETWORK = input.network;
+  for (const [label, address] of Object.entries(input.wallets)) {
+    env[`CANDLE_PLUGIN_WALLET_${envSuffix(label)}`] = address;
+  }
+  for (const [name, value] of Object.entries(input.secrets)) {
+    env[`CANDLE_SECRET_${envSuffix(name)}`] = value;
+  }
+  return env;
+}
+function realRunPlugin(path, args, env) {
+  return new Promise((resolve2) => {
+    let child;
+    try {
+      child = spawn(path, args, { stdio: "inherit", env });
+    } catch {
+      resolve2(1);
+      return;
+    }
+    child.on("error", () => resolve2(1));
+    child.on("close", (code) => resolve2(code ?? 1));
+  });
+}
+function pluginInvocation(argv, env, isBuiltIn) {
+  const valued = new Set(["--api-url", "--profile", "--factor", "--device"]);
+  const bare = new Set(["--json", "--help", "-h", "--version", "-v", "--no-verify-account"]);
+  let droppedBin = false;
+  for (let i = 0;i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === undefined)
+      continue;
+    if (valued.has(arg)) {
+      i++;
+      continue;
+    }
+    if (bare.has(arg) || [...valued].some((flag) => arg.startsWith(`${flag}=`)))
+      continue;
+    if (arg === "candle" && !droppedBin) {
+      droppedBin = true;
+      continue;
+    }
+    if (isBuiltIn(arg) || !isPluginName(arg))
+      return;
+    if (findPlugin(arg, env.PATH) === undefined)
+      return;
+    return { name: arg, args: argv.slice(i + 1) };
+  }
+  return;
+}
+
+// src/commands/plugins.ts
+init_profiles();
+init_render();
+init_store();
+
+// src/commands/secrets.ts
+init_args();
+init_render();
+var NAME_SHAPE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+function canonicalSecretName(raw) {
+  if (!NAME_SHAPE.test(raw))
+    return;
+  return raw.toUpperCase();
+}
+function secretRef(profile, name) {
+  return profile === undefined ? `secret:${name}` : `profile:${profile}:secret:${name}`;
+}
+async function storedSecretNames(deps, profile) {
+  const config = await deps.readConfig();
+  const names = profile === undefined ? config.secretNames : config.profiles?.[profile]?.secretNames;
+  return [...names ?? []].sort();
+}
+async function writeSecretNames(deps, profile, names) {
+  const sorted = [...new Set(names)].sort();
+  if (profile === undefined)
+    await deps.writeConfig({ secretNames: sorted });
+  else
+    await deps.updateProfile(profile, { secretNames: sorted });
+}
+function usage4(ctx, line) {
+  writeUsageFailure(ctx.deps, line, ctx.json);
+  return 2;
+}
+async function secretsSet(args, ctx) {
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed)
+    return usage4(ctx, parsed.error);
+  const [raw, extra] = parsed.positionals;
+  if (!raw || extra !== undefined)
+    return usage4(ctx, "Usage: candle secrets set <name>");
+  const name = canonicalSecretName(raw);
+  if (name === undefined) {
+    return usage4(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+  }
+  if (!ctx.deps.isTTY.stdin || !ctx.deps.isTTY.stdout) {
+    writeLocalFailure(ctx.deps, {
+      code: "SECRET_REQUIRES_TTY",
+      message: "candle secrets set reads the value from a hidden prompt on a terminal and from nowhere else.",
+      suggestion: "There is no environment variable and no flag that supplies a secret's value."
+    }, ctx.json);
+    return 1;
+  }
+  const value = await ctx.deps.promptSecret(`Value for ${name} (input hidden): `);
+  if (value.length === 0)
+    return usage4(ctx, "An empty value was typed; nothing was stored.");
+  try {
+    await ctx.deps.secretsStore.set(secretRef(ctx.profile, name), value);
+  } catch (error) {
+    writeLocalFailure(ctx.deps, { code: "SECRET_STORE_FAILED", message: error instanceof Error ? error.message : String(error) }, ctx.json);
+    return 1;
+  }
+  await writeSecretNames(ctx.deps, ctx.profile, [...await storedSecretNames(ctx.deps, ctx.profile), name]);
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, name, backend: ctx.deps.backend })}
+`);
+    return 0;
+  }
+  ctx.deps.stdout.write(`Stored ${name} in the ${ctx.deps.backend} secrets namespace. It is never sent to Candle and never shown again; a plug-in receives it as CANDLE_SECRET_${name} only when you pass --secret ${name}.
+`);
+  return 0;
+}
+async function secretsList(args, ctx) {
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed)
+    return usage4(ctx, parsed.error);
+  if (parsed.positionals.length > 0)
+    return usage4(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  const names = await storedSecretNames(ctx.deps, ctx.profile);
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, names, backend: ctx.deps.backend })}
+`);
+    return 0;
+  }
+  if (names.length === 0) {
+    ctx.deps.stdout.write(`No secrets stored. Add one: candle secrets set <name>
+`);
+    return 0;
+  }
+  ctx.deps.stdout.write(`${renderTable(["Name", "Passed to a plug-in as"], names.map((n) => [n, `CANDLE_SECRET_${n}`]))}
+`);
+  return 0;
+}
+async function secretsRemove(args, ctx) {
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed)
+    return usage4(ctx, parsed.error);
+  const [raw, extra] = parsed.positionals;
+  if (!raw || extra !== undefined)
+    return usage4(ctx, "Usage: candle secrets remove <name>");
+  const name = canonicalSecretName(raw);
+  if (name === undefined) {
+    return usage4(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+  }
+  await ctx.deps.secretsStore.delete(secretRef(ctx.profile, name));
+  const names = await storedSecretNames(ctx.deps, ctx.profile);
+  await writeSecretNames(ctx.deps, ctx.profile, names.filter((n) => n !== name));
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, name, removed: names.includes(name) })}
+`);
+    return 0;
+  }
+  ctx.deps.stdout.write(names.includes(name) ? `Removed ${name}.
+` : `No secret named ${name} was stored.
+`);
+  return 0;
+}
+
+// src/commands/plugins.ts
+init_vault_support();
+var PLUGIN_NETWORK = "solana-mainnet";
+async function plugins(args, ctx) {
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(ctx.deps, `Unexpected argument: ${parsed.positionals[0]}`, ctx.json);
+    return 2;
+  }
+  const found = listPlugins(ctx.deps.env.PATH);
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify({ ok: true, plugins: found })}
+`);
+    return 0;
+  }
+  if (found.length === 0) {
+    ctx.deps.stdout.write(`No plug-ins found. An executable named candle-<name> on your PATH runs as: candle <name> [--secret <name>]... [--wallet <label>]... [args]
+`);
+    return 0;
+  }
+  ctx.deps.stdout.write(`${renderTable(["Command", "Executable"], found.map((plugin) => [`candle ${plugin.name}`, plugin.path]))}
+`);
+  return 0;
+}
+async function runPlugin(name, rawArgs, ctx) {
+  const path = findPlugin(name, ctx.deps.env.PATH);
+  if (path === undefined) {
+    writeLocalFailure(ctx.deps, { code: "PLUGIN_NOT_FOUND", message: `No candle-${name} executable on PATH.` }, ctx.json);
+    return 1;
+  }
+  const split2 = splitPluginArgs(rawArgs);
+  if ("error" in split2) {
+    writeUsageFailure(ctx.deps, split2.error, ctx.json);
+    return 2;
+  }
+  const secrets = {};
+  for (const requested of split2.secrets) {
+    const name2 = requested.toUpperCase();
+    const value = await ctx.deps.secretsStore.get(secretRef(ctx.profile, name2));
+    if (value === null) {
+      writeLocalFailure(ctx.deps, {
+        code: "SECRET_MISSING",
+        message: `No secret named ${name2} is stored for this profile.`,
+        suggestion: `Store it first: candle secrets set ${name2}`
+      }, ctx.json);
+      return 1;
+    }
+    secrets[name2] = value;
+  }
+  const wallets2 = {};
+  if (split2.wallets.length > 0) {
+    if (!refuseEnvPassphrase(ctx))
+      return 1;
+    if (!requireTty(ctx, "candle <plugin> --wallet"))
+      return 1;
+    const resolvedVault = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
+    if ("error" in resolvedVault)
+      return usage(ctx, resolvedVault.error);
+    const vaultPath = resolvedVault.path;
+    const resolved = await runVaultCommand(ctx, async ({ hold }) => {
+      const raw = await requireVaultRaw(ctx, resolvedVault);
+      const vault = hold((await unlockInteractively(ctx, vaultPath, raw)).vault);
+      for (const requested of split2.wallets) {
+        const entry = findExternalEntry(vault.index, requested);
+        if (entry === undefined) {
+          const other = vault.index.entries.find((e) => e.label === requested || e.address === requested);
+          writeLocalFailure(ctx.deps, {
+            code: "PLUGIN_WALLET_NOT_EXTERNAL",
+            message: other === undefined ? `No external wallet in this vault matches --wallet ${requested}.` : `${requested} is ${describeRole(other)}; only an external wallet's address is passed to a plug-in.`,
+            suggestion: "Create one: candle external new --label <name>"
+          }, ctx.json);
+          return 1;
+        }
+        wallets2[entry.label] = entry.address;
+      }
+      closeVault(vault);
+      return 0;
+    });
+    if (resolved !== 0)
+      return resolved;
+  }
+  const profile = effectiveProfileFields(await ctx.deps.readConfig(), ctx.profile);
+  const env = pluginEnvironment({
+    parentEnv: ctx.deps.env,
+    rpcUrl: profile.rpcUrl ?? (ctx.deps.env.CANDLE_SOLANA_RPC_URL?.trim() || undefined),
+    network: PLUGIN_NETWORK,
+    wallets: wallets2,
+    secrets
+  });
+  return ctx.deps.runPlugin(path, split2.passthrough, env);
+}
+
+// src/commands/pnl.ts
+init_args();
+init_deps();
+init_profiles();
+init_render();
+
+// src/usd.ts
+function formatUsd(value) {
+  if (!Number.isFinite(value))
+    return "?";
+  const sign2 = value < 0 ? "-" : "";
+  const abs = Math.abs(value);
+  if (abs > 0 && abs < 0.005)
+    return `${sign2}<$0.01`;
+  return `${sign2}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+function formatPrice(value) {
+  if (!Number.isFinite(value) || value <= 0)
+    return "?";
+  if (value >= 1)
+    return formatUsd(value);
+  return `$${Number(value.toPrecision(4)).toLocaleString("en-US", { maximumFractionDigits: 12 })}`;
+}
+function formatAmount(raw, decimals) {
+  const digits = BigInt(raw).toString().padStart(decimals + 1, "0");
+  if (decimals === 0)
+    return digits;
+  const whole = digits.slice(0, -decimals);
+  const fraction = digits.slice(-decimals).replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+function formatQuantity(value) {
+  if (!Number.isFinite(value))
+    return "?";
+  return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
+}
+function shortAddress2(address) {
+  return address.length > 12 ? `${address.slice(0, 4)}…${address.slice(-4)}` : address;
+}
+
+// src/commands/pnl.ts
+var NO_API_KEY3 = {
+  code: "NO_API_KEY",
+  message: "No API key for this profile.",
+  suggestion: "Set CANDLE_API_KEY, or run `candle auth login` to store one."
+};
+async function pnl(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}. Usage: candle pnl [--profile <name>]`, json);
+    return 2;
+  }
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(deps, NO_API_KEY3, json);
+    return 1;
+  }
+  const perProfile = ctx.profileFlag !== undefined;
+  let keyPrefix;
+  if (perProfile) {
+    keyPrefix = apiKeyPrefix(apiKey);
+    if (keyPrefix === undefined) {
+      writeLocalFailure(deps, {
+        code: "BAD_REQUEST",
+        message: `The API key for profile ${ctx.profileFlag} is not a Candle agent key, so it names no profile to read.`,
+        suggestion: "Run `candle auth login --profile <name>` to store a key for that profile."
+      }, json);
+      return 1;
+    }
+  }
+  await printIdentity(ctx);
+  const path = perProfile ? `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl` : "/api/v1/agent/books";
+  const result = await apiRequest(path, {
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    if (!perProfile && result.code === "SCOPE_MISSING") {
+      writeLocalFailure(deps, {
+        code: "SCOPE_MISSING",
+        message: "The account's P&L needs a key with the Read scope (account:read); this profile's key has none.",
+        suggestion: "Log in with a Read or Read:Write key, or read this key's own P&L: candle pnl --profile <name>"
+      }, json);
+      return 1;
+    }
+    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+    return 1;
+  }
+  const body = result.body;
+  if (json) {
+    const { success: _success, ...rest } = body;
+    deps.stdout.write(`${JSON.stringify({ ok: true, scope: perProfile ? "profile" : "account", ...rest })}
+`);
+    return 0;
+  }
+  if (perProfile) {
+    const { pnl: p, lp } = body;
+    deps.stdout.write(`P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills
+
+`);
+    writeSummary(ctx, {
+      realizedNetUsd: p.realizedNetUsd,
+      realizedGrossUsd: p.realizedGrossUsd,
+      feesUsd: p.feesUsd,
+      unrealizedUsd: p.unrealizedUsd,
+      unmarked: p.unmarkedPositions,
+      unvalued: p.unvalued,
+      counted: p.counted,
+      positions: p.openPositions.length,
+      truncated: p.truncated,
+      lookback: p.lookback,
+      lookbackUnit: "trades",
+      oldestMarkAt: p.oldestMarkAt,
+      lp
+    });
+    writePositions(ctx, p.openPositions, false);
+    writeLpPositions(ctx, lp, false);
+    return 0;
+  }
+  const books = body;
+  deps.stdout.write(`P&L for the account: every profile, the web app and the CLI, one ledger
+
+`);
+  writeSummary(ctx, {
+    ...books.all,
+    positions: books.positions.length,
+    truncated: books.truncated,
+    lookback: books.lookback,
+    lookbackUnit: "ledger rows",
+    oldestMarkAt: books.oldestMarkAt,
+    lp: books.lp
+  });
+  writePositions(ctx, books.positions, true);
+  writeLpPositions(ctx, books.lp, true);
+  return 0;
+}
+function writeSummary(ctx, s) {
+  const marked = s.positions - s.unmarked;
+  const lines = [
+    [
+      "Realized net",
+      formatUsd(s.realizedNetUsd),
+      `gross ${formatUsd(s.realizedGrossUsd)}, fees ${formatUsd(s.feesUsd)}`
+    ],
+    [
+      "Unrealized",
+      formatUsd(s.unrealizedUsd),
+      `${marked} of ${s.positions} open ${s.positions === 1 ? "position" : "positions"} marked${s.unmarked > 0 ? `; ${s.unmarked} unpriced, not counted` : ""}`
+    ]
+  ];
+  const lp = s.lp;
+  if (lp?.read) {
+    const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+    lines.push([
+      "LP realized",
+      formatUsd(lp.realizedUsd),
+      `withdrawn ${formatUsd(lp.withdrawnUsd)} against ${formatUsd(lp.realizedBasisUsd)} of cost basis, plus ${formatUsd(lp.claimedFeesUsd)} claimed fees`
+    ], [
+      "LP unrealized",
+      formatUsd(lp.unrealizedUsd),
+      `${lp.valued} of ${plural(lp.openPositions, "open LP position", "open LP positions")} valued${lp.unpriced > 0 ? `; ${lp.unpriced} unpriced, not counted` : ""}${lp.unreadable > 0 ? `; ${lp.unreadable} not read, not counted` : ""}${lp.closedOutsideLedger > 0 ? `; ${lp.closedOutsideLedger} closed outside the ledger, not counted` : ""}`
+    ], [
+      "LP vs holding",
+      lp.vsHoldingPositions > 0 ? formatUsd(lp.vsHoldingUsd) : "-",
+      lp.vsHoldingPositions > 0 ? `${lp.vsHoldingPositions} of ${lp.valued} valued, against holding the deposited tokens (now ${formatUsd(lp.holdValueUsd)})` : "no valued LP position with every deposit priced"
+    ], [
+      "Total",
+      formatUsd(s.realizedNetUsd + s.unrealizedUsd + lp.realizedUsd + lp.unrealizedUsd),
+      "realized net plus unrealized, tokens and LP"
+    ]);
+  } else if (lp) {
+    lines.push(["LP", "not read", `${terminalText(lp.reason)}; not in the total`], ["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized, tokens only"]);
+  } else {
+    lines.push(["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized"]);
+  }
+  const width = Math.max(...lines.map(([label]) => label.length));
+  const valueWidth = Math.max(...lines.map(([, value]) => value.length));
+  for (const [label, value, note] of lines) {
+    ctx.deps.stdout.write(`${label.padEnd(width)}  ${value.padStart(valueWidth)}  (${note})
+`);
+  }
+  if (s.oldestMarkAt !== undefined) {
+    ctx.deps.stdout.write(`Marks as old as ${new Date(s.oldestMarkAt).toISOString()}.
+`);
+  }
+  if (s.unvalued > 0 || (s.unresolved ?? 0) > 0) {
+    ctx.deps.stdout.write(`${s.unvalued} ${s.unvalued === 1 ? "fill" : "fills"} could not be valued and are not in these figures.
+`);
+  }
+  if (s.truncated) {
+    ctx.deps.stdout.write(`History is truncated: this covers the most recent ${s.lookback} ${s.lookbackUnit}, not the account's lifetime.
+`);
+  }
+  if (lp?.read) {
+    if (lp.unvalued > 0) {
+      ctx.deps.stdout.write(`${lp.unvalued} LP ledger ${lp.unvalued === 1 ? "leg" : "legs"} could not be valued and ${lp.unvalued === 1 ? "is" : "are"} not in these figures.
+`);
+    }
+    if (lp.closedOutsideLedger > 0) {
+      ctx.deps.stdout.write(`${lp.closedOutsideLedger} LP ${lp.closedOutsideLedger === 1 ? "position was" : "positions were"} closed outside the ledger (a sweep close writes no confirmation), so ${lp.closedOutsideLedger === 1 ? "its" : "their"} result is unknown and not in these figures.
+`);
+    }
+    if (lp.truncated) {
+      ctx.deps.stdout.write(`LP history is truncated: this covers the most recent ${lp.lookback} LP operations, not the account's lifetime.
+`);
+    }
+  }
+}
+function writeLpPositions(ctx, lp, withBook) {
+  if (!lp?.read || lp.positions.length === 0)
+    return;
+  const headers = ["POSITION", "POOL", "WALLET", "VALUE", "COST BASIS", "UNREALIZED", "VS HOLDING"];
+  if (withBook)
+    headers.push("BOOK");
+  const value = (p) => p.status === "valued" && p.valueUsd !== undefined ? formatUsd(p.valueUsd) : p.status === "unpriced" ? "unpriced" : p.status === "unreadable" ? "not read" : "closed outside the ledger";
+  const rows = lp.positions.map((p) => {
+    const row = [
+      shortAddress2(p.position),
+      shortAddress2(p.pool),
+      shortAddress2(p.wallet),
+      value(p),
+      formatUsd(p.costBasisUsd),
+      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd) : "-",
+      p.vsHoldingUsd !== undefined ? formatUsd(p.vsHoldingUsd) : "-"
+    ];
+    if (withBook)
+      row.push(p.book ?? "-");
+    return row;
+  });
+  ctx.deps.stdout.write(`
+Open LP positions
+${renderTable(headers, rows.map((row) => row.map(terminalText)))}
+`);
+}
+function writePositions(ctx, positions, withBook) {
+  if (positions.length === 0) {
+    ctx.deps.stdout.write(`
+No open positions.
+`);
+    return;
+  }
+  const headers = ["TOKEN", "QUANTITY", "AVG ENTRY", "MARK", "UNREALIZED"];
+  if (withBook)
+    headers.push("BOOK");
+  const rows = positions.map((p) => {
+    const row = [
+      p.symbol?.trim() || shortAddress2(p.mint),
+      formatQuantity(p.quantity),
+      formatPrice(p.avgEntryUsd),
+      p.markPriceUsd !== undefined ? formatPrice(p.markPriceUsd) : "unpriced",
+      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd) : "-"
+    ];
+    if (withBook)
+      row.push(p.book ?? "-");
+    return row;
+  });
+  ctx.deps.stdout.write(`
+Open positions
+${renderTable(headers, rows.map((row) => row.map(terminalText)))}
+`);
+}
+
+// src/commands/portfolio.ts
+init_args();
+init_deps();
+init_profiles();
+init_render();
+init_solana_lite();
+init_store();
+init_vault_support();
+var SOL_MINT = "So11111111111111111111111111111111111111112";
+var KNOWN_SYMBOLS = {
+  [SOL_MINT]: "SOL",
+  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: "USDC",
+  "9dXSV8VWuYvGfTzqvkBeoFwH9ihVTybDuWo5VaJPCNDL": "CNDL"
+};
+var CHUNK = 100;
+var TOKEN_READS_IN_FLIGHT = 8;
+var NO_API_KEY4 = {
+  code: "NO_API_KEY",
+  message: "No API key for this profile.",
+  suggestion: "Set CANDLE_API_KEY, or run `candle auth login` to store one."
+};
+async function portfolio(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"], pathFlags: ["--keystore"] });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  if (parsed.positionals.length > 0)
+    return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  const { deps } = ctx;
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(deps, NO_API_KEY4, ctx.json);
+    return 1;
+  }
+  const rpcGiven = parsed.values["--rpc-url"] !== undefined || Boolean(deps.env[RPC_URL_ENV]?.trim());
+  let rpcUrl2;
+  if (rpcGiven) {
+    const resolved = rpcUrlFrom(ctx, parsed);
+    if (typeof resolved !== "string")
+      return usage(ctx, resolved.error);
+    rpcUrl2 = resolved;
+  }
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    let vaultEntries;
+    let vaultReason;
+    const raw = rpcUrl2 === undefined ? null : await readVaultRaw(resolvedVault.path);
+    if (rpcUrl2 === undefined) {
+      vaultReason = `not read: vault balances are read only over your own RPC; pass --rpc-url or set ${RPC_URL_ENV}`;
+    } else if (raw === null) {
+      vaultReason = `no vault at ${resolvedVault.path}`;
+    } else {
+      if (!refuseEnvPassphrase(ctx))
+        return 1;
+      if (!requirePromptStreams(ctx, "portfolio"))
+        return 1;
+      const vault = hold((await unlockInteractively(ctx, resolvedVault.path, raw)).vault);
+      vaultEntries = vault.index.entries.filter((entry) => entry.chain === "solana" && (entry.role === "vault" || entry.role === "external")).map((entry) => ({ address: entry.address, label: entry.label, role: entry.role }));
+    }
+    await printIdentity(ctx);
+    const rpcHost = rpcUrl2 === undefined ? undefined : new URL(rpcUrl2).host;
+    if (vaultEntries && vaultEntries.length > 0 && rpcHost !== undefined) {
+      const requests = Math.ceil(vaultEntries.length / CHUNK) + vaultEntries.length * 2;
+      deps.stderr.write(`Reading ${vaultEntries.length} vault ${vaultEntries.length === 1 ? "address" : "addresses"} from ${rpcHost} in ${requests} requests. That endpoint sees them together; Candle sees none of them.
+`);
+    }
+    const [candle, vaultRead] = await Promise.all([
+      apiRequest("/api/v1/agent/portfolio", {
+        auth: "key",
+        credentials: { apiKey },
+        apiUrl: ctx.apiUrl,
+        fetch: deps.fetch,
+        env: deps.env
+      }),
+      vaultEntries && rpcUrl2 ? readOwnRpc(vaultEntries.map((entry) => entry.address), rpcUrl2, deps.fetch) : Promise.resolve(undefined)
+    ]);
+    if (!candle.ok) {
+      writeFailure(deps, candle, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
+      return 1;
+    }
+    const fromCandle = candle.body;
+    const prices = { ...fromCandle.prices ?? {} };
+    let priceFailure;
+    if (vaultRead) {
+      const wanted = new Set;
+      for (const wallet2 of vaultRead.byAddress.values()) {
+        if (wallet2.lamports !== null)
+          wanted.add(SOL_MINT);
+        for (const token of wallet2.tokens ?? [])
+          wanted.add(token.mint);
+      }
+      const missing = [...wanted].filter((mint) => prices[mint] === undefined);
+      for (let at = 0;at < missing.length; at += CHUNK) {
+        const priced = await apiRequest("/api/v1/agent/prices", {
+          method: "POST",
+          body: { mints: missing.slice(at, at + CHUNK) },
+          auth: "key",
+          credentials: { apiKey },
+          apiUrl: ctx.apiUrl,
+          fetch: deps.fetch,
+          env: deps.env
+        });
+        if (priced.ok)
+          Object.assign(prices, priced.body.prices ?? {});
+        else
+          priceFailure ??= priced.message;
+      }
+    }
+    if (priceFailure !== undefined) {
+      deps.stderr.write(`Some vault holdings could not be priced: ${terminalText(priceFailure)}. They are shown as unpriced.
+`);
+    }
+    const lpByWallet = new Map;
+    const lpOf = (address) => {
+      const entry = lpByWallet.get(address) ?? { positions: [], unread: [] };
+      lpByWallet.set(address, entry);
+      return entry;
+    };
+    for (const position of fromCandle.lp?.positions ?? [])
+      lpOf(position.wallet).positions.push(lpRow(position, prices));
+    for (const unread of fromCandle.lp?.unreadable ?? [])
+      lpOf(unread.wallet).unread.push(unread.position);
+    const wallet = (address, read, extra) => {
+      const holdings = read === undefined ? null : valueHoldings(read, prices);
+      const unread = read === undefined ? [] : [...read.lamports === null ? ["sol"] : [], ...read.tokens === null ? ["tokens"] : []];
+      const lp2 = fromCandle.lp ? lpOf(address) : undefined;
+      return {
+        address,
+        ...extra,
+        holdings,
+        ...unread.length > 0 ? { unread } : {},
+        ...lp2 ? { lpPositions: lp2.positions } : {},
+        ...lp2 && lp2.unread.length > 0 ? { lpUnread: lp2.unread } : {},
+        valueUsd: (holdings ?? []).reduce((sum, h) => sum + (h.valueUsd ?? 0), 0) + (lp2?.positions ?? []).reduce((sum, p) => sum + (p.valueUsd ?? 0), 0),
+        unpriced: (holdings ?? []).filter((h) => h.priceUsd === null).length + (lp2?.positions ?? []).filter((p) => p.valueUsd === null).length
+      };
+    };
+    const group = (name, wallets2, read, reason) => ({
+      group: name,
+      read,
+      ...reason !== undefined ? { reason } : {},
+      wallets: wallets2,
+      valueUsd: wallets2.reduce((sum, w) => sum + w.valueUsd, 0),
+      unpriced: wallets2.reduce((sum, w) => sum + w.unpriced, 0)
+    });
+    const orNull = (read) => read.lamports === null && read.tokens === null ? undefined : read;
+    const groups = [
+      group("vault", (vaultEntries ?? []).map((entry) => {
+        const read = vaultRead?.byAddress.get(entry.address);
+        return wallet(entry.address, read ? orNull(read) : undefined, { label: entry.label, role: entry.role });
+      }), vaultEntries !== undefined, vaultReason),
+      group("tee", (fromCandle.tee ?? []).map((row) => wallet(row.address, orNull(row), {
+        id: row.id,
+        ...row.label ? { label: row.label } : {},
+        active: row.active
+      })), true),
+      group("embedded", (fromCandle.embedded ?? []).map((row) => wallet(row.address, orNull(row), {})), true)
+    ];
+    const unavailable = [...vaultRead?.unavailable ?? [], ...fromCandle.unavailable ?? []];
+    const lpUnread = (fromCandle.lp?.unreadable ?? []).length;
+    const complete = fromCandle.complete !== false && unavailable.length === 0 && lpUnread === 0;
+    const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0);
+    const unpriced = groups.reduce((sum, g) => sum + g.unpriced, 0);
+    const lp = fromCandle.lp ? {
+      positions: fromCandle.lp.positions.length,
+      unpriced: fromCandle.lp.positions.filter((p) => p.valueUsd === null).length,
+      unreadable: lpUnread,
+      valueUsd: fromCandle.lp.positions.reduce((sum, p) => sum + (p.valueUsd ?? 0), 0)
+    } : undefined;
+    if (ctx.json) {
+      writeJson(deps, {
+        ok: true,
+        totalUsd,
+        unpriced,
+        complete,
+        unavailable,
+        ...rpcHost !== undefined ? { rpcHost } : {},
+        ...lp ? { lp } : {},
+        groups
+      });
+      return complete ? 0 : 3;
+    }
+    writeTable(ctx, groups, { totalUsd, unpriced, unavailable: unavailable.length, lp });
+    return complete ? 0 : 3;
+  });
+}
+async function readOwnRpc(addresses, rpcUrl2, fetchFn) {
+  const rpc2 = createSolanaRpc(rpcUrl2, fetchFn);
+  const unique = [...new Set(addresses)];
+  const lamports = new Map;
+  for (let at = 0;at < unique.length; at += CHUNK) {
+    const chunk = unique.slice(at, at + CHUNK);
+    try {
+      const accounts = await rpc2.getMultipleAccounts(chunk);
+      for (const [i, address] of chunk.entries())
+        lamports.set(address, (accounts[i]?.lamports ?? 0n).toString());
+    } catch {
+      for (const address of chunk)
+        lamports.set(address, null);
+    }
+  }
+  const tokens = new Map;
+  const failed = new Set;
+  const reads = unique.flatMap((owner) => [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((programId) => ({ owner, programId })));
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(TOKEN_READS_IN_FLIGHT, reads.length) }, async () => {
+    while (next < reads.length) {
+      const { owner, programId } = reads[next++];
+      try {
+        const accounts = await rpc2.getTokenAccountsByOwner(owner, programId);
+        const held = tokens.get(owner) ?? new Map;
+        tokens.set(owner, held);
+        const program = programId === TOKEN_PROGRAM_ID ? "token" : "token-2022";
+        for (const account of accounts) {
+          if (!/^\d+$/.test(account.amountRaw) || BigInt(account.amountRaw) === 0n)
+            continue;
+          const key = `${program}:${account.mint}`;
+          const prior = held.get(key);
+          held.set(key, {
+            mint: account.mint,
+            amountRaw: (BigInt(prior?.amountRaw ?? "0") + BigInt(account.amountRaw)).toString(),
+            decimals: account.decimals,
+            program
+          });
+        }
+      } catch {
+        failed.add(owner);
+      }
+    }
+  }));
+  const byAddress = new Map;
+  const unavailable = [];
+  for (const address of unique) {
+    const sol = lamports.get(address) ?? null;
+    const held = failed.has(address) ? null : [...tokens.get(address)?.values() ?? []];
+    byAddress.set(address, { lamports: sol, tokens: held });
+    if (sol === null || held === null)
+      unavailable.push(address);
+  }
+  return { byAddress, unavailable };
+}
+function valueHoldings(read, prices) {
+  const raw = [];
+  if (read.lamports !== null && BigInt(read.lamports) > 0n) {
+    raw.push({ mint: SOL_MINT, amountRaw: read.lamports, decimals: 9, program: "native" });
+  }
+  for (const token of read.tokens ?? [])
+    raw.push(token);
+  return raw.map((h) => {
+    const price = prices[h.mint];
+    const priceUsd = price?.priceUsd ?? null;
+    const amount = formatAmount(h.amountRaw, h.decimals);
+    return {
+      ...h,
+      symbol: KNOWN_SYMBOLS[h.mint] ?? price?.symbol ?? null,
+      amount,
+      priceUsd,
+      valueUsd: priceUsd === null ? null : Number(amount) * priceUsd,
+      priceSource: price?.source ?? null
+    };
+  });
+}
+function lpRow(position, prices) {
+  return {
+    position: position.position,
+    pool: position.pool,
+    tokens: position.tokens.map((token) => ({
+      ...token,
+      symbol: KNOWN_SYMBOLS[token.mint] ?? token.symbol ?? prices[token.mint]?.symbol ?? null,
+      amount: formatAmount(token.amountRaw, token.decimals),
+      unclaimedFees: formatAmount(token.unclaimedFeesRaw, token.decimals)
+    })),
+    ...position.poolShare !== undefined ? { poolShare: position.poolShare } : {},
+    valueUsd: position.valueUsd,
+    unpriced: position.unpriced
+  };
+}
+function writeTable(ctx, groups, totals) {
+  const { deps } = ctx;
+  const rows = [];
+  const lpRows = [];
+  const notes = [];
+  for (const g of groups) {
+    const shown = g.wallets.filter((w) => w.holdings === null || w.holdings.length > 0 || (w.unread?.length ?? 0) > 0 || (w.lpPositions?.length ?? 0) > 0 || (w.lpUnread?.length ?? 0) > 0).sort((a, b) => b.valueUsd - a.valueUsd);
+    let lpCount = 0;
+    let lpUnread = 0;
+    for (const w of shown) {
+      const name = `${w.label ? `${w.label} ` : ""}(${shortAddress2(w.address)})${w.role === "external" ? " external" : ""}`;
+      const side = (t, amount) => `${amount} ${t.symbol ?? shortAddress2(t.mint)}`;
+      for (const p of [...w.lpPositions ?? []].sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1))) {
+        lpCount += 1;
+        lpRows.push([
+          g.group,
+          name,
+          shortAddress2(p.position),
+          shortAddress2(p.pool),
+          p.tokens.map((t) => side(t, t.amount)).join(" + "),
+          p.tokens.map((t) => side(t, t.unclaimedFees)).join(" + "),
+          p.valueUsd === null ? "unpriced" : formatUsd(p.valueUsd)
+        ]);
+      }
+      for (const position of w.lpUnread ?? []) {
+        lpUnread += 1;
+        lpRows.push([g.group, name, shortAddress2(position), "-", "not read", "-", "-"]);
+      }
+      if (w.holdings === null) {
+        rows.push([g.group, name, "-", "not read", "-", "-"]);
+        continue;
+      }
+      const sorted = [...w.holdings].sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1));
+      for (const h of sorted) {
+        rows.push([
+          g.group,
+          name,
+          h.symbol ?? shortAddress2(h.mint),
+          h.amount,
+          h.priceUsd === null ? "unpriced" : formatPrice(h.priceUsd),
+          h.valueUsd === null ? "-" : formatUsd(h.valueUsd)
+        ]);
+      }
+      for (const part of w.unread ?? [])
+        rows.push([g.group, name, part === "sol" ? "SOL" : "tokens", "not read", "-", "-"]);
+    }
+    const empty = g.wallets.length - shown.length;
+    const count = `${g.wallets.length} ${g.wallets.length === 1 ? "wallet" : "wallets"}`;
+    notes.push([
+      g.group,
+      g.read ? formatUsd(g.valueUsd) : "-",
+      g.read ? `${count}${empty > 0 ? `, ${empty} empty not shown` : ""}${lpCount > 0 ? `, ${lpCount} LP ${lpCount === 1 ? "position" : "positions"}` : ""}${lpUnread > 0 ? `, ${lpUnread} LP not read` : ""}${g.unpriced > 0 ? `, ${g.unpriced} unpriced` : ""}` : g.reason ?? "not read"
+    ]);
+  }
+  if (rows.length > 0)
+    deps.stdout.write(`
+${renderTable(["GROUP", "WALLET", "TOKEN", "AMOUNT", "PRICE", "VALUE"], rows.map((row) => row.map(terminalText)))}
+`);
+  else
+    deps.stdout.write(`
+Nothing held in any wallet read.
+`);
+  if (lpRows.length > 0)
+    deps.stdout.write(`
+LP positions
+${renderTable(["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEES", "VALUE"], lpRows.map((row) => row.map(terminalText)))}
+`);
+  notes.push([
+    "total",
+    formatUsd(totals.totalUsd),
+    totals.unpriced > 0 ? `${totals.unpriced} unpriced ${totals.unpriced === 1 ? "holding" : "holdings"} not counted` : "every holding priced"
+  ]);
+  const width = Math.max(...notes.map(([label]) => label.length));
+  const valueWidth = Math.max(...notes.map(([, value]) => value.length));
+  deps.stdout.write(`
+`);
+  for (const [label, value, note] of notes) {
+    deps.stdout.write(`${label.padEnd(width)}  ${value.padStart(valueWidth)}  ${note}
+`);
+  }
+  if (totals.unavailable > 0) {
+    deps.stdout.write(`${totals.unavailable} ${totals.unavailable === 1 ? "wallet" : "wallets"} could not be read in full. What was not read is marked "not read" and is not in the total.
+`);
+  }
+  if ((totals.lp?.unreadable ?? 0) > 0) {
+    const n = totals.lp?.unreadable ?? 0;
+    deps.stdout.write(`${n} LP ${n === 1 ? "position" : "positions"} could not be read (the pool did not answer). ${n === 1 ? "It is" : "They are"} marked "not read" and not in the total.
+`);
+  }
+}
+
+// src/commands/profile.ts
+init_args();
+init_profiles();
+init_render();
+async function profileList(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const rows = profileTable(await deps.readConfig(), deps.now());
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(rows)}
+`);
+    return 0;
+  }
+  if (rows.length === 0) {
+    deps.stdout.write(`No profiles on this machine. Run: candle auth login
+`);
+    return 0;
+  }
+  deps.stdout.write(renderTable(["Profile", "Account", "Cached", "Host", "Key"], rows.map((r) => [
+    r.active ? `${r.name} (active)` : r.name,
+    r.account ?? "unknown",
+    r.cachedAge,
+    r.apiUrl ?? "-",
+    r.keyPrefix ?? "-"
+  ])));
+  return 0;
+}
+var NEEDS_SCHEME = (value) => `It needs a scheme, such as https://${value}`;
+var BAD_SCHEME = "The scheme must be http or https.";
+function apiUrlFault(value, env) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return NEEDS_SCHEME(value);
+  }
+  if (url.host === "")
+    return NEEDS_SCHEME(value);
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    return BAD_SCHEME;
+  return insecureApiUrlFault(value, env);
+}
+async function profileAdd(args, ctx) {
+  const { deps, json, apiUrlFlag } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const name = parsed.positionals[0];
+  if (!name || parsed.positionals.length !== 1) {
+    writeUsageFailure(deps, "Usage: candle profile add <name> --api-url <url>", json);
+    return 2;
+  }
+  if (!isValidProfileName(name)) {
+    writeUsageFailure(deps, `Invalid profile name: ${name}`, json);
+    return 2;
+  }
+  if (!apiUrlFlag) {
+    writeUsageFailure(deps, "profile add needs --api-url <url>: the host this profile authenticates against", json);
+    return 2;
+  }
+  const fault = apiUrlFault(apiUrlFlag, deps.env);
+  if (fault) {
+    writeUsageFailure(deps, `Invalid --api-url: ${apiUrlFlag}. ${fault}`, json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  if (config.profiles !== undefined && Object.hasOwn(config.profiles, name)) {
+    writeLocalFailure(deps, {
+      code: "PROFILE_EXISTS",
+      message: `Profile "${name}" already exists.`,
+      suggestion: `Run: candle profile use ${name}`
+    }, json);
+    return 1;
+  }
+  await deps.updateProfile(name, { apiUrl: apiUrlFlag });
+  if (!config.activeProfile)
+    await deps.writeConfig({ activeProfile: name });
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ name, apiUrl: apiUrlFlag })}
+`);
+  else
+    deps.stdout.write(`Created profile ${name} for ${apiUrlFlag}. Run: candle auth login --profile ${name}
+`);
+  return 0;
+}
+async function profileUse(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const name = parsed.positionals[0];
+  if (!name || parsed.positionals.length !== 1) {
+    writeUsageFailure(deps, "Usage: candle profile use <name>", json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  const profile = config.profiles !== undefined && Object.hasOwn(config.profiles, name) ? config.profiles[name] : undefined;
+  if (!profile) {
+    const names = Object.keys(config.profiles ?? {}).join(", ") || "(none)";
+    writeLocalFailure(deps, {
+      code: "NO_SUCH_PROFILE",
+      message: `No profile named "${name}".`,
+      suggestion: `Profiles on this machine: ${names}`
+    }, json);
+    return 1;
+  }
+  await deps.writeConfig({ activeProfile: name });
+  const envProfile = deps.env.CANDLE_PROFILE?.trim();
+  if (envProfile && envProfile !== name) {
+    deps.stderr.write(`CANDLE_PROFILE=${envProfile} is set and takes precedence over the active profile.
+`);
+  }
+  const apiUrl = ctx.apiUrlFlag ?? resolveApiUrl(profile.apiUrl, deps.env);
+  const apiKey = await deps.store.get(profileSecretRef(name, "apiKey"));
+  let account = profile.account;
+  let username = profile.username;
+  if (apiKey) {
+    const { account: live, username: liveUsername, failure } = await fetchAccount(deps, apiUrl, apiKey);
+    if (live) {
+      account = live;
+      username = liveUsername;
+      await deps.updateProfile(name, { account: live, username: liveUsername, accountCachedAt: deps.now() });
+    } else {
+      deps.stderr.write(`Could not refresh the account for ${name} (${failure}); keeping the cached value.
+`);
+    }
+  } else {
+    deps.stderr.write(`No stored credentials for ${name}. Run: candle auth login --profile ${name}
+`);
+  }
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ name, account, apiUrl })}
+`);
+  else
+    deps.stdout.write(`${identityLine(name, account, apiUrl, undefined, username)}
+`);
+  return 0;
+}
+var SECRET_KINDS = ["deviceToken", "apiKey"];
+async function profileRename(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const [from, to] = parsed.positionals;
+  if (!from || !to || parsed.positionals.length !== 2) {
+    writeUsageFailure(deps, "Usage: candle profile rename <old> <new>", json);
+    return 2;
+  }
+  if (!isValidProfileName(to)) {
+    writeUsageFailure(deps, `Invalid profile name: ${to}`, json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  const profiles = { ...config.profiles ?? {} };
+  if (!profiles[from]) {
+    writeLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${from}".` }, json);
+    return 1;
+  }
+  if (profiles[to]) {
+    writeLocalFailure(deps, { code: "PROFILE_EXISTS", message: `Profile "${to}" already exists.` }, json);
+    return 1;
+  }
+  for (const kind of SECRET_KINDS) {
+    const value = await deps.store.get(profileSecretRef(from, kind));
+    if (value) {
+      await deps.store.set(profileSecretRef(to, kind), value);
+      await deps.store.delete(profileSecretRef(from, kind));
+    }
+  }
+  profiles[to] = profiles[from];
+  delete profiles[from];
+  await deps.writeConfig({ profiles, ...config.activeProfile === from ? { activeProfile: to } : {} });
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ from, to })}
+`);
+  else
+    deps.stdout.write(`Renamed profile ${from} to ${to}.
+`);
+  return 0;
+}
+async function profileRemove(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, { booleanFlags: ["--yes"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const name = parsed.positionals[0];
+  if (!name || parsed.positionals.length !== 1) {
+    writeUsageFailure(deps, "Usage: candle profile remove <name> --yes", json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  const profiles = { ...config.profiles ?? {} };
+  const profile = profiles[name];
+  if (!profile) {
+    writeLocalFailure(deps, { code: "NO_SUCH_PROFILE", message: `No profile named "${name}".` }, json);
+    return 1;
+  }
+  if (!parsed.booleans.has("--yes")) {
+    writeUsageFailure(deps, `Would delete profile ${name} (${profile.account ?? "unknown"} at ${profile.apiUrl ?? "default host"}) and its stored credentials. Re-run with --yes to confirm.`, json);
+    return 2;
+  }
+  for (const kind of SECRET_KINDS)
+    await deps.store.delete(profileSecretRef(name, kind));
+  delete profiles[name];
+  const wasActive = config.activeProfile === name;
+  await deps.writeConfig({ profiles, ...wasActive ? { activeProfile: undefined } : {} });
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ removed: name })}
+`);
+  else {
+    const needsPick = wasActive && Object.keys(profiles).length > 1;
+    deps.stdout.write(`Deleted profile ${name} and its stored credentials.${needsPick ? " Run: candle profile use <name>" : ""}
+`);
+  }
+  return 0;
+}
+
+// src/commands/setup.ts
+init_args();
+init_deps();
+init_profiles();
+init_render();
+var SKILLS_CLAUDE_COMMAND = "/plugin marketplace add candledottv/agentic";
+var CODING_AGENTS_DOCS = "https://docs.candle.tv/developers/coding-agents";
+function section(deps, title) {
+  deps.stdout.write(`
+== ${title} ==
+`);
+}
+async function setup(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { booleanFlags: ["--no-browser"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  if (json) {
+    writeUsageFailure(deps, "setup is an interactive wizard; for machine use, compose `auth login --json` and `doctor --json` directly", json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  deps.stdout.write(`candle setup: this wizard authorizes the device, shows funding, and verifies everything.
+`);
+  section(deps, "1/4 Authorize this device");
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  let nextCtx = ctx;
+  if (deviceToken && apiKey) {
+    deps.stdout.write(`Already authorized on this machine (device token + API key present). Skipping login.
+`);
+  } else {
+    const loginArgs = parsed.booleans.has("--no-browser") ? ["--no-browser"] : [];
+    const loginExit = await authLogin(loginArgs, ctx);
+    if (loginExit !== 0) {
+      deps.stderr.write(`Setup stopped: device authorization did not complete.
+`);
+      return loginExit;
+    }
+    const loginConfig = await deps.readConfig();
+    const resolution = resolveProfileName(loginConfig, { flag: ctx.profileFlag, env: deps.env });
+    if (!resolution.ok) {
+      deps.stderr.write(`${resolution.message}
+`);
+      return 1;
+    }
+    nextCtx = { ...ctx, profile: resolution.name };
+  }
+  section(deps, "2/4 Fund your agent's wallets");
+  const key = await resolveApiKey(deps, nextCtx.profile);
+  const walletsResult = key ? await apiRequest("/api/v1/agent/wallets/embedded", {
+    auth: "key",
+    credentials: { apiKey: key },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  }) : null;
+  if (walletsResult?.ok) {
+    const body = walletsResult.body;
+    const solana = body.wallets?.solana ?? null;
+    const evm = body.wallets?.evm ?? null;
+    if (body.account)
+      deps.stdout.write(`${identityLine(nextCtx.profile, body.account, apiUrl, undefined, body.username)}
+`);
+    if (solana)
+      deps.stdout.write(`Solana (send SOL here):    ${solana.address}
+`);
+    if (evm)
+      deps.stdout.write(`Hood    (send ETH here):    ${evm.address}
+`);
+    deps.stdout.write(`Launches and trades are paid from these wallets. There is no minimum, and read-only requests work unfunded.
+`);
+    deps.stdout.write(`
+Tell your agent (paste into its context):
+`);
+    deps.stdout.write(`  Install the Candle CLI: curl -fsSL https://candle.tv/install.sh | bash
+`);
+    deps.stdout.write(`  You operate a Candle agent account. API base URL: ${apiUrl} (send your API key in the x-api-key header).
+`);
+    if (solana)
+      deps.stdout.write(`  Your Solana wallet: ${solana.address}
+`);
+    if (evm)
+      deps.stdout.write(`  Your Hood Chain (EVM) wallet: ${evm.address}
+`);
+    deps.stdout.write(`  Check balances before trading, and ask me to fund whichever chain you need.
+`);
+  } else {
+    deps.stdout.write("Could not read the agent wallets right now; `candle wallets` shows them once the API is reachable.\n");
+  }
+  section(deps, "3/4 Connect your agent");
+  deps.stdout.write(`Claude Code skills:  ${SKILLS_CLAUDE_COMMAND}
+`);
+  deps.stdout.write(`MCP (any client), paste into the host's MCP config:
+`);
+  deps.stdout.write(`${await mcpClientConfig([], deps)}
+`);
+  deps.stdout.write(`The MCP server is built into this binary; the host needs nothing else installed.
+`);
+  deps.stdout.write(`Other platforms:     ${CODING_AGENTS_DOCS}
+`);
+  section(deps, "4/4 Health check");
+  const doctorExit = await doctor([], nextCtx);
+  const config = await deps.readConfig();
+  const { portalOrigin } = effectiveProfileFields(config, nextCtx.profile);
+  deps.stdout.write(`
+Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl, portalOrigin)}
+`);
+  deps.stdout.write(doctorExit === 0 ? `Setup complete. Your agent can launch, trade, and transfer the moment the wallets are funded.
+` : "Setup finished with failed checks above; fix them and re-run `candle doctor`.\n");
+  return doctorExit;
+}
+
+// src/commands/sign.ts
+init_sha256();
+init_esm();
+init_args();
+init_solana_lite();
+init_errors();
+init_promote_support();
+init_store();
+init_vault_support();
+async function readInput(ctx, file) {
+  if (file !== undefined)
+    return ctx.deps.readBytes(file);
+  return ctx.deps.readStdin();
+}
+function assertExternalSigners(index, compiled, numRequiredSignatures, named) {
+  const required = compiled.keys.slice(0, numRequiredSignatures);
+  const signers = [];
+  for (const [i, address] of required.entries()) {
+    const entry = index.entries.find((candidate) => candidate.address === address);
+    const role = i === 0 ? "the fee payer" : `signer ${i}`;
+    if (entry === undefined) {
+      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address} (${role}) is not an address this vault holds. candle sign signs only with this vault's external wallets.`, {
+        suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
+      });
+    }
+    if (entry.role !== "external") {
+      throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `${address} (${role}) is ${describeRole(entry)}${entry.label ? ` "${entry.label}"` : ""}, which never signs for an outside tool. Only an external wallet does (candle external new).`, {
+        suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
+      });
+    }
+    const provided = named.find((candidate) => candidate.id === entry.id);
+    if (provided === undefined) {
+      throw new VaultError("SIGN_SIGNER_NOT_PROVIDED", `${address} (${role}) is external wallet "${entry.label}", and this invocation did not name it. Nothing was signed rather than returning a half-signed transaction.`, { suggestion: `Add: --wallet ${entry.label}` });
+    }
+    signers.push(entry);
+  }
+  return signers;
+}
+async function readMints(rpc2, mints) {
+  const out = new Map;
+  if (mints.length === 0)
+    return out;
+  let accounts;
+  try {
+    accounts = await rpc2.getMultipleAccounts(mints);
+  } catch {
+    for (const mint of mints)
+      out.set(mint, { risks: ["the mint could not be read, so its decimals and warnings are unknown"] });
+    return out;
+  }
+  for (const [i, mint] of mints.entries()) {
+    const account = accounts[i];
+    if (!account) {
+      out.set(mint, { risks: ["the mint does not exist, so its decimals and warnings are unknown"] });
+      continue;
+    }
+    try {
+      const profile = parseMintAccount(mint, account.owner, account.data);
+      out.set(mint, { decimals: profile.decimals, risks: profile.risks.map((risk) => risk.message) });
+    } catch (error) {
+      out.set(mint, { risks: [`the mint could not be parsed (${error instanceof Error ? error.message : error})`] });
+    }
+  }
+  return out;
+}
+function formatAmount2(raw, decimals) {
+  if (decimals === undefined)
+    return `${raw} raw`;
+  const negative = raw < 0n;
+  const abs = negative ? -raw : raw;
+  const whole = abs / 10n ** BigInt(decimals);
+  const frac = (abs % 10n ** BigInt(decimals)).toString().padStart(decimals, "0").replace(/0+$/, "");
+  return `${negative ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`;
+}
+function formatSol2(lamports) {
+  return `${formatAmount2(lamports, 9)} SOL`;
+}
+function displayLines(input) {
+  const { tx, compiled, signers, simulation, mints } = input;
+  const lines = [];
+  const feePayer = compiled.keys[0] ?? "(none)";
+  const signerAddresses = new Set(signers.map((entry) => entry.address));
+  lines.push(`message     ${tx.message.version === "legacy" ? "legacy" : "v0"}, ${tx.message.instructions.length} instruction(s), ${compiled.keys.length} account(s)${tx.message.lookups.length > 0 ? ` (${tx.message.lookups.length} lookup table(s) resolved)` : ""}`);
+  lines.push(`fee payer   ${feePayer}${signerAddresses.has(feePayer) ? "" : "  (NOT this vault's external wallet)"}`);
+  lines.push(`signers     ${signers.map((entry) => `${entry.label} (${entry.address})`).join(", ")}`);
+  const programs = [...new Set(tx.message.instructions.map((ix) => compiled.keys[ix.programIdIndex] ?? "?"))];
+  for (const program of programs)
+    lines.push(`program     ${programNameOf(program)}`);
+  const deltas = computeDeltas(simulation.snapshots);
+  for (const entry of signers) {
+    const sol = deltas.sol.find((delta) => delta.address === entry.address);
+    if (sol) {
+      lines.push(`${entry.label.padEnd(11)} ${formatSol2(sol.before)} -> ${formatSol2(sol.after)} (${sol.after >= sol.before ? "+" : ""}${formatSol2(sol.after - sol.before)})`);
+    } else {
+      lines.push(`${entry.label.padEnd(11)} SOL unchanged (not a writable account of this transaction)`);
+    }
+    for (const token of deltas.tokens.filter((delta) => delta.owner === entry.address)) {
+      const info = mints.get(token.mint);
+      lines.push(`            ${token.mint}: ${formatAmount2(token.before, info?.decimals)} -> ${formatAmount2(token.after, info?.decimals)} (${token.after >= token.before ? "+" : ""}${formatAmount2(token.after - token.before, info?.decimals)}${info?.decimals === undefined ? "" : `, ${info.decimals} dp`}) in ${token.account}`);
+    }
+  }
+  const others = [];
+  for (const sol of deltas.sol) {
+    if (signerAddresses.has(sol.address) || sol.after <= sol.before)
+      continue;
+    if (deltas.tokens.some((token) => token.account === sol.address))
+      continue;
+    others.push(`${sol.address} receives +${formatSol2(sol.after - sol.before)}`);
+  }
+  for (const token of deltas.tokens) {
+    if (signerAddresses.has(token.owner) || token.after <= token.before)
+      continue;
+    const info = mints.get(token.mint);
+    others.push(`${token.owner} receives +${formatAmount2(token.after - token.before, info?.decimals)} of ${token.mint} (account ${token.account})`);
+  }
+  if (others.length === 0)
+    lines.push("others      no other account gains a balance in the simulation");
+  for (const line of others)
+    lines.push(`receives    ${line}`);
+  for (const [mint, info] of mints)
+    for (const risk of info.risks)
+      lines.push(`warning     ${mint}: ${risk}`);
+  if (simulation.result.unitsConsumed !== undefined)
+    lines.push(`compute     ${simulation.result.unitsConsumed} units in simulation`);
+  lines.push("note        the simulation is evidence, not a guarantee: a program can behave differently once signed");
+  return lines;
+}
+async function sign2(args, ctx) {
+  const lifted = takeRepeatedFlag(args, "--wallet");
+  if ("error" in lifted)
+    return usage(ctx, lifted.error);
+  const parsed = parseArgs(lifted.rest, {
+    valueFlags: ["--file", "--rpc-url", "--keystore"],
+    booleanFlags: ["--broadcast", "--yes", "--accept-older-copy"],
+    pathFlags: ["--keystore", "--file"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  if (parsed.positionals.length > 0) {
+    return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}. The transaction comes from --file <path> or stdin.`);
+  }
+  if (lifted.values.length === 0)
+    return usage(ctx, "--wallet <external> is required (repeat it for a multi-signer transaction).");
+  const rpcUrl2 = rpcUrlFrom(ctx, parsed);
+  if (typeof rpcUrl2 !== "string")
+    return usage(ctx, rpcUrl2.error);
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "candle sign"))
+    return 1;
+  const { deps } = ctx;
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
+  const yes = parsed.booleans.has("--yes");
+  return runVaultCommand(ctx, async ({ hold }) => {
+    let tx;
+    try {
+      const raw2 = await readInput(ctx, parsed.values["--file"]);
+      tx = decodeTransaction(decodeStrictBase64(new TextDecoder().decode(raw2)));
+    } catch (error) {
+      if (error instanceof TransactionDecodeError) {
+        throw new VaultError("SIGN_TRANSACTION_UNDECODABLE", `The input is not one base64 legacy or v0 transaction: ${error.message}.`, { suggestion: "Nothing was signed. Pass one base64 transaction through --file <path> or stdin." });
+      }
+      throw new VaultError("SIGN_TRANSACTION_UNDECODABLE", `The input could not be read: ${error instanceof Error ? error.message : error}.`, { suggestion: "Nothing was signed. Check --file <path>, or pipe the transaction on stdin." });
+    }
+    const rpc2 = createSolanaRpc(rpcUrl2, deps.fetch);
+    let compiled;
+    try {
+      compiled = await resolveCompiledKeys(tx.message, rpc2);
+    } catch (error) {
+      if (error instanceof LookupTableError)
+        throw new VaultError("SIGN_LOOKUP_TABLE_UNRESOLVED", `${error.message}. Nothing was displayed or signed.`, {
+          suggestion: "Point --rpc-url at an endpoint that has the lookup table, then run it again."
+        });
+      throw error;
+    }
+    const raw = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    });
+    const vault = hold(opened.vault);
+    const named = [];
+    for (const requested of lifted.values) {
+      assertNotEvmEntry(vault.index, requested, "candle sign");
+      const entry = findExternalEntry(vault.index, requested);
+      if (entry === undefined) {
+        const other = vault.index.entries.find((candidate) => candidate.label === requested || candidate.address === requested);
+        if (other !== undefined) {
+          throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `--wallet ${requested} is ${describeRole(other)}, which never signs for an outside tool.`, {
+            suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
+          });
+        }
+        return usage(ctx, `No external wallet in this vault matches --wallet ${requested}.`);
+      }
+      if (!named.some((candidate) => candidate.id === entry.id))
+        named.push(entry);
+    }
+    const signers = assertExternalSigners(vault.index, compiled, tx.message.numRequiredSignatures, named);
+    const unused = named.filter((entry) => !signers.some((signer) => signer.id === entry.id));
+    if (unused.length > 0) {
+      return usage(ctx, `--wallet ${unused.map((entry) => entry.label).join(", ")}: not a required signer of this transaction.`);
+    }
+    const unsignedBase64 = toBase642(attachSignatures(tx, new Map));
+    let simulation;
+    try {
+      simulation = await simulateWithSnapshots(rpc2, unsignedBase64, compiled);
+    } catch (error) {
+      throw new VaultError("SIGN_SIMULATION_FAILED", `The simulation could not be run over ${rpcUrl2}: ${error instanceof Error ? error.message : error}. Nothing was signed.`, {
+        suggestion: "Point --rpc-url at a reachable endpoint and run it again; there is no way to skip the simulation."
+      });
+    }
+    if (simulation.result.err !== null && simulation.result.err !== undefined) {
+      const logs = simulation.result.logs.length > 0 ? `
+${simulation.result.logs.map((line) => `  ${line}`).join(`
+`)}` : "";
+      throw new VaultError("SIGN_SIMULATION_FAILED", `The simulation failed: ${JSON.stringify(simulation.result.err)}. Nothing was signed; there is no override.${logs}`, { suggestion: "Fix what the transaction does, then sign the corrected one." });
+    }
+    const mints = await readMints(rpc2, [
+      ...new Set(computeDeltas(simulation.snapshots).tokens.map((token) => token.mint))
+    ]);
+    const lines = displayLines({ tx, compiled, signers, simulation, mints });
+    if (!ctx.json) {
+      deps.stderr.write(`Decoded transaction (simulated, unsigned):
+`);
+      for (const line of lines)
+        deps.stderr.write(`  ${line}
+`);
+    }
+    if (!yes)
+      await opened.confirm(`sign with ${signers.map((entry) => entry.label).join(", ")}`);
+    const signed = new Map;
+    const signatures = [];
+    for (const [i, entry] of signers.entries()) {
+      const secret = await decryptKey(vault, entry.id);
+      try {
+        const signature = signMessage(tx.message.bytes, secret);
+        signed.set(i, signature);
+        signatures.push({ wallet: entry.label, address: entry.address, signature: base58.encode(signature) });
+      } finally {
+        wipe(secret);
+      }
+    }
+    const wire = attachSignatures(tx, signed);
+    const signedBase64 = toBase642(wire);
+    const txSignature = signatures[0]?.signature ?? "";
+    let broadcast;
+    if (parsed.booleans.has("--broadcast")) {
+      try {
+        await rpc2.sendTransaction(signedBase64);
+        broadcast = { ok: true, signature: txSignature };
+      } catch (error) {
+        broadcast = { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    if (ctx.json) {
+      writeJson(deps, {
+        ok: broadcast === undefined ? true : broadcast.ok,
+        ...broadcast?.ok === false ? { code: "SIGN_BROADCAST_FAILED", message: broadcast.error } : {},
+        signedTransaction: signedBase64,
+        signature: txSignature,
+        signers: signatures,
+        display: lines,
+        ...broadcast ? { broadcast } : {}
+      });
+      return broadcast?.ok === false ? 1 : 0;
+    }
+    deps.stdout.write(`${signedBase64}
+`);
+    for (const s of signatures)
+      deps.stderr.write(`signed by ${s.wallet}: ${s.signature}
+`);
+    if (broadcast?.ok)
+      deps.stderr.write(`broadcast: ${broadcast.signature}
+`);
+    if (broadcast?.ok === false) {
+      throw new VaultError("SIGN_BROADCAST_FAILED", `The signed transaction was printed above but could not be sent: ${broadcast.error}.`, {
+        suggestion: "Send it yourself, or run again with a fresh transaction if its blockhash expired."
+      });
+    }
+    return 0;
+  });
+}
+function renderableAsText(bytes) {
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return;
+  }
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code === 10)
+      continue;
+    if (code <= 31 || code >= 127 && code <= 159)
+      return;
+  }
+  return text;
+}
+function hex3(bytes) {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+async function signMessage2(args, ctx) {
+  const lifted = takeRepeatedFlag(args, "--wallet");
+  if ("error" in lifted)
+    return usage(ctx, lifted.error);
+  const parsed = parseArgs(lifted.rest, {
+    valueFlags: ["--file", "--keystore"],
+    booleanFlags: ["--yes", "--accept-older-copy"],
+    pathFlags: ["--keystore", "--file"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  if (parsed.positionals.length > 0) {
+    return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}. The message comes from --file <path> or stdin, never an argument.`);
+  }
+  if (lifted.values.length !== 1)
+    return usage(ctx, "--wallet <external> is required, exactly once.");
+  const requested = lifted.values[0];
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "candle sign message"))
+    return 1;
+  const { deps } = ctx;
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
+  return runVaultCommand(ctx, async ({ hold }) => {
+    let bytes;
+    try {
+      bytes = await readInput(ctx, parsed.values["--file"]);
+    } catch (error) {
+      throw new VaultError("VAULT_UNREADABLE", `The message could not be read: ${error instanceof Error ? error.message : error}.`);
+    }
+    const raw = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    });
+    const vault = hold(opened.vault);
+    assertNotEvmEntry(vault.index, requested, "candle sign message");
+    const entry = findExternalEntry(vault.index, requested);
+    if (entry === undefined) {
+      const other = vault.index.entries.find((candidate) => candidate.label === requested || candidate.address === requested);
+      if (other !== undefined) {
+        throw new VaultError("SIGN_SIGNER_NOT_EXTERNAL", `--wallet ${requested} is ${describeRole(other)}, which never signs a message for an outside tool.`, {
+          suggestion: "Nothing was signed. Only an external wallet signs here: candle external new, or candle external list for the ones you have."
+        });
+      }
+      return usage(ctx, `No external wallet in this vault matches --wallet ${requested}.`);
+    }
+    const digest = hex3(sha2562(bytes));
+    const text = renderableAsText(bytes);
+    const lines = [
+      `wallet      ${entry.label} (${entry.address})`,
+      `bytes       ${bytes.length}`,
+      `sha256      ${digest}`,
+      text === undefined ? `form        not renderable as text (not UTF-8, or a control character other than newline); shown as hex` : `form        UTF-8 text with no control characters other than newline`,
+      text === undefined ? `hex         ${hex3(bytes)}` : `text        ${text.split(`
+`).join(`
+            `)}`
+    ];
+    if (!ctx.json) {
+      deps.stderr.write(`Message to sign (the exact bytes read; nothing was trimmed or normalized):
+`);
+      for (const line of lines)
+        deps.stderr.write(`  ${line}
+`);
+    }
+    if (!parsed.booleans.has("--yes"))
+      await opened.confirm(`sign this message with ${entry.label}`);
+    const secret = await decryptKey(vault, entry.id);
+    let signature;
+    try {
+      signature = signMessage(bytes, secret);
+    } finally {
+      wipe(secret);
+    }
+    const signatureBase58 = base58.encode(signature);
+    if (ctx.json) {
+      writeJson(deps, {
+        ok: true,
+        wallet: entry.label,
+        publicKey: entry.address,
+        byteLength: bytes.length,
+        sha256: digest,
+        renderedAs: text === undefined ? "hex" : "text",
+        signature: signatureBase58,
+        signatureBase64: toBase642(signature)
+      });
+      return 0;
+    }
+    deps.stdout.write(`${signatureBase58}
+`);
+    return 0;
+  });
+}
+
 // src/commands/transfer.ts
 init_args();
+init_profiles();
 init_render();
 init_trading();
 var USAGE2 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL>|--mint <mint> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
@@ -54006,7 +54338,7 @@ async function transfer(args, ctx) {
     if (payer.kind === "embedded")
       throw new TradingError("PAYER_UNSUPPORTED", "This command moves a linked wallet this machine can sign for. The embedded wallet transfers through the agent transfer rail (MCP candle_transfer), not from here. Name a TEE wallet with --wallet.");
     if (!payer.scopes.includes("transfer:bound"))
-      throw new TradingError("SCOPE_MISSING", "Moving funds out of a TEE wallet needs a Read:Write:Transfer key. Mint one with: candle keys create --access read-write-transfer, then bind the wallet to it with: candle tee rebind");
+      throw new TradingError("SCOPE_MISSING", `Moving funds out of a TEE wallet needs a Read:Write:Transfer key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access read-write-transfer. Or mint one with: candle keys create --access read-write-transfer, then bind the wallet to it with: candle tee rebind`);
     const wallet = payer.wallet;
     const destination = await resolveDestination(ctx, key, wallet, to);
     const label = asset ?? flags["--mint"];
@@ -62435,7 +62767,9 @@ var COMMANDS = {
   portfolio: { bare: portfolio },
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
-  keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke, wallets: keysWallets } },
+  keys: {
+    subcommands: { list: keysList, create: keysCreate, access: keysAccess, revoke: keysRevoke, wallets: keysWallets }
+  },
   wallets: {
     subcommands: { import: walletsImport, revoke: walletsRevoke, trust: walletsTrust, untrust: walletsUntrust },
     bare: wallets

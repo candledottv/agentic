@@ -277,12 +277,18 @@ describe("candle transfer (R19)", () => {
     expect(f.stderr.text).toContain("to linked wallet treasury")
   })
 
-  test("a key without transfer:bound is refused with the mint-and-rebind hint before any build", async () => {
+  test("a key without transfer:bound is refused with the widen hint, then mint-and-rebind, before any build", async () => {
     const f = await fixture({ scopes: ["swap:write", "transfer:write"] })
     const code = await run([...base, "--to", "treasury", "--asset", "USDC", "--amount", "1", "--json"], f.deps)
     expect(code).toBe(1)
     const failure = JSON.parse(f.stdout.text)
     expect(failure.code).toBe("SCOPE_MISSING")
+    // BE-361 (T-B12): widening the bound key in place is the first path; the test key is not a
+    // real key, so the prefix is named as a placeholder rather than guessed.
+    expect(failure.message).toContain(
+      "Widen the bound key with: candle keys access <bound prefix> --access read-write-transfer",
+    )
+    expect(failure.message.indexOf("candle keys access")).toBeLessThan(failure.message.indexOf("candle keys create"))
     expect(failure.message).toContain("candle keys create --access read-write-transfer")
     expect(failure.message).toContain("candle tee rebind")
     expect(f.paths()).not.toContain("/api/v1/agent/transfer/build")

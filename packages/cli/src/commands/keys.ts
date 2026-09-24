@@ -43,7 +43,7 @@ export const ACCESS_LEVELS: Record<string, AgentKeyPreset> = {
 /** The one precondition all three `keys` subcommands share. Written through `writeLocalFailure`
  * so `--json` gets an object here too: this exit is as much a result of the command as an API
  * error is, and a `--json` caller must never have to fall back to parsing a sentence. */
-const NO_DEVICE_TOKEN = {
+export const NO_DEVICE_TOKEN = {
   code: "NO_DEVICE_TOKEN",
   message: "No device token available.",
   suggestion: "Run: candle auth login",

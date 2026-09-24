@@ -205,7 +205,7 @@ export async function postRebind(
 }
 
 /**
- * `--to-key`: an 8-character prefix is used as is. Anything else is matched as an exact label
+ * `--to-key` (and `keys access <key>`, BE-361): an 8-character prefix is used as is. Anything else is matched as an exact label
  * against the non-revoked keys from `GET /keys` (the same device-token read `keys list` makes).
  * No match lists the labelled keys; more than one match is refused with the prefixes listed. The
  * server only ever receives a prefix.
@@ -219,15 +219,25 @@ export async function resolveTargetKey(
   ctx: CommandContext,
   deviceToken: string,
   raw: string,
-  opts: { keys?: KeyRow[] } = {},
+  opts: {
+    keys?: KeyRow[]
+    /** The refusal codes' prefix: `REBIND` here, `KEY_ACCESS` for `keys access` (BE-361). */
+    codePrefix?: string
+    /** How a failed `GET /keys` is written; the rebind envelope unless the caller names another. */
+    writeListFailure?: (result: Extract<ApiResult, { ok: false }>) => number
+  } = {},
 ): Promise<{ ok: true; keyPrefix: string } | { ok: false; code: number }> {
   const { deps, json } = ctx
+  const codePrefix = opts.codePrefix ?? "REBIND"
   if (KEY_PREFIX_RE.test(raw)) return { ok: true, keyPrefix: raw }
   let listed = opts.keys
   if (listed === undefined) {
     const result = await listAccountKeys(ctx, deviceToken)
     if (!result.ok) {
-      return { ok: false, code: writeRebindFailure(ctx, result, {}) }
+      return {
+        ok: false,
+        code: opts.writeListFailure ? opts.writeListFailure(result) : writeRebindFailure(ctx, result, {}),
+      }
     }
     listed = (result.body as { keys?: KeyRow[] } | null)?.keys ?? []
   }
@@ -239,7 +249,7 @@ export async function resolveTargetKey(
     writeLocalFailure(
       deps,
       {
-        code: "REBIND_KEY_NOT_FOUND",
+        code: `${codePrefix}_KEY_NOT_FOUND`,
         message: `No active key on this account is named ${JSON.stringify(raw)}.`,
         suggestion:
           labelled.length > 0
@@ -253,7 +263,7 @@ export async function resolveTargetKey(
   writeLocalFailure(
     deps,
     {
-      code: "REBIND_KEY_AMBIGUOUS",
+      code: `${codePrefix}_KEY_AMBIGUOUS`,
       message: `${matches.length} active keys are named ${JSON.stringify(raw)}; pass a prefix instead.`,
       suggestion: `Matching prefixes: ${matches.map((key) => key.keyPrefix).join(", ")}`,
     },
