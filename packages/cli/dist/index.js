@@ -287,6 +287,8 @@ function presetForScopes(scopes) {
     return "read";
   if (sameSet(scopes, READWRITE_SCOPES))
     return "readwrite";
+  if (sameSet(scopes, READWRITETRANSFER_SCOPES))
+    return "readwritetransfer";
   return null;
 }
 function agentKeyCapabilities(scopes) {
@@ -295,6 +297,7 @@ function agentKeyCapabilities(scopes) {
     launch: scopes.includes("launch:write"),
     trade: scopes.includes("swap:write"),
     transfer: scopes.includes("transfer:write"),
+    linkedTransfer: scopes.includes("transfer:bound"),
     report: scopes.includes("activity:write")
   };
 }
@@ -308,7 +311,7 @@ function agentKeyAccess(scopes) {
 function sortAgentKeyScopes(scopes) {
   return [...scopes].sort();
 }
-var READ_SCOPES, READWRITE_SCOPES, AGENT_KEY_PRESET_LABELS, AGENT_KEY_CAPABILITY_CHIPS;
+var READ_SCOPES, READWRITE_SCOPES, READWRITETRANSFER_SCOPES, AGENT_KEY_PRESET_LABELS, AGENT_KEY_CAPABILITY_CHIPS;
 var init_agent_key_access = __esm(() => {
   READ_SCOPES = ["account:read"];
   READWRITE_SCOPES = [
@@ -319,11 +322,25 @@ var init_agent_key_access = __esm(() => {
     "transfer:write",
     "account:read"
   ];
-  AGENT_KEY_PRESET_LABELS = { read: "Read", readwrite: "Read:Write" };
+  READWRITETRANSFER_SCOPES = [
+    "launch:write",
+    "launch:read",
+    "activity:write",
+    "swap:write",
+    "transfer:write",
+    "account:read",
+    "transfer:bound"
+  ];
+  AGENT_KEY_PRESET_LABELS = {
+    read: "Read",
+    readwrite: "Read:Write",
+    readwritetransfer: "Read:Write:Transfer"
+  };
   AGENT_KEY_CAPABILITY_CHIPS = [
     ["Launch", "launch"],
     ["Trade", "trade"],
     ["Transfer", "transfer"],
+    ["Linked transfer", "linkedTransfer"],
     ["Report", "report"]
   ];
 });
