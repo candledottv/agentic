@@ -32,13 +32,16 @@ const NO_API_KEY = {
  * reads `keys wallets set`, hits LOOSEN_REQUIRES_SESSION, and never finds `tee rebind`, which is
  * the owner's move for TEE wallets and the command that was wanted (2026-09-24). So the hint names
  * both ways forward, with the rebind spelled out for exactly the wallets and key this call named.
+ * BE-362 adds the third case: a wallet already bound to this key but missing from its set, where
+ * the rebind answers "Nothing to move" and only a signed-in grant repairs it.
  */
 export function widenRefusedHint(prefix: string, walletIds: string[]): string {
   const wallets = walletIds.length > 0 ? walletIds.join(" ") : "<wallet...>"
   return (
     `To move TEE wallets to this key, run: candle tee rebind ${wallets} --to-key ${prefix} ` +
     "(owner, device token; --label-prefix <p> names many at once). To grant a linked wallet to the key " +
-    "instead, use the agent console's Agents tab in a signed-in session."
+    "instead, use the agent console's Agents tab in a signed-in session. If `tee rebind` says the wallets " +
+    "are already bound, grant them to the key in the agent console's Agents tab (signed in)."
   )
 }
 

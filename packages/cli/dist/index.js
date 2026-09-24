@@ -45111,7 +45111,7 @@ var NO_API_KEY = {
 };
 function widenRefusedHint(prefix, walletIds) {
   const wallets = walletIds.length > 0 ? walletIds.join(" ") : "<wallet...>";
-  return `To move TEE wallets to this key, run: candle tee rebind ${wallets} --to-key ${prefix} ` + "(owner, device token; --label-prefix <p> names many at once). To grant a linked wallet to the key " + "instead, use the agent console's Agents tab in a signed-in session.";
+  return `To move TEE wallets to this key, run: candle tee rebind ${wallets} --to-key ${prefix} ` + "(owner, device token; --label-prefix <p> names many at once). To grant a linked wallet to the key " + "instead, use the agent console's Agents tab in a signed-in session. If `tee rebind` says the wallets " + "are already bound, grant them to the key in the agent console's Agents tab (signed in).";
 }
 function formatTimestamp2(ms) {
   return ms ? new Date(ms).toISOString().replace("T", " ").slice(0, 16) : "-";
