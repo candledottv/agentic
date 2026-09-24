@@ -70,7 +70,7 @@ export async function resolveTeeAddress(
   address: string,
   openLegacy: () => Promise<LegacyOpen>,
   access: TeeAccess = "read",
-): Promise<{ ok: true; resolved: ResolvedTee } | { ok: false; code: number }> {
+): Promise<{ ok: true; resolved: ResolvedTee } | { ok: false; code: number; reported?: true }> {
   try {
     const hit = await findTeeInVault(ctx, address)
     if (hit.hit) {
@@ -118,15 +118,17 @@ export async function resolveTeeAddress(
     // `vaultPathFor`. Do not rethrow: a real binary would print `Unexpected error:` and exit 1.
     if (isUsageError(error)) {
       writeUsageFailure(ctx.deps, error.message, ctx.json)
-      return { ok: false, code: 2 }
+      return { ok: false, code: 2, reported: true }
     }
     if (isVaultError(error)) {
+      // `reported`: the refusal is already on the screen (Phase 4a: `SOLANA_COMMAND_EVM_KEY` for
+      // an EVM entry named to a tee command), so a caller must not write a second one over it.
       writeLocalFailure(
         ctx.deps,
         { code: error.code, message: error.message, ...(error.suggestion ? { suggestion: error.suggestion } : {}) },
         ctx.json,
       )
-      return { ok: false, code: error.exitCode }
+      return { ok: false, code: error.exitCode, reported: true }
     }
     throw error
   }

@@ -34,6 +34,7 @@ import {
   applyPromotion,
   assertColdVaultDestination,
   assertInPlacePreconditions,
+  assertNotEvmEntry,
   assertNotPinnedDestination,
   CONFIRM_WORD,
   confirmPromotion,
@@ -452,6 +453,9 @@ async function promoteInPlace(
     let vault = hold(opened.vault)
     assertRecoverableFactorExists(vault.file.envelopes)
 
+    // Phase 4a (D3): promotion stays Solana-only until 4b; an EVM subject is refused by name,
+    // before the resume check and before any read.
+    assertNotEvmEntry(vault.index, subjectLabel, "vault promote")
     const existing = findEntryByLabelOrAddress(vault.index, subjectLabel)
     if (existing === undefined) {
       throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`, {

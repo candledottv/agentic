@@ -20,11 +20,19 @@
  * and step 6 zeroes it the moment the pass ends.
  */
 
+import { evmAddressFromSecret, sameEvmAddress } from "../evm-lite"
 import { bytesEqual } from "./crypto"
 import { addressFromSecret64, SECP256K1_SCALAR_BYTES, SOLANA_SECRET_BYTES } from "./ed25519"
 import { VaultError } from "./errors"
 import { branchOfPath, type KeyEntry } from "./format"
-import { deriveSolanaKey, isValidPhrase, phraseFromEntropy, ROOT_ENTROPY_BYTES } from "./hd"
+import {
+  deriveEvmKeyFromRoot,
+  deriveSolanaKey,
+  evmIndexOfPath,
+  isValidPhrase,
+  phraseFromEntropy,
+  ROOT_ENTROPY_BYTES,
+} from "./hd"
 import { wipe } from "./hygiene"
 import { decryptKey, decryptRoot, type UnlockedVault } from "./store"
 
@@ -189,6 +197,11 @@ async function verifyEntry(
       if (addressFromSecret64(secret) !== entry.address) {
         fail(5, "its stored secret does not produce the address the index records", entry.id)
       }
+    } else if (!sameEvmAddress(evmAddressFromSecret(secret), entry.address)) {
+      // Phase 4a (D7): the secp256k1 half of the secret→address check. The scalar's uncompressed
+      // public key, keccak-256, last 20 bytes, must be the address the index records; the two
+      // spellings of one address (EIP-55 and lowercase) are the same address.
+      fail(5, "its stored secret does not produce the address the index records", entry.id)
     }
     report.addressChecked.push(entry.id)
 
@@ -198,9 +211,27 @@ async function verifyEntry(
       report.notRederived.push(entry.id)
       return
     }
+    if (entry.derivation.scheme === "bip32-secp256k1") {
+      // Phase 4a (D7): re-derive `m/44'/60'/n'/0/0` from the root and require byte equality of the
+      // scalar, exactly as the Solana branch below requires it of the 64-byte secret.
+      const index = evmIndexOfPath(entry.derivation.path)
+      if (index === undefined) {
+        fail(5, `its recorded path ${entry.derivation.path} is not on the EVM branch`, entry.id)
+      }
+      const derivedEvm = await deriveEvmKeyFromRoot(root, index)
+      observer?.onLeafLive?.(2)
+      try {
+        if (!bytesEqual(derivedEvm.secret, secret)) {
+          fail(5, `it does not re-derive from the root along its recorded path ${entry.derivation.path}`, entry.id)
+        }
+        report.rederived.push(entry.id)
+      } finally {
+        wipe(derivedEvm.secret)
+        observer?.onLeafLive?.(1)
+      }
+      return
+    }
     if (entry.derivation.scheme !== "slip10-ed25519") {
-      // Phase 2 adds no secp256k1 derivation code (ED-13); a fixture carrying one is listed rather
-      // than re-derived, and Phase 4's PR is where that check arrives.
       report.notRederived.push(entry.id)
       return
     }

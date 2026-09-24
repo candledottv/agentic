@@ -22,14 +22,22 @@
  * exactly as it is for the first. There is no unattended derivation here and no flag that makes
  * one: a batch still costs a terminal and a typed passphrase. (`assertHighValueSatisfied` was a
  * fourth refusal above the loop until BE-245 removed `--high-value` outright.)
+ *
+ * Phase 4a (BE-350, D3, D7): `--chain evm` allocates on the EVM branch, `m/44'/60'/n'/0/0` through
+ * BIP-32 secp256k1, with `hd.nextIndex.evm` and `hd.exposedIndexes.evm` playing the roles the
+ * Solana counters play above. Every refusal above the loop is the same refusal: invariant 1, the
+ * restored-vault boundary (CC-11, which applies to the EVM branch exactly as to Solana), the label
+ * check. An EVM entry is `chain: "evm"`, `curve: "secp256k1"`, `role: "vault"`, and its default
+ * label is `evm-<index>` so it cannot collide with a Solana `key-<index>`.
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { EVM_DERIVATION_SCHEME, evmAddressFromSecret, sameEvmAddress } from "../evm-lite"
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { addressFromSecret64 } from "../vault/ed25519"
 import { VaultError } from "../vault/errors"
-import { type IndexPlaintext, type KeyEntry, parseVaultFile } from "../vault/format"
-import { DERIVATION_SCHEME, deriveSolanaKey, solanaVaultPath } from "../vault/hd"
+import { type Branch, type IndexPlaintext, type KeyEntry, parseVaultFile } from "../vault/format"
+import { DERIVATION_SCHEME, deriveEvmKeyFromRoot, deriveSolanaKey, evmPath, solanaVaultPath } from "../vault/hd"
 import { wipe } from "../vault/hygiene"
 import {
   commitVault,
@@ -134,13 +142,11 @@ export async function vaultNewKey(args: string[], ctx: CommandContext): Promise<
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
 
   const chain = parsed.values["--chain"]
-  if (chain === undefined) return usage(ctx, "--chain solana is required.")
-  if (chain === "evm") {
-    // Exit 2 rather than 1: the format accepts a secp256k1 entry and the path is already fixed
-    // (`m/44'/60'/n'/0/0`), so this is a command that does not exist yet, not an operation refused.
-    return usage(ctx, "CHAIN_NOT_OFFERED: EVM keys arrive in Phase 4. This release derives Solana keys only.")
+  if (chain === undefined) return usage(ctx, "--chain solana|evm is required.")
+  if (chain !== "solana" && chain !== "evm") {
+    return usage(ctx, `Unknown chain: ${chain}. This release derives Solana and EVM keys (--chain solana|evm).`)
   }
-  if (chain !== "solana") return usage(ctx, `Unknown chain: ${chain}. This release derives Solana keys only.`)
+  const branch: Branch = chain === "evm" ? "evm" : "solanaVault"
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "vault new-key")) return 1
 
@@ -201,7 +207,7 @@ export async function vaultNewKey(args: string[], ctx: CommandContext): Promise<
     // made; found here it costs nothing. The refusal keeps the shipped wording, exit 2 and the
     // `USAGE` code (D10): two of the three label-taken sites ship with that code, and §1.1
     // freezes an existing refusal's code.
-    const clash = labelClash(vault.index, plannedLabels(vault.index.hd, batch, parsed.values["--label"]))
+    const clash = labelClash(vault.index, plannedLabels(vault.index.hd, batch, parsed.values["--label"], branch))
     if (clash !== undefined) {
       return usage(
         ctx,
@@ -225,35 +231,43 @@ export async function vaultNewKey(args: string[], ctx: CommandContext): Promise<
       for (let made = 0; made < batch.count; made++) {
         // Per INDEX, never once for the batch: `exposedIndexes` must be honoured for keys 2..n
         // exactly as it is for the first, and the counter moves under us on every commit.
-        const index = nextAllocatableIndex(
-          current.index.hd.nextIndex.solanaVault,
-          current.index.hd.exposedIndexes.solanaVault,
-        )
-        const derivationPath = solanaVaultPath(index)
-        const label = batch.labels?.[made] ?? parsed.values["--label"] ?? `key-${index}`
+        const index = nextAllocatableIndex(current.index.hd.nextIndex[branch], current.index.hd.exposedIndexes[branch])
+        const derivationPath = branch === "evm" ? evmPath(index) : solanaVaultPath(index)
+        const label = batch.labels?.[made] ?? parsed.values["--label"] ?? defaultLabel(branch, index)
 
         let address: string
         let keyId: string
         let blob: Awaited<ReturnType<typeof sealKeyBlob>>
-        const key = await deriveSolanaKey(root, derivationPath)
-        try {
-          address = key.address
-          keyId = freshKeyId()
-          blob = await sealKeyBlob(current, keyId, key.secret64)
-        } finally {
-          wipe(key.secret64)
+        if (branch === "evm") {
+          const key = await deriveEvmKeyFromRoot(root, index)
+          try {
+            address = key.address
+            keyId = freshKeyId()
+            blob = await sealKeyBlob(current, keyId, key.secret)
+          } finally {
+            wipe(key.secret)
+          }
+        } else {
+          const key = await deriveSolanaKey(root, derivationPath)
+          try {
+            address = key.address
+            keyId = freshKeyId()
+            blob = await sealKeyBlob(current, keyId, key.secret64)
+          } finally {
+            wipe(key.secret64)
+          }
         }
 
         const entry: KeyEntry = {
           id: keyId,
-          chain: "solana",
-          curve: "ed25519",
+          chain,
+          curve: chain === "evm" ? "secp256k1" : "ed25519",
           address,
           label,
           createdAt: new Date(deps.now()).toISOString(),
           role: "vault",
           origin: "derived",
-          derivation: { scheme: DERIVATION_SCHEME, path: derivationPath },
+          derivation: { scheme: chain === "evm" ? EVM_DERIVATION_SCHEME : DERIVATION_SCHEME, path: derivationPath },
           exposure: { everRemoteExposed: false, everExported: false },
         }
 
@@ -266,7 +280,7 @@ export async function vaultNewKey(args: string[], ctx: CommandContext): Promise<
           current,
           {
             index: {
-              hd: { ...current.index.hd, nextIndex: { ...current.index.hd.nextIndex, solanaVault: index + 1 } },
+              hd: { ...current.index.hd, nextIndex: { ...current.index.hd.nextIndex, [branch]: index + 1 } },
               entries: [...current.index.entries, entry],
             },
             addKeys: [blob],
@@ -285,7 +299,7 @@ export async function vaultNewKey(args: string[], ctx: CommandContext): Promise<
         // `init` re-reads itself: the guarantee is about the file, not about the object this
         // process just built. Through the held payload key rather than the factor -- see
         // `verifyWrittenFromDisk` for why that distinction is what makes a batch possible at all.
-        await verifyWrittenFromDisk(current, address, keyId)
+        await verifyWrittenFromDisk(current, address, keyId, chain)
         last = { address, keyId }
 
         // Streamed rather than buffered in the human rendering: on a 160-key run the addresses
@@ -307,7 +321,7 @@ export async function vaultNewKey(args: string[], ctx: CommandContext): Promise<
     // proves the envelopes still unwrap after every write above. That is the half a held-key check
     // cannot make, and it is why it is still here -- but it is presented once, so a security key
     // is touched twice for a batch of 160 rather than 160 times.
-    await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx)
+    await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx, chain)
 
     if (ctx.json) {
       // The single-key document is unchanged, so every existing `--json` caller keeps parsing what
@@ -368,15 +382,30 @@ export function plannedLabels(
   hd: Pick<IndexPlaintext["hd"], "nextIndex" | "exposedIndexes">,
   batch: { count: number; labels?: string[] },
   labelFlag: string | undefined,
+  branch: Branch = "solanaVault",
 ): string[] {
   const labels: string[] = []
-  let counter = hd.nextIndex.solanaVault
+  let counter = hd.nextIndex[branch]
   for (let made = 0; made < batch.count; made++) {
-    const index = nextAllocatableIndex(counter, hd.exposedIndexes.solanaVault)
-    labels.push(batch.labels?.[made] ?? labelFlag ?? `key-${index}`)
+    const index = nextAllocatableIndex(counter, hd.exposedIndexes[branch])
+    labels.push(batch.labels?.[made] ?? labelFlag ?? defaultLabel(branch, index))
     counter = index + 1
   }
   return labels
+}
+
+/** `key-<n>` on the Solana vault branch, `evm-<n>` on the EVM branch (Phase 4a), so the two never collide. */
+export function defaultLabel(branch: Branch, index: number): string {
+  return branch === "evm" ? `evm-${index}` : `key-${index}`
+}
+
+/** The address a decrypted secret belongs to, by chain: re-derived, never read out of the blob. */
+function addressOfSecret(chain: KeyEntry["chain"], secret: Uint8Array): string {
+  return chain === "evm" ? evmAddressFromSecret(secret) : addressFromSecret64(secret)
+}
+
+function sameAddress(chain: KeyEntry["chain"], a: string, b: string): boolean {
+  return chain === "evm" ? sameEvmAddress(a, b) : a === b
 }
 
 /**
@@ -417,7 +446,12 @@ export function nextAllocatableIndex(counter: number, exposed: readonly number[]
  * all. The factor-based check still runs once at the end of every run, so "the vault still opens
  * with your factor after these writes" is proved too.
  */
-export async function verifyWrittenFromDisk(vault: UnlockedVault, address: string, keyId: string): Promise<void> {
+export async function verifyWrittenFromDisk(
+  vault: UnlockedVault,
+  address: string,
+  keyId: string,
+  chain: KeyEntry["chain"] = "solana",
+): Promise<void> {
   const raw = await readVaultRaw(vault.path)
   if (raw === null) {
     throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${vault.path} could not be read back after the write.`)
@@ -427,7 +461,7 @@ export async function verifyWrittenFromDisk(vault: UnlockedVault, address: strin
   const onDisk: UnlockedVault = { ...vault, raw, file: parseVaultFile(raw) }
   const secret = await decryptKey(onDisk, keyId)
   try {
-    if (addressFromSecret64(secret) !== address) {
+    if (!sameAddress(chain, addressOfSecret(chain, secret), address)) {
       throw new VaultError(
         "VAULT_VERIFY_FAILED",
         "The key written to the vault does not produce the address just derived.",
@@ -446,6 +480,7 @@ export async function verifyWritten(
   keyId: string,
   reopen: OpenedVault["reopen"],
   _ctx: CommandContext,
+  chain: KeyEntry["chain"] = "solana",
 ): Promise<void> {
   const raw = await readVaultRaw(path)
   if (raw === null)
@@ -454,7 +489,7 @@ export async function verifyWritten(
   try {
     const secret = await decryptKey(reopened, keyId)
     try {
-      if (addressFromSecret64(secret) !== address) {
+      if (!sameAddress(chain, addressOfSecret(chain, secret), address)) {
         throw new VaultError(
           "VAULT_VERIFY_FAILED",
           "The key written to the vault does not produce the address just derived.",

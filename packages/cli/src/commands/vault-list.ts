@@ -14,9 +14,28 @@
  * `getMultipleAccounts` and no other RPC method (D8). That is an invariant rather than a default:
  * tokens are `getTokenAccountsByOwner`, one request per owner per token program, which is 608
  * requests for the same vault the SOL read does in four.
+ *
+ * Phase 4a (BE-350, D3, D7): EVM rows are read too, over their OWN endpoint: `--evm-rpc-url`, else
+ * `CANDLE_EVM_RPC_URL`, else the built-in Hood RPC. That default is Andrew's "Hood built in" and is
+ * the one place a default endpoint exists; Solana keeps none (key-naming D5). A Solana `--rpc-url`
+ * is never sent an EVM address, and the EVM read prints its host on stderr before the first
+ * request, the same rule as the Solana line. The read is `eth_chainId`, then `eth_getBalance` per
+ * address, then, on chain id 4663 only, USDG's `balanceOf` per address.
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import {
+  createEvmRpc,
+  DEFAULT_HOOD_RPC_URL,
+  EVM_RPC_URL_ENV,
+  formatUnits,
+  HOOD_CHAIN_ID,
+  HOOD_USDG_ADDRESS,
+  HOOD_USDG_DECIMALS,
+  NATIVE_DECIMALS,
+  resolveEvmRpcUrl,
+  rpcHostOf,
+} from "../evm-lite"
 import { renderTable } from "../render"
 import { createSolanaRpc } from "../solana-lite"
 import type { KeyEntry } from "../vault/format"
@@ -85,9 +104,66 @@ async function readLamports(
   return { lamports, unavailable, ...(failure === undefined ? {} : { failure }) }
 }
 
+interface EvmRead {
+  host: string
+  chainId: bigint | undefined
+  requests: number
+  wei: Map<string, bigint>
+  usdg: Map<string, bigint>
+  unavailable: string[]
+  failure?: string
+}
+
+/**
+ * The EVM read (Phase 4a, D7): the chain id first, then the native balance per address, then, when
+ * the chain is Hood, USDG per address. A failed call marks that address unavailable and the read
+ * goes on; a chain id that cannot be read makes every row unavailable, since nothing else is asked.
+ */
+async function readEvmBalances(addresses: string[], rpcUrl: string, fetchFn: typeof fetch): Promise<EvmRead> {
+  const rpc = createEvmRpc(rpcUrl, fetchFn)
+  const read: EvmRead = {
+    host: rpcHostOf(rpcUrl),
+    chainId: undefined,
+    requests: 0,
+    wei: new Map(),
+    usdg: new Map(),
+    unavailable: [],
+  }
+  try {
+    read.requests += 1
+    read.chainId = await rpc.chainId()
+  } catch (error) {
+    read.unavailable.push(...addresses)
+    read.failure = error instanceof Error ? error.message : String(error)
+    return read
+  }
+  const hood = read.chainId === BigInt(HOOD_CHAIN_ID)
+  for (const address of addresses) {
+    try {
+      read.requests += 1
+      read.wei.set(address, await rpc.getBalance(address))
+      if (hood) {
+        read.requests += 1
+        read.usdg.set(address, await rpc.erc20BalanceOf(HOOD_USDG_ADDRESS, address))
+      }
+    } catch (error) {
+      read.wei.delete(address)
+      read.usdg.delete(address)
+      read.unavailable.push(address)
+      read.failure ??= error instanceof Error ? error.message : String(error)
+    }
+  }
+  return read
+}
+
+/** How many requests the EVM read will make, said before the first one: 1 + N, or 1 + 2N on Hood. */
+function evmRequestsPlanned(count: number): string {
+  return `${1 + count} to ${1 + 2 * count}`
+}
+
 export async function vaultList(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
-    valueFlags: ["--keystore", "--rpc-url"],
+    valueFlags: ["--keystore", "--rpc-url", "--evm-rpc-url"],
     booleanFlags: ["--balances", "--accept-older-copy"],
     pathFlags: ["--keystore"],
   })
@@ -103,6 +179,9 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
   if (!balances && parsed.values["--rpc-url"] !== undefined) {
     return usage(ctx, "--rpc-url has no effect without --balances; vault list is offline by default.")
   }
+  if (!balances && parsed.values["--evm-rpc-url"] !== undefined) {
+    return usage(ctx, "--evm-rpc-url has no effect without --balances; vault list is offline by default.")
+  }
   const resolvedVault = vaultPathFor(ctx, parsed)
   if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
   const path = resolvedVault.path
@@ -115,6 +194,12 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
     if (typeof resolved !== "string") return usage(ctx, resolved.error)
     rpcUrl = resolved
   }
+  // Phase 4a (D3): the EVM endpoint, with the built-in Hood RPC as the one default this command
+  // has. `--evm-rpc-url`, else `CANDLE_EVM_RPC_URL`, else Hood; the Solana `--rpc-url` is never it.
+  // A blank value is unset. Checked before unlock, the same way the flag was.
+  const evmRpc = resolveEvmRpcUrl(parsed.values["--evm-rpc-url"], deps.env[EVM_RPC_URL_ENV], "--evm-rpc-url")
+  if (balances && "error" in evmRpc) return usage(ctx, evmRpc.error)
+  const evmRpcUrl = "url" in evmRpc ? evmRpc.url : DEFAULT_HOOD_RPC_URL
   // D7: the prompt reads stdin and writes stderr, so those are the two streams that must be a
   // terminal. stdout is the payload channel and may be a file.
   if (!requirePromptStreams(ctx, "vault list")) return 1
@@ -156,15 +241,38 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
       unavailable = outcome.unavailable
       failure = outcome.failure
     }
-    const complete = unavailable.length === 0
+    const solanaComplete = unavailable.length === 0
     const totalLamports = [...lamports.values()].reduce((sum, value) => sum + value, 0n)
     // D11: the RPC's own message, on stderr in both modes. `--json` stdout stays one JSON value,
     // and an agent that exits 3 can still tell a rate limit from an outage.
-    if (!complete) {
+    if (!solanaComplete) {
       deps.stderr.write(
         `${unavailable.length} ${unavailable.length === 1 ? "address" : "addresses"} could not be read: ${failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.\n`,
       )
     }
+
+    // Phase 4a: the EVM rows, over the EVM endpoint only, after the Solana read so the two stderr
+    // lines appear in the order the reads happen.
+    const evm = balances ? matched.filter((entry) => entry.chain === "evm") : []
+    let evmRead: EvmRead | undefined
+    if (evm.length > 0) {
+      const host = rpcHostOf(evmRpcUrl)
+      deps.stderr.write(
+        `Reading ETH (and USDG when the chain is Hood) for ${evm.length} EVM ${evm.length === 1 ? "address" : "addresses"} from ${host}, in ${evmRequestsPlanned(evm.length)} requests. That endpoint sees all ${evm.length} together.\n`,
+      )
+      evmRead = await readEvmBalances(
+        evm.map((entry) => entry.address),
+        evmRpcUrl,
+        deps.fetch,
+      )
+      if (evmRead.unavailable.length > 0) {
+        deps.stderr.write(
+          `${evmRead.unavailable.length} EVM ${evmRead.unavailable.length === 1 ? "address" : "addresses"} could not be read: ${evmRead.failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --evm-rpc-url.\n`,
+        )
+      }
+    }
+    const hood = evmRead?.chainId === BigInt(HOOD_CHAIN_ID)
+    const complete = solanaComplete && (evmRead === undefined || evmRead.unavailable.length === 0)
 
     if (ctx.json) {
       writeJson(deps, {
@@ -181,6 +289,15 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
             // because lamports exceed Number.MAX_SAFE_INTEGER and the `--json` contract has one shot
             // at this. `null` means one thing: a Solana address whose chunk failed.
             ...(balances && entry.chain === "solana" ? { lamports: held === undefined ? null : held.toString() } : {}),
+            // Phase 4a: additive and optional, only under --balances, only on an EVM entry. `wei`
+            // is the native balance as a string; `usdgRaw` is present only when the chain id
+            // answered was Hood's. `null` means the address's read failed.
+            ...(balances && entry.chain === "evm"
+              ? {
+                  wei: evmRead?.wei.get(entry.address)?.toString() ?? null,
+                  ...(hood ? { usdgRaw: evmRead?.usdg.get(entry.address)?.toString() ?? null } : {}),
+                }
+              : {}),
           }
         }),
         ...(balances && rpcHost !== undefined
@@ -188,9 +305,20 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
               balances: {
                 rpcHost,
                 requests,
-                complete,
+                complete: solanaComplete,
                 totalLamports: totalLamports.toString(),
                 unavailable,
+              },
+            }
+          : {}),
+        ...(evmRead !== undefined
+          ? {
+              evmBalances: {
+                rpcHost: evmRead.host,
+                chainId: evmRead.chainId === undefined ? null : Number(evmRead.chainId),
+                requests: evmRead.requests,
+                complete: evmRead.unavailable.length === 0,
+                unavailable: evmRead.unavailable,
               },
             }
           : {}),
@@ -214,6 +342,12 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
     )
     const headers = ["ADDRESS", "LABEL", "ROLE", "DERIVATION"]
     if (balances) headers.push("SOL")
+    // Phase 4a: an ETH column when an EVM row was read, named by the chain when it is not Hood so
+    // ETH on another chain is not mistaken for Hood ETH (D1), and a USDG column on Hood only.
+    const evmColumns = evmRead !== undefined
+    const nativeHeader = hood || evmRead?.chainId === undefined ? "ETH" : `ETH@${evmRead.chainId}`
+    if (evmColumns) headers.push(nativeHeader)
+    if (evmColumns && hood) headers.push("USDG")
     const rows = matched.map((entry) => {
       const row = [entry.address, entry.label || "(none)", entry.role, entry.derivation?.path ?? "-"]
       if (balances) {
@@ -222,6 +356,14 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
         // chunk threw. The two are different facts and read differently.
         row.push(entry.chain !== "solana" ? "-" : held === undefined ? "?" : formatSol(held))
       }
+      if (evmColumns) {
+        const wei = evmRead?.wei.get(entry.address)
+        row.push(entry.chain !== "evm" ? "-" : wei === undefined ? "?" : formatUnits(wei, NATIVE_DECIMALS))
+        if (hood) {
+          const usdg = evmRead?.usdg.get(entry.address)
+          row.push(entry.chain !== "evm" ? "-" : usdg === undefined ? "?" : formatUnits(usdg, HOOD_USDG_DECIMALS))
+        }
+      }
       return row
     })
     deps.stdout.write(`\n${renderTable(headers, rows)}\n`)
@@ -229,10 +371,22 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
     if (balances) {
       // The count is Solana keys: an `evm` match is in the match line above and not in this one.
       deps.stdout.write(
-        complete
+        solanaComplete
           ? `\ntotal  ${formatSol(totalLamports)} SOL across ${solana.length} keys\n`
           : `\ntotal  ${formatSol(totalLamports)} SOL across ${solana.length - unavailable.length} of ${solana.length} keys read\n`,
       )
+    }
+    if (evmRead !== undefined) {
+      const totalWei = [...evmRead.wei.values()].reduce((sum, value) => sum + value, 0n)
+      const readCount = evm.length - evmRead.unavailable.length
+      const chain = evmRead.chainId === undefined ? "an unread chain" : hood ? "Hood" : `chain id ${evmRead.chainId}`
+      deps.stdout.write(
+        `total  ${formatUnits(totalWei, NATIVE_DECIMALS)} ${nativeHeader} across ${readCount}${readCount === evm.length ? "" : ` of ${evm.length}`} EVM keys${readCount === evm.length ? "" : " read"} on ${chain}\n`,
+      )
+      if (hood) {
+        const totalUsdg = [...evmRead.usdg.values()].reduce((sum, value) => sum + value, 0n)
+        deps.stdout.write(`total  ${formatUnits(totalUsdg, HOOD_USDG_DECIMALS)} USDG across those keys\n`)
+      }
     }
     // Exit 3 is the shipped meaning of "pending or partial" (`vault/errors.ts`; `wallets revoke`
     // already exits 3 with a success-shaped document on stdout). The listing succeeded; part of an

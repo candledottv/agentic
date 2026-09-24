@@ -24,7 +24,7 @@ import type { KeyEntry } from "../vault/format"
 import { DERIVATION_SCHEME, deriveSolanaKey, solanaExternalPath } from "../vault/hd"
 import { wipe } from "../vault/hygiene"
 import { sweepEverythingTo } from "../vault/local-sweep"
-import { findVaultRoleEntry } from "../vault/promote-support"
+import { assertNotEvmEntry, findVaultRoleEntry } from "../vault/promote-support"
 import { commitVault, decryptKey, decryptRoot, freshKeyId, sealKeyBlob } from "../vault/store"
 import { nextAllocatableIndex, verifyWritten } from "./vault-new-key"
 import {
@@ -256,7 +256,10 @@ export async function externalSweep(args: string[], ctx: CommandContext): Promis
     const vault = hold(opened.vault)
 
     // The source is a `role: "external"` entry and only that; the destination a `role: "vault"`
-    // entry and only that. Naming them the other way round is refused, not reinterpreted.
+    // entry and only that. Naming them the other way round is refused, not reinterpreted. An EVM
+    // entry in either position is refused by name (Phase 4a, D3).
+    assertNotEvmEntry(vault.index, source, "external sweep")
+    assertNotEvmEntry(vault.index, to, "external sweep")
     const sourceEntry = requireExternalEntry(vault.index, source)
     const destination = findVaultRoleEntry(vault.index, to)
     if (destination === undefined || destination.role !== "vault") {

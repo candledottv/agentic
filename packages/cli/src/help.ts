@@ -85,6 +85,11 @@ export const ENVIRONMENT: EnvVar[] = [
   },
   { name: "CANDLE_SOLANA_RPC_URL", description: "Solana RPC endpoint, when --rpc-url is not given" },
   {
+    name: "CANDLE_EVM_RPC_URL",
+    description:
+      "EVM RPC endpoint for an EVM vault key, when --rpc-url (transfer) or --evm-rpc-url (list) is not given; without it the built-in Hood RPC is used",
+  },
+  {
     name: "CANDLE_FIDO2_HELPER",
     description: "Path to the candle-fido2 helper, when it is not beside the binary",
   },
@@ -454,12 +459,14 @@ export const HELP: Record<string, Topic> = {
       },
       { invocation: "status [--unlock]", description: "What the vault holds, and what opens it" },
       {
-        invocation: "list [<filter>] [--balances] [--rpc-url <url>]",
-        description: "One line per key: address, label, role, derivation. Prompts for the passphrase",
+        invocation: "list [<filter>] [--balances] [--rpc-url <url>] [--evm-rpc-url <url>]",
+        description:
+          "One line per key: address, label, role, derivation. Prompts for the passphrase. --balances reads SOL over your Solana RPC and ETH (plus USDG on Hood) for EVM keys over --evm-rpc-url, CANDLE_EVM_RPC_URL, or the built-in Hood RPC",
       },
       {
-        invocation: "new-key --chain solana [--label <name>] [--count <n>] [--labels-from <file>]",
-        description: "Derive the next Solana key, or n of them under one unlock; the name must be free",
+        invocation: "new-key --chain solana|evm [--label <name>] [--count <n>] [--labels-from <file>]",
+        description:
+          "Derive the next Solana key (m/44'/501'/n'/0') or EVM key (m/44'/60'/n'/0/0), or n of them under one unlock; the name must be free",
       },
       {
         invocation: "rename <label|address> <new-label> [--id <entry-id>]",
@@ -468,8 +475,9 @@ export const HELP: Record<string, Topic> = {
       { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
       {
         invocation:
-          "restore --phrase [--own-passphrase] [--count <n>] [--tee-count <k>] [--external-count <e>] [--rpc-url <url>]",
-        description: "Rebuild a vault from the recovery phrase; it gets a new passphrase",
+          "restore --phrase [--own-passphrase] [--count <n>] [--tee-count <k>] [--external-count <e>] [--evm-count <m>] [--rpc-url <url>]",
+        description:
+          "Rebuild a vault from the recovery phrase; it gets a new passphrase. --evm-count derives EVM indices 0..m-1 (default 0, never gap-scanned)",
       },
       {
         invocation: "reconcile-exposure",
@@ -495,8 +503,10 @@ export const HELP: Record<string, Topic> = {
         description: "Rename the Phase 1 store after a verified backup",
       },
       {
-        invocation: "transfer <to> --amount <n> --asset SOL|<mint> --from <label> --rpc-url <url>",
-        description: "Sign a transfer locally from a vault key or a promoted TEE wallet",
+        invocation:
+          "transfer <to> --amount <n|max> --asset SOL|<mint>|ETH|USDG|<0x token> --from <label> [--rpc-url <url>]",
+        description:
+          "Sign a transfer locally from a vault key or a promoted TEE wallet. From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key still needs --rpc-url",
       },
       {
         invocation:
@@ -537,7 +547,12 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "--balances",
         description:
-          "list: SOL per matched key, read from your RPC (one request per 100 matched keys). Every matched address goes to that one endpoint together, which links them; tokens are never read",
+          "list: SOL per matched key, read from your RPC (one request per 100 matched keys). Every matched address goes to that one endpoint together, which links them; SPL tokens are never read. EVM keys are read over the EVM endpoint: ETH, and USDG on Hood",
+      },
+      {
+        invocation: "--evm-rpc-url <url>",
+        description:
+          "list --balances: the EVM endpoint for EVM keys. Else CANDLE_EVM_RPC_URL, else the built-in Hood RPC; the Solana --rpc-url is never sent an EVM address. The host is printed on stderr before the read",
       },
       {
         invocation: "--labels-from <file>",
@@ -558,6 +573,8 @@ export const HELP: Record<string, Topic> = {
     examples: [
       "candle vault init",
       "candle vault new-key --chain solana --label treasury",
+      "candle vault new-key --chain evm --label hood-cold",
+      "candle vault transfer 0x000000000000000000000000000000000000dEaD --amount 0.5 --asset USDG --from hood-cold",
       "candle vault list cn-s",
       "candle vault rename key-7 treasury-cold",
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
@@ -568,7 +585,14 @@ export const HELP: Record<string, Topic> = {
       "candle vault backup --to icloud",
       "CANDLE_CONFIG_DIR=$HOME/t47 candle vault status",
     ],
-    env: ["CANDLE_CONFIG_DIR", "CANDLE_FIDO2_HELPER", "CANDLE_ENCLAVE_HELPER", "CANDLE_KEYSTORE_PASSPHRASE"],
+    env: [
+      "CANDLE_CONFIG_DIR",
+      "CANDLE_SOLANA_RPC_URL",
+      "CANDLE_EVM_RPC_URL",
+      "CANDLE_FIDO2_HELPER",
+      "CANDLE_ENCLAVE_HELPER",
+      "CANDLE_KEYSTORE_PASSPHRASE",
+    ],
   },
   tee: {
     group: "Custody, on this machine",

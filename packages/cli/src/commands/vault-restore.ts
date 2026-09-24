@@ -19,11 +19,20 @@
  *
  * A gap scan is discovery, not enumeration. An allocated index that was never funded is invisible
  * to it, so a scan extends the derived set and establishes nothing about the indices it skipped.
+ *
+ * Phase 4a (BE-350, D7): `--evm-count <m>` derives EVM indices `0..m-1` on `m/44'/60'/n'/0/0` and
+ * sets `hd.nextIndex.evm = m`. It defaults to 0, is never gap-scanned (there is no EVM scan;
+ * `--rpc-url` stays the Solana endpoint), and is NOT recorded in `discovery`: `requestedCounts`
+ * keeps its three Solana branches, because invariant 4 forbids a format change. A linked-wallet row
+ * whose address is a derived EVM key flags that entry remotely exposed and appends its index to
+ * `exposedIndexes.evm`; the entry stays `role: "vault"` and is never rewritten as a Solana
+ * `tee-wallet`.
  */
 import { rm } from "node:fs/promises"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
+import { EVM_DERIVATION_SCHEME, looksLikeEvmAddress } from "../evm-lite"
 import { createSolanaRpc, type SolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import { createVault, freshHdRecord } from "../vault/create"
 import { randomBytes } from "../vault/crypto"
@@ -32,6 +41,7 @@ import type { Branch, HdRecord, KeyEntry, TeeRemoteState } from "../vault/format
 import { branchOfPath } from "../vault/format"
 import {
   DERIVATION_SCHEME,
+  deriveEvmKeyFromRoot,
   deriveSolanaKey,
   entropyFromPhrase,
   PHRASE_WORDS,
@@ -72,7 +82,7 @@ const SCAN_CEILING = 500
 
 export async function vaultRestore(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
-    valueFlags: ["--keystore", "--count", "--tee-count", "--external-count", "--rpc-url"],
+    valueFlags: ["--keystore", "--count", "--tee-count", "--external-count", "--evm-count", "--rpc-url"],
     booleanFlags: ["--phrase", "--own-passphrase"],
     pathFlags: ["--keystore"],
   })
@@ -94,6 +104,7 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
     parsed.values["--tee-count"],
     parsed.values["--external-count"],
     parsed.values["--rpc-url"],
+    parsed.values["--evm-count"],
   )
   if ("error" in counts) return usage(ctx, counts.error)
 
@@ -259,6 +270,8 @@ interface Counts {
   solanaTee: number | undefined
   /** R6: the external branch, on exactly the same rules as the other two. */
   solanaExternal: number | undefined
+  /** Phase 4a: EVM indices `0..evm-1`. Defaults to 0, never scanned, never recorded in `discovery`. */
+  evm: number
   requested: Record<RestoredBranch, number>
 }
 
@@ -273,6 +286,7 @@ export function parseCounts(
   teeCount: string | undefined,
   externalCount: string | undefined,
   rpcUrl: string | undefined,
+  evmCount?: string,
 ): Counts | { error: string } {
   const parse = (raw: string | undefined, flag: string): number | undefined | { error: string } => {
     if (raw === undefined) return undefined
@@ -286,6 +300,8 @@ export function parseCounts(
   if (typeof teeParsed === "object" && teeParsed !== null) return teeParsed
   const externalParsed = parse(externalCount, "--external-count")
   if (typeof externalParsed === "object" && externalParsed !== null) return externalParsed
+  const evmParsed = parse(evmCount, "--evm-count")
+  if (typeof evmParsed === "object" && evmParsed !== null) return evmParsed
 
   const allOmitted = vaultCount === undefined && teeParsed === undefined && externalParsed === undefined
   const scan = rpcUrl !== undefined
@@ -301,6 +317,8 @@ export function parseCounts(
     solanaVault,
     solanaTee,
     solanaExternal,
+    // The EVM count takes no part in the Solana defaulting above: 0 unless asked for (D7).
+    evm: evmParsed ?? 0,
     requested: { solanaVault: solanaVault ?? -1, solanaTee: solanaTee ?? -1, solanaExternal: solanaExternal ?? -1 },
   }
 }
@@ -316,7 +334,11 @@ interface DerivedEntry {
 
 interface DerivedSet {
   entries: DerivedEntry[]
-  /** The vault- and TEE-branch entries, which the linked-wallet read is matched against. */
+  /**
+   * The vault- and TEE-branch entries, which the linked-wallet read is matched against, and
+   * (Phase 4a) the EVM entries keyed by their lowercased address, since a Hood row may carry
+   * either spelling of one address.
+   */
   byAddress: Map<string, DerivedEntry>
   /**
    * The external-branch entries, kept apart (R6): an external key is never registered with Candle,
@@ -364,14 +386,41 @@ async function deriveWithinBounds(
         `Gap scan on ${branch} stopped at index ${index - 1} after ${GAP_LIMIT} consecutive indices with no balance, no token account and no signature history.\n`,
       )
     }
+    // Phase 4a (D7): the EVM branch, bounded by `--evm-count` and never scanned.
+    for (let index = 0; index < counts.evm; index++) {
+      set.entries.push(await deriveOneEvm(vault, root, index))
+    }
   } finally {
     wipe(root)
   }
   for (const entry of set.entries) {
     if (entry.branch === "solanaExternal") set.externalByAddress.set(entry.address, entry)
+    else if (entry.branch === "evm") set.byAddress.set(entry.address.toLowerCase(), entry)
     else set.byAddress.set(entry.address, entry)
   }
   return set
+}
+
+async function deriveOneEvm(vault: UnlockedVault, root: Uint8Array, index: number): Promise<DerivedEntry> {
+  const derived = await deriveEvmKeyFromRoot(root, index)
+  try {
+    const keyId = freshKeyId()
+    return {
+      branch: "evm",
+      index,
+      address: derived.address,
+      path: derived.path,
+      keyId,
+      blob: await sealKeyBlob(vault, keyId, derived.secret),
+    }
+  } finally {
+    wipe(derived.secret)
+  }
+}
+
+/** A row's address as the derived map keys it: lowercased when it is an EVM address. */
+function lookupKey(address: string): string {
+  return looksLikeEvmAddress(address) ? address.toLowerCase() : address
 }
 
 async function deriveOne(vault: UnlockedVault, root: Uint8Array, branch: Branch, index: number): Promise<DerivedEntry> {
@@ -463,7 +512,7 @@ async function matchAgainstAccount(ctx: CommandContext, apiKey: string, derived:
   const externalListed: string[] = []
   for (const row of read.rows) {
     if (typeof row.address !== "string") continue
-    const entry = derived.byAddress.get(row.address)
+    const entry = derived.byAddress.get(lookupKey(row.address))
     if (entry) matched.push({ entry, row })
     else if (derived.externalByAddress.has(row.address)) externalListed.push(row.address)
     else unmatched.push(row.address)
@@ -490,6 +539,24 @@ async function writeRestoredIndex(
 
   const entries: KeyEntry[] = derived.entries.map((entry) => {
     const row = matchByAddress.get(entry.address)
+    if (entry.branch === "evm") {
+      // Phase 4a (D7): an EVM entry is written as an EVM vault key, `exposureUnknown` like every
+      // recovered key. A matching linked-wallet row (a Hood wallet this account imported) ADDS
+      // `everRemoteExposed`; it is not passed through `teeFieldsFor`, because that mapping is the
+      // Solana TEE lifecycle and an EVM key has none until 4b.
+      return {
+        id: entry.keyId,
+        chain: "evm",
+        curve: "secp256k1",
+        address: entry.address,
+        label: row?.label ?? `evm-${entry.index}`,
+        createdAt: now,
+        role: "vault",
+        origin: "derived",
+        derivation: { scheme: EVM_DERIVATION_SCHEME, path: entry.path },
+        exposure: { everRemoteExposed: row !== undefined, everExported: false, exposureUnknown: true },
+      }
+    }
     const external = entry.branch === "solanaExternal"
     const base: KeyEntry = {
       id: entry.keyId,
@@ -514,6 +581,7 @@ async function writeRestoredIndex(
   // `nextIndex` lands one past the highest index this restore derived OR matched, with no reserve.
   // In a restored vault it is a record of what was recovered, not a license to allocate, and the
   // allocation refusal rather than this number is what enforces CC-10's no-reuse contract.
+  // The EVM branch has no scan and no reserve either: `nextIndex.evm` is exactly `--evm-count`.
   const highest: Record<Branch, number> = { solanaVault: -1, solanaTee: -1, solanaExternal: -1, evm: -1 }
   const exposed: Record<Branch, number[]> = { solanaVault: [], solanaTee: [], solanaExternal: [], evm: [] }
   for (const entry of entries) {
@@ -537,14 +605,14 @@ async function writeRestoredIndex(
       solanaVault: highest.solanaVault + 1,
       solanaTee: highest.solanaTee + 1,
       solanaExternal: highest.solanaExternal + 1,
-      evm: 0,
+      evm: highest.evm + 1,
     },
     rootExported: false,
     exposedIndexes: {
       solanaVault: exposed.solanaVault.sort((a, b) => a - b),
       solanaTee: exposed.solanaTee.sort((a, b) => a - b),
       solanaExternal: exposed.solanaExternal.sort((a, b) => a - b),
-      evm: [],
+      evm: exposed.evm.sort((a, b) => a - b),
     },
     // Present, with `complete: false`, permanently. Its presence is what refuses allocation.
     discovery: {
@@ -638,6 +706,13 @@ function reportRestore(
         `  ${branch}: index 0 only. If you derived more, re-run with --count/--tee-count/--external-count, or with --rpc-url to gap-scan.\n`,
       )
     }
+  }
+  if (counts.evm === 0) {
+    deps.stdout.write(
+      `  evm: none. If this root has EVM keys, re-run with --evm-count <n>; the EVM branch is never gap-scanned.\n`,
+    )
+  } else {
+    deps.stdout.write(`  evm: indices 0 to ${counts.evm - 1}, on m/44'/60'/n'/0/0.\n`)
   }
   if ((matches.externalListed?.length ?? 0) > 0) {
     // R6: an external key is never registered with Candle, so a listed address that is one of this
@@ -745,10 +820,11 @@ export async function vaultReconcileExposure(args: string[], ctx: CommandContext
       )
     }
 
-    const listed = new Set(read.rows.map((row) => row.address))
+    // Phase 4a: an EVM row may carry either spelling of one address, so EVM addresses compare lowercased.
+    const listed = new Set(read.rows.map((row) => lookupKey(row.address)))
     // R6: the read cannot raise an external key's exposure; those entries pass through untouched.
     const entries = vault.index.entries.map((entry) =>
-      entry.role !== "external" && listed.has(entry.address) && !entry.exposure.everRemoteExposed
+      entry.role !== "external" && listed.has(lookupKey(entry.address)) && !entry.exposure.everRemoteExposed
         ? { ...entry, exposure: { ...entry.exposure, everRemoteExposed: true } }
         : entry,
     )

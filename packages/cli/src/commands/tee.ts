@@ -489,12 +489,14 @@ async function addressOwnedByVault(ctx: CommandContext, address: string): Promis
       writeUsageFailure(ctx.deps, error.message, ctx.json)
       return "usage"
     }
+    // A coded vault refusal keeps its code (Phase 4a: `SOLANA_COMMAND_EVM_KEY` for an EVM entry
+    // named to a tee command); anything else is the unlock that failed.
+    const { isVaultError } = await import("../vault/errors")
     writeLocalFailure(
       ctx.deps,
-      {
-        code: "VAULT_UNLOCK_FAILED",
-        message: error instanceof Error ? error.message : String(error),
-      },
+      isVaultError(error)
+        ? { code: error.code, message: error.message, ...(error.suggestion ? { suggestion: error.suggestion } : {}) }
+        : { code: "VAULT_UNLOCK_FAILED", message: error instanceof Error ? error.message : String(error) },
       ctx.json,
     )
     return "error"

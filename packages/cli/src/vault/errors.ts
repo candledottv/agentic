@@ -117,6 +117,25 @@ export const VAULT_ERROR_CODES = [
   // by locator, by the silent probe, or by the authenticator's own exclude-list answer. Thrown from
   // `vault/fido2.ts` (`alreadyEnrolled`) and nowhere else; exit 1.
   "VAULT_KEY_ALREADY_ENROLLED",
+  // BE-350 (spec 2026-09-24-ember-phase-4a-evm-vault-keys-design.md, D3, D6): EVM vault keys.
+  // The pre-sign refusals of `vault transfer` from an EVM key, each exit 1 with no signature,
+  // thrown from `vault/evm-transfer.ts`; `EVM_TRANSFER_REVERTED` and the post-sign
+  // `EVM_NONCE_STALE` are the two that carry a hash in `details`. `TRANSFER_CHAIN_MISMATCH` is a
+  // destination of the wrong chain family for `--from`'s chain, before any read.
+  // `SOLANA_COMMAND_EVM_KEY` is the Solana-only filter: `fund`, `promote`, `promote-batch`,
+  // `demote`, `tee`, `external sweep` and `sign` refuse an EVM entry named to them (D3), thrown
+  // from `vault/promote-support.ts` (`assertNotEvmEntry`).
+  "EVM_CHAIN_MISMATCH",
+  "EVM_NONCE_STALE",
+  "EVM_TOKEN_UNREADABLE",
+  "EVM_AMOUNT_PRECISION",
+  "EVM_INSUFFICIENT_FOR_FEES",
+  "EVM_DESTINATION_INVALID",
+  "EVM_SELF_TRANSFER",
+  "EVM_RECIPIENT_IS_TOKEN",
+  "EVM_TRANSFER_REVERTED",
+  "TRANSFER_CHAIN_MISMATCH",
+  "SOLANA_COMMAND_EVM_KEY",
 ] as const
 
 export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number]

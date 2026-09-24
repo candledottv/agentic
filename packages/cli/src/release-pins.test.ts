@@ -35,7 +35,9 @@ function declaredRanges(name: string): string[] {
  * first is pinned on this list and the second is declared already.
  */
 test("every library the vault's cryptography rests on is pinned to an exact version", () => {
-  for (const name of ["@noble/hashes", "@noble/curves", "@scure/bip39"]) {
+  // Phase 4a (BE-350, D4) adds `@scure/bip32`, the BIP-32 secp256k1 derivation an EVM vault key's
+  // address comes from, under the same rule as the other three (E13).
+  for (const name of ["@noble/hashes", "@noble/curves", "@scure/bip39", "@scure/bip32"]) {
     const ranges = declaredRanges(name)
     // A filter that silently matched nothing would make the assertion below vacuous, and an
     // undeclared import is exactly the failure class the mirror caught the hard way (E21).
@@ -45,6 +47,26 @@ test("every library the vault's cryptography rests on is pinned to an exact vers
     expect(`${name}@${range}`).toBe(`${name}@${range.replace(/^[\^~>=<]+\s*/, "")}`)
     expect(range).toMatch(EXACT)
   }
+})
+
+/**
+ * Phase 4a (BE-350, D4, E13): `@noble/curves` stays on an exact 1.x release, and not only because
+ * a derived address must not move. `evm-lite`'s `signTransaction` calls `secp256k1.sign(hash, key)`
+ * with 1.x's defaults, `lowS: true` and `prehash: false`: the hash it passes is already keccak-256
+ * of the signing payload and must not be hashed again. `@noble/curves` 2.x changes the `prehash`
+ * default, so a 2.x upgrade would silently sign a different digest. E2 catches the encoding drift
+ * after the fact; this pin is what stops the upgrade from being silent.
+ */
+test("@noble/curves is an exact 1.x pin, because evm-lite relies on 1.x's sign defaults (lowS true, prehash false)", () => {
+  const ranges = declaredRanges("@noble/curves")
+  expect(ranges.length).toBe(1)
+  const range = ranges[0] as string
+  expect(range).toMatch(EXACT)
+  expect(range.split(".")[0]).toBe("1")
+  // `@scure/bip32` 2.x moves to `@noble/curves` 2.x with it; the pin above keeps both on 1.x.
+  const bip32 = declaredRanges("@scure/bip32")[0] as string
+  expect(bip32).toMatch(EXACT)
+  expect(bip32.split(".")[0]).toBe("1")
 })
 
 test("every @sigstore dependency is pinned to an exact version", () => {

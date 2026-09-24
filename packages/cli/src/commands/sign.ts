@@ -60,6 +60,7 @@ import { type MintProfile, parseMintAccount } from "../token-2022"
 import { VaultError } from "../vault/errors"
 import type { KeyEntry, UnlockedVaultIndex } from "../vault/format"
 import { wipe } from "../vault/hygiene"
+import { assertNotEvmEntry } from "../vault/promote-support"
 import { decryptKey } from "../vault/store"
 import {
   describeRole,
@@ -302,6 +303,8 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
     const vault = hold(opened.vault)
     const named: KeyEntry[] = []
     for (const requested of lifted.values) {
+      // Phase 4a (D3): an EVM entry is refused by name before the role check.
+      assertNotEvmEntry(vault.index, requested, "candle sign")
       const entry = findExternalEntry(vault.index, requested)
       if (entry === undefined) {
         const other = vault.index.entries.find(
@@ -482,6 +485,8 @@ export async function signMessage(args: string[], ctx: CommandContext): Promise<
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
     const vault = hold(opened.vault)
+    // Phase 4a (D3): an EVM entry is refused by name before the role check.
+    assertNotEvmEntry(vault.index, requested, "candle sign message")
     const entry = findExternalEntry(vault.index, requested)
     if (entry === undefined) {
       const other = vault.index.entries.find(

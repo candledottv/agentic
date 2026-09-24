@@ -1049,6 +1049,9 @@ function createView(arr) {
 function rotr(word, shift) {
   return word << 32 - shift | word >>> shift;
 }
+function rotl(word, shift) {
+  return word << shift | word >>> 32 - shift >>> 0;
+}
 function byteSwap(word) {
   return word << 24 & 4278190080 | word << 8 & 16711680 | word >>> 8 & 65280 | word >>> 24 & 255;
 }
@@ -2114,7 +2117,7 @@ var gcd = (a, b) => b === 0 ? a : gcd(b, a % b), radix2carry = (from, to) => fro
   if (s.length > 0 && !re.test(s))
     throw new Error("invalid base64");
   return Uint8Array.fromBase64(s, { alphabet: alphabet2, lastChunkHandling: "strict" });
-}, base64, base64nopad, base64url, base64urlnopad, genBase58 = (abc) => chain(radix(58), alphabet(abc), join3("")), base58, base58flickr, base58xrp, BECH_ALPHABET, POLYMOD_GENERATORS, bech32, bech32m, hasHexBuiltin2, hexBuiltin, hex;
+}, base64, base64nopad, base64url, base64urlnopad, genBase58 = (abc) => chain(radix(58), alphabet(abc), join3("")), base58, base58flickr, base58xrp, createBase58check = (sha2563) => chain(checksum(4, (data) => sha2563(sha2563(data))), base58), BECH_ALPHABET, POLYMOD_GENERATORS, bech32, bech32m, hasHexBuiltin2, hexBuiltin, hex;
 var init_esm = __esm(() => {
   /*! scure-base - MIT License (c) 2022 Paul Miller (paulmillr.com) */
   powers = /* @__PURE__ */ (() => {
@@ -3176,7 +3179,18 @@ var init_errors = __esm(() => {
     "LINKED_WALLET_ROOM_UNREADABLE",
     "PROMOTE_ACCOUNT_UNRESOLVED",
     "TRANSFER_SWEEP_PENDING",
-    "VAULT_KEY_ALREADY_ENROLLED"
+    "VAULT_KEY_ALREADY_ENROLLED",
+    "EVM_CHAIN_MISMATCH",
+    "EVM_NONCE_STALE",
+    "EVM_TOKEN_UNREADABLE",
+    "EVM_AMOUNT_PRECISION",
+    "EVM_INSUFFICIENT_FOR_FEES",
+    "EVM_DESTINATION_INVALID",
+    "EVM_SELF_TRANSFER",
+    "EVM_RECIPIENT_IS_TOKEN",
+    "EVM_TRANSFER_REVERTED",
+    "TRANSFER_CHAIN_MISMATCH",
+    "SOLANA_COMMAND_EVM_KEY"
   ];
   VaultError = class VaultError extends Error {
     code;
@@ -8972,7 +8986,7 @@ function tokenMintFilters(key) {
   return [{ dataSize: 82 }, memcmp(4, key)];
 }
 function tokenFreezeFilters(key) {
-  return [{ dataSize: 82 }, memcmp(46, concat2(COPTION_SOME_U32, key))];
+  return [{ dataSize: 82 }, memcmp(46, concat3(COPTION_SOME_U32, key))];
 }
 function token2022MintFilters(key) {
   const authority = memcmp(4, key);
@@ -8982,7 +8996,7 @@ function token2022MintFilters(key) {
   ];
 }
 function token2022FreezeFilters(key) {
-  const authority = memcmp(46, concat2(COPTION_SOME_U32, key));
+  const authority = memcmp(46, concat3(COPTION_SOME_U32, key));
   return [
     [{ dataSize: 82 }, authority],
     [memcmp(165, TOKEN_2022_MINT_ACCOUNT_TYPE), authority]
@@ -8992,7 +9006,7 @@ function keepSetAuthority(hits) {
   return hits.filter((hit) => hit.data.length === COPTION_SOME_U32.length && hit.data.every((byte, i) => byte === COPTION_SOME_U32[i])).map((hit) => hit.pubkey);
 }
 function programUpgradeFilters(key) {
-  return [memcmp(0, LOADER_PROGRAM_DATA_TAG), memcmp(12, concat2(COPTION_SOME_U8, key))];
+  return [memcmp(0, LOADER_PROGRAM_DATA_TAG), memcmp(12, concat3(COPTION_SOME_U8, key))];
 }
 function programIdFilters(programData) {
   return [memcmp(0, LOADER_PROGRAM_TAG), memcmp(4, programData)];
@@ -9342,7 +9356,7 @@ function authoritiesJson(result) {
     found: result.found.map(({ address, role, target, program }) => ({ address, role, target, program }))
   };
 }
-var BPF_UPGRADEABLE_LOADER_ID = "BPFLoaderUpgradeab1e11111111111111111111111", STAKE_PROGRAM_ID = "Stake11111111111111111111111111111111111111", ROLE_GROUP_IDS, PAGINATED_TOKEN_GROUPS, RPC_PAGINATION_REQUIRED = -32600, MAX_V2_PAGES = 10, RPC_METHOD_NOT_FOUND = -32601, REQUESTS_PER_KEY = 9, b642 = (bytes) => base64.encode(bytes), concat2 = (...parts) => {
+var BPF_UPGRADEABLE_LOADER_ID = "BPFLoaderUpgradeab1e11111111111111111111111", STAKE_PROGRAM_ID = "Stake11111111111111111111111111111111111111", ROLE_GROUP_IDS, PAGINATED_TOKEN_GROUPS, RPC_PAGINATION_REQUIRED = -32600, MAX_V2_PAGES = 10, RPC_METHOD_NOT_FOUND = -32601, REQUESTS_PER_KEY = 9, b642 = (bytes) => base64.encode(bytes), concat3 = (...parts) => {
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let at = 0;
   for (const part of parts) {
@@ -9464,6 +9478,7 @@ __export(exports_promote_support, {
   confirmPrompt: () => confirmPrompt,
   confirmPromotion: () => confirmPromotion,
   assertNotPinnedDestination: () => assertNotPinnedDestination,
+  assertNotEvmEntry: () => assertNotEvmEntry,
   assertInPlacePreconditions: () => assertInPlacePreconditions,
   assertColdVaultDestination: () => assertColdVaultDestination,
   applyPromotion: () => applyPromotion,
@@ -9471,6 +9486,7 @@ __export(exports_promote_support, {
   CONFIRM_WORD: () => CONFIRM_WORD
 });
 function assertColdVaultDestination(index, destinationLabelOrAddress, opts = {}) {
+  assertNotEvmEntry(index, destinationLabelOrAddress, "this destination");
   const destination = findVaultRoleEntry(index, destinationLabelOrAddress);
   if (destination === undefined) {
     throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `No vault key matches ${destinationLabelOrAddress}.`, {
@@ -9498,11 +9514,20 @@ function assertColdVaultDestination(index, destinationLabelOrAddress, opts = {})
   }
   return destination;
 }
+function assertNotEvmEntry(index, labelOrAddress, command) {
+  const named = index.entries.find((entry) => entry.chain === "evm" && (entry.label === labelOrAddress || entry.address.toLowerCase() === labelOrAddress.toLowerCase()));
+  if (named === undefined)
+    return;
+  throw new VaultError("SOLANA_COMMAND_EVM_KEY", `${named.label || named.address} is an EVM key (${named.address}); ${command} works on Solana keys only.`, {
+    suggestion: `Nothing was signed or written. An EVM vault key moves funds with: candle vault transfer <0x address> --from ${named.label || named.address}`
+  });
+}
 function findVaultRoleEntry(index, labelOrAddress) {
-  const byLabel = index.entries.find((entry) => entry.role === "vault" && entry.label !== undefined && entry.label === labelOrAddress);
+  const solana = index.entries.filter((entry) => entry.chain === "solana");
+  const byLabel = solana.find((entry) => entry.role === "vault" && entry.label !== undefined && entry.label === labelOrAddress);
   if (byLabel !== undefined)
     return byLabel;
-  return index.entries.find((entry) => entry.address === labelOrAddress);
+  return solana.find((entry) => entry.address === labelOrAddress);
 }
 function findTransferSource(index, labelOrAddress) {
   const byLabel = (role) => index.entries.find((entry) => entry.role === role && entry.label !== undefined && entry.label === labelOrAddress);
@@ -9523,6 +9548,7 @@ function assertNotPinnedDestination(index, subjectAddress) {
   });
 }
 function assertInPlacePreconditions(index, subjectLabel, sweepToLabel, opts) {
+  assertNotEvmEntry(index, subjectLabel, "vault promote");
   const subject = findEntryByLabelOrAddress(index, subjectLabel);
   if (subject === undefined) {
     throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`);
@@ -22973,6 +22999,12 @@ async function findTeeInVault(ctx, address, opts = {}) {
     return { hit: false };
   const opened = await unlockInteractively(ctx, path, raw, { acceptOlderCopy: true });
   const vault = opened.vault;
+  try {
+    assertNotEvmEntry(vault.index, address, "this command");
+  } catch (error) {
+    closeVault(vault);
+    throw error;
+  }
   const entry = vault.index.entries.find((candidate) => candidate.address === address && candidate.role === "tee-wallet");
   if (entry === undefined) {
     closeVault(vault);
@@ -22986,6 +23018,7 @@ function vaultOwnsTeeAddress(vault, address) {
 var init_tee_lookup = __esm(() => {
   init_args();
   init_vault_support();
+  init_promote_support();
   init_store();
 });
 
@@ -39248,6 +39281,10 @@ var ENVIRONMENT = [
   },
   { name: "CANDLE_SOLANA_RPC_URL", description: "Solana RPC endpoint, when --rpc-url is not given" },
   {
+    name: "CANDLE_EVM_RPC_URL",
+    description: "EVM RPC endpoint for an EVM vault key, when --rpc-url (transfer) or --evm-rpc-url (list) is not given; without it the built-in Hood RPC is used"
+  },
+  {
     name: "CANDLE_FIDO2_HELPER",
     description: "Path to the candle-fido2 helper, when it is not beside the binary"
   },
@@ -39551,12 +39588,12 @@ var HELP = {
       },
       { invocation: "status [--unlock]", description: "What the vault holds, and what opens it" },
       {
-        invocation: "list [<filter>] [--balances] [--rpc-url <url>]",
-        description: "One line per key: address, label, role, derivation. Prompts for the passphrase"
+        invocation: "list [<filter>] [--balances] [--rpc-url <url>] [--evm-rpc-url <url>]",
+        description: "One line per key: address, label, role, derivation. Prompts for the passphrase. --balances reads SOL over your Solana RPC and ETH (plus USDG on Hood) for EVM keys over --evm-rpc-url, CANDLE_EVM_RPC_URL, or the built-in Hood RPC"
       },
       {
-        invocation: "new-key --chain solana [--label <name>] [--count <n>] [--labels-from <file>]",
-        description: "Derive the next Solana key, or n of them under one unlock; the name must be free"
+        invocation: "new-key --chain solana|evm [--label <name>] [--count <n>] [--labels-from <file>]",
+        description: "Derive the next Solana key (m/44'/501'/n'/0') or EVM key (m/44'/60'/n'/0/0), or n of them under one unlock; the name must be free"
       },
       {
         invocation: "rename <label|address> <new-label> [--id <entry-id>]",
@@ -39564,8 +39601,8 @@ var HELP = {
       },
       { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
       {
-        invocation: "restore --phrase [--own-passphrase] [--count <n>] [--tee-count <k>] [--external-count <e>] [--rpc-url <url>]",
-        description: "Rebuild a vault from the recovery phrase; it gets a new passphrase"
+        invocation: "restore --phrase [--own-passphrase] [--count <n>] [--tee-count <k>] [--external-count <e>] [--evm-count <m>] [--rpc-url <url>]",
+        description: "Rebuild a vault from the recovery phrase; it gets a new passphrase. --evm-count derives EVM indices 0..m-1 (default 0, never gap-scanned)"
       },
       {
         invocation: "reconcile-exposure",
@@ -39590,8 +39627,8 @@ var HELP = {
         description: "Rename the Phase 1 store after a verified backup"
       },
       {
-        invocation: "transfer <to> --amount <n> --asset SOL|<mint> --from <label> --rpc-url <url>",
-        description: "Sign a transfer locally from a vault key or a promoted TEE wallet"
+        invocation: "transfer <to> --amount <n|max> --asset SOL|<mint>|ETH|USDG|<0x token> --from <label> [--rpc-url <url>]",
+        description: "Sign a transfer locally from a vault key or a promoted TEE wallet. From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key still needs --rpc-url"
       },
       {
         invocation: "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>] [--to-key <prefix|label>]",
@@ -39626,7 +39663,11 @@ var HELP = {
       },
       {
         invocation: "--balances",
-        description: "list: SOL per matched key, read from your RPC (one request per 100 matched keys). Every matched address goes to that one endpoint together, which links them; tokens are never read"
+        description: "list: SOL per matched key, read from your RPC (one request per 100 matched keys). Every matched address goes to that one endpoint together, which links them; SPL tokens are never read. EVM keys are read over the EVM endpoint: ETH, and USDG on Hood"
+      },
+      {
+        invocation: "--evm-rpc-url <url>",
+        description: "list --balances: the EVM endpoint for EVM keys. Else CANDLE_EVM_RPC_URL, else the built-in Hood RPC; the Solana --rpc-url is never sent an EVM address. The host is printed on stderr before the read"
       },
       {
         invocation: "--labels-from <file>",
@@ -39644,6 +39685,8 @@ var HELP = {
     examples: [
       "candle vault init",
       "candle vault new-key --chain solana --label treasury",
+      "candle vault new-key --chain evm --label hood-cold",
+      "candle vault transfer 0x000000000000000000000000000000000000dEaD --amount 0.5 --asset USDG --from hood-cold",
       "candle vault list cn-s",
       "candle vault rename key-7 treasury-cold",
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
@@ -39654,7 +39697,14 @@ var HELP = {
       "candle vault backup --to icloud",
       "CANDLE_CONFIG_DIR=$HOME/t47 candle vault status"
     ],
-    env: ["CANDLE_CONFIG_DIR", "CANDLE_FIDO2_HELPER", "CANDLE_ENCLAVE_HELPER", "CANDLE_KEYSTORE_PASSPHRASE"]
+    env: [
+      "CANDLE_CONFIG_DIR",
+      "CANDLE_SOLANA_RPC_URL",
+      "CANDLE_EVM_RPC_URL",
+      "CANDLE_FIDO2_HELPER",
+      "CANDLE_ENCLAVE_HELPER",
+      "CANDLE_KEYSTORE_PASSPHRASE"
+    ]
   },
   tee: {
     group: "Custody, on this machine",
@@ -42640,6 +42690,1022 @@ zone
 zoo`.split(`
 `);
 
+// ../../node_modules/@noble/curves/esm/secp256k1.js
+init_sha2();
+init__shortw_utils();
+init_modular();
+/*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+var secp256k1_CURVE = {
+  p: BigInt("0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f"),
+  n: BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"),
+  h: BigInt(1),
+  a: BigInt(0),
+  b: BigInt(7),
+  Gx: BigInt("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
+  Gy: BigInt("0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8")
+};
+var secp256k1_ENDO = {
+  beta: BigInt("0x7ae96a2b657c07106e64479eac3434e99cf0497512f58995c1396c28719501ee"),
+  basises: [
+    [BigInt("0x3086d221a7d46bcde86c90e49284eb15"), -BigInt("0xe4437ed6010e88286f547fa90abfe4c3")],
+    [BigInt("0x114ca50f7a8e2f3f657c1108d9d44cfd8"), BigInt("0x3086d221a7d46bcde86c90e49284eb15")]
+  ]
+};
+var _2n5 = /* @__PURE__ */ BigInt(2);
+function sqrtMod(y) {
+  const P2 = secp256k1_CURVE.p;
+  const _3n4 = BigInt(3), _6n = BigInt(6), _11n = BigInt(11), _22n = BigInt(22);
+  const _23n = BigInt(23), _44n = BigInt(44), _88n = BigInt(88);
+  const b2 = y * y * y % P2;
+  const b3 = b2 * b2 * y % P2;
+  const b6 = pow2(b3, _3n4, P2) * b3 % P2;
+  const b9 = pow2(b6, _3n4, P2) * b3 % P2;
+  const b11 = pow2(b9, _2n5, P2) * b2 % P2;
+  const b22 = pow2(b11, _11n, P2) * b11 % P2;
+  const b44 = pow2(b22, _22n, P2) * b22 % P2;
+  const b88 = pow2(b44, _44n, P2) * b44 % P2;
+  const b176 = pow2(b88, _88n, P2) * b88 % P2;
+  const b220 = pow2(b176, _44n, P2) * b44 % P2;
+  const b223 = pow2(b220, _3n4, P2) * b3 % P2;
+  const t1 = pow2(b223, _23n, P2) * b22 % P2;
+  const t2 = pow2(t1, _6n, P2) * b2 % P2;
+  const root = pow2(t2, _2n5, P2);
+  if (!Fpk1.eql(Fpk1.sqr(root), y))
+    throw new Error("Cannot find square root");
+  return root;
+}
+var Fpk1 = Field(secp256k1_CURVE.p, { sqrt: sqrtMod });
+var secp256k1 = createCurve({ ...secp256k1_CURVE, Fp: Fpk1, lowS: true, endo: secp256k1_ENDO }, sha256);
+
+// ../../node_modules/@noble/hashes/esm/sha3.js
+init__u64();
+init_utils();
+var _0n7 = BigInt(0);
+var _1n7 = BigInt(1);
+var _2n6 = BigInt(2);
+var _7n2 = BigInt(7);
+var _256n = BigInt(256);
+var _0x71n = BigInt(113);
+var SHA3_PI = [];
+var SHA3_ROTL = [];
+var _SHA3_IOTA = [];
+for (let round = 0, R = _1n7, x = 1, y = 0;round < 24; round++) {
+  [x, y] = [y, (2 * x + 3 * y) % 5];
+  SHA3_PI.push(2 * (5 * y + x));
+  SHA3_ROTL.push((round + 1) * (round + 2) / 2 % 64);
+  let t = _0n7;
+  for (let j = 0;j < 7; j++) {
+    R = (R << _1n7 ^ (R >> _7n2) * _0x71n) % _256n;
+    if (R & _2n6)
+      t ^= _1n7 << (_1n7 << /* @__PURE__ */ BigInt(j)) - _1n7;
+  }
+  _SHA3_IOTA.push(t);
+}
+var IOTAS = split(_SHA3_IOTA, true);
+var SHA3_IOTA_H = IOTAS[0];
+var SHA3_IOTA_L = IOTAS[1];
+var rotlH = (h, l, s) => s > 32 ? rotlBH(h, l, s) : rotlSH(h, l, s);
+var rotlL = (h, l, s) => s > 32 ? rotlBL(h, l, s) : rotlSL(h, l, s);
+function keccakP(s, rounds = 24) {
+  const B = new Uint32Array(5 * 2);
+  for (let round = 24 - rounds;round < 24; round++) {
+    for (let x = 0;x < 10; x++)
+      B[x] = s[x] ^ s[x + 10] ^ s[x + 20] ^ s[x + 30] ^ s[x + 40];
+    for (let x = 0;x < 10; x += 2) {
+      const idx1 = (x + 8) % 10;
+      const idx0 = (x + 2) % 10;
+      const B0 = B[idx0];
+      const B1 = B[idx0 + 1];
+      const Th = rotlH(B0, B1, 1) ^ B[idx1];
+      const Tl = rotlL(B0, B1, 1) ^ B[idx1 + 1];
+      for (let y = 0;y < 50; y += 10) {
+        s[x + y] ^= Th;
+        s[x + y + 1] ^= Tl;
+      }
+    }
+    let curH = s[2];
+    let curL = s[3];
+    for (let t = 0;t < 24; t++) {
+      const shift = SHA3_ROTL[t];
+      const Th = rotlH(curH, curL, shift);
+      const Tl = rotlL(curH, curL, shift);
+      const PI = SHA3_PI[t];
+      curH = s[PI];
+      curL = s[PI + 1];
+      s[PI] = Th;
+      s[PI + 1] = Tl;
+    }
+    for (let y = 0;y < 50; y += 10) {
+      for (let x = 0;x < 10; x++)
+        B[x] = s[y + x];
+      for (let x = 0;x < 10; x++)
+        s[y + x] ^= ~B[(x + 2) % 10] & B[(x + 4) % 10];
+    }
+    s[0] ^= SHA3_IOTA_H[round];
+    s[1] ^= SHA3_IOTA_L[round];
+  }
+  clean(B);
+}
+
+class Keccak extends Hash {
+  constructor(blockLen, suffix, outputLen, enableXOF = false, rounds = 24) {
+    super();
+    this.pos = 0;
+    this.posOut = 0;
+    this.finished = false;
+    this.destroyed = false;
+    this.enableXOF = false;
+    this.blockLen = blockLen;
+    this.suffix = suffix;
+    this.outputLen = outputLen;
+    this.enableXOF = enableXOF;
+    this.rounds = rounds;
+    anumber(outputLen);
+    if (!(0 < blockLen && blockLen < 200))
+      throw new Error("only keccak-f1600 function is supported");
+    this.state = new Uint8Array(200);
+    this.state32 = u32(this.state);
+  }
+  clone() {
+    return this._cloneInto();
+  }
+  keccak() {
+    swap32IfBE(this.state32);
+    keccakP(this.state32, this.rounds);
+    swap32IfBE(this.state32);
+    this.posOut = 0;
+    this.pos = 0;
+  }
+  update(data) {
+    aexists(this);
+    data = toBytes(data);
+    abytes(data);
+    const { blockLen, state } = this;
+    const len = data.length;
+    for (let pos = 0;pos < len; ) {
+      const take = Math.min(blockLen - this.pos, len - pos);
+      for (let i = 0;i < take; i++)
+        state[this.pos++] ^= data[pos++];
+      if (this.pos === blockLen)
+        this.keccak();
+    }
+    return this;
+  }
+  finish() {
+    if (this.finished)
+      return;
+    this.finished = true;
+    const { state, suffix, pos, blockLen } = this;
+    state[pos] ^= suffix;
+    if ((suffix & 128) !== 0 && pos === blockLen - 1)
+      this.keccak();
+    state[blockLen - 1] ^= 128;
+    this.keccak();
+  }
+  writeInto(out) {
+    aexists(this, false);
+    abytes(out);
+    this.finish();
+    const bufferOut = this.state;
+    const { blockLen } = this;
+    for (let pos = 0, len = out.length;pos < len; ) {
+      if (this.posOut >= blockLen)
+        this.keccak();
+      const take = Math.min(blockLen - this.posOut, len - pos);
+      out.set(bufferOut.subarray(this.posOut, this.posOut + take), pos);
+      this.posOut += take;
+      pos += take;
+    }
+    return out;
+  }
+  xofInto(out) {
+    if (!this.enableXOF)
+      throw new Error("XOF is not possible for this instance");
+    return this.writeInto(out);
+  }
+  xof(bytes) {
+    anumber(bytes);
+    return this.xofInto(new Uint8Array(bytes));
+  }
+  digestInto(out) {
+    aoutput(out, this);
+    if (this.finished)
+      throw new Error("digest() was already called");
+    this.writeInto(out);
+    this.destroy();
+    return out;
+  }
+  digest() {
+    return this.digestInto(new Uint8Array(this.outputLen));
+  }
+  destroy() {
+    this.destroyed = true;
+    clean(this.state);
+  }
+  _cloneInto(to) {
+    const { blockLen, suffix, outputLen, rounds, enableXOF } = this;
+    to || (to = new Keccak(blockLen, suffix, outputLen, enableXOF, rounds));
+    to.state32.set(this.state32);
+    to.pos = this.pos;
+    to.posOut = this.posOut;
+    to.finished = this.finished;
+    to.rounds = rounds;
+    to.suffix = suffix;
+    to.outputLen = outputLen;
+    to.enableXOF = enableXOF;
+    to.destroyed = this.destroyed;
+    return to;
+  }
+}
+var gen = (suffix, blockLen, outputLen) => createHasher(() => new Keccak(blockLen, suffix, outputLen));
+var keccak_256 = /* @__PURE__ */ (() => gen(1, 136, 256 / 8))();
+
+// ../../node_modules/@scure/bip32/lib/esm/index.js
+init_modular();
+init_hmac();
+
+// ../../node_modules/@noble/hashes/esm/legacy.js
+init__md();
+init_utils();
+var Rho160 = /* @__PURE__ */ Uint8Array.from([
+  7,
+  4,
+  13,
+  1,
+  10,
+  6,
+  15,
+  3,
+  12,
+  0,
+  9,
+  5,
+  2,
+  14,
+  11,
+  8
+]);
+var Id160 = /* @__PURE__ */ (() => Uint8Array.from(new Array(16).fill(0).map((_, i) => i)))();
+var Pi160 = /* @__PURE__ */ (() => Id160.map((i) => (9 * i + 5) % 16))();
+var idxLR = /* @__PURE__ */ (() => {
+  const L = [Id160];
+  const R = [Pi160];
+  const res = [L, R];
+  for (let i = 0;i < 4; i++)
+    for (let j of res)
+      j.push(j[i].map((k) => Rho160[k]));
+  return res;
+})();
+var idxL = /* @__PURE__ */ (() => idxLR[0])();
+var idxR = /* @__PURE__ */ (() => idxLR[1])();
+var shifts160 = /* @__PURE__ */ [
+  [11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8],
+  [12, 13, 11, 15, 6, 9, 9, 7, 12, 15, 11, 13, 7, 8, 7, 7],
+  [13, 15, 14, 11, 7, 7, 6, 8, 13, 14, 13, 12, 5, 5, 6, 9],
+  [14, 11, 12, 14, 8, 6, 5, 5, 15, 12, 15, 14, 9, 9, 8, 6],
+  [15, 12, 13, 13, 9, 5, 8, 6, 14, 11, 12, 11, 8, 6, 5, 5]
+].map((i) => Uint8Array.from(i));
+var shiftsL160 = /* @__PURE__ */ idxL.map((idx, i) => idx.map((j) => shifts160[i][j]));
+var shiftsR160 = /* @__PURE__ */ idxR.map((idx, i) => idx.map((j) => shifts160[i][j]));
+var Kl160 = /* @__PURE__ */ Uint32Array.from([
+  0,
+  1518500249,
+  1859775393,
+  2400959708,
+  2840853838
+]);
+var Kr160 = /* @__PURE__ */ Uint32Array.from([
+  1352829926,
+  1548603684,
+  1836072691,
+  2053994217,
+  0
+]);
+function ripemd_f(group, x, y, z) {
+  if (group === 0)
+    return x ^ y ^ z;
+  if (group === 1)
+    return x & y | ~x & z;
+  if (group === 2)
+    return (x | ~y) ^ z;
+  if (group === 3)
+    return x & z | y & ~z;
+  return x ^ (y | ~z);
+}
+var BUF_160 = /* @__PURE__ */ new Uint32Array(16);
+
+class RIPEMD160 extends HashMD {
+  constructor() {
+    super(64, 20, 8, true);
+    this.h0 = 1732584193 | 0;
+    this.h1 = 4023233417 | 0;
+    this.h2 = 2562383102 | 0;
+    this.h3 = 271733878 | 0;
+    this.h4 = 3285377520 | 0;
+  }
+  get() {
+    const { h0, h1, h2, h3, h4 } = this;
+    return [h0, h1, h2, h3, h4];
+  }
+  set(h0, h1, h2, h3, h4) {
+    this.h0 = h0 | 0;
+    this.h1 = h1 | 0;
+    this.h2 = h2 | 0;
+    this.h3 = h3 | 0;
+    this.h4 = h4 | 0;
+  }
+  process(view, offset) {
+    for (let i = 0;i < 16; i++, offset += 4)
+      BUF_160[i] = view.getUint32(offset, true);
+    let al = this.h0 | 0, ar = al, bl = this.h1 | 0, br = bl, cl = this.h2 | 0, cr = cl, dl = this.h3 | 0, dr = dl, el = this.h4 | 0, er = el;
+    for (let group = 0;group < 5; group++) {
+      const rGroup = 4 - group;
+      const hbl = Kl160[group], hbr = Kr160[group];
+      const rl = idxL[group], rr = idxR[group];
+      const sl = shiftsL160[group], sr = shiftsR160[group];
+      for (let i = 0;i < 16; i++) {
+        const tl = rotl(al + ripemd_f(group, bl, cl, dl) + BUF_160[rl[i]] + hbl, sl[i]) + el | 0;
+        al = el, el = dl, dl = rotl(cl, 10) | 0, cl = bl, bl = tl;
+      }
+      for (let i = 0;i < 16; i++) {
+        const tr = rotl(ar + ripemd_f(rGroup, br, cr, dr) + BUF_160[rr[i]] + hbr, sr[i]) + er | 0;
+        ar = er, er = dr, dr = rotl(cr, 10) | 0, cr = br, br = tr;
+      }
+    }
+    this.set(this.h1 + cl + dr | 0, this.h2 + dl + er | 0, this.h3 + el + ar | 0, this.h4 + al + br | 0, this.h0 + bl + cr | 0);
+  }
+  roundClean() {
+    clean(BUF_160);
+  }
+  destroy() {
+    this.destroyed = true;
+    clean(this.buffer);
+    this.set(0, 0, 0, 0, 0);
+  }
+}
+var ripemd160 = /* @__PURE__ */ createHasher(() => new RIPEMD160);
+
+// ../../node_modules/@scure/bip32/lib/esm/index.js
+init_sha2();
+init_utils();
+init_esm();
+/*! scure-bip32 - MIT License (c) 2022 Patricio Palladino, Paul Miller (paulmillr.com) */
+var Point = secp256k1.ProjectivePoint;
+var base58check = createBase58check(sha256);
+function bytesToNumber(bytes) {
+  abytes(bytes);
+  const h = bytes.length === 0 ? "0" : bytesToHex(bytes);
+  return BigInt("0x" + h);
+}
+function numberToBytes(num) {
+  if (typeof num !== "bigint")
+    throw new Error("bigint expected");
+  return hexToBytes(num.toString(16).padStart(64, "0"));
+}
+var MASTER_SECRET = utf8ToBytes("Bitcoin seed");
+var BITCOIN_VERSIONS = { private: 76066276, public: 76067358 };
+var HARDENED_OFFSET = 2147483648;
+var hash160 = (data) => ripemd160(sha256(data));
+var fromU32 = (data) => createView(data).getUint32(0, false);
+var toU32 = (n) => {
+  if (!Number.isSafeInteger(n) || n < 0 || n > 2 ** 32 - 1) {
+    throw new Error("invalid number, should be from 0 to 2**32-1, got " + n);
+  }
+  const buf = new Uint8Array(4);
+  createView(buf).setUint32(0, n, false);
+  return buf;
+};
+
+class HDKey {
+  get fingerprint() {
+    if (!this.pubHash) {
+      throw new Error("No publicKey set!");
+    }
+    return fromU32(this.pubHash);
+  }
+  get identifier() {
+    return this.pubHash;
+  }
+  get pubKeyHash() {
+    return this.pubHash;
+  }
+  get privateKey() {
+    return this.privKeyBytes || null;
+  }
+  get publicKey() {
+    return this.pubKey || null;
+  }
+  get privateExtendedKey() {
+    const priv = this.privateKey;
+    if (!priv) {
+      throw new Error("No private key");
+    }
+    return base58check.encode(this.serialize(this.versions.private, concatBytes(new Uint8Array([0]), priv)));
+  }
+  get publicExtendedKey() {
+    if (!this.pubKey) {
+      throw new Error("No public key");
+    }
+    return base58check.encode(this.serialize(this.versions.public, this.pubKey));
+  }
+  static fromMasterSeed(seed, versions = BITCOIN_VERSIONS) {
+    abytes(seed);
+    if (8 * seed.length < 128 || 8 * seed.length > 512) {
+      throw new Error("HDKey: seed length must be between 128 and 512 bits; 256 bits is advised, got " + seed.length);
+    }
+    const I = hmac(sha512, MASTER_SECRET, seed);
+    return new HDKey({
+      versions,
+      chainCode: I.slice(32),
+      privateKey: I.slice(0, 32)
+    });
+  }
+  static fromExtendedKey(base58key, versions = BITCOIN_VERSIONS) {
+    const keyBuffer = base58check.decode(base58key);
+    const keyView = createView(keyBuffer);
+    const version = keyView.getUint32(0, false);
+    const opt = {
+      versions,
+      depth: keyBuffer[4],
+      parentFingerprint: keyView.getUint32(5, false),
+      index: keyView.getUint32(9, false),
+      chainCode: keyBuffer.slice(13, 45)
+    };
+    const key = keyBuffer.slice(45);
+    const isPriv = key[0] === 0;
+    if (version !== versions[isPriv ? "private" : "public"]) {
+      throw new Error("Version mismatch");
+    }
+    if (isPriv) {
+      return new HDKey({ ...opt, privateKey: key.slice(1) });
+    } else {
+      return new HDKey({ ...opt, publicKey: key });
+    }
+  }
+  static fromJSON(json) {
+    return HDKey.fromExtendedKey(json.xpriv);
+  }
+  constructor(opt) {
+    this.depth = 0;
+    this.index = 0;
+    this.chainCode = null;
+    this.parentFingerprint = 0;
+    if (!opt || typeof opt !== "object") {
+      throw new Error("HDKey.constructor must not be called directly");
+    }
+    this.versions = opt.versions || BITCOIN_VERSIONS;
+    this.depth = opt.depth || 0;
+    this.chainCode = opt.chainCode || null;
+    this.index = opt.index || 0;
+    this.parentFingerprint = opt.parentFingerprint || 0;
+    if (!this.depth) {
+      if (this.parentFingerprint || this.index) {
+        throw new Error("HDKey: zero depth with non-zero index/parent fingerprint");
+      }
+    }
+    if (opt.publicKey && opt.privateKey) {
+      throw new Error("HDKey: publicKey and privateKey at same time.");
+    }
+    if (opt.privateKey) {
+      if (!secp256k1.utils.isValidPrivateKey(opt.privateKey)) {
+        throw new Error("Invalid private key");
+      }
+      this.privKey = typeof opt.privateKey === "bigint" ? opt.privateKey : bytesToNumber(opt.privateKey);
+      this.privKeyBytes = numberToBytes(this.privKey);
+      this.pubKey = secp256k1.getPublicKey(opt.privateKey, true);
+    } else if (opt.publicKey) {
+      this.pubKey = Point.fromHex(opt.publicKey).toRawBytes(true);
+    } else {
+      throw new Error("HDKey: no public or private key provided");
+    }
+    this.pubHash = hash160(this.pubKey);
+  }
+  derive(path) {
+    if (!/^[mM]'?/.test(path)) {
+      throw new Error('Path must start with "m" or "M"');
+    }
+    if (/^[mM]'?$/.test(path)) {
+      return this;
+    }
+    const parts = path.replace(/^[mM]'?\//, "").split("/");
+    let child = this;
+    for (const c of parts) {
+      const m = /^(\d+)('?)$/.exec(c);
+      const m1 = m && m[1];
+      if (!m || m.length !== 3 || typeof m1 !== "string")
+        throw new Error("invalid child index: " + c);
+      let idx = +m1;
+      if (!Number.isSafeInteger(idx) || idx >= HARDENED_OFFSET) {
+        throw new Error("Invalid index");
+      }
+      if (m[2] === "'") {
+        idx += HARDENED_OFFSET;
+      }
+      child = child.deriveChild(idx);
+    }
+    return child;
+  }
+  deriveChild(index) {
+    if (!this.pubKey || !this.chainCode) {
+      throw new Error("No publicKey or chainCode set");
+    }
+    let data = toU32(index);
+    if (index >= HARDENED_OFFSET) {
+      const priv = this.privateKey;
+      if (!priv) {
+        throw new Error("Could not derive hardened child key");
+      }
+      data = concatBytes(new Uint8Array([0]), priv, data);
+    } else {
+      data = concatBytes(this.pubKey, data);
+    }
+    const I = hmac(sha512, this.chainCode, data);
+    const childTweak = bytesToNumber(I.slice(0, 32));
+    const chainCode = I.slice(32);
+    if (!secp256k1.utils.isValidPrivateKey(childTweak)) {
+      throw new Error("Tweak bigger than curve order");
+    }
+    const opt = {
+      versions: this.versions,
+      chainCode,
+      depth: this.depth + 1,
+      parentFingerprint: this.fingerprint,
+      index
+    };
+    try {
+      if (this.privateKey) {
+        const added = mod(this.privKey + childTweak, secp256k1.CURVE.n);
+        if (!secp256k1.utils.isValidPrivateKey(added)) {
+          throw new Error("The tweak was out of range or the resulted private key is invalid");
+        }
+        opt.privateKey = added;
+      } else {
+        const added = Point.fromHex(this.pubKey).add(Point.fromPrivateKey(childTweak));
+        if (added.equals(Point.ZERO)) {
+          throw new Error("The tweak was equal to negative P, which made the result key invalid");
+        }
+        opt.publicKey = added.toRawBytes(true);
+      }
+      return new HDKey(opt);
+    } catch (err) {
+      return this.deriveChild(index + 1);
+    }
+  }
+  sign(hash) {
+    if (!this.privateKey) {
+      throw new Error("No privateKey set!");
+    }
+    abytes(hash, 32);
+    return secp256k1.sign(hash, this.privKey).toCompactRawBytes();
+  }
+  verify(hash, signature) {
+    abytes(hash, 32);
+    abytes(signature, 64);
+    if (!this.publicKey) {
+      throw new Error("No publicKey set!");
+    }
+    let sig;
+    try {
+      sig = secp256k1.Signature.fromCompact(signature);
+    } catch (error) {
+      return false;
+    }
+    return secp256k1.verify(sig, hash, this.publicKey);
+  }
+  wipePrivateData() {
+    this.privKey = undefined;
+    if (this.privKeyBytes) {
+      this.privKeyBytes.fill(0);
+      this.privKeyBytes = undefined;
+    }
+    return this;
+  }
+  toJSON() {
+    return {
+      xpriv: this.privateExtendedKey,
+      xpub: this.publicExtendedKey
+    };
+  }
+  serialize(version, key) {
+    if (!this.chainCode) {
+      throw new Error("No chainCode set");
+    }
+    abytes(key, 33);
+    return concatBytes(toU32(version), new Uint8Array([this.depth]), toU32(this.parentFingerprint), toU32(this.index), this.chainCode, key);
+  }
+}
+
+// src/evm-lite.ts
+var HOOD_CHAIN_ID = 4663;
+var DEFAULT_HOOD_RPC_URL = "https://rpc.mainnet.chain.robinhood.com";
+var EVM_RPC_URL_ENV = "CANDLE_EVM_RPC_URL";
+var HOOD_USDG_ADDRESS = "0x5fc5360d0400a0fd4f2af552add042d716f1d168";
+var HOOD_USDG_DECIMALS = 6;
+var NATIVE_DECIMALS = 18;
+var EVM_DERIVATION_SCHEME = "bip32-secp256k1";
+var EVM_SECRET_BYTES = 32;
+function bytesToHex2(bytes) {
+  let out = "";
+  for (const b of bytes)
+    out += b.toString(16).padStart(2, "0");
+  return `0x${out}`;
+}
+function hexToBytes2(hex2) {
+  const body = hex2.startsWith("0x") ? hex2.slice(2) : hex2;
+  if (body.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(body))
+    throw new Error(`not a hex string: ${hex2}`);
+  const out = new Uint8Array(body.length / 2);
+  for (let i = 0;i < out.length; i++)
+    out[i] = Number.parseInt(body.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+function hexToBigInt(hex2) {
+  const body = hex2.startsWith("0x") ? hex2.slice(2) : hex2;
+  if (body === "")
+    return 0n;
+  if (!/^[0-9a-fA-F]+$/.test(body))
+    throw new Error(`not a hex quantity: ${hex2}`);
+  return BigInt(`0x${body}`);
+}
+function quantity(value) {
+  return `0x${BigInt(value).toString(16)}`;
+}
+function uintToMinimalBytes(value) {
+  if (value < 0n)
+    throw new Error("RLP integers are non-negative");
+  if (value === 0n)
+    return new Uint8Array(0);
+  let hex2 = value.toString(16);
+  if (hex2.length % 2 !== 0)
+    hex2 = `0${hex2}`;
+  return hexToBytes2(hex2);
+}
+function rlpLength(length, offset) {
+  if (length < 56)
+    return Uint8Array.of(offset + length);
+  const lengthBytes = uintToMinimalBytes(BigInt(length));
+  return concat2(Uint8Array.of(offset + 55 + lengthBytes.length), lengthBytes);
+}
+function concat2(...parts) {
+  const out = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+function rlpEncode(item) {
+  if (item instanceof Uint8Array) {
+    if (item.length === 1 && item[0] < 128)
+      return item;
+    return concat2(rlpLength(item.length, 128), item);
+  }
+  const body = concat2(...item.map(rlpEncode));
+  return concat2(rlpLength(body.length, 192), body);
+}
+function toChecksumAddress(address) {
+  const lower = (address.startsWith("0x") ? address.slice(2) : address).toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(lower))
+    throw new Error(`not an EVM address: ${address}`);
+  const digest = bytesToHex2(keccak_256(new TextEncoder().encode(lower))).slice(2);
+  let out = "0x";
+  for (let i = 0;i < lower.length; i++) {
+    const c = lower[i];
+    out += Number.parseInt(digest[i], 16) >= 8 ? c.toUpperCase() : c;
+  }
+  return out;
+}
+function looksLikeEvmAddress(value) {
+  return /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+function checkEvmAddress(value) {
+  if (!looksLikeEvmAddress(value))
+    return { ok: false, reason: "not 0x followed by 40 hex characters" };
+  const body = value.slice(2);
+  const checksummed = toChecksumAddress(value);
+  const hasLower = /[a-f]/.test(body);
+  const hasUpper = /[A-F]/.test(body);
+  if (hasLower && hasUpper && checksummed !== value) {
+    return { ok: false, reason: "its mixed-case EIP-55 checksum does not match" };
+  }
+  return { ok: true, address: checksummed };
+}
+function sameEvmAddress(a, b) {
+  return a.toLowerCase() === b.toLowerCase();
+}
+function evmAddressFromSecret(secret) {
+  if (secret.length !== EVM_SECRET_BYTES) {
+    throw new Error(`expected a ${EVM_SECRET_BYTES}-byte secp256k1 scalar, got ${secret.length}`);
+  }
+  const pub = secp256k1.getPublicKey(secret, false).slice(1);
+  return toChecksumAddress(bytesToHex2(keccak_256(pub)).slice(-40));
+}
+function evmDerivationPath(index) {
+  if (!Number.isInteger(index) || index < 0 || index >= 2147483648)
+    throw new Error(`index out of range: ${index}`);
+  return `m/44'/60'/${index}'/0/0`;
+}
+function deriveEvmKey(seed, index) {
+  const path = evmDerivationPath(index);
+  const root = HDKey.fromMasterSeed(seed);
+  try {
+    const leaf = root.derive(path);
+    try {
+      if (leaf.privateKey === null)
+        throw new Error("BIP-32 derivation produced no private key");
+      const secret = Uint8Array.from(leaf.privateKey);
+      return { secret, address: evmAddressFromSecret(secret), path };
+    } finally {
+      leaf.wipePrivateData();
+    }
+  } finally {
+    root.wipePrivateData();
+  }
+}
+function buildNativeTransfer(input) {
+  return { ...input, to: toChecksumAddress(input.to), data: new Uint8Array(0) };
+}
+function buildErc20Transfer(input) {
+  const { token, recipient, amount, ...fees } = input;
+  return { ...fees, to: toChecksumAddress(token), value: 0n, data: encodeErc20Transfer(recipient, amount) };
+}
+var ERC20_TRANSFER_SELECTOR = "0xa9059cbb";
+var ERC20_DECIMALS_SELECTOR = "0x313ce567";
+var ERC20_SYMBOL_SELECTOR = "0x95d89b41";
+var ERC20_BALANCE_OF_SELECTOR = "0x70a08231";
+function abiWord(value) {
+  if (value < 0n || value >= 1n << 256n)
+    throw new Error("uint256 out of range");
+  const out = new Uint8Array(32);
+  out.set(uintToMinimalBytes(value), 32 - uintToMinimalBytes(value).length);
+  return out;
+}
+function abiAddress(address) {
+  const out = new Uint8Array(32);
+  out.set(hexToBytes2(address), 12);
+  return out;
+}
+function encodeErc20Transfer(recipient, amount) {
+  return concat2(hexToBytes2(ERC20_TRANSFER_SELECTOR), abiAddress(recipient), abiWord(amount));
+}
+var TYPE_2 = Uint8Array.of(2);
+function unsignedFields(tx) {
+  return [
+    uintToMinimalBytes(tx.chainId),
+    uintToMinimalBytes(tx.nonce),
+    uintToMinimalBytes(tx.maxPriorityFeePerGas),
+    uintToMinimalBytes(tx.maxFeePerGas),
+    uintToMinimalBytes(tx.gas),
+    hexToBytes2(tx.to),
+    uintToMinimalBytes(tx.value),
+    tx.data,
+    []
+  ];
+}
+function signingPayload(tx) {
+  return keccak_256(concat2(TYPE_2, rlpEncode(unsignedFields(tx))));
+}
+function signTransaction(tx, secret) {
+  if (secret.length !== EVM_SECRET_BYTES) {
+    throw new Error(`expected a ${EVM_SECRET_BYTES}-byte secp256k1 scalar, got ${secret.length}`);
+  }
+  const signature = secp256k1.sign(signingPayload(tx), secret, { lowS: true, prehash: false });
+  const yParity = signature.recovery === 1 ? 1 : 0;
+  const raw = concat2(TYPE_2, rlpEncode([
+    ...unsignedFields(tx),
+    uintToMinimalBytes(BigInt(yParity)),
+    uintToMinimalBytes(signature.r),
+    uintToMinimalBytes(signature.s)
+  ]));
+  return { raw, hash: bytesToHex2(keccak_256(raw)), yParity, r: signature.r, s: signature.s };
+}
+function formatUnits(raw, decimals) {
+  const negative = raw < 0n;
+  const magnitude = negative ? -raw : raw;
+  const base = 10n ** BigInt(decimals);
+  const whole = magnitude / base;
+  const fraction = decimals === 0 ? "" : (magnitude % base).toString().padStart(decimals, "0").replace(/0+$/, "");
+  const text = fraction === "" ? whole.toString() : `${whole}.${fraction}`;
+  return negative ? `-${text}` : text;
+}
+function parseUnits(decimal, decimals) {
+  if (!/^\d+(\.\d+)?$/.test(decimal))
+    return { ok: false, reason: "not-a-number" };
+  const [whole, fraction = ""] = decimal.split(".");
+  if (fraction.length > decimals)
+    return { ok: false, reason: "precision" };
+  const raw = BigInt((whole ?? "0") + fraction.padEnd(decimals, "0"));
+  if (raw === 0n)
+    return { ok: false, reason: "zero" };
+  return { ok: true, raw };
+}
+
+class EvmRpcError extends Error {
+  kind;
+  method;
+  rpcCode;
+  constructor(kind, method, message, rpcCode) {
+    super(message);
+    this.name = "EvmRpcError";
+    this.kind = kind;
+    this.method = method;
+    this.rpcCode = rpcCode;
+  }
+}
+function decodeAbiString(bytes) {
+  if (bytes.length === 0)
+    return;
+  if (bytes.length >= 64) {
+    const offset = Number(hexToBigInt(bytesToHex2(bytes.subarray(0, 32))));
+    if (offset + 32 <= bytes.length) {
+      const length = Number(hexToBigInt(bytesToHex2(bytes.subarray(offset, offset + 32))));
+      if (offset + 32 + length <= bytes.length) {
+        return new TextDecoder().decode(bytes.subarray(offset + 32, offset + 32 + length));
+      }
+    }
+  }
+  if (bytes.length === 32) {
+    let end = 32;
+    while (end > 0 && bytes[end - 1] === 0)
+      end--;
+    const text = new TextDecoder().decode(bytes.subarray(0, end));
+    return /^[\x20-\x7e]+$/.test(text) ? text : undefined;
+  }
+  return;
+}
+function createEvmRpc(url, fetchFn) {
+  let id = 0;
+  async function call(method, params) {
+    id += 1;
+    let res;
+    try {
+      res = await fetchFn(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id, method, params })
+      });
+    } catch (error) {
+      throw new EvmRpcError("transport", method, `RPC ${method} failed: ${error instanceof Error ? error.message : error}`);
+    }
+    if (!res.ok)
+      throw new EvmRpcError("transport", method, `RPC ${method} failed: HTTP ${res.status}`);
+    let json;
+    try {
+      json = await res.json();
+    } catch {
+      throw new EvmRpcError("transport", method, `RPC ${method} failed: the answer was not JSON`);
+    }
+    if (json.error) {
+      throw new EvmRpcError("rpc", method, `${json.error.message ?? "RPC error"}`, typeof json.error.code === "number" ? json.error.code : undefined);
+    }
+    return json.result;
+  }
+  const asQuantity = (value, method) => {
+    if (typeof value !== "string")
+      throw new EvmRpcError("rpc", method, `RPC ${method} answered without a quantity`);
+    return hexToBigInt(value);
+  };
+  return {
+    async chainId() {
+      return asQuantity(await call("eth_chainId", []), "eth_chainId");
+    },
+    async getTransactionCount(address, tag) {
+      return asQuantity(await call("eth_getTransactionCount", [address, tag]), "eth_getTransactionCount");
+    },
+    async estimateGas(input) {
+      return asQuantity(await call("eth_estimateGas", [
+        {
+          from: input.from,
+          to: input.to,
+          value: quantity(input.value),
+          ...input.data.length > 0 ? { data: bytesToHex2(input.data) } : {}
+        }
+      ]), "eth_estimateGas");
+    },
+    async feeHistory(blockCount, newestBlock, rewardPercentiles) {
+      const r = await call("eth_feeHistory", [
+        quantity(blockCount),
+        newestBlock,
+        rewardPercentiles
+      ]);
+      const base = Array.isArray(r?.baseFeePerGas) ? r.baseFeePerGas : [];
+      if (base.length === 0)
+        throw new EvmRpcError("rpc", "eth_feeHistory", "RPC eth_feeHistory answered no baseFeePerGas");
+      return {
+        baseFeePerGas: base.map((value) => asQuantity(value, "eth_feeHistory")),
+        reward: (Array.isArray(r.reward) ? r.reward : []).map((row) => (Array.isArray(row) ? row : []).map((value) => asQuantity(value, "eth_feeHistory")))
+      };
+    },
+    async maxPriorityFeePerGas() {
+      return asQuantity(await call("eth_maxPriorityFeePerGas", []), "eth_maxPriorityFeePerGas");
+    },
+    async getBalance(address) {
+      return asQuantity(await call("eth_getBalance", [address, "latest"]), "eth_getBalance");
+    },
+    async call(input) {
+      const r = await call("eth_call", [{ to: input.to, data: bytesToHex2(input.data) }, "latest"]);
+      if (typeof r !== "string")
+        throw new EvmRpcError("rpc", "eth_call", "RPC eth_call answered without data");
+      return hexToBytes2(r);
+    },
+    async sendRawTransaction(raw) {
+      const r = await call("eth_sendRawTransaction", [bytesToHex2(raw)]);
+      if (typeof r !== "string") {
+        throw new EvmRpcError("rpc", "eth_sendRawTransaction", "RPC eth_sendRawTransaction answered without a hash");
+      }
+      return r;
+    },
+    async getTransactionReceipt(hash) {
+      const r = await call("eth_getTransactionReceipt", [hash]);
+      if (r === null || r === undefined)
+        return null;
+      const status = asQuantity(r.status, "eth_getTransactionReceipt");
+      return {
+        status: status === 1n ? 1 : 0,
+        blockNumber: asQuantity(r.blockNumber, "eth_getTransactionReceipt"),
+        transactionHash: typeof r.transactionHash === "string" ? r.transactionHash : hash
+      };
+    },
+    async blockNumber() {
+      return asQuantity(await call("eth_blockNumber", []), "eth_blockNumber");
+    },
+    async erc20Decimals(token) {
+      const answer = await this.call({ to: token, data: hexToBytes2(ERC20_DECIMALS_SELECTOR) });
+      if (answer.length !== 32)
+        throw new EvmRpcError("rpc", "eth_call", "the contract did not answer decimals()");
+      const value = hexToBigInt(bytesToHex2(answer));
+      if (value > 255n)
+        throw new EvmRpcError("rpc", "eth_call", "the contract's decimals() is not a uint8");
+      return Number(value);
+    },
+    async erc20Symbol(token) {
+      try {
+        return decodeAbiString(await this.call({ to: token, data: hexToBytes2(ERC20_SYMBOL_SELECTOR) }));
+      } catch (error) {
+        if (error instanceof EvmRpcError && error.kind === "rpc")
+          return;
+        throw error;
+      }
+    },
+    async erc20BalanceOf(token, owner) {
+      const answer = await this.call({
+        to: token,
+        data: concat2(hexToBytes2(ERC20_BALANCE_OF_SELECTOR), abiAddress(owner))
+      });
+      if (answer.length !== 32)
+        throw new EvmRpcError("rpc", "eth_call", "the contract did not answer balanceOf()");
+      return hexToBigInt(bytesToHex2(answer));
+    }
+  };
+}
+var FEE_HISTORY_BLOCKS = 10;
+async function quoteFees(rpc) {
+  const history = await rpc.feeHistory(FEE_HISTORY_BLOCKS, "latest", [50]);
+  const baseFee = history.baseFeePerGas[history.baseFeePerGas.length - 1];
+  let tip;
+  let tipSource;
+  try {
+    tip = await rpc.maxPriorityFeePerGas();
+    tipSource = "eth_maxPriorityFeePerGas";
+  } catch (error) {
+    if (!(error instanceof EvmRpcError) || error.kind !== "rpc")
+      throw error;
+    const rewards = history.reward.map((row) => row[0] ?? 0n).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    tip = rewards.length === 0 ? 0n : rewards[Math.floor(rewards.length / 2)];
+    tipSource = "eth_feeHistory";
+  }
+  return { baseFee, maxPriorityFeePerGas: tip, maxFeePerGas: 2n * baseFee + tip, tipSource };
+}
+function gasWithHeadroom(estimate) {
+  return (estimate * 12n + 9n) / 10n;
+}
+function requiredDepth(chainId) {
+  return chainId === BigInt(HOOD_CHAIN_ID) ? 1 : 2;
+}
+function rpcHostOf(url) {
+  return new URL(url).host;
+}
+function resolveEvmRpcUrl(flag, envValue, flagName) {
+  const fromFlag = flag?.trim() || undefined;
+  const fromEnv = envValue?.trim() || undefined;
+  const url = fromFlag ?? fromEnv ?? DEFAULT_HOOD_RPC_URL;
+  const source = fromFlag !== undefined ? flagName : fromEnv !== undefined ? EVM_RPC_URL_ENV : undefined;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { error: `${source ?? flagName} is not a valid URL: ${url}` };
+  }
+  const local = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && local)) {
+    return {
+      error: `${source ?? flagName} must be https:// (plain http is allowed only for 127.0.0.1 / localhost).`
+    };
+  }
+  return { url, builtIn: url === DEFAULT_HOOD_RPC_URL };
+}
+
 // src/vault/ed25519.ts
 init_ed25519();
 init_esm();
@@ -42675,7 +43741,7 @@ var sha5122 = sha512;
 
 // src/vault/slip10.ts
 init_errors();
-var HARDENED_OFFSET = 2147483648;
+var HARDENED_OFFSET2 = 2147483648;
 var ED25519_SEED_KEY = new TextEncoder().encode("ed25519 seed");
 function masterFromSeed(seed) {
   const i = hmac(sha5122, ED25519_SEED_KEY, seed);
@@ -42686,7 +43752,7 @@ function masterFromSeed(seed) {
   }
 }
 function deriveChild(node, index) {
-  if (!Number.isInteger(index) || index < HARDENED_OFFSET || index > 4294967295) {
+  if (!Number.isInteger(index) || index < HARDENED_OFFSET2 || index > 4294967295) {
     throw new VaultError("VAULT_INDEX_INVALID", `SLIP-0010 Ed25519 has no non-hardened children; refusing index ${index}.`);
   }
   const data = new Uint8Array(1 + 32 + 4);
@@ -42713,9 +43779,9 @@ function parsePath(path) {
     if (!hardened) {
       throw new VaultError("VAULT_INDEX_INVALID", `SLIP-0010 Ed25519 has no non-hardened children; ${path} asks for one.`);
     }
-    if (index >= HARDENED_OFFSET)
+    if (index >= HARDENED_OFFSET2)
       throw new VaultError("VAULT_INDEX_INVALID", `Derivation index out of range: ${part}`);
-    return index + HARDENED_OFFSET;
+    return index + HARDENED_OFFSET2;
   });
 }
 function derivePath(seed, path) {
@@ -42749,6 +43815,10 @@ function solanaExternalPath(index) {
 }
 function evmPath(index) {
   return `m/44'/60'/${assertIndex(index)}'/0/0`;
+}
+function evmIndexOfPath(path) {
+  const match = /^m\/44'\/60'\/(\d+)'\/0\/0$/.exec(path);
+  return match?.[1] === undefined ? undefined : Number(match[1]);
 }
 function pathForBranch(branch, index) {
   if (branch === "solanaVault")
@@ -42803,6 +43873,15 @@ async function deriveSolanaKey(entropy, path) {
     } finally {
       wipe(leaf);
     }
+  } finally {
+    wipe(seed);
+  }
+}
+async function deriveEvmKeyFromRoot(entropy, index) {
+  const seed = await seedFromEntropy(entropy);
+  try {
+    const derived = deriveEvmKey(seed, index);
+    return { ...derived, secret: ownSecret(derived.secret) };
   } finally {
     wipe(seed);
   }
@@ -43496,12 +44575,11 @@ async function vaultNewKey(args, ctx) {
     return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
   const chain2 = parsed.values["--chain"];
   if (chain2 === undefined)
-    return usage(ctx, "--chain solana is required.");
-  if (chain2 === "evm") {
-    return usage(ctx, "CHAIN_NOT_OFFERED: EVM keys arrive in Phase 4. This release derives Solana keys only.");
+    return usage(ctx, "--chain solana|evm is required.");
+  if (chain2 !== "solana" && chain2 !== "evm") {
+    return usage(ctx, `Unknown chain: ${chain2}. This release derives Solana and EVM keys (--chain solana|evm).`);
   }
-  if (chain2 !== "solana")
-    return usage(ctx, `Unknown chain: ${chain2}. This release derives Solana keys only.`);
+  const branch = chain2 === "evm" ? "evm" : "solanaVault";
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (!requireTty(ctx, "vault new-key"))
@@ -43536,7 +44614,7 @@ async function vaultNewKey(args, ctx) {
         suggestion: "Create a second vault with a fresh root (`candle vault init`) and move the funds across with `candle vault transfer`. There is no flag for this: no fact you could assert would make the old boundary known."
       });
     }
-    const clash = labelClash(vault.index, plannedLabels(vault.index.hd, batch, parsed.values["--label"]));
+    const clash = labelClash(vault.index, plannedLabels(vault.index.hd, batch, parsed.values["--label"], branch));
     if (clash !== undefined) {
       return usage(ctx, batch.labels !== undefined ? `A key labelled ${clash} already exists in this vault; every --labels-from name must be new.` : parsed.values["--label"] !== undefined ? `A key labelled ${clash} already exists in this vault; choose another --label.` : `A key labelled ${clash} already exists in this vault; pass --label <name> to choose a different name for this key.`);
     }
@@ -43546,41 +44624,52 @@ async function vaultNewKey(args, ctx) {
     const root = await decryptRoot(vault);
     try {
       for (let made = 0;made < batch.count; made++) {
-        const index = nextAllocatableIndex(current.index.hd.nextIndex.solanaVault, current.index.hd.exposedIndexes.solanaVault);
-        const derivationPath = solanaVaultPath(index);
-        const label = batch.labels?.[made] ?? parsed.values["--label"] ?? `key-${index}`;
+        const index = nextAllocatableIndex(current.index.hd.nextIndex[branch], current.index.hd.exposedIndexes[branch]);
+        const derivationPath = branch === "evm" ? evmPath(index) : solanaVaultPath(index);
+        const label = batch.labels?.[made] ?? parsed.values["--label"] ?? defaultLabel(branch, index);
         let address;
         let keyId;
         let blob;
-        const key = await deriveSolanaKey(root, derivationPath);
-        try {
-          address = key.address;
-          keyId = freshKeyId();
-          blob = await sealKeyBlob(current, keyId, key.secret64);
-        } finally {
-          wipe(key.secret64);
+        if (branch === "evm") {
+          const key = await deriveEvmKeyFromRoot(root, index);
+          try {
+            address = key.address;
+            keyId = freshKeyId();
+            blob = await sealKeyBlob(current, keyId, key.secret);
+          } finally {
+            wipe(key.secret);
+          }
+        } else {
+          const key = await deriveSolanaKey(root, derivationPath);
+          try {
+            address = key.address;
+            keyId = freshKeyId();
+            blob = await sealKeyBlob(current, keyId, key.secret64);
+          } finally {
+            wipe(key.secret64);
+          }
         }
         const entry = {
           id: keyId,
-          chain: "solana",
-          curve: "ed25519",
+          chain: chain2,
+          curve: chain2 === "evm" ? "secp256k1" : "ed25519",
           address,
           label,
           createdAt: new Date(deps.now()).toISOString(),
           role: "vault",
           origin: "derived",
-          derivation: { scheme: DERIVATION_SCHEME, path: derivationPath },
+          derivation: { scheme: chain2 === "evm" ? EVM_DERIVATION_SCHEME : DERIVATION_SCHEME, path: derivationPath },
           exposure: { everRemoteExposed: false, everExported: false }
         };
         current = await commitVault(current, {
           index: {
-            hd: { ...current.index.hd, nextIndex: { ...current.index.hd.nextIndex, solanaVault: index + 1 } },
+            hd: { ...current.index.hd, nextIndex: { ...current.index.hd.nextIndex, [branch]: index + 1 } },
             entries: [...current.index.entries, entry]
           },
           addKeys: [blob]
         }, deps);
         derived.push({ address, label, path: derivationPath, index, keyId });
-        await verifyWrittenFromDisk(current, address, keyId);
+        await verifyWrittenFromDisk(current, address, keyId, chain2);
         last = { address, keyId };
         if (!ctx.json && batchRequested)
           deps.stdout.write(`${address}  ${label}  ${derivationPath}
@@ -43595,7 +44684,7 @@ async function vaultNewKey(args, ctx) {
     const only = derived[0];
     if (only === undefined || last === undefined)
       throw new VaultError("VAULT_WRITE_FAILED", "No key was derived.");
-    await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx);
+    await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx, chain2);
     if (ctx.json) {
       if (batchRequested)
         writeJson(deps, { ok: true, count: derived.length, keys: derived });
@@ -43634,15 +44723,24 @@ ${derived.length} of ${requested} keys were created and ARE in the vault; the va
 ` + `Re-run for the remaining ${requested - derived.length}${derived.length > 0 ? " (with a --labels-from file holding the names that did not land)" : ""}.
 `);
 }
-function plannedLabels(hd, batch, labelFlag) {
+function plannedLabels(hd, batch, labelFlag, branch = "solanaVault") {
   const labels = [];
-  let counter = hd.nextIndex.solanaVault;
+  let counter = hd.nextIndex[branch];
   for (let made = 0;made < batch.count; made++) {
-    const index = nextAllocatableIndex(counter, hd.exposedIndexes.solanaVault);
-    labels.push(batch.labels?.[made] ?? labelFlag ?? `key-${index}`);
+    const index = nextAllocatableIndex(counter, hd.exposedIndexes[branch]);
+    labels.push(batch.labels?.[made] ?? labelFlag ?? defaultLabel(branch, index));
     counter = index + 1;
   }
   return labels;
+}
+function defaultLabel(branch, index) {
+  return branch === "evm" ? `evm-${index}` : `key-${index}`;
+}
+function addressOfSecret(chain2, secret) {
+  return chain2 === "evm" ? evmAddressFromSecret(secret) : addressFromSecret64(secret);
+}
+function sameAddress(chain2, a, b) {
+  return chain2 === "evm" ? sameEvmAddress(a, b) : a === b;
 }
 function labelClash(index, planned) {
   const taken = new Set(index.entries.map((entry) => entry.label));
@@ -43660,7 +44758,7 @@ function nextAllocatableIndex(counter, exposed) {
     index++;
   return index;
 }
-async function verifyWrittenFromDisk(vault, address, keyId) {
+async function verifyWrittenFromDisk(vault, address, keyId, chain2 = "solana") {
   const raw = await readVaultRaw(vault.path);
   if (raw === null) {
     throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${vault.path} could not be read back after the write.`);
@@ -43668,14 +44766,14 @@ async function verifyWrittenFromDisk(vault, address, keyId) {
   const onDisk = { ...vault, raw, file: parseVaultFile(raw) };
   const secret = await decryptKey(onDisk, keyId);
   try {
-    if (addressFromSecret64(secret) !== address) {
+    if (!sameAddress(chain2, addressOfSecret(chain2, secret), address)) {
       throw new VaultError("VAULT_VERIFY_FAILED", "The key written to the vault does not produce the address just derived.");
     }
   } finally {
     wipe(secret);
   }
 }
-async function verifyWritten(path, address, keyId, reopen, _ctx) {
+async function verifyWritten(path, address, keyId, reopen, _ctx, chain2 = "solana") {
   const raw = await readVaultRaw(path);
   if (raw === null)
     throw new VaultError("VAULT_WRITE_FAILED", `The vault at ${path} could not be read back after the write.`);
@@ -43683,7 +44781,7 @@ async function verifyWritten(path, address, keyId, reopen, _ctx) {
   try {
     const secret = await decryptKey(reopened, keyId);
     try {
-      if (addressFromSecret64(secret) !== address) {
+      if (!sameAddress(chain2, addressOfSecret(chain2, secret), address)) {
         throw new VaultError("VAULT_VERIFY_FAILED", "The key written to the vault does not produce the address just derived.");
       }
     } finally {
@@ -43898,6 +44996,8 @@ async function externalSweep(args, ctx) {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const vault = hold(opened.vault);
+    assertNotEvmEntry(vault.index, source, "external sweep");
+    assertNotEvmEntry(vault.index, to, "external sweep");
     const sourceEntry = requireExternalEntry(vault.index, source);
     const destination = findVaultRoleEntry(vault.index, to);
     if (destination === undefined || destination.role !== "vault") {
@@ -46667,6 +47767,7 @@ function programNameOf(programId) {
 // src/commands/sign.ts
 init_solana_lite();
 init_errors();
+init_promote_support();
 init_store();
 init_vault_support();
 async function readInput(ctx, file) {
@@ -46845,6 +47946,7 @@ async function sign2(args, ctx) {
     const vault = hold(opened.vault);
     const named = [];
     for (const requested of lifted.values) {
+      assertNotEvmEntry(vault.index, requested, "candle sign");
       const entry = findExternalEntry(vault.index, requested);
       if (entry === undefined) {
         const other = vault.index.entries.find((candidate) => candidate.label === requested || candidate.address === requested);
@@ -47000,6 +48102,7 @@ async function signMessage2(args, ctx) {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const vault = hold(opened.vault);
+    assertNotEvmEntry(vault.index, requested, "candle sign message");
     const entry = findExternalEntry(vault.index, requested);
     if (entry === undefined) {
       const other = vault.index.entries.find((candidate) => candidate.label === requested || candidate.address === requested);
@@ -47649,11 +48752,11 @@ async function resolveTeeAddress(ctx, _parsed, address, openLegacy, access3 = "r
   } catch (error) {
     if (isUsageError(error)) {
       writeUsageFailure(ctx.deps, error.message, ctx.json);
-      return { ok: false, code: 2 };
+      return { ok: false, code: 2, reported: true };
     }
     if (isVaultError(error)) {
       writeLocalFailure(ctx.deps, { code: error.code, message: error.message, ...error.suggestion ? { suggestion: error.suggestion } : {} }, ctx.json);
-      return { ok: false, code: error.exitCode };
+      return { ok: false, code: error.exitCode, reported: true };
     }
     throw error;
   }
@@ -48003,7 +49106,7 @@ var sigma16 = _utf8ToBytes("expand 16-byte k");
 var sigma32 = _utf8ToBytes("expand 32-byte k");
 var sigma16_32 = u322(sigma16);
 var sigma32_32 = u322(sigma32);
-function rotl(a, b) {
+function rotl2(a, b) {
   return a << b | a >>> 32 - b;
 }
 function isAligned322(b) {
@@ -48418,69 +49521,69 @@ function chachaCore(s, k, n, out, cnt, rounds = 20) {
   let x00 = y00, x01 = y01, x02 = y02, x03 = y03, x04 = y04, x05 = y05, x06 = y06, x07 = y07, x08 = y08, x09 = y09, x10 = y10, x11 = y11, x12 = y12, x13 = y13, x14 = y14, x15 = y15;
   for (let r = 0;r < rounds; r += 2) {
     x00 = x00 + x04 | 0;
-    x12 = rotl(x12 ^ x00, 16);
+    x12 = rotl2(x12 ^ x00, 16);
     x08 = x08 + x12 | 0;
-    x04 = rotl(x04 ^ x08, 12);
+    x04 = rotl2(x04 ^ x08, 12);
     x00 = x00 + x04 | 0;
-    x12 = rotl(x12 ^ x00, 8);
+    x12 = rotl2(x12 ^ x00, 8);
     x08 = x08 + x12 | 0;
-    x04 = rotl(x04 ^ x08, 7);
+    x04 = rotl2(x04 ^ x08, 7);
     x01 = x01 + x05 | 0;
-    x13 = rotl(x13 ^ x01, 16);
+    x13 = rotl2(x13 ^ x01, 16);
     x09 = x09 + x13 | 0;
-    x05 = rotl(x05 ^ x09, 12);
+    x05 = rotl2(x05 ^ x09, 12);
     x01 = x01 + x05 | 0;
-    x13 = rotl(x13 ^ x01, 8);
+    x13 = rotl2(x13 ^ x01, 8);
     x09 = x09 + x13 | 0;
-    x05 = rotl(x05 ^ x09, 7);
+    x05 = rotl2(x05 ^ x09, 7);
     x02 = x02 + x06 | 0;
-    x14 = rotl(x14 ^ x02, 16);
+    x14 = rotl2(x14 ^ x02, 16);
     x10 = x10 + x14 | 0;
-    x06 = rotl(x06 ^ x10, 12);
+    x06 = rotl2(x06 ^ x10, 12);
     x02 = x02 + x06 | 0;
-    x14 = rotl(x14 ^ x02, 8);
+    x14 = rotl2(x14 ^ x02, 8);
     x10 = x10 + x14 | 0;
-    x06 = rotl(x06 ^ x10, 7);
+    x06 = rotl2(x06 ^ x10, 7);
     x03 = x03 + x07 | 0;
-    x15 = rotl(x15 ^ x03, 16);
+    x15 = rotl2(x15 ^ x03, 16);
     x11 = x11 + x15 | 0;
-    x07 = rotl(x07 ^ x11, 12);
+    x07 = rotl2(x07 ^ x11, 12);
     x03 = x03 + x07 | 0;
-    x15 = rotl(x15 ^ x03, 8);
+    x15 = rotl2(x15 ^ x03, 8);
     x11 = x11 + x15 | 0;
-    x07 = rotl(x07 ^ x11, 7);
+    x07 = rotl2(x07 ^ x11, 7);
     x00 = x00 + x05 | 0;
-    x15 = rotl(x15 ^ x00, 16);
+    x15 = rotl2(x15 ^ x00, 16);
     x10 = x10 + x15 | 0;
-    x05 = rotl(x05 ^ x10, 12);
+    x05 = rotl2(x05 ^ x10, 12);
     x00 = x00 + x05 | 0;
-    x15 = rotl(x15 ^ x00, 8);
+    x15 = rotl2(x15 ^ x00, 8);
     x10 = x10 + x15 | 0;
-    x05 = rotl(x05 ^ x10, 7);
+    x05 = rotl2(x05 ^ x10, 7);
     x01 = x01 + x06 | 0;
-    x12 = rotl(x12 ^ x01, 16);
+    x12 = rotl2(x12 ^ x01, 16);
     x11 = x11 + x12 | 0;
-    x06 = rotl(x06 ^ x11, 12);
+    x06 = rotl2(x06 ^ x11, 12);
     x01 = x01 + x06 | 0;
-    x12 = rotl(x12 ^ x01, 8);
+    x12 = rotl2(x12 ^ x01, 8);
     x11 = x11 + x12 | 0;
-    x06 = rotl(x06 ^ x11, 7);
+    x06 = rotl2(x06 ^ x11, 7);
     x02 = x02 + x07 | 0;
-    x13 = rotl(x13 ^ x02, 16);
+    x13 = rotl2(x13 ^ x02, 16);
     x08 = x08 + x13 | 0;
-    x07 = rotl(x07 ^ x08, 12);
+    x07 = rotl2(x07 ^ x08, 12);
     x02 = x02 + x07 | 0;
-    x13 = rotl(x13 ^ x02, 8);
+    x13 = rotl2(x13 ^ x02, 8);
     x08 = x08 + x13 | 0;
-    x07 = rotl(x07 ^ x08, 7);
+    x07 = rotl2(x07 ^ x08, 7);
     x03 = x03 + x04 | 0;
-    x14 = rotl(x14 ^ x03, 16);
+    x14 = rotl2(x14 ^ x03, 16);
     x09 = x09 + x14 | 0;
-    x04 = rotl(x04 ^ x09, 12);
+    x04 = rotl2(x04 ^ x09, 12);
     x03 = x03 + x04 | 0;
-    x14 = rotl(x14 ^ x03, 8);
+    x14 = rotl2(x14 ^ x03, 8);
     x09 = x09 + x14 | 0;
-    x04 = rotl(x04 ^ x09, 7);
+    x04 = rotl2(x04 ^ x09, 7);
   }
   let oi = 0;
   out[oi++] = y00 + x00 | 0;
@@ -48753,7 +49856,7 @@ function i2Osp(n, w) {
   }
   return ret;
 }
-function concat3(a, b) {
+function concat4(a, b) {
   const ret = new Uint8Array(a.length + b.length);
   ret.set(a, 0);
   ret.set(b, a.length);
@@ -48898,11 +50001,11 @@ class Dhkem {
         const sks = isCryptoKeyPair(params.senderKey) ? params.senderKey.privateKey : params.senderKey;
         const dh1 = new Uint8Array(await this._prim.dh(ke.privateKey, params.recipientPublicKey));
         const dh2 = new Uint8Array(await this._prim.dh(sks, params.recipientPublicKey));
-        dh = concat3(dh1, dh2);
+        dh = concat4(dh1, dh2);
       }
       let kemContext;
       if (params.senderKey === undefined) {
-        kemContext = concat3(new Uint8Array(enc), new Uint8Array(pkrm));
+        kemContext = concat4(new Uint8Array(enc), new Uint8Array(pkrm));
       } else {
         const pks = isCryptoKeyPair(params.senderKey) ? params.senderKey.publicKey : await this._prim.derivePublicKey(params.senderKey);
         const pksm = await this._prim.serializePublicKey(pks);
@@ -48929,11 +50032,11 @@ class Dhkem {
       } else {
         const dh1 = new Uint8Array(await this._prim.dh(skr, pke));
         const dh2 = new Uint8Array(await this._prim.dh(skr, params.senderPublicKey));
-        dh = concat3(dh1, dh2);
+        dh = concat4(dh1, dh2);
       }
       let kemContext;
       if (params.senderPublicKey === undefined) {
-        kemContext = concat3(new Uint8Array(params.enc), new Uint8Array(pkrm));
+        kemContext = concat4(new Uint8Array(params.enc), new Uint8Array(pkrm));
       } else {
         const pksm = await this._prim.serializePublicKey(params.senderPublicKey);
         kemContext = new Uint8Array(params.enc.byteLength + pkrm.byteLength + pksm.byteLength);
@@ -50374,241 +51477,9 @@ async function runImportFlow(params) {
 
 // src/wallet-keygen.ts
 import { generateKeyPairSync } from "node:crypto";
-
-// ../../node_modules/@noble/curves/esm/secp256k1.js
-init_sha2();
-init__shortw_utils();
-init_modular();
-/*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-var secp256k1_CURVE = {
-  p: BigInt("0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f"),
-  n: BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"),
-  h: BigInt(1),
-  a: BigInt(0),
-  b: BigInt(7),
-  Gx: BigInt("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
-  Gy: BigInt("0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8")
-};
-var secp256k1_ENDO = {
-  beta: BigInt("0x7ae96a2b657c07106e64479eac3434e99cf0497512f58995c1396c28719501ee"),
-  basises: [
-    [BigInt("0x3086d221a7d46bcde86c90e49284eb15"), -BigInt("0xe4437ed6010e88286f547fa90abfe4c3")],
-    [BigInt("0x114ca50f7a8e2f3f657c1108d9d44cfd8"), BigInt("0x3086d221a7d46bcde86c90e49284eb15")]
-  ]
-};
-var _2n5 = /* @__PURE__ */ BigInt(2);
-function sqrtMod(y) {
-  const P2 = secp256k1_CURVE.p;
-  const _3n4 = BigInt(3), _6n = BigInt(6), _11n = BigInt(11), _22n = BigInt(22);
-  const _23n = BigInt(23), _44n = BigInt(44), _88n = BigInt(88);
-  const b2 = y * y * y % P2;
-  const b3 = b2 * b2 * y % P2;
-  const b6 = pow2(b3, _3n4, P2) * b3 % P2;
-  const b9 = pow2(b6, _3n4, P2) * b3 % P2;
-  const b11 = pow2(b9, _2n5, P2) * b2 % P2;
-  const b22 = pow2(b11, _11n, P2) * b11 % P2;
-  const b44 = pow2(b22, _22n, P2) * b22 % P2;
-  const b88 = pow2(b44, _44n, P2) * b44 % P2;
-  const b176 = pow2(b88, _88n, P2) * b88 % P2;
-  const b220 = pow2(b176, _44n, P2) * b44 % P2;
-  const b223 = pow2(b220, _3n4, P2) * b3 % P2;
-  const t1 = pow2(b223, _23n, P2) * b22 % P2;
-  const t2 = pow2(t1, _6n, P2) * b2 % P2;
-  const root = pow2(t2, _2n5, P2);
-  if (!Fpk1.eql(Fpk1.sqr(root), y))
-    throw new Error("Cannot find square root");
-  return root;
-}
-var Fpk1 = Field(secp256k1_CURVE.p, { sqrt: sqrtMod });
-var secp256k1 = createCurve({ ...secp256k1_CURVE, Fp: Fpk1, lowS: true, endo: secp256k1_ENDO }, sha256);
-
-// ../../node_modules/@noble/hashes/esm/sha3.js
-init__u64();
-init_utils();
-var _0n7 = BigInt(0);
-var _1n7 = BigInt(1);
-var _2n6 = BigInt(2);
-var _7n2 = BigInt(7);
-var _256n = BigInt(256);
-var _0x71n = BigInt(113);
-var SHA3_PI = [];
-var SHA3_ROTL = [];
-var _SHA3_IOTA = [];
-for (let round = 0, R = _1n7, x = 1, y = 0;round < 24; round++) {
-  [x, y] = [y, (2 * x + 3 * y) % 5];
-  SHA3_PI.push(2 * (5 * y + x));
-  SHA3_ROTL.push((round + 1) * (round + 2) / 2 % 64);
-  let t = _0n7;
-  for (let j = 0;j < 7; j++) {
-    R = (R << _1n7 ^ (R >> _7n2) * _0x71n) % _256n;
-    if (R & _2n6)
-      t ^= _1n7 << (_1n7 << /* @__PURE__ */ BigInt(j)) - _1n7;
-  }
-  _SHA3_IOTA.push(t);
-}
-var IOTAS = split(_SHA3_IOTA, true);
-var SHA3_IOTA_H = IOTAS[0];
-var SHA3_IOTA_L = IOTAS[1];
-var rotlH = (h, l, s) => s > 32 ? rotlBH(h, l, s) : rotlSH(h, l, s);
-var rotlL = (h, l, s) => s > 32 ? rotlBL(h, l, s) : rotlSL(h, l, s);
-function keccakP(s, rounds = 24) {
-  const B = new Uint32Array(5 * 2);
-  for (let round = 24 - rounds;round < 24; round++) {
-    for (let x = 0;x < 10; x++)
-      B[x] = s[x] ^ s[x + 10] ^ s[x + 20] ^ s[x + 30] ^ s[x + 40];
-    for (let x = 0;x < 10; x += 2) {
-      const idx1 = (x + 8) % 10;
-      const idx0 = (x + 2) % 10;
-      const B0 = B[idx0];
-      const B1 = B[idx0 + 1];
-      const Th = rotlH(B0, B1, 1) ^ B[idx1];
-      const Tl = rotlL(B0, B1, 1) ^ B[idx1 + 1];
-      for (let y = 0;y < 50; y += 10) {
-        s[x + y] ^= Th;
-        s[x + y + 1] ^= Tl;
-      }
-    }
-    let curH = s[2];
-    let curL = s[3];
-    for (let t = 0;t < 24; t++) {
-      const shift = SHA3_ROTL[t];
-      const Th = rotlH(curH, curL, shift);
-      const Tl = rotlL(curH, curL, shift);
-      const PI = SHA3_PI[t];
-      curH = s[PI];
-      curL = s[PI + 1];
-      s[PI] = Th;
-      s[PI + 1] = Tl;
-    }
-    for (let y = 0;y < 50; y += 10) {
-      for (let x = 0;x < 10; x++)
-        B[x] = s[y + x];
-      for (let x = 0;x < 10; x++)
-        s[y + x] ^= ~B[(x + 2) % 10] & B[(x + 4) % 10];
-    }
-    s[0] ^= SHA3_IOTA_H[round];
-    s[1] ^= SHA3_IOTA_L[round];
-  }
-  clean(B);
-}
-
-class Keccak extends Hash {
-  constructor(blockLen, suffix, outputLen, enableXOF = false, rounds = 24) {
-    super();
-    this.pos = 0;
-    this.posOut = 0;
-    this.finished = false;
-    this.destroyed = false;
-    this.enableXOF = false;
-    this.blockLen = blockLen;
-    this.suffix = suffix;
-    this.outputLen = outputLen;
-    this.enableXOF = enableXOF;
-    this.rounds = rounds;
-    anumber(outputLen);
-    if (!(0 < blockLen && blockLen < 200))
-      throw new Error("only keccak-f1600 function is supported");
-    this.state = new Uint8Array(200);
-    this.state32 = u32(this.state);
-  }
-  clone() {
-    return this._cloneInto();
-  }
-  keccak() {
-    swap32IfBE(this.state32);
-    keccakP(this.state32, this.rounds);
-    swap32IfBE(this.state32);
-    this.posOut = 0;
-    this.pos = 0;
-  }
-  update(data) {
-    aexists(this);
-    data = toBytes(data);
-    abytes(data);
-    const { blockLen, state } = this;
-    const len = data.length;
-    for (let pos = 0;pos < len; ) {
-      const take2 = Math.min(blockLen - this.pos, len - pos);
-      for (let i = 0;i < take2; i++)
-        state[this.pos++] ^= data[pos++];
-      if (this.pos === blockLen)
-        this.keccak();
-    }
-    return this;
-  }
-  finish() {
-    if (this.finished)
-      return;
-    this.finished = true;
-    const { state, suffix, pos, blockLen } = this;
-    state[pos] ^= suffix;
-    if ((suffix & 128) !== 0 && pos === blockLen - 1)
-      this.keccak();
-    state[blockLen - 1] ^= 128;
-    this.keccak();
-  }
-  writeInto(out) {
-    aexists(this, false);
-    abytes(out);
-    this.finish();
-    const bufferOut = this.state;
-    const { blockLen } = this;
-    for (let pos = 0, len = out.length;pos < len; ) {
-      if (this.posOut >= blockLen)
-        this.keccak();
-      const take2 = Math.min(blockLen - this.posOut, len - pos);
-      out.set(bufferOut.subarray(this.posOut, this.posOut + take2), pos);
-      this.posOut += take2;
-      pos += take2;
-    }
-    return out;
-  }
-  xofInto(out) {
-    if (!this.enableXOF)
-      throw new Error("XOF is not possible for this instance");
-    return this.writeInto(out);
-  }
-  xof(bytes) {
-    anumber(bytes);
-    return this.xofInto(new Uint8Array(bytes));
-  }
-  digestInto(out) {
-    aoutput(out, this);
-    if (this.finished)
-      throw new Error("digest() was already called");
-    this.writeInto(out);
-    this.destroy();
-    return out;
-  }
-  digest() {
-    return this.digestInto(new Uint8Array(this.outputLen));
-  }
-  destroy() {
-    this.destroyed = true;
-    clean(this.state);
-  }
-  _cloneInto(to) {
-    const { blockLen, suffix, outputLen, rounds, enableXOF } = this;
-    to || (to = new Keccak(blockLen, suffix, outputLen, enableXOF, rounds));
-    to.state32.set(this.state32);
-    to.pos = this.pos;
-    to.posOut = this.posOut;
-    to.finished = this.finished;
-    to.rounds = rounds;
-    to.suffix = suffix;
-    to.outputLen = outputLen;
-    to.enableXOF = enableXOF;
-    to.destroyed = this.destroyed;
-    return to;
-  }
-}
-var gen = (suffix, blockLen, outputLen) => createHasher(() => new Keccak(blockLen, suffix, outputLen));
-var keccak_256 = /* @__PURE__ */ (() => gen(1, 136, 256 / 8))();
-
-// src/wallet-keygen.ts
 init_esm();
 var hex3 = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-function toChecksumAddress(lowercaseBody) {
+function toChecksumAddress2(lowercaseBody) {
   const digest = hex3(keccak_256(new TextEncoder().encode(lowercaseBody)));
   let out = "0x";
   for (let i = 0;i < lowercaseBody.length; i++) {
@@ -50629,7 +51500,7 @@ function generateSolana() {
 function generateEvm() {
   const priv = secp256k1.utils.randomPrivateKey();
   const pub = secp256k1.getPublicKey(priv, false).slice(1);
-  return { address: toChecksumAddress(hex3(keccak_256(pub)).slice(-40)), privateKey: `0x${hex3(priv)}` };
+  return { address: toChecksumAddress2(hex3(keccak_256(pub)).slice(-40)), privateKey: `0x${hex3(priv)}` };
 }
 function generateWallet(chain2) {
   return chain2 === "solana" ? generateSolana() : generateEvm();
@@ -51372,10 +52243,8 @@ async function addressOwnedByVault(ctx, address) {
       writeUsageFailure(ctx.deps, error.message, ctx.json);
       return "usage";
     }
-    writeLocalFailure(ctx.deps, {
-      code: "VAULT_UNLOCK_FAILED",
-      message: error instanceof Error ? error.message : String(error)
-    }, ctx.json);
+    const { isVaultError: isVaultError2 } = await Promise.resolve().then(() => (init_errors(), exports_errors));
+    writeLocalFailure(ctx.deps, isVaultError2(error) ? { code: error.code, message: error.message, ...error.suggestion ? { suggestion: error.suggestion } : {} } : { code: "VAULT_UNLOCK_FAILED", message: error instanceof Error ? error.message : String(error) }, ctx.json);
     return "error";
   }
 }
@@ -53899,10 +54768,30 @@ async function verifyEntry(copy, entry, root, report, observer) {
       if (addressFromSecret64(secret) !== entry.address) {
         fail2(5, "its stored secret does not produce the address the index records", entry.id);
       }
+    } else if (!sameEvmAddress(evmAddressFromSecret(secret), entry.address)) {
+      fail2(5, "its stored secret does not produce the address the index records", entry.id);
     }
     report.addressChecked.push(entry.id);
     if (entry.origin !== "derived" || entry.derivation === undefined) {
       report.notRederived.push(entry.id);
+      return;
+    }
+    if (entry.derivation.scheme === "bip32-secp256k1") {
+      const index = evmIndexOfPath(entry.derivation.path);
+      if (index === undefined) {
+        fail2(5, `its recorded path ${entry.derivation.path} is not on the EVM branch`, entry.id);
+      }
+      const derivedEvm = await deriveEvmKeyFromRoot(root, index);
+      observer?.onLeafLive?.(2);
+      try {
+        if (!bytesEqual(derivedEvm.secret, secret)) {
+          fail2(5, `it does not re-derive from the root along its recorded path ${entry.derivation.path}`, entry.id);
+        }
+        report.rederived.push(entry.id);
+      } finally {
+        wipe(derivedEvm.secret);
+        observer?.onLeafLive?.(1);
+      }
       return;
     }
     if (entry.derivation.scheme !== "slip10-ed25519") {
@@ -54440,6 +55329,8 @@ async function vaultDemote(args, ctx) {
     code: 1
   }));
   if (!resolved.ok) {
+    if (resolved.reported)
+      return resolved.code;
     writeLocalFailure(ctx.deps, {
       code: "TEE_WALLET_UNKNOWN",
       message: `${address} is not a TEE wallet in the vault.`,
@@ -56040,6 +56931,7 @@ async function reconcileFundingReceipts(vault, addresses, rpcUrl2, ctx) {
 }
 
 // src/commands/vault-fund.ts
+init_promote_support();
 init_store();
 
 // src/vault/vault-transfer-sign.ts
@@ -56257,10 +57149,11 @@ async function signAndBroadcastTransfer(input) {
 // src/commands/vault-fund.ts
 init_vault_support();
 async function fundExternal(ctx, opened, vault, external2, input) {
-  const vaultKeys = vault.index.entries.filter((entry) => entry.role === "vault");
+  const vaultKeys = vault.index.entries.filter((entry) => entry.role === "vault" && entry.chain === "solana");
   const fromFlag = input.parsed.values["--from"];
   let fromEntry;
   if (fromFlag !== undefined) {
+    assertNotEvmEntry(vault.index, fromFlag, "vault fund");
     fromEntry = vaultKeys.find((entry) => entry.label === fromFlag) ?? vaultKeys.find((entry) => entry.address === fromFlag);
     if (fromEntry === undefined)
       return usage(ctx, `No vault key matches --from ${fromFlag}.`);
@@ -56350,6 +57243,9 @@ async function vaultFund(args, ctx) {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const vault = hold(opened.vault);
+    assertNotEvmEntry(vault.index, teeAddress, "vault fund");
+    if (parsed.values["--from"] !== undefined)
+      assertNotEvmEntry(vault.index, parsed.values["--from"], "vault fund");
     const teeEntry = vault.index.entries.find((entry) => entry.address === teeAddress && entry.role === "tee-wallet");
     if (teeEntry === undefined) {
       const external2 = findExternalEntry(vault.index, teeAddress);
@@ -56381,7 +57277,7 @@ async function vaultFund(args, ctx) {
         suggestion: "Nothing was signed. Name the source key with --from <label>, or pin one: candle tee enable <address> --vault <address>"
       });
     }
-    const fromEntry = vault.index.entries.find((entry) => entry.address === destination && entry.role === "vault");
+    const fromEntry = vault.index.entries.find((entry) => entry.address === destination && entry.role === "vault" && entry.chain === "solana");
     if (fromEntry === undefined) {
       throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `Pinned destination ${destination} is not a vault key in this vault.`, {
         suggestion: "Nothing was signed. Name the source key with --from <label>; candle vault status lists this vault's keys."
@@ -56838,9 +57734,48 @@ async function readLamports(addresses, rpcUrl2, fetchFn) {
   }
   return { lamports, unavailable, ...failure === undefined ? {} : { failure } };
 }
+async function readEvmBalances(addresses, rpcUrl2, fetchFn) {
+  const rpc2 = createEvmRpc(rpcUrl2, fetchFn);
+  const read = {
+    host: rpcHostOf(rpcUrl2),
+    chainId: undefined,
+    requests: 0,
+    wei: new Map,
+    usdg: new Map,
+    unavailable: []
+  };
+  try {
+    read.requests += 1;
+    read.chainId = await rpc2.chainId();
+  } catch (error) {
+    read.unavailable.push(...addresses);
+    read.failure = error instanceof Error ? error.message : String(error);
+    return read;
+  }
+  const hood = read.chainId === BigInt(HOOD_CHAIN_ID);
+  for (const address of addresses) {
+    try {
+      read.requests += 1;
+      read.wei.set(address, await rpc2.getBalance(address));
+      if (hood) {
+        read.requests += 1;
+        read.usdg.set(address, await rpc2.erc20BalanceOf(HOOD_USDG_ADDRESS, address));
+      }
+    } catch (error) {
+      read.wei.delete(address);
+      read.usdg.delete(address);
+      read.unavailable.push(address);
+      read.failure ??= error instanceof Error ? error.message : String(error);
+    }
+  }
+  return read;
+}
+function evmRequestsPlanned(count) {
+  return `${1 + count} to ${1 + 2 * count}`;
+}
 async function vaultList(args, ctx) {
   const parsed = parseArgs(args, {
-    valueFlags: ["--keystore", "--rpc-url"],
+    valueFlags: ["--keystore", "--rpc-url", "--evm-rpc-url"],
     booleanFlags: ["--balances", "--accept-older-copy"],
     pathFlags: ["--keystore"]
   });
@@ -56856,6 +57791,9 @@ async function vaultList(args, ctx) {
   if (!balances && parsed.values["--rpc-url"] !== undefined) {
     return usage(ctx, "--rpc-url has no effect without --balances; vault list is offline by default.");
   }
+  if (!balances && parsed.values["--evm-rpc-url"] !== undefined) {
+    return usage(ctx, "--evm-rpc-url has no effect without --balances; vault list is offline by default.");
+  }
   const resolvedVault = vaultPathFor(ctx, parsed);
   if ("error" in resolvedVault)
     return usage(ctx, resolvedVault.error);
@@ -56867,6 +57805,10 @@ async function vaultList(args, ctx) {
       return usage(ctx, resolved.error);
     rpcUrl2 = resolved;
   }
+  const evmRpc = resolveEvmRpcUrl(parsed.values["--evm-rpc-url"], deps.env[EVM_RPC_URL_ENV], "--evm-rpc-url");
+  if (balances && "error" in evmRpc)
+    return usage(ctx, evmRpc.error);
+  const evmRpcUrl = "url" in evmRpc ? evmRpc.url : DEFAULT_HOOD_RPC_URL;
   if (!requirePromptStreams(ctx, "vault list"))
     return 1;
   return runVaultCommand(ctx, async ({ hold }) => {
@@ -56892,12 +57834,26 @@ async function vaultList(args, ctx) {
       unavailable = outcome.unavailable;
       failure = outcome.failure;
     }
-    const complete = unavailable.length === 0;
+    const solanaComplete = unavailable.length === 0;
     const totalLamports = [...lamports.values()].reduce((sum, value) => sum + value, 0n);
-    if (!complete) {
+    if (!solanaComplete) {
       deps.stderr.write(`${unavailable.length} ${unavailable.length === 1 ? "address" : "addresses"} could not be read: ${failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --rpc-url.
 `);
     }
+    const evm = balances ? matched.filter((entry) => entry.chain === "evm") : [];
+    let evmRead;
+    if (evm.length > 0) {
+      const host = rpcHostOf(evmRpcUrl);
+      deps.stderr.write(`Reading ETH (and USDG when the chain is Hood) for ${evm.length} EVM ${evm.length === 1 ? "address" : "addresses"} from ${host}, in ${evmRequestsPlanned(evm.length)} requests. That endpoint sees all ${evm.length} together.
+`);
+      evmRead = await readEvmBalances(evm.map((entry) => entry.address), evmRpcUrl, deps.fetch);
+      if (evmRead.unavailable.length > 0) {
+        deps.stderr.write(`${evmRead.unavailable.length} EVM ${evmRead.unavailable.length === 1 ? "address" : "addresses"} could not be read: ${evmRead.failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --evm-rpc-url.
+`);
+      }
+    }
+    const hood = evmRead?.chainId === BigInt(HOOD_CHAIN_ID);
+    const complete = solanaComplete && (evmRead === undefined || evmRead.unavailable.length === 0);
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
@@ -56909,16 +57865,29 @@ async function vaultList(args, ctx) {
           const held = lamports.get(entry.address);
           return {
             ...describeEntry(entry),
-            ...balances && entry.chain === "solana" ? { lamports: held === undefined ? null : held.toString() } : {}
+            ...balances && entry.chain === "solana" ? { lamports: held === undefined ? null : held.toString() } : {},
+            ...balances && entry.chain === "evm" ? {
+              wei: evmRead?.wei.get(entry.address)?.toString() ?? null,
+              ...hood ? { usdgRaw: evmRead?.usdg.get(entry.address)?.toString() ?? null } : {}
+            } : {}
           };
         }),
         ...balances && rpcHost !== undefined ? {
           balances: {
             rpcHost,
             requests,
-            complete,
+            complete: solanaComplete,
             totalLamports: totalLamports.toString(),
             unavailable
+          }
+        } : {},
+        ...evmRead !== undefined ? {
+          evmBalances: {
+            rpcHost: evmRead.host,
+            chainId: evmRead.chainId === undefined ? null : Number(evmRead.chainId),
+            requests: evmRead.requests,
+            complete: evmRead.unavailable.length === 0,
+            unavailable: evmRead.unavailable
           }
         } : {}
       });
@@ -56935,11 +57904,25 @@ async function vaultList(args, ctx) {
     const headers = ["ADDRESS", "LABEL", "ROLE", "DERIVATION"];
     if (balances)
       headers.push("SOL");
+    const evmColumns = evmRead !== undefined;
+    const nativeHeader = hood || evmRead?.chainId === undefined ? "ETH" : `ETH@${evmRead.chainId}`;
+    if (evmColumns)
+      headers.push(nativeHeader);
+    if (evmColumns && hood)
+      headers.push("USDG");
     const rows = matched.map((entry) => {
       const row = [entry.address, entry.label || "(none)", entry.role, entry.derivation?.path ?? "-"];
       if (balances) {
         const held = lamports.get(entry.address);
         row.push(entry.chain !== "solana" ? "-" : held === undefined ? "?" : formatSol3(held));
+      }
+      if (evmColumns) {
+        const wei = evmRead?.wei.get(entry.address);
+        row.push(entry.chain !== "evm" ? "-" : wei === undefined ? "?" : formatUnits(wei, NATIVE_DECIMALS));
+        if (hood) {
+          const usdg = evmRead?.usdg.get(entry.address);
+          row.push(entry.chain !== "evm" ? "-" : usdg === undefined ? "?" : formatUnits(usdg, HOOD_USDG_DECIMALS));
+        }
       }
       return row;
     });
@@ -56947,11 +57930,23 @@ async function vaultList(args, ctx) {
 ${renderTable(headers, rows)}
 `);
     if (balances) {
-      deps.stdout.write(complete ? `
+      deps.stdout.write(solanaComplete ? `
 total  ${formatSol3(totalLamports)} SOL across ${solana.length} keys
 ` : `
 total  ${formatSol3(totalLamports)} SOL across ${solana.length - unavailable.length} of ${solana.length} keys read
 `);
+    }
+    if (evmRead !== undefined) {
+      const totalWei = [...evmRead.wei.values()].reduce((sum, value) => sum + value, 0n);
+      const readCount = evm.length - evmRead.unavailable.length;
+      const chain2 = evmRead.chainId === undefined ? "an unread chain" : hood ? "Hood" : `chain id ${evmRead.chainId}`;
+      deps.stdout.write(`total  ${formatUnits(totalWei, NATIVE_DECIMALS)} ${nativeHeader} across ${readCount}${readCount === evm.length ? "" : ` of ${evm.length}`} EVM keys${readCount === evm.length ? "" : " read"} on ${chain2}
+`);
+      if (hood) {
+        const totalUsdg = [...evmRead.usdg.values()].reduce((sum, value) => sum + value, 0n);
+        deps.stdout.write(`total  ${formatUnits(totalUsdg, HOOD_USDG_DECIMALS)} USDG across those keys
+`);
+      }
     }
     return complete ? 0 : 3;
   });
@@ -57632,6 +58627,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
     });
     let vault = hold(opened.vault);
     assertRecoverableFactorExists(vault.file.envelopes);
+    assertNotEvmEntry(vault.index, subjectLabel, "vault promote");
     const existing = findEntryByLabelOrAddress(vault.index, subjectLabel);
     if (existing === undefined) {
       throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`, {
@@ -59262,8 +60258,8 @@ function resolveTarget(index, old, id) {
 // src/commands/vault-restore.ts
 init_args();
 init_deps();
-init_solana_lite();
 import { rm as rm3 } from "node:fs/promises";
+init_solana_lite();
 init_crypto();
 init_errors();
 init_format();
@@ -59275,7 +60271,7 @@ var GAP_LIMIT = 20;
 var SCAN_CEILING = 500;
 async function vaultRestore(args, ctx) {
   const parsed = parseArgs(args, {
-    valueFlags: ["--keystore", "--count", "--tee-count", "--external-count", "--rpc-url"],
+    valueFlags: ["--keystore", "--count", "--tee-count", "--external-count", "--evm-count", "--rpc-url"],
     booleanFlags: ["--phrase", "--own-passphrase"],
     pathFlags: ["--keystore"]
   });
@@ -59292,7 +60288,7 @@ async function vaultRestore(args, ctx) {
   }
   if (!requireTty(ctx, "vault restore"))
     return 1;
-  const counts = parseCounts(parsed.values["--count"], parsed.values["--tee-count"], parsed.values["--external-count"], parsed.values["--rpc-url"]);
+  const counts = parseCounts(parsed.values["--count"], parsed.values["--tee-count"], parsed.values["--external-count"], parsed.values["--rpc-url"], parsed.values["--evm-count"]);
   if ("error" in counts)
     return usage(ctx, counts.error);
   const { deps } = ctx;
@@ -59392,7 +60388,7 @@ async function discardIncompleteRestore(ctx, path, sidecarExisted) {
   }
 }
 var RESTORED_BRANCHES = ["solanaVault", "solanaTee", "solanaExternal"];
-function parseCounts(count, teeCount, externalCount, rpcUrl2) {
+function parseCounts(count, teeCount, externalCount, rpcUrl2, evmCount) {
   const parse = (raw, flag) => {
     if (raw === undefined)
       return;
@@ -59410,6 +60406,9 @@ function parseCounts(count, teeCount, externalCount, rpcUrl2) {
   const externalParsed = parse(externalCount, "--external-count");
   if (typeof externalParsed === "object" && externalParsed !== null)
     return externalParsed;
+  const evmParsed = parse(evmCount, "--evm-count");
+  if (typeof evmParsed === "object" && evmParsed !== null)
+    return evmParsed;
   const allOmitted = vaultCount === undefined && teeParsed === undefined && externalParsed === undefined;
   const scan = rpcUrl2 !== undefined;
   const resolve4 = (value) => {
@@ -59424,6 +60423,7 @@ function parseCounts(count, teeCount, externalCount, rpcUrl2) {
     solanaVault,
     solanaTee,
     solanaExternal,
+    evm: evmParsed ?? 0,
     requested: { solanaVault: solanaVault ?? -1, solanaTee: solanaTee ?? -1, solanaExternal: solanaExternal ?? -1 }
   };
 }
@@ -59453,16 +60453,40 @@ async function deriveWithinBounds(ctx, vault, counts, rpc2) {
       ctx.deps.stdout.write(`Gap scan on ${branch} stopped at index ${index - 1} after ${GAP_LIMIT} consecutive indices with no balance, no token account and no signature history.
 `);
     }
+    for (let index = 0;index < counts.evm; index++) {
+      set.entries.push(await deriveOneEvm(vault, root, index));
+    }
   } finally {
     wipe(root);
   }
   for (const entry of set.entries) {
     if (entry.branch === "solanaExternal")
       set.externalByAddress.set(entry.address, entry);
+    else if (entry.branch === "evm")
+      set.byAddress.set(entry.address.toLowerCase(), entry);
     else
       set.byAddress.set(entry.address, entry);
   }
   return set;
+}
+async function deriveOneEvm(vault, root, index) {
+  const derived = await deriveEvmKeyFromRoot(root, index);
+  try {
+    const keyId = freshKeyId();
+    return {
+      branch: "evm",
+      index,
+      address: derived.address,
+      path: derived.path,
+      keyId,
+      blob: await sealKeyBlob(vault, keyId, derived.secret)
+    };
+  } finally {
+    wipe(derived.secret);
+  }
+}
+function lookupKey(address) {
+  return looksLikeEvmAddress(address) ? address.toLowerCase() : address;
 }
 async function deriveOne(vault, root, branch, index) {
   const path = pathForBranch(branch, index);
@@ -59521,7 +60545,7 @@ This profile acts as account ${read.account}.
   for (const row of read.rows) {
     if (typeof row.address !== "string")
       continue;
-    const entry = derived.byAddress.get(row.address);
+    const entry = derived.byAddress.get(lookupKey(row.address));
     if (entry)
       matched.push({ entry, row });
     else if (derived.externalByAddress.has(row.address))
@@ -59536,6 +60560,20 @@ async function writeRestoredIndex(ctx, vault, derived, matches2, counts) {
   const matchByAddress = new Map(matches2.matched.map((match) => [match.entry.address, match.row]));
   const entries = derived.entries.map((entry) => {
     const row = matchByAddress.get(entry.address);
+    if (entry.branch === "evm") {
+      return {
+        id: entry.keyId,
+        chain: "evm",
+        curve: "secp256k1",
+        address: entry.address,
+        label: row?.label ?? `evm-${entry.index}`,
+        createdAt: now,
+        role: "vault",
+        origin: "derived",
+        derivation: { scheme: EVM_DERIVATION_SCHEME, path: entry.path },
+        exposure: { everRemoteExposed: row !== undefined, everExported: false, exposureUnknown: true }
+      };
+    }
     const external2 = entry.branch === "solanaExternal";
     const base = {
       id: entry.keyId,
@@ -59576,14 +60614,14 @@ async function writeRestoredIndex(ctx, vault, derived, matches2, counts) {
       solanaVault: highest.solanaVault + 1,
       solanaTee: highest.solanaTee + 1,
       solanaExternal: highest.solanaExternal + 1,
-      evm: 0
+      evm: highest.evm + 1
     },
     rootExported: false,
     exposedIndexes: {
       solanaVault: exposed.solanaVault.sort((a, b) => a - b),
       solanaTee: exposed.solanaTee.sort((a, b) => a - b),
       solanaExternal: exposed.solanaExternal.sort((a, b) => a - b),
-      evm: []
+      evm: exposed.evm.sort((a, b) => a - b)
     },
     discovery: {
       restoredAt: now,
@@ -59645,6 +60683,13 @@ Every one of them is recorded with an unknown history and stays that way: this p
       deps.stdout.write(`  ${branch}: index 0 only. If you derived more, re-run with --count/--tee-count/--external-count, or with --rpc-url to gap-scan.
 `);
     }
+  }
+  if (counts.evm === 0) {
+    deps.stdout.write(`  evm: none. If this root has EVM keys, re-run with --evm-count <n>; the EVM branch is never gap-scanned.
+`);
+  } else {
+    deps.stdout.write(`  evm: indices 0 to ${counts.evm - 1}, on m/44'/60'/n'/0/0.
+`);
   }
   if ((matches2.externalListed?.length ?? 0) > 0) {
     deps.stdout.write(`
@@ -59722,8 +60767,8 @@ async function vaultReconcileExposure(args, ctx) {
     if (recorded !== undefined && recorded !== "" && recorded !== read.account) {
       throw new VaultError("EXPOSURE_ACCOUNT_MISMATCH", `This vault recorded its discovery against account ${recorded}, and this profile acts as ${read.account}.`, { suggestion: "Switch profile and run it again. Nothing was flagged." });
     }
-    const listed = new Set(read.rows.map((row) => row.address));
-    const entries = vault.index.entries.map((entry) => entry.role !== "external" && listed.has(entry.address) && !entry.exposure.everRemoteExposed ? { ...entry, exposure: { ...entry.exposure, everRemoteExposed: true } } : entry);
+    const listed = new Set(read.rows.map((row) => lookupKey(row.address)));
+    const entries = vault.index.entries.map((entry) => entry.role !== "external" && listed.has(lookupKey(entry.address)) && !entry.exposure.everRemoteExposed ? { ...entry, exposure: { ...entry.exposure, everRemoteExposed: true } } : entry);
     const added = entries.filter((entry, i) => entry !== vault.index.entries[i]);
     const exposedIndexes = { ...vault.index.hd.exposedIndexes };
     for (const entry of entries) {
@@ -60190,6 +61235,375 @@ function describeEnvelope(envelope, facts) {
 // src/commands/vault-transfer.ts
 init_args();
 init_deps();
+init_errors();
+
+// src/vault/evm-transfer.ts
+init_errors();
+var EVM_RECEIPT_WAIT_MS = 120000;
+var EVM_RECEIPT_POLL_MS = 2000;
+function refuse2(code, message, opts = {}) {
+  return new VaultError(code, message, { suggestion: opts.suggestion ?? "Nothing was signed.", ...opts });
+}
+function checkEvmDestination(to, from) {
+  if (!to.startsWith("0x")) {
+    throw refuse2("TRANSFER_CHAIN_MISMATCH", `${to} is not an EVM address, and ${from.label || from.address} is an EVM key.`, { suggestion: "Nothing was signed. An EVM key sends to a 0x address; a Solana key sends to a Solana address." });
+  }
+  const checked = checkEvmAddress(to);
+  if (!checked.ok) {
+    throw refuse2("EVM_DESTINATION_INVALID", `${to} is not a valid EVM address: ${checked.reason}.`);
+  }
+  if (sameEvmAddress(checked.address, from.address)) {
+    throw refuse2("EVM_SELF_TRANSFER", `${to} is ${from.label || from.address}'s own address.`);
+  }
+  return checked.address;
+}
+function assertSolanaDestination(to, from) {
+  if (!looksLikeEvmAddress(to))
+    return;
+  throw refuse2("TRANSFER_CHAIN_MISMATCH", `${to} is an EVM address, and ${from.label || from.address} is a Solana key.`, { suggestion: "Nothing was signed. A Solana key sends to a Solana address; an EVM key sends to a 0x address." });
+}
+async function resolveEvmAsset(rpc2, asset, chainId) {
+  const upper = asset.toUpperCase();
+  if (upper === "ETH")
+    return { kind: "native", symbol: "ETH", decimals: NATIVE_DECIMALS };
+  let token;
+  if (upper === "USDG") {
+    if (chainId !== BigInt(HOOD_CHAIN_ID)) {
+      return {
+        usage: `USDG is named on Hood (chain id ${HOOD_CHAIN_ID}) only; this RPC answered chain id ${chainId}. Name the token by its contract address.`
+      };
+    }
+    token = toChecksumAddress(HOOD_USDG_ADDRESS);
+  } else {
+    const checked = checkEvmAddress(asset);
+    if (!checked.ok)
+      return {
+        usage: `--asset must be ETH, USDG (on Hood), or an ERC-20 contract address: ${asset} is ${checked.reason}.`
+      };
+    token = checked.address;
+  }
+  let decimals;
+  try {
+    decimals = await rpc2.erc20Decimals(token);
+  } catch (error) {
+    throw refuse2("EVM_TOKEN_UNREADABLE", `${token} did not answer decimals(): ${error instanceof Error ? error.message : String(error)}`, { suggestion: "Nothing was signed. Check the contract address, and that this RPC serves the chain it lives on." });
+  }
+  const symbol = upper === "USDG" ? "USDG" : await rpc2.erc20Symbol(token) ?? `${token.slice(0, 10)}…`;
+  return { kind: "erc20", symbol, decimals, token };
+}
+function nativeName(hood, chainId) {
+  return hood ? "ETH" : `ETH on chain ${chainId}`;
+}
+function evmDisplayLines(plan) {
+  const { tx, asset, hood, chainId } = plan;
+  const native = nativeName(hood, chainId);
+  const lines = [
+    `chain       ${chainId}${hood ? " (Hood)" : ""}`,
+    `from        ${plan.from.label}  ${plan.from.address}`
+  ];
+  if (asset.kind === "native") {
+    lines.push(`to          ${tx.to}`);
+    lines.push(`amount      ${plan.amount} ${native} = ${plan.amountRaw} wei`);
+  } else {
+    lines.push(`to          ${tx.to}  (the ${asset.symbol} contract, ${asset.decimals} dp)`);
+    lines.push(`recipient   ${plan.recipient}  (decoded from transfer(address,uint256))`);
+    lines.push(`amount      ${plan.amount} ${asset.symbol} = ${plan.amountRaw} raw`);
+  }
+  lines.push(`gas limit   ${tx.gas}`);
+  lines.push(`max fee     ${tx.maxFeePerGas} wei/gas (priority ${tx.maxPriorityFeePerGas} wei/gas)`);
+  lines.push(`fee cap     ${formatUnits(plan.feeCap, NATIVE_DECIMALS)} ${native} (gas × max fee)`);
+  lines.push(`nonce       ${tx.nonce}`);
+  return lines;
+}
+async function planEvmTransfer(rpc2, input) {
+  const to = checkEvmDestination(input.to, input.from);
+  const chainId = await rpc2.chainId();
+  if (input.builtIn && chainId !== BigInt(HOOD_CHAIN_ID)) {
+    throw refuse2("EVM_CHAIN_MISMATCH", `The built-in Hood RPC answered chain id ${chainId}, not ${HOOD_CHAIN_ID}.`, {
+      suggestion: "Nothing was signed. Pass --rpc-url for another chain; the built-in endpoint is Hood's only."
+    });
+  }
+  const hood = chainId === BigInt(HOOD_CHAIN_ID);
+  const asset = await resolveEvmAsset(rpc2, input.asset, chainId);
+  if ("usage" in asset)
+    return asset;
+  const max = input.amount.toLowerCase() === "max";
+  if (asset.kind === "erc20" && asset.token !== undefined && sameEvmAddress(to, asset.token)) {
+    throw refuse2("EVM_RECIPIENT_IS_TOKEN", `${to} is the ${asset.symbol} contract itself; sending it its own tokens is a loss.`);
+  }
+  let amountRaw = 0n;
+  if (!max) {
+    const parsed = parseUnits(input.amount, asset.decimals);
+    if (!parsed.ok && parsed.reason === "precision") {
+      throw refuse2("EVM_AMOUNT_PRECISION", `${input.amount} has more decimal places than ${asset.symbol}'s ${asset.decimals}.`);
+    }
+    if (!parsed.ok)
+      return { usage: `--amount must be a positive decimal or max; ${input.amount} is neither.` };
+    amountRaw = parsed.raw;
+  }
+  const nonce = await rpc2.getTransactionCount(input.from.address, "pending");
+  const fees = await quoteFees(rpc2);
+  const nativeBalance = await rpc2.getBalance(input.from.address);
+  if (asset.kind === "erc20" && asset.token !== undefined) {
+    if (max) {
+      amountRaw = await rpc2.erc20BalanceOf(asset.token, input.from.address);
+      if (amountRaw === 0n) {
+        throw new VaultError("VAULT_INDEX_INVALID", `${input.from.label} holds no ${asset.symbol}; there is nothing to send.`);
+      }
+    }
+    const draft2 = buildErc20Transfer({
+      chainId,
+      nonce,
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+      maxFeePerGas: fees.maxFeePerGas,
+      gas: 0n,
+      token: asset.token,
+      recipient: to,
+      amount: amountRaw
+    });
+    const gas2 = gasWithHeadroom(await estimate(rpc2, input.from.address, draft2));
+    const tx2 = { ...draft2, gas: gas2 };
+    const feeCap2 = gas2 * tx2.maxFeePerGas;
+    if (nativeBalance < feeCap2) {
+      throw refuse2("EVM_INSUFFICIENT_FOR_FEES", `${input.from.label} holds ${formatUnits(nativeBalance, NATIVE_DECIMALS)} ${nativeName(hood, chainId)}, below the fee cap of ${formatUnits(feeCap2, NATIVE_DECIMALS)}.`);
+    }
+    const plan2 = {
+      chainId,
+      hood,
+      from: input.from,
+      asset,
+      recipient: to,
+      amountRaw,
+      amount: formatUnits(amountRaw, asset.decimals),
+      tx: tx2,
+      feeCap: feeCap2,
+      displayLines: []
+    };
+    plan2.displayLines = evmDisplayLines(plan2);
+    return plan2;
+  }
+  const draft = buildNativeTransfer({
+    chainId,
+    nonce,
+    maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+    maxFeePerGas: fees.maxFeePerGas,
+    gas: 0n,
+    to,
+    value: max ? 0n : amountRaw
+  });
+  if (!max && nativeBalance < amountRaw) {
+    throw refuse2("EVM_INSUFFICIENT_FOR_FEES", `${input.from.label} holds ${formatUnits(nativeBalance, NATIVE_DECIMALS)} ${nativeName(hood, chainId)}, below the amount of ${formatUnits(amountRaw, NATIVE_DECIMALS)}.`);
+  }
+  const gas = gasWithHeadroom(await estimate(rpc2, input.from.address, draft));
+  const feeCap = gas * draft.maxFeePerGas;
+  let value = amountRaw;
+  if (max) {
+    value = nativeBalance - feeCap;
+    if (value <= 0n) {
+      throw refuse2("EVM_INSUFFICIENT_FOR_FEES", `${input.from.label} holds ${formatUnits(nativeBalance, NATIVE_DECIMALS)} ${nativeName(hood, chainId)}, not above the fee cap of ${formatUnits(feeCap, NATIVE_DECIMALS)}; max leaves nothing to send.`);
+    }
+  } else if (nativeBalance < value + feeCap) {
+    throw refuse2("EVM_INSUFFICIENT_FOR_FEES", `${input.from.label} holds ${formatUnits(nativeBalance, NATIVE_DECIMALS)} ${nativeName(hood, chainId)}, below the amount plus the fee cap of ${formatUnits(value + feeCap, NATIVE_DECIMALS)}.`);
+  }
+  const tx = { ...draft, gas, value };
+  const plan = {
+    chainId,
+    hood,
+    from: input.from,
+    asset,
+    recipient: to,
+    amountRaw: value,
+    amount: formatUnits(value, NATIVE_DECIMALS),
+    tx,
+    feeCap,
+    displayLines: []
+  };
+  plan.displayLines = evmDisplayLines(plan);
+  return plan;
+}
+async function estimate(rpc2, from, tx) {
+  try {
+    return await rpc2.estimateGas({ from, to: tx.to, value: tx.value, data: tx.data });
+  } catch (error) {
+    throw new VaultError("VAULT_UNREADABLE", `Could not estimate gas: ${error instanceof Error ? error.message : String(error)}`, { suggestion: "Nothing was signed. A revert here usually means the balance does not cover the amount." });
+  }
+}
+function displayEvmTransferPlan(ctx, plan) {
+  ctx.deps.stdout.write(`Decoded EVM transfer (local signing only):
+`);
+  for (const line of plan.displayLines)
+    ctx.deps.stdout.write(`  ${line}
+`);
+}
+function evmFactorPrompt(plan) {
+  return `sign transfer of ${plan.amount} ${plan.asset.symbol} to ${plan.recipient}${plan.hood ? " on Hood" : ` on chain ${plan.chainId}`}`;
+}
+function judgeReceipt(receipt, head, depth, hash, chainId) {
+  if (receipt.status === 0) {
+    throw new VaultError("EVM_TRANSFER_REVERTED", `Transaction ${hash} reverted in block ${receipt.blockNumber}; the fee was spent.`, {
+      suggestion: "Nothing else was signed. Read the transaction on an explorer before sending again.",
+      details: { hash, chainId: chainId.toString(), blockNumber: receipt.blockNumber.toString(), status: "reverted" }
+    });
+  }
+  const reached = head - receipt.blockNumber + 1n;
+  if (reached < BigInt(depth))
+    return;
+  return {
+    status: "confirmed",
+    exit: 0,
+    blockNumber: receipt.blockNumber,
+    line: `Confirmed ${hash} in block ${receipt.blockNumber}, ${reached} block${reached === 1n ? "" : "s"} deep (depth ${depth}, not finality).`
+  };
+}
+async function awaitReceipt(rpc2, ctx, hash, chainId) {
+  const depth = requiredDepth(chainId);
+  const deadline = ctx.deps.now() + EVM_RECEIPT_WAIT_MS;
+  let seen;
+  for (;; ) {
+    try {
+      const receipt = await rpc2.getTransactionReceipt(hash);
+      if (receipt !== null) {
+        seen = receipt;
+        const outcome = judgeReceipt(receipt, await rpc2.blockNumber(), depth, hash, chainId);
+        if (outcome !== undefined)
+          return outcome;
+      }
+    } catch (error) {
+      if (error instanceof VaultError)
+        throw error;
+    }
+    if (ctx.deps.now() >= deadline)
+      break;
+    await ctx.deps.sleep(EVM_RECEIPT_POLL_MS);
+  }
+  if (seen !== undefined) {
+    return {
+      status: "uncertain",
+      exit: 3,
+      blockNumber: seen.blockNumber,
+      line: `Submitted ${hash}: it is in block ${seen.blockNumber} but not yet ${depth} block${depth === 1 ? "" : "s"} deep after ${EVM_RECEIPT_WAIT_MS / 1000} s. Do not resend; check the hash on an explorer.`
+    };
+  }
+  return {
+    status: "uncertain",
+    exit: 3,
+    line: `Submitted ${hash}; no receipt after ${EVM_RECEIPT_WAIT_MS / 1000} s. It may still land: do not resend blindly; check the hash on an explorer first.`
+  };
+}
+async function broadcast(rpc2, ctx, raw, hash, chainId) {
+  try {
+    await rpc2.sendRawTransaction(raw);
+  } catch (error) {
+    if (!(error instanceof EvmRpcError))
+      throw error;
+    const message = error.message.toLowerCase();
+    if (error.kind === "transport") {
+      return {
+        status: "uncertain",
+        exit: 3,
+        line: `Submitted ${hash}, but the RPC did not answer eth_sendRawTransaction (${error.message}). It may still land: do not resend blindly; check the hash on an explorer first.`
+      };
+    }
+    if (message.includes("already known")) {
+      return {
+        status: "uncertain",
+        exit: 3,
+        line: `Submitted ${hash}: the RPC already knows it, so it is in flight. Do not resend; check the hash on an explorer.`
+      };
+    }
+    if (message.includes("nonce too low")) {
+      let receipt = null;
+      try {
+        receipt = await rpc2.getTransactionReceipt(hash);
+      } catch {
+        receipt = null;
+      }
+      if (receipt !== null) {
+        let head;
+        try {
+          head = await rpc2.blockNumber();
+        } catch {
+          return awaitReceipt(rpc2, ctx, hash, chainId);
+        }
+        const outcome = judgeReceipt(receipt, head, requiredDepth(chainId), hash, chainId);
+        if (outcome !== undefined)
+          return outcome;
+        return awaitReceipt(rpc2, ctx, hash, chainId);
+      }
+      throw new VaultError("EVM_NONCE_STALE", `The RPC refused ${hash}: nonce too low, and it has no receipt for that hash. Another transaction used this nonce.`, {
+        suggestion: "Nothing was resent. Run the transfer again; it reads the pending nonce afresh. The CLI never re-signs on its own.",
+        details: { hash, chainId: chainId.toString() }
+      });
+    }
+    return {
+      status: "uncertain",
+      exit: 3,
+      line: `Submitted ${hash}, and the RPC answered: ${error.message}. The CLI cannot tell from that whether it is in flight: do not resend blindly; check the hash on an explorer first.`
+    };
+  }
+  return awaitReceipt(rpc2, ctx, hash, chainId);
+}
+async function runEvmTransfer(input, rpc2) {
+  const { ctx } = input;
+  const { deps } = ctx;
+  checkEvmDestination(input.to, input.from);
+  deps.stderr.write(`Reading chain id, nonce, fees and balances for ${input.from.label} from ${rpcHostOf(input.rpcUrl)}${input.rpcUrl === DEFAULT_HOOD_RPC_URL ? " (the built-in Hood RPC)" : ""}.
+`);
+  const planned = await planEvmTransfer(rpc2, input);
+  if ("usage" in planned)
+    return input.usage(planned.usage);
+  const plan = planned;
+  displayEvmTransferPlan(ctx, plan);
+  await input.confirmLastSix(plan.recipient, plan.asset.kind === "erc20" ? "the token recipient" : "the destination");
+  await input.confirmFactor(evmFactorPrompt(plan));
+  const chainIdAgain = await rpc2.chainId();
+  if (chainIdAgain !== plan.chainId) {
+    throw refuse2("EVM_CHAIN_MISMATCH", `The RPC answered chain id ${chainIdAgain} after the factor, but ${plan.chainId} was displayed.`);
+  }
+  const nonceAgain = await rpc2.getTransactionCount(plan.from.address, "pending");
+  if (nonceAgain !== plan.tx.nonce) {
+    throw refuse2("EVM_NONCE_STALE", `The pending nonce is ${nonceAgain} after the factor, but ${plan.tx.nonce} was displayed; another transaction moved it.`, { suggestion: "Nothing was signed. Run the transfer again; it reads the pending nonce afresh." });
+  }
+  const secret = await input.decryptSecret();
+  let signed;
+  try {
+    if (!sameEvmAddress(evmAddressFromSecret(secret), plan.from.address)) {
+      throw new VaultError("VAULT_VERIFY_FAILED", "The decrypted key does not match the planned sender.");
+    }
+    signed = signTransaction(plan.tx, secret);
+  } finally {
+    wipe(secret);
+  }
+  const outcome = await broadcast(rpc2, ctx, signed.raw, signed.hash, plan.chainId);
+  if (ctx.json) {
+    input.writeJson({
+      ok: outcome.status === "confirmed",
+      chainId: Number(plan.chainId),
+      hash: signed.hash,
+      status: outcome.status,
+      ...outcome.blockNumber !== undefined ? { blockNumber: outcome.blockNumber.toString() } : {},
+      depth: requiredDepth(plan.chainId),
+      finalized: false,
+      from: plan.from.address,
+      to: plan.tx.to,
+      recipient: plan.recipient,
+      amount: plan.amount,
+      asset: plan.asset.symbol,
+      amountRaw: plan.amountRaw.toString(),
+      ...plan.asset.token !== undefined ? { token: plan.asset.token } : {},
+      nonce: plan.tx.nonce.toString(),
+      gas: plan.tx.gas.toString(),
+      maxFeePerGas: plan.tx.maxFeePerGas.toString(),
+      maxPriorityFeePerGas: plan.tx.maxPriorityFeePerGas.toString()
+    });
+  } else {
+    deps.stdout.write(`${outcome.line}
+`);
+  }
+  return outcome.exit;
+}
+
+// src/commands/vault-transfer.ts
 init_promote_support();
 init_store();
 
@@ -60272,20 +61686,29 @@ async function vaultTransfer(args, ctx) {
     return usage(ctx, parsed.error);
   const [to, extra] = parsed.positionals;
   if (!to || extra !== undefined) {
-    return usage(ctx, "Usage: candle vault transfer <to> --amount <n> --asset SOL|<mint> --from <label> --rpc-url <url>");
+    return usage(ctx, "Usage: candle vault transfer <to> --amount <n|max> --asset SOL|<mint>|ETH|USDG|<0x token> --from <label> [--rpc-url <url>]");
   }
   const amount = parsed.values["--amount"];
   const asset = parsed.values["--asset"];
   const fromLabel = parsed.values["--from"];
-  const rpcUrl2 = parsed.values["--rpc-url"];
+  const rpcUrlFlag = parsed.values["--rpc-url"];
   if (!amount)
     return usage(ctx, "--amount <n> is required.");
   if (!asset)
-    return usage(ctx, "--asset SOL|<mint> is required.");
+    return usage(ctx, "--asset SOL|<mint>|ETH|USDG|<0x token> is required.");
   if (!fromLabel)
     return usage(ctx, "--from <label> is required.");
-  if (!rpcUrl2)
-    return usage(ctx, "--rpc-url <url> is required.");
+  if (rpcUrlFlag !== undefined) {
+    try {
+      new URL(rpcUrlFlag);
+    } catch {
+      return usage(ctx, `--rpc-url is not a valid URL: ${rpcUrlFlag}`);
+    }
+  } else {
+    const evmFromEnv = resolveEvmRpcUrl(undefined, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url");
+    if ("error" in evmFromEnv)
+      return usage(ctx, evmFromEnv.error);
+  }
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (!requireTty(ctx, "vault transfer"))
@@ -60306,6 +61729,34 @@ async function vaultTransfer(args, ctx) {
       return usage(ctx, `No vault key or promoted wallet matches --from ${fromLabel}.`);
     }
     assertTransferSigner(fromEntry);
+    if (fromEntry.chain === "evm") {
+      if (fromEntry.role !== "vault") {
+        throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${fromEntry.label || fromEntry.address} is an EVM ${fromEntry.role} entry; this release signs EVM transfers from vault keys only.`, { suggestion: "Nothing was signed." });
+      }
+      const evmRpc = resolveEvmRpcUrl(rpcUrlFlag, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url");
+      if ("error" in evmRpc)
+        return usage(ctx, evmRpc.error);
+      const evmRpcUrl = evmRpc.url;
+      const secretRef2 = fromEntry;
+      return runEvmTransfer({
+        ctx,
+        rpcUrl: evmRpcUrl,
+        builtIn: evmRpc.builtIn,
+        from: fromEntry,
+        to,
+        amount,
+        asset,
+        confirmLastSix: (address, what) => confirmLastSix(ctx, address, what),
+        confirmFactor: (what) => opened.confirm(what),
+        decryptSecret: () => decryptKey(vault, secretRef2.id),
+        usage: (line) => usage(ctx, line),
+        writeJson: (value) => writeJson(ctx.deps, value)
+      }, createEvmRpc(evmRpcUrl, ctx.deps.fetch));
+    }
+    assertSolanaDestination(to, fromEntry);
+    const rpcUrl2 = rpcUrlFlag;
+    if (!rpcUrl2)
+      return usage(ctx, "--rpc-url <url> is required for a transfer from a Solana key.");
     const promoted = fromEntry.role === "tee-wallet";
     if (promoted)
       assertNoPendingSweep(fromEntry);

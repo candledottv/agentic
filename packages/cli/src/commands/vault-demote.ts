@@ -53,6 +53,9 @@ export async function vaultDemote(args: string[], ctx: CommandContext): Promise<
     code: 1,
   }))
   if (!resolved.ok) {
+    // A refusal the resolver already wrote (an unlock failure, or Phase 4a's EVM-key refusal) is
+    // the answer; a second envelope over it would hide the code an agent switches on.
+    if (resolved.reported) return resolved.code
     writeLocalFailure(
       ctx.deps,
       {

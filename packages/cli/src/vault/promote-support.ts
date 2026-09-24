@@ -30,6 +30,10 @@ export function assertColdVaultDestination(
     acceptUnknownExposure?: boolean
   } = {},
 ): KeyEntry {
+  // D3 (Phase 4a): a sweep destination is a Solana vault key. An EVM key named here is refused
+  // by name rather than reported as "no vault key matches", which would send the operator looking
+  // for a typo.
+  assertNotEvmEntry(index, destinationLabelOrAddress, "this destination")
   const destination = findVaultRoleEntry(index, destinationLabelOrAddress)
   if (destination === undefined) {
     throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `No vault key matches ${destinationLabelOrAddress}.`, {
@@ -74,12 +78,40 @@ export function assertColdVaultDestination(
   return destination
 }
 
+/**
+ * Phase 4a's Solana-only filter (D3). Every command this spec does not extend to EVM selects
+ * `chain: "solana"` entries only, and when a label, address or positional NAMES an EVM entry it
+ * refuses with `SOLANA_COMMAND_EVM_KEY`, exit 1, before anything is signed, written or broadcast.
+ * `vault list`, `export-key`, `verify`, `restore` and `transfer` are the commands that may name one.
+ */
+export function assertNotEvmEntry(
+  index: Pick<IndexPlaintext, "entries">,
+  labelOrAddress: string,
+  command: string,
+): void {
+  const named = index.entries.find(
+    (entry) =>
+      entry.chain === "evm" &&
+      (entry.label === labelOrAddress || entry.address.toLowerCase() === labelOrAddress.toLowerCase()),
+  )
+  if (named === undefined) return
+  throw new VaultError(
+    "SOLANA_COMMAND_EVM_KEY",
+    `${named.label || named.address} is an EVM key (${named.address}); ${command} works on Solana keys only.`,
+    {
+      suggestion: `Nothing was signed or written. An EVM vault key moves funds with: candle vault transfer <0x address> --from ${named.label || named.address}`,
+    },
+  )
+}
+
+/** A Solana `role: "vault"` entry by label, else any Solana entry by address. An EVM entry never answers (D3). */
 export function findVaultRoleEntry(index: IndexPlaintext, labelOrAddress: string): KeyEntry | undefined {
-  const byLabel = index.entries.find(
+  const solana = index.entries.filter((entry) => entry.chain === "solana")
+  const byLabel = solana.find(
     (entry) => entry.role === "vault" && entry.label !== undefined && entry.label === labelOrAddress,
   )
   if (byLabel !== undefined) return byLabel
-  return index.entries.find((entry) => entry.address === labelOrAddress)
+  return solana.find((entry) => entry.address === labelOrAddress)
 }
 
 /**
@@ -119,6 +151,8 @@ export function assertInPlacePreconditions(
   sweepToLabel: string,
   opts: { acceptUnknownExposure?: boolean },
 ): { subject: KeyEntry; destination: KeyEntry; resume: boolean } {
+  // D3 (Phase 4a): promotion is Solana-only until 4b. An EVM subject is refused by name.
+  assertNotEvmEntry(index, subjectLabel, "vault promote")
   const subject = findEntryByLabelOrAddress(index, subjectLabel)
   if (subject === undefined) {
     throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`)

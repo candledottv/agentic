@@ -14,6 +14,7 @@
  */
 import { entropyToMnemonic, mnemonicToEntropy, mnemonicToSeed, validateMnemonic } from "@scure/bip39"
 import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english"
+import { type DerivedEvmKey, deriveEvmKey } from "../evm-lite"
 import { pubkeyFromSecretSeed } from "./ed25519"
 import { VaultError } from "./errors"
 import type { Branch } from "./format"
@@ -49,9 +50,15 @@ export function solanaExternalPath(index: number): string {
   return `m/44'/501'/${assertIndex(index)}'/2'`
 }
 
-/** Phase 4's path, fixed now so the format and the reader agree before any code derives one. */
+/** The EVM path, fixed in Phase 2 so the format and the reader agreed before Phase 4a derived one. */
 export function evmPath(index: number): string {
   return `m/44'/60'/${assertIndex(index)}'/0/0`
+}
+
+/** The EVM index a recorded path names, or undefined when the path is not on the EVM branch. */
+export function evmIndexOfPath(path: string): number | undefined {
+  const match = /^m\/44'\/60'\/(\d+)'\/0\/0$/.exec(path)
+  return match?.[1] === undefined ? undefined : Number(match[1])
 }
 
 export function pathForBranch(branch: Branch, index: number): string {
@@ -144,6 +151,21 @@ export async function deriveSolanaKey(entropy: Uint8Array, path: string): Promis
     } finally {
       wipe(leaf)
     }
+  } finally {
+    wipe(seed)
+  }
+}
+
+/**
+ * Derives one EVM key from the root entropy at `m/44'/60'/index'/0/0` (Phase 4a, D4): the same
+ * derivation event as `deriveSolanaKey`, with the seed recomputed and zeroed here and the BIP-32
+ * nodes zeroed inside `evm-lite`. Only the 32-byte scalar leaves, owned by the caller.
+ */
+export async function deriveEvmKeyFromRoot(entropy: Uint8Array, index: number): Promise<DerivedEvmKey> {
+  const seed = await seedFromEntropy(entropy)
+  try {
+    const derived = deriveEvmKey(seed, index)
+    return { ...derived, secret: ownSecret(derived.secret) }
   } finally {
     wipe(seed)
   }

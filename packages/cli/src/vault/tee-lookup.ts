@@ -11,6 +11,7 @@ import type { OpenedVault } from "../commands/vault-support"
 import { unlockInteractively, vaultPathFor } from "../commands/vault-support"
 import type { CommandContext } from "../deps"
 import type { KeyEntry } from "./format"
+import { assertNotEvmEntry } from "./promote-support"
 import { closeVault, readVaultRaw, type UnlockedVault } from "./store"
 
 export type VaultTeeHit =
@@ -45,6 +46,14 @@ export async function findTeeInVault(
 
   const opened = await unlockInteractively(ctx, path, raw, { acceptOlderCopy: true })
   const vault = opened.vault
+  // Phase 4a (D3): every `tee` command and `vault demote` resolve their address here. An EVM
+  // entry is refused by name (`SOLANA_COMMAND_EVM_KEY`) rather than reported as "not a TEE wallet".
+  try {
+    assertNotEvmEntry(vault.index, address, "this command")
+  } catch (error) {
+    closeVault(vault)
+    throw error
+  }
   const entry = vault.index.entries.find(
     (candidate) => candidate.address === address && candidate.role === "tee-wallet",
   )

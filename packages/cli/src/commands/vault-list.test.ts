@@ -108,9 +108,17 @@ interface Harness {
   stdout: ReturnType<typeof createCapture>
   stderr: ReturnType<typeof createCapture>
   asked: string[]
-  /** Every JSON-RPC request the run made, in order: its method and the addresses it asked for. */
+  /** Every Solana JSON-RPC request the run made, in order: its method and the addresses it asked for. */
   calls: { method: string; addresses: string[] }[]
+  /** Phase 4a (E10): every EVM JSON-RPC request, with the host it went to. */
+  evmCalls: { host: string; method: string; params: unknown[] }[]
 }
+
+/** The built-in Hood host, as `vault list` prints it (E10). */
+const HOOD_HOST = "rpc.mainnet.chain.robinhood.com"
+const ZERO_WORD = `0x${"0".repeat(64)}`
+/** An EVM-shaped fixture address: an EVM row carries a 0x address, never a base58 one. */
+const EVM_FIXTURE = "0x000000000000000000000000000000000000dEaD"
 
 /**
  * A scripted RPC. `lamports` answers per address; `failCall` is the 1-based call that answers HTTP
@@ -125,15 +133,34 @@ function harness(
     secrets?: string[]
     lamports?: (address: string) => bigint
     failCall?: number
+    /** Phase 4a: the EVM node. Answers per method; a missing answer falls back to Hood-shaped zeros. */
+    evm?: (method: string, params: unknown[]) => unknown
   } = {},
 ): Harness {
   const stdout = createCapture()
   const stderr = createCapture()
   const asked: string[] = []
   const calls: { method: string; addresses: string[] }[] = []
+  const evmCalls: Harness["evmCalls"] = []
   const secrets = [...(opts.secrets ?? [FIXTURE_PASSPHRASE])]
-  const fetchFn = (async (_input: string | URL | Request, init?: RequestInit) => {
+  const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as { id: number; method: string; params: unknown[] }
+    if (body.method.startsWith("eth_")) {
+      evmCalls.push({ host: new URL(String(input)).host, method: body.method, params: body.params })
+      const scripted = opts.evm?.(body.method, body.params)
+      const result =
+        scripted !== undefined
+          ? scripted
+          : body.method === "eth_chainId"
+            ? "0x1237"
+            : body.method === "eth_getBalance"
+              ? "0x0"
+              : ZERO_WORD
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    }
     const addresses = body.method === "getMultipleAccounts" ? (body.params[0] as string[]) : []
     calls.push({ method: body.method, addresses })
     if (opts.failCall === calls.length) return new Response("rate limited", { status: 429 })
@@ -166,7 +193,7 @@ function harness(
       return next
     },
   })
-  return { deps, stdout, stderr, asked, calls }
+  return { deps, stdout, stderr, asked, calls, evmCalls }
 }
 
 const THREE_KEYS = [
@@ -295,31 +322,178 @@ describe("T6: the filter, and what a filtered balance read sends", () => {
     })
   })
 
-  test("an evm-only match is a match: the table prints, the SOL cell is `-`, and 0 keys are read", async () => {
-    const fx = await vaultWith([entryAt(0, { label: "treasury" }), entryAt(1, { label: "hood-evm", chain: "evm" })])
+  test("an evm-only match is a match: the table prints, the SOL cell is `-`, and 0 Solana keys are read", async () => {
+    const fx = await vaultWith([
+      entryAt(0, { label: "treasury" }),
+      { ...entryAt(1, { label: "hood-evm", chain: "evm" }), address: EVM_FIXTURE },
+    ])
     const h = harness({ dir: fx.dir })
     expect(await run(["vault", "list", "hood", "--balances", "--rpc-url", RPC_URL], h.deps)).toBe(0)
+    // Phase 4a: the Solana endpoint is never sent the EVM address; the EVM row is read from Hood.
     expect(h.calls).toEqual([])
     expect(h.stderr.text).not.toContain("Reading SOL")
     expect(h.stdout.text).toContain("1 of 2 keys match")
-    const row = h.stdout.text.split("\n").find((line) => line.startsWith(STEM)) as string
-    expect(row.trimEnd().endsWith("-")).toBe(true)
+    const row = h.stdout.text.split("\n").find((line) => line.startsWith(EVM_FIXTURE)) as string
+    // SOL `-`, then ETH 0 and USDG 0 from the Hood read.
+    expect(row.trimEnd()).toMatch(/-\s+0\s+0$/)
     // The 0 is the Solana key count: the matched evm key is in the match line and not in this one.
     expect(h.stdout.text).toContain("total  0 SOL across 0 keys")
   })
 
   test("an evm entry stays in --json with no lamports key at all, and is not `unavailable`", async () => {
-    const fx = await vaultWith([entryAt(0, { label: "treasury" }), entryAt(1, { label: "hood-evm", chain: "evm" })])
+    const fx = await vaultWith([
+      entryAt(0, { label: "treasury" }),
+      { ...entryAt(1, { label: "hood-evm", chain: "evm" }), address: EVM_FIXTURE },
+    ])
     const h = harness({ dir: fx.dir, lamports: () => 2_039_280n })
     expect(await run(["vault", "list", "--balances", "--rpc-url", RPC_URL, "--json"], h.deps)).toBe(0)
     const body = JSON.parse(h.stdout.text) as {
-      entries: { address: string; lamports?: string | null }[]
+      entries: { address: string; lamports?: string | null; wei?: string | null }[]
       balances: { totalLamports: string; unavailable: string[] }
     }
     expect(body.entries[0]?.lamports).toBe("2039280")
     expect(Object.hasOwn(body.entries[1] as object, "lamports")).toBe(false)
+    expect(Object.hasOwn(body.entries[0] as object, "wei")).toBe(false)
+    expect(body.entries[1]?.wei).toBe("0")
     expect(body.balances.totalLamports).toBe("2039280")
     expect(body.balances.unavailable).toEqual([])
+  })
+})
+
+/**
+ * Phase 4a (BE-350, spec 2026-09-24-ember-phase-4a-evm-vault-keys-design.md, D3, D7), E10: EVM rows
+ * are read from the built-in Hood host when no `--evm-rpc-url` is given, that host is printed on
+ * stderr, the Solana `--rpc-url` is never sent an EVM address, and Hood USDG is included when the
+ * chain id is 4663.
+ */
+describe("E10: EVM rows under --balances", () => {
+  const EVM_ADDRESS = EVM_FIXTURE
+  const vaultWithEvm = () =>
+    vaultWith([
+      entryAt(0, { label: "treasury" }),
+      { ...entryAt(1, { label: "hood-cold", chain: "evm" }), address: EVM_ADDRESS },
+    ])
+
+  test("no --evm-rpc-url: the built-in Hood host is read and printed, and the Solana RPC sees no 0x address", async () => {
+    const fx = await vaultWithEvm()
+    const h = harness({
+      dir: fx.dir,
+      lamports: () => 1_000_000_000n,
+      evm: (method, params) => {
+        if (method === "eth_chainId") return "0x1237"
+        if (method === "eth_getBalance") return "0x1bc16d674ec80000" // 2 ETH
+        if (method === "eth_call") {
+          const call = params[0] as { to: string; data: string }
+          expect(call.to.toLowerCase()).toBe("0x5fc5360d0400a0fd4f2af552add042d716f1d168")
+          expect(call.data.startsWith("0x70a08231")).toBe(true)
+          return `0x${1_500_000n.toString(16).padStart(64, "0")}` // 1.5 USDG
+        }
+        return undefined
+      },
+    })
+    expect(await run(["vault", "list", "--balances", "--rpc-url", RPC_URL], h.deps)).toBe(0)
+    // The Solana batch is the Solana key only; the EVM address went to Hood and nowhere else.
+    expect(h.calls.flatMap((call) => call.addresses)).toEqual([fakeAddress(0)])
+    expect(h.evmCalls.map((call) => call.host)).toEqual([HOOD_HOST, HOOD_HOST, HOOD_HOST])
+    expect(h.evmCalls.map((call) => call.method)).toEqual(["eth_chainId", "eth_getBalance", "eth_call"])
+    expect(h.stderr.text).toContain(`Reading ETH (and USDG when the chain is Hood) for 1 EVM address from ${HOOD_HOST}`)
+    expect(h.stderr.text).not.toContain(RPC_URL)
+    const row = h.stdout.text.split("\n").find((line) => line.startsWith(EVM_ADDRESS)) as string
+    expect(row).toContain("hood-cold")
+    expect(row.trimEnd()).toMatch(/-\s+2\s+1\.5$/)
+    expect(h.stdout.text).toContain("ETH")
+    expect(h.stdout.text).toContain("USDG")
+    expect(h.stdout.text).toContain("total  2 ETH across 1 EVM keys on Hood")
+    expect(h.stdout.text).toContain("total  1.5 USDG across those keys")
+  })
+
+  test("--evm-rpc-url, then CANDLE_EVM_RPC_URL, beat the built-in host; off Hood no USDG is read", async () => {
+    const fx = await vaultWithEvm()
+    const flagged = harness({
+      dir: fx.dir,
+      env: { CANDLE_EVM_RPC_URL: "https://env.evm.test/rpc" },
+      evm: (method) => (method === "eth_chainId" ? "0x2105" : undefined),
+    })
+    expect(
+      await run(
+        ["vault", "list", "hood", "--balances", "--rpc-url", RPC_URL, "--evm-rpc-url", "https://flag.evm.test/rpc"],
+        flagged.deps,
+      ),
+    ).toBe(0)
+    expect(new Set(flagged.evmCalls.map((call) => call.host))).toEqual(new Set(["flag.evm.test"]))
+    // Chain id 8453 is not Hood: the native balance only, no USDG call, and the column names the chain.
+    expect(flagged.evmCalls.map((call) => call.method)).toEqual(["eth_chainId", "eth_getBalance"])
+    expect(flagged.stdout.text).toContain("ETH@8453")
+    expect(flagged.stdout.text).not.toContain("USDG")
+
+    const fromEnv = harness({ dir: fx.dir, env: { CANDLE_EVM_RPC_URL: "https://env.evm.test/rpc" } })
+    expect(await run(["vault", "list", "hood", "--balances", "--rpc-url", RPC_URL], fromEnv.deps)).toBe(0)
+    expect(new Set(fromEnv.evmCalls.map((call) => call.host))).toEqual(new Set(["env.evm.test"]))
+    expect(fromEnv.stderr.text).toContain("from env.evm.test")
+  })
+
+  test("a blank CANDLE_EVM_RPC_URL is the built-in host; an invalid one is a usage error before the prompt", async () => {
+    const fx = await vaultWithEvm()
+    const blank = harness({ dir: fx.dir, env: { CANDLE_EVM_RPC_URL: "   " } })
+    expect(await run(["vault", "list", "--balances", "--rpc-url", RPC_URL], blank.deps)).toBe(0)
+    expect(new Set(blank.evmCalls.map((call) => call.host))).toEqual(new Set([HOOD_HOST]))
+
+    const invalid = harness({ dir: fx.dir, env: { CANDLE_EVM_RPC_URL: "not a url" } })
+    expect(await run(["vault", "list", "--balances", "--rpc-url", RPC_URL], invalid.deps)).toBe(2)
+    expect(invalid.stderr.text).toContain("CANDLE_EVM_RPC_URL is not a valid URL")
+    expect(invalid.asked).toEqual([])
+    expect(invalid.evmCalls).toEqual([])
+
+    const cleartext = harness({ dir: fx.dir, env: { CANDLE_EVM_RPC_URL: "http://rpc.example.test/rpc" } })
+    expect(await run(["vault", "list", "--balances", "--rpc-url", RPC_URL], cleartext.deps)).toBe(2)
+    expect(cleartext.stderr.text).toContain("CANDLE_EVM_RPC_URL must be https://")
+    expect(cleartext.asked).toEqual([])
+  })
+
+  test("--json carries wei and usdgRaw on the EVM entry and an evmBalances object; a failed read is null and exit 3", async () => {
+    const fx = await vaultWithEvm()
+    const ok = harness({
+      dir: fx.dir,
+      evm: (method) =>
+        method === "eth_getBalance" ? "0x2a" : method === "eth_call" ? `0x${"0".repeat(63)}7` : undefined,
+    })
+    expect(await run(["vault", "list", "--balances", "--rpc-url", RPC_URL, "--json"], ok.deps)).toBe(0)
+    const body = JSON.parse(ok.stdout.text) as {
+      entries: { wei?: string | null; usdgRaw?: string | null }[]
+      evmBalances: Record<string, unknown>
+    }
+    expect(body.entries[1]).toMatchObject({ wei: "42", usdgRaw: "7" })
+    expect(body.evmBalances).toEqual({
+      rpcHost: HOOD_HOST,
+      chainId: 4663,
+      requests: 3,
+      complete: true,
+      unavailable: [],
+    })
+
+    const failing = harness({
+      dir: fx.dir,
+      evm: (method) => {
+        if (method === "eth_getBalance") throw new Error("boom")
+        return undefined
+      },
+    })
+    expect(await run(["vault", "list", "--balances", "--rpc-url", RPC_URL, "--json"], failing.deps)).toBe(3)
+    const partial = JSON.parse(failing.stdout.text) as {
+      entries: { wei?: string | null }[]
+      evmBalances: { complete: boolean; unavailable: string[] }
+    }
+    expect(partial.entries[1]?.wei).toBeNull()
+    expect(partial.evmBalances.complete).toBe(false)
+    expect(partial.evmBalances.unavailable).toEqual([EVM_ADDRESS])
+    expect(failing.stderr.text).toContain("1 EVM address could not be read")
+  })
+
+  test("--evm-rpc-url without --balances is a usage error, like --rpc-url", async () => {
+    const fx = await vaultWithEvm()
+    const h = harness({ dir: fx.dir })
+    expect(await run(["vault", "list", "--evm-rpc-url", "https://flag.evm.test/rpc"], h.deps)).toBe(2)
+    expect(h.stderr.text).toContain("--evm-rpc-url has no effect without --balances")
   })
 })
 

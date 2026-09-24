@@ -263,10 +263,17 @@ export const FIXTURE_TEE_0 = "FKhHHGpQ52Wcf446ANQL9vmuxLjjfuKYfFpZiKRbS63J"
 /** R6: the fixture root's external index 0, `m/44'/501'/0'/2'`. */
 export const FIXTURE_EXTERNAL_0 = "9xUo4nK6C3isRd3kqqGuYKJALTuGGdXGxQBoebaerFea"
 
-test("the BIP-32 secp256k1 half of T53 is recorded as Phase 4's, not silently skipped", () => {
-  // Phase 2 adds no secp256k1 derivation code (ED-13), so there is nothing here to run the BIP-32
-  // vectors against. The path is fixed and asserted above; the vectors run in the Phase 4 PR that
-  // declares `@scure/bip32`. This assertion exists so the gap is visible in the suite's output
-  // rather than being an absence nobody notices.
+test("the BIP-32 secp256k1 half of T53 runs in evm-lite.test.ts (E1), through @scure/bip32 as bundled", async () => {
+  // Phase 4a (BE-350) declared `@scure/bip32` and completed T53: the published BIP-32 vector and
+  // the fixture root's `m/44'/60'/n'/0/0` addresses against viem are in `src/evm-lite.test.ts`.
+  // This keeps the anchor here too, so a change to the path or the derivation moves a T53 test.
+  const { deriveEvmKeyFromRoot } = await import("./hd")
+  const { FIXTURE_EVM_0 } = await import("../evm-lite.test")
   expect(evmPath(0)).toBe("m/44'/60'/0'/0/0")
+  const derived = await deriveEvmKeyFromRoot(
+    new Uint8Array(32).map((_, index) => index),
+    0,
+  )
+  expect(derived.address).toBe(FIXTURE_EVM_0)
+  expect(derived.secret.length).toBe(32)
 })

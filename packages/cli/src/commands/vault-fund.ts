@@ -9,6 +9,10 @@
  * set, and that balance is the whole bound on `candle sign --yes`, so an unattended path here would
  * remove the bound that one depends on. The source is `--from <vault-label>`, or the vault's only
  * receive key when it has exactly one; with several, none is chosen silently.
+ *
+ * Phase 4a (BE-350, D3): Solana-only. The single-key default sees Solana vault keys only, so a vault
+ * with one Solana vault key and one EVM vault key still auto-selects the Solana key; an EVM entry
+ * named by `--from` or by the positional refuses with `SOLANA_COMMAND_EVM_KEY`.
  */
 import { type ParsedArgs, parseArgs } from "../args"
 import type { CommandContext } from "../deps"
@@ -17,6 +21,7 @@ import { VaultError } from "../vault/errors"
 import type { KeyEntry } from "../vault/format"
 import { type FundingReceipt, reconcileFundingReceipts, saveFundingReceipt } from "../vault/funding-receipts"
 import { wipe } from "../vault/hygiene"
+import { assertNotEvmEntry } from "../vault/promote-support"
 import { decryptKey } from "../vault/store"
 import {
   assertVaultSigner,
@@ -52,10 +57,12 @@ async function fundExternal(
   external: KeyEntry,
   input: { amount: string; asset: string; rpcUrl: string; parsed: ParsedArgs },
 ): Promise<number> {
-  const vaultKeys = vault.index.entries.filter((entry) => entry.role === "vault")
+  // D3 (Phase 4a): Solana vault keys only. An EVM vault key is never the single-key default.
+  const vaultKeys = vault.index.entries.filter((entry) => entry.role === "vault" && entry.chain === "solana")
   const fromFlag = input.parsed.values["--from"]
   let fromEntry: KeyEntry | undefined
   if (fromFlag !== undefined) {
+    assertNotEvmEntry(vault.index, fromFlag, "vault fund")
     fromEntry =
       vaultKeys.find((entry) => entry.label === fromFlag) ?? vaultKeys.find((entry) => entry.address === fromFlag)
     if (fromEntry === undefined) return usage(ctx, `No vault key matches --from ${fromFlag}.`)
@@ -155,6 +162,9 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
     })
     const vault = hold(opened.vault)
 
+    // D3 (Phase 4a): an EVM entry named as the destination, or as the source, is refused by name.
+    assertNotEvmEntry(vault.index, teeAddress, "vault fund")
+    if (parsed.values["--from"] !== undefined) assertNotEvmEntry(vault.index, parsed.values["--from"], "vault fund")
     const teeEntry = vault.index.entries.find((entry) => entry.address === teeAddress && entry.role === "tee-wallet")
     if (teeEntry === undefined) {
       const external = findExternalEntry(vault.index, teeAddress)
@@ -203,7 +213,9 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
         },
       )
     }
-    const fromEntry = vault.index.entries.find((entry) => entry.address === destination && entry.role === "vault")
+    const fromEntry = vault.index.entries.find(
+      (entry) => entry.address === destination && entry.role === "vault" && entry.chain === "solana",
+    )
     if (fromEntry === undefined) {
       throw new VaultError(
         "GRANT_DESTINATION_UNRESOLVED",

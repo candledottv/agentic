@@ -362,12 +362,16 @@ describe("new-key derives, records and verifies", () => {
     expect(s.stdout.text).toContain("solanaVault  2")
   })
 
-  test("--chain evm exits 2 with CHAIN_NOT_OFFERED and derives nothing", async () => {
+  test("--chain evm derives an EVM key on m/44'/60'/n'/0/0 (Phase 4a: T51's exit 2 is gone), and an unknown chain is usage", async () => {
     const h = await initVault()
-    const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
-    expect(await run(["vault", "new-key", "--chain", "evm", "--keystore", h.vaultPath], k.deps)).toBe(2)
-    expect(k.stderr.text).toContain("CHAIN_NOT_OFFERED")
-    expect(k.stderr.text).toContain("Phase 4")
+    const k = await harness({ env: { CANDLE_CONFIG_DIR: h.dir }, secrets: [h.passphrase] })
+    expect(await run(["vault", "new-key", "--chain", "evm", "--keystore", h.vaultPath], k.deps)).toBe(0)
+    expect(k.stdout.text).toMatch(/^0x[0-9a-fA-F]{40}\n/)
+    expect(k.stdout.text).toContain("derivation  m/44'/60'/0'/0/0")
+    expect(k.stderr.text).not.toContain("CHAIN_NOT_OFFERED")
+    const u = await harness({ env: { CANDLE_CONFIG_DIR: h.dir } })
+    expect(await run(["vault", "new-key", "--chain", "bitcoin", "--keystore", h.vaultPath], u.deps)).toBe(2)
+    expect(u.stderr.text).toContain("Unknown chain: bitcoin")
   })
 
   test("an index in hd.exposedIndexes is never allocated, even when the boundary is known", async () => {
