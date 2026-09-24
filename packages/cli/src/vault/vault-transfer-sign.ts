@@ -1,6 +1,7 @@
 /**
  * Ember Phase 2 PR C (ED-10, CC-08): build, display and locally sign the two vault transfer
- * shapes. Vault keys only; TEE wallet entries must never reach this path.
+ * shapes. `vault fund` signs them from vault keys only. BE-326 (ED-10 amendment, 2026-09-24):
+ * `vault transfer` may also sign them from a promoted wallet (`role: "tee-wallet"`).
  *
  * Ember Phase 3 PR A (BE-218) applies the Phase 2 ED-10 amendment: the token shape is built under
  * the MINT's owning program, classic or Token-2022, with idempotent ATA creation under that same
@@ -46,13 +47,32 @@ export function decimalToRaw(decimal: string, decimals: number): bigint | null {
   return BigInt((whole ?? "0") + frac.padEnd(decimals, "0"))
 }
 
+/** `vault fund`'s signer: a vault key only (ED-10; the 2026-09-24 amendment keeps fund cold-sourced). */
 export function assertVaultSigner(entry: KeyEntry): void {
   if (entry.role !== "vault") {
     throw new VaultError(
       "PROMOTE_NOT_VAULT_KEY",
-      `${entry.label ?? entry.address} is a TEE wallet entry and cannot sign vault transfer or fund shapes (ED-10 / N3).`,
+      `${entry.label ?? entry.address} is not a vault key, and vault fund signs from vault keys only (ED-10).`,
+      {
+        suggestion: `To move funds out of a promoted wallet, use: candle vault transfer <to> --from ${entry.label ?? entry.address}`,
+      },
     )
   }
+}
+
+/**
+ * `vault transfer`'s signer (BE-326, ED-10 amendment of 2026-09-24): a vault key or a promoted
+ * wallet. An external wallet signs only through `candle sign` and `external sweep`.
+ */
+export function assertTransferSigner(entry: KeyEntry): void {
+  if (entry.role === "vault" || entry.role === "tee-wallet") return
+  throw new VaultError(
+    "PROMOTE_NOT_VAULT_KEY",
+    `${entry.label ?? entry.address} is an external wallet and cannot sign vault transfer shapes (ED-10).`,
+    {
+      suggestion: `Move funds out of an external wallet with: candle external sweep ${entry.label} --to <vault> --rpc-url <url>`,
+    },
+  )
 }
 
 export interface TransferPlan {

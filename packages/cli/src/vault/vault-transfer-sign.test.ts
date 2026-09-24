@@ -4,7 +4,10 @@ import { Keypair, PublicKey } from "@solana/web3.js"
 import type { CommandContext } from "../deps"
 import { encodePubkey, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import { createCapture, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
+import type { KeyEntry } from "./format"
 import {
+  assertTransferSigner,
+  assertVaultSigner,
   displayTransferPlan,
   namedSendFailure,
   planTransfer,
@@ -389,4 +392,19 @@ test("a send that finalizes with an error carries R5's name for the mint that re
   await expect(signAndBroadcastTransfer({ ctx, rpcUrl, secret64: fromKey.secretKey, plan })).rejects.toThrow(
     "Transfer failed on chain (TOKEN_2022_NOT_TRANSFERABLE)",
   )
+})
+
+describe("BE-326: which roles may sign which transfer (ED-10 amendment)", () => {
+  const entry = (role: KeyEntry["role"]) => ({ role, label: `a-${role}`, address: from }) as KeyEntry
+
+  test("vault transfer admits a vault key and a promoted wallet, and refuses an external wallet", () => {
+    expect(() => assertTransferSigner(entry("vault"))).not.toThrow()
+    expect(() => assertTransferSigner(entry("tee-wallet"))).not.toThrow()
+    expect(() => assertTransferSigner(entry("external"))).toThrow(/external wallet/)
+  })
+
+  test("vault fund stays vault-key-only", () => {
+    expect(() => assertVaultSigner(entry("vault"))).not.toThrow()
+    expect(() => assertVaultSigner(entry("tee-wallet"))).toThrow(/vault fund signs from vault keys only/)
+  })
 })

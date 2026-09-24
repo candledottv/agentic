@@ -3143,7 +3143,8 @@ var init_errors = __esm(() => {
     "WALLET_LIMIT_REACHED",
     "TIER_REQUIRED",
     "LINKED_WALLET_ROOM_UNREADABLE",
-    "PROMOTE_ACCOUNT_UNRESOLVED"
+    "PROMOTE_ACCOUNT_UNRESOLVED",
+    "TRANSFER_SWEEP_PENDING"
   ];
   VaultError = class VaultError extends Error {
     code;
@@ -9347,6 +9348,7 @@ __export(exports_promote_support, {
   promoteSentence: () => promoteSentence,
   printPromoteSentence: () => printPromoteSentence,
   findVaultRoleEntry: () => findVaultRoleEntry,
+  findTransferSource: () => findTransferSource,
   findEntryByLabelOrAddress: () => findEntryByLabelOrAddress,
   controlledByJson: () => controlledByJson,
   confirmPrompt: () => confirmPrompt,
@@ -9391,6 +9393,10 @@ function findVaultRoleEntry(index, labelOrAddress) {
   if (byLabel !== undefined)
     return byLabel;
   return index.entries.find((entry) => entry.address === labelOrAddress);
+}
+function findTransferSource(index, labelOrAddress) {
+  const byLabel = (role) => index.entries.find((entry) => entry.role === role && entry.label !== undefined && entry.label === labelOrAddress);
+  return byLabel("vault") ?? byLabel("tee-wallet") ?? index.entries.find((entry) => entry.address === labelOrAddress);
 }
 function findEntryByLabelOrAddress(index, labelOrAddress) {
   const byLabel = index.entries.find((entry) => entry.label !== undefined && entry.label === labelOrAddress);
@@ -39408,7 +39414,7 @@ var HELP = {
       },
       {
         invocation: "transfer <to> --amount <n> --asset SOL|<mint> --from <label> --rpc-url <url>",
-        description: "Sign a vault-key transfer locally"
+        description: "Sign a transfer locally from a vault key or a promoted TEE wallet"
       },
       {
         invocation: "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>] [--to-key <prefix|label>]",
@@ -55567,8 +55573,17 @@ function decimalToRaw2(decimal, decimals) {
 }
 function assertVaultSigner(entry) {
   if (entry.role !== "vault") {
-    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry.label ?? entry.address} is a TEE wallet entry and cannot sign vault transfer or fund shapes (ED-10 / N3).`);
+    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry.label ?? entry.address} is not a vault key, and vault fund signs from vault keys only (ED-10).`, {
+      suggestion: `To move funds out of a promoted wallet, use: candle vault transfer <to> --from ${entry.label ?? entry.address}`
+    });
   }
+}
+function assertTransferSigner(entry) {
+  if (entry.role === "vault" || entry.role === "tee-wallet")
+    return;
+  throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry.label ?? entry.address} is an external wallet and cannot sign vault transfer shapes (ED-10).`, {
+    suggestion: `Move funds out of an external wallet with: candle external sweep ${entry.label} --to <vault> --rpc-url <url>`
+  });
 }
 function namedSendFailure(plan) {
   if (!plan.token)
@@ -59690,8 +59705,78 @@ function describeEnvelope(envelope, facts) {
 
 // src/commands/vault-transfer.ts
 init_args();
+init_deps();
 init_promote_support();
 init_store();
+
+// src/vault/tee-transfer.ts
+init_errors();
+function assertNoPendingSweep(entry) {
+  const pending = entry.tee?.sweepPending?.length ?? 0;
+  if (pending === 0)
+    return;
+  throw new VaultError("TRANSFER_SWEEP_PENDING", `${entry.label} (${entry.address}) has ${pending} pending sweep transaction(s); a transfer would interleave with that sweep.`, { suggestion: `Finish the sweep first: candle tee sweep ${entry.address} --rpc-url <url>` });
+}
+async function readTeeServerState(ctx, entry, apiKey) {
+  if (entry.linkedWalletId === undefined) {
+    return { read: false, reason: "this wallet has no linked wallet id recorded" };
+  }
+  if (apiKey === undefined)
+    return { read: false, reason: "no API key for this profile" };
+  try {
+    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/lifecycle`, {
+      auth: "key",
+      credentials: { apiKey },
+      apiUrl: ctx.apiUrl,
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env
+    });
+    if (!result.ok)
+      return { read: false, reason: result.message };
+    const state = result.body.state;
+    if (typeof state !== "string")
+      return { read: false, reason: "the lifecycle response carried no state" };
+    return { read: true, state };
+  } catch (error) {
+    return { read: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+function serverStateNotice(state) {
+  if (!state.read) {
+    return `Could not read this wallet's Candle state (${state.reason}); proceeding. An agent may be trading it.`;
+  }
+  if (state.state === "enabled") {
+    return "Warning: this wallet is enabled, so an agent may be trading it now; a trade may fail if this transfer leaves too little.";
+  }
+  return;
+}
+async function reportTransferActivity(ctx, apiKey, signature) {
+  const unseen = "Candle's history will not show this transfer.";
+  if (apiKey === undefined)
+    return { outcome: "no-api-key", line: `No API key for this profile, so ${unseen}` };
+  try {
+    const result = await apiRequest("/api/v1/activity/report", {
+      method: "POST",
+      body: { chain: "solana", signature },
+      auth: "key",
+      credentials: { apiKey },
+      apiUrl: ctx.apiUrl,
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env
+    });
+    if (result.ok)
+      return { outcome: "reported", line: "Reported to Candle's history." };
+    if (result.code === "SCOPE_MISSING") {
+      return { outcome: "scope-missing", line: `This profile's API key lacks activity:write, so ${unseen}` };
+    }
+    return { outcome: "failed", line: `Could not report this transfer (${result.message}); ${unseen}` };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { outcome: "failed", line: `Could not report this transfer (${reason}); ${unseen}` };
+  }
+}
+
+// src/commands/vault-transfer.ts
 init_vault_support();
 async function vaultTransfer(args, ctx) {
   const parsed = parseArgs(args, {
@@ -59732,11 +59817,17 @@ async function vaultTransfer(args, ctx) {
       promptText: "Vault passphrase (input hidden): "
     });
     const vault = hold(opened.vault);
-    const fromEntry = findVaultRoleEntry(vault.index, fromLabel);
+    const fromEntry = findTransferSource(vault.index, fromLabel);
     if (fromEntry === undefined) {
-      return usage(ctx, `No vault key matches --from ${fromLabel}.`);
+      return usage(ctx, `No vault key or promoted wallet matches --from ${fromLabel}.`);
     }
-    assertVaultSigner(fromEntry);
+    assertTransferSigner(fromEntry);
+    const promoted = fromEntry.role === "tee-wallet";
+    if (promoted)
+      assertNoPendingSweep(fromEntry);
+    const note = (line) => (ctx.json ? ctx.deps.stderr : ctx.deps.stdout).write(`${line}
+`);
+    const apiKey = promoted ? await resolveApiKey(ctx.deps, ctx.profile) : undefined;
     const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, to], rpcUrl2, ctx);
     if (reconciled !== null)
       return reconciled;
@@ -59750,11 +59841,25 @@ async function vaultTransfer(args, ctx) {
     });
     const feeQuote = await quoteTransferFee(rpcUrl2, ctx.deps.fetch, plan.from, plan.instructions);
     displayTransferPlan(ctx, plan, feeQuote);
+    if (promoted) {
+      const notice = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey));
+      if (notice !== undefined)
+        note(notice);
+    }
     await confirmLastSix(ctx, to, "the destination");
     await opened.confirm(`sign transfer of ${plan.amount} ${plan.asset} to ${to}`);
     const secret = await decryptKey(vault, fromEntry.id);
     try {
       const result = await signAndBroadcastTransfer({ ctx, rpcUrl: rpcUrl2, secret64: secret, plan });
+      let activityReport;
+      if (promoted && result.finalized) {
+        const report = await reportTransferActivity(ctx, apiKey, result.signature);
+        activityReport = report.outcome;
+        note(report.line);
+      } else if (promoted) {
+        activityReport = "not-finalized";
+        note("Not reported to Candle's history: finality is not yet confirmed.");
+      }
       if (ctx.json) {
         writeJson(ctx.deps, {
           ok: result.finalized,
@@ -59764,7 +59869,8 @@ async function vaultTransfer(args, ctx) {
           amount: plan.amount,
           asset: plan.asset,
           amountRaw: plan.amountRaw.toString(),
-          finalized: result.finalized
+          finalized: result.finalized,
+          ...activityReport !== undefined ? { activityReport } : {}
         });
       } else {
         ctx.deps.stdout.write(result.finalized ? `Transferred ${plan.amount} ${plan.asset} to ${to}: ${result.signature}

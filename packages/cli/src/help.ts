@@ -456,7 +456,7 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation: "transfer <to> --amount <n> --asset SOL|<mint> --from <label> --rpc-url <url>",
-        description: "Sign a vault-key transfer locally",
+        description: "Sign a transfer locally from a vault key or a promoted TEE wallet",
       },
       {
         invocation:

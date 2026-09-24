@@ -108,6 +108,10 @@ export const VAULT_ERROR_CODES = [
   // cached profile account: the block it feeds exists only because it is live. Thrown from
   // `vault/promote-support.ts` (`readControlledBy`).
   "PROMOTE_ACCOUNT_UNRESOLVED",
+  // BE-326 (Phase 2 ED-10 amendment, 2026-09-24): `vault transfer` from a promoted wallet refuses
+  // while a sweep of that wallet is pending, before anything is signed. Thrown from
+  // `vault/tee-transfer.ts`.
+  "TRANSFER_SWEEP_PENDING",
 ] as const
 
 export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number]

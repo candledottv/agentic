@@ -82,6 +82,16 @@ export function findVaultRoleEntry(index: IndexPlaintext, labelOrAddress: string
   return index.entries.find((entry) => entry.address === labelOrAddress)
 }
 
+/**
+ * `vault transfer --from`: a vault key by label first (unchanged), then a promoted wallet by label
+ * (BE-326, ED-10 amendment), then any entry by address. The signer check decides what may sign.
+ */
+export function findTransferSource(index: IndexPlaintext, labelOrAddress: string): KeyEntry | undefined {
+  const byLabel = (role: KeyEntry["role"]) =>
+    index.entries.find((entry) => entry.role === role && entry.label !== undefined && entry.label === labelOrAddress)
+  return byLabel("vault") ?? byLabel("tee-wallet") ?? index.entries.find((entry) => entry.address === labelOrAddress)
+}
+
 export function findEntryByLabelOrAddress(index: IndexPlaintext, labelOrAddress: string): KeyEntry | undefined {
   const byLabel = index.entries.find((entry) => entry.label !== undefined && entry.label === labelOrAddress)
   if (byLabel !== undefined) return byLabel

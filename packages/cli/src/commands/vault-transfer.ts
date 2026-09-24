@@ -3,15 +3,28 @@
  *
  * Vault keys build and sign only the two transfer shapes, decoded and displayed before the factor
  * prompt, with the destination confirmed by typing its last six characters.
+ *
+ * BE-326 (ED-10 amendment, 2026-09-24): `--from` may also name a promoted wallet
+ * (`role: "tee-wallet"`), under every safeguard above. For that source only, a pending sweep
+ * refuses before anything is signed, the wallet's server state is read and an enabled wallet is
+ * warned about before the confirmation, and a finalized transfer is reported to Candle's activity
+ * history. A vault key's transfer is unchanged.
  */
 import { parseArgs } from "../args"
-import type { CommandContext } from "../deps"
+import { type CommandContext, resolveApiKey } from "../deps"
 import { reconcileFundingReceipts } from "../vault/funding-receipts"
 import { wipe } from "../vault/hygiene"
-import { findVaultRoleEntry } from "../vault/promote-support"
+import { findTransferSource } from "../vault/promote-support"
 import { decryptKey } from "../vault/store"
 import {
-  assertVaultSigner,
+  type ActivityReportOutcome,
+  assertNoPendingSweep,
+  readTeeServerState,
+  reportTransferActivity,
+  serverStateNotice,
+} from "../vault/tee-transfer"
+import {
+  assertTransferSigner,
   displayTransferPlan,
   planTransfer,
   quoteTransferFee,
@@ -66,11 +79,16 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
       promptText: "Vault passphrase (input hidden): ",
     })
     const vault = hold(opened.vault)
-    const fromEntry = findVaultRoleEntry(vault.index, fromLabel)
+    const fromEntry = findTransferSource(vault.index, fromLabel)
     if (fromEntry === undefined) {
-      return usage(ctx, `No vault key matches --from ${fromLabel}.`)
+      return usage(ctx, `No vault key or promoted wallet matches --from ${fromLabel}.`)
     }
-    assertVaultSigner(fromEntry)
+    assertTransferSigner(fromEntry)
+    const promoted = fromEntry.role === "tee-wallet"
+    if (promoted) assertNoPendingSweep(fromEntry)
+    // These lines are diagnostics: stdout for a person, stderr under `--json`.
+    const note = (line: string) => (ctx.json ? ctx.deps.stderr : ctx.deps.stdout).write(`${line}\n`)
+    const apiKey = promoted ? await resolveApiKey(ctx.deps, ctx.profile) : undefined
     const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, to], rpcUrl, ctx)
     if (reconciled !== null) return reconciled
 
@@ -84,6 +102,10 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
     })
     const feeQuote = await quoteTransferFee(rpcUrl, ctx.deps.fetch, plan.from, plan.instructions)
     displayTransferPlan(ctx, plan, feeQuote)
+    if (promoted) {
+      const notice = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey))
+      if (notice !== undefined) note(notice)
+    }
     await confirmLastSix(ctx, to, "the destination")
 
     // The factor a second time before anything is signed: the passphrase typed again, or the
@@ -93,6 +115,17 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
     const secret = await decryptKey(vault, fromEntry.id)
     try {
       const result = await signAndBroadcastTransfer({ ctx, rpcUrl, secret64: secret, plan })
+      // Only a finalized transfer is reported; the server verifies it on chain. A report failure
+      // is a line of output, never an exit code.
+      let activityReport: ActivityReportOutcome | "not-finalized" | undefined
+      if (promoted && result.finalized) {
+        const report = await reportTransferActivity(ctx, apiKey, result.signature)
+        activityReport = report.outcome
+        note(report.line)
+      } else if (promoted) {
+        activityReport = "not-finalized"
+        note("Not reported to Candle's history: finality is not yet confirmed.")
+      }
       if (ctx.json) {
         writeJson(ctx.deps, {
           ok: result.finalized,
@@ -103,6 +136,7 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
           asset: plan.asset,
           amountRaw: plan.amountRaw.toString(),
           finalized: result.finalized,
+          ...(activityReport !== undefined ? { activityReport } : {}),
         })
       } else {
         ctx.deps.stdout.write(
