@@ -186,10 +186,14 @@ function rpcHandler(opts: {
         n: opts.counts.getProgramAccounts,
       })
       if (answer instanceof Response) return answer
+      // BE-318: a mint-group call asks for the 4-byte COption tag back. Every hit this fake
+      // returns is a live authority, so it answers the slice of `01 00 00 00`.
+      const slice = (body.params[1] as { dataSlice?: { offset: number; length: number } }).dataSlice
+      const data = Buffer.from([1, 0, 0, 0].slice(slice?.offset ?? 0, (slice?.offset ?? 0) + (slice?.length ?? 0)))
       return jsonResponse(200, {
         jsonrpc: "2.0",
         id: body.id,
-        result: (answer ?? []).map((pubkey) => ({ pubkey, account: { data: ["", "base64"] } })),
+        result: (answer ?? []).map((pubkey) => ({ pubkey, account: { data: [data.toString("base64"), "base64"] } })),
       })
     }
     if (method === "getMultipleAccounts") {

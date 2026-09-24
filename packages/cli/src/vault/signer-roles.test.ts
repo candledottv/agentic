@@ -3,6 +3,10 @@
  * level. T9 pins every filter's bytes and offsets; T11, T11a, T12, T12a and T13 run the scheduler
  * at 1 and 2 in flight against a scripted fake RPC with an injected clock, so no test waits on a
  * real timer; the last describe pins the words the two commands print from.
+ *
+ * BE-318 (spec `2026-09-24-cli-token-authority-source-design.md`, D2, §5 T1-T4): the mint groups
+ * match the key alone at offset 4, ask for the 4-byte COption tag back, and drop a revoked
+ * authority. The fake RPC answers the requested `dataSlice` out of real 82-byte mint bytes.
  */
 import { describe, expect, test } from "bun:test"
 import { base58, base64 } from "@scure/base"
@@ -26,8 +30,10 @@ import {
   checkOpeningLine,
   findingLine,
   formatDuration,
+  keepSetAuthority,
   keysWithFindings,
   MAX_V2_PAGES,
+  MINT_AUTHORITY_TAG_SLICE,
   NOT_CHECKED_LINE,
   programIdFilters,
   programUpgradeFilters,
@@ -58,21 +64,68 @@ const memcmp = (offset: number, bytes: number[] | Uint8Array): ProgramAccountFil
   memcmp: { offset, bytes: b64(bytes), encoding: "base64" },
 })
 
+/**
+ * An 82-byte SPL mint as `pack` writes it: the mint authority COption (4-byte tag, 32-byte key)
+ * at 0, supply at 36, decimals at 44, `is_initialized` at 45, the freeze COption at 46.
+ * `tag` 0 with the key still in place is what a revoke leaves (BONK, JUP and WIF on mainnet).
+ */
+const mintAccount = (tag: number, authority: Uint8Array): Uint8Array => {
+  const data = new Uint8Array(82)
+  data[0] = tag
+  data.set(authority, 4)
+  data[44] = 6
+  data[45] = 1
+  return data
+}
+
 describe("T9: the filter builders produce the D6 bytes and offsets", () => {
-  test("SPL Token mint and freeze: dataSize 82, COption tag 01 00 00 00 then the key, at 0 and 46", () => {
-    expect(tokenMintFilters(KEY_BYTES)).toEqual([{ dataSize: 82 }, memcmp(0, [1, 0, 0, 0, ...KEY_BYTES])])
+  test("T1: SPL Token mint is dataSize 82 and the bare key at 4; freeze is unchanged, COption tag then the key at 46", () => {
+    expect(tokenMintFilters(KEY_BYTES)).toEqual([{ dataSize: 82 }, memcmp(4, KEY_BYTES)])
     expect(tokenFreezeFilters(KEY_BYTES)).toEqual([{ dataSize: 82 }, memcmp(46, [1, 0, 0, 0, ...KEY_BYTES])])
   })
 
-  test("Token-2022: two shapes each, the 82-byte mint and the offset-165 account-type byte", () => {
+  test("T1: Token-2022: two shapes each, the 82-byte mint and the offset-165 account-type byte; mint matches the key at 4", () => {
     expect(token2022MintFilters(KEY_BYTES)).toEqual([
-      [{ dataSize: 82 }, memcmp(0, [1, 0, 0, 0, ...KEY_BYTES])],
-      [memcmp(165, [1]), memcmp(0, [1, 0, 0, 0, ...KEY_BYTES])],
+      [{ dataSize: 82 }, memcmp(4, KEY_BYTES)],
+      [memcmp(165, [1]), memcmp(4, KEY_BYTES)],
     ])
     expect(token2022FreezeFilters(KEY_BYTES)).toEqual([
       [{ dataSize: 82 }, memcmp(46, [1, 0, 0, 0, ...KEY_BYTES])],
       [memcmp(165, [1]), memcmp(46, [1, 0, 0, 0, ...KEY_BYTES])],
     ])
+  })
+
+  test("T1: the two mint groups ask for the 4-byte tag back; no other group asks for data", () => {
+    expect(MINT_AUTHORITY_TAG_SLICE).toEqual({ offset: 0, length: 4 })
+    const sliced = ROLE_GROUPS.filter((group) => group.tagSlice !== undefined).map((group) => group.id)
+    expect(sliced).toEqual(["token-mint", "token2022-mint"])
+    for (const group of ROLE_GROUPS) {
+      if (group.tagSlice !== undefined) expect(group.tagSlice).toEqual({ offset: 0, length: 4 })
+    }
+  })
+
+  test("T4: no mint-group shape carries a memcmp at offset 0, for any key", () => {
+    for (const key of [KEY_BYTES, new Uint8Array(32), new Uint8Array(32).fill(255)]) {
+      for (const group of ROLE_GROUPS.filter((g) => g.role === "mint")) {
+        for (const shape of group.shapes(key)) {
+          const offsets = shape.flatMap((filter) => ("memcmp" in filter ? [filter.memcmp.offset] : []))
+          expect(offsets).not.toContain(0)
+          const authority = shape.find((filter) => "memcmp" in filter && filter.memcmp.offset === 4)
+          expect(authority).toEqual(memcmp(4, key))
+        }
+      }
+    }
+  })
+
+  test("keepSetAuthority keeps only a 01 00 00 00 tag", () => {
+    const hits = [
+      { pubkey: "live", data: Uint8Array.from([1, 0, 0, 0]) },
+      { pubkey: "revoked", data: Uint8Array.from([0, 0, 0, 0]) },
+      { pubkey: "garbage", data: Uint8Array.from([1, 0, 0, 1]) },
+      { pubkey: "short", data: Uint8Array.from([1]) },
+      { pubkey: "empty", data: new Uint8Array(0) },
+    ]
+    expect(keepSetAuthority(hits)).toEqual(["live"])
   })
 
   test("program upgrade: ProgramData tag 03 00 00 00 at 0 and the u8 COption tag then the key at 12; the resolve is tag 02 at 0 and the ProgramData at 4", () => {
@@ -123,8 +176,13 @@ interface Seen {
   activeAtIssue: number
 }
 
-type ScriptedPage = { pubkeys: string[]; paginationKey: string | null }
-type Scripted = Response | string[] | ScriptedPage
+/**
+ * A hit: a pubkey, whose account is a live mint (tag 1) when a slice is asked for, or a pubkey
+ * with the account bytes the fake slices the requested `dataSlice` out of.
+ */
+type Hit = string | { pubkey: string; account: Uint8Array }
+type ScriptedPage = { pubkeys: Hit[]; paginationKey: string | null }
+type Scripted = Response | Hit[] | ScriptedPage
 
 /** A fake RPC over a routed fetch, so the methods under test are the real client methods. */
 function fakeRpc(answer: (seen: Seen) => Scripted | Promise<Scripted>): {
@@ -171,8 +229,13 @@ function fakeRpc(answer: (seen: Seen) => Scripted | Promise<Scripted>): {
       try {
         const out = await answer(call)
         if (out instanceof Response) return out
-        const pubkeys = Array.isArray(out) ? out : out.pubkeys
-        const accounts = pubkeys.map((pubkey) => ({ pubkey, account: { data: ["", "base64"] } }))
+        const hits = Array.isArray(out) ? out : out.pubkeys
+        const slice = config.dataSlice ?? { offset: 0, length: 0 }
+        const accounts = hits.map((hit) => {
+          const pubkey = typeof hit === "string" ? hit : hit.pubkey
+          const raw = typeof hit === "string" ? mintAccount(1, KEY_BYTES) : hit.account
+          return { pubkey, account: { data: [b64(raw.slice(slice.offset, slice.offset + slice.length)), "base64"] } }
+        })
         // V2's documented shape with `withContext` omitted: accounts and paginationKey on `result`.
         if (body.method === "getProgramAccountsV2") {
           const paginationKey = Array.isArray(out) ? null : out.paginationKey
@@ -203,6 +266,13 @@ const groupOf = (seen: Seen): RoleGroupId => {
   if (dataSize === 200) return offsets.includes(44) ? "stake-withdrawer" : "stake-staker"
   throw new Error(`unrecognised request ${JSON.stringify(seen.filters)}`)
 }
+
+const PAGINATED: ReadonlySet<RoleGroupId> = new Set([
+  "token-mint",
+  "token-freeze",
+  "token2022-mint",
+  "token2022-freeze",
+])
 
 const rpcError = (code: number, message: string) =>
   jsonResponse(200, { jsonrpc: "2.0", id: 1, error: { code, message } })
@@ -505,7 +575,7 @@ describe("readSignerRoles: the scheduler (D7)", () => {
     const mint = Keypair.generate().publicKey.toBase58()
     const clock = createFakeClock()
     const samples: RoleProgress[] = []
-    const keyBytes = b64([1, 0, 0, 0, ...KEY_BYTES])
+    const keyBytes = b64(KEY_BYTES)
     const { rpc, seen, maxInFlight } = fakeRpc((call) => {
       if (groupOf(call) !== "token-mint") return []
       if (call.method === "getProgramAccounts") return rpcError(-32600, HELIUS_PAGINATION_REFUSAL)
@@ -544,7 +614,7 @@ describe("readSignerRoles: the scheduler (D7)", () => {
     }
     for (const call of mintCalls.filter((call) => call.method === "getProgramAccountsV2")) {
       expect(call.limit).toBe(1000)
-      expect(call.dataSlice).toEqual({ offset: 0, length: 0 })
+      expect(call.dataSlice).toEqual({ offset: 0, length: 4 })
       expect(call.withContext).toBeUndefined()
     }
     // The second key never pays for a v1 probe: the group has already switched.
@@ -644,6 +714,126 @@ describe("readSignerRoles: the scheduler (D7)", () => {
     expect(result.notChecked).toEqual([{ group: "stake-staker", reason: HELIUS_PAGINATION_REASON }])
     expect(seen.some((call) => call.method === "getProgramAccountsV2")).toBe(false)
     expect(seen.filter((call) => groupOf(call) === "stake-staker")).toHaveLength(1)
+  })
+
+  test("T2: a revoked BONK-shaped hit (tag 0, the old key still at 4..36) is dropped and a live hit beside it is kept", async () => {
+    const live = Keypair.generate().publicKey.toBase58()
+    const revoked = Keypair.generate().publicKey.toBase58()
+    const clock = createFakeClock()
+    const { rpc, seen } = fakeRpc((call) =>
+      groupOf(call) === "token-mint" && call.filters.some((f) => "memcmp" in f && f.memcmp.bytes === b64(KEY_BYTES))
+        ? [
+            { pubkey: live, account: mintAccount(1, KEY_BYTES) },
+            { pubkey: revoked, account: mintAccount(0, KEY_BYTES) },
+          ]
+        : [],
+    )
+    const result = await readSignerRoles(rpc, addresses, { ...clock, inFlight: 1 })
+    expect(result.found).toEqual([{ address: KEY.toBase58(), role: "mint", program: "token", target: live }])
+    // Dropped is not an error: every group is checked, and the sentence names one finding.
+    expect(result.checked).toEqual([...ROLE_GROUP_IDS])
+    expect(result.notChecked).toEqual([])
+    expect(sentenceForm(result)).toBe("F")
+    // No extra request: the tag rides on the one call.
+    expect(result.requests).toBe(18)
+    const mintCalls = seen.filter((call) => groupOf(call) === "token-mint")
+    expect(mintCalls.every((call) => call.method === "getProgramAccounts")).toBe(true)
+    expect(mintCalls.every((call) => JSON.stringify(call.dataSlice) === JSON.stringify({ offset: 0, length: 4 }))).toBe(
+      true,
+    )
+  })
+
+  for (const method of ["getProgramAccounts", "getProgramAccountsV2"] as const) {
+    test(`T3: on ${method}, a live tag on V2 page 2 (or the v1 answer) is kept and a revoked one is dropped, in both mint groups`, async () => {
+      const live = { token: Keypair.generate().publicKey.toBase58(), t22: Keypair.generate().publicKey.toBase58() }
+      const revoked = { token: Keypair.generate().publicKey.toBase58(), t22: Keypair.generate().publicKey.toBase58() }
+      const clock = createFakeClock()
+      const { rpc, seen } = fakeRpc((call) => {
+        const group = groupOf(call)
+        if (group !== "token-mint" && group !== "token2022-mint") return []
+        // Only the (a) shape of Token-2022 answers, so each group has one kept and one dropped.
+        if (group === "token2022-mint" && !call.filters.some((f) => "dataSize" in f)) {
+          return method === "getProgramAccounts" ? [] : { pubkeys: [], paginationKey: null }
+        }
+        const which = group === "token-mint" ? "token" : "t22"
+        const hits: Hit[] = [
+          { pubkey: revoked[which], account: mintAccount(0, KEY_BYTES) },
+          { pubkey: live[which], account: mintAccount(1, KEY_BYTES) },
+        ]
+        if (method === "getProgramAccounts") return call.method === "getProgramAccounts" ? hits : []
+        if (call.method === "getProgramAccounts") return rpcError(-32600, HELIUS_PAGINATION_REFUSAL)
+        if (call.paginationKey === undefined) return { pubkeys: [], paginationKey: "cursor-2" }
+        return { pubkeys: hits, paginationKey: null }
+      })
+      const result = await readSignerRoles(rpc, [KEY.toBase58()], { ...clock, inFlight: 1 })
+      expect(result.found).toEqual([
+        { address: KEY.toBase58(), role: "mint", program: "token", target: live.token },
+        { address: KEY.toBase58(), role: "mint", program: "token-2022", target: live.t22 },
+      ])
+      expect(result.checked).toEqual([...ROLE_GROUP_IDS])
+      const mintCalls = seen.filter((call) => ["token-mint", "token2022-mint"].includes(groupOf(call)))
+      expect(mintCalls.some((call) => call.method === method)).toBe(true)
+      for (const call of mintCalls) expect(call.dataSlice).toEqual({ offset: 0, length: 4 })
+      if (method === "getProgramAccountsV2") {
+        expect(mintCalls.filter((call) => call.paginationKey === "cursor-2")).toHaveLength(2)
+      }
+    })
+  }
+
+  test("T4: in a full run no mint-group request carries a memcmp at offset 0, and only mint-group requests ask for data", async () => {
+    const clock = createFakeClock()
+    const { rpc, seen } = fakeRpc((call) =>
+      call.method === "getProgramAccounts" && PAGINATED.has(groupOf(call))
+        ? rpcError(-32600, HELIUS_PAGINATION_REFUSAL)
+        : call.method === "getProgramAccountsV2"
+          ? { pubkeys: [], paginationKey: null }
+          : [],
+    )
+    await readSignerRoles(rpc, addresses, { ...clock, inFlight: 2 })
+    const mintCalls = seen.filter((call) => groupOf(call) === "token-mint" || groupOf(call) === "token2022-mint")
+    // Two keys: SPL 1 + Token-2022 2 shapes each on V2, after the v1 probes that were in flight.
+    expect(mintCalls.filter((call) => call.method === "getProgramAccountsV2")).toHaveLength(2 * 3)
+    for (const call of mintCalls) {
+      const offsets = call.filters.flatMap((f) => ("memcmp" in f ? [f.memcmp.offset] : []))
+      expect(offsets).not.toContain(0)
+      expect(offsets).toContain(4)
+      expect(call.dataSlice).toEqual({ offset: 0, length: 4 })
+    }
+    for (const call of seen.filter((call) => !mintCalls.includes(call))) {
+      expect(call.dataSlice).toEqual({ offset: 0, length: 0 })
+    }
+  })
+
+  test("getProgramAccounts and getProgramAccountsV2 with a dataSlice send it and answer pubkey and data; without one they answer pubkeys", async () => {
+    const mint = Keypair.generate().publicKey.toBase58()
+    const entry = { pubkey: mint, account: { data: [b64([1, 0, 0, 0]), "base64"] } }
+    const { fetch, calls } = createRoutedFetch({
+      "/rpc": [
+        () => jsonResponse(200, { jsonrpc: "2.0", id: 1, result: [entry] }),
+        () => jsonResponse(200, { jsonrpc: "2.0", id: 2, result: { accounts: [entry], paginationKey: "next" } }),
+        () => jsonResponse(200, { jsonrpc: "2.0", id: 3, result: [entry] }),
+        () => jsonResponse(200, { jsonrpc: "2.0", id: 4, result: [{ pubkey: mint, account: {} }] }),
+      ],
+    })
+    const rpc = createSolanaRpc("https://rpc.test/rpc", fetch)
+    const filters = tokenMintFilters(KEY_BYTES)
+    const slice = { offset: 0, length: 4 }
+    expect(await rpc.getProgramAccounts(TOKEN_PROGRAM_ID, filters, { dataSlice: slice })).toEqual([
+      { pubkey: mint, data: Uint8Array.from([1, 0, 0, 0]) },
+    ])
+    expect(await rpc.getProgramAccountsV2(TOKEN_PROGRAM_ID, filters, { dataSlice: slice })).toEqual({
+      accounts: [{ pubkey: mint, data: Uint8Array.from([1, 0, 0, 0]) }],
+      paginationKey: "next",
+    })
+    expect(await rpc.getProgramAccounts(TOKEN_PROGRAM_ID, filters)).toEqual([mint])
+    const missing = await rpc.getProgramAccounts(TOKEN_PROGRAM_ID, filters, { dataSlice: slice }).catch((e) => e)
+    expect(missing).toBeInstanceOf(SolanaRpcError)
+    expect(missing).toMatchObject({ message: "RPC getProgramAccounts answered an account without base64 data" })
+    const slices = calls.map(
+      (call) =>
+        (JSON.parse(call.init.body as string) as { params: [string, { dataSlice: unknown }] }).params[1].dataSlice,
+    )
+    expect(slices).toEqual([slice, slice, { offset: 0, length: 0 }, slice])
   })
 })
 

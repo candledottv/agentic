@@ -417,16 +417,26 @@ export interface SolanaRpc {
    * bounds each request at 20 s and cancels a group's in-flight requests once the group has
    * failed; no existing method changes. Throws `SolanaRpcError`, which carries the HTTP status
    * (so a caller can tell a 429 from a 403) and the RPC error code when there is one.
+   *
+   * With `dataSlice` (BE-318, BE-314 D2) it asks for those bytes instead and answers
+   * `{ pubkey, data }` pairs, `data` being exactly the slice the RPC returned. The mint groups use
+   * it to read the 4-byte COption tag in the response rather than in the filter.
    */
   getProgramAccounts(
     programId: string,
     filters: ProgramAccountFilter[],
     opts?: { signal?: AbortSignal },
   ): Promise<string[]>
+  getProgramAccounts(
+    programId: string,
+    filters: ProgramAccountFilter[],
+    opts: { signal?: AbortSignal; dataSlice: ProgramAccountDataSlice },
+  ): Promise<ProgramAccountSlice[]>
   /**
    * One page of Helius `getProgramAccountsV2` (BE-306). Same filters and the same pubkey-only
    * `dataSlice` as `getProgramAccounts`, plus `limit` and an optional `paginationKey`.
-   * `withContext` is omitted, so `accounts` and `paginationKey` sit on `result`.
+   * `withContext` is omitted, so `accounts` and `paginationKey` sit on `result`. With `dataSlice`
+   * the page carries `{ pubkey, data }` pairs, as `getProgramAccounts` does.
    * https://www.helius.dev/docs/api-reference/rpc/http/getprogramaccountsv2
    */
   getProgramAccountsV2(
@@ -434,6 +444,11 @@ export interface SolanaRpc {
     filters: ProgramAccountFilter[],
     opts?: { signal?: AbortSignal; paginationKey?: string; limit?: number },
   ): Promise<ProgramAccountsV2Page>
+  getProgramAccountsV2(
+    programId: string,
+    filters: ProgramAccountFilter[],
+    opts: { signal?: AbortSignal; paginationKey?: string; limit?: number; dataSlice: ProgramAccountDataSlice },
+  ): Promise<ProgramAccountsV2SlicePage>
 }
 
 /**
@@ -446,6 +461,24 @@ export const PROGRAM_ACCOUNTS_V2_LIMIT = 1000
 /** One page of `getProgramAccountsV2`. `paginationKey` is null when the cursor is exhausted. */
 export interface ProgramAccountsV2Page {
   pubkeys: string[]
+  paginationKey: string | null
+}
+
+/** The bytes of each matching account to return: `length` bytes from `offset`. */
+export interface ProgramAccountDataSlice {
+  offset: number
+  length: number
+}
+
+/** One matching account with the slice of its data the request asked for. */
+export interface ProgramAccountSlice {
+  pubkey: string
+  data: Uint8Array
+}
+
+/** One page of `getProgramAccountsV2` asked with a `dataSlice`. */
+export interface ProgramAccountsV2SlicePage {
+  accounts: ProgramAccountSlice[]
   paginationKey: string | null
 }
 
@@ -483,6 +516,29 @@ function retryAfterMs(header: string | null, now: number): number | undefined {
   const at = Date.parse(trimmed)
   if (Number.isNaN(at)) return undefined
   return Math.max(0, at - now)
+}
+
+/**
+ * The entries of a `getProgramAccounts` or `getProgramAccountsV2` answer: pubkeys, or with
+ * `sliced` the pubkey and the base64 slice the request asked for. An entry without a pubkey,
+ * or a sliced entry without base64 data, throws: it is an answer this client cannot read.
+ */
+function readProgramAccounts(method: string, entries: unknown[], sliced: false): string[]
+function readProgramAccounts(method: string, entries: unknown[], sliced: true): ProgramAccountSlice[]
+function readProgramAccounts(method: string, entries: unknown[], sliced: boolean): string[] | ProgramAccountSlice[]
+function readProgramAccounts(method: string, entries: unknown[], sliced: boolean): string[] | ProgramAccountSlice[] {
+  const pubkeys = entries.map((entry) => {
+    const pubkey = (entry as { pubkey?: unknown } | null)?.pubkey
+    if (typeof pubkey !== "string") throw new SolanaRpcError(`RPC ${method} answered an account without a pubkey`)
+    return pubkey
+  })
+  if (!sliced) return pubkeys
+  return entries.map((entry, i) => {
+    const data = (entry as { account?: { data?: unknown } }).account?.data
+    const encoded = Array.isArray(data) && data[1] === "base64" ? data[0] : undefined
+    if (typeof encoded !== "string") throw new SolanaRpcError(`RPC ${method} answered an account without base64 data`)
+    return { pubkey: pubkeys[i] as string, data: new Uint8Array(Buffer.from(encoded, "base64")) }
+  })
 }
 
 /** One account as the RPC answers it under `encoding: "base64"`. */
@@ -667,37 +723,48 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch): SolanaRpc {
       if (typeof r?.value !== "boolean") throw new Error("isBlockhashValid answered with a non-boolean value")
       return r.value
     },
-    async getProgramAccounts(programId, filters, opts) {
-      const r = await call<Array<{ pubkey?: unknown }> | null>(
+    getProgramAccounts: (async (
+      programId: string,
+      filters: ProgramAccountFilter[],
+      opts?: { signal?: AbortSignal; dataSlice?: ProgramAccountDataSlice },
+    ) => {
+      const r = await call<unknown>(
         "getProgramAccounts",
-        [programId, { encoding: "base64", commitment: "finalized", dataSlice: { offset: 0, length: 0 }, filters }],
+        [
+          programId,
+          {
+            encoding: "base64",
+            commitment: "finalized",
+            dataSlice: opts?.dataSlice ?? { offset: 0, length: 0 },
+            filters,
+          },
+        ],
         opts?.signal,
       )
       // Addresses or nothing: a `null` or non-array answer is not "no accounts", it is an answer
       // this method cannot read, and the caller must not mistake it for a clean scan.
       if (!Array.isArray(r)) throw new SolanaRpcError("RPC getProgramAccounts answered without an account list")
-      return r.map((entry) => {
-        if (typeof entry?.pubkey !== "string") {
-          throw new SolanaRpcError("RPC getProgramAccounts answered an account without a pubkey")
-        }
-        return entry.pubkey
-      })
-    },
-    async getProgramAccountsV2(programId, filters, opts) {
+      return readProgramAccounts("getProgramAccounts", r, opts?.dataSlice !== undefined)
+    }) as SolanaRpc["getProgramAccounts"],
+    getProgramAccountsV2: (async (
+      programId: string,
+      filters: ProgramAccountFilter[],
+      opts?: { signal?: AbortSignal; paginationKey?: string; limit?: number; dataSlice?: ProgramAccountDataSlice },
+    ) => {
       // Docs: omit `withContext` and `accounts` / `paginationKey` are on `result`, not `result.value`.
       // `paginationKey` is sent only from the second page on. A page shorter than `limit` is not
       // the end; the caller follows `paginationKey` until it is null.
       const config: {
         encoding: "base64"
         commitment: "finalized"
-        dataSlice: { offset: 0; length: 0 }
+        dataSlice: ProgramAccountDataSlice
         filters: ProgramAccountFilter[]
         limit: number
         paginationKey?: string
       } = {
         encoding: "base64",
         commitment: "finalized",
-        dataSlice: { offset: 0, length: 0 },
+        dataSlice: opts?.dataSlice ?? { offset: 0, length: 0 },
         filters,
         limit: opts?.limit ?? PROGRAM_ACCOUNTS_V2_LIMIT,
       }
@@ -706,19 +773,18 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch): SolanaRpc {
       if (r === null || typeof r !== "object" || !Array.isArray((r as { accounts?: unknown }).accounts)) {
         throw new SolanaRpcError("RPC getProgramAccountsV2 answered without an account list")
       }
-      const page = r as { accounts: Array<{ pubkey?: unknown }>; paginationKey?: unknown }
-      const pubkeys = page.accounts.map((entry) => {
-        if (typeof entry?.pubkey !== "string") {
-          throw new SolanaRpcError("RPC getProgramAccountsV2 answered an account without a pubkey")
-        }
-        return entry.pubkey
-      })
+      const page = r as { accounts: unknown[]; paginationKey?: unknown }
+      const sliced = opts?.dataSlice !== undefined
+      const accounts = readProgramAccounts("getProgramAccountsV2", page.accounts, sliced)
       const cursor = page.paginationKey
-      if (cursor === null || cursor === undefined) return { pubkeys, paginationKey: null }
-      if (typeof cursor !== "string" || cursor.length === 0) {
-        throw new SolanaRpcError("RPC getProgramAccountsV2 answered a paginationKey that is not a string")
+      let paginationKey: string | null = null
+      if (cursor !== null && cursor !== undefined) {
+        if (typeof cursor !== "string" || cursor.length === 0) {
+          throw new SolanaRpcError("RPC getProgramAccountsV2 answered a paginationKey that is not a string")
+        }
+        paginationKey = cursor
       }
-      return { pubkeys, paginationKey: cursor }
-    },
+      return sliced ? { accounts, paginationKey } : { pubkeys: accounts, paginationKey }
+    }) as SolanaRpc["getProgramAccountsV2"],
   }
 }

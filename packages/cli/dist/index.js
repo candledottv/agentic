@@ -8344,6 +8344,23 @@ function retryAfterMs(header, now) {
     return;
   return Math.max(0, at - now);
 }
+function readProgramAccounts(method, entries, sliced) {
+  const pubkeys = entries.map((entry) => {
+    const pubkey = entry?.pubkey;
+    if (typeof pubkey !== "string")
+      throw new SolanaRpcError(`RPC ${method} answered an account without a pubkey`);
+    return pubkey;
+  });
+  if (!sliced)
+    return pubkeys;
+  return entries.map((entry, i) => {
+    const data = entry.account?.data;
+    const encoded = Array.isArray(data) && data[1] === "base64" ? data[0] : undefined;
+    if (typeof encoded !== "string")
+      throw new SolanaRpcError(`RPC ${method} answered an account without base64 data`);
+    return { pubkey: pubkeys[i], data: new Uint8Array(Buffer.from(encoded, "base64")) };
+  });
+}
 function rawAccountView(value, address) {
   if (!value)
     return null;
@@ -8494,22 +8511,25 @@ function createSolanaRpc(url, fetchFn) {
         throw new Error("isBlockhashValid answered with a non-boolean value");
       return r.value;
     },
-    async getProgramAccounts(programId, filters, opts) {
-      const r = await call("getProgramAccounts", [programId, { encoding: "base64", commitment: "finalized", dataSlice: { offset: 0, length: 0 }, filters }], opts?.signal);
+    getProgramAccounts: async (programId, filters, opts) => {
+      const r = await call("getProgramAccounts", [
+        programId,
+        {
+          encoding: "base64",
+          commitment: "finalized",
+          dataSlice: opts?.dataSlice ?? { offset: 0, length: 0 },
+          filters
+        }
+      ], opts?.signal);
       if (!Array.isArray(r))
         throw new SolanaRpcError("RPC getProgramAccounts answered without an account list");
-      return r.map((entry) => {
-        if (typeof entry?.pubkey !== "string") {
-          throw new SolanaRpcError("RPC getProgramAccounts answered an account without a pubkey");
-        }
-        return entry.pubkey;
-      });
+      return readProgramAccounts("getProgramAccounts", r, opts?.dataSlice !== undefined);
     },
-    async getProgramAccountsV2(programId, filters, opts) {
+    getProgramAccountsV2: async (programId, filters, opts) => {
       const config = {
         encoding: "base64",
         commitment: "finalized",
-        dataSlice: { offset: 0, length: 0 },
+        dataSlice: opts?.dataSlice ?? { offset: 0, length: 0 },
         filters,
         limit: opts?.limit ?? PROGRAM_ACCOUNTS_V2_LIMIT
       };
@@ -8520,19 +8540,17 @@ function createSolanaRpc(url, fetchFn) {
         throw new SolanaRpcError("RPC getProgramAccountsV2 answered without an account list");
       }
       const page = r;
-      const pubkeys = page.accounts.map((entry) => {
-        if (typeof entry?.pubkey !== "string") {
-          throw new SolanaRpcError("RPC getProgramAccountsV2 answered an account without a pubkey");
-        }
-        return entry.pubkey;
-      });
+      const sliced = opts?.dataSlice !== undefined;
+      const accounts = readProgramAccounts("getProgramAccountsV2", page.accounts, sliced);
       const cursor = page.paginationKey;
-      if (cursor === null || cursor === undefined)
-        return { pubkeys, paginationKey: null };
-      if (typeof cursor !== "string" || cursor.length === 0) {
-        throw new SolanaRpcError("RPC getProgramAccountsV2 answered a paginationKey that is not a string");
+      let paginationKey = null;
+      if (cursor !== null && cursor !== undefined) {
+        if (typeof cursor !== "string" || cursor.length === 0) {
+          throw new SolanaRpcError("RPC getProgramAccountsV2 answered a paginationKey that is not a string");
+        }
+        paginationKey = cursor;
       }
-      return { pubkeys, paginationKey: cursor };
+      return sliced ? { accounts, paginationKey } : { pubkeys: accounts, paginationKey };
     }
   };
 }
@@ -8837,13 +8855,13 @@ var init_keys = __esm(() => {
 
 // src/vault/signer-roles.ts
 function tokenMintFilters(key) {
-  return [{ dataSize: 82 }, memcmp(0, concat2(COPTION_SOME_U32, key))];
+  return [{ dataSize: 82 }, memcmp(4, key)];
 }
 function tokenFreezeFilters(key) {
   return [{ dataSize: 82 }, memcmp(46, concat2(COPTION_SOME_U32, key))];
 }
 function token2022MintFilters(key) {
-  const authority = memcmp(0, concat2(COPTION_SOME_U32, key));
+  const authority = memcmp(4, key);
   return [
     [{ dataSize: 82 }, authority],
     [memcmp(165, TOKEN_2022_MINT_ACCOUNT_TYPE), authority]
@@ -8855,6 +8873,9 @@ function token2022FreezeFilters(key) {
     [{ dataSize: 82 }, authority],
     [memcmp(165, TOKEN_2022_MINT_ACCOUNT_TYPE), authority]
   ];
+}
+function keepSetAuthority(hits) {
+  return hits.filter((hit) => hit.data.length === COPTION_SOME_U32.length && hit.data.every((byte, i) => byte === COPTION_SOME_U32[i])).map((hit) => hit.pubkey);
 }
 function programUpgradeFilters(key) {
   return [memcmp(0, LOADER_PROGRAM_DATA_TAG), memcmp(12, concat2(COPTION_SOME_U8, key))];
@@ -8950,19 +8971,31 @@ async function readSignerRoles(rpc, addresses, opts) {
     const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(Object.assign(new Error("timed out"), { name: "TimeoutError" })), timeoutMs) : undefined;
     try {
       requests += 1;
+      const tagSlice = task.group.tagSlice;
       if (task.via === "v2") {
         if (rpc.getProgramAccountsV2 === undefined) {
           throw new SolanaRpcError("RPC getProgramAccountsV2 failed: -32601 Method not found", {
             rpcCode: RPC_METHOD_NOT_FOUND
           });
         }
-        return await rpc.getProgramAccountsV2(task.group.programId, filters, {
+        const pageOpts = {
           signal: controller.signal,
           ...task.paginationKey !== undefined ? { paginationKey: task.paginationKey } : {}
-        });
+        };
+        if (tagSlice === undefined)
+          return await rpc.getProgramAccountsV2(task.group.programId, filters, pageOpts);
+        const page = await rpc.getProgramAccountsV2(task.group.programId, filters, { ...pageOpts, dataSlice: tagSlice });
+        return { pubkeys: keepSetAuthority(page.accounts), paginationKey: page.paginationKey };
       }
-      const pubkeys = await rpc.getProgramAccounts(task.group.programId, filters, { signal: controller.signal });
-      return { pubkeys, paginationKey: null };
+      if (tagSlice === undefined) {
+        const pubkeys = await rpc.getProgramAccounts(task.group.programId, filters, { signal: controller.signal });
+        return { pubkeys, paginationKey: null };
+      }
+      const hits = await rpc.getProgramAccounts(task.group.programId, filters, {
+        signal: controller.signal,
+        dataSlice: tagSlice
+      });
+      return { pubkeys: keepSetAuthority(hits), paginationKey: null };
     } finally {
       if (timer !== undefined)
         clearTimeout(timer);
@@ -9205,7 +9238,7 @@ var BPF_UPGRADEABLE_LOADER_ID = "BPFLoaderUpgradeab1e11111111111111111111111", S
   return out;
 }, COPTION_SOME_U32, COPTION_SOME_U8, LOADER_PROGRAM_DATA_TAG, LOADER_PROGRAM_TAG, TOKEN_2022_MINT_ACCOUNT_TYPE, memcmp = (offset, bytes) => ({
   memcmp: { offset, bytes: b642(bytes), encoding: "base64" }
-}), ROLE_GROUPS, PROGRAM_LABELS, NOT_CHECKED_LINE = "Not checked: multisig membership, Token-2022 extension authorities, metadata update authority.", thousands = (n) => n.toLocaleString("en-US");
+}), MINT_AUTHORITY_TAG_SLICE, ROLE_GROUPS, PROGRAM_LABELS, NOT_CHECKED_LINE = "Not checked: multisig membership, Token-2022 extension authorities, metadata update authority.", thousands = (n) => n.toLocaleString("en-US");
 var init_signer_roles = __esm(() => {
   init_esm();
   init_solana_lite();
@@ -9229,6 +9262,7 @@ var init_signer_roles = __esm(() => {
   LOADER_PROGRAM_DATA_TAG = new Uint8Array([3, 0, 0, 0]);
   LOADER_PROGRAM_TAG = new Uint8Array([2, 0, 0, 0]);
   TOKEN_2022_MINT_ACCOUNT_TYPE = new Uint8Array([1]);
+  MINT_AUTHORITY_TAG_SLICE = { offset: 0, length: 4 };
   ROLE_GROUPS = [
     {
       id: "token-mint",
@@ -9236,7 +9270,8 @@ var init_signer_roles = __esm(() => {
       program: "token",
       programId: TOKEN_PROGRAM_ID,
       label: "token mint",
-      shapes: (key) => [tokenMintFilters(key)]
+      shapes: (key) => [tokenMintFilters(key)],
+      tagSlice: MINT_AUTHORITY_TAG_SLICE
     },
     {
       id: "token-freeze",
@@ -9252,7 +9287,8 @@ var init_signer_roles = __esm(() => {
       program: "token-2022",
       programId: TOKEN_2022_PROGRAM_ID,
       label: "Token-2022 mint",
-      shapes: token2022MintFilters
+      shapes: token2022MintFilters,
+      tagSlice: MINT_AUTHORITY_TAG_SLICE
     },
     {
       id: "token2022-freeze",

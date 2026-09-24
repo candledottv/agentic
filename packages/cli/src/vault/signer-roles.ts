@@ -15,8 +15,12 @@
  * Three things live here and nowhere else:
  *
  * - The filter builders, one per group, so the byte layouts have one home and a unit test each
- *   (T9). The COption tag is part of the token and loader `memcmp` bytes, so an unset authority
- *   whose bytes happen to match is never a hit.
+ *   (T9). The COption tag is part of the freeze and loader `memcmp` bytes, so an unset authority
+ *   whose bytes happen to match is never a hit. The mint groups cannot do that: Agave reads any
+ *   `memcmp` at offset 0 on a token program as a 32-byte token-account mint filter and refuses
+ *   the 36-byte tag-and-key (BE-314 D2, `-32602`). They match the key alone at offset 4, ask
+ *   for the 4 tag bytes back, and `keepSetAuthority` drops a revoked authority whose old key
+ *   bytes are still in place.
  * - The scheduler, `readSignerRoles`: group-major order, up to 8 in flight, one in flight for
  *   the rest of the run after the first 429, per-group stop on the first failure, a 20 s timeout
  *   per request, the ProgramData-to-program resolve, and a progress callback. A token group that
@@ -32,7 +36,9 @@
 import { base64 } from "@scure/base"
 import {
   decodePubkey,
+  type ProgramAccountDataSlice,
   type ProgramAccountFilter,
+  type ProgramAccountSlice,
   type SolanaRpc,
   SolanaRpcError,
   TOKEN_2022_PROGRAM_ID,
@@ -91,6 +97,11 @@ export interface RoleGroup {
   label: string
   /** The request shapes for one key: one filter list per `getProgramAccounts` call. */
   shapes: (key: Uint8Array) => ProgramAccountFilter[][]
+  /**
+   * The mint groups only (BE-314 D2): the COption tag is read from the response, not matched
+   * in the filter. Each call asks for this slice, and `keepSetAuthority` filters the hits.
+   */
+  tagSlice?: ProgramAccountDataSlice
 }
 
 /** Requests per key across the seven groups: 1 + 1 + 2 + 2 + 1 + 1 + 1. */
@@ -117,9 +128,13 @@ const memcmp = (offset: number, bytes: Uint8Array): ProgramAccountFilter => ({
 
 // ── The filter builders (D6) ────────────────────────────────────────────────────────────────
 
-/** SPL Token mint: 82 bytes; `mint_authority` is a COption<Pubkey> at offset 0. */
+/**
+ * SPL Token mint: 82 bytes; `mint_authority` is a COption<Pubkey> at offset 0, so the key sits
+ * at 4. The filter matches the key only (never offset 0, which Agave refuses); the tag at 0..4
+ * comes back through `MINT_AUTHORITY_TAG_SLICE` and `keepSetAuthority` decides.
+ */
 export function tokenMintFilters(key: Uint8Array): ProgramAccountFilter[] {
-  return [{ dataSize: 82 }, memcmp(0, concat(COPTION_SOME_U32, key))]
+  return [{ dataSize: 82 }, memcmp(4, key)]
 }
 /** SPL Token mint: `freeze_authority` is a COption<Pubkey> at offset 46. */
 export function tokenFreezeFilters(key: Uint8Array): ProgramAccountFilter[] {
@@ -128,10 +143,10 @@ export function tokenFreezeFilters(key: Uint8Array): ProgramAccountFilter[] {
 /**
  * Token-2022 mint, two shapes: (a) the 82-byte mint with no extensions, exactly the SPL shape;
  * (b) a mint with extensions, longer than 82 bytes and identified by its account-type byte at
- * offset 165 (`1` = mint). A filter on offset 0 alone would also scan token accounts.
+ * offset 165 (`1` = mint). The authority filter alone would also scan token accounts.
  */
 export function token2022MintFilters(key: Uint8Array): ProgramAccountFilter[][] {
-  const authority = memcmp(0, concat(COPTION_SOME_U32, key))
+  const authority = memcmp(4, key)
   return [
     [{ dataSize: 82 }, authority],
     [memcmp(165, TOKEN_2022_MINT_ACCOUNT_TYPE), authority],
@@ -144,6 +159,22 @@ export function token2022FreezeFilters(key: Uint8Array): ProgramAccountFilter[][
     [memcmp(165, TOKEN_2022_MINT_ACCOUNT_TYPE), authority],
   ]
 }
+/** The mint authority's 4-byte COption tag, asked back on every mint-group call. */
+export const MINT_AUTHORITY_TAG_SLICE: ProgramAccountDataSlice = { offset: 0, length: 4 }
+
+/**
+ * The mint-group hits whose sliced tag is `01 00 00 00`, as pubkeys. Revoking an authority
+ * zeroes the tag and leaves the old key at 4..36 (`pack_coption_key`), so a hit with any other
+ * tag is a revoked authority: dropped, not a finding and not an error.
+ */
+export function keepSetAuthority(hits: ProgramAccountSlice[]): string[] {
+  return hits
+    .filter(
+      (hit) => hit.data.length === COPTION_SOME_U32.length && hit.data.every((byte, i) => byte === COPTION_SOME_U32[i]),
+    )
+    .map((hit) => hit.pubkey)
+}
+
 /** ProgramData (`UpgradeableLoaderState` tag 3): slot at 4, `upgrade_authority_address` COption at 12. */
 export function programUpgradeFilters(key: Uint8Array): ProgramAccountFilter[] {
   return [memcmp(0, LOADER_PROGRAM_DATA_TAG), memcmp(12, concat(COPTION_SOME_U8, key))]
@@ -173,6 +204,7 @@ export const ROLE_GROUPS: readonly RoleGroup[] = [
     programId: TOKEN_PROGRAM_ID,
     label: "token mint",
     shapes: (key) => [tokenMintFilters(key)],
+    tagSlice: MINT_AUTHORITY_TAG_SLICE,
   },
   {
     id: "token-freeze",
@@ -189,6 +221,7 @@ export const ROLE_GROUPS: readonly RoleGroup[] = [
     programId: TOKEN_2022_PROGRAM_ID,
     label: "Token-2022 mint",
     shapes: token2022MintFilters,
+    tagSlice: MINT_AUTHORITY_TAG_SLICE,
   },
   {
     id: "token2022-freeze",
@@ -441,19 +474,30 @@ export async function readSignerRoles(
         : undefined
     try {
       requests += 1
+      const tagSlice = task.group.tagSlice
       if (task.via === "v2") {
         if (rpc.getProgramAccountsV2 === undefined) {
           throw new SolanaRpcError("RPC getProgramAccountsV2 failed: -32601 Method not found", {
             rpcCode: RPC_METHOD_NOT_FOUND,
           })
         }
-        return await rpc.getProgramAccountsV2(task.group.programId, filters, {
+        const pageOpts = {
           signal: controller.signal,
           ...(task.paginationKey !== undefined ? { paginationKey: task.paginationKey } : {}),
-        })
+        }
+        if (tagSlice === undefined) return await rpc.getProgramAccountsV2(task.group.programId, filters, pageOpts)
+        const page = await rpc.getProgramAccountsV2(task.group.programId, filters, { ...pageOpts, dataSlice: tagSlice })
+        return { pubkeys: keepSetAuthority(page.accounts), paginationKey: page.paginationKey }
       }
-      const pubkeys = await rpc.getProgramAccounts(task.group.programId, filters, { signal: controller.signal })
-      return { pubkeys, paginationKey: null }
+      if (tagSlice === undefined) {
+        const pubkeys = await rpc.getProgramAccounts(task.group.programId, filters, { signal: controller.signal })
+        return { pubkeys, paginationKey: null }
+      }
+      const hits = await rpc.getProgramAccounts(task.group.programId, filters, {
+        signal: controller.signal,
+        dataSlice: tagSlice,
+      })
+      return { pubkeys: keepSetAuthority(hits), paginationKey: null }
     } finally {
       if (timer !== undefined) clearTimeout(timer)
       set.delete(controller)
