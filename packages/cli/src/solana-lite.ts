@@ -410,6 +410,79 @@ export interface SolanaRpc {
    * one index early.
    */
   hasSignatureHistory(address: string): Promise<boolean>
+  /**
+   * The pubkeys of every account under `programId` that matches every filter (BE-296, D6, D7):
+   * `getProgramAccounts` with `dataSlice {offset: 0, length: 0}`, so the answer is addresses only
+   * and never account data. Read-only. Takes an `AbortSignal`, because the signer-role scan
+   * bounds each request at 20 s and cancels a group's in-flight requests once the group has
+   * failed; no existing method changes. Throws `SolanaRpcError`, which carries the HTTP status
+   * (so a caller can tell a 429 from a 403) and the RPC error code when there is one.
+   */
+  getProgramAccounts(
+    programId: string,
+    filters: ProgramAccountFilter[],
+    opts?: { signal?: AbortSignal },
+  ): Promise<string[]>
+  /**
+   * One page of Helius `getProgramAccountsV2` (BE-306). Same filters and the same pubkey-only
+   * `dataSlice` as `getProgramAccounts`, plus `limit` and an optional `paginationKey`.
+   * `withContext` is omitted, so `accounts` and `paginationKey` sit on `result`.
+   * https://www.helius.dev/docs/api-reference/rpc/http/getprogramaccountsv2
+   */
+  getProgramAccountsV2(
+    programId: string,
+    filters: ProgramAccountFilter[],
+    opts?: { signal?: AbortSignal; paginationKey?: string; limit?: number },
+  ): Promise<ProgramAccountsV2Page>
+}
+
+/**
+ * Page size for `getProgramAccountsV2`. Helius allows 1 to 10,000 and says to start at 1,000
+ * (docs, "Performance Tips", read 2026-09-24). A smaller page is a pubkey-only filtered scan,
+ * which is what a single authority lookup returns.
+ */
+export const PROGRAM_ACCOUNTS_V2_LIMIT = 1000
+
+/** One page of `getProgramAccountsV2`. `paginationKey` is null when the cursor is exhausted. */
+export interface ProgramAccountsV2Page {
+  pubkeys: string[]
+  paginationKey: string | null
+}
+
+/** One `getProgramAccounts` filter: an exact data length, or bytes at an offset (base64-encoded). */
+export type ProgramAccountFilter =
+  | { dataSize: number }
+  | { memcmp: { offset: number; bytes: string; encoding: "base64" } }
+
+/**
+ * What an RPC request threw, with the facts the signer-role scheduler branches on (BE-296, D7):
+ * `status` for an HTTP failure (429 is retried, anything else stops the group), `retryAfterMs`
+ * from a 429's `Retry-After` header when the server sent one, and `rpcCode` for a JSON-RPC
+ * `error` member (`-32602 INVALID_PARAMS` is what the public endpoint answers a token scan with).
+ * The message is byte-identical to what every existing method threw before this class existed,
+ * so no caller that matched on the text changes.
+ */
+export class SolanaRpcError extends Error {
+  readonly status?: number
+  readonly retryAfterMs?: number
+  readonly rpcCode?: number
+  constructor(message: string, facts: { status?: number; retryAfterMs?: number; rpcCode?: number } = {}) {
+    super(message)
+    this.name = "SolanaRpcError"
+    this.status = facts.status
+    this.retryAfterMs = facts.retryAfterMs
+    this.rpcCode = facts.rpcCode
+  }
+}
+
+/** `Retry-After` as milliseconds: delta-seconds, or an HTTP date; `undefined` when absent or unreadable. */
+function retryAfterMs(header: string | null, now: number): number | undefined {
+  if (header === null) return undefined
+  const trimmed = header.trim()
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1000
+  const at = Date.parse(trimmed)
+  if (Number.isNaN(at)) return undefined
+  return Math.max(0, at - now)
 }
 
 /** One account as the RPC answers it under `encoding: "base64"`. */
@@ -436,16 +509,31 @@ function rawAccountView(value: RawAccount | null, address: string): AccountView 
  */
 export function createSolanaRpc(url: string, fetchFn: typeof fetch): SolanaRpc {
   let id = 0
-  async function call<T>(method: string, params: unknown[]): Promise<T> {
+  async function call<T>(method: string, params: unknown[], signal?: AbortSignal): Promise<T> {
     id += 1
     const res = await fetchFn(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+      ...(signal !== undefined ? { signal } : {}),
     })
-    if (!res.ok) throw new Error(`RPC ${method} failed: HTTP ${res.status}`)
+    if (!res.ok) {
+      throw new SolanaRpcError(`RPC ${method} failed: HTTP ${res.status}`, {
+        status: res.status,
+        ...(res.status === 429
+          ? (() => {
+              const after = retryAfterMs(res.headers.get("retry-after"), Date.now())
+              return after === undefined ? {} : { retryAfterMs: after }
+            })()
+          : {}),
+      })
+    }
     const json = (await res.json()) as { result?: T; error?: { code?: number; message?: string } }
-    if (json.error) throw new Error(`RPC ${method} failed: ${json.error.code ?? ""} ${json.error.message ?? ""}`.trim())
+    if (json.error) {
+      throw new SolanaRpcError(`RPC ${method} failed: ${json.error.code ?? ""} ${json.error.message ?? ""}`.trim(), {
+        ...(typeof json.error.code === "number" ? { rpcCode: json.error.code } : {}),
+      })
+    }
     return json.result as T
   }
   return {
@@ -578,6 +666,59 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch): SolanaRpc {
       // keeps the transaction uncertain.
       if (typeof r?.value !== "boolean") throw new Error("isBlockhashValid answered with a non-boolean value")
       return r.value
+    },
+    async getProgramAccounts(programId, filters, opts) {
+      const r = await call<Array<{ pubkey?: unknown }> | null>(
+        "getProgramAccounts",
+        [programId, { encoding: "base64", commitment: "finalized", dataSlice: { offset: 0, length: 0 }, filters }],
+        opts?.signal,
+      )
+      // Addresses or nothing: a `null` or non-array answer is not "no accounts", it is an answer
+      // this method cannot read, and the caller must not mistake it for a clean scan.
+      if (!Array.isArray(r)) throw new SolanaRpcError("RPC getProgramAccounts answered without an account list")
+      return r.map((entry) => {
+        if (typeof entry?.pubkey !== "string") {
+          throw new SolanaRpcError("RPC getProgramAccounts answered an account without a pubkey")
+        }
+        return entry.pubkey
+      })
+    },
+    async getProgramAccountsV2(programId, filters, opts) {
+      // Docs: omit `withContext` and `accounts` / `paginationKey` are on `result`, not `result.value`.
+      // `paginationKey` is sent only from the second page on. A page shorter than `limit` is not
+      // the end; the caller follows `paginationKey` until it is null.
+      const config: {
+        encoding: "base64"
+        commitment: "finalized"
+        dataSlice: { offset: 0; length: 0 }
+        filters: ProgramAccountFilter[]
+        limit: number
+        paginationKey?: string
+      } = {
+        encoding: "base64",
+        commitment: "finalized",
+        dataSlice: { offset: 0, length: 0 },
+        filters,
+        limit: opts?.limit ?? PROGRAM_ACCOUNTS_V2_LIMIT,
+      }
+      if (opts?.paginationKey !== undefined) config.paginationKey = opts.paginationKey
+      const r = await call<unknown>("getProgramAccountsV2", [programId, config], opts?.signal)
+      if (r === null || typeof r !== "object" || !Array.isArray((r as { accounts?: unknown }).accounts)) {
+        throw new SolanaRpcError("RPC getProgramAccountsV2 answered without an account list")
+      }
+      const page = r as { accounts: Array<{ pubkey?: unknown }>; paginationKey?: unknown }
+      const pubkeys = page.accounts.map((entry) => {
+        if (typeof entry?.pubkey !== "string") {
+          throw new SolanaRpcError("RPC getProgramAccountsV2 answered an account without a pubkey")
+        }
+        return entry.pubkey
+      })
+      const cursor = page.paginationKey
+      if (cursor === null || cursor === undefined) return { pubkeys, paginationKey: null }
+      if (typeof cursor !== "string" || cursor.length === 0) {
+        throw new SolanaRpcError("RPC getProgramAccountsV2 answered a paginationKey that is not a string")
+      }
+      return { pubkeys, paginationKey: cursor }
     },
   }
 }

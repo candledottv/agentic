@@ -38,7 +38,7 @@ const NO_DEVICE_TOKEN = {
   suggestion: "Run: candle auth login",
 }
 
-interface KeyRow {
+export interface KeyRow {
   keyPrefix: string
   /** The operator's name for the key; absent when it was never named. */
   label?: string

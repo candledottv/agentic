@@ -102,6 +102,12 @@ export const VAULT_ERROR_CODES = [
   "WALLET_LIMIT_REACHED",
   "TIER_REQUIRED",
   "LINKED_WALLET_ROOM_UNREADABLE",
+  // BE-296 (spec 2026-09-23-cli-vault-promote-confirm-design.md, D5): the live read of which
+  // Candle account the API key acts for, made by `vault promote --in-place` and
+  // `vault promote-batch` before anything is printed or written. It never falls back to the
+  // cached profile account: the block it feeds exists only because it is live. Thrown from
+  // `vault/promote-support.ts` (`readControlledBy`).
+  "PROMOTE_ACCOUNT_UNRESOLVED",
 ] as const
 
 export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number]

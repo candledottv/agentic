@@ -26,24 +26,24 @@ import {
 import { HELPER_ENV } from "../vault/fido2"
 import type { KeyEntry } from "../vault/format"
 import { wipe } from "../vault/hygiene"
-import {
-  checkAcknowledgement,
-  formatSol,
-  formatUsd,
-  parsePairsFile,
-  parseValueUsdCell,
-  preflightBatch,
-} from "../vault/promote-batch"
-import { AD8_WARNING, applyPromotion } from "../vault/promote-support"
+import { formatSol, formatUsd, parsePairsFile, parseValueUsdCell, preflightBatch } from "../vault/promote-batch"
+import { applyPromotion, confirmPrompt, promoteSentence, SENTENCE_PREFIX } from "../vault/promote-support"
+import { REQUESTS_PER_KEY, ROLE_GROUP_IDS, STAKE_PROGRAM_ID } from "../vault/signer-roles"
 import { closeVault, commitVault, decryptKey, unlockWithPassphrase } from "../vault/store"
 import { generatedPassphraseFrom, makeVault, tempDir, useCheapKdf } from "../vault/test-vault"
-import { ACK_PROMPT, BATCH_AD8_SENTENCE, setPromoteBatchObserver } from "./vault-promote-batch"
+import { setPromoteBatchObserver } from "./vault-promote-batch"
 
 setDefaultTimeout(180_000)
 useCheapKdf()
 
 const ACCOUNT = "PBAccountABCDEFGH1234567890xyzabcd"
+const USERNAME = "pb-operator"
 const API = "https://api.pb.test"
+/** A key in the server's shape (BE-296, D4): `cndl_live_` then 43 characters; the prefix is the first 8. */
+const KEY_PREFIX = "pbpbpbpb"
+const API_KEY = `cndl_live_${KEY_PREFIX.padEnd(43, "x")}`
+const DEVICE_TOKEN = "dt_pb_device_token"
+const KEY_LABEL = "vault-promote"
 const RPC = "https://rpc.pb.test/rpc"
 const SYSTEM_PROGRAM = "11111111111111111111111111111111"
 const CLOCK = { now: () => Date.now(), sleep: async () => {} } as never
@@ -168,13 +168,42 @@ async function pairsFile(dir: string, contents: string, name = "promote-plan.txt
 interface RpcCounts {
   getMultipleAccounts: number
   getTokenAccountsByOwner: number
+  getProgramAccounts: number
 }
 
-function rpcHandler(opts: { counts: RpcCounts; lamports?: number; failMultiple?: boolean }): RouteHandler {
+/** One `getProgramAccounts` as the fake sees it (BE-296): the program, its filters, and the request's own signal. */
+interface ProgramAccountsCall {
+  programId: string
+  filters: Array<{ dataSize?: number; memcmp?: { offset: number; bytes: string; encoding: string } }>
+  signal?: AbortSignal
+  n: number
+}
+
+function rpcHandler(opts: {
+  counts: RpcCounts
+  lamports?: number
+  failMultiple?: boolean
+  /** Answers a `getProgramAccounts` (BE-296): a Response to override, or a pubkey list; default `[]`. */
+  programAccounts?: (call: ProgramAccountsCall) => Response | string[] | undefined
+}): RouteHandler {
   return async (req) => {
     const body = typeof req.init.body === "string" ? JSON.parse(req.init.body) : {}
     const method = body.method as keyof RpcCounts
     if (method in opts.counts) opts.counts[method] += 1
+    if (method === "getProgramAccounts") {
+      const answer = opts.programAccounts?.({
+        programId: body.params[0] as string,
+        filters: (body.params[1] as { filters: ProgramAccountsCall["filters"] }).filters,
+        ...(req.init.signal ? { signal: req.init.signal } : {}),
+        n: opts.counts.getProgramAccounts,
+      })
+      if (answer instanceof Response) return answer
+      return jsonResponse(200, {
+        jsonrpc: "2.0",
+        id: body.id,
+        result: (answer ?? []).map((pubkey) => ({ pubkey, account: { data: ["", "base64"] } })),
+      })
+    }
     if (method === "getMultipleAccounts") {
       if (opts.failMultiple) return jsonResponse(500, { error: "rate limited" })
       const addresses = body.params[0] as string[]
@@ -208,6 +237,10 @@ interface ApiOptions {
   wallets?: RouteHandler | RouteHandler[]
   remoteAuthority?: string | ((address: string) => string)
   failures?: unknown[]
+  /** `GET /agent/wallets/embedded` (BE-296, D5). Default: `ACCOUNT` with `USERNAME`. */
+  embedded?: RouteHandler
+  /** `GET /agent/keys` (BE-296, D4). Default: one row whose `keyPrefix` is this key's, labelled `KEY_LABEL`. */
+  keys?: RouteHandler
 }
 
 function apiRoutes(
@@ -247,7 +280,23 @@ function apiRoutes(
             : (opts.remoteAuthority ?? "verified-active"),
       })
     },
-    "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: ACCOUNT }),
+    "/api/v1/agent/wallets/embedded":
+      opts.embedded ?? (() => jsonResponse(200, { success: true, account: ACCOUNT, username: USERNAME })),
+    "/api/v1/agent/keys":
+      opts.keys ??
+      (() =>
+        jsonResponse(200, {
+          keys: [
+            { keyPrefix: "otherkey", scopes: ["read"], environment: "production", createdAt: 1, label: "not this one" },
+            {
+              keyPrefix: KEY_PREFIX,
+              scopes: ["read", "trade"],
+              environment: "production",
+              createdAt: 2,
+              label: KEY_LABEL,
+            },
+          ],
+        })),
     "/api/v1/agent/wallets": opts.wallets ?? (() => jsonResponse(200, { page: [], isDone: true })),
     "/api/v1/agent/wallets/import-failures": () =>
       jsonResponse(200, { success: true, account: ACCOUNT, failures: opts.failures ?? [], complete: true }),
@@ -276,16 +325,24 @@ interface RunOptions {
   args?: string[]
   /** Visible-prompt answers, in order. The acknowledgement is the only one the batch asks for. */
   lines?: string[]
-  /** `"ack"` answers the acknowledgement correctly for the run's own footer. */
+  /** `"correct"` types `confirm` at the acknowledgement. */
   ack?: "correct"
   api?: ApiOptions
-  rpc?: { lamports?: number; failMultiple?: boolean }
+  rpc?: {
+    lamports?: number
+    failMultiple?: boolean
+    programAccounts?: (call: ProgramAccountsCall) => Response | string[] | undefined
+  }
   json?: boolean
   tty?: boolean
   env?: Record<string, string>
   deps?: Partial<Deps>
   /** No cached account on the profile (a grant-less resume then has nothing to assert). */
   noAccount?: boolean
+  /** A device token in the store (BE-296, D4): only then is the key's label read. */
+  deviceToken?: boolean
+  /** No API key in the store (BE-296, D5). */
+  noApiKey?: boolean
 }
 
 interface Outcome {
@@ -296,39 +353,37 @@ interface Outcome {
   linePrompts: string[]
   /** stdout as it stood when each visible prompt was asked. */
   stdoutAtPrompt: string[]
+  /** stderr as it stood when each visible prompt was asked. */
+  stderrAtPrompt: string[]
+  /** Every request the fake fetch saw, in order. */
+  calls: Array<{ url: string; init: RequestInit }>
   rpc: RpcCounts
   submits: { n: number; addresses: string[] }
   inits: { n: number }
   deps: Deps
 }
 
-/** The correct acknowledgement, read off the footer the way the operator would. */
-function ackFromFooter(err: string): string {
-  const count = /: \d+ already promoted \(skipped\), (\d+) to resume, (\d+) to promote\./.exec(err)
-  const roll = /destinations?, in this order: (.*)/.exec(err)
-  if (count === null) throw new Error(`no footer count line in:\n${err}`)
-  const acting = Number(count[1]) + Number(count[2])
-  const tokens = roll === null ? [] : [...(roll[1] ?? "").matchAll(/\(…([^)]+)\)/g)].map((m) => m[1] as string)
-  return [String(acting), ...tokens].join(" ")
-}
-
 async function runBatch(f: Fixture, opts: RunOptions): Promise<Outcome> {
   const out = createCapture()
   const err = createCapture()
-  const counts: RpcCounts = { getMultipleAccounts: 0, getTokenAccountsByOwner: 0 }
+  const counts: RpcCounts = { getMultipleAccounts: 0, getTokenAccountsByOwner: 0, getProgramAccounts: 0 }
   const submits = { n: 0, addresses: [] as string[] }
   const inits = { n: 0 }
-  const { fetch } = createRoutedFetch({
+  const { fetch, calls } = createRoutedFetch({
     ...apiRoutes(opts.api ?? {}, submits, inits),
     "/rpc": rpcHandler({ counts, ...(opts.rpc ?? {}) }),
   })
   const lines = [...(opts.lines ?? [])]
   const linePrompts: string[] = []
   const stdoutAtPrompt: string[] = []
+  const stderrAtPrompt: string[] = []
   let secretPrompts = 0
   const deps = createTestDeps({
     fetch,
-    store: createFakeStore({ "profile:pb:api_key": "ck_live_pb" }),
+    store: createFakeStore({
+      ...(opts.noApiKey ? {} : { "profile:pb:api_key": API_KEY }),
+      ...(opts.deviceToken ? { "profile:pb:device_token": DEVICE_TOKEN } : {}),
+    }),
     stdout: out,
     stderr: err,
     env: { CANDLE_CONFIG_DIR: f.dir, CANDLE_API_URL: API, ...(opts.env ?? {}) },
@@ -340,7 +395,8 @@ async function runBatch(f: Fixture, opts: RunOptions): Promise<Outcome> {
     promptLine: async (text: string) => {
       linePrompts.push(text)
       stdoutAtPrompt.push(out.text)
-      if (opts.ack === "correct" && text === ACK_PROMPT) return ackFromFooter(err.text)
+      stderrAtPrompt.push(err.text)
+      if (opts.ack === "correct" && text.startsWith("Type confirm")) return "confirm"
       return lines.shift() ?? ""
     },
     readFile: (path) => readFile(path, "utf8"),
@@ -371,6 +427,8 @@ async function runBatch(f: Fixture, opts: RunOptions): Promise<Outcome> {
     secretPrompts,
     linePrompts,
     stdoutAtPrompt,
+    stderrAtPrompt,
+    calls,
     rpc: counts,
     submits,
     inits,
@@ -378,13 +436,25 @@ async function runBatch(f: Fixture, opts: RunOptions): Promise<Outcome> {
   }
 }
 
-/** stdout with the AD-8 prose (the inherited exception, §4.3) removed: what must be exactly one JSON value. */
+/** stdout with the one sentence (the inherited exception, §1.2 of BE-296) removed: what must be exactly one JSON value. */
 function jsonDocuments(out: string): string[] {
-  const prose = new Set([...AD8_WARNING.split("\n"), ...[1, 2, 3, 4, 5, 146].map((n) => BATCH_AD8_SENTENCE(n))])
   return out
     .split("\n")
-    .filter((line) => line.trim().length > 0 && !prose.has(line))
-    .filter((line) => !/^You are about to accept the warning above for all \d+ addresses/.test(line))
+    .filter((line) => line.trim().length > 0)
+    .filter((line) => !line.startsWith(SENTENCE_PREFIX))
+}
+
+/** The D4 block as this harness's fixture renders it: profile `pb`, the URL from CANDLE_API_URL, no Candle host. */
+function controlledByBlock(n: number, opts: { label?: string; username?: string | null } = {}): string {
+  const subject = n === 1 ? "This key" : `These ${n} keys`
+  const label = opts.label !== undefined ? `(${opts.label})  ` : ""
+  const username = opts.username === null ? "(no username)" : (opts.username ?? USERNAME)
+  return [
+    `${subject} will be controlled by:`,
+    `  Candle account  ${username}  (${ACCOUNT.slice(0, 6)}…${ACCOUNT.slice(-4)})`,
+    `  API key         ${KEY_PREFIX}…  ${label}profile pb`,
+    `  API             ${API}  (not a Candle host, from CANDLE_API_URL)`,
+  ].join("\n")
 }
 
 function batchRefusal(o: Outcome): { rows: Array<Record<string, string | number>>; message: string } {
@@ -437,8 +507,8 @@ describe("T-P1: the named failure, a destination this file promotes", () => {
     expect(o.err).toContain("No vault key matches q1. q1 is promoted by row 2 of this file.")
     expect(o.err).toContain("Each row was checked against the vault as it will be when the rows above it have run")
     expect(o.err).toContain("the next run re-checks all 3")
-    // No warning and no table on a refusal: nothing to acknowledge (D8, point 1).
-    expect(o.out).not.toContain(AD8_WARNING.split("\n")[0] as string)
+    // No sentence and no table on a refusal: nothing to acknowledge (D8, point 1).
+    expect(o.out).not.toContain(SENTENCE_PREFIX)
     expect(o.err).not.toContain("value_usd")
   })
 })
@@ -658,7 +728,7 @@ describe("T-R7: resume rows are reconciled in Phase B, and never prompt in the l
     expect(o.err.split(footerLine)).toHaveLength(2)
     // One visible prompt for the whole run: the acknowledgement. No `confirmLastSix` for the
     // account, none for the destination, and no grant block on stdout.
-    expect(o.linePrompts).toEqual([ACK_PROMPT])
+    expect(o.linePrompts).toEqual([confirmPrompt(2)])
     expect(o.out).not.toContain("Server grant for")
     expect(o.out).not.toContain("This profile acts as account")
     expect(o.submits.n).toBe(1)
@@ -911,7 +981,7 @@ describe("T-I1, T-I2, T-I3: the input file", () => {
     expect(o.code).toBe(1)
     expect(o.err).toContain("value_usd (yours)")
     // Echoed verbatim: the cell as the file spells it, not a reformatting of it (D4).
-    expect(o.err).toMatch(/^2\s+promote\s+tr-1\s+\S+\s+p-2 \(…\w+\)\s+0\.021400\s+2140\.00$/m)
+    expect(o.err).toMatch(/^2\s+promote\s+tr-1\s+\S+\s+p-2 \(…\w+\)\s+none\s+0\.021400\s+2140\.00$/m)
     expect(o.err).toContain(
       "value_usd totals your file's own column; this CLI reads no price. Total for the 2 rows this run will act on: $3,020.50",
     )
@@ -964,70 +1034,63 @@ describe("T-U2: a passphrase batch asks for the passphrase once", () => {
   })
 })
 
-describe("T-A1 to T-A4: the warning and the acknowledgement", () => {
-  test("T-A1: AD-8 is printed exactly once, byte-equal, on stdout, before the prompt; the batch sentence sits under it", async () => {
+describe("T-A1 to T-A4: the sentence and the acknowledgement (BE-296)", () => {
+  test("T-A1: one sentence, exactly once, on stdout, before the prompt; the table and the block are on stderr", async () => {
     const f = await fixture(["a", "b", "cold"])
     const file = await pairsFile(f.dir, "a cold\nb cold\n")
     const o = await runBatch(f, { file, ack: "correct" })
     expect(o.code).toBe(0)
-    expect(o.out.split(`\n${AD8_WARNING}\n\n`)).toHaveLength(2)
-    expect(o.out).toContain(`${AD8_WARNING}\n\n${BATCH_AD8_SENTENCE(2)}\n`)
-    expect(o.err).not.toContain(AD8_WARNING.split("\n")[1] as string)
-    // At the moment the prompt was asked, the warning was already on stdout.
-    expect(o.stdoutAtPrompt[0]).toContain(AD8_WARNING)
-    // The table is on stderr, the state column first after the number, and the consequence line
-    // sits directly above the prompt.
-    expect(o.err).toMatch(/#\s+state\s+label\s+address\s+destination\s+SOL \(tokens not read\)/)
-    expect(o.err).toContain(
-      "This acknowledges permanent TEE exposure for 2 addresses; the full warning is printed above this table.",
-    )
+    // Every group answered (the fake returns no accounts), so the sentence is Form N, plural.
+    const sentence = promoteSentence({ n: 2, form: "N", where: "below" })
+    expect(o.out.split(`\n${sentence}\n\n`)).toHaveLength(2)
+    expect(o.out).toContain(SENTENCE_PREFIX)
+    expect(o.err).not.toContain(SENTENCE_PREFIX)
+    // At the moment the prompt was asked, the sentence was already on stdout.
+    expect(o.stdoutAtPrompt[0]).toContain(sentence)
+    // The table is on stderr, `line` first, `authority` after `destination` (D10, D8).
+    expect(o.err).toMatch(/line\s+state\s+label\s+address\s+destination\s+authority\s+SOL \(tokens not read\)/)
+    expect(o.err).not.toContain("This acknowledges permanent TEE exposure")
+    // The controlled-by block is the last thing on stderr before the prompt (D4).
+    expect(o.stderrAtPrompt[0]?.endsWith(`\n${controlledByBlock(2)}\n`)).toBe(true)
+    expect(o.linePrompts).toEqual([confirmPrompt(2)])
   })
 
-  test("T-A2: the rule accepts the count and the last sixes in order, and rejects every other shape", () => {
-    const d = [
-      { label: "p-2", address: "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJoskL3f9a" },
-      { label: "p-4", address: "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYt9wQ2mn" },
-    ]
-    expect(checkAcknowledgement("146 kL3f9a 9wQ2mn", 146, d)).toEqual({ ok: true })
-    expect(checkAcknowledgement("  146   kL3f9a\t9wQ2mn ", 146, d)).toEqual({ ok: true })
-    expect(checkAcknowledgement("145 kL3f9a 9wQ2mn", 146, d)).toEqual({ ok: false, reason: "The count did not match." })
-    expect(checkAcknowledgement("146 kL3f9a 9wQ2mX", 146, d)).toEqual({
-      ok: false,
-      reason: "Token 3 of 3 is not the last six of the destination p-4.",
-    })
-    expect(checkAcknowledgement("146 9wQ2mn kL3f9a", 146, d)).toEqual({
-      ok: false,
-      reason: "Token 2 of 3 is not the last six of the destination p-2.",
-    })
-    expect(checkAcknowledgement("146 KL3F9A 9wQ2mn", 146, d)).toEqual({
-      ok: false,
-      reason: "Token 2 of 3 is not the last six of the destination p-2.",
-    })
-    expect(checkAcknowledgement("146 kL3f9a", 146, d)).toEqual({
-      ok: false,
-      reason: "The answer has 2 tokens; 3 were expected (the count, then the last six of each destination).",
-    })
-    expect(checkAcknowledgement("EXPOSE", 146, d).ok).toBe(false)
-    expect(checkAcknowledgement("3 kL3f9a", 3, [d[0] as (typeof d)[number]])).toEqual({ ok: true })
+  test("T3: confirm, Confirm and padded CONFIRM proceed; EXPOSE, yes, the old token and empty each refuse with zero writes", async () => {
+    for (const accepted of ["confirm", "Confirm", "  CONFIRM  "]) {
+      const f = await fixture(["a", "b", "cold"])
+      const file = await pairsFile(f.dir, "a cold\nb cold\n")
+      const o = await runBatch(f, { file, lines: [accepted] })
+      expect([accepted, o.code]).toEqual([accepted, 0])
+      expect(o.submits.n).toBe(2)
+    }
+    for (const refused of ["EXPOSE", "yes", "y", `2 ${"CwTwwC"}`, ""]) {
+      const f = await fixture(["a", "b", "cold"])
+      const before = await readEntries(f)
+      const file = await pairsFile(f.dir, "a cold\nb cold\n")
+      const o = await runBatch(f, { file, lines: [refused, "should not be asked"] })
+      expect([refused, o.code]).toEqual([refused, 1])
+      expect(o.err).toContain("The acknowledgement is the word confirm; nothing was promoted, and nothing was written.")
+      expect(o.linePrompts).toEqual([confirmPrompt(2)])
+      expect((await readEntries(f)).generation).toBe(before.generation)
+      expect(o.submits.n).toBe(0)
+      expect(o.inits.n).toBe(0)
+    }
   })
 
-  test("T-A3, T-A4: a wrong answer writes nothing, exits 1, names the position, never prints the expected value, and is not re-asked", async () => {
+  test("T-A3, T-A4: a wrong answer writes nothing, exits 1, never echoes what was typed, and is not re-asked", async () => {
     const f = await fixture(["a", "b", "cold"])
     const before = await readEntries(f)
     const file = await pairsFile(f.dir, "a cold\nb cold\n")
-    const wrongToken = `2 ${"zzzzzz"}`
-    const o = await runBatch(f, { file, lines: [wrongToken, "should not be asked"], json: true })
+    const o = await runBatch(f, { file, lines: ["zzzzzz-typed", "should not be asked"], json: true })
     expect(o.code).toBe(1)
     const docs = jsonDocuments(o.out)
     expect(docs).toHaveLength(1)
     const body = JSON.parse(docs[0] as string)
     expect(body).toMatchObject({ ok: false, code: "PROMOTE_NOT_ACKNOWLEDGED" })
-    expect(body.message).toBe(
-      "Token 2 of 2 is not the last six of the destination cold. Nothing was promoted, and nothing was written.",
-    )
-    expect(body.suggestion).toBe("Run the command again and read the destination roll-up in the footer above.")
-    expect(body.message).not.toContain((f.addresses.cold as string).slice(-6))
-    expect(o.linePrompts).toEqual([ACK_PROMPT])
+    expect(body.message).toBe("The acknowledgement is the word confirm; nothing was promoted, and nothing was written.")
+    expect(body.suggestion).toBe("Run the command again and type confirm at the prompt.")
+    expect(o.out + o.err).not.toContain("zzzzzz-typed")
+    expect(o.linePrompts).toEqual([confirmPrompt(2)])
     expect((await readEntries(f)).generation).toBe(before.generation)
     expect(o.submits.n).toBe(0)
   })
@@ -1041,17 +1104,23 @@ describe("T-R2 to T-R6: re-runs", () => {
       ["a", "b", "c"].includes(e.label) ? { ...e, ...teeSeed("enabled", cold, { grant: true, linked: true }) } : e,
     )
     const file = await pairsFile(f.dir, "a cold\nb cold\nc cold\nd cold\ne cold\n")
-    // The file's row count (5) is refused; the acting count (2) is what the prompt expects.
-    const wrong = await runBatch(f, { file, lines: [`5 ${cold.slice(-6)}`] })
+    // The acting count (2), not the file's row count (5), is what the prompt, the sentence and
+    // the block name.
+    const wrong = await runBatch(f, { file, lines: ["no"] })
     expect(wrong.code).toBe(1)
-    expect(wrong.err).toContain("The count did not match.")
+    expect(wrong.err).toContain("The acknowledgement is the word confirm")
     expect(wrong.err).toContain("5 rows from")
     expect(wrong.err).toContain("3 already promoted (skipped), 0 to resume, 2 to promote.")
     expect(wrong.err).toMatch(/^1\s+skip\s+a\s/m)
     expect(wrong.err).toMatch(/^4\s+promote\s+d\s/m)
-    expect(wrong.err).toContain("This acknowledges permanent TEE exposure for 2 addresses")
+    expect(wrong.out).toContain("a permanent copy of these 2 keys")
+    expect(wrong.err).toContain("These 2 keys will be controlled by:")
+    expect(wrong.linePrompts).toEqual([confirmPrompt(2)])
+    // Skip rows get no role requests: two acting keys, nine each (D7).
+    expect(wrong.rpc.getProgramAccounts).toBe(2 * REQUESTS_PER_KEY)
 
-    const right = await runBatch(f, { file, lines: [`2 ${cold.slice(-6)}`] })
+    const right = await runBatch(f, { file, ack: "correct" })
+    void cold
     expect(right.code).toBe(0)
     expect(right.submits.addresses).toEqual([f.addresses.d as string, f.addresses.e as string])
     expect(right.out).toContain(
@@ -1073,7 +1142,7 @@ describe("T-R2 to T-R6: re-runs", () => {
     expect(o.code).toBe(0)
     // The one import is row 1's. Row 2 adopted the grant.
     expect(o.submits.addresses).toEqual([f.addresses.a as string])
-    expect(o.linePrompts).toEqual([ACK_PROMPT])
+    expect(o.linePrompts).toEqual([confirmPrompt(2)])
     const docs = jsonDocuments(o.out)
     expect(docs).toHaveLength(1)
     const body = JSON.parse(docs[0] as string)
@@ -1140,7 +1209,11 @@ describe("T-R2 to T-R6: re-runs", () => {
     expect(o.linePrompts).toEqual([])
     expect(o.err).toContain("2 already promoted (skipped), 0 to resume, 0 to promote.")
     expect(o.err).toContain("Nothing to do: every row already landed.")
-    expect(o.out).not.toContain(AD8_WARNING.split("\n")[0] as string)
+    expect(o.out).not.toContain(SENTENCE_PREFIX)
+    // No acting rows, so the role check does not run: no requests, no opening line, no done line.
+    expect(o.rpc.getProgramAccounts).toBe(0)
+    expect(o.err).not.toContain("Checking token mint")
+    expect(o.err).not.toContain("✓ authorities")
     const json = await runBatch(f, { file, json: true })
     expect(json.code).toBe(0)
     expect(JSON.parse(json.out)).toMatchObject({
@@ -1150,6 +1223,7 @@ describe("T-R2 to T-R6: re-runs", () => {
       promoted: 0,
       resumed: 0,
       skipped: 2,
+      authorities: { checked: [...ROLE_GROUP_IDS], notChecked: [], found: [] },
     })
   })
 })
@@ -1210,8 +1284,15 @@ describe("T-H1, T-H2, T-H3: the bounded holdings read", () => {
     expect(o.rpc.getTokenAccountsByOwner).toBe(0)
     expect(o.err).toContain("✓ SOL read for 146 addresses (2 requests)")
     expect(o.err).toContain("146 rows from")
-    expect(o.err).toContain("This acknowledges permanent TEE exposure for 146 addresses")
-    expect(o.out).toContain(BATCH_AD8_SENTENCE(146))
+    // BE-296 (D7): the opening line names the request count before the first one is sent, and
+    // the acting rows get nine requests each.
+    expect(o.err).toContain(
+      "Checking token mint, freeze, program upgrade and stake authorities for 146 addresses: 1,314 requests over rpc.pb.test.",
+    )
+    expect(o.rpc.getProgramAccounts).toBe(1314)
+    expect(o.err).toContain("✓ authorities read for 146 addresses (1,314 requests, 7 of 7 groups read) in 0s")
+    expect(o.out).toContain("a permanent copy of these 146 keys")
+    expect(o.linePrompts).toEqual([confirmPrompt(146)])
 
     const tokens = await runBatch(f, { file, lines: ["no"], args: ["--token-holdings"] })
     expect(tokens.rpc.getMultipleAccounts).toBe(2)
@@ -1236,12 +1317,14 @@ describe("T-H1, T-H2, T-H3: the bounded holdings read", () => {
     const o = await runBatch(f, { file, rpc: { failMultiple: true } })
     expect(o.code).toBe(1)
     expect(o.linePrompts).toEqual([])
-    expect(o.err).toMatch(/^1\s+promote\s+a\s+\S+\s+cold \(…\w+\)\s+unread$/m)
+    expect(o.err).toMatch(/^1\s+promote\s+a\s+\S+\s+cold \(…\w+\)\s+\?\s+unread$/m)
     expect(o.err).toContain(
       "SOL read over rpc.pb.test FAILED: RPC getMultipleAccounts failed: HTTP 500. The batch is refused.",
     )
     expect(o.err).toContain("The SOL read over rpc.pb.test failed")
-    expect(o.out).not.toContain(AD8_WARNING.split("\n")[0] as string)
+    expect(o.out).not.toContain(SENTENCE_PREFIX)
+    // The batch refuses right here, so the role read is not made and the column reads `?`.
+    expect(o.rpc.getProgramAccounts).toBe(0)
     expect((await readEntries(f)).generation).toBe(before.generation)
   })
 })
@@ -1533,7 +1616,7 @@ describe("BE-288 C3: only promote rows take room", () => {
     expect(o.err).toContain("140 already promoted (skipped), 0 to resume, 6 to promote.")
     expect(o.err).toContain("Linked wallets: 4 of 10 active on the Pro tier; this run links 6, leaving 0.")
     expect(o.err).not.toContain("This batch would link")
-    expect(o.linePrompts).toEqual([ACK_PROMPT])
+    expect(o.linePrompts).toEqual([confirmPrompt(6)])
     expect(o.inits.n).toBe(0)
   })
 })
@@ -1668,5 +1751,454 @@ describe("BE-288 C6, C7, C12: a mid-run refusal at init restores the row; at sub
     expect(body.stage).toBeUndefined()
     expect(body.status).toBeUndefined()
     expect(body.suggestion).toBeUndefined()
+  })
+})
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// BE-296 (spec `2026-09-23-cli-vault-promote-confirm-design.md`, §6): the controlled-by block, the
+// live account read, the always-on role check, the `authority` column, the `line` header, --json.
+
+/** The D6 group a `getProgramAccounts` belongs to, from its program and filter shape. */
+function groupOfCall(call: ProgramAccountsCall): string {
+  const dataSize = call.filters.find((f) => f.dataSize !== undefined)?.dataSize
+  const offsets = call.filters.map((f) => f.memcmp?.offset).filter((o): o is number => o !== undefined)
+  if (call.programId === "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+    return offsets.includes(46) ? "token-freeze" : "token-mint"
+  if (call.programId === "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+    return offsets.includes(46) ? "token2022-freeze" : "token2022-mint"
+  if (call.programId === "BPFLoaderUpgradeab1e11111111111111111111111")
+    return offsets.includes(12) ? "program-upgrade" : "program-resolve"
+  if (call.programId === STAKE_PROGRAM_ID && dataSize === 200)
+    return offsets.includes(44) ? "stake-withdrawer" : "stake-staker"
+  throw new Error(`unrecognised getProgramAccounts ${call.programId} ${JSON.stringify(call.filters)}`)
+}
+
+/** Whether the request's key bytes are this address (the key sits at the end of the memcmp bytes). */
+function isFor(call: ProgramAccountsCall, address: string): boolean {
+  const key = Buffer.from(base58.decode(address))
+  return call.filters.some((f) => {
+    if (f.memcmp === undefined) return false
+    const bytes = Buffer.from(f.memcmp.bytes, "base64")
+    return bytes.length >= key.length && bytes.subarray(bytes.length - key.length).equals(key)
+  })
+}
+
+describe("BE-296 T5, T5a: the controlled-by block", () => {
+  test("T5: username, shortened account, 8-character prefix, label in parentheses with a device token, profile source, full URL and environment; the secret appears nowhere", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const o = await runBatch(f, { file, ack: "correct", deviceToken: true })
+    expect(o.code).toBe(0)
+    const block = controlledByBlock(2, { label: KEY_LABEL })
+    expect(o.err).toContain(block)
+    // Directly above the prompt: the block is the last stderr output before `confirm` is asked.
+    expect(o.stderrAtPrompt[0]?.endsWith(`\n${block}\n`)).toBe(true)
+    expect(o.err).not.toContain(API_KEY)
+    expect(o.out).not.toContain(API_KEY)
+    expect(o.err).not.toContain(DEVICE_TOKEN)
+    expect(o.err).not.toContain(KEY_PREFIX.padEnd(43, "x"))
+    // The label read used the device token, never the API key.
+    const keysCall = o.calls.find((call) => call.url.endsWith("/api/v1/agent/keys"))
+    expect(keysCall).toBeDefined()
+    const headers = (keysCall?.init.headers ?? {}) as Record<string, string>
+    expect(headers.authorization).toBe(`Bearer ${DEVICE_TOKEN}`)
+    expect(headers["x-api-key"]).toBeUndefined()
+  })
+
+  test("T5: CANDLE_API_KEY as the source when the env var supplies the key; (no username) when the account has none", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const env = await runBatch(f, {
+      file,
+      lines: ["no"],
+      noApiKey: true,
+      env: { CANDLE_API_KEY: API_KEY },
+      json: true,
+      api: { embedded: () => jsonResponse(200, { success: true, account: ACCOUNT }) },
+    })
+    expect(env.code).toBe(1)
+    expect(env.err).toContain(`  API key         ${KEY_PREFIX}…  CANDLE_API_KEY`)
+    expect(env.err).toContain(`  Candle account  (no username)  (${ACCOUNT.slice(0, 6)}…${ACCOUNT.slice(-4)})`)
+    // No profile key, no device token: nothing reads the label, and the run still reaches the prompt.
+    expect(env.calls.some((call) => call.url.endsWith("/api/v1/agent/keys"))).toBe(false)
+    expect(env.linePrompts).toEqual([confirmPrompt(2)])
+  })
+
+  test("T5a: no parenthesis, no extra line, and the run still reaches the prompt when the label cannot be read", async () => {
+    const cases: Array<{ name: string; deviceToken: boolean; keys?: RouteHandler }> = [
+      { name: "no device token", deviceToken: false },
+      {
+        name: "401",
+        deviceToken: true,
+        keys: () => jsonResponse(401, { success: false, error: { code: "UNAUTHORIZED", message: "no" } }),
+      },
+      { name: "500", deviceToken: true, keys: () => jsonResponse(500, { success: false }) },
+      {
+        name: "network error",
+        deviceToken: true,
+        keys: () => {
+          throw new Error("ECONNRESET")
+        },
+      },
+      {
+        name: "no row with the prefix",
+        deviceToken: true,
+        keys: () =>
+          jsonResponse(200, {
+            keys: [{ keyPrefix: "someone", label: "theirs", scopes: [], environment: "production", createdAt: 1 }],
+          }),
+      },
+      {
+        name: "empty label",
+        deviceToken: true,
+        keys: () =>
+          jsonResponse(200, {
+            keys: [{ keyPrefix: KEY_PREFIX, label: "", scopes: [], environment: "production", createdAt: 1 }],
+          }),
+      },
+      {
+        name: "absent label",
+        deviceToken: true,
+        keys: () =>
+          jsonResponse(200, { keys: [{ keyPrefix: KEY_PREFIX, scopes: [], environment: "production", createdAt: 1 }] }),
+      },
+    ]
+    for (const c of cases) {
+      const f = await fixture(["a", "b", "cold"])
+      const file = await pairsFile(f.dir, "a cold\nb cold\n")
+      const o = await runBatch(f, {
+        file,
+        lines: ["no"],
+        deviceToken: c.deviceToken,
+        api: c.keys ? { keys: c.keys } : {},
+      })
+      expect([c.name, o.code]).toEqual([c.name, 1])
+      expect([c.name, o.err.includes(`  API key         ${KEY_PREFIX}…  profile pb\n`)]).toEqual([c.name, true])
+      expect([c.name, o.err.includes(`(${KEY_LABEL})`)]).toEqual([c.name, false])
+      expect([c.name, o.stderrAtPrompt[0]?.endsWith(`\n${controlledByBlock(2)}\n`)]).toEqual([c.name, true])
+      expect([c.name, o.linePrompts]).toEqual([c.name, [confirmPrompt(2)]])
+      expect([c.name, o.calls.some((call) => call.url.endsWith("/api/v1/agent/keys"))]).toEqual([c.name, c.deviceToken])
+    }
+  })
+
+  test("T5a: GET /keys is not called when the account read has already refused", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const o = await runBatch(f, {
+      file,
+      deviceToken: true,
+      api: { embedded: () => jsonResponse(500, { success: false }) },
+    })
+    expect(o.code).toBe(1)
+    expect(o.err).toContain(
+      "Could not confirm which Candle account this API key acts for (HTTP 500); nothing was written.",
+    )
+    expect(o.calls.some((call) => call.url.endsWith("/api/v1/agent/keys"))).toBe(false)
+  })
+})
+
+describe("BE-296 T6: the account read is live or the batch refuses", () => {
+  test("a network error, a 401, a 500 and a body without account each refuse with PROMOTE_ACCOUNT_UNRESOLVED, before any RPC, prompt or write, despite the cached account", async () => {
+    const cases: Array<{ name: string; embedded: RouteHandler; reason: string }> = [
+      {
+        name: "network",
+        embedded: () => {
+          throw new Error("ECONNREFUSED")
+        },
+        reason: "Could not confirm which Candle account this API key acts for (",
+      },
+      {
+        name: "401",
+        embedded: () =>
+          jsonResponse(401, { success: false, error: { code: "UNAUTHORIZED", message: "Invalid API key" } }),
+        reason: "Could not confirm which Candle account this API key acts for (HTTP 401); nothing was written.",
+      },
+      {
+        name: "500",
+        embedded: () => jsonResponse(500, { success: false }),
+        reason: "Could not confirm which Candle account this API key acts for (HTTP 500); nothing was written.",
+      },
+      {
+        name: "no account",
+        embedded: () => jsonResponse(200, { success: true, wallets: {} }),
+        reason:
+          "Could not confirm which Candle account this API key acts for (the response carried no account); nothing was written.",
+      },
+    ]
+    for (const c of cases) {
+      const f = await fixture(["a", "b", "cold"])
+      const before = await readEntries(f)
+      const file = await pairsFile(f.dir, "a cold\nb cold\n")
+      const o = await runBatch(f, { file, api: { embedded: c.embedded } })
+      expect([c.name, o.code]).toEqual([c.name, 1])
+      expect([c.name, o.err.includes(c.reason)]).toEqual([c.name, true])
+      expect(o.err).toContain(
+        "Check the key with: candle doctor. Promotion registers the keys to that account, so it does not proceed on a cached value.",
+      )
+      // The cached profile account is never printed as the answer.
+      expect([c.name, o.err.includes("will be controlled by")]).toEqual([c.name, false])
+      expect([c.name, o.linePrompts]).toEqual([c.name, []])
+      expect([c.name, o.rpc]).toEqual([
+        c.name,
+        { getMultipleAccounts: 0, getTokenAccountsByOwner: 0, getProgramAccounts: 0 },
+      ])
+      expect([c.name, o.inits.n]).toEqual([c.name, 0])
+      expect([c.name, (await readEntries(f)).generation]).toEqual([c.name, before.generation])
+      expect(o.out).not.toContain(SENTENCE_PREFIX)
+    }
+    // Under --json: the failure envelope with the new code, and nothing else on stdout.
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const j = await runBatch(f, { file, json: true, api: { embedded: () => jsonResponse(500, { success: false }) } })
+    expect(j.code).toBe(1)
+    const docs = jsonDocuments(j.out)
+    expect(docs).toHaveLength(1)
+    expect(JSON.parse(docs[0] as string)).toMatchObject({ ok: false, code: "PROMOTE_ACCOUNT_UNRESOLVED" })
+  })
+
+  test("no API key at all: the room read (BE-288, D7), which comes first in the batch, refuses before the account read can", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const o = await runBatch(f, { file, noApiKey: true })
+    expect(o.code).toBe(1)
+    expect(o.err).toContain(
+      "Could not read how many linked wallets this account has room for (no API key is available). Nothing was written.",
+    )
+    expect(o.err).not.toContain("will be controlled by")
+    expect(o.linePrompts).toEqual([])
+    expect(o.rpc.getProgramAccounts).toBe(0)
+  })
+})
+
+describe("BE-296 T10 to T13: the role check always runs", () => {
+  test("T10: nine requests per acting key, no flag; --check-authorities is an unknown-flag usage error; the opening line comes before the first request", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const order: string[] = []
+    const o = await runBatch(f, {
+      file,
+      lines: ["no"],
+      rpc: {
+        programAccounts: () => {
+          order.push("request")
+          return []
+        },
+      },
+      deps: {},
+    })
+    expect(o.code).toBe(1)
+    expect(o.rpc.getProgramAccounts).toBe(2 * REQUESTS_PER_KEY)
+    const opening =
+      "Checking token mint, freeze, program upgrade and stake authorities for 2 addresses: 18 requests over rpc.pb.test."
+    expect(o.err.indexOf(opening)).toBeGreaterThan(-1)
+    expect(o.err.indexOf(opening)).toBeLessThan(o.err.indexOf("Checking authorities:"))
+    expect(o.err.indexOf(opening)).toBeLessThan(o.err.indexOf("✓ authorities read"))
+
+    const flagged = await runBatch(f, { file, args: ["--check-authorities"] })
+    expect(flagged.code).toBe(2)
+    expect(flagged.err).toContain("--check-authorities")
+    expect(flagged.secretPrompts).toBe(0)
+    expect(flagged.rpc.getProgramAccounts).toBe(0)
+  })
+
+  test("T11: a 403 on the SPL-mint scan names the group not read in the footer and in --json, the sentence is Form U, the column says ?, and the run reaches the prompt", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const programAccounts = (call: ProgramAccountsCall) =>
+      groupOfCall(call) === "token-mint" ? jsonResponse(403, { error: "Your IP or provider is blocked" }) : []
+    const o = await runBatch(f, { file, lines: ["no"], rpc: { programAccounts } })
+    expect(o.code).toBe(1)
+    expect(o.linePrompts).toEqual([confirmPrompt(2)])
+    expect(o.out).toContain(promoteSentence({ n: 2, form: "U", where: "below" }))
+    expect(o.err).toMatch(/^1\s+promote\s+a\s+\S+\s+cold \(…\w+\)\s+\?\s+0\.021400$/m)
+    expect(o.err).toContain("Authorities: none found; 1 of 7 groups were not read (see below).")
+    expect(o.err).toContain(
+      "Authorities read over rpc.pb.test: token freeze, Token-2022 mint, Token-2022 freeze, program upgrade, stake staker, stake withdrawer. Not read: token mint (HTTP 403). Not checked: multisig membership, Token-2022 extension authorities, metadata update authority.",
+    )
+    expect(o.err).toMatch(/✓ authorities read for 2 addresses \(\d+ requests, 6 of 7 groups read, 1 refused\) in 0s/)
+
+    const j = await runBatch(f, { file, ack: "correct", json: true, rpc: { programAccounts } })
+    expect(j.code).toBe(0)
+    const body = JSON.parse(jsonDocuments(j.out)[0] as string)
+    expect(body.authorities.notChecked).toEqual([{ group: "token-mint", reason: "HTTP 403" }])
+    expect(body.authorities.checked).toEqual(ROLE_GROUP_IDS.filter((id) => id !== "token-mint"))
+    expect(body.authorities.found).toEqual([])
+  })
+
+  test("T12: a request that is aborted (timeout) behaves as a refusal of its group", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const o = await runBatch(f, {
+      file,
+      lines: ["no"],
+      rpc: {
+        programAccounts: (call) => {
+          if (groupOfCall(call) !== "stake-staker") return []
+          throw Object.assign(new Error("The operation was aborted."), { name: "AbortError" })
+        },
+      },
+    })
+    expect(o.code).toBe(1)
+    expect(o.err).toContain("Not read: stake staker (timed out after 20 s).")
+    expect(o.out).toContain(promoteSentence({ n: 2, form: "U", where: "below" }))
+    expect(o.linePrompts).toEqual([confirmPrompt(2)])
+  })
+
+  test("T12b: the progress line is written to stderr with \\r and replaced by the ✓ line; under --json none of it reaches stdout", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const o = await runBatch(f, { file, ack: "correct", json: true })
+    expect(o.code).toBe(0)
+    expect(o.err).toContain("\rChecking authorities: 1 of 18 requests, 0 s elapsed")
+    expect(o.err).toContain("\rChecking authorities: 18 of 18 requests, 0 s elapsed")
+    expect(o.err).toContain("\r✓ authorities read for 2 addresses (18 requests, 7 of 7 groups read) in 0s\n")
+    expect(o.out).not.toContain("Checking authorities")
+    expect(o.out).not.toContain("✓ authorities")
+    expect(jsonDocuments(o.out)).toHaveLength(1)
+  })
+
+  test("T12c: a found stake withdrawer and a found mint on one key: the row, the footer count (keys, not findings), the sentence's k, and --json", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const a = f.addresses.a as string
+    const mint = "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R"
+    const stake = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const programAccounts = (call: ProgramAccountsCall) => {
+      if (!isFor(call, a)) return []
+      if (groupOfCall(call) === "stake-withdrawer") return [stake]
+      if (groupOfCall(call) === "token-mint") return [mint]
+      return []
+    }
+    const o = await runBatch(f, { file, lines: ["no"], rpc: { programAccounts } })
+    expect(o.code).toBe(1)
+    expect(o.err).toContain(`  mint authority of ${mint}; withdrawer authority of ${stake}  `)
+    expect(o.err).toMatch(/^2\s+promote\s+b\s+\S+\s+cold \(…\w+\)\s+none\s+0\.021400$/m)
+    expect(o.err).toContain("Authorities: 1 of 2 keys holds one (2 findings, in the authority column).")
+    expect(o.out).toContain(promoteSentence({ n: 2, form: "F", k: 1, where: "below" }))
+    expect(o.out).toContain("1 of them holds a mint, freeze, upgrade or stake authority, named below")
+
+    const j = await runBatch(f, { file, ack: "correct", json: true, rpc: { programAccounts } })
+    const body = JSON.parse(jsonDocuments(j.out)[0] as string)
+    expect(body.authorities.found).toEqual([
+      { address: a, role: "mint", target: mint, program: "token" },
+      { address: a, role: "withdrawer", target: stake, program: "stake" },
+    ])
+  })
+
+  test("T13: an upgrade hit resolves its program id with one more request; one that does not resolve prints the ProgramData address and says so", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const b = f.addresses.b as string
+    const programData = "9BVcYqEQxyccuwznvxXqDkSJFavvTyheiTYk231T1A8S"
+    const programId = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4"
+    const orphan = "So11111111111111111111111111111111111111112"
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const o = await runBatch(f, {
+      file,
+      lines: ["no"],
+      rpc: {
+        programAccounts: (call) => {
+          const group = groupOfCall(call)
+          if (group === "program-upgrade") return isFor(call, b) ? [programData, orphan] : []
+          if (group === "program-resolve") {
+            const which = call.filters[1]?.memcmp?.bytes
+            return which === base64.encode(base58.decode(programData)) ? [programId] : []
+          }
+          return []
+        },
+      },
+    })
+    expect(o.code).toBe(1)
+    // 18 scans plus 2 resolves.
+    expect(o.rpc.getProgramAccounts).toBe(20)
+    expect(o.err).toContain(
+      `upgrade authority of ${programId}; upgrade authority of ${orphan} (ProgramData account; the program id could not be resolved)`,
+    )
+    expect(o.err).toContain("✓ authorities read for 2 addresses (20 requests, 7 of 7 groups read) in 0s")
+  })
+})
+
+describe("BE-296 T14, T15: the line header and --json", () => {
+  test("T14: the batch table and the refusal table are headed `line`, and the values are the file lines the document carries", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "# plan\n\na cold\n\nb cold\n")
+    const o = await runBatch(f, { file, lines: ["no"] })
+    expect(o.err).toMatch(/^line\s+state\s+label\s+address\s+destination\s+authority\s+SOL \(tokens not read\)$/m)
+    expect(o.err).not.toMatch(/^#\s+state/m)
+    expect(o.err).toMatch(/^3\s+promote\s+a\s/m)
+    expect(o.err).toMatch(/^5\s+promote\s+b\s/m)
+    const j = await runBatch(f, { file, ack: "correct", json: true })
+    const body = JSON.parse(jsonDocuments(j.out)[0] as string)
+    expect(body.keys.map((k: { line: number }) => k.line)).toEqual([3, 5])
+
+    // The refusal table (row 2 sweeps to a key row 1 promotes).
+    const g = await fixture(["p", "q", "cold"])
+    const refused = await pairsFile(g.dir, "p cold\nq p\n")
+    const r = await runBatch(g, { file: refused })
+    expect(r.code).toBe(1)
+    expect(r.err).toMatch(/^line\s+label\s+destination\s+code\s+why$/m)
+    expect(r.err).not.toMatch(/^#\s+label/m)
+  })
+
+  test("T15: success and stopped documents carry controlledBy and authorities; every pre-existing key is unchanged; one JSON value on stdout", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const o = await runBatch(f, { file, ack: "correct", json: true, deviceToken: true })
+    expect(o.code).toBe(0)
+    const docs = jsonDocuments(o.out)
+    expect(docs).toHaveLength(1)
+    const body = JSON.parse(docs[0] as string)
+    expect(Object.keys(body).sort()).toEqual([
+      "authorities",
+      "complete",
+      "controlledBy",
+      "destinations",
+      "file",
+      "keys",
+      "ok",
+      "promoted",
+      "resumed",
+      "rows",
+      "skipped",
+    ])
+    expect(body.controlledBy).toEqual({
+      account: ACCOUNT,
+      username: USERNAME,
+      keyPrefix: KEY_PREFIX,
+      keyLabel: KEY_LABEL,
+      keySource: "profile",
+      apiUrl: API,
+      environment: null,
+    })
+    expect(body.authorities).toEqual({ checked: [...ROLE_GROUP_IDS], notChecked: [], found: [] })
+    const inOne = [
+      ...body.authorities.checked,
+      ...body.authorities.notChecked.map((n: { group: string }) => n.group),
+    ].sort()
+    expect(inOne).toEqual([...ROLE_GROUP_IDS].sort())
+
+    // Stopped mid-run (row 2's submit fails): the same two keys, `keyLabel` null without a device token.
+    const g = await fixture(["a", "b", "cold"])
+    const gfile = await pairsFile(g.dir, "a cold\nb cold\n")
+    const s = await runBatch(g, {
+      file: gfile,
+      ack: "correct",
+      json: true,
+      api: {
+        submit: (n) =>
+          n === 2 ? jsonResponse(500, { success: false, error: { code: "INTERNAL", message: "boom" } }) : undefined,
+      },
+    })
+    expect(s.code).toBe(1)
+    const sdocs = jsonDocuments(s.out)
+    expect(sdocs).toHaveLength(1)
+    const stopped = JSON.parse(sdocs[0] as string)
+    expect(stopped).toMatchObject({ ok: false, complete: false, failedLine: 2 })
+    expect(stopped.controlledBy).toMatchObject({
+      account: ACCOUNT,
+      keyPrefix: KEY_PREFIX,
+      keyLabel: null,
+      keySource: "profile",
+    })
+    expect(stopped.authorities).toEqual({ checked: [...ROLE_GROUP_IDS], notChecked: [], found: [] })
   })
 })

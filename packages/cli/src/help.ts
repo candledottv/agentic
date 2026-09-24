@@ -393,11 +393,13 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation: "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>]",
-        description: "Fresh TEE key, or promote one vault key in place",
+        description:
+          "Fresh TEE key, or promote one vault key in place. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked.",
       },
       {
         invocation: "promote-batch --pairs-from <file> --rpc-url <url> [--token-holdings]",
-        description: "Promote many vault keys in place: one unlock, one reviewed acknowledgement",
+        description:
+          "Promote many vault keys in place: one unlock, one reviewed acknowledgement. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked.",
       },
       {
         invocation: "fund <tee-address|external> --amount <n> --asset SOL|USDC --rpc-url <url> [--from <label>]",

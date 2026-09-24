@@ -15,12 +15,15 @@
  *   payload key exactly as `verifyWrittenFromDisk` does, so a security key is touched twice for a
  *   146-row batch, not 292 to 438 times. `runTeeImport` takes `closeReopened: false` because the
  *   held-key re-open shares this command's DEK.
- * - The acknowledgement (D10). The acting count, then the last six of each destination in listed
- *   order. The destinations' last sixes cannot be produced from a CSV of labels; they can only
- *   come from reading the table. One attempt; a mismatch is `PROMOTE_NOT_ACKNOWLEDGED` with zero
- *   writes.
+ * - The acknowledgement. Since BE-296 (spec `2026-09-23-cli-vault-promote-confirm-design.md`) it
+ *   is the word `confirm`, shared with single promote (`confirmPromotion`), typed under a
+ *   one-sentence warning, above which the table names every address and destination and directly
+ *   above which the live controlled-by block names the Candle account, API key and API the keys
+ *   will be registered to. One attempt; anything else is `PROMOTE_NOT_ACKNOWLEDGED` with zero
+ *   writes. The role read (D6, D7) always runs for the acting rows and fills the `authority`
+ *   column; it warns and never refuses.
  *
- * `vault promote` is unchanged: it passes the defaults on every parameter §4.7 added.
+ * `vault promote` passes the defaults on every parameter §4.7 added.
  */
 import { base58 } from "@scure/base"
 import { parseArgs } from "../args"
@@ -44,7 +47,6 @@ import { type KeyEntry, parseVaultFile } from "../vault/format"
 import { wipe } from "../vault/hygiene"
 import {
   actingDestinations,
-  checkAcknowledgement,
   destinationCell,
   formatSol,
   formatUsd,
@@ -59,8 +61,30 @@ import {
   renderPhaseAFindings,
   writeBatchRefusal,
 } from "../vault/promote-batch"
-import { applyPromotion, printAd8Warning } from "../vault/promote-support"
+import {
+  applyPromotion,
+  type ControlledBy,
+  confirmPromotion,
+  controlledByJson,
+  printPromoteSentence,
+  promoteSentence,
+  readControlledBy,
+  renderControlledBy,
+  runRoleCheck,
+  shortAddress,
+} from "../vault/promote-support"
 import { reconcileGrant } from "../vault/reconcile-grant"
+import {
+  authoritiesCountLine,
+  authoritiesJson,
+  authorityCell,
+  checkOpeningLine,
+  keysWithFindings,
+  ROLE_GROUP_IDS,
+  readSummaryLine,
+  type SignerRolesResult,
+  sentenceForm,
+} from "../vault/signer-roles"
 import { commitVault, decryptKey, type UnlockedVault } from "../vault/store"
 import { verifyWritten } from "./vault-new-key"
 import { type ReturnedFailure, resumePromote, runTeeImport } from "./vault-promote"
@@ -78,13 +102,6 @@ import {
 
 const USAGE_LINE =
   "Usage: candle vault promote-batch --pairs-from <file> --rpc-url <url> [--token-holdings] [--accept-unknown-exposure]"
-
-/** The batch-only sentence under AD-8 (D8). Never part of `AD8_WARNING`. */
-export const BATCH_AD8_SENTENCE = (n: number) =>
-  `You are about to accept the warning above for all ${n} addresses below at once. Each exposure is permanent, and independent of the others.`
-
-export const ACK_PROMPT =
-  "Type the number of addresses this run will act on, then the last six of each destination in the order listed above: "
 
 /**
  * TEST ONLY: sees the batch's vault object after each row's pre-import commit and again after its
@@ -199,6 +216,11 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     if (roomRefusal !== null) throw roomRefusal
     const room = roomRead.room
 
+    // ── Which account, key and API will control these keys (BE-296, D5): live, after the room,
+    // before the SOL read, so a refusal comes before the operator reads anything and before any
+    // write. Never a cached value.
+    const controlledBy = await readControlledBy(ctx)
+
     // ── Holdings (D8): SOL for every address, always; tokens only on request ──────────────
     const addresses = planned.map((item) => item.subject.address)
     const rpc = createSolanaRpc(rpcUrl, deps.fetch)
@@ -228,8 +250,21 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
       }
     }
 
-    // ── The screen (D8): the warning, the table, the footer, the prompt ───────────────────
-    const table = renderBatchTable(planned, { lamports, tokenCounts, hasValueUsd })
+    // ── The role read (BE-296, D6, D7): always, no flag, for the acting rows only, after the
+    // SOL read and any token counts and before the screen. Group-major, up to 8 in flight, one
+    // after the first 429, per-group stop; the progress line is replaced by the `✓` line. It
+    // warns and never refuses. Not run when the SOL read already failed (the batch refuses
+    // just below) or when every row is a skip: there is no acting key, and the done line
+    // would say "0 addresses".
+    const actingAddresses = acting.map((item) => item.subject.address)
+    let roles: SignerRolesResult | undefined
+    if (lamports !== undefined && actingAddresses.length > 0) {
+      deps.stderr.write(`${checkOpeningLine(actingAddresses.length, host)}\n`)
+      roles = await runRoleCheck(ctx, rpc, actingAddresses)
+    }
+
+    // ── The screen (D8): the sentence, the table, the footer, the block, the prompt ───────
+    const table = renderBatchTable(planned, { lamports, tokenCounts, hasValueUsd, roles })
     const footer = renderFooter({
       file: pairsFile,
       planned,
@@ -242,6 +277,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
       hasValueUsd,
       room,
       promotes,
+      roles,
     })
 
     if (readError !== undefined) {
@@ -262,26 +298,36 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
         keys: planned.map((item) => skippedResult(item)),
         destinations,
         exit: 0,
+        controlledBy,
+        // Nothing was asked. `checked` is every group so `--json` still carries `authorities`
+        // (D9), the same shape an empty read returns, without printing a done line.
+        roles: {
+          checked: [...ROLE_GROUP_IDS],
+          notChecked: [],
+          found: [],
+          requests: 0,
+          planned: 0,
+          rateLimited: 0,
+          elapsedMs: 0,
+        },
       })
     }
 
-    printAd8Warning(ctx)
-    deps.stdout.write(`${BATCH_AD8_SENTENCE(acting.length)}\n\n`)
-    deps.stderr.write(`${table}\n\n${footer}\n`)
-    deps.stderr.write(
-      `\nThis acknowledges permanent TEE exposure for ${acting.length} addresses; the full warning is printed above this table.\n`,
+    // The sentence (D1) on stdout where the five-sentence warning used to be; the table and
+    // footer on stderr; the controlled-by block directly above the prompt (D4); `confirm` (D3).
+    const checked = roles as SignerRolesResult
+    printPromoteSentence(
+      ctx,
+      promoteSentence({
+        n: acting.length,
+        form: sentenceForm(checked),
+        k: keysWithFindings(checked),
+        where: "below",
+      }),
     )
-    const typed = await deps.promptLine(ACK_PROMPT)
-    const verdict = checkAcknowledgement(typed, acting.length, destinations)
-    if (!verdict.ok) {
-      throw new VaultError(
-        "PROMOTE_NOT_ACKNOWLEDGED",
-        `${verdict.reason} Nothing was promoted, and nothing was written.`,
-        {
-          suggestion: "Run the command again and read the destination roll-up in the footer above.",
-        },
-      )
-    }
+    deps.stderr.write(`${table}\n\n${footer}\n`)
+    deps.stderr.write(`\n${renderControlledBy(controlledBy, acting.length)}\n`)
+    await confirmPromotion(ctx, acting.length)
 
     // ── The loop (D9, D11, D12): one commit per key, no factor presentation, stop on failure ──
     const now = new Date(deps.now()).toISOString()
@@ -458,6 +504,9 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
           code: stopped.code,
           message: stopped.message,
           ...(stopped.suggestion !== undefined ? { suggestion: stopped.suggestion } : {}),
+          // BE-296 (D9): the stopped document carries the same two optional keys as success.
+          controlledBy: controlledByJson(controlledBy),
+          authorities: authoritiesJson(checked),
         })
       } else {
         deps.stderr.write(`${stopped.message}${stopped.suggestion ? ` ${stopped.suggestion}` : ""}\n`)
@@ -470,7 +519,15 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     // cannot make, presented once, so a security key is touched twice for 146 keys (D9).
     if (last !== undefined) await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx)
 
-    return finish(ctx, { file: pairsFile, rows: rows.length, keys: results, destinations, exit: worst })
+    return finish(ctx, {
+      file: pairsFile,
+      rows: rows.length,
+      keys: results,
+      destinations,
+      exit: worst,
+      controlledBy,
+      roles: checked,
+    })
   })
 }
 
@@ -587,10 +644,6 @@ async function reconcileForPreflight(
   return { ok: true, destinationAddress: server, ...(assertedAccount !== undefined ? { account } : {}) }
 }
 
-function shortAddress(address: string): string {
-  return `${address.slice(0, 6)}…${address.slice(-4)}`
-}
-
 function skippedResult(item: Extract<PlannedRow, { kind: "skip" }> | PlannedRow): KeyResult {
   const subject = item.subject
   return {
@@ -606,12 +659,22 @@ function skippedResult(item: Extract<PlannedRow, { kind: "skip" }> | PlannedRow)
   }
 }
 
-/** The table (D8): one row per file row, in file order, the `state` column first after the number. */
+/**
+ * The table (D8): one row per file row, in file order, the `state` column first after the line.
+ * `line` is the file line (BE-296, D10), and `authority` (BE-296, D8) holds every finding for an
+ * acting key in full, `none` when every group was read and nothing was found, `?` when some group
+ * was not read for it, and nothing for a skip row.
+ */
 function renderBatchTable(
   planned: PlannedRow[],
-  opts: { lamports?: Map<string, bigint>; tokenCounts?: Map<string, number>; hasValueUsd: boolean },
+  opts: {
+    lamports?: Map<string, bigint>
+    tokenCounts?: Map<string, number>
+    hasValueUsd: boolean
+    roles?: SignerRolesResult
+  },
 ): string {
-  const headers = ["#", "state", "label", "address", "destination"]
+  const headers = ["line", "state", "label", "address", "destination", "authority"]
   headers.push(opts.tokenCounts !== undefined ? "SOL" : "SOL (tokens not read)")
   if (opts.tokenCounts !== undefined) headers.push("token accounts")
   if (opts.hasValueUsd) headers.push("value_usd (yours)")
@@ -629,7 +692,8 @@ function renderBatchTable(
       item.kind === "promote"
         ? destinationCell(item.destination.label, item.destination.address)
         : destinationCell(item.row.destination, item.destinationAddress)
-    const cells = [String(item.row.line), state, item.subject.label, address, destination]
+    const authority = item.kind === "skip" ? "" : opts.roles === undefined ? "?" : authorityCell(address, opts.roles)
+    const cells = [String(item.row.line), state, item.subject.label, address, destination, authority]
     const lamports = opts.lamports?.get(address)
     cells.push(lamports === undefined ? "unread" : formatSol(lamports))
     if (opts.tokenCounts !== undefined) cells.push(String(opts.tokenCounts.get(address) ?? 0))
@@ -652,6 +716,8 @@ function renderFooter(opts: {
   /** BE-288 (§4.3): the room this run was checked against, and the `promote` rows that take a slot. */
   room: AccountRoom
   promotes: number
+  /** BE-296 (D8): the role read, when it ran (it does not when the SOL read failed). */
+  roles?: SignerRolesResult
 }): string {
   const skipped = opts.planned.filter((item) => item.kind === "skip").length
   const resumes = opts.planned.filter((item) => item.kind === "resume").length
@@ -679,6 +745,12 @@ function renderFooter(opts: {
           : "Token accounts were not read (pass --token-holdings)."
       }`,
     )
+  }
+  // BE-296 (D8): the count, then what was and was not read, after the SOL line; the destination
+  // roll-up above does not move. Only when there was something to check.
+  if (opts.roles !== undefined && opts.acting.length > 0) {
+    lines.push(authoritiesCountLine(opts.acting.length, opts.roles))
+    lines.push(readSummaryLine(opts.host, opts.roles))
   }
   if (opts.hasValueUsd) {
     let total = 0
@@ -731,6 +803,8 @@ function finish(
     keys: KeyResult[]
     destinations: ReturnType<typeof actingDestinations>
     exit: number
+    controlledBy: ControlledBy
+    roles: SignerRolesResult
   },
 ): number {
   const promoted = opts.keys.filter((r) => r.state === "promoted").length
@@ -749,6 +823,9 @@ function finish(
       skipped,
       destinations: opts.destinations.map(({ label, address, keys }) => ({ label, address, keys })),
       keys: opts.keys,
+      // BE-296 (D9): optional keys only; every key above is unchanged.
+      controlledBy: controlledByJson(opts.controlledBy),
+      authorities: authoritiesJson(opts.roles),
     })
     return opts.exit
   }

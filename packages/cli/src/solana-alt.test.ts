@@ -66,6 +66,8 @@ function rpcWith(accounts: Record<string, AccountView | null>): SolanaRpc {
     isBlockhashValid: refuse("isBlockhashValid"),
     hasSignatureHistory: refuse("hasSignatureHistory"),
     simulateTransaction: refuse("simulateTransaction"),
+    getProgramAccounts: refuse("getProgramAccounts"),
+    getProgramAccountsV2: refuse("getProgramAccountsV2"),
     getEpoch: refuse("getEpoch"),
     getAccountInfo: async (address) => accounts[address] ?? null,
     getMultipleAccounts: async (addresses) => addresses.map((address) => accounts[address] ?? null),

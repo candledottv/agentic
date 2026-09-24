@@ -2,13 +2,14 @@
  * Ember Phase 2 PR C (CC-06, CC-10, AD-4, AD-8): `candle vault promote`.
  *
  * Two modes: `--from` derives a fresh key on the TEE branch; `--in-place` imports one named vault
- * key at its own address after the AD-8 warning and typed confirmations.
+ * key at its own address after the one-sentence warning, the last-six check, the live
+ * controlled-by block and the typed `confirm` (BE-296).
  */
 import { base58 } from "@scure/base"
 import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { errorEnvelope, renderError, suggestionFor, writeFailure, writeLocalFailure } from "../render"
-import { createSolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
+import { createSolanaRpc, type SolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import {
   RESTORED_SENTENCE,
   readAccountRoom,
@@ -24,16 +25,21 @@ import type { KeyEntry } from "../vault/format"
 import { DERIVATION_SCHEME, deriveSolanaKey, solanaTeePath } from "../vault/hd"
 import { wipe } from "../vault/hygiene"
 import {
-  AD8_WARNING,
   applyPromotion,
   assertColdVaultDestination,
   assertInPlacePreconditions,
   assertNotPinnedDestination,
-  confirmAd8Acknowledgement,
+  confirmPromotion,
+  controlledByJson,
   findEntryByLabelOrAddress,
-  printAd8Warning,
+  printPromoteSentence,
+  promoteSentence,
+  readControlledBy,
+  renderControlledBy,
+  runRoleCheck,
 } from "../vault/promote-support"
 import { adoptGrantedRow, reconcileGrant } from "../vault/reconcile-grant"
+import { authoritiesBlock, authoritiesJson, keysWithFindings, sentenceForm } from "../vault/signer-roles"
 import {
   closeVault,
   commitVault,
@@ -335,22 +341,33 @@ async function promoteInPlace(
       return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).")
     }
 
-    // The room, before the holdings, the AD-8 warning and either typed confirmation (BE-288, D8):
-    // a full account is refused before anyone types EXPOSE, and before any write.
+    // The room, before the holdings, the sentence and either typed confirmation (BE-288, D8):
+    // a full account is refused before anyone types confirm, and before any write.
     await refuseWithoutRoom(ctx)
 
-    // Holdings (step 4): display what the subject holds.
-    await displayHoldings(ctx, rpcUrl, first.subject.address)
+    // Which account, key and API will control this key (BE-296, D5): live, after the room,
+    // before the operator reads anything and before any write. Refuses; never a cached value.
+    const controlledBy = await readControlledBy(ctx)
 
-    // AD-8 warning BEFORE both typed confirmations (step 5 then 6).
-    printAd8Warning(ctx)
-    // Assert the normative block is the one CC-10 specifies (tests check substring coverage).
-    if (!ctx.json) {
-      // Already printed by printAd8Warning; keep AD8_WARNING referenced so it cannot drift unused.
-      void AD8_WARNING
-    }
+    // Holdings (step 4): display what the subject holds.
+    const rpc = createSolanaRpc(rpcUrl, ctx.deps.fetch)
+    const host = new URL(rpcUrl).host
+    await displayHoldings(ctx, rpc, first.subject.address)
+
+    // The role read (BE-296, D6, D7): always, no flag, nine requests, warns and never refuses.
+    // Its block sits under the holdings, on stdout like them; the sentence names it as "above".
+    const roles = await runRoleCheck(ctx, rpc, [first.subject.address])
+    ctx.deps.stdout.write(`${authoritiesBlock(host, roles)}\n`)
+
+    // The sentence BEFORE both typed confirmations (step 5 then 6): the last six of the address
+    // being promoted, then the controlled-by block directly above `confirm` (D3, D4).
+    printPromoteSentence(
+      ctx,
+      promoteSentence({ n: 1, form: sentenceForm(roles), k: keysWithFindings(roles), where: "above" }),
+    )
     await confirmLastSix(ctx, first.subject.address, "the address being promoted")
-    await confirmAd8Acknowledgement(ctx)
+    ctx.deps.stderr.write(`${renderControlledBy(controlledBy, 1)}\n`)
+    await confirmPromotion(ctx, 1)
 
     // Re-open under the lock and re-run steps 1-3 before the write.
     vault = hold(await reopenFromDisk(path, opened.reopen, vault))
@@ -442,6 +459,9 @@ async function promoteInPlace(
         vaultDestination: destination.address,
         lifecycle: updated?.tee?.lifecycle ?? null,
         linkedWalletId: updated?.linkedWalletId ?? null,
+        // BE-296 (D9): optional keys only; every key above is unchanged.
+        controlledBy: controlledByJson(controlledBy),
+        authorities: authoritiesJson(roles),
       })
     } else if (code === 0 || code === 3) {
       ctx.deps.stdout.write(
@@ -647,8 +667,7 @@ export async function resumePromote(
   return { exit: 0, adopted }
 }
 
-async function displayHoldings(ctx: CommandContext, rpcUrl: string, address: string): Promise<void> {
-  const rpc = createSolanaRpc(rpcUrl, ctx.deps.fetch)
+async function displayHoldings(ctx: CommandContext, rpc: SolanaRpc, address: string): Promise<void> {
   const observedAt = new Date(ctx.deps.now()).toISOString()
   const lamports = await rpc.getBalance(address)
   // Both programs (R5): a holdings read that showed only classic Token accounts would promote a

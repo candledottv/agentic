@@ -4,6 +4,8 @@
  */
 import { describe, expect, test } from "bun:test"
 import {
+  apiKeyPrefix,
+  candleEnvironment,
   defaultProfileNameFor,
   effectiveProfileFields,
   formatCacheAge,
@@ -298,5 +300,39 @@ describe("profile lookup ignores inherited properties", () => {
   test("a real profile still resolves", () => {
     const config = { profiles: { real: { apiUrl: "https://api.test" } }, activeProfile: "real" }
     expect(resolveProfileName(config as never, { flag: "real", env: {} })).toEqual({ ok: true, name: "real" })
+  })
+})
+
+/**
+ * BE-296 (spec `2026-09-23-cli-vault-promote-confirm-design.md`, D4, T7, T8): the two pure readers
+ * the controlled-by block prints from. `defaultProfileNameFor` now calls `candleEnvironment`, so
+ * the login-derived profile name and the environment beside the API URL cannot disagree.
+ */
+describe("BE-296: candleEnvironment and apiKeyPrefix", () => {
+  test("T7: the three Candle hosts, a localhost URL, and defaultProfileNameFor still agrees", () => {
+    expect(candleEnvironment("https://staging.api.candle.tv")).toBe("staging")
+    expect(candleEnvironment("https://api.candle.tv")).toBe("production")
+    expect(candleEnvironment("https://api.alpha.candle.tv")).toBe("production")
+    expect(candleEnvironment("http://localhost:3005")).toBeUndefined()
+    expect(candleEnvironment("https://api.pb.test")).toBeUndefined()
+    expect(candleEnvironment("not a url")).toBeUndefined()
+    expect(defaultProfileNameFor("https://staging.api.candle.tv", undefined)).toBe("staging")
+    expect(defaultProfileNameFor("https://api.candle.tv", undefined)).toBe("production")
+    expect(defaultProfileNameFor("https://api.alpha.candle.tv", undefined)).toBe("production")
+    expect(defaultProfileNameFor("http://localhost:3005", undefined)).toBe("localhost")
+  })
+
+  test("T8: a live key, a test key, and malformed keys, by the server's parseAgentKey rule", () => {
+    const random = "B6P-TSRsAbCdEfGhIjKlMnOpQrStUvWxYz0123456_-"
+    expect(random).toHaveLength(43)
+    expect(apiKeyPrefix(`cndl_live_${random}`)).toBe("B6P-TSRs")
+    expect(apiKeyPrefix(`cndl_test_${random}`)).toBe("B6P-TSRs")
+    expect(apiKeyPrefix(`  cndl_live_${random}\n`)).toBe("B6P-TSRs")
+    // Wrong length, wrong prefix, empty: never a slice of something that is not a key.
+    expect(apiKeyPrefix(`cndl_live_${random.slice(0, 42)}`)).toBeUndefined()
+    expect(apiKeyPrefix(`cndl_live_${random}x`)).toBeUndefined()
+    expect(apiKeyPrefix("ck_live_prc")).toBeUndefined()
+    expect(apiKeyPrefix(`sk_live_${random}`)).toBeUndefined()
+    expect(apiKeyPrefix("")).toBeUndefined()
   })
 })

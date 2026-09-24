@@ -1,22 +1,25 @@
 /**
- * Ember Phase 2 PR C (CC-06, CC-10, AD-8): shared preconditions and the normative AD-8 warning
- * for both promote modes and `tee enable --vault-key`.
+ * Ember Phase 2 PR C (CC-06, CC-10, AD-8): shared preconditions for both promote modes and
+ * `tee enable --vault-key`, plus, since BE-296 (spec `2026-09-23-cli-vault-promote-confirm-design.md`),
+ * the one-sentence warning, the `confirm` acknowledgement, the live controlled-by block and the
+ * signer-role check's screen handling that `vault promote --in-place` and `vault promote-batch`
+ * share. One producer for each, so the two commands cannot drift.
  */
-import type { CommandContext } from "../deps"
+import { apiRequest } from "../client"
+import { type KeyRow, labelCell } from "../commands/keys"
+import { type CommandContext, resolveApiKey, resolveDeviceToken } from "../deps"
+import { apiKeyPrefix, candleEnvironment } from "../profiles"
+import type { SolanaRpc } from "../solana-lite"
 import { VaultError } from "./errors"
 import type { IndexPlaintext, KeyEntry } from "./format"
-
-/**
- * CC-10's normative AD-8 warning. Printed in full on every in-place promotion, for every
- * address, unconditionally, before both typed confirmations. Never a gate.
- */
-export const AD8_WARNING = `This key may sign for a multisig, for a program upgrade authority, or for a token mint or freeze authority. The CLI does not know which, and does not check.
-Promoting leaves a copy of this key inside Privy's TEE for good.
-The key itself, its multisig membership and its authorities are unchanged: the operator keeps the key and can keep signing with it, and whatever it signs for keeps working exactly as before.
-If Privy's TEE or its signing policy were compromised, whatever this key controls is at risk, and how much depends on the setup: a multisig's threshold, or whether this key is a sole authority, decides what an attacker could actually do.
-Demoting does not remove that copy. The only way to end this exposure is to replace this key in the multisig, or to move the authority to another key.`
-
-export const AD8_ACK_WORD = "EXPOSE"
+import {
+  checkDoneLine,
+  progressLine,
+  type RoleProgress,
+  readSignerRoles,
+  type SentenceForm,
+  type SignerRolesResult,
+} from "./signer-roles"
 
 /** The recovery destination rule (CC-10), shared by both promote modes and `tee enable --vault-key`. */
 export function assertColdVaultDestination(
@@ -212,17 +215,282 @@ export function applyPromotion(
   }
 }
 
-export function printAd8Warning(ctx: CommandContext): void {
-  ctx.deps.stdout.write(`\n${AD8_WARNING}\n\n`)
+// ── D1: the sentence ────────────────────────────────────────────────────────────────────────
+
+export interface SentenceInput {
+  /** The acting count: promote plus resume rows in a batch, 1 in single promote. */
+  n: number
+  form: SentenceForm
+  /** Form F only: distinct acting keys with at least one finding. */
+  k?: number
+  /** Where the findings are named: `below` (the batch table follows) or `above` (single promote's block precedes). */
+  where: "below" | "above"
 }
 
-export async function confirmAd8Acknowledgement(ctx: CommandContext): Promise<void> {
-  const typed = (
-    await ctx.deps.promptLine(
-      `Type ${AD8_ACK_WORD} to acknowledge: I have read the warning above, this address never returns to cold, and I accept what it may control: `,
-    )
-  ).trim()
-  if (typed !== AD8_ACK_WORD) {
-    throw new VaultError("PROMOTE_NOT_ACKNOWLEDGED", "The acknowledgement word did not match; nothing was promoted.")
+/**
+ * The one sentence, first, on stdout (D1). Three forms, chosen by what the role read found: U when
+ * not every group was read, N when every group was read for every key and nothing was found, F
+ * when anything was found. Each states the two facts the acknowledgement covers: the copy is
+ * permanent, and demoting does not remove it. The singular/plural variants are the only
+ * substitutions; every detail goes in the table, footer or authorities block, never here.
+ */
+export function promoteSentence(input: SentenceInput): string {
+  const plural = input.n !== 1
+  const subject = plural ? `these ${input.n} keys` : "this key"
+  const head = `You are about to accept a permanent copy of ${subject} in Privy's TEE: demoting will not remove it,`
+  switch (input.form) {
+    case "U":
+      return `${head} and anything ${plural ? "a key" : "it"} signs for (a multisig, a token mint, a program upgrade authority) is then only as safe as Privy.`
+    case "N":
+      return `${head} ${plural ? "none of them is" : "it is not"} a token mint, freeze, program upgrade or stake authority, and any multisig ${plural ? "they sign" : "it signs"} for (not checked) is then only as safe as Privy.`
+    case "F": {
+      const k = input.k ?? 1
+      const holder = plural ? `${k} of them ${k === 1 ? "holds" : "hold"}` : "it holds"
+      return `${head} and ${holder} a mint, freeze, upgrade or stake authority, named ${input.where}, which is then only as safe as Privy.`
+    }
   }
+}
+
+/** Every form starts with this; the `--json` tests strip the sentence from stdout by it. */
+export const SENTENCE_PREFIX = "You are about to accept "
+
+/** Where the five-sentence warning used to be printed: stdout, one line, a blank line after it. */
+export function printPromoteSentence(ctx: CommandContext, sentence: string): void {
+  ctx.deps.stdout.write(`\n${sentence}\n\n`)
+}
+
+// ── D3: the acknowledgement ─────────────────────────────────────────────────────────────────
+
+export const CONFIRM_WORD = "confirm"
+
+/** The prompt's subject: `this key` or `these n keys`, the same words the sentence and the block use. */
+export function subjectPhrase(n: number): string {
+  return n === 1 ? "this key" : `these ${n} keys`
+}
+
+/**
+ * The prompt, both commands: `Type confirm to accept this for {these n keys | this key}: `. Trimmed
+ * and case-insensitive; anything else is `PROMOTE_NOT_ACKNOWLEDGED`, exit 1, zero writes, one
+ * attempt. The refusal never echoes what was typed.
+ */
+export function confirmPrompt(n: number): string {
+  return `Type ${CONFIRM_WORD} to accept this for ${subjectPhrase(n)}: `
+}
+
+export async function confirmPromotion(ctx: CommandContext, n: number): Promise<void> {
+  const typed = await ctx.deps.promptLine(confirmPrompt(n))
+  if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
+    throw new VaultError(
+      "PROMOTE_NOT_ACKNOWLEDGED",
+      `The acknowledgement is the word ${CONFIRM_WORD}; nothing was promoted, and nothing was written.`,
+      { suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.` },
+    )
+  }
+}
+
+// ── D4, D5: the controlled-by block ─────────────────────────────────────────────────────────
+
+/** `FfU8M5…8pPD`: the first six, an ellipsis, the last four. */
+export function shortAddress(address: string): string {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`
+}
+
+export interface ControlledBy {
+  /** The account's address, from the live `GET /wallets/embedded`. */
+  account: string
+  username: string | null
+  /** The first 8 characters of the key's random part, the value `keys list` prints. Never more. */
+  keyPrefix: string
+  /** The key's label from `GET /keys`, or null whenever D4 prints nothing. */
+  keyLabel: string | null
+  keySource: "env" | "profile" | "default"
+  /** The profile name, for the `profile <name>` clause; absent for `env` and `default`. */
+  profileName?: string
+  apiUrl: string
+  environment: "production" | "staging" | null
+  /** Set when the URL came from `--api-url` or `CANDLE_API_URL` rather than the profile. */
+  apiUrlFrom?: "--api-url" | "CANDLE_API_URL"
+}
+
+function accountUnresolved(reason: string): VaultError {
+  return new VaultError(
+    "PROMOTE_ACCOUNT_UNRESOLVED",
+    `Could not confirm which Candle account this API key acts for (${reason}); nothing was written.`,
+    {
+      suggestion:
+        "Check the key with: candle doctor. Promotion registers the keys to that account, so it does not proceed on a cached value.",
+    },
+  )
+}
+
+/**
+ * D5: one live `GET /api/v1/agent/wallets/embedded` with the key the import will use, the call
+ * `doctor` makes. Refuses with `PROMOTE_ACCOUNT_UNRESOLVED` when no key resolves, the key is not
+ * in the `cndl_live_` / `cndl_test_` shape, the request fails for any reason, or the body has no
+ * string `account`. Never falls back to the cached profile account: the block's only purpose is
+ * that it is live.
+ *
+ * Then D4's label read, which is the opposite in every way: it needs the device token rather
+ * than the API key, its failure is silent, and it never refuses. The two are not one request and
+ * are not awaited together, so a `GET /keys` failure cannot be mistaken for an account failure.
+ */
+export async function readControlledBy(ctx: CommandContext): Promise<ControlledBy> {
+  const { deps } = ctx
+  const apiKey = await resolveApiKey(deps, ctx.profile)
+  if (!apiKey) throw accountUnresolved("no API key is available")
+  const keyPrefix = apiKeyPrefix(apiKey)
+  if (keyPrefix === undefined) throw accountUnresolved("the API key is not in the cndl_live_ or cndl_test_ shape")
+  const result = await apiRequest("/api/v1/agent/wallets/embedded", {
+    method: "GET",
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl: ctx.apiUrl,
+    fetch: deps.fetch,
+    env: deps.env,
+  })
+  if (!result.ok) throw accountUnresolved(result.status === 0 ? result.message : `HTTP ${result.status}`)
+  const body = (result.body ?? {}) as Record<string, unknown>
+  if (typeof body.account !== "string" || body.account.length === 0) {
+    throw accountUnresolved("the response carried no account")
+  }
+  const username = typeof body.username === "string" && body.username.length > 0 ? body.username : null
+
+  const keySource: ControlledBy["keySource"] = deps.env.CANDLE_API_KEY?.trim()
+    ? "env"
+    : ctx.profile !== undefined
+      ? "profile"
+      : "default"
+  const apiUrlFrom: ControlledBy["apiUrlFrom"] | undefined =
+    ctx.apiUrlFlag !== undefined ? "--api-url" : deps.env.CANDLE_API_URL?.trim() ? "CANDLE_API_URL" : undefined
+
+  return {
+    account: body.account,
+    username,
+    keyPrefix,
+    keyLabel: await readKeyLabel(ctx, keyPrefix),
+    keySource,
+    ...(keySource === "profile" && ctx.profile !== undefined ? { profileName: ctx.profile } : {}),
+    apiUrl: ctx.apiUrl,
+    environment: candleEnvironment(ctx.apiUrl) ?? null,
+    ...(apiUrlFrom !== undefined ? { apiUrlFrom } : {}),
+  }
+}
+
+/** D4's label: `GET /keys` with the device token, exactly as `keys list` calls it; null on every failure. */
+async function readKeyLabel(ctx: CommandContext, keyPrefix: string): Promise<string | null> {
+  try {
+    const deviceToken = await resolveDeviceToken(ctx.deps, ctx.profile)
+    if (!deviceToken) return null
+    const result = await apiRequest("/api/v1/agent/keys", {
+      method: "GET",
+      auth: "device",
+      credentials: { deviceToken },
+      apiUrl: ctx.apiUrl,
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env,
+    })
+    if (!result.ok) return null
+    const keys = (result.body as { keys?: unknown } | null)?.keys
+    if (!Array.isArray(keys)) return null
+    const row = (keys as Array<Partial<KeyRow>>).find((key) => key?.keyPrefix === keyPrefix)
+    return typeof row?.label === "string" && row.label.length > 0 ? row.label : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * D4's block, printed on stderr directly above the `confirm` prompt:
+ *
+ *     These 2 keys will be controlled by:
+ *       Candle account  Quant-  (FfU8M5…8pPD)
+ *       API key         B6P-TSRs…  (vault-promote)  profile production
+ *       API             https://api.alpha.candle.tv  (production)
+ */
+export function renderControlledBy(controlledBy: ControlledBy, n: number): string {
+  const subject = n === 1 ? "This key" : `These ${n} keys`
+  const source =
+    controlledBy.keySource === "env"
+      ? "CANDLE_API_KEY"
+      : controlledBy.keySource === "profile"
+        ? `profile ${controlledBy.profileName ?? ""}`.trimEnd()
+        : "default credentials"
+  const cleaned = controlledBy.keyLabel !== null ? labelCell(controlledBy.keyLabel) : ""
+  const label = cleaned.length > 0 ? `(${cleaned})  ` : ""
+  const environment = controlledBy.environment ?? "not a Candle host"
+  const from = controlledBy.apiUrlFrom !== undefined ? `, from ${controlledBy.apiUrlFrom}` : ""
+  return [
+    `${subject} will be controlled by:`,
+    `  Candle account  ${controlledBy.username ?? "(no username)"}  (${shortAddress(controlledBy.account)})`,
+    `  API key         ${controlledBy.keyPrefix}…  ${label}${source}`,
+    `  API             ${controlledBy.apiUrl}  (${environment}${from})`,
+  ].join("\n")
+}
+
+/** D9: the `controlledBy` value of both commands' documents. */
+export function controlledByJson(controlledBy: ControlledBy): {
+  account: string
+  username: string | null
+  keyPrefix: string
+  keyLabel: string | null
+  keySource: "env" | "profile" | "default"
+  apiUrl: string
+  environment: "production" | "staging" | null
+} {
+  return {
+    account: controlledBy.account,
+    username: controlledBy.username,
+    keyPrefix: controlledBy.keyPrefix,
+    keyLabel: controlledBy.keyLabel,
+    keySource: controlledBy.keySource,
+    apiUrl: controlledBy.apiUrl,
+    environment: controlledBy.environment,
+  }
+}
+
+// ── D7: the role read with its progress line ────────────────────────────────────────────────
+
+/**
+ * Runs `readSignerRoles` for the acting addresses with the D7 defaults (8 in flight, 2 s backoff,
+ * 5 retries, 20 s timeout), drawing the progress line on stderr in place with `\r`, updated on
+ * every completed request and at least once a second, and replacing it with the permanent `✓`
+ * line when the read finishes. Under `--json` the same lines go to stderr; stdout is untouched.
+ * Never throws for an RPC reason.
+ */
+export async function runRoleCheck(
+  ctx: CommandContext,
+  rpc: Pick<SolanaRpc, "getProgramAccounts"> & Partial<Pick<SolanaRpc, "getProgramAccountsV2">>,
+  addresses: string[],
+): Promise<SignerRolesResult> {
+  const { deps } = ctx
+  const startedAt = deps.now()
+  let latest: RoleProgress | undefined
+  let drawn = ""
+  const draw = () => {
+    if (latest === undefined) return
+    // The snapshot was taken when a call settled. Recompute elapsed on every draw, including
+    // the one-second ticker, so a slow in-flight request does not freeze `elapsed` and `left`.
+    const line = progressLine({ ...latest, elapsedMs: deps.now() - startedAt })
+    const pad = drawn.length > line.length ? " ".repeat(drawn.length - line.length) : ""
+    deps.stderr.write(`\r${line}${pad}`)
+    drawn = line
+  }
+  const ticker = setInterval(draw, 1000)
+  ticker.unref?.()
+  let result: SignerRolesResult
+  try {
+    result = await readSignerRoles(rpc, addresses, {
+      now: deps.now,
+      sleep: deps.sleep,
+      onProgress: (progress) => {
+        latest = progress
+        draw()
+      },
+    })
+  } finally {
+    clearInterval(ticker)
+  }
+  const clear = drawn.length > 0 ? `\r${" ".repeat(drawn.length)}\r` : ""
+  deps.stderr.write(`${clear}${checkDoneLine(addresses.length, result)}\n`)
+  return result
 }

@@ -136,6 +136,8 @@ function rpcOver(accounts: Record<string, AccountView | null>, epoch = 500n): So
     isBlockhashValid: refuse("isBlockhashValid"),
     hasSignatureHistory: refuse("hasSignatureHistory"),
     getMultipleAccounts: refuse("getMultipleAccounts"),
+    getProgramAccounts: refuse("getProgramAccounts"),
+    getProgramAccountsV2: refuse("getProgramAccountsV2"),
     simulateTransaction: refuse("simulateTransaction"),
     getAccountInfo: async (address: string) => accounts[address] ?? null,
     getEpoch: async () => epoch,

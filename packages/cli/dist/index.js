@@ -47,6 +47,148 @@ var __export = (target, all) => {
 var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
+// src/client.ts
+function trimTrailingSlashes(url) {
+  return url.trim().replace(/\/+$/, "");
+}
+function isLoopbackHost(hostname) {
+  const host = hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost"))
+    return true;
+  if (host === "::1" || host === "[::1]")
+    return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+function isPrivateHost(hostname) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host.includes(".") && !host.includes(":"))
+    return true;
+  if (/\.(local|internal|home\.arpa)$/.test(host))
+    return true;
+  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host))
+    return true;
+  if (/^f[cd][0-9a-f]{2}:/.test(host))
+    return true;
+  return /^fe[89ab][0-9a-f]:/.test(host);
+}
+function insecureApiUrlFault(url, env = process.env) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return;
+  }
+  if (parsed.protocol !== "http:")
+    return;
+  if (isLoopbackHost(parsed.hostname))
+    return;
+  if (env[ALLOW_INSECURE_HTTP_ENV]?.trim() && isPrivateHost(parsed.hostname))
+    return;
+  return `Refusing to send credentials in the clear to ${parsed.origin}. Use https://` + (isPrivateHost(parsed.hostname) ? `, or set ${ALLOW_INSECURE_HTTP_ENV}=1 if this really is a trusted local endpoint.` : `. ${ALLOW_INSECURE_HTTP_ENV} does not apply here: it covers private networks only, and this is a public address.`);
+}
+function resolveApiUrl(configuredApiUrl, env = process.env) {
+  const fromEnv = env.CANDLE_API_URL?.trim();
+  const resolved = fromEnv || configuredApiUrl?.trim() || DEFAULT_API_URL;
+  return trimTrailingSlashes(resolved);
+}
+function buildHeaders(opts) {
+  const headers = { "content-type": "application/json", accept: "application/json" };
+  if (opts.auth === "device" && opts.credentials.deviceToken) {
+    headers.authorization = `Bearer ${opts.credentials.deviceToken}`;
+  } else if (opts.auth === "key" && opts.credentials.apiKey) {
+    headers["x-api-key"] = opts.credentials.apiKey;
+  }
+  return headers;
+}
+function buildUrl(apiUrl, path) {
+  const base = trimTrailingSlashes(apiUrl);
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${normalizedPath}`;
+}
+function parseBody(text) {
+  if (text.length === 0)
+    return;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+function classifyError(status, raw) {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const obj = raw;
+    if (typeof obj.error === "string") {
+      const description = typeof obj.error_description === "string" ? obj.error_description : obj.error;
+      return { rfcError: obj.error, message: description };
+    }
+    if (obj.error && typeof obj.error === "object") {
+      const errorObj = obj.error;
+      const code = typeof errorObj.code === "string" ? errorObj.code : undefined;
+      const message = typeof errorObj.message === "string" ? errorObj.message : `Request failed with status ${status}`;
+      const uiHint = typeof errorObj.uiHint === "string" ? errorObj.uiHint : undefined;
+      const docsPath = typeof errorObj.docsPath === "string" ? errorObj.docsPath : undefined;
+      return {
+        code,
+        message,
+        ...typeof errorObj.retryable === "boolean" ? { retryable: errorObj.retryable } : {},
+        ...typeof errorObj.routing === "object" && errorObj.routing !== null ? { routing: errorObj.routing } : {},
+        ...typeof errorObj.discovery === "object" && errorObj.discovery !== null ? { discovery: errorObj.discovery } : {},
+        ...uiHint ? { uiHint } : {},
+        ...docsPath ? { docsPath } : {}
+      };
+    }
+  }
+  return { message: `Request failed with status ${status}` };
+}
+function latestCliVersionFromApi() {
+  return latestCliVersionSeen;
+}
+async function apiRequest(path, opts) {
+  const url = buildUrl(opts.apiUrl, path);
+  const insecure = insecureApiUrlFault(opts.apiUrl, opts.env ?? process.env);
+  if (insecure) {
+    return { ok: false, status: 0, code: "INSECURE_API_URL", message: insecure, raw: undefined };
+  }
+  const headers = buildHeaders(opts);
+  const body = opts.body === undefined ? undefined : JSON.stringify(opts.body);
+  const doFetch = opts.fetch ?? fetch;
+  let response;
+  try {
+    response = await doFetch(url, {
+      method: opts.method ?? "GET",
+      headers,
+      body
+    });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    const env = opts.env ?? process.env;
+    const envOverride = env.CANDLE_API_URL?.trim();
+    return {
+      ok: false,
+      status: 0,
+      message: `Could not reach ${url}: ${reason} (set CANDLE_API_URL to override; ${envOverride ? `currently "${envOverride}"` : "currently unset"})`,
+      raw: undefined
+    };
+  }
+  const latestHeader = response.headers?.get?.("x-candle-cli-latest");
+  if (latestHeader)
+    latestCliVersionSeen = latestHeader;
+  const text = await response.text();
+  const raw = parseBody(text);
+  if (response.ok) {
+    return { ok: true, status: response.status, body: raw };
+  }
+  const classified = classifyError(response.status, raw);
+  return { ok: false, status: response.status, raw, ...classified };
+}
+var DEFAULT_API_URL = "https://api.alpha.candle.tv", ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP", latestCliVersionSeen = null;
+
 // src/args.ts
 function refuseUnexpandedTilde(name, value) {
   if (!value.startsWith("~"))
@@ -303,6 +445,416 @@ var init_render = __esm(() => {
     "transfer:write"
   ];
   DEFAULT_AGENT_SCOPES = ALL_AGENT_SCOPES.filter((scope) => scope !== "swap:write" && scope !== "transfer:write");
+});
+
+// src/profiles.ts
+function profileSecretRef(name, kind) {
+  return `profile:${name}:${kind === "deviceToken" ? "device_token" : "api_key"}`;
+}
+function isValidProfileName(name) {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(name);
+}
+function listForHumans(profiles, active) {
+  return Object.entries(profiles).map(([name, p]) => `  ${name}${name === active ? " (active)" : ""}${p.account ? `  ${p.account}` : ""}${p.apiUrl ? `  ${p.apiUrl}` : ""}`).join(`
+`);
+}
+function resolveProfileName(config, opts) {
+  const profiles = config.profiles ?? {};
+  const names = Object.keys(profiles);
+  const requested = opts.flag?.trim() || opts.env.CANDLE_PROFILE?.trim() || undefined;
+  if (requested !== undefined) {
+    if (!isValidProfileName(requested))
+      return { ok: false, message: `Invalid profile name: ${requested}` };
+    if (!Object.hasOwn(profiles, requested)) {
+      return {
+        ok: false,
+        message: `No profile named "${requested}".${names.length ? `
+Profiles on this machine:
+${listForHumans(profiles, config.activeProfile)}` : " Run: candle auth login --profile " + requested}`
+      };
+    }
+    return { ok: true, name: requested };
+  }
+  if (config.activeProfile && Object.hasOwn(profiles, config.activeProfile))
+    return { ok: true, name: config.activeProfile };
+  if (names.length === 0)
+    return { ok: true, name: undefined };
+  if (names.length === 1)
+    return { ok: true, name: names[0] };
+  return {
+    ok: false,
+    message: `Several profiles exist and none is selected. Pick one with --profile <name> or CANDLE_PROFILE=<name>:
+${listForHumans(profiles, config.activeProfile)}`
+  };
+}
+function resolveProfileNameForLogin(config, opts) {
+  const profiles = config.profiles ?? {};
+  const requested = opts.flag?.trim() || opts.env.CANDLE_PROFILE?.trim() || undefined;
+  if (requested !== undefined) {
+    if (!isValidProfileName(requested))
+      return { ok: false, message: `Invalid profile name: ${requested}` };
+    return { ok: true, name: requested };
+  }
+  if (config.activeProfile && Object.hasOwn(profiles, config.activeProfile))
+    return { ok: true, name: config.activeProfile };
+  const names = Object.keys(profiles);
+  return { ok: true, name: names.length === 1 ? names[0] : undefined };
+}
+function migratedConfig(config) {
+  if (config.profiles !== undefined)
+    return { config, migrated: false };
+  const legacy = {};
+  for (const field of PRE_PROFILE_FIELDS) {
+    const value = config[field];
+    if (value !== undefined)
+      legacy[field] = value;
+  }
+  if (Object.keys(legacy).length === 0)
+    return { config, migrated: false };
+  return { config: { ...config, profiles: { default: legacy }, activeProfile: "default" }, migrated: true };
+}
+function effectiveProfileFields(config, profile) {
+  if (profile !== undefined)
+    return config.profiles?.[profile] ?? {};
+  const legacy = {};
+  for (const field of PRE_PROFILE_FIELDS) {
+    const value = config[field];
+    if (value !== undefined)
+      legacy[field] = value;
+  }
+  return legacy;
+}
+function defaultProfileNameFor(apiUrl, existing) {
+  let host = "profile";
+  try {
+    host = new URL(apiUrl).hostname;
+  } catch {}
+  let base;
+  const environment = candleEnvironment(apiUrl);
+  if (environment !== undefined)
+    base = environment;
+  else
+    base = host.replace(/[^A-Za-z0-9._-]/g, "-").replace(/\./g, "-").slice(0, 28) || "profile";
+  if (!isValidProfileName(base))
+    base = "profile";
+  const taken = new Set(Object.keys(existing ?? {}));
+  if (!taken.has(base))
+    return base;
+  for (let n = 2;; n++) {
+    const candidate = `${base}-${n}`;
+    if (!taken.has(candidate))
+      return candidate;
+  }
+}
+function candleEnvironment(apiUrl) {
+  let host;
+  try {
+    host = new URL(apiUrl).hostname;
+  } catch {
+    return;
+  }
+  if (host === "staging.api.candle.tv")
+    return "staging";
+  if (host === "api.candle.tv" || host === "api.alpha.candle.tv")
+    return "production";
+  return;
+}
+function apiKeyPrefix(key) {
+  const trimmed = key.trim();
+  for (const prefix of API_KEY_PREFIXES) {
+    if (!trimmed.startsWith(prefix))
+      continue;
+    const random = trimmed.slice(prefix.length);
+    if (random.length !== API_KEY_RANDOM_LENGTH)
+      return;
+    return random.slice(0, 8);
+  }
+  return;
+}
+function credentialEnvOverrides(env) {
+  return ["CANDLE_API_KEY", "CANDLE_DEVICE_TOKEN"].filter((name) => env[name]?.trim());
+}
+function identityLine(profile, account, apiUrl, overrides, username) {
+  const shown = overrides?.length ? `unknown (${overrides.join(", ")} override)` : username && account ? `${username} (${account})` : account ?? "unknown";
+  return `Profile: ${profile ?? "none"}   Account: ${shown} at ${apiUrl}`;
+}
+async function printIdentity(ctx) {
+  if (ctx.json)
+    return;
+  const config = await ctx.deps.readConfig();
+  const fields = effectiveProfileFields(config, ctx.profile);
+  ctx.deps.stdout.write(`${identityLine(ctx.profile, fields.account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env), fields.username)}
+`);
+}
+function formatCacheAge(now, cachedAt) {
+  if (cachedAt === undefined)
+    return "not cached";
+  const seconds = Math.max(0, Math.floor((now - cachedAt) / 1000));
+  if (seconds < 60)
+    return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60)
+    return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24)
+    return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+function profileTable(config, now) {
+  return Object.entries(config.profiles ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([name, p]) => ({
+    name,
+    active: config.activeProfile === name,
+    account: p.account,
+    cachedAge: p.account !== undefined && p.accountCachedAt === undefined ? "age unknown" : formatCacheAge(now, p.accountCachedAt),
+    apiUrl: p.apiUrl,
+    keyPrefix: p.keyPrefix
+  }));
+}
+var PRE_PROFILE_FIELDS, API_KEY_PREFIXES, API_KEY_RANDOM_LENGTH = 43;
+var init_profiles = __esm(() => {
+  PRE_PROFILE_FIELDS = ["apiUrl", "keyPrefix", "deviceTokenPrefix", "scopes", "label", "portalOrigin"];
+  API_KEY_PREFIXES = ["cndl_live_", "cndl_test_"];
+});
+
+// src/file-lock.ts
+import { open, rm, stat } from "node:fs/promises";
+async function withFileLock(target, fn) {
+  const lockPath = `${target}.lock`;
+  const deadline = Date.now() + TIMEOUT_MS;
+  for (;; ) {
+    try {
+      await (await open(lockPath, "wx")).close();
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST")
+        throw error;
+      const age = await stat(lockPath).then((s) => Date.now() - s.mtimeMs).catch(() => 0);
+      if (age > STALE_MS) {
+        await rm(lockPath, { force: true });
+        continue;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`Timed out waiting for ${lockPath}. Another candle process is writing; if none is running, delete that file.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await rm(lockPath, { force: true });
+  }
+}
+var STALE_MS = 30000, RETRY_MS = 25, TIMEOUT_MS = 1e4;
+var init_file_lock = () => {};
+
+// src/secret-store.ts
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+function walletSignerRef(walletId) {
+  return `wallet_signer_${walletId}`;
+}
+function importPendingSignerRef(chain, address) {
+  return `import_pending_${chain}_${address}`;
+}
+function pemToStoredSigner(pem) {
+  return pem.replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s+/g, "");
+}
+function storedSignerToPem(stored) {
+  const lines = stored.match(/.{1,64}/g) ?? [stored];
+  return `-----BEGIN PRIVATE KEY-----
+${lines.join(`
+`)}
+-----END PRIVATE KEY-----
+`;
+}
+function configDir() {
+  return process.env.CANDLE_CONFIG_DIR?.trim() || join(homedir(), ".config", "candle");
+}
+function defaultCredentialsPath() {
+  return join(configDir(), "credentials.enc");
+}
+function defaultSecretsPath(env = process.env) {
+  return join(env.CANDLE_CONFIG_DIR?.trim() || join(homedir(), ".config", "candle"), "secrets.enc");
+}
+async function deriveKey(passphrase, salt, iterations) {
+  const keyMaterial = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
+    "deriveKey"
+  ]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+
+class EncryptedFileSecretStore {
+  path;
+  iterations;
+  cachedPassphrase;
+  constructor(options = {}) {
+    this.path = options.path ?? defaultCredentialsPath();
+    this.iterations = options.iterations ?? PBKDF2_ITERATIONS;
+  }
+  async get(ref) {
+    const passphrase = await this.resolvePassphrase();
+    const contents = await this.readContents();
+    const entry = contents[ref];
+    if (!entry)
+      return null;
+    const salt = fromBase64(entry.salt);
+    const key = await deriveKey(passphrase, salt, entry.iterations);
+    const iv = fromBase64(entry.iv);
+    const ciphertext = fromBase64(entry.ciphertext);
+    let plaintext;
+    try {
+      plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
+    } catch {
+      throw new Error(`Could not decrypt the credential for "${ref}" in ${this.path}. CANDLE_KEYRING_PASSPHRASE is likely wrong for this file.`);
+    }
+    return new TextDecoder().decode(plaintext);
+  }
+  async set(ref, value) {
+    const passphrase = await this.resolvePassphrase();
+    return withFileLock(this.path, async () => {
+      const contents = await this.readContents();
+      const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH_BYTES));
+      const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH_BYTES));
+      const key = await deriveKey(passphrase, salt, this.iterations);
+      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
+      contents[ref] = {
+        salt: toBase64(salt),
+        iv: toBase64(iv),
+        ciphertext: toBase64(new Uint8Array(ciphertext)),
+        iterations: this.iterations
+      };
+      await this.writeContents(contents);
+    });
+  }
+  async delete(ref) {
+    await this.resolvePassphrase();
+    return withFileLock(this.path, async () => {
+      const contents = await this.readContents();
+      if (!Object.hasOwn(contents, ref))
+        return;
+      delete contents[ref];
+      await this.writeContents(contents);
+    });
+  }
+  async resolvePassphrase() {
+    if (this.cachedPassphrase !== undefined)
+      return this.cachedPassphrase;
+    const fromEnv = process.env.CANDLE_KEYRING_PASSPHRASE;
+    if (fromEnv) {
+      this.cachedPassphrase = fromEnv;
+      return fromEnv;
+    }
+    if (process.stdin.isTTY) {
+      const prompted = await readHiddenLine("Passphrase for Candle credential store: ", realPromptStreams());
+      this.cachedPassphrase = prompted;
+      return prompted;
+    }
+    throw new Error("No keychain available and no CANDLE_KEYRING_PASSPHRASE set; set it to use the encrypted file store on this machine");
+  }
+  async readContents() {
+    let raw;
+    try {
+      raw = await readFile(this.path, "utf8");
+    } catch (err) {
+      if (err.code === "ENOENT")
+        return {};
+      throw err;
+    }
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw new Error(`The credentials file at ${this.path} is not valid JSON and cannot be read. Delete it and re-run ` + "the command that stores your device token / API key to recreate it.");
+    }
+  }
+  async writeContents(contents) {
+    const dir = dirname(this.path);
+    await mkdir(dir, { recursive: true });
+    await chmod(dir, 448);
+    const tmpPath = `${this.path}.${crypto.randomUUID()}.tmp`;
+    await writeFile(tmpPath, JSON.stringify(contents, null, 2), { encoding: "utf8", mode: 384 });
+    await chmod(tmpPath, 384);
+    await rename(tmpPath, this.path);
+  }
+}
+async function promptHiddenSecret(promptText) {
+  if (!process.stdin.isTTY) {
+    throw new Error("No TTY available for interactive input; pass --key-file instead");
+  }
+  return readHiddenLine(promptText, realPromptStreams());
+}
+function realPromptStreams() {
+  return { input: process.stdin, output: process.stderr };
+}
+async function promptVisibleLine(promptText) {
+  if (!process.stdin.isTTY) {
+    throw new Error("No TTY available for interactive input; this command cannot run unattended");
+  }
+  return readVisibleLine(promptText, realPromptStreams());
+}
+async function readVisibleLine(promptText, io) {
+  const readline = await import("node:readline");
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
+    rl.question(promptText, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+async function readHiddenLine(promptText, io) {
+  const readline = await import("node:readline");
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
+    const rlInternals = rl;
+    rlInternals._writeToOutput = (text) => {
+      if (text === promptText)
+        io.output.write(text);
+    };
+    rl.question(promptText, (answer) => {
+      rl.close();
+      io.output.write(`
+`);
+      resolve(answer);
+    });
+  });
+}
+function toBase64(bytes) {
+  return Buffer.from(bytes).toString("base64");
+}
+function fromBase64(base64) {
+  return new Uint8Array(Buffer.from(base64, "base64"));
+}
+var SECRET_REFS, PBKDF2_ITERATIONS = 210000, SALT_LENGTH_BYTES = 16, IV_LENGTH_BYTES = 12;
+var init_secret_store = __esm(() => {
+  init_file_lock();
+  SECRET_REFS = {
+    deviceToken: "device_token",
+    apiKey: "api_key"
+  };
+});
+
+// src/deps.ts
+async function resolveDeviceToken(deps, profile) {
+  const fromEnv = deps.env.CANDLE_DEVICE_TOKEN?.trim();
+  if (fromEnv)
+    return fromEnv;
+  const ref = profile ? profileSecretRef(profile, "deviceToken") : SECRET_REFS.deviceToken;
+  const stored = await deps.store.get(ref);
+  return stored ?? undefined;
+}
+async function resolveApiKey(deps, profile) {
+  const fromEnv = deps.env.CANDLE_API_KEY?.trim();
+  if (fromEnv)
+    return fromEnv;
+  const ref = profile ? profileSecretRef(profile, "apiKey") : SECRET_REFS.apiKey;
+  const stored = await deps.store.get(ref);
+  return stored ?? undefined;
+}
+var init_deps = __esm(() => {
+  init_profiles();
+  init_secret_store();
 });
 
 // src/release.ts
@@ -2587,7 +3139,8 @@ var init_errors = __esm(() => {
     "PROMOTE_BATCH_REFUSED",
     "WALLET_LIMIT_REACHED",
     "TIER_REQUIRED",
-    "LINKED_WALLET_ROOM_UNREADABLE"
+    "LINKED_WALLET_ROOM_UNREADABLE",
+    "PROMOTE_ACCOUNT_UNRESOLVED"
   ];
   VaultError = class VaultError extends Error {
     code;
@@ -6768,20 +7321,1950 @@ var init_store = __esm(() => {
   init_sidecar();
 });
 
+// ../../node_modules/@noble/curves/esm/abstract/edwards.js
+function isEdValidXY(Fp, CURVE, x, y) {
+  const x2 = Fp.sqr(x);
+  const y2 = Fp.sqr(y);
+  const left = Fp.add(Fp.mul(CURVE.a, x2), y2);
+  const right = Fp.add(Fp.ONE, Fp.mul(CURVE.d, Fp.mul(x2, y2)));
+  return Fp.eql(left, right);
+}
+function edwards(params, extraOpts = {}) {
+  const validated = _createCurveFields("edwards", params, extraOpts, extraOpts.FpFnLE);
+  const { Fp, Fn } = validated;
+  let CURVE = validated.CURVE;
+  const { h: cofactor } = CURVE;
+  _validateObject(extraOpts, {}, { uvRatio: "function" });
+  const MASK = _2n3 << BigInt(Fn.BYTES * 8) - _1n5;
+  const modP = (n) => Fp.create(n);
+  const uvRatio = extraOpts.uvRatio || ((u, v) => {
+    try {
+      return { isValid: true, value: Fp.sqrt(Fp.div(u, v)) };
+    } catch (e) {
+      return { isValid: false, value: _0n5 };
+    }
+  });
+  if (!isEdValidXY(Fp, CURVE, CURVE.Gx, CURVE.Gy))
+    throw new Error("bad curve params: generator point");
+  function acoord(title, n, banZero = false) {
+    const min = banZero ? _1n5 : _0n5;
+    aInRange("coordinate " + title, n, min, MASK);
+    return n;
+  }
+  function aextpoint(other) {
+    if (!(other instanceof Point))
+      throw new Error("ExtendedPoint expected");
+  }
+  const toAffineMemo = memoized((p, iz) => {
+    const { X, Y, Z } = p;
+    const is0 = p.is0();
+    if (iz == null)
+      iz = is0 ? _8n2 : Fp.inv(Z);
+    const x = modP(X * iz);
+    const y = modP(Y * iz);
+    const zz = Fp.mul(Z, iz);
+    if (is0)
+      return { x: _0n5, y: _1n5 };
+    if (zz !== _1n5)
+      throw new Error("invZ was invalid");
+    return { x, y };
+  });
+  const assertValidMemo = memoized((p) => {
+    const { a, d } = CURVE;
+    if (p.is0())
+      throw new Error("bad point: ZERO");
+    const { X, Y, Z, T } = p;
+    const X2 = modP(X * X);
+    const Y2 = modP(Y * Y);
+    const Z2 = modP(Z * Z);
+    const Z4 = modP(Z2 * Z2);
+    const aX2 = modP(X2 * a);
+    const left = modP(Z2 * modP(aX2 + Y2));
+    const right = modP(Z4 + modP(d * modP(X2 * Y2)));
+    if (left !== right)
+      throw new Error("bad point: equation left != right (1)");
+    const XY = modP(X * Y);
+    const ZT = modP(Z * T);
+    if (XY !== ZT)
+      throw new Error("bad point: equation left != right (2)");
+    return true;
+  });
+
+  class Point {
+    constructor(X, Y, Z, T) {
+      this.X = acoord("x", X);
+      this.Y = acoord("y", Y);
+      this.Z = acoord("z", Z, true);
+      this.T = acoord("t", T);
+      Object.freeze(this);
+    }
+    static CURVE() {
+      return CURVE;
+    }
+    static fromAffine(p) {
+      if (p instanceof Point)
+        throw new Error("extended point not allowed");
+      const { x, y } = p || {};
+      acoord("x", x);
+      acoord("y", y);
+      return new Point(x, y, _1n5, modP(x * y));
+    }
+    static fromBytes(bytes, zip215 = false) {
+      const len = Fp.BYTES;
+      const { a, d } = CURVE;
+      bytes = copyBytes(_abytes2(bytes, len, "point"));
+      _abool2(zip215, "zip215");
+      const normed = copyBytes(bytes);
+      const lastByte = bytes[len - 1];
+      normed[len - 1] = lastByte & ~128;
+      const y = bytesToNumberLE(normed);
+      const max = zip215 ? MASK : Fp.ORDER;
+      aInRange("point.y", y, _0n5, max);
+      const y2 = modP(y * y);
+      const u = modP(y2 - _1n5);
+      const v = modP(d * y2 - a);
+      let { isValid, value: x } = uvRatio(u, v);
+      if (!isValid)
+        throw new Error("bad point: invalid y coordinate");
+      const isXOdd = (x & _1n5) === _1n5;
+      const isLastByteOdd = (lastByte & 128) !== 0;
+      if (!zip215 && x === _0n5 && isLastByteOdd)
+        throw new Error("bad point: x=0 and x_0=1");
+      if (isLastByteOdd !== isXOdd)
+        x = modP(-x);
+      return Point.fromAffine({ x, y });
+    }
+    static fromHex(bytes, zip215 = false) {
+      return Point.fromBytes(ensureBytes("point", bytes), zip215);
+    }
+    get x() {
+      return this.toAffine().x;
+    }
+    get y() {
+      return this.toAffine().y;
+    }
+    precompute(windowSize = 8, isLazy = true) {
+      wnaf.createCache(this, windowSize);
+      if (!isLazy)
+        this.multiply(_2n3);
+      return this;
+    }
+    assertValidity() {
+      assertValidMemo(this);
+    }
+    equals(other) {
+      aextpoint(other);
+      const { X: X1, Y: Y1, Z: Z1 } = this;
+      const { X: X2, Y: Y2, Z: Z2 } = other;
+      const X1Z2 = modP(X1 * Z2);
+      const X2Z1 = modP(X2 * Z1);
+      const Y1Z2 = modP(Y1 * Z2);
+      const Y2Z1 = modP(Y2 * Z1);
+      return X1Z2 === X2Z1 && Y1Z2 === Y2Z1;
+    }
+    is0() {
+      return this.equals(Point.ZERO);
+    }
+    negate() {
+      return new Point(modP(-this.X), this.Y, this.Z, modP(-this.T));
+    }
+    double() {
+      const { a } = CURVE;
+      const { X: X1, Y: Y1, Z: Z1 } = this;
+      const A = modP(X1 * X1);
+      const B = modP(Y1 * Y1);
+      const C = modP(_2n3 * modP(Z1 * Z1));
+      const D = modP(a * A);
+      const x1y1 = X1 + Y1;
+      const E = modP(modP(x1y1 * x1y1) - A - B);
+      const G2 = D + B;
+      const F = G2 - C;
+      const H = D - B;
+      const X3 = modP(E * F);
+      const Y3 = modP(G2 * H);
+      const T3 = modP(E * H);
+      const Z3 = modP(F * G2);
+      return new Point(X3, Y3, Z3, T3);
+    }
+    add(other) {
+      aextpoint(other);
+      const { a, d } = CURVE;
+      const { X: X1, Y: Y1, Z: Z1, T: T1 } = this;
+      const { X: X2, Y: Y2, Z: Z2, T: T2 } = other;
+      const A = modP(X1 * X2);
+      const B = modP(Y1 * Y2);
+      const C = modP(T1 * d * T2);
+      const D = modP(Z1 * Z2);
+      const E = modP((X1 + Y1) * (X2 + Y2) - A - B);
+      const F = D - C;
+      const G2 = D + C;
+      const H = modP(B - a * A);
+      const X3 = modP(E * F);
+      const Y3 = modP(G2 * H);
+      const T3 = modP(E * H);
+      const Z3 = modP(F * G2);
+      return new Point(X3, Y3, Z3, T3);
+    }
+    subtract(other) {
+      return this.add(other.negate());
+    }
+    multiply(scalar) {
+      if (!Fn.isValidNot0(scalar))
+        throw new Error("invalid scalar: expected 1 <= sc < curve.n");
+      const { p, f } = wnaf.cached(this, scalar, (p2) => normalizeZ(Point, p2));
+      return normalizeZ(Point, [p, f])[0];
+    }
+    multiplyUnsafe(scalar, acc = Point.ZERO) {
+      if (!Fn.isValid(scalar))
+        throw new Error("invalid scalar: expected 0 <= sc < curve.n");
+      if (scalar === _0n5)
+        return Point.ZERO;
+      if (this.is0() || scalar === _1n5)
+        return this;
+      return wnaf.unsafe(this, scalar, (p) => normalizeZ(Point, p), acc);
+    }
+    isSmallOrder() {
+      return this.multiplyUnsafe(cofactor).is0();
+    }
+    isTorsionFree() {
+      return wnaf.unsafe(this, CURVE.n).is0();
+    }
+    toAffine(invertedZ) {
+      return toAffineMemo(this, invertedZ);
+    }
+    clearCofactor() {
+      if (cofactor === _1n5)
+        return this;
+      return this.multiplyUnsafe(cofactor);
+    }
+    toBytes() {
+      const { x, y } = this.toAffine();
+      const bytes = Fp.toBytes(y);
+      bytes[bytes.length - 1] |= x & _1n5 ? 128 : 0;
+      return bytes;
+    }
+    toHex() {
+      return bytesToHex(this.toBytes());
+    }
+    toString() {
+      return `<Point ${this.is0() ? "ZERO" : this.toHex()}>`;
+    }
+    get ex() {
+      return this.X;
+    }
+    get ey() {
+      return this.Y;
+    }
+    get ez() {
+      return this.Z;
+    }
+    get et() {
+      return this.T;
+    }
+    static normalizeZ(points) {
+      return normalizeZ(Point, points);
+    }
+    static msm(points, scalars) {
+      return pippenger(Point, Fn, points, scalars);
+    }
+    _setWindowSize(windowSize) {
+      this.precompute(windowSize);
+    }
+    toRawBytes() {
+      return this.toBytes();
+    }
+  }
+  Point.BASE = new Point(CURVE.Gx, CURVE.Gy, _1n5, modP(CURVE.Gx * CURVE.Gy));
+  Point.ZERO = new Point(_0n5, _1n5, _1n5, _0n5);
+  Point.Fp = Fp;
+  Point.Fn = Fn;
+  const wnaf = new wNAF(Point, Fn.BITS);
+  Point.BASE.precompute(8);
+  return Point;
+}
+
+class PrimeEdwardsPoint {
+  constructor(ep) {
+    this.ep = ep;
+  }
+  static fromBytes(_bytes) {
+    notImplemented();
+  }
+  static fromHex(_hex) {
+    notImplemented();
+  }
+  get x() {
+    return this.toAffine().x;
+  }
+  get y() {
+    return this.toAffine().y;
+  }
+  clearCofactor() {
+    return this;
+  }
+  assertValidity() {
+    this.ep.assertValidity();
+  }
+  toAffine(invertedZ) {
+    return this.ep.toAffine(invertedZ);
+  }
+  toHex() {
+    return bytesToHex(this.toBytes());
+  }
+  toString() {
+    return this.toHex();
+  }
+  isTorsionFree() {
+    return true;
+  }
+  isSmallOrder() {
+    return false;
+  }
+  add(other) {
+    this.assertSame(other);
+    return this.init(this.ep.add(other.ep));
+  }
+  subtract(other) {
+    this.assertSame(other);
+    return this.init(this.ep.subtract(other.ep));
+  }
+  multiply(scalar) {
+    return this.init(this.ep.multiply(scalar));
+  }
+  multiplyUnsafe(scalar) {
+    return this.init(this.ep.multiplyUnsafe(scalar));
+  }
+  double() {
+    return this.init(this.ep.double());
+  }
+  negate() {
+    return this.init(this.ep.negate());
+  }
+  precompute(windowSize, isLazy) {
+    return this.init(this.ep.precompute(windowSize, isLazy));
+  }
+  toRawBytes() {
+    return this.toBytes();
+  }
+}
+function eddsa(Point, cHash, eddsaOpts = {}) {
+  if (typeof cHash !== "function")
+    throw new Error('"hash" function param is required');
+  _validateObject(eddsaOpts, {}, {
+    adjustScalarBytes: "function",
+    randomBytes: "function",
+    domain: "function",
+    prehash: "function",
+    mapToCurve: "function"
+  });
+  const { prehash } = eddsaOpts;
+  const { BASE, Fp, Fn } = Point;
+  const randomBytes3 = eddsaOpts.randomBytes || randomBytes;
+  const adjustScalarBytes = eddsaOpts.adjustScalarBytes || ((bytes) => bytes);
+  const domain = eddsaOpts.domain || ((data, ctx, phflag) => {
+    _abool2(phflag, "phflag");
+    if (ctx.length || phflag)
+      throw new Error("Contexts/pre-hash are not supported");
+    return data;
+  });
+  function modN_LE(hash) {
+    return Fn.create(bytesToNumberLE(hash));
+  }
+  function getPrivateScalar(key) {
+    const len = lengths.secretKey;
+    key = ensureBytes("private key", key, len);
+    const hashed = ensureBytes("hashed private key", cHash(key), 2 * len);
+    const head = adjustScalarBytes(hashed.slice(0, len));
+    const prefix = hashed.slice(len, 2 * len);
+    const scalar = modN_LE(head);
+    return { head, prefix, scalar };
+  }
+  function getExtendedPublicKey(secretKey) {
+    const { head, prefix, scalar } = getPrivateScalar(secretKey);
+    const point = BASE.multiply(scalar);
+    const pointBytes = point.toBytes();
+    return { head, prefix, scalar, point, pointBytes };
+  }
+  function getPublicKey(secretKey) {
+    return getExtendedPublicKey(secretKey).pointBytes;
+  }
+  function hashDomainToScalar(context = Uint8Array.of(), ...msgs) {
+    const msg = concatBytes(...msgs);
+    return modN_LE(cHash(domain(msg, ensureBytes("context", context), !!prehash)));
+  }
+  function sign(msg, secretKey, options = {}) {
+    msg = ensureBytes("message", msg);
+    if (prehash)
+      msg = prehash(msg);
+    const { prefix, scalar, pointBytes } = getExtendedPublicKey(secretKey);
+    const r = hashDomainToScalar(options.context, prefix, msg);
+    const R = BASE.multiply(r).toBytes();
+    const k = hashDomainToScalar(options.context, R, pointBytes, msg);
+    const s = Fn.create(r + k * scalar);
+    if (!Fn.isValid(s))
+      throw new Error("sign failed: invalid s");
+    const rs = concatBytes(R, Fn.toBytes(s));
+    return _abytes2(rs, lengths.signature, "result");
+  }
+  const verifyOpts = { zip215: true };
+  function verify(sig, msg, publicKey, options = verifyOpts) {
+    const { context, zip215 } = options;
+    const len = lengths.signature;
+    sig = ensureBytes("signature", sig, len);
+    msg = ensureBytes("message", msg);
+    publicKey = ensureBytes("publicKey", publicKey, lengths.publicKey);
+    if (zip215 !== undefined)
+      _abool2(zip215, "zip215");
+    if (prehash)
+      msg = prehash(msg);
+    const mid = len / 2;
+    const r = sig.subarray(0, mid);
+    const s = bytesToNumberLE(sig.subarray(mid, len));
+    let A, R, SB;
+    try {
+      A = Point.fromBytes(publicKey, zip215);
+      R = Point.fromBytes(r, zip215);
+      SB = BASE.multiplyUnsafe(s);
+    } catch (error) {
+      return false;
+    }
+    if (!zip215 && A.isSmallOrder())
+      return false;
+    const k = hashDomainToScalar(context, R.toBytes(), A.toBytes(), msg);
+    const RkA = R.add(A.multiplyUnsafe(k));
+    return RkA.subtract(SB).clearCofactor().is0();
+  }
+  const _size = Fp.BYTES;
+  const lengths = {
+    secretKey: _size,
+    publicKey: _size,
+    signature: 2 * _size,
+    seed: _size
+  };
+  function randomSecretKey(seed = randomBytes3(lengths.seed)) {
+    return _abytes2(seed, lengths.seed, "seed");
+  }
+  function keygen(seed) {
+    const secretKey = utils2.randomSecretKey(seed);
+    return { secretKey, publicKey: getPublicKey(secretKey) };
+  }
+  function isValidSecretKey(key) {
+    return isBytes(key) && key.length === Fn.BYTES;
+  }
+  function isValidPublicKey(key, zip215) {
+    try {
+      return !!Point.fromBytes(key, zip215);
+    } catch (error) {
+      return false;
+    }
+  }
+  const utils2 = {
+    getExtendedPublicKey,
+    randomSecretKey,
+    isValidSecretKey,
+    isValidPublicKey,
+    toMontgomery(publicKey) {
+      const { y } = Point.fromBytes(publicKey);
+      const size = lengths.publicKey;
+      const is25519 = size === 32;
+      if (!is25519 && size !== 57)
+        throw new Error("only defined for 25519 and 448");
+      const u = is25519 ? Fp.div(_1n5 + y, _1n5 - y) : Fp.div(y - _1n5, y + _1n5);
+      return Fp.toBytes(u);
+    },
+    toMontgomerySecret(secretKey) {
+      const size = lengths.secretKey;
+      _abytes2(secretKey, size);
+      const hashed = cHash(secretKey.subarray(0, size));
+      return adjustScalarBytes(hashed).subarray(0, size);
+    },
+    randomPrivateKey: randomSecretKey,
+    precompute(windowSize = 8, point = Point.BASE) {
+      return point.precompute(windowSize, false);
+    }
+  };
+  return Object.freeze({
+    keygen,
+    getPublicKey,
+    sign,
+    verify,
+    utils: utils2,
+    Point,
+    lengths
+  });
+}
+function _eddsa_legacy_opts_to_new(c) {
+  const CURVE = {
+    a: c.a,
+    d: c.d,
+    p: c.Fp.ORDER,
+    n: c.n,
+    h: c.h,
+    Gx: c.Gx,
+    Gy: c.Gy
+  };
+  const Fp = c.Fp;
+  const Fn = Field(CURVE.n, c.nBitLength, true);
+  const curveOpts = { Fp, Fn, uvRatio: c.uvRatio };
+  const eddsaOpts = {
+    randomBytes: c.randomBytes,
+    adjustScalarBytes: c.adjustScalarBytes,
+    domain: c.domain,
+    prehash: c.prehash,
+    mapToCurve: c.mapToCurve
+  };
+  return { CURVE, curveOpts, hash: c.hash, eddsaOpts };
+}
+function _eddsa_new_output_to_legacy(c, eddsa2) {
+  const Point = eddsa2.Point;
+  const legacy = Object.assign({}, eddsa2, {
+    ExtendedPoint: Point,
+    CURVE: c,
+    nBitLength: Point.Fn.BITS,
+    nByteLength: Point.Fn.BYTES
+  });
+  return legacy;
+}
+function twistedEdwards(c) {
+  const { CURVE, curveOpts, hash, eddsaOpts } = _eddsa_legacy_opts_to_new(c);
+  const Point = edwards(CURVE, curveOpts);
+  const EDDSA = eddsa(Point, hash, eddsaOpts);
+  return _eddsa_new_output_to_legacy(c, EDDSA);
+}
+var _0n5, _1n5, _2n3, _8n2;
+var init_edwards = __esm(() => {
+  init_utils2();
+  init_curve();
+  init_modular();
+  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+  _0n5 = BigInt(0);
+  _1n5 = BigInt(1);
+  _2n3 = BigInt(2);
+  _8n2 = BigInt(8);
+});
+
+// ../../node_modules/@noble/curves/esm/ed25519.js
+function ed25519_pow_2_252_3(x) {
+  const _10n = BigInt(10), _20n = BigInt(20), _40n = BigInt(40), _80n = BigInt(80);
+  const P2 = ed25519_CURVE_p;
+  const x2 = x * x % P2;
+  const b2 = x2 * x % P2;
+  const b4 = pow2(b2, _2n4, P2) * b2 % P2;
+  const b5 = pow2(b4, _1n6, P2) * x % P2;
+  const b10 = pow2(b5, _5n2, P2) * b5 % P2;
+  const b20 = pow2(b10, _10n, P2) * b10 % P2;
+  const b40 = pow2(b20, _20n, P2) * b20 % P2;
+  const b80 = pow2(b40, _40n, P2) * b40 % P2;
+  const b160 = pow2(b80, _80n, P2) * b80 % P2;
+  const b240 = pow2(b160, _80n, P2) * b80 % P2;
+  const b250 = pow2(b240, _10n, P2) * b10 % P2;
+  const pow_p_5_8 = pow2(b250, _2n4, P2) * x % P2;
+  return { pow_p_5_8, b2 };
+}
+function adjustScalarBytes(bytes) {
+  bytes[0] &= 248;
+  bytes[31] &= 127;
+  bytes[31] |= 64;
+  return bytes;
+}
+function uvRatio(u, v) {
+  const P2 = ed25519_CURVE_p;
+  const v3 = mod(v * v * v, P2);
+  const v7 = mod(v3 * v3 * v, P2);
+  const pow = ed25519_pow_2_252_3(u * v7).pow_p_5_8;
+  let x = mod(u * v3 * pow, P2);
+  const vx2 = mod(v * x * x, P2);
+  const root1 = x;
+  const root2 = mod(x * ED25519_SQRT_M1, P2);
+  const useRoot1 = vx2 === u;
+  const useRoot2 = vx2 === mod(-u, P2);
+  const noRoot = vx2 === mod(-u * ED25519_SQRT_M1, P2);
+  if (useRoot1)
+    x = root1;
+  if (useRoot2 || noRoot)
+    x = root2;
+  if (isNegativeLE(x, P2))
+    x = mod(-x, P2);
+  return { isValid: useRoot1 || useRoot2, value: x };
+}
+function calcElligatorRistrettoMap(r0) {
+  const { d } = ed25519_CURVE;
+  const P2 = ed25519_CURVE_p;
+  const mod2 = (n) => Fp.create(n);
+  const r = mod2(SQRT_M1 * r0 * r0);
+  const Ns = mod2((r + _1n6) * ONE_MINUS_D_SQ);
+  let c = BigInt(-1);
+  const D = mod2((c - d * r) * mod2(r + d));
+  let { isValid: Ns_D_is_sq, value: s } = uvRatio(Ns, D);
+  let s_ = mod2(s * r0);
+  if (!isNegativeLE(s_, P2))
+    s_ = mod2(-s_);
+  if (!Ns_D_is_sq)
+    s = s_;
+  if (!Ns_D_is_sq)
+    c = r;
+  const Nt = mod2(c * (r - _1n6) * D_MINUS_ONE_SQ - D);
+  const s2 = s * s;
+  const W0 = mod2((s + s) * D);
+  const W1 = mod2(Nt * SQRT_AD_MINUS_ONE);
+  const W2 = mod2(_1n6 - s2);
+  const W3 = mod2(_1n6 + s2);
+  return new ed25519.Point(mod2(W0 * W3), mod2(W2 * W1), mod2(W1 * W3), mod2(W0 * W2));
+}
+function ristretto255_map(bytes) {
+  abytes(bytes, 64);
+  const r1 = bytes255ToNumberLE(bytes.subarray(0, 32));
+  const R1 = calcElligatorRistrettoMap(r1);
+  const r2 = bytes255ToNumberLE(bytes.subarray(32, 64));
+  const R2 = calcElligatorRistrettoMap(r2);
+  return new _RistrettoPoint(R1.add(R2));
+}
+var _0n6, _1n6, _2n4, _3n3, _5n2, _8n3, ed25519_CURVE_p, ed25519_CURVE, ED25519_SQRT_M1, Fp, Fn, ed25519Defaults, ed25519, SQRT_M1, SQRT_AD_MINUS_ONE, INVSQRT_A_MINUS_D, ONE_MINUS_D_SQ, D_MINUS_ONE_SQ, invertSqrt = (number) => uvRatio(_1n6, number), MAX_255B, bytes255ToNumberLE = (bytes) => ed25519.Point.Fp.create(bytesToNumberLE(bytes) & MAX_255B), _RistrettoPoint;
+var init_ed25519 = __esm(() => {
+  init_sha2();
+  init_utils();
+  init_curve();
+  init_edwards();
+  init_modular();
+  init_utils2();
+  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+  _0n6 = /* @__PURE__ */ BigInt(0);
+  _1n6 = BigInt(1);
+  _2n4 = BigInt(2);
+  _3n3 = BigInt(3);
+  _5n2 = BigInt(5);
+  _8n3 = BigInt(8);
+  ed25519_CURVE_p = BigInt("0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed");
+  ed25519_CURVE = /* @__PURE__ */ (() => ({
+    p: ed25519_CURVE_p,
+    n: BigInt("0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed"),
+    h: _8n3,
+    a: BigInt("0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffec"),
+    d: BigInt("0x52036cee2b6ffe738cc740797779e89800700a4d4141d8ab75eb4dca135978a3"),
+    Gx: BigInt("0x216936d3cd6e53fec0a4e231fdd6dc5c692cc7609525a7b2c9562d608f25d51a"),
+    Gy: BigInt("0x6666666666666666666666666666666666666666666666666666666666666658")
+  }))();
+  ED25519_SQRT_M1 = /* @__PURE__ */ BigInt("19681161376707505956807079304988542015446066515923890162744021073123829784752");
+  Fp = /* @__PURE__ */ (() => Field(ed25519_CURVE.p, { isLE: true }))();
+  Fn = /* @__PURE__ */ (() => Field(ed25519_CURVE.n, { isLE: true }))();
+  ed25519Defaults = /* @__PURE__ */ (() => ({
+    ...ed25519_CURVE,
+    Fp,
+    hash: sha512,
+    adjustScalarBytes,
+    uvRatio
+  }))();
+  ed25519 = /* @__PURE__ */ (() => twistedEdwards(ed25519Defaults))();
+  SQRT_M1 = ED25519_SQRT_M1;
+  SQRT_AD_MINUS_ONE = /* @__PURE__ */ BigInt("25063068953384623474111414158702152701244531502492656460079210482610430750235");
+  INVSQRT_A_MINUS_D = /* @__PURE__ */ BigInt("54469307008909316920995813868745141605393597292927456921205312896311721017578");
+  ONE_MINUS_D_SQ = /* @__PURE__ */ BigInt("1159843021668779879193775521855586647937357759715417654439879720876111806838");
+  D_MINUS_ONE_SQ = /* @__PURE__ */ BigInt("40440834346308536858101042469323190826248399146238708352240133220865137265952");
+  MAX_255B = /* @__PURE__ */ BigInt("0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
+  _RistrettoPoint = class _RistrettoPoint extends PrimeEdwardsPoint {
+    constructor(ep) {
+      super(ep);
+    }
+    static fromAffine(ap) {
+      return new _RistrettoPoint(ed25519.Point.fromAffine(ap));
+    }
+    assertSame(other) {
+      if (!(other instanceof _RistrettoPoint))
+        throw new Error("RistrettoPoint expected");
+    }
+    init(ep) {
+      return new _RistrettoPoint(ep);
+    }
+    static hashToCurve(hex2) {
+      return ristretto255_map(ensureBytes("ristrettoHash", hex2, 64));
+    }
+    static fromBytes(bytes) {
+      abytes(bytes, 32);
+      const { a, d } = ed25519_CURVE;
+      const P2 = ed25519_CURVE_p;
+      const mod2 = (n) => Fp.create(n);
+      const s = bytes255ToNumberLE(bytes);
+      if (!equalBytes(Fp.toBytes(s), bytes) || isNegativeLE(s, P2))
+        throw new Error("invalid ristretto255 encoding 1");
+      const s2 = mod2(s * s);
+      const u1 = mod2(_1n6 + a * s2);
+      const u2 = mod2(_1n6 - a * s2);
+      const u1_2 = mod2(u1 * u1);
+      const u2_2 = mod2(u2 * u2);
+      const v = mod2(a * d * u1_2 - u2_2);
+      const { isValid, value: I } = invertSqrt(mod2(v * u2_2));
+      const Dx = mod2(I * u2);
+      const Dy = mod2(I * Dx * v);
+      let x = mod2((s + s) * Dx);
+      if (isNegativeLE(x, P2))
+        x = mod2(-x);
+      const y = mod2(u1 * Dy);
+      const t = mod2(x * y);
+      if (!isValid || isNegativeLE(t, P2) || y === _0n6)
+        throw new Error("invalid ristretto255 encoding 2");
+      return new _RistrettoPoint(new ed25519.Point(x, y, _1n6, t));
+    }
+    static fromHex(hex2) {
+      return _RistrettoPoint.fromBytes(ensureBytes("ristrettoHex", hex2, 32));
+    }
+    static msm(points, scalars) {
+      return pippenger(_RistrettoPoint, ed25519.Point.Fn, points, scalars);
+    }
+    toBytes() {
+      let { X, Y, Z, T } = this.ep;
+      const P2 = ed25519_CURVE_p;
+      const mod2 = (n) => Fp.create(n);
+      const u1 = mod2(mod2(Z + Y) * mod2(Z - Y));
+      const u2 = mod2(X * Y);
+      const u2sq = mod2(u2 * u2);
+      const { value: invsqrt } = invertSqrt(mod2(u1 * u2sq));
+      const D1 = mod2(invsqrt * u1);
+      const D2 = mod2(invsqrt * u2);
+      const zInv = mod2(D1 * D2 * T);
+      let D;
+      if (isNegativeLE(T * zInv, P2)) {
+        let _x = mod2(Y * SQRT_M1);
+        let _y = mod2(X * SQRT_M1);
+        X = _x;
+        Y = _y;
+        D = mod2(D1 * INVSQRT_A_MINUS_D);
+      } else {
+        D = D2;
+      }
+      if (isNegativeLE(X * zInv, P2))
+        Y = mod2(-Y);
+      let s = mod2((Z - Y) * D);
+      if (isNegativeLE(s, P2))
+        s = mod2(-s);
+      return Fp.toBytes(s);
+    }
+    equals(other) {
+      this.assertSame(other);
+      const { X: X1, Y: Y1 } = this.ep;
+      const { X: X2, Y: Y2 } = other.ep;
+      const mod2 = (n) => Fp.create(n);
+      const one = mod2(X1 * Y2) === mod2(Y1 * X2);
+      const two = mod2(Y1 * Y2) === mod2(X1 * X2);
+      return one || two;
+    }
+    is0() {
+      return this.equals(_RistrettoPoint.ZERO);
+    }
+  };
+  _RistrettoPoint.BASE = /* @__PURE__ */ (() => new _RistrettoPoint(ed25519.Point.BASE))();
+  _RistrettoPoint.ZERO = /* @__PURE__ */ (() => new _RistrettoPoint(ed25519.Point.ZERO))();
+  _RistrettoPoint.Fp = /* @__PURE__ */ (() => Fp)();
+  _RistrettoPoint.Fn = /* @__PURE__ */ (() => Fn)();
+});
+
+// src/solana-lite.ts
+function decodePubkey(address) {
+  let bytes;
+  try {
+    bytes = base58.decode(address);
+  } catch {
+    throw new Error(`Not a base58 address: ${address}`);
+  }
+  if (bytes.length !== 32)
+    throw new Error(`Not a 32-byte Solana address: ${address}`);
+  return bytes;
+}
+function encodePubkey(bytes) {
+  return base58.encode(bytes);
+}
+function isOnCurve(bytes) {
+  try {
+    ed25519.ExtendedPoint.fromHex(bytes);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function concat(...parts) {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.length;
+  }
+  return out;
+}
+function findProgramAddress(seeds, programId) {
+  for (let bump = 255;bump >= 0; bump--) {
+    const candidate = sha2562(concat(...seeds, new Uint8Array([bump]), programId, PDA_MARKER));
+    if (!isOnCurve(candidate))
+      return { address: candidate, bump };
+  }
+  throw new Error("Unable to find a viable program address bump seed");
+}
+function associatedTokenAddress(owner, mint, tokenProgram = decodePubkey(TOKEN_PROGRAM_ID)) {
+  return findProgramAddress([owner, tokenProgram, mint], decodePubkey(ASSOCIATED_TOKEN_PROGRAM_ID)).address;
+}
+function u64le(value) {
+  if (value < 0n || value > 0xffffffffffffffffn)
+    throw new Error(`u64 out of range: ${value}`);
+  const out = new Uint8Array(8);
+  let v = value;
+  for (let i = 0;i < 8; i++) {
+    out[i] = Number(v & 0xffn);
+    v >>= 8n;
+  }
+  return out;
+}
+function u32le(value) {
+  const out = new Uint8Array(4);
+  out[0] = value & 255;
+  out[1] = value >>> 8 & 255;
+  out[2] = value >>> 16 & 255;
+  out[3] = value >>> 24 & 255;
+  return out;
+}
+function systemTransfer(from, to, lamports) {
+  return {
+    programId: decodePubkey(SYSTEM_PROGRAM_ID),
+    keys: [
+      { pubkey: from, isSigner: true, isWritable: true },
+      { pubkey: to, isSigner: false, isWritable: true }
+    ],
+    data: concat(u32le(2), u64le(lamports))
+  };
+}
+function tokenTransferChecked(input) {
+  return {
+    programId: input.tokenProgram ?? decodePubkey(TOKEN_PROGRAM_ID),
+    keys: [
+      { pubkey: input.source, isSigner: false, isWritable: true },
+      { pubkey: input.mint, isSigner: false, isWritable: false },
+      { pubkey: input.destination, isSigner: false, isWritable: true },
+      { pubkey: input.owner, isSigner: true, isWritable: false },
+      ...input.extraAccounts ?? []
+    ],
+    data: concat(new Uint8Array([12]), u64le(input.amount), new Uint8Array([input.decimals]))
+  };
+}
+function tokenCloseAccount(input) {
+  return {
+    programId: input.tokenProgram ?? decodePubkey(TOKEN_PROGRAM_ID),
+    keys: [
+      { pubkey: input.account, isSigner: false, isWritable: true },
+      { pubkey: input.destination, isSigner: false, isWritable: true },
+      { pubkey: input.owner, isSigner: true, isWritable: false }
+    ],
+    data: new Uint8Array([9])
+  };
+}
+function createAssociatedTokenAccountIdempotent(input) {
+  const tokenProgram = input.tokenProgram ?? decodePubkey(TOKEN_PROGRAM_ID);
+  const ata = associatedTokenAddress(input.owner, input.mint, tokenProgram);
+  return {
+    programId: decodePubkey(ASSOCIATED_TOKEN_PROGRAM_ID),
+    keys: [
+      { pubkey: input.payer, isSigner: true, isWritable: true },
+      { pubkey: ata, isSigner: false, isWritable: true },
+      { pubkey: input.owner, isSigner: false, isWritable: false },
+      { pubkey: input.mint, isSigner: false, isWritable: false },
+      { pubkey: decodePubkey(SYSTEM_PROGRAM_ID), isSigner: false, isWritable: false },
+      { pubkey: tokenProgram, isSigner: false, isWritable: false }
+    ],
+    data: new Uint8Array([1])
+  };
+}
+function shortvec(n) {
+  const out = [];
+  let rem = n;
+  for (;; ) {
+    let elem = rem & 127;
+    rem >>= 7;
+    if (rem === 0) {
+      out.push(elem);
+      return new Uint8Array(out);
+    }
+    elem |= 128;
+    out.push(elem);
+  }
+}
+function keyEq(a, b) {
+  if (a.length !== b.length)
+    return false;
+  for (let i = 0;i < a.length; i++)
+    if (a[i] !== b[i])
+      return false;
+  return true;
+}
+function compileLegacyMessage(input) {
+  const metas = [];
+  const upsert = (pubkey, isSigner, isWritable) => {
+    const b58 = encodePubkey(pubkey);
+    const existing = metas.find((x) => x.base58 === b58);
+    if (existing) {
+      existing.isSigner = existing.isSigner || isSigner;
+      existing.isWritable = existing.isWritable || isWritable;
+    } else {
+      metas.push({ pubkey, base58: b58, isSigner, isWritable });
+    }
+  };
+  for (const ix of input.instructions)
+    for (const k of ix.keys)
+      upsert(k.pubkey, k.isSigner, k.isWritable);
+  for (const ix of input.instructions)
+    upsert(ix.programId, false, false);
+  const localeOptions = {
+    localeMatcher: "best fit",
+    usage: "sort",
+    sensitivity: "variant",
+    ignorePunctuation: false,
+    numeric: false,
+    caseFirst: "lower"
+  };
+  metas.sort((x, y) => {
+    if (x.isSigner !== y.isSigner)
+      return x.isSigner ? -1 : 1;
+    if (x.isWritable !== y.isWritable)
+      return x.isWritable ? -1 : 1;
+    return x.base58.localeCompare(y.base58, "en", localeOptions);
+  });
+  const payerB58 = encodePubkey(input.feePayer);
+  const payerIdx = metas.findIndex((m) => m.base58 === payerB58);
+  if (payerIdx > -1) {
+    const [payer] = metas.splice(payerIdx, 1);
+    if (!payer)
+      throw new Error("unreachable");
+    payer.isSigner = true;
+    payer.isWritable = true;
+    metas.unshift(payer);
+  } else {
+    metas.unshift({ pubkey: input.feePayer, base58: payerB58, isSigner: true, isWritable: true });
+  }
+  const numRequiredSignatures = metas.filter((m) => m.isSigner).length;
+  const numReadonlySigned = metas.filter((m) => m.isSigner && !m.isWritable).length;
+  const numReadonlyUnsigned = metas.filter((m) => !m.isSigner && !m.isWritable).length;
+  const indexOf = (k) => {
+    const b58 = encodePubkey(k);
+    const i = metas.findIndex((m) => m.base58 === b58);
+    if (i < 0)
+      throw new Error("unreachable: key missing from account list");
+    return i;
+  };
+  const parts = [
+    new Uint8Array([numRequiredSignatures, numReadonlySigned, numReadonlyUnsigned]),
+    shortvec(metas.length),
+    ...metas.map((m) => m.pubkey),
+    decodePubkey(input.recentBlockhash),
+    shortvec(input.instructions.length)
+  ];
+  for (const ix of input.instructions) {
+    const accountIdx = new Uint8Array(ix.keys.map((k) => indexOf(k.pubkey)));
+    parts.push(new Uint8Array([indexOf(ix.programId)]), shortvec(accountIdx.length), accountIdx, shortvec(ix.data.length), ix.data);
+  }
+  return concat(...parts);
+}
+function signMessage(message, secret64) {
+  if (secret64.length !== 64)
+    throw new Error(`expected a 64-byte Solana secret, got ${secret64.length}`);
+  return ed25519.sign(message, secret64.slice(0, 32));
+}
+function pubkeyFromSecret(secret64) {
+  if (secret64.length !== 64)
+    throw new Error(`expected a 64-byte Solana secret, got ${secret64.length}`);
+  const derived = ed25519.getPublicKey(secret64.slice(0, 32));
+  const embedded = secret64.slice(32);
+  if (!keyEq(derived, embedded))
+    throw new Error("The secret's embedded public key does not match its seed");
+  return derived;
+}
+function serializeSignedTransaction(message, signature) {
+  if (signature.length !== 64)
+    throw new Error("expected a 64-byte signature");
+  return concat(shortvec(1), signature, message);
+}
+function toBase642(bytes) {
+  return Buffer.from(bytes).toString("base64");
+}
+function retryAfterMs(header, now) {
+  if (header === null)
+    return;
+  const trimmed = header.trim();
+  if (/^\d+$/.test(trimmed))
+    return Number(trimmed) * 1000;
+  const at = Date.parse(trimmed);
+  if (Number.isNaN(at))
+    return;
+  return Math.max(0, at - now);
+}
+function rawAccountView(value, address) {
+  if (!value)
+    return null;
+  const owner = value.owner;
+  const encoded = value.data?.[0];
+  if (typeof owner !== "string" || typeof encoded !== "string") {
+    throw new Error(`RPC answered without a base64 owner/data pair for ${address}`);
+  }
+  return { owner, lamports: BigInt(value.lamports ?? 0), data: new Uint8Array(Buffer.from(encoded, "base64")) };
+}
+function createSolanaRpc(url, fetchFn) {
+  let id = 0;
+  async function call(method, params, signal) {
+    id += 1;
+    const res = await fetchFn(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+      ...signal !== undefined ? { signal } : {}
+    });
+    if (!res.ok) {
+      throw new SolanaRpcError(`RPC ${method} failed: HTTP ${res.status}`, {
+        status: res.status,
+        ...res.status === 429 ? (() => {
+          const after = retryAfterMs(res.headers.get("retry-after"), Date.now());
+          return after === undefined ? {} : { retryAfterMs: after };
+        })() : {}
+      });
+    }
+    const json = await res.json();
+    if (json.error) {
+      throw new SolanaRpcError(`RPC ${method} failed: ${json.error.code ?? ""} ${json.error.message ?? ""}`.trim(), {
+        ...typeof json.error.code === "number" ? { rpcCode: json.error.code } : {}
+      });
+    }
+    return json.result;
+  }
+  return {
+    async getLatestBlockhash() {
+      const r = await call("getLatestBlockhash", [{ commitment: "finalized" }]);
+      return r.value.blockhash;
+    },
+    async getBalance(address) {
+      const r = await call("getBalance", [address, { commitment: "finalized" }]);
+      return BigInt(r.value);
+    },
+    async getTokenAccountsByOwner(owner, programId) {
+      const r = await call("getTokenAccountsByOwner", [owner, { programId }, { encoding: "jsonParsed", commitment: "finalized" }]);
+      return r.value.map((v) => ({
+        pubkey: v.pubkey,
+        mint: v.account.data.parsed.info.mint,
+        amountRaw: v.account.data.parsed.info.tokenAmount.amount,
+        decimals: v.account.data.parsed.info.tokenAmount.decimals,
+        state: v.account.data.parsed.info.state,
+        programId
+      }));
+    },
+    async getFeeForMessage(messageBase64) {
+      const r = await call("getFeeForMessage", [messageBase64, { commitment: "finalized" }]);
+      return r.value === null ? null : BigInt(r.value);
+    },
+    async getMinimumBalanceForRentExemption(size) {
+      const rent = await call("getMinimumBalanceForRentExemption", [size, { commitment: "finalized" }]);
+      if (!Number.isSafeInteger(rent) || rent < 0)
+        throw new Error("Invalid rent exemption quote");
+      return BigInt(rent);
+    },
+    async getAccountInfo(address) {
+      const r = await call("getAccountInfo", [address, { encoding: "base64", commitment: "finalized" }]);
+      const value = r.value;
+      if (!value)
+        return null;
+      const owner = value.owner;
+      const encoded = value.data?.[0];
+      if (typeof owner !== "string" || typeof encoded !== "string") {
+        throw new Error(`RPC getAccountInfo answered without a base64 owner/data pair for ${address}`);
+      }
+      return {
+        owner,
+        lamports: BigInt(value.lamports ?? 0),
+        data: new Uint8Array(Buffer.from(encoded, "base64"))
+      };
+    },
+    async getEpoch() {
+      const r = await call("getEpochInfo", [{ commitment: "finalized" }]);
+      if (!Number.isSafeInteger(r?.epoch))
+        throw new Error("RPC getEpochInfo answered without an epoch");
+      return BigInt(r.epoch);
+    },
+    async getMultipleAccounts(addresses) {
+      const out = [];
+      for (let at = 0;at < addresses.length; at += 100) {
+        const chunk = addresses.slice(at, at + 100);
+        const r = await call("getMultipleAccounts", [
+          chunk,
+          { encoding: "base64", commitment: "finalized" }
+        ]);
+        if (!Array.isArray(r?.value) || r.value.length !== chunk.length) {
+          throw new Error("RPC getMultipleAccounts answered with the wrong number of accounts");
+        }
+        for (const [i, value] of r.value.entries())
+          out.push(rawAccountView(value, chunk[i] ?? ""));
+      }
+      return out;
+    },
+    async simulateTransaction(txBase64, addresses) {
+      const r = await call("simulateTransaction", [
+        txBase64,
+        {
+          sigVerify: false,
+          replaceRecentBlockhash: true,
+          commitment: "finalized",
+          encoding: "base64",
+          accounts: { encoding: "base64", addresses }
+        }
+      ]);
+      const value = r?.value;
+      if (!value || typeof value !== "object")
+        throw new Error("RPC simulateTransaction answered without a value");
+      const accounts = Array.isArray(value.accounts) ? value.accounts : [];
+      if (value.accounts !== null && value.accounts !== undefined && accounts.length !== addresses.length) {
+        throw new Error("RPC simulateTransaction answered with the wrong number of accounts");
+      }
+      return {
+        err: value.err ?? null,
+        logs: Array.isArray(value.logs) ? value.logs.filter((line) => typeof line === "string") : [],
+        accounts: value.accounts === null || value.accounts === undefined ? addresses.map(() => null) : accounts.map((account, i) => rawAccountView(account, addresses[i] ?? "")),
+        ...Number.isSafeInteger(value.unitsConsumed) ? { unitsConsumed: value.unitsConsumed } : {}
+      };
+    },
+    async sendTransaction(txBase64) {
+      return await call("sendTransaction", [
+        txBase64,
+        { encoding: "base64", skipPreflight: false, preflightCommitment: "finalized", maxRetries: 3 }
+      ]);
+    },
+    async getSignatureStatus(signature) {
+      const r = await call("getSignatureStatuses", [[signature], { searchTransactionHistory: true }]);
+      return r.value[0] ?? null;
+    },
+    async hasSignatureHistory(address) {
+      const r = await call("getSignaturesForAddress", [address, { limit: 1 }]);
+      return Array.isArray(r) && r.length > 0;
+    },
+    async isBlockhashValid(blockhash) {
+      const r = await call("isBlockhashValid", [blockhash, { commitment: "finalized" }]);
+      if (typeof r?.value !== "boolean")
+        throw new Error("isBlockhashValid answered with a non-boolean value");
+      return r.value;
+    },
+    async getProgramAccounts(programId, filters, opts) {
+      const r = await call("getProgramAccounts", [programId, { encoding: "base64", commitment: "finalized", dataSlice: { offset: 0, length: 0 }, filters }], opts?.signal);
+      if (!Array.isArray(r))
+        throw new SolanaRpcError("RPC getProgramAccounts answered without an account list");
+      return r.map((entry) => {
+        if (typeof entry?.pubkey !== "string") {
+          throw new SolanaRpcError("RPC getProgramAccounts answered an account without a pubkey");
+        }
+        return entry.pubkey;
+      });
+    },
+    async getProgramAccountsV2(programId, filters, opts) {
+      const config = {
+        encoding: "base64",
+        commitment: "finalized",
+        dataSlice: { offset: 0, length: 0 },
+        filters,
+        limit: opts?.limit ?? PROGRAM_ACCOUNTS_V2_LIMIT
+      };
+      if (opts?.paginationKey !== undefined)
+        config.paginationKey = opts.paginationKey;
+      const r = await call("getProgramAccountsV2", [programId, config], opts?.signal);
+      if (r === null || typeof r !== "object" || !Array.isArray(r.accounts)) {
+        throw new SolanaRpcError("RPC getProgramAccountsV2 answered without an account list");
+      }
+      const page = r;
+      const pubkeys = page.accounts.map((entry) => {
+        if (typeof entry?.pubkey !== "string") {
+          throw new SolanaRpcError("RPC getProgramAccountsV2 answered an account without a pubkey");
+        }
+        return entry.pubkey;
+      });
+      const cursor = page.paginationKey;
+      if (cursor === null || cursor === undefined)
+        return { pubkeys, paginationKey: null };
+      if (typeof cursor !== "string" || cursor.length === 0) {
+        throw new SolanaRpcError("RPC getProgramAccountsV2 answered a paginationKey that is not a string");
+      }
+      return { pubkeys, paginationKey: cursor };
+    }
+  };
+}
+var SYSTEM_PROGRAM_ID = "11111111111111111111111111111111", TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", PDA_MARKER, PROGRAM_ACCOUNTS_V2_LIMIT = 1000, SolanaRpcError;
+var init_solana_lite = __esm(() => {
+  init_ed25519();
+  init_sha256();
+  init_esm();
+  PDA_MARKER = new TextEncoder().encode("ProgramDerivedAddress");
+  SolanaRpcError = class SolanaRpcError extends Error {
+    status;
+    retryAfterMs;
+    rpcCode;
+    constructor(message, facts = {}) {
+      super(message);
+      this.name = "SolanaRpcError";
+      this.status = facts.status;
+      this.retryAfterMs = facts.retryAfterMs;
+      this.rpcCode = facts.rpcCode;
+    }
+  };
+});
+
+// src/commands/keys.ts
+function mintedByLabel(mintedBy, ownDeviceTokenPrefix) {
+  if (!mintedBy)
+    return "browser session";
+  if (mintedBy === ownDeviceTokenPrefix)
+    return "this device";
+  return mintedBy;
+}
+function labelCell(label) {
+  if (!label)
+    return "";
+  const cleaned = Array.from(label).map((ch) => {
+    const code = ch.codePointAt(0) ?? 0;
+    const isControl = code < 32 || code >= 127 && code <= 159;
+    const isBidiOrInvisible = code >= 8203 && code <= 8207 || code >= 8234 && code <= 8238 || code >= 8294 && code <= 8297 || code === 65279;
+    return isControl || isBidiOrInvisible ? " " : ch;
+  }).join("");
+  return cleaned.replace(/\s+/g, " ").trim();
+}
+function accessCell(scopes) {
+  const access3 = agentKeyAccess(scopes);
+  if (access3.kind === "preset")
+    return access3.label;
+  return access3.can.length > 0 ? access3.can.join(", ") : "–";
+}
+async function keysList(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, { booleanFlags: ["--scopes"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    return 1;
+  }
+  const result = await apiRequest(KEYS_PATH, {
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
+    return 1;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(result.body)}
+`);
+    return 0;
+  }
+  const withScopes = parsed.booleans.has("--scopes");
+  const body = result.body;
+  const config = await deps.readConfig();
+  const ownDevicePrefix = effectiveProfileFields(config, ctx.profile).deviceTokenPrefix;
+  const rows = body.keys.map((key) => [
+    key.keyPrefix,
+    labelCell(key.label),
+    accessCell(key.scopes),
+    ...withScopes ? [sortAgentKeyScopes(key.scopes).join(",")] : [],
+    key.environment,
+    formatTimestamp(key.createdAt),
+    formatTimestamp(key.lastUsedAt),
+    key.revokedAt ? formatTimestamp(key.revokedAt) : "no",
+    mintedByLabel(key.mintedByDevicePrefix, ownDevicePrefix)
+  ]);
+  const headers = [
+    "Prefix",
+    "Name",
+    "Access",
+    ...withScopes ? ["Scopes"] : [],
+    "Environment",
+    "Created",
+    "Last used",
+    "Revoked",
+    "Minted by"
+  ];
+  deps.stdout.write(`${renderTable(headers, rows)}
+`);
+  return 0;
+}
+async function keysCreate(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {
+    valueFlags: ["--scopes", "--environment", "--label", "--expires-in", "--tx-limit", "--reset"]
+  });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
+    return 2;
+  }
+  const requestedScopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined;
+  const environment = parsed.values["--environment"];
+  const label = parsed.values["--label"]?.trim();
+  if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > 64)) {
+    writeUsageFailure(deps, "--label must be 1 to 64 characters.", json);
+    return 2;
+  }
+  let expiresInDays;
+  if (parsed.values["--expires-in"] !== undefined) {
+    const parsedDays = parseExpiresInDays(parsed.values["--expires-in"]);
+    if (!parsedDays.ok) {
+      writeUsageFailure(deps, parsedDays.message, json);
+      return 2;
+    }
+    expiresInDays = parsedDays.days;
+  }
+  if (parsed.values["--reset"] !== undefined && parsed.values["--tx-limit"] === undefined) {
+    writeUsageFailure(deps, "--reset requires --tx-limit.", json);
+    return 2;
+  }
+  let txLimit;
+  if (parsed.values["--tx-limit"] !== undefined) {
+    const parsedUsd = parseUsdToMicros(parsed.values["--tx-limit"]);
+    if (!parsedUsd.ok) {
+      writeUsageFailure(deps, parsedUsd.message, json);
+      return 2;
+    }
+    const reset = parsed.values["--reset"] ?? "daily";
+    if (!TX_LIMIT_RESETS.includes(reset)) {
+      writeUsageFailure(deps, `--reset must be one of: ${TX_LIMIT_RESETS.join(", ")}.`, json);
+      return 2;
+    }
+    txLimit = { usdMicros: parsedUsd.usdMicros, reset };
+  }
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    return 1;
+  }
+  const result = await apiRequest(KEYS_PATH, {
+    method: "POST",
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env,
+    body: {
+      ...requestedScopes ? { scopes: requestedScopes } : {},
+      ...environment ? { environment } : {},
+      ...label ? { label } : {},
+      ...expiresInDays !== undefined ? { expiresInDays } : {},
+      ...txLimit ? { txLimit } : {}
+    }
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
+    return 1;
+  }
+  const body = result.body;
+  const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
+  let stored = false;
+  let storeError;
+  try {
+    if (!await deps.store.get(apiKeyRef)) {
+      await deps.store.set(apiKeyRef, body.key);
+      if (ctx.profile) {
+        await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes });
+      } else {
+        await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes });
+      }
+      stored = true;
+    }
+  } catch (error) {
+    storeError = error instanceof Error ? error.message : String(error);
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ...body, stored, ...storeError ? { storeError } : {} })}
+`);
+    return storeError ? 1 : 0;
+  }
+  deps.stdout.write(`API key: ${body.key}
+`);
+  deps.stdout.write(`This is the only time the plaintext key is shown; store it now.
+`);
+  deps.stdout.write(`Prefix: ${body.keyPrefix}
+`);
+  deps.stdout.write(`Scopes: ${formatScopesForSummary(body.scopes)}
+`);
+  if (storeError !== undefined) {
+    deps.stderr.write(`
+WARNING: the key above was NOT stored in the ${deps.backend} store: ${storeError}
+` + "It is live on your account. Save it now, or revoke it with: candle keys revoke " + `${body.keyPrefix}
+`);
+  }
+  if (!requestedScopes) {
+    deps.stdout.write(`No --scopes given: the server granted the default scopes (swap:write excluded).
+`);
+  }
+  if (storeError === undefined) {
+    deps.stdout.write(stored ? `Stored in the ${deps.backend} backend as the CLI's working key.
+` : `Not stored: the CLI already manages a different working key. This key belongs to whichever agent it was minted for.
+`);
+  }
+  return storeError === undefined ? 0 : 1;
+}
+async function keysRevoke(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length !== 1) {
+    deps.stderr.write(`Usage: candle keys revoke <prefix>
+`);
+    return 2;
+  }
+  const prefix = parsed.positionals[0];
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
+    return 1;
+  }
+  const result = await apiRequest(`${KEYS_PATH}/${encodeURIComponent(prefix)}`, {
+    method: "DELETE",
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
+    return 1;
+  }
+  const config = await deps.readConfig();
+  const storedPrefix = effectiveProfileFields(config, ctx.profile).keyPrefix;
+  let clearedLocal = false;
+  if (storedPrefix === prefix) {
+    const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
+    await deps.store.delete(apiKeyRef);
+    if (ctx.profile) {
+      await deps.updateProfile(ctx.profile, { keyPrefix: undefined });
+    } else {
+      await deps.writeConfig({ keyPrefix: undefined });
+    }
+    clearedLocal = true;
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ success: true, keyPrefix: prefix, clearedLocal })}
+`);
+    return 0;
+  }
+  deps.stdout.write(`Revoked key ${prefix}.
+`);
+  if (clearedLocal) {
+    deps.stdout.write(`This was the CLI's stored working key; also cleared it locally.
+`);
+  }
+  return 0;
+}
+var KEYS_PATH = "/api/v1/agent/keys", NO_DEVICE_TOKEN;
+var init_keys = __esm(() => {
+  init_agent_key_access();
+  init_args();
+  init_deps();
+  init_profiles();
+  init_render();
+  init_secret_store();
+  NO_DEVICE_TOKEN = {
+    code: "NO_DEVICE_TOKEN",
+    message: "No device token available.",
+    suggestion: "Run: candle auth login"
+  };
+});
+
+// src/vault/signer-roles.ts
+function tokenMintFilters(key) {
+  return [{ dataSize: 82 }, memcmp(0, concat2(COPTION_SOME_U32, key))];
+}
+function tokenFreezeFilters(key) {
+  return [{ dataSize: 82 }, memcmp(46, concat2(COPTION_SOME_U32, key))];
+}
+function token2022MintFilters(key) {
+  const authority = memcmp(0, concat2(COPTION_SOME_U32, key));
+  return [
+    [{ dataSize: 82 }, authority],
+    [memcmp(165, TOKEN_2022_MINT_ACCOUNT_TYPE), authority]
+  ];
+}
+function token2022FreezeFilters(key) {
+  const authority = memcmp(46, concat2(COPTION_SOME_U32, key));
+  return [
+    [{ dataSize: 82 }, authority],
+    [memcmp(165, TOKEN_2022_MINT_ACCOUNT_TYPE), authority]
+  ];
+}
+function programUpgradeFilters(key) {
+  return [memcmp(0, LOADER_PROGRAM_DATA_TAG), memcmp(12, concat2(COPTION_SOME_U8, key))];
+}
+function programIdFilters(programData) {
+  return [memcmp(0, LOADER_PROGRAM_TAG), memcmp(4, programData)];
+}
+function stakeStakerFilters(key) {
+  return [{ dataSize: 200 }, memcmp(12, key)];
+}
+function stakeWithdrawerFilters(key) {
+  return [{ dataSize: 200 }, memcmp(44, key)];
+}
+function failureReason(error, timeoutMs) {
+  if (error instanceof SolanaRpcError) {
+    if (error.status !== undefined)
+      return `HTTP ${error.status}`;
+    if (error.rpcCode !== undefined) {
+      const text = error.message.replace(/^RPC getProgramAccounts(?:V2)? failed: /, "").replace(/^-?\d+\s*/, "");
+      return `RPC error ${error.rpcCode}${text ? ` ${text}` : ""}`;
+    }
+    return error.message.replace(/^RPC getProgramAccounts(?:V2)? failed: /, "");
+  }
+  if (error instanceof Error && error.name === "AbortError")
+    return `timed out after ${Math.round(timeoutMs / 1000)} s`;
+  if (error instanceof Error && error.name === "TimeoutError")
+    return `timed out after ${Math.round(timeoutMs / 1000)} s`;
+  return error instanceof Error ? error.message : String(error);
+}
+function v2NotOffered(error) {
+  return error instanceof SolanaRpcError && error.status === undefined && (error.rpcCode === RPC_METHOD_NOT_FOUND || error.rpcCode === RPC_PAGINATION_REQUIRED);
+}
+async function readSignerRoles(rpc, addresses, opts) {
+  const startedAt = opts.now();
+  let cap = Math.max(1, opts.inFlight ?? 8);
+  const backoffMs = opts.backoffMs ?? 2000;
+  const maxRetries = opts.maxRetries ?? 5;
+  const timeoutMs = opts.timeoutMs ?? 20000;
+  const maxPages = Math.max(1, opts.maxPages ?? MAX_V2_PAGES);
+  const tasks = [];
+  const keys = addresses.map((address) => ({ address, bytes: decodePubkey(address) }));
+  for (const group of ROLE_GROUPS) {
+    for (const key of keys) {
+      for (const filters of group.shapes(key.bytes))
+        tasks.push({ group, address: key.address, filters, via: "v1" });
+    }
+  }
+  let planned = tasks.length;
+  const failed = new Map;
+  const v1Refusal = new Map;
+  const v2Groups = new Set;
+  const controllers = new Map;
+  const found = [];
+  const seen = new Set;
+  let requests = 0;
+  let rateLimited = 0;
+  let settled = 0;
+  let skipped = 0;
+  let next = 0;
+  let active = 0;
+  const progress = () => {
+    opts.onProgress?.({
+      completed: settled + skipped,
+      settled,
+      skipped,
+      total: planned,
+      refusedGroups: failed.size,
+      elapsedMs: opts.now() - startedAt
+    });
+  };
+  const record = (finding) => {
+    const key = `${finding.address} ${finding.role} ${finding.program} ${finding.target}`;
+    if (seen.has(key))
+      return;
+    seen.add(key);
+    found.push(finding);
+  };
+  const stopGroup = (group, reason) => {
+    if (failed.has(group.id))
+      return;
+    failed.set(group.id, reason);
+    for (const controller of controllers.get(group.id) ?? [])
+      controller.abort();
+  };
+  const request = async (task, filters) => {
+    const controller = new AbortController;
+    let set = controllers.get(task.group.id);
+    if (set === undefined) {
+      set = new Set;
+      controllers.set(task.group.id, set);
+    }
+    set.add(controller);
+    const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(Object.assign(new Error("timed out"), { name: "TimeoutError" })), timeoutMs) : undefined;
+    try {
+      requests += 1;
+      if (task.via === "v2") {
+        if (rpc.getProgramAccountsV2 === undefined) {
+          throw new SolanaRpcError("RPC getProgramAccountsV2 failed: -32601 Method not found", {
+            rpcCode: RPC_METHOD_NOT_FOUND
+          });
+        }
+        return await rpc.getProgramAccountsV2(task.group.programId, filters, {
+          signal: controller.signal,
+          ...task.paginationKey !== undefined ? { paginationKey: task.paginationKey } : {}
+        });
+      }
+      const pubkeys = await rpc.getProgramAccounts(task.group.programId, filters, { signal: controller.signal });
+      return { pubkeys, paginationKey: null };
+    } finally {
+      if (timer !== undefined)
+        clearTimeout(timer);
+      set.delete(controller);
+    }
+  };
+  const run = async (task, countPage) => {
+    let current = task;
+    let attempt = 0;
+    const cursors = new Set;
+    for (;; ) {
+      if (failed.has(current.group.id))
+        return;
+      try {
+        const page = await request(current, current.filters);
+        for (const hit of page.pubkeys) {
+          if (current.group.id === "program-upgrade") {
+            record(await resolveProgram(current, hit));
+          } else {
+            record({ address: current.address, role: current.group.role, program: current.group.program, target: hit });
+          }
+        }
+        countPage();
+        if (failed.has(current.group.id))
+          return;
+        const cursor = current.via === "v2" ? page.paginationKey : null;
+        if (cursor === null)
+          return;
+        if (cursors.has(cursor)) {
+          stopGroup(current.group, "paginationKey did not advance");
+          return;
+        }
+        if (cursors.size + 1 >= maxPages) {
+          stopGroup(current.group, `more than ${maxPages} pages (getProgramAccountsV2)`);
+          return;
+        }
+        cursors.add(cursor);
+        planned += 1;
+        progress();
+        current = { ...current, paginationKey: cursor };
+        attempt = 0;
+      } catch (error) {
+        if (failed.has(current.group.id)) {
+          countPage();
+          return;
+        }
+        if (error instanceof SolanaRpcError && error.status === 429) {
+          rateLimited += 1;
+          cap = 1;
+          if (attempt < maxRetries) {
+            attempt += 1;
+            await opts.sleep(error.retryAfterMs ?? backoffMs);
+            continue;
+          }
+          countPage();
+          stopGroup(current.group, `HTTP 429 after ${maxRetries} retries`);
+          return;
+        }
+        if (current.via === "v1" && PAGINATED_TOKEN_GROUPS.has(current.group.id) && error instanceof SolanaRpcError && error.status === undefined && error.rpcCode === RPC_PAGINATION_REQUIRED) {
+          v2Groups.add(current.group.id);
+          if (!v1Refusal.has(current.group.id))
+            v1Refusal.set(current.group.id, failureReason(error, timeoutMs));
+          current = { ...current, via: "v2", paginationKey: undefined };
+          attempt = 0;
+          continue;
+        }
+        countPage();
+        const reason = current.via === "v2" && v2NotOffered(error) ? v1Refusal.get(current.group.id) ?? failureReason(error, timeoutMs) : failureReason(error, timeoutMs);
+        stopGroup(current.group, reason);
+        return;
+      }
+    }
+  };
+  const resolveProgram = async (task, programData) => {
+    const base = { address: task.address, role: task.group.role, program: task.group.program };
+    try {
+      const page = await request({ ...task, via: "v1", paginationKey: undefined }, programIdFilters(decodePubkey(programData)));
+      const program = page.pubkeys[0];
+      if (program !== undefined)
+        return { ...base, target: program };
+    } catch {}
+    return { ...base, target: programData, unresolvedProgram: true };
+  };
+  await new Promise((resolve2) => {
+    const pump = () => {
+      let skippedAny = false;
+      while (active < cap && next < tasks.length) {
+        const task = tasks[next++];
+        if (failed.has(task.group.id)) {
+          skipped += 1;
+          skippedAny = true;
+          continue;
+        }
+        if (v2Groups.has(task.group.id))
+          task.via = "v2";
+        if (skippedAny) {
+          progress();
+          skippedAny = false;
+        }
+        const counted = { n: 0 };
+        const countPage = () => {
+          counted.n += 1;
+          settled += 1;
+          progress();
+        };
+        active += 1;
+        run(task, countPage).finally(() => {
+          active -= 1;
+          if (counted.n === 0) {
+            settled += 1;
+            progress();
+          }
+          pump();
+        });
+      }
+      if (skippedAny)
+        progress();
+      if (active === 0 && next >= tasks.length)
+        resolve2();
+    };
+    pump();
+  });
+  const checked = ROLE_GROUPS.filter((group) => !failed.has(group.id)).map((group) => group.id);
+  const notChecked = ROLE_GROUPS.filter((group) => failed.has(group.id)).map((group) => ({
+    group: group.id,
+    reason: failed.get(group.id)
+  }));
+  return { checked, notChecked, found, requests, planned, rateLimited, elapsedMs: opts.now() - startedAt };
+}
+function sentenceForm(result) {
+  if (result.found.length > 0)
+    return "F";
+  return result.notChecked.length === 0 ? "N" : "U";
+}
+function keysWithFindings(result) {
+  return new Set(result.found.map((finding) => finding.address)).size;
+}
+function groupLabel(id) {
+  return ROLE_GROUPS.find((group) => group.id === id).label;
+}
+function findingText(finding) {
+  const text = `${finding.role} authority of ${finding.target}`;
+  return finding.unresolvedProgram ? `${text} (ProgramData account; the program id could not be resolved)` : text;
+}
+function findingLine(finding) {
+  return `${findingText(finding)} (${PROGRAM_LABELS[finding.program]})`;
+}
+function authorityCell(address, result) {
+  const own = result.found.filter((finding) => finding.address === address);
+  if (own.length > 0)
+    return own.map(findingText).join("; ");
+  return result.notChecked.length === 0 ? "none" : "?";
+}
+function notReadRuns(notChecked) {
+  const runs = [];
+  for (const entry of notChecked) {
+    const last = runs[runs.length - 1];
+    if (last !== undefined && last.reason === entry.reason)
+      last.groups.push(groupLabel(entry.group));
+    else
+      runs.push({ reason: entry.reason, groups: [groupLabel(entry.group)] });
+  }
+  return runs;
+}
+function notReadClause(notChecked) {
+  return notReadRuns(notChecked).map((run) => `${run.groups.join(", ")} (${run.reason})`).join(", ");
+}
+function readSummaryLine(host, result) {
+  const read = result.checked.length === 0 ? "none" : result.checked.map(groupLabel).join(", ");
+  const notRead = result.notChecked.length === 0 ? "" : ` Not read: ${notReadClause(result.notChecked)}.`;
+  return `Authorities read over ${host}: ${read}.${notRead} ${NOT_CHECKED_LINE}`;
+}
+function authoritiesCountLine(keys, result) {
+  const k = keysWithFindings(result);
+  if (k > 0) {
+    const findings = result.found.length;
+    return `Authorities: ${k} of ${keys} keys ${k === 1 ? "holds" : "hold"} one (${findings} finding${findings === 1 ? "" : "s"}, in the authority column).`;
+  }
+  if (result.notChecked.length === 0)
+    return `Authorities: none of the ${keys} keys holds one.`;
+  return `Authorities: none found; ${result.notChecked.length} of ${ROLE_GROUPS.length} groups were not read (see below).`;
+}
+function authoritiesBlock(host, result) {
+  const lines = [`Authorities (read over ${host}):`];
+  if (result.found.length > 0) {
+    for (const finding of result.found)
+      lines.push(`  ${findingLine(finding)}`);
+  } else if (result.notChecked.length === 0) {
+    lines.push("  none: not a token mint, freeze, program upgrade or stake authority");
+  }
+  for (const run of notReadRuns(result.notChecked)) {
+    lines.push(`  ${run.groups.join(", ")}: not read (RPC getProgramAccounts failed: ${run.reason})`);
+  }
+  lines.push(`  ${NOT_CHECKED_LINE}`);
+  return lines.join(`
+`);
+}
+function formatDuration(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60)
+    return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+}
+function checkOpeningLine(keys, host) {
+  return `Checking token mint, freeze, program upgrade and stake authorities for ${keys} address${keys === 1 ? "" : "es"}: ${thousands(keys * REQUESTS_PER_KEY)} requests over ${host}.`;
+}
+function progressLine(progress) {
+  const parts = [`Checking authorities: ${thousands(progress.completed)} of ${thousands(progress.total)} requests`];
+  if (progress.refusedGroups > 0) {
+    parts.push(`${progress.refusedGroups} group${progress.refusedGroups === 1 ? "" : "s"} refused`);
+  }
+  const elapsedS = Math.floor(progress.elapsedMs / 1000);
+  parts.push(`${elapsedS} s elapsed`);
+  const remaining = progress.total - progress.settled - progress.skipped;
+  if (progress.elapsedMs >= 5000 && progress.settled > 0 && remaining > 0) {
+    const leftS = Math.ceil(remaining * progress.elapsedMs / progress.settled / 1000);
+    parts.push(`about ${leftS} s left`);
+  }
+  return parts.join(", ");
+}
+function checkDoneLine(keys, result) {
+  const refused = result.notChecked.length;
+  return `✓ authorities read for ${keys} address${keys === 1 ? "" : "es"} (${thousands(result.requests)} requests, ${result.checked.length} of ${ROLE_GROUPS.length} groups read${refused > 0 ? `, ${refused} refused` : ""}) in ${formatDuration(result.elapsedMs)}`;
+}
+function authoritiesJson(result) {
+  return {
+    checked: result.checked,
+    notChecked: result.notChecked,
+    found: result.found.map(({ address, role, target, program }) => ({ address, role, target, program }))
+  };
+}
+var BPF_UPGRADEABLE_LOADER_ID = "BPFLoaderUpgradeab1e11111111111111111111111", STAKE_PROGRAM_ID = "Stake11111111111111111111111111111111111111", ROLE_GROUP_IDS, PAGINATED_TOKEN_GROUPS, RPC_PAGINATION_REQUIRED = -32600, MAX_V2_PAGES = 10, RPC_METHOD_NOT_FOUND = -32601, REQUESTS_PER_KEY = 9, b642 = (bytes) => base64.encode(bytes), concat2 = (...parts) => {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}, COPTION_SOME_U32, COPTION_SOME_U8, LOADER_PROGRAM_DATA_TAG, LOADER_PROGRAM_TAG, TOKEN_2022_MINT_ACCOUNT_TYPE, memcmp = (offset, bytes) => ({
+  memcmp: { offset, bytes: b642(bytes), encoding: "base64" }
+}), ROLE_GROUPS, PROGRAM_LABELS, NOT_CHECKED_LINE = "Not checked: multisig membership, Token-2022 extension authorities, metadata update authority.", thousands = (n) => n.toLocaleString("en-US");
+var init_signer_roles = __esm(() => {
+  init_esm();
+  init_solana_lite();
+  ROLE_GROUP_IDS = [
+    "token-mint",
+    "token-freeze",
+    "token2022-mint",
+    "token2022-freeze",
+    "program-upgrade",
+    "stake-staker",
+    "stake-withdrawer"
+  ];
+  PAGINATED_TOKEN_GROUPS = new Set([
+    "token-mint",
+    "token-freeze",
+    "token2022-mint",
+    "token2022-freeze"
+  ]);
+  COPTION_SOME_U32 = new Uint8Array([1, 0, 0, 0]);
+  COPTION_SOME_U8 = new Uint8Array([1]);
+  LOADER_PROGRAM_DATA_TAG = new Uint8Array([3, 0, 0, 0]);
+  LOADER_PROGRAM_TAG = new Uint8Array([2, 0, 0, 0]);
+  TOKEN_2022_MINT_ACCOUNT_TYPE = new Uint8Array([1]);
+  ROLE_GROUPS = [
+    {
+      id: "token-mint",
+      role: "mint",
+      program: "token",
+      programId: TOKEN_PROGRAM_ID,
+      label: "token mint",
+      shapes: (key) => [tokenMintFilters(key)]
+    },
+    {
+      id: "token-freeze",
+      role: "freeze",
+      program: "token",
+      programId: TOKEN_PROGRAM_ID,
+      label: "token freeze",
+      shapes: (key) => [tokenFreezeFilters(key)]
+    },
+    {
+      id: "token2022-mint",
+      role: "mint",
+      program: "token-2022",
+      programId: TOKEN_2022_PROGRAM_ID,
+      label: "Token-2022 mint",
+      shapes: token2022MintFilters
+    },
+    {
+      id: "token2022-freeze",
+      role: "freeze",
+      program: "token-2022",
+      programId: TOKEN_2022_PROGRAM_ID,
+      label: "Token-2022 freeze",
+      shapes: token2022FreezeFilters
+    },
+    {
+      id: "program-upgrade",
+      role: "upgrade",
+      program: "bpf-upgradeable-loader",
+      programId: BPF_UPGRADEABLE_LOADER_ID,
+      label: "program upgrade",
+      shapes: (key) => [programUpgradeFilters(key)]
+    },
+    {
+      id: "stake-staker",
+      role: "staker",
+      program: "stake",
+      programId: STAKE_PROGRAM_ID,
+      label: "stake staker",
+      shapes: (key) => [stakeStakerFilters(key)]
+    },
+    {
+      id: "stake-withdrawer",
+      role: "withdrawer",
+      program: "stake",
+      programId: STAKE_PROGRAM_ID,
+      label: "stake withdrawer",
+      shapes: (key) => [stakeWithdrawerFilters(key)]
+    }
+  ];
+  PROGRAM_LABELS = {
+    token: "Token",
+    "token-2022": "Token-2022",
+    "bpf-upgradeable-loader": "BPF Upgradeable Loader",
+    stake: "Stake"
+  };
+});
+
 // src/vault/promote-support.ts
 var exports_promote_support = {};
 __export(exports_promote_support, {
+  subjectPhrase: () => subjectPhrase,
+  shortAddress: () => shortAddress,
+  runRoleCheck: () => runRoleCheck,
+  renderControlledBy: () => renderControlledBy,
+  readControlledBy: () => readControlledBy,
   promotedEntry: () => promotedEntry,
-  printAd8Warning: () => printAd8Warning,
+  promoteSentence: () => promoteSentence,
+  printPromoteSentence: () => printPromoteSentence,
   findVaultRoleEntry: () => findVaultRoleEntry,
   findEntryByLabelOrAddress: () => findEntryByLabelOrAddress,
-  confirmAd8Acknowledgement: () => confirmAd8Acknowledgement,
+  controlledByJson: () => controlledByJson,
+  confirmPrompt: () => confirmPrompt,
+  confirmPromotion: () => confirmPromotion,
   assertNotPinnedDestination: () => assertNotPinnedDestination,
   assertInPlacePreconditions: () => assertInPlacePreconditions,
   assertColdVaultDestination: () => assertColdVaultDestination,
   applyPromotion: () => applyPromotion,
-  AD8_WARNING: () => AD8_WARNING,
-  AD8_ACK_WORD: () => AD8_ACK_WORD
+  SENTENCE_PREFIX: () => SENTENCE_PREFIX,
+  CONFIRM_WORD: () => CONFIRM_WORD
 });
 function assertColdVaultDestination(index, destinationLabelOrAddress, opts = {}) {
   const destination = findVaultRoleEntry(index, destinationLabelOrAddress);
@@ -6900,25 +9383,175 @@ function applyPromotion(index, subject, destination, opts) {
     entries
   };
 }
-function printAd8Warning(ctx) {
+function promoteSentence(input) {
+  const plural = input.n !== 1;
+  const subject = plural ? `these ${input.n} keys` : "this key";
+  const head = `You are about to accept a permanent copy of ${subject} in Privy's TEE: demoting will not remove it,`;
+  switch (input.form) {
+    case "U":
+      return `${head} and anything ${plural ? "a key" : "it"} signs for (a multisig, a token mint, a program upgrade authority) is then only as safe as Privy.`;
+    case "N":
+      return `${head} ${plural ? "none of them is" : "it is not"} a token mint, freeze, program upgrade or stake authority, and any multisig ${plural ? "they sign" : "it signs"} for (not checked) is then only as safe as Privy.`;
+    case "F": {
+      const k = input.k ?? 1;
+      const holder = plural ? `${k} of them ${k === 1 ? "holds" : "hold"}` : "it holds";
+      return `${head} and ${holder} a mint, freeze, upgrade or stake authority, named ${input.where}, which is then only as safe as Privy.`;
+    }
+  }
+}
+function printPromoteSentence(ctx, sentence) {
   ctx.deps.stdout.write(`
-${AD8_WARNING}
+${sentence}
 
 `);
 }
-async function confirmAd8Acknowledgement(ctx) {
-  const typed = (await ctx.deps.promptLine(`Type ${AD8_ACK_WORD} to acknowledge: I have read the warning above, this address never returns to cold, and I accept what it may control: `)).trim();
-  if (typed !== AD8_ACK_WORD) {
-    throw new VaultError("PROMOTE_NOT_ACKNOWLEDGED", "The acknowledgement word did not match; nothing was promoted.");
+function subjectPhrase(n) {
+  return n === 1 ? "this key" : `these ${n} keys`;
+}
+function confirmPrompt(n) {
+  return `Type ${CONFIRM_WORD} to accept this for ${subjectPhrase(n)}: `;
+}
+async function confirmPromotion(ctx, n) {
+  const typed = await ctx.deps.promptLine(confirmPrompt(n));
+  if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
+    throw new VaultError("PROMOTE_NOT_ACKNOWLEDGED", `The acknowledgement is the word ${CONFIRM_WORD}; nothing was promoted, and nothing was written.`, { suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.` });
   }
 }
-var AD8_WARNING = `This key may sign for a multisig, for a program upgrade authority, or for a token mint or freeze authority. The CLI does not know which, and does not check.
-Promoting leaves a copy of this key inside Privy's TEE for good.
-The key itself, its multisig membership and its authorities are unchanged: the operator keeps the key and can keep signing with it, and whatever it signs for keeps working exactly as before.
-If Privy's TEE or its signing policy were compromised, whatever this key controls is at risk, and how much depends on the setup: a multisig's threshold, or whether this key is a sole authority, decides what an attacker could actually do.
-Demoting does not remove that copy. The only way to end this exposure is to replace this key in the multisig, or to move the authority to another key.`, AD8_ACK_WORD = "EXPOSE";
+function shortAddress(address) {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+function accountUnresolved(reason) {
+  return new VaultError("PROMOTE_ACCOUNT_UNRESOLVED", `Could not confirm which Candle account this API key acts for (${reason}); nothing was written.`, {
+    suggestion: "Check the key with: candle doctor. Promotion registers the keys to that account, so it does not proceed on a cached value."
+  });
+}
+async function readControlledBy(ctx) {
+  const { deps } = ctx;
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey)
+    throw accountUnresolved("no API key is available");
+  const keyPrefix = apiKeyPrefix(apiKey);
+  if (keyPrefix === undefined)
+    throw accountUnresolved("the API key is not in the cndl_live_ or cndl_test_ shape");
+  const result = await apiRequest("/api/v1/agent/wallets/embedded", {
+    method: "GET",
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl: ctx.apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok)
+    throw accountUnresolved(result.status === 0 ? result.message : `HTTP ${result.status}`);
+  const body = result.body ?? {};
+  if (typeof body.account !== "string" || body.account.length === 0) {
+    throw accountUnresolved("the response carried no account");
+  }
+  const username = typeof body.username === "string" && body.username.length > 0 ? body.username : null;
+  const keySource = deps.env.CANDLE_API_KEY?.trim() ? "env" : ctx.profile !== undefined ? "profile" : "default";
+  const apiUrlFrom = ctx.apiUrlFlag !== undefined ? "--api-url" : deps.env.CANDLE_API_URL?.trim() ? "CANDLE_API_URL" : undefined;
+  return {
+    account: body.account,
+    username,
+    keyPrefix,
+    keyLabel: await readKeyLabel(ctx, keyPrefix),
+    keySource,
+    ...keySource === "profile" && ctx.profile !== undefined ? { profileName: ctx.profile } : {},
+    apiUrl: ctx.apiUrl,
+    environment: candleEnvironment(ctx.apiUrl) ?? null,
+    ...apiUrlFrom !== undefined ? { apiUrlFrom } : {}
+  };
+}
+async function readKeyLabel(ctx, keyPrefix) {
+  try {
+    const deviceToken = await resolveDeviceToken(ctx.deps, ctx.profile);
+    if (!deviceToken)
+      return null;
+    const result = await apiRequest("/api/v1/agent/keys", {
+      method: "GET",
+      auth: "device",
+      credentials: { deviceToken },
+      apiUrl: ctx.apiUrl,
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env
+    });
+    if (!result.ok)
+      return null;
+    const keys = result.body?.keys;
+    if (!Array.isArray(keys))
+      return null;
+    const row = keys.find((key) => key?.keyPrefix === keyPrefix);
+    return typeof row?.label === "string" && row.label.length > 0 ? row.label : null;
+  } catch {
+    return null;
+  }
+}
+function renderControlledBy(controlledBy, n) {
+  const subject = n === 1 ? "This key" : `These ${n} keys`;
+  const source = controlledBy.keySource === "env" ? "CANDLE_API_KEY" : controlledBy.keySource === "profile" ? `profile ${controlledBy.profileName ?? ""}`.trimEnd() : "default credentials";
+  const cleaned = controlledBy.keyLabel !== null ? labelCell(controlledBy.keyLabel) : "";
+  const label = cleaned.length > 0 ? `(${cleaned})  ` : "";
+  const environment = controlledBy.environment ?? "not a Candle host";
+  const from = controlledBy.apiUrlFrom !== undefined ? `, from ${controlledBy.apiUrlFrom}` : "";
+  return [
+    `${subject} will be controlled by:`,
+    `  Candle account  ${controlledBy.username ?? "(no username)"}  (${shortAddress(controlledBy.account)})`,
+    `  API key         ${controlledBy.keyPrefix}…  ${label}${source}`,
+    `  API             ${controlledBy.apiUrl}  (${environment}${from})`
+  ].join(`
+`);
+}
+function controlledByJson(controlledBy) {
+  return {
+    account: controlledBy.account,
+    username: controlledBy.username,
+    keyPrefix: controlledBy.keyPrefix,
+    keyLabel: controlledBy.keyLabel,
+    keySource: controlledBy.keySource,
+    apiUrl: controlledBy.apiUrl,
+    environment: controlledBy.environment
+  };
+}
+async function runRoleCheck(ctx, rpc, addresses) {
+  const { deps } = ctx;
+  const startedAt = deps.now();
+  let latest;
+  let drawn = "";
+  const draw = () => {
+    if (latest === undefined)
+      return;
+    const line = progressLine({ ...latest, elapsedMs: deps.now() - startedAt });
+    const pad = drawn.length > line.length ? " ".repeat(drawn.length - line.length) : "";
+    deps.stderr.write(`\r${line}${pad}`);
+    drawn = line;
+  };
+  const ticker = setInterval(draw, 1000);
+  ticker.unref?.();
+  let result;
+  try {
+    result = await readSignerRoles(rpc, addresses, {
+      now: deps.now,
+      sleep: deps.sleep,
+      onProgress: (progress) => {
+        latest = progress;
+        draw();
+      }
+    });
+  } finally {
+    clearInterval(ticker);
+  }
+  const clear = drawn.length > 0 ? `\r${" ".repeat(drawn.length)}\r` : "";
+  deps.stderr.write(`${clear}${checkDoneLine(addresses.length, result)}
+`);
+  return result;
+}
+var SENTENCE_PREFIX = "You are about to accept ", CONFIRM_WORD = "confirm";
 var init_promote_support = __esm(() => {
+  init_keys();
+  init_deps();
+  init_profiles();
   init_errors();
+  init_signer_roles();
 });
 
 // src/vault/webauthn-cbor.ts
@@ -19680,8 +22313,8 @@ var require_envelope = __commonJS((exports) => {
       return obj;
     }
   };
-  function bytesFromBase64(b642) {
-    return Uint8Array.from(globalThis.Buffer.from(b642, "base64"));
+  function bytesFromBase64(b643) {
+    return Uint8Array.from(globalThis.Buffer.from(b643, "base64"));
   }
   function base64FromBytes(arr) {
     return globalThis.Buffer.from(arr).toString("base64");
@@ -20186,8 +22819,8 @@ var require_sigstore_common = __commonJS((exports) => {
       return obj;
     }
   };
-  function bytesFromBase64(b642) {
-    return Uint8Array.from(globalThis.Buffer.from(b642, "base64"));
+  function bytesFromBase64(b643) {
+    return Uint8Array.from(globalThis.Buffer.from(b643, "base64"));
   }
   function base64FromBytes(arr) {
     return globalThis.Buffer.from(arr).toString("base64");
@@ -20328,8 +22961,8 @@ var require_sigstore_rekor = __commonJS((exports) => {
       return obj;
     }
   };
-  function bytesFromBase64(b642) {
-    return Uint8Array.from(globalThis.Buffer.from(b642, "base64"));
+  function bytesFromBase64(b643) {
+    return Uint8Array.from(globalThis.Buffer.from(b643, "base64"));
   }
   function base64FromBytes(arr) {
     return globalThis.Buffer.from(arr).toString("base64");
@@ -20901,8 +23534,8 @@ var require_sigstore_verification = __commonJS((exports) => {
       return obj;
     }
   };
-  function bytesFromBase64(b642) {
-    return Uint8Array.from(globalThis.Buffer.from(b642, "base64"));
+  function bytesFromBase64(b643) {
+    return Uint8Array.from(globalThis.Buffer.from(b643, "base64"));
   }
   function base64FromBytes(arr) {
     return globalThis.Buffer.from(arr).toString("base64");
@@ -23512,8 +26145,8 @@ var require_verifier = __commonJS((exports) => {
       return obj;
     }
   };
-  function bytesFromBase64(b642) {
-    return Uint8Array.from(globalThis.Buffer.from(b642, "base64"));
+  function bytesFromBase64(b643) {
+    return Uint8Array.from(globalThis.Buffer.from(b643, "base64"));
   }
   function base64FromBytes(arr) {
     return globalThis.Buffer.from(arr).toString("base64");
@@ -23613,8 +26246,8 @@ var require_hashedrekord = __commonJS((exports) => {
       return obj;
     }
   };
-  function bytesFromBase64(b642) {
-    return Uint8Array.from(globalThis.Buffer.from(b642, "base64"));
+  function bytesFromBase64(b643) {
+    return Uint8Array.from(globalThis.Buffer.from(b643, "base64"));
   }
   function base64FromBytes(arr) {
     return globalThis.Buffer.from(arr).toString("base64");
@@ -35455,150 +38088,6 @@ import { chmod as chmod8, readFile as readFile8, realpath, rename as rename5, un
 import { homedir as homedir6, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
-// src/client.ts
-var DEFAULT_API_URL = "https://api.alpha.candle.tv";
-function trimTrailingSlashes(url) {
-  return url.trim().replace(/\/+$/, "");
-}
-var ALLOW_INSECURE_HTTP_ENV = "CANDLE_ALLOW_INSECURE_HTTP";
-function isLoopbackHost(hostname) {
-  const host = hostname.toLowerCase();
-  if (host === "localhost" || host.endsWith(".localhost"))
-    return true;
-  if (host === "::1" || host === "[::1]")
-    return true;
-  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
-}
-function isPrivateHost(hostname) {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
-  if (!host.includes(".") && !host.includes(":"))
-    return true;
-  if (/\.(local|internal|home\.arpa)$/.test(host))
-    return true;
-  if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host))
-    return true;
-  if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(host))
-    return true;
-  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(host))
-    return true;
-  if (/^169\.254\.\d{1,3}\.\d{1,3}$/.test(host))
-    return true;
-  if (/^f[cd][0-9a-f]{2}:/.test(host))
-    return true;
-  return /^fe[89ab][0-9a-f]:/.test(host);
-}
-function insecureApiUrlFault(url, env = process.env) {
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return;
-  }
-  if (parsed.protocol !== "http:")
-    return;
-  if (isLoopbackHost(parsed.hostname))
-    return;
-  if (env[ALLOW_INSECURE_HTTP_ENV]?.trim() && isPrivateHost(parsed.hostname))
-    return;
-  return `Refusing to send credentials in the clear to ${parsed.origin}. Use https://` + (isPrivateHost(parsed.hostname) ? `, or set ${ALLOW_INSECURE_HTTP_ENV}=1 if this really is a trusted local endpoint.` : `. ${ALLOW_INSECURE_HTTP_ENV} does not apply here: it covers private networks only, and this is a public address.`);
-}
-function resolveApiUrl(configuredApiUrl, env = process.env) {
-  const fromEnv = env.CANDLE_API_URL?.trim();
-  const resolved = fromEnv || configuredApiUrl?.trim() || DEFAULT_API_URL;
-  return trimTrailingSlashes(resolved);
-}
-function buildHeaders(opts) {
-  const headers = { "content-type": "application/json", accept: "application/json" };
-  if (opts.auth === "device" && opts.credentials.deviceToken) {
-    headers.authorization = `Bearer ${opts.credentials.deviceToken}`;
-  } else if (opts.auth === "key" && opts.credentials.apiKey) {
-    headers["x-api-key"] = opts.credentials.apiKey;
-  }
-  return headers;
-}
-function buildUrl(apiUrl, path) {
-  const base = trimTrailingSlashes(apiUrl);
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  return `${base}${normalizedPath}`;
-}
-function parseBody(text) {
-  if (text.length === 0)
-    return;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-function classifyError(status, raw) {
-  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-    const obj = raw;
-    if (typeof obj.error === "string") {
-      const description = typeof obj.error_description === "string" ? obj.error_description : obj.error;
-      return { rfcError: obj.error, message: description };
-    }
-    if (obj.error && typeof obj.error === "object") {
-      const errorObj = obj.error;
-      const code = typeof errorObj.code === "string" ? errorObj.code : undefined;
-      const message = typeof errorObj.message === "string" ? errorObj.message : `Request failed with status ${status}`;
-      const uiHint = typeof errorObj.uiHint === "string" ? errorObj.uiHint : undefined;
-      const docsPath = typeof errorObj.docsPath === "string" ? errorObj.docsPath : undefined;
-      return {
-        code,
-        message,
-        ...typeof errorObj.retryable === "boolean" ? { retryable: errorObj.retryable } : {},
-        ...typeof errorObj.routing === "object" && errorObj.routing !== null ? { routing: errorObj.routing } : {},
-        ...typeof errorObj.discovery === "object" && errorObj.discovery !== null ? { discovery: errorObj.discovery } : {},
-        ...uiHint ? { uiHint } : {},
-        ...docsPath ? { docsPath } : {}
-      };
-    }
-  }
-  return { message: `Request failed with status ${status}` };
-}
-var latestCliVersionSeen = null;
-function latestCliVersionFromApi() {
-  return latestCliVersionSeen;
-}
-async function apiRequest(path, opts) {
-  const url = buildUrl(opts.apiUrl, path);
-  const insecure = insecureApiUrlFault(opts.apiUrl, opts.env ?? process.env);
-  if (insecure) {
-    return { ok: false, status: 0, code: "INSECURE_API_URL", message: insecure, raw: undefined };
-  }
-  const headers = buildHeaders(opts);
-  const body = opts.body === undefined ? undefined : JSON.stringify(opts.body);
-  const doFetch = opts.fetch ?? fetch;
-  let response;
-  try {
-    response = await doFetch(url, {
-      method: opts.method ?? "GET",
-      headers,
-      body
-    });
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    const env = opts.env ?? process.env;
-    const envOverride = env.CANDLE_API_URL?.trim();
-    return {
-      ok: false,
-      status: 0,
-      message: `Could not reach ${url}: ${reason} (set CANDLE_API_URL to override; ${envOverride ? `currently "${envOverride}"` : "currently unset"})`,
-      raw: undefined
-    };
-  }
-  const latestHeader = response.headers?.get?.("x-candle-cli-latest");
-  if (latestHeader)
-    latestCliVersionSeen = latestHeader;
-  const text = await response.text();
-  const raw = parseBody(text);
-  if (response.ok) {
-    return { ok: true, status: response.status, body: raw };
-  }
-  const classified = classifyError(response.status, raw);
-  return { ok: false, status: response.status, raw, ...classified };
-}
-
 // src/commands/auth.ts
 import { homedir as homedir2 } from "node:os";
 import { join as join2 } from "node:path";
@@ -35636,388 +38125,11 @@ async function runLiveCheck(params) {
   return result.ok ? { check, state: "PASS", detail: passDetail } : { check, state: "FAIL", detail: renderError(result, { apiUrl, authType: auth }) };
 }
 
-// src/profiles.ts
-function profileSecretRef(name, kind) {
-  return `profile:${name}:${kind === "deviceToken" ? "device_token" : "api_key"}`;
-}
-function isValidProfileName(name) {
-  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/.test(name);
-}
-function listForHumans(profiles, active) {
-  return Object.entries(profiles).map(([name, p]) => `  ${name}${name === active ? " (active)" : ""}${p.account ? `  ${p.account}` : ""}${p.apiUrl ? `  ${p.apiUrl}` : ""}`).join(`
-`);
-}
-function resolveProfileName(config, opts) {
-  const profiles = config.profiles ?? {};
-  const names = Object.keys(profiles);
-  const requested = opts.flag?.trim() || opts.env.CANDLE_PROFILE?.trim() || undefined;
-  if (requested !== undefined) {
-    if (!isValidProfileName(requested))
-      return { ok: false, message: `Invalid profile name: ${requested}` };
-    if (!Object.hasOwn(profiles, requested)) {
-      return {
-        ok: false,
-        message: `No profile named "${requested}".${names.length ? `
-Profiles on this machine:
-${listForHumans(profiles, config.activeProfile)}` : " Run: candle auth login --profile " + requested}`
-      };
-    }
-    return { ok: true, name: requested };
-  }
-  if (config.activeProfile && Object.hasOwn(profiles, config.activeProfile))
-    return { ok: true, name: config.activeProfile };
-  if (names.length === 0)
-    return { ok: true, name: undefined };
-  if (names.length === 1)
-    return { ok: true, name: names[0] };
-  return {
-    ok: false,
-    message: `Several profiles exist and none is selected. Pick one with --profile <name> or CANDLE_PROFILE=<name>:
-${listForHumans(profiles, config.activeProfile)}`
-  };
-}
-function resolveProfileNameForLogin(config, opts) {
-  const profiles = config.profiles ?? {};
-  const requested = opts.flag?.trim() || opts.env.CANDLE_PROFILE?.trim() || undefined;
-  if (requested !== undefined) {
-    if (!isValidProfileName(requested))
-      return { ok: false, message: `Invalid profile name: ${requested}` };
-    return { ok: true, name: requested };
-  }
-  if (config.activeProfile && Object.hasOwn(profiles, config.activeProfile))
-    return { ok: true, name: config.activeProfile };
-  const names = Object.keys(profiles);
-  return { ok: true, name: names.length === 1 ? names[0] : undefined };
-}
-var PRE_PROFILE_FIELDS = ["apiUrl", "keyPrefix", "deviceTokenPrefix", "scopes", "label", "portalOrigin"];
-function migratedConfig(config) {
-  if (config.profiles !== undefined)
-    return { config, migrated: false };
-  const legacy = {};
-  for (const field of PRE_PROFILE_FIELDS) {
-    const value = config[field];
-    if (value !== undefined)
-      legacy[field] = value;
-  }
-  if (Object.keys(legacy).length === 0)
-    return { config, migrated: false };
-  return { config: { ...config, profiles: { default: legacy }, activeProfile: "default" }, migrated: true };
-}
-function effectiveProfileFields(config, profile) {
-  if (profile !== undefined)
-    return config.profiles?.[profile] ?? {};
-  const legacy = {};
-  for (const field of PRE_PROFILE_FIELDS) {
-    const value = config[field];
-    if (value !== undefined)
-      legacy[field] = value;
-  }
-  return legacy;
-}
-function defaultProfileNameFor(apiUrl, existing) {
-  let host = "profile";
-  try {
-    host = new URL(apiUrl).hostname;
-  } catch {}
-  let base;
-  if (host === "staging.api.candle.tv")
-    base = "staging";
-  else if (host === "api.candle.tv" || host === "api.alpha.candle.tv")
-    base = "production";
-  else
-    base = host.replace(/[^A-Za-z0-9._-]/g, "-").replace(/\./g, "-").slice(0, 28) || "profile";
-  if (!isValidProfileName(base))
-    base = "profile";
-  const taken = new Set(Object.keys(existing ?? {}));
-  if (!taken.has(base))
-    return base;
-  for (let n = 2;; n++) {
-    const candidate = `${base}-${n}`;
-    if (!taken.has(candidate))
-      return candidate;
-  }
-}
-function credentialEnvOverrides(env) {
-  return ["CANDLE_API_KEY", "CANDLE_DEVICE_TOKEN"].filter((name) => env[name]?.trim());
-}
-function identityLine(profile, account, apiUrl, overrides, username) {
-  const shown = overrides?.length ? `unknown (${overrides.join(", ")} override)` : username && account ? `${username} (${account})` : account ?? "unknown";
-  return `Profile: ${profile ?? "none"}   Account: ${shown} at ${apiUrl}`;
-}
-async function printIdentity(ctx) {
-  if (ctx.json)
-    return;
-  const config = await ctx.deps.readConfig();
-  const fields = effectiveProfileFields(config, ctx.profile);
-  ctx.deps.stdout.write(`${identityLine(ctx.profile, fields.account, ctx.apiUrl, credentialEnvOverrides(ctx.deps.env), fields.username)}
-`);
-}
-function formatCacheAge(now, cachedAt) {
-  if (cachedAt === undefined)
-    return "not cached";
-  const seconds = Math.max(0, Math.floor((now - cachedAt) / 1000));
-  if (seconds < 60)
-    return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60)
-    return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24)
-    return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-function profileTable(config, now) {
-  return Object.entries(config.profiles ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([name, p]) => ({
-    name,
-    active: config.activeProfile === name,
-    account: p.account,
-    cachedAge: p.account !== undefined && p.accountCachedAt === undefined ? "age unknown" : formatCacheAge(now, p.accountCachedAt),
-    apiUrl: p.apiUrl,
-    keyPrefix: p.keyPrefix
-  }));
-}
-
-// src/secret-store.ts
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-
-// src/file-lock.ts
-import { open, rm, stat } from "node:fs/promises";
-var STALE_MS = 30000;
-var RETRY_MS = 25;
-var TIMEOUT_MS = 1e4;
-async function withFileLock(target, fn) {
-  const lockPath = `${target}.lock`;
-  const deadline = Date.now() + TIMEOUT_MS;
-  for (;; ) {
-    try {
-      await (await open(lockPath, "wx")).close();
-      break;
-    } catch (error) {
-      if (error.code !== "EEXIST")
-        throw error;
-      const age = await stat(lockPath).then((s) => Date.now() - s.mtimeMs).catch(() => 0);
-      if (age > STALE_MS) {
-        await rm(lockPath, { force: true });
-        continue;
-      }
-      if (Date.now() > deadline) {
-        throw new Error(`Timed out waiting for ${lockPath}. Another candle process is writing; if none is running, delete that file.`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
-    }
-  }
-  try {
-    return await fn();
-  } finally {
-    await rm(lockPath, { force: true });
-  }
-}
-
-// src/secret-store.ts
-var SECRET_REFS = {
-  deviceToken: "device_token",
-  apiKey: "api_key"
-};
-function walletSignerRef(walletId) {
-  return `wallet_signer_${walletId}`;
-}
-function importPendingSignerRef(chain, address) {
-  return `import_pending_${chain}_${address}`;
-}
-function pemToStoredSigner(pem) {
-  return pem.replace(/-----BEGIN PRIVATE KEY-----/, "").replace(/-----END PRIVATE KEY-----/, "").replace(/\s+/g, "");
-}
-function storedSignerToPem(stored) {
-  const lines = stored.match(/.{1,64}/g) ?? [stored];
-  return `-----BEGIN PRIVATE KEY-----
-${lines.join(`
-`)}
------END PRIVATE KEY-----
-`;
-}
-function configDir() {
-  return process.env.CANDLE_CONFIG_DIR?.trim() || join(homedir(), ".config", "candle");
-}
-function defaultCredentialsPath() {
-  return join(configDir(), "credentials.enc");
-}
-function defaultSecretsPath(env = process.env) {
-  return join(env.CANDLE_CONFIG_DIR?.trim() || join(homedir(), ".config", "candle"), "secrets.enc");
-}
-var PBKDF2_ITERATIONS = 210000;
-var SALT_LENGTH_BYTES = 16;
-var IV_LENGTH_BYTES = 12;
-async function deriveKey(passphrase, salt, iterations) {
-  const keyMaterial = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
-    "deriveKey"
-  ]);
-  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-}
-
-class EncryptedFileSecretStore {
-  path;
-  iterations;
-  cachedPassphrase;
-  constructor(options = {}) {
-    this.path = options.path ?? defaultCredentialsPath();
-    this.iterations = options.iterations ?? PBKDF2_ITERATIONS;
-  }
-  async get(ref) {
-    const passphrase = await this.resolvePassphrase();
-    const contents = await this.readContents();
-    const entry = contents[ref];
-    if (!entry)
-      return null;
-    const salt = fromBase64(entry.salt);
-    const key = await deriveKey(passphrase, salt, entry.iterations);
-    const iv = fromBase64(entry.iv);
-    const ciphertext = fromBase64(entry.ciphertext);
-    let plaintext;
-    try {
-      plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
-    } catch {
-      throw new Error(`Could not decrypt the credential for "${ref}" in ${this.path}. CANDLE_KEYRING_PASSPHRASE is likely wrong for this file.`);
-    }
-    return new TextDecoder().decode(plaintext);
-  }
-  async set(ref, value) {
-    const passphrase = await this.resolvePassphrase();
-    return withFileLock(this.path, async () => {
-      const contents = await this.readContents();
-      const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH_BYTES));
-      const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH_BYTES));
-      const key = await deriveKey(passphrase, salt, this.iterations);
-      const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(value));
-      contents[ref] = {
-        salt: toBase64(salt),
-        iv: toBase64(iv),
-        ciphertext: toBase64(new Uint8Array(ciphertext)),
-        iterations: this.iterations
-      };
-      await this.writeContents(contents);
-    });
-  }
-  async delete(ref) {
-    await this.resolvePassphrase();
-    return withFileLock(this.path, async () => {
-      const contents = await this.readContents();
-      if (!Object.hasOwn(contents, ref))
-        return;
-      delete contents[ref];
-      await this.writeContents(contents);
-    });
-  }
-  async resolvePassphrase() {
-    if (this.cachedPassphrase !== undefined)
-      return this.cachedPassphrase;
-    const fromEnv = process.env.CANDLE_KEYRING_PASSPHRASE;
-    if (fromEnv) {
-      this.cachedPassphrase = fromEnv;
-      return fromEnv;
-    }
-    if (process.stdin.isTTY) {
-      const prompted = await readHiddenLine("Passphrase for Candle credential store: ", realPromptStreams());
-      this.cachedPassphrase = prompted;
-      return prompted;
-    }
-    throw new Error("No keychain available and no CANDLE_KEYRING_PASSPHRASE set; set it to use the encrypted file store on this machine");
-  }
-  async readContents() {
-    let raw;
-    try {
-      raw = await readFile(this.path, "utf8");
-    } catch (err) {
-      if (err.code === "ENOENT")
-        return {};
-      throw err;
-    }
-    try {
-      return JSON.parse(raw);
-    } catch {
-      throw new Error(`The credentials file at ${this.path} is not valid JSON and cannot be read. Delete it and re-run ` + "the command that stores your device token / API key to recreate it.");
-    }
-  }
-  async writeContents(contents) {
-    const dir = dirname(this.path);
-    await mkdir(dir, { recursive: true });
-    await chmod(dir, 448);
-    const tmpPath = `${this.path}.${crypto.randomUUID()}.tmp`;
-    await writeFile(tmpPath, JSON.stringify(contents, null, 2), { encoding: "utf8", mode: 384 });
-    await chmod(tmpPath, 384);
-    await rename(tmpPath, this.path);
-  }
-}
-async function promptHiddenSecret(promptText) {
-  if (!process.stdin.isTTY) {
-    throw new Error("No TTY available for interactive input; pass --key-file instead");
-  }
-  return readHiddenLine(promptText, realPromptStreams());
-}
-function realPromptStreams() {
-  return { input: process.stdin, output: process.stderr };
-}
-async function promptVisibleLine(promptText) {
-  if (!process.stdin.isTTY) {
-    throw new Error("No TTY available for interactive input; this command cannot run unattended");
-  }
-  return readVisibleLine(promptText, realPromptStreams());
-}
-async function readVisibleLine(promptText, io) {
-  const readline = await import("node:readline");
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
-    rl.question(promptText, (answer) => {
-      rl.close();
-      resolve(answer);
-    });
-  });
-}
-async function readHiddenLine(promptText, io) {
-  const readline = await import("node:readline");
-  return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: io.input, output: io.output, terminal: true });
-    const rlInternals = rl;
-    rlInternals._writeToOutput = (text) => {
-      if (text === promptText)
-        io.output.write(text);
-    };
-    rl.question(promptText, (answer) => {
-      rl.close();
-      io.output.write(`
-`);
-      resolve(answer);
-    });
-  });
-}
-function toBase64(bytes) {
-  return Buffer.from(bytes).toString("base64");
-}
-function fromBase64(base64) {
-  return new Uint8Array(Buffer.from(base64, "base64"));
-}
-
-// src/deps.ts
-async function resolveDeviceToken(deps, profile) {
-  const fromEnv = deps.env.CANDLE_DEVICE_TOKEN?.trim();
-  if (fromEnv)
-    return fromEnv;
-  const ref = profile ? profileSecretRef(profile, "deviceToken") : SECRET_REFS.deviceToken;
-  const stored = await deps.store.get(ref);
-  return stored ?? undefined;
-}
-async function resolveApiKey(deps, profile) {
-  const fromEnv = deps.env.CANDLE_API_KEY?.trim();
-  if (fromEnv)
-    return fromEnv;
-  const ref = profile ? profileSecretRef(profile, "apiKey") : SECRET_REFS.apiKey;
-  const stored = await deps.store.get(ref);
-  return stored ?? undefined;
-}
-
 // src/commands/auth.ts
+init_deps();
+init_profiles();
 init_render();
+init_secret_store();
 
 // src/version.ts
 var CLI_VERSION = "0.11.5";
@@ -36659,11 +38771,11 @@ var HELP = {
       },
       {
         invocation: "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>]",
-        description: "Fresh TEE key, or promote one vault key in place"
+        description: "Fresh TEE key, or promote one vault key in place. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked."
       },
       {
         invocation: "promote-batch --pairs-from <file> --rpc-url <url> [--token-holdings]",
-        description: "Promote many vault keys in place: one unlock, one reviewed acknowledgement"
+        description: "Promote many vault keys in place: one unlock, one reviewed acknowledgement. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked."
       },
       {
         invocation: "fund <tee-address|external> --amount <n> --asset SOL|USDC --rpc-url <url> [--from <label>]",
@@ -37162,6 +39274,8 @@ async function completion(args, ctx) {
 // src/commands/doctor.ts
 init_agent_key_access();
 init_args();
+init_deps();
+init_profiles();
 init_release();
 init_render();
 init_fido2();
@@ -37384,1113 +39498,7 @@ async function doctor(args, ctx) {
 
 // src/commands/external.ts
 init_args();
-
-// ../../node_modules/@noble/curves/esm/ed25519.js
-init_sha2();
-init_utils();
-init_curve();
-
-// ../../node_modules/@noble/curves/esm/abstract/edwards.js
-init_utils2();
-init_curve();
-init_modular();
-/*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-var _0n5 = BigInt(0);
-var _1n5 = BigInt(1);
-var _2n3 = BigInt(2);
-var _8n2 = BigInt(8);
-function isEdValidXY(Fp, CURVE, x, y) {
-  const x2 = Fp.sqr(x);
-  const y2 = Fp.sqr(y);
-  const left = Fp.add(Fp.mul(CURVE.a, x2), y2);
-  const right = Fp.add(Fp.ONE, Fp.mul(CURVE.d, Fp.mul(x2, y2)));
-  return Fp.eql(left, right);
-}
-function edwards(params, extraOpts = {}) {
-  const validated = _createCurveFields("edwards", params, extraOpts, extraOpts.FpFnLE);
-  const { Fp, Fn } = validated;
-  let CURVE = validated.CURVE;
-  const { h: cofactor } = CURVE;
-  _validateObject(extraOpts, {}, { uvRatio: "function" });
-  const MASK = _2n3 << BigInt(Fn.BYTES * 8) - _1n5;
-  const modP = (n) => Fp.create(n);
-  const uvRatio = extraOpts.uvRatio || ((u, v) => {
-    try {
-      return { isValid: true, value: Fp.sqrt(Fp.div(u, v)) };
-    } catch (e) {
-      return { isValid: false, value: _0n5 };
-    }
-  });
-  if (!isEdValidXY(Fp, CURVE, CURVE.Gx, CURVE.Gy))
-    throw new Error("bad curve params: generator point");
-  function acoord(title, n, banZero = false) {
-    const min = banZero ? _1n5 : _0n5;
-    aInRange("coordinate " + title, n, min, MASK);
-    return n;
-  }
-  function aextpoint(other) {
-    if (!(other instanceof Point))
-      throw new Error("ExtendedPoint expected");
-  }
-  const toAffineMemo = memoized((p, iz) => {
-    const { X, Y, Z } = p;
-    const is0 = p.is0();
-    if (iz == null)
-      iz = is0 ? _8n2 : Fp.inv(Z);
-    const x = modP(X * iz);
-    const y = modP(Y * iz);
-    const zz = Fp.mul(Z, iz);
-    if (is0)
-      return { x: _0n5, y: _1n5 };
-    if (zz !== _1n5)
-      throw new Error("invZ was invalid");
-    return { x, y };
-  });
-  const assertValidMemo = memoized((p) => {
-    const { a, d } = CURVE;
-    if (p.is0())
-      throw new Error("bad point: ZERO");
-    const { X, Y, Z, T } = p;
-    const X2 = modP(X * X);
-    const Y2 = modP(Y * Y);
-    const Z2 = modP(Z * Z);
-    const Z4 = modP(Z2 * Z2);
-    const aX2 = modP(X2 * a);
-    const left = modP(Z2 * modP(aX2 + Y2));
-    const right = modP(Z4 + modP(d * modP(X2 * Y2)));
-    if (left !== right)
-      throw new Error("bad point: equation left != right (1)");
-    const XY = modP(X * Y);
-    const ZT = modP(Z * T);
-    if (XY !== ZT)
-      throw new Error("bad point: equation left != right (2)");
-    return true;
-  });
-
-  class Point {
-    constructor(X, Y, Z, T) {
-      this.X = acoord("x", X);
-      this.Y = acoord("y", Y);
-      this.Z = acoord("z", Z, true);
-      this.T = acoord("t", T);
-      Object.freeze(this);
-    }
-    static CURVE() {
-      return CURVE;
-    }
-    static fromAffine(p) {
-      if (p instanceof Point)
-        throw new Error("extended point not allowed");
-      const { x, y } = p || {};
-      acoord("x", x);
-      acoord("y", y);
-      return new Point(x, y, _1n5, modP(x * y));
-    }
-    static fromBytes(bytes, zip215 = false) {
-      const len = Fp.BYTES;
-      const { a, d } = CURVE;
-      bytes = copyBytes(_abytes2(bytes, len, "point"));
-      _abool2(zip215, "zip215");
-      const normed = copyBytes(bytes);
-      const lastByte = bytes[len - 1];
-      normed[len - 1] = lastByte & ~128;
-      const y = bytesToNumberLE(normed);
-      const max = zip215 ? MASK : Fp.ORDER;
-      aInRange("point.y", y, _0n5, max);
-      const y2 = modP(y * y);
-      const u = modP(y2 - _1n5);
-      const v = modP(d * y2 - a);
-      let { isValid, value: x } = uvRatio(u, v);
-      if (!isValid)
-        throw new Error("bad point: invalid y coordinate");
-      const isXOdd = (x & _1n5) === _1n5;
-      const isLastByteOdd = (lastByte & 128) !== 0;
-      if (!zip215 && x === _0n5 && isLastByteOdd)
-        throw new Error("bad point: x=0 and x_0=1");
-      if (isLastByteOdd !== isXOdd)
-        x = modP(-x);
-      return Point.fromAffine({ x, y });
-    }
-    static fromHex(bytes, zip215 = false) {
-      return Point.fromBytes(ensureBytes("point", bytes), zip215);
-    }
-    get x() {
-      return this.toAffine().x;
-    }
-    get y() {
-      return this.toAffine().y;
-    }
-    precompute(windowSize = 8, isLazy = true) {
-      wnaf.createCache(this, windowSize);
-      if (!isLazy)
-        this.multiply(_2n3);
-      return this;
-    }
-    assertValidity() {
-      assertValidMemo(this);
-    }
-    equals(other) {
-      aextpoint(other);
-      const { X: X1, Y: Y1, Z: Z1 } = this;
-      const { X: X2, Y: Y2, Z: Z2 } = other;
-      const X1Z2 = modP(X1 * Z2);
-      const X2Z1 = modP(X2 * Z1);
-      const Y1Z2 = modP(Y1 * Z2);
-      const Y2Z1 = modP(Y2 * Z1);
-      return X1Z2 === X2Z1 && Y1Z2 === Y2Z1;
-    }
-    is0() {
-      return this.equals(Point.ZERO);
-    }
-    negate() {
-      return new Point(modP(-this.X), this.Y, this.Z, modP(-this.T));
-    }
-    double() {
-      const { a } = CURVE;
-      const { X: X1, Y: Y1, Z: Z1 } = this;
-      const A = modP(X1 * X1);
-      const B = modP(Y1 * Y1);
-      const C = modP(_2n3 * modP(Z1 * Z1));
-      const D = modP(a * A);
-      const x1y1 = X1 + Y1;
-      const E = modP(modP(x1y1 * x1y1) - A - B);
-      const G2 = D + B;
-      const F = G2 - C;
-      const H = D - B;
-      const X3 = modP(E * F);
-      const Y3 = modP(G2 * H);
-      const T3 = modP(E * H);
-      const Z3 = modP(F * G2);
-      return new Point(X3, Y3, Z3, T3);
-    }
-    add(other) {
-      aextpoint(other);
-      const { a, d } = CURVE;
-      const { X: X1, Y: Y1, Z: Z1, T: T1 } = this;
-      const { X: X2, Y: Y2, Z: Z2, T: T2 } = other;
-      const A = modP(X1 * X2);
-      const B = modP(Y1 * Y2);
-      const C = modP(T1 * d * T2);
-      const D = modP(Z1 * Z2);
-      const E = modP((X1 + Y1) * (X2 + Y2) - A - B);
-      const F = D - C;
-      const G2 = D + C;
-      const H = modP(B - a * A);
-      const X3 = modP(E * F);
-      const Y3 = modP(G2 * H);
-      const T3 = modP(E * H);
-      const Z3 = modP(F * G2);
-      return new Point(X3, Y3, Z3, T3);
-    }
-    subtract(other) {
-      return this.add(other.negate());
-    }
-    multiply(scalar) {
-      if (!Fn.isValidNot0(scalar))
-        throw new Error("invalid scalar: expected 1 <= sc < curve.n");
-      const { p, f } = wnaf.cached(this, scalar, (p2) => normalizeZ(Point, p2));
-      return normalizeZ(Point, [p, f])[0];
-    }
-    multiplyUnsafe(scalar, acc = Point.ZERO) {
-      if (!Fn.isValid(scalar))
-        throw new Error("invalid scalar: expected 0 <= sc < curve.n");
-      if (scalar === _0n5)
-        return Point.ZERO;
-      if (this.is0() || scalar === _1n5)
-        return this;
-      return wnaf.unsafe(this, scalar, (p) => normalizeZ(Point, p), acc);
-    }
-    isSmallOrder() {
-      return this.multiplyUnsafe(cofactor).is0();
-    }
-    isTorsionFree() {
-      return wnaf.unsafe(this, CURVE.n).is0();
-    }
-    toAffine(invertedZ) {
-      return toAffineMemo(this, invertedZ);
-    }
-    clearCofactor() {
-      if (cofactor === _1n5)
-        return this;
-      return this.multiplyUnsafe(cofactor);
-    }
-    toBytes() {
-      const { x, y } = this.toAffine();
-      const bytes = Fp.toBytes(y);
-      bytes[bytes.length - 1] |= x & _1n5 ? 128 : 0;
-      return bytes;
-    }
-    toHex() {
-      return bytesToHex(this.toBytes());
-    }
-    toString() {
-      return `<Point ${this.is0() ? "ZERO" : this.toHex()}>`;
-    }
-    get ex() {
-      return this.X;
-    }
-    get ey() {
-      return this.Y;
-    }
-    get ez() {
-      return this.Z;
-    }
-    get et() {
-      return this.T;
-    }
-    static normalizeZ(points) {
-      return normalizeZ(Point, points);
-    }
-    static msm(points, scalars) {
-      return pippenger(Point, Fn, points, scalars);
-    }
-    _setWindowSize(windowSize) {
-      this.precompute(windowSize);
-    }
-    toRawBytes() {
-      return this.toBytes();
-    }
-  }
-  Point.BASE = new Point(CURVE.Gx, CURVE.Gy, _1n5, modP(CURVE.Gx * CURVE.Gy));
-  Point.ZERO = new Point(_0n5, _1n5, _1n5, _0n5);
-  Point.Fp = Fp;
-  Point.Fn = Fn;
-  const wnaf = new wNAF(Point, Fn.BITS);
-  Point.BASE.precompute(8);
-  return Point;
-}
-
-class PrimeEdwardsPoint {
-  constructor(ep) {
-    this.ep = ep;
-  }
-  static fromBytes(_bytes) {
-    notImplemented();
-  }
-  static fromHex(_hex) {
-    notImplemented();
-  }
-  get x() {
-    return this.toAffine().x;
-  }
-  get y() {
-    return this.toAffine().y;
-  }
-  clearCofactor() {
-    return this;
-  }
-  assertValidity() {
-    this.ep.assertValidity();
-  }
-  toAffine(invertedZ) {
-    return this.ep.toAffine(invertedZ);
-  }
-  toHex() {
-    return bytesToHex(this.toBytes());
-  }
-  toString() {
-    return this.toHex();
-  }
-  isTorsionFree() {
-    return true;
-  }
-  isSmallOrder() {
-    return false;
-  }
-  add(other) {
-    this.assertSame(other);
-    return this.init(this.ep.add(other.ep));
-  }
-  subtract(other) {
-    this.assertSame(other);
-    return this.init(this.ep.subtract(other.ep));
-  }
-  multiply(scalar) {
-    return this.init(this.ep.multiply(scalar));
-  }
-  multiplyUnsafe(scalar) {
-    return this.init(this.ep.multiplyUnsafe(scalar));
-  }
-  double() {
-    return this.init(this.ep.double());
-  }
-  negate() {
-    return this.init(this.ep.negate());
-  }
-  precompute(windowSize, isLazy) {
-    return this.init(this.ep.precompute(windowSize, isLazy));
-  }
-  toRawBytes() {
-    return this.toBytes();
-  }
-}
-function eddsa(Point, cHash, eddsaOpts = {}) {
-  if (typeof cHash !== "function")
-    throw new Error('"hash" function param is required');
-  _validateObject(eddsaOpts, {}, {
-    adjustScalarBytes: "function",
-    randomBytes: "function",
-    domain: "function",
-    prehash: "function",
-    mapToCurve: "function"
-  });
-  const { prehash } = eddsaOpts;
-  const { BASE, Fp, Fn } = Point;
-  const randomBytes3 = eddsaOpts.randomBytes || randomBytes;
-  const adjustScalarBytes = eddsaOpts.adjustScalarBytes || ((bytes) => bytes);
-  const domain = eddsaOpts.domain || ((data, ctx, phflag) => {
-    _abool2(phflag, "phflag");
-    if (ctx.length || phflag)
-      throw new Error("Contexts/pre-hash are not supported");
-    return data;
-  });
-  function modN_LE(hash) {
-    return Fn.create(bytesToNumberLE(hash));
-  }
-  function getPrivateScalar(key) {
-    const len = lengths.secretKey;
-    key = ensureBytes("private key", key, len);
-    const hashed = ensureBytes("hashed private key", cHash(key), 2 * len);
-    const head = adjustScalarBytes(hashed.slice(0, len));
-    const prefix = hashed.slice(len, 2 * len);
-    const scalar = modN_LE(head);
-    return { head, prefix, scalar };
-  }
-  function getExtendedPublicKey(secretKey) {
-    const { head, prefix, scalar } = getPrivateScalar(secretKey);
-    const point = BASE.multiply(scalar);
-    const pointBytes = point.toBytes();
-    return { head, prefix, scalar, point, pointBytes };
-  }
-  function getPublicKey(secretKey) {
-    return getExtendedPublicKey(secretKey).pointBytes;
-  }
-  function hashDomainToScalar(context = Uint8Array.of(), ...msgs) {
-    const msg = concatBytes(...msgs);
-    return modN_LE(cHash(domain(msg, ensureBytes("context", context), !!prehash)));
-  }
-  function sign(msg, secretKey, options = {}) {
-    msg = ensureBytes("message", msg);
-    if (prehash)
-      msg = prehash(msg);
-    const { prefix, scalar, pointBytes } = getExtendedPublicKey(secretKey);
-    const r = hashDomainToScalar(options.context, prefix, msg);
-    const R = BASE.multiply(r).toBytes();
-    const k = hashDomainToScalar(options.context, R, pointBytes, msg);
-    const s = Fn.create(r + k * scalar);
-    if (!Fn.isValid(s))
-      throw new Error("sign failed: invalid s");
-    const rs = concatBytes(R, Fn.toBytes(s));
-    return _abytes2(rs, lengths.signature, "result");
-  }
-  const verifyOpts = { zip215: true };
-  function verify(sig, msg, publicKey, options = verifyOpts) {
-    const { context, zip215 } = options;
-    const len = lengths.signature;
-    sig = ensureBytes("signature", sig, len);
-    msg = ensureBytes("message", msg);
-    publicKey = ensureBytes("publicKey", publicKey, lengths.publicKey);
-    if (zip215 !== undefined)
-      _abool2(zip215, "zip215");
-    if (prehash)
-      msg = prehash(msg);
-    const mid = len / 2;
-    const r = sig.subarray(0, mid);
-    const s = bytesToNumberLE(sig.subarray(mid, len));
-    let A, R, SB;
-    try {
-      A = Point.fromBytes(publicKey, zip215);
-      R = Point.fromBytes(r, zip215);
-      SB = BASE.multiplyUnsafe(s);
-    } catch (error) {
-      return false;
-    }
-    if (!zip215 && A.isSmallOrder())
-      return false;
-    const k = hashDomainToScalar(context, R.toBytes(), A.toBytes(), msg);
-    const RkA = R.add(A.multiplyUnsafe(k));
-    return RkA.subtract(SB).clearCofactor().is0();
-  }
-  const _size = Fp.BYTES;
-  const lengths = {
-    secretKey: _size,
-    publicKey: _size,
-    signature: 2 * _size,
-    seed: _size
-  };
-  function randomSecretKey(seed = randomBytes3(lengths.seed)) {
-    return _abytes2(seed, lengths.seed, "seed");
-  }
-  function keygen(seed) {
-    const secretKey = utils2.randomSecretKey(seed);
-    return { secretKey, publicKey: getPublicKey(secretKey) };
-  }
-  function isValidSecretKey(key) {
-    return isBytes(key) && key.length === Fn.BYTES;
-  }
-  function isValidPublicKey(key, zip215) {
-    try {
-      return !!Point.fromBytes(key, zip215);
-    } catch (error) {
-      return false;
-    }
-  }
-  const utils2 = {
-    getExtendedPublicKey,
-    randomSecretKey,
-    isValidSecretKey,
-    isValidPublicKey,
-    toMontgomery(publicKey) {
-      const { y } = Point.fromBytes(publicKey);
-      const size = lengths.publicKey;
-      const is25519 = size === 32;
-      if (!is25519 && size !== 57)
-        throw new Error("only defined for 25519 and 448");
-      const u = is25519 ? Fp.div(_1n5 + y, _1n5 - y) : Fp.div(y - _1n5, y + _1n5);
-      return Fp.toBytes(u);
-    },
-    toMontgomerySecret(secretKey) {
-      const size = lengths.secretKey;
-      _abytes2(secretKey, size);
-      const hashed = cHash(secretKey.subarray(0, size));
-      return adjustScalarBytes(hashed).subarray(0, size);
-    },
-    randomPrivateKey: randomSecretKey,
-    precompute(windowSize = 8, point = Point.BASE) {
-      return point.precompute(windowSize, false);
-    }
-  };
-  return Object.freeze({
-    keygen,
-    getPublicKey,
-    sign,
-    verify,
-    utils: utils2,
-    Point,
-    lengths
-  });
-}
-function _eddsa_legacy_opts_to_new(c) {
-  const CURVE = {
-    a: c.a,
-    d: c.d,
-    p: c.Fp.ORDER,
-    n: c.n,
-    h: c.h,
-    Gx: c.Gx,
-    Gy: c.Gy
-  };
-  const Fp = c.Fp;
-  const Fn = Field(CURVE.n, c.nBitLength, true);
-  const curveOpts = { Fp, Fn, uvRatio: c.uvRatio };
-  const eddsaOpts = {
-    randomBytes: c.randomBytes,
-    adjustScalarBytes: c.adjustScalarBytes,
-    domain: c.domain,
-    prehash: c.prehash,
-    mapToCurve: c.mapToCurve
-  };
-  return { CURVE, curveOpts, hash: c.hash, eddsaOpts };
-}
-function _eddsa_new_output_to_legacy(c, eddsa2) {
-  const Point = eddsa2.Point;
-  const legacy = Object.assign({}, eddsa2, {
-    ExtendedPoint: Point,
-    CURVE: c,
-    nBitLength: Point.Fn.BITS,
-    nByteLength: Point.Fn.BYTES
-  });
-  return legacy;
-}
-function twistedEdwards(c) {
-  const { CURVE, curveOpts, hash, eddsaOpts } = _eddsa_legacy_opts_to_new(c);
-  const Point = edwards(CURVE, curveOpts);
-  const EDDSA = eddsa(Point, hash, eddsaOpts);
-  return _eddsa_new_output_to_legacy(c, EDDSA);
-}
-
-// ../../node_modules/@noble/curves/esm/ed25519.js
-init_modular();
-init_utils2();
-/*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-var _0n6 = /* @__PURE__ */ BigInt(0);
-var _1n6 = BigInt(1);
-var _2n4 = BigInt(2);
-var _3n3 = BigInt(3);
-var _5n2 = BigInt(5);
-var _8n3 = BigInt(8);
-var ed25519_CURVE_p = BigInt("0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffed");
-var ed25519_CURVE = /* @__PURE__ */ (() => ({
-  p: ed25519_CURVE_p,
-  n: BigInt("0x1000000000000000000000000000000014def9dea2f79cd65812631a5cf5d3ed"),
-  h: _8n3,
-  a: BigInt("0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffec"),
-  d: BigInt("0x52036cee2b6ffe738cc740797779e89800700a4d4141d8ab75eb4dca135978a3"),
-  Gx: BigInt("0x216936d3cd6e53fec0a4e231fdd6dc5c692cc7609525a7b2c9562d608f25d51a"),
-  Gy: BigInt("0x6666666666666666666666666666666666666666666666666666666666666658")
-}))();
-function ed25519_pow_2_252_3(x) {
-  const _10n = BigInt(10), _20n = BigInt(20), _40n = BigInt(40), _80n = BigInt(80);
-  const P2 = ed25519_CURVE_p;
-  const x2 = x * x % P2;
-  const b2 = x2 * x % P2;
-  const b4 = pow2(b2, _2n4, P2) * b2 % P2;
-  const b5 = pow2(b4, _1n6, P2) * x % P2;
-  const b10 = pow2(b5, _5n2, P2) * b5 % P2;
-  const b20 = pow2(b10, _10n, P2) * b10 % P2;
-  const b40 = pow2(b20, _20n, P2) * b20 % P2;
-  const b80 = pow2(b40, _40n, P2) * b40 % P2;
-  const b160 = pow2(b80, _80n, P2) * b80 % P2;
-  const b240 = pow2(b160, _80n, P2) * b80 % P2;
-  const b250 = pow2(b240, _10n, P2) * b10 % P2;
-  const pow_p_5_8 = pow2(b250, _2n4, P2) * x % P2;
-  return { pow_p_5_8, b2 };
-}
-function adjustScalarBytes(bytes) {
-  bytes[0] &= 248;
-  bytes[31] &= 127;
-  bytes[31] |= 64;
-  return bytes;
-}
-var ED25519_SQRT_M1 = /* @__PURE__ */ BigInt("19681161376707505956807079304988542015446066515923890162744021073123829784752");
-function uvRatio(u, v) {
-  const P2 = ed25519_CURVE_p;
-  const v3 = mod(v * v * v, P2);
-  const v7 = mod(v3 * v3 * v, P2);
-  const pow = ed25519_pow_2_252_3(u * v7).pow_p_5_8;
-  let x = mod(u * v3 * pow, P2);
-  const vx2 = mod(v * x * x, P2);
-  const root1 = x;
-  const root2 = mod(x * ED25519_SQRT_M1, P2);
-  const useRoot1 = vx2 === u;
-  const useRoot2 = vx2 === mod(-u, P2);
-  const noRoot = vx2 === mod(-u * ED25519_SQRT_M1, P2);
-  if (useRoot1)
-    x = root1;
-  if (useRoot2 || noRoot)
-    x = root2;
-  if (isNegativeLE(x, P2))
-    x = mod(-x, P2);
-  return { isValid: useRoot1 || useRoot2, value: x };
-}
-var Fp = /* @__PURE__ */ (() => Field(ed25519_CURVE.p, { isLE: true }))();
-var Fn = /* @__PURE__ */ (() => Field(ed25519_CURVE.n, { isLE: true }))();
-var ed25519Defaults = /* @__PURE__ */ (() => ({
-  ...ed25519_CURVE,
-  Fp,
-  hash: sha512,
-  adjustScalarBytes,
-  uvRatio
-}))();
-var ed25519 = /* @__PURE__ */ (() => twistedEdwards(ed25519Defaults))();
-var SQRT_M1 = ED25519_SQRT_M1;
-var SQRT_AD_MINUS_ONE = /* @__PURE__ */ BigInt("25063068953384623474111414158702152701244531502492656460079210482610430750235");
-var INVSQRT_A_MINUS_D = /* @__PURE__ */ BigInt("54469307008909316920995813868745141605393597292927456921205312896311721017578");
-var ONE_MINUS_D_SQ = /* @__PURE__ */ BigInt("1159843021668779879193775521855586647937357759715417654439879720876111806838");
-var D_MINUS_ONE_SQ = /* @__PURE__ */ BigInt("40440834346308536858101042469323190826248399146238708352240133220865137265952");
-var invertSqrt = (number) => uvRatio(_1n6, number);
-var MAX_255B = /* @__PURE__ */ BigInt("0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff");
-var bytes255ToNumberLE = (bytes) => ed25519.Point.Fp.create(bytesToNumberLE(bytes) & MAX_255B);
-function calcElligatorRistrettoMap(r0) {
-  const { d } = ed25519_CURVE;
-  const P2 = ed25519_CURVE_p;
-  const mod2 = (n) => Fp.create(n);
-  const r = mod2(SQRT_M1 * r0 * r0);
-  const Ns = mod2((r + _1n6) * ONE_MINUS_D_SQ);
-  let c = BigInt(-1);
-  const D = mod2((c - d * r) * mod2(r + d));
-  let { isValid: Ns_D_is_sq, value: s } = uvRatio(Ns, D);
-  let s_ = mod2(s * r0);
-  if (!isNegativeLE(s_, P2))
-    s_ = mod2(-s_);
-  if (!Ns_D_is_sq)
-    s = s_;
-  if (!Ns_D_is_sq)
-    c = r;
-  const Nt = mod2(c * (r - _1n6) * D_MINUS_ONE_SQ - D);
-  const s2 = s * s;
-  const W0 = mod2((s + s) * D);
-  const W1 = mod2(Nt * SQRT_AD_MINUS_ONE);
-  const W2 = mod2(_1n6 - s2);
-  const W3 = mod2(_1n6 + s2);
-  return new ed25519.Point(mod2(W0 * W3), mod2(W2 * W1), mod2(W1 * W3), mod2(W0 * W2));
-}
-function ristretto255_map(bytes) {
-  abytes(bytes, 64);
-  const r1 = bytes255ToNumberLE(bytes.subarray(0, 32));
-  const R1 = calcElligatorRistrettoMap(r1);
-  const r2 = bytes255ToNumberLE(bytes.subarray(32, 64));
-  const R2 = calcElligatorRistrettoMap(r2);
-  return new _RistrettoPoint(R1.add(R2));
-}
-
-class _RistrettoPoint extends PrimeEdwardsPoint {
-  constructor(ep) {
-    super(ep);
-  }
-  static fromAffine(ap) {
-    return new _RistrettoPoint(ed25519.Point.fromAffine(ap));
-  }
-  assertSame(other) {
-    if (!(other instanceof _RistrettoPoint))
-      throw new Error("RistrettoPoint expected");
-  }
-  init(ep) {
-    return new _RistrettoPoint(ep);
-  }
-  static hashToCurve(hex2) {
-    return ristretto255_map(ensureBytes("ristrettoHash", hex2, 64));
-  }
-  static fromBytes(bytes) {
-    abytes(bytes, 32);
-    const { a, d } = ed25519_CURVE;
-    const P2 = ed25519_CURVE_p;
-    const mod2 = (n) => Fp.create(n);
-    const s = bytes255ToNumberLE(bytes);
-    if (!equalBytes(Fp.toBytes(s), bytes) || isNegativeLE(s, P2))
-      throw new Error("invalid ristretto255 encoding 1");
-    const s2 = mod2(s * s);
-    const u1 = mod2(_1n6 + a * s2);
-    const u2 = mod2(_1n6 - a * s2);
-    const u1_2 = mod2(u1 * u1);
-    const u2_2 = mod2(u2 * u2);
-    const v = mod2(a * d * u1_2 - u2_2);
-    const { isValid, value: I } = invertSqrt(mod2(v * u2_2));
-    const Dx = mod2(I * u2);
-    const Dy = mod2(I * Dx * v);
-    let x = mod2((s + s) * Dx);
-    if (isNegativeLE(x, P2))
-      x = mod2(-x);
-    const y = mod2(u1 * Dy);
-    const t = mod2(x * y);
-    if (!isValid || isNegativeLE(t, P2) || y === _0n6)
-      throw new Error("invalid ristretto255 encoding 2");
-    return new _RistrettoPoint(new ed25519.Point(x, y, _1n6, t));
-  }
-  static fromHex(hex2) {
-    return _RistrettoPoint.fromBytes(ensureBytes("ristrettoHex", hex2, 32));
-  }
-  static msm(points, scalars) {
-    return pippenger(_RistrettoPoint, ed25519.Point.Fn, points, scalars);
-  }
-  toBytes() {
-    let { X, Y, Z, T } = this.ep;
-    const P2 = ed25519_CURVE_p;
-    const mod2 = (n) => Fp.create(n);
-    const u1 = mod2(mod2(Z + Y) * mod2(Z - Y));
-    const u2 = mod2(X * Y);
-    const u2sq = mod2(u2 * u2);
-    const { value: invsqrt } = invertSqrt(mod2(u1 * u2sq));
-    const D1 = mod2(invsqrt * u1);
-    const D2 = mod2(invsqrt * u2);
-    const zInv = mod2(D1 * D2 * T);
-    let D;
-    if (isNegativeLE(T * zInv, P2)) {
-      let _x = mod2(Y * SQRT_M1);
-      let _y = mod2(X * SQRT_M1);
-      X = _x;
-      Y = _y;
-      D = mod2(D1 * INVSQRT_A_MINUS_D);
-    } else {
-      D = D2;
-    }
-    if (isNegativeLE(X * zInv, P2))
-      Y = mod2(-Y);
-    let s = mod2((Z - Y) * D);
-    if (isNegativeLE(s, P2))
-      s = mod2(-s);
-    return Fp.toBytes(s);
-  }
-  equals(other) {
-    this.assertSame(other);
-    const { X: X1, Y: Y1 } = this.ep;
-    const { X: X2, Y: Y2 } = other.ep;
-    const mod2 = (n) => Fp.create(n);
-    const one = mod2(X1 * Y2) === mod2(Y1 * X2);
-    const two = mod2(Y1 * Y2) === mod2(X1 * X2);
-    return one || two;
-  }
-  is0() {
-    return this.equals(_RistrettoPoint.ZERO);
-  }
-}
-_RistrettoPoint.BASE = /* @__PURE__ */ (() => new _RistrettoPoint(ed25519.Point.BASE))();
-_RistrettoPoint.ZERO = /* @__PURE__ */ (() => new _RistrettoPoint(ed25519.Point.ZERO))();
-_RistrettoPoint.Fp = /* @__PURE__ */ (() => Fp)();
-_RistrettoPoint.Fn = /* @__PURE__ */ (() => Fn)();
-
-// src/solana-lite.ts
-init_sha256();
-init_esm();
-var SYSTEM_PROGRAM_ID = "11111111111111111111111111111111";
-var TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
-var TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
-var ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
-function decodePubkey(address) {
-  let bytes;
-  try {
-    bytes = base58.decode(address);
-  } catch {
-    throw new Error(`Not a base58 address: ${address}`);
-  }
-  if (bytes.length !== 32)
-    throw new Error(`Not a 32-byte Solana address: ${address}`);
-  return bytes;
-}
-function encodePubkey(bytes) {
-  return base58.encode(bytes);
-}
-function isOnCurve(bytes) {
-  try {
-    ed25519.ExtendedPoint.fromHex(bytes);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function concat(...parts) {
-  const total = parts.reduce((n, p) => n + p.length, 0);
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    out.set(p, offset);
-    offset += p.length;
-  }
-  return out;
-}
-var PDA_MARKER = new TextEncoder().encode("ProgramDerivedAddress");
-function findProgramAddress(seeds, programId) {
-  for (let bump = 255;bump >= 0; bump--) {
-    const candidate = sha2562(concat(...seeds, new Uint8Array([bump]), programId, PDA_MARKER));
-    if (!isOnCurve(candidate))
-      return { address: candidate, bump };
-  }
-  throw new Error("Unable to find a viable program address bump seed");
-}
-function associatedTokenAddress(owner, mint, tokenProgram = decodePubkey(TOKEN_PROGRAM_ID)) {
-  return findProgramAddress([owner, tokenProgram, mint], decodePubkey(ASSOCIATED_TOKEN_PROGRAM_ID)).address;
-}
-function u64le(value) {
-  if (value < 0n || value > 0xffffffffffffffffn)
-    throw new Error(`u64 out of range: ${value}`);
-  const out = new Uint8Array(8);
-  let v = value;
-  for (let i = 0;i < 8; i++) {
-    out[i] = Number(v & 0xffn);
-    v >>= 8n;
-  }
-  return out;
-}
-function u32le(value) {
-  const out = new Uint8Array(4);
-  out[0] = value & 255;
-  out[1] = value >>> 8 & 255;
-  out[2] = value >>> 16 & 255;
-  out[3] = value >>> 24 & 255;
-  return out;
-}
-function systemTransfer(from, to, lamports) {
-  return {
-    programId: decodePubkey(SYSTEM_PROGRAM_ID),
-    keys: [
-      { pubkey: from, isSigner: true, isWritable: true },
-      { pubkey: to, isSigner: false, isWritable: true }
-    ],
-    data: concat(u32le(2), u64le(lamports))
-  };
-}
-function tokenTransferChecked(input) {
-  return {
-    programId: input.tokenProgram ?? decodePubkey(TOKEN_PROGRAM_ID),
-    keys: [
-      { pubkey: input.source, isSigner: false, isWritable: true },
-      { pubkey: input.mint, isSigner: false, isWritable: false },
-      { pubkey: input.destination, isSigner: false, isWritable: true },
-      { pubkey: input.owner, isSigner: true, isWritable: false },
-      ...input.extraAccounts ?? []
-    ],
-    data: concat(new Uint8Array([12]), u64le(input.amount), new Uint8Array([input.decimals]))
-  };
-}
-function tokenCloseAccount(input) {
-  return {
-    programId: input.tokenProgram ?? decodePubkey(TOKEN_PROGRAM_ID),
-    keys: [
-      { pubkey: input.account, isSigner: false, isWritable: true },
-      { pubkey: input.destination, isSigner: false, isWritable: true },
-      { pubkey: input.owner, isSigner: true, isWritable: false }
-    ],
-    data: new Uint8Array([9])
-  };
-}
-function createAssociatedTokenAccountIdempotent(input) {
-  const tokenProgram = input.tokenProgram ?? decodePubkey(TOKEN_PROGRAM_ID);
-  const ata = associatedTokenAddress(input.owner, input.mint, tokenProgram);
-  return {
-    programId: decodePubkey(ASSOCIATED_TOKEN_PROGRAM_ID),
-    keys: [
-      { pubkey: input.payer, isSigner: true, isWritable: true },
-      { pubkey: ata, isSigner: false, isWritable: true },
-      { pubkey: input.owner, isSigner: false, isWritable: false },
-      { pubkey: input.mint, isSigner: false, isWritable: false },
-      { pubkey: decodePubkey(SYSTEM_PROGRAM_ID), isSigner: false, isWritable: false },
-      { pubkey: tokenProgram, isSigner: false, isWritable: false }
-    ],
-    data: new Uint8Array([1])
-  };
-}
-function shortvec(n) {
-  const out = [];
-  let rem = n;
-  for (;; ) {
-    let elem = rem & 127;
-    rem >>= 7;
-    if (rem === 0) {
-      out.push(elem);
-      return new Uint8Array(out);
-    }
-    elem |= 128;
-    out.push(elem);
-  }
-}
-function keyEq(a, b) {
-  if (a.length !== b.length)
-    return false;
-  for (let i = 0;i < a.length; i++)
-    if (a[i] !== b[i])
-      return false;
-  return true;
-}
-function compileLegacyMessage(input) {
-  const metas = [];
-  const upsert = (pubkey, isSigner, isWritable) => {
-    const b58 = encodePubkey(pubkey);
-    const existing = metas.find((x) => x.base58 === b58);
-    if (existing) {
-      existing.isSigner = existing.isSigner || isSigner;
-      existing.isWritable = existing.isWritable || isWritable;
-    } else {
-      metas.push({ pubkey, base58: b58, isSigner, isWritable });
-    }
-  };
-  for (const ix of input.instructions)
-    for (const k of ix.keys)
-      upsert(k.pubkey, k.isSigner, k.isWritable);
-  for (const ix of input.instructions)
-    upsert(ix.programId, false, false);
-  const localeOptions = {
-    localeMatcher: "best fit",
-    usage: "sort",
-    sensitivity: "variant",
-    ignorePunctuation: false,
-    numeric: false,
-    caseFirst: "lower"
-  };
-  metas.sort((x, y) => {
-    if (x.isSigner !== y.isSigner)
-      return x.isSigner ? -1 : 1;
-    if (x.isWritable !== y.isWritable)
-      return x.isWritable ? -1 : 1;
-    return x.base58.localeCompare(y.base58, "en", localeOptions);
-  });
-  const payerB58 = encodePubkey(input.feePayer);
-  const payerIdx = metas.findIndex((m) => m.base58 === payerB58);
-  if (payerIdx > -1) {
-    const [payer] = metas.splice(payerIdx, 1);
-    if (!payer)
-      throw new Error("unreachable");
-    payer.isSigner = true;
-    payer.isWritable = true;
-    metas.unshift(payer);
-  } else {
-    metas.unshift({ pubkey: input.feePayer, base58: payerB58, isSigner: true, isWritable: true });
-  }
-  const numRequiredSignatures = metas.filter((m) => m.isSigner).length;
-  const numReadonlySigned = metas.filter((m) => m.isSigner && !m.isWritable).length;
-  const numReadonlyUnsigned = metas.filter((m) => !m.isSigner && !m.isWritable).length;
-  const indexOf = (k) => {
-    const b58 = encodePubkey(k);
-    const i = metas.findIndex((m) => m.base58 === b58);
-    if (i < 0)
-      throw new Error("unreachable: key missing from account list");
-    return i;
-  };
-  const parts = [
-    new Uint8Array([numRequiredSignatures, numReadonlySigned, numReadonlyUnsigned]),
-    shortvec(metas.length),
-    ...metas.map((m) => m.pubkey),
-    decodePubkey(input.recentBlockhash),
-    shortvec(input.instructions.length)
-  ];
-  for (const ix of input.instructions) {
-    const accountIdx = new Uint8Array(ix.keys.map((k) => indexOf(k.pubkey)));
-    parts.push(new Uint8Array([indexOf(ix.programId)]), shortvec(accountIdx.length), accountIdx, shortvec(ix.data.length), ix.data);
-  }
-  return concat(...parts);
-}
-function signMessage(message, secret64) {
-  if (secret64.length !== 64)
-    throw new Error(`expected a 64-byte Solana secret, got ${secret64.length}`);
-  return ed25519.sign(message, secret64.slice(0, 32));
-}
-function pubkeyFromSecret(secret64) {
-  if (secret64.length !== 64)
-    throw new Error(`expected a 64-byte Solana secret, got ${secret64.length}`);
-  const derived = ed25519.getPublicKey(secret64.slice(0, 32));
-  const embedded = secret64.slice(32);
-  if (!keyEq(derived, embedded))
-    throw new Error("The secret's embedded public key does not match its seed");
-  return derived;
-}
-function serializeSignedTransaction(message, signature) {
-  if (signature.length !== 64)
-    throw new Error("expected a 64-byte signature");
-  return concat(shortvec(1), signature, message);
-}
-function toBase642(bytes) {
-  return Buffer.from(bytes).toString("base64");
-}
-function rawAccountView(value, address) {
-  if (!value)
-    return null;
-  const owner = value.owner;
-  const encoded = value.data?.[0];
-  if (typeof owner !== "string" || typeof encoded !== "string") {
-    throw new Error(`RPC answered without a base64 owner/data pair for ${address}`);
-  }
-  return { owner, lamports: BigInt(value.lamports ?? 0), data: new Uint8Array(Buffer.from(encoded, "base64")) };
-}
-function createSolanaRpc(url, fetchFn) {
-  let id = 0;
-  async function call(method, params) {
-    id += 1;
-    const res = await fetchFn(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params })
-    });
-    if (!res.ok)
-      throw new Error(`RPC ${method} failed: HTTP ${res.status}`);
-    const json = await res.json();
-    if (json.error)
-      throw new Error(`RPC ${method} failed: ${json.error.code ?? ""} ${json.error.message ?? ""}`.trim());
-    return json.result;
-  }
-  return {
-    async getLatestBlockhash() {
-      const r = await call("getLatestBlockhash", [{ commitment: "finalized" }]);
-      return r.value.blockhash;
-    },
-    async getBalance(address) {
-      const r = await call("getBalance", [address, { commitment: "finalized" }]);
-      return BigInt(r.value);
-    },
-    async getTokenAccountsByOwner(owner, programId) {
-      const r = await call("getTokenAccountsByOwner", [owner, { programId }, { encoding: "jsonParsed", commitment: "finalized" }]);
-      return r.value.map((v) => ({
-        pubkey: v.pubkey,
-        mint: v.account.data.parsed.info.mint,
-        amountRaw: v.account.data.parsed.info.tokenAmount.amount,
-        decimals: v.account.data.parsed.info.tokenAmount.decimals,
-        state: v.account.data.parsed.info.state,
-        programId
-      }));
-    },
-    async getFeeForMessage(messageBase64) {
-      const r = await call("getFeeForMessage", [messageBase64, { commitment: "finalized" }]);
-      return r.value === null ? null : BigInt(r.value);
-    },
-    async getMinimumBalanceForRentExemption(size) {
-      const rent = await call("getMinimumBalanceForRentExemption", [size, { commitment: "finalized" }]);
-      if (!Number.isSafeInteger(rent) || rent < 0)
-        throw new Error("Invalid rent exemption quote");
-      return BigInt(rent);
-    },
-    async getAccountInfo(address) {
-      const r = await call("getAccountInfo", [address, { encoding: "base64", commitment: "finalized" }]);
-      const value = r.value;
-      if (!value)
-        return null;
-      const owner = value.owner;
-      const encoded = value.data?.[0];
-      if (typeof owner !== "string" || typeof encoded !== "string") {
-        throw new Error(`RPC getAccountInfo answered without a base64 owner/data pair for ${address}`);
-      }
-      return {
-        owner,
-        lamports: BigInt(value.lamports ?? 0),
-        data: new Uint8Array(Buffer.from(encoded, "base64"))
-      };
-    },
-    async getEpoch() {
-      const r = await call("getEpochInfo", [{ commitment: "finalized" }]);
-      if (!Number.isSafeInteger(r?.epoch))
-        throw new Error("RPC getEpochInfo answered without an epoch");
-      return BigInt(r.epoch);
-    },
-    async getMultipleAccounts(addresses) {
-      const out = [];
-      for (let at = 0;at < addresses.length; at += 100) {
-        const chunk = addresses.slice(at, at + 100);
-        const r = await call("getMultipleAccounts", [
-          chunk,
-          { encoding: "base64", commitment: "finalized" }
-        ]);
-        if (!Array.isArray(r?.value) || r.value.length !== chunk.length) {
-          throw new Error("RPC getMultipleAccounts answered with the wrong number of accounts");
-        }
-        for (const [i, value] of r.value.entries())
-          out.push(rawAccountView(value, chunk[i] ?? ""));
-      }
-      return out;
-    },
-    async simulateTransaction(txBase64, addresses) {
-      const r = await call("simulateTransaction", [
-        txBase64,
-        {
-          sigVerify: false,
-          replaceRecentBlockhash: true,
-          commitment: "finalized",
-          encoding: "base64",
-          accounts: { encoding: "base64", addresses }
-        }
-      ]);
-      const value = r?.value;
-      if (!value || typeof value !== "object")
-        throw new Error("RPC simulateTransaction answered without a value");
-      const accounts = Array.isArray(value.accounts) ? value.accounts : [];
-      if (value.accounts !== null && value.accounts !== undefined && accounts.length !== addresses.length) {
-        throw new Error("RPC simulateTransaction answered with the wrong number of accounts");
-      }
-      return {
-        err: value.err ?? null,
-        logs: Array.isArray(value.logs) ? value.logs.filter((line) => typeof line === "string") : [],
-        accounts: value.accounts === null || value.accounts === undefined ? addresses.map(() => null) : accounts.map((account, i) => rawAccountView(account, addresses[i] ?? "")),
-        ...Number.isSafeInteger(value.unitsConsumed) ? { unitsConsumed: value.unitsConsumed } : {}
-      };
-    },
-    async sendTransaction(txBase64) {
-      return await call("sendTransaction", [
-        txBase64,
-        { encoding: "base64", skipPreflight: false, preflightCommitment: "finalized", maxRetries: 3 }
-      ]);
-    },
-    async getSignatureStatus(signature) {
-      const r = await call("getSignatureStatuses", [[signature], { searchTransactionHistory: true }]);
-      return r.value[0] ?? null;
-    },
-    async hasSignatureHistory(address) {
-      const r = await call("getSignaturesForAddress", [address, { limit: 1 }]);
-      return Array.isArray(r) && r.length > 0;
-    },
-    async isBlockhashValid(blockhash) {
-      const r = await call("isBlockhashValid", [blockhash, { commitment: "finalized" }]);
-      if (typeof r?.value !== "boolean")
-        throw new Error("isBlockhashValid answered with a non-boolean value");
-      return r.value;
-    }
-  };
-}
+init_solana_lite();
 
 // src/vault/domains.ts
 init_errors();
@@ -40795,6 +41803,7 @@ zoo`.split(`
 `);
 
 // src/vault/ed25519.ts
+init_ed25519();
 init_esm();
 init_errors();
 var SOLANA_SECRET_BYTES = 64;
@@ -40962,6 +41971,7 @@ async function deriveSolanaKey(entropy, path) {
 }
 // src/vault/local-sweep.ts
 init_esm();
+init_solana_lite();
 
 // src/sweep-pending.ts
 function classifyStatus(status) {
@@ -41026,6 +42036,7 @@ function settle(observation, signature) {
 }
 
 // src/token-2022.ts
+init_solana_lite();
 class MintReadError extends Error {
 }
 var MINT_DECIMALS_OFFSET = 44;
@@ -42139,282 +43150,13 @@ async function help(args, ctx) {
   return 0;
 }
 
-// src/commands/keys.ts
-init_agent_key_access();
-init_args();
-init_render();
-var KEYS_PATH = "/api/v1/agent/keys";
-var NO_DEVICE_TOKEN = {
-  code: "NO_DEVICE_TOKEN",
-  message: "No device token available.",
-  suggestion: "Run: candle auth login"
-};
-function mintedByLabel(mintedBy, ownDeviceTokenPrefix) {
-  if (!mintedBy)
-    return "browser session";
-  if (mintedBy === ownDeviceTokenPrefix)
-    return "this device";
-  return mintedBy;
-}
-function labelCell(label) {
-  if (!label)
-    return "";
-  const cleaned = Array.from(label).map((ch) => {
-    const code = ch.codePointAt(0) ?? 0;
-    const isControl = code < 32 || code >= 127 && code <= 159;
-    const isBidiOrInvisible = code >= 8203 && code <= 8207 || code >= 8234 && code <= 8238 || code >= 8294 && code <= 8297 || code === 65279;
-    return isControl || isBidiOrInvisible ? " " : ch;
-  }).join("");
-  return cleaned.replace(/\s+/g, " ").trim();
-}
-function accessCell(scopes) {
-  const access3 = agentKeyAccess(scopes);
-  if (access3.kind === "preset")
-    return access3.label;
-  return access3.can.length > 0 ? access3.can.join(", ") : "–";
-}
-async function keysList(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, { booleanFlags: ["--scopes"] });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
-    return 2;
-  }
-  await printIdentity(ctx);
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
-  if (!deviceToken) {
-    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
-    return 1;
-  }
-  const result = await apiRequest(KEYS_PATH, {
-    auth: "device",
-    credentials: { deviceToken },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
-    return 1;
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(result.body)}
-`);
-    return 0;
-  }
-  const withScopes = parsed.booleans.has("--scopes");
-  const body = result.body;
-  const config = await deps.readConfig();
-  const ownDevicePrefix = effectiveProfileFields(config, ctx.profile).deviceTokenPrefix;
-  const rows = body.keys.map((key) => [
-    key.keyPrefix,
-    labelCell(key.label),
-    accessCell(key.scopes),
-    ...withScopes ? [sortAgentKeyScopes(key.scopes).join(",")] : [],
-    key.environment,
-    formatTimestamp(key.createdAt),
-    formatTimestamp(key.lastUsedAt),
-    key.revokedAt ? formatTimestamp(key.revokedAt) : "no",
-    mintedByLabel(key.mintedByDevicePrefix, ownDevicePrefix)
-  ]);
-  const headers = [
-    "Prefix",
-    "Name",
-    "Access",
-    ...withScopes ? ["Scopes"] : [],
-    "Environment",
-    "Created",
-    "Last used",
-    "Revoked",
-    "Minted by"
-  ];
-  deps.stdout.write(`${renderTable(headers, rows)}
-`);
-  return 0;
-}
-async function keysCreate(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {
-    valueFlags: ["--scopes", "--environment", "--label", "--expires-in", "--tx-limit", "--reset"]
-  });
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length > 0) {
-    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
-    return 2;
-  }
-  const requestedScopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined;
-  const environment = parsed.values["--environment"];
-  const label = parsed.values["--label"]?.trim();
-  if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > 64)) {
-    writeUsageFailure(deps, "--label must be 1 to 64 characters.", json);
-    return 2;
-  }
-  let expiresInDays;
-  if (parsed.values["--expires-in"] !== undefined) {
-    const parsedDays = parseExpiresInDays(parsed.values["--expires-in"]);
-    if (!parsedDays.ok) {
-      writeUsageFailure(deps, parsedDays.message, json);
-      return 2;
-    }
-    expiresInDays = parsedDays.days;
-  }
-  if (parsed.values["--reset"] !== undefined && parsed.values["--tx-limit"] === undefined) {
-    writeUsageFailure(deps, "--reset requires --tx-limit.", json);
-    return 2;
-  }
-  let txLimit;
-  if (parsed.values["--tx-limit"] !== undefined) {
-    const parsedUsd = parseUsdToMicros(parsed.values["--tx-limit"]);
-    if (!parsedUsd.ok) {
-      writeUsageFailure(deps, parsedUsd.message, json);
-      return 2;
-    }
-    const reset = parsed.values["--reset"] ?? "daily";
-    if (!TX_LIMIT_RESETS.includes(reset)) {
-      writeUsageFailure(deps, `--reset must be one of: ${TX_LIMIT_RESETS.join(", ")}.`, json);
-      return 2;
-    }
-    txLimit = { usdMicros: parsedUsd.usdMicros, reset };
-  }
-  await printIdentity(ctx);
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
-  if (!deviceToken) {
-    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
-    return 1;
-  }
-  const result = await apiRequest(KEYS_PATH, {
-    method: "POST",
-    auth: "device",
-    credentials: { deviceToken },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env,
-    body: {
-      ...requestedScopes ? { scopes: requestedScopes } : {},
-      ...environment ? { environment } : {},
-      ...label ? { label } : {},
-      ...expiresInDays !== undefined ? { expiresInDays } : {},
-      ...txLimit ? { txLimit } : {}
-    }
-  });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
-    return 1;
-  }
-  const body = result.body;
-  const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
-  let stored = false;
-  let storeError;
-  try {
-    if (!await deps.store.get(apiKeyRef)) {
-      await deps.store.set(apiKeyRef, body.key);
-      if (ctx.profile) {
-        await deps.updateProfile(ctx.profile, { keyPrefix: body.keyPrefix, scopes: body.scopes });
-      } else {
-        await deps.writeConfig({ keyPrefix: body.keyPrefix, scopes: body.scopes });
-      }
-      stored = true;
-    }
-  } catch (error) {
-    storeError = error instanceof Error ? error.message : String(error);
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify({ ...body, stored, ...storeError ? { storeError } : {} })}
-`);
-    return storeError ? 1 : 0;
-  }
-  deps.stdout.write(`API key: ${body.key}
-`);
-  deps.stdout.write(`This is the only time the plaintext key is shown; store it now.
-`);
-  deps.stdout.write(`Prefix: ${body.keyPrefix}
-`);
-  deps.stdout.write(`Scopes: ${formatScopesForSummary(body.scopes)}
-`);
-  if (storeError !== undefined) {
-    deps.stderr.write(`
-WARNING: the key above was NOT stored in the ${deps.backend} store: ${storeError}
-` + "It is live on your account. Save it now, or revoke it with: candle keys revoke " + `${body.keyPrefix}
-`);
-  }
-  if (!requestedScopes) {
-    deps.stdout.write(`No --scopes given: the server granted the default scopes (swap:write excluded).
-`);
-  }
-  if (storeError === undefined) {
-    deps.stdout.write(stored ? `Stored in the ${deps.backend} backend as the CLI's working key.
-` : `Not stored: the CLI already manages a different working key. This key belongs to whichever agent it was minted for.
-`);
-  }
-  return storeError === undefined ? 0 : 1;
-}
-async function keysRevoke(args, ctx) {
-  const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {});
-  if ("error" in parsed) {
-    writeUsageFailure(deps, parsed.error, json);
-    return 2;
-  }
-  if (parsed.positionals.length !== 1) {
-    deps.stderr.write(`Usage: candle keys revoke <prefix>
-`);
-    return 2;
-  }
-  const prefix = parsed.positionals[0];
-  await printIdentity(ctx);
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
-  if (!deviceToken) {
-    writeLocalFailure(deps, NO_DEVICE_TOKEN, json);
-    return 1;
-  }
-  const result = await apiRequest(`${KEYS_PATH}/${encodeURIComponent(prefix)}`, {
-    method: "DELETE",
-    auth: "device",
-    credentials: { deviceToken },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
-  if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "device" }, json);
-    return 1;
-  }
-  const config = await deps.readConfig();
-  const storedPrefix = effectiveProfileFields(config, ctx.profile).keyPrefix;
-  let clearedLocal = false;
-  if (storedPrefix === prefix) {
-    const apiKeyRef = ctx.profile ? profileSecretRef(ctx.profile, "apiKey") : SECRET_REFS.apiKey;
-    await deps.store.delete(apiKeyRef);
-    if (ctx.profile) {
-      await deps.updateProfile(ctx.profile, { keyPrefix: undefined });
-    } else {
-      await deps.writeConfig({ keyPrefix: undefined });
-    }
-    clearedLocal = true;
-  }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify({ success: true, keyPrefix: prefix, clearedLocal })}
-`);
-    return 0;
-  }
-  deps.stdout.write(`Revoked key ${prefix}.
-`);
-  if (clearedLocal) {
-    deps.stdout.write(`This was the CLI's stored working key; also cleared it locally.
-`);
-  }
-  return 0;
-}
+// src/index.ts
+init_keys();
 
 // src/commands/keys-wallets.ts
 init_args();
+init_deps();
+init_profiles();
 init_render();
 var NO_API_KEY = {
   code: "NO_API_KEY",
@@ -42583,15 +43325,19 @@ async function keysWallets(args, ctx) {
 // src/commands/launch.ts
 init_args();
 init_render();
+init_solana_lite();
 import { randomUUID as randomUUID2 } from "node:crypto";
 
 // src/trading.ts
 init_esm();
 init_zod();
+init_deps();
+init_secret_store();
 import { createHash, sign } from "node:crypto";
 import { mkdir as mkdir5, open as open3, readFile as readFile5, rename as rename3, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
 import { join as join9 } from "node:path";
+
 class TradingError extends Error {
   code;
   constructor(code, message) {
@@ -42915,6 +43661,7 @@ async function saveLaunchSignature(ctx, key, id, transaction) {
 // src/commands/swap.ts
 init_args();
 init_render();
+init_solana_lite();
 import { randomUUID } from "node:crypto";
 function tradingFailure(ctx, error, id) {
   writeLocalFailure(ctx.deps, {
@@ -43224,6 +43971,8 @@ async function launch(args, ctx) {
 
 // src/commands/mcp.ts
 init_args();
+init_deps();
+init_profiles();
 init_release();
 init_render();
 var MCP_TOOL_NAMES = [
@@ -43518,6 +44267,7 @@ function pluginInvocation(argv, env, isBuiltIn) {
 }
 
 // src/commands/plugins.ts
+init_profiles();
 init_render();
 init_store();
 
@@ -43731,6 +44481,7 @@ async function runPlugin(name, rawArgs, ctx) {
 
 // src/commands/profile.ts
 init_args();
+init_profiles();
 init_render();
 async function profileList(args, ctx) {
   const { deps, json } = ctx;
@@ -43960,6 +44711,8 @@ async function profileRemove(args, ctx) {
 
 // src/commands/setup.ts
 init_args();
+init_deps();
+init_profiles();
 init_render();
 var SKILLS_CLAUDE_COMMAND = "/plugin marketplace add candledottv/agentic";
 var CODING_AGENTS_DOCS = "https://docs.candle.tv/developers/coding-agents";
@@ -44082,6 +44835,7 @@ init_args();
 
 // src/solana-alt.ts
 init_esm();
+init_solana_lite();
 var ADDRESS_LOOKUP_TABLE_PROGRAM_ID = "AddressLookupTab1e1111111111111111111111111";
 var COMPUTE_BUDGET_PROGRAM_ID = "ComputeBudget111111111111111111111111111111";
 var MEMO_PROGRAM_ID = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr";
@@ -44400,6 +45154,7 @@ function programNameOf(programId) {
 }
 
 // src/commands/sign.ts
+init_solana_lite();
 init_errors();
 init_store();
 init_vault_support();
@@ -44794,17 +45549,22 @@ async function signMessage2(args, ctx) {
 // src/commands/tee.ts
 init_esm();
 init_args();
+init_deps();
+init_profiles();
 init_render();
+init_solana_lite();
 init_store();
 
 // src/vault/tee-resolve.ts
 init_esm();
 init_args();
 init_vault_support();
+init_deps();
 init_render();
 init_errors();
 
 // src/vault/reconcile-grant.ts
+init_deps();
 init_errors();
 
 // src/vault/linked-wallets.ts
@@ -45299,6 +46059,9 @@ function keyEntryAsKeystore(entry, privateKeyBase58) {
     ...meta !== undefined ? { tee: meta } : {}
   };
 }
+
+// src/wallet-import-flow.ts
+init_secret_store();
 
 // ../../node_modules/@hpke/chacha20poly1305/esm/src/chacha/utils.js
 function isBytes3(a) {
@@ -46194,7 +46957,7 @@ function i2Osp(n, w) {
   }
   return ret;
 }
-function concat2(a, b) {
+function concat3(a, b) {
   const ret = new Uint8Array(a.length + b.length);
   ret.set(a, 0);
   ret.set(b, a.length);
@@ -46237,7 +47000,7 @@ var LABEL_SHARED_SECRET = new Uint8Array([
   101,
   116
 ]);
-function concat3(a, b, c) {
+function concat32(a, b, c) {
   const ret = new Uint8Array(a.length + b.length + c.length);
   ret.set(a, 0);
   ret.set(b, a.length);
@@ -46339,15 +47102,15 @@ class Dhkem {
         const sks = isCryptoKeyPair(params.senderKey) ? params.senderKey.privateKey : params.senderKey;
         const dh1 = new Uint8Array(await this._prim.dh(ke.privateKey, params.recipientPublicKey));
         const dh2 = new Uint8Array(await this._prim.dh(sks, params.recipientPublicKey));
-        dh = concat2(dh1, dh2);
+        dh = concat3(dh1, dh2);
       }
       let kemContext;
       if (params.senderKey === undefined) {
-        kemContext = concat2(new Uint8Array(enc), new Uint8Array(pkrm));
+        kemContext = concat3(new Uint8Array(enc), new Uint8Array(pkrm));
       } else {
         const pks = isCryptoKeyPair(params.senderKey) ? params.senderKey.publicKey : await this._prim.derivePublicKey(params.senderKey);
         const pksm = await this._prim.serializePublicKey(pks);
-        kemContext = concat3(new Uint8Array(enc), new Uint8Array(pkrm), new Uint8Array(pksm));
+        kemContext = concat32(new Uint8Array(enc), new Uint8Array(pkrm), new Uint8Array(pksm));
       }
       const sharedSecret = await this._generateSharedSecret(dh, kemContext);
       return {
@@ -46370,11 +47133,11 @@ class Dhkem {
       } else {
         const dh1 = new Uint8Array(await this._prim.dh(skr, pke));
         const dh2 = new Uint8Array(await this._prim.dh(skr, params.senderPublicKey));
-        dh = concat2(dh1, dh2);
+        dh = concat3(dh1, dh2);
       }
       let kemContext;
       if (params.senderPublicKey === undefined) {
-        kemContext = concat2(new Uint8Array(params.enc), new Uint8Array(pkrm));
+        kemContext = concat3(new Uint8Array(params.enc), new Uint8Array(pkrm));
       } else {
         const pksm = await this._prim.serializePublicKey(params.senderPublicKey);
         kemContext = new Uint8Array(params.enc.byteLength + pkrm.byteLength + pksm.byteLength);
@@ -48082,7 +48845,10 @@ init_wallet_keystore();
 // src/commands/wallets.ts
 init_esm();
 init_args();
+init_deps();
+init_profiles();
 init_render();
+init_secret_store();
 var TEE_PROFILES = new Set(["ember-tee", "ember-hot"]);
 function isTeeRow(row) {
   return row.profile !== undefined && TEE_PROFILES.has(row.profile);
@@ -52673,6 +53439,7 @@ init_render();
 init_errors();
 
 // src/vault/funding-receipts.ts
+init_solana_lite();
 init_errors();
 init_store();
 function readReceipt(value) {
@@ -52739,6 +53506,7 @@ init_store();
 
 // src/vault/vault-transfer-sign.ts
 init_esm();
+init_solana_lite();
 init_errors();
 var USDC_MINT2 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 function decimalToRaw2(decimal, decimals) {
@@ -53495,6 +54263,7 @@ The Phase 1 file was left in place. A 0.9.x binary reading it still sees that st
 // src/commands/vault-list.ts
 init_args();
 init_render();
+init_solana_lite();
 init_store();
 init_vault_support();
 var CHUNK = 100;
@@ -53659,9 +54428,12 @@ async function vaultPhrase(args, ctx) {
 // src/commands/vault-promote.ts
 init_esm();
 init_args();
+init_deps();
 init_render();
+init_solana_lite();
 
 // src/vault/account-room.ts
+init_deps();
 init_errors();
 async function readAccountRoom(ctx) {
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
@@ -53763,6 +54535,7 @@ function restoreRefusedFailure(init, error) {
 // src/commands/vault-promote.ts
 init_errors();
 init_promote_support();
+init_signer_roles();
 init_store();
 init_vault_support();
 async function vaultPromote(args, ctx) {
@@ -53983,11 +54756,18 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
       return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).");
     }
     await refuseWithoutRoom(ctx);
-    await displayHoldings(ctx, rpcUrl2, first.subject.address);
-    printAd8Warning(ctx);
-    if (!ctx.json) {}
+    const controlledBy = await readControlledBy(ctx);
+    const rpc2 = createSolanaRpc(rpcUrl2, ctx.deps.fetch);
+    const host = new URL(rpcUrl2).host;
+    await displayHoldings(ctx, rpc2, first.subject.address);
+    const roles = await runRoleCheck(ctx, rpc2, [first.subject.address]);
+    ctx.deps.stdout.write(`${authoritiesBlock(host, roles)}
+`);
+    printPromoteSentence(ctx, promoteSentence({ n: 1, form: sentenceForm(roles), k: keysWithFindings(roles), where: "above" }));
     await confirmLastSix(ctx, first.subject.address, "the address being promoted");
-    await confirmAd8Acknowledgement(ctx);
+    ctx.deps.stderr.write(`${renderControlledBy(controlledBy, 1)}
+`);
+    await confirmPromotion(ctx, 1);
     vault = hold(await reopenFromDisk(path, opened.reopen, vault));
     const second = assertInPlacePreconditions(vault.index, subjectLabel, sweepTo, {
       acceptUnknownExposure: acceptUnknown
@@ -54055,7 +54835,9 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
         address: subject.address,
         vaultDestination: destination.address,
         lifecycle: updated?.tee?.lifecycle ?? null,
-        linkedWalletId: updated?.linkedWalletId ?? null
+        linkedWalletId: updated?.linkedWalletId ?? null,
+        controlledBy: controlledByJson(controlledBy),
+        authorities: authoritiesJson(roles)
       });
     } else if (code === 0 || code === 3) {
       ctx.deps.stdout.write(`Promoted ${subject.address} in place (sweep to ${destination.address}). This address never returns to cold.
@@ -54186,8 +54968,7 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
   }
   return { exit: 0, adopted };
 }
-async function displayHoldings(ctx, rpcUrl2, address) {
-  const rpc2 = createSolanaRpc(rpcUrl2, ctx.deps.fetch);
+async function displayHoldings(ctx, rpc2, address) {
   const observedAt = new Date(ctx.deps.now()).toISOString();
   const lamports = await rpc2.getBalance(address);
   const tokens = [
@@ -54318,7 +55099,9 @@ async function runTeeImport(ctx, opts) {
 // src/commands/vault-promote-batch.ts
 init_esm();
 init_args();
+init_deps();
 init_render();
+init_solana_lite();
 init_errors();
 init_format();
 
@@ -54625,7 +55408,7 @@ function writeBatchRefusal(deps, json, refusal) {
 `);
     return;
   }
-  const table = renderTable(["#", "label", "destination", "code", "why"], refusal.rows.map((row) => [
+  const table = renderTable(["line", "label", "destination", "code", "why"], refusal.rows.map((row) => [
     String(row.line),
     row.label,
     row.destination,
@@ -54638,27 +55421,6 @@ ${table}
 
 ${CONTINUATION_SENTENCE(refusal.total)}
 `);
-}
-function checkAcknowledgement(typed, actingCount, destinations) {
-  const tokens = typed.trim().split(/\s+/).filter((token) => token.length > 0);
-  const expected = 1 + destinations.length;
-  if (tokens.length !== expected) {
-    return {
-      ok: false,
-      reason: `The answer has ${tokens.length} token${tokens.length === 1 ? "" : "s"}; ${expected} were expected (the count, then the last six of each destination).`
-    };
-  }
-  if (tokens[0] !== String(actingCount))
-    return { ok: false, reason: "The count did not match." };
-  for (const [at, destination] of destinations.entries()) {
-    if (tokens[at + 1] !== destination.address.slice(-6)) {
-      return {
-        ok: false,
-        reason: `Token ${at + 2} of ${expected} is not the last six of the destination ${destination.label}.`
-      };
-    }
-  }
-  return { ok: true };
 }
 function parseValueUsdCell(raw) {
   const cleaned = raw.trim().replace(/^\$/, "").replace(/,/g, "");
@@ -54698,11 +55460,10 @@ function actingDestinations(planned) {
 
 // src/commands/vault-promote-batch.ts
 init_promote_support();
+init_signer_roles();
 init_store();
 init_vault_support();
 var USAGE_LINE = "Usage: candle vault promote-batch --pairs-from <file> --rpc-url <url> [--token-holdings] [--accept-unknown-exposure]";
-var BATCH_AD8_SENTENCE = (n) => `You are about to accept the warning above for all ${n} addresses below at once. Each exposure is permanent, and independent of the others.`;
-var ACK_PROMPT = "Type the number of addresses this run will act on, then the last six of each destination in the order listed above: ";
 var rowObserver = null;
 async function vaultPromoteBatch(args, ctx) {
   if (args.some((arg) => arg === "--from" || arg.startsWith("--from="))) {
@@ -54779,6 +55540,7 @@ async function vaultPromoteBatch(args, ctx) {
     if (roomRefusal !== null)
       throw roomRefusal;
     const room = roomRead.room;
+    const controlledBy = await readControlledBy(ctx);
     const addresses = planned.map((item) => item.subject.address);
     const rpc2 = createSolanaRpc(rpcUrl2, deps.fetch);
     const host = new URL(rpcUrl2).host;
@@ -54804,7 +55566,14 @@ async function vaultPromoteBatch(args, ctx) {
         tokenCounts.set(address, classic.length + token2022.length);
       }
     }
-    const table = renderBatchTable(planned, { lamports, tokenCounts, hasValueUsd });
+    const actingAddresses = acting.map((item) => item.subject.address);
+    let roles;
+    if (lamports !== undefined && actingAddresses.length > 0) {
+      deps.stderr.write(`${checkOpeningLine(actingAddresses.length, host)}
+`);
+      roles = await runRoleCheck(ctx, rpc2, actingAddresses);
+    }
+    const table = renderBatchTable(planned, { lamports, tokenCounts, hasValueUsd, roles });
     const footer = renderFooter({
       file: pairsFile,
       planned,
@@ -54816,7 +55585,8 @@ async function vaultPromoteBatch(args, ctx) {
       tokensRead: tokenCounts !== undefined,
       hasValueUsd,
       room,
-      promotes
+      promotes,
+      roles
     });
     if (readError !== undefined) {
       deps.stderr.write(`
@@ -54840,27 +55610,34 @@ Nothing to do: every row already landed.
         rows: rows.length,
         keys: planned.map((item) => skippedResult(item)),
         destinations,
-        exit: 0
+        exit: 0,
+        controlledBy,
+        roles: {
+          checked: [...ROLE_GROUP_IDS],
+          notChecked: [],
+          found: [],
+          requests: 0,
+          planned: 0,
+          rateLimited: 0,
+          elapsedMs: 0
+        }
       });
     }
-    printAd8Warning(ctx);
-    deps.stdout.write(`${BATCH_AD8_SENTENCE(acting.length)}
-
-`);
+    const checked = roles;
+    printPromoteSentence(ctx, promoteSentence({
+      n: acting.length,
+      form: sentenceForm(checked),
+      k: keysWithFindings(checked),
+      where: "below"
+    }));
     deps.stderr.write(`${table}
 
 ${footer}
 `);
     deps.stderr.write(`
-This acknowledges permanent TEE exposure for ${acting.length} addresses; the full warning is printed above this table.
+${renderControlledBy(controlledBy, acting.length)}
 `);
-    const typed = await deps.promptLine(ACK_PROMPT);
-    const verdict = checkAcknowledgement(typed, acting.length, destinations);
-    if (!verdict.ok) {
-      throw new VaultError("PROMOTE_NOT_ACKNOWLEDGED", `${verdict.reason} Nothing was promoted, and nothing was written.`, {
-        suggestion: "Run the command again and read the destination roll-up in the footer above."
-      });
-    }
+    await confirmPromotion(ctx, acting.length);
     const now = new Date(deps.now()).toISOString();
     const results = [];
     let stopped;
@@ -55012,7 +55789,9 @@ This acknowledges permanent TEE exposure for ${acting.length} addresses; the ful
           failedLine: stopped.line,
           code: stopped.code,
           message: stopped.message,
-          ...stopped.suggestion !== undefined ? { suggestion: stopped.suggestion } : {}
+          ...stopped.suggestion !== undefined ? { suggestion: stopped.suggestion } : {},
+          controlledBy: controlledByJson(controlledBy),
+          authorities: authoritiesJson(checked)
         });
       } else {
         deps.stderr.write(`${stopped.message}${stopped.suggestion ? ` ${stopped.suggestion}` : ""}
@@ -55022,7 +55801,15 @@ This acknowledges permanent TEE exposure for ${acting.length} addresses; the ful
     }
     if (last !== undefined)
       await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx);
-    return finish(ctx, { file: pairsFile, rows: rows.length, keys: results, destinations, exit: worst });
+    return finish(ctx, {
+      file: pairsFile,
+      rows: rows.length,
+      keys: results,
+      destinations,
+      exit: worst,
+      controlledBy,
+      roles: checked
+    });
   });
 }
 async function verifySubjectSecret(vault, subject) {
@@ -55119,9 +55906,6 @@ async function reconcileForPreflight(ctx, row, subject, resolved) {
   }
   return { ok: true, destinationAddress: server, ...assertedAccount !== undefined ? { account } : {} };
 }
-function shortAddress(address) {
-  return `${address.slice(0, 6)}…${address.slice(-4)}`;
-}
 function skippedResult(item) {
   const subject = item.subject;
   return {
@@ -55137,7 +55921,7 @@ function skippedResult(item) {
   };
 }
 function renderBatchTable(planned, opts) {
-  const headers = ["#", "state", "label", "address", "destination"];
+  const headers = ["line", "state", "label", "address", "destination", "authority"];
   headers.push(opts.tokenCounts !== undefined ? "SOL" : "SOL (tokens not read)");
   if (opts.tokenCounts !== undefined)
     headers.push("token accounts");
@@ -55147,7 +55931,8 @@ function renderBatchTable(planned, opts) {
     const address = item.subject.address;
     const state = item.kind === "promote" ? item.acceptedUnknown ? "promote*" : "promote" : item.kind === "resume" ? "resume" : "skip";
     const destination = item.kind === "promote" ? destinationCell(item.destination.label, item.destination.address) : destinationCell(item.row.destination, item.destinationAddress);
-    const cells = [String(item.row.line), state, item.subject.label, address, destination];
+    const authority = item.kind === "skip" ? "" : opts.roles === undefined ? "?" : authorityCell(address, opts.roles);
+    const cells = [String(item.row.line), state, item.subject.label, address, destination, authority];
     const lamports = opts.lamports?.get(address);
     cells.push(lamports === undefined ? "unread" : formatSol3(lamports));
     if (opts.tokenCounts !== undefined)
@@ -55173,6 +55958,10 @@ function renderFooter(opts) {
     lines.push(`SOL read over ${opts.host} FAILED: ${opts.readError}. The batch is refused.`);
   } else {
     lines.push(`SOL read at ${opts.observedAt} over ${opts.host}. ${opts.tokensRead ? "Token accounts were read under both programs." : "Token accounts were not read (pass --token-holdings)."}`);
+  }
+  if (opts.roles !== undefined && opts.acting.length > 0) {
+    lines.push(authoritiesCountLine(opts.acting.length, opts.roles));
+    lines.push(readSummaryLine(opts.host, opts.roles));
   }
   if (opts.hasValueUsd) {
     let total = 0;
@@ -55220,7 +56009,9 @@ function finish(ctx, opts) {
       resumed,
       skipped,
       destinations: opts.destinations.map(({ label, address, keys }) => ({ label, address, keys })),
-      keys: opts.keys
+      keys: opts.keys,
+      controlledBy: controlledByJson(opts.controlledBy),
+      authorities: authoritiesJson(opts.roles)
     });
     return opts.exit;
   }
@@ -55395,6 +56186,8 @@ function resolveTarget(index, old, id) {
 
 // src/commands/vault-restore.ts
 init_args();
+init_deps();
+init_solana_lite();
 import { rm as rm3 } from "node:fs/promises";
 init_crypto();
 init_errors();
@@ -56557,6 +57350,7 @@ async function clearConfig() {
 }
 
 // src/guard.ts
+init_profiles();
 async function verifyProfileAccount(ctx, config) {
   const { deps, profile } = ctx;
   if (!ctx.verifyAccount)
@@ -56594,6 +57388,7 @@ async function verifyProfileAccount(ctx, config) {
 }
 
 // src/keychain.ts
+init_secret_store();
 import { spawn as spawn2, spawnSync } from "node:child_process";
 var CREDENTIAL_SERVICE = "tv.candle.cli";
 var SECRETS_SERVICE = "tv.candle.cli.secrets";
@@ -56735,8 +57530,10 @@ async function resolveSecretStore(platform = process.platform, namespace = { ser
 }
 
 // src/index.ts
+init_profiles();
 init_release();
 init_render();
+init_secret_store();
 
 // src/update-notice.ts
 init_release();

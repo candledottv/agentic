@@ -337,3 +337,16 @@ describe("BE-288: the linked-wallet room codes are declared", () => {
     }
   })
 })
+
+/**
+ * BE-296 (spec `2026-09-23-cli-vault-promote-confirm-design.md`, D5, T16): the one code the live
+ * controlled-by read adds is declared, and `FROZEN_CODES` above is untouched.
+ */
+describe("BE-296: the promote account code is declared", () => {
+  test("T16: PROMOTE_ACCOUNT_UNRESOLVED is a vault code, and PROMOTE_NOT_ACKNOWLEDGED still is", () => {
+    const declared = new Set<string>(VAULT_ERROR_CODES)
+    for (const code of ["PROMOTE_ACCOUNT_UNRESOLVED", "PROMOTE_NOT_ACKNOWLEDGED"]) {
+      expect(declared.has(code), `${code} is not in VAULT_ERROR_CODES`).toBe(true)
+    }
+  })
+})

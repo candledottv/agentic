@@ -1,8 +1,9 @@
 /**
  * BE-285 (spec `2026-09-22-cli-vault-promote-batch-design.md`): the pure half of
  * `candle vault promote-batch`. The file parser (D3, D4, D5), Phase A (D7), the re-run classifier
- * (D11), the projected whole-set preflight (D6), the refusal report (D7) and the acknowledgement
- * rule (D10). Nothing here takes a `ctx`, prompts, or touches the network: the two checks that need
+ * (D11), the projected whole-set preflight (D6) and the refusal report (D7). The acknowledgement
+ * is `confirmPromotion` in `promote-support.ts` since BE-296 (the word `confirm`, shared with
+ * single promote). Nothing here takes a `ctx`, prompts, or touches the network: the two checks that need
  * the unlocked vault or the API (`verifySubject`, `reconcileResume`) are injected by the command,
  * so the walk itself is a unit test.
  *
@@ -518,8 +519,10 @@ export function writeBatchRefusal(
     )
     return
   }
+  // `line` (BE-296, D10): the value is the file line, which is what `keys[].line`, `failedLine`
+  // and every Phase A finding already call it.
   const table = renderTable(
-    ["#", "label", "destination", "code", "why"],
+    ["line", "label", "destination", "code", "why"],
     refusal.rows.map((row) => [
       String(row.line),
       row.label,
@@ -533,46 +536,9 @@ export function writeBatchRefusal(
   )
 }
 
-// ── The acknowledgement (D10) ───────────────────────────────────────────────────────────────
-
 export interface Destination {
   label: string
   address: string
-}
-
-/**
- * The typed line against the acting count and the destinations in listed order. Split on
- * whitespace; the count as a decimal integer; each remaining token the corresponding address's
- * last six, case-sensitive (base58 is, and `confirmLastSix` compares exactly). A wrong number of
- * tokens is itself a mismatch. The reason names the POSITION and never the expected value, so a
- * refusal cannot become a copy-paste prompt.
- */
-export function checkAcknowledgement(
-  typed: string,
-  actingCount: number,
-  destinations: Destination[],
-): { ok: true } | { ok: false; reason: string } {
-  const tokens = typed
-    .trim()
-    .split(/\s+/)
-    .filter((token) => token.length > 0)
-  const expected = 1 + destinations.length
-  if (tokens.length !== expected) {
-    return {
-      ok: false,
-      reason: `The answer has ${tokens.length} token${tokens.length === 1 ? "" : "s"}; ${expected} were expected (the count, then the last six of each destination).`,
-    }
-  }
-  if (tokens[0] !== String(actingCount)) return { ok: false, reason: "The count did not match." }
-  for (const [at, destination] of destinations.entries()) {
-    if (tokens[at + 1] !== destination.address.slice(-6)) {
-      return {
-        ok: false,
-        reason: `Token ${at + 2} of ${expected} is not the last six of the destination ${destination.label}.`,
-      }
-    }
-  }
-  return { ok: true }
 }
 
 // ── Display helpers (D4, D8) ────────────────────────────────────────────────────────────────

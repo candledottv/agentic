@@ -154,8 +154,8 @@ export function defaultProfileNameFor(apiUrl: string, existing: Record<string, P
     // keep the fallback
   }
   let base: string
-  if (host === "staging.api.candle.tv") base = "staging"
-  else if (host === "api.candle.tv" || host === "api.alpha.candle.tv") base = "production"
+  const environment = candleEnvironment(apiUrl)
+  if (environment !== undefined) base = environment
   else
     base =
       host
@@ -169,6 +169,46 @@ export function defaultProfileNameFor(apiUrl: string, existing: Record<string, P
     const candidate = `${base}-${n}`
     if (!taken.has(candidate)) return candidate
   }
+}
+
+/**
+ * Which Candle deployment an API URL names (BE-296, D4): `staging` for `staging.api.candle.tv`,
+ * `production` for `api.candle.tv` and `api.alpha.candle.tv`, `undefined` for any other host or an
+ * unparseable URL. `defaultProfileNameFor` calls this so the profile name a login derives and the
+ * environment the promote ceremony prints beside the API URL can never disagree.
+ */
+export function candleEnvironment(apiUrl: string): "production" | "staging" | undefined {
+  let host: string
+  try {
+    host = new URL(apiUrl).hostname
+  } catch {
+    return undefined
+  }
+  if (host === "staging.api.candle.tv") return "staging"
+  if (host === "api.candle.tv" || host === "api.alpha.candle.tv") return "production"
+  return undefined
+}
+
+const API_KEY_PREFIXES = ["cndl_live_", "cndl_test_"] as const
+/** 32 random bytes, base64url, unpadded: the server's `RANDOM_LEN` (`apps/api/src/lib/agent-keys.ts`). */
+const API_KEY_RANDOM_LENGTH = 43
+
+/**
+ * The public prefix of an API key, by the server's own rule (`parseAgentKey`): `cndl_live_` or
+ * `cndl_test_`, a 43-character random part, and the prefix is its first 8 characters. That is the
+ * value `candle keys list` prints in its `Prefix` column and what `GET /keys` calls `keyPrefix`.
+ * `undefined` for anything else, so a caller can never print a slice of a secret it did not
+ * recognise as a key (BE-296, D4).
+ */
+export function apiKeyPrefix(key: string): string | undefined {
+  const trimmed = key.trim()
+  for (const prefix of API_KEY_PREFIXES) {
+    if (!trimmed.startsWith(prefix)) continue
+    const random = trimmed.slice(prefix.length)
+    if (random.length !== API_KEY_RANDOM_LENGTH) return undefined
+    return random.slice(0, 8)
+  }
+  return undefined
 }
 
 /** The credential env vars that BEAT the store (see deps.ts's resolvers), named where they are
