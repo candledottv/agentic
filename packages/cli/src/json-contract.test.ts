@@ -353,6 +353,19 @@ describe("BE-288: the linked-wallet room codes are declared", () => {
  * BE-296 (spec `2026-09-23-cli-vault-promote-confirm-design.md`, D5, T16): the one code the live
  * controlled-by read adds is declared, and `FROZEN_CODES` above is untouched.
  */
+/**
+ * BE-337 (spec `2026-09-24-cli-security-key-authorizes-factor-add-design.md`, D3, D6; T18): the one
+ * code `factor add security-key` adds is declared, and `FROZEN_CODES` above is untouched. The three
+ * `factor add` payloads gain `openedWith` and nothing else; that is asserted where the commands
+ * run, in their own suites.
+ */
+describe("BE-337: the already-enrolled code is declared", () => {
+  test("T18: VAULT_KEY_ALREADY_ENROLLED is a vault code", () => {
+    const declared = new Set<string>(VAULT_ERROR_CODES)
+    expect(declared.has("VAULT_KEY_ALREADY_ENROLLED")).toBe(true)
+  })
+})
+
 describe("BE-296: the promote account code is declared", () => {
   test("T16: PROMOTE_ACCOUNT_UNRESOLVED is a vault code, and PROMOTE_NOT_ACKNOWLEDGED still is", () => {
     const declared = new Set<string>(VAULT_ERROR_CODES)

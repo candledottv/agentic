@@ -104,6 +104,8 @@ const SYMBOLS = {
   fido_cbor_info_options_len: { args: [FFIType.ptr], returns: FFIType.u64 },
   fido_cbor_info_aaguid_ptr: { args: [FFIType.ptr], returns: FFIType.ptr },
   fido_cbor_info_aaguid_len: { args: [FFIType.ptr], returns: FFIType.u64 },
+  /** BE-337 (D3): getInfo's `maxCredentialCountInList`; 0 when the authenticator reports none. */
+  fido_cbor_info_maxcredcntlst: { args: [FFIType.ptr], returns: FFIType.u64 },
   fido_cred_new: { args: [], returns: FFIType.ptr },
   fido_cred_free: { args: [FFIType.ptr], returns: FFIType.void },
   fido_cred_set_type: { args: [FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
@@ -116,6 +118,8 @@ const SYMBOLS = {
   fido_cred_set_extensions: { args: [FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
   fido_cred_set_rk: { args: [FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
   fido_cred_set_uv: { args: [FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
+  /** BE-337 (D3): one call per excluded credential id, before `fido_dev_make_cred`. */
+  fido_cred_exclude: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i32 },
   fido_dev_make_cred: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
   fido_cred_id_ptr: { args: [FFIType.ptr], returns: FFIType.ptr },
   fido_cred_id_len: { args: [FFIType.ptr], returns: FFIType.u64 },
@@ -245,6 +249,13 @@ export function helperErrorForRc(rc: number, describe: (rc: number) => string): 
     case FIDO_ERR.NO_CREDENTIALS:
     case FIDO_ERR.INVALID_CREDENTIAL:
       return new HelperError("NO_CREDENTIAL", `the security key holds no credential for this relying party (${text})`)
+    // BE-337 (D3, refusal 3): the key holds a credential the exclude list named, so it created
+    // nothing. CTAP 2.1 has it wait for a touch before it says so; that touch is the whole cost.
+    case FIDO_ERR.CREDENTIAL_EXCLUDED:
+      return new HelperError(
+        "CREDENTIAL_EXCLUDED",
+        `the security key already holds one of the excluded credentials and created nothing (${text})`,
+      )
     case FIDO_ERR.UNSUPPORTED_EXTENSION:
     case FIDO_ERR.UNSUPPORTED_ALGORITHM:
       return new HelperError("PRF_UNSUPPORTED", `the security key refused the hmac-secret extension (${text})`)
@@ -377,7 +388,14 @@ class Libfido2Backend implements Fido2Backend {
           this.lib.fido_cbor_info_aaguid_ptr(info),
           Number(this.lib.fido_cbor_info_aaguid_len(info)),
         )
-        return { aaguid, extensions, options }
+        // libfido2 answers 0 for an authenticator whose getInfo has no maxCredentialCountInList.
+        const maxCredentialCountInList = Number(this.lib.fido_cbor_info_maxcredcntlst(info))
+        return {
+          aaguid,
+          extensions,
+          options,
+          ...(maxCredentialCountInList > 0 ? { maxCredentialCountInList } : {}),
+        }
       } finally {
         this.lib.fido_cbor_info_free(ptr(holderOf(info)))
       }
@@ -399,6 +417,9 @@ class Libfido2Backend implements Fido2Backend {
     const rpName = cstr(params.rpName)
     const userName = cstr(params.userName)
     const pin = params.pin !== undefined ? cstr(params.pin) : null
+    // BE-337 (D3): the excluded ids are copied so the buffers the library points at live until
+    // make_cred returns, like every other argument here.
+    const excluded = (params.excludeCredentialIds ?? []).map((id) => Uint8Array.from(id))
     try {
       this.check(this.lib.fido_cred_set_type(cred, COSE_ES256), "setting the credential type")
       this.check(
@@ -414,6 +435,11 @@ class Libfido2Backend implements Fido2Backend {
       // Discoverable (rk) and user-verified (uv), both required: ED-11's user-verified variant only.
       this.check(this.lib.fido_cred_set_rk(cred, FIDO_OPT_TRUE), "requiring a discoverable credential")
       this.check(this.lib.fido_cred_set_uv(cred, FIDO_OPT_TRUE), "requiring user verification")
+      // BE-337 (D3, refusal 3): every credential the vault already holds is excluded before the
+      // device is asked, so a key that holds one answers CREDENTIAL_EXCLUDED and creates nothing.
+      for (const id of excluded) {
+        this.check(this.lib.fido_cred_exclude(cred, ptr(id), id.length), "excluding an enrolled credential")
+      }
       this.check(this.lib.fido_dev_make_cred(dev, cred, pin === null ? null : ptr(pin)), "registering")
       const credentialId = copyBytes(this.lib.fido_cred_id_ptr(cred), Number(this.lib.fido_cred_id_len(cred)))
       const aaguid = copyBytes(this.lib.fido_cred_aaguid_ptr(cred), Number(this.lib.fido_cred_aaguid_len(cred)))

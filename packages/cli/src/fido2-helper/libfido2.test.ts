@@ -9,6 +9,8 @@
  *
  * Skipped, and named as skipped, on a machine without libfido2; the PR records whether it ran.
  */
+
+import { ptr } from "bun:ffi"
 import { describe, expect, test } from "bun:test"
 import { mkdtempSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -160,6 +162,8 @@ describe("libfido2 through bun:ffi", () => {
     expectCode(-1, "DEVICE_IO")
     expectCode(-2, "DEVICE_IO")
     expectCode(-9, "DEVICE_IO")
+    // BE-337 (D3, refusal 3).
+    expectCode(0x19, "CREDENTIAL_EXCLUDED")
     expectCode(0x28, "INTERNAL")
     expectCode(0x99, "INTERNAL")
     expect(helperErrorForRc(0x99, describe).message).toContain("rc 153")
@@ -225,5 +229,87 @@ describe("libfido2 probeCredential", () => {
     expect(probeOutcomeForRc(0, 1)).toBe("present")
     expect(probeOutcomeForRc(0x2e, 0)).toBe("absent")
     expect(probeOutcomeForRc(0x36, 0)).toBe("unknown")
+  })
+})
+
+/**
+ * BE-337 (D3, T19): the exclude list's FFI calls and the getInfo count, against a recording
+ * stand-in for the library. What a real key does with an excluded credential is Group E's (E6);
+ * what this proves is the shape: one `fido_cred_exclude` per id, every one before
+ * `fido_dev_make_cred`, and `fido_cbor_info_maxcredcntlst` read into the capabilities.
+ */
+describe("libfido2 exclude list and maxCredentialCountInList", () => {
+  function recordingLibrary(returns: Record<string, unknown>) {
+    const calls: Array<{ name: string; args: unknown[] }> = []
+    const lib = new Proxy(
+      {},
+      {
+        get:
+          (_target, name: string) =>
+          (...args: unknown[]) => {
+            calls.push({ name, args })
+            return name in returns ? returns[name] : 0
+          },
+      },
+    )
+    const backend = openLibfido2("darwin", ["/fake/libfido2.dylib"], (() => lib) as unknown as LibraryOpener)
+    return { backend, calls }
+  }
+
+  test("fido_cred_exclude is called once per id, all before fido_dev_make_cred", () => {
+    // Real buffers, so the copies the backend makes of the library's answers have bytes to read.
+    const credentialId = new Uint8Array(16).fill(4)
+    const aaguid = new Uint8Array(16).fill(6)
+    const authData = new Uint8Array(37).fill(1)
+    const wrapped = new Uint8Array([0x58, authData.length, ...authData])
+    const { backend, calls } = recordingLibrary({
+      fido_dev_new: 11,
+      fido_cred_new: 22,
+      fido_cred_id_ptr: ptr(credentialId),
+      fido_cred_id_len: BigInt(credentialId.length),
+      fido_cred_aaguid_ptr: ptr(aaguid),
+      fido_cred_aaguid_len: BigInt(aaguid.length),
+      fido_cred_authdata_ptr: ptr(wrapped),
+      fido_cred_authdata_len: BigInt(wrapped.length),
+    })
+    const excluded = [new Uint8Array(48).fill(1), new Uint8Array(32).fill(2)]
+    const result = backend.makeCredential("ioreg://1", {
+      rpId: "cli.candle.tv",
+      rpName: "Candle CLI",
+      userId: new Uint8Array(32).fill(3),
+      userName: "candle vault",
+      clientDataHash: new Uint8Array(32).fill(7),
+      pin: "123456",
+      excludeCredentialIds: excluded,
+    })
+    expect(result.authData).toEqual(authData)
+    const names = calls.map((call) => call.name)
+    const excludes = calls.filter((call) => call.name === "fido_cred_exclude")
+    expect(excludes).toHaveLength(2)
+    expect(excludes.map((call) => call.args[2])).toEqual([48, 32])
+    expect(names.lastIndexOf("fido_cred_exclude")).toBeLessThan(names.indexOf("fido_dev_make_cred"))
+    // Without a list, the symbol is never called.
+    calls.length = 0
+    backend.makeCredential("ioreg://1", {
+      rpId: "cli.candle.tv",
+      rpName: "Candle CLI",
+      userId: new Uint8Array(32).fill(3),
+      userName: "candle vault",
+      clientDataHash: new Uint8Array(32).fill(7),
+    })
+    expect(calls.map((call) => call.name)).not.toContain("fido_cred_exclude")
+  })
+
+  test("describe reports maxCredentialCountInList when the key does, and leaves it out when it answers 0", () => {
+    const withCount = recordingLibrary({
+      fido_dev_new: 11,
+      fido_dev_is_fido2: true,
+      fido_cbor_info_new: 33,
+      fido_cbor_info_maxcredcntlst: 8n,
+    })
+    expect(withCount.backend.describe("ioreg://1").maxCredentialCountInList).toBe(8)
+    expect(withCount.calls.map((call) => call.name)).toContain("fido_cbor_info_maxcredcntlst")
+    const without = recordingLibrary({ fido_dev_new: 11, fido_dev_is_fido2: true, fido_cbor_info_new: 33 })
+    expect(without.backend.describe("ioreg://1")).not.toHaveProperty("maxCredentialCountInList")
   })
 })

@@ -1237,18 +1237,20 @@ test("signed helper info failures leave status, factor list and passphrase enrol
 })
 
 /**
- * BE-292 (D7, row F2; D10): `factor add touch-id` and `factor add passkey` open the vault with the
- * passphrase and say why before the prompt, when the vault has another factor. This harness is the
- * only one that can run those two commands, so the row is pinned here rather than beside T12.
+ * BE-337 (D1, D5; row F3 replacing BE-292's F2): `factor add touch-id` and `factor add passkey`
+ * open the vault with the passphrase or a security key, never Touch ID or a synced passkey, and
+ * say why only the passphrase is offered when the vault has another factor and no usable key. This
+ * harness is the only one that can run those two commands, so the row is pinned here.
  */
-test("F2: factor add touch-id and passkey say why the passphrase opens the vault, only when it has another factor", async () => {
+test("F3: factor add touch-id and passkey say why only the passphrase opens the vault, only when it has another factor", async () => {
   const t = await vaultWithPasskey()
-  const F2 =
-    "Passphrase only: adding a factor opens the vault with the passphrase. A security key does not authorise enrollment: adding a second key while one is plugged in needs a device-selection rule this command does not have (D10)."
+  const F3 =
+    "Passphrase only: adding a factor opens the vault with the passphrase or a security key, and this vault has no security key."
   const touch = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [t.passphrase] })
   expect(await run(["vault", "factor", "add", "touch-id", "--keystore", t.vaultPath], touch.deps)).toBe(0)
-  expect(touch.stderr.text).toContain(F2)
-  expect(touch.stderr.text.indexOf(F2)).toBeLessThan(touch.stderr.text.length)
+  expect(touch.stderr.text).toContain(F3)
+  expect(touch.stderr.text.indexOf(F3)).toBeLessThan(touch.stderr.text.length)
+  // The synced passkey on the vault is not offered: no menu, one passphrase prompt.
   expect(touch.asked).toEqual([expect.stringContaining("Current vault passphrase")])
   const second = await harness({
     env: { CANDLE_CONFIG_DIR: t.dir },
@@ -1256,7 +1258,8 @@ test("F2: factor add touch-id and passkey say why the passphrase opens the vault
     script: { store: t.add.script.store },
   })
   expect(await run(["vault", "factor", "add", "passkey", "--keystore", t.vaultPath], second.deps)).toBe(0)
-  expect(second.stderr.text).toContain(F2)
+  expect(second.stderr.text).toContain(F3)
+  expect(second.asked).toEqual([expect.stringContaining("Current vault passphrase")])
 
   // On a vault whose only envelope is the passphrase, nothing needs explaining.
   const fresh = await initVault()
@@ -1369,7 +1372,9 @@ describe("BE-294: the unlock menu with a security key, Touch ID and a synced pas
     }
     await add(["touch-id", "--label", "Touch ID"], [t.passphrase])
     await add(["security-key", "--label", "yubikey-a"], [PIN, t.passphrase], key(CRED_A))
-    await add(["security-key", "--label", "yubikey-b"], [PIN, t.passphrase], key(CRED_B))
+    // BE-337 (D1): with key A enrolled the second add would offer it as the opener; the flag keeps
+    // this fixture on the passphrase path.
+    await add(["security-key", "--label", "yubikey-b", "--factor", "passphrase"], [PIN, t.passphrase], key(CRED_B))
     const file = await readVault(t.vaultPath)
     const idOf = (predicate: (envelope: VaultJson["envelopes"][number]) => boolean) =>
       file.envelopes.find(predicate)?.id as string
@@ -1425,5 +1430,150 @@ describe("BE-294: the unlock menu with a security key, Touch ID and a synced pas
       "unlock the Candle vault",
     ])
     expect(fido2Calls.map((call) => call.op)).toEqual(["probe", "probe"])
+  })
+
+  /**
+   * BE-337 (D5, T17): `factor add touch-id` and `factor add passkey` opened by security key A. The
+   * chooser's own probe, `--device` with its ordinary meaning, PIN, one assertion, then the Enclave
+   * key or the passkey sheet, and no passphrase prompt. The platform refusals still come before the
+   * vault is read, so a key is asked nothing on a Mac that cannot add the factor.
+   */
+  test("T17: factor add touch-id opened by key A: restricted menu, PIN, one assertion, then the Enclave key", async () => {
+    const t = await everyKind()
+    const fido2Calls: BackendLogEntry[] = []
+    const h = await harness({
+      env: { CANDLE_CONFIG_DIR: t.dir },
+      script: { store: t.add.script.store },
+      fido2: key(CRED_A, { "/dev/hidraw3": { [CRED_A]: "present" } }),
+      fido2Calls,
+      lines: ["1"],
+      secrets: [PIN],
+    })
+    expect(
+      await run(
+        ["vault", "factor", "add", "touch-id", "--label", "second mac", "--json", "--keystore", t.vaultPath],
+        h.deps,
+      ),
+    ).toBe(0)
+    // The menu is the restricted one: keys and the passphrase, no Touch ID or synced passkey row.
+    expect(h.asked[0]).toBe(
+      "line: Unlock with:\n" +
+        `  1  yubikey-a  (security key, attached)      id ${t.aId}\n` +
+        `  2  yubikey-b  (security key, not attached)  id ${t.bId}\n` +
+        "  3  Passphrase\n" +
+        "> ",
+    )
+    expect(h.asked.slice(1)).toEqual(["secret: PIN for YubiKey 5 NFC (input hidden): "])
+    // One probe request (the chooser's own, two credentials on one device, so two backend calls),
+    // one assertion, then the Enclave create and the proof.
+    expect(fido2Calls.map((call) => call.op)).toEqual(["probe", "probe", "assert"])
+    expect(h.calls.map((call) => call.op)).toContain("create")
+    const payload = JSON.parse(h.stdout.text) as Record<string, unknown>
+    expect(payload).toMatchObject({ ok: true, factor: "secure-enclave", verified: true })
+    expect(payload.openedWith).toEqual({ factor: "security-key", envelopeId: t.aId })
+    expect(Object.keys(payload).sort()).toEqual(
+      [
+        "ok",
+        "envelopeId",
+        "factor",
+        "domain",
+        "label",
+        "helper",
+        "accessControl",
+        "recoverableFactors",
+        "verified",
+        "openedWith",
+      ].sort(),
+    )
+  })
+
+  test("T17: factor add passkey opened by key A, and the platform refusal still comes before the vault is read", async () => {
+    const t = await everyKind()
+    const fido2Calls: BackendLogEntry[] = []
+    const h = await harness({
+      env: { CANDLE_CONFIG_DIR: t.dir },
+      script: { store: t.add.script.store },
+      fido2: key(CRED_A, { "/dev/hidraw3": { [CRED_A]: "present" } }),
+      fido2Calls,
+      secrets: [PIN],
+    })
+    // `--factor security-key` would be ambiguous (two key envelopes); the id names A.
+    expect(
+      await run(
+        [
+          "vault",
+          "factor",
+          "add",
+          "passkey",
+          "--label",
+          "second passkey",
+          "--factor",
+          t.aId,
+          "--json",
+          "--keystore",
+          t.vaultPath,
+        ],
+        h.deps,
+      ),
+    ).toBe(0)
+    expect(h.asked).toEqual(["secret: PIN for YubiKey 5 NFC (input hidden): "])
+    // `--factor` skips the menu and its probe (BE-294 D5): one assertion, then the passkey sheet.
+    expect(fido2Calls.map((call) => call.op)).toEqual(["assert"])
+    expect(h.calls.map((call) => call.op)).toContain("passkey-register")
+    const payload = JSON.parse(h.stdout.text) as Record<string, unknown>
+    expect(payload.openedWith).toEqual({ factor: "security-key", envelopeId: t.aId })
+    expect(Object.keys(payload).sort()).toEqual(
+      [
+        "ok",
+        "envelopeId",
+        "factor",
+        "transport",
+        "domain",
+        "label",
+        "rpId",
+        "appId",
+        "backupEligible",
+        "backupState",
+        "userVerification",
+        "saltDerivation",
+        "helper",
+        "recoverableFactors",
+        "verified",
+        "openedWith",
+      ].sort(),
+    )
+
+    // macOS 14: the passkey gate refuses before the vault is read; the key is asked nothing.
+    const refusedCalls: BackendLogEntry[] = []
+    const refused = await harness({
+      env: { CANDLE_CONFIG_DIR: t.dir },
+      script: { store: t.add.script.store, osVersion: "14.6.0" },
+      fido2: key(CRED_A, { "/dev/hidraw3": { [CRED_A]: "present" } }),
+      fido2Calls: refusedCalls,
+    })
+    expect(await run(["vault", "factor", "add", "passkey", "--json", "--keystore", t.vaultPath], refused.deps)).toBe(1)
+    expect(failure(refused).code).toBe("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM")
+    expect(refusedCalls).toEqual([])
+    expect(refused.asked).toEqual([])
+  })
+
+  test("F3, second variant: keys on the vault that this machine cannot drive are named before the passphrase prompt", async () => {
+    const t = await everyKind()
+    // No candle-fido2 beside this run: both keys are unusable here, and Touch ID is not offered.
+    const h = await harness({
+      env: { CANDLE_CONFIG_DIR: t.dir },
+      script: { store: t.add.script.store },
+      secrets: [t.passphrase],
+    })
+    expect(
+      await run(["vault", "factor", "add", "touch-id", "--label", "third", "--keystore", t.vaultPath], h.deps),
+    ).toBe(0)
+    expect(h.stderr.text).toContain(
+      `Passphrase only: adding a factor opens the vault with the passphrase or a security key, and security key ${t.aId} cannot be used on this machine: unavailable-on-this-device: `,
+    )
+    expect(h.stderr.text).toContain(
+      `; security key ${t.bId} cannot be used on this machine: unavailable-on-this-device: `,
+    )
+    expect(h.asked).toEqual([expect.stringContaining("Current vault passphrase")])
   })
 })

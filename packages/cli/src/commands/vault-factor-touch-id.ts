@@ -36,7 +36,13 @@ import {
 } from "../vault/enclave"
 import { VaultError } from "../vault/errors"
 import { currentPlatformFacts } from "../vault/fido2"
-import { type Envelope, SECURE_ENCLAVE_KEK_ALG, type SecureEnclaveEnvelope, VAULT_CIPHER } from "../vault/format"
+import {
+  type Envelope,
+  parseVaultFile,
+  SECURE_ENCLAVE_KEK_ALG,
+  type SecureEnclaveEnvelope,
+  VAULT_CIPHER,
+} from "../vault/format"
 import { wipe } from "../vault/hygiene"
 import { assertFactorAddable } from "../vault/platform"
 import {
@@ -48,7 +54,13 @@ import {
   unlockVault,
   wrapDekForKek,
 } from "../vault/store"
-import { type ResolvedVaultPath, requireVaultRaw, unlockInteractively, writeJson } from "./vault-support"
+import {
+  factorAddAmong,
+  type ResolvedVaultPath,
+  requireVaultRaw,
+  unlockInteractively,
+  writeJson,
+} from "./vault-support"
 
 export const TOUCH_ID_NOTE =
   "Touch ID is a daily-use factor, not a recovery factor: it opens this vault on this Mac only, and a wiped Mac, a changed fingerprint set or a lost Mac loses it. The passphrase remains this vault's recovery floor. The Secure Enclave resists extraction of its key; it does not stop a process running as you from asking the helper to unwrap, which is why every unlock names its operation in the Touch ID prompt."
@@ -89,17 +101,21 @@ export async function addTouchIdFactor(
   const envelopeId = freshEnvelopeId()
   const label = parsed.values["--label"] ?? "Touch ID"
 
-  // The vault, with the passphrase: the Enclave key does not exist yet, and the recovery floor is
-  // on every vault.
+  // The vault, with the passphrase or one of its security keys (BE-337 D1, D5): the Enclave key
+  // does not exist yet, and neither Touch ID nor a synced passkey authorises enrollment. `--device`
+  // keeps its ordinary meaning here, the key that opens the vault. With a key, its session is
+  // dropped (D4 step 4) before the Enclave key is created.
   const opened = await unlockInteractively(ctx, path, raw, {
     acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     promptText: "Current vault passphrase, to unlock (input hidden): ",
-    factor: "passphrase",
-    // BE-292 (D7, row F2; D10): said before the prompt when the vault has another factor.
-    passphraseOnlyBecause:
-      "adding a factor opens the vault with the passphrase. A security key does not authorise enrollment: adding a second key while one is plugged in needs a device-selection rule this command does not have (D10).",
+    among: factorAddAmong(parseVaultFile(raw).envelopes),
   })
   const vault = hold(opened.vault)
+  const openedWith = {
+    factor: opened.factor.kind === "passphrase" ? ("passphrase" as const) : ("security-key" as const),
+    envelopeId: opened.factor.envelopeId,
+  }
+  if (opened.factor.kind === "security-key") opened.factor.session.pin = undefined
   const vaultId = vault.file.vaultId
   const keyTag = keyTagFor(vaultId, envelopeId)
 
@@ -205,6 +221,8 @@ export async function addTouchIdFactor(
       accessControl: "biometryCurrentSet",
       recoverableFactors: recoverable,
       verified: true,
+      // BE-337 (D6): the one additive key.
+      openedWith,
     })
     return 0
   }

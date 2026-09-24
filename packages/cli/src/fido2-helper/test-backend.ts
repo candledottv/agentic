@@ -29,6 +29,14 @@ export interface ScriptedDevice extends EnumeratedDevice {
   options?: Record<string, boolean>
   /** The device enumerates but cannot be opened by this user (the Linux `hidraw` case). */
   unreadable?: boolean
+  /** BE-337 (D3): getInfo's `maxCredentialCountInList`; absent when the device reports none. */
+  maxCredentialCountInList?: number
+  /**
+   * BE-337 (D3, refusal 3): credential ids (base64) this scripted key holds. A register whose
+   * exclude list names one of them answers `CREDENTIAL_EXCLUDED` and creates nothing, as a real
+   * CTAP 2.1 authenticator does, whatever the script's `register` result says.
+   */
+  holds?: string[]
 }
 
 export interface ScriptedFailure {
@@ -74,6 +82,8 @@ export interface BackendLogEntry {
   credentialId?: string
   salt?: string
   pin: string | null
+  /** BE-337 (D3): the excluded credential ids (base64) a register carried to the key. */
+  excludeCredentialIds?: string[]
 }
 
 export function scriptedBackend(script: HelperScript, onCall?: (entry: BackendLogEntry) => void): Fido2Backend {
@@ -91,10 +101,25 @@ export function scriptedBackend(script: HelperScript, onCall?: (entry: BackendLo
         aaguid: hex.decode(device.aaguid ?? "00".repeat(16)),
         extensions: device.extensions ?? [],
         options: device.options ?? {},
+        ...(device.maxCredentialCountInList !== undefined
+          ? { maxCredentialCountInList: device.maxCredentialCountInList }
+          : {}),
       }
     },
     makeCredential: (path: string, params: MakeCredentialParams): MakeCredentialResult => {
-      log({ op: "register", path, rpId: params.rpId, userName: params.userName, pin: params.pin ?? null })
+      const excludeCredentialIds = (params.excludeCredentialIds ?? []).map((id) => base64.encode(id))
+      log({
+        op: "register",
+        path,
+        rpId: params.rpId,
+        userName: params.userName,
+        pin: params.pin ?? null,
+        ...(excludeCredentialIds.length > 0 ? { excludeCredentialIds } : {}),
+      })
+      const device = script.devices.find((candidate) => candidate.path === path)
+      if (excludeCredentialIds.some((id) => device?.holds?.includes(id))) {
+        throw new HelperError("CREDENTIAL_EXCLUDED", "scripted: the key holds an excluded credential")
+      }
       const scripted = script.register
       if (!scripted) throw new HelperError("INTERNAL", "the script has no register result")
       if ("error" in scripted) throw new HelperError(scripted.error.code, scripted.error.message)

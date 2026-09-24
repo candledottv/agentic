@@ -34,7 +34,7 @@ import { b64u, randomBytes } from "../vault/crypto"
 import { countRecoverableFactors } from "../vault/domains"
 import { VaultError } from "../vault/errors"
 import { currentPlatformFacts } from "../vault/fido2"
-import { type Envelope, type PlatformPasskeyEnvelope, VAULT_CIPHER } from "../vault/format"
+import { type Envelope, type PlatformPasskeyEnvelope, parseVaultFile, VAULT_CIPHER } from "../vault/format"
 import { wipe } from "../vault/hygiene"
 import {
   assertPlatformPrf,
@@ -52,7 +52,13 @@ import {
   unlockVault,
   wrapDekForPrf,
 } from "../vault/store"
-import { type ResolvedVaultPath, requireVaultRaw, unlockInteractively, writeJson } from "./vault-support"
+import {
+  factorAddAmong,
+  type ResolvedVaultPath,
+  requireVaultRaw,
+  unlockInteractively,
+  writeJson,
+} from "./vault-support"
 
 export const PASSKEY_NOTE =
   "A synced passkey lives in your Apple account: it follows the account to a new Mac, so it is a recoverable factor, and it is never counted as independent of any other Apple-account item (two synced passkeys are one factor). What syncs through iCloud Keychain is the credential's private key; the PRF output and this vault's key never leave this Mac. Keep the passphrase and the recovery phrase outside that Apple account."
@@ -92,17 +98,21 @@ export async function addPasskeyFactor(
   const envelopeId = freshEnvelopeId()
   const label = parsed.values["--label"] ?? "synced passkey"
 
-  // The vault, with the passphrase: the passkey does not exist yet, and the recovery floor is on
-  // every vault.
+  // The vault, with the passphrase or one of its security keys (BE-337 D1, D5): the passkey does
+  // not exist yet, and neither Touch ID nor a synced passkey authorises enrollment. `--device`
+  // keeps its ordinary meaning here, the key that opens the vault. With a key, its session is
+  // dropped (D4 step 4) before the passkey sheet is shown.
   const opened = await unlockInteractively(ctx, path, raw, {
     acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     promptText: "Current vault passphrase, to unlock (input hidden): ",
-    factor: "passphrase",
-    // BE-292 (D7, row F2; D10): said before the prompt when the vault has another factor.
-    passphraseOnlyBecause:
-      "adding a factor opens the vault with the passphrase. A security key does not authorise enrollment: adding a second key while one is plugged in needs a device-selection rule this command does not have (D10).",
+    among: factorAddAmong(parseVaultFile(raw).envelopes),
   })
   const vault = hold(opened.vault)
+  const openedWith = {
+    factor: opened.factor.kind === "passphrase" ? ("passphrase" as const) : ("security-key" as const),
+    envelopeId: opened.factor.envelopeId,
+  }
+  if (opened.factor.kind === "security-key") opened.factor.session.pin = undefined
   const vaultId = vault.file.vaultId
 
   // The credential: one sheet. From here on a failure leaves the passkey on the platform and the
@@ -231,6 +241,8 @@ export async function addPasskeyFactor(
       helper: envelope.helper,
       recoverableFactors: recoverable,
       verified: true,
+      // BE-337 (D6): the one additive key.
+      openedWith,
     })
     return 0
   }

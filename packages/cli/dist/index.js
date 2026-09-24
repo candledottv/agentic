@@ -2192,6 +2192,9 @@ function libraryInstallInstruction(platform) {
 }
 
 // src/fido2-helper/protocol.ts
+function excludeCapacity(device) {
+  return device.maxCredentialCountInList ?? 1;
+}
 var HELPER_PROTOCOL = 1, RP_ID = "cli.candle.tv", PROBE_MAX_CREDENTIALS = 16, AUTHDATA_FLAG_UP = 1, AUTHDATA_FLAG_UV = 4, AUTHDATA_MIN_LENGTH = 37;
 var init_protocol = () => {};
 
@@ -3172,7 +3175,8 @@ var init_errors = __esm(() => {
     "TIER_REQUIRED",
     "LINKED_WALLET_ROOM_UNREADABLE",
     "PROMOTE_ACCOUNT_UNRESOLVED",
-    "TRANSFER_SWEEP_PENDING"
+    "TRANSFER_SWEEP_PENDING",
+    "VAULT_KEY_ALREADY_ENROLLED"
   ];
   VaultError = class VaultError extends Error {
     code;
@@ -5985,6 +5989,9 @@ function translateHelperFailure(code, message, platform) {
     LIBRARY_MISSING: "VAULT_HELPER_MISSING"
   };
   const suggestion = "Nothing was derived and no other factor was tried.";
+  if (code === "CREDENTIAL_EXCLUDED") {
+    return new VaultError("VAULT_KEY_ALREADY_ENROLLED", `This security key already holds one of this vault's credentials, so enrolling it again would not add a second key (${message}). Nothing was written.`, { suggestion: ALREADY_ENROLLED_SUGGESTION });
+  }
   if (code === "DEVICE_NOT_READABLE") {
     return new VaultError("VAULT_AUTHENTICATOR_NOT_READABLE", platform === "linux" ? HIDRAW_MESSAGE : `A security key is attached but this user cannot open it: ${message}.`, { suggestion: "No other factor is substituted." });
   }
@@ -6044,6 +6051,51 @@ async function callHelper(deps, helperPath, request) {
   if (!response.ok)
     throw translateHelperFailure(String(response.code), String(response.message), deps.platform);
   return response;
+}
+function alreadyEnrolled(device, envelopeId) {
+  const product = device.product || "This security key";
+  return new VaultError("VAULT_KEY_ALREADY_ENROLLED", `${product} (--device ${device.deviceId}) already holds this vault's security key credential${envelopeId !== undefined ? ` for envelope ${envelopeId}` : ""}, so enrolling it again would not add a second key. Nothing was written.`, {
+    suggestion: ALREADY_ENROLLED_SUGGESTION,
+    ...envelopeId !== undefined ? { details: { envelopeId } } : {}
+  });
+}
+function helperPredatesExcludeList(helperPath, leftover) {
+  return new VaultError("VAULT_HELPER_MISSING", `The security key helper at ${helperPath} predates the exclude list this command needs; reinstall the CLI so candle and candle-fido2 come from the same release.`, {
+    suggestion: leftover ? "Nothing was written to the vault. The credential now on the authenticator can be removed with its vendor's tool. Reinstall the CLI so candle and candle-fido2 come from the same release, then enroll again." : "Nothing was sent to any key and nothing was written. Reinstall the CLI so candle and candle-fido2 come from the same release, then enroll again."
+  });
+}
+function assertHelperExcludeList(info, helperPath, excludeCount) {
+  if (excludeCount === 0)
+    return;
+  const features = Array.isArray(info.features) ? info.features : [];
+  if (!features.includes(EXCLUDE_LIST_FEATURE))
+    throw helperPredatesExcludeList(helperPath, false);
+}
+function assertExcludeListFits(device, excludeCount) {
+  const capacity = excludeCapacity(device);
+  if (excludeCount <= capacity)
+    return;
+  throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `${device.product || "This security key"} (--device ${device.deviceId}) takes at most ${capacity} credential${capacity === 1 ? "" : "s"} in one request${device.maxCredentialCountInList === null ? " (it reports no maxCredentialCountInList)" : ""}, and this vault has ${excludeCount} security key credentials to exclude, so it cannot enroll on this vault. Nothing was sent to it.`, { suggestion: "Nothing was written. Use a security key that reports a larger maxCredentialCountInList." });
+}
+function assertDeviceServesFactor(device) {
+  if (!device.extensions.includes("hmac-secret")) {
+    throw new VaultError("VAULT_PRF_UNSUPPORTED", `${device.product || "This security key"} does not support the hmac-secret extension, which this factor needs.`, { suggestion: "Use a key that supports hmac-secret (FIDO2 with PRF). No other derivation is substituted." });
+  }
+  if (device.options.clientPin !== true && device.options.uv !== true) {
+    throw new VaultError("VAULT_UV_UNSUPPORTED", `${device.product || "This security key"} has no PIN set and no built-in user verification, and this factor uses the user-verified secret only.`, { suggestion: "Set a PIN on this key (its vendor's tool does that) and retry. Nothing was written." });
+  }
+}
+async function listSecurityKeys(deps, opts) {
+  const location = await locateFido2Helper(deps);
+  if (location.state === "absent")
+    throw helperMissing(location);
+  const info = await callHelper(deps, location.path, {
+    op: "info",
+    vaultId: opts.vaultId,
+    envelopeId: opts.envelopeId,
+    digest: base64.encode(operationDigest({ vaultId: opts.vaultId, envelopeId: opts.envelopeId, op: "info", nonce: b64u(randomBytes2(16)) }))
+  });
+  return { helperPath: location.path, info };
 }
 function describeDeviceForList(device) {
   const product = device.product || "security key";
@@ -6127,17 +6179,12 @@ async function openSecurityKeySession(deps, opts) {
     deps.stderr.write(`Using the attached security key: ${device.product || "security key"} (--device ${device.deviceId})
 `);
   }
-  if (opts.requireFeatures) {
-    if (!device.extensions.includes("hmac-secret")) {
-      throw new VaultError("VAULT_PRF_UNSUPPORTED", `${device.product || "This security key"} does not support the hmac-secret extension, which this factor needs.`, { suggestion: "Use a key that supports hmac-secret (FIDO2 with PRF). No other derivation is substituted." });
-    }
-    if (device.options.clientPin !== true && device.options.uv !== true) {
-      throw new VaultError("VAULT_UV_UNSUPPORTED", `${device.product || "This security key"} has no PIN set and no built-in user verification, and this factor uses the user-verified secret only.`, { suggestion: "Set a PIN on this key (its vendor's tool does that) and retry. Nothing was written." });
-    }
-  }
+  if (opts.requireFeatures)
+    assertDeviceServesFactor(device);
+  opts.beforePin?.(device, info);
   const session = { helperPath: location.path, device, snapshotId: info.snapshotId };
   if (device.options.clientPin === true) {
-    const typed = await deps.promptSecret(`PIN for ${device.product || "the security key"} (input hidden): `);
+    const typed = await deps.promptSecret(opts.pinPrompt?.(device) ?? `PIN for ${device.product || "the security key"} (input hidden): `);
     if (typed === "") {
       throw new VaultError("VAULT_PIN_REQUIRED", "This security key needs its PIN and none was typed; nothing was sent to it.");
     }
@@ -6191,7 +6238,7 @@ async function probeAttachedKeys(deps, opts) {
       if (opts.deviceFlag === undefined && allReadable && !uncertain)
         state.set(envelopeId, "not attached");
     }
-    return { state, holder };
+    return { state, holder, devices, credentials: credentialOf };
   } catch {
     return;
   }
@@ -6199,20 +6246,37 @@ async function probeAttachedKeys(deps, opts) {
 async function registerCredential(deps, session, opts) {
   deps.stderr.write(`Touch ${session.device.product || "the security key"} to register the vault's credential on it.
 `);
-  const digest = operationDigest({ ...opts, op: "register", nonce: b64u(randomBytes2(16)) });
-  const response = await callHelper(deps, session.helperPath, {
-    op: "register",
+  const digest = operationDigest({
     vaultId: opts.vaultId,
     envelopeId: opts.envelopeId,
-    digest: base64.encode(digest),
-    deviceId: session.device.deviceId,
-    expectSnapshot: session.snapshotId,
-    rpId: RP_ID,
-    userId: base64.encode(userIdFor(opts.vaultId, opts.envelopeId)),
-    userName: userNameFor(opts.vaultId, opts.envelopeId),
-    clientDataHash: base64.encode(digest),
-    ...session.pin !== undefined ? { pin: session.pin } : {}
+    op: "register",
+    nonce: b64u(randomBytes2(16))
   });
+  const exclude = opts.excludeCredentialIds ?? [];
+  let response;
+  try {
+    response = await callHelper(deps, session.helperPath, {
+      op: "register",
+      vaultId: opts.vaultId,
+      envelopeId: opts.envelopeId,
+      digest: base64.encode(digest),
+      deviceId: session.device.deviceId,
+      expectSnapshot: session.snapshotId,
+      rpId: RP_ID,
+      userId: base64.encode(userIdFor(opts.vaultId, opts.envelopeId)),
+      userName: userNameFor(opts.vaultId, opts.envelopeId),
+      clientDataHash: base64.encode(digest),
+      ...session.pin !== undefined ? { pin: session.pin } : {},
+      ...exclude.length > 0 ? { excludeCredentialIds: exclude } : {}
+    });
+  } catch (error) {
+    if (error instanceof VaultError && error.code === "VAULT_KEY_ALREADY_ENROLLED")
+      throw alreadyEnrolled(session.device);
+    throw error;
+  }
+  if (exclude.length > 0 && response.excluded !== exclude.length) {
+    throw helperPredatesExcludeList(session.helperPath, true);
+  }
   const authData = base64.decode(response.authData);
   assertAuthenticatorData(authData, RP_ID, "registration");
   return {
@@ -6252,7 +6316,7 @@ async function assertPrf(deps, session, envelope, vaultId, purpose) {
   }
   return prfOutput;
 }
-var HELPER_NAME = "candle-fido2", HELPER_ENV = "CANDLE_FIDO2_HELPER", HELPER_TIMEOUT_MS = 90000, HELPER_INSTALL_SUGGESTION = "Install a release build of the CLI (the installer script or Homebrew place candle-fido2 beside candle), or set CANDLE_FIDO2_HELPER to the path of a candle-fido2 executable. No other factor is substituted.";
+var HELPER_NAME = "candle-fido2", HELPER_ENV = "CANDLE_FIDO2_HELPER", HELPER_TIMEOUT_MS = 90000, HELPER_INSTALL_SUGGESTION = "Install a release build of the CLI (the installer script or Homebrew place candle-fido2 beside candle), or set CANDLE_FIDO2_HELPER to the path of a candle-fido2 executable. No other factor is substituted.", ALREADY_ENROLLED_SUGGESTION = "Insert a different security key, or name one with --device.", EXCLUDE_LIST_FEATURE = "exclude-list";
 var init_fido2 = __esm(() => {
   init_sha256();
   init_esm();
@@ -22226,6 +22290,8 @@ __export(exports_vault_support, {
   menuSafeText: () => menuSafeText,
   findExternalEntry: () => findExternalEntry,
   factorMenu: () => factorMenu,
+  factorAddPassphraseOnlyReason: () => factorAddPassphraseOnlyReason,
+  factorAddAmong: () => factorAddAmong,
   describeRole: () => describeRole,
   describeEntry: () => describeEntry,
   derivationNotice: () => derivationNotice,
@@ -22324,6 +22390,20 @@ async function requireVaultRaw(ctx, resolved) {
     throw missingVault(ctx, resolved);
   return raw;
 }
+function factorAddAmong(envelopes) {
+  return {
+    envelopeIds: envelopes.filter((envelope) => isPassphraseEnvelope(envelope) || isCtap2Envelope(envelope)).map((envelope) => envelope.id),
+    because: factorAddPassphraseOnlyReason,
+    excludedBecause: "adding a factor opens the vault with the passphrase or a security key."
+  };
+}
+function factorAddPassphraseOnlyReason(unusable) {
+  if (unusable.length === 0) {
+    return "adding a factor opens the vault with the passphrase or a security key, and this vault has no security key.";
+  }
+  const keys = unusable.map((entry) => `${entry.word} ${entry.id} cannot be used on this machine: ${entry.availability}`);
+  return `adding a factor opens the vault with the passphrase or a security key, and ${keys.join("; ")}.`;
+}
 function derivationNotice(line, purpose) {
   if (purpose === undefined)
     return line;
@@ -22350,6 +22430,9 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
   const noticeFor = (purpose) => (line) => deps.stderr.write(derivationNotice(line, purpose));
   const notice = noticeFor(opts.purpose);
   if (choice.kind === "passphrase") {
+    if (opts.onFactorChosen) {
+      await opts.onFactorChosen(choice.envelopeId !== undefined ? { kind: "passphrase", envelopeId: choice.envelopeId } : { kind: "passphrase" });
+    }
     if (choice.onlyBecause !== undefined)
       deps.stderr.write(`${PASSPHRASE_ONLY_PREFIX}${choice.onlyBecause}
 `);
@@ -22371,6 +22454,8 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
   }
   if (choice.kind === "touch-id") {
     const envelope2 = choice.envelope;
+    if (opts.onFactorChosen)
+      await opts.onFactorChosen({ kind: "touch-id", envelope: envelope2 });
     const session2 = await openEnclaveSession(deps, envelope2.helper);
     const open5 = async (p, r, reason2) => {
       const current = parseVaultFile(r);
@@ -22399,6 +22484,8 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
   }
   if (choice.kind === "passkey") {
     const envelope2 = choice.envelope;
+    if (opts.onFactorChosen)
+      await opts.onFactorChosen({ kind: "passkey", envelope: envelope2 });
     const session2 = await openPasskeySession(deps, envelope2.helper);
     const open5 = async (p, r, purpose) => {
       const current = parseVaultFile(r);
@@ -22426,11 +22513,14 @@ async function unlockInteractively(ctx, path, raw, opts = {}) {
     };
   }
   const envelope = choice.envelope;
+  const keyDevice = opts.onFactorChosen ? await opts.onFactorChosen({ kind: "security-key", envelope }) : undefined;
   const session = await openSecurityKeySession(deps, {
     vaultId: file.vaultId,
     envelopeId: envelope.id,
-    deviceFlag: ctx.vaultDevice,
-    ...choice.preferDevice !== undefined ? { preferDevice: choice.preferDevice } : {},
+    ...keyDevice !== undefined ? { preferDevice: keyDevice.preferDevice } : {
+      deviceFlag: ctx.vaultDevice,
+      ...choice.preferDevice !== undefined ? { preferDevice: choice.preferDevice } : {}
+    },
     requireFeatures: false
   });
   const open4 = async (p, r) => {
@@ -22524,7 +22614,7 @@ async function chooseFactor(ctx, vaultId, allEnvelopes, facts, requested, opts =
     }
     if (passphrases.length === 0 && drivable.length === 1)
       return choiceFor(drivable[0]);
-    const attached = ctx.deps.isTTY.stdin ? await probeAttachedKeys(ctx.deps, { vaultId, envelopes: drivableKeys, deviceFlag: ctx.vaultDevice }) : undefined;
+    const attached = "attached" in opts ? opts.attached : ctx.deps.isTTY.stdin ? await probeAttachedKeys(ctx.deps, { vaultId, envelopes: drivableKeys, deviceFlag: ctx.vaultDevice }) : undefined;
     const notUsableHere = envelopes.filter((envelope) => !isPassphraseEnvelope(envelope) && !drivable.includes(envelope));
     const menu = factorMenu({
       keys: drivableKeys,
@@ -39530,7 +39620,10 @@ var HELP = {
         invocation: "--factor <id|kind>",
         description: "Unlock with this envelope: an id from factor list, or passphrase, security-key, touch-id, passkey; without it, a terminal lists the factors to pick by number"
       },
-      { invocation: "--device <id>", description: "The security key to use when more than one is attached" },
+      {
+        invocation: "--device <id>",
+        description: "The security key to use when more than one is attached; on factor add security-key, the key to add (the vault opens with the passphrase or another key)"
+      },
       {
         invocation: "--balances",
         description: "list: SOL per matched key, read from your RPC (one request per 100 matched keys). Every matched address goes to that one endpoint together, which links them; tokens are never read"
@@ -54649,10 +54742,15 @@ async function addPasskeyFactor(ctx, parsed, resolvedVault, hold) {
   const opened = await unlockInteractively(ctx, path, raw, {
     acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     promptText: "Current vault passphrase, to unlock (input hidden): ",
-    factor: "passphrase",
-    passphraseOnlyBecause: "adding a factor opens the vault with the passphrase. A security key does not authorise enrollment: adding a second key while one is plugged in needs a device-selection rule this command does not have (D10)."
+    among: factorAddAmong(parseVaultFile(raw).envelopes)
   });
   const vault = hold(opened.vault);
+  const openedWith = {
+    factor: opened.factor.kind === "passphrase" ? "passphrase" : "security-key",
+    envelopeId: opened.factor.envelopeId
+  };
+  if (opened.factor.kind === "security-key")
+    opened.factor.session.pin = undefined;
   const vaultId = vault.file.vaultId;
   let registered;
   try {
@@ -54750,7 +54848,8 @@ async function addPasskeyFactor(ctx, parsed, resolvedVault, hold) {
       saltDerivation: "platform",
       helper: envelope.helper,
       recoverableFactors: recoverable,
-      verified: true
+      verified: true,
+      openedWith
     });
     return 0;
   }
@@ -54773,6 +54872,7 @@ ${PASSKEY_NOTE}
 }
 
 // src/commands/vault-factor-security-key.ts
+init_esm();
 init_crypto();
 init_errors();
 init_fido2();
@@ -54896,20 +54996,84 @@ async function addSecurityKeyFactor(ctx, parsed, resolvedVault, hold) {
   const raw = await requireVaultRaw(ctx, resolvedVault);
   const file = parseVaultFile(raw);
   const envelopeId = freshEnvelopeId();
-  const session = await openSecurityKeySession(deps, {
-    vaultId: file.vaultId,
-    envelopeId,
-    deviceFlag: ctx.vaultDevice,
-    requireFeatures: true
-  });
+  const vaultId = file.vaultId;
+  const keysInHeader = file.envelopes.filter(isCtap2Envelope);
+  const { helperPath, info } = await listSecurityKeys(deps, { vaultId, envelopeId });
+  assertHelperExcludeList(info, helperPath, keysInHeader.length);
+  const attached = keysInHeader.length > 0 ? await probeAttachedKeys(deps, { vaultId, envelopes: keysInHeader }) : undefined;
+  const excludeCountNow = keysInHeader.length;
+  const addingLine = (device) => deps.stderr.write(`Adding: ${device.product || "security key"} (--device ${device.deviceId}), a different key from the one that opened the vault.
+`);
+  let session;
+  let enrolling;
+  let deferredAfter;
   const opened = await unlockInteractively(ctx, path, raw, {
     acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     promptText: "Current vault passphrase, to unlock (input hidden): ",
-    factor: "passphrase",
-    passphraseOnlyBecause: "this command's security key session is for the key being added, so the vault opens with the passphrase here."
+    among: factorAddAmong(file.envelopes),
+    attached,
+    onFactorChosen: async (chosen) => {
+      if (chosen.kind === "passphrase") {
+        session = await openSecurityKeySession(deps, {
+          vaultId,
+          envelopeId,
+          deviceFlag: ctx.vaultDevice,
+          requireFeatures: true,
+          beforePin: (device) => {
+            refuseIfEnrolled(device, attached);
+            assertExcludeListFits(device, excludeCountNow);
+          }
+        });
+        return;
+      }
+      if (chosen.kind !== "security-key")
+        return;
+      const plan = planDevices(ctx, chosen.envelope, info.devices, attached);
+      if (plan.enrolling !== undefined) {
+        refuseIfEnrolled(plan.enrolling, attached);
+        assertDeviceServesFactor(plan.enrolling);
+        assertExcludeListFits(plan.enrolling, excludeCountNow);
+        enrolling = plan.enrolling;
+        addingLine(plan.enrolling);
+      } else {
+        deferredAfter = plan.opening;
+      }
+      return { preferDevice: plan.opening.deviceId };
+    }
   });
   const vault = hold(opened.vault);
-  const registered = await registerCredential(deps, session, { vaultId: vault.file.vaultId, envelopeId });
+  const openedWith = {
+    factor: opened.factor.kind === "passphrase" ? "passphrase" : "security-key",
+    envelopeId: opened.factor.envelopeId
+  };
+  if (opened.factor.kind === "security-key")
+    opened.factor.session.pin = undefined;
+  const enrolledKeys = vault.file.envelopes.filter(isCtap2Envelope);
+  const excludeCredentialIds = enrolledKeys.map((envelope2) => base64.encode(unb64u(envelope2.credentialId, "credentialId")));
+  if (session === undefined) {
+    if (deferredAfter !== undefined) {
+      await deps.promptLine(`The vault is open. Unplug ${deferredAfter.product || "the security key that opened it"}, insert the security key to add, then press Enter.`);
+      const again = await listSecurityKeys(deps, { vaultId, envelopeId });
+      const probeAgain = enrolledKeys.length > 0 ? await probeAttachedKeys(deps, { vaultId, envelopes: enrolledKeys }) : undefined;
+      const inserted = chooseAfterInsert(ctx, again.info.devices, probeAgain);
+      refuseIfEnrolled(inserted, probeAgain);
+      assertDeviceServesFactor(inserted);
+      assertExcludeListFits(inserted, excludeCredentialIds.length);
+      addingLine(inserted);
+      enrolling = inserted;
+    }
+    if (enrolling === undefined)
+      throw new Error("factor add security-key: no enrolling device was decided");
+    const target = enrolling;
+    session = await openSecurityKeySession(deps, {
+      vaultId,
+      envelopeId,
+      deviceFlag: target.deviceId,
+      requireFeatures: true,
+      pinPrompt: (device) => `PIN for the key being added, ${device.product || "the security key"} (input hidden): `
+    });
+  }
+  const registered = await registerCredential(deps, session, { vaultId, envelopeId, excludeCredentialIds });
   if (registered.backupEligible) {
     throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `${session.device.product || "This authenticator"} reports the credential it created as backup-eligible (synced), so it is not a hardware-bound security key credential and cannot be recorded as a hardware-token factor.`, {
       suggestion: "Nothing was written to the vault. The credential now on the authenticator can be removed with its vendor's tool. Use a hardware security key for this factor."
@@ -54966,7 +55130,8 @@ async function addSecurityKeyFactor(ctx, parsed, resolvedVault, hold) {
       backupState: envelope.backupState,
       userVerification: "required",
       recoverableFactors: recoverable,
-      verified: true
+      verified: true,
+      openedWith
     });
     return 0;
   }
@@ -54984,6 +55149,76 @@ ${SECURITY_KEY_PAIR_NOTE}
   deps.stdout.write(`This vault now has ${recoverable} recoverable factor(s), domains counted once.
 `);
   return 0;
+}
+function refuseIfEnrolled(device, attached) {
+  const entry = attached?.devices?.find((candidate) => candidate.deviceId === device.deviceId);
+  if (entry === undefined || attached?.credentials === undefined)
+    return;
+  for (const [envelopeId, credentialId] of attached.credentials) {
+    if (entry.present.includes(credentialId))
+      throw alreadyEnrolled(device, envelopeId);
+  }
+}
+function planDevices(ctx, opener, devices, attached) {
+  const platform = ctx.deps.platform;
+  if (devices.length === 0) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "No security key is attached.", {
+      suggestion: "Plug the key in and run the command again. No other factor is substituted."
+    });
+  }
+  const named = ctx.vaultDevice;
+  const openerCredential = attached?.credentials?.get(opener.id);
+  const holders = openerCredential === undefined ? [] : (attached?.devices ?? []).filter((device) => device.present.includes(openerCredential));
+  let opening;
+  if (holders.length === 1) {
+    opening = devices.find((device) => device.deviceId === holders[0].deviceId);
+  }
+  if (opening === undefined) {
+    const candidates = devices.filter((device) => device.deviceId !== named);
+    if (candidates.length === 1)
+      opening = candidates[0];
+    else if (devices.length === 1)
+      opening = devices[0];
+  }
+  if (opening === undefined) {
+    throw new VaultError("VAULT_AUTHENTICATOR_AMBIGUOUS", `${devices.length} security keys are attached and the one that opens the vault could not be told apart. Leave only the key that opens the vault attached; this command asks for the key to add after the vault is open.`, { suggestion: "Nothing was sent to any key. Run again with only the key that opens the vault attached." });
+  }
+  if (!opening.readable)
+    selectDevice([opening], undefined, platform);
+  const others = devices.filter((device) => device.deviceId !== opening.deviceId);
+  if (named !== undefined) {
+    if (named === opening.deviceId)
+      throw alreadyEnrolled(opening, opener.id);
+    return { opening, enrolling: selectDevice(others, named, platform) };
+  }
+  if (others.length === 1)
+    return { opening, enrolling: selectDevice(others, undefined, platform) };
+  if (others.length > 1) {
+    const listing = others.map((device) => `  ${describeDeviceForList(device)}`).join(`
+`);
+    throw new VaultError("VAULT_AUTHENTICATOR_AMBIGUOUS", `${others.length} security keys are attached besides the one that opens the vault, and none was named, so nothing was sent to any of them:
+${listing}`, { suggestion: "Run again with --device <id> naming the key to add." });
+  }
+  return { opening, enrolling: undefined };
+}
+function chooseAfterInsert(ctx, devices, probe) {
+  const platform = ctx.deps.platform;
+  if (devices.length === 0) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "No security key other than the one that opened the vault is attached. Nothing was written.", { suggestion: "Run the command again with the key to add inserted when asked." });
+  }
+  if (devices.length === 1)
+    return selectDevice(devices, undefined, platform);
+  const holdsVault = (device) => (probe?.devices?.find((entry) => entry.deviceId === device.deviceId)?.present.length ?? 0) > 0;
+  const others = devices.filter((device) => !holdsVault(device));
+  if (others.length === 1)
+    return selectDevice(others, undefined, platform);
+  if (others.length === 0) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "Every attached security key already holds one of this vault's credentials, so there is no key to add. Nothing was written.", { suggestion: "Run the command again with a security key this vault does not have inserted when asked." });
+  }
+  const listing = others.map((device) => `  ${describeDeviceForList(device)}`).join(`
+`);
+  throw new VaultError("VAULT_AUTHENTICATOR_AMBIGUOUS", `${others.length} security keys are attached besides the one that opened the vault, so nothing was sent to any of them:
+${listing}`, { suggestion: "Run the command again with only the key to add inserted when asked. Nothing was written." });
 }
 
 // src/commands/vault-factor-touch-id.ts
@@ -55023,10 +55258,15 @@ async function addTouchIdFactor(ctx, parsed, resolvedVault, hold) {
   const opened = await unlockInteractively(ctx, path, raw, {
     acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     promptText: "Current vault passphrase, to unlock (input hidden): ",
-    factor: "passphrase",
-    passphraseOnlyBecause: "adding a factor opens the vault with the passphrase. A security key does not authorise enrollment: adding a second key while one is plugged in needs a device-selection rule this command does not have (D10)."
+    among: factorAddAmong(parseVaultFile(raw).envelopes)
   });
   const vault = hold(opened.vault);
+  const openedWith = {
+    factor: opened.factor.kind === "passphrase" ? "passphrase" : "security-key",
+    envelopeId: opened.factor.envelopeId
+  };
+  if (opened.factor.kind === "security-key")
+    opened.factor.session.pin = undefined;
   const vaultId = vault.file.vaultId;
   const keyTag = keyTagFor(vaultId, envelopeId);
   let created;
@@ -55110,7 +55350,8 @@ async function addTouchIdFactor(ctx, parsed, resolvedVault, hold) {
       helper: { teamId: session.identity.teamId, bundleId: session.identity.bundleId, minVersion: session.version },
       accessControl: "biometryCurrentSet",
       recoverableFactors: recoverable,
-      verified: true
+      verified: true,
+      openedWith
     });
     return 0;
   }

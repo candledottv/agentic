@@ -519,9 +519,129 @@ describe("probe: which attached keys hold which credentials, with nothing secret
       assert: { hmacSecret: SALT, authData: base64.encode(authDataFor(RP_ID, AUTHDATA_FLAG_UP | AUTHDATA_FLAG_UV)) },
     }
     const info = handleLine(JSON.stringify(common("info")), () => scriptedBackend(script))
-    expect(Object.keys(info).sort()).toEqual(["devices", "ok", "op", "protocol", "snapshotId"])
+    // BE-337 (D3): `features` is the one additive key on `info`.
+    expect(Object.keys(info).sort()).toEqual(["devices", "features", "ok", "op", "protocol", "snapshotId"])
     const deviceId = deviceIdFor({ path: "/dev/hidraw3", aaguid: AAGUID })
     const assert = handleLine(JSON.stringify(assertRequest(deviceId)), () => scriptedBackend(script))
     expect(Object.keys(assert).sort()).toEqual(["authData", "flags", "hmacSecret", "ok", "op", "protocol"])
+  })
+})
+
+// ── BE-337 (D3, T19): the register exclude list, `features`, `excluded`, `maxCredentialCountInList` ──
+
+describe("register exclude list: parsed, capped, handed to the key, counted back", () => {
+  const CRED_2 = base64.encode(new Uint8Array(48).fill(2))
+  const okRegister = (path = "/dev/hidraw3", extra: Partial<HelperScript["devices"][number]> = {}): HelperScript => ({
+    devices: [yubikey(path, { maxCredentialCountInList: 8, ...extra })],
+    register: {
+      credentialId: CRED,
+      aaguid: AAGUID,
+      authData: base64.encode(authDataFor(RP_ID, AUTHDATA_FLAG_UP | AUTHDATA_FLAG_UV)),
+    },
+  })
+
+  test("excludeCredentialIds is parsed, and refused above 16, when not a list, or when not base64", () => {
+    const parsed = parseRequest(JSON.stringify(registerRequest("d", { excludeCredentialIds: [CRED, CRED_2] })))
+    expect(parsed).toMatchObject({ op: "register", excludeCredentialIds: [CRED, CRED_2] })
+    expect(parseRequest(JSON.stringify(registerRequest("d")))).not.toHaveProperty("excludeCredentialIds")
+    for (const bad of [Array.from({ length: 17 }, () => CRED), "not a list", [42], [""], ["!!not base64!!"]]) {
+      const response = handleLine(JSON.stringify(registerRequest("d", { excludeCredentialIds: bad as never })), () => {
+        throw new Error("the backend must not be loaded for a malformed request")
+      })
+      expect(response, JSON.stringify(bad).slice(0, 40)).toMatchObject({ ok: false, code: "BAD_REQUEST" })
+    }
+    // Sixteen is the cap, and it is a refusal above it, never a truncation.
+    expect(
+      parseRequest(
+        JSON.stringify(registerRequest("d", { excludeCredentialIds: Array.from({ length: 16 }, () => CRED) })),
+      ),
+    ).toMatchObject({ op: "register" })
+  })
+
+  test("every excluded id reaches the key before it registers, and the count comes back", () => {
+    const calls: BackendLogEntry[] = []
+    const script = okRegister()
+    const listed = info(script)
+    const response = handleRequest(
+      registerRequest(listed.devices[0]?.deviceId as string, {
+        expectSnapshot: listed.snapshotId,
+        pin: "123456",
+        excludeCredentialIds: [CRED, CRED_2],
+      }),
+      scriptedBackend(script, (entry) => calls.push(entry)),
+    )
+    expect(response).toMatchObject({ ok: true, op: "register", excluded: 2 })
+    expect(calls).toEqual([expect.objectContaining({ op: "register", excludeCredentialIds: [CRED, CRED_2] })])
+  })
+
+  test("a list longer than the device's maxCredentialCountInList, or than 1 when it reports none, is BAD_REQUEST before the key is asked", () => {
+    for (const [device, list] of [
+      [okRegister("/dev/hidraw3", { maxCredentialCountInList: 1 }), [CRED, CRED_2]],
+      [okRegister("/dev/hidraw3", { maxCredentialCountInList: undefined }), [CRED, CRED_2]],
+    ] as const) {
+      const calls: BackendLogEntry[] = []
+      const script: HelperScript = { ...device, devices: device.devices.map((d) => ({ ...d })) }
+      if (script.devices[0]?.maxCredentialCountInList === undefined) delete script.devices[0]?.maxCredentialCountInList
+      const id = info(script).devices[0]?.deviceId as string
+      const response = handleRequest(
+        registerRequest(id, { excludeCredentialIds: [...list] }),
+        scriptedBackend(script, (entry) => calls.push(entry)),
+      )
+      expect(response).toMatchObject({ ok: false, code: "BAD_REQUEST" })
+      if (!response.ok) expect(response.message).toContain("takes at most 1")
+      expect(calls).toEqual([])
+    }
+    // One id fits a device that reports none.
+    const none: HelperScript = okRegister()
+    delete none.devices[0]?.maxCredentialCountInList
+    const id = info(none).devices[0]?.deviceId as string
+    expect(handleRequest(registerRequest(id, { excludeCredentialIds: [CRED] }), scriptedBackend(none))).toMatchObject({
+      ok: true,
+      excluded: 1,
+    })
+  })
+
+  test("a key that holds an excluded credential answers CREDENTIAL_EXCLUDED, typed, and creates nothing", () => {
+    const script = okRegister("/dev/hidraw3", { holds: [CRED_2] })
+    const id = info(script).devices[0]?.deviceId as string
+    expect(
+      handleRequest(registerRequest(id, { excludeCredentialIds: [CRED, CRED_2] }), scriptedBackend(script)),
+    ).toMatchObject({ ok: false, code: "CREDENTIAL_EXCLUDED" })
+    expect(HELPER_CODES).toContain("CREDENTIAL_EXCLUDED")
+  })
+
+  test("info reports the exclude-list feature and each device's maxCredentialCountInList, null when unreported", () => {
+    const script: HelperScript = {
+      devices: [yubikey("/dev/hidraw3", { maxCredentialCountInList: 8 }), yubikey("/dev/hidraw4")],
+    }
+    const listed = info(script)
+    expect(listed.features).toEqual(["exclude-list"])
+    expect(listed.devices.map((device) => device.maxCredentialCountInList)).toEqual([8, null])
+    expect(
+      info({ devices: [yubikey("/dev/hidraw5", { unreadable: true })] }).devices[0]?.maxCredentialCountInList,
+    ).toBe(null)
+  })
+
+  test("an older CLI's request (no excludeCredentialIds) registers exactly as before, with excluded: 0", () => {
+    const calls: BackendLogEntry[] = []
+    const script = okRegister()
+    const id = info(script).devices[0]?.deviceId as string
+    const response = handleRequest(
+      registerRequest(id),
+      scriptedBackend(script, (entry) => calls.push(entry)),
+    )
+    expect(response).toMatchObject({ ok: true, op: "register", excluded: 0 })
+    expect(Object.keys(response).sort()).toEqual([
+      "aaguid",
+      "attFlags",
+      "authData",
+      "credentialId",
+      "excluded",
+      "flags",
+      "ok",
+      "op",
+      "protocol",
+    ])
+    expect(calls[0]).not.toHaveProperty("excludeCredentialIds")
   })
 })

@@ -29,11 +29,13 @@ import {
   AUTHDATA_FLAG_UV,
   AUTHDATA_MIN_LENGTH,
   type DeviceReport,
+  excludeCapacity,
   HELPER_PROTOCOL,
   type HelperCode,
   type HelperResponse,
   type InfoResponse,
   PROBE_MAX_CREDENTIALS,
+  type ProbeDeviceReport,
   type ProbeResponse,
   type RegisterResponse,
   RP_ID,
@@ -168,6 +170,15 @@ export function translateHelperFailure(code: string, message: string, platform: 
     LIBRARY_MISSING: "VAULT_HELPER_MISSING",
   }
   const suggestion = "Nothing was derived and no other factor was tried."
+  // BE-337 (D3, refusal 3): the authenticator itself refused a second credential beside one the
+  // vault already holds. The caller that knows the device rewrites the line with its name.
+  if (code === "CREDENTIAL_EXCLUDED") {
+    return new VaultError(
+      "VAULT_KEY_ALREADY_ENROLLED",
+      `This security key already holds one of this vault's credentials, so enrolling it again would not add a second key (${message}). Nothing was written.`,
+      { suggestion: ALREADY_ENROLLED_SUGGESTION },
+    )
+  }
   if (code === "DEVICE_NOT_READABLE") {
     return new VaultError(
       "VAULT_AUTHENTICATOR_NOT_READABLE",
@@ -262,6 +273,114 @@ export async function callHelper<T extends Exclude<HelperResponse, { ok: false }
   }
   if (!response.ok) throw translateHelperFailure(String(response.code), String(response.message), deps.platform)
   return response as T
+}
+
+// ── BE-337 (D3): a key that already holds this vault's credential is not enrolled twice ───────
+
+export const ALREADY_ENROLLED_SUGGESTION = "Insert a different security key, or name one with --device."
+
+/**
+ * The one refusal behind D3's three checks, whichever of them fired: by locator (`--device` names
+ * the key that opens the vault), by the silent probe (the key answers `present` for one of the
+ * vault's credentials, `envelopeId` names which), or by the authenticator's own exclude-list answer
+ * (no envelope known). Exit 1, nothing written.
+ */
+export function alreadyEnrolled(device: Pick<DeviceReport, "product" | "deviceId">, envelopeId?: string): VaultError {
+  const product = device.product || "This security key"
+  return new VaultError(
+    "VAULT_KEY_ALREADY_ENROLLED",
+    `${product} (--device ${device.deviceId}) already holds this vault's security key credential${envelopeId !== undefined ? ` for envelope ${envelopeId}` : ""}, so enrolling it again would not add a second key. Nothing was written.`,
+    {
+      suggestion: ALREADY_ENROLLED_SUGGESTION,
+      ...(envelopeId !== undefined ? { details: { envelopeId } } : {}),
+    },
+  )
+}
+
+/** BE-337 (D3): the `info` feature a non-empty exclude list needs from the helper. */
+export const EXCLUDE_LIST_FEATURE = "exclude-list"
+
+function helperPredatesExcludeList(helperPath: string, leftover: boolean): VaultError {
+  return new VaultError(
+    "VAULT_HELPER_MISSING",
+    `The security key helper at ${helperPath} predates the exclude list this command needs; reinstall the CLI so candle and candle-fido2 come from the same release.`,
+    {
+      suggestion: leftover
+        ? "Nothing was written to the vault. The credential now on the authenticator can be removed with its vendor's tool. Reinstall the CLI so candle and candle-fido2 come from the same release, then enroll again."
+        : "Nothing was sent to any key and nothing was written. Reinstall the CLI so candle and candle-fido2 come from the same release, then enroll again.",
+    },
+  )
+}
+
+/**
+ * BE-337 (D3, mixed versions): an older helper's request parser drops a field it does not know, so
+ * a silently dropped exclude list would look like a success. With a non-empty list the helper must
+ * say it has the feature, before any PIN is typed. The first enrollment on a vault (an empty list)
+ * works with any protocol-1 helper, as before.
+ */
+export function assertHelperExcludeList(info: InfoResponse, helperPath: string, excludeCount: number): void {
+  if (excludeCount === 0) return
+  const features: string[] = Array.isArray(info.features) ? info.features : []
+  if (!features.includes(EXCLUDE_LIST_FEATURE)) throw helperPredatesExcludeList(helperPath, false)
+}
+
+/**
+ * BE-337 (D3): the exclude list is never split across requests, so a device that cannot take the
+ * whole list in one request is refused before any PIN, naming both counts. The helper makes the
+ * same check (`BAD_REQUEST`); this one is earlier and cheaper.
+ */
+export function assertExcludeListFits(device: DeviceReport, excludeCount: number): void {
+  const capacity = excludeCapacity(device)
+  if (excludeCount <= capacity) return
+  throw new VaultError(
+    "VAULT_FACTOR_UNAVAILABLE",
+    `${device.product || "This security key"} (--device ${device.deviceId}) takes at most ${capacity} credential${capacity === 1 ? "" : "s"} in one request${device.maxCredentialCountInList === null ? " (it reports no maxCredentialCountInList)" : ""}, and this vault has ${excludeCount} security key credentials to exclude, so it cannot enroll on this vault. Nothing was sent to it.`,
+    { suggestion: "Nothing was written. Use a security key that reports a larger maxCredentialCountInList." },
+  )
+}
+
+/**
+ * ED-11's two refusals at `factor add`, made in the CLI as well as in the helper, so the operator
+ * is refused before typing a PIN into a key that cannot serve the factor. Exported (BE-337, D4
+ * step 3) so the key being added is checked from the command's own `info`, before the opener's
+ * PIN, when a security key opens the vault.
+ */
+export function assertDeviceServesFactor(device: DeviceReport): void {
+  if (!device.extensions.includes("hmac-secret")) {
+    throw new VaultError(
+      "VAULT_PRF_UNSUPPORTED",
+      `${device.product || "This security key"} does not support the hmac-secret extension, which this factor needs.`,
+      { suggestion: "Use a key that supports hmac-secret (FIDO2 with PRF). No other derivation is substituted." },
+    )
+  }
+  if (device.options.clientPin !== true && device.options.uv !== true) {
+    throw new VaultError(
+      "VAULT_UV_UNSUPPORTED",
+      `${device.product || "This security key"} has no PIN set and no built-in user verification, and this factor uses the user-verified secret only.`,
+      { suggestion: "Set a PIN on this key (its vendor's tool does that) and retry. Nothing was written." },
+    )
+  }
+}
+
+/**
+ * BE-337 (D4 step 2): one `info`, run by a command that decides which attached key does what
+ * before any session is opened. Nothing here asks a PIN or a touch.
+ */
+export async function listSecurityKeys(
+  deps: Pick<Deps, "env" | "execPath" | "realpath" | "spawnHelper" | "platform">,
+  opts: { vaultId: string; envelopeId: string },
+): Promise<{ helperPath: string; info: InfoResponse }> {
+  const location = await locateFido2Helper(deps)
+  if (location.state === "absent") throw helperMissing(location)
+  const info = await callHelper<InfoResponse>(deps, location.path, {
+    op: "info",
+    vaultId: opts.vaultId,
+    envelopeId: opts.envelopeId,
+    digest: base64.encode(
+      operationDigest({ vaultId: opts.vaultId, envelopeId: opts.envelopeId, op: "info", nonce: b64u(randomBytes(16)) }),
+    ),
+  })
+  return { helperPath: location.path, info }
 }
 
 // ── Device selection (the operator's, never the CLI's) ────────────────────────────────────────
@@ -421,6 +540,17 @@ export async function openSecurityKeySession(
      */
     preferDevice?: string
     requireFeatures: boolean
+    /**
+     * BE-337 (D4): the PIN prompt's text for this device, when the default `PIN for <product>` would
+     * not tell the operator which of two same-model keys is being asked for.
+     */
+    pinPrompt?: (device: DeviceReport) => string
+    /**
+     * BE-337 (D3, D4): runs after the device is selected and its features checked, and before the
+     * PIN prompt, so a command can refuse the selected device (already enrolled, too small an
+     * exclude-list capacity) with nothing typed and nothing sent to it.
+     */
+    beforePin?: (device: DeviceReport, info: InfoResponse) => void
   },
 ): Promise<SecurityKeySession> {
   const location = await locateFido2Helper(deps)
@@ -443,29 +573,15 @@ export async function openSecurityKeySession(
       `Using the attached security key: ${device.product || "security key"} (--device ${device.deviceId})\n`,
     )
   }
-  if (opts.requireFeatures) {
-    // ED-11's two refusals at `factor add`, made in the CLI as well as in the helper, so the
-    // operator is refused before typing a PIN into a key that cannot serve the factor.
-    if (!device.extensions.includes("hmac-secret")) {
-      throw new VaultError(
-        "VAULT_PRF_UNSUPPORTED",
-        `${device.product || "This security key"} does not support the hmac-secret extension, which this factor needs.`,
-        { suggestion: "Use a key that supports hmac-secret (FIDO2 with PRF). No other derivation is substituted." },
-      )
-    }
-    if (device.options.clientPin !== true && device.options.uv !== true) {
-      throw new VaultError(
-        "VAULT_UV_UNSUPPORTED",
-        `${device.product || "This security key"} has no PIN set and no built-in user verification, and this factor uses the user-verified secret only.`,
-        { suggestion: "Set a PIN on this key (its vendor's tool does that) and retry. Nothing was written." },
-      )
-    }
-  }
+  if (opts.requireFeatures) assertDeviceServesFactor(device)
+  opts.beforePin?.(device, info)
   const session: SecurityKeySession = { helperPath: location.path, device, snapshotId: info.snapshotId }
   if (device.options.clientPin === true) {
     // The CLI owns the prompt (ED-11). The PIN arrives as a JavaScript string with CC-04's stated
     // lifetime caveat, the same as the passphrase, and reaches the helper inside its request only.
-    const typed = await deps.promptSecret(`PIN for ${device.product || "the security key"} (input hidden): `)
+    const typed = await deps.promptSecret(
+      opts.pinPrompt?.(device) ?? `PIN for ${device.product || "the security key"} (input hidden): `,
+    )
     if (typed === "") {
       throw new VaultError(
         "VAULT_PIN_REQUIRED",
@@ -485,6 +601,13 @@ export interface AttachedKeys {
   state: Map<string, KeyPresence>
   /** By envelope id: the one probed device the credential was present on, when exactly one. */
   holder: Map<string, string>
+  /**
+   * BE-337 (D2, D3): the probe's raw per-device answer, for `factor add security-key`, which
+   * decides the opening and the enrolling device from it. Absent on a hand-built menu fixture.
+   */
+  devices?: ProbeDeviceReport[]
+  /** BE-337: the base64 credential id the probe named for each offered envelope id. */
+  credentials?: Map<string, string>
 }
 
 /**
@@ -542,7 +665,7 @@ export async function probeAttachedKeys(
       const uncertain = devices.some((device) => device.unknown.includes(credentialId))
       if (opts.deviceFlag === undefined && allReadable && !uncertain) state.set(envelopeId, "not attached")
     }
-    return { state, holder }
+    return { state, holder, devices, credentials: credentialOf }
   } catch {
     return undefined
   }
@@ -560,23 +683,51 @@ export interface RegisteredCredential {
 export async function registerCredential(
   deps: SessionDeps,
   session: SecurityKeySession,
-  opts: { vaultId: string; envelopeId: string },
+  opts: {
+    vaultId: string
+    envelopeId: string
+    /**
+     * BE-337 (D3, refusal 3): every CTAP2 credential id (base64) in the AUTHENTICATED header. Sent
+     * only when non-empty, so an older CLI's request shape is what a first enrollment still sends.
+     */
+    excludeCredentialIds?: string[]
+  },
 ): Promise<RegisteredCredential> {
   deps.stderr.write(`Touch ${session.device.product || "the security key"} to register the vault's credential on it.\n`)
-  const digest = operationDigest({ ...opts, op: "register", nonce: b64u(randomBytes(16)) })
-  const response = await callHelper<RegisterResponse>(deps, session.helperPath, {
-    op: "register",
+  const digest = operationDigest({
     vaultId: opts.vaultId,
     envelopeId: opts.envelopeId,
-    digest: base64.encode(digest),
-    deviceId: session.device.deviceId,
-    expectSnapshot: session.snapshotId,
-    rpId: RP_ID,
-    userId: base64.encode(userIdFor(opts.vaultId, opts.envelopeId)),
-    userName: userNameFor(opts.vaultId, opts.envelopeId),
-    clientDataHash: base64.encode(digest),
-    ...(session.pin !== undefined ? { pin: session.pin } : {}),
+    op: "register",
+    nonce: b64u(randomBytes(16)),
   })
+  const exclude = opts.excludeCredentialIds ?? []
+  let response: RegisterResponse
+  try {
+    response = await callHelper<RegisterResponse>(deps, session.helperPath, {
+      op: "register",
+      vaultId: opts.vaultId,
+      envelopeId: opts.envelopeId,
+      digest: base64.encode(digest),
+      deviceId: session.device.deviceId,
+      expectSnapshot: session.snapshotId,
+      rpId: RP_ID,
+      userId: base64.encode(userIdFor(opts.vaultId, opts.envelopeId)),
+      userName: userNameFor(opts.vaultId, opts.envelopeId),
+      clientDataHash: base64.encode(digest),
+      ...(session.pin !== undefined ? { pin: session.pin } : {}),
+      ...(exclude.length > 0 ? { excludeCredentialIds: exclude } : {}),
+    })
+  } catch (error) {
+    // The authenticator's own answer, reworded with the device it came from.
+    if (error instanceof VaultError && error.code === "VAULT_KEY_ALREADY_ENROLLED")
+      throw alreadyEnrolled(session.device)
+    throw error
+  }
+  // BE-337 (D3, mixed versions): a helper that dropped the list answers without `excluded` (or
+  // with fewer). The credential it created stays on the key; nothing is written to the vault.
+  if (exclude.length > 0 && response.excluded !== exclude.length) {
+    throw helperPredatesExcludeList(session.helperPath, true)
+  }
   const authData = base64.decode(response.authData)
   assertAuthenticatorData(authData, RP_ID, "registration")
   return {

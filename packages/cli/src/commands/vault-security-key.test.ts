@@ -701,12 +701,28 @@ describe("unlocking with a security key", () => {
         register: { credentialId: base64.encode(new Uint8Array(48).fill(5)), aaguid: AAGUID, authData: UV },
       },
     })
+    // BE-337 (D1): the vault has a key, so without `--factor` the menu would ask; the passphrase
+    // named on the flag is today's order (the new key's PIN, then the passphrase) and no line.
     expect(
       await run(
-        ["vault", "factor", "add", "security-key", "--label", "drawer key", "--keystore", v.vaultPath],
+        [
+          "vault",
+          "factor",
+          "add",
+          "security-key",
+          "--label",
+          "drawer key",
+          "--factor",
+          "passphrase",
+          "--keystore",
+          v.vaultPath,
+        ],
         second.deps,
       ),
     ).toBe(0)
+    expect(second.stderr.text).not.toContain("Passphrase only:")
+    // D3 refusal 3: the second enrollment excludes the first key's credential.
+    expect(second.calls.find((call) => call.op === "register")?.excludeCredentialIds).toEqual([CRED])
     expect(second.stdout.text).toContain("2 recoverable factor(s)")
     expect(second.stdout.text).toContain("Two security key envelopes on two different keys are a recoverable pair")
   })
@@ -1373,8 +1389,10 @@ async function vaultWithTwoKeys(labels: { a?: string; b?: string } = {}) {
       secrets: [PIN, v.passphrase],
       script: { ...goodScript(), register: { credentialId, aaguid: AAGUID, authData: UV } },
     })
+    // BE-337 (D1): once the vault has a key, `factor add security-key` offers it as the opener;
+    // `--factor passphrase` keeps these fixtures on the passphrase path.
     const code = await run(
-      ["vault", "factor", "add", "security-key", "--label", label, "--keystore", v.vaultPath],
+      ["vault", "factor", "add", "security-key", "--label", label, "--factor", "passphrase", "--keystore", v.vaultPath],
       add.deps,
     )
     if (code !== 0) throw new Error(`factor add security-key failed (${code}): ${add.stderr.text}${add.stdout.text}`)

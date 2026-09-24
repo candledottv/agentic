@@ -267,8 +267,9 @@ export interface UnlockOptions {
   /** What the derivation notice and the prompt call this operation. */
   promptText?: string
   /**
-   * Overrides `--factor` for a command that must open with one particular kind: adding a security
-   * key unlocks with the passphrase, so the key being added is the only key the ceremony names.
+   * Overrides `--factor` for a command that must open with one particular kind (`verify-backup`'s
+   * prompt for the copy's own passphrase). The three `factor add` sites no longer force the
+   * passphrase (BE-337 D1): they restrict with `among` instead.
    */
   factor?: string
   /**
@@ -317,6 +318,59 @@ export interface UnlockOptions {
    * what the platform's sheet asserts for, this is the derivation-line suffix.
    */
   purpose?: string
+  /**
+   * BE-337 (D1): a probe the command already ran, used by the chooser in place of its own, so a
+   * command that needs the probe's device answer (`factor add security-key`, over EVERY attached
+   * device rather than the one `--device` names) runs exactly one probe per command. The KEY's
+   * presence is what counts: a command whose probe failed passes `attached: undefined` and the
+   * menu is drawn without markers rather than from a second probe.
+   */
+  attached?: AttachedKeys | undefined
+  /**
+   * BE-337 (D2, D4): the spec's `keyDevice`. Called once, after the factor is chosen and before any
+   * prompt or helper session for it, with what was chosen. `factor add security-key` decides its
+   * opening and enrolling devices here (D2), makes refusals 1 and 2 (D3), and with the passphrase
+   * chosen opens the enrolling key's session first, as before. For a security-key choice the
+   * returned `preferDevice` replaces `--device` for this one unlock: `deviceFlag` is undefined and
+   * the opener's session selects that device, so `--device` (the key being ADDED, in that command)
+   * never reaches the opener. Every other command leaves this unset and `--device` names the opener.
+   */
+  onFactorChosen?: (chosen: ChosenFactor) => Promise<{ preferDevice: string } | undefined>
+}
+
+/** BE-337: what `onFactorChosen` is told. The envelope is the header's, not yet authenticated. */
+export type ChosenFactor =
+  | { kind: "passphrase"; envelopeId?: string }
+  | { kind: "security-key"; envelope: Ctap2Envelope }
+  | { kind: "touch-id"; envelope: SecureEnclaveEnvelope }
+  | { kind: "passkey"; envelope: PlatformPasskeyEnvelope }
+
+/**
+ * BE-337 (D1): the `among` the three `factor add` commands open with: every passphrase envelope and
+ * every CTAP2 security key envelope, never Touch ID or a synced passkey. Why: a synced passkey is
+ * an `apple-account` factor, and letting it authorise enrollment would let whoever holds the Apple
+ * account add a hardware key that outlives the passkey's removal (the AD-9 problem again). The
+ * `Passphrase only:` reason is the spec's row F3, produced exactly as `vault backup`'s B2 is.
+ */
+export function factorAddAmong(envelopes: Envelope[]): NonNullable<UnlockOptions["among"]> {
+  return {
+    envelopeIds: envelopes
+      .filter((envelope) => isPassphraseEnvelope(envelope) || isCtap2Envelope(envelope))
+      .map((envelope) => envelope.id),
+    because: factorAddPassphraseOnlyReason,
+    excludedBecause: "adding a factor opens the vault with the passphrase or a security key.",
+  }
+}
+
+/** Row F3 (BE-337 D1): why only the passphrase can open the vault for a `factor add`. */
+export function factorAddPassphraseOnlyReason(unusable: UnusableEnvelope[]): string {
+  if (unusable.length === 0) {
+    return "adding a factor opens the vault with the passphrase or a security key, and this vault has no security key."
+  }
+  const keys = unusable.map(
+    (entry) => `${entry.word} ${entry.id} cannot be used on this machine: ${entry.availability}`,
+  )
+  return `adding a factor opens the vault with the passphrase or a security key, and ${keys.join("; ")}.`
 }
 
 /**
@@ -417,6 +471,15 @@ export async function unlockInteractively(
   const notice = noticeFor(opts.purpose)
 
   if (choice.kind === "passphrase") {
+    // BE-337 (D4): the command's own device work first (`factor add security-key` opens the key
+    // being added here, before the passphrase, as it always has), then D7's line, then the prompt.
+    if (opts.onFactorChosen) {
+      await opts.onFactorChosen(
+        choice.envelopeId !== undefined
+          ? { kind: "passphrase", envelopeId: choice.envelopeId }
+          : { kind: "passphrase" },
+      )
+    }
     // BE-292 (D7): one line, immediately before the prompt, whenever the passphrase is the only
     // answer and there was another factor the operator might have expected to use.
     if (choice.onlyBecause !== undefined) deps.stderr.write(`${PASSPHRASE_ONLY_PREFIX}${choice.onlyBecause}\n`)
@@ -460,6 +523,7 @@ export async function unlockInteractively(
   if (choice.kind === "touch-id") {
     // The Secure Enclave. The policy, the helper and its signature (against this build's release policy) are settled before the vault is touched; the Touch ID prompt is the unwrap itself.
     const envelope = choice.envelope
+    if (opts.onFactorChosen) await opts.onFactorChosen({ kind: "touch-id", envelope })
     const session = await openEnclaveSession(deps, envelope.helper)
     const open = async (p: string, r: string, reason: string): Promise<UnlockedVault> => {
       const current = parseVaultFile(r)
@@ -496,6 +560,7 @@ export async function unlockInteractively(
     // The synced passkey (BE-135). The policy, the helper, its signature (against this build's release policy) and the AD-2 gates are settled before the vault is touched; the passkey
     // sheet is the assertion itself. No network: the system's own association check answers.
     const envelope = choice.envelope
+    if (opts.onFactorChosen) await opts.onFactorChosen({ kind: "passkey", envelope })
     const session = await openPasskeySession(deps, envelope.helper)
     const open = async (p: string, r: string, purpose: string): Promise<UnlockedVault> => {
       const current = parseVaultFile(r)
@@ -531,11 +596,18 @@ export async function unlockInteractively(
 
   // A security key. The helper, the device and the PIN are settled before the vault is touched.
   const envelope = choice.envelope
+  // BE-337 (D2): when the command decides the opening device itself, `--device` does not reach
+  // this session at all: it names the key being ADDED there, never the opener.
+  const keyDevice = opts.onFactorChosen ? await opts.onFactorChosen({ kind: "security-key", envelope }) : undefined
   const session = await openSecurityKeySession(deps, {
     vaultId: file.vaultId,
     envelopeId: envelope.id,
-    deviceFlag: ctx.vaultDevice,
-    ...(choice.preferDevice !== undefined ? { preferDevice: choice.preferDevice } : {}),
+    ...(keyDevice !== undefined
+      ? { preferDevice: keyDevice.preferDevice }
+      : {
+          deviceFlag: ctx.vaultDevice,
+          ...(choice.preferDevice !== undefined ? { preferDevice: choice.preferDevice } : {}),
+        }),
     requireFeatures: false,
   })
   const open = async (p: string, r: string): Promise<UnlockedVault> => {
@@ -623,7 +695,7 @@ async function chooseFactor(
   allEnvelopes: Envelope[],
   facts: PlatformFacts,
   requested: string | undefined,
-  opts: Pick<UnlockOptions, "among" | "passphraseOnlyBecause" | "passphraseOnlyEvenIfSole"> = {},
+  opts: Pick<UnlockOptions, "among" | "passphraseOnlyBecause" | "passphraseOnlyEvenIfSole" | "attached"> = {},
 ): Promise<FactorChoice> {
   const among = opts.among
   const envelopes =
@@ -685,9 +757,14 @@ async function chooseFactor(
     // More than one factor can open it here: the operator picks from the menu (BE-294). Visible
     // prompt, nothing secret. Without a TTY there is no probe, and the one `promptLine` refuses
     // before it writes anything, exactly as before the menu existed (D5).
-    const attached = ctx.deps.isTTY.stdin
-      ? await probeAttachedKeys(ctx.deps, { vaultId, envelopes: drivableKeys, deviceFlag: ctx.vaultDevice })
-      : undefined
+    // BE-337 (D1): a command that already probed hands its answer in, even when that probe failed
+    // (`undefined`), so there is one probe per command and the menu is never drawn from a second.
+    const attached =
+      "attached" in opts
+        ? opts.attached
+        : ctx.deps.isTTY.stdin
+          ? await probeAttachedKeys(ctx.deps, { vaultId, envelopes: drivableKeys, deviceFlag: ctx.vaultDevice })
+          : undefined
     const notUsableHere = envelopes.filter(
       (envelope) => !isPassphraseEnvelope(envelope) && !(drivable as unknown as Envelope[]).includes(envelope),
     )

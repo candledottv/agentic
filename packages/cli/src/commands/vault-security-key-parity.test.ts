@@ -985,20 +985,53 @@ describe("T12: one Passphrase only: line before every passphrase-only prompt, an
     expect(verify.stderr.text).toContain("Details: candle vault status")
   })
 
-  test("F1: factor add security-key on a vault that already has one", async () => {
+  // BE-337 (D1) retired rows F1 and F2 for F3: `factor add` opens with the passphrase or a security
+  // key, so a vault with a usable key gets the menu, not a `Passphrase only:` line (T16).
+  test("F3: factor add security-key says why only the passphrase can open, and only when the vault has no key", async () => {
+    // The operator chose the passphrase on the flag: today's order, and no line.
     const v = await vaultWithKey()
-    const add = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [PIN, v.passphrase] })
+    const drawerKey = goodScript()
+    drawerKey.devices = drawerKey.devices.map((device) => ({ ...device, path: "/dev/hidraw7" }))
+    drawerKey.register = { credentialId: base64.encode(new Uint8Array(48).fill(5)), aaguid: AAGUID, authData: UV_UP }
+    const add = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [PIN, v.passphrase], script: drawerKey })
     expect(
       await run(
-        ["vault", "factor", "add", "security-key", "--label", "second key", "--keystore", v.vaultPath],
+        [
+          "vault",
+          "factor",
+          "add",
+          "security-key",
+          "--label",
+          "second key",
+          "--factor",
+          "passphrase",
+          "--keystore",
+          v.vaultPath,
+        ],
         add.deps,
       ),
     ).toBe(0)
+    expect(add.stderr.text).not.toContain(PASSPHRASE_ONLY_PREFIX)
+    expect(add.asked).toEqual([
+      expect.stringContaining("PIN for YubiKey 5 NFC"),
+      expect.stringContaining("Current vault passphrase"),
+    ])
+
+    // F3, first variant: another factor exists, and none of it is a security key.
+    const t = await initVault()
+    await addFixtureEnvelopes(t.vaultPath, t.passphrase, [touchId()])
+    const first = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, secrets: [PIN, t.passphrase] })
+    expect(await run(["vault", "factor", "add", "security-key", "--keystore", t.vaultPath], first.deps)).toBe(0)
     lineBeforePrompt(
-      add,
-      "this command's security key session is for the key being added, so the vault opens with the passphrase here.",
+      first,
+      "adding a factor opens the vault with the passphrase or a security key, and this vault has no security key.",
       "secret: Current vault passphrase",
     )
+    // The key being added is settled (its PIN typed) before the line and the passphrase, as before.
+    const pin = first.events.findIndex((e) => e.startsWith("secret: PIN for"))
+    const line = first.events.findIndex((e) => e.includes(PASSPHRASE_ONLY_PREFIX))
+    expect(pin).toBeGreaterThan(-1)
+    expect(pin).toBeLessThan(line)
   })
 
   test("C1: no --factor, a key that cannot be driven here, on a plain unlock", async () => {

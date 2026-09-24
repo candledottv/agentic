@@ -38,6 +38,15 @@ export type HelperOp = "info" | "register" | "assert" | "probe"
 export const PROBE_MAX_CREDENTIALS = 16
 
 /**
+ * BE-337 (D3): the additive capabilities an `info` response lists under `features`, so a CLI that
+ * needs one can tell a helper that has it from an older helper that would silently drop the field
+ * (the request parser ignores fields it does not know). `HELPER_PROTOCOL` stays 1: every change
+ * this list names is additive on both sides.
+ */
+export const HELPER_FEATURES = ["exclude-list"] as const
+export type HelperFeature = (typeof HELPER_FEATURES)[number]
+
+/**
  * The helper's own typed codes. They are deliberately not the vault's `VAULT_*` codes: the helper
  * reports what the authenticator or the library said, and the CLI owns the mapping into the spec's
  * codes (`vault/fido2.ts`), so a helper built from a different revision cannot smuggle a fallback
@@ -57,6 +66,10 @@ export const HELPER_CODES = [
   "NO_CREDENTIAL",
   "DEVICE_IO",
   "LIBRARY_MISSING",
+  // BE-337 (D3, refusal 3): the authenticator holds a credential the register's exclude list named
+  // and created nothing (`CTAP2_ERR_CREDENTIAL_EXCLUDED`). The CLI maps it to
+  // `VAULT_KEY_ALREADY_ENROLLED`; an older CLI reads it as `VAULT_UNLOCK_FAILED`, also a refusal.
+  "CREDENTIAL_EXCLUDED",
   "BAD_REQUEST",
   "INTERNAL",
 ] as const
@@ -96,6 +109,13 @@ export interface RegisterRequest extends RequestCommon {
   /** base64, 32 bytes */
   clientDataHash: string
   pin?: string
+  /**
+   * BE-337 (D3, refusal 3): credential ids (base64) the authenticator must refuse to create a
+   * second credential beside, at most `PROBE_MAX_CREDENTIALS`. Every id is handed to the device as
+   * an excluded credential before it is asked to register; a device that holds one answers
+   * `CREDENTIAL_EXCLUDED` and creates nothing. Optional, so an older CLI's request is unchanged.
+   */
+  excludeCredentialIds?: string[]
 }
 
 export interface AssertRequest extends RequestCommon {
@@ -144,6 +164,12 @@ export interface DeviceReport {
   /** False when the device enumerated but this user cannot open it (the Linux `hidraw` case). */
   readable: boolean
   reason?: string
+  /**
+   * BE-337 (D3): CTAP2 getInfo's `maxCredentialCountInList`, the most credentials one request may
+   * name in an allow or exclude list. `null` when the authenticator does not report one (or could
+   * not be opened), and then one register request carries at most one excluded id.
+   */
+  maxCredentialCountInList: number | null
 }
 
 export interface InfoResponse {
@@ -152,6 +178,8 @@ export interface InfoResponse {
   op: "info"
   snapshotId: string
   devices: DeviceReport[]
+  /** BE-337 (D3): what this helper can do beyond protocol 1's baseline. */
+  features: HelperFeature[]
 }
 
 export interface RegisterResponse {
@@ -166,6 +194,11 @@ export interface RegisterResponse {
   authData: string
   attFlags: { be: boolean; bs: boolean }
   flags: { uv: boolean; up: boolean }
+  /**
+   * BE-337 (D3): how many excluded credential ids reached the authenticator. The CLI compares it
+   * with the count it sent, so a helper that dropped the list cannot look like one that applied it.
+   */
+  excluded: number
 }
 
 export interface AssertResponse {
@@ -219,6 +252,8 @@ export interface DeviceCapabilities {
   extensions: string[]
   /** Every option getInfo listed, by name. */
   options: Record<string, boolean>
+  /** BE-337 (D3): getInfo's `maxCredentialCountInList`; absent when the device reports none. */
+  maxCredentialCountInList?: number
 }
 
 export interface MakeCredentialParams {
@@ -228,6 +263,8 @@ export interface MakeCredentialParams {
   userName: string
   clientDataHash: Uint8Array
   pin?: string
+  /** BE-337 (D3): every id is excluded (`fido_cred_exclude`) before the device is asked. */
+  excludeCredentialIds?: Uint8Array[]
 }
 
 export interface MakeCredentialResult {
@@ -421,6 +458,7 @@ export function parseRequest(line: string): HelperRequest {
   if (op === "register") {
     const userId = requireString(value, "userId")
     base64Bytes(userId, "userId")
+    const excludeCredentialIds = parseExcludeList(value)
     return {
       op,
       ...common,
@@ -431,6 +469,7 @@ export function parseRequest(line: string): HelperRequest {
       userName: requireString(value, "userName"),
       clientDataHash,
       ...(pin !== undefined ? { pin } : {}),
+      ...(excludeCredentialIds !== undefined ? { excludeCredentialIds } : {}),
     }
   }
   const credentialId = requireString(value, "credentialId")
@@ -448,6 +487,30 @@ export function parseRequest(line: string): HelperRequest {
     salt,
     ...(pin !== undefined ? { pin } : {}),
   }
+}
+
+/**
+ * BE-337 (D3): a register's exclude list, when the request carries one. Above
+ * `PROBE_MAX_CREDENTIALS` it is refused, never truncated: a truncated list would only be caught by
+ * the CLI's `excluded` count and reported under the wrong code.
+ */
+function parseExcludeList(value: Record<string, unknown>): string[] | undefined {
+  const raw = value.excludeCredentialIds
+  if (raw === undefined) return undefined
+  if (!Array.isArray(raw)) throw new HelperError("BAD_REQUEST", "excludeCredentialIds is not a list")
+  if (raw.length > PROBE_MAX_CREDENTIALS) {
+    throw new HelperError(
+      "BAD_REQUEST",
+      `excludeCredentialIds names ${raw.length} credentials; a register excludes at most ${PROBE_MAX_CREDENTIALS}`,
+    )
+  }
+  return raw.map((entry, index) => {
+    if (typeof entry !== "string" || entry === "") {
+      throw new HelperError("BAD_REQUEST", `excludeCredentialIds[${index}] is not a non-empty string`)
+    }
+    base64Bytes(entry, `excludeCredentialIds[${index}]`)
+    return entry
+  })
 }
 
 /** BE-294 (D2): the probe's own fields. A PIN or a salt is refused, whatever its value. */
@@ -506,6 +569,7 @@ function reportDevices(backend: Fido2Backend): DeviceReport[] {
           uv: capabilities.options.uv ?? null,
         },
         readable: true,
+        maxCredentialCountInList: capabilities.maxCredentialCountInList ?? null,
       }
     } catch (error) {
       const failure = asHelperError(error)
@@ -519,6 +583,7 @@ function reportDevices(backend: Fido2Backend): DeviceReport[] {
         options: { clientPin: null, uv: null },
         readable: false,
         reason: `${failure.code}: ${failure.message}`,
+        maxCredentialCountInList: null,
       }
     }
   })
@@ -559,13 +624,29 @@ function selectDevice(backend: Fido2Backend, request: RegisterRequest | AssertRe
   return device
 }
 
+/**
+ * BE-337 (D3): how many excluded credential ids one register request may carry to this device:
+ * its `maxCredentialCountInList`, or 1 when it reports none (the platform convention). Exported so
+ * the CLI refuses earlier, naming both counts, before any PIN is typed.
+ */
+export function excludeCapacity(device: Pick<DeviceReport, "maxCredentialCountInList">): number {
+  return device.maxCredentialCountInList ?? 1
+}
+
 /** Runs one request against one backend and answers with the one response line's value. */
 export function handleRequest(request: HelperRequest, backend: Fido2Backend): HelperResponse {
   try {
     switch (request.op) {
       case "info": {
         const devices = reportDevices(backend)
-        return { ok: true, protocol: HELPER_PROTOCOL, op: "info", snapshotId: snapshotIdFor(devices), devices }
+        return {
+          ok: true,
+          protocol: HELPER_PROTOCOL,
+          op: "info",
+          snapshotId: snapshotIdFor(devices),
+          devices,
+          features: [...HELPER_FEATURES],
+        }
       }
       case "register": {
         const device = selectDevice(backend, request)
@@ -583,6 +664,19 @@ export function handleRequest(request: HelperRequest, backend: Fido2Backend): He
             `${device.product || "this security key"} has no PIN set and no built-in user verification; set a PIN on this key and retry`,
           )
         }
+        // BE-337 (D3): the exclude list is checked against what the device can take BEFORE the
+        // device is asked, and is never split across requests. A device that reports no
+        // `maxCredentialCountInList` takes one id.
+        const exclude = (request.excludeCredentialIds ?? []).map((id, index) =>
+          base64Bytes(id, `excludeCredentialIds[${index}]`),
+        )
+        const capacity = excludeCapacity(device)
+        if (exclude.length > capacity) {
+          throw new HelperError(
+            "BAD_REQUEST",
+            `excludeCredentialIds names ${exclude.length} credentials, and ${device.product || "this security key"} takes at most ${capacity} in one request${device.maxCredentialCountInList === null ? " (it reports no maxCredentialCountInList)" : ""}; nothing was sent to it`,
+          )
+        }
         const result = backend.makeCredential(device.path, {
           rpId: request.rpId,
           rpName: RP_NAME,
@@ -590,6 +684,7 @@ export function handleRequest(request: HelperRequest, backend: Fido2Backend): He
           userName: request.userName,
           clientDataHash: base64Bytes(request.clientDataHash, "clientDataHash", 32),
           ...(request.pin !== undefined ? { pin: request.pin } : {}),
+          ...(exclude.length > 0 ? { excludeCredentialIds: exclude } : {}),
         })
         const flags = authDataFlags(result.authData)
         if (flags < 0) throw new HelperError("INTERNAL", "the authenticator returned truncated authenticator data")
@@ -602,6 +697,7 @@ export function handleRequest(request: HelperRequest, backend: Fido2Backend): He
           authData: base64.encode(result.authData),
           attFlags: { be: (flags & AUTHDATA_FLAG_BE) !== 0, bs: (flags & AUTHDATA_FLAG_BS) !== 0 },
           flags: { uv: (flags & AUTHDATA_FLAG_UV) !== 0, up: (flags & AUTHDATA_FLAG_UP) !== 0 },
+          excluded: exclude.length,
         }
       }
       case "probe":

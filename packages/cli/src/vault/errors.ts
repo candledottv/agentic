@@ -112,6 +112,11 @@ export const VAULT_ERROR_CODES = [
   // while a sweep of that wallet is pending, before anything is signed. Thrown from
   // `vault/tee-transfer.ts`.
   "TRANSFER_SWEEP_PENDING",
+  // BE-337 (spec 2026-09-24-cli-security-key-authorizes-factor-add-design.md, D3): `vault factor
+  // add security-key` refuses to enroll a key that already holds one of this vault's credentials,
+  // by locator, by the silent probe, or by the authenticator's own exclude-list answer. Thrown from
+  // `vault/fido2.ts` (`alreadyEnrolled`) and nowhere else; exit 1.
+  "VAULT_KEY_ALREADY_ENROLLED",
 ] as const
 
 export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number]

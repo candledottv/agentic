@@ -62,6 +62,7 @@ const device = (overrides: Partial<DeviceReport> = {}): DeviceReport => ({
   extensions: ["hmac-secret"],
   options: { clientPin: true, uv: false },
   readable: true,
+  maxCredentialCountInList: 8,
   ...overrides,
 })
 
@@ -80,6 +81,8 @@ describe("the typed translation table (helper protocols)", () => {
     NO_CREDENTIAL: "VAULT_CREDENTIAL_NOT_PRESENT",
     DEVICE_IO: "VAULT_FACTOR_UNAVAILABLE",
     LIBRARY_MISSING: "VAULT_HELPER_MISSING",
+    // BE-337 (D3, refusal 3).
+    CREDENTIAL_EXCLUDED: "VAULT_KEY_ALREADY_ENROLLED",
     BAD_REQUEST: "VAULT_UNLOCK_FAILED",
     INTERNAL: "VAULT_UNLOCK_FAILED",
   }
