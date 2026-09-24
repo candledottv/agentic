@@ -314,7 +314,17 @@ describe("wallets signer column", () => {
 
     expect(code).toBe(0)
     const header = stdout.text.split("\n").find((line) => line.startsWith("Id "))
-    expect(header?.split(/\s{2,}/)).toEqual(["Id", "Wallet", "Address", "Label", "Kind", "Revoked", "Signer"])
+    // BE-329 added Trusted before Signer; Signer stays last.
+    expect(header?.split(/\s{2,}/)).toEqual([
+      "Id",
+      "Wallet",
+      "Address",
+      "Label",
+      "Kind",
+      "Revoked",
+      "Trusted",
+      "Signer",
+    ])
     expect(cellsFor(stdout.text, "lw_listed01")).toEqual([
       "lw_listed01",
       "evm",
@@ -322,8 +332,45 @@ describe("wallets signer column", () => {
       "my wallet",
       "linked",
       "no",
+      "no",
       "none",
     ])
+  })
+
+  // BE-329: the Trusted column is the server's rule: linked while signed in, or marked by the owner.
+  test("Trusted reads yes for a session link or a trust mark, no for an unmarked key import, - when revoked", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/embedded": noEmbeddedWallets,
+      "/api/v1/agent/wallets": linkedPage([
+        { _id: "lw_sess", address: "SessAddr", chain: "solana", addedVia: "session" },
+        { _id: "lw_mark", address: "MarkAddr", chain: "solana", addedVia: "agent", trustedAt: 5 },
+        { _id: "lw_key", address: "KeyAddr", chain: "solana", addedVia: "agent" },
+        { _id: "lw_gone", address: "GoneAddr", chain: "solana", addedVia: "agent", trustedAt: 5, revokedAt: 9 },
+      ]),
+    })
+    const stdout = createCapture()
+    expect(
+      await run(["wallets"], createTestDeps({ fetch, store: createFakeStore({ api_key: "ck_live_x" }), stdout })),
+    ).toBe(0)
+    expect(cellsFor(stdout.text, "lw_sess")?.[6]).toBe("yes")
+    expect(cellsFor(stdout.text, "lw_mark")?.[6]).toBe("yes")
+    expect(cellsFor(stdout.text, "lw_key")?.[6]).toBe("no")
+    expect(cellsFor(stdout.text, "lw_gone")?.[6]).toBe("-")
+    expect(stdout.text).toContain("candle wallets trust")
+  })
+
+  test("no untrusted hint when every active wallet is trusted", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/embedded": noEmbeddedWallets,
+      "/api/v1/agent/wallets": linkedPage([
+        { _id: "lw_sess", address: "SessAddr", chain: "solana", addedVia: "session" },
+      ]),
+    })
+    const stdout = createCapture()
+    expect(
+      await run(["wallets"], createTestDeps({ fetch, store: createFakeStore({ api_key: "ck_live_x" }), stdout })),
+    ).toBe(0)
+    expect(stdout.text).not.toContain("candle wallets trust")
   })
 
   // BE-249: someone refused by `candle swap --wallet` had no command that answered "then which

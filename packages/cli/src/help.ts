@@ -395,7 +395,7 @@ export const HELP: Record<string, Topic> = {
     display: "wallet",
     summary: "Launch and linked wallets; import or revoke one (wallets is an alias)",
     description:
-      "The account's embedded launch wallets and any wallet you linked, with a Signer column saying whether this machine holds the signing key. Keys are derived in the vault now: this command links and revokes, it never generates or prints one.",
+      "The account's embedded launch wallets and any wallet you linked, with a Signer column saying whether this machine holds the signing key and a Trusted column saying whether it is yours: linked while signed in, or marked with wallet trust. Keys are derived in the vault now: this command links and revokes, it never generates or prints one.",
     usage: ["candle wallet [flags]", "candle wallet <subcommand> [flags]"],
     rows: [
       {
@@ -403,11 +403,20 @@ export const HELP: Record<string, Topic> = {
         description: "Import a wallet you own (key via --key-file or hidden prompt)",
       },
       { invocation: "revoke <wallet-id>", description: "Revoke a linked wallet" },
+      {
+        invocation: "trust <label|address|id|prefix*>...",
+        description: "Mark linked wallets yours, so agents can move funds into them (owner only; typed confirm)",
+      },
+      {
+        invocation: "untrust <label|address|id|prefix*>... [--yes]",
+        description: "Clear the mark; moving funds in needs the withdrawal allowlist again (owner only)",
+      },
     ],
     examples: [
       "candle wallet",
       "candle wallet import --chain solana --key-file ./signer.json",
       "candle wallet revoke wal_123",
+      "candle wallet trust 'tr-*' 'dest-*'",
     ],
     env: ENV_API,
   },

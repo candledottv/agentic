@@ -57,6 +57,21 @@ interface LinkedWalletRow {
    * now that command.
    */
   profile?: string
+  /** How the row was linked: a signed-in session, or an API key import. */
+  addedVia?: "agent" | "session"
+  /** BE-329: set when the owner marked the wallet trusted (`wallets trust`). */
+  trustedAt?: number
+}
+
+/**
+ * The Trusted cell (BE-329): the server's own rule, `isOwnLinkedWallet` in
+ * apps/api/src/lib/linked-wallet-trust.ts. A wallet linked while signed in is the account's own; a
+ * wallet an API key imported is only once the owner marks it. `-` for a revoked row, which is no
+ * destination at all.
+ */
+export function trustedCell(row: LinkedWalletRow): string {
+  if (row.revokedAt) return "-"
+  return row.addedVia === "session" || typeof row.trustedAt === "number" ? "yes" : "no"
 }
 
 /**
@@ -200,6 +215,11 @@ const NONE_HINT =
 const TEE_HINT =
   "A wallet marked tee is a TEE trading wallet: pass its id, address or label to candle swap --wallet.\n" +
   "This account's embedded wallet, shown above, can pay for a token trade too.\n"
+
+/** The line printed under the table when any active row is not trusted (BE-329). */
+const UNTRUSTED_HINT =
+  "A wallet marked Trusted no was linked by an API key: agents can move funds into it only once you mark it.\n" +
+  "Run: candle wallets trust <label|address|prefix*>  (the device token, never an API key)\n"
 
 /** The line printed under the table when any row reads `stale`. */
 const STALE_HINT =
@@ -367,7 +387,7 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
         // "Kind" rather than a bare TEE flag: the column has to be readable by someone who does
         // not know what Ember is, and "tee" / "linked" is the distinction that decides which
         // wallets `candle swap --wallet` and `candle launch --wallet` will accept.
-        ["Id", "Wallet", "Address", "Label", "Kind", "Revoked", "Signer"],
+        ["Id", "Wallet", "Address", "Label", "Kind", "Revoked", "Trusted", "Signer"],
         linkedRows.map((wallet, index) => [
           wallet._id,
           wallet.chain,
@@ -375,6 +395,7 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
           wallet.label ?? "-",
           isTeeRow(wallet) ? "tee" : "linked",
           wallet.revokedAt ? "yes" : "no",
+          trustedCell(wallet),
           cells[index] ?? "-",
         ]),
       )}\n`,
@@ -384,8 +405,10 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
     const anyNone = cells.includes("none")
     const anyStale = cells.includes("stale")
     const anyTee = linkedRows.some(isTeeRow)
-    if (anyNone || anyStale || anyTee) deps.stdout.write("\n")
+    const anyUntrusted = linkedRows.some((row) => trustedCell(row) === "no")
+    if (anyNone || anyStale || anyTee || anyUntrusted) deps.stdout.write("\n")
     if (anyTee) deps.stdout.write(TEE_HINT)
+    if (anyUntrusted) deps.stdout.write(UNTRUSTED_HINT)
     if (anyNone) deps.stdout.write(NONE_HINT)
     if (anyStale) deps.stdout.write(STALE_HINT)
   }

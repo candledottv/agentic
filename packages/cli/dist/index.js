@@ -39405,19 +39405,28 @@ var HELP = {
     group: "Account",
     display: "wallet",
     summary: "Launch and linked wallets; import or revoke one (wallets is an alias)",
-    description: "The account's embedded launch wallets and any wallet you linked, with a Signer column saying whether this machine holds the signing key. Keys are derived in the vault now: this command links and revokes, it never generates or prints one.",
+    description: "The account's embedded launch wallets and any wallet you linked, with a Signer column saying whether this machine holds the signing key and a Trusted column saying whether it is yours: linked while signed in, or marked with wallet trust. Keys are derived in the vault now: this command links and revokes, it never generates or prints one.",
     usage: ["candle wallet [flags]", "candle wallet <subcommand> [flags]"],
     rows: [
       {
         invocation: "import --chain <solana|evm> [options]",
         description: "Import a wallet you own (key via --key-file or hidden prompt)"
       },
-      { invocation: "revoke <wallet-id>", description: "Revoke a linked wallet" }
+      { invocation: "revoke <wallet-id>", description: "Revoke a linked wallet" },
+      {
+        invocation: "trust <label|address|id|prefix*>...",
+        description: "Mark linked wallets yours, so agents can move funds into them (owner only; typed confirm)"
+      },
+      {
+        invocation: "untrust <label|address|id|prefix*>... [--yes]",
+        description: "Clear the mark; moving funds in needs the withdrawal allowlist again (owner only)"
+      }
     ],
     examples: [
       "candle wallet",
       "candle wallet import --chain solana --key-file ./signer.json",
-      "candle wallet revoke wal_123"
+      "candle wallet revoke wal_123",
+      "candle wallet trust 'tr-*' 'dest-*'"
     ],
     env: ENV_API
   },
@@ -50543,6 +50552,11 @@ init_deps();
 init_profiles();
 init_render();
 init_secret_store();
+function trustedCell(row) {
+  if (row.revokedAt)
+    return "-";
+  return row.addedVia === "session" || typeof row.trustedAt === "number" ? "yes" : "no";
+}
 var TEE_PROFILES = new Set(["ember-tee", "ember-hot"]);
 function isTeeRow(row) {
   return row.profile !== undefined && TEE_PROFILES.has(row.profile);
@@ -50592,6 +50606,9 @@ var NONE_HINT = `A wallet marked none has no signer on this machine, so a trade 
 `;
 var TEE_HINT = `A wallet marked tee is a TEE trading wallet: pass its id, address or label to candle swap --wallet.
 ` + `This account's embedded wallet, shown above, can pay for a token trade too.
+`;
+var UNTRUSTED_HINT = `A wallet marked Trusted no was linked by an API key: agents can move funds into it only once you mark it.
+` + `Run: candle wallets trust <label|address|prefix*>  (the device token, never an API key)
 `;
 var STALE_HINT = `A wallet marked stale is revoked but its signer is still stored here. Run: candle wallets revoke <id>
 `;
@@ -50699,24 +50716,28 @@ Linked wallets (${linkedRows.length}):
 `);
   } else {
     const cells = linkedRows.map((wallet) => signerCell(signerStates.get(wallet._id), wallet));
-    deps.stdout.write(`${renderTable(["Id", "Wallet", "Address", "Label", "Kind", "Revoked", "Signer"], linkedRows.map((wallet, index) => [
+    deps.stdout.write(`${renderTable(["Id", "Wallet", "Address", "Label", "Kind", "Revoked", "Trusted", "Signer"], linkedRows.map((wallet, index) => [
       wallet._id,
       wallet.chain,
       wallet.address,
       wallet.label ?? "-",
       isTeeRow(wallet) ? "tee" : "linked",
       wallet.revokedAt ? "yes" : "no",
+      trustedCell(wallet),
       cells[index] ?? "-"
     ]))}
 `);
     const anyNone = cells.includes("none");
     const anyStale = cells.includes("stale");
     const anyTee = linkedRows.some(isTeeRow);
-    if (anyNone || anyStale || anyTee)
+    const anyUntrusted = linkedRows.some((row) => trustedCell(row) === "no");
+    if (anyNone || anyStale || anyTee || anyUntrusted)
       deps.stdout.write(`
 `);
     if (anyTee)
       deps.stdout.write(TEE_HINT);
+    if (anyUntrusted)
+      deps.stdout.write(UNTRUSTED_HINT);
     if (anyNone)
       deps.stdout.write(NONE_HINT);
     if (anyStale)
@@ -60210,6 +60231,177 @@ function messageOf2(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+// src/commands/wallets-trust.ts
+init_args();
+init_deps();
+init_profiles();
+init_render();
+init_promote_support();
+var TRUST_PATH = "/api/v1/agent/linked-wallets/trust";
+var USAGE_TRUST = "Usage: candle wallets trust <label|address|id|prefix*>... [--json]";
+var USAGE_UNTRUST = "Usage: candle wallets untrust <label|address|id|prefix*>... [--yes] [--json]";
+var DEVICE_TOKEN_REQUIRED2 = {
+  code: "DEVICE_TOKEN_REQUIRED",
+  message: "Marking a wallet trusted needs the device token, the owner's credential; an API key cannot do it.",
+  suggestion: "Run: candle auth login"
+};
+function sessionLinkedLine(rows) {
+  const n = rows.length;
+  const it = n === 1 ? "it" : "them";
+  const names = rows.map((row) => row.label ?? row.address).join(", ");
+  return `${n} linked while signed in (${names}): always yours while linked. Revoke ${it} to remove ${it}.`;
+}
+function nothingToChangeLine(shown, trusted) {
+  const session = shown.sessionLinked ?? [];
+  const unchanged = shown.unchanged;
+  if (session.length > 0 && unchanged.length === 0) {
+    const one = session.length === 1;
+    return `Nothing to change: ${one ? "that wallet is" : `those ${session.length} wallets are`} always yours while linked. Revoke ${one ? "it" : "them"} to remove ${one ? "it" : "them"}.
+`;
+  }
+  const bits = [];
+  if (session.length > 0)
+    bits.push(sessionLinkedLine(session).replace(/\.$/, ""));
+  if (unchanged.length > 0) {
+    bits.push(unchanged.length === 1 ? `that wallet is already ${trusted ? "trusted" : "untrusted"}` : `all ${unchanged.length} wallets are already ${trusted ? "trusted" : "untrusted"}`);
+  }
+  if (bits.length === 0)
+    return `Nothing to change.
+`;
+  return `Nothing to change: ${bits.join("; ")}.
+`;
+}
+function writeTrustFailure(ctx, result) {
+  const { deps, apiUrl, json } = ctx;
+  let code = result.code;
+  let message = result.message;
+  let suggestion;
+  if (result.status === 404) {
+    code = "TRUST_UNSUPPORTED";
+    message = "This Candle API does not support trusting wallets yet; nothing changed.";
+  } else {
+    const error = result.raw?.error;
+    if (error?.reason === "ambiguous" && Array.isArray(error.matches)) {
+      const ids = error.matches.map((m) => String(m.id)).join(", ");
+      suggestion = `Name one of them by id or address: ${ids}`;
+    } else if (error?.reason === "not_found") {
+      suggestion = "Run: candle wallets, to see this account's linked wallets and their labels.";
+    }
+  }
+  const envelope = errorEnvelope({ ...result, code, message }, { apiUrl, authType: "device" });
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ...envelope, ...suggestion ? { suggestion } : {} })}
+`);
+  } else {
+    deps.stderr.write(`${code ?? `HTTP ${result.status}`}: ${message}${suggestion ? ` ${suggestion}` : ""}
+`);
+  }
+  return 1;
+}
+function trustTable(rows) {
+  return renderTable(["line", "label", "wallet", "address"], rows.map((row, i) => [String(i + 1), row.label ?? "-", row.chain, row.address]));
+}
+async function setTrust(args, ctx, trusted) {
+  const { deps, apiUrl, json } = ctx;
+  const usage5 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
+  const command = trusted ? "wallets trust" : "wallets untrust";
+  const parsed = parseArgs(args, trusted ? {} : { booleanFlags: ["--yes"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length === 0) {
+    writeUsageFailure(deps, `Name at least one wallet. ${usage5}`, json);
+    return 2;
+  }
+  const skipConfirm = !trusted && parsed.booleans.has("--yes");
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED2, json);
+    return 1;
+  }
+  if (!skipConfirm && (!deps.isTTY.stdin || !deps.isTTY.stdout)) {
+    writeLocalFailure(deps, {
+      code: "TRUST_REQUIRES_TTY",
+      message: `candle ${command} needs a terminal: the acknowledgement is typed, and nothing else supplies it.`,
+      suggestion: trusted ? "Run it in an interactive shell; there is no flag and no environment variable for confirm." : "Run it in an interactive shell, or pass --yes to untrust without the prompt."
+    }, json);
+    return 1;
+  }
+  const call = (body) => apiRequest(TRUST_PATH, {
+    method: "POST",
+    body,
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  const preview = await call({ dryRun: true, wallets: parsed.positionals, trusted });
+  if (!preview.ok)
+    return writeTrustFailure(ctx, preview);
+  const shown = preview.body;
+  const changing = shown.changed;
+  if (changing.length === 0) {
+    if (json) {
+      deps.stdout.write(`${JSON.stringify({ ...shown, command })}
+`);
+    } else {
+      deps.stdout.write(nothingToChangeLine(shown, trusted));
+    }
+    return 0;
+  }
+  const n = changing.length;
+  const screen = [
+    trustTable(changing),
+    ...shown.unchanged.length > 0 ? [
+      `${shown.unchanged.length} already ${trusted ? "trusted" : "untrusted"}: ${shown.unchanged.map((row) => row.label ?? row.address).join(", ")}`
+    ] : [],
+    ...(shown.sessionLinked?.length ?? 0) > 0 ? [sessionLinkedLine(shown.sessionLinked ?? [])] : [],
+    "",
+    trusted ? `${n === 1 ? "This wallet" : `These ${n} wallets`} will be trusted: your agents can move funds into ${n === 1 ? "it" : "them"} with no cap, like a wallet you linked while signed in.` : `${n === 1 ? "This wallet" : `These ${n} wallets`} will no longer be trusted: moving funds into ${n === 1 ? "it" : "them"} will need the withdrawal allowlist again.`,
+    ""
+  ];
+  deps.stderr.write(`${screen.join(`
+`)}
+`);
+  if (!skipConfirm) {
+    const typed = await deps.promptLine(`Type ${CONFIRM_WORD} to ${trusted ? "trust" : "untrust"} ${n === 1 ? "this wallet" : `these ${n} wallets`}: `);
+    if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
+      writeLocalFailure(deps, {
+        code: "TRUST_NOT_ACKNOWLEDGED",
+        message: `The acknowledgement is the word ${CONFIRM_WORD}; nothing changed.`,
+        suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.`
+      }, json);
+      return 1;
+    }
+  }
+  const committed = await call({ walletIds: changing.map((row) => row.id), trusted });
+  if (!committed.ok)
+    return writeTrustFailure(ctx, committed);
+  const result = committed.body;
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ...result, command })}
+`);
+    return result.skipped.length > 0 ? 1 : 0;
+  }
+  const done = result.changed.length;
+  deps.stdout.write(`${trusted ? "Trusted" : "Untrusted"} ${done} wallet${done === 1 ? "" : "s"}.
+`);
+  for (const skip of result.skipped) {
+    deps.stderr.write(`Skipped ${skip.walletId}: ${skip.reason === "revoked" ? "revoked" : "not on this account"}.
+`);
+  }
+  return result.skipped.length > 0 ? 1 : 0;
+}
+function walletsTrust(args, ctx) {
+  return setTrust(args, ctx, true);
+}
+function walletsUntrust(args, ctx) {
+  return setTrust(args, ctx, false);
+}
+
 // src/config.ts
 import { chmod as chmod7, mkdir as mkdir7, readFile as readFile7, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
 import { homedir as homedir5 } from "node:os";
@@ -60533,7 +60725,7 @@ var COMMANDS = {
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
   keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke, wallets: keysWallets } },
   wallets: {
-    subcommands: { import: walletsImport, revoke: walletsRevoke },
+    subcommands: { import: walletsImport, revoke: walletsRevoke, trust: walletsTrust, untrust: walletsUntrust },
     bare: wallets
   },
   vault: {

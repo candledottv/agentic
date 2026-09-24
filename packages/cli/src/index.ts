@@ -65,6 +65,7 @@ import { vaultStatus } from "./commands/vault-status"
 import { vaultTransfer } from "./commands/vault-transfer"
 import { verify } from "./commands/verify"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
+import { walletsTrust, walletsUntrust } from "./commands/wallets-trust"
 import type { CliConfig } from "./config"
 import { clearConfig, readConfig, updateProfile, writeConfig } from "./config"
 import type { CommandContext, Deps } from "./deps"
@@ -166,7 +167,8 @@ const COMMANDS: Record<string, CommandRoute> = {
   // `wallets` has a bare form, so those two words never reach unknownCommand. They answer as
   // any other leftover positional after wallet: Unexpected argument, exit 2 (T14).
   wallets: {
-    subcommands: { import: walletsImport, revoke: walletsRevoke },
+    // BE-329: the owner's trust mark, over the device token (never an API key).
+    subcommands: { import: walletsImport, revoke: walletsRevoke, trust: walletsTrust, untrust: walletsUntrust },
     bare: wallets,
   },
   // Ember Phase 2 (BE-136). Local custody: every one of these reads or writes `vault.enc` on this
