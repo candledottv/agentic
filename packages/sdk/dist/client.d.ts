@@ -539,9 +539,11 @@ export interface ProfileOpenPosition {
 /**
  * `GET /api/v1/agent/keys/{prefix}/pnl` response.
  *
- * REALIZED only. `openPositions` carries what is needed to mark the rest yourself; nothing here
- * is marked for you, so no figure can be stale in a way you cannot see. Deposits and withdrawals
- * are excluded entirely: funding a wallet is not trading profit.
+ * Realized AND marked. Each open position carries Candle's current mark where one exists
+ * (`markPriceUsd`, `marketValueUsd`, `unrealizedUsd`), and `pnl.unrealizedUsd` sums the positions
+ * that could be marked. A position with no price is counted in `unmarkedPositions` rather than
+ * valued at zero, and `oldestMarkAt` says how old the marks are, so a stale figure is visible.
+ * Deposits and withdrawals are excluded entirely: funding a wallet is not trading profit.
  */
 export interface ProfilePnlResult {
     success: true;
@@ -1199,8 +1201,9 @@ export declare class CandleClient {
         limit?: number;
     }): Promise<ProfileTradesResult>;
     /**
-     * One profile's realized P&L, fees, and open positions
-     * (GET /api/v1/agent/keys/{prefix}/pnl).
+     * One profile's realized P&L, fees, and open positions marked at current prices
+     * (GET /api/v1/agent/keys/{prefix}/pnl). Read `unrealizedUsd` with `unmarkedPositions` and
+     * `oldestMarkAt`: an unpriced position is counted there, never valued at zero.
      *
      * Check `unvalued` and `truncated` before quoting the number: the first counts fills that had
      * no trusted USD price and were left out rather than counted as zero, the second says the

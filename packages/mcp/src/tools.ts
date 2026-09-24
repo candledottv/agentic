@@ -751,12 +751,15 @@ export function registerTools(server: McpServer, env: Record<string, string | un
   register(
     "candle_get_profile_pnl",
     {
-      title: "Read an agent profile's realized P&L",
+      title: "Read an agent profile's P&L",
       description:
         "Realized profit for this profile's own fills, the Candle fees charged against it, and the " +
-        "positions it still holds with their COST BASIS -- not their current value, which is not marked " +
-        "here. Deposits, withdrawals and transfers are excluded: funding a wallet is not profit. Check " +
-        "`unvalued` and `truncated` before quoting the number; they mean the total is partial. Reads only.",
+        "positions it still holds with their cost basis, each MARKED at Candle's current price where one " +
+        "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " +
+        "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " +
+        "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits, withdrawals and " +
+        "transfers are excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before " +
+        "quoting the number; they mean the total is partial. Reads only.",
       inputSchema: profilePnlShape,
     },
     async (args) => callAndRelay("candle_get_profile_pnl", args, cfg),

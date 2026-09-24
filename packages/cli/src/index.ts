@@ -34,6 +34,8 @@ import { launch } from "./commands/launch"
 import { lpAdd, lpClaim, lpPools, lpPositions, lpRemove } from "./commands/lp"
 import { mcp, mcpActsAsIdentity } from "./commands/mcp"
 import { plugins, runPlugin } from "./commands/plugins"
+import { pnl } from "./commands/pnl"
+import { portfolio } from "./commands/portfolio"
 import { profileAdd, profileList, profileRemove, profileRename, profileUse } from "./commands/profile"
 import { secretsList, secretsRemove, secretsSet } from "./commands/secrets"
 import { setup } from "./commands/setup"
@@ -145,6 +147,10 @@ interface CommandRoute {
 const COMMANDS: Record<string, CommandRoute> = {
   swap: { bare: swap, subcommands: { status: swapStatus } },
   launch: { bare: launch },
+  // Ember Phase 3 R7 (BE-316): read-only. `pnl --profile <name>` reads the global flag as the
+  // per-key request (see commands/pnl.ts).
+  pnl: { bare: pnl },
+  portfolio: { bare: portfolio },
   // Ember Phase 3 PR D (BE-315, R4): Meteora DAMM v2 liquidity from a TEE wallet, on the agent
   // rail under the bound key's opt-in `lp:write`. Server-built, relay-signed, never a vault key.
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },

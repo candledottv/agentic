@@ -332,6 +332,9 @@ var init_agent_key_access = __esm(() => {
 function formatScopesForSummary(scopes) {
   return sortAgentKeyScopes(scopes).map((scope) => scope === "swap:write" ? `${scope} (${SWAP_WRITE_NOTE})` : scope === "transfer:write" ? `${scope} (${TRANSFER_WRITE_NOTE})` : scope).join(", ");
 }
+function terminalText(value) {
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+}
 function renderTable(headers, rows) {
   const widths = headers.map((header, col) => Math.max(header.length, ...rows.map((row) => (row[col] ?? "").length)));
   const line = (cells) => cells.map((cell, col) => col === cells.length - 1 ? cell ?? "" : (cell ?? "").padEnd(widths[col] ?? 0)).join("  ");
@@ -38344,8 +38347,8 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     inputSchema: setProfileWalletsShape
   }, async (args) => callAndRelay("candle_set_profile_wallets", args, cfg));
   register("candle_get_profile_pnl", {
-    title: "Read an agent profile's realized P&L",
-    description: "Realized profit for this profile's own fills, the Candle fees charged against it, and the " + "positions it still holds with their COST BASIS -- not their current value, which is not marked " + "here. Deposits, withdrawals and transfers are excluded: funding a wallet is not profit. Check " + "`unvalued` and `truncated` before quoting the number; they mean the total is partial. Reads only.",
+    title: "Read an agent profile's P&L",
+    description: "Realized profit for this profile's own fills, the Candle fees charged against it, and the " + "positions it still holds with their cost basis, each MARKED at Candle's current price where one " + "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " + "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " + "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits, withdrawals and " + "transfers are excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before " + "quoting the number; they mean the total is partial. Reads only.",
     inputSchema: profilePnlShape
   }, async (args) => callAndRelay("candle_get_profile_pnl", args, cfg));
   register("candle_get_profile_trades", {
@@ -39225,6 +39228,31 @@ var HELP = {
       { invocation: "--wallet <tee>", description: "The TEE wallet that creates it" }
     ],
     examples: ["candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne"],
+    env: ENV_API
+  },
+  portfolio: {
+    group: "Account",
+    summary: "Every wallet's holdings, prices and value in one table (vault read over your own RPC)",
+    description: "Vault, TEE and embedded wallets, each token with amount, price and value, then a total. TEE and embedded balances come from Candle; vault and external wallets are read over your own RPC, and Candle is sent only the mints they hold, for prices. Unpriced tokens are shown as unpriced and left out of the total.",
+    usage: ["candle portfolio [--rpc-url <url>] [--json]"],
+    rows: [],
+    flags: [
+      {
+        invocation: "--rpc-url <url>",
+        description: "Your own Solana RPC, for the vault. Without it (or CANDLE_SOLANA_RPC_URL) the vault is not read"
+      },
+      KEYSTORE_FLAG
+    ],
+    examples: ["candle portfolio", "candle portfolio --rpc-url https://your-rpc.example --json"],
+    env: [...ENV_API, ...ENV_LOCAL_SIGNING]
+  },
+  pnl: {
+    group: "Account",
+    summary: "P&L: realized, fees, unrealized and open positions (--profile for one key's own)",
+    description: "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the web P&L chart shows. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its own P&L. Unpriced positions are shown as unpriced and never valued at zero.",
+    usage: ["candle pnl [--profile <name>] [--json]"],
+    rows: [],
+    examples: ["candle pnl", "candle pnl --profile scalper --json"],
     env: ENV_API
   },
   keys: {
@@ -45100,6 +45128,511 @@ async function runPlugin(name, rawArgs, ctx) {
   return ctx.deps.runPlugin(path, split2.passthrough, env);
 }
 
+// src/commands/pnl.ts
+init_args();
+init_deps();
+init_profiles();
+init_render();
+
+// src/usd.ts
+function formatUsd(value) {
+  if (!Number.isFinite(value))
+    return "?";
+  const sign2 = value < 0 ? "-" : "";
+  const abs = Math.abs(value);
+  if (abs > 0 && abs < 0.005)
+    return `${sign2}<$0.01`;
+  return `${sign2}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+function formatPrice(value) {
+  if (!Number.isFinite(value) || value <= 0)
+    return "?";
+  if (value >= 1)
+    return formatUsd(value);
+  return `$${Number(value.toPrecision(4)).toLocaleString("en-US", { maximumFractionDigits: 12 })}`;
+}
+function formatAmount(raw, decimals) {
+  const digits = BigInt(raw).toString().padStart(decimals + 1, "0");
+  if (decimals === 0)
+    return digits;
+  const whole = digits.slice(0, -decimals);
+  const fraction = digits.slice(-decimals).replace(/0+$/, "");
+  return fraction ? `${whole}.${fraction}` : whole;
+}
+function formatQuantity(value) {
+  if (!Number.isFinite(value))
+    return "?";
+  return value.toLocaleString("en-US", { maximumFractionDigits: 6 });
+}
+function shortAddress2(address) {
+  return address.length > 12 ? `${address.slice(0, 4)}…${address.slice(-4)}` : address;
+}
+
+// src/commands/pnl.ts
+var NO_API_KEY2 = {
+  code: "NO_API_KEY",
+  message: "No API key for this profile.",
+  suggestion: "Set CANDLE_API_KEY, or run `candle auth login` to store one."
+};
+async function pnl(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length > 0) {
+    writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}. Usage: candle pnl [--profile <name>]`, json);
+    return 2;
+  }
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(deps, NO_API_KEY2, json);
+    return 1;
+  }
+  const perProfile = ctx.profileFlag !== undefined;
+  let keyPrefix;
+  if (perProfile) {
+    keyPrefix = apiKeyPrefix(apiKey);
+    if (keyPrefix === undefined) {
+      writeLocalFailure(deps, {
+        code: "BAD_REQUEST",
+        message: `The API key for profile ${ctx.profileFlag} is not a Candle agent key, so it names no profile to read.`,
+        suggestion: "Run `candle auth login --profile <name>` to store a key for that profile."
+      }, json);
+      return 1;
+    }
+  }
+  await printIdentity(ctx);
+  const path = perProfile ? `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl` : "/api/v1/agent/books";
+  const result = await apiRequest(path, {
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    if (!perProfile && result.code === "SCOPE_MISSING") {
+      writeLocalFailure(deps, {
+        code: "SCOPE_MISSING",
+        message: "The account's P&L needs a key with the Read scope (account:read); this profile's key has none.",
+        suggestion: "Log in with a Read or Read:Write key, or read this key's own P&L: candle pnl --profile <name>"
+      }, json);
+      return 1;
+    }
+    writeFailure(deps, result, { apiUrl, authType: "key" }, json);
+    return 1;
+  }
+  const body = result.body;
+  if (json) {
+    const { success: _success, ...rest } = body;
+    deps.stdout.write(`${JSON.stringify({ ok: true, scope: perProfile ? "profile" : "account", ...rest })}
+`);
+    return 0;
+  }
+  if (perProfile) {
+    const { pnl: p } = body;
+    deps.stdout.write(`P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills
+
+`);
+    writeSummary(ctx, {
+      realizedNetUsd: p.realizedNetUsd,
+      realizedGrossUsd: p.realizedGrossUsd,
+      feesUsd: p.feesUsd,
+      unrealizedUsd: p.unrealizedUsd,
+      unmarked: p.unmarkedPositions,
+      unvalued: p.unvalued,
+      counted: p.counted,
+      positions: p.openPositions.length,
+      truncated: p.truncated,
+      lookback: p.lookback,
+      lookbackUnit: "trades",
+      oldestMarkAt: p.oldestMarkAt
+    });
+    writePositions(ctx, p.openPositions, false);
+    return 0;
+  }
+  const books = body;
+  deps.stdout.write(`P&L for the account: every profile, the web app and the CLI, one ledger
+
+`);
+  writeSummary(ctx, {
+    ...books.all,
+    positions: books.positions.length,
+    truncated: books.truncated,
+    lookback: books.lookback,
+    lookbackUnit: "ledger rows",
+    oldestMarkAt: books.oldestMarkAt
+  });
+  writePositions(ctx, books.positions, true);
+  return 0;
+}
+function writeSummary(ctx, s) {
+  const marked = s.positions - s.unmarked;
+  const lines = [
+    [
+      "Realized net",
+      formatUsd(s.realizedNetUsd),
+      `gross ${formatUsd(s.realizedGrossUsd)}, fees ${formatUsd(s.feesUsd)}`
+    ],
+    [
+      "Unrealized",
+      formatUsd(s.unrealizedUsd),
+      `${marked} of ${s.positions} open ${s.positions === 1 ? "position" : "positions"} marked${s.unmarked > 0 ? `; ${s.unmarked} unpriced, not counted` : ""}`
+    ],
+    ["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized"]
+  ];
+  const width = Math.max(...lines.map(([label]) => label.length));
+  const valueWidth = Math.max(...lines.map(([, value]) => value.length));
+  for (const [label, value, note] of lines) {
+    ctx.deps.stdout.write(`${label.padEnd(width)}  ${value.padStart(valueWidth)}  (${note})
+`);
+  }
+  if (s.oldestMarkAt !== undefined) {
+    ctx.deps.stdout.write(`Marks as old as ${new Date(s.oldestMarkAt).toISOString()}.
+`);
+  }
+  if (s.unvalued > 0 || (s.unresolved ?? 0) > 0) {
+    ctx.deps.stdout.write(`${s.unvalued} ${s.unvalued === 1 ? "fill" : "fills"} could not be valued and are not in these figures.
+`);
+  }
+  if (s.truncated) {
+    ctx.deps.stdout.write(`History is truncated: this covers the most recent ${s.lookback} ${s.lookbackUnit}, not the account's lifetime.
+`);
+  }
+}
+function writePositions(ctx, positions, withBook) {
+  if (positions.length === 0) {
+    ctx.deps.stdout.write(`
+No open positions.
+`);
+    return;
+  }
+  const headers = ["TOKEN", "QUANTITY", "AVG ENTRY", "MARK", "UNREALIZED"];
+  if (withBook)
+    headers.push("BOOK");
+  const rows = positions.map((p) => {
+    const row = [
+      p.symbol?.trim() || shortAddress2(p.mint),
+      formatQuantity(p.quantity),
+      formatPrice(p.avgEntryUsd),
+      p.markPriceUsd !== undefined ? formatPrice(p.markPriceUsd) : "unpriced",
+      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd) : "-"
+    ];
+    if (withBook)
+      row.push(p.book ?? "-");
+    return row;
+  });
+  ctx.deps.stdout.write(`
+Open positions
+${renderTable(headers, rows.map((row) => row.map(terminalText)))}
+`);
+}
+
+// src/commands/portfolio.ts
+init_args();
+init_deps();
+init_profiles();
+init_render();
+init_solana_lite();
+init_store();
+init_vault_support();
+var SOL_MINT = "So11111111111111111111111111111111111111112";
+var KNOWN_SYMBOLS = {
+  [SOL_MINT]: "SOL",
+  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: "USDC",
+  "9dXSV8VWuYvGfTzqvkBeoFwH9ihVTybDuWo5VaJPCNDL": "CNDL"
+};
+var CHUNK = 100;
+var TOKEN_READS_IN_FLIGHT = 8;
+var NO_API_KEY3 = {
+  code: "NO_API_KEY",
+  message: "No API key for this profile.",
+  suggestion: "Set CANDLE_API_KEY, or run `candle auth login` to store one."
+};
+async function portfolio(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"], pathFlags: ["--keystore"] });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  if (parsed.positionals.length > 0)
+    return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  const { deps } = ctx;
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey) {
+    writeLocalFailure(deps, NO_API_KEY3, ctx.json);
+    return 1;
+  }
+  const rpcGiven = parsed.values["--rpc-url"] !== undefined || Boolean(deps.env[RPC_URL_ENV]?.trim());
+  let rpcUrl2;
+  if (rpcGiven) {
+    const resolved = rpcUrlFrom(ctx, parsed);
+    if (typeof resolved !== "string")
+      return usage(ctx, resolved.error);
+    rpcUrl2 = resolved;
+  }
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    let vaultEntries;
+    let vaultReason;
+    const raw = rpcUrl2 === undefined ? null : await readVaultRaw(resolvedVault.path);
+    if (rpcUrl2 === undefined) {
+      vaultReason = `not read: vault balances are read only over your own RPC; pass --rpc-url or set ${RPC_URL_ENV}`;
+    } else if (raw === null) {
+      vaultReason = `no vault at ${resolvedVault.path}`;
+    } else {
+      if (!refuseEnvPassphrase(ctx))
+        return 1;
+      if (!requirePromptStreams(ctx, "portfolio"))
+        return 1;
+      const vault = hold((await unlockInteractively(ctx, resolvedVault.path, raw)).vault);
+      vaultEntries = vault.index.entries.filter((entry) => entry.chain === "solana" && (entry.role === "vault" || entry.role === "external")).map((entry) => ({ address: entry.address, label: entry.label, role: entry.role }));
+    }
+    await printIdentity(ctx);
+    const rpcHost = rpcUrl2 === undefined ? undefined : new URL(rpcUrl2).host;
+    if (vaultEntries && vaultEntries.length > 0 && rpcHost !== undefined) {
+      const requests = Math.ceil(vaultEntries.length / CHUNK) + vaultEntries.length * 2;
+      deps.stderr.write(`Reading ${vaultEntries.length} vault ${vaultEntries.length === 1 ? "address" : "addresses"} from ${rpcHost} in ${requests} requests. That endpoint sees them together; Candle sees none of them.
+`);
+    }
+    const [candle, vaultRead] = await Promise.all([
+      apiRequest("/api/v1/agent/portfolio", {
+        auth: "key",
+        credentials: { apiKey },
+        apiUrl: ctx.apiUrl,
+        fetch: deps.fetch,
+        env: deps.env
+      }),
+      vaultEntries && rpcUrl2 ? readOwnRpc(vaultEntries.map((entry) => entry.address), rpcUrl2, deps.fetch) : Promise.resolve(undefined)
+    ]);
+    if (!candle.ok) {
+      writeFailure(deps, candle, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
+      return 1;
+    }
+    const fromCandle = candle.body;
+    const prices = { ...fromCandle.prices ?? {} };
+    let priceFailure;
+    if (vaultRead) {
+      const wanted = new Set;
+      for (const wallet2 of vaultRead.byAddress.values()) {
+        if (wallet2.lamports !== null)
+          wanted.add(SOL_MINT);
+        for (const token of wallet2.tokens ?? [])
+          wanted.add(token.mint);
+      }
+      const missing = [...wanted].filter((mint) => prices[mint] === undefined);
+      for (let at = 0;at < missing.length; at += CHUNK) {
+        const priced = await apiRequest("/api/v1/agent/prices", {
+          method: "POST",
+          body: { mints: missing.slice(at, at + CHUNK) },
+          auth: "key",
+          credentials: { apiKey },
+          apiUrl: ctx.apiUrl,
+          fetch: deps.fetch,
+          env: deps.env
+        });
+        if (priced.ok)
+          Object.assign(prices, priced.body.prices ?? {});
+        else
+          priceFailure ??= priced.message;
+      }
+    }
+    if (priceFailure !== undefined) {
+      deps.stderr.write(`Some vault holdings could not be priced: ${terminalText(priceFailure)}. They are shown as unpriced.
+`);
+    }
+    const wallet = (address, read, extra) => {
+      const holdings = read === undefined ? null : valueHoldings(read, prices);
+      const unread = read === undefined ? [] : [...read.lamports === null ? ["sol"] : [], ...read.tokens === null ? ["tokens"] : []];
+      return {
+        address,
+        ...extra,
+        holdings,
+        ...unread.length > 0 ? { unread } : {},
+        valueUsd: (holdings ?? []).reduce((sum, h) => sum + (h.valueUsd ?? 0), 0),
+        unpriced: (holdings ?? []).filter((h) => h.priceUsd === null).length
+      };
+    };
+    const group = (name, wallets, read, reason) => ({
+      group: name,
+      read,
+      ...reason !== undefined ? { reason } : {},
+      wallets,
+      valueUsd: wallets.reduce((sum, w) => sum + w.valueUsd, 0),
+      unpriced: wallets.reduce((sum, w) => sum + w.unpriced, 0)
+    });
+    const orNull = (read) => read.lamports === null && read.tokens === null ? undefined : read;
+    const groups = [
+      group("vault", (vaultEntries ?? []).map((entry) => {
+        const read = vaultRead?.byAddress.get(entry.address);
+        return wallet(entry.address, read ? orNull(read) : undefined, { label: entry.label, role: entry.role });
+      }), vaultEntries !== undefined, vaultReason),
+      group("tee", (fromCandle.tee ?? []).map((row) => wallet(row.address, orNull(row), {
+        id: row.id,
+        ...row.label ? { label: row.label } : {},
+        active: row.active
+      })), true),
+      group("embedded", (fromCandle.embedded ?? []).map((row) => wallet(row.address, orNull(row), {})), true)
+    ];
+    const unavailable = [...vaultRead?.unavailable ?? [], ...fromCandle.unavailable ?? []];
+    const complete = fromCandle.complete !== false && unavailable.length === 0;
+    const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0);
+    const unpriced = groups.reduce((sum, g) => sum + g.unpriced, 0);
+    if (ctx.json) {
+      writeJson(deps, {
+        ok: true,
+        totalUsd,
+        unpriced,
+        complete,
+        unavailable,
+        ...rpcHost !== undefined ? { rpcHost } : {},
+        groups
+      });
+      return complete ? 0 : 3;
+    }
+    writeTable(ctx, groups, { totalUsd, unpriced, unavailable: unavailable.length });
+    return complete ? 0 : 3;
+  });
+}
+async function readOwnRpc(addresses, rpcUrl2, fetchFn) {
+  const rpc2 = createSolanaRpc(rpcUrl2, fetchFn);
+  const unique = [...new Set(addresses)];
+  const lamports = new Map;
+  for (let at = 0;at < unique.length; at += CHUNK) {
+    const chunk = unique.slice(at, at + CHUNK);
+    try {
+      const accounts = await rpc2.getMultipleAccounts(chunk);
+      for (const [i, address] of chunk.entries())
+        lamports.set(address, (accounts[i]?.lamports ?? 0n).toString());
+    } catch {
+      for (const address of chunk)
+        lamports.set(address, null);
+    }
+  }
+  const tokens = new Map;
+  const failed = new Set;
+  const reads = unique.flatMap((owner) => [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].map((programId) => ({ owner, programId })));
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(TOKEN_READS_IN_FLIGHT, reads.length) }, async () => {
+    while (next < reads.length) {
+      const { owner, programId } = reads[next++];
+      try {
+        const accounts = await rpc2.getTokenAccountsByOwner(owner, programId);
+        const held = tokens.get(owner) ?? new Map;
+        tokens.set(owner, held);
+        const program = programId === TOKEN_PROGRAM_ID ? "token" : "token-2022";
+        for (const account of accounts) {
+          if (!/^\d+$/.test(account.amountRaw) || BigInt(account.amountRaw) === 0n)
+            continue;
+          const key = `${program}:${account.mint}`;
+          const prior = held.get(key);
+          held.set(key, {
+            mint: account.mint,
+            amountRaw: (BigInt(prior?.amountRaw ?? "0") + BigInt(account.amountRaw)).toString(),
+            decimals: account.decimals,
+            program
+          });
+        }
+      } catch {
+        failed.add(owner);
+      }
+    }
+  }));
+  const byAddress = new Map;
+  const unavailable = [];
+  for (const address of unique) {
+    const sol = lamports.get(address) ?? null;
+    const held = failed.has(address) ? null : [...tokens.get(address)?.values() ?? []];
+    byAddress.set(address, { lamports: sol, tokens: held });
+    if (sol === null || held === null)
+      unavailable.push(address);
+  }
+  return { byAddress, unavailable };
+}
+function valueHoldings(read, prices) {
+  const raw = [];
+  if (read.lamports !== null && BigInt(read.lamports) > 0n) {
+    raw.push({ mint: SOL_MINT, amountRaw: read.lamports, decimals: 9, program: "native" });
+  }
+  for (const token of read.tokens ?? [])
+    raw.push(token);
+  return raw.map((h) => {
+    const price = prices[h.mint];
+    const priceUsd = price?.priceUsd ?? null;
+    const amount = formatAmount(h.amountRaw, h.decimals);
+    return {
+      ...h,
+      symbol: KNOWN_SYMBOLS[h.mint] ?? price?.symbol ?? null,
+      amount,
+      priceUsd,
+      valueUsd: priceUsd === null ? null : Number(amount) * priceUsd,
+      priceSource: price?.source ?? null
+    };
+  });
+}
+function writeTable(ctx, groups, totals) {
+  const { deps } = ctx;
+  const rows = [];
+  const notes = [];
+  for (const g of groups) {
+    const shown = g.wallets.filter((w) => w.holdings === null || w.holdings.length > 0 || (w.unread?.length ?? 0) > 0).sort((a, b) => b.valueUsd - a.valueUsd);
+    for (const w of shown) {
+      const name = `${w.label ? `${w.label} ` : ""}(${shortAddress2(w.address)})${w.role === "external" ? " external" : ""}`;
+      if (w.holdings === null) {
+        rows.push([g.group, name, "-", "not read", "-", "-"]);
+        continue;
+      }
+      const sorted = [...w.holdings].sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1));
+      for (const h of sorted) {
+        rows.push([
+          g.group,
+          name,
+          h.symbol ?? shortAddress2(h.mint),
+          h.amount,
+          h.priceUsd === null ? "unpriced" : formatPrice(h.priceUsd),
+          h.valueUsd === null ? "-" : formatUsd(h.valueUsd)
+        ]);
+      }
+      for (const part of w.unread ?? [])
+        rows.push([g.group, name, part === "sol" ? "SOL" : "tokens", "not read", "-", "-"]);
+    }
+    const empty = g.wallets.length - shown.length;
+    const count = `${g.wallets.length} ${g.wallets.length === 1 ? "wallet" : "wallets"}`;
+    notes.push([
+      g.group,
+      g.read ? formatUsd(g.valueUsd) : "-",
+      g.read ? `${count}${empty > 0 ? `, ${empty} empty not shown` : ""}${g.unpriced > 0 ? `, ${g.unpriced} unpriced` : ""}` : g.reason ?? "not read"
+    ]);
+  }
+  if (rows.length > 0)
+    deps.stdout.write(`
+${renderTable(["GROUP", "WALLET", "TOKEN", "AMOUNT", "PRICE", "VALUE"], rows.map((row) => row.map(terminalText)))}
+`);
+  else
+    deps.stdout.write(`
+Nothing held in any wallet read.
+`);
+  notes.push([
+    "total",
+    formatUsd(totals.totalUsd),
+    totals.unpriced > 0 ? `${totals.unpriced} unpriced ${totals.unpriced === 1 ? "holding" : "holdings"} not counted` : "every holding priced"
+  ]);
+  const width = Math.max(...notes.map(([label]) => label.length));
+  const valueWidth = Math.max(...notes.map(([, value]) => value.length));
+  deps.stdout.write(`
+`);
+  for (const [label, value, note] of notes) {
+    deps.stdout.write(`${label.padEnd(width)}  ${value.padStart(valueWidth)}  ${note}
+`);
+  }
+  if (totals.unavailable > 0) {
+    deps.stdout.write(`${totals.unavailable} ${totals.unavailable === 1 ? "wallet" : "wallets"} could not be read in full. What was not read is marked "not read" and is not in the total.
+`);
+  }
+}
+
 // src/commands/profile.ts
 init_args();
 init_profiles();
@@ -45835,7 +46368,7 @@ async function readMints(rpc2, mints) {
   }
   return out;
 }
-function formatAmount(raw, decimals) {
+function formatAmount2(raw, decimals) {
   if (decimals === undefined)
     return `${raw} raw`;
   const negative = raw < 0n;
@@ -45845,7 +46378,7 @@ function formatAmount(raw, decimals) {
   return `${negative ? "-" : ""}${whole}${frac ? `.${frac}` : ""}`;
 }
 function formatSol(lamports) {
-  return `${formatAmount(lamports, 9)} SOL`;
+  return `${formatAmount2(lamports, 9)} SOL`;
 }
 function displayLines(input) {
   const { tx, compiled, signers, simulation, mints } = input;
@@ -45868,7 +46401,7 @@ function displayLines(input) {
     }
     for (const token of deltas.tokens.filter((delta) => delta.owner === entry.address)) {
       const info = mints.get(token.mint);
-      lines.push(`            ${token.mint}: ${formatAmount(token.before, info?.decimals)} -> ${formatAmount(token.after, info?.decimals)} (${token.after >= token.before ? "+" : ""}${formatAmount(token.after - token.before, info?.decimals)}${info?.decimals === undefined ? "" : `, ${info.decimals} dp`}) in ${token.account}`);
+      lines.push(`            ${token.mint}: ${formatAmount2(token.before, info?.decimals)} -> ${formatAmount2(token.after, info?.decimals)} (${token.after >= token.before ? "+" : ""}${formatAmount2(token.after - token.before, info?.decimals)}${info?.decimals === undefined ? "" : `, ${info.decimals} dp`}) in ${token.account}`);
     }
   }
   const others = [];
@@ -45883,7 +46416,7 @@ function displayLines(input) {
     if (signerAddresses.has(token.owner) || token.after <= token.before)
       continue;
     const info = mints.get(token.mint);
-    others.push(`${token.owner} receives +${formatAmount(token.after - token.before, info?.decimals)} of ${token.mint} (account ${token.account})`);
+    others.push(`${token.owner} receives +${formatAmount2(token.after - token.before, info?.decimals)} of ${token.mint} (account ${token.account})`);
   }
   if (others.length === 0)
     lines.push("others      no other account gains a balance in the simulation");
@@ -55589,7 +56122,7 @@ init_render();
 init_solana_lite();
 init_store();
 init_vault_support();
-var CHUNK = 100;
+var CHUNK2 = 100;
 var LAMPORTS_PER_SOL = 1000000000n;
 function formatSol3(lamports) {
   const whole = lamports / LAMPORTS_PER_SOL;
@@ -55601,8 +56134,8 @@ async function readLamports(addresses, rpcUrl2, fetchFn) {
   const lamports = new Map;
   const unavailable = [];
   let failure;
-  for (let at = 0;at < addresses.length; at += CHUNK) {
-    const chunk = addresses.slice(at, at + CHUNK);
+  for (let at = 0;at < addresses.length; at += CHUNK2) {
+    const chunk = addresses.slice(at, at + CHUNK2);
     try {
       const accounts = await rpc2.getMultipleAccounts(chunk);
       for (const [i, address] of chunk.entries())
@@ -55653,7 +56186,7 @@ async function vaultList(args, ctx) {
     const all = vault.index.entries;
     const matched = filter === undefined ? all : all.filter((entry) => matches(entry, filter));
     const solana = balances ? matched.filter((entry) => entry.chain === "solana") : [];
-    const requests = Math.ceil(solana.length / CHUNK);
+    const requests = Math.ceil(solana.length / CHUNK2);
     const rpcHost = rpcUrl2 === undefined ? undefined : new URL(rpcUrl2).host;
     if (balances && solana.length > 0 && rpcHost !== undefined) {
       deps.stderr.write(`Reading SOL for ${solana.length} addresses from ${rpcHost}, in ${requests} ${requests === 1 ? "request" : "requests"}. That endpoint sees all ${solana.length} together.
@@ -56752,7 +57285,7 @@ function parseValueUsdCell(raw) {
   const value = Number(cleaned);
   return Number.isFinite(value) ? value : undefined;
 }
-function formatUsd(value) {
+function formatUsd2(value) {
   const [whole, fraction] = value.toFixed(2).split(".");
   const grouped = (whole ?? "0").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return `$${grouped}.${fraction ?? "00"}`;
@@ -57296,7 +57829,7 @@ function renderFooter(opts) {
       else
         total += value;
     }
-    lines.push(`value_usd totals your file's own column; this CLI reads no price. Total for the ${opts.acting.length} rows this run will act on: ${formatUsd(total)}${excluded > 0 ? ` (${excluded} row${excluded === 1 ? "" : "s"} excluded: the cell did not parse)` : ""}`);
+    lines.push(`value_usd totals your file's own column; this CLI reads no price. Total for the ${opts.acting.length} rows this run will act on: ${formatUsd2(total)}${excluded > 0 ? ` (${excluded} row${excluded === 1 ? "" : "s"} excluded: the cell did not parse)` : ""}`);
   }
   const accepted = opts.acting.filter((item) => item.kind === "promote" && item.acceptedUnknown);
   if (accepted.length > 0) {
@@ -58945,6 +59478,8 @@ function extractGlobalFlags(argv) {
 var COMMANDS = {
   swap: { bare: swap, subcommands: { status: swapStatus } },
   launch: { bare: launch },
+  pnl: { bare: pnl },
+  portfolio: { bare: portfolio },
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
   keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke, wallets: keysWallets } },

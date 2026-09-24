@@ -12,6 +12,7 @@ import {
   portalDeviceUrl,
   renderError,
   renderTable,
+  terminalText,
   writeFailure,
   writeLocalFailure,
   writeUsageFailure,
@@ -310,4 +311,9 @@ describe("portalDeviceUrl", () => {
   test("stripping a leading api. host label never touches the port", () => {
     expect(portalDeviceUrl("https://api.example.com:8443")).toBe("https://example.com:8443/agents")
   })
+})
+
+test("terminalText removes every C0 and C1 control character and DEL, and nothing else", () => {
+  expect(terminalText("\u001b[2J\u001b[31mUSDC\u0007\u007f\u009b\n\t")).toBe("[2J[31mUSDC")
+  expect(terminalText("Ünïcødé 🚀 $1,234.56")).toBe("Ünïcødé 🚀 $1,234.56")
 })

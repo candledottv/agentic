@@ -51,6 +51,18 @@ export function formatScopesForSummary(scopes: readonly string[]): string {
     .join(", ")
 }
 
+/**
+ * Text from a server, made safe to print on a terminal (BE-316 review): every C0 and C1 control
+ * character removed, DEL included. A token's symbol and name reach Candle from market data anyone
+ * can influence by minting a token, so `\x1b[2J` in a symbol would otherwise clear or recolour the
+ * rows around it -- in a table that carries balances and a total. `--json` needs none of this:
+ * `JSON.stringify` escapes control characters.
+ */
+export function terminalText(value: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point.
+  return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+}
+
 /** A plain fixed-width table: a header row, a separator row of dashes, then one row per data
  * row, every column padded to its widest cell (header included). No color, no box drawing --
  * this only has to be readable in a plain terminal and diffable in a test assertion. */

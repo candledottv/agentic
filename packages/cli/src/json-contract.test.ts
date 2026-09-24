@@ -208,6 +208,9 @@ const JSON_ANSWERING: { name: string; argv: string[] }[] = [
   { name: "swap", argv: ["swap"] },
   { name: "swap status", argv: ["swap", "status"] },
   { name: "launch", argv: ["launch"] },
+  // BE-316: read-only. With no credentials both answer NO_API_KEY before any request.
+  { name: "pnl", argv: ["pnl"] },
+  { name: "portfolio", argv: ["portfolio"] },
   // BE-315: the LP writes answer usage without a terminal or a key; `lp positions` needs a key
   // before it can answer at all, like `swap` with a full argument list, and is not frozen here.
   { name: "lp pools", argv: ["lp", "pools"] },

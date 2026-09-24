@@ -297,6 +297,33 @@ export const HELP: Record<string, Topic> = {
     env: ENV_API,
   },
 
+  portfolio: {
+    group: "Account",
+    summary: "Every wallet's holdings, prices and value in one table (vault read over your own RPC)",
+    description:
+      "Vault, TEE and embedded wallets, each token with amount, price and value, then a total. TEE and embedded balances come from Candle; vault and external wallets are read over your own RPC, and Candle is sent only the mints they hold, for prices. Unpriced tokens are shown as unpriced and left out of the total.",
+    usage: ["candle portfolio [--rpc-url <url>] [--json]"],
+    rows: [],
+    flags: [
+      {
+        invocation: "--rpc-url <url>",
+        description: "Your own Solana RPC, for the vault. Without it (or CANDLE_SOLANA_RPC_URL) the vault is not read",
+      },
+      KEYSTORE_FLAG,
+    ],
+    examples: ["candle portfolio", "candle portfolio --rpc-url https://your-rpc.example --json"],
+    env: [...ENV_API, ...ENV_LOCAL_SIGNING],
+  },
+  pnl: {
+    group: "Account",
+    summary: "P&L: realized, fees, unrealized and open positions (--profile for one key's own)",
+    description:
+      "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the web P&L chart shows. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its own P&L. Unpriced positions are shown as unpriced and never valued at zero.",
+    usage: ["candle pnl [--profile <name>] [--json]"],
+    rows: [],
+    examples: ["candle pnl", "candle pnl --profile scalper --json"],
+    env: ENV_API,
+  },
   keys: {
     group: "Account",
     summary: "API keys, and the wallets each key may use",

@@ -97,7 +97,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_get_wallets` | The account's embedded wallets, one per chain, with delegation state | `GET /api/v1/agent/wallets/embedded` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_profile_wallets` | Which wallets an agent profile may spend from, and whether it is scoped | `GET /api/v1/agent/keys/:prefix/wallets` | `CANDLE_AGENT_API_KEY` |
 | `candle_set_profile_wallets` | Replace the wallets an agent profile may spend from | `PUT /api/v1/agent/keys/:prefix/wallets` | `CANDLE_AGENT_API_KEY` |
-| `candle_get_profile_pnl` | An agent profile's realized P&L, fees, and open positions at cost basis | `GET /api/v1/agent/keys/:prefix/pnl` | `CANDLE_AGENT_API_KEY` |
+| `candle_get_profile_pnl` | An agent profile's realized P&L, fees, and open positions at cost basis, marked at current prices (unpriced positions counted, not zeroed) | `GET /api/v1/agent/keys/:prefix/pnl` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_profile_trades` | An agent profile's orders, fills, fees and transaction hashes | `GET /api/v1/agent/keys/:prefix/trades` | `CANDLE_AGENT_API_KEY` |
 | `candle_execution_status` | One call before trading: wallets to spend from, tier, and whether trading is possible | Composes the wallet and tier reads | `CANDLE_AGENT_API_KEY` |
 | `candle_get_operation` | Look up a trade or launch by the id its write used, and whether it landed | `GET /api/v1/trade/agent/jobs/:clientId` or `/api/v1/launch/headless/jobs/:clientId` | `CANDLE_AGENT_API_KEY` |
