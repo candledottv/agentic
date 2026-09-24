@@ -159,7 +159,7 @@
     "availability": {
       "retryable": true,
       "action": "The capability is switched off or a required leg is absent in this environment. Retry later; escalate if it persists.",
-      "codes": ["LAUNCH_DISABLED", "FEE_LEG_MISSING"]
+      "codes": ["LAUNCH_DISABLED", "FEE_LEG_MISSING", "HOOD_LAUNCH_UNAVAILABLE"]
     },
     "risk_stop": {
       "retryable": false,
