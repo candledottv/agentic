@@ -70,6 +70,21 @@ anyone signs up for anything.
 | --- | --- | --- |
 | `candle_get_operation` | yes | look up a trade or launch by the id its write used. Call this after a timeout instead of writing again |
 
+## Which CLI command do I need?
+
+Match the task, not the noun: "make this key use these wallets" is a rebind, not `keys wallets set`.
+
+| I want to | Run |
+| --- | --- |
+| Give a key TEE wallets, or move them to another key | `candle tee rebind <wallets...> --to-key <key>` (or `--label-prefix <p>` for many) |
+| Let a key use a linked wallet you imported | The agent console's Agents tab, signed in (`keys wallets set` from a key can only narrow) |
+| Turn a vault key into a TEE wallet | `candle vault promote --in-place <label> --sweep-to <cold key>`, or `--from <cold key>` for a fresh one |
+| Send funds out of a TEE wallet as the agent | `candle transfer --to vault` (or to a trusted wallet) with a Read:Write:Transfer key |
+| Send funds anywhere yourself | `candle vault transfer <address> --from <label>` |
+| Mark wallets as yours so agents can send to them | `candle wallets trust <selectors...>` |
+| Stop an agent | `candle tee disable <address>`, then `candle keys revoke <prefix>` |
+| Bring everything home | `candle tee sweep <address>` or `candle vault demote <address>` (`--emergency` with no API) |
+
 ## Doing a job end to end
 
 A human says: **"buy 0.2 SOL of 9dXSV8...CNDL"**. That is four calls, and none of them requires

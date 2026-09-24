@@ -361,7 +361,7 @@ export const HELP: Record<string, Topic> = {
     group: "Account",
     summary: "API keys, and the wallets each key may use",
     description:
-      "API keys are minted over the device token and shown exactly once. A key's wallet set and scope decide which wallets an agent holding it may act on.",
+      "API keys are minted over the device token and shown exactly once. A key's wallet set and scope decide which wallets an agent holding it may act on. To give a key TEE wallets, move them to it with candle tee rebind; keys wallets set cannot widen a key's set from the CLI.",
     usage: ["candle keys <subcommand> [flags]"],
     rows: [
       {
@@ -376,11 +376,18 @@ export const HELP: Record<string, Topic> = {
           "Create an API key; --access mints one of the three levels (read-write-transfer can move funds out of the wallet it runs)",
       },
       { invocation: "revoke <prefix>", description: "Revoke an API key" },
-      { invocation: "wallets <prefix>", description: "Wallets an agent profile can use" },
+      {
+        invocation: "wallets <prefix>",
+        description: "Wallets an agent profile can use. TEE wallets move between keys with candle tee rebind",
+      },
       // Indented, as the 0.11.0 block had them: these are second words under `keys wallets`, not
       // subcommands of `keys`. The indent is what keeps them out of every row-start scan (the
       // drift test's, and the completion generator's), which reads a row start as `/^ {2}(\S+)/`.
-      { invocation: "  set <prefix> --wallets <id,id>", description: "Replace the profile's wallet set" },
+      {
+        invocation: "  set <prefix> --wallets <id,id>",
+        description:
+          "Replace the profile's wallet set; from a key it can only narrow. To move TEE wallets to a key: candle tee rebind",
+      },
       {
         invocation: "  scope <prefix> --scope <all|selected>",
         description: "Limit a profile to assigned wallets",
@@ -391,6 +398,7 @@ export const HELP: Record<string, Topic> = {
       "candle keys create --access read-write-transfer --label rebalancer",
       "candle keys create --scopes trade:write --label agent-one",
       "candle keys wallets ck_live_ab12",
+      "candle tee rebind --label-prefix dest- --to-key ck_live_ab12",
       "candle keys revoke ck_live_ab12",
     ],
     env: ENV_API,
@@ -624,8 +632,9 @@ export const HELP: Record<string, Topic> = {
           "Sign locally and move everything to the pinned vault; closes DAMM v2 LP positions after verifying each server-built close (--emergency moves the position NFT instead, with no API)",
       },
       {
-        invocation: "rebind <wallet...> --to-key <prefix|label>",
-        description: "Move TEE wallets to another key on this account (owner only; funds do not move)",
+        invocation: "rebind <wallet...> --to-key <prefix|label> [--label-prefix <p>]",
+        description:
+          "Move TEE wallets to another key on this account, which is how a key gets TEE wallets. Name them, or --label-prefix for every wallet whose label starts with it (owner only; funds do not move)",
       },
       { invocation: "rebinds [wallet]", description: "List TEE wallet rebinds for this account (owner only)" },
     ],
@@ -635,6 +644,7 @@ export const HELP: Record<string, Topic> = {
       "candle tee status AgentOneAddress",
       "candle tee sweep AgentOneAddress --rpc-url https://api.mainnet-beta.solana.com",
       "candle tee rebind tr-01 tr-02 --to-key Ab3dEf9h",
+      "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
     ],
     env: ENV_LOCAL_SIGNING,
   },

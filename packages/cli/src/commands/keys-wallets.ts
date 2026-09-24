@@ -26,6 +26,22 @@ const NO_API_KEY = {
   suggestion: "Set CANDLE_API_KEY, or run `candle keys create` and store one.",
 }
 
+/**
+ * The suggestion on a refused widening of a wallet set. The refusal itself stays the API's own
+ * message; what changes is where it points. An agent asked to "make this key use these wallets"
+ * reads `keys wallets set`, hits LOOSEN_REQUIRES_SESSION, and never finds `tee rebind`, which is
+ * the owner's move for TEE wallets and the command that was wanted (2026-09-24). So the hint names
+ * both ways forward, with the rebind spelled out for exactly the wallets and key this call named.
+ */
+export function widenRefusedHint(prefix: string, walletIds: string[]): string {
+  const wallets = walletIds.length > 0 ? walletIds.join(" ") : "<wallet...>"
+  return (
+    `To move TEE wallets to this key, run: candle tee rebind ${wallets} --to-key ${prefix} ` +
+    "(owner, device token; --label-prefix <p> names many at once). To grant a linked wallet to the key " +
+    "instead, use the agent console's Agents tab in a signed-in session."
+  )
+}
+
 interface ProfileWalletRow {
   linkedWalletId: string
   assignedAt: number
@@ -153,7 +169,16 @@ export async function keysWalletsSet(args: string[], ctx: CommandContext): Promi
     env: deps.env,
   })
   if (!result.ok) {
-    writeFailure(deps, result, { apiUrl, authType: "key" }, json)
+    if (result.code !== "LOOSEN_REQUIRES_SESSION") {
+      writeFailure(deps, result, { apiUrl, authType: "key" }, json)
+      return 1
+    }
+    // The human renderer prints the API's message alone and keeps suggestions for `--json`; this
+    // refusal is the one where the next command matters more than the message, so a person (or an
+    // agent reading the plain output) gets it on its own line too.
+    const hint = widenRefusedHint(prefix, walletIds)
+    writeFailure(deps, { ...result, uiHint: hint }, { apiUrl, authType: "key" }, json)
+    if (!json) deps.stderr.write(`${hint}\n`)
     return 1
   }
   if (json) {
