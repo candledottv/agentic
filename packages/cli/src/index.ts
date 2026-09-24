@@ -39,6 +39,7 @@ import { setup } from "./commands/setup"
 import { sign, signMessage } from "./commands/sign"
 import { swap, swapStatus } from "./commands/swap"
 import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./commands/tee"
+import { teeRebind, teeRebinds } from "./commands/tee-rebind"
 import { update } from "./commands/update"
 import { vaultBackup, vaultVerifyBackup } from "./commands/vault-backup"
 import { vaultDemote } from "./commands/vault-demote"
@@ -197,6 +198,9 @@ const COMMANDS: Record<string, CommandRoute> = {
       status: teeStatus,
       disable: teeDisable,
       sweep: teeSweep,
+      // BE-303: owner-only, device token, never the vault.
+      rebind: teeRebind,
+      rebinds: teeRebinds,
     },
   },
   profile: {

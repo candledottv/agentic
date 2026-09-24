@@ -38850,13 +38850,19 @@ var HELP = {
       {
         invocation: "sweep <address> --rpc-url <url> [--emergency]",
         description: "Sign locally and move everything to the pinned vault"
-      }
+      },
+      {
+        invocation: "rebind <wallet...> --to-key <prefix|label>",
+        description: "Move TEE wallets to another key on this account (owner only; funds do not move)"
+      },
+      { invocation: "rebinds [wallet]", description: "List TEE wallet rebinds for this account (owner only)" }
     ],
     flags: [KEYSTORE_FLAG],
     examples: [
       "candle tee new --label AgentOne",
       "candle tee status AgentOneAddress",
-      "candle tee sweep AgentOneAddress --rpc-url https://api.mainnet-beta.solana.com"
+      "candle tee sweep AgentOneAddress --rpc-url https://api.mainnet-beta.solana.com",
+      "candle tee rebind tr-01 tr-02 --to-key Ab3dEf9h"
     ],
     env: ENV_LOCAL_SIGNING
   },
@@ -45686,11 +45692,16 @@ async function adoptGrantedRow(ctx, entry, row, account, opts) {
     throw new VaultError("VAULT_INDEX_INVALID", `Entry ${entry.address} has no tee metadata.`);
   }
   if (entry.linkedWalletId !== undefined && tee.vaultDestination !== undefined && tee.boundKeyPrefix !== undefined) {
-    assertBinding(entry, row);
+    const moved = assertBinding(entry, row);
+    if (moved !== undefined) {
+      ctx.deps.stderr.write(`${entry.address}: bound key is now ${moved.to} (was ${moved.from}); it was moved with tee rebind.
+`);
+    }
     return {
       patch: {
         tee: {
           ...tee,
+          ...moved !== undefined ? { boundKeyPrefix: moved.to } : {},
           grantIdentity: recordedIdentity(tee.grantIdentity, account, ctx.apiUrl),
           remoteAuthority: row.remoteAuthority ?? tee.remoteAuthority,
           remoteState: row.sweptAt !== undefined ? "swept" : row.revokedAt !== undefined ? "quarantined" : "enabled",
@@ -45762,8 +45773,9 @@ function assertBinding(entry, row) {
     throw new VaultError("GRANT_BINDING_MISMATCH", `The recorded vault destination ${entry.tee.vaultDestination} does not match the server's ${row.vaultDestination}.`);
   }
   if (entry.tee?.boundKeyPrefix !== undefined && row.boundKeyPrefix !== undefined && entry.tee.boundKeyPrefix !== row.boundKeyPrefix) {
-    throw new VaultError("GRANT_BINDING_MISMATCH", `The recorded bound key prefix ${entry.tee.boundKeyPrefix} does not match the server's ${row.boundKeyPrefix}.`);
+    return { from: entry.tee.boundKeyPrefix, to: row.boundKeyPrefix };
   }
+  return;
 }
 function recordedIdentity(previous, account, apiBaseUrl) {
   return {
@@ -50778,6 +50790,302 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
   } finally {
     releaseActiveTee(active);
   }
+}
+
+// src/commands/tee-rebind.ts
+init_args();
+init_deps();
+init_profiles();
+init_render();
+init_promote_support();
+init_keys();
+var REBIND_PATH = "/api/v1/agent/tee-wallets/rebind";
+var REBINDS_PATH = "/api/v1/agent/tee-wallets/rebinds";
+var KEYS_PATH2 = "/api/v1/agent/keys";
+var USAGE_REBIND = "Usage: candle tee rebind <wallet...> --to-key <prefix|label> [--label-prefix <p>] [--json]";
+var USAGE_REBINDS = "Usage: candle tee rebinds [wallet] [--json]";
+var DEVICE_TOKEN_REQUIRED = {
+  code: "DEVICE_TOKEN_REQUIRED",
+  message: "Moving a TEE wallet needs the device token, the owner's credential; an API key cannot do it.",
+  suggestion: "Run: candle auth login"
+};
+var KEY_PREFIX_RE = /^[A-Za-z0-9_-]{8}$/;
+function capWarnings(keyPrefix, toKey) {
+  const { tradeReady, missingCaps } = toKey;
+  if (missingCaps.includes("txLimit")) {
+    return [
+      `Warning: key ${keyPrefix} has no txLimit; it cannot trade SOL-quoted or USDC-quoted swaps until one is set.`
+    ];
+  }
+  const lines = [];
+  if (!tradeReady.sol) {
+    lines.push(`Warning: key ${keyPrefix} can trade USDC-quoted swaps; it cannot trade SOL-quoted swaps until a SOL cap is set.`);
+  }
+  if (!tradeReady.usdc) {
+    lines.push(`Warning: key ${keyPrefix} can trade SOL-quoted swaps; it cannot trade USDC-quoted swaps until a USDC cap is set.`);
+  }
+  return lines;
+}
+function launchWarning(keyPrefix, toKey, rows) {
+  if (toKey.launchScope)
+    return null;
+  const launchers = rows.filter((row) => row.allowLaunch).map((row) => row.label ?? shortAddress(row.address));
+  if (launchers.length === 0)
+    return null;
+  return `Warning: key ${keyPrefix} lacks launch:write; ${launchers.join(", ")} ${launchers.length === 1 ? "has" : "have"} allowLaunch but cannot launch under it.`;
+}
+var RELAY_SIGNER_LINE = "The relay signer does not move: trade these wallets from the machine that promoted them.";
+function writeRebindFailure(ctx, result, context) {
+  const { deps, apiUrl, json } = ctx;
+  let code = result.code;
+  let message = result.message;
+  let suggestion;
+  if (result.status === 404 && result.code !== "REBIND_WALLET_INVALID") {
+    code = "REBIND_UNSUPPORTED";
+    message = "This Candle API does not support rebinding yet; nothing changed.";
+  } else if (result.code === "REBIND_BUILD_OPEN") {
+    const retryAfter = result.raw?.error?.retryAfter;
+    const when = typeof retryAfter === "number" ? new Date(retryAfter).toLocaleString() : "the build window closes";
+    const keys = context.fromKeyPrefixes ?? [];
+    const stop = keys.length === 1 ? `Stop the agent on key ${keys[0]} (candle keys stop ${keys[0]})` : keys.length > 1 ? `Stop the agents on keys ${keys.join(", ")} (candle keys stop <prefix>)` : "Stop the agent on the wallet's current key (candle keys stop <prefix>)";
+    suggestion = `${stop}, then run this again after ${when}.`;
+  } else if (result.code === "REBIND_FORWARD_OPEN") {
+    message = "A sign for these wallets is still in flight or not yet expired; nothing changed.";
+  } else if (result.code === "REBIND_RECONCILE_INCOMPLETE") {
+    suggestion = "Run the same command again; nothing changed.";
+  } else if (result.code === "REBIND_STALE") {
+    suggestion = "Run the command again; the preview will show the current binding.";
+  }
+  const envelope = errorEnvelope({ ...result, code, message }, { apiUrl, authType: "device" });
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ...envelope, ...suggestion ? { suggestion } : {} })}
+`);
+  } else {
+    deps.stderr.write(`${code ?? `HTTP ${result.status}`}: ${message}${suggestion ? ` ${suggestion}` : ""}
+`);
+  }
+  return 1;
+}
+async function resolveTargetKey(ctx, deviceToken, raw) {
+  const { deps, apiUrl, json } = ctx;
+  if (KEY_PREFIX_RE.test(raw))
+    return { ok: true, keyPrefix: raw };
+  const result = await apiRequest(KEYS_PATH2, {
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok) {
+    return { ok: false, code: writeRebindFailure(ctx, result, {}) };
+  }
+  const keys = (result.body?.keys ?? []).filter((key) => !key.revokedAt);
+  const matches = keys.filter((key) => key.label === raw);
+  if (matches.length === 1)
+    return { ok: true, keyPrefix: matches[0].keyPrefix };
+  if (matches.length === 0) {
+    const labelled = keys.filter((key) => key.label).map((key) => `${key.keyPrefix} ${labelCell(key.label)}`);
+    writeLocalFailure(deps, {
+      code: "REBIND_KEY_NOT_FOUND",
+      message: `No active key on this account is named ${JSON.stringify(raw)}.`,
+      suggestion: labelled.length > 0 ? `Named keys on this account:
+${labelled.map((line) => `  ${line}`).join(`
+`)}` : "No key on this account has a name; pass the key's 8-character prefix from: candle keys list"
+    }, json);
+    return { ok: false, code: 1 };
+  }
+  writeLocalFailure(deps, {
+    code: "REBIND_KEY_AMBIGUOUS",
+    message: `${matches.length} active keys are named ${JSON.stringify(raw)}; pass a prefix instead.`,
+    suggestion: `Matching prefixes: ${matches.map((key) => key.keyPrefix).join(", ")}`
+  }, json);
+  return { ok: false, code: 1 };
+}
+async function teeRebind(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  const parsed = parseArgs(args, { valueFlags: ["--to-key", "--label-prefix"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const toKey = parsed.values["--to-key"];
+  const labelPrefix = parsed.values["--label-prefix"];
+  if (!toKey) {
+    writeUsageFailure(deps, `--to-key is required. ${USAGE_REBIND}`, json);
+    return 2;
+  }
+  if (parsed.positionals.length === 0 && labelPrefix === undefined) {
+    writeUsageFailure(deps, `Name at least one wallet, or pass --label-prefix. ${USAGE_REBIND}`, json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED, json);
+    return 1;
+  }
+  if (!deps.isTTY.stdin || !deps.isTTY.stdout) {
+    writeLocalFailure(deps, {
+      code: "REBIND_REQUIRES_TTY",
+      message: "candle tee rebind needs a terminal: the acknowledgement is typed, and nothing else supplies it.",
+      suggestion: "Run it in an interactive shell; there is no flag and no environment variable for confirm."
+    }, json);
+    return 1;
+  }
+  const target = await resolveTargetKey(ctx, deviceToken, toKey);
+  if (!target.ok)
+    return target.code;
+  const call = (body) => apiRequest(REBIND_PATH, {
+    method: "POST",
+    body,
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  const preview = await call({
+    dryRun: true,
+    toKeyPrefix: target.keyPrefix,
+    wallets: parsed.positionals,
+    ...labelPrefix !== undefined ? { labelPrefix } : {}
+  });
+  if (!preview.ok)
+    return writeRebindFailure(ctx, preview, {});
+  const shown = preview.body;
+  const moving = shown.rebound;
+  if (moving.length === 0) {
+    if (json) {
+      deps.stdout.write(`${JSON.stringify({ ...shown, command: "tee rebind" })}
+`);
+    } else {
+      deps.stdout.write(`Nothing to move: every named wallet is already bound to ${shown.toKey.keyPrefix}.
+`);
+    }
+    return 0;
+  }
+  const table = renderTable(["line", "label", "address", "from", "allowLaunch"], moving.map((row, i) => [
+    String(i + 1),
+    labelCell(row.label ?? undefined),
+    row.address,
+    row.fromKeyPrefix,
+    row.allowLaunch ? "yes" : "no"
+  ]));
+  const config = await deps.readConfig();
+  const fields = effectiveProfileFields(config, ctx.profile);
+  const account = fields.account ? shortAddress(fields.account) : "unknown";
+  const accountLine = fields.username ? `${fields.username}  (${account})` : account;
+  const environment = candleEnvironment(apiUrl) ?? "not a Candle host";
+  const keyLabel = shown.toKey.label ? `  ${labelCell(shown.toKey.label)}` : "";
+  const n = moving.length;
+  const screen = [
+    table,
+    ...shown.unchanged.length > 0 ? [
+      `${shown.unchanged.length} already bound to this key: ${shown.unchanged.map((row) => row.label ?? shortAddress(row.address)).join(", ")}`
+    ] : [],
+    "",
+    `${n === 1 ? "This wallet" : `These ${n} wallets`} will move to:`,
+    `  API key         ${shown.toKey.keyPrefix}${keyLabel}${shown.toKey.paused ? "  (paused)" : ""}`,
+    `  Candle account  ${accountLine}`,
+    `  API             ${apiUrl}  (${environment})`,
+    "",
+    ...capWarnings(shown.toKey.keyPrefix, shown.toKey),
+    ...launchWarning(shown.toKey.keyPrefix, shown.toKey, moving) ? [launchWarning(shown.toKey.keyPrefix, shown.toKey, moving)] : [],
+    RELAY_SIGNER_LINE,
+    ""
+  ];
+  deps.stderr.write(`${screen.join(`
+`)}
+`);
+  const typed = await deps.promptLine(`Type ${CONFIRM_WORD} to move ${n === 1 ? "this wallet" : `these ${n} wallets`}: `);
+  if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
+    writeLocalFailure(deps, {
+      code: "REBIND_NOT_ACKNOWLEDGED",
+      message: `The acknowledgement is the word ${CONFIRM_WORD}; nothing was moved.`,
+      suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.`
+    }, json);
+    return 1;
+  }
+  const committed = await call({
+    toKeyPrefix: shown.toKey.keyPrefix,
+    walletIds: moving.map((row) => row.id),
+    expect: Object.fromEntries(moving.map((row) => [row.id, row.fromKeyPrefix]))
+  });
+  if (!committed.ok) {
+    return writeRebindFailure(ctx, committed, {
+      fromKeyPrefixes: Array.from(new Set(moving.map((row) => row.fromKeyPrefix)))
+    });
+  }
+  const result = committed.body;
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ...result, command: "tee rebind" })}
+`);
+    return 0;
+  }
+  const auditIds = result.rebound.map((row) => row.auditId).filter((id) => typeof id === "string");
+  deps.stdout.write(`Moved ${result.rebound.length} wallet${result.rebound.length === 1 ? "" : "s"} to ${result.toKey.keyPrefix}.` + `${auditIds.length > 0 ? ` Audit ids: ${auditIds.join(", ")}` : ""}
+`);
+  return 0;
+}
+var PORTAL_REVOKE_LINE = "A device token cannot revoke devices: revoke a device you do not recognise from the portal, with a signed-in session.";
+async function teeRebinds(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const [walletId, extra] = parsed.positionals;
+  if (extra !== undefined) {
+    writeUsageFailure(deps, `Unexpected argument: ${extra}. ${USAGE_REBINDS}`, json);
+    return 2;
+  }
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED, json);
+    return 1;
+  }
+  const query = walletId ? `?walletId=${encodeURIComponent(walletId)}` : "";
+  const result = await apiRequest(`${REBINDS_PATH}${query}`, {
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  if (!result.ok)
+    return writeRebindFailure(ctx, result, {});
+  const body = result.body;
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ...result.body, command: "tee rebinds" })}
+`);
+    return 0;
+  }
+  const rows = body.rebinds ?? [];
+  if (rows.length === 0) {
+    deps.stdout.write(`No rebinds on this account${walletId ? ` for ${walletId}` : ""}.
+`);
+    return 0;
+  }
+  deps.stdout.write(`${renderTable(["Time", "Wallet", "From", "To", "Actor", "Device"], rows.map((row) => [
+    formatTimestamp(row.at),
+    row.address,
+    row.fromKeyPrefix,
+    row.toKeyPrefix,
+    row.actor,
+    row.actorDevicePrefix ?? ""
+  ]))}
+`);
+  if (rows.some((row) => row.actor === "device"))
+    deps.stdout.write(`${PORTAL_REVOKE_LINE}
+`);
+  return 0;
 }
 
 // src/commands/update.ts
@@ -57659,7 +57967,9 @@ var COMMANDS = {
       fund: teeFund,
       status: teeStatus,
       disable: teeDisable,
-      sweep: teeSweep
+      sweep: teeSweep,
+      rebind: teeRebind,
+      rebinds: teeRebinds
     }
   },
   profile: {

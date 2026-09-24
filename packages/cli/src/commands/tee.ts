@@ -91,7 +91,7 @@ const CONFIRM_MAX_POLLS = 45
 // ── Shared guards and store access ──────────────────────────────────────────────────────────
 
 /** D3: the TEE wallet store's passphrase is typed. The variable's VALUE is never read, only its presence. */
-function refuseEnvPassphrase(ctx: CommandContext): boolean {
+export function refuseEnvPassphrase(ctx: CommandContext): boolean {
   if (ctx.deps.env.CANDLE_KEYSTORE_PASSPHRASE === undefined) return true
   writeLocalFailure(
     ctx.deps,

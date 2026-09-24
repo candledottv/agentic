@@ -127,13 +127,23 @@ export async function adoptGrantedRow(
     throw new VaultError("VAULT_INDEX_INVALID", `Entry ${entry.address} has no tee metadata.`)
   }
 
-  // Fully recorded: verify every field, write nothing on match.
+  // Fully recorded: verify every field, write nothing on match. The bound key prefix is the one
+  // exception (BE-303 D9): the vault's copy is a cache the server overrides, never a gate, so a
+  // prefix-only difference means the wallet was moved with `tee rebind` and the server value is
+  // adopted, with one line saying so. The linked-wallet id and the destination are still
+  // GRANT_BINDING_MISMATCH: the destination is the fund-safety invariant, the prefix is not.
   if (entry.linkedWalletId !== undefined && tee.vaultDestination !== undefined && tee.boundKeyPrefix !== undefined) {
-    assertBinding(entry, row)
+    const moved = assertBinding(entry, row)
+    if (moved !== undefined) {
+      ctx.deps.stderr.write(
+        `${entry.address}: bound key is now ${moved.to} (was ${moved.from}); it was moved with tee rebind.\n`,
+      )
+    }
     return {
       patch: {
         tee: {
           ...tee,
+          ...(moved !== undefined ? { boundKeyPrefix: moved.to } : {}),
           grantIdentity: recordedIdentity(tee.grantIdentity, account, ctx.apiUrl),
           remoteAuthority: row.remoteAuthority ?? tee.remoteAuthority,
           remoteState: row.sweptAt !== undefined ? "swept" : row.revokedAt !== undefined ? "quarantined" : "enabled",
@@ -212,7 +222,12 @@ export async function adoptGrantedRow(
   }
 }
 
-function assertBinding(entry: KeyEntry, row: LinkedWalletRow): void {
+/**
+ * The binding check (BE-303 D9): the linked-wallet id and the vault destination must match the
+ * server's, or the entry is refused. A bound key prefix that differs is not a mismatch since
+ * 0.11.6: it is the server's record of a `tee rebind`, returned so the caller adopts it.
+ */
+export function assertBinding(entry: KeyEntry, row: LinkedWalletRow): { from: string; to: string } | undefined {
   if (entry.linkedWalletId !== undefined && entry.linkedWalletId !== row._id) {
     throw new VaultError(
       "GRANT_BINDING_MISMATCH",
@@ -234,11 +249,9 @@ function assertBinding(entry: KeyEntry, row: LinkedWalletRow): void {
     row.boundKeyPrefix !== undefined &&
     entry.tee.boundKeyPrefix !== row.boundKeyPrefix
   ) {
-    throw new VaultError(
-      "GRANT_BINDING_MISMATCH",
-      `The recorded bound key prefix ${entry.tee.boundKeyPrefix} does not match the server's ${row.boundKeyPrefix}.`,
-    )
+    return { from: entry.tee.boundKeyPrefix, to: row.boundKeyPrefix }
   }
+  return undefined
 }
 
 function recordedIdentity(

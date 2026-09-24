@@ -480,12 +480,18 @@ export const HELP: Record<string, Topic> = {
         invocation: "sweep <address> --rpc-url <url> [--emergency]",
         description: "Sign locally and move everything to the pinned vault",
       },
+      {
+        invocation: "rebind <wallet...> --to-key <prefix|label>",
+        description: "Move TEE wallets to another key on this account (owner only; funds do not move)",
+      },
+      { invocation: "rebinds [wallet]", description: "List TEE wallet rebinds for this account (owner only)" },
     ],
     flags: [KEYSTORE_FLAG],
     examples: [
       "candle tee new --label AgentOne",
       "candle tee status AgentOneAddress",
       "candle tee sweep AgentOneAddress --rpc-url https://api.mainnet-beta.solana.com",
+      "candle tee rebind tr-01 tr-02 --to-key Ab3dEf9h",
     ],
     env: ENV_LOCAL_SIGNING,
   },
