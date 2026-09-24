@@ -142,7 +142,9 @@
         "WALLET_ALREADY_REGISTERED",
         "REBIND_STALE",
         "REBIND_BUILD_OPEN",
-        "REBIND_FORWARD_OPEN"
+        "REBIND_FORWARD_OPEN",
+        "KEY_ACCESS_STALE",
+        "KEY_ACCESS_PARTNER_KEY"
       ]
     },
     "quota": {
