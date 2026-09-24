@@ -1184,3 +1184,38 @@ describe("profiles", () => {
 const unusedFetch = (() => {
   throw new Error("fetch should not be called for this test")
 }) as unknown as typeof fetch
+
+// Read:Write:Transfer (2026-09-24 spec, D6; BE-332 PR C): this CLI never puts `transfer:bound` on a
+// device login. The API refuses it there too (R22); refusing here, before /code, says where the
+// level is minted instead.
+describe("auth login never requests transfer:bound", () => {
+  test("--scopes naming transfer:bound is a usage error, exit 2, with no request made", async () => {
+    const { fetch, calls } = createRoutedFetch({})
+    const stderr = createCapture()
+    const code = await run(
+      ["auth", "login", "--scopes", "transfer:write,transfer:bound", "--no-browser"],
+      createTestDeps({ fetch, stderr }),
+    )
+    expect(code).toBe(2)
+    expect(calls).toHaveLength(0)
+    expect(stderr.text).toContain("transfer:bound is not available on a device login")
+    expect(stderr.text).toContain("candle keys create --access read-write-transfer")
+  })
+
+  test("a login that omits scopes sends none, so the server's device default (no transfer:bound) applies", async () => {
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/device/code": () => jsonResponse(200, CODE_RESPONSE),
+      "/api/v1/agent/device/token": () =>
+        jsonResponse(200, {
+          deviceToken: DEVICE_TOKEN,
+          deviceTokenPrefix: "dvcpref1",
+          apiKey: { key: API_KEY, keyPrefix: "ck_livexx", scopes: ["launch:write", "account:read"] },
+        }),
+    })
+    const code = await run(["auth", "login", "--no-browser"], createTestDeps({ fetch, stdout: createCapture() }))
+    expect(code).toBe(0)
+    const codeCall = calls.find((call) => call.url.endsWith("/api/v1/agent/device/code"))
+    expect(codeCall).toBeDefined()
+    expect("scopes" in (JSON.parse(String(codeCall?.init.body)) as Record<string, unknown>)).toBe(false)
+  })
+})

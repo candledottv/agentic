@@ -280,6 +280,34 @@ export const HELP: Record<string, Topic> = {
     ],
     env: ENV_API,
   },
+  transfer: {
+    group: "Trade",
+    summary: "Move funds out of a TEE wallet to your own wallets or its vault, through its bound key",
+    description:
+      "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Read:Write:Transfer key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted. To a linked wallet the amount counts against the key's spend caps and must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm.",
+    usage: [
+      "candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL>|--mint <mint> --amount <decimal|max> [--wallet <tee>] [--yes] [--json]",
+    ],
+    rows: [],
+    flags: [
+      {
+        invocation: "--to <address|wallet name|vault>",
+        description: "Where the funds go: vault is the wallet's own pin",
+      },
+      { invocation: "--asset <SOL|USDC|CNDL>", description: "A base asset (required for a linked-wallet destination)" },
+      { invocation: "--mint <mint>", description: "Any Solana mint, instead of --asset (vault destinations only)" },
+      { invocation: "--amount <decimal|max>", description: "How much, or max for the whole spendable balance" },
+      { invocation: "--wallet <tee>", description: "The TEE wallet the funds leave; optional with one payer" },
+      { invocation: "--rpc-url <url>", description: "Your own Solana RPC, to read a --mint's decimals" },
+      { invocation: "--yes", description: "Skip the confirmation prompt (the destination is still printed)" },
+    ],
+    examples: [
+      "candle transfer --to vault --asset SOL --amount max --wallet AgentOne",
+      "candle transfer --to treasury --asset USDC --amount 250 --wallet AgentOne --yes --json",
+    ],
+    env: ENV_API,
+  },
+
   launch: {
     group: "Trade",
     summary: "Create a Solana token (the first buy is a separate swap)",
@@ -333,12 +361,14 @@ export const HELP: Record<string, Topic> = {
     rows: [
       {
         invocation: "list [--scopes]",
-        description: "List API keys: name and Read or Read:Write access; --scopes adds the raw scopes",
+        description:
+          "List API keys: name and Read, Read:Write or Read:Write:Transfer access; --scopes adds the raw scopes",
       },
       {
         invocation:
-          "create [--scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]",
-        description: "Create an API key",
+          "create [--access read|read-write|read-write-transfer | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]",
+        description:
+          "Create an API key; --access mints one of the three levels (read-write-transfer can move funds out of the wallet it runs)",
       },
       { invocation: "revoke <prefix>", description: "Revoke an API key" },
       { invocation: "wallets <prefix>", description: "Wallets an agent profile can use" },
@@ -353,6 +383,7 @@ export const HELP: Record<string, Topic> = {
     ],
     examples: [
       "candle keys list",
+      "candle keys create --access read-write-transfer --label rebalancer",
       "candle keys create --scopes trade:write --label agent-one",
       "candle keys wallets ck_live_ab12",
       "candle keys revoke ck_live_ab12",

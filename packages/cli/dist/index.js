@@ -278,6 +278,16 @@ var init_args = __esm(() => {
 });
 
 // src/agent-key-access.ts
+function scopesForPreset(preset) {
+  switch (preset) {
+    case "read":
+      return [...READ_SCOPES];
+    case "readwrite":
+      return [...READWRITE_SCOPES];
+    case "readwritetransfer":
+      return [...READWRITETRANSFER_SCOPES];
+  }
+}
 function sameSet(scopes, preset) {
   const held = new Set(scopes);
   return held.size === preset.length && preset.every((scope) => held.has(scope));
@@ -347,7 +357,7 @@ var init_agent_key_access = __esm(() => {
 
 // src/render.ts
 function formatScopesForSummary(scopes) {
-  return sortAgentKeyScopes(scopes).map((scope) => scope === "swap:write" ? `${scope} (${SWAP_WRITE_NOTE})` : scope === "transfer:write" ? `${scope} (${TRANSFER_WRITE_NOTE})` : scope).join(", ");
+  return sortAgentKeyScopes(scopes).map((scope) => scope === "swap:write" ? `${scope} (${SWAP_WRITE_NOTE})` : scope === "transfer:write" ? `${scope} (${TRANSFER_WRITE_NOTE})` : scope === "transfer:bound" ? `${scope} (${TRANSFER_BOUND_NOTE})` : scope).join(", ");
 }
 function terminalText(value) {
   return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
@@ -453,7 +463,7 @@ function portalDeviceUrl(apiUrl, portalOrigin) {
     return `${apiUrl}/agents`;
   }
 }
-var ALL_AGENT_SCOPES, DEFAULT_AGENT_SCOPES, SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf", TRANSFER_WRITE_NOTE = "moves funds -- this key can transfer assets between your wallets";
+var ALL_AGENT_SCOPES, DEFAULT_AGENT_SCOPES, SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf", TRANSFER_WRITE_NOTE = "moves funds -- this key can transfer assets between your wallets", TRANSFER_BOUND_NOTE = "moves funds -- this key can move funds out of the wallet it runs, to your linked wallets and its vault";
 var init_render = __esm(() => {
   init_agent_key_access();
   ALL_AGENT_SCOPES = [
@@ -462,9 +472,10 @@ var init_render = __esm(() => {
     "account:read",
     "activity:write",
     "swap:write",
-    "transfer:write"
+    "transfer:write",
+    "transfer:bound"
   ];
-  DEFAULT_AGENT_SCOPES = ALL_AGENT_SCOPES.filter((scope) => scope !== "swap:write" && scope !== "transfer:write");
+  DEFAULT_AGENT_SCOPES = ALL_AGENT_SCOPES.filter((scope) => scope !== "swap:write" && scope !== "transfer:write" && scope !== "transfer:bound");
 });
 
 // src/profiles.ts
@@ -8686,7 +8697,7 @@ async function keysList(args, ctx) {
 async function keysCreate(args, ctx) {
   const { deps, apiUrl, json } = ctx;
   const parsed = parseArgs(args, {
-    valueFlags: ["--scopes", "--environment", "--label", "--expires-in", "--tx-limit", "--reset"]
+    valueFlags: ["--scopes", "--access", "--environment", "--label", "--expires-in", "--tx-limit", "--reset"]
   });
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json);
@@ -8696,7 +8707,20 @@ async function keysCreate(args, ctx) {
     writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
-  const requestedScopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined;
+  if (parsed.values["--access"] !== undefined && parsed.values["--scopes"] !== undefined) {
+    writeUsageFailure(deps, "--access and --scopes are mutually exclusive; pass one of them.", json);
+    return 2;
+  }
+  let accessScopes;
+  if (parsed.values["--access"] !== undefined) {
+    const preset = ACCESS_LEVELS[parsed.values["--access"]];
+    if (preset === undefined) {
+      writeUsageFailure(deps, `--access must be one of: ${Object.keys(ACCESS_LEVELS).join(", ")}.`, json);
+      return 2;
+    }
+    accessScopes = scopesForPreset(preset);
+  }
+  const requestedScopes = accessScopes ?? (parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined);
   const environment = parsed.values["--environment"];
   const label = parsed.values["--label"]?.trim();
   if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > 64)) {
@@ -8792,7 +8816,7 @@ WARNING: the key above was NOT stored in the ${deps.backend} store: ${storeError
 `);
   }
   if (!requestedScopes) {
-    deps.stdout.write(`No --scopes given: the server granted the default scopes (swap:write excluded).
+    deps.stdout.write(`No --access or --scopes given: the server granted the default scopes (swap:write excluded).
 `);
   }
   if (storeError === undefined) {
@@ -8859,7 +8883,7 @@ async function keysRevoke(args, ctx) {
   }
   return 0;
 }
-var KEYS_PATH = "/api/v1/agent/keys", NO_DEVICE_TOKEN;
+var KEYS_PATH = "/api/v1/agent/keys", ACCESS_LEVELS, NO_DEVICE_TOKEN;
 var init_keys = __esm(() => {
   init_agent_key_access();
   init_args();
@@ -8867,6 +8891,11 @@ var init_keys = __esm(() => {
   init_profiles();
   init_render();
   init_secret_store();
+  ACCESS_LEVELS = {
+    read: "read",
+    "read-write": "readwrite",
+    "read-write-transfer": "readwritetransfer"
+  };
   NO_DEVICE_TOKEN = {
     code: "NO_DEVICE_TOKEN",
     message: "No device token available.",
@@ -13724,11 +13753,13 @@ async function listTradingWallets(ctx, key, scope) {
   const rows = [];
   const cursors = new Set;
   let appId = "";
+  let scopes = [];
   for (;; ) {
     const response = walletPageSchema.parse(await request(ctx, key, `/api/v1/agent/wallets/trading${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`));
     if (scope !== undefined && !response.scopes?.includes(scope))
       throw new TradingError("SCOPE_MISSING", `The bound key needs ${scope}.`);
     appId = response.privyAppId ?? "";
+    scopes = response.scopes;
     if (!Array.isArray(response.page))
       throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not return a page.");
     rows.push(...response.page);
@@ -13739,7 +13770,7 @@ async function listTradingWallets(ctx, key, scope) {
       throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not complete.");
     cursors.add(cursor);
   }
-  return { rows, appId };
+  return { rows, appId, scopes };
 }
 function matchesName(row, name) {
   return row.id === name || row.address === name || row.label === name;
@@ -13776,25 +13807,24 @@ async function tradingWallet(ctx, key, name, scope) {
   }
   return await completeTradingWallet(ctx, matches[0], appId, scope);
 }
-async function tradingPayer(ctx, key, name) {
-  const scope = "swap:write";
-  const { rows, appId } = await listTradingWallets(ctx, key, scope);
+async function tradingPayer(ctx, key, name, scope = "swap:write") {
+  const { rows, appId, scopes } = await listTradingWallets(ctx, key, scope);
   const embedded = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded")).wallets?.solana?.address;
-  const asEmbedded = () => ({ kind: "embedded", address: embedded });
+  const asEmbedded = () => ({ kind: "embedded", address: embedded, scopes });
   const options = [
     ...rows.map((row) => `TEE ${describeWallet(row)}`),
     ...embedded ? [`embedded (${embedded})`] : []
   ].join("; ");
   if (name === undefined) {
     if (rows.length === 1 && !embedded)
-      return { kind: "tee", wallet: await completeTradingWallet(ctx, rows[0], appId, scope) };
+      return { kind: "tee", wallet: await completeTradingWallet(ctx, rows[0], appId, scope), scopes };
     if (rows.length === 0 && embedded)
       return asEmbedded();
     throw new TradingError("PAYER_REQUIRED", options.length === 0 ? "This account has no wallet that can pay for a swap. Enrol a TEE wallet, or create an embedded wallet in the app." : `Name the payer with --wallet. This account can pay from: ${options}.`);
   }
   const matches = rows.filter((row) => matchesName(row, name));
   if (matches.length === 1)
-    return { kind: "tee", wallet: await completeTradingWallet(ctx, matches[0], appId, scope) };
+    return { kind: "tee", wallet: await completeTradingWallet(ctx, matches[0], appId, scope), scopes };
   if (matches.length === 0 && embedded === name)
     return asEmbedded();
   throw new TradingError("TEE_WALLET_REQUIRED", matches.length > 1 ? `"${name}" matches ${matches.length} TEE wallets on this key: ${teeWalletList(matches)}. Name one by id or address.` : options.length === 0 ? `"${name}" is not a wallet this account can pay from, and it has none: enrol a TEE wallet, or create an embedded wallet in the app.` : `"${name}" is not a wallet this account can pay from. It can pay from: ${options}.`);
@@ -38754,6 +38784,10 @@ async function authLogin(args, ctx) {
     return 2;
   }
   const scopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined;
+  if (scopes?.includes("transfer:bound")) {
+    writeUsageFailure(deps, "transfer:bound is not available on a device login. Mint a Read:Write:Transfer key with: candle keys create --access read-write-transfer", json);
+    return 2;
+  }
   const label = parsed.values["--label"]?.trim();
   const noBrowser = parsed.booleans.has("--no-browser");
   if (parsed.values["--label"] !== undefined && (label === undefined || label.length < 1 || label.length > MAX_CLIENT_NAME_LENGTH)) {
@@ -39270,6 +39304,32 @@ var HELP = {
     ],
     env: ENV_API
   },
+  transfer: {
+    group: "Trade",
+    summary: "Move funds out of a TEE wallet to your own wallets or its vault, through its bound key",
+    description: "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Read:Write:Transfer key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted. To a linked wallet the amount counts against the key's spend caps and must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm.",
+    usage: [
+      "candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL>|--mint <mint> --amount <decimal|max> [--wallet <tee>] [--yes] [--json]"
+    ],
+    rows: [],
+    flags: [
+      {
+        invocation: "--to <address|wallet name|vault>",
+        description: "Where the funds go: vault is the wallet's own pin"
+      },
+      { invocation: "--asset <SOL|USDC|CNDL>", description: "A base asset (required for a linked-wallet destination)" },
+      { invocation: "--mint <mint>", description: "Any Solana mint, instead of --asset (vault destinations only)" },
+      { invocation: "--amount <decimal|max>", description: "How much, or max for the whole spendable balance" },
+      { invocation: "--wallet <tee>", description: "The TEE wallet the funds leave; optional with one payer" },
+      { invocation: "--rpc-url <url>", description: "Your own Solana RPC, to read a --mint's decimals" },
+      { invocation: "--yes", description: "Skip the confirmation prompt (the destination is still printed)" }
+    ],
+    examples: [
+      "candle transfer --to vault --asset SOL --amount max --wallet AgentOne",
+      "candle transfer --to treasury --asset USDC --amount 250 --wallet AgentOne --yes --json"
+    ],
+    env: ENV_API
+  },
   launch: {
     group: "Trade",
     summary: "Create a Solana token (the first buy is a separate swap)",
@@ -39318,11 +39378,11 @@ var HELP = {
     rows: [
       {
         invocation: "list [--scopes]",
-        description: "List API keys: name and Read or Read:Write access; --scopes adds the raw scopes"
+        description: "List API keys: name and Read, Read:Write or Read:Write:Transfer access; --scopes adds the raw scopes"
       },
       {
-        invocation: "create [--scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]",
-        description: "Create an API key"
+        invocation: "create [--access read|read-write|read-write-transfer | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]",
+        description: "Create an API key; --access mints one of the three levels (read-write-transfer can move funds out of the wallet it runs)"
       },
       { invocation: "revoke <prefix>", description: "Revoke an API key" },
       { invocation: "wallets <prefix>", description: "Wallets an agent profile can use" },
@@ -39334,6 +39394,7 @@ var HELP = {
     ],
     examples: [
       "candle keys list",
+      "candle keys create --access read-write-transfer --label rebalancer",
       "candle keys create --scopes trade:write --label agent-one",
       "candle keys wallets ck_live_ab12",
       "candle keys revoke ck_live_ab12"
@@ -52851,6 +52912,150 @@ async function teeRebinds(args, ctx) {
   return 0;
 }
 
+// src/commands/transfer.ts
+init_args();
+init_render();
+init_trading();
+var USAGE2 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL>|--mint <mint> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
+var TRANSFER_ASSETS = Object.keys(BASES);
+var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+async function readLinkedWallets(ctx, key) {
+  const rows = [];
+  let cursor = null;
+  const seen = new Set;
+  for (let page = 0;page < 25; page++) {
+    const query = cursor === null ? "?limit=100" : `?limit=100&cursor=${encodeURIComponent(cursor)}`;
+    const body = await request(ctx, key, `/api/v1/agent/wallets${query}`);
+    if (!Array.isArray(body.page))
+      throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not return a page.");
+    rows.push(...body.page);
+    if (body.isDone !== false || typeof body.continueCursor !== "string" || seen.has(body.continueCursor))
+      return rows;
+    seen.add(body.continueCursor);
+    cursor = body.continueCursor;
+  }
+  return rows;
+}
+async function resolveDestination(ctx, key, source, to) {
+  if (to === "vault") {
+    const lifecycle = await request(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(source.id)}/lifecycle`);
+    const vault = lifecycle.vaultDestination;
+    if (typeof vault !== "string" || vault.length === 0)
+      throw new TradingError("VAULT_NOT_PINNED", "This wallet has no pinned vault recorded on Candle, so --to vault names nothing. Pass the address instead.");
+    return { kind: "vault", address: vault };
+  }
+  const rows = (await readLinkedWallets(ctx, key)).filter((row) => row.chain === "solana" && row.revokedAt === undefined && row.address !== source.address);
+  const matches = rows.filter((row) => row.label === to || row._id === to || row.address === to);
+  if (matches.length > 1)
+    throw new TradingError("DESTINATION_AMBIGUOUS", `"${to}" names ${matches.length} linked wallets: ${matches.map((row) => `${row.label ?? ""} (${row._id}, ${row.address})`.trim()).join("; ")}. Name one by id or address.`);
+  const match = matches[0];
+  if (match)
+    return { kind: "linked", address: match.address, id: match._id, ...match.label ? { label: match.label } : {} };
+  if (to === source.address)
+    throw new TradingError("DESTINATION_IS_SOURCE", "--to names the wallet the funds would leave. Name a different destination.");
+  if (BASE58_ADDRESS.test(to))
+    return { kind: "address", address: to };
+  throw new TradingError("DESTINATION_UNKNOWN", rows.length === 0 ? `"${to}" is not vault, a Solana address, or a linked wallet on this account (it has no other active Solana linked wallets).` : `"${to}" is not vault, a Solana address, or a linked wallet on this account. Linked wallets: ${rows.map((row) => `${row.label ?? ""} (${row._id}, ${row.address})`.trim()).join("; ")}.`);
+}
+function describeDestination(destination) {
+  switch (destination.kind) {
+    case "vault":
+      return `this wallet's pinned vault ${destination.address}`;
+    case "linked":
+      return `linked wallet ${destination.label ? `${destination.label} ` : ""}(${destination.id}, ${destination.address})`;
+    case "address":
+      return `address ${destination.address} (not one of this account's linked wallets; Candle decides whether it is allowed)`;
+  }
+}
+async function confirmTransfer(ctx, lines, yes) {
+  const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
+  for (const line of lines)
+    output.write(`${safeText(line)}
+`);
+  if (yes)
+    return true;
+  if (!ctx.deps.isTTY.stdin)
+    throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes for an ordinary transfer prompt.");
+  return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y";
+}
+async function transfer(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--wallet", "--to", "--asset", "--mint", "--amount", "--rpc-url"],
+    booleanFlags: ["--yes"]
+  });
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  const flags = parsed.values;
+  const asset = flags["--asset"]?.toUpperCase();
+  if (parsed.positionals.length !== 0 || !flags["--to"] || !flags["--amount"] || Boolean(flags["--asset"]) === Boolean(flags["--mint"]) || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags["--mint"] !== undefined && !BASE58_ADDRESS.test(flags["--mint"])) {
+    writeUsageFailure(ctx.deps, USAGE2, ctx.json);
+    return 2;
+  }
+  const to = flags["--to"];
+  const isMax = flags["--amount"] === "max";
+  try {
+    if (!isMax)
+      rawAmount(flags["--amount"], 18);
+    const key = await tradingKey(ctx);
+    const payer = await tradingPayer(ctx, key, flags["--wallet"], "transfer:write");
+    if (payer.kind === "embedded")
+      throw new TradingError("PAYER_UNSUPPORTED", "This command moves a linked wallet this machine can sign for. The embedded wallet transfers through the agent transfer rail (MCP candle_transfer), not from here. Name a TEE wallet with --wallet.");
+    if (!payer.scopes.includes("transfer:bound"))
+      throw new TradingError("SCOPE_MISSING", "Moving funds out of a TEE wallet needs a Read:Write:Transfer key. Mint one with: candle keys create --access read-write-transfer, then bind the wallet to it with: candle tee rebind");
+    const wallet = payer.wallet;
+    const destination = await resolveDestination(ctx, key, wallet, to);
+    const label = asset ?? flags["--mint"];
+    let amountRaw;
+    if (isMax)
+      amountRaw = "max";
+    else {
+      const decimals = asset ? BASES[asset]?.decimals ?? 9 : await decimalsFor(ctx, flags["--mint"], flags["--rpc-url"]);
+      amountRaw = rawAmount(flags["--amount"], decimals);
+    }
+    const amountText = isMax ? `the full spendable balance of ${label}` : `${flags["--amount"]} ${label}`;
+    const confirmed = await confirmTransfer(ctx, [
+      `Transfer ${amountText} from ${wallet.address} (${wallet.id}) to ${describeDestination(destination)}`,
+      destination.kind === "vault" ? "Destination: this wallet's own vault, pinned when it was imported." : destination.kind === "linked" ? "Destination: a linked wallet on this account. Candle allows it only if you linked it while signed in or marked it trusted, and the amount counts against this key's spend caps." : "Destination: an address Candle will classify at build; from a TEE wallet only its vault or a trusted linked wallet is allowed."
+    ], parsed.booleans.has("--yes"));
+    if (!confirmed)
+      return printTradingResult(ctx, { success: true, status: "cancelled", walletId: wallet.id, destination });
+    const built = await request(ctx, key, "/api/v1/agent/transfer/build", {
+      walletId: wallet.id,
+      chain: "solana",
+      ...asset ? { asset } : { mint: flags["--mint"] },
+      amountRaw,
+      to: destination.address
+    });
+    const transferId = built.transferId;
+    const unsigned = built.unsignedTransactionsBase64;
+    if (typeof transferId !== "string" || !Array.isArray(unsigned) || unsigned.length !== 1 || typeof unsigned[0] !== "string")
+      throw new TradingError("INVALID_RESPONSE", "Candle did not return one unsigned transfer transaction; nothing was signed.");
+    if (typeof built.payerAddress === "string" && built.payerAddress !== wallet.address)
+      throw new TradingError("INVALID_RESPONSE", "The transfer build does not name the requested payer; nothing was signed.");
+    const builtAmount = typeof built.amountRaw === "string" ? built.amountRaw : amountRaw;
+    ctx.deps.stderr.write(`Built transfer ${transferId}: ${asset ? `${decimalAmount(builtAmount, BASES[asset]?.decimals ?? 0)} ${asset}` : `${builtAmount} raw units of ${label}`}${typeof built.destinationKind === "string" ? ` to ${built.destinationKind === "vault" ? "the vault" : "a linked wallet"}` : ""}.
+`);
+    const signed = await relaySign(ctx, key, wallet, unsigned[0]);
+    const result = await request(ctx, key, "/api/v1/agent/transfer/submit", {
+      transferId,
+      signedTransactionsBase64: [signed]
+    });
+    const receipt = {
+      ...result,
+      transferId,
+      walletId: wallet.id,
+      wallet: safeText(wallet.address),
+      destination,
+      ...typeof built.destinationKind === "string" ? { destinationKind: built.destinationKind } : {}
+    };
+    return printTradingResult(ctx, receipt);
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+
 // src/commands/update.ts
 init_args();
 import { randomBytes as randomBytes3 } from "node:crypto";
@@ -59906,7 +60111,7 @@ init_args();
 init_release();
 import { dirname as dirname10, join as join11 } from "node:path";
 init_render();
-var USAGE2 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE3 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -59938,19 +60143,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeUsageFailure(deps, `${parsed.error}
-${USAGE2}`, json);
+${USAGE3}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeUsageFailure(deps, `verify takes exactly one file.
-${USAGE2}`, json);
+${USAGE3}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeUsageFailure(deps, `--bundle is required.
-${USAGE2}`, json);
+${USAGE3}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -59964,7 +60169,7 @@ ${USAGE2}`, json);
   }
   if (resolved.kind === "absent") {
     writeUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE2}`, json);
+${USAGE3}`, json);
     return 2;
   }
   const identity = resolved.uri;
@@ -60320,6 +60525,7 @@ function extractGlobalFlags(argv) {
 }
 var COMMANDS = {
   swap: { bare: swap, subcommands: { status: swapStatus } },
+  transfer: { bare: transfer },
   launch: { bare: launch },
   pnl: { bare: pnl },
   portfolio: { bare: portfolio },

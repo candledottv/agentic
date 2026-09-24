@@ -4,7 +4,7 @@
  * the latter). Credential resolution is env-first, then the store, via `resolveDeviceToken`.
  */
 
-import { agentKeyAccess, sortAgentKeyScopes } from "../agent-key-access"
+import { type AgentKeyPreset, agentKeyAccess, scopesForPreset, sortAgentKeyScopes } from "../agent-key-access"
 import {
   parseArgs,
   parseExpiresInDays,
@@ -28,6 +28,17 @@ import {
 import { SECRET_REFS } from "../secret-store"
 
 const KEYS_PATH = "/api/v1/agent/keys"
+
+/**
+ * `keys create --access <level>`: the web picker's three presets by their CLI spellings (Read:
+ * Write:Transfer, 2026-09-24 spec, D6 / R17). Each maps to the exact scope list the shared module
+ * mints for that preset, so a key created here and one created on the web are the same key.
+ */
+export const ACCESS_LEVELS: Record<string, AgentKeyPreset> = {
+  read: "read",
+  "read-write": "readwrite",
+  "read-write-transfer": "readwritetransfer",
+}
 
 /** The one precondition all three `keys` subcommands share. Written through `writeLocalFailure`
  * so `--json` gets an object here too: this exit is as much a result of the command as an API
@@ -175,7 +186,7 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
 export async function keysCreate(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, {
-    valueFlags: ["--scopes", "--environment", "--label", "--expires-in", "--tx-limit", "--reset"],
+    valueFlags: ["--scopes", "--access", "--environment", "--label", "--expires-in", "--tx-limit", "--reset"],
   })
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json)
@@ -185,7 +196,23 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
     writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json)
     return 2
   }
-  const requestedScopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined
+  // `--access` names a preset, `--scopes` names raw scopes. Both at once is a contradiction to
+  // refuse, not a merge to guess at (spec D6: mutually exclusive, exit 2).
+  if (parsed.values["--access"] !== undefined && parsed.values["--scopes"] !== undefined) {
+    writeUsageFailure(deps, "--access and --scopes are mutually exclusive; pass one of them.", json)
+    return 2
+  }
+  let accessScopes: string[] | undefined
+  if (parsed.values["--access"] !== undefined) {
+    const preset = ACCESS_LEVELS[parsed.values["--access"]]
+    if (preset === undefined) {
+      writeUsageFailure(deps, `--access must be one of: ${Object.keys(ACCESS_LEVELS).join(", ")}.`, json)
+      return 2
+    }
+    accessScopes = scopesForPreset(preset)
+  }
+  const requestedScopes =
+    accessScopes ?? (parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined)
   const environment = parsed.values["--environment"]
 
   // Key-manager parity (CLI P0 plan, Task 4): the same optional name / expiry / spend cap the
@@ -315,7 +342,7 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
     )
   }
   if (!requestedScopes) {
-    deps.stdout.write("No --scopes given: the server granted the default scopes (swap:write excluded).\n")
+    deps.stdout.write("No --access or --scopes given: the server granted the default scopes (swap:write excluded).\n")
   }
   if (storeError === undefined) {
     deps.stdout.write(

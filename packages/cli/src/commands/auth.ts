@@ -103,6 +103,17 @@ export async function authLogin(args: string[], ctx: CommandContext): Promise<nu
     return 2
   }
   const scopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined
+  // Read:Write:Transfer (2026-09-24 spec, D6): this CLI never puts `transfer:bound` on a device
+  // login. The API refuses it on that path anyway (R22) until the approval page that labels it
+  // has been in production long enough; refusing here says where the level is minted instead.
+  if (scopes?.includes("transfer:bound")) {
+    writeUsageFailure(
+      deps,
+      "transfer:bound is not available on a device login. Mint a Read:Write:Transfer key with: candle keys create --access read-write-transfer",
+      json,
+    )
+    return 2
+  }
   // Trimmed, and 1..64 after trimming: the same rule and message as `keys create --label`, because
   // this label now names a key too. Checked before `/code`, so a blank one never starts a flow
   // (it used to reach the server and come back as the device name "Unknown client").

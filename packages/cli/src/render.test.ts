@@ -7,6 +7,7 @@
 import { describe, expect, test } from "bun:test"
 import { DEFAULT_API_URL } from "./client"
 import {
+  ALL_AGENT_SCOPES,
   DEFAULT_AGENT_SCOPES,
   formatScopesForSummary,
   portalDeviceUrl,
@@ -246,6 +247,15 @@ describe("formatScopesForSummary", () => {
     expect(summary).toContain("launch:write")
     expect(summary).toContain("activity:write")
     expect(summary.toLowerCase()).not.toContain("fund")
+  })
+
+  // Read:Write:Transfer (BE-332 PR C): the third fund-moving scope is called out and never defaulted.
+  test("calls out transfer:bound as fund-moving, naming the wallet it runs", () => {
+    const summary = formatScopesForSummary(["transfer:write", "transfer:bound"])
+    expect(summary).toContain("transfer:bound (moves funds")
+    expect(summary).toContain("wallet it runs")
+    expect(DEFAULT_AGENT_SCOPES).not.toContain("transfer:bound")
+    expect(ALL_AGENT_SCOPES).toContain("transfer:bound")
   })
 
   test("DEFAULT_AGENT_SCOPES excludes swap:write", () => {

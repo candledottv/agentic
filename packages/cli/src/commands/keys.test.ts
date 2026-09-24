@@ -625,3 +625,149 @@ describe("keys create: a storage failure never swallows the key", () => {
     expect(code).toBe(1)
   })
 })
+
+// Read:Write:Transfer (2026-09-24 spec, D6 / R17): `keys create --access` maps each level to the
+// exact scope list the shared module mints for that preset, so a key created here is the same key
+// the web picker creates. `--access` and `--scopes` together is a usage error, exit 2, no request.
+describe("keys create --access (R17)", () => {
+  const LEVELS: Array<[string, string[]]> = [
+    ["read", ["account:read"]],
+    ["read-write", ["launch:write", "launch:read", "activity:write", "swap:write", "transfer:write", "account:read"]],
+    [
+      "read-write-transfer",
+      [
+        "launch:write",
+        "launch:read",
+        "activity:write",
+        "swap:write",
+        "transfer:write",
+        "account:read",
+        "transfer:bound",
+      ],
+    ],
+  ]
+  for (const [level, scopes] of LEVELS) {
+    test(`--access ${level} sends exactly the preset's scope list`, async () => {
+      const { fetch, calls } = createRoutedFetch({
+        "/api/v1/agent/keys": () =>
+          jsonResponse(200, {
+            success: true,
+            key: "ck_live_FIXTURE_ACCESS_KEY",
+            keyPrefix: "ck_liveacc",
+            scopes,
+            environment: "production",
+          }),
+      })
+      const store = createFakeStore({ device_token: "cndl_dvc_x" })
+      const stdout = createCapture()
+      const code = await run(
+        ["keys", "create", "--access", level, "--label", "rebalancer"],
+        createTestDeps({ fetch, store, stdout }),
+      )
+      expect(code).toBe(0)
+      expect(calls).toHaveLength(1)
+      expect((JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>).scopes).toEqual(scopes)
+      expect(stdout.text).not.toContain("No --access or --scopes given")
+    })
+  }
+
+  test("read-write-transfer calls out transfer:bound as fund-moving when the key is minted", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () =>
+        jsonResponse(200, {
+          success: true,
+          key: "ck_live_FIXTURE_RWT_KEY",
+          keyPrefix: "ck_livermt",
+          scopes: LEVELS[2]?.[1],
+          environment: "production",
+        }),
+    })
+    const stdout = createCapture()
+    const code = await run(
+      ["keys", "create", "--access", "read-write-transfer"],
+      createTestDeps({ fetch, store: createFakeStore({ device_token: "cndl_dvc_x" }), stdout }),
+    )
+    expect(code).toBe(0)
+    expect(stdout.text).toContain("transfer:bound (moves funds")
+  })
+
+  test("--access with --scopes is a usage error, exit 2, with no request made", async () => {
+    for (const argv of [
+      ["keys", "create", "--access", "read", "--scopes", "account:read"],
+      ["keys", "create", "--access", "read-write-transfer", "--scopes", "transfer:bound", "--json"],
+    ]) {
+      const { fetch, calls } = createRoutedFetch({})
+      const stdout = createCapture()
+      const stderr = createCapture()
+      const code = await run(
+        argv,
+        createTestDeps({ fetch, store: createFakeStore({ device_token: "cndl_dvc_x" }), stdout, stderr }),
+      )
+      expect(code).toBe(2)
+      expect(calls).toHaveLength(0)
+      if (argv.includes("--json")) expect(JSON.parse(stdout.text).message).toContain("mutually exclusive")
+      else expect(stderr.text).toContain("mutually exclusive")
+    }
+  })
+
+  test("an unknown --access value is a usage error naming the three levels, with no request made", async () => {
+    const { fetch, calls } = createRoutedFetch({})
+    const stderr = createCapture()
+    const code = await run(
+      ["keys", "create", "--access", "full"],
+      createTestDeps({ fetch, store: createFakeStore({ device_token: "cndl_dvc_x" }), stderr }),
+    )
+    expect(code).toBe(2)
+    expect(calls).toHaveLength(0)
+    expect(stderr.text).toContain("read, read-write, read-write-transfer")
+  })
+})
+
+// R18: `keys list` reads the shared classification, so the third preset prints its name and a
+// key holding transfer:bound in any other combination prints its chip words, Linked transfer included.
+describe("keys list: Read:Write:Transfer (R18)", () => {
+  test("prints Read:Write:Transfer for the preset and Linked transfer for a custom set", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/keys": () =>
+        jsonResponse(200, {
+          success: true,
+          tier: "pro",
+          keys: [
+            {
+              keyPrefix: "ck_livermt",
+              label: "rebalancer",
+              scopes: [
+                "transfer:bound",
+                "account:read",
+                "launch:write",
+                "launch:read",
+                "activity:write",
+                "swap:write",
+                "transfer:write",
+              ],
+              environment: "production",
+              createdAt: 1000,
+            },
+            {
+              keyPrefix: "ck_livecus",
+              scopes: ["account:read", "transfer:write", "transfer:bound"],
+              environment: "production",
+              createdAt: 2000,
+            },
+          ],
+        }),
+    })
+    const stdout = createCapture()
+    const code = await run(
+      ["keys", "list"],
+      createTestDeps({ fetch, store: createFakeStore({ device_token: "cndl_dvc_x" }), stdout }),
+    )
+    expect(code).toBe(0)
+    const [, ...tableLines] = stdout.text.split("\n")
+    const first = tableLines.find((line) => line.startsWith("ck_livermt"))
+    const second = tableLines.find((line) => line.startsWith("ck_livecus"))
+    expect(first).toMatch(/^ck_livermt {2}rebalancer {2}Read:Write:Transfer {2,}production /)
+    expect(second).toContain("Transfer, Linked transfer")
+    expect(second).not.toContain("Read:Write:Transfer")
+  })
+})

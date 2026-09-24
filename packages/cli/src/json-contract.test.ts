@@ -207,6 +207,8 @@ const JSON_ANSWERING: { name: string; argv: string[] }[] = [
   { name: "profile list", argv: ["profile", "list"] },
   { name: "swap", argv: ["swap"] },
   { name: "swap status", argv: ["swap", "status"] },
+  // BE-332 PR C: with no flags it is a usage error, like `swap` with no pair.
+  { name: "transfer", argv: ["transfer"] },
   { name: "launch", argv: ["launch"] },
   // BE-316: read-only. With no credentials both answer NO_API_KEY before any request.
   { name: "pnl", argv: ["pnl"] },

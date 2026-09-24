@@ -228,11 +228,12 @@ export async function listTradingWallets(
   key: string,
   /** A scope the bound key must carry; omitted for a read that `requireAgentKey("any")` admits. */
   scope?: string,
-): Promise<{ rows: WalletRow[]; appId: string }> {
+): Promise<{ rows: WalletRow[]; appId: string; scopes: string[] }> {
   let cursor: string | undefined
   const rows: WalletRow[] = []
   const cursors = new Set<string>()
   let appId = ""
+  let scopes: string[] = []
   for (;;) {
     const response = walletPageSchema.parse(
       await request(ctx, key, `/api/v1/agent/wallets/trading${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
@@ -240,6 +241,7 @@ export async function listTradingWallets(
     if (scope !== undefined && !response.scopes?.includes(scope))
       throw new TradingError("SCOPE_MISSING", `The bound key needs ${scope}.`)
     appId = response.privyAppId ?? ""
+    scopes = response.scopes
     if (!Array.isArray(response.page))
       throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not return a page.")
     rows.push(...response.page)
@@ -248,7 +250,7 @@ export async function listTradingWallets(
     if (!cursor || cursors.has(cursor)) throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not complete.")
     cursors.add(cursor)
   }
-  return { rows, appId }
+  return { rows, appId, scopes }
 }
 
 function matchesName(row: WalletRow, name: string): boolean {
@@ -336,18 +338,27 @@ export async function tradingWallet(
  * worth having.
  */
 export type SwapPayer =
-  | { kind: "tee"; wallet: TradingWallet }
+  | { kind: "tee"; wallet: TradingWallet; scopes: string[] }
   /** The account's own embedded (main) Solana wallet. Candle holds its delegation and signs server-side. */
-  | { kind: "embedded"; address: string }
+  | { kind: "embedded"; address: string; scopes: string[] }
 
-export async function tradingPayer(ctx: CommandContext, key: string, name: string | undefined): Promise<SwapPayer> {
-  const scope = "swap:write"
-  const { rows, appId } = await listTradingWallets(ctx, key, scope)
+/**
+ * `scope` is what the bound key must carry for the rail the caller is on: `swap:write` for a swap
+ * (the default), `transfer:write` for `candle transfer`. The key's whole scope list rides back on
+ * the payer, so a caller can refuse a wallet its key cannot act on before anything is built.
+ */
+export async function tradingPayer(
+  ctx: CommandContext,
+  key: string,
+  name: string | undefined,
+  scope = "swap:write",
+): Promise<SwapPayer> {
+  const { rows, appId, scopes } = await listTradingWallets(ctx, key, scope)
   // Read even when a name was given: it is what lets a miss say "here is what you could have
   // meant" instead of naming only half the account.
   const embedded = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded")).wallets?.solana
     ?.address
-  const asEmbedded = (): SwapPayer => ({ kind: "embedded", address: embedded as string })
+  const asEmbedded = (): SwapPayer => ({ kind: "embedded", address: embedded as string, scopes })
   const options = [
     ...rows.map((row) => `TEE ${describeWallet(row)}`),
     ...(embedded ? [`embedded (${embedded})`] : []),
@@ -355,7 +366,7 @@ export async function tradingPayer(ctx: CommandContext, key: string, name: strin
 
   if (name === undefined) {
     if (rows.length === 1 && !embedded)
-      return { kind: "tee", wallet: await completeTradingWallet(ctx, rows[0] as WalletRow, appId, scope) }
+      return { kind: "tee", wallet: await completeTradingWallet(ctx, rows[0] as WalletRow, appId, scope), scopes }
     if (rows.length === 0 && embedded) return asEmbedded()
     throw new TradingError(
       "PAYER_REQUIRED",
@@ -367,7 +378,7 @@ export async function tradingPayer(ctx: CommandContext, key: string, name: strin
 
   const matches = rows.filter((row) => matchesName(row, name))
   if (matches.length === 1)
-    return { kind: "tee", wallet: await completeTradingWallet(ctx, matches[0] as WalletRow, appId, scope) }
+    return { kind: "tee", wallet: await completeTradingWallet(ctx, matches[0] as WalletRow, appId, scope), scopes }
   if (matches.length === 0 && embedded === name) return asEmbedded()
   throw new TradingError(
     "TEE_WALLET_REQUIRED",

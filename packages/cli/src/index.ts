@@ -43,6 +43,7 @@ import { sign, signMessage } from "./commands/sign"
 import { swap, swapStatus } from "./commands/swap"
 import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./commands/tee"
 import { teeRebind, teeRebinds } from "./commands/tee-rebind"
+import { transfer } from "./commands/transfer"
 import { update } from "./commands/update"
 import { vaultBackup, vaultVerifyBackup } from "./commands/vault-backup"
 import { vaultDemote } from "./commands/vault-demote"
@@ -146,6 +147,9 @@ interface CommandRoute {
  */
 const COMMANDS: Record<string, CommandRoute> = {
   swap: { bare: swap, subcommands: { status: swapStatus } },
+  // Read:Write:Transfer (BE-332 PR C): move funds out of a TEE wallet through its bound key, to
+  // the account's own wallets or the wallet's vault. Server-built, relay-signed, never a vault key.
+  transfer: { bare: transfer },
   launch: { bare: launch },
   // Ember Phase 3 R7 (BE-316): read-only. `pnl --profile <name>` reads the global flag as the
   // per-key request (see commands/pnl.ts).

@@ -23,20 +23,25 @@ export const ALL_AGENT_SCOPES = [
   "activity:write",
   "swap:write",
   "transfer:write",
+  // Read:Write:Transfer (2026-09-24 spec, D1): move funds out of the wallet this key runs. Never
+  // in the default, and never put on a device login by this CLI (the API refuses it there).
+  "transfer:bound",
 ] as const
 export type AgentScope = (typeof ALL_AGENT_SCOPES)[number]
 
 /** Mirrors `DEFAULT_AGENT_KEY_SCOPES`: what `POST /keys` grants when `scopes` is omitted.
  * `swap:write` moves real funds on every call, so it is deliberately excluded from the default. */
 export const DEFAULT_AGENT_SCOPES: readonly AgentScope[] = ALL_AGENT_SCOPES.filter(
-  (scope) => scope !== "swap:write" && scope !== "transfer:write",
+  (scope) => scope !== "swap:write" && scope !== "transfer:write" && scope !== "transfer:bound",
 )
 
 const SWAP_WRITE_NOTE = "moves funds -- this key can execute swaps on your behalf"
 const TRANSFER_WRITE_NOTE = "moves funds -- this key can transfer assets between your wallets"
+const TRANSFER_BOUND_NOTE =
+  "moves funds -- this key can move funds out of the wallet it runs, to your linked wallets and its vault"
 
-/** Renders a scope list for a human, calling `swap:write` and `transfer:write` out explicitly as
- * fund-moving. Every other scope renders as its raw name. Sorted first, in the one order raw
+/** Renders a scope list for a human, calling `swap:write`, `transfer:write` and `transfer:bound`
+ * out explicitly as fund-moving. Every other scope renders as its raw name. Sorted first, in the one order raw
  * scopes are shown to a person everywhere (`keys list --scopes`, the web key detail), so the same
  * set never reads as two different lists (keys list Access and Name spec, 2026-09-23, D6). */
 export function formatScopesForSummary(scopes: readonly string[]): string {
@@ -46,7 +51,9 @@ export function formatScopesForSummary(scopes: readonly string[]): string {
         ? `${scope} (${SWAP_WRITE_NOTE})`
         : scope === "transfer:write"
           ? `${scope} (${TRANSFER_WRITE_NOTE})`
-          : scope,
+          : scope === "transfer:bound"
+            ? `${scope} (${TRANSFER_BOUND_NOTE})`
+            : scope,
     )
     .join(", ")
 }
