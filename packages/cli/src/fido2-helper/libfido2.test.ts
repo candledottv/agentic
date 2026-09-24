@@ -14,7 +14,7 @@ import { mkdtempSync, realpathSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, isAbsolute, join, resolve } from "node:path"
 import { base64 } from "@scure/base"
-import { helperErrorForRc, openLibfido2 } from "./libfido2"
+import { helperErrorForRc, type LibraryOpener, openLibfido2, probeOutcomeForRc } from "./libfido2"
 import { libraryCandidates, libraryInstallInstruction, libraryMissingMessage } from "./library-paths"
 import { type Fido2Backend, type HelperCode, HelperError, handleRequest } from "./protocol"
 
@@ -163,5 +163,67 @@ describe("libfido2 through bun:ffi", () => {
     expectCode(0x28, "INTERNAL")
     expectCode(0x99, "INTERNAL")
     expect(helperErrorForRc(0x99, describe).message).toContain("rc 153")
+  })
+})
+
+/**
+ * BE-294 (D2, T13): the probe's FFI calls, against a recording stand-in for the library. What a
+ * real key does with them is T47's; what this proves is the shape: `up` false, no `uv`, no PIN,
+ * no extension and no salt, one credential in the allow list, and only the count read back.
+ */
+describe("libfido2 probeCredential", () => {
+  function recordingLibrary(getAssertRc: number, count = 1) {
+    const calls: Array<{ name: string; args: unknown[] }> = []
+    const returns: Record<string, unknown> = {
+      fido_dev_new: 11,
+      fido_assert_new: 22,
+      fido_dev_get_assert: getAssertRc,
+      fido_assert_count: BigInt(count),
+    }
+    const lib = new Proxy(
+      {},
+      {
+        get:
+          (_target, name: string) =>
+          (...args: unknown[]) => {
+            calls.push({ name, args })
+            return name in returns ? returns[name] : 0
+          },
+      },
+    )
+    const backend = openLibfido2("darwin", ["/fake/libfido2.dylib"], (() => lib) as unknown as LibraryOpener)
+    return { backend, calls }
+  }
+  const params = {
+    rpId: "cli.candle.tv",
+    credentialId: new Uint8Array(48).fill(1),
+    clientDataHash: new Uint8Array(32).fill(7),
+  }
+
+  test("sets up false, and sets no uv, no extension, no salt and no PIN", () => {
+    const { backend, calls } = recordingLibrary(0)
+    expect(backend.probeCredential("ioreg://1", params)).toBe("present")
+    const names = calls.map((call) => call.name)
+    expect(calls.find((call) => call.name === "fido_assert_set_up")?.args[1]).toBe(1)
+    for (const forbidden of ["fido_assert_set_uv", "fido_assert_set_extensions", "fido_assert_set_hmac_salt"]) {
+      expect(names).not.toContain(forbidden)
+    }
+    expect(names.filter((name) => name === "fido_assert_allow_cred")).toHaveLength(1)
+    expect(calls.find((call) => call.name === "fido_dev_get_assert")?.args[2]).toBeNull()
+    for (const unread of ["fido_assert_authdata_ptr", "fido_assert_hmac_secret_ptr"])
+      expect(names).not.toContain(unread)
+    // The assertion and the device are released on every path.
+    expect(names).toContain("fido_assert_free")
+    expect(names).toContain("fido_dev_close")
+  })
+
+  test("no credentials is absent, and every other failure is unknown", () => {
+    expect(recordingLibrary(0x2e).backend.probeCredential("ioreg://1", params)).toBe("absent")
+    expect(recordingLibrary(0x22).backend.probeCredential("ioreg://1", params)).toBe("unknown")
+    expect(recordingLibrary(-1).backend.probeCredential("ioreg://1", params)).toBe("unknown")
+    expect(recordingLibrary(0, 0).backend.probeCredential("ioreg://1", params)).toBe("unknown")
+    expect(probeOutcomeForRc(0, 1)).toBe("present")
+    expect(probeOutcomeForRc(0x2e, 0)).toBe("absent")
+    expect(probeOutcomeForRc(0x36, 0)).toBe("unknown")
   })
 })

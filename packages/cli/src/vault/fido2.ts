@@ -33,6 +33,8 @@ import {
   type HelperCode,
   type HelperResponse,
   type InfoResponse,
+  PROBE_MAX_CREDENTIALS,
+  type ProbeResponse,
   type RegisterResponse,
   RP_ID,
 } from "../fido2-helper/protocol"
@@ -408,7 +410,18 @@ type SessionDeps = Pick<Deps, "env" | "execPath" | "realpath" | "spawnHelper" | 
  */
 export async function openSecurityKeySession(
   deps: SessionDeps,
-  opts: { vaultId: string; envelopeId: string; deviceFlag?: string; requireFeatures: boolean },
+  opts: {
+    vaultId: string
+    envelopeId: string
+    deviceFlag?: string
+    /**
+     * BE-294 (D5): the device the unlock menu's probe found this envelope's credential on, and
+     * only there. Used only when `deviceFlag` is undefined, and only when that device is in this
+     * enumeration; otherwise selection runs exactly as without it. It is not `--device`.
+     */
+    preferDevice?: string
+    requireFeatures: boolean
+  },
 ): Promise<SecurityKeySession> {
   const location = await locateFido2Helper(deps)
   if (location.state === "absent") throw helperMissing(location)
@@ -420,7 +433,11 @@ export async function openSecurityKeySession(
       operationDigest({ vaultId: opts.vaultId, envelopeId: opts.envelopeId, op: "info", nonce: b64u(randomBytes(16)) }),
     ),
   })
-  const device = selectDevice(info.devices, opts.deviceFlag, deps.platform)
+  const preferred =
+    opts.deviceFlag === undefined && opts.preferDevice !== undefined
+      ? info.devices.find((candidate) => candidate.deviceId === opts.preferDevice)
+      : undefined
+  const device = selectDevice(info.devices, opts.deviceFlag ?? preferred?.deviceId, deps.platform)
   if (opts.deviceFlag === undefined) {
     deps.stderr.write(
       `Using the attached security key: ${device.product || "security key"} (--device ${device.deviceId})\n`,
@@ -458,6 +475,77 @@ export async function openSecurityKeySession(
     session.pin = typed
   }
   return session
+}
+
+/** BE-294 (D2): what the menu may say about one offered security-key envelope. */
+export type KeyPresence = "attached" | "not attached"
+
+export interface AttachedKeys {
+  /** By envelope id. An envelope with no entry gets no marker. */
+  state: Map<string, KeyPresence>
+  /** By envelope id: the one probed device the credential was present on, when exactly one. */
+  holder: Map<string, string>
+}
+
+/**
+ * BE-294 (D2): one silent `probe` before the unlock menu, asking the attached keys which offered
+ * credentials they hold. It never throws and never prints: an absent helper, an older helper that
+ * refuses the op, any failure at all, is `undefined`, and the menu is drawn without markers.
+ *
+ * With `deviceFlag`, only that device is probed, so a key is marked `attached` when that device
+ * holds it and is otherwise left unmarked (it may be on a device that was not asked). A named
+ * device that is not attached drops every marker.
+ */
+export async function probeAttachedKeys(
+  deps: Pick<Deps, "env" | "execPath" | "realpath" | "spawnHelper" | "platform">,
+  opts: { vaultId: string; envelopes: Ctap2Envelope[]; deviceFlag?: string },
+): Promise<AttachedKeys | undefined> {
+  try {
+    const offered = opts.envelopes.filter((envelope) => envelope.rpId === RP_ID).slice(0, PROBE_MAX_CREDENTIALS)
+    const first = offered[0]
+    if (first === undefined) return undefined
+    const location = await locateFido2Helper(deps)
+    if (location.state === "absent") return undefined
+    const credentialOf = new Map(
+      offered.map((envelope) => [envelope.id, base64.encode(unb64u(envelope.credentialId, "credentialId"))]),
+    )
+    const digest = operationDigest({
+      vaultId: opts.vaultId,
+      envelopeId: first.id,
+      op: "probe",
+      nonce: b64u(randomBytes(16)),
+    })
+    const response = await callHelper<ProbeResponse>(deps, location.path, {
+      op: "probe",
+      vaultId: opts.vaultId,
+      envelopeId: first.id,
+      digest: base64.encode(digest),
+      rpId: RP_ID,
+      credentialIds: [...credentialOf.values()],
+      ...(opts.deviceFlag !== undefined ? { deviceId: opts.deviceFlag } : {}),
+    })
+    if (response.op !== "probe" || !Array.isArray(response.devices)) return undefined
+    const devices = response.devices
+    if (opts.deviceFlag !== undefined && !devices.some((device) => device.deviceId === opts.deviceFlag)) {
+      return undefined
+    }
+    const allReadable = devices.every((device) => device.readable)
+    const state = new Map<string, KeyPresence>()
+    const holder = new Map<string, string>()
+    for (const [envelopeId, credentialId] of credentialOf) {
+      const holders = devices.filter((device) => device.present.includes(credentialId))
+      if (holders.length > 0) {
+        state.set(envelopeId, "attached")
+        if (holders.length === 1) holder.set(envelopeId, (holders[0] as (typeof devices)[number]).deviceId)
+        continue
+      }
+      const uncertain = devices.some((device) => device.unknown.includes(credentialId))
+      if (opts.deviceFlag === undefined && allReadable && !uncertain) state.set(envelopeId, "not attached")
+    }
+    return { state, holder }
+  } catch {
+    return undefined
+  }
 }
 
 export interface RegisteredCredential {

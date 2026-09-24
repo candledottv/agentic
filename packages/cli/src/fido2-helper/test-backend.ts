@@ -18,6 +18,8 @@ import {
   HelperError,
   type MakeCredentialParams,
   type MakeCredentialResult,
+  type ProbeCredentialParams,
+  type ProbeOutcome,
 } from "./protocol"
 
 export interface ScriptedDevice extends EnumeratedDevice {
@@ -51,6 +53,12 @@ export interface ScriptedAssert {
 
 export interface HelperScript {
   devices: ScriptedDevice[]
+  /**
+   * BE-294 (D2): what a silent probe finds, by device path, then by credential id (base64). A
+   * credential a listed device does not name is absent there. With no `probe` at all, every probe
+   * answers unknown, which leaves the menu without markers.
+   */
+  probe?: Record<string, Record<string, ProbeOutcome>>
   register?: ScriptedRegister | ScriptedFailure
   assert?: ScriptedAssert | ScriptedFailure
   /** A file every backend call is appended to as one JSON line, PIN included. */
@@ -59,7 +67,7 @@ export interface HelperScript {
 
 /** One entry of the script's log: what reached the (scripted) authenticator, and through which path. */
 export interface BackendLogEntry {
-  op: "register" | "assert"
+  op: "register" | "assert" | "probe"
   path: string
   rpId: string
   userName?: string
@@ -95,6 +103,13 @@ export function scriptedBackend(script: HelperScript, onCall?: (entry: BackendLo
         aaguid: hex.decode(scripted.aaguid),
         authData: base64.decode(scripted.authData),
       }
+    },
+    probeCredential: (path: string, params: ProbeCredentialParams): ProbeOutcome => {
+      const credentialId = base64.encode(params.credentialId)
+      log({ op: "probe", path, rpId: params.rpId, credentialId, pin: null })
+      const scripted = script.probe
+      if (scripted === undefined) return "unknown"
+      return scripted[path]?.[credentialId] ?? "absent"
     },
     getAssertion: (path: string, params: GetAssertionParams): GetAssertionResult => {
       log({

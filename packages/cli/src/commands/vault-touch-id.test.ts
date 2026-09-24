@@ -684,8 +684,8 @@ describe("unlocking with Touch ID", () => {
       lines: [t.envelopeId],
     })
     expect(await run(["vault", "status", "--unlock", "--keystore", t.vaultPath], byId.deps)).toBe(0)
-    expect(byId.asked[0]).toContain("This vault opens with a passphrase or Touch ID.")
-    expect(byId.asked[0]).toContain(`${t.envelopeId}  Touch ID  this mac`)
+    expect(byId.asked[0]).toContain("Unlock with:")
+    expect(byId.asked[0]).toContain(`  1  this mac  (Touch ID, this Mac)  id ${t.envelopeId}\n  2  Passphrase\n`)
     expect(byId.calls.filter((call) => call.op === "decrypt")).toHaveLength(1)
 
     const byPassphrase = await harness({

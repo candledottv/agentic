@@ -15,6 +15,7 @@ import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { sha256 } from "@noble/hashes/sha256"
 import { base64 } from "@scure/base"
 import type { CommandContext, Deps } from "../deps"
 import {
@@ -24,9 +25,12 @@ import {
   handleEnclaveLine,
 } from "../enclave-helper/protocol"
 import { type EnclaveLogEntry, type EnclaveScript, scriptedEnclaveBackend } from "../enclave-helper/test-backend"
+import { AUTHDATA_FLAG_UP, AUTHDATA_FLAG_UV, handleLine, RP_ID } from "../fido2-helper/protocol"
+import { type BackendLogEntry, type HelperScript, scriptedBackend } from "../fido2-helper/test-backend"
 import { realSpawnHelper, run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 import { AASA_URL, CODESIGN_PATH, codesignRequirement, ENCLAVE_HELPER_ENV, type ReleasePolicy } from "../vault/enclave"
+import { HELPER_ENV } from "../vault/fido2"
 import { trackSecrets } from "../vault/hygiene"
 import { RELEASE_POLICY } from "../vault/release-policy"
 import { readSidecar, sidecarPath } from "../vault/sidecar"
@@ -83,6 +87,10 @@ interface HarnessOptions {
   subprocess?: boolean
   aasa?: AasaOptions
   vaultFactor?: string
+  /** BE-294: a scripted `candle-fido2` beside the macOS helper, so one vault can hold every kind. */
+  fido2?: HelperScript
+  /** Receives every call that reached the scripted security key. */
+  fido2Calls?: BackendLogEntry[]
   /** Replaces the nth response of an op (1-based), for a proof that fails or a foreign helper. */
   tamper?: (op: string, nth: number, response: EnclaveResponse) => EnclaveResponse | undefined
 }
@@ -128,8 +136,19 @@ async function harness(opts: HarnessOptions = {}): Promise<Harness> {
     await chmod(executable, 0o755)
     env[ENCLAVE_HELPER_ENV] = appPath
   }
+  const fido2Path = join(dir, "candle-fido2")
+  if (opts.fido2) {
+    await writeFile(fido2Path, "#!/bin/sh\nexit 1\n")
+    await chmod(fido2Path, 0o755)
+    env[HELPER_ENV] = fido2Path
+  }
   const counts = new Map<string, number>()
   const spawnHelper: Deps["spawnHelper"] = async (path, line, o) => {
+    if (opts.fido2 && path === fido2Path) {
+      const fido2 = opts.fido2
+      const response = handleLine(line, () => scriptedBackend(fido2, (entry) => opts.fido2Calls?.push(entry)))
+      return { stdout: `${JSON.stringify(response)}\n`, stderr: "", exitCode: response.ok ? 0 : 1, signal: null }
+    }
     if (path === CODESIGN_PATH) {
       codesign.push(o.args ?? [])
       const mode = opts.codesign ?? "pass"
@@ -744,8 +763,8 @@ describe("unlocking with a synced passkey", () => {
       lines: [t.envelopeId],
     })
     expect(await run(["vault", "status", "--unlock", "--keystore", t.vaultPath], chosen.deps)).toBe(0)
-    expect(chosen.asked[0]).toContain("This vault opens with a passphrase or a synced passkey.")
-    expect(chosen.asked[0]).toContain(`${t.envelopeId}  synced passkey  my passkey`)
+    expect(chosen.asked[0]).toContain("Unlock with:")
+    expect(chosen.asked[0]).toContain(`  1  my passkey  (synced passkey)  id ${t.envelopeId}\n  2  Passphrase\n`)
     expect(ops(chosen)).toContain("passkey-assert")
 
     const typed = await harness({
@@ -1304,4 +1323,107 @@ test("a sealed backup retains its old passphrase after rotation", async () => {
     expect.stringContaining("Passphrase this backup was sealed under"),
   ])
   expect(ops(p)).not.toContain("passkey-assert")
+})
+
+// ── BE-294: every kind of factor in one menu (T1, T10) ────────────────────────────────────────
+
+describe("BE-294: the unlock menu with a security key, Touch ID and a synced passkey", () => {
+  const PIN = "482913"
+  const AAGUID = "2fc0579f811347eab116bb5a8db9202a"
+  const CRED_A = base64.encode(new Uint8Array(48).map((_, i) => (i * 7 + 3) & 0xff))
+  const CRED_B = base64.encode(new Uint8Array(48).fill(5))
+  const authData = (() => {
+    const out = new Uint8Array(37)
+    out.set(sha256(new TextEncoder().encode(RP_ID)), 0)
+    out[32] = AUTHDATA_FLAG_UP | AUTHDATA_FLAG_UV
+    return base64.encode(out)
+  })()
+  const key = (credentialId: string, probe?: HelperScript["probe"]): HelperScript => ({
+    devices: [
+      {
+        path: "/dev/hidraw3",
+        product: "YubiKey 5 NFC",
+        manufacturer: "Yubico",
+        aaguid: AAGUID,
+        extensions: ["hmac-secret"],
+        options: { clientPin: true },
+      },
+    ],
+    register: { credentialId, aaguid: AAGUID, authData },
+    assert: { hmacSecret: base64.encode(new Uint8Array(32).fill(9)), authData },
+    ...(probe !== undefined ? { probe } : {}),
+  })
+
+  /** Passphrase, synced passkey, Touch ID, then key A and key B, in that file order. */
+  async function everyKind() {
+    const t = await vaultWithPasskey()
+    const add = async (args: string[], secrets: string[], fido2?: HelperScript) => {
+      const h = await harness({
+        env: { CANDLE_CONFIG_DIR: t.dir },
+        script: { store: t.add.script.store },
+        secrets,
+        ...(fido2 ? { fido2 } : {}),
+      })
+      const code = await run(["vault", "factor", "add", ...args, "--keystore", t.vaultPath], h.deps)
+      if (code !== 0) throw new Error(`factor add ${args[0]} failed (${code}): ${h.stderr.text}${h.stdout.text}`)
+    }
+    await add(["touch-id", "--label", "Touch ID"], [t.passphrase])
+    await add(["security-key", "--label", "yubikey-a"], [PIN, t.passphrase], key(CRED_A))
+    await add(["security-key", "--label", "yubikey-b"], [PIN, t.passphrase], key(CRED_B))
+    const file = await readVault(t.vaultPath)
+    const idOf = (predicate: (envelope: VaultJson["envelopes"][number]) => boolean) =>
+      file.envelopes.find(predicate)?.id as string
+    return {
+      ...t,
+      aId: idOf((envelope) => envelope.label === "yubikey-a"),
+      bId: idOf((envelope) => envelope.label === "yubikey-b"),
+      touchId: idOf((envelope) => envelope.factor === "secure-enclave"),
+      passkeyId: t.envelopeId,
+    }
+  }
+
+  test("T1: the menu text end to end, with a factor this Mac cannot use named under the rows", async () => {
+    const t = await everyKind()
+    // macOS 14 at unlock: the synced passkey's gate fails here, and Touch ID still works.
+    const h = await harness({
+      env: { CANDLE_CONFIG_DIR: t.dir },
+      script: { store: t.add.script.store, osVersion: "14.6.0" },
+      fido2: key(CRED_A, { "/dev/hidraw3": { [CRED_B]: "present" } }),
+      lines: ["nope"],
+    })
+    expect(await run(["vault", "status", "--unlock", "--json", "--keystore", t.vaultPath], h.deps)).toBe(1)
+    expect(h.asked[0]).toBe(
+      "line: Unlock with:\n" +
+        `  1  yubikey-b  (security key, attached)      id ${t.bId}\n` +
+        `  2  yubikey-a  (security key, not attached)  id ${t.aId}\n` +
+        `  3  Touch ID   (this Mac)                    id ${t.touchId}\n` +
+        "  4  Passphrase\n" +
+        "Not usable on this machine: my passkey (synced passkey). Details: candle vault status\n" +
+        "> ",
+    )
+  })
+
+  test("T10: Touch ID and a synced passkey sit after the keys, and Touch ID's number opens with Touch ID", async () => {
+    const t = await everyKind()
+    const fido2Calls: BackendLogEntry[] = []
+    const h = await harness({
+      env: { CANDLE_CONFIG_DIR: t.dir },
+      script: { store: t.add.script.store },
+      fido2: key(CRED_A, { "/dev/hidraw3": { [CRED_A]: "present" } }),
+      fido2Calls,
+      lines: ["3"],
+    })
+    expect(await run(["vault", "status", "--unlock", "--keystore", t.vaultPath], h.deps)).toBe(0)
+    const menu = h.asked[0] as string
+    expect(menu).toContain(`  1  yubikey-a   (security key, attached)      id ${t.aId}\n`)
+    expect(menu).toContain(`  2  yubikey-b   (security key, not attached)  id ${t.bId}\n`)
+    expect(menu).toContain(`  3  Touch ID    (this Mac)                    id ${t.touchId}\n`)
+    expect(menu).toContain(`  4  my passkey  (synced passkey)              id ${t.passkeyId}\n`)
+    expect(menu).toContain("  5  Passphrase\n")
+    expect(menu).not.toContain("Not usable")
+    expect(h.calls.filter((call) => call.op === "decrypt").map((call) => call.reason)).toEqual([
+      "unlock the Candle vault",
+    ])
+    expect(fido2Calls.map((call) => call.op)).toEqual(["probe", "probe"])
+  })
 })

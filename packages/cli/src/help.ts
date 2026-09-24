@@ -419,7 +419,7 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "--factor <id|kind>",
         description:
-          "Unlock with this envelope: an id from factor list, or passphrase, security-key, touch-id, passkey",
+          "Unlock with this envelope: an id from factor list, or passphrase, security-key, touch-id, passkey; without it, a terminal lists the factors to pick by number",
       },
       { invocation: "--device <id>", description: "The security key to use when more than one is attached" },
       {

@@ -435,3 +435,93 @@ test("the helper's fixed relying party is the spec's", () => {
   expect(RP_ID).toBe("cli.candle.tv")
   expect(hex.encode(sha256(new TextEncoder().encode(RP_ID)))).toHaveLength(64)
 })
+
+// ── BE-294 (D2, T13): the silent probe ────────────────────────────────────────────────────────
+
+describe("probe: which attached keys hold which credentials, with nothing secret asked", () => {
+  const CRED_2 = base64.encode(new Uint8Array(48).fill(2))
+  const probeLine = (extra: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      op: "probe",
+      vaultId: "vault-1",
+      envelopeId: "env-1",
+      digest: DIGEST,
+      rpId: RP_ID,
+      credentialIds: [CRED, CRED_2],
+      ...extra,
+    })
+
+  test("parses, and refuses a PIN, a salt, too many credentials, or none", () => {
+    expect(parseRequest(probeLine())).toMatchObject({ op: "probe", credentialIds: [CRED, CRED_2] })
+    const refused = (extra: Record<string, unknown>) =>
+      handleLine(probeLine(extra), () => scriptedBackend({ devices: [yubikey("/dev/hidraw3")] }))
+    for (const extra of [
+      { pin: "1234" },
+      { pin: "" },
+      { salt: SALT },
+      { credentialIds: [] },
+      { credentialIds: "not a list" },
+      { credentialIds: [42] },
+      { credentialIds: ["!!not base64!!"] },
+      { credentialIds: Array.from({ length: 17 }, () => CRED) },
+    ]) {
+      expect(refused(extra), JSON.stringify(extra).slice(0, 60)).toMatchObject({ ok: false, code: "BAD_REQUEST" })
+    }
+    expect(parseRequest(probeLine({ credentialIds: Array.from({ length: 16 }, () => CRED) }))).toMatchObject({
+      op: "probe",
+    })
+  })
+
+  test("answers per device: present, unknown, and nothing for absent; the assertion itself never crosses", () => {
+    const calls: BackendLogEntry[] = []
+    const script: HelperScript = {
+      devices: [yubikey("/dev/hidraw3"), yubikey("/dev/hidraw4"), yubikey("/dev/hidraw5", { unreadable: true })],
+      probe: { "/dev/hidraw3": { [CRED]: "present" }, "/dev/hidraw4": { [CRED_2]: "unknown" } },
+    }
+    const response = handleLine(probeLine(), () => scriptedBackend(script, (entry) => calls.push(entry)))
+    expect(response).toMatchObject({ ok: true, protocol: HELPER_PROTOCOL, op: "probe" })
+    if (!response.ok || response.op !== "probe") throw new Error("probe failed")
+    const byPath = (path: string) => deviceIdFor({ path, aaguid: path.endsWith("5") ? "" : AAGUID })
+    expect(response.devices).toEqual([
+      { deviceId: byPath("/dev/hidraw3"), readable: true, present: [CRED], unknown: [] },
+      { deviceId: byPath("/dev/hidraw4"), readable: true, present: [], unknown: [CRED_2] },
+      { deviceId: byPath("/dev/hidraw5"), readable: false, present: [], unknown: [] },
+    ])
+    const text = JSON.stringify(response)
+    for (const field of ["authData", "signature", "hmacSecret"]) expect(text).not.toContain(field)
+    // Two readable devices by two credentials; the unreadable one is never asked.
+    expect(calls.map((call) => call.path)).toEqual(["/dev/hidraw3", "/dev/hidraw3", "/dev/hidraw4", "/dev/hidraw4"])
+    expect(calls.every((call) => call.op === "probe" && call.pin === null && call.salt === undefined)).toBe(true)
+  })
+
+  test("a named device limits the probe to it, and a stale snapshot is refused before any key is asked", () => {
+    const calls: BackendLogEntry[] = []
+    const script: HelperScript = { devices: [yubikey("/dev/hidraw3"), yubikey("/dev/hidraw4")], probe: {} }
+    const second = deviceIdFor({ path: "/dev/hidraw4", aaguid: AAGUID })
+    const named = handleLine(probeLine({ deviceId: second }), () =>
+      scriptedBackend(script, (entry) => calls.push(entry)),
+    )
+    if (!named.ok || named.op !== "probe") throw new Error("probe failed")
+    expect(named.devices.map((device) => device.deviceId)).toEqual([second])
+    expect(calls.every((call) => call.path === "/dev/hidraw4")).toBe(true)
+
+    calls.length = 0
+    const stale = handleLine(probeLine({ expectSnapshot: "stale" }), () =>
+      scriptedBackend(script, (entry) => calls.push(entry)),
+    )
+    expect(stale).toMatchObject({ ok: false, code: "SNAPSHOT_CHANGED" })
+    expect(calls).toEqual([])
+  })
+
+  test("info, register and assert are unchanged by the new op", () => {
+    const script: HelperScript = {
+      devices: [yubikey("/dev/hidraw3")],
+      assert: { hmacSecret: SALT, authData: base64.encode(authDataFor(RP_ID, AUTHDATA_FLAG_UP | AUTHDATA_FLAG_UV)) },
+    }
+    const info = handleLine(JSON.stringify(common("info")), () => scriptedBackend(script))
+    expect(Object.keys(info).sort()).toEqual(["devices", "ok", "op", "protocol", "snapshotId"])
+    const deviceId = deviceIdFor({ path: "/dev/hidraw3", aaguid: AAGUID })
+    const assert = handleLine(JSON.stringify(assertRequest(deviceId)), () => scriptedBackend(script))
+    expect(Object.keys(assert).sort()).toEqual(["authData", "flags", "hmacSecret", "ok", "op", "protocol"])
+  })
+})

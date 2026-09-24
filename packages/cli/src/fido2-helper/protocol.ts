@@ -29,7 +29,13 @@ export const HELPER_PROTOCOL = 1 as const
 export const RP_ID = "cli.candle.tv"
 export const RP_NAME = "Candle CLI"
 
-export type HelperOp = "info" | "register" | "assert"
+export type HelperOp = "info" | "register" | "assert" | "probe"
+
+/**
+ * BE-294 (D2): the most credentials one `probe` may name. A vault offers one CTAP2 envelope per
+ * enrolled key, so this is far above any real vault and keeps one silent pre-flight bounded.
+ */
+export const PROBE_MAX_CREDENTIALS = 16
 
 /**
  * The helper's own typed codes. They are deliberately not the vault's `VAULT_*` codes: the helper
@@ -106,7 +112,22 @@ export interface AssertRequest extends RequestCommon {
   pin?: string
 }
 
-export type HelperRequest = InfoRequest | RegisterRequest | AssertRequest
+/**
+ * BE-294 (D2): which attached keys hold which of the offered credentials, asked silently. There is
+ * no PIN field and no salt field, and the parser refuses both: a probe asserts with user presence
+ * clear, no user verification and no extension, so no secret is derived and none can be asked for.
+ */
+export interface ProbeRequest extends RequestCommon {
+  op: "probe"
+  rpId: string
+  /** base64, one per offered CTAP2 envelope, at most `PROBE_MAX_CREDENTIALS`. */
+  credentialIds: string[]
+  /** Probe only this device (the operator's `--device`). */
+  deviceId?: string
+  expectSnapshot?: string
+}
+
+export type HelperRequest = InfoRequest | RegisterRequest | AssertRequest | ProbeRequest
 
 // ── Responses ─────────────────────────────────────────────────────────────────────────────────
 
@@ -158,6 +179,24 @@ export interface AssertResponse {
   flags: { uv: boolean; up: boolean }
 }
 
+/** One device's answer to a probe. The authenticator data and signature never cross the pipe. */
+export interface ProbeDeviceReport {
+  deviceId: string
+  readable: boolean
+  /** Credential ids (base64, as requested) this device answered with an assertion. */
+  present: string[]
+  /** Credential ids this device answered with an error other than "no credentials". */
+  unknown: string[]
+}
+
+export interface ProbeResponse {
+  ok: true
+  protocol: typeof HELPER_PROTOCOL
+  op: "probe"
+  snapshotId: string
+  devices: ProbeDeviceReport[]
+}
+
 export interface FailureResponse {
   ok: false
   protocol: typeof HELPER_PROTOCOL
@@ -165,7 +204,7 @@ export interface FailureResponse {
   message: string
 }
 
-export type HelperResponse = InfoResponse | RegisterResponse | AssertResponse | FailureResponse
+export type HelperResponse = InfoResponse | RegisterResponse | AssertResponse | ProbeResponse | FailureResponse
 
 // ── The backend seam ──────────────────────────────────────────────────────────────────────────
 
@@ -206,6 +245,16 @@ export interface GetAssertionParams {
   pin?: string
 }
 
+/** BE-294 (D2): a silent assertion's inputs. No PIN, no salt, no extension. */
+export interface ProbeCredentialParams {
+  rpId: string
+  credentialId: Uint8Array
+  clientDataHash: Uint8Array
+}
+
+/** `present`: the key answered with an assertion; `absent`: no credentials; `unknown`: anything else. */
+export type ProbeOutcome = "present" | "absent" | "unknown"
+
 export interface GetAssertionResult {
   hmacSecret: Uint8Array
   /** Raw authenticator data. */
@@ -222,6 +271,12 @@ export interface Fido2Backend {
   describe(path: string): DeviceCapabilities
   makeCredential(path: string, params: MakeCredentialParams): MakeCredentialResult
   getAssertion(path: string, params: GetAssertionParams): GetAssertionResult
+  /**
+   * BE-294 (D2): one `getAssertion` with `up` false, `uv` omitted, no PIN and no extensions, kept
+   * apart from `getAssertion` so that shape cannot drift. Answers whether the device holds the
+   * credential and nothing else.
+   */
+  probeCredential(path: string, params: ProbeCredentialParams): ProbeOutcome
 }
 
 // ── Authenticator data flags (WebAuthn section 6.1) ───────────────────────────────────────────
@@ -343,10 +398,10 @@ export function parseRequest(line: string): HelperRequest {
   }
   if (!isRecord(value)) throw new HelperError("BAD_REQUEST", "the request is not a JSON object")
   const op = value.op
-  if (op !== "info" && op !== "register" && op !== "assert") {
+  if (op !== "info" && op !== "register" && op !== "assert" && op !== "probe") {
     throw new HelperError(
       "BAD_REQUEST",
-      `unknown op ${JSON.stringify(op)}; this helper knows info, register and assert`,
+      `unknown op ${JSON.stringify(op)}; this helper knows info, register, assert and probe`,
     )
   }
   const common = {
@@ -356,6 +411,7 @@ export function parseRequest(line: string): HelperRequest {
   }
   base64Bytes(common.digest, "digest", 32)
   if (op === "info") return { op, ...common }
+  if (op === "probe") return parseProbe(value, common)
   const deviceId = requireString(value, "deviceId")
   const expectSnapshot = optionalString(value, "expectSnapshot")
   const rpId = requireString(value, "rpId")
@@ -391,6 +447,44 @@ export function parseRequest(line: string): HelperRequest {
     clientDataHash,
     salt,
     ...(pin !== undefined ? { pin } : {}),
+  }
+}
+
+/** BE-294 (D2): the probe's own fields. A PIN or a salt is refused, whatever its value. */
+function parseProbe(
+  value: Record<string, unknown>,
+  common: Pick<RequestCommon, "vaultId" | "envelopeId" | "digest">,
+): ProbeRequest {
+  for (const field of ["pin", "salt"]) {
+    if (field in value) throw new HelperError("BAD_REQUEST", `a probe carries no ${field}`)
+  }
+  const rpId = requireString(value, "rpId")
+  const raw = value.credentialIds
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new HelperError("BAD_REQUEST", "credentialIds is missing or empty")
+  }
+  if (raw.length > PROBE_MAX_CREDENTIALS) {
+    throw new HelperError(
+      "BAD_REQUEST",
+      `credentialIds names ${raw.length} credentials; a probe names at most ${PROBE_MAX_CREDENTIALS}`,
+    )
+  }
+  const credentialIds = raw.map((entry, index) => {
+    if (typeof entry !== "string" || entry === "") {
+      throw new HelperError("BAD_REQUEST", `credentialIds[${index}] is not a non-empty string`)
+    }
+    base64Bytes(entry, `credentialIds[${index}]`)
+    return entry
+  })
+  const deviceId = optionalString(value, "deviceId")
+  const expectSnapshot = optionalString(value, "expectSnapshot")
+  return {
+    op: "probe",
+    ...common,
+    rpId,
+    credentialIds,
+    ...(deviceId !== undefined ? { deviceId } : {}),
+    ...(expectSnapshot !== undefined ? { expectSnapshot } : {}),
   }
 }
 
@@ -510,6 +604,8 @@ export function handleRequest(request: HelperRequest, backend: Fido2Backend): He
           flags: { uv: (flags & AUTHDATA_FLAG_UV) !== 0, up: (flags & AUTHDATA_FLAG_UP) !== 0 },
         }
       }
+      case "probe":
+        return probe(backend, request)
       case "assert": {
         const device = selectDevice(backend, request)
         const result = backend.getAssertion(device.path, {
@@ -540,6 +636,54 @@ export function handleRequest(request: HelperRequest, backend: Fido2Backend): He
   } catch (error) {
     const failure = asHelperError(error)
     return { ok: false, protocol: HELPER_PROTOCOL, code: failure.code, message: failure.message }
+  }
+}
+
+/**
+ * BE-294 (D2): one silent assertion per readable device and offered credential. Every per-credential
+ * failure is folded into `unknown` rather than failing the op, because a probe only decides a marker
+ * on a menu row. An unreadable device is reported as such, with nothing asked of it.
+ */
+function probe(backend: Fido2Backend, request: ProbeRequest): ProbeResponse {
+  const all = reportDevices(backend)
+  const snapshotId = snapshotIdFor(all)
+  if (request.expectSnapshot !== undefined && request.expectSnapshot !== snapshotId) {
+    throw new HelperError(
+      "SNAPSHOT_CHANGED",
+      "the set of attached security keys changed since it was listed; nothing was sent to any key",
+    )
+  }
+  const devices = request.deviceId === undefined ? all : all.filter((device) => device.deviceId === request.deviceId)
+  const clientDataHash = base64Bytes(request.digest, "digest", 32)
+  return {
+    ok: true,
+    protocol: HELPER_PROTOCOL,
+    op: "probe",
+    snapshotId,
+    devices: devices.map((device) => {
+      const report: ProbeDeviceReport = {
+        deviceId: device.deviceId,
+        readable: device.readable,
+        present: [],
+        unknown: [],
+      }
+      if (!device.readable) return report
+      for (const credentialId of request.credentialIds) {
+        let outcome: ProbeOutcome
+        try {
+          outcome = backend.probeCredential(device.path, {
+            rpId: request.rpId,
+            credentialId: base64Bytes(credentialId, "credentialId"),
+            clientDataHash,
+          })
+        } catch {
+          outcome = "unknown"
+        }
+        if (outcome === "present") report.present.push(credentialId)
+        else if (outcome === "unknown") report.unknown.push(credentialId)
+      }
+      return report
+    }),
   }
 }
 

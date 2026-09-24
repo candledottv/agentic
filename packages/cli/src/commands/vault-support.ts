@@ -10,9 +10,17 @@ import { dirname } from "node:path"
 import { isUsageError, type ParsedArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
 import { writeLocalFailure, writeUsageFailure } from "../render"
+import { safeText } from "../trading"
 import { type EnclaveSession, openEnclaveSession, pinnedHelperIdentity, unwrapKekWithEnclave } from "../vault/enclave"
 import { isVaultError, VaultError } from "../vault/errors"
-import { assertPrf, currentPlatformFacts, openSecurityKeySession, type SecurityKeySession } from "../vault/fido2"
+import {
+  type AttachedKeys,
+  assertPrf,
+  currentPlatformFacts,
+  openSecurityKeySession,
+  probeAttachedKeys,
+  type SecurityKeySession,
+} from "../vault/fido2"
 import {
   type Ctap2Envelope,
   type Envelope,
@@ -356,7 +364,8 @@ export interface UnusableEnvelope {
 
 type FactorChoice =
   | { kind: "passphrase"; envelopeId?: string; onlyBecause?: string }
-  | { kind: "security-key"; envelope: Ctap2Envelope }
+  /** `preferDevice` (BE-294 D5): the one device the menu's probe found this credential on. */
+  | { kind: "security-key"; envelope: Ctap2Envelope; preferDevice?: string }
   | { kind: "touch-id"; envelope: SecureEnclaveEnvelope }
   | { kind: "passkey"; envelope: PlatformPasskeyEnvelope }
 
@@ -388,7 +397,8 @@ export function assertVaultHelperIdentities(deps: Pick<Deps, "releasePolicy">, e
  * CC-12's typed code. With no flag, the vault's passphrase is used when it is the only kind this
  * machine can drive, and when a security key, Touch ID or a synced passkey could also open it the
  * operator is asked, on a visible prompt, which to use. The CLI never picks a different envelope
- * on the operator's behalf.
+ * on the operator's behalf. With no `--factor`, an attached key is marked and listed first, and the
+ * operator still chooses (BE-294 D4).
  */
 export async function unlockInteractively(
   ctx: CommandContext,
@@ -401,7 +411,7 @@ export async function unlockInteractively(
   const file = parseVaultFile(raw)
   assertVaultHelperIdentities(deps, file.envelopes)
   const facts = await currentPlatformFacts(deps)
-  const choice = await chooseFactor(ctx, file.envelopes, facts, opts.factor ?? ctx.vaultFactor, opts)
+  const choice = await chooseFactor(ctx, file.vaultId, file.envelopes, facts, opts.factor ?? ctx.vaultFactor, opts)
   const noticeFor = (purpose: string | undefined) => (line: string) =>
     deps.stderr.write(derivationNotice(line, purpose))
   const notice = noticeFor(opts.purpose)
@@ -525,6 +535,7 @@ export async function unlockInteractively(
     vaultId: file.vaultId,
     envelopeId: envelope.id,
     deviceFlag: ctx.vaultDevice,
+    ...(choice.preferDevice !== undefined ? { preferDevice: choice.preferDevice } : {}),
     requireFeatures: false,
   })
   const open = async (p: string, r: string): Promise<UnlockedVault> => {
@@ -608,6 +619,7 @@ function availabilityText(envelope: Envelope, facts: PlatformFacts): string {
  */
 async function chooseFactor(
   ctx: CommandContext,
+  vaultId: string,
   allEnvelopes: Envelope[],
   facts: PlatformFacts,
   requested: string | undefined,
@@ -670,25 +682,31 @@ async function chooseFactor(
       }
     }
     if (passphrases.length === 0 && drivable.length === 1) return choiceFor(drivable[0] as DrivableEnvelope)
-    // More than one kind can open it here: the operator says which. Visible prompt, nothing secret.
-    const kinds = [
-      ...(passphrases.length > 0 ? ["a passphrase"] : []),
-      ...(drivableKeys.length > 0 ? ["a security key"] : []),
-      ...(drivableEnclaves.length > 0 ? ["Touch ID"] : []),
-      ...(drivablePasskeys.length > 0 ? ["a synced passkey"] : []),
-    ]
-    const noun = drivableEnclaves.length > 0 || drivablePasskeys.length > 0 ? "an" : "a security key"
-    const answer = (
-      await ctx.deps.promptLine(
-        `This vault opens with ${kinds.join(" or ")}. Type passphrase, or the id of ${noun} envelope:\n${list(drivable as unknown as Envelope[])}\n> `,
-      )
-    ).trim()
-    if (answer === "passphrase" && passphrases.length > 0) return { kind: "passphrase" }
-    const chosen = drivable.find((envelope) => envelope.id === answer)
-    if (chosen) return choiceFor(chosen)
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `No factor named ${JSON.stringify(answer)}; nothing was tried.`, {
-      suggestion: "Answer passphrase, or one of the envelope ids listed, or pass --factor.",
+    // More than one factor can open it here: the operator picks from the menu (BE-294). Visible
+    // prompt, nothing secret. Without a TTY there is no probe, and the one `promptLine` refuses
+    // before it writes anything, exactly as before the menu existed (D5).
+    const attached = ctx.deps.isTTY.stdin
+      ? await probeAttachedKeys(ctx.deps, { vaultId, envelopes: drivableKeys, deviceFlag: ctx.vaultDevice })
+      : undefined
+    const notUsableHere = envelopes.filter(
+      (envelope) => !isPassphraseEnvelope(envelope) && !(drivable as unknown as Envelope[]).includes(envelope),
+    )
+    const menu = factorMenu({
+      keys: drivableKeys,
+      enclaves: drivableEnclaves,
+      passkeys: drivablePasskeys,
+      passphrase: passphrases.length > 0,
+      unusable: notUsableHere,
+      attached,
     })
+    const answer = (await ctx.deps.promptLine(menu.text)).trim()
+    const chosen = pickMenuRow(menu.rows, answer)
+    if (chosen) return chosen.choice
+    throw new VaultError(
+      "VAULT_FACTOR_UNAVAILABLE",
+      `No factor numbered or named ${JSON.stringify(answer)}; nothing was tried.`,
+      { suggestion: `Answer a number from 1 to ${menu.rows.length}, or pass --factor.` },
+    )
   }
 
   if (flag === "passphrase") {
@@ -750,6 +768,111 @@ async function chooseFactor(
     `Envelope ${named.id} (${named.factor}${typeof named.transport === "string" ? `/${named.transport}` : ""}) cannot open the vault here: ${availability.reason}.`,
     { suggestion: "No other envelope was tried. Run `candle vault status` to see which factors can open it here." },
   )
+}
+
+interface MenuRow {
+  choice: FactorChoice
+  /** The envelope id a row answers to, and prints; the Passphrase row has none. */
+  id?: string
+  line: (number: string) => string
+}
+
+/**
+ * BE-294 (D1): a label as the menu prints it. The header is not authenticated when the menu is
+ * drawn and `factor add --label` refuses nothing, so C0 and C1 controls (`safeText`) and every
+ * `Bidi_Control` character become spaces BEFORE the row is composed: a label can neither drive the
+ * terminal nor reorder the trusted text beside it.
+ */
+export function menuSafeText(value: string): string {
+  return safeText(value).replace(/\p{Bidi_Control}/gu, " ")
+}
+
+function menuName(envelope: Envelope): string {
+  const name = menuSafeText(envelope.label).trim()
+  if (name !== "") return name
+  if (isCtap2Envelope(envelope)) return menuSafeText(envelope.product).trim() || "security key"
+  return wordFor(envelope)
+}
+
+/**
+ * BE-294 (D1, D2): the numbered menu, one `promptLine` worth of text. Security keys first, the
+ * ones the probe marked `attached` ahead of the rest (each group in file order), then Touch ID,
+ * then synced passkeys, then one Passphrase row. Every envelope row keeps its id, which is what
+ * tells two same-model keys apart and what `--factor` takes next time.
+ */
+export function factorMenu(input: {
+  keys: Ctap2Envelope[]
+  enclaves: SecureEnclaveEnvelope[]
+  passkeys: PlatformPasskeyEnvelope[]
+  passphrase: boolean
+  unusable: Envelope[]
+  attached: AttachedKeys | undefined
+}): { rows: MenuRow[]; text: string } {
+  const presence = (envelope: Ctap2Envelope) => input.attached?.state.get(envelope.id)
+  const keys = [
+    ...input.keys.filter((envelope) => presence(envelope) === "attached"),
+    ...input.keys.filter((envelope) => presence(envelope) !== "attached"),
+  ]
+  const entries: Array<{ envelope: Envelope; state?: string; choice: FactorChoice }> = [
+    ...keys.map((envelope) => {
+      const state = presence(envelope)
+      const preferDevice = input.attached?.holder.get(envelope.id)
+      return {
+        envelope: envelope as unknown as Envelope,
+        ...(state !== undefined ? { state } : {}),
+        choice: {
+          kind: "security-key",
+          envelope,
+          ...(preferDevice !== undefined ? { preferDevice } : {}),
+        } as FactorChoice,
+      }
+    }),
+    ...input.enclaves.map((envelope) => ({
+      envelope: envelope as unknown as Envelope,
+      state: "this Mac",
+      choice: { kind: "touch-id", envelope } as FactorChoice,
+    })),
+    ...input.passkeys.map((envelope) => ({
+      envelope: envelope as unknown as Envelope,
+      choice: { kind: "passkey", envelope } as FactorChoice,
+    })),
+  ]
+  const described = entries.map(({ envelope, state, choice }) => {
+    const name = menuName(envelope)
+    const kind = wordFor(envelope)
+    const descriptor =
+      name.toLowerCase() === kind.toLowerCase() ? state : state !== undefined ? `${kind}, ${state}` : kind
+    return { id: envelope.id, name, column: descriptor === undefined ? "" : `(${descriptor})`, choice }
+  })
+  const nameWidth = Math.max(0, ...described.map((row) => row.name.length))
+  const columnWidth = Math.max(0, ...described.map((row) => row.column.length))
+  const rows: MenuRow[] = described.map((row) => ({
+    choice: row.choice,
+    id: row.id,
+    line: (n) =>
+      `  ${n}  ${row.name.padEnd(nameWidth)}  ${columnWidth > 0 ? `${row.column.padEnd(columnWidth)}  ` : ""}id ${row.id}`,
+  }))
+  if (input.passphrase) rows.push({ choice: { kind: "passphrase" }, line: (n) => `  ${n}  Passphrase` })
+  const numberWidth = String(rows.length).length
+  const lines = ["Unlock with:", ...rows.map((row, index) => row.line(String(index + 1).padStart(numberWidth)))]
+  if (input.unusable.length > 0) {
+    const names = input.unusable.map((envelope) => `${menuName(envelope)} (${wordFor(envelope)})`).join(", ")
+    lines.push(`Not usable on this machine: ${names}. Details: candle vault status`)
+  }
+  return { rows, text: `${lines.join("\n")}\n> ` }
+}
+
+/**
+ * BE-294 (D3): an offered row's exact id first (so an id is never read as a number), then
+ * `passphrase` in any case when there is a Passphrase row, then a row number from 1 to the row
+ * count with no sign, no leading zero and at most two digits. Labels are not answers.
+ */
+function pickMenuRow(rows: MenuRow[], answer: string): MenuRow | undefined {
+  const byId = rows.find((row) => row.id !== undefined && row.id === answer)
+  if (byId) return byId
+  if (answer.toLowerCase() === "passphrase") return rows.find((row) => row.choice.kind === "passphrase")
+  if (!/^[1-9][0-9]?$/.test(answer)) return undefined
+  return rows[Number(answer) - 1]
 }
 
 /** The kind word the chooser and the backup report print for an envelope. Exported for the report. */

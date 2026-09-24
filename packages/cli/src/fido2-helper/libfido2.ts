@@ -29,6 +29,8 @@ import {
   HelperError,
   type MakeCredentialParams,
   type MakeCredentialResult,
+  type ProbeCredentialParams,
+  type ProbeOutcome,
   unwrapCborByteString,
 } from "./protocol"
 
@@ -37,6 +39,7 @@ import {
 const FIDO_OK = 0
 const COSE_ES256 = -7
 const FIDO_EXT_HMAC_SECRET = 0x01
+const FIDO_OPT_FALSE = 1
 const FIDO_OPT_TRUE = 2
 
 /** The CTAP2 status codes and libfido2's own negative codes that this helper translates. */
@@ -128,6 +131,7 @@ const SYMBOLS = {
   fido_assert_set_extensions: { args: [FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
   fido_assert_set_hmac_salt: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.i32 },
   fido_assert_set_uv: { args: [FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
+  fido_assert_set_up: { args: [FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
   fido_dev_get_assert: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
   fido_assert_count: { args: [FFIType.ptr], returns: FFIType.u64 },
   fido_assert_hmac_secret_ptr: { args: [FFIType.ptr, FFIType.u64], returns: FFIType.ptr },
@@ -259,6 +263,17 @@ export function helperErrorForRc(rc: number, describe: (rc: number) => string): 
     default:
       return new HelperError("INTERNAL", `libfido2 reported ${rc}: ${text}`)
   }
+}
+
+/**
+ * BE-294 (D2): what one silent assertion's return code says about a credential. Only CTAP2's
+ * "no credentials" is absent; every other failure (a key enforcing credProtect level 3 or
+ * `alwaysUv`, a transport error) is unknown, which costs the menu its marker and nothing else.
+ */
+export function probeOutcomeForRc(rc: number, assertions: number): ProbeOutcome {
+  if (rc === FIDO_OK) return assertions > 0 ? "present" : "unknown"
+  if (rc === FIDO_ERR.NO_CREDENTIALS) return "absent"
+  return "unknown"
 }
 
 // ── The backend ───────────────────────────────────────────────────────────────────────────────
@@ -451,6 +466,38 @@ class Libfido2Backend implements Fido2Backend {
       return { hmacSecret, authData }
     } finally {
       pin?.fill(0)
+      this.lib.fido_assert_free(ptr(holderOf(assert)))
+      this.close(dev)
+    }
+  }
+
+  /**
+   * BE-294 (D2): one `getAssertion` naming one credential, with `up` false, `uv` left unset, no
+   * PIN and no extension, so no `hmac-secret` is requested and no PRF output exists. The
+   * authenticator data and signature are never read; only whether an assertion came back is.
+   */
+  probeCredential(path: string, params: ProbeCredentialParams): ProbeOutcome {
+    const dev = this.open(path)
+    const assert = this.lib.fido_assert_new()
+    if (assert === null) {
+      this.close(dev)
+      throw new HelperError("INTERNAL", "fido_assert_new returned NULL")
+    }
+    const rpId = cstr(params.rpId)
+    try {
+      this.check(
+        this.lib.fido_assert_set_clientdata_hash(assert, ptr(params.clientDataHash), params.clientDataHash.length),
+        "setting the client data hash",
+      )
+      this.check(this.lib.fido_assert_set_rp(assert, ptr(rpId)), "setting the relying party")
+      this.check(
+        this.lib.fido_assert_allow_cred(assert, ptr(params.credentialId), params.credentialId.length),
+        "naming the credential",
+      )
+      this.check(this.lib.fido_assert_set_up(assert, FIDO_OPT_FALSE), "clearing user presence")
+      const rc = this.lib.fido_dev_get_assert(dev, assert, null)
+      return probeOutcomeForRc(rc, rc === FIDO_OK ? Number(this.lib.fido_assert_count(assert)) : 0)
+    } finally {
       this.lib.fido_assert_free(ptr(holderOf(assert)))
       this.close(dev)
     }
