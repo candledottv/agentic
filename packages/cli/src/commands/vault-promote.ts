@@ -4,10 +4,16 @@
  * Two modes: `--from` derives a fresh key on the TEE branch; `--in-place` imports one named vault
  * key at its own address after the one-sentence warning, the last-six check, the live
  * controlled-by block and the typed `confirm` (BE-296).
+ *
+ * `--to-key <label|prefix>` (BE-322): the import runs under the calling key exactly as before, and
+ * the promoted wallet is then moved to the named key through the rebind route. The target is
+ * checked before the unlock (`preflightToKey`), the block names the target, and an import whose
+ * rebind fails is reported with the wallet still on the calling key and the command that finishes.
  */
 import { base58 } from "@scure/base"
 import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
+import { apiKeyPrefix } from "../profiles"
 import { errorEnvelope, renderError, suggestionFor, writeFailure, writeLocalFailure } from "../render"
 import { createSolanaRpc, type SolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import {
@@ -29,6 +35,7 @@ import {
   assertColdVaultDestination,
   assertInPlacePreconditions,
   assertNotPinnedDestination,
+  CONFIRM_WORD,
   confirmPromotion,
   controlledByJson,
   findEntryByLabelOrAddress,
@@ -37,7 +44,20 @@ import {
   readControlledBy,
   renderControlledBy,
   runRoleCheck,
+  withToKey,
 } from "../vault/promote-support"
+import {
+  finalBoundKey,
+  type NotRebindable,
+  preflightToKey,
+  type RebindableWallet,
+  rebindJson,
+  rebindPromoted,
+  renderRebindReport,
+  type ToKeyTarget,
+  targetWarnings,
+  walletRebindJson,
+} from "../vault/promote-to-key"
 import { adoptGrantedRow, reconcileGrant } from "../vault/reconcile-grant"
 import { authoritiesBlock, authoritiesJson, keysWithFindings, sentenceForm } from "../vault/signer-roles"
 import {
@@ -68,7 +88,7 @@ import {
 
 export async function vaultPromote(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
-    valueFlags: ["--from", "--in-place", "--sweep-to", "--label", "--rpc-url", "--keystore"],
+    valueFlags: ["--from", "--in-place", "--sweep-to", "--label", "--rpc-url", "--keystore", "--to-key"],
     booleanFlags: ["--accept-unknown-exposure", "--accept-older-copy"],
     pathFlags: ["--keystore"],
   })
@@ -83,25 +103,130 @@ export async function vaultPromote(args: string[], ctx: CommandContext): Promise
   if (fromLabel === undefined && inPlaceLabel === undefined) {
     return usage(
       ctx,
-      "Usage: candle vault promote --from <vault-key-label> | --in-place <vault-key-label> --sweep-to <label> --rpc-url <url>",
+      "Usage: candle vault promote --from <vault-key-label> | --in-place <vault-key-label> --sweep-to <label> --rpc-url <url> [--to-key <label|prefix>]",
     )
   }
+  const toKeyRaw = parsed.values["--to-key"]
+  if (toKeyRaw !== undefined && toKeyRaw.trim().length === 0) return usage(ctx, "--to-key needs a label or a prefix.")
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "vault promote")) return 1
-
-  if (fromLabel !== undefined) {
-    if (parsed.values["--sweep-to"] !== undefined) {
-      return usage(ctx, "Fresh-key promote takes --from, not --sweep-to.")
-    }
-    return promoteFresh(ctx, parsed, fromLabel)
+  if (fromLabel !== undefined && parsed.values["--sweep-to"] !== undefined) {
+    return usage(ctx, "Fresh-key promote takes --from, not --sweep-to.")
   }
-  return promoteInPlace(ctx, parsed, inPlaceLabel as string)
+
+  // BE-322: the target, before the unlock prompt and before any write. A refusal here has written
+  // nothing, like every other preflight refusal.
+  let toKey: ToKeyContext | undefined
+  if (toKeyRaw !== undefined) {
+    // Fresh mode without `--label` has not chosen a name yet (it becomes `tee-<index>` after
+    // unlock). Count that one new wallet anyway: an empty list would let a `selected` target at
+    // the cap pass here and fail only after the import.
+    const label = parsed.values["--label"] ?? inPlaceLabel ?? (fromLabel !== undefined ? "<fresh>" : undefined)
+    const preflight = await preflightToKey(ctx, toKeyRaw, { labels: label !== undefined ? [label] : [] })
+    if (!preflight.ok) return preflight.exit
+    toKey = { target: preflight.target, deviceToken: preflight.deviceToken }
+  }
+
+  if (fromLabel !== undefined) return promoteFresh(ctx, parsed, fromLabel, toKey)
+  return promoteInPlace(ctx, parsed, inPlaceLabel as string, toKey)
+}
+
+/** BE-322: the resolved `--to-key` target and the device token the rebind sends. */
+interface ToKeyContext {
+  target: ToKeyTarget
+  deviceToken: string
+}
+
+/** What one import left behind, as the rebind and the document need it. */
+interface PromotedWallet {
+  linkedWalletId: string | null
+  address: string
+  label: string
+  remoteAuthority: string | null
+  /** `boundKeyPrefix` from the import, when the server reported it. */
+  importedTo: string | null
+}
+
+/**
+ * BE-322: after one import, the rebind to the target, its report on stderr, and the keys the
+ * `--json` document carries. A wallet not at `verified-active` cannot move and is listed with the
+ * reason; a failed rebind leaves the wallet on the calling key, says so, and prints the finishing
+ * command. `exit` is 1 when the wallet is not on the target for a reason a re-run or the finishing
+ * command fixes, and 0 otherwise.
+ */
+async function rebindAfterImport(
+  ctx: CommandContext,
+  toKey: ToKeyContext,
+  wallet: PromotedWallet,
+  callingKeyPrefix: string,
+): Promise<{ exit: number; json: Record<string, unknown> }> {
+  const rebindable: RebindableWallet[] =
+    wallet.linkedWalletId !== null && wallet.remoteAuthority === "verified-active"
+      ? [{ id: wallet.linkedWalletId, address: wallet.address, label: wallet.label }]
+      : []
+  const notRebindable: NotRebindable[] =
+    rebindable.length === 0
+      ? [
+          {
+            address: wallet.address,
+            label: wallet.label,
+            reason:
+              wallet.linkedWalletId === null
+                ? "no linked wallet id"
+                : `remote authority is ${wallet.remoteAuthority ?? "unknown"}, not verified-active`,
+          },
+        ]
+      : []
+  const run =
+    rebindable.length > 0 ? await rebindPromoted(ctx, toKey.deviceToken, toKey.target.keyPrefix, rebindable) : undefined
+  const input = { target: toKey.target, callingKeyPrefix, wallets: rebindable, run, notRebindable }
+  const report = renderRebindReport(input)
+  if (report.length > 0) ctx.deps.stderr.write(`${report}\n`)
+  const id = wallet.linkedWalletId
+  return {
+    exit: run !== undefined && !run.ok ? 1 : 0,
+    json: {
+      ...rebindJson(input),
+      boundKeyPrefix: finalBoundKey({ id, importedTo: wallet.importedTo }, run, toKey.target.keyPrefix),
+      walletRebind: walletRebindJson({ id, remoteAuthority: wallet.remoteAuthority }, run),
+    },
+  }
+}
+
+/**
+ * BE-322: a single `--in-place` resume has no controlled-by block. Name the target the way fresh
+ * mode does, then require `confirm` before the rebind. A wrong word refuses before `resumePromote`
+ * writes, so the entry stays import-pending.
+ */
+async function confirmResumeRebind(ctx: CommandContext, toKey: ToKeyContext): Promise<void> {
+  const name = toKey.target.label !== null ? `  (${toKey.target.label})` : ""
+  ctx.deps.stderr.write(
+    `${[
+      `This wallet will be bound to key ${toKey.target.keyPrefix}${name} by a rebind after the import.`,
+      ...targetWarnings(toKey.target),
+    ].join("\n")}\n`,
+  )
+  const typed = await ctx.deps.promptLine(`Type ${CONFIRM_WORD} to move this wallet to ${toKey.target.keyPrefix}: `)
+  if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
+    throw new VaultError(
+      "PROMOTE_NOT_ACKNOWLEDGED",
+      `The acknowledgement is the word ${CONFIRM_WORD}; nothing was moved, and nothing was written.`,
+      { suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.` },
+    )
+  }
+}
+
+/** The calling key's prefix for the report: the key this CLI sent the import under. */
+async function callingKeyPrefixFor(ctx: CommandContext): Promise<string> {
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile)
+  return (apiKey !== undefined ? apiKeyPrefix(apiKey) : undefined) ?? "(the calling key)"
 }
 
 async function promoteFresh(
   ctx: CommandContext,
   parsed: ReturnType<typeof parseArgs> & object,
   fromLabel: string,
+  toKey: ToKeyContext | undefined,
 ): Promise<number> {
   if ("error" in parsed) return usage(ctx, parsed.error)
   const resolvedVault = vaultPathFor(ctx, parsed)
@@ -199,11 +324,22 @@ async function promoteFresh(
     )
 
     await confirmLastSix(ctx, destination.address, "the sweep vault destination")
+    if (toKey !== undefined) {
+      // BE-322: the fresh mode has no controlled-by block; the target is named here, with its cap
+      // lines, before the import.
+      const name = toKey.target.label !== null ? `  (${toKey.target.label})` : ""
+      ctx.deps.stderr.write(
+        `${[
+          `This wallet will be bound to key ${toKey.target.keyPrefix}${name} by a rebind after the import.`,
+          ...targetWarnings(toKey.target),
+        ].join("\n")}\n`,
+      )
+    }
 
     const privateKey = base58.encode(secret64)
     wipe(secret64)
     const importCount = { n: 0 }
-    const { exit: code } = await runTeeImport(ctx, {
+    const { exit: code, submitted } = await runTeeImport(ctx, {
       address,
       privateKey,
       label: entry.label,
@@ -224,10 +360,28 @@ async function promoteFresh(
     if (target === undefined) {
       throw new VaultError("VAULT_INDEX_INVALID", `Entry ${keyId} missing after import.`)
     }
+    // BE-322: the rebind, after the import committed.
+    let rebound: Awaited<ReturnType<typeof rebindAfterImport>> | undefined
+    if (toKey !== undefined) {
+      const importedTo = submitted?.boundKeyPrefix ?? null
+      rebound = await rebindAfterImport(
+        ctx,
+        toKey,
+        {
+          linkedWalletId: target.linkedWalletId ?? null,
+          address,
+          label: entry.label,
+          remoteAuthority: target.tee?.remoteAuthority ?? submitted?.remoteAuthority ?? null,
+          importedTo,
+        },
+        await callingKeyPrefixFor(ctx),
+      )
+    }
+    const exit = Math.max(code, rebound?.exit ?? 0)
     // runTeeImport already committed success fields when ok; re-read for output.
     if (ctx.json) {
       writeJson(ctx.deps, {
-        ok: true,
+        ok: rebound === undefined || rebound.exit === 0,
         mode: "fresh",
         address,
         label: entry.label,
@@ -235,11 +389,12 @@ async function promoteFresh(
         lifecycle: target.tee?.lifecycle,
         linkedWalletId: target.linkedWalletId ?? null,
         importCalls: importCount.n,
+        ...(rebound?.json ?? {}),
       })
     } else {
       ctx.deps.stdout.write(`Promoted fresh TEE wallet ${address} (sweep to ${destination.address}).\n`)
     }
-    return code
+    return exit
   })
 }
 
@@ -279,6 +434,7 @@ async function promoteInPlace(
   ctx: CommandContext,
   parsed: ReturnType<typeof parseArgs> & object,
   subjectLabel: string,
+  toKey: ToKeyContext | undefined,
 ): Promise<number> {
   if ("error" in parsed) return usage(ctx, parsed.error)
   const resolvedVault = vaultPathFor(ctx, parsed)
@@ -312,7 +468,10 @@ async function promoteInPlace(
       if (sweepTo !== undefined) {
         return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).")
       }
-      const { exit } = await resumePromote(ctx, vault, existing, opened.reopen, path, hold, {
+      // BE-322: a resume rebind moves a wallet that is already on the server. Name the target
+      // and take `confirm` before that rebind, and before the resume writes.
+      if (toKey !== undefined) await confirmResumeRebind(ctx, toKey)
+      const resumed = await resumePromote(ctx, vault, existing, opened.reopen, path, hold, {
         confirmAccount: (account) => confirmLastSix(ctx, account, "that account"),
         confirmDestination: async (destination) => {
           try {
@@ -322,8 +481,43 @@ async function promoteInPlace(
             return false
           }
         },
+        // BE-322: with a target, this function writes the one document, after the rebind.
+        report: toKey !== undefined ? "return" : "write",
       })
-      return exit
+      if (toKey === undefined) return resumed.exit
+      if (resumed.failure !== undefined || resumed.exit !== 0) {
+        writeLocalFailure(
+          ctx.deps,
+          resumed.failure ?? { code: "PROMOTE_OUTCOME_UNRESOLVED", message: "The resume did not complete." },
+          ctx.json,
+        )
+        return resumed.exit
+      }
+      const rebound = await rebindAfterImport(
+        ctx,
+        toKey,
+        {
+          linkedWalletId: resumed.adopted?.linkedWalletId ?? null,
+          address: existing.address,
+          label: existing.label,
+          remoteAuthority: resumed.adopted?.remoteAuthority ?? null,
+          importedTo: existing.tee?.boundKeyPrefix ?? null,
+        },
+        await callingKeyPrefixFor(ctx),
+      )
+      if (ctx.json) {
+        writeJson(ctx.deps, {
+          ok: rebound.exit === 0,
+          mode: "resume",
+          address: existing.address,
+          lifecycle: "enabled",
+          importCalls: 0,
+          ...rebound.json,
+        })
+      } else {
+        ctx.deps.stdout.write(`Resumed ${existing.address}: grant adopted; no re-import.\n`)
+      }
+      return rebound.exit
     }
 
     if (sweepTo === undefined || rpcUrl === undefined) {
@@ -347,7 +541,16 @@ async function promoteInPlace(
 
     // Which account, key and API will control this key (BE-296, D5): live, after the room,
     // before the operator reads anything and before any write. Refuses; never a cached value.
-    const controlledBy = await readControlledBy(ctx)
+    // With `--to-key` (BE-322) the block names the target, reached by a rebind after the import.
+    const live = await readControlledBy(ctx)
+    const controlledBy =
+      toKey === undefined
+        ? live
+        : withToKey(live, {
+            keyPrefix: toKey.target.keyPrefix,
+            label: toKey.target.label,
+            warnings: targetWarnings(toKey.target),
+          })
 
     // Holdings (step 4): display what the subject holds.
     const rpc = createSolanaRpc(rpcUrl, ctx.deps.fetch)
@@ -449,11 +652,30 @@ async function promoteInPlace(
       writeLocalFailure(ctx.deps, failure, ctx.json)
       return code
     }
+    // BE-322: the rebind, after the import committed. The import's own outcome is not changed by
+    // it: a failed rebind is exit 1 with the wallet named as still on the calling key.
+    let rebound: Awaited<ReturnType<typeof rebindAfterImport>> | undefined
+    if (toKey !== undefined && imported.submitted !== undefined) {
+      const importedTo = imported.submitted.boundKeyPrefix ?? null
+      rebound = await rebindAfterImport(
+        ctx,
+        toKey,
+        {
+          linkedWalletId: imported.submitted.id ?? null,
+          address: subject.address,
+          label: parsed.values["--label"] ?? subject.label,
+          remoteAuthority: imported.submitted.remoteAuthority ?? null,
+          importedTo,
+        },
+        controlledBy.keyPrefix,
+      )
+    }
+    const exit = Math.max(code, rebound?.exit ?? 0)
     if (ctx.json) {
       const reopened = hold(await reopenFromDisk(path, opened.reopen, vault))
       const updated = reopened.index.entries.find((e) => e.id === subject.id)
       writeJson(ctx.deps, {
-        ok: code === 0 || code === 3,
+        ok: (code === 0 || code === 3) && (rebound === undefined || rebound.exit === 0),
         mode: "in-place",
         address: subject.address,
         vaultDestination: destination.address,
@@ -462,13 +684,14 @@ async function promoteInPlace(
         // BE-296 (D9): optional keys only; every key above is unchanged.
         controlledBy: controlledByJson(controlledBy),
         authorities: authoritiesJson(roles),
+        ...(rebound?.json ?? {}),
       })
     } else if (code === 0 || code === 3) {
       ctx.deps.stdout.write(
         `Promoted ${subject.address} in place (sweep to ${destination.address}). This address never returns to cold.\n`,
       )
     }
-    return code
+    return exit
   })
 }
 

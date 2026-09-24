@@ -9337,6 +9337,7 @@ var init_signer_roles = __esm(() => {
 // src/vault/promote-support.ts
 var exports_promote_support = {};
 __export(exports_promote_support, {
+  withToKey: () => withToKey,
   subjectPhrase: () => subjectPhrase,
   shortAddress: () => shortAddress,
   runRoleCheck: () => runRoleCheck,
@@ -9511,6 +9512,9 @@ async function confirmPromotion(ctx, n) {
 function shortAddress(address) {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
+function withToKey(controlledBy, toKey) {
+  return { ...controlledBy, toKey };
+}
 function accountUnresolved(reason) {
   return new VaultError("PROMOTE_ACCOUNT_UNRESOLVED", `Could not confirm which Candle account this API key acts for (${reason}); nothing was written.`, {
     suggestion: "Check the key with: candle doctor. Promotion registers the keys to that account, so it does not proceed on a cached value."
@@ -9584,23 +9588,51 @@ function renderControlledBy(controlledBy, n) {
   const label = cleaned.length > 0 ? `(${cleaned})  ` : "";
   const environment = controlledBy.environment ?? "not a Candle host";
   const from = controlledBy.apiUrlFrom !== undefined ? `, from ${controlledBy.apiUrlFrom}` : "";
+  const { toKey } = controlledBy;
+  if (toKey === undefined) {
+    return [
+      `${subject} will be controlled by:`,
+      `  Candle account  ${controlledBy.username ?? "(no username)"}  (${shortAddress(controlledBy.account)})`,
+      `  API key         ${controlledBy.keyPrefix}…  ${label}${source}`,
+      `  API             ${controlledBy.apiUrl}  (${environment}${from})`
+    ].join(`
+`);
+  }
+  const toLabel = toKey.label !== null && labelCell(toKey.label).length > 0 ? `(${labelCell(toKey.label)})  ` : "";
   return [
     `${subject} will be controlled by:`,
     `  Candle account  ${controlledBy.username ?? "(no username)"}  (${shortAddress(controlledBy.account)})`,
-    `  API key         ${controlledBy.keyPrefix}…  ${label}${source}`,
-    `  API             ${controlledBy.apiUrl}  (${environment}${from})`
+    `  API key         ${toKey.keyPrefix}…  ${toLabel}--to-key, bound by a rebind after the import`,
+    `  imported under  ${controlledBy.keyPrefix}…  ${label}${source}`,
+    `  API             ${controlledBy.apiUrl}  (${environment}${from})`,
+    ...toKey.warnings
   ].join(`
 `);
 }
 function controlledByJson(controlledBy) {
+  const importedUnder = {
+    keyPrefix: controlledBy.keyPrefix,
+    keyLabel: controlledBy.keyLabel,
+    keySource: controlledBy.keySource
+  };
+  if (controlledBy.toKey === undefined) {
+    return {
+      account: controlledBy.account,
+      username: controlledBy.username,
+      ...importedUnder,
+      apiUrl: controlledBy.apiUrl,
+      environment: controlledBy.environment
+    };
+  }
   return {
     account: controlledBy.account,
     username: controlledBy.username,
-    keyPrefix: controlledBy.keyPrefix,
-    keyLabel: controlledBy.keyLabel,
-    keySource: controlledBy.keySource,
+    keyPrefix: controlledBy.toKey.keyPrefix,
+    keyLabel: controlledBy.toKey.label,
+    keySource: "--to-key",
     apiUrl: controlledBy.apiUrl,
-    environment: controlledBy.environment
+    environment: controlledBy.environment,
+    importedUnder
   };
 }
 async function runRoleCheck(ctx, rpc, addresses) {
@@ -39379,11 +39411,11 @@ var HELP = {
         description: "Sign a vault-key transfer locally"
       },
       {
-        invocation: "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>]",
+        invocation: "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>] [--to-key <prefix|label>]",
         description: "Fresh TEE key, or promote one vault key in place. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked."
       },
       {
-        invocation: "promote-batch --pairs-from <file> --rpc-url <url> [--token-holdings]",
+        invocation: "promote-batch --pairs-from <file> --rpc-url <url> [--to-key <prefix|label>] [--token-holdings]",
         description: "Promote many vault keys in place: one unlock, one reviewed acknowledgement. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked."
       },
       {
@@ -39417,6 +39449,10 @@ var HELP = {
       {
         invocation: "--pairs-from <file>",
         description: "promote-batch: one '<label> <destination>' per line, or a CSV with label and sweep_to columns (max 256). Every row is checked against the whole set before anything is written, and each key is committed on its own, so an interrupted batch keeps what landed and re-running the same file resumes."
+      },
+      {
+        invocation: "--to-key <prefix|label>",
+        description: "promote, promote-batch: bind the promoted wallets to this key instead of the calling one. The import runs under the calling key as before, then the wallets are moved to the named key by a rebind (device token; the target's secret never touches this machine). The target is checked before the unlock; a wallet whose rebind fails is named as still on the calling key, with the tee rebind command that finishes."
       }
     ],
     examples: [
@@ -39426,6 +39462,7 @@ var HELP = {
       "candle vault rename key-7 treasury-cold",
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
       "candle vault promote-batch --pairs-from ./promote-plan.csv --rpc-url https://<rpc>",
+      "candle vault promote-batch --pairs-from ./promote-plan.csv --rpc-url https://<rpc> --to-key tr-01",
       "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
       "candle vault backup --to icloud",
@@ -52517,8 +52554,7 @@ function launchWarning(keyPrefix, toKey, rows) {
   return `Warning: key ${keyPrefix} lacks launch:write; ${launchers.join(", ")} ${launchers.length === 1 ? "has" : "have"} allowLaunch but cannot launch under it.`;
 }
 var RELAY_SIGNER_LINE = "The relay signer does not move: trade these wallets from the machine that promoted them.";
-function writeRebindFailure(ctx, result, context) {
-  const { deps, apiUrl, json } = ctx;
+function rebindFailureDetails(result, context) {
   let code = result.code;
   let message = result.message;
   let suggestion;
@@ -52538,31 +52574,61 @@ function writeRebindFailure(ctx, result, context) {
   } else if (result.code === "REBIND_STALE") {
     suggestion = "Run the command again; the preview will show the current binding.";
   }
+  return {
+    code: code ?? `HTTP ${result.status}`,
+    message,
+    ...suggestion !== undefined ? { suggestion } : {},
+    status: result.status
+  };
+}
+function writeRebindFailure(ctx, result, context) {
+  const { deps, apiUrl, json } = ctx;
+  const { code, message, suggestion } = rebindFailureDetails(result, context);
   const envelope = errorEnvelope({ ...result, code, message }, { apiUrl, authType: "device" });
   if (json) {
     deps.stdout.write(`${JSON.stringify({ ...envelope, ...suggestion ? { suggestion } : {} })}
 `);
   } else {
-    deps.stderr.write(`${code ?? `HTTP ${result.status}`}: ${message}${suggestion ? ` ${suggestion}` : ""}
+    deps.stderr.write(`${code}: ${message}${suggestion ? ` ${suggestion}` : ""}
 `);
   }
   return 1;
 }
-async function resolveTargetKey(ctx, deviceToken, raw) {
-  const { deps, apiUrl, json } = ctx;
-  if (KEY_PREFIX_RE.test(raw))
-    return { ok: true, keyPrefix: raw };
-  const result = await apiRequest(KEYS_PATH2, {
+async function listAccountKeys(ctx, deviceToken) {
+  const { deps, apiUrl } = ctx;
+  return apiRequest(KEYS_PATH2, {
     auth: "device",
     credentials: { deviceToken },
     apiUrl,
     fetch: deps.fetch,
     env: deps.env
   });
-  if (!result.ok) {
-    return { ok: false, code: writeRebindFailure(ctx, result, {}) };
+}
+async function postRebind(ctx, deviceToken, body) {
+  const { deps, apiUrl } = ctx;
+  return apiRequest(REBIND_PATH, {
+    method: "POST",
+    body,
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+}
+async function resolveTargetKey(ctx, deviceToken, raw, opts = {}) {
+  const { deps, json } = ctx;
+  if (KEY_PREFIX_RE.test(raw))
+    return { ok: true, keyPrefix: raw };
+  let listed = opts.keys;
+  if (listed === undefined) {
+    const result = await listAccountKeys(ctx, deviceToken);
+    if (!result.ok) {
+      return { ok: false, code: writeRebindFailure(ctx, result, {}) };
+    }
+    listed = result.body?.keys ?? [];
   }
-  const keys = (result.body?.keys ?? []).filter((key) => !key.revokedAt);
+  const keys = listed.filter((key) => !key.revokedAt);
   const matches = keys.filter((key) => key.label === raw);
   if (matches.length === 1)
     return { ok: true, keyPrefix: matches[0].keyPrefix };
@@ -52620,15 +52686,7 @@ async function teeRebind(args, ctx) {
   const target = await resolveTargetKey(ctx, deviceToken, toKey);
   if (!target.ok)
     return target.code;
-  const call = (body) => apiRequest(REBIND_PATH, {
-    method: "POST",
-    body,
-    auth: "device",
-    credentials: { deviceToken },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env
-  });
+  const call = (body) => postRebind(ctx, deviceToken, body);
   const preview = await call({
     dryRun: true,
     toKeyPrefix: target.keyPrefix,
@@ -56419,6 +56477,7 @@ async function vaultPhrase(args, ctx) {
 init_esm();
 init_args();
 init_deps();
+init_profiles();
 init_render();
 init_solana_lite();
 
@@ -56525,12 +56584,299 @@ function restoreRefusedFailure(init, error) {
 // src/commands/vault-promote.ts
 init_errors();
 init_promote_support();
+// src/vault/promote-to-key.ts
+init_deps();
+init_render();
+var REBIND_CHUNK = 200;
+var SELECTED_SCOPE_LIMIT = 50;
+function targetKeyRefusal(row, keyPrefix, now) {
+  const written = "Nothing was written.";
+  if (row === undefined) {
+    return {
+      code: "REBIND_KEY_NOT_FOUND",
+      message: `No key ${keyPrefix} on this account. ${written}`,
+      suggestion: "The target must be a key on the same account: candle keys list"
+    };
+  }
+  if (row.revokedAt !== undefined) {
+    return {
+      code: "REBIND_TARGET_INVALID",
+      message: `The target key ${keyPrefix} is revoked. ${written}`,
+      suggestion: "Pick an active key: candle keys list"
+    };
+  }
+  if (row.expiresAt !== undefined && row.expiresAt !== null && row.expiresAt <= now) {
+    return {
+      code: "REBIND_TARGET_INVALID",
+      message: `The target key ${keyPrefix} has expired. ${written}`,
+      suggestion: "Pick an active key: candle keys list"
+    };
+  }
+  if (row.environment !== "production") {
+    return {
+      code: "REBIND_TARGET_INVALID",
+      message: `The target key ${keyPrefix} is a test key; the trade rail refuses test keys. ${written}`,
+      suggestion: "Pick a production key: candle keys list"
+    };
+  }
+  if (!row.scopes.includes("swap:write")) {
+    return {
+      code: "REBIND_TARGET_INVALID",
+      message: `The target key ${keyPrefix} lacks swap:write, which a TEE wallet needs to trade. ${written}`,
+      suggestion: "Pick a key with swap:write, or mint one: candle keys create"
+    };
+  }
+  return null;
+}
+function tradeReadinessOf(row) {
+  const hasTxLimit = row.txLimit !== null && row.txLimit !== undefined;
+  const limits = row.spendLimits ?? [];
+  const cap = (asset) => limits.some((limit) => limit.asset === asset.toLowerCase() || limit.asset === asset.toUpperCase());
+  const sol = cap("sol");
+  const usdc = cap("usdc");
+  const missingCaps = [];
+  if (!hasTxLimit)
+    missingCaps.push("txLimit");
+  if (!sol)
+    missingCaps.push("spendLimits.sol");
+  if (!usdc)
+    missingCaps.push("spendLimits.usdc");
+  return { tradeReady: { sol: hasTxLimit && sol, usdc: hasTxLimit && usdc }, missingCaps };
+}
+function targetWarnings(target) {
+  return capWarnings(target.keyPrefix, {
+    keyPrefix: target.keyPrefix,
+    label: target.label,
+    paused: target.paused,
+    walletScope: target.walletScope,
+    tradeReady: target.tradeReady,
+    missingCaps: target.missingCaps,
+    launchScope: target.launchScope
+  });
+}
+async function preflightToKey(ctx, raw, opts) {
+  const { deps, json } = ctx;
+  const refuse2 = (failure) => {
+    writeLocalFailure(deps, failure, json);
+    return { ok: false, exit: 1 };
+  };
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken)
+    return refuse2(DEVICE_TOKEN_REQUIRED);
+  const listing = await listAccountKeys(ctx, deviceToken);
+  if (!listing.ok) {
+    return refuse2({
+      code: listing.code ?? `HTTP ${listing.status}`,
+      message: `Could not read this account's keys to check --to-key (${listing.status === 0 ? listing.message : `HTTP ${listing.status}`}). Nothing was written.`,
+      suggestion: "Check the device token with: candle auth status"
+    });
+  }
+  const keys = listing.body?.keys ?? [];
+  const resolved = await resolveTargetKey(ctx, deviceToken, raw, { keys });
+  if (!resolved.ok)
+    return { ok: false, exit: resolved.code };
+  const keyPrefix = resolved.keyPrefix;
+  const row = keys.find((key) => key.keyPrefix === keyPrefix);
+  const refusal = targetKeyRefusal(row, keyPrefix, deps.now());
+  if (refusal !== null)
+    return refuse2(refusal);
+  const target = row;
+  const walletScope = target.walletScope === "selected" ? "selected" : "all";
+  if (walletScope === "selected") {
+    const room = await readSelectedScopeRoom(ctx, keyPrefix);
+    if (room.ok) {
+      const moving = opts.labels.filter((label) => !room.heldLabels.has(label)).length;
+      if (room.held + moving > SELECTED_SCOPE_LIMIT) {
+        return refuse2({
+          code: "REBIND_SCOPE_FULL",
+          message: `Key ${keyPrefix} is scoped to selected wallets and holds ${room.held} of ${SELECTED_SCOPE_LIMIT}; the ${moving} this run would move do not fit. Nothing was written.`,
+          suggestion: "Widen the key's wallet scope from the portal, or name a key with room."
+        });
+      }
+    } else {
+      deps.stderr.write(`Could not read key ${keyPrefix}'s wallet set (${room.reason}); its selected-scope room is checked at the rebind.
+`);
+    }
+  }
+  const readiness = tradeReadinessOf(target);
+  return {
+    ok: true,
+    deviceToken,
+    target: {
+      keyPrefix,
+      label: typeof target.label === "string" && target.label.length > 0 ? target.label : null,
+      walletScope,
+      paused: target.pausedAt !== undefined && target.pausedAt !== null,
+      launchScope: target.scopes.includes("launch:write"),
+      ...readiness
+    }
+  };
+}
+async function readSelectedScopeRoom(ctx, keyPrefix) {
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  if (!apiKey)
+    return { ok: false, reason: "no API key" };
+  const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/wallets`, {
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl: ctx.apiUrl,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result.ok)
+    return { ok: false, reason: result.status === 0 ? result.message : `HTTP ${result.status}` };
+  const wallets2 = result.body?.wallets;
+  if (!Array.isArray(wallets2))
+    return { ok: false, reason: "no wallet list in the response" };
+  const heldLabels = new Set;
+  for (const wallet of wallets2)
+    if (typeof wallet?.label === "string")
+      heldLabels.add(wallet.label);
+  return { ok: true, held: wallets2.length, heldLabels };
+}
+function chunkWallets(wallets2, size = REBIND_CHUNK) {
+  const out = [];
+  for (let at = 0;at < wallets2.length; at += size)
+    out.push(wallets2.slice(at, at + size));
+  return out;
+}
+async function rebindPromoted(ctx, deviceToken, toKeyPrefix, wallets2) {
+  const run = { ok: true, requests: 0, outcomes: new Map };
+  for (const wallet of wallets2)
+    run.outcomes.set(wallet.id, { state: "not-reached" });
+  const chunks = chunkWallets(wallets2);
+  for (const [at, chunk] of chunks.entries()) {
+    run.requests += 1;
+    const preview = await postRebind(ctx, deviceToken, {
+      dryRun: true,
+      toKeyPrefix,
+      wallets: chunk.map((wallet) => wallet.id)
+    });
+    if (!preview.ok) {
+      run.ok = false;
+      run.failure = { ...rebindFailureDetails(preview, {}), chunk: at + 1 };
+      return run;
+    }
+    const shown = preview.body;
+    if (run.toKey === undefined)
+      run.toKey = shown.toKey;
+    for (const row of shown.unchanged)
+      run.outcomes.set(row.id, { state: "unchanged" });
+    const moving = shown.rebound;
+    if (moving.length === 0)
+      continue;
+    run.requests += 1;
+    const committed = await postRebind(ctx, deviceToken, {
+      toKeyPrefix,
+      walletIds: moving.map((row) => row.id),
+      expect: Object.fromEntries(moving.map((row) => [row.id, row.fromKeyPrefix]))
+    });
+    if (!committed.ok) {
+      run.ok = false;
+      run.failure = {
+        ...rebindFailureDetails(committed, {
+          fromKeyPrefixes: Array.from(new Set(moving.map((row) => row.fromKeyPrefix)))
+        }),
+        chunk: at + 1
+      };
+      for (const row of moving)
+        run.outcomes.set(row.id, { state: "failed" });
+      return run;
+    }
+    const result = committed.body;
+    for (const row of result.rebound) {
+      run.outcomes.set(row.id, { state: "rebound", ...row.auditId !== undefined ? { auditId: row.auditId } : {} });
+    }
+    for (const row of result.unchanged)
+      run.outcomes.set(row.id, { state: "unchanged" });
+  }
+  return run;
+}
+function finishingCommands(addresses, toKeyPrefix) {
+  return chunkWallets(addresses).map((chunk) => `candle tee rebind ${chunk.join(" ")} --to-key ${toKeyPrefix}`);
+}
+function pendingWallets(wallets2, run) {
+  return wallets2.filter((wallet) => {
+    const state = run?.outcomes.get(wallet.id)?.state;
+    return state !== "rebound" && state !== "unchanged";
+  });
+}
+function renderRebindReport(input) {
+  const { target, wallets: wallets2, run, notRebindable } = input;
+  const lines = [];
+  const name = (wallet) => `${wallet.label} (${wallet.address})`;
+  if (run !== undefined) {
+    const rebound = wallets2.filter((wallet) => run.outcomes.get(wallet.id)?.state === "rebound").length;
+    const unchanged = wallets2.filter((wallet) => run.outcomes.get(wallet.id)?.state === "unchanged").length;
+    if (rebound > 0 || unchanged > 0) {
+      lines.push(`✓ ${rebound} wallet${rebound === 1 ? "" : "s"} moved to key ${target.keyPrefix}${unchanged > 0 ? ` (${unchanged} already there)` : ""} in ${run.requests} request${run.requests === 1 ? "" : "s"}.`);
+    }
+    if (run.failure !== undefined) {
+      lines.push(`Rebind ${run.failure.code}: ${run.failure.message}${run.failure.suggestion ? ` ${run.failure.suggestion}` : ""}`);
+    }
+  }
+  const pending = pendingWallets(wallets2, run);
+  if (pending.length > 0) {
+    lines.push(`${pending.length} promoted wallet${pending.length === 1 ? " is" : "s are"} still bound to the calling key ${input.callingKeyPrefix}, not ${target.keyPrefix}:`, ...pending.map((wallet) => `  ${name(wallet)}`), "Finish with:", ...finishingCommands(pending.map((wallet) => wallet.address), target.keyPrefix).map((command) => `  ${command}`));
+  }
+  if (notRebindable.length > 0) {
+    lines.push(`${notRebindable.length} wallet${notRebindable.length === 1 ? "" : "s"} cannot be rebound yet (only a verified-active wallet moves):`, ...notRebindable.map((wallet) => `  ${name(wallet)}: ${wallet.reason}`));
+  }
+  return lines.join(`
+`);
+}
+function walletRebindJson(wallet, run) {
+  if (wallet.id === null || wallet.remoteAuthority !== "verified-active") {
+    return {
+      state: "not-rebindable",
+      reason: wallet.id === null ? "no linked wallet id" : `remote authority is ${wallet.remoteAuthority ?? "unknown"}, not verified-active`
+    };
+  }
+  const outcome = run?.outcomes.get(wallet.id);
+  if (outcome === undefined)
+    return { state: "not-reached" };
+  return { state: outcome.state, ...outcome.auditId !== undefined ? { auditId: outcome.auditId } : {} };
+}
+function finalBoundKey(wallet, run, toKeyPrefix) {
+  const state = wallet.id === null ? undefined : run?.outcomes.get(wallet.id)?.state;
+  return state === "rebound" || state === "unchanged" ? toKeyPrefix : wallet.importedTo;
+}
+function rebindJson(input) {
+  const { target, wallets: wallets2, run } = input;
+  const pending = pendingWallets(wallets2, run);
+  const count = (state) => wallets2.filter((wallet) => run?.outcomes.get(wallet.id)?.state === state).length;
+  return {
+    toKey: {
+      keyPrefix: target.keyPrefix,
+      label: target.label,
+      tradeReady: run?.toKey?.tradeReady ?? target.tradeReady,
+      missingCaps: run?.toKey?.missingCaps ?? target.missingCaps
+    },
+    rebind: {
+      ok: run !== undefined && run.ok && input.notRebindable.length === 0,
+      reached: run !== undefined,
+      requests: run?.requests ?? 0,
+      rebound: count("rebound"),
+      unchanged: count("unchanged"),
+      pending: pending.map((wallet) => wallet.address),
+      notRebindable: input.notRebindable.length,
+      ...run?.failure !== undefined ? {
+        code: run.failure.code,
+        message: run.failure.message,
+        ...run.failure.suggestion !== undefined ? { suggestion: run.failure.suggestion } : {}
+      } : {},
+      finishWith: finishingCommands(pending.map((wallet) => wallet.address), target.keyPrefix)
+    }
+  };
+}
+
+// src/commands/vault-promote.ts
 init_signer_roles();
 init_store();
 init_vault_support();
 async function vaultPromote(args, ctx) {
   const parsed = parseArgs(args, {
-    valueFlags: ["--from", "--in-place", "--sweep-to", "--label", "--rpc-url", "--keystore"],
+    valueFlags: ["--from", "--in-place", "--sweep-to", "--label", "--rpc-url", "--keystore", "--to-key"],
     booleanFlags: ["--accept-unknown-exposure", "--accept-older-copy"],
     pathFlags: ["--keystore"]
   });
@@ -56544,21 +56890,73 @@ async function vaultPromote(args, ctx) {
     return usage(ctx, "Use either --from or --in-place, not both.");
   }
   if (fromLabel === undefined && inPlaceLabel === undefined) {
-    return usage(ctx, "Usage: candle vault promote --from <vault-key-label> | --in-place <vault-key-label> --sweep-to <label> --rpc-url <url>");
+    return usage(ctx, "Usage: candle vault promote --from <vault-key-label> | --in-place <vault-key-label> --sweep-to <label> --rpc-url <url> [--to-key <label|prefix>]");
   }
+  const toKeyRaw = parsed.values["--to-key"];
+  if (toKeyRaw !== undefined && toKeyRaw.trim().length === 0)
+    return usage(ctx, "--to-key needs a label or a prefix.");
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (!requireTty(ctx, "vault promote"))
     return 1;
-  if (fromLabel !== undefined) {
-    if (parsed.values["--sweep-to"] !== undefined) {
-      return usage(ctx, "Fresh-key promote takes --from, not --sweep-to.");
-    }
-    return promoteFresh(ctx, parsed, fromLabel);
+  if (fromLabel !== undefined && parsed.values["--sweep-to"] !== undefined) {
+    return usage(ctx, "Fresh-key promote takes --from, not --sweep-to.");
   }
-  return promoteInPlace(ctx, parsed, inPlaceLabel);
+  let toKey;
+  if (toKeyRaw !== undefined) {
+    const label = parsed.values["--label"] ?? inPlaceLabel ?? (fromLabel !== undefined ? "<fresh>" : undefined);
+    const preflight = await preflightToKey(ctx, toKeyRaw, { labels: label !== undefined ? [label] : [] });
+    if (!preflight.ok)
+      return preflight.exit;
+    toKey = { target: preflight.target, deviceToken: preflight.deviceToken };
+  }
+  if (fromLabel !== undefined)
+    return promoteFresh(ctx, parsed, fromLabel, toKey);
+  return promoteInPlace(ctx, parsed, inPlaceLabel, toKey);
 }
-async function promoteFresh(ctx, parsed, fromLabel) {
+async function rebindAfterImport(ctx, toKey, wallet, callingKeyPrefix) {
+  const rebindable = wallet.linkedWalletId !== null && wallet.remoteAuthority === "verified-active" ? [{ id: wallet.linkedWalletId, address: wallet.address, label: wallet.label }] : [];
+  const notRebindable = rebindable.length === 0 ? [
+    {
+      address: wallet.address,
+      label: wallet.label,
+      reason: wallet.linkedWalletId === null ? "no linked wallet id" : `remote authority is ${wallet.remoteAuthority ?? "unknown"}, not verified-active`
+    }
+  ] : [];
+  const run = rebindable.length > 0 ? await rebindPromoted(ctx, toKey.deviceToken, toKey.target.keyPrefix, rebindable) : undefined;
+  const input = { target: toKey.target, callingKeyPrefix, wallets: rebindable, run, notRebindable };
+  const report = renderRebindReport(input);
+  if (report.length > 0)
+    ctx.deps.stderr.write(`${report}
+`);
+  const id = wallet.linkedWalletId;
+  return {
+    exit: run !== undefined && !run.ok ? 1 : 0,
+    json: {
+      ...rebindJson(input),
+      boundKeyPrefix: finalBoundKey({ id, importedTo: wallet.importedTo }, run, toKey.target.keyPrefix),
+      walletRebind: walletRebindJson({ id, remoteAuthority: wallet.remoteAuthority }, run)
+    }
+  };
+}
+async function confirmResumeRebind(ctx, toKey) {
+  const name = toKey.target.label !== null ? `  (${toKey.target.label})` : "";
+  ctx.deps.stderr.write(`${[
+    `This wallet will be bound to key ${toKey.target.keyPrefix}${name} by a rebind after the import.`,
+    ...targetWarnings(toKey.target)
+  ].join(`
+`)}
+`);
+  const typed = await ctx.deps.promptLine(`Type ${CONFIRM_WORD} to move this wallet to ${toKey.target.keyPrefix}: `);
+  if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
+    throw new VaultError("PROMOTE_NOT_ACKNOWLEDGED", `The acknowledgement is the word ${CONFIRM_WORD}; nothing was moved, and nothing was written.`, { suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.` });
+  }
+}
+async function callingKeyPrefixFor(ctx) {
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  return (apiKey !== undefined ? apiKeyPrefix(apiKey) : undefined) ?? "(the calling key)";
+}
+async function promoteFresh(ctx, parsed, fromLabel, toKey) {
   if ("error" in parsed)
     return usage(ctx, parsed.error);
   const resolvedVault = vaultPathFor(ctx, parsed);
@@ -56637,10 +57035,19 @@ async function promoteFresh(ctx, parsed, fromLabel) {
       addKeys: [blob]
     }, ctx.deps));
     await confirmLastSix(ctx, destination.address, "the sweep vault destination");
+    if (toKey !== undefined) {
+      const name = toKey.target.label !== null ? `  (${toKey.target.label})` : "";
+      ctx.deps.stderr.write(`${[
+        `This wallet will be bound to key ${toKey.target.keyPrefix}${name} by a rebind after the import.`,
+        ...targetWarnings(toKey.target)
+      ].join(`
+`)}
+`);
+    }
     const privateKey = base58.encode(secret64);
     wipe(secret64);
     const importCount = { n: 0 };
-    const { exit: code } = await runTeeImport(ctx, {
+    const { exit: code, submitted } = await runTeeImport(ctx, {
       address,
       privateKey,
       label: entry.label,
@@ -56659,22 +57066,35 @@ async function promoteFresh(ctx, parsed, fromLabel) {
     if (target === undefined) {
       throw new VaultError("VAULT_INDEX_INVALID", `Entry ${keyId} missing after import.`);
     }
+    let rebound;
+    if (toKey !== undefined) {
+      const importedTo = submitted?.boundKeyPrefix ?? null;
+      rebound = await rebindAfterImport(ctx, toKey, {
+        linkedWalletId: target.linkedWalletId ?? null,
+        address,
+        label: entry.label,
+        remoteAuthority: target.tee?.remoteAuthority ?? submitted?.remoteAuthority ?? null,
+        importedTo
+      }, await callingKeyPrefixFor(ctx));
+    }
+    const exit = Math.max(code, rebound?.exit ?? 0);
     if (ctx.json) {
       writeJson(ctx.deps, {
-        ok: true,
+        ok: rebound === undefined || rebound.exit === 0,
         mode: "fresh",
         address,
         label: entry.label,
         vaultDestination: destination.address,
         lifecycle: target.tee?.lifecycle,
         linkedWalletId: target.linkedWalletId ?? null,
-        importCalls: importCount.n
+        importCalls: importCount.n,
+        ...rebound?.json ?? {}
       });
     } else {
       ctx.deps.stdout.write(`Promoted fresh TEE wallet ${address} (sweep to ${destination.address}).
 `);
     }
-    return code;
+    return exit;
   });
 }
 async function refuseWithoutRoom(ctx) {
@@ -56696,7 +57116,7 @@ async function reopenFromDisk(path, reopen, previous) {
     });
   return reopen(path, raw);
 }
-async function promoteInPlace(ctx, parsed, subjectLabel) {
+async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
   if ("error" in parsed)
     return usage(ctx, parsed.error);
   const resolvedVault = vaultPathFor(ctx, parsed);
@@ -56723,7 +57143,9 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
       if (sweepTo !== undefined) {
         return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).");
       }
-      const { exit } = await resumePromote(ctx, vault, existing, opened.reopen, path, hold, {
+      if (toKey !== undefined)
+        await confirmResumeRebind(ctx, toKey);
+      const resumed = await resumePromote(ctx, vault, existing, opened.reopen, path, hold, {
         confirmAccount: (account) => confirmLastSix(ctx, account, "that account"),
         confirmDestination: async (destination2) => {
           try {
@@ -56732,9 +57154,36 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
           } catch {
             return false;
           }
-        }
+        },
+        report: toKey !== undefined ? "return" : "write"
       });
-      return exit;
+      if (toKey === undefined)
+        return resumed.exit;
+      if (resumed.failure !== undefined || resumed.exit !== 0) {
+        writeLocalFailure(ctx.deps, resumed.failure ?? { code: "PROMOTE_OUTCOME_UNRESOLVED", message: "The resume did not complete." }, ctx.json);
+        return resumed.exit;
+      }
+      const rebound2 = await rebindAfterImport(ctx, toKey, {
+        linkedWalletId: resumed.adopted?.linkedWalletId ?? null,
+        address: existing.address,
+        label: existing.label,
+        remoteAuthority: resumed.adopted?.remoteAuthority ?? null,
+        importedTo: existing.tee?.boundKeyPrefix ?? null
+      }, await callingKeyPrefixFor(ctx));
+      if (ctx.json) {
+        writeJson(ctx.deps, {
+          ok: rebound2.exit === 0,
+          mode: "resume",
+          address: existing.address,
+          lifecycle: "enabled",
+          importCalls: 0,
+          ...rebound2.json
+        });
+      } else {
+        ctx.deps.stdout.write(`Resumed ${existing.address}: grant adopted; no re-import.
+`);
+      }
+      return rebound2.exit;
     }
     if (sweepTo === undefined || rpcUrl2 === undefined) {
       return usage(ctx, "Usage: candle vault promote --in-place <label> --sweep-to <label> --rpc-url <url> [--label] [--accept-unknown-exposure]");
@@ -56746,7 +57195,12 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
       return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).");
     }
     await refuseWithoutRoom(ctx);
-    const controlledBy = await readControlledBy(ctx);
+    const live = await readControlledBy(ctx);
+    const controlledBy = toKey === undefined ? live : withToKey(live, {
+      keyPrefix: toKey.target.keyPrefix,
+      label: toKey.target.label,
+      warnings: targetWarnings(toKey.target)
+    });
     const rpc2 = createSolanaRpc(rpcUrl2, ctx.deps.fetch);
     const host = new URL(rpcUrl2).host;
     await displayHoldings(ctx, rpc2, first.subject.address);
@@ -56816,24 +57270,37 @@ async function promoteInPlace(ctx, parsed, subjectLabel) {
       writeLocalFailure(ctx.deps, failure, ctx.json);
       return code;
     }
+    let rebound;
+    if (toKey !== undefined && imported.submitted !== undefined) {
+      const importedTo = imported.submitted.boundKeyPrefix ?? null;
+      rebound = await rebindAfterImport(ctx, toKey, {
+        linkedWalletId: imported.submitted.id ?? null,
+        address: subject.address,
+        label: parsed.values["--label"] ?? subject.label,
+        remoteAuthority: imported.submitted.remoteAuthority ?? null,
+        importedTo
+      }, controlledBy.keyPrefix);
+    }
+    const exit = Math.max(code, rebound?.exit ?? 0);
     if (ctx.json) {
       const reopened = hold(await reopenFromDisk(path, opened.reopen, vault));
       const updated = reopened.index.entries.find((e) => e.id === subject.id);
       writeJson(ctx.deps, {
-        ok: code === 0 || code === 3,
+        ok: (code === 0 || code === 3) && (rebound === undefined || rebound.exit === 0),
         mode: "in-place",
         address: subject.address,
         vaultDestination: destination.address,
         lifecycle: updated?.tee?.lifecycle ?? null,
         linkedWalletId: updated?.linkedWalletId ?? null,
         controlledBy: controlledByJson(controlledBy),
-        authorities: authoritiesJson(roles)
+        authorities: authoritiesJson(roles),
+        ...rebound?.json ?? {}
       });
     } else if (code === 0 || code === 3) {
       ctx.deps.stdout.write(`Promoted ${subject.address} in place (sweep to ${destination.address}). This address never returns to cold.
 `);
     }
-    return code;
+    return exit;
   });
 }
 async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmations) {
@@ -57453,14 +57920,37 @@ init_promote_support();
 init_signer_roles();
 init_store();
 init_vault_support();
-var USAGE_LINE = "Usage: candle vault promote-batch --pairs-from <file> --rpc-url <url> [--token-holdings] [--accept-unknown-exposure]";
+var USAGE_LINE = "Usage: candle vault promote-batch --pairs-from <file> --rpc-url <url> [--to-key <label|prefix>] [--token-holdings] [--accept-unknown-exposure]";
 var rowObserver = null;
+function splitRebindable(results) {
+  const wallets2 = [];
+  const notRebindable = [];
+  for (const row of results) {
+    if (row.linkedWalletId !== null && row.remoteAuthority === "verified-active") {
+      wallets2.push({ id: row.linkedWalletId, address: row.address, label: row.label });
+    } else {
+      notRebindable.push({
+        address: row.address,
+        label: row.label,
+        reason: row.linkedWalletId === null ? `no linked wallet id (${row.lifecycle})` : `remote authority is ${row.remoteAuthority ?? "unknown"}, not verified-active`
+      });
+    }
+  }
+  return { wallets: wallets2, notRebindable };
+}
+function keysWithRebind(results, phase, run) {
+  return results.map((row) => ({
+    ...row,
+    boundKeyPrefix: finalBoundKey({ id: row.linkedWalletId, importedTo: phase.importedTo.get(row.address) ?? null }, run, phase.toKey.target.keyPrefix),
+    rebind: walletRebindJson({ id: row.linkedWalletId, remoteAuthority: row.remoteAuthority }, run)
+  }));
+}
 async function vaultPromoteBatch(args, ctx) {
   if (args.some((arg) => arg === "--from" || arg.startsWith("--from="))) {
     return usage(ctx, "promote-batch promotes existing vault keys in place and takes no --from. For fresh keys: candle vault new-key --chain solana --labels-from <file>, then candle vault promote --from <label> for each.");
   }
   const parsed = parseArgs(args, {
-    valueFlags: ["--pairs-from", "--rpc-url", "--keystore"],
+    valueFlags: ["--pairs-from", "--rpc-url", "--keystore", "--to-key"],
     booleanFlags: ["--token-holdings", "--accept-unknown-exposure", "--accept-older-copy"],
     pathFlags: ["--keystore", "--pairs-from"]
   });
@@ -57471,6 +57961,9 @@ async function vaultPromoteBatch(args, ctx) {
   const pairsFile = parsed.values["--pairs-from"];
   if (pairsFile === undefined)
     return usage(ctx, USAGE_LINE);
+  const toKeyRaw = parsed.values["--to-key"];
+  if (toKeyRaw !== undefined && toKeyRaw.trim().length === 0)
+    return usage(ctx, "--to-key needs a label or a prefix.");
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (!requireTty(ctx, "vault promote-batch"))
@@ -57495,6 +57988,13 @@ async function vaultPromoteBatch(args, ctx) {
   if (!parsedFile.ok)
     return usage(ctx, renderPhaseAFindings(pairsFile, parsedFile.findings));
   const { rows, hasValueUsd } = parsedFile;
+  let toKey;
+  if (toKeyRaw !== undefined) {
+    const preflight = await preflightToKey(ctx, toKeyRaw, { labels: rows.map((row) => row.label) });
+    if (!preflight.ok)
+      return preflight.exit;
+    toKey = { target: preflight.target, deviceToken: preflight.deviceToken };
+  }
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
@@ -57530,7 +58030,17 @@ async function vaultPromoteBatch(args, ctx) {
     if (roomRefusal !== null)
       throw roomRefusal;
     const room = roomRead.room;
-    const controlledBy = await readControlledBy(ctx);
+    const live = await readControlledBy(ctx);
+    const controlledBy = toKey === undefined ? live : withToKey(live, {
+      keyPrefix: toKey.target.keyPrefix,
+      label: toKey.target.label,
+      warnings: targetWarnings(toKey.target)
+    });
+    const rebindPhase = toKey === undefined ? undefined : { toKey, callingKeyPrefix: live.keyPrefix, importedTo: new Map };
+    for (const item of planned) {
+      if (item.kind === "skip")
+        rebindPhase?.importedTo.set(item.subject.address, item.subject.tee?.boundKeyPrefix ?? null);
+    }
     const addresses = planned.map((item) => item.subject.address);
     const rpc2 = createSolanaRpc(rpcUrl2, deps.fetch);
     const host = new URL(rpcUrl2).host;
@@ -57589,28 +58099,58 @@ ${footer}
       });
     }
     if (acting.length === 0) {
-      deps.stderr.write(`
+      const roles2 = {
+        checked: [...ROLE_GROUP_IDS],
+        notChecked: [],
+        found: [],
+        requests: 0,
+        planned: 0,
+        rateLimited: 0,
+        elapsedMs: 0
+      };
+      const skipped = planned.map((item) => skippedResult(item));
+      const rebindable = rebindPhase === undefined ? undefined : splitRebindable(skipped);
+      if (rebindPhase === undefined || rebindable === undefined || rebindable.wallets.length === 0) {
+        deps.stderr.write(`
 ${table}
 
 ${footer}
 Nothing to do: every row already landed.
 `);
+        return finish(ctx, {
+          file: pairsFile,
+          rows: rows.length,
+          keys: skipped,
+          destinations,
+          exit: 0,
+          controlledBy,
+          roles: roles2
+        });
+      }
+      const n = rebindable.wallets.length;
+      deps.stderr.write(`
+${table}
+
+${footer}
+Every row already landed; ${n} wallet${n === 1 ? "" : "s"} to rebind.
+`);
+      deps.stderr.write(`
+${renderControlledBy(controlledBy, n)}
+`);
+      const typed = await deps.promptLine(`Type ${CONFIRM_WORD} to move ${n === 1 ? "this wallet" : `these ${n} wallets`} to ${rebindPhase.toKey.target.keyPrefix}: `);
+      if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
+        throw new VaultError("PROMOTE_NOT_ACKNOWLEDGED", `The acknowledgement is the word ${CONFIRM_WORD}; nothing was moved, and nothing was written.`, { suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.` });
+      }
+      const rebound2 = await runRebindPhase(ctx, rebindPhase, skipped);
       return finish(ctx, {
         file: pairsFile,
         rows: rows.length,
-        keys: planned.map((item) => skippedResult(item)),
+        keys: skipped,
         destinations,
         exit: 0,
         controlledBy,
-        roles: {
-          checked: [...ROLE_GROUP_IDS],
-          notChecked: [],
-          found: [],
-          requests: 0,
-          planned: 0,
-          rateLimited: 0,
-          elapsedMs: 0
-        }
+        roles: roles2,
+        rebound: rebound2
       });
     }
     const checked = roles;
@@ -57701,6 +58241,7 @@ ${renderControlledBy(controlledBy, acting.length)}
           worst = Math.max(worst, imported.exit);
           done += 1;
           last = { address: subject2.address, keyId: subject2.id };
+          rebindPhase?.importedTo.set(subject2.address, imported.submitted.boundKeyPrefix ?? null);
           results.push({
             line: row2.line,
             label: subject2.label,
@@ -57740,6 +58281,7 @@ ${renderControlledBy(controlledBy, acting.length)}
         await rowObserver?.({ line: row.line, stage: "resumed", vault: current });
         done += 1;
         last = { address: subject.address, keyId: subject.id };
+        rebindPhase?.importedTo.set(subject.address, subject.tee?.boundKeyPrefix ?? null);
         results.push({
           line: row.line,
           label: subject.label,
@@ -57765,6 +58307,20 @@ ${renderControlledBy(controlledBy, acting.length)}
     }
     if (stopped !== undefined) {
       reportPartial(ctx, { landed: done, acting: acting.length, failure: stopped });
+      let notReached;
+      if (rebindPhase !== undefined) {
+        const { wallets: wallets2, notRebindable } = splitRebindable(results);
+        notReached = {
+          target: rebindPhase.toKey.target,
+          callingKeyPrefix: rebindPhase.callingKeyPrefix,
+          wallets: wallets2,
+          notRebindable
+        };
+        const report = renderRebindReport(notReached);
+        if (report.length > 0)
+          deps.stderr.write(`${report}
+`);
+      }
       if (ctx.json) {
         writeJson(deps, {
           ok: false,
@@ -57775,13 +58331,14 @@ ${renderControlledBy(controlledBy, acting.length)}
           resumed: results.filter((r) => r.state === "resumed").length,
           skipped: results.filter((r) => r.state === "skipped").length,
           destinations: destinations.map(({ label, address, keys }) => ({ label, address, keys })),
-          keys: results,
+          keys: rebindPhase === undefined ? results : keysWithRebind(results, rebindPhase, undefined),
           failedLine: stopped.line,
           code: stopped.code,
           message: stopped.message,
           ...stopped.suggestion !== undefined ? { suggestion: stopped.suggestion } : {},
           controlledBy: controlledByJson(controlledBy),
-          authorities: authoritiesJson(checked)
+          authorities: authoritiesJson(checked),
+          ...notReached !== undefined ? rebindJson(notReached) : {}
         });
       } else {
         deps.stderr.write(`${stopped.message}${stopped.suggestion ? ` ${stopped.suggestion}` : ""}
@@ -57791,6 +58348,7 @@ ${renderControlledBy(controlledBy, acting.length)}
     }
     if (last !== undefined)
       await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx);
+    const rebound = rebindPhase === undefined ? undefined : await runRebindPhase(ctx, rebindPhase, results);
     return finish(ctx, {
       file: pairsFile,
       rows: rows.length,
@@ -57798,9 +58356,26 @@ ${renderControlledBy(controlledBy, acting.length)}
       destinations,
       exit: worst,
       controlledBy,
-      roles: checked
+      roles: checked,
+      ...rebound !== undefined ? { rebound } : {}
     });
   });
+}
+async function runRebindPhase(ctx, phase, results) {
+  const { wallets: wallets2, notRebindable } = splitRebindable(results);
+  const run = wallets2.length > 0 ? await rebindPromoted(ctx, phase.toKey.deviceToken, phase.toKey.target.keyPrefix, wallets2) : undefined;
+  const input = {
+    target: phase.toKey.target,
+    callingKeyPrefix: phase.callingKeyPrefix,
+    wallets: wallets2,
+    run,
+    notRebindable
+  };
+  const report = renderRebindReport(input);
+  if (report.length > 0)
+    ctx.deps.stderr.write(`${report}
+`);
+  return { phase, run, input };
 }
 async function verifySubjectSecret(vault, subject) {
   const secret = await decryptKey(vault, subject.id);
@@ -57988,10 +58563,12 @@ function finish(ctx, opts) {
   const resumed = opts.keys.filter((r) => r.state === "resumed").length;
   const skipped = opts.keys.filter((r) => r.state === "skipped").length;
   const unverified = opts.keys.filter((r) => r.state !== "skipped" && r.remoteAuthority !== "verified-active");
-  const complete = opts.exit === 0;
+  const rebindFailed = opts.rebound?.run !== undefined && !opts.rebound.run.ok;
+  const exit = rebindFailed ? Math.max(opts.exit, 1) : opts.exit;
+  const complete = exit === 0;
   if (ctx.json) {
     writeJson(ctx.deps, {
-      ok: true,
+      ok: !rebindFailed,
       complete,
       file: opts.file,
       rows: opts.rows,
@@ -57999,11 +58576,12 @@ function finish(ctx, opts) {
       resumed,
       skipped,
       destinations: opts.destinations.map(({ label, address, keys }) => ({ label, address, keys })),
-      keys: opts.keys,
+      keys: opts.rebound === undefined ? opts.keys : keysWithRebind(opts.keys, opts.rebound.phase, opts.rebound.run),
       controlledBy: controlledByJson(opts.controlledBy),
-      authorities: authoritiesJson(opts.roles)
+      authorities: authoritiesJson(opts.roles),
+      ...opts.rebound !== undefined ? rebindJson(opts.rebound.input) : {}
     });
-    return opts.exit;
+    return exit;
   }
   const parts = [];
   if (promoted > 0)
@@ -58014,11 +58592,19 @@ function finish(ctx, opts) {
     parts.push(`${skipped} already promoted (skipped)`);
   ctx.deps.stdout.write(`${parts.join("; ")}.
 `);
-  if (!complete) {
+  if (unverified.length > 0) {
     ctx.deps.stdout.write(`${unverified.length} import${unverified.length === 1 ? "" : "s"} did not report verified-active: ${unverified.map((r) => r.address).join(", ")}
 `);
   }
-  return opts.exit;
+  if (opts.rebound !== undefined) {
+    const { input, run } = opts.rebound;
+    const moved = input.wallets.filter((w) => run?.outcomes.get(w.id)?.state === "rebound").length;
+    const already = input.wallets.filter((w) => run?.outcomes.get(w.id)?.state === "unchanged").length;
+    const pending = input.wallets.length - moved - already;
+    ctx.deps.stdout.write(`${moved + already} of ${input.wallets.length + input.notRebindable.length} wallets bound to ${input.target.keyPrefix}${pending > 0 ? `; ${pending} still on ${input.callingKeyPrefix}` : ""}${input.notRebindable.length > 0 ? `; ${input.notRebindable.length} not yet rebindable` : ""}.
+`);
+  }
+  return exit;
 }
 
 // src/commands/vault-rename.ts

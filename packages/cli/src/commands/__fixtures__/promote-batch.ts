@@ -233,6 +233,10 @@ interface ApiOptions {
   embedded?: RouteHandler
   /** `GET /agent/keys` (BE-296, D4). Default: one row whose `keyPrefix` is this key's, labelled `KEY_LABEL`. */
   keys?: RouteHandler
+  /** `POST /agent/tee-wallets/rebind` (BE-322). Default: a server without the route (404). */
+  rebind?: RouteHandler | RouteHandler[]
+  /** Any other route, keyed by pathname (BE-322: `GET /agent/keys/<prefix>/wallets`). Spread last. */
+  routes?: Record<string, RouteHandler | RouteHandler[]>
 }
 
 function apiRoutes(
@@ -292,6 +296,8 @@ function apiRoutes(
     "/api/v1/agent/wallets": opts.wallets ?? (() => jsonResponse(200, { page: [], isDone: true })),
     "/api/v1/agent/wallets/import-failures": () =>
       jsonResponse(200, { success: true, account: ACCOUNT, failures: opts.failures ?? [], complete: true }),
+    "/api/v1/agent/tee-wallets/rebind": opts.rebind ?? (() => jsonResponse(404, { error: "Not Found" })),
+    ...(opts.routes ?? {}),
   }
 }
 

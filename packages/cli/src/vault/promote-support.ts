@@ -310,6 +310,20 @@ export interface ControlledBy {
   environment: "production" | "staging" | null
   /** Set when the URL came from `--api-url` or `CANDLE_API_URL` rather than the profile. */
   apiUrlFrom?: "--api-url" | "CANDLE_API_URL"
+  /**
+   * BE-322: the key the wallets end up on when `--to-key` is given, reached by a rebind after the
+   * import. The block names THIS key as the controller and the fields above as the key the import
+   * runs under. `warnings` are the D7 cap lines for it, printed under the block.
+   */
+  toKey?: { keyPrefix: string; label: string | null; warnings: string[] }
+}
+
+/** BE-322: the same block, naming the `--to-key` target as the controller. */
+export function withToKey(
+  controlledBy: ControlledBy,
+  toKey: { keyPrefix: string; label: string | null; warnings: string[] },
+): ControlledBy {
+  return { ...controlledBy, toKey }
 }
 
 function accountUnresolved(reason: string): VaultError {
@@ -419,32 +433,69 @@ export function renderControlledBy(controlledBy: ControlledBy, n: number): strin
   const label = cleaned.length > 0 ? `(${cleaned})  ` : ""
   const environment = controlledBy.environment ?? "not a Candle host"
   const from = controlledBy.apiUrlFrom !== undefined ? `, from ${controlledBy.apiUrlFrom}` : ""
+  const { toKey } = controlledBy
+  if (toKey === undefined) {
+    return [
+      `${subject} will be controlled by:`,
+      `  Candle account  ${controlledBy.username ?? "(no username)"}  (${shortAddress(controlledBy.account)})`,
+      `  API key         ${controlledBy.keyPrefix}…  ${label}${source}`,
+      `  API             ${controlledBy.apiUrl}  (${environment}${from})`,
+    ].join("\n")
+  }
+  // BE-322: the target is the controller; the import key is named for what it is, and the D7 cap
+  // lines for the target follow the block.
+  const toLabel = toKey.label !== null && labelCell(toKey.label).length > 0 ? `(${labelCell(toKey.label)})  ` : ""
   return [
     `${subject} will be controlled by:`,
     `  Candle account  ${controlledBy.username ?? "(no username)"}  (${shortAddress(controlledBy.account)})`,
-    `  API key         ${controlledBy.keyPrefix}…  ${label}${source}`,
+    `  API key         ${toKey.keyPrefix}…  ${toLabel}--to-key, bound by a rebind after the import`,
+    `  imported under  ${controlledBy.keyPrefix}…  ${label}${source}`,
     `  API             ${controlledBy.apiUrl}  (${environment}${from})`,
+    ...toKey.warnings,
   ].join("\n")
 }
 
-/** D9: the `controlledBy` value of both commands' documents. */
-export function controlledByJson(controlledBy: ControlledBy): {
+export interface ControlledByJson {
   account: string
   username: string | null
   keyPrefix: string
   keyLabel: string | null
-  keySource: "env" | "profile" | "default"
+  keySource: "env" | "profile" | "default" | "--to-key"
   apiUrl: string
   environment: "production" | "staging" | null
-} {
-  return {
-    account: controlledBy.account,
-    username: controlledBy.username,
+  /** BE-322, only with `--to-key`: the key the import ran under, which the fields above then do not name. */
+  importedUnder?: { keyPrefix: string; keyLabel: string | null; keySource: "env" | "profile" | "default" }
+}
+
+/**
+ * D9: the `controlledBy` value of both commands' documents. With `--to-key` (BE-322) the key named
+ * is the target, the one that controls the wallets when the command is done, `keySource` is
+ * `--to-key`, and `importedUnder` carries the import key; without it, unchanged.
+ */
+export function controlledByJson(controlledBy: ControlledBy): ControlledByJson {
+  const importedUnder = {
     keyPrefix: controlledBy.keyPrefix,
     keyLabel: controlledBy.keyLabel,
     keySource: controlledBy.keySource,
+  }
+  if (controlledBy.toKey === undefined) {
+    return {
+      account: controlledBy.account,
+      username: controlledBy.username,
+      ...importedUnder,
+      apiUrl: controlledBy.apiUrl,
+      environment: controlledBy.environment,
+    }
+  }
+  return {
+    account: controlledBy.account,
+    username: controlledBy.username,
+    keyPrefix: controlledBy.toKey.keyPrefix,
+    keyLabel: controlledBy.toKey.label,
+    keySource: "--to-key",
     apiUrl: controlledBy.apiUrl,
     environment: controlledBy.environment,
+    importedUnder,
   }
 }
 

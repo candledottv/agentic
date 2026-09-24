@@ -24,6 +24,12 @@
  *   column; it warns and never refuses.
  *
  * `vault promote` passes the defaults on every parameter §4.7 added.
+ *
+ * `--to-key <label|prefix>` (BE-322): the target is checked before the unlock (`preflightToKey`),
+ * the block names it, and once every row has landed the promoted wallets are moved to it in
+ * chunks of at most 200 through the rebind route. A batch that stopped, or whose rebind failed,
+ * names the wallets still on the calling key and the command that finishes; a re-run of the same
+ * file skips the rows that landed and rebinds them, the moved ones reported `unchanged`.
  */
 import { base58 } from "@scure/base"
 import { parseArgs } from "../args"
@@ -63,6 +69,7 @@ import {
 } from "../vault/promote-batch"
 import {
   applyPromotion,
+  CONFIRM_WORD,
   type ControlledBy,
   confirmPromotion,
   controlledByJson,
@@ -72,7 +79,22 @@ import {
   renderControlledBy,
   runRoleCheck,
   shortAddress,
+  withToKey,
 } from "../vault/promote-support"
+import {
+  finalBoundKey,
+  type NotRebindable,
+  preflightToKey,
+  type RebindableWallet,
+  type RebindReportInput,
+  type RebindRun,
+  rebindJson,
+  rebindPromoted,
+  renderRebindReport,
+  type ToKeyTarget,
+  targetWarnings,
+  walletRebindJson,
+} from "../vault/promote-to-key"
 import { reconcileGrant } from "../vault/reconcile-grant"
 import {
   authoritiesCountLine,
@@ -101,7 +123,7 @@ import {
 } from "./vault-support"
 
 const USAGE_LINE =
-  "Usage: candle vault promote-batch --pairs-from <file> --rpc-url <url> [--token-holdings] [--accept-unknown-exposure]"
+  "Usage: candle vault promote-batch --pairs-from <file> --rpc-url <url> [--to-key <label|prefix>] [--token-holdings] [--accept-unknown-exposure]"
 
 /**
  * TEST ONLY: sees the batch's vault object after each row's pre-import commit and again after its
@@ -132,6 +154,61 @@ interface KeyResult {
   importCalls: number
 }
 
+/** BE-322: the resolved `--to-key` target and the device token the rebind sends. */
+interface ToKeyContext {
+  target: ToKeyTarget
+  deviceToken: string
+}
+
+/**
+ * BE-322: what the rebind phase needs from the rows that landed. `importedTo` is the key the
+ * import (or an earlier run) bound the wallet to, by address; it is not part of `KeyResult`, so
+ * the document without `--to-key` is unchanged.
+ */
+interface RebindPhase {
+  toKey: ToKeyContext
+  callingKeyPrefix: string
+  importedTo: Map<string, string | null>
+}
+
+/** The wallets a run can move (`verified-active`, with a server id) and the ones it cannot yet. */
+function splitRebindable(results: KeyResult[]): { wallets: RebindableWallet[]; notRebindable: NotRebindable[] } {
+  const wallets: RebindableWallet[] = []
+  const notRebindable: NotRebindable[] = []
+  for (const row of results) {
+    if (row.linkedWalletId !== null && row.remoteAuthority === "verified-active") {
+      wallets.push({ id: row.linkedWalletId, address: row.address, label: row.label })
+    } else {
+      notRebindable.push({
+        address: row.address,
+        label: row.label,
+        reason:
+          row.linkedWalletId === null
+            ? `no linked wallet id (${row.lifecycle})`
+            : `remote authority is ${row.remoteAuthority ?? "unknown"}, not verified-active`,
+      })
+    }
+  }
+  return { wallets, notRebindable }
+}
+
+/** The rows with their final binding and rebind outcome, for the `--json` document (BE-322). */
+function keysWithRebind(
+  results: KeyResult[],
+  phase: RebindPhase,
+  run: RebindRun | undefined,
+): Array<KeyResult & { boundKeyPrefix: string | null; rebind: ReturnType<typeof walletRebindJson> }> {
+  return results.map((row) => ({
+    ...row,
+    boundKeyPrefix: finalBoundKey(
+      { id: row.linkedWalletId, importedTo: phase.importedTo.get(row.address) ?? null },
+      run,
+      phase.toKey.target.keyPrefix,
+    ),
+    rebind: walletRebindJson({ id: row.linkedWalletId, remoteAuthority: row.remoteAuthority }, run),
+  }))
+}
+
 export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Promise<number> {
   // `--from` is refused by name (D2), so someone who tries it learns the route instead of reading
   // "unknown flag": a fresh-key migration is `vault new-key --labels-from`, then n promotions.
@@ -142,7 +219,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     )
   }
   const parsed = parseArgs(args, {
-    valueFlags: ["--pairs-from", "--rpc-url", "--keystore"],
+    valueFlags: ["--pairs-from", "--rpc-url", "--keystore", "--to-key"],
     booleanFlags: ["--token-holdings", "--accept-unknown-exposure", "--accept-older-copy"],
     pathFlags: ["--keystore", "--pairs-from"],
   })
@@ -150,6 +227,8 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
   const pairsFile = parsed.values["--pairs-from"]
   if (pairsFile === undefined) return usage(ctx, USAGE_LINE)
+  const toKeyRaw = parsed.values["--to-key"]
+  if (toKeyRaw !== undefined && toKeyRaw.trim().length === 0) return usage(ctx, "--to-key needs a label or a prefix.")
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "vault promote-batch")) return 1
 
@@ -173,6 +252,16 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
   const parsedFile = parsePairsFile(contents, { file: pairsFile, rpcUrl })
   if (!parsedFile.ok) return usage(ctx, renderPhaseAFindings(pairsFile, parsedFile.findings))
   const { rows, hasValueUsd } = parsedFile
+
+  // BE-322: the target, still before the unlock and before any write. It resolves, it is on this
+  // account and can take TEE wallets, a selected-scope key has room for the file, and there is a
+  // device token to rebind with. A refusal here has written nothing.
+  let toKey: ToKeyContext | undefined
+  if (toKeyRaw !== undefined) {
+    const preflight = await preflightToKey(ctx, toKeyRaw, { labels: rows.map((row) => row.label) })
+    if (!preflight.ok) return preflight.exit
+    toKey = { target: preflight.target, deviceToken: preflight.deviceToken }
+  }
 
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault)
@@ -218,8 +307,22 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
 
     // ── Which account, key and API will control these keys (BE-296, D5): live, after the room,
     // before the SOL read, so a refusal comes before the operator reads anything and before any
-    // write. Never a cached value.
-    const controlledBy = await readControlledBy(ctx)
+    // write. Never a cached value. With `--to-key` (BE-322) the block names the target.
+    const live = await readControlledBy(ctx)
+    const controlledBy =
+      toKey === undefined
+        ? live
+        : withToKey(live, {
+            keyPrefix: toKey.target.keyPrefix,
+            label: toKey.target.label,
+            warnings: targetWarnings(toKey.target),
+          })
+    const rebindPhase: RebindPhase | undefined =
+      toKey === undefined ? undefined : { toKey, callingKeyPrefix: live.keyPrefix, importedTo: new Map() }
+    for (const item of planned) {
+      if (item.kind === "skip")
+        rebindPhase?.importedTo.set(item.subject.address, item.subject.tee?.boundKeyPrefix ?? null)
+    }
 
     // ── Holdings (D8): SOL for every address, always; tokens only on request ──────────────
     const addresses = planned.map((item) => item.subject.address)
@@ -290,26 +393,60 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     }
 
     if (acting.length === 0) {
-      // Nothing to decide, so nothing to acknowledge (D10).
-      deps.stderr.write(`\n${table}\n\n${footer}\nNothing to do: every row already landed.\n`)
+      // Nothing to promote, so nothing to acknowledge for the promotion (D10). Nothing was asked
+      // of the role read: `checked` is every group so `--json` still carries `authorities` (D9),
+      // the same shape an empty read returns, without printing a done line.
+      const roles = {
+        checked: [...ROLE_GROUP_IDS],
+        notChecked: [],
+        found: [],
+        requests: 0,
+        planned: 0,
+        rateLimited: 0,
+        elapsedMs: 0,
+      }
+      const skipped = planned.map((item) => skippedResult(item))
+      const rebindable = rebindPhase === undefined ? undefined : splitRebindable(skipped)
+      if (rebindPhase === undefined || rebindable === undefined || rebindable.wallets.length === 0) {
+        deps.stderr.write(`\n${table}\n\n${footer}\nNothing to do: every row already landed.\n`)
+        return finish(ctx, {
+          file: pairsFile,
+          rows: rows.length,
+          keys: skipped,
+          destinations,
+          exit: 0,
+          controlledBy,
+          roles,
+        })
+      }
+      // BE-322: every row landed on an earlier run and the rebind is what remains (the re-run after
+      // a rebind that failed or was not reached). A rebind moves control of funded wallets, so it
+      // is acknowledged: the block names the target, then `confirm`, the rule `tee rebind` applies.
+      const n = rebindable.wallets.length
+      deps.stderr.write(
+        `\n${table}\n\n${footer}\nEvery row already landed; ${n} wallet${n === 1 ? "" : "s"} to rebind.\n`,
+      )
+      deps.stderr.write(`\n${renderControlledBy(controlledBy, n)}\n`)
+      const typed = await deps.promptLine(
+        `Type ${CONFIRM_WORD} to move ${n === 1 ? "this wallet" : `these ${n} wallets`} to ${rebindPhase.toKey.target.keyPrefix}: `,
+      )
+      if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
+        throw new VaultError(
+          "PROMOTE_NOT_ACKNOWLEDGED",
+          `The acknowledgement is the word ${CONFIRM_WORD}; nothing was moved, and nothing was written.`,
+          { suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.` },
+        )
+      }
+      const rebound = await runRebindPhase(ctx, rebindPhase, skipped)
       return finish(ctx, {
         file: pairsFile,
         rows: rows.length,
-        keys: planned.map((item) => skippedResult(item)),
+        keys: skipped,
         destinations,
         exit: 0,
         controlledBy,
-        // Nothing was asked. `checked` is every group so `--json` still carries `authorities`
-        // (D9), the same shape an empty read returns, without printing a done line.
-        roles: {
-          checked: [...ROLE_GROUP_IDS],
-          notChecked: [],
-          found: [],
-          requests: 0,
-          planned: 0,
-          rateLimited: 0,
-          elapsedMs: 0,
-        },
+        roles,
+        rebound,
       })
     }
 
@@ -415,6 +552,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
           worst = Math.max(worst, imported.exit)
           done += 1
           last = { address: subject.address, keyId: subject.id }
+          rebindPhase?.importedTo.set(subject.address, imported.submitted.boundKeyPrefix ?? null)
           results.push({
             line: row.line,
             label: subject.label,
@@ -460,6 +598,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
         await rowObserver?.({ line: row.line, stage: "resumed", vault: current })
         done += 1
         last = { address: subject.address, keyId: subject.id }
+        rebindPhase?.importedTo.set(subject.address, subject.tee?.boundKeyPrefix ?? null)
         results.push({
           line: row.line,
           label: subject.label,
@@ -489,6 +628,20 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
 
     if (stopped !== undefined) {
       reportPartial(ctx, { landed: done, acting: acting.length, failure: stopped })
+      // BE-322: the rebind is not reached when the batch stops. The rows that landed are on the
+      // calling key; say so, with the finishing command, and let the re-run rebind them.
+      let notReached: RebindReportInput | undefined
+      if (rebindPhase !== undefined) {
+        const { wallets, notRebindable } = splitRebindable(results)
+        notReached = {
+          target: rebindPhase.toKey.target,
+          callingKeyPrefix: rebindPhase.callingKeyPrefix,
+          wallets,
+          notRebindable,
+        }
+        const report = renderRebindReport(notReached)
+        if (report.length > 0) deps.stderr.write(`${report}\n`)
+      }
       if (ctx.json) {
         writeJson(deps, {
           ok: false,
@@ -499,7 +652,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
           resumed: results.filter((r) => r.state === "resumed").length,
           skipped: results.filter((r) => r.state === "skipped").length,
           destinations: destinations.map(({ label, address, keys }) => ({ label, address, keys })),
-          keys: results,
+          keys: rebindPhase === undefined ? results : keysWithRebind(results, rebindPhase, undefined),
           failedLine: stopped.line,
           code: stopped.code,
           message: stopped.message,
@@ -507,6 +660,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
           // BE-296 (D9): the stopped document carries the same two optional keys as success.
           controlledBy: controlledByJson(controlledBy),
           authorities: authoritiesJson(checked),
+          ...(notReached !== undefined ? rebindJson(notReached) : {}),
         })
       } else {
         deps.stderr.write(`${stopped.message}${stopped.suggestion ? ` ${stopped.suggestion}` : ""}\n`)
@@ -519,6 +673,9 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     // cannot make, presented once, so a security key is touched twice for 146 keys (D9).
     if (last !== undefined) await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx)
 
+    // BE-322: every row landed; now the rebind, in chunks of at most 200, then the one report.
+    const rebound = rebindPhase === undefined ? undefined : await runRebindPhase(ctx, rebindPhase, results)
+
     return finish(ctx, {
       file: pairsFile,
       rows: rows.length,
@@ -527,8 +684,32 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
       exit: worst,
       controlledBy,
       roles: checked,
+      ...(rebound !== undefined ? { rebound } : {}),
     })
   })
+}
+
+/** BE-322: the rebind phase over the rows that landed, and its stderr report. */
+async function runRebindPhase(
+  ctx: CommandContext,
+  phase: RebindPhase,
+  results: KeyResult[],
+): Promise<{ phase: RebindPhase; run: RebindRun | undefined; input: RebindReportInput }> {
+  const { wallets, notRebindable } = splitRebindable(results)
+  const run =
+    wallets.length > 0
+      ? await rebindPromoted(ctx, phase.toKey.deviceToken, phase.toKey.target.keyPrefix, wallets)
+      : undefined
+  const input: RebindReportInput = {
+    target: phase.toKey.target,
+    callingKeyPrefix: phase.callingKeyPrefix,
+    wallets,
+    run,
+    notRebindable,
+  }
+  const report = renderRebindReport(input)
+  if (report.length > 0) ctx.deps.stderr.write(`${report}\n`)
+  return { phase, run, input }
 }
 
 /** The shipped compare (`vault-promote.ts:372-377`): the caller owns the plaintext and wipes it. */
@@ -805,16 +986,22 @@ function finish(
     exit: number
     controlledBy: ControlledBy
     roles: SignerRolesResult
+    /** BE-322: the rebind phase, when `--to-key` was given. */
+    rebound?: { phase: RebindPhase; run: RebindRun | undefined; input: RebindReportInput }
   },
 ): number {
   const promoted = opts.keys.filter((r) => r.state === "promoted").length
   const resumed = opts.keys.filter((r) => r.state === "resumed").length
   const skipped = opts.keys.filter((r) => r.state === "skipped").length
   const unverified = opts.keys.filter((r) => r.state !== "skipped" && r.remoteAuthority !== "verified-active")
-  const complete = opts.exit === 0
+  // BE-322: a rebind that failed is not done. A wallet that cannot move yet does not change the
+  // exit on its own: it is already the exit-3 case the import reported.
+  const rebindFailed = opts.rebound?.run !== undefined && !opts.rebound.run.ok
+  const exit = rebindFailed ? Math.max(opts.exit, 1) : opts.exit
+  const complete = exit === 0
   if (ctx.json) {
     writeJson(ctx.deps, {
-      ok: true,
+      ok: !rebindFailed,
       complete,
       file: opts.file,
       rows: opts.rows,
@@ -822,12 +1009,13 @@ function finish(
       resumed,
       skipped,
       destinations: opts.destinations.map(({ label, address, keys }) => ({ label, address, keys })),
-      keys: opts.keys,
+      keys: opts.rebound === undefined ? opts.keys : keysWithRebind(opts.keys, opts.rebound.phase, opts.rebound.run),
       // BE-296 (D9): optional keys only; every key above is unchanged.
       controlledBy: controlledByJson(opts.controlledBy),
       authorities: authoritiesJson(opts.roles),
+      ...(opts.rebound !== undefined ? rebindJson(opts.rebound.input) : {}),
     })
-    return opts.exit
+    return exit
   }
   const parts: string[] = []
   if (promoted > 0)
@@ -835,12 +1023,23 @@ function finish(
   if (resumed > 0) parts.push(`${resumed} resumed`)
   if (skipped > 0) parts.push(`${skipped} already promoted (skipped)`)
   ctx.deps.stdout.write(`${parts.join("; ")}.\n`)
-  if (!complete) {
+  if (unverified.length > 0) {
     ctx.deps.stdout.write(
       `${unverified.length} import${unverified.length === 1 ? "" : "s"} did not report verified-active: ${unverified
         .map((r) => r.address)
         .join(", ")}\n`,
     )
   }
-  return opts.exit
+  if (opts.rebound !== undefined) {
+    const { input, run } = opts.rebound
+    const moved = input.wallets.filter((w) => run?.outcomes.get(w.id)?.state === "rebound").length
+    const already = input.wallets.filter((w) => run?.outcomes.get(w.id)?.state === "unchanged").length
+    const pending = input.wallets.length - moved - already
+    ctx.deps.stdout.write(
+      `${moved + already} of ${input.wallets.length + input.notRebindable.length} wallets bound to ${input.target.keyPrefix}${
+        pending > 0 ? `; ${pending} still on ${input.callingKeyPrefix}` : ""
+      }${input.notRebindable.length > 0 ? `; ${input.notRebindable.length} not yet rebindable` : ""}.\n`,
+    )
+  }
+  return exit
 }

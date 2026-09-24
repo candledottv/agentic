@@ -459,12 +459,13 @@ export const HELP: Record<string, Topic> = {
         description: "Sign a vault-key transfer locally",
       },
       {
-        invocation: "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>]",
+        invocation:
+          "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>] [--to-key <prefix|label>]",
         description:
           "Fresh TEE key, or promote one vault key in place. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked.",
       },
       {
-        invocation: "promote-batch --pairs-from <file> --rpc-url <url> [--token-holdings]",
+        invocation: "promote-batch --pairs-from <file> --rpc-url <url> [--to-key <prefix|label>] [--token-holdings]",
         description:
           "Promote many vault keys in place: one unlock, one reviewed acknowledgement. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked.",
       },
@@ -504,6 +505,11 @@ export const HELP: Record<string, Topic> = {
         description:
           "promote-batch: one '<label> <destination>' per line, or a CSV with label and sweep_to columns (max 256). Every row is checked against the whole set before anything is written, and each key is committed on its own, so an interrupted batch keeps what landed and re-running the same file resumes.",
       },
+      {
+        invocation: "--to-key <prefix|label>",
+        description:
+          "promote, promote-batch: bind the promoted wallets to this key instead of the calling one. The import runs under the calling key as before, then the wallets are moved to the named key by a rebind (device token; the target's secret never touches this machine). The target is checked before the unlock; a wallet whose rebind fails is named as still on the calling key, with the tee rebind command that finishes.",
+      },
     ],
     examples: [
       "candle vault init",
@@ -512,6 +518,7 @@ export const HELP: Record<string, Topic> = {
       "candle vault rename key-7 treasury-cold",
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
       "candle vault promote-batch --pairs-from ./promote-plan.csv --rpc-url https://<rpc>",
+      "candle vault promote-batch --pairs-from ./promote-plan.csv --rpc-url https://<rpc> --to-key tr-01",
       "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
       "candle vault backup --to icloud",

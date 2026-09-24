@@ -31,8 +31,11 @@ const KEYS_PATH = "/api/v1/agent/keys"
 const USAGE_REBIND = "Usage: candle tee rebind <wallet...> --to-key <prefix|label> [--label-prefix <p>] [--json]"
 const USAGE_REBINDS = "Usage: candle tee rebinds [wallet] [--json]"
 
-/** The one precondition both commands share: the device token, not an API key. */
-const DEVICE_TOKEN_REQUIRED = {
+/**
+ * The one precondition both commands share: the device token, not an API key. `vault promote
+ * --to-key` (BE-322) refuses with the same envelope before its unlock, since its rebind is this one.
+ */
+export const DEVICE_TOKEN_REQUIRED = {
   code: "DEVICE_TOKEN_REQUIRED",
   message: "Moving a TEE wallet needs the device token, the owner's credential; an API key cannot do it.",
   suggestion: "Run: candle auth login",
@@ -41,7 +44,7 @@ const DEVICE_TOKEN_REQUIRED = {
 /** A key's 8-character prefix, as `keys list` prints it and as the server names it. */
 const KEY_PREFIX_RE = /^[A-Za-z0-9_-]{8}$/
 
-interface RebindPreviewRow {
+export interface RebindPreviewRow {
   id: string
   address: string
   label: string | null
@@ -50,7 +53,7 @@ interface RebindPreviewRow {
   auditId?: string
 }
 
-interface RebindResponse {
+export interface RebindResponse {
   success: true
   dryRun: boolean
   toKey: {
@@ -103,16 +106,22 @@ export function launchWarning(
 export const RELAY_SIGNER_LINE =
   "The relay signer does not move: trade these wallets from the machine that promoted them."
 
+export interface RebindFailureDetails {
+  code: string
+  message: string
+  suggestion?: string
+  status: number
+}
+
 /**
- * The server's refusal, with the suggestion the spec gives each code (D7). Written like every
- * other failure: the envelope on stdout under `--json`, one line on stderr otherwise. Exit 1.
+ * The server's refusal, with the suggestion the spec gives each code (D7), as facts: `tee rebind`
+ * writes them below, and `vault promote --to-key` (BE-322) folds them into its own report, where a
+ * second envelope on stdout would break the one-document rule.
  */
-function writeRebindFailure(
-  ctx: CommandContext,
+export function rebindFailureDetails(
   result: Extract<ApiResult, { ok: false }>,
   context: { fromKeyPrefixes?: string[] },
-): number {
-  const { deps, apiUrl, json } = ctx
+): RebindFailureDetails {
   let code = result.code
   let message = result.message
   let suggestion: string | undefined
@@ -137,13 +146,62 @@ function writeRebindFailure(
   } else if (result.code === "REBIND_STALE") {
     suggestion = "Run the command again; the preview will show the current binding."
   }
+  return {
+    code: code ?? `HTTP ${result.status}`,
+    message,
+    ...(suggestion !== undefined ? { suggestion } : {}),
+    status: result.status,
+  }
+}
+
+/**
+ * The refusal, written like every other failure: the envelope on stdout under `--json`, one line
+ * on stderr otherwise. Exit 1.
+ */
+function writeRebindFailure(
+  ctx: CommandContext,
+  result: Extract<ApiResult, { ok: false }>,
+  context: { fromKeyPrefixes?: string[] },
+): number {
+  const { deps, apiUrl, json } = ctx
+  const { code, message, suggestion } = rebindFailureDetails(result, context)
   const envelope = errorEnvelope({ ...result, code, message }, { apiUrl, authType: "device" })
   if (json) {
     deps.stdout.write(`${JSON.stringify({ ...envelope, ...(suggestion ? { suggestion } : {}) })}\n`)
   } else {
-    deps.stderr.write(`${code ?? `HTTP ${result.status}`}: ${message}${suggestion ? ` ${suggestion}` : ""}\n`)
+    deps.stderr.write(`${code}: ${message}${suggestion ? ` ${suggestion}` : ""}\n`)
   }
   return 1
+}
+
+/** `GET /keys` with the device token, the read `keys list` makes: every key on this account. */
+export async function listAccountKeys(ctx: CommandContext, deviceToken: string): Promise<ApiResult> {
+  const { deps, apiUrl } = ctx
+  return apiRequest(KEYS_PATH, {
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env,
+  })
+}
+
+/** One `POST /tee-wallets/rebind` with the device token: a preview (`dryRun: true`) or a commit. */
+export async function postRebind(
+  ctx: CommandContext,
+  deviceToken: string,
+  body: Record<string, unknown>,
+): Promise<ApiResult> {
+  const { deps, apiUrl } = ctx
+  return apiRequest(REBIND_PATH, {
+    method: "POST",
+    body,
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env,
+  })
 }
 
 /**
@@ -151,25 +209,29 @@ function writeRebindFailure(
  * against the non-revoked keys from `GET /keys` (the same device-token read `keys list` makes).
  * No match lists the labelled keys; more than one match is refused with the prefixes listed. The
  * server only ever receives a prefix.
+ *
+ * `opts.keys` (BE-322) is the listing when the caller has already made that read; `vault promote
+ * --to-key` reads it once for the target checks it makes before its unlock, and resolves through
+ * here so the two commands cannot drift on what a label means. The refusal is written here in
+ * both cases, so the caller returns the exit code and nothing else.
  */
-async function resolveTargetKey(
+export async function resolveTargetKey(
   ctx: CommandContext,
   deviceToken: string,
   raw: string,
+  opts: { keys?: KeyRow[] } = {},
 ): Promise<{ ok: true; keyPrefix: string } | { ok: false; code: number }> {
-  const { deps, apiUrl, json } = ctx
+  const { deps, json } = ctx
   if (KEY_PREFIX_RE.test(raw)) return { ok: true, keyPrefix: raw }
-  const result = await apiRequest(KEYS_PATH, {
-    auth: "device",
-    credentials: { deviceToken },
-    apiUrl,
-    fetch: deps.fetch,
-    env: deps.env,
-  })
-  if (!result.ok) {
-    return { ok: false, code: writeRebindFailure(ctx, result, {}) }
+  let listed = opts.keys
+  if (listed === undefined) {
+    const result = await listAccountKeys(ctx, deviceToken)
+    if (!result.ok) {
+      return { ok: false, code: writeRebindFailure(ctx, result, {}) }
+    }
+    listed = (result.body as { keys?: KeyRow[] } | null)?.keys ?? []
   }
-  const keys = ((result.body as { keys?: KeyRow[] } | null)?.keys ?? []).filter((key) => !key.revokedAt)
+  const keys = listed.filter((key) => !key.revokedAt)
   const matches = keys.filter((key) => key.label === raw)
   if (matches.length === 1) return { ok: true, keyPrefix: (matches[0] as KeyRow).keyPrefix }
   if (matches.length === 0) {
@@ -242,16 +304,7 @@ export async function teeRebind(args: string[], ctx: CommandContext): Promise<nu
   const target = await resolveTargetKey(ctx, deviceToken, toKey)
   if (!target.ok) return target.code
 
-  const call = (body: Record<string, unknown>) =>
-    apiRequest(REBIND_PATH, {
-      method: "POST",
-      body,
-      auth: "device",
-      credentials: { deviceToken },
-      apiUrl,
-      fetch: deps.fetch,
-      env: deps.env,
-    })
+  const call = (body: Record<string, unknown>) => postRebind(ctx, deviceToken, body)
 
   // Preview: every check the commit makes, nothing written.
   const preview = await call({
