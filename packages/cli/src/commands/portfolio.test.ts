@@ -106,6 +106,29 @@ function harness(opts: {
   rpcFailOwner?: string
   candleStatus?: number
   tty?: boolean
+  /** The `lp` section Candle adds when it serves LP (BE-323). Absent by default, as before E2. */
+  lp?: {
+    positions: {
+      position: string
+      pool: string
+      wallet: string
+      walletId: string
+      tokens: {
+        mint: string
+        decimals: number
+        amountRaw: string
+        unclaimedFeesRaw: string
+        symbol?: string
+        priceUsd: number | null
+        valueUsd: number | null
+      }[]
+      poolShare?: number
+      valueUsd: number | null
+      unpriced: number
+    }[]
+    unreadable: { position: string; wallet: string; walletId: string }[]
+    complete: boolean
+  }
 }) {
   const stdout = createCapture()
   const stderr = createCapture()
@@ -171,7 +194,8 @@ function harness(opts: {
         tee,
         prices: opts.candlePrices ?? { [SOL]: { priceUsd: 100, source: "jupiter", symbol: "SOL" } },
         unavailable: tee.filter((w) => w.lamports === null || w.tokens === null).map((w) => w.address),
-        complete: tee.every((w) => w.lamports !== null && w.tokens !== null),
+        complete: tee.every((w) => w.lamports !== null && w.tokens !== null) && (opts.lp?.complete ?? true),
+        ...(opts.lp ? { lp: opts.lp } : {}),
       })
     }
     if (url.pathname === "/api/v1/agent/prices") {
@@ -431,6 +455,218 @@ describe("candle portfolio", () => {
     expect(await run(["portfolio", "--rpc-url", "http://rpc.example.test", "--json"], h.deps)).toBe(2)
     expect(JSON.parse(h.stdout.text)).toMatchObject({ ok: false, code: "USAGE" })
     expect(h.requests).toEqual([])
+  })
+
+  /**
+   * BE-323 (E2). Candle values each TEE wallet's DAMM v2 positions itself (no Meteora code here);
+   * the CLI shows them after the tokens, counts them in the wallet, group and total, carries them
+   * per wallet in `--json`, and treats a position it could not read as unknown: a row, a footnote,
+   * out of the total, exit 3.
+   */
+  const POS_A = "PositionNftAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  const POS_B = "PositionNftBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+  const POS_C = "PositionNftCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+  const POOL = "PoolAddressXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+  const lpSection = (unreadable = false) => ({
+    positions: [
+      {
+        position: POS_A,
+        pool: POOL,
+        wallet: teeAddress(1),
+        walletId: "w1",
+        tokens: [
+          {
+            mint: SOL,
+            decimals: 9,
+            amountRaw: "500000000",
+            unclaimedFeesRaw: "10000000",
+            symbol: "SOL",
+            priceUsd: 100,
+            valueUsd: 51,
+          },
+          {
+            mint: USDC,
+            decimals: 6,
+            amountRaw: "200000000",
+            unclaimedFeesRaw: "1500000",
+            symbol: "USDC",
+            priceUsd: 1,
+            valueUsd: 201.5,
+          },
+        ],
+        poolShare: 0.25,
+        valueUsd: 252.5,
+        unpriced: 0,
+      },
+      {
+        position: POS_B,
+        pool: POOL,
+        wallet: teeAddress(2),
+        walletId: "w2",
+        tokens: [
+          { mint: MEME, decimals: 6, amountRaw: "3000000", unclaimedFeesRaw: "0", priceUsd: null, valueUsd: null },
+          {
+            mint: USDC,
+            decimals: 6,
+            amountRaw: "1000000",
+            unclaimedFeesRaw: "0",
+            symbol: "USDC",
+            priceUsd: 1,
+            valueUsd: 1,
+          },
+        ],
+        poolShare: 0.01,
+        valueUsd: null,
+        unpriced: 1,
+      },
+    ],
+    unreadable: unreadable ? [{ position: POS_C, wallet: teeAddress(1), walletId: "w1" }] : [],
+    complete: !unreadable,
+  })
+
+  test("an lp section: positions after the tokens, valued at Candle's marks, counted in the wallet, group and total", async () => {
+    const dir = await emptyConfigDir()
+    const h = harness({
+      dir,
+      tee: [
+        { id: "w1", address: teeAddress(1), label: "tee-1", active: true, lamports: "500000000", tokens: [] },
+        { id: "w2", address: teeAddress(2), active: true, lamports: "0", tokens: [] },
+      ],
+      lp: lpSection(),
+    })
+    expect(await run(["portfolio"], h.deps)).toBe(0)
+    const out = h.stdout.text
+    // The token table first, then the LP table.
+    expect(out.indexOf("GROUP     WALLET")).toBeLessThan(out.indexOf("LP positions"))
+    expect(out).toContain("GROUP  WALLET             POSITION   POOL       HOLDINGS")
+    expect(out).toMatch(
+      /tee\s+tee-1 \(TeeW…[^)]+\)\s+Posi…AAAA\s+Pool…XXXX\s+0\.5 SOL \+ 200 USDC\s+0\.01 SOL \+ 1\.5 USDC\s+\$252\.50/,
+    )
+    // An unpriced side: the amounts are shown, the value is a word, and the wallet is listed although it holds no token.
+    expect(out).toMatch(
+      /tee\s+\(TeeW…[^)]+\)\s+Posi…BBBB\s+Pool…XXXX\s+3 Meme…1111 \+ 1 USDC\s+0 Meme…1111 \+ 0 USDC\s+unpriced/,
+    )
+    // tee: $50 of SOL + $252.50 of LP; 2 positions, one unpriced. Total adds the embedded $200.
+    expect(out).toMatch(/tee\s+\$302\.50\s+2 wallets, 2 LP positions, 1 unpriced/)
+    expect(out).toMatch(/total\s+\$502\.50\s+1 unpriced holding not counted/)
+  })
+
+  test("--json carries the positions per wallet and a top-level lp summary", async () => {
+    const dir = await emptyConfigDir()
+    const h = harness({
+      dir,
+      tee: [
+        { id: "w1", address: teeAddress(1), label: "tee-1", active: true, lamports: "500000000", tokens: [] },
+        { id: "w2", address: teeAddress(2), active: true, lamports: "0", tokens: [] },
+      ],
+      lp: lpSection(),
+    })
+    expect(await run(["portfolio", "--json"], h.deps)).toBe(0)
+    const doc = JSON.parse(h.stdout.text)
+    expect(doc.complete).toBe(true)
+    expect(doc.totalUsd).toBeCloseTo(502.5, 10)
+    expect(doc.unpriced).toBe(1)
+    expect(doc.lp).toEqual({ positions: 2, unpriced: 1, unreadable: 0, valueUsd: 252.5 })
+    const tee = doc.groups.find((g: { group: string }) => g.group === "tee")
+    expect(tee.valueUsd).toBeCloseTo(302.5, 10)
+    expect(tee.unpriced).toBe(1)
+    const [w1, w2] = tee.wallets
+    expect(w1.valueUsd).toBeCloseTo(302.5, 10)
+    expect(w1.lpPositions).toHaveLength(1)
+    expect(w1.lpPositions[0]).toMatchObject({
+      position: POS_A,
+      pool: POOL,
+      poolShare: 0.25,
+      valueUsd: 252.5,
+      unpriced: 0,
+    })
+    expect(
+      w1.lpPositions[0].tokens.map((t: { symbol: string; amount: string; unclaimedFees: string; valueUsd: number }) => [
+        t.symbol,
+        t.amount,
+        t.unclaimedFees,
+        t.valueUsd,
+      ]),
+    ).toEqual([
+      ["SOL", "0.5", "0.01", 51],
+      ["USDC", "200", "1.5", 201.5],
+    ])
+    expect(w1.lpUnread).toBeUndefined()
+    expect(w2.lpPositions[0]).toMatchObject({ position: POS_B, valueUsd: null, unpriced: 1 })
+    expect(w2.lpPositions[0].tokens[0]).toMatchObject({ mint: MEME, symbol: null, priceUsd: null, valueUsd: null })
+    // The vault group carries no LP fields at all; the embedded wallet gets an empty list.
+    const vault = doc.groups.find((g: { group: string }) => g.group === "vault")
+    expect(vault.wallets).toEqual([])
+    const embedded = doc.groups.find((g: { group: string }) => g.group === "embedded")
+    expect(embedded.wallets[0].lpPositions).toEqual([])
+  })
+
+  test("a position Candle could not read: a not-read row, a footnote, out of the total, exit 3", async () => {
+    const dir = await emptyConfigDir()
+    const h = harness({
+      dir,
+      tee: [{ id: "w1", address: teeAddress(1), label: "tee-1", active: true, lamports: "500000000", tokens: [] }],
+      lp: {
+        ...lpSection(true),
+        positions: [lpSection().positions[0] as NonNullable<Parameters<typeof harness>[0]["lp"]>["positions"][number]],
+      },
+    })
+    expect(await run(["portfolio"], h.deps)).toBe(3)
+    const out = h.stdout.text
+    expect(out).toMatch(/tee\s+tee-1 \(TeeW…[^)]+\)\s+Posi…CCCC\s+-\s+not read\s+-\s+-/)
+    expect(out).toMatch(/tee\s+\$302\.50\s+1 wallet, 1 LP position, 1 LP not read/)
+    expect(out).toContain(
+      '1 LP position could not be read (the pool did not answer). It is marked "not read" and not in the total.',
+    )
+
+    const j = harness({
+      dir,
+      tee: [{ id: "w1", address: teeAddress(1), label: "tee-1", active: true, lamports: "500000000", tokens: [] }],
+      lp: { ...lpSection(true), positions: [] },
+    })
+    expect(await run(["portfolio", "--json"], j.deps)).toBe(3)
+    const doc = JSON.parse(j.stdout.text)
+    expect(doc.complete).toBe(false)
+    expect(doc.lp).toEqual({ positions: 0, unpriced: 0, unreadable: 1, valueUsd: 0 })
+    expect(doc.groups.find((g: { group: string }) => g.group === "tee").wallets[0].lpUnread).toEqual([POS_C])
+  })
+
+  test("without an lp section nothing LP is printed or carried", async () => {
+    const dir = await emptyConfigDir()
+    const h = harness({
+      dir,
+      tee: [{ id: "w1", address: teeAddress(1), label: "tee-1", active: true, lamports: "500000000", tokens: [] }],
+    })
+    expect(await run(["portfolio", "--json"], h.deps)).toBe(0)
+    const doc = JSON.parse(h.stdout.text)
+    expect(doc.lp).toBeUndefined()
+    expect(doc.groups.find((g: { group: string }) => g.group === "tee").wallets[0].lpPositions).toBeUndefined()
+    const t = harness({
+      dir,
+      tee: [{ id: "w1", address: teeAddress(1), label: "tee-1", active: true, lamports: "500000000", tokens: [] }],
+    })
+    expect(await run(["portfolio"], t.deps)).toBe(0)
+    expect(t.stdout.text).not.toContain("LP")
+  })
+
+  test("control characters in an LP token symbol never reach the terminal", async () => {
+    const dir = await emptyConfigDir()
+    const section = lpSection()
+    // A mint the CLI does not name itself (SOL and USDC take the CLI's own symbols): the server's.
+    const meme = section.positions[1]?.tokens[0]
+    if (meme) meme.symbol = "ME\u001b[2JME\u0007"
+    const h = harness({
+      dir,
+      tee: [
+        { id: "w1", address: teeAddress(1), label: "tee-1", active: true, lamports: "500000000", tokens: [] },
+        { id: "w2", address: teeAddress(2), active: true, lamports: "0", tokens: [] },
+      ],
+      lp: section,
+    })
+    expect(await run(["portfolio"], h.deps)).toBe(0)
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence.
+    expect(h.stdout.text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
+    expect(h.stdout.text).toContain("3 ME[2JME")
   })
 
   test("control characters in a server-supplied symbol or label never reach the terminal; --json keeps them escaped", async () => {

@@ -21,6 +21,17 @@
  * Both answers carry realized net, fees, unrealized and their total, then open positions with
  * average entry, mark and unrealized. An unpriced position is shown as unpriced and left out of
  * unrealized, never valued at zero, and a truncated history says so.
+ *
+ * ── LP (E2, BE-323) ──────────────────────────────────────────────────────────────────────────
+ *
+ * When the API serves LP (`LP_ENABLED`) either answer carries an `lp` section beside the token
+ * figures, computed server-side from the same `activity` ledger (the rows LP `/confirm` wrote)
+ * and the LP routes' pool read: realized (withdrawals against the cost basis at the add, plus
+ * claimed fees), unrealized (open positions at their share of the pool plus unclaimed fees, at
+ * current marks, against that basis), and vs holding (what the deposited tokens would be worth
+ * held). The total then covers tokens and LP. A position that is unpriced, unreadable, or closed
+ * outside the ledger (a sweep close writes no confirmation) is shown as such and never valued.
+ * Without an `lp` section the output is exactly what it was.
  */
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
@@ -53,12 +64,57 @@ interface Summary {
   counted: number
 }
 
+interface LpPosition {
+  position: string
+  pool: string
+  wallet: string
+  book: string | null
+  status: "valued" | "unpriced" | "unreadable" | "closed-outside-ledger"
+  costBasisUsd: number
+  claimedFeesUsd: number
+  realizedUsd: number
+  valueUsd?: number
+  unrealizedUsd?: number
+  holdValueUsd?: number
+  vsHoldingUsd?: number
+}
+
+/** The LP section of either answer, when the API serves LP (BE-323). */
+type LpSection =
+  | {
+      read: true
+      realizedUsd: number
+      withdrawnUsd: number
+      realizedBasisUsd: number
+      claimedFeesUsd: number
+      unrealizedUsd: number
+      valueUsd: number
+      costBasisUsd: number
+      holdValueUsd: number
+      vsHoldingUsd: number
+      vsHoldingPositions: number
+      openPositions: number
+      valued: number
+      unpriced: number
+      unreadable: number
+      closedOutsideLedger: number
+      closedPositions: number
+      unvalued: number
+      basisIncomplete: number
+      complete: boolean
+      lookback: number
+      truncated: boolean
+      positions: LpPosition[]
+    }
+  | { read: false; reason: string }
+
 interface BooksBody {
   all: Summary & { totalUsd: number }
   positions: Position[]
   lookback: number
   truncated: boolean
   oldestMarkAt?: number
+  lp?: LpSection
 }
 
 interface ProfileBody {
@@ -76,6 +132,7 @@ interface ProfileBody {
     truncated: boolean
     oldestMarkAt?: number
   }
+  lp?: LpSection
 }
 
 const NO_API_KEY = {
@@ -154,7 +211,7 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
   }
 
   if (perProfile) {
-    const { pnl: p } = body as unknown as ProfileBody
+    const { pnl: p, lp } = body as unknown as ProfileBody
     deps.stdout.write(`P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills\n\n`)
     writeSummary(ctx, {
       realizedNetUsd: p.realizedNetUsd,
@@ -169,8 +226,10 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
       lookback: p.lookback,
       lookbackUnit: "trades",
       oldestMarkAt: p.oldestMarkAt,
+      lp,
     })
     writePositions(ctx, p.openPositions, false)
+    writeLpPositions(ctx, lp, false)
     return 0
   }
 
@@ -183,8 +242,10 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
     lookback: books.lookback,
     lookbackUnit: "ledger rows",
     oldestMarkAt: books.oldestMarkAt,
+    lp: books.lp,
   })
   writePositions(ctx, books.positions, true)
+  writeLpPositions(ctx, books.lp, true)
   return 0
 }
 
@@ -196,6 +257,7 @@ function writeSummary(
     lookback: number
     lookbackUnit: string
     oldestMarkAt?: number
+    lp?: LpSection
   },
 ): void {
   const marked = s.positions - s.unmarked
@@ -210,8 +272,42 @@ function writeSummary(
       formatUsd(s.unrealizedUsd),
       `${marked} of ${s.positions} open ${s.positions === 1 ? "position" : "positions"} marked${s.unmarked > 0 ? `; ${s.unmarked} unpriced, not counted` : ""}`,
     ],
-    ["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized"],
   ]
+  const lp = s.lp
+  if (lp?.read) {
+    const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+    lines.push(
+      [
+        "LP realized",
+        formatUsd(lp.realizedUsd),
+        `withdrawn ${formatUsd(lp.withdrawnUsd)} against ${formatUsd(lp.realizedBasisUsd)} of cost basis, plus ${formatUsd(lp.claimedFeesUsd)} claimed fees`,
+      ],
+      [
+        "LP unrealized",
+        formatUsd(lp.unrealizedUsd),
+        `${lp.valued} of ${plural(lp.openPositions, "open LP position", "open LP positions")} valued${lp.unpriced > 0 ? `; ${lp.unpriced} unpriced, not counted` : ""}${lp.unreadable > 0 ? `; ${lp.unreadable} not read, not counted` : ""}${lp.closedOutsideLedger > 0 ? `; ${lp.closedOutsideLedger} closed outside the ledger, not counted` : ""}`,
+      ],
+      [
+        "LP vs holding",
+        lp.vsHoldingPositions > 0 ? formatUsd(lp.vsHoldingUsd) : "-",
+        lp.vsHoldingPositions > 0
+          ? `${lp.vsHoldingPositions} of ${lp.valued} valued, against holding the deposited tokens (now ${formatUsd(lp.holdValueUsd)})`
+          : "no valued LP position with every deposit priced",
+      ],
+      [
+        "Total",
+        formatUsd(s.realizedNetUsd + s.unrealizedUsd + lp.realizedUsd + lp.unrealizedUsd),
+        "realized net plus unrealized, tokens and LP",
+      ],
+    )
+  } else if (lp) {
+    lines.push(
+      ["LP", "not read", `${terminalText(lp.reason)}; not in the total`],
+      ["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized, tokens only"],
+    )
+  } else {
+    lines.push(["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized"])
+  }
   const width = Math.max(...lines.map(([label]) => (label as string).length))
   const valueWidth = Math.max(...lines.map(([, value]) => (value as string).length))
   for (const [label, value, note] of lines) {
@@ -230,6 +326,56 @@ function writeSummary(
       `History is truncated: this covers the most recent ${s.lookback} ${s.lookbackUnit}, not the account's lifetime.\n`,
     )
   }
+  if (lp?.read) {
+    if (lp.unvalued > 0) {
+      ctx.deps.stdout.write(
+        `${lp.unvalued} LP ledger ${lp.unvalued === 1 ? "leg" : "legs"} could not be valued and ${lp.unvalued === 1 ? "is" : "are"} not in these figures.\n`,
+      )
+    }
+    if (lp.closedOutsideLedger > 0) {
+      ctx.deps.stdout.write(
+        `${lp.closedOutsideLedger} LP ${lp.closedOutsideLedger === 1 ? "position was" : "positions were"} closed outside the ledger (a sweep close writes no confirmation), so ${lp.closedOutsideLedger === 1 ? "its" : "their"} result is unknown and not in these figures.\n`,
+      )
+    }
+    if (lp.truncated) {
+      ctx.deps.stdout.write(
+        `LP history is truncated: this covers the most recent ${lp.lookback} LP operations, not the account's lifetime.\n`,
+      )
+    }
+  }
+}
+
+function writeLpPositions(ctx: CommandContext, lp: LpSection | undefined, withBook: boolean): void {
+  if (!lp?.read || lp.positions.length === 0) return
+  const headers = ["POSITION", "POOL", "WALLET", "VALUE", "COST BASIS", "UNREALIZED", "VS HOLDING"]
+  if (withBook) headers.push("BOOK")
+  const value = (p: LpPosition) =>
+    p.status === "valued" && p.valueUsd !== undefined
+      ? formatUsd(p.valueUsd)
+      : p.status === "unpriced"
+        ? "unpriced"
+        : p.status === "unreadable"
+          ? "not read"
+          : "closed outside the ledger"
+  const rows = lp.positions.map((p) => {
+    const row = [
+      shortAddress(p.position),
+      shortAddress(p.pool),
+      shortAddress(p.wallet),
+      value(p),
+      formatUsd(p.costBasisUsd),
+      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd) : "-",
+      p.vsHoldingUsd !== undefined ? formatUsd(p.vsHoldingUsd) : "-",
+    ]
+    if (withBook) row.push(p.book ?? "-")
+    return row
+  })
+  ctx.deps.stdout.write(
+    `\nOpen LP positions\n${renderTable(
+      headers,
+      rows.map((row) => row.map(terminalText)),
+    )}\n`,
+  )
 }
 
 function writePositions(ctx: CommandContext, positions: Position[], withBook: boolean): void {

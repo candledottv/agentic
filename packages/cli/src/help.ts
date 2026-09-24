@@ -301,7 +301,7 @@ export const HELP: Record<string, Topic> = {
     group: "Account",
     summary: "Every wallet's holdings, prices and value in one table (vault read over your own RPC)",
     description:
-      "Vault, TEE and embedded wallets, each token with amount, price and value, then a total. TEE and embedded balances come from Candle; vault and external wallets are read over your own RPC, and Candle is sent only the mints they hold, for prices. Unpriced tokens are shown as unpriced and left out of the total.",
+      "Vault, TEE and embedded wallets, each token with amount, price and value, then a total. TEE and embedded balances come from Candle; vault and external wallets are read over your own RPC, and Candle is sent only the mints they hold, for prices. Unpriced tokens are shown as unpriced and left out of the total. Where Candle serves LP, each TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial.",
     usage: ["candle portfolio [--rpc-url <url>] [--json]"],
     rows: [],
     flags: [
@@ -318,7 +318,7 @@ export const HELP: Record<string, Topic> = {
     group: "Account",
     summary: "P&L: realized, fees, unrealized and open positions (--profile for one key's own)",
     description:
-      "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the web P&L chart shows. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its own P&L. Unpriced positions are shown as unpriced and never valued at zero.",
+      "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the web P&L chart shows. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its own P&L. Unpriced positions are shown as unpriced and never valued at zero. Where Candle serves LP, DAMM v2 positions are included: realized (withdrawals against the cost basis at the add, plus claimed fees), unrealized (open positions at their share of the pool plus unclaimed fees, against that basis), and vs holding (what the deposited tokens would be worth held); the total then covers tokens and LP.",
     usage: ["candle pnl [--profile <name>] [--json]"],
     rows: [],
     examples: ["candle pnl", "candle pnl --profile scalper --json"],

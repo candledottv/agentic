@@ -85,13 +85,84 @@ const PROFILE_PNL = {
   },
 }
 
-function harness(opts: { env?: Record<string, string>; books?: Response; withProfiles?: boolean } = {}) {
+const POS_OPEN = "PositionNftAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+const POS_UNPRICED = "PositionNftBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+const POS_SWEPT = "PositionNftCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+const POOL = "PoolAddressXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+const TEE = "TeeWalletAddressTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+
+/** The LP section the API adds when it serves LP (BE-323): one valued, one unpriced, one swept. */
+const LP = {
+  read: true,
+  realizedUsd: 16.5,
+  withdrawnUsd: 315,
+  realizedBasisUsd: 300,
+  claimedFeesUsd: 1.5,
+  unrealizedUsd: 3.5,
+  valueUsd: 303.5,
+  costBasisUsd: 300,
+  holdValueUsd: 350,
+  vsHoldingUsd: -46.5,
+  vsHoldingPositions: 1,
+  openPositions: 3,
+  valued: 1,
+  unpriced: 1,
+  unreadable: 0,
+  closedOutsideLedger: 1,
+  closedPositions: 1,
+  unvalued: 0,
+  basisIncomplete: 0,
+  complete: true,
+  lookback: 500,
+  truncated: false,
+  positions: [
+    {
+      position: POS_OPEN,
+      pool: POOL,
+      wallet: TEE,
+      book: "Scalper",
+      status: "valued",
+      costBasisUsd: 300,
+      claimedFeesUsd: 1.5,
+      realizedUsd: 1.5,
+      valueUsd: 303.5,
+      unrealizedUsd: 3.5,
+      holdValueUsd: 350,
+      vsHoldingUsd: -46.5,
+    },
+    {
+      position: POS_SWEPT,
+      pool: POOL,
+      wallet: TEE,
+      book: null,
+      status: "closed-outside-ledger",
+      costBasisUsd: 120,
+      claimedFeesUsd: 0,
+      realizedUsd: 0,
+    },
+    {
+      position: POS_UNPRICED,
+      pool: POOL,
+      wallet: TEE,
+      book: "Scalper",
+      status: "unpriced",
+      costBasisUsd: 50,
+      claimedFeesUsd: 0,
+      realizedUsd: 0,
+      unpriced: 1,
+    },
+  ],
+}
+
+function harness(
+  opts: { env?: Record<string, string>; books?: Response; profile?: Response; withProfiles?: boolean } = {},
+) {
   const calls: { path: string; key: string | null }[] = []
   const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input))
     calls.push({ path: url.pathname, key: new Headers(init?.headers).get("x-api-key") })
     if (url.pathname === "/api/v1/agent/books") return opts.books ?? Response.json(BOOKS)
-    if (url.pathname === "/api/v1/agent/keys/BBBBBBBB/pnl") return Response.json(PROFILE_PNL)
+    if (url.pathname === "/api/v1/agent/keys/BBBBBBBB/pnl") return opts.profile ?? Response.json(PROFILE_PNL)
     throw new Error(`Unexpected ${url.pathname}`)
   }) as typeof fetch
   const stdout = createCapture()
@@ -185,6 +256,80 @@ describe("candle pnl", () => {
     expect(JSON.parse(stray.stdout.text)).toMatchObject({ ok: false, code: "USAGE" })
   })
 
+  /**
+   * BE-323 (E2). With an `lp` section the summary gains the three LP lines and the total covers
+   * tokens and LP; the open LP positions get their own table; every kind of absence is a word.
+   */
+  test("an lp section adds LP realized, unrealized and vs holding, a total across both, and an LP table", async () => {
+    const h = harness({ books: Response.json({ ...BOOKS, lp: LP }) })
+    expect(await run(["pnl"], h.deps)).toBe(0)
+    const out = h.stdout.text
+    expect(out).toMatch(/Realized net\s+\$97\.00/)
+    expect(out).toMatch(/Unrealized\s+\$12\.00/)
+    expect(out).toMatch(
+      /LP realized\s+\$16\.50\s+\(withdrawn \$315\.00 against \$300\.00 of cost basis, plus \$1\.50 claimed fees\)/,
+    )
+    expect(out).toMatch(
+      /LP unrealized\s+\$3\.50\s+\(1 of 3 open LP positions valued; 1 unpriced, not counted; 1 closed outside the ledger, not counted\)/,
+    )
+    expect(out).toMatch(
+      /LP vs holding\s+-\$46\.50\s+\(1 of 1 valued, against holding the deposited tokens \(now \$350\.00\)\)/,
+    )
+    // 97 + 12 + 16.5 + 3.5
+    expect(out).toMatch(/Total\s+\$129\.00\s+\(realized net plus unrealized, tokens and LP\)/)
+    expect(out).toContain("1 LP position was closed outside the ledger")
+    expect(out).toContain("Open LP positions")
+    expect(out).toMatch(/Posi…AAAA\s+Pool…XXXX\s+TeeW…TTTT\s+\$303\.50\s+\$300\.00\s+\$3\.50\s+-\$46\.50\s+Scalper/)
+    expect(out).toMatch(/Posi…CCCC\s+Pool…XXXX\s+TeeW…TTTT\s+closed outside the ledger\s+\$120\.00\s+-\s+-\s+-/)
+    expect(out).toMatch(/Posi…BBBB\s+Pool…XXXX\s+TeeW…TTTT\s+unpriced\s+\$50\.00\s+-\s+-\s+Scalper/)
+    // The token positions table is still there, before the LP one.
+    expect(out.indexOf("Open positions")).toBeLessThan(out.indexOf("Open LP positions"))
+  })
+
+  test("--json carries the lp section as the API sent it, and --profile renders LP without a book column", async () => {
+    const j = harness({ books: Response.json({ ...BOOKS, lp: LP }) })
+    expect(await run(["pnl", "--json"], j.deps)).toBe(0)
+    expect(JSON.parse(j.stdout.text).lp).toEqual(LP)
+
+    const p = harness({ withProfiles: true, profile: Response.json({ ...PROFILE_PNL, lp: LP }) })
+    expect(await run(["pnl", "--profile", "scalper"], p.deps)).toBe(0)
+    expect(p.stdout.text).toMatch(/Total\s+\$29\.00\s+\(realized net plus unrealized, tokens and LP\)/)
+    expect(p.stdout.text).toMatch(/Posi…AAAA\s+Pool…XXXX\s+TeeW…TTTT\s+\$303\.50\s+\$300\.00\s+\$3\.50\s+-\$46\.50\n/)
+    expect(p.stdout.text).not.toContain("BOOK")
+  })
+
+  test("an LP read the API could not make is a line, not a figure, and the total says tokens only", async () => {
+    const h = harness({
+      books: Response.json({ ...BOOKS, lp: { read: false, reason: "The LP ledger or positions could not be read" } }),
+    })
+    expect(await run(["pnl"], h.deps)).toBe(0)
+    expect(h.stdout.text).toMatch(/LP\s+not read\s+\(The LP ledger or positions could not be read; not in the total\)/)
+    expect(h.stdout.text).toMatch(/Total\s+\$109\.00\s+\(realized net plus unrealized, tokens only\)/)
+    expect(h.stdout.text).not.toContain("Open LP positions")
+  })
+
+  test("an lp section with no open positions, truncated: the lines, the caption, no table", async () => {
+    const lp = {
+      ...LP,
+      openPositions: 0,
+      valued: 0,
+      unpriced: 0,
+      closedOutsideLedger: 0,
+      vsHoldingPositions: 0,
+      unrealizedUsd: 0,
+      positions: [],
+      truncated: true,
+      unvalued: 2,
+    }
+    const h = harness({ books: Response.json({ ...BOOKS, lp }) })
+    expect(await run(["pnl"], h.deps)).toBe(0)
+    expect(h.stdout.text).toMatch(/LP unrealized\s+\$0\.00\s+\(0 of 0 open LP positions valued\)/)
+    expect(h.stdout.text).toMatch(/LP vs holding\s+-\s+\(no valued LP position with every deposit priced\)/)
+    expect(h.stdout.text).toContain("2 LP ledger legs could not be valued and are not in these figures.")
+    expect(h.stdout.text).toContain("LP history is truncated: this covers the most recent 500 LP operations")
+    expect(h.stdout.text).not.toContain("Open LP positions")
+  })
+
   test("control characters in a server-supplied symbol or book never reach the terminal", async () => {
     const hostile = {
       ...BOOKS,
@@ -195,5 +340,21 @@ describe("candle pnl", () => {
     // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence.
     expect(h.stdout.text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
     expect(h.stdout.text).toMatch(/\[2JMEME\s+6\s+\$1\.00\s+\$3\.00\s+\$12\.00\s+Scal\[31mper/)
+
+    // The LP table and the not-read reason pass through the same filter.
+    const lpHostile = {
+      ...BOOKS,
+      lp: { ...LP, positions: [{ ...LP.positions[0], book: "Pool\u001b[2Jer" }] },
+    }
+    const l = harness({ books: Response.json(lpHostile) })
+    expect(await run(["pnl"], l.deps)).toBe(0)
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence.
+    expect(l.stdout.text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
+    expect(l.stdout.text).toContain("Pool[2Jer")
+    const r = harness({ books: Response.json({ ...BOOKS, lp: { read: false, reason: "down\u0007" } }) })
+    expect(await run(["pnl"], r.deps)).toBe(0)
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence.
+    expect(r.stdout.text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
+    expect(r.stdout.text).toContain("(down; not in the total)")
   })
 })

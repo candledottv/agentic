@@ -39233,7 +39233,7 @@ var HELP = {
   portfolio: {
     group: "Account",
     summary: "Every wallet's holdings, prices and value in one table (vault read over your own RPC)",
-    description: "Vault, TEE and embedded wallets, each token with amount, price and value, then a total. TEE and embedded balances come from Candle; vault and external wallets are read over your own RPC, and Candle is sent only the mints they hold, for prices. Unpriced tokens are shown as unpriced and left out of the total.",
+    description: "Vault, TEE and embedded wallets, each token with amount, price and value, then a total. TEE and embedded balances come from Candle; vault and external wallets are read over your own RPC, and Candle is sent only the mints they hold, for prices. Unpriced tokens are shown as unpriced and left out of the total. Where Candle serves LP, each TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial.",
     usage: ["candle portfolio [--rpc-url <url>] [--json]"],
     rows: [],
     flags: [
@@ -39249,7 +39249,7 @@ var HELP = {
   pnl: {
     group: "Account",
     summary: "P&L: realized, fees, unrealized and open positions (--profile for one key's own)",
-    description: "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the web P&L chart shows. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its own P&L. Unpriced positions are shown as unpriced and never valued at zero.",
+    description: "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the web P&L chart shows. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its own P&L. Unpriced positions are shown as unpriced and never valued at zero. Where Candle serves LP, DAMM v2 positions are included: realized (withdrawals against the cost basis at the add, plus claimed fees), unrealized (open positions at their share of the pool plus unclaimed fees, against that basis), and vs holding (what the deposited tokens would be worth held); the total then covers tokens and LP.",
     usage: ["candle pnl [--profile <name>] [--json]"],
     rows: [],
     examples: ["candle pnl", "candle pnl --profile scalper --json"],
@@ -45232,7 +45232,7 @@ async function pnl(args, ctx) {
     return 0;
   }
   if (perProfile) {
-    const { pnl: p } = body;
+    const { pnl: p, lp } = body;
     deps.stdout.write(`P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills
 
 `);
@@ -45248,9 +45248,11 @@ async function pnl(args, ctx) {
       truncated: p.truncated,
       lookback: p.lookback,
       lookbackUnit: "trades",
-      oldestMarkAt: p.oldestMarkAt
+      oldestMarkAt: p.oldestMarkAt,
+      lp
     });
     writePositions(ctx, p.openPositions, false);
+    writeLpPositions(ctx, lp, false);
     return 0;
   }
   const books = body;
@@ -45263,9 +45265,11 @@ async function pnl(args, ctx) {
     truncated: books.truncated,
     lookback: books.lookback,
     lookbackUnit: "ledger rows",
-    oldestMarkAt: books.oldestMarkAt
+    oldestMarkAt: books.oldestMarkAt,
+    lp: books.lp
   });
   writePositions(ctx, books.positions, true);
+  writeLpPositions(ctx, books.lp, true);
   return 0;
 }
 function writeSummary(ctx, s) {
@@ -45280,9 +45284,33 @@ function writeSummary(ctx, s) {
       "Unrealized",
       formatUsd(s.unrealizedUsd),
       `${marked} of ${s.positions} open ${s.positions === 1 ? "position" : "positions"} marked${s.unmarked > 0 ? `; ${s.unmarked} unpriced, not counted` : ""}`
-    ],
-    ["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized"]
+    ]
   ];
+  const lp = s.lp;
+  if (lp?.read) {
+    const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+    lines.push([
+      "LP realized",
+      formatUsd(lp.realizedUsd),
+      `withdrawn ${formatUsd(lp.withdrawnUsd)} against ${formatUsd(lp.realizedBasisUsd)} of cost basis, plus ${formatUsd(lp.claimedFeesUsd)} claimed fees`
+    ], [
+      "LP unrealized",
+      formatUsd(lp.unrealizedUsd),
+      `${lp.valued} of ${plural(lp.openPositions, "open LP position", "open LP positions")} valued${lp.unpriced > 0 ? `; ${lp.unpriced} unpriced, not counted` : ""}${lp.unreadable > 0 ? `; ${lp.unreadable} not read, not counted` : ""}${lp.closedOutsideLedger > 0 ? `; ${lp.closedOutsideLedger} closed outside the ledger, not counted` : ""}`
+    ], [
+      "LP vs holding",
+      lp.vsHoldingPositions > 0 ? formatUsd(lp.vsHoldingUsd) : "-",
+      lp.vsHoldingPositions > 0 ? `${lp.vsHoldingPositions} of ${lp.valued} valued, against holding the deposited tokens (now ${formatUsd(lp.holdValueUsd)})` : "no valued LP position with every deposit priced"
+    ], [
+      "Total",
+      formatUsd(s.realizedNetUsd + s.unrealizedUsd + lp.realizedUsd + lp.unrealizedUsd),
+      "realized net plus unrealized, tokens and LP"
+    ]);
+  } else if (lp) {
+    lines.push(["LP", "not read", `${terminalText(lp.reason)}; not in the total`], ["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized, tokens only"]);
+  } else {
+    lines.push(["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized"]);
+  }
   const width = Math.max(...lines.map(([label]) => label.length));
   const valueWidth = Math.max(...lines.map(([, value]) => value.length));
   for (const [label, value, note] of lines) {
@@ -45301,6 +45329,46 @@ function writeSummary(ctx, s) {
     ctx.deps.stdout.write(`History is truncated: this covers the most recent ${s.lookback} ${s.lookbackUnit}, not the account's lifetime.
 `);
   }
+  if (lp?.read) {
+    if (lp.unvalued > 0) {
+      ctx.deps.stdout.write(`${lp.unvalued} LP ledger ${lp.unvalued === 1 ? "leg" : "legs"} could not be valued and ${lp.unvalued === 1 ? "is" : "are"} not in these figures.
+`);
+    }
+    if (lp.closedOutsideLedger > 0) {
+      ctx.deps.stdout.write(`${lp.closedOutsideLedger} LP ${lp.closedOutsideLedger === 1 ? "position was" : "positions were"} closed outside the ledger (a sweep close writes no confirmation), so ${lp.closedOutsideLedger === 1 ? "its" : "their"} result is unknown and not in these figures.
+`);
+    }
+    if (lp.truncated) {
+      ctx.deps.stdout.write(`LP history is truncated: this covers the most recent ${lp.lookback} LP operations, not the account's lifetime.
+`);
+    }
+  }
+}
+function writeLpPositions(ctx, lp, withBook) {
+  if (!lp?.read || lp.positions.length === 0)
+    return;
+  const headers = ["POSITION", "POOL", "WALLET", "VALUE", "COST BASIS", "UNREALIZED", "VS HOLDING"];
+  if (withBook)
+    headers.push("BOOK");
+  const value = (p) => p.status === "valued" && p.valueUsd !== undefined ? formatUsd(p.valueUsd) : p.status === "unpriced" ? "unpriced" : p.status === "unreadable" ? "not read" : "closed outside the ledger";
+  const rows = lp.positions.map((p) => {
+    const row = [
+      shortAddress2(p.position),
+      shortAddress2(p.pool),
+      shortAddress2(p.wallet),
+      value(p),
+      formatUsd(p.costBasisUsd),
+      p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd) : "-",
+      p.vsHoldingUsd !== undefined ? formatUsd(p.vsHoldingUsd) : "-"
+    ];
+    if (withBook)
+      row.push(p.book ?? "-");
+    return row;
+  });
+  ctx.deps.stdout.write(`
+Open LP positions
+${renderTable(headers, rows.map((row) => row.map(terminalText)))}
+`);
 }
 function writePositions(ctx, positions, withBook) {
   if (positions.length === 0) {
@@ -45443,16 +45511,29 @@ async function portfolio(args, ctx) {
       deps.stderr.write(`Some vault holdings could not be priced: ${terminalText(priceFailure)}. They are shown as unpriced.
 `);
     }
+    const lpByWallet = new Map;
+    const lpOf = (address) => {
+      const entry = lpByWallet.get(address) ?? { positions: [], unread: [] };
+      lpByWallet.set(address, entry);
+      return entry;
+    };
+    for (const position of fromCandle.lp?.positions ?? [])
+      lpOf(position.wallet).positions.push(lpRow(position, prices));
+    for (const unread of fromCandle.lp?.unreadable ?? [])
+      lpOf(unread.wallet).unread.push(unread.position);
     const wallet = (address, read, extra) => {
       const holdings = read === undefined ? null : valueHoldings(read, prices);
       const unread = read === undefined ? [] : [...read.lamports === null ? ["sol"] : [], ...read.tokens === null ? ["tokens"] : []];
+      const lp2 = fromCandle.lp ? lpOf(address) : undefined;
       return {
         address,
         ...extra,
         holdings,
         ...unread.length > 0 ? { unread } : {},
-        valueUsd: (holdings ?? []).reduce((sum, h) => sum + (h.valueUsd ?? 0), 0),
-        unpriced: (holdings ?? []).filter((h) => h.priceUsd === null).length
+        ...lp2 ? { lpPositions: lp2.positions } : {},
+        ...lp2 && lp2.unread.length > 0 ? { lpUnread: lp2.unread } : {},
+        valueUsd: (holdings ?? []).reduce((sum, h) => sum + (h.valueUsd ?? 0), 0) + (lp2?.positions ?? []).reduce((sum, p) => sum + (p.valueUsd ?? 0), 0),
+        unpriced: (holdings ?? []).filter((h) => h.priceUsd === null).length + (lp2?.positions ?? []).filter((p) => p.valueUsd === null).length
       };
     };
     const group = (name, wallets, read, reason) => ({
@@ -45477,9 +45558,16 @@ async function portfolio(args, ctx) {
       group("embedded", (fromCandle.embedded ?? []).map((row) => wallet(row.address, orNull(row), {})), true)
     ];
     const unavailable = [...vaultRead?.unavailable ?? [], ...fromCandle.unavailable ?? []];
-    const complete = fromCandle.complete !== false && unavailable.length === 0;
+    const lpUnread = (fromCandle.lp?.unreadable ?? []).length;
+    const complete = fromCandle.complete !== false && unavailable.length === 0 && lpUnread === 0;
     const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0);
     const unpriced = groups.reduce((sum, g) => sum + g.unpriced, 0);
+    const lp = fromCandle.lp ? {
+      positions: fromCandle.lp.positions.length,
+      unpriced: fromCandle.lp.positions.filter((p) => p.valueUsd === null).length,
+      unreadable: lpUnread,
+      valueUsd: fromCandle.lp.positions.reduce((sum, p) => sum + (p.valueUsd ?? 0), 0)
+    } : undefined;
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
@@ -45488,11 +45576,12 @@ async function portfolio(args, ctx) {
         complete,
         unavailable,
         ...rpcHost !== undefined ? { rpcHost } : {},
+        ...lp ? { lp } : {},
         groups
       });
       return complete ? 0 : 3;
     }
-    writeTable(ctx, groups, { totalUsd, unpriced, unavailable: unavailable.length });
+    writeTable(ctx, groups, { totalUsd, unpriced, unavailable: unavailable.length, lp });
     return complete ? 0 : 3;
   });
 }
@@ -45572,14 +45661,49 @@ function valueHoldings(read, prices) {
     };
   });
 }
+function lpRow(position, prices) {
+  return {
+    position: position.position,
+    pool: position.pool,
+    tokens: position.tokens.map((token) => ({
+      ...token,
+      symbol: KNOWN_SYMBOLS[token.mint] ?? token.symbol ?? prices[token.mint]?.symbol ?? null,
+      amount: formatAmount(token.amountRaw, token.decimals),
+      unclaimedFees: formatAmount(token.unclaimedFeesRaw, token.decimals)
+    })),
+    ...position.poolShare !== undefined ? { poolShare: position.poolShare } : {},
+    valueUsd: position.valueUsd,
+    unpriced: position.unpriced
+  };
+}
 function writeTable(ctx, groups, totals) {
   const { deps } = ctx;
   const rows = [];
+  const lpRows = [];
   const notes = [];
   for (const g of groups) {
-    const shown = g.wallets.filter((w) => w.holdings === null || w.holdings.length > 0 || (w.unread?.length ?? 0) > 0).sort((a, b) => b.valueUsd - a.valueUsd);
+    const shown = g.wallets.filter((w) => w.holdings === null || w.holdings.length > 0 || (w.unread?.length ?? 0) > 0 || (w.lpPositions?.length ?? 0) > 0 || (w.lpUnread?.length ?? 0) > 0).sort((a, b) => b.valueUsd - a.valueUsd);
+    let lpCount = 0;
+    let lpUnread = 0;
     for (const w of shown) {
       const name = `${w.label ? `${w.label} ` : ""}(${shortAddress2(w.address)})${w.role === "external" ? " external" : ""}`;
+      const side = (t, amount) => `${amount} ${t.symbol ?? shortAddress2(t.mint)}`;
+      for (const p of [...w.lpPositions ?? []].sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1))) {
+        lpCount += 1;
+        lpRows.push([
+          g.group,
+          name,
+          shortAddress2(p.position),
+          shortAddress2(p.pool),
+          p.tokens.map((t) => side(t, t.amount)).join(" + "),
+          p.tokens.map((t) => side(t, t.unclaimedFees)).join(" + "),
+          p.valueUsd === null ? "unpriced" : formatUsd(p.valueUsd)
+        ]);
+      }
+      for (const position of w.lpUnread ?? []) {
+        lpUnread += 1;
+        lpRows.push([g.group, name, shortAddress2(position), "-", "not read", "-", "-"]);
+      }
       if (w.holdings === null) {
         rows.push([g.group, name, "-", "not read", "-", "-"]);
         continue;
@@ -45603,7 +45727,7 @@ function writeTable(ctx, groups, totals) {
     notes.push([
       g.group,
       g.read ? formatUsd(g.valueUsd) : "-",
-      g.read ? `${count}${empty > 0 ? `, ${empty} empty not shown` : ""}${g.unpriced > 0 ? `, ${g.unpriced} unpriced` : ""}` : g.reason ?? "not read"
+      g.read ? `${count}${empty > 0 ? `, ${empty} empty not shown` : ""}${lpCount > 0 ? `, ${lpCount} LP ${lpCount === 1 ? "position" : "positions"}` : ""}${lpUnread > 0 ? `, ${lpUnread} LP not read` : ""}${g.unpriced > 0 ? `, ${g.unpriced} unpriced` : ""}` : g.reason ?? "not read"
     ]);
   }
   if (rows.length > 0)
@@ -45613,6 +45737,11 @@ ${renderTable(["GROUP", "WALLET", "TOKEN", "AMOUNT", "PRICE", "VALUE"], rows.map
   else
     deps.stdout.write(`
 Nothing held in any wallet read.
+`);
+  if (lpRows.length > 0)
+    deps.stdout.write(`
+LP positions
+${renderTable(["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEES", "VALUE"], lpRows.map((row) => row.map(terminalText)))}
 `);
   notes.push([
     "total",
@@ -45629,6 +45758,11 @@ Nothing held in any wallet read.
   }
   if (totals.unavailable > 0) {
     deps.stdout.write(`${totals.unavailable} ${totals.unavailable === 1 ? "wallet" : "wallets"} could not be read in full. What was not read is marked "not read" and is not in the total.
+`);
+  }
+  if ((totals.lp?.unreadable ?? 0) > 0) {
+    const n = totals.lp?.unreadable ?? 0;
+    deps.stdout.write(`${n} LP ${n === 1 ? "position" : "positions"} could not be read (the pool did not answer). ${n === 1 ? "It is" : "They are"} marked "not read" and not in the total.
 `);
   }
 }

@@ -25,6 +25,17 @@
  * out wallets that hold nothing and says how many it left out, sorts each group by value, and ends
  * with a subtotal per group and a total. `--json` is the whole document, every wallet included,
  * written once (the pipe drain is `index.ts`'s, BE-299).
+ *
+ * ── LP positions (E2, BE-323) ────────────────────────────────────────────────────────────────
+ *
+ * When Candle's answer carries an `lp` section (the API serves LP, `LP_ENABLED`), each TEE
+ * wallet's Meteora DAMM v2 positions come with it: the position's share of the pool reserves plus
+ * its unclaimed fees, valued server-side at the same marks as the token rows, from the LP routes'
+ * own pool read. Nothing about a pool is computed here (no Meteora SDK in the CLI, P3-ED-6). The
+ * positions are shown in a second table after the tokens, counted in the wallet, group and total
+ * figures, and carried per wallet in `--json`. A position whose pool could not be read is shown as
+ * not read and left out, and the total says it is partial (exit 3). Without an `lp` section the
+ * output is exactly what it was.
  */
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
@@ -81,12 +92,37 @@ interface MintPrice {
   symbol?: string
   name?: string
 }
+interface LpToken {
+  mint: string
+  decimals: number
+  amountRaw: string
+  unclaimedFeesRaw: string
+  symbol?: string
+  priceUsd: number | null
+  valueUsd: number | null
+}
+interface CandleLpPosition {
+  position: string
+  pool: string
+  wallet: string
+  walletId: string
+  tokens: LpToken[]
+  poolShare?: number
+  valueUsd: number | null
+  unpriced: number
+}
 interface CandlePortfolio {
   embedded: ({ address: string } & WalletRead)[]
   tee: ({ id: string; address: string; label?: string; active: boolean } & WalletRead)[]
   prices: Record<string, MintPrice>
   unavailable: string[]
   complete: boolean
+  /** Present when the API serves LP (BE-323). Absent means no LP section, not "no positions". */
+  lp?: {
+    positions: CandleLpPosition[]
+    unreadable: { position: string; wallet: string; walletId: string }[]
+    complete: boolean
+  }
 }
 
 export interface Holding extends RawHolding {
@@ -95,6 +131,21 @@ export interface Holding extends RawHolding {
   priceUsd: number | null
   valueUsd: number | null
   priceSource: MintPrice["source"]
+}
+/** One side of an LP position, as shown: amount and unclaimed fees in whole tokens, and its value. */
+export interface LpPositionToken extends Omit<LpToken, "symbol"> {
+  symbol: string | null
+  amount: string
+  unclaimedFees: string
+}
+export interface LpPositionRow {
+  position: string
+  pool: string
+  tokens: LpPositionToken[]
+  poolShare?: number
+  /** Share of the reserves plus unclaimed fees at the marks; null when a side is unpriced. */
+  valueUsd: number | null
+  unpriced: number
 }
 export interface PortfolioWallet {
   address: string
@@ -108,6 +159,10 @@ export interface PortfolioWallet {
   holdings: Holding[] | null
   /** The halves of the read that failed, when some did. Their holdings are unknown, not absent. */
   unread?: ("sol" | "tokens")[]
+  /** DAMM v2 positions this TEE wallet holds, when the API serves LP (BE-323). In `valueUsd`. */
+  lpPositions?: LpPositionRow[]
+  /** Position NFTs whose pool could not be read. Their value is unknown, not zero. */
+  lpUnread?: string[]
   valueUsd: number
   unpriced: number
 }
@@ -228,23 +283,43 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       )
     }
 
+    // LP positions by the TEE wallet that holds them (E2). Absent section, absent rows.
+    const lpByWallet = new Map<string, { positions: LpPositionRow[]; unread: string[] }>()
+    const lpOf = (address: string) => {
+      const entry = lpByWallet.get(address) ?? { positions: [], unread: [] }
+      lpByWallet.set(address, entry)
+      return entry
+    }
+    for (const position of fromCandle.lp?.positions ?? []) lpOf(position.wallet).positions.push(lpRow(position, prices))
+    for (const unread of fromCandle.lp?.unreadable ?? []) lpOf(unread.wallet).unread.push(unread.position)
+
     const wallet = (
       address: string,
       read: WalletRead | undefined,
-      extra: Omit<PortfolioWallet, "address" | "holdings" | "unread" | "valueUsd" | "unpriced">,
+      extra: Omit<
+        PortfolioWallet,
+        "address" | "holdings" | "unread" | "valueUsd" | "unpriced" | "lpPositions" | "lpUnread"
+      >,
     ): PortfolioWallet => {
       const holdings = read === undefined ? null : valueHoldings(read, prices)
       const unread: ("sol" | "tokens")[] =
         read === undefined
           ? []
           : [...(read.lamports === null ? ["sol" as const] : []), ...(read.tokens === null ? ["tokens" as const] : [])]
+      const lp = fromCandle.lp ? lpOf(address) : undefined
       return {
         address,
         ...extra,
         holdings,
         ...(unread.length > 0 ? { unread } : {}),
-        valueUsd: (holdings ?? []).reduce((sum, h) => sum + (h.valueUsd ?? 0), 0),
-        unpriced: (holdings ?? []).filter((h) => h.priceUsd === null).length,
+        ...(lp ? { lpPositions: lp.positions } : {}),
+        ...(lp && lp.unread.length > 0 ? { lpUnread: lp.unread } : {}),
+        valueUsd:
+          (holdings ?? []).reduce((sum, h) => sum + (h.valueUsd ?? 0), 0) +
+          (lp?.positions ?? []).reduce((sum, p) => sum + (p.valueUsd ?? 0), 0),
+        unpriced:
+          (holdings ?? []).filter((h) => h.priceUsd === null).length +
+          (lp?.positions ?? []).filter((p) => p.valueUsd === null).length,
       }
     }
     const group = (
@@ -291,9 +366,18 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       ),
     ]
     const unavailable = [...(vaultRead?.unavailable ?? []), ...(fromCandle.unavailable ?? [])]
-    const complete = fromCandle.complete !== false && unavailable.length === 0
+    const lpUnread = (fromCandle.lp?.unreadable ?? []).length
+    const complete = fromCandle.complete !== false && unavailable.length === 0 && lpUnread === 0
     const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0)
     const unpriced = groups.reduce((sum, g) => sum + g.unpriced, 0)
+    const lp = fromCandle.lp
+      ? {
+          positions: fromCandle.lp.positions.length,
+          unpriced: fromCandle.lp.positions.filter((p) => p.valueUsd === null).length,
+          unreadable: lpUnread,
+          valueUsd: fromCandle.lp.positions.reduce((sum, p) => sum + (p.valueUsd ?? 0), 0),
+        }
+      : undefined
 
     if (ctx.json) {
       writeJson(deps, {
@@ -303,12 +387,13 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
         complete,
         unavailable,
         ...(rpcHost !== undefined ? { rpcHost } : {}),
+        ...(lp ? { lp } : {}),
         groups,
       })
       return complete ? 0 : 3
     }
 
-    writeTable(ctx, groups, { totalUsd, unpriced, unavailable: unavailable.length })
+    writeTable(ctx, groups, { totalUsd, unpriced, unavailable: unavailable.length, lp })
     return complete ? 0 : 3
   })
 }
@@ -398,20 +483,69 @@ function valueHoldings(read: WalletRead, prices: Record<string, MintPrice>): Hol
   })
 }
 
+/** An LP position as Candle valued it, with each side in whole tokens for the table and `--json`. */
+function lpRow(position: CandleLpPosition, prices: Record<string, MintPrice>): LpPositionRow {
+  return {
+    position: position.position,
+    pool: position.pool,
+    tokens: position.tokens.map((token) => ({
+      ...token,
+      symbol: KNOWN_SYMBOLS[token.mint] ?? token.symbol ?? prices[token.mint]?.symbol ?? null,
+      amount: formatAmount(token.amountRaw, token.decimals),
+      unclaimedFees: formatAmount(token.unclaimedFeesRaw, token.decimals),
+    })),
+    ...(position.poolShare !== undefined ? { poolShare: position.poolShare } : {}),
+    valueUsd: position.valueUsd,
+    unpriced: position.unpriced,
+  }
+}
+
 function writeTable(
   ctx: CommandContext,
   groups: PortfolioGroup[],
-  totals: { totalUsd: number; unpriced: number; unavailable: number },
+  totals: {
+    totalUsd: number
+    unpriced: number
+    unavailable: number
+    lp?: { positions: number; unpriced: number; unreadable: number; valueUsd: number }
+  },
 ): void {
   const { deps } = ctx
   const rows: string[][] = []
+  const lpRows: string[][] = []
   const notes: string[][] = []
   for (const g of groups) {
     const shown = g.wallets
-      .filter((w) => w.holdings === null || w.holdings.length > 0 || (w.unread?.length ?? 0) > 0)
+      .filter(
+        (w) =>
+          w.holdings === null ||
+          w.holdings.length > 0 ||
+          (w.unread?.length ?? 0) > 0 ||
+          (w.lpPositions?.length ?? 0) > 0 ||
+          (w.lpUnread?.length ?? 0) > 0,
+      )
       .sort((a, b) => b.valueUsd - a.valueUsd)
+    let lpCount = 0
+    let lpUnread = 0
     for (const w of shown) {
       const name = `${w.label ? `${w.label} ` : ""}(${shortAddress(w.address)})${w.role === "external" ? " external" : ""}`
+      const side = (t: LpPositionToken, amount: string) => `${amount} ${t.symbol ?? shortAddress(t.mint)}`
+      for (const p of [...(w.lpPositions ?? [])].sort((a, b) => (b.valueUsd ?? -1) - (a.valueUsd ?? -1))) {
+        lpCount += 1
+        lpRows.push([
+          g.group,
+          name,
+          shortAddress(p.position),
+          shortAddress(p.pool),
+          p.tokens.map((t) => side(t, t.amount)).join(" + "),
+          p.tokens.map((t) => side(t, t.unclaimedFees)).join(" + "),
+          p.valueUsd === null ? "unpriced" : formatUsd(p.valueUsd),
+        ])
+      }
+      for (const position of w.lpUnread ?? []) {
+        lpUnread += 1
+        lpRows.push([g.group, name, shortAddress(position), "-", "not read", "-", "-"])
+      }
       if (w.holdings === null) {
         rows.push([g.group, name, "-", "not read", "-", "-"])
         continue
@@ -436,7 +570,7 @@ function writeTable(
       g.group,
       g.read ? formatUsd(g.valueUsd) : "-",
       g.read
-        ? `${count}${empty > 0 ? `, ${empty} empty not shown` : ""}${g.unpriced > 0 ? `, ${g.unpriced} unpriced` : ""}`
+        ? `${count}${empty > 0 ? `, ${empty} empty not shown` : ""}${lpCount > 0 ? `, ${lpCount} LP ${lpCount === 1 ? "position" : "positions"}` : ""}${lpUnread > 0 ? `, ${lpUnread} LP not read` : ""}${g.unpriced > 0 ? `, ${g.unpriced} unpriced` : ""}`
         : (g.reason ?? "not read"),
     ])
   }
@@ -448,6 +582,14 @@ function writeTable(
       )}\n`,
     )
   else deps.stdout.write("\nNothing held in any wallet read.\n")
+  // LP positions after the tokens (R7): share of the pool plus unclaimed fees, at the same marks.
+  if (lpRows.length > 0)
+    deps.stdout.write(
+      `\nLP positions\n${renderTable(
+        ["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEES", "VALUE"],
+        lpRows.map((row) => row.map(terminalText)),
+      )}\n`,
+    )
 
   notes.push([
     "total",
@@ -465,6 +607,12 @@ function writeTable(
   if (totals.unavailable > 0) {
     deps.stdout.write(
       `${totals.unavailable} ${totals.unavailable === 1 ? "wallet" : "wallets"} could not be read in full. What was not read is marked "not read" and is not in the total.\n`,
+    )
+  }
+  if ((totals.lp?.unreadable ?? 0) > 0) {
+    const n = totals.lp?.unreadable ?? 0
+    deps.stdout.write(
+      `${n} LP ${n === 1 ? "position" : "positions"} could not be read (the pool did not answer). ${n === 1 ? "It is" : "They are"} marked "not read" and not in the total.\n`,
     )
   }
 }
