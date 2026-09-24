@@ -69,7 +69,10 @@
         "IMAGE_REDIRECT_NOT_ALLOWED",
         "BANNER_UNREACHABLE",
         "BANNER_WRONG_SHAPE",
-        "TRANSFER_ASSET_NOT_SUPPORTED"
+        "TRANSFER_ASSET_NOT_SUPPORTED",
+        "REBIND_TARGET_INVALID",
+        "REBIND_WALLET_INVALID",
+        "REBIND_TOO_MANY"
       ]
     },
     "market": {
@@ -117,12 +120,13 @@
         "QUOTE_UNAVAILABLE",
         "KEY_ISSUANCE_FAILED",
         "TRANSFER_FAILED",
-        "WALLET_IMPORT_FAILED"
+        "WALLET_IMPORT_FAILED",
+        "REBIND_RECONCILE_INCOMPLETE"
       ]
     },
     "state_conflict": {
       "retryable": false,
-      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id.",
+      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed.",
       "codes": [
         "IDEMPOTENCY_CONFLICT",
         "TRADE_ALREADY_CLAIMED",
@@ -135,13 +139,22 @@
         "TRADE_REVERTED",
         "UNRECOGNIZED_TRANSACTION",
         "WALLET_ALREADY_LINKED",
-        "WALLET_ALREADY_REGISTERED"
+        "WALLET_ALREADY_REGISTERED",
+        "REBIND_STALE",
+        "REBIND_BUILD_OPEN",
+        "REBIND_FORWARD_OPEN"
       ]
     },
     "quota": {
       "retryable": false,
       "action": "A per-account ceiling is full. Revoke or delete something first; waiting does not help.",
-      "codes": ["KEY_LIMIT_REACHED", "ORDER_LIMIT_REACHED", "WALLET_LIMIT_REACHED", "WEBHOOK_LIMIT_REACHED"]
+      "codes": [
+        "KEY_LIMIT_REACHED",
+        "ORDER_LIMIT_REACHED",
+        "WALLET_LIMIT_REACHED",
+        "WEBHOOK_LIMIT_REACHED",
+        "REBIND_SCOPE_FULL"
+      ]
     },
     "availability": {
       "retryable": true,
