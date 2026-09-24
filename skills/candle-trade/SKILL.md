@@ -30,11 +30,12 @@ than trading twice. Retrying with a NEW id is a second trade.
 
 Needs an agent API key carrying the `swap:write` scope. If you followed the candle-setup skill's
 device flow (`candle auth login` with `--scopes` omitted), you already have it: that flow's default
-grants all four scopes, `swap:write` included, and the browser approval screen names each one
+is a Read:Write key, `swap:write` included, and the browser approval screen names each scope
 explicitly before you approve. `swap:write` is never granted silently, only ever named on that
 screen or asked for by hand. A narrower key, one minted with an explicit `--scopes` list on
-`candle auth login`, or created with `candle keys create`, does not include `swap:write` by default;
-request it there instead. There is no keyless path for trading: this always moves funds. Point the
+`candle auth login`, or created with `candle keys create` and no `--access`, does not include
+`swap:write`; mint it with `candle keys create --access read-write` (or `read-write-transfer`)
+instead. There is no keyless path for trading: this always moves funds. Point the
 MCP server anywhere: the CLI and MCP default to the alpha API host
 (`https://api.alpha.candle.tv`), where the trade routes run today. Set `CANDLE_API_URL` only to
 point at a different deployment.
@@ -134,8 +135,8 @@ replaces the account's cap for that asset rather than adding to it.
 
 `swap:write` is never granted silently: the device-flow approval screen (see candle-setup) names it
 as its own fund-moving grant before any key exists, and a key minted with a narrower scope list,
-whether through an explicit `--scopes` on `candle auth login` or via `candle keys create`, leaves it
-out unless you ask for it by name.
+whether through an explicit `--scopes` on `candle auth login` or via `candle keys create` without
+`--access read-write`, leaves it out unless you ask for it.
 
 ## Example
 

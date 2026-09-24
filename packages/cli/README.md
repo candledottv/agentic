@@ -1,8 +1,12 @@
 # @candledottv/cli
 
-The Candle CLI: authorize a device from your browser, then manage API keys, wallets, and setup
-health from the terminal. Zero runtime dependencies; the whole thing is one self-contained
-`dist/index.js` that runs under plain Node.
+The Candle CLI (current version 0.11.8): authorize a device from your browser, keep your own keys
+in an encrypted vault on this machine, hand an agent a TEE wallet it can trade, and manage API
+keys, wallets, and setup health from the terminal. Zero runtime dependencies; the whole thing is
+one self-contained `dist/index.js` that runs under plain Node.
+
+The full custody guide is [CLI custody](https://docs.candle.tv/developers/cli-custody), and every
+command and flag is in the [Candle CLI reference](https://docs.candle.tv/developers/cli).
 
 ## Quick start
 
@@ -47,6 +51,118 @@ bun run --cwd packages/cli build
 node packages/cli/dist/index.js auth login
 ```
 
+## Custody tiers
+
+The CLI keeps keys at two custody tiers. These are not the account plans (Free, Pro, Max); a
+custody tier says who can sign for a wallet.
+
+**Tier 1: the vault (self-custody, on your machine).** `vault.enc` in the config directory
+(default `~/.config/candle`, moved with `CANDLE_CONFIG_DIR`, or `-k <path>` for one call) holds
+one data key wrapped once per factor, one encrypted blob per private key, and a 24-word recovery
+phrase every derived key comes from. No API, relay or server ever sees a vault key, and no
+environment variable or `--yes` opens it.
+
+```
+candle vault init                                  # one passphrase factor (eight generated words)
+candle vault phrase show                           # the 24 words, on paper
+candle vault new-key --chain solana --label treasury
+candle vault factor add security-key               # a FIDO2 key; add a second to make a pair
+candle vault backup --to /Volumes/<drive>/vault.enc
+```
+
+Factors available today are a **passphrase** and a **security key** (FIDO2 with `hmac-secret`
+and a PIN, through the bundled `candle-fido2` helper; two keys make a recoverable pair, and an
+enrolled security key can authorize adding another, with `--device` picking which). **Touch ID**
+and **passkey** factors are built but not released: they need the Apple-signed
+`candle-enclave.app` helper, which waits on Apple's approval, and until then `vault factor add
+touch-id|passkey` refuses with `VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM`. Removing a factor is not
+revocation: the data key never rotates, so an old copy of the vault still opens with it.
+
+**Tier 2: TEE wallets (agent access).** A TEE wallet is a Solana wallet whose key is also held in
+Privy's TEE and bound to one API key, so an agent using that key can trade without the vault being
+unlocked. The vault still holds the key of every promoted wallet, so you never lose control. The
+server admits TEE wallets only on the trade and sign routes (swap, the trade rail, launch where
+enabled, LP with `lp:write`, and bound transfers). The relay signer stays on the machine that
+promoted the wallet, so trade it from that machine. A copy of a promoted key stays in Privy's TEE
+permanently; demoting does not remove it.
+
+### Promote a vault key to a TEE wallet
+
+- `candle vault promote --in-place <label> --sweep-to <cold label> --rpc-url <url>` promotes an
+  existing vault key at its own address (same address, same funds). It first shows the holdings,
+  whether the key is a token mint, freeze, program-upgrade or stake authority (read over your
+  RPC; multisig membership is not checked), the account and API key that will control it, and
+  asks for the address's last six characters and the word `confirm`.
+- `candle vault promote --from <cold label>` derives a fresh key on the vault's TEE branch
+  (`m/44'/501'/n'/1'`, a path wallet apps do not scan) and promotes that, for a clean agent
+  wallet you fund explicitly. Refused in a restored vault.
+- `candle vault promote-batch --pairs-from <file> --rpc-url <url>` runs many in-place promotes
+  under one unlock and one `confirm`: one `<label> <destination>` per line, or a CSV with `label`
+  and `sweep_to` columns (max 256). Each key is committed on its own, so re-running resumes.
+- `--to-key <prefix|label>` on any of these binds the promoted wallets to another of your keys
+  instead of the calling one (a rebind over the device token; the target key's secret never
+  touches this machine).
+
+Promoted wallets are linked wallets and count against the plan's linked-wallet cap (Pro 10,
+Max 1,000). The older `candle tee new` / `candle tee enable` path and its separate
+`tee-wallets.enc` still work; `candle vault import-legacy --tee` moves that store into the vault.
+New setups use `vault promote`.
+
+### The pinned vault
+
+Every TEE wallet has exactly one pinned vault address: the `--sweep-to` key for an in-place
+promote, or the `--from` key for a fresh one. It must be a cold vault key. `tee sweep`,
+`vault demote` and `candle transfer --to vault` all send there: it is where funds go home.
+
+### Moving funds out of a TEE wallet
+
+1. `candle transfer --to <vault|wallet name|address> --asset SOL|USDC|CNDL --amount <n|max>
+   --wallet <tee>` goes through the wallet's bound API key, which must be **Read:Write:Transfer**.
+   Allowed destinations are the wallet's pinned vault (`--to vault`, any token via `--mint`, `max`
+   allowed) or another of the account's wallets that you linked while signed in or marked trusted
+   (base assets only; the key needs a per-asset cap and a USD `--tx-limit`, and the amount counts against them). This is what an agent uses.
+2. `candle vault transfer <to> --amount <n> --asset SOL|<mint> --from <promoted wallet> --rpc-url
+   <url>` signs locally with the vault, to any destination. Owner only.
+3. `candle tee sweep <address> --rpc-url <url>` or `candle vault demote <address> --rpc-url <url>`
+   moves everything back to the pinned vault, signed locally (`demote` is disable, then sweep).
+
+### Emergency
+
+- `candle tee disable <address>` stops the agent. It records the stop locally first and exits 0
+  only on a verified stop, 3 while it is pending.
+- `candle tee sweep <address> --rpc-url <url> --emergency` (or `vault demote ... --emergency`)
+  sweeps with only the local key and the pinned vault, and no API call: for the API being down, a
+  lost or leaked key, or suspected theft. Open DAMM v2 positions move to the vault as their NFT.
+- `candle keys revoke <prefix>` (or the web console) cuts the agent off at the server.
+
+After a key leak the path is stop, sweep, new wallet.
+
+### Rebinding and trust
+
+- `candle tee rebind <wallet...> --to-key <prefix|label>` moves TEE wallets to another key on the
+  same account: owner only (device token), no vault unlock, a preview then `confirm`. Funds do not
+  move and the relay signer stays. `candle tee rebinds [wallet]` lists the history. A rebind is a
+  routine move, not incident response.
+- `candle wallets trust <label|address|id|prefix*>...` marks linked wallets as yours so an agent
+  can move funds into them (owner only, typed confirm, globs like `'tr-*'`); `wallets untrust`
+  clears the mark. A wallet linked while signed in is already trusted; one an API key imported is
+  not. The same marks are in the web console's Wallets tab.
+
+### API key access levels
+
+`candle keys create --access read|read-write|read-write-transfer` mints one of three levels:
+
+| Access | Scopes | What it can do |
+| --- | --- | --- |
+| Read | `account:read` | See the whole account (every profile, books, P&L); change nothing. |
+| Read:Write | `launch:write`, `launch:read`, `activity:write`, `swap:write`, `transfer:write`, `account:read` | Trade, launch, report activity, and move funds between the account's own wallets. Cannot move funds out of a TEE wallet with `candle transfer`. |
+| Read:Write:Transfer | Read:Write plus `transfer:bound` | Also move funds out of the TEE wallet the key is bound to, to its pinned vault or to trusted wallets. |
+
+`--scopes <a,b,c>` names a custom set instead (never both); `lp:write` is opt-in and in no
+preset. An account holds at most **12** active keys (`ACTIVE_KEY_LIMIT_REACHED`). A device login
+cannot request `transfer:bound`: mint a Read:Write:Transfer key with `keys create` or in the web
+key manager.
+
 ## Commands
 
 | Command | What it does |
@@ -56,21 +172,26 @@ node packages/cli/dist/index.js auth login
 | `candle auth status` | Shows which storage backend is in use, both credential prefixes, the config file path, and a live validity check for each credential. |
 | `candle auth logout [--keep-key]` | Revokes the stored API key (skipped with `--keep-key`), clears local credentials and config, and prints the portal URL for revoking the device itself. |
 | `candle keys list [--scopes]` | Lists this account's API keys: prefix, name, Read, Read:Write or Read:Write:Transfer access, environment, timestamps, and which device minted each one. `--scopes` adds the raw scopes, sorted. |
-| `candle keys create [--access read\|read-write\|read-write-transfer \| --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily\|weekly\|monthly\|never]]` | Creates a new API key and prints the plaintext exactly once, with the same optional name, expiration, and USD transaction limit the portal's create form takes. `--access` mints one of the portal's three levels (`read-write-transfer` is Read:Write plus `transfer:bound`: the key can move funds out of the wallet it runs, to wallets you linked while signed in or marked trusted and to that wallet's vault); `--scopes` names raw scopes instead, never both. Stored locally only if the CLI does not already hold a working key. |
+| `candle keys create [--access read\|read-write\|read-write-transfer \| --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily\|weekly\|monthly\|never]]` | Creates a new API key and prints the plaintext exactly once, with the same optional name, expiration, and USD transaction limit the portal's create form takes. `--access` mints one of the portal's three levels (`read-write-transfer` is Read:Write plus `transfer:bound`: the key can move funds out of the wallet it runs, to wallets you linked while signed in or marked trusted and to that wallet's vault); `--scopes` names raw scopes instead, never both. Stored locally only if the CLI does not already hold a working key. An account holds at most 12 active keys. |
 | `candle keys revoke <prefix>` | Revokes an API key by prefix. Revoking the CLI's own stored key also clears it locally. |
-| `candle wallets` | Shows the account's embedded (launch) wallets and any linked wallets, using the API key, with a `Signer` column saying whether this machine holds each linked wallet's signing key. |
-| `candle vault init\|status\|new-key\|phrase show\|restore` | The encrypted local vault, `vault.enc`. `init` creates it with a passphrase factor and a 24-word recovery phrase, `new-key` derives a key inside it, `phrase show` displays the phrase on a terminal (never in `--json`, a log or a pipe), and `restore --phrase` rebuilds the derived keys on another machine (`--count`, `--tee-count`, `--external-count`, or a gap scan with `--rpc-url`). No key ever leaves the vault to reach Candle. See [The vault](https://docs.candle.tv/developers/cli#the-vault). |
-| `candle vault factor list\|add passphrase\|add security-key\|add touch-id\|add passkey\|remove`, `vault backup --to <path>`, `vault verify-backup <path>` | What can open the vault, and proving a copy of it works: `backup` verifies the copy in full before reporting (a copy is sealed to the passphrase envelope unless it goes to a recognised local disk or removable drive, so a cloud folder and any path the CLI cannot place are both sealed unless `--accept-shared-domain` is passed), and `verify-backup` re-checks an existing one against this vault's key and address set. `add security-key` enrolls a FIDO2 security key (CTAP2 `hmac-secret`, user-verified with the key's PIN or biometric) through the bundled `candle-fido2` helper; one key is not a recoverable factor, two keys are a pair, and the passphrase stays the recovery floor. Every vault command then takes `--factor <id\|passphrase\|security-key>` to say which envelope opens it and `--device <id>` to name the key when several are attached. |
-| `candle vault transfer\|promote\|fund\|demote\|export-key` | Moving value and authority. `transfer` and `fund` sign locally after showing the decoded transaction (`transfer` from a vault key or a promoted TEE wallet, which warns when an agent may be trading it and reports the finalized transfer to Candle's history; `fund` reaches a TEE wallet from its pinned vault key, or an external wallet, and confirms the destination's last six characters with no `--yes`); `promote` turns a vault key into a delegated TEE wallet (fresh, or the key's own address after a typed warning) and `demote` sweeps it back; `export-key` is the one ceremony that writes a single private key to a file you name. |
+| `candle keys wallets <prefix>`, `keys wallets set <prefix> --wallets <id,id>`, `keys wallets scope <prefix> --scope all\|selected` | Each key is an agent profile with its own wallet set: list it, replace it, or limit the profile to its assigned wallets. |
+| `candle wallets` (alias `candle wallet`) | Shows the account's embedded (launch) wallets and any linked wallets, using the API key, with a `Signer` column saying whether this machine holds each linked wallet's signing key and a `Trusted` column saying whether it is yours (linked while signed in, or marked with `trust`). It links and revokes; it never generates or prints a key, which the vault now derives. |
+| `candle wallets import --chain solana\|evm`, `wallets revoke <wallet-id>` | Link a wallet you own (key from `--key-file` or a hidden prompt, sealed to Privy before it leaves the machine), or unlink one. |
+| `candle wallets trust\|untrust <label\|address\|id\|prefix*>...` | Mark linked wallets as yours so an agent's Read:Write:Transfer key can move funds into them, or clear the mark. Owner only, over the device token, with a typed confirm; globs like `'tr-*'` select many. |
+| `candle vault init\|status\|list\|new-key\|rename\|phrase show\|restore` | The encrypted local vault, `vault.enc` (Tier 1). `init` creates it with a passphrase factor and a 24-word recovery phrase (and no key), `new-key` derives a key inside it (`--count`, `--labels-from <file>` for many under one unlock), `list [filter] [--balances]` shows one line per key, `rename` changes a label only, `phrase show` displays the phrase on a terminal (never in `--json`, a log or a pipe), and `restore --phrase` rebuilds the derived keys on another machine with a new passphrase (`--count`, `--tee-count`, `--external-count`, or a gap scan with `--rpc-url`); a restored vault never allocates new keys. No key ever leaves the vault to reach Candle. See [CLI custody](https://docs.candle.tv/developers/cli-custody). |
+| `candle vault factor list\|add passphrase\|add security-key\|add touch-id\|add passkey\|remove` (or `vault enroll <kind>`), `vault backup --to <path>\|icloud`, `vault verify-backup <path>` | What can open the vault, and proving a copy of it works: `backup` verifies the copy in full before reporting (a copy is sealed to the passphrase envelope unless it goes to a recognised local disk or removable drive, so a cloud folder and any path the CLI cannot place are both sealed unless `--accept-shared-domain` is passed), and `verify-backup` re-checks an existing one against this vault's key and address set. `add security-key` enrolls a FIDO2 security key (CTAP2 `hmac-secret`, user-verified with the key's PIN or biometric) through the bundled `candle-fido2` helper; one key is not a recoverable factor, two keys are a pair, an enrolled key can authorize adding another, and the passphrase stays the recovery floor. `add touch-id` and `add passkey` are refused with `VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM` until the Apple-signed helper ships. Every vault command then takes `--factor <id\|passphrase\|security-key>` to say which envelope opens it and `--device <id>` to name the key when several are attached. |
+| `candle vault transfer\|promote\|promote-batch\|fund\|demote\|export-key` | Moving value and authority. `transfer` and `fund` sign locally after showing the decoded transaction (`transfer` from a vault key or a promoted TEE wallet, which warns when an agent may be trading it and reports the finalized transfer to Candle's history; `fund` reaches a TEE wallet from its pinned vault key, or an external wallet, and confirms the destination's last six characters with no `--yes`); `promote --from <cold label>` derives a fresh TEE wallet pinned to that key, `promote --in-place <label> --sweep-to <cold label>` promotes a key at its own address after a typed warning, `promote-batch --pairs-from <file>` does many in place under one unlock, `--to-key` binds the result to another of your keys, and `demote` (disable then sweep, `--emergency` with no API call) sends it back to its pinned vault; `export-key` is the one ceremony that writes a single private key to a file you name. |
 | `candle external new\|list\|sweep` | External wallets for outside tools: keys on the vault's third branch (`m/44'/501'/n'/2'`), never delegated to Privy and never registered with Candle. `new` allocates one (and moves the vault to format version 3; refused in a restored vault), `list` shows them, and `sweep <external> --to <vault>` sends everything back to a named vault key, signed locally, confirming the vault key's last six characters. See [Bring your own services](https://docs.candle.tv/developers/cli#bring-your-own-services). |
 | `candle sign [--file <path>] --wallet <external>... [--broadcast] [--yes]`, `candle sign message --wallet <external> [--file <path>] [--yes]` | The generic signer: a base64 transaction any tool built, legacy or v0, decoded (lookup tables resolved) and simulated over your own RPC before it is displayed and signed with an external wallet only. A vault key, a TEE wallet or an unnamed signer is refused; a failing simulation is refused with no override; `--yes` skips the confirmation prompt and nothing else. `sign message` signs the exact bytes of a file or of stdin. |
 | `candle secrets set\|list\|remove <name>` | Your own third-party API keys, in a keychain namespace separate from Candle's credentials (`tv.candle.cli.secrets`, or `secrets.enc` on the encrypted-file fallback). Typed on a hidden prompt, never sent to Candle, never printed after `set`; `list` shows names only. A plug-in receives one as `CANDLE_SECRET_<NAME>` only when named with `--secret`. |
 | `candle plugins`, `candle <name> [--secret <name>]... [--wallet <label>]... [args]` | Git-style plug-ins: an executable `candle-<name>` on your `PATH` runs as `candle <name>` with an allowlist environment built from empty (`PATH`, `HOME`, `TMPDIR`, `TERM`, `TZ`, `LANG`, `LC_*`, the proxy variables, `CANDLE_PLUGIN_NETWORK`, `CANDLE_PLUGIN_RPC_URL`, the named wallets as `CANDLE_PLUGIN_WALLET_<LABEL>` and the named secrets as `CANDLE_SECRET_<NAME>`). No parent `CANDLE_*` variable, no Candle credential, no passphrase and no private key ever reach it; `--secret` and `--wallet` are stripped from its argv and everything else passes through verbatim. `plugins` lists what is on `PATH`. |
 | `candle vault import-legacy --tee`, `candle vault retire-legacy` | Moves an existing `tee-wallets.enc` into the vault without deleting it, then retires the old file once the vault holds everything and a backup has been verified. |
-| `candle tee new\|enable\|fund\|status\|disable\|sweep` | A dedicated, capped TEE wallet for one agent: the CLI generates the key and seals it locally in `tee-wallets.enc`, `enable` delegates it to this profile's API key with a pinned sweep vault, `fund` prints what your vault signs, and `disable` then `sweep` stop the agent and move everything back to the vault, signed locally. Solana only. See [TEE wallets](https://docs.candle.tv/developers/cli#tee-wallets). |
+| `candle tee status\|disable\|sweep\|fund` | Operate a TEE wallet (Tier 2): `status` shows its server state and on-chain balances, `disable` stops the agent (exit 0 only on a verified stop, 3 while pending), `sweep --rpc-url <url>` moves everything to the pinned vault, signed locally (closing DAMM v2 positions after verifying each server-built close; `--emergency` makes no API call and moves the position NFT instead), and `fund` prints what your vault signs. Solana only. See [CLI custody](https://docs.candle.tv/developers/cli-custody). |
+| `candle tee rebind <wallet...> --to-key <prefix\|label>`, `candle tee rebinds [wallet]` | Move TEE wallets to another key on the same account (owner only, preview then `confirm`; funds and the relay signer do not move), and list the rebind history. |
+| `candle tee new\|enable` | The legacy path: `new` seals a fresh key in its own `tee-wallets.enc` and `enable <address> --vault <address>` delegates it with a pinned sweep vault. New setups use `vault promote`; `vault import-legacy --tee` migrates an existing store. |
 | `candle swap <from> <to> --amount <n>\|--percent <n> --wallet <tee>` | Quote, confirm and swap on Solana through the TEE wallet's bound key; first buy after a launch is this command. |
 | `candle swap status <id> [--kind trade\|swap\|launch]` | Read an operation without resending it. |
-| `candle transfer --to <address\|wallet name\|vault> --asset <SOL\|USDC\|CNDL>\|--mint <mint> --amount <decimal\|max> [--wallet <tee>] [--yes]` | Move funds out of a TEE wallet through its bound Read:Write:Transfer key, to the wallet's own pinned vault (`--to vault`, any token, `max` allowed) or to another of the account's wallets you linked while signed in or marked trusted (base assets, counted against the key's caps). The destination and its kind are shown before you confirm; Candle builds, the relay signs, Candle broadcasts. |
+| `candle transfer --to <address\|wallet name\|vault> --asset <SOL\|USDC\|CNDL>\|--mint <mint> --amount <decimal\|max> [--wallet <tee>] [--yes]` | Move funds out of a TEE wallet through its bound Read:Write:Transfer key, to the wallet's own pinned vault (`--to vault`, any token, `max` allowed) or to another of the account's wallets you linked while signed in or marked trusted (base assets, counted against the key's caps, which must include a per-asset cap and a USD `--tx-limit`). The destination and its kind are shown before you confirm; Candle builds, the relay signs, Candle broadcasts. |
 | `candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee>` | Create a Solana token with no first buy; needs `launch:write` and operator-enabled `allowLaunch`. |
 | `candle pnl [--profile <name>]` | P&L: realized net, fees, unrealized and total, then open positions. Without `--profile`, the account's books (every profile, the web app and the CLI, one ledger; needs the Read scope). With `--profile <name>`, that profile's key's own P&L. Unpriced positions are never valued at zero. Where Candle serves LP, DAMM v2 positions are included: realized (withdrawals against the cost basis at the add, plus claimed fees), unrealized (open positions at their share of the pool plus unclaimed fees, against that basis) and vs holding (what the deposited tokens would be worth held), with the total covering tokens and LP. |
 | `candle portfolio [--rpc-url <url>]` | Vault, TEE and embedded wallets in one table with amount, price, value and a total. Vault and external balances are read over your own RPC; Candle is sent only the mints, for prices. Where Candle serves LP, each TEE wallet's DAMM v2 positions follow the tokens, valued by Candle at the same marks, and count in the total; one whose pool could not be read is shown as not read and the total says it is partial. |
@@ -81,9 +202,9 @@ node packages/cli/dist/index.js auth login
 | `candle profile rename <old> <new>` | Renames a profile. |
 | `candle profile remove <name> --yes` | Deletes a profile and its stored credentials. |
 | `candle mcp [--tools <a,b,c>] [--read-only] [--print-config]` | Runs the Candle MCP server (built into this binary) with this CLI's stored API key and API URL in its environment, so an MCP client config is just `{"mcpServers": {"candle": {"command": "/Users/you/.local/bin/candle", "args": ["mcp"]}}}` -- the absolute path, because GUI hosts launch servers with the app's environment and never see your PATH. Run `--print-config` to print that block filled in for this install. `--read-only` starts it with no key and only the four keyless read tools; `--tools` pins an explicit allowlist. The server is bundled into the binary, so the host needs nothing else installed. |
-| `candle doctor` | Runs a full health check (runtime, backend, credentials, API reachability, credential validity, wallet delegation) as a PASS/FAIL/SKIP table. Exits nonzero on any FAIL. |
+| `candle doctor` | Runs a full health check (runtime, backend, credentials, API reachability, credential validity, wallet delegation, the install method, and whether the `candle-fido2` security key helper is beside the binary) as a PASS/FAIL/SKIP table meant for pasting into a bug report. Exits nonzero on any FAIL. |
 | `candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]` | Verifies a release asset's Sigstore bundle against the trusted root compiled into this binary. No network, no credentials, and nothing else installed: the bundle carries the certificate and the transparency-log entry. `--identity` defaults to the release identity for the version in a `latest.json` sitting beside the bundle; `--issuer` defaults to GitHub Actions'. Prints `verified: <identity>` and exits 0, or the reason on stderr and exits 1. |
-| `candle update [--check] [--to <tag>]` | Replaces this binary with the latest signed release. The download is renamed over the running binary only after its SHA-256 matches both SHA256SUMS and `latest.json` AND its Sigstore bundle verifies in process against that exact version's release workflow. `--check` reports what is available and installs nothing; `--to <tag>` pins a release (an older one installs, with a warning). A Homebrew or npm install is left alone, with the command that owns it printed instead. |
+| `candle update [--check] [--to <tag>]` | Replaces this binary, and the `candle-fido2` helper beside it, with the latest signed release. Nothing is renamed until both downloads pass; the binary is renamed over the running binary only after its SHA-256 matches both SHA256SUMS and `latest.json` AND its Sigstore bundle verifies in process against that exact version's release workflow. `--check` reports what is available and installs nothing; `--to <tag>` pins a release (an older one installs, with a warning). A Homebrew or npm install is left alone, with the command that owns it printed instead. |
 | `candle completion <zsh\|bash\|fish>` | Prints a shell completion script to stdout, generated from the same data `candle help` prints, so it offers exactly the commands, subcommands and flags the help documents. Install it by redirecting: `candle completion zsh > "${fpath[1]}/_candle"`, `candle completion bash > ~/.local/share/bash-completion/completions/candle`, `candle completion fish > ~/.config/fish/completions/candle.fish`. Static: profile names, key labels and factor ids are not completed, because that would mean reading config or opening the vault at tab time. Regenerate after every `candle update`. |
 | `candle help [<command>]` | The top-level screen (six groups of command words, the global flags, and every environment variable the CLI reads), or one command's own: its subcommands, the flags they share, examples, and the environment it reads. `candle <command> --help` is the same screen. Reads no config and makes no request, so it answers before any profile is selected. |
 

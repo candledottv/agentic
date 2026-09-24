@@ -81,7 +81,7 @@ and keep `CANDLE_API_URL` on staging until this rail reaches production. Ask an 
 
 ## The tool surface
 
-Fifteen tools. Five need no key, so a client can be pointed at the server and used before anyone
+Nineteen tools. Five need no key, so a client can be pointed at the server and used before anyone
 signs up.
 
 | | Tool | Key | What it does |
@@ -123,8 +123,9 @@ Selling a fraction is the same shape with `{ "side": "sell", "percent": 50 }`.
 
 ## The CLI
 
-`candle` is the terminal half of all of this: it authorizes a device, holds your API key in the OS
-keychain, runs the MCP server with no config file, and keeps a local encrypted vault of keys.
+`candle` (current version 0.11.8) is the terminal half of all of this: it authorizes a device,
+holds your API key in the OS keychain, runs the MCP server with no config file, keeps your own keys
+in a local encrypted vault, and hands an agent a TEE wallet it can trade.
 
 ```
 Install (macOS 13 or later, or Linux):
@@ -157,10 +158,40 @@ The two word lists are different things, and it is the one idea worth getting ri
 phrase rebuilds your keys anywhere, with or without that file, which is why it belongs on paper
 rather than on the disk it protects.
 
-[**CLI quick start and FAQ**](https://docs.candle.tv/developers/cli-quickstart) answers what those
-words are, what encrypts the vault and where the passphrase lives, whether anything syncs to
-iCloud, what a recovery phrase does and does not restore, and the errors people hit on a first
-run. [Candle CLI](https://docs.candle.tv/developers/cli) is the full command reference.
+### Two custody tiers
+
+The CLI keeps keys at two custody tiers (not the account plans Free, Pro and Max):
+
+- **Tier 1: the vault.** Self-custody on your machine. It opens with a passphrase or a FIDO2
+  security key (`candle vault factor add security-key`; two keys make a recoverable pair). Touch ID
+  and passkey factors are built and arrive once Apple approves the signed helper. No API, relay or
+  server ever sees a vault key.
+- **Tier 2: TEE wallets.** Agent access. `candle vault promote` turns a vault key into a Solana
+  wallet whose key is also held in Privy's TEE and bound to one API key, so an agent can trade it
+  without the vault being unlocked. `--in-place <label> --sweep-to <cold label>` keeps the key's own
+  address and funds, `--from <cold label>` derives a fresh one, `candle vault promote-batch` does
+  many under one unlock, and `--to-key` binds the result to another of your keys. Each TEE wallet
+  has one pinned vault key its funds go home to.
+
+Funds leave a TEE wallet three ways: `candle transfer` through a Read:Write:Transfer key (to the
+pinned vault or to wallets you linked while signed in or marked trusted with `candle wallets
+trust`), `candle vault transfer` signed locally by the vault, or `candle tee sweep` /
+`candle vault demote` back to the pinned vault. In an emergency, `candle tee disable` stops the
+agent and `--emergency` on a sweep or demote moves everything home with no API call.
+`candle tee rebind` moves wallets between your keys without moving funds.
+
+API keys come in three access levels, minted with `candle keys create --access
+read|read-write|read-write-transfer`: **Read** sees the account and changes nothing,
+**Read:Write** trades, launches and moves funds between your own wallets, and
+**Read:Write:Transfer** can also move funds out of the TEE wallet it is bound to. An account holds
+at most 12 active keys.
+
+[**CLI custody**](https://docs.candle.tv/developers/cli-custody) is the full guide to the vault,
+factors, promoting, the pinned vault, moving funds and emergencies.
+[**Candle CLI**](https://docs.candle.tv/developers/cli) is the full command reference, and
+[CLI quick start and FAQ](https://docs.candle.tv/developers/cli-quickstart) answers what the
+passphrase and the 24 words are, whether anything syncs to iCloud, what a recovery phrase does and
+does not restore, and the errors people hit on a first run.
 
 ## Full setup
 
@@ -204,14 +235,14 @@ The absolute path, because GUI hosts launch servers with the app's environment a
 PATH. `candle mcp` runs the server built into the binary, with the key and API URL this device
 just stored, so the credential never sits in a config file and the host needs nothing else
 installed.
-`--read-only` pins it to the four keyless read tools; `--tools` takes an explicit allowlist;
+`--read-only` pins it to the five keyless read tools; `--tools` takes an explicit allowlist;
 `--print-config` prints the block above filled in for this install. The full command surface,
 credential storage, and headless use are documented on the
 [Candle CLI](https://docs.candle.tv/developers/cli) page.
 
 ## Install as a skill package
 
-Every platform below installs the same seven skills (in `skills/`).
+Every platform below installs the same nine skills (in `skills/`).
 
 | Platform | Install | Details |
 | --- | --- | --- |
@@ -236,8 +267,9 @@ Five cover the surface: what you can call, and how to call it.
   order against a Candle-launched token.
 - [`skills/candle-market`](skills/candle-market/SKILL.md): read market state, curated feeds
   carrying live price and market cap, and agent profiles, no API key required.
-- [`skills/candle-setup`](skills/candle-setup/SKILL.md): authorize a device, provision an agent
-  API key, and check credential health from the terminal.
+- [`skills/candle-setup`](skills/candle-setup/SKILL.md): authorize a device, set up the vault and
+  a TEE wallet, provision an agent API key at the right access level, and check setup health from
+  the terminal.
 - [`skills/candle-webhooks`](skills/candle-webhooks/SKILL.md): register a webhook endpoint and
   verify signed event deliveries instead of polling.
 
@@ -276,9 +308,9 @@ differently.
 - [`packages/mcp`](packages/mcp): the MCP server that wraps the SDK for MCP-compatible agent
   clients. Docs: [Candle MCP server](https://docs.candle.tv/developers/mcp-server).
 - [`packages/cli`](packages/cli): the `candle` CLI, device-based authorization plus API key,
-  wallet, and setup-health management from the terminal, including `candle wallets import`,
-  the safe path for linking a wallet you already own (key via file or hidden prompt, sealed
-  locally, signer stored in your OS keychain).
+  vault, TEE wallet, linked wallet and setup-health management from the terminal, including
+  `candle wallets import`, the safe path for linking a wallet you already own (key via file or
+  hidden prompt, sealed locally, signer stored in your OS keychain).
   Docs: [Candle CLI](https://docs.candle.tv/developers/cli).
 
 ## Examples
@@ -320,8 +352,8 @@ which the error alone cannot.
 or an undelegated wallet. Scopes are fixed when a key is issued and cannot be added later; check
 the code against `agents/error-catalog.json` and issue a new key if the scope is absent.
 
-**Calls hit the wrong environment.** `CANDLE_API_URL` decides which one you are on, and the agent
-rail runs on staging until the production flip. A key issued for one environment does not work
+**Calls hit the wrong environment.** `CANDLE_API_URL` decides which one you are on, and production is
+`https://api.alpha.candle.tv` (the CLI's default) and staging is `https://staging.api.candle.tv`. A key issued for one environment does not work
 against the other.
 
 ## Documentation

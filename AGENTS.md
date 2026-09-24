@@ -16,8 +16,11 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
    key. Use them to confirm the server is wired before asking anyone for a credential.
 2. **Get a key** only when you need to write. Install the Candle CLI
    (`curl -fsSL https://candle.tv/install.sh | bash`, or `brew install candledottv/tap/candle`),
-   then `candle auth login` authorizes a device from the browser and stores a device token plus an
-   agent key in the OS keychain. From then on `candle mcp` runs this MCP server with those stored
+   then `candle setup` (or `candle auth login` alone) authorizes a device from the browser and
+   stores a device token plus an agent key in the OS keychain. That key is Read:Write; a key that
+   must also move funds out of its TEE wallet is Read:Write:Transfer, minted by the owner with
+   `candle keys create --access read-write-transfer` (at most 12 active keys per account). The
+   vault, TEE wallets and moving funds are covered in https://docs.candle.tv/developers/cli-custody. From then on `candle mcp` runs this MCP server with those stored
    credentials -- no env block. The npm package `@candledottv/cli` stays published for CI,
    programmatic use, and Windows until `install.ps1` ships; `npx -y @candledottv/cli@latest
    <command>` runs it once without installing.
@@ -25,7 +28,7 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 
 ## The tool surface
 
-Fifteen tools. Five need no key at all, so a client can be pointed at the server and used before
+Nineteen tools. Five need no key at all, so a client can be pointed at the server and used before
 anyone signs up for anything.
 
 **Find out what you can do**
@@ -142,8 +145,8 @@ arrives while the first is still in flight; once it settles, the same id swaps A
 takes time, and a confirmed source transaction is not proof the destination was credited.
 
 **Stay on the configured environment.** `CANDLE_API_URL` decides which environment you are
-touching. The agent rail runs on staging until the production flip, and a key issued for one
-environment does not work against the other.
+touching. Production is `https://api.alpha.candle.tv` (the CLI's default) and staging is
+`https://staging.api.candle.tv`; a key issued for one environment does not work against the other.
 
 ## Errors
 
@@ -158,7 +161,8 @@ is written for humans and will change.
 
 Under `--json`, the CLI's stdout carries exactly one JSON value per invocation -- the result on
 success, or this failure envelope -- and stderr is diagnostics only. Exit codes: `0` success,
-`1` failure, `2` usage error.
+`1` failure, `2` usage error, `3` not yet verified (for example a TEE wallet stop still pending):
+treat `3` as not done and follow the printed next step.
 
 ```json
 { "ok": false, "code": "TIER_REQUIRED", "status": 403, "message": "...", "suggestion": "Stake CNDL to reach Pro.", "docsUrl": "https://docs.candle.tv/developers/agent-access" }
@@ -180,6 +184,7 @@ setting -- run it before asking a human.
 | `CANDLE_CONFIG_DIR` | override the config location |
 | `CANDLE_KEYRING_PASSPHRASE` | unlock the keyring in headless environments |
 | `CANDLE_MCP_TOOLS` | comma-separated tool allowlist for the MCP server (`candle mcp --tools` sets it) |
+| `CANDLE_SOLANA_RPC_URL` | Solana RPC for vault and TEE wallet reads, when `--rpc-url` is not given |
 
 ## When you are stuck
 
