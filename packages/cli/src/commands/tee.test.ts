@@ -9,11 +9,26 @@ import { describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, readFile as realReadFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { ed25519 } from "@noble/curves/ed25519"
 import { base58 } from "@scure/base"
-import { getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID as SPL_TOKEN_2022 } from "@solana/spl-token"
-import { Keypair, PublicKey, Transaction } from "@solana/web3.js"
+import {
+  createAssociatedTokenAccountIdempotentInstruction,
+  getAssociatedTokenAddressSync,
+  TOKEN_PROGRAM_ID as SPL_TOKEN,
+  TOKEN_2022_PROGRAM_ID as SPL_TOKEN_2022,
+} from "@solana/spl-token"
+import {
+  ComputeBudgetProgram,
+  Keypair,
+  PublicKey,
+  Transaction,
+  TransactionInstruction,
+  TransactionMessage,
+  VersionedTransaction,
+} from "@solana/web3.js"
 import { run } from "../index"
-import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
+import { DAMM_V2_PROGRAM_ID } from "../lp-close"
+import { SYSTEM_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import {
   createCapture,
   createFakeStore,
@@ -135,12 +150,30 @@ interface RpcState {
    * TLV carries the extensions), destination ATAs, and a transfer hook's validation account. An
    * address absent from here does not exist, which is what makes the sweep create the vault's ATA.
    */
-  accounts: Record<string, { owner: string; data: Uint8Array }>
+  accounts: Record<string, { owner: string; data: Uint8Array; lamports?: number }>
   epoch: number
   sent: string[]
   /** Scripted answers, consumed in order; an explicit `null` means "not found". Empty = finalized. */
   statuses: Array<{ confirmationStatus: string | null; err: unknown } | null>
   blockhashValid: boolean
+  /**
+   * BE-315 (P3-ED-6): what `simulateTransaction` answers for the accounts it is asked about, over
+   * `accounts`; an explicit `null` is an account the simulated transaction closed. `simulationErr`
+   * makes the simulation fail. `onClose` is the fake chain's state transition for a sent DAMM v2
+   * close (the NFT account gone, the withdrawn tokens in the wallet).
+   */
+  simulated?: Record<string, { owner: string; data: Uint8Array; lamports?: number } | null>
+  simulationErr?: unknown
+  onClose?: () => void
+}
+
+function rawView(account: { owner: string; data: Uint8Array; lamports?: number } | null | undefined) {
+  if (!account) return null
+  return {
+    owner: account.owner,
+    lamports: account.lamports ?? 1,
+    data: [Buffer.from(account.data).toString("base64"), "base64"],
+  }
 }
 
 function rpcHandler(state: RpcState): RouteHandler {
@@ -167,6 +200,22 @@ function rpcHandler(state: RpcState): RouteHandler {
       }
       case "getEpochInfo":
         return reply({ epoch: state.epoch })
+      case "getMultipleAccounts":
+        return reply({ value: (body.params[0] as string[]).map((address) => rawView(state.accounts[address])) })
+      case "simulateTransaction": {
+        const addresses = (body.params[1] as { accounts: { addresses: string[] } }).accounts.addresses
+        return reply({
+          value: {
+            err: state.simulationErr ?? null,
+            logs: [],
+            accounts: addresses.map((address) =>
+              state.simulated && address in state.simulated
+                ? rawView(state.simulated[address])
+                : rawView(state.accounts[address]),
+            ),
+          },
+        })
+      }
       case "getTokenAccountsByOwner": {
         const programId = (body.params[1] as { programId: string }).programId
         const list =
@@ -212,17 +261,40 @@ function rpcHandler(state: RpcState): RouteHandler {
  * transaction, a System transfer debits its lamports, a Token `TransferChecked` empties the source
  * account and `CloseAccount` removes it.
  */
+/** Legacy or v0 (BE-315: a signed position close is v0), as one list of resolved instructions. */
+function instructionsOf(wire: string): Array<{ programId: PublicKey; keys: PublicKey[]; data: Buffer }> {
+  const bytes = Buffer.from(wire, "base64")
+  const versioned = VersionedTransaction.deserialize(bytes)
+  if (versioned.version === "legacy") {
+    return Transaction.from(bytes).instructions.map((ix) => ({
+      programId: ix.programId,
+      keys: ix.keys.map((key) => key.pubkey),
+      data: ix.data,
+    }))
+  }
+  const keys = versioned.message.getAccountKeys()
+  return versioned.message.compiledInstructions.map((ix) => ({
+    programId: keys.get(ix.programIdIndex) as PublicKey,
+    keys: ix.accountKeyIndexes.map((index) => keys.get(index) as PublicKey),
+    data: Buffer.from(ix.data),
+  }))
+}
+
 function applySent(state: RpcState, wire: string): void {
-  const tx = Transaction.from(Buffer.from(wire, "base64"))
+  const tx = { instructions: instructionsOf(wire) }
   if (state.fee !== null) state.lamports = Math.max(0, state.lamports - state.fee)
   for (const ix of tx.instructions) {
     const program = ix.programId.toBase58()
+    if (program === DAMM_V2_PROGRAM_ID) {
+      state.onClose?.()
+      continue
+    }
     if (program === "11111111111111111111111111111111" && ix.data.readUInt32LE(0) === 2) {
       const amount = Number(Buffer.from(ix.data.subarray(4, 12)).readBigUInt64LE())
       state.lamports = Math.max(0, state.lamports - amount)
     } else if (program === TOKEN_PROGRAM_ID || program === TOKEN_2022_PROGRAM_ID) {
       const list = program === TOKEN_PROGRAM_ID ? "tokenAccounts" : "token2022Accounts"
-      const account = ix.keys[0]?.pubkey.toBase58()
+      const account = ix.keys[0]?.toBase58()
       if (ix.data[0] === 12) {
         for (const t of state[list]) if (t.pubkey === account) t.amount = "0"
       } else if (ix.data[0] === 9) {
@@ -234,7 +306,7 @@ function applySent(state: RpcState, wire: string): void {
 
 /** The transaction's identity: the first signature of the signed wire, as a node echoes it. */
 function sigOf(wire: string): string {
-  return base58.encode(Transaction.from(Buffer.from(wire, "base64")).signature ?? new Uint8Array())
+  return base58.encode(VersionedTransaction.deserialize(Buffer.from(wire, "base64")).signatures[0] ?? new Uint8Array())
 }
 
 // ── Mint fixtures (BE-218, R5). Same byte layout `token-2022.test.ts` pins against spl-token. ──
@@ -972,9 +1044,11 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
       const dir = await tempDir()
       await seedTeeStore(dir, [enabledEntry()])
       const source = getAssociatedTokenAddressSync(MINT_2022, teeKey.publicKey, false, SPL_TOKEN_2022)
+      // Amount 7, not 1: raw amount 1 with decimals 0 is a DAMM v2 position NFT candidate since
+      // BE-315 (P3-ED-6) and takes the close-build path, not the generic transfer this test pins.
       const rpc = defaultRpcState({
         token2022Accounts: [
-          { pubkey: source.toBase58(), mint: MINT_2022.toBase58(), amount: "1", decimals: 0, state: "initialized" },
+          { pubkey: source.toBase58(), mint: MINT_2022.toBase58(), amount: "7", decimals: 0, state: "initialized" },
         ],
         accounts: { ...mint2022(mint), ...extra },
         lamports: 1_000_000,
@@ -1000,7 +1074,7 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
       const named = parsed.residuals.find((r: { kind: string }) => r.kind === name)
       expect(`${name}: ${JSON.stringify(named ?? parsed.residuals)}`).toContain(`${name}: {`)
       expect(named.mint).toBe(MINT_2022.toBase58())
-      expect(named.amountRaw).toBe("1")
+      expect(named.amountRaw).toBe("7")
       // The leftover does not abort the sweep: SOL still moved.
       expect(parsed.receipts.map((r: { kind: string }) => r.kind)).toContain("sol")
     }
@@ -2065,5 +2139,447 @@ describe("HW-07: pending evidence is preserved until conclusive", () => {
     expect(body.pending).toEqual([])
     expect(body.residuals.map((r: { kind: string }) => r.kind)).toContain("sol-transfer-failed")
     expect((await openStore(dir2)).entries[0]?.tee?.sweepPending).toEqual([])
+  })
+})
+
+/**
+ * BE-315 (Ember Phase 3 PR D, CLI half; spec P3-ED-6, test matrix "DAMM v2"): LP positions in an
+ * ordinary sweep. The position NFT is discovered LOCALLY (Token-2022, raw amount 1, decimals 0),
+ * one close-build is fetched per candidate mint under the bound key, every artifact is verified
+ * before any is signed, and a close that cannot be obtained or fails a check is a named leftover
+ * that does not stop the token and SOL moves. `--emergency` never calls the API (pinned above,
+ * "--emergency sweeps Token-2022 locally, with no API call at all").
+ */
+describe("BE-315: DAMM v2 positions in tee sweep (P3-ED-6)", () => {
+  const DAMM = new PublicKey(DAMM_V2_PROGRAM_ID)
+  const POOL = Keypair.generate().publicKey
+  const POSITION = Keypair.generate().publicKey
+  const NFT_MINT = Keypair.generate().publicKey
+  const POOL_VAULT_A = Keypair.generate().publicKey
+  const NFT_ACCOUNT = getAssociatedTokenAddressSync(NFT_MINT, teeKey.publicKey, false, SPL_TOKEN_2022)
+  const TEE_ATA_A = getAssociatedTokenAddressSync(MINT, teeKey.publicKey, false, SPL_TOKEN)
+
+  function tokenAccountFull(mint: PublicKey, owner: PublicKey, amount: bigint): Uint8Array {
+    const data = new Uint8Array(165)
+    data.set(mint.toBytes(), 0)
+    data.set(owner.toBytes(), 32)
+    new DataView(data.buffer).setBigUint64(64, amount, true)
+    data[108] = 1
+    return data
+  }
+
+  /** The chain with one open position: the NFT in the wallet, the pool's vault holding token A. */
+  function positionAccounts(): RpcState["accounts"] {
+    return {
+      [TEE]: { owner: SYSTEM_PROGRAM_ID, data: new Uint8Array(0), lamports: 1_000_000 },
+      [POOL.toBase58()]: { owner: DAMM_V2_PROGRAM_ID, data: new Uint8Array(100) },
+      [POSITION.toBase58()]: { owner: DAMM_V2_PROGRAM_ID, data: new Uint8Array(100) },
+      [MINT.toBase58()]: { owner: TOKEN_PROGRAM_ID, data: baseMint(6) },
+      [NFT_MINT.toBase58()]: { owner: TOKEN_2022_PROGRAM_ID, data: baseMint(0) },
+      [POOL_VAULT_A.toBase58()]: { owner: TOKEN_PROGRAM_ID, data: tokenAccountFull(MINT, POOL, 5_000_000n) },
+      [NFT_ACCOUNT.toBase58()]: {
+        owner: TOKEN_2022_PROGRAM_ID,
+        data: tokenAccountFull(NFT_MINT, teeKey.publicKey, 1n),
+      },
+    }
+  }
+
+  /** The honest simulation: NFT account and position gone, token A withdrawn into a new TEE ATA. */
+  function honestSimulation(): NonNullable<RpcState["simulated"]> {
+    return {
+      [TEE]: { owner: SYSTEM_PROGRAM_ID, data: new Uint8Array(0), lamports: 3_000_000 },
+      [POSITION.toBase58()]: null,
+      [NFT_ACCOUNT.toBase58()]: null,
+      [POOL_VAULT_A.toBase58()]: { owner: TOKEN_PROGRAM_ID, data: tokenAccountFull(MINT, POOL, 4_300_000n) },
+      [TEE_ATA_A.toBase58()]: { owner: TOKEN_PROGRAM_ID, data: tokenAccountFull(MINT, teeKey.publicKey, 700_000n) },
+    }
+  }
+
+  /** What close-build returns for this position: one unsigned v0 close and its keys in compiled order. */
+  function closeArtifact(mutate?: (keys: string[]) => string[]) {
+    const message = new TransactionMessage({
+      payerKey: teeKey.publicKey,
+      recentBlockhash: BLOCKHASH,
+      instructions: [
+        ComputeBudgetProgram.setComputeUnitLimit({ units: 400_000 }),
+        createAssociatedTokenAccountIdempotentInstruction(teeKey.publicKey, TEE_ATA_A, teeKey.publicKey, MINT),
+        new TransactionInstruction({
+          programId: DAMM,
+          data: Buffer.from([1, 2, 3, 4, 5, 6, 7, 8]),
+          keys: [
+            { pubkey: teeKey.publicKey, isSigner: true, isWritable: true },
+            { pubkey: POOL, isSigner: false, isWritable: true },
+            { pubkey: POSITION, isSigner: false, isWritable: true },
+            { pubkey: POOL_VAULT_A, isSigner: false, isWritable: true },
+            { pubkey: TEE_ATA_A, isSigner: false, isWritable: true },
+            { pubkey: NFT_ACCOUNT, isSigner: false, isWritable: true },
+            { pubkey: NFT_MINT, isSigner: false, isWritable: true },
+            { pubkey: MINT, isSigner: false, isWritable: false },
+            { pubkey: SPL_TOKEN, isSigner: false, isWritable: false },
+            { pubkey: SPL_TOKEN_2022, isSigner: false, isWritable: false },
+          ],
+        }),
+      ],
+    }).compileToV0Message()
+    const keys = message.staticAccountKeys.map((key) => key.toBase58())
+    return {
+      transaction: Buffer.from(new VersionedTransaction(message).serialize()).toString("base64"),
+      accountKeys: mutate ? mutate(keys) : keys,
+    }
+  }
+
+  const candidate = () => ({
+    pubkey: NFT_ACCOUNT.toBase58(),
+    mint: NFT_MINT.toBase58(),
+    amount: "1",
+    decimals: 0,
+    state: "initialized",
+  })
+
+  function positionState(overrides: Partial<RpcState> = {}): RpcState {
+    const rpc = defaultRpcState({
+      token2022Accounts: [candidate()],
+      accounts: positionAccounts(),
+      simulated: honestSimulation(),
+      lamports: 1_000_000,
+      fee: 5_000,
+      ...overrides,
+    })
+    rpc.onClose = () => {
+      rpc.token2022Accounts = rpc.token2022Accounts.filter((t) => t.pubkey !== NFT_ACCOUNT.toBase58())
+      rpc.tokenAccounts.push({
+        pubkey: TEE_ATA_A.toBase58(),
+        mint: MINT.toBase58(),
+        amount: "700000",
+        decimals: 6,
+        state: "initialized",
+      })
+    }
+    return rpc
+  }
+
+  function sweptRoute(rpc: RpcState): RouteHandler {
+    return () =>
+      jsonResponse(200, { success: true, id: "lw_tee1", state: "swept", sweptAt: 1, signatures: rpc.sent.map(sigOf) })
+  }
+
+  test("ordinary quarantined sweep: local inventory, one close-build per candidate, verified, signed locally, then the withdrawn tokens and SOL", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const rpc = positionState()
+    const closeBuilds: Array<{ method: string | undefined; auth: string | null; body: string }> = []
+    const { fetch, calls, unmatched } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      [`/api/v1/agent/lp/positions/${NFT_MINT.toBase58()}/close-build`]: (req) => {
+        closeBuilds.push({
+          method: req.init.method,
+          auth: new Headers(req.init.headers).get("x-api-key"),
+          body: String(req.init.body),
+        })
+        return jsonResponse(200, closeArtifact())
+      },
+      "/api/v1/agent/wallets/lw_tee1/swept": sweptRoute(rpc),
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    const parsed = JSON.parse(stdout.text.trim())
+
+    // Close-build was called exactly once, for the NFT MINT in the path, with the bound key, and
+    // no live positions listing was read (every unregistered route would be recorded here).
+    expect(closeBuilds).toHaveLength(1)
+    expect(closeBuilds[0]?.method).toBe("POST")
+    expect(closeBuilds[0]?.auth).toBe("ck_live_x")
+    expect(unmatched).toEqual([])
+    expect(calls.map((c) => new URL(c.url).pathname).filter((p) => p.includes("/lp/positions"))).toEqual([
+      `/api/v1/agent/lp/positions/${NFT_MINT.toBase58()}/close-build`,
+    ])
+
+    // Three transactions: the close (v0, signed by the TEE key), the withdrawn token A, then SOL.
+    expect(rpc.sent).toHaveLength(3)
+    const close = VersionedTransaction.deserialize(Buffer.from(rpc.sent[0] as string, "base64"))
+    expect(close.version).toBe(0)
+    expect(close.message.staticAccountKeys[0]?.toBase58()).toBe(TEE)
+    expect(close.signatures).toHaveLength(1)
+    expect(
+      ed25519.verify(close.signatures[0] as Uint8Array, close.message.serialize(), teeKey.publicKey.toBytes()),
+    ).toBe(true)
+    // The close's message bytes are the server's, untouched.
+    expect(Buffer.from(close.message.serialize()).toString("base64")).toBe(
+      Buffer.from(
+        VersionedTransaction.deserialize(Buffer.from(closeArtifact().transaction, "base64")).message.serialize(),
+      ).toString("base64"),
+    )
+    const tokenTx = Transaction.from(Buffer.from(rpc.sent[1] as string, "base64"))
+    expect(tokenTx.instructions.map((ix) => ix.programId.toBase58())).toContain(TOKEN_PROGRAM_ID)
+    expect(parsed.receipts.map((r: { kind: string }) => r.kind)).toEqual(["lp-close", "token", "sol"])
+    expect(parsed.residuals).toEqual([])
+
+    // Simulation and every account read happened BEFORE the first send.
+    const rpcMethods = calls
+      .filter((c) => new URL(c.url).pathname === "/rpc")
+      .map((c) => (JSON.parse(String(c.init.body)) as { method: string }).method)
+    expect(rpcMethods.indexOf("simulateTransaction")).toBeLessThan(rpcMethods.indexOf("sendTransaction"))
+  })
+
+  test("raw amount 1 with decimals 6 is not a candidate: no close-build, swept as an ordinary Token-2022 token", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const source = getAssociatedTokenAddressSync(MINT_2022, teeKey.publicKey, false, SPL_TOKEN_2022)
+    const rpc = defaultRpcState({
+      token2022Accounts: [
+        { pubkey: source.toBase58(), mint: MINT_2022.toBase58(), amount: "1", decimals: 6, state: "initialized" },
+      ],
+      accounts: mint2022(baseMint(6)),
+    })
+    const { fetch, unmatched } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": sweptRoute(rpc),
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    expect(unmatched).toEqual([])
+    const tx = Transaction.from(Buffer.from(rpc.sent[0] as string, "base64"))
+    expect(tx.instructions[1]?.programId.toBase58()).toBe(TOKEN_2022_PROGRAM_ID)
+    expect(tx.instructions[1]?.data[0]).toBe(12) // TransferChecked
+  })
+
+  test("an unknown decimals-0 mint (close-build 404) is leftover DAMM_POSITION_CLOSE_UNAVAILABLE, never transferred; a classic token and SOL still sweep", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const classic = getAssociatedTokenAddressSync(MINT, teeKey.publicKey)
+    const rpc = positionState({
+      tokenAccounts: [
+        { pubkey: classic.toBase58(), mint: MINT.toBase58(), amount: "700000", decimals: 6, state: "initialized" },
+      ],
+    })
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      [`/api/v1/agent/lp/positions/${NFT_MINT.toBase58()}/close-build`]: () =>
+        jsonResponse(404, { success: false, error: { code: "LP_POSITION_NOT_FOUND", message: "Not a position NFT" } }),
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    const parsed = JSON.parse(stdout.text.trim())
+    const leftover = parsed.residuals.find((r: { kind: string }) => r.kind === "DAMM_POSITION_CLOSE_UNAVAILABLE")
+    expect(leftover).toMatchObject({ mint: NFT_MINT.toBase58(), account: NFT_ACCOUNT.toBase58(), amountRaw: "1" })
+    expect(leftover.detail).toContain("LP_POSITION_NOT_FOUND")
+    // Not reported a second time as a leftover token account, and never moved as a token.
+    expect(parsed.residuals.filter((r: { account?: string }) => r.account === NFT_ACCOUNT.toBase58())).toHaveLength(1)
+    for (const wire of rpc.sent) {
+      for (const ix of instructionsOf(wire)) {
+        expect(ix.programId.toBase58()).not.toBe(TOKEN_2022_PROGRAM_ID)
+        expect(ix.programId.toBase58()).not.toBe(DAMM_V2_PROGRAM_ID)
+      }
+    }
+    expect(parsed.receipts.map((r: { kind: string }) => r.kind)).toEqual(["token", "sol"])
+  })
+
+  test("a close that fails a check is leftover DAMM_CLOSE_TRANSACTION_REFUSED before it is signed, and the rest still sweeps", async () => {
+    const cases: Array<{ name: string; artifact: () => unknown; state?: Partial<RpcState>; reason: RegExp }> = [
+      {
+        name: "permuted key array",
+        artifact: () => closeArtifact((keys) => [...keys].reverse()),
+        reason: /account key 0 is/,
+      },
+      {
+        name: "simulation failure",
+        artifact: () => closeArtifact(),
+        state: { simulationErr: { InstructionError: [2, "Custom"] } },
+        reason: /simulation failed/,
+      },
+      {
+        name: "still-held NFT",
+        artifact: () => closeArtifact(),
+        state: {
+          simulated: {
+            ...honestSimulation(),
+            [NFT_ACCOUNT.toBase58()]: {
+              owner: TOKEN_2022_PROGRAM_ID,
+              data: tokenAccountFull(NFT_MINT, teeKey.publicKey, 1n),
+            },
+          },
+        },
+        reason: /still holds 1/,
+      },
+      { name: "no transaction in the answer", artifact: () => ({ accountKeys: [] }), reason: /without a transaction/ },
+    ]
+    for (const { name, artifact, state, reason } of cases) {
+      const dir = await tempDir()
+      await seedTeeStore(dir, [enabledEntry()])
+      const classic = getAssociatedTokenAddressSync(MINT, teeKey.publicKey)
+      const rpc = positionState({
+        tokenAccounts: [
+          { pubkey: classic.toBase58(), mint: MINT.toBase58(), amount: "9", decimals: 6, state: "initialized" },
+        ],
+        ...state,
+      })
+      const { fetch } = createRoutedFetch({
+        "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+        [`/api/v1/agent/lp/positions/${NFT_MINT.toBase58()}/close-build`]: () => jsonResponse(200, artifact()),
+        "/rpc": rpcHandler(rpc),
+      })
+      const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+      expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+      const parsed = JSON.parse(stdout.text.trim())
+      const kind =
+        name === "no transaction in the answer" ? "DAMM_POSITION_CLOSE_UNAVAILABLE" : "DAMM_CLOSE_TRANSACTION_REFUSED"
+      const leftover = parsed.residuals.find((r: { kind: string }) => r.kind === kind)
+      expect(`${name}: ${JSON.stringify(leftover ?? parsed.residuals)}`).toContain(`${name}: {`)
+      expect(leftover.detail).toMatch(reason)
+      expect(leftover.account).toBe(NFT_ACCOUNT.toBase58())
+      // No DAMM transaction was ever signed or sent; the classic token and SOL still moved.
+      for (const wire of rpc.sent)
+        for (const ix of instructionsOf(wire)) expect(ix.programId.toBase58()).not.toBe(DAMM_V2_PROGRAM_ID)
+      expect(parsed.receipts.map((r: { kind: string }) => r.kind)).toEqual(["token", "sol"])
+    }
+  })
+
+  test("every artifact is fetched and verified before ANY close is signed: a refused second close does not undo the first, and the first is sent only after both were checked", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const OTHER_MINT = Keypair.generate().publicKey
+    const OTHER_ACCOUNT = getAssociatedTokenAddressSync(OTHER_MINT, teeKey.publicKey, false, SPL_TOKEN_2022)
+    const rpc = positionState({
+      token2022Accounts: [
+        candidate(),
+        {
+          pubkey: OTHER_ACCOUNT.toBase58(),
+          mint: OTHER_MINT.toBase58(),
+          amount: "1",
+          decimals: 0,
+          state: "initialized",
+        },
+      ],
+    })
+    rpc.accounts[OTHER_MINT.toBase58()] = { owner: TOKEN_2022_PROGRAM_ID, data: baseMint(0) }
+    rpc.accounts[OTHER_ACCOUNT.toBase58()] = {
+      owner: TOKEN_2022_PROGRAM_ID,
+      data: tokenAccountFull(OTHER_MINT, teeKey.publicKey, 1n),
+    }
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      [`/api/v1/agent/lp/positions/${NFT_MINT.toBase58()}/close-build`]: () => jsonResponse(200, closeArtifact()),
+      // The second position's close names the wrong fee payer: refused.
+      [`/api/v1/agent/lp/positions/${OTHER_MINT.toBase58()}/close-build`]: () =>
+        jsonResponse(
+          200,
+          closeArtifact((keys) => [...keys].reverse()),
+        ),
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    const parsed = JSON.parse(stdout.text.trim())
+    expect(parsed.receipts.map((r: { kind: string }) => r.kind)).toEqual(["lp-close", "token", "sol"])
+    expect(parsed.residuals.map((r: { kind: string; mint?: string }) => [r.kind, r.mint])).toEqual([
+      ["DAMM_CLOSE_TRANSACTION_REFUSED", OTHER_MINT.toBase58()],
+    ])
+    // Order: both close-builds, then the first send.
+    const sequence = calls.map((c) => {
+      const path = new URL(c.url).pathname
+      if (path === "/rpc") return (JSON.parse(String(c.init.body)) as { method: string }).method
+      return path
+    })
+    const lastFetch = Math.max(...sequence.map((step, i) => (step.endsWith("/close-build") ? i : -1)))
+    expect(sequence.filter((step) => step.endsWith("/close-build"))).toHaveLength(2)
+    expect(sequence.indexOf("sendTransaction")).toBeGreaterThan(lastFetch)
+  })
+
+  test("the verified close is displayed before it is signed, in human output and in the --json document", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const rpc = positionState()
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      [`/api/v1/agent/lp/positions/${NFT_MINT.toBase58()}/close-build`]: () => jsonResponse(200, closeArtifact()),
+      "/api/v1/agent/wallets/lw_tee1/swept": sweptRoute(rpc),
+      "/rpc": rpcHandler(rpc),
+    })
+    const human = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], human.deps)).toBe(0)
+    const text = human.stdout.text
+    const shown = text.indexOf(`Close for position ${NFT_MINT.toBase58()} (verified, unsigned; about to sign):`)
+    expect(shown).toBeGreaterThan(-1)
+    expect(text).toContain(`fee payer   ${TEE} (this TEE wallet)`)
+    expect(text).toContain("program     Meteora DAMM v2")
+    expect(text).toContain(`wallet      ${MINT.toBase58()}: 0 -> 700000 raw (+700000) in ${TEE_ATA_A.toBase58()}`)
+    expect(text).toContain(`position    NFT account ${NFT_ACCOUNT.toBase58()} is closed by this transaction`)
+    // Displayed BEFORE the receipt line for the same close.
+    expect(shown).toBeLessThan(text.indexOf(`closed LP position ${NFT_MINT.toBase58()}`))
+
+    const dir2 = await tempDir()
+    await seedTeeStore(dir2, [enabledEntry()])
+    const rpc2 = positionState()
+    const routed = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      [`/api/v1/agent/lp/positions/${NFT_MINT.toBase58()}/close-build`]: () => jsonResponse(200, closeArtifact()),
+      "/api/v1/agent/wallets/lw_tee1/swept": sweptRoute(rpc2),
+      "/rpc": rpcHandler(rpc2),
+    })
+    const json = depsFor(dir2, routed.fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], json.deps)).toBe(0)
+    const parsed = JSON.parse(json.stdout.text.trim())
+    expect(parsed.lpCloses).toHaveLength(1)
+    expect(parsed.lpCloses[0]).toMatchObject({ mint: NFT_MINT.toBase58(), account: NFT_ACCOUNT.toBase58() })
+    expect(parsed.lpCloses[0].display.some((line: string) => line.startsWith("program     Meteora DAMM v2"))).toBe(true)
+  })
+
+  test("a verified close whose blockhash has expired is leftover DAMM_POSITION_CLOSE_UNAVAILABLE without a signature, and tokens and SOL still sweep", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const classic = getAssociatedTokenAddressSync(MINT, teeKey.publicKey)
+    const rpc = positionState({
+      blockhashValid: false,
+      tokenAccounts: [
+        { pubkey: classic.toBase58(), mint: MINT.toBase58(), amount: "9", decimals: 6, state: "initialized" },
+      ],
+    })
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      [`/api/v1/agent/lp/positions/${NFT_MINT.toBase58()}/close-build`]: () => jsonResponse(200, closeArtifact()),
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    const parsed = JSON.parse(stdout.text.trim())
+    const leftover = parsed.residuals.find((r: { kind: string }) => r.kind === "DAMM_POSITION_CLOSE_UNAVAILABLE")
+    expect(leftover.detail).toContain("blockhash has expired")
+    // close-build's blockhash is taken at confirmed. Finalized would reject a fresh one.
+    const blockhashChecks = calls
+      .filter((call) => new URL(call.url).pathname === "/rpc")
+      .map((call) => JSON.parse(String(call.init?.body)) as { method?: string; params?: unknown[] })
+      .filter((body) => body.method === "isBlockhashValid")
+    expect(blockhashChecks).toHaveLength(1)
+    expect(blockhashChecks[0]?.params?.[1]).toEqual({ commitment: "confirmed" })
+    expect(leftover.account).toBe(NFT_ACCOUNT.toBase58())
+    for (const wire of rpc.sent)
+      for (const ix of instructionsOf(wire)) expect(ix.programId.toBase58()).not.toBe(DAMM_V2_PROGRAM_ID)
+    expect(parsed.receipts.map((r: { kind: string }) => r.kind)).toEqual(["token", "sol"])
+    expect(parsed.pending).toEqual([])
+  })
+
+  test("--emergency with an open position: no API call at all, the NFT itself moves to the vault under Token-2022", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const rpc = positionState()
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("disable-pending")),
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency"], deps)).toBe(3)
+    expect(calls.map((c) => new URL(c.url).pathname).filter((p) => p.startsWith("/api/"))).toEqual([
+      "/api/v1/agent/wallets/lw_tee1/lifecycle",
+    ])
+    const tx = Transaction.from(Buffer.from(rpc.sent[0] as string, "base64"))
+    expect(tx.instructions[1]?.programId.toBase58()).toBe(TOKEN_2022_PROGRAM_ID)
+    expect(tx.instructions[1]?.data[0]).toBe(12)
+    expect(tx.instructions[1]?.keys[2]?.pubkey.toBase58()).toBe(
+      getAssociatedTokenAddressSync(NFT_MINT, new PublicKey(VAULT), false, SPL_TOKEN_2022).toBase58(),
+    )
+    expect(stdout.text).toContain("position NFT moved as-is to the vault (emergency")
   })
 })

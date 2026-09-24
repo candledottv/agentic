@@ -21,6 +21,14 @@ import { isUsageError, type ParsedArgs, parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext, Deps } from "../deps"
 import { resolveApiKey } from "../deps"
+import {
+  DAMM_CLOSE_TRANSACTION_REFUSED,
+  DAMM_POSITION_CLOSE_UNAVAILABLE,
+  describeClose,
+  isPositionCandidate,
+  parseCloseArtifact,
+  verifyCloseArtifact,
+} from "../lp-close"
 import { printIdentity } from "../profiles"
 import { writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import {
@@ -39,6 +47,7 @@ import {
   systemTransfer,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
+  type TokenAccountView,
   toBase64,
   tokenCloseAccount,
   tokenTransferChecked,
@@ -1271,6 +1280,25 @@ async function broadcastAndFinalize(
 ): Promise<BroadcastOutcome> {
   const blockhash = await rpc.getLatestBlockhash()
   const message = compileLegacyMessage({ feePayer, recentBlockhash: blockhash, instructions })
+  return broadcastMessage(rpc, deps, secret, message, blockhash, pending, recordPending, clearPending)
+}
+
+/**
+ * The signing-and-sending half of `broadcastAndFinalize`, for a message this command did not
+ * compile: an ordinary sweep's verified DAMM v2 position close (P3-ED-6) arrives as a v0 message
+ * the server built, and it is signed here only after `verifyCloseArtifact` passed it. One signer
+ * (the TEE key), so the wire is shortvec(1) || signature || message for legacy and v0 alike.
+ */
+async function broadcastMessage(
+  rpc: SolanaRpc,
+  deps: Deps,
+  secret: Uint8Array,
+  message: Uint8Array,
+  blockhash: string,
+  pending: Omit<SweepPendingRecord, "signature" | "blockhash" | "submittedAt">,
+  recordPending: (record: SweepPendingRecord) => Promise<boolean>,
+  clearPending: (signature: string) => Promise<void>,
+): Promise<BroadcastOutcome> {
   const signatureBytes = signMessage(message, secret)
   // The transaction's identity is its first signature, known here, before submission. Nothing
   // the RPC answers later replaces it.
@@ -1621,11 +1649,179 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
       signingBlocked = true
     }
 
-    // 1. Token accounts under BOTH programs (R5): tokens first, closing each account for its rent
+    // 1. DAMM v2 LP positions (Ember Phase 3 PR D, P3-ED-6). The inventory is LOCAL: the wallet's
+    //    Token-2022 accounts over its own RPC, and a position NFT candidate is raw amount 1 AND
+    //    mint decimals 0. Nothing here reads a live positions listing.
+    //
+    //    An ordinary sweep asks the server for one unsigned close per candidate mint
+    //    (`POST /agent/lp/positions/:mint/close-build`, bound key, no lp:write), then verifies EVERY
+    //    artifact before signing ANY: ordered v0 keys reproduced element for element, top-level
+    //    programs on the allowlist, a clean signature-verification-off simulation whose positive
+    //    deltas all land on this wallet or its vault and which leaves the NFT account empty, and
+    //    every writable account classified (`lp-close.ts`). Only the closes that passed are then
+    //    signed, one at a time. A close that could not be fetched is leftover
+    //    DAMM_POSITION_CLOSE_UNAVAILABLE; one that failed a check is leftover
+    //    DAMM_CLOSE_TRANSACTION_REFUSED, before it is signed. Candidates never go through the
+    //    generic token pass below in an ordinary sweep: a maybe-frozen NFT is reported, not moved.
+    //
+    //    `--emergency` never calls the API: each candidate is moved as an NFT, by the generic
+    //    Token-2022 `TransferChecked` to the pinned vault below, to be unwound later from a fresh
+    //    TEE wallet.
+    const candidateAccounts = new Set<string>()
+    /** Every verified close this run displayed before signing, for the `--json` document. */
+    const lpCloses: Array<{ mint: string; account: string; display: string[] }> = []
+    {
+      let token2022Accounts: TokenAccountView[] = []
+      try {
+        token2022Accounts = await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
+      } catch (error) {
+        residuals.push({
+          kind: "inventory",
+          detail: `could not list Token-2022 accounts for position discovery: ${error instanceof Error ? error.message : error}`,
+        })
+      }
+      const candidates = token2022Accounts.filter(isPositionCandidate)
+      for (const acct of candidates) candidateAccounts.add(acct.pubkey)
+      const leftover = (kind: string, acct: TokenAccountView, detail: string) =>
+        residuals.push({ kind, detail, mint: acct.mint, account: acct.pubkey, amountRaw: acct.amountRaw })
+      if (!emergency && candidates.length > 0) {
+        if (!json)
+          deps.stdout.write(`  ${candidates.length} position NFT candidate(s) (Token-2022, amount 1, decimals 0)\n`)
+        // Phase A: fetch and verify every artifact. Sign none.
+        const verified: Array<{
+          acct: TokenAccountView
+          verdict: Extract<Awaited<ReturnType<typeof verifyCloseArtifact>>, { ok: true }>
+        }> = []
+        for (const acct of candidates) {
+          if (signingBlocked) break
+          if (!apiKey || !entry.linkedWalletId) {
+            leftover(
+              DAMM_POSITION_CLOSE_UNAVAILABLE,
+              acct,
+              "no bound API key is available to build the close; the NFT was left in place",
+            )
+            continue
+          }
+          const result = await apiRequest(`/api/v1/agent/lp/positions/${encodeURIComponent(acct.mint)}/close-build`, {
+            method: "POST",
+            auth: "key",
+            credentials: { apiKey },
+            apiUrl,
+            fetch: deps.fetch,
+            env: deps.env,
+            body: {},
+          })
+          if (!result.ok) {
+            leftover(
+              DAMM_POSITION_CLOSE_UNAVAILABLE,
+              acct,
+              `close-build ${result.code ?? `HTTP ${result.status}`}: ${result.message}; the NFT was left in place`,
+            )
+            continue
+          }
+          const artifact = parseCloseArtifact(result.body)
+          if (artifact === undefined) {
+            leftover(
+              DAMM_POSITION_CLOSE_UNAVAILABLE,
+              acct,
+              "close-build answered without a transaction and an ordered account key array; the NFT was left in place",
+            )
+            continue
+          }
+          const verdict = await verifyCloseArtifact({
+            artifact,
+            rpc,
+            tee: address,
+            vault,
+            nftMint: acct.mint,
+            nftAccount: acct.pubkey,
+          })
+          if (!verdict.ok) {
+            leftover(DAMM_CLOSE_TRANSACTION_REFUSED, acct, `${verdict.reason}; refused before signing`)
+            continue
+          }
+          verified.push({ acct, verdict })
+        }
+        // Phase B: sign and send only what passed, after every artifact has been through Phase A.
+        for (const { acct, verdict } of verified) {
+          if (signingBlocked) {
+            leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, "not signed: an earlier transaction is still in flight")
+            continue
+          }
+          // The server's blockhash is what gets signed (the simulation replaced it, so a stale
+          // build passes verification and would only fail at preflight, which would read as an
+          // uncertain send and block the token and SOL passes). close-build takes that blockhash
+          // at confirmed. The default isBlockhashValid commitment is finalized, and a blockhash
+          // newer than the last finalized slot answers false there even though it can still land,
+          // which would skip every fresh close. Confirmed matches the build: an expired blockhash
+          // is a leftover, not a signature.
+          let blockhashValid: boolean
+          try {
+            blockhashValid = await rpc.isBlockhashValid(verdict.tx.message.recentBlockhash, "confirmed")
+          } catch (error) {
+            leftover(
+              DAMM_POSITION_CLOSE_UNAVAILABLE,
+              acct,
+              `could not check the close build's blockhash: ${error instanceof Error ? error.message : error}; not signed`,
+            )
+            continue
+          }
+          if (!blockhashValid) {
+            leftover(
+              DAMM_POSITION_CLOSE_UNAVAILABLE,
+              acct,
+              "the close build's blockhash has expired; not signed, re-run the sweep for a fresh close",
+            )
+            continue
+          }
+          // Decoded and displayed from the agreed ordered array before the key signs (P3-ED-6, step 2).
+          const display = describeClose({ verdict, tee: address, vault, nftMint: acct.mint, nftAccount: acct.pubkey })
+          lpCloses.push({ mint: acct.mint, account: acct.pubkey, display })
+          if (!json) {
+            deps.stdout.write(`  Close for position ${acct.mint} (verified, unsigned; about to sign):\n`)
+            for (const line of display) deps.stdout.write(`    ${line}\n`)
+          }
+          const pending = {
+            kind: "lp-close" as const,
+            mint: acct.mint,
+            account: acct.pubkey,
+            amountRaw: acct.amountRaw,
+          }
+          const outcome = await broadcastMessage(
+            rpc,
+            deps,
+            secret,
+            verdict.tx.message.bytes,
+            verdict.tx.message.recentBlockhash,
+            pending,
+            recordPending,
+            clearPending,
+          )
+          if (outcome.status !== "finalized") {
+            // A close that was signed and then failed at finality is `lp-close-failed`, not a
+            // REFUSED leftover: REFUSED names a check that stopped the signature (P3-ED-6, step 5).
+            if (!settle(outcome, pending, "lp-close")) signingBlocked = true
+            continue
+          }
+          await retainReceipt({
+            kind: "lp-close",
+            mint: acct.mint,
+            amountRaw: acct.amountRaw,
+            signature: outcome.signature,
+            finalizedAt: new Date(deps.now()).toISOString(),
+          })
+          if (!json)
+            deps.stdout.write(`  closed LP position ${acct.mint} and withdrew its liquidity: ${outcome.signature}\n`)
+        }
+      }
+    }
+
+    // 2. Token accounts under BOTH programs (R5): tokens first, closing each account for its rent
     //    (HW-07). Every instruction for an account runs under the program that OWNS its mint --
     //    the transfer, the destination ATA derivation, and the close. Phase 1 swept the classic
     //    program and listed Token-2022 as an untouched residual (SC-06); the Phase 2 ED-10
-    //    amendment in this spec is what lets the TEE key sign the Token-2022 shapes too.
+    //    amendment in this spec is what lets the TEE key sign the Token-2022 shapes too. Listed
+    //    AFTER the position closes above, so the tokens a close just withdrew are swept here.
     const tokenAccounts: Awaited<ReturnType<SolanaRpc["getTokenAccountsByOwner"]>> = []
     for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
       try {
@@ -1642,6 +1838,15 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
     for (const acct of tokenAccounts) {
       if (signingBlocked) break
       const token2022 = acct.programId === TOKEN_2022_PROGRAM_ID
+      if (candidateAccounts.has(acct.pubkey)) {
+        // An ordinary sweep never moves a position NFT as a token: it was closed above, or it is
+        // already a named leftover. Only --emergency moves the NFT itself, to the pinned vault.
+        if (!emergency) continue
+        if (!json)
+          deps.stdout.write(
+            `  ${acct.mint}: position NFT moved as-is to the vault (emergency; unwind it from a fresh TEE wallet)\n`,
+          )
+      }
       if (acct.state !== "initialized") {
         residuals.push({
           // A frozen Token-2022 account earns R5's name; a classic one keeps Phase 1's.
@@ -1943,6 +2148,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
           })),
           inventory,
           recordedOnServer,
+          ...(lpCloses.length > 0 ? { lpCloses } : {}),
         })}\n`,
       )
       return finalState === "swept" ? 0 : 3

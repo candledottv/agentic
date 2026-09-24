@@ -71,6 +71,7 @@ node packages/cli/dist/index.js auth login
 | `candle swap <from> <to> --amount <n>\|--percent <n> --wallet <tee>` | Quote, confirm and swap on Solana through the TEE wallet's bound key; first buy after a launch is this command. |
 | `candle swap status <id> [--kind trade\|swap\|launch]` | Read an operation without resending it. |
 | `candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee>` | Create a Solana token with no first buy; needs `launch:write` and operator-enabled `allowLaunch`. |
+| `candle lp pools\|add\|positions\|remove\|claim` | Meteora DAMM v2 liquidity from a TEE wallet through its bound key (`lp:write`, opt-in). `pools <token>` lists pools with liquidity, fee, volume and an estimated yield; `add <pool> --amount <n> <token> --wallet <tee>` opens or grows a position at the pool's ratio after showing both tokens' Token-2022 warnings; `positions` lists every position across your TEE wallets; `remove <position> --percent <n>` withdraws (100% also claims fees and closes the position); `claim <position>` claims fees and rewards. No Candle fee. A `tee sweep` closes open positions itself; see TEE wallets. |
 | `candle profile list` | Lists profiles on this machine, with cached accounts. |
 | `candle profile add <name> --api-url <url>` | Creates a profile before authenticating it. |
 | `candle profile use <name>` | Makes a profile the active one. |
@@ -340,6 +341,14 @@ candle launch --name Example --symbol EX --image-url https://example.com/token.p
 candle swap status lunch-1
 candle swap status example-launch --kind launch --json
 ```
+
+`candle lp` (Meteora DAMM v2) follows the same shape: the server builds and quotes, you confirm,
+the relay signs, and this machine broadcasts over `--rpc-url` before `/confirm` writes the ledger.
+The bound key needs the opt-in `lp:write` scope and the server needs `LP_ENABLED=1`. An open
+position is swept by `candle tee sweep`: the CLI discovers the position NFT locally (Token-2022,
+amount 1, decimals 0), fetches one unsigned close per position, verifies every close (ordered
+keys, program allowlist, simulation, writable-account classification) before signing any, and
+`--emergency` moves the NFT to the vault without calling the API.
 
 A same-chain SOL/USDC/CNDL pair uses the base-swap rail. A Solana mint paired with one
 of those assets uses the token rail, whether on Candle's curve or graduated to Jupiter/DFlow.

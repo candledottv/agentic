@@ -141,7 +141,7 @@ export interface TeeWalletMeta {
 }
 
 export interface SweepPendingRecord {
-  kind: "token" | "sol" | "close"
+  kind: "token" | "sol" | "close" | "lp-close"
   mint?: string
   account?: string
   amountRaw: string
@@ -151,7 +151,7 @@ export interface SweepPendingRecord {
 }
 
 export interface SweepReceiptRecord {
-  kind: "token" | "sol" | "close"
+  kind: "token" | "sol" | "close" | "lp-close"
   mint?: string
   amountRaw: string
   signature: string

@@ -31,6 +31,7 @@ import { help } from "./commands/help"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { keysWallets } from "./commands/keys-wallets"
 import { launch } from "./commands/launch"
+import { lpAdd, lpClaim, lpPools, lpPositions, lpRemove } from "./commands/lp"
 import { mcp, mcpActsAsIdentity } from "./commands/mcp"
 import { plugins, runPlugin } from "./commands/plugins"
 import { profileAdd, profileList, profileRemove, profileRename, profileUse } from "./commands/profile"
@@ -144,6 +145,9 @@ interface CommandRoute {
 const COMMANDS: Record<string, CommandRoute> = {
   swap: { bare: swap, subcommands: { status: swapStatus } },
   launch: { bare: launch },
+  // Ember Phase 3 PR D (BE-315, R4): Meteora DAMM v2 liquidity from a TEE wallet, on the agent
+  // rail under the bound key's opt-in `lp:write`. Server-built, relay-signed, never a vault key.
+  lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
   keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke, wallets: keysWallets } },
   // D6 (BE-238): `wallets generate` and `wallets export` were tombstoned in 0.10.0 and are gone

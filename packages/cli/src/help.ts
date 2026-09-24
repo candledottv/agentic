@@ -240,6 +240,46 @@ export const HELP: Record<string, Topic> = {
     ],
     env: ENV_API,
   },
+  lp: {
+    group: "Trade",
+    summary: "Meteora DAMM v2 liquidity from a TEE wallet: pools, add, positions, remove, claim",
+    description:
+      "Provide liquidity on any Meteora DAMM v2 pool from a TEE wallet, through its bound key (scope lp:write, opt-in). Every write is quoted, shown with the pool's Token-2022 warnings, confirmed, signed by Candle's relay and broadcast over your RPC; no Candle fee. A sweep closes open positions itself (tee sweep).",
+    usage: ["candle lp <subcommand> [flags]"],
+    rows: [
+      {
+        invocation: "pools <token> [--page <n>]",
+        description: "Pools listing a token: liquidity, fee, 24h volume, estimated yield",
+      },
+      {
+        invocation: "add <pool> --amount <n> <token> --wallet <tee> [--position <nft>]",
+        description: "Open a position, or add to one; the other side follows the pool's ratio",
+      },
+      { invocation: "positions [--wallet <tee>]", description: "Every position across your TEE wallets" },
+      {
+        invocation: "remove <position> --percent <n> [--wallet <tee>]",
+        description: "Withdraw; at 100% also claims fees and closes the position",
+      },
+      { invocation: "claim <position> [--wallet <tee>]", description: "Claim fees and any rewards" },
+    ],
+    flags: [
+      { invocation: "--wallet <tee>", description: "The TEE wallet by id, address or unique label" },
+      { invocation: "--rpc-url <url>", description: "Your Solana RPC, for mint reads and the broadcast" },
+      {
+        invocation: "--client-trade-id <id>",
+        description: "Idempotency: the same id never deposits or withdraws twice",
+      },
+      { invocation: "--slippage-bps <n>", description: "add and remove: the tolerance, 0 to 1000 (default 100)" },
+      { invocation: "--yes", description: "Skip the confirmation prompt (an ordinary prompt only)" },
+    ],
+    examples: [
+      "candle lp pools So11111111111111111111111111111111111111112",
+      "candle lp add <pool> --amount 0.5 SOL --wallet AgentOne --rpc-url https://<rpc>",
+      "candle lp positions",
+      "candle lp remove <position> --percent 100 --wallet AgentOne --rpc-url https://<rpc>",
+    ],
+    env: ENV_API,
+  },
   launch: {
     group: "Trade",
     summary: "Create a Solana token (the first buy is a separate swap)",
@@ -478,7 +518,8 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation: "sweep <address> --rpc-url <url> [--emergency]",
-        description: "Sign locally and move everything to the pinned vault",
+        description:
+          "Sign locally and move everything to the pinned vault; closes DAMM v2 LP positions after verifying each server-built close (--emergency moves the position NFT instead, with no API)",
       },
       {
         invocation: "rebind <wallet...> --to-key <prefix|label>",

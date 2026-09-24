@@ -399,8 +399,13 @@ export interface SolanaRpc {
   getMinimumBalanceForRentExemption(size: number): Promise<bigint>
   sendTransaction(txBase64: string): Promise<string>
   getSignatureStatus(signature: string): Promise<{ confirmationStatus: string | null; err: unknown } | null>
-  /** Whether a transaction built on this blockhash can still land (finalized commitment). */
-  isBlockhashValid(blockhash: string): Promise<boolean>
+  /**
+   * Whether a transaction built on this blockhash can still land.
+   * The default commitment is finalized, which is what pending resolution uses. Pass `"confirmed"`
+   * for a blockhash taken at confirmed: close-build does that, and a blockhash newer than the last
+   * finalized slot is still valid there while an expired one is not.
+   */
+  isBlockhashValid(blockhash: string, commitment?: "finalized" | "confirmed" | "processed"): Promise<boolean>
   /**
    * Whether this address has ever signed or been touched by a confirmed transaction (Ember Phase 2,
    * BE-136, CC-11). Read-only, and used by exactly one caller: `vault restore --phrase`'s gap scan,
@@ -716,8 +721,8 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch): SolanaRpc {
       const r = await call<Array<unknown>>("getSignaturesForAddress", [address, { limit: 1 }])
       return Array.isArray(r) && r.length > 0
     },
-    async isBlockhashValid(blockhash) {
-      const r = await call<{ value?: unknown }>("isBlockhashValid", [blockhash, { commitment: "finalized" }])
+    async isBlockhashValid(blockhash, commitment = "finalized") {
+      const r = await call<{ value?: unknown }>("isBlockhashValid", [blockhash, { commitment }])
       // The contract is a boolean. Anything else is not evidence of expiry: throw, and the caller
       // keeps the transaction uncertain.
       if (typeof r?.value !== "boolean") throw new Error("isBlockhashValid answered with a non-boolean value")

@@ -8505,8 +8505,8 @@ function createSolanaRpc(url, fetchFn) {
       const r = await call("getSignaturesForAddress", [address, { limit: 1 }]);
       return Array.isArray(r) && r.length > 0;
     },
-    async isBlockhashValid(blockhash) {
-      const r = await call("isBlockhashValid", [blockhash, { commitment: "finalized" }]);
+    async isBlockhashValid(blockhash, commitment = "finalized") {
+      const r = await call("isBlockhashValid", [blockhash, { commitment }]);
       if (typeof r?.value !== "boolean")
         throw new Error("isBlockhashValid answered with a non-boolean value");
       return r.value;
@@ -13661,14 +13661,14 @@ async function request(ctx, key, path, body) {
     throw new TradingError("INVALID_RESPONSE", "Candle returned an invalid response.");
   return result.body;
 }
-async function teeWallets(ctx, key, scope) {
+async function listTradingWallets(ctx, key, scope) {
   let cursor;
   const rows = [];
   const cursors = new Set;
   let appId = "";
   for (;; ) {
     const response = walletPageSchema.parse(await request(ctx, key, `/api/v1/agent/wallets/trading${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`));
-    if (!response.scopes?.includes(scope))
+    if (scope !== undefined && !response.scopes?.includes(scope))
       throw new TradingError("SCOPE_MISSING", `The bound key needs ${scope}.`);
     appId = response.privyAppId ?? "";
     if (!Array.isArray(response.page))
@@ -13711,7 +13711,7 @@ async function completeTradingWallet(ctx, row, appId, scope) {
   };
 }
 async function tradingWallet(ctx, key, name, scope) {
-  const { rows, appId } = await teeWallets(ctx, key, scope);
+  const { rows, appId } = await listTradingWallets(ctx, key, scope);
   const matches = rows.filter((row) => matchesName(row, name));
   if (matches.length !== 1) {
     throw new TradingError("TEE_WALLET_REQUIRED", matches.length > 1 ? `"${name}" matches ${matches.length} TEE wallets on this key: ${teeWalletList(matches)}. Name one by id or address.` : rows.length === 0 ? "This key has no TEE wallets bound to it. Enrol one, or select the profile whose key holds it." : `No TEE wallet on this key is called "${name}". Bound to this key: ${teeWalletList(rows)}.`);
@@ -13720,7 +13720,7 @@ async function tradingWallet(ctx, key, name, scope) {
 }
 async function tradingPayer(ctx, key, name) {
   const scope = "swap:write";
-  const { rows, appId } = await teeWallets(ctx, key, scope);
+  const { rows, appId } = await listTradingWallets(ctx, key, scope);
   const embedded = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded")).wallets?.solana?.address;
   const asEmbedded = () => ({ kind: "embedded", address: embedded });
   const options = [
@@ -13844,7 +13844,7 @@ Minimum received: ${safeText(quote.minimumReceived)}
     throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes for an ordinary trade prompt.");
   return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y";
 }
-async function saveLaunchSignature(ctx, key, id, transaction) {
+async function saveOperationSignature(ctx, key, id, kind, transaction) {
   const bytes = Buffer.from(transaction, "base64");
   let offset = 0;
   let count = 0;
@@ -13861,7 +13861,7 @@ async function saveLaunchSignature(ctx, key, id, transaction) {
   const signature = base58.encode(bytes.subarray(offset, offset + 64));
   const path = operationPath(ctx, key, id);
   const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile4(temporary, JSON.stringify({ id, kind: "launch", signature }), { mode: 384 });
+  await writeFile4(temporary, JSON.stringify({ id, kind, signature }), { mode: 384 });
   const file = await open3(temporary, "r");
   try {
     await file.sync();
@@ -13871,7 +13871,7 @@ async function saveLaunchSignature(ctx, key, id, transaction) {
   await rename3(temporary, path);
   return signature;
 }
-var TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, BASES;
+var TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, BASES;
 var init_trading = __esm(() => {
   init_esm();
   init_zod();
@@ -13933,6 +13933,51 @@ var init_trading = __esm(() => {
     wallets: exports_external.object({ solana: exports_external.object({ address: exports_external.string() }).passthrough().nullable().optional() }).passthrough().optional()
   }).passthrough();
   operationSchema = exports_external.object({ job: exports_external.object({ status: exports_external.string() }).passthrough() }).passthrough();
+  lpAmountSchema = exports_external.object({ mint: exports_external.string(), raw: exports_external.string().regex(/^\d+$/), decimals: exports_external.number().int() });
+  lpBuildSchema = exports_external.object({
+    build: exports_external.object({
+      action: exports_external.enum(["add", "remove", "claim"]),
+      pool: exports_external.string(),
+      position: exports_external.string(),
+      transaction: exports_external.string().min(1),
+      walletAddress: exports_external.string(),
+      signature: exports_external.string().optional()
+    }).passthrough(),
+    preview: exports_external.object({
+      amounts: exports_external.array(lpAmountSchema).default([]),
+      tokenRisks: risksSchema.default([]),
+      warnings: exports_external.array(exports_external.string()).default([]),
+      candleFeeBps: exports_external.number().optional()
+    }).passthrough().nullable(),
+    replay: exports_external.boolean().optional()
+  });
+  lpPositionsSchema = exports_external.object({
+    positions: exports_external.array(exports_external.object({
+      position: exports_external.string(),
+      pool: exports_external.string(),
+      tokens: exports_external.array(exports_external.object({
+        mint: exports_external.string(),
+        decimals: exports_external.number().int(),
+        amountRaw: exports_external.string(),
+        unclaimedFeesRaw: exports_external.string(),
+        valueUsd: exports_external.number().nullable().optional()
+      }).passthrough()),
+      poolShare: exports_external.number().optional(),
+      valueUsd: exports_external.number().nullable().optional()
+    }).passthrough())
+  });
+  lpPoolsSchema = exports_external.object({
+    page: exports_external.number().int(),
+    pages: exports_external.number().int(),
+    pools: exports_external.array(exports_external.object({
+      pool: exports_external.string(),
+      tokens: exports_external.array(exports_external.string()),
+      liquidityUsd: exports_external.number().nullable().optional(),
+      baseFeePercent: exports_external.number().nullable().optional(),
+      volume24hUsd: exports_external.number().nullable().optional(),
+      estimatedAprPercent: exports_external.number().nullable().optional()
+    }).passthrough())
+  });
   BASES = {
     SOL: { mint: "So11111111111111111111111111111111111111112", decimals: 9 },
     USDC: { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 },
@@ -37640,7 +37685,7 @@ var init_update_notice = __esm(() => {
 });
 
 // ../mcp/src/orchestrate.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { randomUUID as randomUUID4 } from "node:crypto";
 function requireApiKey(cfg) {
   if (!cfg.apiKey) {
     throw new Error("CANDLE_AGENT_API_KEY is required for this tool. Set it in the environment or MCP client config.");
@@ -37752,7 +37797,7 @@ async function readPaperInventory(cfg, doFetch, extra) {
 }
 async function executeTrade(args, cfg, doFetch) {
   const apiKey = requireApiKey(cfg);
-  const clientTradeId = args.clientTradeId ?? randomUUID3();
+  const clientTradeId = args.clientTradeId ?? randomUUID4();
   if (args.amount !== undefined && args.percent !== undefined) {
     return errText("pass exactly one of amount or percent, not both", { clientTradeId });
   }
@@ -37890,7 +37935,7 @@ async function executeTrade(args, cfg, doFetch) {
 }
 async function executeLaunchAndSeed(args, cfg, doFetch) {
   const apiKey = requireApiKey(cfg);
-  const clientLaunchId = args.clientLaunchId ?? randomUUID3();
+  const clientLaunchId = args.clientLaunchId ?? randomUUID4();
   const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...launchFields } = args;
   let buyAmount;
   if (devBuy !== undefined) {
@@ -39128,6 +39173,45 @@ var HELP = {
     ],
     env: ENV_API
   },
+  lp: {
+    group: "Trade",
+    summary: "Meteora DAMM v2 liquidity from a TEE wallet: pools, add, positions, remove, claim",
+    description: "Provide liquidity on any Meteora DAMM v2 pool from a TEE wallet, through its bound key (scope lp:write, opt-in). Every write is quoted, shown with the pool's Token-2022 warnings, confirmed, signed by Candle's relay and broadcast over your RPC; no Candle fee. A sweep closes open positions itself (tee sweep).",
+    usage: ["candle lp <subcommand> [flags]"],
+    rows: [
+      {
+        invocation: "pools <token> [--page <n>]",
+        description: "Pools listing a token: liquidity, fee, 24h volume, estimated yield"
+      },
+      {
+        invocation: "add <pool> --amount <n> <token> --wallet <tee> [--position <nft>]",
+        description: "Open a position, or add to one; the other side follows the pool's ratio"
+      },
+      { invocation: "positions [--wallet <tee>]", description: "Every position across your TEE wallets" },
+      {
+        invocation: "remove <position> --percent <n> [--wallet <tee>]",
+        description: "Withdraw; at 100% also claims fees and closes the position"
+      },
+      { invocation: "claim <position> [--wallet <tee>]", description: "Claim fees and any rewards" }
+    ],
+    flags: [
+      { invocation: "--wallet <tee>", description: "The TEE wallet by id, address or unique label" },
+      { invocation: "--rpc-url <url>", description: "Your Solana RPC, for mint reads and the broadcast" },
+      {
+        invocation: "--client-trade-id <id>",
+        description: "Idempotency: the same id never deposits or withdraws twice"
+      },
+      { invocation: "--slippage-bps <n>", description: "add and remove: the tolerance, 0 to 1000 (default 100)" },
+      { invocation: "--yes", description: "Skip the confirmation prompt (an ordinary prompt only)" }
+    ],
+    examples: [
+      "candle lp pools So11111111111111111111111111111111111111112",
+      "candle lp add <pool> --amount 0.5 SOL --wallet AgentOne --rpc-url https://<rpc>",
+      "candle lp positions",
+      "candle lp remove <position> --percent 100 --wallet AgentOne --rpc-url https://<rpc>"
+    ],
+    env: ENV_API
+  },
   launch: {
     group: "Trade",
     summary: "Create a Solana token (the first buy is a separate swap)",
@@ -39346,7 +39430,7 @@ var HELP = {
       },
       {
         invocation: "sweep <address> --rpc-url <url> [--emergency]",
-        description: "Sign locally and move everything to the pinned vault"
+        description: "Sign locally and move everything to the pinned vault; closes DAMM v2 LP positions after verifying each server-built close (--emergency moves the position NFT instead, with no API)"
       },
       {
         invocation: "rebind <wallet...> --to-key <prefix|label>",
@@ -43856,7 +43940,7 @@ function validClientId(id) {
 }
 async function lookupOperation(ctx, key, id, kind) {
   const local = await savedOperation(ctx, key, id);
-  const kinds = kind ? [kind] : local ? [local.kind] : ["trade", "swap", "launch"];
+  const kinds = kind ? [kind] : local && local.kind !== "lp" ? [local.kind] : ["trade", "swap", "launch"];
   const found = [];
   for (const candidate of kinds) {
     try {
@@ -44131,7 +44215,7 @@ async function launch(args, ctx) {
     if (!Number.isFinite(built.expiresAt) || built.expiresAt <= ctx.deps.now())
       throw new TradingError("QUOTE_EXPIRED", "The launch build expired before signing.");
     const signed = await relaySign(ctx, key, wallet, built.transaction);
-    const signature = await saveLaunchSignature(ctx, key, id, signed);
+    const signature = await saveOperationSignature(ctx, key, id, "launch", signed);
     const broadcastSignature = await createSolanaRpc(url, ctx.deps.fetch).sendTransaction(signed);
     if (broadcastSignature !== signature)
       throw new TradingError("RPC_FAILED", "RPC returned a different transaction signature; check the saved operation.");
@@ -44139,6 +44223,368 @@ async function launch(args, ctx) {
 `);
     const result = await request(ctx, key, "/api/v1/launch/self/confirm", { clientLaunchId: id, signature });
     return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch", quote });
+  } catch (error) {
+    return tradingFailure(ctx, error, id);
+  }
+}
+
+// src/commands/lp.ts
+init_args();
+init_render();
+init_solana_lite();
+import { randomUUID as randomUUID3 } from "node:crypto";
+init_trading();
+var LP_SCOPE = "lp:write";
+var CONFIRM_POLL_MS2 = 2000;
+var CONFIRM_MAX_POLLS2 = 45;
+async function lpRequest(ctx, key, path, body) {
+  const result = await apiRequest(path, {
+    apiUrl: ctx.apiUrl,
+    credentials: { apiKey: key },
+    auth: "key",
+    method: body ? "POST" : "GET",
+    body,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result.ok) {
+    if (result.status === 404 && !result.code)
+      throw new TradingError("LP_NOT_ENABLED", "This Candle deployment does not serve LP routes (LP_ENABLED is off there, or the API predates them).");
+    throw new TradingError(result.code ?? "REQUEST_FAILED", result.message);
+  }
+  if (!result.body || typeof result.body !== "object")
+    throw new TradingError("INVALID_RESPONSE", "Candle returned an invalid response.");
+  return result.body;
+}
+function solanaAddress(value, what) {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value))
+    throw new TradingError("INVALID_ADDRESS", `${what} must be a Solana address (base58).`);
+  return value;
+}
+function poolToken(value) {
+  const base = baseAsset(value);
+  if (base)
+    return BASES[base]?.mint;
+  return solanaAddress(value, "The token");
+}
+function matchesWallet(row, name) {
+  return row.id === name || row.address === name || row.label === name;
+}
+function usage2(ctx, line) {
+  writeUsageFailure(ctx.deps, line, ctx.json);
+  return 2;
+}
+function amountLine(amount) {
+  const base = Object.entries(BASES).find(([, asset]) => asset.mint === amount.mint)?.[0];
+  return `${decimalAmount(amount.raw, amount.decimals)} ${base ?? amount.mint}`;
+}
+async function lpPools(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--page"] });
+  const page = Number(parsed && !("error" in parsed) ? parsed.values["--page"] ?? "1" : "1");
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  if (parsed.positionals.length !== 1 || !Number.isSafeInteger(page) || page < 1)
+    return usage2(ctx, "Usage: candle lp pools <token> [--page <n>]");
+  try {
+    const token = poolToken(parsed.positionals[0]);
+    const key = await tradingKey(ctx);
+    const pools = lpPoolsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/pools/${encodeURIComponent(token)}?page=${page}`));
+    if (ctx.json)
+      return printTradingResult(ctx, { success: true, token, ...pools });
+    const out = ctx.deps.stdout;
+    if (pools.pools.length === 0) {
+      out.write(`No DAMM v2 pool lists ${token} (page ${pools.page} of ${pools.pages}).
+`);
+      return 0;
+    }
+    const usd = (value) => value === null || value === undefined ? "unavailable" : `$${value.toFixed(2)}`;
+    const pct = (value) => value === null || value === undefined ? "unavailable" : `${value.toFixed(2)}%`;
+    out.write(`DAMM v2 pools for ${token} (page ${pools.page} of ${pools.pages}):
+`);
+    for (const pool of pools.pools) {
+      out.write(`  ${safeText(pool.pool)}
+    pair ${pool.tokens.map(safeText).join(" / ")}
+    liquidity ${usd(pool.liquidityUsd)}, fee ${pct(pool.baseFeePercent)}, 24h volume ${usd(pool.volume24hUsd)}, est. yield ${pct(pool.estimatedAprPercent)} APR (indexed, not a quote)
+`);
+    }
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+async function lpPositions(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--wallet"] });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  if (parsed.positionals.length !== 0)
+    return usage2(ctx, "Usage: candle lp positions [--wallet <tee>]");
+  try {
+    const key = await tradingKey(ctx);
+    const { rows } = await listTradingWallets(ctx, key);
+    const name = parsed.values["--wallet"];
+    const wallets = rows.filter((row) => row.chain === "solana" && (name === undefined || matchesWallet(row, name)));
+    if (name !== undefined && wallets.length === 0)
+      throw new TradingError("TEE_WALLET_REQUIRED", `No TEE wallet on this key is called "${name}".`);
+    const report = [];
+    for (const row of wallets) {
+      const positions = lpPositionsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/positions?linkedWalletId=${encodeURIComponent(row.id)}`));
+      report.push({
+        id: row.id,
+        address: row.address,
+        ...row.label ? { label: row.label } : {},
+        positions: positions.positions
+      });
+    }
+    if (ctx.json)
+      return printTradingResult(ctx, { success: true, wallets: report });
+    const out = ctx.deps.stdout;
+    const total = report.reduce((n, wallet) => n + wallet.positions.length, 0);
+    if (total === 0) {
+      out.write(`No DAMM v2 positions across ${report.length} TEE wallet(s).
+`);
+      return 0;
+    }
+    for (const wallet of report) {
+      if (wallet.positions.length === 0)
+        continue;
+      out.write(`${wallet.label ? `${safeText(wallet.label)} ` : ""}(${wallet.id}, ${safeText(wallet.address)})
+`);
+      for (const position of wallet.positions) {
+        out.write(`  position ${safeText(position.position)} in pool ${safeText(position.pool)}
+`);
+        for (const token of position.tokens) {
+          out.write(`    ${amountLine({ mint: token.mint, raw: token.amountRaw, decimals: token.decimals })}, unclaimed fees ${decimalAmount(token.unclaimedFeesRaw, token.decimals)}${token.valueUsd === null || token.valueUsd === undefined ? "" : ` ($${token.valueUsd.toFixed(2)})`}
+`);
+        }
+        out.write(`    value ${position.valueUsd === null || position.valueUsd === undefined ? "unpriced" : `$${position.valueUsd.toFixed(2)}`}${position.poolShare === undefined ? "" : `, ${(position.poolShare * 100).toFixed(4)}% of the pool`}
+`);
+      }
+    }
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+async function walletHolding(ctx, key, position, name) {
+  if (name !== undefined)
+    return tradingWallet(ctx, key, name, LP_SCOPE);
+  const { rows, appId } = await listTradingWallets(ctx, key, LP_SCOPE);
+  for (const row of rows) {
+    if (row.chain !== "solana")
+      continue;
+    const positions = lpPositionsSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/positions?linkedWalletId=${encodeURIComponent(row.id)}`));
+    if (positions.positions.some((held) => held.position === position))
+      return completeTradingWallet(ctx, row, appId, LP_SCOPE);
+  }
+  throw new TradingError("LP_POSITION_NOT_FOUND", `No TEE wallet bound to this key holds position ${position}. See candle lp positions, or name the wallet with --wallet.`);
+}
+async function waitConfirmed(ctx, rpc2, signature, id) {
+  for (let i = 0;i < CONFIRM_MAX_POLLS2; i++) {
+    const observed = classifyStatus(await rpc2.getSignatureStatus(signature));
+    if (observed.kind === "finalized")
+      return;
+    if (observed.kind === "failed")
+      throw new TradingError("LP_TRANSACTION_FAILED", `Transaction ${signature} failed on chain: ${JSON.stringify(observed.err)}.`);
+    if (observed.kind === "nonfinal") {
+      if (observed.err !== null && observed.err !== undefined)
+        throw new TradingError("LP_TRANSACTION_FAILED", `Transaction ${signature} failed: ${JSON.stringify(observed.err)}.`);
+      if (observed.confirmationStatus === "confirmed")
+        return;
+    }
+    await ctx.deps.sleep(CONFIRM_POLL_MS2);
+  }
+  throw new TradingError("LP_CONFIRM_PENDING", `Transaction ${signature} was sent but not confirmed within ${CONFIRM_MAX_POLLS2 * CONFIRM_POLL_MS2 / 1000}s. Re-run the same command with --client-trade-id ${id}: it confirms the saved signature and sends nothing new.`);
+}
+async function confirmPreview(ctx, plan, built) {
+  const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
+  output.write(`${safeText(plan.intent)}
+Payer: ${safeText(plan.wallet.address)}
+`);
+  output.write(`Pool: ${safeText(built.build.pool)}
+Position: ${safeText(built.build.position)}
+`);
+  const preview = built.preview;
+  const amounts = preview?.amounts ?? [];
+  if (amounts.length > 0) {
+    const verb = plan.action === "add" ? "Deposit (maximum, at the pool's ratio)" : plan.action === "remove" ? "Withdraw (minimum)" : "Claim";
+    output.write(`${verb}: ${amounts.map(amountLine).join(" + ")}
+`);
+  }
+  output.write(`Candle LP fee: ${safeText(preview?.candleFeeBps ?? 0)} bps
+`);
+  for (const warning of preview?.warnings ?? [])
+    output.write(`Warning: ${safeText(warning)}
+`);
+  for (const risk of preview?.tokenRisks ?? [])
+    output.write(`Warning (${safeText(risk.mint)}): ${safeText(risk.message)}
+`);
+  if (built.replay)
+    output.write(`This client id was already built; the same artifact is shown again.
+`);
+  if (plan.yes)
+    return true;
+  if (!ctx.deps.isTTY.stdin)
+    throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes for an ordinary LP prompt.");
+  return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y";
+}
+async function runLpOperation(ctx, plan) {
+  const { id, key, wallet, action } = plan;
+  const confirm = async (signature2, extra) => {
+    const result = await lpRequest(ctx, key, "/api/v1/agent/lp/confirm", { clientTradeId: id, signature: signature2 });
+    return printTradingResult(ctx, {
+      ...result,
+      clientTradeId: id,
+      kind: "lp",
+      action,
+      signature: signature2,
+      wallet: safeText(wallet.address),
+      ...extra
+    });
+  };
+  const local = await savedOperation(ctx, key, id);
+  if (local?.signature)
+    return confirm(local.signature, { resumed: true });
+  if (!local && !await claimOperation(ctx, key, id, "lp"))
+    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
+  ctx.deps.stderr.write(`Operation: ${id}
+`);
+  const built = lpBuildSchema.parse(await lpRequest(ctx, key, `/api/v1/agent/lp/${action}/build`, {
+    linkedWalletId: wallet.id,
+    clientTradeId: id,
+    ...plan.body
+  }));
+  if (built.build.walletAddress !== wallet.address || built.build.action !== action)
+    throw new TradingError("INVALID_RESPONSE", "The LP build does not name the requested wallet and action; nothing was signed.");
+  if (built.build.signature)
+    return confirm(built.build.signature, { resumed: true });
+  const preview = {
+    pool: built.build.pool,
+    position: built.build.position,
+    amounts: built.preview?.amounts ?? [],
+    warnings: built.preview?.warnings ?? [],
+    tokenRisks: built.preview?.tokenRisks ?? [],
+    candleFeeBps: built.preview?.candleFeeBps ?? 0
+  };
+  if (!await confirmPreview(ctx, plan, built))
+    return printTradingResult(ctx, {
+      success: true,
+      status: "cancelled",
+      clientTradeId: id,
+      kind: "lp",
+      action,
+      preview
+    });
+  const signed = await relaySign(ctx, key, wallet, built.build.transaction);
+  const signature = await saveOperationSignature(ctx, key, id, "lp", signed);
+  const rpc2 = createSolanaRpc(plan.url, ctx.deps.fetch);
+  const echoed = await rpc2.sendTransaction(signed);
+  if (echoed !== signature)
+    throw new TradingError("RPC_FAILED", "RPC returned a different transaction signature; check the saved operation.");
+  ctx.deps.stderr.write(`LP ${action} signature: ${signature}
+`);
+  await waitConfirmed(ctx, rpc2, signature, id);
+  return confirm(signature, { preview });
+}
+function slippageOf(flag) {
+  const slippage = Number(flag ?? "100");
+  if (!Number.isInteger(slippage) || slippage < 0 || slippage > 1000)
+    throw new TradingError("INVALID_AMOUNT", "--slippage-bps must be an integer from 0 to 1000.");
+  return slippage;
+}
+async function lpAdd(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--amount", "--wallet", "--position", "--client-trade-id", "--slippage-bps", "--rpc-url"],
+    booleanFlags: ["--yes"]
+  });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  const flags = parsed.values;
+  const id = flags["--client-trade-id"] ?? `lp-${randomUUID3()}`;
+  if (parsed.positionals.length !== 2 || !flags["--amount"] || !flags["--wallet"] || !validClientId(id))
+    return usage2(ctx, "Usage: candle lp add <pool> --amount <decimal> <token> --wallet <tee> [--position <nft-mint>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
+  try {
+    const pool = solanaAddress(parsed.positionals[0], "The pool");
+    const token = poolToken(parsed.positionals[1]);
+    const position = flags["--position"] ? solanaAddress(flags["--position"], "--position") : undefined;
+    rawAmount(flags["--amount"], 18);
+    const slippageBps = slippageOf(flags["--slippage-bps"]);
+    const url = rpcUrl(ctx, flags["--rpc-url"]);
+    const key = await tradingKey(ctx);
+    const wallet = await tradingWallet(ctx, key, flags["--wallet"], LP_SCOPE);
+    const decimals = await decimalsFor(ctx, baseAsset(token) ?? token, flags["--rpc-url"]);
+    const amountRaw = rawAmount(flags["--amount"], decimals);
+    return await runLpOperation(ctx, {
+      action: "add",
+      id,
+      key,
+      wallet,
+      url,
+      yes: parsed.booleans.has("--yes"),
+      intent: `Add ${decimalAmount(amountRaw, decimals)} ${baseAsset(token) ?? token} of liquidity to DAMM v2 pool ${pool}${position ? ` (position ${position})` : " (new position)"}`,
+      body: { pool, token, amountRaw, slippageBps, ...position ? { position } : {} }
+    });
+  } catch (error) {
+    return tradingFailure(ctx, error, id);
+  }
+}
+async function lpRemove(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--percent", "--wallet", "--client-trade-id", "--slippage-bps", "--rpc-url"],
+    booleanFlags: ["--yes"]
+  });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  const flags = parsed.values;
+  const id = flags["--client-trade-id"] ?? `lp-${randomUUID3()}`;
+  const percent = Number(flags["--percent"]);
+  if (parsed.positionals.length !== 1 || !flags["--percent"] || !/^\d+(\.\d{1,2})?$/.test(flags["--percent"]) || !(percent > 0 && percent <= 100) || !validClientId(id))
+    return usage2(ctx, "Usage: candle lp remove <position> --percent <0.01-100> [--wallet <tee>] [--slippage-bps 100] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
+  try {
+    const position = solanaAddress(parsed.positionals[0], "The position");
+    const slippageBps = slippageOf(flags["--slippage-bps"]);
+    const url = rpcUrl(ctx, flags["--rpc-url"]);
+    const key = await tradingKey(ctx);
+    const wallet = await walletHolding(ctx, key, position, flags["--wallet"]);
+    return await runLpOperation(ctx, {
+      action: "remove",
+      id,
+      key,
+      wallet,
+      url,
+      yes: parsed.booleans.has("--yes"),
+      intent: percent === 100 ? `Remove all liquidity from position ${position}, claim its fees and close it (rent returns to the wallet)` : `Remove ${percent}% of the liquidity in position ${position}`,
+      body: { position, percent, slippageBps }
+    });
+  } catch (error) {
+    return tradingFailure(ctx, error, id);
+  }
+}
+async function lpClaim(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--wallet", "--client-trade-id", "--rpc-url"],
+    booleanFlags: ["--yes"]
+  });
+  if ("error" in parsed)
+    return usage2(ctx, parsed.error);
+  const flags = parsed.values;
+  const id = flags["--client-trade-id"] ?? `lp-${randomUUID3()}`;
+  if (parsed.positionals.length !== 1 || !validClientId(id))
+    return usage2(ctx, "Usage: candle lp claim <position> [--wallet <tee>] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
+  try {
+    const position = solanaAddress(parsed.positionals[0], "The position");
+    const url = rpcUrl(ctx, flags["--rpc-url"]);
+    const key = await tradingKey(ctx);
+    const wallet = await walletHolding(ctx, key, position, flags["--wallet"]);
+    return await runLpOperation(ctx, {
+      action: "claim",
+      id,
+      key,
+      wallet,
+      url,
+      yes: parsed.booleans.has("--yes"),
+      intent: `Claim the fees and any rewards of position ${position}`,
+      body: { position }
+    });
   } catch (error) {
     return tradingFailure(ctx, error, id);
   }
@@ -44470,20 +44916,20 @@ async function writeSecretNames(deps, profile, names) {
   else
     await deps.updateProfile(profile, { secretNames: sorted });
 }
-function usage2(ctx, line) {
+function usage3(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
 async function secretsSet(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage2(ctx, parsed.error);
+    return usage3(ctx, parsed.error);
   const [raw, extra] = parsed.positionals;
   if (!raw || extra !== undefined)
-    return usage2(ctx, "Usage: candle secrets set <name>");
+    return usage3(ctx, "Usage: candle secrets set <name>");
   const name = canonicalSecretName(raw);
   if (name === undefined) {
-    return usage2(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage3(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
   }
   if (!ctx.deps.isTTY.stdin || !ctx.deps.isTTY.stdout) {
     writeLocalFailure(ctx.deps, {
@@ -44495,7 +44941,7 @@ async function secretsSet(args, ctx) {
   }
   const value = await ctx.deps.promptSecret(`Value for ${name} (input hidden): `);
   if (value.length === 0)
-    return usage2(ctx, "An empty value was typed; nothing was stored.");
+    return usage3(ctx, "An empty value was typed; nothing was stored.");
   try {
     await ctx.deps.secretsStore.set(secretRef(ctx.profile, name), value);
   } catch (error) {
@@ -44515,9 +44961,9 @@ async function secretsSet(args, ctx) {
 async function secretsList(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage2(ctx, parsed.error);
+    return usage3(ctx, parsed.error);
   if (parsed.positionals.length > 0)
-    return usage2(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+    return usage3(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
   const names = await storedSecretNames(ctx.deps, ctx.profile);
   if (ctx.json) {
     ctx.deps.stdout.write(`${JSON.stringify({ ok: true, names, backend: ctx.deps.backend })}
@@ -44536,13 +44982,13 @@ async function secretsList(args, ctx) {
 async function secretsRemove(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage2(ctx, parsed.error);
+    return usage3(ctx, parsed.error);
   const [raw, extra] = parsed.positionals;
   if (!raw || extra !== undefined)
-    return usage2(ctx, "Usage: candle secrets remove <name>");
+    return usage3(ctx, "Usage: candle secrets remove <name>");
   const name = canonicalSecretName(raw);
   if (name === undefined) {
-    return usage2(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage3(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
   }
   await ctx.deps.secretsStore.delete(secretRef(ctx.profile, name));
   const names = await storedSecretNames(ctx.deps, ctx.profile);
@@ -45725,6 +46171,285 @@ async function signMessage2(args, ctx) {
 init_esm();
 init_args();
 init_deps();
+
+// src/lp-close.ts
+init_solana_lite();
+var DAMM_V2_PROGRAM_ID = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG";
+var CLOSE_PROGRAM_ALLOWLIST = new Set([
+  DAMM_V2_PROGRAM_ID,
+  TOKEN_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  COMPUTE_BUDGET_PROGRAM_ID,
+  SYSTEM_PROGRAM_ID
+]);
+var DAMM_POSITION_CLOSE_UNAVAILABLE = "DAMM_POSITION_CLOSE_UNAVAILABLE";
+var DAMM_CLOSE_TRANSACTION_REFUSED = "DAMM_CLOSE_TRANSACTION_REFUSED";
+function isPositionCandidate(account) {
+  return account.programId === TOKEN_2022_PROGRAM_ID && account.amountRaw === "1" && account.decimals === 0;
+}
+function parseCloseArtifact(body) {
+  if (!body || typeof body !== "object")
+    return;
+  const { transaction, accountKeys } = body;
+  if (typeof transaction !== "string" || transaction.length === 0)
+    return;
+  if (!Array.isArray(accountKeys) || !accountKeys.every((key) => typeof key === "string" && key.length > 0))
+    return;
+  return { transaction, accountKeys };
+}
+var MINT_BASE_SIZE2 = 82;
+var ACCOUNT_TYPE_OFFSET2 = 165;
+var ACCOUNT_TYPE_MINT = 1;
+var MULTISIG_SIZE2 = 355;
+var TOKEN_ACCOUNT_SIZE2 = 165;
+var TOKEN_ACCOUNT_STATE_INITIALIZED = 1;
+var CONTROL_RANGES = [
+  [0, 32, "mint"],
+  [32, 64, "authority"],
+  [72, 108, "delegate"],
+  [108, 109, "state"],
+  [121, 129, "delegated amount"],
+  [129, 165, "close authority"]
+];
+var TOKEN_IX_CLOSE_ACCOUNT = 9;
+var ATA_IX_CREATE = 0;
+var ATA_IX_CREATE_IDEMPOTENT = 1;
+function isTokenProgram(owner) {
+  return owner === TOKEN_PROGRAM_ID || owner === TOKEN_2022_PROGRAM_ID;
+}
+function isMintAccount(view) {
+  if (view === null || !isTokenProgram(view.owner))
+    return false;
+  if (view.data.length === MINT_BASE_SIZE2)
+    return true;
+  if (view.data.length === MULTISIG_SIZE2)
+    return false;
+  return view.data.length > ACCOUNT_TYPE_OFFSET2 && view.data[ACCOUNT_TYPE_OFFSET2] === ACCOUNT_TYPE_MINT;
+}
+function isUnsigned(tx) {
+  return tx.signatures.every((slot) => slot.every((byte) => byte === 0));
+}
+function bytesEqual2(a, b) {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
+}
+function allZero(bytes) {
+  return bytes.every((byte) => byte === 0);
+}
+async function verifyCloseArtifact(input) {
+  const { artifact, rpc: rpc2, tee, vault, nftMint, nftAccount } = input;
+  const refuse2 = (reason) => ({ ok: false, reason });
+  const allowedOwner = (address) => address === tee || address === vault;
+  let tx;
+  try {
+    tx = decodeTransaction(decodeStrictBase64(artifact.transaction));
+  } catch (error) {
+    if (error instanceof TransactionDecodeError)
+      return refuse2(`the close transaction is undecodable: ${error.message}`);
+    return refuse2(`the close transaction could not be read: ${error instanceof Error ? error.message : error}`);
+  }
+  if (tx.message.version !== 0)
+    return refuse2("the close transaction is not a v0 message");
+  if (!isUnsigned(tx))
+    return refuse2("the close transaction already carries a signature; close-build must return it unsigned");
+  if (tx.message.numRequiredSignatures !== 1)
+    return refuse2(`the close transaction requires ${tx.message.numRequiredSignatures} signers; a position close needs only the TEE wallet`);
+  if (tx.message.staticKeys[0] !== tee)
+    return refuse2(`the fee payer is ${tx.message.staticKeys[0]}, not the TEE wallet`);
+  let compiled;
+  try {
+    compiled = await resolveCompiledKeys(tx.message, rpc2);
+  } catch (error) {
+    if (error instanceof LookupTableError)
+      return refuse2(`a lookup table could not be resolved: ${error.message}`);
+    return refuse2(`the lookup tables could not be read: ${error instanceof Error ? error.message : error}`);
+  }
+  if (compiled.keys.length !== artifact.accountKeys.length)
+    return refuse2(`the server listed ${artifact.accountKeys.length} account keys and the transaction resolves to ${compiled.keys.length}`);
+  for (const [i, key] of compiled.keys.entries()) {
+    if (artifact.accountKeys[i] !== key)
+      return refuse2(`account key ${i} is ${key} in the transaction and ${artifact.accountKeys[i]} in the server's ordered array`);
+  }
+  let dammCalls = 0;
+  for (const [i, ix] of tx.message.instructions.entries()) {
+    const program = compiled.keys[ix.programIdIndex];
+    const account = (at) => compiled.keys[ix.accountIndexes[at] ?? -1];
+    if (program === undefined || !CLOSE_PROGRAM_ALLOWLIST.has(program))
+      return refuse2(`instruction ${i} calls ${program ?? "an unknown program"}, which a position close never does`);
+    switch (program) {
+      case DAMM_V2_PROGRAM_ID:
+        dammCalls += 1;
+        break;
+      case COMPUTE_BUDGET_PROGRAM_ID:
+        break;
+      case ASSOCIATED_TOKEN_PROGRAM_ID: {
+        const kind = ix.data.length === 0 ? ATA_IX_CREATE : ix.data.length === 1 ? ix.data[0] : -1;
+        if (kind !== ATA_IX_CREATE && kind !== ATA_IX_CREATE_IDEMPOTENT)
+          return refuse2(`instruction ${i} is an Associated Token instruction other than Create, which a close never needs`);
+        if (account(0) !== tee || !allowedOwner(account(2) ?? ""))
+          return refuse2(`instruction ${i} creates a token account for ${account(2) ?? "?"}, not the TEE wallet or its vault`);
+        break;
+      }
+      case TOKEN_PROGRAM_ID:
+      case TOKEN_2022_PROGRAM_ID: {
+        if (ix.data[0] !== TOKEN_IX_CLOSE_ACCOUNT || ix.data.length !== 1)
+          return refuse2(`instruction ${i} is a token instruction other than CloseAccount, which a close never issues at the top level`);
+        if (account(1) !== tee || account(2) !== tee)
+          return refuse2(`instruction ${i} closes a token account to ${account(1) ?? "?"}, not the TEE wallet`);
+        break;
+      }
+      default:
+        return refuse2(`instruction ${i} is a top-level System instruction, which a close never issues`);
+    }
+  }
+  if (dammCalls === 0)
+    return refuse2("the transaction calls no DAMM v2 instruction, so it cannot close a position");
+  let simulation;
+  try {
+    simulation = await simulateWithSnapshots(rpc2, artifact.transaction, compiled);
+  } catch (error) {
+    return refuse2(`the simulation could not be run: ${error instanceof Error ? error.message : error}`);
+  }
+  if (simulation.result.err !== null && simulation.result.err !== undefined)
+    return refuse2(`the simulation failed: ${JSON.stringify(simulation.result.err)}`);
+  const deltas = computeDeltas(simulation.snapshots);
+  const postState = new Map(simulation.snapshots.map((snapshot) => [snapshot.address, snapshot.after]));
+  for (const token of deltas.tokens) {
+    if (token.after > token.before && !allowedOwner(token.owner))
+      return refuse2(`${token.owner} would receive ${token.after - token.before} raw of ${token.mint} in account ${token.account}`);
+  }
+  for (const sol of deltas.sol) {
+    if (sol.after <= sol.before)
+      continue;
+    if (allowedOwner(sol.address))
+      continue;
+    const balance = tokenBalanceOf(postState.get(sol.address) ?? null);
+    if (balance !== undefined && allowedOwner(balance.owner))
+      continue;
+    return refuse2(`${sol.address} would receive ${sol.after - sol.before} lamports`);
+  }
+  const nftSnapshot = simulation.snapshots.find((snapshot) => snapshot.address === nftAccount);
+  if (nftSnapshot === undefined)
+    return refuse2(`the position NFT account ${nftAccount} is not written by this transaction`);
+  const nftAfter = tokenBalanceOf(nftSnapshot.after);
+  if (nftAfter !== undefined && nftAfter.amount !== 0n)
+    return refuse2(`the position NFT account ${nftAccount} still holds ${nftAfter.amount} after the simulation`);
+  for (const { address, before, after } of simulation.snapshots) {
+    if (allowedOwner(address)) {
+      if (after === null || after.owner !== SYSTEM_PROGRAM_ID || after.data.length !== 0)
+        return refuse2(`${address === tee ? "the TEE wallet" : "the vault"} would no longer be a plain System account after this transaction`);
+    }
+    if (after === null)
+      continue;
+    if (before !== null && after.owner !== before.owner)
+      return refuse2(`writable account ${address} would change owner from ${before.owner} to ${after.owner}`);
+    if (before !== null) {
+      const controlled = tokenBalanceOf(before);
+      if (controlled !== undefined && allowedOwner(controlled.owner)) {
+        if (after.data.length < TOKEN_ACCOUNT_SIZE2)
+          return refuse2(`token account ${address} would no longer decode as a token account`);
+        for (const [start, end, what] of CONTROL_RANGES) {
+          if (!bytesEqual2(before.data.subarray(start, end), after.data.subarray(start, end)))
+            return refuse2(`token account ${address} would change its ${what}, which a close never does`);
+        }
+        continue;
+      }
+    }
+    const created = before === null ? tokenBalanceOf(after) : undefined;
+    if (created !== undefined) {
+      if (!allowedOwner(created.owner))
+        return refuse2(`created token account ${address} would be controlled by ${created.owner}`);
+      if (!allZero(after.data.subarray(72, 108)) || after.data[108] !== TOKEN_ACCOUNT_STATE_INITIALIZED || !allZero(after.data.subarray(121, 129)) || !allZero(after.data.subarray(129, 165)))
+        return refuse2(`created token account ${address} would start with a delegate, a close authority, or a frozen state`);
+    }
+  }
+  const infos = new Map;
+  const infoOf = async (address) => {
+    if (!infos.has(address))
+      infos.set(address, await rpc2.getAccountInfo(address));
+    return infos.get(address) ?? null;
+  };
+  const canonical = new Set;
+  for (const key of compiled.keys) {
+    const view = await infoOf(key);
+    if (!isMintAccount(view) || view === null)
+      continue;
+    const mint = decodePubkey(key);
+    const program = decodePubkey(view.owner);
+    canonical.add(encodePubkey(associatedTokenAddress(decodePubkey(tee), mint, program)));
+    canonical.add(encodePubkey(associatedTokenAddress(decodePubkey(vault), mint, program)));
+  }
+  for (const [i, key] of compiled.keys.entries()) {
+    if (!compiled.isWritable[i])
+      continue;
+    const view = await infoOf(key);
+    if (view === null) {
+      if (canonical.has(key))
+        continue;
+      return refuse2(`writable account ${key} does not exist and is not a TEE or vault associated token account for a mint this transaction names`);
+    }
+    if (isTokenProgram(view.owner)) {
+      if (key === nftMint)
+        continue;
+      const balance = tokenBalanceOf(view);
+      if (balance === undefined)
+        return refuse2(`writable account ${key} is owned by a token program but is not a token account`);
+      if (allowedOwner(balance.owner) || key === nftAccount)
+        continue;
+      const authority = await infoOf(balance.owner);
+      if (authority !== null && authority.owner === DAMM_V2_PROGRAM_ID)
+        continue;
+      return refuse2(`writable token account ${key} is controlled by ${balance.owner}, which is neither this wallet, its vault, nor a DAMM v2 pool`);
+    }
+    if (view.owner === SYSTEM_PROGRAM_ID) {
+      if (allowedOwner(key))
+        continue;
+      return refuse2(`writable system account ${key} is neither the TEE wallet nor its vault`);
+    }
+    if (view.owner !== DAMM_V2_PROGRAM_ID)
+      return refuse2(`writable account ${key} is owned by ${view.owner}, not DAMM v2`);
+  }
+  return { ok: true, tx, compiled, simulation };
+}
+function formatSol2(lamports) {
+  const negative = lamports < 0n;
+  const abs = negative ? -lamports : lamports;
+  const whole = abs / 1000000000n;
+  const frac = (abs % 1000000000n).toString().padStart(9, "0").replace(/0+$/, "");
+  return `${negative ? "-" : ""}${whole}${frac ? `.${frac}` : ""} SOL`;
+}
+function describeClose(input) {
+  const { verdict, tee, vault, nftMint, nftAccount } = input;
+  const { tx, compiled, simulation } = verdict;
+  const lines = [];
+  lines.push(`message     v0, ${tx.message.instructions.length} instruction(s), ${compiled.keys.length} account(s)${tx.message.lookups.length > 0 ? ` (${tx.message.lookups.length} lookup table(s) resolved)` : ""}, blockhash ${tx.message.recentBlockhash}`);
+  lines.push(`fee payer   ${compiled.keys[0]} (this TEE wallet)`);
+  lines.push(`position    NFT mint ${nftMint}, account ${nftAccount}`);
+  const programs = [...new Set(tx.message.instructions.map((ix) => compiled.keys[ix.programIdIndex] ?? "?"))];
+  for (const program of programs)
+    lines.push(`program     ${program === DAMM_V2_PROGRAM_ID ? `Meteora DAMM v2 (${program})` : programNameOf(program)}`);
+  const deltas = computeDeltas(simulation.snapshots);
+  const who = (address) => address === tee ? "wallet" : address === vault ? "vault" : address;
+  for (const address of [tee, vault]) {
+    const sol = deltas.sol.find((delta) => delta.address === address);
+    if (sol && sol.after !== sol.before)
+      lines.push(`${who(address).padEnd(11)} ${formatSol2(sol.before)} -> ${formatSol2(sol.after)} (${sol.after >= sol.before ? "+" : ""}${formatSol2(sol.after - sol.before)})`);
+    for (const token of deltas.tokens.filter((delta) => delta.owner === address && delta.after !== delta.before)) {
+      lines.push(`${who(address).padEnd(11)} ${token.mint}: ${token.before} -> ${token.after} raw (${token.after >= token.before ? "+" : ""}${token.after - token.before}) in ${token.account}${token.account === nftAccount ? " (position NFT, burned)" : ""}`);
+    }
+  }
+  const nft = simulation.snapshots.find((snapshot) => snapshot.address === nftAccount);
+  if (nft && nft.after === null)
+    lines.push(`position    NFT account ${nftAccount} is closed by this transaction`);
+  const others = deltas.tokens.filter((token) => token.owner !== tee && token.owner !== vault && token.after !== token.before);
+  for (const token of others)
+    lines.push(`${token.owner === undefined ? "?" : "pool"}        ${token.mint}: ${token.before} -> ${token.after} raw in ${token.account} (authority ${token.owner})`);
+  lines.push("checked     ordered keys, programs, simulation, positive deltas, control, writable accounts: all passed");
+  lines.push("note        the simulation is evidence, not a guarantee: a program can behave differently once signed");
+  return lines;
+}
+
+// src/commands/tee.ts
 init_profiles();
 init_render();
 init_solana_lite();
@@ -49465,8 +50190,8 @@ function readDisableOutcome(body) {
 var MIN_PASSPHRASE_LENGTH = 12;
 var USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 var RPC_URL_ENV2 = "CANDLE_SOLANA_RPC_URL";
-var CONFIRM_POLL_MS2 = 2000;
-var CONFIRM_MAX_POLLS2 = 45;
+var CONFIRM_POLL_MS3 = 2000;
+var CONFIRM_MAX_POLLS3 = 45;
 function refuseEnvPassphrase2(ctx) {
   if (ctx.deps.env.CANDLE_KEYSTORE_PASSPHRASE === undefined)
     return true;
@@ -49477,7 +50202,7 @@ function refuseEnvPassphrase2(ctx) {
   }, ctx.json);
   return false;
 }
-function usage3(ctx, line) {
+function usage4(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
@@ -49697,7 +50422,7 @@ async function openExistingTeeStore(ctx, parsed) {
   const { deps, json } = ctx;
   const found = await readTeeStore(ctx, parsed);
   if ("usage" in found)
-    return { ok: false, code: usage3(ctx, found.usage) };
+    return { ok: false, code: usage4(ctx, found.usage) };
   const { path } = found;
   if ("error" in found) {
     writeLocalFailure(deps, {
@@ -49794,12 +50519,12 @@ async function teeNew(args, ctx) {
     return 1;
   const parsed = parseArgs(args, { valueFlags: ["--label", "--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
-    return usage3(ctx, parsed.error);
+    return usage4(ctx, parsed.error);
   if (parsed.positionals.length > 0)
-    return usage3(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+    return usage4(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
   const found = await readTeeStore(ctx, parsed);
   if ("usage" in found)
-    return usage3(ctx, found.usage);
+    return usage4(ctx, found.usage);
   const { path } = found;
   if ("error" in found) {
     writeLocalFailure(deps, {
@@ -49876,15 +50601,15 @@ async function teeEnable(args, ctx) {
     pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
-    return usage3(ctx, parsed.error);
+    return usage4(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined) {
-    return usage3(ctx, "Usage: candle tee enable <address> --vault <address> | --vault-key <label>");
+    return usage4(ctx, "Usage: candle tee enable <address> --vault <address> | --vault-key <label>");
   }
   const vaultFlag = parsed.values["--vault"];
   const vaultKey = parsed.values["--vault-key"];
   if (vaultFlag !== undefined && vaultKey !== undefined) {
-    return usage3(ctx, "Use either --vault or --vault-key, not both.");
+    return usage4(ctx, "Use either --vault or --vault-key, not both.");
   }
   let vault = vaultFlag;
   if (vaultKey !== undefined) {
@@ -49894,7 +50619,7 @@ async function teeEnable(args, ctx) {
     const { isVaultError: isVaultError2 } = await Promise.resolve().then(() => (init_errors(), exports_errors));
     const resolvedVault = vaultPathFor2(ctx, parsed);
     if ("error" in resolvedVault)
-      return usage3(ctx, resolvedVault.error);
+      return usage4(ctx, resolvedVault.error);
     const vaultPath = resolvedVault.path;
     const raw = await readVaultRaw2(vaultPath);
     if (raw === null) {
@@ -49932,11 +50657,11 @@ async function teeEnable(args, ctx) {
     }
   }
   if (!vault)
-    return usage3(ctx, "--vault <address> or --vault-key <label> is required: the destination every sweep sends to.");
+    return usage4(ctx, "--vault <address> or --vault-key <label> is required: the destination every sweep sends to.");
   if (!isSolanaAddress(vault))
-    return usage3(ctx, "--vault is not a valid Solana address.");
+    return usage4(ctx, "--vault is not a valid Solana address.");
   if (vault === address)
-    return usage3(ctx, "--vault must be a different address from the TEE wallet.");
+    return usage4(ctx, "--vault must be a different address from the TEE wallet.");
   const vaultOwned = await addressOwnedByVault(ctx, address);
   if (vaultOwned === "usage")
     return 2;
@@ -50073,20 +50798,20 @@ async function teeFund(args, ctx) {
     return 1;
   const parsed = parseArgs(args, { valueFlags: ["--amount", "--asset", "--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
-    return usage3(ctx, parsed.error);
+    return usage4(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage3(ctx, "Usage: candle tee fund <address> --amount <n> [--asset SOL|USDC]");
+    return usage4(ctx, "Usage: candle tee fund <address> --amount <n> [--asset SOL|USDC]");
   const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase();
   if (asset !== "SOL" && asset !== "USDC")
-    return usage3(ctx, "--asset must be SOL or USDC.");
+    return usage4(ctx, "--asset must be SOL or USDC.");
   const amount = parsed.values["--amount"];
   if (!amount)
-    return usage3(ctx, "--amount <n> is required.");
+    return usage4(ctx, "--amount <n> is required.");
   const decimals = asset === "SOL" ? 9 : 6;
   const raw = decimalToRaw(amount, decimals);
   if (raw === null || raw === 0n)
-    return usage3(ctx, `--amount must be a positive decimal with at most ${decimals} decimal places.`);
+    return usage4(ctx, `--amount must be a positive decimal with at most ${decimals} decimal places.`);
   const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed));
   if (!resolved.ok)
     return resolved.code;
@@ -50153,10 +50878,10 @@ async function teeStatus(args, ctx) {
     return 1;
   const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
-    return usage3(ctx, parsed.error);
+    return usage4(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage3(ctx, "Usage: candle tee status <address> [--rpc-url <url>]");
+    return usage4(ctx, "Usage: candle tee status <address> [--rpc-url <url>]");
   const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed));
   if (!resolved.ok)
     return resolved.code;
@@ -50198,7 +50923,7 @@ async function teeStatus(args, ctx) {
     if (rpcUrl2) {
       const checked = rpcUrlFrom2(ctx, parsed);
       if (typeof checked !== "string")
-        return usage3(ctx, checked.error);
+        return usage4(ctx, checked.error);
       const rpc2 = createSolanaRpc(checked, deps.fetch);
       try {
         const lamports = await rpc2.getBalance(address);
@@ -50279,10 +51004,10 @@ async function teeDisable(args, ctx) {
     return 1;
   const parsed = parseArgs(args, { valueFlags: ["--keystore"], pathFlags: ["--keystore"] });
   if ("error" in parsed)
-    return usage3(ctx, parsed.error);
+    return usage4(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage3(ctx, "Usage: candle tee disable <address>");
+    return usage4(ctx, "Usage: candle tee disable <address>");
   await printIdentity(ctx);
   const openedActive = await openActiveTee(ctx, parsed, address, "read");
   if (!openedActive.ok)
@@ -50377,6 +51102,9 @@ function refusalState(raw) {
 async function broadcastAndFinalize2(rpc2, deps, secret, feePayer, instructions, pending, recordPending, clearPending) {
   const blockhash = await rpc2.getLatestBlockhash();
   const message = compileLegacyMessage({ feePayer, recentBlockhash: blockhash, instructions });
+  return broadcastMessage(rpc2, deps, secret, message, blockhash, pending, recordPending, clearPending);
+}
+async function broadcastMessage(rpc2, deps, secret, message, blockhash, pending, recordPending, clearPending) {
   const signatureBytes = signMessage(message, secret);
   const signature = base58.encode(signatureBytes);
   const wire = serializeSignedTransaction(message, signatureBytes);
@@ -50402,7 +51130,7 @@ async function broadcastAndFinalize2(rpc2, deps, secret, feePayer, instructions,
       error: `send did not answer cleanly (${error instanceof Error ? error.message : error}); it may still land`
     };
   }
-  for (let i = 0;i < CONFIRM_MAX_POLLS2; i++) {
+  for (let i = 0;i < CONFIRM_MAX_POLLS3; i++) {
     let status;
     try {
       status = await rpc2.getSignatureStatus(signature);
@@ -50424,12 +51152,12 @@ async function broadcastAndFinalize2(rpc2, deps, secret, feePayer, instructions,
         error: `transaction ${signature} failed on chain: ${JSON.stringify(observed.err)}`
       };
     }
-    await deps.sleep(CONFIRM_POLL_MS2);
+    await deps.sleep(CONFIRM_POLL_MS3);
   }
   return {
     status: "uncertain",
     signature,
-    error: `transaction ${signature} was not finalized within ${CONFIRM_MAX_POLLS2 * CONFIRM_POLL_MS2 / 1000}s; it may still land${echoNote}`
+    error: `transaction ${signature} was not finalized within ${CONFIRM_MAX_POLLS3 * CONFIRM_POLL_MS3 / 1000}s; it may still land${echoNote}`
   };
 }
 async function teeSweep(args, ctx) {
@@ -50442,13 +51170,13 @@ async function teeSweep(args, ctx) {
     pathFlags: ["--keystore"]
   });
   if ("error" in parsed)
-    return usage3(ctx, parsed.error);
+    return usage4(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage3(ctx, "Usage: candle tee sweep <address> --rpc-url <url> [--emergency]");
+    return usage4(ctx, "Usage: candle tee sweep <address> --rpc-url <url> [--emergency]");
   const rpcUrl2 = rpcUrlFrom2(ctx, parsed);
   if (typeof rpcUrl2 !== "string")
-    return usage3(ctx, rpcUrl2.error);
+    return usage4(ctx, rpcUrl2.error);
   const emergency = parsed.booleans.has("--emergency");
   const openedActive = await openActiveTee(ctx, parsed, address, "sign");
   if (!openedActive.ok)
@@ -50651,6 +51379,116 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       pendingStill.push(p);
       signingBlocked = true;
     }
+    const candidateAccounts = new Set;
+    const lpCloses = [];
+    {
+      let token2022Accounts = [];
+      try {
+        token2022Accounts = await rpc2.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID);
+      } catch (error) {
+        residuals.push({
+          kind: "inventory",
+          detail: `could not list Token-2022 accounts for position discovery: ${error instanceof Error ? error.message : error}`
+        });
+      }
+      const candidates = token2022Accounts.filter(isPositionCandidate);
+      for (const acct of candidates)
+        candidateAccounts.add(acct.pubkey);
+      const leftover = (kind, acct, detail) => residuals.push({ kind, detail, mint: acct.mint, account: acct.pubkey, amountRaw: acct.amountRaw });
+      if (!emergency && candidates.length > 0) {
+        if (!json)
+          deps.stdout.write(`  ${candidates.length} position NFT candidate(s) (Token-2022, amount 1, decimals 0)
+`);
+        const verified = [];
+        for (const acct of candidates) {
+          if (signingBlocked)
+            break;
+          if (!apiKey || !entry.linkedWalletId) {
+            leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, "no bound API key is available to build the close; the NFT was left in place");
+            continue;
+          }
+          const result = await apiRequest(`/api/v1/agent/lp/positions/${encodeURIComponent(acct.mint)}/close-build`, {
+            method: "POST",
+            auth: "key",
+            credentials: { apiKey },
+            apiUrl,
+            fetch: deps.fetch,
+            env: deps.env,
+            body: {}
+          });
+          if (!result.ok) {
+            leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, `close-build ${result.code ?? `HTTP ${result.status}`}: ${result.message}; the NFT was left in place`);
+            continue;
+          }
+          const artifact = parseCloseArtifact(result.body);
+          if (artifact === undefined) {
+            leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, "close-build answered without a transaction and an ordered account key array; the NFT was left in place");
+            continue;
+          }
+          const verdict = await verifyCloseArtifact({
+            artifact,
+            rpc: rpc2,
+            tee: address,
+            vault,
+            nftMint: acct.mint,
+            nftAccount: acct.pubkey
+          });
+          if (!verdict.ok) {
+            leftover(DAMM_CLOSE_TRANSACTION_REFUSED, acct, `${verdict.reason}; refused before signing`);
+            continue;
+          }
+          verified.push({ acct, verdict });
+        }
+        for (const { acct, verdict } of verified) {
+          if (signingBlocked) {
+            leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, "not signed: an earlier transaction is still in flight");
+            continue;
+          }
+          let blockhashValid;
+          try {
+            blockhashValid = await rpc2.isBlockhashValid(verdict.tx.message.recentBlockhash, "confirmed");
+          } catch (error) {
+            leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, `could not check the close build's blockhash: ${error instanceof Error ? error.message : error}; not signed`);
+            continue;
+          }
+          if (!blockhashValid) {
+            leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, "the close build's blockhash has expired; not signed, re-run the sweep for a fresh close");
+            continue;
+          }
+          const display = describeClose({ verdict, tee: address, vault, nftMint: acct.mint, nftAccount: acct.pubkey });
+          lpCloses.push({ mint: acct.mint, account: acct.pubkey, display });
+          if (!json) {
+            deps.stdout.write(`  Close for position ${acct.mint} (verified, unsigned; about to sign):
+`);
+            for (const line of display)
+              deps.stdout.write(`    ${line}
+`);
+          }
+          const pending = {
+            kind: "lp-close",
+            mint: acct.mint,
+            account: acct.pubkey,
+            amountRaw: acct.amountRaw
+          };
+          const outcome = await broadcastMessage(rpc2, deps, secret, verdict.tx.message.bytes, verdict.tx.message.recentBlockhash, pending, recordPending, clearPending);
+          if (outcome.status !== "finalized") {
+            if (!settle2(outcome, pending, "lp-close"))
+              signingBlocked = true;
+            continue;
+          }
+          await retainReceipt({
+            kind: "lp-close",
+            mint: acct.mint,
+            amountRaw: acct.amountRaw,
+            signature: outcome.signature,
+            finalizedAt: new Date(deps.now()).toISOString()
+          });
+          if (!json)
+            deps.stdout.write(`  closed LP position ${acct.mint} and withdrew its liquidity: ${outcome.signature}
+`);
+        }
+      }
+    }
     const tokenAccounts = [];
     for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
       try {
@@ -50667,6 +51505,13 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       if (signingBlocked)
         break;
       const token2022 = acct.programId === TOKEN_2022_PROGRAM_ID;
+      if (candidateAccounts.has(acct.pubkey)) {
+        if (!emergency)
+          continue;
+        if (!json)
+          deps.stdout.write(`  ${acct.mint}: position NFT moved as-is to the vault (emergency; unwind it from a fresh TEE wallet)
+`);
+      }
       if (acct.state !== "initialized") {
         residuals.push({
           kind: token2022 && acct.state === "frozen" ? "TOKEN_2022_FROZEN" : "frozen-or-uninitialized",
@@ -50921,7 +51766,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           signature: p.signature
         })),
         inventory,
-        recordedOnServer
+        recordedOnServer,
+        ...lpCloses.length > 0 ? { lpCloses } : {}
       })}
 `);
       return finalState === "swept" ? 0 : 3;
@@ -54745,7 +55591,7 @@ init_store();
 init_vault_support();
 var CHUNK = 100;
 var LAMPORTS_PER_SOL = 1000000000n;
-function formatSol2(lamports) {
+function formatSol3(lamports) {
   const whole = lamports / LAMPORTS_PER_SOL;
   const fraction = (lamports % LAMPORTS_PER_SOL).toString().padStart(9, "0").replace(/0+$/, "");
   return fraction === "" ? whole.toString() : `${whole}.${fraction}`;
@@ -54869,7 +55715,7 @@ async function vaultList(args, ctx) {
       const row = [entry.address, entry.label || "(none)", entry.role, entry.derivation?.path ?? "-"];
       if (balances) {
         const held = lamports.get(entry.address);
-        row.push(entry.chain !== "solana" ? "-" : held === undefined ? "?" : formatSol2(held));
+        row.push(entry.chain !== "solana" ? "-" : held === undefined ? "?" : formatSol3(held));
       }
       return row;
     });
@@ -54878,9 +55724,9 @@ ${renderTable(headers, rows)}
 `);
     if (balances) {
       deps.stdout.write(complete ? `
-total  ${formatSol2(totalLamports)} SOL across ${solana.length} keys
+total  ${formatSol3(totalLamports)} SOL across ${solana.length} keys
 ` : `
-total  ${formatSol2(totalLamports)} SOL across ${solana.length - unavailable.length} of ${solana.length} keys read
+total  ${formatSol3(totalLamports)} SOL across ${solana.length - unavailable.length} of ${solana.length} keys read
 `);
     }
     return complete ? 0 : 3;
@@ -55911,7 +56757,7 @@ function formatUsd(value) {
   const grouped = (whole ?? "0").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return `$${grouped}.${fraction ?? "00"}`;
 }
-function formatSol3(lamports) {
+function formatSol4(lamports) {
   const whole = lamports / 1000000000n;
   const fraction = lamports % 1000000000n;
   return `${whole}.${fraction.toString().padStart(9, "0").slice(0, 6)}`;
@@ -56411,7 +57257,7 @@ function renderBatchTable(planned, opts) {
     const authority = item.kind === "skip" ? "" : opts.roles === undefined ? "?" : authorityCell(address, opts.roles);
     const cells = [String(item.row.line), state, item.subject.label, address, destination, authority];
     const lamports = opts.lamports?.get(address);
-    cells.push(lamports === undefined ? "unread" : formatSol3(lamports));
+    cells.push(lamports === undefined ? "unread" : formatSol4(lamports));
     if (opts.tokenCounts !== undefined)
       cells.push(String(opts.tokenCounts.get(address) ?? 0));
     if (opts.hasValueUsd)
@@ -58099,6 +58945,7 @@ function extractGlobalFlags(argv) {
 var COMMANDS = {
   swap: { bare: swap, subcommands: { status: swapStatus } },
   launch: { bare: launch },
+  lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
   keys: { subcommands: { list: keysList, create: keysCreate, revoke: keysRevoke, wallets: keysWallets } },
   wallets: {

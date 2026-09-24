@@ -208,6 +208,12 @@ const JSON_ANSWERING: { name: string; argv: string[] }[] = [
   { name: "swap", argv: ["swap"] },
   { name: "swap status", argv: ["swap", "status"] },
   { name: "launch", argv: ["launch"] },
+  // BE-315: the LP writes answer usage without a terminal or a key; `lp positions` needs a key
+  // before it can answer at all, like `swap` with a full argument list, and is not frozen here.
+  { name: "lp pools", argv: ["lp", "pools"] },
+  { name: "lp add", argv: ["lp", "add"] },
+  { name: "lp remove", argv: ["lp", "remove", "Pos1111"] },
+  { name: "lp claim", argv: ["lp", "claim"] },
   { name: "vault status", argv: ["vault", "status"] },
   // BE-274: new surface. Without a terminal it is D7's unlock refusal, exactly as every other
   // command that prompts is.

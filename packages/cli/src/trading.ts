@@ -75,6 +75,69 @@ const embeddedSchema = z
   })
   .passthrough()
 export const operationSchema = z.object({ job: z.object({ status: z.string() }).passthrough() }).passthrough()
+/** Ember Phase 3 PR D (BE-315, R4): the LP build routes' response, `POST /agent/lp/{add,remove,claim}/build`. */
+const lpAmountSchema = z.object({ mint: z.string(), raw: z.string().regex(/^\d+$/), decimals: z.number().int() })
+export const lpBuildSchema = z.object({
+  build: z
+    .object({
+      action: z.enum(["add", "remove", "claim"]),
+      pool: z.string(),
+      position: z.string(),
+      transaction: z.string().min(1),
+      walletAddress: z.string(),
+      signature: z.string().optional(),
+    })
+    .passthrough(),
+  preview: z
+    .object({
+      amounts: z.array(lpAmountSchema).default([]),
+      tokenRisks: risksSchema.default([]),
+      warnings: z.array(z.string()).default([]),
+      candleFeeBps: z.number().optional(),
+    })
+    .passthrough()
+    .nullable(),
+  replay: z.boolean().optional(),
+})
+export const lpPositionsSchema = z.object({
+  positions: z.array(
+    z
+      .object({
+        position: z.string(),
+        pool: z.string(),
+        tokens: z.array(
+          z
+            .object({
+              mint: z.string(),
+              decimals: z.number().int(),
+              amountRaw: z.string(),
+              unclaimedFeesRaw: z.string(),
+              valueUsd: z.number().nullable().optional(),
+            })
+            .passthrough(),
+        ),
+        poolShare: z.number().optional(),
+        valueUsd: z.number().nullable().optional(),
+      })
+      .passthrough(),
+  ),
+})
+export const lpPoolsSchema = z.object({
+  page: z.number().int(),
+  pages: z.number().int(),
+  pools: z.array(
+    z
+      .object({
+        pool: z.string(),
+        tokens: z.array(z.string()),
+        liquidityUsd: z.number().nullable().optional(),
+        baseFeePercent: z.number().nullable().optional(),
+        volume24hUsd: z.number().nullable().optional(),
+        estimatedAprPercent: z.number().nullable().optional(),
+      })
+      .passthrough(),
+  ),
+})
 export interface QuoteDisplay {
   intent?: string
   wallet?: string
@@ -159,10 +222,12 @@ type WalletRow = z.infer<typeof walletSchema>
  * that answer cannot be assembled from a match that did not happen -- which is the same family of
  * problem as BE-242's truncated listing: the CLI knew and did not say.
  */
-async function teeWallets(
+export type TradingWalletRow = WalletRow
+export async function listTradingWallets(
   ctx: CommandContext,
   key: string,
-  scope: string,
+  /** A scope the bound key must carry; omitted for a read that `requireAgentKey("any")` admits. */
+  scope?: string,
 ): Promise<{ rows: WalletRow[]; appId: string }> {
   let cursor: string | undefined
   const rows: WalletRow[] = []
@@ -172,7 +237,8 @@ async function teeWallets(
     const response = walletPageSchema.parse(
       await request(ctx, key, `/api/v1/agent/wallets/trading${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
     )
-    if (!response.scopes?.includes(scope)) throw new TradingError("SCOPE_MISSING", `The bound key needs ${scope}.`)
+    if (scope !== undefined && !response.scopes?.includes(scope))
+      throw new TradingError("SCOPE_MISSING", `The bound key needs ${scope}.`)
     appId = response.privyAppId ?? ""
     if (!Array.isArray(response.page))
       throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not return a page.")
@@ -198,7 +264,7 @@ function teeWalletList(rows: WalletRow[]): string {
   return rows.map(describeWallet).join("; ")
 }
 
-async function completeTradingWallet(
+export async function completeTradingWallet(
   ctx: CommandContext,
   row: WalletRow,
   appId: string,
@@ -241,7 +307,7 @@ export async function tradingWallet(
   name: string,
   scope: string,
 ): Promise<TradingWallet> {
-  const { rows, appId } = await teeWallets(ctx, key, scope)
+  const { rows, appId } = await listTradingWallets(ctx, key, scope)
   const matches = rows.filter((row) => matchesName(row, name))
   if (matches.length !== 1) {
     throw new TradingError(
@@ -276,7 +342,7 @@ export type SwapPayer =
 
 export async function tradingPayer(ctx: CommandContext, key: string, name: string | undefined): Promise<SwapPayer> {
   const scope = "swap:write"
-  const { rows, appId } = await teeWallets(ctx, key, scope)
+  const { rows, appId } = await listTradingWallets(ctx, key, scope)
   // Read even when a name was given: it is what lets a miss say "here is what you could have
   // meant" instead of naming only half the account.
   const embedded = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded")).wallets?.solana
@@ -368,8 +434,10 @@ export async function rpc(ctx: CommandContext, url: string, method: string, para
     throw new TradingError("RPC_FAILED", "RPC returned an invalid object.")
   return body.result as Json
 }
-export type OperationKind = "trade" | "swap" | "launch"
-export function jobPath(kind: OperationKind, id: string): string {
+export type OperationKind = "trade" | "swap" | "launch" | "lp"
+/** The kinds with a jobs route. An LP operation is looked up by its build's replay instead (lp.ts). */
+export type JobKind = Exclude<OperationKind, "lp">
+export function jobPath(kind: JobKind, id: string): string {
   const rail = kind === "launch" ? "launch/headless" : kind === "swap" ? "agent/swap" : "trade/agent"
   return `/api/v1/${rail}/jobs/${encodeURIComponent(id)}`
 }
@@ -440,10 +508,11 @@ export async function confirmQuote(ctx: CommandContext, quote: QuoteDisplay, yes
 
 /** Save the payer signature before broadcast for confirmation-only recovery after a restart.
  * No transaction bytes or keys are persisted in this operation record. */
-export async function saveLaunchSignature(
+export async function saveOperationSignature(
   ctx: CommandContext,
   key: string,
   id: string,
+  kind: OperationKind,
   transaction: string,
 ): Promise<string> {
   const bytes = Buffer.from(transaction, "base64")
@@ -460,7 +529,7 @@ export async function saveLaunchSignature(
   const signature = base58.encode(bytes.subarray(offset, offset + 64))
   const path = operationPath(ctx, key, id)
   const temporary = `${path}.${process.pid}.tmp`
-  await writeFile(temporary, JSON.stringify({ id, kind: "launch", signature }), { mode: 0o600 })
+  await writeFile(temporary, JSON.stringify({ id, kind, signature }), { mode: 0o600 })
   const file = await open(temporary, "r")
   try {
     await file.sync()

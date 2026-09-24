@@ -9,6 +9,7 @@ import {
   claimOperation,
   confirmQuote,
   decimalAmount,
+  type JobKind,
   type Json,
   jobPath,
   type OperationKind,
@@ -50,10 +51,10 @@ export async function lookupOperation(
   ctx: CommandContext,
   key: string,
   id: string,
-  kind?: OperationKind,
+  kind?: JobKind,
 ): Promise<(Json & { job: { status: string } }) | null> {
   const local = await savedOperation(ctx, key, id)
-  const kinds: OperationKind[] = kind ? [kind] : local ? [local.kind] : ["trade", "swap", "launch"]
+  const kinds: JobKind[] = kind ? [kind] : local && local.kind !== "lp" ? [local.kind] : ["trade", "swap", "launch"]
   const found: (Json & { job: { status: string } })[] = []
   for (const candidate of kinds) {
     try {
@@ -87,7 +88,7 @@ export async function swapStatus(args: string[], ctx: CommandContext): Promise<n
   try {
     const key = await tradingKey(ctx)
     const id = parsed.positionals[0] as string
-    const result = await lookupOperation(ctx, key, id, parsed.values["--kind"] as OperationKind | undefined)
+    const result = await lookupOperation(ctx, key, id, parsed.values["--kind"] as JobKind | undefined)
     if (!result)
       throw new TradingError(
         "JOB_NOT_FOUND",
@@ -98,7 +99,7 @@ export async function swapStatus(args: string[], ctx: CommandContext): Promise<n
     return tradingFailure(ctx, error)
   }
 }
-async function decimalsFor(ctx: CommandContext, asset: string, url?: string): Promise<number> {
+export async function decimalsFor(ctx: CommandContext, asset: string, url?: string): Promise<number> {
   if (BASES[asset]) return BASES[asset].decimals
   const result = await rpc(ctx, rpcUrl(ctx, url), "getTokenSupply", [asset, { commitment: "confirmed" }])
   const decimals = (result.value as { decimals?: number } | undefined)?.decimals

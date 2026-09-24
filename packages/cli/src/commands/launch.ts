@@ -11,7 +11,7 @@ import {
   request,
   rpcUrl,
   savedOperation,
-  saveLaunchSignature,
+  saveOperationSignature,
   TradingError,
   tradingKey,
   tradingWallet,
@@ -113,7 +113,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     if (!Number.isFinite(built.expiresAt) || built.expiresAt <= ctx.deps.now())
       throw new TradingError("QUOTE_EXPIRED", "The launch build expired before signing.")
     const signed = await relaySign(ctx, key, wallet, built.transaction)
-    const signature = await saveLaunchSignature(ctx, key, id, signed)
+    const signature = await saveOperationSignature(ctx, key, id, "launch", signed)
     const broadcastSignature = await createSolanaRpc(url, ctx.deps.fetch).sendTransaction(signed)
     if (broadcastSignature !== signature)
       throw new TradingError("RPC_FAILED", "RPC returned a different transaction signature; check the saved operation.")
