@@ -159,8 +159,9 @@ describe("vault format: version 2 stays version 2 until the first external alloc
     expect(await run(["external", "new"], h.deps)).toBe(0)
     const raw = await readFile(h.path, "utf8")
     // What a 0.10.x / 0.11.x reader does with this file: its check is `version !== 2`, so a 3 is
-    // the same refusal this reader gives a 4. Reproduced here on the refusal path itself.
-    const asOlderReaderSees = raw.replace('"version": 3', '"version": 4')
+    // the same refusal this reader gives a version it does not know. Phase 4b (BE-391) made 4 a
+    // version this reader opens, so 5 stands in for it. Reproduced here on the refusal path itself.
+    const asOlderReaderSees = raw.replace('"version": 3', '"version": 5')
     expect(() => parseVaultFile(asOlderReaderSees)).toThrow(VaultError)
     try {
       parseVaultFile(asOlderReaderSees)

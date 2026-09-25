@@ -28,14 +28,13 @@ import {
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { addressFromSecret64 } from "../vault/ed25519"
 import { VaultError } from "../vault/errors"
-import type { KeyEntry } from "../vault/format"
+import { type KeyEntry, teeNetworkFor } from "../vault/format"
 import { DERIVATION_SCHEME, deriveSolanaKey, solanaTeePath } from "../vault/hd"
 import { wipe } from "../vault/hygiene"
 import {
   applyPromotion,
   assertColdVaultDestination,
   assertInPlacePreconditions,
-  assertNotEvmEntry,
   assertNotPinnedDestination,
   CONFIRM_WORD,
   confirmPromotion,
@@ -46,6 +45,7 @@ import {
   readControlledBy,
   renderControlledBy,
   runRoleCheck,
+  sameAddress,
   withToKey,
 } from "../vault/promote-support"
 import {
@@ -74,6 +74,7 @@ import {
 } from "../vault/store"
 import { type ImportSubmitResponse, runImportFlow, TEE_PROFILE } from "../wallet-import-flow"
 import { nextAllocatableIndex } from "./vault-new-key"
+import { promoteEvmFresh, promoteEvmInPlace } from "./vault-promote-evm"
 import {
   confirmLastSix,
   type OpenedVault,
@@ -134,13 +135,13 @@ export async function vaultPromote(args: string[], ctx: CommandContext): Promise
 }
 
 /** BE-322: the resolved `--to-key` target and the device token the rebind sends. */
-interface ToKeyContext {
+export interface ToKeyContext {
   target: ToKeyTarget
   deviceToken: string
 }
 
 /** What one import left behind, as the rebind and the document need it. */
-interface PromotedWallet {
+export interface PromotedWallet {
   linkedWalletId: string | null
   address: string
   label: string
@@ -156,7 +157,7 @@ interface PromotedWallet {
  * command. `exit` is 1 when the wallet is not on the target for a reason a re-run or the finishing
  * command fixes, and 0 otherwise.
  */
-async function rebindAfterImport(
+export async function rebindAfterImport(
   ctx: CommandContext,
   toKey: ToKeyContext,
   wallet: PromotedWallet,
@@ -200,7 +201,7 @@ async function rebindAfterImport(
  * mode does, then require `confirm` before the rebind. A wrong word refuses before `resumePromote`
  * writes, so the entry stays import-pending.
  */
-async function confirmResumeRebind(ctx: CommandContext, toKey: ToKeyContext): Promise<void> {
+export async function confirmResumeRebind(ctx: CommandContext, toKey: ToKeyContext): Promise<void> {
   const name = toKey.target.label !== null ? `  (${toKey.target.label})` : ""
   ctx.deps.stderr.write(
     `${[
@@ -219,7 +220,7 @@ async function confirmResumeRebind(ctx: CommandContext, toKey: ToKeyContext): Pr
 }
 
 /** The calling key's prefix for the report: the key this CLI sent the import under. */
-async function callingKeyPrefixFor(ctx: CommandContext): Promise<string> {
+export async function callingKeyPrefixFor(ctx: CommandContext): Promise<string> {
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile)
   return (apiKey !== undefined ? apiKeyPrefix(apiKey) : undefined) ?? "(the calling key)"
 }
@@ -242,6 +243,10 @@ async function promoteFresh(
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
     let vault = hold(opened.vault)
+    // Phase 4b (BE-391, D1): a cold EVM vault key named by --from derives a fresh Hood TEE wallet.
+    if (namesEvmEntry(vault.index.entries, fromLabel)) {
+      return promoteEvmFresh({ ctx, parsed, opened, hold, resolvedVault, toKey }, fromLabel)
+    }
     assertRecoverableFactorExists(vault.file.envelopes)
 
     if (vault.index.hd.discovery !== undefined) {
@@ -407,7 +412,7 @@ async function promoteFresh(
  * "known in advance partial run" to avoid, and the server refuses a full account before anything
  * is sent regardless. Under `--json` the line is on stderr, so the document is unchanged.
  */
-async function refuseWithoutRoom(ctx: CommandContext): Promise<void> {
+export async function refuseWithoutRoom(ctx: CommandContext): Promise<void> {
   const read = await readAccountRoom(ctx)
   if (!read.ok) {
     ctx.deps.stderr.write(unreadableRoomLine(read.reason))
@@ -417,7 +422,7 @@ async function refuseWithoutRoom(ctx: CommandContext): Promise<void> {
   if (refusal !== null) throw refusal
 }
 
-async function reopenFromDisk(
+export async function reopenFromDisk(
   path: string,
   reopen: OpenedVault["reopen"],
   previous: UnlockedVault,
@@ -443,10 +448,6 @@ async function promoteInPlace(
   if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
   const path = resolvedVault.path
   const sweepTo = parsed.values["--sweep-to"]
-  // BE-355 (D1): the holdings and the role read go over the resolved endpoint; validated before
-  // the prompt. No request is made until step 4.
-  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
-  if ("error" in solana) return usage(ctx, solana.error)
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure")
 
   return runVaultCommand(ctx, async ({ hold }) => {
@@ -457,10 +458,11 @@ async function promoteInPlace(
     let vault = hold(opened.vault)
     assertRecoverableFactorExists(vault.file.envelopes)
 
-    // Phase 4a (D3): promotion stays Solana-only until 4b; an EVM subject is refused by name,
-    // before the resume check and before any read.
-    assertNotEvmEntry(vault.index, subjectLabel, "vault promote")
-    const existing = findEntryByLabelOrAddress(vault.index, subjectLabel)
+    // Phase 4b (BE-391, D1): an EVM subject is promoted to a Hood TEE wallet. Its resume (an
+    // import-pending EVM entry) is the shared resume below; everything else is the EVM flow.
+    const existing =
+      findEntryByLabelOrAddress(vault.index, subjectLabel) ??
+      vault.index.entries.find((entry) => entry.chain === "evm" && sameAddress(entry.address, subjectLabel))
     if (existing === undefined) {
       throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`, {
         suggestion:
@@ -534,6 +536,14 @@ async function promoteInPlace(
         "Usage: candle vault promote --in-place <label> --sweep-to <label> [--rpc-url <url>] [--label] [--accept-unknown-exposure]",
       )
     }
+    if (existing.chain === "evm") {
+      return promoteEvmInPlace({ ctx, parsed, opened, hold, resolvedVault, toKey }, subjectLabel, sweepTo)
+    }
+
+    // Solana only from here. The endpoint is resolved after the chain is known, so a bad
+    // CANDLE_SOLANA_RPC_URL or profile rpcUrl does not refuse an EVM promote (BE-391).
+    const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
+    if ("error" in solana) return usage(ctx, solana.error)
 
     // Preconditions 1-3 (first pass).
     const first = assertInPlacePreconditions(vault.index, subjectLabel, sweepTo, {
@@ -815,7 +825,7 @@ export async function resumePromote(
                   ...e,
                   linkedWalletId: undefined,
                   tee: {
-                    network: "solana-mainnet" as const,
+                    network: teeNetworkFor(e.chain),
                     lifecycle: "stranded" as const,
                     grantIdentity: {
                       account: verdict.account,
@@ -953,6 +963,8 @@ export async function runTeeImport(
     report?: "write" | "return"
     resolvedVault: ResolvedVaultPath
     onImport?: () => void
+    /** Phase 4b: the chain the import registers the key on. Default Solana, as before. */
+    chain?: "solana" | "evm"
   },
 ): Promise<TeeImportOutcome> {
   const report = opts.report ?? "write"
@@ -965,7 +977,7 @@ export async function runTeeImport(
   }
   opts.onImport?.()
   const flow = await runImportFlow({
-    chain: "solana",
+    chain: opts.chain ?? "solana",
     address: opts.address,
     privateKey: opts.privateKey,
     label: opts.label,
@@ -1020,6 +1032,8 @@ export async function runTeeImport(
           hd: vault.index.hd,
           entries: vault.index.entries.map((entry) => {
             if (entry.address !== opts.address) return entry
+            // A key's chain is the chain it was imported on; an entry of the other chain is not this one.
+            if (entry.chain !== (opts.chain ?? "solana")) return entry
             return {
               ...entry,
               linkedWalletId: submitted.id,
@@ -1029,7 +1043,7 @@ export async function runTeeImport(
                 ...(entry.exposure?.exposureUnknown ? { exposureUnknown: true } : {}),
               },
               tee: {
-                network: "solana-mainnet" as const,
+                network: teeNetworkFor(entry.chain),
                 lifecycle: "enabled" as const,
                 vaultDestination: opts.vaultDestination,
                 ...(entry.tee?.promotedInPlaceAt ? { promotedInPlaceAt: entry.tee.promotedInPlaceAt } : {}),
@@ -1064,4 +1078,11 @@ export async function runTeeImport(
     submitted,
     ...(closeReopened ? {} : { vault: committed }),
   }
+}
+
+/** Whether `labelOrAddress` names an EVM entry (by label, or by address in either spelling). */
+function namesEvmEntry(entries: KeyEntry[], labelOrAddress: string): boolean {
+  return entries.some(
+    (entry) => entry.chain === "evm" && (entry.label === labelOrAddress || sameAddress(entry.address, labelOrAddress)),
+  )
 }

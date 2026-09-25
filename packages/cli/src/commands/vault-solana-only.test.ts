@@ -92,24 +92,9 @@ describe("E12: Solana-only commands", () => {
       ],
     },
     {
-      name: "vault fund <evm positional>",
-      argv: () => ["vault", "fund", FIXTURE_EVM_0, "--amount", "0.1", "--asset", "SOL", "--rpc-url", RPC],
-    },
-    { name: "vault promote --from <evm>", argv: () => ["vault", "promote", "--from", "hood-cold", "--rpc-url", RPC] },
-    {
-      name: "vault promote --in-place <evm>",
-      argv: () => ["vault", "promote", "--in-place", "hood-cold", "--sweep-to", "cold", "--rpc-url", RPC],
-    },
-    {
       name: "vault promote --in-place <solana> --sweep-to <evm>",
       argv: () => ["vault", "promote", "--in-place", "cold", "--sweep-to", "hood-cold", "--rpc-url", RPC],
     },
-    { name: "vault demote <evm address>", argv: () => ["vault", "demote", FIXTURE_EVM_0, "--rpc-url", RPC] },
-    {
-      name: "vault demote --sweep-to <evm>",
-      argv: () => ["vault", "demote", FIXTURE_EVM_0, "--rpc-url", RPC, "--sweep-to", "hood-cold"],
-    },
-    { name: "tee sweep <evm address>", argv: () => ["tee", "sweep", FIXTURE_EVM_0, "--rpc-url", RPC] },
     { name: "tee enable <evm address>", argv: (fx) => ["tee", "enable", FIXTURE_EVM_0, "--vault", fx.cold] },
     { name: "tee enable --vault-key <evm>", argv: (fx) => ["tee", "enable", fx.external, "--vault-key", "hood-cold"] },
     { name: "tee status <evm address>", argv: () => ["tee", "status", FIXTURE_EVM_0] },
@@ -135,6 +120,35 @@ describe("E12: Solana-only commands", () => {
       expect(body.ok).toBe(false)
       expect(`${body.code} ${body.message}`).toContain("SOLANA_COMMAND_EVM_KEY")
       expect(String(body.message)).toContain("EVM key")
+      expect(fx.requests).toEqual([])
+    })
+  }
+
+  // BE-391 (Phase 4b, D1): `vault fund`, `vault promote`, `vault demote`, `tee sweep` and `tee
+  // disable` now take an EVM entry (a Hood TEE wallet). Naming an EVM VAULT key to them is refused
+  // by the Hood path's own rule, still before any request, and never as SOLANA_COMMAND_EVM_KEY.
+  const hoodRefusals: Array<{ name: string; argv: string[]; code: string }> = [
+    {
+      name: "vault fund <evm vault key>",
+      argv: ["vault", "fund", FIXTURE_EVM_0, "--amount", "0.1", "--asset", "ETH"],
+      code: "TEE_WALLET_UNKNOWN",
+    },
+    {
+      name: "vault promote --in-place <evm> --sweep-to <solana>",
+      argv: ["vault", "promote", "--in-place", "hood-cold", "--sweep-to", "cold"],
+      code: "PROMOTE_DESTINATION_NOT_COLD",
+    },
+    { name: "vault demote <evm vault key>", argv: ["vault", "demote", FIXTURE_EVM_0], code: "TEE_WALLET_UNKNOWN" },
+    { name: "tee sweep <evm vault key>", argv: ["tee", "sweep", FIXTURE_EVM_0], code: "TEE_WALLET_UNKNOWN" },
+    { name: "tee disable <evm vault key>", argv: ["tee", "disable", FIXTURE_EVM_0], code: "TEE_WALLET_UNKNOWN" },
+  ]
+  for (const refusal of hoodRefusals) {
+    test(`BE-391: ${refusal.name} takes the Hood path and refuses with ${refusal.code}, making no request`, async () => {
+      const fx = await fixture()
+      const code = await run([...refusal.argv, "--json"], fx.deps)
+      expect(code).toBe(1)
+      const body = lastJson(fx.stdout.text)
+      expect(body.code).toBe(refusal.code)
       expect(fx.requests).toEqual([])
     })
   }

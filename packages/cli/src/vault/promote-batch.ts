@@ -18,7 +18,12 @@
 import { renderTable } from "../render"
 import { isVaultError } from "./errors"
 import type { IndexPlaintext, KeyEntry } from "./format"
-import { applyPromotion, assertInPlacePreconditions, findEntryByLabelOrAddress } from "./promote-support"
+import {
+  applyPromotion,
+  assertEvmInPlacePreconditions,
+  assertInPlacePreconditions,
+  findEntryByLabelOrAddress,
+} from "./promote-support"
 
 /**
  * The upper bound on rows. The same number as `MAX_NEW_KEY_COUNT` and deliberately not the same
@@ -232,6 +237,26 @@ export function resolveDestinationAddress(index: IndexPlaintext, destination: st
 }
 
 /**
+ * Phase 4b (BE-391): the one chain a batch's rows name. A batch is one chain: its holdings, its
+ * role read and its import are chain-specific, so rows naming Solana and EVM subjects together are
+ * refused before anything is read. Rows whose subject does not resolve count as neither; a file of
+ * only those is Solana's, as before, and the shipped precondition refuses each.
+ */
+export function batchChain(index: IndexPlaintext, rows: PairRow[]): "solana" | "evm" | "mixed" {
+  let solana = false
+  let evm = false
+  for (const row of rows) {
+    const subject =
+      findEntryByLabelOrAddress(index, row.label) ??
+      index.entries.find((entry) => entry.chain === "evm" && entry.address.toLowerCase() === row.label.toLowerCase())
+    if (subject?.chain === "evm") evm = true
+    else if (subject?.chain === "solana") solana = true
+  }
+  if (evm && solana) return "mixed"
+  return evm ? "evm" : "solana"
+}
+
+/**
  * D11's table, against the REAL index. `promote` is anything the shipped precondition should judge
  * (a `role: "vault"` key, an unknown label, an external entry); `resume`, `skip` and `conflict`
  * are the three shapes a `tee-wallet` subject can be in relative to this row's destination.
@@ -300,6 +325,11 @@ export interface ResumeRefused {
 
 export interface PreflightOptions {
   acceptUnknownExposure: boolean
+  /**
+   * Phase 4b (BE-391): the batch's one chain. An EVM batch checks every `promote` row with the Hood
+   * preconditions (`assertEvmInPlacePreconditions`); default Solana, the shipped check.
+   */
+  chain?: "solana" | "evm"
   /** The timestamp the projection writes into `promotedInPlaceAt`. */
   now: string
   /** The stored-secret-matches-address compare (`vault-promote.ts` `:372-377`), for every resolved subject. Throws to refuse. */
@@ -433,7 +463,8 @@ export async function preflightBatch(
 
     // `promote`: the shipped function, its shipped codes and messages, against the projection.
     try {
-      const { subject, destination, resume } = assertInPlacePreconditions(projection, row.label, row.destination, {
+      const check = opts.chain === "evm" ? assertEvmInPlacePreconditions : assertInPlacePreconditions
+      const { subject, destination, resume } = check(projection, row.label, row.destination, {
         acceptUnknownExposure: opts.acceptUnknownExposure,
       })
       if (resume) {

@@ -12,7 +12,7 @@ import { writeLocalFailure, writeUsageFailure } from "../render"
 import type { KeystoreEntry, OpenKeystore, TeeWalletMeta } from "../wallet-keystore"
 import { addressFromSecret64 } from "./ed25519"
 import { isVaultError, VaultError } from "./errors"
-import type { KeyEntry } from "./format"
+import { type KeyEntry, teeNetworkFor } from "./format"
 import { wipe } from "./hygiene"
 import { adoptGrantedRow, reconcileGrant } from "./reconcile-grant"
 import { closeVault, commitVault, decryptKey, type UnlockedVault } from "./store"
@@ -307,7 +307,7 @@ export async function maybeReconcileVaultTee(
     const priorTee = resolved.entry.tee
     const next = await commitVaultTeeEntry(ctx, resolved.vault, resolved.entry.id, (entry) => {
       entry.tee = {
-        network: "solana-mainnet",
+        network: teeNetworkFor(entry.chain),
         lifecycle: "stranded",
         grantIdentity: {
           account: verdict.account,
@@ -376,7 +376,8 @@ function keyEntryAsKeystore(entry: KeyEntry, privateKeyBase58: string | null): K
     tee === undefined
       ? undefined
       : {
-          network: tee.network,
+          // The legacy view is Solana's: every tee command refuses an EVM entry before it is built.
+          network: tee.network as "solana-mainnet",
           ...(tee.vaultDestination !== undefined ? { vaultDestination: tee.vaultDestination } : {}),
           ...(tee.boundKeyPrefix !== undefined ? { boundKeyPrefix: tee.boundKeyPrefix } : {}),
           ...(tee.remoteAuthority !== undefined ? { remoteAuthority: tee.remoteAuthority } : {}),

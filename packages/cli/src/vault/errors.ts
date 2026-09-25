@@ -142,6 +142,21 @@ export const VAULT_ERROR_CODES = [
   // commands throw a `TradingError` with the same code. After a signature the same code travels
   // with exit 3 and the local signature (D4), never an automatic re-send.
   "RPC_RATE_LIMITED",
+  // BE-391 (spec 2026-09-24-ember-phase-4b-hood-tee-wallets-design.md, D1): Hood TEE wallet custody.
+  // `EVM_RECORD_ENTRY_TOO_LONG`: a sealed EVM record entry over 160 bytes is refused, never
+  // truncated (`vault/evm-record-key.ts`); an append turns it into a skipped append and a notice.
+  // `EVM_SWEEP_NEEDS_GAS`: an EVM sweep with ERC-20 balances and no ETH for the gas, naming the
+  // shortfall and the `vault fund` command. `EVM_SWEEP_INCOMPLETE`: a sweep that ran but did not
+  // observe the wallet empty, or skipped a source it needed (exit 3). `WALLET_BUSY`: a local signer
+  // refusing while the D4 per-wallet lock is held, with the operation id. `WALLET_LOCK_UNKNOWN`: the
+  // same signer refusing closed when that lock cannot be read. `EVM_RECORD_UNAVAILABLE`: `vault
+  // backup` could not take the sealed record's lock, so no verified backup is recorded.
+  "EVM_RECORD_ENTRY_TOO_LONG",
+  "EVM_SWEEP_NEEDS_GAS",
+  "EVM_SWEEP_INCOMPLETE",
+  "WALLET_BUSY",
+  "WALLET_LOCK_UNKNOWN",
+  "EVM_RECORD_UNAVAILABLE",
 ] as const
 
 export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number]

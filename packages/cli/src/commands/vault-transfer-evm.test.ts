@@ -526,11 +526,11 @@ describe("E5: every pre-sign refusal in D6 fires with no signature", () => {
     expect(fx.stderr.text).not.toContain(HOOD_HOST)
   })
 
-  test("an EVM entry that is not a vault key does not sign in 4a (4b widens --from to a promoted EVM wallet)", async () => {
+  test("4b (BE-391) widens --from to a promoted EVM wallet, which never signs while its operation lock is unread", async () => {
     const fx = await fixture()
-    // `assertTransferSigner` admits `tee-wallet` by role for Solana; the EVM flow admits `vault`
-    // only. A hand-edited EVM `tee-wallet` entry (no command writes one until 4b) is refused
-    // before any read.
+    // A promoted Hood wallet with no linked-wallet id recorded: its D4 lock cannot be read, so the
+    // transfer refuses closed with WALLET_LOCK_UNKNOWN, after the chain id read and before any
+    // signature or any other read.
     const vault = await reopen(fx.path)
     await commitVault(
       vault,
@@ -542,7 +542,7 @@ describe("E5: every pre-sign refusal in D6 fires with no signature", () => {
               ? {
                   ...entry,
                   role: "tee-wallet" as const,
-                  tee: { network: "solana-mainnet" as const, lifecycle: "local-candidate" as const },
+                  tee: { network: "hood-mainnet" as const, lifecycle: "local-candidate" as const },
                 }
               : entry,
           ),
@@ -552,8 +552,9 @@ describe("E5: every pre-sign refusal in D6 fires with no signature", () => {
     )
     closeVault(vault)
     expect(await fx.transfer([DEAD, "--amount", "0.1", "--asset", "ETH", "--from", "hood-cold", "--json"])).toBe(1)
-    expect(lastJson(fx.stdout.text)).toMatchObject({ ok: false, code: "PROMOTE_NOT_VAULT_KEY" })
-    expect(fx.rpc.methods).toEqual([])
+    expect(lastJson(fx.stdout.text)).toMatchObject({ ok: false, code: "WALLET_LOCK_UNKNOWN" })
+    expect(fx.rpc.methods).toEqual(["eth_chainId"])
+    expect(fx.rpc.sent).toEqual([])
     // By address, a vault key still signs.
     const byAddress = await fixture()
     expect(

@@ -79,13 +79,15 @@ export async function reportTransferActivity(
   ctx: CommandContext,
   apiKey: string | undefined,
   signature: string,
+  /** Phase 4b: `hood` for a promoted Hood wallet's transfer; the route verifies it on Hood. */
+  chain: "solana" | "hood" = "solana",
 ): Promise<{ outcome: ActivityReportOutcome; line: string }> {
   const unseen = "Candle's history will not show this transfer."
   if (apiKey === undefined) return { outcome: "no-api-key", line: `No API key for this profile, so ${unseen}` }
   try {
     const result = await apiRequest("/api/v1/activity/report", {
       method: "POST",
-      body: { chain: "solana", signature },
+      body: { chain, signature },
       auth: "key",
       credentials: { apiKey },
       apiUrl: ctx.apiUrl,

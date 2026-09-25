@@ -14,7 +14,7 @@
  */
 import { entropyToMnemonic, mnemonicToEntropy, mnemonicToSeed, validateMnemonic } from "@scure/bip39"
 import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english"
-import { type DerivedEvmKey, deriveEvmKey } from "../evm-lite"
+import { type DerivedEvmKey, deriveEvmKey, deriveEvmKeyAtPath } from "../evm-lite"
 import { pubkeyFromSecretSeed } from "./ed25519"
 import { VaultError } from "./errors"
 import type { Branch } from "./format"
@@ -55,6 +55,35 @@ export function evmPath(index: number): string {
   return `m/44'/60'/${assertIndex(index)}'/0/0`
 }
 
+/**
+ * Phase 4b (D1, Andrew): the EVM TEE branch, `m/44'/60'/n'/1'/0'`, every level hardened. A TEE key
+ * sits in Privy by design, so full hardening is what keeps it from being combined with an extended
+ * public key to reach its siblings: the Solana TEE branch's property. The change index `1'` is
+ * hardened, which no wallet app scans (`WALLET_APP_EVM_SCAN_PATTERNS`), so restoring the phrase into
+ * one does not present a remotely exposed key as an ordinary account.
+ */
+export function evmTeePath(index: number): string {
+  return `m/44'/60'/${assertIndex(index)}'/1'/0'`
+}
+
+/** The EVM TEE index a recorded path names, or undefined when the path is not on that branch. */
+export function evmTeeIndexOfPath(path: string): number | undefined {
+  const match = /^m\/44'\/60'\/(\d+)'\/1'\/0'$/.exec(path)
+  return match?.[1] === undefined ? undefined : Number(match[1])
+}
+
+/**
+ * The published EVM scan lists the TEE branch was checked against (D1), recorded here as
+ * `solanaTeePath`'s check was: MetaMask and Rabby scan `m/44'/60'/0'/0/i`, Ledger Live scans
+ * `m/44'/60'/i'/0/0`, and the legacy MEW / Ledger Chrome layout is `m/44'/60'/0'/i`, a different
+ * depth. `vectors.test.ts` asserts no `evmTeePath(n)` matches any of them.
+ */
+export const WALLET_APP_EVM_SCAN_PATTERNS: ReadonlyArray<{ app: string; pattern: RegExp }> = [
+  { app: "MetaMask / Rabby", pattern: /^m\/44'\/60'\/0'\/0\/\d+$/ },
+  { app: "Ledger Live", pattern: /^m\/44'\/60'\/\d+'\/0\/0$/ },
+  { app: "legacy (MEW, Ledger Chrome)", pattern: /^m\/44'\/60'\/0'\/\d+$/ },
+]
+
 /** The EVM index a recorded path names, or undefined when the path is not on the EVM branch. */
 export function evmIndexOfPath(path: string): number | undefined {
   const match = /^m\/44'\/60'\/(\d+)'\/0\/0$/.exec(path)
@@ -65,6 +94,7 @@ export function pathForBranch(branch: Branch, index: number): string {
   if (branch === "solanaVault") return solanaVaultPath(index)
   if (branch === "solanaTee") return solanaTeePath(index)
   if (branch === "solanaExternal") return solanaExternalPath(index)
+  if (branch === "evmTee") return evmTeePath(index)
   return evmPath(index)
 }
 
@@ -165,6 +195,20 @@ export async function deriveEvmKeyFromRoot(entropy: Uint8Array, index: number): 
   const seed = await seedFromEntropy(entropy)
   try {
     const derived = deriveEvmKey(seed, index)
+    return { ...derived, secret: ownSecret(derived.secret) }
+  } finally {
+    wipe(seed)
+  }
+}
+
+/**
+ * Phase 4b (D1): derives one EVM TEE key at `m/44'/60'/index'/1'/0'`, the same derivation event as
+ * `deriveEvmKeyFromRoot` on the TEE branch. Only the 32-byte scalar leaves, owned by the caller.
+ */
+export async function deriveEvmTeeKeyFromRoot(entropy: Uint8Array, index: number): Promise<DerivedEvmKey> {
+  const seed = await seedFromEntropy(entropy)
+  try {
+    const derived = deriveEvmKeyAtPath(seed, evmTeePath(index))
     return { ...derived, secret: ownSecret(derived.secret) }
   } finally {
     wipe(seed)

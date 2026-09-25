@@ -14,6 +14,7 @@ import { requireTeeDestination } from "../vault/reconcile-grant"
 import { commitVault } from "../vault/store"
 import { maybeReconcileVaultTee, releaseResolvedTee, resolveTeeAddress } from "../vault/tee-resolve"
 import { teeDisable, teeSweep } from "./tee"
+import { namesEvmWallet, vaultDemoteEvm } from "./tee-evm"
 import {
   refuseEnvPassphrase,
   requireTty,
@@ -25,6 +26,8 @@ import {
 } from "./vault-support"
 
 export async function vaultDemote(args: string[], ctx: CommandContext): Promise<number> {
+  // Phase 4b (BE-391, D1): a Hood TEE wallet is demoted by `tee-evm.ts` (disable, then sweep).
+  if (namesEvmWallet(args)) return vaultDemoteEvm(args, ctx)
   const parsed = parseArgs(args, {
     valueFlags: ["--rpc-url", "--sweep-to", "--keystore"],
     booleanFlags: ["--emergency", "--accept-older-copy"],

@@ -36,7 +36,14 @@ import { EVM_DERIVATION_SCHEME, evmAddressFromSecret, sameEvmAddress } from "../
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { addressFromSecret64 } from "../vault/ed25519"
 import { VaultError } from "../vault/errors"
-import { type Branch, type IndexPlaintext, type KeyEntry, parseVaultFile } from "../vault/format"
+import {
+  type Branch,
+  exposedIndexesOf,
+  type IndexPlaintext,
+  type KeyEntry,
+  nextIndexOf,
+  parseVaultFile,
+} from "../vault/format"
 import { DERIVATION_SCHEME, deriveEvmKeyFromRoot, deriveSolanaKey, evmPath, solanaVaultPath } from "../vault/hd"
 import { wipe } from "../vault/hygiene"
 import {
@@ -385,9 +392,9 @@ export function plannedLabels(
   branch: Branch = "solanaVault",
 ): string[] {
   const labels: string[] = []
-  let counter = hd.nextIndex[branch]
+  let counter = nextIndexOf(hd, branch)
   for (let made = 0; made < batch.count; made++) {
-    const index = nextAllocatableIndex(counter, hd.exposedIndexes[branch])
+    const index = nextAllocatableIndex(counter, exposedIndexesOf(hd, branch))
     labels.push(batch.labels?.[made] ?? labelFlag ?? defaultLabel(branch, index))
     counter = index + 1
   }

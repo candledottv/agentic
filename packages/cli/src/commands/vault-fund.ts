@@ -13,16 +13,24 @@
  * Phase 4a (BE-350, D3): Solana-only. The single-key default sees Solana vault keys only, so a vault
  * with one Solana vault key and one EVM vault key still auto-selects the Solana key; an EVM entry
  * named by `--from` or by the positional refuses with `SOLANA_COMMAND_EVM_KEY`.
+ *
+ * Phase 4b (BE-391, D1): a Hood TEE wallet (a `0x` positional) is funded with `--asset ETH|USDG`
+ * from its pinned EVM vault key, signed locally through 4a's `evm-transfer`: the decoded display,
+ * the destination's last six, and the factor again. No `--yes`, as ever. The RPC must answer Hood's
+ * chain id, and the wallet must be enabled with verified remote authority, exactly as on Solana.
  */
 import { type ParsedArgs, parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import { looksLikeEvmAddress } from "../evm-lite"
 import { writeLocalFailure } from "../render"
 import { openSolanaClient, type SolanaClient } from "../solana-endpoint"
 import { VaultError } from "../vault/errors"
+import { assertHoodChain, hoodHostLine, resolveHoodClient } from "../vault/evm-tee"
+import { runEvmTransfer } from "../vault/evm-transfer"
 import type { KeyEntry } from "../vault/format"
 import { type FundingReceipt, reconcileFundingReceipts, saveFundingReceipt } from "../vault/funding-receipts"
 import { wipe } from "../vault/hygiene"
-import { assertNotEvmEntry } from "../vault/promote-support"
+import { assertNotEvmEntry, sameAddress } from "../vault/promote-support"
 import { decryptKey } from "../vault/store"
 import {
   assertVaultSigner,
@@ -141,9 +149,11 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
   if (!teeAddress || extra !== undefined) {
     return usage(
       ctx,
-      "Usage: candle vault fund <tee-address | external-label> --amount <n> --asset SOL|USDC [--rpc-url <url>] [--from <vault-label>]",
+      "Usage: candle vault fund <tee-address | external-label> --amount <n> --asset SOL|USDC|ETH|USDG [--rpc-url <url>] [--from <vault-label>]",
     )
   }
+  // Phase 4b (D1): a Hood TEE wallet, named by its 0x address.
+  if (looksLikeEvmAddress(teeAddress)) return vaultFundEvm(ctx, parsed, teeAddress)
   const amount = parsed.values["--amount"]
   const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase()
   if (!amount) return usage(ctx, "--amount <n> is required.")
@@ -300,5 +310,100 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
     } finally {
       wipe(secret)
     }
+  })
+}
+
+/**
+ * Phase 4b (BE-391, D1): `vault fund <hood tee wallet> --amount <n> --asset ETH|USDG`, from the
+ * wallet's pinned EVM vault key. Every refusal before the signature writes nothing and signs
+ * nothing; the transfer itself is 4a's `runEvmTransfer`, unchanged.
+ */
+async function vaultFundEvm(ctx: CommandContext, parsed: ParsedArgs, teeAddress: string): Promise<number> {
+  const amount = parsed.values["--amount"]
+  const asset = (parsed.values["--asset"] ?? "ETH").toUpperCase()
+  if (!amount) return usage(ctx, "--amount <n> is required.")
+  if (amount.toLowerCase() === "max") return usage(ctx, "--amount must be a number; funding a TEE wallet takes no max.")
+  if (asset !== "ETH" && asset !== "USDG") return usage(ctx, "--asset must be ETH or USDG for a Hood TEE wallet.")
+  if (parsed.values["--from"] !== undefined) {
+    return usage(ctx, "--from applies to an external wallet only; a TEE wallet is funded from its pinned vault key.")
+  }
+  const client = resolveHoodClient(ctx, parsed.values["--rpc-url"])
+  if ("error" in client) return usage(ctx, client.error)
+  if (!refuseEnvPassphrase(ctx)) return 1
+  if (!requireTty(ctx, "vault fund")) return 1
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const path = resolvedVault.path
+
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(ctx, resolvedVault)
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+    })
+    const vault = hold(opened.vault)
+    const teeEntry = vault.index.entries.find(
+      (entry) => entry.chain === "evm" && entry.role === "tee-wallet" && sameAddress(entry.address, teeAddress),
+    )
+    if (teeEntry === undefined) {
+      writeLocalFailure(
+        ctx.deps,
+        {
+          code: "TEE_WALLET_UNKNOWN",
+          message: `${teeAddress} is not a Hood TEE wallet in this vault.`,
+          suggestion: "Promote one with candle vault promote --from <evm vault key> (or --in-place <evm vault key>).",
+        },
+        ctx.json,
+      )
+      return 1
+    }
+    if (teeEntry.tee?.remoteAuthority !== "verified-active" || teeEntry.tee.stopRequestedAt !== undefined) {
+      writeLocalFailure(
+        ctx.deps,
+        {
+          code: "TEE_WALLET_NOT_VERIFIED",
+          message: `${teeEntry.address} is not an enabled TEE wallet with verified remote authority; do not fund it.`,
+        },
+        ctx.json,
+      )
+      return 1
+    }
+    const destination = teeEntry.tee.vaultDestination
+    const fromEntry =
+      destination === undefined
+        ? undefined
+        : vault.index.entries.find(
+            (entry) => entry.chain === "evm" && entry.role === "vault" && sameAddress(entry.address, destination),
+          )
+    if (fromEntry === undefined) {
+      throw new VaultError(
+        "GRANT_DESTINATION_UNRESOLVED",
+        `${teeEntry.address} has no pinned EVM vault key in this vault to fund from.`,
+        { suggestion: "Nothing was signed. candle vault status lists this vault's keys and their pins." },
+      )
+    }
+    assertVaultSigner(fromEntry)
+    ctx.deps.stderr.write(`${hoodHostLine(client, "the chain id")}\n`)
+    await assertHoodChain(client)
+    ctx.deps.stdout.write(
+      `Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.\n`,
+    )
+    return runEvmTransfer(
+      {
+        ctx,
+        rpcUrl: client.url,
+        builtIn: client.builtIn,
+        pinHoodChain: true,
+        from: fromEntry,
+        to: teeEntry.address,
+        amount,
+        asset,
+        confirmLastSix: (address) => confirmLastSix(ctx, address, "the TEE wallet destination"),
+        confirmFactor: (what) => opened.confirm(what.replace(/^sign transfer of /, "fund ")),
+        decryptSecret: () => decryptKey(vault, fromEntry.id),
+        usage: (line) => usage(ctx, line),
+        writeJson: (value) => writeJson(ctx.deps, { ...(value as object), tee: teeEntry.address }),
+      },
+      client.rpc,
+    )
   })
 }

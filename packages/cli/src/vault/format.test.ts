@@ -72,7 +72,7 @@ describe("T31: the strict reader refuses everything CC-01 lists, in order, and w
     await writeFile(made.path, original, "utf8")
   })
 
-  test("an unknown format, and a version other than 2 or 3, each with their own code", async () => {
+  test("an unknown format, and a version other than 2, 3 or 4, each with their own code", async () => {
     await tamper(made.path, (file) => {
       ;(file as unknown as Record<string, unknown>).format = "candle-keystore"
     })
@@ -80,7 +80,8 @@ describe("T31: the strict reader refuses everything CC-01 lists, in order, and w
 
     await writeFile(made.path, original, "utf8")
     await tamper(made.path, (file) => {
-      ;(file as unknown as Record<string, unknown>).version = 4
+      // Phase 4b made 4 a version this CLI reads; 5 is the next one it does not.
+      ;(file as unknown as Record<string, unknown>).version = 5
     })
     expect((await refusal(() => reopen(made.path))).code).toBe("VAULT_VERSION_UNSUPPORTED")
 

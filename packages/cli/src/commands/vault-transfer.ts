@@ -18,12 +18,20 @@
  * else the profile's, else the public endpoint); an EVM `--from` makes `--rpc-url` the EVM endpoint
  * (else `CANDLE_EVM_RPC_URL`, else Hood) and sends to a 0x address. A destination of the other
  * family refuses with `TRANSFER_CHAIN_MISMATCH` before any read.
+ *
+ * Phase 4b (BE-391, D1): `--from` may name a promoted Hood wallet (an EVM `role: "tee-wallet"`), in
+ * both promote modes and after a phrase restore, with BE-326's checks: refused while a sweep of it
+ * is pending, a warning when the server says it is enabled, and a finalized transfer reported to
+ * Candle's history (`chain: "hood"`). And one check BE-326 did not need: the D4 operation lock is read
+ * immediately before signing, because a sequenced leg may hold this wallet's nonce; the transfer
+ * refuses while it is held (`WALLET_BUSY`, with the operation id) and refuses closed when it cannot
+ * be read (`WALLET_LOCK_UNKNOWN`). The RPC must answer Hood's chain id: a TEE wallet is Hood only.
  */
 import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
-import { createEvmRpc, EVM_RPC_URL_ENV, resolveEvmRpcUrl } from "../evm-lite"
+import { createEvmRpc, EVM_RPC_URL_ENV, resolveEvmRpcUrl, rpcHostOf } from "../evm-lite"
 import { resolveSolanaEndpoint, solanaClientFor } from "../solana-endpoint"
-import { VaultError } from "../vault/errors"
+import { assertHoodChain, assertWalletLockFree, readHoodTeeServer } from "../vault/evm-tee"
 import { assertSolanaDestination, runEvmTransfer } from "../vault/evm-transfer"
 import { reconcileFundingReceipts } from "../vault/funding-receipts"
 import { wipe } from "../vault/hygiene"
@@ -110,14 +118,7 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
     assertTransferSigner(fromEntry)
 
     if (fromEntry.chain === "evm") {
-      // Phase 4a (D5): an EVM `role: "vault"` key. 4b widens this to a promoted EVM wallet.
-      if (fromEntry.role !== "vault") {
-        throw new VaultError(
-          "PROMOTE_NOT_VAULT_KEY",
-          `${fromEntry.label || fromEntry.address} is an EVM ${fromEntry.role} entry; this release signs EVM transfers from vault keys only.`,
-          { suggestion: "Nothing was signed." },
-        )
-      }
+      // Phase 4a (D5): an EVM `role: "vault"` key. Phase 4b (D1): or a promoted Hood wallet.
       // D3: `--rpc-url`, else `CANDLE_EVM_RPC_URL`, else the built-in Hood RPC (Andrew's "Hood
       // built in"). The Solana endpoint variable is never consulted for an EVM key. `builtIn`
       // follows the URL actually used. A blank value was already treated as unset.
@@ -125,6 +126,20 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
       if ("error" in evmRpc) return usage(ctx, evmRpc.error)
       const evmRpcUrl = evmRpc.url
       const secretRef = fromEntry
+      const rpc = createEvmRpc(evmRpcUrl, ctx.deps.fetch)
+      const promotedEvm = fromEntry.role === "tee-wallet"
+      let apiKey: string | undefined
+      if (promotedEvm) {
+        assertNoPendingSweep(fromEntry)
+        // A TEE wallet is Hood only: a custom --rpc-url must answer 4663 too.
+        await assertHoodChain({ rpc, url: evmRpcUrl, host: rpcHostOf(evmRpcUrl), builtIn: evmRpc.builtIn })
+        apiKey = await resolveApiKey(ctx.deps, ctx.profile)
+        const note = (line: string) => (ctx.json ? ctx.deps.stderr : ctx.deps.stdout).write(`${line}\n`)
+        const notice = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey))
+        if (notice !== undefined) note(notice)
+        // The lock, before any prompt: a held or unreadable lock refuses before the operator types.
+        assertWalletLockFree(fromEntry, (await readHoodTeeServer(ctx, fromEntry)).lock, ctx.deps.now())
+      }
       return runEvmTransfer(
         {
           ctx,
@@ -139,8 +154,25 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
           decryptSecret: () => decryptKey(vault, secretRef.id),
           usage: (line) => usage(ctx, line),
           writeJson: (value) => writeJson(ctx.deps, value),
+          ...(promotedEvm
+            ? {
+                // And again after the factor, immediately before the signature (D1).
+                beforeSign: async () =>
+                  assertWalletLockFree(fromEntry, (await readHoodTeeServer(ctx, fromEntry)).lock, ctx.deps.now()),
+                afterOutcome: async ({ hash, status }) => {
+                  const note = (line: string) => (ctx.json ? ctx.deps.stderr : ctx.deps.stdout).write(`${line}\n`)
+                  if (status !== "confirmed") {
+                    note("Not reported to Candle's history: the transfer is not yet confirmed.")
+                    return { activityReport: "not-finalized" }
+                  }
+                  const report = await reportTransferActivity(ctx, apiKey, hash, "hood")
+                  note(report.line)
+                  return { activityReport: report.outcome }
+                },
+              }
+            : {}),
         },
-        createEvmRpc(evmRpcUrl, ctx.deps.fetch),
+        rpc,
       )
     }
 

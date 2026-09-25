@@ -3201,7 +3201,13 @@ var init_errors = __esm(() => {
     "EVM_TRANSFER_REVERTED",
     "TRANSFER_CHAIN_MISMATCH",
     "SOLANA_COMMAND_EVM_KEY",
-    "RPC_RATE_LIMITED"
+    "RPC_RATE_LIMITED",
+    "EVM_RECORD_ENTRY_TOO_LONG",
+    "EVM_SWEEP_NEEDS_GAS",
+    "EVM_SWEEP_INCOMPLETE",
+    "WALLET_BUSY",
+    "WALLET_LOCK_UNKNOWN",
+    "EVM_RECORD_UNAVAILABLE"
   ];
   VaultError = class VaultError extends Error {
     code;
@@ -6500,1011 +6506,6 @@ var init_wallet_keystore = __esm(() => {
   };
 });
 
-// src/vault/format.ts
-function isPassphraseEnvelope(envelope) {
-  return envelope.factor === "passphrase";
-}
-function isCtap2Envelope(envelope) {
-  return envelope.factor === "passkey-prf" && envelope.transport === "ctap2";
-}
-function isSecureEnclaveEnvelope(envelope) {
-  return envelope.factor === "secure-enclave";
-}
-function isPlatformPasskeyEnvelope(envelope) {
-  return envelope.factor === "passkey-prf" && envelope.transport === "platform-macos";
-}
-function isPrfEnvelope(envelope) {
-  return isCtap2Envelope(envelope) || isPlatformPasskeyEnvelope(envelope);
-}
-function passphraseKdf(envelope) {
-  if (!isPassphraseEnvelope(envelope)) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passphrase one.`);
-  }
-  return envelope.kdf;
-}
-function branchesForVersion(version) {
-  return version === LEGACY_VAULT_VERSION ? LEGACY_BRANCHES : BRANCHES;
-}
-function canonicalHeader(file) {
-  const header = {};
-  for (const field of HEADER_FIELDS)
-    header[field] = file[field];
-  return canonicalBytes(header);
-}
-function envelopeAad(file, envelope) {
-  const base = {
-    format: VAULT_FORMAT,
-    version: BLOB_AAD_VERSION,
-    vaultId: file.vaultId,
-    envelopeId: envelope.id,
-    factor: envelope.factor
-  };
-  if (isPassphraseEnvelope(envelope)) {
-    return canonicalBytes({ ...base, kdf: envelope.kdf, strength: envelope.strength });
-  }
-  if (isCtap2Envelope(envelope)) {
-    return canonicalBytes({
-      ...base,
-      transport: envelope.transport,
-      rpId: envelope.rpId,
-      credentialId: envelope.credentialId,
-      prfSalt: envelope.prfSalt,
-      userVerification: envelope.userVerification,
-      backupEligible: envelope.backupEligible,
-      backupState: envelope.backupState,
-      saltDerivation: envelope.saltDerivation
-    });
-  }
-  if (isSecureEnclaveEnvelope(envelope)) {
-    return canonicalBytes({
-      ...base,
-      helper: envelope.helper,
-      publicKey: envelope.publicKey,
-      keyTag: envelope.keyTag,
-      accessControl: envelope.accessControl,
-      kek: envelope.kek
-    });
-  }
-  if (isPlatformPasskeyEnvelope(envelope)) {
-    return canonicalBytes({
-      ...base,
-      transport: envelope.transport,
-      rpId: envelope.rpId,
-      credentialId: envelope.credentialId,
-      prfSalt: envelope.prfSalt,
-      userVerification: envelope.userVerification,
-      backupEligible: envelope.backupEligible,
-      backupState: envelope.backupState,
-      saltDerivation: envelope.saltDerivation,
-      helper: envelope.helper
-    });
-  }
-  throw new VaultError("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM", `This CLI cannot unwrap a ${envelope.factor}${typeof envelope.transport === "string" ? `/${envelope.transport}` : ""} envelope.`);
-}
-function rootAad(vaultId) {
-  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "root" });
-}
-function keyAad(vaultId, keyId) {
-  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "key", keyId });
-}
-function refuse(code, message) {
-  throw new VaultError(code, message);
-}
-function parseVaultFile(raw) {
-  let value;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    refuse("VAULT_UNREADABLE", "The vault file is not valid JSON.");
-  }
-  if (!isRecord(value))
-    refuse("VAULT_UNREADABLE", "The vault file is not a JSON object.");
-  if (value.format !== VAULT_FORMAT) {
-    throw new VaultError("VAULT_FORMAT_UNKNOWN", `Not a Candle vault: format is ${JSON.stringify(value.format)}.`);
-  }
-  if (!SUPPORTED_VAULT_VERSIONS.includes(value.version)) {
-    throw new VaultError("VAULT_VERSION_UNSUPPORTED", `Unsupported vault version ${JSON.stringify(value.version)}: this CLI reads versions ${SUPPORTED_VAULT_VERSIONS.join(" and ")} and writes version ${VAULT_VERSION}.`);
-  }
-  if (value.cipher !== VAULT_CIPHER) {
-    refuse("VAULT_UNREADABLE", `Unsupported cipher ${JSON.stringify(value.cipher)}: this format is ${VAULT_CIPHER}.`);
-  }
-  for (const field of Object.keys(value)) {
-    if (!TOP_LEVEL_FIELDS.includes(field)) {
-      throw new VaultError("VAULT_FIELD_UNKNOWN", `The vault file carries an unknown top-level field: ${field}.`, {
-        suggestion: "A newer CLI may have written it. This CLI refuses rather than dropping a field it cannot honour."
-      });
-    }
-  }
-  if (typeof value.vaultId !== "string")
-    refuse("VAULT_UNREADABLE", "vaultId is missing or not a string.");
-  if (!Number.isInteger(value.generation) || value.generation < 0) {
-    refuse("VAULT_UNREADABLE", "generation is missing or is not a whole number.");
-  }
-  for (const field of ["createdAt", "updatedAt"]) {
-    if (typeof value[field] !== "string")
-      refuse("VAULT_UNREADABLE", `${field} is missing or not a string.`);
-  }
-  if (!Array.isArray(value.envelopes))
-    refuse("VAULT_UNREADABLE", "envelopes is missing or not an array.");
-  if (!Array.isArray(value.keyIds) || value.keyIds.some((id) => typeof id !== "string")) {
-    refuse("VAULT_UNREADABLE", "keyIds is missing or is not an array of strings.");
-  }
-  if (!isBlob(value.index))
-    refuse("VAULT_UNREADABLE", "index is missing or malformed.");
-  if (!isBlob(value.root)) {
-    throw new VaultError("VAULT_INDEX_INVALID", `The vault has no root blob; every version ${String(value.version)} vault must carry one.`);
-  }
-  if (!Array.isArray(value.keys))
-    refuse("VAULT_UNREADABLE", "keys is missing or not an array.");
-  for (const blob of value.keys) {
-    if (!isRecord(blob) || typeof blob.id !== "string" || !isBlob(blob)) {
-      refuse("VAULT_UNREADABLE", "A key blob is malformed.");
-    }
-  }
-  for (const envelope of value.envelopes) {
-    if (!isRecord(envelope))
-      refuse("VAULT_UNREADABLE", "An envelope is not a JSON object.");
-    for (const field of ["id", "factor", "domain", "label", "createdAt"]) {
-      if (typeof envelope[field] !== "string") {
-        refuse("VAULT_UNREADABLE", `An envelope is missing its ${field}, which every factor carries.`);
-      }
-    }
-    const wrap2 = envelope.wrap;
-    if (!isBlob(wrap2) || wrap2.alg !== VAULT_CIPHER) {
-      refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has a malformed wrap.`);
-    }
-    if (envelope.factor === "passphrase") {
-      if (!isRecord(envelope.kdf))
-        refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has no kdf record.`);
-      if (envelope.strength !== "generated-103" && envelope.strength !== "user-chosen") {
-        refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has an unrecognized strength.`);
-      }
-      assertKdfInBounds(envelope.kdf);
-    }
-    if (envelope.factor === "passkey-prf" && envelope.transport === "ctap2") {
-      assertCtap2EnvelopeShape(envelope);
-    }
-    if (envelope.factor === "passkey-prf" && envelope.transport === "platform-macos") {
-      assertPlatformPasskeyEnvelopeShape(envelope);
-    }
-    if (envelope.factor === "secure-enclave") {
-      assertSecureEnclaveEnvelopeShape(envelope);
-    }
-  }
-  const ids = new Set;
-  for (const envelope of value.envelopes) {
-    if (ids.has(envelope.id))
-      refuse("VAULT_UNREADABLE", `Two envelopes share the id ${envelope.id}.`);
-    ids.add(envelope.id);
-  }
-  return value;
-}
-function assertCtap2EnvelopeShape(envelope) {
-  const id = String(envelope.id);
-  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (security key) ${detail}.`);
-  if (envelope.domain !== "hardware-token")
-    bad(`has domain ${JSON.stringify(envelope.domain)}, expected hardware-token`);
-  if (envelope.rpId !== CTAP2_RP_ID)
-    bad(`has rpId ${JSON.stringify(envelope.rpId)}, expected ${CTAP2_RP_ID}`);
-  if (typeof envelope.credentialId !== "string" || envelope.credentialId === "")
-    bad("has no credentialId");
-  if (typeof envelope.prfSalt !== "string" || envelope.prfSalt === "")
-    bad("has no prfSalt");
-  if (envelope.userVerification !== "required")
-    bad("does not record userVerification: required");
-  if (typeof envelope.backupEligible !== "boolean")
-    bad("has no backupEligible flag");
-  if (typeof envelope.backupState !== "boolean")
-    bad("has no backupState flag");
-  if (envelope.saltDerivation !== "webauthn-prf")
-    bad("does not record saltDerivation: webauthn-prf");
-  if (typeof envelope.aaguid !== "string")
-    bad("has no aaguid");
-  if (typeof envelope.product !== "string")
-    bad("has no product");
-}
-function assertPlatformPasskeyEnvelopeShape(envelope) {
-  const id = String(envelope.id);
-  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (synced passkey) ${detail}.`);
-  if (envelope.domain !== "apple-account")
-    bad(`has domain ${JSON.stringify(envelope.domain)}, expected apple-account`);
-  if (envelope.rpId !== CTAP2_RP_ID)
-    bad(`has rpId ${JSON.stringify(envelope.rpId)}, expected ${CTAP2_RP_ID}`);
-  if (typeof envelope.credentialId !== "string" || envelope.credentialId === "")
-    bad("has no credentialId");
-  if (typeof envelope.prfSalt !== "string" || envelope.prfSalt === "")
-    bad("has no prfSalt");
-  if (envelope.userVerification !== "required")
-    bad("does not record userVerification: required");
-  if (envelope.backupEligible !== true)
-    bad("does not record backupEligible: true");
-  if (typeof envelope.backupState !== "boolean")
-    bad("has no backupState flag");
-  if (envelope.saltDerivation !== "platform")
-    bad("does not record saltDerivation: platform");
-  const helper = envelope.helper;
-  if (!isRecord(helper)) {
-    bad("has no helper record");
-    return;
-  }
-  if (!isHelperTeamId(helper.teamId))
-    bad("has an invalid helper.teamId");
-  if (!isHelperBundleId(helper.bundleId))
-    bad("has an invalid helper.bundleId");
-  if (typeof helper.minVersion !== "string" || helper.minVersion === "")
-    bad("has no helper.minVersion");
-}
-function assertSecureEnclaveEnvelopeShape(envelope) {
-  const id = String(envelope.id);
-  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (Secure Enclave) ${detail}.`);
-  if (envelope.domain !== "this-device")
-    bad(`has domain ${JSON.stringify(envelope.domain)}, expected this-device`);
-  const helper = envelope.helper;
-  if (!isRecord(helper)) {
-    bad("has no helper record");
-    return;
-  }
-  if (!isHelperTeamId(helper.teamId))
-    bad("has an invalid helper.teamId");
-  if (!isHelperBundleId(helper.bundleId))
-    bad("has an invalid helper.bundleId");
-  if (typeof helper.minVersion !== "string" || helper.minVersion === "")
-    bad("has no helper.minVersion");
-  if (typeof envelope.publicKey !== "string" || envelope.publicKey === "")
-    bad("has no publicKey");
-  if (typeof envelope.keyTag !== "string" || envelope.keyTag === "")
-    bad("has no keyTag");
-  if (envelope.accessControl !== "biometryCurrentSet")
-    bad("does not record accessControl: biometryCurrentSet");
-  const kek = envelope.kek;
-  if (!isRecord(kek)) {
-    bad("has no kek record");
-    return;
-  }
-  if (kek.alg !== SECURE_ENCLAVE_KEK_ALG)
-    bad(`has kek.alg ${JSON.stringify(kek.alg)}, expected ${SECURE_ENCLAVE_KEK_ALG}`);
-  if (typeof kek.ciphertext !== "string" || kek.ciphertext === "")
-    bad("has no kek.ciphertext");
-}
-function assertKeyIdsAgree(file) {
-  const declared = new Set(file.keyIds);
-  const present = new Set(file.keys.map((blob) => blob.id));
-  const missing = [...declared].filter((id) => !present.has(id));
-  const extra = [...present].filter((id) => !declared.has(id));
-  if (missing.length === 0 && extra.length === 0)
-    return;
-  throw new VaultError("VAULT_INDEX_INVALID", `The vault's keyIds and key blobs disagree: ${missing.length} declared blob(s) absent, ${extra.length} undeclared blob(s) present.`);
-}
-function parseIndexPlaintext(bytes, version = LEGACY_VAULT_VERSION) {
-  let value;
-  try {
-    value = JSON.parse(new TextDecoder().decode(bytes));
-  } catch {
-    refuse("VAULT_INDEX_INVALID", "The vault index is not valid JSON.");
-  }
-  if (!isRecord(value))
-    refuse("VAULT_INDEX_INVALID", "The vault index is not a JSON object.");
-  for (const field of Object.keys(value)) {
-    if (field !== "hd" && field !== "entries")
-      refuse("VAULT_INDEX_INVALID", `The index carries an unknown field: ${field}.`);
-  }
-  const hd = parseHd(value.hd, version);
-  if (!Array.isArray(value.entries))
-    refuse("VAULT_INDEX_INVALID", "The index has no entries array.");
-  const entries = value.entries.map((entry) => parseEntry(entry, version));
-  const seen = new Set;
-  for (const entry of entries) {
-    if (seen.has(entry.id))
-      refuse("VAULT_INDEX_INVALID", `Two index entries share the id ${entry.id}.`);
-    seen.add(entry.id);
-  }
-  for (const entry of entries) {
-    if (entry.derivation === undefined)
-      continue;
-    const located = branchOfPath(entry.derivation.path);
-    if (located === undefined)
-      continue;
-    if (hd.nextIndex[located.branch] <= located.index) {
-      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${located.branch} is ${hd.nextIndex[located.branch]}, at or below the index ${located.index} that entry ${entry.id} already derives.`);
-    }
-  }
-  return { hd, entries };
-}
-function indexRequiresVersion3(index) {
-  if (index.entries.some((entry) => entry.role === "external"))
-    return true;
-  if (index.hd.nextIndex.solanaExternal > 0)
-    return true;
-  if (index.hd.exposedIndexes.solanaExternal.length > 0)
-    return true;
-  const discovery = index.hd.discovery;
-  if (discovery === undefined)
-    return false;
-  return discovery.requestedCounts.solanaExternal !== 0 || discovery.highestMatched.solanaExternal !== -1;
-}
-function serializeIndexPlaintext(index, version) {
-  if (version === VAULT_VERSION)
-    return index;
-  if (indexRequiresVersion3(index)) {
-    throw new VaultError("VAULT_INDEX_INVALID", "This index carries the external branch and cannot be written as a version 2 vault.");
-  }
-  const { solanaExternal: _nextExternal, ...nextIndex } = index.hd.nextIndex;
-  const { solanaExternal: _exposedExternal, ...exposedIndexes } = index.hd.exposedIndexes;
-  const hd = { ...index.hd, nextIndex, exposedIndexes };
-  if (index.hd.discovery !== undefined) {
-    const { solanaExternal: _requested, ...requestedCounts } = index.hd.discovery.requestedCounts;
-    const { solanaExternal: _matched, ...highestMatched } = index.hd.discovery.highestMatched;
-    hd.discovery = { ...index.hd.discovery, requestedCounts, highestMatched };
-  }
-  return { hd, entries: index.entries };
-}
-function parseHd(value, version) {
-  if (!isRecord(value))
-    refuse("VAULT_INDEX_INVALID", "The index has no hd record.");
-  for (const field of Object.keys(value)) {
-    const allowed = [
-      "scheme",
-      "nextIndex",
-      "rootExported",
-      "rootExportedAt",
-      "exposureReconciledAt",
-      "exposedIndexes",
-      "discovery"
-    ];
-    if (!allowed.includes(field))
-      refuse("VAULT_INDEX_INVALID", `hd carries an unknown field: ${field}.`);
-  }
-  if (value.scheme !== "bip39-24/slip10")
-    refuse("VAULT_INDEX_INVALID", `hd.scheme is ${JSON.stringify(value.scheme)}.`);
-  if (typeof value.rootExported !== "boolean")
-    refuse("VAULT_INDEX_INVALID", "hd.rootExported is not a boolean.");
-  const counters = value.nextIndex;
-  if (!isRecord(counters))
-    refuse("VAULT_INDEX_INVALID", "hd.nextIndex is missing.");
-  const exposed = value.exposedIndexes;
-  if (!isRecord(exposed))
-    refuse("VAULT_INDEX_INVALID", "hd.exposedIndexes is missing.");
-  const nextIndex = {};
-  const exposedIndexes = {};
-  const onDisk = branchesForVersion(version);
-  for (const field of Object.keys(counters)) {
-    if (!onDisk.includes(field)) {
-      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${field} is not a branch a version ${version} vault carries.`);
-    }
-  }
-  for (const field of Object.keys(exposed)) {
-    if (!onDisk.includes(field)) {
-      refuse("VAULT_INDEX_INVALID", `hd.exposedIndexes.${field} is not a branch a version ${version} vault carries.`);
-    }
-  }
-  for (const branch of BRANCHES) {
-    if (!onDisk.includes(branch)) {
-      nextIndex[branch] = 0;
-      exposedIndexes[branch] = [];
-      continue;
-    }
-    const counter = counters[branch];
-    if (!Number.isInteger(counter) || counter < 0) {
-      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${branch} is missing or is not a whole number.`);
-    }
-    nextIndex[branch] = counter;
-    const list = exposed[branch];
-    if (!Array.isArray(list) || list.some((n) => !Number.isInteger(n) || n < 0)) {
-      refuse("VAULT_INDEX_INVALID", `hd.exposedIndexes.${branch} is missing or is not a list of whole numbers.`);
-    }
-    exposedIndexes[branch] = [...list].sort((a, b) => a - b);
-  }
-  let discovery;
-  if (value.discovery !== undefined) {
-    const record = value.discovery;
-    if (!isRecord(record))
-      refuse("VAULT_INDEX_INVALID", "hd.discovery is not an object.");
-    if (record.complete !== false) {
-      refuse("VAULT_INDEX_INVALID", "hd.discovery.complete is not false; no command ever writes it true.");
-    }
-    if (typeof record.restoredAt !== "string" || typeof record.account !== "string") {
-      refuse("VAULT_INDEX_INVALID", "hd.discovery is missing restoredAt or account.");
-    }
-    const parsedCounts = {};
-    for (const field of ["requestedCounts", "highestMatched"]) {
-      const counts = record[field];
-      if (!isRecord(counts) || !Number.isInteger(counts.solanaVault) || !Number.isInteger(counts.solanaTee)) {
-        refuse("VAULT_INDEX_INVALID", `hd.discovery.${field} is missing or malformed.`);
-      }
-      if (onDisk.includes("solanaExternal")) {
-        if (!Number.isInteger(counts.solanaExternal)) {
-          refuse("VAULT_INDEX_INVALID", `hd.discovery.${field}.solanaExternal is missing or malformed.`);
-        }
-      } else if (counts.solanaExternal !== undefined) {
-        refuse("VAULT_INDEX_INVALID", `hd.discovery.${field}.solanaExternal is not a field a version 2 vault carries.`);
-      }
-      parsedCounts[field] = {
-        solanaVault: counts.solanaVault,
-        solanaTee: counts.solanaTee,
-        solanaExternal: onDisk.includes("solanaExternal") ? counts.solanaExternal : field === "requestedCounts" ? 0 : -1
-      };
-    }
-    discovery = {
-      ...record,
-      requestedCounts: parsedCounts.requestedCounts,
-      highestMatched: parsedCounts.highestMatched
-    };
-  }
-  return {
-    scheme: "bip39-24/slip10",
-    nextIndex,
-    rootExported: value.rootExported,
-    ...typeof value.rootExportedAt === "string" ? { rootExportedAt: value.rootExportedAt } : {},
-    ...typeof value.exposureReconciledAt === "string" ? { exposureReconciledAt: value.exposureReconciledAt } : {},
-    exposedIndexes,
-    ...discovery ? { discovery } : {}
-  };
-}
-function parseEntry(value, version) {
-  if (!isRecord(value))
-    refuse("VAULT_INDEX_INVALID", "An index entry is not a JSON object.");
-  for (const field of Object.keys(value)) {
-    if (!KEY_ENTRY_FIELDS.includes(field)) {
-      refuse("VAULT_INDEX_INVALID", `An index entry carries a field this format does not define: ${field}.`);
-    }
-  }
-  for (const field of ["id", "address", "label", "createdAt"]) {
-    if (typeof value[field] !== "string")
-      refuse("VAULT_INDEX_INVALID", `An index entry is missing its ${field}.`);
-  }
-  if (value.chain !== "solana" && value.chain !== "evm") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized chain.`);
-  }
-  if (value.curve !== "ed25519" && value.curve !== "secp256k1") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized curve.`);
-  }
-  if (value.role !== "vault" && value.role !== "tee-wallet" && value.role !== "external") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized role.`);
-  }
-  if (value.role === "external" && version === LEGACY_VAULT_VERSION) {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is role:external, which a version 2 vault cannot carry.`);
-  }
-  if (value.origin !== "derived" && value.origin !== "migrated-tee") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized origin.`);
-  }
-  if (value.origin === "derived" && value.derivation === undefined) {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is derived but records no derivation.`);
-  }
-  if (value.origin === "migrated-tee" && value.derivation !== undefined) {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is migrated-tee and must not record a derivation.`);
-  }
-  if (value.derivation !== undefined) {
-    const derivation = value.derivation;
-    if (!isRecord(derivation) || derivation.scheme !== "slip10-ed25519" && derivation.scheme !== "bip32-secp256k1" || typeof derivation.path !== "string") {
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed derivation.`);
-    }
-    for (const field of Object.keys(derivation)) {
-      if (field !== "scheme" && field !== "path") {
-        refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s derivation carries an unknown field: ${field}.`);
-      }
-    }
-  }
-  const exposure = value.exposure;
-  if (!isRecord(exposure) || typeof exposure.everRemoteExposed !== "boolean" || typeof exposure.everExported !== "boolean") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed exposure record.`);
-  }
-  for (const field of Object.keys(exposure)) {
-    if (!["everRemoteExposed", "everExported", "exposureUnknown"].includes(field)) {
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s exposure carries an unknown field: ${field}.`);
-    }
-  }
-  if (exposure.exposureUnknown !== undefined && typeof exposure.exposureUnknown !== "boolean") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s exposureUnknown is not a boolean.`);
-  }
-  if (value.linkedWalletId !== undefined && typeof value.linkedWalletId !== "string") {
-    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed linkedWalletId.`);
-  }
-  if (value.role === "vault" || value.role === "external") {
-    const what = value.role === "vault" ? "a vault key" : "an external key";
-    if (value.tee !== undefined)
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is ${what} carrying tee metadata.`);
-    if (value.linkedWalletId !== undefined) {
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is ${what} carrying a linkedWalletId.`);
-    }
-    if (value.role === "external" && value.origin !== "derived") {
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is an external key that is not derived.`);
-    }
-  } else {
-    if (value.tee === undefined)
-      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is a TEE wallet with no tee metadata.`);
-    parseTee(value.tee, value);
-  }
-  return value;
-}
-function parseTee(value, entry) {
-  const id = entry.id;
-  if (!isRecord(value))
-    refuse("VAULT_INDEX_INVALID", `Entry ${id} has malformed tee metadata.`);
-  for (const field of Object.keys(value)) {
-    if (!TEE_FIELDS.includes(field))
-      refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee metadata carries an unknown field: ${field}.`);
-  }
-  if (value.lifecycle === undefined)
-    refuse("VAULT_INDEX_INVALID", `Entry ${id} has no tee.lifecycle.`);
-  if (TEE_REMOTE_STATES.includes(value.lifecycle) && !TEE_LIFECYCLES.includes(value.lifecycle)) {
-    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.lifecycle is ${JSON.stringify(value.lifecycle)}, which is a remoteState observation and never a lifecycle value.`);
-  }
-  if (!TEE_LIFECYCLES.includes(value.lifecycle)) {
-    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.lifecycle is ${JSON.stringify(value.lifecycle)}, which is not one of the five values.`);
-  }
-  if (value.remoteState !== undefined && !TEE_REMOTE_STATES.includes(value.remoteState)) {
-    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.remoteState is not one of SC-03's words.`);
-  }
-  if (value.grantIdentity !== undefined) {
-    const grant = value.grantIdentity;
-    if (!isRecord(grant) || typeof grant.account !== "string" || typeof grant.apiBaseUrl !== "string" || grant.source !== "operator-asserted" && grant.source !== "recorded-at-operation") {
-      refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.grantIdentity is malformed.`);
-    }
-  }
-  const rule = LIFECYCLE_TABLE[value.lifecycle];
-  for (const field of rule.tee) {
-    if (value[field] === undefined) {
-      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must record tee.${field}.`);
-    }
-  }
-  for (const field of rule.entry) {
-    if (entry[field] === undefined) {
-      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must record ${field}.`);
-    }
-  }
-  for (const field of rule.forbiddenEntry) {
-    if (entry[field] !== undefined) {
-      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must not carry ${field}.`);
-    }
-  }
-}
-function branchOfPath(path) {
-  let match = /^m\/44'\/501'\/(\d+)'\/0'$/.exec(path);
-  if (match?.[1] !== undefined)
-    return { branch: "solanaVault", index: Number(match[1]) };
-  match = /^m\/44'\/501'\/(\d+)'\/1'$/.exec(path);
-  if (match?.[1] !== undefined)
-    return { branch: "solanaTee", index: Number(match[1]) };
-  match = /^m\/44'\/501'\/(\d+)'\/2'$/.exec(path);
-  if (match?.[1] !== undefined)
-    return { branch: "solanaExternal", index: Number(match[1]) };
-  match = /^m\/44'\/60'\/(\d+)'\/0\/0$/.exec(path);
-  if (match?.[1] !== undefined)
-    return { branch: "evm", index: Number(match[1]) };
-  return;
-}
-var VAULT_FORMAT = "candle-vault", VAULT_VERSION = 3, LEGACY_VAULT_VERSION = 2, SUPPORTED_VAULT_VERSIONS, BLOB_AAD_VERSION = 2, VAULT_CIPHER = "AES-256-GCM", CTAP2_RP_ID = "cli.candle.tv", SECURE_ENCLAVE_KEK_ALG = "ECIES-P256-SHA256-AESGCM", NON_HEADER_FIELDS, HEADER_FIELDS, TOP_LEVEL_FIELDS, BRANCHES, LEGACY_BRANCHES, TEE_LIFECYCLES, TEE_REMOTE_STATES, KEY_ENTRY_FIELDS, LIFECYCLE_TABLE, isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value), isBlob = (value) => isRecord(value) && typeof value.iv === "string" && typeof value.ciphertext === "string", TEE_FIELDS;
-var init_format = __esm(() => {
-  init_crypto();
-  init_errors();
-  SUPPORTED_VAULT_VERSIONS = [LEGACY_VAULT_VERSION, VAULT_VERSION];
-  NON_HEADER_FIELDS = ["index", "root", "keys"];
-  HEADER_FIELDS = [
-    "format",
-    "version",
-    "vaultId",
-    "generation",
-    "createdAt",
-    "updatedAt",
-    "cipher",
-    "envelopes",
-    "keyIds"
-  ];
-  TOP_LEVEL_FIELDS = [...HEADER_FIELDS, ...NON_HEADER_FIELDS];
-  BRANCHES = ["solanaVault", "solanaTee", "solanaExternal", "evm"];
-  LEGACY_BRANCHES = ["solanaVault", "solanaTee", "evm"];
-  TEE_LIFECYCLES = ["local-candidate", "import-pending", "enabled", "stranded", "retired"];
-  TEE_REMOTE_STATES = [
-    "local-only",
-    "enabling",
-    "enabled",
-    "disable-pending",
-    "quarantined",
-    "swept"
-  ];
-  KEY_ENTRY_FIELDS = [
-    "id",
-    "chain",
-    "curve",
-    "address",
-    "label",
-    "createdAt",
-    "role",
-    "origin",
-    "derivation",
-    "exposure",
-    "linkedWalletId",
-    "tee"
-  ];
-  LIFECYCLE_TABLE = {
-    "local-candidate": { tee: ["network"], entry: [], forbiddenEntry: ["linkedWalletId"] },
-    "import-pending": { tee: ["network"], entry: [], forbiddenEntry: ["linkedWalletId"] },
-    enabled: { tee: ["network", "grantIdentity", "vaultDestination"], entry: ["linkedWalletId"], forbiddenEntry: [] },
-    stranded: { tee: ["network", "grantIdentity"], entry: [], forbiddenEntry: ["linkedWalletId"] },
-    retired: { tee: ["network", "vaultDestination"], entry: [], forbiddenEntry: [] }
-  };
-  TEE_FIELDS = [
-    "network",
-    "vaultDestination",
-    "boundKeyPrefix",
-    "remoteAuthority",
-    "enabledAt",
-    "stopRequestedAt",
-    "sweepReceipts",
-    "sweepPending",
-    "sweptAt",
-    "lifecycle",
-    "grantIdentity",
-    "promotedInPlaceAt",
-    "fundingReceipts",
-    "destinationExposureAccepted",
-    "remoteState"
-  ];
-});
-
-// src/vault/sidecar.ts
-import { chmod as chmod3, mkdir as mkdir3, readFile as readFile3, writeFile as writeFile3 } from "node:fs/promises";
-import { dirname as dirname5 } from "node:path";
-function sidecarPath(vaultPath) {
-  return vaultPath.replace(/\.enc$/, "") + ".state.json";
-}
-function sourceDigest(vaultId, bytes) {
-  const id = new TextEncoder().encode(vaultId);
-  const joined = new Uint8Array(id.length + bytes.length);
-  joined.set(id, 0);
-  joined.set(bytes, id.length);
-  return b64u(sha2562(joined));
-}
-async function readSidecar(path) {
-  let raw;
-  try {
-    raw = await readFile3(path, "utf8");
-  } catch {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed?.vaultId !== "string" || !Number.isInteger(parsed?.lastGeneration))
-      return null;
-    return {
-      ...parsed,
-      envelopeIds: Array.isArray(parsed.envelopeIds) ? parsed.envelopeIds : [],
-      removedEnvelopeIds: Array.isArray(parsed.removedEnvelopeIds) ? parsed.removedEnvelopeIds : []
-    };
-  } catch {
-    return null;
-  }
-}
-async function writeSidecar(path, state) {
-  const dir = dirname5(path);
-  await mkdir3(dir, { recursive: true });
-  await chmod3(dir, 448).catch(() => {});
-  await writeFile3(path, `${JSON.stringify(state, null, 2)}
-`, { encoding: "utf8", mode: 384 });
-  await chmod3(path, 384).catch(() => {});
-}
-function nextSidecar(previous, file, patch = {}) {
-  const carried = previous !== null && previous.vaultId === file.vaultId ? previous : null;
-  const currentIds = file.envelopes.map((envelope) => envelope.id);
-  const known = carried?.envelopeIds ?? [];
-  const removed = new Set(carried?.removedEnvelopeIds ?? []);
-  for (const id of known)
-    if (!currentIds.includes(id))
-      removed.add(id);
-  const next = {
-    ...carried ?? {},
-    vaultId: file.vaultId,
-    lastGeneration: file.generation,
-    envelopeIds: currentIds,
-    removedEnvelopeIds: [...removed].sort(),
-    ...patch
-  };
-  next.lastGeneration = Math.max(next.lastGeneration, file.generation, carried?.lastGeneration ?? 0);
-  return next;
-}
-var init_sidecar = __esm(() => {
-  init_sha256();
-  init_crypto();
-});
-
-// src/vault/store.ts
-var exports_store = {};
-__export(exports_store, {
-  writeNewVault: () => writeNewVault,
-  wrapDekForPrf: () => wrapDekForPrf,
-  wrapDekForPassphrase: () => wrapDekForPassphrase,
-  wrapDekForKek: () => wrapDekForKek,
-  withVaultLock: () => withVaultLock,
-  unlockWithPassphrase: () => unlockWithPassphrase,
-  unlockVault: () => unlockVault,
-  serializeVault: () => serializeVault,
-  sealKeyBlob: () => sealKeyBlob,
-  sealIndex: () => sealIndex,
-  readVaultRaw: () => readVaultRaw,
-  ownSecret: () => ownSecret,
-  legacyWalletsPath: () => legacyWalletsPath,
-  freshVaultId: () => freshVaultId,
-  freshKeyId: () => freshKeyId,
-  freshEnvelopeId: () => freshEnvelopeId,
-  freshDek: () => freshDek,
-  fileExists: () => fileExists,
-  entriesOf: () => entriesOf,
-  defaultVaultPath: () => defaultVaultPath,
-  decryptRoot: () => decryptRoot,
-  decryptKey: () => decryptKey,
-  commitVault: () => commitVault,
-  closeVault: () => closeVault,
-  candleConfigDir: () => candleConfigDir,
-  CONFIG_DIR_ENV: () => CONFIG_DIR_ENV
-});
-import { chmod as chmod4, mkdir as mkdir4, readFile as readFile4, stat as stat2 } from "node:fs/promises";
-import { join as join7 } from "node:path";
-function candleConfigDir(env, home) {
-  const configured = env.CANDLE_CONFIG_DIR?.trim();
-  if (configured) {
-    const refusal = refuseUnexpandedTilde(CONFIG_DIR_ENV, configured);
-    if (refusal !== undefined)
-      throw new UsageError(refusal);
-    return configured;
-  }
-  return join7(home, ".config", "candle");
-}
-function defaultVaultPath(env, home) {
-  return join7(candleConfigDir(env, home), "vault.enc");
-}
-function legacyWalletsPath(env, home) {
-  return join7(candleConfigDir(env, home), "wallets.enc");
-}
-async function readVaultRaw(path) {
-  try {
-    return await readFile4(path, "utf8");
-  } catch (error) {
-    if (error?.code === "ENOENT")
-      return null;
-    throw new VaultError("VAULT_UNREADABLE", `Could not read the vault at ${path}.`);
-  }
-}
-async function fileExists(path) {
-  try {
-    await stat2(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function closeVault(vault) {
-  wipe(vault.dek);
-}
-async function unlockVault(path, raw, request, opts = {}) {
-  const file = parseVaultFile(raw);
-  const envelope = pickEnvelope(file, request);
-  const dek = await unwrapDek(file, envelope, request, opts.notice);
-  if (dek.length !== DEK_BYTES) {
-    wipe(dek);
-    throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.");
-  }
-  try {
-    const payloadKey = await derivePayloadKey(dek, unb64u(file.vaultId, "vaultId"));
-    const indexBytes = await open2(payloadKey, file.index, canonicalHeader(file), {
-      code: "VAULT_BLOB_TAMPERED",
-      message: "The vault header was altered, an envelope was added or removed outside this CLI, or this index is from a different write of the vault.",
-      suggestion: "Nothing was written. Restore the file from a verified backup."
-    });
-    let index;
-    try {
-      index = parseIndexPlaintext(indexBytes, file.version);
-    } finally {
-      wipe(indexBytes);
-    }
-    assertKeyIdsAgree(file);
-    return { path, raw, file, index, payloadKey, dek, envelope };
-  } catch (error) {
-    wipe(dek);
-    throw error;
-  }
-}
-async function unwrapDek(file, envelope, request, notice) {
-  if (request.factor === "passphrase") {
-    const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), notice);
-    return withSecret(kek, async (kekBytes) => {
-      const kekKey2 = await importAesKey(kekBytes);
-      return open2(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
-        code: "VAULT_UNLOCK_FAILED",
-        message: "Could not open the vault: wrong passphrase, or the file is corrupt."
-      });
-    });
-  }
-  if (request.factor === "secure-enclave") {
-    if (!isSecureEnclaveEnvelope(envelope)) {
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a Secure Enclave one.`);
-    }
-    const kekKey2 = await importAesKey(request.kek);
-    return open2(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
-      code: "VAULT_UNLOCK_FAILED",
-      message: "Could not open the vault with the Secure Enclave: what it unwrapped is not this envelope's key, or the file is corrupt.",
-      suggestion: "Nothing was derived from it and no other factor was tried."
-    });
-  }
-  if (!isPrfEnvelope(envelope)) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passkey one.`);
-  }
-  const kekKey = await derivePrfKek(request.prfOutput, unb64u(file.vaultId, "vaultId"));
-  const what = envelope.transport === "platform-macos" ? "this synced passkey" : "this security key";
-  return open2(kekKey, envelope.wrap, envelopeAad(file, envelope), {
-    code: "VAULT_UNLOCK_FAILED",
-    message: `Could not open the vault with ${what}: the assertion did not yield this envelope's key, or the file is corrupt.`,
-    suggestion: "Nothing was derived from it and no other factor was tried."
-  });
-}
-function pickEnvelope(file, request) {
-  const candidates = file.envelopes.filter((envelope) => envelope.factor === request.factor);
-  if (request.envelopeId !== undefined) {
-    const named = candidates.find((envelope) => envelope.id === request.envelopeId);
-    if (!named)
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request.factor} envelope with id ${request.envelopeId}.`);
-    return named;
-  }
-  const first = candidates[0];
-  if (!first) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request.factor} envelope.`, {
-      suggestion: "Run `candle vault status` to see which factors can open it."
-    });
-  }
-  return first;
-}
-async function unlockWithPassphrase(path, raw, passphrase, opts = {}) {
-  const file = parseVaultFile(raw);
-  const envelopes = file.envelopes.filter((envelope) => envelope.factor === "passphrase");
-  if (envelopes.length === 0) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
-  }
-  let last;
-  for (const envelope of envelopes) {
-    try {
-      return await unlockVault(path, raw, { factor: "passphrase", passphrase, envelopeId: envelope.id }, opts);
-    } catch (error) {
-      if (error instanceof VaultError && error.code !== "VAULT_UNLOCK_FAILED")
-        throw error;
-      last = error;
-    }
-  }
-  throw last;
-}
-async function decryptRoot(vault) {
-  return open2(vault.payloadKey, vault.file.root, rootAad(vault.file.vaultId), {
-    code: "VAULT_BLOB_TAMPERED",
-    message: "The vault's root blob failed its authentication tag.",
-    suggestion: "Nothing was written. Restore the file from a verified backup; `vault verify-backup` checks a copy in full."
-  });
-}
-async function decryptKey(vault, keyId) {
-  const blob = vault.file.keys.find((candidate) => candidate.id === keyId);
-  if (!blob)
-    throw new VaultError("VAULT_INDEX_INVALID", `The vault declares key ${keyId} but holds no blob for it.`);
-  return open2(vault.payloadKey, blob, keyAad(vault.file.vaultId, keyId), {
-    code: "VAULT_BLOB_TAMPERED",
-    message: `Key blob ${keyId} failed its authentication tag.`,
-    suggestion: "Nothing was written."
-  });
-}
-function freshId(bytes) {
-  for (;; ) {
-    const id = b64u(crypto.getRandomValues(new Uint8Array(bytes)));
-    if (!id.startsWith("-") && !id.startsWith("_"))
-      return id;
-  }
-}
-function freshEnvelopeId() {
-  return freshId(8);
-}
-function freshKeyId() {
-  return freshId(8);
-}
-function freshVaultId() {
-  return freshId(16);
-}
-function freshDek() {
-  return randomBytes2(DEK_BYTES);
-}
-async function wrapDekForPassphrase(dek, passphrase, envelope, header, notice) {
-  const kek = await derivePassphraseKek(passphrase, passphraseKdf(envelope), notice);
-  return withSecret(kek, async (kekBytes) => {
-    const kekKey = await importAesKey(kekBytes);
-    const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
-    return { alg: VAULT_CIPHER, ...blob };
-  });
-}
-async function wrapDekForPrf(dek, prfOutput, envelope, header) {
-  const kekKey = await derivePrfKek(prfOutput, unb64u(header.vaultId, "vaultId"));
-  const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
-  return { alg: VAULT_CIPHER, ...blob };
-}
-async function wrapDekForKek(dek, kek, envelope, header) {
-  const kekKey = await importAesKey(kek);
-  const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
-  return { alg: VAULT_CIPHER, ...blob };
-}
-function serializeVault(file) {
-  return `${JSON.stringify(file, null, 2)}
-`;
-}
-async function sealIndex(header, index, payloadKey) {
-  const withoutIndex = { ...header };
-  const blob = await sealJson(payloadKey, serializeIndexPlaintext(index, header.version), canonicalHeader(withoutIndex));
-  return { ...withoutIndex, index: blob };
-}
-async function commitVault(vault, plan, clock) {
-  const written = await withVaultLock(vault.path, clock, async () => {
-    const current = await readVaultRaw(vault.path);
-    if (current !== vault.raw) {
-      throw new VaultError("VAULT_CHANGED", "The vault changed on disk while this command was running; nothing was written.", {
-        suggestion: "Another candle command wrote to it. Run this one again."
-      });
-    }
-    const envelopes = plan.envelopes ?? vault.file.envelopes;
-    const keys = [...vault.file.keys, ...plan.addKeys ?? []];
-    const version = indexRequiresVersion3(plan.index) ? VAULT_VERSION : vault.file.version;
-    const header = {
-      format: VAULT_FORMAT,
-      version,
-      vaultId: vault.file.vaultId,
-      generation: vault.file.generation + 1,
-      createdAt: vault.file.createdAt,
-      updatedAt: new Date(clock.now()).toISOString(),
-      cipher: VAULT_CIPHER,
-      envelopes,
-      keyIds: keys.map((blob) => blob.id),
-      root: vault.file.root,
-      keys
-    };
-    const next = await sealIndex(header, plan.index, vault.payloadKey);
-    const contents = serializeVault(next);
-    try {
-      await writeKeystoreFile(vault.path, contents);
-    } catch {
-      throw new VaultError("VAULT_WRITE_FAILED", `Could not write the vault at ${vault.path}.`);
-    }
-    return { next, contents };
-  });
-  const path = sidecarPath(vault.path);
-  await writeSidecar(path, nextSidecar(await readSidecar(path), written.next, plan.sidecar)).catch(() => {});
-  return { ...vault, raw: written.contents, file: written.next, index: plan.index };
-}
-async function withVaultLock(path, clock, fn) {
-  try {
-    return await withKeystoreLock(path, clock, fn);
-  } catch (error) {
-    if (error instanceof KeystoreLockedError) {
-      throw new VaultError("VAULT_LOCKED", error.message);
-    }
-    throw error;
-  }
-}
-async function sealKeyBlob(vault, keyId, secret) {
-  const blob = await seal(vault.payloadKey, secret, keyAad(vault.file.vaultId, keyId));
-  return { id: keyId, ...blob };
-}
-async function writeNewVault(path, contents) {
-  await mkdir4(candleConfigDirOf(path), { recursive: true });
-  await chmod4(candleConfigDirOf(path), 448).catch(() => {});
-  await writeKeystoreFile(path, contents);
-}
-function candleConfigDirOf(path) {
-  return join7(path, "..");
-}
-function entriesOf(vault) {
-  return vault.index.entries;
-}
-var CONFIG_DIR_ENV = "CANDLE_CONFIG_DIR";
-var init_store = __esm(() => {
-  init_args();
-  init_wallet_keystore();
-  init_crypto();
-  init_errors();
-  init_format();
-  init_sidecar();
-});
-
 // ../../node_modules/@noble/curves/esm/abstract/edwards.js
 function isEdValidXY(Fp, CURVE, x, y) {
   const x2 = Fp.sqr(x);
@@ -8027,14 +7028,140 @@ var init_edwards = __esm(() => {
   _8n2 = BigInt(8);
 });
 
+// ../../node_modules/@noble/curves/esm/abstract/montgomery.js
+function validateOpts(curve) {
+  _validateObject(curve, {
+    adjustScalarBytes: "function",
+    powPminus2: "function"
+  });
+  return Object.freeze({ ...curve });
+}
+function montgomery(curveDef) {
+  const CURVE = validateOpts(curveDef);
+  const { P: P2, type, adjustScalarBytes, powPminus2, randomBytes: rand } = CURVE;
+  const is25519 = type === "x25519";
+  if (!is25519 && type !== "x448")
+    throw new Error("invalid type");
+  const randomBytes_ = rand || randomBytes;
+  const montgomeryBits = is25519 ? 255 : 448;
+  const fieldLen = is25519 ? 32 : 56;
+  const Gu = is25519 ? BigInt(9) : BigInt(5);
+  const a24 = is25519 ? BigInt(121665) : BigInt(39081);
+  const minScalar = is25519 ? _2n4 ** BigInt(254) : _2n4 ** BigInt(447);
+  const maxAdded = is25519 ? BigInt(8) * _2n4 ** BigInt(251) - _1n6 : BigInt(4) * _2n4 ** BigInt(445) - _1n6;
+  const maxScalar = minScalar + maxAdded + _1n6;
+  const modP = (n) => mod(n, P2);
+  const GuBytes = encodeU(Gu);
+  function encodeU(u) {
+    return numberToBytesLE(modP(u), fieldLen);
+  }
+  function decodeU(u) {
+    const _u = ensureBytes("u coordinate", u, fieldLen);
+    if (is25519)
+      _u[31] &= 127;
+    return modP(bytesToNumberLE(_u));
+  }
+  function decodeScalar(scalar) {
+    return bytesToNumberLE(adjustScalarBytes(ensureBytes("scalar", scalar, fieldLen)));
+  }
+  function scalarMult(scalar, u) {
+    const pu = montgomeryLadder(decodeU(u), decodeScalar(scalar));
+    if (pu === _0n6)
+      throw new Error("invalid private or public key received");
+    return encodeU(pu);
+  }
+  function scalarMultBase(scalar) {
+    return scalarMult(scalar, GuBytes);
+  }
+  function cswap(swap, x_2, x_3) {
+    const dummy = modP(swap * (x_2 - x_3));
+    x_2 = modP(x_2 - dummy);
+    x_3 = modP(x_3 + dummy);
+    return { x_2, x_3 };
+  }
+  function montgomeryLadder(u, scalar) {
+    aInRange("u", u, _0n6, P2);
+    aInRange("scalar", scalar, minScalar, maxScalar);
+    const k = scalar;
+    const x_1 = u;
+    let x_2 = _1n6;
+    let z_2 = _0n6;
+    let x_3 = u;
+    let z_3 = _1n6;
+    let swap = _0n6;
+    for (let t = BigInt(montgomeryBits - 1);t >= _0n6; t--) {
+      const k_t = k >> t & _1n6;
+      swap ^= k_t;
+      ({ x_2, x_3 } = cswap(swap, x_2, x_3));
+      ({ x_2: z_2, x_3: z_3 } = cswap(swap, z_2, z_3));
+      swap = k_t;
+      const A = x_2 + z_2;
+      const AA = modP(A * A);
+      const B = x_2 - z_2;
+      const BB = modP(B * B);
+      const E = AA - BB;
+      const C = x_3 + z_3;
+      const D = x_3 - z_3;
+      const DA = modP(D * A);
+      const CB = modP(C * B);
+      const dacb = DA + CB;
+      const da_cb = DA - CB;
+      x_3 = modP(dacb * dacb);
+      z_3 = modP(x_1 * modP(da_cb * da_cb));
+      x_2 = modP(AA * BB);
+      z_2 = modP(E * (AA + modP(a24 * E)));
+    }
+    ({ x_2, x_3 } = cswap(swap, x_2, x_3));
+    ({ x_2: z_2, x_3: z_3 } = cswap(swap, z_2, z_3));
+    const z2 = powPminus2(z_2);
+    return modP(x_2 * z2);
+  }
+  const lengths = {
+    secretKey: fieldLen,
+    publicKey: fieldLen,
+    seed: fieldLen
+  };
+  const randomSecretKey = (seed = randomBytes_(fieldLen)) => {
+    abytes(seed, lengths.seed);
+    return seed;
+  };
+  function keygen(seed) {
+    const secretKey = randomSecretKey(seed);
+    return { secretKey, publicKey: scalarMultBase(secretKey) };
+  }
+  const utils2 = {
+    randomSecretKey,
+    randomPrivateKey: randomSecretKey
+  };
+  return {
+    keygen,
+    getSharedSecret: (secretKey, publicKey) => scalarMult(secretKey, publicKey),
+    getPublicKey: (secretKey) => scalarMultBase(secretKey),
+    scalarMult,
+    scalarMultBase,
+    utils: utils2,
+    GuBytes: GuBytes.slice(),
+    lengths
+  };
+}
+var _0n6, _1n6, _2n4;
+var init_montgomery = __esm(() => {
+  init_utils2();
+  init_modular();
+  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+  _0n6 = BigInt(0);
+  _1n6 = BigInt(1);
+  _2n4 = BigInt(2);
+});
+
 // ../../node_modules/@noble/curves/esm/ed25519.js
 function ed25519_pow_2_252_3(x) {
   const _10n = BigInt(10), _20n = BigInt(20), _40n = BigInt(40), _80n = BigInt(80);
   const P2 = ed25519_CURVE_p;
   const x2 = x * x % P2;
   const b2 = x2 * x % P2;
-  const b4 = pow2(b2, _2n4, P2) * b2 % P2;
-  const b5 = pow2(b4, _1n6, P2) * x % P2;
+  const b4 = pow2(b2, _2n5, P2) * b2 % P2;
+  const b5 = pow2(b4, _1n7, P2) * x % P2;
   const b10 = pow2(b5, _5n2, P2) * b5 % P2;
   const b20 = pow2(b10, _10n, P2) * b10 % P2;
   const b40 = pow2(b20, _20n, P2) * b20 % P2;
@@ -8042,7 +7169,7 @@ function ed25519_pow_2_252_3(x) {
   const b160 = pow2(b80, _80n, P2) * b80 % P2;
   const b240 = pow2(b160, _80n, P2) * b80 % P2;
   const b250 = pow2(b240, _10n, P2) * b10 % P2;
-  const pow_p_5_8 = pow2(b250, _2n4, P2) * x % P2;
+  const pow_p_5_8 = pow2(b250, _2n5, P2) * x % P2;
   return { pow_p_5_8, b2 };
 }
 function adjustScalarBytes(bytes) {
@@ -8076,7 +7203,7 @@ function calcElligatorRistrettoMap(r0) {
   const P2 = ed25519_CURVE_p;
   const mod2 = (n) => Fp.create(n);
   const r = mod2(SQRT_M1 * r0 * r0);
-  const Ns = mod2((r + _1n6) * ONE_MINUS_D_SQ);
+  const Ns = mod2((r + _1n7) * ONE_MINUS_D_SQ);
   let c = BigInt(-1);
   const D = mod2((c - d * r) * mod2(r + d));
   let { isValid: Ns_D_is_sq, value: s } = uvRatio(Ns, D);
@@ -8087,12 +7214,12 @@ function calcElligatorRistrettoMap(r0) {
     s = s_;
   if (!Ns_D_is_sq)
     c = r;
-  const Nt = mod2(c * (r - _1n6) * D_MINUS_ONE_SQ - D);
+  const Nt = mod2(c * (r - _1n7) * D_MINUS_ONE_SQ - D);
   const s2 = s * s;
   const W0 = mod2((s + s) * D);
   const W1 = mod2(Nt * SQRT_AD_MINUS_ONE);
-  const W2 = mod2(_1n6 - s2);
-  const W3 = mod2(_1n6 + s2);
+  const W2 = mod2(_1n7 - s2);
+  const W3 = mod2(_1n7 + s2);
   return new ed25519.Point(mod2(W0 * W3), mod2(W2 * W1), mod2(W1 * W3), mod2(W0 * W2));
 }
 function ristretto255_map(bytes) {
@@ -8103,18 +7230,19 @@ function ristretto255_map(bytes) {
   const R2 = calcElligatorRistrettoMap(r2);
   return new _RistrettoPoint(R1.add(R2));
 }
-var _0n6, _1n6, _2n4, _3n3, _5n2, _8n3, ed25519_CURVE_p, ed25519_CURVE, ED25519_SQRT_M1, Fp, Fn, ed25519Defaults, ed25519, SQRT_M1, SQRT_AD_MINUS_ONE, INVSQRT_A_MINUS_D, ONE_MINUS_D_SQ, D_MINUS_ONE_SQ, invertSqrt = (number) => uvRatio(_1n6, number), MAX_255B, bytes255ToNumberLE = (bytes) => ed25519.Point.Fp.create(bytesToNumberLE(bytes) & MAX_255B), _RistrettoPoint;
+var _0n7, _1n7, _2n5, _3n3, _5n2, _8n3, ed25519_CURVE_p, ed25519_CURVE, ED25519_SQRT_M1, Fp, Fn, ed25519Defaults, ed25519, x25519, SQRT_M1, SQRT_AD_MINUS_ONE, INVSQRT_A_MINUS_D, ONE_MINUS_D_SQ, D_MINUS_ONE_SQ, invertSqrt = (number) => uvRatio(_1n7, number), MAX_255B, bytes255ToNumberLE = (bytes) => ed25519.Point.Fp.create(bytesToNumberLE(bytes) & MAX_255B), _RistrettoPoint;
 var init_ed25519 = __esm(() => {
   init_sha2();
   init_utils();
   init_curve();
   init_edwards();
   init_modular();
+  init_montgomery();
   init_utils2();
   /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-  _0n6 = /* @__PURE__ */ BigInt(0);
-  _1n6 = BigInt(1);
-  _2n4 = BigInt(2);
+  _0n7 = /* @__PURE__ */ BigInt(0);
+  _1n7 = BigInt(1);
+  _2n5 = BigInt(2);
   _3n3 = BigInt(3);
   _5n2 = BigInt(5);
   _8n3 = BigInt(8);
@@ -8139,6 +7267,18 @@ var init_ed25519 = __esm(() => {
     uvRatio
   }))();
   ed25519 = /* @__PURE__ */ (() => twistedEdwards(ed25519Defaults))();
+  x25519 = /* @__PURE__ */ (() => {
+    const P2 = Fp.ORDER;
+    return montgomery({
+      P: P2,
+      type: "x25519",
+      powPminus2: (x) => {
+        const { pow_p_5_8, b2 } = ed25519_pow_2_252_3(x);
+        return mod(pow2(pow_p_5_8, _3n3, P2) * b2, P2);
+      },
+      adjustScalarBytes
+    });
+  })();
   SQRT_M1 = ED25519_SQRT_M1;
   SQRT_AD_MINUS_ONE = /* @__PURE__ */ BigInt("25063068953384623474111414158702152701244531502492656460079210482610430750235");
   INVSQRT_A_MINUS_D = /* @__PURE__ */ BigInt("54469307008909316920995813868745141605393597292927456921205312896311721017578");
@@ -8171,8 +7311,8 @@ var init_ed25519 = __esm(() => {
       if (!equalBytes(Fp.toBytes(s), bytes) || isNegativeLE(s, P2))
         throw new Error("invalid ristretto255 encoding 1");
       const s2 = mod2(s * s);
-      const u1 = mod2(_1n6 + a * s2);
-      const u2 = mod2(_1n6 - a * s2);
+      const u1 = mod2(_1n7 + a * s2);
+      const u2 = mod2(_1n7 - a * s2);
       const u1_2 = mod2(u1 * u1);
       const u2_2 = mod2(u2 * u2);
       const v = mod2(a * d * u1_2 - u2_2);
@@ -8184,9 +7324,9 @@ var init_ed25519 = __esm(() => {
         x = mod2(-x);
       const y = mod2(u1 * Dy);
       const t = mod2(x * y);
-      if (!isValid || isNegativeLE(t, P2) || y === _0n6)
+      if (!isValid || isNegativeLE(t, P2) || y === _0n7)
         throw new Error("invalid ristretto255 encoding 2");
-      return new _RistrettoPoint(new ed25519.Point(x, y, _1n6, t));
+      return new _RistrettoPoint(new ed25519.Point(x, y, _1n7, t));
     }
     static fromHex(hex2) {
       return _RistrettoPoint.fromBytes(ensureBytes("ristrettoHex", hex2, 32));
@@ -8241,6 +7381,1492 @@ var init_ed25519 = __esm(() => {
   _RistrettoPoint.Fn = /* @__PURE__ */ (() => Fn)();
 });
 
+// ../../node_modules/@noble/hashes/esm/hkdf.js
+function extract(hash, ikm, salt) {
+  ahash(hash);
+  if (salt === undefined)
+    salt = new Uint8Array(hash.outputLen);
+  return hmac(hash, toBytes(salt), toBytes(ikm));
+}
+function expand(hash, prk, info, length = 32) {
+  ahash(hash);
+  anumber(length);
+  const olen = hash.outputLen;
+  if (length > 255 * olen)
+    throw new Error("Length should be <= 255*HashLen");
+  const blocks = Math.ceil(length / olen);
+  if (info === undefined)
+    info = EMPTY_BUFFER;
+  const okm = new Uint8Array(blocks * olen);
+  const HMAC2 = hmac.create(hash, prk);
+  const HMACTmp = HMAC2._cloneInto();
+  const T = new Uint8Array(HMAC2.outputLen);
+  for (let counter = 0;counter < blocks; counter++) {
+    HKDF_COUNTER[0] = counter + 1;
+    HMACTmp.update(counter === 0 ? EMPTY_BUFFER : T).update(info).update(HKDF_COUNTER).digestInto(T);
+    okm.set(T, olen * counter);
+    HMAC2._cloneInto(HMACTmp);
+  }
+  HMAC2.destroy();
+  HMACTmp.destroy();
+  clean(T, HKDF_COUNTER);
+  return okm.slice(0, length);
+}
+var HKDF_COUNTER, EMPTY_BUFFER, hkdf = (hash, ikm, salt, info, length) => expand(hash, extract(hash, ikm, salt), info, length);
+var init_hkdf = __esm(() => {
+  init_hmac();
+  init_utils();
+  HKDF_COUNTER = /* @__PURE__ */ Uint8Array.from([0]);
+  EMPTY_BUFFER = /* @__PURE__ */ Uint8Array.of();
+});
+
+// src/vault/format.ts
+function isPassphraseEnvelope(envelope) {
+  return envelope.factor === "passphrase";
+}
+function isCtap2Envelope(envelope) {
+  return envelope.factor === "passkey-prf" && envelope.transport === "ctap2";
+}
+function isSecureEnclaveEnvelope(envelope) {
+  return envelope.factor === "secure-enclave";
+}
+function isPlatformPasskeyEnvelope(envelope) {
+  return envelope.factor === "passkey-prf" && envelope.transport === "platform-macos";
+}
+function isPrfEnvelope(envelope) {
+  return isCtap2Envelope(envelope) || isPlatformPasskeyEnvelope(envelope);
+}
+function passphraseKdf(envelope) {
+  if (!isPassphraseEnvelope(envelope)) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passphrase one.`);
+  }
+  return envelope.kdf;
+}
+function branchesForVersion(version) {
+  if (version === LEGACY_VAULT_VERSION)
+    return LEGACY_BRANCHES;
+  return version === VAULT_VERSION ? BRANCHES : ALL_BRANCHES;
+}
+function nextIndexOf(hd, branch) {
+  return branch === "evmTee" ? hd.nextIndex.evmTee ?? 0 : hd.nextIndex[branch];
+}
+function exposedIndexesOf(hd, branch) {
+  return branch === "evmTee" ? hd.exposedIndexes.evmTee ?? [] : hd.exposedIndexes[branch];
+}
+function teeNetworkFor(chain2) {
+  return chain2 === "evm" ? "hood-mainnet" : "solana-mainnet";
+}
+function canonicalHeader(file) {
+  const header = {};
+  for (const field of HEADER_FIELDS)
+    header[field] = file[field];
+  return canonicalBytes(header);
+}
+function envelopeAad(file, envelope) {
+  const base = {
+    format: VAULT_FORMAT,
+    version: BLOB_AAD_VERSION,
+    vaultId: file.vaultId,
+    envelopeId: envelope.id,
+    factor: envelope.factor
+  };
+  if (isPassphraseEnvelope(envelope)) {
+    return canonicalBytes({ ...base, kdf: envelope.kdf, strength: envelope.strength });
+  }
+  if (isCtap2Envelope(envelope)) {
+    return canonicalBytes({
+      ...base,
+      transport: envelope.transport,
+      rpId: envelope.rpId,
+      credentialId: envelope.credentialId,
+      prfSalt: envelope.prfSalt,
+      userVerification: envelope.userVerification,
+      backupEligible: envelope.backupEligible,
+      backupState: envelope.backupState,
+      saltDerivation: envelope.saltDerivation
+    });
+  }
+  if (isSecureEnclaveEnvelope(envelope)) {
+    return canonicalBytes({
+      ...base,
+      helper: envelope.helper,
+      publicKey: envelope.publicKey,
+      keyTag: envelope.keyTag,
+      accessControl: envelope.accessControl,
+      kek: envelope.kek
+    });
+  }
+  if (isPlatformPasskeyEnvelope(envelope)) {
+    return canonicalBytes({
+      ...base,
+      transport: envelope.transport,
+      rpId: envelope.rpId,
+      credentialId: envelope.credentialId,
+      prfSalt: envelope.prfSalt,
+      userVerification: envelope.userVerification,
+      backupEligible: envelope.backupEligible,
+      backupState: envelope.backupState,
+      saltDerivation: envelope.saltDerivation,
+      helper: envelope.helper
+    });
+  }
+  throw new VaultError("VAULT_FACTOR_UNSUPPORTED_ON_PLATFORM", `This CLI cannot unwrap a ${envelope.factor}${typeof envelope.transport === "string" ? `/${envelope.transport}` : ""} envelope.`);
+}
+function rootAad(vaultId) {
+  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "root" });
+}
+function keyAad(vaultId, keyId) {
+  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "key", keyId });
+}
+function evmRecordKeyAad(vaultId) {
+  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "evm-record" });
+}
+function refuse(code, message) {
+  throw new VaultError(code, message);
+}
+function parseVaultFile(raw) {
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    refuse("VAULT_UNREADABLE", "The vault file is not valid JSON.");
+  }
+  if (!isRecord(value))
+    refuse("VAULT_UNREADABLE", "The vault file is not a JSON object.");
+  if (value.format !== VAULT_FORMAT) {
+    throw new VaultError("VAULT_FORMAT_UNKNOWN", `Not a Candle vault: format is ${JSON.stringify(value.format)}.`);
+  }
+  if (!SUPPORTED_VAULT_VERSIONS.includes(value.version)) {
+    throw new VaultError("VAULT_VERSION_UNSUPPORTED", `Unsupported vault version ${JSON.stringify(value.version)}: this CLI reads versions ${SUPPORTED_VAULT_VERSIONS.join(", ")}.`);
+  }
+  if (value.cipher !== VAULT_CIPHER) {
+    refuse("VAULT_UNREADABLE", `Unsupported cipher ${JSON.stringify(value.cipher)}: this format is ${VAULT_CIPHER}.`);
+  }
+  for (const field of Object.keys(value)) {
+    if (!TOP_LEVEL_FIELDS.includes(field)) {
+      throw new VaultError("VAULT_FIELD_UNKNOWN", `The vault file carries an unknown top-level field: ${field}.`, {
+        suggestion: "A newer CLI may have written it. This CLI refuses rather than dropping a field it cannot honour."
+      });
+    }
+  }
+  if (typeof value.vaultId !== "string")
+    refuse("VAULT_UNREADABLE", "vaultId is missing or not a string.");
+  if (!Number.isInteger(value.generation) || value.generation < 0) {
+    refuse("VAULT_UNREADABLE", "generation is missing or is not a whole number.");
+  }
+  for (const field of ["createdAt", "updatedAt"]) {
+    if (typeof value[field] !== "string")
+      refuse("VAULT_UNREADABLE", `${field} is missing or not a string.`);
+  }
+  if (!Array.isArray(value.envelopes))
+    refuse("VAULT_UNREADABLE", "envelopes is missing or not an array.");
+  if (!Array.isArray(value.keyIds) || value.keyIds.some((id) => typeof id !== "string")) {
+    refuse("VAULT_UNREADABLE", "keyIds is missing or is not an array of strings.");
+  }
+  if (value.version === EVM_TEE_VAULT_VERSION) {
+    if (typeof value.evmRecordPublicKey !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.evmRecordPublicKey)) {
+      refuse("VAULT_UNREADABLE", "evmRecordPublicKey is missing or is not a 32-byte base64url key; a version 4 vault must carry one.");
+    }
+  } else if (value.evmRecordPublicKey !== undefined) {
+    throw new VaultError("VAULT_FIELD_UNKNOWN", `The vault file carries evmRecordPublicKey, which a version ${String(value.version)} vault does not define.`);
+  }
+  if (!isBlob(value.index))
+    refuse("VAULT_UNREADABLE", "index is missing or malformed.");
+  if (!isBlob(value.root)) {
+    throw new VaultError("VAULT_INDEX_INVALID", `The vault has no root blob; every version ${String(value.version)} vault must carry one.`);
+  }
+  if (!Array.isArray(value.keys))
+    refuse("VAULT_UNREADABLE", "keys is missing or not an array.");
+  for (const blob of value.keys) {
+    if (!isRecord(blob) || typeof blob.id !== "string" || !isBlob(blob)) {
+      refuse("VAULT_UNREADABLE", "A key blob is malformed.");
+    }
+  }
+  for (const envelope of value.envelopes) {
+    if (!isRecord(envelope))
+      refuse("VAULT_UNREADABLE", "An envelope is not a JSON object.");
+    for (const field of ["id", "factor", "domain", "label", "createdAt"]) {
+      if (typeof envelope[field] !== "string") {
+        refuse("VAULT_UNREADABLE", `An envelope is missing its ${field}, which every factor carries.`);
+      }
+    }
+    const wrap2 = envelope.wrap;
+    if (!isBlob(wrap2) || wrap2.alg !== VAULT_CIPHER) {
+      refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has a malformed wrap.`);
+    }
+    if (envelope.factor === "passphrase") {
+      if (!isRecord(envelope.kdf))
+        refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has no kdf record.`);
+      if (envelope.strength !== "generated-103" && envelope.strength !== "user-chosen") {
+        refuse("VAULT_UNREADABLE", `Envelope ${String(envelope.id)} has an unrecognized strength.`);
+      }
+      assertKdfInBounds(envelope.kdf);
+    }
+    if (envelope.factor === "passkey-prf" && envelope.transport === "ctap2") {
+      assertCtap2EnvelopeShape(envelope);
+    }
+    if (envelope.factor === "passkey-prf" && envelope.transport === "platform-macos") {
+      assertPlatformPasskeyEnvelopeShape(envelope);
+    }
+    if (envelope.factor === "secure-enclave") {
+      assertSecureEnclaveEnvelopeShape(envelope);
+    }
+  }
+  const ids = new Set;
+  for (const envelope of value.envelopes) {
+    if (ids.has(envelope.id))
+      refuse("VAULT_UNREADABLE", `Two envelopes share the id ${envelope.id}.`);
+    ids.add(envelope.id);
+  }
+  return value;
+}
+function assertCtap2EnvelopeShape(envelope) {
+  const id = String(envelope.id);
+  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (security key) ${detail}.`);
+  if (envelope.domain !== "hardware-token")
+    bad(`has domain ${JSON.stringify(envelope.domain)}, expected hardware-token`);
+  if (envelope.rpId !== CTAP2_RP_ID)
+    bad(`has rpId ${JSON.stringify(envelope.rpId)}, expected ${CTAP2_RP_ID}`);
+  if (typeof envelope.credentialId !== "string" || envelope.credentialId === "")
+    bad("has no credentialId");
+  if (typeof envelope.prfSalt !== "string" || envelope.prfSalt === "")
+    bad("has no prfSalt");
+  if (envelope.userVerification !== "required")
+    bad("does not record userVerification: required");
+  if (typeof envelope.backupEligible !== "boolean")
+    bad("has no backupEligible flag");
+  if (typeof envelope.backupState !== "boolean")
+    bad("has no backupState flag");
+  if (envelope.saltDerivation !== "webauthn-prf")
+    bad("does not record saltDerivation: webauthn-prf");
+  if (typeof envelope.aaguid !== "string")
+    bad("has no aaguid");
+  if (typeof envelope.product !== "string")
+    bad("has no product");
+}
+function assertPlatformPasskeyEnvelopeShape(envelope) {
+  const id = String(envelope.id);
+  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (synced passkey) ${detail}.`);
+  if (envelope.domain !== "apple-account")
+    bad(`has domain ${JSON.stringify(envelope.domain)}, expected apple-account`);
+  if (envelope.rpId !== CTAP2_RP_ID)
+    bad(`has rpId ${JSON.stringify(envelope.rpId)}, expected ${CTAP2_RP_ID}`);
+  if (typeof envelope.credentialId !== "string" || envelope.credentialId === "")
+    bad("has no credentialId");
+  if (typeof envelope.prfSalt !== "string" || envelope.prfSalt === "")
+    bad("has no prfSalt");
+  if (envelope.userVerification !== "required")
+    bad("does not record userVerification: required");
+  if (envelope.backupEligible !== true)
+    bad("does not record backupEligible: true");
+  if (typeof envelope.backupState !== "boolean")
+    bad("has no backupState flag");
+  if (envelope.saltDerivation !== "platform")
+    bad("does not record saltDerivation: platform");
+  const helper = envelope.helper;
+  if (!isRecord(helper)) {
+    bad("has no helper record");
+    return;
+  }
+  if (!isHelperTeamId(helper.teamId))
+    bad("has an invalid helper.teamId");
+  if (!isHelperBundleId(helper.bundleId))
+    bad("has an invalid helper.bundleId");
+  if (typeof helper.minVersion !== "string" || helper.minVersion === "")
+    bad("has no helper.minVersion");
+}
+function assertSecureEnclaveEnvelopeShape(envelope) {
+  const id = String(envelope.id);
+  const bad = (detail) => refuse("VAULT_UNREADABLE", `Envelope ${id} (Secure Enclave) ${detail}.`);
+  if (envelope.domain !== "this-device")
+    bad(`has domain ${JSON.stringify(envelope.domain)}, expected this-device`);
+  const helper = envelope.helper;
+  if (!isRecord(helper)) {
+    bad("has no helper record");
+    return;
+  }
+  if (!isHelperTeamId(helper.teamId))
+    bad("has an invalid helper.teamId");
+  if (!isHelperBundleId(helper.bundleId))
+    bad("has an invalid helper.bundleId");
+  if (typeof helper.minVersion !== "string" || helper.minVersion === "")
+    bad("has no helper.minVersion");
+  if (typeof envelope.publicKey !== "string" || envelope.publicKey === "")
+    bad("has no publicKey");
+  if (typeof envelope.keyTag !== "string" || envelope.keyTag === "")
+    bad("has no keyTag");
+  if (envelope.accessControl !== "biometryCurrentSet")
+    bad("does not record accessControl: biometryCurrentSet");
+  const kek = envelope.kek;
+  if (!isRecord(kek)) {
+    bad("has no kek record");
+    return;
+  }
+  if (kek.alg !== SECURE_ENCLAVE_KEK_ALG)
+    bad(`has kek.alg ${JSON.stringify(kek.alg)}, expected ${SECURE_ENCLAVE_KEK_ALG}`);
+  if (typeof kek.ciphertext !== "string" || kek.ciphertext === "")
+    bad("has no kek.ciphertext");
+}
+function assertKeyIdsAgree(file) {
+  const declared = new Set(file.keyIds);
+  const present = new Set(file.keys.map((blob) => blob.id));
+  const missing = [...declared].filter((id) => !present.has(id));
+  const extra = [...present].filter((id) => !declared.has(id));
+  if (missing.length === 0 && extra.length === 0)
+    return;
+  throw new VaultError("VAULT_INDEX_INVALID", `The vault's keyIds and key blobs disagree: ${missing.length} declared blob(s) absent, ${extra.length} undeclared blob(s) present.`);
+}
+function parseIndexPlaintext(bytes, version = LEGACY_VAULT_VERSION) {
+  let value;
+  try {
+    value = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    refuse("VAULT_INDEX_INVALID", "The vault index is not valid JSON.");
+  }
+  if (!isRecord(value))
+    refuse("VAULT_INDEX_INVALID", "The vault index is not a JSON object.");
+  for (const field of Object.keys(value)) {
+    if (field === "evmRecordKey" && version === EVM_TEE_VAULT_VERSION)
+      continue;
+    if (field !== "hd" && field !== "entries")
+      refuse("VAULT_INDEX_INVALID", `The index carries an unknown field: ${field}.`);
+  }
+  if (version === EVM_TEE_VAULT_VERSION && !isBlob(value.evmRecordKey)) {
+    refuse("VAULT_INDEX_INVALID", "A version 4 index must carry the sealed EVM record's key (evmRecordKey).");
+  }
+  const hd = parseHd(value.hd, version);
+  if (!Array.isArray(value.entries))
+    refuse("VAULT_INDEX_INVALID", "The index has no entries array.");
+  const entries = value.entries.map((entry) => parseEntry(entry, version));
+  const seen = new Set;
+  for (const entry of entries) {
+    if (seen.has(entry.id))
+      refuse("VAULT_INDEX_INVALID", `Two index entries share the id ${entry.id}.`);
+    seen.add(entry.id);
+  }
+  for (const entry of entries) {
+    if (entry.derivation === undefined)
+      continue;
+    const located = branchOfPath(entry.derivation.path);
+    if (located === undefined)
+      continue;
+    if (nextIndexOf(hd, located.branch) <= located.index) {
+      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${located.branch} is ${nextIndexOf(hd, located.branch)}, at or below the index ${located.index} that entry ${entry.id} already derives.`);
+    }
+  }
+  return { hd, entries, ...version === EVM_TEE_VAULT_VERSION ? { evmRecordKey: value.evmRecordKey } : {} };
+}
+function indexRequiresVersion4(index) {
+  if (index.evmRecordKey !== undefined)
+    return true;
+  if (index.entries.some((entry) => entry.chain === "evm" && entry.role === "tee-wallet"))
+    return true;
+  if (nextIndexOf(index.hd, "evmTee") > 0)
+    return true;
+  return exposedIndexesOf(index.hd, "evmTee").length > 0;
+}
+function indexRequiresVersion3(index) {
+  if (index.entries.some((entry) => entry.role === "external"))
+    return true;
+  if (index.hd.nextIndex.solanaExternal > 0)
+    return true;
+  if (index.hd.exposedIndexes.solanaExternal.length > 0)
+    return true;
+  const discovery = index.hd.discovery;
+  if (discovery === undefined)
+    return false;
+  return discovery.requestedCounts.solanaExternal !== 0 || discovery.highestMatched.solanaExternal !== -1;
+}
+function serializeIndexPlaintext(index, version) {
+  if (version === EVM_TEE_VAULT_VERSION) {
+    if (index.evmRecordKey === undefined) {
+      throw new VaultError("VAULT_INDEX_INVALID", "A version 4 index must carry the sealed EVM record's key.");
+    }
+    return {
+      ...index,
+      hd: {
+        ...index.hd,
+        nextIndex: { ...index.hd.nextIndex, evmTee: nextIndexOf(index.hd, "evmTee") },
+        exposedIndexes: { ...index.hd.exposedIndexes, evmTee: exposedIndexesOf(index.hd, "evmTee") }
+      }
+    };
+  }
+  if (indexRequiresVersion4(index)) {
+    throw new VaultError("VAULT_INDEX_INVALID", `This index carries an EVM TEE wallet and cannot be written as a version ${version} vault.`);
+  }
+  const { evmTee: _nextEvmTee, ...nextIndexV3 } = index.hd.nextIndex;
+  const { evmTee: _exposedEvmTee, ...exposedV3 } = index.hd.exposedIndexes;
+  if (version === VAULT_VERSION) {
+    if (index.hd.nextIndex.evmTee === undefined && index.hd.exposedIndexes.evmTee === undefined)
+      return index;
+    return { hd: { ...index.hd, nextIndex: nextIndexV3, exposedIndexes: exposedV3 }, entries: index.entries };
+  }
+  if (indexRequiresVersion3(index)) {
+    throw new VaultError("VAULT_INDEX_INVALID", "This index carries the external branch and cannot be written as a version 2 vault.");
+  }
+  const { solanaExternal: _nextExternal, ...nextIndex } = nextIndexV3;
+  const { solanaExternal: _exposedExternal, ...exposedIndexes } = exposedV3;
+  const hd = { ...index.hd, nextIndex, exposedIndexes };
+  if (index.hd.discovery !== undefined) {
+    const { solanaExternal: _requested, ...requestedCounts } = index.hd.discovery.requestedCounts;
+    const { solanaExternal: _matched, ...highestMatched } = index.hd.discovery.highestMatched;
+    hd.discovery = { ...index.hd.discovery, requestedCounts, highestMatched };
+  }
+  return { hd, entries: index.entries };
+}
+function parseHd(value, version) {
+  if (!isRecord(value))
+    refuse("VAULT_INDEX_INVALID", "The index has no hd record.");
+  for (const field of Object.keys(value)) {
+    const allowed = [
+      "scheme",
+      "nextIndex",
+      "rootExported",
+      "rootExportedAt",
+      "exposureReconciledAt",
+      "exposedIndexes",
+      "discovery"
+    ];
+    if (!allowed.includes(field))
+      refuse("VAULT_INDEX_INVALID", `hd carries an unknown field: ${field}.`);
+  }
+  if (value.scheme !== "bip39-24/slip10")
+    refuse("VAULT_INDEX_INVALID", `hd.scheme is ${JSON.stringify(value.scheme)}.`);
+  if (typeof value.rootExported !== "boolean")
+    refuse("VAULT_INDEX_INVALID", "hd.rootExported is not a boolean.");
+  const counters = value.nextIndex;
+  if (!isRecord(counters))
+    refuse("VAULT_INDEX_INVALID", "hd.nextIndex is missing.");
+  const exposed = value.exposedIndexes;
+  if (!isRecord(exposed))
+    refuse("VAULT_INDEX_INVALID", "hd.exposedIndexes is missing.");
+  const nextIndex = {};
+  const exposedIndexes = {};
+  const onDisk = branchesForVersion(version);
+  for (const field of Object.keys(counters)) {
+    if (!onDisk.includes(field)) {
+      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${field} is not a branch a version ${version} vault carries.`);
+    }
+  }
+  for (const field of Object.keys(exposed)) {
+    if (!onDisk.includes(field)) {
+      refuse("VAULT_INDEX_INVALID", `hd.exposedIndexes.${field} is not a branch a version ${version} vault carries.`);
+    }
+  }
+  for (const branch of ALL_BRANCHES) {
+    if (!onDisk.includes(branch)) {
+      if (branch === "evmTee")
+        continue;
+      nextIndex[branch] = 0;
+      exposedIndexes[branch] = [];
+      continue;
+    }
+    const counter = counters[branch];
+    if (!Number.isInteger(counter) || counter < 0) {
+      refuse("VAULT_INDEX_INVALID", `hd.nextIndex.${branch} is missing or is not a whole number.`);
+    }
+    nextIndex[branch] = counter;
+    const list = exposed[branch];
+    if (!Array.isArray(list) || list.some((n) => !Number.isInteger(n) || n < 0)) {
+      refuse("VAULT_INDEX_INVALID", `hd.exposedIndexes.${branch} is missing or is not a list of whole numbers.`);
+    }
+    exposedIndexes[branch] = [...list].sort((a, b) => a - b);
+  }
+  let discovery;
+  if (value.discovery !== undefined) {
+    const record = value.discovery;
+    if (!isRecord(record))
+      refuse("VAULT_INDEX_INVALID", "hd.discovery is not an object.");
+    if (record.complete !== false) {
+      refuse("VAULT_INDEX_INVALID", "hd.discovery.complete is not false; no command ever writes it true.");
+    }
+    if (typeof record.restoredAt !== "string" || typeof record.account !== "string") {
+      refuse("VAULT_INDEX_INVALID", "hd.discovery is missing restoredAt or account.");
+    }
+    const parsedCounts = {};
+    for (const field of ["requestedCounts", "highestMatched"]) {
+      const counts = record[field];
+      if (!isRecord(counts) || !Number.isInteger(counts.solanaVault) || !Number.isInteger(counts.solanaTee)) {
+        refuse("VAULT_INDEX_INVALID", `hd.discovery.${field} is missing or malformed.`);
+      }
+      if (onDisk.includes("solanaExternal")) {
+        if (!Number.isInteger(counts.solanaExternal)) {
+          refuse("VAULT_INDEX_INVALID", `hd.discovery.${field}.solanaExternal is missing or malformed.`);
+        }
+      } else if (counts.solanaExternal !== undefined) {
+        refuse("VAULT_INDEX_INVALID", `hd.discovery.${field}.solanaExternal is not a field a version 2 vault carries.`);
+      }
+      parsedCounts[field] = {
+        solanaVault: counts.solanaVault,
+        solanaTee: counts.solanaTee,
+        solanaExternal: onDisk.includes("solanaExternal") ? counts.solanaExternal : field === "requestedCounts" ? 0 : -1
+      };
+    }
+    discovery = {
+      ...record,
+      requestedCounts: parsedCounts.requestedCounts,
+      highestMatched: parsedCounts.highestMatched
+    };
+  }
+  return {
+    scheme: "bip39-24/slip10",
+    nextIndex,
+    rootExported: value.rootExported,
+    ...typeof value.rootExportedAt === "string" ? { rootExportedAt: value.rootExportedAt } : {},
+    ...typeof value.exposureReconciledAt === "string" ? { exposureReconciledAt: value.exposureReconciledAt } : {},
+    exposedIndexes,
+    ...discovery ? { discovery } : {}
+  };
+}
+function parseEntry(value, version) {
+  if (!isRecord(value))
+    refuse("VAULT_INDEX_INVALID", "An index entry is not a JSON object.");
+  for (const field of Object.keys(value)) {
+    if (!KEY_ENTRY_FIELDS.includes(field)) {
+      refuse("VAULT_INDEX_INVALID", `An index entry carries a field this format does not define: ${field}.`);
+    }
+  }
+  for (const field of ["id", "address", "label", "createdAt"]) {
+    if (typeof value[field] !== "string")
+      refuse("VAULT_INDEX_INVALID", `An index entry is missing its ${field}.`);
+  }
+  if (value.chain !== "solana" && value.chain !== "evm") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized chain.`);
+  }
+  if (value.curve !== "ed25519" && value.curve !== "secp256k1") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized curve.`);
+  }
+  if (value.role !== "vault" && value.role !== "tee-wallet" && value.role !== "external") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized role.`);
+  }
+  if (value.role === "external" && version === LEGACY_VAULT_VERSION) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is role:external, which a version 2 vault cannot carry.`);
+  }
+  if (value.chain === "evm" && value.role === "tee-wallet" && version !== EVM_TEE_VAULT_VERSION) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is an EVM TEE wallet, which only a version 4 vault carries.`);
+  }
+  if (value.origin !== "derived" && value.origin !== "migrated-tee") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized origin.`);
+  }
+  if (value.origin === "derived" && value.derivation === undefined) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is derived but records no derivation.`);
+  }
+  if (value.origin === "migrated-tee" && value.derivation !== undefined) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is migrated-tee and must not record a derivation.`);
+  }
+  if (value.derivation !== undefined) {
+    const derivation = value.derivation;
+    if (!isRecord(derivation) || derivation.scheme !== "slip10-ed25519" && derivation.scheme !== "bip32-secp256k1" || typeof derivation.path !== "string") {
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed derivation.`);
+    }
+    for (const field of Object.keys(derivation)) {
+      if (field !== "scheme" && field !== "path") {
+        refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s derivation carries an unknown field: ${field}.`);
+      }
+    }
+  }
+  const exposure = value.exposure;
+  if (!isRecord(exposure) || typeof exposure.everRemoteExposed !== "boolean" || typeof exposure.everExported !== "boolean") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed exposure record.`);
+  }
+  for (const field of Object.keys(exposure)) {
+    if (!["everRemoteExposed", "everExported", "exposureUnknown"].includes(field)) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s exposure carries an unknown field: ${field}.`);
+    }
+  }
+  if (exposure.exposureUnknown !== undefined && typeof exposure.exposureUnknown !== "boolean") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)}'s exposureUnknown is not a boolean.`);
+  }
+  if (value.linkedWalletId !== undefined && typeof value.linkedWalletId !== "string") {
+    refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has a malformed linkedWalletId.`);
+  }
+  if (value.role === "vault" || value.role === "external") {
+    const what = value.role === "vault" ? "a vault key" : "an external key";
+    if (value.tee !== undefined)
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is ${what} carrying tee metadata.`);
+    if (value.linkedWalletId !== undefined) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is ${what} carrying a linkedWalletId.`);
+    }
+    if (value.role === "external" && value.origin !== "derived") {
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is an external key that is not derived.`);
+    }
+  } else {
+    if (value.tee === undefined)
+      refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is a TEE wallet with no tee metadata.`);
+    parseTee(value.tee, value);
+  }
+  return value;
+}
+function parseTee(value, entry) {
+  const id = entry.id;
+  if (!isRecord(value))
+    refuse("VAULT_INDEX_INVALID", `Entry ${id} has malformed tee metadata.`);
+  for (const field of Object.keys(value)) {
+    if (!TEE_FIELDS.includes(field))
+      refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee metadata carries an unknown field: ${field}.`);
+  }
+  if (value.lifecycle === undefined)
+    refuse("VAULT_INDEX_INVALID", `Entry ${id} has no tee.lifecycle.`);
+  if (value.network !== undefined) {
+    const expected = entry.chain === "evm" ? "hood-mainnet" : "solana-mainnet";
+    if (value.network !== expected) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id} is a ${entry.chain} key with tee.network ${JSON.stringify(value.network)}.`);
+    }
+  }
+  if (TEE_REMOTE_STATES.includes(value.lifecycle) && !TEE_LIFECYCLES.includes(value.lifecycle)) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.lifecycle is ${JSON.stringify(value.lifecycle)}, which is a remoteState observation and never a lifecycle value.`);
+  }
+  if (!TEE_LIFECYCLES.includes(value.lifecycle)) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.lifecycle is ${JSON.stringify(value.lifecycle)}, which is not one of the five values.`);
+  }
+  if (value.remoteState !== undefined && !TEE_REMOTE_STATES.includes(value.remoteState)) {
+    refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.remoteState is not one of SC-03's words.`);
+  }
+  if (value.grantIdentity !== undefined) {
+    const grant = value.grantIdentity;
+    if (!isRecord(grant) || typeof grant.account !== "string" || typeof grant.apiBaseUrl !== "string" || grant.source !== "operator-asserted" && grant.source !== "recorded-at-operation") {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee.grantIdentity is malformed.`);
+    }
+  }
+  const rule = LIFECYCLE_TABLE[value.lifecycle];
+  for (const field of rule.tee) {
+    if (value[field] === undefined) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must record tee.${field}.`);
+    }
+  }
+  for (const field of rule.entry) {
+    if (entry[field] === undefined) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must record ${field}.`);
+    }
+  }
+  for (const field of rule.forbiddenEntry) {
+    if (entry[field] !== undefined) {
+      refuse("VAULT_INDEX_INVALID", `Entry ${id} is ${String(value.lifecycle)} and must not carry ${field}.`);
+    }
+  }
+}
+function branchOfPath(path) {
+  let match = /^m\/44'\/501'\/(\d+)'\/0'$/.exec(path);
+  if (match?.[1] !== undefined)
+    return { branch: "solanaVault", index: Number(match[1]) };
+  match = /^m\/44'\/501'\/(\d+)'\/1'$/.exec(path);
+  if (match?.[1] !== undefined)
+    return { branch: "solanaTee", index: Number(match[1]) };
+  match = /^m\/44'\/501'\/(\d+)'\/2'$/.exec(path);
+  if (match?.[1] !== undefined)
+    return { branch: "solanaExternal", index: Number(match[1]) };
+  match = /^m\/44'\/60'\/(\d+)'\/0\/0$/.exec(path);
+  if (match?.[1] !== undefined)
+    return { branch: "evm", index: Number(match[1]) };
+  match = /^m\/44'\/60'\/(\d+)'\/1'\/0'$/.exec(path);
+  if (match?.[1] !== undefined)
+    return { branch: "evmTee", index: Number(match[1]) };
+  return;
+}
+var VAULT_FORMAT = "candle-vault", VAULT_VERSION = 3, LEGACY_VAULT_VERSION = 2, EVM_TEE_VAULT_VERSION = 4, SUPPORTED_VAULT_VERSIONS, BLOB_AAD_VERSION = 2, VAULT_CIPHER = "AES-256-GCM", CTAP2_RP_ID = "cli.candle.tv", SECURE_ENCLAVE_KEK_ALG = "ECIES-P256-SHA256-AESGCM", NON_HEADER_FIELDS, HEADER_FIELDS, TOP_LEVEL_FIELDS, ALL_BRANCHES, BRANCHES, LEGACY_BRANCHES, TEE_LIFECYCLES, TEE_REMOTE_STATES, KEY_ENTRY_FIELDS, LIFECYCLE_TABLE, isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value), isBlob = (value) => isRecord(value) && typeof value.iv === "string" && typeof value.ciphertext === "string", TEE_FIELDS;
+var init_format = __esm(() => {
+  init_crypto();
+  init_errors();
+  SUPPORTED_VAULT_VERSIONS = [
+    LEGACY_VAULT_VERSION,
+    VAULT_VERSION,
+    EVM_TEE_VAULT_VERSION
+  ];
+  NON_HEADER_FIELDS = ["index", "root", "keys"];
+  HEADER_FIELDS = [
+    "format",
+    "version",
+    "vaultId",
+    "generation",
+    "createdAt",
+    "updatedAt",
+    "cipher",
+    "envelopes",
+    "keyIds",
+    "evmRecordPublicKey"
+  ];
+  TOP_LEVEL_FIELDS = [...HEADER_FIELDS, ...NON_HEADER_FIELDS];
+  ALL_BRANCHES = ["solanaVault", "solanaTee", "solanaExternal", "evm", "evmTee"];
+  BRANCHES = ["solanaVault", "solanaTee", "solanaExternal", "evm"];
+  LEGACY_BRANCHES = ["solanaVault", "solanaTee", "evm"];
+  TEE_LIFECYCLES = ["local-candidate", "import-pending", "enabled", "stranded", "retired"];
+  TEE_REMOTE_STATES = [
+    "local-only",
+    "enabling",
+    "enabled",
+    "disable-pending",
+    "quarantined",
+    "swept"
+  ];
+  KEY_ENTRY_FIELDS = [
+    "id",
+    "chain",
+    "curve",
+    "address",
+    "label",
+    "createdAt",
+    "role",
+    "origin",
+    "derivation",
+    "exposure",
+    "linkedWalletId",
+    "tee"
+  ];
+  LIFECYCLE_TABLE = {
+    "local-candidate": { tee: ["network"], entry: [], forbiddenEntry: ["linkedWalletId"] },
+    "import-pending": { tee: ["network"], entry: [], forbiddenEntry: ["linkedWalletId"] },
+    enabled: { tee: ["network", "grantIdentity", "vaultDestination"], entry: ["linkedWalletId"], forbiddenEntry: [] },
+    stranded: { tee: ["network", "grantIdentity"], entry: [], forbiddenEntry: ["linkedWalletId"] },
+    retired: { tee: ["network", "vaultDestination"], entry: [], forbiddenEntry: [] }
+  };
+  TEE_FIELDS = [
+    "network",
+    "vaultDestination",
+    "boundKeyPrefix",
+    "remoteAuthority",
+    "enabledAt",
+    "stopRequestedAt",
+    "sweepReceipts",
+    "sweepPending",
+    "sweptAt",
+    "lifecycle",
+    "grantIdentity",
+    "promotedInPlaceAt",
+    "fundingReceipts",
+    "destinationExposureAccepted",
+    "remoteState"
+  ];
+});
+
+// src/vault/evm-record-key.ts
+async function createEvmRecordKey(payloadKey, vaultId) {
+  const secret = x25519.utils.randomPrivateKey();
+  try {
+    const publicKey = x25519.getPublicKey(secret);
+    const blob = await seal(payloadKey, secret, evmRecordKeyAad(vaultId));
+    return { publicKey: b64u(publicKey), blob };
+  } finally {
+    wipe(secret);
+  }
+}
+async function openEvmRecordKey(payloadKey, vaultId, blob, headerPublicKey) {
+  const secret = await open2(payloadKey, blob, evmRecordKeyAad(vaultId), {
+    code: "VAULT_BLOB_TAMPERED",
+    message: "The sealed EVM record's key failed its authentication tag.",
+    suggestion: "Nothing was written. Restore the file from a verified backup."
+  });
+  if (secret.length !== EVM_RECORD_KEY_BYTES) {
+    wipe(secret);
+    throw new VaultError("VAULT_INDEX_INVALID", "The sealed EVM record's key is the wrong length.");
+  }
+  const derived = x25519.getPublicKey(secret);
+  if (!bytesEqual(derived, unb64u(headerPublicKey, "evmRecordPublicKey"))) {
+    wipe(secret);
+    throw new VaultError("VAULT_INDEX_INVALID", "The sealed EVM record's key does not derive the header's evmRecordPublicKey; the pair was altered.", { suggestion: "Nothing was written. Restore the file from a verified backup." });
+  }
+  return secret;
+}
+function entryJson(entry) {
+  return entry.kind === "token" ? JSON.stringify({ kind: "token", wallet: entry.wallet, token: entry.token }) : JSON.stringify({ kind: "scanStart", wallet: entry.wallet, block: entry.block });
+}
+function paddedEntry(entry) {
+  const json = new TextEncoder().encode(entryJson(entry));
+  if (json.length > EVM_RECORD_PLAINTEXT_BYTES)
+    return;
+  const out = new Uint8Array(EVM_RECORD_PLAINTEXT_BYTES).fill(32);
+  out.set(json, 0);
+  return out;
+}
+function concat(a, b) {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+async function lineKey(shared, epk, rpk) {
+  const okm = hkdf(sha2562, shared, concat(epk, rpk), new TextEncoder().encode(EVM_RECORD_HKDF_INFO), 32);
+  try {
+    return await crypto.subtle.importKey("raw", okm, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  } finally {
+    wipe(okm);
+  }
+}
+async function sealEvmRecordLine(entry, recordPublicKey, vaultId) {
+  const plaintext = paddedEntry(entry);
+  if (plaintext === undefined) {
+    throw new VaultError("EVM_RECORD_ENTRY_TOO_LONG", `A sealed EVM record entry is at most ${EVM_RECORD_PLAINTEXT_BYTES} bytes; this one is longer and was not written.`);
+  }
+  const rpk = unb64u(recordPublicKey, "evmRecordPublicKey");
+  const esk = x25519.utils.randomPrivateKey();
+  try {
+    const epk = x25519.getPublicKey(esk);
+    const shared = x25519.getSharedSecret(esk, rpk);
+    try {
+      const key = await lineKey(shared, epk, rpk);
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: ZERO_NONCE, additionalData: new TextEncoder().encode(vaultId) }, key, plaintext));
+      return `${JSON.stringify({ v: EVM_RECORD_LINE_VERSION, epk: b64u(epk), ct: b64u(ct) })}
+`;
+    } finally {
+      wipe(shared);
+    }
+  } finally {
+    wipe(esk);
+  }
+}
+function isAddress(value) {
+  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+async function openEvmRecordLine(line, recordSecret, recordPublicKey, vaultId) {
+  try {
+    const parsed = JSON.parse(line);
+    if (parsed.v !== EVM_RECORD_LINE_VERSION || typeof parsed.epk !== "string" || typeof parsed.ct !== "string") {
+      return;
+    }
+    const epk = unb64u(parsed.epk, "epk");
+    const rpk = unb64u(recordPublicKey, "evmRecordPublicKey");
+    const shared = x25519.getSharedSecret(recordSecret, epk);
+    let plaintext;
+    try {
+      const key = await lineKey(shared, epk, rpk);
+      plaintext = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: ZERO_NONCE, additionalData: new TextEncoder().encode(vaultId) }, key, unb64u(parsed.ct, "ct")));
+    } finally {
+      wipe(shared);
+    }
+    if (plaintext.length !== EVM_RECORD_PLAINTEXT_BYTES)
+      return;
+    const value = JSON.parse(new TextDecoder().decode(plaintext).trimEnd());
+    if (value.kind === "token" && isAddress(value.wallet) && isAddress(value.token)) {
+      return { kind: "token", wallet: value.wallet, token: value.token };
+    }
+    if (value.kind === "scanStart" && isAddress(value.wallet) && Number.isSafeInteger(value.block) && value.block >= 0) {
+      return { kind: "scanStart", wallet: value.wallet, block: value.block };
+    }
+    return;
+  } catch {
+    return;
+  }
+}
+var EVM_RECORD_KEY_BYTES = 32, EVM_RECORD_PLAINTEXT_BYTES = 160, EVM_RECORD_HKDF_INFO = "candle-vault/v4/evm-record", EVM_RECORD_LINE_VERSION = 1, ZERO_NONCE;
+var init_evm_record_key = __esm(() => {
+  init_ed25519();
+  init_hkdf();
+  init_sha256();
+  init_crypto();
+  init_errors();
+  init_format();
+  ZERO_NONCE = new Uint8Array(12);
+});
+
+// src/vault/evm-record.ts
+import { appendFile, readFile as readFile3, rename as rename3, stat as stat2, truncate } from "node:fs/promises";
+function evmRecordPath(vaultPath) {
+  return `${vaultPath.replace(/\.enc$/, "")}.evm-record.sealed`;
+}
+function utcStamp(ms) {
+  return new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+async function readIfPresent(path) {
+  try {
+    return await readFile3(path);
+  } catch (error) {
+    if (error?.code === "ENOENT")
+      return null;
+    throw error;
+  }
+}
+function splitRecord(bytes) {
+  const text = new TextDecoder().decode(bytes);
+  if (text.length === 0)
+    return { lines: [], partialTail: false };
+  const pieces = text.split(`
+`);
+  const last = pieces.pop();
+  return { lines: pieces.filter((line) => line.length > 0), partialTail: last.length > 0 };
+}
+async function appendEvmRecordEntry(input) {
+  const path = evmRecordPath(input.vaultPath);
+  let raw;
+  try {
+    const bytes = await readIfPresent(input.vaultPath);
+    raw = bytes === null ? null : bytes.toString("utf8");
+  } catch (error) {
+    return { written: false, reason: "header-unreadable", detail: messageOf(error), path };
+  }
+  if (raw === null)
+    return { written: false, reason: "no-vault", detail: `no vault at ${input.vaultPath}`, path };
+  let publicKey;
+  let vaultId;
+  try {
+    const header = parseVaultFile(raw);
+    vaultId = header.vaultId;
+    publicKey = header.version === EVM_TEE_VAULT_VERSION ? header.evmRecordPublicKey : undefined;
+  } catch (error) {
+    return { written: false, reason: "header-unreadable", detail: messageOf(error), path };
+  }
+  if (publicKey === undefined) {
+    return {
+      written: false,
+      reason: "no-record-key",
+      detail: "the vault is not version 4, so it has no sealed EVM record key",
+      path
+    };
+  }
+  let line;
+  try {
+    line = await sealEvmRecordLine(input.entry, publicKey, vaultId);
+  } catch (error) {
+    const tooLong = error instanceof VaultError && error.code === "EVM_RECORD_ENTRY_TOO_LONG";
+    return { written: false, reason: tooLong ? "too-long" : "write-failed", detail: messageOf(error), path };
+  }
+  try {
+    const repairedPartial = await withKeystoreLock(path, input.clock, async () => {
+      const repaired = await repairTail(path);
+      await appendFile(path, line, { encoding: "utf8", mode: 384 });
+      return repaired;
+    }, input.lockWaitMs !== undefined ? { waitMs: input.lockWaitMs } : {});
+    return { written: true, repairedPartial, path };
+  } catch (error) {
+    if (error instanceof KeystoreLockedError) {
+      return { written: false, reason: "locked", detail: error.message, path };
+    }
+    return { written: false, reason: "write-failed", detail: messageOf(error), path };
+  }
+}
+async function repairTail(path) {
+  const bytes = await readIfPresent(path);
+  if (bytes === null || bytes.length === 0 || bytes[bytes.length - 1] === 10)
+    return false;
+  const lastNewline = bytes.lastIndexOf(10);
+  await truncate(path, lastNewline + 1);
+  return true;
+}
+function appendNotice(outcome, what) {
+  if (outcome.written) {
+    return outcome.repairedPartial ? `The sealed EVM record at ${outcome.path} ended in a partial line (a torn earlier append); it was dropped before ${what} was added.` : undefined;
+  }
+  return `${what} was not added to the sealed EVM record (${outcome.detail}). A sweep can still find it with --token or --from-block.`;
+}
+async function openVaultRecordKey(vault) {
+  const blob = vault.index.evmRecordKey;
+  const publicKey = vault.file.evmRecordPublicKey;
+  if (blob === undefined || publicKey === undefined)
+    return;
+  return openEvmRecordKey(vault.payloadKey, vault.file.vaultId, blob, publicKey);
+}
+async function readEvmRecord(vault, path = evmRecordPath(vault.path)) {
+  const bytes = await readIfPresent(path);
+  const base = { path, entries: [], unreadableLines: 0, partialTail: false };
+  const secret = await openVaultRecordKey(vault);
+  if (secret === undefined)
+    return { ...base, absent: bytes === null || bytes.length === 0, noKey: true };
+  try {
+    if (bytes === null || bytes.length === 0)
+      return { ...base, absent: true, noKey: false };
+    const { lines, partialTail } = splitRecord(bytes);
+    const seen = new Set;
+    const entries = [];
+    let unreadable = 0;
+    for (const line of lines) {
+      const entry = await openEvmRecordLine(line, secret, vault.file.evmRecordPublicKey, vault.file.vaultId);
+      if (entry === undefined) {
+        unreadable += 1;
+        continue;
+      }
+      const key = JSON.stringify(entry).toLowerCase();
+      if (seen.has(key))
+        continue;
+      seen.add(key);
+      entries.push(entry);
+    }
+    return { path, absent: false, noKey: false, entries, unreadableLines: unreadable, partialTail };
+  } finally {
+    wipe(secret);
+  }
+}
+async function copyEvmRecordForBackup(live, copyPath, clock) {
+  const livePath = evmRecordPath(live.path);
+  try {
+    return await withKeystoreLock(livePath, clock, async () => {
+      const bytes = await readIfPresent(livePath);
+      if (bytes === null)
+        return { present: false, copied: 0, dropped: 0, copyPath };
+      const secret = await openVaultRecordKey(live);
+      const kept = [];
+      let dropped = 0;
+      const { lines, partialTail } = splitRecord(bytes);
+      if (partialTail)
+        dropped += 1;
+      try {
+        for (const line of lines) {
+          const entry = secret === undefined ? undefined : await openEvmRecordLine(line, secret, live.file.evmRecordPublicKey, live.file.vaultId);
+          if (entry === undefined)
+            dropped += 1;
+          else
+            kept.push(`${line}
+`);
+        }
+      } finally {
+        if (secret !== undefined)
+          wipe(secret);
+      }
+      await writeKeystoreFile(copyPath, kept.join(""));
+      return { present: true, copied: kept.length, dropped, copyPath };
+    });
+  } catch (error) {
+    if (error instanceof KeystoreLockedError) {
+      throw new VaultError("EVM_RECORD_UNAVAILABLE", `Could not take the sealed EVM record's lock at ${livePath}.lock, so the backup was not completed and no verified backup was recorded.`, { suggestion: "Wait for the trade or sweep holding it to finish, then run the backup again." });
+    }
+    if (error instanceof VaultError)
+      throw error;
+    throw new VaultError("VAULT_WRITE_FAILED", `Could not copy the sealed EVM record to ${copyPath}: ${messageOf(error)}`);
+  }
+}
+async function verifyEvmRecordCopy(copy, path = evmRecordPath(copy.path)) {
+  if (copy.file.version !== EVM_TEE_VAULT_VERSION)
+    return { notApplicable: true, absent: true, lines: 0, path };
+  const bytes = await readIfPresent(path);
+  if (bytes === null)
+    return { notApplicable: false, absent: true, lines: 0, path };
+  const { lines, partialTail } = splitRecord(bytes);
+  if (partialTail) {
+    throw verifyFailed(`the sealed EVM record at ${path} ends in a partial line`);
+  }
+  const secret = await openVaultRecordKey(copy);
+  if (secret === undefined)
+    throw verifyFailed("the copy has no sealed EVM record key");
+  try {
+    for (const [index, line] of lines.entries()) {
+      const entry = await openEvmRecordLine(line, secret, copy.file.evmRecordPublicKey, copy.file.vaultId);
+      if (entry === undefined) {
+        throw verifyFailed(`line ${index + 1} of the sealed EVM record at ${path} does not decrypt under this copy's key`);
+      }
+    }
+  } finally {
+    wipe(secret);
+  }
+  return { notApplicable: false, absent: false, lines: lines.length, path };
+}
+function verifyFailed(message) {
+  return new VaultError("VAULT_VERIFY_FAILED", `Verification failed at step 9: ${message}.`, {
+    suggestion: "The copy's record changed after it was written. Run `candle vault backup` again; a fresh backup of the same vault copies only the lines that decrypt.",
+    details: { step: "9" }
+  });
+}
+async function moveAsideOrphanRecord(vaultPath, clock) {
+  const path = evmRecordPath(vaultPath);
+  if (!await exists(path))
+    return;
+  return withKeystoreLock(path, clock, async () => {
+    if (!await exists(path))
+      return;
+    let target = `${path}.orphaned-${utcStamp(clock.now())}`;
+    for (let n = 2;await exists(target); n++)
+      target = `${path}.orphaned-${utcStamp(clock.now())}-${n}`;
+    await rename3(path, target);
+    return target;
+  });
+}
+async function exists(path) {
+  try {
+    await stat2(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+var init_evm_record = __esm(() => {
+  init_wallet_keystore();
+  init_errors();
+  init_evm_record_key();
+  init_format();
+});
+
+// src/vault/sidecar.ts
+import { chmod as chmod3, mkdir as mkdir3, readFile as readFile4, writeFile as writeFile3 } from "node:fs/promises";
+import { dirname as dirname5 } from "node:path";
+function sidecarPath(vaultPath) {
+  return vaultPath.replace(/\.enc$/, "") + ".state.json";
+}
+function sourceDigest(vaultId, bytes) {
+  const id = new TextEncoder().encode(vaultId);
+  const joined = new Uint8Array(id.length + bytes.length);
+  joined.set(id, 0);
+  joined.set(bytes, id.length);
+  return b64u(sha2562(joined));
+}
+async function readSidecar(path) {
+  let raw;
+  try {
+    raw = await readFile4(path, "utf8");
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.vaultId !== "string" || !Number.isInteger(parsed?.lastGeneration))
+      return null;
+    return {
+      ...parsed,
+      envelopeIds: Array.isArray(parsed.envelopeIds) ? parsed.envelopeIds : [],
+      removedEnvelopeIds: Array.isArray(parsed.removedEnvelopeIds) ? parsed.removedEnvelopeIds : []
+    };
+  } catch {
+    return null;
+  }
+}
+async function writeSidecar(path, state) {
+  const dir = dirname5(path);
+  await mkdir3(dir, { recursive: true });
+  await chmod3(dir, 448).catch(() => {});
+  await writeFile3(path, `${JSON.stringify(state, null, 2)}
+`, { encoding: "utf8", mode: 384 });
+  await chmod3(path, 384).catch(() => {});
+}
+function nextSidecar(previous, file, patch = {}) {
+  const carried = previous !== null && previous.vaultId === file.vaultId ? previous : null;
+  const currentIds = file.envelopes.map((envelope) => envelope.id);
+  const known = carried?.envelopeIds ?? [];
+  const removed = new Set(carried?.removedEnvelopeIds ?? []);
+  for (const id of known)
+    if (!currentIds.includes(id))
+      removed.add(id);
+  const next = {
+    ...carried ?? {},
+    vaultId: file.vaultId,
+    lastGeneration: file.generation,
+    envelopeIds: currentIds,
+    removedEnvelopeIds: [...removed].sort(),
+    ...patch
+  };
+  next.lastGeneration = Math.max(next.lastGeneration, file.generation, carried?.lastGeneration ?? 0);
+  return next;
+}
+var init_sidecar = __esm(() => {
+  init_sha256();
+  init_crypto();
+});
+
+// src/vault/store.ts
+var exports_store = {};
+__export(exports_store, {
+  writeNewVault: () => writeNewVault,
+  wrapDekForPrf: () => wrapDekForPrf,
+  wrapDekForPassphrase: () => wrapDekForPassphrase,
+  wrapDekForKek: () => wrapDekForKek,
+  withVaultLock: () => withVaultLock,
+  unlockWithPassphrase: () => unlockWithPassphrase,
+  unlockVault: () => unlockVault,
+  serializeVault: () => serializeVault,
+  sealKeyBlob: () => sealKeyBlob,
+  sealIndex: () => sealIndex,
+  readVaultRaw: () => readVaultRaw,
+  ownSecret: () => ownSecret,
+  legacyWalletsPath: () => legacyWalletsPath,
+  freshVaultId: () => freshVaultId,
+  freshKeyId: () => freshKeyId,
+  freshEnvelopeId: () => freshEnvelopeId,
+  freshDek: () => freshDek,
+  fileExists: () => fileExists,
+  entriesOf: () => entriesOf,
+  defaultVaultPath: () => defaultVaultPath,
+  decryptRoot: () => decryptRoot,
+  decryptKey: () => decryptKey,
+  commitVault: () => commitVault,
+  closeVault: () => closeVault,
+  candleConfigDir: () => candleConfigDir,
+  CONFIG_DIR_ENV: () => CONFIG_DIR_ENV
+});
+import { chmod as chmod4, mkdir as mkdir4, readFile as readFile5, stat as stat3 } from "node:fs/promises";
+import { join as join7 } from "node:path";
+function candleConfigDir(env, home) {
+  const configured = env.CANDLE_CONFIG_DIR?.trim();
+  if (configured) {
+    const refusal = refuseUnexpandedTilde(CONFIG_DIR_ENV, configured);
+    if (refusal !== undefined)
+      throw new UsageError(refusal);
+    return configured;
+  }
+  return join7(home, ".config", "candle");
+}
+function defaultVaultPath(env, home) {
+  return join7(candleConfigDir(env, home), "vault.enc");
+}
+function legacyWalletsPath(env, home) {
+  return join7(candleConfigDir(env, home), "wallets.enc");
+}
+async function readVaultRaw(path) {
+  try {
+    return await readFile5(path, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT")
+      return null;
+    throw new VaultError("VAULT_UNREADABLE", `Could not read the vault at ${path}.`);
+  }
+}
+async function fileExists(path) {
+  try {
+    await stat3(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function closeVault(vault) {
+  wipe(vault.dek);
+}
+async function unlockVault(path, raw, request, opts = {}) {
+  const file = parseVaultFile(raw);
+  const envelope = pickEnvelope(file, request);
+  const dek = await unwrapDek(file, envelope, request, opts.notice);
+  if (dek.length !== DEK_BYTES) {
+    wipe(dek);
+    throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.");
+  }
+  try {
+    const payloadKey = await derivePayloadKey(dek, unb64u(file.vaultId, "vaultId"));
+    const indexBytes = await open2(payloadKey, file.index, canonicalHeader(file), {
+      code: "VAULT_BLOB_TAMPERED",
+      message: "The vault header was altered, an envelope was added or removed outside this CLI, or this index is from a different write of the vault.",
+      suggestion: "Nothing was written. Restore the file from a verified backup."
+    });
+    let index;
+    try {
+      index = parseIndexPlaintext(indexBytes, file.version);
+    } finally {
+      wipe(indexBytes);
+    }
+    assertKeyIdsAgree(file);
+    if (file.version === EVM_TEE_VAULT_VERSION && index.evmRecordKey !== undefined) {
+      const secret = await openEvmRecordKey(payloadKey, file.vaultId, index.evmRecordKey, file.evmRecordPublicKey);
+      wipe(secret);
+    }
+    return { path, raw, file, index, payloadKey, dek, envelope };
+  } catch (error) {
+    wipe(dek);
+    throw error;
+  }
+}
+async function unwrapDek(file, envelope, request, notice) {
+  if (request.factor === "passphrase") {
+    const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), notice);
+    return withSecret(kek, async (kekBytes) => {
+      const kekKey2 = await importAesKey(kekBytes);
+      return open2(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
+        code: "VAULT_UNLOCK_FAILED",
+        message: "Could not open the vault: wrong passphrase, or the file is corrupt."
+      });
+    });
+  }
+  if (request.factor === "secure-enclave") {
+    if (!isSecureEnclaveEnvelope(envelope)) {
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a Secure Enclave one.`);
+    }
+    const kekKey2 = await importAesKey(request.kek);
+    return open2(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
+      code: "VAULT_UNLOCK_FAILED",
+      message: "Could not open the vault with the Secure Enclave: what it unwrapped is not this envelope's key, or the file is corrupt.",
+      suggestion: "Nothing was derived from it and no other factor was tried."
+    });
+  }
+  if (!isPrfEnvelope(envelope)) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passkey one.`);
+  }
+  const kekKey = await derivePrfKek(request.prfOutput, unb64u(file.vaultId, "vaultId"));
+  const what = envelope.transport === "platform-macos" ? "this synced passkey" : "this security key";
+  return open2(kekKey, envelope.wrap, envelopeAad(file, envelope), {
+    code: "VAULT_UNLOCK_FAILED",
+    message: `Could not open the vault with ${what}: the assertion did not yield this envelope's key, or the file is corrupt.`,
+    suggestion: "Nothing was derived from it and no other factor was tried."
+  });
+}
+function pickEnvelope(file, request) {
+  const candidates = file.envelopes.filter((envelope) => envelope.factor === request.factor);
+  if (request.envelopeId !== undefined) {
+    const named = candidates.find((envelope) => envelope.id === request.envelopeId);
+    if (!named)
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request.factor} envelope with id ${request.envelopeId}.`);
+    return named;
+  }
+  const first = candidates[0];
+  if (!first) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request.factor} envelope.`, {
+      suggestion: "Run `candle vault status` to see which factors can open it."
+    });
+  }
+  return first;
+}
+async function unlockWithPassphrase(path, raw, passphrase, opts = {}) {
+  const file = parseVaultFile(raw);
+  const envelopes = file.envelopes.filter((envelope) => envelope.factor === "passphrase");
+  if (envelopes.length === 0) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
+  }
+  let last;
+  for (const envelope of envelopes) {
+    try {
+      return await unlockVault(path, raw, { factor: "passphrase", passphrase, envelopeId: envelope.id }, opts);
+    } catch (error) {
+      if (error instanceof VaultError && error.code !== "VAULT_UNLOCK_FAILED")
+        throw error;
+      last = error;
+    }
+  }
+  throw last;
+}
+async function decryptRoot(vault) {
+  return open2(vault.payloadKey, vault.file.root, rootAad(vault.file.vaultId), {
+    code: "VAULT_BLOB_TAMPERED",
+    message: "The vault's root blob failed its authentication tag.",
+    suggestion: "Nothing was written. Restore the file from a verified backup; `vault verify-backup` checks a copy in full."
+  });
+}
+async function decryptKey(vault, keyId) {
+  const blob = vault.file.keys.find((candidate) => candidate.id === keyId);
+  if (!blob)
+    throw new VaultError("VAULT_INDEX_INVALID", `The vault declares key ${keyId} but holds no blob for it.`);
+  return open2(vault.payloadKey, blob, keyAad(vault.file.vaultId, keyId), {
+    code: "VAULT_BLOB_TAMPERED",
+    message: `Key blob ${keyId} failed its authentication tag.`,
+    suggestion: "Nothing was written."
+  });
+}
+function freshId(bytes) {
+  for (;; ) {
+    const id = b64u(crypto.getRandomValues(new Uint8Array(bytes)));
+    if (!id.startsWith("-") && !id.startsWith("_"))
+      return id;
+  }
+}
+function freshEnvelopeId() {
+  return freshId(8);
+}
+function freshKeyId() {
+  return freshId(8);
+}
+function freshVaultId() {
+  return freshId(16);
+}
+function freshDek() {
+  return randomBytes2(DEK_BYTES);
+}
+async function wrapDekForPassphrase(dek, passphrase, envelope, header, notice) {
+  const kek = await derivePassphraseKek(passphrase, passphraseKdf(envelope), notice);
+  return withSecret(kek, async (kekBytes) => {
+    const kekKey = await importAesKey(kekBytes);
+    const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
+    return { alg: VAULT_CIPHER, ...blob };
+  });
+}
+async function wrapDekForPrf(dek, prfOutput, envelope, header) {
+  const kekKey = await derivePrfKek(prfOutput, unb64u(header.vaultId, "vaultId"));
+  const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
+  return { alg: VAULT_CIPHER, ...blob };
+}
+async function wrapDekForKek(dek, kek, envelope, header) {
+  const kekKey = await importAesKey(kek);
+  const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
+  return { alg: VAULT_CIPHER, ...blob };
+}
+function serializeVault(file) {
+  return `${JSON.stringify(file, null, 2)}
+`;
+}
+async function sealIndex(header, index, payloadKey) {
+  const withoutIndex = { ...header };
+  const blob = await sealJson(payloadKey, serializeIndexPlaintext(index, header.version), canonicalHeader(withoutIndex));
+  return { ...withoutIndex, index: blob };
+}
+async function commitVault(vault, plan, clock) {
+  let index = plan.index.evmRecordKey === undefined && vault.index.evmRecordKey !== undefined ? { ...plan.index, evmRecordKey: vault.index.evmRecordKey } : plan.index;
+  let orphaned;
+  const written = await withVaultLock(vault.path, clock, async () => {
+    const current = await readVaultRaw(vault.path);
+    if (current !== vault.raw) {
+      throw new VaultError("VAULT_CHANGED", "The vault changed on disk while this command was running; nothing was written.", {
+        suggestion: "Another candle command wrote to it. Run this one again."
+      });
+    }
+    const envelopes = plan.envelopes ?? vault.file.envelopes;
+    const keys = [...vault.file.keys, ...plan.addKeys ?? []];
+    let evmRecordPublicKey = vault.file.evmRecordPublicKey;
+    if (indexRequiresVersion4(index) && evmRecordPublicKey === undefined) {
+      orphaned = await moveAsideOrphanRecord(vault.path, clock);
+      const created = await createEvmRecordKey(vault.payloadKey, vault.file.vaultId);
+      evmRecordPublicKey = created.publicKey;
+      index = { ...index, evmRecordKey: created.blob };
+    }
+    const version = indexRequiresVersion4(index) ? EVM_TEE_VAULT_VERSION : indexRequiresVersion3(index) ? VAULT_VERSION : vault.file.version;
+    const header = {
+      format: VAULT_FORMAT,
+      version,
+      vaultId: vault.file.vaultId,
+      generation: vault.file.generation + 1,
+      createdAt: vault.file.createdAt,
+      updatedAt: new Date(clock.now()).toISOString(),
+      cipher: VAULT_CIPHER,
+      envelopes,
+      keyIds: keys.map((blob) => blob.id),
+      ...evmRecordPublicKey !== undefined ? { evmRecordPublicKey } : {},
+      root: vault.file.root,
+      keys
+    };
+    const next = await sealIndex(header, index, vault.payloadKey);
+    const contents = serializeVault(next);
+    try {
+      await writeKeystoreFile(vault.path, contents);
+    } catch {
+      throw new VaultError("VAULT_WRITE_FAILED", `Could not write the vault at ${vault.path}.`);
+    }
+    return { next, contents };
+  });
+  const path = sidecarPath(vault.path);
+  await writeSidecar(path, nextSidecar(await readSidecar(path), written.next, plan.sidecar)).catch(() => {});
+  if (orphaned !== undefined) {
+    clock.stderr?.write(`A sealed EVM record from an earlier vault was at ${evmRecordPath(vault.path)}; it was moved to ${orphaned} (never deleted), and this vault starts a fresh record.
+`);
+  }
+  return { ...vault, raw: written.contents, file: written.next, index };
+}
+async function withVaultLock(path, clock, fn) {
+  try {
+    return await withKeystoreLock(path, clock, fn);
+  } catch (error) {
+    if (error instanceof KeystoreLockedError) {
+      throw new VaultError("VAULT_LOCKED", error.message);
+    }
+    throw error;
+  }
+}
+async function sealKeyBlob(vault, keyId, secret) {
+  const blob = await seal(vault.payloadKey, secret, keyAad(vault.file.vaultId, keyId));
+  return { id: keyId, ...blob };
+}
+async function writeNewVault(path, contents) {
+  await mkdir4(candleConfigDirOf(path), { recursive: true });
+  await chmod4(candleConfigDirOf(path), 448).catch(() => {});
+  await writeKeystoreFile(path, contents);
+}
+function candleConfigDirOf(path) {
+  return join7(path, "..");
+}
+function entriesOf(vault) {
+  return vault.index.entries;
+}
+var CONFIG_DIR_ENV = "CANDLE_CONFIG_DIR";
+var init_store = __esm(() => {
+  init_args();
+  init_wallet_keystore();
+  init_crypto();
+  init_errors();
+  init_evm_record();
+  init_evm_record_key();
+  init_format();
+  init_sidecar();
+});
+
 // src/solana-lite.ts
 function decodePubkey(address) {
   let bytes;
@@ -8264,7 +8890,7 @@ function isOnCurve(bytes) {
     return false;
   }
 }
-function concat(...parts) {
+function concat2(...parts) {
   const total = parts.reduce((n, p) => n + p.length, 0);
   const out = new Uint8Array(total);
   let offset = 0;
@@ -8276,7 +8902,7 @@ function concat(...parts) {
 }
 function findProgramAddress(seeds, programId) {
   for (let bump = 255;bump >= 0; bump--) {
-    const candidate = sha2562(concat(...seeds, new Uint8Array([bump]), programId, PDA_MARKER));
+    const candidate = sha2562(concat2(...seeds, new Uint8Array([bump]), programId, PDA_MARKER));
     if (!isOnCurve(candidate))
       return { address: candidate, bump };
   }
@@ -8311,7 +8937,7 @@ function systemTransfer(from, to, lamports) {
       { pubkey: from, isSigner: true, isWritable: true },
       { pubkey: to, isSigner: false, isWritable: true }
     ],
-    data: concat(u32le(2), u64le(lamports))
+    data: concat2(u32le(2), u64le(lamports))
   };
 }
 function tokenTransferChecked(input) {
@@ -8324,7 +8950,7 @@ function tokenTransferChecked(input) {
       { pubkey: input.owner, isSigner: true, isWritable: false },
       ...input.extraAccounts ?? []
     ],
-    data: concat(new Uint8Array([12]), u64le(input.amount), new Uint8Array([input.decimals]))
+    data: concat2(new Uint8Array([12]), u64le(input.amount), new Uint8Array([input.decimals]))
   };
 }
 function tokenCloseAccount(input) {
@@ -8441,7 +9067,7 @@ function compileLegacyMessage(input) {
     const accountIdx = new Uint8Array(ix.keys.map((k) => indexOf(k.pubkey)));
     parts.push(new Uint8Array([indexOf(ix.programId)]), shortvec(accountIdx.length), accountIdx, shortvec(ix.data.length), ix.data);
   }
-  return concat(...parts);
+  return concat2(...parts);
 }
 function signMessage(message, secret64) {
   if (secret64.length !== 64)
@@ -8460,7 +9086,7 @@ function pubkeyFromSecret(secret64) {
 function serializeSignedTransaction(message, signature) {
   if (signature.length !== 64)
     throw new Error("expected a 64-byte signature");
-  return concat(shortvec(1), signature, message);
+  return concat2(shortvec(1), signature, message);
 }
 function toBase642(bytes) {
   return Buffer.from(bytes).toString("base64");
@@ -8948,7 +9574,7 @@ function sqrtMod(y) {
   const b3 = b2 * b2 * y % P2;
   const b6 = pow2(b3, _3n4, P2) * b3 % P2;
   const b9 = pow2(b6, _3n4, P2) * b3 % P2;
-  const b11 = pow2(b9, _2n5, P2) * b2 % P2;
+  const b11 = pow2(b9, _2n6, P2) * b2 % P2;
   const b22 = pow2(b11, _11n, P2) * b11 % P2;
   const b44 = pow2(b22, _22n, P2) * b22 % P2;
   const b88 = pow2(b44, _44n, P2) * b44 % P2;
@@ -8957,12 +9583,12 @@ function sqrtMod(y) {
   const b223 = pow2(b220, _3n4, P2) * b3 % P2;
   const t1 = pow2(b223, _23n, P2) * b22 % P2;
   const t2 = pow2(t1, _6n, P2) * b2 % P2;
-  const root = pow2(t2, _2n5, P2);
+  const root = pow2(t2, _2n6, P2);
   if (!Fpk1.eql(Fpk1.sqr(root), y))
     throw new Error("Cannot find square root");
   return root;
 }
-var secp256k1_CURVE, secp256k1_ENDO, _2n5, Fpk1, secp256k1;
+var secp256k1_CURVE, secp256k1_ENDO, _2n6, Fpk1, secp256k1;
 var init_secp256k1 = __esm(() => {
   init_sha2();
   init__shortw_utils();
@@ -8984,7 +9610,7 @@ var init_secp256k1 = __esm(() => {
       [BigInt("0x114ca50f7a8e2f3f657c1108d9d44cfd8"), BigInt("0x3086d221a7d46bcde86c90e49284eb15")]
     ]
   };
-  _2n5 = /* @__PURE__ */ BigInt(2);
+  _2n6 = /* @__PURE__ */ BigInt(2);
   Fpk1 = Field(secp256k1_CURVE.p, { sqrt: sqrtMod });
   secp256k1 = createCurve({ ...secp256k1_CURVE, Fp: Fpk1, lowS: true, endo: secp256k1_ENDO }, sha256);
 });
@@ -9030,28 +9656,28 @@ function keccakP(s, rounds = 24) {
   }
   clean(B);
 }
-var _0n7, _1n7, _2n6, _7n2, _256n, _0x71n, SHA3_PI, SHA3_ROTL, _SHA3_IOTA, IOTAS, SHA3_IOTA_H, SHA3_IOTA_L, rotlH = (h, l, s) => s > 32 ? rotlBH(h, l, s) : rotlSH(h, l, s), rotlL = (h, l, s) => s > 32 ? rotlBL(h, l, s) : rotlSL(h, l, s), Keccak, gen = (suffix, blockLen, outputLen) => createHasher(() => new Keccak(blockLen, suffix, outputLen)), keccak_256;
+var _0n8, _1n8, _2n7, _7n2, _256n, _0x71n, SHA3_PI, SHA3_ROTL, _SHA3_IOTA, IOTAS, SHA3_IOTA_H, SHA3_IOTA_L, rotlH = (h, l, s) => s > 32 ? rotlBH(h, l, s) : rotlSH(h, l, s), rotlL = (h, l, s) => s > 32 ? rotlBL(h, l, s) : rotlSL(h, l, s), Keccak, gen = (suffix, blockLen, outputLen) => createHasher(() => new Keccak(blockLen, suffix, outputLen)), keccak_256;
 var init_sha3 = __esm(() => {
   init__u64();
   init_utils();
-  _0n7 = BigInt(0);
-  _1n7 = BigInt(1);
-  _2n6 = BigInt(2);
+  _0n8 = BigInt(0);
+  _1n8 = BigInt(1);
+  _2n7 = BigInt(2);
   _7n2 = BigInt(7);
   _256n = BigInt(256);
   _0x71n = BigInt(113);
   SHA3_PI = [];
   SHA3_ROTL = [];
   _SHA3_IOTA = [];
-  for (let round = 0, R = _1n7, x = 1, y = 0;round < 24; round++) {
+  for (let round = 0, R = _1n8, x = 1, y = 0;round < 24; round++) {
     [x, y] = [y, (2 * x + 3 * y) % 5];
     SHA3_PI.push(2 * (5 * y + x));
     SHA3_ROTL.push((round + 1) * (round + 2) / 2 % 64);
-    let t = _0n7;
+    let t = _0n8;
     for (let j = 0;j < 7; j++) {
-      R = (R << _1n7 ^ (R >> _7n2) * _0x71n) % _256n;
-      if (R & _2n6)
-        t ^= _1n7 << (_1n7 << /* @__PURE__ */ BigInt(j)) - _1n7;
+      R = (R << _1n8 ^ (R >> _7n2) * _0x71n) % _256n;
+      if (R & _2n7)
+        t ^= _1n8 << (_1n8 << /* @__PURE__ */ BigInt(j)) - _1n8;
     }
     _SHA3_IOTA.push(t);
   }
@@ -9588,9 +10214,9 @@ function rlpLength(length, offset) {
   if (length < 56)
     return Uint8Array.of(offset + length);
   const lengthBytes = uintToMinimalBytes(BigInt(length));
-  return concat2(Uint8Array.of(offset + 55 + lengthBytes.length), lengthBytes);
+  return concat3(Uint8Array.of(offset + 55 + lengthBytes.length), lengthBytes);
 }
-function concat2(...parts) {
+function concat3(...parts) {
   const out = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
   let at = 0;
   for (const part of parts) {
@@ -9603,10 +10229,10 @@ function rlpEncode(item) {
   if (item instanceof Uint8Array) {
     if (item.length === 1 && item[0] < 128)
       return item;
-    return concat2(rlpLength(item.length, 128), item);
+    return concat3(rlpLength(item.length, 128), item);
   }
-  const body = concat2(...item.map(rlpEncode));
-  return concat2(rlpLength(body.length, 192), body);
+  const body = concat3(...item.map(rlpEncode));
+  return concat3(rlpLength(body.length, 192), body);
 }
 function toChecksumAddress(address) {
   const lower = (address.startsWith("0x") ? address.slice(2) : address).toLowerCase();
@@ -9651,7 +10277,9 @@ function evmDerivationPath(index) {
   return `m/44'/60'/${index}'/0/0`;
 }
 function deriveEvmKey(seed, index) {
-  const path = evmDerivationPath(index);
+  return deriveEvmKeyAtPath(seed, evmDerivationPath(index));
+}
+function deriveEvmKeyAtPath(seed, path) {
   const root = HDKey.fromMasterSeed(seed);
   try {
     const leaf = root.derive(path);
@@ -9687,7 +10315,7 @@ function abiAddress(address) {
   return out;
 }
 function encodeErc20Transfer(recipient, amount) {
-  return concat2(hexToBytes2(ERC20_TRANSFER_SELECTOR), abiAddress(recipient), abiWord(amount));
+  return concat3(hexToBytes2(ERC20_TRANSFER_SELECTOR), abiAddress(recipient), abiWord(amount));
 }
 function unsignedFields(tx) {
   return [
@@ -9703,7 +10331,7 @@ function unsignedFields(tx) {
   ];
 }
 function signingPayload(tx) {
-  return keccak_256(concat2(TYPE_2, rlpEncode(unsignedFields(tx))));
+  return keccak_256(concat3(TYPE_2, rlpEncode(unsignedFields(tx))));
 }
 function signTransaction(tx, secret) {
   if (secret.length !== EVM_SECRET_BYTES) {
@@ -9711,7 +10339,7 @@ function signTransaction(tx, secret) {
   }
   const signature = secp256k1.sign(signingPayload(tx), secret, { lowS: true, prehash: false });
   const yParity = signature.recovery === 1 ? 1 : 0;
-  const raw = concat2(TYPE_2, rlpEncode([
+  const raw = concat3(TYPE_2, rlpEncode([
     ...unsignedFields(tx),
     uintToMinimalBytes(BigInt(yParity)),
     uintToMinimalBytes(signature.r),
@@ -9773,6 +10401,9 @@ function parseUnits(decimal, decimals) {
   if (raw === 0n)
     return { ok: false, reason: "zero" };
   return { ok: true, raw };
+}
+function addressTopic(address) {
+  return `0x${"0".repeat(24)}${address.toLowerCase().replace(/^0x/, "")}`;
 }
 function decodeAbiString(bytes) {
   if (bytes.length === 0)
@@ -9888,8 +10519,31 @@ function createEvmRpc(url, fetchFn) {
         transactionHash: typeof r.transactionHash === "string" ? r.transactionHash : hash
       };
     },
+    async getTransactionByHash(hash) {
+      const r = await call("eth_getTransactionByHash", [hash]);
+      if (r === null || r === undefined)
+        return null;
+      return { hash };
+    },
     async blockNumber() {
       return asQuantity(await call("eth_blockNumber", []), "eth_blockNumber");
+    },
+    async getLogs(filter) {
+      const r = await call("eth_getLogs", [
+        { fromBlock: quantity(filter.fromBlock), toBlock: quantity(filter.toBlock), topics: filter.topics }
+      ]);
+      if (!Array.isArray(r))
+        throw new EvmRpcError("rpc", "eth_getLogs", "RPC eth_getLogs answered without a list");
+      const logs = [];
+      for (const item of r) {
+        if (typeof item?.address !== "string" || !looksLikeEvmAddress(item.address))
+          continue;
+        logs.push({
+          address: toChecksumAddress(item.address),
+          blockNumber: typeof item.blockNumber === "string" ? hexToBigInt(item.blockNumber) : 0n
+        });
+      }
+      return logs;
     },
     async erc20Decimals(token) {
       const answer = await this.call({ to: token, data: hexToBytes2(ERC20_DECIMALS_SELECTOR) });
@@ -9912,7 +10566,7 @@ function createEvmRpc(url, fetchFn) {
     async erc20BalanceOf(token, owner) {
       const answer = await this.call({
         to: token,
-        data: concat2(hexToBytes2(ERC20_BALANCE_OF_SELECTOR), abiAddress(owner))
+        data: concat3(hexToBytes2(ERC20_BALANCE_OF_SELECTOR), abiAddress(owner))
       });
       if (answer.length !== 32)
         throw new EvmRpcError("rpc", "eth_call", "the contract did not answer balanceOf()");
@@ -9965,7 +10619,7 @@ function resolveEvmRpcUrl(flag, envValue, flagName) {
   }
   return { url, builtIn: url === DEFAULT_HOOD_RPC_URL };
 }
-var HOOD_CHAIN_ID = 4663, DEFAULT_HOOD_RPC_URL = "https://rpc.mainnet.chain.robinhood.com", EVM_RPC_URL_ENV = "CANDLE_EVM_RPC_URL", HOOD_USDG_ADDRESS = "0x5fc5360d0400a0fd4f2af552add042d716f1d168", HOOD_USDG_DECIMALS = 6, HOOD_WETH_ADDRESS = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", NATIVE_DECIMALS = 18, EVM_DERIVATION_SCHEME = "bip32-secp256k1", EVM_SECRET_BYTES = 32, ERC20_TRANSFER_SELECTOR = "0xa9059cbb", ERC20_DECIMALS_SELECTOR = "0x313ce567", ERC20_SYMBOL_SELECTOR = "0x95d89b41", ERC20_BALANCE_OF_SELECTOR = "0x70a08231", TYPE_2, EvmRpcError, FEE_HISTORY_BLOCKS = 10;
+var HOOD_CHAIN_ID = 4663, DEFAULT_HOOD_RPC_URL = "https://rpc.mainnet.chain.robinhood.com", EVM_RPC_URL_ENV = "CANDLE_EVM_RPC_URL", HOOD_USDG_ADDRESS = "0x5fc5360d0400a0fd4f2af552add042d716f1d168", HOOD_USDG_DECIMALS = 6, HOOD_WETH_ADDRESS = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", NATIVE_DECIMALS = 18, EVM_DERIVATION_SCHEME = "bip32-secp256k1", EVM_SECRET_BYTES = 32, ERC20_TRANSFER_SELECTOR = "0xa9059cbb", ERC20_DECIMALS_SELECTOR = "0x313ce567", ERC20_SYMBOL_SELECTOR = "0x95d89b41", ERC20_BALANCE_OF_SELECTOR = "0x70a08231", TYPE_2, EvmRpcError, FEE_HISTORY_BLOCKS = 10;
 var init_evm_lite = __esm(() => {
   init_secp256k1();
   init_sha3();
@@ -10287,7 +10941,7 @@ function tokenMintFilters(key) {
   return [{ dataSize: 82 }, memcmp(4, key)];
 }
 function tokenFreezeFilters(key) {
-  return [{ dataSize: 82 }, memcmp(46, concat3(COPTION_SOME_U32, key))];
+  return [{ dataSize: 82 }, memcmp(46, concat4(COPTION_SOME_U32, key))];
 }
 function token2022MintFilters(key) {
   const authority = memcmp(4, key);
@@ -10297,7 +10951,7 @@ function token2022MintFilters(key) {
   ];
 }
 function token2022FreezeFilters(key) {
-  const authority = memcmp(46, concat3(COPTION_SOME_U32, key));
+  const authority = memcmp(46, concat4(COPTION_SOME_U32, key));
   return [
     [{ dataSize: 82 }, authority],
     [memcmp(165, TOKEN_2022_MINT_ACCOUNT_TYPE), authority]
@@ -10307,7 +10961,7 @@ function keepSetAuthority(hits) {
   return hits.filter((hit) => hit.data.length === COPTION_SOME_U32.length && hit.data.every((byte, i) => byte === COPTION_SOME_U32[i])).map((hit) => hit.pubkey);
 }
 function programUpgradeFilters(key) {
-  return [memcmp(0, LOADER_PROGRAM_DATA_TAG), memcmp(12, concat3(COPTION_SOME_U8, key))];
+  return [memcmp(0, LOADER_PROGRAM_DATA_TAG), memcmp(12, concat4(COPTION_SOME_U8, key))];
 }
 function programIdFilters(programData) {
   return [memcmp(0, LOADER_PROGRAM_TAG), memcmp(4, programData)];
@@ -10657,7 +11311,7 @@ function authoritiesJson(result) {
     found: result.found.map(({ address, role, target, program }) => ({ address, role, target, program }))
   };
 }
-var BPF_UPGRADEABLE_LOADER_ID = "BPFLoaderUpgradeab1e11111111111111111111111", STAKE_PROGRAM_ID = "Stake11111111111111111111111111111111111111", ROLE_GROUP_IDS, PAGINATED_TOKEN_GROUPS, RPC_PAGINATION_REQUIRED = -32600, MAX_V2_PAGES = 10, RPC_METHOD_NOT_FOUND = -32601, REQUESTS_PER_KEY = 9, b642 = (bytes) => base64.encode(bytes), concat3 = (...parts) => {
+var BPF_UPGRADEABLE_LOADER_ID = "BPFLoaderUpgradeab1e11111111111111111111111", STAKE_PROGRAM_ID = "Stake11111111111111111111111111111111111111", ROLE_GROUP_IDS, PAGINATED_TOKEN_GROUPS, RPC_PAGINATION_REQUIRED = -32600, MAX_V2_PAGES = 10, RPC_METHOD_NOT_FOUND = -32601, REQUESTS_PER_KEY = 9, b642 = (bytes) => base64.encode(bytes), concat4 = (...parts) => {
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
   let at = 0;
   for (const part of parts) {
@@ -10766,6 +11420,7 @@ __export(exports_promote_support, {
   withToKey: () => withToKey,
   subjectPhrase: () => subjectPhrase,
   shortAddress: () => shortAddress,
+  sameAddress: () => sameAddress,
   runRoleCheck: () => runRoleCheck,
   renderControlledBy: () => renderControlledBy,
   readControlledBy: () => readControlledBy,
@@ -10774,30 +11429,37 @@ __export(exports_promote_support, {
   printPromoteSentence: () => printPromoteSentence,
   findVaultRoleEntry: () => findVaultRoleEntry,
   findTransferSource: () => findTransferSource,
+  findEvmVaultRoleEntry: () => findEvmVaultRoleEntry,
   findEntryByLabelOrAddress: () => findEntryByLabelOrAddress,
   controlledByJson: () => controlledByJson,
   confirmPrompt: () => confirmPrompt,
   confirmPromotion: () => confirmPromotion,
+  assertNotSolanaEntry: () => assertNotSolanaEntry,
   assertNotPinnedDestination: () => assertNotPinnedDestination,
   assertNotEvmEntry: () => assertNotEvmEntry,
   assertInPlacePreconditions: () => assertInPlacePreconditions,
+  assertEvmInPlacePreconditions: () => assertEvmInPlacePreconditions,
   assertColdVaultDestination: () => assertColdVaultDestination,
   applyPromotion: () => applyPromotion,
   SENTENCE_PREFIX: () => SENTENCE_PREFIX,
   CONFIRM_WORD: () => CONFIRM_WORD
 });
 function assertColdVaultDestination(index, destinationLabelOrAddress, opts = {}) {
-  assertNotEvmEntry(index, destinationLabelOrAddress, "this destination");
-  const destination = findVaultRoleEntry(index, destinationLabelOrAddress);
+  const chain2 = opts.chain ?? "solana";
+  if (chain2 === "solana")
+    assertNotEvmEntry(index, destinationLabelOrAddress, "this destination");
+  else
+    assertNotSolanaEntry(index, destinationLabelOrAddress);
+  const destination = chain2 === "solana" ? findVaultRoleEntry(index, destinationLabelOrAddress) : findEvmVaultRoleEntry(index, destinationLabelOrAddress);
   if (destination === undefined) {
     throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `No vault key matches ${destinationLabelOrAddress}.`, {
-      suggestion: "Create a cold vault key with `candle vault new-key --chain solana`, or name an existing one that has never been remotely exposed or exported."
+      suggestion: `Create a cold vault key with \`candle vault new-key --chain ${chain2}\`, or name an existing one that has never been remotely exposed or exported.`
     });
   }
   if (destination.role !== "vault") {
     throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${destination.label ?? destination.address} is not a role:vault key.`);
   }
-  if (opts.subjectAddress !== undefined && destination.address === opts.subjectAddress) {
+  if (opts.subjectAddress !== undefined && sameAddress(destination.address, opts.subjectAddress)) {
     throw new VaultError("PROMOTE_SAME_KEY_DESTINATION", "The sweep destination must be a different vault key from the one being promoted.");
   }
   const exposed = destination.exposure?.everRemoteExposed === true;
@@ -10823,6 +11485,24 @@ function assertNotEvmEntry(index, labelOrAddress, command) {
     suggestion: `Nothing was signed or written. An EVM vault key moves funds with: candle vault transfer <0x address> --from ${named.label || named.address}`
   });
 }
+function sameAddress(a, b) {
+  if (a.startsWith("0x") && b.startsWith("0x"))
+    return a.toLowerCase() === b.toLowerCase();
+  return a === b;
+}
+function assertNotSolanaEntry(index, labelOrAddress) {
+  const named = index.entries.find((entry) => entry.chain === "solana" && (entry.label === labelOrAddress || entry.address === labelOrAddress));
+  if (named === undefined)
+    return;
+  throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `${named.label || named.address} is a Solana key; a Hood TEE wallet sweeps home to a cold EVM vault key.`, { suggestion: "Nothing was written. Create one with: candle vault new-key --chain evm" });
+}
+function findEvmVaultRoleEntry(index, labelOrAddress) {
+  const evm = index.entries.filter((entry) => entry.chain === "evm");
+  const byLabel = evm.find((entry) => entry.role === "vault" && entry.label === labelOrAddress);
+  if (byLabel !== undefined)
+    return byLabel;
+  return evm.find((entry) => sameAddress(entry.address, labelOrAddress));
+}
 function findVaultRoleEntry(index, labelOrAddress) {
   const solana = index.entries.filter((entry) => entry.chain === "solana");
   const byLabel = solana.find((entry) => entry.role === "vault" && entry.label !== undefined && entry.label === labelOrAddress);
@@ -10832,7 +11512,7 @@ function findVaultRoleEntry(index, labelOrAddress) {
 }
 function findTransferSource(index, labelOrAddress) {
   const byLabel = (role) => index.entries.find((entry) => entry.role === role && entry.label !== undefined && entry.label === labelOrAddress);
-  return byLabel("vault") ?? byLabel("tee-wallet") ?? index.entries.find((entry) => entry.address === labelOrAddress);
+  return byLabel("vault") ?? byLabel("tee-wallet") ?? index.entries.find((entry) => sameAddress(entry.address, labelOrAddress));
 }
 function findEntryByLabelOrAddress(index, labelOrAddress) {
   const byLabel = index.entries.find((entry) => entry.label !== undefined && entry.label === labelOrAddress);
@@ -10841,7 +11521,7 @@ function findEntryByLabelOrAddress(index, labelOrAddress) {
   return index.entries.find((entry) => entry.address === labelOrAddress);
 }
 function assertNotPinnedDestination(index, subjectAddress) {
-  const pinners = index.entries.filter((entry) => entry.tee?.vaultDestination === subjectAddress);
+  const pinners = index.entries.filter((entry) => entry.tee?.vaultDestination !== undefined && sameAddress(entry.tee.vaultDestination, subjectAddress));
   if (pinners.length === 0)
     return;
   throw new VaultError("PROMOTE_KEY_IS_PINNED_DESTINATION", `${subjectAddress} is the pinned sweep destination for: ${pinners.map((e) => e.label ?? e.address).join(", ")}.`, {
@@ -10881,6 +11561,33 @@ function assertInPlacePreconditions(index, subjectLabel, sweepToLabel, opts) {
   });
   return { subject, destination, resume: false };
 }
+function assertEvmInPlacePreconditions(index, subjectLabel, sweepToLabel, opts) {
+  const subject = index.entries.find((entry) => entry.chain === "evm" && entry.label === subjectLabel) ?? index.entries.find((entry) => entry.chain === "evm" && sameAddress(entry.address, subjectLabel));
+  if (subject === undefined) {
+    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No EVM entry matches ${subjectLabel}.`);
+  }
+  const destinationFor = () => assertColdVaultDestination(index, sweepToLabel, {
+    subjectAddress: subject.address,
+    acceptUnknownExposure: opts.acceptUnknownExposure,
+    chain: "evm"
+  });
+  if (subject.role === "tee-wallet") {
+    const lifecycle = subject.tee?.lifecycle;
+    if (lifecycle === "local-candidate" || lifecycle === "import-pending") {
+      return { subject, destination: destinationFor(), resume: true };
+    }
+    throw new VaultError("PROMOTE_ALREADY_TEE_WALLET", `${subject.label ?? subject.address} is already a TEE wallet (${lifecycle ?? "unknown"}).`);
+  }
+  const located = subject.derivation !== undefined ? branchOfPath(subject.derivation.path) : undefined;
+  if (subject.role !== "vault" || subject.tee !== undefined || located?.branch !== "evm") {
+    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${subjectLabel} is not an EVM vault key on m/44'/60'/n'/0/0 without tee metadata.`);
+  }
+  if (subject.exposure?.exposureUnknown === true) {
+    throw new VaultError("PROMOTE_SUBJECT_EXPOSURE_UNKNOWN", `${subject.label ?? subject.address} carries exposureUnknown and cannot be promoted in place.`);
+  }
+  assertNotPinnedDestination(index, subject.address);
+  return { subject, destination: destinationFor(), resume: false };
+}
 function promotedEntry(entry, destination, label, now, acceptUnknown) {
   return {
     ...entry,
@@ -10892,7 +11599,7 @@ function promotedEntry(entry, destination, label, now, acceptUnknown) {
       ...entry.exposure?.exposureUnknown ? { exposureUnknown: true } : {}
     },
     tee: {
-      network: "solana-mainnet",
+      network: teeNetworkFor(entry.chain),
       lifecycle: "import-pending",
       vaultDestination: destination.address,
       promotedInPlaceAt: now,
@@ -10902,18 +11609,18 @@ function promotedEntry(entry, destination, label, now, acceptUnknown) {
 }
 function applyPromotion(index, subject, destination, opts) {
   const entries = index.entries.map((entry) => entry.id === subject.id ? promotedEntry(entry, destination, opts.label, opts.now, opts.acceptUnknownExposure) : entry);
-  const exposedVault = [...index.hd.exposedIndexes.solanaVault];
-  const derivedIndex = subject.derivation?.path.match(/m\/44'\/501'\/(\d+)'\/0'/);
-  if (derivedIndex?.[1] !== undefined) {
-    const idx = Number(derivedIndex[1]);
-    if (!exposedVault.includes(idx))
-      exposedVault.push(idx);
-    exposedVault.sort((a, b) => a - b);
+  const located = subject.derivation !== undefined ? branchOfPath(subject.derivation.path) : undefined;
+  if (located === undefined || located.branch !== "solanaVault" && located.branch !== "evm") {
+    return { hd: index.hd, entries };
   }
+  const exposed = [...index.hd.exposedIndexes[located.branch]];
+  if (!exposed.includes(located.index))
+    exposed.push(located.index);
+  exposed.sort((a, b) => a - b);
   return {
     hd: {
       ...index.hd,
-      exposedIndexes: { ...index.hd.exposedIndexes, solanaVault: exposedVault }
+      exposedIndexes: { ...index.hd.exposedIndexes, [located.branch]: exposed }
     },
     entries
   };
@@ -11117,6 +11824,7 @@ var init_promote_support = __esm(() => {
   init_deps();
   init_profiles();
   init_errors();
+  init_format();
   init_signer_roles();
 });
 
@@ -15088,7 +15796,7 @@ var init_zod = __esm(() => {
 
 // src/trading.ts
 import { createHash, sign } from "node:crypto";
-import { mkdir as mkdir5, open as open3, readFile as readFile5, rename as rename3, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir5, open as open3, readFile as readFile6, rename as rename4, writeFile as writeFile4 } from "node:fs/promises";
 import { homedir as homedir4 } from "node:os";
 import { join as join9 } from "node:path";
 function baseAsset(value) {
@@ -15197,7 +15905,7 @@ async function listTradingWallets(ctx, key, scope) {
   return { rows, appId, scopes };
 }
 function matchesName(row, name) {
-  return row.id === name || sameAddress(row.address, name) || row.label === name;
+  return row.id === name || sameAddress2(row.address, name) || row.label === name;
 }
 function describeWallet(row) {
   return `${row.label ? `${row.label} ` : ""}(${row.id}, ${row.address})`;
@@ -15267,17 +15975,17 @@ async function tradingPayer(ctx, key, name, scope = "swap:write", chain2 = "sola
       scopes
     };
   if (matches.length === 0) {
-    if (embedded !== undefined && sameAddress(embedded, name))
+    if (embedded !== undefined && sameAddress2(embedded, name))
       return asEmbedded();
     for (const other of Object.keys(embeddedOn)) {
       const address = embeddedOn[other];
-      if (other !== chain2 && address !== undefined && sameAddress(address, name))
+      if (other !== chain2 && address !== undefined && sameAddress2(address, name))
         throw chainMismatch(`The embedded wallet ${address}`, other, chain2);
     }
   }
   throw new TradingError("TEE_WALLET_REQUIRED", matches.length > 1 ? `"${name}" matches ${matches.length} TEE wallets on this key: ${teeWalletList(matches)}. Name one by id or address.` : options.length === 0 ? `"${name}" is not a wallet this account can pay from, and it has none on ${chainName(chain2)}: enrol a TEE wallet, or create an embedded wallet in the app.` : `"${name}" is not a wallet this account can pay from. On ${chainName(chain2)} it can pay from: ${options}.`);
 }
-function sameAddress(a, b) {
+function sameAddress2(a, b) {
   return a === b || /^0x/i.test(a) && /^0x/i.test(b) && sameEvmAddress(a, b);
 }
 function authorizationSignature(wallet, transaction) {
@@ -15454,7 +16162,7 @@ function operationPath(ctx, key, id) {
 }
 async function savedOperation(ctx, key, id) {
   try {
-    return JSON.parse(await readFile5(operationPath(ctx, key, id), "utf8"));
+    return JSON.parse(await readFile6(operationPath(ctx, key, id), "utf8"));
   } catch (error) {
     if (error.code === "ENOENT" || error instanceof SyntaxError)
       return null;
@@ -15527,7 +16235,7 @@ async function saveOperationHash(ctx, key, id, kind, hash, operationId) {
   } finally {
     await file.close();
   }
-  await rename3(temporary, path);
+  await rename4(temporary, path);
 }
 async function saveOperationSignature(ctx, key, id, kind, transaction) {
   const bytes = Buffer.from(transaction, "base64");
@@ -15553,7 +16261,7 @@ async function saveOperationSignature(ctx, key, id, kind, transaction) {
   } finally {
     await file.close();
   }
-  await rename3(temporary, path);
+  await rename4(temporary, path);
   return signature;
 }
 var TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, BASES, HOOD_BASES, sequencedLegSchema, legKindSchema, landedLegSchema, sequencedSchema, ERC20_TRANSFER_GAS = 65000n, ETH_TRANSFER_GAS = 21000n, RESERVE_FEE_MULTIPLIER = 2n, RESERVE_EXTRA_ERC20_TRANSFERS = 1, TradingUsage;
@@ -40366,7 +41074,7 @@ var init_server2 = __esm(() => {
 // src/index.ts
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod as chmod8, readFile as readFile8, realpath, rename as rename5, unlink, writeFile as writeFile7 } from "node:fs/promises";
+import { chmod as chmod8, readFile as readFile9, realpath, rename as rename6, unlink, writeFile as writeFile7 } from "node:fs/promises";
 import { homedir as homedir6, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -41156,8 +41864,8 @@ var HELP = {
       },
       { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
       {
-        invocation: "restore --phrase [--own-passphrase] [--count <n>] [--tee-count <k>] [--external-count <e>] [--evm-count <m>] [--rpc-url <url>]",
-        description: "Rebuild a vault from the recovery phrase; it gets a new passphrase. --evm-count derives EVM indices 0..m-1 (default 0, never gap-scanned). A gap scan needs --rpc-url on this command; no default or stored endpoint is used for it"
+        invocation: "restore --phrase [--own-passphrase] [--count <n>] [--tee-count <k>] [--external-count <e>] [--evm-count <m>] [--evm-tee-count <k>] [--rpc-url <url>]",
+        description: "Rebuild a vault from the recovery phrase; it gets a new passphrase. --evm-count derives EVM indices 0..m-1 and --evm-tee-count Hood TEE wallets 0..k-1 on m/44'/60'/n'/1'/0' (default 0, never gap-scanned; the sealed EVM record does not come back, so a sweep then needs --from-block or --token). A gap scan needs --rpc-url on this command; no default or stored endpoint is used for it"
       },
       {
         invocation: "reconcile-exposure",
@@ -41173,9 +41881,12 @@ var HELP = {
       },
       {
         invocation: "backup --to <path>|icloud [--accept-shared-domain]",
-        description: "Copy the vault and verify the copy in full; icloud is iCloud Drive; sealed copies carry the passphrase and security keys"
+        description: "Copy the vault and verify the copy in full; icloud is iCloud Drive; sealed copies carry the passphrase and security keys. A vault with Hood TEE wallets also writes its sealed EVM record beside the copy (<copy minus .enc>.evm-record.sealed), the lines that decrypt only"
       },
-      { invocation: "verify-backup <path>", description: "Verify a copy in full (all eight steps)" },
+      {
+        invocation: "verify-backup <path>",
+        description: "Verify a copy in full (all eight steps; a ninth for a vault with Hood TEE wallets: every line of the record beside the copy decrypts under the copy's key)"
+      },
       { invocation: "import-legacy --tee [--from <path>]", description: "Migrate tee-wallets.enc into the vault" },
       {
         invocation: "retire-legacy [--from <path>]",
@@ -41183,23 +41894,23 @@ var HELP = {
       },
       {
         invocation: "transfer <to> --amount <n|max> --asset SOL|<mint>|ETH|USDG|<0x token> --from <label> [--rpc-url <url>]",
-        description: "Sign a transfer locally from a vault key or a promoted TEE wallet. From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint"
+        description: "Sign a transfer locally from a vault key or a promoted TEE wallet (Solana, or Hood: refused while a sequenced trade holds the wallet's nonce, and when that cannot be read). From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint"
       },
       {
         invocation: "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>] [--to-key <prefix|label>]",
-        description: "Fresh TEE key, or promote one vault key in place. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked."
+        description: "Fresh TEE key, or promote one vault key in place. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked. An EVM key becomes a Hood TEE wallet (--from derives m/44'/60'/n'/1'/0'; --sweep-to is a cold EVM vault key; --rpc-url is the Hood RPC); the vault becomes version 4 and records the promote height as the wallet's scan start."
       },
       {
         invocation: "promote-batch --pairs-from <file> [--rpc-url <url>] [--to-key <prefix|label>] [--token-holdings]",
-        description: "Promote many vault keys in place: one unlock, one reviewed acknowledgement. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked."
+        description: "Promote many vault keys in place: one unlock, one reviewed acknowledgement. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked. A file of EVM keys promotes them to Hood TEE wallets (ETH shown, no authority read); one file is one chain."
       },
       {
-        invocation: "fund <tee-address|external> --amount <n> --asset SOL|USDC [--rpc-url <url>] [--from <label>]",
-        description: "Fund a TEE or external wallet from a vault key"
+        invocation: "fund <tee-address|external> --amount <n> --asset SOL|USDC|ETH|USDG [--rpc-url <url>] [--from <label>]",
+        description: "Fund a TEE or external wallet from a vault key. A Hood TEE wallet takes ETH or USDG from its pinned EVM vault key"
       },
       {
-        invocation: "demote <tee-address> [--rpc-url <url>] [--emergency]",
-        description: "Disable then sweep a TEE wallet back to its pin"
+        invocation: "demote <tee-address> [--rpc-url <url>] [--emergency] [--sweep-to <label>] [--token <0x...>] [--from-block <n>]",
+        description: "Disable then sweep a TEE wallet back to its pin. A Hood wallet takes tee sweep's --token and --from-block"
       },
       {
         invocation: "export-key <label> --to <new-file>",
@@ -41250,6 +41961,8 @@ var HELP = {
       "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
       "candle vault backup --to icloud",
+      "candle vault promote --in-place hood-cold-1 --sweep-to hood-cold",
+      "candle vault fund 0x000000000000000000000000000000000000dEaD --amount 0.01 --asset ETH",
       "CANDLE_CONFIG_DIR=$HOME/t47 candle vault status"
     ],
     env: [
@@ -41285,8 +41998,8 @@ var HELP = {
         description: 'Stop the agent; verified stop or pending, never "done" on a 200'
       },
       {
-        invocation: "sweep <address> [--rpc-url <url>] [--emergency]",
-        description: "Sign locally and move everything to the pinned vault; closes DAMM v2 LP positions after verifying each server-built close (--emergency moves the position NFT instead, with no API)"
+        invocation: "sweep <address> [--rpc-url <url>] [--emergency] [--token <0x...>] [--from-block <n>]",
+        description: "Sign locally and move everything to the pinned vault; closes DAMM v2 LP positions after verifying each server-built close (--emergency moves the position NFT instead, with no API). A Hood wallet (0x): USDG, WETH, the sealed EVM record, the server's list (not under --emergency), every --token, and Transfer logs from its recorded scan start or --from-block, then ETH last; it refuses while a sequenced trade holds the wallet's nonce"
       },
       {
         invocation: "rebind <wallet...> --to-key <prefix|label> [--label-prefix <p>]",
@@ -41299,6 +42012,7 @@ var HELP = {
       "candle tee new --label AgentOne",
       "candle tee status AgentOneAddress",
       "candle tee sweep AgentOneAddress",
+      "candle tee sweep 0x000000000000000000000000000000000000dEaD --emergency --from-block 1200000",
       "candle tee rebind tr-01 tr-02 --to-key Ab3dEf9h",
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h"
     ],
@@ -44359,6 +45073,13 @@ function solanaExternalPath(index) {
 function evmPath(index) {
   return `m/44'/60'/${assertIndex(index)}'/0/0`;
 }
+function evmTeePath(index) {
+  return `m/44'/60'/${assertIndex(index)}'/1'/0'`;
+}
+function evmTeeIndexOfPath(path) {
+  const match = /^m\/44'\/60'\/(\d+)'\/1'\/0'$/.exec(path);
+  return match?.[1] === undefined ? undefined : Number(match[1]);
+}
 function evmIndexOfPath(path) {
   const match = /^m\/44'\/60'\/(\d+)'\/0\/0$/.exec(path);
   return match?.[1] === undefined ? undefined : Number(match[1]);
@@ -44370,6 +45091,8 @@ function pathForBranch(branch, index) {
     return solanaTeePath(index);
   if (branch === "solanaExternal")
     return solanaExternalPath(index);
+  if (branch === "evmTee")
+    return evmTeePath(index);
   return evmPath(index);
 }
 function assertIndex(index) {
@@ -44424,6 +45147,15 @@ async function deriveEvmKeyFromRoot(entropy, index) {
   const seed = await seedFromEntropy(entropy);
   try {
     const derived = deriveEvmKey(seed, index);
+    return { ...derived, secret: ownSecret(derived.secret) };
+  } finally {
+    wipe(seed);
+  }
+}
+async function deriveEvmTeeKeyFromRoot(entropy, index) {
+  const seed = await seedFromEntropy(entropy);
+  try {
+    const derived = deriveEvmKeyAtPath(seed, evmTeePath(index));
     return { ...derived, secret: ownSecret(derived.secret) };
   } finally {
     wipe(seed);
@@ -45275,9 +46007,9 @@ ${derived.length} of ${requested} keys were created and ARE in the vault; the va
 }
 function plannedLabels(hd, batch, labelFlag, branch = "solanaVault") {
   const labels = [];
-  let counter = hd.nextIndex[branch];
+  let counter = nextIndexOf(hd, branch);
   for (let made = 0;made < batch.count; made++) {
-    const index = nextAllocatableIndex(counter, hd.exposedIndexes[branch]);
+    const index = nextAllocatableIndex(counter, exposedIndexesOf(hd, branch));
     labels.push(batch.labels?.[made] ?? labelFlag ?? defaultLabel(branch, index));
     counter = index + 1;
   }
@@ -45289,7 +46021,7 @@ function defaultLabel(branch, index) {
 function addressOfSecret(chain2, secret) {
   return chain2 === "evm" ? evmAddressFromSecret(secret) : addressFromSecret64(secret);
 }
-function sameAddress2(chain2, a, b) {
+function sameAddress3(chain2, a, b) {
   return chain2 === "evm" ? sameEvmAddress(a, b) : a === b;
 }
 function labelClash(index, planned) {
@@ -45316,7 +46048,7 @@ async function verifyWrittenFromDisk(vault, address, keyId, chain2 = "solana") {
   const onDisk = { ...vault, raw, file: parseVaultFile(raw) };
   const secret = await decryptKey(onDisk, keyId);
   try {
-    if (!sameAddress2(chain2, addressOfSecret(chain2, secret), address)) {
+    if (!sameAddress3(chain2, addressOfSecret(chain2, secret), address)) {
       throw new VaultError("VAULT_VERIFY_FAILED", "The key written to the vault does not produce the address just derived.");
     }
   } finally {
@@ -45331,7 +46063,7 @@ async function verifyWritten(path, address, keyId, reopen, _ctx, chain2 = "solan
   try {
     const secret = await decryptKey(reopened, keyId);
     try {
-      if (!sameAddress2(chain2, addressOfSecret(chain2, secret), address)) {
+      if (!sameAddress3(chain2, addressOfSecret(chain2, secret), address)) {
         throw new VaultError("VAULT_VERIFY_FAILED", "The key written to the vault does not produce the address just derived.");
       }
     } finally {
@@ -46275,10 +47007,12 @@ init_vault_support();
 init_deps();
 init_render();
 init_errors();
+init_format();
 
 // src/vault/reconcile-grant.ts
 init_deps();
 init_errors();
+init_format();
 
 // src/vault/linked-wallets.ts
 var MAX_PAGES = 100;
@@ -46379,7 +47113,7 @@ async function reconcileGrant(ctx, entry, opts = {}) {
   if (identity === undefined && opts.assertedAccount !== undefined && opts.assertedAccount !== wallets.account) {
     throw new VaultError("GRANT_IDENTITY_MISMATCH", `The asserted account ${opts.assertedAccount} does not match this profile's account ${wallets.account}.`);
   }
-  const row = wallets.rows.find((candidate) => candidate.address === entry.address);
+  const row = wallets.rows.find((candidate) => sameWalletAddress(candidate.address, entry.address));
   if (row !== undefined) {
     return { kind: "granted", row, account: wallets.account };
   }
@@ -46387,7 +47121,7 @@ async function reconcileGrant(ctx, entry, opts = {}) {
   if (!stranded.complete) {
     return { kind: "unreadable", reason: stranded.incompleteReason ?? "the stranded-import read was incomplete" };
   }
-  const failure = stranded.failures.find((candidate) => candidate.address === entry.address);
+  const failure = stranded.failures.find((candidate) => sameWalletAddress(candidate.address, entry.address));
   if (failure?.stage === "convex_link") {
     return { kind: "strand-final", account: wallets.account, failure };
   }
@@ -46458,7 +47192,7 @@ async function adoptGrantedRow(ctx, entry, row, account, opts) {
     patch: {
       linkedWalletId: row._id,
       tee: {
-        network: "solana-mainnet",
+        network: teeNetworkFor(entry.chain),
         lifecycle: "enabled",
         vaultDestination: row.vaultDestination,
         ...row.boundKeyPrefix !== undefined ? { boundKeyPrefix: row.boundKeyPrefix } : {},
@@ -46527,6 +47261,11 @@ function requireTeeDestination(entry) {
     });
   }
   return destination;
+}
+function sameWalletAddress(a, b) {
+  if (a.startsWith("0x") && b.startsWith("0x"))
+    return a.toLowerCase() === b.toLowerCase();
+  return a === b;
 }
 
 // src/vault/tee-resolve.ts
@@ -46697,7 +47436,7 @@ async function maybeReconcileVaultTee(ctx, resolved, caller = "default") {
     const priorTee = resolved.entry.tee;
     const next2 = await commitVaultTeeEntry(ctx, resolved.vault, resolved.entry.id, (entry) => {
       entry.tee = {
-        network: "solana-mainnet",
+        network: teeNetworkFor(entry.chain),
         lifecycle: "stranded",
         grantIdentity: {
           account: verdict.account,
@@ -47676,7 +48415,7 @@ function i2Osp(n, w) {
   }
   return ret;
 }
-function concat4(a, b) {
+function concat5(a, b) {
   const ret = new Uint8Array(a.length + b.length);
   ret.set(a, 0);
   ret.set(b, a.length);
@@ -47821,11 +48560,11 @@ class Dhkem {
         const sks = isCryptoKeyPair(params.senderKey) ? params.senderKey.privateKey : params.senderKey;
         const dh1 = new Uint8Array(await this._prim.dh(ke.privateKey, params.recipientPublicKey));
         const dh2 = new Uint8Array(await this._prim.dh(sks, params.recipientPublicKey));
-        dh = concat4(dh1, dh2);
+        dh = concat5(dh1, dh2);
       }
       let kemContext;
       if (params.senderKey === undefined) {
-        kemContext = concat4(new Uint8Array(enc), new Uint8Array(pkrm));
+        kemContext = concat5(new Uint8Array(enc), new Uint8Array(pkrm));
       } else {
         const pks = isCryptoKeyPair(params.senderKey) ? params.senderKey.publicKey : await this._prim.derivePublicKey(params.senderKey);
         const pksm = await this._prim.serializePublicKey(pks);
@@ -47852,11 +48591,11 @@ class Dhkem {
       } else {
         const dh1 = new Uint8Array(await this._prim.dh(skr, pke));
         const dh2 = new Uint8Array(await this._prim.dh(skr, params.senderPublicKey));
-        dh = concat4(dh1, dh2);
+        dh = concat5(dh1, dh2);
       }
       let kemContext;
       if (params.senderPublicKey === undefined) {
-        kemContext = concat4(new Uint8Array(params.enc), new Uint8Array(pkrm));
+        kemContext = concat5(new Uint8Array(params.enc), new Uint8Array(pkrm));
       } else {
         const pksm = await this._prim.serializePublicKey(params.senderPublicKey);
         kemContext = new Uint8Array(params.enc.byteLength + pkrm.byteLength + pksm.byteLength);
@@ -48206,7 +48945,7 @@ var PKCS8_ALG_ID_P_521 = new Uint8Array([
 ]);
 
 class Ec extends NativeAlgorithm {
-  constructor(kem, hkdf) {
+  constructor(kem, hkdf2) {
     super();
     Object.defineProperty(this, "_hkdf", {
       enumerable: true,
@@ -48256,7 +48995,7 @@ class Ec extends NativeAlgorithm {
       writable: true,
       value: undefined
     });
-    this._hkdf = hkdf;
+    this._hkdf = hkdf2;
     switch (kem) {
       case KemId.DhkemP256HkdfSha256:
         this._alg = { name: "ECDH", namedCurve: "P-256" };
@@ -49331,179 +50070,661 @@ function generateWallet(chain2) {
 // src/commands/tee.ts
 init_wallet_keystore();
 
-// src/commands/tee-status-evm.ts
+// src/commands/tee-evm.ts
+init_args();
 init_deps();
 init_evm_lite();
+init_profiles();
 init_render();
-init_solana_endpoint();
-init_trading();
 init_errors();
+init_evm_record();
+
+// src/vault/evm-sweep.ts
+init_evm_lite();
+var LOG_PAGE_BLOCKS = 10000n;
+var LOG_PAGE_FLOOR = 250n;
+function sameToken(a, b) {
+  return a.toLowerCase() === b.toLowerCase();
+}
+function mergedTokens(sources) {
+  const out = [];
+  const seen = new Set;
+  for (const token of [
+    ...sources.always,
+    ...sources.flags,
+    ...sources.record.tokens,
+    ...sources.server.tokens,
+    ...sources.logs.tokens
+  ]) {
+    const key = token.toLowerCase();
+    if (seen.has(key))
+      continue;
+    seen.add(key);
+    out.push(toChecksumAddress(token));
+  }
+  return out;
+}
+function alwaysTokens() {
+  return [toChecksumAddress(HOOD_USDG_ADDRESS), HOOD_WETH_ADDRESS];
+}
+function recordSource(read, wallet) {
+  const mine = read.entries.filter((entry) => sameToken(entry.wallet, wallet));
+  return {
+    tokens: mine.flatMap((entry) => entry.kind === "token" ? [entry.token] : []),
+    scanStarts: mine.flatMap((entry) => entry.kind === "scanStart" ? [BigInt(entry.block)] : []),
+    absent: read.absent,
+    noKey: read.noKey,
+    unreadableLines: read.unreadableLines,
+    partialTail: read.partialTail,
+    path: read.path
+  };
+}
+function startBlock(scanStarts, fromBlockFlag) {
+  const recorded = scanStarts.length > 0 ? scanStarts.reduce((a, b) => a < b ? a : b) : undefined;
+  if (recorded === undefined && fromBlockFlag === undefined)
+    return;
+  if (recorded === undefined)
+    return { block: fromBlockFlag, source: "--from-block" };
+  if (fromBlockFlag === undefined)
+    return { block: recorded, source: "record" };
+  return { block: recorded < fromBlockFlag ? recorded : fromBlockFlag, source: "record and --from-block" };
+}
+async function discoverTransferLogs(rpc, wallet, fromBlock, toBlock, opts = {}) {
+  const seen = new Map;
+  let page = opts.pageBlocks ?? LOG_PAGE_BLOCKS;
+  let pages = 0;
+  let from = fromBlock;
+  const topics = [ERC20_TRANSFER_TOPIC, null, addressTopic(wallet)];
+  while (from <= toBlock) {
+    const to = from + page - 1n > toBlock ? toBlock : from + page - 1n;
+    try {
+      const logs = await rpc.getLogs({ fromBlock: from, toBlock: to, topics });
+      pages += 1;
+      for (const log of logs)
+        seen.set(log.address.toLowerCase(), log.address);
+      from = to + 1n;
+    } catch (error) {
+      if (error instanceof EvmRpcError && error.kind === "rpc" && page > LOG_PAGE_FLOOR) {
+        page = page / 2n < LOG_PAGE_FLOOR ? LOG_PAGE_FLOOR : page / 2n;
+        continue;
+      }
+      const reason = error instanceof Error ? error.message : String(error);
+      return { failed: `eth_getLogs from block ${from} failed: ${reason}`, tokens: [...seen.values()], pages };
+    }
+  }
+  return { tokens: [...seen.values()], pages };
+}
+function sourceLines(sources, host) {
+  const lines = ["Token sources:", "  USDG and WETH: always read"];
+  const record = sources.record;
+  if (record.noKey && record.absent) {
+    lines.push(`  sealed EVM record: none (this vault has no record key)`);
+  } else if (record.absent) {
+    lines.push(`  sealed EVM record: absent at ${record.path} (not on this machine, or nothing recorded yet)`);
+  } else {
+    const damage = [
+      ...record.unreadableLines > 0 ? [`${record.unreadableLines} unreadable line(s) skipped`] : [],
+      ...record.partialTail ? ["a partial last line skipped"] : []
+    ];
+    lines.push(`  sealed EVM record: ${record.tokens.length} token(s), ${record.scanStarts.length} scan start(s)${damage.length > 0 ? `; ${damage.join(", ")}` : ""}`);
+  }
+  const server = sources.server;
+  if (!server.asked)
+    lines.push(`  server traded-token list: not asked (${server.reason ?? "--emergency calls no Candle API"})`);
+  else if (!server.answered)
+    lines.push(`  server traded-token list: FAILED (${server.reason ?? "no answer"})`);
+  else
+    lines.push(`  server traded-token list: ${server.tokens.length} token(s)${server.truncated ? " (truncated)" : ""}`);
+  lines.push(`  --token: ${sources.flags.length}`);
+  const logs = sources.logs;
+  if (logs.ran && !logs.failed) {
+    lines.push(`  Transfer logs over ${host}: blocks ${logs.fromBlock} to ${logs.toBlock} (start from ${logs.startSource}), ${logs.tokens.length} contract(s)`);
+  } else if (logs.failed) {
+    lines.push(`  Transfer logs over ${host}: FAILED (${logs.reason})`);
+  } else {
+    lines.push(`  Transfer logs: NOT scanned (${logs.reason})`);
+  }
+  if (logs.ran && logs.fromBlock !== undefined) {
+    lines.push(`  A token received before block ${logs.fromBlock}, or from a contract that emits no Transfer log, still needs --token <0x...>.`);
+  }
+  return lines;
+}
+
+// src/vault/evm-tee.ts
+init_deps();
+init_evm_lite();
+init_errors();
+init_evm_record();
+init_promote_support();
 init_store();
-init_vault_support();
-var GAS_LOW_RESERVE_MULTIPLE = 2n;
-async function readVaultEntry(ctx, address) {
-  const resolved = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
+function resolveHoodClient(ctx, flag) {
+  const resolved = resolveEvmRpcUrl(flag, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url");
   if ("error" in resolved)
-    throw new TradingError("USAGE", resolved.error);
-  const raw = await readVaultRaw(resolved.path);
-  if (raw === null)
-    return null;
-  const opened = await unlockInteractively(ctx, resolved.path, raw, { acceptOlderCopy: true });
-  try {
-    const entry = opened.vault.index.entries.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address));
-    if (entry === undefined)
-      return null;
-    if (entry.role !== "tee-wallet")
-      throw new VaultError("SOLANA_COMMAND_EVM_KEY", `${entry.label || entry.address} is an EVM key (${entry.address}) but not a TEE wallet; tee status reads Solana and Hood TEE wallets only.`, {
-        suggestion: `Nothing was read or written. An EVM vault key's balances are in: candle vault list --balances`
-      });
-    return {
-      label: entry.label,
-      ...entry.linkedWalletId ? { linkedWalletId: entry.linkedWalletId } : {},
-      ...entry.tee?.vaultDestination ? { vaultDestination: entry.tee.vaultDestination } : {}
-    };
-  } finally {
-    closeVault(opened.vault);
+    return resolved;
+  return {
+    rpc: createEvmRpc(resolved.url, ctx.deps.fetch),
+    url: resolved.url,
+    host: rpcHostOf2(resolved.url),
+    builtIn: resolved.builtIn
+  };
+}
+function hoodHostLine(client, what) {
+  return `Reading ${what} from ${client.host}${client.builtIn ? " (the built-in Hood RPC)" : ""}.`;
+}
+async function assertHoodChain(client) {
+  const chainId = await client.rpc.chainId();
+  if (chainId !== BigInt(HOOD_CHAIN_ID)) {
+    throw new VaultError("EVM_CHAIN_MISMATCH", `${client.host} answered chain id ${chainId}; Hood TEE wallets live on Hood, chain id ${HOOD_CHAIN_ID}, only.`, { suggestion: "Nothing was signed or written. Point --rpc-url (or CANDLE_EVM_RPC_URL) at a Hood RPC." });
   }
 }
-async function teeStatusEvm(ctx, parsed, address) {
-  const { deps, json } = ctx;
-  const checked = checkEvmAddress(address);
-  if (!checked.ok) {
-    writeUsageFailure(deps, `${address} is not a Hood address: ${checked.reason}.`, json);
-    return 2;
+async function readEvmHoldings(rpc, address) {
+  const [eth, usdg, weth] = await Promise.all([
+    rpc.getBalance(address),
+    rpc.erc20BalanceOf(toChecksumAddress(HOOD_USDG_ADDRESS), address),
+    rpc.erc20BalanceOf(HOOD_WETH_ADDRESS, address)
+  ]);
+  return { eth, usdg, weth };
+}
+function holdingsLines(address, holdings, observedAt) {
+  return [
+    `Holdings at ${address} on Hood (observed ${observedAt}):`,
+    `  ETH   ${formatUnits(holdings.eth, NATIVE_DECIMALS)}  (${holdings.eth} wei)`,
+    `  USDG  ${formatUnits(holdings.usdg, HOOD_USDG_DECIMALS)}  (${holdings.usdg} raw)`,
+    `  WETH  ${formatUnits(holdings.weth, NATIVE_DECIMALS)}  (${holdings.weth} raw)`,
+    "  Other tokens are not listed: an EVM RPC has no token-account listing."
+  ];
+}
+async function appendScanStart(ctx, vaultPath, wallet, block2) {
+  const outcome = await appendEvmRecordEntry({
+    vaultPath,
+    entry: { kind: "scanStart", wallet, block: Number(block2) },
+    clock: ctx.deps
+  });
+  const repaired = appendNotice(outcome, `the scan start for ${wallet}`);
+  if (outcome.written) {
+    if (repaired !== undefined)
+      ctx.deps.stderr.write(`${repaired}
+`);
+    return { recorded: true, block: block2.toString() };
   }
-  const rpcUrl = resolveEvmRpcUrl(parsed.values["--rpc-url"], deps.env[EVM_RPC_URL_ENV], "--rpc-url");
-  if ("error" in rpcUrl) {
-    writeUsageFailure(deps, rpcUrl.error, json);
-    return 2;
-  }
-  let vault;
+  ctx.deps.stderr.write(`The promote height, Hood block ${block2}, was not written to the sealed EVM record at ${evmRecordPath(vaultPath)} (${outcome.detail}).
+` + `Keep it: a later sweep of ${wallet} finds traded tokens from it with: candle tee sweep ${wallet} --from-block ${block2}
+`);
+  return { recorded: false, block: block2.toString() };
+}
+async function appendEvmRecordForTrade(ctx, entry) {
+  let vaultPath;
   try {
-    vault = await readVaultEntry(ctx, checked.address);
+    vaultPath = defaultVaultPath(ctx.deps.env, ctx.deps.homedir());
   } catch (error) {
-    if (error instanceof TradingError && error.code === "USAGE") {
-      writeUsageFailure(deps, error.message, json);
-      return 2;
-    }
-    if (isVaultError(error)) {
-      writeLocalFailure(deps, { code: error.code, message: error.message, ...error.suggestion ? { suggestion: error.suggestion } : {} }, json);
-      return error.exitCode;
-    }
-    throw error;
+    return { appended: false, notice: error instanceof Error ? error.message : String(error) };
   }
-  const report = {
-    address: checked.address,
-    chain: "hood",
-    label: vault?.label ?? null,
-    source: vault ? "vault" : "server",
-    linkedWalletId: vault?.linkedWalletId ?? null,
-    vaultDestination: vault?.vaultDestination ?? null,
-    observedAt: new Date(deps.now()).toISOString()
-  };
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  if (!apiKey)
-    report.server = { error: "no API key available; server state not read" };
-  else {
-    try {
-      const { rows } = await listTradingWallets(ctx, apiKey);
-      const row = rows.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address));
-      if (row) {
-        report.linkedWalletId ??= row.id;
-        if (report.label === null && row.label)
-          report.label = row.label;
-        report.bound = { active: row.active, walletId: row.id };
+  try {
+    const outcome = await appendEvmRecordEntry({ vaultPath, entry, clock: ctx.deps });
+    if (!outcome.written)
+      return { appended: false, notice: outcome.detail };
+    const repaired = appendNotice(outcome, `token ${entry.token}`);
+    return { appended: true, ...repaired !== undefined ? { notice: repaired } : {} };
+  } catch (error) {
+    return { appended: false, notice: error instanceof Error ? error.message : String(error) };
+  }
+}
+async function readHoodTeeServer(ctx, entry) {
+  if (entry.linkedWalletId === undefined) {
+    return {
+      lock: {
+        state: "unknown",
+        reason: "this wallet has no linked wallet id recorded",
+        suggestion: `Nothing was signed. This wallet has no server row, so its lock cannot be read. candle tee sweep ${entry.address} --emergency moves the funds and exits 3; it does not record sweptAt or retire the entry.`
       }
-      const walletId = report.linkedWalletId ?? undefined;
-      if (walletId === undefined)
-        report.server = { error: "not a TEE wallet on this key" };
-      else {
-        const lifecycle = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(walletId)}/lifecycle`, {
-          auth: "key",
-          credentials: { apiKey },
-          apiUrl: ctx.apiUrl,
-          fetch: deps.fetch,
-          env: deps.env
-        });
-        report.server = lifecycle.ok ? lifecycle.body : { error: lifecycle.message ?? `HTTP ${lifecycle.status}` };
+    };
+  }
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  if (apiKey === undefined)
+    return { lock: { state: "unknown", reason: "no API key for this profile" } };
+  try {
+    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/hood-tee`, {
+      auth: "key",
+      credentials: { apiKey },
+      apiUrl: ctx.apiUrl,
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env
+    });
+    if (!result.ok)
+      return { lock: { state: "unknown", reason: result.message ?? `HTTP ${result.status}` } };
+    const body = result.body ?? {};
+    const reported = typeof body.address === "string" ? body.address : undefined;
+    if (reported === undefined || !sameAddress(reported, entry.address)) {
+      return {
+        lock: {
+          state: "unknown",
+          reason: reported === undefined ? "the response named no wallet address" : `the response is for ${reported}, not this wallet`
+        }
+      };
+    }
+    const tradedTokens = Array.isArray(body.tradedTokens) ? body.tradedTokens.filter((token) => typeof token === "string" && /^0x[0-9a-fA-F]{40}$/.test(token)) : undefined;
+    const extras = {
+      ...tradedTokens !== undefined ? { tradedTokens } : {},
+      ...body.tradedTokensTruncated === true ? { tradedTokensTruncated: true } : {}
+    };
+    if (body.activeOperation === null)
+      return { lock: { state: "free" }, ...extras };
+    const op = body.activeOperation;
+    if (op === undefined || typeof op.operationId !== "string") {
+      return { lock: { state: "unknown", reason: "the response carried no activeOperation field" }, ...extras };
+    }
+    return {
+      lock: {
+        state: "held",
+        operationId: op.operationId,
+        kind: typeof op.kind === "string" ? op.kind : "operation",
+        expiresAt: typeof op.expiresAt === "number" ? op.expiresAt : 0
+      },
+      ...extras
+    };
+  } catch (error) {
+    return { lock: { state: "unknown", reason: error instanceof Error ? error.message : String(error) } };
+  }
+}
+function busyStatusHint(kind, operationId) {
+  if (kind === "swap")
+    return `candle swap status ${operationId}`;
+  if (kind === "trade" || kind === "launch")
+    return `candle swap status ${operationId} --kind ${kind}`;
+  return `the ${kind} operation ${operationId}`;
+}
+function assertWalletLockFree(entry, lock, now) {
+  if (lock.state === "free")
+    return;
+  if (lock.state === "held") {
+    const left = Math.max(0, Math.ceil((lock.expiresAt - now) / 60000));
+    throw new VaultError("WALLET_BUSY", `${entry.label || entry.address} has a sequenced ${lock.kind} in flight (operation ${lock.operationId}); signing locally now could use the nonce one of its legs holds.`, {
+      suggestion: `Nothing was signed. Wait for operation ${lock.operationId} to finish (${busyStatusHint(lock.kind, lock.operationId)}); the lock expires within ${left} minute(s) at most. If funds must move now, candle tee sweep ${entry.address} --emergency compares the chain's nonces instead.`,
+      details: { operationId: lock.operationId }
+    });
+  }
+  throw new VaultError("WALLET_LOCK_UNKNOWN", `Could not read whether ${entry.label || entry.address} has a sequenced operation in flight (${lock.reason}), so nothing is signed at its nonce.`, {
+    suggestion: lock.suggestion ?? `Nothing was signed. Restore the API key or connectivity and run it again. If the server is unreachable and funds must move: candle tee sweep ${entry.address} --emergency`
+  });
+}
+
+// src/vault/evm-transfer.ts
+init_evm_lite();
+init_errors();
+var EVM_RECEIPT_WAIT_MS = 120000;
+var EVM_RECEIPT_POLL_MS = 2000;
+function refuse2(code, message, opts = {}) {
+  return new VaultError(code, message, { suggestion: opts.suggestion ?? "Nothing was signed.", ...opts });
+}
+function checkEvmDestination(to, from) {
+  if (!to.startsWith("0x")) {
+    throw refuse2("TRANSFER_CHAIN_MISMATCH", `${to} is not an EVM address, and ${from.label || from.address} is an EVM key.`, { suggestion: "Nothing was signed. An EVM key sends to a 0x address; a Solana key sends to a Solana address." });
+  }
+  const checked = checkEvmAddress(to);
+  if (!checked.ok) {
+    throw refuse2("EVM_DESTINATION_INVALID", `${to} is not a valid EVM address: ${checked.reason}.`);
+  }
+  if (sameEvmAddress(checked.address, from.address)) {
+    throw refuse2("EVM_SELF_TRANSFER", `${to} is ${from.label || from.address}'s own address.`);
+  }
+  return checked.address;
+}
+function assertSolanaDestination(to, from) {
+  if (!looksLikeEvmAddress(to))
+    return;
+  throw refuse2("TRANSFER_CHAIN_MISMATCH", `${to} is an EVM address, and ${from.label || from.address} is a Solana key.`, { suggestion: "Nothing was signed. A Solana key sends to a Solana address; an EVM key sends to a 0x address." });
+}
+async function resolveEvmAsset(rpc, asset, chainId) {
+  const upper = asset.toUpperCase();
+  if (upper === "ETH")
+    return { kind: "native", symbol: "ETH", decimals: NATIVE_DECIMALS };
+  let token;
+  if (upper === "USDG") {
+    if (chainId !== BigInt(HOOD_CHAIN_ID)) {
+      return {
+        usage: `USDG is named on Hood (chain id ${HOOD_CHAIN_ID}) only; this RPC answered chain id ${chainId}. Name the token by its contract address.`
+      };
+    }
+    token = toChecksumAddress(HOOD_USDG_ADDRESS);
+  } else {
+    const checked = checkEvmAddress(asset);
+    if (!checked.ok)
+      return {
+        usage: `--asset must be ETH, USDG (on Hood), or an ERC-20 contract address: ${asset} is ${checked.reason}.`
+      };
+    token = checked.address;
+  }
+  let decimals;
+  try {
+    decimals = await rpc.erc20Decimals(token);
+  } catch (error) {
+    throw refuse2("EVM_TOKEN_UNREADABLE", `${token} did not answer decimals(): ${error instanceof Error ? error.message : String(error)}`, { suggestion: "Nothing was signed. Check the contract address, and that this RPC serves the chain it lives on." });
+  }
+  const symbol = upper === "USDG" ? "USDG" : await rpc.erc20Symbol(token) ?? `${token.slice(0, 10)}…`;
+  return { kind: "erc20", symbol, decimals, token };
+}
+function nativeName(hood, chainId) {
+  return hood ? "ETH" : `ETH on chain ${chainId}`;
+}
+function evmDisplayLines(plan) {
+  const { tx, asset, hood, chainId } = plan;
+  const native = nativeName(hood, chainId);
+  const lines = [
+    `chain       ${chainId}${hood ? " (Hood)" : ""}`,
+    `from        ${plan.from.label}  ${plan.from.address}`
+  ];
+  if (asset.kind === "native") {
+    lines.push(`to          ${tx.to}`);
+    lines.push(`amount      ${plan.amount} ${native} = ${plan.amountRaw} wei`);
+  } else {
+    lines.push(`to          ${tx.to}  (the ${asset.symbol} contract, ${asset.decimals} dp)`);
+    lines.push(`recipient   ${plan.recipient}  (decoded from transfer(address,uint256))`);
+    lines.push(`amount      ${plan.amount} ${asset.symbol} = ${plan.amountRaw} raw`);
+  }
+  lines.push(`gas limit   ${tx.gas}`);
+  lines.push(`max fee     ${tx.maxFeePerGas} wei/gas (priority ${tx.maxPriorityFeePerGas} wei/gas)`);
+  lines.push(`fee cap     ${formatUnits(plan.feeCap, NATIVE_DECIMALS)} ${native} (gas × max fee)`);
+  lines.push(`nonce       ${tx.nonce}`);
+  return lines;
+}
+async function planEvmTransfer(rpc, input) {
+  const to = checkEvmDestination(input.to, input.from);
+  const chainId = await rpc.chainId();
+  if (input.builtIn && chainId !== BigInt(HOOD_CHAIN_ID)) {
+    throw refuse2("EVM_CHAIN_MISMATCH", `The built-in Hood RPC answered chain id ${chainId}, not ${HOOD_CHAIN_ID}.`, {
+      suggestion: "Nothing was signed. Pass --rpc-url for another chain; the built-in endpoint is Hood's only."
+    });
+  }
+  const hood = chainId === BigInt(HOOD_CHAIN_ID);
+  const asset = await resolveEvmAsset(rpc, input.asset, chainId);
+  if ("usage" in asset)
+    return asset;
+  const max = input.amount.toLowerCase() === "max";
+  if (asset.kind === "erc20" && asset.token !== undefined && sameEvmAddress(to, asset.token)) {
+    throw refuse2("EVM_RECIPIENT_IS_TOKEN", `${to} is the ${asset.symbol} contract itself; sending it its own tokens is a loss.`);
+  }
+  let amountRaw = 0n;
+  if (!max) {
+    const parsed = parseUnits(input.amount, asset.decimals);
+    if (!parsed.ok && parsed.reason === "precision") {
+      throw refuse2("EVM_AMOUNT_PRECISION", `${input.amount} has more decimal places than ${asset.symbol}'s ${asset.decimals}.`);
+    }
+    if (!parsed.ok)
+      return { usage: `--amount must be a positive decimal or max; ${input.amount} is neither.` };
+    amountRaw = parsed.raw;
+  }
+  const nonce = await rpc.getTransactionCount(input.from.address, "pending");
+  const fees = await quoteFees(rpc);
+  const nativeBalance = await rpc.getBalance(input.from.address);
+  if (asset.kind === "erc20" && asset.token !== undefined) {
+    if (max) {
+      amountRaw = await rpc.erc20BalanceOf(asset.token, input.from.address);
+      if (amountRaw === 0n) {
+        throw new VaultError("VAULT_INDEX_INVALID", `${input.from.label} holds no ${asset.symbol}; there is nothing to send.`);
+      }
+    }
+    const draft2 = buildErc20Transfer({
+      chainId,
+      nonce,
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+      maxFeePerGas: fees.maxFeePerGas,
+      gas: 0n,
+      token: asset.token,
+      recipient: to,
+      amount: amountRaw
+    });
+    const gas2 = gasWithHeadroom(await estimate(rpc, input.from.address, draft2));
+    const tx2 = { ...draft2, gas: gas2 };
+    const feeCap2 = gas2 * tx2.maxFeePerGas;
+    if (nativeBalance < feeCap2) {
+      throw refuse2("EVM_INSUFFICIENT_FOR_FEES", `${input.from.label} holds ${formatUnits(nativeBalance, NATIVE_DECIMALS)} ${nativeName(hood, chainId)}, below the fee cap of ${formatUnits(feeCap2, NATIVE_DECIMALS)}.`);
+    }
+    const plan2 = {
+      chainId,
+      hood,
+      from: input.from,
+      asset,
+      recipient: to,
+      amountRaw,
+      amount: formatUnits(amountRaw, asset.decimals),
+      tx: tx2,
+      feeCap: feeCap2,
+      displayLines: []
+    };
+    plan2.displayLines = evmDisplayLines(plan2);
+    return plan2;
+  }
+  const draft = buildNativeTransfer({
+    chainId,
+    nonce,
+    maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+    maxFeePerGas: fees.maxFeePerGas,
+    gas: 0n,
+    to,
+    value: max ? 0n : amountRaw
+  });
+  if (!max && nativeBalance < amountRaw) {
+    throw refuse2("EVM_INSUFFICIENT_FOR_FEES", `${input.from.label} holds ${formatUnits(nativeBalance, NATIVE_DECIMALS)} ${nativeName(hood, chainId)}, below the amount of ${formatUnits(amountRaw, NATIVE_DECIMALS)}.`);
+  }
+  const gas = gasWithHeadroom(await estimate(rpc, input.from.address, draft));
+  const feeCap = gas * draft.maxFeePerGas;
+  let value = amountRaw;
+  if (max) {
+    value = nativeBalance - feeCap;
+    if (value <= 0n) {
+      throw refuse2("EVM_INSUFFICIENT_FOR_FEES", `${input.from.label} holds ${formatUnits(nativeBalance, NATIVE_DECIMALS)} ${nativeName(hood, chainId)}, not above the fee cap of ${formatUnits(feeCap, NATIVE_DECIMALS)}; max leaves nothing to send.`);
+    }
+  } else if (nativeBalance < value + feeCap) {
+    throw refuse2("EVM_INSUFFICIENT_FOR_FEES", `${input.from.label} holds ${formatUnits(nativeBalance, NATIVE_DECIMALS)} ${nativeName(hood, chainId)}, below the amount plus the fee cap of ${formatUnits(value + feeCap, NATIVE_DECIMALS)}.`);
+  }
+  const tx = { ...draft, gas, value };
+  const plan = {
+    chainId,
+    hood,
+    from: input.from,
+    asset,
+    recipient: to,
+    amountRaw: value,
+    amount: formatUnits(value, NATIVE_DECIMALS),
+    tx,
+    feeCap,
+    displayLines: []
+  };
+  plan.displayLines = evmDisplayLines(plan);
+  return plan;
+}
+async function estimate(rpc, from, tx) {
+  try {
+    return await rpc.estimateGas({ from, to: tx.to, value: tx.value, data: tx.data });
+  } catch (error) {
+    throw new VaultError("VAULT_UNREADABLE", `Could not estimate gas: ${error instanceof Error ? error.message : String(error)}`, { suggestion: "Nothing was signed. A revert here usually means the balance does not cover the amount." });
+  }
+}
+function displayEvmTransferPlan(ctx, plan) {
+  ctx.deps.stdout.write(`Decoded EVM transfer (local signing only):
+`);
+  for (const line of plan.displayLines)
+    ctx.deps.stdout.write(`  ${line}
+`);
+}
+function evmFactorPrompt(plan) {
+  return `sign transfer of ${plan.amount} ${plan.asset.symbol} to ${plan.recipient}${plan.hood ? " on Hood" : ` on chain ${plan.chainId}`}`;
+}
+function judgeReceipt(receipt, head, depth, hash, chainId) {
+  if (receipt.status === 0) {
+    throw new VaultError("EVM_TRANSFER_REVERTED", `Transaction ${hash} reverted in block ${receipt.blockNumber}; the fee was spent.`, {
+      suggestion: "Nothing else was signed. Read the transaction on an explorer before sending again.",
+      details: { hash, chainId: chainId.toString(), blockNumber: receipt.blockNumber.toString(), status: "reverted" }
+    });
+  }
+  const reached = head - receipt.blockNumber + 1n;
+  if (reached < BigInt(depth))
+    return;
+  return {
+    status: "confirmed",
+    exit: 0,
+    blockNumber: receipt.blockNumber,
+    line: `Confirmed ${hash} in block ${receipt.blockNumber}, ${reached} block${reached === 1n ? "" : "s"} deep (depth ${depth}, not finality).`
+  };
+}
+async function awaitReceipt(rpc, ctx, hash, chainId) {
+  const depth = requiredDepth(chainId);
+  const deadline = ctx.deps.now() + EVM_RECEIPT_WAIT_MS;
+  let seen;
+  for (;; ) {
+    try {
+      const receipt = await rpc.getTransactionReceipt(hash);
+      if (receipt !== null) {
+        seen = receipt;
+        const outcome = judgeReceipt(receipt, await rpc.blockNumber(), depth, hash, chainId);
+        if (outcome !== undefined)
+          return outcome;
       }
     } catch (error) {
-      report.server = { error: error instanceof Error ? error.message : "wallet listing failed" };
+      if (error instanceof VaultError)
+        throw error;
     }
+    if (ctx.deps.now() >= deadline)
+      break;
+    await ctx.deps.sleep(EVM_RECEIPT_POLL_MS);
   }
-  deps.stderr.write(`Reading ETH, USDG and the fee for ${checked.address} from ${rpcHostOf2(rpcUrl.url)}
-`);
-  const rpc = createEvmRpc(rpcUrl.url, deps.fetch);
-  try {
-    const [eth, usdg, fees] = await Promise.all([
-      rpc.getBalance(checked.address),
-      rpc.erc20BalanceOf(HOOD_USDG_ADDRESS, checked.address),
-      quoteFees(rpc)
-    ]);
-    const reserve = sweepReserveFloor(fees.maxFeePerGas);
-    const low = eth < reserve.wei * GAS_LOW_RESERVE_MULTIPLE;
-    report.balances = {
-      ethWei: eth.toString(),
-      eth: formatUnits(eth, 18),
-      usdgRaw: usdg.toString(),
-      usdg: formatUnits(usdg, HOOD_USDG_DECIMALS)
+  if (seen !== undefined) {
+    return {
+      status: "uncertain",
+      exit: 3,
+      blockNumber: seen.blockNumber,
+      line: `Submitted ${hash}: it is in block ${seen.blockNumber} but not yet ${depth} block${depth === 1 ? "" : "s"} deep after ${EVM_RECEIPT_WAIT_MS / 1000} s. Do not resend; check the hash on an explorer.`
     };
-    report.reserve = {
-      wei: reserve.wei.toString(),
-      eth: formatUnits(reserve.wei, 18),
-      erc20Transfers: reserve.erc20Transfers,
-      maxFeePerGas: fees.maxFeePerGas.toString(),
-      basis: "floor: USDG, WETH and one extra ERC-20 transfer, plus the final ETH transfer, at twice the fee"
-    };
-    report.gas = low ? "low" : "ok";
-    if (low) {
-      const topUp = reserve.wei * GAS_LOW_RESERVE_MULTIPLE - eth;
-      report.fund = `candle vault fund ${checked.address} --amount ${formatUnits(topUp, 18)} --asset ETH`;
-    }
-  } catch (error) {
-    report.balances = { error: describeRpcFailure(error) };
   }
-  if (json) {
-    deps.stdout.write(`${JSON.stringify(report)}
-`);
-    return 0;
-  }
-  deps.stdout.write(`${checked.address}  ${report.label ?? ""}
-`);
-  deps.stdout.write(`  chain         Hood (4663)
-`);
-  deps.stdout.write(`  source        ${report.source}
-`);
-  if (vault?.vaultDestination)
-    deps.stdout.write(`  vault         ${vault.vaultDestination}
-`);
-  const server = report.server;
-  if (server?.error)
-    deps.stdout.write(`  server        (unavailable: ${server.error})
-`);
-  else if (server)
-    deps.stdout.write(`  server state  ${server.state ?? "?"}  remote authority ${server.remoteAuthority ?? "?"}
-`);
-  const balances = report.balances;
-  if (balances.error)
-    deps.stdout.write(`  balances      (unavailable: ${balances.error})
-`);
-  else {
-    const reserve = report.reserve;
-    deps.stdout.write(`  ETH           ${balances.eth}
-`);
-    deps.stdout.write(`  USDG          ${balances.usdg}
-`);
-    deps.stdout.write(`  reserve       at least ${reserve.eth} ETH (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee)
-`);
-    deps.stdout.write(report.gas === "low" ? `  gas: low      ETH is under twice the reserve. Fund it: ${report.fund}
-` : `  gas           ok
-`);
-  }
-  deps.stdout.write(`  observed at   ${report.observedAt}
-`);
-  return 0;
+  return {
+    status: "uncertain",
+    exit: 3,
+    line: `Submitted ${hash}; no receipt after ${EVM_RECEIPT_WAIT_MS / 1000} s. It may still land: do not resend blindly; check the hash on an explorer first.`
+  };
 }
+async function broadcast(rpc, ctx, raw, hash, chainId) {
+  try {
+    await rpc.sendRawTransaction(raw);
+  } catch (error) {
+    if (!(error instanceof EvmRpcError))
+      throw error;
+    const message = error.message.toLowerCase();
+    if (error.kind === "transport") {
+      return {
+        status: "uncertain",
+        exit: 3,
+        line: `Submitted ${hash}, but the RPC did not answer eth_sendRawTransaction (${error.message}). It may still land: do not resend blindly; check the hash on an explorer first.`
+      };
+    }
+    if (message.includes("already known")) {
+      return {
+        status: "uncertain",
+        exit: 3,
+        line: `Submitted ${hash}: the RPC already knows it, so it is in flight. Do not resend; check the hash on an explorer.`
+      };
+    }
+    if (message.includes("nonce too low")) {
+      let receipt = null;
+      try {
+        receipt = await rpc.getTransactionReceipt(hash);
+      } catch {
+        receipt = null;
+      }
+      if (receipt !== null) {
+        let head;
+        try {
+          head = await rpc.blockNumber();
+        } catch {
+          return awaitReceipt(rpc, ctx, hash, chainId);
+        }
+        const outcome = judgeReceipt(receipt, head, requiredDepth(chainId), hash, chainId);
+        if (outcome !== undefined)
+          return outcome;
+        return awaitReceipt(rpc, ctx, hash, chainId);
+      }
+      throw new VaultError("EVM_NONCE_STALE", `The RPC refused ${hash}: nonce too low, and it has no receipt for that hash. Another transaction used this nonce.`, {
+        suggestion: "Nothing was resent. Run the transfer again; it reads the pending nonce afresh. The CLI never re-signs on its own.",
+        details: { hash, chainId: chainId.toString() }
+      });
+    }
+    return {
+      status: "uncertain",
+      exit: 3,
+      line: `Submitted ${hash}, and the RPC answered: ${error.message}. The CLI cannot tell from that whether it is in flight: do not resend blindly; check the hash on an explorer first.`
+    };
+  }
+  return awaitReceipt(rpc, ctx, hash, chainId);
+}
+async function runEvmTransfer(input, rpc) {
+  const { ctx } = input;
+  const { deps } = ctx;
+  checkEvmDestination(input.to, input.from);
+  deps.stderr.write(`Reading chain id, nonce, fees and balances for ${input.from.label} from ${rpcHostOf2(input.rpcUrl)}${input.rpcUrl === DEFAULT_HOOD_RPC_URL ? " (the built-in Hood RPC)" : ""}.
+`);
+  const planned = await planEvmTransfer(rpc, input);
+  if ("usage" in planned)
+    return input.usage(planned.usage);
+  const plan = planned;
+  displayEvmTransferPlan(ctx, plan);
+  await input.confirmLastSix(plan.recipient, plan.asset.kind === "erc20" ? "the token recipient" : "the destination");
+  await input.confirmFactor(evmFactorPrompt(plan));
+  const chainIdAgain = await rpc.chainId();
+  if (chainIdAgain !== plan.chainId) {
+    throw refuse2("EVM_CHAIN_MISMATCH", `The RPC answered chain id ${chainIdAgain} after the factor, but ${plan.chainId} was displayed.`);
+  }
+  if ((input.pinHoodChain === true || input.from.role === "tee-wallet") && plan.chainId !== BigInt(HOOD_CHAIN_ID)) {
+    throw refuse2("EVM_CHAIN_MISMATCH", `Signing refused: this transfer must be on Hood (chain id ${HOOD_CHAIN_ID}), and the RPC's chain id is ${plan.chainId}.`);
+  }
+  const nonceAgain = await rpc.getTransactionCount(plan.from.address, "pending");
+  if (nonceAgain !== plan.tx.nonce) {
+    throw refuse2("EVM_NONCE_STALE", `The pending nonce is ${nonceAgain} after the factor, but ${plan.tx.nonce} was displayed; another transaction moved it.`, { suggestion: "Nothing was signed. Run the transfer again; it reads the pending nonce afresh." });
+  }
+  await input.beforeSign?.();
+  const secret = await input.decryptSecret();
+  let signed;
+  try {
+    if (!sameEvmAddress(evmAddressFromSecret(secret), plan.from.address)) {
+      throw new VaultError("VAULT_VERIFY_FAILED", "The decrypted key does not match the planned sender.");
+    }
+    signed = signTransaction(plan.tx, secret);
+  } finally {
+    wipe(secret);
+  }
+  const outcome = await broadcast(rpc, ctx, signed.raw, signed.hash, plan.chainId);
+  if (!ctx.json)
+    deps.stdout.write(`${outcome.line}
+`);
+  const extra = await input.afterOutcome?.({ hash: signed.hash, status: outcome.status }) ?? {};
+  if (ctx.json) {
+    input.writeJson({
+      ok: outcome.status === "confirmed",
+      chainId: Number(plan.chainId),
+      hash: signed.hash,
+      status: outcome.status,
+      ...outcome.blockNumber !== undefined ? { blockNumber: outcome.blockNumber.toString() } : {},
+      depth: requiredDepth(plan.chainId),
+      finalized: false,
+      from: plan.from.address,
+      to: plan.tx.to,
+      recipient: plan.recipient,
+      amount: plan.amount,
+      asset: plan.asset.symbol,
+      amountRaw: plan.amountRaw.toString(),
+      ...plan.asset.token !== undefined ? { token: plan.asset.token } : {},
+      nonce: plan.tx.nonce.toString(),
+      gas: plan.tx.gas.toString(),
+      maxFeePerGas: plan.tx.maxFeePerGas.toString(),
+      maxPriorityFeePerGas: plan.tx.maxPriorityFeePerGas.toString(),
+      ...extra
+    });
+  }
+  return outcome.exit;
+}
+
+// src/commands/tee-evm.ts
+init_promote_support();
+init_store();
+init_vault_support();
 
 // src/commands/wallets.ts
 init_esm();
@@ -49953,6 +51174,1003 @@ function readDisableOutcome(body) {
   const reasonCode = typeof record.reasonCode === "string" ? record.reasonCode : undefined;
   const complete = record.complete === true && state === "quarantined";
   return { complete, state, remoteAuthority, ...reasonCode !== undefined ? { reasonCode } : {} };
+}
+
+// src/commands/tee-evm.ts
+var MAX_TOKEN_TRANSFER_GAS = 1000000n;
+function replacementFees(fees) {
+  return {
+    ...fees,
+    maxFeePerGas: fees.maxFeePerGas * 2n,
+    maxPriorityFeePerGas: fees.maxPriorityFeePerGas * 2n + 1n
+  };
+}
+function namesEvmWallet(args) {
+  const valueFlags = new Set(["--rpc-url", "--keystore", "-k", "--sweep-to", "--from-block", "--token"]);
+  for (let i = 0;i < args.length; i++) {
+    const arg = args[i];
+    if (valueFlags.has(arg)) {
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("-"))
+      continue;
+    return /^0x[0-9a-fA-F]{40}$/.test(arg);
+  }
+  return false;
+}
+function extractRepeated(args, flag) {
+  const rest = [];
+  const values = [];
+  for (let i = 0;i < args.length; i++) {
+    const arg = args[i];
+    if (arg === flag) {
+      const value = args[i + 1];
+      if (value !== undefined)
+        values.push(...value.split(",").filter((part) => part.length > 0));
+      else
+        values.push("");
+      i += 1;
+      continue;
+    }
+    rest.push(arg);
+  }
+  return { rest, values };
+}
+function findEvmTee(vault, address) {
+  return vault.index.entries.find((entry) => entry.chain === "evm" && entry.role === "tee-wallet" && sameAddress(entry.address, address));
+}
+function unknownWallet(ctx, address) {
+  writeLocalFailure(ctx.deps, {
+    code: "TEE_WALLET_UNKNOWN",
+    message: `${address} is not a Hood TEE wallet in this vault.`,
+    suggestion: "Hood TEE wallets live in the vault only: candle vault list shows every wallet it holds."
+  }, ctx.json);
+  return 1;
+}
+async function patchTee(ctx, vault, entryId, patch) {
+  return commitVault(vault, {
+    index: {
+      ...vault.index,
+      entries: vault.index.entries.map((entry) => entry.id === entryId && entry.tee !== undefined ? { ...entry, tee: patch(entry.tee) } : entry)
+    }
+  }, ctx.deps);
+}
+async function teeSweepEvm(args, ctx) {
+  const { rest, values: tokenFlags } = extractRepeated(args, "--token");
+  const parsed = parseArgs(rest, {
+    valueFlags: ["--rpc-url", "--keystore", "--from-block"],
+    booleanFlags: ["--emergency", "--accept-older-copy"],
+    pathFlags: ["--keystore"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  const [address, extra] = parsed.positionals;
+  if (!address || extra !== undefined) {
+    return usage(ctx, "Usage: candle tee sweep <0x address> [--rpc-url <url>] [--emergency] [--token <0x...>]... [--from-block <n>]");
+  }
+  const tokens = [];
+  for (const raw of tokenFlags) {
+    const checked = checkEvmAddress(raw);
+    if (!checked.ok)
+      return usage(ctx, `--token must be an ERC-20 contract address: ${raw || "(empty)"} is ${checked.reason}.`);
+    tokens.push(checked.address);
+  }
+  let fromBlock;
+  const fromBlockRaw = parsed.values["--from-block"];
+  if (fromBlockRaw !== undefined) {
+    if (!/^\d+$/.test(fromBlockRaw))
+      return usage(ctx, `--from-block must be a Hood block number: ${fromBlockRaw} is not.`);
+    fromBlock = BigInt(fromBlockRaw);
+  }
+  const client = resolveHoodClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in client)
+    return usage(ctx, client.error);
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "tee sweep"))
+    return 1;
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const emergency = parsed.booleans.has("--emergency");
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, resolvedVault.path, raw, { acceptOlderCopy: true });
+    const vault = hold(opened.vault);
+    const entry = findEvmTee(vault, address);
+    if (entry === undefined)
+      return unknownWallet(ctx, address);
+    return sweepEvmWallet({ ctx, vault, hold, entry, client, emergency, tokenFlags: tokens, fromBlock });
+  });
+}
+async function sweepEvmWallet(input) {
+  const { ctx, client, emergency, hold } = input;
+  const { deps, json } = ctx;
+  let vault = input.vault;
+  let entry = input.entry;
+  const address = entry.address;
+  const rpc = client.rpc;
+  const note = (line) => (json ? deps.stderr : deps.stdout).write(`${line}
+`);
+  const destination = entry.tee?.vaultDestination;
+  if (destination === undefined) {
+    writeLocalFailure(deps, {
+      code: "TEE_WALLET_NO_VAULT",
+      message: `${address} has no pinned vault destination, so there is nothing a sweep may send to.`,
+      suggestion: `Pin a cold EVM vault key first: candle vault demote ${address} --sweep-to <evm vault key>`
+    }, json);
+    return 1;
+  }
+  let serverState = "local-only";
+  let apiKey;
+  let server;
+  if (!emergency) {
+    if (entry.linkedWalletId !== undefined) {
+      apiKey = await resolveApiKey(deps, ctx.profile);
+      let unreadReason;
+      if (apiKey === undefined)
+        unreadReason = "no API key available";
+      else {
+        const lifecycle = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/lifecycle`, { auth: "key", credentials: { apiKey }, apiUrl: ctx.apiUrl, fetch: deps.fetch, env: deps.env });
+        if (!lifecycle.ok)
+          unreadReason = `the lifecycle read failed: ${lifecycle.message ?? `HTTP ${lifecycle.status}`}`;
+        else
+          serverState = lifecycle.body.state ?? "unknown";
+      }
+      if (unreadReason !== undefined) {
+        writeLocalFailure(deps, {
+          code: "TEE_WALLET_STATE_UNREAD",
+          message: `Could not read ${address}'s lifecycle from the server (${unreadReason}); its remote signing authority is unverified.`,
+          suggestion: `Restore the API key or connectivity and re-run. If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address} --emergency`
+        }, json);
+        return 3;
+      }
+      if (serverState === "enabled") {
+        writeLocalFailure(deps, {
+          code: "TEE_WALLET_STILL_ENABLED",
+          message: `${address} is still enabled for the agent.`,
+          suggestion: `Stop it first: candle tee disable ${address}`
+        }, json);
+        return 1;
+      }
+      if (serverState === "disable-pending") {
+        writeLocalFailure(deps, {
+          code: "TEE_WALLET_DISABLE_PENDING",
+          message: `${address}'s remote signing authority is not yet verified denied.`,
+          suggestion: `Re-run: candle tee disable ${address}. If the provider is down or theft is suspected, add --emergency (the agent signer may still race you).`
+        }, json);
+        return 3;
+      }
+      if (serverState !== "quarantined" && serverState !== "swept") {
+        writeLocalFailure(deps, { code: "TEE_WALLET_STATE_UNKNOWN", message: `Server reports state "${serverState}"; refusing to sweep.` }, json);
+        return 1;
+      }
+    }
+    server = await readHoodTeeServer(ctx, entry);
+    assertWalletLockFree(entry, server.lock, deps.now());
+  }
+  if (emergency) {
+    note("EMERGENCY SWEEP: no Candle API call is made. Remote signing authority is NOT verified denied, and a still-authorized agent signer can race these transactions.");
+  }
+  deps.stderr.write(`${hoodHostLine(client, "the chain id, nonces, balances and logs")}
+`);
+  await assertHoodChain(client);
+  const resolved = await resolvePending2(ctx, vault, entry, rpc);
+  vault = hold(resolved.vault);
+  entry = findEvmTee(vault, address);
+  if (resolved.stillPending.length > 0) {
+    writeLocalFailure(deps, {
+      code: "EVM_SWEEP_INCOMPLETE",
+      message: `${resolved.stillPending.length} sweep transaction(s) from an earlier run are still in flight (${resolved.stillPending.map((p) => p.hash).join(", ")}).`,
+      suggestion: `Nothing new was signed. Re-run this sweep once they land: candle tee sweep ${address}${emergency ? " --emergency" : ""}`
+    }, json);
+    return 3;
+  }
+  const head = await rpc.blockNumber();
+  if (input.fromBlock !== undefined && input.fromBlock > head) {
+    return usage(ctx, `--from-block ${input.fromBlock} is above the chain head (${head}). Nothing was scanned.`);
+  }
+  const record = recordSource(await readEvmRecord(vault), address);
+  const start = startBlock(record.scanStarts, input.fromBlock);
+  const sources = {
+    always: alwaysTokens(),
+    record,
+    server: emergency ? { asked: false, answered: false, tokens: [], reason: "--emergency calls no Candle API" } : server?.tradedTokens !== undefined ? {
+      asked: true,
+      answered: true,
+      tokens: server.tradedTokens,
+      ...server.tradedTokensTruncated ? { truncated: true } : {}
+    } : {
+      asked: true,
+      answered: false,
+      tokens: [],
+      reason: server?.lock.state === "unknown" ? server.lock.reason : "the read carried no list"
+    },
+    flags: input.tokenFlags,
+    logs: { ran: false, tokens: [], pages: 0 }
+  };
+  if (start === undefined) {
+    sources.logs = {
+      ran: false,
+      tokens: [],
+      pages: 0,
+      reason: `no start block: no scan start is recorded for this wallet on this machine and --from-block was not given. Pass --from-block <n> (a Hood block at or before its first transfer in) or name tokens with --token <0x...>`
+    };
+  } else {
+    const found = await discoverTransferLogs(rpc, address, start.block, head);
+    sources.logs = {
+      ran: true,
+      fromBlock: start.block,
+      toBlock: head,
+      startSource: start.source,
+      tokens: found.tokens,
+      pages: found.pages,
+      ..."failed" in found ? { failed: true, reason: found.failed } : {}
+    };
+  }
+  const candidates = mergedTokens(sources);
+  for (const line of sourceLines(sources, client.host))
+    note(line);
+  const residuals = [];
+  const holding = [];
+  for (const token of candidates) {
+    try {
+      const balance = await rpc.erc20BalanceOf(token, address);
+      if (balance > 0n)
+        holding.push({ token, balance });
+    } catch (error) {
+      residuals.push({
+        kind: "token-unreadable",
+        token,
+        detail: `balanceOf could not be read: ${error instanceof Error ? error.message : String(error)}`
+      });
+    }
+  }
+  let emergencyNonces;
+  if (emergency) {
+    emergencyNonces = {
+      latest: await rpc.getTransactionCount(address, "latest"),
+      pending: await rpc.getTransactionCount(address, "pending")
+    };
+  }
+  const replacing = emergencyNonces !== undefined && emergencyNonces.pending > emergencyNonces.latest;
+  const quoted = await quoteFees(rpc);
+  const fees = replacing ? replacementFees(quoted) : quoted;
+  const planned = [];
+  for (const item of holding) {
+    const draft = buildErc20Transfer({
+      chainId: BigInt(HOOD_CHAIN_ID),
+      nonce: 0n,
+      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+      maxFeePerGas: fees.maxFeePerGas,
+      gas: 0n,
+      token: item.token,
+      recipient: destination,
+      amount: item.balance
+    });
+    try {
+      const estimate2 = await rpc.estimateGas({ from: address, to: draft.to, value: 0n, data: draft.data });
+      const gas = gasWithHeadroom(estimate2);
+      if (gas > MAX_TOKEN_TRANSFER_GAS) {
+        residuals.push({
+          kind: "token-gas-too-high",
+          token: item.token,
+          amountRaw: item.balance.toString(),
+          detail: `its transfer estimates at ${gas} gas, above the ${MAX_TOKEN_TRANSFER_GAS} a sweep spends on one token; move it on purpose with candle vault transfer <to> --asset ${item.token} --from ${address} if it is yours`
+        });
+        continue;
+      }
+      planned.push({ ...item, gas });
+    } catch (error) {
+      residuals.push({
+        kind: "token-not-transferable",
+        token: item.token,
+        amountRaw: item.balance.toString(),
+        detail: `the transfer does not estimate (${error instanceof Error ? error.message : String(error)}); it may be frozen or not a plain ERC-20`
+      });
+    }
+  }
+  const ethBalance = await rpc.getBalance(address);
+  const tokenGasCost = planned.reduce((sum, item) => sum + item.gas * fees.maxFeePerGas, 0n);
+  let budget = ethBalance;
+  const deferred = [];
+  for (const item of [...planned]) {
+    const cost = item.gas * fees.maxFeePerGas;
+    if (cost <= budget) {
+      budget -= cost;
+      continue;
+    }
+    deferred.push(item);
+    planned.splice(planned.indexOf(item), 1);
+  }
+  if (planned.length === 0 && deferred.length > 0) {
+    const shortfall = tokenGasCost - ethBalance;
+    throw new VaultError("EVM_SWEEP_NEEDS_GAS", `${address} holds ${formatUnits(ethBalance, NATIVE_DECIMALS)} ETH; the ${deferred.length} token transfer(s) need up to ${formatUnits(tokenGasCost, NATIVE_DECIMALS)} ETH of gas, ${formatUnits(shortfall, NATIVE_DECIMALS)} ETH short.`, {
+      suggestion: `Nothing was signed. Fund the gas, then sweep again: candle vault fund ${address} --amount ${formatUnits(shortfall * 2n, NATIVE_DECIMALS)} --asset ETH`,
+      details: {
+        shortfallWei: shortfall.toString(),
+        requiredWei: tokenGasCost.toString(),
+        balanceWei: ethBalance.toString()
+      }
+    });
+  }
+  if (deferred.length > 0) {
+    const need = deferred.reduce((sum, item) => sum + item.gas * fees.maxFeePerGas, 0n);
+    for (const item of deferred) {
+      residuals.push({
+        kind: "token-needs-gas",
+        token: item.token,
+        amountRaw: item.balance.toString(),
+        detail: `not enough ETH left for its transfer; fund the gas and sweep again: candle vault fund ${address} --amount ${formatUnits(need * 2n, NATIVE_DECIMALS)} --asset ETH`
+      });
+    }
+  }
+  note(`Sweep ${address} -> vault ${destination} (Hood)`);
+  for (const item of planned)
+    note(`  send ${item.balance} raw of ${item.token}  (gas limit ${item.gas})`);
+  note(`  then ETH: the balance left after these transfers, minus the final transfer's gas`);
+  const receipts = [];
+  const pendingNow = [];
+  let stopped;
+  const somethingToMove = planned.length > 0 || ethBalance > 0n;
+  if (somethingToMove) {
+    await confirmLastSix(ctx, destination, "the vault destination");
+    const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date(deps.now()).toISOString();
+    vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({ ...tee, stopRequestedAt })));
+    if (!emergency)
+      assertWalletLockFree(entry, (await readHoodTeeServer(ctx, entry)).lock, deps.now());
+    let nonce;
+    if (emergencyNonces !== undefined) {
+      const { latest, pending } = emergencyNonces;
+      nonce = latest;
+      note(pending > latest ? `A transaction already occupies nonce ${latest} (pending ${pending} > latest ${latest}). This sweep signs at nonce ${latest} with doubled fees and may replace that in-flight leg; replacement is not guaranteed if the leg paid a higher fee.` : `No in-flight transaction was observed (latest and pending nonce are both ${latest}); signing from nonce ${latest}.`);
+    } else {
+      nonce = await rpc.getTransactionCount(address, "pending");
+    }
+    const secret = await decryptKey(vault, entry.id);
+    try {
+      if (!sameEvmAddress(evmAddressFromSecret(secret), address)) {
+        throw new VaultError("VAULT_VERIFY_FAILED", "The stored secret does not derive this address; refusing to sign.");
+      }
+      const send = async (tx, meta) => {
+        const signed = signTransaction(tx, secret);
+        const record2 = {
+          chain: "hood",
+          hash: signed.hash,
+          nonce: tx.nonce.toString(),
+          kind: meta.kind,
+          ...meta.token !== undefined ? { token: meta.token } : {},
+          amountRaw: meta.amountRaw.toString(),
+          at: new Date(deps.now()).toISOString()
+        };
+        vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({
+          ...tee,
+          sweepPending: [...tee.sweepPending ?? [], record2]
+        })));
+        let status;
+        let blockNumber;
+        let line;
+        try {
+          const outcome = await broadcast(rpc, ctx, signed.raw, signed.hash, BigInt(HOOD_CHAIN_ID));
+          status = outcome.status === "confirmed" ? "confirmed" : "uncertain";
+          blockNumber = outcome.blockNumber;
+          line = outcome.line;
+        } catch (error) {
+          if (error instanceof VaultError && error.code === "EVM_TRANSFER_REVERTED") {
+            status = "reverted";
+            line = error.message;
+          } else if (error instanceof VaultError && error.code === "EVM_NONCE_STALE") {
+            vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({
+              ...tee,
+              sweepPending: (tee.sweepPending ?? []).filter((p) => p.hash !== signed.hash)
+            })));
+            stopped = `${error.message} ${error.suggestion ?? ""}`.trim();
+            return false;
+          } else {
+            throw error;
+          }
+        }
+        note(`  ${line}`);
+        if (status === "uncertain") {
+          pendingNow.push(record2);
+          stopped = `transaction ${signed.hash} is in flight; the sweep stopped before signing the next nonce`;
+          return false;
+        }
+        const receipt = {
+          chain: "hood",
+          hash: signed.hash,
+          kind: meta.kind,
+          ...meta.token !== undefined ? { token: meta.token } : {},
+          amountRaw: meta.amountRaw.toString(),
+          status,
+          ...blockNumber !== undefined ? { blockNumber: blockNumber.toString() } : {},
+          at: new Date(deps.now()).toISOString()
+        };
+        receipts.push(receipt);
+        vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({
+          ...tee,
+          sweepPending: (tee.sweepPending ?? []).filter((p) => p.hash !== signed.hash),
+          sweepReceipts: [...tee.sweepReceipts ?? [], receipt]
+        })));
+        if (status === "reverted") {
+          residuals.push({
+            kind: "transfer-reverted",
+            detail: `${signed.hash} reverted; the fee was spent`,
+            ...meta.token !== undefined ? { token: meta.token } : {},
+            amountRaw: meta.amountRaw.toString()
+          });
+        }
+        return true;
+      };
+      for (const item of planned) {
+        const tx = buildErc20Transfer({
+          chainId: BigInt(HOOD_CHAIN_ID),
+          nonce,
+          maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+          maxFeePerGas: fees.maxFeePerGas,
+          gas: item.gas,
+          token: item.token,
+          recipient: destination,
+          amount: item.balance
+        });
+        const ok = await send(tx, { kind: "erc20", token: item.token, amountRaw: item.balance });
+        if (!ok)
+          break;
+        nonce += 1n;
+      }
+      if (stopped === undefined) {
+        const balance = await rpc.getBalance(address);
+        const quotedEth = await quoteFees(rpc);
+        const ethReplacing = emergencyNonces !== undefined && nonce < emergencyNonces.pending;
+        const ethFees = ethReplacing ? replacementFees(quotedEth) : quotedEth;
+        const draft = buildNativeTransfer({
+          chainId: BigInt(HOOD_CHAIN_ID),
+          nonce,
+          maxPriorityFeePerGas: ethFees.maxPriorityFeePerGas,
+          maxFeePerGas: ethFees.maxFeePerGas,
+          gas: 0n,
+          to: destination,
+          value: 0n
+        });
+        const gas = gasWithHeadroom(await rpc.estimateGas({ from: address, to: draft.to, value: 0n, data: draft.data }));
+        const value = balance - gas * ethFees.maxFeePerGas;
+        if (value > 0n)
+          await send({ ...draft, gas, value }, { kind: "native", amountRaw: value });
+      }
+    } finally {
+      wipe(secret);
+    }
+  }
+  const inventory = {
+    observedAt: new Date(deps.now()).toISOString(),
+    verified: false,
+    ethWei: null,
+    dustCeilingWei: null
+  };
+  try {
+    const eth = await rpc.getBalance(address);
+    const dustFees = await quoteFees(rpc);
+    const dustGas = gasWithHeadroom(await rpc.estimateGas({ from: address, to: destination, value: 0n, data: new Uint8Array }));
+    const dustCeiling = dustGas * dustFees.maxFeePerGas;
+    inventory.ethWei = eth.toString();
+    inventory.dustCeilingWei = dustCeiling.toString();
+    if (eth > dustCeiling) {
+      residuals.push({
+        kind: "eth-remaining",
+        amountRaw: eth.toString(),
+        detail: `${formatUnits(eth, NATIVE_DECIMALS)} ETH remains, above the ${formatUnits(dustCeiling, NATIVE_DECIMALS)} ETH a final transfer would cost; re-run the sweep`
+      });
+    }
+    for (const token of candidates) {
+      if (residuals.some((r) => r.token !== undefined && sameAddress(r.token, token) && r.kind !== "transfer-reverted"))
+        continue;
+      const left = await rpc.erc20BalanceOf(token, address);
+      if (left > 0n) {
+        residuals.push({
+          kind: "token-remaining",
+          token,
+          amountRaw: left.toString(),
+          detail: "a balance remains; re-run the sweep"
+        });
+      }
+    }
+    inventory.verified = true;
+  } catch (error) {
+    residuals.push({
+      kind: "inventory-unverified",
+      detail: `the post-sweep balances could not be read: ${error instanceof Error ? error.message : String(error)}`
+    });
+  }
+  const missingSources = [];
+  if (!sources.logs.ran || sources.logs.failed)
+    missingSources.push("Transfer-log discovery");
+  if (!emergency && !sources.server.answered)
+    missingSources.push("the server's traded-token list");
+  const observedEmpty = inventory.verified && residuals.length === 0 && stopped === undefined && missingSources.length === 0;
+  const allReceipts = [...entry.tee?.sweepReceipts ?? [], ...receipts].filter((receipt, at, list) => list.findIndex((other) => other.hash === receipt.hash) === at);
+  let recordedOnServer = entry.tee?.sweptAt !== undefined || serverState === "swept";
+  const complete = observedEmpty && !emergency && (serverState === "quarantined" || serverState === "swept" || serverState === "local-only" && !entry.linkedWalletId);
+  if (complete && entry.linkedWalletId && apiKey && !recordedOnServer) {
+    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(entry.linkedWalletId)}/swept`, {
+      method: "POST",
+      auth: "key",
+      credentials: { apiKey },
+      apiUrl: ctx.apiUrl,
+      fetch: deps.fetch,
+      env: deps.env,
+      body: { signatures: allReceipts.map((r) => r.hash), residuals: [] }
+    });
+    recordedOnServer = result.ok;
+    if (!result.ok) {
+      residuals.push({
+        kind: "server-record-failed",
+        detail: `${result.message ?? `HTTP ${result.status}`}; the receipts are retained locally, re-run to record`
+      });
+    }
+  }
+  let sweptLocally = entry.tee?.sweptAt !== undefined;
+  if (complete && (recordedOnServer || !entry.linkedWalletId) && !sweptLocally) {
+    const sweptAt = new Date(deps.now()).toISOString();
+    vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({
+      ...tee,
+      sweptAt,
+      lifecycle: tee.lifecycle === "stranded" ? tee.lifecycle : "retired",
+      ...tee.vaultDestination !== undefined ? { vaultDestination: tee.vaultDestination } : {}
+    })));
+    sweptLocally = true;
+  }
+  const finalState = sweptLocally && complete ? "swept" : emergency ? "disable-pending" : serverState;
+  const exit = finalState === "swept" ? 0 : 3;
+  if (json) {
+    writeJson(deps, {
+      ok: exit === 0,
+      chain: "hood",
+      address,
+      vaultDestination: destination,
+      state: finalState,
+      serverState: emergency ? "not-read" : serverState,
+      emergency,
+      observedEmpty,
+      sources: {
+        record: {
+          tokens: record.tokens.length,
+          scanStarts: record.scanStarts.map(String),
+          absent: record.absent,
+          unreadableLines: record.unreadableLines,
+          partialTail: record.partialTail
+        },
+        server: sources.server,
+        tokenFlags: sources.flags,
+        logs: {
+          ran: sources.logs.ran,
+          ...sources.logs.fromBlock !== undefined ? { fromBlock: sources.logs.fromBlock.toString() } : {},
+          ...sources.logs.toBlock !== undefined ? { toBlock: sources.logs.toBlock.toString() } : {},
+          ...sources.logs.startSource !== undefined ? { startSource: sources.logs.startSource } : {},
+          tokens: sources.logs.tokens,
+          ...sources.logs.reason !== undefined ? { reason: sources.logs.reason } : {}
+        }
+      },
+      missingSources,
+      receipts: allReceipts,
+      newReceipts: receipts.length,
+      pending: pendingNow,
+      residuals,
+      inventory,
+      recordedOnServer,
+      ...stopped !== undefined ? { stopped } : {}
+    });
+    return exit;
+  }
+  if (exit === 0) {
+    deps.stdout.write(`Swept. ${allReceipts.length} transaction(s) confirmed; the wallet is observed empty and retired, and must not be reused.
+`);
+    return 0;
+  }
+  if (stopped !== undefined)
+    deps.stdout.write(`Sweep stopped: ${stopped}.
+`);
+  if (residuals.length > 0) {
+    deps.stdout.write(`Sweep incomplete: ${residuals.length} residual(s) remain.
+`);
+    for (const r of residuals) {
+      deps.stdout.write(`  - ${r.kind}${r.token ? ` ${r.token}` : ""}${r.amountRaw ? ` (${r.amountRaw} raw)` : ""}: ${r.detail}
+`);
+    }
+  }
+  if (missingSources.length > 0) {
+    deps.stdout.write(`Not reported observed-empty: ${missingSources.join(" and ")} did not run, so a token only they would find may remain. ${sources.logs.ran ? "" : `Re-run with --from-block <n> or --token <0x...>: candle tee sweep ${address} --from-block <n>`}
+`);
+  }
+  if (emergency) {
+    deps.stdout.write(`Recovered funds recorded; remote authority is still pending. Re-run: candle tee disable ${address}
+`);
+  } else if (observedEmpty && !complete) {
+    deps.stdout.write(`The wallet is observed empty, but its server state is ${serverState}; re-run once it is quarantined.
+`);
+  }
+  deps.stdout.write(`Inventory at ${inventory.observedAt}: ${inventory.verified ? `${inventory.ethWei} wei ETH (gas dust ceiling ${inventory.dustCeilingWei} wei), ${candidates.length} token(s) read` : "NOT verified"}.
+`);
+  return exit;
+}
+async function resolvePending2(ctx, vault, entry, rpc) {
+  const pending = entry.tee?.sweepPending ?? [];
+  if (pending.length === 0)
+    return { vault, stillPending: [] };
+  const latest = await rpc.getTransactionCount(entry.address, "latest");
+  const still = [];
+  const landed = [];
+  for (const record of pending) {
+    const receipt = await rpc.getTransactionReceipt(record.hash);
+    if (receipt !== null) {
+      landed.push({
+        chain: "hood",
+        hash: record.hash,
+        kind: record.kind,
+        ...record.token !== undefined ? { token: record.token } : {},
+        amountRaw: record.amountRaw,
+        status: receipt.status === 1 ? "confirmed" : "reverted",
+        blockNumber: receipt.blockNumber.toString(),
+        at: new Date(ctx.deps.now()).toISOString()
+      });
+      continue;
+    }
+    if (BigInt(record.nonce) < latest)
+      continue;
+    let known;
+    try {
+      known = await rpc.getTransactionByHash(record.hash);
+    } catch {
+      still.push(record);
+      continue;
+    }
+    if (known === null)
+      continue;
+    still.push(record);
+  }
+  const next = await patchTee(ctx, vault, entry.id, (tee) => ({
+    ...tee,
+    sweepPending: still,
+    sweepReceipts: [...tee.sweepReceipts ?? [], ...landed]
+  }));
+  return { vault: next, stillPending: still };
+}
+async function teeDisableEvm(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore"],
+    booleanFlags: ["--accept-older-copy"],
+    pathFlags: ["--keystore"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  const [address, extra] = parsed.positionals;
+  if (!address || extra !== undefined)
+    return usage(ctx, "Usage: candle tee disable <address>");
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "tee disable"))
+    return 1;
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const { deps, json } = ctx;
+  await printIdentity(ctx);
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, resolvedVault.path, raw, { acceptOlderCopy: true });
+    let vault = hold(opened.vault);
+    const entry = findEvmTee(vault, address);
+    if (entry === undefined)
+      return unknownWallet(ctx, address);
+    if (entry.linkedWalletId === undefined) {
+      writeLocalFailure(deps, { code: "TEE_WALLET_NOT_ENABLED", message: `${entry.address} was never enabled; there is nothing to stop.` }, json);
+      return 1;
+    }
+    const linkedWalletId = entry.linkedWalletId;
+    const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date(deps.now()).toISOString();
+    vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({ ...tee, stopRequestedAt })));
+    const unconfirmed = (detail, suggestion) => {
+      if (json) {
+        writeJson(deps, {
+          ok: false,
+          code: "STOP_UNCONFIRMED",
+          message: detail,
+          address: entry.address,
+          linkedWalletId,
+          stopRequestedAt,
+          remoteEnforcement: "unconfirmed",
+          suggestion
+        });
+        return 1;
+      }
+      deps.stderr.write(`${detail}
+Stop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${entry.address} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.
+${suggestion}
+`);
+      return 1;
+    };
+    const apiKey = await resolveApiKey(deps, ctx.profile);
+    if (!apiKey) {
+      return unconfirmed("No API key available, so the server was not asked to stop the agent.", `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle tee disable ${entry.address}`);
+    }
+    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(linkedWalletId)}`, {
+      method: "DELETE",
+      auth: "key",
+      credentials: { apiKey },
+      apiUrl: ctx.apiUrl,
+      fetch: deps.fetch,
+      env: deps.env
+    });
+    if (!result.ok) {
+      return unconfirmed(`The stop request failed: ${result.message ?? `HTTP ${result.status}`}.`, `Re-run: candle tee disable ${entry.address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`);
+    }
+    const outcome = readDisableOutcome(result.body);
+    if (json) {
+      writeJson(deps, { address: entry.address, linkedWalletId, ...result.body });
+      return outcome.complete ? 0 : 3;
+    }
+    if (outcome.complete) {
+      deps.stdout.write(`Stopped ${entry.address}. Remote signing denial verified; the wallet is quarantined.
+`);
+      deps.stdout.write(`Recover the funds: candle tee sweep ${entry.address}
+`);
+      return 0;
+    }
+    deps.stdout.write(`Agent trading stopped at Candle for ${entry.address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
+Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${entry.address}
+If the provider is down or theft is suspected: candle tee sweep ${entry.address} --emergency
+`);
+    return 3;
+  });
+}
+async function vaultDemoteEvm(args, ctx) {
+  const { rest, values: tokenFlags } = extractRepeated(args, "--token");
+  const parsed = parseArgs(rest, {
+    valueFlags: ["--rpc-url", "--sweep-to", "--keystore", "--from-block"],
+    booleanFlags: ["--emergency", "--accept-older-copy", "--accept-unknown-exposure"],
+    pathFlags: ["--keystore"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  const [address, extra] = parsed.positionals;
+  if (!address || extra !== undefined) {
+    return usage(ctx, "Usage: candle vault demote <tee-address> [--rpc-url <url>] [--emergency] [--sweep-to <label>]");
+  }
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault demote"))
+    return 1;
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const sweepTo = parsed.values["--sweep-to"];
+  let emergency = parsed.booleans.has("--emergency");
+  const snapshot = await runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, resolvedVault.path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    });
+    const vault = hold(opened.vault);
+    const entry = findEvmTee(vault, address);
+    if (entry === undefined)
+      return unknownWallet(ctx, address);
+    if (entry.tee?.vaultDestination === undefined) {
+      if (sweepTo === undefined) {
+        throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${address} has no pinned vault destination.`, {
+          suggestion: "Pass --sweep-to <evm vault key> (a cold EVM vault key in this vault)."
+        });
+      }
+      const destination = assertColdVaultDestination(vault.index, sweepTo, {
+        chain: "evm",
+        acceptUnknownExposure: parsed.booleans.has("--accept-unknown-exposure")
+      });
+      hold(await patchTee(ctx, vault, entry.id, (tee) => ({ ...tee, vaultDestination: destination.address })));
+    }
+    if (entry.linkedWalletId === undefined) {
+      ctx.deps.stdout.write(`No linkedWalletId is recorded for ${entry.address}; disable was not called and remote authority stays unknown.
+`);
+      emergency = true;
+    }
+    return 0;
+  });
+  if (snapshot !== 0)
+    return snapshot;
+  if (!emergency) {
+    const disableCode = await teeDisableEvm([address, ...keystoreArgs(parsed)], ctx);
+    if (disableCode !== 0 && disableCode !== 3)
+      return disableCode;
+    if (disableCode === 3) {
+      ctx.deps.stdout.write(`The disable is not yet verified; the sweep below will wait for quarantine. If the provider is down or theft is suspected, run: candle vault demote ${address} --emergency
+`);
+    }
+  }
+  const sweepArgs = [address, ...keystoreArgs(parsed)];
+  if (parsed.values["--rpc-url"] !== undefined)
+    sweepArgs.push("--rpc-url", parsed.values["--rpc-url"]);
+  if (parsed.values["--from-block"] !== undefined)
+    sweepArgs.push("--from-block", parsed.values["--from-block"]);
+  for (const token of tokenFlags)
+    sweepArgs.push("--token", token);
+  if (emergency)
+    sweepArgs.push("--emergency");
+  return teeSweepEvm(sweepArgs, ctx);
+}
+function keystoreArgs(parsed) {
+  return parsed.values["--keystore"] !== undefined ? ["--keystore", parsed.values["--keystore"]] : [];
+}
+
+// src/commands/tee-status-evm.ts
+init_deps();
+init_evm_lite();
+init_render();
+init_solana_endpoint();
+init_trading();
+init_errors();
+init_store();
+init_vault_support();
+var GAS_LOW_RESERVE_MULTIPLE = 2n;
+async function readVaultEntry(ctx, address) {
+  const resolved = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
+  if ("error" in resolved)
+    throw new TradingError("USAGE", resolved.error);
+  const raw = await readVaultRaw(resolved.path);
+  if (raw === null)
+    return null;
+  const opened = await unlockInteractively(ctx, resolved.path, raw, { acceptOlderCopy: true });
+  try {
+    const entry = opened.vault.index.entries.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address));
+    if (entry === undefined)
+      return null;
+    if (entry.role !== "tee-wallet")
+      throw new VaultError("SOLANA_COMMAND_EVM_KEY", `${entry.label || entry.address} is an EVM key (${entry.address}) but not a TEE wallet; tee status reads Solana and Hood TEE wallets only.`, {
+        suggestion: `Nothing was read or written. An EVM vault key's balances are in: candle vault list --balances`
+      });
+    return {
+      label: entry.label,
+      ...entry.linkedWalletId ? { linkedWalletId: entry.linkedWalletId } : {},
+      ...entry.tee?.vaultDestination ? { vaultDestination: entry.tee.vaultDestination } : {}
+    };
+  } finally {
+    closeVault(opened.vault);
+  }
+}
+async function teeStatusEvm(ctx, parsed, address) {
+  const { deps, json } = ctx;
+  const checked = checkEvmAddress(address);
+  if (!checked.ok) {
+    writeUsageFailure(deps, `${address} is not a Hood address: ${checked.reason}.`, json);
+    return 2;
+  }
+  const rpcUrl = resolveEvmRpcUrl(parsed.values["--rpc-url"], deps.env[EVM_RPC_URL_ENV], "--rpc-url");
+  if ("error" in rpcUrl) {
+    writeUsageFailure(deps, rpcUrl.error, json);
+    return 2;
+  }
+  let vault;
+  try {
+    vault = await readVaultEntry(ctx, checked.address);
+  } catch (error) {
+    if (error instanceof TradingError && error.code === "USAGE") {
+      writeUsageFailure(deps, error.message, json);
+      return 2;
+    }
+    if (isVaultError(error)) {
+      writeLocalFailure(deps, { code: error.code, message: error.message, ...error.suggestion ? { suggestion: error.suggestion } : {} }, json);
+      return error.exitCode;
+    }
+    throw error;
+  }
+  const report = {
+    address: checked.address,
+    chain: "hood",
+    label: vault?.label ?? null,
+    source: vault ? "vault" : "server",
+    linkedWalletId: vault?.linkedWalletId ?? null,
+    vaultDestination: vault?.vaultDestination ?? null,
+    observedAt: new Date(deps.now()).toISOString()
+  };
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey)
+    report.server = { error: "no API key available; server state not read" };
+  else {
+    try {
+      const { rows } = await listTradingWallets(ctx, apiKey);
+      const row = rows.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address));
+      if (row) {
+        report.linkedWalletId ??= row.id;
+        if (report.label === null && row.label)
+          report.label = row.label;
+        report.bound = { active: row.active, walletId: row.id };
+      }
+      const walletId = report.linkedWalletId ?? undefined;
+      if (walletId === undefined)
+        report.server = { error: "not a TEE wallet on this key" };
+      else {
+        const lifecycle = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(walletId)}/lifecycle`, {
+          auth: "key",
+          credentials: { apiKey },
+          apiUrl: ctx.apiUrl,
+          fetch: deps.fetch,
+          env: deps.env
+        });
+        report.server = lifecycle.ok ? lifecycle.body : { error: lifecycle.message ?? `HTTP ${lifecycle.status}` };
+      }
+    } catch (error) {
+      report.server = { error: error instanceof Error ? error.message : "wallet listing failed" };
+    }
+  }
+  deps.stderr.write(`Reading ETH, USDG and the fee for ${checked.address} from ${rpcHostOf2(rpcUrl.url)}
+`);
+  const rpc = createEvmRpc(rpcUrl.url, deps.fetch);
+  try {
+    const [eth, usdg, fees] = await Promise.all([
+      rpc.getBalance(checked.address),
+      rpc.erc20BalanceOf(HOOD_USDG_ADDRESS, checked.address),
+      quoteFees(rpc)
+    ]);
+    const reserve = sweepReserveFloor(fees.maxFeePerGas);
+    const low = eth < reserve.wei * GAS_LOW_RESERVE_MULTIPLE;
+    report.balances = {
+      ethWei: eth.toString(),
+      eth: formatUnits(eth, 18),
+      usdgRaw: usdg.toString(),
+      usdg: formatUnits(usdg, HOOD_USDG_DECIMALS)
+    };
+    report.reserve = {
+      wei: reserve.wei.toString(),
+      eth: formatUnits(reserve.wei, 18),
+      erc20Transfers: reserve.erc20Transfers,
+      maxFeePerGas: fees.maxFeePerGas.toString(),
+      basis: "floor: USDG, WETH and one extra ERC-20 transfer, plus the final ETH transfer, at twice the fee"
+    };
+    report.gas = low ? "low" : "ok";
+    if (low) {
+      const topUp = reserve.wei * GAS_LOW_RESERVE_MULTIPLE - eth;
+      report.fund = `candle vault fund ${checked.address} --amount ${formatUnits(topUp, 18)} --asset ETH`;
+    }
+  } catch (error) {
+    report.balances = { error: describeRpcFailure(error) };
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(report)}
+`);
+    return 0;
+  }
+  deps.stdout.write(`${checked.address}  ${report.label ?? ""}
+`);
+  deps.stdout.write(`  chain         Hood (4663)
+`);
+  deps.stdout.write(`  source        ${report.source}
+`);
+  if (vault?.vaultDestination)
+    deps.stdout.write(`  vault         ${vault.vaultDestination}
+`);
+  const server = report.server;
+  if (server?.error)
+    deps.stdout.write(`  server        (unavailable: ${server.error})
+`);
+  else if (server)
+    deps.stdout.write(`  server state  ${server.state ?? "?"}  remote authority ${server.remoteAuthority ?? "?"}
+`);
+  const balances = report.balances;
+  if (balances.error)
+    deps.stdout.write(`  balances      (unavailable: ${balances.error})
+`);
+  else {
+    const reserve = report.reserve;
+    deps.stdout.write(`  ETH           ${balances.eth}
+`);
+    deps.stdout.write(`  USDG          ${balances.usdg}
+`);
+    deps.stdout.write(`  reserve       at least ${reserve.eth} ETH (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee)
+`);
+    deps.stdout.write(report.gas === "low" ? `  gas: low      ETH is under twice the reserve. Fund it: ${report.fund}
+` : `  gas           ok
+`);
+  }
+  deps.stdout.write(`  observed at   ${report.observedAt}
+`);
+  return 0;
 }
 
 // src/commands/tee.ts
@@ -50753,6 +52971,8 @@ async function teeStatus(args, ctx) {
 }
 async function teeDisable(args, ctx) {
   const { deps, apiUrl, json } = ctx;
+  if (namesEvmWallet(args))
+    return teeDisableEvm(args, ctx);
   if (!refuseEnvPassphrase2(ctx))
     return 1;
   const parsed = parseArgs(args, { valueFlags: ["--keystore"], pathFlags: ["--keystore"] });
@@ -50920,6 +53140,8 @@ async function broadcastMessage(rpc, ctx, secret, message, blockhash, pending, r
 }
 async function teeSweep(args, ctx) {
   const { deps, apiUrl, json } = ctx;
+  if (namesEvmWallet(args))
+    return teeSweepEvm(args, ctx);
   if (!refuseEnvPassphrase2(ctx))
     return 1;
   const parsed = parseArgs(args, {
@@ -51076,7 +53298,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       if (!kept.ok)
         residuals.push({ kind: "local-record-failed", detail: kept.message });
     };
-    const broadcast = (instructions, pending) => broadcastAndFinalize2(rpc, ctx, secret, teePubkey, instructions, pending, recordPending, clearPending);
+    const broadcast2 = (instructions, pending) => broadcastAndFinalize2(rpc, ctx, secret, teePubkey, instructions, pending, recordPending, clearPending);
     const settle2 = (outcome, pending, describe2, failedKind) => {
       if (outcome.status === "failed") {
         residuals.push({
@@ -51346,7 +53568,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           account: acct.pubkey,
           amountRaw: acct.amountRaw
         };
-        const outcome = await broadcast(instructions, pending);
+        const outcome = await broadcast2(instructions, pending);
         if (outcome.status !== "finalized") {
           const named = profile ? classifyTokenSendFailure({ profile, frozen: destinationFrozen, extraAccountsMissing }) : undefined;
           if (!settle2(outcome, pending, "token-transfer", named)) {
@@ -51403,7 +53625,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         } else {
           const amount = balance - fee;
           const pending = { kind: "sol", amountRaw: amount.toString() };
-          const outcome = await broadcast([systemTransfer(teePubkey, vaultKey, amount)], pending);
+          const outcome = await broadcast2([systemTransfer(teePubkey, vaultKey, amount)], pending);
           if (outcome.status !== "finalized") {
             solHandledAsResidual = true;
             if (!settle2(outcome, pending, "sol-transfer"))
@@ -55155,44 +57377,44 @@ ${simulation.result.logs.map((line) => `  ${line}`).join(`
     const wire = attachSignatures(tx, signed);
     const signedBase64 = toBase642(wire);
     const txSignature = signatures[0]?.signature ?? "";
-    let broadcast;
+    let broadcast2;
     if (parsed.booleans.has("--broadcast")) {
       try {
         await rpc.sendTransaction(signedBase64);
-        broadcast = { ok: true, signature: txSignature };
+        broadcast2 = { ok: true, signature: txSignature };
       } catch (error) {
         if (isRateLimited(error)) {
           notePostSignatureRateLimit(ctx, txSignature);
-          broadcast = { ok: false, uncertain: true, error: error.message };
+          broadcast2 = { ok: false, uncertain: true, error: error.message };
         } else
-          broadcast = { ok: false, error: describeRpcFailure(error) };
+          broadcast2 = { ok: false, error: describeRpcFailure(error) };
       }
     }
-    const rateLimited = broadcast?.uncertain === true;
+    const rateLimited = broadcast2?.uncertain === true;
     if (ctx.json) {
       writeJson(deps, {
-        ok: broadcast === undefined ? true : broadcast.ok,
-        ...broadcast?.ok === false ? { code: rateLimited ? "RPC_RATE_LIMITED" : "SIGN_BROADCAST_FAILED", message: broadcast.error } : {},
+        ok: broadcast2 === undefined ? true : broadcast2.ok,
+        ...broadcast2?.ok === false ? { code: rateLimited ? "RPC_RATE_LIMITED" : "SIGN_BROADCAST_FAILED", message: broadcast2.error } : {},
         signedTransaction: signedBase64,
         signature: txSignature,
         signers: signatures,
         display: lines,
-        ...broadcast ? { broadcast } : {}
+        ...broadcast2 ? { broadcast: broadcast2 } : {}
       });
-      return broadcast?.ok === false ? rateLimited ? 3 : 1 : 0;
+      return broadcast2?.ok === false ? rateLimited ? 3 : 1 : 0;
     }
     deps.stdout.write(`${signedBase64}
 `);
     for (const s of signatures)
       deps.stderr.write(`signed by ${s.wallet}: ${s.signature}
 `);
-    if (broadcast?.ok)
-      deps.stderr.write(`broadcast: ${broadcast.signature}
+    if (broadcast2?.ok)
+      deps.stderr.write(`broadcast: ${broadcast2.signature}
 `);
     if (rateLimited)
       return 3;
-    if (broadcast?.ok === false) {
-      throw new VaultError("SIGN_BROADCAST_FAILED", `The signed transaction was printed above but could not be sent: ${broadcast.error}.`, {
+    if (broadcast2?.ok === false) {
+      throw new VaultError("SIGN_BROADCAST_FAILED", `The signed transaction was printed above but could not be sent: ${broadcast2.error}.`, {
         suggestion: "Send it yourself, or run again with a fresh transaction if its blockhash expired."
       });
     }
@@ -55768,7 +57990,7 @@ async function downloadReleaseAsset(deps, base, tag, name) {
     }
     return { ok: true, bytes: new Uint8Array(await bin.arrayBuffer()), bundle: await bundle.json() };
   } catch (error) {
-    return { ok: false, message: `Could not download ${tag}: ${messageOf(error)}` };
+    return { ok: false, message: `Could not download ${tag}: ${messageOf2(error)}` };
   }
 }
 async function downloadSums(deps, base, tag) {
@@ -55779,7 +58001,7 @@ async function downloadSums(deps, base, tag) {
       return { ok: false, message: `SHA256SUMS answered ${res.status} at ${url}` };
     return { ok: true, sums: await res.text() };
   } catch (error) {
-    return { ok: false, message: `Could not download ${tag}: ${messageOf(error)}` };
+    return { ok: false, message: `Could not download ${tag}: ${messageOf2(error)}` };
   }
 }
 function checkReleaseAsset(deps, opts) {
@@ -55805,7 +58027,7 @@ function checkReleaseAsset(deps, opts) {
   }
   return { ok: true };
 }
-function messageOf(error) {
+function messageOf2(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -55865,7 +58087,7 @@ async function update(args, ctx) {
   } catch (error) {
     writeLocalFailure(deps, {
       code: "MANIFEST_INVALID",
-      message: `Refusing the release manifest at ${base}: ${messageOf(error)}.`,
+      message: `Refusing the release manifest at ${base}: ${messageOf2(error)}.`,
       suggestion: "Nothing was downloaded or installed."
     }, json);
     return 1;
@@ -56080,7 +58302,7 @@ async function stage(deps, steps, opts) {
 function notWritable(dir, error) {
   return {
     code: "UPDATE_NOT_WRITABLE",
-    message: `Cannot write ${dir}: ${messageOf(error)}.`,
+    message: `Cannot write ${dir}: ${messageOf2(error)}.`,
     suggestion: `Rerun the installer with --bin-dir <writable dir>: ${INSTALLER_LINE}`
   };
 }
@@ -56092,10 +58314,11 @@ async function discard(deps, path) {
 
 // src/commands/vault-backup.ts
 init_args();
-import { chmod as chmod5, copyFile, mkdir as mkdir6, stat as stat3 } from "node:fs/promises";
+import { chmod as chmod5, copyFile, mkdir as mkdir6, stat as stat4 } from "node:fs/promises";
 import nodePath, { dirname as dirname8, resolve as resolve2 } from "node:path";
 init_crypto();
 init_errors();
+init_evm_record();
 init_fido2();
 init_format();
 init_passphrase();
@@ -56157,10 +58380,10 @@ async function verifyVaultIntegrity(copy, opts = {}) {
     const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
     if (located === undefined)
       continue;
-    if (copy.index.hd.nextIndex[located.branch] <= located.index) {
-      fail2(7, `hd.nextIndex.${located.branch} is ${copy.index.hd.nextIndex[located.branch]}, at or below this entry's index ${located.index}`, entry.id);
+    if (nextIndexOf(copy.index.hd, located.branch) <= located.index) {
+      fail2(7, `hd.nextIndex.${located.branch} is ${nextIndexOf(copy.index.hd, located.branch)}, at or below this entry's index ${located.index}`, entry.id);
     }
-    if (entry.exposure.everRemoteExposed && !copy.index.hd.exposedIndexes[located.branch].includes(located.index)) {
+    if (entry.exposure.everRemoteExposed && !exposedIndexesOf(copy.index.hd, located.branch).includes(located.index)) {
       fail2(7, `it is flagged remotely exposed but index ${located.index} is missing from hd.exposedIndexes.${located.branch}`, entry.id);
     }
   }
@@ -56199,10 +58422,11 @@ async function verifyEntry(copy, entry, root, report, observer) {
     }
     if (entry.derivation.scheme === "bip32-secp256k1") {
       const index = evmIndexOfPath(entry.derivation.path);
-      if (index === undefined) {
-        fail2(5, `its recorded path ${entry.derivation.path} is not on the EVM branch`, entry.id);
+      const teeIndex = evmTeeIndexOfPath(entry.derivation.path);
+      if (index === undefined && teeIndex === undefined) {
+        fail2(5, `its recorded path ${entry.derivation.path} is not on an EVM branch`, entry.id);
       }
-      const derivedEvm = await deriveEvmKeyFromRoot(root, index);
+      const derivedEvm = index !== undefined ? await deriveEvmKeyFromRoot(root, index) : await deriveEvmTeeKeyFromRoot(root, teeIndex);
       observer?.onLeafLive?.(2);
       try {
         if (!bytesEqual(derivedEvm.secret, secret)) {
@@ -56262,7 +58486,7 @@ async function vaultBackup(args, ctx) {
     return usage(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   const target = resolveBackupDestination(to, deps);
-  if (target.requires !== undefined && !await exists(target.requires)) {
+  if (target.requires !== undefined && !await exists2(target.requires)) {
     return usage(ctx, `There is no iCloud Drive folder at ${target.requires} on this machine. Sign in to iCloud and turn on iCloud Drive, or pass --to <path> with somewhere else to write.`);
   }
   const destination = target.path;
@@ -56288,8 +58512,12 @@ async function vaultBackup(args, ctx) {
       realpath: deps.realpath,
       home: homeDirOf(deps.env)
     });
-    if (await exists(destination)) {
+    if (await exists2(destination)) {
       throw new VaultError("EXPORT_TARGET_EXISTS", `${destination} already exists; this CLI does not overwrite a backup.`, { suggestion: "Nothing was written. Choose a path that does not exist yet." });
+    }
+    const copyRecordPath = evmRecordPath(destination);
+    if (file.version === EVM_TEE_VAULT_VERSION && await exists2(copyRecordPath)) {
+      throw new VaultError("EXPORT_TARGET_EXISTS", `${copyRecordPath} already exists; this backup would write its sealed EVM record there, and this CLI does not overwrite one.`, { suggestion: "Nothing was written. Choose a backup path whose record path does not exist yet." });
     }
     if (verdict.sealed) {
       deps.stderr.write(`${sealedBackupLine(verdict.destination, destination)}
@@ -56316,8 +58544,9 @@ async function vaultBackup(args, ctx) {
         throw copyWriteFailed(destination, error, "copy");
       }
     }
-    const written = await stat3(destination);
-    const { report, copyHeader } = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it");
+    const recordCopy = live.file.version === EVM_TEE_VAULT_VERSION ? await copyEvmRecordForBackup(live, copyRecordPath, deps) : undefined;
+    const written = await stat4(destination);
+    const { report, copyHeader, record } = await verifyCopy(ctx, destination, opened.reopen, live, "re-opening the copy to verify it");
     assertFloorCarried(copyHeader, live.file);
     const verifiedAt = new Date(deps.now()).toISOString();
     const copyEnvelopeIds = copyHeader.envelopes.map((envelope) => envelope.id);
@@ -56347,7 +58576,15 @@ async function vaultBackup(args, ctx) {
         sharedDomainAccepted: verdict.sharedDomainAccepted,
         sharedDomain: verdict.sharedDomain,
         verified: true,
-        ...reportJson(report, live),
+        ...reportJson(report, live, record),
+        ...recordCopy !== undefined ? {
+          evmRecordCopy: {
+            path: recordCopy.copyPath,
+            present: recordCopy.present,
+            copied: recordCopy.copied,
+            dropped: recordCopy.dropped
+          }
+        } : {},
         bytesWritten: written.size,
         mode,
         openedWith: { factor: opened.factor.kind, envelopeId: opened.factor.envelopeId },
@@ -56358,7 +58595,11 @@ async function vaultBackup(args, ctx) {
     for (const line of wroteLines(destination, written.size, mode))
       deps.stdout.write(`${line}
 `);
+    if (recordCopy !== undefined)
+      deps.stdout.write(`${recordCopyLine(recordCopy)}
+`);
     writeVerifiedReport(ctx, destination, verdict, report, live, {
+      record,
       copyEnvelopes,
       leftOut,
       verifiedWith: verifiedWithLine(wordFor(live.envelope), live.envelope.id, "the copy was re-opened with it", carriedClause(live.file.envelopes.filter(isPassphraseEnvelope).map((envelope) => envelope.id)))
@@ -56518,9 +58759,12 @@ async function vaultVerifyBackup(args, ctx) {
     const live = hold(opened.vault);
     const openedInCopy = carried.some((envelope) => envelope.id === opened.factor.envelopeId);
     let report;
+    let record;
     let copyOpened;
     if (openedInCopy) {
-      report = (await verifyCopy(ctx, target, opened.reopen, live, "opening the copy")).report;
+      const verified = await verifyCopy(ctx, target, opened.reopen, live, "opening the copy");
+      report = verified.report;
+      record = verified.record;
       copyOpened = {
         word: wordFor(live.envelope),
         envelopeId: opened.factor.envelopeId,
@@ -56537,6 +58781,7 @@ async function vaultVerifyBackup(args, ctx) {
         passphraseOnlyEvenIfSole: true
       })).vault);
       report = await verifyVaultIntegrity(copy, { live });
+      record = await verifyEvmRecordCopy(copy, evmRecordPath(target));
       copyOpened = {
         word: "passphrase",
         envelopeId: copy.envelope.id,
@@ -56561,7 +58806,7 @@ async function vaultVerifyBackup(args, ctx) {
         ok: true,
         verified: target,
         sealed,
-        ...reportJson(report, live),
+        ...reportJson(report, live, record),
         openedWith: { factor: copyOpened.factor, envelopeId: copyOpened.envelopeId },
         envelopesInCopy: copyHeader.envelopes.map((envelope) => envelope.id),
         passphraseExercised,
@@ -56570,6 +58815,7 @@ async function vaultVerifyBackup(args, ctx) {
       return 0;
     }
     writeVerifiedReport(ctx, target, sealed ? { sealed: true } : undefined, report, live, {
+      record,
       copyEnvelopes: copyHeader.envelopes,
       leftOut: [],
       verifiedWith: verifiedWithLine(copyOpened.word, copyOpened.envelopeId, copyOpened.how, floorClause)
@@ -56593,7 +58839,9 @@ async function verifyCopy(_ctx, copyPath, reopen, live, purpose) {
     });
   const copy = await reopen(copyPath, raw, purpose);
   try {
-    return { report: await verifyVaultIntegrity(copy, { live }), copyHeader: copy.file };
+    const report = await verifyVaultIntegrity(copy, { live });
+    const record = await verifyEvmRecordCopy(copy, evmRecordPath(copyPath));
+    return { report, copyHeader: copy.file, record };
   } finally {
     closeVault(copy);
   }
@@ -56614,17 +58862,19 @@ function assertOutsideConfigDir(destination, env, home, api = nodePath) {
     });
   }
 }
-async function exists(path) {
+async function exists2(path) {
   try {
-    await stat3(path);
+    await stat4(path);
     return true;
   } catch {
     return false;
   }
 }
-function reportJson(report, live) {
+function reportJson(report, live, record) {
+  const ninth = record !== undefined && !record.notApplicable;
   return {
-    steps: 8,
+    steps: ninth ? 9 : 8,
+    ...ninth ? { evmRecord: { path: record.path, absent: record.absent, lines: record.lines } } : {},
     addressChecked: report.addressChecked.length,
     rederived: report.rederived.length,
     notRederived: report.notRederived.length,
@@ -56678,8 +58928,14 @@ function writeVerifiedReport(ctx, target, verdict, report, live, opts) {
 `);
   deps.stdout.write(`${opts.verifiedWith}
 `);
-  deps.stdout.write(`  steps         all 8 passed, in order
+  const ninth = opts.record !== undefined && !opts.record.notApplicable;
+  deps.stdout.write(`  steps         all ${ninth ? 9 : 8} passed, in order
 `);
+  if (ninth && opts.record !== undefined) {
+    deps.stdout.write(opts.record.absent ? `  EVM record    absent beside the copy (${opts.record.path}); nothing to check
+` : `  EVM record    ${opts.record.lines} line(s), each decrypts under this copy's record key
+`);
+  }
   deps.stdout.write(`  keys checked  ${report.addressChecked.length} (each secret produces the address the index records)
 `);
   deps.stdout.write(`  re-derived    ${report.rederived.length} from the root along their recorded paths
@@ -56712,6 +58968,11 @@ Derivation counters to keep with your recovery phrase:
 The recovery phrase restores derived keys only. It does not restore any key imported from the Phase 1 TEE wallet store; this file plus a factor does that.
 `);
 }
+function recordCopyLine(outcome) {
+  if (!outcome.present)
+    return `  EVM record    none beside the live vault; no record written`;
+  return `  EVM record    ${outcome.copyPath}: ${outcome.copied} line(s) copied${outcome.dropped > 0 ? `, ${outcome.dropped} dropped (a torn line, or a line that does not decrypt under this vault's key; the sweep could not read them either)` : ""}`;
+}
 
 // src/commands/vault-demote.ts
 init_args();
@@ -56721,6 +58982,8 @@ init_promote_support();
 init_store();
 init_vault_support();
 async function vaultDemote(args, ctx) {
+  if (namesEvmWallet(args))
+    return vaultDemoteEvm(args, ctx);
   const parsed = parseArgs(args, {
     valueFlags: ["--rpc-url", "--sweep-to", "--keystore"],
     booleanFlags: ["--emergency", "--accept-older-copy"],
@@ -57262,14 +59525,14 @@ async function installHelperForThisRelease(ctx) {
     await deps.writeBytes(tmpPath, download.bytes);
   } catch (error) {
     steps.fail(`installing ${HELPER_NAME}`);
-    return { ok: false, message: `cannot write ${dir}: ${messageOf(error)}` };
+    return { ok: false, message: `cannot write ${dir}: ${messageOf2(error)}` };
   }
   try {
     await deps.rename(tmpPath, target);
   } catch (error) {
     steps.fail(`installing ${HELPER_NAME}`);
     await discard2(deps, tmpPath);
-    return { ok: false, message: `cannot write ${dir}: ${messageOf(error)}` };
+    return { ok: false, message: `cannot write ${dir}: ${messageOf2(error)}` };
   }
   steps.done(`installed ${HELPER_NAME} ${CLI_VERSION} to ${target}`);
   return { ok: true, path: target, installed: true };
@@ -57689,6 +59952,8 @@ init_args();
 // src/vault/create.ts
 init_crypto();
 init_errors();
+init_evm_record();
+init_evm_record_key();
 init_format();
 init_sidecar();
 init_store();
@@ -57719,16 +59984,30 @@ async function createVault(request2, clock) {
     strength: request2.strength,
     wrap: { alg: VAULT_CIPHER, iv: "", ciphertext: "" }
   };
+  const seedIndex = { hd: request2.hd ?? freshHdRecord(), entries: [] };
+  let orphaned;
+  if (indexRequiresVersion4(seedIndex)) {
+    orphaned = await moveAsideOrphanRecord(request2.path, {
+      now: clock.now,
+      sleep: clock.sleep ?? ((ms) => new Promise((resolve4) => setTimeout(resolve4, ms)))
+    });
+  }
   const dek = freshDek();
   const file = await withSecret(dek, async (dekBytes) => {
     const wrap2 = await wrapDekForPassphrase(dekBytes, request2.passphrase, envelope, { vaultId }, request2.notice);
     const sealedEnvelope = { ...envelope, wrap: wrap2 };
     const payloadKey = await derivePayloadKey(dekBytes, unb64u(vaultId, "vaultId"));
     const root = await seal(payloadKey, request2.rootEntropy, rootAad(vaultId));
-    const index = { hd: request2.hd ?? freshHdRecord(), entries: [] };
+    let index = seedIndex;
+    let evmRecordPublicKey;
+    if (indexRequiresVersion4(index)) {
+      const created = await createEvmRecordKey(payloadKey, vaultId);
+      evmRecordPublicKey = created.publicKey;
+      index = { ...index, evmRecordKey: created.blob };
+    }
     const header = {
       format: VAULT_FORMAT,
-      version: indexRequiresVersion3(index) ? VAULT_VERSION : LEGACY_VAULT_VERSION,
+      version: indexRequiresVersion4(index) ? EVM_TEE_VAULT_VERSION : indexRequiresVersion3(index) ? VAULT_VERSION : LEGACY_VAULT_VERSION,
       vaultId,
       generation: 1,
       createdAt,
@@ -57736,12 +60015,17 @@ async function createVault(request2, clock) {
       cipher: VAULT_CIPHER,
       envelopes: [sealedEnvelope],
       keyIds: [],
+      ...evmRecordPublicKey !== undefined ? { evmRecordPublicKey } : {},
       root,
       keys: []
     };
     return sealIndex(header, index, payloadKey);
   });
   await writeNewVault(request2.path, serializeVault(file));
+  if (orphaned !== undefined) {
+    request2.notice?.(`A sealed EVM record from an earlier vault was at ${evmRecordPath(request2.path)}; it was moved to ${orphaned} (never deleted), and this vault starts a fresh record.
+`);
+  }
   const path = sidecarPath(request2.path);
   await writeSidecar(path, nextSidecar(await readSidecar(path), file)).catch(() => {});
   const raw = await readVaultRaw(request2.path);
@@ -58283,6 +60567,7 @@ async function vaultFactor(args, ctx) {
 
 // src/commands/vault-fund.ts
 init_args();
+init_evm_lite();
 init_render();
 init_solana_endpoint();
 init_errors();
@@ -58301,8 +60586,8 @@ async function saveFundingReceipt(vault, teeId, receipt, ctx) {
     if (entry.id !== teeId || !entry.tee)
       return entry;
     const prior = entry.tee.fundingReceipts ?? [];
-    const exists2 = prior.some((value) => readReceipt(value).signature === receipt.signature);
-    const fundingReceipts = exists2 ? prior.map((value) => readReceipt(value).signature === receipt.signature ? receipt : value) : [...prior, receipt];
+    const exists3 = prior.some((value) => readReceipt(value).signature === receipt.signature);
+    const fundingReceipts = exists3 ? prior.map((value) => readReceipt(value).signature === receipt.signature ? receipt : value) : [...prior, receipt];
     return { ...entry, tee: { ...entry.tee, fundingReceipts } };
   });
   const next = await commitVault(vault, { index: { ...vault.index, entries } }, ctx.deps);
@@ -58642,8 +60927,10 @@ async function vaultFund(args, ctx) {
     return usage(ctx, parsed.error);
   const [teeAddress, extra] = parsed.positionals;
   if (!teeAddress || extra !== undefined) {
-    return usage(ctx, "Usage: candle vault fund <tee-address | external-label> --amount <n> --asset SOL|USDC [--rpc-url <url>] [--from <vault-label>]");
+    return usage(ctx, "Usage: candle vault fund <tee-address | external-label> --amount <n> --asset SOL|USDC|ETH|USDG [--rpc-url <url>] [--from <vault-label>]");
   }
+  if (looksLikeEvmAddress(teeAddress))
+    return vaultFundEvm(ctx, parsed, teeAddress);
   const amount = parsed.values["--amount"];
   const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase();
   if (!amount)
@@ -58767,10 +61054,83 @@ async function vaultFund(args, ctx) {
     }
   });
 }
+async function vaultFundEvm(ctx, parsed, teeAddress) {
+  const amount = parsed.values["--amount"];
+  const asset = (parsed.values["--asset"] ?? "ETH").toUpperCase();
+  if (!amount)
+    return usage(ctx, "--amount <n> is required.");
+  if (amount.toLowerCase() === "max")
+    return usage(ctx, "--amount must be a number; funding a TEE wallet takes no max.");
+  if (asset !== "ETH" && asset !== "USDG")
+    return usage(ctx, "--asset must be ETH or USDG for a Hood TEE wallet.");
+  if (parsed.values["--from"] !== undefined) {
+    return usage(ctx, "--from applies to an external wallet only; a TEE wallet is funded from its pinned vault key.");
+  }
+  const client = resolveHoodClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in client)
+    return usage(ctx, client.error);
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault fund"))
+    return 1;
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    });
+    const vault = hold(opened.vault);
+    const teeEntry = vault.index.entries.find((entry) => entry.chain === "evm" && entry.role === "tee-wallet" && sameAddress(entry.address, teeAddress));
+    if (teeEntry === undefined) {
+      writeLocalFailure(ctx.deps, {
+        code: "TEE_WALLET_UNKNOWN",
+        message: `${teeAddress} is not a Hood TEE wallet in this vault.`,
+        suggestion: "Promote one with candle vault promote --from <evm vault key> (or --in-place <evm vault key>)."
+      }, ctx.json);
+      return 1;
+    }
+    if (teeEntry.tee?.remoteAuthority !== "verified-active" || teeEntry.tee.stopRequestedAt !== undefined) {
+      writeLocalFailure(ctx.deps, {
+        code: "TEE_WALLET_NOT_VERIFIED",
+        message: `${teeEntry.address} is not an enabled TEE wallet with verified remote authority; do not fund it.`
+      }, ctx.json);
+      return 1;
+    }
+    const destination = teeEntry.tee.vaultDestination;
+    const fromEntry = destination === undefined ? undefined : vault.index.entries.find((entry) => entry.chain === "evm" && entry.role === "vault" && sameAddress(entry.address, destination));
+    if (fromEntry === undefined) {
+      throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${teeEntry.address} has no pinned EVM vault key in this vault to fund from.`, { suggestion: "Nothing was signed. candle vault status lists this vault's keys and their pins." });
+    }
+    assertVaultSigner(fromEntry);
+    ctx.deps.stderr.write(`${hoodHostLine(client, "the chain id")}
+`);
+    await assertHoodChain(client);
+    ctx.deps.stdout.write(`Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
+`);
+    return runEvmTransfer({
+      ctx,
+      rpcUrl: client.url,
+      builtIn: client.builtIn,
+      pinHoodChain: true,
+      from: fromEntry,
+      to: teeEntry.address,
+      amount,
+      asset,
+      confirmLastSix: (address) => confirmLastSix(ctx, address, "the TEE wallet destination"),
+      confirmFactor: (what) => opened.confirm(what.replace(/^sign transfer of /, "fund ")),
+      decryptSecret: () => decryptKey(vault, fromEntry.id),
+      usage: (line) => usage(ctx, line),
+      writeJson: (value) => writeJson(ctx.deps, { ...value, tee: teeEntry.address })
+    }, client.rpc);
+  });
+}
 
 // src/commands/vault-import-legacy.ts
 init_args();
-import { readFile as readFile6 } from "node:fs/promises";
+import { readFile as readFile7 } from "node:fs/promises";
 init_errors();
 
 // src/vault/migrate-tee.ts
@@ -58944,7 +61304,7 @@ async function vaultImportLegacy(args, ctx) {
     const vaultRaw = await requireVaultRaw(ctx, resolvedVault);
     let legacyRaw;
     try {
-      legacyRaw = await readFile6(fromPath, "utf8");
+      legacyRaw = await readFile7(fromPath, "utf8");
     } catch (error) {
       const code = error?.code;
       if (code === "ENOENT") {
@@ -59035,7 +61395,7 @@ async function vaultImportLegacy(args, ctx) {
 async function resolveDefaultTeePath(env, home) {
   const current = defaultTeeKeystorePath(env, home);
   try {
-    await readFile6(current);
+    await readFile7(current);
     return current;
   } catch {}
   return legacyTeeKeystorePath(env, home);
@@ -59513,6 +61873,7 @@ function restoreRefusedFailure(init, error) {
 
 // src/commands/vault-promote.ts
 init_errors();
+init_format();
 init_promote_support();
 // src/vault/promote-to-key.ts
 init_deps();
@@ -59586,16 +61947,16 @@ function targetWarnings(target) {
 }
 async function preflightToKey(ctx, raw, opts) {
   const { deps, json } = ctx;
-  const refuse2 = (failure) => {
+  const refuse3 = (failure) => {
     writeLocalFailure(deps, failure, json);
     return { ok: false, exit: 1 };
   };
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   if (!deviceToken)
-    return refuse2(DEVICE_TOKEN_REQUIRED);
+    return refuse3(DEVICE_TOKEN_REQUIRED);
   const listing = await listAccountKeys(ctx, deviceToken);
   if (!listing.ok) {
-    return refuse2({
+    return refuse3({
       code: listing.code ?? `HTTP ${listing.status}`,
       message: `Could not read this account's keys to check --to-key (${listing.status === 0 ? listing.message : `HTTP ${listing.status}`}). Nothing was written.`,
       suggestion: "Check the device token with: candle auth status"
@@ -59609,7 +61970,7 @@ async function preflightToKey(ctx, raw, opts) {
   const row = keys.find((key) => key.keyPrefix === keyPrefix);
   const refusal = targetKeyRefusal(row, keyPrefix, deps.now());
   if (refusal !== null)
-    return refuse2(refusal);
+    return refuse3(refusal);
   const target = row;
   const walletScope = target.walletScope === "selected" ? "selected" : "all";
   if (walletScope === "selected") {
@@ -59617,7 +61978,7 @@ async function preflightToKey(ctx, raw, opts) {
     if (room.ok) {
       const moving = opts.labels.filter((label) => !room.heldLabels.has(label)).length;
       if (moving > 0 && room.held + moving > SELECTED_SCOPE_LIMIT) {
-        return refuse2({
+        return refuse3({
           code: "REBIND_SCOPE_FULL",
           message: `Key ${keyPrefix} is scoped to selected wallets and holds ${room.held} of ${SELECTED_SCOPE_LIMIT}; the ${moving} this run would move do not fit. Nothing was written.`,
           suggestion: "Widen the key's wallet scope from the portal, or name a key with room."
@@ -59803,6 +62164,303 @@ function rebindJson(input) {
 // src/commands/vault-promote.ts
 init_signer_roles();
 init_store();
+
+// src/commands/vault-promote-evm.ts
+init_evm_lite();
+init_render();
+init_errors();
+init_format();
+init_promote_support();
+init_store();
+init_vault_support();
+function hoodClientFor(ctx, parsed) {
+  const client = resolveHoodClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in client)
+    return { exit: usage(ctx, client.error) };
+  return client;
+}
+async function promoteHeight(ctx, client) {
+  ctx.deps.stderr.write(`${hoodHostLine(client, "the chain id and the current Hood height")}
+`);
+  await assertHoodChain(client);
+  return client.rpc.blockNumber();
+}
+function importKeyHex(secret) {
+  return bytesToHex2(secret);
+}
+async function promoteEvmFresh(input, fromLabel) {
+  const { ctx, parsed, opened, hold, resolvedVault, toKey } = input;
+  let vault = hold(opened.vault);
+  assertRecoverableFactorExists(vault.file.envelopes);
+  if (vault.index.hd.discovery !== undefined) {
+    throw new VaultError("VAULT_ALLOCATION_BOUNDARY_UNKNOWN", "This vault was built by `vault restore --phrase`, so deriving a fresh TEE key is refused.", {
+      suggestion: "Create a second vault with a fresh root (`candle vault init`) and move funds with `candle vault transfer`."
+    });
+  }
+  const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
+  const destination = assertColdVaultDestination(vault.index, fromLabel, {
+    acceptUnknownExposure: acceptUnknown,
+    chain: "evm"
+  });
+  const client = hoodClientFor(ctx, parsed);
+  if ("exit" in client)
+    return client.exit;
+  await refuseWithoutRoom(ctx);
+  const height = await promoteHeight(ctx, client);
+  const teeIndex = nextAllocatableIndex(nextIndexOf(vault.index.hd, "evmTee"), exposedIndexesOf(vault.index.hd, "evmTee"));
+  const derivationPath = evmTeePath(teeIndex);
+  const root = await decryptRoot(vault);
+  let address;
+  let keyId;
+  let blob;
+  let secret;
+  let privateKey;
+  let entry;
+  let scanStart;
+  try {
+    const derived = await deriveEvmTeeKeyFromRoot(root, teeIndex);
+    try {
+      address = derived.address;
+      keyId = freshKeyId();
+      secret = Uint8Array.from(derived.secret);
+      blob = await sealKeyBlob(vault, keyId, derived.secret);
+    } finally {
+      wipe(derived.secret);
+    }
+    wipe(root);
+    const now = new Date(ctx.deps.now()).toISOString();
+    entry = {
+      id: keyId,
+      chain: "evm",
+      curve: "secp256k1",
+      address,
+      label: parsed.values["--label"] ?? `evm-tee-${teeIndex}`,
+      createdAt: now,
+      role: "tee-wallet",
+      origin: "derived",
+      derivation: { scheme: EVM_DERIVATION_SCHEME, path: derivationPath },
+      exposure: { everRemoteExposed: true, everExported: false },
+      tee: {
+        network: "hood-mainnet",
+        lifecycle: "import-pending",
+        vaultDestination: destination.address,
+        ...acceptUnknown && destination.exposure?.exposureUnknown ? { destinationExposureAccepted: true } : {}
+      }
+    };
+    const exposedTee = [...exposedIndexesOf(vault.index.hd, "evmTee")];
+    if (!exposedTee.includes(teeIndex))
+      exposedTee.push(teeIndex);
+    exposedTee.sort((a, b) => a - b);
+    vault = hold(await commitVault(vault, {
+      index: {
+        ...vault.index,
+        hd: {
+          ...vault.index.hd,
+          nextIndex: { ...vault.index.hd.nextIndex, evmTee: teeIndex + 1 },
+          exposedIndexes: { ...vault.index.hd.exposedIndexes, evmTee: exposedTee }
+        },
+        entries: [...vault.index.entries, entry]
+      },
+      addKeys: [blob]
+    }, ctx.deps));
+    scanStart = await appendScanStart(ctx, vault.path, address, height);
+    await confirmLastSix(ctx, destination.address, "the sweep vault destination");
+    if (toKey !== undefined) {
+      const name = toKey.target.label !== null ? `  (${toKey.target.label})` : "";
+      ctx.deps.stderr.write(`${[
+        `This wallet will be bound to key ${toKey.target.keyPrefix}${name} by a rebind after the import.`,
+        ...targetWarnings(toKey.target)
+      ].join(`
+`)}
+`);
+    }
+    if (secret === undefined)
+      throw new Error("EVM TEE key was not derived");
+    privateKey = importKeyHex(secret);
+  } finally {
+    wipe(root);
+    if (secret !== undefined)
+      wipe(secret);
+  }
+  const importCount = { n: 0 };
+  const { exit: code, submitted } = await runTeeImport(ctx, {
+    address,
+    privateKey,
+    label: entry.label,
+    vaultDestination: destination.address,
+    reopenForWrite: opened.reopen,
+    resolvedVault,
+    chain: "evm",
+    onImport: () => {
+      importCount.n += 1;
+    }
+  });
+  if (code !== 0 && code !== 3)
+    return code;
+  vault = hold(await reopenFromDisk(vault.path, opened.reopen, vault));
+  const target = vault.index.entries.find((candidate) => candidate.id === keyId);
+  if (target === undefined)
+    throw new VaultError("VAULT_INDEX_INVALID", `Entry ${keyId} missing after import.`);
+  let rebound;
+  if (toKey !== undefined) {
+    rebound = await rebindAfterImport(ctx, toKey, {
+      linkedWalletId: target.linkedWalletId ?? null,
+      address,
+      label: entry.label,
+      remoteAuthority: target.tee?.remoteAuthority ?? submitted?.remoteAuthority ?? null,
+      importedTo: submitted?.boundKeyPrefix ?? null
+    }, await callingKeyPrefixFor(ctx));
+  }
+  const exit = Math.max(code, rebound?.exit ?? 0);
+  if (ctx.json) {
+    writeJson(ctx.deps, {
+      ok: rebound === undefined || rebound.exit === 0,
+      mode: "fresh",
+      chain: "evm",
+      address,
+      label: entry.label,
+      path: derivationPath,
+      vaultDestination: destination.address,
+      lifecycle: target.tee?.lifecycle,
+      linkedWalletId: target.linkedWalletId ?? null,
+      importCalls: importCount.n,
+      scanStart: { block: scanStart.block, recorded: scanStart.recorded },
+      vaultVersion: vault.file.version,
+      ...rebound?.json ?? {}
+    });
+  } else {
+    ctx.deps.stdout.write(`Promoted fresh Hood TEE wallet ${address} at ${derivationPath} (sweep to ${destination.address}). Scan start: Hood block ${scanStart.block}.
+`);
+  }
+  return exit;
+}
+async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
+  const { ctx, parsed, opened, hold, resolvedVault, toKey } = input;
+  let vault = hold(opened.vault);
+  const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
+  const client = hoodClientFor(ctx, parsed);
+  if ("exit" in client)
+    return client.exit;
+  const first = assertEvmInPlacePreconditions(vault.index, subjectLabel, sweepTo, {
+    acceptUnknownExposure: acceptUnknown
+  });
+  if (first.resume)
+    return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).");
+  await refuseWithoutRoom(ctx);
+  const live = await readControlledBy(ctx);
+  const controlledBy = toKey === undefined ? live : withToKey(live, {
+    keyPrefix: toKey.target.keyPrefix,
+    label: toKey.target.label,
+    warnings: targetWarnings(toKey.target)
+  });
+  const height = await promoteHeight(ctx, client);
+  const holdings = await readEvmHoldings(client.rpc, first.subject.address);
+  for (const line of holdingsLines(first.subject.address, holdings, new Date(ctx.deps.now()).toISOString())) {
+    ctx.deps.stdout.write(`${line}
+`);
+  }
+  ctx.deps.stdout.write(`Authorities: the signer-role read (mint, freeze, upgrade and stake authorities) is Solana's; nothing is read on Hood, so any contract this key controls is not checked.
+`);
+  printPromoteSentence(ctx, promoteSentence({ n: 1, form: "U", where: "above" }));
+  await confirmLastSix(ctx, first.subject.address, "the address being promoted");
+  ctx.deps.stderr.write(`${renderControlledBy(controlledBy, 1)}
+`);
+  await confirmPromotion(ctx, 1);
+  vault = hold(await reopenFromDisk(vault.path, opened.reopen, vault));
+  const second = assertEvmInPlacePreconditions(vault.index, subjectLabel, sweepTo, {
+    acceptUnknownExposure: acceptUnknown
+  });
+  if (second.resume) {
+    throw new VaultError("PROMOTE_ALREADY_TEE_WALLET", "The entry changed under the lock; nothing was written.", {
+      suggestion: "Run: candle vault status --unlock to see where the entry is now, then re-run promote to resume."
+    });
+  }
+  assertNotPinnedDestination(vault.index, second.subject.address);
+  const subject = second.subject;
+  const destination = second.destination;
+  const preImportIndex = vault.index;
+  vault = hold(await commitVault(vault, {
+    index: applyPromotion(vault.index, subject, destination, {
+      label: parsed.values["--label"],
+      now: new Date(ctx.deps.now()).toISOString(),
+      acceptUnknownExposure: acceptUnknown
+    })
+  }, ctx.deps));
+  const scanStart = await appendScanStart(ctx, vault.path, subject.address, height);
+  const secret = await decryptKey(vault, subject.id);
+  let privateKey;
+  try {
+    if (!sameEvmAddress(evmAddressFromSecret(secret), subject.address)) {
+      throw new VaultError("VAULT_VERIFY_FAILED", "Stored secret does not match the subject address.");
+    }
+    privateKey = importKeyHex(secret);
+  } finally {
+    wipe(secret);
+  }
+  const imported = await runTeeImport(ctx, {
+    address: subject.address,
+    privateKey,
+    label: parsed.values["--label"] ?? subject.label,
+    vaultDestination: destination.address,
+    reopenForWrite: opened.reopen,
+    report: "return",
+    resolvedVault,
+    chain: "evm"
+  });
+  const code = imported.exit;
+  if (imported.failure !== undefined) {
+    let failure = {
+      code: imported.failure.code,
+      message: imported.failure.message,
+      ...imported.failure.suggestion !== undefined ? { suggestion: imported.failure.suggestion } : {}
+    };
+    if (restoresPreImportEntry(imported.failure)) {
+      try {
+        vault = hold(await commitVault(vault, { index: preImportIndex }, ctx.deps));
+        failure = { ...failure, message: `${failure.message} ${RESTORED_SENTENCE}` };
+      } catch (error) {
+        failure = restoreRefusedFailure(failure, error);
+      }
+    }
+    writeLocalFailure(ctx.deps, failure, ctx.json);
+    return code;
+  }
+  let rebound;
+  if (toKey !== undefined && imported.submitted !== undefined) {
+    rebound = await rebindAfterImport(ctx, toKey, {
+      linkedWalletId: imported.submitted.id ?? null,
+      address: subject.address,
+      label: parsed.values["--label"] ?? subject.label,
+      remoteAuthority: imported.submitted.remoteAuthority ?? null,
+      importedTo: imported.submitted.boundKeyPrefix ?? null
+    }, controlledBy.keyPrefix);
+  }
+  const exit = Math.max(code, rebound?.exit ?? 0);
+  if (ctx.json) {
+    const reopened = hold(await reopenFromDisk(vault.path, opened.reopen, vault));
+    const updated = reopened.index.entries.find((candidate) => candidate.id === subject.id);
+    writeJson(ctx.deps, {
+      ok: (code === 0 || code === 3) && (rebound === undefined || rebound.exit === 0),
+      mode: "in-place",
+      chain: "evm",
+      address: subject.address,
+      vaultDestination: destination.address,
+      lifecycle: updated?.tee?.lifecycle ?? null,
+      linkedWalletId: updated?.linkedWalletId ?? null,
+      controlledBy: controlledByJson(controlledBy),
+      holdings: { eth: holdings.eth.toString(), usdg: holdings.usdg.toString(), weth: holdings.weth.toString() },
+      scanStart: { block: scanStart.block, recorded: scanStart.recorded },
+      vaultVersion: reopened.file.version,
+      ...rebound?.json ?? {}
+    });
+  } else if (code === 0 || code === 3) {
+    ctx.deps.stdout.write(`Promoted ${subject.address} in place on Hood (sweep to ${destination.address}). This address never returns to cold. Scan start: Hood block ${scanStart.block}.
+`);
+  }
+  return exit;
+}
+
+// src/commands/vault-promote.ts
 init_vault_support();
 async function vaultPromote(args, ctx) {
   const parsed = parseArgs(args, {
@@ -59900,6 +62558,9 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     let vault = hold(opened.vault);
+    if (namesEvmEntry(vault.index.entries, fromLabel)) {
+      return promoteEvmFresh({ ctx, parsed, opened, hold, resolvedVault, toKey }, fromLabel);
+    }
     assertRecoverableFactorExists(vault.file.envelopes);
     if (vault.index.hd.discovery !== undefined) {
       throw new VaultError("VAULT_ALLOCATION_BOUNDARY_UNKNOWN", "This vault was built by `vault restore --phrase`, so deriving a fresh TEE key is refused.", {
@@ -60054,9 +62715,6 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
     return usage(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   const sweepTo = parsed.values["--sweep-to"];
-  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
-  if ("error" in solana)
-    return usage(ctx, solana.error);
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
@@ -60065,8 +62723,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
     });
     let vault = hold(opened.vault);
     assertRecoverableFactorExists(vault.file.envelopes);
-    assertNotEvmEntry(vault.index, subjectLabel, "vault promote");
-    const existing = findEntryByLabelOrAddress(vault.index, subjectLabel);
+    const existing = findEntryByLabelOrAddress(vault.index, subjectLabel) ?? vault.index.entries.find((entry) => entry.chain === "evm" && sameAddress(entry.address, subjectLabel));
     if (existing === undefined) {
       throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No entry matches ${subjectLabel}.`, {
         suggestion: "Nothing was written. Run: candle vault status (which lists every label and address this vault holds)"
@@ -60121,6 +62778,12 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
     if (sweepTo === undefined) {
       return usage(ctx, "Usage: candle vault promote --in-place <label> --sweep-to <label> [--rpc-url <url>] [--label] [--accept-unknown-exposure]");
     }
+    if (existing.chain === "evm") {
+      return promoteEvmInPlace({ ctx, parsed, opened, hold, resolvedVault, toKey }, subjectLabel, sweepTo);
+    }
+    const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
+    if ("error" in solana)
+      return usage(ctx, solana.error);
     const first = assertInPlacePreconditions(vault.index, subjectLabel, sweepTo, {
       acceptUnknownExposure: acceptUnknown
     });
@@ -60288,7 +62951,7 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
           ...e,
           linkedWalletId: undefined,
           tee: {
-            network: "solana-mainnet",
+            network: teeNetworkFor(e.chain),
             lifecycle: "stranded",
             grantIdentity: {
               account: verdict.account,
@@ -60390,7 +63053,7 @@ async function runTeeImport(ctx, opts) {
   }
   opts.onImport?.();
   const flow = await runImportFlow({
-    chain: "solana",
+    chain: opts.chain ?? "solana",
     address: opts.address,
     privateKey: opts.privateKey,
     label: opts.label,
@@ -60444,6 +63107,8 @@ async function runTeeImport(ctx, opts) {
         entries: vault.index.entries.map((entry) => {
           if (entry.address !== opts.address)
             return entry;
+          if (entry.chain !== (opts.chain ?? "solana"))
+            return entry;
           return {
             ...entry,
             linkedWalletId: submitted.id,
@@ -60453,7 +63118,7 @@ async function runTeeImport(ctx, opts) {
               ...entry.exposure?.exposureUnknown ? { exposureUnknown: true } : {}
             },
             tee: {
-              network: "solana-mainnet",
+              network: teeNetworkFor(entry.chain),
               lifecycle: "enabled",
               vaultDestination: opts.vaultDestination,
               ...entry.tee?.promotedInPlaceAt ? { promotedInPlaceAt: entry.tee.promotedInPlaceAt } : {},
@@ -60485,11 +63150,15 @@ async function runTeeImport(ctx, opts) {
     ...closeReopened ? {} : { vault: committed }
   };
 }
+function namesEvmEntry(entries, labelOrAddress) {
+  return entries.some((entry) => entry.chain === "evm" && (entry.label === labelOrAddress || sameAddress(entry.address, labelOrAddress)));
+}
 
 // src/commands/vault-promote-batch.ts
 init_esm();
 init_args();
 init_deps();
+init_evm_lite();
 init_render();
 init_solana_endpoint();
 init_solana_lite();
@@ -60639,6 +63308,20 @@ function renderPhaseAFindings(file, findings) {
 function resolveDestinationAddress(index, destination) {
   return findEntryByLabelOrAddress(index, destination)?.address ?? destination;
 }
+function batchChain(index, rows) {
+  let solana = false;
+  let evm = false;
+  for (const row of rows) {
+    const subject = findEntryByLabelOrAddress(index, row.label) ?? index.entries.find((entry) => entry.chain === "evm" && entry.address.toLowerCase() === row.label.toLowerCase());
+    if (subject?.chain === "evm")
+      evm = true;
+    else if (subject?.chain === "solana")
+      solana = true;
+  }
+  if (evm && solana)
+    return "mixed";
+  return evm ? "evm" : "solana";
+}
 function classifyRow(index, row) {
   const subject = findEntryByLabelOrAddress(index, row.label);
   const destinationAddress = resolveDestinationAddress(index, row.destination);
@@ -60663,7 +63346,7 @@ async function preflightBatch(index, rows, opts) {
   const failures = [];
   const pinnedBy = new Map;
   const promotedBy = new Map;
-  const refuse2 = (row, failure) => {
+  const refuse3 = (row, failure) => {
     failures.push({
       line: row.line,
       label: row.label,
@@ -60676,7 +63359,7 @@ async function preflightBatch(index, rows, opts) {
   };
   const refuseWith = (row, error, why) => {
     if (isVaultError(error)) {
-      refuse2(row, {
+      refuse3(row, {
         code: error.code,
         message: error.message,
         ...error.suggestion !== undefined ? { suggestion: error.suggestion } : {},
@@ -60684,7 +63367,7 @@ async function preflightBatch(index, rows, opts) {
       });
       return;
     }
-    refuse2(row, { code: "VAULT_UNREADABLE", message: error instanceof Error ? error.message : String(error) });
+    refuse3(row, { code: "VAULT_UNREADABLE", message: error instanceof Error ? error.message : String(error) });
   };
   for (const row of rows) {
     const classified = classifyRow(index, row);
@@ -60708,7 +63391,7 @@ async function preflightBatch(index, rows, opts) {
     if (classified.state === "conflict") {
       const subject = classified.subject;
       const lifecycle = subject.tee?.lifecycle ?? "unknown";
-      refuse2(row, {
+      refuse3(row, {
         code: "PROMOTE_ALREADY_TEE_WALLET",
         message: `${subject.label ?? subject.address} is already a TEE wallet (${lifecycle}).`,
         why: classified.onDisk !== undefined ? `On disk it sweeps to ${classified.onDisk}; this file says ${row.destination} (${classified.destinationAddress}).` : `Its lifecycle is ${lifecycle}, which is not resumable; this file says ${row.destination}.`
@@ -60722,7 +63405,7 @@ async function preflightBatch(index, rows, opts) {
         destinationAddress: classified.destinationAddress
       });
       if (!reconciled.ok) {
-        refuse2(row, reconciled.failure);
+        refuse3(row, reconciled.failure);
         continue;
       }
       planned.push({
@@ -60735,11 +63418,12 @@ async function preflightBatch(index, rows, opts) {
       continue;
     }
     try {
-      const { subject, destination, resume } = assertInPlacePreconditions(projection, row.label, row.destination, {
+      const check = opts.chain === "evm" ? assertEvmInPlacePreconditions : assertInPlacePreconditions;
+      const { subject, destination, resume } = check(projection, row.label, row.destination, {
         acceptUnknownExposure: opts.acceptUnknownExposure
       });
       if (resume) {
-        refuse2(row, {
+        refuse3(row, {
           code: "PROMOTE_ALREADY_TEE_WALLET",
           message: `${subject.label ?? subject.address} is already a TEE wallet (${subject.tee?.lifecycle ?? "unknown"}).`
         });
@@ -60906,9 +63590,6 @@ async function vaultPromoteBatch(args, ctx) {
   if ("error" in resolvedVault)
     return usage(ctx, resolvedVault.error);
   const path = resolvedVault.path;
-  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
-  if ("error" in solana)
-    return usage(ctx, solana.error);
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
   const readTokens = parsed.booleans.has("--token-holdings");
   const { deps } = ctx;
@@ -60941,7 +63622,21 @@ async function vaultPromoteBatch(args, ctx) {
     assertRecoverableFactorExists(current.file.envelopes);
     deps.stderr.write(`✓ ${rows.length} rows read from ${pairsFile}
 `);
+    const chain2 = batchChain(current.index, rows);
+    if (chain2 === "mixed") {
+      throw new VaultError("SOLANA_COMMAND_EVM_KEY", `${pairsFile} names both Solana and EVM keys; a promote-batch run is one chain.`, { suggestion: "Nothing was written. Split the file into a Solana file and an EVM file and run each." });
+    }
+    const hood = chain2 === "evm" ? resolveHoodClient(ctx, parsed.values["--rpc-url"]) : undefined;
+    if (hood !== undefined && "error" in hood)
+      return usage(ctx, hood.error);
+    if (chain2 === "evm" && readTokens) {
+      return usage(ctx, "--token-holdings reads Solana token accounts; a Hood batch shows each key's ETH.");
+    }
+    const solana = chain2 === "evm" ? undefined : await openSolanaClient(ctx, parsed.values["--rpc-url"]);
+    if (solana !== undefined && "error" in solana)
+      return usage(ctx, solana.error);
     const preflight = await preflightBatch(current.index, rows, {
+      chain: chain2,
       acceptUnknownExposure: acceptUnknown,
       now: new Date(deps.now()).toISOString(),
       verifySubject: async (subject) => {
@@ -60979,24 +63674,53 @@ async function vaultPromoteBatch(args, ctx) {
         rebindPhase?.importedTo.set(item.subject.address, item.subject.tee?.boundKeyPrefix ?? null);
     }
     const addresses = planned.map((item) => item.subject.address);
-    const rpc = solana.rpc;
-    const host = solana.endpoint.host;
     const observedAt = new Date(deps.now()).toISOString();
     let lamports;
     let readError;
     let rateLimited;
-    try {
-      const accounts = await rpc.getMultipleAccounts(addresses);
-      lamports = new Map(addresses.map((address, at) => [address, accounts[at]?.lamports ?? 0n]));
-      deps.stderr.write(`✓ SOL read for ${addresses.length} addresses (${Math.ceil(addresses.length / 100)} requests)
+    let hoodHeight;
+    let evmHoldings;
+    let rpc;
+    let host;
+    if (hood !== undefined) {
+      host = hood.host;
+      deps.stderr.write(`${hoodHostLine(hood, "the chain id, the Hood height and each key's ETH")}
 `);
-    } catch (error) {
-      if (isRateLimited(error))
-        rateLimited = error;
-      readError = describeRpcFailure(error);
+      await assertHoodChain(hood);
+      try {
+        hoodHeight = await hood.rpc.blockNumber();
+        const balances = new Map;
+        evmHoldings = new Map;
+        for (const address of addresses) {
+          const held = await readEvmHoldings(hood.rpc, address);
+          evmHoldings.set(address, held);
+          balances.set(address, held.eth);
+        }
+        lamports = balances;
+        deps.stderr.write(`✓ ETH, USDG and WETH read for ${addresses.length} addresses (${addresses.length * 3} requests)
+`);
+      } catch (error) {
+        readError = error instanceof Error ? error.message : String(error);
+      }
+    } else {
+      if (solana === undefined || "error" in solana) {
+        return usage(ctx, "No Solana endpoint for this batch.");
+      }
+      rpc = solana.rpc;
+      host = solana.endpoint.host;
+      try {
+        const accounts = await rpc.getMultipleAccounts(addresses);
+        lamports = new Map(addresses.map((address, at) => [address, accounts[at]?.lamports ?? 0n]));
+        deps.stderr.write(`✓ SOL read for ${addresses.length} addresses (${Math.ceil(addresses.length / 100)} requests)
+`);
+      } catch (error) {
+        if (isRateLimited(error))
+          rateLimited = error;
+        readError = describeRpcFailure(error);
+      }
     }
     let tokenCounts;
-    if (readTokens && lamports !== undefined) {
+    if (readTokens && lamports !== undefined && rpc !== undefined) {
       deps.stderr.write(`Reading token accounts for ${addresses.length} addresses: ${addresses.length * 2} requests over ${host}.
 `);
       tokenCounts = new Map;
@@ -61008,12 +63732,22 @@ async function vaultPromoteBatch(args, ctx) {
     }
     const actingAddresses = acting.map((item) => item.subject.address);
     let roles;
-    if (lamports !== undefined && actingAddresses.length > 0) {
+    if (hood !== undefined) {
+      roles = {
+        checked: [],
+        notChecked: ROLE_GROUP_IDS.map((group) => ({ group, reason: "not read on Hood" })),
+        found: [],
+        requests: 0,
+        planned: 0,
+        rateLimited: 0,
+        elapsedMs: 0
+      };
+    } else if (lamports !== undefined && actingAddresses.length > 0 && rpc !== undefined) {
       deps.stderr.write(`${checkOpeningLine(actingAddresses.length, host)}
 `);
       roles = await runRoleCheck(ctx, rpc, actingAddresses);
     }
-    const table = renderBatchTable(planned, { lamports, tokenCounts, hasValueUsd, roles });
+    const table = renderBatchTable(planned, { lamports, tokenCounts, hasValueUsd, roles, evmHoldings });
     const footer = renderFooter({
       file: pairsFile,
       planned,
@@ -61026,7 +63760,8 @@ async function vaultPromoteBatch(args, ctx) {
       hasValueUsd,
       room,
       promotes,
-      roles
+      roles,
+      evm: hood !== undefined
     });
     if (readError !== undefined) {
       deps.stderr.write(`
@@ -61036,8 +63771,8 @@ ${footer}
 `);
       if (rateLimited !== undefined)
         throw rpcRateLimitedError(ctx, host, rateLimited);
-      throw new VaultError("VAULT_UNREADABLE", `The SOL read over ${host} failed: ${readError}. Nothing was written.`, {
-        suggestion: "Check --rpc-url (or CANDLE_SOLANA_RPC_URL) and run again; the table above is what would have run."
+      throw new VaultError("VAULT_UNREADABLE", `The ${hood !== undefined ? "ETH" : "SOL"} read over ${host} failed: ${readError}. Nothing was written.`, {
+        suggestion: `Check --rpc-url (or ${hood !== undefined ? "CANDLE_EVM_RPC_URL" : "CANDLE_SOLANA_RPC_URL"}) and run again; the table above is what would have run.`
       });
     }
     if (acting.length === 0) {
@@ -61138,10 +63873,12 @@ ${renderControlledBy(controlledBy, acting.length)}
             })
           }, deps));
           await rowObserver?.({ line: row2.line, stage: "pre-import", vault: current });
+          if (hoodHeight !== undefined)
+            await appendScanStart(ctx, path, subject2.address, hoodHeight);
           const secret = await verifySubjectSecret(current, subject2);
           let privateKey;
           try {
-            privateKey = base58.encode(secret);
+            privateKey = subject2.chain === "evm" ? bytesToHex2(secret) : base58.encode(secret);
           } finally {
             wipe(secret);
           }
@@ -61153,7 +63890,8 @@ ${renderControlledBy(controlledBy, acting.length)}
             reopenForWrite: reopenHeld,
             closeReopened: false,
             report: "return",
-            resolvedVault
+            resolvedVault,
+            chain: subject2.chain
           });
           if (imported.failure !== undefined || imported.submitted === undefined) {
             let failure = imported.failure ?? {
@@ -61289,7 +64027,7 @@ ${renderControlledBy(controlledBy, acting.length)}
       return stopped.exit;
     }
     if (last !== undefined)
-      await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx);
+      await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx, chain2);
     const rebound = rebindPhase === undefined ? undefined : await runRebindPhase(ctx, rebindPhase, results);
     return finish(ctx, {
       file: pairsFile,
@@ -61322,7 +64060,8 @@ async function runRebindPhase(ctx, phase, results) {
 async function verifySubjectSecret(vault, subject) {
   const secret = await decryptKey(vault, subject.id);
   try {
-    if (addressFromSecret64(secret) !== subject.address) {
+    const matches2 = subject.chain === "evm" ? sameEvmAddress(evmAddressFromSecret(secret), subject.address) : addressFromSecret64(secret) === subject.address;
+    if (!matches2) {
       throw new VaultError("VAULT_VERIFY_FAILED", "Stored secret does not match the subject address.");
     }
   } catch (error) {
@@ -61333,10 +64072,10 @@ async function verifySubjectSecret(vault, subject) {
 }
 async function reconcileForPreflight(ctx, row, subject, resolved) {
   const { onDisk } = resolved;
-  const refuse2 = (failure) => ({ ok: false, failure });
+  const refuse3 = (failure) => ({ ok: false, failure });
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
   if (!apiKey) {
-    return refuse2({
+    return refuse3({
       code: "PROMOTE_RECONCILE_INCOMPLETE",
       message: "No API key is available; reconciliation cannot run.",
       suggestion: "Run: candle keys create"
@@ -61348,7 +64087,7 @@ async function reconcileForPreflight(ctx, row, subject, resolved) {
     const name = ctx.profile ?? config.activeProfile;
     const cached = name !== undefined ? config.profiles?.[name]?.account : undefined;
     if (cached === undefined || cached === "") {
-      return refuse2({
+      return refuse3({
         code: "PROMOTE_RECONCILE_INCOMPLETE",
         message: "This entry has no grant identity, and this profile has no cached account to assert."
       });
@@ -61360,7 +64099,7 @@ async function reconcileForPreflight(ctx, row, subject, resolved) {
     verdict = await reconcileGrant(ctx, subject, { assertedAccount });
   } catch (error) {
     if (isVaultError(error)) {
-      return refuse2({
+      return refuse3({
         code: error.code,
         message: error.message,
         ...error.suggestion !== undefined ? { suggestion: error.suggestion } : {}
@@ -61369,17 +64108,17 @@ async function reconcileForPreflight(ctx, row, subject, resolved) {
     throw error;
   }
   if (verdict.kind === "unreadable") {
-    return refuse2({ code: "PROMOTE_RECONCILE_INCOMPLETE", message: verdict.reason });
+    return refuse3({ code: "PROMOTE_RECONCILE_INCOMPLETE", message: verdict.reason });
   }
   if (verdict.kind === "unresolved") {
-    return refuse2({
+    return refuse3({
       code: "PROMOTE_OUTCOME_UNRESOLVED",
       message: `No authoritative grant or stranding record for ${subject.address}; the outcome is not established.`,
       suggestion: "Nothing was written. Demote under --emergency if funds must move, then promote a fresh key."
     });
   }
   if (verdict.kind === "strand-final") {
-    return refuse2({
+    return refuse3({
       code: "PROMOTE_ALREADY_TEE_WALLET",
       message: `${subject.address} is stranded; it is never re-promotable.`,
       suggestion: `Run: candle vault promote --in-place ${row.label} (which records the stranding), then remove this row from the file.`
@@ -61389,7 +64128,7 @@ async function reconcileForPreflight(ctx, row, subject, resolved) {
   const account = assertedAccount ?? subject.tee?.grantIdentity?.account ?? verdict.account;
   if (onDisk !== undefined) {
     if (server !== undefined && server !== onDisk) {
-      return refuse2({
+      return refuse3({
         code: "GRANT_BINDING_MISMATCH",
         message: `The recorded vault destination ${onDisk} does not match the server's ${server}.`
       });
@@ -61397,7 +64136,7 @@ async function reconcileForPreflight(ctx, row, subject, resolved) {
     return { ok: true, destinationAddress: onDisk, ...assertedAccount !== undefined ? { account } : {} };
   }
   if (server === undefined) {
-    return refuse2({
+    return refuse3({
       code: "GRANT_DESTINATION_UNRESOLVED",
       message: `The server lists ${subject.address} but carries no vault destination to adopt.`,
       suggestion: "Choose a vault key with `vault demote --sweep-to`, or wait until the grant records a destination."
@@ -61405,7 +64144,7 @@ async function reconcileForPreflight(ctx, row, subject, resolved) {
   }
   const fileDestination = resolved.destinationAddress;
   if (server !== fileDestination) {
-    return refuse2({
+    return refuse3({
       code: "GRANT_BINDING_MISMATCH",
       message: `The server-reported vault destination ${server} does not match this file's ${row.destination} (${fileDestination}).`,
       why: `Row ${row.line} names a different destination from the grant the server holds; the file and the server describe different migrations.`
@@ -61428,8 +64167,11 @@ function skippedResult(item) {
   };
 }
 function renderBatchTable(planned, opts) {
+  const evm = opts.evmHoldings !== undefined;
   const headers = ["line", "state", "label", "address", "destination", "authority"];
-  headers.push(opts.tokenCounts !== undefined ? "SOL" : "SOL (tokens not read)");
+  headers.push(evm ? "ETH" : opts.tokenCounts !== undefined ? "SOL" : "SOL (tokens not read)");
+  if (evm)
+    headers.push("USDG", "WETH");
   if (opts.tokenCounts !== undefined)
     headers.push("token accounts");
   if (opts.hasValueUsd)
@@ -61441,7 +64183,12 @@ function renderBatchTable(planned, opts) {
     const authority = item.kind === "skip" ? "" : opts.roles === undefined ? "?" : authorityCell(address, opts.roles);
     const cells = [String(item.row.line), state, item.subject.label, address, destination, authority];
     const lamports = opts.lamports?.get(address);
-    cells.push(lamports === undefined ? "unread" : formatSol4(lamports));
+    cells.push(lamports === undefined ? "unread" : evm ? formatUnits(lamports, NATIVE_DECIMALS) : formatSol4(lamports));
+    if (evm) {
+      const held = opts.evmHoldings?.get(address);
+      cells.push(held === undefined ? "unread" : formatUnits(held.usdg, HOOD_USDG_DECIMALS));
+      cells.push(held === undefined ? "unread" : formatUnits(held.weth, NATIVE_DECIMALS));
+    }
     if (opts.tokenCounts !== undefined)
       cells.push(String(opts.tokenCounts.get(address) ?? 0));
     if (opts.hasValueUsd)
@@ -61461,7 +64208,9 @@ function renderFooter(opts) {
     lines.push(`${opts.destinations.length} destination${opts.destinations.length === 1 ? "" : "s"}, in this order: ${opts.destinations.map((d) => `${destinationCell(d.label, d.address)} ${d.keys} key${d.keys === 1 ? "" : "s"}`).join(" · ")}`);
   }
   lines.push(`Linked wallets: ${opts.room.active} of ${opts.room.cap} active on the ${tierName(opts.room.tier)} tier; this run links ${opts.promotes}, leaving ${opts.room.room - opts.promotes}.`);
-  if (opts.readError !== undefined) {
+  if (opts.evm) {
+    lines.push(opts.readError !== undefined ? `ETH read over ${opts.host} FAILED: ${opts.readError}. The batch is refused.` : `ETH read at ${opts.observedAt} over ${opts.host} (Hood). The signer-role read is Solana's; no authority is read on Hood.`);
+  } else if (opts.readError !== undefined) {
     lines.push(`SOL read over ${opts.host} FAILED: ${opts.readError}. The batch is refused.`);
   } else {
     lines.push(`SOL read at ${opts.observedAt} over ${opts.host}. ${opts.tokensRead ? "Token accounts were read under both programs." : "Token accounts were not read (pass --token-holdings)."}`);
@@ -61711,6 +64460,7 @@ init_solana_lite();
 import { rm as rm3 } from "node:fs/promises";
 init_crypto();
 init_errors();
+init_evm_record();
 init_format();
 init_passphrase();
 init_sidecar();
@@ -61720,7 +64470,15 @@ var GAP_LIMIT = 20;
 var SCAN_CEILING = 500;
 async function vaultRestore(args, ctx) {
   const parsed = parseArgs(args, {
-    valueFlags: ["--keystore", "--count", "--tee-count", "--external-count", "--evm-count", "--rpc-url"],
+    valueFlags: [
+      "--keystore",
+      "--count",
+      "--tee-count",
+      "--external-count",
+      "--evm-count",
+      "--evm-tee-count",
+      "--rpc-url"
+    ],
     booleanFlags: ["--phrase", "--own-passphrase"],
     pathFlags: ["--keystore"]
   });
@@ -61743,7 +64501,7 @@ async function vaultRestore(args, ctx) {
   }
   if (!requireTty(ctx, "vault restore"))
     return 1;
-  const counts = parseCounts(parsed.values["--count"], parsed.values["--tee-count"], parsed.values["--external-count"], parsed.values["--rpc-url"], parsed.values["--evm-count"]);
+  const counts = parseCounts(parsed.values["--count"], parsed.values["--tee-count"], parsed.values["--external-count"], parsed.values["--rpc-url"], parsed.values["--evm-count"], parsed.values["--evm-tee-count"]);
   if ("error" in counts)
     return usage(ctx, counts.error);
   const { deps } = ctx;
@@ -61753,7 +64511,7 @@ async function vaultRestore(args, ctx) {
   const path = resolvedVault.path;
   return runVaultCommand(ctx, async ({ hold }) => {
     if (await fileExists(path)) {
-      throw vaultAlreadyExists(ctx, resolvedVault, "Restoring builds a new vault and never merges into one. Move the existing file aside first.");
+      throw vaultAlreadyExists(ctx, resolvedVault, `Restoring builds a new vault and never merges into one. Move the existing file aside first, and its sealed EVM record with it if there is one: ${evmRecordPath(path)}.`);
     }
     const sidecarExisted = await fileExists(sidecarPath(path));
     deps.stdout.write(`${RESTORE_NEW_PASSPHRASE_NOTICE}
@@ -61822,7 +64580,13 @@ New vault at ${path}, verified in full (all eight steps).
   });
 }
 function restoreSeedHd(counts, restoredAt) {
+  const base = freshHdRecord();
+  const evmTee = counts.evmTee ?? 0;
   return freshHdRecord({
+    ...evmTee > 0 ? {
+      nextIndex: { ...base.nextIndex, evmTee },
+      exposedIndexes: { ...base.exposedIndexes, evmTee: [] }
+    } : {},
     discovery: {
       restoredAt,
       account: "",
@@ -61845,7 +64609,7 @@ async function discardIncompleteRestore(ctx, path, sidecarExisted) {
   }
 }
 var RESTORED_BRANCHES = ["solanaVault", "solanaTee", "solanaExternal"];
-function parseCounts(count, teeCount, externalCount, rpcUrl, evmCount) {
+function parseCounts(count, teeCount, externalCount, rpcUrl, evmCount, evmTeeCount) {
   const parse = (raw, flag) => {
     if (raw === undefined)
       return;
@@ -61866,6 +64630,9 @@ function parseCounts(count, teeCount, externalCount, rpcUrl, evmCount) {
   const evmParsed = parse(evmCount, "--evm-count");
   if (typeof evmParsed === "object" && evmParsed !== null)
     return evmParsed;
+  const evmTeeParsed = parse(evmTeeCount, "--evm-tee-count");
+  if (typeof evmTeeParsed === "object" && evmTeeParsed !== null)
+    return evmTeeParsed;
   const allOmitted = vaultCount === undefined && teeParsed === undefined && externalParsed === undefined;
   const scan = rpcUrl !== undefined;
   const resolve4 = (value) => {
@@ -61881,6 +64648,7 @@ function parseCounts(count, teeCount, externalCount, rpcUrl, evmCount) {
     solanaTee,
     solanaExternal,
     evm: evmParsed ?? 0,
+    evmTee: evmTeeParsed ?? 0,
     requested: { solanaVault: solanaVault ?? -1, solanaTee: solanaTee ?? -1, solanaExternal: solanaExternal ?? -1 }
   };
 }
@@ -61914,25 +64682,28 @@ async function deriveWithinBounds(ctx, vault, counts, solana) {
     for (let index = 0;index < counts.evm; index++) {
       set.entries.push(await deriveOneEvm(vault, root, index));
     }
+    for (let index = 0;index < counts.evmTee; index++) {
+      set.entries.push(await deriveOneEvm(vault, root, index, "evmTee"));
+    }
   } finally {
     wipe(root);
   }
   for (const entry of set.entries) {
     if (entry.branch === "solanaExternal")
       set.externalByAddress.set(entry.address, entry);
-    else if (entry.branch === "evm")
+    else if (entry.branch === "evm" || entry.branch === "evmTee")
       set.byAddress.set(entry.address.toLowerCase(), entry);
     else
       set.byAddress.set(entry.address, entry);
   }
   return set;
 }
-async function deriveOneEvm(vault, root, index) {
-  const derived = await deriveEvmKeyFromRoot(root, index);
+async function deriveOneEvm(vault, root, index, branch = "evm") {
+  const derived = branch === "evmTee" ? await deriveEvmTeeKeyFromRoot(root, index) : await deriveEvmKeyFromRoot(root, index);
   try {
     const keyId = freshKeyId();
     return {
-      branch: "evm",
+      branch,
       index,
       address: derived.address,
       path: derived.path,
@@ -62018,6 +64789,31 @@ async function writeRestoredIndex(ctx, vault, derived, matches2, counts) {
   const matchByAddress = new Map(matches2.matched.map((match) => [match.entry.address, match.row]));
   const entries = derived.entries.map((entry) => {
     const row = matchByAddress.get(entry.address);
+    if (entry.branch === "evmTee") {
+      const base2 = {
+        id: entry.keyId,
+        chain: "evm",
+        curve: "secp256k1",
+        address: entry.address,
+        label: row?.label ?? `evm-tee-${entry.index}`,
+        createdAt: now,
+        role: "tee-wallet",
+        origin: "derived",
+        derivation: { scheme: EVM_DERIVATION_SCHEME, path: entry.path },
+        exposure: { everRemoteExposed: true, everExported: false, exposureUnknown: true }
+      };
+      if (row !== undefined)
+        return { ...base2, ...teeFieldsFor(row, ctx, "hood-mainnet"), role: "tee-wallet" };
+      return {
+        ...base2,
+        tee: {
+          network: "hood-mainnet",
+          lifecycle: "stranded",
+          grantIdentity: { account: "", apiBaseUrl: ctx.apiUrl, source: "operator-asserted" },
+          remoteState: "local-only"
+        }
+      };
+    }
     if (entry.branch === "evm") {
       return {
         id: entry.keyId,
@@ -62049,8 +64845,8 @@ async function writeRestoredIndex(ctx, vault, derived, matches2, counts) {
       return base;
     return { ...base, ...teeFieldsFor(row, ctx), exposure: { ...base.exposure, everRemoteExposed: true } };
   });
-  const highest = { solanaVault: -1, solanaTee: -1, solanaExternal: -1, evm: -1 };
-  const exposed = { solanaVault: [], solanaTee: [], solanaExternal: [], evm: [] };
+  const highest = { solanaVault: -1, solanaTee: -1, solanaExternal: -1, evm: -1, evmTee: -1 };
+  const exposed = { solanaVault: [], solanaTee: [], solanaExternal: [], evm: [], evmTee: [] };
   for (const entry of entries) {
     const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
     if (located === undefined)
@@ -62072,14 +64868,16 @@ async function writeRestoredIndex(ctx, vault, derived, matches2, counts) {
       solanaVault: highest.solanaVault + 1,
       solanaTee: highest.solanaTee + 1,
       solanaExternal: highest.solanaExternal + 1,
-      evm: highest.evm + 1
+      evm: highest.evm + 1,
+      ...counts.evmTee > 0 ? { evmTee: highest.evmTee + 1 } : {}
     },
     rootExported: false,
     exposedIndexes: {
       solanaVault: exposed.solanaVault.sort((a, b) => a - b),
       solanaTee: exposed.solanaTee.sort((a, b) => a - b),
       solanaExternal: exposed.solanaExternal.sort((a, b) => a - b),
-      evm: exposed.evm.sort((a, b) => a - b)
+      evm: exposed.evm.sort((a, b) => a - b),
+      ...counts.evmTee > 0 ? { evmTee: exposed.evmTee.sort((a, b) => a - b) } : {}
     },
     discovery: {
       restoredAt: now,
@@ -62093,7 +64891,7 @@ async function writeRestoredIndex(ctx, vault, derived, matches2, counts) {
   await commitVault(vault, { index: { hd, entries }, addKeys: derived.entries.map((entry) => entry.blob) }, ctx.deps);
   return { entries, hd };
 }
-function teeFieldsFor(row, ctx) {
+function teeFieldsFor(row, ctx, network = "solana-mainnet") {
   const remoteState = row.sweptAt !== undefined ? "swept" : row.revokedAt !== undefined ? "quarantined" : "enabled";
   const grantIdentity = {
     account: "",
@@ -62101,7 +64899,7 @@ function teeFieldsFor(row, ctx) {
     source: "recorded-at-operation"
   };
   const common = {
-    network: "solana-mainnet",
+    network,
     ...row.vaultDestination !== undefined ? { vaultDestination: row.vaultDestination } : {},
     ...row.boundKeyPrefix !== undefined ? { boundKeyPrefix: row.boundKeyPrefix } : {},
     ...row.remoteAuthority !== undefined ? { remoteAuthority: row.remoteAuthority } : {},
@@ -62153,6 +64951,10 @@ Every one of them is recorded with an unknown history and stays that way: this p
 `);
   } else {
     deps.stdout.write(`  evm: indices 0 to ${counts.evm - 1}, on m/44'/60'/n'/0/0.
+`);
+  }
+  if (counts.evmTee > 0) {
+    deps.stdout.write(`  evm tee: indices 0 to ${counts.evmTee - 1}, on m/44'/60'/n'/1'/0'. The sealed EVM record is not restored by a phrase: a sweep of these wallets needs --from-block <n> (a Hood block at or before the first transfer in) or --token <0x...> to find tokens beyond USDG and WETH.
 `);
   }
   if ((matches2.externalListed?.length ?? 0) > 0) {
@@ -62239,8 +65041,9 @@ async function vaultReconcileExposure(args, ctx) {
       const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined;
       if (located === undefined || !entry.exposure.everRemoteExposed)
         continue;
-      if (!exposedIndexes[located.branch].includes(located.index)) {
-        exposedIndexes[located.branch] = [...exposedIndexes[located.branch], located.index].sort((a, b) => a - b);
+      const list = exposedIndexesOf({ exposedIndexes }, located.branch);
+      if (!list.includes(located.index)) {
+        exposedIndexes[located.branch] = [...list, located.index].sort((a, b) => a - b);
       }
     }
     const now = new Date(deps.now()).toISOString();
@@ -62314,7 +65117,7 @@ async function collectOwn2(ctx) {
 init_args();
 init_errors();
 init_sidecar();
-import { rename as rename4, stat as stat4 } from "node:fs/promises";
+import { rename as rename5, stat as stat5 } from "node:fs/promises";
 init_wallet_keystore();
 init_vault_support();
 async function vaultRetireLegacy(args, ctx) {
@@ -62392,7 +65195,7 @@ async function vaultRetireLegacy(args, ctx) {
     const date = new Date(deps.now()).toISOString().slice(0, 10);
     const retiredPath = `${fromPath}.migrated-${date}`;
     try {
-      await rename4(fromPath, retiredPath);
+      await rename5(fromPath, retiredPath);
     } catch (error) {
       throw new VaultError("VAULT_WRITE_FAILED", `Could not rename ${fromPath} to ${retiredPath}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -62418,7 +65221,7 @@ async function vaultRetireLegacy(args, ctx) {
 async function resolveLegacyPath(env, home) {
   const current = defaultTeeKeystorePath(env, home);
   try {
-    await stat4(current);
+    await stat5(current);
     return current;
   } catch {
     return legacyTeeKeystorePath(env, home);
@@ -62701,376 +65504,6 @@ init_args();
 init_deps();
 init_evm_lite();
 init_solana_endpoint();
-init_errors();
-
-// src/vault/evm-transfer.ts
-init_evm_lite();
-init_errors();
-var EVM_RECEIPT_WAIT_MS = 120000;
-var EVM_RECEIPT_POLL_MS = 2000;
-function refuse2(code, message, opts = {}) {
-  return new VaultError(code, message, { suggestion: opts.suggestion ?? "Nothing was signed.", ...opts });
-}
-function checkEvmDestination(to, from) {
-  if (!to.startsWith("0x")) {
-    throw refuse2("TRANSFER_CHAIN_MISMATCH", `${to} is not an EVM address, and ${from.label || from.address} is an EVM key.`, { suggestion: "Nothing was signed. An EVM key sends to a 0x address; a Solana key sends to a Solana address." });
-  }
-  const checked = checkEvmAddress(to);
-  if (!checked.ok) {
-    throw refuse2("EVM_DESTINATION_INVALID", `${to} is not a valid EVM address: ${checked.reason}.`);
-  }
-  if (sameEvmAddress(checked.address, from.address)) {
-    throw refuse2("EVM_SELF_TRANSFER", `${to} is ${from.label || from.address}'s own address.`);
-  }
-  return checked.address;
-}
-function assertSolanaDestination(to, from) {
-  if (!looksLikeEvmAddress(to))
-    return;
-  throw refuse2("TRANSFER_CHAIN_MISMATCH", `${to} is an EVM address, and ${from.label || from.address} is a Solana key.`, { suggestion: "Nothing was signed. A Solana key sends to a Solana address; an EVM key sends to a 0x address." });
-}
-async function resolveEvmAsset(rpc, asset, chainId) {
-  const upper = asset.toUpperCase();
-  if (upper === "ETH")
-    return { kind: "native", symbol: "ETH", decimals: NATIVE_DECIMALS };
-  let token;
-  if (upper === "USDG") {
-    if (chainId !== BigInt(HOOD_CHAIN_ID)) {
-      return {
-        usage: `USDG is named on Hood (chain id ${HOOD_CHAIN_ID}) only; this RPC answered chain id ${chainId}. Name the token by its contract address.`
-      };
-    }
-    token = toChecksumAddress(HOOD_USDG_ADDRESS);
-  } else {
-    const checked = checkEvmAddress(asset);
-    if (!checked.ok)
-      return {
-        usage: `--asset must be ETH, USDG (on Hood), or an ERC-20 contract address: ${asset} is ${checked.reason}.`
-      };
-    token = checked.address;
-  }
-  let decimals;
-  try {
-    decimals = await rpc.erc20Decimals(token);
-  } catch (error) {
-    throw refuse2("EVM_TOKEN_UNREADABLE", `${token} did not answer decimals(): ${error instanceof Error ? error.message : String(error)}`, { suggestion: "Nothing was signed. Check the contract address, and that this RPC serves the chain it lives on." });
-  }
-  const symbol = upper === "USDG" ? "USDG" : await rpc.erc20Symbol(token) ?? `${token.slice(0, 10)}…`;
-  return { kind: "erc20", symbol, decimals, token };
-}
-function nativeName(hood, chainId) {
-  return hood ? "ETH" : `ETH on chain ${chainId}`;
-}
-function evmDisplayLines(plan) {
-  const { tx, asset, hood, chainId } = plan;
-  const native = nativeName(hood, chainId);
-  const lines = [
-    `chain       ${chainId}${hood ? " (Hood)" : ""}`,
-    `from        ${plan.from.label}  ${plan.from.address}`
-  ];
-  if (asset.kind === "native") {
-    lines.push(`to          ${tx.to}`);
-    lines.push(`amount      ${plan.amount} ${native} = ${plan.amountRaw} wei`);
-  } else {
-    lines.push(`to          ${tx.to}  (the ${asset.symbol} contract, ${asset.decimals} dp)`);
-    lines.push(`recipient   ${plan.recipient}  (decoded from transfer(address,uint256))`);
-    lines.push(`amount      ${plan.amount} ${asset.symbol} = ${plan.amountRaw} raw`);
-  }
-  lines.push(`gas limit   ${tx.gas}`);
-  lines.push(`max fee     ${tx.maxFeePerGas} wei/gas (priority ${tx.maxPriorityFeePerGas} wei/gas)`);
-  lines.push(`fee cap     ${formatUnits(plan.feeCap, NATIVE_DECIMALS)} ${native} (gas × max fee)`);
-  lines.push(`nonce       ${tx.nonce}`);
-  return lines;
-}
-async function planEvmTransfer(rpc, input) {
-  const to = checkEvmDestination(input.to, input.from);
-  const chainId = await rpc.chainId();
-  if (input.builtIn && chainId !== BigInt(HOOD_CHAIN_ID)) {
-    throw refuse2("EVM_CHAIN_MISMATCH", `The built-in Hood RPC answered chain id ${chainId}, not ${HOOD_CHAIN_ID}.`, {
-      suggestion: "Nothing was signed. Pass --rpc-url for another chain; the built-in endpoint is Hood's only."
-    });
-  }
-  const hood = chainId === BigInt(HOOD_CHAIN_ID);
-  const asset = await resolveEvmAsset(rpc, input.asset, chainId);
-  if ("usage" in asset)
-    return asset;
-  const max = input.amount.toLowerCase() === "max";
-  if (asset.kind === "erc20" && asset.token !== undefined && sameEvmAddress(to, asset.token)) {
-    throw refuse2("EVM_RECIPIENT_IS_TOKEN", `${to} is the ${asset.symbol} contract itself; sending it its own tokens is a loss.`);
-  }
-  let amountRaw = 0n;
-  if (!max) {
-    const parsed = parseUnits(input.amount, asset.decimals);
-    if (!parsed.ok && parsed.reason === "precision") {
-      throw refuse2("EVM_AMOUNT_PRECISION", `${input.amount} has more decimal places than ${asset.symbol}'s ${asset.decimals}.`);
-    }
-    if (!parsed.ok)
-      return { usage: `--amount must be a positive decimal or max; ${input.amount} is neither.` };
-    amountRaw = parsed.raw;
-  }
-  const nonce = await rpc.getTransactionCount(input.from.address, "pending");
-  const fees = await quoteFees(rpc);
-  const nativeBalance = await rpc.getBalance(input.from.address);
-  if (asset.kind === "erc20" && asset.token !== undefined) {
-    if (max) {
-      amountRaw = await rpc.erc20BalanceOf(asset.token, input.from.address);
-      if (amountRaw === 0n) {
-        throw new VaultError("VAULT_INDEX_INVALID", `${input.from.label} holds no ${asset.symbol}; there is nothing to send.`);
-      }
-    }
-    const draft2 = buildErc20Transfer({
-      chainId,
-      nonce,
-      maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
-      maxFeePerGas: fees.maxFeePerGas,
-      gas: 0n,
-      token: asset.token,
-      recipient: to,
-      amount: amountRaw
-    });
-    const gas2 = gasWithHeadroom(await estimate(rpc, input.from.address, draft2));
-    const tx2 = { ...draft2, gas: gas2 };
-    const feeCap2 = gas2 * tx2.maxFeePerGas;
-    if (nativeBalance < feeCap2) {
-      throw refuse2("EVM_INSUFFICIENT_FOR_FEES", `${input.from.label} holds ${formatUnits(nativeBalance, NATIVE_DECIMALS)} ${nativeName(hood, chainId)}, below the fee cap of ${formatUnits(feeCap2, NATIVE_DECIMALS)}.`);
-    }
-    const plan2 = {
-      chainId,
-      hood,
-      from: input.from,
-      asset,
-      recipient: to,
-      amountRaw,
-      amount: formatUnits(amountRaw, asset.decimals),
-      tx: tx2,
-      feeCap: feeCap2,
-      displayLines: []
-    };
-    plan2.displayLines = evmDisplayLines(plan2);
-    return plan2;
-  }
-  const draft = buildNativeTransfer({
-    chainId,
-    nonce,
-    maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
-    maxFeePerGas: fees.maxFeePerGas,
-    gas: 0n,
-    to,
-    value: max ? 0n : amountRaw
-  });
-  if (!max && nativeBalance < amountRaw) {
-    throw refuse2("EVM_INSUFFICIENT_FOR_FEES", `${input.from.label} holds ${formatUnits(nativeBalance, NATIVE_DECIMALS)} ${nativeName(hood, chainId)}, below the amount of ${formatUnits(amountRaw, NATIVE_DECIMALS)}.`);
-  }
-  const gas = gasWithHeadroom(await estimate(rpc, input.from.address, draft));
-  const feeCap = gas * draft.maxFeePerGas;
-  let value = amountRaw;
-  if (max) {
-    value = nativeBalance - feeCap;
-    if (value <= 0n) {
-      throw refuse2("EVM_INSUFFICIENT_FOR_FEES", `${input.from.label} holds ${formatUnits(nativeBalance, NATIVE_DECIMALS)} ${nativeName(hood, chainId)}, not above the fee cap of ${formatUnits(feeCap, NATIVE_DECIMALS)}; max leaves nothing to send.`);
-    }
-  } else if (nativeBalance < value + feeCap) {
-    throw refuse2("EVM_INSUFFICIENT_FOR_FEES", `${input.from.label} holds ${formatUnits(nativeBalance, NATIVE_DECIMALS)} ${nativeName(hood, chainId)}, below the amount plus the fee cap of ${formatUnits(value + feeCap, NATIVE_DECIMALS)}.`);
-  }
-  const tx = { ...draft, gas, value };
-  const plan = {
-    chainId,
-    hood,
-    from: input.from,
-    asset,
-    recipient: to,
-    amountRaw: value,
-    amount: formatUnits(value, NATIVE_DECIMALS),
-    tx,
-    feeCap,
-    displayLines: []
-  };
-  plan.displayLines = evmDisplayLines(plan);
-  return plan;
-}
-async function estimate(rpc, from, tx) {
-  try {
-    return await rpc.estimateGas({ from, to: tx.to, value: tx.value, data: tx.data });
-  } catch (error) {
-    throw new VaultError("VAULT_UNREADABLE", `Could not estimate gas: ${error instanceof Error ? error.message : String(error)}`, { suggestion: "Nothing was signed. A revert here usually means the balance does not cover the amount." });
-  }
-}
-function displayEvmTransferPlan(ctx, plan) {
-  ctx.deps.stdout.write(`Decoded EVM transfer (local signing only):
-`);
-  for (const line of plan.displayLines)
-    ctx.deps.stdout.write(`  ${line}
-`);
-}
-function evmFactorPrompt(plan) {
-  return `sign transfer of ${plan.amount} ${plan.asset.symbol} to ${plan.recipient}${plan.hood ? " on Hood" : ` on chain ${plan.chainId}`}`;
-}
-function judgeReceipt(receipt, head, depth, hash, chainId) {
-  if (receipt.status === 0) {
-    throw new VaultError("EVM_TRANSFER_REVERTED", `Transaction ${hash} reverted in block ${receipt.blockNumber}; the fee was spent.`, {
-      suggestion: "Nothing else was signed. Read the transaction on an explorer before sending again.",
-      details: { hash, chainId: chainId.toString(), blockNumber: receipt.blockNumber.toString(), status: "reverted" }
-    });
-  }
-  const reached = head - receipt.blockNumber + 1n;
-  if (reached < BigInt(depth))
-    return;
-  return {
-    status: "confirmed",
-    exit: 0,
-    blockNumber: receipt.blockNumber,
-    line: `Confirmed ${hash} in block ${receipt.blockNumber}, ${reached} block${reached === 1n ? "" : "s"} deep (depth ${depth}, not finality).`
-  };
-}
-async function awaitReceipt(rpc, ctx, hash, chainId) {
-  const depth = requiredDepth(chainId);
-  const deadline = ctx.deps.now() + EVM_RECEIPT_WAIT_MS;
-  let seen;
-  for (;; ) {
-    try {
-      const receipt = await rpc.getTransactionReceipt(hash);
-      if (receipt !== null) {
-        seen = receipt;
-        const outcome = judgeReceipt(receipt, await rpc.blockNumber(), depth, hash, chainId);
-        if (outcome !== undefined)
-          return outcome;
-      }
-    } catch (error) {
-      if (error instanceof VaultError)
-        throw error;
-    }
-    if (ctx.deps.now() >= deadline)
-      break;
-    await ctx.deps.sleep(EVM_RECEIPT_POLL_MS);
-  }
-  if (seen !== undefined) {
-    return {
-      status: "uncertain",
-      exit: 3,
-      blockNumber: seen.blockNumber,
-      line: `Submitted ${hash}: it is in block ${seen.blockNumber} but not yet ${depth} block${depth === 1 ? "" : "s"} deep after ${EVM_RECEIPT_WAIT_MS / 1000} s. Do not resend; check the hash on an explorer.`
-    };
-  }
-  return {
-    status: "uncertain",
-    exit: 3,
-    line: `Submitted ${hash}; no receipt after ${EVM_RECEIPT_WAIT_MS / 1000} s. It may still land: do not resend blindly; check the hash on an explorer first.`
-  };
-}
-async function broadcast(rpc, ctx, raw, hash, chainId) {
-  try {
-    await rpc.sendRawTransaction(raw);
-  } catch (error) {
-    if (!(error instanceof EvmRpcError))
-      throw error;
-    const message = error.message.toLowerCase();
-    if (error.kind === "transport") {
-      return {
-        status: "uncertain",
-        exit: 3,
-        line: `Submitted ${hash}, but the RPC did not answer eth_sendRawTransaction (${error.message}). It may still land: do not resend blindly; check the hash on an explorer first.`
-      };
-    }
-    if (message.includes("already known")) {
-      return {
-        status: "uncertain",
-        exit: 3,
-        line: `Submitted ${hash}: the RPC already knows it, so it is in flight. Do not resend; check the hash on an explorer.`
-      };
-    }
-    if (message.includes("nonce too low")) {
-      let receipt = null;
-      try {
-        receipt = await rpc.getTransactionReceipt(hash);
-      } catch {
-        receipt = null;
-      }
-      if (receipt !== null) {
-        let head;
-        try {
-          head = await rpc.blockNumber();
-        } catch {
-          return awaitReceipt(rpc, ctx, hash, chainId);
-        }
-        const outcome = judgeReceipt(receipt, head, requiredDepth(chainId), hash, chainId);
-        if (outcome !== undefined)
-          return outcome;
-        return awaitReceipt(rpc, ctx, hash, chainId);
-      }
-      throw new VaultError("EVM_NONCE_STALE", `The RPC refused ${hash}: nonce too low, and it has no receipt for that hash. Another transaction used this nonce.`, {
-        suggestion: "Nothing was resent. Run the transfer again; it reads the pending nonce afresh. The CLI never re-signs on its own.",
-        details: { hash, chainId: chainId.toString() }
-      });
-    }
-    return {
-      status: "uncertain",
-      exit: 3,
-      line: `Submitted ${hash}, and the RPC answered: ${error.message}. The CLI cannot tell from that whether it is in flight: do not resend blindly; check the hash on an explorer first.`
-    };
-  }
-  return awaitReceipt(rpc, ctx, hash, chainId);
-}
-async function runEvmTransfer(input, rpc) {
-  const { ctx } = input;
-  const { deps } = ctx;
-  checkEvmDestination(input.to, input.from);
-  deps.stderr.write(`Reading chain id, nonce, fees and balances for ${input.from.label} from ${rpcHostOf2(input.rpcUrl)}${input.rpcUrl === DEFAULT_HOOD_RPC_URL ? " (the built-in Hood RPC)" : ""}.
-`);
-  const planned = await planEvmTransfer(rpc, input);
-  if ("usage" in planned)
-    return input.usage(planned.usage);
-  const plan = planned;
-  displayEvmTransferPlan(ctx, plan);
-  await input.confirmLastSix(plan.recipient, plan.asset.kind === "erc20" ? "the token recipient" : "the destination");
-  await input.confirmFactor(evmFactorPrompt(plan));
-  const chainIdAgain = await rpc.chainId();
-  if (chainIdAgain !== plan.chainId) {
-    throw refuse2("EVM_CHAIN_MISMATCH", `The RPC answered chain id ${chainIdAgain} after the factor, but ${plan.chainId} was displayed.`);
-  }
-  const nonceAgain = await rpc.getTransactionCount(plan.from.address, "pending");
-  if (nonceAgain !== plan.tx.nonce) {
-    throw refuse2("EVM_NONCE_STALE", `The pending nonce is ${nonceAgain} after the factor, but ${plan.tx.nonce} was displayed; another transaction moved it.`, { suggestion: "Nothing was signed. Run the transfer again; it reads the pending nonce afresh." });
-  }
-  const secret = await input.decryptSecret();
-  let signed;
-  try {
-    if (!sameEvmAddress(evmAddressFromSecret(secret), plan.from.address)) {
-      throw new VaultError("VAULT_VERIFY_FAILED", "The decrypted key does not match the planned sender.");
-    }
-    signed = signTransaction(plan.tx, secret);
-  } finally {
-    wipe(secret);
-  }
-  const outcome = await broadcast(rpc, ctx, signed.raw, signed.hash, plan.chainId);
-  if (ctx.json) {
-    input.writeJson({
-      ok: outcome.status === "confirmed",
-      chainId: Number(plan.chainId),
-      hash: signed.hash,
-      status: outcome.status,
-      ...outcome.blockNumber !== undefined ? { blockNumber: outcome.blockNumber.toString() } : {},
-      depth: requiredDepth(plan.chainId),
-      finalized: false,
-      from: plan.from.address,
-      to: plan.tx.to,
-      recipient: plan.recipient,
-      amount: plan.amount,
-      asset: plan.asset.symbol,
-      amountRaw: plan.amountRaw.toString(),
-      ...plan.asset.token !== undefined ? { token: plan.asset.token } : {},
-      nonce: plan.tx.nonce.toString(),
-      gas: plan.tx.gas.toString(),
-      maxFeePerGas: plan.tx.maxFeePerGas.toString(),
-      maxPriorityFeePerGas: plan.tx.maxPriorityFeePerGas.toString()
-    });
-  } else {
-    deps.stdout.write(`${outcome.line}
-`);
-  }
-  return outcome.exit;
-}
-
-// src/commands/vault-transfer.ts
 init_promote_support();
 init_store();
 
@@ -63115,14 +65548,14 @@ function serverStateNotice(state) {
   }
   return;
 }
-async function reportTransferActivity(ctx, apiKey, signature) {
+async function reportTransferActivity(ctx, apiKey, signature, chain2 = "solana") {
   const unseen = "Candle's history will not show this transfer.";
   if (apiKey === undefined)
     return { outcome: "no-api-key", line: `No API key for this profile, so ${unseen}` };
   try {
     const result = await apiRequest("/api/v1/activity/report", {
       method: "POST",
-      body: { chain: "solana", signature },
+      body: { chain: chain2, signature },
       auth: "key",
       credentials: { apiKey },
       apiUrl: ctx.apiUrl,
@@ -63195,14 +65628,25 @@ async function vaultTransfer(args, ctx) {
     }
     assertTransferSigner(fromEntry);
     if (fromEntry.chain === "evm") {
-      if (fromEntry.role !== "vault") {
-        throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${fromEntry.label || fromEntry.address} is an EVM ${fromEntry.role} entry; this release signs EVM transfers from vault keys only.`, { suggestion: "Nothing was signed." });
-      }
       const evmRpc = resolveEvmRpcUrl(rpcUrlFlag, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url");
       if ("error" in evmRpc)
         return usage(ctx, evmRpc.error);
       const evmRpcUrl = evmRpc.url;
       const secretRef2 = fromEntry;
+      const rpc = createEvmRpc(evmRpcUrl, ctx.deps.fetch);
+      const promotedEvm = fromEntry.role === "tee-wallet";
+      let apiKey2;
+      if (promotedEvm) {
+        assertNoPendingSweep(fromEntry);
+        await assertHoodChain({ rpc, url: evmRpcUrl, host: rpcHostOf2(evmRpcUrl), builtIn: evmRpc.builtIn });
+        apiKey2 = await resolveApiKey(ctx.deps, ctx.profile);
+        const note2 = (line) => (ctx.json ? ctx.deps.stderr : ctx.deps.stdout).write(`${line}
+`);
+        const notice = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey2));
+        if (notice !== undefined)
+          note2(notice);
+        assertWalletLockFree(fromEntry, (await readHoodTeeServer(ctx, fromEntry)).lock, ctx.deps.now());
+      }
       return runEvmTransfer({
         ctx,
         rpcUrl: evmRpcUrl,
@@ -63215,8 +65659,22 @@ async function vaultTransfer(args, ctx) {
         confirmFactor: (what) => opened.confirm(what),
         decryptSecret: () => decryptKey(vault, secretRef2.id),
         usage: (line) => usage(ctx, line),
-        writeJson: (value) => writeJson(ctx.deps, value)
-      }, createEvmRpc(evmRpcUrl, ctx.deps.fetch));
+        writeJson: (value) => writeJson(ctx.deps, value),
+        ...promotedEvm ? {
+          beforeSign: async () => assertWalletLockFree(fromEntry, (await readHoodTeeServer(ctx, fromEntry)).lock, ctx.deps.now()),
+          afterOutcome: async ({ hash, status }) => {
+            const note2 = (line) => (ctx.json ? ctx.deps.stderr : ctx.deps.stdout).write(`${line}
+`);
+            if (status !== "confirmed") {
+              note2("Not reported to Candle's history: the transfer is not yet confirmed.");
+              return { activityReport: "not-finalized" };
+            }
+            const report = await reportTransferActivity(ctx, apiKey2, hash, "hood");
+            note2(report.line);
+            return { activityReport: report.outcome };
+          }
+        } : {}
+      }, rpc);
     }
     assertSolanaDestination(to, fromEntry);
     if ("error" in solanaEndpoint)
@@ -63308,7 +65766,7 @@ async function resolveIdentity(deps, bundlePath, flag) {
       provenance: "identity from latest.json beside the bundle"
     };
   } catch (error) {
-    return { kind: "invalid", message: messageOf2(error) };
+    return { kind: "invalid", message: messageOf3(error) };
   }
 }
 async function verify(args, ctx) {
@@ -63356,13 +65814,13 @@ ${USAGE3}`, json);
   try {
     bytes = await deps.readBytes(file);
   } catch (error) {
-    writeLocalFailure(deps, { code: "FILE_UNREADABLE", message: `Could not read ${file}: ${messageOf2(error)}` }, json);
+    writeLocalFailure(deps, { code: "FILE_UNREADABLE", message: `Could not read ${file}: ${messageOf3(error)}` }, json);
     return 1;
   }
   try {
     bundleJson = JSON.parse(await deps.readFile(bundlePath));
   } catch (error) {
-    writeLocalFailure(deps, { code: "BUNDLE_UNREADABLE", message: `Could not read the bundle ${bundlePath}: ${messageOf2(error)}` }, json);
+    writeLocalFailure(deps, { code: "BUNDLE_UNREADABLE", message: `Could not read the bundle ${bundlePath}: ${messageOf3(error)}` }, json);
     return 1;
   }
   const result = verifyReleaseAsset(bytes, bundleJson, identity, issuer);
@@ -63383,7 +65841,7 @@ ${USAGE3}`, json);
   }
   return 0;
 }
-function messageOf2(error) {
+function messageOf3(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -63559,7 +66017,7 @@ function walletsUntrust(args, ctx) {
 }
 
 // src/config.ts
-import { chmod as chmod7, mkdir as mkdir7, readFile as readFile7, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
+import { chmod as chmod7, mkdir as mkdir7, readFile as readFile8, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
 import { homedir as homedir5 } from "node:os";
 import { join as join12 } from "node:path";
 function configDir2() {
@@ -63570,7 +66028,7 @@ function configFilePath() {
 }
 async function readConfig() {
   try {
-    const raw = await readFile7(configFilePath(), "utf8");
+    const raw = await readFile8(configFilePath(), "utf8");
     return JSON.parse(raw);
   } catch (err) {
     if (err.code === "ENOENT")
@@ -64153,7 +66611,7 @@ function realSpawnHelper(path, requestLine, opts) {
     try {
       child = spawn3(path, opts.args ?? [], { stdio: ["pipe", "pipe", "pipe"], cwd: HELPER_WORKING_DIRECTORY });
     } catch (error) {
-      resolve4({ stdout: "", stderr: "", exitCode: null, signal: null, spawnError: messageOf3(error) });
+      resolve4({ stdout: "", stderr: "", exitCode: null, signal: null, spawnError: messageOf4(error) });
       return;
     }
     const out = [];
@@ -64176,7 +66634,7 @@ function realSpawnHelper(path, requestLine, opts) {
         finish2(exited ?? { exitCode: null, signal: "SIGTERM" });
       }, 2000).unref();
     }, opts.timeoutMs);
-    child.on("error", (error) => finish2({ exitCode: null, signal: null, spawnError: messageOf3(error) }));
+    child.on("error", (error) => finish2({ exitCode: null, signal: null, spawnError: messageOf4(error) }));
     child.on("exit", (code, signal) => {
       exited = { exitCode: code, signal };
     });
@@ -64186,7 +66644,7 @@ function realSpawnHelper(path, requestLine, opts) {
 `);
   });
 }
-function messageOf3(error) {
+function messageOf4(error) {
   return error instanceof Error ? error.message : String(error);
 }
 async function buildRealDeps() {
@@ -64221,12 +66679,13 @@ async function buildRealDeps() {
     nodeVersion: process.versions.node,
     hostname: hostname(),
     homedir: homedir6,
+    appendEvmRecord: appendEvmRecordForTrade,
     runMcpServer: async (env) => {
       const { runStdioServer: runStdioServer2 } = await Promise.resolve().then(() => (init_server2(), exports_server));
       await runStdioServer2(env);
     },
-    readFile: (path) => readFile8(path, "utf8"),
-    readBytes: (path) => readFile8(path),
+    readFile: (path) => readFile9(path, "utf8"),
+    readBytes: (path) => readFile9(path),
     readStdin: () => new Promise((resolve4, reject) => {
       const chunks = [];
       process.stdin.on("data", (chunk) => chunks.push(chunk));
@@ -64255,7 +66714,7 @@ async function buildRealDeps() {
       await writeFile7(path, bytes, { flag: "wx", mode: 493 });
       await chmod8(path, 493);
     },
-    rename: (from, to) => rename5(from, to),
+    rename: (from, to) => rename6(from, to),
     unlink: (path) => unlink(path)
   };
 }

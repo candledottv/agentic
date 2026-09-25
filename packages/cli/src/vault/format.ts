@@ -38,12 +38,23 @@ import { VaultError } from "./errors"
 import { isHelperBundleId, isHelperTeamId } from "./helper-identity"
 
 export const VAULT_FORMAT = "candle-vault" as const
-/** The current format version: what a vault carrying the external branch is written as. */
+/** The version a vault carrying the external branch (and no EVM TEE wallet) is written as. */
 export const VAULT_VERSION = 3 as const
 /** Phase 2's version: what a vault with no external branch keeps, so an older CLI still opens it. */
 export const LEGACY_VAULT_VERSION = 2 as const
-export type VaultVersion = typeof LEGACY_VAULT_VERSION | typeof VAULT_VERSION
-export const SUPPORTED_VAULT_VERSIONS: readonly VaultVersion[] = [LEGACY_VAULT_VERSION, VAULT_VERSION]
+/**
+ * Phase 4b (D1, Andrew 2026-09-25): the version a vault holding an EVM TEE wallet is written as. It
+ * adds the `evmTee` branch and the sealed EVM record's key (the public half in the header as
+ * `evmRecordPublicKey`, the private half as the index's `evmRecordKey` blob). Lazy, as version 3
+ * was: only the write that creates the first EVM TEE wallet moves a file here.
+ */
+export const EVM_TEE_VAULT_VERSION = 4 as const
+export type VaultVersion = typeof LEGACY_VAULT_VERSION | typeof VAULT_VERSION | typeof EVM_TEE_VAULT_VERSION
+export const SUPPORTED_VAULT_VERSIONS: readonly VaultVersion[] = [
+  LEGACY_VAULT_VERSION,
+  VAULT_VERSION,
+  EVM_TEE_VAULT_VERSION,
+]
 /**
  * The `version` inside every envelope, root and key blob AAD, in BOTH file versions. Those blobs
  * are sealed once and never re-encrypted (ED-1), so the value they were sealed under is the value
@@ -225,6 +236,13 @@ export interface VaultHeader {
   cipher: typeof VAULT_CIPHER
   envelopes: Envelope[]
   keyIds: string[]
+  /**
+   * Phase 4b (D1): the sealed EVM record's X25519 public key, base64url, 32 bytes. Present in a
+   * version 4 file and in no other. It is a header field, so the index tag authenticates it: a
+   * swapped key fails that tag before any record line is read. Absent is skipped by the canonical
+   * encoder, so a version 2 or 3 header's bytes are unchanged.
+   */
+  evmRecordPublicKey?: string
 }
 
 export interface VaultFile extends VaultHeader {
@@ -246,12 +264,15 @@ const HEADER_FIELDS = [
   "cipher",
   "envelopes",
   "keyIds",
+  "evmRecordPublicKey",
 ] as const
 const TOP_LEVEL_FIELDS: readonly string[] = [...HEADER_FIELDS, ...NON_HEADER_FIELDS]
 
 // ── Index plaintext ───────────────────────────────────────────────────────────────────────────
 
-export type Branch = "solanaVault" | "solanaTee" | "solanaExternal" | "evm"
+export type Branch = "solanaVault" | "solanaTee" | "solanaExternal" | "evm" | "evmTee"
+/** Every branch the in-memory index carries, whatever the file's version. */
+export const ALL_BRANCHES: readonly Branch[] = ["solanaVault", "solanaTee", "solanaExternal", "evm", "evmTee"]
 /** Every branch a `version: 3` index carries. */
 export const BRANCHES: readonly Branch[] = ["solanaVault", "solanaTee", "solanaExternal", "evm"]
 /** The three a `version: 2` index carries; `solanaExternal` is what version 3 adds (R6). */
@@ -261,21 +282,38 @@ export const DISCOVERY_BRANCHES = ["solanaVault", "solanaTee", "solanaExternal"]
 export type DiscoveryBranch = (typeof DISCOVERY_BRANCHES)[number]
 
 export function branchesForVersion(version: VaultVersion): readonly Branch[] {
-  return version === LEGACY_VAULT_VERSION ? LEGACY_BRANCHES : BRANCHES
+  if (version === LEGACY_VAULT_VERSION) return LEGACY_BRANCHES
+  return version === VAULT_VERSION ? BRANCHES : ALL_BRANCHES
 }
+
+/** The branches every in-memory index carries; `evmTee` is present only once a vault is version 4. */
+export type CoreBranch = Exclude<Branch, "evmTee">
 
 export interface HdRecord {
   scheme: "bip39-24/slip10"
-  /** Each only ever increases; an index is never reused (CC-10). */
-  nextIndex: Record<Branch, number>
+  /**
+   * Each only ever increases; an index is never reused (CC-10). `evmTee` (Phase 4b) is present in a
+   * version 4 index and absent below it, which reads as 0: read it through `nextIndexOf`.
+   */
+  nextIndex: Record<CoreBranch, number> & { evmTee?: number }
   /** Never reset once true. */
   rootExported: boolean
   rootExportedAt?: string
   exposureReconciledAt?: string
   /** Per branch, every index positively known to have been exposed. Only ever grows (CC-11). */
-  exposedIndexes: Record<Branch, number[]>
+  exposedIndexes: Record<CoreBranch, number[]> & { evmTee?: number[] }
   /** Present only in a vault built by `restore --phrase`; its presence is what refuses allocation. */
   discovery?: HdDiscovery
+}
+
+/** A branch's counter, reading an absent `evmTee` (a version 2 or 3 index) as 0. */
+export function nextIndexOf(hd: Pick<HdRecord, "nextIndex">, branch: Branch): number {
+  return branch === "evmTee" ? (hd.nextIndex.evmTee ?? 0) : hd.nextIndex[branch]
+}
+
+/** A branch's exposure list, reading an absent `evmTee` as empty. */
+export function exposedIndexesOf(hd: Pick<HdRecord, "exposedIndexes">, branch: Branch): number[] {
+  return branch === "evmTee" ? (hd.exposedIndexes.evmTee ?? []) : hd.exposedIndexes[branch]
 }
 
 export interface HdDiscovery {
@@ -325,8 +363,17 @@ export interface TeeGrantIdentity {
 }
 
 /** Phase 1's `TeeWalletMeta` plus the Phase 2 fields CC-01 declares here and nowhere else. */
+/** The TEE networks: Solana, and (Phase 4b) Hood, chain id 4663, the only EVM chain for TEE wallets. */
+export const TEE_NETWORKS = ["solana-mainnet", "hood-mainnet"] as const
+export type TeeNetwork = (typeof TEE_NETWORKS)[number]
+
+/** The TEE network an entry's chain implies: Solana mainnet, or Hood for an EVM key (Phase 4b). */
+export function teeNetworkFor(chain: "solana" | "evm"): TeeNetwork {
+  return chain === "evm" ? "hood-mainnet" : "solana-mainnet"
+}
+
 export interface VaultTeeMeta {
-  network: "solana-mainnet"
+  network: TeeNetwork
   vaultDestination?: string
   boundKeyPrefix?: string
   remoteAuthority?: "verified-active" | "verified-denied" | "unknown" | "none"
@@ -372,6 +419,12 @@ export interface KeyEntry {
 export interface IndexPlaintext {
   hd: HdRecord
   entries: KeyEntry[]
+  /**
+   * Phase 4b (D1): the sealed EVM record's X25519 private key, sealed under the payload key with
+   * `evmRecordKeyAad`. Present in a version 4 index and in no other; unlock checks that the key it
+   * opens to derives the header's `evmRecordPublicKey`.
+   */
+  evmRecordKey?: Blob
 }
 
 /** The index a command reads after unlock: the same shape, named for the callers that only look. */
@@ -496,6 +549,11 @@ export function keyAad(vaultId: string, keyId: string): Uint8Array {
   return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "key", keyId })
 }
 
+/** Phase 4b (D1): the record key blob's AAD, the same `version: 2` blob AAD the root and key blobs use. */
+export function evmRecordKeyAad(vaultId: string): Uint8Array {
+  return canonicalBytes({ format: VAULT_FORMAT, version: BLOB_AAD_VERSION, vaultId, purpose: "evm-record" })
+}
+
 // ── The strict reader ─────────────────────────────────────────────────────────────────────────
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -531,7 +589,7 @@ export function parseVaultFile(raw: string): VaultFile {
   if (!SUPPORTED_VAULT_VERSIONS.includes(value.version as VaultVersion)) {
     throw new VaultError(
       "VAULT_VERSION_UNSUPPORTED",
-      `Unsupported vault version ${JSON.stringify(value.version)}: this CLI reads versions ${SUPPORTED_VAULT_VERSIONS.join(" and ")} and writes version ${VAULT_VERSION}.`,
+      `Unsupported vault version ${JSON.stringify(value.version)}: this CLI reads versions ${SUPPORTED_VAULT_VERSIONS.join(", ")}.`,
     )
   }
   if (value.cipher !== VAULT_CIPHER) {
@@ -555,6 +613,21 @@ export function parseVaultFile(raw: string): VaultFile {
   if (!Array.isArray(value.envelopes)) refuse("VAULT_UNREADABLE", "envelopes is missing or not an array.")
   if (!Array.isArray(value.keyIds) || value.keyIds.some((id) => typeof id !== "string")) {
     refuse("VAULT_UNREADABLE", "keyIds is missing or is not an array of strings.")
+  }
+  // Phase 4b (D1): the record public key is a version 4 field, required there and refused
+  // anywhere else, so a version 3 file cannot be given a record key without its version moving.
+  if (value.version === EVM_TEE_VAULT_VERSION) {
+    if (typeof value.evmRecordPublicKey !== "string" || !/^[A-Za-z0-9_-]{43}$/.test(value.evmRecordPublicKey)) {
+      refuse(
+        "VAULT_UNREADABLE",
+        "evmRecordPublicKey is missing or is not a 32-byte base64url key; a version 4 vault must carry one.",
+      )
+    }
+  } else if (value.evmRecordPublicKey !== undefined) {
+    throw new VaultError(
+      "VAULT_FIELD_UNKNOWN",
+      `The vault file carries evmRecordPublicKey, which a version ${String(value.version)} vault does not define.`,
+    )
   }
   if (!isBlob(value.index)) refuse("VAULT_UNREADABLE", "index is missing or malformed.")
   // Required in EVERY version 2 and version 3 file, so its absence is checked at every open (CC-01).
@@ -720,8 +793,13 @@ export function parseIndexPlaintext(bytes: Uint8Array, version: VaultVersion = L
   }
   if (!isRecord(value)) refuse("VAULT_INDEX_INVALID", "The vault index is not a JSON object.")
   for (const field of Object.keys(value)) {
+    if (field === "evmRecordKey" && version === EVM_TEE_VAULT_VERSION) continue
     if (field !== "hd" && field !== "entries")
       refuse("VAULT_INDEX_INVALID", `The index carries an unknown field: ${field}.`)
+  }
+  // Phase 4b (D1): a version 4 index carries the record key's private half, always.
+  if (version === EVM_TEE_VAULT_VERSION && !isBlob(value.evmRecordKey)) {
+    refuse("VAULT_INDEX_INVALID", "A version 4 index must carry the sealed EVM record's key (evmRecordKey).")
   }
 
   const hd = parseHd(value.hd, version)
@@ -740,15 +818,28 @@ export function parseIndexPlaintext(bytes: Uint8Array, version: VaultVersion = L
     if (entry.derivation === undefined) continue
     const located = branchOfPath(entry.derivation.path)
     if (located === undefined) continue
-    if (hd.nextIndex[located.branch] <= located.index) {
+    if (nextIndexOf(hd, located.branch) <= located.index) {
       refuse(
         "VAULT_INDEX_INVALID",
-        `hd.nextIndex.${located.branch} is ${hd.nextIndex[located.branch]}, at or below the index ${located.index} that entry ${entry.id} already derives.`,
+        `hd.nextIndex.${located.branch} is ${nextIndexOf(hd, located.branch)}, at or below the index ${located.index} that entry ${entry.id} already derives.`,
       )
     }
   }
 
-  return { hd, entries }
+  return { hd, entries, ...(version === EVM_TEE_VAULT_VERSION ? { evmRecordKey: value.evmRecordKey as Blob } : {}) }
+}
+
+/**
+ * Phase 4b (D1): whether an index can only be written as `version: 4`: it holds an EVM TEE wallet,
+ * or state on the `evmTee` branch, or already carries the record key. The write whose index first
+ * answers true is the one that creates the record key and moves the file to version 4; every later
+ * write keeps it there. Nothing else moves a file to 4.
+ */
+export function indexRequiresVersion4(index: IndexPlaintext): boolean {
+  if (index.evmRecordKey !== undefined) return true
+  if (index.entries.some((entry) => entry.chain === "evm" && entry.role === "tee-wallet")) return true
+  if (nextIndexOf(index.hd, "evmTee") > 0) return true
+  return exposedIndexesOf(index.hd, "evmTee").length > 0
 }
 
 /**
@@ -773,15 +864,42 @@ export function indexRequiresVersion3(index: IndexPlaintext): boolean {
  * an external key out of a file is exactly the loss a strict reader exists to prevent.
  */
 export function serializeIndexPlaintext(index: IndexPlaintext, version: VaultVersion): unknown {
-  if (version === VAULT_VERSION) return index
+  if (version === EVM_TEE_VAULT_VERSION) {
+    if (index.evmRecordKey === undefined) {
+      throw new VaultError("VAULT_INDEX_INVALID", "A version 4 index must carry the sealed EVM record's key.")
+    }
+    // The evmTee branch is always on a version 4 disk, even before its first allocation.
+    return {
+      ...index,
+      hd: {
+        ...index.hd,
+        nextIndex: { ...index.hd.nextIndex, evmTee: nextIndexOf(index.hd, "evmTee") },
+        exposedIndexes: { ...index.hd.exposedIndexes, evmTee: exposedIndexesOf(index.hd, "evmTee") },
+      },
+    }
+  }
+  if (indexRequiresVersion4(index)) {
+    throw new VaultError(
+      "VAULT_INDEX_INVALID",
+      `This index carries an EVM TEE wallet and cannot be written as a version ${version} vault.`,
+    )
+  }
+  // Below version 4 the evmTee branch is not on disk (it is empty, as the check above proves).
+  const { evmTee: _nextEvmTee, ...nextIndexV3 } = index.hd.nextIndex
+  const { evmTee: _exposedEvmTee, ...exposedV3 } = index.hd.exposedIndexes
+  if (version === VAULT_VERSION) {
+    // The in-memory shape verbatim when it carries no evmTee branch at all, as before Phase 4b.
+    if (index.hd.nextIndex.evmTee === undefined && index.hd.exposedIndexes.evmTee === undefined) return index
+    return { hd: { ...index.hd, nextIndex: nextIndexV3, exposedIndexes: exposedV3 }, entries: index.entries }
+  }
   if (indexRequiresVersion3(index)) {
     throw new VaultError(
       "VAULT_INDEX_INVALID",
       "This index carries the external branch and cannot be written as a version 2 vault.",
     )
   }
-  const { solanaExternal: _nextExternal, ...nextIndex } = index.hd.nextIndex
-  const { solanaExternal: _exposedExternal, ...exposedIndexes } = index.hd.exposedIndexes
+  const { solanaExternal: _nextExternal, ...nextIndex } = nextIndexV3
+  const { solanaExternal: _exposedExternal, ...exposedIndexes } = exposedV3
   const hd: Record<string, unknown> = { ...index.hd, nextIndex, exposedIndexes }
   if (index.hd.discovery !== undefined) {
     const { solanaExternal: _requested, ...requestedCounts } = index.hd.discovery.requestedCounts
@@ -812,8 +930,8 @@ function parseHd(value: unknown, version: VaultVersion): HdRecord {
   if (!isRecord(counters)) refuse("VAULT_INDEX_INVALID", "hd.nextIndex is missing.")
   const exposed = value.exposedIndexes
   if (!isRecord(exposed)) refuse("VAULT_INDEX_INVALID", "hd.exposedIndexes is missing.")
-  const nextIndex = {} as Record<Branch, number>
-  const exposedIndexes = {} as Record<Branch, number[]>
+  const nextIndex = {} as HdRecord["nextIndex"]
+  const exposedIndexes = {} as HdRecord["exposedIndexes"]
   const onDisk = branchesForVersion(version)
   for (const field of Object.keys(counters)) {
     if (!onDisk.includes(field as Branch)) {
@@ -825,8 +943,11 @@ function parseHd(value: unknown, version: VaultVersion): HdRecord {
       refuse("VAULT_INDEX_INVALID", `hd.exposedIndexes.${field} is not a branch a version ${version} vault carries.`)
     }
   }
-  for (const branch of BRANCHES) {
+  for (const branch of ALL_BRANCHES) {
     if (!onDisk.includes(branch)) {
+      // A version 2 or 3 file has no evmTee branch (Phase 4b). It stays absent in memory, which
+      // `nextIndexOf` / `exposedIndexesOf` read as unallocated and unexposed.
+      if (branch === "evmTee") continue
       // A version 2 file has no external branch on disk (R6). In memory it reads as unallocated
       // and unexposed, the shape a fresh vault starts from, so every command sees one shape.
       nextIndex[branch] = 0
@@ -922,6 +1043,14 @@ function parseEntry(value: unknown, version: VaultVersion): KeyEntry {
   // CLI never wrote and an older reader would refuse; it is refused here rather than read.
   if (value.role === "external" && version === LEGACY_VAULT_VERSION) {
     refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} is role:external, which a version 2 vault cannot carry.`)
+  }
+  // Phase 4b (D1): an EVM TEE wallet is what version 4 adds; a version 2 or 3 file recording one
+  // is a file this CLI never wrote and an older reader would misread.
+  if (value.chain === "evm" && value.role === "tee-wallet" && version !== EVM_TEE_VAULT_VERSION) {
+    refuse(
+      "VAULT_INDEX_INVALID",
+      `Entry ${String(value.id)} is an EVM TEE wallet, which only a version 4 vault carries.`,
+    )
   }
   if (value.origin !== "derived" && value.origin !== "migrated-tee") {
     refuse("VAULT_INDEX_INVALID", `Entry ${String(value.id)} has an unrecognized origin.`)
@@ -1021,6 +1150,17 @@ function parseTee(value: unknown, entry: KeyEntry): void {
       refuse("VAULT_INDEX_INVALID", `Entry ${id}'s tee metadata carries an unknown field: ${field}.`)
   }
   if (value.lifecycle === undefined) refuse("VAULT_INDEX_INVALID", `Entry ${id} has no tee.lifecycle.`)
+  // Phase 4b: the network follows the entry's chain. A Solana key on Hood, or the reverse, is a
+  // file this CLI never wrote.
+  if (value.network !== undefined) {
+    const expected: TeeNetwork = entry.chain === "evm" ? "hood-mainnet" : "solana-mainnet"
+    if (value.network !== expected) {
+      refuse(
+        "VAULT_INDEX_INVALID",
+        `Entry ${id} is a ${entry.chain} key with tee.network ${JSON.stringify(value.network)}.`,
+      )
+    }
+  }
   // "a `remoteState` used as a `lifecycle`" is called out separately in CC-01 because it is the
   // confusion the two vocabularies invite, and the message should say which mistake was made.
   if (
@@ -1087,5 +1227,7 @@ export function branchOfPath(path: string): { branch: Branch; index: number } | 
   if (match?.[1] !== undefined) return { branch: "solanaExternal", index: Number(match[1]) }
   match = /^m\/44'\/60'\/(\d+)'\/0\/0$/.exec(path)
   if (match?.[1] !== undefined) return { branch: "evm", index: Number(match[1]) }
+  match = /^m\/44'\/60'\/(\d+)'\/1'\/0'$/.exec(path)
+  if (match?.[1] !== undefined) return { branch: "evmTee", index: Number(match[1]) }
   return undefined
 }

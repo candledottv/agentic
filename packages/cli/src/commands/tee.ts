@@ -94,6 +94,7 @@ import {
   withKeystoreLock,
   writeKeystoreFile,
 } from "../wallet-keystore"
+import { namesEvmWallet, teeDisableEvm, teeSweepEvm } from "./tee-evm"
 import { teeStatusEvm } from "./tee-status-evm"
 import { readDisableOutcome } from "./wallets"
 
@@ -1113,6 +1114,8 @@ export async function teeStatus(args: string[], ctx: CommandContext): Promise<nu
 
 export async function teeDisable(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
+  // Phase 4b (BE-391, D1): a Hood TEE wallet is stopped by `tee-evm.ts`.
+  if (namesEvmWallet(args)) return teeDisableEvm(args, ctx)
   if (!refuseEnvPassphrase(ctx)) return 1
   const parsed = parseArgs(args, { valueFlags: ["--keystore"], pathFlags: ["--keystore"] })
   if ("error" in parsed) return usage(ctx, parsed.error)
@@ -1366,6 +1369,8 @@ async function broadcastMessage(
 
 export async function teeSweep(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
+  // Phase 4b (BE-391, D1): a Hood TEE wallet is swept by `tee-evm.ts`.
+  if (namesEvmWallet(args)) return teeSweepEvm(args, ctx)
   if (!refuseEnvPassphrase(ctx)) return 1
   const parsed = parseArgs(args, {
     valueFlags: ["--rpc-url", "--keystore"],

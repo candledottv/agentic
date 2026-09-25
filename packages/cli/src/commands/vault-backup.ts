@@ -60,6 +60,15 @@
  * (see `writeKeystoreFile`), and the reason any remaining failure gives is in the sentence and in
  * `details` for `--json`, because an error that names the path but not the reason is a dead end
  * for whoever hits it at 2am.
+ *
+ * Phase 4b (BE-391, D1 fix (a)): a version 4 vault's sealed EVM record travels with the copy, to
+ * `<copy path minus .enc>.evm-record.sealed`. The backup refuses before writing anything when that
+ * path exists, takes the live record's lock while reading it (and fails, recording no verified
+ * backup, when it cannot), and copies byte for byte and in order only the complete lines that
+ * decrypt under this vault's record key, reporting how many it copied and dropped. It never rewrites
+ * the live record. `verify-backup` (and the backup's own verify) runs a ninth check: every complete
+ * line of the copy's record decrypts under the copy's own record key; a version 4 copy with no record
+ * passes and says the record was absent.
  */
 import { chmod, copyFile, mkdir, stat } from "node:fs/promises"
 import nodePath, { dirname, resolve } from "node:path"
@@ -79,8 +88,15 @@ import {
   keptInSealedCopy,
 } from "../vault/domains"
 import { VaultError } from "../vault/errors"
+import {
+  copyEvmRecordForBackup,
+  evmRecordPath,
+  type RecordCopyOutcome,
+  type RecordVerifyOutcome,
+  verifyEvmRecordCopy,
+} from "../vault/evm-record"
 import { currentPlatformFacts } from "../vault/fido2"
-import { type Envelope, isPassphraseEnvelope, parseVaultFile } from "../vault/format"
+import { type Envelope, EVM_TEE_VAULT_VERSION, isPassphraseEnvelope, parseVaultFile } from "../vault/format"
 import { APPLE_ACCOUNT_NOTICE } from "../vault/passphrase"
 import { canDrive } from "../vault/platform"
 import { nextSidecar, readSidecar, sidecarPath, writeSidecar } from "../vault/sidecar"
@@ -180,6 +196,15 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
         { suggestion: "Nothing was written. Choose a path that does not exist yet." },
       )
     }
+    // Phase 4b (D1): the copy's sealed EVM record path is refused the same way, before anything.
+    const copyRecordPath = evmRecordPath(destination)
+    if (file.version === EVM_TEE_VAULT_VERSION && (await exists(copyRecordPath))) {
+      throw new VaultError(
+        "EXPORT_TARGET_EXISTS",
+        `${copyRecordPath} already exists; this backup would write its sealed EVM record there, and this CLI does not overwrite one.`,
+        { suggestion: "Nothing was written. Choose a backup path whose record path does not exist yet." },
+      )
+    }
 
     // AD-9 as amended (BE-292, D3): a sealed copy carries the passphrase and any security key,
     // so the live vault is opened with the operator's choice among exactly those envelopes: the
@@ -221,6 +246,10 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
       }
     }
 
+    // Phase 4b (D1): the sealed EVM record, lines that decrypt only, under the live record's lock.
+    const recordCopy =
+      live.file.version === EVM_TEE_VAULT_VERSION ? await copyEvmRecordForBackup(live, copyRecordPath, deps) : undefined
+
     // BE-259 (D1): the size and the mode come from the FILE, after the write and before the
     // verify, for the same reason `verifyWrittenFromDisk` re-reads the vault it just wrote: the
     // guarantee is about the bytes on disk, not about what this process believes it wrote.
@@ -228,7 +257,7 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
 
     // The copy is opened and verified as its OWN file, from its own bytes, so what is verified is
     // what actually landed at the destination rather than what this process believes it wrote.
-    const { report, copyHeader } = await verifyCopy(
+    const { report, copyHeader, record } = await verifyCopy(
       ctx,
       destination,
       opened.reopen,
@@ -272,7 +301,17 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
         sharedDomainAccepted: verdict.sharedDomainAccepted,
         sharedDomain: verdict.sharedDomain,
         verified: true,
-        ...reportJson(report, live),
+        ...reportJson(report, live, record),
+        ...(recordCopy !== undefined
+          ? {
+              evmRecordCopy: {
+                path: recordCopy.copyPath,
+                present: recordCopy.present,
+                copied: recordCopy.copied,
+                dropped: recordCopy.dropped,
+              },
+            }
+          : {}),
         // BE-259 (D1): two additive keys, on this document only.
         bytesWritten: written.size,
         mode,
@@ -287,7 +326,9 @@ export async function vaultBackup(args: string[], ctx: CommandContext): Promise<
     // the operator read `Verified` as "I checked something that was already there". A verify
     // failure raises above this line, because a `Wrote` above a failure envelope reads as success.
     for (const line of wroteLines(destination, written.size, mode)) deps.stdout.write(`${line}\n`)
+    if (recordCopy !== undefined) deps.stdout.write(`${recordCopyLine(recordCopy)}\n`)
     writeVerifiedReport(ctx, destination, verdict, report, live, {
+      record,
       copyEnvelopes,
       leftOut,
       verifiedWith: verifiedWithLine(
@@ -583,9 +624,12 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
     // rotation or restore needs the old copy's passphrase, not another factor or a retry.
     const openedInCopy = carried.some((envelope) => envelope.id === opened.factor.envelopeId)
     let report: VerifyReport
+    let record: RecordVerifyOutcome
     let copyOpened: { word: string; envelopeId: string; factor: OpenedVault["factor"]["kind"]; how: string }
     if (openedInCopy) {
-      report = (await verifyCopy(ctx, target, opened.reopen, live, "opening the copy")).report
+      const verified = await verifyCopy(ctx, target, opened.reopen, live, "opening the copy")
+      report = verified.report
+      record = verified.record
       copyOpened = {
         word: wordFor(live.envelope),
         envelopeId: opened.factor.envelopeId,
@@ -606,6 +650,7 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
         ).vault,
       )
       report = await verifyVaultIntegrity(copy, { live })
+      record = await verifyEvmRecordCopy(copy, evmRecordPath(target))
       copyOpened = {
         word: "passphrase",
         envelopeId: copy.envelope.id,
@@ -643,7 +688,7 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
         ok: true,
         verified: target,
         sealed,
-        ...reportJson(report, live),
+        ...reportJson(report, live, record),
         // BE-292 (D9): additive keys.
         openedWith: { factor: copyOpened.factor, envelopeId: copyOpened.envelopeId },
         envelopesInCopy: copyHeader.envelopes.map((envelope) => envelope.id),
@@ -653,6 +698,7 @@ export async function vaultVerifyBackup(args: string[], ctx: CommandContext): Pr
       return 0
     }
     writeVerifiedReport(ctx, target, sealed ? { sealed: true } : undefined, report, live, {
+      record,
       copyEnvelopes: copyHeader.envelopes,
       leftOut: [],
       verifiedWith: verifiedWithLine(copyOpened.word, copyOpened.envelopeId, copyOpened.how, floorClause),
@@ -678,7 +724,7 @@ async function verifyCopy(
   reopen: OpenedVault["reopen"],
   live: UnlockedVault,
   purpose: string,
-): Promise<{ report: VerifyReport; copyHeader: { envelopes: Envelope[] } }> {
+): Promise<{ report: VerifyReport; copyHeader: { envelopes: Envelope[] }; record: RecordVerifyOutcome }> {
   const raw = await readVaultRaw(copyPath)
   if (raw === null)
     throw new VaultError("VAULT_MISSING", `No file at ${copyPath}.`, {
@@ -688,7 +734,10 @@ async function verifyCopy(
   // or a security key asserted again), so what is verified is that this factor opens this copy.
   const copy = await reopen(copyPath, raw, purpose)
   try {
-    return { report: await verifyVaultIntegrity(copy, { live }), copyHeader: copy.file }
+    const report = await verifyVaultIntegrity(copy, { live })
+    // The ninth check (Phase 4b, D1): the copy's record against the copy's own record key.
+    const record = await verifyEvmRecordCopy(copy, evmRecordPath(copyPath))
+    return { report, copyHeader: copy.file, record }
   } finally {
     closeVault(copy)
   }
@@ -737,9 +786,11 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-function reportJson(report: VerifyReport, live: UnlockedVault) {
+function reportJson(report: VerifyReport, live: UnlockedVault, record?: RecordVerifyOutcome) {
+  const ninth = record !== undefined && !record.notApplicable
   return {
-    steps: 8,
+    steps: ninth ? 9 : 8,
+    ...(ninth ? { evmRecord: { path: record.path, absent: record.absent, lines: record.lines } } : {}),
     addressChecked: report.addressChecked.length,
     rederived: report.rederived.length,
     notRederived: report.notRederived.length,
@@ -833,7 +884,7 @@ function writeVerifiedReport(
   verdict: Partial<BackupDomainVerdict> | undefined,
   report: VerifyReport,
   live: UnlockedVault,
-  opts: { copyEnvelopes: Envelope[]; leftOut: Envelope[]; verifiedWith: string },
+  opts: { copyEnvelopes: Envelope[]; leftOut: Envelope[]; verifiedWith: string; record?: RecordVerifyOutcome },
 ): void {
   const { deps } = ctx
   const kept = opts.copyEnvelopes.map(labelEnvelope)
@@ -841,7 +892,15 @@ function writeVerifiedReport(
   deps.stdout.write(`Verified ${target}\n`)
   for (const line of backupVerdictLines(verdict, kept, leftOut)) deps.stdout.write(`${line}\n`)
   deps.stdout.write(`${opts.verifiedWith}\n`)
-  deps.stdout.write(`  steps         all 8 passed, in order\n`)
+  const ninth = opts.record !== undefined && !opts.record.notApplicable
+  deps.stdout.write(`  steps         all ${ninth ? 9 : 8} passed, in order\n`)
+  if (ninth && opts.record !== undefined) {
+    deps.stdout.write(
+      opts.record.absent
+        ? `  EVM record    absent beside the copy (${opts.record.path}); nothing to check\n`
+        : `  EVM record    ${opts.record.lines} line(s), each decrypts under this copy's record key\n`,
+    )
+  }
   deps.stdout.write(
     `  keys checked  ${report.addressChecked.length} (each secret produces the address the index records)\n`,
   )
@@ -866,4 +925,10 @@ function writeVerifiedReport(
   deps.stdout.write(
     `\nThe recovery phrase restores derived keys only. It does not restore any key imported from the Phase 1 TEE wallet store; this file plus a factor does that.\n`,
   )
+}
+
+/** Phase 4b (D1): what `vault backup` did with the sealed EVM record. */
+export function recordCopyLine(outcome: RecordCopyOutcome): string {
+  if (!outcome.present) return `  EVM record    none beside the live vault; no record written`
+  return `  EVM record    ${outcome.copyPath}: ${outcome.copied} line(s) copied${outcome.dropped > 0 ? `, ${outcome.dropped} dropped (a torn line, or a line that does not decrypt under this vault's key; the sweep could not read them either)` : ""}`
 }

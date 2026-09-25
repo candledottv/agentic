@@ -24,11 +24,13 @@ import { evmAddressFromSecret, sameEvmAddress } from "../evm-lite"
 import { bytesEqual } from "./crypto"
 import { addressFromSecret64, SECP256K1_SCALAR_BYTES, SOLANA_SECRET_BYTES } from "./ed25519"
 import { VaultError } from "./errors"
-import { branchOfPath, type KeyEntry } from "./format"
+import { branchOfPath, exposedIndexesOf, type KeyEntry, nextIndexOf } from "./format"
 import {
   deriveEvmKeyFromRoot,
+  deriveEvmTeeKeyFromRoot,
   deriveSolanaKey,
   evmIndexOfPath,
+  evmTeeIndexOfPath,
   isValidPhrase,
   phraseFromEntropy,
   ROOT_ENTROPY_BYTES,
@@ -137,14 +139,14 @@ export async function verifyVaultIntegrity(
   for (const entry of copy.index.entries) {
     const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined
     if (located === undefined) continue
-    if (copy.index.hd.nextIndex[located.branch] <= located.index) {
+    if (nextIndexOf(copy.index.hd, located.branch) <= located.index) {
       fail(
         7,
-        `hd.nextIndex.${located.branch} is ${copy.index.hd.nextIndex[located.branch]}, at or below this entry's index ${located.index}`,
+        `hd.nextIndex.${located.branch} is ${nextIndexOf(copy.index.hd, located.branch)}, at or below this entry's index ${located.index}`,
         entry.id,
       )
     }
-    if (entry.exposure.everRemoteExposed && !copy.index.hd.exposedIndexes[located.branch].includes(located.index)) {
+    if (entry.exposure.everRemoteExposed && !exposedIndexesOf(copy.index.hd, located.branch).includes(located.index)) {
       fail(
         7,
         `it is flagged remotely exposed but index ${located.index} is missing from hd.exposedIndexes.${located.branch}`,
@@ -214,11 +216,16 @@ async function verifyEntry(
     if (entry.derivation.scheme === "bip32-secp256k1") {
       // Phase 4a (D7): re-derive `m/44'/60'/n'/0/0` from the root and require byte equality of the
       // scalar, exactly as the Solana branch below requires it of the 64-byte secret.
+      // Phase 4b (D1): or `m/44'/60'/n'/1'/0'`, the EVM TEE branch, by the same byte equality.
       const index = evmIndexOfPath(entry.derivation.path)
-      if (index === undefined) {
-        fail(5, `its recorded path ${entry.derivation.path} is not on the EVM branch`, entry.id)
+      const teeIndex = evmTeeIndexOfPath(entry.derivation.path)
+      if (index === undefined && teeIndex === undefined) {
+        fail(5, `its recorded path ${entry.derivation.path} is not on an EVM branch`, entry.id)
       }
-      const derivedEvm = await deriveEvmKeyFromRoot(root, index)
+      const derivedEvm =
+        index !== undefined
+          ? await deriveEvmKeyFromRoot(root, index)
+          : await deriveEvmTeeKeyFromRoot(root, teeIndex as number)
       observer?.onLeafLive?.(2)
       try {
         if (!bytesEqual(derivedEvm.secret, secret)) {

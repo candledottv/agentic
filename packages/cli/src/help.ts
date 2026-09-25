@@ -506,9 +506,9 @@ export const HELP: Record<string, Topic> = {
       { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
       {
         invocation:
-          "restore --phrase [--own-passphrase] [--count <n>] [--tee-count <k>] [--external-count <e>] [--evm-count <m>] [--rpc-url <url>]",
+          "restore --phrase [--own-passphrase] [--count <n>] [--tee-count <k>] [--external-count <e>] [--evm-count <m>] [--evm-tee-count <k>] [--rpc-url <url>]",
         description:
-          "Rebuild a vault from the recovery phrase; it gets a new passphrase. --evm-count derives EVM indices 0..m-1 (default 0, never gap-scanned). A gap scan needs --rpc-url on this command; no default or stored endpoint is used for it",
+          "Rebuild a vault from the recovery phrase; it gets a new passphrase. --evm-count derives EVM indices 0..m-1 and --evm-tee-count Hood TEE wallets 0..k-1 on m/44'/60'/n'/1'/0' (default 0, never gap-scanned; the sealed EVM record does not come back, so a sweep then needs --from-block or --token). A gap scan needs --rpc-url on this command; no default or stored endpoint is used for it",
       },
       {
         invocation: "reconcile-exposure",
@@ -525,9 +525,13 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "backup --to <path>|icloud [--accept-shared-domain]",
         description:
-          "Copy the vault and verify the copy in full; icloud is iCloud Drive; sealed copies carry the passphrase and security keys",
+          "Copy the vault and verify the copy in full; icloud is iCloud Drive; sealed copies carry the passphrase and security keys. A vault with Hood TEE wallets also writes its sealed EVM record beside the copy (<copy minus .enc>.evm-record.sealed), the lines that decrypt only",
       },
-      { invocation: "verify-backup <path>", description: "Verify a copy in full (all eight steps)" },
+      {
+        invocation: "verify-backup <path>",
+        description:
+          "Verify a copy in full (all eight steps; a ninth for a vault with Hood TEE wallets: every line of the record beside the copy decrypts under the copy's key)",
+      },
       { invocation: "import-legacy --tee [--from <path>]", description: "Migrate tee-wallets.enc into the vault" },
       {
         invocation: "retire-legacy [--from <path>]",
@@ -537,26 +541,30 @@ export const HELP: Record<string, Topic> = {
         invocation:
           "transfer <to> --amount <n|max> --asset SOL|<mint>|ETH|USDG|<0x token> --from <label> [--rpc-url <url>]",
         description:
-          "Sign a transfer locally from a vault key or a promoted TEE wallet. From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint",
+          "Sign a transfer locally from a vault key or a promoted TEE wallet (Solana, or Hood: refused while a sequenced trade holds the wallet's nonce, and when that cannot be read). From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint",
       },
       {
         invocation:
           "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>] [--to-key <prefix|label>]",
         description:
-          "Fresh TEE key, or promote one vault key in place. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked.",
+          "Fresh TEE key, or promote one vault key in place. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked. An EVM key becomes a Hood TEE wallet (--from derives m/44'/60'/n'/1'/0'; --sweep-to is a cold EVM vault key; --rpc-url is the Hood RPC); the vault becomes version 4 and records the promote height as the wallet's scan start.",
       },
       {
         invocation: "promote-batch --pairs-from <file> [--rpc-url <url>] [--to-key <prefix|label>] [--token-holdings]",
         description:
-          "Promote many vault keys in place: one unlock, one reviewed acknowledgement. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked.",
+          "Promote many vault keys in place: one unlock, one reviewed acknowledgement. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked. A file of EVM keys promotes them to Hood TEE wallets (ETH shown, no authority read); one file is one chain.",
       },
       {
-        invocation: "fund <tee-address|external> --amount <n> --asset SOL|USDC [--rpc-url <url>] [--from <label>]",
-        description: "Fund a TEE or external wallet from a vault key",
+        invocation:
+          "fund <tee-address|external> --amount <n> --asset SOL|USDC|ETH|USDG [--rpc-url <url>] [--from <label>]",
+        description:
+          "Fund a TEE or external wallet from a vault key. A Hood TEE wallet takes ETH or USDG from its pinned EVM vault key",
       },
       {
-        invocation: "demote <tee-address> [--rpc-url <url>] [--emergency]",
-        description: "Disable then sweep a TEE wallet back to its pin",
+        invocation:
+          "demote <tee-address> [--rpc-url <url>] [--emergency] [--sweep-to <label>] [--token <0x...>] [--from-block <n>]",
+        description:
+          "Disable then sweep a TEE wallet back to its pin. A Hood wallet takes tee sweep's --token and --from-block",
       },
       {
         invocation: "export-key <label> --to <new-file>",
@@ -614,6 +622,8 @@ export const HELP: Record<string, Topic> = {
       "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
       "candle vault backup --to icloud",
+      "candle vault promote --in-place hood-cold-1 --sweep-to hood-cold",
+      "candle vault fund 0x000000000000000000000000000000000000dEaD --amount 0.01 --asset ETH",
       "CANDLE_CONFIG_DIR=$HOME/t47 candle vault status",
     ],
     env: [
@@ -650,9 +660,9 @@ export const HELP: Record<string, Topic> = {
         description: 'Stop the agent; verified stop or pending, never "done" on a 200',
       },
       {
-        invocation: "sweep <address> [--rpc-url <url>] [--emergency]",
+        invocation: "sweep <address> [--rpc-url <url>] [--emergency] [--token <0x...>] [--from-block <n>]",
         description:
-          "Sign locally and move everything to the pinned vault; closes DAMM v2 LP positions after verifying each server-built close (--emergency moves the position NFT instead, with no API)",
+          "Sign locally and move everything to the pinned vault; closes DAMM v2 LP positions after verifying each server-built close (--emergency moves the position NFT instead, with no API). A Hood wallet (0x): USDG, WETH, the sealed EVM record, the server's list (not under --emergency), every --token, and Transfer logs from its recorded scan start or --from-block, then ETH last; it refuses while a sequenced trade holds the wallet's nonce",
       },
       {
         invocation: "rebind <wallet...> --to-key <prefix|label> [--label-prefix <p>]",
@@ -666,6 +676,7 @@ export const HELP: Record<string, Topic> = {
       "candle tee new --label AgentOne",
       "candle tee status AgentOneAddress",
       "candle tee sweep AgentOneAddress",
+      "candle tee sweep 0x000000000000000000000000000000000000dEaD --emergency --from-block 1200000",
       "candle tee rebind tr-01 tr-02 --to-key Ab3dEf9h",
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
     ],

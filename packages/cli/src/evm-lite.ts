@@ -36,6 +36,8 @@ export const HOOD_USDG_ADDRESS = "0x5fc5360d0400a0fd4f2af552add042d716f1d168"
 export const HOOD_USDG_DECIMALS = 6
 /** Hood's WETH (`HOOD_WETH` in `packages/shared/src/hood-dex.ts`). The sweep and the gas reserve count it always (Phase 4b D1, D5). */
 export const HOOD_WETH_ADDRESS = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
+/** `keccak256("Transfer(address,address,uint256)")`, the ERC-20 Transfer event topic. */
+export const ERC20_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 /** The native asset's decimals on every EVM chain this CLI reaches. */
 export const NATIVE_DECIMALS = 18
 
@@ -189,7 +191,14 @@ export function evmDerivationPath(index: number): string {
  * the library's buffer so the wipe cannot reach it.
  */
 export function deriveEvmKey(seed: Uint8Array, index: number): DerivedEvmKey {
-  const path = evmDerivationPath(index)
+  return deriveEvmKeyAtPath(seed, evmDerivationPath(index))
+}
+
+/**
+ * The same derivation along any BIP-32 path the caller has already built: Phase 4b's EVM TEE
+ * branch `m/44'/60'/n'/1'/0'` (`evmTeePath` in `vault/hd.ts`) is the one other path it is given.
+ */
+export function deriveEvmKeyAtPath(seed: Uint8Array, path: string): DerivedEvmKey {
   const root = HDKey.fromMasterSeed(seed)
   try {
     const leaf = root.derive(path)
@@ -442,12 +451,34 @@ export interface EvmRpc {
   call(call: { to: string; data: Uint8Array }): Promise<Uint8Array>
   sendRawTransaction(raw: Uint8Array): Promise<string>
   getTransactionReceipt(hash: string): Promise<EvmReceipt | null>
+  /**
+   * `eth_getTransactionByHash`. Null when this node has no such transaction: it was never
+   * accepted, or it has left the pool. A sweep uses that to drop a pending record it cannot
+   * prove is in flight, and re-sign the nonce.
+   */
+  getTransactionByHash(hash: string): Promise<{ hash: string } | null>
   blockNumber(): Promise<bigint>
   /** ERC-20 `decimals()`. Throws `EvmRpcError` when the contract does not answer one. */
   erc20Decimals(token: string): Promise<number>
   /** ERC-20 `symbol()`, or undefined when the contract answers nothing readable. Never throws for the answer's shape. */
   erc20Symbol(token: string): Promise<string | undefined>
   erc20BalanceOf(token: string, owner: string): Promise<bigint>
+  /**
+   * Phase 4b (D1): `eth_getLogs` over `[fromBlock, toBlock]` with the given topics, returning each
+   * log's emitting contract (checksummed) and block. The sweep's log discovery pages this.
+   */
+  getLogs(filter: { fromBlock: bigint; toBlock: bigint; topics: Array<string | null> }): Promise<EvmLog[]>
+}
+
+/** One log, reduced to what log discovery reads. */
+export interface EvmLog {
+  address: string
+  blockNumber: bigint
+}
+
+/** A 20-byte address as a 32-byte log topic, lowercase. */
+export function addressTopic(address: string): string {
+  return `0x${"0".repeat(24)}${address.toLowerCase().replace(/^0x/, "")}`
 }
 
 function decodeAbiString(bytes: Uint8Array): string | undefined {
@@ -583,8 +614,28 @@ export function createEvmRpc(url: string, fetchFn: typeof fetch): EvmRpc {
         transactionHash: typeof r.transactionHash === "string" ? r.transactionHash : hash,
       }
     },
+    async getTransactionByHash(hash) {
+      const r = await call<unknown>("eth_getTransactionByHash", [hash])
+      if (r === null || r === undefined) return null
+      return { hash }
+    },
     async blockNumber() {
       return asQuantity(await call("eth_blockNumber", []), "eth_blockNumber")
+    },
+    async getLogs(filter) {
+      const r = await call<unknown>("eth_getLogs", [
+        { fromBlock: quantity(filter.fromBlock), toBlock: quantity(filter.toBlock), topics: filter.topics },
+      ])
+      if (!Array.isArray(r)) throw new EvmRpcError("rpc", "eth_getLogs", "RPC eth_getLogs answered without a list")
+      const logs: EvmLog[] = []
+      for (const item of r as Array<{ address?: unknown; blockNumber?: unknown }>) {
+        if (typeof item?.address !== "string" || !looksLikeEvmAddress(item.address)) continue
+        logs.push({
+          address: toChecksumAddress(item.address),
+          blockNumber: typeof item.blockNumber === "string" ? hexToBigInt(item.blockNumber) : 0n,
+        })
+      }
+      return logs
     },
     async erc20Decimals(token) {
       const answer = await this.call({ to: token, data: hexToBytes(ERC20_DECIMALS_SELECTOR) })

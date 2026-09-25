@@ -99,6 +99,24 @@ export interface EvmTransferInput {
   /** A usage refusal (exit 2), for a flag value that is wrong rather than a state that is refused. */
   usage: (line: string) => number
   writeJson: (value: unknown) => void
+  /**
+   * Phase 4b (BE-391): this transfer may only be signed on Hood (chain id 4663). Set for
+   * `vault fund`. A `tee-wallet` source is pinned the same way even when this is unset, because
+   * a custom `--rpc-url` is not the built-in endpoint and `planEvmTransfer` would otherwise
+   * accept whatever chain id the second read returns.
+   */
+  pinHoodChain?: boolean
+  /**
+   * Phase 4b (BE-391, D1): a last check after the factor and the nonce re-read, immediately before
+   * the signature, that throws to refuse with nothing signed. A promoted Hood wallet reads the D4
+   * operation lock here, so the lock read is the last thing before its nonce is used.
+   */
+  beforeSign?: () => Promise<void>
+  /**
+   * Phase 4b (BE-326 for EVM): runs once the outcome is known, with the locally computed hash. What
+   * it returns is added to the `--json` document; it never changes the exit code.
+   */
+  afterOutcome?: (outcome: { hash: string; status: EvmTransferStatus }) => Promise<Record<string, unknown>>
 }
 
 function refuse(
@@ -375,7 +393,7 @@ export function evmFactorPrompt(plan: EvmTransferPlan): string {
   return `sign transfer of ${plan.amount} ${plan.asset.symbol} to ${plan.recipient}${plan.hood ? " on Hood" : ` on chain ${plan.chainId}`}`
 }
 
-interface Outcome {
+export interface Outcome {
   status: EvmTransferStatus
   exit: 0 | 3
   line: string
@@ -458,7 +476,7 @@ async function awaitReceipt(rpc: EvmRpc, ctx: CommandContext, hash: string, chai
  * no receipt. Any other RPC error is reported as uncertain with the node's message, because the
  * CLI cannot prove from a refusal message alone that the transaction is not in flight.
  */
-async function broadcast(
+export async function broadcast(
   rpc: EvmRpc,
   ctx: CommandContext,
   raw: Uint8Array,
@@ -551,6 +569,12 @@ export async function runEvmTransfer(input: EvmTransferInput, rpc: EvmRpc): Prom
       `The RPC answered chain id ${chainIdAgain} after the factor, but ${plan.chainId} was displayed.`,
     )
   }
+  if ((input.pinHoodChain === true || input.from.role === "tee-wallet") && plan.chainId !== BigInt(HOOD_CHAIN_ID)) {
+    throw refuse(
+      "EVM_CHAIN_MISMATCH",
+      `Signing refused: this transfer must be on Hood (chain id ${HOOD_CHAIN_ID}), and the RPC's chain id is ${plan.chainId}.`,
+    )
+  }
   const nonceAgain = await rpc.getTransactionCount(plan.from.address, "pending")
   if (nonceAgain !== plan.tx.nonce) {
     throw refuse(
@@ -559,6 +583,8 @@ export async function runEvmTransfer(input: EvmTransferInput, rpc: EvmRpc): Prom
       { suggestion: "Nothing was signed. Run the transfer again; it reads the pending nonce afresh." },
     )
   }
+
+  await input.beforeSign?.()
 
   const secret = await input.decryptSecret()
   let signed: ReturnType<typeof signTransaction>
@@ -572,6 +598,9 @@ export async function runEvmTransfer(input: EvmTransferInput, rpc: EvmRpc): Prom
   }
 
   const outcome = await broadcast(rpc, ctx, signed.raw, signed.hash, plan.chainId)
+  // Human mode prints the outcome line before anything the hook says about it.
+  if (!ctx.json) deps.stdout.write(`${outcome.line}\n`)
+  const extra = (await input.afterOutcome?.({ hash: signed.hash, status: outcome.status })) ?? {}
   if (ctx.json) {
     input.writeJson({
       ok: outcome.status === "confirmed",
@@ -594,9 +623,8 @@ export async function runEvmTransfer(input: EvmTransferInput, rpc: EvmRpc): Prom
       gas: plan.tx.gas.toString(),
       maxFeePerGas: plan.tx.maxFeePerGas.toString(),
       maxPriorityFeePerGas: plan.tx.maxPriorityFeePerGas.toString(),
+      ...extra,
     })
-  } else {
-    deps.stdout.write(`${outcome.line}\n`)
   }
   return outcome.exit
 }

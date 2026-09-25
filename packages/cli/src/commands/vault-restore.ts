@@ -27,6 +27,16 @@
  * whose address is a derived EVM key flags that entry remotely exposed and appends its index to
  * `exposedIndexes.evm`; the entry stays `role: "vault"` and is never rewritten as a Solana
  * `tee-wallet`.
+ *
+ * Phase 4b (BE-391, D1): `--evm-tee-count <k>` derives EVM TEE indices `0..k-1` on
+ * `m/44'/60'/n'/1'/0'` as TEE entries (`role: "tee-wallet"`, network `hood-mainnet`), each
+ * `exposureUnknown` and remotely exposed, since the branch exists only to hold keys given to Privy.
+ * Like `--evm-count` it is an argument, never stored in `discovery`. `k` of 1 or more creates the
+ * vault as version 4 with its sealed EVM record key in the first write (moving aside a record left
+ * by an earlier vault at this path); 0, or no flag, stays version 3 or below with no record key.
+ * A phrase restore never brings the record: the phrase cannot recreate a random record key, so a
+ * sweep then names `--from-block` and `--token`. `vault transfer` and `tee sweep` work on a restored
+ * entry; fresh allocation stays refused.
  */
 import { rm } from "node:fs/promises"
 import { parseArgs } from "../args"
@@ -38,11 +48,13 @@ import { type SolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../sola
 import { createVault, freshHdRecord } from "../vault/create"
 import { randomBytes } from "../vault/crypto"
 import { VaultError } from "../vault/errors"
+import { evmRecordPath } from "../vault/evm-record"
 import type { Branch, HdRecord, KeyEntry, TeeRemoteState } from "../vault/format"
-import { branchOfPath } from "../vault/format"
+import { branchOfPath, exposedIndexesOf } from "../vault/format"
 import {
   DERIVATION_SCHEME,
   deriveEvmKeyFromRoot,
+  deriveEvmTeeKeyFromRoot,
   deriveSolanaKey,
   entropyFromPhrase,
   PHRASE_WORDS,
@@ -83,7 +95,15 @@ const SCAN_CEILING = 500
 
 export async function vaultRestore(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
-    valueFlags: ["--keystore", "--count", "--tee-count", "--external-count", "--evm-count", "--rpc-url"],
+    valueFlags: [
+      "--keystore",
+      "--count",
+      "--tee-count",
+      "--external-count",
+      "--evm-count",
+      "--evm-tee-count",
+      "--rpc-url",
+    ],
     booleanFlags: ["--phrase", "--own-passphrase"],
     pathFlags: ["--keystore"],
   })
@@ -115,6 +135,7 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
     parsed.values["--external-count"],
     parsed.values["--rpc-url"],
     parsed.values["--evm-count"],
+    parsed.values["--evm-tee-count"],
   )
   if ("error" in counts) return usage(ctx, counts.error)
 
@@ -128,7 +149,7 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
       throw vaultAlreadyExists(
         ctx,
         resolvedVault,
-        "Restoring builds a new vault and never merges into one. Move the existing file aside first.",
+        `Restoring builds a new vault and never merges into one. Move the existing file aside first, and its sealed EVM record with it if there is one: ${evmRecordPath(path)}.`,
       )
     }
     const sidecarExisted = await fileExists(sidecarPath(path))
@@ -241,8 +262,21 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
  * `complete: false` from the first byte on disk, which is the whole of what refuses allocation
  * (CC-11); the commit later replaces the counters and the account, never the presence.
  */
-export function restoreSeedHd(counts: Pick<Counts, "requested">, restoredAt: string): HdRecord {
+export function restoreSeedHd(
+  counts: Pick<Counts, "requested"> & Partial<Pick<Counts, "evmTee">>,
+  restoredAt: string,
+): HdRecord {
+  const base = freshHdRecord()
+  const evmTee = counts.evmTee ?? 0
   return freshHdRecord({
+    // Phase 4b (D1): seeding the EVM TEE counter is what makes this first write version 4 with its
+    // record key. k = 0 leaves the branch absent, so the file stays version 3 or below.
+    ...(evmTee > 0
+      ? {
+          nextIndex: { ...base.nextIndex, evmTee },
+          exposedIndexes: { ...base.exposedIndexes, evmTee: [] },
+        }
+      : {}),
     discovery: {
       restoredAt,
       account: "",
@@ -286,6 +320,8 @@ interface Counts {
   solanaExternal: number | undefined
   /** Phase 4a: EVM indices `0..evm-1`. Defaults to 0, never scanned, never recorded in `discovery`. */
   evm: number
+  /** Phase 4b: EVM TEE indices `0..evmTee-1`. The same rules as `evm`. */
+  evmTee: number
   requested: Record<RestoredBranch, number>
 }
 
@@ -301,6 +337,7 @@ export function parseCounts(
   externalCount: string | undefined,
   rpcUrl: string | undefined,
   evmCount?: string,
+  evmTeeCount?: string,
 ): Counts | { error: string } {
   const parse = (raw: string | undefined, flag: string): number | undefined | { error: string } => {
     if (raw === undefined) return undefined
@@ -316,6 +353,8 @@ export function parseCounts(
   if (typeof externalParsed === "object" && externalParsed !== null) return externalParsed
   const evmParsed = parse(evmCount, "--evm-count")
   if (typeof evmParsed === "object" && evmParsed !== null) return evmParsed
+  const evmTeeParsed = parse(evmTeeCount, "--evm-tee-count")
+  if (typeof evmTeeParsed === "object" && evmTeeParsed !== null) return evmTeeParsed
 
   const allOmitted = vaultCount === undefined && teeParsed === undefined && externalParsed === undefined
   const scan = rpcUrl !== undefined
@@ -333,6 +372,7 @@ export function parseCounts(
     solanaExternal,
     // The EVM count takes no part in the Solana defaulting above: 0 unless asked for (D7).
     evm: evmParsed ?? 0,
+    evmTee: evmTeeParsed ?? 0,
     requested: { solanaVault: solanaVault ?? -1, solanaTee: solanaTee ?? -1, solanaExternal: solanaExternal ?? -1 },
   }
 }
@@ -407,23 +447,33 @@ async function deriveWithinBounds(
     for (let index = 0; index < counts.evm; index++) {
       set.entries.push(await deriveOneEvm(vault, root, index))
     }
+    // Phase 4b (D1): the EVM TEE branch, bounded by `--evm-tee-count` and never scanned.
+    for (let index = 0; index < counts.evmTee; index++) {
+      set.entries.push(await deriveOneEvm(vault, root, index, "evmTee"))
+    }
   } finally {
     wipe(root)
   }
   for (const entry of set.entries) {
     if (entry.branch === "solanaExternal") set.externalByAddress.set(entry.address, entry)
-    else if (entry.branch === "evm") set.byAddress.set(entry.address.toLowerCase(), entry)
+    else if (entry.branch === "evm" || entry.branch === "evmTee") set.byAddress.set(entry.address.toLowerCase(), entry)
     else set.byAddress.set(entry.address, entry)
   }
   return set
 }
 
-async function deriveOneEvm(vault: UnlockedVault, root: Uint8Array, index: number): Promise<DerivedEntry> {
-  const derived = await deriveEvmKeyFromRoot(root, index)
+async function deriveOneEvm(
+  vault: UnlockedVault,
+  root: Uint8Array,
+  index: number,
+  branch: "evm" | "evmTee" = "evm",
+): Promise<DerivedEntry> {
+  const derived =
+    branch === "evmTee" ? await deriveEvmTeeKeyFromRoot(root, index) : await deriveEvmKeyFromRoot(root, index)
   try {
     const keyId = freshKeyId()
     return {
-      branch: "evm",
+      branch,
       index,
       address: derived.address,
       path: derived.path,
@@ -556,6 +606,34 @@ async function writeRestoredIndex(
 
   const entries: KeyEntry[] = derived.entries.map((entry) => {
     const row = matchByAddress.get(entry.address)
+    if (entry.branch === "evmTee") {
+      // Phase 4b (D1): an EVM TEE entry. The branch exists only for keys given to Privy, so it is
+      // recorded remotely exposed as well as `exposureUnknown`. A matching row supplies the lifecycle
+      // (its pin, its binding); without one it is `stranded`, and a later sweep takes a pin through
+      // `vault demote --sweep-to`, exactly as a Solana entry with no pinned destination.
+      const base: KeyEntry = {
+        id: entry.keyId,
+        chain: "evm",
+        curve: "secp256k1",
+        address: entry.address,
+        label: row?.label ?? `evm-tee-${entry.index}`,
+        createdAt: now,
+        role: "tee-wallet",
+        origin: "derived",
+        derivation: { scheme: EVM_DERIVATION_SCHEME, path: entry.path },
+        exposure: { everRemoteExposed: true, everExported: false, exposureUnknown: true },
+      }
+      if (row !== undefined) return { ...base, ...teeFieldsFor(row, ctx, "hood-mainnet"), role: "tee-wallet" }
+      return {
+        ...base,
+        tee: {
+          network: "hood-mainnet",
+          lifecycle: "stranded",
+          grantIdentity: { account: "", apiBaseUrl: ctx.apiUrl, source: "operator-asserted" },
+          remoteState: "local-only",
+        },
+      }
+    }
     if (entry.branch === "evm") {
       // Phase 4a (D7): an EVM entry is written as an EVM vault key, `exposureUnknown` like every
       // recovered key. A matching linked-wallet row (a Hood wallet this account imported) ADDS
@@ -599,8 +677,8 @@ async function writeRestoredIndex(
   // In a restored vault it is a record of what was recovered, not a license to allocate, and the
   // allocation refusal rather than this number is what enforces CC-10's no-reuse contract.
   // The EVM branch has no scan and no reserve either: `nextIndex.evm` is exactly `--evm-count`.
-  const highest: Record<Branch, number> = { solanaVault: -1, solanaTee: -1, solanaExternal: -1, evm: -1 }
-  const exposed: Record<Branch, number[]> = { solanaVault: [], solanaTee: [], solanaExternal: [], evm: [] }
+  const highest: Record<Branch, number> = { solanaVault: -1, solanaTee: -1, solanaExternal: -1, evm: -1, evmTee: -1 }
+  const exposed: Record<Branch, number[]> = { solanaVault: [], solanaTee: [], solanaExternal: [], evm: [], evmTee: [] }
   for (const entry of entries) {
     const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined
     if (located === undefined) continue
@@ -623,6 +701,8 @@ async function writeRestoredIndex(
       solanaTee: highest.solanaTee + 1,
       solanaExternal: highest.solanaExternal + 1,
       evm: highest.evm + 1,
+      // Phase 4b: present only when this restore derived the branch, so k = 0 stays version 3.
+      ...(counts.evmTee > 0 ? { evmTee: highest.evmTee + 1 } : {}),
     },
     rootExported: false,
     exposedIndexes: {
@@ -630,6 +710,7 @@ async function writeRestoredIndex(
       solanaTee: exposed.solanaTee.sort((a, b) => a - b),
       solanaExternal: exposed.solanaExternal.sort((a, b) => a - b),
       evm: exposed.evm.sort((a, b) => a - b),
+      ...(counts.evmTee > 0 ? { evmTee: exposed.evmTee.sort((a, b) => a - b) } : {}),
     },
     // Present, with `complete: false`, permanently. Its presence is what refuses allocation.
     discovery: {
@@ -661,7 +742,11 @@ async function writeRestoredIndex(
  *                                                     `--sweep-to`, and `linkedWalletId` is absent
  *                                                     by definition for that value)
  */
-function teeFieldsFor(row: LinkedWalletRow, ctx: CommandContext): Partial<KeyEntry> {
+function teeFieldsFor(
+  row: LinkedWalletRow,
+  ctx: CommandContext,
+  network: "solana-mainnet" | "hood-mainnet" = "solana-mainnet",
+): Partial<KeyEntry> {
   const remoteState: TeeRemoteState =
     row.sweptAt !== undefined ? "swept" : row.revokedAt !== undefined ? "quarantined" : "enabled"
   const grantIdentity = {
@@ -671,7 +756,7 @@ function teeFieldsFor(row: LinkedWalletRow, ctx: CommandContext): Partial<KeyEnt
     source: "recorded-at-operation" as const,
   }
   const common = {
-    network: "solana-mainnet" as const,
+    network,
     ...(row.vaultDestination !== undefined ? { vaultDestination: row.vaultDestination } : {}),
     ...(row.boundKeyPrefix !== undefined ? { boundKeyPrefix: row.boundKeyPrefix } : {}),
     ...(row.remoteAuthority !== undefined ? { remoteAuthority: row.remoteAuthority } : {}),
@@ -739,6 +824,11 @@ function reportRestore(
     )
   } else {
     deps.stdout.write(`  evm: indices 0 to ${counts.evm - 1}, on m/44'/60'/n'/0/0.\n`)
+  }
+  if (counts.evmTee > 0) {
+    deps.stdout.write(
+      `  evm tee: indices 0 to ${counts.evmTee - 1}, on m/44'/60'/n'/1'/0'. The sealed EVM record is not restored by a phrase: a sweep of these wallets needs --from-block <n> (a Hood block at or before the first transfer in) or --token <0x...> to find tokens beyond USDG and WETH.\n`,
+    )
   }
   if ((matches.externalListed?.length ?? 0) > 0) {
     // R6: an external key is never registered with Candle, so a listed address that is one of this
@@ -860,8 +950,9 @@ export async function vaultReconcileExposure(args: string[], ctx: CommandContext
     for (const entry of entries) {
       const located = entry.derivation ? branchOfPath(entry.derivation.path) : undefined
       if (located === undefined || !entry.exposure.everRemoteExposed) continue
-      if (!exposedIndexes[located.branch].includes(located.index)) {
-        exposedIndexes[located.branch] = [...exposedIndexes[located.branch], located.index].sort((a, b) => a - b)
+      const list = exposedIndexesOf({ exposedIndexes }, located.branch)
+      if (!list.includes(located.index)) {
+        exposedIndexes[located.branch] = [...list, located.index].sort((a, b) => a - b)
       }
     }
 

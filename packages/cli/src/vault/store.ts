@@ -39,13 +39,17 @@ import {
   unb64u,
 } from "./crypto"
 import { VaultError } from "./errors"
+import { evmRecordPath, moveAsideOrphanRecord } from "./evm-record"
+import { createEvmRecordKey, openEvmRecordKey } from "./evm-record-key"
 import {
   assertKeyIdsAgree,
   canonicalHeader,
   type Envelope,
+  EVM_TEE_VAULT_VERSION,
   envelopeAad,
   type IndexPlaintext,
   indexRequiresVersion3,
+  indexRequiresVersion4,
   isPrfEnvelope,
   isSecureEnclaveEnvelope,
   type KeyEntry,
@@ -199,6 +203,18 @@ export async function unlockVault(
       wipe(indexBytes)
     }
     assertKeyIdsAgree(file)
+    // Phase 4b (D1): a version 4 index carries the record key's private half; it must derive the
+    // header's public half. The header is authenticated by now, so a swapped public key has already
+    // failed the index tag above; this catches a pair that does not match.
+    if (file.version === EVM_TEE_VAULT_VERSION && index.evmRecordKey !== undefined) {
+      const secret = await openEvmRecordKey(
+        payloadKey,
+        file.vaultId,
+        index.evmRecordKey,
+        file.evmRecordPublicKey as string,
+      )
+      wipe(secret)
+    }
     return { path, raw, file, index, payloadKey, dek, envelope }
   } catch (error) {
     wipe(dek)
@@ -470,8 +486,15 @@ export interface CommitPlan {
 export async function commitVault(
   vault: UnlockedVault,
   plan: CommitPlan,
-  clock: Pick<Deps, "now" | "sleep">,
+  clock: Pick<Deps, "now" | "sleep"> & Partial<Pick<Deps, "stderr">>,
 ): Promise<UnlockedVault> {
+  // Phase 4b (D1): the record key rides along on every write. A caller that rebuilt the index as
+  // `{ hd, entries }` must not drop it, so it is carried from the vault that was opened.
+  let index: IndexPlaintext =
+    plan.index.evmRecordKey === undefined && vault.index.evmRecordKey !== undefined
+      ? { ...plan.index, evmRecordKey: vault.index.evmRecordKey }
+      : plan.index
+  let orphaned: string | undefined
   const written = await withVaultLock(vault.path, clock, async () => {
     const current = await readVaultRaw(vault.path)
     if (current !== vault.raw) {
@@ -487,8 +510,24 @@ export async function commitVault(
     const envelopes = plan.envelopes ?? vault.file.envelopes
     const keys = [...vault.file.keys, ...(plan.addKeys ?? [])]
     // R6: the file keeps the version it had, and moves from 2 to 3 on exactly one kind of write,
-    // the one whose index needs the external branch. It never moves back.
-    const version = indexRequiresVersion3(plan.index) ? VAULT_VERSION : vault.file.version
+    // the one whose index needs the external branch. Phase 4b (D1): it moves to 4 on exactly one
+    // kind of write too, the one that creates the vault's first EVM TEE wallet, and that write
+    // creates the record key. It never moves back.
+    let evmRecordPublicKey = vault.file.evmRecordPublicKey
+    if (indexRequiresVersion4(index) && evmRecordPublicKey === undefined) {
+      // A record already at the record path cannot hold a line sealed to a key that does not exist
+      // yet: it is an earlier vault's. Moved aside, never deleted, before the key exists.
+      orphaned = await moveAsideOrphanRecord(vault.path, clock)
+      const created = await createEvmRecordKey(vault.payloadKey, vault.file.vaultId)
+      evmRecordPublicKey = created.publicKey
+      index = { ...index, evmRecordKey: created.blob }
+    }
+    // A version 4 file always carries the record key, so it always answers true here.
+    const version = indexRequiresVersion4(index)
+      ? EVM_TEE_VAULT_VERSION
+      : indexRequiresVersion3(index)
+        ? VAULT_VERSION
+        : vault.file.version
     const header: Omit<VaultFile, "index"> = {
       format: VAULT_FORMAT,
       version,
@@ -499,10 +538,11 @@ export async function commitVault(
       cipher: VAULT_CIPHER,
       envelopes,
       keyIds: keys.map((blob) => blob.id),
+      ...(evmRecordPublicKey !== undefined ? { evmRecordPublicKey } : {}),
       root: vault.file.root,
       keys,
     }
-    const next = await sealIndex(header, plan.index, vault.payloadKey)
+    const next = await sealIndex(header, index, vault.payloadKey)
     const contents = serializeVault(next)
     try {
       await writeKeystoreFile(vault.path, contents)
@@ -514,7 +554,12 @@ export async function commitVault(
 
   const path = sidecarPath(vault.path)
   await writeSidecar(path, nextSidecar(await readSidecar(path), written.next, plan.sidecar)).catch(() => {})
-  return { ...vault, raw: written.contents, file: written.next, index: plan.index }
+  if (orphaned !== undefined) {
+    clock.stderr?.write(
+      `A sealed EVM record from an earlier vault was at ${evmRecordPath(vault.path)}; it was moved to ${orphaned} (never deleted), and this vault starts a fresh record.\n`,
+    )
+  }
+  return { ...vault, raw: written.contents, file: written.next, index }
 }
 
 /** Phase 1's advisory lock, with the vault's own typed refusal on top of it. */

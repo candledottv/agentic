@@ -79,6 +79,7 @@ import { platformKey } from "./release"
 import { writeLocalFailure, writeUsageFailure } from "./render"
 import { defaultSecretsPath, promptHiddenSecret, promptVisibleLine, SECRET_REFS } from "./secret-store"
 import { maybeWriteUpdateNotice } from "./update-notice"
+import { appendEvmRecordForTrade } from "./vault/evm-tee"
 import type { HelperRun } from "./vault/fido2"
 import { RELEASE_POLICY } from "./vault/release-policy"
 import { CLI_VERSION } from "./version"
@@ -780,6 +781,8 @@ export async function buildRealDeps(): Promise<Deps> {
     // transport the moment it is asked to run, and every other command should stay untouched by
     // that. A static import would also make the server's own module graph part of startup for
     // `candle --version`.
+    // BE-391 (Phase 4b, D1): the sealed EVM record's writer, for BE-392's leg loop.
+    appendEvmRecord: appendEvmRecordForTrade,
     runMcpServer: async (env) => {
       const { runStdioServer } = await import("../../mcp/src/server")
       await runStdioServer(env)

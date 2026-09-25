@@ -10,7 +10,7 @@ import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
 import { VaultError } from "./errors"
-import type { KeyEntry, TeeGrantIdentity, VaultTeeMeta } from "./format"
+import { type KeyEntry, type TeeGrantIdentity, teeNetworkFor, type VaultTeeMeta } from "./format"
 import { completeLinkedWalletRead, type LinkedWalletRow } from "./linked-wallets"
 
 export type ReconcileVerdict =
@@ -85,7 +85,8 @@ export async function reconcileGrant(
     )
   }
 
-  const row = wallets.rows.find((candidate) => candidate.address === entry.address)
+  // Phase 4b: an EVM address may come back in either spelling (EIP-55 or lowercase).
+  const row = wallets.rows.find((candidate) => sameWalletAddress(candidate.address, entry.address))
   if (row !== undefined) {
     return { kind: "granted", row, account: wallets.account }
   }
@@ -94,7 +95,7 @@ export async function reconcileGrant(
   if (!stranded.complete) {
     return { kind: "unreadable", reason: stranded.incompleteReason ?? "the stranded-import read was incomplete" }
   }
-  const failure = stranded.failures.find((candidate) => candidate.address === entry.address)
+  const failure = stranded.failures.find((candidate) => sameWalletAddress(candidate.address, entry.address))
   if (failure?.stage === "convex_link") {
     return { kind: "strand-final", account: wallets.account, failure }
   }
@@ -207,7 +208,7 @@ export async function adoptGrantedRow(
     patch: {
       linkedWalletId: row._id,
       tee: {
-        network: "solana-mainnet",
+        network: teeNetworkFor(entry.chain),
         lifecycle: "enabled",
         vaultDestination: row.vaultDestination,
         ...(row.boundKeyPrefix !== undefined ? { boundKeyPrefix: row.boundKeyPrefix } : {}),
@@ -317,4 +318,10 @@ export function requireTeeDestination(entry: KeyEntry): string {
     })
   }
   return destination
+}
+
+/** Exact for Solana (base58 is case-sensitive); case-insensitive for a 0x address, whose two spellings are one address. */
+function sameWalletAddress(a: string, b: string): boolean {
+  if (a.startsWith("0x") && b.startsWith("0x")) return a.toLowerCase() === b.toLowerCase()
+  return a === b
 }

@@ -34,8 +34,16 @@
 import { base58 } from "@scure/base"
 import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
+import {
+  bytesToHex,
+  evmAddressFromSecret,
+  formatUnits,
+  HOOD_USDG_DECIMALS,
+  NATIVE_DECIMALS,
+  sameEvmAddress,
+} from "../evm-lite"
 import { renderTable } from "../render"
-import { describeRpcFailure, openSolanaClient, rpcRateLimitedError } from "../solana-endpoint"
+import { describeRpcFailure, openSolanaClient, rpcRateLimitedError, type SolanaClient } from "../solana-endpoint"
 import { isRateLimited, type SolanaRpcError, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import {
   type AccountRoom,
@@ -50,10 +58,19 @@ import {
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { addressFromSecret64 } from "../vault/ed25519"
 import { isVaultError, VaultError } from "../vault/errors"
+import {
+  appendScanStart,
+  assertHoodChain,
+  type EvmHoldings,
+  hoodHostLine,
+  readEvmHoldings,
+  resolveHoodClient,
+} from "../vault/evm-tee"
 import { type KeyEntry, parseVaultFile } from "../vault/format"
 import { wipe } from "../vault/hygiene"
 import {
   actingDestinations,
+  batchChain,
   destinationCell,
   formatSol,
   formatUsd,
@@ -235,9 +252,6 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
   const resolvedVault = vaultPathFor(ctx, parsed)
   if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
   const path = resolvedVault.path
-  // BE-355 (D1): the resolved endpoint, validated before the unlock and before the file is read.
-  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
-  if ("error" in solana) return usage(ctx, solana.error)
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure")
   const readTokens = parsed.booleans.has("--token-holdings")
   const { deps } = ctx
@@ -278,8 +292,29 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     assertRecoverableFactorExists(current.file.envelopes)
     deps.stderr.write(`✓ ${rows.length} rows read from ${pairsFile}\n`)
 
+    // Phase 4b (BE-391): a batch is one chain. An EVM batch promotes 4a EVM vault keys to Hood TEE
+    // wallets: the Hood preconditions, ETH holdings over the Hood RPC, and no signer-role read.
+    const chain = batchChain(current.index, rows)
+    if (chain === "mixed") {
+      throw new VaultError(
+        "SOLANA_COMMAND_EVM_KEY",
+        `${pairsFile} names both Solana and EVM keys; a promote-batch run is one chain.`,
+        { suggestion: "Nothing was written. Split the file into a Solana file and an EVM file and run each." },
+      )
+    }
+    const hood = chain === "evm" ? resolveHoodClient(ctx, parsed.values["--rpc-url"]) : undefined
+    if (hood !== undefined && "error" in hood) return usage(ctx, hood.error)
+    if (chain === "evm" && readTokens) {
+      return usage(ctx, "--token-holdings reads Solana token accounts; a Hood batch shows each key's ETH.")
+    }
+    // Solana only. Resolved after the chain is known, so a bad Solana endpoint does not refuse
+    // an EVM batch (BE-391).
+    const solana = chain === "evm" ? undefined : await openSolanaClient(ctx, parsed.values["--rpc-url"])
+    if (solana !== undefined && "error" in solana) return usage(ctx, solana.error)
+
     // ── Phase B ────────────────────────────────────────────────────────────────────────────
     const preflight = await preflightBatch(current.index, rows, {
+      chain,
       acceptUnknownExposure: acceptUnknown,
       now: new Date(deps.now()).toISOString(),
       verifySubject: async (subject) => {
@@ -329,25 +364,56 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     }
 
     // ── Holdings (D8): SOL for every address, always; tokens only on request ──────────────
+    // Phase 4b: ETH over the Hood RPC for an EVM batch, and the Hood height every row's scanStart
+    // records, read once before any write.
     const addresses = planned.map((item) => item.subject.address)
-    const rpc = solana.rpc
-    const host = solana.endpoint.host
     const observedAt = new Date(deps.now()).toISOString()
     let lamports: Map<string, bigint> | undefined
     let readError: string | undefined
     let rateLimited: SolanaRpcError | undefined
-    try {
-      const accounts = await rpc.getMultipleAccounts(addresses)
-      lamports = new Map(addresses.map((address, at) => [address, accounts[at]?.lamports ?? 0n]))
-      deps.stderr.write(
-        `✓ SOL read for ${addresses.length} addresses (${Math.ceil(addresses.length / 100)} requests)\n`,
-      )
-    } catch (error) {
-      if (isRateLimited(error)) rateLimited = error
-      readError = describeRpcFailure(error)
+    let hoodHeight: bigint | undefined
+    let evmHoldings: Map<string, EvmHoldings> | undefined
+    let rpc: SolanaClient["rpc"] | undefined
+    let host: string
+    if (hood !== undefined) {
+      host = hood.host
+      deps.stderr.write(`${hoodHostLine(hood, "the chain id, the Hood height and each key's ETH")}\n`)
+      await assertHoodChain(hood)
+      try {
+        hoodHeight = await hood.rpc.blockNumber()
+        const balances = new Map<string, bigint>()
+        evmHoldings = new Map()
+        for (const address of addresses) {
+          const held = await readEvmHoldings(hood.rpc, address)
+          evmHoldings.set(address, held)
+          balances.set(address, held.eth)
+        }
+        lamports = balances
+        deps.stderr.write(
+          `✓ ETH, USDG and WETH read for ${addresses.length} addresses (${addresses.length * 3} requests)\n`,
+        )
+      } catch (error) {
+        readError = error instanceof Error ? error.message : String(error)
+      }
+    } else {
+      if (solana === undefined || "error" in solana) {
+        return usage(ctx, "No Solana endpoint for this batch.")
+      }
+      rpc = solana.rpc
+      host = solana.endpoint.host
+      try {
+        const accounts = await rpc.getMultipleAccounts(addresses)
+        lamports = new Map(addresses.map((address, at) => [address, accounts[at]?.lamports ?? 0n]))
+        deps.stderr.write(
+          `✓ SOL read for ${addresses.length} addresses (${Math.ceil(addresses.length / 100)} requests)\n`,
+        )
+      } catch (error) {
+        if (isRateLimited(error)) rateLimited = error
+        readError = describeRpcFailure(error)
+      }
     }
     let tokenCounts: Map<string, number> | undefined
-    if (readTokens && lamports !== undefined) {
+    if (readTokens && lamports !== undefined && rpc !== undefined) {
       deps.stderr.write(
         `Reading token accounts for ${addresses.length} addresses: ${addresses.length * 2} requests over ${host}.\n`,
       )
@@ -367,13 +433,25 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     // would say "0 addresses".
     const actingAddresses = acting.map((item) => item.subject.address)
     let roles: SignerRolesResult | undefined
-    if (lamports !== undefined && actingAddresses.length > 0) {
+    if (hood !== undefined) {
+      // The role read is Solana's (mint, freeze, upgrade, stake). Nothing is read on Hood, so every
+      // group is `not checked` and the sentence takes that form.
+      roles = {
+        checked: [],
+        notChecked: ROLE_GROUP_IDS.map((group) => ({ group, reason: "not read on Hood" })),
+        found: [],
+        requests: 0,
+        planned: 0,
+        rateLimited: 0,
+        elapsedMs: 0,
+      }
+    } else if (lamports !== undefined && actingAddresses.length > 0 && rpc !== undefined) {
       deps.stderr.write(`${checkOpeningLine(actingAddresses.length, host)}\n`)
       roles = await runRoleCheck(ctx, rpc, actingAddresses)
     }
 
     // ── The screen (D8): the sentence, the table, the footer, the block, the prompt ───────
-    const table = renderBatchTable(planned, { lamports, tokenCounts, hasValueUsd, roles })
+    const table = renderBatchTable(planned, { lamports, tokenCounts, hasValueUsd, roles, evmHoldings })
     const footer = renderFooter({
       file: pairsFile,
       planned,
@@ -387,6 +465,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
       room,
       promotes,
       roles,
+      evm: hood !== undefined,
     })
 
     if (readError !== undefined) {
@@ -395,9 +474,13 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
       deps.stderr.write(`\n${table}\n\n${footer}\n`)
       // BE-355 (D3): a rate limit that survived the retry is named, with the fix, and nothing was written.
       if (rateLimited !== undefined) throw rpcRateLimitedError(ctx, host, rateLimited)
-      throw new VaultError("VAULT_UNREADABLE", `The SOL read over ${host} failed: ${readError}. Nothing was written.`, {
-        suggestion: "Check --rpc-url (or CANDLE_SOLANA_RPC_URL) and run again; the table above is what would have run.",
-      })
+      throw new VaultError(
+        "VAULT_UNREADABLE",
+        `The ${hood !== undefined ? "ETH" : "SOL"} read over ${host} failed: ${readError}. Nothing was written.`,
+        {
+          suggestion: `Check --rpc-url (or ${hood !== undefined ? "CANDLE_EVM_RPC_URL" : "CANDLE_SOLANA_RPC_URL"}) and run again; the table above is what would have run.`,
+        },
+      )
     }
 
     if (acting.length === 0) {
@@ -514,10 +597,13 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
             ),
           )
           await rowObserver?.({ line: row.line, stage: "pre-import", vault: current })
+          // Phase 4b (D1): every EVM TEE promote appends its own wallet's scanStart, after the
+          // write that created the record key (the batch's first EVM row).
+          if (hoodHeight !== undefined) await appendScanStart(ctx, path, subject.address, hoodHeight)
           const secret = await verifySubjectSecret(current, subject)
           let privateKey: string
           try {
-            privateKey = base58.encode(secret)
+            privateKey = subject.chain === "evm" ? bytesToHex(secret) : base58.encode(secret)
           } finally {
             wipe(secret)
           }
@@ -530,6 +616,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
             closeReopened: false,
             report: "return",
             resolvedVault,
+            chain: subject.chain,
           })
           if (imported.failure !== undefined || imported.submitted === undefined) {
             let failure: ReturnedFailure = imported.failure ?? {
@@ -679,7 +766,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
     // Once for the whole run, on the last row written: the vault is re-opened through the FACTOR,
     // which proves the envelopes still unwrap after every write above. The half a held-key check
     // cannot make, presented once, so a security key is touched twice for 146 keys (D9).
-    if (last !== undefined) await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx)
+    if (last !== undefined) await verifyWritten(path, last.address, last.keyId, opened.reopen, ctx, chain)
 
     // BE-322: every row landed; now the rebind, in chunks of at most 200, then the one report.
     const rebound = rebindPhase === undefined ? undefined : await runRebindPhase(ctx, rebindPhase, results)
@@ -724,7 +811,11 @@ async function runRebindPhase(
 async function verifySubjectSecret(vault: UnlockedVault, subject: KeyEntry): Promise<Uint8Array> {
   const secret = await decryptKey(vault, subject.id)
   try {
-    if (addressFromSecret64(secret) !== subject.address) {
+    const matches =
+      subject.chain === "evm"
+        ? sameEvmAddress(evmAddressFromSecret(secret), subject.address)
+        : addressFromSecret64(secret) === subject.address
+    if (!matches) {
       throw new VaultError("VAULT_VERIFY_FAILED", "Stored secret does not match the subject address.")
     }
   } catch (error) {
@@ -861,10 +952,14 @@ function renderBatchTable(
     tokenCounts?: Map<string, number>
     hasValueUsd: boolean
     roles?: SignerRolesResult
+    /** Phase 4b: an EVM batch's holdings (ETH, USDG, WETH), shown in place of SOL. */
+    evmHoldings?: Map<string, EvmHoldings>
   },
 ): string {
+  const evm = opts.evmHoldings !== undefined
   const headers = ["line", "state", "label", "address", "destination", "authority"]
-  headers.push(opts.tokenCounts !== undefined ? "SOL" : "SOL (tokens not read)")
+  headers.push(evm ? "ETH" : opts.tokenCounts !== undefined ? "SOL" : "SOL (tokens not read)")
+  if (evm) headers.push("USDG", "WETH")
   if (opts.tokenCounts !== undefined) headers.push("token accounts")
   if (opts.hasValueUsd) headers.push("value_usd (yours)")
   const rows = planned.map((item) => {
@@ -884,7 +979,12 @@ function renderBatchTable(
     const authority = item.kind === "skip" ? "" : opts.roles === undefined ? "?" : authorityCell(address, opts.roles)
     const cells = [String(item.row.line), state, item.subject.label, address, destination, authority]
     const lamports = opts.lamports?.get(address)
-    cells.push(lamports === undefined ? "unread" : formatSol(lamports))
+    cells.push(lamports === undefined ? "unread" : evm ? formatUnits(lamports, NATIVE_DECIMALS) : formatSol(lamports))
+    if (evm) {
+      const held = opts.evmHoldings?.get(address)
+      cells.push(held === undefined ? "unread" : formatUnits(held.usdg, HOOD_USDG_DECIMALS))
+      cells.push(held === undefined ? "unread" : formatUnits(held.weth, NATIVE_DECIMALS))
+    }
     if (opts.tokenCounts !== undefined) cells.push(String(opts.tokenCounts.get(address) ?? 0))
     if (opts.hasValueUsd) cells.push(item.row.valueUsd ?? "")
     return cells
@@ -907,6 +1007,8 @@ function renderFooter(opts: {
   promotes: number
   /** BE-296 (D8): the role read, when it ran (it does not when the SOL read failed). */
   roles?: SignerRolesResult
+  /** Phase 4b: an EVM batch reads ETH over the Hood RPC and no authority. */
+  evm?: boolean
 }): string {
   const skipped = opts.planned.filter((item) => item.kind === "skip").length
   const resumes = opts.planned.filter((item) => item.kind === "resume").length
@@ -924,7 +1026,13 @@ function renderFooter(opts: {
   lines.push(
     `Linked wallets: ${opts.room.active} of ${opts.room.cap} active on the ${tierName(opts.room.tier)} tier; this run links ${opts.promotes}, leaving ${opts.room.room - opts.promotes}.`,
   )
-  if (opts.readError !== undefined) {
+  if (opts.evm) {
+    lines.push(
+      opts.readError !== undefined
+        ? `ETH read over ${opts.host} FAILED: ${opts.readError}. The batch is refused.`
+        : `ETH read at ${opts.observedAt} over ${opts.host} (Hood). The signer-role read is Solana's; no authority is read on Hood.`,
+    )
+  } else if (opts.readError !== undefined) {
     lines.push(`SOL read over ${opts.host} FAILED: ${opts.readError}. The batch is refused.`)
   } else {
     lines.push(

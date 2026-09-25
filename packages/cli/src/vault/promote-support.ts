@@ -11,7 +11,7 @@ import { type CommandContext, resolveApiKey, resolveDeviceToken } from "../deps"
 import { apiKeyPrefix, candleEnvironment } from "../profiles"
 import type { SolanaRpc } from "../solana-lite"
 import { VaultError } from "./errors"
-import type { IndexPlaintext, KeyEntry } from "./format"
+import { branchOfPath, type IndexPlaintext, type KeyEntry, teeNetworkFor } from "./format"
 import {
   checkDoneLine,
   progressLine,
@@ -28,17 +28,26 @@ export function assertColdVaultDestination(
   opts: {
     subjectAddress?: string
     acceptUnknownExposure?: boolean
+    /**
+     * Phase 4b (D1): the chain of the wallet being pinned. A Hood TEE wallet's destination is a
+     * cold EVM vault key (`chain: "evm"`), a Solana one's a cold Solana vault key. Default Solana.
+     */
+    chain?: "solana" | "evm"
   } = {},
 ): KeyEntry {
-  // D3 (Phase 4a): a sweep destination is a Solana vault key. An EVM key named here is refused
-  // by name rather than reported as "no vault key matches", which would send the operator looking
-  // for a typo.
-  assertNotEvmEntry(index, destinationLabelOrAddress, "this destination")
-  const destination = findVaultRoleEntry(index, destinationLabelOrAddress)
+  const chain = opts.chain ?? "solana"
+  // D3 (Phase 4a): a Solana sweep destination is a Solana vault key. An EVM key named here is
+  // refused by name rather than reported as "no vault key matches", which would send the operator
+  // looking for a typo. Phase 4b: the same rule the other way for a Hood TEE wallet.
+  if (chain === "solana") assertNotEvmEntry(index, destinationLabelOrAddress, "this destination")
+  else assertNotSolanaEntry(index, destinationLabelOrAddress)
+  const destination =
+    chain === "solana"
+      ? findVaultRoleEntry(index, destinationLabelOrAddress)
+      : findEvmVaultRoleEntry(index, destinationLabelOrAddress)
   if (destination === undefined) {
     throw new VaultError("PROMOTE_DESTINATION_NOT_COLD", `No vault key matches ${destinationLabelOrAddress}.`, {
-      suggestion:
-        "Create a cold vault key with `candle vault new-key --chain solana`, or name an existing one that has never been remotely exposed or exported.",
+      suggestion: `Create a cold vault key with \`candle vault new-key --chain ${chain}\`, or name an existing one that has never been remotely exposed or exported.`,
     })
   }
   if (destination.role !== "vault") {
@@ -47,7 +56,7 @@ export function assertColdVaultDestination(
       `${destination.label ?? destination.address} is not a role:vault key.`,
     )
   }
-  if (opts.subjectAddress !== undefined && destination.address === opts.subjectAddress) {
+  if (opts.subjectAddress !== undefined && sameAddress(destination.address, opts.subjectAddress)) {
     throw new VaultError(
       "PROMOTE_SAME_KEY_DESTINATION",
       "The sweep destination must be a different vault key from the one being promoted.",
@@ -104,6 +113,36 @@ export function assertNotEvmEntry(
   )
 }
 
+/** Exact for Solana; case-insensitive for a 0x address, whose two spellings are one address. */
+export function sameAddress(a: string, b: string): boolean {
+  if (a.startsWith("0x") && b.startsWith("0x")) return a.toLowerCase() === b.toLowerCase()
+  return a === b
+}
+
+/**
+ * Phase 4b (D1): the EVM side of the destination rule. A Solana entry named as a Hood TEE wallet's
+ * destination is refused by name, before the cold checks.
+ */
+export function assertNotSolanaEntry(index: Pick<IndexPlaintext, "entries">, labelOrAddress: string): void {
+  const named = index.entries.find(
+    (entry) => entry.chain === "solana" && (entry.label === labelOrAddress || entry.address === labelOrAddress),
+  )
+  if (named === undefined) return
+  throw new VaultError(
+    "PROMOTE_DESTINATION_NOT_COLD",
+    `${named.label || named.address} is a Solana key; a Hood TEE wallet sweeps home to a cold EVM vault key.`,
+    { suggestion: "Nothing was written. Create one with: candle vault new-key --chain evm" },
+  )
+}
+
+/** Phase 4b: an EVM `role: "vault"` entry by label, else any EVM entry by address (either spelling). */
+export function findEvmVaultRoleEntry(index: IndexPlaintext, labelOrAddress: string): KeyEntry | undefined {
+  const evm = index.entries.filter((entry) => entry.chain === "evm")
+  const byLabel = evm.find((entry) => entry.role === "vault" && entry.label === labelOrAddress)
+  if (byLabel !== undefined) return byLabel
+  return evm.find((entry) => sameAddress(entry.address, labelOrAddress))
+}
+
 /** A Solana `role: "vault"` entry by label, else any Solana entry by address. An EVM entry never answers (D3). */
 export function findVaultRoleEntry(index: IndexPlaintext, labelOrAddress: string): KeyEntry | undefined {
   const solana = index.entries.filter((entry) => entry.chain === "solana")
@@ -121,7 +160,11 @@ export function findVaultRoleEntry(index: IndexPlaintext, labelOrAddress: string
 export function findTransferSource(index: IndexPlaintext, labelOrAddress: string): KeyEntry | undefined {
   const byLabel = (role: KeyEntry["role"]) =>
     index.entries.find((entry) => entry.role === role && entry.label !== undefined && entry.label === labelOrAddress)
-  return byLabel("vault") ?? byLabel("tee-wallet") ?? index.entries.find((entry) => entry.address === labelOrAddress)
+  return (
+    byLabel("vault") ??
+    byLabel("tee-wallet") ??
+    index.entries.find((entry) => sameAddress(entry.address, labelOrAddress))
+  )
 }
 
 export function findEntryByLabelOrAddress(index: IndexPlaintext, labelOrAddress: string): KeyEntry | undefined {
@@ -132,7 +175,9 @@ export function findEntryByLabelOrAddress(index: IndexPlaintext, labelOrAddress:
 
 /** Refuse when any TEE entry already pins this address as its sweep destination. */
 export function assertNotPinnedDestination(index: IndexPlaintext, subjectAddress: string): void {
-  const pinners = index.entries.filter((entry) => entry.tee?.vaultDestination === subjectAddress)
+  const pinners = index.entries.filter(
+    (entry) => entry.tee?.vaultDestination !== undefined && sameAddress(entry.tee.vaultDestination, subjectAddress),
+  )
   if (pinners.length === 0) return
   throw new VaultError(
     "PROMOTE_KEY_IS_PINNED_DESTINATION",
@@ -192,6 +237,56 @@ export function assertInPlacePreconditions(
 }
 
 /**
+ * Phase 4b (D1): CC-10 steps 1-3 for an EVM subject, the Hood side of `assertInPlacePreconditions`.
+ * The subject is a 4a EVM vault key (`role: "vault"`, on `m/44'/60'/n'/0/0`); the destination a
+ * different cold EVM vault key. An import-pending EVM TEE entry is a resume, as on Solana.
+ */
+export function assertEvmInPlacePreconditions(
+  index: IndexPlaintext,
+  subjectLabel: string,
+  sweepToLabel: string,
+  opts: { acceptUnknownExposure?: boolean },
+): { subject: KeyEntry; destination: KeyEntry; resume: boolean } {
+  const subject =
+    index.entries.find((entry) => entry.chain === "evm" && entry.label === subjectLabel) ??
+    index.entries.find((entry) => entry.chain === "evm" && sameAddress(entry.address, subjectLabel))
+  if (subject === undefined) {
+    throw new VaultError("PROMOTE_NOT_VAULT_KEY", `No EVM entry matches ${subjectLabel}.`)
+  }
+  const destinationFor = () =>
+    assertColdVaultDestination(index, sweepToLabel, {
+      subjectAddress: subject.address,
+      acceptUnknownExposure: opts.acceptUnknownExposure,
+      chain: "evm",
+    })
+  if (subject.role === "tee-wallet") {
+    const lifecycle = subject.tee?.lifecycle
+    if (lifecycle === "local-candidate" || lifecycle === "import-pending") {
+      return { subject, destination: destinationFor(), resume: true }
+    }
+    throw new VaultError(
+      "PROMOTE_ALREADY_TEE_WALLET",
+      `${subject.label ?? subject.address} is already a TEE wallet (${lifecycle ?? "unknown"}).`,
+    )
+  }
+  const located = subject.derivation !== undefined ? branchOfPath(subject.derivation.path) : undefined
+  if (subject.role !== "vault" || subject.tee !== undefined || located?.branch !== "evm") {
+    throw new VaultError(
+      "PROMOTE_NOT_VAULT_KEY",
+      `${subjectLabel} is not an EVM vault key on m/44'/60'/n'/0/0 without tee metadata.`,
+    )
+  }
+  if (subject.exposure?.exposureUnknown === true) {
+    throw new VaultError(
+      "PROMOTE_SUBJECT_EXPOSURE_UNKNOWN",
+      `${subject.label ?? subject.address} carries exposureUnknown and cannot be promoted in place.`,
+    )
+  }
+  assertNotPinnedDestination(index, subject.address)
+  return { subject, destination: destinationFor(), resume: false }
+}
+
+/**
  * The in-place promotion's entry mutation, extracted from `promoteInPlace` (BE-285, spec
  * 2026-09-22-cli-vault-promote-batch-design.md, D6, §8 step 1) so that the loop that writes it and
  * the batch preflight that PROJECTS it call the same function. If the two ever differed, the
@@ -216,7 +311,7 @@ export function promotedEntry(
       ...(entry.exposure?.exposureUnknown ? { exposureUnknown: true } : {}),
     },
     tee: {
-      network: "solana-mainnet",
+      network: teeNetworkFor(entry.chain),
       lifecycle: "import-pending",
       vaultDestination: destination.address,
       promotedInPlaceAt: now,
@@ -242,18 +337,19 @@ export function applyPromotion(
       ? promotedEntry(entry, destination, opts.label, opts.now, opts.acceptUnknownExposure)
       : entry,
   )
-  // Exposure index: record this vault-branch index as exposed.
-  const exposedVault = [...index.hd.exposedIndexes.solanaVault]
-  const derivedIndex = subject.derivation?.path.match(/m\/44'\/501'\/(\d+)'\/0'/)
-  if (derivedIndex?.[1] !== undefined) {
-    const idx = Number(derivedIndex[1])
-    if (!exposedVault.includes(idx)) exposedVault.push(idx)
-    exposedVault.sort((a, b) => a - b)
+  // Exposure index: record the subject's own branch index as exposed (the Solana vault branch, or
+  // Phase 4b's EVM vault branch for an in-place Hood promote).
+  const located = subject.derivation !== undefined ? branchOfPath(subject.derivation.path) : undefined
+  if (located === undefined || (located.branch !== "solanaVault" && located.branch !== "evm")) {
+    return { hd: index.hd, entries }
   }
+  const exposed = [...index.hd.exposedIndexes[located.branch]]
+  if (!exposed.includes(located.index)) exposed.push(located.index)
+  exposed.sort((a, b) => a - b)
   return {
     hd: {
       ...index.hd,
-      exposedIndexes: { ...index.hd.exposedIndexes, solanaVault: exposedVault },
+      exposedIndexes: { ...index.hd.exposedIndexes, [located.branch]: exposed },
     },
     entries,
   }
