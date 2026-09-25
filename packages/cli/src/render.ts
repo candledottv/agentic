@@ -235,7 +235,7 @@ export function writeLocalFailure(
   // `details` (D3, BE-241) is an optional nested object of facts the caller can act on, spread
   // into the `--json` envelope by whoever builds `failure` and deliberately absent from the human
   // rendering: the same facts are already in `message`, written as a sentence.
-  failure: { code: string; message: string; suggestion?: string; details?: Record<string, string> },
+  failure: { code: string; message: string; suggestion?: string; details?: Record<string, unknown> },
   json: boolean,
 ): void {
   if (json) {

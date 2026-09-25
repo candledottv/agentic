@@ -8939,6 +8939,1052 @@ var init_solana_endpoint = __esm(() => {
   init_errors();
 });
 
+// ../../node_modules/@noble/curves/esm/secp256k1.js
+function sqrtMod(y) {
+  const P2 = secp256k1_CURVE.p;
+  const _3n4 = BigInt(3), _6n = BigInt(6), _11n = BigInt(11), _22n = BigInt(22);
+  const _23n = BigInt(23), _44n = BigInt(44), _88n = BigInt(88);
+  const b2 = y * y * y % P2;
+  const b3 = b2 * b2 * y % P2;
+  const b6 = pow2(b3, _3n4, P2) * b3 % P2;
+  const b9 = pow2(b6, _3n4, P2) * b3 % P2;
+  const b11 = pow2(b9, _2n5, P2) * b2 % P2;
+  const b22 = pow2(b11, _11n, P2) * b11 % P2;
+  const b44 = pow2(b22, _22n, P2) * b22 % P2;
+  const b88 = pow2(b44, _44n, P2) * b44 % P2;
+  const b176 = pow2(b88, _88n, P2) * b88 % P2;
+  const b220 = pow2(b176, _44n, P2) * b44 % P2;
+  const b223 = pow2(b220, _3n4, P2) * b3 % P2;
+  const t1 = pow2(b223, _23n, P2) * b22 % P2;
+  const t2 = pow2(t1, _6n, P2) * b2 % P2;
+  const root = pow2(t2, _2n5, P2);
+  if (!Fpk1.eql(Fpk1.sqr(root), y))
+    throw new Error("Cannot find square root");
+  return root;
+}
+var secp256k1_CURVE, secp256k1_ENDO, _2n5, Fpk1, secp256k1;
+var init_secp256k1 = __esm(() => {
+  init_sha2();
+  init__shortw_utils();
+  init_modular();
+  /*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
+  secp256k1_CURVE = {
+    p: BigInt("0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f"),
+    n: BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"),
+    h: BigInt(1),
+    a: BigInt(0),
+    b: BigInt(7),
+    Gx: BigInt("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
+    Gy: BigInt("0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8")
+  };
+  secp256k1_ENDO = {
+    beta: BigInt("0x7ae96a2b657c07106e64479eac3434e99cf0497512f58995c1396c28719501ee"),
+    basises: [
+      [BigInt("0x3086d221a7d46bcde86c90e49284eb15"), -BigInt("0xe4437ed6010e88286f547fa90abfe4c3")],
+      [BigInt("0x114ca50f7a8e2f3f657c1108d9d44cfd8"), BigInt("0x3086d221a7d46bcde86c90e49284eb15")]
+    ]
+  };
+  _2n5 = /* @__PURE__ */ BigInt(2);
+  Fpk1 = Field(secp256k1_CURVE.p, { sqrt: sqrtMod });
+  secp256k1 = createCurve({ ...secp256k1_CURVE, Fp: Fpk1, lowS: true, endo: secp256k1_ENDO }, sha256);
+});
+
+// ../../node_modules/@noble/hashes/esm/sha3.js
+function keccakP(s, rounds = 24) {
+  const B = new Uint32Array(5 * 2);
+  for (let round = 24 - rounds;round < 24; round++) {
+    for (let x = 0;x < 10; x++)
+      B[x] = s[x] ^ s[x + 10] ^ s[x + 20] ^ s[x + 30] ^ s[x + 40];
+    for (let x = 0;x < 10; x += 2) {
+      const idx1 = (x + 8) % 10;
+      const idx0 = (x + 2) % 10;
+      const B0 = B[idx0];
+      const B1 = B[idx0 + 1];
+      const Th = rotlH(B0, B1, 1) ^ B[idx1];
+      const Tl = rotlL(B0, B1, 1) ^ B[idx1 + 1];
+      for (let y = 0;y < 50; y += 10) {
+        s[x + y] ^= Th;
+        s[x + y + 1] ^= Tl;
+      }
+    }
+    let curH = s[2];
+    let curL = s[3];
+    for (let t = 0;t < 24; t++) {
+      const shift = SHA3_ROTL[t];
+      const Th = rotlH(curH, curL, shift);
+      const Tl = rotlL(curH, curL, shift);
+      const PI = SHA3_PI[t];
+      curH = s[PI];
+      curL = s[PI + 1];
+      s[PI] = Th;
+      s[PI + 1] = Tl;
+    }
+    for (let y = 0;y < 50; y += 10) {
+      for (let x = 0;x < 10; x++)
+        B[x] = s[y + x];
+      for (let x = 0;x < 10; x++)
+        s[y + x] ^= ~B[(x + 2) % 10] & B[(x + 4) % 10];
+    }
+    s[0] ^= SHA3_IOTA_H[round];
+    s[1] ^= SHA3_IOTA_L[round];
+  }
+  clean(B);
+}
+var _0n7, _1n7, _2n6, _7n2, _256n, _0x71n, SHA3_PI, SHA3_ROTL, _SHA3_IOTA, IOTAS, SHA3_IOTA_H, SHA3_IOTA_L, rotlH = (h, l, s) => s > 32 ? rotlBH(h, l, s) : rotlSH(h, l, s), rotlL = (h, l, s) => s > 32 ? rotlBL(h, l, s) : rotlSL(h, l, s), Keccak, gen = (suffix, blockLen, outputLen) => createHasher(() => new Keccak(blockLen, suffix, outputLen)), keccak_256;
+var init_sha3 = __esm(() => {
+  init__u64();
+  init_utils();
+  _0n7 = BigInt(0);
+  _1n7 = BigInt(1);
+  _2n6 = BigInt(2);
+  _7n2 = BigInt(7);
+  _256n = BigInt(256);
+  _0x71n = BigInt(113);
+  SHA3_PI = [];
+  SHA3_ROTL = [];
+  _SHA3_IOTA = [];
+  for (let round = 0, R = _1n7, x = 1, y = 0;round < 24; round++) {
+    [x, y] = [y, (2 * x + 3 * y) % 5];
+    SHA3_PI.push(2 * (5 * y + x));
+    SHA3_ROTL.push((round + 1) * (round + 2) / 2 % 64);
+    let t = _0n7;
+    for (let j = 0;j < 7; j++) {
+      R = (R << _1n7 ^ (R >> _7n2) * _0x71n) % _256n;
+      if (R & _2n6)
+        t ^= _1n7 << (_1n7 << /* @__PURE__ */ BigInt(j)) - _1n7;
+    }
+    _SHA3_IOTA.push(t);
+  }
+  IOTAS = split(_SHA3_IOTA, true);
+  SHA3_IOTA_H = IOTAS[0];
+  SHA3_IOTA_L = IOTAS[1];
+  Keccak = class Keccak extends Hash {
+    constructor(blockLen, suffix, outputLen, enableXOF = false, rounds = 24) {
+      super();
+      this.pos = 0;
+      this.posOut = 0;
+      this.finished = false;
+      this.destroyed = false;
+      this.enableXOF = false;
+      this.blockLen = blockLen;
+      this.suffix = suffix;
+      this.outputLen = outputLen;
+      this.enableXOF = enableXOF;
+      this.rounds = rounds;
+      anumber(outputLen);
+      if (!(0 < blockLen && blockLen < 200))
+        throw new Error("only keccak-f1600 function is supported");
+      this.state = new Uint8Array(200);
+      this.state32 = u32(this.state);
+    }
+    clone() {
+      return this._cloneInto();
+    }
+    keccak() {
+      swap32IfBE(this.state32);
+      keccakP(this.state32, this.rounds);
+      swap32IfBE(this.state32);
+      this.posOut = 0;
+      this.pos = 0;
+    }
+    update(data) {
+      aexists(this);
+      data = toBytes(data);
+      abytes(data);
+      const { blockLen, state } = this;
+      const len = data.length;
+      for (let pos = 0;pos < len; ) {
+        const take = Math.min(blockLen - this.pos, len - pos);
+        for (let i = 0;i < take; i++)
+          state[this.pos++] ^= data[pos++];
+        if (this.pos === blockLen)
+          this.keccak();
+      }
+      return this;
+    }
+    finish() {
+      if (this.finished)
+        return;
+      this.finished = true;
+      const { state, suffix, pos, blockLen } = this;
+      state[pos] ^= suffix;
+      if ((suffix & 128) !== 0 && pos === blockLen - 1)
+        this.keccak();
+      state[blockLen - 1] ^= 128;
+      this.keccak();
+    }
+    writeInto(out) {
+      aexists(this, false);
+      abytes(out);
+      this.finish();
+      const bufferOut = this.state;
+      const { blockLen } = this;
+      for (let pos = 0, len = out.length;pos < len; ) {
+        if (this.posOut >= blockLen)
+          this.keccak();
+        const take = Math.min(blockLen - this.posOut, len - pos);
+        out.set(bufferOut.subarray(this.posOut, this.posOut + take), pos);
+        this.posOut += take;
+        pos += take;
+      }
+      return out;
+    }
+    xofInto(out) {
+      if (!this.enableXOF)
+        throw new Error("XOF is not possible for this instance");
+      return this.writeInto(out);
+    }
+    xof(bytes) {
+      anumber(bytes);
+      return this.xofInto(new Uint8Array(bytes));
+    }
+    digestInto(out) {
+      aoutput(out, this);
+      if (this.finished)
+        throw new Error("digest() was already called");
+      this.writeInto(out);
+      this.destroy();
+      return out;
+    }
+    digest() {
+      return this.digestInto(new Uint8Array(this.outputLen));
+    }
+    destroy() {
+      this.destroyed = true;
+      clean(this.state);
+    }
+    _cloneInto(to) {
+      const { blockLen, suffix, outputLen, rounds, enableXOF } = this;
+      to || (to = new Keccak(blockLen, suffix, outputLen, enableXOF, rounds));
+      to.state32.set(this.state32);
+      to.pos = this.pos;
+      to.posOut = this.posOut;
+      to.finished = this.finished;
+      to.rounds = rounds;
+      to.suffix = suffix;
+      to.outputLen = outputLen;
+      to.enableXOF = enableXOF;
+      to.destroyed = this.destroyed;
+      return to;
+    }
+  };
+  keccak_256 = /* @__PURE__ */ (() => gen(1, 136, 256 / 8))();
+});
+
+// ../../node_modules/@noble/hashes/esm/legacy.js
+function ripemd_f(group, x, y, z) {
+  if (group === 0)
+    return x ^ y ^ z;
+  if (group === 1)
+    return x & y | ~x & z;
+  if (group === 2)
+    return (x | ~y) ^ z;
+  if (group === 3)
+    return x & z | y & ~z;
+  return x ^ (y | ~z);
+}
+var Rho160, Id160, Pi160, idxLR, idxL, idxR, shifts160, shiftsL160, shiftsR160, Kl160, Kr160, BUF_160, RIPEMD160, ripemd160;
+var init_legacy = __esm(() => {
+  init__md();
+  init_utils();
+  Rho160 = /* @__PURE__ */ Uint8Array.from([
+    7,
+    4,
+    13,
+    1,
+    10,
+    6,
+    15,
+    3,
+    12,
+    0,
+    9,
+    5,
+    2,
+    14,
+    11,
+    8
+  ]);
+  Id160 = /* @__PURE__ */ (() => Uint8Array.from(new Array(16).fill(0).map((_, i) => i)))();
+  Pi160 = /* @__PURE__ */ (() => Id160.map((i) => (9 * i + 5) % 16))();
+  idxLR = /* @__PURE__ */ (() => {
+    const L = [Id160];
+    const R = [Pi160];
+    const res = [L, R];
+    for (let i = 0;i < 4; i++)
+      for (let j of res)
+        j.push(j[i].map((k) => Rho160[k]));
+    return res;
+  })();
+  idxL = /* @__PURE__ */ (() => idxLR[0])();
+  idxR = /* @__PURE__ */ (() => idxLR[1])();
+  shifts160 = /* @__PURE__ */ [
+    [11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8],
+    [12, 13, 11, 15, 6, 9, 9, 7, 12, 15, 11, 13, 7, 8, 7, 7],
+    [13, 15, 14, 11, 7, 7, 6, 8, 13, 14, 13, 12, 5, 5, 6, 9],
+    [14, 11, 12, 14, 8, 6, 5, 5, 15, 12, 15, 14, 9, 9, 8, 6],
+    [15, 12, 13, 13, 9, 5, 8, 6, 14, 11, 12, 11, 8, 6, 5, 5]
+  ].map((i) => Uint8Array.from(i));
+  shiftsL160 = /* @__PURE__ */ idxL.map((idx, i) => idx.map((j) => shifts160[i][j]));
+  shiftsR160 = /* @__PURE__ */ idxR.map((idx, i) => idx.map((j) => shifts160[i][j]));
+  Kl160 = /* @__PURE__ */ Uint32Array.from([
+    0,
+    1518500249,
+    1859775393,
+    2400959708,
+    2840853838
+  ]);
+  Kr160 = /* @__PURE__ */ Uint32Array.from([
+    1352829926,
+    1548603684,
+    1836072691,
+    2053994217,
+    0
+  ]);
+  BUF_160 = /* @__PURE__ */ new Uint32Array(16);
+  RIPEMD160 = class RIPEMD160 extends HashMD {
+    constructor() {
+      super(64, 20, 8, true);
+      this.h0 = 1732584193 | 0;
+      this.h1 = 4023233417 | 0;
+      this.h2 = 2562383102 | 0;
+      this.h3 = 271733878 | 0;
+      this.h4 = 3285377520 | 0;
+    }
+    get() {
+      const { h0, h1, h2, h3, h4 } = this;
+      return [h0, h1, h2, h3, h4];
+    }
+    set(h0, h1, h2, h3, h4) {
+      this.h0 = h0 | 0;
+      this.h1 = h1 | 0;
+      this.h2 = h2 | 0;
+      this.h3 = h3 | 0;
+      this.h4 = h4 | 0;
+    }
+    process(view, offset) {
+      for (let i = 0;i < 16; i++, offset += 4)
+        BUF_160[i] = view.getUint32(offset, true);
+      let al = this.h0 | 0, ar = al, bl = this.h1 | 0, br = bl, cl = this.h2 | 0, cr = cl, dl = this.h3 | 0, dr = dl, el = this.h4 | 0, er = el;
+      for (let group = 0;group < 5; group++) {
+        const rGroup = 4 - group;
+        const hbl = Kl160[group], hbr = Kr160[group];
+        const rl = idxL[group], rr = idxR[group];
+        const sl = shiftsL160[group], sr = shiftsR160[group];
+        for (let i = 0;i < 16; i++) {
+          const tl = rotl(al + ripemd_f(group, bl, cl, dl) + BUF_160[rl[i]] + hbl, sl[i]) + el | 0;
+          al = el, el = dl, dl = rotl(cl, 10) | 0, cl = bl, bl = tl;
+        }
+        for (let i = 0;i < 16; i++) {
+          const tr = rotl(ar + ripemd_f(rGroup, br, cr, dr) + BUF_160[rr[i]] + hbr, sr[i]) + er | 0;
+          ar = er, er = dr, dr = rotl(cr, 10) | 0, cr = br, br = tr;
+        }
+      }
+      this.set(this.h1 + cl + dr | 0, this.h2 + dl + er | 0, this.h3 + el + ar | 0, this.h4 + al + br | 0, this.h0 + bl + cr | 0);
+    }
+    roundClean() {
+      clean(BUF_160);
+    }
+    destroy() {
+      this.destroyed = true;
+      clean(this.buffer);
+      this.set(0, 0, 0, 0, 0);
+    }
+  };
+  ripemd160 = /* @__PURE__ */ createHasher(() => new RIPEMD160);
+});
+
+// ../../node_modules/@scure/bip32/lib/esm/index.js
+function bytesToNumber(bytes) {
+  abytes(bytes);
+  const h = bytes.length === 0 ? "0" : bytesToHex(bytes);
+  return BigInt("0x" + h);
+}
+function numberToBytes(num) {
+  if (typeof num !== "bigint")
+    throw new Error("bigint expected");
+  return hexToBytes(num.toString(16).padStart(64, "0"));
+}
+
+class HDKey {
+  get fingerprint() {
+    if (!this.pubHash) {
+      throw new Error("No publicKey set!");
+    }
+    return fromU32(this.pubHash);
+  }
+  get identifier() {
+    return this.pubHash;
+  }
+  get pubKeyHash() {
+    return this.pubHash;
+  }
+  get privateKey() {
+    return this.privKeyBytes || null;
+  }
+  get publicKey() {
+    return this.pubKey || null;
+  }
+  get privateExtendedKey() {
+    const priv = this.privateKey;
+    if (!priv) {
+      throw new Error("No private key");
+    }
+    return base58check.encode(this.serialize(this.versions.private, concatBytes(new Uint8Array([0]), priv)));
+  }
+  get publicExtendedKey() {
+    if (!this.pubKey) {
+      throw new Error("No public key");
+    }
+    return base58check.encode(this.serialize(this.versions.public, this.pubKey));
+  }
+  static fromMasterSeed(seed, versions = BITCOIN_VERSIONS) {
+    abytes(seed);
+    if (8 * seed.length < 128 || 8 * seed.length > 512) {
+      throw new Error("HDKey: seed length must be between 128 and 512 bits; 256 bits is advised, got " + seed.length);
+    }
+    const I = hmac(sha512, MASTER_SECRET, seed);
+    return new HDKey({
+      versions,
+      chainCode: I.slice(32),
+      privateKey: I.slice(0, 32)
+    });
+  }
+  static fromExtendedKey(base58key, versions = BITCOIN_VERSIONS) {
+    const keyBuffer = base58check.decode(base58key);
+    const keyView = createView(keyBuffer);
+    const version = keyView.getUint32(0, false);
+    const opt = {
+      versions,
+      depth: keyBuffer[4],
+      parentFingerprint: keyView.getUint32(5, false),
+      index: keyView.getUint32(9, false),
+      chainCode: keyBuffer.slice(13, 45)
+    };
+    const key = keyBuffer.slice(45);
+    const isPriv = key[0] === 0;
+    if (version !== versions[isPriv ? "private" : "public"]) {
+      throw new Error("Version mismatch");
+    }
+    if (isPriv) {
+      return new HDKey({ ...opt, privateKey: key.slice(1) });
+    } else {
+      return new HDKey({ ...opt, publicKey: key });
+    }
+  }
+  static fromJSON(json) {
+    return HDKey.fromExtendedKey(json.xpriv);
+  }
+  constructor(opt) {
+    this.depth = 0;
+    this.index = 0;
+    this.chainCode = null;
+    this.parentFingerprint = 0;
+    if (!opt || typeof opt !== "object") {
+      throw new Error("HDKey.constructor must not be called directly");
+    }
+    this.versions = opt.versions || BITCOIN_VERSIONS;
+    this.depth = opt.depth || 0;
+    this.chainCode = opt.chainCode || null;
+    this.index = opt.index || 0;
+    this.parentFingerprint = opt.parentFingerprint || 0;
+    if (!this.depth) {
+      if (this.parentFingerprint || this.index) {
+        throw new Error("HDKey: zero depth with non-zero index/parent fingerprint");
+      }
+    }
+    if (opt.publicKey && opt.privateKey) {
+      throw new Error("HDKey: publicKey and privateKey at same time.");
+    }
+    if (opt.privateKey) {
+      if (!secp256k1.utils.isValidPrivateKey(opt.privateKey)) {
+        throw new Error("Invalid private key");
+      }
+      this.privKey = typeof opt.privateKey === "bigint" ? opt.privateKey : bytesToNumber(opt.privateKey);
+      this.privKeyBytes = numberToBytes(this.privKey);
+      this.pubKey = secp256k1.getPublicKey(opt.privateKey, true);
+    } else if (opt.publicKey) {
+      this.pubKey = Point.fromHex(opt.publicKey).toRawBytes(true);
+    } else {
+      throw new Error("HDKey: no public or private key provided");
+    }
+    this.pubHash = hash160(this.pubKey);
+  }
+  derive(path) {
+    if (!/^[mM]'?/.test(path)) {
+      throw new Error('Path must start with "m" or "M"');
+    }
+    if (/^[mM]'?$/.test(path)) {
+      return this;
+    }
+    const parts = path.replace(/^[mM]'?\//, "").split("/");
+    let child = this;
+    for (const c of parts) {
+      const m = /^(\d+)('?)$/.exec(c);
+      const m1 = m && m[1];
+      if (!m || m.length !== 3 || typeof m1 !== "string")
+        throw new Error("invalid child index: " + c);
+      let idx = +m1;
+      if (!Number.isSafeInteger(idx) || idx >= HARDENED_OFFSET) {
+        throw new Error("Invalid index");
+      }
+      if (m[2] === "'") {
+        idx += HARDENED_OFFSET;
+      }
+      child = child.deriveChild(idx);
+    }
+    return child;
+  }
+  deriveChild(index) {
+    if (!this.pubKey || !this.chainCode) {
+      throw new Error("No publicKey or chainCode set");
+    }
+    let data = toU32(index);
+    if (index >= HARDENED_OFFSET) {
+      const priv = this.privateKey;
+      if (!priv) {
+        throw new Error("Could not derive hardened child key");
+      }
+      data = concatBytes(new Uint8Array([0]), priv, data);
+    } else {
+      data = concatBytes(this.pubKey, data);
+    }
+    const I = hmac(sha512, this.chainCode, data);
+    const childTweak = bytesToNumber(I.slice(0, 32));
+    const chainCode = I.slice(32);
+    if (!secp256k1.utils.isValidPrivateKey(childTweak)) {
+      throw new Error("Tweak bigger than curve order");
+    }
+    const opt = {
+      versions: this.versions,
+      chainCode,
+      depth: this.depth + 1,
+      parentFingerprint: this.fingerprint,
+      index
+    };
+    try {
+      if (this.privateKey) {
+        const added = mod(this.privKey + childTweak, secp256k1.CURVE.n);
+        if (!secp256k1.utils.isValidPrivateKey(added)) {
+          throw new Error("The tweak was out of range or the resulted private key is invalid");
+        }
+        opt.privateKey = added;
+      } else {
+        const added = Point.fromHex(this.pubKey).add(Point.fromPrivateKey(childTweak));
+        if (added.equals(Point.ZERO)) {
+          throw new Error("The tweak was equal to negative P, which made the result key invalid");
+        }
+        opt.publicKey = added.toRawBytes(true);
+      }
+      return new HDKey(opt);
+    } catch (err) {
+      return this.deriveChild(index + 1);
+    }
+  }
+  sign(hash) {
+    if (!this.privateKey) {
+      throw new Error("No privateKey set!");
+    }
+    abytes(hash, 32);
+    return secp256k1.sign(hash, this.privKey).toCompactRawBytes();
+  }
+  verify(hash, signature) {
+    abytes(hash, 32);
+    abytes(signature, 64);
+    if (!this.publicKey) {
+      throw new Error("No publicKey set!");
+    }
+    let sig;
+    try {
+      sig = secp256k1.Signature.fromCompact(signature);
+    } catch (error) {
+      return false;
+    }
+    return secp256k1.verify(sig, hash, this.publicKey);
+  }
+  wipePrivateData() {
+    this.privKey = undefined;
+    if (this.privKeyBytes) {
+      this.privKeyBytes.fill(0);
+      this.privKeyBytes = undefined;
+    }
+    return this;
+  }
+  toJSON() {
+    return {
+      xpriv: this.privateExtendedKey,
+      xpub: this.publicExtendedKey
+    };
+  }
+  serialize(version, key) {
+    if (!this.chainCode) {
+      throw new Error("No chainCode set");
+    }
+    abytes(key, 33);
+    return concatBytes(toU32(version), new Uint8Array([this.depth]), toU32(this.parentFingerprint), toU32(this.index), this.chainCode, key);
+  }
+}
+var Point, base58check, MASTER_SECRET, BITCOIN_VERSIONS, HARDENED_OFFSET = 2147483648, hash160 = (data) => ripemd160(sha256(data)), fromU32 = (data) => createView(data).getUint32(0, false), toU32 = (n) => {
+  if (!Number.isSafeInteger(n) || n < 0 || n > 2 ** 32 - 1) {
+    throw new Error("invalid number, should be from 0 to 2**32-1, got " + n);
+  }
+  const buf = new Uint8Array(4);
+  createView(buf).setUint32(0, n, false);
+  return buf;
+};
+var init_esm2 = __esm(() => {
+  init_modular();
+  init_secp256k1();
+  init_hmac();
+  init_legacy();
+  init_sha2();
+  init_utils();
+  init_esm();
+  /*! scure-bip32 - MIT License (c) 2022 Patricio Palladino, Paul Miller (paulmillr.com) */
+  Point = secp256k1.ProjectivePoint;
+  base58check = createBase58check(sha256);
+  MASTER_SECRET = utf8ToBytes("Bitcoin seed");
+  BITCOIN_VERSIONS = { private: 76066276, public: 76067358 };
+});
+
+// src/evm-lite.ts
+function bytesToHex2(bytes) {
+  let out = "";
+  for (const b of bytes)
+    out += b.toString(16).padStart(2, "0");
+  return `0x${out}`;
+}
+function hexToBytes2(hex2) {
+  const body = hex2.startsWith("0x") ? hex2.slice(2) : hex2;
+  if (body.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(body))
+    throw new Error(`not a hex string: ${hex2}`);
+  const out = new Uint8Array(body.length / 2);
+  for (let i = 0;i < out.length; i++)
+    out[i] = Number.parseInt(body.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+function hexToBigInt(hex2) {
+  const body = hex2.startsWith("0x") ? hex2.slice(2) : hex2;
+  if (body === "")
+    return 0n;
+  if (!/^[0-9a-fA-F]+$/.test(body))
+    throw new Error(`not a hex quantity: ${hex2}`);
+  return BigInt(`0x${body}`);
+}
+function quantity(value) {
+  return `0x${BigInt(value).toString(16)}`;
+}
+function uintToMinimalBytes(value) {
+  if (value < 0n)
+    throw new Error("RLP integers are non-negative");
+  if (value === 0n)
+    return new Uint8Array(0);
+  let hex2 = value.toString(16);
+  if (hex2.length % 2 !== 0)
+    hex2 = `0${hex2}`;
+  return hexToBytes2(hex2);
+}
+function rlpLength(length, offset) {
+  if (length < 56)
+    return Uint8Array.of(offset + length);
+  const lengthBytes = uintToMinimalBytes(BigInt(length));
+  return concat2(Uint8Array.of(offset + 55 + lengthBytes.length), lengthBytes);
+}
+function concat2(...parts) {
+  const out = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+function rlpEncode(item) {
+  if (item instanceof Uint8Array) {
+    if (item.length === 1 && item[0] < 128)
+      return item;
+    return concat2(rlpLength(item.length, 128), item);
+  }
+  const body = concat2(...item.map(rlpEncode));
+  return concat2(rlpLength(body.length, 192), body);
+}
+function toChecksumAddress(address) {
+  const lower = (address.startsWith("0x") ? address.slice(2) : address).toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(lower))
+    throw new Error(`not an EVM address: ${address}`);
+  const digest = bytesToHex2(keccak_256(new TextEncoder().encode(lower))).slice(2);
+  let out = "0x";
+  for (let i = 0;i < lower.length; i++) {
+    const c = lower[i];
+    out += Number.parseInt(digest[i], 16) >= 8 ? c.toUpperCase() : c;
+  }
+  return out;
+}
+function looksLikeEvmAddress(value) {
+  return /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+function checkEvmAddress(value) {
+  if (!looksLikeEvmAddress(value))
+    return { ok: false, reason: "not 0x followed by 40 hex characters" };
+  const body = value.slice(2);
+  const checksummed = toChecksumAddress(value);
+  const hasLower = /[a-f]/.test(body);
+  const hasUpper = /[A-F]/.test(body);
+  if (hasLower && hasUpper && checksummed !== value) {
+    return { ok: false, reason: "its mixed-case EIP-55 checksum does not match" };
+  }
+  return { ok: true, address: checksummed };
+}
+function sameEvmAddress(a, b) {
+  return a.toLowerCase() === b.toLowerCase();
+}
+function evmAddressFromSecret(secret) {
+  if (secret.length !== EVM_SECRET_BYTES) {
+    throw new Error(`expected a ${EVM_SECRET_BYTES}-byte secp256k1 scalar, got ${secret.length}`);
+  }
+  const pub = secp256k1.getPublicKey(secret, false).slice(1);
+  return toChecksumAddress(bytesToHex2(keccak_256(pub)).slice(-40));
+}
+function evmDerivationPath(index) {
+  if (!Number.isInteger(index) || index < 0 || index >= 2147483648)
+    throw new Error(`index out of range: ${index}`);
+  return `m/44'/60'/${index}'/0/0`;
+}
+function deriveEvmKey(seed, index) {
+  const path = evmDerivationPath(index);
+  const root = HDKey.fromMasterSeed(seed);
+  try {
+    const leaf = root.derive(path);
+    try {
+      if (leaf.privateKey === null)
+        throw new Error("BIP-32 derivation produced no private key");
+      const secret = Uint8Array.from(leaf.privateKey);
+      return { secret, address: evmAddressFromSecret(secret), path };
+    } finally {
+      leaf.wipePrivateData();
+    }
+  } finally {
+    root.wipePrivateData();
+  }
+}
+function buildNativeTransfer(input) {
+  return { ...input, to: toChecksumAddress(input.to), data: new Uint8Array(0) };
+}
+function buildErc20Transfer(input) {
+  const { token, recipient, amount, ...fees } = input;
+  return { ...fees, to: toChecksumAddress(token), value: 0n, data: encodeErc20Transfer(recipient, amount) };
+}
+function abiWord(value) {
+  if (value < 0n || value >= 1n << 256n)
+    throw new Error("uint256 out of range");
+  const out = new Uint8Array(32);
+  out.set(uintToMinimalBytes(value), 32 - uintToMinimalBytes(value).length);
+  return out;
+}
+function abiAddress(address) {
+  const out = new Uint8Array(32);
+  out.set(hexToBytes2(address), 12);
+  return out;
+}
+function encodeErc20Transfer(recipient, amount) {
+  return concat2(hexToBytes2(ERC20_TRANSFER_SELECTOR), abiAddress(recipient), abiWord(amount));
+}
+function unsignedFields(tx) {
+  return [
+    uintToMinimalBytes(tx.chainId),
+    uintToMinimalBytes(tx.nonce),
+    uintToMinimalBytes(tx.maxPriorityFeePerGas),
+    uintToMinimalBytes(tx.maxFeePerGas),
+    uintToMinimalBytes(tx.gas),
+    hexToBytes2(tx.to),
+    uintToMinimalBytes(tx.value),
+    tx.data,
+    []
+  ];
+}
+function signingPayload(tx) {
+  return keccak_256(concat2(TYPE_2, rlpEncode(unsignedFields(tx))));
+}
+function signTransaction(tx, secret) {
+  if (secret.length !== EVM_SECRET_BYTES) {
+    throw new Error(`expected a ${EVM_SECRET_BYTES}-byte secp256k1 scalar, got ${secret.length}`);
+  }
+  const signature = secp256k1.sign(signingPayload(tx), secret, { lowS: true, prehash: false });
+  const yParity = signature.recovery === 1 ? 1 : 0;
+  const raw = concat2(TYPE_2, rlpEncode([
+    ...unsignedFields(tx),
+    uintToMinimalBytes(BigInt(yParity)),
+    uintToMinimalBytes(signature.r),
+    uintToMinimalBytes(signature.s)
+  ]));
+  return { raw, hash: bytesToHex2(keccak_256(raw)), yParity, r: signature.r, s: signature.s };
+}
+function signedTransactionCovers(raw, tx) {
+  if (raw[0] !== 2)
+    return false;
+  const list = raw.subarray(1);
+  const body = rlpListBody(list);
+  if (body === undefined)
+    return false;
+  const unsigned = rlpListBody(rlpEncode(unsignedFields(tx)));
+  if (unsigned === undefined || body.length <= unsigned.length)
+    return false;
+  for (let i = 0;i < unsigned.length; i++)
+    if (body[i] !== unsigned[i])
+      return false;
+  return true;
+}
+function rlpListBody(bytes) {
+  const first = bytes[0];
+  if (first === undefined || first < 192)
+    return;
+  let start;
+  let length;
+  if (first <= 247) {
+    start = 1;
+    length = first - 192;
+  } else {
+    const size = first - 247;
+    if (bytes.length < 1 + size)
+      return;
+    start = 1 + size;
+    length = Number(hexToBigInt(bytesToHex2(bytes.subarray(1, start))));
+  }
+  if (start + length !== bytes.length)
+    return;
+  return bytes.subarray(start);
+}
+function formatUnits(raw, decimals) {
+  const negative = raw < 0n;
+  const magnitude = negative ? -raw : raw;
+  const base = 10n ** BigInt(decimals);
+  const whole = magnitude / base;
+  const fraction = decimals === 0 ? "" : (magnitude % base).toString().padStart(decimals, "0").replace(/0+$/, "");
+  const text = fraction === "" ? whole.toString() : `${whole}.${fraction}`;
+  return negative ? `-${text}` : text;
+}
+function parseUnits(decimal, decimals) {
+  if (!/^\d+(\.\d+)?$/.test(decimal))
+    return { ok: false, reason: "not-a-number" };
+  const [whole, fraction = ""] = decimal.split(".");
+  if (fraction.length > decimals)
+    return { ok: false, reason: "precision" };
+  const raw = BigInt((whole ?? "0") + fraction.padEnd(decimals, "0"));
+  if (raw === 0n)
+    return { ok: false, reason: "zero" };
+  return { ok: true, raw };
+}
+function decodeAbiString(bytes) {
+  if (bytes.length === 0)
+    return;
+  if (bytes.length >= 64) {
+    const offset = Number(hexToBigInt(bytesToHex2(bytes.subarray(0, 32))));
+    if (offset + 32 <= bytes.length) {
+      const length = Number(hexToBigInt(bytesToHex2(bytes.subarray(offset, offset + 32))));
+      if (offset + 32 + length <= bytes.length) {
+        return new TextDecoder().decode(bytes.subarray(offset + 32, offset + 32 + length));
+      }
+    }
+  }
+  if (bytes.length === 32) {
+    let end = 32;
+    while (end > 0 && bytes[end - 1] === 0)
+      end--;
+    const text = new TextDecoder().decode(bytes.subarray(0, end));
+    return /^[\x20-\x7e]+$/.test(text) ? text : undefined;
+  }
+  return;
+}
+function createEvmRpc(url, fetchFn) {
+  let id = 0;
+  async function call(method, params) {
+    id += 1;
+    let res;
+    try {
+      res = await fetchFn(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id, method, params })
+      });
+    } catch (error) {
+      throw new EvmRpcError("transport", method, `RPC ${method} failed: ${error instanceof Error ? error.message : error}`);
+    }
+    if (!res.ok)
+      throw new EvmRpcError("transport", method, `RPC ${method} failed: HTTP ${res.status}`);
+    let json;
+    try {
+      json = await res.json();
+    } catch {
+      throw new EvmRpcError("transport", method, `RPC ${method} failed: the answer was not JSON`);
+    }
+    if (json.error) {
+      throw new EvmRpcError("rpc", method, `${json.error.message ?? "RPC error"}`, typeof json.error.code === "number" ? json.error.code : undefined);
+    }
+    return json.result;
+  }
+  const asQuantity = (value, method) => {
+    if (typeof value !== "string")
+      throw new EvmRpcError("rpc", method, `RPC ${method} answered without a quantity`);
+    return hexToBigInt(value);
+  };
+  return {
+    async chainId() {
+      return asQuantity(await call("eth_chainId", []), "eth_chainId");
+    },
+    async getTransactionCount(address, tag) {
+      return asQuantity(await call("eth_getTransactionCount", [address, tag]), "eth_getTransactionCount");
+    },
+    async estimateGas(input) {
+      return asQuantity(await call("eth_estimateGas", [
+        {
+          from: input.from,
+          to: input.to,
+          value: quantity(input.value),
+          ...input.data.length > 0 ? { data: bytesToHex2(input.data) } : {}
+        }
+      ]), "eth_estimateGas");
+    },
+    async feeHistory(blockCount, newestBlock, rewardPercentiles) {
+      const r = await call("eth_feeHistory", [
+        quantity(blockCount),
+        newestBlock,
+        rewardPercentiles
+      ]);
+      const base = Array.isArray(r?.baseFeePerGas) ? r.baseFeePerGas : [];
+      if (base.length === 0)
+        throw new EvmRpcError("rpc", "eth_feeHistory", "RPC eth_feeHistory answered no baseFeePerGas");
+      return {
+        baseFeePerGas: base.map((value) => asQuantity(value, "eth_feeHistory")),
+        reward: (Array.isArray(r.reward) ? r.reward : []).map((row) => (Array.isArray(row) ? row : []).map((value) => asQuantity(value, "eth_feeHistory")))
+      };
+    },
+    async maxPriorityFeePerGas() {
+      return asQuantity(await call("eth_maxPriorityFeePerGas", []), "eth_maxPriorityFeePerGas");
+    },
+    async getBalance(address) {
+      return asQuantity(await call("eth_getBalance", [address, "latest"]), "eth_getBalance");
+    },
+    async call(input) {
+      const r = await call("eth_call", [{ to: input.to, data: bytesToHex2(input.data) }, "latest"]);
+      if (typeof r !== "string")
+        throw new EvmRpcError("rpc", "eth_call", "RPC eth_call answered without data");
+      return hexToBytes2(r);
+    },
+    async sendRawTransaction(raw) {
+      const r = await call("eth_sendRawTransaction", [bytesToHex2(raw)]);
+      if (typeof r !== "string") {
+        throw new EvmRpcError("rpc", "eth_sendRawTransaction", "RPC eth_sendRawTransaction answered without a hash");
+      }
+      return r;
+    },
+    async getTransactionReceipt(hash) {
+      const r = await call("eth_getTransactionReceipt", [hash]);
+      if (r === null || r === undefined)
+        return null;
+      const status = asQuantity(r.status, "eth_getTransactionReceipt");
+      return {
+        status: status === 1n ? 1 : 0,
+        blockNumber: asQuantity(r.blockNumber, "eth_getTransactionReceipt"),
+        transactionHash: typeof r.transactionHash === "string" ? r.transactionHash : hash
+      };
+    },
+    async blockNumber() {
+      return asQuantity(await call("eth_blockNumber", []), "eth_blockNumber");
+    },
+    async erc20Decimals(token) {
+      const answer = await this.call({ to: token, data: hexToBytes2(ERC20_DECIMALS_SELECTOR) });
+      if (answer.length !== 32)
+        throw new EvmRpcError("rpc", "eth_call", "the contract did not answer decimals()");
+      const value = hexToBigInt(bytesToHex2(answer));
+      if (value > 255n)
+        throw new EvmRpcError("rpc", "eth_call", "the contract's decimals() is not a uint8");
+      return Number(value);
+    },
+    async erc20Symbol(token) {
+      try {
+        return decodeAbiString(await this.call({ to: token, data: hexToBytes2(ERC20_SYMBOL_SELECTOR) }));
+      } catch (error) {
+        if (error instanceof EvmRpcError && error.kind === "rpc")
+          return;
+        throw error;
+      }
+    },
+    async erc20BalanceOf(token, owner) {
+      const answer = await this.call({
+        to: token,
+        data: concat2(hexToBytes2(ERC20_BALANCE_OF_SELECTOR), abiAddress(owner))
+      });
+      if (answer.length !== 32)
+        throw new EvmRpcError("rpc", "eth_call", "the contract did not answer balanceOf()");
+      return hexToBigInt(bytesToHex2(answer));
+    }
+  };
+}
+async function quoteFees(rpc) {
+  const history = await rpc.feeHistory(FEE_HISTORY_BLOCKS, "latest", [50]);
+  const baseFee = history.baseFeePerGas[history.baseFeePerGas.length - 1];
+  let tip;
+  let tipSource;
+  try {
+    tip = await rpc.maxPriorityFeePerGas();
+    tipSource = "eth_maxPriorityFeePerGas";
+  } catch (error) {
+    if (!(error instanceof EvmRpcError) || error.kind !== "rpc")
+      throw error;
+    const rewards = history.reward.map((row) => row[0] ?? 0n).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
+    tip = rewards.length === 0 ? 0n : rewards[Math.floor(rewards.length / 2)];
+    tipSource = "eth_feeHistory";
+  }
+  return { baseFee, maxPriorityFeePerGas: tip, maxFeePerGas: 2n * baseFee + tip, tipSource };
+}
+function gasWithHeadroom(estimate) {
+  return (estimate * 12n + 9n) / 10n;
+}
+function requiredDepth(chainId) {
+  return chainId === BigInt(HOOD_CHAIN_ID) ? 1 : 2;
+}
+function rpcHostOf2(url) {
+  return new URL(url).host;
+}
+function resolveEvmRpcUrl(flag, envValue, flagName) {
+  const fromFlag = flag?.trim() || undefined;
+  const fromEnv = envValue?.trim() || undefined;
+  const url = fromFlag ?? fromEnv ?? DEFAULT_HOOD_RPC_URL;
+  const source = fromFlag !== undefined ? flagName : fromEnv !== undefined ? EVM_RPC_URL_ENV : undefined;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { error: `${source ?? flagName} is not a valid URL: ${url}` };
+  }
+  const local = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && local)) {
+    return {
+      error: `${source ?? flagName} must be https:// (plain http is allowed only for 127.0.0.1 / localhost).`
+    };
+  }
+  return { url, builtIn: url === DEFAULT_HOOD_RPC_URL };
+}
+var HOOD_CHAIN_ID = 4663, DEFAULT_HOOD_RPC_URL = "https://rpc.mainnet.chain.robinhood.com", EVM_RPC_URL_ENV = "CANDLE_EVM_RPC_URL", HOOD_USDG_ADDRESS = "0x5fc5360d0400a0fd4f2af552add042d716f1d168", HOOD_USDG_DECIMALS = 6, HOOD_WETH_ADDRESS = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73", NATIVE_DECIMALS = 18, EVM_DERIVATION_SCHEME = "bip32-secp256k1", EVM_SECRET_BYTES = 32, ERC20_TRANSFER_SELECTOR = "0xa9059cbb", ERC20_DECIMALS_SELECTOR = "0x313ce567", ERC20_SYMBOL_SELECTOR = "0x95d89b41", ERC20_BALANCE_OF_SELECTOR = "0x70a08231", TYPE_2, EvmRpcError, FEE_HISTORY_BLOCKS = 10;
+var init_evm_lite = __esm(() => {
+  init_secp256k1();
+  init_sha3();
+  init_esm2();
+  TYPE_2 = Uint8Array.of(2);
+  EvmRpcError = class EvmRpcError extends Error {
+    kind;
+    method;
+    rpcCode;
+    constructor(kind, method, message, rpcCode) {
+      super(message);
+      this.name = "EvmRpcError";
+      this.kind = kind;
+      this.method = method;
+      this.rpcCode = rpcCode;
+    }
+  };
+});
+
 // src/commands/keys.ts
 function mintedByLabel(mintedBy, ownDeviceTokenPrefix) {
   if (!mintedBy)
@@ -14053,8 +15099,41 @@ function solanaAsset(value) {
   if (base)
     return base;
   if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value))
-    throw new TradingError("PAIR_UNSUPPORTED", "Phase 3 supports Solana only; cross-chain pairs and EVM assets are refused. Use SOL, USDC, CNDL or a Solana mint.");
+    throw new TradingError("PAIR_UNSUPPORTED", "Use SOL, USDC, CNDL or a Solana mint on Solana, or ETH, USDG or a 0x token address on Hood.");
   return value;
+}
+function classifyAsset(value) {
+  const upper = value.toUpperCase();
+  if (HOOD_BASES[upper])
+    return { chain: "hood", asset: upper, base: upper };
+  if (/^0x/i.test(value)) {
+    const checked = checkEvmAddress(value);
+    if (!checked.ok)
+      throw new TradingError("PAIR_UNSUPPORTED", `${safeText(value)} is not a Hood token: ${checked.reason}.`);
+    if (sameEvmAddress(checked.address, HOOD_USDG_ADDRESS))
+      return { chain: "hood", asset: "USDG", base: "USDG" };
+    return { chain: "hood", asset: checked.address };
+  }
+  const asset = solanaAsset(value);
+  const base = baseAsset(asset);
+  return { chain: "solana", asset, ...base ? { base } : {} };
+}
+function pairChain(from, to) {
+  if (from.chain !== to.chain)
+    throw new TradingError("CHAIN_MISMATCH", `${safeText(from.asset)} is on ${chainName(from.chain)} and ${safeText(to.asset)} is on ${chainName(to.chain)}; a swap stays on one chain. Nothing was built.`);
+  return from.chain;
+}
+function chainName(chain2) {
+  return chain2 === "hood" ? "Hood" : "Solana";
+}
+function walletNameChain(name) {
+  return /^0x[0-9a-fA-F]{40}$/.test(name) ? "hood" : undefined;
+}
+function rowChain(row) {
+  return row.chain === "solana" ? "solana" : row.chain === "evm" ? "hood" : undefined;
+}
+function chainMismatch(what, walletChain, chain2) {
+  return new TradingError("CHAIN_MISMATCH", `${what} is a ${walletChain ? chainName(walletChain) : "non-trading-chain"} wallet and this operation is on ${chainName(chain2)}. The wallet decides the chain: name ${chain2 === "hood" ? "ETH, USDG or a 0x token" : "SOL, USDC, CNDL or a Solana mint"}, or a ${chainName(chain2)} wallet. Nothing was built.`);
 }
 function rawAmount(value, decimals) {
   if (!Number.isInteger(decimals) || decimals < 0 || decimals > 18 || !/^\d+(\.\d+)?$/.test(value))
@@ -14118,7 +15197,7 @@ async function listTradingWallets(ctx, key, scope) {
   return { rows, appId, scopes };
 }
 function matchesName(row, name) {
-  return row.id === name || row.address === name || row.label === name;
+  return row.id === name || sameAddress(row.address, name) || row.label === name;
 }
 function describeWallet(row) {
   return `${row.label ? `${row.label} ` : ""}(${row.id}, ${row.address})`;
@@ -14126,9 +15205,11 @@ function describeWallet(row) {
 function teeWalletList(rows) {
   return rows.map(describeWallet).join("; ");
 }
-async function completeTradingWallet(ctx, row, appId, scope) {
-  if (!row.active || row.chain !== "solana")
-    throw new TradingError("TEE_WALLET_INACTIVE", "The payer must be a verified-active Solana TEE wallet.");
+async function completeTradingWallet(ctx, row, appId, scope, chain2 = "solana") {
+  if (rowChain(row) !== chain2)
+    throw chainMismatch(`TEE wallet ${describeWallet(row)}`, rowChain(row), chain2);
+  if (!row.active)
+    throw new TradingError("TEE_WALLET_INACTIVE", `The payer must be a verified-active ${chainName(chain2)} TEE wallet.`);
   if (scope === "launch:write" && row.allowLaunch !== true)
     throw new TradingError("LAUNCH_NOT_ALLOWED", `The operator must enable allowLaunch for wallet ${row.id} through PUT /api/v1/agent/wallets/${row.id}/capabilities using device/session authentication.`);
   if (!appId || !row.privyWalletId)
@@ -14141,7 +15222,8 @@ async function completeTradingWallet(ctx, row, appId, scope) {
     address: row.address,
     privyWalletId: row.privyWalletId,
     appId,
-    signer: storedSignerToPem(signer)
+    signer: storedSignerToPem(signer),
+    chain: row.chain === "evm" ? "evm" : "solana"
   };
 }
 async function tradingWallet(ctx, key, name, scope) {
@@ -14152,27 +15234,51 @@ async function tradingWallet(ctx, key, name, scope) {
   }
   return await completeTradingWallet(ctx, matches[0], appId, scope);
 }
-async function tradingPayer(ctx, key, name, scope = "swap:write") {
+async function tradingPayer(ctx, key, name, scope = "swap:write", chain2 = "solana") {
   const { rows, appId, scopes } = await listTradingWallets(ctx, key, scope);
-  const embedded = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded")).wallets?.solana?.address;
+  const wallets = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded")).wallets;
+  const embeddedOn = {
+    solana: wallets?.solana?.address,
+    hood: wallets?.evm?.address
+  };
+  const embedded = embeddedOn[chain2];
+  const onChain = rows.filter((row) => rowChain(row) === chain2);
   const asEmbedded = () => ({ kind: "embedded", address: embedded, scopes });
   const options = [
-    ...rows.map((row) => `TEE ${describeWallet(row)}`),
+    ...onChain.map((row) => `TEE ${describeWallet(row)}`),
     ...embedded ? [`embedded (${embedded})`] : []
   ].join("; ");
   if (name === undefined) {
-    if (rows.length === 1 && !embedded)
-      return { kind: "tee", wallet: await completeTradingWallet(ctx, rows[0], appId, scope), scopes };
-    if (rows.length === 0 && embedded)
+    if (onChain.length === 1 && !embedded)
+      return {
+        kind: "tee",
+        wallet: await completeTradingWallet(ctx, onChain[0], appId, scope, chain2),
+        scopes
+      };
+    if (onChain.length === 0 && embedded)
       return asEmbedded();
-    throw new TradingError("PAYER_REQUIRED", options.length === 0 ? "This account has no wallet that can pay for a swap. Enrol a TEE wallet, or create an embedded wallet in the app." : `Name the payer with --wallet. This account can pay from: ${options}.`);
+    throw new TradingError("PAYER_REQUIRED", options.length === 0 ? `This account has no ${chainName(chain2)} wallet that can pay for this. Enrol a ${chainName(chain2)} TEE wallet, or create an embedded wallet in the app.` : `Name the payer with --wallet. On ${chainName(chain2)} this account can pay from: ${options}.`);
   }
   const matches = rows.filter((row) => matchesName(row, name));
   if (matches.length === 1)
-    return { kind: "tee", wallet: await completeTradingWallet(ctx, matches[0], appId, scope), scopes };
-  if (matches.length === 0 && embedded === name)
-    return asEmbedded();
-  throw new TradingError("TEE_WALLET_REQUIRED", matches.length > 1 ? `"${name}" matches ${matches.length} TEE wallets on this key: ${teeWalletList(matches)}. Name one by id or address.` : options.length === 0 ? `"${name}" is not a wallet this account can pay from, and it has none: enrol a TEE wallet, or create an embedded wallet in the app.` : `"${name}" is not a wallet this account can pay from. It can pay from: ${options}.`);
+    return {
+      kind: "tee",
+      wallet: await completeTradingWallet(ctx, matches[0], appId, scope, chain2),
+      scopes
+    };
+  if (matches.length === 0) {
+    if (embedded !== undefined && sameAddress(embedded, name))
+      return asEmbedded();
+    for (const other of Object.keys(embeddedOn)) {
+      const address = embeddedOn[other];
+      if (other !== chain2 && address !== undefined && sameAddress(address, name))
+        throw chainMismatch(`The embedded wallet ${address}`, other, chain2);
+    }
+  }
+  throw new TradingError("TEE_WALLET_REQUIRED", matches.length > 1 ? `"${name}" matches ${matches.length} TEE wallets on this key: ${teeWalletList(matches)}. Name one by id or address.` : options.length === 0 ? `"${name}" is not a wallet this account can pay from, and it has none on ${chainName(chain2)}: enrol a TEE wallet, or create an embedded wallet in the app.` : `"${name}" is not a wallet this account can pay from. On ${chainName(chain2)} it can pay from: ${options}.`);
+}
+function sameAddress(a, b) {
+  return a === b || /^0x/i.test(a) && /^0x/i.test(b) && sameEvmAddress(a, b);
 }
 function authorizationSignature(wallet, transaction) {
   const body = { method: "signTransaction", params: { encoding: "base64", transaction } };
@@ -14192,6 +15298,139 @@ async function relaySign(ctx, key, wallet, transaction) {
   if (typeof result.signedTransaction !== "string" || result.encoding !== "base64")
     throw new TradingError("INVALID_RESPONSE", "The relay did not return a base64 signed transaction.");
   return result.signedTransaction;
+}
+function evmLegWire(wallet, leg) {
+  return {
+    chain_id: leg.chainId,
+    data: leg.data,
+    from: wallet.address,
+    gas_limit: quantity(BigInt(leg.gas)),
+    max_fee_per_gas: quantity(BigInt(leg.maxFeePerGas)),
+    max_priority_fee_per_gas: quantity(BigInt(leg.maxPriorityFeePerGas)),
+    nonce: leg.nonce,
+    to: leg.to,
+    type: 2,
+    value: quantity(BigInt(leg.value))
+  };
+}
+function evmAuthorizationSignature(wallet, leg) {
+  const body = { method: "eth_signTransaction", params: { transaction: evmLegWire(wallet, leg) } };
+  const payload = JSON.stringify({
+    body,
+    headers: { "privy-app-id": wallet.appId },
+    method: "POST",
+    url: `https://api.privy.io/v1/wallets/${wallet.privyWalletId}/rpc`,
+    version: 1
+  });
+  return { body, authorizationSignature: sign("sha256", Buffer.from(payload), wallet.signer).toString("base64") };
+}
+function legTransaction(leg) {
+  return {
+    chainId: BigInt(leg.chainId),
+    nonce: BigInt(leg.nonce),
+    maxPriorityFeePerGas: BigInt(leg.maxPriorityFeePerGas),
+    maxFeePerGas: BigInt(leg.maxFeePerGas),
+    gas: BigInt(leg.gas),
+    to: leg.to,
+    value: BigInt(leg.value),
+    data: hexToBytes2(leg.data)
+  };
+}
+async function relaySignEvmLeg(ctx, key, wallet, leg) {
+  const result = await request(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(wallet.id)}/sign`, evmAuthorizationSignature(wallet, leg));
+  const raw = result.signedTransaction;
+  if (typeof raw !== "string" || !/^0x02([0-9a-fA-F]{2})+$/.test(raw))
+    throw new TradingError("INVALID_RESPONSE", "The relay did not return a raw signed type-2 transaction.");
+  const bytes = hexToBytes2(raw);
+  if (!signedTransactionCovers(bytes, legTransaction(leg)))
+    throw new TradingError("INVALID_RESPONSE", "The relay returned a signature over a different transaction than the leg Candle built; nothing was sent.");
+  return { raw, hash: bytesToHexHash(bytes) };
+}
+function bytesToHexHash(raw) {
+  return `0x${Buffer.from(keccak_256(raw)).toString("hex")}`;
+}
+function plannedLegKinds(first, count, hasFee) {
+  const tail = hasFee ? ["trade", "feeTransfer"] : ["trade"];
+  const head = count - tail.length;
+  const candidates = [[], ["approval"], ["permit2Approval"], ["approval", "permit2Approval"]];
+  const legs = candidates.filter((prefix) => prefix.length === head).map((prefix) => [...prefix, ...tail]);
+  return legs.find((plan) => plan[0] === first);
+}
+function sweepReserveFloor(maxFeePerGas, tokens = []) {
+  const set = new Set([HOOD_USDG_ADDRESS, HOOD_WETH_ADDRESS, ...tokens].map((token) => token.toLowerCase()));
+  const erc20Transfers = set.size + RESERVE_EXTRA_ERC20_TRANSFERS;
+  const gas = ERC20_TRANSFER_GAS * BigInt(erc20Transfers) + ETH_TRANSFER_GAS;
+  return { wei: gas * maxFeePerGas * RESERVE_FEE_MULTIPLIER, erc20Transfers };
+}
+async function runSequencedLegs(ctx, key, opts) {
+  let current = opts.first;
+  const landed = [];
+  const noteLanded = async (legs) => {
+    for (const leg of legs.slice(landed.length)) {
+      landed.push({ kind: leg.kind, hash: leg.hash });
+      await opts.onLanded(leg);
+    }
+  };
+  const failWith = (code, message, exitCode, extra = {}) => new TradingError(code, `${message}${describeLanded(landed)}`, {
+    exitCode,
+    details: { operationId: current.operationId, landedLegs: landed, ...extra }
+  });
+  for (;; ) {
+    await noteLanded(current.landedLegs);
+    const leg = current.nextLeg;
+    if (leg.chainId !== HOOD_CHAIN_ID)
+      throw failWith("INVALID_RESPONSE", `The ${current.legKind} leg names chain ${leg.chainId}, not Hood; nothing was signed.`, 1);
+    if (current.legKind === "feeTransfer" && !landed.some((done) => done.kind === "trade"))
+      throw failWith("INVALID_RESPONSE", "Candle offered the fee leg before the trade leg landed; nothing was signed.", 1);
+    if (!Number.isFinite(current.expiresAt) || current.expiresAt <= ctx.deps.now())
+      throw failWith("QUOTE_EXPIRED", `Operation ${current.operationId}'s window closed before the ${current.legKind} leg was signed.`, 1);
+    const signed = await relaySignEvmLeg(ctx, key, opts.wallet, leg);
+    await saveOperationHash(ctx, key, opts.clientId, opts.kind, signed.hash, current.operationId);
+    const posted = await apiRequest(opts.submitPath, {
+      apiUrl: ctx.apiUrl,
+      credentials: { apiKey: key },
+      auth: "key",
+      method: "POST",
+      body: { ...opts.submitFields, operationId: current.operationId, signedTransaction: signed.raw },
+      fetch: ctx.deps.fetch,
+      env: ctx.deps.env
+    });
+    if (!posted.ok) {
+      const error = errorObject(posted.raw);
+      await noteLanded(landedFrom(posted.raw, error));
+      if (posted.status === 0 || error.stage === "unconfirmed") {
+        const hash = typeof error.signature === "string" ? error.signature : signed.hash;
+        throw failWith("LEG_UNCONFIRMED", `The ${current.legKind} leg ${hash} was posted and its receipt was not seen; it may still land. Nothing was re-sent.`, 3, { hash, legKind: current.legKind });
+      }
+      throw failWith(posted.code ?? "REQUEST_FAILED", `The ${current.legKind} leg failed: ${posted.message}`, 1, typeof error.signature === "string" ? { hash: error.signature, legKind: current.legKind } : { legKind: current.legKind });
+    }
+    const answer = opts.unwrap(posted.body ?? {});
+    if (answer.mode === "sequenced") {
+      const next = sequencedSchema.safeParse(answer);
+      if (!next.success || next.data.operationId !== current.operationId)
+        throw failWith("INVALID_RESPONSE", "Candle answered the leg with an unreadable next leg; nothing more was signed.", 1);
+      current = next.data;
+      continue;
+    }
+    const finalLanded = landedFrom(answer, {});
+    await noteLanded(finalLanded.length > landed.length ? finalLanded : [...landed, { kind: current.legKind, hash: signed.hash }]);
+    return { final: answer, landed };
+  }
+}
+function describeLanded(landed) {
+  return landed.length === 0 ? " No leg landed." : ` Landed: ${landed.map((leg) => `${leg.kind} ${safeText(leg.hash)}`).join(", ")}.`;
+}
+function errorObject(raw) {
+  if (!raw || typeof raw !== "object")
+    return {};
+  const error = raw.error;
+  return error && typeof error === "object" ? error : {};
+}
+function landedFrom(raw, error) {
+  const top = raw && typeof raw === "object" ? raw.landedLegs : undefined;
+  const list = Array.isArray(top) ? top : Array.isArray(error.landedLegs) ? error.landedLegs : [];
+  const parsed = exports_external.array(landedLegSchema).safeParse(list);
+  return parsed.success ? parsed.data.map((leg) => ({ kind: leg.kind, hash: leg.hash })) : [];
 }
 async function tradingSolanaClient(ctx, flag) {
   const client = await openSolanaClient(ctx, flag);
@@ -14260,6 +15499,15 @@ Minimum received: ${safeText(quote.minimumReceived)}
   if (quote.maxDebitLamports)
     output.write(`Maximum launch debit: ${safeText(quote.maxDebitLamports)} lamports
 `);
+  if (quote.legs)
+    output.write(`Legs, signed one at a time: ${quote.legs.map(safeText).join(", ")}
+`);
+  if (quote.gas)
+    output.write(`Gas: ${safeText(quote.gas)}
+`);
+  if (quote.reserve)
+    output.write(`Gas reserve: ${safeText(quote.reserve)}
+`);
   for (const risk of quote.tokenRisks ?? [])
     output.write(`Warning (${safeText(risk.mint)}): ${safeText(risk.message)}
 `);
@@ -14268,6 +15516,18 @@ Minimum received: ${safeText(quote.minimumReceived)}
   if (!ctx.deps.isTTY.stdin)
     throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes for an ordinary trade prompt.");
   return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y";
+}
+async function saveOperationHash(ctx, key, id, kind, hash, operationId) {
+  const path = operationPath(ctx, key, id);
+  const temporary = `${path}.${process.pid}.tmp`;
+  await writeFile4(temporary, JSON.stringify({ id, kind, signature: hash, operationId }), { mode: 384 });
+  const file = await open3(temporary, "r");
+  try {
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  await rename3(temporary, path);
 }
 async function saveOperationSignature(ctx, key, id, kind, transaction) {
   const bytes = Buffer.from(transaction, "base64");
@@ -14296,22 +15556,26 @@ async function saveOperationSignature(ctx, key, id, kind, transaction) {
   await rename3(temporary, path);
   return signature;
 }
-var TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, BASES, TradingUsage;
+var TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, BASES, HOOD_BASES, sequencedLegSchema, legKindSchema, landedLegSchema, sequencedSchema, ERC20_TRANSFER_GAS = 65000n, ETH_TRANSFER_GAS = 21000n, RESERVE_FEE_MULTIPLIER = 2n, RESERVE_EXTRA_ERC20_TRANSFERS = 1, TradingUsage;
 var init_trading = __esm(() => {
+  init_sha3();
   init_esm();
   init_zod();
   init_deps();
+  init_evm_lite();
   init_secret_store();
   init_solana_endpoint();
   TradingError = class TradingError extends Error {
     code;
     suggestion;
     exitCode;
+    details;
     constructor(code, message, opts = {}) {
       super(message);
       this.code = code;
       this.suggestion = opts.suggestion;
       this.exitCode = opts.exitCode ?? 1;
+      this.details = opts.details;
     }
   };
   feeSchema = exports_external.object({ bps: exports_external.number().finite().nonnegative(), feeRaw: exports_external.string().regex(/^\d+$/) }).passthrough();
@@ -14360,7 +15624,10 @@ var init_trading = __esm(() => {
     continueCursor: exports_external.string().nullable().optional()
   });
   embeddedSchema = exports_external.object({
-    wallets: exports_external.object({ solana: exports_external.object({ address: exports_external.string() }).passthrough().nullable().optional() }).passthrough().optional()
+    wallets: exports_external.object({
+      solana: exports_external.object({ address: exports_external.string() }).passthrough().nullable().optional(),
+      evm: exports_external.object({ address: exports_external.string() }).passthrough().nullable().optional()
+    }).passthrough().optional()
   }).passthrough();
   operationSchema = exports_external.object({ job: exports_external.object({ status: exports_external.string() }).passthrough() }).passthrough();
   lpAmountSchema = exports_external.object({ mint: exports_external.string(), raw: exports_external.string().regex(/^\d+$/), decimals: exports_external.number().int() });
@@ -14413,6 +15680,31 @@ var init_trading = __esm(() => {
     USDC: { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 },
     CNDL: { mint: "9dXSV8VWuYvGfTzqvkBeoFwH9ihVTybDuWo5VaJPCNDL", decimals: 6 }
   };
+  HOOD_BASES = {
+    ETH: { address: null, decimals: NATIVE_DECIMALS },
+    USDG: { address: HOOD_USDG_ADDRESS, decimals: HOOD_USDG_DECIMALS }
+  };
+  sequencedLegSchema = exports_external.object({
+    chainId: exports_external.number().int(),
+    nonce: exports_external.number().int().nonnegative(),
+    gas: exports_external.string().regex(/^\d+$/),
+    maxFeePerGas: exports_external.string().regex(/^\d+$/),
+    maxPriorityFeePerGas: exports_external.string().regex(/^\d+$/),
+    to: exports_external.string().regex(/^0x[0-9a-fA-F]{40}$/),
+    data: exports_external.string().regex(/^0x([0-9a-fA-F]{2})*$/),
+    value: exports_external.string().regex(/^\d+$/)
+  });
+  legKindSchema = exports_external.enum(["approval", "permit2Approval", "trade", "feeTransfer"]);
+  landedLegSchema = exports_external.object({ kind: exports_external.string(), hash: exports_external.string() }).passthrough();
+  sequencedSchema = exports_external.object({
+    mode: exports_external.literal("sequenced"),
+    operationId: exports_external.string().min(1),
+    legKind: legKindSchema,
+    plannedLegCount: exports_external.number().int().positive(),
+    nextLeg: sequencedLegSchema,
+    landedLegs: exports_external.array(landedLegSchema).default([]),
+    expiresAt: exports_external.number().finite()
+  }).passthrough();
   TradingUsage = class TradingUsage extends Error {
   };
 });
@@ -30242,9 +31534,9 @@ var require_errors = __commonJS((exports) => {
     const { createErrors } = cxt.it;
     if (createErrors === false)
       return (0, codegen_1._)`{}`;
-    return errorObject(cxt, error, errorPaths);
+    return errorObject2(cxt, error, errorPaths);
   }
-  function errorObject(cxt, error, errorPaths = {}) {
+  function errorObject2(cxt, error, errorPaths = {}) {
     const { gen: gen2, it } = cxt;
     const keyValues = [
       errorInstancePath(it, errorPaths),
@@ -37166,7 +38458,7 @@ var init_zodToJsonSchema = __esm(() => {
 });
 
 // ../../node_modules/zod-to-json-schema/dist/esm/index.js
-var init_esm2 = __esm(() => {
+var init_esm3 = __esm(() => {
   init_zodToJsonSchema();
   init_Options();
   init_Refs();
@@ -37882,7 +39174,7 @@ function createCompletionResult(suggestions) {
 var EMPTY_OBJECT_JSON_SCHEMA, EMPTY_COMPLETION_RESULT;
 var init_mcp = __esm(() => {
   init_server();
-  init_esm2();
+  init_esm3();
   init_zod();
   init_types2();
   init_completable();
@@ -39612,13 +40904,13 @@ var HELP = {
   },
   swap: {
     group: "Trade",
-    summary: "Quote, confirm and swap on Solana; read an operation by id",
-    description: "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch.",
+    summary: "Quote, confirm and swap on Solana or Hood; read an operation by id",
+    description: "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed.",
     usage: ["candle swap <from> <to> [flags]", "candle swap status <id>"],
     rows: [
       {
         invocation: "<from> <to> --amount <n>|--percent <n> --wallet <tee>",
-        description: "Quote, confirm and swap on Solana"
+        description: "Quote, confirm and swap on Solana or Hood"
       },
       {
         invocation: "status <id> [--kind trade|swap|launch]",
@@ -39628,6 +40920,8 @@ var HELP = {
     examples: [
       "candle swap SOL USDC --amount 0.5 --wallet AgentOne",
       "candle swap USDC SOL --percent 100 --wallet AgentOne",
+      "candle swap ETH USDG --amount 0.05 --wallet HoodOne",
+      "candle swap 0xTokenAddress ETH --percent 100 --wallet HoodOne",
       "candle swap status op_123 --kind swap"
     ],
     env: ENV_API
@@ -39984,7 +41278,7 @@ var HELP = {
       },
       {
         invocation: "status <address> [--rpc-url <url>]",
-        description: "Server lifecycle state and on-chain balances"
+        description: "Server lifecycle state and on-chain balances; on Hood, ETH, USDG, the gas reserve and gas: low"
       },
       {
         invocation: "disable <address>",
@@ -42952,1021 +44246,8 @@ zone
 zoo`.split(`
 `);
 
-// ../../node_modules/@noble/curves/esm/secp256k1.js
-init_sha2();
-init__shortw_utils();
-init_modular();
-/*! noble-curves - MIT License (c) 2022 Paul Miller (paulmillr.com) */
-var secp256k1_CURVE = {
-  p: BigInt("0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f"),
-  n: BigInt("0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141"),
-  h: BigInt(1),
-  a: BigInt(0),
-  b: BigInt(7),
-  Gx: BigInt("0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
-  Gy: BigInt("0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8")
-};
-var secp256k1_ENDO = {
-  beta: BigInt("0x7ae96a2b657c07106e64479eac3434e99cf0497512f58995c1396c28719501ee"),
-  basises: [
-    [BigInt("0x3086d221a7d46bcde86c90e49284eb15"), -BigInt("0xe4437ed6010e88286f547fa90abfe4c3")],
-    [BigInt("0x114ca50f7a8e2f3f657c1108d9d44cfd8"), BigInt("0x3086d221a7d46bcde86c90e49284eb15")]
-  ]
-};
-var _2n5 = /* @__PURE__ */ BigInt(2);
-function sqrtMod(y) {
-  const P2 = secp256k1_CURVE.p;
-  const _3n4 = BigInt(3), _6n = BigInt(6), _11n = BigInt(11), _22n = BigInt(22);
-  const _23n = BigInt(23), _44n = BigInt(44), _88n = BigInt(88);
-  const b2 = y * y * y % P2;
-  const b3 = b2 * b2 * y % P2;
-  const b6 = pow2(b3, _3n4, P2) * b3 % P2;
-  const b9 = pow2(b6, _3n4, P2) * b3 % P2;
-  const b11 = pow2(b9, _2n5, P2) * b2 % P2;
-  const b22 = pow2(b11, _11n, P2) * b11 % P2;
-  const b44 = pow2(b22, _22n, P2) * b22 % P2;
-  const b88 = pow2(b44, _44n, P2) * b44 % P2;
-  const b176 = pow2(b88, _88n, P2) * b88 % P2;
-  const b220 = pow2(b176, _44n, P2) * b44 % P2;
-  const b223 = pow2(b220, _3n4, P2) * b3 % P2;
-  const t1 = pow2(b223, _23n, P2) * b22 % P2;
-  const t2 = pow2(t1, _6n, P2) * b2 % P2;
-  const root = pow2(t2, _2n5, P2);
-  if (!Fpk1.eql(Fpk1.sqr(root), y))
-    throw new Error("Cannot find square root");
-  return root;
-}
-var Fpk1 = Field(secp256k1_CURVE.p, { sqrt: sqrtMod });
-var secp256k1 = createCurve({ ...secp256k1_CURVE, Fp: Fpk1, lowS: true, endo: secp256k1_ENDO }, sha256);
-
-// ../../node_modules/@noble/hashes/esm/sha3.js
-init__u64();
-init_utils();
-var _0n7 = BigInt(0);
-var _1n7 = BigInt(1);
-var _2n6 = BigInt(2);
-var _7n2 = BigInt(7);
-var _256n = BigInt(256);
-var _0x71n = BigInt(113);
-var SHA3_PI = [];
-var SHA3_ROTL = [];
-var _SHA3_IOTA = [];
-for (let round = 0, R = _1n7, x = 1, y = 0;round < 24; round++) {
-  [x, y] = [y, (2 * x + 3 * y) % 5];
-  SHA3_PI.push(2 * (5 * y + x));
-  SHA3_ROTL.push((round + 1) * (round + 2) / 2 % 64);
-  let t = _0n7;
-  for (let j = 0;j < 7; j++) {
-    R = (R << _1n7 ^ (R >> _7n2) * _0x71n) % _256n;
-    if (R & _2n6)
-      t ^= _1n7 << (_1n7 << /* @__PURE__ */ BigInt(j)) - _1n7;
-  }
-  _SHA3_IOTA.push(t);
-}
-var IOTAS = split(_SHA3_IOTA, true);
-var SHA3_IOTA_H = IOTAS[0];
-var SHA3_IOTA_L = IOTAS[1];
-var rotlH = (h, l, s) => s > 32 ? rotlBH(h, l, s) : rotlSH(h, l, s);
-var rotlL = (h, l, s) => s > 32 ? rotlBL(h, l, s) : rotlSL(h, l, s);
-function keccakP(s, rounds = 24) {
-  const B = new Uint32Array(5 * 2);
-  for (let round = 24 - rounds;round < 24; round++) {
-    for (let x = 0;x < 10; x++)
-      B[x] = s[x] ^ s[x + 10] ^ s[x + 20] ^ s[x + 30] ^ s[x + 40];
-    for (let x = 0;x < 10; x += 2) {
-      const idx1 = (x + 8) % 10;
-      const idx0 = (x + 2) % 10;
-      const B0 = B[idx0];
-      const B1 = B[idx0 + 1];
-      const Th = rotlH(B0, B1, 1) ^ B[idx1];
-      const Tl = rotlL(B0, B1, 1) ^ B[idx1 + 1];
-      for (let y = 0;y < 50; y += 10) {
-        s[x + y] ^= Th;
-        s[x + y + 1] ^= Tl;
-      }
-    }
-    let curH = s[2];
-    let curL = s[3];
-    for (let t = 0;t < 24; t++) {
-      const shift = SHA3_ROTL[t];
-      const Th = rotlH(curH, curL, shift);
-      const Tl = rotlL(curH, curL, shift);
-      const PI = SHA3_PI[t];
-      curH = s[PI];
-      curL = s[PI + 1];
-      s[PI] = Th;
-      s[PI + 1] = Tl;
-    }
-    for (let y = 0;y < 50; y += 10) {
-      for (let x = 0;x < 10; x++)
-        B[x] = s[y + x];
-      for (let x = 0;x < 10; x++)
-        s[y + x] ^= ~B[(x + 2) % 10] & B[(x + 4) % 10];
-    }
-    s[0] ^= SHA3_IOTA_H[round];
-    s[1] ^= SHA3_IOTA_L[round];
-  }
-  clean(B);
-}
-
-class Keccak extends Hash {
-  constructor(blockLen, suffix, outputLen, enableXOF = false, rounds = 24) {
-    super();
-    this.pos = 0;
-    this.posOut = 0;
-    this.finished = false;
-    this.destroyed = false;
-    this.enableXOF = false;
-    this.blockLen = blockLen;
-    this.suffix = suffix;
-    this.outputLen = outputLen;
-    this.enableXOF = enableXOF;
-    this.rounds = rounds;
-    anumber(outputLen);
-    if (!(0 < blockLen && blockLen < 200))
-      throw new Error("only keccak-f1600 function is supported");
-    this.state = new Uint8Array(200);
-    this.state32 = u32(this.state);
-  }
-  clone() {
-    return this._cloneInto();
-  }
-  keccak() {
-    swap32IfBE(this.state32);
-    keccakP(this.state32, this.rounds);
-    swap32IfBE(this.state32);
-    this.posOut = 0;
-    this.pos = 0;
-  }
-  update(data) {
-    aexists(this);
-    data = toBytes(data);
-    abytes(data);
-    const { blockLen, state } = this;
-    const len = data.length;
-    for (let pos = 0;pos < len; ) {
-      const take = Math.min(blockLen - this.pos, len - pos);
-      for (let i = 0;i < take; i++)
-        state[this.pos++] ^= data[pos++];
-      if (this.pos === blockLen)
-        this.keccak();
-    }
-    return this;
-  }
-  finish() {
-    if (this.finished)
-      return;
-    this.finished = true;
-    const { state, suffix, pos, blockLen } = this;
-    state[pos] ^= suffix;
-    if ((suffix & 128) !== 0 && pos === blockLen - 1)
-      this.keccak();
-    state[blockLen - 1] ^= 128;
-    this.keccak();
-  }
-  writeInto(out) {
-    aexists(this, false);
-    abytes(out);
-    this.finish();
-    const bufferOut = this.state;
-    const { blockLen } = this;
-    for (let pos = 0, len = out.length;pos < len; ) {
-      if (this.posOut >= blockLen)
-        this.keccak();
-      const take = Math.min(blockLen - this.posOut, len - pos);
-      out.set(bufferOut.subarray(this.posOut, this.posOut + take), pos);
-      this.posOut += take;
-      pos += take;
-    }
-    return out;
-  }
-  xofInto(out) {
-    if (!this.enableXOF)
-      throw new Error("XOF is not possible for this instance");
-    return this.writeInto(out);
-  }
-  xof(bytes) {
-    anumber(bytes);
-    return this.xofInto(new Uint8Array(bytes));
-  }
-  digestInto(out) {
-    aoutput(out, this);
-    if (this.finished)
-      throw new Error("digest() was already called");
-    this.writeInto(out);
-    this.destroy();
-    return out;
-  }
-  digest() {
-    return this.digestInto(new Uint8Array(this.outputLen));
-  }
-  destroy() {
-    this.destroyed = true;
-    clean(this.state);
-  }
-  _cloneInto(to) {
-    const { blockLen, suffix, outputLen, rounds, enableXOF } = this;
-    to || (to = new Keccak(blockLen, suffix, outputLen, enableXOF, rounds));
-    to.state32.set(this.state32);
-    to.pos = this.pos;
-    to.posOut = this.posOut;
-    to.finished = this.finished;
-    to.rounds = rounds;
-    to.suffix = suffix;
-    to.outputLen = outputLen;
-    to.enableXOF = enableXOF;
-    to.destroyed = this.destroyed;
-    return to;
-  }
-}
-var gen = (suffix, blockLen, outputLen) => createHasher(() => new Keccak(blockLen, suffix, outputLen));
-var keccak_256 = /* @__PURE__ */ (() => gen(1, 136, 256 / 8))();
-
-// ../../node_modules/@scure/bip32/lib/esm/index.js
-init_modular();
-init_hmac();
-
-// ../../node_modules/@noble/hashes/esm/legacy.js
-init__md();
-init_utils();
-var Rho160 = /* @__PURE__ */ Uint8Array.from([
-  7,
-  4,
-  13,
-  1,
-  10,
-  6,
-  15,
-  3,
-  12,
-  0,
-  9,
-  5,
-  2,
-  14,
-  11,
-  8
-]);
-var Id160 = /* @__PURE__ */ (() => Uint8Array.from(new Array(16).fill(0).map((_, i) => i)))();
-var Pi160 = /* @__PURE__ */ (() => Id160.map((i) => (9 * i + 5) % 16))();
-var idxLR = /* @__PURE__ */ (() => {
-  const L = [Id160];
-  const R = [Pi160];
-  const res = [L, R];
-  for (let i = 0;i < 4; i++)
-    for (let j of res)
-      j.push(j[i].map((k) => Rho160[k]));
-  return res;
-})();
-var idxL = /* @__PURE__ */ (() => idxLR[0])();
-var idxR = /* @__PURE__ */ (() => idxLR[1])();
-var shifts160 = /* @__PURE__ */ [
-  [11, 14, 15, 12, 5, 8, 7, 9, 11, 13, 14, 15, 6, 7, 9, 8],
-  [12, 13, 11, 15, 6, 9, 9, 7, 12, 15, 11, 13, 7, 8, 7, 7],
-  [13, 15, 14, 11, 7, 7, 6, 8, 13, 14, 13, 12, 5, 5, 6, 9],
-  [14, 11, 12, 14, 8, 6, 5, 5, 15, 12, 15, 14, 9, 9, 8, 6],
-  [15, 12, 13, 13, 9, 5, 8, 6, 14, 11, 12, 11, 8, 6, 5, 5]
-].map((i) => Uint8Array.from(i));
-var shiftsL160 = /* @__PURE__ */ idxL.map((idx, i) => idx.map((j) => shifts160[i][j]));
-var shiftsR160 = /* @__PURE__ */ idxR.map((idx, i) => idx.map((j) => shifts160[i][j]));
-var Kl160 = /* @__PURE__ */ Uint32Array.from([
-  0,
-  1518500249,
-  1859775393,
-  2400959708,
-  2840853838
-]);
-var Kr160 = /* @__PURE__ */ Uint32Array.from([
-  1352829926,
-  1548603684,
-  1836072691,
-  2053994217,
-  0
-]);
-function ripemd_f(group, x, y, z) {
-  if (group === 0)
-    return x ^ y ^ z;
-  if (group === 1)
-    return x & y | ~x & z;
-  if (group === 2)
-    return (x | ~y) ^ z;
-  if (group === 3)
-    return x & z | y & ~z;
-  return x ^ (y | ~z);
-}
-var BUF_160 = /* @__PURE__ */ new Uint32Array(16);
-
-class RIPEMD160 extends HashMD {
-  constructor() {
-    super(64, 20, 8, true);
-    this.h0 = 1732584193 | 0;
-    this.h1 = 4023233417 | 0;
-    this.h2 = 2562383102 | 0;
-    this.h3 = 271733878 | 0;
-    this.h4 = 3285377520 | 0;
-  }
-  get() {
-    const { h0, h1, h2, h3, h4 } = this;
-    return [h0, h1, h2, h3, h4];
-  }
-  set(h0, h1, h2, h3, h4) {
-    this.h0 = h0 | 0;
-    this.h1 = h1 | 0;
-    this.h2 = h2 | 0;
-    this.h3 = h3 | 0;
-    this.h4 = h4 | 0;
-  }
-  process(view, offset) {
-    for (let i = 0;i < 16; i++, offset += 4)
-      BUF_160[i] = view.getUint32(offset, true);
-    let al = this.h0 | 0, ar = al, bl = this.h1 | 0, br = bl, cl = this.h2 | 0, cr = cl, dl = this.h3 | 0, dr = dl, el = this.h4 | 0, er = el;
-    for (let group = 0;group < 5; group++) {
-      const rGroup = 4 - group;
-      const hbl = Kl160[group], hbr = Kr160[group];
-      const rl = idxL[group], rr = idxR[group];
-      const sl = shiftsL160[group], sr = shiftsR160[group];
-      for (let i = 0;i < 16; i++) {
-        const tl = rotl(al + ripemd_f(group, bl, cl, dl) + BUF_160[rl[i]] + hbl, sl[i]) + el | 0;
-        al = el, el = dl, dl = rotl(cl, 10) | 0, cl = bl, bl = tl;
-      }
-      for (let i = 0;i < 16; i++) {
-        const tr = rotl(ar + ripemd_f(rGroup, br, cr, dr) + BUF_160[rr[i]] + hbr, sr[i]) + er | 0;
-        ar = er, er = dr, dr = rotl(cr, 10) | 0, cr = br, br = tr;
-      }
-    }
-    this.set(this.h1 + cl + dr | 0, this.h2 + dl + er | 0, this.h3 + el + ar | 0, this.h4 + al + br | 0, this.h0 + bl + cr | 0);
-  }
-  roundClean() {
-    clean(BUF_160);
-  }
-  destroy() {
-    this.destroyed = true;
-    clean(this.buffer);
-    this.set(0, 0, 0, 0, 0);
-  }
-}
-var ripemd160 = /* @__PURE__ */ createHasher(() => new RIPEMD160);
-
-// ../../node_modules/@scure/bip32/lib/esm/index.js
-init_sha2();
-init_utils();
-init_esm();
-/*! scure-bip32 - MIT License (c) 2022 Patricio Palladino, Paul Miller (paulmillr.com) */
-var Point = secp256k1.ProjectivePoint;
-var base58check = createBase58check(sha256);
-function bytesToNumber(bytes) {
-  abytes(bytes);
-  const h = bytes.length === 0 ? "0" : bytesToHex(bytes);
-  return BigInt("0x" + h);
-}
-function numberToBytes(num) {
-  if (typeof num !== "bigint")
-    throw new Error("bigint expected");
-  return hexToBytes(num.toString(16).padStart(64, "0"));
-}
-var MASTER_SECRET = utf8ToBytes("Bitcoin seed");
-var BITCOIN_VERSIONS = { private: 76066276, public: 76067358 };
-var HARDENED_OFFSET = 2147483648;
-var hash160 = (data) => ripemd160(sha256(data));
-var fromU32 = (data) => createView(data).getUint32(0, false);
-var toU32 = (n) => {
-  if (!Number.isSafeInteger(n) || n < 0 || n > 2 ** 32 - 1) {
-    throw new Error("invalid number, should be from 0 to 2**32-1, got " + n);
-  }
-  const buf = new Uint8Array(4);
-  createView(buf).setUint32(0, n, false);
-  return buf;
-};
-
-class HDKey {
-  get fingerprint() {
-    if (!this.pubHash) {
-      throw new Error("No publicKey set!");
-    }
-    return fromU32(this.pubHash);
-  }
-  get identifier() {
-    return this.pubHash;
-  }
-  get pubKeyHash() {
-    return this.pubHash;
-  }
-  get privateKey() {
-    return this.privKeyBytes || null;
-  }
-  get publicKey() {
-    return this.pubKey || null;
-  }
-  get privateExtendedKey() {
-    const priv = this.privateKey;
-    if (!priv) {
-      throw new Error("No private key");
-    }
-    return base58check.encode(this.serialize(this.versions.private, concatBytes(new Uint8Array([0]), priv)));
-  }
-  get publicExtendedKey() {
-    if (!this.pubKey) {
-      throw new Error("No public key");
-    }
-    return base58check.encode(this.serialize(this.versions.public, this.pubKey));
-  }
-  static fromMasterSeed(seed, versions = BITCOIN_VERSIONS) {
-    abytes(seed);
-    if (8 * seed.length < 128 || 8 * seed.length > 512) {
-      throw new Error("HDKey: seed length must be between 128 and 512 bits; 256 bits is advised, got " + seed.length);
-    }
-    const I = hmac(sha512, MASTER_SECRET, seed);
-    return new HDKey({
-      versions,
-      chainCode: I.slice(32),
-      privateKey: I.slice(0, 32)
-    });
-  }
-  static fromExtendedKey(base58key, versions = BITCOIN_VERSIONS) {
-    const keyBuffer = base58check.decode(base58key);
-    const keyView = createView(keyBuffer);
-    const version = keyView.getUint32(0, false);
-    const opt = {
-      versions,
-      depth: keyBuffer[4],
-      parentFingerprint: keyView.getUint32(5, false),
-      index: keyView.getUint32(9, false),
-      chainCode: keyBuffer.slice(13, 45)
-    };
-    const key = keyBuffer.slice(45);
-    const isPriv = key[0] === 0;
-    if (version !== versions[isPriv ? "private" : "public"]) {
-      throw new Error("Version mismatch");
-    }
-    if (isPriv) {
-      return new HDKey({ ...opt, privateKey: key.slice(1) });
-    } else {
-      return new HDKey({ ...opt, publicKey: key });
-    }
-  }
-  static fromJSON(json) {
-    return HDKey.fromExtendedKey(json.xpriv);
-  }
-  constructor(opt) {
-    this.depth = 0;
-    this.index = 0;
-    this.chainCode = null;
-    this.parentFingerprint = 0;
-    if (!opt || typeof opt !== "object") {
-      throw new Error("HDKey.constructor must not be called directly");
-    }
-    this.versions = opt.versions || BITCOIN_VERSIONS;
-    this.depth = opt.depth || 0;
-    this.chainCode = opt.chainCode || null;
-    this.index = opt.index || 0;
-    this.parentFingerprint = opt.parentFingerprint || 0;
-    if (!this.depth) {
-      if (this.parentFingerprint || this.index) {
-        throw new Error("HDKey: zero depth with non-zero index/parent fingerprint");
-      }
-    }
-    if (opt.publicKey && opt.privateKey) {
-      throw new Error("HDKey: publicKey and privateKey at same time.");
-    }
-    if (opt.privateKey) {
-      if (!secp256k1.utils.isValidPrivateKey(opt.privateKey)) {
-        throw new Error("Invalid private key");
-      }
-      this.privKey = typeof opt.privateKey === "bigint" ? opt.privateKey : bytesToNumber(opt.privateKey);
-      this.privKeyBytes = numberToBytes(this.privKey);
-      this.pubKey = secp256k1.getPublicKey(opt.privateKey, true);
-    } else if (opt.publicKey) {
-      this.pubKey = Point.fromHex(opt.publicKey).toRawBytes(true);
-    } else {
-      throw new Error("HDKey: no public or private key provided");
-    }
-    this.pubHash = hash160(this.pubKey);
-  }
-  derive(path) {
-    if (!/^[mM]'?/.test(path)) {
-      throw new Error('Path must start with "m" or "M"');
-    }
-    if (/^[mM]'?$/.test(path)) {
-      return this;
-    }
-    const parts = path.replace(/^[mM]'?\//, "").split("/");
-    let child = this;
-    for (const c of parts) {
-      const m = /^(\d+)('?)$/.exec(c);
-      const m1 = m && m[1];
-      if (!m || m.length !== 3 || typeof m1 !== "string")
-        throw new Error("invalid child index: " + c);
-      let idx = +m1;
-      if (!Number.isSafeInteger(idx) || idx >= HARDENED_OFFSET) {
-        throw new Error("Invalid index");
-      }
-      if (m[2] === "'") {
-        idx += HARDENED_OFFSET;
-      }
-      child = child.deriveChild(idx);
-    }
-    return child;
-  }
-  deriveChild(index) {
-    if (!this.pubKey || !this.chainCode) {
-      throw new Error("No publicKey or chainCode set");
-    }
-    let data = toU32(index);
-    if (index >= HARDENED_OFFSET) {
-      const priv = this.privateKey;
-      if (!priv) {
-        throw new Error("Could not derive hardened child key");
-      }
-      data = concatBytes(new Uint8Array([0]), priv, data);
-    } else {
-      data = concatBytes(this.pubKey, data);
-    }
-    const I = hmac(sha512, this.chainCode, data);
-    const childTweak = bytesToNumber(I.slice(0, 32));
-    const chainCode = I.slice(32);
-    if (!secp256k1.utils.isValidPrivateKey(childTweak)) {
-      throw new Error("Tweak bigger than curve order");
-    }
-    const opt = {
-      versions: this.versions,
-      chainCode,
-      depth: this.depth + 1,
-      parentFingerprint: this.fingerprint,
-      index
-    };
-    try {
-      if (this.privateKey) {
-        const added = mod(this.privKey + childTweak, secp256k1.CURVE.n);
-        if (!secp256k1.utils.isValidPrivateKey(added)) {
-          throw new Error("The tweak was out of range or the resulted private key is invalid");
-        }
-        opt.privateKey = added;
-      } else {
-        const added = Point.fromHex(this.pubKey).add(Point.fromPrivateKey(childTweak));
-        if (added.equals(Point.ZERO)) {
-          throw new Error("The tweak was equal to negative P, which made the result key invalid");
-        }
-        opt.publicKey = added.toRawBytes(true);
-      }
-      return new HDKey(opt);
-    } catch (err) {
-      return this.deriveChild(index + 1);
-    }
-  }
-  sign(hash) {
-    if (!this.privateKey) {
-      throw new Error("No privateKey set!");
-    }
-    abytes(hash, 32);
-    return secp256k1.sign(hash, this.privKey).toCompactRawBytes();
-  }
-  verify(hash, signature) {
-    abytes(hash, 32);
-    abytes(signature, 64);
-    if (!this.publicKey) {
-      throw new Error("No publicKey set!");
-    }
-    let sig;
-    try {
-      sig = secp256k1.Signature.fromCompact(signature);
-    } catch (error) {
-      return false;
-    }
-    return secp256k1.verify(sig, hash, this.publicKey);
-  }
-  wipePrivateData() {
-    this.privKey = undefined;
-    if (this.privKeyBytes) {
-      this.privKeyBytes.fill(0);
-      this.privKeyBytes = undefined;
-    }
-    return this;
-  }
-  toJSON() {
-    return {
-      xpriv: this.privateExtendedKey,
-      xpub: this.publicExtendedKey
-    };
-  }
-  serialize(version, key) {
-    if (!this.chainCode) {
-      throw new Error("No chainCode set");
-    }
-    abytes(key, 33);
-    return concatBytes(toU32(version), new Uint8Array([this.depth]), toU32(this.parentFingerprint), toU32(this.index), this.chainCode, key);
-  }
-}
-
-// src/evm-lite.ts
-var HOOD_CHAIN_ID = 4663;
-var DEFAULT_HOOD_RPC_URL = "https://rpc.mainnet.chain.robinhood.com";
-var EVM_RPC_URL_ENV = "CANDLE_EVM_RPC_URL";
-var HOOD_USDG_ADDRESS = "0x5fc5360d0400a0fd4f2af552add042d716f1d168";
-var HOOD_USDG_DECIMALS = 6;
-var NATIVE_DECIMALS = 18;
-var EVM_DERIVATION_SCHEME = "bip32-secp256k1";
-var EVM_SECRET_BYTES = 32;
-function bytesToHex2(bytes) {
-  let out = "";
-  for (const b of bytes)
-    out += b.toString(16).padStart(2, "0");
-  return `0x${out}`;
-}
-function hexToBytes2(hex2) {
-  const body = hex2.startsWith("0x") ? hex2.slice(2) : hex2;
-  if (body.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(body))
-    throw new Error(`not a hex string: ${hex2}`);
-  const out = new Uint8Array(body.length / 2);
-  for (let i = 0;i < out.length; i++)
-    out[i] = Number.parseInt(body.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
-function hexToBigInt(hex2) {
-  const body = hex2.startsWith("0x") ? hex2.slice(2) : hex2;
-  if (body === "")
-    return 0n;
-  if (!/^[0-9a-fA-F]+$/.test(body))
-    throw new Error(`not a hex quantity: ${hex2}`);
-  return BigInt(`0x${body}`);
-}
-function quantity(value) {
-  return `0x${BigInt(value).toString(16)}`;
-}
-function uintToMinimalBytes(value) {
-  if (value < 0n)
-    throw new Error("RLP integers are non-negative");
-  if (value === 0n)
-    return new Uint8Array(0);
-  let hex2 = value.toString(16);
-  if (hex2.length % 2 !== 0)
-    hex2 = `0${hex2}`;
-  return hexToBytes2(hex2);
-}
-function rlpLength(length, offset) {
-  if (length < 56)
-    return Uint8Array.of(offset + length);
-  const lengthBytes = uintToMinimalBytes(BigInt(length));
-  return concat2(Uint8Array.of(offset + 55 + lengthBytes.length), lengthBytes);
-}
-function concat2(...parts) {
-  const out = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
-  let at = 0;
-  for (const part of parts) {
-    out.set(part, at);
-    at += part.length;
-  }
-  return out;
-}
-function rlpEncode(item) {
-  if (item instanceof Uint8Array) {
-    if (item.length === 1 && item[0] < 128)
-      return item;
-    return concat2(rlpLength(item.length, 128), item);
-  }
-  const body = concat2(...item.map(rlpEncode));
-  return concat2(rlpLength(body.length, 192), body);
-}
-function toChecksumAddress(address) {
-  const lower = (address.startsWith("0x") ? address.slice(2) : address).toLowerCase();
-  if (!/^[0-9a-f]{40}$/.test(lower))
-    throw new Error(`not an EVM address: ${address}`);
-  const digest = bytesToHex2(keccak_256(new TextEncoder().encode(lower))).slice(2);
-  let out = "0x";
-  for (let i = 0;i < lower.length; i++) {
-    const c = lower[i];
-    out += Number.parseInt(digest[i], 16) >= 8 ? c.toUpperCase() : c;
-  }
-  return out;
-}
-function looksLikeEvmAddress(value) {
-  return /^0x[0-9a-fA-F]{40}$/.test(value);
-}
-function checkEvmAddress(value) {
-  if (!looksLikeEvmAddress(value))
-    return { ok: false, reason: "not 0x followed by 40 hex characters" };
-  const body = value.slice(2);
-  const checksummed = toChecksumAddress(value);
-  const hasLower = /[a-f]/.test(body);
-  const hasUpper = /[A-F]/.test(body);
-  if (hasLower && hasUpper && checksummed !== value) {
-    return { ok: false, reason: "its mixed-case EIP-55 checksum does not match" };
-  }
-  return { ok: true, address: checksummed };
-}
-function sameEvmAddress(a, b) {
-  return a.toLowerCase() === b.toLowerCase();
-}
-function evmAddressFromSecret(secret) {
-  if (secret.length !== EVM_SECRET_BYTES) {
-    throw new Error(`expected a ${EVM_SECRET_BYTES}-byte secp256k1 scalar, got ${secret.length}`);
-  }
-  const pub = secp256k1.getPublicKey(secret, false).slice(1);
-  return toChecksumAddress(bytesToHex2(keccak_256(pub)).slice(-40));
-}
-function evmDerivationPath(index) {
-  if (!Number.isInteger(index) || index < 0 || index >= 2147483648)
-    throw new Error(`index out of range: ${index}`);
-  return `m/44'/60'/${index}'/0/0`;
-}
-function deriveEvmKey(seed, index) {
-  const path = evmDerivationPath(index);
-  const root = HDKey.fromMasterSeed(seed);
-  try {
-    const leaf = root.derive(path);
-    try {
-      if (leaf.privateKey === null)
-        throw new Error("BIP-32 derivation produced no private key");
-      const secret = Uint8Array.from(leaf.privateKey);
-      return { secret, address: evmAddressFromSecret(secret), path };
-    } finally {
-      leaf.wipePrivateData();
-    }
-  } finally {
-    root.wipePrivateData();
-  }
-}
-function buildNativeTransfer(input) {
-  return { ...input, to: toChecksumAddress(input.to), data: new Uint8Array(0) };
-}
-function buildErc20Transfer(input) {
-  const { token, recipient, amount, ...fees } = input;
-  return { ...fees, to: toChecksumAddress(token), value: 0n, data: encodeErc20Transfer(recipient, amount) };
-}
-var ERC20_TRANSFER_SELECTOR = "0xa9059cbb";
-var ERC20_DECIMALS_SELECTOR = "0x313ce567";
-var ERC20_SYMBOL_SELECTOR = "0x95d89b41";
-var ERC20_BALANCE_OF_SELECTOR = "0x70a08231";
-function abiWord(value) {
-  if (value < 0n || value >= 1n << 256n)
-    throw new Error("uint256 out of range");
-  const out = new Uint8Array(32);
-  out.set(uintToMinimalBytes(value), 32 - uintToMinimalBytes(value).length);
-  return out;
-}
-function abiAddress(address) {
-  const out = new Uint8Array(32);
-  out.set(hexToBytes2(address), 12);
-  return out;
-}
-function encodeErc20Transfer(recipient, amount) {
-  return concat2(hexToBytes2(ERC20_TRANSFER_SELECTOR), abiAddress(recipient), abiWord(amount));
-}
-var TYPE_2 = Uint8Array.of(2);
-function unsignedFields(tx) {
-  return [
-    uintToMinimalBytes(tx.chainId),
-    uintToMinimalBytes(tx.nonce),
-    uintToMinimalBytes(tx.maxPriorityFeePerGas),
-    uintToMinimalBytes(tx.maxFeePerGas),
-    uintToMinimalBytes(tx.gas),
-    hexToBytes2(tx.to),
-    uintToMinimalBytes(tx.value),
-    tx.data,
-    []
-  ];
-}
-function signingPayload(tx) {
-  return keccak_256(concat2(TYPE_2, rlpEncode(unsignedFields(tx))));
-}
-function signTransaction(tx, secret) {
-  if (secret.length !== EVM_SECRET_BYTES) {
-    throw new Error(`expected a ${EVM_SECRET_BYTES}-byte secp256k1 scalar, got ${secret.length}`);
-  }
-  const signature = secp256k1.sign(signingPayload(tx), secret, { lowS: true, prehash: false });
-  const yParity = signature.recovery === 1 ? 1 : 0;
-  const raw = concat2(TYPE_2, rlpEncode([
-    ...unsignedFields(tx),
-    uintToMinimalBytes(BigInt(yParity)),
-    uintToMinimalBytes(signature.r),
-    uintToMinimalBytes(signature.s)
-  ]));
-  return { raw, hash: bytesToHex2(keccak_256(raw)), yParity, r: signature.r, s: signature.s };
-}
-function formatUnits(raw, decimals) {
-  const negative = raw < 0n;
-  const magnitude = negative ? -raw : raw;
-  const base = 10n ** BigInt(decimals);
-  const whole = magnitude / base;
-  const fraction = decimals === 0 ? "" : (magnitude % base).toString().padStart(decimals, "0").replace(/0+$/, "");
-  const text = fraction === "" ? whole.toString() : `${whole}.${fraction}`;
-  return negative ? `-${text}` : text;
-}
-function parseUnits(decimal, decimals) {
-  if (!/^\d+(\.\d+)?$/.test(decimal))
-    return { ok: false, reason: "not-a-number" };
-  const [whole, fraction = ""] = decimal.split(".");
-  if (fraction.length > decimals)
-    return { ok: false, reason: "precision" };
-  const raw = BigInt((whole ?? "0") + fraction.padEnd(decimals, "0"));
-  if (raw === 0n)
-    return { ok: false, reason: "zero" };
-  return { ok: true, raw };
-}
-
-class EvmRpcError extends Error {
-  kind;
-  method;
-  rpcCode;
-  constructor(kind, method, message, rpcCode) {
-    super(message);
-    this.name = "EvmRpcError";
-    this.kind = kind;
-    this.method = method;
-    this.rpcCode = rpcCode;
-  }
-}
-function decodeAbiString(bytes) {
-  if (bytes.length === 0)
-    return;
-  if (bytes.length >= 64) {
-    const offset = Number(hexToBigInt(bytesToHex2(bytes.subarray(0, 32))));
-    if (offset + 32 <= bytes.length) {
-      const length = Number(hexToBigInt(bytesToHex2(bytes.subarray(offset, offset + 32))));
-      if (offset + 32 + length <= bytes.length) {
-        return new TextDecoder().decode(bytes.subarray(offset + 32, offset + 32 + length));
-      }
-    }
-  }
-  if (bytes.length === 32) {
-    let end = 32;
-    while (end > 0 && bytes[end - 1] === 0)
-      end--;
-    const text = new TextDecoder().decode(bytes.subarray(0, end));
-    return /^[\x20-\x7e]+$/.test(text) ? text : undefined;
-  }
-  return;
-}
-function createEvmRpc(url, fetchFn) {
-  let id = 0;
-  async function call(method, params) {
-    id += 1;
-    let res;
-    try {
-      res = await fetchFn(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id, method, params })
-      });
-    } catch (error) {
-      throw new EvmRpcError("transport", method, `RPC ${method} failed: ${error instanceof Error ? error.message : error}`);
-    }
-    if (!res.ok)
-      throw new EvmRpcError("transport", method, `RPC ${method} failed: HTTP ${res.status}`);
-    let json;
-    try {
-      json = await res.json();
-    } catch {
-      throw new EvmRpcError("transport", method, `RPC ${method} failed: the answer was not JSON`);
-    }
-    if (json.error) {
-      throw new EvmRpcError("rpc", method, `${json.error.message ?? "RPC error"}`, typeof json.error.code === "number" ? json.error.code : undefined);
-    }
-    return json.result;
-  }
-  const asQuantity = (value, method) => {
-    if (typeof value !== "string")
-      throw new EvmRpcError("rpc", method, `RPC ${method} answered without a quantity`);
-    return hexToBigInt(value);
-  };
-  return {
-    async chainId() {
-      return asQuantity(await call("eth_chainId", []), "eth_chainId");
-    },
-    async getTransactionCount(address, tag) {
-      return asQuantity(await call("eth_getTransactionCount", [address, tag]), "eth_getTransactionCount");
-    },
-    async estimateGas(input) {
-      return asQuantity(await call("eth_estimateGas", [
-        {
-          from: input.from,
-          to: input.to,
-          value: quantity(input.value),
-          ...input.data.length > 0 ? { data: bytesToHex2(input.data) } : {}
-        }
-      ]), "eth_estimateGas");
-    },
-    async feeHistory(blockCount, newestBlock, rewardPercentiles) {
-      const r = await call("eth_feeHistory", [
-        quantity(blockCount),
-        newestBlock,
-        rewardPercentiles
-      ]);
-      const base = Array.isArray(r?.baseFeePerGas) ? r.baseFeePerGas : [];
-      if (base.length === 0)
-        throw new EvmRpcError("rpc", "eth_feeHistory", "RPC eth_feeHistory answered no baseFeePerGas");
-      return {
-        baseFeePerGas: base.map((value) => asQuantity(value, "eth_feeHistory")),
-        reward: (Array.isArray(r.reward) ? r.reward : []).map((row) => (Array.isArray(row) ? row : []).map((value) => asQuantity(value, "eth_feeHistory")))
-      };
-    },
-    async maxPriorityFeePerGas() {
-      return asQuantity(await call("eth_maxPriorityFeePerGas", []), "eth_maxPriorityFeePerGas");
-    },
-    async getBalance(address) {
-      return asQuantity(await call("eth_getBalance", [address, "latest"]), "eth_getBalance");
-    },
-    async call(input) {
-      const r = await call("eth_call", [{ to: input.to, data: bytesToHex2(input.data) }, "latest"]);
-      if (typeof r !== "string")
-        throw new EvmRpcError("rpc", "eth_call", "RPC eth_call answered without data");
-      return hexToBytes2(r);
-    },
-    async sendRawTransaction(raw) {
-      const r = await call("eth_sendRawTransaction", [bytesToHex2(raw)]);
-      if (typeof r !== "string") {
-        throw new EvmRpcError("rpc", "eth_sendRawTransaction", "RPC eth_sendRawTransaction answered without a hash");
-      }
-      return r;
-    },
-    async getTransactionReceipt(hash) {
-      const r = await call("eth_getTransactionReceipt", [hash]);
-      if (r === null || r === undefined)
-        return null;
-      const status = asQuantity(r.status, "eth_getTransactionReceipt");
-      return {
-        status: status === 1n ? 1 : 0,
-        blockNumber: asQuantity(r.blockNumber, "eth_getTransactionReceipt"),
-        transactionHash: typeof r.transactionHash === "string" ? r.transactionHash : hash
-      };
-    },
-    async blockNumber() {
-      return asQuantity(await call("eth_blockNumber", []), "eth_blockNumber");
-    },
-    async erc20Decimals(token) {
-      const answer = await this.call({ to: token, data: hexToBytes2(ERC20_DECIMALS_SELECTOR) });
-      if (answer.length !== 32)
-        throw new EvmRpcError("rpc", "eth_call", "the contract did not answer decimals()");
-      const value = hexToBigInt(bytesToHex2(answer));
-      if (value > 255n)
-        throw new EvmRpcError("rpc", "eth_call", "the contract's decimals() is not a uint8");
-      return Number(value);
-    },
-    async erc20Symbol(token) {
-      try {
-        return decodeAbiString(await this.call({ to: token, data: hexToBytes2(ERC20_SYMBOL_SELECTOR) }));
-      } catch (error) {
-        if (error instanceof EvmRpcError && error.kind === "rpc")
-          return;
-        throw error;
-      }
-    },
-    async erc20BalanceOf(token, owner) {
-      const answer = await this.call({
-        to: token,
-        data: concat2(hexToBytes2(ERC20_BALANCE_OF_SELECTOR), abiAddress(owner))
-      });
-      if (answer.length !== 32)
-        throw new EvmRpcError("rpc", "eth_call", "the contract did not answer balanceOf()");
-      return hexToBigInt(bytesToHex2(answer));
-    }
-  };
-}
-var FEE_HISTORY_BLOCKS = 10;
-async function quoteFees(rpc) {
-  const history = await rpc.feeHistory(FEE_HISTORY_BLOCKS, "latest", [50]);
-  const baseFee = history.baseFeePerGas[history.baseFeePerGas.length - 1];
-  let tip;
-  let tipSource;
-  try {
-    tip = await rpc.maxPriorityFeePerGas();
-    tipSource = "eth_maxPriorityFeePerGas";
-  } catch (error) {
-    if (!(error instanceof EvmRpcError) || error.kind !== "rpc")
-      throw error;
-    const rewards = history.reward.map((row) => row[0] ?? 0n).sort((a, b) => a < b ? -1 : a > b ? 1 : 0);
-    tip = rewards.length === 0 ? 0n : rewards[Math.floor(rewards.length / 2)];
-    tipSource = "eth_feeHistory";
-  }
-  return { baseFee, maxPriorityFeePerGas: tip, maxFeePerGas: 2n * baseFee + tip, tipSource };
-}
-function gasWithHeadroom(estimate) {
-  return (estimate * 12n + 9n) / 10n;
-}
-function requiredDepth(chainId) {
-  return chainId === BigInt(HOOD_CHAIN_ID) ? 1 : 2;
-}
-function rpcHostOf2(url) {
-  return new URL(url).host;
-}
-function resolveEvmRpcUrl(flag, envValue, flagName) {
-  const fromFlag = flag?.trim() || undefined;
-  const fromEnv = envValue?.trim() || undefined;
-  const url = fromFlag ?? fromEnv ?? DEFAULT_HOOD_RPC_URL;
-  const source = fromFlag !== undefined ? flagName : fromEnv !== undefined ? EVM_RPC_URL_ENV : undefined;
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return { error: `${source ?? flagName} is not a valid URL: ${url}` };
-  }
-  const local = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
-  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && local)) {
-    return {
-      error: `${source ?? flagName} must be https:// (plain http is allowed only for 127.0.0.1 / localhost).`
-    };
-  }
-  return { url, builtIn: url === DEFAULT_HOOD_RPC_URL };
-}
+// src/vault/hd.ts
+init_evm_lite();
 
 // src/vault/ed25519.ts
 init_ed25519();
@@ -44792,6 +45073,7 @@ init_store();
 
 // src/commands/vault-new-key.ts
 init_args();
+init_evm_lite();
 init_errors();
 init_format();
 init_store();
@@ -45007,7 +45289,7 @@ function defaultLabel(branch, index) {
 function addressOfSecret(chain2, secret) {
   return chain2 === "evm" ? evmAddressFromSecret(secret) : addressFromSecret64(secret);
 }
-function sameAddress(chain2, a, b) {
+function sameAddress2(chain2, a, b) {
   return chain2 === "evm" ? sameEvmAddress(a, b) : a === b;
 }
 function labelClash(index, planned) {
@@ -45034,7 +45316,7 @@ async function verifyWrittenFromDisk(vault, address, keyId, chain2 = "solana") {
   const onDisk = { ...vault, raw, file: parseVaultFile(raw) };
   const secret = await decryptKey(onDisk, keyId);
   try {
-    if (!sameAddress(chain2, addressOfSecret(chain2, secret), address)) {
+    if (!sameAddress2(chain2, addressOfSecret(chain2, secret), address)) {
       throw new VaultError("VAULT_VERIFY_FAILED", "The key written to the vault does not produce the address just derived.");
     }
   } finally {
@@ -45049,7 +45331,7 @@ async function verifyWritten(path, address, keyId, reopen, _ctx, chain2 = "solan
   try {
     const secret = await decryptKey(reopened, keyId);
     try {
-      if (!sameAddress(chain2, addressOfSecret(chain2, secret), address)) {
+      if (!sameAddress2(chain2, addressOfSecret(chain2, secret), address)) {
         throw new VaultError("VAULT_VERIFY_FAILED", "The key written to the vault does not produce the address just derived.");
       }
     } finally {
@@ -49014,8 +49296,10 @@ async function runImportFlow(params) {
 }
 
 // src/wallet-keygen.ts
-import { generateKeyPairSync } from "node:crypto";
+init_secp256k1();
+init_sha3();
 init_esm();
+import { generateKeyPairSync } from "node:crypto";
 var hex2 = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 function toChecksumAddress2(lowercaseBody) {
   const digest = hex2(keccak_256(new TextEncoder().encode(lowercaseBody)));
@@ -49046,6 +49330,180 @@ function generateWallet(chain2) {
 
 // src/commands/tee.ts
 init_wallet_keystore();
+
+// src/commands/tee-status-evm.ts
+init_deps();
+init_evm_lite();
+init_render();
+init_solana_endpoint();
+init_trading();
+init_errors();
+init_store();
+init_vault_support();
+var GAS_LOW_RESERVE_MULTIPLE = 2n;
+async function readVaultEntry(ctx, address) {
+  const resolved = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
+  if ("error" in resolved)
+    throw new TradingError("USAGE", resolved.error);
+  const raw = await readVaultRaw(resolved.path);
+  if (raw === null)
+    return null;
+  const opened = await unlockInteractively(ctx, resolved.path, raw, { acceptOlderCopy: true });
+  try {
+    const entry = opened.vault.index.entries.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address));
+    if (entry === undefined)
+      return null;
+    if (entry.role !== "tee-wallet")
+      throw new VaultError("SOLANA_COMMAND_EVM_KEY", `${entry.label || entry.address} is an EVM key (${entry.address}) but not a TEE wallet; tee status reads Solana and Hood TEE wallets only.`, {
+        suggestion: `Nothing was read or written. An EVM vault key's balances are in: candle vault list --balances`
+      });
+    return {
+      label: entry.label,
+      ...entry.linkedWalletId ? { linkedWalletId: entry.linkedWalletId } : {},
+      ...entry.tee?.vaultDestination ? { vaultDestination: entry.tee.vaultDestination } : {}
+    };
+  } finally {
+    closeVault(opened.vault);
+  }
+}
+async function teeStatusEvm(ctx, parsed, address) {
+  const { deps, json } = ctx;
+  const checked = checkEvmAddress(address);
+  if (!checked.ok) {
+    writeUsageFailure(deps, `${address} is not a Hood address: ${checked.reason}.`, json);
+    return 2;
+  }
+  const rpcUrl = resolveEvmRpcUrl(parsed.values["--rpc-url"], deps.env[EVM_RPC_URL_ENV], "--rpc-url");
+  if ("error" in rpcUrl) {
+    writeUsageFailure(deps, rpcUrl.error, json);
+    return 2;
+  }
+  let vault;
+  try {
+    vault = await readVaultEntry(ctx, checked.address);
+  } catch (error) {
+    if (error instanceof TradingError && error.code === "USAGE") {
+      writeUsageFailure(deps, error.message, json);
+      return 2;
+    }
+    if (isVaultError(error)) {
+      writeLocalFailure(deps, { code: error.code, message: error.message, ...error.suggestion ? { suggestion: error.suggestion } : {} }, json);
+      return error.exitCode;
+    }
+    throw error;
+  }
+  const report = {
+    address: checked.address,
+    chain: "hood",
+    label: vault?.label ?? null,
+    source: vault ? "vault" : "server",
+    linkedWalletId: vault?.linkedWalletId ?? null,
+    vaultDestination: vault?.vaultDestination ?? null,
+    observedAt: new Date(deps.now()).toISOString()
+  };
+  const apiKey = await resolveApiKey(deps, ctx.profile);
+  if (!apiKey)
+    report.server = { error: "no API key available; server state not read" };
+  else {
+    try {
+      const { rows } = await listTradingWallets(ctx, apiKey);
+      const row = rows.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address));
+      if (row) {
+        report.linkedWalletId ??= row.id;
+        if (report.label === null && row.label)
+          report.label = row.label;
+        report.bound = { active: row.active, walletId: row.id };
+      }
+      const walletId = report.linkedWalletId ?? undefined;
+      if (walletId === undefined)
+        report.server = { error: "not a TEE wallet on this key" };
+      else {
+        const lifecycle = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(walletId)}/lifecycle`, {
+          auth: "key",
+          credentials: { apiKey },
+          apiUrl: ctx.apiUrl,
+          fetch: deps.fetch,
+          env: deps.env
+        });
+        report.server = lifecycle.ok ? lifecycle.body : { error: lifecycle.message ?? `HTTP ${lifecycle.status}` };
+      }
+    } catch (error) {
+      report.server = { error: error instanceof Error ? error.message : "wallet listing failed" };
+    }
+  }
+  deps.stderr.write(`Reading ETH, USDG and the fee for ${checked.address} from ${rpcHostOf2(rpcUrl.url)}
+`);
+  const rpc = createEvmRpc(rpcUrl.url, deps.fetch);
+  try {
+    const [eth, usdg, fees] = await Promise.all([
+      rpc.getBalance(checked.address),
+      rpc.erc20BalanceOf(HOOD_USDG_ADDRESS, checked.address),
+      quoteFees(rpc)
+    ]);
+    const reserve = sweepReserveFloor(fees.maxFeePerGas);
+    const low = eth < reserve.wei * GAS_LOW_RESERVE_MULTIPLE;
+    report.balances = {
+      ethWei: eth.toString(),
+      eth: formatUnits(eth, 18),
+      usdgRaw: usdg.toString(),
+      usdg: formatUnits(usdg, HOOD_USDG_DECIMALS)
+    };
+    report.reserve = {
+      wei: reserve.wei.toString(),
+      eth: formatUnits(reserve.wei, 18),
+      erc20Transfers: reserve.erc20Transfers,
+      maxFeePerGas: fees.maxFeePerGas.toString(),
+      basis: "floor: USDG, WETH and one extra ERC-20 transfer, plus the final ETH transfer, at twice the fee"
+    };
+    report.gas = low ? "low" : "ok";
+    if (low) {
+      const topUp = reserve.wei * GAS_LOW_RESERVE_MULTIPLE - eth;
+      report.fund = `candle vault fund ${checked.address} --amount ${formatUnits(topUp, 18)} --asset ETH`;
+    }
+  } catch (error) {
+    report.balances = { error: describeRpcFailure(error) };
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify(report)}
+`);
+    return 0;
+  }
+  deps.stdout.write(`${checked.address}  ${report.label ?? ""}
+`);
+  deps.stdout.write(`  chain         Hood (4663)
+`);
+  deps.stdout.write(`  source        ${report.source}
+`);
+  if (vault?.vaultDestination)
+    deps.stdout.write(`  vault         ${vault.vaultDestination}
+`);
+  const server = report.server;
+  if (server?.error)
+    deps.stdout.write(`  server        (unavailable: ${server.error})
+`);
+  else if (server)
+    deps.stdout.write(`  server state  ${server.state ?? "?"}  remote authority ${server.remoteAuthority ?? "?"}
+`);
+  const balances = report.balances;
+  if (balances.error)
+    deps.stdout.write(`  balances      (unavailable: ${balances.error})
+`);
+  else {
+    const reserve = report.reserve;
+    deps.stdout.write(`  ETH           ${balances.eth}
+`);
+    deps.stdout.write(`  USDG          ${balances.usdg}
+`);
+    deps.stdout.write(`  reserve       at least ${reserve.eth} ETH (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee)
+`);
+    deps.stdout.write(report.gas === "low" ? `  gas: low      ETH is under twice the reserve. Fund it: ${report.fund}
+` : `  gas           ok
+`);
+  }
+  deps.stdout.write(`  observed at   ${report.observedAt}
+`);
+  return 0;
+}
 
 // src/commands/wallets.ts
 init_esm();
@@ -50174,6 +50632,8 @@ async function teeStatus(args, ctx) {
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
     return usage2(ctx, "Usage: candle tee status <address> [--rpc-url <url>]");
+  if (/^0x/i.test(address))
+    return await teeStatusEvm(ctx, parsed, address);
   const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
   if ("error" in solana)
     return usage2(ctx, solana.error);
@@ -51923,6 +52383,7 @@ import { randomUUID as randomUUID2 } from "node:crypto";
 
 // src/commands/swap.ts
 init_args();
+init_evm_lite();
 init_render();
 init_solana_endpoint();
 init_solana_lite();
@@ -51936,7 +52397,8 @@ function tradingFailure(ctx, error, id) {
   writeLocalFailure(ctx.deps, {
     code: error instanceof TradingError ? error.code : "TRADING_FAILED",
     message: `${error instanceof Error ? describeRpcFailure(error) : "Trading failed."}${id ? ` Operation ${id}; use candle swap status ${id} before another attempt.` : ""}`,
-    ...error instanceof TradingError && error.suggestion ? { suggestion: error.suggestion } : {}
+    ...error instanceof TradingError && error.suggestion ? { suggestion: error.suggestion } : {},
+    ...error instanceof TradingError && error.details ? { details: error.details } : {}
   }, ctx.json);
   return error instanceof TradingError ? error.exitCode : 1;
 }
@@ -52042,12 +52504,28 @@ async function swap(args, ctx) {
   const id = flags["--client-trade-id"] ?? `swap-${randomUUID()}`;
   const slippage = Number(flags["--slippage-bps"] ?? "50");
   if (parsed.positionals.length !== 2 || Boolean(flags["--amount"]) === Boolean(flags["--percent"]) || !validClientId(id) || !Number.isInteger(slippage) || slippage < 0 || slippage > 1e4) {
-    writeUsageFailure(ctx.deps, "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]", ctx.json);
+    writeUsageFailure(ctx.deps, "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token.", ctx.json);
     return 2;
   }
   try {
-    const from = solanaAsset(parsed.positionals[0]);
-    const to = solanaAsset(parsed.positionals[1]);
+    const fromAsset = classifyAsset(parsed.positionals[0]);
+    const toAsset = classifyAsset(parsed.positionals[1]);
+    const chain2 = pairChain(fromAsset, toAsset);
+    const walletFlag = flags["--wallet"];
+    const named = walletFlag === undefined ? undefined : walletNameChain(walletFlag);
+    if (named !== undefined && named !== chain2)
+      throw chainMismatch(`--wallet ${safeText(walletFlag)}`, named, chain2);
+    if (chain2 === "hood")
+      return await hoodSwap(ctx, {
+        flags,
+        yes: parsed.booleans.has("--yes"),
+        id,
+        slippage,
+        from: fromAsset,
+        to: toAsset
+      });
+    const from = fromAsset.asset;
+    const to = toAsset.asset;
     if (from === to)
       throw new TradingError("PAIR_UNSUPPORTED", "Choose two distinct assets.");
     const fromBase = baseAsset(from);
@@ -52172,6 +52650,215 @@ async function swap(args, ctx) {
   } catch (error) {
     return tradingFailure(ctx, error, id);
   }
+}
+function lazyEvmRpc(ctx, flag) {
+  let rpc;
+  return () => {
+    if (rpc)
+      return rpc;
+    const resolved = resolveEvmRpcUrl(flag, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url");
+    if ("error" in resolved)
+      throw new TradingUsage(resolved.error);
+    ctx.deps.stderr.write(`Reading from ${rpcHostOf2(resolved.url)} (Hood RPC; reads only, nothing is sent there)
+`);
+    rpc = createEvmRpc(resolved.url, ctx.deps.fetch);
+    return rpc;
+  };
+}
+async function evmRead(what, read) {
+  try {
+    return await read();
+  } catch (error) {
+    if (error instanceof TradingError || error instanceof TradingUsage)
+      throw error;
+    throw new TradingError("RPC_FAILED", `Reading ${what} over the Hood RPC failed; nothing was built or signed.`);
+  }
+}
+async function hoodDecimals(asset, rpc) {
+  const base = asset.base ? HOOD_BASES[asset.base] : undefined;
+  if (base)
+    return base.decimals;
+  const decimals = await evmRead(`${asset.asset} decimals()`, () => rpc().erc20Decimals(asset.asset));
+  if (decimals > 36)
+    throw new TradingError("INVALID_RESPONSE", "The token's decimals() is out of range.");
+  return decimals;
+}
+async function recordTradedToken(ctx, wallet, token) {
+  const skipped = (reason) => `Notice: the sealed EVM record was not updated for ${token} (${reason}). The leg landed. A later sweep still finds this token with --token ${token}, or with --from-block.`;
+  const append = ctx.deps.appendEvmRecord;
+  let notice;
+  if (!append)
+    notice = skipped("this CLI build has no sealed EVM record writer");
+  else {
+    try {
+      const outcome = await append(ctx, { kind: "token", wallet: toChecksumAddress(wallet), token });
+      notice = outcome.appended ? outcome.notice : skipped(outcome.notice);
+    } catch (error) {
+      notice = skipped(error instanceof Error ? error.message : "the append failed");
+    }
+  }
+  if (notice)
+    ctx.deps.stderr.write(`${safeText(notice)}
+`);
+  return notice;
+}
+function describeHoodLegs(first, hasFee) {
+  const kinds = plannedLegKinds(first.legKind, first.plannedLegCount, hasFee);
+  const names = {
+    approval: "approve",
+    permit2Approval: "Permit2 approve",
+    trade: "trade",
+    feeTransfer: "fee"
+  };
+  return kinds ? kinds.map((kind) => names[kind] ?? kind) : [`${first.plannedLegCount} legs, starting with ${names[first.legKind] ?? first.legKind}`];
+}
+async function hoodSwap(ctx, args) {
+  const { flags, id, from, to } = args;
+  if (from.asset === to.asset)
+    throw new TradingError("PAIR_UNSUPPORTED", "Choose two distinct assets.");
+  if (!from.base && !to.base)
+    throw new TradingError("PAIR_UNSUPPORTED", "A Hood token trade must have ETH or USDG on one side; token-to-token routing is unavailable.");
+  if (flags["--amount"])
+    rawAmount(flags["--amount"], 18);
+  const percent = flags["--percent"] ? BigInt(rawAmount(flags["--percent"], 6)) : undefined;
+  if (percent !== undefined && percent > 100000000n)
+    throw new TradingError("INVALID_AMOUNT", "Percent must be greater than 0 and at most 100 (up to six decimal places).");
+  const kind = from.base && to.base ? "swap" : "trade";
+  const key = await tradingKey(ctx);
+  const prior = await lookupOperation(ctx, key, id, kind);
+  if (prior)
+    return printTradingResult(ctx, prior);
+  const payer = await tradingPayer(ctx, key, flags["--wallet"], "swap:write", "hood");
+  if (payer.kind === "embedded" && kind === "swap")
+    throw new TradingError("PAIR_UNSUPPORTED", "The embedded wallet cannot swap ETH and USDG from this command: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a Hood TEE wallet.");
+  const payerAddress = payer.kind === "tee" ? payer.wallet.address : payer.address;
+  const rpc = lazyEvmRpc(ctx, flags["--rpc-url"]);
+  const decimals = await hoodDecimals(from, rpc);
+  const outDecimals = await hoodDecimals(to, rpc);
+  let amountRaw;
+  if (percent !== undefined) {
+    const balance = from.asset === "ETH" ? await evmRead("the ETH balance", () => rpc().getBalance(payerAddress)) : await evmRead(`the ${from.asset} balance`, () => rpc().erc20BalanceOf(from.asset === "USDG" ? HOOD_USDG_ADDRESS : from.asset, payerAddress));
+    amountRaw = (balance * percent / 100000000n).toString();
+    if (amountRaw === "0")
+      throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.");
+  } else
+    amountRaw = rawAmount(flags["--amount"], decimals);
+  if (payer.kind === "embedded")
+    await assertDeferredExecuteSupported(ctx, key, id);
+  if (!await claimOperation(ctx, key, id, kind))
+    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
+  ctx.deps.stderr.write(`Operation: ${id}
+`);
+  const payerBody = payer.kind === "tee" ? { type: "linked", linkedWalletId: payer.wallet.id } : { type: "main" };
+  const base = from.base ?? to.base;
+  const token = from.base ? to.asset : from.asset;
+  const built = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/build", {
+    clientTradeId: id,
+    from: from.asset,
+    to: to.asset,
+    amountRaw,
+    maxSlippageBps: args.slippage,
+    payer: payerBody
+  }) : await request(ctx, key, "/api/v1/trade/agent/build", {
+    clientTradeId: id,
+    chain: "hood",
+    mint: token,
+    side: from.base ? "buy" : "sell",
+    quoteAsset: base.toLowerCase(),
+    amountRaw,
+    maxSlippageBps: args.slippage,
+    payer: payerBody,
+    ...payer.kind === "embedded" ? { deferExecution: true } : {}
+  });
+  if (built.job || built.status === "executed")
+    return printTradingResult(ctx, { ...built, clientTradeId: id, kind });
+  const body = kind === "swap" ? built.payload : built;
+  const data = swapBuildSchema.parse(body);
+  const echoed = kind === "swap" ? body?.recipient : body?.walletAddress;
+  if (body?.chain !== "hood" || typeof echoed !== "string" || echoed.toLowerCase() !== payerAddress.toLowerCase())
+    throw new TradingError("INVALID_RESPONSE", "The Hood build does not name the requested payer; nothing was signed.");
+  const artifacts = kind === "swap" ? { ...data, quoteAsset: undefined, quoteSource: undefined } : data.artifacts;
+  if (!artifacts)
+    throw new TradingError("INVALID_RESPONSE", "Missing quote artifacts.");
+  if (kind === "trade" && artifacts.quoteAsset !== base.toLowerCase())
+    throw new TradingError("PAIR_UNSUPPORTED", `This token settles in ${artifacts.quoteAsset ?? "an unknown asset"}, not ${base}. Nothing was signed.`);
+  let sequenced;
+  if (payer.kind === "tee") {
+    const parsed = sequencedSchema.safeParse(body);
+    if (!parsed.success)
+      throw new TradingError("SEQUENCED_RAIL_REQUIRED", "A Hood TEE wallet trades one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.");
+    sequenced = parsed.data;
+  }
+  const minimumRaw = !from.base && artifacts.venue === "curve" ? (BigInt(data.minOutRaw) > BigInt(data.fee.feeRaw) ? BigInt(data.minOutRaw) - BigInt(data.fee.feeRaw) : 0n).toString() : data.minOutRaw;
+  const quote = {
+    intent: `Swap ${decimalAmount(amountRaw, decimals)} ${from.asset} to ${to.asset} on Hood`,
+    wallet: payerAddress,
+    venue: artifacts.quoteSource ?? artifacts.venue,
+    priceImpactPct: artifacts.priceImpactPct ?? null,
+    fee: data.fee,
+    minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to.asset}`,
+    minOutRaw: data.minOutRaw,
+    minimumReceivedRaw: minimumRaw,
+    tokenRisks: artifacts.tokenRisks ?? []
+  };
+  if (sequenced) {
+    const leg = sequenced.nextLeg;
+    const maxFee = BigInt(leg.maxFeePerGas);
+    const reserve = sweepReserveFloor(maxFee, kind === "trade" ? [token] : []);
+    quote.legs = describeHoodLegs(sequenced, BigInt(data.fee.feeRaw) > 0n);
+    quote.gas = `the ${sequenced.legKind} leg up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei); each later leg is priced by Candle when it becomes next`;
+    quote.reserve = `at least ${formatUnits(reserve.wei, 18)} ETH stays in the wallet for a sweep home (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee); a trade never spends it`;
+    quote.operationId = sequenced.operationId;
+  }
+  if (!await confirmQuote(ctx, quote, args.yes)) {
+    if (sequenced)
+      ctx.deps.stderr.write(`Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade from it is refused as WALLET_BUSY until then.
+`);
+    return printTradingResult(ctx, {
+      success: true,
+      status: "cancelled",
+      clientTradeId: id,
+      kind,
+      quote,
+      ...sequenced ? { operationId: sequenced.operationId, walletHeldUntil: sequenced.expiresAt } : {}
+    });
+  }
+  if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
+    throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
+  if (payer.kind === "embedded") {
+    const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
+    return printTradingResult(ctx, { ...executed, clientTradeId: id, kind, quote, wallet: safeText(payerAddress) });
+  }
+  const wallet = payer.wallet;
+  if (wallet.chain !== "evm" || !sequenced)
+    throw chainMismatch(`TEE wallet ${wallet.id}`, wallet.chain === "evm" ? "hood" : "solana", "hood");
+  const recorded = kind === "trade" ? token : HOOD_USDG_ADDRESS;
+  const notices = [];
+  const run = await runSequencedLegs(ctx, key, {
+    wallet,
+    first: sequenced,
+    submitPath: kind === "swap" ? "/api/v1/agent/swap/submit" : "/api/v1/trade/agent/submit",
+    submitFields: kind === "swap" ? { clientTradeId: id, swapId: data.swapId } : { clientTradeId: id },
+    unwrap: (answer) => kind === "swap" ? answer.payload ?? {} : answer,
+    clientId: id,
+    kind,
+    onLanded: async (_leg) => {
+      const notice = await recordTradedToken(ctx, wallet.address, toChecksumAddress(recorded));
+      if (notice)
+        notices.push(notice);
+    }
+  });
+  return printTradingResult(ctx, {
+    ...run.final,
+    clientTradeId: id,
+    kind,
+    chain: "hood",
+    quote,
+    wallet: safeText(wallet.address),
+    operationId: sequenced.operationId,
+    landedLegs: run.landed,
+    evmRecord: { token: toChecksumAddress(recorded), notices }
+  });
 }
 
 // src/commands/launch.ts
@@ -55417,6 +56104,7 @@ init_sidecar();
 init_store();
 
 // src/vault/verify.ts
+init_evm_lite();
 init_crypto();
 init_errors();
 init_format();
@@ -58440,6 +59128,7 @@ The Phase 1 file was left in place. A 0.9.x binary reading it still sees that st
 
 // src/commands/vault-list.ts
 init_args();
+init_evm_lite();
 init_render();
 init_solana_endpoint();
 init_solana_lite();
@@ -58587,19 +59276,19 @@ async function vaultList(args, ctx) {
 `);
     }
     const evm = balances ? matched.filter((entry) => entry.chain === "evm") : [];
-    let evmRead;
+    let evmRead2;
     if (evm.length > 0) {
       const host = rpcHostOf2(evmRpcUrl);
       deps.stderr.write(`Reading ETH (and USDG when the chain is Hood) for ${evm.length} EVM ${evm.length === 1 ? "address" : "addresses"} from ${host}, in ${evmRequestsPlanned(evm.length)} requests. That endpoint sees all ${evm.length} together.
 `);
-      evmRead = await readEvmBalances(evm.map((entry) => entry.address), evmRpcUrl, deps.fetch);
-      if (evmRead.unavailable.length > 0) {
-        deps.stderr.write(`${evmRead.unavailable.length} EVM ${evmRead.unavailable.length === 1 ? "address" : "addresses"} could not be read: ${evmRead.failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --evm-rpc-url.
+      evmRead2 = await readEvmBalances(evm.map((entry) => entry.address), evmRpcUrl, deps.fetch);
+      if (evmRead2.unavailable.length > 0) {
+        deps.stderr.write(`${evmRead2.unavailable.length} EVM ${evmRead2.unavailable.length === 1 ? "address" : "addresses"} could not be read: ${evmRead2.failure ?? "the RPC did not answer"}. Narrow with a filter, or use your own endpoint with --evm-rpc-url.
 `);
       }
     }
-    const hood = evmRead?.chainId === BigInt(HOOD_CHAIN_ID);
-    const complete = solanaComplete && (evmRead === undefined || evmRead.unavailable.length === 0);
+    const hood = evmRead2?.chainId === BigInt(HOOD_CHAIN_ID);
+    const complete = solanaComplete && (evmRead2 === undefined || evmRead2.unavailable.length === 0);
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
@@ -58613,8 +59302,8 @@ async function vaultList(args, ctx) {
             ...describeEntry(entry),
             ...balances && entry.chain === "solana" ? { lamports: held === undefined ? null : held.toString() } : {},
             ...balances && entry.chain === "evm" ? {
-              wei: evmRead?.wei.get(entry.address)?.toString() ?? null,
-              ...hood ? { usdgRaw: evmRead?.usdg.get(entry.address)?.toString() ?? null } : {}
+              wei: evmRead2?.wei.get(entry.address)?.toString() ?? null,
+              ...hood ? { usdgRaw: evmRead2?.usdg.get(entry.address)?.toString() ?? null } : {}
             } : {}
           };
         }),
@@ -58627,13 +59316,13 @@ async function vaultList(args, ctx) {
             unavailable
           }
         } : {},
-        ...evmRead !== undefined ? {
+        ...evmRead2 !== undefined ? {
           evmBalances: {
-            rpcHost: evmRead.host,
-            chainId: evmRead.chainId === undefined ? null : Number(evmRead.chainId),
-            requests: evmRead.requests,
-            complete: evmRead.unavailable.length === 0,
-            unavailable: evmRead.unavailable
+            rpcHost: evmRead2.host,
+            chainId: evmRead2.chainId === undefined ? null : Number(evmRead2.chainId),
+            requests: evmRead2.requests,
+            complete: evmRead2.unavailable.length === 0,
+            unavailable: evmRead2.unavailable
           }
         } : {}
       });
@@ -58650,8 +59339,8 @@ async function vaultList(args, ctx) {
     const headers = ["ADDRESS", "LABEL", "ROLE", "DERIVATION"];
     if (balances)
       headers.push("SOL");
-    const evmColumns = evmRead !== undefined;
-    const nativeHeader = hood || evmRead?.chainId === undefined ? "ETH" : `ETH@${evmRead.chainId}`;
+    const evmColumns = evmRead2 !== undefined;
+    const nativeHeader = hood || evmRead2?.chainId === undefined ? "ETH" : `ETH@${evmRead2.chainId}`;
     if (evmColumns)
       headers.push(nativeHeader);
     if (evmColumns && hood)
@@ -58663,10 +59352,10 @@ async function vaultList(args, ctx) {
         row.push(entry.chain !== "solana" ? "-" : held === undefined ? "?" : formatSol3(held));
       }
       if (evmColumns) {
-        const wei = evmRead?.wei.get(entry.address);
+        const wei = evmRead2?.wei.get(entry.address);
         row.push(entry.chain !== "evm" ? "-" : wei === undefined ? "?" : formatUnits(wei, NATIVE_DECIMALS));
         if (hood) {
-          const usdg = evmRead?.usdg.get(entry.address);
+          const usdg = evmRead2?.usdg.get(entry.address);
           row.push(entry.chain !== "evm" ? "-" : usdg === undefined ? "?" : formatUnits(usdg, HOOD_USDG_DECIMALS));
         }
       }
@@ -58682,14 +59371,14 @@ total  ${formatSol3(totalLamports)} SOL across ${solana.length} keys
 total  ${formatSol3(totalLamports)} SOL across ${solana.length - unavailable.length} of ${solana.length} keys read
 `);
     }
-    if (evmRead !== undefined) {
-      const totalWei = [...evmRead.wei.values()].reduce((sum, value) => sum + value, 0n);
-      const readCount = evm.length - evmRead.unavailable.length;
-      const chain2 = evmRead.chainId === undefined ? "an unread chain" : hood ? "Hood" : `chain id ${evmRead.chainId}`;
+    if (evmRead2 !== undefined) {
+      const totalWei = [...evmRead2.wei.values()].reduce((sum, value) => sum + value, 0n);
+      const readCount = evm.length - evmRead2.unavailable.length;
+      const chain2 = evmRead2.chainId === undefined ? "an unread chain" : hood ? "Hood" : `chain id ${evmRead2.chainId}`;
       deps.stdout.write(`total  ${formatUnits(totalWei, NATIVE_DECIMALS)} ${nativeHeader} across ${readCount}${readCount === evm.length ? "" : ` of ${evm.length}`} EVM keys${readCount === evm.length ? "" : " read"} on ${chain2}
 `);
       if (hood) {
-        const totalUsdg = [...evmRead.usdg.values()].reduce((sum, value) => sum + value, 0n);
+        const totalUsdg = [...evmRead2.usdg.values()].reduce((sum, value) => sum + value, 0n);
         deps.stdout.write(`total  ${formatUnits(totalUsdg, HOOD_USDG_DECIMALS)} USDG across those keys
 `);
       }
@@ -61016,9 +61705,10 @@ function resolveTarget(index, old, id) {
 // src/commands/vault-restore.ts
 init_args();
 init_deps();
-import { rm as rm3 } from "node:fs/promises";
+init_evm_lite();
 init_solana_endpoint();
 init_solana_lite();
+import { rm as rm3 } from "node:fs/promises";
 init_crypto();
 init_errors();
 init_format();
@@ -62009,10 +62699,12 @@ function describeEnvelope(envelope, facts) {
 // src/commands/vault-transfer.ts
 init_args();
 init_deps();
+init_evm_lite();
 init_solana_endpoint();
 init_errors();
 
 // src/vault/evm-transfer.ts
+init_evm_lite();
 init_errors();
 var EVM_RECEIPT_WAIT_MS = 120000;
 var EVM_RECEIPT_POLL_MS = 2000;

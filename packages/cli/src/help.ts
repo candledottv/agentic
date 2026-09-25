@@ -228,14 +228,14 @@ export const HELP: Record<string, Topic> = {
 
   swap: {
     group: "Trade",
-    summary: "Quote, confirm and swap on Solana; read an operation by id",
+    summary: "Quote, confirm and swap on Solana or Hood; read an operation by id",
     description:
-      "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch.",
+      "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed.",
     usage: ["candle swap <from> <to> [flags]", "candle swap status <id>"],
     rows: [
       {
         invocation: "<from> <to> --amount <n>|--percent <n> --wallet <tee>",
-        description: "Quote, confirm and swap on Solana",
+        description: "Quote, confirm and swap on Solana or Hood",
       },
       {
         invocation: "status <id> [--kind trade|swap|launch]",
@@ -245,6 +245,8 @@ export const HELP: Record<string, Topic> = {
     examples: [
       "candle swap SOL USDC --amount 0.5 --wallet AgentOne",
       "candle swap USDC SOL --percent 100 --wallet AgentOne",
+      "candle swap ETH USDG --amount 0.05 --wallet HoodOne",
+      "candle swap 0xTokenAddress ETH --percent 100 --wallet HoodOne",
       "candle swap status op_123 --kind swap",
     ],
     env: ENV_API,
@@ -641,7 +643,7 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation: "status <address> [--rpc-url <url>]",
-        description: "Server lifecycle state and on-chain balances",
+        description: "Server lifecycle state and on-chain balances; on Hood, ETH, USDG, the gas reserve and gas: low",
       },
       {
         invocation: "disable <address>",

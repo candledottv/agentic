@@ -94,6 +94,7 @@ import {
   withKeystoreLock,
   writeKeystoreFile,
 } from "../wallet-keystore"
+import { teeStatusEvm } from "./tee-status-evm"
 import { readDisableOutcome } from "./wallets"
 
 const MIN_PASSPHRASE_LENGTH = 12
@@ -989,6 +990,8 @@ export async function teeStatus(args: string[], ctx: CommandContext): Promise<nu
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
   if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee status <address> [--rpc-url <url>]")
+  // Phase 4b-1 (BE-392, D5): a Hood TEE wallet reads ETH, USDG and the gas reserve instead.
+  if (/^0x/i.test(address)) return await teeStatusEvm(ctx, parsed, address)
   // BE-355 (D1): the balances are always read, over the resolved endpoint; validated before the prompt.
   const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
   if ("error" in solana) return usage(ctx, solana.error)

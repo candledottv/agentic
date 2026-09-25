@@ -1,33 +1,56 @@
 import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
+import {
+  createEvmRpc,
+  EVM_RPC_URL_ENV,
+  type EvmRpc,
+  formatUnits,
+  HOOD_USDG_ADDRESS,
+  resolveEvmRpcUrl,
+  rpcHostOf,
+  toChecksumAddress,
+} from "../evm-lite"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 import { describeRpcFailure, type SolanaClient } from "../solana-endpoint"
 import { isRateLimited, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import {
   BASES,
   baseAsset,
+  chainMismatch,
   claimOperation,
+  classifyAsset,
   confirmQuote,
   decimalAmount,
+  HOOD_BASES,
   type JobKind,
   type Json,
   jobPath,
+  type LandedLeg,
   type OperationKind,
   operationSchema,
+  pairChain,
+  plannedLegKinds,
+  type QuoteDisplay,
   rawAmount,
   relaySign,
   request,
+  runSequencedLegs,
+  type SequencedBody,
   safeText,
   savedOperation,
-  solanaAsset,
+  sequencedSchema,
   swapBuildSchema,
+  sweepReserveFloor,
+  type TradeAsset,
   TradingError,
   TradingUsage,
+  type TradingWallet,
   tradingKey,
   tradingPayer,
   tradingRateLimited,
   tradingSolanaClient,
+  walletNameChain,
 } from "../trading"
 
 /**
@@ -47,6 +70,8 @@ export function tradingFailure(ctx: CommandContext, error: unknown, id?: string)
       // BE-355 (invariant 1): a connect failure's message may carry the endpoint URL; strip it.
       message: `${error instanceof Error ? describeRpcFailure(error) : "Trading failed."}${id ? ` Operation ${id}; use candle swap status ${id} before another attempt.` : ""}`,
       ...(error instanceof TradingError && error.suggestion ? { suggestion: error.suggestion } : {}),
+      // Phase 4b (D4): a sequenced failure's operation id, landed legs, and an uncertain leg's hash.
+      ...(error instanceof TradingError && error.details ? { details: error.details } : {}),
     },
     ctx.json,
   )
@@ -208,14 +233,30 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
       ctx.deps,
       // --wallet is optional since BE-249: an account with exactly one payer does not have to name
       // it, and the payer may now be the embedded wallet as well as a TEE one.
-      "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]",
+      "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token.",
       ctx.json,
     )
     return 2
   }
   try {
-    const from = solanaAsset(parsed.positionals[0] as string)
-    const to = solanaAsset(parsed.positionals[1] as string)
+    // Phase 4b (D6): the assets decide the chain, and both sides must agree, before any request.
+    const fromAsset = classifyAsset(parsed.positionals[0] as string)
+    const toAsset = classifyAsset(parsed.positionals[1] as string)
+    const chain = pairChain(fromAsset, toAsset)
+    const walletFlag = flags["--wallet"]
+    const named = walletFlag === undefined ? undefined : walletNameChain(walletFlag)
+    if (named !== undefined && named !== chain) throw chainMismatch(`--wallet ${safeText(walletFlag)}`, named, chain)
+    if (chain === "hood")
+      return await hoodSwap(ctx, {
+        flags,
+        yes: parsed.booleans.has("--yes"),
+        id,
+        slippage,
+        from: fromAsset,
+        to: toAsset,
+      })
+    const from = fromAsset.asset
+    const to = toAsset.asset
     if (from === to) throw new TradingError("PAIR_UNSUPPORTED", "Choose two distinct assets.")
     const fromBase = baseAsset(from)
     const toBase = baseAsset(to)
@@ -392,4 +433,264 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
   } catch (error) {
     return tradingFailure(ctx, error, id)
   }
+}
+
+// ── Phase 4b-1: Hood (D6) ─────────────────────────────────────────────────────────────────────
+
+/**
+ * The EVM endpoint a Hood swap READS over, resolved only when a read needs one: a token's
+ * `decimals()` and, for `--percent`, the payer's balance. Trading itself never touches it: the
+ * server sets every nonce and fee, broadcasts, and reads every receipt (D6). The host is printed
+ * once, on first use, never the URL.
+ */
+function lazyEvmRpc(ctx: CommandContext, flag: string | undefined): () => EvmRpc {
+  let rpc: EvmRpc | undefined
+  return () => {
+    if (rpc) return rpc
+    const resolved = resolveEvmRpcUrl(flag, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url")
+    if ("error" in resolved) throw new TradingUsage(resolved.error)
+    ctx.deps.stderr.write(`Reading from ${rpcHostOf(resolved.url)} (Hood RPC; reads only, nothing is sent there)\n`)
+    rpc = createEvmRpc(resolved.url, ctx.deps.fetch)
+    return rpc
+  }
+}
+
+async function evmRead<T>(what: string, read: () => Promise<T>): Promise<T> {
+  try {
+    return await read()
+  } catch (error) {
+    if (error instanceof TradingError || error instanceof TradingUsage) throw error
+    throw new TradingError("RPC_FAILED", `Reading ${what} over the Hood RPC failed; nothing was built or signed.`)
+  }
+}
+
+async function hoodDecimals(asset: TradeAsset, rpc: () => EvmRpc): Promise<number> {
+  const base = asset.base ? HOOD_BASES[asset.base] : undefined
+  if (base) return base.decimals
+  const decimals = await evmRead(`${asset.asset} decimals()`, () => rpc().erc20Decimals(asset.asset))
+  if (decimals > 36) throw new TradingError("INVALID_RESPONSE", "The token's decimals() is out of range.")
+  return decimals
+}
+
+/**
+ * Append one `token` line to the sealed EVM record for a leg that landed (D1). Never fails the
+ * leg: any append that cannot run is a notice on stderr, and the leg's success stands.
+ */
+async function recordTradedToken(ctx: CommandContext, wallet: string, token: string): Promise<string | undefined> {
+  const skipped = (reason: string) =>
+    `Notice: the sealed EVM record was not updated for ${token} (${reason}). The leg landed. A later sweep still finds this token with --token ${token}, or with --from-block.`
+  const append = ctx.deps.appendEvmRecord
+  let notice: string | undefined
+  if (!append) notice = skipped("this CLI build has no sealed EVM record writer")
+  else {
+    try {
+      const outcome = await append(ctx, { kind: "token", wallet: toChecksumAddress(wallet), token })
+      notice = outcome.appended ? outcome.notice : skipped(outcome.notice)
+    } catch (error) {
+      notice = skipped(error instanceof Error ? error.message : "the append failed")
+    }
+  }
+  if (notice) ctx.deps.stderr.write(`${safeText(notice)}\n`)
+  return notice
+}
+
+function describeHoodLegs(first: SequencedBody, hasFee: boolean): string[] {
+  const kinds = plannedLegKinds(first.legKind, first.plannedLegCount, hasFee)
+  const names: Record<string, string> = {
+    approval: "approve",
+    permit2Approval: "Permit2 approve",
+    trade: "trade",
+    feeTransfer: "fee",
+  }
+  return kinds
+    ? kinds.map((kind) => names[kind] ?? kind)
+    : [`${first.plannedLegCount} legs, starting with ${names[first.legKind] ?? first.legKind}`]
+}
+
+/**
+ * `candle swap` on Hood (D6): ETH <-> USDG on the base rail, or a token against ETH or USDG on the
+ * trade rail. A Hood TEE wallet trades only through the sequenced rail (D4); the embedded Hood
+ * wallet trades tokens through the deferred build and `/execute`, as it does on Solana.
+ */
+async function hoodSwap(
+  ctx: CommandContext,
+  args: {
+    flags: Record<string, string>
+    yes: boolean
+    id: string
+    slippage: number
+    from: TradeAsset
+    to: TradeAsset
+  },
+): Promise<number> {
+  const { flags, id, from, to } = args
+  if (from.asset === to.asset) throw new TradingError("PAIR_UNSUPPORTED", "Choose two distinct assets.")
+  if (!from.base && !to.base)
+    throw new TradingError(
+      "PAIR_UNSUPPORTED",
+      "A Hood token trade must have ETH or USDG on one side; token-to-token routing is unavailable.",
+    )
+  if (flags["--amount"]) rawAmount(flags["--amount"], 18)
+  const percent = flags["--percent"] ? BigInt(rawAmount(flags["--percent"], 6)) : undefined
+  if (percent !== undefined && percent > 100_000_000n)
+    throw new TradingError(
+      "INVALID_AMOUNT",
+      "Percent must be greater than 0 and at most 100 (up to six decimal places).",
+    )
+  const kind: OperationKind = from.base && to.base ? "swap" : "trade"
+  const key = await tradingKey(ctx)
+  const prior = await lookupOperation(ctx, key, id, kind)
+  if (prior) return printTradingResult(ctx, prior)
+  const payer = await tradingPayer(ctx, key, flags["--wallet"], "swap:write", "hood")
+  if (payer.kind === "embedded" && kind === "swap")
+    throw new TradingError(
+      "PAIR_UNSUPPORTED",
+      "The embedded wallet cannot swap ETH and USDG from this command: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a Hood TEE wallet.",
+    )
+  const payerAddress = payer.kind === "tee" ? payer.wallet.address : payer.address
+  const rpc = lazyEvmRpc(ctx, flags["--rpc-url"])
+  const decimals = await hoodDecimals(from, rpc)
+  const outDecimals = await hoodDecimals(to, rpc)
+  let amountRaw: string
+  if (percent !== undefined) {
+    const balance =
+      from.asset === "ETH"
+        ? await evmRead("the ETH balance", () => rpc().getBalance(payerAddress))
+        : await evmRead(`the ${from.asset} balance`, () =>
+            rpc().erc20BalanceOf(from.asset === "USDG" ? HOOD_USDG_ADDRESS : from.asset, payerAddress),
+          )
+    amountRaw = ((balance * percent) / 100_000_000n).toString()
+    if (amountRaw === "0") throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.")
+  } else amountRaw = rawAmount(flags["--amount"] as string, decimals)
+  if (payer.kind === "embedded") await assertDeferredExecuteSupported(ctx, key, id)
+  if (!(await claimOperation(ctx, key, id, kind)))
+    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.")
+  ctx.deps.stderr.write(`Operation: ${id}\n`)
+  const payerBody = payer.kind === "tee" ? { type: "linked", linkedWalletId: payer.wallet.id } : { type: "main" }
+  const base = (from.base ?? to.base) as string
+  const token = from.base ? to.asset : from.asset
+  const built =
+    kind === "swap"
+      ? await request(ctx, key, "/api/v1/agent/swap/build", {
+          clientTradeId: id,
+          from: from.asset,
+          to: to.asset,
+          amountRaw,
+          maxSlippageBps: args.slippage,
+          payer: payerBody,
+        })
+      : await request(ctx, key, "/api/v1/trade/agent/build", {
+          clientTradeId: id,
+          chain: "hood",
+          mint: token,
+          side: from.base ? "buy" : "sell",
+          quoteAsset: base.toLowerCase(),
+          amountRaw,
+          maxSlippageBps: args.slippage,
+          payer: payerBody,
+          ...(payer.kind === "embedded" ? { deferExecution: true } : {}),
+        })
+  if (built.job || built.status === "executed") return printTradingResult(ctx, { ...built, clientTradeId: id, kind })
+  const body = (kind === "swap" ? built.payload : built) as Json | undefined
+  const data = swapBuildSchema.parse(body)
+  const echoed = kind === "swap" ? body?.recipient : body?.walletAddress
+  if (body?.chain !== "hood" || typeof echoed !== "string" || echoed.toLowerCase() !== payerAddress.toLowerCase())
+    throw new TradingError("INVALID_RESPONSE", "The Hood build does not name the requested payer; nothing was signed.")
+  const artifacts = kind === "swap" ? { ...data, quoteAsset: undefined, quoteSource: undefined } : data.artifacts
+  if (!artifacts) throw new TradingError("INVALID_RESPONSE", "Missing quote artifacts.")
+  if (kind === "trade" && artifacts.quoteAsset !== base.toLowerCase())
+    throw new TradingError(
+      "PAIR_UNSUPPORTED",
+      `This token settles in ${artifacts.quoteAsset ?? "an unknown asset"}, not ${base}. Nothing was signed.`,
+    )
+  // D4: a Hood TEE wallet signs one leg at a time. A deployment that answers with every leg at
+  // once predates the sequenced rail, and its legs are never signed from this wallet.
+  let sequenced: SequencedBody | undefined
+  if (payer.kind === "tee") {
+    const parsed = sequencedSchema.safeParse(body)
+    if (!parsed.success)
+      throw new TradingError(
+        "SEQUENCED_RAIL_REQUIRED",
+        "A Hood TEE wallet trades one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.",
+      )
+    sequenced = parsed.data
+  }
+  const minimumRaw =
+    !from.base && artifacts.venue === "curve"
+      ? (BigInt(data.minOutRaw) > BigInt(data.fee.feeRaw)
+          ? BigInt(data.minOutRaw) - BigInt(data.fee.feeRaw)
+          : 0n
+        ).toString()
+      : data.minOutRaw
+  const quote: QuoteDisplay & Json = {
+    intent: `Swap ${decimalAmount(amountRaw, decimals)} ${from.asset} to ${to.asset} on Hood`,
+    wallet: payerAddress,
+    venue: artifacts.quoteSource ?? artifacts.venue,
+    priceImpactPct: artifacts.priceImpactPct ?? null,
+    fee: data.fee,
+    minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to.asset}`,
+    minOutRaw: data.minOutRaw,
+    minimumReceivedRaw: minimumRaw,
+    tokenRisks: artifacts.tokenRisks ?? [],
+  }
+  if (sequenced) {
+    const leg = sequenced.nextLeg
+    const maxFee = BigInt(leg.maxFeePerGas)
+    const reserve = sweepReserveFloor(maxFee, kind === "trade" ? [token] : [])
+    quote.legs = describeHoodLegs(sequenced, BigInt(data.fee.feeRaw) > 0n)
+    quote.gas = `the ${sequenced.legKind} leg up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei); each later leg is priced by Candle when it becomes next`
+    quote.reserve = `at least ${formatUnits(reserve.wei, 18)} ETH stays in the wallet for a sweep home (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee); a trade never spends it`
+    quote.operationId = sequenced.operationId
+  }
+  if (!(await confirmQuote(ctx, quote, args.yes))) {
+    // The build already holds the wallet (D4, one operation per wallet), and nothing releases an
+    // operation that never sent a leg: the next Hood build for it is WALLET_BUSY until the window closes.
+    if (sequenced)
+      ctx.deps.stderr.write(
+        `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade from it is refused as WALLET_BUSY until then.\n`,
+      )
+    return printTradingResult(ctx, {
+      success: true,
+      status: "cancelled",
+      clientTradeId: id,
+      kind,
+      quote,
+      ...(sequenced ? { operationId: sequenced.operationId, walletHeldUntil: sequenced.expiresAt } : {}),
+    })
+  }
+  if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
+    throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.")
+  if (payer.kind === "embedded") {
+    const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id })
+    return printTradingResult(ctx, { ...executed, clientTradeId: id, kind, quote, wallet: safeText(payerAddress) })
+  }
+  const wallet = payer.wallet as TradingWallet
+  if (wallet.chain !== "evm" || !sequenced)
+    throw chainMismatch(`TEE wallet ${wallet.id}`, wallet.chain === "evm" ? "hood" : "solana", "hood")
+  const recorded = kind === "trade" ? token : HOOD_USDG_ADDRESS
+  const notices: string[] = []
+  const run = await runSequencedLegs(ctx, key, {
+    wallet,
+    first: sequenced,
+    submitPath: kind === "swap" ? "/api/v1/agent/swap/submit" : "/api/v1/trade/agent/submit",
+    submitFields: kind === "swap" ? { clientTradeId: id, swapId: data.swapId } : { clientTradeId: id },
+    unwrap: (answer) => (kind === "swap" ? ((answer.payload ?? {}) as Json) : answer),
+    clientId: id,
+    kind,
+    onLanded: async (_leg: LandedLeg) => {
+      const notice = await recordTradedToken(ctx, wallet.address, toChecksumAddress(recorded))
+      if (notice) notices.push(notice)
+    },
+  })
+  return printTradingResult(ctx, {
+    ...run.final,
+    clientTradeId: id,
+    kind,
+    chain: "hood",
+    quote,
+    wallet: safeText(wallet.address),
+    operationId: sequenced.operationId,
+    landedLegs: run.landed,
+    evmRecord: { token: toChecksumAddress(recorded), notices },
+  })
 }

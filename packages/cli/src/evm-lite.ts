@@ -34,6 +34,8 @@ export const EVM_RPC_URL_ENV = "CANDLE_EVM_RPC_URL"
 /** Hood's USDG. Named on chain id 4663 only (D1); its decimals and symbol are still read from the contract. */
 export const HOOD_USDG_ADDRESS = "0x5fc5360d0400a0fd4f2af552add042d716f1d168"
 export const HOOD_USDG_DECIMALS = 6
+/** Hood's WETH (`HOOD_WETH` in `packages/shared/src/hood-dex.ts`). The sweep and the gas reserve count it always (Phase 4b D1, D5). */
+export const HOOD_WETH_ADDRESS = "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73"
 /** The native asset's decimals on every EVM chain this CLI reaches. */
 export const NATIVE_DECIMALS = 18
 
@@ -328,6 +330,43 @@ export function signTransaction(tx: EvmTransaction, secret: Uint8Array): SignedE
     ]),
   )
   return { raw, hash: bytesToHex(keccak_256(raw)), yParity, r: signature.r, s: signature.s }
+}
+
+/**
+ * Phase 4b (D4): whether a raw signed type-2 transaction, as the sign relay returned it, is a
+ * signature over exactly `tx`. The raw form is `0x02 ‖ rlp([...unsigned fields, yParity, r, s])`,
+ * so the list body must start with the unsigned fields' encodings byte for byte, followed by three
+ * more items. This signs nothing: it lets the CLI refuse a relay answer for any other nonce, fee,
+ * gas, recipient, value or calldata before posting it. The signer is checked by the server.
+ */
+export function signedTransactionCovers(raw: Uint8Array, tx: EvmTransaction): boolean {
+  if (raw[0] !== 0x02) return false
+  const list = raw.subarray(1)
+  const body = rlpListBody(list)
+  if (body === undefined) return false
+  const unsigned = rlpListBody(rlpEncode(unsignedFields(tx)))
+  if (unsigned === undefined || body.length <= unsigned.length) return false
+  for (let i = 0; i < unsigned.length; i++) if (body[i] !== unsigned[i]) return false
+  return true
+}
+
+/** The payload of an RLP list that spans all of `bytes`, or undefined when `bytes` is not exactly one list. */
+function rlpListBody(bytes: Uint8Array): Uint8Array | undefined {
+  const first = bytes[0]
+  if (first === undefined || first < 0xc0) return undefined
+  let start: number
+  let length: number
+  if (first <= 0xf7) {
+    start = 1
+    length = first - 0xc0
+  } else {
+    const size = first - 0xf7
+    if (bytes.length < 1 + size) return undefined
+    start = 1 + size
+    length = Number(hexToBigInt(bytesToHex(bytes.subarray(1, start))))
+  }
+  if (start + length !== bytes.length) return undefined
+  return bytes.subarray(start)
 }
 
 // ── Decimal formatting ────────────────────────────────────────────────────────────────────────

@@ -191,7 +191,26 @@ export interface Deps {
    * would receive without starting a real server on this process's stdio.
    */
   runMcpServer: (env: Record<string, string | undefined>) => Promise<void>
+  /**
+   * Phase 4b (spec 2026-09-24-ember-phase-4b-hood-tee-wallets-design.md, D1): append one entry to
+   * the sealed EVM record beside this machine's vault, without unlocking it. The trading leg loop
+   * (BE-392) calls it after each Hood TEE leg lands; the writer itself (header read, sealing, the
+   * record lock, torn-tail repair) is the custody slice's (BE-391). Optional so the call site can
+   * land first: absent, the append is skipped with a notice, which is what a landed leg does for
+   * any append that cannot run. It never throws for a skip; a throw is treated as a skip too.
+   */
+  appendEvmRecord?: (ctx: CommandContext, entry: EvmRecordTokenEntry) => Promise<EvmRecordAppendOutcome>
 }
+
+/** A `token` line of the sealed EVM record (D1): a token a landed leg on `wallet` traded. */
+export interface EvmRecordTokenEntry {
+  kind: "token"
+  wallet: string
+  token: string
+}
+
+/** What an append did. A skip carries the notice the CLI prints; a landed leg never fails on it. */
+export type EvmRecordAppendOutcome = { appended: true; notice?: string } | { appended: false; notice: string }
 
 export interface CommandContext {
   deps: Deps
