@@ -58829,7 +58829,7 @@ init_promote_support();
 init_deps();
 init_render();
 var REBIND_CHUNK = 200;
-var SELECTED_SCOPE_LIMIT = 50;
+var SELECTED_SCOPE_LIMIT = 1000;
 function targetKeyRefusal(row, keyPrefix, now) {
   const written = "Nothing was written.";
   if (row === undefined) {
@@ -58927,7 +58927,7 @@ async function preflightToKey(ctx, raw, opts) {
     const room = await readSelectedScopeRoom(ctx, keyPrefix);
     if (room.ok) {
       const moving = opts.labels.filter((label) => !room.heldLabels.has(label)).length;
-      if (room.held + moving > SELECTED_SCOPE_LIMIT) {
+      if (moving > 0 && room.held + moving > SELECTED_SCOPE_LIMIT) {
         return refuse2({
           code: "REBIND_SCOPE_FULL",
           message: `Key ${keyPrefix} is scoped to selected wallets and holds ${room.held} of ${SELECTED_SCOPE_LIMIT}; the ${moving} this run would move do not fit. Nothing was written.`,

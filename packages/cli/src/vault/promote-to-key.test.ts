@@ -92,7 +92,7 @@ describe("chunking and the finishing command", () => {
     const ids = Array.from({ length: 201 }, (_, i) => `w${i}`)
     expect(chunkWallets(ids).map((chunk) => chunk.length)).toEqual([200, 1])
     expect(REBIND_CHUNK).toBe(200)
-    expect(SELECTED_SCOPE_LIMIT).toBe(50)
+    expect(SELECTED_SCOPE_LIMIT).toBe(1000)
     const commands = finishingCommands(ids, TO)
     expect(commands).toHaveLength(2)
     expect(commands[0]?.startsWith("candle tee rebind w0 w1 ")).toBe(true)

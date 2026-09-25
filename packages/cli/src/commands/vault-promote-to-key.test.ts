@@ -19,6 +19,7 @@ import {
   jsonResponse,
   type RouteHandler,
 } from "../test-support"
+import { SELECTED_SCOPE_LIMIT } from "../vault/promote-to-key"
 import { useCheapKdf } from "../vault/test-vault"
 import {
   ACCOUNT,
@@ -343,7 +344,7 @@ describe("promote-batch --to-key: every target refusal is before the unlock, wit
   })
 
   test("a selected-scope key without room for the file: REBIND_SCOPE_FULL", async () => {
-    const held = Array.from({ length: 49 }, (_, i) => ({
+    const held = Array.from({ length: SELECTED_SCOPE_LIMIT - 1 }, (_, i) => ({
       linkedWalletId: `lw_h${i}`,
       assignedAt: 1,
       chain: "solana",
@@ -359,7 +360,9 @@ describe("promote-batch --to-key: every target refusal is before the unlock, wit
       },
     })
     expect(body.code).toBe("REBIND_SCOPE_FULL")
-    expect(body.message).toContain(`holds 49 of 50; the 2 this run would move do not fit`)
+    expect(body.message).toContain(
+      `holds ${SELECTED_SCOPE_LIMIT - 1} of ${SELECTED_SCOPE_LIMIT}; the 2 this run would move do not fit`,
+    )
     // The wallet set was read with the calling API key on the same account.
     const read = o.calls.find((c) => c.url.includes(`/keys/${TO}/wallets`))
     expect((read?.init.headers as Record<string, string>)["x-api-key"]).toBe(API_KEY)
@@ -886,7 +889,7 @@ describe("vault promote --to-key", () => {
   test("--from without --label: a selected target at the cap is refused before the unlock", async () => {
     const f = await fixture(["cold"])
     const before = await readEntries(f)
-    const held = Array.from({ length: 50 }, (_, i) => ({
+    const held = Array.from({ length: SELECTED_SCOPE_LIMIT }, (_, i) => ({
       linkedWalletId: `lw_h${i}`,
       assignedAt: 1,
       chain: "solana",
@@ -911,6 +914,8 @@ describe("vault promote --to-key", () => {
     expect((await readEntries(f)).generation).toBe(before.generation)
     const body = JSON.parse(r.out.trim())
     expect(body.code).toBe("REBIND_SCOPE_FULL")
-    expect(body.message).toContain("holds 50 of 50; the 1 this run would move do not fit")
+    expect(body.message).toContain(
+      `holds ${SELECTED_SCOPE_LIMIT} of ${SELECTED_SCOPE_LIMIT}; the 1 this run would move do not fit`,
+    )
   })
 })

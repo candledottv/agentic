@@ -48,8 +48,10 @@ export const REBIND_CHUNK = 200
  * `packages/db/convex/lib/apiKeyWalletPolicy.ts`, which this package cannot import: the mirror
  * carries no `packages/db`). The server's own check at commit time is the authority; this one
  * exists so a batch that cannot fit is refused before the unlock rather than after the import.
+ * It equals the Max plan's linked-wallet cap (`TIER_CAPS.max.linkedWallets`), which the server
+ * constant now is; only a run that adds wallets to the key is checked.
  */
-export const SELECTED_SCOPE_LIMIT = 50
+export const SELECTED_SCOPE_LIMIT = 1000
 
 /** The `GET /keys` row, with the fields the target checks read. The listing is the full key row minus its hash. */
 export interface TargetKeyRow extends KeyRow {
@@ -207,7 +209,7 @@ export async function preflightToKey(
     const room = await readSelectedScopeRoom(ctx, keyPrefix)
     if (room.ok) {
       const moving = opts.labels.filter((label) => !room.heldLabels.has(label)).length
-      if (room.held + moving > SELECTED_SCOPE_LIMIT) {
+      if (moving > 0 && room.held + moving > SELECTED_SCOPE_LIMIT) {
         return refuse({
           code: "REBIND_SCOPE_FULL",
           message: `Key ${keyPrefix} is scoped to selected wallets and holds ${room.held} of ${SELECTED_SCOPE_LIMIT}; the ${moving} this run would move do not fit. Nothing was written.`,
