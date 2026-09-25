@@ -18,6 +18,7 @@ import {
   b64u,
   derivePassphraseKek,
   freshArgon2Params,
+  setTestKekReuse,
   unb64u,
 } from "./crypto"
 import { VaultError } from "./errors"
@@ -152,6 +153,8 @@ describe("T32: ED-3's bounds are enforced before any derivation runs", () => {
   })
 
   test("derivation is deterministic, and one byte of salt changes every byte of the key", async () => {
+    // Both derivations must be real ones, whatever a sibling suite's `useCheapKdf()` switched on.
+    setTestKekReuse(false)
     const kdf = { ...base(), m: ARGON2_BOUNDS.m.min, t: 2 }
     const first = await derivePassphraseKek("a vault passphrase", kdf)
     const second = await derivePassphraseKek("a vault passphrase", kdf)
@@ -227,7 +230,104 @@ describe("the EFF wordlist, and the four words that break a naive reader", () =>
   })
 })
 
+describe("the test-only KEK reuse seam returns what a real derivation would, and nothing it would refuse", () => {
+  // BE-383: with reuse on, each distinct input is derived once and a repeat is handed a copy. These
+  // pin the three things that make that safe for every suite that turns it on through `useCheapKdf`.
+  const floor = () => ({
+    name: "argon2id" as const,
+    version: ARGON2_BOUNDS.version,
+    m: ARGON2_BOUNDS.m.min,
+    t: ARGON2_BOUNDS.t.min,
+    p: 1,
+    salt: b64u(crypto.getRandomValues(new Uint8Array(16))),
+  })
+
+  test("a repeat is the same key in a buffer of its own, served without deriving again", async () => {
+    setTestKekReuse(true)
+    try {
+      const kdf = floor()
+      const first = await derivePassphraseKek("a vault passphrase", kdf)
+      const expected = b64u(first)
+      // The caller zeroes its buffer, as every caller does through `withSecret`; the next caller
+      // must still get the key, not the zeroes.
+      first.fill(0)
+      const lines: string[] = []
+      const started = performance.now()
+      const second = await derivePassphraseKek("a vault passphrase", kdf, (line) => lines.push(line))
+      const elapsed = performance.now() - started
+      expect(b64u(second)).toBe(expected)
+      expect(second).not.toBe(first)
+      // The notice is written on a repeat exactly as on a derivation.
+      expect(lines).toEqual(["Deriving the vault key (Argon2id, 19 MiB)\n"])
+      // A real derivation at the floor is well over 50 ms (the T32 test above asserts that floor).
+      expect(elapsed).toBeLessThan(50)
+
+      // And it is the key a real derivation produces, not just whatever was stored.
+      setTestKekReuse(false)
+      expect(b64u(await derivePassphraseKek("a vault passphrase", kdf))).toBe(expected)
+    } finally {
+      setTestKekReuse(false)
+    }
+  })
+
+  test("a different passphrase, salt or cost is a new derivation, never the stored key", async () => {
+    setTestKekReuse(true)
+    try {
+      const kdf = floor()
+      const key = b64u(await derivePassphraseKek("a vault passphrase", kdf))
+      const variants = [
+        await derivePassphraseKek("a vault passphrase!", kdf),
+        await derivePassphraseKek("a vault passphrase", { ...kdf, salt: b64u(new Uint8Array(16).fill(7)) }),
+        await derivePassphraseKek("a vault passphrase", { ...kdf, t: kdf.t + 1 }),
+      ].map(b64u)
+      for (const variant of variants) expect(variant).not.toBe(key)
+      expect(new Set(variants).size).toBe(variants.length)
+    } finally {
+      setTestKekReuse(false)
+    }
+  })
+
+  test("bounds are still checked first: an out-of-bounds record is refused even after its inputs were derived", async () => {
+    setTestKekReuse(true)
+    try {
+      const kdf = floor()
+      await derivePassphraseKek("a vault passphrase", kdf)
+      for (const tampered of [
+        { ...kdf, m: ARGON2_BOUNDS.m.min - 1 },
+        { ...kdf, t: 1 },
+      ]) {
+        await expect(derivePassphraseKek("a vault passphrase", tampered)).rejects.toMatchObject({
+          code: "VAULT_KDF_OUT_OF_BOUNDS",
+        })
+      }
+    } finally {
+      setTestKekReuse(false)
+    }
+  })
+})
+
 describe("the test-only KDF cost seam cannot be reached from a real invocation", () => {
+  test("only test files and the test helper call setTestKekReuse", () => {
+    // Same discipline as the cost seam below: reuse is harmless in a suite and has no business in a
+    // shipping path, so its writers are asserted rather than trusted.
+    const srcDir = resolve(import.meta.dir, "..")
+    const callers: string[] = []
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        const path = join(dir, name)
+        if (statSync(path).isDirectory()) {
+          walk(path)
+        } else if (name.endsWith(".ts") && readFileSync(path, "utf8").includes("setTestKekReuse")) {
+          callers.push(path.slice(srcDir.length + 1))
+        }
+      }
+    }
+    walk(srcDir)
+    const shipping = callers.filter((path) => !path.endsWith(".test.ts"))
+    expect(shipping.sort()).toEqual(["vault/crypto.ts", "vault/test-vault.ts"])
+    expect(callers.filter((path) => path.startsWith("commands/"))).toEqual([])
+  })
+
   test("only test files and the test helper call setTestKdfCost", () => {
     // The same grep-level discipline T39 applies to CANDLE_KEYSTORE_PASSPHRASE. A weakened KDF that
     // a flag or an environment variable could reach would be the worst kind of convenience, so the

@@ -3287,10 +3287,18 @@ function freshArgon2Params() {
   const salt = crypto.getRandomValues(new Uint8Array(ARGON2_SALT_BYTES));
   return { name: "argon2id", ...testCostOverride ?? ARGON2_DEFAULTS, salt: b64u(salt) };
 }
+function kekReuseKey(passphrase, kdf) {
+  const inputs = JSON.stringify([passphrase, kdf.salt, kdf.m, kdf.t, kdf.p, kdf.version]);
+  return b64u(sha2562(new TextEncoder().encode(inputs)));
+}
 async function derivePassphraseKek(passphrase, kdf, notice) {
   assertKdfInBounds(kdf);
   notice?.(`Deriving the vault key (Argon2id, ${Math.round(kdf.m / 1024)} MiB)
 `);
+  const reuseKey = testKekReuse ? kekReuseKey(passphrase, kdf) : null;
+  const reused = reuseKey ? testKekReuse?.get(reuseKey) : undefined;
+  if (reused)
+    return ownSecret(Uint8Array.from(reused));
   const salt = unb64u(kdf.salt, "kdf.salt");
   const kek = await argon2idAsync(passphrase, salt, {
     t: kdf.t,
@@ -3299,6 +3307,8 @@ async function derivePassphraseKek(passphrase, kdf, notice) {
     version: kdf.version,
     dkLen: ARGON2_BOUNDS.outputBytes
   });
+  if (reuseKey)
+    testKekReuse?.set(reuseKey, Uint8Array.from(kek));
   return ownSecret(kek);
 }
 async function importAesKey(raw) {
@@ -3356,9 +3366,10 @@ async function sealJson(key, value, aad) {
     wipe(bytes);
   }
 }
-var ARGON2_DEFAULTS, ARGON2_SALT_BYTES = 16, KEK_BYTES = 32, DEK_BYTES = 32, ARGON2_BOUNDS, testCostOverride = null, PRF_OUTPUT_BYTES = 32;
+var ARGON2_DEFAULTS, ARGON2_SALT_BYTES = 16, KEK_BYTES = 32, DEK_BYTES = 32, ARGON2_BOUNDS, testCostOverride = null, testKekReuse = null, PRF_OUTPUT_BYTES = 32;
 var init_crypto = __esm(() => {
   init_argon2();
+  init_sha256();
   init_esm();
   init_canonical_json();
   init_errors();

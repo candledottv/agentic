@@ -2,8 +2,9 @@
  * Ember Phase 2 (BE-136): shared helpers for the vault tests. Not a `*.test.ts` file itself -- a
  * plain module the test files import, matching `test-support.ts`'s role for the command tests.
  *
- * Two things live here. `withCheapKdf` switches newly created vaults to ED-3's bounds FLOOR for
- * the duration of a suite (see `setTestKdfCost` for why that is a module seam and not a flag), and
+ * Two things live here. `useCheapKdf` switches newly created vaults to ED-3's bounds FLOOR for
+ * the duration of a suite and reuses a KEK already derived from identical inputs (see
+ * `setTestKdfCost` and `setTestKekReuse` for why those are module seams and not flags), and
  * `makeVault` builds a real vault through the real `createVault`, so every test is asserting
  * against the production write path rather than a hand-assembled file.
  *
@@ -16,7 +17,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Deps } from "../deps"
 import { type CreateVaultRequest, createVault } from "./create"
-import { ARGON2_BOUNDS, setTestKdfCost } from "./crypto"
+import { ARGON2_BOUNDS, setTestKdfCost, setTestKekReuse } from "./crypto"
 import type { VaultFile } from "./format"
 import {
   closeVault,
@@ -39,9 +40,14 @@ export const FIXTURE_ENTROPY = new Uint8Array(32).map((_, i) => i)
 export const FIXTURE_PHRASE =
   "abandon amount liar amount expire adjust cage candy arch gather drum bullet absurd math era live bid rhythm alien crouch range attend journey unaware"
 
-/** Switches new vaults to the cheap cost for this module's lifetime. Call at the top of a suite. */
+/**
+ * Switches new vaults to the cheap cost for this module's lifetime, and lets a repeat derivation
+ * from identical inputs reuse the first one's output (`setTestKekReuse`, BE-383). Call at the top
+ * of a suite.
+ */
 export function useCheapKdf(): void {
   setTestKdfCost(CHEAP_KDF)
+  setTestKekReuse(true)
 }
 
 /**

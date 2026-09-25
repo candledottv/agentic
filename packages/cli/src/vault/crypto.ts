@@ -19,6 +19,7 @@
  * table, so that is the reading taken here.
  */
 import { argon2idAsync } from "@noble/hashes/argon2"
+import { sha256 } from "@noble/hashes/sha256"
 import { base64urlnopad } from "@scure/base"
 import { canonicalBytes } from "./canonical-json"
 import { VaultError } from "./errors"
@@ -144,6 +145,35 @@ export function setTestKdfCost(cost: { version: number; m: number; t: number; p:
 }
 
 /**
+ * A TEST-ONLY switch that lets `derivePassphraseKek` hand back a KEK it already derived from the
+ * very same inputs, and nothing else (BE-383).
+ *
+ * A vault suite derives the same KEK over and over: `vault init` wraps and then re-opens, every
+ * command unlocks, `new-key` re-opens through the factor to verify its write. Measured on
+ * 2026-09-25, the CLI suite ran 3,845 derivations of which 711 had distinct inputs, and Argon2
+ * was 91% of its time. With this on, each distinct (passphrase, salt, m, t, p, version) is still
+ * derived by the real Argon2id exactly once; a repeat returns a fresh copy of that output.
+ *
+ * What it does not change: `assertKdfInBounds` still runs first on every call, the notice is still
+ * written, and the recorded parameters are still the ones derived with, so a wrong passphrase, a
+ * tampered salt or out-of-bounds parameters behave exactly as they do with it off. Each caller
+ * still owns and zeroes the buffer it is given. Same discipline as `setTestKdfCost`: a module
+ * seam, never a variable or a flag, and `crypto.test.ts` asserts by grep that only tests and the
+ * test helper write it.
+ */
+let testKekReuse: Map<string, Uint8Array> | null = null
+
+export function setTestKekReuse(on: boolean): void {
+  if (testKekReuse) for (const kek of testKekReuse.values()) wipe(kek)
+  testKekReuse = on ? new Map() : null
+}
+
+function kekReuseKey(passphrase: string, kdf: Argon2Params): string {
+  const inputs = JSON.stringify([passphrase, kdf.salt, kdf.m, kdf.t, kdf.p, kdf.version])
+  return b64u(sha256(new TextEncoder().encode(inputs)))
+}
+
+/**
  * The passphrase KEK. `notice` is written before the derivation starts because a silent second of
  * nothing reads as a hang (CC-02); it names the cost and never the passphrase or a derived byte.
  *
@@ -156,6 +186,9 @@ export async function derivePassphraseKek(
 ): Promise<Uint8Array> {
   assertKdfInBounds(kdf)
   notice?.(`Deriving the vault key (Argon2id, ${Math.round(kdf.m / 1024)} MiB)\n`)
+  const reuseKey = testKekReuse ? kekReuseKey(passphrase, kdf) : null
+  const reused = reuseKey ? testKekReuse?.get(reuseKey) : undefined
+  if (reused) return ownSecret(Uint8Array.from(reused))
   const salt = unb64u(kdf.salt, "kdf.salt")
   // `argon2idAsync` yields to the event loop between passes, so the notice above actually reaches
   // the terminal before the CPU disappears for a second.
@@ -166,6 +199,7 @@ export async function derivePassphraseKek(
     version: kdf.version,
     dkLen: ARGON2_BOUNDS.outputBytes,
   })
+  if (reuseKey) testKekReuse?.set(reuseKey, Uint8Array.from(kek))
   return ownSecret(kek)
 }
 
