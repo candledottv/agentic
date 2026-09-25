@@ -83,7 +83,7 @@ Match the task, not the noun: "make this key use these wallets" is a rebind, not
 | Send funds anywhere yourself | `candle vault transfer <address> --from <label>` |
 | Mark wallets as yours so agents can send to them | `candle wallets trust <selectors...>` |
 | Stop an agent | `candle tee disable <address>`, then `candle keys revoke <prefix>` |
-| Bring everything home | `candle tee sweep <address>` or `candle vault demote <address>` (`--emergency` with no API) |
+| Bring everything home | `candle tee sweep <address>` or `candle vault demote <address>` |
 
 ## Doing a job end to end
 

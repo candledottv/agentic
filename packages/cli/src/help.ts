@@ -405,7 +405,7 @@ export const HELP: Record<string, Topic> = {
       "candle keys access cndl --access read-write-transfer",
       "candle keys access self --access read --yes",
       "candle keys wallets ck_live_ab12",
-      "candle tee rebind --label-prefix dest- --to-key ck_live_ab12",
+      "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
       "candle keys revoke ck_live_ab12",
     ],
     env: ENV_API,
