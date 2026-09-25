@@ -95,7 +95,8 @@
         "DEV_BUY_TOO_LOW",
         "SLIPPAGE_EXCEEDED",
         "INSUFFICIENT_OWNER_BALANCE",
-        "TRANSFER_AMOUNT_UNAVAILABLE"
+        "TRANSFER_AMOUNT_UNAVAILABLE",
+        "GAS_INSUFFICIENT"
       ]
     },
     "token_transfer": {
@@ -145,7 +146,8 @@
         "REBIND_BUILD_OPEN",
         "REBIND_FORWARD_OPEN",
         "KEY_ACCESS_STALE",
-        "KEY_ACCESS_PARTNER_KEY"
+        "KEY_ACCESS_PARTNER_KEY",
+        "WALLET_BUSY"
       ]
     },
     "quota": {
