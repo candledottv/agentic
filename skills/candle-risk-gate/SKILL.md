@@ -30,6 +30,8 @@ same-funder insiders and cluster, plus `safety.summary` and six flags: `mintAuth
 Each flag carries `status` (`flagged`, `clear`, or `unknown`), `value`, `source`, `checkedAt`,
 and `detail`. Preserve detail even on a clear authority: revocation can follow a recorded freeze.
 Sellability is a verdict from runner evidence or Jupiter Shield, not a holder-side simulation.
+A routable `safety.sellProbe` is not clearance: an unknown `sellability` stays unknown, and a
+refused probe is not a flag.
 
 **Refuse an unprompted buy when `safety.summary` is `flagged`, and name the flag and its detail.**
 `clear` means all six flags are clear, not that a trade is guaranteed safe. `incomplete` means
