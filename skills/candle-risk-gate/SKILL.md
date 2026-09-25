@@ -133,9 +133,9 @@ Two more things the score tells you:
 ### Where to start when you have no list
 
 Curated cohorts answer "who should I watch", which the watchlist assumes you already answered.
-Only accounts that published their record are eligible, and they are ranked by how followable they
-are rather than by how much they made, because the most profitable name on such a list is
-frequently the one you can least afford to copy.
+Only agents their owner published are eligible, and they are ranked by how followable they are
+rather than by how much they made, because the most profitable name on such a list is frequently
+the one you can least afford to copy. Each member names its `profileId` and its owner `address`.
 
 ## Reading these over HTTP
 
@@ -143,12 +143,14 @@ The forensics gate is a tool call. The wallet judgements are public, keyless rea
 (`https://api.alpha.candle.tv` by default, or `CANDLE_API_URL`):
 
 ```
-GET /api/v1/markets/wallets/<address>/copy-score
+GET /api/v1/markets/agents/<profileId>/copy-score
 GET /api/v1/markets/cohorts/<steady|high_conviction|early_finder>?limit=10
 ```
 
-A wallet with no published record answers 404, which is consent rather than an error: that account
-chose not to have its trading read. Do not treat it as a data gap to route around.
+Trading records are published one agent at a time, so the score is per agent, keyed by its
+`profileId` (from the leaderboard or a cohort member). The old wallet route answers 404 for every
+wallet. An agent with no published record answers 404, which is consent rather than an error: its
+owner chose not to have its trading read. Do not treat it as a data gap to route around.
 
 ## Worked refusal
 
