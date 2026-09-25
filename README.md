@@ -74,8 +74,8 @@ back `MARKET_NOT_FOUND`. That is a coverage boundary rather than a fault -- it i
 retry, and from forensics it is not a clean bill of health either. It is the single most common
 reason an agent decides the integration is broken when it is working.
 
-Use the real absolute path to your clone (MCP clients spawn from their own working directory),
-and keep `CANDLE_API_URL` on staging until this rail reaches production. Ask an agent to call
+Use the real absolute path to your clone (MCP clients spawn from their own working directory).
+Ask an agent to call
 `candle_get_feed` with `{ "bucket": "new" }` and it works before signing up for anything. Details:
 [Candle MCP server](https://docs.candle.tv/developers/mcp-server).
 
@@ -160,7 +160,7 @@ rather than on the disk it protects.
 
 ### Two custody tiers
 
-The CLI keeps keys at two custody tiers (not the account plans Free, Pro and Max):
+The CLI keeps keys at two custody tiers (not the account plans Free, Believer, Pro and Max):
 
 - **Tier 1: the vault.** Self-custody on your machine. It opens with a passphrase or a FIDO2
   security key (`candle vault factor add security-key`; two keys make a recoverable pair). Touch ID
@@ -176,15 +176,13 @@ The CLI keeps keys at two custody tiers (not the account plans Free, Pro and Max
 Funds leave a TEE wallet three ways: `candle transfer` through a Read:Write:Transfer key (to the
 pinned vault or to wallets you linked while signed in or marked trusted with `candle wallets
 trust`), `candle vault transfer` signed locally by the vault, or `candle tee sweep` /
-`candle vault demote` back to the pinned vault. In an emergency, `candle tee disable` stops the
-agent and `--emergency` on a sweep or demote moves everything home with no API call.
+`candle vault demote` back to the pinned vault. For a misbehaving agent or a leaked key, follow
+[In an emergency](https://docs.candle.tv/developers/cli-custody#in-an-emergency).
 `candle tee rebind` moves wallets between your keys without moving funds.
 
 API keys come in three access levels, minted with `candle keys create --access
-read|read-write|read-write-transfer`: **Read** sees the account and changes nothing,
-**Read:Write** trades, launches and moves funds between your own wallets, and
-**Read:Write:Transfer** can also move funds out of the TEE wallet it is bound to. An account holds
-at most 12 active keys.
+read|read-write|read-write-transfer`; see
+[Access levels](https://docs.candle.tv/developers/agent-access#access-levels).
 
 [**CLI custody**](https://docs.candle.tv/developers/cli-custody) is the full guide to the vault,
 factors, promoting, the pinned vault, moving funds and emergencies.

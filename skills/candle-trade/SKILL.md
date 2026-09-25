@@ -32,9 +32,8 @@ Needs an agent API key carrying the `swap:write` scope. If you followed the cand
 device flow (`candle auth login` with `--scopes` omitted), you already have it: that flow's default
 is a Read:Write key, `swap:write` included, and the browser approval screen names each scope
 explicitly before you approve. `swap:write` is never granted silently, only ever named on that
-screen or asked for by hand. A narrower key, one minted with an explicit `--scopes` list on
-`candle auth login`, or created with `candle keys create` and no `--access`, does not include
-`swap:write`; mint it with `candle keys create --access read-write` (or `read-write-transfer`)
+screen or asked for by hand. A key minted with an explicit `--scopes` list (on `candle auth
+login` or `candle keys create`) that leaves `swap:write` out cannot trade; mint one with `candle keys create --access read-write` (or `read-write-transfer`)
 instead. There is no keyless path for trading: this always moves funds. Point the
 MCP server anywhere: the CLI and MCP default to the alpha API host
 (`https://api.alpha.candle.tv`), where the trade routes run today. Set `CANDLE_API_URL` only to

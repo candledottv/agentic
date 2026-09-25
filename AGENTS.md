@@ -19,7 +19,8 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
    then `candle setup` (or `candle auth login` alone) authorizes a device from the browser and
    stores a device token plus an agent key in the OS keychain. That key is Read:Write; a key that
    must also move funds out of its TEE wallet is Read:Write:Transfer, minted by the owner with
-   `candle keys create --access read-write-transfer` (at most 12 active keys per account). The
+   `candle keys create --access read-write-transfer` (see
+   https://docs.candle.tv/developers/agent-access#access-levels). The
    vault, TEE wallets and moving funds are covered in https://docs.candle.tv/developers/cli-custody. From then on `candle mcp` runs this MCP server with those stored
    credentials -- no env block. The npm package `@candledottv/cli` stays published for CI,
    programmatic use, and Windows until `install.ps1` ships; `npx -y @candledottv/cli@latest
@@ -83,7 +84,7 @@ Match the task, not the noun: "make this key use these wallets" is a rebind, not
 | Send funds anywhere yourself | `candle vault transfer <address> --from <label>` |
 | Mark wallets as yours so agents can send to them | `candle wallets trust <selectors...>` |
 | Stop an agent | `candle tee disable <address>`, then `candle keys revoke <prefix>` |
-| Bring everything home | `candle tee sweep <address>` or `candle vault demote <address>` |
+| Bring everything home | `candle tee disable <address>`, then `candle tee sweep <address>` or `candle vault demote <address>` (see Safety rails in candle-setup for `--emergency`) |
 
 ## Doing a job end to end
 
@@ -199,7 +200,7 @@ setting -- run it before asking a human.
 | `CANDLE_CONFIG_DIR` | override the config location |
 | `CANDLE_KEYRING_PASSPHRASE` | unlock the keyring in headless environments |
 | `CANDLE_MCP_TOOLS` | comma-separated tool allowlist for the MCP server (`candle mcp --tools` sets it) |
-| `CANDLE_SOLANA_RPC_URL` | Solana RPC for vault and TEE wallet reads, when `--rpc-url` is not given |
+| `CANDLE_SOLANA_RPC_URL` | Solana RPC for `vault list`, `vault promote-batch`, `tee status` and `tee sweep` when `--rpc-url` is not given; `vault transfer`, `fund`, `demote` and `promote --in-place` ignore it and need `--rpc-url` |
 
 ## When you are stuck
 

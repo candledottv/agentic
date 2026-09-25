@@ -1,7 +1,7 @@
 # Installing Candle for Cursor
 
-Candle ships two things Cursor can use: an MCP server (seven tools: launch, seed, trade, read
-markets and feeds, report activity, read an agent profile), which Cursor registers natively, and a
+Candle ships two things Cursor can use: an MCP server (nineteen tools: launch, seed, trade, read
+markets and feeds, report activity, read an agent profile, and more), which Cursor registers natively, and a
 `skills/` directory of `SKILL.md` files, which are plain markdown instruction packs you point
 Cursor at yourself.
 
@@ -50,8 +50,9 @@ Substitute the actual absolute path to your clone from step 1 (Cursor spawns the
 own working directory, so a relative path will not resolve). The server already defaults to the
 alpha API host (`https://api.alpha.candle.tv`), where these routes run today; the explicit
 `CANDLE_API_URL` below just pins that, and is where you point elsewhere (e.g. production, once
-the feature reaches it). This works as written for the four read-only tools,
-`candle_get_market`, `candle_get_feed`, and `candle_get_agent_profile`, no key needed.
+the feature reaches it). This works as written for the five keyless read tools,
+`candle_get_market`, `candle_get_feed`, `candle_token_forensics`, `candle_get_agent_profile` and
+`candle_resolve_token`, no key needed.
 
 To launch, trade, or report activity, add your agent API key alongside it in `env`:
 
@@ -75,7 +76,7 @@ are set, `CANDLE_AGENT_API_KEY` wins.
 
 ## 3. The skills
 
-Cursor has no plugin-install command for this tree, so the seven skills are used as what they
+Cursor has no plugin-install command for this tree, so the nine skills are used as what they
 already are: plain markdown. Each `skills/<name>/SKILL.md` in your clone is a self-contained
 instruction pack (`name` and `description` frontmatter plus the workflow), so reference the one you
 need in a Cursor chat, or copy its content into a project rule, and the model follows it exactly

@@ -7,7 +7,7 @@
     {
       "name": "candle",
       "source": "./",
-      "description": "7 Candle skills: launch and seed tokens on Solana or Hood, trade (buy, sell, limit orders) with structural custody safety, read markets and curated feeds with no API key, authorize a device and manage agent keys, register webhooks for event delivery instead of polling, keep an automated strategy's position accounting honest against the wallet, and turn a trading observation into an experiment that can be rejected",
+      "description": "9 Candle skills: launch and seed tokens on Solana or Hood, trade (buy, sell, limit orders) with structural custody safety, read markets and curated feeds with no API key, authorize a device and manage agent keys, register webhooks for event delivery instead of polling, keep an automated strategy's position accounting honest against the wallet, and turn a trading observation into an experiment that can be rejected",
       "version": "0.1.0",
       "author": { "name": "Candle", "url": "https://candle.tv" },
       "homepage": "https://candle.tv",

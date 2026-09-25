@@ -1,7 +1,7 @@
 # Installing Candle for Grok Build
 
-Candle ships two things Grok Build can use directly: an MCP server (seven tools: launch, seed,
-trade, read markets and feeds, report activity, read an agent profile) and a `skills/` directory
+Candle ships two things Grok Build can use directly: an MCP server (nineteen tools: launch, seed,
+trade, read markets and feeds, report activity, read an agent profile, and more) and a `skills/` directory
 of `SKILL.md` files in Claude Code's own frontmatter shape (`name` plus `description`), which Grok
 Build reads natively.
 
@@ -42,8 +42,8 @@ registered with `grok mcp list`; remove it later with `grok mcp remove candle`.
 
 `grok mcp add` has no flag for environment variables on a stdio server, so add the `env` table by
 hand to the entry it just wrote (in `~/.grok/config.toml`, or `.grok/config.toml` if you used
-`--scope project`). This is required even for the four read-only tools, `candle_get_market`,
-`candle_get_feed`, and `candle_get_agent_profile`: the server defaults to the alpha API host
+`--scope project`). This is required even for the five keyless read tools, `candle_get_market`,
+`candle_get_feed`, `candle_token_forensics`, `candle_get_agent_profile` and `candle_resolve_token`: the server defaults to the alpha API host
 (`https://api.alpha.candle.tv`), where these routes run today.
 
 ```toml
@@ -53,8 +53,8 @@ args = ["/absolute/path/to/agentic/packages/mcp/dist/index.js"]
 env = { CANDLE_API_URL = "https://api.alpha.candle.tv" }
 ```
 
-`CANDLE_API_URL` points the server at staging, where these routes run today, until the feature
-reaches production. To also launch, trade, or report activity, add your agent API key to the same
+`CANDLE_API_URL` points the server at production (`https://api.alpha.candle.tv`, also the default
+when it is unset). To also launch, trade, or report activity, add your agent API key to the same
 table:
 
 ```toml
@@ -74,7 +74,7 @@ Grok Build's own `SKILL.md` format reads directly (Grok ignores frontmatter keys
 recognize, and neither `name` nor `description` needs converting to a Grok-specific `skill.json`).
 Grok Build is also documented as fully Claude Code compatible, reading Claude Code marketplaces,
 plugins, and skills automatically with no extra setup, so a `.claude-plugin/`-based install (see
-the Claude Code platform's own instructions) may surface these same seven skills with nothing
+the Claude Code platform's own instructions) may surface these same nine skills with nothing
 further to do. To point Grok Build at the clone directly instead, add its `skills/` directory to
 `~/.grok/config.toml`:
 

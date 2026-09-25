@@ -11,7 +11,7 @@ key carrying the scopes you actually saw and approved. Every other skill that wr
 candle-trade, candle-webhooks) depends on the key this produces. For an agent that trades from the
 terminal, it also sets up the two custody tiers: the vault (Tier 1, self-custody on this machine)
 and a TEE wallet (Tier 2, agent access) promoted out of it. Custody tiers are not the account plans
-(Free, Pro, Max).
+(Free, Believer, Pro, Max).
 
 ## Setup
 
@@ -56,16 +56,18 @@ any of this: they work with no key at all.
    <cold label>` derives a fresh wallet pinned to that cold key; `candle vault promote --in-place
    <label> --sweep-to <cold label> --rpc-url <url>` promotes an existing key at its own address;
    `candle vault promote-batch --pairs-from <file> --rpc-url <url>` does many at once. Each
-   promote shows what is being handed over and asks the user for a typed confirmation. `--to-key
+   promote shows what is being handed over. `--in-place` and `promote-batch` ask the user to type
+   `confirm`; `--from` asks for the last six characters of the vault key it sweeps home to. `--to-key
    <prefix|label>` binds the wallet to another of the user's keys. The pinned vault key is where
    `candle tee sweep` and `candle vault demote` send funds home. Trade the wallet from the machine
-   that promoted it, because its relay signer stays there. Vault and TEE reads need `--rpc-url` or
-   `CANDLE_SOLANA_RPC_URL`.
+   that promoted it, because its relay signer stays there. `vault list`, `vault promote-batch`,
+   `tee status` and `tee sweep` take `--rpc-url` or `CANDLE_SOLANA_RPC_URL`; `vault transfer`,
+   `vault fund`, `vault demote` and `vault promote --in-place` need `--rpc-url` every time.
 7. Mint the agent's key at the access level it needs with `candle keys create --access
-   read|read-write|read-write-transfer`. Read sees the account and changes nothing; Read:Write
-   trades, launches and moves funds between the account's own wallets; Read:Write:Transfer can also
-   move funds out of the TEE wallet it is bound to (`candle transfer`), to its pinned vault or to
-   wallets marked yours with `candle wallets trust`. An account holds at most 12 active keys.
+   read|read-write|read-write-transfer`: Read changes nothing, Read:Write trades and launches, and
+   only Read:Write:Transfer can move funds out of its TEE wallet with `candle transfer`. The levels
+   and the active key limit are in https://docs.candle.tv/developers/agent-access#access-levels, and
+   what a trusted wallet allows in https://docs.candle.tv/developers/agent-wallets#trusted-wallets.
    `candle keys list` and `candle keys revoke <prefix>` manage them, and `candle keys wallets
    <prefix>` shows which wallets a key's profile may use.
 8. Run `candle doctor` any time: one PASS/FAIL/SKIP table over the runtime, the storage backend,
@@ -95,7 +97,7 @@ Match the task, not the noun: "make this key use these wallets" is a rebind, not
 | Send funds anywhere yourself | `candle vault transfer <address> --from <label>` |
 | Mark wallets as yours so agents can send to them | `candle wallets trust <selectors...>` |
 | Stop an agent | `candle tee disable <address>`, then `candle keys revoke <prefix>` |
-| Bring everything home | `candle tee sweep <address>` or `candle vault demote <address>` |
+| Bring everything home | `candle tee disable <address>`, then `candle tee sweep <address>` or `candle vault demote <address>` (`--emergency`: see below) |
 
 ## Safety rails
 
@@ -110,7 +112,9 @@ device, so a stolen token cannot erase its own trail.
 Never run a promote, a `confirm` prompt, or a vault unlock on the user's behalf: those are the
 owner's decisions, typed by the owner. If an agent's key or wallet may be compromised, the path is
 stop, sweep, new wallet: `candle tee disable <address>`, then `candle tee sweep <address> --rpc-url
-<url>` (add `--emergency` to sweep with no API call), and revoke the key.
+<url>` (add `--emergency` when the API is down or the key is revoked; if the API answers, an
+enabled wallet is still refused, so disable first), and revoke the key. The full procedure is
+https://docs.candle.tv/developers/cli-custody#in-an-emergency.
 
 ## Example
 
