@@ -104,6 +104,8 @@ function harness(opts: {
   rpcLamports?: (address: string) => number
   rpcTokens?: (owner: string, programId: string) => { mint: string; amount: string; decimals: number }[]
   rpcFailOwner?: string
+  /** BE-355 (T13): the 1-based getMultipleAccounts calls that answer HTTP 429 (the client retries once). */
+  rpcRateLimitCalls?: number[]
   candleStatus?: number
   tty?: boolean
   /** The `lp` section Candle adds when it serves LP (BE-323). Absent by default, as before E2. */
@@ -136,6 +138,7 @@ function harness(opts: {
   const requests: Recorded[] = []
   let inFlight = 0
   let peak = 0
+  let chunkCalls = 0
   const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input))
     const body = init?.body ? String(init.body) : ""
@@ -147,6 +150,8 @@ function harness(opts: {
       inFlight -= 1
       const rpc = JSON.parse(body) as { id: number; method: string; params: unknown[] }
       if (rpc.method === "getMultipleAccounts") {
+        chunkCalls += 1
+        if (opts.rpcRateLimitCalls?.includes(chunkCalls)) return new Response("rate limited", { status: 429 })
         const addresses = rpc.params[0] as string[]
         return Response.json({
           jsonrpc: "2.0",
@@ -241,7 +246,7 @@ async function emptyConfigDir(): Promise<string> {
 }
 
 describe("candle portfolio", () => {
-  test("no RPC: the vault is neither unlocked nor read, and the output says why", async () => {
+  test("no RPC and no vault file: the public default is resolved, nothing is asked or sent, and the row says where it looked (BE-355)", async () => {
     const dir = await emptyConfigDir()
     const h = harness({
       dir,
@@ -259,7 +264,9 @@ describe("candle portfolio", () => {
     expect(out).toContain("GROUP     WALLET")
     expect(out).toMatch(/tee\s+tee-1 \(TeeW…[^)]+\)\s+SOL\s+0\.5\s+\$100\.00\s+\$50\.00/)
     expect(out).toMatch(/embedded\s+\(Embe…1111\)\s+SOL\s+2\s+\$100\.00\s+\$200\.00/)
-    expect(out).toMatch(/vault\s+-\s+not read: vault balances are read only over your own RPC/)
+    expect(out).toMatch(/vault\s+-\s+no vault at /)
+    // No vault entry, so no request: neither the notice nor the host line was printed (invariant 4).
+    expect(h.stderr.text).not.toContain("Solana RPC:")
     expect(out).toMatch(/tee\s+\$50\.00\s+2 wallets, 1 empty not shown/)
     expect(out).toMatch(/total\s+\$250\.00\s+every holding priced/)
   })
@@ -697,5 +704,40 @@ describe("candle portfolio", () => {
     const doc = JSON.parse(j.stdout.text)
     expect(doc.groups[1].wallets[0].holdings[0].symbol).toBe(hostile)
     expect(j.stdout.text).not.toContain("\u001b")
+  })
+})
+
+/**
+ * BE-355 (T13): a chunk still rate-limited after the client's retry stops the vault read. Nothing
+ * more is sent (no third chunk, no token reads), every wallet not yet read is "not read", the exit
+ * is 3 with `complete: false`, and the stderr line carries `RPC_RATE_LIMITED` and the fix.
+ */
+describe("BE-355 T13: a rate-limited vault read is partial, and stops", () => {
+  test("second chunk rate-limited twice: chunk 3 never sent, no token reads, exit 3, the fix on stderr", async () => {
+    const entries = Array.from({ length: 250 }, (_, i) => entryAt(i, `v-${i}`))
+    const { dir } = await vaultWith(entries)
+    const h = harness({
+      dir,
+      env: { CANDLE_SOLANA_RPC_URL: RPC_URL },
+      tee: [],
+      rpcLamports: () => 1_000_000_000,
+      rpcRateLimitCalls: [2, 3],
+    })
+    expect(await run(["portfolio", "--json"], h.deps)).toBe(3)
+    const methods = h.rpcRequests().map((r) => (JSON.parse(r.body) as { method: string }).method)
+    expect(methods).toEqual(["getMultipleAccounts", "getMultipleAccounts", "getMultipleAccounts"])
+    const doc = JSON.parse(h.stdout.text) as {
+      complete: boolean
+      unavailable: string[]
+      groups: { group: string; read: boolean; wallets: { unread?: string[] }[] }[]
+    }
+    expect(doc.complete).toBe(false)
+    expect(doc.unavailable).toHaveLength(250)
+    expect(doc.groups[0]?.read).toBe(true)
+    expect(h.stderr.text).toContain(
+      "250 vault addresses could not be read: RPC_RATE_LIMITED (HTTP 429, retried once). Fix: --rpc-url https://<your-rpc> on this command, or CANDLE_SOLANA_RPC_URL for every command, or sign in (candle auth login) to store one per profile.",
+    )
+    expect(h.stderr.text).toContain("Solana RPC: rpc.example.test (CANDLE_SOLANA_RPC_URL)")
+    expect(h.stdout.text + h.stderr.text).not.toContain("key-in-path")
   })
 })

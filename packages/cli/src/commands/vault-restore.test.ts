@@ -17,11 +17,13 @@ import { existsSync } from "node:fs"
 import { mkdtemp, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { CliConfig } from "../config"
 import type { Deps } from "../deps"
 import { run } from "../index"
 import { SECRET_REFS } from "../secret-store"
 import {
   createCapture,
+  createFakeConfigStore,
   createFakeStore,
   createRoutedFetch,
   createTestDeps,
@@ -66,7 +68,7 @@ interface ApiScript {
   rpc?: RouteHandler
 }
 
-async function harness(script: ApiScript = {}) {
+async function harness(script: ApiScript = {}, extra: { env?: Record<string, string>; config?: CliConfig } = {}) {
   const dir = await mkdtemp(join(tmpdir(), "candle-vault-restore-"))
   const stdout = createCapture()
   const stderr = createCapture()
@@ -81,9 +83,11 @@ async function harness(script: ApiScript = {}) {
     fetch: routed.fetch,
     stdout,
     stderr,
-    // An API key must be stored, or the restore reads no exposure at all.
-    store: createFakeStore({ [SECRET_REFS.apiKey]: "ck_live_testkey" }),
-    env: { CANDLE_CONFIG_DIR: dir, HOME: dir },
+    // An API key must be stored, or the restore reads no exposure at all. Under both refs, so a
+    // run as profile `work` (BE-355, T14) reads the same key.
+    store: createFakeStore({ [SECRET_REFS.apiKey]: "ck_live_testkey", "profile:work:api_key": "ck_live_testkey" }),
+    env: { CANDLE_CONFIG_DIR: dir, HOME: dir, ...(extra.env ?? {}) },
+    ...(extra.config ? createFakeConfigStore(extra.config) : {}),
     isTTY: { stdin: true, stdout: true, stderr: true },
     promptSecret: async () => {
       const next = secrets.shift()
@@ -916,5 +920,62 @@ describe("T16: D8's restore copy and passphrase prompt", () => {
     const restoreRow = HELP.vault?.rows.find((row) => row.invocation.startsWith("restore "))
     expect(restoreRow?.invocation).toContain("[--own-passphrase]")
     expect(restoreRow?.description).toContain("new passphrase")
+  })
+})
+
+/**
+ * BE-355 (D7, T14): the gap scan runs only with `--rpc-url` on the command line. An ambient
+ * endpoint (`CANDLE_SOLANA_RPC_URL`, a profile's `rpcUrl`) never starts one, and the output says
+ * it was not used; with the flag the scan runs, disclosed as the flag's, with no notice.
+ */
+describe("BE-355 T14: restore refuses a default and ambient endpoints", () => {
+  const solanaCalls = (h: Awaited<ReturnType<typeof harness>>) =>
+    h.routed.calls.filter((call) => new URL(call.url).pathname === "/rpc")
+  const NOT_USED =
+    "A gap scan runs only with --rpc-url on this command; CANDLE_SOLANA_RPC_URL and profile settings are not used for it."
+
+  test("no --rpc-url with the env and a profile rpcUrl set: zero Solana requests, index 0 only, and the not-used line", async () => {
+    const h = await harness(
+      {},
+      {
+        env: { CANDLE_SOLANA_RPC_URL: "https://rpc.test/rpc" },
+        config: { profiles: { work: { rpcUrl: "https://rpc.test/rpc" } }, activeProfile: "work" },
+      },
+    )
+    expect(await restore(h)).toBe(0)
+    expect(solanaCalls(h)).toEqual([])
+    expect(h.routed.unmatched).toEqual([])
+    for (const branch of ["solanaVault", "solanaTee", "solanaExternal"]) {
+      expect(h.stdout.text).toContain(`${branch}: index 0 only.`)
+    }
+    expect(h.stdout.text).toContain(NOT_USED)
+    expect(h.stderr.text).not.toContain("Solana RPC:")
+    expect(h.stderr.text).not.toContain("Using the public Solana RPC")
+  })
+
+  test("no --rpc-url and nothing set: zero requests, and the not-used line is not printed", async () => {
+    const h = await harness()
+    expect(await restore(h)).toBe(0)
+    expect(solanaCalls(h)).toEqual([])
+    expect(h.stdout.text).not.toContain(NOT_USED)
+    expect(h.stderr.text).not.toContain("Solana RPC:")
+  })
+
+  test("with --rpc-url the scan runs, and the host line says (--rpc-url)", async () => {
+    const h = await harness({
+      rpc: (req) => {
+        const body = JSON.parse(String(req.init.body)) as { id: number; method: string }
+        const reply = (result: unknown) => jsonResponse(200, { jsonrpc: "2.0", id: body.id, result })
+        if (body.method === "getBalance") return reply({ value: 0 })
+        if (body.method === "getTokenAccountsByOwner") return reply({ value: [] })
+        if (body.method === "getSignaturesForAddress") return reply([])
+        throw new Error(`unexpected RPC method ${body.method}`)
+      },
+    })
+    expect(await restore(h, ["--rpc-url", "https://rpc.test/rpc"])).toBe(0)
+    expect(solanaCalls(h).length).toBeGreaterThan(0)
+    expect(h.stderr.text).toContain("Solana RPC: rpc.test (--rpc-url)")
+    expect(h.stderr.text).not.toContain("Using the public Solana RPC")
+    expect(h.stdout.text).toContain("gap-scanned to index")
   })
 })

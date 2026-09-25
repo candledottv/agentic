@@ -35,7 +35,8 @@ import { base58 } from "@scure/base"
 import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { renderTable } from "../render"
-import { createSolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
+import { describeRpcFailure, openSolanaClient, rpcRateLimitedError } from "../solana-endpoint"
+import { isRateLimited, type SolanaRpcError, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import {
   type AccountRoom,
   batchRoomRefusal,
@@ -114,7 +115,6 @@ import {
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
-  rpcUrlFrom,
   runVaultCommand,
   unlockInteractively,
   usage,
@@ -123,7 +123,7 @@ import {
 } from "./vault-support"
 
 const USAGE_LINE =
-  "Usage: candle vault promote-batch --pairs-from <file> --rpc-url <url> [--to-key <label|prefix>] [--token-holdings] [--accept-unknown-exposure]"
+  "Usage: candle vault promote-batch --pairs-from <file> [--rpc-url <url>] [--to-key <label|prefix>] [--token-holdings] [--accept-unknown-exposure]"
 
 /**
  * TEST ONLY: sees the batch's vault object after each row's pre-import commit and again after its
@@ -235,8 +235,9 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
   const resolvedVault = vaultPathFor(ctx, parsed)
   if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
   const path = resolvedVault.path
-  const rpcUrl = rpcUrlFrom(ctx, parsed)
-  if (typeof rpcUrl !== "string") return usage(ctx, rpcUrl.error)
+  // BE-355 (D1): the resolved endpoint, validated before the unlock and before the file is read.
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
+  if ("error" in solana) return usage(ctx, solana.error)
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure")
   const readTokens = parsed.booleans.has("--token-holdings")
   const { deps } = ctx
@@ -249,7 +250,10 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
   } catch (error) {
     return usage(ctx, `Could not read --pairs-from: ${error instanceof Error ? error.message : error}`)
   }
-  const parsedFile = parsePairsFile(contents, { file: pairsFile, rpcUrl })
+  const parsedFile = parsePairsFile(contents, {
+    file: pairsFile,
+    rpcUrlGiven: parsed.values["--rpc-url"] !== undefined,
+  })
   if (!parsedFile.ok) return usage(ctx, renderPhaseAFindings(pairsFile, parsedFile.findings))
   const { rows, hasValueUsd } = parsedFile
 
@@ -326,11 +330,12 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
 
     // ── Holdings (D8): SOL for every address, always; tokens only on request ──────────────
     const addresses = planned.map((item) => item.subject.address)
-    const rpc = createSolanaRpc(rpcUrl, deps.fetch)
-    const host = new URL(rpcUrl).host
+    const rpc = solana.rpc
+    const host = solana.endpoint.host
     const observedAt = new Date(deps.now()).toISOString()
     let lamports: Map<string, bigint> | undefined
     let readError: string | undefined
+    let rateLimited: SolanaRpcError | undefined
     try {
       const accounts = await rpc.getMultipleAccounts(addresses)
       lamports = new Map(addresses.map((address, at) => [address, accounts[at]?.lamports ?? 0n]))
@@ -338,7 +343,8 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
         `✓ SOL read for ${addresses.length} addresses (${Math.ceil(addresses.length / 100)} requests)\n`,
       )
     } catch (error) {
-      readError = error instanceof Error ? error.message : String(error)
+      if (isRateLimited(error)) rateLimited = error
+      readError = describeRpcFailure(error)
     }
     let tokenCounts: Map<string, number> | undefined
     if (readTokens && lamports !== undefined) {
@@ -387,6 +393,8 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
       // The table is not lost, and the batch refuses: a listing is a read, this is the last screen
       // before an irreversible write, so a missing column is a reason to stop (D8).
       deps.stderr.write(`\n${table}\n\n${footer}\n`)
+      // BE-355 (D3): a rate limit that survived the retry is named, with the fix, and nothing was written.
+      if (rateLimited !== undefined) throw rpcRateLimitedError(ctx, host, rateLimited)
       throw new VaultError("VAULT_UNREADABLE", `The SOL read over ${host} failed: ${readError}. Nothing was written.`, {
         suggestion: "Check --rpc-url (or CANDLE_SOLANA_RPC_URL) and run again; the table above is what would have run.",
       })

@@ -11,7 +11,8 @@
  * last, minus the fee that exact transfer costs.
  */
 import { base58 } from "@scure/base"
-import type { Deps } from "../deps"
+import type { CommandContext } from "../deps"
+import { describeRpcFailure, notePostSignatureRateLimit } from "../solana-endpoint"
 import {
   type AccountMeta,
   associatedTokenAddress,
@@ -20,6 +21,7 @@ import {
   decodePubkey,
   encodePubkey,
   type Instruction,
+  isRateLimited,
   type Pubkey,
   type SolanaRpc,
   serializeSignedTransaction,
@@ -75,11 +77,12 @@ type Broadcast =
 
 async function broadcastAndFinalize(
   rpc: SolanaRpc,
-  deps: Deps,
+  ctx: CommandContext,
   secret64: Uint8Array,
   feePayer: Pubkey,
   instructions: Instruction[],
 ): Promise<Broadcast> {
+  const { deps } = ctx
   const blockhash = await rpc.getLatestBlockhash()
   const message = compileLegacyMessage({ feePayer, recentBlockhash: blockhash, instructions })
   const signatureBytes = signMessage(message, secret64)
@@ -88,10 +91,13 @@ async function broadcastAndFinalize(
   try {
     await rpc.sendTransaction(toBase64(wire))
   } catch (error) {
+    // BE-355 (D4): the leftover is unchanged; a rate limit adds the line naming the signature
+    // and the fix. The client never re-sends.
+    if (isRateLimited(error)) notePostSignatureRateLimit(ctx, signature)
     return {
       status: "uncertain",
       signature,
-      error: `send did not answer cleanly (${error instanceof Error ? error.message : error}); it may still land`,
+      error: `send did not answer cleanly (${describeRpcFailure(error)}); it may still land`,
     }
   }
   for (let i = 0; i < CONFIRM_MAX_POLLS; i++) {
@@ -99,10 +105,11 @@ async function broadcastAndFinalize(
     try {
       status = await rpc.getSignatureStatus(signature)
     } catch (error) {
+      if (isRateLimited(error)) notePostSignatureRateLimit(ctx, signature)
       return {
         status: "uncertain",
         signature,
-        error: `status read failed (${error instanceof Error ? error.message : error}); ${signature} may still land`,
+        error: `status read failed (${describeRpcFailure(error)}); ${signature} may still land`,
       }
     }
     const observed = classifyStatus(status)
@@ -125,13 +132,13 @@ async function broadcastAndFinalize(
  */
 export async function sweepEverythingTo(input: {
   rpc: SolanaRpc
-  deps: Deps
+  ctx: CommandContext
   secret64: Uint8Array
   owner: string
   destination: string
   say: (line: string) => void
 }): Promise<LocalSweepOutcome> {
-  const { rpc, deps, secret64, say } = input
+  const { rpc, ctx, secret64, say } = input
   const ownerKey = decodePubkey(input.owner)
   const destinationKey = decodePubkey(input.destination)
   const receipts: SweepReceipt[] = []
@@ -145,7 +152,7 @@ export async function sweepEverythingTo(input: {
     } catch (error) {
       leftovers.push({
         kind: "inventory",
-        detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${error instanceof Error ? error.message : error}`,
+        detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${describeRpcFailure(error)}`,
       })
     }
   }
@@ -221,7 +228,7 @@ export async function sweepEverythingTo(input: {
       }
       instructions.push(tokenCloseAccount({ account: source, destination: ownerKey, owner: ownerKey, tokenProgram }))
       const kind = amount > 0n ? ("token" as const) : ("close" as const)
-      const outcome = await broadcastAndFinalize(rpc, deps, secret64, ownerKey, instructions)
+      const outcome = await broadcastAndFinalize(rpc, ctx, secret64, ownerKey, instructions)
       if (outcome.status === "finalized") {
         receipts.push({ kind, mint: acct.mint, amountRaw: acct.amountRaw, signature: outcome.signature })
         say(`  moved ${acct.amountRaw} raw of ${acct.mint} and closed its account: ${outcome.signature}`)
@@ -242,7 +249,7 @@ export async function sweepEverythingTo(input: {
     } catch (error) {
       leftovers.push({
         kind: "token-transfer-failed",
-        detail: error instanceof Error ? error.message : String(error),
+        detail: describeRpcFailure(error),
         mint: acct.mint,
         account: acct.pubkey,
         amountRaw: acct.amountRaw,
@@ -279,7 +286,7 @@ export async function sweepEverythingTo(input: {
         })
       } else {
         const amount = balance - fee
-        const outcome = await broadcastAndFinalize(rpc, deps, secret64, ownerKey, [
+        const outcome = await broadcastAndFinalize(rpc, ctx, secret64, ownerKey, [
           systemTransfer(ownerKey, destinationKey, amount),
         ])
         if (outcome.status === "finalized") {
@@ -296,7 +303,7 @@ export async function sweepEverythingTo(input: {
       }
     }
   } catch (error) {
-    leftovers.push({ kind: "sol-transfer-failed", detail: error instanceof Error ? error.message : String(error) })
+    leftovers.push({ kind: "sol-transfer-failed", detail: describeRpcFailure(error) })
   }
 
   return { receipts, leftovers }

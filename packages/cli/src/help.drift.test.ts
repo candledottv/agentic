@@ -197,3 +197,53 @@ describe("the flags a completion can offer", () => {
     }
   })
 })
+
+/**
+ * BE-355 (section 8, T18): `profile set` is routed and documented both ways, the env row names the
+ * profile and the public endpoint, the restore row says the scan needs `--rpc-url`, and the rows
+ * whose `--rpc-url` became optional say so.
+ */
+describe("BE-355 T18: the help rows", () => {
+  test("profile set is routed and documented, with its example", () => {
+    expect(ROUTED_SUBCOMMANDS.profile).toContain("set")
+    const row = HELP.profile?.rows.find((r) => r.invocation.startsWith("set "))
+    expect(row?.invocation).toBe("set <name> --rpc-url <url> | --clear-rpc-url")
+    expect(row?.description).toContain("config.json")
+    expect(row?.description).toContain("only its host is ever shown")
+    expect(HELP.profile?.examples).toContain("candle profile set work --rpc-url https://<your-rpc>")
+    expect(HELP.profile?.rows.find((r) => r.invocation === "list")?.description).toContain("Solana RPC host")
+  })
+
+  test("the env row, the restore row, and the rows whose --rpc-url became optional", () => {
+    const env = ENVIRONMENT.find((entry) => entry.name === "CANDLE_SOLANA_RPC_URL")
+    expect(env?.description).toBe(
+      "Solana RPC endpoint, when --rpc-url is not given. Beats the profile's (candle profile set <name> --rpc-url); the public endpoint when none is set",
+    )
+    const restore = HELP.vault?.rows.find((r) => r.invocation.startsWith("restore "))
+    expect(restore?.description).toContain(
+      "A gap scan needs --rpc-url on this command; no default or stored endpoint is used for it",
+    )
+    for (const [word, prefix] of [
+      ["vault", "transfer "],
+      ["vault", "promote "],
+      ["vault", "promote-batch "],
+      ["vault", "fund "],
+      ["vault", "demote "],
+      ["tee", "sweep "],
+      ["external", "sweep "],
+    ] as const) {
+      const row = HELP[word]?.rows.find((r) => r.invocation.startsWith(prefix))
+      expect([word, prefix, row?.invocation.includes("[--rpc-url <url>]")]).toEqual([word, prefix, true])
+      expect([word, prefix, row?.invocation.includes(" --rpc-url <url>")]).toEqual([word, prefix, false])
+    }
+    expect(HELP.portfolio?.flags?.find((f) => f.invocation === "--rpc-url <url>")?.description).toContain(
+      "then the profile's, then the public endpoint",
+    )
+    // No example still pastes the public endpoint as if it had to be typed.
+    for (const [word, topic] of Object.entries(HELP)) {
+      for (const example of topic.examples) {
+        expect([word, example, example.includes("api.mainnet-beta.solana.com")]).toEqual([word, example, false])
+      }
+    }
+  })
+})

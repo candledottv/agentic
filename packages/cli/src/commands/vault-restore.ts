@@ -33,7 +33,8 @@ import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
 import { EVM_DERIVATION_SCHEME, looksLikeEvmAddress } from "../evm-lite"
-import { createSolanaRpc, type SolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
+import { flagEndpoint, RPC_URL_ENV, type SolanaClient, solanaClientFor, validateSolanaRpcUrl } from "../solana-endpoint"
+import { type SolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import { createVault, freshHdRecord } from "../vault/create"
 import { randomBytes } from "../vault/crypto"
 import { VaultError } from "../vault/errors"
@@ -90,6 +91,15 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
   if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
   if (!parsed.booleans.has("--phrase"))
     return usage(ctx, "--phrase is required: this command restores from a 24-word recovery phrase.")
+  // BE-355 (D7): the gap scan reads `--rpc-url` ONLY. Not the public default, and not
+  // `CANDLE_SOLANA_RPC_URL` or the profile's `rpcUrl` either: both are ambient, and a scan that
+  // sends every derived address to an endpoint stays an explicit act on this command line. The
+  // flag is validated by the shared rule (D1), before any prompt.
+  const rpcUrlFlag = parsed.values["--rpc-url"]
+  if (rpcUrlFlag !== undefined) {
+    const fault = validateSolanaRpcUrl(rpcUrlFlag, "--rpc-url")
+    if (fault !== undefined) return usage(ctx, fault)
+  }
   if (!refuseEnvPassphrase(ctx)) return 1
   if (ctx.json) {
     return usage(
@@ -184,10 +194,10 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
       deps.stdout.write(`\nNew vault at ${path}, verified in full (all eight steps).\n`)
       deps.stdout.write(`${APPLE_ACCOUNT_NOTICE}\n\n`)
 
-      const rpc = parsed.values["--rpc-url"] ? createSolanaRpc(parsed.values["--rpc-url"], deps.fetch) : undefined
+      const solana = rpcUrlFlag === undefined ? undefined : solanaClientFor(ctx, flagEndpoint(rpcUrlFlag))
 
       // Step 1: derive every index inside the two bounds and build an address map IN MEMORY.
-      const derived = await deriveWithinBounds(ctx, vault, counts, rpc)
+      const derived = await deriveWithinBounds(ctx, vault, counts, solana)
 
       // Step 2: the complete linked-wallet read. A partial or failed read is not a short answer;
       // it stops the discovery step entirely, because a list that happens to be empty would
@@ -208,7 +218,11 @@ export async function vaultRestore(args: string[], ctx: CommandContext): Promise
 
       const outcome = await writeRestoredIndex(ctx, vault, derived, matches, counts)
       committed = true
-      const result = reportRestore(ctx, vault, derived, matches, outcome, counts)
+      const config = await deps.readConfig()
+      const ambient =
+        Boolean(deps.env[RPC_URL_ENV]?.trim()) ||
+        Boolean(ctx.profile !== undefined && config.profiles?.[ctx.profile]?.rpcUrl?.trim())
+      const result = reportRestore(ctx, vault, derived, matches, outcome, counts, ambient)
       // D8/D10, last: the moment the non-default vault is born is the moment to say that every
       // later vault command needs the flag, or the variable that moves every file together. Human
       // mode only, which is every mode here: restore has no --json form at all.
@@ -358,7 +372,7 @@ async function deriveWithinBounds(
   ctx: CommandContext,
   vault: UnlockedVault,
   counts: Counts,
-  rpc: SolanaRpc | undefined,
+  solana: SolanaClient | undefined,
 ): Promise<DerivedSet> {
   const { decryptRoot } = await import("../vault/store")
   const root = await decryptRoot(vault)
@@ -372,14 +386,17 @@ async function deriveWithinBounds(
         }
         continue
       }
-      if (rpc === undefined) continue
-      // The gap scan. Every index it derives is added; the ones it steps over prove nothing.
+      if (solana === undefined) continue
+      // The gap scan. Every index it derives is added; the ones it steps over prove nothing. The
+      // host line prints before the first read (D2); a read still rate-limited after the client's
+      // retry stops here with RPC_RATE_LIMITED (D3), where any failed scan read stops today.
       let consecutiveUnused = 0
       let index = 0
       for (; index < SCAN_CEILING && consecutiveUnused < GAP_LIMIT; index++) {
         const entry = await deriveOne(vault, root, branch, index)
         set.entries.push(entry)
-        consecutiveUnused = (await addressLooksUsed(rpc, entry.address)) ? 0 : consecutiveUnused + 1
+        const used = await solana.read(() => addressLooksUsed(solana.rpc, entry.address))
+        consecutiveUnused = used ? 0 : consecutiveUnused + 1
       }
       set.scanStoppedAt[branch] = index
       ctx.deps.stdout.write(
@@ -679,6 +696,7 @@ function reportRestore(
   matches: MatchOutcome,
   outcome: RestoreOutcome,
   counts: Counts,
+  ambientSolanaEndpoint: boolean,
 ): number {
   const { deps } = ctx
   deps.stdout.write(`\nRecovered ${outcome.entries.length} address(es) from the phrase.\n`)
@@ -697,15 +715,23 @@ function reportRestore(
     `The Phase 1 TEE wallet store was not read, and no migrated-tee entry was restored: the phrase does not restore those keys, and the vault file plus a factor does.\n`,
   )
 
+  let scanHint = false
   for (const branch of RESTORED_BRANCHES) {
     const bound = counts[branch]
     if (bound === undefined) {
       deps.stdout.write(`  ${branch}: gap-scanned to index ${(derived.scanStoppedAt[branch] ?? 1) - 1}\n`)
     } else if (bound <= 1) {
+      scanHint = true
       deps.stdout.write(
         `  ${branch}: index 0 only. If you derived more, re-run with --count/--tee-count/--external-count, or with --rpc-url to gap-scan.\n`,
       )
     }
+  }
+  // BE-355 (D7): an ambient endpoint was set and deliberately not used for a scan; say so once.
+  if (scanHint && ambientSolanaEndpoint) {
+    deps.stdout.write(
+      `A gap scan runs only with --rpc-url on this command; ${RPC_URL_ENV} and profile settings are not used for it.\n`,
+    )
   }
   if (counts.evm === 0) {
     deps.stdout.write(

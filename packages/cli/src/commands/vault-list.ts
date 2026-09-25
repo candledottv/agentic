@@ -16,11 +16,16 @@
  * requests for the same vault the SOL read does in four.
  *
  * Phase 4a (BE-350, D3, D7): EVM rows are read too, over their OWN endpoint: `--evm-rpc-url`, else
- * `CANDLE_EVM_RPC_URL`, else the built-in Hood RPC. That default is Andrew's "Hood built in" and is
- * the one place a default endpoint exists; Solana keeps none (key-naming D5). A Solana `--rpc-url`
- * is never sent an EVM address, and the EVM read prints its host on stderr before the first
- * request, the same rule as the Solana line. The read is `eth_chainId`, then `eth_getBalance` per
- * address, then, on chain id 4663 only, USDG's `balanceOf` per address.
+ * `CANDLE_EVM_RPC_URL`, else the built-in Hood RPC. A Solana `--rpc-url` is never sent an EVM
+ * address, and the EVM read prints its host on stderr before the first request, the same rule as
+ * the Solana line. The read is `eth_chainId`, then `eth_getBalance` per address, then, on chain id
+ * 4663 only, USDG's `balanceOf` per address.
+ *
+ * BE-355 (D1 to D3): the Solana read resolves through `solana-endpoint.ts` (`--rpc-url`, else
+ * `CANDLE_SOLANA_RPC_URL`, else the profile's `rpcUrl`, else the public endpoint), prints the host
+ * line (and, once per machine, the public-endpoint notice) before the first request, and stops
+ * sending chunks after one is still rate-limited after the client's retry: those addresses read
+ * `?`, exit 3, and the stderr line carries `RPC_RATE_LIMITED` and the fix.
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
@@ -37,7 +42,8 @@ import {
   rpcHostOf,
 } from "../evm-lite"
 import { renderTable } from "../render"
-import { createSolanaRpc } from "../solana-lite"
+import { describeRpcFailure, openSolanaClient, rateLimitedReadFailure, type SolanaClient } from "../solana-endpoint"
+import { isRateLimited } from "../solana-lite"
 import type { KeyEntry } from "../vault/format"
 import { readVaultRaw } from "../vault/store"
 import {
@@ -45,7 +51,6 @@ import {
   missingVault,
   refuseEnvPassphrase,
   requirePromptStreams,
-  rpcUrlFrom,
   runVaultCommand,
   unlockInteractively,
   usage,
@@ -75,30 +80,40 @@ export function formatSol(lamports: bigint): string {
  * The SOL read, one `getMultipleAccounts` call per chunk of 100 (D11).
  *
  * `getMultipleAccounts` loops over 100-address chunks INSIDE the client and `call()` throws on
- * HTTP 429 or an RPC error, so a throw discards every chunk that call had already fetched. `list`
- * therefore cuts the set up itself: a throw costs that chunk only, is not retried -- the chunk
- * failed because an endpoint rate-limited a burst, and an immediate retry is the burst again --
- * and the chunks after it are still issued. Every chunk is issued, so the request count is
- * `ceil(N / 100)` at the call site rather than a second counter here.
+ * an HTTP failure or an RPC error, so a throw discards every chunk that call had already fetched.
+ * `list` therefore cuts the set up itself: a throw costs that chunk only, and the chunks after it
+ * are still issued, so the request count is `ceil(N / 100)` at the call site rather than a second
+ * counter here. The one exception (BE-355, D3): a chunk that is still rate-limited after the
+ * client's own single retry stops the read, because pounding a rate-limited endpoint only
+ * lengthens the wait; the remaining addresses join `unavailable` without a request, and the
+ * failure names `RPC_RATE_LIMITED` and the fix.
  */
 async function readLamports(
   addresses: string[],
-  rpcUrl: string,
-  fetchFn: typeof fetch,
+  solana: SolanaClient,
+  ctx: CommandContext,
 ): Promise<{ lamports: Map<string, bigint>; unavailable: string[]; failure?: string }> {
-  const rpc = createSolanaRpc(rpcUrl, fetchFn)
+  const { rpc } = solana
   const lamports = new Map<string, bigint>()
   const unavailable: string[] = []
   let failure: string | undefined
+  let rateLimited = false
   for (let at = 0; at < addresses.length; at += CHUNK) {
     const chunk = addresses.slice(at, at + CHUNK)
+    if (rateLimited) {
+      unavailable.push(...chunk)
+      continue
+    }
     try {
       const accounts = await rpc.getMultipleAccounts(chunk)
       // A never-funded address comes back null, which is zero.
       for (const [i, address] of chunk.entries()) lamports.set(address, accounts[i]?.lamports ?? 0n)
     } catch (error) {
       unavailable.push(...chunk)
-      failure ??= error instanceof Error ? error.message : String(error)
+      if (isRateLimited(error)) {
+        rateLimited = true
+        failure ??= rateLimitedReadFailure(ctx, error)
+      } else failure ??= describeRpcFailure(error)
     }
   }
   return { lamports, unavailable, ...(failure === undefined ? {} : { failure }) }
@@ -186,13 +201,14 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
   if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
   const path = resolvedVault.path
 
-  // The operator's own endpoint or nothing: --rpc-url, else CANDLE_SOLANA_RPC_URL, else a usage
-  // refusal (D5). No default endpoint is added, because a default endpoint is a default recipient.
-  let rpcUrl: string | undefined
+  // BE-355 (D1): --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's rpcUrl, else the public
+  // endpoint, resolved and validated before the prompt. The vault list spec's D5 item 2 is amended
+  // to allow the default; the disclosure before the first request (D2) is what mitigates it.
+  let solanaClient: SolanaClient | undefined
   if (balances) {
-    const resolved = rpcUrlFrom(ctx, parsed)
-    if (typeof resolved !== "string") return usage(ctx, resolved.error)
-    rpcUrl = resolved
+    const resolved = await openSolanaClient(ctx, parsed.values["--rpc-url"])
+    if ("error" in resolved) return usage(ctx, resolved.error)
+    solanaClient = resolved
   }
   // Phase 4a (D3): the EVM endpoint, with the built-in Hood RPC as the one default this command
   // has. `--evm-rpc-url`, else `CANDLE_EVM_RPC_URL`, else Hood; the Solana `--rpc-url` is never it.
@@ -219,8 +235,10 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
     // cheaper one (D5). An `evm` entry is not a Solana address and is not in it (D8, §4.4).
     const solana = balances ? matched.filter((entry) => entry.chain === "solana") : []
     const requests = Math.ceil(solana.length / CHUNK)
-    const rpcHost = rpcUrl === undefined ? undefined : new URL(rpcUrl).host
-    if (balances && solana.length > 0 && rpcHost !== undefined) {
+    const rpcHost = solanaClient?.endpoint.host
+    if (balances && solana.length > 0 && solanaClient !== undefined) {
+      // D2's host line (and the notice, once) first, then this command's own sentence.
+      await solanaClient.disclose()
       // The host, never the URL: a provider URL can carry an API key in its path or query. On
       // stderr in both modes, so `--json` stdout stays exactly one JSON value.
       deps.stderr.write(
@@ -231,11 +249,11 @@ export async function vaultList(args: string[], ctx: CommandContext): Promise<nu
     let lamports = new Map<string, bigint>()
     let unavailable: string[] = []
     let failure: string | undefined
-    if (balances && solana.length > 0 && rpcUrl !== undefined) {
+    if (balances && solana.length > 0 && solanaClient !== undefined) {
       const outcome = await readLamports(
         solana.map((entry) => entry.address),
-        rpcUrl,
-        deps.fetch,
+        solanaClient,
+        ctx,
       )
       lamports = outcome.lamports
       unavailable = outcome.unavailable

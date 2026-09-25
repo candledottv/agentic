@@ -136,6 +136,12 @@ export const VAULT_ERROR_CODES = [
   "EVM_TRANSFER_REVERTED",
   "TRANSFER_CHAIN_MISMATCH",
   "SOLANA_COMMAND_EVM_KEY",
+  // BE-355 (spec 2026-09-24-cli-default-solana-rpc-design.md, D3): the Solana RPC rate-limited a
+  // read, the one retry was rate-limited too, and nothing has been signed. Exit 1, thrown from
+  // `solana-endpoint.ts` (`rpcRateLimitedError`) by the vault and TEE commands; the trading
+  // commands throw a `TradingError` with the same code. After a signature the same code travels
+  // with exit 3 and the local signature (D4), never an automatic re-send.
+  "RPC_RATE_LIMITED",
 ] as const
 
 export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number]

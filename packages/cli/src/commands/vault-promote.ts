@@ -15,7 +15,8 @@ import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { apiKeyPrefix } from "../profiles"
 import { errorEnvelope, renderError, suggestionFor, writeFailure, writeLocalFailure } from "../render"
-import { createSolanaRpc, type SolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
+import { openSolanaClient } from "../solana-endpoint"
+import { type SolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import {
   RESTORED_SENTENCE,
   readAccountRoom,
@@ -104,7 +105,7 @@ export async function vaultPromote(args: string[], ctx: CommandContext): Promise
   if (fromLabel === undefined && inPlaceLabel === undefined) {
     return usage(
       ctx,
-      "Usage: candle vault promote --from <vault-key-label> | --in-place <vault-key-label> --sweep-to <label> --rpc-url <url> [--to-key <label|prefix>]",
+      "Usage: candle vault promote --from <vault-key-label> | --in-place <vault-key-label> --sweep-to <label> [--rpc-url <url>] [--to-key <label|prefix>]",
     )
   }
   const toKeyRaw = parsed.values["--to-key"]
@@ -442,7 +443,10 @@ async function promoteInPlace(
   if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
   const path = resolvedVault.path
   const sweepTo = parsed.values["--sweep-to"]
-  const rpcUrl = parsed.values["--rpc-url"]
+  // BE-355 (D1): the holdings and the role read go over the resolved endpoint; validated before
+  // the prompt. No request is made until step 4.
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
+  if ("error" in solana) return usage(ctx, solana.error)
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure")
 
   return runVaultCommand(ctx, async ({ hold }) => {
@@ -524,10 +528,10 @@ async function promoteInPlace(
       return rebound.exit
     }
 
-    if (sweepTo === undefined || rpcUrl === undefined) {
+    if (sweepTo === undefined) {
       return usage(
         ctx,
-        "Usage: candle vault promote --in-place <label> --sweep-to <label> --rpc-url <url> [--label] [--accept-unknown-exposure]",
+        "Usage: candle vault promote --in-place <label> --sweep-to <label> [--rpc-url <url>] [--label] [--accept-unknown-exposure]",
       )
     }
 
@@ -557,9 +561,9 @@ async function promoteInPlace(
           })
 
     // Holdings (step 4): display what the subject holds.
-    const rpc = createSolanaRpc(rpcUrl, ctx.deps.fetch)
-    const host = new URL(rpcUrl).host
-    await displayHoldings(ctx, rpc, first.subject.address)
+    const rpc = solana.rpc
+    const host = solana.endpoint.host
+    await solana.read(() => displayHoldings(ctx, rpc, first.subject.address))
 
     // The role read (BE-296, D6, D7): always, no flag, nine requests, warns and never refuses.
     // Its block sits under the holdings, on stdout like them; the sentence names it as "above".

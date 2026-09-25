@@ -64,6 +64,13 @@ export interface CliConfig {
    * driver sees it without every command nagging.
    */
   updateNotice?: { version: string; shownAt: number }
+  /**
+   * BE-355 (D2): when the once-per-machine notice about the public Solana RPC was printed. Per
+   * machine, not per profile: the vault every profile on this config directory reads is one file,
+   * so a second profile discloses the same addresses to the same endpoint, and a notice that
+   * repeats is a notice that stops being read. Written only after the notice is on stderr.
+   */
+  publicRpcNotice?: { shownAt: number }
   /** The scopes this device/key was authorized with. */
   scopes?: string[]
   /** A human-readable label for this device, as shown during authorization. */

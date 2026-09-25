@@ -37,7 +37,7 @@ import { mcp, mcpActsAsIdentity } from "./commands/mcp"
 import { plugins, runPlugin } from "./commands/plugins"
 import { pnl } from "./commands/pnl"
 import { portfolio } from "./commands/portfolio"
-import { profileAdd, profileList, profileRemove, profileRename, profileUse } from "./commands/profile"
+import { profileAdd, profileList, profileRemove, profileRename, profileSet, profileUse } from "./commands/profile"
 import { secretsList, secretsRemove, secretsSet } from "./commands/secrets"
 import { setup } from "./commands/setup"
 import { sign, signMessage } from "./commands/sign"
@@ -224,7 +224,15 @@ const COMMANDS: Record<string, CommandRoute> = {
     },
   },
   profile: {
-    subcommands: { list: profileList, add: profileAdd, use: profileUse, rename: profileRename, remove: profileRemove },
+    subcommands: {
+      list: profileList,
+      add: profileAdd,
+      use: profileUse,
+      rename: profileRename,
+      remove: profileRemove,
+      // BE-355 (D5): this profile's Solana RPC.
+      set: profileSet,
+    },
   },
   // Ember Phase 3 PR F (BE-226, R6): bring your own services. None of these acts as the Candle
   // identity or reaches Candle's API: the vault's external branch, the generic signer, the user's

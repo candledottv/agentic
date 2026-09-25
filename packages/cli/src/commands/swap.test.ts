@@ -7,7 +7,7 @@ import { base58 } from "@scure/base"
 import { canonicalAuthorizationPayloadBytes } from "../../../sdk/src/authorization-signature"
 import { run } from "../index"
 import { pemToStoredSigner } from "../secret-store"
-import { createCapture, createFakeStore, createTestDeps } from "../test-support"
+import { createCapture, createFakeConfigStore, createFakeStore, createTestDeps } from "../test-support"
 import { authorizationSignature, rawAmount } from "../trading"
 
 const pair = generateKeyPairSync("ec", { namedCurve: "P-256" })
@@ -39,6 +39,10 @@ async function fixture(
     noExecuteRoute?: boolean
     /** BE-249: what a deferred build hands back. Defaults to the deferred (built) shape. */
     mainBuildStatus?: string
+    /** BE-355 (T10, T11): RPC methods that always answer HTTP 429. */
+    rpcRateLimit?: string[]
+    /** BE-355: run as acting profile `work` instead of pre-profile mode. */
+    profile?: boolean
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "candle-trade-"))
@@ -111,6 +115,7 @@ async function fixture(
     if (path.endsWith("/submit") || path.endsWith("/confirm"))
       return ok({ success: true, status: "executed", signature })
     if (path === "/rpc") {
+      if (opts.rpcRateLimit?.includes(body.method)) return new Response("rate limited", { status: 429 })
       const result =
         body.method === "getTokenSupply"
           ? { value: { decimals: 6 } }
@@ -146,6 +151,7 @@ async function fixture(
     stdout,
     stderr,
     promptLine: async () => opts.prompt ?? "y",
+    ...(opts.profile ? createFakeConfigStore({ profiles: { work: {} }, activeProfile: "work" }) : {}),
   })
   return {
     deps,
@@ -426,5 +432,82 @@ describe("TEE CLI trading", () => {
   test("raw sizing never passes through floating point", () => {
     expect(rawAmount("9007199254740993", 0)).toBe("9007199254740993")
     expect(rawAmount("0.000000001", 9)).toBe("1")
+  })
+})
+
+/**
+ * BE-355 (T10, T11). A swap's reads all come before any signature: a rate limit that survives the
+ * client's retry is `RPC_RATE_LIMITED`, exit 1, and nothing is signed, relayed or submitted. A
+ * launch signs through the relay and then sends over the RPC: a rate limit on that send is D4's
+ * uncertain outcome, exit 3 with the saved signature, and the same `--client-trade-id` confirms
+ * the saved signature on the next run without building or sending again. `launch`'s tests live
+ * here because this file owns them.
+ */
+describe("BE-355: rate limits (T10, T11)", () => {
+  const percentArgs = [
+    "swap",
+    "SOL",
+    "USDC",
+    "--percent",
+    "50",
+    "--wallet",
+    "tee",
+    "--client-trade-id",
+    "test-1",
+    "--yes",
+    "--json",
+  ]
+  const rpcMethods = (f: Awaited<ReturnType<typeof fixture>>) =>
+    f.calls.filter((c) => c.path === "/rpc").map((c) => c.body?.method)
+
+  test("T10: swap with the balance read rate-limited twice: exit 1, RPC_RATE_LIMITED, nothing signed or sent; profile set named for profile work", async () => {
+    const f = await fixture({ rpcRateLimit: ["getBalance"], profile: true })
+    expect(await run(percentArgs, f.deps)).toBe(1)
+    const out = JSON.parse(f.stdout.text.trim())
+    expect(out.code).toBe("RPC_RATE_LIMITED")
+    expect(out.message).toContain(
+      "The Solana RPC at localhost is rate-limiting this CLI (HTTP 429, retried once). Nothing was signed or sent.",
+    )
+    expect(out.suggestion).toBe(
+      "candle profile set work --rpc-url https://<your-rpc>\nor, for one command, --rpc-url https://<your-rpc> or CANDLE_SOLANA_RPC_URL",
+    )
+    expect(rpcMethods(f)).toEqual(["getBalance", "getBalance"])
+    expect(f.calls.some((c) => /\/(sign|submit|execute)$/.test(c.path))).toBe(false)
+    expect(f.stderr.text).toContain("Solana RPC: localhost (CANDLE_SOLANA_RPC_URL)")
+  })
+
+  test("T10: pre-profile: the suggestion is D3's pre-profile text byte for byte", async () => {
+    const f = await fixture({ rpcRateLimit: ["getBalance"] })
+    expect(await run(percentArgs, f.deps)).toBe(1)
+    const out = JSON.parse(f.stdout.text.trim())
+    expect(out.code).toBe("RPC_RATE_LIMITED")
+    expect(out.suggestion).toBe(
+      "--rpc-url https://<your-rpc> on this command, or CANDLE_SOLANA_RPC_URL for every command\nor sign in (candle auth login) to store one per profile",
+    )
+    expect(out.suggestion).not.toContain("profile set")
+    expect(out.suggestion).not.toContain("<name>")
+  })
+
+  test("T11: launch with a rate-limited send: exit 3, the saved signature, one send; the re-run confirms and sends nothing", async () => {
+    const f = await fixture({ rpcRateLimit: ["sendTransaction"] })
+    expect(await run(launchArgs, f.deps)).toBe(3)
+    const out = JSON.parse(f.stdout.text.trim())
+    expect(out.ok).toBe(false)
+    expect(out.code).toBe("RPC_RATE_LIMITED")
+    expect(out.message).toContain(`It may still land: check ${signature} before anything else.`)
+    expect(out.message).toContain("--client-trade-id launch-1")
+    expect(rpcMethods(f)).toEqual(["sendTransaction"])
+    expect(f.calls.some((c) => c.path === "/api/v1/launch/self/confirm")).toBe(false)
+
+    const before = f.calls.length
+    expect(await run(launchArgs, f.deps)).toBe(0)
+    const again = f.calls.slice(before).map((c) => c.path)
+    expect(again).not.toContain("/rpc")
+    expect(again).not.toContain("/api/v1/launch/self/build")
+    expect(again).toContain("/api/v1/launch/self/confirm")
+    expect(f.calls.slice(before).find((c) => c.path === "/api/v1/launch/self/confirm")?.body).toEqual({
+      clientLaunchId: "launch-1",
+      signature,
+    })
   })
 })

@@ -30,7 +30,7 @@ import {
   tradingKey,
   tradingPayer,
 } from "../trading"
-import { decimalsFor, printTradingResult, tradingFailure } from "./swap"
+import { decimalsFor, lazySolanaClient, printTradingResult, tradingFailure } from "./swap"
 
 const USAGE =
   "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL>|--mint <mint> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]"
@@ -191,7 +191,7 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
     else {
       const decimals = asset
         ? (BASES[asset]?.decimals ?? 9)
-        : await decimalsFor(ctx, flags["--mint"] as string, flags["--rpc-url"])
+        : await decimalsFor(ctx, flags["--mint"] as string, lazySolanaClient(ctx, flags["--rpc-url"]))
       amountRaw = rawAmount(flags["--amount"], decimals)
     }
     const amountText = isMax ? `the full spendable balance of ${label}` : `${flags["--amount"]} ${label}`

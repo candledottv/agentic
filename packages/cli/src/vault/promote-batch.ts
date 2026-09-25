@@ -64,7 +64,7 @@ const COMMENT = /^\s*#/
  * operator's column order, and positional selection would map `family` to the destination for
  * anyone whose export orders columns differently.
  */
-export function parsePairsFile(contents: string, opts: { file: string; rpcUrl: string }): ParsedPairs {
+export function parsePairsFile(contents: string, opts: { file: string; rpcUrlGiven: boolean }): ParsedPairs {
   const findings: PhaseAFinding[] = []
   const lines = contents.split(/\r?\n/)
   const meaningful: Array<{ line: number; text: string }> = []
@@ -181,7 +181,8 @@ export function parsePairsFile(contents: string, opts: { file: string; rpcUrl: s
       const only = rows[0] as PairRow
       findings.push({
         line: 0,
-        problem: `${opts.file} holds one row, and a batch of one buys nothing over the single command. Run: candle vault promote --in-place ${only.label} --sweep-to ${only.destination} --rpc-url ${opts.rpcUrl}`,
+        // BE-355 (invariant 1): the flag is named, never its value, which may carry a key.
+        problem: `${opts.file} holds one row, and a batch of one buys nothing over the single command. Run: candle vault promote --in-place ${only.label} --sweep-to ${only.destination}${opts.rpcUrlGiven ? " --rpc-url <url>" : ""}`,
       })
     } else if (rows.length > MAX_PROMOTE_BATCH) {
       findings.push({

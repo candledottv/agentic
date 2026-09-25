@@ -492,3 +492,94 @@ describe("profile remove", () => {
     expect(stdout.text).not.toContain("candle profile use")
   })
 })
+
+/**
+ * BE-355 (D5, T15): `profile set <name> --rpc-url <url> | --clear-rpc-url` stores the URL as given,
+ * prints and lists only its host, clears it, and refuses an unknown profile, both flags, neither
+ * flag and a cleartext remote URL with `USAGE`, exit 2, leaving the config untouched. No request.
+ */
+describe("profile set (BE-355, T15)", () => {
+  const SECRET_URL = "https://rpc.example/?api-key=SECRET"
+
+  test("stores the URL, shows and lists the host, never the value; --clear-rpc-url removes it", async () => {
+    const config = createFakeConfigStore({
+      profiles: { work: { apiUrl: "https://api.candle.tv" } },
+      activeProfile: "work",
+    })
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch: unusedFetch, stdout, now: () => NOW, ...config })
+    expect(await run(["profile", "set", "work", "--rpc-url", SECRET_URL], deps)).toBe(0)
+    expect((await deps.readConfig()).profiles?.work?.rpcUrl).toBe(SECRET_URL)
+    expect(stdout.text).toBe("Solana RPC for work: rpc.example\n")
+
+    stdout.text = ""
+    expect(await run(["profile", "list"], deps)).toBe(0)
+    expect(stdout.text).toContain("Solana RPC")
+    expect(stdout.text).toContain("rpc.example")
+    expect(stdout.text).not.toContain("SECRET")
+    stdout.text = ""
+    expect(await run(["profile", "list", "--json"], deps)).toBe(0)
+    expect((JSON.parse(stdout.text) as { rpcHost: string | null }[])[0]?.rpcHost).toBe("rpc.example")
+    expect(stdout.text).not.toContain("SECRET")
+
+    stdout.text = ""
+    expect(await run(["profile", "set", "work", "--rpc-url", SECRET_URL, "--json"], deps)).toBe(0)
+    expect(JSON.parse(stdout.text)).toEqual({ ok: true, profile: "work", rpcHost: "rpc.example" })
+
+    stdout.text = ""
+    expect(await run(["profile", "set", "work", "--clear-rpc-url"], deps)).toBe(0)
+    expect((await deps.readConfig()).profiles?.work?.rpcUrl).toBeUndefined()
+    expect(stdout.text).toBe("Solana RPC for work: public default\n")
+    stdout.text = ""
+    expect(await run(["profile", "list"], deps)).toBe(0)
+    expect(stdout.text).toContain("public default")
+    stdout.text = ""
+    expect(await run(["profile", "list", "--json"], deps)).toBe(0)
+    expect((JSON.parse(stdout.text) as { rpcHost: string | null }[])[0]?.rpcHost).toBeNull()
+    stdout.text = ""
+    expect(await run(["profile", "set", "work", "--clear-rpc-url", "--json"], deps)).toBe(0)
+    expect(JSON.parse(stdout.text)).toEqual({ ok: true, profile: "work", rpcHost: null })
+  })
+
+  test("an unknown profile, both flags, neither flag, and http://remote are USAGE, exit 2, and change nothing", async () => {
+    const config = createFakeConfigStore({ profiles: { work: {} }, activeProfile: "work" })
+    const before = JSON.stringify(await config.readConfig())
+    const cases: Array<[string[], string]> = [
+      [["set", "other", "--rpc-url", "https://rpc.example/"], "No profile named other. Run: candle profile list"],
+      [
+        ["set", "work", "--rpc-url", "https://rpc.example/", "--clear-rpc-url"],
+        "Usage: candle profile set <name> --rpc-url <url> | --clear-rpc-url",
+      ],
+      [["set", "work"], "Usage: candle profile set <name> --rpc-url <url> | --clear-rpc-url"],
+      [["set", "work", "--rpc-url", "http://remote"], "--rpc-url must be https://"],
+    ]
+    for (const [args, message] of cases) {
+      const stdout = createCapture()
+      const deps = createTestDeps({ fetch: unusedFetch, stdout, ...config })
+      expect([args, await run(["profile", ...args, "--json"], deps)]).toEqual([args, 2])
+      const body = JSON.parse(stdout.text) as { code: string; message: string }
+      expect(body.code).toBe("USAGE")
+      expect(body.message).toContain(message)
+    }
+    expect(JSON.stringify(await config.readConfig())).toBe(before)
+
+    // No profiles at all: the same refusal points at sign-in, which is why no fix line ever names
+    // `profile set` in pre-profile mode (D2).
+    const stderr = createCapture()
+    const none = createTestDeps({ fetch: unusedFetch, stderr, ...createFakeConfigStore({}) })
+    expect(await run(["profile", "set", "work", "--rpc-url", "https://rpc.example/"], none)).toBe(2)
+    expect(stderr.text).toContain("No profile named work. Run: candle auth login")
+  })
+
+  test("a stored value that does not parse lists as invalid, never raw", async () => {
+    const stdout = createCapture()
+    const deps = createTestDeps({
+      fetch: unusedFetch,
+      stdout,
+      ...createFakeConfigStore({ profiles: { work: { rpcUrl: "not a url SECRET" } }, activeProfile: "work" }),
+    })
+    expect(await run(["profile", "list"], deps)).toBe(0)
+    expect(stdout.text).toContain("invalid (fix with profile set)")
+    expect(stdout.text).not.toContain("SECRET")
+  })
+})

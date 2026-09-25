@@ -42,7 +42,10 @@ function rpcFake(handlers: Record<string, (params: unknown[]) => unknown>) {
       methods.push(method)
       const handler = handlers[method]
       if (!handler) throw new Error(`unexpected RPC method ${method}`)
-      return jsonResponse(200, { id, jsonrpc: "2.0", result: await handler(params) })
+      const result = await handler(params)
+      // A handler may answer a whole Response (BE-355: an HTTP 429 the client must see as such).
+      if (result instanceof Response) return result
+      return jsonResponse(200, { id, jsonrpc: "2.0", result })
     },
     "/api/v1/agent/wallets/embedded": () => jsonResponse(200, { success: true, account: "Acct" }),
   })
@@ -421,5 +424,40 @@ describe("external sweep <external> --to <vault>: both named, neither inferred, 
       external: expectedExternal0,
     })
     expect(rpc.sends).toEqual([expectedExternal0, expectedVault0])
+  })
+})
+
+/**
+ * BE-355 (D4, T11): a rate limit on a sweep's send is the existing uncertain leftover, with the
+ * signature, exactly one send, and D4's fix line on stderr (pre-profile form here). The client
+ * never re-sends.
+ */
+describe("BE-355 T11: a rate-limited send during external sweep", () => {
+  test("exit 3, one send, a finality-uncertain leftover with the signature, and the fix line on stderr", async () => {
+    const rpc = rpcFake({
+      getTokenAccountsByOwner: () => ({ value: [] }),
+      getBalance: () => ({ value: 1_000_000 }),
+      getLatestBlockhash: () => ({ value: { blockhash: BLOCKHASH } }),
+      getFeeForMessage: () => ({ value: 5000 }),
+      sendTransaction: () => new Response("rate limited", { status: 429 }),
+    })
+    const h = await harness({ rpc })
+    expect(await run(["vault", "new-key", "--chain", "solana", "--label", "cold"], h.deps)).toBe(0)
+    expect(await run(["external", "new", "--label", "trader"], h.deps)).toBe(0)
+    h.stdout.text = ""
+    h.stderr.text = ""
+    h.lines.push(expectedVault0.slice(-6))
+    expect(await run(["external", "sweep", "trader", "--to", "cold", "--rpc-url", RPC, "--json"], h.deps)).toBe(3)
+    expect(rpc.methods.filter((m) => m === "sendTransaction")).toHaveLength(1)
+    const body = JSON.parse(h.stdout.text.trim())
+    expect(body.ok).toBe(false)
+    expect(body.leftovers).toHaveLength(1)
+    expect(body.leftovers[0]).toMatchObject({ kind: "finality-uncertain" })
+    const signature = body.leftovers[0].signature as string
+    expect(typeof signature).toBe("string")
+    expect(h.stderr.text).toContain(
+      `The RPC rate-limited this CLI after the transaction was signed. It may still land: check ${signature} before anything else.\nFix: --rpc-url https://<your-rpc> on this command, or CANDLE_SOLANA_RPC_URL for every command\n     or sign in (candle auth login) to store one per profile\n`,
+    )
+    expect(h.stderr.text).not.toContain(RPC)
   })
 })

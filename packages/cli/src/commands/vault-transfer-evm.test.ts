@@ -392,11 +392,14 @@ describe("E4: the native and ERC-20 shapes, displayed, confirmed, re-read, broad
     expect(cleartext.events).toEqual([])
   })
 
-  test("a Solana --from still needs --rpc-url and a Solana destination; --rpc-url is optional for an EVM --from only", async () => {
+  test("a Solana --from without --rpc-url reads over the public Solana endpoint, never the EVM node (BE-355)", async () => {
     const fx = await fixture()
-    expect(await fx.transfer([SOLANA_DESTINATION, "--amount", "1", "--asset", "SOL", "--from", "cold"])).toBe(2)
-    expect(fx.stderr.text).toContain("--rpc-url <url> is required for a transfer from a Solana key.")
-    expect(fx.rpc.methods).toEqual([])
+    // The fixture's node speaks EVM only, so the first Solana read fails; what matters is where it
+    // went: the public Solana default, disclosed first, and not Hood.
+    expect(await fx.transfer([SOLANA_DESTINATION, "--amount", "1", "--asset", "SOL", "--from", "cold"])).toBe(1)
+    expect(fx.rpc.methods).toEqual(["getLatestBlockhash"])
+    expect([...fx.rpc.hosts]).toEqual(["api.mainnet-beta.solana.com"])
+    expect(fx.stderr.text).toContain("Solana RPC: api.mainnet-beta.solana.com (public default)")
   })
 })
 

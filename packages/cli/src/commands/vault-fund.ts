@@ -17,6 +17,7 @@
 import { type ParsedArgs, parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { writeLocalFailure } from "../render"
+import { openSolanaClient, type SolanaClient } from "../solana-endpoint"
 import { VaultError } from "../vault/errors"
 import type { KeyEntry } from "../vault/format"
 import { type FundingReceipt, reconcileFundingReceipts, saveFundingReceipt } from "../vault/funding-receipts"
@@ -55,7 +56,7 @@ async function fundExternal(
   opened: OpenedVault,
   vault: OpenedVault["vault"],
   external: KeyEntry,
-  input: { amount: string; asset: string; rpcUrl: string; parsed: ParsedArgs },
+  input: { amount: string; asset: string; solana: SolanaClient; parsed: ParsedArgs },
 ): Promise<number> {
   // D3 (Phase 4a): Solana vault keys only. An EVM vault key is never the single-key default.
   const vaultKeys = vault.index.entries.filter((entry) => entry.role === "vault" && entry.chain === "solana")
@@ -81,28 +82,30 @@ async function fundExternal(
   }
   if (fromEntry === undefined) return usage(ctx, "No source vault key.")
   assertVaultSigner(fromEntry)
-  const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, external.address], input.rpcUrl, ctx)
+  const { solana } = input
+  const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, external.address], solana.rpc, ctx)
   if (reconciled !== null) return reconciled
 
   ctx.deps.stdout.write(
     `Funding external wallet ${external.label} (${external.address}) from vault key ${fromEntry.label}. What this wallet holds is what candle sign can spend; fund a session, not a float.\n`,
   )
-  const plan = await planTransfer({
-    from: fromEntry.address,
-    to: external.address,
-    amount: input.amount,
-    asset: input.asset,
-    rpcUrl: input.rpcUrl,
-    fetch: ctx.deps.fetch,
-  })
-  const feeQuote = await quoteTransferFee(input.rpcUrl, ctx.deps.fetch, plan.from, plan.instructions)
+  const plan = await solana.read(() =>
+    planTransfer({
+      from: fromEntry.address,
+      to: external.address,
+      amount: input.amount,
+      asset: input.asset,
+      rpc: solana.rpc,
+    }),
+  )
+  const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions))
   displayTransferPlan(ctx, plan, feeQuote)
   await confirmLastSix(ctx, external.address, "the external wallet destination")
   await opened.confirm(`fund ${plan.amount} ${plan.asset} to external wallet ${external.label}`)
 
   const secret = await decryptKey(vault, fromEntry.id)
   try {
-    const result = await signAndBroadcastTransfer({ ctx, rpcUrl: input.rpcUrl, secret64: secret, plan })
+    const result = await signAndBroadcastTransfer({ ctx, solana, secret64: secret, plan })
     if (ctx.json) {
       writeJson(ctx.deps, {
         ok: result.finalized,
@@ -138,15 +141,17 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
   if (!teeAddress || extra !== undefined) {
     return usage(
       ctx,
-      "Usage: candle vault fund <tee-address | external-label> --amount <n> --asset SOL|USDC --rpc-url <url> [--from <vault-label>]",
+      "Usage: candle vault fund <tee-address | external-label> --amount <n> --asset SOL|USDC [--rpc-url <url>] [--from <vault-label>]",
     )
   }
   const amount = parsed.values["--amount"]
   const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase()
-  const rpcUrl = parsed.values["--rpc-url"]
   if (!amount) return usage(ctx, "--amount <n> is required.")
   if (asset !== "SOL" && asset !== "USDC") return usage(ctx, "--asset must be SOL or USDC.")
-  if (!rpcUrl) return usage(ctx, "--rpc-url <url> is required.")
+  // BE-355 (D1): resolved and validated before the unlock; no request is made until the vault is
+  // open and the receipts are reconciled.
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
+  if ("error" in solana) return usage(ctx, solana.error)
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "vault fund")) return 1
 
@@ -168,7 +173,7 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
     const teeEntry = vault.index.entries.find((entry) => entry.address === teeAddress && entry.role === "tee-wallet")
     if (teeEntry === undefined) {
       const external = findExternalEntry(vault.index, teeAddress)
-      if (external !== undefined) return fundExternal(ctx, opened, vault, external, { amount, asset, rpcUrl, parsed })
+      if (external !== undefined) return fundExternal(ctx, opened, vault, external, { amount, asset, solana, parsed })
       writeLocalFailure(
         ctx.deps,
         {
@@ -187,7 +192,7 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
     const reconciled = await reconcileFundingReceipts(
       vault,
       [teeAddress, ...(teeEntry.tee?.vaultDestination ? [teeEntry.tee.vaultDestination] : [])],
-      rpcUrl,
+      solana.rpc,
       ctx,
     )
     if (reconciled !== null) return reconciled
@@ -232,15 +237,16 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
       `Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.\n`,
     )
 
-    const plan = await planTransfer({
-      from: fromEntry.address,
-      to: teeAddress,
-      amount,
-      asset,
-      rpcUrl,
-      fetch: ctx.deps.fetch,
-    })
-    const feeQuote = await quoteTransferFee(rpcUrl, ctx.deps.fetch, plan.from, plan.instructions)
+    const plan = await solana.read(() =>
+      planTransfer({
+        from: fromEntry.address,
+        to: teeAddress,
+        amount,
+        asset,
+        rpc: solana.rpc,
+      }),
+    )
+    const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions))
     displayTransferPlan(ctx, plan, feeQuote)
     await confirmLastSix(ctx, teeAddress, "the TEE wallet destination")
 
@@ -252,7 +258,7 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
       let receipt: FundingReceipt | undefined
       const result = await signAndBroadcastTransfer({
         ctx,
-        rpcUrl,
+        solana,
         secret64: secret,
         plan,
         beforeBroadcast: async ({ signature, blockhash }) => {

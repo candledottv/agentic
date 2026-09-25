@@ -8,13 +8,16 @@
  *
  * - **TEE and embedded wallets come from Candle**, `GET /api/v1/agent/portfolio`: Candle already
  *   holds those rows, so it reads their balances over its own RPC and prices what they hold.
- * - **Vault and external wallets are read over the operator's own RPC** (`--rpc-url`, else
- *   `CANDLE_SOLANA_RPC_URL`). Candle does not know those addresses and this command does not tell
- *   it: the only thing sent about them is the list of MINTS they hold, to `POST /agent/prices`,
- *   and only the mints Candle's own answer did not already price. External wallets are listed
- *   with the vault as holdings only; Candle is in none of their transactions, so they carry no P&L.
- * - With no RPC given, the vault is not read and not unlocked, and the output says so. No default
- *   endpoint is added, because a default endpoint is a default recipient (`vault list`, D5).
+ * - **Vault and external wallets are read over the resolved Solana RPC** (BE-355: `--rpc-url`,
+ *   else `CANDLE_SOLANA_RPC_URL`, else the profile's `rpcUrl`, else the public endpoint, whose
+ *   host is printed on stderr before the first request). Candle does not know those addresses and
+ *   this command does not tell it: the only thing sent about them is the list of MINTS they hold,
+ *   to `POST /agent/prices`, and only the mints Candle's own answer did not already price. External
+ *   wallets are listed with the vault as holdings only; Candle is in none of their transactions, so
+ *   they carry no P&L.
+ * - A read that is still rate-limited after the client's retry stops the vault read (BE-355, D3):
+ *   the wallets not yet read are "not read", the exit is 3, and the stderr line carries
+ *   `RPC_RATE_LIMITED` and the fix.
  *
  * ── Fast and readable at 146 TEE wallets ─────────────────────────────────────────────────────
  *
@@ -43,14 +46,13 @@ import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
 import { printIdentity } from "../profiles"
 import { renderTable, terminalText, writeFailure, writeLocalFailure } from "../render"
-import { createSolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
+import { describeRpcFailure, openSolanaClient, rateLimitedReadFailure, type SolanaClient } from "../solana-endpoint"
+import { isRateLimited, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import { formatAmount, formatPrice, formatUsd, shortAddress } from "../usd"
 import { readVaultRaw } from "../vault/store"
 import {
-  RPC_URL_ENV,
   refuseEnvPassphrase,
   requirePromptStreams,
-  rpcUrlFrom,
   runVaultCommand,
   unlockInteractively,
   usage,
@@ -193,13 +195,9 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     writeLocalFailure(deps, NO_API_KEY, ctx.json)
     return 1
   }
-  const rpcGiven = parsed.values["--rpc-url"] !== undefined || Boolean(deps.env[RPC_URL_ENV]?.trim())
-  let rpcUrl: string | undefined
-  if (rpcGiven) {
-    const resolved = rpcUrlFrom(ctx, parsed)
-    if (typeof resolved !== "string") return usage(ctx, resolved.error)
-    rpcUrl = resolved
-  }
+  // BE-355 (D1): resolved and validated before the prompt; the vault is always read when there is one.
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
+  if ("error" in solana) return usage(ctx, solana.error)
   const resolvedVault = vaultPathFor(ctx, parsed)
   if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
 
@@ -207,10 +205,8 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     // The vault first, when it will be read: the passphrase prompt comes before any waiting.
     let vaultEntries: { address: string; label: string; role: "vault" | "external" }[] | undefined
     let vaultReason: string | undefined
-    const raw = rpcUrl === undefined ? null : await readVaultRaw(resolvedVault.path)
-    if (rpcUrl === undefined) {
-      vaultReason = `not read: vault balances are read only over your own RPC; pass --rpc-url or set ${RPC_URL_ENV}`
-    } else if (raw === null) {
+    const raw = await readVaultRaw(resolvedVault.path)
+    if (raw === null) {
       vaultReason = `no vault at ${resolvedVault.path}`
     } else {
       if (!refuseEnvPassphrase(ctx)) return 1
@@ -222,8 +218,10 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     }
 
     await printIdentity(ctx)
-    const rpcHost = rpcUrl === undefined ? undefined : new URL(rpcUrl).host
-    if (vaultEntries && vaultEntries.length > 0 && rpcHost !== undefined) {
+    const rpcHost = solana.endpoint.host
+    if (vaultEntries && vaultEntries.length > 0) {
+      // D2's host line (and the notice, once) before this command's own sentence and first request.
+      await solana.disclose()
       // The host, never the URL: a provider URL can carry an API key. stderr in both modes.
       const requests = Math.ceil(vaultEntries.length / CHUNK) + vaultEntries.length * 2
       deps.stderr.write(
@@ -239,14 +237,20 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
         fetch: deps.fetch,
         env: deps.env,
       }),
-      vaultEntries && rpcUrl
+      vaultEntries
         ? readOwnRpc(
             vaultEntries.map((entry) => entry.address),
-            rpcUrl,
-            deps.fetch,
+            solana,
+            ctx,
           )
         : Promise.resolve(undefined),
     ])
+    if (vaultRead?.failure !== undefined) {
+      // BE-355 (D3): the same line `vault list` prints, in both modes; under --json stdout stays
+      // one document and the exit code says partial.
+      const n = vaultRead.unavailable.length
+      deps.stderr.write(`${n} vault ${n === 1 ? "address" : "addresses"} could not be read: ${vaultRead.failure}.\n`)
+    }
     if (!candle.ok) {
       writeFailure(deps, candle, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json)
       return 1
@@ -386,7 +390,7 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
         unpriced,
         complete,
         unavailable,
-        ...(rpcHost !== undefined ? { rpcHost } : {}),
+        rpcHost,
         ...(lp ? { lp } : {}),
         groups,
       })
@@ -398,21 +402,39 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
   })
 }
 
-/** Holdings over the operator's own RPC. Per-chunk and per-owner failures stay local (see header). */
+/**
+ * Holdings over the resolved Solana RPC. Per-chunk and per-owner failures stay local (see header),
+ * except a rate limit that survived the client's retry (BE-355, D3): after it, nothing more is
+ * sent, every wallet not yet read is unavailable, and `failure` names `RPC_RATE_LIMITED` and the
+ * fix. Any other first failure's message is `failure` too, for the stderr line.
+ */
 async function readOwnRpc(
   addresses: string[],
-  rpcUrl: string,
-  fetchFn: typeof fetch,
-): Promise<{ byAddress: Map<string, WalletRead>; unavailable: string[] }> {
-  const rpc = createSolanaRpc(rpcUrl, fetchFn)
+  solana: SolanaClient,
+  ctx: CommandContext,
+): Promise<{ byAddress: Map<string, WalletRead>; unavailable: string[]; failure?: string }> {
+  const { rpc } = solana
   const unique = [...new Set(addresses)]
   const lamports = new Map<string, string | null>()
+  let rateLimited = false
+  let failure: string | undefined
+  const noteFailure = (error: unknown) => {
+    if (isRateLimited(error)) {
+      rateLimited = true
+      failure ??= rateLimitedReadFailure(ctx, error)
+    } else failure ??= describeRpcFailure(error)
+  }
   for (let at = 0; at < unique.length; at += CHUNK) {
     const chunk = unique.slice(at, at + CHUNK)
+    if (rateLimited) {
+      for (const address of chunk) lamports.set(address, null)
+      continue
+    }
     try {
       const accounts = await rpc.getMultipleAccounts(chunk)
       for (const [i, address] of chunk.entries()) lamports.set(address, (accounts[i]?.lamports ?? 0n).toString())
-    } catch {
+    } catch (error) {
+      noteFailure(error)
       for (const address of chunk) lamports.set(address, null)
     }
   }
@@ -427,6 +449,10 @@ async function readOwnRpc(
     Array.from({ length: Math.min(TOKEN_READS_IN_FLIGHT, reads.length) }, async () => {
       while (next < reads.length) {
         const { owner, programId } = reads[next++] as (typeof reads)[number]
+        if (rateLimited) {
+          failed.add(owner)
+          continue
+        }
         try {
           const accounts = await rpc.getTokenAccountsByOwner(owner, programId)
           const held = tokens.get(owner) ?? new Map<string, TokenRow>()
@@ -443,7 +469,8 @@ async function readOwnRpc(
               program,
             })
           }
-        } catch {
+        } catch (error) {
+          noteFailure(error)
           failed.add(owner)
         }
       }
@@ -458,7 +485,7 @@ async function readOwnRpc(
     byAddress.set(address, { lamports: sol, tokens: held })
     if (sol === null || held === null) unavailable.push(address)
   }
-  return { byAddress, unavailable }
+  return { byAddress, unavailable, ...(failure === undefined ? {} : { failure }) }
 }
 
 /** SOL first, then tokens; zero SOL is left out, an unread half contributes nothing. */

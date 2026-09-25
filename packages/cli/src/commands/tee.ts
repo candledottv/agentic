@@ -32,14 +32,20 @@ import {
 import { printIdentity } from "../profiles"
 import { writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import {
+  describeRpcFailure,
+  notePostSignatureRateLimit,
+  openSolanaClient,
+  rateLimitedReadFailure,
+} from "../solana-endpoint"
+import {
   type AccountMeta,
   associatedTokenAddress,
   compileLegacyMessage,
   createAssociatedTokenAccountIdempotent,
-  createSolanaRpc,
   decodePubkey,
   encodePubkey,
   type Instruction,
+  isRateLimited,
   pubkeyFromSecret,
   type SolanaRpc,
   serializeSignedTransaction,
@@ -92,7 +98,6 @@ import { readDisableOutcome } from "./wallets"
 
 const MIN_PASSPHRASE_LENGTH = 12
 const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-const RPC_URL_ENV = "CANDLE_SOLANA_RPC_URL"
 /** Finality polling: 2 s apart, up to 45 tries (90 s). A stalled confirmation is a residual, not a success. */
 const CONFIRM_POLL_MS = 2_000
 const CONFIRM_MAX_POLLS = 45
@@ -535,22 +540,6 @@ async function confirmVault(deps: Deps, vault: string): Promise<boolean> {
     await deps.promptSecret(`Type the LAST 6 characters of the vault address (${vault}) to confirm: `)
   ).trim()
   return typed === vault.slice(-6)
-}
-
-function rpcUrlFrom(ctx: CommandContext, parsed: ParsedArgs): string | { error: string } {
-  const url = parsed.values["--rpc-url"] ?? ctx.deps.env[RPC_URL_ENV]?.trim()
-  if (!url) return { error: `--rpc-url <url> is required (or set ${RPC_URL_ENV}).` }
-  let parsedUrl: URL
-  try {
-    parsedUrl = new URL(url)
-  } catch {
-    return { error: `--rpc-url is not a valid URL: ${url}` }
-  }
-  const local = parsedUrl.hostname === "127.0.0.1" || parsedUrl.hostname === "localhost"
-  if (parsedUrl.protocol !== "https:" && !(parsedUrl.protocol === "http:" && local)) {
-    return { error: "--rpc-url must be https:// (plain http is allowed only for 127.0.0.1 / localhost)." }
-  }
-  return url
 }
 
 // ── tee new ─────────────────────────────────────────────────────────────────────────────────
@@ -1000,6 +989,9 @@ export async function teeStatus(args: string[], ctx: CommandContext): Promise<nu
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
   if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee status <address> [--rpc-url <url>]")
+  // BE-355 (D1): the balances are always read, over the resolved endpoint; validated before the prompt.
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
+  if ("error" in solana) return usage(ctx, solana.error)
 
   const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed))
   if (!resolved.ok) return resolved.code
@@ -1045,11 +1037,8 @@ export async function teeStatus(args: string[], ctx: CommandContext): Promise<nu
       }
     }
 
-    const rpcUrl = parsed.values["--rpc-url"] ?? deps.env[RPC_URL_ENV]?.trim()
-    if (rpcUrl) {
-      const checked = rpcUrlFrom(ctx, parsed)
-      if (typeof checked !== "string") return usage(ctx, checked.error)
-      const rpc = createSolanaRpc(checked, deps.fetch)
+    {
+      const rpc = solana.rpc
       try {
         const lamports = await rpc.getBalance(address)
         const tokens = [
@@ -1069,7 +1058,10 @@ export async function teeStatus(args: string[], ctx: CommandContext): Promise<nu
           })),
         }
       } catch (error) {
-        report.balances = { error: error instanceof Error ? error.message : String(error) }
+        // BE-355 (D3): a rate limit that survived the retry is named, with the fix, in the report.
+        report.balances = {
+          error: isRateLimited(error) ? rateLimitedReadFailure(ctx, error) : describeRpcFailure(error),
+        }
       }
     }
 
@@ -1214,14 +1206,14 @@ export async function teeDisable(args: string[], ctx: CommandContext): Promise<n
     }
     if (outcome.complete) {
       deps.stdout.write(`Stopped ${address}. Remote signing denial verified; the wallet is quarantined.\n`)
-      deps.stdout.write(`Recover the funds: candle tee sweep ${address} --rpc-url <url>\n`)
+      deps.stdout.write(`Recover the funds: candle tee sweep ${address}\n`)
       return 0
     }
     deps.stdout.write(
       `Agent trading stopped at Candle for ${address}. Remote policy verification is pending` +
         `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.\n` +
         `Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${address}\n` +
-        `If the provider is down or theft is suspected: candle tee sweep ${address} --rpc-url <url> --emergency\n`,
+        `If the provider is down or theft is suspected: candle tee sweep ${address} --emergency\n`,
     )
     return 3
   } finally {
@@ -1272,7 +1264,7 @@ type BroadcastOutcome =
  */
 async function broadcastAndFinalize(
   rpc: SolanaRpc,
-  deps: Deps,
+  ctx: CommandContext,
   secret: Uint8Array,
   feePayer: Uint8Array,
   instructions: Instruction[],
@@ -1282,7 +1274,7 @@ async function broadcastAndFinalize(
 ): Promise<BroadcastOutcome> {
   const blockhash = await rpc.getLatestBlockhash()
   const message = compileLegacyMessage({ feePayer, recentBlockhash: blockhash, instructions })
-  return broadcastMessage(rpc, deps, secret, message, blockhash, pending, recordPending, clearPending)
+  return broadcastMessage(rpc, ctx, secret, message, blockhash, pending, recordPending, clearPending)
 }
 
 /**
@@ -1293,7 +1285,7 @@ async function broadcastAndFinalize(
  */
 async function broadcastMessage(
   rpc: SolanaRpc,
-  deps: Deps,
+  ctx: CommandContext,
   secret: Uint8Array,
   message: Uint8Array,
   blockhash: string,
@@ -1301,6 +1293,7 @@ async function broadcastMessage(
   recordPending: (record: SweepPendingRecord) => Promise<boolean>,
   clearPending: (signature: string) => Promise<void>,
 ): Promise<BroadcastOutcome> {
+  const { deps } = ctx
   const signatureBytes = signMessage(message, secret)
   // The transaction's identity is its first signature, known here, before submission. Nothing
   // the RPC answers later replaces it.
@@ -1326,10 +1319,13 @@ async function broadcastMessage(
       echoNote = `; the RPC echoed a different signature (${echoed}), which was ignored`
     }
   } catch (error) {
+    // BE-355 (D4): the outcome and the pending record are unchanged; a rate limit adds the line
+    // that names the signature and the fix. The client never re-sends.
+    if (isRateLimited(error)) notePostSignatureRateLimit(ctx, signature)
     return {
       status: "uncertain",
       signature,
-      error: `send did not answer cleanly (${error instanceof Error ? error.message : error}); it may still land`,
+      error: `send did not answer cleanly (${describeRpcFailure(error)}); it may still land`,
     }
   }
   for (let i = 0; i < CONFIRM_MAX_POLLS; i++) {
@@ -1337,10 +1333,11 @@ async function broadcastMessage(
     try {
       status = await rpc.getSignatureStatus(signature)
     } catch (error) {
+      if (isRateLimited(error)) notePostSignatureRateLimit(ctx, signature)
       return {
         status: "uncertain",
         signature,
-        error: `status read failed (${error instanceof Error ? error.message : error}); ${signature} may still land`,
+        error: `status read failed (${describeRpcFailure(error)}); ${signature} may still land`,
       }
     }
     const observed = classifyStatus(status)
@@ -1375,9 +1372,12 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
   if (!address || extra !== undefined)
-    return usage(ctx, "Usage: candle tee sweep <address> --rpc-url <url> [--emergency]")
-  const rpcUrl = rpcUrlFrom(ctx, parsed)
-  if (typeof rpcUrl !== "string") return usage(ctx, rpcUrl.error)
+    return usage(ctx, "Usage: candle tee sweep <address> [--rpc-url <url>] [--emergency]")
+  // BE-355 (D1): --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's, else the public
+  // endpoint, validated before the prompt. The emergency path is unchanged by it: the default is
+  // not Candle's (decision 6), so recovery still needs nothing from Candle.
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
+  if ("error" in solana) return usage(ctx, solana.error)
   const emergency = parsed.booleans.has("--emergency")
 
   // The one tee command that signs with the key, so the one that may keep it after the verify.
@@ -1430,7 +1430,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
               message: `Could not read ${address}'s lifecycle from the server (${unreadReason}); its remote signing authority is unverified.`,
               suggestion:
                 `Restore the API key or connectivity and re-run, or stop it from your Candle session first. ` +
-                `If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address} --rpc-url <url> --emergency ` +
+                `If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address} --emergency ` +
                 `(remote authority stays pending and a still-authorized agent signer may race the sweep).`,
             },
             json,
@@ -1529,7 +1529,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
     }
 
     const vaultKey = decodePubkey(vault)
-    const rpc = createSolanaRpc(rpcUrl, deps.fetch)
+    const rpc = solana.rpc
     // HW-07 operation evidence: receipts from EARLIER runs of this sweep are retained in the sealed
     // entry and reconciled here; every receipt this run finalizes is persisted before the next
     // transaction is signed, so an outage or an interrupted run never loses what already moved.
@@ -1577,7 +1577,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
     const broadcast = (
       instructions: Instruction[],
       pending: Omit<SweepPendingRecord, "signature" | "blockhash" | "submittedAt">,
-    ) => broadcastAndFinalize(rpc, deps, secret, teePubkey, instructions, pending, recordPending, clearPending)
+    ) => broadcastAndFinalize(rpc, ctx, secret, teePubkey, instructions, pending, recordPending, clearPending)
     /**
      * Records a non-finalized broadcast outcome; true when this run may keep signing. `failedKind`
      * is R5's name for this move, used only for a FINALIZED failure: that is the one outcome that
@@ -1679,7 +1679,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
       } catch (error) {
         residuals.push({
           kind: "inventory",
-          detail: `could not list Token-2022 accounts for position discovery: ${error instanceof Error ? error.message : error}`,
+          detail: `could not list Token-2022 accounts for position discovery: ${describeRpcFailure(error)}`,
         })
       }
       const candidates = token2022Accounts.filter(isPositionCandidate)
@@ -1764,7 +1764,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
             leftover(
               DAMM_POSITION_CLOSE_UNAVAILABLE,
               acct,
-              `could not check the close build's blockhash: ${error instanceof Error ? error.message : error}; not signed`,
+              `could not check the close build's blockhash: ${describeRpcFailure(error)}; not signed`,
             )
             continue
           }
@@ -1791,7 +1791,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
           }
           const outcome = await broadcastMessage(
             rpc,
-            deps,
+            ctx,
             secret,
             verdict.tx.message.bytes,
             verdict.tx.message.recentBlockhash,
@@ -1831,7 +1831,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
       } catch (error) {
         residuals.push({
           kind: "inventory",
-          detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${error instanceof Error ? error.message : error}`,
+          detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${describeRpcFailure(error)}`,
         })
       }
     }
@@ -1960,7 +1960,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
       } catch (error) {
         residuals.push({
           kind: "token-transfer-failed",
-          detail: error instanceof Error ? error.message : String(error),
+          detail: describeRpcFailure(error),
           mint: acct.mint,
           account: acct.pubkey,
           amountRaw: acct.amountRaw,
@@ -2015,7 +2015,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
       }
     } catch (error) {
       solHandledAsResidual = true
-      residuals.push({ kind: "sol-transfer-failed", detail: error instanceof Error ? error.message : String(error) })
+      residuals.push({ kind: "sol-transfer-failed", detail: describeRpcFailure(error) })
     }
 
     // 4. Post-finality inventory (SC-06, HW-07): completion is decided from what the chain holds
@@ -2059,7 +2059,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
     } catch (error) {
       residuals.push({
         kind: "inventory-unverified",
-        detail: `the post-sweep balance inventory could not be read: ${error instanceof Error ? error.message : error}`,
+        detail: `the post-sweep balance inventory could not be read: ${describeRpcFailure(error)}`,
       })
     }
 

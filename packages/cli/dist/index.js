@@ -631,6 +631,15 @@ function formatCacheAge(now, cachedAt) {
     return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
 }
+function rpcHostOf(rpcUrl) {
+  if (rpcUrl === undefined || rpcUrl.trim() === "")
+    return null;
+  try {
+    return new URL(rpcUrl).host;
+  } catch {
+    return INVALID_RPC_HOST;
+  }
+}
 function profileTable(config, now) {
   return Object.entries(config.profiles ?? {}).sort(([a], [b]) => a.localeCompare(b)).map(([name, p]) => ({
     name,
@@ -638,10 +647,11 @@ function profileTable(config, now) {
     account: p.account,
     cachedAge: p.account !== undefined && p.accountCachedAt === undefined ? "age unknown" : formatCacheAge(now, p.accountCachedAt),
     apiUrl: p.apiUrl,
-    keyPrefix: p.keyPrefix
+    keyPrefix: p.keyPrefix,
+    rpcHost: rpcHostOf(p.rpcUrl)
   }));
 }
-var PRE_PROFILE_FIELDS, API_KEY_PREFIXES, API_KEY_RANDOM_LENGTH = 43;
+var PRE_PROFILE_FIELDS, API_KEY_PREFIXES, API_KEY_RANDOM_LENGTH = 43, INVALID_RPC_HOST = "invalid (fix with profile set)";
 var init_profiles = __esm(() => {
   PRE_PROFILE_FIELDS = ["apiUrl", "keyPrefix", "deviceTokenPrefix", "scopes", "label", "portalOrigin"];
   API_KEY_PREFIXES = ["cndl_live_", "cndl_test_"];
@@ -3190,7 +3200,8 @@ var init_errors = __esm(() => {
     "EVM_RECIPIENT_IS_TOKEN",
     "EVM_TRANSFER_REVERTED",
     "TRANSFER_CHAIN_MISMATCH",
-    "SOLANA_COMMAND_EVM_KEY"
+    "SOLANA_COMMAND_EVM_KEY",
+    "RPC_RATE_LIMITED"
   ];
   VaultError = class VaultError extends Error {
     code;
@@ -8454,6 +8465,19 @@ function serializeSignedTransaction(message, signature) {
 function toBase642(bytes) {
   return Buffer.from(bytes).toString("base64");
 }
+function rpcRetryDelayMs(error) {
+  return Math.min(error.retryAfterMs ?? RPC_RETRY_DEFAULT_MS, RPC_RETRY_CAP_MS);
+}
+function describeRateLimit(error) {
+  if (error.status === 429)
+    return "HTTP 429";
+  if (error.rpcCode === RPC_RATE_LIMIT_CODE)
+    return `RPC ${RPC_RATE_LIMIT_CODE}`;
+  return '"Too many requests"';
+}
+function isRateLimited(error) {
+  return error instanceof SolanaRpcError && error.rateLimited;
+}
 function retryAfterMs(header, now) {
   if (header === null)
     return;
@@ -8492,9 +8516,19 @@ function rawAccountView(value, address) {
   }
   return { owner, lamports: BigInt(value.lamports ?? 0), data: new Uint8Array(Buffer.from(encoded, "base64")) };
 }
-function createSolanaRpc(url, fetchFn) {
+function createSolanaRpc(url, fetchFn, sleep) {
   let id = 0;
   async function call(method, params, signal) {
+    try {
+      return await once(method, params, signal);
+    } catch (error) {
+      if (!isRateLimited(error) || NEVER_RETRIED.has(method))
+        throw error;
+      await sleep(rpcRetryDelayMs(error));
+      return await once(method, params, signal);
+    }
+  }
+  async function once(method, params, signal) {
     id += 1;
     const res = await fetchFn(url, {
       method: "POST",
@@ -8612,6 +8646,15 @@ function createSolanaRpc(url, fetchFn) {
         ...Number.isSafeInteger(value.unitsConsumed) ? { unitsConsumed: value.unitsConsumed } : {}
       };
     },
+    async getTokenSupply(mint) {
+      const r = await call("getTokenSupply", [
+        mint,
+        { commitment: "confirmed" }
+      ]);
+      if (!r?.value || typeof r.value !== "object")
+        throw new SolanaRpcError("RPC getTokenSupply answered without a value");
+      return { decimals: r.value.decimals };
+    },
     async sendTransaction(txBase64) {
       return await call("sendTransaction", [
         txBase64,
@@ -8675,7 +8718,7 @@ function createSolanaRpc(url, fetchFn) {
     }
   };
 }
-var SYSTEM_PROGRAM_ID = "11111111111111111111111111111111", TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", PDA_MARKER, PROGRAM_ACCOUNTS_V2_LIMIT = 1000, SolanaRpcError;
+var SYSTEM_PROGRAM_ID = "11111111111111111111111111111111", TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", PDA_MARKER, PROGRAM_ACCOUNTS_V2_LIMIT = 1000, SolanaRpcError, RPC_RATE_LIMIT_CODE = -32429, RPC_RETRY_DEFAULT_MS = 2000, RPC_RETRY_CAP_MS = 1e4, NEVER_RETRIED;
 var init_solana_lite = __esm(() => {
   init_ed25519();
   init_sha256();
@@ -8685,14 +8728,215 @@ var init_solana_lite = __esm(() => {
     status;
     retryAfterMs;
     rpcCode;
+    rateLimited;
     constructor(message, facts = {}) {
       super(message);
       this.name = "SolanaRpcError";
       this.status = facts.status;
       this.retryAfterMs = facts.retryAfterMs;
       this.rpcCode = facts.rpcCode;
+      this.rateLimited = facts.status === 429 || facts.rpcCode === RPC_RATE_LIMIT_CODE || /too many requests/i.test(message);
     }
   };
+  NEVER_RETRIED = new Set(["sendTransaction", "getProgramAccounts", "getProgramAccountsV2"]);
+});
+
+// src/solana-endpoint.ts
+function validateSolanaRpcUrl(url, source) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return `${source} is not a valid URL`;
+  }
+  const local = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && local)) {
+    return `${source} must be https:// (plain http is allowed only for 127.0.0.1 / localhost).`;
+  }
+  return;
+}
+function sourceLabel(source, ctx) {
+  if (source === "flag")
+    return "--rpc-url";
+  if (source === "env")
+    return RPC_URL_ENV;
+  return `profile ${ctx.profile}'s rpcUrl`;
+}
+function describeSource(endpoint, ctx) {
+  if (endpoint.source === "flag")
+    return "--rpc-url";
+  if (endpoint.source === "env")
+    return RPC_URL_ENV;
+  if (endpoint.source === "profile")
+    return `profile ${ctx.profile}`;
+  return "public default";
+}
+function resolveSolanaEndpoint(ctx, flag, config) {
+  const profileUrl = ctx.profile !== undefined && config.profiles !== undefined && Object.hasOwn(config.profiles, ctx.profile) ? config.profiles[ctx.profile]?.rpcUrl?.trim() || undefined : undefined;
+  const candidates = [
+    ["flag", flag],
+    ["env", ctx.deps.env[RPC_URL_ENV]?.trim() || undefined],
+    ["profile", profileUrl]
+  ];
+  for (const [source, url] of candidates) {
+    if (url === undefined)
+      continue;
+    const fault = validateSolanaRpcUrl(url, sourceLabel(source, ctx));
+    if (fault !== undefined)
+      return { error: fault };
+    return { url, host: new URL(url).host, source };
+  }
+  return { url: PUBLIC_SOLANA_RPC, host: PUBLIC_SOLANA_RPC_HOST, source: "default" };
+}
+function flagEndpoint(url) {
+  return { url, host: new URL(url).host, source: "flag" };
+}
+function profileSetCommand(profile) {
+  return `candle profile set ${profile} --rpc-url ${RPC_PLACEHOLDER}`;
+}
+function rpcFixLines(ctx) {
+  if (ctx.profile !== undefined) {
+    return [profileSetCommand(ctx.profile), `or, for one command, --rpc-url ${RPC_PLACEHOLDER} or ${RPC_URL_ENV}`];
+  }
+  return [
+    `--rpc-url ${RPC_PLACEHOLDER} on this command, or ${RPC_URL_ENV} for every command`,
+    "or sign in (candle auth login) to store one per profile"
+  ];
+}
+function publicRpcNoticeLines(ctx) {
+  const first = `Using the public Solana RPC, ${PUBLIC_SOLANA_RPC_HOST}. It rate-limits heavily, and it sees every address this CLI asks it about.`;
+  const last = "This notice is shown once on this machine.";
+  if (ctx.profile !== undefined) {
+    return [
+      first,
+      `Set your own RPC for this profile: ${profileSetCommand(ctx.profile)}`,
+      `Or for one command: --rpc-url ${RPC_PLACEHOLDER}, or ${RPC_URL_ENV}.`,
+      last
+    ];
+  }
+  return [
+    first,
+    `Set your own RPC for one command with --rpc-url ${RPC_PLACEHOLDER}, or for every command with ${RPC_URL_ENV}.`,
+    "Or sign in (candle auth login) to store one per profile.",
+    last
+  ];
+}
+async function maybeWritePublicRpcNotice(ctx) {
+  let config = {};
+  try {
+    config = await ctx.deps.readConfig();
+  } catch {}
+  if (config.publicRpcNotice?.shownAt !== undefined)
+    return;
+  for (const line of publicRpcNoticeLines(ctx))
+    ctx.deps.stderr.write(`${line}
+`);
+  try {
+    await ctx.deps.writeConfig({ publicRpcNotice: { shownAt: ctx.deps.now() } });
+  } catch {}
+}
+function hostLine(endpoint, ctx) {
+  return `Solana RPC: ${endpoint.host} (${describeSource(endpoint, ctx)})`;
+}
+function disclosing(rpc, disclose) {
+  const wrapped = {};
+  for (const key of Object.keys(rpc)) {
+    const method = rpc[key];
+    if (typeof method !== "function")
+      continue;
+    wrapped[key] = async (...args) => {
+      await disclose();
+      return method(...args);
+    };
+  }
+  return wrapped;
+}
+function solanaClientFor(ctx, endpoint) {
+  let disclosed = false;
+  const disclose = async () => {
+    if (disclosed)
+      return;
+    disclosed = true;
+    if (endpoint.source === "default")
+      await maybeWritePublicRpcNotice(ctx);
+    ctx.deps.stderr.write(`${hostLine(endpoint, ctx)}
+`);
+  };
+  return {
+    endpoint,
+    rpc: disclosing(createSolanaRpc(endpoint.url, ctx.deps.fetch, ctx.deps.sleep), disclose),
+    disclose,
+    async read(read) {
+      try {
+        return await read();
+      } catch (error) {
+        if (isRateLimited(error))
+          throw rpcRateLimitedError(ctx, endpoint.host, error);
+        throw error;
+      }
+    }
+  };
+}
+async function openSolanaClient(ctx, flag) {
+  const endpoint = resolveSolanaEndpoint(ctx, flag, await ctx.deps.readConfig());
+  if ("error" in endpoint)
+    return endpoint;
+  return solanaClientFor(ctx, endpoint);
+}
+function fixSuggestion(ctx, lines) {
+  if (ctx.json)
+    return lines.join(`
+`);
+  const [first, ...rest] = lines;
+  return [`Fix: ${first}`, ...rest.map((line) => `     ${line}`)].join(`
+`);
+}
+function rateLimitedSuggestion(ctx) {
+  return fixSuggestion(ctx, rpcFixLines(ctx));
+}
+function rateLimitedMessage(host, error) {
+  return `The Solana RPC at ${host} is rate-limiting this CLI (${describeRateLimit(error)}, retried once). Nothing was signed or sent.`;
+}
+function rpcRateLimitedError(ctx, host, error) {
+  return new VaultError("RPC_RATE_LIMITED", rateLimitedMessage(host, error), {
+    suggestion: rateLimitedSuggestion(ctx),
+    exitCode: 1
+  });
+}
+function postSignatureFixLines(ctx) {
+  const lines = rpcFixLines(ctx);
+  return ctx.profile === undefined ? lines : lines.slice(0, 1);
+}
+function postSignatureRateLimitMessage(signature) {
+  return `The RPC rate-limited this CLI after the transaction was signed. It may still land: check ${signature} before anything else.`;
+}
+function postSignatureSuggestion(ctx) {
+  return fixSuggestion(ctx, postSignatureFixLines(ctx));
+}
+function notePostSignatureRateLimit(ctx, signature) {
+  const [first, ...rest] = postSignatureFixLines(ctx);
+  ctx.deps.stderr.write(`${postSignatureRateLimitMessage(signature)}
+`);
+  ctx.deps.stderr.write(`Fix: ${first}
+`);
+  for (const line of rest)
+    ctx.deps.stderr.write(`     ${line}
+`);
+}
+function describeRpcFailure(error) {
+  if (error instanceof SolanaRpcError)
+    return error.message;
+  if (error instanceof Error)
+    return error.message.replace(/https?:\/\/\S+/g, "<rpc>");
+  return String(error);
+}
+function rateLimitedReadFailure(ctx, error) {
+  return `RPC_RATE_LIMITED (${describeRateLimit(error)}, retried once). Fix: ${rpcFixLines(ctx).join(", ")}`;
+}
+var PUBLIC_SOLANA_RPC = "https://api.mainnet-beta.solana.com", PUBLIC_SOLANA_RPC_HOST = "api.mainnet-beta.solana.com", RPC_URL_ENV = "CANDLE_SOLANA_RPC_URL", RPC_PLACEHOLDER = "https://<your-rpc>";
+var init_solana_endpoint = __esm(() => {
+  init_solana_lite();
+  init_errors();
 });
 
 // src/commands/keys.ts
@@ -13949,24 +14193,16 @@ async function relaySign(ctx, key, wallet, transaction) {
     throw new TradingError("INVALID_RESPONSE", "The relay did not return a base64 signed transaction.");
   return result.signedTransaction;
 }
-function rpcUrl(ctx, flag) {
-  const value = flag ?? ctx.deps.env.CANDLE_SOLANA_RPC_URL;
-  if (!value || !/^https?:\/\//.test(value))
-    throw new TradingError("RPC_REQUIRED", "Provide --rpc-url or CANDLE_SOLANA_RPC_URL for mint/balance reads or launch broadcast.");
-  return value;
+async function tradingSolanaClient(ctx, flag) {
+  const client = await openSolanaClient(ctx, flag);
+  if ("error" in client)
+    throw new TradingUsage(client.error);
+  return client;
 }
-async function rpc(ctx, url, method, params) {
-  const response = await ctx.deps.fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params })
+function tradingRateLimited(ctx, host, error) {
+  return new TradingError("RPC_RATE_LIMITED", rateLimitedMessage(host, error), {
+    suggestion: rateLimitedSuggestion(ctx)
   });
-  const body = await response.json();
-  if (!response.ok || body.error || body.result === undefined)
-    throw new TradingError("RPC_FAILED", `Solana ${method} failed; no automatic retry was sent.`);
-  if (!body.result || typeof body.result !== "object" || Array.isArray(body.result))
-    throw new TradingError("RPC_FAILED", "RPC returned an invalid object.");
-  return body.result;
 }
 function jobPath(kind, id) {
   const rail = kind === "launch" ? "launch/headless" : kind === "swap" ? "agent/swap" : "trade/agent";
@@ -14060,17 +14296,22 @@ async function saveOperationSignature(ctx, key, id, kind, transaction) {
   await rename3(temporary, path);
   return signature;
 }
-var TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, BASES;
+var TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, BASES, TradingUsage;
 var init_trading = __esm(() => {
   init_esm();
   init_zod();
   init_deps();
   init_secret_store();
+  init_solana_endpoint();
   TradingError = class TradingError extends Error {
     code;
-    constructor(code, message) {
+    suggestion;
+    exitCode;
+    constructor(code, message, opts = {}) {
       super(message);
       this.code = code;
+      this.suggestion = opts.suggestion;
+      this.exitCode = opts.exitCode ?? 1;
     }
   };
   feeSchema = exports_external.object({ bps: exports_external.number().finite().nonnegative(), feeRaw: exports_external.string().regex(/^\d+$/) }).passthrough();
@@ -14171,6 +14412,8 @@ var init_trading = __esm(() => {
     SOL: { mint: "So11111111111111111111111111111111111111112", decimals: 9 },
     USDC: { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 },
     CNDL: { mint: "9dXSV8VWuYvGfTzqvkBeoFwH9ihVTybDuWo5VaJPCNDL", decimals: 6 }
+  };
+  TradingUsage = class TradingUsage extends Error {
   };
 });
 
@@ -22316,7 +22559,6 @@ __export(exports_vault_support, {
   unlockInteractively: () => unlockInteractively,
   takeRepeatedFlag: () => takeRepeatedFlag,
   runVaultCommand: () => runVaultCommand,
-  rpcUrlFrom: () => rpcUrlFrom,
   requireVaultRaw: () => requireVaultRaw,
   requireTty: () => requireTty,
   requirePromptStreams: () => requirePromptStreams,
@@ -22336,7 +22578,6 @@ __export(exports_vault_support, {
   assertVaultHelperIdentities: () => assertVaultHelperIdentities,
   assertNotOlderCopy: () => assertNotOlderCopy,
   askForOwnPassphrase: () => askForOwnPassphrase,
-  RPC_URL_ENV: () => RPC_URL_ENV,
   PASSPHRASE_ONLY_PREFIX: () => PASSPHRASE_ONLY_PREFIX
 });
 import { dirname as dirname7 } from "node:path";
@@ -22876,7 +23117,7 @@ function writeVaultFailure(ctx, error) {
     }, ctx.json);
     return error.exitCode;
   }
-  writeLocalFailure(ctx.deps, { code: "VAULT_UNREADABLE", message: error instanceof Error ? error.message : String(error) }, ctx.json);
+  writeLocalFailure(ctx.deps, { code: "VAULT_UNREADABLE", message: describeRpcFailure(error) }, ctx.json);
   return 1;
 }
 function usage(ctx, line) {
@@ -22902,22 +23143,6 @@ async function runVaultCommand(ctx, body) {
 function writeJson(deps, value) {
   deps.stdout.write(`${JSON.stringify(value)}
 `);
-}
-function rpcUrlFrom(ctx, parsed) {
-  const url = parsed.values["--rpc-url"] ?? ctx.deps.env[RPC_URL_ENV]?.trim();
-  if (!url)
-    return { error: `--rpc-url <url> is required (or set ${RPC_URL_ENV}).` };
-  let parsedUrl;
-  try {
-    parsedUrl = new URL(url);
-  } catch {
-    return { error: `--rpc-url is not a valid URL: ${url}` };
-  }
-  const local = parsedUrl.hostname === "127.0.0.1" || parsedUrl.hostname === "localhost";
-  if (parsedUrl.protocol !== "https:" && !(parsedUrl.protocol === "http:" && local)) {
-    return { error: "--rpc-url must be https:// (plain http is allowed only for 127.0.0.1 / localhost)." };
-  }
-  return url;
 }
 function describeEntry(entry) {
   const flags = [];
@@ -22973,10 +23198,11 @@ function takeRepeatedFlag(args, flag) {
   }
   return { values, rest };
 }
-var PASSPHRASE_ONLY_PREFIX = "Passphrase only: ", RPC_URL_ENV = "CANDLE_SOLANA_RPC_URL";
+var PASSPHRASE_ONLY_PREFIX = "Passphrase only: ";
 var init_vault_support = __esm(() => {
   init_args();
   init_render();
+  init_solana_endpoint();
   init_trading();
   init_enclave();
   init_errors();
@@ -39290,7 +39516,10 @@ var ENVIRONMENT = [
     name: "CANDLE_KEYRING_PASSPHRASE",
     description: "Unlocks the encrypted-file backend where no OS keychain exists"
   },
-  { name: "CANDLE_SOLANA_RPC_URL", description: "Solana RPC endpoint, when --rpc-url is not given" },
+  {
+    name: "CANDLE_SOLANA_RPC_URL",
+    description: "Solana RPC endpoint, when --rpc-url is not given. Beats the profile's (candle profile set <name> --rpc-url); the public endpoint when none is set"
+  },
   {
     name: "CANDLE_EVM_RPC_URL",
     description: "EVM RPC endpoint for an EVM vault key, when --rpc-url (transfer) or --evm-rpc-url (list) is not given; without it the built-in Hood RPC is used"
@@ -39426,7 +39655,7 @@ var HELP = {
     ],
     flags: [
       { invocation: "--wallet <tee>", description: "The TEE wallet by id, address or unique label" },
-      { invocation: "--rpc-url <url>", description: "Your Solana RPC, for mint reads and the broadcast" },
+      { invocation: "--rpc-url <url>", description: "Your own Solana RPC (optional; see candle help profile)" },
       {
         invocation: "--client-trade-id <id>",
         description: "Idempotency: the same id never deposits or withdraws twice"
@@ -39436,9 +39665,9 @@ var HELP = {
     ],
     examples: [
       "candle lp pools So11111111111111111111111111111111111111112",
-      "candle lp add <pool> --amount 0.5 SOL --wallet AgentOne --rpc-url https://<rpc>",
+      "candle lp add <pool> --amount 0.5 SOL --wallet AgentOne",
       "candle lp positions",
-      "candle lp remove <position> --percent 100 --wallet AgentOne --rpc-url https://<rpc>"
+      "candle lp remove <position> --percent 100 --wallet AgentOne"
     ],
     env: ENV_API
   },
@@ -39459,7 +39688,7 @@ var HELP = {
       { invocation: "--mint <mint>", description: "Any Solana mint, instead of --asset (vault destinations only)" },
       { invocation: "--amount <decimal|max>", description: "How much, or max for the whole spendable balance" },
       { invocation: "--wallet <tee>", description: "The TEE wallet the funds leave; optional with one payer" },
-      { invocation: "--rpc-url <url>", description: "Your own Solana RPC, to read a --mint's decimals" },
+      { invocation: "--rpc-url <url>", description: "Your own Solana RPC (optional; see candle help profile)" },
       { invocation: "--yes", description: "Skip the confirmation prompt (the destination is still printed)" }
     ],
     examples: [
@@ -39492,7 +39721,7 @@ var HELP = {
     flags: [
       {
         invocation: "--rpc-url <url>",
-        description: "Your own Solana RPC, for the vault. Without it (or CANDLE_SOLANA_RPC_URL) the vault is not read"
+        description: "Your Solana RPC, for the vault. Without one: CANDLE_SOLANA_RPC_URL, then the profile's, then the public endpoint"
       },
       KEYSTORE_FLAG
     ],
@@ -39587,16 +39816,24 @@ var HELP = {
     description: "A profile is a named set of credentials and an API URL: one per account, or one per environment. Every other command acts as the selected profile, and these manage the map itself.",
     usage: ["candle profile <subcommand> [flags]"],
     rows: [
-      { invocation: "list", description: "Profiles on this machine, with cached accounts" },
+      {
+        invocation: "list",
+        description: "Profiles on this machine, with cached accounts, and each one's Solana RPC host"
+      },
       { invocation: "add <name> --api-url <url>", description: "Create a profile before authenticating it" },
       { invocation: "use <name>", description: "Make a profile the active one" },
       { invocation: "rename <old> <new>", description: "Rename a profile" },
-      { invocation: "remove <name> --yes", description: "Delete a profile and its stored credentials" }
+      { invocation: "remove <name> --yes", description: "Delete a profile and its stored credentials" },
+      {
+        invocation: "set <name> --rpc-url <url> | --clear-rpc-url",
+        description: "This profile's Solana RPC, used when --rpc-url and CANDLE_SOLANA_RPC_URL are not given. Stored in config.json; only its host is ever shown"
+      }
     ],
     examples: [
       "candle profile list",
       "candle profile add staging --api-url https://staging.api.candle.tv",
       "candle profile use staging",
+      "candle profile set work --rpc-url https://<your-rpc>",
       "candle profile remove old --yes"
     ]
   },
@@ -39626,7 +39863,7 @@ var HELP = {
       { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
       {
         invocation: "restore --phrase [--own-passphrase] [--count <n>] [--tee-count <k>] [--external-count <e>] [--evm-count <m>] [--rpc-url <url>]",
-        description: "Rebuild a vault from the recovery phrase; it gets a new passphrase. --evm-count derives EVM indices 0..m-1 (default 0, never gap-scanned)"
+        description: "Rebuild a vault from the recovery phrase; it gets a new passphrase. --evm-count derives EVM indices 0..m-1 (default 0, never gap-scanned). A gap scan needs --rpc-url on this command; no default or stored endpoint is used for it"
       },
       {
         invocation: "reconcile-exposure",
@@ -39652,22 +39889,22 @@ var HELP = {
       },
       {
         invocation: "transfer <to> --amount <n|max> --asset SOL|<mint>|ETH|USDG|<0x token> --from <label> [--rpc-url <url>]",
-        description: "Sign a transfer locally from a vault key or a promoted TEE wallet. From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key still needs --rpc-url"
+        description: "Sign a transfer locally from a vault key or a promoted TEE wallet. From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint"
       },
       {
         invocation: "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>] [--to-key <prefix|label>]",
         description: "Fresh TEE key, or promote one vault key in place. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked."
       },
       {
-        invocation: "promote-batch --pairs-from <file> --rpc-url <url> [--to-key <prefix|label>] [--token-holdings]",
+        invocation: "promote-batch --pairs-from <file> [--rpc-url <url>] [--to-key <prefix|label>] [--token-holdings]",
         description: "Promote many vault keys in place: one unlock, one reviewed acknowledgement. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked."
       },
       {
-        invocation: "fund <tee-address|external> --amount <n> --asset SOL|USDC --rpc-url <url> [--from <label>]",
+        invocation: "fund <tee-address|external> --amount <n> --asset SOL|USDC [--rpc-url <url>] [--from <label>]",
         description: "Fund a TEE or external wallet from a vault key"
       },
       {
-        invocation: "demote <tee-address> --rpc-url <url> [--emergency]",
+        invocation: "demote <tee-address> [--rpc-url <url>] [--emergency]",
         description: "Disable then sweep a TEE wallet back to its pin"
       },
       {
@@ -39714,8 +39951,8 @@ var HELP = {
       "candle vault list cn-s",
       "candle vault rename key-7 treasury-cold",
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
-      "candle vault promote-batch --pairs-from ./promote-plan.csv --rpc-url https://<rpc>",
-      "candle vault promote-batch --pairs-from ./promote-plan.csv --rpc-url https://<rpc> --to-key tr-01",
+      "candle vault promote-batch --pairs-from ./promote-plan.csv",
+      "candle vault promote-batch --pairs-from ./promote-plan.csv --to-key tr-01",
       "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
       "candle vault backup --to icloud",
@@ -39754,7 +39991,7 @@ var HELP = {
         description: 'Stop the agent; verified stop or pending, never "done" on a 200'
       },
       {
-        invocation: "sweep <address> --rpc-url <url> [--emergency]",
+        invocation: "sweep <address> [--rpc-url <url>] [--emergency]",
         description: "Sign locally and move everything to the pinned vault; closes DAMM v2 LP positions after verifying each server-built close (--emergency moves the position NFT instead, with no API)"
       },
       {
@@ -39767,7 +40004,7 @@ var HELP = {
     examples: [
       "candle tee new --label AgentOne",
       "candle tee status AgentOneAddress",
-      "candle tee sweep AgentOneAddress --rpc-url https://api.mainnet-beta.solana.com",
+      "candle tee sweep AgentOneAddress",
       "candle tee rebind tr-01 tr-02 --to-key Ab3dEf9h",
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h"
     ],
@@ -39785,7 +40022,7 @@ var HELP = {
       },
       { invocation: "list", description: "The external wallets in the vault" },
       {
-        invocation: "sweep <external> --to <vault> --rpc-url <url>",
+        invocation: "sweep <external> --to <vault> [--rpc-url <url>]",
         description: "Send everything an external wallet holds back to a vault key"
       }
     ],
@@ -39793,7 +40030,7 @@ var HELP = {
     examples: [
       "candle external new --label defi-tool",
       "candle external list",
-      "candle external sweep defi-tool --to treasury --rpc-url https://api.mainnet-beta.solana.com"
+      "candle external sweep defi-tool --to treasury"
     ],
     env: ENV_LOCAL_SIGNING
   },
@@ -40411,7 +40648,7 @@ async function doctor(args, ctx) {
 
 // src/commands/external.ts
 init_args();
-init_solana_lite();
+init_solana_endpoint();
 
 // src/vault/domains.ts
 init_errors();
@@ -43708,7 +43945,7 @@ function gasWithHeadroom(estimate) {
 function requiredDepth(chainId) {
   return chainId === BigInt(HOOD_CHAIN_ID) ? 1 : 2;
 }
-function rpcHostOf(url) {
+function rpcHostOf2(url) {
   return new URL(url).host;
 }
 function resolveEvmRpcUrl(flag, envValue, flagName) {
@@ -43913,6 +44150,7 @@ async function deriveEvmKeyFromRoot(entropy, index) {
 }
 // src/vault/local-sweep.ts
 init_esm();
+init_solana_endpoint();
 init_solana_lite();
 
 // src/sweep-pending.ts
@@ -44344,7 +44582,8 @@ var TOKEN_ACCOUNT_STATE_OFFSET = 108;
 var TOKEN_ACCOUNT_STATE_FROZEN = 2;
 var CONFIRM_POLL_MS = 2000;
 var CONFIRM_MAX_POLLS = 45;
-async function broadcastAndFinalize(rpc, deps, secret64, feePayer, instructions) {
+async function broadcastAndFinalize(rpc, ctx, secret64, feePayer, instructions) {
+  const { deps } = ctx;
   const blockhash = await rpc.getLatestBlockhash();
   const message = compileLegacyMessage({ feePayer, recentBlockhash: blockhash, instructions });
   const signatureBytes = signMessage(message, secret64);
@@ -44353,10 +44592,12 @@ async function broadcastAndFinalize(rpc, deps, secret64, feePayer, instructions)
   try {
     await rpc.sendTransaction(toBase642(wire));
   } catch (error) {
+    if (isRateLimited(error))
+      notePostSignatureRateLimit(ctx, signature);
     return {
       status: "uncertain",
       signature,
-      error: `send did not answer cleanly (${error instanceof Error ? error.message : error}); it may still land`
+      error: `send did not answer cleanly (${describeRpcFailure(error)}); it may still land`
     };
   }
   for (let i = 0;i < CONFIRM_MAX_POLLS; i++) {
@@ -44364,10 +44605,12 @@ async function broadcastAndFinalize(rpc, deps, secret64, feePayer, instructions)
     try {
       status = await rpc.getSignatureStatus(signature);
     } catch (error) {
+      if (isRateLimited(error))
+        notePostSignatureRateLimit(ctx, signature);
       return {
         status: "uncertain",
         signature,
-        error: `status read failed (${error instanceof Error ? error.message : error}); ${signature} may still land`
+        error: `status read failed (${describeRpcFailure(error)}); ${signature} may still land`
       };
     }
     const observed = classifyStatus(status);
@@ -44385,7 +44628,7 @@ async function broadcastAndFinalize(rpc, deps, secret64, feePayer, instructions)
   };
 }
 async function sweepEverythingTo(input) {
-  const { rpc, deps, secret64, say } = input;
+  const { rpc, ctx, secret64, say } = input;
   const ownerKey = decodePubkey(input.owner);
   const destinationKey = decodePubkey(input.destination);
   const receipts = [];
@@ -44397,7 +44640,7 @@ async function sweepEverythingTo(input) {
     } catch (error) {
       leftovers.push({
         kind: "inventory",
-        detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${error instanceof Error ? error.message : error}`
+        detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${describeRpcFailure(error)}`
       });
     }
   }
@@ -44469,7 +44712,7 @@ async function sweepEverythingTo(input) {
       }
       instructions.push(tokenCloseAccount({ account: source, destination: ownerKey, owner: ownerKey, tokenProgram }));
       const kind = amount > 0n ? "token" : "close";
-      const outcome = await broadcastAndFinalize(rpc, deps, secret64, ownerKey, instructions);
+      const outcome = await broadcastAndFinalize(rpc, ctx, secret64, ownerKey, instructions);
       if (outcome.status === "finalized") {
         receipts.push({ kind, mint: acct.mint, amountRaw: acct.amountRaw, signature: outcome.signature });
         say(`  moved ${acct.amountRaw} raw of ${acct.mint} and closed its account: ${outcome.signature}`);
@@ -44487,7 +44730,7 @@ async function sweepEverythingTo(input) {
     } catch (error) {
       leftovers.push({
         kind: "token-transfer-failed",
-        detail: error instanceof Error ? error.message : String(error),
+        detail: describeRpcFailure(error),
         mint: acct.mint,
         account: acct.pubkey,
         amountRaw: acct.amountRaw
@@ -44521,7 +44764,7 @@ async function sweepEverythingTo(input) {
         });
       } else {
         const amount = balance - fee;
-        const outcome = await broadcastAndFinalize(rpc, deps, secret64, ownerKey, [
+        const outcome = await broadcastAndFinalize(rpc, ctx, secret64, ownerKey, [
           systemTransfer(ownerKey, destinationKey, amount)
         ]);
         if (outcome.status === "finalized") {
@@ -44538,7 +44781,7 @@ async function sweepEverythingTo(input) {
       }
     }
   } catch (error) {
-    leftovers.push({ kind: "sol-transfer-failed", detail: error instanceof Error ? error.message : String(error) });
+    leftovers.push({ kind: "sol-transfer-failed", detail: describeRpcFailure(error) });
   }
   return { receipts, leftovers };
 }
@@ -44928,7 +45171,7 @@ async function externalNew(args, ctx) {
       deps.stdout.write(`  format      the vault is now version 3 (the external branch); a CLI before 0.12 refuses to open it
 `);
     }
-    deps.stdout.write(`Fund it from the vault with: candle vault fund ${label} --amount <n> --rpc-url <url>
+    deps.stdout.write(`Fund it from the vault with: candle vault fund ${label} --amount <n>
 `);
     return 0;
   });
@@ -44998,14 +45241,14 @@ async function externalSweep(args, ctx) {
     return usage(ctx, parsed.error);
   const [source, extra] = parsed.positionals;
   if (!source || extra !== undefined) {
-    return usage(ctx, "Usage: candle external sweep <external> --to <vault> --rpc-url <url>");
+    return usage(ctx, "Usage: candle external sweep <external> --to <vault> [--rpc-url <url>]");
   }
   const to = parsed.values["--to"];
   if (!to)
     return usage(ctx, "--to <vault> is required: the vault receive key everything is sent to (never inferred).");
-  const rpcUrl2 = rpcUrlFrom(ctx, parsed);
-  if (typeof rpcUrl2 !== "string")
-    return usage(ctx, rpcUrl2.error);
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in solana)
+    return usage(ctx, solana.error);
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (!requireTty(ctx, "external sweep"))
@@ -45048,10 +45291,9 @@ async function externalSweep(args, ctx) {
     await opened.confirm(`sweep ${sourceEntry.label} to ${destination.address}`);
     const secret = await decryptKey(vault, sourceEntry.id);
     try {
-      const rpc2 = createSolanaRpc(rpcUrl2, deps.fetch);
       const outcome = await sweepEverythingTo({
-        rpc: rpc2,
-        deps,
+        rpc: solana.rpc,
+        ctx,
         secret64: secret,
         owner: sourceEntry.address,
         destination: destination.address,
@@ -45346,14 +45588,16 @@ function parseLookupTableAddresses(account, table) {
   }
   return addresses;
 }
-async function resolveCompiledKeys(message, rpc2) {
+async function resolveCompiledKeys(message, rpc) {
   const loadedWritable = [];
   const loadedReadonly = [];
   if (message.lookups.length > 0) {
     let accounts;
     try {
-      accounts = await rpc2.getMultipleAccounts(message.lookups.map((lookup) => lookup.table));
+      accounts = await rpc.getMultipleAccounts(message.lookups.map((lookup) => lookup.table));
     } catch (error) {
+      if (isRateLimited(error))
+        throw error;
       throw new LookupTableError(`the lookup table(s) could not be fetched: ${error instanceof Error ? error.message : String(error)}`);
     }
     for (const [i, lookup] of message.lookups.entries()) {
@@ -45383,10 +45627,10 @@ async function resolveCompiledKeys(message, rpc2) {
   });
   return { keys, isSigner, isWritable, staticCount };
 }
-async function simulateWithSnapshots(rpc2, txBase64, compiled) {
+async function simulateWithSnapshots(rpc, txBase64, compiled) {
   const writable = compiled.keys.filter((_, i) => compiled.isWritable[i]);
-  const before = await rpc2.getMultipleAccounts(writable);
-  const result = await rpc2.simulateTransaction(txBase64, writable);
+  const before = await rpc.getMultipleAccounts(writable);
+  const result = await rpc.simulateTransaction(txBase64, writable);
   return {
     result,
     snapshots: writable.map((address, i) => ({
@@ -45523,7 +45767,7 @@ function allZero(bytes) {
   return bytes.every((byte) => byte === 0);
 }
 async function verifyCloseArtifact(input) {
-  const { artifact, rpc: rpc2, tee, vault, nftMint, nftAccount } = input;
+  const { artifact, rpc, tee, vault, nftMint, nftAccount } = input;
   const refuse2 = (reason) => ({ ok: false, reason });
   const allowedOwner = (address) => address === tee || address === vault;
   let tx;
@@ -45544,7 +45788,7 @@ async function verifyCloseArtifact(input) {
     return refuse2(`the fee payer is ${tx.message.staticKeys[0]}, not the TEE wallet`);
   let compiled;
   try {
-    compiled = await resolveCompiledKeys(tx.message, rpc2);
+    compiled = await resolveCompiledKeys(tx.message, rpc);
   } catch (error) {
     if (error instanceof LookupTableError)
       return refuse2(`a lookup table could not be resolved: ${error.message}`);
@@ -45592,7 +45836,7 @@ async function verifyCloseArtifact(input) {
     return refuse2("the transaction calls no DAMM v2 instruction, so it cannot close a position");
   let simulation;
   try {
-    simulation = await simulateWithSnapshots(rpc2, artifact.transaction, compiled);
+    simulation = await simulateWithSnapshots(rpc, artifact.transaction, compiled);
   } catch (error) {
     return refuse2(`the simulation could not be run: ${error instanceof Error ? error.message : error}`);
   }
@@ -45652,7 +45896,7 @@ async function verifyCloseArtifact(input) {
   const infos = new Map;
   const infoOf = async (address) => {
     if (!infos.has(address))
-      infos.set(address, await rpc2.getAccountInfo(address));
+      infos.set(address, await rpc.getAccountInfo(address));
     return infos.get(address) ?? null;
   };
   const canonical = new Set;
@@ -45738,6 +45982,7 @@ function describeClose(input) {
 // src/commands/tee.ts
 init_profiles();
 init_render();
+init_solana_endpoint();
 init_solana_lite();
 init_store();
 
@@ -49255,7 +49500,6 @@ function readDisableOutcome(body) {
 // src/commands/tee.ts
 var MIN_PASSPHRASE_LENGTH = 12;
 var USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-var RPC_URL_ENV2 = "CANDLE_SOLANA_RPC_URL";
 var CONFIRM_POLL_MS2 = 2000;
 var CONFIRM_MAX_POLLS2 = 45;
 function refuseEnvPassphrase2(ctx) {
@@ -49560,22 +49804,6 @@ function isSolanaAddress(value) {
 async function confirmVault(deps, vault) {
   const typed = (await deps.promptSecret(`Type the LAST 6 characters of the vault address (${vault}) to confirm: `)).trim();
   return typed === vault.slice(-6);
-}
-function rpcUrlFrom2(ctx, parsed) {
-  const url = parsed.values["--rpc-url"] ?? ctx.deps.env[RPC_URL_ENV2]?.trim();
-  if (!url)
-    return { error: `--rpc-url <url> is required (or set ${RPC_URL_ENV2}).` };
-  let parsedUrl;
-  try {
-    parsedUrl = new URL(url);
-  } catch {
-    return { error: `--rpc-url is not a valid URL: ${url}` };
-  }
-  const local = parsedUrl.hostname === "127.0.0.1" || parsedUrl.hostname === "localhost";
-  if (parsedUrl.protocol !== "https:" && !(parsedUrl.protocol === "http:" && local)) {
-    return { error: "--rpc-url must be https:// (plain http is allowed only for 127.0.0.1 / localhost)." };
-  }
-  return url;
 }
 async function teeNew(args, ctx) {
   const { deps, json } = ctx;
@@ -49946,6 +50174,9 @@ async function teeStatus(args, ctx) {
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
     return usage2(ctx, "Usage: candle tee status <address> [--rpc-url <url>]");
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in solana)
+    return usage2(ctx, solana.error);
   const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed));
   if (!resolved.ok)
     return resolved.code;
@@ -49983,17 +50214,13 @@ async function teeStatus(args, ctx) {
         report.server = { error: "no API key available; server state not read" };
       }
     }
-    const rpcUrl2 = parsed.values["--rpc-url"] ?? deps.env[RPC_URL_ENV2]?.trim();
-    if (rpcUrl2) {
-      const checked = rpcUrlFrom2(ctx, parsed);
-      if (typeof checked !== "string")
-        return usage2(ctx, checked.error);
-      const rpc2 = createSolanaRpc(checked, deps.fetch);
+    {
+      const rpc = solana.rpc;
       try {
-        const lamports = await rpc2.getBalance(address);
+        const lamports = await rpc.getBalance(address);
         const tokens = [
-          ...await rpc2.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
-          ...await rpc2.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
+          ...await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
+          ...await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
         ];
         report.balances = {
           lamports: lamports.toString(),
@@ -50007,7 +50234,9 @@ async function teeStatus(args, ctx) {
           }))
         };
       } catch (error) {
-        report.balances = { error: error instanceof Error ? error.message : String(error) };
+        report.balances = {
+          error: isRateLimited(error) ? rateLimitedReadFailure(ctx, error) : describeRpcFailure(error)
+        };
       }
     }
     if (json) {
@@ -50139,13 +50368,13 @@ ${suggestion}
     if (outcome.complete) {
       deps.stdout.write(`Stopped ${address}. Remote signing denial verified; the wallet is quarantined.
 `);
-      deps.stdout.write(`Recover the funds: candle tee sweep ${address} --rpc-url <url>
+      deps.stdout.write(`Recover the funds: candle tee sweep ${address}
 `);
       return 0;
     }
     deps.stdout.write(`Agent trading stopped at Candle for ${address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.
 Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${address}
-If the provider is down or theft is suspected: candle tee sweep ${address} --rpc-url <url> --emergency
+If the provider is down or theft is suspected: candle tee sweep ${address} --emergency
 `);
     return 3;
   } finally {
@@ -50163,12 +50392,13 @@ function refusalState(raw) {
   const state = error.state;
   return state === "disable-pending" || state === "enabled" ? state : null;
 }
-async function broadcastAndFinalize2(rpc2, deps, secret, feePayer, instructions, pending, recordPending, clearPending) {
-  const blockhash = await rpc2.getLatestBlockhash();
+async function broadcastAndFinalize2(rpc, ctx, secret, feePayer, instructions, pending, recordPending, clearPending) {
+  const blockhash = await rpc.getLatestBlockhash();
   const message = compileLegacyMessage({ feePayer, recentBlockhash: blockhash, instructions });
-  return broadcastMessage(rpc2, deps, secret, message, blockhash, pending, recordPending, clearPending);
+  return broadcastMessage(rpc, ctx, secret, message, blockhash, pending, recordPending, clearPending);
 }
-async function broadcastMessage(rpc2, deps, secret, message, blockhash, pending, recordPending, clearPending) {
+async function broadcastMessage(rpc, ctx, secret, message, blockhash, pending, recordPending, clearPending) {
+  const { deps } = ctx;
   const signatureBytes = signMessage(message, secret);
   const signature = base58.encode(signatureBytes);
   const wire = serializeSignedTransaction(message, signatureBytes);
@@ -50183,26 +50413,30 @@ async function broadcastMessage(rpc2, deps, secret, message, blockhash, pending,
   }
   let echoNote = "";
   try {
-    const echoed = await rpc2.sendTransaction(toBase642(wire));
+    const echoed = await rpc.sendTransaction(toBase642(wire));
     if (echoed !== signature) {
       echoNote = `; the RPC echoed a different signature (${echoed}), which was ignored`;
     }
   } catch (error) {
+    if (isRateLimited(error))
+      notePostSignatureRateLimit(ctx, signature);
     return {
       status: "uncertain",
       signature,
-      error: `send did not answer cleanly (${error instanceof Error ? error.message : error}); it may still land`
+      error: `send did not answer cleanly (${describeRpcFailure(error)}); it may still land`
     };
   }
   for (let i = 0;i < CONFIRM_MAX_POLLS2; i++) {
     let status;
     try {
-      status = await rpc2.getSignatureStatus(signature);
+      status = await rpc.getSignatureStatus(signature);
     } catch (error) {
+      if (isRateLimited(error))
+        notePostSignatureRateLimit(ctx, signature);
       return {
         status: "uncertain",
         signature,
-        error: `status read failed (${error instanceof Error ? error.message : error}); ${signature} may still land`
+        error: `status read failed (${describeRpcFailure(error)}); ${signature} may still land`
       };
     }
     const observed = classifyStatus(status);
@@ -50237,10 +50471,10 @@ async function teeSweep(args, ctx) {
     return usage2(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage2(ctx, "Usage: candle tee sweep <address> --rpc-url <url> [--emergency]");
-  const rpcUrl2 = rpcUrlFrom2(ctx, parsed);
-  if (typeof rpcUrl2 !== "string")
-    return usage2(ctx, rpcUrl2.error);
+    return usage2(ctx, "Usage: candle tee sweep <address> [--rpc-url <url>] [--emergency]");
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in solana)
+    return usage2(ctx, solana.error);
   const emergency = parsed.booleans.has("--emergency");
   const openedActive = await openActiveTee(ctx, parsed, address, "sign");
   if (!openedActive.ok)
@@ -50278,7 +50512,7 @@ async function teeSweep(args, ctx) {
           writeLocalFailure(deps, {
             code: "TEE_WALLET_STATE_UNREAD",
             message: `Could not read ${address}'s lifecycle from the server (${unreadReason}); its remote signing authority is unverified.`,
-            suggestion: `Restore the API key or connectivity and re-run, or stop it from your Candle session first. If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address} --rpc-url <url> --emergency (remote authority stays pending and a still-authorized agent signer may race the sweep).`
+            suggestion: `Restore the API key or connectivity and re-run, or stop it from your Candle session first. If the credential is lost or theft is suspected, recover WITHOUT the server: candle tee sweep ${address} --emergency (remote authority stays pending and a still-authorized agent signer may race the sweep).`
           }, json);
           return 3;
         }
@@ -50337,7 +50571,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       return 1;
     }
     const vaultKey = decodePubkey(vault);
-    const rpc2 = createSolanaRpc(rpcUrl2, deps.fetch);
+    const rpc = solana.rpc;
     const retained = entry.tee?.sweepReceipts ?? [];
     const receipts = [];
     const residuals = [];
@@ -50382,7 +50616,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       if (!kept.ok)
         residuals.push({ kind: "local-record-failed", detail: kept.message });
     };
-    const broadcast = (instructions, pending) => broadcastAndFinalize2(rpc2, deps, secret, teePubkey, instructions, pending, recordPending, clearPending);
+    const broadcast = (instructions, pending) => broadcastAndFinalize2(rpc, ctx, secret, teePubkey, instructions, pending, recordPending, clearPending);
     const settle2 = (outcome, pending, describe2, failedKind) => {
       if (outcome.status === "failed") {
         residuals.push({
@@ -50409,8 +50643,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     };
     let signingBlocked = false;
     const reads = {
-      status: (signature) => rpc2.getSignatureStatus(signature),
-      blockhashValid: (blockhash) => rpc2.isBlockhashValid(blockhash)
+      status: (signature) => rpc.getSignatureStatus(signature),
+      blockhashValid: (blockhash) => rpc.isBlockhashValid(blockhash)
     };
     for (const p of entry.tee?.sweepPending ?? []) {
       const resolution = await resolvePending(reads, p);
@@ -50448,11 +50682,11 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     {
       let token2022Accounts = [];
       try {
-        token2022Accounts = await rpc2.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID);
+        token2022Accounts = await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID);
       } catch (error) {
         residuals.push({
           kind: "inventory",
-          detail: `could not list Token-2022 accounts for position discovery: ${error instanceof Error ? error.message : error}`
+          detail: `could not list Token-2022 accounts for position discovery: ${describeRpcFailure(error)}`
         });
       }
       const candidates = token2022Accounts.filter(isPositionCandidate);
@@ -50491,7 +50725,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           }
           const verdict = await verifyCloseArtifact({
             artifact,
-            rpc: rpc2,
+            rpc,
             tee: address,
             vault,
             nftMint: acct.mint,
@@ -50510,9 +50744,9 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           }
           let blockhashValid;
           try {
-            blockhashValid = await rpc2.isBlockhashValid(verdict.tx.message.recentBlockhash, "confirmed");
+            blockhashValid = await rpc.isBlockhashValid(verdict.tx.message.recentBlockhash, "confirmed");
           } catch (error) {
-            leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, `could not check the close build's blockhash: ${error instanceof Error ? error.message : error}; not signed`);
+            leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, `could not check the close build's blockhash: ${describeRpcFailure(error)}; not signed`);
             continue;
           }
           if (!blockhashValid) {
@@ -50534,7 +50768,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
             account: acct.pubkey,
             amountRaw: acct.amountRaw
           };
-          const outcome = await broadcastMessage(rpc2, deps, secret, verdict.tx.message.bytes, verdict.tx.message.recentBlockhash, pending, recordPending, clearPending);
+          const outcome = await broadcastMessage(rpc, ctx, secret, verdict.tx.message.bytes, verdict.tx.message.recentBlockhash, pending, recordPending, clearPending);
           if (outcome.status !== "finalized") {
             if (!settle2(outcome, pending, "lp-close"))
               signingBlocked = true;
@@ -50556,11 +50790,11 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     const tokenAccounts = [];
     for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
       try {
-        tokenAccounts.push(...await rpc2.getTokenAccountsByOwner(address, programId));
+        tokenAccounts.push(...await rpc.getTokenAccountsByOwner(address, programId));
       } catch (error) {
         residuals.push({
           kind: "inventory",
-          detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${error instanceof Error ? error.message : error}`
+          detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${describeRpcFailure(error)}`
         });
       }
     }
@@ -50599,8 +50833,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         if (amount > 0n) {
           let extraAccounts = [];
           if (token2022) {
-            profile = await readMintProfile(rpc2, acct.mint);
-            const hook = await resolveTransferHookAccounts(rpc2, {
+            profile = await readMintProfile(rpc, acct.mint);
+            const hook = await resolveTransferHookAccounts(rpc, {
               profile,
               source,
               destination,
@@ -50620,14 +50854,14 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
                 deps.stdout.write(`  ${acct.mint}: ${risk.message}
 `);
             if (profile.newerTransferFee || profile.olderTransferFee) {
-              epoch ??= await rpc2.getEpoch();
+              epoch ??= await rpc.getEpoch();
               const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, amount, epoch);
               if (!json)
                 deps.stdout.write(`  ${acct.mint}: ${postFeeAmountRaw} raw will arrive; ${feeRaw} raw is withheld by the mint at epoch ${epoch}
 `);
             }
           }
-          const existing = await rpc2.getAccountInfo(encodePubkey(destination));
+          const existing = await rpc.getAccountInfo(encodePubkey(destination));
           if (existing === null) {
             instructions.push(createAssociatedTokenAccountIdempotent({ payer: teePubkey, owner: vaultKey, mint, tokenProgram }));
             destinationFrozen = profile?.defaultFrozen ?? false;
@@ -50675,7 +50909,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       } catch (error) {
         residuals.push({
           kind: "token-transfer-failed",
-          detail: error instanceof Error ? error.message : String(error),
+          detail: describeRpcFailure(error),
           mint: acct.mint,
           account: acct.pubkey,
           amountRaw: acct.amountRaw
@@ -50683,15 +50917,15 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       }
     }
     try {
-      const balance = signingBlocked ? 0n : await rpc2.getBalance(address);
+      const balance = signingBlocked ? 0n : await rpc.getBalance(address);
       if (balance > 0n) {
-        const blockhash = await rpc2.getLatestBlockhash();
+        const blockhash = await rpc.getLatestBlockhash();
         const probe = compileLegacyMessage({
           feePayer: teePubkey,
           recentBlockhash: blockhash,
           instructions: [systemTransfer(teePubkey, vaultKey, 1n)]
         });
-        const fee = await rpc2.getFeeForMessage(toBase642(probe));
+        const fee = await rpc.getFeeForMessage(toBase642(probe));
         if (fee === null) {
           solHandledAsResidual = true;
           residuals.push({
@@ -50730,12 +50964,12 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       }
     } catch (error) {
       solHandledAsResidual = true;
-      residuals.push({ kind: "sol-transfer-failed", detail: error instanceof Error ? error.message : String(error) });
+      residuals.push({ kind: "sol-transfer-failed", detail: describeRpcFailure(error) });
     }
     const inventory = { observedAt: new Date(deps.now()).toISOString(), verified: false, lamports: null, tokenAccounts: null };
     try {
       const listed = new Set(residuals.map((r) => r.account).filter((a) => a !== undefined));
-      const lamports = await rpc2.getBalance(address);
+      const lamports = await rpc.getBalance(address);
       inventory.lamports = lamports.toString();
       if (lamports > 0n && !solHandledAsResidual) {
         residuals.push({
@@ -50745,8 +50979,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         });
       }
       const remaining = [
-        ...await rpc2.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
-        ...await rpc2.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
+        ...await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
+        ...await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
       ];
       inventory.tokenAccounts = remaining.length;
       for (const acct of remaining) {
@@ -50764,7 +50998,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     } catch (error) {
       residuals.push({
         kind: "inventory-unverified",
-        detail: `the post-sweep balance inventory could not be read: ${error instanceof Error ? error.message : error}`
+        detail: `the post-sweep balance inventory could not be read: ${describeRpcFailure(error)}`
       });
     }
     const allReceipts = [...retained, ...receipts];
@@ -51682,6 +51916,7 @@ async function keysWallets(args, ctx) {
 // src/commands/launch.ts
 init_args();
 init_render();
+init_solana_endpoint();
 init_solana_lite();
 init_trading();
 import { randomUUID as randomUUID2 } from "node:crypto";
@@ -51689,15 +51924,37 @@ import { randomUUID as randomUUID2 } from "node:crypto";
 // src/commands/swap.ts
 init_args();
 init_render();
+init_solana_endpoint();
 init_solana_lite();
 init_trading();
 import { randomUUID } from "node:crypto";
 function tradingFailure(ctx, error, id) {
+  if (error instanceof TradingUsage) {
+    writeUsageFailure(ctx.deps, error.message, ctx.json);
+    return 2;
+  }
   writeLocalFailure(ctx.deps, {
     code: error instanceof TradingError ? error.code : "TRADING_FAILED",
-    message: `${error instanceof Error ? error.message : "Trading failed."}${id ? ` Operation ${id}; use candle swap status ${id} before another attempt.` : ""}`
+    message: `${error instanceof Error ? describeRpcFailure(error) : "Trading failed."}${id ? ` Operation ${id}; use candle swap status ${id} before another attempt.` : ""}`,
+    ...error instanceof TradingError && error.suggestion ? { suggestion: error.suggestion } : {}
   }, ctx.json);
-  return 1;
+  return error instanceof TradingError ? error.exitCode : 1;
+}
+function lazySolanaClient(ctx, flag) {
+  let pending;
+  return () => {
+    pending ??= tradingSolanaClient(ctx, flag);
+    return pending;
+  };
+}
+async function tradingRead(ctx, client, read) {
+  try {
+    return await read();
+  } catch (error) {
+    if (isRateLimited(error))
+      throw tradingRateLimited(ctx, client.endpoint.host, error);
+    throw error;
+  }
 }
 function printTradingResult(ctx, result) {
   ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(result)}
@@ -51745,11 +52002,19 @@ async function swapStatus(args, ctx) {
     return tradingFailure(ctx, error);
   }
 }
-async function decimalsFor(ctx, asset, url) {
+async function decimalsFor(ctx, asset, client) {
   if (BASES[asset])
     return BASES[asset].decimals;
-  const result = await rpc(ctx, rpcUrl(ctx, url), "getTokenSupply", [asset, { commitment: "confirmed" }]);
-  const decimals = result.value?.decimals;
+  const reader = await client();
+  let result;
+  try {
+    result = await tradingRead(ctx, reader, () => reader.rpc.getTokenSupply(asset));
+  } catch (error) {
+    if (error instanceof TradingError)
+      throw error;
+    throw new TradingError("RPC_FAILED", "Solana getTokenSupply failed; no automatic re-send was made.");
+  }
+  const decimals = result.decimals;
   if (typeof decimals !== "number" || !Number.isInteger(decimals) || decimals < 0 || decimals > 18)
     throw new TradingError("INVALID_RESPONSE", "RPC returned invalid mint decimals.");
   return decimals;
@@ -51803,20 +52068,21 @@ async function swap(args, ctx) {
     if (payerWallet.kind === "embedded" && kind === "swap")
       throw new TradingError("PAIR_UNSUPPORTED", "The embedded wallet cannot swap between base assets from this command yet: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a TEE wallet for a base pair.");
     const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address };
-    const decimals = await decimalsFor(ctx, from, flags["--rpc-url"]);
-    const outDecimals = await decimalsFor(ctx, to, flags["--rpc-url"]);
+    const solana = lazySolanaClient(ctx, flags["--rpc-url"]);
+    const decimals = await decimalsFor(ctx, from, solana);
+    const outDecimals = await decimalsFor(ctx, to, solana);
     let amountRaw;
     if (percent !== undefined) {
-      const reader = createSolanaRpc(rpcUrl(ctx, flags["--rpc-url"]), ctx.deps.fetch);
+      const reader = await solana();
       let balance;
       if (from === "SOL")
-        balance = await reader.getBalance(wallet.address);
+        balance = await tradingRead(ctx, reader, () => reader.rpc.getBalance(wallet.address));
       else {
         const mint = BASES[from]?.mint ?? from;
-        const accounts = (await Promise.all([
-          reader.getTokenAccountsByOwner(wallet.address, TOKEN_PROGRAM_ID),
-          reader.getTokenAccountsByOwner(wallet.address, TOKEN_2022_PROGRAM_ID)
-        ])).flat();
+        const accounts = (await tradingRead(ctx, reader, () => Promise.all([
+          reader.rpc.getTokenAccountsByOwner(wallet.address, TOKEN_PROGRAM_ID),
+          reader.rpc.getTokenAccountsByOwner(wallet.address, TOKEN_2022_PROGRAM_ID)
+        ]))).flat();
         balance = accounts.filter((account) => account.mint === mint).reduce((sum, account) => sum + BigInt(account.amountRaw), 0n);
       }
       amountRaw = (balance * percent / 100000000n).toString();
@@ -51948,7 +52214,7 @@ async function launch(args, ctx) {
       }
       return printTradingResult(ctx, prior);
     }
-    const url = rpcUrl(ctx, flags["--rpc-url"]);
+    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"]);
     const wallet = await tradingWallet(ctx, key, flags["--wallet"], "launch:write");
     if (!await claimOperation(ctx, key, id, "launch"))
       throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
@@ -51986,7 +52252,14 @@ async function launch(args, ctx) {
       throw new TradingError("QUOTE_EXPIRED", "The launch build expired before signing.");
     const signed = await relaySign(ctx, key, wallet, built.transaction);
     const signature = await saveOperationSignature(ctx, key, id, "launch", signed);
-    const broadcastSignature = await createSolanaRpc(url, ctx.deps.fetch).sendTransaction(signed);
+    let broadcastSignature;
+    try {
+      broadcastSignature = await solana.rpc.sendTransaction(signed);
+    } catch (error) {
+      if (!isRateLimited(error))
+        throw error;
+      throw new TradingError("RPC_RATE_LIMITED", `${postSignatureRateLimitMessage(signature)} Re-run with the same --client-trade-id ${id}: it confirms the saved signature and sends nothing new.`, { suggestion: postSignatureSuggestion(ctx), exitCode: 3 });
+    }
     if (broadcastSignature !== signature)
       throw new TradingError("RPC_FAILED", "RPC returned a different transaction signature; check the saved operation.");
     ctx.deps.stderr.write(`Launch signature: ${signature}
@@ -52001,6 +52274,7 @@ async function launch(args, ctx) {
 // src/commands/lp.ts
 init_args();
 init_render();
+init_solana_endpoint();
 init_solana_lite();
 import { randomUUID as randomUUID3 } from "node:crypto";
 init_trading();
@@ -52148,9 +52422,20 @@ async function walletHolding(ctx, key, position, name) {
   }
   throw new TradingError("LP_POSITION_NOT_FOUND", `No TEE wallet bound to this key holds position ${position}. See candle lp positions, or name the wallet with --wallet.`);
 }
-async function waitConfirmed(ctx, rpc2, signature, id) {
+function postSignatureRateLimit(ctx, signature, id) {
+  return new TradingError("RPC_RATE_LIMITED", `${postSignatureRateLimitMessage(signature)} Re-run the same command with --client-trade-id ${id}: it confirms the saved signature and sends nothing new.`, { suggestion: postSignatureSuggestion(ctx), exitCode: 3 });
+}
+async function waitConfirmed(ctx, rpc, signature, id) {
   for (let i = 0;i < CONFIRM_MAX_POLLS3; i++) {
-    const observed = classifyStatus(await rpc2.getSignatureStatus(signature));
+    let status;
+    try {
+      status = await rpc.getSignatureStatus(signature);
+    } catch (error) {
+      if (isRateLimited(error))
+        throw postSignatureRateLimit(ctx, signature, id);
+      throw error;
+    }
+    const observed = classifyStatus(status);
     if (observed.kind === "finalized")
       return;
     if (observed.kind === "failed")
@@ -52246,13 +52531,20 @@ async function runLpOperation(ctx, plan) {
     });
   const signed = await relaySign(ctx, key, wallet, built.build.transaction);
   const signature = await saveOperationSignature(ctx, key, id, "lp", signed);
-  const rpc2 = createSolanaRpc(plan.url, ctx.deps.fetch);
-  const echoed = await rpc2.sendTransaction(signed);
+  const rpc = plan.solana.rpc;
+  let echoed;
+  try {
+    echoed = await rpc.sendTransaction(signed);
+  } catch (error) {
+    if (isRateLimited(error))
+      throw postSignatureRateLimit(ctx, signature, id);
+    throw error;
+  }
   if (echoed !== signature)
     throw new TradingError("RPC_FAILED", "RPC returned a different transaction signature; check the saved operation.");
   ctx.deps.stderr.write(`LP ${action} signature: ${signature}
 `);
-  await waitConfirmed(ctx, rpc2, signature, id);
+  await waitConfirmed(ctx, rpc, signature, id);
   return confirm(signature, { preview });
 }
 function slippageOf(flag) {
@@ -52278,17 +52570,17 @@ async function lpAdd(args, ctx) {
     const position = flags["--position"] ? solanaAddress(flags["--position"], "--position") : undefined;
     rawAmount(flags["--amount"], 18);
     const slippageBps = slippageOf(flags["--slippage-bps"]);
-    const url = rpcUrl(ctx, flags["--rpc-url"]);
+    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"]);
     const key = await tradingKey(ctx);
     const wallet = await tradingWallet(ctx, key, flags["--wallet"], LP_SCOPE);
-    const decimals = await decimalsFor(ctx, baseAsset(token) ?? token, flags["--rpc-url"]);
+    const decimals = await decimalsFor(ctx, baseAsset(token) ?? token, () => Promise.resolve(solana));
     const amountRaw = rawAmount(flags["--amount"], decimals);
     return await runLpOperation(ctx, {
       action: "add",
       id,
       key,
       wallet,
-      url,
+      solana,
       yes: parsed.booleans.has("--yes"),
       intent: `Add ${decimalAmount(amountRaw, decimals)} ${baseAsset(token) ?? token} of liquidity to DAMM v2 pool ${pool}${position ? ` (position ${position})` : " (new position)"}`,
       body: { pool, token, amountRaw, slippageBps, ...position ? { position } : {} }
@@ -52312,7 +52604,7 @@ async function lpRemove(args, ctx) {
   try {
     const position = solanaAddress(parsed.positionals[0], "The position");
     const slippageBps = slippageOf(flags["--slippage-bps"]);
-    const url = rpcUrl(ctx, flags["--rpc-url"]);
+    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"]);
     const key = await tradingKey(ctx);
     const wallet = await walletHolding(ctx, key, position, flags["--wallet"]);
     return await runLpOperation(ctx, {
@@ -52320,7 +52612,7 @@ async function lpRemove(args, ctx) {
       id,
       key,
       wallet,
-      url,
+      solana,
       yes: parsed.booleans.has("--yes"),
       intent: percent === 100 ? `Remove all liquidity from position ${position}, claim its fees and close it (rent returns to the wallet)` : `Remove ${percent}% of the liquidity in position ${position}`,
       body: { position, percent, slippageBps }
@@ -52342,7 +52634,7 @@ async function lpClaim(args, ctx) {
     return usage3(ctx, "Usage: candle lp claim <position> [--wallet <tee>] [--client-trade-id <id>] [--rpc-url <url>] [--yes]");
   try {
     const position = solanaAddress(parsed.positionals[0], "The position");
-    const url = rpcUrl(ctx, flags["--rpc-url"]);
+    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"]);
     const key = await tradingKey(ctx);
     const wallet = await walletHolding(ctx, key, position, flags["--wallet"]);
     return await runLpOperation(ctx, {
@@ -52350,7 +52642,7 @@ async function lpClaim(args, ctx) {
       id,
       key,
       wallet,
-      url,
+      solana,
       yes: parsed.booleans.has("--yes"),
       intent: `Claim the fees and any rewards of position ${position}`,
       body: { position }
@@ -52658,8 +52950,8 @@ function pluginInvocation(argv, env, isBuiltIn) {
 }
 
 // src/commands/plugins.ts
-init_profiles();
 init_render();
+init_solana_endpoint();
 init_store();
 
 // src/commands/secrets.ts
@@ -52859,10 +53151,14 @@ async function runPlugin(name, rawArgs, ctx) {
     if (resolved !== 0)
       return resolved;
   }
-  const profile = effectiveProfileFields(await ctx.deps.readConfig(), ctx.profile);
+  const endpoint = resolveSolanaEndpoint(ctx, undefined, await ctx.deps.readConfig());
+  if ("error" in endpoint) {
+    writeUsageFailure(ctx.deps, endpoint.error, ctx.json);
+    return 2;
+  }
   const env = pluginEnvironment({
     parentEnv: ctx.deps.env,
-    rpcUrl: profile.rpcUrl ?? (ctx.deps.env.CANDLE_SOLANA_RPC_URL?.trim() || undefined),
+    rpcUrl: endpoint.source === "default" ? undefined : endpoint.url,
     network: PLUGIN_NETWORK,
     wallets: wallets2,
     secrets
@@ -53145,6 +53441,7 @@ init_args();
 init_deps();
 init_profiles();
 init_render();
+init_solana_endpoint();
 init_solana_lite();
 init_store();
 init_vault_support();
@@ -53173,24 +53470,17 @@ async function portfolio(args, ctx) {
     writeLocalFailure(deps, NO_API_KEY4, ctx.json);
     return 1;
   }
-  const rpcGiven = parsed.values["--rpc-url"] !== undefined || Boolean(deps.env[RPC_URL_ENV]?.trim());
-  let rpcUrl2;
-  if (rpcGiven) {
-    const resolved = rpcUrlFrom(ctx, parsed);
-    if (typeof resolved !== "string")
-      return usage(ctx, resolved.error);
-    rpcUrl2 = resolved;
-  }
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in solana)
+    return usage(ctx, solana.error);
   const resolvedVault = vaultPathFor(ctx, parsed);
   if ("error" in resolvedVault)
     return usage(ctx, resolvedVault.error);
   return runVaultCommand(ctx, async ({ hold }) => {
     let vaultEntries;
     let vaultReason;
-    const raw = rpcUrl2 === undefined ? null : await readVaultRaw(resolvedVault.path);
-    if (rpcUrl2 === undefined) {
-      vaultReason = `not read: vault balances are read only over your own RPC; pass --rpc-url or set ${RPC_URL_ENV}`;
-    } else if (raw === null) {
+    const raw = await readVaultRaw(resolvedVault.path);
+    if (raw === null) {
       vaultReason = `no vault at ${resolvedVault.path}`;
     } else {
       if (!refuseEnvPassphrase(ctx))
@@ -53201,8 +53491,9 @@ async function portfolio(args, ctx) {
       vaultEntries = vault.index.entries.filter((entry) => entry.chain === "solana" && (entry.role === "vault" || entry.role === "external")).map((entry) => ({ address: entry.address, label: entry.label, role: entry.role }));
     }
     await printIdentity(ctx);
-    const rpcHost = rpcUrl2 === undefined ? undefined : new URL(rpcUrl2).host;
-    if (vaultEntries && vaultEntries.length > 0 && rpcHost !== undefined) {
+    const rpcHost = solana.endpoint.host;
+    if (vaultEntries && vaultEntries.length > 0) {
+      await solana.disclose();
       const requests = Math.ceil(vaultEntries.length / CHUNK) + vaultEntries.length * 2;
       deps.stderr.write(`Reading ${vaultEntries.length} vault ${vaultEntries.length === 1 ? "address" : "addresses"} from ${rpcHost} in ${requests} requests. That endpoint sees them together; Candle sees none of them.
 `);
@@ -53215,8 +53506,13 @@ async function portfolio(args, ctx) {
         fetch: deps.fetch,
         env: deps.env
       }),
-      vaultEntries && rpcUrl2 ? readOwnRpc(vaultEntries.map((entry) => entry.address), rpcUrl2, deps.fetch) : Promise.resolve(undefined)
+      vaultEntries ? readOwnRpc(vaultEntries.map((entry) => entry.address), solana, ctx) : Promise.resolve(undefined)
     ]);
+    if (vaultRead?.failure !== undefined) {
+      const n = vaultRead.unavailable.length;
+      deps.stderr.write(`${n} vault ${n === 1 ? "address" : "addresses"} could not be read: ${vaultRead.failure}.
+`);
+    }
     if (!candle.ok) {
       writeFailure(deps, candle, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
       return 1;
@@ -53317,7 +53613,7 @@ async function portfolio(args, ctx) {
         unpriced,
         complete,
         unavailable,
-        ...rpcHost !== undefined ? { rpcHost } : {},
+        rpcHost,
         ...lp ? { lp } : {},
         groups
       });
@@ -53327,17 +53623,32 @@ async function portfolio(args, ctx) {
     return complete ? 0 : 3;
   });
 }
-async function readOwnRpc(addresses, rpcUrl2, fetchFn) {
-  const rpc2 = createSolanaRpc(rpcUrl2, fetchFn);
+async function readOwnRpc(addresses, solana, ctx) {
+  const { rpc } = solana;
   const unique = [...new Set(addresses)];
   const lamports = new Map;
+  let rateLimited = false;
+  let failure;
+  const noteFailure = (error) => {
+    if (isRateLimited(error)) {
+      rateLimited = true;
+      failure ??= rateLimitedReadFailure(ctx, error);
+    } else
+      failure ??= describeRpcFailure(error);
+  };
   for (let at = 0;at < unique.length; at += CHUNK) {
     const chunk = unique.slice(at, at + CHUNK);
+    if (rateLimited) {
+      for (const address of chunk)
+        lamports.set(address, null);
+      continue;
+    }
     try {
-      const accounts = await rpc2.getMultipleAccounts(chunk);
+      const accounts = await rpc.getMultipleAccounts(chunk);
       for (const [i, address] of chunk.entries())
         lamports.set(address, (accounts[i]?.lamports ?? 0n).toString());
-    } catch {
+    } catch (error) {
+      noteFailure(error);
       for (const address of chunk)
         lamports.set(address, null);
     }
@@ -53349,8 +53660,12 @@ async function readOwnRpc(addresses, rpcUrl2, fetchFn) {
   await Promise.all(Array.from({ length: Math.min(TOKEN_READS_IN_FLIGHT, reads.length) }, async () => {
     while (next < reads.length) {
       const { owner, programId } = reads[next++];
+      if (rateLimited) {
+        failed.add(owner);
+        continue;
+      }
       try {
-        const accounts = await rpc2.getTokenAccountsByOwner(owner, programId);
+        const accounts = await rpc.getTokenAccountsByOwner(owner, programId);
         const held = tokens.get(owner) ?? new Map;
         tokens.set(owner, held);
         const program = programId === TOKEN_PROGRAM_ID ? "token" : "token-2022";
@@ -53366,7 +53681,8 @@ async function readOwnRpc(addresses, rpcUrl2, fetchFn) {
             program
           });
         }
-      } catch {
+      } catch (error) {
+        noteFailure(error);
         failed.add(owner);
       }
     }
@@ -53380,7 +53696,7 @@ async function readOwnRpc(addresses, rpcUrl2, fetchFn) {
     if (sol === null || held === null)
       unavailable.push(address);
   }
-  return { byAddress, unavailable };
+  return { byAddress, unavailable, ...failure === undefined ? {} : { failure } };
 }
 function valueHoldings(read, prices) {
   const raw = [];
@@ -53513,6 +53829,7 @@ ${renderTable(["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEE
 init_args();
 init_profiles();
 init_render();
+init_solana_endpoint();
 async function profileList(args, ctx) {
   const { deps, json } = ctx;
   const parsed = parseArgs(args, {});
@@ -53531,13 +53848,56 @@ async function profileList(args, ctx) {
 `);
     return 0;
   }
-  deps.stdout.write(renderTable(["Profile", "Account", "Cached", "Host", "Key"], rows.map((r) => [
+  deps.stdout.write(renderTable(["Profile", "Account", "Cached", "Host", "Solana RPC", "Key"], rows.map((r) => [
     r.active ? `${r.name} (active)` : r.name,
     r.account ?? "unknown",
     r.cachedAge,
     r.apiUrl ?? "-",
+    r.rpcHost ?? "public default",
     r.keyPrefix ?? "-"
   ])));
+  return 0;
+}
+var SET_USAGE = "Usage: candle profile set <name> --rpc-url <url> | --clear-rpc-url";
+async function profileSet(args, ctx) {
+  const { deps, json } = ctx;
+  const parsed = parseArgs(args, { valueFlags: ["--rpc-url"], booleanFlags: ["--clear-rpc-url"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  const name = parsed.positionals[0];
+  if (!name || parsed.positionals.length !== 1) {
+    writeUsageFailure(deps, SET_USAGE, json);
+    return 2;
+  }
+  const rpcUrl = parsed.values["--rpc-url"];
+  const clear = parsed.booleans.has("--clear-rpc-url");
+  if (rpcUrl === undefined === !clear) {
+    writeUsageFailure(deps, SET_USAGE, json);
+    return 2;
+  }
+  const config = await deps.readConfig();
+  if (config.profiles === undefined || !Object.hasOwn(config.profiles, name)) {
+    const none = Object.keys(config.profiles ?? {}).length === 0;
+    writeUsageFailure(deps, none ? `No profile named ${name}. Run: candle auth login` : `No profile named ${name}. Run: candle profile list`, json);
+    return 2;
+  }
+  if (rpcUrl !== undefined) {
+    const fault = validateSolanaRpcUrl(rpcUrl, "--rpc-url");
+    if (fault !== undefined) {
+      writeUsageFailure(deps, fault, json);
+      return 2;
+    }
+  }
+  await deps.updateProfile(name, { rpcUrl });
+  const rpcHost = rpcUrl === undefined ? null : rpcHostOf(rpcUrl);
+  if (json)
+    deps.stdout.write(`${JSON.stringify({ ok: true, profile: name, rpcHost })}
+`);
+  else
+    deps.stdout.write(`Solana RPC for ${name}: ${rpcHost ?? "public default"}
+`);
   return 0;
 }
 var NEEDS_SCHEME = (value) => `It needs a scheme, such as https://${value}`;
@@ -53862,6 +54222,7 @@ Console (keys, funding, withdrawal addresses, limits): ${portalDeviceUrl(apiUrl,
 init_sha256();
 init_esm();
 init_args();
+init_solana_endpoint();
 init_solana_lite();
 init_errors();
 init_promote_support();
@@ -53896,13 +54257,13 @@ function assertExternalSigners(index, compiled, numRequiredSignatures, named) {
   }
   return signers;
 }
-async function readMints(rpc2, mints) {
+async function readMints(rpc, mints) {
   const out = new Map;
   if (mints.length === 0)
     return out;
   let accounts;
   try {
-    accounts = await rpc2.getMultipleAccounts(mints);
+    accounts = await rpc.getMultipleAccounts(mints);
   } catch {
     for (const mint of mints)
       out.set(mint, { risks: ["the mint could not be read, so its decimals and warnings are unknown"] });
@@ -54001,9 +54362,9 @@ async function sign2(args, ctx) {
   }
   if (lifted.values.length === 0)
     return usage(ctx, "--wallet <external> is required (repeat it for a multi-signer transaction).");
-  const rpcUrl2 = rpcUrlFrom(ctx, parsed);
-  if (typeof rpcUrl2 !== "string")
-    return usage(ctx, rpcUrl2.error);
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in solana)
+    return usage(ctx, solana.error);
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (!requireTty(ctx, "candle sign"))
@@ -54025,10 +54386,10 @@ async function sign2(args, ctx) {
       }
       throw new VaultError("SIGN_TRANSACTION_UNDECODABLE", `The input could not be read: ${error instanceof Error ? error.message : error}.`, { suggestion: "Nothing was signed. Check --file <path>, or pipe the transaction on stdin." });
     }
-    const rpc2 = createSolanaRpc(rpcUrl2, deps.fetch);
+    const rpc = solana.rpc;
     let compiled;
     try {
-      compiled = await resolveCompiledKeys(tx.message, rpc2);
+      compiled = await solana.read(() => resolveCompiledKeys(tx.message, rpc));
     } catch (error) {
       if (error instanceof LookupTableError)
         throw new VaultError("SIGN_LOOKUP_TABLE_UNRESOLVED", `${error.message}. Nothing was displayed or signed.`, {
@@ -54065,9 +54426,11 @@ async function sign2(args, ctx) {
     const unsignedBase64 = toBase642(attachSignatures(tx, new Map));
     let simulation;
     try {
-      simulation = await simulateWithSnapshots(rpc2, unsignedBase64, compiled);
+      simulation = await solana.read(() => simulateWithSnapshots(rpc, unsignedBase64, compiled));
     } catch (error) {
-      throw new VaultError("SIGN_SIMULATION_FAILED", `The simulation could not be run over ${rpcUrl2}: ${error instanceof Error ? error.message : error}. Nothing was signed.`, {
+      if (error instanceof VaultError)
+        throw error;
+      throw new VaultError("SIGN_SIMULATION_FAILED", `The simulation could not be run over ${solana.endpoint.host}: ${describeRpcFailure(error)}. Nothing was signed.`, {
         suggestion: "Point --rpc-url at a reachable endpoint and run it again; there is no way to skip the simulation."
       });
     }
@@ -54077,7 +54440,7 @@ ${simulation.result.logs.map((line) => `  ${line}`).join(`
 `)}` : "";
       throw new VaultError("SIGN_SIMULATION_FAILED", `The simulation failed: ${JSON.stringify(simulation.result.err)}. Nothing was signed; there is no override.${logs}`, { suggestion: "Fix what the transaction does, then sign the corrected one." });
     }
-    const mints = await readMints(rpc2, [
+    const mints = await readMints(rpc, [
       ...new Set(computeDeltas(simulation.snapshots).tokens.map((token) => token.mint))
     ]);
     const lines = displayLines({ tx, compiled, signers, simulation, mints });
@@ -54108,23 +54471,28 @@ ${simulation.result.logs.map((line) => `  ${line}`).join(`
     let broadcast;
     if (parsed.booleans.has("--broadcast")) {
       try {
-        await rpc2.sendTransaction(signedBase64);
+        await rpc.sendTransaction(signedBase64);
         broadcast = { ok: true, signature: txSignature };
       } catch (error) {
-        broadcast = { ok: false, error: error instanceof Error ? error.message : String(error) };
+        if (isRateLimited(error)) {
+          notePostSignatureRateLimit(ctx, txSignature);
+          broadcast = { ok: false, uncertain: true, error: error.message };
+        } else
+          broadcast = { ok: false, error: describeRpcFailure(error) };
       }
     }
+    const rateLimited = broadcast?.uncertain === true;
     if (ctx.json) {
       writeJson(deps, {
         ok: broadcast === undefined ? true : broadcast.ok,
-        ...broadcast?.ok === false ? { code: "SIGN_BROADCAST_FAILED", message: broadcast.error } : {},
+        ...broadcast?.ok === false ? { code: rateLimited ? "RPC_RATE_LIMITED" : "SIGN_BROADCAST_FAILED", message: broadcast.error } : {},
         signedTransaction: signedBase64,
         signature: txSignature,
         signers: signatures,
         display: lines,
         ...broadcast ? { broadcast } : {}
       });
-      return broadcast?.ok === false ? 1 : 0;
+      return broadcast?.ok === false ? rateLimited ? 3 : 1 : 0;
     }
     deps.stdout.write(`${signedBase64}
 `);
@@ -54134,6 +54502,8 @@ ${simulation.result.logs.map((line) => `  ${line}`).join(`
     if (broadcast?.ok)
       deps.stderr.write(`broadcast: ${broadcast.signature}
 `);
+    if (rateLimited)
+      return 3;
     if (broadcast?.ok === false) {
       throw new VaultError("SIGN_BROADCAST_FAILED", `The signed transaction was printed above but could not be sent: ${broadcast.error}.`, {
         suggestion: "Send it yourself, or run again with a fresh transaction if its blockhash expired."
@@ -54357,7 +54727,7 @@ async function transfer(args, ctx) {
     if (isMax)
       amountRaw = "max";
     else {
-      const decimals = asset ? BASES[asset]?.decimals ?? 9 : await decimalsFor(ctx, flags["--mint"], flags["--rpc-url"]);
+      const decimals = asset ? BASES[asset]?.decimals ?? 9 : await decimalsFor(ctx, flags["--mint"], lazySolanaClient(ctx, flags["--rpc-url"]));
       amountRaw = rawAmount(flags["--amount"], decimals);
     }
     const amountText = isMax ? `the full spendable balance of ${label}` : `${flags["--amount"]} ${label}`;
@@ -55672,11 +56042,9 @@ async function vaultDemote(args, ctx) {
     return usage(ctx, parsed.error);
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined) {
-    return usage(ctx, "Usage: candle vault demote <tee-address> --rpc-url <url> [--emergency] [--sweep-to <label>]");
+    return usage(ctx, "Usage: candle vault demote <tee-address> [--rpc-url <url>] [--emergency] [--sweep-to <label>]");
   }
-  const rpcUrl2 = parsed.values["--rpc-url"];
-  if (!rpcUrl2)
-    return usage(ctx, "--rpc-url <url> is required.");
+  const rpcUrl = parsed.values["--rpc-url"];
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (!requireTty(ctx, "vault demote"))
@@ -55743,7 +56111,7 @@ async function vaultDemote(args, ctx) {
             } : e)
           }
         }, ctx.deps);
-        return demoteWithAdapter(ctx, { linkedWalletId: entry.linkedWalletId }, address, rpcUrl2, true);
+        return demoteWithAdapter(ctx, { linkedWalletId: entry.linkedWalletId }, address, rpcUrl, true);
       });
     }
     requireTeeDestination(entry);
@@ -55751,7 +56119,7 @@ async function vaultDemote(args, ctx) {
     const snapshot = { linkedWalletId: entry.linkedWalletId };
     releaseResolvedTee(resolved.resolved);
     released = true;
-    return demoteWithAdapter(ctx, snapshot, address, rpcUrl2, needsEmergency);
+    return demoteWithAdapter(ctx, snapshot, address, rpcUrl, needsEmergency);
   } catch (error) {
     if (error instanceof VaultError) {
       writeLocalFailure(ctx.deps, {
@@ -55767,7 +56135,7 @@ async function vaultDemote(args, ctx) {
       releaseResolvedTee(resolved.resolved);
   }
 }
-async function demoteWithAdapter(ctx, entry, address, rpcUrl2, emergency) {
+async function demoteWithAdapter(ctx, entry, address, rpcUrl, emergency) {
   if (entry.linkedWalletId !== undefined) {
     const disableCode = await teeDisable([address], ctx);
     if (disableCode !== 0 && disableCode !== 3 && !emergency)
@@ -55776,7 +56144,7 @@ async function demoteWithAdapter(ctx, entry, address, rpcUrl2, emergency) {
     ctx.deps.stdout.write(`No linkedWalletId is recorded for ${address}; the grant could not be identified, so disable was not called and remote authority stays unknown.
 `);
   }
-  const sweepArgs = [address, "--rpc-url", rpcUrl2];
+  const sweepArgs = rpcUrl === undefined ? [address] : [address, "--rpc-url", rpcUrl];
   if (emergency || entry.linkedWalletId === undefined)
     sweepArgs.push("--emergency");
   return teeSweep(sweepArgs, ctx);
@@ -57228,10 +57596,10 @@ async function vaultFactor(args, ctx) {
 // src/commands/vault-fund.ts
 init_args();
 init_render();
+init_solana_endpoint();
 init_errors();
 
 // src/vault/funding-receipts.ts
-init_solana_lite();
 init_errors();
 init_store();
 function readReceipt(value) {
@@ -57252,8 +57620,7 @@ async function saveFundingReceipt(vault, teeId, receipt, ctx) {
   const next = await commitVault(vault, { index: { ...vault.index, entries } }, ctx.deps);
   Object.assign(vault, next);
 }
-async function reconcileFundingReceipts(vault, addresses, rpcUrl2, ctx) {
-  const rpc2 = createSolanaRpc(rpcUrl2, ctx.deps.fetch);
+async function reconcileFundingReceipts(vault, addresses, rpc, ctx) {
   const results = [];
   for (const entry of vault.index.entries) {
     if (!entry.tee)
@@ -57266,8 +57633,8 @@ async function reconcileFundingReceipts(vault, addresses, rpcUrl2, ctx) {
       if (!addresses.includes(entry.address) && (from === undefined || !addresses.includes(from)))
         continue;
       const resolution = await resolvePending({
-        status: (signature) => rpc2.getSignatureStatus(signature),
-        blockhashValid: (blockhash) => receipt.blockhash ? rpc2.isBlockhashValid(blockhash) : Promise.resolve(true)
+        status: (signature) => rpc.getSignatureStatus(signature),
+        blockhashValid: (blockhash) => receipt.blockhash ? rpc.isBlockhashValid(blockhash) : Promise.resolve(true)
       }, { signature: receipt.signature, blockhash: receipt.blockhash ?? "" });
       if (resolution.kind === "finalized") {
         await saveFundingReceipt(vault, entry.id, { ...receipt, finalized: true }, ctx);
@@ -57299,6 +57666,7 @@ init_store();
 
 // src/vault/vault-transfer-sign.ts
 init_esm();
+init_solana_endpoint();
 init_solana_lite();
 init_errors();
 var USDC_MINT2 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -57321,7 +57689,7 @@ function assertTransferSigner(entry) {
   if (entry.role === "vault" || entry.role === "tee-wallet")
     return;
   throw new VaultError("PROMOTE_NOT_VAULT_KEY", `${entry.label ?? entry.address} is an external wallet and cannot sign vault transfer shapes (ED-10).`, {
-    suggestion: `Move funds out of an external wallet with: candle external sweep ${entry.label} --to <vault> --rpc-url <url>`
+    suggestion: `Move funds out of an external wallet with: candle external sweep ${entry.label} --to <vault>`
   });
 }
 function namedSendFailure(plan) {
@@ -57335,8 +57703,8 @@ function namedSendFailure(plan) {
 }
 var TOKEN_ACCOUNT_STATE_OFFSET3 = 108;
 var TOKEN_ACCOUNT_STATE_FROZEN3 = 2;
-async function tokenAccountFrozen(rpc2, address) {
-  const account = await rpc2.getAccountInfo(address);
+async function tokenAccountFrozen(rpc, address) {
+  const account = await rpc.getAccountInfo(address);
   if (account === null)
     return { exists: false, frozen: false };
   return { exists: true, frozen: account.data[TOKEN_ACCOUNT_STATE_OFFSET3] === TOKEN_ACCOUNT_STATE_FROZEN3 };
@@ -57367,13 +57735,15 @@ async function planTransfer(input) {
     };
   }
   const mintAddress = asset === "USDC" ? USDC_MINT2 : input.asset;
-  const rpc2 = createSolanaRpc(input.rpcUrl, input.fetch);
+  const rpc = input.rpc;
   let profile;
   try {
-    profile = await readMintProfile(rpc2, mintAddress);
+    profile = await readMintProfile(rpc, mintAddress);
   } catch (error) {
     if (error instanceof MintReadError)
       throw new VaultError("VAULT_UNREADABLE", error.message);
+    if (isRateLimited(error))
+      throw error;
     throw new VaultError("VAULT_UNREADABLE", `Could not read mint ${mintAddress}: ${asMessage(error)}`);
   }
   const decimals = profile.decimals;
@@ -57387,22 +57757,22 @@ async function planTransfer(input) {
   const destination = ataFor(profile, toKey);
   const instructions = [];
   const accountCreationLines = [];
-  const destinationState = await tokenAccountFrozen(rpc2, encodePubkey(destination));
+  const destinationState = await tokenAccountFrozen(rpc, encodePubkey(destination));
   if (!destinationState.exists) {
-    const rent = await rpc2.getMinimumBalanceForRentExemption(165);
+    const rent = await rpc.getMinimumBalanceForRentExemption(165);
     instructions.push(createAssociatedTokenAccountIdempotent({ payer: fromKey, owner: toKey, mint, tokenProgram }));
     accountCreationLines.push(`create associated token account ${encodePubkey(destination)} (idempotent)`, `account owner ${input.to}`, `account rent ${rent} lamports, paid by ${input.from} if created`);
   }
-  const sourceState = await tokenAccountFrozen(rpc2, encodePubkey(source));
+  const sourceState = await tokenAccountFrozen(rpc, encodePubkey(source));
   const riskLines = profile.risks.map((risk) => `warning     ${risk.message}`);
-  const hook = await resolveTransferHookAccounts(rpc2, { profile, source, destination, owner: fromKey, amount: raw });
+  const hook = await resolveTransferHookAccounts(rpc, { profile, source, destination, owner: fromKey, amount: raw });
   const hookLines = [];
   if (profile.transferHookProgram) {
     hookLines.push(hook.ok ? `hook        ${profile.transferHookProgram}: ${hook.accounts.length} extra account(s) resolved` : `hook        ${profile.transferHookProgram}: extra accounts could NOT be resolved (${hook.reason}); the send is expected to fail as TOKEN_2022_EXTRA_ACCOUNTS_MISSING`);
   }
   const feeLines = [];
   if (profile.newerTransferFee || profile.olderTransferFee) {
-    const epoch = await rpc2.getEpoch();
+    const epoch = await rpc.getEpoch();
     const { feeRaw, postFeeAmountRaw } = transferFeeFor(profile, raw, epoch);
     feeLines.push(`post-fee    ${postFeeAmountRaw} raw arrives (${feeRaw} raw withheld by the mint at epoch ${epoch})`);
   }
@@ -57444,17 +57814,16 @@ async function planTransfer(input) {
   };
 }
 function asMessage(error) {
-  return error instanceof Error ? error.message : String(error);
+  return describeRpcFailure(error);
 }
-async function quoteTransferFee(rpcUrl2, fetchFn, from, instructions) {
-  const rpc2 = createSolanaRpc(rpcUrl2, fetchFn);
-  const blockhash = await rpc2.getLatestBlockhash();
+async function quoteTransferFee(rpc, from, instructions) {
+  const blockhash = await rpc.getLatestBlockhash();
   const message = compileLegacyMessage({
     feePayer: decodePubkey(from),
     recentBlockhash: blockhash,
     instructions
   });
-  return rpc2.getFeeForMessage(toBase642(message));
+  return rpc.getFeeForMessage(toBase642(message));
 }
 function displayTransferPlan(ctx, plan, feeQuote) {
   ctx.deps.stdout.write(`Decoded transfer (local signing only):
@@ -57470,12 +57839,12 @@ function displayTransferPlan(ctx, plan, feeQuote) {
 `);
 }
 async function signAndBroadcastTransfer(input) {
-  const rpc2 = createSolanaRpc(input.rpcUrl, input.ctx.deps.fetch);
+  const rpc = input.solana.rpc;
   const feePayer = pubkeyFromSecret(input.secret64);
   if (encodePubkey(feePayer) !== input.plan.from) {
     throw new VaultError("VAULT_VERIFY_FAILED", "The decrypted key does not match the planned fee payer.");
   }
-  const blockhash = await rpc2.getLatestBlockhash();
+  const blockhash = await input.solana.read(() => rpc.getLatestBlockhash());
   const message = compileLegacyMessage({
     feePayer,
     recentBlockhash: blockhash,
@@ -57486,16 +57855,20 @@ async function signAndBroadcastTransfer(input) {
   const sigB58 = base58.encode(signature);
   await input.beforeBroadcast?.({ signature: sigB58, blockhash });
   try {
-    await rpc2.sendTransaction(toBase642(wire));
-  } catch {
+    await rpc.sendTransaction(toBase642(wire));
+  } catch (error) {
+    if (isRateLimited(error))
+      notePostSignatureRateLimit(input.ctx, sigB58);
     return { signature: sigB58, finalized: false };
   }
   for (let i = 0;i < 30; i++) {
     await input.ctx.deps.sleep(500);
     let status;
     try {
-      status = await rpc2.getSignatureStatus(sigB58);
-    } catch {
+      status = await rpc.getSignatureStatus(sigB58);
+    } catch (error) {
+      if (isRateLimited(error))
+        notePostSignatureRateLimit(input.ctx, sigB58);
       return { signature: sigB58, finalized: false };
     }
     if (status?.confirmationStatus === "finalized") {
@@ -57530,26 +57903,26 @@ async function fundExternal(ctx, opened, vault, external2, input) {
   if (fromEntry === undefined)
     return usage(ctx, "No source vault key.");
   assertVaultSigner(fromEntry);
-  const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, external2.address], input.rpcUrl, ctx);
+  const { solana } = input;
+  const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, external2.address], solana.rpc, ctx);
   if (reconciled !== null)
     return reconciled;
   ctx.deps.stdout.write(`Funding external wallet ${external2.label} (${external2.address}) from vault key ${fromEntry.label}. What this wallet holds is what candle sign can spend; fund a session, not a float.
 `);
-  const plan = await planTransfer({
+  const plan = await solana.read(() => planTransfer({
     from: fromEntry.address,
     to: external2.address,
     amount: input.amount,
     asset: input.asset,
-    rpcUrl: input.rpcUrl,
-    fetch: ctx.deps.fetch
-  });
-  const feeQuote = await quoteTransferFee(input.rpcUrl, ctx.deps.fetch, plan.from, plan.instructions);
+    rpc: solana.rpc
+  }));
+  const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions));
   displayTransferPlan(ctx, plan, feeQuote);
   await confirmLastSix(ctx, external2.address, "the external wallet destination");
   await opened.confirm(`fund ${plan.amount} ${plan.asset} to external wallet ${external2.label}`);
   const secret = await decryptKey(vault, fromEntry.id);
   try {
-    const result = await signAndBroadcastTransfer({ ctx, rpcUrl: input.rpcUrl, secret64: secret, plan });
+    const result = await signAndBroadcastTransfer({ ctx, solana, secret64: secret, plan });
     if (ctx.json) {
       writeJson(ctx.deps, {
         ok: result.finalized,
@@ -57581,17 +57954,17 @@ async function vaultFund(args, ctx) {
     return usage(ctx, parsed.error);
   const [teeAddress, extra] = parsed.positionals;
   if (!teeAddress || extra !== undefined) {
-    return usage(ctx, "Usage: candle vault fund <tee-address | external-label> --amount <n> --asset SOL|USDC --rpc-url <url> [--from <vault-label>]");
+    return usage(ctx, "Usage: candle vault fund <tee-address | external-label> --amount <n> --asset SOL|USDC [--rpc-url <url>] [--from <vault-label>]");
   }
   const amount = parsed.values["--amount"];
   const asset = (parsed.values["--asset"] ?? "SOL").toUpperCase();
-  const rpcUrl2 = parsed.values["--rpc-url"];
   if (!amount)
     return usage(ctx, "--amount <n> is required.");
   if (asset !== "SOL" && asset !== "USDC")
     return usage(ctx, "--asset must be SOL or USDC.");
-  if (!rpcUrl2)
-    return usage(ctx, "--rpc-url <url> is required.");
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in solana)
+    return usage(ctx, solana.error);
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (!requireTty(ctx, "vault fund"))
@@ -57613,7 +57986,7 @@ async function vaultFund(args, ctx) {
     if (teeEntry === undefined) {
       const external2 = findExternalEntry(vault.index, teeAddress);
       if (external2 !== undefined)
-        return fundExternal(ctx, opened, vault, external2, { amount, asset, rpcUrl: rpcUrl2, parsed });
+        return fundExternal(ctx, opened, vault, external2, { amount, asset, solana, parsed });
       writeLocalFailure(ctx.deps, {
         code: "TEE_WALLET_UNKNOWN",
         message: `${teeAddress} is neither a TEE wallet nor an external wallet in this vault.`,
@@ -57624,7 +57997,7 @@ async function vaultFund(args, ctx) {
     if (parsed.values["--from"] !== undefined) {
       return usage(ctx, "--from applies to an external wallet only; a TEE wallet is funded from its pinned vault key.");
     }
-    const reconciled = await reconcileFundingReceipts(vault, [teeAddress, ...teeEntry.tee?.vaultDestination ? [teeEntry.tee.vaultDestination] : []], rpcUrl2, ctx);
+    const reconciled = await reconcileFundingReceipts(vault, [teeAddress, ...teeEntry.tee?.vaultDestination ? [teeEntry.tee.vaultDestination] : []], solana.rpc, ctx);
     if (reconciled !== null)
       return reconciled;
     if (teeEntry.tee?.remoteAuthority !== "verified-active" || teeEntry.tee.stopRequestedAt !== undefined) {
@@ -57649,15 +58022,14 @@ async function vaultFund(args, ctx) {
     assertVaultSigner(fromEntry);
     ctx.deps.stdout.write(`Every funded unit adds to the TEE wallet exposure; the initial float is not a maximum loss.
 `);
-    const plan = await planTransfer({
+    const plan = await solana.read(() => planTransfer({
       from: fromEntry.address,
       to: teeAddress,
       amount,
       asset,
-      rpcUrl: rpcUrl2,
-      fetch: ctx.deps.fetch
-    });
-    const feeQuote = await quoteTransferFee(rpcUrl2, ctx.deps.fetch, plan.from, plan.instructions);
+      rpc: solana.rpc
+    }));
+    const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions));
     displayTransferPlan(ctx, plan, feeQuote);
     await confirmLastSix(ctx, teeAddress, "the TEE wallet destination");
     await opened.confirm(`fund ${plan.amount} ${plan.asset} to ${teeAddress}`);
@@ -57666,7 +58038,7 @@ async function vaultFund(args, ctx) {
       let receipt;
       const result = await signAndBroadcastTransfer({
         ctx,
-        rpcUrl: rpcUrl2,
+        solana,
         secret64: secret,
         plan,
         beforeBroadcast: async ({ signature, blockhash }) => {
@@ -58069,6 +58441,7 @@ The Phase 1 file was left in place. A 0.9.x binary reading it still sees that st
 // src/commands/vault-list.ts
 init_args();
 init_render();
+init_solana_endpoint();
 init_solana_lite();
 init_store();
 init_vault_support();
@@ -58079,28 +58452,37 @@ function formatSol3(lamports) {
   const fraction = (lamports % LAMPORTS_PER_SOL).toString().padStart(9, "0").replace(/0+$/, "");
   return fraction === "" ? whole.toString() : `${whole}.${fraction}`;
 }
-async function readLamports(addresses, rpcUrl2, fetchFn) {
-  const rpc2 = createSolanaRpc(rpcUrl2, fetchFn);
+async function readLamports(addresses, solana, ctx) {
+  const { rpc } = solana;
   const lamports = new Map;
   const unavailable = [];
   let failure;
+  let rateLimited = false;
   for (let at = 0;at < addresses.length; at += CHUNK2) {
     const chunk = addresses.slice(at, at + CHUNK2);
+    if (rateLimited) {
+      unavailable.push(...chunk);
+      continue;
+    }
     try {
-      const accounts = await rpc2.getMultipleAccounts(chunk);
+      const accounts = await rpc.getMultipleAccounts(chunk);
       for (const [i, address] of chunk.entries())
         lamports.set(address, accounts[i]?.lamports ?? 0n);
     } catch (error) {
       unavailable.push(...chunk);
-      failure ??= error instanceof Error ? error.message : String(error);
+      if (isRateLimited(error)) {
+        rateLimited = true;
+        failure ??= rateLimitedReadFailure(ctx, error);
+      } else
+        failure ??= describeRpcFailure(error);
     }
   }
   return { lamports, unavailable, ...failure === undefined ? {} : { failure } };
 }
-async function readEvmBalances(addresses, rpcUrl2, fetchFn) {
-  const rpc2 = createEvmRpc(rpcUrl2, fetchFn);
+async function readEvmBalances(addresses, rpcUrl, fetchFn) {
+  const rpc = createEvmRpc(rpcUrl, fetchFn);
   const read = {
-    host: rpcHostOf(rpcUrl2),
+    host: rpcHostOf2(rpcUrl),
     chainId: undefined,
     requests: 0,
     wei: new Map,
@@ -58109,7 +58491,7 @@ async function readEvmBalances(addresses, rpcUrl2, fetchFn) {
   };
   try {
     read.requests += 1;
-    read.chainId = await rpc2.chainId();
+    read.chainId = await rpc.chainId();
   } catch (error) {
     read.unavailable.push(...addresses);
     read.failure = error instanceof Error ? error.message : String(error);
@@ -58119,10 +58501,10 @@ async function readEvmBalances(addresses, rpcUrl2, fetchFn) {
   for (const address of addresses) {
     try {
       read.requests += 1;
-      read.wei.set(address, await rpc2.getBalance(address));
+      read.wei.set(address, await rpc.getBalance(address));
       if (hood) {
         read.requests += 1;
-        read.usdg.set(address, await rpc2.erc20BalanceOf(HOOD_USDG_ADDRESS, address));
+        read.usdg.set(address, await rpc.erc20BalanceOf(HOOD_USDG_ADDRESS, address));
       }
     } catch (error) {
       read.wei.delete(address);
@@ -58161,12 +58543,12 @@ async function vaultList(args, ctx) {
   if ("error" in resolvedVault)
     return usage(ctx, resolvedVault.error);
   const path = resolvedVault.path;
-  let rpcUrl2;
+  let solanaClient;
   if (balances) {
-    const resolved = rpcUrlFrom(ctx, parsed);
-    if (typeof resolved !== "string")
+    const resolved = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
+    if ("error" in resolved)
       return usage(ctx, resolved.error);
-    rpcUrl2 = resolved;
+    solanaClient = resolved;
   }
   const evmRpc = resolveEvmRpcUrl(parsed.values["--evm-rpc-url"], deps.env[EVM_RPC_URL_ENV], "--evm-rpc-url");
   if (balances && "error" in evmRpc)
@@ -58183,16 +58565,17 @@ async function vaultList(args, ctx) {
     const matched = filter === undefined ? all : all.filter((entry) => matches(entry, filter));
     const solana = balances ? matched.filter((entry) => entry.chain === "solana") : [];
     const requests = Math.ceil(solana.length / CHUNK2);
-    const rpcHost = rpcUrl2 === undefined ? undefined : new URL(rpcUrl2).host;
-    if (balances && solana.length > 0 && rpcHost !== undefined) {
+    const rpcHost = solanaClient?.endpoint.host;
+    if (balances && solana.length > 0 && solanaClient !== undefined) {
+      await solanaClient.disclose();
       deps.stderr.write(`Reading SOL for ${solana.length} addresses from ${rpcHost}, in ${requests} ${requests === 1 ? "request" : "requests"}. That endpoint sees all ${solana.length} together.
 `);
     }
     let lamports = new Map;
     let unavailable = [];
     let failure;
-    if (balances && solana.length > 0 && rpcUrl2 !== undefined) {
-      const outcome = await readLamports(solana.map((entry) => entry.address), rpcUrl2, deps.fetch);
+    if (balances && solana.length > 0 && solanaClient !== undefined) {
+      const outcome = await readLamports(solana.map((entry) => entry.address), solanaClient, ctx);
       lamports = outcome.lamports;
       unavailable = outcome.unavailable;
       failure = outcome.failure;
@@ -58206,7 +58589,7 @@ async function vaultList(args, ctx) {
     const evm = balances ? matched.filter((entry) => entry.chain === "evm") : [];
     let evmRead;
     if (evm.length > 0) {
-      const host = rpcHostOf(evmRpcUrl);
+      const host = rpcHostOf2(evmRpcUrl);
       deps.stderr.write(`Reading ETH (and USDG when the chain is Hood) for ${evm.length} EVM ${evm.length === 1 ? "address" : "addresses"} from ${host}, in ${evmRequestsPlanned(evm.length)} requests. That endpoint sees all ${evm.length} together.
 `);
       evmRead = await readEvmBalances(evm.map((entry) => entry.address), evmRpcUrl, deps.fetch);
@@ -58336,6 +58719,7 @@ init_args();
 init_deps();
 init_profiles();
 init_render();
+init_solana_endpoint();
 init_solana_lite();
 
 // src/vault/account-room.ts
@@ -58747,7 +59131,7 @@ async function vaultPromote(args, ctx) {
     return usage(ctx, "Use either --from or --in-place, not both.");
   }
   if (fromLabel === undefined && inPlaceLabel === undefined) {
-    return usage(ctx, "Usage: candle vault promote --from <vault-key-label> | --in-place <vault-key-label> --sweep-to <label> --rpc-url <url> [--to-key <label|prefix>]");
+    return usage(ctx, "Usage: candle vault promote --from <vault-key-label> | --in-place <vault-key-label> --sweep-to <label> [--rpc-url <url>] [--to-key <label|prefix>]");
   }
   const toKeyRaw = parsed.values["--to-key"];
   if (toKeyRaw !== undefined && toKeyRaw.trim().length === 0)
@@ -58981,7 +59365,9 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
     return usage(ctx, resolvedVault.error);
   const path = resolvedVault.path;
   const sweepTo = parsed.values["--sweep-to"];
-  const rpcUrl2 = parsed.values["--rpc-url"];
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in solana)
+    return usage(ctx, solana.error);
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
@@ -59043,8 +59429,8 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
       }
       return rebound2.exit;
     }
-    if (sweepTo === undefined || rpcUrl2 === undefined) {
-      return usage(ctx, "Usage: candle vault promote --in-place <label> --sweep-to <label> --rpc-url <url> [--label] [--accept-unknown-exposure]");
+    if (sweepTo === undefined) {
+      return usage(ctx, "Usage: candle vault promote --in-place <label> --sweep-to <label> [--rpc-url <url>] [--label] [--accept-unknown-exposure]");
     }
     const first = assertInPlacePreconditions(vault.index, subjectLabel, sweepTo, {
       acceptUnknownExposure: acceptUnknown
@@ -59059,10 +59445,10 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
       label: toKey.target.label,
       warnings: targetWarnings(toKey.target)
     });
-    const rpc2 = createSolanaRpc(rpcUrl2, ctx.deps.fetch);
-    const host = new URL(rpcUrl2).host;
-    await displayHoldings(ctx, rpc2, first.subject.address);
-    const roles = await runRoleCheck(ctx, rpc2, [first.subject.address]);
+    const rpc = solana.rpc;
+    const host = solana.endpoint.host;
+    await solana.read(() => displayHoldings(ctx, rpc, first.subject.address));
+    const roles = await runRoleCheck(ctx, rpc, [first.subject.address]);
     ctx.deps.stdout.write(`${authoritiesBlock(host, roles)}
 `);
     printPromoteSentence(ctx, promoteSentence({ n: 1, form: sentenceForm(roles), k: keysWithFindings(roles), where: "above" }));
@@ -59283,12 +59669,12 @@ async function resumePromote(ctx, vault, entry, reopen, path, hold, confirmation
   }
   return { exit: 0, adopted };
 }
-async function displayHoldings(ctx, rpc2, address) {
+async function displayHoldings(ctx, rpc, address) {
   const observedAt = new Date(ctx.deps.now()).toISOString();
-  const lamports = await rpc2.getBalance(address);
+  const lamports = await rpc.getBalance(address);
   const tokens = [
-    ...await rpc2.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
-    ...await rpc2.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
+    ...await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
+    ...await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
   ];
   ctx.deps.stdout.write(`Holdings at ${address} (observed ${observedAt}):
 `);
@@ -59416,6 +59802,7 @@ init_esm();
 init_args();
 init_deps();
 init_render();
+init_solana_endpoint();
 init_solana_lite();
 init_errors();
 init_format();
@@ -59530,7 +59917,7 @@ function parsePairsFile(contents, opts) {
       const only = rows[0];
       findings.push({
         line: 0,
-        problem: `${opts.file} holds one row, and a batch of one buys nothing over the single command. Run: candle vault promote --in-place ${only.label} --sweep-to ${only.destination} --rpc-url ${opts.rpcUrl}`
+        problem: `${opts.file} holds one row, and a batch of one buys nothing over the single command. Run: candle vault promote --in-place ${only.label} --sweep-to ${only.destination}${opts.rpcUrlGiven ? " --rpc-url <url>" : ""}`
       });
     } else if (rows.length > MAX_PROMOTE_BATCH) {
       findings.push({
@@ -59778,7 +60165,7 @@ init_promote_support();
 init_signer_roles();
 init_store();
 init_vault_support();
-var USAGE_LINE = "Usage: candle vault promote-batch --pairs-from <file> --rpc-url <url> [--to-key <label|prefix>] [--token-holdings] [--accept-unknown-exposure]";
+var USAGE_LINE = "Usage: candle vault promote-batch --pairs-from <file> [--rpc-url <url>] [--to-key <label|prefix>] [--token-holdings] [--accept-unknown-exposure]";
 var rowObserver = null;
 function splitRebindable(results) {
   const wallets2 = [];
@@ -59830,9 +60217,9 @@ async function vaultPromoteBatch(args, ctx) {
   if ("error" in resolvedVault)
     return usage(ctx, resolvedVault.error);
   const path = resolvedVault.path;
-  const rpcUrl2 = rpcUrlFrom(ctx, parsed);
-  if (typeof rpcUrl2 !== "string")
-    return usage(ctx, rpcUrl2.error);
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
+  if ("error" in solana)
+    return usage(ctx, solana.error);
   const acceptUnknown = parsed.booleans.has("--accept-unknown-exposure");
   const readTokens = parsed.booleans.has("--token-holdings");
   const { deps } = ctx;
@@ -59842,7 +60229,10 @@ async function vaultPromoteBatch(args, ctx) {
   } catch (error) {
     return usage(ctx, `Could not read --pairs-from: ${error instanceof Error ? error.message : error}`);
   }
-  const parsedFile = parsePairsFile(contents, { file: pairsFile, rpcUrl: rpcUrl2 });
+  const parsedFile = parsePairsFile(contents, {
+    file: pairsFile,
+    rpcUrlGiven: parsed.values["--rpc-url"] !== undefined
+  });
   if (!parsedFile.ok)
     return usage(ctx, renderPhaseAFindings(pairsFile, parsedFile.findings));
   const { rows, hasValueUsd } = parsedFile;
@@ -59900,18 +60290,21 @@ async function vaultPromoteBatch(args, ctx) {
         rebindPhase?.importedTo.set(item.subject.address, item.subject.tee?.boundKeyPrefix ?? null);
     }
     const addresses = planned.map((item) => item.subject.address);
-    const rpc2 = createSolanaRpc(rpcUrl2, deps.fetch);
-    const host = new URL(rpcUrl2).host;
+    const rpc = solana.rpc;
+    const host = solana.endpoint.host;
     const observedAt = new Date(deps.now()).toISOString();
     let lamports;
     let readError;
+    let rateLimited;
     try {
-      const accounts = await rpc2.getMultipleAccounts(addresses);
+      const accounts = await rpc.getMultipleAccounts(addresses);
       lamports = new Map(addresses.map((address, at) => [address, accounts[at]?.lamports ?? 0n]));
       deps.stderr.write(`✓ SOL read for ${addresses.length} addresses (${Math.ceil(addresses.length / 100)} requests)
 `);
     } catch (error) {
-      readError = error instanceof Error ? error.message : String(error);
+      if (isRateLimited(error))
+        rateLimited = error;
+      readError = describeRpcFailure(error);
     }
     let tokenCounts;
     if (readTokens && lamports !== undefined) {
@@ -59919,8 +60312,8 @@ async function vaultPromoteBatch(args, ctx) {
 `);
       tokenCounts = new Map;
       for (const address of addresses) {
-        const classic = await rpc2.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID);
-        const token2022 = await rpc2.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID);
+        const classic = await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID);
+        const token2022 = await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID);
         tokenCounts.set(address, classic.length + token2022.length);
       }
     }
@@ -59929,7 +60322,7 @@ async function vaultPromoteBatch(args, ctx) {
     if (lamports !== undefined && actingAddresses.length > 0) {
       deps.stderr.write(`${checkOpeningLine(actingAddresses.length, host)}
 `);
-      roles = await runRoleCheck(ctx, rpc2, actingAddresses);
+      roles = await runRoleCheck(ctx, rpc, actingAddresses);
     }
     const table = renderBatchTable(planned, { lamports, tokenCounts, hasValueUsd, roles });
     const footer = renderFooter({
@@ -59952,6 +60345,8 @@ ${table}
 
 ${footer}
 `);
+      if (rateLimited !== undefined)
+        throw rpcRateLimitedError(ctx, host, rateLimited);
       throw new VaultError("VAULT_UNREADABLE", `The SOL read over ${host} failed: ${readError}. Nothing was written.`, {
         suggestion: "Check --rpc-url (or CANDLE_SOLANA_RPC_URL) and run again; the table above is what would have run."
       });
@@ -60622,6 +61017,7 @@ function resolveTarget(index, old, id) {
 init_args();
 init_deps();
 import { rm as rm3 } from "node:fs/promises";
+init_solana_endpoint();
 init_solana_lite();
 init_crypto();
 init_errors();
@@ -60644,6 +61040,12 @@ async function vaultRestore(args, ctx) {
     return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
   if (!parsed.booleans.has("--phrase"))
     return usage(ctx, "--phrase is required: this command restores from a 24-word recovery phrase.");
+  const rpcUrlFlag = parsed.values["--rpc-url"];
+  if (rpcUrlFlag !== undefined) {
+    const fault = validateSolanaRpcUrl(rpcUrlFlag, "--rpc-url");
+    if (fault !== undefined)
+      return usage(ctx, fault);
+  }
   if (!refuseEnvPassphrase(ctx))
     return 1;
   if (ctx.json) {
@@ -60697,8 +61099,8 @@ New vault at ${path}, verified in full (all eight steps).
       deps.stdout.write(`${APPLE_ACCOUNT_NOTICE}
 
 `);
-      const rpc2 = parsed.values["--rpc-url"] ? createSolanaRpc(parsed.values["--rpc-url"], deps.fetch) : undefined;
-      const derived = await deriveWithinBounds(ctx, vault, counts, rpc2);
+      const solana = rpcUrlFlag === undefined ? undefined : solanaClientFor(ctx, flagEndpoint(rpcUrlFlag));
+      const derived = await deriveWithinBounds(ctx, vault, counts, solana);
       const apiKey = await resolveApiKey(deps, ctx.profile);
       let matches2 = {
         matched: [],
@@ -60715,7 +61117,9 @@ New vault at ${path}, verified in full (all eight steps).
       }
       const outcome = await writeRestoredIndex(ctx, vault, derived, matches2, counts);
       committed = true;
-      const result = reportRestore(ctx, vault, derived, matches2, outcome, counts);
+      const config = await deps.readConfig();
+      const ambient = Boolean(deps.env[RPC_URL_ENV]?.trim()) || Boolean(ctx.profile !== undefined && config.profiles?.[ctx.profile]?.rpcUrl?.trim());
+      const result = reportRestore(ctx, vault, derived, matches2, outcome, counts, ambient);
       const footer = nonDefaultVaultFooter(resolvedVault);
       if (footer !== undefined)
         deps.stdout.write(footer);
@@ -60751,7 +61155,7 @@ async function discardIncompleteRestore(ctx, path, sidecarExisted) {
   }
 }
 var RESTORED_BRANCHES = ["solanaVault", "solanaTee", "solanaExternal"];
-function parseCounts(count, teeCount, externalCount, rpcUrl2, evmCount) {
+function parseCounts(count, teeCount, externalCount, rpcUrl, evmCount) {
   const parse = (raw, flag) => {
     if (raw === undefined)
       return;
@@ -60773,7 +61177,7 @@ function parseCounts(count, teeCount, externalCount, rpcUrl2, evmCount) {
   if (typeof evmParsed === "object" && evmParsed !== null)
     return evmParsed;
   const allOmitted = vaultCount === undefined && teeParsed === undefined && externalParsed === undefined;
-  const scan = rpcUrl2 !== undefined;
+  const scan = rpcUrl !== undefined;
   const resolve4 = (value) => {
     if (value !== undefined)
       return value;
@@ -60790,7 +61194,7 @@ function parseCounts(count, teeCount, externalCount, rpcUrl2, evmCount) {
     requested: { solanaVault: solanaVault ?? -1, solanaTee: solanaTee ?? -1, solanaExternal: solanaExternal ?? -1 }
   };
 }
-async function deriveWithinBounds(ctx, vault, counts, rpc2) {
+async function deriveWithinBounds(ctx, vault, counts, solana) {
   const { decryptRoot: decryptRoot2 } = await Promise.resolve().then(() => (init_store(), exports_store));
   const root = await decryptRoot2(vault);
   const set = { entries: [], byAddress: new Map, externalByAddress: new Map, scanStoppedAt: {} };
@@ -60803,14 +61207,15 @@ async function deriveWithinBounds(ctx, vault, counts, rpc2) {
         }
         continue;
       }
-      if (rpc2 === undefined)
+      if (solana === undefined)
         continue;
       let consecutiveUnused = 0;
       let index = 0;
       for (;index < SCAN_CEILING && consecutiveUnused < GAP_LIMIT; index++) {
         const entry = await deriveOne(vault, root, branch, index);
         set.entries.push(entry);
-        consecutiveUnused = await addressLooksUsed(rpc2, entry.address) ? 0 : consecutiveUnused + 1;
+        const used = await solana.read(() => addressLooksUsed(solana.rpc, entry.address));
+        consecutiveUnused = used ? 0 : consecutiveUnused + 1;
       }
       set.scanStoppedAt[branch] = index;
       ctx.deps.stdout.write(`Gap scan on ${branch} stopped at index ${index - 1} after ${GAP_LIMIT} consecutive indices with no balance, no token account and no signature history.
@@ -60868,14 +61273,14 @@ async function deriveOne(vault, root, branch, index) {
     wipe(derived.secret64);
   }
 }
-async function addressLooksUsed(rpc2, address) {
-  if (await rpc2.getBalance(address) > 0n)
+async function addressLooksUsed(rpc, address) {
+  if (await rpc.getBalance(address) > 0n)
     return true;
-  if ((await rpc2.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)).length > 0)
+  if ((await rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID)).length > 0)
     return true;
-  if ((await rpc2.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)).length > 0)
+  if ((await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)).length > 0)
     return true;
-  return rpc2.hasSignatureHistory(address);
+  return rpc.hasSignatureHistory(address);
 }
 async function matchAgainstAccount(ctx, apiKey, derived) {
   const read = await completeLinkedWalletRead(ctx, apiKey);
@@ -61021,7 +61426,7 @@ function teeFieldsFor(row, ctx) {
   }
   return { role: "tee-wallet", tee: { ...common, lifecycle: "stranded", grantIdentity } };
 }
-function reportRestore(ctx, vault, derived, matches2, outcome, counts) {
+function reportRestore(ctx, vault, derived, matches2, outcome, counts, ambientSolanaEndpoint) {
   const { deps } = ctx;
   deps.stdout.write(`
 Recovered ${outcome.entries.length} address(es) from the phrase.
@@ -61037,15 +61442,21 @@ Every one of them is recorded with an unknown history and stays that way: this p
 `);
   deps.stdout.write(`The Phase 1 TEE wallet store was not read, and no migrated-tee entry was restored: the phrase does not restore those keys, and the vault file plus a factor does.
 `);
+  let scanHint = false;
   for (const branch of RESTORED_BRANCHES) {
     const bound = counts[branch];
     if (bound === undefined) {
       deps.stdout.write(`  ${branch}: gap-scanned to index ${(derived.scanStoppedAt[branch] ?? 1) - 1}
 `);
     } else if (bound <= 1) {
+      scanHint = true;
       deps.stdout.write(`  ${branch}: index 0 only. If you derived more, re-run with --count/--tee-count/--external-count, or with --rpc-url to gap-scan.
 `);
     }
+  }
+  if (scanHint && ambientSolanaEndpoint) {
+    deps.stdout.write(`A gap scan runs only with --rpc-url on this command; ${RPC_URL_ENV} and profile settings are not used for it.
+`);
   }
   if (counts.evm === 0) {
     deps.stdout.write(`  evm: none. If this root has EVM keys, re-run with --evm-count <n>; the EVM branch is never gap-scanned.
@@ -61598,6 +62009,7 @@ function describeEnvelope(envelope, facts) {
 // src/commands/vault-transfer.ts
 init_args();
 init_deps();
+init_solana_endpoint();
 init_errors();
 
 // src/vault/evm-transfer.ts
@@ -61625,7 +62037,7 @@ function assertSolanaDestination(to, from) {
     return;
   throw refuse2("TRANSFER_CHAIN_MISMATCH", `${to} is an EVM address, and ${from.label || from.address} is a Solana key.`, { suggestion: "Nothing was signed. A Solana key sends to a Solana address; an EVM key sends to a 0x address." });
 }
-async function resolveEvmAsset(rpc2, asset, chainId) {
+async function resolveEvmAsset(rpc, asset, chainId) {
   const upper = asset.toUpperCase();
   if (upper === "ETH")
     return { kind: "native", symbol: "ETH", decimals: NATIVE_DECIMALS };
@@ -61647,11 +62059,11 @@ async function resolveEvmAsset(rpc2, asset, chainId) {
   }
   let decimals;
   try {
-    decimals = await rpc2.erc20Decimals(token);
+    decimals = await rpc.erc20Decimals(token);
   } catch (error) {
     throw refuse2("EVM_TOKEN_UNREADABLE", `${token} did not answer decimals(): ${error instanceof Error ? error.message : String(error)}`, { suggestion: "Nothing was signed. Check the contract address, and that this RPC serves the chain it lives on." });
   }
-  const symbol = upper === "USDG" ? "USDG" : await rpc2.erc20Symbol(token) ?? `${token.slice(0, 10)}…`;
+  const symbol = upper === "USDG" ? "USDG" : await rpc.erc20Symbol(token) ?? `${token.slice(0, 10)}…`;
   return { kind: "erc20", symbol, decimals, token };
 }
 function nativeName(hood, chainId) {
@@ -61678,16 +62090,16 @@ function evmDisplayLines(plan) {
   lines.push(`nonce       ${tx.nonce}`);
   return lines;
 }
-async function planEvmTransfer(rpc2, input) {
+async function planEvmTransfer(rpc, input) {
   const to = checkEvmDestination(input.to, input.from);
-  const chainId = await rpc2.chainId();
+  const chainId = await rpc.chainId();
   if (input.builtIn && chainId !== BigInt(HOOD_CHAIN_ID)) {
     throw refuse2("EVM_CHAIN_MISMATCH", `The built-in Hood RPC answered chain id ${chainId}, not ${HOOD_CHAIN_ID}.`, {
       suggestion: "Nothing was signed. Pass --rpc-url for another chain; the built-in endpoint is Hood's only."
     });
   }
   const hood = chainId === BigInt(HOOD_CHAIN_ID);
-  const asset = await resolveEvmAsset(rpc2, input.asset, chainId);
+  const asset = await resolveEvmAsset(rpc, input.asset, chainId);
   if ("usage" in asset)
     return asset;
   const max = input.amount.toLowerCase() === "max";
@@ -61704,12 +62116,12 @@ async function planEvmTransfer(rpc2, input) {
       return { usage: `--amount must be a positive decimal or max; ${input.amount} is neither.` };
     amountRaw = parsed.raw;
   }
-  const nonce = await rpc2.getTransactionCount(input.from.address, "pending");
-  const fees = await quoteFees(rpc2);
-  const nativeBalance = await rpc2.getBalance(input.from.address);
+  const nonce = await rpc.getTransactionCount(input.from.address, "pending");
+  const fees = await quoteFees(rpc);
+  const nativeBalance = await rpc.getBalance(input.from.address);
   if (asset.kind === "erc20" && asset.token !== undefined) {
     if (max) {
-      amountRaw = await rpc2.erc20BalanceOf(asset.token, input.from.address);
+      amountRaw = await rpc.erc20BalanceOf(asset.token, input.from.address);
       if (amountRaw === 0n) {
         throw new VaultError("VAULT_INDEX_INVALID", `${input.from.label} holds no ${asset.symbol}; there is nothing to send.`);
       }
@@ -61724,7 +62136,7 @@ async function planEvmTransfer(rpc2, input) {
       recipient: to,
       amount: amountRaw
     });
-    const gas2 = gasWithHeadroom(await estimate(rpc2, input.from.address, draft2));
+    const gas2 = gasWithHeadroom(await estimate(rpc, input.from.address, draft2));
     const tx2 = { ...draft2, gas: gas2 };
     const feeCap2 = gas2 * tx2.maxFeePerGas;
     if (nativeBalance < feeCap2) {
@@ -61757,7 +62169,7 @@ async function planEvmTransfer(rpc2, input) {
   if (!max && nativeBalance < amountRaw) {
     throw refuse2("EVM_INSUFFICIENT_FOR_FEES", `${input.from.label} holds ${formatUnits(nativeBalance, NATIVE_DECIMALS)} ${nativeName(hood, chainId)}, below the amount of ${formatUnits(amountRaw, NATIVE_DECIMALS)}.`);
   }
-  const gas = gasWithHeadroom(await estimate(rpc2, input.from.address, draft));
+  const gas = gasWithHeadroom(await estimate(rpc, input.from.address, draft));
   const feeCap = gas * draft.maxFeePerGas;
   let value = amountRaw;
   if (max) {
@@ -61784,9 +62196,9 @@ async function planEvmTransfer(rpc2, input) {
   plan.displayLines = evmDisplayLines(plan);
   return plan;
 }
-async function estimate(rpc2, from, tx) {
+async function estimate(rpc, from, tx) {
   try {
-    return await rpc2.estimateGas({ from, to: tx.to, value: tx.value, data: tx.data });
+    return await rpc.estimateGas({ from, to: tx.to, value: tx.value, data: tx.data });
   } catch (error) {
     throw new VaultError("VAULT_UNREADABLE", `Could not estimate gas: ${error instanceof Error ? error.message : String(error)}`, { suggestion: "Nothing was signed. A revert here usually means the balance does not cover the amount." });
   }
@@ -61818,16 +62230,16 @@ function judgeReceipt(receipt, head, depth, hash, chainId) {
     line: `Confirmed ${hash} in block ${receipt.blockNumber}, ${reached} block${reached === 1n ? "" : "s"} deep (depth ${depth}, not finality).`
   };
 }
-async function awaitReceipt(rpc2, ctx, hash, chainId) {
+async function awaitReceipt(rpc, ctx, hash, chainId) {
   const depth = requiredDepth(chainId);
   const deadline = ctx.deps.now() + EVM_RECEIPT_WAIT_MS;
   let seen;
   for (;; ) {
     try {
-      const receipt = await rpc2.getTransactionReceipt(hash);
+      const receipt = await rpc.getTransactionReceipt(hash);
       if (receipt !== null) {
         seen = receipt;
-        const outcome = judgeReceipt(receipt, await rpc2.blockNumber(), depth, hash, chainId);
+        const outcome = judgeReceipt(receipt, await rpc.blockNumber(), depth, hash, chainId);
         if (outcome !== undefined)
           return outcome;
       }
@@ -61853,9 +62265,9 @@ async function awaitReceipt(rpc2, ctx, hash, chainId) {
     line: `Submitted ${hash}; no receipt after ${EVM_RECEIPT_WAIT_MS / 1000} s. It may still land: do not resend blindly; check the hash on an explorer first.`
   };
 }
-async function broadcast(rpc2, ctx, raw, hash, chainId) {
+async function broadcast(rpc, ctx, raw, hash, chainId) {
   try {
-    await rpc2.sendRawTransaction(raw);
+    await rpc.sendRawTransaction(raw);
   } catch (error) {
     if (!(error instanceof EvmRpcError))
       throw error;
@@ -61877,21 +62289,21 @@ async function broadcast(rpc2, ctx, raw, hash, chainId) {
     if (message.includes("nonce too low")) {
       let receipt = null;
       try {
-        receipt = await rpc2.getTransactionReceipt(hash);
+        receipt = await rpc.getTransactionReceipt(hash);
       } catch {
         receipt = null;
       }
       if (receipt !== null) {
         let head;
         try {
-          head = await rpc2.blockNumber();
+          head = await rpc.blockNumber();
         } catch {
-          return awaitReceipt(rpc2, ctx, hash, chainId);
+          return awaitReceipt(rpc, ctx, hash, chainId);
         }
         const outcome = judgeReceipt(receipt, head, requiredDepth(chainId), hash, chainId);
         if (outcome !== undefined)
           return outcome;
-        return awaitReceipt(rpc2, ctx, hash, chainId);
+        return awaitReceipt(rpc, ctx, hash, chainId);
       }
       throw new VaultError("EVM_NONCE_STALE", `The RPC refused ${hash}: nonce too low, and it has no receipt for that hash. Another transaction used this nonce.`, {
         suggestion: "Nothing was resent. Run the transfer again; it reads the pending nonce afresh. The CLI never re-signs on its own.",
@@ -61904,26 +62316,26 @@ async function broadcast(rpc2, ctx, raw, hash, chainId) {
       line: `Submitted ${hash}, and the RPC answered: ${error.message}. The CLI cannot tell from that whether it is in flight: do not resend blindly; check the hash on an explorer first.`
     };
   }
-  return awaitReceipt(rpc2, ctx, hash, chainId);
+  return awaitReceipt(rpc, ctx, hash, chainId);
 }
-async function runEvmTransfer(input, rpc2) {
+async function runEvmTransfer(input, rpc) {
   const { ctx } = input;
   const { deps } = ctx;
   checkEvmDestination(input.to, input.from);
-  deps.stderr.write(`Reading chain id, nonce, fees and balances for ${input.from.label} from ${rpcHostOf(input.rpcUrl)}${input.rpcUrl === DEFAULT_HOOD_RPC_URL ? " (the built-in Hood RPC)" : ""}.
+  deps.stderr.write(`Reading chain id, nonce, fees and balances for ${input.from.label} from ${rpcHostOf2(input.rpcUrl)}${input.rpcUrl === DEFAULT_HOOD_RPC_URL ? " (the built-in Hood RPC)" : ""}.
 `);
-  const planned = await planEvmTransfer(rpc2, input);
+  const planned = await planEvmTransfer(rpc, input);
   if ("usage" in planned)
     return input.usage(planned.usage);
   const plan = planned;
   displayEvmTransferPlan(ctx, plan);
   await input.confirmLastSix(plan.recipient, plan.asset.kind === "erc20" ? "the token recipient" : "the destination");
   await input.confirmFactor(evmFactorPrompt(plan));
-  const chainIdAgain = await rpc2.chainId();
+  const chainIdAgain = await rpc.chainId();
   if (chainIdAgain !== plan.chainId) {
     throw refuse2("EVM_CHAIN_MISMATCH", `The RPC answered chain id ${chainIdAgain} after the factor, but ${plan.chainId} was displayed.`);
   }
-  const nonceAgain = await rpc2.getTransactionCount(plan.from.address, "pending");
+  const nonceAgain = await rpc.getTransactionCount(plan.from.address, "pending");
   if (nonceAgain !== plan.tx.nonce) {
     throw refuse2("EVM_NONCE_STALE", `The pending nonce is ${nonceAgain} after the factor, but ${plan.tx.nonce} was displayed; another transaction moved it.`, { suggestion: "Nothing was signed. Run the transfer again; it reads the pending nonce afresh." });
   }
@@ -61937,7 +62349,7 @@ async function runEvmTransfer(input, rpc2) {
   } finally {
     wipe(secret);
   }
-  const outcome = await broadcast(rpc2, ctx, signed.raw, signed.hash, plan.chainId);
+  const outcome = await broadcast(rpc, ctx, signed.raw, signed.hash, plan.chainId);
   if (ctx.json) {
     input.writeJson({
       ok: outcome.status === "confirmed",
@@ -61976,7 +62388,7 @@ function assertNoPendingSweep(entry) {
   const pending = entry.tee?.sweepPending?.length ?? 0;
   if (pending === 0)
     return;
-  throw new VaultError("TRANSFER_SWEEP_PENDING", `${entry.label} (${entry.address}) has ${pending} pending sweep transaction(s); a transfer would interleave with that sweep.`, { suggestion: `Finish the sweep first: candle tee sweep ${entry.address} --rpc-url <url>` });
+  throw new VaultError("TRANSFER_SWEEP_PENDING", `${entry.label} (${entry.address}) has ${pending} pending sweep transaction(s); a transfer would interleave with that sweep.`, { suggestion: `Finish the sweep first: candle tee sweep ${entry.address}` });
 }
 async function readTeeServerState(ctx, entry, apiKey) {
   if (entry.linkedWalletId === undefined) {
@@ -62061,12 +62473,10 @@ async function vaultTransfer(args, ctx) {
     return usage(ctx, "--asset SOL|<mint>|ETH|USDG|<0x token> is required.");
   if (!fromLabel)
     return usage(ctx, "--from <label> is required.");
+  const solanaEndpoint = resolveSolanaEndpoint(ctx, rpcUrlFlag, await ctx.deps.readConfig());
   if (rpcUrlFlag !== undefined) {
-    try {
-      new URL(rpcUrlFlag);
-    } catch {
-      return usage(ctx, `--rpc-url is not a valid URL: ${rpcUrlFlag}`);
-    }
+    if ("error" in solanaEndpoint)
+      return usage(ctx, solanaEndpoint.error);
   } else {
     const evmFromEnv = resolveEvmRpcUrl(undefined, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url");
     if ("error" in evmFromEnv)
@@ -62117,27 +62527,26 @@ async function vaultTransfer(args, ctx) {
       }, createEvmRpc(evmRpcUrl, ctx.deps.fetch));
     }
     assertSolanaDestination(to, fromEntry);
-    const rpcUrl2 = rpcUrlFlag;
-    if (!rpcUrl2)
-      return usage(ctx, "--rpc-url <url> is required for a transfer from a Solana key.");
+    if ("error" in solanaEndpoint)
+      return usage(ctx, solanaEndpoint.error);
+    const solana = solanaClientFor(ctx, solanaEndpoint);
     const promoted = fromEntry.role === "tee-wallet";
     if (promoted)
       assertNoPendingSweep(fromEntry);
     const note = (line) => (ctx.json ? ctx.deps.stderr : ctx.deps.stdout).write(`${line}
 `);
     const apiKey = promoted ? await resolveApiKey(ctx.deps, ctx.profile) : undefined;
-    const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, to], rpcUrl2, ctx);
+    const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, to], solana.rpc, ctx);
     if (reconciled !== null)
       return reconciled;
-    const plan = await planTransfer({
+    const plan = await solana.read(() => planTransfer({
       from: fromEntry.address,
       to,
       amount,
       asset,
-      rpcUrl: rpcUrl2,
-      fetch: ctx.deps.fetch
-    });
-    const feeQuote = await quoteTransferFee(rpcUrl2, ctx.deps.fetch, plan.from, plan.instructions);
+      rpc: solana.rpc
+    }));
+    const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions));
     displayTransferPlan(ctx, plan, feeQuote);
     if (promoted) {
       const notice = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey));
@@ -62148,7 +62557,7 @@ async function vaultTransfer(args, ctx) {
     await opened.confirm(`sign transfer of ${plan.amount} ${plan.asset} to ${to}`);
     const secret = await decryptKey(vault, fromEntry.id);
     try {
-      const result = await signAndBroadcastTransfer({ ctx, rpcUrl: rpcUrl2, secret64: secret, plan });
+      const result = await signAndBroadcastTransfer({ ctx, solana, secret64: secret, plan });
       let activityReport;
       if (promoted && result.finalized) {
         const report = await reportTransferActivity(ctx, apiKey, result.signature);
@@ -62822,7 +63231,14 @@ var COMMANDS = {
     }
   },
   profile: {
-    subcommands: { list: profileList, add: profileAdd, use: profileUse, rename: profileRename, remove: profileRemove }
+    subcommands: {
+      list: profileList,
+      add: profileAdd,
+      use: profileUse,
+      rename: profileRename,
+      remove: profileRemove,
+      set: profileSet
+    }
   },
   external: { subcommands: { new: externalNew, list: externalList, sweep: externalSweep } },
   sign: { subcommands: { message: signMessage2 }, bare: sign2 },

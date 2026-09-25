@@ -10,13 +10,14 @@
  */
 import { base58 } from "@scure/base"
 import type { CommandContext } from "../deps"
+import { describeRpcFailure, notePostSignatureRateLimit, type SolanaClient } from "../solana-endpoint"
 import {
   compileLegacyMessage,
   createAssociatedTokenAccountIdempotent,
-  createSolanaRpc,
   decodePubkey,
   encodePubkey,
   type Instruction,
+  isRateLimited,
   pubkeyFromSecret,
   type SolanaRpc,
   serializeSignedTransaction,
@@ -70,7 +71,7 @@ export function assertTransferSigner(entry: KeyEntry): void {
     "PROMOTE_NOT_VAULT_KEY",
     `${entry.label ?? entry.address} is an external wallet and cannot sign vault transfer shapes (ED-10).`,
     {
-      suggestion: `Move funds out of an external wallet with: candle external sweep ${entry.label} --to <vault> --rpc-url <url>`,
+      suggestion: `Move funds out of an external wallet with: candle external sweep ${entry.label} --to <vault>`,
     },
   )
 }
@@ -119,13 +120,17 @@ async function tokenAccountFrozen(rpc: SolanaRpc, address: string): Promise<{ ex
   return { exists: true, frozen: account.data[TOKEN_ACCOUNT_STATE_OFFSET] === TOKEN_ACCOUNT_STATE_FROZEN }
 }
 
+/**
+ * Builds the plan over the caller's client (BE-355: one client per command, built with `sleep`,
+ * so every read here is retried once on a rate limit). A rate limit that survives the retry is
+ * rethrown untouched, so the command's `client.read` names it `RPC_RATE_LIMITED`.
+ */
 export async function planTransfer(input: {
   from: string
   to: string
   amount: string
   asset: string
-  rpcUrl: string
-  fetch: typeof fetch
+  rpc: SolanaRpc
 }): Promise<TransferPlan> {
   const asset = input.asset.toUpperCase()
   const fromKey = decodePubkey(input.from)
@@ -153,7 +158,7 @@ export async function planTransfer(input: {
   }
 
   const mintAddress = asset === "USDC" ? USDC_MINT : input.asset
-  const rpc = createSolanaRpc(input.rpcUrl, input.fetch)
+  const rpc = input.rpc
   // The mint account is read, never assumed -- including for USDC. Its OWNER is the program the
   // transfer, the close and the ATA derivation all run under (P3-ED-7), and reading decimals from
   // a table while reading the program from the chain is how the two come apart.
@@ -162,6 +167,7 @@ export async function planTransfer(input: {
     profile = await readMintProfile(rpc, mintAddress)
   } catch (error) {
     if (error instanceof MintReadError) throw new VaultError("VAULT_UNREADABLE", error.message)
+    if (isRateLimited(error)) throw error
     throw new VaultError("VAULT_UNREADABLE", `Could not read mint ${mintAddress}: ${asMessage(error)}`)
   }
   const decimals = profile.decimals
@@ -249,16 +255,14 @@ export async function planTransfer(input: {
 }
 
 function asMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  return describeRpcFailure(error)
 }
 
 export async function quoteTransferFee(
-  rpcUrl: string,
-  fetchFn: typeof fetch,
+  rpc: SolanaRpc,
   from: string,
   instructions: Instruction[],
 ): Promise<bigint | null> {
-  const rpc = createSolanaRpc(rpcUrl, fetchFn)
   const blockhash = await rpc.getLatestBlockhash()
   const message = compileLegacyMessage({
     feePayer: decodePubkey(from),
@@ -275,19 +279,25 @@ export function displayTransferPlan(ctx: CommandContext, plan: TransferPlan, fee
   else ctx.deps.stdout.write(`  fee quote  (unavailable)\n`)
 }
 
+/**
+ * Signs and sends. The blockhash read is before the signature: a rate limit there is D3's
+ * `RPC_RATE_LIMITED`, exit 1. The send and the status reads after it are the existing uncertain
+ * outcome (`finalized: false`, exit 3 at the caller) whatever threw; when what threw was a rate
+ * limit, D4's line and the fix are added on stderr, and nothing is ever re-sent.
+ */
 export async function signAndBroadcastTransfer(input: {
   ctx: CommandContext
-  rpcUrl: string
+  solana: SolanaClient
   secret64: Uint8Array
   plan: TransferPlan
   beforeBroadcast?: (pending: { signature: string; blockhash: string }) => Promise<void>
 }): Promise<{ signature: string; finalized: boolean }> {
-  const rpc = createSolanaRpc(input.rpcUrl, input.ctx.deps.fetch)
+  const rpc = input.solana.rpc
   const feePayer = pubkeyFromSecret(input.secret64)
   if (encodePubkey(feePayer) !== input.plan.from) {
     throw new VaultError("VAULT_VERIFY_FAILED", "The decrypted key does not match the planned fee payer.")
   }
-  const blockhash = await rpc.getLatestBlockhash()
+  const blockhash = await input.solana.read(() => rpc.getLatestBlockhash())
   const message = compileLegacyMessage({
     feePayer,
     recentBlockhash: blockhash,
@@ -300,8 +310,9 @@ export async function signAndBroadcastTransfer(input: {
   await input.beforeBroadcast?.({ signature: sigB58, blockhash })
   try {
     await rpc.sendTransaction(toBase64(wire))
-  } catch {
+  } catch (error) {
     // A failed response cannot prove the transaction was not accepted. Keep its pending receipt.
+    if (isRateLimited(error)) notePostSignatureRateLimit(input.ctx, sigB58)
     return { signature: sigB58, finalized: false }
   }
   for (let i = 0; i < 30; i++) {
@@ -309,7 +320,8 @@ export async function signAndBroadcastTransfer(input: {
     let status: Awaited<ReturnType<typeof rpc.getSignatureStatus>>
     try {
       status = await rpc.getSignatureStatus(sigB58)
-    } catch {
+    } catch (error) {
+      if (isRateLimited(error)) notePostSignatureRateLimit(input.ctx, sigB58)
       return { signature: sigB58, finalized: false }
     }
     if (status?.confirmationStatus === "finalized") {

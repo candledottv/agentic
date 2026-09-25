@@ -13,14 +13,16 @@
  * Phase 4a (BE-350, D3, D5, D6): `--from` may name an EVM `role: "vault"` key, and then the transfer
  * is the EVM flow in `vault/evm-transfer.ts`: the native asset or an ERC-20, signed locally through
  * `evm-lite`, on Hood by default (the built-in RPC) or on any EVM chain by `--rpc-url`. The chain
- * is chosen by the `--from` entry's `chain`, never by a flag: a Solana `--from` still requires
- * `--rpc-url` and still sends to a Solana address; an EVM `--from` makes `--rpc-url` optional (else
- * `CANDLE_EVM_RPC_URL`, else Hood) and sends to a 0x address. A destination of the other family
- * refuses with `TRANSFER_CHAIN_MISMATCH` before any read.
+ * is chosen by the `--from` entry's `chain`, never by a flag: a Solana `--from` sends to a Solana
+ * address over the resolved Solana endpoint (BE-355: `--rpc-url`, else `CANDLE_SOLANA_RPC_URL`,
+ * else the profile's, else the public endpoint); an EVM `--from` makes `--rpc-url` the EVM endpoint
+ * (else `CANDLE_EVM_RPC_URL`, else Hood) and sends to a 0x address. A destination of the other
+ * family refuses with `TRANSFER_CHAIN_MISMATCH` before any read.
  */
 import { parseArgs } from "../args"
 import { type CommandContext, resolveApiKey } from "../deps"
 import { createEvmRpc, EVM_RPC_URL_ENV, resolveEvmRpcUrl } from "../evm-lite"
+import { resolveSolanaEndpoint, solanaClientFor } from "../solana-endpoint"
 import { VaultError } from "../vault/errors"
 import { assertSolanaDestination, runEvmTransfer } from "../vault/evm-transfer"
 import { reconcileFundingReceipts } from "../vault/funding-receipts"
@@ -74,15 +76,14 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
   if (!amount) return usage(ctx, "--amount <n> is required.")
   if (!asset) return usage(ctx, "--asset SOL|<mint>|ETH|USDG|<0x token> is required.")
   if (!fromLabel) return usage(ctx, "--from <label> is required.")
-  // The flag is checked before unlock, as it always was. A blank `CANDLE_EVM_RPC_URL` is unset;
-  // an env value that does not parse is a usage error here too, before the passphrase. The flag
-  // itself may be a Solana endpoint, so the https rule is applied only once the key is EVM.
+  // The flag is checked before unlock, as it always was, by the shared Solana rule (BE-355, D1),
+  // which is the EVM rule too (https, or http to a local host). An ambient Solana value
+  // (`CANDLE_SOLANA_RPC_URL`, the profile's `rpcUrl`) that fails is refused only once the key is
+  // known to be Solana: it says nothing about an EVM transfer. A blank `CANDLE_EVM_RPC_URL` is
+  // unset; an env value that does not parse is a usage error here too, before the passphrase.
+  const solanaEndpoint = resolveSolanaEndpoint(ctx, rpcUrlFlag, await ctx.deps.readConfig())
   if (rpcUrlFlag !== undefined) {
-    try {
-      new URL(rpcUrlFlag)
-    } catch {
-      return usage(ctx, `--rpc-url is not a valid URL: ${rpcUrlFlag}`)
-    }
+    if ("error" in solanaEndpoint) return usage(ctx, solanaEndpoint.error)
   } else {
     const evmFromEnv = resolveEvmRpcUrl(undefined, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url")
     if ("error" in evmFromEnv) return usage(ctx, evmFromEnv.error)
@@ -143,27 +144,28 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
       )
     }
 
-    // A Solana key: the endpoint is required, as it always was, and the destination must be Solana's.
+    // A Solana key: the resolved Solana endpoint (BE-355, D1), and the destination must be Solana's.
     assertSolanaDestination(to, fromEntry)
-    const rpcUrl = rpcUrlFlag
-    if (!rpcUrl) return usage(ctx, "--rpc-url <url> is required for a transfer from a Solana key.")
+    if ("error" in solanaEndpoint) return usage(ctx, solanaEndpoint.error)
+    const solana = solanaClientFor(ctx, solanaEndpoint)
     const promoted = fromEntry.role === "tee-wallet"
     if (promoted) assertNoPendingSweep(fromEntry)
     // These lines are diagnostics: stdout for a person, stderr under `--json`.
     const note = (line: string) => (ctx.json ? ctx.deps.stderr : ctx.deps.stdout).write(`${line}\n`)
     const apiKey = promoted ? await resolveApiKey(ctx.deps, ctx.profile) : undefined
-    const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, to], rpcUrl, ctx)
+    const reconciled = await reconcileFundingReceipts(vault, [fromEntry.address, to], solana.rpc, ctx)
     if (reconciled !== null) return reconciled
 
-    const plan = await planTransfer({
-      from: fromEntry.address,
-      to,
-      amount,
-      asset,
-      rpcUrl,
-      fetch: ctx.deps.fetch,
-    })
-    const feeQuote = await quoteTransferFee(rpcUrl, ctx.deps.fetch, plan.from, plan.instructions)
+    const plan = await solana.read(() =>
+      planTransfer({
+        from: fromEntry.address,
+        to,
+        amount,
+        asset,
+        rpc: solana.rpc,
+      }),
+    )
+    const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions))
     displayTransferPlan(ctx, plan, feeQuote)
     if (promoted) {
       const notice = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey))
@@ -177,7 +179,7 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
 
     const secret = await decryptKey(vault, fromEntry.id)
     try {
-      const result = await signAndBroadcastTransfer({ ctx, rpcUrl, secret64: secret, plan })
+      const result = await signAndBroadcastTransfer({ ctx, solana, secret64: secret, plan })
       // Only a finalized transfer is reported; the server verifies it on chain. A report failure
       // is a line of output, never an exit code.
       let activityReport: ActivityReportOutcome | "not-finalized" | undefined

@@ -18,7 +18,8 @@ import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { writeUsageFailure } from "../render"
-import { createSolanaRpc, type SolanaRpc } from "../solana-lite"
+import { postSignatureRateLimitMessage, postSignatureSuggestion, type SolanaClient } from "../solana-endpoint"
+import { isRateLimited, type SolanaRpc } from "../solana-lite"
 import { classifyStatus } from "../sweep-pending"
 import {
   BASES,
@@ -33,13 +34,13 @@ import {
   lpPositionsSchema,
   rawAmount,
   relaySign,
-  rpcUrl,
   safeText,
   savedOperation,
   saveOperationSignature,
   TradingError,
   type TradingWallet,
   tradingKey,
+  tradingSolanaClient,
   tradingWallet,
 } from "../trading"
 import { decimalsFor, printTradingResult, tradingFailure, validClientId } from "./swap"
@@ -226,10 +227,30 @@ async function walletHolding(
   )
 }
 
+/**
+ * BE-355 (D4): a rate limit on the send, or on a status read after it (the client already retried
+ * the read once), is the uncertain outcome: exit 3 with the saved signature, and nothing re-sent.
+ * The resume path in `runLpOperation` confirms the saved signature on the next run.
+ */
+function postSignatureRateLimit(ctx: CommandContext, signature: string, id: string): TradingError {
+  return new TradingError(
+    "RPC_RATE_LIMITED",
+    `${postSignatureRateLimitMessage(signature)} Re-run the same command with --client-trade-id ${id}: it confirms the saved signature and sends nothing new.`,
+    { suggestion: postSignatureSuggestion(ctx), exitCode: 3 },
+  )
+}
+
 /** Wait until the broadcast transaction is at least confirmed, which is what the server's `/confirm` reads. */
 async function waitConfirmed(ctx: CommandContext, rpc: SolanaRpc, signature: string, id: string): Promise<void> {
   for (let i = 0; i < CONFIRM_MAX_POLLS; i++) {
-    const observed = classifyStatus(await rpc.getSignatureStatus(signature))
+    let status: Awaited<ReturnType<SolanaRpc["getSignatureStatus"]>>
+    try {
+      status = await rpc.getSignatureStatus(signature)
+    } catch (error) {
+      if (isRateLimited(error)) throw postSignatureRateLimit(ctx, signature, id)
+      throw error
+    }
+    const observed = classifyStatus(status)
     if (observed.kind === "finalized") return
     if (observed.kind === "failed")
       throw new TradingError(
@@ -257,7 +278,7 @@ interface LpPlan {
   id: string
   key: string
   wallet: TradingWallet
-  url: string
+  solana: SolanaClient
   intent: string
   body: Json
   yes: boolean
@@ -350,8 +371,14 @@ async function runLpOperation(ctx: CommandContext, plan: LpPlan): Promise<number
     })
   const signed = await relaySign(ctx, key, wallet, built.build.transaction)
   const signature = await saveOperationSignature(ctx, key, id, "lp", signed)
-  const rpc = createSolanaRpc(plan.url, ctx.deps.fetch)
-  const echoed = await rpc.sendTransaction(signed)
+  const rpc = plan.solana.rpc
+  let echoed: string
+  try {
+    echoed = await rpc.sendTransaction(signed)
+  } catch (error) {
+    if (isRateLimited(error)) throw postSignatureRateLimit(ctx, signature, id)
+    throw error
+  }
   if (echoed !== signature)
     throw new TradingError("RPC_FAILED", "RPC returned a different transaction signature; check the saved operation.")
   ctx.deps.stderr.write(`LP ${action} signature: ${signature}\n`)
@@ -387,17 +414,17 @@ export async function lpAdd(args: string[], ctx: CommandContext): Promise<number
     const position = flags["--position"] ? solanaAddress(flags["--position"], "--position") : undefined
     rawAmount(flags["--amount"], 18)
     const slippageBps = slippageOf(flags["--slippage-bps"])
-    const url = rpcUrl(ctx, flags["--rpc-url"])
+    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"])
     const key = await tradingKey(ctx)
     const wallet = await tradingWallet(ctx, key, flags["--wallet"], LP_SCOPE)
-    const decimals = await decimalsFor(ctx, baseAsset(token) ?? token, flags["--rpc-url"])
+    const decimals = await decimalsFor(ctx, baseAsset(token) ?? token, () => Promise.resolve(solana))
     const amountRaw = rawAmount(flags["--amount"], decimals)
     return await runLpOperation(ctx, {
       action: "add",
       id,
       key,
       wallet,
-      url,
+      solana,
       yes: parsed.booleans.has("--yes"),
       intent: `Add ${decimalAmount(amountRaw, decimals)} ${baseAsset(token) ?? token} of liquidity to DAMM v2 pool ${pool}${position ? ` (position ${position})` : " (new position)"}`,
       body: { pool, token, amountRaw, slippageBps, ...(position ? { position } : {}) },
@@ -432,7 +459,7 @@ export async function lpRemove(args: string[], ctx: CommandContext): Promise<num
   try {
     const position = solanaAddress(parsed.positionals[0] as string, "The position")
     const slippageBps = slippageOf(flags["--slippage-bps"])
-    const url = rpcUrl(ctx, flags["--rpc-url"])
+    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"])
     const key = await tradingKey(ctx)
     const wallet = await walletHolding(ctx, key, position, flags["--wallet"])
     return await runLpOperation(ctx, {
@@ -440,7 +467,7 @@ export async function lpRemove(args: string[], ctx: CommandContext): Promise<num
       id,
       key,
       wallet,
-      url,
+      solana,
       yes: parsed.booleans.has("--yes"),
       intent:
         percent === 100
@@ -470,7 +497,7 @@ export async function lpClaim(args: string[], ctx: CommandContext): Promise<numb
     )
   try {
     const position = solanaAddress(parsed.positionals[0] as string, "The position")
-    const url = rpcUrl(ctx, flags["--rpc-url"])
+    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"])
     const key = await tradingKey(ctx)
     const wallet = await walletHolding(ctx, key, position, flags["--wallet"])
     return await runLpOperation(ctx, {
@@ -478,7 +505,7 @@ export async function lpClaim(args: string[], ctx: CommandContext): Promise<numb
       id,
       key,
       wallet,
-      url,
+      solana,
       yes: parsed.booleans.has("--yes"),
       intent: `Claim the fees and any rewards of position ${position}`,
       body: { position },

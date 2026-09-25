@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { getAssociatedTokenAddressSync, TOKEN_2022_PROGRAM_ID as SPL_TOKEN_2022 } from "@solana/spl-token"
 import { Keypair, PublicKey } from "@solana/web3.js"
 import type { CommandContext } from "../deps"
-import { encodePubkey, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
+import { flagEndpoint, solanaClientFor } from "../solana-endpoint"
+import { createSolanaRpc, encodePubkey, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import { createCapture, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
 import type { KeyEntry } from "./format"
 import {
@@ -19,6 +20,8 @@ const fromKey = Keypair.generate()
 const from = fromKey.publicKey.toBase58()
 const to = Keypair.generate().publicKey.toBase58()
 const rpcUrl = "https://rpc.test/rpc"
+/** The client a command would hand the helpers (BE-355): built with an instant `sleep`. */
+const rpcOver = (fetch: typeof globalThis.fetch) => createSolanaRpc(rpcUrl, fetch, async () => {})
 const BLOCKHASH = "EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N"
 
 // ── Mint fixtures (the same byte layout `token-2022.test.ts` pins against spl-token) ───────────
@@ -119,7 +122,7 @@ describe("transfer account creation disclosure", () => {
       }
       if (exists) accounts[destinationAta.toBase58()] = { owner: TOKEN_PROGRAM_ID, data: tokenAccount(false) }
       const { fetch } = createRoutedFetch({ "/rpc": rpcRoute({ accounts }) })
-      const plan = await planTransfer({ from, to, amount: "1", asset: "USDC", rpcUrl, fetch })
+      const plan = await planTransfer({ from, to, amount: "1", asset: "USDC", rpc: rpcOver(fetch) })
       const stdout = createCapture()
       const ctx: CommandContext = {
         deps: createTestDeps({ fetch, stdout }),
@@ -150,12 +153,14 @@ describe("transfer account creation disclosure", () => {
         rent: "unavailable",
       }),
     })
-    await expect(planTransfer({ from, to, amount: "1", asset: "USDC", rpcUrl, fetch })).rejects.toThrow("HTTP 503")
+    await expect(planTransfer({ from, to, amount: "1", asset: "USDC", rpc: rpcOver(fetch) })).rejects.toThrow(
+      "HTTP 503",
+    )
   })
 
   test("an unreadable mint refuses; nothing is planned from a guessed program", async () => {
     const { fetch } = createRoutedFetch({ "/rpc": rpcRoute({ accounts: {} }) })
-    await expect(planTransfer({ from, to, amount: "1", asset: "USDC", rpcUrl, fetch })).rejects.toThrow(
+    await expect(planTransfer({ from, to, amount: "1", asset: "USDC", rpc: rpcOver(fetch) })).rejects.toThrow(
       /does not exist/,
     )
   })
@@ -181,7 +186,7 @@ describe("a Token-2022 vault transfer runs under Token-2022 throughout", () => {
 
   test("the ATAs, the create and the TransferChecked all use the mint's program", async () => {
     const { fetch } = createRoutedFetch({ "/rpc": rpcRoute(fixtureFor(baseMint(6))) })
-    const plan = await planTransfer({ from, to, amount: "2.5", asset: mint, rpcUrl, fetch })
+    const plan = await planTransfer({ from, to, amount: "2.5", asset: mint, rpc: rpcOver(fetch) })
     expect(plan.instructions).toHaveLength(2)
     const [create, transfer] = plan.instructions
     // Create is the ATA program's, and names the Token-2022 account plus Token-2022 as its program.
@@ -203,13 +208,13 @@ describe("a Token-2022 vault transfer runs under Token-2022 throughout", () => {
         }),
       ),
     })
-    const plan = await planTransfer({ from, to, amount: "1", asset: mint, rpcUrl, fetch })
+    const plan = await planTransfer({ from, to, amount: "1", asset: mint, rpc: rpcOver(fetch) })
     expect(plan.decimals).toBe(0)
     expect(plan.amountRaw).toBe(1n)
     expect(plan.instructions).toHaveLength(1)
     expect(plan.instructions[0]?.data.at(-1)).toBe(0)
     // A fractional amount of a 0-decimal mint is not a thing.
-    await expect(planTransfer({ from, to, amount: "0.5", asset: mint, rpcUrl, fetch })).rejects.toThrow(
+    await expect(planTransfer({ from, to, amount: "0.5", asset: mint, rpc: rpcOver(fetch) })).rejects.toThrow(
       /at most 0 decimal places/,
     )
   })
@@ -221,7 +226,7 @@ describe("a Token-2022 vault transfer runs under Token-2022 throughout", () => {
         epoch: 42,
       }),
     })
-    const plan = await planTransfer({ from, to, amount: "100", asset: mint, rpcUrl, fetch })
+    const plan = await planTransfer({ from, to, amount: "100", asset: mint, rpc: rpcOver(fetch) })
     const stdout = createCapture()
     displayTransferPlan(
       { deps: createTestDeps({ fetch, stdout }), json: false, apiUrl: "", verifyAccount: false },
@@ -256,7 +261,7 @@ describe("a Token-2022 vault transfer runs under Token-2022 throughout", () => {
         }),
       ),
     })
-    const plan = await planTransfer({ from, to, amount: "1", asset: mint, rpcUrl, fetch })
+    const plan = await planTransfer({ from, to, amount: "1", asset: mint, rpc: rpcOver(fetch) })
     const transfer = plan.instructions[0]
     expect(transfer?.keys.slice(4).map((k) => encodePubkey(k.pubkey))).toEqual([
       literal.toBase58(),
@@ -297,7 +302,7 @@ describe("a Token-2022 vault transfer runs under Token-2022 throughout", () => {
         }),
       ),
     })
-    const plan = await planTransfer({ from, to, amount: "1", asset: mint, rpcUrl, fetch })
+    const plan = await planTransfer({ from, to, amount: "1", asset: mint, rpc: rpcOver(fetch) })
     expect(plan.instructions).toHaveLength(1)
     expect(plan.instructions[0]?.keys).toHaveLength(4)
     expect(plan.token?.extraAccountsMissing).toBe(true)
@@ -332,7 +337,7 @@ describe("a Token-2022 vault transfer runs under Token-2022 throughout", () => {
     ]
     for (const { data, extra, expected } of cases) {
       const { fetch } = createRoutedFetch({ "/rpc": rpcRoute(fixtureFor(data, extra)) })
-      const plan = await planTransfer({ from, to, amount: "1", asset: mint, rpcUrl, fetch })
+      const plan = await planTransfer({ from, to, amount: "1", asset: mint, rpc: rpcOver(fetch) })
       // The move is still built and would still be sent: nothing here is a refusal.
       expect(plan.instructions.length).toBeGreaterThan(0)
       expect(namedSendFailure(plan)).toBe(expected)
@@ -347,12 +352,12 @@ test("a failed pending write never reaches broadcast", async () => {
       return jsonResponse(200, { result: { value: { blockhash: BLOCKHASH } } })
     },
   })
-  const plan = await planTransfer({ from, to, amount: "1", asset: "SOL", rpcUrl, fetch })
+  const plan = await planTransfer({ from, to, amount: "1", asset: "SOL", rpc: rpcOver(fetch) })
   const ctx: CommandContext = { deps: createTestDeps({ fetch }), json: false, apiUrl: "", verifyAccount: false }
   await expect(
     signAndBroadcastTransfer({
       ctx,
-      rpcUrl,
+      solana: solanaClientFor(ctx, flagEndpoint(rpcUrl)),
       secret64: fromKey.secretKey,
       plan,
       beforeBroadcast: async ({ signature, blockhash }) => {
@@ -387,11 +392,16 @@ test("a send that finalizes with an error carries R5's name for the mint that re
       return chain(req)
     },
   })
-  const plan = await planTransfer({ from, to, amount: "1", asset: mint, rpcUrl, fetch })
+  const plan = await planTransfer({ from, to, amount: "1", asset: mint, rpc: rpcOver(fetch) })
   const ctx: CommandContext = { deps: createTestDeps({ fetch }), json: false, apiUrl: "", verifyAccount: false }
-  await expect(signAndBroadcastTransfer({ ctx, rpcUrl, secret64: fromKey.secretKey, plan })).rejects.toThrow(
-    "Transfer failed on chain (TOKEN_2022_NOT_TRANSFERABLE)",
-  )
+  await expect(
+    signAndBroadcastTransfer({
+      ctx,
+      solana: solanaClientFor(ctx, flagEndpoint(rpcUrl)),
+      secret64: fromKey.secretKey,
+      plan,
+    }),
+  ).rejects.toThrow("Transfer failed on chain (TOKEN_2022_NOT_TRANSFERABLE)")
 })
 
 describe("BE-326: which roles may sign which transfer (ED-10 amendment)", () => {

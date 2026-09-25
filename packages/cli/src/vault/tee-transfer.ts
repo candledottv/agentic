@@ -24,7 +24,7 @@ export function assertNoPendingSweep(entry: KeyEntry): void {
   throw new VaultError(
     "TRANSFER_SWEEP_PENDING",
     `${entry.label} (${entry.address}) has ${pending} pending sweep transaction(s); a transfer would interleave with that sweep.`,
-    { suggestion: `Finish the sweep first: candle tee sweep ${entry.address} --rpc-url <url>` },
+    { suggestion: `Finish the sweep first: candle tee sweep ${entry.address}` },
   )
 }
 

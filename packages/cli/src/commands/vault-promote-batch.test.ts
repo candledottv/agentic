@@ -509,7 +509,9 @@ describe("T-P5, T-P6, T-P7: Phase A, before the unlock", () => {
 
     const one = await runBatch(f, { file: await pairsFile(f.dir, "a cold\n", "one.txt") })
     expect(one.code).toBe(2)
-    expect(one.err).toContain(`Run: candle vault promote --in-place a --sweep-to cold --rpc-url ${RPC}`)
+    // BE-355 (invariant 1): the flag, never its value, which may carry a key.
+    expect(one.err).toContain("Run: candle vault promote --in-place a --sweep-to cold --rpc-url <url>")
+    expect(one.err).not.toContain(RPC)
     for (const o of [dup, order, cap, one]) expect(o.secretPrompts).toBe(0)
   })
 
@@ -536,14 +538,14 @@ describe("T-I1, T-I2, T-I3: the input file", () => {
       "order,label,family,sweep_to,value_usd\n1,tr-1,tr,p-2,2140.00\n2,tr-2,tr,p-2,880.50\n",
       {
         file: "plan.csv",
-        rpcUrl: RPC,
+        rpcUrlGiven: true,
       },
     )
     const reordered = parsePairsFile(
       "sweep_to,value_usd,label,family,order\np-2,2140.00,tr-1,tr,1\np-2,880.50,tr-2,tr,2\n",
       {
         file: "plan.csv",
-        rpcUrl: RPC,
+        rpcUrlGiven: true,
       },
     )
     expect(real.ok && reordered.ok).toBe(true)
@@ -576,13 +578,13 @@ describe("T-I1, T-I2, T-I3: the input file", () => {
   })
 
   test("T-I2: a CSV missing sweep_to lists the columns it found; a 3-field whitespace line names its line", async () => {
-    const missing = parsePairsFile("order,label,family\n1,a,x\n", { file: "plan.csv", rpcUrl: RPC })
+    const missing = parsePairsFile("order,label,family\n1,a,x\n", { file: "plan.csv", rpcUrlGiven: true })
     expect(missing.ok).toBe(false)
     if (missing.ok) return
     expect(missing.findings).toEqual([
       { line: 1, problem: "a CSV needs both a label and a sweep_to column; found: order, label, family" },
     ])
-    const three = parsePairsFile("a cold\nb cold extra\n", { file: "plan.txt", rpcUrl: RPC })
+    const three = parsePairsFile("a cold\nb cold extra\n", { file: "plan.txt", rpcUrlGiven: true })
     expect(three.ok).toBe(false)
     if (three.ok) return
     expect(three.findings).toEqual([{ line: 2, problem: `3 fields; a row is "<label> <destination>"` }])

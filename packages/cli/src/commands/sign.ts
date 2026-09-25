@@ -55,7 +55,8 @@ import {
   simulateWithSnapshots,
   TransactionDecodeError,
 } from "../solana-alt"
-import { createSolanaRpc, type SolanaRpc, signMessage as signBytes, toBase64 } from "../solana-lite"
+import { describeRpcFailure, notePostSignatureRateLimit, openSolanaClient } from "../solana-endpoint"
+import { isRateLimited, type SolanaRpc, signMessage as signBytes, toBase64 } from "../solana-lite"
 import { type MintProfile, parseMintAccount } from "../token-2022"
 import { VaultError } from "../vault/errors"
 import type { KeyEntry, UnlockedVaultIndex } from "../vault/format"
@@ -68,7 +69,6 @@ import {
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
-  rpcUrlFrom,
   runVaultCommand,
   takeRepeatedFlag,
   unlockInteractively,
@@ -251,8 +251,9 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
   }
   if (lifted.values.length === 0)
     return usage(ctx, "--wallet <external> is required (repeat it for a multi-signer transaction).")
-  const rpcUrl = rpcUrlFrom(ctx, parsed)
-  if (typeof rpcUrl !== "string") return usage(ctx, rpcUrl.error)
+  // BE-355 (D1): the resolved endpoint, for the lookup tables, the simulation and --broadcast.
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
+  if ("error" in solana) return usage(ctx, solana.error)
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "candle sign")) return 1
 
@@ -283,10 +284,10 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
         { suggestion: "Nothing was signed. Check --file <path>, or pipe the transaction on stdin." },
       )
     }
-    const rpc = createSolanaRpc(rpcUrl, deps.fetch)
+    const rpc = solana.rpc
     let compiled: CompiledKeys
     try {
-      compiled = await resolveCompiledKeys(tx.message, rpc)
+      compiled = await solana.read(() => resolveCompiledKeys(tx.message, rpc))
     } catch (error) {
       if (error instanceof LookupTableError)
         throw new VaultError("SIGN_LOOKUP_TABLE_UNRESOLVED", `${error.message}. Nothing was displayed or signed.`, {
@@ -337,11 +338,13 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
     const unsignedBase64 = toBase64(attachSignatures(tx, new Map()))
     let simulation: SimulationSnapshot
     try {
-      simulation = await simulateWithSnapshots(rpc, unsignedBase64, compiled)
+      simulation = await solana.read(() => simulateWithSnapshots(rpc, unsignedBase64, compiled))
     } catch (error) {
+      // A rate limit that survived the retry is RPC_RATE_LIMITED (D3), already named by `read`.
+      if (error instanceof VaultError) throw error
       throw new VaultError(
         "SIGN_SIMULATION_FAILED",
-        `The simulation could not be run over ${rpcUrl}: ${error instanceof Error ? error.message : error}. Nothing was signed.`,
+        `The simulation could not be run over ${solana.endpoint.host}: ${describeRpcFailure(error)}. Nothing was signed.`,
         {
           suggestion:
             "Point --rpc-url at a reachable endpoint and run it again; there is no way to skip the simulation.",
@@ -386,30 +389,39 @@ export async function sign(args: string[], ctx: CommandContext): Promise<number>
     const signedBase64 = toBase64(wire)
     const txSignature = signatures[0]?.signature ?? ""
 
-    let broadcast: { ok: boolean; signature?: string; error?: string } | undefined
+    let broadcast: { ok: boolean; signature?: string; error?: string; uncertain?: true } | undefined
     if (parsed.booleans.has("--broadcast")) {
       try {
         await rpc.sendTransaction(signedBase64)
         broadcast = { ok: true, signature: txSignature }
       } catch (error) {
-        broadcast = { ok: false, error: error instanceof Error ? error.message : String(error) }
+        // BE-355 (D4): a rate limit on the send is the uncertain outcome. The client never
+        // re-sends; the transaction may still land under `txSignature`. Exit 3, not 1.
+        if (isRateLimited(error)) {
+          notePostSignatureRateLimit(ctx, txSignature)
+          broadcast = { ok: false, uncertain: true, error: error.message }
+        } else broadcast = { ok: false, error: describeRpcFailure(error) }
       }
     }
+    const rateLimited = broadcast?.uncertain === true
     if (ctx.json) {
       writeJson(deps, {
         ok: broadcast === undefined ? true : broadcast.ok,
-        ...(broadcast?.ok === false ? { code: "SIGN_BROADCAST_FAILED", message: broadcast.error } : {}),
+        ...(broadcast?.ok === false
+          ? { code: rateLimited ? "RPC_RATE_LIMITED" : "SIGN_BROADCAST_FAILED", message: broadcast.error }
+          : {}),
         signedTransaction: signedBase64,
         signature: txSignature,
         signers: signatures,
         display: lines,
         ...(broadcast ? { broadcast } : {}),
       })
-      return broadcast?.ok === false ? 1 : 0
+      return broadcast?.ok === false ? (rateLimited ? 3 : 1) : 0
     }
     deps.stdout.write(`${signedBase64}\n`)
     for (const s of signatures) deps.stderr.write(`signed by ${s.wallet}: ${s.signature}\n`)
     if (broadcast?.ok) deps.stderr.write(`broadcast: ${broadcast.signature}\n`)
+    if (rateLimited) return 3
     if (broadcast?.ok === false) {
       throw new VaultError(
         "SIGN_BROADCAST_FAILED",

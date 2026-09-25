@@ -23,6 +23,7 @@ import {
   findProgramAddress,
   isOnCurve,
   pubkeyFromSecret,
+  SolanaRpcError,
   serializeSignedTransaction,
   signMessage,
   systemTransfer,
@@ -328,7 +329,7 @@ describe("createSolanaRpc", () => {
       }
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: result[body.method] }), { status: 200 })
     }) as typeof fetch
-    const rpc = createSolanaRpc("https://rpc.test/", fetchFn)
+    const rpc = createSolanaRpc("https://rpc.test/", fetchFn, async () => {})
     expect(await rpc.getLatestBlockhash()).toBe(BLOCKHASH)
     expect(await rpc.getBalance("x")).toBe(5000n)
     expect(await rpc.getFeeForMessage("m")).toBe(5000n)
@@ -352,5 +353,110 @@ describe("createSolanaRpc", () => {
       "dHg=",
       { encoding: "base64", skipPreflight: false, preflightCommitment: "finalized", maxRetries: 3 },
     ])
+  })
+})
+
+/**
+ * BE-355 (D3, T7 to T9, T19): a rate-limited read is retried exactly once, after the server's
+ * `Retry-After` (capped at 10 s) or 2 s; a second rate-limited answer throws with `rateLimited`;
+ * `sendTransaction` and the `getProgramAccounts*` methods are never retried; and `sleep` is a
+ * required parameter, so a two-argument client cannot compile.
+ */
+describe("BE-355 D3: rate limits, one retry, then the named error", () => {
+  type Answer = { status: number; body?: unknown; headers?: Record<string, string> }
+
+  /** Answers in order; the last repeats. Records every request's method and every sleep. */
+  function scripted(answers: Answer[]) {
+    const seen: string[] = []
+    const sleeps: number[] = []
+    let at = 0
+    const fetchFn = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string; id: number }
+      seen.push(body.method)
+      const answer = answers[Math.min(at++, answers.length - 1)] as Answer
+      const payload = answer.status === 200 ? { jsonrpc: "2.0", id: body.id, ...(answer.body as object) } : "limited"
+      return new Response(typeof payload === "string" ? payload : JSON.stringify(payload), {
+        status: answer.status,
+        headers: answer.headers ?? {},
+      })
+    }) as typeof fetch
+    const rpc = createSolanaRpc("https://rpc.test/", fetchFn, async (ms) => {
+      sleeps.push(ms)
+    })
+    return { rpc, seen, sleeps }
+  }
+  const limited = (headers?: Record<string, string>): Answer => ({ status: 429, headers })
+  const balance = (value: number): Answer => ({ status: 200, body: { result: { value } } })
+
+  test("T7: 429 twice is two requests, one 2 s sleep, and a SolanaRpcError with rateLimited", async () => {
+    const s = scripted([limited(), limited()])
+    const error = await s.rpc.getBalance("x").catch((e) => e)
+    expect(error).toBeInstanceOf(SolanaRpcError)
+    expect((error as SolanaRpcError).rateLimited).toBe(true)
+    expect((error as SolanaRpcError).status).toBe(429)
+    expect(s.seen).toEqual(["getBalance", "getBalance"])
+    expect(s.sleeps).toEqual([2000])
+  })
+
+  test("T7: Retry-After is honoured, capped at 10 s", async () => {
+    const three = scripted([limited({ "retry-after": "3" }), limited()])
+    await three.rpc.getBalance("x").catch(() => undefined)
+    expect(three.sleeps).toEqual([3000])
+    const sixty = scripted([limited({ "retry-after": "60" }), limited()])
+    await sixty.rpc.getBalance("x").catch(() => undefined)
+    expect(sixty.sleeps).toEqual([10000])
+  })
+
+  test("T7: 429 then 200 is the value, after one sleep", async () => {
+    const s = scripted([limited(), balance(5000)])
+    expect(await s.rpc.getBalance("x")).toBe(5000n)
+    expect(s.seen).toEqual(["getBalance", "getBalance"])
+    expect(s.sleeps).toEqual([2000])
+  })
+
+  test("T8: HTTP 429, RPC -32429, and a 'Too many requests' message are each rateLimited; -32602 is not", async () => {
+    const rpcError = (code: number, message: string): Answer => ({ status: 200, body: { error: { code, message } } })
+    const shapes: Array<[Answer, boolean]> = [
+      [limited(), true],
+      [rpcError(-32429, "rate limited"), true],
+      [rpcError(-32602, "Too many requests for a specific RPC call"), true],
+      [rpcError(-32602, "Invalid params"), false],
+    ]
+    for (const [answer, expected] of shapes) {
+      const s = scripted([answer, answer])
+      const error = (await s.rpc.getBalance("x").catch((e) => e)) as SolanaRpcError
+      expect(error).toBeInstanceOf(SolanaRpcError)
+      expect([answer, error.rateLimited]).toEqual([answer, expected])
+      // A rate limit is retried once; anything else is not.
+      expect([answer, s.seen.length]).toEqual([answer, expected ? 2 : 1])
+    }
+  })
+
+  test("T9: sendTransaction and the role-check methods are never retried", async () => {
+    const send = scripted([limited()])
+    const sendError = (await send.rpc.sendTransaction("dHg=").catch((e) => e)) as SolanaRpcError
+    expect(sendError.rateLimited).toBe(true)
+    expect(send.seen).toEqual(["sendTransaction"])
+    expect(send.sleeps).toEqual([])
+
+    const v2 = scripted([limited()])
+    await v2.rpc.getProgramAccountsV2("prog", []).catch(() => undefined)
+    expect(v2.seen).toEqual(["getProgramAccountsV2"])
+    expect(v2.sleeps).toEqual([])
+
+    const v1 = scripted([limited()])
+    await v1.rpc.getProgramAccounts("prog", []).catch(() => undefined)
+    expect(v1.seen).toEqual(["getProgramAccounts"])
+    expect(v1.sleeps).toEqual([])
+  })
+
+  test("T19: sleep is required: a two-argument client is a type error, so every site retries", () => {
+    const fetchFn = (() => {
+      throw new Error("never called")
+    }) as unknown as typeof fetch
+    const twoArguments = () =>
+      // @ts-expect-error sleep is required (BE-355 D3)
+      createSolanaRpc("https://rpc.test/", fetchFn)
+    expect(typeof twoArguments).toBe("function")
   })
 })

@@ -397,6 +397,13 @@ export interface SolanaRpc {
   simulateTransaction(txBase64: string, addresses: string[]): Promise<SimulationResult>
   getFeeForMessage(messageBase64: string): Promise<bigint | null>
   getMinimumBalanceForRentExemption(size: number): Promise<bigint>
+  /**
+   * BE-355 (D3): a mint's decimals, as `getTokenSupply` answers them at `confirmed`. The trading
+   * commands read this before sizing an amount; it moved here from `trading.ts`'s own `rpc()`
+   * helper so the read gets the same rate-limit detection and retry as every other. The caller
+   * validates the value (a non-integer or an absent one is its `INVALID_RESPONSE`).
+   */
+  getTokenSupply(mint: string): Promise<{ decimals?: unknown }>
   sendTransaction(txBase64: string): Promise<string>
   getSignatureStatus(signature: string): Promise<{ confirmationStatus: string | null; err: unknown } | null>
   /**
@@ -504,13 +511,56 @@ export class SolanaRpcError extends Error {
   readonly status?: number
   readonly retryAfterMs?: number
   readonly rpcCode?: number
+  /**
+   * BE-355 (D3): whether this answer was a rate limit, derived once from the three facts above so
+   * every caller asks one question. Any of: HTTP 429; JSON-RPC `error.code` -32429; a JSON-RPC
+   * `error.message` matching "too many requests" (some providers answer HTTP 200 with that).
+   */
+  readonly rateLimited: boolean
   constructor(message: string, facts: { status?: number; retryAfterMs?: number; rpcCode?: number } = {}) {
     super(message)
     this.name = "SolanaRpcError"
     this.status = facts.status
     this.retryAfterMs = facts.retryAfterMs
     this.rpcCode = facts.rpcCode
+    this.rateLimited =
+      facts.status === 429 || facts.rpcCode === RPC_RATE_LIMIT_CODE || /too many requests/i.test(message)
   }
+}
+
+/** The JSON-RPC error code some providers answer a rate limit with, beside or instead of HTTP 429. */
+export const RPC_RATE_LIMIT_CODE = -32429
+
+/**
+ * BE-355 (D3): the wait before the one retry of a rate-limited read. `Retry-After` when the server
+ * sent one, capped at 10 s; otherwise 2 s. Exported so the client test pins the three cases.
+ */
+export const RPC_RETRY_DEFAULT_MS = 2_000
+export const RPC_RETRY_CAP_MS = 10_000
+
+export function rpcRetryDelayMs(error: SolanaRpcError): number {
+  return Math.min(error.retryAfterMs ?? RPC_RETRY_DEFAULT_MS, RPC_RETRY_CAP_MS)
+}
+
+/**
+ * The methods `createSolanaRpc` never retries (D3, decision 4). `sendTransaction`: never an
+ * automatic re-send, even of the same bytes. The two `getProgramAccounts` forms: their 429 policy
+ * belongs to the signer-role scheduler (`vault/signer-roles.ts`, BE-296 D7), which is unchanged.
+ */
+const NEVER_RETRIED = new Set(["sendTransaction", "getProgramAccounts", "getProgramAccountsV2"])
+
+/**
+ * What a rate-limited answer said, for the one sentence that names it: `HTTP 429`, `RPC -32429`,
+ * or the quoted "Too many requests".
+ */
+export function describeRateLimit(error: SolanaRpcError): string {
+  if (error.status === 429) return "HTTP 429"
+  if (error.rpcCode === RPC_RATE_LIMIT_CODE) return `RPC ${RPC_RATE_LIMIT_CODE}`
+  return '"Too many requests"'
+}
+
+export function isRateLimited(error: unknown): error is SolanaRpcError {
+  return error instanceof SolanaRpcError && error.rateLimited
 }
 
 /** `Retry-After` as milliseconds: delta-seconds, or an HTTP date; `undefined` when absent or unreadable. */
@@ -567,10 +617,26 @@ function rawAccountView(value: RawAccount | null, address: string): AccountView 
  * The narrowest JSON-RPC client the sweep needs, over the injected `fetch`. Every call is a POST
  * of one request; a non-2xx or an `error` member throws with the RPC's code/message only (never
  * the request body, which for sendTransaction is a signed transaction).
+ *
+ * BE-355 (D3): a rate-limited answer to a read is retried exactly once, after `rpcRetryDelayMs`
+ * through `sleep`; a second rate-limited answer throws the `SolanaRpcError` with `rateLimited`.
+ * `sendTransaction` and the `getProgramAccounts*` methods are never retried (`NEVER_RETRIED`).
+ * `sleep` is a required positional parameter with no default on purpose: a default would compile
+ * at every two-argument site and silently opt that site out of the retry, so the compiler is what
+ * finds every caller (T19). Every site passes `deps.sleep`, which a test can make instant.
  */
-export function createSolanaRpc(url: string, fetchFn: typeof fetch): SolanaRpc {
+export function createSolanaRpc(url: string, fetchFn: typeof fetch, sleep: (ms: number) => Promise<void>): SolanaRpc {
   let id = 0
   async function call<T>(method: string, params: unknown[], signal?: AbortSignal): Promise<T> {
+    try {
+      return await once<T>(method, params, signal)
+    } catch (error) {
+      if (!isRateLimited(error) || NEVER_RETRIED.has(method)) throw error
+      await sleep(rpcRetryDelayMs(error))
+      return await once<T>(method, params, signal)
+    }
+  }
+  async function once<T>(method: string, params: unknown[], signal?: AbortSignal): Promise<T> {
     id += 1
     const res = await fetchFn(url, {
       method: "POST",
@@ -703,6 +769,15 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch): SolanaRpc {
             : accounts.map((account, i) => rawAccountView(account, addresses[i] ?? "")),
         ...(Number.isSafeInteger(value.unitsConsumed) ? { unitsConsumed: value.unitsConsumed as number } : {}),
       }
+    },
+    async getTokenSupply(mint) {
+      const r = await call<{ value?: { decimals?: unknown } | null }>("getTokenSupply", [
+        mint,
+        { commitment: "confirmed" },
+      ])
+      if (!r?.value || typeof r.value !== "object")
+        throw new SolanaRpcError("RPC getTokenSupply answered without a value")
+      return { decimals: r.value.decimals }
     },
     async sendTransaction(txBase64) {
       return await call<string>("sendTransaction", [

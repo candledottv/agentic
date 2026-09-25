@@ -31,6 +31,7 @@ import { DAMM_V2_PROGRAM_ID } from "../lp-close"
 import { SYSTEM_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import {
   createCapture,
+  createFakeConfigStore,
   createFakeStore,
   createRoutedFetch,
   createTestDeps,
@@ -487,7 +488,8 @@ describe("the store written before the tee rename (hot-wallets.enc)", () => {
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
     expect(await run(["tee", "status", TEE, "--json"], deps)).toBe(0)
     expect(JSON.parse(stdout.text.trim()).localState).toBe("local-only")
-    expect(calls).toHaveLength(0)
+    // BE-355: the balances are always read, here over the public default (unrouted in this fixture).
+    expect(calls.map((call) => new URL(call.url).host)).toEqual(["api.mainnet-beta.solana.com"])
   })
 
   test("the first write keeps the old key and rewrites the file under the current marker", async () => {
@@ -708,14 +710,19 @@ describe("tee status (T21 partial, T29)", () => {
     expect(typeof parsed.observedAt).toBe("string")
   })
 
-  test("a local-only wallet reports without any network call", async () => {
+  test("a local-only wallet makes no Candle call; its balances are read over the resolved endpoint (BE-355)", async () => {
     const dir = await tempDir()
     await seedTeeStore(dir, [teeEntry()])
     const { fetch, calls } = createRoutedFetch({})
-    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
+    const { deps, stdout, stderr } = depsFor(dir, fetch, [PASSPHRASE])
     expect(await run(["tee", "status", TEE, "--json"], deps)).toBe(0)
-    expect(JSON.parse(stdout.text.trim()).localState).toBe("local-only")
-    expect(calls).toHaveLength(0)
+    const report = JSON.parse(stdout.text.trim())
+    expect(report.localState).toBe("local-only")
+    // The only request is the balance read, over the public default, disclosed first on stderr.
+    // Unrouted here, so the report carries the failure and the command still exits 0.
+    expect(calls.map((call) => new URL(call.url).host)).toEqual(["api.mainnet-beta.solana.com"])
+    expect(typeof report.balances.error).toBe("string")
+    expect(stderr.text).toContain("Solana RPC: api.mainnet-beta.solana.com (public default)")
   })
 })
 
@@ -1243,6 +1250,100 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
     const { fetch, calls } = createRoutedFetch({})
     expect(await run(["tee", "sweep", TEE, "--rpc-url", "http://rpc.example/"], depsFor(dir, fetch, []).deps)).toBe(2)
     expect(calls).toHaveLength(0)
+  })
+})
+
+/**
+ * BE-355 (T10, T11). `tee status` reports a rate limit that survived the retry in `balances.error`
+ * with the fix (D3's partial-read shape). `tee sweep`'s pre-signature reads keep D3's "uncertain"
+ * classification: with every read rate-limited it signs nothing and exits 3. A rate limit on the
+ * send is D4's uncertain outcome: exit 3, exactly one send, the pending record kept in the sealed
+ * entry, and the fix line on stderr, in the pre-profile form and in the profile form.
+ */
+describe("BE-355: rate limits (T10, T11)", () => {
+  const PRE_PROFILE_FIX = [
+    "--rpc-url https://<your-rpc> on this command, or CANDLE_SOLANA_RPC_URL for every command",
+    "or sign in (candle auth login) to store one per profile",
+  ]
+  const limitedRpc = (seen: string[]) => (req: { init: { body?: BodyInit | null } }) => {
+    seen.push((JSON.parse(String(req.init.body)) as { method: string }).method)
+    return new Response("rate limited", { status: 429 })
+  }
+
+  test("T10: tee status carries RPC_RATE_LIMITED and the fix in balances.error, after one retry, exit 0", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [teeEntry()])
+    const seen: string[] = []
+    const { fetch } = createRoutedFetch({ "/rpc": limitedRpc(seen) })
+    const { deps, stdout, stderr } = depsFor(dir, fetch, [PASSPHRASE])
+    expect(await run(["tee", "status", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    const report = JSON.parse(stdout.text.trim())
+    expect(report.balances.error).toBe(`RPC_RATE_LIMITED (HTTP 429, retried once). Fix: ${PRE_PROFILE_FIX.join(", ")}`)
+    expect(seen).toEqual(["getBalance", "getBalance"])
+    expect(stderr.text).toContain("Solana RPC: rpc.test (--rpc-url)")
+    expect(stderr.text).not.toContain(RPC)
+  })
+
+  test("T10: tee sweep with every read rate-limited signs nothing: no send, exit 3, no pending record", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const seen: string[] = []
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/rpc": limitedRpc(seen),
+    })
+    const { deps } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(3)
+    expect(seen.length).toBeGreaterThan(0)
+    expect(seen).not.toContain("sendTransaction")
+    expect((await openStore(dir)).entries[0]?.tee?.sweepPending ?? []).toEqual([])
+  })
+
+  async function rateLimitedSend(extra: Record<string, unknown> = {}) {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const rpc = defaultRpcState({ lamports: 1_000_000, fee: 5_000 })
+    const base = rpcHandler(rpc)
+    const seen: string[] = []
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/rpc": (req) => {
+        const body = JSON.parse(String(req.init.body)) as { method: string }
+        seen.push(body.method)
+        if (body.method === "sendTransaction") return new Response("rate limited", { status: 429 })
+        return base(req)
+      },
+    })
+    const { deps, stderr } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)], extra)
+    const code = await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)
+    const pending = (await openStore(dir)).entries[0]?.tee?.sweepPending ?? []
+    return { code, seen, stderr, pending }
+  }
+
+  test("T11: a rate-limited send exits 3 with one send, the pending record kept, and D3's pre-profile fix", async () => {
+    const t = await rateLimitedSend()
+    expect(t.code).toBe(3)
+    expect(t.seen.filter((m) => m === "sendTransaction")).toHaveLength(1)
+    expect(t.pending).toHaveLength(1)
+    const signature = t.pending[0]?.signature
+    expect(t.stderr.text).toContain(
+      `The RPC rate-limited this CLI after the transaction was signed. It may still land: check ${signature} before anything else.\nFix: ${PRE_PROFILE_FIX[0]}\n     ${PRE_PROFILE_FIX[1]}\n`,
+    )
+    expect(t.stderr.text).not.toContain("profile set")
+    expect(t.stderr.text).not.toContain("<name>")
+  })
+
+  test("T11: with acting profile work the fix names candle profile set work", async () => {
+    const t = await rateLimitedSend({
+      store: createFakeStore({ "profile:work:api_key": "ck_live_x" }),
+      ...createFakeConfigStore({ profiles: { work: {} }, activeProfile: "work" }),
+    })
+    expect(t.code).toBe(3)
+    expect(t.seen.filter((m) => m === "sendTransaction")).toHaveLength(1)
+    expect(t.pending).toHaveLength(1)
+    expect(t.stderr.text).toContain(
+      `check ${t.pending[0]?.signature} before anything else.\nFix: candle profile set work --rpc-url https://<your-rpc>\n`,
+    )
   })
 })
 

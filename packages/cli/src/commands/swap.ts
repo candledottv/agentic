@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { writeLocalFailure, writeUsageFailure } from "../render"
-import { createSolanaRpc, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
+import { describeRpcFailure, type SolanaClient } from "../solana-endpoint"
+import { isRateLimited, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
 import {
   BASES,
   baseAsset,
@@ -17,27 +18,65 @@ import {
   rawAmount,
   relaySign,
   request,
-  rpc,
-  rpcUrl,
   safeText,
   savedOperation,
   solanaAsset,
   swapBuildSchema,
   TradingError,
+  TradingUsage,
   tradingKey,
   tradingPayer,
+  tradingRateLimited,
+  tradingSolanaClient,
 } from "../trading"
 
+/**
+ * One failure envelope for every trading command. Exit 1, except the one uncertain outcome
+ * (BE-355, D4): a `TradingError` that carries exit 3, a rate limit after a signature. A
+ * `TradingUsage` (an endpoint that fails validation) is the `USAGE` envelope, exit 2.
+ */
 export function tradingFailure(ctx: CommandContext, error: unknown, id?: string): number {
+  if (error instanceof TradingUsage) {
+    writeUsageFailure(ctx.deps, error.message, ctx.json)
+    return 2
+  }
   writeLocalFailure(
     ctx.deps,
     {
       code: error instanceof TradingError ? error.code : "TRADING_FAILED",
-      message: `${error instanceof Error ? error.message : "Trading failed."}${id ? ` Operation ${id}; use candle swap status ${id} before another attempt.` : ""}`,
+      // BE-355 (invariant 1): a connect failure's message may carry the endpoint URL; strip it.
+      message: `${error instanceof Error ? describeRpcFailure(error) : "Trading failed."}${id ? ` Operation ${id}; use candle swap status ${id} before another attempt.` : ""}`,
+      ...(error instanceof TradingError && error.suggestion ? { suggestion: error.suggestion } : {}),
     },
     ctx.json,
   )
-  return 1
+  return error instanceof TradingError ? error.exitCode : 1
+}
+
+/**
+ * The Solana client a trading command resolves only when a read actually needs one (BE-355): a
+ * base-asset swap makes no RPC request, so an endpoint that fails validation must not refuse it.
+ * Resolved once; every later call returns the same client, so the host line prints once.
+ */
+export function lazySolanaClient(ctx: CommandContext, flag: string | undefined): () => Promise<SolanaClient> {
+  let pending: Promise<SolanaClient> | undefined
+  return () => {
+    pending ??= tradingSolanaClient(ctx, flag)
+    return pending
+  }
+}
+
+/**
+ * One read before any signature: a rate limit that survived the client's retry is D3's
+ * `RPC_RATE_LIMITED`, exit 1, nothing signed or sent. The client disclosed the host on the request.
+ */
+export async function tradingRead<T>(ctx: CommandContext, client: SolanaClient, read: () => Promise<T>): Promise<T> {
+  try {
+    return await read()
+  } catch (error) {
+    if (isRateLimited(error)) throw tradingRateLimited(ctx, client.endpoint.host, error)
+    throw error
+  }
 }
 export function printTradingResult(ctx: CommandContext, result: Json): number {
   ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(result)}\n` : `${JSON.stringify(result, null, 2)}\n`)
@@ -99,10 +138,21 @@ export async function swapStatus(args: string[], ctx: CommandContext): Promise<n
     return tradingFailure(ctx, error)
   }
 }
-export async function decimalsFor(ctx: CommandContext, asset: string, url?: string): Promise<number> {
+export async function decimalsFor(
+  ctx: CommandContext,
+  asset: string,
+  client: () => Promise<SolanaClient>,
+): Promise<number> {
   if (BASES[asset]) return BASES[asset].decimals
-  const result = await rpc(ctx, rpcUrl(ctx, url), "getTokenSupply", [asset, { commitment: "confirmed" }])
-  const decimals = (result.value as { decimals?: number } | undefined)?.decimals
+  const reader = await client()
+  let result: { decimals?: unknown }
+  try {
+    result = await tradingRead(ctx, reader, () => reader.rpc.getTokenSupply(asset))
+  } catch (error) {
+    if (error instanceof TradingError) throw error
+    throw new TradingError("RPC_FAILED", "Solana getTokenSupply failed; no automatic re-send was made.")
+  }
+  const decimals = result.decimals
   if (typeof decimals !== "number" || !Number.isInteger(decimals) || decimals < 0 || decimals > 18)
     throw new TradingError("INVALID_RESPONSE", "RPC returned invalid mint decimals.")
   return decimals
@@ -200,20 +250,23 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
         "The embedded wallet cannot swap between base assets from this command yet: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a TEE wallet for a base pair.",
       )
     const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address }
-    const decimals = await decimalsFor(ctx, from, flags["--rpc-url"])
-    const outDecimals = await decimalsFor(ctx, to, flags["--rpc-url"])
+    const solana = lazySolanaClient(ctx, flags["--rpc-url"])
+    const decimals = await decimalsFor(ctx, from, solana)
+    const outDecimals = await decimalsFor(ctx, to, solana)
     let amountRaw: string
     if (percent !== undefined) {
-      const reader = createSolanaRpc(rpcUrl(ctx, flags["--rpc-url"]), ctx.deps.fetch)
+      const reader = await solana()
       let balance: bigint
-      if (from === "SOL") balance = await reader.getBalance(wallet.address)
+      if (from === "SOL") balance = await tradingRead(ctx, reader, () => reader.rpc.getBalance(wallet.address))
       else {
         const mint = BASES[from]?.mint ?? from
         const accounts = (
-          await Promise.all([
-            reader.getTokenAccountsByOwner(wallet.address, TOKEN_PROGRAM_ID),
-            reader.getTokenAccountsByOwner(wallet.address, TOKEN_2022_PROGRAM_ID),
-          ])
+          await tradingRead(ctx, reader, () =>
+            Promise.all([
+              reader.rpc.getTokenAccountsByOwner(wallet.address, TOKEN_PROGRAM_ID),
+              reader.rpc.getTokenAccountsByOwner(wallet.address, TOKEN_2022_PROGRAM_ID),
+            ]),
+          )
         ).flat()
         balance = accounts
           .filter((account) => account.mint === mint)

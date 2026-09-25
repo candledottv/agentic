@@ -20,10 +20,11 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from "@solana/web3.js"
+import type { Deps } from "../deps"
 import { run } from "../index"
 import { ADDRESS_LOOKUP_TABLE_PROGRAM_ID, decodeTransaction } from "../solana-alt"
 import { SYSTEM_PROGRAM_ID } from "../solana-lite"
-import { createCapture, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
+import { createCapture, createFakeConfigStore, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
 import type { KeyEntry } from "../vault/format"
 import { deriveSolanaKey, solanaExternalPath, solanaTeePath, solanaVaultPath } from "../vault/hd"
 import { closeVault, commitVault, freshKeyId, sealKeyBlob } from "../vault/store"
@@ -71,6 +72,8 @@ interface RpcScript {
   simulateErr?: unknown
   unreachable?: boolean
   sendFails?: boolean
+  /** BE-355 (T11): the send answers HTTP 429; the client never retries a send. */
+  sendRateLimited?: boolean
 }
 
 /** The scripted RPC: pre-state, post-state (what the simulation answers), tables, mints. */
@@ -104,6 +107,7 @@ function rpcFake(script: RpcScript) {
           })
         }
         case "sendTransaction":
+          if (script.sendRateLimited) return new Response("rate limited", { status: 429 })
           if (script.sendFails) {
             return jsonResponse(200, { id, jsonrpc: "2.0", error: { code: -32002, message: "Blockhash not found" } })
           }
@@ -170,12 +174,13 @@ async function vaultWithEveryRole() {
   return made
 }
 
-async function harness(rpc: ReturnType<typeof rpcFake>, input: Uint8Array) {
+async function harness(rpc: ReturnType<typeof rpcFake>, input: Uint8Array, extra: Partial<Deps> = {}) {
   const made = await vaultWithEveryRole()
   const stdout = createCapture()
   const stderr = createCapture()
   let secretPrompts = 0
   const deps = createTestDeps({
+    ...extra,
     fetch: rpc.fetch,
     stdout,
     stderr,
@@ -408,6 +413,48 @@ describe("candle sign: v0 with lookup tables, the display, the confirmation and 
     const h = await harness(rpcFake({ pre }), base64Of(wire))
     expect(await run(["sign", "--wallet", "trader", "--rpc-url", RPC, "--yes", "--json"], h.deps)).toBe(0)
     expect(JSON.parse(h.stdout.text.trim()).ok).toBe(true)
+  })
+})
+
+/**
+ * BE-355 (D4, T11): a rate limit on `--broadcast`'s send is the uncertain outcome: exit 3 (not 1),
+ * `RPC_RATE_LIMITED`, `broadcast.uncertain`, the signature and the signed transaction still in the
+ * document, exactly one send, and the fix line on stderr. Any other send failure is still
+ * `SIGN_BROADCAST_FAILED`, exit 1.
+ */
+describe("BE-355 T11: a rate-limited --broadcast", () => {
+  test("exit 3, RPC_RATE_LIMITED, broadcast.uncertain, one send, the fix on stderr; other send failures stay exit 1", async () => {
+    const wire = legacyTransfer(new PublicKey(external0.address))
+    const pre = { [external0.address]: systemPre(50_000), [recipient.toBase58()]: null }
+    const post = { [external0.address]: systemPre(44_000), [recipient.toBase58()]: systemPre(1_000) }
+
+    const limited = rpcFake({ pre, post, sendRateLimited: true })
+    const h = await harness(limited, base64Of(wire))
+    expect(await run(signArgs("--wallet", "trader", "--yes", "--broadcast", "--json"), h.deps)).toBe(3)
+    const body = JSON.parse(h.stdout.text.trim())
+    expect(body.ok).toBe(false)
+    expect(body.code).toBe("RPC_RATE_LIMITED")
+    expect(body.broadcast).toMatchObject({ ok: false, uncertain: true })
+    expect(typeof body.signature).toBe("string")
+    expect(typeof body.signedTransaction).toBe("string")
+    expect(limited.calls.filter((c) => c === "sendTransaction")).toHaveLength(1)
+    expect(h.stderr.text).toContain(
+      `The RPC rate-limited this CLI after the transaction was signed. It may still land: check ${body.signature} before anything else.\nFix: --rpc-url https://<your-rpc> on this command, or CANDLE_SOLANA_RPC_URL for every command\n     or sign in (candle auth login) to store one per profile\n`,
+    )
+    expect(h.stderr.text).not.toContain("profile set")
+
+    const withProfile = await harness(rpcFake({ pre, post, sendRateLimited: true }), base64Of(wire), {
+      ...createFakeConfigStore({ profiles: { work: {} }, activeProfile: "work" }),
+    })
+    expect(await run(signArgs("--wallet", "trader", "--yes", "--broadcast"), withProfile.deps)).toBe(3)
+    // Human mode: the signed transaction is still on stdout, and the fix names the profile.
+    expect(withProfile.stdout.text.trim().length).toBeGreaterThan(80)
+    expect(withProfile.stderr.text).toContain("Fix: candle profile set work --rpc-url https://<your-rpc>\n")
+
+    const failing = rpcFake({ pre, post, sendFails: true })
+    const k = await harness(failing, base64Of(wire))
+    expect(await run(signArgs("--wallet", "trader", "--yes", "--broadcast", "--json"), k.deps)).toBe(1)
+    expect(JSON.parse(k.stdout.text.trim()).code).toBe("SIGN_BROADCAST_FAILED")
   })
 })
 

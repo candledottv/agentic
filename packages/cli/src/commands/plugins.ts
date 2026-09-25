@@ -12,8 +12,8 @@
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { findPlugin, listPlugins, pluginEnvironment, splitPluginArgs } from "../plugins"
-import { effectiveProfileFields } from "../profiles"
 import { renderTable, writeLocalFailure, writeUsageFailure } from "../render"
+import { resolveSolanaEndpoint } from "../solana-endpoint"
 import { closeVault } from "../vault/store"
 import { secretRef } from "./secrets"
 import {
@@ -140,10 +140,18 @@ export async function runPlugin(name: string, rawArgs: string[], ctx: CommandCon
     if (resolved !== 0) return resolved
   }
 
-  const profile = effectiveProfileFields(await ctx.deps.readConfig(), ctx.profile)
+  // BE-355 (D6): the resolver's first sources in decision 5's order, CANDLE_SOLANA_RPC_URL then
+  // the profile's rpcUrl (`--rpc-url` is not a CLI flag on a plug-in invocation). The public
+  // default is NOT injected: the CLI makes no request on a plug-in's behalf, so it could neither
+  // disclose the host before the plug-in's first request nor turn its 429 into RPC_RATE_LIMITED.
+  const endpoint = resolveSolanaEndpoint(ctx, undefined, await ctx.deps.readConfig())
+  if ("error" in endpoint) {
+    writeUsageFailure(ctx.deps, endpoint.error, ctx.json)
+    return 2
+  }
   const env = pluginEnvironment({
     parentEnv: ctx.deps.env,
-    rpcUrl: profile.rpcUrl ?? (ctx.deps.env.CANDLE_SOLANA_RPC_URL?.trim() || undefined),
+    rpcUrl: endpoint.source === "default" ? undefined : endpoint.url,
     network: PLUGIN_NETWORK,
     wallets,
     secrets,

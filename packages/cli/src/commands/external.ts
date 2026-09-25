@@ -17,7 +17,7 @@
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
-import { createSolanaRpc } from "../solana-lite"
+import { openSolanaClient } from "../solana-endpoint"
 import { assertRecoverableFactorExists } from "../vault/domains"
 import { VaultError } from "../vault/errors"
 import type { KeyEntry } from "../vault/format"
@@ -34,7 +34,6 @@ import {
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
-  rpcUrlFrom,
   runVaultCommand,
   unlockInteractively,
   usage,
@@ -170,7 +169,7 @@ export async function externalNew(args: string[], ctx: CommandContext): Promise<
         `  format      the vault is now version 3 (the external branch); a CLI before 0.12 refuses to open it\n`,
       )
     }
-    deps.stdout.write(`Fund it from the vault with: candle vault fund ${label} --amount <n> --rpc-url <url>\n`)
+    deps.stdout.write(`Fund it from the vault with: candle vault fund ${label} --amount <n>\n`)
     return 0
   })
 }
@@ -233,14 +232,15 @@ export async function externalSweep(args: string[], ctx: CommandContext): Promis
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [source, extra] = parsed.positionals
   if (!source || extra !== undefined) {
-    return usage(ctx, "Usage: candle external sweep <external> --to <vault> --rpc-url <url>")
+    return usage(ctx, "Usage: candle external sweep <external> --to <vault> [--rpc-url <url>]")
   }
   // Both entries are named on the command (R6): there is no default destination, and a vault with
   // several receive keys never silently chooses one.
   const to = parsed.values["--to"]
   if (!to) return usage(ctx, "--to <vault> is required: the vault receive key everything is sent to (never inferred).")
-  const rpcUrl = rpcUrlFrom(ctx, parsed)
-  if (typeof rpcUrl !== "string") return usage(ctx, rpcUrl.error)
+  // BE-355 (D1): the resolved Solana endpoint, validated before the prompt.
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
+  if ("error" in solana) return usage(ctx, solana.error)
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "external sweep")) return 1
 
@@ -290,10 +290,9 @@ export async function externalSweep(args: string[], ctx: CommandContext): Promis
 
     const secret = await decryptKey(vault, sourceEntry.id)
     try {
-      const rpc = createSolanaRpc(rpcUrl, deps.fetch)
       const outcome = await sweepEverythingTo({
-        rpc,
-        deps,
+        rpc: solana.rpc,
+        ctx,
         secret64: secret,
         owner: sourceEntry.address,
         destination: destination.address,

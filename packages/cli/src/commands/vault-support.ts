@@ -10,6 +10,7 @@ import { dirname } from "node:path"
 import { isUsageError, type ParsedArgs } from "../args"
 import type { CommandContext, Deps } from "../deps"
 import { writeLocalFailure, writeUsageFailure } from "../render"
+import { describeRpcFailure } from "../solana-endpoint"
 import { safeText } from "../trading"
 import { type EnclaveSession, openEnclaveSession, pinnedHelperIdentity, unwrapKekWithEnclave } from "../vault/enclave"
 import { isVaultError, VaultError } from "../vault/errors"
@@ -1069,11 +1070,9 @@ export function writeVaultFailure(ctx: CommandContext, error: unknown): number {
     )
     return error.exitCode
   }
-  writeLocalFailure(
-    ctx.deps,
-    { code: "VAULT_UNREADABLE", message: error instanceof Error ? error.message : String(error) },
-    ctx.json,
-  )
+  // BE-355 (invariant 1): an unknown error may be a connect failure whose message carries the
+  // endpoint URL, key and all; the URL is stripped before it is printed.
+  writeLocalFailure(ctx.deps, { code: "VAULT_UNREADABLE", message: describeRpcFailure(error) }, ctx.json)
   return 1
 }
 
@@ -1108,25 +1107,6 @@ export async function runVaultCommand(
 /** One JSON value on stdout, as the CLI's agent contract requires. Never carries a secret. */
 export function writeJson(deps: Deps, value: unknown): void {
   deps.stdout.write(`${JSON.stringify(value)}\n`)
-}
-
-/** The user's own Solana RPC: `--rpc-url`, else `CANDLE_SOLANA_RPC_URL` (the rule `candle tee` uses). */
-export const RPC_URL_ENV = "CANDLE_SOLANA_RPC_URL"
-
-export function rpcUrlFrom(ctx: CommandContext, parsed: ParsedArgs): string | { error: string } {
-  const url = parsed.values["--rpc-url"] ?? ctx.deps.env[RPC_URL_ENV]?.trim()
-  if (!url) return { error: `--rpc-url <url> is required (or set ${RPC_URL_ENV}).` }
-  let parsedUrl: URL
-  try {
-    parsedUrl = new URL(url)
-  } catch {
-    return { error: `--rpc-url is not a valid URL: ${url}` }
-  }
-  const local = parsedUrl.hostname === "127.0.0.1" || parsedUrl.hostname === "localhost"
-  if (parsedUrl.protocol !== "https:" && !(parsedUrl.protocol === "http:" && local)) {
-    return { error: "--rpc-url must be https:// (plain http is allowed only for 127.0.0.1 / localhost)." }
-  }
-  return url
 }
 
 /**

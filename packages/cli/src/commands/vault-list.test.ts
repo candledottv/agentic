@@ -8,9 +8,10 @@
  * 304-key vault, and `getMultipleAccounts` is the only method") an assertion rather than a promise.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
+import type { CliConfig } from "../config"
 import type { Deps } from "../deps"
 import { run } from "../index"
-import { createCapture, createTestDeps } from "../test-support"
+import { createCapture, createFakeConfigStore, createTestDeps } from "../test-support"
 import type { IndexPlaintext, KeyEntry } from "../vault/format"
 import { closeVault, commitVault } from "../vault/store"
 import { FIXTURE_PASSPHRASE, makeVault, testClock, useCheapKdf } from "../vault/test-vault"
@@ -108,6 +109,8 @@ interface Harness {
   stdout: ReturnType<typeof createCapture>
   stderr: ReturnType<typeof createCapture>
   asked: string[]
+  /** BE-355 (T16): the host of every Solana request, in order. */
+  hosts: string[]
   /** Every Solana JSON-RPC request the run made, in order: its method and the addresses it asked for. */
   calls: { method: string; addresses: string[] }[]
   /** Phase 4a (E10): every EVM JSON-RPC request, with the host it went to. */
@@ -122,8 +125,9 @@ const EVM_FIXTURE = "0x000000000000000000000000000000000000dEaD"
 
 /**
  * A scripted RPC. `lamports` answers per address; `failCall` is the 1-based call that answers HTTP
- * 429, which is how D11's partial read is produced -- one CALL fails, not one address inside a
- * call, because that is the unit `getMultipleAccounts` throws at.
+ * 503, which is how D11's partial read is produced -- one CALL fails, not one address inside a
+ * call, because that is the unit `getMultipleAccounts` throws at. A 503 and not a 429: since
+ * BE-355 the client retries a 429 once, and `rateLimitCalls` is how that path is scripted (T13).
  */
 function harness(
   opts: {
@@ -133,6 +137,10 @@ function harness(
     secrets?: string[]
     lamports?: (address: string) => bigint
     failCall?: number
+    /** BE-355 (T13): the 1-based calls that answer HTTP 429; the client retries each once. */
+    rateLimitCalls?: number[]
+    /** BE-355 (T16): the config.json this run reads, for a profile's stored rpcUrl. */
+    config?: CliConfig
     /** Phase 4a: the EVM node. Answers per method; a missing answer falls back to Hood-shaped zeros. */
     evm?: (method: string, params: unknown[]) => unknown
   } = {},
@@ -140,6 +148,7 @@ function harness(
   const stdout = createCapture()
   const stderr = createCapture()
   const asked: string[] = []
+  const hosts: string[] = []
   const calls: { method: string; addresses: string[] }[] = []
   const evmCalls: Harness["evmCalls"] = []
   const secrets = [...(opts.secrets ?? [FIXTURE_PASSPHRASE])]
@@ -162,8 +171,10 @@ function harness(
       })
     }
     const addresses = body.method === "getMultipleAccounts" ? (body.params[0] as string[]) : []
+    hosts.push(new URL(String(input)).host)
     calls.push({ method: body.method, addresses })
-    if (opts.failCall === calls.length) return new Response("rate limited", { status: 429 })
+    if (opts.failCall === calls.length) return new Response("unavailable", { status: 503 })
+    if (opts.rateLimitCalls?.includes(calls.length)) return new Response("rate limited", { status: 429 })
     return new Response(
       JSON.stringify({
         jsonrpc: "2.0",
@@ -192,8 +203,9 @@ function harness(
       if (next === undefined) throw new Error(`promptSecret asked for more than the test scripted: ${text}`)
       return next
     },
+    ...(opts.config ? createFakeConfigStore(opts.config) : {}),
   })
-  return { deps, stdout, stderr, asked, calls, evmCalls }
+  return { deps, stdout, stderr, asked, hosts, calls, evmCalls }
 }
 
 const THREE_KEYS = [
@@ -643,7 +655,7 @@ describe("T10: a failed chunk does not lose the listing", () => {
     expect((rows[249] as string).endsWith("?")).toBe(true)
     expect(h.stdout.text).toContain("total  12.4821932 SOL across 200 of 250 keys read")
     expect(h.stderr.text).toContain("50 addresses could not be read: ")
-    expect(h.stderr.text).toContain("HTTP 429")
+    expect(h.stderr.text).toContain("HTTP 503")
     expect(h.stderr.text).toContain("Narrow with a filter, or use your own endpoint with --rpc-url.")
   })
 
@@ -668,7 +680,7 @@ describe("T10: a failed chunk does not lose the listing", () => {
     expect(body.balances.unavailable).toEqual(entries.slice(200).map((entry) => entry.address))
     // D11: the RPC's message is on stderr in this mode too, not only on the human path.
     expect(h.stderr.text).toContain("50 addresses could not be read: ")
-    expect(h.stderr.text).toContain("HTTP 429")
+    expect(h.stderr.text).toContain("HTTP 503")
     expect(h.stderr.text).toContain("Narrow with a filter, or use your own endpoint with --rpc-url.")
   })
 })
@@ -696,12 +708,17 @@ describe("the refusals §4.5 names, in the order they are decided", () => {
     expect(h.asked).toEqual([])
   })
 
-  test("--balances with no endpoint is rpcUrlFrom's refusal, before the prompt", async () => {
+  test("--balances with no endpoint reads over the public default, disclosed before the first request (BE-355)", async () => {
     const fx = await vaultWith(THREE_KEYS)
     const h = harness({ dir: fx.dir })
-    expect(await run(["vault", "list", "--balances"], h.deps)).toBe(2)
-    expect(h.stderr.text).toContain("--rpc-url <url> is required (or set CANDLE_SOLANA_RPC_URL).")
-    expect(h.asked).toEqual([])
+    expect(await run(["vault", "list", "--balances"], h.deps)).toBe(0)
+    expect(h.calls).toHaveLength(1)
+    const hostLine = h.stderr.text.indexOf("Solana RPC: api.mainnet-beta.solana.com (public default)")
+    expect(hostLine).toBeGreaterThan(-1)
+    expect(h.stderr.text.indexOf("Using the public Solana RPC")).toBeLessThan(hostLine)
+    expect(h.stderr.text.indexOf("Reading SOL for 3 addresses from api.mainnet-beta.solana.com")).toBeGreaterThan(
+      hostLine,
+    )
   })
 
   test("plain http is refused for a remote host, unchanged", async () => {
@@ -749,5 +766,60 @@ describe("T13: status keeps its keys, and `status --json` is untouched", () => {
       "restored",
       "rootExported",
     ])
+  })
+})
+
+/**
+ * BE-355 (T13, T16). A chunk still rate-limited after the client's own retry stops the read: the
+ * remaining chunks are not sent, their addresses read `?`, the exit is 3 with `complete: false`,
+ * and the stderr line carries `RPC_RATE_LIMITED` and the fix. A stored profile endpoint is used
+ * when neither the flag nor the env names one, disclosed as that profile's, with no notice.
+ */
+describe("BE-355: partial reads and the profile endpoint (T13, T16)", () => {
+  test("T13: the second chunk rate-limited twice: chunk 3 is never sent, exit 3, ? on chunks 2 and 3, the fix on stderr", async () => {
+    const entries = Array.from({ length: 250 }, (_, i) => entryAt(i, { label: `key-${i}` }))
+    const fx = await vaultWith(entries)
+    const h = harness({
+      dir: fx.dir,
+      lamports: (address) => (address === (entries[0] as KeyEntry).address ? 12_482_193_200n : 0n),
+      // Call 2 is chunk 2; call 3 is the client's retry of it. Chunk 3 would have been call 4.
+      rateLimitCalls: [2, 3],
+    })
+    expect(await run(["vault", "list", "--balances", "--rpc-url", RPC_URL, "--json"], h.deps)).toBe(3)
+    expect(h.calls).toHaveLength(3)
+    expect(h.calls.map((c) => c.addresses.length)).toEqual([100, 100, 100])
+    const body = JSON.parse(h.stdout.text) as {
+      entries: { lamports: string | null }[]
+      balances: { complete: boolean; unavailable: string[]; totalLamports: string }
+    }
+    expect(body.entries[0]?.lamports).toBe("12482193200")
+    expect(body.entries[99]?.lamports).toBe("0")
+    expect(body.entries[100]?.lamports).toBeNull()
+    expect(body.entries[249]?.lamports).toBeNull()
+    expect(body.balances.complete).toBe(false)
+    expect(body.balances.unavailable).toEqual(entries.slice(100).map((entry) => entry.address))
+    expect(h.stderr.text).toContain(
+      "150 addresses could not be read: RPC_RATE_LIMITED (HTTP 429, retried once). Fix: --rpc-url https://<your-rpc> on this command, or CANDLE_SOLANA_RPC_URL for every command, or sign in (candle auth login) to store one per profile.",
+    )
+
+    const human = harness({ dir: fx.dir, rateLimitCalls: [2, 3] })
+    expect(await run(["vault", "list", "--balances", "--rpc-url", RPC_URL], human.deps)).toBe(3)
+    const rows = human.stdout.text.split("\n").filter((line) => line.startsWith(STEM))
+    expect((rows[99] as string).endsWith("0")).toBe(true)
+    expect((rows[100] as string).endsWith("?")).toBe(true)
+    expect((rows[249] as string).endsWith("?")).toBe(true)
+  })
+
+  test("T16: a stored profile endpoint is used, disclosed as (profile work), with no notice", async () => {
+    const fx = await vaultWith(THREE_KEYS)
+    const h = harness({
+      dir: fx.dir,
+      config: { profiles: { work: { rpcUrl: "https://profile.rpc.test/v1/KEY" } }, activeProfile: "work" },
+    })
+    expect(await run(["vault", "list", "--balances"], h.deps)).toBe(0)
+    expect(h.hosts).toEqual(["profile.rpc.test"])
+    expect(h.stderr.text).toContain("Solana RPC: profile.rpc.test (profile work)")
+    expect(h.stderr.text).not.toContain("Using the public Solana RPC")
+    expect(h.stdout.text + h.stderr.text).not.toContain("KEY")
   })
 })

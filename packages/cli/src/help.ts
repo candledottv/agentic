@@ -83,7 +83,11 @@ export const ENVIRONMENT: EnvVar[] = [
     name: "CANDLE_KEYRING_PASSPHRASE",
     description: "Unlocks the encrypted-file backend where no OS keychain exists",
   },
-  { name: "CANDLE_SOLANA_RPC_URL", description: "Solana RPC endpoint, when --rpc-url is not given" },
+  {
+    name: "CANDLE_SOLANA_RPC_URL",
+    description:
+      "Solana RPC endpoint, when --rpc-url is not given. Beats the profile's (candle profile set <name> --rpc-url); the public endpoint when none is set",
+  },
   {
     name: "CANDLE_EVM_RPC_URL",
     description:
@@ -269,7 +273,7 @@ export const HELP: Record<string, Topic> = {
     ],
     flags: [
       { invocation: "--wallet <tee>", description: "The TEE wallet by id, address or unique label" },
-      { invocation: "--rpc-url <url>", description: "Your Solana RPC, for mint reads and the broadcast" },
+      { invocation: "--rpc-url <url>", description: "Your own Solana RPC (optional; see candle help profile)" },
       {
         invocation: "--client-trade-id <id>",
         description: "Idempotency: the same id never deposits or withdraws twice",
@@ -279,9 +283,9 @@ export const HELP: Record<string, Topic> = {
     ],
     examples: [
       "candle lp pools So11111111111111111111111111111111111111112",
-      "candle lp add <pool> --amount 0.5 SOL --wallet AgentOne --rpc-url https://<rpc>",
+      "candle lp add <pool> --amount 0.5 SOL --wallet AgentOne",
       "candle lp positions",
-      "candle lp remove <position> --percent 100 --wallet AgentOne --rpc-url https://<rpc>",
+      "candle lp remove <position> --percent 100 --wallet AgentOne",
     ],
     env: ENV_API,
   },
@@ -303,7 +307,7 @@ export const HELP: Record<string, Topic> = {
       { invocation: "--mint <mint>", description: "Any Solana mint, instead of --asset (vault destinations only)" },
       { invocation: "--amount <decimal|max>", description: "How much, or max for the whole spendable balance" },
       { invocation: "--wallet <tee>", description: "The TEE wallet the funds leave; optional with one payer" },
-      { invocation: "--rpc-url <url>", description: "Your own Solana RPC, to read a --mint's decimals" },
+      { invocation: "--rpc-url <url>", description: "Your own Solana RPC (optional; see candle help profile)" },
       { invocation: "--yes", description: "Skip the confirmation prompt (the destination is still printed)" },
     ],
     examples: [
@@ -340,7 +344,8 @@ export const HELP: Record<string, Topic> = {
     flags: [
       {
         invocation: "--rpc-url <url>",
-        description: "Your own Solana RPC, for the vault. Without it (or CANDLE_SOLANA_RPC_URL) the vault is not read",
+        description:
+          "Your Solana RPC, for the vault. Without one: CANDLE_SOLANA_RPC_URL, then the profile's, then the public endpoint",
       },
       KEYSTORE_FLAG,
     ],
@@ -447,16 +452,25 @@ export const HELP: Record<string, Topic> = {
       "A profile is a named set of credentials and an API URL: one per account, or one per environment. Every other command acts as the selected profile, and these manage the map itself.",
     usage: ["candle profile <subcommand> [flags]"],
     rows: [
-      { invocation: "list", description: "Profiles on this machine, with cached accounts" },
+      {
+        invocation: "list",
+        description: "Profiles on this machine, with cached accounts, and each one's Solana RPC host",
+      },
       { invocation: "add <name> --api-url <url>", description: "Create a profile before authenticating it" },
       { invocation: "use <name>", description: "Make a profile the active one" },
       { invocation: "rename <old> <new>", description: "Rename a profile" },
       { invocation: "remove <name> --yes", description: "Delete a profile and its stored credentials" },
+      {
+        invocation: "set <name> --rpc-url <url> | --clear-rpc-url",
+        description:
+          "This profile's Solana RPC, used when --rpc-url and CANDLE_SOLANA_RPC_URL are not given. Stored in config.json; only its host is ever shown",
+      },
     ],
     examples: [
       "candle profile list",
       "candle profile add staging --api-url https://staging.api.candle.tv",
       "candle profile use staging",
+      "candle profile set work --rpc-url https://<your-rpc>",
       "candle profile remove old --yes",
     ],
   },
@@ -492,7 +506,7 @@ export const HELP: Record<string, Topic> = {
         invocation:
           "restore --phrase [--own-passphrase] [--count <n>] [--tee-count <k>] [--external-count <e>] [--evm-count <m>] [--rpc-url <url>]",
         description:
-          "Rebuild a vault from the recovery phrase; it gets a new passphrase. --evm-count derives EVM indices 0..m-1 (default 0, never gap-scanned)",
+          "Rebuild a vault from the recovery phrase; it gets a new passphrase. --evm-count derives EVM indices 0..m-1 (default 0, never gap-scanned). A gap scan needs --rpc-url on this command; no default or stored endpoint is used for it",
       },
       {
         invocation: "reconcile-exposure",
@@ -521,7 +535,7 @@ export const HELP: Record<string, Topic> = {
         invocation:
           "transfer <to> --amount <n|max> --asset SOL|<mint>|ETH|USDG|<0x token> --from <label> [--rpc-url <url>]",
         description:
-          "Sign a transfer locally from a vault key or a promoted TEE wallet. From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key still needs --rpc-url",
+          "Sign a transfer locally from a vault key or a promoted TEE wallet. From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint",
       },
       {
         invocation:
@@ -530,16 +544,16 @@ export const HELP: Record<string, Topic> = {
           "Fresh TEE key, or promote one vault key in place. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked.",
       },
       {
-        invocation: "promote-batch --pairs-from <file> --rpc-url <url> [--to-key <prefix|label>] [--token-holdings]",
+        invocation: "promote-batch --pairs-from <file> [--rpc-url <url>] [--to-key <prefix|label>] [--token-holdings]",
         description:
           "Promote many vault keys in place: one unlock, one reviewed acknowledgement. Reads, over your RPC, whether each key is a token mint, freeze, program upgrade or stake authority (9 requests per key; public endpoints refuse the token scans). Multisig membership is not checked.",
       },
       {
-        invocation: "fund <tee-address|external> --amount <n> --asset SOL|USDC --rpc-url <url> [--from <label>]",
+        invocation: "fund <tee-address|external> --amount <n> --asset SOL|USDC [--rpc-url <url>] [--from <label>]",
         description: "Fund a TEE or external wallet from a vault key",
       },
       {
-        invocation: "demote <tee-address> --rpc-url <url> [--emergency]",
+        invocation: "demote <tee-address> [--rpc-url <url>] [--emergency]",
         description: "Disable then sweep a TEE wallet back to its pin",
       },
       {
@@ -593,8 +607,8 @@ export const HELP: Record<string, Topic> = {
       "candle vault list cn-s",
       "candle vault rename key-7 treasury-cold",
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
-      "candle vault promote-batch --pairs-from ./promote-plan.csv --rpc-url https://<rpc>",
-      "candle vault promote-batch --pairs-from ./promote-plan.csv --rpc-url https://<rpc> --to-key tr-01",
+      "candle vault promote-batch --pairs-from ./promote-plan.csv",
+      "candle vault promote-batch --pairs-from ./promote-plan.csv --to-key tr-01",
       "candle vault enroll security-key --label yubikey-a",
       "candle vault backup --to /Volumes/BACKUP/vault.enc",
       "candle vault backup --to icloud",
@@ -634,7 +648,7 @@ export const HELP: Record<string, Topic> = {
         description: 'Stop the agent; verified stop or pending, never "done" on a 200',
       },
       {
-        invocation: "sweep <address> --rpc-url <url> [--emergency]",
+        invocation: "sweep <address> [--rpc-url <url>] [--emergency]",
         description:
           "Sign locally and move everything to the pinned vault; closes DAMM v2 LP positions after verifying each server-built close (--emergency moves the position NFT instead, with no API)",
       },
@@ -649,7 +663,7 @@ export const HELP: Record<string, Topic> = {
     examples: [
       "candle tee new --label AgentOne",
       "candle tee status AgentOneAddress",
-      "candle tee sweep AgentOneAddress --rpc-url https://api.mainnet-beta.solana.com",
+      "candle tee sweep AgentOneAddress",
       "candle tee rebind tr-01 tr-02 --to-key Ab3dEf9h",
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
     ],
@@ -668,7 +682,7 @@ export const HELP: Record<string, Topic> = {
       },
       { invocation: "list", description: "The external wallets in the vault" },
       {
-        invocation: "sweep <external> --to <vault> --rpc-url <url>",
+        invocation: "sweep <external> --to <vault> [--rpc-url <url>]",
         description: "Send everything an external wallet holds back to a vault key",
       },
     ],
@@ -676,7 +690,7 @@ export const HELP: Record<string, Topic> = {
     examples: [
       "candle external new --label defi-tool",
       "candle external list",
-      "candle external sweep defi-tool --to treasury --rpc-url https://api.mainnet-beta.solana.com",
+      "candle external sweep defi-tool --to treasury",
     ],
     env: ENV_LOCAL_SIGNING,
   },

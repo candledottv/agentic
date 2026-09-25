@@ -247,7 +247,12 @@ function fakeRpc(answer: (seen: Seen) => Scripted | Promise<Scripted>): {
       }
     },
   })
-  return { rpc: createSolanaRpc("https://rpc.test/rpc", fetch), seen, inFlight: () => active, maxInFlight: () => max }
+  return {
+    rpc: createSolanaRpc("https://rpc.test/rpc", fetch, async () => {}),
+    seen,
+    inFlight: () => active,
+    maxInFlight: () => max,
+  }
 }
 
 /** The refusal Helius returned for the SPL Token and Token-2022 programs on 2026-09-23. */
@@ -513,7 +518,7 @@ describe("readSignerRoles: the scheduler (D7)", () => {
         () => jsonResponse(200, { jsonrpc: "2.0", id: 3, result: { value: 1 } }),
       ],
     })
-    const rpc = createSolanaRpc("https://rpc.test/rpc", fetch)
+    const rpc = createSolanaRpc("https://rpc.test/rpc", fetch, async () => {})
     const first = await rpc.getProgramAccounts(TOKEN_PROGRAM_ID, []).catch((error) => error)
     expect(first).toBeInstanceOf(SolanaRpcError)
     expect(first).toMatchObject({ status: 429, retryAfterMs: 3000, message: "RPC getProgramAccounts failed: HTTP 429" })
@@ -539,7 +544,7 @@ describe("readSignerRoles: the scheduler (D7)", () => {
         () => jsonResponse(200, { jsonrpc: "2.0", id: 3, result: { paginationKey: null } }),
       ],
     })
-    const rpc = createSolanaRpc("https://rpc.test/rpc", fetch)
+    const rpc = createSolanaRpc("https://rpc.test/rpc", fetch, async () => {})
     const first = await rpc.getProgramAccountsV2(TOKEN_PROGRAM_ID, filters)
     expect(first).toEqual({ pubkeys: [mint], paginationKey: "cursor-2" })
     const second = await rpc.getProgramAccountsV2(TOKEN_PROGRAM_ID, filters, { paginationKey: "cursor-2" })
@@ -815,7 +820,7 @@ describe("readSignerRoles: the scheduler (D7)", () => {
         () => jsonResponse(200, { jsonrpc: "2.0", id: 4, result: [{ pubkey: mint, account: {} }] }),
       ],
     })
-    const rpc = createSolanaRpc("https://rpc.test/rpc", fetch)
+    const rpc = createSolanaRpc("https://rpc.test/rpc", fetch, async () => {})
     const filters = tokenMintFilters(KEY_BYTES)
     const slice = { offset: 0, length: 4 }
     expect(await rpc.getProgramAccounts(TOKEN_PROGRAM_ID, filters, { dataSlice: slice })).toEqual([

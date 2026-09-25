@@ -10,13 +10,26 @@ import { apiRequest } from "./client"
 import type { CommandContext } from "./deps"
 import { resolveApiKey } from "./deps"
 import { storedSignerToPem, walletSignerRef } from "./secret-store"
+import { openSolanaClient, rateLimitedMessage, rateLimitedSuggestion, type SolanaClient } from "./solana-endpoint"
+import type { SolanaRpcError } from "./solana-lite"
 
 export class TradingError extends Error {
+  /** A fix the failure envelope carries beside the message, when there is one (BE-355, D3, D4). */
+  readonly suggestion?: string
+  /**
+   * 1 for every refusal, as always. 3 for the one uncertain outcome a trading command has: a rate
+   * limit after a signature (BE-355, D4), where the transaction may still land and nothing is
+   * re-sent. `tradingFailure` returns it.
+   */
+  readonly exitCode: 1 | 3
   constructor(
     public code: string,
     message: string,
+    opts: { suggestion?: string; exitCode?: 1 | 3 } = {},
   ) {
     super(message)
+    this.suggestion = opts.suggestion
+    this.exitCode = opts.exitCode ?? 1
   }
 }
 export type Json = Record<string, unknown>
@@ -423,27 +436,29 @@ export async function relaySign(
     throw new TradingError("INVALID_RESPONSE", "The relay did not return a base64 signed transaction.")
   return result.signedTransaction
 }
-export function rpcUrl(ctx: CommandContext, flag?: string): string {
-  const value = flag ?? ctx.deps.env.CANDLE_SOLANA_RPC_URL
-  if (!value || !/^https?:\/\//.test(value))
-    throw new TradingError(
-      "RPC_REQUIRED",
-      "Provide --rpc-url or CANDLE_SOLANA_RPC_URL for mint/balance reads or launch broadcast.",
-    )
-  return value
+/**
+ * BE-355 (D1, D3): the Solana client a trading command reads and broadcasts over. Resolved by the
+ * shared rule (`--rpc-url`, else `CANDLE_SOLANA_RPC_URL`, else the profile's, else the public
+ * endpoint); a value that fails validation is a usage refusal, exit 2, thrown as `TradingUsage`
+ * so the command's catch writes the `USAGE` envelope. `trading.ts`'s own looser `rpcUrl()` rule
+ * (any `^https?://`) and its `rpc()` helper, which parsed the body before looking at the status,
+ * are gone: the client detects and retries a rate limit the same way every other command does.
+ */
+export async function tradingSolanaClient(ctx: CommandContext, flag?: string): Promise<SolanaClient> {
+  const client = await openSolanaClient(ctx, flag)
+  if ("error" in client) throw new TradingUsage(client.error)
+  return client
 }
-export async function rpc(ctx: CommandContext, url: string, method: string, params: unknown[]): Promise<Json> {
-  const response = await ctx.deps.fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+/** A usage refusal decided inside a trading command's `try`: exit 2 and the `USAGE` envelope. */
+export class TradingUsage extends Error {}
+/**
+ * D3's refusal for a rate limit before any signature, as the trading commands throw it: the same
+ * code, message and suggestion a vault command's `RPC_RATE_LIMITED` carries, exit 1.
+ */
+export function tradingRateLimited(ctx: CommandContext, host: string, error: SolanaRpcError): TradingError {
+  return new TradingError("RPC_RATE_LIMITED", rateLimitedMessage(host, error), {
+    suggestion: rateLimitedSuggestion(ctx),
   })
-  const body = (await response.json()) as Json
-  if (!response.ok || body.error || body.result === undefined)
-    throw new TradingError("RPC_FAILED", `Solana ${method} failed; no automatic retry was sent.`)
-  if (!body.result || typeof body.result !== "object" || Array.isArray(body.result))
-    throw new TradingError("RPC_FAILED", "RPC returned an invalid object.")
-  return body.result as Json
 }
 export type OperationKind = "trade" | "swap" | "launch" | "lp"
 /** The kinds with a jobs route. An LP operation is looked up by its build's replay instead (lp.ts). */

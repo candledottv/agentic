@@ -36,6 +36,7 @@ import {
   type AccountView,
   ASSOCIATED_TOKEN_PROGRAM_ID,
   encodePubkey,
+  isRateLimited,
   type SimulationResult,
   type SolanaRpc,
   SYSTEM_PROGRAM_ID,
@@ -334,6 +335,9 @@ export async function resolveCompiledKeys(message: DecodedMessage, rpc: SolanaRp
     try {
       accounts = await rpc.getMultipleAccounts(message.lookups.map((lookup) => lookup.table))
     } catch (error) {
+      // BE-355 (D3): a rate limit that survived the client's retry is the caller's RPC_RATE_LIMITED,
+      // not a table that could not be fetched.
+      if (isRateLimited(error)) throw error
       throw new LookupTableError(
         `the lookup table(s) could not be fetched: ${error instanceof Error ? error.message : String(error)}`,
       )

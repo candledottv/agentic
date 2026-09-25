@@ -33,10 +33,11 @@ export async function vaultDemote(args: string[], ctx: CommandContext): Promise<
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [address, extra] = parsed.positionals
   if (!address || extra !== undefined) {
-    return usage(ctx, "Usage: candle vault demote <tee-address> --rpc-url <url> [--emergency] [--sweep-to <label>]")
+    return usage(ctx, "Usage: candle vault demote <tee-address> [--rpc-url <url>] [--emergency] [--sweep-to <label>]")
   }
+  // BE-355: forwarded to `tee sweep` only when the member gave it; otherwise the sweep resolves
+  // for itself, so the host line prints once, in the sweep, with the true source.
   const rpcUrl = parsed.values["--rpc-url"]
-  if (!rpcUrl) return usage(ctx, "--rpc-url <url> is required.")
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "vault demote")) return 1
 
@@ -163,7 +164,7 @@ async function demoteWithAdapter(
   ctx: CommandContext,
   entry: { linkedWalletId?: string },
   address: string,
-  rpcUrl: string,
+  rpcUrl: string | undefined,
   emergency: boolean,
 ): Promise<number> {
   if (entry.linkedWalletId !== undefined) {
@@ -175,7 +176,7 @@ async function demoteWithAdapter(
     )
   }
 
-  const sweepArgs = [address, "--rpc-url", rpcUrl]
+  const sweepArgs = rpcUrl === undefined ? [address] : [address, "--rpc-url", rpcUrl]
   if (emergency || entry.linkedWalletId === undefined) sweepArgs.push("--emergency")
   return teeSweep(sweepArgs, ctx)
 }

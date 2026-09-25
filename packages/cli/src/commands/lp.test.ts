@@ -44,6 +44,8 @@ interface Options {
   holder?: "wallet" | "wallet-2" | "none"
   preview?: Record<string, unknown>
   teeWallets?: number
+  /** BE-355 (T11, T12): RPC methods that always answer HTTP 429. */
+  rpcRateLimit?: string[]
 }
 
 async function fixture(opts: Options = {}) {
@@ -142,6 +144,7 @@ async function fixture(opts: Options = {}) {
     }
     if (path.endsWith("/sign")) return ok({ signedTransaction: signed, encoding: "base64" })
     if (path === "/rpc") {
+      if (opts.rpcRateLimit?.includes(body.method)) return new Response("rate limited", { status: 429 })
       const result =
         body.method === "getTokenSupply"
           ? { value: { decimals: 6 } }
@@ -466,5 +469,48 @@ describe("candle lp: the writes", () => {
       expect(JSON.parse(f.stdout.text.trim()).code).toBe("USAGE")
       expect(f.calls).toEqual([])
     }
+  })
+})
+
+/**
+ * BE-355 (D4, T11, T12): a rate limit on the send, or on a status read after it, is the uncertain
+ * outcome for an LP write: exit 3 with `RPC_RATE_LIMITED` and the saved signature, nothing
+ * re-sent, and the re-run confirming the saved signature instead of building or sending again.
+ */
+describe("BE-355: rate limits after the signature (T11, T12)", () => {
+  const rpcMethods = (f: Awaited<ReturnType<typeof fixture>>) =>
+    f.calls.filter((c) => c.path === "/rpc").map((c) => c.body?.method)
+
+  test("T11: a rate-limited send exits 3 with the saved signature and one send; the re-run confirms and sends nothing", async () => {
+    const f = await fixture({ rpcRateLimit: ["sendTransaction"] })
+    expect(await run(addArgs, f.deps)).toBe(3)
+    const out = JSON.parse(f.stdout.text.trim())
+    expect(out.ok).toBe(false)
+    expect(out.code).toBe("RPC_RATE_LIMITED")
+    expect(out.message).toContain(`It may still land: check ${signature} before anything else.`)
+    expect(out.message).toContain("--client-trade-id lp-1")
+    // Pre-profile (this fixture has no profiles): the two pre-profile lines, and never profile set.
+    expect(out.suggestion).toBe(
+      "--rpc-url https://<your-rpc> on this command, or CANDLE_SOLANA_RPC_URL for every command\nor sign in (candle auth login) to store one per profile",
+    )
+    expect(rpcMethods(f)).toEqual(["sendTransaction"])
+    expect(f.calls.some((c) => c.path === "/api/v1/agent/lp/confirm")).toBe(false)
+
+    // The signature was saved before the send: the same id confirms it and sends nothing new.
+    const fresh = await fixture()
+    f.deps.fetch = fresh.deps.fetch
+    expect(await run(addArgs, f.deps)).toBe(0)
+    expect(fresh.calls.map((c) => c.path)).toEqual(["/api/v1/agent/wallets/trading", "/api/v1/agent/lp/confirm"])
+    expect(fresh.calls[1]?.body).toEqual({ clientTradeId: "lp-1", signature })
+  })
+
+  test("T12: a rate-limited status read after the send retries once, then exits 3 with the signature", async () => {
+    const f = await fixture({ rpcRateLimit: ["getSignatureStatuses"] })
+    expect(await run(addArgs, f.deps)).toBe(3)
+    const out = JSON.parse(f.stdout.text.trim())
+    expect(out.code).toBe("RPC_RATE_LIMITED")
+    expect(out.message).toContain(signature)
+    expect(rpcMethods(f)).toEqual(["sendTransaction", "getSignatureStatuses", "getSignatureStatuses"])
+    expect(f.calls.some((c) => c.path === "/api/v1/agent/lp/confirm")).toBe(false)
   })
 })

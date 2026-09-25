@@ -1,6 +1,6 @@
 /** Durable funding evidence shared by vault fund and vault transfer. */
 import type { CommandContext } from "../deps"
-import { createSolanaRpc } from "../solana-lite"
+import type { SolanaRpc } from "../solana-lite"
 import { resolvePending } from "../sweep-pending"
 import { VaultError } from "./errors"
 import { commitVault, type UnlockedVault } from "./store"
@@ -59,10 +59,9 @@ export async function saveFundingReceipt(
 export async function reconcileFundingReceipts(
   vault: UnlockedVault,
   addresses: string[],
-  rpcUrl: string,
+  rpc: SolanaRpc,
   ctx: CommandContext,
 ): Promise<number | null> {
-  const rpc = createSolanaRpc(rpcUrl, ctx.deps.fetch)
   const results: Array<{ signature: string; outcome: string }> = []
   for (const entry of vault.index.entries) {
     if (!entry.tee) continue

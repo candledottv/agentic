@@ -156,6 +156,7 @@ function fakeRpc(input: {
     hasSignatureHistory: refuse("hasSignatureHistory"),
     getProgramAccounts: refuse("getProgramAccounts"),
     getProgramAccountsV2: refuse("getProgramAccountsV2"),
+    getTokenSupply: refuse("getTokenSupply"),
     getEpoch: refuse("getEpoch"),
     getAccountInfo: async (address) => {
       calls.push(`getAccountInfo ${address}`)

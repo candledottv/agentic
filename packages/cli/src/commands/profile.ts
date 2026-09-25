@@ -7,8 +7,9 @@ import { fetchAccount } from "../account"
 import { parseArgs } from "../args"
 import { insecureApiUrlFault, resolveApiUrl } from "../client"
 import type { CommandContext } from "../deps"
-import { identityLine, isValidProfileName, profileSecretRef, profileTable } from "../profiles"
+import { identityLine, isValidProfileName, profileSecretRef, profileTable, rpcHostOf } from "../profiles"
 import { renderTable, writeLocalFailure, writeUsageFailure } from "../render"
+import { validateSolanaRpcUrl } from "../solana-endpoint"
 
 export async function profileList(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, json } = ctx
@@ -28,16 +29,73 @@ export async function profileList(args: string[], ctx: CommandContext): Promise<
   }
   deps.stdout.write(
     renderTable(
-      ["Profile", "Account", "Cached", "Host", "Key"],
+      ["Profile", "Account", "Cached", "Host", "Solana RPC", "Key"],
       rows.map((r) => [
         r.active ? `${r.name} (active)` : r.name,
         r.account ?? "unknown",
         r.cachedAge,
         r.apiUrl ?? "-",
+        // BE-355 (D5): the host, or `public default`; never the URL.
+        r.rpcHost ?? "public default",
         r.keyPrefix ?? "-",
       ]),
     ),
   )
+  return 0
+}
+
+const SET_USAGE = "Usage: candle profile set <name> --rpc-url <url> | --clear-rpc-url"
+
+/**
+ * BE-355 (D5): `candle profile set <name> --rpc-url <url> | --clear-rpc-url`. One setting per
+ * flag, so later settings need no new verbs. `<name>` is required and must exist: a setting that
+ * silently landed on whichever profile happened to be active is the wrong default for a value that
+ * decides where every vault address goes. The value is validated by the shared rule before it is
+ * stored, stored as given in `config.json` (not a secret store; the help row says so), and never
+ * printed: only its host. No request is made: a probe would be a first request from this machine
+ * that the command did not disclose, and a later command reports a bad endpoint anyway.
+ */
+export async function profileSet(args: string[], ctx: CommandContext): Promise<number> {
+  const { deps, json } = ctx
+  const parsed = parseArgs(args, { valueFlags: ["--rpc-url"], booleanFlags: ["--clear-rpc-url"] })
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json)
+    return 2
+  }
+  const name = parsed.positionals[0]
+  if (!name || parsed.positionals.length !== 1) {
+    writeUsageFailure(deps, SET_USAGE, json)
+    return 2
+  }
+  const rpcUrl = parsed.values["--rpc-url"]
+  const clear = parsed.booleans.has("--clear-rpc-url")
+  if ((rpcUrl === undefined) === !clear) {
+    // Neither, or both: exactly one of the two is the whole request.
+    writeUsageFailure(deps, SET_USAGE, json)
+    return 2
+  }
+  const config = await deps.readConfig()
+  // Object.hasOwn, as `profile add` and `profile use`: `profiles["constructor"]` is a function.
+  if (config.profiles === undefined || !Object.hasOwn(config.profiles, name)) {
+    const none = Object.keys(config.profiles ?? {}).length === 0
+    writeUsageFailure(
+      deps,
+      none ? `No profile named ${name}. Run: candle auth login` : `No profile named ${name}. Run: candle profile list`,
+      json,
+    )
+    return 2
+  }
+  if (rpcUrl !== undefined) {
+    const fault = validateSolanaRpcUrl(rpcUrl, "--rpc-url")
+    if (fault !== undefined) {
+      writeUsageFailure(deps, fault, json)
+      return 2
+    }
+  }
+  await deps.updateProfile(name, { rpcUrl })
+  const rpcHost = rpcUrl === undefined ? null : rpcHostOf(rpcUrl)
+  if (json) deps.stdout.write(`${JSON.stringify({ ok: true, profile: name, rpcHost })}\n`)
+  else deps.stdout.write(`Solana RPC for ${name}: ${rpcHost ?? "public default"}\n`)
   return 0
 }
 

@@ -2,18 +2,19 @@ import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { writeUsageFailure } from "../render"
-import { createSolanaRpc } from "../solana-lite"
+import { postSignatureRateLimitMessage, postSignatureSuggestion } from "../solana-endpoint"
+import { isRateLimited } from "../solana-lite"
 import {
   claimOperation,
   confirmQuote,
   launchBuildSchema,
   relaySign,
   request,
-  rpcUrl,
   savedOperation,
   saveOperationSignature,
   TradingError,
   tradingKey,
+  tradingSolanaClient,
   tradingWallet,
 } from "../trading"
 import { lookupOperation, printTradingResult, tradingFailure, validClientId } from "./swap"
@@ -68,7 +69,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       }
       return printTradingResult(ctx, prior)
     }
-    const url = rpcUrl(ctx, flags["--rpc-url"])
+    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"])
     const wallet = await tradingWallet(ctx, key, flags["--wallet"], "launch:write")
     if (!(await claimOperation(ctx, key, id, "launch")))
       throw new TradingError(
@@ -114,7 +115,19 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       throw new TradingError("QUOTE_EXPIRED", "The launch build expired before signing.")
     const signed = await relaySign(ctx, key, wallet, built.transaction)
     const signature = await saveOperationSignature(ctx, key, id, "launch", signed)
-    const broadcastSignature = await createSolanaRpc(url, ctx.deps.fetch).sendTransaction(signed)
+    let broadcastSignature: string
+    try {
+      broadcastSignature = await solana.rpc.sendTransaction(signed)
+    } catch (error) {
+      // BE-355 (D4): the signature is in the operation file, the client never re-sends, and the
+      // transaction may still land. Exit 3; the resume path above confirms it and sends nothing.
+      if (!isRateLimited(error)) throw error
+      throw new TradingError(
+        "RPC_RATE_LIMITED",
+        `${postSignatureRateLimitMessage(signature)} Re-run with the same --client-trade-id ${id}: it confirms the saved signature and sends nothing new.`,
+        { suggestion: postSignatureSuggestion(ctx), exitCode: 3 },
+      )
+    }
     if (broadcastSignature !== signature)
       throw new TradingError("RPC_FAILED", "RPC returned a different transaction signature; check the saved operation.")
     ctx.deps.stderr.write(`Launch signature: ${signature}\n`)

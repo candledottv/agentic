@@ -278,6 +278,24 @@ export interface ProfileRow {
   cachedAge: string
   apiUrl?: string
   keyPrefix?: string
+  /**
+   * BE-355 (D5): the host of this profile's stored Solana RPC, `null` when none is stored (the
+   * public default), and never the URL itself, which may carry a provider key. A stored value that
+   * does not parse reads `invalid (fix with profile set)`.
+   */
+  rpcHost: string | null
+}
+
+export const INVALID_RPC_HOST = "invalid (fix with profile set)"
+
+/** The host of a stored `rpcUrl`, by D5's rule; `null` for none. */
+export function rpcHostOf(rpcUrl: string | undefined): string | null {
+  if (rpcUrl === undefined || rpcUrl.trim() === "") return null
+  try {
+    return new URL(rpcUrl).host
+  } catch {
+    return INVALID_RPC_HOST
+  }
 }
 
 /**
@@ -301,5 +319,6 @@ export function profileTable(config: CliConfig, now: number): ProfileRow[] {
           : formatCacheAge(now, p.accountCachedAt),
       apiUrl: p.apiUrl,
       keyPrefix: p.keyPrefix,
+      rpcHost: rpcHostOf(p.rpcUrl),
     }))
 }

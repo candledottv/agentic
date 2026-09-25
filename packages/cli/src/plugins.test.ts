@@ -15,7 +15,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { run } from "./index"
 import { findPlugin, isPluginName, listPlugins, pluginEnvironment, splitPluginArgs } from "./plugins"
-import { createCapture, createFakeStore, createTestDeps } from "./test-support"
+import { createCapture, createFakeConfigStore, createFakeStore, createTestDeps } from "./test-support"
 import { deriveSolanaKey, solanaExternalPath } from "./vault/hd"
 import { closeVault } from "./vault/store"
 import { FIXTURE_ENTROPY, makeVault, useCheapKdf } from "./vault/test-vault"
@@ -279,5 +279,52 @@ describe("candle plugins, and dispatch", () => {
     })
     expect(await run(["frobnicate"], deps)).toBe(1)
     expect(stderr.text).toContain("Unknown command: frobnicate")
+  })
+})
+
+/**
+ * BE-355 (D6, T17): a plug-in's `CANDLE_PLUGIN_RPC_URL` comes from `CANDLE_SOLANA_RPC_URL`, then the
+ * profile's `rpcUrl` (decision 5's order, the reverse of before), and never from the public default.
+ */
+describe("BE-355 T17: a plug-in's RPC comes from env, then the profile, never the default", () => {
+  test("env and profile both set: the env value wins", async () => {
+    const { dir, path } = await pluginDir()
+    const envFile = join(dir, "env.txt")
+    const argvFile = join(dir, "argv.txt")
+    const deps = createTestDeps({
+      fetch: (async () => {
+        throw new Error("a plug-in run makes no Candle request")
+      }) as unknown as typeof fetch,
+      env: { PATH: path, HOME: "/home/tester", CANDLE_SOLANA_RPC_URL: "https://rpc.parent", CANDLE_CONFIG_DIR: dir },
+      ...createFakeConfigStore({ profiles: { work: { rpcUrl: "https://rpc.profile" } }, activeProfile: "work" }),
+    })
+    expect(await run(["envdump", envFile, argvFile], deps)).toBe(7)
+    expect((await envOf(envFile)).CANDLE_PLUGIN_RPC_URL).toBe("https://rpc.parent")
+  })
+
+  test("only the profile set: the profile's value; neither set: the variable is absent, and no public default is injected", async () => {
+    const { dir, path } = await pluginDir()
+    const envFile = join(dir, "env.txt")
+    const argvFile = join(dir, "argv.txt")
+    const fromProfile = createTestDeps({
+      fetch: (async () => {
+        throw new Error("a plug-in run makes no Candle request")
+      }) as unknown as typeof fetch,
+      env: { PATH: path, HOME: "/home/tester", CANDLE_CONFIG_DIR: dir },
+      ...createFakeConfigStore({ profiles: { work: { rpcUrl: "https://rpc.profile" } }, activeProfile: "work" }),
+    })
+    expect(await run(["envdump", envFile, argvFile], fromProfile)).toBe(7)
+    expect((await envOf(envFile)).CANDLE_PLUGIN_RPC_URL).toBe("https://rpc.profile")
+
+    const neither = createTestDeps({
+      fetch: (async () => {
+        throw new Error("a plug-in run makes no Candle request")
+      }) as unknown as typeof fetch,
+      env: { PATH: path, HOME: "/home/tester", CANDLE_CONFIG_DIR: dir },
+    })
+    expect(await run(["envdump", envFile, argvFile], neither)).toBe(7)
+    const env = await envOf(envFile)
+    expect(env.CANDLE_PLUGIN_RPC_URL).toBeUndefined()
+    expect(JSON.stringify(env)).not.toContain("mainnet-beta")
   })
 })
