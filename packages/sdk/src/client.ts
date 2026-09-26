@@ -980,6 +980,124 @@ export interface SwapResult {
   statusChecks: string[]
 }
 
+/** One token account a close would reclaim (BE-418). `lamports` is its rent, returned to the wallet. */
+export interface EmptyTokenAccount {
+  account: string
+  mint: string
+  tokenProgram: "spl-token" | "token-2022"
+  lamports: string
+}
+
+/**
+ * Why an empty account is left open: a mint the caller kept, wrapped SOL, an account the wallet
+ * does not own or cannot close, a frozen account, or Token-2022 state CloseAccount refuses.
+ */
+export type EmptyTokenAccountSkipReason =
+  | "kept"
+  | "wrapped_sol"
+  | "not_owner"
+  | "close_authority"
+  | "frozen"
+  | "withheld_transfer_fees"
+  | "confidential_transfer"
+
+export interface SkippedEmptyTokenAccount extends EmptyTokenAccount {
+  reason: EmptyTokenAccountSkipReason
+}
+
+export interface PreviewCloseEmptyAccountsRequest {
+  /** Mints whose empty accounts stay open, e.g. the pair token a held holder-reward coin pays in. */
+  keep?: string[]
+}
+
+/** previewCloseEmptyAccounts()'s result. Nothing was built, signed or written to produce it. */
+export interface CloseEmptyAccountsPreview {
+  success: true
+  wallet: string
+  keep: string[]
+  accounts: EmptyTokenAccount[]
+  accountCount: number
+  totalLamports: string
+  totalSol: string
+  /** Transactions a close would send, at `closesPerTransaction` each. */
+  transactions: number
+  estimatedFeeLamports: string
+  netLamports: string
+  netSol: string
+  skipped: SkippedEmptyTokenAccount[]
+  /** Token accounts whose bytes did not decode. Never closed. */
+  undecodable: string[]
+  closesPerTransaction: number
+  /** The most accounts one closeEmptyAccounts() call closes; `remaining` counts the rest. */
+  maxAccountsPerCall: number
+}
+
+export interface CloseEmptyAccountsRequest {
+  /** Required and durable: the same id replays its stored report and never closes twice. */
+  clientTradeId: string
+  keep?: string[]
+  /** The preview's `accounts[].account`, to close only what was shown. Omit to close every qualifying account. */
+  accounts?: string[]
+}
+
+/** A close transaction that landed. */
+export interface CloseEmptyAccountsBatch {
+  signature: string
+  accounts: string[]
+  lamports: string
+}
+
+/**
+ * A close transaction that did not land. `CLOSE_REFUSED` was refused in simulation (no fee);
+ * `CLOSE_REVERTED` landed and reverted (fee only); `CLOSE_UNCONFIRMED` may still land, so
+ * re-preview before re-running.
+ */
+export interface CloseEmptyAccountsFailure {
+  accounts: string[]
+  code: string
+  message: string
+  signature?: string
+}
+
+/** closeEmptyAccounts()'s result. A run in which nothing landed throws a CandleApiError instead. */
+export interface CloseEmptyAccountsResult {
+  success: true
+  /** `partial`: some batch failed, or more accounts remain than one call closes. */
+  status: "completed" | "partial" | "nothing_to_close"
+  clientTradeId: string
+  wallet: string
+  keep: string[]
+  closed: EmptyTokenAccount[]
+  transactions: CloseEmptyAccountsBatch[]
+  signatures: string[]
+  lamportsRecovered: string
+  solRecovered: string
+  /** The base network fee of the transactions that landed, reverted ones included, 5,000 lamports each. */
+  feeLamports: string
+  netLamports: string
+  netSol: string
+  failed: CloseEmptyAccountsFailure[]
+  /** Accounts in batches never sent, after a failure that stops the run. */
+  unattempted: string[]
+  /** Accounts named in `accounts` that no longer qualify. */
+  notClosed: { account: string; reason: string }[]
+  skipped: SkippedEmptyTokenAccount[]
+  remaining: number
+  /** Present when this is the stored report of an earlier call under the same id. */
+  replayed?: true
+}
+
+export interface CloseEmptyAccountsJob {
+  clientTradeId: string
+  kind: "close-empty"
+  status: "running" | "completed" | "failed"
+  createdAt: number
+  finishedAt?: number
+  httpStatus?: number
+  /** The report the close call returned, once it finished. */
+  result?: CloseEmptyAccountsResult | Record<string, unknown>
+}
+
 /** trade()'s one-call request: mirrors BuildTradeRequest minus clientTradeId/payer, plus who signs. */
 export interface TradeRequest {
   mint: string
@@ -1702,6 +1820,46 @@ export class CandleClient {
     this.requireKey("swap()")
     const body = await this.requestJson<{ success: true; payload: SwapResult }>("POST", "/api/v1/agent/swap", req)
     return body.payload
+  }
+
+  /**
+   * Lists the embedded Solana wallet's empty token accounts that a close would reclaim, on both
+   * token programs, and the SOL their rent returns (BE-418). Read-only: nothing is built, signed or
+   * written, and any key scope may call it.
+   */
+  async previewCloseEmptyAccounts(req: PreviewCloseEmptyAccountsRequest = {}): Promise<CloseEmptyAccountsPreview> {
+    this.requireKey("previewCloseEmptyAccounts()")
+    return this.requestJson<CloseEmptyAccountsPreview>(
+      "POST",
+      "/api/v1/agent/wallets/embedded/close-empty/preview",
+      req,
+    )
+  }
+
+  /**
+   * Closes the embedded Solana wallet's empty token accounts and returns their rent to that same
+   * wallet (BE-418). Needs `transfer:write`. Batches up to 20 closes per transaction and at most
+   * ten transactions per call; `remaining` counts what is left for another call.
+   *
+   * SIGNS ON CHAIN with the embedded wallet. The only lamports that move come back into it, less
+   * 5,000 per transaction. `clientTradeId` is a durable ledger key: a repeat of a finished call
+   * returns its stored report (`replayed: true`), a repeat while it runs throws CLOSE_IN_PROGRESS,
+   * and the same id with a different request throws IDEMPOTENCY_CONFLICT. So a retry under the
+   * same id is safe, and this method still never retries on its own.
+   */
+  async closeEmptyAccounts(req: CloseEmptyAccountsRequest): Promise<CloseEmptyAccountsResult> {
+    this.requireKey("closeEmptyAccounts()")
+    return this.requestJson<CloseEmptyAccountsResult>("POST", "/api/v1/agent/wallets/embedded/close-empty", req)
+  }
+
+  /** Reads a closeEmptyAccounts() run by its clientTradeId, without sending anything (BE-418). */
+  async getCloseEmptyAccountsJob(clientTradeId: string): Promise<CloseEmptyAccountsJob> {
+    this.requireKey("getCloseEmptyAccountsJob()")
+    const body = await this.requestJson<{ success: true; job: CloseEmptyAccountsJob }>(
+      "GET",
+      `/api/v1/agent/wallets/embedded/close-empty/jobs/${encodeURIComponent(clientTradeId)}`,
+    )
+    return body.job
   }
 
   /**

@@ -438,12 +438,18 @@ export const HELP: Record<string, Topic> = {
         invocation: "untrust <label|address|id|prefix*>... [--yes]",
         description: "Clear the mark; moving funds in needs the withdrawal allowlist again (owner only)",
       },
+      {
+        invocation: "close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes]",
+        description:
+          "Close the embedded wallet's empty token accounts and return their rent to it, after a preview (transfer:write)",
+      },
     ],
     examples: [
       "candle wallet",
       "candle wallet import --chain solana --key-file ./signer.json",
       "candle wallet revoke wal_123",
       "candle wallet trust 'tr-*' 'dest-*'",
+      "candle wallet close-empty --keep EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     ],
     env: ENV_API,
   },

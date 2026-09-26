@@ -130,7 +130,7 @@
     },
     "state_conflict": {
       "retryable": false,
-      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed.",
+      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed. CLOSE_IN_PROGRESS: an earlier close under this id is still sending; read its job. CLOSE_FAILED closed nothing and settled its id; preview again and close under a new id.",
       "codes": [
         "IDEMPOTENCY_CONFLICT",
         "TRADE_ALREADY_CLAIMED",
@@ -155,7 +155,9 @@
         "KEY_SIGNER_ALREADY_ACTIVE",
         "KEY_SIGNER_READBACK_MISMATCH",
         "KEY_SIGNER_SIGNATURE_REQUIRED",
-        "WALLET_BUSY"
+        "WALLET_BUSY",
+        "CLOSE_IN_PROGRESS",
+        "CLOSE_FAILED"
       ]
     },
     "quota": {
@@ -172,7 +174,7 @@
     "availability": {
       "retryable": true,
       "action": "The capability is switched off or a required leg is absent in this environment. Retry later; escalate if it persists.",
-      "codes": ["LAUNCH_DISABLED", "FEE_LEG_MISSING", "HOOD_LAUNCH_UNAVAILABLE"]
+      "codes": ["LAUNCH_DISABLED", "FEE_LEG_MISSING", "HOOD_LAUNCH_UNAVAILABLE", "CLOSE_LEDGER_UNAVAILABLE"]
     },
     "risk_stop": {
       "retryable": false,

@@ -467,6 +467,70 @@ describe("request shapes", () => {
     expect(calls).toHaveLength(1)
   })
 
+  test("previewCloseEmptyAccounts: POST the keep list to the preview route and return the body (BE-418)", async () => {
+    const body = {
+      success: true,
+      wallet: "Wallet1",
+      keep: ["KeepMint1"],
+      accounts: [{ account: "Acct1", mint: "Mint1", tokenProgram: "token-2022", lamports: "2074080" }],
+      accountCount: 1,
+      totalLamports: "2074080",
+      totalSol: "0.00207408",
+      transactions: 1,
+      estimatedFeeLamports: "5000",
+      netLamports: "2069080",
+      netSol: "0.00206908",
+      skipped: [],
+      undecodable: [],
+      closesPerTransaction: 20,
+      maxAccountsPerCall: 200,
+    }
+    const { client, calls } = makeClient(KEYED, [json(200, body)])
+    const result = await client.previewCloseEmptyAccounts({ keep: ["KeepMint1"] })
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/agent/wallets/embedded/close-empty/preview")
+    expect(calls[0]?.method).toBe("POST")
+    expect(calls[0]?.headers).toEqual(JSON_HEADERS)
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({ keep: ["KeepMint1"] })
+    expect(result).toEqual(body as never)
+  })
+
+  test("previewCloseEmptyAccounts: no argument sends an empty body", async () => {
+    const { client, calls } = makeClient(KEYED, [json(200, { success: true })])
+    await client.previewCloseEmptyAccounts()
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({})
+  })
+
+  test("closeEmptyAccounts: POST the id, keep and accounts, and never retry (BE-418)", async () => {
+    const report = { success: true, status: "completed", clientTradeId: "c1", signatures: ["sig1"] }
+    const { client, calls } = makeClient(KEYED, [json(200, report)])
+    const result = await client.closeEmptyAccounts({ clientTradeId: "c1", keep: ["K"], accounts: ["A1"] })
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/agent/wallets/embedded/close-empty")
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({ clientTradeId: "c1", keep: ["K"], accounts: ["A1"] })
+    expect(result).toEqual(report as never)
+
+    const failing = makeClient(KEYED, [envelope(503, "CLOSE_LEDGER_UNAVAILABLE", { retryable: true })])
+    const error = await failing.client.closeEmptyAccounts({ clientTradeId: "c2" }).catch((e) => e)
+    expect(error).toBeInstanceOf(CandleApiError)
+    expect(error.code).toBe("CLOSE_LEDGER_UNAVAILABLE")
+    expect(failing.calls).toHaveLength(1)
+  })
+
+  test("getCloseEmptyAccountsJob: GET the job route with an encoded id and unwrap the job", async () => {
+    const job = { clientTradeId: "a/b", kind: "close-empty", status: "completed", createdAt: 1 }
+    const { client, calls } = makeClient(KEYED, [json(200, { success: true, job })])
+    const result = await client.getCloseEmptyAccountsJob("a/b")
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/agent/wallets/embedded/close-empty/jobs/a%2Fb")
+    expect(calls[0]?.method).toBe("GET")
+    expect(result).toEqual(job as never)
+  })
+
+  test("the close-empty methods require an apiKey", async () => {
+    const { client } = makeClient({}, [])
+    await expect(client.previewCloseEmptyAccounts()).rejects.toThrow("previewCloseEmptyAccounts() requires an apiKey")
+    await expect(client.closeEmptyAccounts({ clientTradeId: "c" })).rejects.toThrow("closeEmptyAccounts() requires")
+    await expect(client.getCloseEmptyAccountsJob("c")).rejects.toThrow("getCloseEmptyAccountsJob() requires")
+  })
+
   test("uploadImage: POST raw bytes with the caller's content-type and the key", async () => {
     const bytes = new Uint8Array([137, 80, 78, 71])
     const { client, calls } = makeClient(KEYED, [json(200, { success: true, imageUrl: "https://gateway/img.png" })])

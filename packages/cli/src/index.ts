@@ -66,6 +66,7 @@ import { vaultStatus } from "./commands/vault-status"
 import { vaultTransfer } from "./commands/vault-transfer"
 import { verify } from "./commands/verify"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
+import { walletsCloseEmpty } from "./commands/wallets-close-empty"
 import { walletsTrust, walletsUntrust } from "./commands/wallets-trust"
 import type { CliConfig } from "./config"
 import { clearConfig, readConfig, updateProfile, writeConfig } from "./config"
@@ -173,7 +174,14 @@ const COMMANDS: Record<string, CommandRoute> = {
   // any other leftover positional after wallet: Unexpected argument, exit 2 (T14).
   wallets: {
     // BE-329: the owner's trust mark, over the device token (never an API key).
-    subcommands: { import: walletsImport, revoke: walletsRevoke, trust: walletsTrust, untrust: walletsUntrust },
+    // BE-418: `close-empty` closes the embedded wallet's empty token accounts, rent back to it.
+    subcommands: {
+      import: walletsImport,
+      revoke: walletsRevoke,
+      trust: walletsTrust,
+      untrust: walletsUntrust,
+      "close-empty": walletsCloseEmpty,
+    },
     bare: wallets,
   },
   // Ember Phase 2 (BE-136). Local custody: every one of these reads or writes `vault.enc` on this

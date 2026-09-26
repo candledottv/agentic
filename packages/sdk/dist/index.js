@@ -633,6 +633,19 @@ class CandleClient {
     const body = await this.requestJson("POST", "/api/v1/agent/swap", req);
     return body.payload;
   }
+  async previewCloseEmptyAccounts(req = {}) {
+    this.requireKey("previewCloseEmptyAccounts()");
+    return this.requestJson("POST", "/api/v1/agent/wallets/embedded/close-empty/preview", req);
+  }
+  async closeEmptyAccounts(req) {
+    this.requireKey("closeEmptyAccounts()");
+    return this.requestJson("POST", "/api/v1/agent/wallets/embedded/close-empty", req);
+  }
+  async getCloseEmptyAccountsJob(clientTradeId) {
+    this.requireKey("getCloseEmptyAccountsJob()");
+    const body = await this.requestJson("GET", `/api/v1/agent/wallets/embedded/close-empty/jobs/${encodeURIComponent(clientTradeId)}`);
+    return body.job;
+  }
   async importWallet(params) {
     this.requireKey("importWallet()");
     const init = await this.requestJson("POST", "/api/v1/agent/wallets/import/init", { chain: params.chain, address: params.address });

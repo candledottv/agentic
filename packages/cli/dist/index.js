@@ -40133,7 +40133,7 @@ var init_update_notice = __esm(() => {
 });
 
 // ../mcp/src/orchestrate.ts
-import { randomUUID as randomUUID4 } from "node:crypto";
+import { randomUUID as randomUUID5 } from "node:crypto";
 function requireApiKey(cfg) {
   if (!cfg.apiKey) {
     throw new Error("CANDLE_AGENT_API_KEY is required for this tool. Set it in the environment or MCP client config.");
@@ -40245,7 +40245,7 @@ async function readPaperInventory(cfg, doFetch, extra) {
 }
 async function executeTrade(args, cfg, doFetch) {
   const apiKey = requireApiKey(cfg);
-  const clientTradeId = args.clientTradeId ?? randomUUID4();
+  const clientTradeId = args.clientTradeId ?? randomUUID5();
   if (args.amount !== undefined && args.percent !== undefined) {
     return errText("pass exactly one of amount or percent, not both", { clientTradeId });
   }
@@ -40383,7 +40383,7 @@ async function executeTrade(args, cfg, doFetch) {
 }
 async function executeLaunchAndSeed(args, cfg, doFetch) {
   const apiKey = requireApiKey(cfg);
-  const clientLaunchId = args.clientLaunchId ?? randomUUID4();
+  const clientLaunchId = args.clientLaunchId ?? randomUUID5();
   const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...launchFields } = args;
   let buyAmount;
   if (devBuy !== undefined) {
@@ -41802,13 +41802,18 @@ var HELP = {
       {
         invocation: "untrust <label|address|id|prefix*>... [--yes]",
         description: "Clear the mark; moving funds in needs the withdrawal allowlist again (owner only)"
+      },
+      {
+        invocation: "close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes]",
+        description: "Close the embedded wallet's empty token accounts and return their rent to it, after a preview (transfer:write)"
       }
     ],
     examples: [
       "candle wallet",
       "candle wallet import --chain solana --key-file ./signer.json",
       "candle wallet revoke wal_123",
-      "candle wallet trust 'tr-*' 'dest-*'"
+      "candle wallet trust 'tr-*' 'dest-*'",
+      "candle wallet close-empty --keep EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     ],
     env: ENV_API
   },
@@ -65859,6 +65864,153 @@ function messageOf3(error) {
   return error instanceof Error ? error.message : String(error);
 }
 
+// src/commands/wallets-close-empty.ts
+init_args();
+init_render();
+init_trading();
+import { randomUUID as randomUUID4 } from "node:crypto";
+var USAGE4 = "Usage: candle wallet close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+var LISTED_ROWS = 50;
+function splitKeep(args) {
+  const rest = [];
+  const keep = [];
+  for (let i = 0;i < args.length; i++) {
+    if (args[i] !== "--keep") {
+      rest.push(args[i]);
+      continue;
+    }
+    const value = args[++i];
+    if (value === undefined || value.startsWith("--"))
+      return { error: "--keep requires a mint" };
+    keep.push(...value.split(",").filter((mint) => mint.length > 0));
+  }
+  return { rest, keep: [...new Set(keep)] };
+}
+var SKIP_WORDS = {
+  kept: "kept by --keep",
+  wrapped_sol: "wrapped SOL",
+  not_owner: "not owned by this wallet",
+  close_authority: "another address is its close authority",
+  frozen: "frozen",
+  withheld_transfer_fees: "Token-2022 transfer fees withheld in it",
+  confidential_transfer: "Token-2022 confidential-transfer state"
+};
+function solOf(lamports) {
+  const digits = lamports.padStart(10, "0");
+  return `${digits.slice(0, -9)}.${digits.slice(-9)}`.replace(/\.?0+$/, "");
+}
+function previewLines(preview) {
+  const lines = [
+    `Close ${preview.accountCount} empty token account${preview.accountCount === 1 ? "" : "s"} on the embedded wallet ${safeText(preview.wallet)}`,
+    `Rent returned to that same wallet: ${safeText(preview.totalSol)} SOL in ${preview.transactions} transaction${preview.transactions === 1 ? "" : "s"}, network fee about ${solOf(preview.estimatedFeeLamports)} SOL, net ${safeText(preview.netSol)} SOL`
+  ];
+  for (const row of preview.accounts.slice(0, LISTED_ROWS))
+    lines.push(`  ${safeText(row.mint)}  ${safeText(row.tokenProgram)}  ${solOf(row.lamports)} SOL`);
+  if (preview.accounts.length > LISTED_ROWS)
+    lines.push(`  ... and ${preview.accounts.length - LISTED_ROWS} more (--json lists every one)`);
+  const cap = preview.maxAccountsPerCall;
+  if (cap !== undefined && preview.accountCount > cap)
+    lines.push(`This run closes the first ${cap}; run it again for the rest.`);
+  if (preview.skipped.length > 0) {
+    const counts = new Map;
+    for (const row of preview.skipped)
+      counts.set(row.reason, (counts.get(row.reason) ?? 0) + 1);
+    lines.push(`Left open: ${[...counts].map(([reason, n]) => `${n} ${SKIP_WORDS[reason] ?? safeText(reason)}`).join(", ")}`);
+  }
+  return lines;
+}
+async function confirmClose(ctx, lines, yes) {
+  const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
+  for (const line of lines)
+    output.write(`${line}
+`);
+  if (yes)
+    return true;
+  if (!ctx.deps.isTTY.stdin)
+    throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes to close without a prompt.");
+  return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y";
+}
+async function embeddedSolana(ctx, key, wallet) {
+  const body = await request(ctx, key, "/api/v1/agent/wallets/embedded");
+  const wallets2 = body.wallets;
+  const address = typeof wallets2?.solana?.address === "string" ? wallets2.solana.address : undefined;
+  if (!address)
+    throw new TradingError("AGENT_WALLET_MISSING", "This account has no embedded Solana wallet. Create one in the app, then run this again.");
+  if (wallet !== undefined && wallet !== "embedded" && wallet !== address)
+    throw new TradingError("PAYER_UNSUPPORTED", `This command closes accounts on the embedded wallet (${address}) only. A TEE wallet's empty accounts close with: candle tee sweep <address>`);
+  return address;
+}
+async function walletsCloseEmpty(args, ctx) {
+  const lifted = splitKeep(args);
+  if ("error" in lifted) {
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE4}`, ctx.json);
+    return 2;
+  }
+  const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  const named = parsed.values["--client-trade-id"];
+  const id = named ?? `close-${randomUUID4()}`;
+  if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
+    writeUsageFailure(ctx.deps, USAGE4, ctx.json);
+    return 2;
+  }
+  const keep = lifted.keep;
+  try {
+    const key = await tradingKey(ctx);
+    if (named !== undefined) {
+      try {
+        const prior = await request(ctx, key, `/api/v1/agent/wallets/embedded/close-empty/jobs/${encodeURIComponent(id)}`);
+        return printTradingResult(ctx, { ...prior, clientTradeId: id });
+      } catch (error) {
+        if (!(error instanceof TradingError && error.code === "JOB_NOT_FOUND"))
+          throw error;
+      }
+    }
+    const wallet = await embeddedSolana(ctx, key, parsed.values["--wallet"]);
+    const preview = await request(ctx, key, "/api/v1/agent/wallets/embedded/close-empty/preview", {
+      keep
+    });
+    if (!Array.isArray(preview.accounts) || preview.wallet !== wallet)
+      throw new TradingError("INVALID_RESPONSE", "Candle's preview does not name the embedded wallet; nothing was closed.");
+    if (preview.accounts.length === 0) {
+      const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
+      output.write(`No empty token accounts to close on the embedded wallet ${safeText(wallet)}.
+`);
+      for (const line of previewLines(preview).slice(2))
+        output.write(`${line}
+`);
+      return printTradingResult(ctx, {
+        success: true,
+        status: "nothing_to_close",
+        wallet,
+        preview
+      });
+    }
+    const confirmed = await confirmClose(ctx, previewLines(preview), parsed.booleans.has("--yes"));
+    if (!confirmed)
+      return printTradingResult(ctx, {
+        success: true,
+        status: "cancelled",
+        wallet,
+        preview
+      });
+    ctx.deps.stderr.write(`Operation: ${id}
+`);
+    const result = await request(ctx, key, "/api/v1/agent/wallets/embedded/close-empty", {
+      clientTradeId: id,
+      keep,
+      accounts: preview.accounts.map((row) => row.account)
+    });
+    return printTradingResult(ctx, { ...result, clientTradeId: id });
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+
 // src/commands/wallets-trust.ts
 init_args();
 init_deps();
@@ -66355,7 +66507,13 @@ var COMMANDS = {
     subcommands: { list: keysList, create: keysCreate, access: keysAccess, revoke: keysRevoke, wallets: keysWallets }
   },
   wallets: {
-    subcommands: { import: walletsImport, revoke: walletsRevoke, trust: walletsTrust, untrust: walletsUntrust },
+    subcommands: {
+      import: walletsImport,
+      revoke: walletsRevoke,
+      trust: walletsTrust,
+      untrust: walletsUntrust,
+      "close-empty": walletsCloseEmpty
+    },
     bare: wallets
   },
   vault: {
