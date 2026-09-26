@@ -182,7 +182,8 @@ export interface QuoteDisplay {
   wallet?: string
   venue?: string
   priceImpactPct?: string | null
-  fee: z.infer<typeof feeSchema>
+  /** Absent where no tier fee is known before the legs run (a Hood TEE launch, Phase 4b-2). */
+  fee?: z.infer<typeof feeSchema>
   minimumReceived: string
   maxDebitLamports?: string
   tokenRisks: z.infer<typeof risksSchema>
@@ -454,6 +455,9 @@ async function signerUnavailableMessage(
  * Resolve one TEE wallet by id, address or label. The launch rail's resolver: a launch pays from a
  * TEE wallet with `allowLaunch`, and nothing else, so it stays narrow on purpose.
  *
+ * `chain` is the operation's chain. `"any"` lets the wallet decide (Phase 4b-2, D6: `candle
+ * launch` has no pair to read a chain from), so a Hood TEE wallet resolves as a Hood payer.
+ *
  * Only its REFUSALS changed with BE-249. "Name exactly one TEE wallet" answered a question nobody
  * asked -- the caller knew they had to name one, they did not know which names existed. Both
  * refusals below now say.
@@ -463,6 +467,7 @@ export async function tradingWallet(
   key: string,
   name: string,
   scope: string,
+  chain: TradeChain | "any" = "solana",
 ): Promise<TradingWallet> {
   const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, scope)
   const matches = rows.filter((row) => matchesName(row, name))
@@ -476,7 +481,11 @@ export async function tradingWallet(
           : `No TEE wallet on this key is called "${name}". Bound to this key: ${teeWalletList(rows)}.`,
     )
   }
-  return await completeTradingWallet(ctx, matches[0] as WalletRow, appId, scope, "solana", { apiKey: key, keyPrefix })
+  const row = matches[0] as WalletRow
+  return await completeTradingWallet(ctx, row, appId, scope, chain === "any" ? (rowChain(row) ?? "solana") : chain, {
+    apiKey: key,
+    keyPrefix,
+  })
 }
 
 /**
@@ -629,7 +638,8 @@ const sequencedLegSchema = z.object({
   value: z.string().regex(/^\d+$/),
 })
 export type SequencedLeg = z.infer<typeof sequencedLegSchema>
-const legKindSchema = z.enum(["approval", "permit2Approval", "trade", "feeTransfer"])
+/** A trade or base swap uses the first four; a launch `createCurve` then `feeTransfer`; a transfer `transfer` (D4, D9). */
+const legKindSchema = z.enum(["approval", "permit2Approval", "trade", "feeTransfer", "createCurve", "transfer"])
 export type LegKind = z.infer<typeof legKindSchema>
 const landedLegSchema = z.object({ kind: z.string(), hash: z.string() }).passthrough()
 export type LandedLeg = { kind: string; hash: string }
@@ -780,8 +790,9 @@ export interface SequencedRun {
  * THE LEG LOOP (D4, D6), entered only for a response with `mode: "sequenced"`: take `nextLeg`,
  * relay-sign it with `eth_signTransaction`, post `{ operationId, signedTransaction }`, read the
  * server's receipt (it answers only after the leg's receipt), repeat. Every leg is re-checked
- * before it is signed: Hood's chain id, the wallet's operation, and never a fee leg before the
- * trade leg has landed (invariant 3).
+ * before it is signed: Hood's chain id, the wallet's operation, never a fee leg before the
+ * primary leg has landed (invariant 3), never more legs than the first body's `plannedLegCount`,
+ * never a later body whose `plannedLegCount` differs, and never the same kind twice.
  *
  * Failure: a leg the server refused, or one that reverted, ends the operation with exit 1 and the
  * legs that landed. An uncertain leg (the server saw no receipt, or the submit itself got no
@@ -800,12 +811,31 @@ export async function runSequencedLegs(
     submitFields: Json
     /** The next sequenced body, or the final result, out of one submit's answer. */
     unwrap: (body: Json) => Json
-    clientId: string
-    kind: OperationKind
+    /** Where each leg's hash is saved before it is posted. A transfer has no operation file, so omits both. */
+    clientId?: string
+    kind?: OperationKind
+    /**
+     * The leg a fee may only follow (invariant 3): `trade` for a trade or swap (the default),
+     * `createCurve` for a launch (D9).
+     */
+    primaryLeg?: LegKind
+    /** The leg kinds this operation may sign; any other is refused before it is signed. Default: any. */
+    allowedLegs?: readonly LegKind[]
+    /**
+     * Refuses one leg of an allowed kind. Transfer checks the asset, the amount and the
+     * destination; a launch's `createCurve` must carry no ETH, because the factory is not payable.
+     */
+    checkLeg?: (kind: LegKind, leg: SequencedLeg) => boolean
     /** Runs once per leg that landed, in order. It must not throw. */
     onLanded: (leg: LandedLeg) => Promise<void>
   },
 ): Promise<SequencedRun> {
+  const primary = opts.primaryLeg ?? "trade"
+  // The count the caller already accepted. A later body must not raise it, and must not lower it
+  // either: a changed count means this is not the plan that was checked.
+  const plannedCount = opts.first.plannedLegCount
+  let signedCount = 0
+  const signedKinds = new Set<LegKind>()
   let current = opts.first
   const landed: LandedLeg[] = []
   const noteLanded = async (legs: LandedLeg[]) => {
@@ -828,10 +858,42 @@ export async function runSequencedLegs(
         `The ${current.legKind} leg names chain ${leg.chainId}, not Hood; nothing was signed.`,
         1,
       )
-    if (current.legKind === "feeTransfer" && !landed.some((done) => done.kind === "trade"))
+    if (opts.allowedLegs && !opts.allowedLegs.includes(current.legKind))
       throw failWith(
         "INVALID_RESPONSE",
-        "Candle offered the fee leg before the trade leg landed; nothing was signed.",
+        `Candle offered a ${current.legKind} leg, which this operation never signs; nothing was signed.`,
+        1,
+      )
+    if (current.legKind === "feeTransfer" && !landed.some((done) => done.kind === primary))
+      throw failWith(
+        "INVALID_RESPONSE",
+        `Candle offered the fee leg before the ${primary} leg landed; nothing was signed.`,
+        1,
+      )
+    if (current.plannedLegCount !== plannedCount)
+      throw failWith(
+        "INVALID_RESPONSE",
+        `Candle changed the planned leg count from ${plannedCount} to ${current.plannedLegCount}; nothing was signed.`,
+        1,
+      )
+    if (signedCount >= plannedCount)
+      throw failWith(
+        "INVALID_RESPONSE",
+        `Candle offered another ${current.legKind} leg after the ${plannedCount} planned ${
+          plannedCount === 1 ? "leg" : "legs"
+        }; nothing was signed.`,
+        1,
+      )
+    if (signedKinds.has(current.legKind) || landed.some((done) => done.kind === current.legKind))
+      throw failWith(
+        "INVALID_RESPONSE",
+        `Candle offered another ${current.legKind} leg after one of that kind already landed; nothing was signed.`,
+        1,
+      )
+    if (opts.checkLeg && !opts.checkLeg(current.legKind, leg))
+      throw failWith(
+        "INVALID_RESPONSE",
+        `The ${current.legKind} leg does not match what this operation confirmed; nothing was signed.`,
         1,
       )
     if (!Number.isFinite(current.expiresAt) || current.expiresAt <= ctx.deps.now())
@@ -841,8 +903,11 @@ export async function runSequencedLegs(
         1,
       )
     const signed = await relaySignEvmLeg(ctx, key, opts.wallet, leg)
+    signedCount += 1
+    signedKinds.add(current.legKind)
     // Before the post, as the Solana rail saves its payer signature: a restart can read this hash.
-    await saveOperationHash(ctx, key, opts.clientId, opts.kind, signed.hash, current.operationId)
+    if (opts.clientId !== undefined && opts.kind !== undefined)
+      await saveOperationHash(ctx, key, opts.clientId, opts.kind, signed.hash, current.operationId)
     const posted = await apiRequest(opts.submitPath, {
       apiUrl: ctx.apiUrl,
       credentials: { apiKey: key },
@@ -956,7 +1021,7 @@ export async function savedOperation(
   ctx: CommandContext,
   key: string,
   id: string,
-): Promise<{ kind: OperationKind; signature?: string } | null> {
+): Promise<{ kind: OperationKind; signature?: string; operationId?: string } | null> {
   try {
     return JSON.parse(await readFile(operationPath(ctx, key, id), "utf8"))
   } catch (error) {
@@ -996,7 +1061,7 @@ export async function confirmQuote(ctx: CommandContext, quote: QuoteDisplay, yes
   if (quote.intent) output.write(`${safeText(quote.intent)}\n`)
   if (quote.wallet) output.write(`Payer: ${safeText(quote.wallet)}\n`)
   output.write(
-    `Venue: ${safeText(quote.venue)}\nPrice impact: ${quote.priceImpactPct == null ? "unavailable" : `${safeText(quote.priceImpactPct)}%`}\nTier fee: ${safeText(quote.fee.bps)} bps (${safeText(quote.fee.feeRaw)} raw)\nMinimum received: ${safeText(quote.minimumReceived)}\n`,
+    `Venue: ${safeText(quote.venue)}\nPrice impact: ${quote.priceImpactPct == null ? "unavailable" : `${safeText(quote.priceImpactPct)}%`}\n${quote.fee ? `Tier fee: ${safeText(quote.fee.bps)} bps (${safeText(quote.fee.feeRaw)} raw)\n` : ""}Minimum received: ${safeText(quote.minimumReceived)}\n`,
   )
   if (quote.maxDebitLamports) output.write(`Maximum launch debit: ${safeText(quote.maxDebitLamports)} lamports\n`)
   if (quote.legs) output.write(`Legs, signed one at a time: ${quote.legs.map(safeText).join(", ")}\n`)

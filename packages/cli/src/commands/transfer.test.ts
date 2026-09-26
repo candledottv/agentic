@@ -335,13 +335,14 @@ describe("candle transfer (R19)", () => {
     expect(JSON.parse(f.stdout.text).code).toBe("INVALID_RESPONSE")
   })
 
-  test("usage: --to and --amount are required, --asset and --mint are exclusive, USDG is not a Solana asset, no request is made", async () => {
+  test("usage: --to and --amount are required, --asset, --mint and --token are exclusive, a malformed --token is refused, no request is made", async () => {
     for (const argv of [
       ["transfer"],
       ["transfer", "--to", "vault", "--amount", "1"],
       ["transfer", "--to", "vault", "--asset", "SOL"],
       ["transfer", "--to", "vault", "--asset", "SOL", "--mint", MINT, "--amount", "1"],
-      ["transfer", "--to", "vault", "--asset", "USDG", "--amount", "1"],
+      ["transfer", "--to", "vault", "--asset", "USDG", "--token", `0x${"11".repeat(20)}`, "--amount", "1"],
+      ["transfer", "--to", "vault", "--token", `0x${"Ab".repeat(20)}`, "--amount", "1"],
       ["transfer", "--to", "vault", "--mint", "not-a-mint", "--amount", "1"],
       ["transfer", "extra", "--to", "vault", "--asset", "SOL", "--amount", "1"],
       ["transfer", "--to", "vault", "--asset", "SOL", "--amount", "1", "--bogus"],

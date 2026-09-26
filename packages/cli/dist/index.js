@@ -15685,6 +15685,18 @@ function abiAddress(address) {
 function encodeErc20Transfer(recipient, amount) {
   return concat4(hexToBytes2(ERC20_TRANSFER_SELECTOR), abiAddress(recipient), abiWord(amount));
 }
+function decodeErc20Transfer(data) {
+  if (data.length !== 68)
+    return;
+  if (bytesToHex2(data.subarray(0, 4)) !== ERC20_TRANSFER_SELECTOR)
+    return;
+  if (data.subarray(4, 16).some((b) => b !== 0))
+    return;
+  return {
+    recipient: toChecksumAddress(bytesToHex2(data.subarray(16, 36))),
+    amount: hexToBigInt(bytesToHex2(data.subarray(36, 68)))
+  };
+}
 function unsignedFields(tx) {
   return [
     uintToMinimalBytes(tx.chainId),
@@ -16168,13 +16180,17 @@ async function signerUnavailableMessage(ctx, row, key) {
   }
   return `Wallet ${name} is owned by a signer this machine does not hold: its per-wallet signer is on the machine that promoted it${active !== null ? `. Run candle keys signer move ${prefix} there to move it onto key ${prefix}'s signer (${active.fingerprint})` : ""}.`;
 }
-async function tradingWallet(ctx, key, name, scope) {
+async function tradingWallet(ctx, key, name, scope, chain2 = "solana") {
   const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, scope);
-  const matches = rows.filter((row) => matchesName(row, name));
+  const matches = rows.filter((row2) => matchesName(row2, name));
   if (matches.length !== 1) {
     throw new TradingError("TEE_WALLET_REQUIRED", matches.length > 1 ? `"${name}" matches ${matches.length} TEE wallets on this key: ${teeWalletList(matches)}. Name one by id or address.` : rows.length === 0 ? "This key has no TEE wallets bound to it. Enrol one, or select the profile whose key holds it." : `No TEE wallet on this key is called "${name}". Bound to this key: ${teeWalletList(rows)}.`);
   }
-  return await completeTradingWallet(ctx, matches[0], appId, scope, "solana", { apiKey: key, keyPrefix });
+  const row = matches[0];
+  return await completeTradingWallet(ctx, row, appId, scope, chain2 === "any" ? rowChain(row) ?? "solana" : chain2, {
+    apiKey: key,
+    keyPrefix
+  });
 }
 async function tradingPayer(ctx, key, name, scope = "swap:write", chain2 = "solana") {
   const { rows, appId, scopes, keyPrefix } = await listTradingWallets(ctx, key, scope);
@@ -16311,6 +16327,10 @@ function sweepReserveFloor(maxFeePerGas, tokens = []) {
   return { wei: gas * maxFeePerGas * RESERVE_FEE_MULTIPLIER, erc20Transfers };
 }
 async function runSequencedLegs(ctx, key, opts) {
+  const primary = opts.primaryLeg ?? "trade";
+  const plannedCount = opts.first.plannedLegCount;
+  let signedCount = 0;
+  const signedKinds = new Set;
   let current = opts.first;
   const landed = [];
   const noteLanded = async (legs) => {
@@ -16328,12 +16348,25 @@ async function runSequencedLegs(ctx, key, opts) {
     const leg = current.nextLeg;
     if (leg.chainId !== HOOD_CHAIN_ID)
       throw failWith("INVALID_RESPONSE", `The ${current.legKind} leg names chain ${leg.chainId}, not Hood; nothing was signed.`, 1);
-    if (current.legKind === "feeTransfer" && !landed.some((done) => done.kind === "trade"))
-      throw failWith("INVALID_RESPONSE", "Candle offered the fee leg before the trade leg landed; nothing was signed.", 1);
+    if (opts.allowedLegs && !opts.allowedLegs.includes(current.legKind))
+      throw failWith("INVALID_RESPONSE", `Candle offered a ${current.legKind} leg, which this operation never signs; nothing was signed.`, 1);
+    if (current.legKind === "feeTransfer" && !landed.some((done) => done.kind === primary))
+      throw failWith("INVALID_RESPONSE", `Candle offered the fee leg before the ${primary} leg landed; nothing was signed.`, 1);
+    if (current.plannedLegCount !== plannedCount)
+      throw failWith("INVALID_RESPONSE", `Candle changed the planned leg count from ${plannedCount} to ${current.plannedLegCount}; nothing was signed.`, 1);
+    if (signedCount >= plannedCount)
+      throw failWith("INVALID_RESPONSE", `Candle offered another ${current.legKind} leg after the ${plannedCount} planned ${plannedCount === 1 ? "leg" : "legs"}; nothing was signed.`, 1);
+    if (signedKinds.has(current.legKind) || landed.some((done) => done.kind === current.legKind))
+      throw failWith("INVALID_RESPONSE", `Candle offered another ${current.legKind} leg after one of that kind already landed; nothing was signed.`, 1);
+    if (opts.checkLeg && !opts.checkLeg(current.legKind, leg))
+      throw failWith("INVALID_RESPONSE", `The ${current.legKind} leg does not match what this operation confirmed; nothing was signed.`, 1);
     if (!Number.isFinite(current.expiresAt) || current.expiresAt <= ctx.deps.now())
       throw failWith("QUOTE_EXPIRED", `Operation ${current.operationId}'s window closed before the ${current.legKind} leg was signed.`, 1);
     const signed = await relaySignEvmLeg(ctx, key, opts.wallet, leg);
-    await saveOperationHash(ctx, key, opts.clientId, opts.kind, signed.hash, current.operationId);
+    signedCount += 1;
+    signedKinds.add(current.legKind);
+    if (opts.clientId !== undefined && opts.kind !== undefined)
+      await saveOperationHash(ctx, key, opts.clientId, opts.kind, signed.hash, current.operationId);
     const posted = await apiRequest(opts.submitPath, {
       apiUrl: ctx.apiUrl,
       credentials: { apiKey: key },
@@ -16441,8 +16474,8 @@ async function confirmQuote(ctx, quote, yes) {
 `);
   output.write(`Venue: ${safeText(quote.venue)}
 Price impact: ${quote.priceImpactPct == null ? "unavailable" : `${safeText(quote.priceImpactPct)}%`}
-Tier fee: ${safeText(quote.fee.bps)} bps (${safeText(quote.fee.feeRaw)} raw)
-Minimum received: ${safeText(quote.minimumReceived)}
+${quote.fee ? `Tier fee: ${safeText(quote.fee.bps)} bps (${safeText(quote.fee.feeRaw)} raw)
+` : ""}Minimum received: ${safeText(quote.minimumReceived)}
 `);
   if (quote.maxDebitLamports)
     output.write(`Maximum launch debit: ${safeText(quote.maxDebitLamports)} lamports
@@ -16644,7 +16677,7 @@ var init_trading = __esm(() => {
     data: exports_external.string().regex(/^0x([0-9a-fA-F]{2})*$/),
     value: exports_external.string().regex(/^\d+$/)
   });
-  legKindSchema = exports_external.enum(["approval", "permit2Approval", "trade", "feeTransfer"]);
+  legKindSchema = exports_external.enum(["approval", "permit2Approval", "trade", "feeTransfer", "createCurve", "transfer"]);
   landedLegSchema = exports_external.object({ kind: exports_external.string(), hash: exports_external.string() }).passthrough();
   sequencedSchema = exports_external.object({
     mode: exports_external.literal("sequenced"),
@@ -41918,9 +41951,9 @@ var HELP = {
   transfer: {
     group: "Trade",
     summary: "Move funds out of a TEE wallet to your own wallets or its vault, through its bound key",
-    description: "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Read:Write:Transfer key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted. To a linked wallet the amount counts against the key's spend caps and must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm.",
+    description: "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Read:Write:Transfer key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted. To a linked wallet the amount counts against the key's spend caps and must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
     usage: [
-      "candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL>|--mint <mint> --amount <decimal|max> [--wallet <tee>] [--yes] [--json]"
+      "candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <tee>] [--yes] [--json]"
     ],
     rows: [],
     flags: [
@@ -41928,32 +41961,50 @@ var HELP = {
         invocation: "--to <address|wallet name|vault>",
         description: "Where the funds go: vault is the wallet's own pin"
       },
-      { invocation: "--asset <SOL|USDC|CNDL>", description: "A base asset (required for a linked-wallet destination)" },
+      {
+        invocation: "--asset <SOL|USDC|CNDL|ETH|USDG>",
+        description: "A base asset (required for a linked-wallet destination)"
+      },
       { invocation: "--mint <mint>", description: "Any Solana mint, instead of --asset (vault destinations only)" },
+      { invocation: "--token <0x...>", description: "Any Hood ERC-20, instead of --asset (vault destinations only)" },
       { invocation: "--amount <decimal|max>", description: "How much, or max for the whole spendable balance" },
       { invocation: "--wallet <tee>", description: "The TEE wallet the funds leave; optional with one payer" },
-      { invocation: "--rpc-url <url>", description: "Your own Solana RPC (optional; see candle help profile)" },
+      {
+        invocation: "--rpc-url <url>",
+        description: "Your own Solana RPC, or on Hood the EVM RPC a --token's decimals are read over (optional)"
+      },
       { invocation: "--yes", description: "Skip the confirmation prompt (the destination is still printed)" }
     ],
     examples: [
       "candle transfer --to vault --asset SOL --amount max --wallet AgentOne",
-      "candle transfer --to treasury --asset USDC --amount 250 --wallet AgentOne --yes --json"
+      "candle transfer --to treasury --asset USDC --amount 250 --wallet AgentOne --yes --json",
+      "candle transfer --to vault --asset ETH --amount max --wallet HoodAgent"
     ],
     env: ENV_API
   },
   launch: {
     group: "Trade",
-    summary: "Create a Solana token (the first buy is a separate swap)",
-    description: "Creates a Solana token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and an operator-enabled allowLaunch.",
-    usage: ["candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee>"],
+    summary: "Create a token on Solana or Hood (the first buy is a separate swap)",
+    description: "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and an operator-enabled allowLaunch. The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed.",
+    usage: [
+      "candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee> [--quote-asset <asset>] [--dex-version v3|v4]"
+    ],
     rows: [],
     flags: [
       { invocation: "--name <name>", description: "The token's name" },
       { invocation: "--symbol <symbol>", description: "The token's ticker" },
       { invocation: "--image-url <url>", description: "The token image, already hosted" },
-      { invocation: "--wallet <tee>", description: "The TEE wallet that creates it" }
+      { invocation: "--wallet <tee>", description: "The TEE wallet that creates it" },
+      { invocation: "--quote-asset <asset>", description: "sol, usdc or cndl on Solana; eth or usdg on Hood" },
+      {
+        invocation: "--dex-version v3|v4",
+        description: "Hood only, required there: the Uniswap version the curve graduates to"
+      }
     ],
-    examples: ["candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne"],
+    examples: [
+      "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne",
+      "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet HoodAgent --dex-version v4"
+    ],
     env: ENV_API
   },
   portfolio: {
@@ -56257,6 +56308,7 @@ async function keysWallets(args, ctx) {
 
 // src/commands/launch.ts
 init_args();
+init_evm_lite();
 init_render();
 init_solana_endpoint();
 init_solana_lite();
@@ -56584,6 +56636,7 @@ async function recordTradedToken(ctx, wallet, token) {
 `);
   return notice;
 }
+var HOOD_TRADE_LEGS = ["approval", "permit2Approval", "trade", "feeTransfer"];
 function describeHoodLegs(first, hasFee) {
   const kinds = plannedLegKinds(first.legKind, first.plannedLegCount, hasFee);
   const names = {
@@ -56724,6 +56777,7 @@ async function hoodSwap(ctx, args) {
     unwrap: (answer) => kind === "swap" ? answer.payload ?? {} : answer,
     clientId: id,
     kind,
+    allowedLegs: HOOD_TRADE_LEGS,
     onLanded: async (_leg) => {
       const notice = await recordTradedToken(ctx, wallet.address, toChecksumAddress(recorded));
       if (notice)
@@ -56744,6 +56798,32 @@ async function hoodSwap(ctx, args) {
 }
 
 // src/commands/launch.ts
+var USAGE2 = "Usage: candle launch --name <name> --symbol <symbol> --image-url <https-url> --wallet <tee> [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version.";
+var QUOTE_CHAIN = {
+  sol: "solana",
+  usdc: "solana",
+  cndl: "solana",
+  eth: "hood",
+  usdg: "hood"
+};
+var HOOD_LAUNCH_LEGS = ["createCurve", "feeTransfer"];
+function flagChain(flags) {
+  const said = [];
+  const named = walletNameChain(flags["--wallet"] ?? "");
+  if (named)
+    said.push([`--wallet ${flags["--wallet"]}`, named]);
+  const quote = flags["--quote-asset"];
+  const quoteChain = quote === undefined ? undefined : QUOTE_CHAIN[quote.toLowerCase()];
+  if (quoteChain)
+    said.push([`--quote-asset ${quote}`, quoteChain]);
+  if (flags["--dex-version"] !== undefined)
+    said.push(["--dex-version", "hood"]);
+  const [first, ...rest] = said;
+  const other = rest.find(([, chain2]) => chain2 !== first?.[1]);
+  if (first && other)
+    throw new TradingError("CHAIN_MISMATCH", `${safeText(first[0])} is ${chainName(first[1])} and ${safeText(other[0])} is ${chainName(other[1])}; a launch is on one chain. Nothing was built.`);
+  return first?.[1];
+}
 async function launch(args, ctx) {
   const parsed = parseArgs(args, {
     valueFlags: [
@@ -56755,7 +56835,8 @@ async function launch(args, ctx) {
       "--client-trade-id",
       "--rpc-url",
       "--quote-asset",
-      "--mode"
+      "--mode",
+      "--dex-version"
     ],
     booleanFlags: ["--yes"]
   });
@@ -56765,16 +56846,24 @@ async function launch(args, ctx) {
   }
   const flags = parsed.values;
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID2()}`;
-  if (parsed.positionals.length || !flags["--name"] || !flags["--symbol"] || !flags["--image-url"] || !flags["--wallet"] || !validClientId(id)) {
-    writeUsageFailure(ctx.deps, "Usage: candle launch --name <name> --symbol <symbol> --image-url <https-url> --wallet <tee> [--client-trade-id <id>] [--rpc-url <url>] [--quote-asset sol|usdc|cndl] [--mode <mode>] [--yes]", ctx.json);
+  if (parsed.positionals.length || !flags["--name"] || !flags["--symbol"] || !flags["--image-url"] || !flags["--wallet"] || !validClientId(id) || flags["--dex-version"] !== undefined && flags["--dex-version"] !== "v3" && flags["--dex-version"] !== "v4") {
+    writeUsageFailure(ctx.deps, USAGE2, ctx.json);
     return 2;
   }
   try {
+    const hinted = flagChain(flags);
+    if (hinted === "hood" && flags["--dex-version"] === undefined) {
+      writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE2}`, ctx.json);
+      return 2;
+    }
     const key = await tradingKey(ctx);
     const prior = await lookupOperation(ctx, key, id, "launch");
     if (prior) {
       const local = await savedOperation(ctx, key, id);
-      if (local?.signature && prior.job?.status !== "confirmed" && prior.job?.status !== "failed") {
+      const settled = prior.job?.status === "confirmed" || prior.job?.status === "failed";
+      if (local?.operationId && !settled)
+        return await resumeHoodLaunch(ctx, key, id, local.operationId, prior);
+      if (local?.signature && !settled) {
         const result2 = await request(ctx, key, "/api/v1/launch/self/confirm", {
           clientLaunchId: id,
           signature: local.signature
@@ -56783,8 +56872,13 @@ async function launch(args, ctx) {
       }
       return printTradingResult(ctx, prior);
     }
+    const wallet = await tradingWallet(ctx, key, flags["--wallet"], "launch:write", hinted ?? "any");
+    if (wallet.chain === "evm") {
+      if (flags["--dex-version"] === undefined)
+        throw new TradingUsage(`${wallet.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`);
+      return await hoodLaunch(ctx, key, { flags, id, wallet, yes: parsed.booleans.has("--yes") });
+    }
     const solana = await tradingSolanaClient(ctx, flags["--rpc-url"]);
-    const wallet = await tradingWallet(ctx, key, flags["--wallet"], "launch:write");
     if (!await claimOperation(ctx, key, id, "launch"))
       throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
     ctx.deps.stderr.write(`Operation: ${id}
@@ -56838,6 +56932,110 @@ async function launch(args, ctx) {
   } catch (error) {
     return tradingFailure(ctx, error, id);
   }
+}
+async function hoodLaunch(ctx, key, args) {
+  const { flags, id, wallet } = args;
+  if (!await claimOperation(ctx, key, id, "launch"))
+    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
+  ctx.deps.stderr.write(`Operation: ${id}
+`);
+  const built = await request(ctx, key, "/api/v1/launch/self/build", {
+    clientLaunchId: id,
+    chain: "hood",
+    buyAmount: 0,
+    name: flags["--name"],
+    symbol: flags["--symbol"],
+    imageUrl: flags["--image-url"],
+    linkedWalletId: wallet.id,
+    dexVersion: flags["--dex-version"],
+    ...flags["--description"] ? { description: flags["--description"] } : {},
+    ...flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"].toLowerCase() } : {},
+    ...flags["--mode"] ? { mode: flags["--mode"] } : {}
+  });
+  const parsed = sequencedSchema.safeParse(built);
+  if (!parsed.success)
+    throw new TradingError("SEQUENCED_RAIL_REQUIRED", "A Hood TEE wallet launches one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.");
+  const first = parsed.data;
+  const curve = typeof built.curveAddress === "string" ? checkEvmAddress(built.curveAddress) : undefined;
+  if (built.chain !== "hood" || built.clientLaunchId !== id || typeof built.walletAddress !== "string" || !sameEvmAddress(built.walletAddress, wallet.address) || !curve?.ok)
+    throw new TradingError("INVALID_RESPONSE", "The Hood launch build does not name this launch and payer; nothing was signed.");
+  if (first.legKind !== "createCurve" || first.plannedLegCount > HOOD_LAUNCH_LEGS.length)
+    throw new TradingError("INVALID_RESPONSE", `A Hood launch starts with its createCurve leg, and Candle offered ${safeText(first.legKind)} of ${first.plannedLegCount}; nothing was signed.`);
+  const leg = first.nextLeg;
+  const maxFee = BigInt(leg.maxFeePerGas);
+  const reserve = sweepReserveFloor(maxFee);
+  const quote = {
+    intent: `Launch ${flags["--name"]} (${flags["--symbol"]}) on Hood`,
+    wallet: wallet.address,
+    venue: "curve launch",
+    priceImpactPct: null,
+    minimumReceived: "0 tokens (no first buy)",
+    tokenRisks: [],
+    legs: first.plannedLegCount === 2 ? ["create curve", "fee"] : ["create curve"],
+    gas: `the createCurve leg up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei)${first.plannedLegCount === 2 ? "; the fee leg is priced by Candle when it becomes next" : ""}`,
+    reserve: `at least ${formatUnits(reserve.wei, 18)} ETH stays in the wallet for a sweep home (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee)`,
+    curveAddress: curve.address,
+    operationId: first.operationId
+  };
+  ctx.deps.stderr.write(`Launch creates the token only. Make the first buy with a separate candle swap. Price impact does not apply to creation.
+`);
+  if (!await confirmQuote(ctx, quote, args.yes)) {
+    ctx.deps.stderr.write(`Nothing was signed. Operation ${first.operationId} holds this wallet until ${new Date(first.expiresAt).toISOString()}; a new Hood operation from it is refused as WALLET_BUSY until then.
+`);
+    return printTradingResult(ctx, {
+      success: true,
+      status: "cancelled",
+      clientTradeId: id,
+      kind: "launch",
+      chain: "hood",
+      quote,
+      operationId: first.operationId,
+      walletHeldUntil: first.expiresAt
+    });
+  }
+  const run = await runSequencedLegs(ctx, key, {
+    wallet,
+    first,
+    submitPath: "/api/v1/launch/self/confirm",
+    submitFields: { clientLaunchId: id },
+    unwrap: (answer) => answer,
+    clientId: id,
+    kind: "launch",
+    primaryLeg: "createCurve",
+    allowedLegs: HOOD_LAUNCH_LEGS,
+    checkLeg: (kind, leg2) => kind !== "createCurve" || leg2.value === "0",
+    onLanded: async () => {}
+  });
+  return printTradingResult(ctx, {
+    ...run.final,
+    ...await recordLaunchedToken(ctx, wallet, run.final),
+    clientTradeId: id,
+    kind: "launch",
+    chain: "hood",
+    quote,
+    wallet: safeText(wallet.address),
+    operationId: first.operationId,
+    landedLegs: run.landed
+  });
+}
+async function recordLaunchedToken(ctx, wallet, final) {
+  const mint = typeof final.mint === "string" ? checkEvmAddress(final.mint) : undefined;
+  if (!mint?.ok) {
+    const notice2 = "Notice: Candle did not name the launched token, so the sealed EVM record was not updated. The launch landed.";
+    ctx.deps.stderr.write(`${notice2}
+`);
+    return { evmRecord: { notices: [notice2] } };
+  }
+  const token = toChecksumAddress(mint.address);
+  const notice = await recordTradedToken(ctx, wallet.address, token);
+  return { evmRecord: { token, notices: notice ? [notice] : [] } };
+}
+async function resumeHoodLaunch(ctx, key, id, operationId, prior) {
+  const operation = prior.job.operation;
+  if (operation?.status === "active" && typeof operation.expiresAt === "number" && operation.expiresAt > ctx.deps.now())
+    throw new TradingError("OPERATION_IN_FLIGHT", `Operation ${operationId} still holds this wallet until ${new Date(operation.expiresAt).toISOString()}, and its leg may still land. Nothing was posted or re-sent.`, { exitCode: 3, details: { operationId, operation } });
+  const result = await request(ctx, key, "/api/v1/launch/self/confirm", { clientLaunchId: id, operationId });
+  return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch", chain: "hood", operationId });
 }
 
 // src/commands/lp.ts
@@ -59198,11 +59396,12 @@ async function signMessage2(args, ctx) {
 
 // src/commands/transfer.ts
 init_args();
+init_evm_lite();
 init_profiles();
 init_render();
 init_trading();
-var USAGE2 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL>|--mint <mint> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
-var TRANSFER_ASSETS = Object.keys(BASES);
+var USAGE3 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
+var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
 var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 async function readLinkedWallets(ctx, key) {
   const rows = [];
@@ -59221,26 +59420,38 @@ async function readLinkedWallets(ctx, key) {
   }
   return rows;
 }
-async function resolveDestination(ctx, key, source, to) {
+async function resolveDestination(ctx, key, source, to, chain2 = "solana") {
+  const hood = chain2 === "hood";
+  const same = (a, b) => hood ? sameEvmAddress(a, b) : a === b;
   if (to === "vault") {
     const lifecycle = await request(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(source.id)}/lifecycle`);
     const vault = lifecycle.vaultDestination;
     if (typeof vault !== "string" || vault.length === 0)
       throw new TradingError("VAULT_NOT_PINNED", "This wallet has no pinned vault recorded on Candle, so --to vault names nothing. Pass the address instead.");
-    return { kind: "vault", address: vault };
+    if (!hood)
+      return { kind: "vault", address: vault };
+    const checked = checkEvmAddress(vault);
+    if (!checked.ok)
+      throw new TradingError("INVALID_RESPONSE", "Candle recorded a vault for this Hood wallet that is not an EVM address; nothing was built.");
+    return { kind: "vault", address: checked.address };
   }
-  const rows = (await readLinkedWallets(ctx, key)).filter((row) => row.chain === "solana" && row.revokedAt === undefined && row.address !== source.address);
-  const matches = rows.filter((row) => row.label === to || row._id === to || row.address === to);
+  const rowChain2 = hood ? "evm" : "solana";
+  const rows = (await readLinkedWallets(ctx, key)).filter((row) => row.chain === rowChain2 && row.revokedAt === undefined && !same(row.address, source.address));
+  const matches = rows.filter((row) => row.label === to || row._id === to || same(row.address, to));
   if (matches.length > 1)
     throw new TradingError("DESTINATION_AMBIGUOUS", `"${to}" names ${matches.length} linked wallets: ${matches.map((row) => `${row.label ?? ""} (${row._id}, ${row.address})`.trim()).join("; ")}. Name one by id or address.`);
   const match = matches[0];
   if (match)
     return { kind: "linked", address: match.address, id: match._id, ...match.label ? { label: match.label } : {} };
-  if (to === source.address)
+  if (same(to, source.address))
     throw new TradingError("DESTINATION_IS_SOURCE", "--to names the wallet the funds would leave. Name a different destination.");
-  if (BASE58_ADDRESS.test(to))
+  if (!hood && BASE58_ADDRESS.test(to))
     return { kind: "address", address: to };
-  throw new TradingError("DESTINATION_UNKNOWN", rows.length === 0 ? `"${to}" is not vault, a Solana address, or a linked wallet on this account (it has no other active Solana linked wallets).` : `"${to}" is not vault, a Solana address, or a linked wallet on this account. Linked wallets: ${rows.map((row) => `${row.label ?? ""} (${row._id}, ${row.address})`.trim()).join("; ")}.`);
+  const evm = hood ? checkEvmAddress(to) : undefined;
+  if (evm?.ok)
+    return { kind: "address", address: evm.address };
+  const name2 = hood ? "Hood" : "Solana";
+  throw new TradingError("DESTINATION_UNKNOWN", rows.length === 0 ? `"${to}" is not vault, a ${name2} address, or a linked wallet on this account (it has no other active ${name2} linked wallets).` : `"${to}" is not vault, a ${name2} address, or a linked wallet on this account. Linked wallets: ${rows.map((row) => `${row.label ?? ""} (${row._id}, ${row.address})`.trim()).join("; ")}.`);
 }
 function describeDestination(destination) {
   switch (destination.kind) {
@@ -59265,7 +59476,7 @@ async function confirmTransfer(ctx, lines, yes) {
 }
 async function transfer(args, ctx) {
   const parsed = parseArgs(args, {
-    valueFlags: ["--wallet", "--to", "--asset", "--mint", "--amount", "--rpc-url"],
+    valueFlags: ["--wallet", "--to", "--asset", "--mint", "--token", "--amount", "--rpc-url"],
     booleanFlags: ["--yes"]
   });
   if ("error" in parsed) {
@@ -59274,13 +59485,22 @@ async function transfer(args, ctx) {
   }
   const flags = parsed.values;
   const asset = flags["--asset"]?.toUpperCase();
-  if (parsed.positionals.length !== 0 || !flags["--to"] || !flags["--amount"] || Boolean(flags["--asset"]) === Boolean(flags["--mint"]) || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags["--mint"] !== undefined && !BASE58_ADDRESS.test(flags["--mint"])) {
-    writeUsageFailure(ctx.deps, USAGE2, ctx.json);
+  if (parsed.positionals.length !== 0 || !flags["--to"] || !flags["--amount"] || [flags["--asset"], flags["--mint"], flags["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags["--mint"] !== undefined && !BASE58_ADDRESS.test(flags["--mint"]) || flags["--token"] !== undefined && !checkEvmAddress(flags["--token"]).ok) {
+    writeUsageFailure(ctx.deps, USAGE3, ctx.json);
     return 2;
   }
   const to = flags["--to"];
   const isMax = flags["--amount"] === "max";
   try {
+    const chain2 = flags["--token"] !== undefined || asset !== undefined && HOOD_BASES[asset] ? "hood" : "solana";
+    const named = walletNameChain(flags["--wallet"] ?? "");
+    if (named !== undefined && named !== chain2)
+      throw chainMismatch(`--wallet ${safeText(flags["--wallet"])}`, named, chain2);
+    const toNamed = walletNameChain(to);
+    if (toNamed !== undefined && toNamed !== chain2)
+      throw new TradingError("CHAIN_MISMATCH", `--to ${safeText(to)} is a Hood address and ${asset ?? "this mint"} is on Solana; a transfer stays on one chain. Nothing was built.`);
+    if (chain2 === "hood")
+      return await hoodTransfer(ctx, { flags, asset, to, isMax, yes: parsed.booleans.has("--yes") });
     if (!isMax)
       rawAmount(flags["--amount"], 18);
     const key = await tradingKey(ctx);
@@ -59339,6 +59559,92 @@ async function transfer(args, ctx) {
   } catch (error) {
     return tradingFailure(ctx, error);
   }
+}
+function transferLegMoves(leg, expected) {
+  if (expected.token === null)
+    return leg.data === "0x" && leg.value === expected.amountRaw && sameEvmAddress(leg.to, expected.to);
+  if (leg.value !== "0" || !sameEvmAddress(leg.to, expected.token))
+    return false;
+  const decoded = decodeErc20Transfer(hexToBytes2(leg.data));
+  return decoded !== undefined && sameEvmAddress(decoded.recipient, expected.to) && decoded.amount.toString() === expected.amountRaw;
+}
+async function hoodTransfer(ctx, args) {
+  const { flags, asset, to, isMax } = args;
+  const checked = flags["--token"] === undefined ? undefined : checkEvmAddress(flags["--token"]);
+  const tokenAddress = asset !== undefined ? HOOD_BASES[asset]?.address ?? null : checked?.ok ? checked.address : null;
+  const label = asset ?? tokenAddress;
+  if (!isMax)
+    rawAmount(flags["--amount"], 18);
+  const key = await tradingKey(ctx);
+  const payer = await tradingPayer(ctx, key, flags["--wallet"], "transfer:write", "hood");
+  if (payer.kind === "embedded")
+    throw new TradingError("PAYER_UNSUPPORTED", "This command moves a linked wallet this machine can sign for. The embedded wallet transfers through the agent transfer rail (MCP candle_transfer), not from here. Name a Hood TEE wallet with --wallet.");
+  if (!payer.scopes.includes("transfer:bound"))
+    throw new TradingError("SCOPE_MISSING", `Moving funds out of a TEE wallet needs a Read:Write:Transfer key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access read-write-transfer. Or mint one with: candle keys create --access read-write-transfer, then bind the wallet to it with: candle tee rebind`);
+  const wallet = payer.wallet;
+  const destination = await resolveDestination(ctx, key, wallet, to, "hood");
+  const decimals = asset ? HOOD_BASES[asset]?.decimals ?? 18 : await hoodDecimals({ chain: "hood", asset: tokenAddress }, lazyEvmRpc(ctx, flags["--rpc-url"]));
+  const requested = isMax ? "max" : rawAmount(flags["--amount"], decimals);
+  const amountText = isMax ? `the full spendable balance of ${label}` : `${flags["--amount"]} ${label}`;
+  const confirmed = await confirmTransfer(ctx, [
+    `Transfer ${amountText} on Hood from ${wallet.address} (${wallet.id}) to ${describeDestination(destination)}`,
+    destination.kind === "vault" ? "Destination: this wallet's own vault, pinned when it was imported." : destination.kind === "linked" ? "Destination: a linked wallet on this account. Candle allows it only if you linked it while signed in or marked it trusted, only for ETH or USDG, and the amount counts against this key's spend caps." : "Destination: an address Candle will classify at build; from a TEE wallet only its vault or a trusted linked wallet is allowed.",
+    ...asset === "ETH" ? [
+      "ETH keeps this send's gas and the sweep-home gas reserve in the wallet; Candle refuses an amount that would spend them."
+    ] : []
+  ], args.yes);
+  if (!confirmed)
+    return printTradingResult(ctx, {
+      success: true,
+      status: "cancelled",
+      chain: "hood",
+      walletId: wallet.id,
+      destination
+    });
+  const built = await request(ctx, key, "/api/v1/agent/transfer/build", {
+    walletId: wallet.id,
+    chain: "hood",
+    ...asset ? { asset } : { mint: tokenAddress },
+    amountRaw: requested,
+    to: destination.address
+  });
+  const parsed = sequencedSchema.safeParse(built);
+  if (!parsed.success)
+    throw new TradingError("SEQUENCED_RAIL_REQUIRED", "A Hood TEE wallet transfers one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.");
+  const first = parsed.data;
+  const transferId = built.transferId;
+  const amountRaw = typeof built.amountRaw === "string" && /^[1-9]\d*$/.test(built.amountRaw) ? built.amountRaw : null;
+  if (typeof transferId !== "string" || typeof built.payerAddress !== "string" || !sameEvmAddress(built.payerAddress, wallet.address) || amountRaw === null || requested !== "max" && amountRaw !== requested)
+    throw new TradingError("INVALID_RESPONSE", "The Hood transfer build does not name this payer and amount; nothing was signed.");
+  if (first.legKind !== "transfer" || first.plannedLegCount !== 1 || !transferLegMoves(first.nextLeg, { token: tokenAddress, to: destination.address, amountRaw }))
+    throw new TradingError("INVALID_RESPONSE", `The leg Candle built does not move ${decimalAmount(amountRaw, decimals)} ${label} to ${destination.address}; nothing was signed.`);
+  const leg = first.nextLeg;
+  const maxFee = BigInt(leg.maxFeePerGas);
+  ctx.deps.stderr.write(`Built transfer ${safeText(transferId)}: ${decimalAmount(amountRaw, decimals)} ${safeText(label)}${typeof built.destinationKind === "string" ? ` to ${built.destinationKind === "vault" ? "the vault" : "a linked wallet"}` : ""}. Gas up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei).
+`);
+  const run = await runSequencedLegs(ctx, key, {
+    wallet,
+    first,
+    submitPath: "/api/v1/agent/transfer/submit",
+    submitFields: { transferId },
+    unwrap: (answer) => answer,
+    primaryLeg: "transfer",
+    allowedLegs: ["transfer"],
+    checkLeg: (_kind, leg2) => transferLegMoves(leg2, { token: tokenAddress, to: destination.address, amountRaw }),
+    onLanded: async () => {}
+  });
+  const receipt = {
+    ...run.final,
+    transferId,
+    chain: "hood",
+    walletId: wallet.id,
+    wallet: safeText(wallet.address),
+    destination,
+    ...typeof built.destinationKind === "string" ? { destinationKind: built.destinationKind } : {},
+    operationId: first.operationId,
+    landedLegs: run.landed
+  };
+  return printTradingResult(ctx, receipt);
 }
 
 // src/commands/update.ts
@@ -67143,7 +67449,7 @@ init_args();
 init_release();
 import { dirname as dirname10, join as join11 } from "node:path";
 init_render();
-var USAGE3 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE4 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -67175,19 +67481,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeUsageFailure(deps, `${parsed.error}
-${USAGE3}`, json);
+${USAGE4}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeUsageFailure(deps, `verify takes exactly one file.
-${USAGE3}`, json);
+${USAGE4}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeUsageFailure(deps, `--bundle is required.
-${USAGE3}`, json);
+${USAGE4}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -67201,7 +67507,7 @@ ${USAGE3}`, json);
   }
   if (resolved.kind === "absent") {
     writeUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE3}`, json);
+${USAGE4}`, json);
     return 2;
   }
   const identity = resolved.uri;
@@ -67247,7 +67553,7 @@ init_args();
 init_render();
 init_trading();
 import { randomUUID as randomUUID4 } from "node:crypto";
-var USAGE4 = "Usage: candle wallet close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+var USAGE5 = "Usage: candle wallet close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 function splitKeep(args) {
@@ -67322,7 +67628,7 @@ async function embeddedSolana(ctx, key, wallet) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE4}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE5}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
@@ -67333,7 +67639,7 @@ async function walletsCloseEmpty(args, ctx) {
   const named = parsed.values["--client-trade-id"];
   const id = named ?? `close-${randomUUID4()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE4, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE5, ctx.json);
     return 2;
   }
   const keep = lifted.keep;

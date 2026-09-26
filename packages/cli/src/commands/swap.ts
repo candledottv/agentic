@@ -27,6 +27,7 @@ import {
   type Json,
   jobPath,
   type LandedLeg,
+  type LegKind,
   type OperationKind,
   operationSchema,
   pairChain,
@@ -443,7 +444,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
  * server sets every nonce and fee, broadcasts, and reads every receipt (D6). The host is printed
  * once, on first use, never the URL.
  */
-function lazyEvmRpc(ctx: CommandContext, flag: string | undefined): () => EvmRpc {
+export function lazyEvmRpc(ctx: CommandContext, flag: string | undefined): () => EvmRpc {
   let rpc: EvmRpc | undefined
   return () => {
     if (rpc) return rpc
@@ -464,7 +465,7 @@ async function evmRead<T>(what: string, read: () => Promise<T>): Promise<T> {
   }
 }
 
-async function hoodDecimals(asset: TradeAsset, rpc: () => EvmRpc): Promise<number> {
+export async function hoodDecimals(asset: TradeAsset, rpc: () => EvmRpc): Promise<number> {
   const base = asset.base ? HOOD_BASES[asset.base] : undefined
   if (base) return base.decimals
   const decimals = await evmRead(`${asset.asset} decimals()`, () => rpc().erc20Decimals(asset.asset))
@@ -476,7 +477,11 @@ async function hoodDecimals(asset: TradeAsset, rpc: () => EvmRpc): Promise<numbe
  * Append one `token` line to the sealed EVM record for a leg that landed (D1). Never fails the
  * leg: any append that cannot run is a notice on stderr, and the leg's success stands.
  */
-async function recordTradedToken(ctx: CommandContext, wallet: string, token: string): Promise<string | undefined> {
+export async function recordTradedToken(
+  ctx: CommandContext,
+  wallet: string,
+  token: string,
+): Promise<string | undefined> {
   const skipped = (reason: string) =>
     `Notice: the sealed EVM record was not updated for ${token} (${reason}). The leg landed. A later sweep still finds this token with --token ${token}, or with --from-block.`
   const append = ctx.deps.appendEvmRecord
@@ -493,6 +498,9 @@ async function recordTradedToken(ctx: CommandContext, wallet: string, token: str
   if (notice) ctx.deps.stderr.write(`${safeText(notice)}\n`)
   return notice
 }
+
+/** The legs a Hood trade or base swap may sign (D4). A launch's or a transfer's leg kind is refused. */
+const HOOD_TRADE_LEGS: readonly LegKind[] = ["approval", "permit2Approval", "trade", "feeTransfer"]
 
 function describeHoodLegs(first: SequencedBody, hasFee: boolean): string[] {
   const kinds = plannedLegKinds(first.legKind, first.plannedLegCount, hasFee)
@@ -677,6 +685,7 @@ async function hoodSwap(
     unwrap: (answer) => (kind === "swap" ? ((answer.payload ?? {}) as Json) : answer),
     clientId: id,
     kind,
+    allowedLegs: HOOD_TRADE_LEGS,
     onLanded: async (_leg: LandedLeg) => {
       const notice = await recordTradedToken(ctx, wallet.address, toChecksumAddress(recorded))
       if (notice) notices.push(notice)

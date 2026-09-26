@@ -603,6 +603,15 @@ describe("H8: the sequenced leg loop", () => {
     expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
   })
 
+  test("a launch or transfer leg kind offered to a swap is refused and never signed (Phase 4b-2)", async () => {
+    for (const kind of ["createCurve", "transfer"]) {
+      const f = await fixture({ legs: [{ kind: kind as Kind, leg: leg(1, router) }] })
+      expect(await run(buyArgs(), f.deps)).toBe(1)
+      expect(lastJson(f.stdout.text).code).toBe("INVALID_RESPONSE")
+      expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
+    }
+  })
+
   test("a leg on another chain id is refused and never signed", async () => {
     const f = await fixture({ legs: [{ kind: "trade", leg: { ...leg(1, router), chainId: 1 } }] })
     expect(await run(buyArgs(), f.deps)).toBe(1)

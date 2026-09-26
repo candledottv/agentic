@@ -295,9 +295,9 @@ export const HELP: Record<string, Topic> = {
     group: "Trade",
     summary: "Move funds out of a TEE wallet to your own wallets or its vault, through its bound key",
     description:
-      "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Read:Write:Transfer key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted. To a linked wallet the amount counts against the key's spend caps and must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm.",
+      "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Read:Write:Transfer key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted. To a linked wallet the amount counts against the key's spend caps and must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
     usage: [
-      "candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL>|--mint <mint> --amount <decimal|max> [--wallet <tee>] [--yes] [--json]",
+      "candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <tee>] [--yes] [--json]",
     ],
     rows: [],
     flags: [
@@ -305,34 +305,52 @@ export const HELP: Record<string, Topic> = {
         invocation: "--to <address|wallet name|vault>",
         description: "Where the funds go: vault is the wallet's own pin",
       },
-      { invocation: "--asset <SOL|USDC|CNDL>", description: "A base asset (required for a linked-wallet destination)" },
+      {
+        invocation: "--asset <SOL|USDC|CNDL|ETH|USDG>",
+        description: "A base asset (required for a linked-wallet destination)",
+      },
       { invocation: "--mint <mint>", description: "Any Solana mint, instead of --asset (vault destinations only)" },
+      { invocation: "--token <0x...>", description: "Any Hood ERC-20, instead of --asset (vault destinations only)" },
       { invocation: "--amount <decimal|max>", description: "How much, or max for the whole spendable balance" },
       { invocation: "--wallet <tee>", description: "The TEE wallet the funds leave; optional with one payer" },
-      { invocation: "--rpc-url <url>", description: "Your own Solana RPC (optional; see candle help profile)" },
+      {
+        invocation: "--rpc-url <url>",
+        description: "Your own Solana RPC, or on Hood the EVM RPC a --token's decimals are read over (optional)",
+      },
       { invocation: "--yes", description: "Skip the confirmation prompt (the destination is still printed)" },
     ],
     examples: [
       "candle transfer --to vault --asset SOL --amount max --wallet AgentOne",
       "candle transfer --to treasury --asset USDC --amount 250 --wallet AgentOne --yes --json",
+      "candle transfer --to vault --asset ETH --amount max --wallet HoodAgent",
     ],
     env: ENV_API,
   },
 
   launch: {
     group: "Trade",
-    summary: "Create a Solana token (the first buy is a separate swap)",
+    summary: "Create a token on Solana or Hood (the first buy is a separate swap)",
     description:
-      "Creates a Solana token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and an operator-enabled allowLaunch.",
-    usage: ["candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee>"],
+      "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and an operator-enabled allowLaunch. The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed.",
+    usage: [
+      "candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee> [--quote-asset <asset>] [--dex-version v3|v4]",
+    ],
     rows: [],
     flags: [
       { invocation: "--name <name>", description: "The token's name" },
       { invocation: "--symbol <symbol>", description: "The token's ticker" },
       { invocation: "--image-url <url>", description: "The token image, already hosted" },
       { invocation: "--wallet <tee>", description: "The TEE wallet that creates it" },
+      { invocation: "--quote-asset <asset>", description: "sol, usdc or cndl on Solana; eth or usdg on Hood" },
+      {
+        invocation: "--dex-version v3|v4",
+        description: "Hood only, required there: the Uniswap version the curve graduates to",
+      },
     ],
-    examples: ["candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne"],
+    examples: [
+      "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne",
+      "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet HoodAgent --dex-version v4",
+    ],
     env: ENV_API,
   },
 
