@@ -7,7 +7,7 @@
  */
 import { describe, expect, test } from "bun:test"
 import { createHash, createPublicKey, verify } from "node:crypto"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   formatRequestForAuthorizationSignature,
@@ -41,8 +41,11 @@ describe("published relay-signature vectors", () => {
     expectDerived(V.publicKeySpkiBase64, spki, "publicKeySpkiBase64")
   })
 
-  test("docs/agent-trading.md contains each published vector", () => {
-    const doc = readFileSync(join(import.meta.dir, "../../../docs/agent-trading.md"), "utf8")
+  // The doc lives in the monorepo only. The SDK is mirrored into candledottv/agentic without `docs/`,
+  // so there this pin has nothing to read; the vector tests below still run in both places.
+  const docPath = join(import.meta.dir, "../../../docs/agent-trading.md")
+  test.skipIf(!existsSync(docPath))("docs/agent-trading.md contains each published vector", () => {
+    const doc = readFileSync(docPath, "utf8")
     expect(doc).toContain(V.publicKeySpkiBase64)
     for (const c of V.cases) {
       expect(doc, `${c.name} canonical`).toContain(c.canonical)
