@@ -24,6 +24,7 @@ import { renderError, renderTable, writeUsageFailure } from "../render"
 import { HELPER_ENV, HELPER_NAME, locateFido2Helper } from "../vault/fido2"
 import { CONFIG_DIR_ENV, candleConfigDir, defaultVaultPath, fileExists } from "../vault/store"
 import { CLI_VERSION } from "../version"
+import { keySignerDoctorRows } from "./key-signer"
 
 // Matches packages/mcp's own `engines.node` floor (">=18"); doctor needs an actual number to
 // compare against, package.json's engines field alone isn't read at runtime by the built bundle
@@ -368,6 +369,10 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
         }
       : { check: "Update", state: "SKIP", detail: `could not check: ${latest.message}` },
   )
+
+  // Key signers (spec 2026-09-25-key-signers-design.md, 5.6): the slots this machine holds, and
+  // a device token beside one. No row at all when there is nothing to say.
+  rows.push(...(await keySignerDoctorRows(ctx, { apiKey, deviceToken })))
 
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0
 

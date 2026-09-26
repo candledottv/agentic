@@ -50,14 +50,19 @@ import {
 } from "../vault/promote-support"
 import {
   finalBoundKey,
+  keySignerImport,
+  keySignerJson,
+  keySignerTradableLine,
   type NotRebindable,
   preflightToKey,
   type RebindableWallet,
   rebindJson,
   rebindPromoted,
   renderRebindReport,
+  type ToKeySigner,
   type ToKeyTarget,
   targetWarnings,
+  toKeyPlanLine,
   walletRebindJson,
 } from "../vault/promote-to-key"
 import { adoptGrantedRow, reconcileGrant } from "../vault/reconcile-grant"
@@ -72,7 +77,7 @@ import {
   sealKeyBlob,
   type UnlockedVault,
 } from "../vault/store"
-import { type ImportSubmitResponse, runImportFlow, TEE_PROFILE } from "../wallet-import-flow"
+import { type ImportFlowParams, type ImportSubmitResponse, runImportFlow, TEE_PROFILE } from "../wallet-import-flow"
 import { nextAllocatableIndex } from "./vault-new-key"
 import { promoteEvmFresh, promoteEvmInPlace } from "./vault-promote-evm"
 import {
@@ -127,7 +132,11 @@ export async function vaultPromote(args: string[], ctx: CommandContext): Promise
     const label = parsed.values["--label"] ?? inPlaceLabel ?? (fromLabel !== undefined ? "<fresh>" : undefined)
     const preflight = await preflightToKey(ctx, toKeyRaw, { labels: label !== undefined ? [label] : [] })
     if (!preflight.ok) return preflight.exit
-    toKey = { target: preflight.target, deviceToken: preflight.deviceToken }
+    toKey = {
+      target: preflight.target,
+      deviceToken: preflight.deviceToken,
+      ...(preflight.keySigner !== undefined ? { keySigner: preflight.keySigner } : {}),
+    }
   }
 
   if (fromLabel !== undefined) return promoteFresh(ctx, parsed, fromLabel, toKey)
@@ -138,6 +147,8 @@ export async function vaultPromote(args: string[], ctx: CommandContext): Promise
 export interface ToKeyContext {
   target: ToKeyTarget
   deviceToken: string
+  /** Key signers (5.2): the target's active signer, pinned; the import then goes onto it. */
+  keySigner?: ToKeySigner
 }
 
 /** What one import left behind, as the rebind and the document need it. */
@@ -163,6 +174,19 @@ export async function rebindAfterImport(
   wallet: PromotedWallet,
   callingKeyPrefix: string,
 ): Promise<{ exit: number; json: Record<string, unknown> }> {
+  // Key signers (5.2): a keySigner import already owned the wallet by the target's signer and
+  // bound it to the target, in that call. There is nothing to rebind.
+  if (toKey.keySigner !== undefined && wallet.importedTo === toKey.target.keyPrefix) {
+    ctx.deps.stderr.write(`${keySignerTradableLine({ target: toKey.target, keySigner: toKey.keySigner })}\n`)
+    return {
+      exit: 0,
+      json: {
+        ...keySignerJson({ target: toKey.target, keySigner: toKey.keySigner }, wallet.importedTo),
+        boundKeyPrefix: wallet.importedTo,
+        walletRebind: { state: "not-needed" },
+      },
+    }
+  }
   const rebindable: RebindableWallet[] =
     wallet.linkedWalletId !== null && wallet.remoteAuthority === "verified-active"
       ? [{ id: wallet.linkedWalletId, address: wallet.address, label: wallet.label }]
@@ -181,7 +205,9 @@ export async function rebindAfterImport(
         ]
       : []
   const run =
-    rebindable.length > 0 ? await rebindPromoted(ctx, toKey.deviceToken, toKey.target.keyPrefix, rebindable) : undefined
+    rebindable.length > 0
+      ? await rebindPromoted(ctx, toKey.deviceToken, toKey.target.keyPrefix, rebindable, toKey.keySigner?.spkiSha256)
+      : undefined
   const input = { target: toKey.target, callingKeyPrefix, wallets: rebindable, run, notRebindable }
   const report = renderRebindReport(input)
   if (report.length > 0) ctx.deps.stderr.write(`${report}\n`)
@@ -202,13 +228,7 @@ export async function rebindAfterImport(
  * writes, so the entry stays import-pending.
  */
 export async function confirmResumeRebind(ctx: CommandContext, toKey: ToKeyContext): Promise<void> {
-  const name = toKey.target.label !== null ? `  (${toKey.target.label})` : ""
-  ctx.deps.stderr.write(
-    `${[
-      `This wallet will be bound to key ${toKey.target.keyPrefix}${name} by a rebind after the import.`,
-      ...targetWarnings(toKey.target),
-    ].join("\n")}\n`,
-  )
+  ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target)].join("\n")}\n`)
   const typed = await ctx.deps.promptLine(`Type ${CONFIRM_WORD} to move this wallet to ${toKey.target.keyPrefix}: `)
   if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
     throw new VaultError(
@@ -334,13 +354,7 @@ async function promoteFresh(
     if (toKey !== undefined) {
       // BE-322: the fresh mode has no controlled-by block; the target is named here, with its cap
       // lines, before the import.
-      const name = toKey.target.label !== null ? `  (${toKey.target.label})` : ""
-      ctx.deps.stderr.write(
-        `${[
-          `This wallet will be bound to key ${toKey.target.keyPrefix}${name} by a rebind after the import.`,
-          ...targetWarnings(toKey.target),
-        ].join("\n")}\n`,
-      )
+      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target)].join("\n")}\n`)
     }
 
     const privateKey = base58.encode(secret64)
@@ -353,6 +367,7 @@ async function promoteFresh(
       vaultDestination: destination.address,
       reopenForWrite: opened.reopen,
       resolvedVault,
+      keySigner: keySignerImport(toKey),
       onImport: () => {
         importCount.n += 1
       },
@@ -568,6 +583,7 @@ async function promoteInPlace(
             keyPrefix: toKey.target.keyPrefix,
             label: toKey.target.label,
             warnings: targetWarnings(toKey.target),
+            ...(toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}),
           })
 
     // Holdings (step 4): display what the subject holds.
@@ -649,6 +665,7 @@ async function promoteInPlace(
       reopenForWrite: opened.reopen,
       report: "return",
       resolvedVault,
+      keySigner: keySignerImport(toKey),
     })
     const code = imported.exit
     if (imported.failure !== undefined) {
@@ -965,6 +982,8 @@ export async function runTeeImport(
     onImport?: () => void
     /** Phase 4b: the chain the import registers the key on. Default Solana, as before. */
     chain?: "solana" | "evm"
+    /** Key signers (5.2): import onto the `--to-key` target's signer; see `keySignerImport`. */
+    keySigner?: ImportFlowParams["keySigner"]
   },
 ): Promise<TeeImportOutcome> {
   const report = opts.report ?? "write"
@@ -986,6 +1005,7 @@ export async function runTeeImport(
     deps: ctx.deps,
     profile: TEE_PROFILE,
     vaultDestination: opts.vaultDestination,
+    ...(opts.keySigner !== undefined ? { keySigner: opts.keySigner } : {}),
   })
   if (!flow.ok) {
     const failure = flow.failure

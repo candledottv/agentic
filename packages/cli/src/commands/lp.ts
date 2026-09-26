@@ -212,14 +212,14 @@ async function walletHolding(
   name: string | undefined,
 ): Promise<TradingWallet> {
   if (name !== undefined) return tradingWallet(ctx, key, name, LP_SCOPE)
-  const { rows, appId } = await listTradingWallets(ctx, key, LP_SCOPE)
+  const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, LP_SCOPE)
   for (const row of rows) {
     if (row.chain !== "solana") continue
     const positions = lpPositionsSchema.parse(
       await lpRequest(ctx, key, `/api/v1/agent/lp/positions?linkedWalletId=${encodeURIComponent(row.id)}`),
     )
     if (positions.positions.some((held) => held.position === position))
-      return completeTradingWallet(ctx, row, appId, LP_SCOPE)
+      return completeTradingWallet(ctx, row, appId, LP_SCOPE, "solana", { apiKey: key, keyPrefix })
   }
   throw new TradingError(
     "LP_POSITION_NOT_FOUND",

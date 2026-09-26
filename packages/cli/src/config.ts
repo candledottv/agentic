@@ -13,6 +13,34 @@ import { chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
+/** One key signer this machine holds. Public facts only; the private half is in the secret store. */
+export interface KeySignerEntry {
+  /** The API key's 8-character prefix. */
+  keyPrefix: string
+  /** Lowercase hex sha256 of the SPKI DER: the slot name, and the only form that is compared. */
+  spkiSha256: string
+  /** `CNDL-XXXX-XXXX-XXXX`, for display only. */
+  fingerprint: string
+  /** Base64 SPKI DER, so a pending request can be re-sent with the same public key. */
+  publicKeyDer: string
+  /** The Privy quorum, once approval returned it. Absent: the pair is still pending. */
+  signerQuorumId?: string
+  createdAt: number
+}
+
+/** A promote's trust in a key's signer (D3): the full hash it last confirmed. */
+export interface KeySignerPin {
+  spkiSha256: string
+  fingerprint: string
+  pinnedAt: number
+}
+
+export interface KeySignerIndex {
+  entries?: KeySignerEntry[]
+  /** By key prefix. */
+  pins?: Record<string, KeySignerPin>
+}
+
 /**
  * The non-secret half of one identity. The two secrets that belong to it live in the
  * SecretStore under `profileSecretRef(name, kind)` (profiles.ts). `account` is cached at
@@ -71,6 +99,13 @@ export interface CliConfig {
    * repeats is a notice that stops being read. Written only after the notice is on stderr.
    */
   publicRpcNotice?: { shownAt: number }
+  /**
+   * Key signers (spec 2026-09-25-key-signers-design.md, 4.1 and D3): the NON-secret half of this
+   * machine's key signers and the full-hash pins a promote checks. Per machine, like the secret
+   * store it indexes: the private halves live under `key_signer_<prefix>_<spkiSha256>` there, and
+   * no store backend can list its refs. See key-signers.ts. An older CLI ignores this field.
+   */
+  keySigners?: KeySignerIndex
   /** The scopes this device/key was authorized with. */
   scopes?: string[]
   /** A human-readable label for this device, as shown during authorization. */

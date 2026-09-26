@@ -10,6 +10,8 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { readFile, writeFile } from "node:fs/promises"
 import { run } from "../index"
+import { keySignerFingerprint, readPin } from "../key-signers"
+import { walletSignerRef } from "../secret-store"
 import {
   type CapturedRequest,
   createCapture,
@@ -18,6 +20,7 @@ import {
   createTestDeps,
   jsonResponse,
   type RouteHandler,
+  signerView,
 } from "../test-support"
 import { SELECTED_SCOPE_LIMIT } from "../vault/promote-to-key"
 import { useCheapKdf } from "../vault/test-vault"
@@ -39,6 +42,7 @@ import {
   teeSeed,
   USERNAME,
 } from "./__fixtures__/promote-batch"
+import { RELAY_SIGNER_LINE } from "./tee-rebind"
 
 setDefaultTimeout(180_000)
 useCheapKdf()
@@ -74,7 +78,15 @@ function keysListing(target: KeyRowIn = {}, extra: KeyRowIn[] = []): RouteHandle
 const parse = (req: CapturedRequest) => JSON.parse(String(req.init.body ?? "{}")) as Record<string, unknown>
 
 /** A rebind route answering from the request: a preview reports every id not already on the target as moving. */
-function rebindRoute(opts: { alreadyThere?: string[]; failCommit?: Response; failPreview?: Response } = {}) {
+function rebindRoute(
+  opts: {
+    alreadyThere?: string[]
+    failCommit?: Response
+    failPreview?: Response
+    /** Key signers: the target's active signer as the preview reports it. */
+    signer?: { fingerprint: string; spkiSha256: string }
+  } = {},
+) {
   const bodies: Record<string, unknown>[] = []
   const toKey = {
     keyPrefix: TO,
@@ -84,6 +96,7 @@ function rebindRoute(opts: { alreadyThere?: string[]; failCommit?: Response; fai
     tradeReady: { sol: true, usdc: false },
     missingCaps: ["spendLimits.usdc"],
     launchScope: false,
+    ...(opts.signer !== undefined ? { signer: opts.signer } : {}),
   }
   const there = new Set(opts.alreadyThere ?? [])
   const handler: RouteHandler = (req) => {
@@ -649,6 +662,14 @@ async function runSingle(
     routes?: Record<string, RouteHandler>
     /** Rows `GET /wallets` returns. A resume needs the server's grant for the subject. */
     walletPage?: Array<Record<string, unknown>>
+    /** Key signers: the target's `GET …/signer` (default: no signer). */
+    signer?: RouteHandler
+    /** Key signers: what the pin prompt is answered with (a hidden prompt naming the fingerprint). */
+    fingerprint?: string
+    /** What the submit reports as `boundKeyPrefix` (default: the calling key). */
+    boundKeyPrefix?: string
+    /** Key signers: a pin this machine already holds for the target. */
+    pin?: { spkiSha256: string; fingerprint: string }
   },
 ) {
   const out = createCapture()
@@ -670,7 +691,7 @@ async function runSingle(
         chain: "solana",
         privyWalletId: `pw_${address.slice(0, 6)}`,
         profile: "ember-tee",
-        boundKeyPrefix: IMPORTED_TO,
+        boundKeyPrefix: opts.boundKeyPrefix ?? IMPORTED_TO,
         vaultDestination: f.addresses.cold,
         remoteAuthority: opts.remoteAuthority ?? "verified-active",
       })
@@ -683,6 +704,7 @@ async function runSingle(
       jsonResponse(200, { success: true, tier: "max", active: 0, cap: 1000, room: 1000 }),
     "/api/v1/agent/keys": opts.keys ?? keysListing(),
     "/api/v1/agent/tee-wallets/rebind": opts.rebind ?? (() => jsonResponse(404, { error: "Not Found" })),
+    "/api/v1/agent/keys/Ab3dEf9h/signer": opts.signer ?? (() => signerView(TO)),
     "/rpc": (req) => {
       const body = parse(req)
       const id = body.id
@@ -702,6 +724,7 @@ async function runSingle(
   const linePrompts: string[] = []
   const stderrAtPrompt: string[] = []
   let secretPrompts = 0
+  const fingerprintPrompts: string[] = []
   const deps = createTestDeps({
     fetch,
     store: createFakeStore({
@@ -712,7 +735,11 @@ async function runSingle(
     stderr: err,
     env: { CANDLE_CONFIG_DIR: f.dir, CANDLE_API_URL: API },
     isTTY: { stdin: true, stdout: true, stderr: true },
-    promptSecret: async () => {
+    promptSecret: async (text: string) => {
+      if (text.includes("fingerprint")) {
+        fingerprintPrompts.push(text)
+        return opts.fingerprint ?? ""
+      }
       secretPrompts += 1
       return f.passphrase
     },
@@ -727,9 +754,22 @@ async function runSingle(
   await deps.writeConfig({
     activeProfile: "pb",
     profiles: { pb: { account: ACCOUNT, apiUrl: API, accountCachedAt: Date.now() } },
+    ...(opts.pin ? { keySigners: { pins: { [TO]: { ...opts.pin, pinnedAt: 1 } } } } : {}),
   })
   const code = await run(["vault", "promote", ...opts.args, ...(opts.json ? ["--json"] : [])], deps)
-  return { code, out: out.text, err: err.text, calls, submits, secretPrompts, linePrompts, stderrAtPrompt }
+  return {
+    code,
+    out: out.text,
+    err: err.text,
+    calls,
+    submits,
+    secretPrompts,
+    linePrompts,
+    stderrAtPrompt,
+    fingerprintPrompts,
+    store: deps.store,
+    deps,
+  }
 }
 
 describe("vault promote --to-key", () => {
@@ -978,5 +1018,238 @@ describe("vault promote --to-key", () => {
     expect(body.message).toContain(
       `holds ${SELECTED_SCOPE_LIMIT} of ${SELECTED_SCOPE_LIMIT}; the 1 this run would move do not fit`,
     )
+  })
+})
+
+// ── Key signers K3 (spec 2026-09-25-key-signers-design.md, 5.2): T4 and T5 ──────────────────
+
+describe("vault promote --to-key and key signers", () => {
+  const inPlace = ["--in-place", "subject", "--sweep-to", "cold", "--rpc-url", RPC, "--to-key", TO_LABEL]
+  const signerSha = "5f".repeat(32)
+  const signerFp = keySignerFingerprint(signerSha)
+  const activeSigner = () =>
+    signerView(TO, {
+      state: "active",
+      fingerprint: signerFp,
+      spkiSha256: signerSha,
+      publicKeyDer: "AAAA",
+      signerQuorumId: "q-to",
+    })
+  const submitCall = (r: { calls: CapturedRequest[] }) =>
+    r.calls.find((c) => c.url.endsWith("/wallets/import/submit")) as CapturedRequest
+  const headers = (c: CapturedRequest) => (c.init.headers ?? {}) as Record<string, string>
+
+  test("T4: onto a key with no signer, the import is under the calling key with a per-wallet signer here, then a binding-only rebind; no keySigner is sent", async () => {
+    const f = await fixture(["subject", "cold"])
+    const rebind = rebindRoute()
+    const r = await runSingle(f, {
+      args: inPlace,
+      lines: [(f.addresses.subject as string).slice(-6), "confirm"],
+      rebind: rebind.handler,
+    })
+    expect(r.code).toBe(0)
+    expect(r.fingerprintPrompts).toHaveLength(0)
+    const submit = submitCall(r)
+    const body = parse(submit)
+    expect(typeof body.signerPublicKey).toBe("string")
+    expect(body.keySigner).toBeUndefined()
+    expect(body.spkiSha256).toBeUndefined()
+    expect(headers(submit)["x-api-key"]).toBe(API_KEY)
+    const id = linkedId(f.addresses.subject as string)
+    expect(await r.store.get(walletSignerRef(id))).not.toBeNull()
+    expect(rebind.bodies.map((b) => b.owner)).toEqual([undefined, undefined])
+    expect(r.err).toContain(RELAY_SIGNER_LINE)
+  })
+
+  test("T5: onto a key with a signer, the first promote asks for the full fingerprint without echo, pins the full sha256, and imports onto the target in one call with the device token alone", async () => {
+    const f = await fixture(["subject", "cold"])
+    const rebind = rebindRoute()
+    const r = await runSingle(f, {
+      args: inPlace,
+      lines: [(f.addresses.subject as string).slice(-6), "confirm"],
+      json: true,
+      rebind: rebind.handler,
+      signer: activeSigner,
+      fingerprint: signerFp.toLowerCase(),
+      boundKeyPrefix: TO,
+    })
+    expect(r.code).toBe(0)
+    expect(r.fingerprintPrompts).toHaveLength(1)
+    expect((await readPin(r.deps, TO))?.spkiSha256).toBe(signerSha)
+    const submit = submitCall(r)
+    const body = parse(submit)
+    expect(body).toMatchObject({ keySigner: true, spkiSha256: signerSha, targetKeyPrefix: TO, profile: "ember-tee" })
+    expect(body.signerPublicKey).toBeUndefined()
+    // The cross-key mount: the device token, and the calling API key is not sent.
+    expect(headers(submit).authorization).toBe(`Bearer ${DEVICE_TOKEN}`)
+    expect(headers(submit)["x-api-key"]).toBeUndefined()
+    // No rebind after, and no signer stored on the vault machine.
+    expect(rebind.bodies).toHaveLength(0)
+    expect(await r.store.get(walletSignerRef(linkedId(f.addresses.subject as string)))).toBeNull()
+    expect(r.err).toContain(`Tradable from the machine holding key ${TO_LABEL} (signer ${signerFp})`)
+    expect(r.err).toContain(`--to-key, owned by its signer ${signerFp} from the import`)
+    expect(lastLine(r.out)).toMatchObject({
+      ok: true,
+      boundKeyPrefix: TO,
+      keySigner: { fingerprint: signerFp, spkiSha256: signerSha },
+      rebind: { ok: true, skipped: "keySigner" },
+      walletRebind: { state: "not-needed" },
+    })
+  })
+
+  test("T5: one group, or a wrong string, refuses before the unlock and before any write; nothing is pinned", async () => {
+    for (const typed of [signerFp.split("-")[3] as string, "CNDL-0000-0000-0000"]) {
+      const f = await fixture(["subject", "cold"])
+      const before = await readEntries(f)
+      const r = await runSingle(f, {
+        args: inPlace,
+        lines: [],
+        json: true,
+        signer: activeSigner,
+        fingerprint: typed,
+      })
+      expect(r.code).toBe(1)
+      expect(JSON.parse(r.out.trim()).code).toBe("KEY_SIGNER_FINGERPRINT_MISMATCH")
+      expect(r.secretPrompts).toBe(0)
+      expect(r.submits.n).toBe(0)
+      expect(await readPin(r.deps, TO)).toBeUndefined()
+      expect((await readEntries(f)).generation).toBe(before.generation)
+    }
+  })
+
+  test("T5: a later change of the full hash refuses until the new full string is typed; the same hash asks nothing", async () => {
+    const oldSha = "ab".repeat(32)
+    const oldFp = keySignerFingerprint(oldSha)
+    // Pinned to an earlier signer; the operator types the fingerprint they know, which is the old one.
+    const f = await fixture(["subject", "cold"])
+    const changed = await runSingle(f, {
+      args: inPlace,
+      lines: [],
+      json: true,
+      signer: activeSigner,
+      fingerprint: oldFp,
+      pin: { spkiSha256: oldSha, fingerprint: oldFp },
+    })
+    expect(changed.code).toBe(1)
+    expect(JSON.parse(changed.out.trim()).code).toBe("KEY_SIGNER_CHANGED")
+    expect(changed.err).toContain(
+      `KEY_SIGNER_CHANGED: key ${TO}'s signer is not the one this machine pinned (${oldFp})`,
+    )
+    expect((await readPin(changed.deps, TO))?.spkiSha256).toBe(oldSha)
+    expect(changed.submits.n).toBe(0)
+
+    const g = await fixture(["subject", "cold"])
+    const same = await runSingle(g, {
+      args: inPlace,
+      lines: [(g.addresses.subject as string).slice(-6), "confirm"],
+      json: true,
+      signer: activeSigner,
+      pin: { spkiSha256: signerSha, fingerprint: signerFp },
+      boundKeyPrefix: TO,
+    })
+    expect(same.code).toBe(0)
+    expect(same.fingerprintPrompts).toHaveLength(0)
+    expect(parse(submitCall(same)).spkiSha256).toBe(signerSha)
+  })
+
+  test("a signer approved on the target after the preflight saw none: the rebind asks for its full fingerprint before the commit; a wrong one commits nothing", async () => {
+    const f = await fixture(["subject", "cold"])
+    const wrong = rebindRoute({ signer: { fingerprint: signerFp, spkiSha256: signerSha } })
+    const refused = await runSingle(f, {
+      args: inPlace,
+      lines: [(f.addresses.subject as string).slice(-6), "confirm"],
+      json: true,
+      rebind: wrong.handler,
+      fingerprint: "CNDL-0000-0000-0000",
+    })
+    expect(refused.code).toBe(1)
+    // The preflight read no signer, so the only pin prompt is the rebind's, after the import.
+    expect(refused.fingerprintPrompts).toHaveLength(1)
+    expect(refused.submits.n).toBe(1)
+    expect(wrong.bodies.map((b) => b.dryRun === true)).toEqual([true])
+    expect(await readPin(refused.deps, TO)).toBeUndefined()
+    expect(refused.err).toContain("Rebind KEY_SIGNER_FINGERPRINT_MISMATCH")
+    expect(refused.err).toContain(`  candle tee rebind ${f.addresses.subject} --to-key ${TO}`)
+    expect(lastLine(refused.out)).toMatchObject({ walletRebind: { state: "failed" } })
+
+    const g = await fixture(["subject", "cold"])
+    const right = rebindRoute({ signer: { fingerprint: signerFp, spkiSha256: signerSha } })
+    const confirmed = await runSingle(g, {
+      args: inPlace,
+      lines: [(g.addresses.subject as string).slice(-6), "confirm"],
+      json: true,
+      rebind: right.handler,
+      fingerprint: signerFp,
+    })
+    expect(confirmed.code).toBe(0)
+    expect(confirmed.fingerprintPrompts).toHaveLength(1)
+    expect(right.bodies.map((b) => b.dryRun === true)).toEqual([true, false])
+    expect((await readPin(confirmed.deps, TO))?.spkiSha256).toBe(signerSha)
+  })
+})
+
+describe("promote-batch --to-key onto a key with a signer (5.2)", () => {
+  test("every import goes onto the target's signer with the device token; the rebind preview finds them there and commits nothing", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const sha = "5f".repeat(32)
+    const fp = keySignerFingerprint(sha)
+    const a = linkedId(f.addresses.a as string)
+    const b = linkedId(f.addresses.b as string)
+    const rebind = rebindRoute({ alreadyThere: [a, b] })
+    const submitted: CapturedRequest[] = []
+    const o = await runBatch(f, {
+      file,
+      ack: "correct",
+      json: true,
+      deviceToken: true,
+      args: ["--to-key", TO_LABEL],
+      api: {
+        keys: keysListing(),
+        rebind: rebind.handler,
+        routes: {
+          [`/api/v1/agent/keys/${TO}/signer`]: () =>
+            signerView(TO, {
+              state: "active",
+              fingerprint: fp,
+              spkiSha256: sha,
+              publicKeyDer: "AAAA",
+              signerQuorumId: "q-to",
+            }),
+          "/api/v1/agent/wallets/import/submit": (req) => {
+            submitted.push(req)
+            const address = parse(req).address as string
+            return jsonResponse(200, {
+              success: true,
+              id: linkedId(address),
+              address,
+              chain: "solana",
+              privyWalletId: `pw_${address.slice(0, 6)}`,
+              profile: "ember-tee",
+              boundKeyPrefix: TO,
+              vaultDestination: parse(req).vaultDestination,
+              remoteAuthority: "verified-active",
+              keySigner: { fingerprint: fp, spkiSha256: sha },
+            })
+          },
+        },
+      },
+      deps: {
+        promptSecret: async (text: string) => (text.includes("fingerprint") ? fp : f.passphrase),
+      },
+    })
+    expect(o.code).toBe(0)
+    expect(submitted).toHaveLength(2)
+    for (const req of submitted) {
+      expect(parse(req)).toMatchObject({ keySigner: true, spkiSha256: sha, targetKeyPrefix: TO })
+      expect(parse(req).signerPublicKey).toBeUndefined()
+      const headers = req.init.headers as Record<string, string>
+      expect([headers.authorization, headers["x-api-key"]]).toEqual([`Bearer ${DEVICE_TOKEN}`, undefined])
+    }
+    expect(rebind.bodies.filter((body) => body.dryRun !== true)).toHaveLength(0)
+    expect(o.err).toContain(`--to-key, owned by its signer ${fp} from the import`)
+    expect(o.err).toContain(`Tradable from the machine holding key ${TO_LABEL} (signer ${fp})`)
+    const body = JSON.parse(jsonDocuments(o.out)[0] as string)
+    expect(body.keys.map((k: { boundKeyPrefix: string }) => k.boundKeyPrefix)).toEqual([TO, TO])
   })
 })

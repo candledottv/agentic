@@ -23,7 +23,7 @@ import {
   sameEvmAddress,
   signedTransactionCovers,
 } from "./evm-lite"
-import { storedSignerToPem, walletSignerRef } from "./secret-store"
+import { activeSigner, localSignerFor, readSigner, type SignerView } from "./key-signers"
 import { openSolanaClient, rateLimitedMessage, rateLimitedSuggestion, type SolanaClient } from "./solana-endpoint"
 import type { SolanaRpcError } from "./solana-lite"
 
@@ -90,8 +90,11 @@ const walletSchema = z.object({
   active: z.boolean(),
   allowLaunch: z.boolean(),
   privyWalletId: z.string().optional(),
+  /** Key signers (5.3): the wallet's owner quorum. Absent from an API that predates it. */
+  signerQuorumId: z.string().optional(),
 })
 const walletPageSchema = z.object({
+  keyPrefix: z.string().optional(),
   scopes: z.array(z.string()),
   privyAppId: z.string().nullable(),
   page: z.array(walletSchema),
@@ -337,12 +340,13 @@ export async function listTradingWallets(
   key: string,
   /** A scope the bound key must carry; omitted for a read that `requireAgentKey("any")` admits. */
   scope?: string,
-): Promise<{ rows: WalletRow[]; appId: string; scopes: string[] }> {
+): Promise<{ rows: WalletRow[]; appId: string; scopes: string[]; keyPrefix?: string }> {
   let cursor: string | undefined
   const rows: WalletRow[] = []
   const cursors = new Set<string>()
   let appId = ""
   let scopes: string[] = []
+  let keyPrefix: string | undefined
   for (;;) {
     const response = walletPageSchema.parse(
       await request(ctx, key, `/api/v1/agent/wallets/trading${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`),
@@ -351,6 +355,7 @@ export async function listTradingWallets(
       throw new TradingError("SCOPE_MISSING", `The bound key needs ${scope}.`)
     appId = response.privyAppId ?? ""
     scopes = response.scopes
+    keyPrefix = response.keyPrefix
     if (!Array.isArray(response.page))
       throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not return a page.")
     rows.push(...response.page)
@@ -359,7 +364,7 @@ export async function listTradingWallets(
     if (!cursor || cursors.has(cursor)) throw new TradingError("INVALID_RESPONSE", "Wallet discovery did not complete.")
     cursors.add(cursor)
   }
-  return { rows, appId, scopes }
+  return { rows, appId, scopes, ...(keyPrefix !== undefined ? { keyPrefix } : {}) }
 }
 
 function matchesName(row: WalletRow, name: string): boolean {
@@ -386,6 +391,8 @@ export async function completeTradingWallet(
   appId: string,
   scope: string,
   chain: TradeChain = "solana",
+  /** The key that listed the row, so a refusal can name whose signer owns it (5.3). */
+  key?: { apiKey: string; keyPrefix?: string },
 ): Promise<TradingWallet> {
   if (rowChain(row) !== chain) throw chainMismatch(`TEE wallet ${describeWallet(row)}`, rowChain(row), chain)
   if (!row.active)
@@ -397,20 +404,51 @@ export async function completeTradingWallet(
     )
   if (!appId || !row.privyWalletId)
     throw new TradingError("SIGNER_UNAVAILABLE", "The server did not return its relay public identifiers.")
-  const signer = await ctx.deps.store.get(walletSignerRef(row.id))
-  if (!signer)
-    throw new TradingError(
-      "SIGNER_UNAVAILABLE",
-      "This machine does not hold the wallet's relay authorization key. Use the machine that enabled it.",
-    )
+  // Key signers (spec 2026-09-25-key-signers-design.md, 5.3): the local signer whose quorum is the
+  // wallet's owner, a key signer of any key (a moving wallet still trades from the machine that
+  // holds its source signer), else the legacy per-wallet signer.
+  const signer = await localSignerFor(ctx.deps, row.id, row.signerQuorumId)
+  if (!signer) throw new TradingError("SIGNER_UNAVAILABLE", await signerUnavailableMessage(ctx, row, key))
   return {
     id: row.id,
     address: row.address,
     privyWalletId: row.privyWalletId,
     appId,
-    signer: storedSignerToPem(signer),
+    signer: signer.pem,
     chain: row.chain === "evm" ? "evm" : "solana",
   }
+}
+
+/**
+ * 5.3: `SIGNER_UNAVAILABLE` names what is missing. A wallet on its key's active signer is traded
+ * from the machine holding that signer; one still on a previous signer of the key waits on
+ * `keys signer move` from the machine holding that one; anything else is a per-wallet signer on
+ * the machine that promoted it. The key's signer is read only here, on the failure path.
+ */
+async function signerUnavailableMessage(
+  ctx: CommandContext,
+  row: WalletRow,
+  key: { apiKey: string; keyPrefix?: string } | undefined,
+): Promise<string> {
+  const name = row.label ? `${row.label} (${row.id})` : row.id
+  const fallback = `This machine does not hold the signer that owns wallet ${name}. Use the machine that enabled it.`
+  if (key === undefined || !row.signerQuorumId) return fallback
+  const read = await readSigner(ctx, "self", { apiKey: key.apiKey })
+  if (!read.ok) return fallback
+  const view = read.body as SignerView
+  const prefix = view.keyPrefix ?? key.keyPrefix ?? "this key"
+  const active = activeSigner(view)
+  if (active !== null && active.signerQuorumId === row.signerQuorumId) {
+    return `Wallet ${name} is owned by key ${prefix}'s signer (${active.fingerprint}), which is on another machine. Trade it there, or run candle tee signer new --key ${prefix} here and move the wallets to it.`
+  }
+  if (view.wallets?.moving?.some((wallet) => wallet.id === row.id)) {
+    return `Wallet ${name} is owned by a previous signer of key ${prefix}, which this machine does not hold; run candle keys signer move ${prefix} on the machine that does.`
+  }
+  return `Wallet ${name} is owned by a signer this machine does not hold: its per-wallet signer is on the machine that promoted it${
+    active !== null
+      ? `. Run candle keys signer move ${prefix} there to move it onto key ${prefix}'s signer (${active.fingerprint})`
+      : ""
+  }.`
 }
 /**
  * Resolve one TEE wallet by id, address or label. The launch rail's resolver: a launch pays from a
@@ -426,7 +464,7 @@ export async function tradingWallet(
   name: string,
   scope: string,
 ): Promise<TradingWallet> {
-  const { rows, appId } = await listTradingWallets(ctx, key, scope)
+  const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, scope)
   const matches = rows.filter((row) => matchesName(row, name))
   if (matches.length !== 1) {
     throw new TradingError(
@@ -438,7 +476,7 @@ export async function tradingWallet(
           : `No TEE wallet on this key is called "${name}". Bound to this key: ${teeWalletList(rows)}.`,
     )
   }
-  return await completeTradingWallet(ctx, matches[0] as WalletRow, appId, scope)
+  return await completeTradingWallet(ctx, matches[0] as WalletRow, appId, scope, "solana", { apiKey: key, keyPrefix })
 }
 
 /**
@@ -476,7 +514,7 @@ export async function tradingPayer(
   scope = "swap:write",
   chain: TradeChain = "solana",
 ): Promise<SwapPayer> {
-  const { rows, appId, scopes } = await listTradingWallets(ctx, key, scope)
+  const { rows, appId, scopes, keyPrefix } = await listTradingWallets(ctx, key, scope)
   // Read even when a name was given: it is what lets a miss say "here is what you could have
   // meant" instead of naming only half the account.
   const wallets = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded")).wallets
@@ -496,7 +534,10 @@ export async function tradingPayer(
     if (onChain.length === 1 && !embedded)
       return {
         kind: "tee",
-        wallet: await completeTradingWallet(ctx, onChain[0] as WalletRow, appId, scope, chain),
+        wallet: await completeTradingWallet(ctx, onChain[0] as WalletRow, appId, scope, chain, {
+          apiKey: key,
+          keyPrefix,
+        }),
         scopes,
       }
     if (onChain.length === 0 && embedded) return asEmbedded()
@@ -512,7 +553,10 @@ export async function tradingPayer(
   if (matches.length === 1)
     return {
       kind: "tee",
-      wallet: await completeTradingWallet(ctx, matches[0] as WalletRow, appId, scope, chain),
+      wallet: await completeTradingWallet(ctx, matches[0] as WalletRow, appId, scope, chain, {
+        apiKey: key,
+        keyPrefix,
+      }),
       scopes,
     }
   if (matches.length === 0) {

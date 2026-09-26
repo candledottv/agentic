@@ -42,6 +42,8 @@ export interface ImportSubmitResponse {
   /** Ember Phase 1: present only for `profile: "ember-tee"` imports. */
   profile?: typeof TEE_PROFILE
   boundKeyPrefix?: string
+  /** Key signers (4.2): present when the wallet was imported onto a key's signer. */
+  keySigner?: { fingerprint: string; spkiSha256: string }
   vaultDestination?: string
   remoteAuthority?: "verified-active" | "verified-denied" | "unknown" | "none"
   reasonCode?: string
@@ -60,7 +62,8 @@ export type ImportFlowFailure =
   | { kind: "signer-commit"; error: unknown; pendingRef: string; walletId: string }
 
 export type ImportFlowResult =
-  | { ok: true; submitted: ImportSubmitResponse; signerPrivateKeyPem: string }
+  /** `signerPrivateKeyPem` is null for a keySigner import: no per-wallet signer exists. */
+  | { ok: true; submitted: ImportSubmitResponse; signerPrivateKeyPem: string | null }
   | { ok: false; failure: ImportFlowFailure }
 
 export interface ImportFlowParams {
@@ -75,10 +78,19 @@ export interface ImportFlowParams {
    * Forwarded to import/submit verbatim; the server validates and records them. */
   profile?: typeof TEE_PROFILE
   vaultDestination?: string
+  /**
+   * Key signers (spec 2026-09-25-key-signers-design.md, 4.2 and 5.2): import onto a key's signer
+   * instead of a per-wallet one. No signer is generated or stored on this machine; the submit
+   * names `keySigner: true` and the pinned full hash, and the server owns the wallet by that
+   * key's quorum. With `targetKeyPrefix` the submit is the cross-key mount: the device token
+   * alone, never the API key, and the server binds the wallet to the target in the same call.
+   * The init is the calling key's either way.
+   */
+  keySigner?: { spkiSha256: string } | { spkiSha256: string; targetKeyPrefix: string; deviceToken: string }
 }
 
 export async function runImportFlow(params: ImportFlowParams): Promise<ImportFlowResult> {
-  const { chain, address, privateKey, label, apiKey, apiUrl, deps, profile, vaultDestination } = params
+  const { chain, address, privateKey, label, apiKey, apiUrl, deps, profile, vaultDestination, keySigner } = params
   const credentials = { apiKey }
 
   const init = await apiRequest("/api/v1/agent/wallets/import/init", {
@@ -94,6 +106,33 @@ export async function runImportFlow(params: ImportFlowParams): Promise<ImportFlo
   const { encryptionPublicKey } = init.body as ImportInitResponse
 
   const { ciphertext, encapsulatedKey } = await encryptWalletKeyForImport({ chain, privateKey, encryptionPublicKey })
+  if (keySigner !== undefined) {
+    const crossKey = "targetKeyPrefix" in keySigner
+    const submit = await apiRequest("/api/v1/agent/wallets/import/submit", {
+      method: "POST",
+      body: {
+        chain,
+        address,
+        ciphertext,
+        encapsulatedKey,
+        keySigner: true,
+        spkiSha256: keySigner.spkiSha256,
+        ...(crossKey ? { targetKeyPrefix: keySigner.targetKeyPrefix } : {}),
+        ...(label !== undefined ? { label } : {}),
+        ...(profile !== undefined ? { profile } : {}),
+        ...(vaultDestination !== undefined ? { vaultDestination } : {}),
+      },
+      // One credential per request (4.2): the cross-key mount refuses an API key beside it.
+      ...(crossKey
+        ? { auth: "device" as const, credentials: { deviceToken: keySigner.deviceToken } }
+        : { auth: "key" as const, credentials }),
+      apiUrl,
+      fetch: deps.fetch,
+      env: deps.env,
+    })
+    if (!submit.ok) return { ok: false, failure: { kind: "api", stage: "submit", response: submit } }
+    return { ok: true, submitted: submit.body as ImportSubmitResponse, signerPrivateKeyPem: null }
+  }
   const signer = await generateSignerKeypair()
   const storedSigner = pemToStoredSigner(signer.privateKeyPem)
 

@@ -18,6 +18,7 @@ import {
   createTestDeps,
   jsonResponse,
   type RouteHandler,
+  signerView,
 } from "../../test-support"
 import type { KeyEntry } from "../../vault/format"
 import { SENTENCE_PREFIX } from "../../vault/promote-support"
@@ -297,6 +298,8 @@ function apiRoutes(
     "/api/v1/agent/wallets/import-failures": () =>
       jsonResponse(200, { success: true, account: ACCOUNT, failures: opts.failures ?? [], complete: true }),
     "/api/v1/agent/tee-wallets/rebind": opts.rebind ?? (() => jsonResponse(404, { error: "Not Found" })),
+    // Key signers: the `--to-key` targets these tests name have no signer (today's path).
+    "/api/v1/agent/keys/Ab3dEf9h/signer": () => signerView("Ab3dEf9h"),
     ...(opts.routes ?? {}),
   }
 }

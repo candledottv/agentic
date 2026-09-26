@@ -8,6 +8,11 @@
  *
  * Three parts, shared by both commands so they cannot drift:
  *
+ * Key signers (spec 2026-09-25-key-signers-design.md, 5.2): when the target has an ACTIVE signer,
+ * the preflight also reads it and checks it against this machine's pin, and the import then goes
+ * onto that signer's quorum and binds to the target in the same call. No rebind follows, and this
+ * machine stores no signer. A target with no signer keeps everything below exactly as it was.
+ *
  * - **The preflight** (`preflightToKey`), before the unlock and before any write. The rebind
  *   route's preview resolves its selectors against the account's EXISTING TEE rows, so it cannot
  *   be asked about wallets that are not imported yet. The preflight therefore makes the target
@@ -29,15 +34,21 @@ import { apiRequest } from "../client"
 import type { KeyRow } from "../commands/keys"
 import {
   capWarnings,
+  commitRebind,
   DEVICE_TOKEN_REQUIRED,
   listAccountKeys,
+  missingSignerFailure,
   postRebind,
+  REBIND_NOTHING_PINNED,
+  RELAY_SIGNER_LINE,
   type RebindFailureDetails,
   type RebindResponse,
   rebindFailureDetails,
   resolveTargetKey,
 } from "../commands/tee-rebind"
 import { type CommandContext, resolveApiKey, resolveDeviceToken } from "../deps"
+import { activeSigner, confirmSignerPin, readSigner, type SignerView } from "../key-signers"
+import { apiKeyPrefix } from "../profiles"
 import { writeLocalFailure } from "../render"
 
 /** The rebind route takes 1 to 200 wallets per request (`REBIND_TOO_MANY`); a batch holds up to 256 rows. */
@@ -158,7 +169,112 @@ export function targetWarnings(target: ToKeyTarget): string[] {
   })
 }
 
-export type ToKeyPreflight = { ok: true; target: ToKeyTarget; deviceToken: string } | { ok: false; exit: number }
+/**
+ * Key signers (spec 2026-09-25-key-signers-design.md, 5.2): the target's ACTIVE signer, read and
+ * checked against this machine's pin before the unlock. Present only when the target has one;
+ * then the import goes onto that signer's quorum and binds to the target in the same call, and no
+ * rebind follows. `crossKey` is whether the target is not the calling key: the import is then the
+ * device-token mount, and the calling key is not sent on the submit.
+ */
+export interface ToKeySigner {
+  fingerprint: string
+  spkiSha256: string
+  signerQuorumId: string
+  crossKey: boolean
+}
+
+export type ToKeyPreflight =
+  | { ok: true; target: ToKeyTarget; deviceToken: string; keySigner?: ToKeySigner }
+  | { ok: false; exit: number }
+
+/** The one line each confirmation screen prints about how the wallet reaches the target. */
+export function toKeyPlanLine(toKey: { target: ToKeyTarget; keySigner?: ToKeySigner }, n = 1): string {
+  const name = toKey.target.label !== null ? `  (${toKey.target.label})` : ""
+  const subject = n === 1 ? "This wallet" : `These ${n} wallets`
+  return toKey.keySigner !== undefined
+    ? `${subject} will be imported onto key ${toKey.target.keyPrefix}${name}'s signer ${toKey.keySigner.fingerprint} and bound to it in the same call.`
+    : `${subject} will be bound to key ${toKey.target.keyPrefix}${name} by a rebind after the import.`
+}
+
+/** What `runImportFlow` needs for a keySigner import onto the target (5.2), or undefined for today's path. */
+export function keySignerImport(
+  toKey: { target: ToKeyTarget; deviceToken: string; keySigner?: ToKeySigner } | undefined,
+): { spkiSha256: string } | { spkiSha256: string; targetKeyPrefix: string; deviceToken: string } | undefined {
+  if (toKey?.keySigner === undefined) return undefined
+  return toKey.keySigner.crossKey
+    ? {
+        spkiSha256: toKey.keySigner.spkiSha256,
+        targetKeyPrefix: toKey.target.keyPrefix,
+        deviceToken: toKey.deviceToken,
+      }
+    : { spkiSha256: toKey.keySigner.spkiSha256 }
+}
+
+/**
+ * The `--json` keys for a wallet a keySigner import already put on the target: no rebind ran,
+ * because none was needed. Same top-level keys as `rebindJson`, so a reader keys on `rebind.ok`.
+ */
+export function keySignerJson(toKey: { target: ToKeyTarget; keySigner: ToKeySigner }, importedTo: string | null) {
+  return {
+    toKey: {
+      keyPrefix: toKey.target.keyPrefix,
+      label: toKey.target.label,
+      tradeReady: toKey.target.tradeReady,
+      missingCaps: toKey.target.missingCaps,
+    },
+    keySigner: { fingerprint: toKey.keySigner.fingerprint, spkiSha256: toKey.keySigner.spkiSha256 },
+    rebind: {
+      ok: importedTo === toKey.target.keyPrefix,
+      reached: false,
+      requests: 0,
+      rebound: 0,
+      unchanged: 0,
+      pending: [] as string[],
+      notRebindable: 0,
+      finishWith: [] as string[],
+      skipped: "keySigner" as const,
+    },
+  }
+}
+
+/** The stderr line after a keySigner import (5.2): where the wallet trades from now. */
+export function keySignerTradableLine(toKey: { target: ToKeyTarget; keySigner: ToKeySigner }): string {
+  const name = toKey.target.label ?? toKey.target.keyPrefix
+  return `Tradable from the machine holding key ${name} (signer ${toKey.keySigner.fingerprint}). This machine stores no signer for it.`
+}
+
+/**
+ * 5.2: the target's signer, before the unlock. A target with an active signer is checked against
+ * the pin (D3: the full hash; the first time, the typed full group string). A target with none
+ * keeps today's path. An API that does not serve the read (404, the alpha lag) has no key signers,
+ * so it is the same as none. Any other failure refuses: whether the import owns the wallet by a
+ * signer on another machine is not something to guess.
+ */
+async function readTargetSigner(
+  ctx: CommandContext,
+  deviceToken: string,
+  keyPrefix: string,
+): Promise<{ ok: true; keySigner?: ToKeySigner } | { ok: false; failure: ToKeyFailure }> {
+  const read = await readSigner(ctx, keyPrefix, { deviceToken })
+  if (!read.ok) {
+    if (read.status === 404) return { ok: true }
+    return {
+      ok: false,
+      failure: {
+        code: read.code ?? `HTTP ${read.status}`,
+        message: `Could not read key ${keyPrefix}'s signer (${read.status === 0 ? read.message : `HTTP ${read.status}`}). Nothing was written.`,
+        suggestion: "Run the same command again.",
+      },
+    }
+  }
+  const active = activeSigner(read.body as SignerView)
+  if (active === null) return { ok: true }
+  const pinned = await confirmSignerPin(ctx, keyPrefix, active)
+  if (!pinned.ok) return { ok: false, failure: pinned.failure }
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile)
+  const callingPrefix = apiKey !== undefined ? apiKeyPrefix(apiKey) : undefined
+  return { ok: true, keySigner: { ...active, crossKey: callingPrefix !== keyPrefix } }
+}
 
 /**
  * Phase A of `--to-key`: before the unlock prompt, before any import. Every refusal is written
@@ -226,10 +342,14 @@ export async function preflightToKey(
     }
   }
 
+  const signer = await readTargetSigner(ctx, deviceToken, keyPrefix)
+  if (!signer.ok) return refuse(signer.failure)
+
   const readiness = tradeReadinessOf(target)
   return {
     ok: true,
     deviceToken,
+    ...(signer.keySigner !== undefined ? { keySigner: signer.keySigner } : {}),
     target: {
       keyPrefix,
       label: typeof target.label === "string" && target.label.length > 0 ? target.label : null,
@@ -315,14 +435,20 @@ export function chunkWallets<T>(wallets: T[], size: number = REBIND_CHUNK): T[][
  * nothing written) and then the commit with exactly the preview's ids and bindings (`expect`, the
  * server's compare-and-swap), never the selectors. A chunk the preview reports wholly `unchanged`
  * sends no commit. The first failure stops the run; every wallet after it is `not-reached`.
+ *
+ * `pinnedSpkiSha256` is the target signer's full hash the preflight confirmed (5.2), if any. A
+ * preview that names a signer with another hash, or a signer when the preflight saw none, is
+ * confirmed against the pin here (D3) before any owner change is signed; a refusal stops the run.
  */
 export async function rebindPromoted(
   ctx: CommandContext,
   deviceToken: string,
   toKeyPrefix: string,
   wallets: RebindableWallet[],
+  pinnedSpkiSha256?: string,
 ): Promise<RebindRun> {
   const run: RebindRun = { ok: true, requests: 0, outcomes: new Map() }
+  let pinned: string | null = pinnedSpkiSha256 ?? null
   for (const wallet of wallets) run.outcomes.set(wallet.id, { state: "not-reached" })
   const chunks = chunkWallets(wallets)
   for (const [at, chunk] of chunks.entries()) {
@@ -342,24 +468,54 @@ export async function rebindPromoted(
     for (const row of shown.unchanged) run.outcomes.set(row.id, { state: "unchanged" })
     const moving = shown.rebound
     if (moving.length === 0) continue
+    const signer = shown.toKey.signer ?? null
+    if (signer !== null && signer.spkiSha256 !== pinned) {
+      const confirmed = await confirmSignerPin(ctx, toKeyPrefix, signer, { nothing: REBIND_NOTHING_PINNED })
+      if (!confirmed.ok) {
+        run.ok = false
+        run.failure = { ...confirmed.failure, status: 0, chunk: at + 1 }
+        for (const row of moving) run.outcomes.set(row.id, { state: "failed" })
+        return run
+      }
+      pinned = signer.spkiSha256
+    }
     run.requests += 1
-    const committed = await postRebind(ctx, deviceToken, {
-      toKeyPrefix,
-      walletIds: moving.map((row) => row.id),
-      expect: Object.fromEntries(moving.map((row) => [row.id, row.fromKeyPrefix])),
-    })
+    // Key signers (5.5): onto a target with a signer, the owner changes the server asks for are
+    // signed here by the wallets' current owner (the per-wallet signer this machine promoted with).
+    const committed = await commitRebind(
+      ctx,
+      deviceToken,
+      {
+        toKeyPrefix,
+        walletIds: moving.map((row) => row.id),
+        expect: Object.fromEntries(moving.map((row) => [row.id, row.fromKeyPrefix])),
+      },
+      {
+        appId: shown.privyAppId,
+        fromKeyPrefixes: Object.fromEntries(moving.map((row) => [row.id, row.fromKeyPrefix])),
+        signerSpkiSha256: pinned,
+      },
+    )
     if (!committed.ok) {
       run.ok = false
-      run.failure = {
-        ...rebindFailureDetails(committed, {
-          fromKeyPrefixes: Array.from(new Set(moving.map((row) => row.fromKeyPrefix))),
-        }),
-        chunk: at + 1,
+      if ("missing" in committed) {
+        const failure = missingSignerFailure(committed.missing)
+        run.failure = { ...failure, status: 409, chunk: at + 1 }
+      } else if ("changed" in committed) {
+        run.failure = { ...committed.changed, status: 409, chunk: at + 1 }
+      } else {
+        run.failure = {
+          ...rebindFailureDetails(committed.result, {
+            fromKeyPrefixes: Array.from(new Set(moving.map((row) => row.fromKeyPrefix))),
+          }),
+          chunk: at + 1,
+        }
       }
       for (const row of moving) run.outcomes.set(row.id, { state: "failed" })
       return run
     }
-    const result = committed.body as RebindResponse
+    if (committed.signed.length > 0) run.requests += 1
+    const result = committed.result.body as RebindResponse
     for (const row of result.rebound) {
       run.outcomes.set(row.id, { state: "rebound", ...(row.auditId !== undefined ? { auditId: row.auditId } : {}) })
     }
@@ -410,6 +566,15 @@ export function renderRebindReport(input: RebindReportInput): string {
           unchanged > 0 ? ` (${unchanged} already there)` : ""
         } in ${run.requests} request${run.requests === 1 ? "" : "s"}.`,
       )
+      // Key signers (5.2, 5.5): who owns the moved wallets now, so where they trade from.
+      if (rebound > 0) {
+        const signer = run.toKey?.signer ?? null
+        lines.push(
+          signer !== null
+            ? `Owned by key ${target.keyPrefix}'s signer ${signer.fingerprint}: they trade from the machine that holds it.`
+            : RELAY_SIGNER_LINE,
+        )
+      }
     }
     if (run.failure !== undefined) {
       lines.push(

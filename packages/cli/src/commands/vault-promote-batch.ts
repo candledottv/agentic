@@ -101,6 +101,8 @@ import {
 } from "../vault/promote-support"
 import {
   finalBoundKey,
+  keySignerImport,
+  keySignerTradableLine,
   type NotRebindable,
   preflightToKey,
   type RebindableWallet,
@@ -109,6 +111,7 @@ import {
   rebindJson,
   rebindPromoted,
   renderRebindReport,
+  type ToKeySigner,
   type ToKeyTarget,
   targetWarnings,
   walletRebindJson,
@@ -175,6 +178,8 @@ interface KeyResult {
 interface ToKeyContext {
   target: ToKeyTarget
   deviceToken: string
+  /** Key signers (5.2): the target's active signer, pinned; each import then goes onto it. */
+  keySigner?: ToKeySigner
 }
 
 /**
@@ -278,7 +283,11 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
   if (toKeyRaw !== undefined) {
     const preflight = await preflightToKey(ctx, toKeyRaw, { labels: rows.map((row) => row.label) })
     if (!preflight.ok) return preflight.exit
-    toKey = { target: preflight.target, deviceToken: preflight.deviceToken }
+    toKey = {
+      target: preflight.target,
+      deviceToken: preflight.deviceToken,
+      ...(preflight.keySigner !== undefined ? { keySigner: preflight.keySigner } : {}),
+    }
   }
 
   return runVaultCommand(ctx, async ({ hold }) => {
@@ -355,6 +364,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
             keyPrefix: toKey.target.keyPrefix,
             label: toKey.target.label,
             warnings: targetWarnings(toKey.target),
+            ...(toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}),
           })
     const rebindPhase: RebindPhase | undefined =
       toKey === undefined ? undefined : { toKey, callingKeyPrefix: live.keyPrefix, importedTo: new Map() }
@@ -617,6 +627,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
             report: "return",
             resolvedVault,
             chain: subject.chain,
+            keySigner: keySignerImport(rebindPhase?.toKey),
           })
           if (imported.failure !== undefined || imported.submitted === undefined) {
             let failure: ReturnedFailure = imported.failure ?? {
@@ -727,7 +738,16 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
       // calling key; say so, with the finishing command, and let the re-run rebind them.
       let notReached: RebindReportInput | undefined
       if (rebindPhase !== undefined) {
-        const { wallets, notRebindable } = splitRebindable(results)
+        const split = splitRebindable(results)
+        // Key signers (5.2): a row a keySigner import already bound to the target is not waiting
+        // on a rebind, so it is not named as still on the calling key.
+        const notRebindable = split.notRebindable
+        const wallets =
+          rebindPhase.toKey.keySigner === undefined
+            ? split.wallets
+            : split.wallets.filter(
+                (wallet) => rebindPhase.importedTo.get(wallet.address) !== rebindPhase.toKey.target.keyPrefix,
+              )
         notReached = {
           target: rebindPhase.toKey.target,
           callingKeyPrefix: rebindPhase.callingKeyPrefix,
@@ -793,7 +813,13 @@ async function runRebindPhase(
   const { wallets, notRebindable } = splitRebindable(results)
   const run =
     wallets.length > 0
-      ? await rebindPromoted(ctx, phase.toKey.deviceToken, phase.toKey.target.keyPrefix, wallets)
+      ? await rebindPromoted(
+          ctx,
+          phase.toKey.deviceToken,
+          phase.toKey.target.keyPrefix,
+          wallets,
+          phase.toKey.keySigner?.spkiSha256,
+        )
       : undefined
   const input: RebindReportInput = {
     target: phase.toKey.target,
@@ -804,6 +830,15 @@ async function runRebindPhase(
   }
   const report = renderRebindReport(input)
   if (report.length > 0) ctx.deps.stderr.write(`${report}\n`)
+  // Key signers (5.2): the rows imported onto the target's signer were bound in that call; the
+  // preview above reports them as already there. Say where they trade from.
+  const keySigner = phase.toKey.keySigner
+  if (
+    keySigner !== undefined &&
+    results.some((row) => phase.importedTo.get(row.address) === phase.toKey.target.keyPrefix)
+  ) {
+    ctx.deps.stderr.write(`${keySignerTradableLine({ target: phase.toKey.target, keySigner })}\n`)
+  }
   return { phase, run, input }
 }
 

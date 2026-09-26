@@ -23,6 +23,7 @@ import { parseArgs } from "../args"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext, Deps } from "../deps"
 import { resolveApiKey } from "../deps"
+import { localKeySigners } from "../key-signers"
 import { printIdentity } from "../profiles"
 import { renderTable, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { importPendingSignerRef, pemToStoredSigner, type SecretStore, walletSignerRef } from "../secret-store"
@@ -40,6 +41,8 @@ interface LinkedWalletRow {
   /** The Convex row id GET /wallets returns verbatim: the handle `wallets revoke`, the trade
    * API's `from.linkedWalletId`, and the SDK's secretStore keying all take. */
   _id: string
+  /** The wallet's owner quorum; a key signer's when the wallet is on one (key signers, 5.3). */
+  signerQuorumId?: string
   address: string
   chain: string
   label?: string
@@ -241,6 +244,8 @@ const STALE_HINT =
 async function probeSignerStates(
   rows: LinkedWalletRow[],
   store: SecretStore,
+  /** The quorums of the key signers this machine holds: a wallet one of them owns is signed here. */
+  keySignerQuorums: ReadonlySet<string> = new Set(),
 ): Promise<{ states: Map<string, SignerState>; storeError?: string }> {
   const states = new Map<string, SignerState>()
   let storeError: string | undefined
@@ -248,6 +253,12 @@ async function probeSignerStates(
     // The type says `_id` is always present. A row without one is skipped rather than probed
     // under `wallet_signer_undefined`, and is left out of the map.
     if (typeof row._id !== "string" || row._id.length === 0) continue
+    // A key signer is shared by every wallet on it, so a revoked wallet leaves nothing of its own
+    // behind to clean up: it is never `stale`.
+    if (row.signerQuorumId !== undefined && keySignerQuorums.has(row.signerQuorumId)) {
+      states.set(row._id, row.revokedAt ? "none" : "stored")
+      continue
+    }
     let stored = false
     try {
       stored = (await store.get(walletSignerRef(row._id))) !== null
@@ -311,7 +322,10 @@ export async function wallets(args: string[], ctx: CommandContext): Promise<numb
   }
   const listing = linked.listing
   const linkedRows = listing.rows
-  const { states: signerStates, storeError } = await probeSignerStates(linkedRows, deps.store)
+  const keySignerQuorums = new Set(
+    (await localKeySigners(deps)).flatMap((entry) => (entry.signerQuorumId ? [entry.signerQuorumId] : [])),
+  )
+  const { states: signerStates, storeError } = await probeSignerStates(linkedRows, deps.store, keySignerQuorums)
   // On STDERR in both modes: a warning must never land in the middle of the JSON document
   // stdout is contracted to carry, and it is not a failure of the listing either way.
   if (storeError !== undefined) deps.stderr.write(`Could not read the signer store: ${storeError}\n`)
@@ -585,7 +599,8 @@ export async function walletsImport(args: string[], ctx: CommandContext): Promis
   const result = flow.submitted
 
   const signerOut = parsed.values["--signer-out"]
-  if (signerOut !== undefined) {
+  // `wallets import` never imports onto a key signer, so a per-wallet signer always exists here.
+  if (signerOut !== undefined && flow.signerPrivateKeyPem !== null) {
     try {
       await deps.writeFile(signerOut, flow.signerPrivateKeyPem)
     } catch (error) {

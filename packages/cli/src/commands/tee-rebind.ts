@@ -18,8 +18,19 @@ import { parseArgs } from "../args"
 import { type ApiResult, apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveDeviceToken } from "../deps"
+import {
+  activeSigner,
+  confirmSignerPin,
+  errorDetails,
+  localSignerFor,
+  type PinFailure,
+  readSigner,
+  type SignerView,
+  signOwnerChange,
+} from "../key-signers"
 import { apiKeyPrefix, candleEnvironment, effectiveProfileFields, printIdentity } from "../profiles"
 import { errorEnvelope, formatTimestamp, renderTable, writeLocalFailure, writeUsageFailure } from "../render"
+import { walletSignerRef } from "../secret-store"
 import { CONFIRM_WORD, shortAddress } from "../vault/promote-support"
 import { type KeyRow, labelCell } from "./keys"
 import { refuseEnvPassphrase } from "./tee"
@@ -64,9 +75,24 @@ export interface RebindResponse {
     tradeReady: { sol: boolean; usdc: boolean }
     missingCaps: string[]
     launchScope: boolean
+    /** Key signers (5.5): the target's active signer, or null. Absent from an older API. */
+    signer?: { fingerprint: string; spkiSha256: string } | null
   }
   rebound: RebindPreviewRow[]
   unchanged: Array<{ id: string; address: string; label: string | null }>
+  /**
+   * Key signers (5.5), when the target has an active signer. The preview names the wallets whose
+   * owner changes with the binding, and the owner each holds now; the commit reports which owner
+   * changes were forwarded and which Privy already showed.
+   */
+  ownerChange?: {
+    signerQuorumId: string
+    wallets?: Array<{ id: string; privyWalletId: string; signerQuorumId: string | null }>
+    forwarded?: string[]
+    alreadyOwned?: string[]
+  } | null
+  /** The Privy app id the owner changes sign over, on a preview that names any. */
+  privyAppId?: string | null
 }
 
 /** The screen's wording for each cap gap, one line per asset that is not ready (D7). */
@@ -103,8 +129,221 @@ export function launchWarning(
   return `Warning: key ${keyPrefix} lacks launch:write; ${launchers.join(", ")} ${launchers.length === 1 ? "has" : "have"} allowLaunch but cannot launch under it.`
 }
 
+/** The pin refusal's "what did not happen" sentence for an owner-changing rebind (D3). */
+export const REBIND_NOTHING_PINNED = "Nothing was signed, nothing moved and nothing was pinned."
+
 export const RELAY_SIGNER_LINE =
   "The relay signer does not move: trade these wallets from the machine that promoted them."
+
+/**
+ * The owner lines for a binding-only rebind (the target has no signer, so no owner changes; spec
+ * 5.5 and the BE-419 PASS note). A wallet on a key signer stays owned by it and trades from the
+ * machine holding THAT signer, not "the machine that promoted it", so each source key is read and
+ * its wallets are named by what owns them. Only legacy per-wallet wallets get RELAY_SIGNER_LINE.
+ * A source whose signer cannot be read is described the old way.
+ */
+export async function ownerLines(
+  ctx: CommandContext,
+  deviceToken: string,
+  rows: Array<{ id: string; address: string; label: string | null; fromKeyPrefix: string }>,
+): Promise<string[]> {
+  const lines: string[] = []
+  let legacy = false
+  const byKey = new Map<string, typeof rows>()
+  for (const row of rows) byKey.set(row.fromKeyPrefix, [...(byKey.get(row.fromKeyPrefix) ?? []), row])
+  for (const [fromKeyPrefix, keyRows] of byKey) {
+    const read = await readSigner(ctx, fromKeyPrefix, { deviceToken })
+    const view = read.ok ? (read.body as SignerView) : null
+    const active = view !== null ? activeSigner(view) : null
+    const onSigner = new Set(view?.wallets?.onSigner?.map((w) => w.id) ?? [])
+    const moving = new Set(view?.wallets?.moving?.map((w) => w.id) ?? [])
+    const name = (row: (typeof rows)[number]) => row.label ?? shortAddress(row.address)
+    const onActive = keyRows.filter((row) => onSigner.has(row.id))
+    const onPrevious = keyRows.filter((row) => moving.has(row.id))
+    if (onActive.length > 0 && active !== null) {
+      lines.push(
+        `${onActive.map(name).join(", ")} stay${onActive.length === 1 ? "s" : ""} owned by key ${fromKeyPrefix}'s signer ${active.fingerprint}: trade ${onActive.length === 1 ? "it" : "them"} from the machine that holds that signer.`,
+      )
+    }
+    if (onPrevious.length > 0) {
+      lines.push(
+        `${onPrevious.map(name).join(", ")} stay${onPrevious.length === 1 ? "s" : ""} owned by a previous signer of key ${fromKeyPrefix}: trade ${onPrevious.length === 1 ? "it" : "them"} from the machine that holds that signer.`,
+      )
+    }
+    if (keyRows.length > onActive.length + onPrevious.length) legacy = true
+  }
+  if (legacy) lines.push(RELAY_SIGNER_LINE)
+  return lines
+}
+
+/**
+ * Where a wallet's current owner is, for a refusal that has to send the operator to that machine
+ * (5.5: "names the machine that holds the current owner"). `ownerId` is the owner Privy or the
+ * row reports; the source key is read with the device token.
+ */
+export async function ownerMachine(
+  ctx: CommandContext,
+  deviceToken: string,
+  wallet: { id: string; fromKeyPrefix?: string; ownerId: string | null },
+): Promise<string> {
+  if (wallet.fromKeyPrefix !== undefined) {
+    const read = await readSigner(ctx, wallet.fromKeyPrefix, { deviceToken })
+    if (read.ok) {
+      const view = read.body as SignerView
+      const active = activeSigner(view)
+      if (active !== null && wallet.ownerId !== null && active.signerQuorumId === wallet.ownerId) {
+        return `the machine that holds key ${wallet.fromKeyPrefix}'s signer ${active.fingerprint}`
+      }
+      if (view.wallets?.moving?.some((w) => w.id === wallet.id)) {
+        return `the machine that holds a previous signer of key ${wallet.fromKeyPrefix}`
+      }
+    }
+  }
+  return "the machine that promoted it (its per-wallet signer)"
+}
+
+export interface OwnerSigning {
+  /** Wallet id to the relay request the commit's `owner` carries. */
+  owner: Record<string, { body: { owner_id: string }; authorizationSignature: string }>
+  /** Wallet ids signed with a legacy per-wallet signer: their slot is deleted once the owner moved. */
+  legacy: string[]
+}
+
+/**
+ * Signs each owner change a rebind needs with the local signer that owns the wallet now (5.3's
+ * rule). `null` in `missing` for every wallet this machine holds no signer for: nothing is sent
+ * then, and the caller names where that owner is.
+ */
+export async function signOwnerChanges(
+  ctx: CommandContext,
+  wallets: Array<{ walletId: string; privyWalletId: string; ownerId: string | null }>,
+  target: { signerQuorumId: string; appId: string },
+): Promise<
+  { ok: true; signing: OwnerSigning } | { ok: false; missing: Array<{ walletId: string; ownerId: string | null }> }
+> {
+  const signing: OwnerSigning = { owner: {}, legacy: [] }
+  const missing: Array<{ walletId: string; ownerId: string | null }> = []
+  for (const wallet of wallets) {
+    const signer = await localSignerFor(ctx.deps, wallet.walletId, wallet.ownerId)
+    if (signer === null) {
+      missing.push({ walletId: wallet.walletId, ownerId: wallet.ownerId })
+      continue
+    }
+    signing.owner[wallet.walletId] = signOwnerChange(signer.pem, {
+      privyWalletId: wallet.privyWalletId,
+      ownerId: target.signerQuorumId,
+      appId: target.appId,
+    })
+    if (signer.kind === "legacy") signing.legacy.push(wallet.walletId)
+  }
+  return missing.length > 0 ? { ok: false, missing } : { ok: true, signing }
+}
+
+/**
+ * The refusal when the signer a commit would sign to is not the one the operator confirmed (D3).
+ * The rebind commit carries no server-side pin, so the CLI holds the line: nothing is signed.
+ */
+export function signerChangedFailure(keyPrefix: string, now: string | undefined): PinFailure {
+  return {
+    code: "KEY_SIGNER_CHANGED",
+    message: `Key ${keyPrefix}'s signer is not the one you confirmed${now !== undefined ? `; the server now names ${now}` : ""}. Nothing was signed and nothing moved.`,
+    suggestion:
+      "Read the key's full fingerprint on the trading machine, then run the same command again; it asks for the full fingerprint.",
+  }
+}
+
+/**
+ * A rebind commit onto a key that may have an active signer (5.5). The commit goes first with no
+ * `owner`: the server GETs each wallet, so one whose owner change already landed (a lost record)
+ * completes from the GET with no new signature. When the server answers
+ * KEY_SIGNER_SIGNATURE_REQUIRED, it names the wallets that still need one and the owner Privy
+ * shows for each; those are signed here and the commit is sent once more with `owner`. After a
+ * success, a legacy per-wallet slot used to sign is deleted: the read-back showed the new owner.
+ *
+ * `signerSpkiSha256` is the full hash of the target signer the operator confirmed against the pin
+ * (D3), or null when none was. The owner changes are signed only to a signer with exactly that
+ * hash: a different one (approved after the pin) or none confirmed refuses KEY_SIGNER_CHANGED and
+ * signs nothing.
+ */
+export async function commitRebind(
+  ctx: CommandContext,
+  deviceToken: string,
+  body: { toKeyPrefix: string; walletIds: string[]; expect: Record<string, string> },
+  opts: {
+    appId: string | null | undefined
+    fromKeyPrefixes: Record<string, string>
+    signerSpkiSha256: string | null
+  },
+): Promise<
+  | { ok: true; result: ApiResult & { ok: true }; signed: string[] }
+  | { ok: false; result: Extract<ApiResult, { ok: false }> }
+  | { ok: false; missing: Array<{ walletId: string; ownerId: string | null; where: string }> }
+  | { ok: false; changed: PinFailure }
+> {
+  const first = await postRebind(ctx, deviceToken, body)
+  if (first.ok) return { ok: true, result: first, signed: [] }
+  if (first.code !== "KEY_SIGNER_SIGNATURE_REQUIRED") return { ok: false, result: first }
+  const details = errorDetails(first)
+  const owners = Array.isArray(details.owners)
+    ? (details.owners as Array<{ walletId: string; privyWalletId: string; ownerId: string | null }>)
+    : []
+  const keySigner = (details.keySigner ?? {}) as {
+    signerQuorumId?: unknown
+    spkiSha256?: unknown
+    fingerprint?: unknown
+  }
+  const quorum = keySigner.signerQuorumId
+  if (opts.signerSpkiSha256 === null || keySigner.spkiSha256 !== opts.signerSpkiSha256) {
+    return {
+      ok: false,
+      changed: signerChangedFailure(
+        body.toKeyPrefix,
+        typeof keySigner.fingerprint === "string" ? keySigner.fingerprint : undefined,
+      ),
+    }
+  }
+  if (owners.length === 0 || typeof quorum !== "string" || !opts.appId) return { ok: false, result: first }
+  const signed = await signOwnerChanges(ctx, owners, { signerQuorumId: quorum, appId: opts.appId })
+  if (!signed.ok) {
+    const missing: Array<{ walletId: string; ownerId: string | null; where: string }> = []
+    for (const wallet of signed.missing) {
+      missing.push({
+        ...wallet,
+        where: await ownerMachine(ctx, deviceToken, {
+          id: wallet.walletId,
+          fromKeyPrefix: opts.fromKeyPrefixes[wallet.walletId],
+          ownerId: wallet.ownerId,
+        }),
+      })
+    }
+    return { ok: false, missing }
+  }
+  const second = await postRebind(ctx, deviceToken, { ...body, owner: signed.signing.owner })
+  if (!second.ok) return { ok: false, result: second }
+  const moved = new Set([
+    ...(((second.body as RebindResponse).ownerChange?.forwarded as string[] | undefined) ?? []),
+    ...(((second.body as RebindResponse).ownerChange?.alreadyOwned as string[] | undefined) ?? []),
+  ])
+  for (const walletId of signed.signing.legacy) {
+    if (moved.has(walletId)) await ctx.deps.store.delete(walletSignerRef(walletId)).catch(() => {})
+  }
+  return { ok: true, result: second, signed: Object.keys(signed.signing.owner) }
+}
+
+/** The refusal when this machine holds no signer for a wallet whose owner must change (5.5). */
+export function missingSignerFailure(missing: Array<{ walletId: string; where: string }>): {
+  code: string
+  message: string
+  suggestion: string
+} {
+  return {
+    code: "KEY_SIGNER_SIGNATURE_REQUIRED",
+    message: `The target key has a signer, so the owner of ${missing.length === 1 ? "this wallet" : "these wallets"} must change with the binding, and this machine does not hold the current owner. Nothing changed.\n${missing
+      .map((m) => `  ${m.walletId}: on ${m.where}`)
+      .join("\n")}`,
+    suggestion: "Run the same rebind on the machine named for each wallet, with the device token there.",
+  }
+}
 
 export interface RebindFailureDetails {
   code: string
@@ -335,6 +574,50 @@ export async function teeRebind(args: string[], ctx: CommandContext): Promise<nu
     return 0
   }
 
+  // Key signers (5.5): onto a key with an active signer the owner changes with the binding, signed
+  // here by the owner each wallet has now. Check this machine holds every one of those owners, and
+  // the target's signer against the pin (D3), before the screen and before `confirm`. Onto a key
+  // with none, the rebind stays binding-only, and each wallet is named by what still owns it.
+  const targetSigner = shown.toKey.signer ?? null
+  const ownerChanges = shown.ownerChange?.wallets ?? []
+  const fromKeyPrefixes = Object.fromEntries(moving.map((row) => [row.id, row.fromKeyPrefix]))
+  let ownerSection: string[]
+  let pinnedSpkiSha256: string | null = null
+  if (targetSigner !== null && shown.ownerChange) {
+    const missing: Array<{ walletId: string; where: string }> = []
+    for (const change of ownerChanges) {
+      if ((await localSignerFor(deps, change.id, change.signerQuorumId)) !== null) continue
+      missing.push({
+        walletId: change.id,
+        where: await ownerMachine(ctx, deviceToken, {
+          id: change.id,
+          fromKeyPrefix: fromKeyPrefixes[change.id],
+          ownerId: change.signerQuorumId,
+        }),
+      })
+    }
+    if (missing.length > 0) {
+      writeLocalFailure(deps, missingSignerFailure(missing), json)
+      return 1
+    }
+    const pinned = await confirmSignerPin(ctx, shown.toKey.keyPrefix, targetSigner, { nothing: REBIND_NOTHING_PINNED })
+    if (!pinned.ok) {
+      writeLocalFailure(deps, pinned.failure, json)
+      return 1
+    }
+    pinnedSpkiSha256 = targetSigner.spkiSha256
+    ownerSection =
+      ownerChanges.length > 0
+        ? [
+            `The owner of ${ownerChanges.length === 1 ? "this wallet" : `these ${ownerChanges.length} wallets`} moves to key ${shown.toKey.keyPrefix}'s signer ${targetSigner.fingerprint}, signed here by the current owner. Afterwards ${ownerChanges.length === 1 ? "it trades" : "they trade"} from the machine that holds that signer.`,
+          ]
+        : [
+            `Already owned by key ${shown.toKey.keyPrefix}'s signer ${targetSigner.fingerprint}; only the binding moves.`,
+          ]
+  } else {
+    ownerSection = await ownerLines(ctx, deviceToken, moving)
+  }
+
   // The screen, on stderr, so `--json` stdout carries exactly one document (D7).
   const table = renderTable(
     ["line", "label", "address", "from", "allowLaunch"],
@@ -372,7 +655,7 @@ export async function teeRebind(args: string[], ctx: CommandContext): Promise<nu
     ...(launchWarning(shown.toKey.keyPrefix, shown.toKey, moving)
       ? [launchWarning(shown.toKey.keyPrefix, shown.toKey, moving) as string]
       : []),
-    RELAY_SIGNER_LINE,
+    ...ownerSection,
     "",
   ]
   deps.stderr.write(`${screen.join("\n")}\n`)
@@ -393,26 +676,44 @@ export async function teeRebind(args: string[], ctx: CommandContext): Promise<nu
     return 1
   }
 
-  // Commit: exactly the preview's ids and bindings, no selectors (D6, L4).
-  const committed = await call({
-    toKeyPrefix: shown.toKey.keyPrefix,
-    walletIds: moving.map((row) => row.id),
-    expect: Object.fromEntries(moving.map((row) => [row.id, row.fromKeyPrefix])),
-  })
+  // Commit: exactly the preview's ids and bindings, no selectors (D6, L4). Onto a key with a
+  // signer, the owner changes the server asks for are signed and sent with it (5.5).
+  const committed = await commitRebind(
+    ctx,
+    deviceToken,
+    {
+      toKeyPrefix: shown.toKey.keyPrefix,
+      walletIds: moving.map((row) => row.id),
+      expect: Object.fromEntries(moving.map((row) => [row.id, row.fromKeyPrefix])),
+    },
+    { appId: shown.privyAppId, fromKeyPrefixes, signerSpkiSha256: pinnedSpkiSha256 },
+  )
   if (!committed.ok) {
-    return writeRebindFailure(ctx, committed, {
+    if ("missing" in committed) {
+      writeLocalFailure(deps, missingSignerFailure(committed.missing), json)
+      return 1
+    }
+    if ("changed" in committed) {
+      writeLocalFailure(deps, committed.changed, json)
+      return 1
+    }
+    return writeRebindFailure(ctx, committed.result, {
       fromKeyPrefixes: Array.from(new Set(moving.map((row) => row.fromKeyPrefix))),
     })
   }
-  const result = committed.body as RebindResponse
+  const result = committed.result.body as RebindResponse
   if (json) {
     deps.stdout.write(`${JSON.stringify({ ...result, command: "tee rebind" })}\n`)
     return 0
   }
   const auditIds = result.rebound.map((row) => row.auditId).filter((id): id is string => typeof id === "string")
+  const owners = result.ownerChange
   deps.stdout.write(
     `Moved ${result.rebound.length} wallet${result.rebound.length === 1 ? "" : "s"} to ${result.toKey.keyPrefix}.` +
-      `${auditIds.length > 0 ? ` Audit ids: ${auditIds.join(", ")}` : ""}\n`,
+      `${auditIds.length > 0 ? ` Audit ids: ${auditIds.join(", ")}` : ""}\n` +
+      (owners && targetSigner !== null
+        ? `Owner: key ${result.toKey.keyPrefix}'s signer ${targetSigner.fingerprint} (${owners.forwarded?.length ?? 0} changed, ${owners.alreadyOwned?.length ?? 0} already there).\n`
+        : ""),
   )
   return 0
 }

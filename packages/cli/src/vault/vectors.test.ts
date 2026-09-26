@@ -17,9 +17,11 @@
  */
 import { describe, expect, test } from "bun:test"
 import { mnemonicToSeedSync } from "@scure/bip39"
+import { FIXTURE_EVM_0 } from "../evm-lite.test"
 import { addressFromSecret64 } from "./ed25519"
 import { VaultError } from "./errors"
 import {
+  deriveEvmKeyFromRoot,
   deriveSolanaKey,
   entropyFromPhrase,
   evmPath,
@@ -266,9 +268,9 @@ export const FIXTURE_EXTERNAL_0 = "9xUo4nK6C3isRd3kqqGuYKJALTuGGdXGxQBoebaerFea"
 test("the BIP-32 secp256k1 half of T53 runs in evm-lite.test.ts (E1), through @scure/bip32 as bundled", async () => {
   // Phase 4a (BE-350) declared `@scure/bip32` and completed T53: the published BIP-32 vector and
   // the fixture root's `m/44'/60'/n'/0/0` addresses against viem are in `src/evm-lite.test.ts`.
-  // This keeps the anchor here too, so a change to the path or the derivation moves a T53 test.
-  const { deriveEvmKeyFromRoot } = await import("./hd")
-  const { FIXTURE_EVM_0 } = await import("../evm-lite.test")
+  // The fixture is imported at load time. Importing that file from inside this test calls its
+  // describe() while the test is running, which fails once the CLI shards put the two files in
+  // different processes.
   expect(evmPath(0)).toBe("m/44'/60'/0'/0/0")
   const derived = await deriveEvmKeyFromRoot(
     new Uint8Array(32).map((_, index) => index),

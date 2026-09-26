@@ -379,7 +379,11 @@ describe("L7: the vault is never opened", () => {
     const { deps } = depsFor(fetch)
     // The deps' promptSecret throws, readFile throws, and CANDLE_CONFIG_DIR points nowhere.
     expect(await run(["tee", "rebind", "tr-01", "--to-key", TO], deps)).toBe(0)
-    expect(calls.every((c) => c.url.includes("/api/v1/agent/tee-wallets/rebind"))).toBe(true)
+    // Key signers: a binding-only rebind also READS each source key's signer, to say which
+    // machine keeps trading the wallets. Reads only; nothing else is called.
+    expect(
+      calls.every((c) => c.url.includes("/api/v1/agent/tee-wallets/rebind") || /\/keys\/[^/]+\/signer$/.test(c.url)),
+    ).toBe(true)
   })
 })
 

@@ -389,6 +389,17 @@ export const HELP: Record<string, Topic> = {
       },
       { invocation: "revoke <prefix>", description: "Revoke an API key" },
       {
+        invocation: "signer approve <code> --key <prefix|label> [--reject]",
+        description:
+          "Approve (or reject) a key's signer request with the device token; type the full fingerprint the trading machine printed",
+      },
+      // Indented like `keys wallets set`: a second word under `keys signer`, not a subcommand of `keys`.
+      {
+        invocation: "  move <prefix|label> [--to-key <prefix|label>]",
+        description:
+          "On the machine holding a wallet's current signer: move every wallet on the key onto its active signer (legacy per-wallet ones too). --to-key moves a revoked key's wallets to a live key (device token). Resumable",
+      },
+      {
         invocation: "wallets <prefix>",
         description: "Wallets an agent profile can use. TEE wallets move between keys with candle tee rebind",
       },
@@ -413,6 +424,8 @@ export const HELP: Record<string, Topic> = {
       "candle keys access self --access read --yes",
       "candle keys wallets ck_live_ab12",
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
+      "candle keys signer approve ABCD-EFGH --key tr-2",
+      "candle keys signer move tr-2",
       "candle keys revoke ck_live_ab12",
     ],
     env: ENV_API,
@@ -676,6 +689,11 @@ export const HELP: Record<string, Topic> = {
           "Move TEE wallets to another key on this account, which is how a key gets TEE wallets. Name them, or --label-prefix for every wallet whose label starts with it (owner only; funds do not move)",
       },
       { invocation: "rebinds [wallet]", description: "List TEE wallet rebinds for this account (owner only)" },
+      {
+        invocation: "signer new --key <prefix|label> [--out <pem>] [--force]",
+        description:
+          "On the trading machine, with that key's API key: generate the key's signer here and wait for the owner to approve it. Its wallets then trade from this machine. --out also writes a plaintext PEM for an SDK process (weaker than the secret store); --force adds a signer while an old one here still owns wallets",
+      },
     ],
     flags: [KEYSTORE_FLAG],
     examples: [
@@ -685,6 +703,7 @@ export const HELP: Record<string, Topic> = {
       "candle tee sweep 0x000000000000000000000000000000000000dEaD --emergency --from-block 1200000",
       "candle tee rebind tr-01 tr-02 --to-key Ab3dEf9h",
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
+      "candle tee signer new --key tr-2",
     ],
     env: ENV_LOCAL_SIGNING,
   },

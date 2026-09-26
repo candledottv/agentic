@@ -30,6 +30,30 @@ export function jsonResponse(status: number, body: unknown, headers: Record<stri
   })
 }
 
+/**
+ * Key signers (K1's `GET /keys/:prefix/signer`): a key with no signer and no wallets, the answer
+ * every key gives on a server where nobody has approved one. Fixtures that exercise a `--to-key`
+ * target or a rebind's source register it, so the CLI's signer read sees today's state.
+ */
+export function signerView(keyPrefix: string, extra: Record<string, unknown> = {}): Response {
+  return jsonResponse(200, {
+    success: true,
+    keyPrefix,
+    keyLabel: null,
+    state: "none",
+    fingerprint: null,
+    spkiSha256: null,
+    publicKeyDer: null,
+    requestedAt: null,
+    pending: null,
+    wallets: { onSigner: [], legacy: [], moving: [] },
+    counts: { onSigner: 0, legacy: 0, moving: 0 },
+    reconcile: { checked: 0, recorded: 0, mismatched: [], remaining: 0 },
+    privyAppId: "app-test",
+    ...extra,
+  })
+}
+
 export interface CapturedRequest {
   url: string
   init: RequestInit

@@ -52,7 +52,7 @@ import {
   renderControlledBy,
   withToKey,
 } from "../vault/promote-support"
-import { targetWarnings } from "../vault/promote-to-key"
+import { keySignerImport, targetWarnings, toKeyPlanLine } from "../vault/promote-to-key"
 import { commitVault, decryptKey, decryptRoot, freshKeyId, sealKeyBlob, type UnlockedVault } from "../vault/store"
 import { nextAllocatableIndex } from "./vault-new-key"
 import {
@@ -201,13 +201,7 @@ export async function promoteEvmFresh(input: EvmPromoteContext, fromLabel: strin
 
     await confirmLastSix(ctx, destination.address, "the sweep vault destination")
     if (toKey !== undefined) {
-      const name = toKey.target.label !== null ? `  (${toKey.target.label})` : ""
-      ctx.deps.stderr.write(
-        `${[
-          `This wallet will be bound to key ${toKey.target.keyPrefix}${name} by a rebind after the import.`,
-          ...targetWarnings(toKey.target),
-        ].join("\n")}\n`,
-      )
+      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target)].join("\n")}\n`)
     }
 
     if (secret === undefined) throw new Error("EVM TEE key was not derived")
@@ -225,6 +219,7 @@ export async function promoteEvmFresh(input: EvmPromoteContext, fromLabel: strin
     reopenForWrite: opened.reopen,
     resolvedVault,
     chain: "evm",
+    keySigner: keySignerImport(toKey),
     onImport: () => {
       importCount.n += 1
     },
@@ -305,6 +300,7 @@ export async function promoteEvmInPlace(
           keyPrefix: toKey.target.keyPrefix,
           label: toKey.target.label,
           warnings: targetWarnings(toKey.target),
+          ...(toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}),
         })
 
   const height = await promoteHeight(ctx, client)
@@ -371,6 +367,7 @@ export async function promoteEvmInPlace(
     report: "return",
     resolvedVault,
     chain: "evm",
+    keySigner: keySignerImport(toKey),
   })
   const code = imported.exit
   if (imported.failure !== undefined) {

@@ -28,6 +28,7 @@ import { completion, completionBash, completionFish, completionZsh } from "./com
 import { doctor } from "./commands/doctor"
 import { externalList, externalNew, externalSweep } from "./commands/external"
 import { help } from "./commands/help"
+import { keysSigner, teeSigner } from "./commands/key-signer"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { keysAccess } from "./commands/keys-access"
 import { keysWallets } from "./commands/keys-wallets"
@@ -165,7 +166,15 @@ const COMMANDS: Record<string, CommandRoute> = {
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
   // BE-361: `keys access` moves an existing key between the three levels in place.
   keys: {
-    subcommands: { list: keysList, create: keysCreate, access: keysAccess, revoke: keysRevoke, wallets: keysWallets },
+    subcommands: {
+      list: keysList,
+      create: keysCreate,
+      access: keysAccess,
+      revoke: keysRevoke,
+      wallets: keysWallets,
+      // Key signers K3: `keys signer approve|move`, a second word of their own (like vault factor).
+      signer: keysSigner,
+    },
   },
   // D6 (BE-238): `wallets generate` and `wallets export` were tombstoned in 0.10.0 and are gone
   // in 0.11.1. Nobody ran the releases in between (BE-235, item 3), so the tombstone had no
@@ -230,6 +239,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       // BE-303: owner-only, device token, never the vault.
       rebind: teeRebind,
       rebinds: teeRebinds,
+      // Key signers K3: `tee signer new`, on the trading machine, with that key's API key.
+      signer: teeSigner,
     },
   },
   profile: {

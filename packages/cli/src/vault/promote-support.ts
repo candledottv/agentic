@@ -455,13 +455,16 @@ export interface ControlledBy {
    * import. The block names THIS key as the controller and the fields above as the key the import
    * runs under. `warnings` are the D7 cap lines for it, printed under the block.
    */
-  toKey?: { keyPrefix: string; label: string | null; warnings: string[] }
+  toKey?: { keyPrefix: string; label: string | null; warnings: string[]; signer?: string }
 }
 
-/** BE-322: the same block, naming the `--to-key` target as the controller. */
+/**
+ * BE-322: the same block, naming the `--to-key` target as the controller. `signer` (key signers,
+ * 5.2) is the target's signer fingerprint when the import goes onto it instead of a rebind.
+ */
 export function withToKey(
   controlledBy: ControlledBy,
-  toKey: { keyPrefix: string; label: string | null; warnings: string[] },
+  toKey: { keyPrefix: string; label: string | null; warnings: string[]; signer?: string },
 ): ControlledBy {
   return { ...controlledBy, toKey }
 }
@@ -588,7 +591,9 @@ export function renderControlledBy(controlledBy: ControlledBy, n: number): strin
   return [
     `${subject} will be controlled by:`,
     `  Candle account  ${controlledBy.username ?? "(no username)"}  (${shortAddress(controlledBy.account)})`,
-    `  API key         ${toKey.keyPrefix}…  ${toLabel}--to-key, bound by a rebind after the import`,
+    toKey.signer !== undefined
+      ? `  API key         ${toKey.keyPrefix}…  ${toLabel}--to-key, owned by its signer ${toKey.signer} from the import`
+      : `  API key         ${toKey.keyPrefix}…  ${toLabel}--to-key, bound by a rebind after the import`,
     `  imported under  ${controlledBy.keyPrefix}…  ${label}${source}`,
     `  API             ${controlledBy.apiUrl}  (${environment}${from})`,
     ...toKey.warnings,
