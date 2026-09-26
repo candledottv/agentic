@@ -95,37 +95,22 @@ export interface RebindResponse {
   privyAppId?: string | null
 }
 
-/** The screen's wording for each cap gap, one line per asset that is not ready (D7). */
-export function capWarnings(keyPrefix: string, toKey: RebindResponse["toKey"]): string[] {
-  const { tradeReady, missingCaps } = toKey
-  if (missingCaps.includes("txLimit")) {
-    return [
-      `Warning: key ${keyPrefix} has no txLimit; it cannot trade SOL-quoted or USDC-quoted swaps until one is set.`,
-    ]
-  }
-  return pairedCapWarnings(keyPrefix, [
-    { ready: tradeReady.sol, asset: "SOL" },
-    { ready: tradeReady.usdc, asset: "USDC" },
-  ])
-}
-
 /**
- * The same D7 lines for a Hood TEE wallet, whose swaps are quoted in ETH or USDG: the Solana caps say
- * nothing about it, and the caps it does need are these two.
+ * The screen's wording for each cap gap (D7). One txLimit line, then one line per quote asset
+ * that is not ready. The pair is the chain's own quotes: SOL/USDC, or ETH/USDG for a Hood wallet.
  */
-export function hoodCapWarnings(
+export function capWarnings(
   keyPrefix: string,
-  target: { missingCaps: string[]; hoodTradeReady: { eth: boolean; usdg: boolean } },
+  hasTxLimit: boolean,
+  pair: [{ ready: boolean; asset: string }, { ready: boolean; asset: string }],
 ): string[] {
-  if (target.missingCaps.includes("txLimit")) {
+  const [a, b] = pair
+  if (!hasTxLimit) {
     return [
-      `Warning: key ${keyPrefix} has no txLimit; it cannot trade ETH-quoted or USDG-quoted swaps until one is set.`,
+      `Warning: key ${keyPrefix} has no txLimit; it cannot trade ${a.asset}-quoted or ${b.asset}-quoted swaps until one is set.`,
     ]
   }
-  return pairedCapWarnings(keyPrefix, [
-    { ready: target.hoodTradeReady.eth, asset: "ETH" },
-    { ready: target.hoodTradeReady.usdg, asset: "USDG" },
-  ])
+  return pairedCapWarnings(keyPrefix, pair)
 }
 
 /**
@@ -688,7 +673,10 @@ export async function teeRebind(args: string[], ctx: CommandContext): Promise<nu
     `  Candle account  ${accountLine}`,
     `  API             ${apiUrl}  (${environment})`,
     "",
-    ...capWarnings(shown.toKey.keyPrefix, shown.toKey),
+    ...capWarnings(shown.toKey.keyPrefix, !shown.toKey.missingCaps.includes("txLimit"), [
+      { ready: shown.toKey.tradeReady.sol, asset: "SOL" },
+      { ready: shown.toKey.tradeReady.usdc, asset: "USDC" },
+    ]),
     ...(launchWarning(shown.toKey.keyPrefix, shown.toKey, moving)
       ? [launchWarning(shown.toKey.keyPrefix, shown.toKey, moving) as string]
       : []),

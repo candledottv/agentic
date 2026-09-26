@@ -10,6 +10,7 @@ import {
   chunkWallets,
   finalBoundKey,
   finishingCommands,
+  keySignerJson,
   pendingWallets,
   REBIND_CHUNK,
   type RebindableWallet,
@@ -18,6 +19,7 @@ import {
   renderRebindReport,
   SELECTED_SCOPE_LIMIT,
   type TargetKeyRow,
+  type ToKeySigner,
   type ToKeyTarget,
   targetKeyRefusal,
   targetWarnings,
@@ -74,6 +76,7 @@ describe("tradeReadinessOf: the route's rule from the row", () => {
       tradeReady: { sol: false, usdc: false },
       missingCaps: ["txLimit", "spendLimits.sol", "spendLimits.usdc"],
       hoodTradeReady: { eth: false, usdg: false },
+      hoodMissingCaps: ["txLimit", "spendLimits.eth", "spendLimits.usdg"],
     })
   })
 
@@ -82,6 +85,7 @@ describe("tradeReadinessOf: the route's rule from the row", () => {
       tradeReady: { sol: true, usdc: false },
       missingCaps: ["spendLimits.usdc"],
       hoodTradeReady: { eth: false, usdg: false },
+      hoodMissingCaps: ["spendLimits.eth", "spendLimits.usdg"],
     })
     expect(tradeReadinessOf({ txLimit: {}, spendLimits: [{ asset: "USDC", maxPerTxRaw: "1" }] }).tradeReady).toEqual({
       sol: false,
@@ -98,7 +102,11 @@ describe("tradeReadinessOf: the route's rule from the row", () => {
       ],
     }
     expect(tradeReadinessOf(hood).hoodTradeReady).toEqual({ eth: true, usdg: true })
-    expect(tradeReadinessOf({ ...hood, txLimit: null }).hoodTradeReady).toEqual({ eth: false, usdg: false })
+    expect(tradeReadinessOf(hood).hoodMissingCaps).toEqual([])
+    const noLimit = tradeReadinessOf({ ...hood, txLimit: null })
+    expect(noLimit.hoodTradeReady).toEqual({ eth: false, usdg: false })
+    // The caps are present; only txLimit is missing. A false hoodTradeReady must not invent cap gaps.
+    expect(noLimit.hoodMissingCaps).toEqual(["txLimit"])
   })
 })
 
@@ -113,7 +121,7 @@ describe("targetWarnings: one line per gap, and the chain's own quote assets", (
   })
 
   test("with neither cap it is one line naming both, never that the other one can trade", () => {
-    const lines = targetWarnings(target({ txLimit: {}, spendLimits: [] }))
+    const lines = targetWarnings(target({ txLimit: {}, spendLimits: [] }), "solana")
     expect(lines).toEqual([
       `Warning: key ${TO} has no SOL or USDC cap; it cannot trade SOL-quoted or USDC-quoted swaps until one is set.`,
     ])
@@ -121,7 +129,7 @@ describe("targetWarnings: one line per gap, and the chain's own quote assets", (
   })
 
   test("with one cap the line names the ready asset and the missing one", () => {
-    expect(targetWarnings(target(good))).toEqual([
+    expect(targetWarnings(target(good), "solana")).toEqual([
       `Warning: key ${TO} can trade SOL-quoted swaps; it cannot trade USDC-quoted swaps until a USDC cap is set.`,
     ])
   })
@@ -135,6 +143,8 @@ describe("targetWarnings: one line per gap, and the chain's own quote assets", (
       ],
     })
     expect(targetWarnings(hoodOnly, "evm")).toEqual([])
+    expect(targetWarnings(hoodOnly, "evm").join("\n")).not.toContain("SOL")
+    expect(targetWarnings(hoodOnly, "evm").join("\n")).not.toContain("USDC")
     expect(targetWarnings(target({ txLimit: {}, spendLimits: [{ asset: "eth", maxPerTxRaw: "1" }] }), "evm")).toEqual([
       `Warning: key ${TO} can trade ETH-quoted swaps; it cannot trade USDG-quoted swaps until a USDG cap is set.`,
     ])
@@ -143,6 +153,76 @@ describe("targetWarnings: one line per gap, and the chain's own quote assets", (
     ])
     expect(targetWarnings(target({ txLimit: null, spendLimits: [] }), "evm")).toEqual([
       `Warning: key ${TO} has no txLimit; it cannot trade ETH-quoted or USDG-quoted swaps until one is set.`,
+    ])
+  })
+})
+
+describe("EVM --json: Hood readiness, and the Solana preview is not the answer", () => {
+  const ready = (row: Pick<TargetKeyRow, "spendLimits" | "txLimit">): ToKeyTarget => ({
+    keyPrefix: TO,
+    label: "tr-01",
+    walletScope: "all",
+    paused: false,
+    launchScope: true,
+    ...tradeReadinessOf(row),
+  })
+  const signer: ToKeySigner = {
+    fingerprint: "fp",
+    spkiSha256: "spki",
+    signerQuorumId: "q",
+    crossKey: false,
+  }
+  const hood = {
+    txLimit: {},
+    spendLimits: [
+      { asset: "eth", maxPerTxRaw: "1" },
+      { asset: "usdg", maxPerTxRaw: "1" },
+    ],
+  }
+
+  test("a Hood-ready key reports hoodTradeReady and empty Hood gaps, ignoring a Solana-ready preview", () => {
+    const row = ready(hood)
+    const json = rebindJson(
+      {
+        target: row,
+        callingKeyPrefix: FROM,
+        wallets: [],
+        notRebindable: [],
+        run: {
+          ok: true,
+          requests: 1,
+          outcomes: new Map(),
+          toKey: {
+            keyPrefix: TO,
+            label: "tr-01",
+            paused: false,
+            walletScope: "all",
+            tradeReady: { sol: true, usdc: true },
+            missingCaps: [],
+            launchScope: true,
+          },
+        },
+      },
+      "evm",
+    )
+    expect(json.toKey).toEqual({
+      keyPrefix: TO,
+      label: "tr-01",
+      tradeReady: { sol: false, usdc: false },
+      hoodTradeReady: { eth: true, usdg: true },
+      missingCaps: [],
+    })
+    expect(json.toKey.missingCaps.join(" ")).not.toContain("sol")
+    expect(keySignerJson({ target: row, keySigner: signer }, TO, "evm").toKey).toEqual(json.toKey)
+  })
+
+  test("a missing USDG cap is named spendLimits.usdg", () => {
+    const row = ready({ txLimit: {}, spendLimits: [{ asset: "eth", maxPerTxRaw: "1" }] })
+    const json = rebindJson({ target: row, callingKeyPrefix: FROM, wallets: [], notRebindable: [] }, "evm")
+    expect(json.toKey.missingCaps).toEqual(["spendLimits.usdg"])
+    expect(json.toKey.hoodTradeReady).toEqual({ eth: true, usdg: false })
+    expect(keySignerJson({ target: row, keySigner: signer }, null, "evm").toKey.missingCaps).toEqual([
+      "spendLimits.usdg",
     ])
   })
 })
@@ -175,6 +255,8 @@ function target(): ToKeyTarget {
     launchScope: false,
     tradeReady: { sol: true, usdc: false },
     missingCaps: ["spendLimits.usdc"],
+    hoodTradeReady: { eth: false, usdg: false },
+    hoodMissingCaps: ["spendLimits.eth", "spendLimits.usdg"],
   }
 }
 
@@ -327,7 +409,10 @@ describe("rebindPromoted: preview then commit per chunk of at most 200", () => {
     expect(report).toContain("  k-0 (Addr0)")
     expect(report).toContain("Finish with:")
     expect(report).toContain(`  candle tee rebind Addr200 --to-key ${TO}`)
-    const json = rebindJson({ target: target(), callingKeyPrefix: FROM, wallets: all, run, notRebindable: [] })
+    const json = rebindJson(
+      { target: target(), callingKeyPrefix: FROM, wallets: all, run, notRebindable: [] },
+      "solana",
+    )
     expect(json.rebind).toMatchObject({
       ok: false,
       reached: true,
@@ -338,8 +423,10 @@ describe("rebindPromoted: preview then commit per chunk of at most 200", () => {
     })
     expect(json.rebind.pending).toHaveLength(201)
     expect(json.rebind.finishWith).toHaveLength(2)
-    // The preview's readiness replaces the row's.
+    // The preview's readiness replaces the row's. A Solana document does not add Hood keys.
     expect(json.toKey.tradeReady).toEqual({ sol: true, usdc: true })
+    expect(json.toKey.hoodTradeReady).toBeUndefined()
+    expect(json.toKey.missingCaps).toEqual([])
   })
 
   test("a preview refused by a server without the route is REBIND_UNSUPPORTED with every wallet not reached", async () => {

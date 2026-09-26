@@ -22,7 +22,7 @@ import {
   type RouteHandler,
   signerView,
 } from "../test-support"
-import { SELECTED_SCOPE_LIMIT } from "../vault/promote-to-key"
+import { SELECTED_SCOPE_LIMIT, type ToKeyTarget, tradeReadinessOf } from "../vault/promote-to-key"
 import { useCheapKdf } from "../vault/test-vault"
 import {
   ACCOUNT,
@@ -43,6 +43,7 @@ import {
   USERNAME,
 } from "./__fixtures__/promote-batch"
 import { RELAY_SIGNER_LINE } from "./tee-rebind"
+import { confirmResumeRebind } from "./vault-promote"
 
 setDefaultTimeout(180_000)
 useCheapKdf()
@@ -920,6 +921,52 @@ describe("vault promote --to-key", () => {
     expect(body.rebind).toBeUndefined()
     expect(body.controlledBy.keySource).toBe("profile")
     expect(r.err).not.toContain("imported under")
+  })
+
+  test("an EVM resume prints ETH and USDG lines, and a Hood-ready key does not say it has no SOL cap", async () => {
+    const stderr = createCapture()
+    const hood: ToKeyTarget = {
+      keyPrefix: TO,
+      label: TO_LABEL,
+      walletScope: "all",
+      paused: false,
+      launchScope: true,
+      ...tradeReadinessOf({
+        txLimit: {},
+        spendLimits: [
+          { asset: "eth", maxPerTxRaw: "1" },
+          { asset: "usdg", maxPerTxRaw: "1" },
+        ],
+      }),
+    }
+    const deps = createTestDeps({
+      fetch: createRoutedFetch({}).fetch,
+      stderr,
+      promptLine: async () => "confirm",
+    })
+    await confirmResumeRebind(
+      { deps, json: false, apiUrl: API, verifyAccount: true },
+      { target: hood, deviceToken: DEVICE_TOKEN },
+      "evm",
+    )
+    expect(stderr.text).toContain(`bound to key ${TO}`)
+    expect(stderr.text).not.toContain("SOL")
+    expect(stderr.text).not.toContain("USDC")
+    expect(stderr.text).not.toContain("Warning:")
+
+    stderr.text = ""
+    const ethOnly: ToKeyTarget = {
+      ...hood,
+      ...tradeReadinessOf({ txLimit: {}, spendLimits: [{ asset: "eth", maxPerTxRaw: "1" }] }),
+    }
+    await confirmResumeRebind(
+      { deps, json: false, apiUrl: API, verifyAccount: true },
+      { target: ethOnly, deviceToken: DEVICE_TOKEN },
+      "evm",
+    )
+    expect(stderr.text).toContain("cannot trade USDG-quoted swaps")
+    expect(stderr.text).not.toContain("SOL")
+    expect(stderr.text).not.toContain("USDC")
   })
 
   test("--in-place resume: names the target and requires confirm before the rebind", async () => {

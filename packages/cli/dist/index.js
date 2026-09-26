@@ -50662,28 +50662,14 @@ var DEVICE_TOKEN_REQUIRED = {
   suggestion: "Run: candle auth login"
 };
 var KEY_PREFIX_RE2 = /^[A-Za-z0-9_-]{8}$/;
-function capWarnings(keyPrefix, toKey) {
-  const { tradeReady, missingCaps } = toKey;
-  if (missingCaps.includes("txLimit")) {
+function capWarnings(keyPrefix, hasTxLimit, pair) {
+  const [a, b] = pair;
+  if (!hasTxLimit) {
     return [
-      `Warning: key ${keyPrefix} has no txLimit; it cannot trade SOL-quoted or USDC-quoted swaps until one is set.`
+      `Warning: key ${keyPrefix} has no txLimit; it cannot trade ${a.asset}-quoted or ${b.asset}-quoted swaps until one is set.`
     ];
   }
-  return pairedCapWarnings(keyPrefix, [
-    { ready: tradeReady.sol, asset: "SOL" },
-    { ready: tradeReady.usdc, asset: "USDC" }
-  ]);
-}
-function hoodCapWarnings(keyPrefix, target) {
-  if (target.missingCaps.includes("txLimit")) {
-    return [
-      `Warning: key ${keyPrefix} has no txLimit; it cannot trade ETH-quoted or USDG-quoted swaps until one is set.`
-    ];
-  }
-  return pairedCapWarnings(keyPrefix, [
-    { ready: target.hoodTradeReady.eth, asset: "ETH" },
-    { ready: target.hoodTradeReady.usdg, asset: "USDG" }
-  ]);
+  return pairedCapWarnings(keyPrefix, pair);
 }
 function pairedCapWarnings(keyPrefix, [a, b]) {
   if (!a.ready && !b.ready) {
@@ -51057,7 +51043,10 @@ async function teeRebind(args, ctx) {
     `  Candle account  ${accountLine}`,
     `  API             ${apiUrl}  (${environment})`,
     "",
-    ...capWarnings(shown.toKey.keyPrefix, shown.toKey),
+    ...capWarnings(shown.toKey.keyPrefix, !shown.toKey.missingCaps.includes("txLimit"), [
+      { ready: shown.toKey.tradeReady.sol, asset: "SOL" },
+      { ready: shown.toKey.tradeReady.usdc, asset: "USDC" }
+    ]),
     ...launchWarning(shown.toKey.keyPrefix, shown.toKey, moving) ? [launchWarning(shown.toKey.keyPrefix, shown.toKey, moving)] : [],
     ...ownerSection,
     ""
@@ -51215,32 +51204,59 @@ function tradeReadinessOf(row) {
   const cap = (asset) => limits.some((limit) => limit.asset === asset.toLowerCase() || limit.asset === asset.toUpperCase());
   const sol = cap("sol");
   const usdc = cap("usdc");
-  const missingCaps = [];
-  if (!hasTxLimit)
-    missingCaps.push("txLimit");
-  if (!sol)
-    missingCaps.push("spendLimits.sol");
-  if (!usdc)
-    missingCaps.push("spendLimits.usdc");
+  const eth = cap("eth");
+  const usdg = cap("usdg");
+  const gaps = (present) => {
+    const missing = [];
+    if (!hasTxLimit)
+      missing.push("txLimit");
+    for (const [hasCap, name] of present)
+      if (!hasCap)
+        missing.push(name);
+    return missing;
+  };
   return {
     tradeReady: { sol: hasTxLimit && sol, usdc: hasTxLimit && usdc },
-    missingCaps,
-    hoodTradeReady: { eth: hasTxLimit && cap("eth"), usdg: hasTxLimit && cap("usdg") }
+    missingCaps: gaps([
+      [sol, "spendLimits.sol"],
+      [usdc, "spendLimits.usdc"]
+    ]),
+    hoodTradeReady: { eth: hasTxLimit && eth, usdg: hasTxLimit && usdg },
+    hoodMissingCaps: gaps([
+      [eth, "spendLimits.eth"],
+      [usdg, "spendLimits.usdg"]
+    ])
   };
 }
-function targetWarnings(target, chain2 = "solana") {
-  if (chain2 === "evm" && target.hoodTradeReady !== undefined) {
-    return hoodCapWarnings(target.keyPrefix, { missingCaps: target.missingCaps, hoodTradeReady: target.hoodTradeReady });
+function targetWarnings(target, chain2) {
+  const hasTxLimit = !target.missingCaps.includes("txLimit");
+  if (chain2 === "evm") {
+    return capWarnings(target.keyPrefix, hasTxLimit, [
+      { ready: target.hoodTradeReady.eth, asset: "ETH" },
+      { ready: target.hoodTradeReady.usdg, asset: "USDG" }
+    ]);
   }
-  return capWarnings(target.keyPrefix, {
+  return capWarnings(target.keyPrefix, hasTxLimit, [
+    { ready: target.tradeReady.sol, asset: "SOL" },
+    { ready: target.tradeReady.usdc, asset: "USDC" }
+  ]);
+}
+function readinessJson(target, chain2, server) {
+  if (chain2 === "evm") {
+    return {
+      keyPrefix: target.keyPrefix,
+      label: target.label,
+      tradeReady: target.tradeReady,
+      hoodTradeReady: target.hoodTradeReady,
+      missingCaps: target.hoodMissingCaps
+    };
+  }
+  return {
     keyPrefix: target.keyPrefix,
     label: target.label,
-    paused: target.paused,
-    walletScope: target.walletScope,
-    tradeReady: target.tradeReady,
-    missingCaps: target.missingCaps,
-    launchScope: target.launchScope
-  });
+    tradeReady: server?.tradeReady ?? target.tradeReady,
+    missingCaps: server?.missingCaps ?? target.missingCaps
+  };
 }
 function toKeyPlanLine(toKey, n = 1) {
   const name = toKey.target.label !== null ? `  (${toKey.target.label})` : "";
@@ -51256,14 +51272,9 @@ function keySignerImport(toKey) {
     deviceToken: toKey.deviceToken
   } : { spkiSha256: toKey.keySigner.spkiSha256 };
 }
-function keySignerJson(toKey, importedTo) {
+function keySignerJson(toKey, importedTo, chain2) {
   return {
-    toKey: {
-      keyPrefix: toKey.target.keyPrefix,
-      label: toKey.target.label,
-      tradeReady: toKey.target.tradeReady,
-      missingCaps: toKey.target.missingCaps
-    },
+    toKey: readinessJson(toKey.target, chain2),
     keySigner: { fingerprint: toKey.keySigner.fingerprint, spkiSha256: toKey.keySigner.spkiSha256 },
     rebind: {
       ok: importedTo === toKey.target.keyPrefix,
@@ -51541,17 +51552,12 @@ function finalBoundKey(wallet, run, toKeyPrefix) {
   const state = wallet.id === null ? undefined : run?.outcomes.get(wallet.id)?.state;
   return state === "rebound" || state === "unchanged" ? toKeyPrefix : wallet.importedTo;
 }
-function rebindJson(input) {
+function rebindJson(input, chain2) {
   const { target, wallets: wallets2, run } = input;
   const pending = pendingWallets(wallets2, run);
   const count = (state) => wallets2.filter((wallet) => run?.outcomes.get(wallet.id)?.state === state).length;
   return {
-    toKey: {
-      keyPrefix: target.keyPrefix,
-      label: target.label,
-      tradeReady: run?.toKey?.tradeReady ?? target.tradeReady,
-      missingCaps: run?.toKey?.missingCaps ?? target.missingCaps
-    },
+    toKey: readinessJson(target, chain2, run?.toKey),
     rebind: {
       ok: run !== undefined && run.ok && input.notRebindable.length === 0,
       reached: run !== undefined,
@@ -64017,7 +64023,7 @@ async function promoteEvmFresh(input, fromLabel) {
       label: entry.label,
       remoteAuthority: target.tee?.remoteAuthority ?? submitted?.remoteAuthority ?? null,
       importedTo: submitted?.boundKeyPrefix ?? null
-    }, await callingKeyPrefixFor(ctx));
+    }, await callingKeyPrefixFor(ctx), "evm");
   }
   const exit = Math.max(code, rebound?.exit ?? 0);
   if (ctx.json) {
@@ -64143,7 +64149,7 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
       label: parsed.values["--label"] ?? subject.label,
       remoteAuthority: imported.submitted.remoteAuthority ?? null,
       importedTo: imported.submitted.boundKeyPrefix ?? null
-    }, controlledBy.keyPrefix);
+    }, controlledBy.keyPrefix, "evm");
   }
   const exit = Math.max(code, rebound?.exit ?? 0);
   if (ctx.json) {
@@ -64216,14 +64222,14 @@ async function vaultPromote(args, ctx) {
     return promoteFresh(ctx, parsed, fromLabel, toKey);
   return promoteInPlace(ctx, parsed, inPlaceLabel, toKey);
 }
-async function rebindAfterImport(ctx, toKey, wallet, callingKeyPrefix) {
+async function rebindAfterImport(ctx, toKey, wallet, callingKeyPrefix, chain2) {
   if (toKey.keySigner !== undefined && wallet.importedTo === toKey.target.keyPrefix) {
     ctx.deps.stderr.write(`${keySignerTradableLine({ target: toKey.target, keySigner: toKey.keySigner })}
 `);
     return {
       exit: 0,
       json: {
-        ...keySignerJson({ target: toKey.target, keySigner: toKey.keySigner }, wallet.importedTo),
+        ...keySignerJson({ target: toKey.target, keySigner: toKey.keySigner }, wallet.importedTo, chain2),
         boundKeyPrefix: wallet.importedTo,
         walletRebind: { state: "not-needed" }
       }
@@ -64247,14 +64253,14 @@ async function rebindAfterImport(ctx, toKey, wallet, callingKeyPrefix) {
   return {
     exit: run !== undefined && !run.ok ? 1 : 0,
     json: {
-      ...rebindJson(input),
+      ...rebindJson(input, chain2),
       boundKeyPrefix: finalBoundKey({ id, importedTo: wallet.importedTo }, run, toKey.target.keyPrefix),
       walletRebind: walletRebindJson({ id, remoteAuthority: wallet.remoteAuthority }, run)
     }
   };
 }
-async function confirmResumeRebind(ctx, toKey) {
-  ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target)].join(`
+async function confirmResumeRebind(ctx, toKey, chain2) {
+  ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, chain2)].join(`
 `)}
 `);
   const typed = await ctx.deps.promptLine(`Type ${CONFIRM_WORD} to move this wallet to ${toKey.target.keyPrefix}: `);
@@ -64349,7 +64355,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
     }, ctx.deps));
     await confirmLastSix(ctx, destination.address, "the sweep vault destination");
     if (toKey !== undefined) {
-      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target)].join(`
+      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, "solana")].join(`
 `)}
 `);
     }
@@ -64385,7 +64391,7 @@ async function promoteFresh(ctx, parsed, fromLabel, toKey) {
         label: entry.label,
         remoteAuthority: target.tee?.remoteAuthority ?? submitted?.remoteAuthority ?? null,
         importedTo
-      }, await callingKeyPrefixFor(ctx));
+      }, await callingKeyPrefixFor(ctx), "solana");
     }
     const exit = Math.max(code, rebound?.exit ?? 0);
     if (ctx.json) {
@@ -64452,8 +64458,9 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
       if (sweepTo !== undefined) {
         return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).");
       }
+      const resumeChain = existing.chain === "evm" ? "evm" : "solana";
       if (toKey !== undefined)
-        await confirmResumeRebind(ctx, toKey);
+        await confirmResumeRebind(ctx, toKey, resumeChain);
       const resumed = await resumePromote(ctx, vault, existing, opened.reopen, path, hold, {
         confirmAccount: (account) => confirmLastSix(ctx, account, "that account"),
         confirmDestination: async (destination2) => {
@@ -64478,7 +64485,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
         label: existing.label,
         remoteAuthority: resumed.adopted?.remoteAuthority ?? null,
         importedTo: existing.tee?.boundKeyPrefix ?? null
-      }, await callingKeyPrefixFor(ctx));
+      }, await callingKeyPrefixFor(ctx), resumeChain);
       if (ctx.json) {
         writeJson(ctx.deps, {
           ok: rebound2.exit === 0,
@@ -64514,7 +64521,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
     const controlledBy = toKey === undefined ? live : withToKey(live, {
       keyPrefix: toKey.target.keyPrefix,
       label: toKey.target.label,
-      warnings: targetWarnings(toKey.target),
+      warnings: targetWarnings(toKey.target, "solana"),
       ...toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}
     });
     const rpc = solana.rpc;
@@ -64596,7 +64603,7 @@ async function promoteInPlace(ctx, parsed, subjectLabel, toKey) {
         label: parsed.values["--label"] ?? subject.label,
         remoteAuthority: imported.submitted.remoteAuthority ?? null,
         importedTo
-      }, controlledBy.keyPrefix);
+      }, controlledBy.keyPrefix, "solana");
     }
     const exit = Math.max(code, rebound?.exit ?? 0);
     if (ctx.json) {
@@ -65528,7 +65535,8 @@ Nothing to do: every row already landed.
           destinations,
           exit: 0,
           controlledBy,
-          roles: roles2
+          roles: roles2,
+          chain: chain2
         });
       }
       const n = rebindable.wallets.length;
@@ -65554,6 +65562,7 @@ ${renderControlledBy(controlledBy, n)}
         exit: 0,
         controlledBy,
         roles: roles2,
+        chain: chain2,
         rebound: rebound2
       });
     }
@@ -65748,7 +65757,7 @@ ${renderControlledBy(controlledBy, acting.length)}
           ...stopped.suggestion !== undefined ? { suggestion: stopped.suggestion } : {},
           controlledBy: controlledByJson(controlledBy),
           authorities: authoritiesJson(checked),
-          ...notReached !== undefined ? rebindJson(notReached) : {}
+          ...notReached !== undefined ? rebindJson(notReached, chain2) : {}
         });
       } else {
         deps.stderr.write(`${stopped.message}${stopped.suggestion ? ` ${stopped.suggestion}` : ""}
@@ -65765,6 +65774,7 @@ ${renderControlledBy(controlledBy, acting.length)}
       keys: results,
       destinations,
       exit: worst,
+      chain: chain2,
       controlledBy,
       roles: checked,
       ...rebound !== undefined ? { rebound } : {}
@@ -66005,7 +66015,7 @@ function finish(ctx, opts) {
       keys: opts.rebound === undefined ? opts.keys : keysWithRebind(opts.keys, opts.rebound.phase, opts.rebound.run),
       controlledBy: controlledByJson(opts.controlledBy),
       authorities: authoritiesJson(opts.roles),
-      ...opts.rebound !== undefined ? rebindJson(opts.rebound.input) : {}
+      ...opts.rebound !== undefined ? rebindJson(opts.rebound.input, opts.chain) : {}
     });
     return exit;
   }

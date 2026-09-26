@@ -104,6 +104,7 @@ import {
   keySignerImport,
   keySignerTradableLine,
   type NotRebindable,
+  type PromoteChain,
   preflightToKey,
   type RebindableWallet,
   type RebindReportInput,
@@ -518,6 +519,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
           exit: 0,
           controlledBy,
           roles,
+          chain,
         })
       }
       // BE-322: every row landed on an earlier run and the rebind is what remains (the re-run after
@@ -547,6 +549,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
         exit: 0,
         controlledBy,
         roles,
+        chain,
         rebound,
       })
     }
@@ -775,7 +778,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
           // BE-296 (D9): the stopped document carries the same two optional keys as success.
           controlledBy: controlledByJson(controlledBy),
           authorities: authoritiesJson(checked),
-          ...(notReached !== undefined ? rebindJson(notReached) : {}),
+          ...(notReached !== undefined ? rebindJson(notReached, chain) : {}),
         })
       } else {
         deps.stderr.write(`${stopped.message}${stopped.suggestion ? ` ${stopped.suggestion}` : ""}\n`)
@@ -797,6 +800,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
       keys: results,
       destinations,
       exit: worst,
+      chain,
       controlledBy,
       roles: checked,
       ...(rebound !== undefined ? { rebound } : {}),
@@ -1135,6 +1139,7 @@ function finish(
     keys: KeyResult[]
     destinations: ReturnType<typeof actingDestinations>
     exit: number
+    chain: PromoteChain
     controlledBy: ControlledBy
     roles: SignerRolesResult
     /** BE-322: the rebind phase, when `--to-key` was given. */
@@ -1164,7 +1169,7 @@ function finish(
       // BE-296 (D9): optional keys only; every key above is unchanged.
       controlledBy: controlledByJson(opts.controlledBy),
       authorities: authoritiesJson(opts.roles),
-      ...(opts.rebound !== undefined ? rebindJson(opts.rebound.input) : {}),
+      ...(opts.rebound !== undefined ? rebindJson(opts.rebound.input, opts.chain) : {}),
     })
     return exit
   }

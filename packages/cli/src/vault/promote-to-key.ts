@@ -36,7 +36,6 @@ import {
   capWarnings,
   commitRebind,
   DEVICE_TOKEN_REQUIRED,
-  hoodCapWarnings,
   listAccountKeys,
   missingSignerFailure,
   postRebind,
@@ -75,17 +74,29 @@ export interface TargetKeyRow extends KeyRow {
   txLimit?: unknown | null
 }
 
+/** Which quote assets a promote warns about. Required at every call so an EVM wallet cannot fall through to SOL/USDC. */
+export type PromoteChain = "solana" | "evm"
+
 export interface ToKeyTarget {
   keyPrefix: string
   label: string | null
   walletScope: "all" | "selected"
   paused: boolean
   launchScope: boolean
-  /** From the key row, the rule the route's `tradeReadiness` applies; the preview's value replaces it in `--json`. */
+  /**
+   * Solana quote readiness from the key row. A Solana `--json` document replaces it with the
+   * rebind preview. An EVM document keeps this snapshot and adds `hoodTradeReady`.
+   */
   tradeReady: { sol: boolean; usdc: boolean }
+  /** Solana gaps: `txLimit`, `spendLimits.sol`, `spendLimits.usdc`. */
   missingCaps: string[]
-  /** The same rule for a Hood TEE wallet's quote assets. Absent on a target built before 4b. */
-  hoodTradeReady?: { eth: boolean; usdg: boolean }
+  /** Hood quote readiness. `tradeReadinessOf` always sets it. */
+  hoodTradeReady: { eth: boolean; usdg: boolean }
+  /**
+   * Hood gaps: `txLimit`, `spendLimits.eth`, `spendLimits.usdg`. A missing cap is named even when
+   * `txLimit` is also missing. EVM `--json` reports this list as `missingCaps`.
+   */
+  hoodMissingCaps: string[]
 }
 
 export interface ToKeyFailure {
@@ -139,13 +150,15 @@ export function targetKeyRefusal(row: TargetKeyRow | undefined, keyPrefix: strin
 }
 
 /**
- * The route's `tradeReadiness` rule, from the row: `sol` is ready only when `txLimit` is present
- * and a SOL cap exists (the lowercased asset, then the original spelling), likewise `usdc`.
+ * The route's `tradeReadiness` rule, from the row: an asset is ready only when `txLimit` is present
+ * and a cap exists (the lowercased asset, then the original spelling). Solana quotes are SOL and
+ * USDC; a Hood TEE wallet's quotes are ETH and USDG. A cap of `"0"` counts as present.
  */
 export function tradeReadinessOf(row: Pick<TargetKeyRow, "spendLimits" | "txLimit">): {
   tradeReady: { sol: boolean; usdc: boolean }
   missingCaps: string[]
   hoodTradeReady: { eth: boolean; usdg: boolean }
+  hoodMissingCaps: string[]
 } {
   const hasTxLimit = row.txLimit !== null && row.txLimit !== undefined
   const limits = row.spendLimits ?? []
@@ -153,34 +166,77 @@ export function tradeReadinessOf(row: Pick<TargetKeyRow, "spendLimits" | "txLimi
     limits.some((limit) => limit.asset === asset.toLowerCase() || limit.asset === asset.toUpperCase())
   const sol = cap("sol")
   const usdc = cap("usdc")
-  const missingCaps: string[] = []
-  if (!hasTxLimit) missingCaps.push("txLimit")
-  if (!sol) missingCaps.push("spendLimits.sol")
-  if (!usdc) missingCaps.push("spendLimits.usdc")
+  const eth = cap("eth")
+  const usdg = cap("usdg")
+  const gaps = (present: Array<[boolean, string]>): string[] => {
+    const missing: string[] = []
+    if (!hasTxLimit) missing.push("txLimit")
+    for (const [hasCap, name] of present) if (!hasCap) missing.push(name)
+    return missing
+  }
   return {
     tradeReady: { sol: hasTxLimit && sol, usdc: hasTxLimit && usdc },
-    missingCaps,
-    hoodTradeReady: { eth: hasTxLimit && cap("eth"), usdg: hasTxLimit && cap("usdg") },
+    missingCaps: gaps([
+      [sol, "spendLimits.sol"],
+      [usdc, "spendLimits.usdc"],
+    ]),
+    hoodTradeReady: { eth: hasTxLimit && eth, usdg: hasTxLimit && usdg },
+    hoodMissingCaps: gaps([
+      [eth, "spendLimits.eth"],
+      [usdg, "spendLimits.usdg"],
+    ]),
   }
 }
 
 /**
- * The D7 cap lines for the target, printed under the controlled-by block. A Hood TEE wallet is
- * quoted in ETH or USDG, so an EVM promote reads those caps rather than SOL and USDC.
+ * The D7 cap lines for the target, printed under the controlled-by block. `chain` chooses the
+ * quote pair. An EVM promote reads ETH and USDG and never the Solana lines.
  */
-export function targetWarnings(target: ToKeyTarget, chain: "solana" | "evm" = "solana"): string[] {
-  if (chain === "evm" && target.hoodTradeReady !== undefined) {
-    return hoodCapWarnings(target.keyPrefix, { missingCaps: target.missingCaps, hoodTradeReady: target.hoodTradeReady })
+export function targetWarnings(target: ToKeyTarget, chain: PromoteChain): string[] {
+  const hasTxLimit = !target.missingCaps.includes("txLimit")
+  if (chain === "evm") {
+    return capWarnings(target.keyPrefix, hasTxLimit, [
+      { ready: target.hoodTradeReady.eth, asset: "ETH" },
+      { ready: target.hoodTradeReady.usdg, asset: "USDG" },
+    ])
   }
-  return capWarnings(target.keyPrefix, {
+  return capWarnings(target.keyPrefix, hasTxLimit, [
+    { ready: target.tradeReady.sol, asset: "SOL" },
+    { ready: target.tradeReady.usdc, asset: "USDC" },
+  ])
+}
+
+/**
+ * Machine-readable readiness. Solana uses the rebind preview when the run has one, because that
+ * is the same SOL/USDC rule. An EVM preview's `tradeReady` is still SOL/USDC, so an EVM document
+ * keeps the row's Solana snapshot, adds `hoodTradeReady`, and names the Hood gaps in `missingCaps`.
+ */
+function readinessJson(
+  target: ToKeyTarget,
+  chain: PromoteChain,
+  server?: { tradeReady: { sol: boolean; usdc: boolean }; missingCaps: string[] },
+): {
+  keyPrefix: string
+  label: string | null
+  tradeReady: { sol: boolean; usdc: boolean }
+  missingCaps: string[]
+  hoodTradeReady?: { eth: boolean; usdg: boolean }
+} {
+  if (chain === "evm") {
+    return {
+      keyPrefix: target.keyPrefix,
+      label: target.label,
+      tradeReady: target.tradeReady,
+      hoodTradeReady: target.hoodTradeReady,
+      missingCaps: target.hoodMissingCaps,
+    }
+  }
+  return {
     keyPrefix: target.keyPrefix,
     label: target.label,
-    paused: target.paused,
-    walletScope: target.walletScope,
-    tradeReady: target.tradeReady,
-    missingCaps: target.missingCaps,
-    launchScope: target.launchScope,
-  })
+    tradeReady: server?.tradeReady ?? target.tradeReady,
+    missingCaps: server?.missingCaps ?? target.missingCaps,
+  }
 }
 
 /**
@@ -228,14 +284,13 @@ export function keySignerImport(
  * The `--json` keys for a wallet a keySigner import already put on the target: no rebind ran,
  * because none was needed. Same top-level keys as `rebindJson`, so a reader keys on `rebind.ok`.
  */
-export function keySignerJson(toKey: { target: ToKeyTarget; keySigner: ToKeySigner }, importedTo: string | null) {
+export function keySignerJson(
+  toKey: { target: ToKeyTarget; keySigner: ToKeySigner },
+  importedTo: string | null,
+  chain: PromoteChain,
+) {
   return {
-    toKey: {
-      keyPrefix: toKey.target.keyPrefix,
-      label: toKey.target.label,
-      tradeReady: toKey.target.tradeReady,
-      missingCaps: toKey.target.missingCaps,
-    },
+    toKey: readinessJson(toKey.target, chain),
     keySigner: { fingerprint: toKey.keySigner.fingerprint, spkiSha256: toKey.keySigner.spkiSha256 },
     rebind: {
       ok: importedTo === toKey.target.keyPrefix,
@@ -647,12 +702,16 @@ export function finalBoundKey(
 }
 
 /** The document's top-level `toKey` and `rebind` keys. */
-export function rebindJson(input: RebindReportInput): {
+export function rebindJson(
+  input: RebindReportInput,
+  chain: PromoteChain,
+): {
   toKey: {
     keyPrefix: string
     label: string | null
     tradeReady: { sol: boolean; usdc: boolean }
     missingCaps: string[]
+    hoodTradeReady?: { eth: boolean; usdg: boolean }
   }
   rebind: {
     ok: boolean
@@ -672,12 +731,7 @@ export function rebindJson(input: RebindReportInput): {
   const pending = pendingWallets(wallets, run)
   const count = (state: RebindState) => wallets.filter((wallet) => run?.outcomes.get(wallet.id)?.state === state).length
   return {
-    toKey: {
-      keyPrefix: target.keyPrefix,
-      label: target.label,
-      tradeReady: run?.toKey?.tradeReady ?? target.tradeReady,
-      missingCaps: run?.toKey?.missingCaps ?? target.missingCaps,
-    },
+    toKey: readinessJson(target, chain, run?.toKey),
     rebind: {
       ok: run !== undefined && run.ok && input.notRebindable.length === 0,
       reached: run !== undefined,

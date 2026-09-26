@@ -54,6 +54,7 @@ import {
   keySignerJson,
   keySignerTradableLine,
   type NotRebindable,
+  type PromoteChain,
   preflightToKey,
   type RebindableWallet,
   rebindJson,
@@ -173,6 +174,7 @@ export async function rebindAfterImport(
   toKey: ToKeyContext,
   wallet: PromotedWallet,
   callingKeyPrefix: string,
+  chain: PromoteChain,
 ): Promise<{ exit: number; json: Record<string, unknown> }> {
   // Key signers (5.2): a keySigner import already owned the wallet by the target's signer and
   // bound it to the target, in that call. There is nothing to rebind.
@@ -181,7 +183,7 @@ export async function rebindAfterImport(
     return {
       exit: 0,
       json: {
-        ...keySignerJson({ target: toKey.target, keySigner: toKey.keySigner }, wallet.importedTo),
+        ...keySignerJson({ target: toKey.target, keySigner: toKey.keySigner }, wallet.importedTo, chain),
         boundKeyPrefix: wallet.importedTo,
         walletRebind: { state: "not-needed" },
       },
@@ -215,7 +217,7 @@ export async function rebindAfterImport(
   return {
     exit: run !== undefined && !run.ok ? 1 : 0,
     json: {
-      ...rebindJson(input),
+      ...rebindJson(input, chain),
       boundKeyPrefix: finalBoundKey({ id, importedTo: wallet.importedTo }, run, toKey.target.keyPrefix),
       walletRebind: walletRebindJson({ id, remoteAuthority: wallet.remoteAuthority }, run),
     },
@@ -227,8 +229,12 @@ export async function rebindAfterImport(
  * mode does, then require `confirm` before the rebind. A wrong word refuses before `resumePromote`
  * writes, so the entry stays import-pending.
  */
-export async function confirmResumeRebind(ctx: CommandContext, toKey: ToKeyContext): Promise<void> {
-  ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target)].join("\n")}\n`)
+export async function confirmResumeRebind(
+  ctx: CommandContext,
+  toKey: ToKeyContext,
+  chain: PromoteChain,
+): Promise<void> {
+  ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, chain)].join("\n")}\n`)
   const typed = await ctx.deps.promptLine(`Type ${CONFIRM_WORD} to move this wallet to ${toKey.target.keyPrefix}: `)
   if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
     throw new VaultError(
@@ -354,7 +360,7 @@ async function promoteFresh(
     if (toKey !== undefined) {
       // BE-322: the fresh mode has no controlled-by block; the target is named here, with its cap
       // lines, before the import.
-      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target)].join("\n")}\n`)
+      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, "solana")].join("\n")}\n`)
     }
 
     const privateKey = base58.encode(secret64)
@@ -397,6 +403,7 @@ async function promoteFresh(
           importedTo,
         },
         await callingKeyPrefixFor(ctx),
+        "solana",
       )
     }
     const exit = Math.max(code, rebound?.exit ?? 0)
@@ -494,8 +501,10 @@ async function promoteInPlace(
         return usage(ctx, "A resume of promote takes no --sweep-to (exit 2).")
       }
       // BE-322: a resume rebind moves a wallet that is already on the server. Name the target
-      // and take `confirm` before that rebind, and before the resume writes.
-      if (toKey !== undefined) await confirmResumeRebind(ctx, toKey)
+      // and take `confirm` before that rebind, and before the resume writes. An import-pending
+      // EVM entry reaches this shared path, so the chain has to be the entry's own.
+      const resumeChain: PromoteChain = existing.chain === "evm" ? "evm" : "solana"
+      if (toKey !== undefined) await confirmResumeRebind(ctx, toKey, resumeChain)
       const resumed = await resumePromote(ctx, vault, existing, opened.reopen, path, hold, {
         confirmAccount: (account) => confirmLastSix(ctx, account, "that account"),
         confirmDestination: async (destination) => {
@@ -529,6 +538,7 @@ async function promoteInPlace(
           importedTo: existing.tee?.boundKeyPrefix ?? null,
         },
         await callingKeyPrefixFor(ctx),
+        resumeChain,
       )
       if (ctx.json) {
         writeJson(ctx.deps, {
@@ -582,7 +592,7 @@ async function promoteInPlace(
         : withToKey(live, {
             keyPrefix: toKey.target.keyPrefix,
             label: toKey.target.label,
-            warnings: targetWarnings(toKey.target),
+            warnings: targetWarnings(toKey.target, "solana"),
             ...(toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}),
           })
 
@@ -703,6 +713,7 @@ async function promoteInPlace(
           importedTo,
         },
         controlledBy.keyPrefix,
+        "solana",
       )
     }
     const exit = Math.max(code, rebound?.exit ?? 0)

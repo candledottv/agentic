@@ -242,6 +242,7 @@ export async function promoteEvmFresh(input: EvmPromoteContext, fromLabel: strin
         importedTo: submitted?.boundKeyPrefix ?? null,
       },
       await callingKeyPrefixFor(ctx),
+      "evm",
     )
   }
   const exit = Math.max(code, rebound?.exit ?? 0)
@@ -400,6 +401,7 @@ export async function promoteEvmInPlace(
         importedTo: imported.submitted.boundKeyPrefix ?? null,
       },
       controlledBy.keyPrefix,
+      "evm",
     )
   }
   const exit = Math.max(code, rebound?.exit ?? 0)
