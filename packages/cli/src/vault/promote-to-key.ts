@@ -44,12 +44,13 @@ import { writeLocalFailure } from "../render"
 export const REBIND_CHUNK = 200
 
 /**
- * A `selected`-scope key holds at most this many wallets (`MAX_WALLETS_PER_PROFILE` in
- * `packages/db/convex/lib/apiKeyWalletPolicy.ts`, which this package cannot import: the mirror
- * carries no `packages/db`). The server's own check at commit time is the authority; this one
- * exists so a batch that cannot fit is refused before the unlock rather than after the import.
- * It equals the Max plan's linked-wallet cap (`TIER_CAPS.max.linkedWallets`), which the server
- * constant now is; only a run that adds wallets to the key is checked.
+ * FALLBACK ONLY: a `selected`-scope key holds at most this many wallets (`MAX_WALLETS_PER_PROFILE`
+ * in `packages/db/convex/lib/apiKeyWalletPolicy.ts`, which this package cannot import: the mirror
+ * carries no `packages/db`). The live path reads the cap and the raw row count from
+ * `GET /keys/:prefix/wallets`'s `scopeLimit` (BE-403); this and the listed count are used only
+ * against an older server that omits it. The server's own check at commit time is the authority;
+ * this one exists so a batch that cannot fit is refused before the unlock rather than after the
+ * import. Only a run that adds wallets to the key is checked.
  */
 export const SELECTED_SCOPE_LIMIT = 1000
 
@@ -168,9 +169,11 @@ export type ToKeyPreflight = { ok: true; target: ToKeyTarget; deviceToken: strin
  *    `candle auth login`, the way `tee rebind` refuses.
  * 2. The target resolves, through `tee rebind`'s own `resolveTargetKey` against one `GET /keys`.
  * 3. The target is on this account and can take TEE wallets (`targetKeyRefusal`).
- * 4. A `selected`-scope target has room: its wallet set plus the rows this run would move must not
- *    exceed the limit. Rows whose label the key already holds are not counted, so a re-run does
- *    not refuse over wallets that moved last time. The set is read with the calling API key
+ * 4. A `selected`-scope target has room: its rows plus the wallets this run would move must not
+ *    exceed the limit. The limit and the row count are the server's (`scopeLimit`: revoked
+ *    wallets' rows included, as `rebindTee` counts them), falling back to `SELECTED_SCOPE_LIMIT`
+ *    and the listed count on an older server. Wallets whose label the key already holds are not
+ *    counted, so a re-run does not refuse over wallets that moved last time. The set is read with the calling API key
  *    (`GET /keys/:prefix/wallets` admits an agent key on the same account); when that read is
  *    refused, the check is left to the commit, and one stderr line says so.
  */
@@ -209,10 +212,10 @@ export async function preflightToKey(
     const room = await readSelectedScopeRoom(ctx, keyPrefix)
     if (room.ok) {
       const moving = opts.labels.filter((label) => !room.heldLabels.has(label)).length
-      if (moving > 0 && room.held + moving > SELECTED_SCOPE_LIMIT) {
+      if (moving > 0 && room.held + moving > room.max) {
         return refuse({
           code: "REBIND_SCOPE_FULL",
-          message: `Key ${keyPrefix} is scoped to selected wallets and holds ${room.held} of ${SELECTED_SCOPE_LIMIT}; the ${moving} this run would move do not fit. Nothing was written.`,
+          message: `Key ${keyPrefix} is scoped to selected wallets and holds ${room.held} of ${room.max}; the ${moving} this run would move do not fit. Nothing was written.`,
           suggestion: "Widen the key's wallet scope from the portal, or name a key with room.",
         })
       }
@@ -241,7 +244,7 @@ export async function preflightToKey(
 async function readSelectedScopeRoom(
   ctx: CommandContext,
   keyPrefix: string,
-): Promise<{ ok: true; held: number; heldLabels: Set<string> } | { ok: false; reason: string }> {
+): Promise<{ ok: true; held: number; max: number; heldLabels: Set<string> } | { ok: false; reason: string }> {
   const apiKey = await resolveApiKey(ctx.deps, ctx.profile)
   if (!apiKey) return { ok: false, reason: "no API key" }
   const result = await apiRequest(`/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/wallets`, {
@@ -252,11 +255,23 @@ async function readSelectedScopeRoom(
     env: ctx.deps.env,
   })
   if (!result.ok) return { ok: false, reason: result.status === 0 ? result.message : `HTTP ${result.status}` }
-  const wallets = (result.body as { wallets?: Array<{ label?: string }> } | null)?.wallets
+  const body = result.body as { wallets?: Array<{ label?: string }>; scopeLimit?: unknown } | null
+  const wallets = body?.wallets
   if (!Array.isArray(wallets)) return { ok: false, reason: "no wallet list in the response" }
   const heldLabels = new Set<string>()
   for (const wallet of wallets) if (typeof wallet?.label === "string") heldLabels.add(wallet.label)
-  return { ok: true, held: wallets.length, heldLabels }
+  const served = servedScopeLimit(body?.scopeLimit)
+  if (served) return { ok: true, held: served.rows, max: served.max, heldLabels }
+  return { ok: true, held: wallets.length, max: SELECTED_SCOPE_LIMIT, heldLabels }
+}
+
+/** The server's `scopeLimit`, when present and well-formed; null sends the caller to the fallback. */
+function servedScopeLimit(raw: unknown): { max: number; rows: number } | null {
+  if (typeof raw !== "object" || raw === null) return null
+  const { max, rows } = raw as { max?: unknown; rows?: unknown }
+  if (typeof max !== "number" || !Number.isInteger(max) || max < 0) return null
+  if (typeof rows !== "number" || !Number.isInteger(rows) || rows < 0) return null
+  return { max, rows }
 }
 
 // ── The rebind ──────────────────────────────────────────────────────────────────────────────

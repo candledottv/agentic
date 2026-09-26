@@ -61977,10 +61977,10 @@ async function preflightToKey(ctx, raw, opts) {
     const room = await readSelectedScopeRoom(ctx, keyPrefix);
     if (room.ok) {
       const moving = opts.labels.filter((label) => !room.heldLabels.has(label)).length;
-      if (moving > 0 && room.held + moving > SELECTED_SCOPE_LIMIT) {
+      if (moving > 0 && room.held + moving > room.max) {
         return refuse3({
           code: "REBIND_SCOPE_FULL",
-          message: `Key ${keyPrefix} is scoped to selected wallets and holds ${room.held} of ${SELECTED_SCOPE_LIMIT}; the ${moving} this run would move do not fit. Nothing was written.`,
+          message: `Key ${keyPrefix} is scoped to selected wallets and holds ${room.held} of ${room.max}; the ${moving} this run would move do not fit. Nothing was written.`,
           suggestion: "Widen the key's wallet scope from the portal, or name a key with room."
         });
       }
@@ -62016,14 +62016,28 @@ async function readSelectedScopeRoom(ctx, keyPrefix) {
   });
   if (!result.ok)
     return { ok: false, reason: result.status === 0 ? result.message : `HTTP ${result.status}` };
-  const wallets2 = result.body?.wallets;
+  const body = result.body;
+  const wallets2 = body?.wallets;
   if (!Array.isArray(wallets2))
     return { ok: false, reason: "no wallet list in the response" };
   const heldLabels = new Set;
   for (const wallet of wallets2)
     if (typeof wallet?.label === "string")
       heldLabels.add(wallet.label);
-  return { ok: true, held: wallets2.length, heldLabels };
+  const served = servedScopeLimit(body?.scopeLimit);
+  if (served)
+    return { ok: true, held: served.rows, max: served.max, heldLabels };
+  return { ok: true, held: wallets2.length, max: SELECTED_SCOPE_LIMIT, heldLabels };
+}
+function servedScopeLimit(raw) {
+  if (typeof raw !== "object" || raw === null)
+    return null;
+  const { max, rows } = raw;
+  if (typeof max !== "number" || !Number.isInteger(max) || max < 0)
+    return null;
+  if (typeof rows !== "number" || !Number.isInteger(rows) || rows < 0)
+    return null;
+  return { max, rows };
 }
 function chunkWallets(wallets2, size = REBIND_CHUNK) {
   const out = [];

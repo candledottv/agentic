@@ -143,6 +143,18 @@ function targetBlock(n: number): string {
   ].join("\n")
 }
 
+/** A `GET /keys/:prefix/wallets` row the target already holds. */
+function heldWallet(i: number) {
+  return {
+    linkedWalletId: `lw_h${i}`,
+    assignedAt: 1,
+    chain: "solana",
+    address: `H${i}`,
+    label: `held-${i}`,
+    spendCapable: true,
+  }
+}
+
 function rebindCalls(o: { calls: CapturedRequest[] }) {
   return o.calls.filter((call) => call.url.includes("/tee-wallets/rebind"))
 }
@@ -226,6 +238,38 @@ describe("promote-batch --to-key: a valid target", () => {
     expect(o.out).not.toContain(API_KEY)
     expect(o.err).not.toContain(API_KEY)
     expect(o.err).not.toContain(DEVICE_TOKEN)
+  })
+
+  test("a selected target: the server's scopeLimit, not the mirrored cap, lets a run that fits through", async () => {
+    const f = await fixture(["a", "b", "cold"])
+    const file = await pairsFile(f.dir, "a cold\nb cold\n")
+    const rebind = rebindRoute()
+    // The list alone is at the mirrored cap; the server says its cap is higher and the 2 fit exactly.
+    const held = Array.from({ length: SELECTED_SCOPE_LIMIT }, (_, i) => heldWallet(i))
+    const o = await runBatch(f, {
+      file,
+      ack: "correct",
+      json: true,
+      deviceToken: true,
+      args: ["--to-key", TO],
+      api: {
+        keys: keysListing({ walletScope: "selected" }),
+        rebind: rebind.handler,
+        routes: {
+          [`/api/v1/agent/keys/${TO}/wallets`]: () =>
+            jsonResponse(200, {
+              keyPrefix: TO,
+              profileId: null,
+              walletScope: "selected",
+              wallets: held,
+              scopeLimit: { max: SELECTED_SCOPE_LIMIT + 2, rows: SELECTED_SCOPE_LIMIT },
+            }),
+        },
+      },
+    })
+    expect(o.code).toBe(0)
+    expect(o.submits.n).toBe(2)
+    expect(rebind.bodies).toHaveLength(2)
   })
 
   test("a prefix is used as is and needs no label match; the human summary names the target", async () => {
@@ -343,29 +387,46 @@ describe("promote-batch --to-key: every target refusal is before the unlock, wit
     }
   })
 
-  test("a selected-scope key without room for the file: REBIND_SCOPE_FULL", async () => {
-    const held = Array.from({ length: SELECTED_SCOPE_LIMIT - 1 }, (_, i) => ({
-      linkedWalletId: `lw_h${i}`,
-      assignedAt: 1,
-      chain: "solana",
-      address: `H${i}`,
-      label: `held-${i}`,
-      spendCapable: true,
-    }))
-    const { body, o } = await refused(["--to-key", TO], {
+  test("an older server without scopeLimit: the fallback cap and the listed count refuse, REBIND_SCOPE_FULL", async () => {
+    const held = Array.from({ length: SELECTED_SCOPE_LIMIT - 1 }, (_, i) => heldWallet(i))
+    // Absent, and malformed (a string max), both fall back to the mirrored cap and the list's length.
+    for (const extra of [{}, { scopeLimit: { max: "5", rows: 1 } }]) {
+      const { body, o } = await refused(["--to-key", TO], {
+        keys: keysListing({ walletScope: "selected" }),
+        routes: {
+          [`/api/v1/agent/keys/${TO}/wallets`]: () =>
+            jsonResponse(200, { keyPrefix: TO, profileId: null, walletScope: "selected", wallets: held, ...extra }),
+        },
+      })
+      expect(body.code).toBe("REBIND_SCOPE_FULL")
+      expect(body.message).toContain(
+        `holds ${SELECTED_SCOPE_LIMIT - 1} of ${SELECTED_SCOPE_LIMIT}; the 2 this run would move do not fit`,
+      )
+      // The wallet set was read with the calling API key on the same account.
+      const read = o.calls.find((c) => c.url.includes(`/keys/${TO}/wallets`))
+      expect((read?.init.headers as Record<string, string>)["x-api-key"]).toBe(API_KEY)
+    }
+  })
+
+  test("the server's scopeLimit decides: a revoked wallet's row the list hides still counts, REBIND_SCOPE_FULL", async () => {
+    // One wallet listed, two rows on the key (the second on a revoked wallet), a cap of 3. The
+    // listed count would let the 2 through (1 + 2 = 3); the server's rows refuse them (2 + 2 > 3),
+    // exactly as rebindTee would after the import.
+    const { body } = await refused(["--to-key", TO], {
       keys: keysListing({ walletScope: "selected" }),
       routes: {
         [`/api/v1/agent/keys/${TO}/wallets`]: () =>
-          jsonResponse(200, { keyPrefix: TO, profileId: null, walletScope: "selected", wallets: held }),
+          jsonResponse(200, {
+            keyPrefix: TO,
+            profileId: null,
+            walletScope: "selected",
+            wallets: [heldWallet(0)],
+            scopeLimit: { max: 3, rows: 2 },
+          }),
       },
     })
     expect(body.code).toBe("REBIND_SCOPE_FULL")
-    expect(body.message).toContain(
-      `holds ${SELECTED_SCOPE_LIMIT - 1} of ${SELECTED_SCOPE_LIMIT}; the 2 this run would move do not fit`,
-    )
-    // The wallet set was read with the calling API key on the same account.
-    const read = o.calls.find((c) => c.url.includes(`/keys/${TO}/wallets`))
-    expect((read?.init.headers as Record<string, string>)["x-api-key"]).toBe(API_KEY)
+    expect(body.message).toContain("holds 2 of 3; the 2 this run would move do not fit")
   })
 
   test("only an API key, no device token: DEVICE_TOKEN_REQUIRED with candle auth login, before any request that writes", async () => {
