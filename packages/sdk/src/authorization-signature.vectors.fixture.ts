@@ -52,6 +52,17 @@ export const RELAY_SIGNATURE_VECTORS = {
     "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEppf0fcDJ1lavcopP7GGeGcGeTUOX8onzhseGpVy8cI46UNMpn2nHd4t68vPFjggZB2gFymLnZDg6bmirKjhSog==",
 } as const
 
+/** The `{version, method, url, body, headers}` object Privy canonicalizes for one published vector. */
+export function relayVectorInput(body: (typeof RELAY_SIGNATURE_VECTORS.cases)[number]["body"]) {
+  return {
+    version: 1 as const,
+    method: "POST" as const,
+    url: `https://api.privy.io/v1/wallets/${RELAY_SIGNATURE_VECTORS.privyWalletId}/rpc`,
+    body: body as Record<string, unknown>,
+    headers: { "privy-app-id": RELAY_SIGNATURE_VECTORS.appId },
+  }
+}
+
 /** The test key, rebuilt from `keySeed`: scalar = SHA-256(seed), public point from the scalar. */
 export function relayVectorKey(): KeyObject {
   const d = createHash("sha256").update(RELAY_SIGNATURE_VECTORS.keySeed, "ascii").digest()
