@@ -25,7 +25,8 @@
         "DEVICE_CODE_NOT_FOUND",
         "SCOPE_MISSING",
         "TEST_ENVIRONMENT_FORBIDDEN",
-        "LOOSEN_REQUIRES_SESSION"
+        "LOOSEN_REQUIRES_SESSION",
+        "KEY_SIGNER_OWNER_INVALID"
       ]
     },
     "rate_limit": {
@@ -72,7 +73,9 @@
         "TRANSFER_ASSET_NOT_SUPPORTED",
         "REBIND_TARGET_INVALID",
         "REBIND_WALLET_INVALID",
-        "REBIND_TOO_MANY"
+        "REBIND_TOO_MANY",
+        "KEY_SIGNER_CODE_INVALID",
+        "KEY_SIGNER_FINGERPRINT_MISMATCH"
       ]
     },
     "market": {
@@ -147,6 +150,11 @@
         "REBIND_FORWARD_OPEN",
         "KEY_ACCESS_STALE",
         "KEY_ACCESS_PARTNER_KEY",
+        "KEY_SIGNER_MISSING",
+        "KEY_SIGNER_CHANGED",
+        "KEY_SIGNER_ALREADY_ACTIVE",
+        "KEY_SIGNER_READBACK_MISMATCH",
+        "KEY_SIGNER_SIGNATURE_REQUIRED",
         "WALLET_BUSY"
       ]
     },
