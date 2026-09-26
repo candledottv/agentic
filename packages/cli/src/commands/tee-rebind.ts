@@ -103,18 +103,55 @@ export function capWarnings(keyPrefix: string, toKey: RebindResponse["toKey"]): 
       `Warning: key ${keyPrefix} has no txLimit; it cannot trade SOL-quoted or USDC-quoted swaps until one is set.`,
     ]
   }
-  const lines: string[] = []
-  if (!tradeReady.sol) {
-    lines.push(
-      `Warning: key ${keyPrefix} can trade USDC-quoted swaps; it cannot trade SOL-quoted swaps until a SOL cap is set.`,
-    )
+  return pairedCapWarnings(keyPrefix, [
+    { ready: tradeReady.sol, asset: "SOL" },
+    { ready: tradeReady.usdc, asset: "USDC" },
+  ])
+}
+
+/**
+ * The same D7 lines for a Hood TEE wallet, whose swaps are quoted in ETH or USDG: the Solana caps say
+ * nothing about it, and the caps it does need are these two.
+ */
+export function hoodCapWarnings(
+  keyPrefix: string,
+  target: { missingCaps: string[]; hoodTradeReady: { eth: boolean; usdg: boolean } },
+): string[] {
+  if (target.missingCaps.includes("txLimit")) {
+    return [
+      `Warning: key ${keyPrefix} has no txLimit; it cannot trade ETH-quoted or USDG-quoted swaps until one is set.`,
+    ]
   }
-  if (!tradeReady.usdc) {
-    lines.push(
-      `Warning: key ${keyPrefix} can trade SOL-quoted swaps; it cannot trade USDC-quoted swaps until a USDC cap is set.`,
-    )
+  return pairedCapWarnings(keyPrefix, [
+    { ready: target.hoodTradeReady.eth, asset: "ETH" },
+    { ready: target.hoodTradeReady.usdg, asset: "USDG" },
+  ])
+}
+
+/**
+ * One line per quote asset that is not ready. With both missing it is one line naming both: saying
+ * of each that the other one "can trade" would claim a cap the key does not have.
+ */
+function pairedCapWarnings(
+  keyPrefix: string,
+  [a, b]: [{ ready: boolean; asset: string }, { ready: boolean; asset: string }],
+): string[] {
+  if (!a.ready && !b.ready) {
+    return [
+      `Warning: key ${keyPrefix} has no ${a.asset} or ${b.asset} cap; it cannot trade ${a.asset}-quoted or ${b.asset}-quoted swaps until one is set.`,
+    ]
   }
-  return lines
+  if (!a.ready) {
+    return [
+      `Warning: key ${keyPrefix} can trade ${b.asset}-quoted swaps; it cannot trade ${a.asset}-quoted swaps until a ${a.asset} cap is set.`,
+    ]
+  }
+  if (!b.ready) {
+    return [
+      `Warning: key ${keyPrefix} can trade ${a.asset}-quoted swaps; it cannot trade ${b.asset}-quoted swaps until a ${b.asset} cap is set.`,
+    ]
+  }
+  return []
 }
 
 /** The launch warning: the target lacks `launch:write`, and a moved wallet carries `allowLaunch` (D7). */

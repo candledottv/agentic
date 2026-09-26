@@ -363,7 +363,7 @@ export async function vaultPromoteBatch(args: string[], ctx: CommandContext): Pr
         : withToKey(live, {
             keyPrefix: toKey.target.keyPrefix,
             label: toKey.target.label,
-            warnings: targetWarnings(toKey.target),
+            warnings: targetWarnings(toKey.target, chain === "evm" ? "evm" : "solana"),
             ...(toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}),
           })
     const rebindPhase: RebindPhase | undefined =

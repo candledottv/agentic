@@ -201,7 +201,7 @@ export async function promoteEvmFresh(input: EvmPromoteContext, fromLabel: strin
 
     await confirmLastSix(ctx, destination.address, "the sweep vault destination")
     if (toKey !== undefined) {
-      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target)].join("\n")}\n`)
+      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, "evm")].join("\n")}\n`)
     }
 
     if (secret === undefined) throw new Error("EVM TEE key was not derived")
@@ -299,7 +299,7 @@ export async function promoteEvmInPlace(
       : withToKey(live, {
           keyPrefix: toKey.target.keyPrefix,
           label: toKey.target.label,
-          warnings: targetWarnings(toKey.target),
+          warnings: targetWarnings(toKey.target, "evm"),
           ...(toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}),
         })
 

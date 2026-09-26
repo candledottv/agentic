@@ -36,6 +36,7 @@ import {
   capWarnings,
   commitRebind,
   DEVICE_TOKEN_REQUIRED,
+  hoodCapWarnings,
   listAccountKeys,
   missingSignerFailure,
   postRebind,
@@ -83,6 +84,8 @@ export interface ToKeyTarget {
   /** From the key row, the rule the route's `tradeReadiness` applies; the preview's value replaces it in `--json`. */
   tradeReady: { sol: boolean; usdc: boolean }
   missingCaps: string[]
+  /** The same rule for a Hood TEE wallet's quote assets. Absent on a target built before 4b. */
+  hoodTradeReady?: { eth: boolean; usdg: boolean }
 }
 
 export interface ToKeyFailure {
@@ -142,6 +145,7 @@ export function targetKeyRefusal(row: TargetKeyRow | undefined, keyPrefix: strin
 export function tradeReadinessOf(row: Pick<TargetKeyRow, "spendLimits" | "txLimit">): {
   tradeReady: { sol: boolean; usdc: boolean }
   missingCaps: string[]
+  hoodTradeReady: { eth: boolean; usdg: boolean }
 } {
   const hasTxLimit = row.txLimit !== null && row.txLimit !== undefined
   const limits = row.spendLimits ?? []
@@ -153,11 +157,21 @@ export function tradeReadinessOf(row: Pick<TargetKeyRow, "spendLimits" | "txLimi
   if (!hasTxLimit) missingCaps.push("txLimit")
   if (!sol) missingCaps.push("spendLimits.sol")
   if (!usdc) missingCaps.push("spendLimits.usdc")
-  return { tradeReady: { sol: hasTxLimit && sol, usdc: hasTxLimit && usdc }, missingCaps }
+  return {
+    tradeReady: { sol: hasTxLimit && sol, usdc: hasTxLimit && usdc },
+    missingCaps,
+    hoodTradeReady: { eth: hasTxLimit && cap("eth"), usdg: hasTxLimit && cap("usdg") },
+  }
 }
 
-/** The D7 cap lines for the target, printed under the controlled-by block. */
-export function targetWarnings(target: ToKeyTarget): string[] {
+/**
+ * The D7 cap lines for the target, printed under the controlled-by block. A Hood TEE wallet is
+ * quoted in ETH or USDG, so an EVM promote reads those caps rather than SOL and USDC.
+ */
+export function targetWarnings(target: ToKeyTarget, chain: "solana" | "evm" = "solana"): string[] {
+  if (chain === "evm" && target.hoodTradeReady !== undefined) {
+    return hoodCapWarnings(target.keyPrefix, { missingCaps: target.missingCaps, hoodTradeReady: target.hoodTradeReady })
+  }
   return capWarnings(target.keyPrefix, {
     keyPrefix: target.keyPrefix,
     label: target.label,

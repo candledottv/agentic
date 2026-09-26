@@ -50669,14 +50669,39 @@ function capWarnings(keyPrefix, toKey) {
       `Warning: key ${keyPrefix} has no txLimit; it cannot trade SOL-quoted or USDC-quoted swaps until one is set.`
     ];
   }
-  const lines = [];
-  if (!tradeReady.sol) {
-    lines.push(`Warning: key ${keyPrefix} can trade USDC-quoted swaps; it cannot trade SOL-quoted swaps until a SOL cap is set.`);
+  return pairedCapWarnings(keyPrefix, [
+    { ready: tradeReady.sol, asset: "SOL" },
+    { ready: tradeReady.usdc, asset: "USDC" }
+  ]);
+}
+function hoodCapWarnings(keyPrefix, target) {
+  if (target.missingCaps.includes("txLimit")) {
+    return [
+      `Warning: key ${keyPrefix} has no txLimit; it cannot trade ETH-quoted or USDG-quoted swaps until one is set.`
+    ];
   }
-  if (!tradeReady.usdc) {
-    lines.push(`Warning: key ${keyPrefix} can trade SOL-quoted swaps; it cannot trade USDC-quoted swaps until a USDC cap is set.`);
+  return pairedCapWarnings(keyPrefix, [
+    { ready: target.hoodTradeReady.eth, asset: "ETH" },
+    { ready: target.hoodTradeReady.usdg, asset: "USDG" }
+  ]);
+}
+function pairedCapWarnings(keyPrefix, [a, b]) {
+  if (!a.ready && !b.ready) {
+    return [
+      `Warning: key ${keyPrefix} has no ${a.asset} or ${b.asset} cap; it cannot trade ${a.asset}-quoted or ${b.asset}-quoted swaps until one is set.`
+    ];
   }
-  return lines;
+  if (!a.ready) {
+    return [
+      `Warning: key ${keyPrefix} can trade ${b.asset}-quoted swaps; it cannot trade ${a.asset}-quoted swaps until a ${a.asset} cap is set.`
+    ];
+  }
+  if (!b.ready) {
+    return [
+      `Warning: key ${keyPrefix} can trade ${a.asset}-quoted swaps; it cannot trade ${b.asset}-quoted swaps until a ${b.asset} cap is set.`
+    ];
+  }
+  return [];
 }
 function launchWarning(keyPrefix, toKey, rows) {
   if (toKey.launchScope)
@@ -51197,9 +51222,16 @@ function tradeReadinessOf(row) {
     missingCaps.push("spendLimits.sol");
   if (!usdc)
     missingCaps.push("spendLimits.usdc");
-  return { tradeReady: { sol: hasTxLimit && sol, usdc: hasTxLimit && usdc }, missingCaps };
+  return {
+    tradeReady: { sol: hasTxLimit && sol, usdc: hasTxLimit && usdc },
+    missingCaps,
+    hoodTradeReady: { eth: hasTxLimit && cap("eth"), usdg: hasTxLimit && cap("usdg") }
+  };
 }
-function targetWarnings(target) {
+function targetWarnings(target, chain2 = "solana") {
+  if (chain2 === "evm" && target.hoodTradeReady !== undefined) {
+    return hoodCapWarnings(target.keyPrefix, { missingCaps: target.missingCaps, hoodTradeReady: target.hoodTradeReady });
+  }
   return capWarnings(target.keyPrefix, {
     keyPrefix: target.keyPrefix,
     label: target.label,
@@ -63945,7 +63977,7 @@ async function promoteEvmFresh(input, fromLabel) {
     scanStart = await appendScanStart(ctx, vault.path, address, height);
     await confirmLastSix(ctx, destination.address, "the sweep vault destination");
     if (toKey !== undefined) {
-      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target)].join(`
+      ctx.deps.stderr.write(`${[toKeyPlanLine(toKey), ...targetWarnings(toKey.target, "evm")].join(`
 `)}
 `);
     }
@@ -64027,7 +64059,7 @@ async function promoteEvmInPlace(input, subjectLabel, sweepTo) {
   const controlledBy = toKey === undefined ? live : withToKey(live, {
     keyPrefix: toKey.target.keyPrefix,
     label: toKey.target.label,
-    warnings: targetWarnings(toKey.target),
+    warnings: targetWarnings(toKey.target, "evm"),
     ...toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}
   });
   const height = await promoteHeight(ctx, client);
@@ -65360,7 +65392,7 @@ async function vaultPromoteBatch(args, ctx) {
     const controlledBy = toKey === undefined ? live : withToKey(live, {
       keyPrefix: toKey.target.keyPrefix,
       label: toKey.target.label,
-      warnings: targetWarnings(toKey.target),
+      warnings: targetWarnings(toKey.target, chain2 === "evm" ? "evm" : "solana"),
       ...toKey.keySigner !== undefined ? { signer: toKey.keySigner.fingerprint } : {}
     });
     const rebindPhase = toKey === undefined ? undefined : { toKey, callingKeyPrefix: live.keyPrefix, importedTo: new Map };
