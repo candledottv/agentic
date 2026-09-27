@@ -240,7 +240,7 @@ credential storage, and headless use are documented on the
 
 ## Install as a skill package
 
-Every platform below installs the same nine skills (in `skills/`).
+Every platform below installs the same seventeen skills (in `skills/`).
 
 | Platform | Install | Details |
 | --- | --- | --- |
@@ -298,6 +298,39 @@ differently.
   observation into an experiment that can be rejected. Decision-time information only, fills that
   are actually executable, and net portfolio outcomes rather than win rates. A valid result is to
   reject every candidate and keep the capital.
+
+Eight more cover what goes wrong once a trading agent runs unattended: controls and limits that
+stop a book or its exits, positions that cannot be sold, taxed tokens, feeds that silently drop
+events, wallet signals that count the wrong buyers, language models that may reduce to a single
+threshold, and workers that restart into the wrong state. Each states general rules and the reason
+each rule holds, with a checklist, and refers to the skills above instead of repeating them.
+
+- [`skills/candle-kill-switches`](skills/candle-kill-switches/SKILL.md): file controls for
+  pause-buys, flatten-all and flatten-one-mint that never stop exits, plus clean stops and restarts.
+- [`skills/candle-book-limits`](skills/candle-book-limits/SKILL.md): size lifetime caps to the
+  experiment, never let a cap block an exit, count only open positions, check caps before blaming
+  the market.
+- [`skills/candle-drained-pool-writeoff`](skills/candle-drained-pool-writeoff/SKILL.md): detect a
+  post-entry liquidity drain from the pool vault, not the price, and write the position off honestly
+  with bounded retries.
+- [`skills/candle-transfer-fee-tokens`](skills/candle-transfer-fee-tokens/SKILL.md): the fee is
+  paid on both legs: judge the round trip from the reverse quote without double-counting, size from
+  the received balance, compare live to a taxed paper column.
+- [`skills/candle-market-data-ingestion`](skills/candle-market-data-ingestion/SKILL.md): durable
+  `since_id` cursors saved after processing, receipt times, stream plus reconciliation poll, every
+  transaction version the RPC supports, gaps recorded as gaps.
+- [`skills/candle-wallet-entry-detection`](skills/candle-wallet-entry-detection/SKILL.md): an entry
+  is a signed, paid purchase (often in stablecoins), a counted wallet must still hold, and exits
+  watch every tracked wallet.
+- [`skills/candle-llm-trade-judge`](skills/candle-llm-trade-judge/SKILL.md): check whether one
+  threshold reproduces the model and run a price-blind ablation; test it as a veto over a
+  deterministic entry, judged net of cost.
+- [`skills/candle-agent-operations`](skills/candle-agent-operations/SKILL.md): restart into the same
+  state, fixed deadlines and budgets, health from evidence, host sleep and priority, limit
+  provenance, handoff notes.
+
+These skills are advisory. They do not authorize trades, transfers, or limit changes; those remain
+your operator's decision.
 
 ## Packages
 

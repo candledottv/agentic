@@ -1,6 +1,6 @@
 {
   "name": "candle",
-  "description": "Candle launchpad skills: launch and seed tokens, trade with structural custody safety, read markets with no API key, and react to events via webhooks",
+  "description": "Candle launchpad skills: launch and seed tokens, trade with structural custody safety, read markets with no API key, react to events via webhooks, and keep an unattended trading worker safe to stop, restart and trust",
   "version": "0.1.0",
   "author": { "name": "Candle", "url": "https://candle.tv" },
   "homepage": "https://candle.tv",

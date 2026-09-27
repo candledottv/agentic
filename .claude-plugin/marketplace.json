@@ -1,13 +1,13 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "candle",
-  "description": "Candle launchpad skills for AI coding agents: launch and seed tokens on Solana or Hood, trade with structural custody safety, read markets with no API key, react to events via webhooks, and run an automated strategy without losing money to your own bookkeeping",
+  "description": "Candle launchpad skills for AI coding agents: launch and seed tokens on Solana or Hood, trade with structural custody safety, read markets with no API key, react to events via webhooks, run an automated strategy without losing money to your own bookkeeping, and keep an unattended trading worker safe to stop, restart and trust",
   "owner": { "name": "Candle" },
   "plugins": [
     {
       "name": "candle",
       "source": "./",
-      "description": "9 Candle skills: launch and seed tokens on Solana or Hood, trade (buy, sell, limit orders) with structural custody safety, read markets and curated feeds with no API key, authorize a device and manage agent keys, register webhooks for event delivery instead of polling, keep an automated strategy's position accounting honest against the wallet, and turn a trading observation into an experiment that can be rejected",
+      "description": "17 Candle skills: launch and seed tokens on Solana or Hood, trade (buy, sell, limit orders) with structural custody safety, read markets and curated feeds with no API key, authorize a device and manage agent keys, register webhooks for event delivery instead of polling, keep an automated strategy's position accounting honest against the wallet, turn a trading observation into an experiment that can be rejected, and keep an unattended trading worker safe to stop, restart and trust (kill switches, book limits, drained pools, transfer-fee tokens, feed ingestion, wallet entry signals, model judges, restarts)",
       "version": "0.1.0",
       "author": { "name": "Candle", "url": "https://candle.tv" },
       "homepage": "https://candle.tv",

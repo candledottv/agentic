@@ -70,13 +70,13 @@ platform.
 
 Codex scans `.agents/skills` from your current working directory up to the repository root, plus
 `~/.agents/skills` for skills available in every repository, and follows symlinks when it does.
-Symlink each of the five skill directories from your clone into one of those locations, for
+Symlink every skill directory from your clone into one of those locations, for
 example, user-wide:
 
 ```bash
 mkdir -p ~/.agents/skills
-for skill in candle-launch candle-trade candle-market candle-setup candle-webhooks; do
-  ln -s /absolute/path/to/agentic/skills/$skill ~/.agents/skills/$skill
+for dir in /absolute/path/to/agentic/skills/*/; do
+  ln -s "${dir%/}" ~/.agents/skills/"$(basename "$dir")"
 done
 ```
 

@@ -74,7 +74,7 @@ Grok Build's own `SKILL.md` format reads directly (Grok ignores frontmatter keys
 recognize, and neither `name` nor `description` needs converting to a Grok-specific `skill.json`).
 Grok Build is also documented as fully Claude Code compatible, reading Claude Code marketplaces,
 plugins, and skills automatically with no extra setup, so a `.claude-plugin/`-based install (see
-the Claude Code platform's own instructions) may surface these same nine skills with nothing
+the Claude Code platform's own instructions) may surface these same seventeen skills with nothing
 further to do. To point Grok Build at the clone directly instead, add its `skills/` directory to
 `~/.grok/config.toml`:
 
@@ -83,8 +83,8 @@ further to do. To point Grok Build at the clone directly instead, add its `skill
 paths = ["/absolute/path/to/agentic/skills"]
 ```
 
-Restart `grok` and candle-launch, candle-trade, candle-market, candle-setup, and candle-webhooks
-appear as slash commands (`/candle-launch`, and so on) alongside the built-in ones. Either way,
+Restart `grok` and every skill in `skills/` appears as a slash command (`/candle-launch`, and so
+on) alongside the built-in ones. Either way,
 every `SKILL.md` file is also plain markdown you can read and follow by hand.
 
 ## Try it with no account

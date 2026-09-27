@@ -83,19 +83,18 @@ are set, `CANDLE_AGENT_API_KEY` wins.
 OpenCode's `skill` tool loads any `SKILL.md` it finds under a fixed set of locations, including
 `~/.claude/skills/<name>/SKILL.md` and `~/.agents/skills/<name>/SKILL.md`, both cross-tool
 locations shared with Claude Code and other agent CLIs, exactly the layout `skills/` here already
-uses. Symlink each of the five skill directories from your clone into one of them, for example:
+uses. Symlink every skill directory from your clone into one of them, for example:
 
 ```bash
 mkdir -p ~/.agents/skills
-for skill in candle-launch candle-trade candle-market candle-setup candle-webhooks; do
-  ln -s /absolute/path/to/agentic/skills/$skill ~/.agents/skills/$skill
+for dir in /absolute/path/to/agentic/skills/*/; do
+  ln -s "${dir%/}" ~/.agents/skills/"$(basename "$dir")"
 done
 ```
 
-Restart OpenCode and candle-launch, candle-trade, candle-market, candle-setup, and
-candle-webhooks appear in the `skill` tool's listing alongside any other skills you have
-installed. Every `SKILL.md` file is also plain markdown you can read and follow by hand if you
-would rather not symlink anything.
+Restart OpenCode and every skill in `skills/` appears in the `skill` tool's listing alongside
+any other skills you have installed. Every `SKILL.md` file is also plain markdown you can read
+and follow by hand if you would rather not symlink anything.
 
 ## Try it with no account
 

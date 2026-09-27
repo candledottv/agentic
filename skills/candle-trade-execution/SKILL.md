@@ -47,9 +47,12 @@ with the very first live order, every one marked `executed / success: true`.
 ### What to do instead
 
 **Book from physical reality.** After a buy confirms, fetch the transaction and diff the owner's pre
-and post token balances for that mint:
+and post token balances for that mint. Read it with the highest transaction version your RPC and
+client library document. Treat an unsupported-version error as an error, never as a reason to book
+from the quote:
 
-    const tx = await rpc.getTransaction(signature, { maxSupportedTransactionVersion: 0 })
+    // MAX_TX_VERSION: the highest transaction version your RPC and client library document
+    const tx = await rpc.getTransaction(signature, { maxSupportedTransactionVersion: MAX_TX_VERSION })
     const pre  = tx.meta.preTokenBalances.find(b => b.owner === owner && b.mint === mint)
     const post = tx.meta.postTokenBalances.find(b => b.owner === owner && b.mint === mint)
     const delivered = BigInt(post?.uiTokenAmount.amount ?? '0') - BigInt(pre?.uiTokenAmount.amount ?? '0')
