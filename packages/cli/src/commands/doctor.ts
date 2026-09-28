@@ -9,6 +9,7 @@ import { SecretStoreLockedError } from "../keychain"
 import { apiKeyPrefix, credentialEnvOverrides, effectiveProfileFields, printIdentity } from "../profiles"
 import { compareVersions, detectInstall, fetchLatest, helperAssetName, releaseBaseUrl } from "../release"
 import { renderError, renderTable, writeUsageFailure } from "../render"
+import { describeTeeRequirement, parseTeeReadiness, TEE_CHAIN_ASSETS, teeMissing } from "../tee-readiness"
 import { HELPER_ENV, HELPER_NAME, locateFido2Helper } from "../vault/fido2"
 import { CONFIG_DIR_ENV, candleConfigDir, defaultVaultPath, fileExists } from "../vault/store"
 import { CLI_VERSION } from "../version"
@@ -49,6 +50,39 @@ export const DOCTOR_ROW_IDS = {
 } as const
 
 const API_KEY_CHECK = "API key valid"
+
+async function teeLimitsRow(ctx: CommandContext, apiKey: string, wallets: { chain?: string }[]): Promise<CheckRow> {
+  const result = await apiRequest("/api/v1/agent/keys/self/limits", {
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl: ctx.apiUrl,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env,
+  })
+  if (!result.ok)
+    return {
+      check: "TEE limits",
+      state: "SKIP",
+      detail: `could not read this key's limits: ${renderError(result, { apiUrl: ctx.apiUrl, authType: "key" })}`,
+    }
+  const readiness = parseTeeReadiness((result.body as { teeReadiness?: unknown } | undefined)?.teeReadiness)
+  if (!readiness) return { check: "TEE limits", state: "SKIP", detail: "this API does not report readiness yet" }
+  const chains = new Set(wallets.map((wallet) => (wallet.chain === "evm" ? "hood" : "solana")))
+  const assets = [...chains].flatMap((chain) => TEE_CHAIN_ASSETS[chain])
+  const missing = teeMissing(readiness, assets)
+  const ready = assets.filter((asset) => readiness.rawCaps[asset])
+  if (missing.length === 0)
+    return {
+      check: "TEE limits",
+      state: "PASS",
+      detail: `USD limit set; per-transaction caps set for ${ready.join(", ")}`,
+    }
+  return {
+    check: "TEE limits",
+    state: "WARN",
+    detail: `missing ${missing.map(describeTeeRequirement).join("; ")}. TEE trades are refused until the owner sets them in a session.`,
+  }
+}
 
 export async function doctor(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
@@ -239,7 +273,7 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
   type TradingPage = {
     scopes?: string[]
     paused?: boolean
-    page?: { id: string; active: boolean }[]
+    page?: { id: string; active: boolean; chain?: string }[]
     isDone?: boolean
     continueCursor?: string | null
   }
@@ -525,6 +559,11 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
           : `${reachable} of ${wallets.length} wallets on this key trade from this machine${embeddedUsable ? "; embedded wallet delegated" : ""}${!scopes?.includes("swap:write") ? "; missing swap:write" : ""}${reachable === 0 && !embeddedUsable ? "; no reachable payer" : ""}`,
     })
   }
+  // TEE limits (BE-500, R4.5): what a TEE wallet's gate needs before it looks at any amount, for
+  // the chains this key's wallets are on. WARN, never FAIL: the server refuses the trade anyway,
+  // and this row is where the owner learns every missing limit at once. SKIP on an API that does
+  // not report readiness, rather than guessing.
+  if (apiKey && wallets.length > 0) rows.push(await teeLimitsRow(ctx, apiKey, wallets))
   const identifiedRows = rows.map((row) => ({ ...row, id: DOCTOR_ROW_IDS[row.check as keyof typeof DOCTOR_ROW_IDS] }))
 
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0

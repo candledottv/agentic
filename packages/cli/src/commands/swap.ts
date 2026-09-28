@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { parseArgs } from "../args"
+import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import {
   createEvmRpc,
@@ -14,6 +15,7 @@ import {
 import { writeLocalFailure, writeUsageFailure } from "../render"
 import { describeRpcFailure, type SolanaClient } from "../solana-endpoint"
 import { isRateLimited, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
+import { describeTeeRequirement, isTeeAsset, parseTeeReadiness, teeMissing } from "../tee-readiness"
 import {
   BASES,
   baseAsset,
@@ -53,6 +55,39 @@ import {
   tradingSolanaClient,
   walletNameChain,
 } from "../trading"
+
+/**
+ * BE-500 (R4.6): a TEE payer's key limits, read before any RPC or write. When the server reports
+ * readiness and something the debited asset needs is missing, refuse here and name all of it, with
+ * the code the server would answer (a missing cap is SPEND_LIMIT_EXCEEDED, otherwise
+ * KEY_LIMIT_REACHED). When readiness is absent (an older API) or the read fails, say nothing and let
+ * the server decide: it refuses every uncapped TEE trade on its own.
+ */
+async function teeLimitsPreflight(ctx: CommandContext, key: string, asset: string | undefined): Promise<void> {
+  if (!isTeeAsset(asset)) return
+  const result = await apiRequest("/api/v1/agent/keys/self/limits", {
+    apiUrl: ctx.apiUrl,
+    credentials: { apiKey: key },
+    auth: "key",
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env,
+  })
+  if (!result.ok) return
+  const readiness = parseTeeReadiness((result.body as { teeReadiness?: unknown } | undefined)?.teeReadiness)
+  if (!readiness) return
+  const missing = teeMissing(readiness, [asset])
+  if (missing.length === 0) return
+  const items = missing.map(describeTeeRequirement)
+  const list = items.length === 1 ? items[0] : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`
+  throw new TradingError(
+    missing.some((item) => item.kind === "raw_cap") ? "SPEND_LIMIT_EXCEEDED" : "KEY_LIMIT_REACHED",
+    `This key cannot trade from a TEE wallet yet: it needs ${list}. Nothing was sent.`,
+    {
+      suggestion: `Have the key's owner set ${missing.length === 1 ? "it" : "them"} in a session.`,
+      details: { missingRequirements: missing },
+    },
+  )
+}
 
 /**
  * One failure envelope for every trading command. Exit 1, except the one uncertain outcome
@@ -291,6 +326,8 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
         "PAIR_UNSUPPORTED",
         "The embedded wallet cannot swap between base assets from this command yet: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a TEE wallet for a base pair.",
       )
+    // The debited asset: the base sent on a buy or a base pair, the base received on a sell.
+    if (payerWallet.kind === "tee") await teeLimitsPreflight(ctx, key, fromBase ?? toBase)
     const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address }
     const solana = lazySolanaClient(ctx, flags["--rpc-url"])
     const decimals = await decimalsFor(ctx, from, solana)
@@ -555,6 +592,7 @@ async function hoodSwap(
       "PAIR_UNSUPPORTED",
       "The embedded wallet cannot swap ETH and USDG from this command: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a Hood TEE wallet.",
     )
+  if (payer.kind === "tee") await teeLimitsPreflight(ctx, key, from.base ?? to.base)
   const payerAddress = payer.kind === "tee" ? payer.wallet.address : payer.address
   const rpc = lazyEvmRpc(ctx, flags["--rpc-url"])
   const decimals = await hoodDecimals(from, rpc)

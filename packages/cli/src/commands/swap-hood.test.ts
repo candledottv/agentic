@@ -107,6 +107,8 @@ interface FixtureOptions {
   appendEvmRecord?: (entry: EvmRecordTokenEntry) => Promise<EvmRecordAppendOutcome>
   fee?: string
   expiresAt?: number
+  /** BE-500: `teeReadiness` on GET /keys/self/limits. Absent by default, as an older API answers. */
+  readiness?: unknown
 }
 
 async function fixture(opts: FixtureOptions = {}) {
@@ -194,6 +196,12 @@ async function fixture(opts: FixtureOptions = {}) {
           solana: opts.embedded?.solana ? { address: opts.embedded.solana } : null,
           evm: opts.embedded?.evm ? { address: opts.embedded.evm } : null,
         },
+      })
+    if (path === "/api/v1/agent/keys/self/limits")
+      return ok({
+        success: true,
+        keyLimits: null,
+        ...(opts.readiness !== undefined ? { teeReadiness: opts.readiness } : {}),
       })
     if (path === "/api/v1/trade/agent/execute")
       return built
@@ -739,5 +747,27 @@ describe("Phase 4b helpers", () => {
     expect(reserve).toContain(`RESERVE_FEE_MULTIPLIER = ${RESERVE_FEE_MULTIPLIER}n`)
     expect(reserve).toContain(`RESERVE_EXTRA_ERC20_TRANSFERS = ${RESERVE_EXTRA_ERC20_TRANSFERS}`)
     expect(readFileSync(dexFile, "utf8")).toContain(`HOOD_WETH = "${HOOD_WETH_ADDRESS}"`)
+  })
+})
+
+// BE-500 (R4.6): the Hood TEE path refuses locally too, before any EVM read or build.
+describe("TEE limits preflight on Hood", () => {
+  const caps = { SOL: true, USDC: true, CNDL: true, ETH: true, USDG: true }
+  test("a buy with ETH needs the ETH cap and the USD limit, both named, with nothing read or built", async () => {
+    const f = await fixture({ readiness: { txLimit: false, rawCaps: { ...caps, ETH: false } } })
+    expect(await run(buyArgs(), f.deps)).toBe(1)
+    const out = lastJson(f.stdout.text)
+    expect(out.code).toBe("SPEND_LIMIT_EXCEEDED")
+    expect((out.details as Record<string, unknown>).missingRequirements).toEqual([
+      { kind: "raw_cap", asset: "ETH" },
+      { kind: "tx_limit" },
+    ])
+    expect(builds(f.calls)).toEqual([])
+    expect(f.calls.some((call) => call.url.startsWith(EVM_RPC))).toBe(false)
+  })
+  test("a ready key goes on to the build", async () => {
+    const f = await fixture({ readiness: { txLimit: true, rawCaps: caps } })
+    expect(await run(buyArgs(), f.deps)).toBe(0)
+    expect(builds(f.calls)).toHaveLength(1)
   })
 })

@@ -53,6 +53,10 @@ function fixture(
     device?: boolean
     signers?: boolean
     old?: boolean
+    /** BE-500: `teeReadiness` on GET /keys/self/limits; absent means an API that predates it. */
+    readiness?: unknown
+    /** BE-500: the chain of the key's one TEE wallet. */
+    chain?: string
   } = {},
 ) {
   const stdout = createCapture(),
@@ -70,7 +74,7 @@ function fixture(
             : {
                 scopes: opts.scopes ?? ["swap:write"],
                 paused: opts.paused,
-                page: [{ ...wallet, active: opts.reachable !== false }],
+                page: [{ ...wallet, chain: opts.chain ?? wallet.chain, active: opts.reachable !== false }],
                 isDone: true,
               },
       ),
@@ -78,6 +82,8 @@ function fixture(
     "/api/v1/agent/wallets/embedded": () =>
       jsonResponse(200, { wallets: { solana: { delegated: opts.embedded ?? false }, evm: null } }),
     "/api/v1/agent/keys/self/signer": () => jsonResponse(200, view),
+    "/api/v1/agent/keys/self/limits": () =>
+      jsonResponse(200, { keyLimits: null, ...(opts.readiness !== undefined ? { teeReadiness: opts.readiness } : {}) }),
     "/releases/latest/download/latest.json": () =>
       jsonResponse(200, {
         version: "0.11.10",
@@ -309,4 +315,49 @@ test.each(["profile", "legacy", "unrecognized"])("R1.4 credential provenance: %s
   })
   expect(f.stdout.text).not.toContain(value)
   if (source === "unrecognized") expect(row(f, "api_key_provenance")?.detail).toContain("unrecognized format")
+})
+
+// BE-500 (R4.5): the TEE limits row. WARN or SKIP never moves the exit code.
+describe("TEE limits row", () => {
+  const caps = { SOL: true, USDC: true, CNDL: true, ETH: true, USDG: true }
+  test("PASS names the assets that are ready on the chains this key's wallets are on", async () => {
+    const f = fixture({ readiness: { txLimit: true, rawCaps: { ...caps, ETH: false } } })
+    expect(await run(["doctor", "--json"], f.deps)).toBe(0)
+    expect(row(f, "tee_limits")).toMatchObject({
+      state: "PASS",
+      detail: "USD limit set; per-transaction caps set for SOL, USDC, CNDL",
+    })
+  })
+  test("WARN lists every missing item for those chains, and T-A1-7 still exits 0", async () => {
+    const f = fixture({ readiness: { txLimit: false, rawCaps: { ...caps, USDC: false, CNDL: false, USDG: false } } })
+    expect(await run(["doctor", "--json"], f.deps)).toBe(0)
+    const tee = row(f, "tee_limits")
+    expect(tee?.state).toBe("WARN")
+    expect(tee?.detail).toBe(
+      "missing a maximum per transaction for USDC; a maximum per transaction for CNDL; a finite USD transaction limit. TEE trades are refused until the owner sets them in a session.",
+    )
+    // USDG is a Hood asset, and this key's only wallet is on Solana.
+    expect(tee?.detail).not.toContain("USDG")
+  })
+  test("a Hood wallet is judged on ETH and USDG", async () => {
+    const f = fixture({ chain: "evm", readiness: { txLimit: true, rawCaps: { ...caps, USDG: false } } })
+    await run(["doctor", "--json"], f.deps)
+    expect(row(f, "tee_limits")).toMatchObject({ state: "WARN" })
+    expect(row(f, "tee_limits")?.detail).toStartWith("missing a maximum per transaction for USDG.")
+  })
+  test("SKIP when the API does not report readiness, instead of guessing", async () => {
+    const f = fixture()
+    expect(await run(["doctor", "--json"], f.deps)).toBe(0)
+    expect(row(f, "tee_limits")).toMatchObject({ state: "SKIP", detail: "this API does not report readiness yet" })
+  })
+  test("no row when the key has no TEE wallets", async () => {
+    const f = fixture({ old: true, readiness: { txLimit: false, rawCaps: caps } })
+    await run(["doctor", "--json"], f.deps)
+    expect(row(f, "tee_limits")).toBeUndefined()
+  })
+  test("the human table shows the row under its label", async () => {
+    const f = fixture({ readiness: { txLimit: false, rawCaps: caps } })
+    await run(["doctor"], f.deps)
+    expect(f.stdout.text).toMatch(/TEE limits\s+WARN\s+missing a finite USD transaction limit/)
+  })
 })
