@@ -8,6 +8,7 @@ import { createHash, createPublicKey, generateKeyPairSync, verify } from "node:c
 import {
   confirmSignerPin,
   fingerprintMatches,
+  fingerprintMismatchMessage,
   keySignerFingerprint,
   keySignerRef,
   localSignerFor,
@@ -34,10 +35,10 @@ function deps(answers: string[] = []) {
   const d = createTestDeps({
     fetch: createRoutedFetch({}).fetch,
     stderr,
-    promptSecret: async (text) => {
+    promptLine: async (text) => {
       prompts.push(text)
       const next = answers.shift()
-      if (next === undefined) throw new Error("promptSecret asked for more answers than the test scripted")
+      if (next === undefined) throw new Error("promptLine asked for more answers than the test scripted")
       return next
     },
   })
@@ -82,7 +83,7 @@ describe("the pin (D3, T5)", () => {
   const signerA = { spkiSha256: "a".repeat(64), fingerprint: keySignerFingerprint("a".repeat(64)) }
   const signerB = { spkiSha256: "b".repeat(64), fingerprint: keySignerFingerprint("b".repeat(64)) }
 
-  test("the first pin needs the full group string, asked without echo, and stores the full sha256", async () => {
+  test("the first pin needs the full group string, asked with echo, and stores the full sha256", async () => {
     const { deps: d, prompts } = deps([signerA.fingerprint])
     const result = await confirmSignerPin({ deps: d }, "Tr2KeyAb", signerA)
     expect(result).toEqual({ ok: true, pinned: "first" })
@@ -119,6 +120,11 @@ describe("the pin (D3, T5)", () => {
     const lookalike = { spkiSha256: `${"a".repeat(15)}${"c".repeat(49)}`, fingerprint: signerA.fingerprint }
     const { deps: d, prompts } = deps([signerA.fingerprint, signerA.fingerprint])
     await confirmSignerPin({ deps: d }, "Tr2KeyAb", signerA)
+    d.isTTY.stdin = false
+    const refused = await confirmSignerPin({ deps: d }, "Tr2KeyAb", lookalike)
+    expect(refused.ok === false && refused.failure.code).toBe("KEY_SIGNER_CHANGED")
+    expect((await readPin(d, "Tr2KeyAb"))?.spkiSha256).toBe(signerA.spkiSha256)
+    d.isTTY.stdin = true
     expect(await confirmSignerPin({ deps: d }, "Tr2KeyAb", lookalike)).toEqual({ ok: true, pinned: "changed" })
     expect(prompts).toHaveLength(2)
   })
@@ -165,4 +171,11 @@ describe("a slot's health (doctor, T12)", () => {
     expect(signerSlotProblem(pemToStoredSigner(p.pem), "0".repeat(64))).toContain("does not match")
     expect(signerSlotProblem("not-a-key")).toContain("cannot be parsed")
   })
+})
+
+test("R3.3 mismatch text names the normalized group without claiming a key mismatch", () => {
+  expect(fingerprintMismatchMessage("cndl 7k2q 94xn altd", "CNDL-7K2Q-94XM-A1TD")).toBe(
+    "You typed CNDL-7K2Q-94XN-A1TD. Group 2 of 3 does not match.",
+  )
+  expect(fingerprintMismatchMessage("7K2Q", "CNDL-7K2Q-94XM-A1TD")).toContain("all 12 characters")
 })

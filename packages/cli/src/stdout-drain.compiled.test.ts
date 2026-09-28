@@ -32,11 +32,24 @@ const PIPE_BUFFER = 65_536
 let api: { url: string; stop(): void }
 
 beforeAll(async () => {
-  const proc = Bun.spawn(["bun", "build", "--compile", "--minify", "src/index.ts", "--outfile", bin], {
-    cwd: dir,
-    stdout: "pipe",
-    stderr: "pipe",
-  })
+  const proc = Bun.spawn(
+    [
+      "bun",
+      "build",
+      "--compile",
+      "--no-compile-autoload-dotenv",
+      "--no-compile-autoload-bunfig",
+      "--minify",
+      "src/index.ts",
+      "--outfile",
+      bin,
+    ],
+    {
+      cwd: dir,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  )
   const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()])
   if (code !== 0) throw new Error(`bun build --compile failed (${code}):\n${err}`)
   api = fakeWalletsApi(ROWS)

@@ -129,6 +129,7 @@ describe("setup", () => {
           wallets: { solana: { address: SOL, delegated: true }, evm: { address: EVM, delegated: true } },
         }),
       "/api/v1/agent/keys": () => jsonResponse(200, { success: true, tier: "free", keys: [] }),
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
       "/api/v1/status": () => jsonResponse(200, { ok: true }),
     })
@@ -185,6 +186,7 @@ describe("setup", () => {
           wallets: { solana: { address: SOL, delegated: true }, evm: { address: EVM, delegated: true } },
         }),
       "/api/v1/agent/keys": () => jsonResponse(200, { success: true, tier: "free", keys: [] }),
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
       "/api/v1/status": () => jsonResponse(200, { ok: true }),
     })

@@ -132,6 +132,25 @@ function binaryResolvable(bin: string): boolean {
  * path, but tests exercise the real `PATH`-resolution code path by prepending a stub directory to
  * `PATH` instead of using it.
  */
+export class SecretStoreLockedError extends Error {
+  constructor() {
+    super(
+      "The macOS login Keychain is locked in this session. Run: security unlock-keychain ~/Library/Keychains/login.keychain-db",
+    )
+    this.name = "SecretStoreLockedError"
+  }
+}
+
+export class SecretStoreReadError extends Error {
+  constructor(status: number, stderr: string, ref: string) {
+    const firstLine = stderr.split(/\r?\n/, 1)[0] ?? ""
+    // security diagnostics may include the requested account. Never include that ref.
+    const safeLine = firstLine.split(ref).join("[redacted]")
+    super(`Cannot read the macOS Keychain (security exited ${status})${safeLine ? `: ${safeLine}` : ""}`)
+    this.name = "SecretStoreReadError"
+  }
+}
+
 export class KeychainSecretStore implements SecretStore {
   constructor(
     private readonly binary: string = "security",
@@ -140,7 +159,9 @@ export class KeychainSecretStore implements SecretStore {
 
   async get(ref: string): Promise<string | null> {
     const result = await run(this.binary, ["find-generic-password", "-s", this.service, "-a", ref, "-w"])
-    if (result.status !== 0) return null
+    if (result.status === 44) return null
+    if (result.status === 128 || /interaction is not allowed/i.test(result.stderr)) throw new SecretStoreLockedError()
+    if (result.status !== 0) throw new SecretStoreReadError(result.status, result.stderr, ref)
     return result.stdout.replace(/\n$/, "")
   }
 

@@ -5,8 +5,8 @@
  * the nonzero-on-any-FAIL exit code are exercised deterministically.
  */
 
-import { describe, expect, test } from "bun:test"
-import { chmod, mkdtemp, writeFile } from "node:fs/promises"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { run } from "../index"
@@ -27,6 +27,7 @@ import { CLI_VERSION } from "../version"
 const HEALTHY_ROUTES: Record<string, RouteHandler | RouteHandler[]> = {
   "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
   "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [], tier: "free" }),
+  "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
   "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
   "/api/v1/agent/wallets/embedded": () =>
     jsonResponse(200, { success: true, wallets: { solana: { address: "abc", delegated: true }, evm: null } }),
@@ -46,6 +47,7 @@ describe("doctor", () => {
           success: false,
           error: { code: "DEVICE_TOKEN_INVALID", message: "Invalid or revoked device token" },
         }),
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
       "/api/v1/agent/wallets/embedded": () =>
         jsonResponse(200, {
@@ -78,6 +80,7 @@ describe("doctor", () => {
       "Your Max plan expired on 2026-08-30. Renew to restore 0% trade fees and up to 1,000 linked wallets: https://alpha.candle.tv/agents/pricing"
     const { fetch } = createRoutedFetch({
       ...HEALTHY_ROUTES,
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () =>
         jsonResponse(200, {
           success: true,
@@ -100,6 +103,7 @@ describe("doctor", () => {
   test("an active plan renders PASS with the tier and its fee", async () => {
     const { fetch } = createRoutedFetch({
       ...HEALTHY_ROUTES,
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "max", feeBps: 0, maxExpired: false }),
     })
     const stdout = createCapture()
@@ -112,6 +116,7 @@ describe("doctor", () => {
     const { fetch } = createRoutedFetch({
       "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
       "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [], tier: "free" }),
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
       "/api/v1/agent/wallets/embedded": () =>
         jsonResponse(200, { success: true, wallets: { solana: { address: "abc", delegated: true }, evm: null } }),
@@ -167,6 +172,7 @@ describe("doctor", () => {
     const { fetch } = createRoutedFetch({
       "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
       "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [], tier: "free" }),
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () =>
         jsonResponse(403, {
           success: false,
@@ -181,7 +187,7 @@ describe("doctor", () => {
     const code = await run(["doctor"], createTestDeps({ fetch, store, stdout }))
 
     expect(code).toBe(1)
-    const row = stdout.text.split("\n").find((line) => line.startsWith("API key valid (launch:write)"))
+    const row = stdout.text.split("\n").find((line) => line.startsWith("API key valid"))
     expect(row).toBeDefined()
     expect(row).toContain("FAIL")
     expect(row).toContain("candle keys create --scopes")
@@ -214,6 +220,7 @@ describe("doctor", () => {
     const { fetch } = createRoutedFetch({
       "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
       "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
       "/api/v1/agent/wallets/embedded": () =>
         jsonResponse(200, {
@@ -236,6 +243,7 @@ describe("profiles", () => {
     const { fetch } = createRoutedFetch({
       "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
       "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
       "/api/v1/agent/wallets/embedded": () =>
         jsonResponse(200, { success: true, wallets: { solana: { address: "abc", delegated: true }, evm: null } }),
@@ -250,14 +258,15 @@ describe("profiles", () => {
     expect(stdout.text.startsWith("Profile: staging   Account: A at ")).toBe(true)
     // The agent-key row's scopes come from the same profile, not from the legacy top-level
     // `scopes` (absent on every login-created profile, which left the row bare).
-    const keyRow = stdout.text.split("\n").find((line) => line.startsWith("API key valid (launch:write)"))
-    expect(keyRow).toContain("scopes: launch:write")
+    const keyRow = stdout.text.split("\n").find((line) => line.startsWith("API key valid"))
+    expect(keyRow).toContain("scopes (cached): launch:write")
   })
 
   test("the agent-key row prints the profile's scopes sorted, not in stored order", async () => {
     const { fetch } = createRoutedFetch({
       "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
       "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
       "/api/v1/agent/wallets/embedded": () =>
         jsonResponse(200, { success: true, wallets: { solana: { address: "abc", delegated: true }, evm: null } }),
@@ -269,7 +278,7 @@ describe("profiles", () => {
     })
     const stdout = createCapture()
     await run(["doctor"], createTestDeps({ fetch, store, stdout, ...config }))
-    expect(stdout.text).toContain("scopes: account:read, launch:write, swap:write")
+    expect(stdout.text).toContain("scopes (cached): account:read, launch:write, swap:write")
   })
 
   // Fix wave item 1: doctor is where a mismatch is meant to be SEEN, so the row that reports the
@@ -279,6 +288,7 @@ describe("profiles", () => {
     const { fetch } = createRoutedFetch({
       "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
       "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
       "/api/v1/agent/wallets/embedded": () =>
         jsonResponse(200, {
@@ -303,6 +313,7 @@ describe("profiles", () => {
     const routes = {
       "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
       "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
       "/api/v1/agent/wallets/embedded": () =>
         jsonResponse(200, {
@@ -350,6 +361,7 @@ describe("profiles", () => {
     const { fetch } = createRoutedFetch({
       "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
       "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [] }),
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
       "/api/v1/agent/wallets/embedded": () =>
         jsonResponse(200, {
@@ -450,7 +462,14 @@ describe("BE-275 D9: the security key helper row", () => {
     ...HEALTHY_ROUTES,
     "/releases/latest/download/latest.json": () => jsonResponse(200, manifest),
   })
-  const env = { CANDLE_RELEASE_BASE_URL: "https://example.test" }
+  const env = { CANDLE_RELEASE_BASE_URL: "https://example.test", CANDLE_CONFIG_DIR: "" }
+  beforeEach(async () => {
+    env.CANDLE_CONFIG_DIR = await mkdtemp(join(tmpdir(), "doctor-vault-"))
+    await writeFile(join(env.CANDLE_CONFIG_DIR, "vault.enc"), "fixture: existence only")
+  })
+  afterEach(async () => {
+    await rm(env.CANDLE_CONFIG_DIR, { recursive: true, force: true })
+  })
 
   test("PASS names the path and where it came from, and the row sits directly after Install", async () => {
     const dir = await mkdtemp(join(tmpdir(), "candle-doctor-helper-"))

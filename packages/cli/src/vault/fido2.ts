@@ -357,7 +357,10 @@ export function assertDeviceServesFactor(device: DeviceReport): void {
     throw new VaultError(
       "VAULT_UV_UNSUPPORTED",
       `${device.product || "This security key"} has no PIN set and no built-in user verification, and this factor uses the user-verified secret only.`,
-      { suggestion: "Set a PIN on this key (its vendor's tool does that) and retry. Nothing was written." },
+      {
+        suggestion:
+          "Set a PIN on this key interactively: YubiKey: ykman fido access change-pin; other keys: chrome://settings/securityKeys (Create a PIN), or on Linux: fido2-token -S <device>. Never pass the PIN as a command-line argument. Retry after setting it. Nothing was written.",
+      },
     )
   }
 }

@@ -5485,17 +5485,17 @@ function codesignArguments(appPath, identity) {
   return ["--verify", "--strict", "--deep", "-R", codesignRequirement(identity), appPath];
 }
 async function verifyHelperSignature(deps, appPath, identity) {
-  const run = await deps.spawnHelper(CODESIGN_PATH, "", {
+  const run2 = await deps.spawnHelper(CODESIGN_PATH, "", {
     timeoutMs: CODESIGN_TIMEOUT_MS,
     args: codesignArguments(appPath, identity)
   });
-  if (run.spawnError !== undefined) {
-    throw new VaultError("VAULT_HELPER_UNTRUSTED", `Could not run ${CODESIGN_PATH} to verify the Secure Enclave helper at ${appPath}: ${run.spawnError}.`, { suggestion: "The helper is not used until its signature has been verified. No other factor is substituted." });
+  if (run2.spawnError !== undefined) {
+    throw new VaultError("VAULT_HELPER_UNTRUSTED", `Could not run ${CODESIGN_PATH} to verify the Secure Enclave helper at ${appPath}: ${run2.spawnError}.`, { suggestion: "The helper is not used until its signature has been verified. No other factor is substituted." });
   }
-  if (run.exitCode !== 0) {
-    const detail = run.stderr.trim().split(`
+  if (run2.exitCode !== 0) {
+    const detail = run2.stderr.trim().split(`
 `).slice(-1)[0]?.slice(0, 200);
-    throw new VaultError("VAULT_HELPER_UNTRUSTED", `The Secure Enclave helper at ${appPath} failed the code signature check for team ${identity.teamId} and bundle id ${identity.bundleId} (codesign exit ${run.exitCode ?? run.signal ?? "unknown"}${detail ? `: ${detail}` : ""}).`, {
+    throw new VaultError("VAULT_HELPER_UNTRUSTED", `The Secure Enclave helper at ${appPath} failed the code signature check for team ${identity.teamId} and bundle id ${identity.bundleId} (codesign exit ${run2.exitCode ?? run2.signal ?? "unknown"}${detail ? `: ${detail}` : ""}).`, {
       suggestion: "An unsigned development build, a helper signed by another team, or a stale helper whose designated requirement no longer matches all fail here. Reinstall the CLI from a release. No other factor is substituted."
     });
   }
@@ -5602,11 +5602,11 @@ function translateEnclaveFailure(code, message) {
   });
 }
 async function callEnclaveHelper(deps, helperPath, request) {
-  const run = await deps.spawnHelper(helperPath, JSON.stringify(request), { timeoutMs: ENCLAVE_HELPER_TIMEOUT_MS });
-  if (run.spawnError !== undefined) {
-    throw new VaultError("VAULT_HELPER_MISSING", `Could not run the Secure Enclave helper at ${helperPath}: ${run.spawnError}.`, { suggestion: ENCLAVE_INSTALL_SUGGESTION });
+  const run2 = await deps.spawnHelper(helperPath, JSON.stringify(request), { timeoutMs: ENCLAVE_HELPER_TIMEOUT_MS });
+  if (run2.spawnError !== undefined) {
+    throw new VaultError("VAULT_HELPER_MISSING", `Could not run the Secure Enclave helper at ${helperPath}: ${run2.spawnError}.`, { suggestion: ENCLAVE_INSTALL_SUGGESTION });
   }
-  const line = run.stdout.split(`
+  const line = run2.stdout.split(`
 `).find((candidate) => candidate.trim() !== "");
   let response;
   if (line !== undefined) {
@@ -5617,19 +5617,19 @@ async function callEnclaveHelper(deps, helperPath, request) {
     }
   }
   if (response === undefined) {
-    if (run.signal !== null) {
-      throw new VaultError("VAULT_AUTHENTICATOR_CANCELLED", `The Secure Enclave operation was cancelled (helper terminated by ${run.signal}) and nothing was derived.`, { suggestion: "Run the command again and confirm with Touch ID when the prompt appears." });
+    if (run2.signal !== null) {
+      throw new VaultError("VAULT_AUTHENTICATOR_CANCELLED", `The Secure Enclave operation was cancelled (helper terminated by ${run2.signal}) and nothing was derived.`, { suggestion: "Run the command again and confirm with Touch ID when the prompt appears." });
     }
-    const diagnostic = run.stderr.trim().split(`
+    const diagnostic = run2.stderr.trim().split(`
 `)[0]?.slice(0, 200);
-    throw new VaultError("VAULT_UNLOCK_FAILED", `The Secure Enclave helper at ${helperPath} exited (${run.exitCode ?? "no code"}) without a response${diagnostic ? `: ${diagnostic}` : ""}.`, { suggestion: "Nothing was derived and no other factor was tried." });
+    throw new VaultError("VAULT_UNLOCK_FAILED", `The Secure Enclave helper at ${helperPath} exited (${run2.exitCode ?? "no code"}) without a response${diagnostic ? `: ${diagnostic}` : ""}.`, { suggestion: "Nothing was derived and no other factor was tried." });
   }
   if (typeof response !== "object" || response === null || response.protocol !== ENCLAVE_PROTOCOL) {
     throw new VaultError("VAULT_HELPER_MISSING", `The Secure Enclave helper at ${helperPath} speaks protocol ${String(response?.protocol)}; this CLI needs protocol ${ENCLAVE_PROTOCOL}.`, { suggestion: "Reinstall the CLI so candle and candle-enclave.app come from the same release." });
   }
   if (!response.ok)
     throw translateEnclaveFailure(String(response.code), String(response.message));
-  if (run.exitCode !== 0) {
+  if (run2.exitCode !== 0) {
     throw new VaultError("VAULT_HELPER_MISSING", "The signed macOS helper did not complete successfully.");
   }
   return response;
@@ -6063,13 +6063,13 @@ function translateHelperFailure(code, message, platform) {
   });
 }
 async function callHelper(deps, helperPath, request) {
-  const run = await deps.spawnHelper(helperPath, JSON.stringify(request), { timeoutMs: HELPER_TIMEOUT_MS });
-  if (run.spawnError !== undefined) {
-    throw new VaultError("VAULT_HELPER_MISSING", `Could not run the security key helper at ${helperPath}: ${run.spawnError}.`, {
+  const run2 = await deps.spawnHelper(helperPath, JSON.stringify(request), { timeoutMs: HELPER_TIMEOUT_MS });
+  if (run2.spawnError !== undefined) {
+    throw new VaultError("VAULT_HELPER_MISSING", `Could not run the security key helper at ${helperPath}: ${run2.spawnError}.`, {
       suggestion: HELPER_INSTALL_SUGGESTION
     });
   }
-  const line = run.stdout.split(`
+  const line = run2.stdout.split(`
 `).find((candidate) => candidate.trim() !== "");
   let response;
   if (line !== undefined) {
@@ -6080,12 +6080,12 @@ async function callHelper(deps, helperPath, request) {
     }
   }
   if (response === undefined) {
-    if (run.signal !== null) {
-      throw new VaultError("VAULT_AUTHENTICATOR_CANCELLED", `The security key operation was cancelled (helper terminated by ${run.signal}) and nothing was derived.`, { suggestion: "Run the command again and touch the key when it blinks." });
+    if (run2.signal !== null) {
+      throw new VaultError("VAULT_AUTHENTICATOR_CANCELLED", `The security key operation was cancelled (helper terminated by ${run2.signal}) and nothing was derived.`, { suggestion: "Run the command again and touch the key when it blinks." });
     }
-    const diagnostic = run.stderr.trim().split(`
+    const diagnostic = run2.stderr.trim().split(`
 `)[0]?.slice(0, 200);
-    throw new VaultError("VAULT_UNLOCK_FAILED", `The security key helper at ${helperPath} exited (${run.exitCode ?? "no code"}) without a response${diagnostic ? `: ${diagnostic}` : ""}.`, { suggestion: "Nothing was derived and no other factor was tried." });
+    throw new VaultError("VAULT_UNLOCK_FAILED", `The security key helper at ${helperPath} exited (${run2.exitCode ?? "no code"}) without a response${diagnostic ? `: ${diagnostic}` : ""}.`, { suggestion: "Nothing was derived and no other factor was tried." });
   }
   if (typeof response !== "object" || response === null || response.protocol !== HELPER_PROTOCOL) {
     throw new VaultError("VAULT_HELPER_MISSING", `The security key helper at ${helperPath} speaks protocol ${String(response?.protocol)}; this CLI needs protocol ${HELPER_PROTOCOL}.`, { suggestion: "Reinstall the CLI so candle and candle-fido2 come from the same release." });
@@ -6124,7 +6124,9 @@ function assertDeviceServesFactor(device) {
     throw new VaultError("VAULT_PRF_UNSUPPORTED", `${device.product || "This security key"} does not support the hmac-secret extension, which this factor needs.`, { suggestion: "Use a key that supports hmac-secret (FIDO2 with PRF). No other derivation is substituted." });
   }
   if (device.options.clientPin !== true && device.options.uv !== true) {
-    throw new VaultError("VAULT_UV_UNSUPPORTED", `${device.product || "This security key"} has no PIN set and no built-in user verification, and this factor uses the user-verified secret only.`, { suggestion: "Set a PIN on this key (its vendor's tool does that) and retry. Nothing was written." });
+    throw new VaultError("VAULT_UV_UNSUPPORTED", `${device.product || "This security key"} has no PIN set and no built-in user verification, and this factor uses the user-verified secret only.`, {
+      suggestion: "Set a PIN on this key interactively: YubiKey: ykman fido access change-pin; other keys: chrome://settings/securityKeys (Create a PIN), or on Linux: fido2-token -S <device>. Never pass the PIN as a command-line argument. Retry after setting it. Nothing was written."
+    });
   }
 }
 async function listSecurityKeys(deps, opts) {
@@ -8885,14 +8887,37 @@ function keySignerFingerprint(spkiSha256) {
   const s = chars.join("");
   return `CNDL-${s.slice(0, 4)}-${s.slice(4, 8)}-${s.slice(8, 12)}`;
 }
-function fingerprintMatches(typed, fingerprint) {
+function normalizeFingerprint(typed) {
   if (typeof typed !== "string")
-    return false;
-  const expected = fingerprint.replace(/^CNDL-/, "").replace(/-/g, "");
-  let normalized = typed.toUpperCase().replace(/[^0-9A-Z]/g, "");
-  if (normalized.length === expected.length + 4 && normalized.startsWith("CNDL"))
-    normalized = normalized.slice(4);
-  return normalized.length === expected.length && normalized === expected;
+    return "";
+  let body = typed.toUpperCase().replace(/[^0-9A-Z]/g, "");
+  if (body.length === 16 && body.startsWith("CNDL"))
+    body = body.slice(4);
+  return body.length === 12 ? body.replace(/O/g, "0").replace(/[IL]/g, "1") : body;
+}
+function fingerprintMismatch(typed, fingerprint) {
+  const body = normalizeFingerprint(typed);
+  if (body.length !== 12)
+    return { ok: false, reason: "length", typedChars: body.length };
+  const expected = normalizeFingerprint(fingerprint);
+  const groups = [1, 2, 3].filter((group) => {
+    const part = body.slice((group - 1) * 4, group * 4);
+    return !/^[0-9A-HJKMNP-TV-Z]{4}$/.test(part) || part !== expected.slice((group - 1) * 4, group * 4);
+  });
+  return groups.length === 0 ? { ok: true } : { ok: false, reason: "groups", groups };
+}
+function fingerprintMatches(typed, fingerprint) {
+  return fingerprintMismatch(typed, fingerprint).ok;
+}
+function fingerprintMismatchMessage(typed, fingerprint) {
+  const mismatch = fingerprintMismatch(typed, fingerprint);
+  const body = normalizeFingerprint(typed);
+  const grouped = body.match(/.{1,4}/g)?.join("-") ?? "";
+  if (mismatch.ok)
+    return "Fingerprint matches.";
+  if (mismatch.reason === "length")
+    return `You typed ${body.length} characters; all 12 characters in three groups are required.`;
+  return `You typed CNDL-${grouped}. ${mismatch.groups.length === 1 ? "Group" : "Groups"} ${mismatch.groups.join(", ")} of 3 ${mismatch.groups.length === 1 ? "does" : "do"} not match.`;
 }
 function spkiSha256Of(publicKeyDerBase64) {
   return createHash("sha256").update(Buffer.from(publicKeyDerBase64, "base64")).digest("hex");
@@ -9040,13 +9065,13 @@ async function confirmSignerPin(ctx, keyPrefix, active, opts = {}) {
 ` + `Read the full fingerprint on the trading machine (candle tee signer new printed it).
 `);
   }
-  const typed = await deps.promptSecret(`Type the full fingerprint of key ${keyPrefix}'s signer, all three groups: `);
+  const typed = await deps.promptLine(`Type the full fingerprint of key ${keyPrefix}'s signer, all three groups: `);
   if (!fingerprintMatches(typed, active.fingerprint)) {
     return {
       ok: false,
       failure: {
         code: pin ? "KEY_SIGNER_CHANGED" : "KEY_SIGNER_FINGERPRINT_MISMATCH",
-        message: `That is not the full fingerprint of key ${keyPrefix}'s signer. ${nothing}`,
+        message: `${fingerprintMismatchMessage(typed, active.fingerprint)} ${nothing}`,
         suggestion: "Type all three groups exactly as the trading machine printed them, for example CNDL-7K2Q-94XM-A1TD."
       }
     };
@@ -10026,7 +10051,7 @@ async function readSignerRoles(rpc, addresses, opts) {
       set.delete(controller);
     }
   };
-  const run = async (task, countPage) => {
+  const run2 = async (task, countPage) => {
     let current = task;
     let attempt = 0;
     const cursors = new Set;
@@ -10126,7 +10151,7 @@ async function readSignerRoles(rpc, addresses, opts) {
           progress();
         };
         active += 1;
-        run(task, countPage).finally(() => {
+        run2(task, countPage).finally(() => {
           active -= 1;
           if (counted.n === 0) {
             settled += 1;
@@ -10185,7 +10210,7 @@ function notReadRuns(notChecked) {
   return runs;
 }
 function notReadClause(notChecked) {
-  return notReadRuns(notChecked).map((run) => `${run.groups.join(", ")} (${run.reason})`).join(", ");
+  return notReadRuns(notChecked).map((run2) => `${run2.groups.join(", ")} (${run2.reason})`).join(", ");
 }
 function readSummaryLine(host, result) {
   const read = result.checked.length === 0 ? "none" : result.checked.map(groupLabel).join(", ");
@@ -10210,8 +10235,8 @@ function authoritiesBlock(host, result) {
   } else if (result.notChecked.length === 0) {
     lines.push("  none: not a token mint, freeze, program upgrade or stake authority");
   }
-  for (const run of notReadRuns(result.notChecked)) {
-    lines.push(`  ${run.groups.join(", ")}: not read (RPC getProgramAccounts failed: ${run.reason})`);
+  for (const run2 of notReadRuns(result.notChecked)) {
+    lines.push(`  ${run2.groups.join(", ")}: not read (RPC getProgramAccounts failed: ${run2.reason})`);
   }
   lines.push(`  ${NOT_CHECKED_LINE}`);
   return lines.join(`
@@ -41880,7 +41905,7 @@ var HELP = {
     group: "Start here",
     summary: "Diagnose CLI setup: credentials, storage backend, API reachability, security key helper",
     description: "One PASS/FAIL/SKIP table over the runtime, the storage backend, both credentials, API reachability, wallet delegation, the install method and whether the security key helper (candle-fido2) is beside the binary. Its output is meant to be pasted into a bug report. Exits nonzero on any FAIL.",
-    usage: ["candle doctor"],
+    usage: ["candle doctor [--role owner|bot|auto]"],
     rows: [],
     examples: ["candle doctor", "candle doctor --json"],
     env: ENV_API
@@ -42746,6 +42771,170 @@ async function completion(args, ctx) {
 init_agent_key_access();
 init_args();
 init_deps();
+
+// src/keychain.ts
+init_secret_store();
+import { spawn, spawnSync } from "node:child_process";
+var CREDENTIAL_SERVICE = "tv.candle.cli";
+var SECRETS_SERVICE = "tv.candle.cli.secrets";
+var SERVICE = CREDENTIAL_SERVICE;
+var PROBE_ACCOUNT = "tv.candle.cli.probe";
+var UNSAFE_FOR_SECURITY_COMMAND_LINE = /["\\\n\r]/;
+function assertSafeRef(ref) {
+  if (UNSAFE_FOR_SECURITY_COMMAND_LINE.test(ref)) {
+    throw new Error("Refusing to use this keychain reference: it contains a quote, backslash, or newline, which " + "could break out of the quoted argument on security's command-on-stdin line");
+  }
+}
+var RUN_TIMEOUT_MS = 1e4;
+function run(bin, args, stdin) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"], env: process.env });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled)
+        return;
+      child.kill("SIGKILL");
+    }, RUN_TIMEOUT_MS);
+    child.stdin.on("error", () => {});
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (err) => {
+      if (settled)
+        return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(err);
+    });
+    child.on("close", (code) => {
+      if (settled)
+        return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({ status: code ?? -1, stdout, stderr });
+    });
+    if (stdin !== undefined)
+      child.stdin.write(stdin);
+    child.stdin.end();
+  });
+}
+function binaryResolvable(bin) {
+  return spawnSync("which", [bin], { env: process.env }).status === 0;
+}
+
+class SecretStoreLockedError extends Error {
+  constructor() {
+    super("The macOS login Keychain is locked in this session. Run: security unlock-keychain ~/Library/Keychains/login.keychain-db");
+    this.name = "SecretStoreLockedError";
+  }
+}
+
+class SecretStoreReadError extends Error {
+  constructor(status, stderr, ref) {
+    const firstLine = stderr.split(/\r?\n/, 1)[0] ?? "";
+    const safeLine = firstLine.split(ref).join("[redacted]");
+    super(`Cannot read the macOS Keychain (security exited ${status})${safeLine ? `: ${safeLine}` : ""}`);
+    this.name = "SecretStoreReadError";
+  }
+}
+
+class KeychainSecretStore {
+  binary;
+  service;
+  constructor(binary = "security", service = SERVICE) {
+    this.binary = binary;
+    this.service = service;
+  }
+  async get(ref) {
+    const result = await run(this.binary, ["find-generic-password", "-s", this.service, "-a", ref, "-w"]);
+    if (result.status === 44)
+      return null;
+    if (result.status === 128 || /interaction is not allowed/i.test(result.stderr))
+      throw new SecretStoreLockedError;
+    if (result.status !== 0)
+      throw new SecretStoreReadError(result.status, result.stderr, ref);
+    return result.stdout.replace(/\n$/, "");
+  }
+  async set(ref, value) {
+    assertSafeRef(ref);
+    if (UNSAFE_FOR_SECURITY_COMMAND_LINE.test(value)) {
+      throw new Error("Refusing to store this secret in the macOS Keychain: it contains a quote, backslash, or " + "newline, which could break out of the quoted argument on security's command-on-stdin line");
+    }
+    const command = `add-generic-password -U -s "${this.service}" -a "${ref}" -w "${value}"
+`;
+    const result = await run(this.binary, ["-i"], command);
+    if (result.status !== 0) {
+      throw new Error(`Failed to store credential in the macOS Keychain (security exited ${result.status})`);
+    }
+  }
+  async delete(ref) {
+    assertSafeRef(ref);
+    const command = `delete-generic-password -s "${this.service}" -a "${ref}"
+`;
+    await run(this.binary, ["-i"], command);
+  }
+}
+
+class SecretToolSecretStore {
+  binary;
+  service;
+  constructor(binary = "secret-tool", service = SERVICE) {
+    this.binary = binary;
+    this.service = service;
+  }
+  async get(ref) {
+    const result = await run(this.binary, ["lookup", "service", this.service, "account", ref]);
+    if (result.status !== 0)
+      return null;
+    const value = result.stdout.replace(/\n$/, "");
+    return value.length > 0 ? value : null;
+  }
+  async set(ref, value) {
+    const result = await run(this.binary, ["store", "--label=Candle CLI", "service", this.service, "account", ref], value);
+    if (result.status !== 0) {
+      throw new Error(`Failed to store credential via secret-tool (exited ${result.status})`);
+    }
+  }
+  async delete(ref) {
+    await run(this.binary, ["clear", "service", this.service, "account", ref]);
+  }
+}
+async function probeSecretTool(store) {
+  const probeValue = crypto.randomUUID();
+  try {
+    await store.set(PROBE_ACCOUNT, probeValue);
+    const got = await store.get(PROBE_ACCOUNT);
+    return got === probeValue;
+  } catch {
+    return false;
+  } finally {
+    try {
+      await store.delete(PROBE_ACCOUNT);
+    } catch {}
+  }
+}
+async function resolveSecretStore(platform = process.platform, namespace = { service: CREDENTIAL_SERVICE }) {
+  if (platform === "darwin" && binaryResolvable("security")) {
+    return { store: new KeychainSecretStore("security", namespace.service), backend: "keychain" };
+  }
+  if (platform === "linux" && binaryResolvable("secret-tool")) {
+    const candidate = new SecretToolSecretStore("secret-tool", namespace.service);
+    if (await probeSecretTool(candidate)) {
+      return { store: candidate, backend: "secret-tool" };
+    }
+  }
+  return {
+    store: new EncryptedFileSecretStore(namespace.filePath ? { path: namespace.filePath } : {}),
+    backend: "encrypted-file"
+  };
+}
+
+// src/commands/doctor.ts
 init_profiles();
 init_release();
 init_render();
@@ -42756,10 +42945,10 @@ init_store();
 init_args();
 init_deps();
 init_key_signers();
+import { generateKeyPairSync as generateKeyPairSync2 } from "node:crypto";
 init_profiles();
 init_render();
 init_secret_store();
-import { generateKeyPairSync as generateKeyPairSync2 } from "node:crypto";
 // src/commands/tee-rebind.ts
 init_args();
 init_deps();
@@ -51422,28 +51611,28 @@ function chunkWallets(wallets2, size = REBIND_CHUNK) {
   return out;
 }
 async function rebindPromoted(ctx, deviceToken, toKeyPrefix, wallets2, pinnedSpkiSha256) {
-  const run = { ok: true, requests: 0, outcomes: new Map };
+  const run2 = { ok: true, requests: 0, outcomes: new Map };
   let pinned = pinnedSpkiSha256 ?? null;
   for (const wallet of wallets2)
-    run.outcomes.set(wallet.id, { state: "not-reached" });
+    run2.outcomes.set(wallet.id, { state: "not-reached" });
   const chunks = chunkWallets(wallets2);
   for (const [at, chunk] of chunks.entries()) {
-    run.requests += 1;
+    run2.requests += 1;
     const preview = await postRebind(ctx, deviceToken, {
       dryRun: true,
       toKeyPrefix,
       wallets: chunk.map((wallet) => wallet.id)
     });
     if (!preview.ok) {
-      run.ok = false;
-      run.failure = { ...rebindFailureDetails(preview, {}), chunk: at + 1 };
-      return run;
+      run2.ok = false;
+      run2.failure = { ...rebindFailureDetails(preview, {}), chunk: at + 1 };
+      return run2;
     }
     const shown = preview.body;
-    if (run.toKey === undefined)
-      run.toKey = shown.toKey;
+    if (run2.toKey === undefined)
+      run2.toKey = shown.toKey;
     for (const row of shown.unchanged)
-      run.outcomes.set(row.id, { state: "unchanged" });
+      run2.outcomes.set(row.id, { state: "unchanged" });
     const moving = shown.rebound;
     if (moving.length === 0)
       continue;
@@ -51451,15 +51640,15 @@ async function rebindPromoted(ctx, deviceToken, toKeyPrefix, wallets2, pinnedSpk
     if (signer !== null && signer.spkiSha256 !== pinned) {
       const confirmed = await confirmSignerPin(ctx, toKeyPrefix, signer, { nothing: REBIND_NOTHING_PINNED });
       if (!confirmed.ok) {
-        run.ok = false;
-        run.failure = { ...confirmed.failure, status: 0, chunk: at + 1 };
+        run2.ok = false;
+        run2.failure = { ...confirmed.failure, status: 0, chunk: at + 1 };
         for (const row of moving)
-          run.outcomes.set(row.id, { state: "failed" });
-        return run;
+          run2.outcomes.set(row.id, { state: "failed" });
+        return run2;
       }
       pinned = signer.spkiSha256;
     }
-    run.requests += 1;
+    run2.requests += 1;
     const committed = await commitRebind(ctx, deviceToken, {
       toKeyPrefix,
       walletIds: moving.map((row) => row.id),
@@ -51470,14 +51659,14 @@ async function rebindPromoted(ctx, deviceToken, toKeyPrefix, wallets2, pinnedSpk
       signerSpkiSha256: pinned
     });
     if (!committed.ok) {
-      run.ok = false;
+      run2.ok = false;
       if ("missing" in committed) {
         const failure = missingSignerFailure(committed.missing);
-        run.failure = { ...failure, status: 409, chunk: at + 1 };
+        run2.failure = { ...failure, status: 409, chunk: at + 1 };
       } else if ("changed" in committed) {
-        run.failure = { ...committed.changed, status: 409, chunk: at + 1 };
+        run2.failure = { ...committed.changed, status: 409, chunk: at + 1 };
       } else {
-        run.failure = {
+        run2.failure = {
           ...rebindFailureDetails(committed.result, {
             fromKeyPrefixes: Array.from(new Set(moving.map((row) => row.fromKeyPrefix)))
           }),
@@ -51485,48 +51674,48 @@ async function rebindPromoted(ctx, deviceToken, toKeyPrefix, wallets2, pinnedSpk
         };
       }
       for (const row of moving)
-        run.outcomes.set(row.id, { state: "failed" });
-      return run;
+        run2.outcomes.set(row.id, { state: "failed" });
+      return run2;
     }
     if (committed.signed.length > 0)
-      run.requests += 1;
+      run2.requests += 1;
     const result = committed.result.body;
     for (const row of result.rebound) {
-      run.outcomes.set(row.id, { state: "rebound", ...row.auditId !== undefined ? { auditId: row.auditId } : {} });
+      run2.outcomes.set(row.id, { state: "rebound", ...row.auditId !== undefined ? { auditId: row.auditId } : {} });
     }
     for (const row of result.unchanged)
-      run.outcomes.set(row.id, { state: "unchanged" });
+      run2.outcomes.set(row.id, { state: "unchanged" });
   }
-  return run;
+  return run2;
 }
 function finishingCommands(addresses, toKeyPrefix) {
   return chunkWallets(addresses).map((chunk) => `candle tee rebind ${chunk.join(" ")} --to-key ${toKeyPrefix}`);
 }
-function pendingWallets(wallets2, run) {
+function pendingWallets(wallets2, run2) {
   return wallets2.filter((wallet) => {
-    const state = run?.outcomes.get(wallet.id)?.state;
+    const state = run2?.outcomes.get(wallet.id)?.state;
     return state !== "rebound" && state !== "unchanged";
   });
 }
 function renderRebindReport(input) {
-  const { target, wallets: wallets2, run, notRebindable } = input;
+  const { target, wallets: wallets2, run: run2, notRebindable } = input;
   const lines = [];
   const name = (wallet) => `${wallet.label} (${wallet.address})`;
-  if (run !== undefined) {
-    const rebound = wallets2.filter((wallet) => run.outcomes.get(wallet.id)?.state === "rebound").length;
-    const unchanged = wallets2.filter((wallet) => run.outcomes.get(wallet.id)?.state === "unchanged").length;
+  if (run2 !== undefined) {
+    const rebound = wallets2.filter((wallet) => run2.outcomes.get(wallet.id)?.state === "rebound").length;
+    const unchanged = wallets2.filter((wallet) => run2.outcomes.get(wallet.id)?.state === "unchanged").length;
     if (rebound > 0 || unchanged > 0) {
-      lines.push(`✓ ${rebound} wallet${rebound === 1 ? "" : "s"} moved to key ${target.keyPrefix}${unchanged > 0 ? ` (${unchanged} already there)` : ""} in ${run.requests} request${run.requests === 1 ? "" : "s"}.`);
+      lines.push(`✓ ${rebound} wallet${rebound === 1 ? "" : "s"} moved to key ${target.keyPrefix}${unchanged > 0 ? ` (${unchanged} already there)` : ""} in ${run2.requests} request${run2.requests === 1 ? "" : "s"}.`);
       if (rebound > 0) {
-        const signer = run.toKey?.signer ?? null;
+        const signer = run2.toKey?.signer ?? null;
         lines.push(signer !== null ? `Owned by key ${target.keyPrefix}'s signer ${signer.fingerprint}: they trade from the machine that holds it.` : RELAY_SIGNER_LINE);
       }
     }
-    if (run.failure !== undefined) {
-      lines.push(`Rebind ${run.failure.code}: ${run.failure.message}${run.failure.suggestion ? ` ${run.failure.suggestion}` : ""}`);
+    if (run2.failure !== undefined) {
+      lines.push(`Rebind ${run2.failure.code}: ${run2.failure.message}${run2.failure.suggestion ? ` ${run2.failure.suggestion}` : ""}`);
     }
   }
-  const pending = pendingWallets(wallets2, run);
+  const pending = pendingWallets(wallets2, run2);
   if (pending.length > 0) {
     lines.push(`${pending.length} promoted wallet${pending.length === 1 ? " is" : "s are"} still bound to the calling key ${input.callingKeyPrefix}, not ${target.keyPrefix}:`, ...pending.map((wallet) => `  ${name(wallet)}`), "Finish with:", ...finishingCommands(pending.map((wallet) => wallet.address), target.keyPrefix).map((command) => `  ${command}`));
   }
@@ -51536,40 +51725,40 @@ function renderRebindReport(input) {
   return lines.join(`
 `);
 }
-function walletRebindJson(wallet, run) {
+function walletRebindJson(wallet, run2) {
   if (wallet.id === null || wallet.remoteAuthority !== "verified-active") {
     return {
       state: "not-rebindable",
       reason: wallet.id === null ? "no linked wallet id" : `remote authority is ${wallet.remoteAuthority ?? "unknown"}, not verified-active`
     };
   }
-  const outcome = run?.outcomes.get(wallet.id);
+  const outcome = run2?.outcomes.get(wallet.id);
   if (outcome === undefined)
     return { state: "not-reached" };
   return { state: outcome.state, ...outcome.auditId !== undefined ? { auditId: outcome.auditId } : {} };
 }
-function finalBoundKey(wallet, run, toKeyPrefix) {
-  const state = wallet.id === null ? undefined : run?.outcomes.get(wallet.id)?.state;
+function finalBoundKey(wallet, run2, toKeyPrefix) {
+  const state = wallet.id === null ? undefined : run2?.outcomes.get(wallet.id)?.state;
   return state === "rebound" || state === "unchanged" ? toKeyPrefix : wallet.importedTo;
 }
 function rebindJson(input, chain2) {
-  const { target, wallets: wallets2, run } = input;
-  const pending = pendingWallets(wallets2, run);
-  const count = (state) => wallets2.filter((wallet) => run?.outcomes.get(wallet.id)?.state === state).length;
+  const { target, wallets: wallets2, run: run2 } = input;
+  const pending = pendingWallets(wallets2, run2);
+  const count = (state) => wallets2.filter((wallet) => run2?.outcomes.get(wallet.id)?.state === state).length;
   return {
-    toKey: readinessJson(target, chain2, run?.toKey),
+    toKey: readinessJson(target, chain2, run2?.toKey),
     rebind: {
-      ok: run !== undefined && run.ok && input.notRebindable.length === 0,
-      reached: run !== undefined,
-      requests: run?.requests ?? 0,
+      ok: run2 !== undefined && run2.ok && input.notRebindable.length === 0,
+      reached: run2 !== undefined,
+      requests: run2?.requests ?? 0,
       rebound: count("rebound"),
       unchanged: count("unchanged"),
       pending: pending.map((wallet) => wallet.address),
       notRebindable: input.notRebindable.length,
-      ...run?.failure !== undefined ? {
-        code: run.failure.code,
-        message: run.failure.message,
-        ...run.failure.suggestion !== undefined ? { suggestion: run.failure.suggestion } : {}
+      ...run2?.failure !== undefined ? {
+        code: run2.failure.code,
+        message: run2.failure.message,
+        ...run2.failure.suggestion !== undefined ? { suggestion: run2.failure.suggestion } : {}
       } : {},
       finishWith: finishingCommands(pending.map((wallet) => wallet.address), target.keyPrefix)
     }
@@ -51908,11 +52097,11 @@ async function keysSignerApprove(args, ctx) {
 `);
   let typed;
   if (!reject) {
-    typed = await deps.promptSecret("Type the full fingerprint the trading machine printed, all three groups: ");
+    typed = await deps.promptLine("Type the full fingerprint the trading machine printed, all three groups: ");
     if (!fingerprintMatches(typed, pending.fingerprint)) {
       writeLocalFailure(deps, {
         code: "KEY_SIGNER_FINGERPRINT_MISMATCH",
-        message: "That is not the full fingerprint of this request; nothing was approved.",
+        message: `${fingerprintMismatchMessage(typed, pending.fingerprint)} Nothing was approved.`,
         suggestion: "Type all three groups exactly as the trading machine printed them, for example CNDL-7K2Q-94XM-A1TD."
       }, json);
       return 1;
@@ -51920,7 +52109,7 @@ async function keysSignerApprove(args, ctx) {
   }
   const answered = await approveSigner(ctx, deviceToken, keyPrefix, {
     userCode: code,
-    ...typed !== undefined ? { fingerprint: typed } : {},
+    ...typed !== undefined ? { fingerprint: pending.fingerprint } : {},
     decision: reject ? "reject" : "approve"
   });
   if (!answered.ok) {
@@ -52286,12 +52475,12 @@ function reportMove(ctx, report) {
 `);
   return exit;
 }
-async function keySignerDoctorRows(ctx, creds) {
+async function keySignerDoctorReport(ctx, creds) {
   const { deps } = ctx;
   const rows = [];
   const entries = await localKeySigners(deps);
   if (entries.length === 0)
-    return rows;
+    return { rows, hasSigners: false, reachableWalletIds: [], locked: false };
   let view = null;
   if (creds.apiKey !== undefined) {
     const read = await readSigner(ctx, "self", { apiKey: creds.apiKey }).catch(() => null);
@@ -52299,13 +52488,16 @@ async function keySignerDoctorRows(ctx, creds) {
       view = read.body;
   }
   const problems = [];
+  const readableQuorums = new Set;
+  let locked = false;
   for (const entry of entries) {
     const ref = keySignerRef(entry.keyPrefix, entry.spkiSha256);
     let stored;
     try {
       stored = await deps.store.get(ref);
     } catch (error) {
-      problems.push(`${ref} (${entry.fingerprint}): cannot be opened: ${error instanceof Error ? error.message : String(error)}`);
+      locked ||= error instanceof SecretStoreLockedError;
+      problems.push(error instanceof SecretStoreLockedError ? "cannot be opened: keychain locked" : `${entry.fingerprint}: cannot be opened: ${error instanceof Error ? error.message : String(error)}`);
       continue;
     }
     if (stored === null) {
@@ -52315,6 +52507,8 @@ async function keySignerDoctorRows(ctx, creds) {
     const problem = signerSlotProblem(stored, entry.spkiSha256);
     if (problem !== null)
       problems.push(`${ref} (${entry.fingerprint}): ${problem}`);
+    else if (entry.signerQuorumId)
+      readableQuorums.add(entry.signerQuorumId);
   }
   if (creds.apiKey !== undefined && view !== null) {
     const quorums = new Set(entries.flatMap((e) => e.signerQuorumId ? [e.signerQuorumId] : []));
@@ -52326,7 +52520,8 @@ async function keySignerDoctorRows(ctx, creds) {
       try {
         stored = await deps.store.get(ref);
       } catch (error) {
-        problems.push(`${ref}: cannot be opened: ${error instanceof Error ? error.message : String(error)}`);
+        locked ||= error instanceof SecretStoreLockedError;
+        problems.push(error instanceof SecretStoreLockedError ? "cannot be opened: keychain locked" : `${ref}: cannot be opened: ${error instanceof Error ? error.message : String(error)}`);
         continue;
       }
       if (stored === null)
@@ -52356,15 +52551,43 @@ async function keySignerDoctorRows(ctx, creds) {
   if (creds.deviceToken !== undefined && entries.length > 0) {
     rows.push({ check: "Device token beside signer", state: "WARN", detail: DEVICE_TOKEN_BESIDE_SIGNER_LINE });
   }
-  return rows;
+  const reachableWalletIds = view === null ? [] : allSignerWallets(view).filter((wallet) => wallet.signerQuorumId && readableQuorums.has(wallet.signerQuorumId)).map((wallet) => wallet.id);
+  return { rows, hasSigners: true, reachableWalletIds, locked };
 }
 
 // src/commands/doctor.ts
 var MIN_NODE_MAJOR = 18;
-var API_KEY_CHECK = "API key valid (launch:write)";
+var DOCTOR_ROW_IDS = {
+  "Runtime version": "runtime",
+  "Keychain backend": "keychain",
+  "Config directory": "config_dir",
+  Vault: "vault",
+  "Credentials present": "credentials",
+  "API reachable": "api_reachable",
+  "Device token valid": "device_token",
+  "API key valid": "api_key",
+  Plan: "plan",
+  "Launch wallet delegated": "embedded_wallet",
+  "Embedded wallet": "embedded_wallet",
+  Account: "account",
+  Install: "install",
+  "Security key helper": "security_key_helper",
+  Update: "update",
+  "Key signers": "key_signers",
+  "Key signer": "key_signers",
+  "Signer slot": "signer_slot",
+  "Device token beside signer": "device_token",
+  "Trade path": "trade_path",
+  "TEE limits": "tee_limits",
+  "Project .env": "project_env",
+  "API URL": "api_url_provenance",
+  "API key": "api_key_provenance",
+  "Device token": "device_token_provenance"
+};
+var API_KEY_CHECK = "API key valid";
 async function doctor(args, ctx) {
   const { deps, apiUrl, json } = ctx;
-  const parsed = parseArgs(args, {});
+  const parsed = parseArgs(args, { valueFlags: ["--role"] });
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json);
     return 2;
@@ -52373,8 +52596,14 @@ async function doctor(args, ctx) {
     writeUsageFailure(deps, `Unexpected argument: ${parsed.positionals[0]}`, json);
     return 2;
   }
+  const requestedRole = parsed.values["--role"] ?? "auto";
+  if (!["auto", "owner", "bot"].includes(String(requestedRole))) {
+    writeUsageFailure(deps, "--role must be owner, bot, or auto", json);
+    return 2;
+  }
   const rows = [];
-  const fields = effectiveProfileFields(await deps.readConfig(), ctx.profile);
+  const config = await deps.readConfig();
+  const fields = effectiveProfileFields(config, ctx.profile);
   const nodeMajor = Number(deps.nodeVersion.split(".")[0]);
   rows.push(Number.isFinite(nodeMajor) && nodeMajor >= MIN_NODE_MAJOR ? { check: "Runtime version", state: "PASS", detail: `node ${deps.nodeVersion}` } : {
     check: "Runtime version",
@@ -52382,6 +52611,7 @@ async function doctor(args, ctx) {
     detail: `node ${deps.nodeVersion} is below the minimum (${MIN_NODE_MAJOR}). Fix: upgrade Node.js to ${MIN_NODE_MAJOR} or later.`
   });
   rows.push({ check: "Keychain backend", state: "PASS", detail: deps.backend });
+  let hasVault = false;
   let configDir2;
   try {
     configDir2 = candleConfigDir(deps.env, deps.homedir());
@@ -52401,19 +52631,62 @@ async function doctor(args, ctx) {
     rows.push({ check: "Vault", state: "SKIP", detail: `${CONFIG_DIR_ENV} is not usable, so no path to check` });
   } else {
     const vaultPath = defaultVaultPath(deps.env, deps.homedir());
-    rows.push(await fileExists(vaultPath) ? { check: "Vault", state: "PASS", detail: vaultPath } : {
+    hasVault = await fileExists(vaultPath);
+    rows.push(hasVault ? { check: "Vault", state: "PASS", detail: vaultPath } : {
       check: "Vault",
       state: "SKIP",
       detail: `no vault at ${vaultPath}. Create one with candle vault init, or point at an existing one with -k <path> or ${CONFIG_DIR_ENV}.`
     });
   }
-  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
-  const apiKey = await resolveApiKey(deps, ctx.profile);
-  rows.push(deviceToken ? {
+  let storeError;
+  const readCredential = async (read) => {
+    try {
+      return await read();
+    } catch (error) {
+      if (!(storeError instanceof SecretStoreLockedError))
+        storeError = error;
+      return;
+    }
+  };
+  const deviceToken = await readCredential(() => resolveDeviceToken(deps, ctx.profile));
+  const apiKey = await readCredential(() => resolveApiKey(deps, ctx.profile));
+  const role = requestedRole === "auto" ? apiKey && !deviceToken ? "bot" : "owner" : requestedRole;
+  rows.push(deviceToken || apiKey ? {
     check: "Credentials present",
     state: "PASS",
-    detail: apiKey ? "device token and API key" : "device token only (no API key yet)"
-  } : { check: "Credentials present", state: "FAIL", detail: "No device token found. Fix: run candle auth login." });
+    detail: `${deviceToken && apiKey ? "device token and API key" : apiKey ? "API key only" : "device token only (no API key yet)"}; role: ${role}`
+  } : {
+    check: "Credentials present",
+    state: "FAIL",
+    detail: "No credential found. Fix: run candle auth login, or export CANDLE_API_KEY."
+  });
+  const source = (value, envName) => deps.env[envName]?.trim() ? envName : value ? ctx.profile ? `profile ${ctx.profile}` : "legacy store" : "none";
+  const provenance = {
+    apiUrl: {
+      value: apiUrl,
+      source: ctx.apiUrlFlag !== undefined ? "--api-url" : deps.env.CANDLE_API_URL?.trim() ? "CANDLE_API_URL" : ctx.profile && config.profiles?.[ctx.profile]?.apiUrl?.trim() ? `profile ${ctx.profile}` : config.apiUrl?.trim() ? "config" : "default"
+    },
+    apiKey: { source: source(apiKey, "CANDLE_API_KEY"), prefix: apiKey ? apiKeyPrefix(apiKey) ?? null : null },
+    deviceToken: { source: source(deviceToken, "CANDLE_DEVICE_TOKEN") }
+  };
+  rows.push({ check: "API URL", state: "PASS", detail: `${apiUrl} (from ${provenance.apiUrl.source})` }, {
+    check: "API key",
+    state: "PASS",
+    detail: `from ${provenance.apiKey.source}${apiKey ? `; ${provenance.apiKey.prefix ?? "unrecognized format"}` : ""}`
+  }, { check: "Device token", state: "PASS", detail: `from ${provenance.deviceToken.source}` });
+  const projectEnv = await deps.readFile(".env").catch(() => "");
+  const names = [
+    ...new Set(projectEnv.split(/\r?\n/).flatMap((line) => {
+      const match = line.match(/^\s*(?:export\s+)?(CANDLE_[A-Za-z0-9_]+)\s*=/);
+      return match?.[1] ? [match[1]] : [];
+    }))
+  ];
+  if (names.length)
+    rows.push({
+      check: "Project .env",
+      state: "WARN",
+      detail: `${names.join(", ")}: the binary ignores them; export them, or store them in a profile.`
+    });
   const statusResult = await apiRequest("/api/v1/status", {
     auth: "none",
     credentials: {},
@@ -52422,8 +52695,12 @@ async function doctor(args, ctx) {
     env: deps.env
   });
   rows.push(statusResult.ok ? { check: "API reachable", state: "PASS", detail: apiUrl } : { check: "API reachable", state: "FAIL", detail: renderError(statusResult, { apiUrl, authType: "none" }) });
-  if (!deviceToken) {
-    rows.push({ check: "Device token valid", state: "SKIP", detail: "no device token to check" });
+  if (role === "bot" || !deviceToken) {
+    rows.push({
+      check: "Device token valid",
+      state: "SKIP",
+      detail: role === "bot" ? "not used on a bot box" : "no device token to check"
+    });
   } else {
     rows.push(await runLiveCheck({
       deps,
@@ -52435,21 +52712,60 @@ async function doctor(args, ctx) {
       passDetail: "valid"
     }));
   }
+  let trading;
+  let scopes = fields.scopes;
   if (!apiKey) {
     rows.push({ check: API_KEY_CHECK, state: "SKIP", detail: "no API key to check" });
   } else {
-    const scopes = fields.scopes;
-    const passDetail = scopes ? `scopes: ${sortAgentKeyScopes(scopes).join(", ")}` : "valid";
-    rows.push(await runLiveCheck({
-      deps,
-      apiUrl,
-      path: "/api/v1/agent/tier",
+    const result = await apiRequest("/api/v1/agent/wallets/trading", {
       auth: "key",
-      credential: apiKey,
-      check: API_KEY_CHECK,
-      passDetail
-    }));
+      credentials: { apiKey },
+      apiUrl,
+      fetch: deps.fetch,
+      env: deps.env
+    });
+    if (result.ok)
+      trading = result.body;
+    if (trading && Array.isArray(trading.scopes)) {
+      scopes = trading.scopes;
+      rows.push({
+        check: API_KEY_CHECK,
+        state: "PASS",
+        detail: `scopes: ${sortAgentKeyScopes(scopes).join(", ")}${trading.paused === true ? "; profile is paused" : ""}`
+      });
+      const seen = new Set;
+      while (trading.isDone === false && trading.continueCursor && !seen.has(trading.continueCursor)) {
+        seen.add(trading.continueCursor);
+        const next = await apiRequest(`/api/v1/agent/wallets/trading?cursor=${encodeURIComponent(trading.continueCursor)}`, { auth: "key", credentials: { apiKey }, apiUrl, fetch: deps.fetch, env: deps.env });
+        if (!next.ok)
+          break;
+        const page = next.body;
+        trading = {
+          ...trading,
+          page: [...trading.page ?? [], ...page.page ?? []],
+          isDone: page.isDone,
+          continueCursor: page.continueCursor
+        };
+      }
+    } else if (result.ok || !result.ok && result.status === 404) {
+      rows.push(await runLiveCheck({
+        deps,
+        apiUrl,
+        path: "/api/v1/agent/tier",
+        auth: "key",
+        credential: apiKey,
+        check: API_KEY_CHECK,
+        passDetail: `${scopes ? `scopes (cached): ${sortAgentKeyScopes(scopes).join(", ")}` : "valid"}${trading?.paused === true ? "; profile is paused" : ""}`
+      }));
+    } else {
+      rows.push({ check: API_KEY_CHECK, state: "FAIL", detail: renderError(result, { apiUrl, authType: "key" }) });
+    }
   }
+  const signerReport = await keySignerDoctorReport(ctx, { apiKey, deviceToken });
+  const wallets2 = trading?.page ?? [];
+  const reachable = wallets2.filter((w) => w.active && signerReport.reachableWalletIds.includes(w.id)).length;
+  const activeTee = wallets2.some((w) => w.active);
+  let embeddedUsable = false;
   if (!apiKey) {
     rows.push({ check: "Plan", state: "SKIP", detail: "no API key to check" });
   } else {
@@ -52474,9 +52790,10 @@ async function doctor(args, ctx) {
       rows.push({ check: "Plan", state: "PASS", detail: `${tierBody.tier}${fee}` });
     }
   }
+  const embeddedLabel = role === "bot" ? "Embedded wallet" : "Launch wallet delegated";
   let account;
   if (!apiKey) {
-    rows.push({ check: "Launch wallet delegated", state: "SKIP", detail: "no API key to check" });
+    rows.push({ check: embeddedLabel, state: "SKIP", detail: "no API key to check" });
   } else {
     const result = await apiRequest("/api/v1/agent/wallets/embedded", {
       auth: "key",
@@ -52487,18 +52804,19 @@ async function doctor(args, ctx) {
     });
     if (!result.ok) {
       rows.push({
-        check: "Launch wallet delegated",
-        state: "FAIL",
-        detail: renderError(result, { apiUrl, authType: "key" })
+        check: embeddedLabel,
+        state: role === "bot" ? activeTee ? "SKIP" : "WARN" : "FAIL",
+        detail: role === "bot" && activeTee ? "not used by this key" : renderError(result, { apiUrl, authType: "key" })
       });
     } else {
       const body = result.body;
       account = body.account;
-      const delegated = Boolean(body.wallets.solana?.delegated || body.wallets.evm?.delegated);
-      rows.push(delegated ? { check: "Launch wallet delegated", state: "PASS", detail: "delegated" } : {
-        check: "Launch wallet delegated",
-        state: "FAIL",
-        detail: "No launch wallet is delegated. Fix: delegate one in the portal."
+      const delegated = Boolean(body.wallets?.solana?.delegated || body.wallets?.evm?.delegated);
+      embeddedUsable = delegated;
+      rows.push(delegated ? { check: embeddedLabel, state: "PASS", detail: "delegated" } : {
+        check: embeddedLabel,
+        state: role === "bot" ? activeTee ? "SKIP" : "WARN" : "FAIL",
+        detail: role === "bot" ? activeTee ? "not used by this key" : "No usable payer: no delegated embedded wallet or active TEE wallet." : "No launch wallet is delegated. Fix: delegate one in the portal."
       });
     }
   }
@@ -52544,7 +52862,7 @@ async function doctor(args, ctx) {
     const fix = helper.installable ? method === "homebrew" ? "brew reinstall candle" : "candle vault factor add security-key --install-helper" : `correct or unset ${HELPER_ENV}`;
     rows.push({
       check: "Security key helper",
-      state: "FAIL",
+      state: hasVault ? "FAIL" : "SKIP",
       detail: `${helper.reason}. Fix: ${fix}`
     });
   }
@@ -52558,12 +52876,30 @@ async function doctor(args, ctx) {
     state: "PASS",
     detail: updateBody.available ? `${latest.manifest.version} available: ${method === "homebrew" ? "brew upgrade candle" : method === "script" ? "npm i -g @candledottv/cli@latest" : "candle update"}` : `up to date (${CLI_VERSION})`
   } : { check: "Update", state: "SKIP", detail: `could not check: ${latest.message}` });
-  rows.push(...await keySignerDoctorRows(ctx, { apiKey, deviceToken }));
+  rows.push(...signerReport.rows);
+  if (storeError || signerReport.locked) {
+    const row = rows.find((r) => r.check === "Keychain backend");
+    if (row) {
+      row.state = "FAIL";
+      row.detail = signerReport.locked || storeError instanceof SecretStoreLockedError ? new SecretStoreLockedError().message : storeError instanceof Error ? storeError.message : "Secret store cannot be opened";
+    }
+  }
+  if (role === "bot" || signerReport.hasSigners || trading?.paused === true) {
+    const canTrade = scopes?.includes("swap:write") && (reachable > 0 || embeddedUsable);
+    rows.push({
+      check: "Trade path",
+      state: trading?.paused === true ? "FAIL" : canTrade ? "PASS" : "WARN",
+      detail: trading?.paused === true ? "The owner paused this profile; every trade is refused with PROFILE_PAUSED." : `${reachable} of ${wallets2.length} wallets on this key trade from this machine${embeddedUsable ? "; embedded wallet delegated" : ""}${!scopes?.includes("swap:write") ? "; missing swap:write" : ""}${reachable === 0 && !embeddedUsable ? "; no reachable payer" : ""}`
+    });
+  }
+  const identifiedRows = rows.map((row) => ({ ...row, id: DOCTOR_ROW_IDS[row.check] }));
   const exitCode = rows.some((row) => row.state === "FAIL") ? 1 : 0;
   await printIdentity(ctx);
   if (json) {
     deps.stdout.write(`${JSON.stringify({
-      rows,
+      rows: identifiedRows,
+      role,
+      provenance,
       ...account !== undefined ? { account } : {},
       ...cachedAccount !== undefined ? { cachedAccount } : {},
       install: { method, path: method === "homebrew" ? realExec : deps.execPath },
@@ -52572,6 +52908,8 @@ async function doctor(args, ctx) {
 `);
     return exitCode;
   }
+  deps.stdout.write(`Role: ${role}
+`);
   deps.stdout.write(`${renderTable(["Check", "Status", "Detail"], rows.map((row) => [row.check, row.state, row.detail]))}
 `);
   return exitCode;
@@ -56807,7 +57145,7 @@ async function hoodSwap(ctx, args) {
     throw chainMismatch(`TEE wallet ${wallet.id}`, wallet.chain === "evm" ? "hood" : "solana", "hood");
   const recorded = kind === "trade" ? token : HOOD_USDG_ADDRESS;
   const notices = [];
-  const run = await runSequencedLegs(ctx, key, {
+  const run2 = await runSequencedLegs(ctx, key, {
     wallet,
     first: sequenced,
     submitPath: kind === "swap" ? "/api/v1/agent/swap/submit" : "/api/v1/trade/agent/submit",
@@ -56823,14 +57161,14 @@ async function hoodSwap(ctx, args) {
     }
   });
   return printTradingResult(ctx, {
-    ...run.final,
+    ...run2.final,
     clientTradeId: id,
     kind,
     chain: "hood",
     quote,
     wallet: safeText(wallet.address),
     operationId: sequenced.operationId,
-    landedLegs: run.landed,
+    landedLegs: run2.landed,
     evmRecord: { token: toChecksumAddress(recorded), notices }
   });
 }
@@ -57031,7 +57369,7 @@ async function hoodLaunch(ctx, key, args) {
       walletHeldUntil: first.expiresAt
     });
   }
-  const run = await runSequencedLegs(ctx, key, {
+  const run2 = await runSequencedLegs(ctx, key, {
     wallet,
     first,
     submitPath: "/api/v1/launch/self/confirm",
@@ -57045,15 +57383,15 @@ async function hoodLaunch(ctx, key, args) {
     onLanded: async () => {}
   });
   return printTradingResult(ctx, {
-    ...run.final,
-    ...await recordLaunchedToken(ctx, wallet, run.final),
+    ...run2.final,
+    ...await recordLaunchedToken(ctx, wallet, run2.final),
     clientTradeId: id,
     kind: "launch",
     chain: "hood",
     quote,
     wallet: safeText(wallet.address),
     operationId: first.operationId,
-    landedLegs: run.landed
+    landedLegs: run2.landed
   });
 }
 async function recordLaunchedToken(ctx, wallet, final) {
@@ -57594,7 +57932,7 @@ async function mcp(args, ctx) {
 init_args();
 
 // src/plugins.ts
-import { spawn } from "node:child_process";
+import { spawn as spawn2 } from "node:child_process";
 import { accessSync, constants as constants3, readdirSync, statSync } from "node:fs";
 import { delimiter, join as join10 } from "node:path";
 var PLUGIN_PREFIX = "candle-";
@@ -57718,7 +58056,7 @@ function realRunPlugin(path, args, env) {
   return new Promise((resolve2) => {
     let child;
     try {
-      child = spawn(path, args, { stdio: "inherit", env });
+      child = spawn2(path, args, { stdio: "inherit", env });
     } catch {
       resolve2(1);
       return;
@@ -59660,7 +59998,7 @@ async function hoodTransfer(ctx, args) {
   const maxFee = BigInt(leg.maxFeePerGas);
   ctx.deps.stderr.write(`Built transfer ${safeText(transferId)}: ${decimalAmount(amountRaw, decimals)} ${safeText(label)}${typeof built.destinationKind === "string" ? ` to ${built.destinationKind === "vault" ? "the vault" : "a linked wallet"}` : ""}. Gas up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei).
 `);
-  const run = await runSequencedLegs(ctx, key, {
+  const run2 = await runSequencedLegs(ctx, key, {
     wallet,
     first,
     submitPath: "/api/v1/agent/transfer/submit",
@@ -59672,7 +60010,7 @@ async function hoodTransfer(ctx, args) {
     onLanded: async () => {}
   });
   const receipt = {
-    ...run.final,
+    ...run2.final,
     transferId,
     chain: "hood",
     walletId: wallet.id,
@@ -59680,7 +60018,7 @@ async function hoodTransfer(ctx, args) {
     destination,
     ...typeof built.destinationKind === "string" ? { destinationKind: built.destinationKind } : {},
     operationId: first.operationId,
-    landedLegs: run.landed
+    landedLegs: run2.landed
   };
   return printTradingResult(ctx, receipt);
 }
@@ -64194,7 +64532,7 @@ async function vaultPromote(args, ctx) {
     return usage(ctx, "Use either --from or --in-place, not both.");
   }
   if (fromLabel === undefined && inPlaceLabel === undefined) {
-    return usage(ctx, "Usage: candle vault promote --from <vault-key-label> | --in-place <vault-key-label> --sweep-to <label> [--rpc-url <url>] [--to-key <label|prefix>]");
+    return usage(ctx, "Usage: candle vault promote --from <vault-key-label> | --in-place <vault-key-label> --sweep-to <label> [--rpc-url <url>] [--to-key <label|prefix>] [--label <name>]");
   }
   const toKeyRaw = parsed.values["--to-key"];
   if (toKeyRaw !== undefined && toKeyRaw.trim().length === 0)
@@ -64243,19 +64581,19 @@ async function rebindAfterImport(ctx, toKey, wallet, callingKeyPrefix, chain2) {
       reason: wallet.linkedWalletId === null ? "no linked wallet id" : `remote authority is ${wallet.remoteAuthority ?? "unknown"}, not verified-active`
     }
   ] : [];
-  const run = rebindable.length > 0 ? await rebindPromoted(ctx, toKey.deviceToken, toKey.target.keyPrefix, rebindable, toKey.keySigner?.spkiSha256) : undefined;
-  const input = { target: toKey.target, callingKeyPrefix, wallets: rebindable, run, notRebindable };
+  const run2 = rebindable.length > 0 ? await rebindPromoted(ctx, toKey.deviceToken, toKey.target.keyPrefix, rebindable, toKey.keySigner?.spkiSha256) : undefined;
+  const input = { target: toKey.target, callingKeyPrefix, wallets: rebindable, run: run2, notRebindable };
   const report = renderRebindReport(input);
   if (report.length > 0)
     ctx.deps.stderr.write(`${report}
 `);
   const id = wallet.linkedWalletId;
   return {
-    exit: run !== undefined && !run.ok ? 1 : 0,
+    exit: run2 !== undefined && !run2.ok ? 1 : 0,
     json: {
       ...rebindJson(input, chain2),
-      boundKeyPrefix: finalBoundKey({ id, importedTo: wallet.importedTo }, run, toKey.target.keyPrefix),
-      walletRebind: walletRebindJson({ id, remoteAuthority: wallet.remoteAuthority }, run)
+      boundKeyPrefix: finalBoundKey({ id, importedTo: wallet.importedTo }, run2, toKey.target.keyPrefix),
+      walletRebind: walletRebindJson({ id, remoteAuthority: wallet.remoteAuthority }, run2)
     }
   };
 }
@@ -65285,11 +65623,11 @@ function splitRebindable(results) {
   }
   return { wallets: wallets2, notRebindable };
 }
-function keysWithRebind(results, phase, run) {
+function keysWithRebind(results, phase, run2) {
   return results.map((row) => ({
     ...row,
-    boundKeyPrefix: finalBoundKey({ id: row.linkedWalletId, importedTo: phase.importedTo.get(row.address) ?? null }, run, phase.toKey.target.keyPrefix),
-    rebind: walletRebindJson({ id: row.linkedWalletId, remoteAuthority: row.remoteAuthority }, run)
+    boundKeyPrefix: finalBoundKey({ id: row.linkedWalletId, importedTo: phase.importedTo.get(row.address) ?? null }, run2, phase.toKey.target.keyPrefix),
+    rebind: walletRebindJson({ id: row.linkedWalletId, remoteAuthority: row.remoteAuthority }, run2)
   }));
 }
 async function vaultPromoteBatch(args, ctx) {
@@ -65783,12 +66121,12 @@ ${renderControlledBy(controlledBy, acting.length)}
 }
 async function runRebindPhase(ctx, phase, results) {
   const { wallets: wallets2, notRebindable } = splitRebindable(results);
-  const run = wallets2.length > 0 ? await rebindPromoted(ctx, phase.toKey.deviceToken, phase.toKey.target.keyPrefix, wallets2, phase.toKey.keySigner?.spkiSha256) : undefined;
+  const run2 = wallets2.length > 0 ? await rebindPromoted(ctx, phase.toKey.deviceToken, phase.toKey.target.keyPrefix, wallets2, phase.toKey.keySigner?.spkiSha256) : undefined;
   const input = {
     target: phase.toKey.target,
     callingKeyPrefix: phase.callingKeyPrefix,
     wallets: wallets2,
-    run,
+    run: run2,
     notRebindable
   };
   const report = renderRebindReport(input);
@@ -65800,7 +66138,7 @@ async function runRebindPhase(ctx, phase, results) {
     ctx.deps.stderr.write(`${keySignerTradableLine({ target: phase.toKey.target, keySigner })}
 `);
   }
-  return { phase, run, input };
+  return { phase, run: run2, input };
 }
 async function verifySubjectSecret(vault, subject) {
   const secret = await decryptKey(vault, subject.id);
@@ -66033,9 +66371,9 @@ function finish(ctx, opts) {
 `);
   }
   if (opts.rebound !== undefined) {
-    const { input, run } = opts.rebound;
-    const moved = input.wallets.filter((w) => run?.outcomes.get(w.id)?.state === "rebound").length;
-    const already = input.wallets.filter((w) => run?.outcomes.get(w.id)?.state === "unchanged").length;
+    const { input, run: run2 } = opts.rebound;
+    const moved = input.wallets.filter((w) => run2?.outcomes.get(w.id)?.state === "rebound").length;
+    const already = input.wallets.filter((w) => run2?.outcomes.get(w.id)?.state === "unchanged").length;
     const pending = input.wallets.length - moved - already;
     ctx.deps.stdout.write(`${moved + already} of ${input.wallets.length + input.notRebindable.length} wallets bound to ${input.target.keyPrefix}${pending > 0 ? `; ${pending} still on ${input.callingKeyPrefix}` : ""}${input.notRebindable.length > 0 ? `; ${input.notRebindable.length} not yet rebindable` : ""}.
 `);
@@ -67989,148 +68327,6 @@ async function verifyProfileAccount(ctx, config) {
   return { ok: true };
 }
 
-// src/keychain.ts
-init_secret_store();
-import { spawn as spawn2, spawnSync } from "node:child_process";
-var CREDENTIAL_SERVICE = "tv.candle.cli";
-var SECRETS_SERVICE = "tv.candle.cli.secrets";
-var SERVICE = CREDENTIAL_SERVICE;
-var PROBE_ACCOUNT = "tv.candle.cli.probe";
-var UNSAFE_FOR_SECURITY_COMMAND_LINE = /["\\\n\r]/;
-function assertSafeRef(ref) {
-  if (UNSAFE_FOR_SECURITY_COMMAND_LINE.test(ref)) {
-    throw new Error("Refusing to use this keychain reference: it contains a quote, backslash, or newline, which " + "could break out of the quoted argument on security's command-on-stdin line");
-  }
-}
-var RUN_TIMEOUT_MS = 1e4;
-function run(bin, args, stdin) {
-  return new Promise((resolve4, reject) => {
-    const child = spawn2(bin, args, { stdio: ["pipe", "pipe", "pipe"], env: process.env });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const timeout = setTimeout(() => {
-      if (settled)
-        return;
-      child.kill("SIGKILL");
-    }, RUN_TIMEOUT_MS);
-    child.stdin.on("error", () => {});
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("error", (err) => {
-      if (settled)
-        return;
-      settled = true;
-      clearTimeout(timeout);
-      reject(err);
-    });
-    child.on("close", (code) => {
-      if (settled)
-        return;
-      settled = true;
-      clearTimeout(timeout);
-      resolve4({ status: code ?? -1, stdout, stderr });
-    });
-    if (stdin !== undefined)
-      child.stdin.write(stdin);
-    child.stdin.end();
-  });
-}
-function binaryResolvable(bin) {
-  return spawnSync("which", [bin], { env: process.env }).status === 0;
-}
-
-class KeychainSecretStore {
-  binary;
-  service;
-  constructor(binary = "security", service = SERVICE) {
-    this.binary = binary;
-    this.service = service;
-  }
-  async get(ref) {
-    const result = await run(this.binary, ["find-generic-password", "-s", this.service, "-a", ref, "-w"]);
-    if (result.status !== 0)
-      return null;
-    return result.stdout.replace(/\n$/, "");
-  }
-  async set(ref, value) {
-    assertSafeRef(ref);
-    if (UNSAFE_FOR_SECURITY_COMMAND_LINE.test(value)) {
-      throw new Error("Refusing to store this secret in the macOS Keychain: it contains a quote, backslash, or " + "newline, which could break out of the quoted argument on security's command-on-stdin line");
-    }
-    const command = `add-generic-password -U -s "${this.service}" -a "${ref}" -w "${value}"
-`;
-    const result = await run(this.binary, ["-i"], command);
-    if (result.status !== 0) {
-      throw new Error(`Failed to store credential in the macOS Keychain (security exited ${result.status})`);
-    }
-  }
-  async delete(ref) {
-    assertSafeRef(ref);
-    const command = `delete-generic-password -s "${this.service}" -a "${ref}"
-`;
-    await run(this.binary, ["-i"], command);
-  }
-}
-
-class SecretToolSecretStore {
-  binary;
-  service;
-  constructor(binary = "secret-tool", service = SERVICE) {
-    this.binary = binary;
-    this.service = service;
-  }
-  async get(ref) {
-    const result = await run(this.binary, ["lookup", "service", this.service, "account", ref]);
-    if (result.status !== 0)
-      return null;
-    const value = result.stdout.replace(/\n$/, "");
-    return value.length > 0 ? value : null;
-  }
-  async set(ref, value) {
-    const result = await run(this.binary, ["store", "--label=Candle CLI", "service", this.service, "account", ref], value);
-    if (result.status !== 0) {
-      throw new Error(`Failed to store credential via secret-tool (exited ${result.status})`);
-    }
-  }
-  async delete(ref) {
-    await run(this.binary, ["clear", "service", this.service, "account", ref]);
-  }
-}
-async function probeSecretTool(store) {
-  const probeValue = crypto.randomUUID();
-  try {
-    await store.set(PROBE_ACCOUNT, probeValue);
-    const got = await store.get(PROBE_ACCOUNT);
-    return got === probeValue;
-  } catch {
-    return false;
-  } finally {
-    try {
-      await store.delete(PROBE_ACCOUNT);
-    } catch {}
-  }
-}
-async function resolveSecretStore(platform = process.platform, namespace = { service: CREDENTIAL_SERVICE }) {
-  if (platform === "darwin" && binaryResolvable("security")) {
-    return { store: new KeychainSecretStore("security", namespace.service), backend: "keychain" };
-  }
-  if (platform === "linux" && binaryResolvable("secret-tool")) {
-    const candidate = new SecretToolSecretStore("secret-tool", namespace.service);
-    if (await probeSecretTool(candidate)) {
-      return { store: candidate, backend: "secret-tool" };
-    }
-  }
-  return {
-    store: new EncryptedFileSecretStore(namespace.filePath ? { path: namespace.filePath } : {}),
-    backend: "encrypted-file"
-  };
-}
-
 // src/index.ts
 init_profiles();
 init_release();
@@ -68348,7 +68544,16 @@ var NEVER_GUARDED = new Set([
   "plugins"
 ]);
 async function run2(argv, deps) {
-  const code = await runCommand(argv, deps);
+  let code;
+  try {
+    code = await runCommand(argv, deps);
+  } catch (error) {
+    if (!(error instanceof SecretStoreLockedError) && !(error instanceof SecretStoreReadError))
+      throw error;
+    const parsed = extractGlobalFlags(argv);
+    writeLocalFailure(deps, { code: "SECRET_STORE_FAILED", message: error.message }, !("error" in parsed) && parsed.flags.json);
+    return 1;
+  }
   const extractedForNotice = extractGlobalFlags(argv);
   const word = "error" in extractedForNotice ? undefined : canonicalCommand(extractedForNotice.rest[0] === "candle" ? extractedForNotice.rest[1] : extractedForNotice.rest[0]);
   await maybeWriteUpdateNotice(deps, { command: word });
@@ -68373,7 +68578,7 @@ async function runCommand(argv, deps) {
       return 1;
     }
     const profile2 = resolution2.name;
-    const profileApiUrl2 = profile2 ? config2.profiles?.[profile2]?.apiUrl : config2.apiUrl;
+    const profileApiUrl2 = profile2 ? config2.profiles?.[profile2]?.apiUrl?.trim() || config2.apiUrl : config2.apiUrl;
     return runPlugin(plugin.name, plugin.args, {
       deps,
       json: pluginFlags.json,
@@ -68417,7 +68622,7 @@ async function runCommand(argv, deps) {
       vaultDevice: flags.vaultDevice
     });
   }
-  const config = await migrateProfiles(deps);
+  const config = cmd === "doctor" ? await deps.readConfig() : await migrateProfiles(deps);
   const isAuthLogin = cmd === "auth" && sub === "login";
   const isProfileCommand = cmd === "profile";
   const resolution = isAuthLogin ? resolveProfileNameForLogin(config, { flag: flags.profile, env: deps.env }) : isProfileCommand ? { ok: true, name: undefined } : resolveProfileName(config, { flag: flags.profile, env: deps.env });
@@ -68430,7 +68635,7 @@ async function runCommand(argv, deps) {
     return 1;
   }
   const profile = resolution.name;
-  const profileApiUrl = profile ? config.profiles?.[profile]?.apiUrl : config.apiUrl;
+  const profileApiUrl = profile ? config.profiles?.[profile]?.apiUrl?.trim() || config.apiUrl : config.apiUrl;
   const apiUrl = flags.apiUrl ?? resolveApiUrl(profileApiUrl, deps.env);
   const ctx = {
     deps,
@@ -68488,6 +68693,8 @@ function unknownCommand(deps, token, word) {
 }
 async function migrateProfiles(deps) {
   const before = await deps.readConfig();
+  if (deps.env.CANDLE_API_KEY?.trim() || deps.env.CANDLE_DEVICE_TOKEN?.trim())
+    return before;
   const { config, migrated } = migratedConfig(before);
   if (!migrated)
     return before;

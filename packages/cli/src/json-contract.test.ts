@@ -375,3 +375,47 @@ describe("BE-296: the promote account code is declared", () => {
     }
   })
 })
+
+test("R2.9 doctor row ids are stable across role-dependent labels", async () => {
+  const { DOCTOR_ROW_IDS } = await import("./commands/doctor")
+  expect([...new Set<string>(Object.values(DOCTOR_ROW_IDS))].sort()).toEqual(
+    [
+      "runtime",
+      "keychain",
+      "config_dir",
+      "vault",
+      "credentials",
+      "api_reachable",
+      "device_token",
+      "api_key",
+      "plan",
+      "embedded_wallet",
+      "account",
+      "install",
+      "security_key_helper",
+      "update",
+      "key_signers",
+      "signer_slot",
+      "trade_path",
+      "tee_limits",
+      "project_env",
+      "api_url_provenance",
+      "api_key_provenance",
+      "device_token_provenance",
+    ].sort(),
+  )
+  const stdout = createCapture()
+  await run(
+    ["doctor", "--json"],
+    createTestDeps({
+      stdout,
+      fetch: (() => {
+        throw new Error("offline fixture")
+      }) as unknown as typeof fetch,
+    }),
+  )
+  const body = JSON.parse(stdout.text)
+  expect(body.role).toBe("owner")
+  expect(body.provenance).toBeDefined()
+  for (const row of body.rows) expect(Object.values(DOCTOR_ROW_IDS)).toContain(row.id)
+})

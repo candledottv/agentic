@@ -110,13 +110,11 @@ function machine(
     updateProfile: config.updateProfile,
     promptSecret: async (text) => {
       secretPrompts.push(text)
-      const next = secrets.shift()
-      if (next === undefined) throw new Error(`unscripted secret prompt: ${text}`)
-      return next
+      throw new Error("Fingerprint must use the visible prompt")
     },
     promptLine: async (text) => {
       linePrompts.push(text)
-      return lines.shift() ?? ""
+      return text.startsWith("Type the full fingerprint") ? (secrets.shift() ?? "") : (lines.shift() ?? "")
     },
     writeFile: async () => {},
   })
@@ -427,7 +425,7 @@ describe("T9: candle keys signer move", () => {
 
     expect(await run(["keys", "signer", "move", PREFIX, "--to-key", TO], h.deps)).toBe(0)
     // D3: the same pin `tee rebind` asks for, before the first owner change is signed.
-    expect(h.secretPrompts).toEqual([`Type the full fingerprint of key ${TO}'s signer, all three groups: `])
+    expect(h.linePrompts).toEqual([`Type the full fingerprint of key ${TO}'s signer, all three groups: `])
     expect(h.stderr.text).toContain(`Key ${TO}'s signer is ${liveFp}. This machine has not pinned it yet`)
     expect((await readPin(h.deps, TO))?.spkiSha256).toBe(spkiSha256Of(live.publicKeyDer))
     const commits = sim.rebinds.filter((b) => b.dryRun !== true)
@@ -479,8 +477,8 @@ describe("T9: candle keys signer move", () => {
     const other = pair()
     const h = machine(sim, { deviceToken: true })
     // The operator types the fingerprint the preview showed; the live key's signer changes before the commit.
-    h.deps.promptSecret = async (text) => {
-      h.secretPrompts.push(text)
+    h.deps.promptLine = async (text) => {
+      h.linePrompts.push(text)
       const key = sim.keys.get(TO)
       if (key) key.active = sim.signer(other.publicKeyDer, "q-other")
       return liveFp
@@ -585,6 +583,7 @@ describe("T11: candle tee rebind onto a key", () => {
     // Between the pin (at the preview) and the commit, another signer is approved on the target.
     h.deps.promptLine = async (text) => {
       h.linePrompts.push(text)
+      if (text.startsWith("Type the full fingerprint")) return fingerprint
       const key = sim.keys.get(TO)
       if (key) key.active = sim.signer(other.publicKeyDer, "q-other")
       return "confirm"
@@ -643,7 +642,7 @@ describe("T11: candle tee rebind onto a key", () => {
 // ── keys signer approve (4.3) ─────────────────────────────────────────────────────────────────
 
 describe("candle keys signer approve", () => {
-  test("takes the full group string, without echo; one group is refused before anything is sent", async () => {
+  test("takes the full group string, with echo; one group is refused before anything is sent", async () => {
     const clock = createFakeClock(1_000)
     const sim = new SignerSim(clock.now)
     const p = pair()
@@ -659,11 +658,15 @@ describe("candle keys signer approve", () => {
     expect(JSON.parse(one.stdout.text).code).toBe("KEY_SIGNER_FINGERPRINT_MISMATCH")
     expect(one.calls.some((c) => c.url.endsWith("/approve"))).toBe(false)
 
-    const full = machine(sim, { deviceToken: true, secrets: [fingerprint] })
+    const full = machine(sim, { deviceToken: true, secrets: [fingerprint.toLowerCase().replace(/-/g, " ")] })
     expect(await run(["keys", "signer", "approve", "ABCD-EFGH", "--key", PREFIX], full.deps)).toBe(0)
-    expect(full.secretPrompts).toHaveLength(1)
+    expect(full.linePrompts).toHaveLength(1)
+    expect(full.secretPrompts).toHaveLength(0)
     expect(sim.keys.get(PREFIX)?.active?.spkiSha256).toBe(sha)
     expect(full.stderr.text).toContain(fingerprint)
+    expect(JSON.parse(String(full.calls.find((call) => call.url.endsWith("/approve"))?.init.body))).toMatchObject({
+      fingerprint,
+    })
   })
 })
 

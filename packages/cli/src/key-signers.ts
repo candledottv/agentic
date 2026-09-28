@@ -64,12 +64,43 @@ export function keySignerFingerprint(spkiSha256: string): string {
  * and the `CNDL` tag may be left off; a missing, extra or wrong character is not, and one group
  * on its own never passes.
  */
+/** Normalize only the twelve-character body: stripping the tag must precede L -> 1. */
+export function normalizeFingerprint(typed: unknown): string {
+  if (typeof typed !== "string") return ""
+  let body = typed.toUpperCase().replace(/[^0-9A-Z]/g, "")
+  if (body.length === 16 && body.startsWith("CNDL")) body = body.slice(4)
+  return body.length === 12 ? body.replace(/O/g, "0").replace(/[IL]/g, "1") : body
+}
+
+export function fingerprintMismatch(
+  typed: unknown,
+  fingerprint: string,
+):
+  | { ok: true }
+  | { ok: false; reason: "length"; typedChars: number }
+  | { ok: false; reason: "groups"; groups: (1 | 2 | 3)[] } {
+  const body = normalizeFingerprint(typed)
+  if (body.length !== 12) return { ok: false, reason: "length", typedChars: body.length }
+  const expected = normalizeFingerprint(fingerprint)
+  const groups = ([1, 2, 3] as const).filter((group) => {
+    const part = body.slice((group - 1) * 4, group * 4)
+    return !/^[0-9A-HJKMNP-TV-Z]{4}$/.test(part) || part !== expected.slice((group - 1) * 4, group * 4)
+  })
+  return groups.length === 0 ? { ok: true } : { ok: false, reason: "groups", groups }
+}
+
 export function fingerprintMatches(typed: unknown, fingerprint: string): boolean {
-  if (typeof typed !== "string") return false
-  const expected = fingerprint.replace(/^CNDL-/, "").replace(/-/g, "")
-  let normalized = typed.toUpperCase().replace(/[^0-9A-Z]/g, "")
-  if (normalized.length === expected.length + 4 && normalized.startsWith("CNDL")) normalized = normalized.slice(4)
-  return normalized.length === expected.length && normalized === expected
+  return fingerprintMismatch(typed, fingerprint).ok
+}
+
+export function fingerprintMismatchMessage(typed: string, fingerprint: string): string {
+  const mismatch = fingerprintMismatch(typed, fingerprint)
+  const body = normalizeFingerprint(typed)
+  const grouped = body.match(/.{1,4}/g)?.join("-") ?? ""
+  if (mismatch.ok) return "Fingerprint matches."
+  if (mismatch.reason === "length")
+    return `You typed ${body.length} characters; all 12 characters in three groups are required.`
+  return `You typed CNDL-${grouped}. ${mismatch.groups.length === 1 ? "Group" : "Groups"} ${mismatch.groups.join(", ")} of 3 ${mismatch.groups.length === 1 ? "does" : "do"} not match.`
 }
 
 /** Lowercase hex sha256 of a base64 SPKI DER. */
@@ -342,13 +373,13 @@ export async function confirmSignerPin(
         "Read the full fingerprint on the trading machine (candle tee signer new printed it).\n",
     )
   }
-  const typed = await deps.promptSecret(`Type the full fingerprint of key ${keyPrefix}'s signer, all three groups: `)
+  const typed = await deps.promptLine(`Type the full fingerprint of key ${keyPrefix}'s signer, all three groups: `)
   if (!fingerprintMatches(typed, active.fingerprint)) {
     return {
       ok: false,
       failure: {
         code: pin ? "KEY_SIGNER_CHANGED" : "KEY_SIGNER_FINGERPRINT_MISMATCH",
-        message: `That is not the full fingerprint of key ${keyPrefix}'s signer. ${nothing}`,
+        message: `${fingerprintMismatchMessage(typed, active.fingerprint)} ${nothing}`,
         suggestion:
           "Type all three groups exactly as the trading machine printed them, for example CNDL-7K2Q-94XM-A1TD.",
       },

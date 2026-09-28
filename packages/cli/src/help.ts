@@ -220,7 +220,7 @@ export const HELP: Record<string, Topic> = {
     summary: "Diagnose CLI setup: credentials, storage backend, API reachability, security key helper",
     description:
       "One PASS/FAIL/SKIP table over the runtime, the storage backend, both credentials, API reachability, wallet delegation, the install method and whether the security key helper (candle-fido2) is beside the binary. Its output is meant to be pasted into a bug report. Exits nonzero on any FAIL.",
-    usage: ["candle doctor"],
+    usage: ["candle doctor [--role owner|bot|auto]"],
     rows: [],
     examples: ["candle doctor", "candle doctor --json"],
     env: ENV_API,

@@ -112,7 +112,7 @@ export async function vaultPromote(args: string[], ctx: CommandContext): Promise
   if (fromLabel === undefined && inPlaceLabel === undefined) {
     return usage(
       ctx,
-      "Usage: candle vault promote --from <vault-key-label> | --in-place <vault-key-label> --sweep-to <label> [--rpc-url <url>] [--to-key <label|prefix>]",
+      "Usage: candle vault promote --from <vault-key-label> | --in-place <vault-key-label> --sweep-to <label> [--rpc-url <url>] [--to-key <label|prefix>] [--label <name>]",
     )
   }
   const toKeyRaw = parsed.values["--to-key"]

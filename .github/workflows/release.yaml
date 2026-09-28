@@ -260,10 +260,10 @@ jobs:
           rm -rf dist-bin && mkdir -p dist-bin
           # shellcheck disable=SC2086
           for target in ${RELEASE_TARGETS}; do
-            bun build --compile --minify --target="bun-${target}" src/index.ts --outfile "dist-bin/candle-${target}"
+            bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --minify --target="bun-${target}" src/index.ts --outfile "dist-bin/candle-${target}"
             # The security key helper (Ember Phase 2 PR E): the same compile, the same target, the
             # same job. It loads libfido2 at run time through bun:ffi, so it needs no cross toolchain.
-            bun build --compile --minify --target="bun-${target}" src/fido2-helper/main.ts --outfile "dist-bin/candle-fido2-${target}"
+            bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --minify --target="bun-${target}" src/fido2-helper/main.ts --outfile "dist-bin/candle-fido2-${target}"
           done
           ls -la dist-bin
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -452,7 +452,13 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           tag="cli-v${VERSION}"
-          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Candle CLI ${VERSION}" --generate-notes
+          # R1.6/R2.9: keep this compatibility note in the first release carrying A1.
+          notes="Formats and compatibility: https://docs.candle.tv/developers/cli-release-notes
+
+          A project .env no longer configures the CLI. Compiled binaries ignore .env and bunfig.toml; export CANDLE_* variables or store settings in a profile.
+
+          Doctor now detects owner/bot roles. API key valid (launch:write) is renamed API key valid; in bot role, Launch wallet delegated is renamed Embedded wallet. JSON rows have stable ids, and role and provenance fields are additive. A paused profile fails the Trade path check."
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "Candle CLI ${VERSION}" --notes "$notes" --generate-notes
           gh release upload "$tag" --clobber candle-* install.sh install.sh.sigstore.json SHA256SUMS SHA256SUMS.sigstore.json latest.json
       - name: Check the Homebrew tap token
         if: github.event_name == 'push'

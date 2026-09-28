@@ -12,6 +12,7 @@ import { readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { resolveApiKey, resolveDeviceToken } from "./deps"
+import { SecretStoreLockedError } from "./keychain"
 import { createFakeStore, createTestDeps, TEST_HOME } from "./test-support"
 import { defaultVaultPath } from "./vault/store"
 import { defaultKeystorePath, defaultTeeKeystorePath, legacyTeeKeystorePath } from "./wallet-keystore"
@@ -170,3 +171,29 @@ describe("T2: homedir is a dep, and the vault and keystore paths are built from 
     expect(realDeps.split("\n").map((line) => line.trim())).toContain("homedir,")
   })
 })
+
+for (const [resolve, envName, kind, legacy] of [
+  [resolveApiKey, "CANDLE_API_KEY", "api_key", "legacy-key"],
+  [resolveDeviceToken, "CANDLE_DEVICE_TOKEN", "device_token", "legacy-token"],
+] as const) {
+  test(`R1.3/R6.3 ${envName}: exported > profile slot; legacy slot only without a profile`, async () => {
+    const store = createFakeStore({ [kind]: legacy, [`profile:bot:${kind}`]: "profile-value" })
+    const deps = createTestDeps({
+      store,
+      fetch: (() => {
+        throw new Error("no network")
+      }) as unknown as typeof fetch,
+    })
+    expect(await resolve(deps)).toBe(legacy)
+    expect(await resolve(deps, "bot")).toBe("profile-value")
+    // A missing selected profile must never silently use another identity.
+    expect(await resolve(deps, "empty")).toBeUndefined()
+    deps.store.get = async () => {
+      throw new SecretStoreLockedError()
+    }
+    await expect(resolve(deps, "bot")).rejects.toThrow("Keychain is locked")
+    deps.env[envName] = "  exported-value  "
+    expect(await resolve(deps, "bot")).toBe("exported-value")
+    expect(await resolve(deps)).toBe("exported-value")
+  })
+}

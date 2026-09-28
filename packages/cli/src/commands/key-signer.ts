@@ -27,6 +27,7 @@ import {
   deleteKeySignerEntry,
   errorDetails,
   fingerprintMatches,
+  fingerprintMismatchMessage,
   KEY_PREFIX_RE,
   type KeySignerEntry,
   keySignerFingerprint,
@@ -45,6 +46,7 @@ import {
   signOwnerChange,
   spkiSha256Of,
 } from "../key-signers"
+import { SecretStoreLockedError } from "../keychain"
 import { apiKeyPrefix, printIdentity } from "../profiles"
 import { formatTimestamp, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { pemToStoredSigner, storedSignerToPem, walletSignerRef } from "../secret-store"
@@ -510,13 +512,13 @@ async function keysSignerApprove(args: string[], ctx: CommandContext): Promise<n
 
   let typed: string | undefined
   if (!reject) {
-    typed = await deps.promptSecret("Type the full fingerprint the trading machine printed, all three groups: ")
+    typed = await deps.promptLine("Type the full fingerprint the trading machine printed, all three groups: ")
     if (!fingerprintMatches(typed, pending.fingerprint)) {
       writeLocalFailure(
         deps,
         {
           code: "KEY_SIGNER_FINGERPRINT_MISMATCH",
-          message: "That is not the full fingerprint of this request; nothing was approved.",
+          message: `${fingerprintMismatchMessage(typed, pending.fingerprint)} Nothing was approved.`,
           suggestion:
             "Type all three groups exactly as the trading machine printed them, for example CNDL-7K2Q-94XM-A1TD.",
         },
@@ -527,7 +529,7 @@ async function keysSignerApprove(args: string[], ctx: CommandContext): Promise<n
   }
   const answered = await approveSigner(ctx, deviceToken, keyPrefix, {
     userCode: code,
-    ...(typed !== undefined ? { fingerprint: typed } : {}),
+    ...(typed !== undefined ? { fingerprint: pending.fingerprint } : {}),
     decision: reject ? "reject" : "approve",
   })
   if (!answered.ok) {
@@ -1002,15 +1004,15 @@ function reportMove(
  * (WARN: its wallets trade from another machine); and a device token beside a key signer (WARN,
  * D2). The network read is best-effort: a failed read adds no row.
  */
-export async function keySignerDoctorRows(
+export async function keySignerDoctorReport(
   ctx: CommandContext,
   creds: { apiKey?: string; deviceToken?: string },
-): Promise<CheckRow[]> {
+): Promise<{ rows: CheckRow[]; hasSigners: boolean; reachableWalletIds: string[]; locked: boolean }> {
   const { deps } = ctx
   const rows: CheckRow[] = []
   const entries = await localKeySigners(deps)
   // Nothing to report on a machine that holds no key signer; and no request for it either.
-  if (entries.length === 0) return rows
+  if (entries.length === 0) return { rows, hasSigners: false, reachableWalletIds: [], locked: false }
   let view: SignerView | null = null
   if (creds.apiKey !== undefined) {
     const read = await readSigner(ctx, "self", { apiKey: creds.apiKey }).catch(() => null)
@@ -1018,15 +1020,21 @@ export async function keySignerDoctorRows(
   }
 
   const problems: string[] = []
+  const readableQuorums = new Set<string>()
+  let locked = false
   for (const entry of entries) {
     const ref = keySignerRef(entry.keyPrefix, entry.spkiSha256)
     let stored: string | null
     try {
       stored = await deps.store.get(ref)
     } catch (error) {
+      locked ||= error instanceof SecretStoreLockedError
       problems.push(
-        `${ref} (${entry.fingerprint}): cannot be opened: ${error instanceof Error ? error.message : String(error)}`,
+        error instanceof SecretStoreLockedError
+          ? "cannot be opened: keychain locked"
+          : `${entry.fingerprint}: cannot be opened: ${error instanceof Error ? error.message : String(error)}`,
       )
+
       continue
     }
     if (stored === null) {
@@ -1035,6 +1043,7 @@ export async function keySignerDoctorRows(
     }
     const problem = signerSlotProblem(stored, entry.spkiSha256)
     if (problem !== null) problems.push(`${ref} (${entry.fingerprint}): ${problem}`)
+    else if (entry.signerQuorumId) readableQuorums.add(entry.signerQuorumId)
   }
 
   // The legacy per-wallet signers the current key's wallets need: those not on a local key signer.
@@ -1047,7 +1056,12 @@ export async function keySignerDoctorRows(
       try {
         stored = await deps.store.get(ref)
       } catch (error) {
-        problems.push(`${ref}: cannot be opened: ${error instanceof Error ? error.message : String(error)}`)
+        locked ||= error instanceof SecretStoreLockedError
+        problems.push(
+          error instanceof SecretStoreLockedError
+            ? "cannot be opened: keychain locked"
+            : `${ref}: cannot be opened: ${error instanceof Error ? error.message : String(error)}`,
+        )
         continue
       }
       if (stored === null) continue // on another machine, which is not a fault
@@ -1077,5 +1091,18 @@ export async function keySignerDoctorRows(
   if (creds.deviceToken !== undefined && entries.length > 0) {
     rows.push({ check: "Device token beside signer", state: "WARN", detail: DEVICE_TOKEN_BESIDE_SIGNER_LINE })
   }
-  return rows
+  const reachableWalletIds =
+    view === null
+      ? []
+      : allSignerWallets(view)
+          .filter((wallet) => wallet.signerQuorumId && readableQuorums.has(wallet.signerQuorumId))
+          .map((wallet) => wallet.id)
+  return { rows, hasSigners: true, reachableWalletIds, locked }
+}
+
+export async function keySignerDoctorRows(
+  ctx: CommandContext,
+  creds: { apiKey?: string; deviceToken?: string },
+): Promise<CheckRow[]> {
+  return (await keySignerDoctorReport(ctx, creds)).rows
 }

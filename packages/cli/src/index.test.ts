@@ -11,6 +11,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { GROUPS, HELP } from "./help"
 import { buildRealDeps, NEVER_GUARDED, ROUTED_COMMANDS, ROUTED_SUBCOMMANDS, run } from "./index"
+import { SecretStoreLockedError } from "./keychain"
 import {
   createCapture,
   createFakeConfigStore,
@@ -713,6 +714,7 @@ describe("the account guard at dispatch", () => {
       ...mismatched,
       "/api/v1/status": () => jsonResponse(200, { api: "ok" }),
       "/api/v1/agent/keys": () => jsonResponse(200, { success: true, keys: [], tier: "free" }),
+      "/api/v1/agent/wallets/trading": () => jsonResponse(200, { success: true }),
       "/api/v1/agent/tier": () => jsonResponse(200, { success: true, tier: "free" }),
     })
     const stdout = createCapture()
@@ -1066,3 +1068,34 @@ describe("the real deps", () => {
 const unusedFetch = (() => {
   throw new Error("fetch should not be called for this test")
 }) as unknown as typeof fetch
+
+test("R6.3 commands report a locked store as an error, including the JSON envelope", async () => {
+  const stdout = createCapture(),
+    stderr = createCapture()
+  const store = createFakeStore()
+  store.get = async () => {
+    throw new SecretStoreLockedError()
+  }
+  const deps = createTestDeps({ fetch: unusedFetch, store, stdout, stderr })
+  expect(await run(["keys", "list", "--json"], deps)).toBe(1)
+  expect(JSON.parse(stdout.text)).toMatchObject({ code: "SECRET_STORE_FAILED" })
+  expect(stdout.text).toContain("security unlock-keychain")
+  expect(stderr.text).toBe("")
+})
+
+test("R6.3 exported device token skips legacy migration and the locked store for keys list", async () => {
+  const stdout = createCapture()
+  const store = createFakeStore()
+  store.get = async () => {
+    throw new Error("store must not be read")
+  }
+  const { fetch } = createRoutedFetch({ "/api/v1/agent/keys": () => jsonResponse(200, { keys: [] }) })
+  const deps = createTestDeps({
+    fetch,
+    store,
+    stdout,
+    env: { CANDLE_DEVICE_TOKEN: "dummy-exported-token" },
+    ...createFakeConfigStore({ apiUrl: "https://example.test" }),
+  })
+  expect(await run(["keys", "list", "--json"], deps)).toBe(0)
+})

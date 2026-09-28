@@ -21,11 +21,24 @@ const identity = readFileSync(join(fx, "identity.txt"), "utf8").trim()
 const issuer = readFileSync(join(fx, "issuer.txt"), "utf8").trim()
 
 async function build(): Promise<void> {
-  const proc = Bun.spawn(["bun", "build", "--compile", "--minify", "src/index.ts", "--outfile", bin], {
-    cwd: dir,
-    stdout: "pipe",
-    stderr: "pipe",
-  })
+  const proc = Bun.spawn(
+    [
+      "bun",
+      "build",
+      "--compile",
+      "--no-compile-autoload-dotenv",
+      "--no-compile-autoload-bunfig",
+      "--minify",
+      "src/index.ts",
+      "--outfile",
+      bin,
+    ],
+    {
+      cwd: dir,
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  )
   const [code, err] = await Promise.all([proc.exited, new Response(proc.stderr).text()])
   if (code !== 0) throw new Error(`bun build --compile failed (${code}):\n${err}`)
 }

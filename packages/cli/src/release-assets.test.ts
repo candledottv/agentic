@@ -114,7 +114,9 @@ describe("a release publishes exactly what it built", () => {
     expect(workflow).toContain(wipe)
     const testAt = workflow.indexOf("run: bun test")
     const wipeAt = workflow.indexOf(wipe)
-    const compileAt = workflow.indexOf(`bun build --compile --minify --target="bun-${shVar("target")}"`)
+    const compileAt = workflow.indexOf(
+      `bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --minify --target="bun-${shVar("target")}"`,
+    )
     const downloadAt = workflow.indexOf("actions/download-artifact")
     expect(testAt).toBeGreaterThan(-1)
     expect(wipeAt).toBeGreaterThan(testAt)
@@ -128,7 +130,10 @@ describe("a release publishes exactly what it built", () => {
     const listed = releaseTargets(workflow)
     expect(listed).toEqual(platforms)
 
-    const build = loopTargetsContaining(workflow, `bun build --compile --minify --target="bun-${shVar("target")}"`)
+    const build = loopTargetsContaining(
+      workflow,
+      `bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --minify --target="bun-${shVar("target")}"`,
+    )
     const pack = loopTargetsContaining(workflow, "tar --sort=name")
     const expected = loopTargetsContaining(
       workflow,

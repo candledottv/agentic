@@ -74,7 +74,7 @@ import { clearConfig, readConfig, updateProfile, writeConfig } from "./config"
 import type { CommandContext, Deps } from "./deps"
 import { verifyProfileAccount } from "./guard"
 import { renderTopic, renderTopLevel } from "./help"
-import { resolveSecretStore, SECRETS_SERVICE } from "./keychain"
+import { resolveSecretStore, SECRETS_SERVICE, SecretStoreLockedError, SecretStoreReadError } from "./keychain"
 import { pluginInvocation, realRunPlugin } from "./plugins"
 import { migratedConfig, profileSecretRef, resolveProfileName, resolveProfileNameForLogin } from "./profiles"
 import { platformKey } from "./release"
@@ -381,7 +381,19 @@ export const NEVER_GUARDED = new Set([
 ])
 
 export async function run(argv: string[], deps: Deps): Promise<number> {
-  const code = await runCommand(argv, deps)
+  let code: number
+  try {
+    code = await runCommand(argv, deps)
+  } catch (error) {
+    if (!(error instanceof SecretStoreLockedError) && !(error instanceof SecretStoreReadError)) throw error
+    const parsed = extractGlobalFlags(argv)
+    writeLocalFailure(
+      deps,
+      { code: "SECRET_STORE_FAILED", message: error.message },
+      !("error" in parsed) && parsed.flags.json,
+    )
+    return 1
+  }
   // After the command, never before or during: the notice must not interleave with command
   // output, and a command that failed still deserves to learn an update exists -- the fix for
   // its failure may BE the update. The command word rides along so `update` and `doctor`, whose
@@ -418,7 +430,7 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
       return 1
     }
     const profile = resolution.name
-    const profileApiUrl = profile ? config.profiles?.[profile]?.apiUrl : config.apiUrl
+    const profileApiUrl = profile ? config.profiles?.[profile]?.apiUrl?.trim() || config.apiUrl : config.apiUrl
     return runPlugin(plugin.name, plugin.args, {
       deps,
       json: pluginFlags.json,
@@ -493,7 +505,8 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
     })
   }
 
-  const config = await migrateProfiles(deps)
+  // Doctor must be able to diagnose a locked legacy store without migrating it first.
+  const config = cmd === "doctor" ? await deps.readConfig() : await migrateProfiles(deps)
   // `auth login` resolves LENIENTLY about EXISTENCE (resolveProfileNameForLogin): its `--profile`
   // may name a profile to CREATE, so it must not be gated by resolveProfileName's "does this name
   // already exist" refusal, which exists to protect a command ACTING as an already-selected
@@ -533,7 +546,7 @@ async function runCommand(argv: string[], deps: Deps): Promise<number> {
     return 1
   }
   const profile = resolution.name
-  const profileApiUrl = profile ? config.profiles?.[profile]?.apiUrl : config.apiUrl
+  const profileApiUrl = profile ? config.profiles?.[profile]?.apiUrl?.trim() || config.apiUrl : config.apiUrl
   const apiUrl = flags.apiUrl ?? resolveApiUrl(profileApiUrl, deps.env)
   const ctx: CommandContext = {
     deps,
@@ -652,6 +665,9 @@ function unknownCommand(deps: Deps, token: string | undefined, word?: string): n
  */
 async function migrateProfiles(deps: Deps): Promise<CliConfig> {
   const before = await deps.readConfig()
+  // An environment override must not touch the store, even for a legacy config.
+  // Defer migration as a whole so a skipped slot is not lost on the next run.
+  if (deps.env.CANDLE_API_KEY?.trim() || deps.env.CANDLE_DEVICE_TOKEN?.trim()) return before
   const { config, migrated } = migratedConfig(before)
   if (!migrated) return before
   for (const [legacyRef, kind] of [

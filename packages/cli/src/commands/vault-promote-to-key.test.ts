@@ -736,15 +736,15 @@ async function runSingle(
     stderr: err,
     env: { CANDLE_CONFIG_DIR: f.dir, CANDLE_API_URL: API },
     isTTY: { stdin: true, stdout: true, stderr: true },
-    promptSecret: async (text: string) => {
-      if (text.includes("fingerprint")) {
-        fingerprintPrompts.push(text)
-        return opts.fingerprint ?? ""
-      }
+    promptSecret: async () => {
       secretPrompts += 1
       return f.passphrase
     },
     promptLine: async (text: string) => {
+      if (text.includes("fingerprint")) {
+        fingerprintPrompts.push(text)
+        return opts.fingerprint ?? ""
+      }
       linePrompts.push(text)
       stderrAtPrompt.push(err.text)
       return lines.shift() ?? ""
@@ -1108,7 +1108,7 @@ describe("vault promote --to-key and key signers", () => {
     expect(r.err).toContain(RELAY_SIGNER_LINE)
   })
 
-  test("T5: onto a key with a signer, the first promote asks for the full fingerprint without echo, pins the full sha256, and imports onto the target in one call with the device token alone", async () => {
+  test("T5: onto a key with a signer, the first promote asks for the full fingerprint with echo, pins the full sha256, and imports onto the target in one call with the device token alone", async () => {
     const f = await fixture(["subject", "cold"])
     const rebind = rebindRoute()
     const r = await runSingle(f, {
@@ -1282,7 +1282,8 @@ describe("promote-batch --to-key onto a key with a signer (5.2)", () => {
         },
       },
       deps: {
-        promptSecret: async (text: string) => (text.includes("fingerprint") ? fp : f.passphrase),
+        promptSecret: async () => f.passphrase,
+        promptLine: async (text: string) => (text.includes("fingerprint") ? fp : "confirm"),
       },
     })
     expect(o.code).toBe(0)

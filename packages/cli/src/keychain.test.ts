@@ -354,3 +354,50 @@ describe("resolveSecretStore", () => {
     expect(result.backend).toBe("encrypted-file")
   })
 })
+
+/** Recorded by Candle Claude on 2026-09-27, BE-498 note 01a0e549-7838-7e68-b5fc-eb2ad2f8f078.
+ * Local noninteractive macOS probe using a temporary keychain and dummy item, NOT an SSH run.
+ * Missing: exit 44, empty stdout, standard not-found stderr.
+ * Locked present item (-w): exit 128, empty stdout/stderr. Metadata-only lookup was 0.
+ * The operator deleted the temporary keychain afterwards. Tests replay these outputs only.
+ */
+describe("R6.1 recorded macOS security read outcomes", () => {
+  test.each([
+    {
+      status: 44,
+      stderr: "security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain.",
+      name: null,
+    },
+    { status: 128, stderr: "", name: "SecretStoreLockedError" },
+    { status: 36, stderr: "security: User interaction is not allowed.", name: "SecretStoreLockedError" },
+    {
+      status: 1,
+      stderr: "security: cannot read dummy-reference\nsecond line must not be printed",
+      name: "SecretStoreReadError",
+    },
+  ])("exit $status / $name", async ({ status, stderr, name }) => {
+    const dir = await mkdtemp(join(tmpdir(), "keychain-recording-"))
+    try {
+      const bin = join(dir, "security")
+      await writeFile(
+        bin,
+        `#!/bin/sh\n${stderr ? `cat >&2 <<'RECORDED'\n${stderr}\nRECORDED\n` : ""}exit ${status}\n`,
+        { mode: 0o700 },
+      )
+      const store = new KeychainSecretStore(bin)
+      if (name === null) expect(await store.get("dummy-reference")).toBeNull()
+      else {
+        const error = await store.get("dummy-reference").catch((e: Error) => e)
+        expect(error).toBeInstanceOf(Error)
+        expect((error as Error).name).toBe(name)
+        expect((error as Error).message).not.toContain("dummy-reference")
+        expect((error as Error).message).not.toContain("second line")
+        if (name === "SecretStoreLockedError")
+          expect((error as Error).message).toContain("security unlock-keychain ~/Library/Keychains/login.keychain-db")
+        else expect((error as Error).message).toContain("security exited 1")
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
