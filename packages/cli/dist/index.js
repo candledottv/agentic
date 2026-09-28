@@ -62989,13 +62989,13 @@ async function vaultFund(args, ctx) {
     const destination = teeEntry.tee.vaultDestination;
     if (destination === undefined) {
       throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `${teeAddress} has no pinned vault destination to fund from.`, {
-        suggestion: "Nothing was signed. Name the source key with --from <label>, or pin one: candle tee enable <address> --vault <address>"
+        suggestion: "Nothing was signed. A TEE wallet is funded from its pinned vault key; pin one: candle tee enable <address> --vault <address>"
       });
     }
     const fromEntry = vault.index.entries.find((entry) => entry.address === destination && entry.role === "vault" && entry.chain === "solana");
     if (fromEntry === undefined) {
       throw new VaultError("GRANT_DESTINATION_UNRESOLVED", `Pinned destination ${destination} is not a vault key in this vault.`, {
-        suggestion: "Nothing was signed. Name the source key with --from <label>; candle vault status lists this vault's keys."
+        suggestion: "Nothing was signed. candle vault status lists this vault's keys and their pins."
       });
     }
     assertVaultSigner(fromEntry);

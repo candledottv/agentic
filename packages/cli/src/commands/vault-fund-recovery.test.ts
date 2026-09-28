@@ -1,7 +1,7 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { readFile } from "node:fs/promises"
 import { base58 } from "@scure/base"
-import { Transaction } from "@solana/web3.js"
+import { Keypair, Transaction } from "@solana/web3.js"
 import { run } from "../index"
 import { createCapture, createFakeStore, createRoutedFetch, createTestDeps, jsonResponse } from "../test-support"
 import type { FundingReceipt } from "../vault/funding-receipts"
@@ -247,5 +247,43 @@ describe("BE-190 durable funding", () => {
     expect(await run(["tee", "sweep", f.teeAddress, "--rpc-url", RPC], f.deps)).toBe(0)
     expect(await f.receipts()).toMatchObject({ fundingReceipts: original, destinationExposureAccepted: true })
     expect((await f.receipts()).sweepReceipts).toHaveLength(1)
+  })
+})
+
+describe("BE-506 TEE fund destination hints", () => {
+  async function repin(f: Awaited<ReturnType<typeof fixture>>, destination: string | undefined) {
+    const vault = await reopen(f.path)
+    const tee = vault.index.entries.find((entry) => entry.address === f.teeAddress)!.tee!
+    if (destination === undefined) {
+      // Only a stranded entry may lack a pin; the index refuses an enabled one without it.
+      const entry = vault.index.entries.find((entry) => entry.address === f.teeAddress)!
+      delete entry.linkedWalletId
+      tee.lifecycle = "stranded"
+      delete tee.vaultDestination
+    } else tee.vaultDestination = destination
+    await commitVault(vault, { index: vault.index }, testClock)
+    closeVault(vault)
+  }
+  const fund = (f: Awaited<ReturnType<typeof fixture>>) =>
+    run(["vault", "fund", f.teeAddress, "--amount", "0.1", "--asset", "SOL", "--rpc-url", RPC, "--json"], f.deps)
+
+  test("an unpinned TEE wallet points at tee enable, never at the refused --from", async () => {
+    const f = await fixture()
+    await repin(f, undefined)
+    expect(await fund(f)).not.toBe(0)
+    expect(f.output.text).toContain("GRANT_DESTINATION_UNRESOLVED")
+    expect(f.output.text).toContain("candle tee enable <address> --vault <address>")
+    expect(f.output.text + f.errors.text).not.toContain("--from")
+    expect(f.broadcasts).toBe(0)
+  })
+
+  test("a pin that is not a vault key here points at vault status, never at the refused --from", async () => {
+    const f = await fixture()
+    await repin(f, Keypair.generate().publicKey.toBase58())
+    expect(await fund(f)).not.toBe(0)
+    expect(f.output.text).toContain("GRANT_DESTINATION_UNRESOLVED")
+    expect(f.output.text).toContain("candle vault status")
+    expect(f.output.text + f.errors.text).not.toContain("--from")
+    expect(f.broadcasts).toBe(0)
   })
 })

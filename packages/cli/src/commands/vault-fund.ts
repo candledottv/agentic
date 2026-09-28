@@ -224,7 +224,7 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
         `${teeAddress} has no pinned vault destination to fund from.`,
         {
           suggestion:
-            "Nothing was signed. Name the source key with --from <label>, or pin one: candle tee enable <address> --vault <address>",
+            "Nothing was signed. A TEE wallet is funded from its pinned vault key; pin one: candle tee enable <address> --vault <address>",
         },
       )
     }
@@ -236,8 +236,7 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
         "GRANT_DESTINATION_UNRESOLVED",
         `Pinned destination ${destination} is not a vault key in this vault.`,
         {
-          suggestion:
-            "Nothing was signed. Name the source key with --from <label>; candle vault status lists this vault's keys.",
+          suggestion: "Nothing was signed. candle vault status lists this vault's keys and their pins.",
         },
       )
     }
