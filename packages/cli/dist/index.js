@@ -50207,7 +50207,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.10";
+var CLI_VERSION = "0.11.11";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -51757,18 +51757,6 @@ function parseTeeReadiness(value) {
     return;
   return { txLimit, rawCaps: caps };
 }
-function isTeeAsset(value) {
-  return value !== undefined && ASSETS.includes(value);
-}
-function teeMissing(readiness, assets) {
-  const missing = assets.filter((asset) => !readiness.rawCaps[asset]).map((asset) => ({ kind: "raw_cap", asset }));
-  if (!readiness.txLimit)
-    missing.push({ kind: "tx_limit" });
-  return missing;
-}
-function describeTeeRequirement(requirement) {
-  return requirement.kind === "raw_cap" ? `a maximum per transaction for ${requirement.asset}` : "a finite USD transaction limit";
-}
 
 // src/commands/doctor.ts
 init_fido2();
@@ -53048,18 +53036,16 @@ async function teeLimitsRow(ctx, apiKey, wallets2) {
     return { check: "TEE limits", state: "SKIP", detail: "this API does not report readiness yet" };
   const chains = new Set(wallets2.map((wallet) => wallet.chain === "evm" ? "hood" : "solana"));
   const assets = [...chains].flatMap((chain2) => TEE_CHAIN_ASSETS[chain2]);
-  const missing = teeMissing(readiness, assets);
-  const ready = assets.filter((asset) => readiness.rawCaps[asset]);
-  if (missing.length === 0)
-    return {
-      check: "TEE limits",
-      state: "PASS",
-      detail: `USD limit set; per-transaction caps set for ${ready.join(", ")}`
-    };
+  const set = assets.filter((asset) => readiness.rawCaps[asset]);
+  const unset = assets.filter((asset) => !readiness.rawCaps[asset]);
   return {
     check: "TEE limits",
-    state: "WARN",
-    detail: `missing ${missing.map(describeTeeRequirement).join("; ")}. TEE trades are refused until the owner sets them in a session.`
+    state: "PASS",
+    detail: [
+      readiness.txLimit ? "USD limit set" : "no USD limit (unlimited)",
+      set.length > 0 ? `per-transaction caps set for ${set.join(", ")}` : "",
+      unset.length > 0 ? `no cap for ${unset.join(", ")} (trades and swaps unlimited; transfers, LP deposits and launches need one)` : ""
+    ].filter(Boolean).join("; ")
   };
 }
 async function doctor(args, ctx) {
@@ -57190,33 +57176,8 @@ init_evm_lite();
 init_render();
 init_solana_endpoint();
 init_solana_lite();
-import { randomUUID } from "node:crypto";
 init_trading();
-async function teeLimitsPreflight(ctx, key, asset) {
-  if (!isTeeAsset(asset))
-    return;
-  const result = await apiRequest("/api/v1/agent/keys/self/limits", {
-    apiUrl: ctx.apiUrl,
-    credentials: { apiKey: key },
-    auth: "key",
-    fetch: ctx.deps.fetch,
-    env: ctx.deps.env
-  });
-  if (!result.ok)
-    return;
-  const readiness = parseTeeReadiness(result.body?.teeReadiness);
-  if (!readiness)
-    return;
-  const missing = teeMissing(readiness, [asset]);
-  if (missing.length === 0)
-    return;
-  const items = missing.map(describeTeeRequirement);
-  const list = items.length === 1 ? items[0] : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
-  throw new TradingError(missing.some((item) => item.kind === "raw_cap") ? "SPEND_LIMIT_EXCEEDED" : "KEY_LIMIT_REACHED", `This key cannot trade from a TEE wallet yet: it needs ${list}. Nothing was sent.`, {
-    suggestion: `Have the key's owner set ${missing.length === 1 ? "it" : "them"} in a session.`,
-    details: { missingRequirements: missing }
-  });
-}
+import { randomUUID } from "node:crypto";
 function tradingFailure(ctx, error, id) {
   if (error instanceof TradingUsage) {
     writeUsageFailure(ctx.deps, error.message, ctx.json);
@@ -57390,8 +57351,6 @@ async function swap(args, ctx) {
     const payerWallet = await tradingPayer(ctx, key, flags["--wallet"]);
     if (payerWallet.kind === "embedded" && kind === "swap")
       throw new TradingError("PAIR_UNSUPPORTED", "The embedded wallet cannot swap between base assets from this command yet: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a TEE wallet for a base pair.");
-    if (payerWallet.kind === "tee")
-      await teeLimitsPreflight(ctx, key, fromBase ?? toBase);
     const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address };
     const solana = lazySolanaClient(ctx, flags["--rpc-url"]);
     const decimals = await decimalsFor(ctx, from, solana);
@@ -57587,8 +57546,6 @@ async function hoodSwap(ctx, args) {
   const payer = await tradingPayer(ctx, key, flags["--wallet"], "swap:write", "hood");
   if (payer.kind === "embedded" && kind === "swap")
     throw new TradingError("PAIR_UNSUPPORTED", "The embedded wallet cannot swap ETH and USDG from this command: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a Hood TEE wallet.");
-  if (payer.kind === "tee")
-    await teeLimitsPreflight(ctx, key, from.base ?? to.base);
   const payerAddress = payer.kind === "tee" ? payer.wallet.address : payer.address;
   const rpc = lazyEvmRpc(ctx, flags["--rpc-url"]);
   const decimals = await hoodDecimals(from, rpc);

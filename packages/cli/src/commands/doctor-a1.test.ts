@@ -362,10 +362,10 @@ test.each(["profile", "legacy", "unrecognized"])("R1.4 credential provenance: %s
   if (source === "unrecognized") expect(row(f, "api_key_provenance")?.detail).toContain("unrecognized format")
 })
 
-// BE-500 (R4.5): the TEE limits row. WARN or SKIP never moves the exit code.
+// BE-500 (R4.5): the TEE limits row. Informational: only limits the owner set apply.
 describe("TEE limits row", () => {
   const caps = { SOL: true, USDC: true, CNDL: true, ETH: true, USDG: true }
-  test("PASS names the assets that are ready on the chains this key's wallets are on", async () => {
+  test("PASS names the limits set on the chains this key's wallets are on", async () => {
     const f = fixture({ readiness: { txLimit: true, rawCaps: { ...caps, ETH: false } } })
     expect(await run(["doctor", "--json"], f.deps)).toBe(0)
     expect(row(f, "tee_limits")).toMatchObject({
@@ -373,13 +373,13 @@ describe("TEE limits row", () => {
       detail: "USD limit set; per-transaction caps set for SOL, USDC, CNDL",
     })
   })
-  test("WARN lists every missing item for those chains, and T-A1-7 still exits 0", async () => {
+  test("unset limits are reported as unlimited, never as a warning, and exit 0", async () => {
     const f = fixture({ readiness: { txLimit: false, rawCaps: { ...caps, USDC: false, CNDL: false, USDG: false } } })
     expect(await run(["doctor", "--json"], f.deps)).toBe(0)
     const tee = row(f, "tee_limits")
-    expect(tee?.state).toBe("WARN")
+    expect(tee?.state).toBe("PASS")
     expect(tee?.detail).toBe(
-      "missing a maximum per transaction for USDC; a maximum per transaction for CNDL; a finite USD transaction limit. TEE trades are refused until the owner sets them in a session.",
+      "no USD limit (unlimited); per-transaction caps set for SOL; no cap for USDC, CNDL (trades and swaps unlimited; transfers, LP deposits and launches need one)",
     )
     // USDG is a Hood asset, and this key's only wallet is on Solana.
     expect(tee?.detail).not.toContain("USDG")
@@ -387,8 +387,8 @@ describe("TEE limits row", () => {
   test("a Hood wallet is judged on ETH and USDG", async () => {
     const f = fixture({ chain: "evm", readiness: { txLimit: true, rawCaps: { ...caps, USDG: false } } })
     await run(["doctor", "--json"], f.deps)
-    expect(row(f, "tee_limits")).toMatchObject({ state: "WARN" })
-    expect(row(f, "tee_limits")?.detail).toStartWith("missing a maximum per transaction for USDG.")
+    expect(row(f, "tee_limits")).toMatchObject({ state: "PASS" })
+    expect(row(f, "tee_limits")?.detail).toContain("no cap for USDG")
   })
   test("SKIP when the API does not report readiness, instead of guessing", async () => {
     const f = fixture()
@@ -403,6 +403,6 @@ describe("TEE limits row", () => {
   test("the human table shows the row under its label", async () => {
     const f = fixture({ readiness: { txLimit: false, rawCaps: caps } })
     await run(["doctor"], f.deps)
-    expect(f.stdout.text).toMatch(/TEE limits\s+WARN\s+missing a finite USD transaction limit/)
+    expect(f.stdout.text).toMatch(/TEE limits\s+PASS\s+no USD limit \(unlimited\)/)
   })
 })

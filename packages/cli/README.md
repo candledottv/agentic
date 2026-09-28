@@ -1,6 +1,6 @@
 # @candledottv/cli
 
-The Candle CLI (current version 0.11.8): authorize a device from your browser, keep your own keys
+The Candle CLI (current version 0.11.11): authorize a device from your browser, keep your own keys
 in an encrypted vault on this machine, hand an agent a TEE wallet it can trade, and manage API
 keys, wallets, and setup health from the terminal. Zero runtime dependencies; the whole thing is
 one self-contained `dist/index.js` that runs under plain Node.

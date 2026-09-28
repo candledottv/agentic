@@ -798,22 +798,10 @@ describe("Phase 4b helpers", () => {
 })
 
 // BE-500 (R4.6): the Hood TEE path refuses locally too, before any EVM read or build.
-describe("TEE limits preflight on Hood", () => {
-  const caps = { SOL: true, USDC: true, CNDL: true, ETH: true, USDG: true }
-  test("a buy with ETH needs the ETH cap and the USD limit, both named, with nothing read or built", async () => {
-    const f = await fixture({ readiness: { txLimit: false, rawCaps: { ...caps, ETH: false } } })
-    expect(await run(buyArgs(), f.deps)).toBe(1)
-    const out = lastJson(f.stdout.text)
-    expect(out.code).toBe("SPEND_LIMIT_EXCEEDED")
-    expect((out.details as Record<string, unknown>).missingRequirements).toEqual([
-      { kind: "raw_cap", asset: "ETH" },
-      { kind: "tx_limit" },
-    ])
-    expect(builds(f.calls)).toEqual([])
-    expect(f.calls.some((call) => call.url.startsWith(EVM_RPC))).toBe(false)
-  })
-  test("a ready key goes on to the build", async () => {
-    const f = await fixture({ readiness: { txLimit: true, rawCaps: caps } })
+describe("TEE limits on Hood: only the server decides", () => {
+  const caps = { SOL: false, USDC: false, CNDL: false, ETH: false, USDG: false }
+  test("a buy with ETH and no limits set goes on to the build", async () => {
+    const f = await fixture({ readiness: { txLimit: false, rawCaps: caps } })
     expect(await run(buyArgs(), f.deps)).toBe(0)
     expect(builds(f.calls)).toHaveLength(1)
   })

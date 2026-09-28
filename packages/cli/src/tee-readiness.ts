@@ -1,9 +1,9 @@
 /**
- * What a TEE wallet's key needs before the server looks at any amount (BE-500, R4.5 and R4.6): a USD
- * transaction limit, and a per-transaction cap for the asset it spends. `GET /keys/self/limits`
- * reports it as `teeReadiness`. An older API omits the field, and then readiness is unknown: doctor
- * and `candle swap` never read an absent field as ready or as missing. The server stays
- * authoritative either way.
+ * `GET /keys/self/limits` reports which of the key's optional limits are set as `teeReadiness`: the
+ * USD transaction limit and each asset's per-transaction cap. Only limits the owner set apply, so
+ * neither is required for a TEE trade or swap; transfers, LP deposits and launches still need a
+ * per-asset cap, which the server enforces. `doctor` reports these as information. An older API
+ * omits the field, and then readiness is unknown. The server stays authoritative either way.
  */
 
 export type TeeAsset = "SOL" | "USDC" | "CNDL" | "ETH" | "USDG"
@@ -21,9 +21,6 @@ export interface TeeReadiness {
   rawCaps: Record<TeeAsset, boolean>
 }
 
-/** The same shape the server's `missingRequirements` uses. */
-export type TeeRequirement = { kind: "raw_cap"; asset: TeeAsset } | { kind: "tx_limit" }
-
 /** The response's `teeReadiness`, or undefined when it is absent or not the shape this CLI knows. */
 export function parseTeeReadiness(value: unknown): TeeReadiness | undefined {
   if (!value || typeof value !== "object") return undefined
@@ -32,23 +29,4 @@ export function parseTeeReadiness(value: unknown): TeeReadiness | undefined {
   const caps = rawCaps as Record<string, unknown>
   if (!ASSETS.every((asset) => typeof caps[asset] === "boolean")) return undefined
   return { txLimit, rawCaps: caps as Record<TeeAsset, boolean> }
-}
-
-export function isTeeAsset(value: string | undefined): value is TeeAsset {
-  return value !== undefined && (ASSETS as readonly string[]).includes(value)
-}
-
-/** Every requirement missing for `assets`, raw caps first, in the server's order. */
-export function teeMissing(readiness: TeeReadiness, assets: readonly TeeAsset[]): TeeRequirement[] {
-  const missing: TeeRequirement[] = assets
-    .filter((asset) => !readiness.rawCaps[asset])
-    .map((asset) => ({ kind: "raw_cap", asset }))
-  if (!readiness.txLimit) missing.push({ kind: "tx_limit" })
-  return missing
-}
-
-export function describeTeeRequirement(requirement: TeeRequirement): string {
-  return requirement.kind === "raw_cap"
-    ? `a maximum per transaction for ${requirement.asset}`
-    : "a finite USD transaction limit"
 }

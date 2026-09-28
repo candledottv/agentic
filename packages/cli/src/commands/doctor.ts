@@ -9,7 +9,7 @@ import { SecretStoreLockedError } from "../keychain"
 import { apiKeyPrefix, credentialEnvOverrides, effectiveProfileFields, printIdentity } from "../profiles"
 import { compareVersions, detectInstall, fetchLatest, helperAssetName, releaseBaseUrl } from "../release"
 import { renderError, renderTable, writeUsageFailure } from "../render"
-import { describeTeeRequirement, parseTeeReadiness, TEE_CHAIN_ASSETS, teeMissing } from "../tee-readiness"
+import { parseTeeReadiness, TEE_CHAIN_ASSETS } from "../tee-readiness"
 import { HELPER_ENV, HELPER_NAME, locateFido2Helper } from "../vault/fido2"
 import { CONFIG_DIR_ENV, candleConfigDir, defaultVaultPath, fileExists } from "../vault/store"
 import { CLI_VERSION } from "../version"
@@ -69,18 +69,22 @@ async function teeLimitsRow(ctx: CommandContext, apiKey: string, wallets: { chai
   if (!readiness) return { check: "TEE limits", state: "SKIP", detail: "this API does not report readiness yet" }
   const chains = new Set(wallets.map((wallet) => (wallet.chain === "evm" ? "hood" : "solana")))
   const assets = [...chains].flatMap((chain) => TEE_CHAIN_ASSETS[chain])
-  const missing = teeMissing(readiness, assets)
-  const ready = assets.filter((asset) => readiness.rawCaps[asset])
-  if (missing.length === 0)
-    return {
-      check: "TEE limits",
-      state: "PASS",
-      detail: `USD limit set; per-transaction caps set for ${ready.join(", ")}`,
-    }
+  const set = assets.filter((asset) => readiness.rawCaps[asset])
+  const unset = assets.filter((asset) => !readiness.rawCaps[asset])
+  // Information, never a warning: only limits the owner set apply, so an unset one is unlimited
+  // and never the reason a trade or swap is refused.
   return {
     check: "TEE limits",
-    state: "WARN",
-    detail: `missing ${missing.map(describeTeeRequirement).join("; ")}. TEE trades are refused until the owner sets them in a session.`,
+    state: "PASS",
+    detail: [
+      readiness.txLimit ? "USD limit set" : "no USD limit (unlimited)",
+      set.length > 0 ? `per-transaction caps set for ${set.join(", ")}` : "",
+      unset.length > 0
+        ? `no cap for ${unset.join(", ")} (trades and swaps unlimited; transfers, LP deposits and launches need one)`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("; "),
   }
 }
 
@@ -576,10 +580,9 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
           : `${reachable} of ${wallets.length} wallets on this key trade from this machine${embeddedUsable ? "; embedded wallet delegated and permitted" : ""}${!scopes?.includes("swap:write") ? "; missing swap:write" : ""}${reachable === 0 && !embeddedUsable ? "; no reachable payer" : ""}`,
     })
   }
-  // TEE limits (BE-500, R4.5): what a TEE wallet's gate needs before it looks at any amount, for
-  // the chains this key's wallets are on. WARN, never FAIL: the server refuses the trade anyway,
-  // and this row is where the owner learns every missing limit at once. SKIP on an API that does
-  // not report readiness, rather than guessing.
+  // TEE limits (BE-500, R4.5): which of the key's optional limits are set, for the chains this
+  // key's wallets are on. Always informational (PASS): only limits the owner set apply. SKIP on an
+  // API that does not report readiness, rather than guessing.
   if (apiKey && wallets.length > 0) rows.push(await teeLimitsRow(ctx, apiKey, wallets))
   const identifiedRows = rows.map((row) => ({ ...row, id: DOCTOR_ROW_IDS[row.check as keyof typeof DOCTOR_ROW_IDS] }))
 

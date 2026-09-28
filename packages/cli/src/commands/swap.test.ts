@@ -573,61 +573,19 @@ describe("BE-355: rate limits (T10, T11)", () => {
 
 // BE-500 (R4.6): a TEE payer's missing key limits, refused locally before any RPC or write, when
 // the API reports readiness. Never assumed when the field is absent.
-describe("TEE limits preflight", () => {
-  const READY = { txLimit: true, rawCaps: { SOL: true, USDC: true, CNDL: true, ETH: true, USDG: true } }
-  const writes = (f: Awaited<ReturnType<typeof fixture>>) =>
-    f.calls.filter((call) => call.path === "/rpc" || call.path.endsWith("/build"))
+describe("TEE limits: only the server decides", () => {
+  const NONE = { txLimit: false, rawCaps: { SOL: false, USDC: false, CNDL: false, ETH: false, USDG: false } }
 
-  test("both missing: SPEND_LIMIT_EXCEEDED naming both, with no RPC read and no build", async () => {
-    const f = await fixture({
-      readiness: { txLimit: false, rawCaps: { ...READY.rawCaps, SOL: false } },
-    })
-    expect(await run(swapArgs, f.deps)).toBe(1)
-    const out = JSON.parse(f.stdout.text)
-    expect(out).toMatchObject({ ok: false, code: "SPEND_LIMIT_EXCEEDED" })
-    expect(out.message).toContain("a maximum per transaction for SOL and a finite USD transaction limit")
-    expect(out.details.missingRequirements).toEqual([{ kind: "raw_cap", asset: "SOL" }, { kind: "tx_limit" }])
-    expect(out.suggestion).toContain("set them in a session")
-    expect(writes(f)).toEqual([])
-  })
-
-  test("only the USD limit missing: KEY_LIMIT_REACHED", async () => {
-    const f = await fixture({ readiness: { ...READY, txLimit: false } })
-    expect(await run(swapArgs, f.deps)).toBe(1)
-    const out = JSON.parse(f.stdout.text)
-    expect(out.code).toBe("KEY_LIMIT_REACHED")
-    expect(out.details.missingRequirements).toEqual([{ kind: "tx_limit" }])
-    expect(writes(f)).toEqual([])
-  })
-
-  test("a sell checks the base it receives, which is what the server debits", async () => {
-    const f = await fixture({ readiness: { ...READY, rawCaps: { ...READY.rawCaps, SOL: false } } })
-    expect(await run(["swap", mint, "SOL", "--amount", "1", "--wallet", "tee", "--yes", "--json"], f.deps)).toBe(1)
-    expect(JSON.parse(f.stdout.text).details.missingRequirements).toEqual([{ kind: "raw_cap", asset: "SOL" }])
-  })
-
-  test("a cap missing for an asset this swap does not spend is not a refusal", async () => {
-    const f = await fixture({ readiness: { ...READY, rawCaps: { ...READY.rawCaps, USDC: false, CNDL: false } } })
+  test("a TEE key with no limits set swaps: the CLI never refuses locally and never reads its limits", async () => {
+    const f = await fixture({ readiness: NONE })
     expect(await run(swapArgs, f.deps)).toBe(0)
+    expect(f.calls.some((call) => call.path === "/api/v1/agent/keys/self/limits")).toBe(false)
+    expect(f.calls.some((call) => call.path.endsWith("swap/build"))).toBe(true)
   })
 
-  for (const [name, readiness] of [
-    ["absent (an older API)", undefined],
-    ["malformed", { txLimit: "yes", rawCaps: {} }],
-  ] as const)
-    test(`readiness ${name}: nothing is assumed, and the build goes to the server`, async () => {
-      const f = await fixture({ readiness })
-      expect(await run(swapArgs, f.deps)).toBe(0)
-      expect(f.calls.some((call) => call.path.endsWith("swap/build"))).toBe(true)
-    })
-
-  test("the embedded payer is never preflighted", async () => {
-    const f = await fixture({
-      teeWallets: 0,
-      readiness: { txLimit: false, rawCaps: { ...READY.rawCaps, SOL: false } },
-    })
-    expect(await run(["swap", "SOL", mint, "--amount", "1", "--yes", "--json"], f.deps)).toBe(0)
-    expect(f.calls.some((call) => call.path === "/api/v1/agent/keys/self/limits")).toBe(false)
+  test("a sell with no SOL cap goes to the server too", async () => {
+    const f = await fixture({ readiness: NONE })
+    expect(await run(["swap", mint, "SOL", "--amount", "1", "--wallet", "tee", "--yes", "--json"], f.deps)).toBe(0)
   })
 })
 

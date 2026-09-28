@@ -123,7 +123,7 @@ Selling a fraction is the same shape with `{ "side": "sell", "percent": 50 }`.
 
 ## The CLI
 
-`candle` (current version 0.11.8) is the terminal half of all of this: it authorizes a device,
+`candle` (current version 0.11.11) is the terminal half of all of this: it authorizes a device,
 holds your API key in the OS keychain, runs the MCP server with no config file, keeps your own keys
 in a local encrypted vault, and hands an agent a TEE wallet it can trade.
 
