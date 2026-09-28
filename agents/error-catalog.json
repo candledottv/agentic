@@ -141,6 +141,7 @@
         "ORDER_NOT_TRIGGERED",
         "JOB_NOT_FOUND",
         "RECORD_NOT_FOUND",
+        "RECEIPT_NOT_FOUND",
         "QUOTE_EXPIRED",
         "TRADE_REVERTED",
         "UNRECOGNIZED_TRANSACTION",
