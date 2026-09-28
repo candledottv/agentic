@@ -46,6 +46,8 @@ async function fixture(
     linked?: { _id: string; address: string; label?: string; chain?: string; revokedAt?: number }[]
     /** What /transfer/build answers; a `{ error }` answers that Candle error. */
     build?: Record<string, unknown> | { error: { code: string; message: string } }
+    /** BE-503: `embeddedWalletPermission` on GET /wallets/embedded; absent as an older API answers. */
+    embeddedPermission?: "allowed" | "denied"
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "candle-transfer-"))
@@ -73,7 +75,11 @@ async function fixture(
         isDone: true,
       })
     if (path === "/api/v1/agent/wallets/embedded")
-      return ok({ success: true, wallets: { solana: { address: EMBEDDED }, evm: null } })
+      return ok({
+        success: true,
+        wallets: { solana: { address: EMBEDDED }, evm: null },
+        ...(opts.embeddedPermission !== undefined ? { embeddedWalletPermission: opts.embeddedPermission } : {}),
+      })
     if (path === "/api/v1/agent/wallets")
       return ok({
         success: true,
@@ -307,6 +313,25 @@ describe("candle transfer (R19)", () => {
     expect(code).toBe(1)
     expect(JSON.parse(f.stdout.text).code).toBe("PAYER_UNSUPPORTED")
     expect(f.paths()).not.toContain("/api/v1/agent/transfer/build")
+  })
+
+  test("BE-503 (R5.10): a key denied the embedded wallet names that refusal and its fix, before any build", async () => {
+    const f = await fixture({ teeWallets: 0, embeddedPermission: "denied" })
+    const code = await run(["transfer", "--to", "treasury", "--asset", "USDC", "--amount", "1", "--json"], f.deps)
+    expect(code).toBe(1)
+    const failure = JSON.parse(f.stdout.text)
+    expect(failure.code).toBe("EMBEDDED_WALLET_NOT_PERMITTED")
+    expect(failure.suggestion).toContain("--embedded-wallet allow")
+    expect(f.paths()).not.toContain("/api/v1/agent/transfer/build")
+  })
+
+  test("BE-503 (R5.10): with the embedded wallet denied, the key's one TEE wallet pays without --wallet", async () => {
+    const f = await fixture({ embeddedPermission: "denied" })
+    const code = await run(["transfer", "--to", "treasury", "--asset", "USDC", "--amount", "1", "--json"], f.deps)
+    expect(code).toBe(0)
+    expect(f.calls.find((call) => call.path === "/api/v1/agent/transfer/build")?.body).toMatchObject({
+      walletId: "wallet",
+    })
   })
 
   test("Candle's refusal at build is reported with its code and nothing is signed", async () => {

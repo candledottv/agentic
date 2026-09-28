@@ -396,14 +396,24 @@ export const HELP: Record<string, Topic> = {
       },
       {
         invocation:
-          "create [--access read|read-write|read-write-transfer | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]]",
+          "create [--access read|read-write|read-write-transfer | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow]",
         description:
-          "Create an API key; --access mints one of the three levels (read-write-transfer can move funds out of the wallet it runs)",
+          "Create an API key; --access mints one of the three levels (read-write-transfer can move funds out of the wallet it runs). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal",
       },
       {
         invocation: "access <prefix|label|self> (--access read|read-write|read-write-transfer [--yes] | --history)",
         description:
           "Change an existing key's level in place (same key, wallets and caps). Widening needs the device token and the prefix typed back at a terminal; --yes skips the prompt when narrowing; self narrows the profile's own key. --history lists the key's changes and who made them",
+      },
+      {
+        invocation: "update <prefix|label> --embedded-wallet allow|deny [--yes]",
+        description:
+          "Allow or deny a key the account's embedded wallet, with the device token. Allowing needs the prefix typed back at a terminal; --yes skips the prompt when denying",
+      },
+      {
+        invocation: "self embedded-wallet deny",
+        description:
+          "The profile's own key gives up the embedded wallet, with no prompt. A key can never allow itself: the owner does that with keys update",
       },
       { invocation: "revoke <prefix>", description: "Revoke an API key" },
       {
@@ -440,6 +450,8 @@ export const HELP: Record<string, Topic> = {
       "candle keys create --scopes trade:write --label agent-one",
       "candle keys access cndl --access read-write-transfer",
       "candle keys access self --access read --yes",
+      "candle keys update agent-one --embedded-wallet deny --yes",
+      "candle keys self embedded-wallet deny",
       "candle keys wallets ck_live_ab12",
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
       "candle keys signer approve ABCD-EFGH --key tr-2",

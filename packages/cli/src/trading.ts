@@ -104,6 +104,9 @@ const walletPageSchema = z.object({
 /** `GET /wallets/embedded`: the account's own launch wallets, per chain (`evm` is the Hood one, Phase 4b D6). */
 const embeddedSchema = z
   .object({
+    // BE-501 / BE-503 (R5.10): whether THIS key may spend the embedded wallet. An older API omits
+    // it, which means allowed, the rule the server applies to a key row without the field.
+    embeddedWalletPermission: z.enum(["allowed", "denied"]).optional().catch(undefined),
     wallets: z
       .object({
         solana: z.object({ address: z.string() }).passthrough().nullable().optional(),
@@ -526,14 +529,22 @@ export async function tradingPayer(
   const { rows, appId, scopes, keyPrefix } = await listTradingWallets(ctx, key, scope)
   // Read even when a name was given: it is what lets a miss say "here is what you could have
   // meant" instead of naming only half the account.
-  const wallets = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded")).wallets
+  const discovered = embeddedSchema.parse(await request(ctx, key, "/api/v1/agent/wallets/embedded"))
+  const wallets = discovered.wallets
   const embeddedOn: Record<TradeChain, string | undefined> = {
     solana: wallets?.solana?.address,
     hood: wallets?.evm?.address,
   }
-  const embedded = embeddedOn[chain]
+  // R5.10: a key the owner denied the embedded wallet cannot pay from it, so it is not a payer
+  // here: it is neither offered nor picked by default. Naming it still answers, with the refusal
+  // and its fix, before anything is built.
+  const denied = discovered.embeddedWalletPermission === "denied"
+  const deniedAddress = denied ? embeddedOn[chain] : undefined
+  const embedded = denied ? undefined : embeddedOn[chain]
   const onChain = rows.filter((row) => rowChain(row) === chain)
   const asEmbedded = (): SwapPayer => ({ kind: "embedded", address: embedded as string, scopes })
+  const deniedError = () =>
+    embeddedWalletNotPermitted(deniedAddress as string, keyPrefix, chain, onChain.map(describeWallet))
   const options = [
     ...onChain.map((row) => `TEE ${describeWallet(row)}`),
     ...(embedded ? [`embedded (${embedded})`] : []),
@@ -550,6 +561,7 @@ export async function tradingPayer(
         scopes,
       }
     if (onChain.length === 0 && embedded) return asEmbedded()
+    if (onChain.length === 0 && deniedAddress !== undefined) throw deniedError()
     throw new TradingError(
       "PAYER_REQUIRED",
       options.length === 0
@@ -570,6 +582,7 @@ export async function tradingPayer(
     }
   if (matches.length === 0) {
     if (embedded !== undefined && sameAddress(embedded, name)) return asEmbedded()
+    if (deniedAddress !== undefined && sameAddress(deniedAddress, name)) throw deniedError()
     for (const other of Object.keys(embeddedOn) as TradeChain[]) {
       const address = embeddedOn[other]
       if (other !== chain && address !== undefined && sameAddress(address, name))
@@ -583,6 +596,31 @@ export async function tradingPayer(
       : options.length === 0
         ? `"${name}" is not a wallet this account can pay from, and it has none on ${chainName(chain)}: enrol a TEE wallet, or create an embedded wallet in the app.`
         : `"${name}" is not a wallet this account can pay from. On ${chainName(chain)} it can pay from: ${options}.`,
+  )
+}
+
+/**
+ * The refusal `candle swap` / `candle transfer` give for a denied embedded wallet, before any build
+ * (R5.10). The code and the first sentence are the server's own (`EMBEDDED_WALLET_NOT_PERMITTED`),
+ * so a script sees the same answer whether the CLI or the API refused. The fix names both ways out.
+ */
+export function embeddedWalletNotPermitted(
+  address: string,
+  keyPrefix: string | undefined,
+  chain: TradeChain,
+  teeWallets: string[],
+) {
+  const prefix = keyPrefix ?? "<prefix>"
+  const instead =
+    teeWallets.length > 0
+      ? `Name one of its ${chainName(chain)} TEE wallets with --wallet instead: ${teeWallets.join("; ")}.`
+      : `It has no ${chainName(chain)} TEE wallet to pay from instead.`
+  return new TradingError(
+    "EMBEDDED_WALLET_NOT_PERMITTED",
+    `This key may not use the account's embedded wallet (${address}). ${instead}`,
+    {
+      suggestion: `Trade a TEE wallet bound to this key, or have the owner allow the embedded wallet: candle keys update ${prefix} --embedded-wallet allow (device token), or in the web key manager.`,
+    },
   )
 }
 

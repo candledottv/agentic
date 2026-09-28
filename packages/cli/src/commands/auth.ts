@@ -54,6 +54,7 @@ import {
 } from "../render"
 import { SECRET_REFS } from "../secret-store"
 import { CLI_VERSION } from "../version"
+import { embeddedWalletLine } from "./keys-embedded-wallet"
 
 const DEVICE_CODE_PATH = "/api/v1/agent/device/code"
 const DEVICE_TOKEN_PATH = "/api/v1/agent/device/token"
@@ -81,7 +82,13 @@ interface DeviceCodeResponse {
 interface DeviceTokenSuccessResponse {
   deviceToken: string
   tokenPrefix: string
-  apiKey: { key: string; keyPrefix: string; scopes: string[] } | null
+  apiKey: {
+    key: string
+    keyPrefix: string
+    scopes: string[]
+    /** BE-503: what the consent page chose, as stored. An older API omits it. */
+    embeddedWallet?: "allowed" | "denied"
+  } | null
   apiKeyError?: string
 }
 
@@ -324,6 +331,8 @@ async function finishLogin(
         ...(apiKeyLabel !== undefined ? { apiKeyLabel } : {}),
         ...(apiKeyLabelError !== undefined ? { apiKeyLabelError } : {}),
         scopes: body.apiKey?.scopes,
+        // Additive (BE-503): present only when the API reported it.
+        ...(body.apiKey?.embeddedWallet !== undefined ? { embeddedWallet: body.apiKey.embeddedWallet } : {}),
         apiKeyError: body.apiKeyError,
       })}\n`,
     )
@@ -341,6 +350,9 @@ async function finishLogin(
       deps.stdout.write(`Could not name the key: ${apiKeyLabelError}.${where}\n`)
     }
     deps.stdout.write(`Granted scopes: ${formatScopesForSummary(body.apiKey.scopes)}\n`)
+    if (body.apiKey.embeddedWallet === "allowed" || body.apiKey.embeddedWallet === "denied") {
+      deps.stdout.write(`${embeddedWalletLine(body.apiKey.embeddedWallet, body.apiKey.keyPrefix)}\n`)
+    }
   } else if (body.apiKeyError) {
     const authorizedScopes = requested.scopes ?? [...ALL_AGENT_SCOPES]
     deps.stdout.write(`Authorized scopes (no key issued yet): ${formatScopesForSummary(authorizedScopes)}\n`)

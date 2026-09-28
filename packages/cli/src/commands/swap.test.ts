@@ -45,6 +45,8 @@ async function fixture(
     profile?: boolean
     /** BE-500: `teeReadiness` on GET /keys/self/limits. Absent by default, as an older API answers. */
     readiness?: unknown
+    /** BE-503: `embeddedWalletPermission` on GET /wallets/embedded. Absent by default (an older API). */
+    embeddedPermission?: "allowed" | "denied"
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "candle-trade-"))
@@ -77,7 +79,11 @@ async function fixture(
         isDone: true,
       })
     if (path === "/api/v1/agent/wallets/embedded")
-      return ok({ success: true, wallets: { solana: opts.noEmbedded ? null : { address: embedded }, evm: null } })
+      return ok({
+        success: true,
+        wallets: { solana: opts.noEmbedded ? null : { address: embedded }, evm: null },
+        ...(opts.embeddedPermission !== undefined ? { embeddedWalletPermission: opts.embeddedPermission } : {}),
+      })
     if (path === "/api/v1/agent/keys/self/limits")
       return ok({
         success: true,
@@ -435,6 +441,48 @@ describe("TEE CLI trading", () => {
     expect(await run(["swap", "SOL", mint, "--amount", "1", "--yes", "--json"], f.deps)).toBe(0)
     expect(f.calls.find((call) => call.path.endsWith("trade/agent/build"))?.body).toMatchObject({
       payer: { type: "linked", linkedWalletId: "wallet" },
+    })
+  })
+  describe("a key denied the embedded wallet (BE-503, R5.10)", () => {
+    test("with one TEE wallet beside it, the TEE wallet is the payer and no --wallet is needed", async () => {
+      const f = await fixture({ embeddedPermission: "denied" })
+      expect(await run(["swap", "SOL", mint, "--amount", "1", "--yes", "--json"], f.deps)).toBe(0)
+      expect(f.calls.find((call) => call.path.endsWith("trade/agent/build"))?.body).toMatchObject({
+        payer: { type: "linked", linkedWalletId: "wallet" },
+      })
+    })
+    test("with only the embedded wallet, it refuses before any build, naming the refusal and the fix", async () => {
+      const f = await fixture({ embeddedPermission: "denied", teeWallets: 0 })
+      expect(await run(["swap", "SOL", mint, "--amount", "1", "--yes", "--json"], f.deps)).toBe(1)
+      expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
+      const failure = JSON.parse(f.stdout.text)
+      expect(failure.code).toBe("EMBEDDED_WALLET_NOT_PERMITTED")
+      expect(failure.message).toContain(embedded)
+      expect(failure.suggestion).toContain("--embedded-wallet allow")
+    })
+    test("naming the embedded wallet refuses before any build and points at the TEE wallet instead", async () => {
+      const f = await fixture({ embeddedPermission: "denied" })
+      expect(await run(["swap", "SOL", mint, "--amount", "1", "--wallet", embedded, "--yes", "--json"], f.deps)).toBe(1)
+      expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
+      const failure = JSON.parse(f.stdout.text)
+      expect(failure.code).toBe("EMBEDDED_WALLET_NOT_PERMITTED")
+      expect(failure.message).toContain("tee (wallet,")
+    })
+    test("a miss lists only the payers this key may use", async () => {
+      const f = await fixture({ embeddedPermission: "denied" })
+      expect(await run(["swap", "SOL", mint, "--amount", "1", "--wallet", "nope", "--yes", "--json"], f.deps)).toBe(1)
+      const message = JSON.parse(f.stdout.text).message
+      expect(message).toContain("tee")
+      expect(message).not.toContain(embedded)
+    })
+    test("allowed, or absent on an older API, keeps the embedded wallet a payer", async () => {
+      for (const embeddedPermission of ["allowed", undefined] as const) {
+        const f = await fixture({ embeddedPermission, teeWallets: 0 })
+        expect(await run(["swap", "SOL", mint, "--amount", "1", "--yes", "--json"], f.deps)).toBe(0)
+        expect(f.calls.find((call) => call.path.endsWith("trade/agent/build"))?.body).toMatchObject({
+          payer: { type: "main" },
+        })
+      }
     })
   })
   test("raw sizing never passes through floating point", () => {

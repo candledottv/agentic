@@ -390,26 +390,43 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
       const body = result.body as {
         account?: string
         wallets: { solana: { delegated: boolean } | null; evm: { delegated: boolean } | null }
+        embeddedWalletPermission?: "allowed" | "denied"
       }
       // Which account these credentials act as. Valid-but-wrong-account is the failure this
       // command exists to make visible: on 2026-08-19 both credential checks passed while an
       // import had landed on a different account entirely, and nothing here would have said so.
       account = body.account
       const delegated = Boolean(body.wallets?.solana?.delegated || body.wallets?.evm?.delegated)
-      embeddedUsable = delegated
+      // R5.13: the key's own permission. An older API omits it, which means allowed.
+      const denied = body.embeddedWalletPermission === "denied"
+      embeddedUsable = delegated && !denied
+      const allowHint = `the owner can allow it: candle keys update ${apiKeyPrefix(apiKey) ?? "<prefix>"} --embedded-wallet allow`
       rows.push(
-        delegated
-          ? { check: embeddedLabel, state: "PASS", detail: "delegated" }
-          : {
+        delegated && denied
+          ? {
               check: embeddedLabel,
-              state: role === "bot" ? (activeTee ? "SKIP" : "WARN") : "FAIL",
+              // Never a FAIL: a denied embedded wallet is the default for a new key, and the
+              // recommended posture for a bot that trades its TEE wallets.
+              state: role === "bot" && activeTee ? "SKIP" : "WARN",
               detail:
-                role === "bot"
-                  ? activeTee
-                    ? "not used by this key"
-                    : "No usable payer: no delegated embedded wallet or active TEE wallet."
-                  : "No launch wallet is delegated. Fix: delegate one in the portal.",
-            },
+                role === "bot" && activeTee
+                  ? "denied for this key; not used by this key"
+                  : role === "bot"
+                    ? `No usable payer: the embedded wallet is denied for this key and it has no active TEE wallet; ${allowHint}.`
+                    : `delegated, but this key may not use it (denied); ${allowHint}.`,
+            }
+          : delegated
+            ? { check: embeddedLabel, state: "PASS", detail: "delegated" }
+            : {
+                check: embeddedLabel,
+                state: role === "bot" ? (activeTee ? "SKIP" : "WARN") : "FAIL",
+                detail:
+                  role === "bot"
+                    ? activeTee
+                      ? "not used by this key"
+                      : "No usable payer: no delegated embedded wallet or active TEE wallet."
+                    : "No launch wallet is delegated. Fix: delegate one in the portal.",
+              },
       )
     }
   }
@@ -556,7 +573,7 @@ export async function doctor(args: string[], ctx: CommandContext): Promise<numbe
       detail:
         trading?.paused === true
           ? "The owner paused this profile; every trade is refused with PROFILE_PAUSED."
-          : `${reachable} of ${wallets.length} wallets on this key trade from this machine${embeddedUsable ? "; embedded wallet delegated" : ""}${!scopes?.includes("swap:write") ? "; missing swap:write" : ""}${reachable === 0 && !embeddedUsable ? "; no reachable payer" : ""}`,
+          : `${reachable} of ${wallets.length} wallets on this key trade from this machine${embeddedUsable ? "; embedded wallet delegated and permitted" : ""}${!scopes?.includes("swap:write") ? "; missing swap:write" : ""}${reachable === 0 && !embeddedUsable ? "; no reachable payer" : ""}`,
     })
   }
   // TEE limits (BE-500, R4.5): what a TEE wallet's gate needs before it looks at any amount, for

@@ -179,6 +179,7 @@ describe("keys list: Name and Access", () => {
       "Prefix",
       "Name",
       "Access",
+      "Embedded",
       "Environment",
       "Created",
       "Last used",
@@ -187,13 +188,31 @@ describe("keys list: Name and Access", () => {
     ])
     const first = lines.find((line) => line.startsWith("JpVPY8gs")) ?? ""
     const second = lines.find((line) => line.startsWith("B6P-TSRs")) ?? ""
-    expect(first).toMatch(/^JpVPY8gs {2}cndl {2}Read:Write {2}production /)
+    // Neither row stores an embedded-wallet value, which is how a key from before it reads: allowed.
+    expect(first).toMatch(/^JpVPY8gs {2}cndl {2}Read:Write {2}allowed {3}production /)
     // Blank Name: the cell is padded to the column's width, so Access starts where it does above.
-    expect(second).toMatch(/^B6P-TSRs {8}Read:Write {2}production /)
+    expect(second).toMatch(/^B6P-TSRs {8}Read:Write {2}allowed {3}production /)
     expect(second.indexOf("Read:Write")).toBe(first.indexOf("Read:Write"))
     expect(first.endsWith("browser session")).toBe(true)
     expect(second.endsWith("this device")).toBe(true)
     expect(stdout).not.toContain("account:read")
+  })
+
+  test("BE-503 (R5.11): the Embedded column says denied or allowed, and a row without the field reads allowed", async () => {
+    const rows = tableRows(
+      (
+        await list([
+          { ...JPVPY8GS, embeddedWallet: "denied" },
+          { ...B6P_TSRS, label: "bot", embeddedWallet: "allowed" },
+          { ...B6P_TSRS, keyPrefix: "legacy01", label: "old" },
+        ])
+      ).stdout,
+    )
+    const embedded = (prefix: string) => rows.find((row) => row[0] === prefix)?.[3]
+    expect(rows[0]?.[3]).toBe("Embedded")
+    expect(embedded("JpVPY8gs")).toBe("denied")
+    expect(embedded("B6P-TSRs")).toBe("allowed")
+    expect(embedded("legacy01")).toBe("allowed")
   })
 
   test("a key matching neither preset reads as the web's chip words, or – when it holds none", async () => {
@@ -474,6 +493,103 @@ describe("keys create: name, expiry, and transaction limit (portal parity)", () 
     expect(envelope.ok).toBe(false)
     expect(envelope.code).toBe("USAGE")
     expect(envelope.message).toContain("--tx-limit")
+  })
+})
+
+describe("keys create --embedded-wallet (BE-503, R5.11)", () => {
+  const routes = (echo: "allowed" | "denied" | null = "denied") =>
+    createRoutedFetch({
+      "/api/v1/agent/keys": (req) => {
+        const sent = JSON.parse(String(req.init.body ?? "{}")) as { embeddedWallet?: string }
+        return jsonResponse(200, {
+          success: true,
+          key: "cndl_live_plain",
+          keyPrefix: "ck_liveaa",
+          scopes: ["launch:write"],
+          environment: "production",
+          ...(echo === null ? {} : { embeddedWallet: sent.embeddedWallet ?? echo }),
+        })
+      },
+    })
+  const store = () => createFakeStore({ device_token: "cndl_dvc_x" })
+
+  test("the flag defaults to deny: the body says denied, no prompt, and the output names the fix", async () => {
+    const { fetch, calls } = routes()
+    const stdout = createCapture()
+    const code = await run(["keys", "create"], createTestDeps({ fetch, store: store(), stdout }))
+    expect(code).toBe(0)
+    expect(JSON.parse(String(calls[0]?.init.body)).embeddedWallet).toBe("denied")
+    expect(stdout.text).toContain("Embedded wallet: denied.")
+    expect(stdout.text).toContain("candle keys update ck_liveaa --embedded-wallet allow")
+  })
+
+  test("--embedded-wallet deny sends denied without a prompt, even without a terminal", async () => {
+    const { fetch, calls } = routes()
+    const deps = createTestDeps({ fetch, store: store() })
+    deps.isTTY = { stdin: false, stdout: false, stderr: false }
+    expect(await run(["keys", "create", "--embedded-wallet", "deny"], deps)).toBe(0)
+    expect(JSON.parse(String(calls[0]?.init.body)).embeddedWallet).toBe("denied")
+  })
+
+  test("--embedded-wallet allow asks first; yes mints an allowed key", async () => {
+    const { fetch, calls } = routes()
+    const prompts: string[] = []
+    const stdout = createCapture()
+    const stderr = createCapture()
+    const deps = createTestDeps({ fetch, store: store(), stdout, stderr })
+    deps.promptLine = async (text) => {
+      prompts.push(text)
+      return "y"
+    }
+    expect(await run(["keys", "create", "--embedded-wallet", "allow"], deps)).toBe(0)
+    expect(prompts).toEqual(["Create the key with the embedded wallet allowed? [y/N] "])
+    expect(stderr.text).toContain("trade, launch and transfer from the account's embedded wallet")
+    expect(JSON.parse(String(calls[0]?.init.body)).embeddedWallet).toBe("allowed")
+    expect(stdout.text).toContain("Embedded wallet: allowed.")
+  })
+
+  test("declining the allow prompt mints nothing", async () => {
+    const { fetch, calls } = routes()
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, store: store(), stdout })
+    deps.promptLine = async () => "n"
+    expect(await run(["keys", "create", "--embedded-wallet", "allow", "--json"], deps)).toBe(1)
+    expect(calls).toHaveLength(0)
+    expect(JSON.parse(stdout.text).code).toBe("EMBEDDED_WALLET_NOT_ACKNOWLEDGED")
+  })
+
+  test("allow without a terminal is refused before any request; there is no flag to skip the prompt", async () => {
+    const { fetch, calls } = routes()
+    const stdout = createCapture()
+    const deps = createTestDeps({ fetch, store: store(), stdout })
+    deps.isTTY = { stdin: false, stdout: false, stderr: false }
+    expect(await run(["keys", "create", "--embedded-wallet", "allow", "--json"], deps)).toBe(1)
+    expect(calls).toHaveLength(0)
+    expect(JSON.parse(stdout.text).code).toBe("EMBEDDED_WALLET_REQUIRES_TTY")
+  })
+
+  test("any other value is a usage error, exit 2, with no request made", async () => {
+    const { fetch, calls } = routes()
+    expect(
+      await run(["keys", "create", "--embedded-wallet", "allowed"], createTestDeps({ fetch, store: store() })),
+    ).toBe(2)
+    expect(calls).toHaveLength(0)
+  })
+
+  test("an API that echoes no permission gets a warning: it stored none, so the key may use the wallet", async () => {
+    const { fetch } = routes(null)
+    const stdout = createCapture()
+    const stderr = createCapture()
+    expect(await run(["keys", "create"], createTestDeps({ fetch, store: store(), stdout, stderr }))).toBe(0)
+    expect(stdout.text).not.toContain("Embedded wallet:")
+    expect(stderr.text).toContain("does not set a per-key embedded-wallet permission yet")
+  })
+
+  test("--json carries the stored value the API echoed", async () => {
+    const { fetch } = routes()
+    const stdout = createCapture()
+    expect(await run(["keys", "create", "--json"], createTestDeps({ fetch, store: store(), stdout }))).toBe(0)
+    expect(JSON.parse(stdout.text).embeddedWallet).toBe("denied")
   })
 })
 
@@ -766,7 +882,7 @@ describe("keys list: Read:Write:Transfer (R18)", () => {
     const [, ...tableLines] = stdout.text.split("\n")
     const first = tableLines.find((line) => line.startsWith("ck_livermt"))
     const second = tableLines.find((line) => line.startsWith("ck_livecus"))
-    expect(first).toMatch(/^ck_livermt {2}rebalancer {2}Read:Write:Transfer {2,}production /)
+    expect(first).toMatch(/^ck_livermt {2}rebalancer {2}Read:Write:Transfer {2,}allowed {2,}production /)
     expect(second).toContain("Transfer, Linked transfer")
     expect(second).not.toContain("Read:Write:Transfer")
   })

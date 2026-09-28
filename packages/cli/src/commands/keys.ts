@@ -26,6 +26,12 @@ import {
   writeUsageFailure,
 } from "../render"
 import { SECRET_REFS } from "../secret-store"
+import {
+  confirmCreateAllow,
+  EMBEDDED_WALLET_CHOICES,
+  effectiveEmbeddedWallet,
+  embeddedWalletLine,
+} from "./keys-embedded-wallet"
 
 const KEYS_PATH = "/api/v1/agent/keys"
 
@@ -59,6 +65,8 @@ export interface KeyRow {
   lastUsedAt?: number
   revokedAt?: number
   mintedByDevicePrefix?: string
+  /** BE-501: whether the key may spend the embedded wallet. Absent on a row that predates it: allowed. */
+  embeddedWallet?: "allowed" | "denied"
 }
 
 function mintedByLabel(mintedBy: string | undefined, ownDeviceTokenPrefix: string | undefined): string {
@@ -161,6 +169,8 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
     labelCell(key.label),
     accessCell(key.scopes),
     ...(withScopes ? [sortAgentKeyScopes(key.scopes).join(",")] : []),
+    // R5.11: the key's embedded-wallet permission, as the server enforces it (absent is allowed).
+    effectiveEmbeddedWallet(key.embeddedWallet),
     key.environment,
     formatTimestamp(key.createdAt),
     formatTimestamp(key.lastUsedAt),
@@ -172,6 +182,7 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
     "Name",
     "Access",
     ...(withScopes ? ["Scopes"] : []),
+    "Embedded",
     "Environment",
     "Created",
     "Last used",
@@ -186,7 +197,16 @@ export async function keysList(args: string[], ctx: CommandContext): Promise<num
 export async function keysCreate(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, apiUrl, json } = ctx
   const parsed = parseArgs(args, {
-    valueFlags: ["--scopes", "--access", "--environment", "--label", "--expires-in", "--tx-limit", "--reset"],
+    valueFlags: [
+      "--scopes",
+      "--access",
+      "--environment",
+      "--label",
+      "--expires-in",
+      "--tx-limit",
+      "--reset",
+      "--embedded-wallet",
+    ],
   })
   if ("error" in parsed) {
     writeUsageFailure(deps, parsed.error, json)
@@ -255,12 +275,28 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
     txLimit = { usdMicros: parsedUsd.usdMicros, reset }
   }
 
+  // BE-503 (R5.11): whether the new key may spend the account's embedded wallet. The flag defaults
+  // to deny, the same default the server now writes for a request that omits it (R5.2, B2), and
+  // the CLI always sends the value so the key is exactly what this command printed.
+  const embeddedFlag = parsed.values["--embedded-wallet"] ?? "deny"
+  const embeddedWallet = EMBEDDED_WALLET_CHOICES[embeddedFlag]
+  if (embeddedWallet === undefined) {
+    writeUsageFailure(deps, "--embedded-wallet must be allow or deny.", json)
+    return 2
+  }
+
   await printIdentity(ctx)
 
   const deviceToken = await resolveDeviceToken(deps, ctx.profile)
   if (!deviceToken) {
     writeLocalFailure(deps, NO_DEVICE_TOKEN, json)
     return 1
+  }
+
+  // Allowing is confirmed at a terminal before anything is minted; denying needs no prompt.
+  if (embeddedWallet === "allowed") {
+    const stop = await confirmCreateAllow(ctx)
+    if (stop !== null) return stop
   }
 
   const result = await apiRequest(KEYS_PATH, {
@@ -278,6 +314,7 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
       ...(label ? { label } : {}),
       ...(expiresInDays !== undefined ? { expiresInDays } : {}),
       ...(txLimit ? { txLimit } : {}),
+      embeddedWallet,
     },
   })
 
@@ -286,7 +323,13 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
     return 1
   }
 
-  const body = result.body as { key: string; keyPrefix: string; scopes: string[]; environment: string }
+  const body = result.body as {
+    key: string
+    keyPrefix: string
+    scopes: string[]
+    environment: string
+    embeddedWallet?: "allowed" | "denied"
+  }
 
   // Store only when the CLI holds no working key yet -- it manages exactly one, and any other
   // key belongs to whichever agent it was minted for. Under a profile the ref and the recorded
@@ -332,6 +375,15 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
   // This is the moment a fund-moving key is actually minted, so swap:write (if granted) is
   // called out here the same way the login summary calls it out (fix round 1, item 16).
   deps.stdout.write(`Scopes: ${formatScopesForSummary(body.scopes)}\n`)
+  // The value the server wrote, not the one requested. An API from before the permission echoes
+  // nothing and stores nothing, and a key with no stored value may use the embedded wallet.
+  if (body.embeddedWallet === "allowed" || body.embeddedWallet === "denied") {
+    deps.stdout.write(`${embeddedWalletLine(body.embeddedWallet, body.keyPrefix)}\n`)
+  } else {
+    deps.stderr.write(
+      "Warning: this Candle API does not set a per-key embedded-wallet permission yet, so this key may use the account's embedded wallet whatever --embedded-wallet said.\n",
+    )
+  }
   if (storeError !== undefined) {
     // After the key, never instead of it. The exit code is non-zero so a script notices, but the
     // key is on screen first because that is the part that cannot be recovered.

@@ -57,6 +57,8 @@ function fixture(
     readiness?: unknown
     /** BE-500: the chain of the key's one TEE wallet. */
     chain?: string
+    /** BE-503: `embeddedWalletPermission` on GET /wallets/embedded; absent as an older API answers. */
+    permission?: "allowed" | "denied"
   } = {},
 ) {
   const stdout = createCapture(),
@@ -80,7 +82,10 @@ function fixture(
       ),
     "/api/v1/agent/tier": () => jsonResponse(200, { tier: "free" }),
     "/api/v1/agent/wallets/embedded": () =>
-      jsonResponse(200, { wallets: { solana: { delegated: opts.embedded ?? false }, evm: null } }),
+      jsonResponse(200, {
+        wallets: { solana: { delegated: opts.embedded ?? false }, evm: null },
+        ...(opts.permission !== undefined ? { embeddedWalletPermission: opts.permission } : {}),
+      }),
     "/api/v1/agent/keys/self/signer": () => jsonResponse(200, view),
     "/api/v1/agent/keys/self/limits": () =>
       jsonResponse(200, { keyLimits: null, ...(opts.readiness !== undefined ? { teeReadiness: opts.readiness } : {}) }),
@@ -172,6 +177,46 @@ describe("A1 role-aware doctor", () => {
           expect(row(f, "embedded_wallet")?.state).toBe(embedded ? "PASS" : reachable ? "SKIP" : "WARN")
         })
       }
+  describe("the key's embedded-wallet permission (BE-503, R5.13)", () => {
+    test("bot, denied, with a reachable TEE wallet: SKIP, and the TEE wallet is the trade path", async () => {
+      const f = fixture({ embedded: true, permission: "denied" })
+      expect(await run(["doctor", "--json"], f.deps)).toBe(0)
+      expect(row(f, "embedded_wallet")).toMatchObject({
+        state: "SKIP",
+        detail: "denied for this key; not used by this key",
+      })
+      expect(row(f, "trade_path")?.state).toBe("PASS")
+      expect(row(f, "trade_path")?.detail).not.toContain("embedded")
+    })
+    test("bot, denied, no TEE wallet: WARN naming the fix, trade path WARN, and still exit 0", async () => {
+      const f = fixture({ embedded: true, permission: "denied", reachable: false })
+      expect(await run(["doctor", "--json"], f.deps)).toBe(0)
+      const embedded = row(f, "embedded_wallet")
+      expect(embedded?.state).toBe("WARN")
+      expect(embedded?.detail).toContain("denied for this key")
+      expect(embedded?.detail).toContain("candle keys update abcdefgh --embedded-wallet allow")
+      expect(row(f, "trade_path")).toMatchObject({ state: "WARN" })
+      expect(row(f, "trade_path")?.detail).toContain("no reachable payer")
+    })
+    test("owner, delegated but denied: WARN, never the undelegated FAIL", async () => {
+      const f = fixture({ device: true, embedded: true, permission: "denied" })
+      expect(await run(["doctor", "--json"], f.deps)).toBe(0)
+      expect(f.body().role).toBe("owner")
+      const embedded = row(f, "embedded_wallet")
+      expect(embedded?.state).toBe("WARN")
+      expect(embedded?.detail).toContain("may not use it (denied)")
+    })
+    test.each([
+      "allowed",
+      undefined,
+    ] as const)("permission %s (undefined: an older API) keeps today's PASS", async (permission) => {
+      const f = fixture({ embedded: true, reachable: false, permission })
+      expect(await run(["doctor", "--json"], f.deps)).toBe(0)
+      expect(row(f, "embedded_wallet")).toMatchObject({ state: "PASS", detail: "delegated" })
+      expect(row(f, "trade_path")).toMatchObject({ state: "PASS" })
+      expect(row(f, "trade_path")?.detail).toContain("embedded wallet delegated and permitted")
+    })
+  })
   test("old API uses tier and cached scopes; unauthorized does not fall back to key PASS", async () => {
     const f = fixture({ old: true })
     expect(await run(["doctor", "--json"], f.deps)).toBe(0)

@@ -250,7 +250,7 @@ describe("auth login: --label names the key as well as the device", () => {
 
   function labelRoutes(
     patch: RouteHandler | undefined,
-    apiKey: { key: string; keyPrefix: string; scopes: string[] } | null = {
+    apiKey: { key: string; keyPrefix: string; scopes: string[]; embeddedWallet?: string } | null = {
       key: "ck_live_LABEL_FIXTURE_KEY",
       keyPrefix: "ck_livepr",
       // The device flow's stored order, so the summary's sort is visible.
@@ -294,6 +294,30 @@ describe("auth login: --label names the key as well as the device", () => {
     expect(stdout.text).toContain(
       "Granted scopes: account:read, activity:write, launch:read, launch:write, swap:write (",
     )
+  })
+
+  test("BE-503: the consent page's embedded-wallet choice is reported, in text and in --json", async () => {
+    for (const embeddedWallet of ["denied", "allowed"] as const) {
+      const apiKey = {
+        key: "ck_live_LABEL_FIXTURE_KEY",
+        keyPrefix: "ck_livepr",
+        scopes: ["swap:write"],
+        embeddedWallet,
+      }
+      const text = createCapture()
+      const { fetch } = createRoutedFetch(labelRoutes(undefined, apiKey))
+      expect(await run(["auth", "login"], createTestDeps({ fetch, stdout: text }))).toBe(0)
+      expect(text.text).toContain(`Embedded wallet: ${embeddedWallet}.`)
+      const json = createCapture()
+      const again = createRoutedFetch(labelRoutes(undefined, apiKey))
+      expect(await run(["--json", "auth", "login"], createTestDeps({ fetch: again.fetch, stdout: json }))).toBe(0)
+      expect((JSON.parse(json.text) as Record<string, unknown>).embeddedWallet).toBe(embeddedWallet)
+    }
+    // An API from before the choice reports nothing, and the login says nothing about it.
+    const old = createCapture()
+    const { fetch } = createRoutedFetch(labelRoutes(undefined))
+    expect(await run(["auth", "login"], createTestDeps({ fetch, stdout: old }))).toBe(0)
+    expect(old.text).not.toContain("Embedded wallet:")
   })
 
   test("--json carries apiKeyLabel", async () => {
