@@ -20,9 +20,12 @@ import {
   type LaunchRequest,
   type ListWalletsResult,
   type PresetsPayload,
+  type SelfBalancesResult,
   type SpendLimitsResult,
   type SubmitAtomicLaunchRequest,
   type SubmitTradeRequest,
+  type SwapResult,
+  type SwapSettlement,
 } from "./client"
 
 import { CandleApiError, JsonRpcError } from "./errors"
@@ -430,6 +433,95 @@ describe("request shapes", () => {
     expect(JSON.parse(String(calls[0]?.body))).toEqual({ from: "SOL", to: "USDC", amountRaw: "1000000000" })
     // The useful object, not the envelope: same stance as getMarket/getAgentProfile.
     expect(result).toEqual(payload)
+  })
+
+  test("BE-505 (R8.4) swap: settlement and receiptStored pass through; absent on an older API means not measured", async () => {
+    const settlement: SwapSettlement = {
+      state: "pending",
+      legs: [{ chain: "solana", hash: "sig1", status: "pending" }],
+      in: { asset: "SOL", raw: "1000000000" },
+      expectedOutRaw: "990000",
+    }
+    const payload = { hashes: ["sig1"], expectedOutRaw: "990000", outDecimals: 6, statusChecks: [] }
+    const { client } = makeClient(KEYED, [
+      json(200, { success: true, payload: { ...payload, settlement, receiptStored: true } }),
+      json(200, { success: true, payload }),
+    ])
+    const measured: SwapResult = await client.swap({ from: "SOL", to: "USDC", amountRaw: "1000000000" })
+    expect(measured.settlement).toEqual(settlement)
+    expect(measured.receiptStored).toBe(true)
+    // Not measured: no settlement key, and certainly no zeroed amount.
+    const older = await client.swap({ from: "SOL", to: "USDC", amountRaw: "1000000000" })
+    expect(older.settlement).toBeUndefined()
+    expect(older.receiptStored).toBeUndefined()
+  })
+
+  test("BE-505 (R8.4) wallets.swapReceipt: GET /api/v1/agent/swap/receipts/{hash} with the key, returning the settlement", async () => {
+    const settlement: SwapSettlement = {
+      state: "settled",
+      legs: [{ chain: "solana", hash: "sig/1", status: "confirmed" }],
+      in: { asset: "SOL", raw: "1000000000" },
+      expectedOutRaw: "990000",
+      settledOutRaw: "991234",
+      settledOutSource: "tx_balance_delta",
+      measuredAt: { slot: 42 },
+    }
+    const { client, calls } = makeClient(KEYED, [json(200, { success: true, settlement })])
+    const result = await client.wallets.swapReceipt("sig/1")
+    expect(calls[0]).toEqual({
+      url: "https://api.test/api/v1/agent/swap/receipts/sig%2F1",
+      method: "GET",
+      headers: { "x-api-key": "cndl_test_key" },
+    })
+    expect(result).toEqual(settlement)
+  })
+
+  test("BE-505 (R8.4) wallets.swapReceipt: another key's or an unknown hash is RECEIPT_NOT_FOUND", async () => {
+    const { client } = makeClient(KEYED, [envelope(404, "RECEIPT_NOT_FOUND")])
+    const error = await client.wallets.swapReceipt("sig1").catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(CandleApiError)
+    expect((error as CandleApiError).code).toBe("RECEIPT_NOT_FOUND")
+    expect((error as CandleApiError).status).toBe(404)
+  })
+
+  test("BE-505 (R8.4) wallets.selfBalances: GET /api/v1/agent/wallets/self/balances, mints and cursor in the query", async () => {
+    const body: SelfBalancesResult = {
+      success: true,
+      keyPrefix: "cndl_test",
+      page: [
+        {
+          kind: "tee",
+          chain: "solana",
+          address: "Tee111",
+          id: "wallet-1",
+          label: "bot",
+          balances: [
+            { asset: "SOL", mint: "So11111111111111111111111111111111111111112", amountRaw: "5", decimals: 9, slot: 7 },
+          ],
+          unavailable: ["Mint111"],
+        },
+      ],
+      isDone: false,
+      continueCursor: "50",
+      complete: true,
+    }
+    const { client, calls } = makeClient(KEYED, [json(200, body), json(200, body)])
+    expect(await client.wallets.selfBalances()).toEqual(body)
+    expect(calls[0]).toEqual({
+      url: "https://api.test/api/v1/agent/wallets/self/balances",
+      method: "GET",
+      headers: { "x-api-key": "cndl_test_key" },
+    })
+    await client.wallets.selfBalances({ mints: ["Mint111", "0xabc"], cursor: "50" })
+    expect(calls[1]?.url).toBe("https://api.test/api/v1/agent/wallets/self/balances?mints=Mint111%2C0xabc&cursor=50")
+  })
+
+  test("BE-505 (R8.4) wallets.selfBalances: a key with no spend scope reads an empty page without complete", async () => {
+    const body = { success: true, keyPrefix: "cndl_test", page: [], isDone: true, continueCursor: null }
+    const { client } = makeClient(KEYED, [json(200, body)])
+    const result = await client.wallets.selfBalances()
+    expect(result.page).toEqual([])
+    expect(result.complete).toBeUndefined()
   })
 
   test("swap: a cross-chain fill reports every leg's hash and its status URLs", async () => {
@@ -2478,6 +2570,8 @@ describe("api key requirement", () => {
       () => client.listWallets(),
       () => client.getSpendLimits(),
       () => client.swap({ from: "SOL", to: "USDC", amountRaw: "1000000" }),
+      () => client.wallets.swapReceipt("sig1"),
+      () => client.wallets.selfBalances(),
       () =>
         client.buildTrade({
           clientTradeId: "trade-1",
@@ -2701,6 +2795,12 @@ describe("swapFromLinked", () => {
               outDecimals: 18,
               statusChecks: ["https://api.relay.link/intents/status?requestId=r1"],
               recipient: "0x00000000000000000000000000000000000000BB",
+              settlement: {
+                state: "pending",
+                legs: [{ chain: "solana", hash: "DepositHash1", status: "confirmed" }],
+                in: { asset: "SOL", raw: "3000000000" },
+                expectedOutRaw: "16000000000000000",
+              },
             },
           })
         }
@@ -2719,6 +2819,9 @@ describe("swapFromLinked", () => {
     expect(result.hashes).toEqual(["DepositHash1"])
     expect(result.recipient).toBe("0x00000000000000000000000000000000000000BB")
     expect(result.statusChecks.length).toBe(1)
+    // BE-505 (R8.4): the submit's settlement passes through; a bridge is pending until the fill.
+    expect(result.settlement?.state).toBe("pending")
+    expect(result.settlement?.settledOutRaw).toBeUndefined()
 
     const build = calls.find((c) => c.url.endsWith("/agent/swap/build"))
     expect(build?.body.payer).toEqual({ type: "linked", linkedWalletId: "lw-1" })

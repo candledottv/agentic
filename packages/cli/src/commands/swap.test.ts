@@ -45,6 +45,8 @@ async function fixture(
     profile?: boolean
     /** BE-500: `teeReadiness` on GET /keys/self/limits. Absent by default, as an older API answers. */
     readiness?: unknown
+    /** BE-505: the body POST /agent/swap/submit answers with. Defaults to one without `settlement`. */
+    swapSubmit?: unknown
     /** BE-503: `embeddedWalletPermission` on GET /wallets/embedded. Absent by default (an older API). */
     embeddedPermission?: "allowed" | "denied"
   } = {},
@@ -126,6 +128,7 @@ async function fixture(
         : ok({ success: true, payload: quote })
     }
     if (path.endsWith("/sign")) return ok({ signedTransaction: signed, encoding: "base64" })
+    if (path === "/api/v1/agent/swap/submit" && opts.swapSubmit !== undefined) return ok(opts.swapSubmit)
     if (path.endsWith("/submit") || path.endsWith("/confirm"))
       return ok({ success: true, status: "executed", signature })
     if (path === "/rpc") {
@@ -625,5 +628,81 @@ describe("TEE limits preflight", () => {
     })
     expect(await run(["swap", "SOL", mint, "--amount", "1", "--yes", "--json"], f.deps)).toBe(0)
     expect(f.calls.some((call) => call.path === "/api/v1/agent/keys/self/limits")).toBe(false)
+  })
+})
+
+describe("BE-505 (R8.4): the settled receipt of a base-pair swap", () => {
+  const settlement = (fields: Record<string, unknown>) => ({
+    legs: [{ chain: "solana", hash: signature, status: "confirmed" }],
+    in: { asset: "SOL", raw: "250000000" },
+    expectedOutRaw: "123500",
+    ...fields,
+  })
+  const submitted = (value: unknown) => ({
+    success: true,
+    payload: { hashes: [signature], expectedOutRaw: "123500", ...(value === undefined ? {} : { settlement: value }) },
+  })
+
+  test("settled: prints the measured amount in the out asset and passes settlement through in --json", async () => {
+    const measured = settlement({
+      state: "settled",
+      settledOutRaw: "123789",
+      settledOutSource: "tx_balance_delta",
+      measuredAt: { slot: 451209566 },
+    })
+    const f = await fixture({ swapSubmit: submitted(measured) })
+    expect(await run(swapArgs, f.deps)).toBe(0)
+    expect(f.stderr.text).toContain("settled 0.123789 USDC\n")
+    expect(f.stderr.text).not.toContain("Re-check")
+    const out = JSON.parse(f.stdout.text)
+    expect(out.settlement).toEqual(measured)
+    expect(out.payload.settlement).toEqual(measured)
+  })
+
+  for (const state of ["pending", "uncertain", "failed"]) {
+    test(`${state}: prints the state and names the job read, never the receipt route`, async () => {
+      const f = await fixture({ swapSubmit: submitted(settlement({ state })) })
+      expect(await run(swapArgs, f.deps)).toBe(0)
+      expect(f.stderr.text).toContain(
+        `Settlement: ${state}. Re-check with GET /api/v1/agent/swap/jobs/test-1 (candle swap status test-1).`,
+      )
+      expect(f.stderr.text).not.toContain("receipts")
+      expect(f.stderr.text).not.toMatch(/^settled /m)
+      expect(JSON.parse(f.stdout.text).settlement.state).toBe(state)
+    })
+  }
+
+  test("settled without a measured amount prints no number", async () => {
+    const f = await fixture({ swapSubmit: submitted(settlement({ state: "settled" })) })
+    expect(await run(swapArgs, f.deps)).toBe(0)
+    expect(f.stderr.text).toContain(
+      "Settlement: settled, amount not measured. Re-check with GET /api/v1/agent/swap/jobs/test-1",
+    )
+    expect(f.stderr.text).not.toMatch(/^settled /m)
+  })
+
+  test("an older API with no settlement is not measured: no amount, no zero, no settlement key invented", async () => {
+    const f = await fixture({ swapSubmit: submitted(undefined) })
+    expect(await run(swapArgs, f.deps)).toBe(0)
+    expect(f.stderr.text).toContain("Settlement: not measured. Re-check with GET /api/v1/agent/swap/jobs/test-1")
+    expect(f.stderr.text).not.toMatch(/settled 0/)
+    const out = JSON.parse(f.stdout.text)
+    expect("settlement" in out).toBe(false)
+    expect(out.payload.expectedOutRaw).toBe("123500")
+  })
+
+  test("an unreadable settlement is not measured and is still passed through as sent", async () => {
+    const odd = { state: "reconciling", settledOutRaw: "12" }
+    const f = await fixture({ swapSubmit: submitted(odd) })
+    expect(await run(swapArgs, f.deps)).toBe(0)
+    expect(f.stderr.text).toContain("Settlement: not measured.")
+    expect(JSON.parse(f.stdout.text).settlement).toEqual(odd)
+  })
+
+  test("a token trade reports no settlement line: that rail has no settlement", async () => {
+    const f = await fixture()
+    expect(await run(["swap", "SOL", mint, "--amount", "0.25", "--wallet", "tee", "--yes", "--json"], f.deps)).toBe(0)
+    expect(f.stderr.text).not.toContain("Settlement")
+    expect(f.stderr.text).not.toMatch(/^settled /m)
   })
 })

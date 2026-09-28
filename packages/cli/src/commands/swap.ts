@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { z } from "zod"
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
@@ -143,6 +144,47 @@ export function printTradingResult(ctx: CommandContext, result: Json): number {
   ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(result)}\n` : `${JSON.stringify(result, null, 2)}\n`)
   return 0
 }
+
+/**
+ * BE-505 (R8.4): what a base-pair swap settled, as `/agent/swap/submit` reports it (BE-504, R8.1).
+ * Only the fields the line below reads are checked; the object itself is passed through as sent.
+ */
+const settlementSchema = z.object({
+  state: z.enum(["settled", "pending", "failed", "uncertain"]),
+  settledOutRaw: z.string().regex(/^\d+$/).optional(),
+})
+
+/**
+ * BE-505 (R8.4): one line on stderr after a base-pair swap's submit, and the `settlement` to pass
+ * through in the JSON result. `settled <amount> <asset>` when the server measured the fill;
+ * otherwise the state and the job read to re-check it with. An older API sends no `settlement`,
+ * which is "not measured", never a zero. The re-check is the job read: `candle swap` always sends a
+ * `clientTradeId`, and the one-shot receipt route does not serve a submitted swap.
+ */
+function reportSettlement(
+  ctx: CommandContext,
+  settlement: unknown,
+  out: { asset: string; decimals: number },
+  id: string,
+): { settlement?: unknown } {
+  const parsed = settlementSchema.safeParse(settlement)
+  const reading = parsed.success ? parsed.data : undefined
+  if (reading?.state === "settled" && reading.settledOutRaw !== undefined)
+    ctx.deps.stderr.write(`settled ${decimalAmount(reading.settledOutRaw, out.decimals)} ${out.asset}\n`)
+  else {
+    // A settled state with no measured amount is still not a number to print.
+    const state = !reading
+      ? "not measured"
+      : reading.state === "settled"
+        ? "settled, amount not measured"
+        : reading.state
+    ctx.deps.stderr.write(
+      `Settlement: ${state}. Re-check with GET /api/v1/agent/swap/jobs/${id} (candle swap status ${id}).\n`,
+    )
+  }
+  return settlement !== null && typeof settlement === "object" ? { settlement } : {}
+}
+
 export function validClientId(id: string): boolean {
   return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)
 }
@@ -467,7 +509,24 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
             signedTransactionsBase64: [signed],
           })
         : await request(ctx, key, "/api/v1/trade/agent/submit", { clientTradeId: id, signedTransactions: [signed] })
-    return printTradingResult(ctx, { ...result, clientTradeId: id, kind, quote, wallet: safeText(wallet.address) })
+    // BE-505 (R8.4): the Solana submit carries `settlement` inside `payload`, beside `hashes`.
+    const settled =
+      kind === "swap"
+        ? reportSettlement(
+            ctx,
+            (result.payload as Json | undefined)?.settlement,
+            { asset: to, decimals: outDecimals },
+            id,
+          )
+        : {}
+    return printTradingResult(ctx, {
+      ...result,
+      clientTradeId: id,
+      kind,
+      quote,
+      wallet: safeText(wallet.address),
+      ...settled,
+    })
   } catch (error) {
     return tradingFailure(ctx, error, id)
   }
@@ -729,8 +788,12 @@ async function hoodSwap(
       if (notice) notices.push(notice)
     },
   })
+  // BE-505 (R8.4): the Hood sequenced `completed` payload carries `settlement` itself.
+  const settled =
+    kind === "swap" ? reportSettlement(ctx, run.final.settlement, { asset: to.asset, decimals: outDecimals }, id) : {}
   return printTradingResult(ctx, {
     ...run.final,
+    ...settled,
     clientTradeId: id,
     kind,
     chain: "hood",

@@ -57184,6 +57184,7 @@ init_trading();
 import { randomUUID as randomUUID2 } from "node:crypto";
 
 // src/commands/swap.ts
+init_zod();
 init_args();
 init_evm_lite();
 init_render();
@@ -57250,6 +57251,23 @@ function printTradingResult(ctx, result) {
 ` : `${JSON.stringify(result, null, 2)}
 `);
   return 0;
+}
+var settlementSchema = exports_external.object({
+  state: exports_external.enum(["settled", "pending", "failed", "uncertain"]),
+  settledOutRaw: exports_external.string().regex(/^\d+$/).optional()
+});
+function reportSettlement(ctx, settlement, out, id) {
+  const parsed = settlementSchema.safeParse(settlement);
+  const reading = parsed.success ? parsed.data : undefined;
+  if (reading?.state === "settled" && reading.settledOutRaw !== undefined)
+    ctx.deps.stderr.write(`settled ${decimalAmount(reading.settledOutRaw, out.decimals)} ${out.asset}
+`);
+  else {
+    const state = !reading ? "not measured" : reading.state === "settled" ? "settled, amount not measured" : reading.state;
+    ctx.deps.stderr.write(`Settlement: ${state}. Re-check with GET /api/v1/agent/swap/jobs/${id} (candle swap status ${id}).
+`);
+  }
+  return settlement !== null && typeof settlement === "object" ? { settlement } : {};
 }
 function validClientId(id) {
   return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id);
@@ -57475,7 +57493,15 @@ async function swap(args, ctx) {
       swapId: data.swapId,
       signedTransactionsBase64: [signed]
     }) : await request(ctx, key, "/api/v1/trade/agent/submit", { clientTradeId: id, signedTransactions: [signed] });
-    return printTradingResult(ctx, { ...result, clientTradeId: id, kind, quote, wallet: safeText(wallet.address) });
+    const settled = kind === "swap" ? reportSettlement(ctx, result.payload?.settlement, { asset: to, decimals: outDecimals }, id) : {};
+    return printTradingResult(ctx, {
+      ...result,
+      clientTradeId: id,
+      kind,
+      quote,
+      wallet: safeText(wallet.address),
+      ...settled
+    });
   } catch (error) {
     return tradingFailure(ctx, error, id);
   }
@@ -57681,8 +57707,10 @@ async function hoodSwap(ctx, args) {
         notices.push(notice);
     }
   });
+  const settled = kind === "swap" ? reportSettlement(ctx, run2.final.settlement, { asset: to.asset, decimals: outDecimals }, id) : {};
   return printTradingResult(ctx, {
     ...run2.final,
+    ...settled,
     clientTradeId: id,
     kind,
     chain: "hood",

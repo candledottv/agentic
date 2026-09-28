@@ -109,6 +109,8 @@ interface FixtureOptions {
   expiresAt?: number
   /** BE-500: `teeReadiness` on GET /keys/self/limits. Absent by default, as an older API answers. */
   readiness?: unknown
+  /** BE-505: `settlement` on the swap rail's `completed` payload. Absent by default, as an older API answers. */
+  settlement?: unknown
 }
 
 async function fixture(opts: FixtureOptions = {}) {
@@ -317,6 +319,7 @@ async function fixture(opts: FixtureOptions = {}) {
                 chain: "hood",
                 hashes: landed.map((l) => l.hash),
                 landedLegs: landed,
+                ...(opts.settlement !== undefined ? { settlement: opts.settlement } : {}),
               },
             }
           : { success: true, status: "executed", txHash: hash },
@@ -646,6 +649,50 @@ describe("H8: the sequenced leg loop", () => {
     expect(submit?.body).toMatchObject({ clientTradeId: "hood-2", swapId: "swap-1", operationId: "op-1" })
     expect(f.appended.map((entry) => entry.token)).toEqual([toChecksumAddress(HOOD_USDG_ADDRESS)])
     expect(lastJson(f.stdout.text).status).toBe("confirmed")
+  })
+
+  test("BE-505 (R8.4): a completed ETH to USDG swap prints the settled USDG and passes settlement through", async () => {
+    const settlement = {
+      state: "settled",
+      legs: [{ chain: "hood", hash: `0x${"1".repeat(64)}`, status: "confirmed" }],
+      in: { asset: "ETH", raw: "500000000000000000" },
+      expectedOutRaw: "100",
+      settledOutRaw: "1234567",
+      settledOutSource: "tx_balance_delta",
+      measuredAt: { blockNumber: 123 },
+    }
+    const f = await fixture({ legs: [{ kind: "trade", leg: leg(4, router, "0x01", "1000") }], settlement })
+    expect(
+      await run(["swap", "ETH", "USDG", "--amount", "0.5", "--client-trade-id", "hood-2", "--yes", "--json"], f.deps),
+    ).toBe(0)
+    expect(f.stderr.text).toContain("settled 1.234567 USDG\n")
+    expect(lastJson(f.stdout.text).settlement).toEqual(settlement)
+  })
+
+  test("BE-505 (R8.4): a Hood swap with a pending or absent settlement names the job read", async () => {
+    for (const settlement of [
+      { state: "pending", legs: [], in: { asset: "ETH", raw: "1" }, expectedOutRaw: "100" },
+      undefined,
+    ]) {
+      const f = await fixture({
+        legs: [{ kind: "trade", leg: leg(4, router, "0x01", "1000") }],
+        ...(settlement ? { settlement } : {}),
+      })
+      expect(
+        await run(["swap", "ETH", "USDG", "--amount", "0.5", "--client-trade-id", "hood-3", "--yes", "--json"], f.deps),
+      ).toBe(0)
+      expect(f.stderr.text).toContain(
+        `Settlement: ${settlement ? "pending" : "not measured"}. Re-check with GET /api/v1/agent/swap/jobs/hood-3 (candle swap status hood-3).`,
+      )
+      expect("settlement" in lastJson(f.stdout.text)).toBe(settlement !== undefined)
+    }
+  })
+
+  test("BE-505 (R8.4): a Hood token trade prints no settlement line", async () => {
+    const f = await fixture()
+    expect(await run(buyArgs(), f.deps)).toBe(0)
+    expect(f.stderr.text).not.toContain("Settlement")
+    expect(f.stderr.text).not.toMatch(/^settled /m)
   })
 
   test("a token sell with --percent 100 reads the token balance over the Hood RPC and sells all of it", async () => {

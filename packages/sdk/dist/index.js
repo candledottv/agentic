@@ -472,6 +472,23 @@ class CandleClient {
   secretStore;
   solanaRpcUrl;
   evmRpcUrl;
+  wallets = {
+    swapReceipt: async (hash) => {
+      this.requireKey("wallets.swapReceipt()");
+      const body = await this.requestJson("GET", `/api/v1/agent/swap/receipts/${encodeURIComponent(hash)}`);
+      return body.settlement;
+    },
+    selfBalances: async (opts = {}) => {
+      this.requireKey("wallets.selfBalances()");
+      const params = new URLSearchParams;
+      if (opts.mints?.length)
+        params.set("mints", opts.mints.join(","));
+      if (opts.cursor !== undefined)
+        params.set("cursor", opts.cursor);
+      const query = params.size ? `?${params}` : "";
+      return this.requestJson("GET", `/api/v1/agent/wallets/self/balances${query}`);
+    }
+  };
   constructor(opts) {
     assertTransportSecurity(opts.apiUrl, opts.allowInsecureHttp === true);
     this.apiUrl = opts.apiUrl.replace(/\/+$/, "");

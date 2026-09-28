@@ -914,6 +914,13 @@ export interface LinkedSwapResult {
     outDecimals: number;
     statusChecks: string[];
     recipient: string;
+    /**
+     * What the swap settled, measured from chain (see `SwapSettlement`). Absent on an older API,
+     * which means "not measured". A cross-chain swap stays `pending` until the destination fill is
+     * observed. This call sends no `clientTradeId`, so it has no job to re-read: poll
+     * `statusChecks` for the fill.
+     */
+    settlement?: SwapSettlement;
 }
 export interface SignLinkedTransactionParams {
     /** The linked wallet's row id: keys the secretStore lookup AND is the relay's :id path segment. */
@@ -961,6 +968,117 @@ export interface SwapResult {
     venueCostUsd?: number;
     /** URLs to poll a cross-chain fill's status, so a caller need not re-derive them from a quote. */
     statusChecks: string[];
+    /**
+     * What the swap settled, measured from chain. Absent on an older API, which means "not
+     * measured", never a zero. When `state` is `pending` or `uncertain`, or to re-read a `settled`
+     * one later, call `wallets.swapReceipt(hash)` with any of `hashes`, on the same key.
+     */
+    settlement?: SwapSettlement;
+    /**
+     * `false` when the server could not store the receipt: the swap landed, and
+     * `wallets.swapReceipt(hash)` will 404 `RECEIPT_NOT_FOUND`. Absent on an older API.
+     */
+    receiptStored?: boolean;
+}
+/** `SwapSettlement.state`. */
+export type SwapSettlementState = "settled" | "pending" | "failed" | "uncertain";
+/** One broadcast leg of a settled swap. */
+export interface SwapSettlementLeg {
+    chain: "solana" | "hood";
+    hash: string;
+    status: "confirmed" | "failed" | "pending";
+}
+/**
+ * What a base-asset swap settled, measured from chain rather than quoted. Carried by `swap()`'s
+ * result, by `swapFromLinked()`'s result, and by `wallets.swapReceipt()`.
+ *
+ * - `settled`: every leg confirmed and the recipient's delta measured into `settledOutRaw`.
+ * - `pending`: a leg is not yet observed, or a cross-chain swap has not filled on the destination.
+ * - `failed`: a leg failed, or the bridge failed or refunded.
+ * - `uncertain`: the legs landed but the delta could not be attributed. Reconcile from chain; the
+ *   server never guesses the amount.
+ *
+ * A swap from `POST /agent/swap/submit` built with a `clientTradeId` is re-read with
+ * `GET /api/v1/agent/swap/jobs/{clientTradeId}` (`job.settlement`), never the receipt route.
+ */
+export interface SwapSettlement {
+    state: SwapSettlementState;
+    legs: SwapSettlementLeg[];
+    /** What was sent. */
+    in: {
+        asset: string;
+        raw: string;
+    };
+    /** The build-time quote. */
+    expectedOutRaw: string;
+    /** The recipient's measured delta of the out asset. Omitted, never zeroed, when not measured. */
+    settledOutRaw?: string;
+    settledOutSource?: "tx_balance_delta" | "bridge_fill";
+    /** The slot (Solana) or block (Hood) of the measurement. Present with `settledOutRaw`. */
+    measuredAt?: {
+        slot?: number;
+        blockNumber?: number;
+    };
+}
+/** One balance of one wallet in `wallets.selfBalances()`. */
+export interface SelfWalletBalance {
+    /** Set for a base asset. */
+    asset?: BaseAssetKey;
+    /** The mint or token contract. */
+    mint: string;
+    amountRaw: string;
+    decimals?: number;
+    /** The Solana slot the balance was read at. */
+    slot?: number;
+    /** The Hood block the balance was read at. */
+    blockNumber?: number;
+}
+/** One wallet this key may spend from, with its balances. */
+export interface SelfWallet {
+    kind: "embedded" | "tee" | "linked";
+    chain: WalletChain;
+    address: string;
+    /** The linked wallet id; absent on an embedded wallet. */
+    id?: string;
+    label?: string;
+    balances: SelfWalletBalance[];
+    /** Mints whose read failed: unknown, not zero. Absent when every read succeeded. */
+    unavailable?: string[];
+}
+/** `wallets.selfBalances()` options. */
+export interface SelfBalancesOptions {
+    /** Extra mints (Solana) or 0x token contracts (Hood) beyond the base assets, at most 10. */
+    mints?: string[];
+    /** The previous page's `continueCursor`. */
+    cursor?: string;
+}
+/** `GET /api/v1/agent/wallets/self/balances` response: one page of this key's spendable wallets. */
+export interface SelfBalancesResult {
+    success: true;
+    keyPrefix: string;
+    page: SelfWallet[];
+    isDone: boolean;
+    continueCursor: string | null;
+    /** `false` when the account's wallet list was cut off. Absent on a key with no spend scope. */
+    complete?: boolean;
+}
+/** `client.wallets`: reads scoped to what this key may spend. */
+export interface CandleWallets {
+    /**
+     * Re-reads a one-shot `swap()`'s settlement (GET /api/v1/agent/swap/receipts/{hash}),
+     * remeasured from chain on every call. `hash` is any of that result's `hashes`, sent by the key
+     * that made the swap. Another key's hash and an unknown hash both throw `RECEIPT_NOT_FOUND`
+     * (404), as does a swap whose result said `receiptStored: false`. A swap from
+     * `/agent/swap/submit` is re-read with its job instead. Needs `swap:write`.
+     */
+    swapReceipt(hash: string): Promise<SwapSettlement>;
+    /**
+     * Balances of the wallets this key may spend from, and no others
+     * (GET /api/v1/agent/wallets/self/balances). Needs no `account:read`; a key with no spend scope
+     * gets an empty page. Base assets always, plus up to 10 `mints`; 50 wallets a page. A balance
+     * whose read failed is listed in `unavailable`, never as zero.
+     */
+    selfBalances(opts?: SelfBalancesOptions): Promise<SelfBalancesResult>;
 }
 /** One token account a close would reclaim (BE-418). `lamports` is its rent, returned to the wallet. */
 export interface EmptyTokenAccount {
@@ -1219,6 +1337,8 @@ export declare class CandleClient {
     private readonly secretStore?;
     private readonly solanaRpcUrl?;
     private readonly evmRpcUrl?;
+    /** Reads scoped to what this key may spend: a one-shot swap's receipt, and spendable balances. */
+    readonly wallets: CandleWallets;
     constructor(opts: CandleClientOptions);
     getQuotePairs(chain?: Chain): Promise<QuotePairsPayload>;
     getPresets(): Promise<PresetsPayload>;
