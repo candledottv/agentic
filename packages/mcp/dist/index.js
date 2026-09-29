@@ -106,7 +106,7 @@ function percentOfBalance(balanceRaw, percent) {
 import { randomUUID } from "node:crypto";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.0";
+var SERVER_VERSION = "0.10.1";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -809,7 +809,7 @@ var swapShape = {
   amount: z.string().optional().describe('Decimal amount of `from` to spend, e.g. "0.5". Preferred. Pass exactly one of amount or amountRaw.'),
   amountRaw: z.string().optional().describe("Raw base units of `from`, as a positive integer string. Kept for callers that already " + "compute raw units; new callers should use `amount`."),
   maxSlippageBps: z.number().optional().describe("Slippage bound in bps, 0-10000. Server defaults to 100 (1%)"),
-  clientSwapId: z.string().optional().describe("Optional dedup key. Only coalesces a duplicate that arrives while the first call is still " + "in flight; one arriving after it settled will swap again")
+  clientSwapId: z.string().optional().describe("Durable idempotency key. Same id + same from/to/amountRaw/effective slippage (omitted means " + "100 bps) replays the stored result, including an indeterminate SWAP_FAILED with the " + "signature in the message. A different body is rejected. Omit it and nothing is coalesced. " + "Pass one so a timeout retry returns that stored result.")
 };
 var tradeShape = {
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
@@ -947,7 +947,8 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 ` + `A bridge behaves differently and the difference matters:
 ` + `- It is several transactions, not one, and it takes time rather than settling on the call.
 ` + "- A confirmed source transaction is NOT proof the destination was credited. Read the " + "returned status before treating the funds as arrived; the response carries the venue's " + `own status URLs for the cross-chain fill.
-` + "- Do NOT re-send after a timeout. `clientSwapId` only coalesces a duplicate that arrives " + "while the first call is still in flight; once the first has settled, a second call with " + `the same id bridges AGAIN. If a bridge times out, check its status rather than retrying.
+` + "- A timeout is unknown, not failed. Pass a `clientSwapId` and retry the SAME request, " + "including the same slippage. The replay returns the stored result: the original success, " + "or a stored error. An indeterminate first leg comes back as SWAP_FAILED, retryable false, " + "with the signature in the message -- verify that on-chain before a new id. A swap that is " + "still running, with no stored outcome, is a retryable conflict. A different body under the " + "same id is rejected. A confirmed first leg is replayed with its hash, retryable false, and " + "is not run again. retryable true on the first LEG2_FAILED means send leg 2 as a new request. " + `Omitting the id never coalesces -- do not retry a timed-out call that had no id.
+` + "- If a bridge times out, check the returned status URLs rather than treating the funds " + `as arrived or lost.
 
 ` + 'Amounts are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for ' + "callers that already compute them. Test-environment keys are refused: every leg settles " + "on a live venue.",
     inputSchema: swapShape

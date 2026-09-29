@@ -115,9 +115,13 @@ scope and the per-key rate limit apply exactly as they do to a trade.
 
 Two things to know before calling it. A cross-chain fill settles as more than one transaction, so
 the result carries a `hashes` array and `statusChecks` URLs to poll: the Solana leg confirming does
-not mean the Hood side has landed. And `clientSwapId` only coalesces a duplicate that arrives while
-the first call is still in flight; one sent after the first settled will swap again, so retrying a
-timed-out swap is not free the way retrying a launch is.
+not mean the Hood side has landed. And `clientSwapId` is a durable idempotency key: the same id
+with the same body, including effective slippage, replays the stored result. A timeout is unknown
+until you retry that same id: an indeterminate first leg comes back as `SWAP_FAILED`, retryable
+false, with the signature in the message, so verify it on-chain before a new id. A different body
+is rejected. Omitting the id never coalesces. A confirmed first leg is replayed with its hash and
+retryable false if a later leg did not finish. `retryable: true` on the first `LEG2_FAILED` means
+send leg 2 as a new request.
 
 ## Safety rails
 

@@ -156,9 +156,16 @@ After a timeout the better move is `candle_get_operation`, which tells you wheth
 before you decide. A 404 there means Candle never saw the id, so nothing moved and the original
 request is safe to send again unchanged.
 
-**A cross-chain swap is not a retryable call.** `clientSwapId` only coalesces a duplicate that
-arrives while the first is still in flight; once it settles, the same id swaps AGAIN. A bridge also
-takes time, and a confirmed source transaction is not proof the destination was credited.
+**A swap timeout is unknown, not failed.** Pass a `clientSwapId` and retry the same request,
+including the same slippage. The replay returns the stored result: the original success, or a
+stored error. An indeterminate first leg comes back as `SWAP_FAILED`, retryable false, with the
+signature in the message -- verify that on-chain before a new id. A swap that is still running,
+with no stored outcome, is a retryable conflict. A different body under the same id is rejected.
+Omitting the id never coalesces -- do not retry a timed-out call that had none. If the first leg
+already confirmed, the replay keeps that hash, is retryable false, and does not run the first
+leg again. `retryable: true` on the first `LEG2_FAILED` means send leg 2 as a new request. A
+bridge still takes time, and a confirmed source transaction is not proof the destination was
+credited.
 
 **Stay on the configured environment.** `CANDLE_API_URL` decides which environment you are
 touching. Production is `https://api.alpha.candle.tv` (the CLI's default) and staging is

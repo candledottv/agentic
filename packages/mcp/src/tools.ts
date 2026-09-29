@@ -459,8 +459,10 @@ const swapShape = {
     .string()
     .optional()
     .describe(
-      "Optional dedup key. Only coalesces a duplicate that arrives while the first call is still " +
-        "in flight; one arriving after it settled will swap again",
+      "Durable idempotency key. Same id + same from/to/amountRaw/effective slippage (omitted means " +
+        "100 bps) replays the stored result, including an indeterminate SWAP_FAILED with the " +
+        "signature in the message. A different body is rejected. Omit it and nothing is coalesced. " +
+        "Pass one so a timeout retry returns that stored result.",
     ),
 }
 
@@ -830,9 +832,16 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "- A confirmed source transaction is NOT proof the destination was credited. Read the " +
         "returned status before treating the funds as arrived; the response carries the venue's " +
         "own status URLs for the cross-chain fill.\n" +
-        "- Do NOT re-send after a timeout. `clientSwapId` only coalesces a duplicate that arrives " +
-        "while the first call is still in flight; once the first has settled, a second call with " +
-        "the same id bridges AGAIN. If a bridge times out, check its status rather than retrying.\n\n" +
+        "- A timeout is unknown, not failed. Pass a `clientSwapId` and retry the SAME request, " +
+        "including the same slippage. The replay returns the stored result: the original success, " +
+        "or a stored error. An indeterminate first leg comes back as SWAP_FAILED, retryable false, " +
+        "with the signature in the message -- verify that on-chain before a new id. A swap that is " +
+        "still running, with no stored outcome, is a retryable conflict. A different body under the " +
+        "same id is rejected. A confirmed first leg is replayed with its hash, retryable false, and " +
+        "is not run again. retryable true on the first LEG2_FAILED means send leg 2 as a new request. " +
+        "Omitting the id never coalesces -- do not retry a timed-out call that had no id.\n" +
+        "- If a bridge times out, check the returned status URLs rather than treating the funds " +
+        "as arrived or lost.\n\n" +
         'Amounts are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for ' +
         "callers that already compute them. Test-environment keys are refused: every leg settles " +
         "on a live venue.",

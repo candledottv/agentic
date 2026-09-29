@@ -956,7 +956,7 @@ export interface SwapRequest {
     amountRaw: string;
     /** Bps, 0-10000. Server defaults to 100 (1%) when omitted. */
     maxSlippageBps?: number;
-    /** Optional in-flight dedup key. See swap()'s jsdoc for what it does and does not guarantee. */
+    /** Durable idempotency key. Same id + same body, including effective slippage, replays; a different body is refused. */
     clientSwapId?: string;
 }
 /** swap()'s unwrapped `payload`. */
@@ -1484,11 +1484,17 @@ export declare class CandleClient {
      * `TEST_ENVIRONMENT_FORBIDDEN`: no leg of this rail has a non-production equivalent, since every
      * one settles on a live venue.
      *
-     * `clientSwapId` is a coalescing key, NOT a durable idempotency ledger. A duplicate arriving
-     * while the first request is still in flight is handed that same result; one arriving after it
-     * settled executes a second swap. Omitting it never coalesces at all. This method therefore
-     * never retries on its own, unlike `launch()`: a retried funding call that already landed would
-     * silently move the funds twice.
+     * `clientSwapId` is a durable idempotency key. The same id with the same `from`/`to`/`amountRaw`
+     * and effective `maxSlippageBps` (omitted means 100) replays the original result and does not
+     * sign or broadcast again. The same id with a different body, including a different slippage,
+     * is `IDEMPOTENCY_CONFLICT`. While no outcome is stored yet, a replay is `IDEMPOTENCY_CONFLICT`
+     * with `retryable: true`. A timeout is unknown until you replay the same id: the replay returns
+     * the stored result. An indeterminate first leg comes back as `SWAP_FAILED` with
+     * `retryable: false` and the signature in the message -- verify it on-chain before a new id.
+     * A confirmed first leg whose later leg did not finish is replayed with that leg's hash and
+     * `retryable: false`, and is not executed again. `retryable: true` on the first `LEG2_FAILED`
+     * means send leg 2 as a new request. Omitting `clientSwapId` never coalesces and never writes
+     * a ledger row. This method still never retries on its own.
      */
     swap(req: SwapRequest): Promise<SwapResult>;
     /**
@@ -1804,7 +1810,7 @@ export declare class CandleClient {
     private jsonRpcCallRaw;
 }
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.4.1";
+export declare const SDK_VERSION = "0.4.2";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map
