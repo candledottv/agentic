@@ -131,7 +131,7 @@
     },
     "state_conflict": {
       "retryable": false,
-      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed. CLOSE_IN_PROGRESS: an earlier close under this id is still sending; read its job. CLOSE_FAILED closed nothing and settled its id; preview again and close under a new id.",
+      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed. CLOSE_IN_PROGRESS: an earlier close under this id is still sending; read its job. CLOSE_FAILED closed nothing and settled its id; preview again and close under a new id. BRIDGE_IN_FLIGHT: a bridge into or out of this wallet is still open; read `candle swap status` and record the sweep once it closes or its two hours pass.",
       "codes": [
         "IDEMPOTENCY_CONFLICT",
         "TRADE_ALREADY_CLAIMED",
@@ -158,6 +158,7 @@
         "KEY_SIGNER_READBACK_MISMATCH",
         "KEY_SIGNER_SIGNATURE_REQUIRED",
         "WALLET_BUSY",
+        "BRIDGE_IN_FLIGHT",
         "CLOSE_IN_PROGRESS",
         "CLOSE_FAILED"
       ]
@@ -177,6 +178,11 @@
       "retryable": true,
       "action": "The capability is switched off or a required leg is absent in this environment. Retry later; escalate if it persists.",
       "codes": ["LAUNCH_DISABLED", "FEE_LEG_MISSING", "HOOD_LAUNCH_UNAVAILABLE", "CLOSE_LEDGER_UNAVAILABLE"]
+    },
+    "venue_refused": {
+      "retryable": false,
+      "action": "Candle checked the venue's transaction before anything was stamped and refused it: another target, another program, or a larger debit than the amount. Nothing was signed and nothing moved. Do not retry the same request in a loop; report the refusal with its message. A venue contract change needs a Candle release.",
+      "codes": ["RELAY_STEP_REFUSED"]
     },
     "risk_stop": {
       "retryable": false,
