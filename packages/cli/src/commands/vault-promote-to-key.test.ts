@@ -68,7 +68,10 @@ function keysListing(target: KeyRowIn = {}, extra: KeyRowIn[] = []): RouteHandle
           environment: "production",
           createdAt: 3,
           txLimit: { usdMicros: 1_000_000, reset: "daily" },
-          spendLimits: [{ asset: "sol", maxPerTxRaw: "1000" }],
+          spendLimits: [
+            { asset: "sol", maxPerTxRaw: "1000" },
+            { asset: "usdc", maxPerTxRaw: "0" },
+          ],
           ...target,
         },
         ...extra,
@@ -153,7 +156,7 @@ function targetBlock(n: number): string {
     `  API key         ${TO}…  (${TO_LABEL})  --to-key, bound by a rebind after the import`,
     `  imported under  ${KEY_PREFIX}…  (${KEY_LABEL})  profile pb`,
     `  API             ${API}  (not a Candle host, from CANDLE_API_URL)`,
-    `Warning: key ${TO} can trade SOL-quoted swaps; it cannot trade USDC-quoted swaps until a USDC cap is set.`,
+    `Warning: key ${TO} has a USDC cap of 0; it cannot trade USDC-quoted swaps until the cap is raised.`,
   ].join("\n")
 }
 
@@ -894,7 +897,7 @@ describe("vault promote --to-key", () => {
     expect(r.submits.n).toBe(1)
     const address = r.submits.addresses[0] as string
     expect(r.err).toContain(`This wallet will be bound to key ${TO}  (${TO_LABEL}) by a rebind after the import.`)
-    expect(r.err).toContain(`Warning: key ${TO} can trade SOL-quoted swaps`)
+    expect(r.err).toContain(`Warning: key ${TO} has a USDC cap of 0`)
     expect(rebind.bodies[0]).toEqual({ dryRun: true, toKeyPrefix: TO, wallets: [linkedId(address)] })
     const body = lastLine(r.out)
     expect(body).toMatchObject({
@@ -957,14 +960,22 @@ describe("vault promote --to-key", () => {
     stderr.text = ""
     const ethOnly: ToKeyTarget = {
       ...hood,
-      ...tradeReadinessOf({ txLimit: {}, spendLimits: [{ asset: "eth", maxPerTxRaw: "1" }] }),
+      ...tradeReadinessOf({
+        txLimit: null,
+        spendLimits: [
+          { asset: "eth", maxPerTxRaw: "1" },
+          { asset: "usdg", maxPerTxRaw: "0" },
+        ],
+      }),
     }
     await confirmResumeRebind(
       { deps, json: false, apiUrl: API, verifyAccount: true },
       { target: ethOnly, deviceToken: DEVICE_TOKEN },
       "evm",
     )
-    expect(stderr.text).toContain("cannot trade USDG-quoted swaps")
+    expect(stderr.text).toContain(
+      `Warning: key ${TO} has a USDG cap of 0; it cannot trade USDG-quoted swaps until the cap is raised.`,
+    )
     expect(stderr.text).not.toContain("SOL")
     expect(stderr.text).not.toContain("USDC")
   })
@@ -997,7 +1008,7 @@ describe("vault promote --to-key", () => {
     expect(r.stderrAtPrompt[0]).toContain(
       `This wallet will be bound to key ${TO}  (${TO_LABEL}) by a rebind after the import.`,
     )
-    expect(r.stderrAtPrompt[0]).toContain(`Warning: key ${TO} can trade SOL-quoted swaps`)
+    expect(r.stderrAtPrompt[0]).toContain(`Warning: key ${TO} has a USDC cap of 0`)
     expect(rebind.bodies).toEqual([
       { dryRun: true, toKeyPrefix: TO, wallets: [id] },
       { toKeyPrefix: TO, walletIds: [id], expect: { [id]: IMPORTED_TO } },

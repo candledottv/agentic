@@ -29,6 +29,7 @@ type ToKey = {
   paused: boolean
   walletScope: "all" | "selected"
   tradeReady: { sol: boolean; usdc: boolean }
+  hoodTradeReady?: { eth: boolean; usdg: boolean }
   missingCaps: string[]
   launchScope: boolean
 }
@@ -267,7 +268,7 @@ describe("L3, L4, L5: the screen, the acknowledgement, the commit", () => {
     expect(screen).toContain("API             https://api.alpha.candle.tv  (production)")
     // The warnings: USDC only (SOL is ready and is not called blocked), and the launch line.
     expect(screen).toContain(
-      `Warning: key ${TO} can trade SOL-quoted swaps; it cannot trade USDC-quoted swaps until a USDC cap is set.`,
+      `Warning: key ${TO} has a USDC cap of 0; it cannot trade USDC-quoted swaps until the cap is raised.`,
     )
     expect(screen).not.toContain("cannot trade SOL-quoted swaps")
     expect(screen).toContain(`Warning: key ${TO} lacks launch:write; tr-02 has allowLaunch but cannot launch under it.`)
@@ -278,20 +279,93 @@ describe("L3, L4, L5: the screen, the acknowledgement, the commit", () => {
     expect(parsed.rebound.map((r: { auditId: string }) => r.auditId)).toEqual(["aud1", "aud2"])
   })
 
-  test("L5: no txLimit prints the txLimit warning and does not say SOL trades are ready", async () => {
-    const noLimit: ToKey = {
+  test("L5: both zero caps are one line naming both, and never say the other one can trade", async () => {
+    const zero: ToKey = {
       ...readyKey,
       tradeReady: { sol: false, usdc: false },
-      missingCaps: ["txLimit", "spendLimits.sol", "spendLimits.usdc"],
+      missingCaps: ["spendLimits.sol", "spendLimits.usdc"],
     }
-    const api = rebindApi({ preview: previewBody(noLimit) })
+    const api = rebindApi({ preview: previewBody(zero) })
     const { fetch } = createRoutedFetch({ "/api/v1/agent/tee-wallets/rebind": api.handlers })
     const { deps, stderr } = depsFor(fetch)
     expect(await run(["tee", "rebind", "tr-01", "--to-key", TO], deps)).toBe(0)
     expect(stderr.text).toContain(
-      `Warning: key ${TO} has no txLimit; it cannot trade SOL-quoted or USDC-quoted swaps until one is set.`,
+      `Warning: key ${TO} has SOL and USDC caps of 0; it cannot trade SOL-quoted or USDC-quoted swaps until they are raised.`,
     )
-    expect(stderr.text).not.toContain("can trade SOL-quoted swaps")
+    expect(stderr.text).not.toContain("can trade")
+    expect(stderr.text).not.toContain("txLimit")
+  })
+
+  describe("L5: the quote pair follows each moving wallet's chain", () => {
+    // SOL ready, USDC zero; ETH zero, USDG ready.
+    const mixedKey: ToKey = {
+      ...readyKey,
+      launchScope: true,
+      hoodTradeReady: { eth: false, usdg: true },
+      missingCaps: ["spendLimits.usdc", "spendLimits.eth"],
+    }
+    const usdcLine = `Warning: key ${TO} has a USDC cap of 0; it cannot trade USDC-quoted swaps until the cap is raised.`
+    const ethLine = `Warning: key ${TO} has an ETH cap of 0; it cannot trade ETH-quoted swaps until the cap is raised.`
+    const row = (id: string, address: string, chain?: "solana" | "evm") => ({
+      id,
+      address,
+      label: id,
+      fromKeyPrefix: FROM,
+      allowLaunch: false,
+      ...(chain !== undefined ? { chain } : {}),
+    })
+    const screenFor = async (rebound: Array<ReturnType<typeof row>>, toKey: ToKey = mixedKey) => {
+      const api = rebindApi({ preview: previewBody(toKey, { rebound, unchanged: [] }) })
+      const { fetch } = createRoutedFetch({ "/api/v1/agent/tee-wallets/rebind": api.handlers })
+      const { deps, stderr } = depsFor(fetch)
+      expect(await run(["tee", "rebind", ...rebound.map((r) => r.id), "--to-key", TO], deps)).toBe(0)
+      return stderr.text
+    }
+
+    test("Solana-only rows print the SOL/USDC lines and no Hood line", async () => {
+      const screen = await screenFor([row("k57", ADDR_1, "solana")])
+      expect(screen).toContain(usdcLine)
+      expect(screen).not.toContain("ETH")
+      expect(screen).not.toContain("USDG")
+    })
+
+    test("Hood-only rows print the ETH/USDG lines and no Solana line", async () => {
+      const screen = await screenFor([row("k60", "0xabc0000000000000000000000000000000000001", "evm")])
+      expect(screen).toContain(ethLine)
+      expect(screen).not.toContain("SOL")
+      expect(screen).not.toContain("USDC")
+    })
+
+    test("a mixed batch prints both sets", async () => {
+      const screen = await screenFor([
+        row("k57", ADDR_1, "solana"),
+        row("k60", "0xabc0000000000000000000000000000000000001", "evm"),
+      ])
+      expect(screen).toContain(usdcLine)
+      expect(screen).toContain(ethLine)
+    })
+
+    test("both Hood caps at zero are one line; a Hood key with no zero cap prints nothing", async () => {
+      const bothZero = await screenFor([row("k60", "0xabc0000000000000000000000000000000000001", "evm")], {
+        ...mixedKey,
+        hoodTradeReady: { eth: false, usdg: false },
+      })
+      expect(bothZero).toContain(
+        `Warning: key ${TO} has ETH and USDG caps of 0; it cannot trade ETH-quoted or USDG-quoted swaps until they are raised.`,
+      )
+      const ready = await screenFor([row("k60", "0xabc0000000000000000000000000000000000001", "evm")], {
+        ...mixedKey,
+        hoodTradeReady: { eth: true, usdg: true },
+      })
+      expect(ready).not.toContain("Warning:")
+    })
+
+    test("an older API: a row without chain reads as Solana, and no hoodTradeReady prints no Hood line", async () => {
+      const { hoodTradeReady: _, ...olderKey } = mixedKey
+      expect(await screenFor([row("k57", ADDR_1)], olderKey)).toContain(usdcLine)
+      const hoodRow = await screenFor([row("k60", "0xabc0000000000000000000000000000000000001", "evm")], olderKey)
+      expect(hoodRow).not.toContain("Warning:")
+    })
   })
 
   test("both assets ready prints no cap warning; a key with launch:write prints no launch warning", async () => {

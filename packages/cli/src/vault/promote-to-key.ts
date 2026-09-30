@@ -88,14 +88,11 @@ export interface ToKeyTarget {
    * rebind preview. An EVM document keeps this snapshot and adds `hoodTradeReady`.
    */
   tradeReady: { sol: boolean; usdc: boolean }
-  /** Solana gaps: `txLimit`, `spendLimits.sol`, `spendLimits.usdc`. */
+  /** Solana zero caps: `spendLimits.sol`, `spendLimits.usdc`. */
   missingCaps: string[]
   /** Hood quote readiness. `tradeReadinessOf` always sets it. */
   hoodTradeReady: { eth: boolean; usdg: boolean }
-  /**
-   * Hood gaps: `txLimit`, `spendLimits.eth`, `spendLimits.usdg`. A missing cap is named even when
-   * `txLimit` is also missing. EVM `--json` reports this list as `missingCaps`.
-   */
+  /** Hood zero caps: `spendLimits.eth`, `spendLimits.usdg`. EVM `--json` reports this list as `missingCaps`. */
   hoodMissingCaps: string[]
 }
 
@@ -150,9 +147,11 @@ export function targetKeyRefusal(row: TargetKeyRow | undefined, keyPrefix: strin
 }
 
 /**
- * The route's `tradeReadiness` rule, from the row: an asset is ready only when `txLimit` is present
- * and a cap exists (the lowercased asset, then the original spelling). Solana quotes are SOL and
- * USDC; a Hood TEE wallet's quotes are ETH and USDG. A cap of `"0"` counts as present.
+ * The route's `tradeReadiness` rule, from the row. Neither a USD `txLimit` nor a raw cap is
+ * required to trade (a missing one is unlimited), so an asset is not ready only when its raw cap is
+ * explicitly zero. The cap is looked up as the route looks it up: the lowercased asset, then the
+ * uppercased one, the smallest entry winning. Solana quotes are SOL and USDC; a Hood TEE wallet's
+ * quotes are ETH and USDG.
  */
 export function tradeReadinessOf(row: Pick<TargetKeyRow, "spendLimits" | "txLimit">): {
   tradeReady: { sol: boolean; usdc: boolean }
@@ -160,31 +159,29 @@ export function tradeReadinessOf(row: Pick<TargetKeyRow, "spendLimits" | "txLimi
   hoodTradeReady: { eth: boolean; usdg: boolean }
   hoodMissingCaps: string[]
 } {
-  const hasTxLimit = row.txLimit !== null && row.txLimit !== undefined
   const limits = row.spendLimits ?? []
-  const cap = (asset: string) =>
-    limits.some((limit) => limit.asset === asset.toLowerCase() || limit.asset === asset.toUpperCase())
-  const sol = cap("sol")
-  const usdc = cap("usdc")
-  const eth = cap("eth")
-  const usdg = cap("usdg")
-  const gaps = (present: Array<[boolean, string]>): string[] => {
-    const missing: string[] = []
-    if (!hasTxLimit) missing.push("txLimit")
-    for (const [hasCap, name] of present) if (!hasCap) missing.push(name)
-    return missing
+  const capOf = (asset: string): bigint | null => {
+    let cap: bigint | null = null
+    for (const limit of limits) {
+      if (limit.asset !== asset || !/^\d+$/.test(limit.maxPerTxRaw)) continue
+      const value = BigInt(limit.maxPerTxRaw)
+      if (cap === null || value < cap) cap = value
+    }
+    return cap
   }
+  const ready = (asset: string, missing: string[]) => {
+    const cap = capOf(asset) ?? capOf(asset.toUpperCase())
+    const ok = cap === null || cap > 0n
+    if (!ok) missing.push(`spendLimits.${asset}`)
+    return ok
+  }
+  const missingCaps: string[] = []
+  const hoodMissingCaps: string[] = []
   return {
-    tradeReady: { sol: hasTxLimit && sol, usdc: hasTxLimit && usdc },
-    missingCaps: gaps([
-      [sol, "spendLimits.sol"],
-      [usdc, "spendLimits.usdc"],
-    ]),
-    hoodTradeReady: { eth: hasTxLimit && eth, usdg: hasTxLimit && usdg },
-    hoodMissingCaps: gaps([
-      [eth, "spendLimits.eth"],
-      [usdg, "spendLimits.usdg"],
-    ]),
+    tradeReady: { sol: ready("sol", missingCaps), usdc: ready("usdc", missingCaps) },
+    missingCaps,
+    hoodTradeReady: { eth: ready("eth", hoodMissingCaps), usdg: ready("usdg", hoodMissingCaps) },
+    hoodMissingCaps,
   }
 }
 
@@ -193,23 +190,25 @@ export function tradeReadinessOf(row: Pick<TargetKeyRow, "spendLimits" | "txLimi
  * quote pair. An EVM promote reads ETH and USDG and never the Solana lines.
  */
 export function targetWarnings(target: ToKeyTarget, chain: PromoteChain): string[] {
-  const hasTxLimit = !target.missingCaps.includes("txLimit")
   if (chain === "evm") {
-    return capWarnings(target.keyPrefix, hasTxLimit, [
+    return capWarnings(target.keyPrefix, [
       { ready: target.hoodTradeReady.eth, asset: "ETH" },
       { ready: target.hoodTradeReady.usdg, asset: "USDG" },
     ])
   }
-  return capWarnings(target.keyPrefix, hasTxLimit, [
+  return capWarnings(target.keyPrefix, [
     { ready: target.tradeReady.sol, asset: "SOL" },
     { ready: target.tradeReady.usdc, asset: "USDC" },
   ])
 }
 
+/** The server's `missingCaps` also names Hood zero caps; a Solana document keeps its own pair. */
+const SOLANA_CAPS = ["spendLimits.sol", "spendLimits.usdc"]
+
 /**
  * Machine-readable readiness. Solana uses the rebind preview when the run has one, because that
  * is the same SOL/USDC rule. An EVM preview's `tradeReady` is still SOL/USDC, so an EVM document
- * keeps the row's Solana snapshot, adds `hoodTradeReady`, and names the Hood gaps in `missingCaps`.
+ * keeps the row's Solana snapshot, adds `hoodTradeReady`, and names the Hood zero caps in `missingCaps`.
  */
 function readinessJson(
   target: ToKeyTarget,
@@ -235,7 +234,7 @@ function readinessJson(
     keyPrefix: target.keyPrefix,
     label: target.label,
     tradeReady: server?.tradeReady ?? target.tradeReady,
-    missingCaps: server?.missingCaps ?? target.missingCaps,
+    missingCaps: server?.missingCaps.filter((cap) => SOLANA_CAPS.includes(cap)) ?? target.missingCaps,
   }
 }
 

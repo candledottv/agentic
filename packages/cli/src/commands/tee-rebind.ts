@@ -61,6 +61,8 @@ export interface RebindPreviewRow {
   label: string | null
   fromKeyPrefix: string
   allowLaunch: boolean
+  /** Which quote pair the wallet trades. Absent from an older API, which means Solana. */
+  chain?: "solana" | "evm"
   auditId?: string
 }
 
@@ -73,6 +75,9 @@ export interface RebindResponse {
     paused: boolean
     walletScope: "all" | "selected"
     tradeReady: { sol: boolean; usdc: boolean }
+    /** ETH/USDG readiness for a Hood wallet. Absent from an older API. */
+    hoodTradeReady?: { eth: boolean; usdg: boolean }
+    /** The raw caps set to zero. */
     missingCaps: string[]
     launchScope: boolean
     /** Key signers (5.5): the target's active signer, or null. Absent from an older API. */
@@ -96,47 +101,54 @@ export interface RebindResponse {
 }
 
 /**
- * The screen's wording for each cap gap (D7). One txLimit line, then one line per quote asset
- * that is not ready. The pair is the chain's own quotes: SOL/USDC, or ETH/USDG for a Hood wallet.
+ * The screen's wording for the quote assets a key cannot trade (D7). Only an explicit raw cap of
+ * zero stops one; a missing cap or `txLimit` is unlimited. The pair is the chain's own quotes:
+ * SOL/USDC, or ETH/USDG for a Hood wallet. With both at zero it is one line naming both: saying of
+ * each that the other one "can trade" would claim more than the line checked.
  */
 export function capWarnings(
-  keyPrefix: string,
-  hasTxLimit: boolean,
-  pair: [{ ready: boolean; asset: string }, { ready: boolean; asset: string }],
-): string[] {
-  const [a, b] = pair
-  if (!hasTxLimit) {
-    return [
-      `Warning: key ${keyPrefix} has no txLimit; it cannot trade ${a.asset}-quoted or ${b.asset}-quoted swaps until one is set.`,
-    ]
-  }
-  return pairedCapWarnings(keyPrefix, pair)
-}
-
-/**
- * One line per quote asset that is not ready. With both missing it is one line naming both: saying
- * of each that the other one "can trade" would claim a cap the key does not have.
- */
-function pairedCapWarnings(
   keyPrefix: string,
   [a, b]: [{ ready: boolean; asset: string }, { ready: boolean; asset: string }],
 ): string[] {
   if (!a.ready && !b.ready) {
     return [
-      `Warning: key ${keyPrefix} has no ${a.asset} or ${b.asset} cap; it cannot trade ${a.asset}-quoted or ${b.asset}-quoted swaps until one is set.`,
+      `Warning: key ${keyPrefix} has ${a.asset} and ${b.asset} caps of 0; it cannot trade ${a.asset}-quoted or ${b.asset}-quoted swaps until they are raised.`,
     ]
   }
-  if (!a.ready) {
-    return [
-      `Warning: key ${keyPrefix} can trade ${b.asset}-quoted swaps; it cannot trade ${a.asset}-quoted swaps until a ${a.asset} cap is set.`,
-    ]
-  }
-  if (!b.ready) {
-    return [
-      `Warning: key ${keyPrefix} can trade ${a.asset}-quoted swaps; it cannot trade ${b.asset}-quoted swaps until a ${b.asset} cap is set.`,
-    ]
+  for (const { ready, asset } of [a, b]) {
+    if (!ready) {
+      // Read aloud: "an ETH", but "a SOL", "a USDC", "a USDG".
+      const article = asset === "ETH" ? "an" : "a"
+      return [
+        `Warning: key ${keyPrefix} has ${article} ${asset} cap of 0; it cannot trade ${asset}-quoted swaps until the cap is raised.`,
+      ]
+    }
   }
   return []
+}
+
+/**
+ * The rebind screen's cap lines: the Solana pair when a moving wallet is a Solana one, the Hood
+ * pair when one is a Hood (EVM) one, both for a mixed batch. A row without `chain` comes from an
+ * older API and is read as Solana, as the screen always did; an older API without
+ * `hoodTradeReady` prints no Hood lines rather than guess.
+ */
+export function rebindCapWarnings(toKey: RebindResponse["toKey"], rows: RebindPreviewRow[]): string[] {
+  const hood = toKey.hoodTradeReady
+  return [
+    ...(rows.some((row) => row.chain !== "evm")
+      ? capWarnings(toKey.keyPrefix, [
+          { ready: toKey.tradeReady.sol, asset: "SOL" },
+          { ready: toKey.tradeReady.usdc, asset: "USDC" },
+        ])
+      : []),
+    ...(hood !== undefined && rows.some((row) => row.chain === "evm")
+      ? capWarnings(toKey.keyPrefix, [
+          { ready: hood.eth, asset: "ETH" },
+          { ready: hood.usdg, asset: "USDG" },
+        ])
+      : []),
+  ]
 }
 
 /** The launch warning: the target lacks `launch:write`, and a moved wallet carries `allowLaunch` (D7). */
@@ -673,10 +685,7 @@ export async function teeRebind(args: string[], ctx: CommandContext): Promise<nu
     `  Candle account  ${accountLine}`,
     `  API             ${apiUrl}  (${environment})`,
     "",
-    ...capWarnings(shown.toKey.keyPrefix, !shown.toKey.missingCaps.includes("txLimit"), [
-      { ready: shown.toKey.tradeReady.sol, asset: "SOL" },
-      { ready: shown.toKey.tradeReady.usdc, asset: "USDC" },
-    ]),
+    ...rebindCapWarnings(shown.toKey, moving),
     ...(launchWarning(shown.toKey.keyPrefix, shown.toKey, moving)
       ? [launchWarning(shown.toKey.keyPrefix, shown.toKey, moving) as string]
       : []),

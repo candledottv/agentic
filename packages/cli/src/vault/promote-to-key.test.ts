@@ -71,46 +71,63 @@ describe("targetKeyRefusal: the mutation's D2.1 checks, in its order, from the l
 })
 
 describe("tradeReadinessOf: the route's rule from the row", () => {
-  test("no txLimit is not ready for either asset, and names all three caps", () => {
+  const zero = (asset: string) => ({ asset, maxPerTxRaw: "0" })
+
+  test("no caps and no txLimit is ready for every asset and names nothing: a missing limit is unlimited", () => {
     expect(tradeReadinessOf({ txLimit: null, spendLimits: null })).toEqual({
-      tradeReady: { sol: false, usdc: false },
-      missingCaps: ["txLimit", "spendLimits.sol", "spendLimits.usdc"],
-      hoodTradeReady: { eth: false, usdg: false },
-      hoodMissingCaps: ["txLimit", "spendLimits.eth", "spendLimits.usdg"],
+      tradeReady: { sol: true, usdc: true },
+      missingCaps: [],
+      hoodTradeReady: { eth: true, usdg: true },
+      hoodMissingCaps: [],
     })
+    expect(tradeReadinessOf({ txLimit: undefined, spendLimits: [] }).tradeReady).toEqual({ sol: true, usdc: true })
   })
 
-  test("txLimit with a SOL cap only: SOL ready, USDC not; either spelling of the asset counts", () => {
-    expect(tradeReadinessOf(good)).toEqual({
+  test("a positive cap is ready with or without a txLimit", () => {
+    expect(tradeReadinessOf(good).tradeReady).toEqual({ sol: true, usdc: true })
+    expect(tradeReadinessOf({ ...good, txLimit: null })).toEqual(tradeReadinessOf(good))
+  })
+
+  test("one zero cap stops only that asset, in either spelling", () => {
+    expect(tradeReadinessOf({ txLimit: {}, spendLimits: [zero("usdc")] })).toEqual({
       tradeReady: { sol: true, usdc: false },
       missingCaps: ["spendLimits.usdc"],
-      hoodTradeReady: { eth: false, usdg: false },
-      hoodMissingCaps: ["spendLimits.eth", "spendLimits.usdg"],
+      hoodTradeReady: { eth: true, usdg: true },
+      hoodMissingCaps: [],
     })
-    expect(tradeReadinessOf({ txLimit: {}, spendLimits: [{ asset: "USDC", maxPerTxRaw: "1" }] }).tradeReady).toEqual({
-      sol: false,
-      usdc: true,
-    })
+    expect(tradeReadinessOf({ txLimit: null, spendLimits: [zero("SOL")] }).missingCaps).toEqual(["spendLimits.sol"])
   })
 
-  test("the Hood quote assets read the same way: an ETH and a USDG cap under a txLimit", () => {
-    const hood = {
-      txLimit: {},
-      spendLimits: [
-        { asset: "eth", maxPerTxRaw: "1" },
-        { asset: "USDG", maxPerTxRaw: "1" },
-      ],
-    }
-    expect(tradeReadinessOf(hood).hoodTradeReady).toEqual({ eth: true, usdg: true })
-    expect(tradeReadinessOf(hood).hoodMissingCaps).toEqual([])
-    const noLimit = tradeReadinessOf({ ...hood, txLimit: null })
-    expect(noLimit.hoodTradeReady).toEqual({ eth: false, usdg: false })
-    // The caps are present; only txLimit is missing. A false hoodTradeReady must not invent cap gaps.
-    expect(noLimit.hoodMissingCaps).toEqual(["txLimit"])
+  test("both zero caps stop both, and the lowercased entry wins over the uppercased one", () => {
+    expect(tradeReadinessOf({ txLimit: null, spendLimits: [zero("sol"), zero("usdc")] }).missingCaps).toEqual([
+      "spendLimits.sol",
+      "spendLimits.usdc",
+    ])
+    // The route reads the lowercased asset first and falls back to the uppercased one only when absent.
+    expect(
+      tradeReadinessOf({ txLimit: null, spendLimits: [{ asset: "sol", maxPerTxRaw: "5" }, zero("SOL")] }).tradeReady
+        .sol,
+    ).toBe(true)
+    // Duplicates of one spelling: the smallest wins, as the route's min-wins lookup does.
+    expect(
+      tradeReadinessOf({ txLimit: null, spendLimits: [{ asset: "sol", maxPerTxRaw: "5" }, zero("sol")] }).tradeReady
+        .sol,
+    ).toBe(false)
+  })
+
+  test("the Hood quote assets read the same way, and a Solana zero cap is not a Hood gap", () => {
+    const hood = { txLimit: null, spendLimits: [zero("eth"), { asset: "USDG", maxPerTxRaw: "1" }, zero("sol")] }
+    expect(tradeReadinessOf(hood).hoodTradeReady).toEqual({ eth: false, usdg: true })
+    expect(tradeReadinessOf(hood).hoodMissingCaps).toEqual(["spendLimits.eth"])
+    expect(tradeReadinessOf(hood).missingCaps).toEqual(["spendLimits.sol"])
+    expect(tradeReadinessOf({ txLimit: null, spendLimits: [zero("ETH"), zero("usdg")] }).hoodMissingCaps).toEqual([
+      "spendLimits.eth",
+      "spendLimits.usdg",
+    ])
   })
 })
 
-describe("targetWarnings: one line per gap, and the chain's own quote assets", () => {
+describe("targetWarnings: only a zero cap warns, and the chain's own quote assets", () => {
   const target = (row: Pick<TargetKeyRow, "spendLimits" | "txLimit">): ToKeyTarget => ({
     keyPrefix: TO,
     label: null,
@@ -119,41 +136,55 @@ describe("targetWarnings: one line per gap, and the chain's own quote assets", (
     launchScope: true,
     ...tradeReadinessOf(row),
   })
+  const zero = (asset: string) => ({ asset, maxPerTxRaw: "0" })
 
-  test("with neither cap it is one line naming both, never that the other one can trade", () => {
-    const lines = targetWarnings(target({ txLimit: {}, spendLimits: [] }), "solana")
+  test("no caps and no txLimit prints nothing on either chain", () => {
+    expect(targetWarnings(target({ txLimit: null, spendLimits: null }), "solana")).toEqual([])
+    expect(targetWarnings(target({ txLimit: null, spendLimits: [] }), "evm")).toEqual([])
+  })
+
+  test("a positive cap prints nothing", () => {
+    expect(targetWarnings(target(good), "solana")).toEqual([])
+    expect(targetWarnings(target({ txLimit: null, spendLimits: [{ asset: "eth", maxPerTxRaw: "1" }] }), "evm")).toEqual(
+      [],
+    )
+  })
+
+  test("one zero cap names that asset and says nothing about the other", () => {
+    const lines = targetWarnings(target({ txLimit: null, spendLimits: [zero("usdc")] }), "solana")
     expect(lines).toEqual([
-      `Warning: key ${TO} has no SOL or USDC cap; it cannot trade SOL-quoted or USDC-quoted swaps until one is set.`,
+      `Warning: key ${TO} has a USDC cap of 0; it cannot trade USDC-quoted swaps until the cap is raised.`,
+    ])
+    expect(lines.join("\n")).not.toContain("can trade")
+    expect(targetWarnings(target({ txLimit: {}, spendLimits: [zero("SOL")] }), "solana")).toEqual([
+      `Warning: key ${TO} has a SOL cap of 0; it cannot trade SOL-quoted swaps until the cap is raised.`,
+    ])
+  })
+
+  test("both zero caps are one line naming both, never that the other one can trade", () => {
+    const lines = targetWarnings(target({ txLimit: {}, spendLimits: [zero("sol"), zero("usdc")] }), "solana")
+    expect(lines).toEqual([
+      `Warning: key ${TO} has SOL and USDC caps of 0; it cannot trade SOL-quoted or USDC-quoted swaps until they are raised.`,
     ])
     expect(lines.join("\n")).not.toContain("can trade")
   })
 
-  test("with one cap the line names the ready asset and the missing one", () => {
-    expect(targetWarnings(target(good), "solana")).toEqual([
-      `Warning: key ${TO} can trade SOL-quoted swaps; it cannot trade USDC-quoted swaps until a USDC cap is set.`,
+  test("an EVM promote reads the ETH and USDG caps and never the Solana ones", () => {
+    // Solana zero caps do not reach an EVM promote's lines.
+    expect(targetWarnings(target({ txLimit: null, spendLimits: [zero("sol"), zero("usdc")] }), "evm")).toEqual([])
+    expect(targetWarnings(target({ txLimit: null, spendLimits: [zero("eth")] }), "evm")).toEqual([
+      `Warning: key ${TO} has an ETH cap of 0; it cannot trade ETH-quoted swaps until the cap is raised.`,
     ])
-  })
-
-  test("an EVM promote reads the ETH and USDG caps, and a key ready on Hood gets no Solana warning", () => {
-    const hoodOnly = target({
-      txLimit: {},
-      spendLimits: [
-        { asset: "eth", maxPerTxRaw: "1" },
-        { asset: "usdg", maxPerTxRaw: "1" },
-      ],
-    })
-    expect(targetWarnings(hoodOnly, "evm")).toEqual([])
-    expect(targetWarnings(hoodOnly, "evm").join("\n")).not.toContain("SOL")
-    expect(targetWarnings(hoodOnly, "evm").join("\n")).not.toContain("USDC")
-    expect(targetWarnings(target({ txLimit: {}, spendLimits: [{ asset: "eth", maxPerTxRaw: "1" }] }), "evm")).toEqual([
-      `Warning: key ${TO} can trade ETH-quoted swaps; it cannot trade USDG-quoted swaps until a USDG cap is set.`,
+    expect(targetWarnings(target({ txLimit: null, spendLimits: [zero("usdg")] }), "evm")).toEqual([
+      `Warning: key ${TO} has a USDG cap of 0; it cannot trade USDG-quoted swaps until the cap is raised.`,
     ])
-    expect(targetWarnings(target({ txLimit: {}, spendLimits: [{ asset: "sol", maxPerTxRaw: "1" }] }), "evm")).toEqual([
-      `Warning: key ${TO} has no ETH or USDG cap; it cannot trade ETH-quoted or USDG-quoted swaps until one is set.`,
+    const both = targetWarnings(target({ txLimit: null, spendLimits: [zero("eth"), zero("USDG")] }), "evm")
+    expect(both).toEqual([
+      `Warning: key ${TO} has ETH and USDG caps of 0; it cannot trade ETH-quoted or USDG-quoted swaps until they are raised.`,
     ])
-    expect(targetWarnings(target({ txLimit: null, spendLimits: [] }), "evm")).toEqual([
-      `Warning: key ${TO} has no txLimit; it cannot trade ETH-quoted or USDG-quoted swaps until one is set.`,
-    ])
+    expect(both.join("\n")).not.toContain("SOL")
+    // Hood zero caps do not reach a Solana promote's lines.
+    expect(targetWarnings(target({ txLimit: null, spendLimits: [zero("eth")] }), "solana")).toEqual([])
   })
 })
 
@@ -172,11 +203,14 @@ describe("EVM --json: Hood readiness, and the Solana preview is not the answer",
     signerQuorumId: "q",
     crossKey: false,
   }
+  // Hood-ready, with SOL and USDC capped at zero so the Solana snapshot differs from the preview.
   const hood = {
-    txLimit: {},
+    txLimit: null,
     spendLimits: [
       { asset: "eth", maxPerTxRaw: "1" },
       { asset: "usdg", maxPerTxRaw: "1" },
+      { asset: "sol", maxPerTxRaw: "0" },
+      { asset: "usdc", maxPerTxRaw: "0" },
     ],
   }
 
@@ -216,14 +250,53 @@ describe("EVM --json: Hood readiness, and the Solana preview is not the answer",
     expect(keySignerJson({ target: row, keySigner: signer }, TO, "evm").toKey).toEqual(json.toKey)
   })
 
-  test("a missing USDG cap is named spendLimits.usdg", () => {
-    const row = ready({ txLimit: {}, spendLimits: [{ asset: "eth", maxPerTxRaw: "1" }] })
+  test("a zero USDG cap is named spendLimits.usdg", () => {
+    const row = ready({
+      txLimit: null,
+      spendLimits: [
+        { asset: "eth", maxPerTxRaw: "1" },
+        { asset: "usdg", maxPerTxRaw: "0" },
+      ],
+    })
     const json = rebindJson({ target: row, callingKeyPrefix: FROM, wallets: [], notRebindable: [] }, "evm")
     expect(json.toKey.missingCaps).toEqual(["spendLimits.usdg"])
     expect(json.toKey.hoodTradeReady).toEqual({ eth: true, usdg: false })
     expect(keySignerJson({ target: row, keySigner: signer }, null, "evm").toKey.missingCaps).toEqual([
       "spendLimits.usdg",
     ])
+  })
+
+  test("a Solana document keeps the preview's SOL/USDC gaps and drops the Hood ones it now also names", () => {
+    const row = ready({ txLimit: null, spendLimits: [] })
+    const json = rebindJson(
+      {
+        target: row,
+        callingKeyPrefix: FROM,
+        wallets: [],
+        notRebindable: [],
+        run: {
+          ok: true,
+          requests: 1,
+          outcomes: new Map(),
+          toKey: {
+            keyPrefix: TO,
+            label: "tr-01",
+            paused: false,
+            walletScope: "all",
+            tradeReady: { sol: true, usdc: false },
+            missingCaps: ["spendLimits.usdc", "spendLimits.eth"],
+            launchScope: true,
+          },
+        },
+      },
+      "solana",
+    )
+    expect(json.toKey).toEqual({
+      keyPrefix: TO,
+      label: row.label,
+      tradeReady: { sol: true, usdc: false },
+      missingCaps: ["spendLimits.usdc"],
+    })
   })
 })
 

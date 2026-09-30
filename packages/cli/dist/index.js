@@ -33577,32 +33577,34 @@ var init_tee = __esm(() => {
 });
 
 // src/commands/tee-rebind.ts
-function capWarnings(keyPrefix, hasTxLimit, pair) {
-  const [a, b] = pair;
-  if (!hasTxLimit) {
-    return [
-      `Warning: key ${keyPrefix} has no txLimit; it cannot trade ${a.asset}-quoted or ${b.asset}-quoted swaps until one is set.`
-    ];
-  }
-  return pairedCapWarnings(keyPrefix, pair);
-}
-function pairedCapWarnings(keyPrefix, [a, b]) {
+function capWarnings(keyPrefix, [a, b]) {
   if (!a.ready && !b.ready) {
     return [
-      `Warning: key ${keyPrefix} has no ${a.asset} or ${b.asset} cap; it cannot trade ${a.asset}-quoted or ${b.asset}-quoted swaps until one is set.`
+      `Warning: key ${keyPrefix} has ${a.asset} and ${b.asset} caps of 0; it cannot trade ${a.asset}-quoted or ${b.asset}-quoted swaps until they are raised.`
     ];
   }
-  if (!a.ready) {
-    return [
-      `Warning: key ${keyPrefix} can trade ${b.asset}-quoted swaps; it cannot trade ${a.asset}-quoted swaps until a ${a.asset} cap is set.`
-    ];
-  }
-  if (!b.ready) {
-    return [
-      `Warning: key ${keyPrefix} can trade ${a.asset}-quoted swaps; it cannot trade ${b.asset}-quoted swaps until a ${b.asset} cap is set.`
-    ];
+  for (const { ready, asset } of [a, b]) {
+    if (!ready) {
+      const article = asset === "ETH" ? "an" : "a";
+      return [
+        `Warning: key ${keyPrefix} has ${article} ${asset} cap of 0; it cannot trade ${asset}-quoted swaps until the cap is raised.`
+      ];
+    }
   }
   return [];
+}
+function rebindCapWarnings(toKey, rows) {
+  const hood = toKey.hoodTradeReady;
+  return [
+    ...rows.some((row) => row.chain !== "evm") ? capWarnings(toKey.keyPrefix, [
+      { ready: toKey.tradeReady.sol, asset: "SOL" },
+      { ready: toKey.tradeReady.usdc, asset: "USDC" }
+    ]) : [],
+    ...hood !== undefined && rows.some((row) => row.chain === "evm") ? capWarnings(toKey.keyPrefix, [
+      { ready: hood.eth, asset: "ETH" },
+      { ready: hood.usdg, asset: "USDG" }
+    ]) : []
+  ];
 }
 function launchWarning(keyPrefix, toKey, rows) {
   if (toKey.launchScope)
@@ -33956,10 +33958,7 @@ async function teeRebind(args, ctx) {
     `  Candle account  ${accountLine}`,
     `  API             ${apiUrl}  (${environment})`,
     "",
-    ...capWarnings(shown.toKey.keyPrefix, !shown.toKey.missingCaps.includes("txLimit"), [
-      { ready: shown.toKey.tradeReady.sol, asset: "SOL" },
-      { ready: shown.toKey.tradeReady.usdc, asset: "USDC" }
-    ]),
+    ...rebindCapWarnings(shown.toKey, moving),
     ...launchWarning(shown.toKey.keyPrefix, shown.toKey, moving) ? [launchWarning(shown.toKey.keyPrefix, shown.toKey, moving)] : [],
     ...ownerSection,
     ""
@@ -49182,7 +49181,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.0";
+var SERVER_VERSION = "0.10.1";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -49824,9 +49823,9 @@ function registerTools(server, env = process.env) {
   }, async (args) => callAndRelay("candle_get_market", args, cfg));
   register("candle_token_forensics", {
     title: "Token forensics",
-    description: `Gate a buy before making it: who launched it (resolved on-chain; pump.fun's shared updateAuthority is never the developer), their went-to-zero rate and last coins, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), same-funder insider share, same-funder deployer cluster, and safety.summary with six sourced flags (mintAuthority, freezeAuthority, tokenExtensions, lpLock, sellability, liquidityDrain). Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.
+    description: `Gate a buy before making it: who launched it (resolved on-chain; pump.fun's shared updateAuthority is never the developer; when no developer is on chain, deployer.attribution names the launchpad or issuer instead, e.g. launched via stonk.fun or issued by xStocks), their went-to-zero rate and last coins, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), same-funder insider share, same-funder deployer cluster, and safety.summary with six sourced flags (mintAuthority, freezeAuthority, tokenExtensions, lpLock, sellability, liquidityDrain). Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.
 
-MARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed now answers with a partial report instead.`,
+MARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed, and any Solana mint Jupiter's index knows, now answers with a partial report instead.`,
     inputSchema: tokenForensicsShape
   }, async (args) => callAndRelay("candle_token_forensics", args, cfg));
   register("candle_get_feed", {
@@ -49911,7 +49910,8 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 ` + `A bridge behaves differently and the difference matters:
 ` + `- It is several transactions, not one, and it takes time rather than settling on the call.
 ` + "- A confirmed source transaction is NOT proof the destination was credited. Read the " + "returned status before treating the funds as arrived; the response carries the venue's " + `own status URLs for the cross-chain fill.
-` + "- Do NOT re-send after a timeout. `clientSwapId` only coalesces a duplicate that arrives " + "while the first call is still in flight; once the first has settled, a second call with " + `the same id bridges AGAIN. If a bridge times out, check its status rather than retrying.
+` + "- A timeout is unknown, not failed. Pass a `clientSwapId` and retry the SAME request, " + "including the same slippage. The replay returns the stored result: the original success, " + "or a stored error. An indeterminate first leg comes back as SWAP_FAILED, retryable false, " + "with the signature in the message -- verify that on-chain before a new id. A swap that is " + "still running, with no stored outcome, is a retryable conflict. A different body under the " + "same id is rejected. A confirmed first leg is replayed with its hash, retryable false, and " + "is not run again. retryable true on the first LEG2_FAILED means send leg 2 as a new request. " + `Omitting the id never coalesces -- do not retry a timed-out call that had no id.
+` + "- If a bridge times out, check the returned status URLs rather than treating the funds " + `as arrived or lost.
 
 ` + 'Amounts are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for ' + "callers that already compute them. Test-environment keys are refused: every leg settles " + "on a live venue.",
     inputSchema: swapShape
@@ -50053,7 +50053,7 @@ var init_tools = __esm(() => {
     amount: exports_external.string().optional().describe('Decimal amount of `from` to spend, e.g. "0.5". Preferred. Pass exactly one of amount or amountRaw.'),
     amountRaw: exports_external.string().optional().describe("Raw base units of `from`, as a positive integer string. Kept for callers that already " + "compute raw units; new callers should use `amount`."),
     maxSlippageBps: exports_external.number().optional().describe("Slippage bound in bps, 0-10000. Server defaults to 100 (1%)"),
-    clientSwapId: exports_external.string().optional().describe("Optional dedup key. Only coalesces a duplicate that arrives while the first call is still " + "in flight; one arriving after it settled will swap again")
+    clientSwapId: exports_external.string().optional().describe("Durable idempotency key. Same id + same from/to/amountRaw/effective slippage (omitted means " + "100 bps) replays the stored result, including an indeterminate SWAP_FAILED with the " + "signature in the message. A different body is rejected. Omit it and nothing is coalesced. " + "Pass one so a timeout retry returns that stored result.")
   };
   tradeShape = {
     mint: exports_external.string().describe("Token mint (solana) or contract address (hood)"),
@@ -50114,7 +50114,7 @@ START HERE — five tools need NO credential. Call these first to confirm the se
   candle_get_market       price, market cap, volume, curve state for one token
   candle_get_feed         the roster: hot streak, new pairs, graduated, blue chip
   candle_resolve_token    a ticker or partial name -> mint address + chain
-  candle_token_forensics  call this before quoting or buying. Returns the on-chain developer (never a launchpad shared authority), their went-to-zero rate and last coins, who bought in the deploy window (strangers in the same slot are the bundle signal), same-funder insider share, same-funder cluster, and safety.summary with six sourced flags. Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning
+  candle_token_forensics  call this before quoting or buying. Returns the on-chain developer (never a launchpad shared authority; deployer.attribution names the launchpad or issuer when no developer is on chain), their went-to-zero rate and last coins, who bought in the deploy window (strangers in the same slot are the bundle signal), same-funder insider share, same-funder cluster, and safety.summary with six sourced flags. Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning
   candle_get_agent_profile  your own tier, caps and verified activity
 
 COVERAGE — read this before you treat an error as a broken server.
@@ -50130,7 +50130,7 @@ General quotes use POST /api/v1/trade/agent/quote; curve quotes/lifecycle descri
 Stored eligibility is not a successful quote or permission. MARKET_NOT_FOUND remains a legacy
 code: read error.routing.reason, error.discovery and sibling error.retryable. A curve-only
 404 is endpoint guidance, not a verdict that Candle cannot trade external tokens.
-candle_token_forensics also answers for Solana tokens the feed already knows, with a partial
+candle_token_forensics also answers for Solana tokens the feed or Jupiter's index knows, with a partial
 report: on-chain developer (never a launchpad shared authority), went-to-zero record, token
 safety flags, same-funder insiders and cluster. Deploy-window stays unavailable without a
 Candle launch record. Indexed external Hood tokens also answer, with unknown hacc flags.
@@ -51819,48 +51819,47 @@ function targetKeyRefusal(row, keyPrefix, now) {
   return null;
 }
 function tradeReadinessOf(row) {
-  const hasTxLimit = row.txLimit !== null && row.txLimit !== undefined;
   const limits = row.spendLimits ?? [];
-  const cap = (asset) => limits.some((limit) => limit.asset === asset.toLowerCase() || limit.asset === asset.toUpperCase());
-  const sol = cap("sol");
-  const usdc = cap("usdc");
-  const eth = cap("eth");
-  const usdg = cap("usdg");
-  const gaps = (present) => {
-    const missing = [];
-    if (!hasTxLimit)
-      missing.push("txLimit");
-    for (const [hasCap, name] of present)
-      if (!hasCap)
-        missing.push(name);
-    return missing;
+  const capOf = (asset) => {
+    let cap = null;
+    for (const limit of limits) {
+      if (limit.asset !== asset || !/^\d+$/.test(limit.maxPerTxRaw))
+        continue;
+      const value = BigInt(limit.maxPerTxRaw);
+      if (cap === null || value < cap)
+        cap = value;
+    }
+    return cap;
   };
+  const ready = (asset, missing) => {
+    const cap = capOf(asset) ?? capOf(asset.toUpperCase());
+    const ok = cap === null || cap > 0n;
+    if (!ok)
+      missing.push(`spendLimits.${asset}`);
+    return ok;
+  };
+  const missingCaps = [];
+  const hoodMissingCaps = [];
   return {
-    tradeReady: { sol: hasTxLimit && sol, usdc: hasTxLimit && usdc },
-    missingCaps: gaps([
-      [sol, "spendLimits.sol"],
-      [usdc, "spendLimits.usdc"]
-    ]),
-    hoodTradeReady: { eth: hasTxLimit && eth, usdg: hasTxLimit && usdg },
-    hoodMissingCaps: gaps([
-      [eth, "spendLimits.eth"],
-      [usdg, "spendLimits.usdg"]
-    ])
+    tradeReady: { sol: ready("sol", missingCaps), usdc: ready("usdc", missingCaps) },
+    missingCaps,
+    hoodTradeReady: { eth: ready("eth", hoodMissingCaps), usdg: ready("usdg", hoodMissingCaps) },
+    hoodMissingCaps
   };
 }
 function targetWarnings(target, chain2) {
-  const hasTxLimit = !target.missingCaps.includes("txLimit");
   if (chain2 === "evm") {
-    return capWarnings(target.keyPrefix, hasTxLimit, [
+    return capWarnings(target.keyPrefix, [
       { ready: target.hoodTradeReady.eth, asset: "ETH" },
       { ready: target.hoodTradeReady.usdg, asset: "USDG" }
     ]);
   }
-  return capWarnings(target.keyPrefix, hasTxLimit, [
+  return capWarnings(target.keyPrefix, [
     { ready: target.tradeReady.sol, asset: "SOL" },
     { ready: target.tradeReady.usdc, asset: "USDC" }
   ]);
 }
+var SOLANA_CAPS = ["spendLimits.sol", "spendLimits.usdc"];
 function readinessJson(target, chain2, server) {
   if (chain2 === "evm") {
     return {
@@ -51875,7 +51874,7 @@ function readinessJson(target, chain2, server) {
     keyPrefix: target.keyPrefix,
     label: target.label,
     tradeReady: server?.tradeReady ?? target.tradeReady,
-    missingCaps: server?.missingCaps ?? target.missingCaps
+    missingCaps: server?.missingCaps.filter((cap) => SOLANA_CAPS.includes(cap)) ?? target.missingCaps
   };
 }
 function toKeyPlanLine(toKey, n = 1) {
