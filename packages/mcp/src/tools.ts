@@ -844,7 +844,10 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "as arrived or lost.\n\n" +
         'Amounts are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for ' +
         "callers that already compute them. Test-environment keys are refused: every leg settles " +
-        "on a live venue.",
+        "on a live venue.\n\n" +
+        "This tool spends the embedded wallets. A TEE wallet also bridges, from SOL or USDC to ETH " +
+        "or USDG or back, but only into the same key's TEE wallet on the other chain, with no Candle " +
+        "fee: that runs through `candle swap` with the wallet's bound key, not this tool.",
       inputSchema: swapShape,
     },
     async (args) => callAndRelay("candle_swap", args, cfg),

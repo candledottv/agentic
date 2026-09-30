@@ -232,6 +232,8 @@ function candleApi() {
     hoodTeeAddress: undefined as string | undefined,
     /** When set, the hood-tee response omits `address`. */
     omitHoodTeeAddress: false,
+    /** Ember 4c: the hood-tee read's `bridges`; absent (an older API) unless set. */
+    bridges: undefined as unknown,
   }
   const json = (status: number, body: unknown) =>
     new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })
@@ -280,6 +282,7 @@ function candleApi() {
         activeOperation: state.activeOperation,
         tradedTokens: state.tradedTokens,
         tradedTokensTruncated: false,
+        ...(state.bridges !== undefined ? { bridges: state.bridges } : {}),
       })
     }
     if (/^\/api\/v1\/agent\/wallets\/[^/]+\/swept$/.test(path)) return json(200, { success: true, state: "swept" })
@@ -802,6 +805,24 @@ describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
     expect(fx.node.state.sent).toHaveLength(0)
   })
 
+  test("Ember 4c: an open bridge out of the wallet refuses the sweep BRIDGE_IN_FLIGHT, and an uncertain one is a warning", async () => {
+    const fx = await promoted()
+    fx.api.state.lifecycle = "quarantined"
+    fx.node.setEth(fx.wallet, ETH)
+    fx.api.state.bridges = [
+      { clientTradeId: "swap-b1", role: "source", state: "open", openedAt: 1, blockingUntil: 7_200_001 },
+    ]
+    expect(await fx.cli(["tee", "sweep", fx.wallet, "--json"])).toBe(1)
+    expect(lastJson(fx.stdout.text)).toMatchObject({ code: "BRIDGE_IN_FLIGHT" })
+    expect(String(lastJson(fx.stdout.text).suggestion)).toContain("candle swap status swap-b1")
+    expect(fx.node.state.sent).toHaveLength(0)
+
+    fx.api.state.bridges = [{ clientTradeId: "swap-b1", role: "source", state: "uncertain", openedAt: 1 }]
+    expect(await fx.cli(["tee", "sweep", fx.wallet, "--json"])).toBe(0)
+    expect(fx.stderr.text).toContain("no result for over two hours")
+    expect(fx.node.ethOf(fx.wallet)).toBeLessThan(ETH)
+  })
+
   test("--emergency calls no Candle API, sweeps a token known only from the record, and signs the in-flight nonce", async () => {
     const fx = await promoted()
     const w = fx.wallet
@@ -818,6 +839,8 @@ describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
 
     expect(await fx.cli(["tee", "sweep", w, "--emergency", "--json"])).toBe(3)
     expect(fx.api.state.calls.length).toBe(apiCalls)
+    // Ember 4c (4c-ED-10): it cannot see a bridge, and says a later fill or refund needs a second sweep.
+    expect(fx.stderr.text).toContain("cannot see an open bridge")
     expect(fx.stderr.text).toContain("A transaction already occupies nonce 4 (pending 5 > latest 4)")
     expect(fx.stderr.text).toContain(
       "with doubled fees and may replace that in-flight leg; replacement is not guaranteed",

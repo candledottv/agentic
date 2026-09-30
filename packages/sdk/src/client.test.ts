@@ -2832,6 +2832,50 @@ describe("swapFromLinked", () => {
   })
 })
 
+describe("swapFromLinked: a TEE payer's bridge (Ember 4c)", () => {
+  test("clientTradeId rides on the build and the submit, and a USDC origin is sent as is", async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = []
+    const store = new InMemorySecretStore()
+    await store.set("tee-sol", (await generateSignerKeypair()).privateKeyPem)
+    const client = new CandleClient({
+      apiUrl: "https://api.test",
+      apiKey: "ck_live_x",
+      privyAppId: "app1",
+      secretStore: store,
+      fetch: (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url)
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>
+        calls.push({ url: u, body })
+        if (u.endsWith("/agent/swap/build"))
+          return json(200, { success: true, payload: { swapId: "swap-t", transactionsBase64: ["dW5zaWduZWQ="] } })
+        if (u.includes("/agent/wallets/tee-sol/sign"))
+          return json(200, { success: true, signedTransaction: "c2lnbmVk", encoding: "base64" })
+        return json(200, {
+          success: true,
+          payload: { hashes: ["D1"], expectedOutRaw: "1", outDecimals: 6, statusChecks: [], recipient: "0xAA" },
+        })
+      }) as typeof fetch,
+    })
+    await client.swapFromLinked({
+      from: "USDC",
+      to: "USDG",
+      amountRaw: "5000000",
+      payer: { linkedWalletId: "tee-sol", privyWalletId: "pw-t" },
+      clientTradeId: "bridge-1",
+    })
+    const build = calls.find((c) => c.url.endsWith("/agent/swap/build"))
+    expect(build?.body).toMatchObject({ from: "USDC", to: "USDG", clientTradeId: "bridge-1" })
+    expect(build?.body.toWalletId).toBeUndefined()
+    const submit = calls.find((c) => c.url.endsWith("/agent/swap/submit"))
+    expect(submit?.body).toMatchObject({ swapId: "swap-t", clientTradeId: "bridge-1" })
+  })
+
+  test("the bridge error codes are exported by name", async () => {
+    const { BRIDGE_ERROR_CODES } = await import("./index")
+    expect([...BRIDGE_ERROR_CODES]).toEqual(["BRIDGE_DESTINATION_MISSING", "RELAY_STEP_REFUSED", "BRIDGE_IN_FLIGHT"])
+  })
+})
+
 describe("maxRetries is validated, not trusted", () => {
   // The loop is `attempt <= maxRetries`, so a negative value runs ZERO attempts and falls through
   // to `throw lastError` before any error exists: the caller sees a TypeError about undefined

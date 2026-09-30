@@ -96,8 +96,8 @@ export type {
   VerifyResult,
 } from "./client"
 export { CandleClient } from "./client"
-export type { CandleErrorPayload, CandleRoutingDetail, SolanaRpcErrorData } from "./errors"
-export { CandleApiError, isSolanaRpcErrorData, JsonRpcError } from "./errors"
+export type { BridgeErrorCode, CandleErrorPayload, CandleRoutingDetail, SolanaRpcErrorData } from "./errors"
+export { BRIDGE_ERROR_CODES, CandleApiError, isSolanaRpcErrorData, JsonRpcError } from "./errors"
 export { KeychainSecretStore } from "./keychain-secret-store"
 export type { SecretStore } from "./secret-store"
 export { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store"

@@ -72,6 +72,8 @@ async function buildPrivyAuthorizationSignature(params) {
 }
 
 // src/errors.ts
+var BRIDGE_ERROR_CODES = ["BRIDGE_DESTINATION_MISSING", "RELAY_STEP_REFUSED", "BRIDGE_IN_FLIGHT"];
+
 class CandleApiError extends Error {
   code;
   status;
@@ -748,7 +750,8 @@ class CandleClient {
       amountRaw: req.amountRaw,
       ...req.maxSlippageBps !== undefined ? { maxSlippageBps: req.maxSlippageBps } : {},
       payer: { type: "linked", linkedWalletId: req.payer.linkedWalletId },
-      ...req.toWalletId !== undefined ? { toWalletId: req.toWalletId } : {}
+      ...req.toWalletId !== undefined ? { toWalletId: req.toWalletId } : {},
+      ...req.clientTradeId !== undefined ? { clientTradeId: req.clientTradeId } : {}
     });
     const signed = [];
     for (const unsignedTransactionBase64 of build.payload.transactionsBase64) {
@@ -760,7 +763,11 @@ class CandleClient {
       });
       signed.push(result.signedTransaction);
     }
-    const submit = await this.requestJson("POST", "/api/v1/agent/swap/submit", { swapId: build.payload.swapId, signedTransactionsBase64: signed });
+    const submit = await this.requestJson("POST", "/api/v1/agent/swap/submit", {
+      swapId: build.payload.swapId,
+      signedTransactionsBase64: signed,
+      ...req.clientTradeId !== undefined ? { clientTradeId: req.clientTradeId } : {}
+    });
     return submit.payload;
   }
   async trade(req) {
@@ -1395,5 +1402,6 @@ export {
   InMemorySecretStore,
   EncryptedFileSecretStore,
   CandleClient,
-  CandleApiError
+  CandleApiError,
+  BRIDGE_ERROR_CODES
 };

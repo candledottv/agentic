@@ -194,6 +194,11 @@ export interface QuoteDisplay {
   legs?: string[]
   gas?: string
   reserve?: string
+  /** Ember 4c (R1): a bridge names where it lands, Relay's own fees and time, and that Candle charges none. */
+  destination?: string
+  candleFee?: string
+  relayFees?: string
+  estimatedTime?: string
 }
 export const BASES: Record<string, { mint: string; decimals: number }> = {
   SOL: { mint: "So11111111111111111111111111111111111111112", decimals: 9 },
@@ -246,12 +251,15 @@ export function classifyAsset(value: string): TradeAsset {
   return { chain: "solana", asset, ...(base ? { base } : {}) }
 }
 
-/** Both sides on one chain, or `CHAIN_MISMATCH` before anything is requested (D6, H7). */
+/**
+ * Both sides on one chain, or `CHAIN_MISMATCH` before anything is requested (D6, H7). A bridge pair
+ * (Ember 4c, 4c-ED-2) never reaches this: `candle swap` routes it first.
+ */
 export function pairChain(from: TradeAsset, to: TradeAsset): TradeChain {
   if (from.chain !== to.chain)
     throw new TradingError(
       "CHAIN_MISMATCH",
-      `${safeText(from.asset)} is on ${chainName(from.chain)} and ${safeText(to.asset)} is on ${chainName(to.chain)}; a swap stays on one chain. Nothing was built.`,
+      `${safeText(from.asset)} is on ${chainName(from.chain)} and ${safeText(to.asset)} is on ${chainName(to.chain)}; a swap stays on one chain, and only SOL or USDC and ETH or USDG bridge between them. Nothing was built.`,
     )
   return from.chain
 }
@@ -270,7 +278,7 @@ export function walletNameChain(name: string): TradeChain | undefined {
 }
 
 /** A wallet row's chain as the trade rails name it: the server's `evm` rows are Hood wallets. */
-function rowChain(row: { chain: string }): TradeChain | undefined {
+export function rowChain(row: { chain: string }): TradeChain | undefined {
   return row.chain === "solana" ? "solana" : row.chain === "evm" ? "hood" : undefined
 }
 
@@ -371,12 +379,12 @@ export async function listTradingWallets(
   return { rows, appId, scopes, ...(keyPrefix !== undefined ? { keyPrefix } : {}) }
 }
 
-function matchesName(row: WalletRow, name: string): boolean {
+export function matchesName(row: WalletRow, name: string): boolean {
   return row.id === name || sameAddress(row.address, name) || row.label === name
 }
 
 /** How a TEE wallet is named back to someone who has to pick one: label first, then id and address. */
-function describeWallet(row: WalletRow): string {
+export function describeWallet(row: WalletRow): string {
   return `${row.label ? `${row.label} ` : ""}(${row.id}, ${row.address})`
 }
 
@@ -676,8 +684,19 @@ const sequencedLegSchema = z.object({
   value: z.string().regex(/^\d+$/),
 })
 export type SequencedLeg = z.infer<typeof sequencedLegSchema>
-/** A trade or base swap uses the first four; a launch `createCurve` then `feeTransfer`; a transfer `transfer` (D4, D9). */
-const legKindSchema = z.enum(["approval", "permit2Approval", "trade", "feeTransfer", "createCurve", "transfer"])
+/**
+ * A trade or base swap uses the first four; a launch `createCurve` then `feeTransfer`; a transfer
+ * `transfer` (D4, D9); a bridge `approval` for USDG then `bridgeDeposit` (Ember 4c, 4c-ED-7).
+ */
+const legKindSchema = z.enum([
+  "approval",
+  "permit2Approval",
+  "trade",
+  "feeTransfer",
+  "createCurve",
+  "transfer",
+  "bridgeDeposit",
+])
 export type LegKind = z.infer<typeof legKindSchema>
 const landedLegSchema = z.object({ kind: z.string(), hash: z.string() }).passthrough()
 export type LandedLeg = { kind: string; hash: string }
@@ -784,9 +803,21 @@ function bytesToHexHash(raw: Uint8Array): string {
 /**
  * The planned legs by kind, in send order (`approval?`, `permit2Approval?`, `trade`,
  * `feeTransfer?`), from what a sequenced build reveals: the first leg's kind, the planned count,
- * and whether a fee is owed. Undefined when those do not fit that order.
+ * and whether a fee is owed. Undefined when those do not fit that order. A bridge's primary leg is
+ * `bridgeDeposit` (Ember 4c, 4c-ED-7): `approval` then `bridgeDeposit` for USDG, the deposit alone
+ * for ETH, and never a fee.
  */
-export function plannedLegKinds(first: LegKind, count: number, hasFee: boolean): LegKind[] | undefined {
+export function plannedLegKinds(
+  first: LegKind,
+  count: number,
+  hasFee: boolean,
+  primary: "trade" | "bridgeDeposit" = "trade",
+): LegKind[] | undefined {
+  if (primary === "bridgeDeposit") {
+    if (hasFee) return undefined
+    const plan: LegKind[] = count === 2 ? ["approval", "bridgeDeposit"] : count === 1 ? ["bridgeDeposit"] : []
+    return plan[0] === first ? plan : undefined
+  }
   const tail: LegKind[] = hasFee ? ["trade", "feeTransfer"] : ["trade"]
   const head = count - tail.length
   const candidates: LegKind[][] = [[], ["approval"], ["permit2Approval"], ["approval", "permit2Approval"]]
@@ -1059,7 +1090,7 @@ export async function savedOperation(
   ctx: CommandContext,
   key: string,
   id: string,
-): Promise<{ kind: OperationKind; signature?: string; operationId?: string } | null> {
+): Promise<{ kind: OperationKind; signature?: string; operationId?: string; bridge?: Json } | null> {
   try {
     return JSON.parse(await readFile(operationPath(ctx, key, id), "utf8"))
   } catch (error) {
@@ -1101,6 +1132,10 @@ export async function confirmQuote(ctx: CommandContext, quote: QuoteDisplay, yes
   output.write(
     `Venue: ${safeText(quote.venue)}\nPrice impact: ${quote.priceImpactPct == null ? "unavailable" : `${safeText(quote.priceImpactPct)}%`}\n${quote.fee ? `Tier fee: ${safeText(quote.fee.bps)} bps (${safeText(quote.fee.feeRaw)} raw)\n` : ""}Minimum received: ${safeText(quote.minimumReceived)}\n`,
   )
+  if (quote.destination) output.write(`Destination: ${safeText(quote.destination)}\n`)
+  if (quote.candleFee) output.write(`Candle fee: ${safeText(quote.candleFee)}\n`)
+  if (quote.relayFees) output.write(`Relay fees: ${safeText(quote.relayFees)}\n`)
+  if (quote.estimatedTime) output.write(`Estimated time: ${safeText(quote.estimatedTime)}\n`)
   if (quote.maxDebitLamports) output.write(`Maximum launch debit: ${safeText(quote.maxDebitLamports)} lamports\n`)
   if (quote.legs) output.write(`Legs, signed one at a time: ${quote.legs.map(safeText).join(", ")}\n`)
   if (quote.gas) output.write(`Gas: ${safeText(quote.gas)}\n`)
@@ -1116,6 +1151,34 @@ export async function confirmQuote(ctx: CommandContext, quote: QuoteDisplay, yes
   return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y"
 }
 
+/**
+ * Ember 4c (4c-ED-9): a bridge's facts the job read does not carry (the destination asset, its
+ * address, Relay's status URL), kept in the operation record so `candle swap status` on this
+ * machine can say what arrived and where. Every later write of the record keeps them.
+ */
+export async function saveOperationBridge(ctx: CommandContext, key: string, id: string, bridge: Json): Promise<void> {
+  const saved = await savedOperation(ctx, key, id)
+  await writeOperation(operationPath(ctx, key, id), { ...(saved ?? { id, kind: "swap" }), bridge })
+}
+
+/** The bridge facts an earlier write recorded, carried into the next one. */
+async function keptBridge(ctx: CommandContext, key: string, id: string): Promise<{ bridge?: Json }> {
+  const bridge = (await savedOperation(ctx, key, id))?.bridge
+  return bridge ? { bridge } : {}
+}
+
+async function writeOperation(path: string, record: Json): Promise<void> {
+  const temporary = `${path}.${process.pid}.tmp`
+  await writeFile(temporary, JSON.stringify(record), { mode: 0o600 })
+  const file = await open(temporary, "r")
+  try {
+    await file.sync()
+  } finally {
+    await file.close()
+  }
+  await rename(temporary, path)
+}
+
 /** Phase 4b (D4): save a Hood leg's hash, known from its signed bytes, before the leg is posted. */
 export async function saveOperationHash(
   ctx: CommandContext,
@@ -1125,16 +1188,13 @@ export async function saveOperationHash(
   hash: string,
   operationId: string,
 ): Promise<void> {
-  const path = operationPath(ctx, key, id)
-  const temporary = `${path}.${process.pid}.tmp`
-  await writeFile(temporary, JSON.stringify({ id, kind, signature: hash, operationId }), { mode: 0o600 })
-  const file = await open(temporary, "r")
-  try {
-    await file.sync()
-  } finally {
-    await file.close()
-  }
-  await rename(temporary, path)
+  await writeOperation(operationPath(ctx, key, id), {
+    id,
+    kind,
+    signature: hash,
+    operationId,
+    ...(await keptBridge(ctx, key, id)),
+  })
 }
 
 /** Save the payer signature before broadcast for confirmation-only recovery after a restart.
@@ -1158,15 +1218,6 @@ export async function saveOperationSignature(
   if (!count || bytes.length < offset + count * 64 || bytes.subarray(offset, offset + 64).every((byte) => byte === 0))
     throw new TradingError("INVALID_RESPONSE", "Missing payer signature.")
   const signature = base58.encode(bytes.subarray(offset, offset + 64))
-  const path = operationPath(ctx, key, id)
-  const temporary = `${path}.${process.pid}.tmp`
-  await writeFile(temporary, JSON.stringify({ id, kind, signature }), { mode: 0o600 })
-  const file = await open(temporary, "r")
-  try {
-    await file.sync()
-  } finally {
-    await file.close()
-  }
-  await rename(temporary, path)
+  await writeOperation(operationPath(ctx, key, id), { id, kind, signature, ...(await keptBridge(ctx, key, id)) })
   return signature
 }

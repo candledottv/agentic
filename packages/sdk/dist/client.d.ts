@@ -892,20 +892,36 @@ export interface EvmSignTransactionParams {
     max_fee_per_gas: string;
     max_priority_fee_per_gas: string;
 }
-/** `swapFromLinked()` request: SOL on the linked wallet into ETH/USDG on Hood. */
+/**
+ * `swapFromLinked()` request: SOL on the linked wallet into ETH/USDG on Hood.
+ *
+ * A TEE payer (Ember Phase 4c) may also start from USDC, and needs `clientTradeId`: the server
+ * then resolves the destination to this key's own TEE wallet on Hood (`toWalletId` names one when
+ * the key has several), requires a raw cap on the origin asset, and charges no fee. That bridge is
+ * gated by the server's `TEE_BRIDGE_ENABLED`; with it off the build answers `PAIR_UNSUPPORTED`.
+ * A Hood-origin bridge signs one leg at a time and is not this call; `candle swap` runs it.
+ */
 export interface LinkedSwapRequest {
-    from: "SOL";
+    from: "SOL" | "USDC";
     to: "ETH" | "USDG";
-    /** Lamports, as a decimal string. */
+    /** Raw base units of `from` (lamports for SOL), as a decimal string. */
     amountRaw: string;
     /** The linked Solana wallet funding the swap. */
     payer: {
         linkedWalletId: string;
         privyWalletId: string;
     };
-    /** The account's OWN linked EVM wallet to receive the output; omitted = the owner's embedded Hood wallet. */
+    /**
+     * The account's OWN linked EVM wallet to receive the output; omitted = the owner's embedded Hood
+     * wallet. For a TEE payer: this key's TEE wallet on Hood, omitted when it has exactly one.
+     */
     toWalletId?: string;
     maxSlippageBps?: number;
+    /**
+     * Required for a TEE payer's bridge, and sent on both calls: the durable idempotency key, and the
+     * id `GET /api/v1/agent/swap/jobs/{clientTradeId}` reads the bridge's settlement and open state by.
+     */
+    clientTradeId?: string;
 }
 /** `swapFromLinked()` result. `hashes` is the Solana deposit; poll `statusChecks` for the fill. */
 export interface LinkedSwapResult {
@@ -1664,8 +1680,11 @@ export declare class CandleClient {
      * proves the Solana deposit landed. Sign promptly after building: the deposit transaction
      * carries a recent blockhash and expires in about a minute.
      *
-     * v1 supports `from: "SOL"` only. Same-chain conversions (SOL/USDC/CNDL) are `trade()` with a
-     * base-asset mint (free, every tier); USDC/CNDL origins convert to SOL that way first.
+     * v1 supports `from: "SOL"` only from a linked wallet. Same-chain conversions (SOL/USDC/CNDL)
+     * are `trade()` with a base-asset mint (free, every tier); USDC/CNDL origins convert to SOL that
+     * way first. A TEE payer (Ember Phase 4c) may bridge SOL or USDC directly with `clientTradeId`;
+     * see `LinkedSwapRequest`. Its errors add `BRIDGE_DESTINATION_MISSING` and `RELAY_STEP_REFUSED`
+     * (`BRIDGE_ERROR_CODES`).
      */
     swapFromLinked(req: LinkedSwapRequest): Promise<LinkedSwapResult>;
     /**

@@ -325,6 +325,15 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
    * the tool this product exists for -- only said "a new id is a second trade" in passing, with
    * no mention of the read that answers "did it land" without re-sending.
    */
+  // Ember 4c (4c-ED-12): the swap tool keeps its parameters and says where a TEE bridge runs.
+  test("swap still bridges the embedded wallets, and names candle swap for a TEE wallet's bridge", () => {
+    const d = describeOf("candle_swap")
+    expect(d).toContain("BRIDGE")
+    expect(d).toContain("candle swap")
+    expect(d).toContain("same key's TEE wallet")
+    expect(d).not.toContain("same-chain only")
+  })
+
   test("trade names its pre-flight and points a lost result at get_operation, not a retry", () => {
     const d = describeOf("candle_trade")
     expect(d).toContain("candle_execution_status")

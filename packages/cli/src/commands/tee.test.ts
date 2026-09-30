@@ -777,6 +777,23 @@ describe("tee disable (T23, HW-06)", () => {
     expect(stdout.text).toContain("tee sweep")
   })
 
+  test("Ember 4c: a disable reports a bridge that still lands in the wallet, and is never blocked by it", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1": () =>
+        jsonResponse(200, {
+          ...QUARANTINED,
+          bridges: [{ clientTradeId: "swap-b1", role: "source", state: "open", openedAt: 1, blockingUntil: 7_200_001 }],
+        }),
+    })
+    const { deps, stdout, stderr } = depsFor(dir, fetch, [PASSPHRASE])
+    expect(await run(["tee", "disable", TEE], deps)).toBe(0)
+    expect(stdout.text).toContain("quarantined")
+    expect(stderr.text).toContain("Bridge swap-b1 out of")
+    expect(stderr.text).toContain("still lands in this wallet")
+  })
+
   test("a never-enabled wallet has nothing to stop", async () => {
     const dir = await tempDir()
     await seedTeeStore(dir, [teeEntry()])
@@ -1205,6 +1222,84 @@ describe("tee sweep (T24, HW-07, SC-06)", () => {
     expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], deps)).toBe(1)
     expect(stderr.text).toContain("tee disable")
     expect(rpc.sent).toHaveLength(0)
+  })
+
+  // Ember 4c (R4, T5): the open-bridge state on the lifecycle read gates an ordinary sweep.
+  const OPEN_BRIDGE = {
+    clientTradeId: "swap-b1",
+    role: "recipient",
+    state: "open",
+    openedAt: 1,
+    blockingUntil: 7_200_001,
+  }
+  const UNCERTAIN_BRIDGE = { clientTradeId: "swap-b0", role: "source", state: "uncertain", openedAt: 1 }
+
+  test("Ember 4c: an open bridge into the wallet refuses the sweep BRIDGE_IN_FLIGHT before anything is signed", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const rpc = defaultRpcState()
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () =>
+        jsonResponse(200, LIFECYCLE("quarantined", { bridges: [OPEN_BRIDGE] })),
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(1)
+    const parsed = JSON.parse(stdout.text.trim().split("\n").at(-1) ?? "")
+    expect(parsed.code).toBe("BRIDGE_IN_FLIGHT")
+    expect(parsed.message).toContain("into")
+    expect(parsed.suggestion).toContain("candle swap status swap-b1")
+    expect(parsed.details.bridges[0].clientTradeId).toBe("swap-b1")
+    expect(rpc.sent).toHaveLength(0)
+    expect(calls.some((call) => call.url.includes("/swept"))).toBe(false)
+  })
+
+  test("Ember 4c: an uncertain bridge (past two hours) is a warning, and the sweep goes ahead", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const rpc = defaultRpcState()
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () =>
+        jsonResponse(200, LIFECYCLE("quarantined", { bridges: [UNCERTAIN_BRIDGE] })),
+      "/rpc": rpcHandler(rpc),
+    })
+    // A wrong vault confirmation stops it right after the gate, so the warning is the proof it passed.
+    const { deps, stdout, stderr } = depsFor(dir, fetch, [PASSPHRASE, "wrong!"])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], deps)).toBe(1)
+    expect(stdout.text).toContain("bridge swap-b0 out of")
+    expect(stdout.text).toContain("sweep this wallet again")
+    expect(stderr.text).not.toContain("BRIDGE_IN_FLIGHT")
+    expect(stderr.text).toContain("vault confirmation did not match")
+  })
+
+  test("Ember 4c: an unread bridge state warns and does not refuse", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const rpc = defaultRpcState()
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined", { bridges: null })),
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps, stdout, stderr } = depsFor(dir, fetch, [PASSPHRASE, "wrong!"])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC], deps)).toBe(1)
+    expect(stdout.text).toContain("could not say whether a bridge")
+    expect(stderr.text).toContain("vault confirmation did not match")
+  })
+
+  test("Ember 4c: --emergency is never blocked by an open bridge, and says a later fill needs a second sweep", async () => {
+    const dir = await tempDir()
+    await seedTeeStore(dir, [enabledEntry()])
+    const rpc = defaultRpcState()
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () =>
+        jsonResponse(200, LIFECYCLE("quarantined", { bridges: [OPEN_BRIDGE] })),
+      "/rpc": rpcHandler(rpc),
+    })
+    const { deps, stdout, stderr } = depsFor(dir, fetch, [PASSPHRASE, "wrong!"])
+    expect(await run(["tee", "sweep", TEE, "--rpc-url", RPC, "--emergency"], deps)).toBe(1)
+    expect(stdout.text).toContain("cannot see an open bridge")
+    expect(stdout.text).toContain("Warning: A bridge into")
+    expect(stderr.text).toContain("vault confirmation did not match")
   })
 
   test("a wrong vault confirmation signs nothing", async () => {

@@ -282,7 +282,9 @@ describe("TEE CLI trading", () => {
     expect(await run(swapArgs, f.deps)).toBe(0)
     for (const message of messages) expect(f.stderr.text).toContain(message)
   })
-  for (const to of ["ETH", "USDG", "0x1234567890123456789012345678901234567890", "ethereum:ETH"])
+  // SOL to ETH or USDG is a bridge since Ember 4c (R1), covered in bridge.test.ts; a Hood token
+  // or a malformed asset is still refused before any request.
+  for (const to of ["0x1234567890123456789012345678901234567890", "ethereum:ETH"])
     test(`refuses ${to} before any request`, async () => {
       const f = await fixture()
       expect(

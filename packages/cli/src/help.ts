@@ -228,18 +228,18 @@ export const HELP: Record<string, Topic> = {
 
   swap: {
     group: "Trade",
-    summary: "Quote, confirm and swap on Solana or Hood; read an operation by id",
+    summary: "Quote, confirm and swap on Solana or Hood, bridge between them; read an operation by id",
     description:
-      "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed.",
+      "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, the key needs a raw cap on the origin asset, and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault.",
     usage: ["candle swap <from> <to> [flags]", "candle swap status <id>"],
     rows: [
       {
-        invocation: "<from> <to> --amount <n>|--percent <n> --wallet <tee>",
-        description: "Quote, confirm and swap on Solana or Hood",
+        invocation: "<from> <to> --amount <n>|--percent <n> --wallet <tee> [--to <tee>] [--wait]",
+        description: "Quote, confirm and swap on Solana or Hood, or bridge between them",
       },
       {
-        invocation: "status <id> [--kind trade|swap|launch]",
-        description: "Read an operation without resending it",
+        invocation: "status <id> [--kind trade|swap|launch] [--wait]",
+        description: "Read an operation without resending it; --wait follows a bridge until it ends",
       },
     ],
     examples: [
@@ -248,6 +248,10 @@ export const HELP: Record<string, Topic> = {
       "candle swap ETH USDG --amount 0.05 --wallet HoodOne",
       "candle swap 0xTokenAddress ETH --percent 100 --wallet HoodOne",
       "candle swap status op_123 --kind swap",
+      "candle vault fund AgentOneAddress --amount 1 --asset SOL   # vault to vault: fund the Solana TEE wallet",
+      "candle swap SOL ETH --amount 1 --wallet AgentOne   # bridge into this key's Hood TEE wallet",
+      "candle swap status op_123 --wait",
+      "candle tee disable 0xHoodOneAddress   # then: candle tee sweep 0xHoodOneAddress",
     ],
     env: ENV_API,
   },

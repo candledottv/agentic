@@ -1,6 +1,20 @@
 import { randomUUID } from "node:crypto"
 import { z } from "zod"
 import { parseArgs } from "../args"
+import {
+  BRIDGE_ASSETS,
+  BRIDGE_WAIT_MS,
+  BRIDGE_WAIT_POLL_MS,
+  type BridgeAsset,
+  type BridgeFacts,
+  bridgeLegKinds,
+  bridgePair,
+  bridgePlanAdmitted,
+  bridgeStatusFinal,
+  describeBridgeJob,
+  relayHoodLegProblem,
+  relaySolanaDepositProblem,
+} from "../bridge"
 import type { CommandContext } from "../deps"
 import {
   createEvmRpc,
@@ -10,6 +24,7 @@ import {
   HOOD_USDG_ADDRESS,
   resolveEvmRpcUrl,
   rpcHostOf,
+  sameEvmAddress,
   toChecksumAddress,
 } from "../evm-lite"
 import { writeLocalFailure, writeUsageFailure } from "../render"
@@ -19,16 +34,20 @@ import {
   BASES,
   baseAsset,
   chainMismatch,
+  chainName,
   claimOperation,
   classifyAsset,
   confirmQuote,
   decimalAmount,
+  describeWallet,
   HOOD_BASES,
   type JobKind,
   type Json,
   jobPath,
   type LandedLeg,
   type LegKind,
+  listTradingWallets,
+  matchesName,
   type OperationKind,
   operationSchema,
   pairChain,
@@ -37,10 +56,12 @@ import {
   rawAmount,
   relaySign,
   request,
+  rowChain,
   runSequencedLegs,
   type SequencedBody,
   safeText,
   savedOperation,
+  saveOperationBridge,
   sequencedSchema,
   swapBuildSchema,
   sweepReserveFloor,
@@ -182,29 +203,109 @@ export async function lookupOperation(
   return found[0] ? { ...found[0], ...(local?.signature ? { signature: local.signature } : {}) } : null
 }
 export async function swapStatus(args: string[], ctx: CommandContext): Promise<number> {
-  const parsed = parseArgs(args, { valueFlags: ["--kind"] })
+  const parsed = parseArgs(args, { valueFlags: ["--kind"], booleanFlags: ["--wait"] })
   if (
     "error" in parsed ||
     parsed.positionals.length !== 1 ||
     !validClientId(parsed.positionals[0] ?? "") ||
     (parsed.values["--kind"] !== undefined && !["trade", "swap", "launch"].includes(parsed.values["--kind"]))
   ) {
-    writeUsageFailure(ctx.deps, "Usage: candle swap status <id> [--kind trade|swap|launch]", ctx.json)
+    writeUsageFailure(ctx.deps, "Usage: candle swap status <id> [--kind trade|swap|launch] [--wait]", ctx.json)
     return 2
   }
   try {
     const key = await tradingKey(ctx)
     const id = parsed.positionals[0] as string
-    const result = await lookupOperation(ctx, key, id, parsed.values["--kind"] as JobKind | undefined)
-    if (!result)
+    const kind = parsed.values["--kind"] as JobKind | undefined
+    const facts = bridgeFactsOf((await savedOperation(ctx, key, id))?.bridge)
+    const found = await lookupOperation(ctx, key, id, kind)
+    if (!found)
       throw new TradingError(
         "JOB_NOT_FOUND",
         "No operation found on the selected rail(s). This command does not resend a write.",
       )
+    const result = parsed.booleans.has("--wait")
+      ? await waitForSettlement(ctx, key, id, found, facts)
+      : { ...found, ...bridgeStatusField(ctx, found, facts) }
     return printTradingResult(ctx, result)
   } catch (error) {
     return tradingFailure(ctx, error)
   }
+}
+
+// ── Ember 4c: bridge status and --wait (4c-ED-9, R1) ─────────────────────────────────────────
+
+const bridgeFactsSchema = z.object({
+  from: z.enum(["SOL", "USDC", "ETH", "USDG"]),
+  to: z.enum(["SOL", "USDC", "ETH", "USDG"]),
+  recipient: z.string(),
+  statusCheck: z.string().optional(),
+})
+
+function bridgeFactsOf(raw: unknown): BridgeFacts | undefined {
+  const parsed = bridgeFactsSchema.safeParse(raw)
+  return parsed.success ? parsed.data : undefined
+}
+
+/** A swap job is a bridge when the server says one is open, or this machine recorded it as one. */
+function isBridgeJob(job: Json, facts: BridgeFacts | undefined): boolean {
+  return facts !== undefined || (job.bridge !== null && typeof job.bridge === "object")
+}
+
+/**
+ * `bridgeStatus` for the JSON result, and the same words on stderr: the phase, what arrived, and
+ * the open or two-hour state. Only on a bridge; any other operation prints exactly as before.
+ */
+function bridgeStatusField(ctx: CommandContext, found: Json, facts: BridgeFacts | undefined): Json {
+  const job = (found.job ?? {}) as Json
+  if (found.kind !== "swap" || !isBridgeJob(job, facts)) return {}
+  const status = describeBridgeJob(job, facts)
+  for (const line of status.lines) ctx.deps.stderr.write(`${line}\n`)
+  const { lines: _lines, ...rest } = status
+  return { bridgeStatus: rest }
+}
+
+/**
+ * Whether `--wait` has nothing more to follow: a bridge at an end state or past its two hours, or
+ * any other job whose settlement is not `pending`. A job with no settlement has nothing to follow.
+ */
+function waitFinished(current: Json, facts: BridgeFacts | undefined, sent: boolean): boolean {
+  const job = (current.job ?? {}) as Json
+  if (current.kind === "swap" && isBridgeJob(job, facts)) {
+    const status = describeBridgeJob(job, facts)
+    // Right after this command's own submit, a read that does not show the deposit yet is lag,
+    // not a build that was never broadcast.
+    if (sent && status.phase === "not_broadcast") return false
+    return bridgeStatusFinal(status)
+  }
+  const settlement = settlementSchema.safeParse(job.settlement)
+  return !settlement.success || settlement.data.state !== "pending"
+}
+
+/**
+ * R1: poll the job read until the settlement ends (settled, failed or uncertain), the bridge
+ * passes its two hours, or ten minutes go by. Reads only; nothing is ever resent.
+ */
+async function waitForSettlement(
+  ctx: CommandContext,
+  key: string,
+  id: string,
+  first: Json,
+  facts: BridgeFacts | undefined,
+  /** This command just submitted the deposit itself. */
+  sent = false,
+): Promise<Json> {
+  const deadline = ctx.deps.now() + BRIDGE_WAIT_MS
+  let current = first
+  while (!waitFinished(current, facts, sent) && ctx.deps.now() < deadline) {
+    await ctx.deps.sleep(BRIDGE_WAIT_POLL_MS)
+    current = { ...current, ...operationSchema.parse(await request(ctx, key, jobPath(current.kind as JobKind, id))) }
+  }
+  const field = bridgeStatusField(ctx, current, facts)
+  const finished = waitFinished(current, facts, sent)
+  if (!finished)
+    ctx.deps.stderr.write(`Still not final after ten minutes. Re-check with candle swap status ${id} --wait.\n`)
+  return { ...current, ...field, waited: { final: finished } }
 }
 export async function decimalsFor(
   ctx: CommandContext,
@@ -254,8 +355,8 @@ async function assertDeferredExecuteSupported(ctx: CommandContext, key: string, 
 
 export async function swap(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
-    valueFlags: ["--amount", "--percent", "--wallet", "--client-trade-id", "--slippage-bps", "--rpc-url"],
-    booleanFlags: ["--yes"],
+    valueFlags: ["--amount", "--percent", "--wallet", "--to", "--client-trade-id", "--slippage-bps", "--rpc-url"],
+    booleanFlags: ["--yes", "--wait"],
   })
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json)
@@ -276,7 +377,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
       ctx.deps,
       // --wallet is optional since BE-249: an account with exactly one payer does not have to name
       // it, and the payer may now be the embedded wallet as well as a TEE one.
-      "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token.",
+      "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--to <tee>] [--wait] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token. SOL or USDC to ETH or USDG, or back, is a bridge between two TEE wallets.",
       ctx.json,
     )
     return 2
@@ -285,6 +386,20 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
     // Phase 4b (D6): the assets decide the chain, and both sides must agree, before any request.
     const fromAsset = classifyAsset(parsed.positionals[0] as string)
     const toAsset = classifyAsset(parsed.positionals[1] as string)
+    // Ember 4c (R1): a base asset on each chain is a bridge. Every other cross-chain pair is still
+    // CHAIN_MISMATCH below, and --to and --wait mean nothing on a same-chain swap.
+    const bridge = bridgePair(fromAsset, toAsset)
+    if (bridge)
+      return await bridgeSwap(ctx, {
+        flags,
+        yes: parsed.booleans.has("--yes"),
+        wait: parsed.booleans.has("--wait"),
+        id,
+        slippage,
+        ...bridge,
+      })
+    if (flags["--to"] !== undefined || parsed.booleans.has("--wait"))
+      throw new TradingUsage("--to and --wait are for a bridge: SOL or USDC to ETH or USDG, or back.")
     const chain = pairChain(fromAsset, toAsset)
     const walletFlag = flags["--wallet"]
     const named = walletFlag === undefined ? undefined : walletNameChain(walletFlag)
@@ -561,13 +676,18 @@ export async function recordTradedToken(
 /** The legs a Hood trade or base swap may sign (D4). A launch's or a transfer's leg kind is refused. */
 const HOOD_TRADE_LEGS: readonly LegKind[] = ["approval", "permit2Approval", "trade", "feeTransfer"]
 
-function describeHoodLegs(first: SequencedBody, hasFee: boolean): string[] {
-  const kinds = plannedLegKinds(first.legKind, first.plannedLegCount, hasFee)
+function describeHoodLegs(
+  first: SequencedBody,
+  hasFee: boolean,
+  primary: "trade" | "bridgeDeposit" = "trade",
+): string[] {
+  const kinds = plannedLegKinds(first.legKind, first.plannedLegCount, hasFee, primary)
   const names: Record<string, string> = {
     approval: "approve",
     permit2Approval: "Permit2 approve",
     trade: "trade",
     feeTransfer: "fee",
+    bridgeDeposit: "bridge deposit",
   }
   return kinds
     ? kinds.map((kind) => names[kind] ?? kind)
@@ -765,4 +885,345 @@ async function hoodSwap(
     landedLegs: run.landed,
     evmRecord: { token: toChecksumAddress(recorded), notices },
   })
+}
+
+// ── Ember Phase 4c: the bridge (R1, R4) ──────────────────────────────────────────────────────
+
+/** A bridge build's payload (`POST /agent/swap/build` for a TEE payer on a cross-chain pair). */
+const bridgeBuildSchema = z
+  .object({
+    status: z.literal("built"),
+    swapId: z.string().min(1),
+    venue: z.string(),
+    fee: z.object({ bps: z.number(), feeRaw: z.string() }).passthrough(),
+    expectedOutRaw: z.string().regex(/^\d+$/),
+    expiresAt: z.number().finite(),
+    recipient: z.string().min(1),
+    statusChecks: z.array(z.string()).default([]),
+    transactionsBase64: z.array(z.string()).optional(),
+    walletAddress: z.string().optional(),
+    venueCostUsd: z.number().finite().optional(),
+    venueTimeEstimateSec: z.number().finite().optional(),
+  })
+  .passthrough()
+
+/** The payer's spendable balance of a bridge's origin asset, for `--percent`. */
+async function bridgeOriginBalance(
+  ctx: CommandContext,
+  from: BridgeAsset,
+  address: string,
+  solana: () => Promise<SolanaClient>,
+  evm: () => EvmRpc,
+): Promise<bigint> {
+  if (from === "ETH") return evmRead("the ETH balance", () => evm().getBalance(address))
+  if (from === "USDG") return evmRead("the USDG balance", () => evm().erc20BalanceOf(HOOD_USDG_ADDRESS, address))
+  const reader = await solana()
+  if (from === "SOL") return tradingRead(ctx, reader, () => reader.rpc.getBalance(address))
+  const mint = BASES.USDC?.mint
+  const accounts = (
+    await tradingRead(ctx, reader, () =>
+      Promise.all([
+        reader.rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
+        reader.rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID),
+      ]),
+    )
+  ).flat()
+  return accounts
+    .filter((account) => account.mint === mint)
+    .reduce((sum, account) => sum + BigInt(account.amountRaw), 0n)
+}
+
+/**
+ * `candle swap` across chains (Ember 4c, R1): a TEE wallet on one chain pays, this key's TEE wallet
+ * on the other chain receives, and Relay carries it. The server resolves and checks the destination,
+ * caps the origin asset and verifies Relay's steps (4c-ED-1, 4c-ED-3, 4c-ED-5); this command checks
+ * again before anything is signed (4c-ED-6): the recipient is a TEE wallet this key lists, Candle
+ * charges nothing, and every leg or the Solana deposit is exactly the confirmed one.
+ */
+async function bridgeSwap(
+  ctx: CommandContext,
+  args: {
+    flags: Record<string, string>
+    yes: boolean
+    wait: boolean
+    id: string
+    slippage: number
+    from: BridgeAsset
+    to: BridgeAsset
+  },
+): Promise<number> {
+  const { flags, id, from, to } = args
+  const origin = BRIDGE_ASSETS[from].chain
+  const destination = BRIDGE_ASSETS[to].chain
+  const walletFlag = flags["--wallet"]
+  const named = walletFlag === undefined ? undefined : walletNameChain(walletFlag)
+  if (named !== undefined && named !== origin) throw chainMismatch(`--wallet ${safeText(walletFlag)}`, named, origin)
+  if (flags["--amount"]) rawAmount(flags["--amount"], 18)
+  const percent = flags["--percent"] ? BigInt(rawAmount(flags["--percent"], 6)) : undefined
+  if (percent !== undefined && percent > 100_000_000n)
+    throw new TradingError(
+      "INVALID_AMOUNT",
+      "Percent must be greater than 0 and at most 100 (up to six decimal places).",
+    )
+  const key = await tradingKey(ctx)
+  const prior = await lookupOperation(ctx, key, id, "swap")
+  if (prior)
+    return printTradingResult(ctx, {
+      ...prior,
+      ...bridgeStatusField(ctx, prior, bridgeFactsOf((await savedOperation(ctx, key, id))?.bridge)),
+    })
+  const payer = await tradingPayer(ctx, key, walletFlag, "swap:write", origin)
+  if (payer.kind !== "tee")
+    throw new TradingError(
+      "CHAIN_MISMATCH",
+      `Only a TEE wallet bridges, and the embedded wallet ${safeText(payer.address)} is not one. Name a ${chainName(origin)} TEE wallet with --wallet. Nothing was built.`,
+    )
+  const wallet = payer.wallet
+
+  // 4c-ED-1: the destination is this key's own TEE wallet on the other chain, and nothing else.
+  const { rows } = await listTradingWallets(ctx, key, "swap:write")
+  const onDestination = rows.filter((row) => rowChain(row) === destination)
+  const toFlag = flags["--to"]
+  let toWalletId: string | undefined
+  let candidates = onDestination.filter((row) => row.active)
+  if (toFlag !== undefined) {
+    const matches = rows.filter((row) => matchesName(row, toFlag))
+    const match = matches[0]
+    if (matches.length > 1)
+      throw new TradingError(
+        "TEE_WALLET_REQUIRED",
+        `"${safeText(toFlag)}" matches ${matches.length} TEE wallets on this key: ${matches.map(describeWallet).join("; ")}. Name one by id or address.`,
+      )
+    if (!match || rowChain(match) !== destination)
+      throw new TradingError(
+        "BRIDGE_DESTINATION_MISSING",
+        `--to ${safeText(toFlag)} is not a ${chainName(destination)} TEE wallet on this key. A bridge lands only in this key's own TEE wallet on ${chainName(destination)}${onDestination.length > 0 ? `: ${onDestination.map(describeWallet).join("; ")}` : ""}. Nothing was built.`,
+      )
+    if (!match.active)
+      throw new TradingError(
+        "TEE_WALLET_INACTIVE",
+        `The destination ${describeWallet(match)} is not a verified-active TEE wallet. Nothing was built.`,
+      )
+    toWalletId = match.id
+    candidates = [match]
+  } else if (candidates.length !== 1) {
+    throw new TradingError(
+      "BRIDGE_DESTINATION_MISSING",
+      candidates.length === 0
+        ? `This key has no active ${chainName(destination)} TEE wallet to bridge into. Promote one onto this key (candle vault promote), then bridge. Nothing was built.`
+        : `This key has more than one ${chainName(destination)} TEE wallet; name the destination with --to: ${candidates.map(describeWallet).join("; ")}. Nothing was built.`,
+    )
+  }
+
+  const solana = lazySolanaClient(ctx, flags["--rpc-url"])
+  const evm = lazyEvmRpc(ctx, flags["--rpc-url"])
+  const decimals = BRIDGE_ASSETS[from].decimals
+  let amountRaw: string
+  if (percent !== undefined) {
+    const balance = await bridgeOriginBalance(ctx, from, wallet.address, solana, evm)
+    amountRaw = ((balance * percent) / 100_000_000n).toString()
+    if (amountRaw === "0") throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.")
+  } else amountRaw = rawAmount(flags["--amount"] as string, decimals)
+  if (!(await claimOperation(ctx, key, id, "swap")))
+    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.")
+  ctx.deps.stderr.write(`Operation: ${id}\n`)
+  const built = await request(ctx, key, "/api/v1/agent/swap/build", {
+    clientTradeId: id,
+    from,
+    to,
+    amountRaw,
+    maxSlippageBps: args.slippage,
+    payer: { type: "linked", linkedWalletId: wallet.id },
+    ...(toWalletId !== undefined ? { toWalletId } : {}),
+  })
+  if (built.job || built.status === "executed")
+    return printTradingResult(ctx, { ...built, clientTradeId: id, kind: "swap" })
+  const body = (built.payload ?? {}) as Json
+  const parsedBuild = bridgeBuildSchema.safeParse(body)
+  if (!parsedBuild.success)
+    throw new TradingError("INVALID_RESPONSE", "Candle did not return a complete bridge quote; nothing was signed.")
+  const data = parsedBuild.data
+  if (data.venue !== "relay")
+    throw new TradingError(
+      "INVALID_RESPONSE",
+      `A bridge goes through Relay, not ${safeText(data.venue)}; nothing was signed.`,
+    )
+  // 4c-AD-4: a swap between two base assets is free. A fee here is not the quote this command shows.
+  if (data.fee.bps !== 0 || data.fee.feeRaw !== "0")
+    throw new TradingError(
+      "INVALID_RESPONSE",
+      "A bridge carries no Candle fee, and this quote has one; nothing was signed.",
+    )
+  const recipient = candidates.find((row) =>
+    destination === "hood" ? sameEvmAddress(row.address, data.recipient) : row.address === data.recipient,
+  )
+  if (!recipient)
+    throw new TradingError(
+      "INVALID_RESPONSE",
+      `Candle named ${safeText(data.recipient)} as the destination, which is not ${toWalletId !== undefined ? "the TEE wallet --to named" : `this key's ${chainName(destination)} TEE wallet`}; nothing was signed.`,
+    )
+  const facts: BridgeFacts = {
+    from,
+    to,
+    recipient: recipient.address,
+    ...(data.statusChecks[0] !== undefined ? { statusCheck: data.statusChecks[0] } : {}),
+  }
+  await saveOperationBridge(ctx, key, id, { ...facts })
+
+  // 4c-ED-6: the CLI's own check of what is about to be signed, before the prompt.
+  const refused = (problem: string) =>
+    new TradingError(
+      "RELAY_STEP_REFUSED",
+      `Relay's deposit did not pass this machine's check (${problem}); nothing was signed.`,
+    )
+  let sequenced: SequencedBody | undefined
+  let transaction: string | undefined
+  const hoodOrigin = from === "ETH" || from === "USDG" ? from : undefined
+  if (hoodOrigin) {
+    const parsedLeg = sequencedSchema.safeParse(body)
+    if (!parsedLeg.success)
+      throw new TradingError(
+        "SEQUENCED_RAIL_REQUIRED",
+        "A Hood TEE wallet bridges one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.",
+      )
+    sequenced = parsedLeg.data
+    if (typeof data.walletAddress !== "string" || !sameEvmAddress(data.walletAddress, wallet.address))
+      throw new TradingError(
+        "INVALID_RESPONSE",
+        "The Hood build does not name the requested payer; nothing was signed.",
+      )
+    const plan = plannedLegKinds(sequenced.legKind, sequenced.plannedLegCount, false, "bridgeDeposit")
+    if (!bridgePlanAdmitted(hoodOrigin, plan))
+      throw refused(`the plan is ${sequenced.plannedLegCount} leg(s) starting with ${sequenced.legKind}`)
+    const problem = relayHoodLegProblem(sequenced.legKind, sequenced.nextLeg, {
+      origin: hoodOrigin,
+      payer: wallet.address,
+      amountRaw,
+    })
+    if (problem) throw refused(problem)
+  } else {
+    if (data.transactionsBase64?.length !== 1)
+      throw refused(`Candle returned ${data.transactionsBase64?.length ?? 0} transactions, not one deposit`)
+    transaction = data.transactionsBase64[0] as string
+    const reader = await solana()
+    const problem = await tradingRead(ctx, reader, () =>
+      relaySolanaDepositProblem(transaction as string, wallet.address, reader.rpc),
+    )
+    if (problem) throw refused(problem)
+  }
+
+  const outDecimals = BRIDGE_ASSETS[to].decimals
+  // Relay's quote carries no guaranteed minimum; the bound is its estimate less the slippage it
+  // was quoted with.
+  const minimumRaw = ((BigInt(data.expectedOutRaw) * BigInt(10_000 - args.slippage)) / 10_000n).toString()
+  const quote: QuoteDisplay & Json = {
+    intent: `Bridge ${decimalAmount(amountRaw, decimals)} ${from} on ${chainName(origin)} to ${to} on ${chainName(destination)}`,
+    wallet: wallet.address,
+    venue: "relay",
+    priceImpactPct: null,
+    minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to} (Relay's estimate ${decimalAmount(data.expectedOutRaw, outDecimals)} ${to}, less the ${args.slippage} bps slippage bound)`,
+    minimumReceivedRaw: minimumRaw,
+    expectedOutRaw: data.expectedOutRaw,
+    destination: `${recipient.label ? `${recipient.label} ` : ""}${recipient.address} (${chainName(destination)} TEE wallet on this key)`,
+    candleFee: "none",
+    relayFees: data.venueCostUsd !== undefined ? `about $${data.venueCostUsd} as Relay reports it` : "not reported",
+    estimatedTime:
+      data.venueTimeEstimateSec !== undefined
+        ? `about ${data.venueTimeEstimateSec}s as Relay reports it`
+        : "not reported",
+    tokenRisks: [],
+  }
+  if (sequenced) {
+    const leg = sequenced.nextLeg
+    const maxFee = BigInt(leg.maxFeePerGas)
+    const reserve = sweepReserveFloor(maxFee, [])
+    quote.legs = describeHoodLegs(sequenced, false, "bridgeDeposit")
+    quote.gas = `the ${sequenced.legKind} leg up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei); each later leg is priced by Candle when it becomes next`
+    quote.reserve = `at least ${formatUnits(reserve.wei, 18)} ETH stays in the wallet for a sweep home (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee); a bridge never spends it`
+    quote.operationId = sequenced.operationId
+  }
+  if (!(await confirmQuote(ctx, quote, args.yes))) {
+    if (sequenced)
+      ctx.deps.stderr.write(
+        `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade or sweep from it waits until then.\n`,
+      )
+    return printTradingResult(ctx, {
+      success: true,
+      status: "cancelled",
+      clientTradeId: id,
+      kind: "swap",
+      quote,
+      ...(sequenced ? { operationId: sequenced.operationId, walletHeldUntil: sequenced.expiresAt } : {}),
+    })
+  }
+  if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
+    throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.")
+
+  let result: Json
+  let depositHash: string | undefined
+  if (sequenced && hoodOrigin) {
+    const run = await runSequencedLegs(ctx, key, {
+      wallet,
+      first: sequenced,
+      submitPath: "/api/v1/agent/swap/submit",
+      submitFields: { clientTradeId: id, swapId: data.swapId },
+      unwrap: (answer) => (answer.payload ?? {}) as Json,
+      clientId: id,
+      kind: "swap",
+      primaryLeg: "bridgeDeposit",
+      allowedLegs: bridgeLegKinds(hoodOrigin),
+      checkLeg: (kind, leg) =>
+        relayHoodLegProblem(kind, leg, { origin: hoodOrigin, payer: wallet.address, amountRaw }) === null,
+      onLanded: async () => {},
+    })
+    depositHash = run.landed.find((leg) => leg.kind === "bridgeDeposit")?.hash
+    result = {
+      ...run.final,
+      chain: "hood",
+      operationId: sequenced.operationId,
+      landedLegs: run.landed,
+    }
+  } else {
+    const signed = await relaySign(ctx, key, wallet, transaction as string)
+    const submitted = await request(ctx, key, "/api/v1/agent/swap/submit", {
+      clientTradeId: id,
+      swapId: data.swapId,
+      signedTransactionsBase64: [signed],
+    })
+    const payload = (submitted.payload ?? {}) as Json
+    const hashes = Array.isArray(payload.hashes) ? payload.hashes.filter((h): h is string => typeof h === "string") : []
+    depositHash = hashes[0]
+    result = submitted
+  }
+  ctx.deps.stderr.write(
+    `Deposit ${depositHash ? safeText(depositHash) : "sent"}: filling.${args.wait ? "" : ` Check it with candle swap status ${id} (add --wait to follow it).`}\n`,
+  )
+  const receipt: Json = {
+    ...result,
+    clientTradeId: id,
+    kind: "swap",
+    bridge: { from, to, destination: recipient.address, ...(depositHash ? { depositHash } : {}) },
+    quote,
+    wallet: safeText(wallet.address),
+  }
+  if (!args.wait) return printTradingResult(ctx, receipt)
+  // The deposit is out. A read that fails while following it is not a failed bridge: the receipt
+  // still prints, so nobody sends it again under a new id.
+  try {
+    const found = await lookupOperation(ctx, key, id, "swap")
+    if (!found) return printTradingResult(ctx, { ...receipt, waited: { final: false } })
+    const waited = await waitForSettlement(ctx, key, id, found, facts, true)
+    return printTradingResult(ctx, {
+      ...receipt,
+      job: waited.job,
+      bridgeStatus: waited.bridgeStatus,
+      waited: waited.waited,
+    })
+  } catch (error) {
+    const reason = safeText(error instanceof Error ? describeRpcFailure(error) : String(error))
+    ctx.deps.stderr.write(
+      `Could not follow the bridge (${reason}). The deposit was sent; do not send it again. Re-check with candle swap status ${id} --wait.\n`,
+    )
+    return printTradingResult(ctx, { ...receipt, waited: { final: false, error: reason } })
+  }
 }

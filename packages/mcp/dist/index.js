@@ -950,7 +950,9 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 ` + "- A timeout is unknown, not failed. Pass a `clientSwapId` and retry the SAME request, " + "including the same slippage. The replay returns the stored result: the original success, " + "or a stored error. An indeterminate first leg comes back as SWAP_FAILED, retryable false, " + "with the signature in the message -- verify that on-chain before a new id. A swap that is " + "still running, with no stored outcome, is a retryable conflict. A different body under the " + "same id is rejected. A confirmed first leg is replayed with its hash, retryable false, and " + "is not run again. retryable true on the first LEG2_FAILED means send leg 2 as a new request. " + `Omitting the id never coalesces -- do not retry a timed-out call that had no id.
 ` + "- If a bridge times out, check the returned status URLs rather than treating the funds " + `as arrived or lost.
 
-` + 'Amounts are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for ' + "callers that already compute them. Test-environment keys are refused: every leg settles " + "on a live venue.",
+` + 'Amounts are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for ' + "callers that already compute them. Test-environment keys are refused: every leg settles " + `on a live venue.
+
+` + "This tool spends the embedded wallets. A TEE wallet also bridges, from SOL or USDC to ETH " + "or USDG or back, but only into the same key's TEE wallet on the other chain, with no Candle " + "fee: that runs through `candle swap` with the wallet's bound key, not this tool.",
     inputSchema: swapShape
   }, async (args) => callAndRelay("candle_swap", args, cfg));
   register("candle_transfer", {

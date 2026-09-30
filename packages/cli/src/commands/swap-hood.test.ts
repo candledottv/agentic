@@ -385,7 +385,8 @@ describe("H7: chain selection", () => {
   })
 
   const beforeAnyRequest: Array<[string, string[]]> = [
-    ["a Solana asset against a Hood asset", ["swap", "SOL", "USDG", "--amount", "1"]],
+    // SOL against USDG is a bridge since Ember 4c (R1); CNDL is not a bridge asset.
+    ["a Solana asset against a Hood asset", ["swap", "CNDL", "USDG", "--amount", "1"]],
     ["a Hood token against a Solana mint", ["swap", token, solanaTee, "--amount", "1"]],
     ["a 0x --wallet on a Solana pair", ["swap", "SOL", "USDC", "--amount", "1", "--wallet", hoodTee]],
   ]

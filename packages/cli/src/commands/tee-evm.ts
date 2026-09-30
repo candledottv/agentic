@@ -28,6 +28,7 @@
  */
 
 import { parseArgs } from "../args"
+import { bridgeDisableWarnings, bridgeSweepGate, EMERGENCY_BRIDGE_NOTE } from "../bridge"
 import { apiRequest } from "../client"
 import { type CommandContext, resolveApiKey } from "../deps"
 import {
@@ -354,11 +355,20 @@ async function sweepEvmWallet(input: SweepInput): Promise<number> {
     }
     server = await readHoodTeeServer(ctx, entry)
     assertWalletLockFree(entry, server.lock, deps.now())
+    // Ember 4c (R4): a bridge still paying into or refunding to this wallet refuses the sweep inside
+    // its two hours, before anything is signed. `uncertain` and an unread state are warnings.
+    const bridgeGate = bridgeSweepGate(address, server.bridges)
+    if (bridgeGate.refusal) {
+      writeLocalFailure(deps, bridgeGate.refusal, json)
+      return 1
+    }
+    for (const warning of bridgeGate.warnings) note(warning)
   }
   if (emergency) {
     note(
       "EMERGENCY SWEEP: no Candle API call is made. Remote signing authority is NOT verified denied, and a still-authorized agent signer can race these transactions.",
     )
+    note(EMERGENCY_BRIDGE_NOTE)
   }
 
   // ── Pending transactions an earlier run left (SC-06): resolve before anything new is signed. ──
@@ -1000,6 +1010,8 @@ export async function teeDisableEvm(args: string[], ctx: CommandContext): Promis
       )
     }
     const outcome = readDisableOutcome(result.body)
+    // Ember 4c (4c-ED-10): disabling is never blocked by a bridge; it says the fill or refund still lands.
+    for (const warning of bridgeDisableWarnings(entry.address, result.body)) deps.stderr.write(`${warning}\n`)
     if (json) {
       writeJson(deps, { address: entry.address, linkedWalletId, ...(result.body as object) })
       return outcome.complete ? 0 : 3

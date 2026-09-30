@@ -18,6 +18,13 @@
  */
 import { base58 } from "@scure/base"
 import { isUsageError, type ParsedArgs, parseArgs } from "../args"
+import {
+  bridgeDisableWarnings,
+  bridgeSweepGate,
+  EMERGENCY_BRIDGE_NOTE,
+  type WalletBridge,
+  walletBridgesOf,
+} from "../bridge"
 import { apiRequest } from "../client"
 import type { CommandContext, Deps } from "../deps"
 import { resolveApiKey } from "../deps"
@@ -966,6 +973,8 @@ interface LifecycleResponse {
   vaultDestination?: string | null
   revokedAt?: number | null
   sweptAt?: number | null
+  /** Ember 4c (4c-ED-10): open bridges into or out of the wallet; null when unread, absent on an older API. */
+  bridges?: unknown
 }
 
 async function readLifecycle(
@@ -1203,6 +1212,8 @@ export async function teeDisable(args: string[], ctx: CommandContext): Promise<n
       return 1
     }
     const outcome = readDisableOutcome(result.body)
+    // Ember 4c (4c-ED-10): disabling is never blocked by a bridge; it says the fill or refund still lands.
+    for (const warning of bridgeDisableWarnings(address, result.body)) deps.stderr.write(`${warning}\n`)
 
     if (json) {
       deps.stdout.write(
@@ -1418,6 +1429,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
     let serverState = "local-only"
     let apiKey: string | undefined
     let unreadReason: string | null = null
+    let bridges: WalletBridge[] | null | undefined
     if (entry.linkedWalletId) {
       apiKey = await resolveApiKey(deps, ctx.profile)
       if (!apiKey) unreadReason = "no API key available"
@@ -1426,7 +1438,10 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
         if (!lifecycle.ok) {
           unreadReason = `the lifecycle read failed: ${lifecycle.result.message ?? `HTTP ${lifecycle.result.status}`}`
           if (lifecycle.result.status === 401 || lifecycle.result.status === 403) apiKey = undefined
-        } else serverState = lifecycle.body.state ?? "unknown"
+        } else {
+          serverState = lifecycle.body.state ?? "unknown"
+          bridges = walletBridgesOf(lifecycle.body)
+        }
       }
       if (unreadReason !== null) {
         serverState = "unread"
@@ -1482,6 +1497,19 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
         )
         return 1
       }
+    }
+    // Ember 4c (R4): a bridge still paying into or refunding to this wallet refuses an ordinary sweep
+    // inside its two hours, before anything is signed. `uncertain` and an unread state are warnings.
+    // An emergency sweep is never blocked; it says a bridge may still land.
+    const bridgeGate = bridgeSweepGate(address, bridges)
+    if (bridgeGate.refusal && !emergency) {
+      writeLocalFailure(deps, bridgeGate.refusal, json)
+      return 1
+    }
+    for (const warning of bridgeGate.warnings) (json ? deps.stderr : deps.stdout).write(`${warning}\n`)
+    if (emergency) {
+      if (bridgeGate.refusal) (json ? deps.stderr : deps.stdout).write(`Warning: ${bridgeGate.refusal.message}\n`)
+      ;(json ? deps.stderr : deps.stdout).write(`${EMERGENCY_BRIDGE_NOTE}\n`)
     }
     if (emergency && !json) {
       deps.stdout.write(

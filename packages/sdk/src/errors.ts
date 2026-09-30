@@ -29,6 +29,21 @@ export interface CandleErrorPayload {
   retryable?: boolean
 }
 
+/**
+ * The codes a TEE bridge between Solana and Hood adds (Ember Phase 4c). `code` stays an open
+ * string; these are named so a caller can branch on them without spelling them.
+ *
+ * - `BRIDGE_DESTINATION_MISSING` (400): this key has no eligible TEE wallet on the other chain, or
+ *   more than one and no `toWalletId`. Promote one onto the key, or name it.
+ * - `RELAY_STEP_REFUSED` (502): Relay answered with a deposit Candle will not sign. Nothing was
+ *   stamped; a later quote may pass.
+ * - `BRIDGE_IN_FLIGHT` (409, or 503 when the state could not be read): a bridge into or out of
+ *   the wallet is still open inside its two hours, so the sweep is not recorded. Retry once
+ *   `GET /api/v1/agent/swap/jobs/{clientTradeId}` shows it closed or the two hours pass.
+ */
+export const BRIDGE_ERROR_CODES = ["BRIDGE_DESTINATION_MISSING", "RELAY_STEP_REFUSED", "BRIDGE_IN_FLIGHT"] as const
+export type BridgeErrorCode = (typeof BRIDGE_ERROR_CODES)[number]
+
 export class CandleApiError extends Error {
   /** The envelope's `error.code`, or `"HTTP_" + status` for non-envelope responses. */
   readonly code: string

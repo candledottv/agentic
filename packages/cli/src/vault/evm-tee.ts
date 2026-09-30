@@ -12,6 +12,7 @@
  * - `appendEvmRecordForTrade`: the one `token` line a landed trade leg appends (the production
  *   `deps.appendEvmRecord`), which never fails the leg.
  */
+import { type WalletBridge, walletBridgesOf } from "../bridge"
 import { apiRequest } from "../client"
 import { type CommandContext, type EvmRecordAppendOutcome, type EvmRecordTokenEntry, resolveApiKey } from "../deps"
 import {
@@ -164,6 +165,11 @@ export interface HoodTeeServerRead {
   /** The server's traded-token list, when the read answered. */
   tradedTokens?: string[]
   tradedTokensTruncated?: boolean
+  /**
+   * Ember 4c (4c-ED-10): open bridges into or out of the wallet. Null when the server could not
+   * read them, absent when the read did not answer or the API predates bridges.
+   */
+  bridges?: WalletBridge[] | null
 }
 
 /**
@@ -217,9 +223,11 @@ export async function readHoodTeeServer(ctx: CommandContext, entry: KeyEntry): P
           (token): token is string => typeof token === "string" && /^0x[0-9a-fA-F]{40}$/.test(token),
         )
       : undefined
+    const bridges = walletBridgesOf(result.body)
     const extras = {
       ...(tradedTokens !== undefined ? { tradedTokens } : {}),
       ...(body.tradedTokensTruncated === true ? { tradedTokensTruncated: true } : {}),
+      ...(bridges !== undefined ? { bridges } : {}),
     }
     if (body.activeOperation === null) return { lock: { state: "free" }, ...extras }
     const op = body.activeOperation

@@ -7614,2357 +7614,6 @@ var init_key_signers = __esm(() => {
   KEY_PREFIX_RE = /^[A-Za-z0-9_-]{8}$/;
 });
 
-// src/solana-alt.ts
-function decodeStrictBase64(text) {
-  const trimmed = text.replace(/[\r\n]+$/, "");
-  if (trimmed.length === 0)
-    throw new TransactionDecodeError("the input is empty");
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed) || trimmed.length % 4 !== 0) {
-    throw new TransactionDecodeError("the input is not strict base64");
-  }
-  const bytes = Buffer.from(trimmed, "base64");
-  if (bytes.toString("base64") !== trimmed) {
-    throw new TransactionDecodeError("the input is not canonical base64");
-  }
-  return new Uint8Array(bytes);
-}
-function fail(detail) {
-  throw new TransactionDecodeError(detail);
-}
-function u82(r) {
-  const value = r.bytes[r.at];
-  if (value === undefined)
-    fail("the transaction ends early");
-  r.at += 1;
-  return value;
-}
-function shortvec2(r) {
-  let value = 0;
-  for (let i = 0;i < 3; i++) {
-    const byte = u82(r);
-    value |= (byte & 127) << 7 * i;
-    if ((byte & 128) === 0) {
-      if (i === 2 && byte > 3)
-        fail("a compact length is out of range");
-      return value;
-    }
-  }
-  fail("a compact length is malformed");
-}
-function take(r, n) {
-  if (r.at + n > r.bytes.length)
-    fail("the transaction ends early");
-  const out = r.bytes.subarray(r.at, r.at + n);
-  r.at += n;
-  return out;
-}
-function indexes(r) {
-  const count = shortvec2(r);
-  const out = [];
-  for (let i = 0;i < count; i++)
-    out.push(u82(r));
-  return out;
-}
-function decodeTransaction(wire) {
-  const r = { bytes: wire, at: 0 };
-  const signatureCount = shortvec2(r);
-  const signatures = [];
-  for (let i = 0;i < signatureCount; i++)
-    signatures.push(Uint8Array.from(take(r, SIGNATURE_BYTES)));
-  const messageStart = r.at;
-  const prefix = u82(r);
-  let version;
-  if ((prefix & 128) === 0) {
-    version = "legacy";
-    r.at = messageStart;
-  } else {
-    const found = prefix & 127;
-    if (found !== 0)
-      fail(`message version ${found} is not supported (legacy and v0 only)`);
-    version = 0;
-  }
-  const numRequiredSignatures = u82(r);
-  const numReadonlySigned = u82(r);
-  const numReadonlyUnsigned = u82(r);
-  const staticCount = shortvec2(r);
-  const staticKeys = [];
-  for (let i = 0;i < staticCount; i++)
-    staticKeys.push(encodePubkey(Uint8Array.from(take(r, PUBKEY_BYTES))));
-  const recentBlockhash = base58.encode(Uint8Array.from(take(r, BLOCKHASH_BYTES)));
-  const instructionCount = shortvec2(r);
-  const instructions = [];
-  for (let i = 0;i < instructionCount; i++) {
-    const programIdIndex = u82(r);
-    const accountIndexes = indexes(r);
-    const dataLength = shortvec2(r);
-    instructions.push({ programIdIndex, accountIndexes, data: Uint8Array.from(take(r, dataLength)) });
-  }
-  const lookups = [];
-  if (version === 0) {
-    const lookupCount = shortvec2(r);
-    for (let i = 0;i < lookupCount; i++) {
-      const table = encodePubkey(Uint8Array.from(take(r, PUBKEY_BYTES)));
-      const writableIndexes = indexes(r);
-      const readonlyIndexes = indexes(r);
-      lookups.push({ table, writableIndexes, readonlyIndexes });
-    }
-  }
-  if (r.at !== wire.length)
-    fail(`${wire.length - r.at} byte(s) remain after the transaction`);
-  if (signatureCount !== numRequiredSignatures) {
-    fail(`the transaction carries ${signatureCount} signature slot(s) but its message requires ${numRequiredSignatures}`);
-  }
-  if (numRequiredSignatures === 0)
-    fail("the message requires no signature, so it has no fee payer");
-  if (numRequiredSignatures > staticCount)
-    fail("the message requires more signatures than it has static keys");
-  if (numReadonlySigned > numRequiredSignatures)
-    fail("the message's readonly-signed count exceeds its signer count");
-  if (numReadonlyUnsigned > staticCount - numRequiredSignatures) {
-    fail("the message's readonly-unsigned count exceeds its unsigned key count");
-  }
-  if (version === 0 && lookups.length > 0 && numReadonlySigned === numRequiredSignatures) {}
-  const loadedCount = lookups.reduce((n, l) => n + l.writableIndexes.length + l.readonlyIndexes.length, 0);
-  const totalKeys = staticCount + loadedCount;
-  for (const [i, ix] of instructions.entries()) {
-    if (ix.programIdIndex >= totalKeys)
-      fail(`instruction ${i} names a program index outside the account list`);
-    if (ix.programIdIndex >= staticCount)
-      fail(`instruction ${i} names a program from a lookup table, which is not allowed`);
-    for (const index of ix.accountIndexes) {
-      if (index >= totalKeys)
-        fail(`instruction ${i} names an account index outside the account list`);
-    }
-  }
-  const seenTables = new Set;
-  for (const lookup of lookups) {
-    if (seenTables.has(lookup.table))
-      fail(`lookup table ${lookup.table} is named twice`);
-    seenTables.add(lookup.table);
-    if (lookup.writableIndexes.length === 0 && lookup.readonlyIndexes.length === 0) {
-      fail(`lookup table ${lookup.table} is named but loads nothing`);
-    }
-  }
-  return {
-    signatures,
-    message: {
-      version,
-      numRequiredSignatures,
-      numReadonlySigned,
-      numReadonlyUnsigned,
-      staticKeys,
-      recentBlockhash,
-      instructions,
-      lookups,
-      bytes: Uint8Array.from(wire.subarray(messageStart))
-    }
-  };
-}
-function encodeShortvec(n) {
-  const out = [];
-  let rem = n;
-  for (;; ) {
-    let elem = rem & 127;
-    rem >>= 7;
-    if (rem === 0) {
-      out.push(elem);
-      return new Uint8Array(out);
-    }
-    elem |= 128;
-    out.push(elem);
-  }
-}
-function attachSignatures(tx, signed) {
-  const slots = tx.signatures.map((existing, i) => signed.get(i) ?? existing);
-  for (const [i, slot] of slots.entries()) {
-    if (slot.length !== SIGNATURE_BYTES)
-      throw new Error(`signature slot ${i} is not ${SIGNATURE_BYTES} bytes`);
-  }
-  const count = encodeShortvec(slots.length);
-  const out = new Uint8Array(count.length + slots.length * SIGNATURE_BYTES + tx.message.bytes.length);
-  out.set(count, 0);
-  let at = count.length;
-  for (const slot of slots) {
-    out.set(slot, at);
-    at += SIGNATURE_BYTES;
-  }
-  out.set(tx.message.bytes, at);
-  return out;
-}
-function parseLookupTableAddresses(account, table) {
-  if (account === null)
-    throw new LookupTableError(`lookup table ${table} does not exist`);
-  if (account.owner !== ADDRESS_LOOKUP_TABLE_PROGRAM_ID) {
-    throw new LookupTableError(`${table} is not a lookup table (owned by ${account.owner})`);
-  }
-  const data = account.data;
-  if (data.length < LOOKUP_TABLE_META_SIZE || (data.length - LOOKUP_TABLE_META_SIZE) % PUBKEY_BYTES !== 0) {
-    throw new LookupTableError(`lookup table ${table} has a malformed address list`);
-  }
-  const addresses = [];
-  for (let at = LOOKUP_TABLE_META_SIZE;at < data.length; at += PUBKEY_BYTES) {
-    addresses.push(encodePubkey(data.subarray(at, at + PUBKEY_BYTES)));
-  }
-  return addresses;
-}
-async function resolveCompiledKeys(message, rpc) {
-  const loadedWritable = [];
-  const loadedReadonly = [];
-  if (message.lookups.length > 0) {
-    let accounts;
-    try {
-      accounts = await rpc.getMultipleAccounts(message.lookups.map((lookup) => lookup.table));
-    } catch (error) {
-      if (isRateLimited(error))
-        throw error;
-      throw new LookupTableError(`the lookup table(s) could not be fetched: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    for (const [i, lookup] of message.lookups.entries()) {
-      const addresses = parseLookupTableAddresses(accounts[i] ?? null, lookup.table);
-      const lookupAddress = (index) => {
-        const address = addresses[index];
-        if (address === undefined) {
-          throw new LookupTableError(`lookup table ${lookup.table} has ${addresses.length} address(es) and the message indexes ${index}`);
-        }
-        return address;
-      };
-      for (const index of lookup.writableIndexes)
-        loadedWritable.push(lookupAddress(index));
-      for (const index of lookup.readonlyIndexes)
-        loadedReadonly.push(lookupAddress(index));
-    }
-  }
-  const staticCount = message.staticKeys.length;
-  const keys = [...message.staticKeys, ...loadedWritable, ...loadedReadonly];
-  const isSigner = keys.map((_, i) => i < message.numRequiredSignatures);
-  const isWritable = keys.map((_, i) => {
-    if (i < message.numRequiredSignatures)
-      return i < message.numRequiredSignatures - message.numReadonlySigned;
-    if (i < staticCount)
-      return i < staticCount - message.numReadonlyUnsigned;
-    return i < staticCount + loadedWritable.length;
-  });
-  return { keys, isSigner, isWritable, staticCount };
-}
-async function simulateWithSnapshots(rpc, txBase64, compiled) {
-  const writable = compiled.keys.filter((_, i) => compiled.isWritable[i]);
-  const before = await rpc.getMultipleAccounts(writable);
-  const result = await rpc.simulateTransaction(txBase64, writable);
-  return {
-    result,
-    snapshots: writable.map((address, i) => ({
-      address,
-      before: before[i] ?? null,
-      after: result.accounts[i] ?? null
-    }))
-  };
-}
-function tokenBalanceOf(view) {
-  if (view === null)
-    return;
-  if (view.owner !== TOKEN_PROGRAM_ID && view.owner !== TOKEN_2022_PROGRAM_ID)
-    return;
-  if (view.data.length < TOKEN_ACCOUNT_SIZE)
-    return;
-  const dv = new DataView(view.data.buffer, view.data.byteOffset, view.data.byteLength);
-  return {
-    mint: encodePubkey(view.data.subarray(0, 32)),
-    owner: encodePubkey(view.data.subarray(32, 64)),
-    amount: dv.getBigUint64(64, true),
-    tokenProgram: view.owner
-  };
-}
-function computeDeltas(snapshots) {
-  const sol = [];
-  const tokens = [];
-  for (const snapshot of snapshots) {
-    sol.push({
-      address: snapshot.address,
-      before: snapshot.before?.lamports ?? 0n,
-      after: snapshot.after?.lamports ?? 0n
-    });
-    const pre = tokenBalanceOf(snapshot.before);
-    const post = tokenBalanceOf(snapshot.after);
-    const shape = post ?? pre;
-    if (shape === undefined)
-      continue;
-    tokens.push({
-      account: snapshot.address,
-      owner: shape.owner,
-      mint: shape.mint,
-      tokenProgram: shape.tokenProgram,
-      before: pre?.amount ?? 0n,
-      after: post?.amount ?? 0n
-    });
-  }
-  return { sol, tokens };
-}
-function programNameOf(programId) {
-  switch (programId) {
-    case SYSTEM_PROGRAM_ID:
-      return `System (${programId})`;
-    case TOKEN_PROGRAM_ID:
-      return `Token (${programId})`;
-    case TOKEN_2022_PROGRAM_ID:
-      return `Token-2022 (${programId})`;
-    case ASSOCIATED_TOKEN_PROGRAM_ID:
-      return `Associated Token (${programId})`;
-    case COMPUTE_BUDGET_PROGRAM_ID:
-      return `Compute Budget (${programId})`;
-    case MEMO_PROGRAM_ID:
-      return `Memo (${programId})`;
-    case ADDRESS_LOOKUP_TABLE_PROGRAM_ID:
-      return `Address Lookup Table (${programId})`;
-    default:
-      return programId;
-  }
-}
-var ADDRESS_LOOKUP_TABLE_PROGRAM_ID = "AddressLookupTab1e1111111111111111111111111", COMPUTE_BUDGET_PROGRAM_ID = "ComputeBudget111111111111111111111111111111", MEMO_PROGRAM_ID = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", TransactionDecodeError, LookupTableError, SIGNATURE_BYTES = 64, PUBKEY_BYTES = 32, BLOCKHASH_BYTES = 32, LOOKUP_TABLE_META_SIZE = 56, TOKEN_ACCOUNT_SIZE = 165;
-var init_solana_alt = __esm(() => {
-  init_esm();
-  init_solana_lite();
-  TransactionDecodeError = class TransactionDecodeError extends Error {
-  };
-  LookupTableError = class LookupTableError extends Error {
-  };
-});
-
-// src/lp-close.ts
-function isPositionCandidate(account) {
-  return account.programId === TOKEN_2022_PROGRAM_ID && account.amountRaw === "1" && account.decimals === 0;
-}
-function parseCloseArtifact(body) {
-  if (!body || typeof body !== "object")
-    return;
-  const { transaction, accountKeys } = body;
-  if (typeof transaction !== "string" || transaction.length === 0)
-    return;
-  if (!Array.isArray(accountKeys) || !accountKeys.every((key) => typeof key === "string" && key.length > 0))
-    return;
-  return { transaction, accountKeys };
-}
-function isTokenProgram(owner) {
-  return owner === TOKEN_PROGRAM_ID || owner === TOKEN_2022_PROGRAM_ID;
-}
-function isMintAccount(view) {
-  if (view === null || !isTokenProgram(view.owner))
-    return false;
-  if (view.data.length === MINT_BASE_SIZE)
-    return true;
-  if (view.data.length === MULTISIG_SIZE)
-    return false;
-  return view.data.length > ACCOUNT_TYPE_OFFSET && view.data[ACCOUNT_TYPE_OFFSET] === ACCOUNT_TYPE_MINT;
-}
-function isUnsigned(tx) {
-  return tx.signatures.every((slot) => slot.every((byte) => byte === 0));
-}
-function bytesEqual2(a, b) {
-  return a.length === b.length && a.every((byte, i) => byte === b[i]);
-}
-function allZero(bytes) {
-  return bytes.every((byte) => byte === 0);
-}
-async function verifyCloseArtifact(input) {
-  const { artifact, rpc, tee, vault, nftMint, nftAccount } = input;
-  const refuse2 = (reason) => ({ ok: false, reason });
-  const allowedOwner = (address) => address === tee || address === vault;
-  let tx;
-  try {
-    tx = decodeTransaction(decodeStrictBase64(artifact.transaction));
-  } catch (error) {
-    if (error instanceof TransactionDecodeError)
-      return refuse2(`the close transaction is undecodable: ${error.message}`);
-    return refuse2(`the close transaction could not be read: ${error instanceof Error ? error.message : error}`);
-  }
-  if (tx.message.version !== 0)
-    return refuse2("the close transaction is not a v0 message");
-  if (!isUnsigned(tx))
-    return refuse2("the close transaction already carries a signature; close-build must return it unsigned");
-  if (tx.message.numRequiredSignatures !== 1)
-    return refuse2(`the close transaction requires ${tx.message.numRequiredSignatures} signers; a position close needs only the TEE wallet`);
-  if (tx.message.staticKeys[0] !== tee)
-    return refuse2(`the fee payer is ${tx.message.staticKeys[0]}, not the TEE wallet`);
-  let compiled;
-  try {
-    compiled = await resolveCompiledKeys(tx.message, rpc);
-  } catch (error) {
-    if (error instanceof LookupTableError)
-      return refuse2(`a lookup table could not be resolved: ${error.message}`);
-    return refuse2(`the lookup tables could not be read: ${error instanceof Error ? error.message : error}`);
-  }
-  if (compiled.keys.length !== artifact.accountKeys.length)
-    return refuse2(`the server listed ${artifact.accountKeys.length} account keys and the transaction resolves to ${compiled.keys.length}`);
-  for (const [i, key] of compiled.keys.entries()) {
-    if (artifact.accountKeys[i] !== key)
-      return refuse2(`account key ${i} is ${key} in the transaction and ${artifact.accountKeys[i]} in the server's ordered array`);
-  }
-  let dammCalls = 0;
-  for (const [i, ix] of tx.message.instructions.entries()) {
-    const program = compiled.keys[ix.programIdIndex];
-    const account = (at) => compiled.keys[ix.accountIndexes[at] ?? -1];
-    if (program === undefined || !CLOSE_PROGRAM_ALLOWLIST.has(program))
-      return refuse2(`instruction ${i} calls ${program ?? "an unknown program"}, which a position close never does`);
-    switch (program) {
-      case DAMM_V2_PROGRAM_ID:
-        dammCalls += 1;
-        break;
-      case COMPUTE_BUDGET_PROGRAM_ID:
-        break;
-      case ASSOCIATED_TOKEN_PROGRAM_ID: {
-        const kind = ix.data.length === 0 ? ATA_IX_CREATE : ix.data.length === 1 ? ix.data[0] : -1;
-        if (kind !== ATA_IX_CREATE && kind !== ATA_IX_CREATE_IDEMPOTENT)
-          return refuse2(`instruction ${i} is an Associated Token instruction other than Create, which a close never needs`);
-        if (account(0) !== tee || !allowedOwner(account(2) ?? ""))
-          return refuse2(`instruction ${i} creates a token account for ${account(2) ?? "?"}, not the TEE wallet or its vault`);
-        break;
-      }
-      case TOKEN_PROGRAM_ID:
-      case TOKEN_2022_PROGRAM_ID: {
-        if (ix.data[0] !== TOKEN_IX_CLOSE_ACCOUNT || ix.data.length !== 1)
-          return refuse2(`instruction ${i} is a token instruction other than CloseAccount, which a close never issues at the top level`);
-        if (account(1) !== tee || account(2) !== tee)
-          return refuse2(`instruction ${i} closes a token account to ${account(1) ?? "?"}, not the TEE wallet`);
-        break;
-      }
-      default:
-        return refuse2(`instruction ${i} is a top-level System instruction, which a close never issues`);
-    }
-  }
-  if (dammCalls === 0)
-    return refuse2("the transaction calls no DAMM v2 instruction, so it cannot close a position");
-  let simulation;
-  try {
-    simulation = await simulateWithSnapshots(rpc, artifact.transaction, compiled);
-  } catch (error) {
-    return refuse2(`the simulation could not be run: ${error instanceof Error ? error.message : error}`);
-  }
-  if (simulation.result.err !== null && simulation.result.err !== undefined)
-    return refuse2(`the simulation failed: ${JSON.stringify(simulation.result.err)}`);
-  const deltas = computeDeltas(simulation.snapshots);
-  const postState = new Map(simulation.snapshots.map((snapshot) => [snapshot.address, snapshot.after]));
-  for (const token of deltas.tokens) {
-    if (token.after > token.before && !allowedOwner(token.owner))
-      return refuse2(`${token.owner} would receive ${token.after - token.before} raw of ${token.mint} in account ${token.account}`);
-  }
-  for (const sol of deltas.sol) {
-    if (sol.after <= sol.before)
-      continue;
-    if (allowedOwner(sol.address))
-      continue;
-    const balance = tokenBalanceOf(postState.get(sol.address) ?? null);
-    if (balance !== undefined && allowedOwner(balance.owner))
-      continue;
-    return refuse2(`${sol.address} would receive ${sol.after - sol.before} lamports`);
-  }
-  const nftSnapshot = simulation.snapshots.find((snapshot) => snapshot.address === nftAccount);
-  if (nftSnapshot === undefined)
-    return refuse2(`the position NFT account ${nftAccount} is not written by this transaction`);
-  const nftAfter = tokenBalanceOf(nftSnapshot.after);
-  if (nftAfter !== undefined && nftAfter.amount !== 0n)
-    return refuse2(`the position NFT account ${nftAccount} still holds ${nftAfter.amount} after the simulation`);
-  for (const { address, before, after } of simulation.snapshots) {
-    if (allowedOwner(address)) {
-      if (after === null || after.owner !== SYSTEM_PROGRAM_ID || after.data.length !== 0)
-        return refuse2(`${address === tee ? "the TEE wallet" : "the vault"} would no longer be a plain System account after this transaction`);
-    }
-    if (after === null)
-      continue;
-    if (before !== null && after.owner !== before.owner)
-      return refuse2(`writable account ${address} would change owner from ${before.owner} to ${after.owner}`);
-    if (before !== null) {
-      const controlled = tokenBalanceOf(before);
-      if (controlled !== undefined && allowedOwner(controlled.owner)) {
-        if (after.data.length < TOKEN_ACCOUNT_SIZE2)
-          return refuse2(`token account ${address} would no longer decode as a token account`);
-        for (const [start, end, what] of CONTROL_RANGES) {
-          if (!bytesEqual2(before.data.subarray(start, end), after.data.subarray(start, end)))
-            return refuse2(`token account ${address} would change its ${what}, which a close never does`);
-        }
-        continue;
-      }
-    }
-    const created = before === null ? tokenBalanceOf(after) : undefined;
-    if (created !== undefined) {
-      if (!allowedOwner(created.owner))
-        return refuse2(`created token account ${address} would be controlled by ${created.owner}`);
-      if (!allZero(after.data.subarray(72, 108)) || after.data[108] !== TOKEN_ACCOUNT_STATE_INITIALIZED || !allZero(after.data.subarray(121, 129)) || !allZero(after.data.subarray(129, 165)))
-        return refuse2(`created token account ${address} would start with a delegate, a close authority, or a frozen state`);
-    }
-  }
-  const infos = new Map;
-  const infoOf = async (address) => {
-    if (!infos.has(address))
-      infos.set(address, await rpc.getAccountInfo(address));
-    return infos.get(address) ?? null;
-  };
-  const canonical = new Set;
-  for (const key of compiled.keys) {
-    const view = await infoOf(key);
-    if (!isMintAccount(view) || view === null)
-      continue;
-    const mint = decodePubkey(key);
-    const program = decodePubkey(view.owner);
-    canonical.add(encodePubkey(associatedTokenAddress(decodePubkey(tee), mint, program)));
-    canonical.add(encodePubkey(associatedTokenAddress(decodePubkey(vault), mint, program)));
-  }
-  for (const [i, key] of compiled.keys.entries()) {
-    if (!compiled.isWritable[i])
-      continue;
-    const view = await infoOf(key);
-    if (view === null) {
-      if (canonical.has(key))
-        continue;
-      return refuse2(`writable account ${key} does not exist and is not a TEE or vault associated token account for a mint this transaction names`);
-    }
-    if (isTokenProgram(view.owner)) {
-      if (key === nftMint)
-        continue;
-      const balance = tokenBalanceOf(view);
-      if (balance === undefined)
-        return refuse2(`writable account ${key} is owned by a token program but is not a token account`);
-      if (allowedOwner(balance.owner) || key === nftAccount)
-        continue;
-      const authority = await infoOf(balance.owner);
-      if (authority !== null && authority.owner === DAMM_V2_PROGRAM_ID)
-        continue;
-      return refuse2(`writable token account ${key} is controlled by ${balance.owner}, which is neither this wallet, its vault, nor a DAMM v2 pool`);
-    }
-    if (view.owner === SYSTEM_PROGRAM_ID) {
-      if (allowedOwner(key))
-        continue;
-      return refuse2(`writable system account ${key} is neither the TEE wallet nor its vault`);
-    }
-    if (view.owner !== DAMM_V2_PROGRAM_ID)
-      return refuse2(`writable account ${key} is owned by ${view.owner}, not DAMM v2`);
-  }
-  return { ok: true, tx, compiled, simulation };
-}
-function formatSol(lamports) {
-  const negative = lamports < 0n;
-  const abs = negative ? -lamports : lamports;
-  const whole = abs / 1000000000n;
-  const frac = (abs % 1000000000n).toString().padStart(9, "0").replace(/0+$/, "");
-  return `${negative ? "-" : ""}${whole}${frac ? `.${frac}` : ""} SOL`;
-}
-function describeClose(input) {
-  const { verdict, tee, vault, nftMint, nftAccount } = input;
-  const { tx, compiled, simulation } = verdict;
-  const lines = [];
-  lines.push(`message     v0, ${tx.message.instructions.length} instruction(s), ${compiled.keys.length} account(s)${tx.message.lookups.length > 0 ? ` (${tx.message.lookups.length} lookup table(s) resolved)` : ""}, blockhash ${tx.message.recentBlockhash}`);
-  lines.push(`fee payer   ${compiled.keys[0]} (this TEE wallet)`);
-  lines.push(`position    NFT mint ${nftMint}, account ${nftAccount}`);
-  const programs = [...new Set(tx.message.instructions.map((ix) => compiled.keys[ix.programIdIndex] ?? "?"))];
-  for (const program of programs)
-    lines.push(`program     ${program === DAMM_V2_PROGRAM_ID ? `Meteora DAMM v2 (${program})` : programNameOf(program)}`);
-  const deltas = computeDeltas(simulation.snapshots);
-  const who = (address) => address === tee ? "wallet" : address === vault ? "vault" : address;
-  for (const address of [tee, vault]) {
-    const sol = deltas.sol.find((delta) => delta.address === address);
-    if (sol && sol.after !== sol.before)
-      lines.push(`${who(address).padEnd(11)} ${formatSol(sol.before)} -> ${formatSol(sol.after)} (${sol.after >= sol.before ? "+" : ""}${formatSol(sol.after - sol.before)})`);
-    for (const token of deltas.tokens.filter((delta) => delta.owner === address && delta.after !== delta.before)) {
-      lines.push(`${who(address).padEnd(11)} ${token.mint}: ${token.before} -> ${token.after} raw (${token.after >= token.before ? "+" : ""}${token.after - token.before}) in ${token.account}${token.account === nftAccount ? " (position NFT, burned)" : ""}`);
-    }
-  }
-  const nft = simulation.snapshots.find((snapshot) => snapshot.address === nftAccount);
-  if (nft && nft.after === null)
-    lines.push(`position    NFT account ${nftAccount} is closed by this transaction`);
-  const others = deltas.tokens.filter((token) => token.owner !== tee && token.owner !== vault && token.after !== token.before);
-  for (const token of others)
-    lines.push(`${token.owner === undefined ? "?" : "pool"}        ${token.mint}: ${token.before} -> ${token.after} raw in ${token.account} (authority ${token.owner})`);
-  lines.push("checked     ordered keys, programs, simulation, positive deltas, control, writable accounts: all passed");
-  lines.push("note        the simulation is evidence, not a guarantee: a program can behave differently once signed");
-  return lines;
-}
-var DAMM_V2_PROGRAM_ID = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG", CLOSE_PROGRAM_ALLOWLIST, DAMM_POSITION_CLOSE_UNAVAILABLE = "DAMM_POSITION_CLOSE_UNAVAILABLE", DAMM_CLOSE_TRANSACTION_REFUSED = "DAMM_CLOSE_TRANSACTION_REFUSED", MINT_BASE_SIZE = 82, ACCOUNT_TYPE_OFFSET = 165, ACCOUNT_TYPE_MINT = 1, MULTISIG_SIZE = 355, TOKEN_ACCOUNT_SIZE2 = 165, TOKEN_ACCOUNT_STATE_INITIALIZED = 1, CONTROL_RANGES, TOKEN_IX_CLOSE_ACCOUNT = 9, ATA_IX_CREATE = 0, ATA_IX_CREATE_IDEMPOTENT = 1;
-var init_lp_close = __esm(() => {
-  init_solana_alt();
-  init_solana_lite();
-  CLOSE_PROGRAM_ALLOWLIST = new Set([
-    DAMM_V2_PROGRAM_ID,
-    TOKEN_PROGRAM_ID,
-    TOKEN_2022_PROGRAM_ID,
-    ASSOCIATED_TOKEN_PROGRAM_ID,
-    COMPUTE_BUDGET_PROGRAM_ID,
-    SYSTEM_PROGRAM_ID
-  ]);
-  CONTROL_RANGES = [
-    [0, 32, "mint"],
-    [32, 64, "authority"],
-    [72, 108, "delegate"],
-    [108, 109, "state"],
-    [121, 129, "delegated amount"],
-    [129, 165, "close authority"]
-  ];
-});
-
-// src/solana-endpoint.ts
-function validateSolanaRpcUrl(url, source) {
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return `${source} is not a valid URL`;
-  }
-  const local = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
-  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && local)) {
-    return `${source} must be https:// (plain http is allowed only for 127.0.0.1 / localhost).`;
-  }
-  return;
-}
-function sourceLabel(source, ctx) {
-  if (source === "flag")
-    return "--rpc-url";
-  if (source === "env")
-    return RPC_URL_ENV;
-  return `profile ${ctx.profile}'s rpcUrl`;
-}
-function describeSource(endpoint, ctx) {
-  if (endpoint.source === "flag")
-    return "--rpc-url";
-  if (endpoint.source === "env")
-    return RPC_URL_ENV;
-  if (endpoint.source === "profile")
-    return `profile ${ctx.profile}`;
-  return "public default";
-}
-function resolveSolanaEndpoint(ctx, flag, config) {
-  const profileUrl = ctx.profile !== undefined && config.profiles !== undefined && Object.hasOwn(config.profiles, ctx.profile) ? config.profiles[ctx.profile]?.rpcUrl?.trim() || undefined : undefined;
-  const candidates = [
-    ["flag", flag],
-    ["env", ctx.deps.env[RPC_URL_ENV]?.trim() || undefined],
-    ["profile", profileUrl]
-  ];
-  for (const [source, url] of candidates) {
-    if (url === undefined)
-      continue;
-    const fault = validateSolanaRpcUrl(url, sourceLabel(source, ctx));
-    if (fault !== undefined)
-      return { error: fault };
-    return { url, host: new URL(url).host, source };
-  }
-  return { url: PUBLIC_SOLANA_RPC, host: PUBLIC_SOLANA_RPC_HOST, source: "default" };
-}
-function flagEndpoint(url) {
-  return { url, host: new URL(url).host, source: "flag" };
-}
-function profileSetCommand(profile) {
-  return `candle profile set ${profile} --rpc-url ${RPC_PLACEHOLDER}`;
-}
-function rpcFixLines(ctx) {
-  if (ctx.profile !== undefined) {
-    return [profileSetCommand(ctx.profile), `or, for one command, --rpc-url ${RPC_PLACEHOLDER} or ${RPC_URL_ENV}`];
-  }
-  return [
-    `--rpc-url ${RPC_PLACEHOLDER} on this command, or ${RPC_URL_ENV} for every command`,
-    "or sign in (candle auth login) to store one per profile"
-  ];
-}
-function publicRpcNoticeLines(ctx) {
-  const first = `Using the public Solana RPC, ${PUBLIC_SOLANA_RPC_HOST}. It rate-limits heavily, and it sees every address this CLI asks it about.`;
-  const last = "This notice is shown once on this machine.";
-  if (ctx.profile !== undefined) {
-    return [
-      first,
-      `Set your own RPC for this profile: ${profileSetCommand(ctx.profile)}`,
-      `Or for one command: --rpc-url ${RPC_PLACEHOLDER}, or ${RPC_URL_ENV}.`,
-      last
-    ];
-  }
-  return [
-    first,
-    `Set your own RPC for one command with --rpc-url ${RPC_PLACEHOLDER}, or for every command with ${RPC_URL_ENV}.`,
-    "Or sign in (candle auth login) to store one per profile.",
-    last
-  ];
-}
-async function maybeWritePublicRpcNotice(ctx) {
-  let config = {};
-  try {
-    config = await ctx.deps.readConfig();
-  } catch {}
-  if (config.publicRpcNotice?.shownAt !== undefined)
-    return;
-  for (const line of publicRpcNoticeLines(ctx))
-    ctx.deps.stderr.write(`${line}
-`);
-  try {
-    await ctx.deps.writeConfig({ publicRpcNotice: { shownAt: ctx.deps.now() } });
-  } catch {}
-}
-function hostLine(endpoint, ctx) {
-  return `Solana RPC: ${endpoint.host} (${describeSource(endpoint, ctx)})`;
-}
-function disclosing(rpc, disclose) {
-  const wrapped = {};
-  for (const key of Object.keys(rpc)) {
-    const method = rpc[key];
-    if (typeof method !== "function")
-      continue;
-    wrapped[key] = async (...args) => {
-      await disclose();
-      return method(...args);
-    };
-  }
-  return wrapped;
-}
-function solanaClientFor(ctx, endpoint) {
-  let disclosed = false;
-  const disclose = async () => {
-    if (disclosed)
-      return;
-    disclosed = true;
-    if (endpoint.source === "default")
-      await maybeWritePublicRpcNotice(ctx);
-    ctx.deps.stderr.write(`${hostLine(endpoint, ctx)}
-`);
-  };
-  return {
-    endpoint,
-    rpc: disclosing(createSolanaRpc(endpoint.url, ctx.deps.fetch, ctx.deps.sleep), disclose),
-    disclose,
-    async read(read) {
-      try {
-        return await read();
-      } catch (error) {
-        if (isRateLimited(error))
-          throw rpcRateLimitedError(ctx, endpoint.host, error);
-        throw error;
-      }
-    }
-  };
-}
-async function openSolanaClient(ctx, flag) {
-  const endpoint = resolveSolanaEndpoint(ctx, flag, await ctx.deps.readConfig());
-  if ("error" in endpoint)
-    return endpoint;
-  return solanaClientFor(ctx, endpoint);
-}
-function fixSuggestion(ctx, lines) {
-  if (ctx.json)
-    return lines.join(`
-`);
-  const [first, ...rest] = lines;
-  return [`Fix: ${first}`, ...rest.map((line) => `     ${line}`)].join(`
-`);
-}
-function rateLimitedSuggestion(ctx) {
-  return fixSuggestion(ctx, rpcFixLines(ctx));
-}
-function rateLimitedMessage(host, error) {
-  return `The Solana RPC at ${host} is rate-limiting this CLI (${describeRateLimit(error)}, retried once). Nothing was signed or sent.`;
-}
-function rpcRateLimitedError(ctx, host, error) {
-  return new VaultError("RPC_RATE_LIMITED", rateLimitedMessage(host, error), {
-    suggestion: rateLimitedSuggestion(ctx),
-    exitCode: 1
-  });
-}
-function postSignatureFixLines(ctx) {
-  const lines = rpcFixLines(ctx);
-  return ctx.profile === undefined ? lines : lines.slice(0, 1);
-}
-function postSignatureRateLimitMessage(signature) {
-  return `The RPC rate-limited this CLI after the transaction was signed. It may still land: check ${signature} before anything else.`;
-}
-function postSignatureSuggestion(ctx) {
-  return fixSuggestion(ctx, postSignatureFixLines(ctx));
-}
-function notePostSignatureRateLimit(ctx, signature) {
-  const [first, ...rest] = postSignatureFixLines(ctx);
-  ctx.deps.stderr.write(`${postSignatureRateLimitMessage(signature)}
-`);
-  ctx.deps.stderr.write(`Fix: ${first}
-`);
-  for (const line of rest)
-    ctx.deps.stderr.write(`     ${line}
-`);
-}
-function describeRpcFailure(error) {
-  if (error instanceof SolanaRpcError)
-    return error.message;
-  if (error instanceof Error)
-    return error.message.replace(/https?:\/\/\S+/g, "<rpc>");
-  return String(error);
-}
-function rateLimitedReadFailure(ctx, error) {
-  return `RPC_RATE_LIMITED (${describeRateLimit(error)}, retried once). Fix: ${rpcFixLines(ctx).join(", ")}`;
-}
-var PUBLIC_SOLANA_RPC = "https://api.mainnet-beta.solana.com", PUBLIC_SOLANA_RPC_HOST = "api.mainnet-beta.solana.com", RPC_URL_ENV = "CANDLE_SOLANA_RPC_URL", RPC_PLACEHOLDER = "https://<your-rpc>";
-var init_solana_endpoint = __esm(() => {
-  init_solana_lite();
-  init_errors();
-});
-
-// src/sweep-pending.ts
-function classifyStatus(status) {
-  if (status === null || status === undefined)
-    return { kind: "missing" };
-  if (status.confirmationStatus === "finalized") {
-    return status.err === null || status.err === undefined ? { kind: "finalized" } : { kind: "failed", err: status.err };
-  }
-  return { kind: "nonfinal", confirmationStatus: status.confirmationStatus, err: status.err };
-}
-function describe(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-async function resolvePending(reads, pending) {
-  let first;
-  try {
-    first = classifyStatus(await reads.status(pending.signature));
-  } catch (error) {
-    return { kind: "uncertain", detail: `status read failed (${describe(error)})` };
-  }
-  const settled = settle(first, pending.signature);
-  if (settled)
-    return settled;
-  if (first.kind === "nonfinal") {
-    return {
-      kind: "uncertain",
-      detail: `observed ${first.confirmationStatus ?? "unknown"}${first.err !== null && first.err !== undefined ? ` with error ${JSON.stringify(first.err)}` : ""}, not yet finalized`
-    };
-  }
-  let valid;
-  try {
-    valid = await reads.blockhashValid(pending.blockhash);
-  } catch (error) {
-    return { kind: "uncertain", detail: `not found, and blockhash validity is unknown (${describe(error)})` };
-  }
-  if (valid)
-    return { kind: "uncertain", detail: "not found yet; its blockhash is still valid, so it may still land" };
-  let second;
-  try {
-    second = classifyStatus(await reads.status(pending.signature));
-  } catch (error) {
-    return { kind: "uncertain", detail: `blockhash expired but the confirming status read failed (${describe(error)})` };
-  }
-  const settledLate = settle(second, pending.signature);
-  if (settledLate)
-    return settledLate;
-  if (second.kind === "nonfinal") {
-    return {
-      kind: "uncertain",
-      detail: `observed ${second.confirmationStatus ?? "unknown"} after its blockhash expired, not yet finalized`
-    };
-  }
-  return { kind: "expired", detail: `never observed and its blockhash is no longer valid: it cannot land` };
-}
-function settle(observation, signature) {
-  if (observation.kind === "finalized")
-    return { kind: "finalized" };
-  if (observation.kind === "failed") {
-    return { kind: "failed", detail: `transaction ${signature} failed on chain: ${JSON.stringify(observation.err)}` };
-  }
-  return null;
-}
-
-// src/token-2022.ts
-function readKey(data, offset) {
-  const bytes = data.subarray(offset, offset + 32);
-  return bytes.some((b) => b !== 0) ? encodePubkey(bytes) : undefined;
-}
-function readFeeSchedule(view, offset) {
-  const basisPoints = view.getUint16(offset + 16, true);
-  if (basisPoints > 1e4)
-    throw new MintReadError("Invalid transfer fee rate");
-  return {
-    epoch: view.getBigUint64(offset, true),
-    maximumFeeRaw: view.getBigUint64(offset + 8, true),
-    basisPoints
-  };
-}
-function parseMintAccount(mint, owner, data) {
-  if (data.length < MINT_BASE_SIZE2 || data[MINT_IS_INITIALIZED_OFFSET] !== 1) {
-    throw new MintReadError(`${mint} is not an initialized mint account`);
-  }
-  const decimals = data[MINT_DECIMALS_OFFSET];
-  if (decimals === undefined)
-    throw new MintReadError(`${mint} is not an initialized mint account`);
-  const profile = {
-    mint,
-    tokenProgram: owner,
-    token2022: owner === TOKEN_2022_PROGRAM_ID,
-    decimals,
-    nonTransferable: false,
-    defaultFrozen: false,
-    paused: false,
-    risks: []
-  };
-  if (!profile.token2022 || data.length === MINT_BASE_SIZE2)
-    return profile;
-  if (data.length < TLV_START || data.length === MULTISIG_SIZE2 || data[ACCOUNT_TYPE_OFFSET2] !== 1) {
-    throw new MintReadError(`${mint} has an invalid mint extension header`);
-  }
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const seen = new Set;
-  for (let offset = TLV_START;offset < data.length; ) {
-    if (data.subarray(offset).every((b) => b === 0))
-      break;
-    if (offset + 4 > data.length)
-      throw new MintReadError(`${mint} has a truncated mint extension header`);
-    const type = view.getUint16(offset, true);
-    const length = view.getUint16(offset + 2, true);
-    offset += 4;
-    if (offset + length > data.length || seen.has(type)) {
-      throw new MintReadError(`${mint} has an invalid mint extension length or a duplicate extension`);
-    }
-    seen.add(type);
-    const requireLength = (expected) => {
-      if (length !== expected)
-        throw new MintReadError(`${mint} has an invalid extension ${type} length`);
-    };
-    switch (type) {
-      case EXT_PERMANENT_DELEGATE: {
-        requireLength(32);
-        const authority = readKey(data, offset);
-        if (authority) {
-          profile.risks.push({
-            kind: "permanent_delegate",
-            message: `Permanent delegate ${authority} can move or burn your tokens.`
-          });
-        }
-        break;
-      }
-      case EXT_TRANSFER_HOOK: {
-        requireLength(64);
-        const hookProgram = readKey(data, offset + 32);
-        if (hookProgram) {
-          profile.transferHookProgram = hookProgram;
-          profile.risks.push({
-            kind: "transfer_hook",
-            message: `Transfer hook ${hookProgram} (unknown program) runs code on every transfer.`
-          });
-        }
-        break;
-      }
-      case EXT_TRANSFER_FEE_CONFIG: {
-        requireLength(108);
-        const older = readFeeSchedule(view, offset + 72);
-        const newer = readFeeSchedule(view, offset + 90);
-        profile.olderTransferFee = older;
-        profile.newerTransferFee = newer;
-        profile.risks.push({
-          kind: "transfer_fee",
-          message: `Transfer fee: ${older.basisPoints / 100}% capped at ${older.maximumFeeRaw} raw units; from epoch ${newer.epoch}, ${newer.basisPoints / 100}% capped at ${newer.maximumFeeRaw} raw units.`
-        });
-        break;
-      }
-      case EXT_DEFAULT_ACCOUNT_STATE: {
-        requireLength(1);
-        const state = data[offset];
-        if (state !== 1 && state !== 2)
-          throw new MintReadError(`${mint} has an invalid default account state`);
-        if (state === 2) {
-          profile.defaultFrozen = true;
-          profile.risks.push({ kind: "default_frozen", message: "New token accounts are frozen by default." });
-        }
-        break;
-      }
-      case EXT_PAUSABLE: {
-        requireLength(33);
-        const authority = readKey(data, offset);
-        const pauseByte = data[offset + 32];
-        if (pauseByte !== 0 && pauseByte !== 1)
-          throw new MintReadError(`${mint} has an invalid pause state`);
-        const paused = pauseByte === 1;
-        profile.paused = paused;
-        if (authority || paused) {
-          profile.risks.push({
-            kind: "pausable",
-            message: `Token ${paused ? "is paused" : "can be paused"}${authority ? ` by ${authority}` : ""}.`
-          });
-        }
-        break;
-      }
-      case EXT_NON_TRANSFERABLE: {
-        requireLength(0);
-        profile.nonTransferable = true;
-        profile.risks.push({ kind: "non_transferable", message: "This token is non-transferable." });
-        break;
-      }
-    }
-    offset += length;
-  }
-  return profile;
-}
-async function readMintProfile(rpc, mint) {
-  const account = await rpc.getAccountInfo(mint);
-  if (account === null)
-    throw new MintReadError(`Mint ${mint} does not exist`);
-  if (account.owner !== TOKEN_PROGRAM_ID && account.owner !== TOKEN_2022_PROGRAM_ID) {
-    throw new MintReadError(`Mint ${mint} is owned by ${account.owner}, which is not a token program`);
-  }
-  return parseMintAccount(mint, account.owner, account.data);
-}
-function transferFeeFor(profile, amount, epoch) {
-  const { olderTransferFee: older, newerTransferFee: newer } = profile;
-  const schedule = newer && epoch >= newer.epoch ? newer : older;
-  if (!schedule)
-    return { feeRaw: 0n, postFeeAmountRaw: amount };
-  const rounded = (amount * BigInt(schedule.basisPoints) + 9999n) / 10000n;
-  const fee = rounded < schedule.maximumFeeRaw ? rounded : schedule.maximumFeeRaw;
-  return { feeRaw: fee, postFeeAmountRaw: amount - fee };
-}
-function extraAccountMetaAddress(mint, hookProgram) {
-  return findProgramAddress([EXTRA_ACCOUNT_METAS_SEED, mint], hookProgram).address;
-}
-function parseExtraAccountMetas(data) {
-  if (data.length < 16)
-    throw new HookResolutionError("the hook's validation account is too short to decode");
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const count = view.getUint32(12, true);
-  if (16 + count * EXTRA_ACCOUNT_META_SIZE > data.length) {
-    throw new HookResolutionError("the hook's validation account declares more extra accounts than it holds");
-  }
-  const metas = [];
-  for (let i = 0;i < count; i++) {
-    const at = 16 + i * EXTRA_ACCOUNT_META_SIZE;
-    const discriminator = data[at];
-    const isSigner = data[at + 33];
-    const isWritable = data[at + 34];
-    if (discriminator === undefined || isSigner === undefined || isWritable === undefined) {
-      throw new HookResolutionError("the hook's validation account holds a truncated extra account");
-    }
-    metas.push({
-      discriminator,
-      addressConfig: data.subarray(at + 1, at + 33),
-      isSigner: isSigner === 1,
-      isWritable: isWritable === 1
-    });
-  }
-  return metas;
-}
-function executeInstructionData(amount) {
-  const data = new Uint8Array(16);
-  data.set(EXECUTE_DISCRIMINATOR, 0);
-  new DataView(data.buffer).setBigUint64(8, amount, true);
-  return data;
-}
-async function unpackSeeds(rpc, config, previous, instructionData) {
-  const seeds = [];
-  let i = 0;
-  while (i < 32) {
-    const discriminator = config[i];
-    const rest = config.subarray(i + 1);
-    if (discriminator === undefined || discriminator === 0)
-      break;
-    if (discriminator === 1) {
-      const length = rest[0];
-      if (length === undefined || rest.length - 1 < length)
-        throw new HookResolutionError("invalid literal seed");
-      seeds.push(rest.subarray(1, 1 + length));
-      i += 2 + length;
-    } else if (discriminator === 2) {
-      const offset = rest[0];
-      const length = rest[1];
-      if (offset === undefined || length === undefined || instructionData.length < offset + length) {
-        throw new HookResolutionError("invalid instruction-data seed");
-      }
-      seeds.push(instructionData.subarray(offset, offset + length));
-      i += 3;
-    } else if (discriminator === 3) {
-      const index = rest[0];
-      const meta = index === undefined ? undefined : previous[index];
-      if (!meta)
-        throw new HookResolutionError("invalid account-key seed");
-      seeds.push(meta.pubkey);
-      i += 2;
-    } else if (discriminator === 4) {
-      const accountIndex = rest[0];
-      const dataIndex = rest[1];
-      const length = rest[2];
-      const meta = accountIndex === undefined ? undefined : previous[accountIndex];
-      if (!meta || dataIndex === undefined || length === undefined) {
-        throw new HookResolutionError("invalid account-data seed");
-      }
-      const account = await rpc.getAccountInfo(encodePubkey(meta.pubkey));
-      if (account === null)
-        throw new HookResolutionError("a seed names an account that does not exist");
-      if (account.data.length < dataIndex + length)
-        throw new HookResolutionError("invalid account-data seed range");
-      seeds.push(account.data.subarray(dataIndex, dataIndex + length));
-      i += 4;
-    } else {
-      throw new HookResolutionError(`unknown seed type ${discriminator}`);
-    }
-  }
-  return seeds;
-}
-async function unpackPubkeyData(rpc, config, previous, instructionData) {
-  const discriminator = config[0];
-  if (discriminator === 1) {
-    const offset = config[1];
-    if (offset === undefined || instructionData.length < offset + 32) {
-      throw new HookResolutionError("a pubkey-data configuration points outside the instruction data");
-    }
-    return instructionData.subarray(offset, offset + 32);
-  }
-  if (discriminator === 2) {
-    const accountIndex = config[1];
-    const dataIndex = config[2];
-    const meta = accountIndex === undefined ? undefined : previous[accountIndex];
-    if (!meta || dataIndex === undefined)
-      throw new HookResolutionError("invalid pubkey-data configuration");
-    const account = await rpc.getAccountInfo(encodePubkey(meta.pubkey));
-    if (account === null)
-      throw new HookResolutionError("a pubkey-data configuration names a missing account");
-    if (account.data.length < dataIndex + 32)
-      throw new HookResolutionError("invalid pubkey-data range");
-    return account.data.subarray(dataIndex, dataIndex + 32);
-  }
-  throw new HookResolutionError(`unknown pubkey-data type ${discriminator ?? "(absent)"}`);
-}
-function deEscalate(meta, previous) {
-  const same = previous.filter((x) => encodePubkey(x.pubkey) === encodePubkey(meta.pubkey));
-  if (same.length === 0)
-    return meta;
-  const isSigner = same.some((x) => x.isSigner);
-  const isWritable = same.some((x) => x.isWritable);
-  return {
-    pubkey: meta.pubkey,
-    isSigner: isSigner ? meta.isSigner : false,
-    isWritable: isWritable ? meta.isWritable : false
-  };
-}
-async function resolveTransferHookAccounts(rpc, input) {
-  const hook = input.profile.transferHookProgram;
-  if (!hook)
-    return { ok: true, accounts: [] };
-  try {
-    const hookProgram = decodePubkey(hook);
-    const mint = decodePubkey(input.profile.mint);
-    const validateState = extraAccountMetaAddress(mint, hookProgram);
-    const validateAccount = await rpc.getAccountInfo(encodePubkey(validateState));
-    if (validateAccount === null)
-      return { ok: true, accounts: [] };
-    const configs = parseExtraAccountMetas(validateAccount.data);
-    const instructionData = executeInstructionData(input.amount);
-    const resolved = [input.source, mint, input.destination, input.owner, validateState].map((pubkey) => ({ pubkey, isSigner: false, isWritable: false }));
-    for (const config of configs) {
-      let meta;
-      if (config.discriminator === 0) {
-        meta = { pubkey: config.addressConfig, isSigner: config.isSigner, isWritable: config.isWritable };
-      } else if (config.discriminator === 2) {
-        meta = {
-          pubkey: await unpackPubkeyData(rpc, config.addressConfig, resolved, instructionData),
-          isSigner: config.isSigner,
-          isWritable: config.isWritable
-        };
-      } else {
-        let programId;
-        if (config.discriminator === 1) {
-          programId = hookProgram;
-        } else {
-          const index = config.discriminator - 128;
-          const owner = index < 0 ? undefined : resolved[index];
-          if (!owner)
-            throw new HookResolutionError(`extra account ${config.discriminator} names no earlier account`);
-          programId = owner.pubkey;
-        }
-        const seeds = await unpackSeeds(rpc, config.addressConfig, resolved, instructionData);
-        meta = {
-          pubkey: findProgramAddress(seeds, programId).address,
-          isSigner: config.isSigner,
-          isWritable: config.isWritable
-        };
-      }
-      resolved.push(deEscalate(meta, resolved));
-    }
-    return {
-      ok: true,
-      accounts: [
-        ...resolved.slice(5),
-        { pubkey: hookProgram, isSigner: false, isWritable: false },
-        { pubkey: validateState, isSigner: false, isWritable: false }
-      ]
-    };
-  } catch (error) {
-    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
-  }
-}
-function ataFor(profile, owner) {
-  return associatedTokenAddress(owner, decodePubkey(profile.mint), decodePubkey(profile.tokenProgram));
-}
-function classifyTokenSendFailure(input) {
-  if (!input.profile.token2022)
-    return;
-  if (input.profile.nonTransferable)
-    return "TOKEN_2022_NOT_TRANSFERABLE";
-  if (input.frozen)
-    return "TOKEN_2022_FROZEN";
-  if (input.extraAccountsMissing)
-    return "TOKEN_2022_EXTRA_ACCOUNTS_MISSING";
-  if (input.profile.transferHookProgram)
-    return "TOKEN_2022_HOOK_REFUSED";
-  return;
-}
-var MintReadError, MINT_DECIMALS_OFFSET = 44, MINT_IS_INITIALIZED_OFFSET = 45, MINT_BASE_SIZE2 = 82, ACCOUNT_TYPE_OFFSET2 = 165, TLV_START = 166, MULTISIG_SIZE2 = 355, EXT_TRANSFER_FEE_CONFIG = 1, EXT_DEFAULT_ACCOUNT_STATE = 6, EXT_NON_TRANSFERABLE = 9, EXT_PERMANENT_DELEGATE = 12, EXT_TRANSFER_HOOK = 14, EXT_PAUSABLE = 26, EXECUTE_DISCRIMINATOR, EXTRA_ACCOUNT_METAS_SEED, EXTRA_ACCOUNT_META_SIZE = 35, HookResolutionError;
-var init_token_2022 = __esm(() => {
-  init_solana_lite();
-  MintReadError = class MintReadError extends Error {
-  };
-  EXECUTE_DISCRIMINATOR = new Uint8Array([105, 37, 101, 197, 75, 251, 102, 26]);
-  EXTRA_ACCOUNT_METAS_SEED = new TextEncoder().encode("extra-account-metas");
-  HookResolutionError = class HookResolutionError extends Error {
-  };
-});
-
-// src/wallet-keystore.ts
-import { chmod as chmod2, mkdir as mkdir2, readFile as readFile2, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
-import { dirname as dirname2, join as join3 } from "node:path";
-function defaultTeeKeystorePath(env, home) {
-  return join3(candleConfigDir(env, home), "tee-wallets.enc");
-}
-function legacyTeeKeystorePath(env, home) {
-  return join3(candleConfigDir(env, home), "hot-wallets.enc");
-}
-async function deriveKeystoreKey(passphrase, salt, iterations) {
-  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
-    "deriveKey"
-  ]);
-  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
-}
-async function createKeystore(passphrase) {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  return { key: await deriveKeystoreKey(passphrase, salt, KEYSTORE_ITERATIONS), salt, iterations: KEYSTORE_ITERATIONS };
-}
-async function serializeKeystore(entries, key, salt, iterations, purpose) {
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(entries)));
-  const file = {
-    version: KEYSTORE_VERSION,
-    createdAt: new Date().toISOString(),
-    kdf: "PBKDF2-HMAC-SHA256",
-    iterations,
-    salt: b642(salt),
-    cipher: "AES-256-GCM",
-    iv: b642(iv),
-    ciphertext: b642(new Uint8Array(sealed)),
-    ...purpose !== undefined && purpose !== "wallets" ? { purpose } : {}
-  };
-  return `${JSON.stringify(file, null, 2)}
-`;
-}
-async function readKeystore(raw, passphrase, opts = {}) {
-  let file;
-  try {
-    file = JSON.parse(raw);
-  } catch {
-    throw new Error("The keystore file is not valid JSON.");
-  }
-  if (file.version !== KEYSTORE_VERSION) {
-    throw new Error(`Unsupported keystore version ${file.version}: this CLI writes version ${KEYSTORE_VERSION}.`);
-  }
-  const purpose = file.purpose === TEE_KEYSTORE_PURPOSE || file.purpose === LEGACY_TEE_PURPOSE ? TEE_KEYSTORE_PURPOSE : "wallets";
-  if (opts.expectPurpose !== undefined && purpose !== opts.expectPurpose) {
-    throw new Error(purpose === TEE_KEYSTORE_PURPOSE ? "This is a TEE wallet store (tee-wallets.enc). It has no export path; use: candle tee sweep." : "This is not a TEE wallet store. The tee commands only open tee-wallets.enc.");
-  }
-  if (purpose === TEE_KEYSTORE_PURPOSE) {
-    if (file.kdf !== "PBKDF2-HMAC-SHA256" || file.cipher !== "AES-256-GCM") {
-      throw new Error("The TEE wallet store names an unsupported KDF or cipher; refusing to open it.");
-    }
-    if (!Number.isInteger(file.iterations) || file.iterations < TEE_KEYSTORE_MIN_ITERATIONS || file.iterations > TEE_KEYSTORE_MAX_ITERATIONS) {
-      throw new Error(`The TEE wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` + `${TEE_KEYSTORE_MIN_ITERATIONS}-${TEE_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`);
-    }
-  }
-  const salt = unb64(file.salt);
-  const key = await deriveKeystoreKey(passphrase, salt, file.iterations);
-  let plain;
-  try {
-    plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(file.iv) }, key, unb64(file.ciphertext));
-  } catch {
-    throw new Error("Could not decrypt the keystore: wrong passphrase, or the file is corrupt.");
-  }
-  const decoded = JSON.parse(new TextDecoder().decode(plain));
-  return {
-    entries: decoded.map(({ [LEGACY_TEE_FIELD]: legacy, ...entry }) => legacy !== undefined && entry.tee === undefined ? { ...entry, tee: legacy } : entry),
-    key,
-    salt,
-    iterations: file.iterations
-  };
-}
-async function writeKeystoreFile(path, contents) {
-  const dir = dirname2(path);
-  const created = await mkdir2(dir, { recursive: true });
-  if (created !== undefined)
-    await chmod2(dir, 448).catch(() => {});
-  const tmpPath = `${path}.${crypto.randomUUID()}.tmp`;
-  await writeFile2(tmpPath, contents, { encoding: "utf8", mode: 384 });
-  await chmod2(tmpPath, 384);
-  await rename2(tmpPath, path);
-}
-function keystoreLockPath(path) {
-  return `${path}.lock`;
-}
-async function withKeystoreLock(path, clock, fn, opts = {}) {
-  const lockPath = keystoreLockPath(path);
-  const waitMs = opts.waitMs ?? 1e4;
-  const pollMs = opts.pollMs ?? 100;
-  await mkdir2(dirname2(path), { recursive: true });
-  const started = clock.now();
-  for (;; ) {
-    try {
-      await mkdir2(lockPath);
-      break;
-    } catch (error) {
-      if (error?.code !== "EEXIST")
-        throw error;
-      if (clock.now() - started >= waitMs) {
-        let owner = null;
-        try {
-          owner = (await readFile2(join3(lockPath, "owner"), "utf8")).trim() || null;
-        } catch {
-          owner = null;
-        }
-        throw new KeystoreLockedError(lockPath, owner);
-      }
-      await clock.sleep(pollMs);
-    }
-  }
-  try {
-    await writeFile2(join3(lockPath, "owner"), `${opts.owner ?? `pid ${process.pid}`} since ${new Date().toISOString()}
-`, { encoding: "utf8", mode: 384 }).catch(() => {});
-    return await fn();
-  } finally {
-    await rm2(lockPath, { recursive: true, force: true });
-  }
-}
-var TEE_KEYSTORE_PURPOSE = "ember-tee", LEGACY_TEE_PURPOSE = "ember-hot", LEGACY_TEE_FIELD = "hot", TEE_KEYSTORE_MIN_ITERATIONS = 210000, TEE_KEYSTORE_MAX_ITERATIONS = 2100000, KEYSTORE_VERSION = 1, KEYSTORE_ITERATIONS = 210000, b642 = (bytes) => Buffer.from(bytes).toString("base64"), unb64 = (s) => new Uint8Array(Buffer.from(s, "base64")), KeystoreLockedError;
-var init_wallet_keystore = __esm(() => {
-  init_store();
-  KeystoreLockedError = class KeystoreLockedError extends Error {
-    lockPath;
-    owner;
-    constructor(lockPath, owner) {
-      super(`Another command holds the TEE wallet store lock at ${lockPath}` + `${owner ? ` (${owner})` : ""}. If no other candle tee command is running, remove that directory and retry.`);
-      this.lockPath = lockPath;
-      this.owner = owner;
-      this.name = "KeystoreLockedError";
-    }
-  };
-});
-
-// ../../node_modules/@noble/hashes/esm/hmac.js
-var HMAC, hmac = (hash, key, message) => new HMAC(hash, key).update(message).digest();
-var init_hmac = __esm(() => {
-  init_utils();
-  HMAC = class HMAC extends Hash {
-    constructor(hash, _key) {
-      super();
-      this.finished = false;
-      this.destroyed = false;
-      ahash(hash);
-      const key = toBytes(_key);
-      this.iHash = hash.create();
-      if (typeof this.iHash.update !== "function")
-        throw new Error("Expected instance of class which extends utils.Hash");
-      this.blockLen = this.iHash.blockLen;
-      this.outputLen = this.iHash.outputLen;
-      const blockLen = this.blockLen;
-      const pad = new Uint8Array(blockLen);
-      pad.set(key.length > blockLen ? hash.create().update(key).digest() : key);
-      for (let i = 0;i < pad.length; i++)
-        pad[i] ^= 54;
-      this.iHash.update(pad);
-      this.oHash = hash.create();
-      for (let i = 0;i < pad.length; i++)
-        pad[i] ^= 54 ^ 92;
-      this.oHash.update(pad);
-      clean(pad);
-    }
-    update(buf) {
-      aexists(this);
-      this.iHash.update(buf);
-      return this;
-    }
-    digestInto(out) {
-      aexists(this);
-      abytes(out, this.outputLen);
-      this.finished = true;
-      this.iHash.digestInto(out);
-      this.oHash.update(out);
-      this.oHash.digestInto(out);
-      this.destroy();
-    }
-    digest() {
-      const out = new Uint8Array(this.oHash.outputLen);
-      this.digestInto(out);
-      return out;
-    }
-    _cloneInto(to) {
-      to || (to = Object.create(Object.getPrototypeOf(this), {}));
-      const { oHash, iHash, finished, destroyed, blockLen, outputLen } = this;
-      to = to;
-      to.finished = finished;
-      to.destroyed = destroyed;
-      to.blockLen = blockLen;
-      to.outputLen = outputLen;
-      to.oHash = oHash._cloneInto(to.oHash);
-      to.iHash = iHash._cloneInto(to.iHash);
-      return to;
-    }
-    clone() {
-      return this._cloneInto();
-    }
-    destroy() {
-      this.destroyed = true;
-      this.oHash.destroy();
-      this.iHash.destroy();
-    }
-  };
-  hmac.create = (hash, key) => new HMAC(hash, key);
-});
-
-// ../../node_modules/@noble/hashes/esm/hkdf.js
-function extract(hash, ikm, salt) {
-  ahash(hash);
-  if (salt === undefined)
-    salt = new Uint8Array(hash.outputLen);
-  return hmac(hash, toBytes(salt), toBytes(ikm));
-}
-function expand(hash, prk, info, length = 32) {
-  ahash(hash);
-  anumber(length);
-  const olen = hash.outputLen;
-  if (length > 255 * olen)
-    throw new Error("Length should be <= 255*HashLen");
-  const blocks = Math.ceil(length / olen);
-  if (info === undefined)
-    info = EMPTY_BUFFER;
-  const okm = new Uint8Array(blocks * olen);
-  const HMAC2 = hmac.create(hash, prk);
-  const HMACTmp = HMAC2._cloneInto();
-  const T = new Uint8Array(HMAC2.outputLen);
-  for (let counter = 0;counter < blocks; counter++) {
-    HKDF_COUNTER[0] = counter + 1;
-    HMACTmp.update(counter === 0 ? EMPTY_BUFFER : T).update(info).update(HKDF_COUNTER).digestInto(T);
-    okm.set(T, olen * counter);
-    HMAC2._cloneInto(HMACTmp);
-  }
-  HMAC2.destroy();
-  HMACTmp.destroy();
-  clean(T, HKDF_COUNTER);
-  return okm.slice(0, length);
-}
-var HKDF_COUNTER, EMPTY_BUFFER, hkdf = (hash, ikm, salt, info, length) => expand(hash, extract(hash, ikm, salt), info, length);
-var init_hkdf = __esm(() => {
-  init_hmac();
-  init_utils();
-  HKDF_COUNTER = /* @__PURE__ */ Uint8Array.from([0]);
-  EMPTY_BUFFER = /* @__PURE__ */ Uint8Array.of();
-});
-
-// src/vault/evm-record-key.ts
-async function createEvmRecordKey(payloadKey, vaultId) {
-  const secret = x25519.utils.randomPrivateKey();
-  try {
-    const publicKey = x25519.getPublicKey(secret);
-    const blob = await seal(payloadKey, secret, evmRecordKeyAad(vaultId));
-    return { publicKey: b64u(publicKey), blob };
-  } finally {
-    wipe(secret);
-  }
-}
-async function openEvmRecordKey(payloadKey, vaultId, blob, headerPublicKey) {
-  const secret = await open2(payloadKey, blob, evmRecordKeyAad(vaultId), {
-    code: "VAULT_BLOB_TAMPERED",
-    message: "The sealed EVM record's key failed its authentication tag.",
-    suggestion: "Nothing was written. Restore the file from a verified backup."
-  });
-  if (secret.length !== EVM_RECORD_KEY_BYTES) {
-    wipe(secret);
-    throw new VaultError("VAULT_INDEX_INVALID", "The sealed EVM record's key is the wrong length.");
-  }
-  const derived = x25519.getPublicKey(secret);
-  if (!bytesEqual(derived, unb64u(headerPublicKey, "evmRecordPublicKey"))) {
-    wipe(secret);
-    throw new VaultError("VAULT_INDEX_INVALID", "The sealed EVM record's key does not derive the header's evmRecordPublicKey; the pair was altered.", { suggestion: "Nothing was written. Restore the file from a verified backup." });
-  }
-  return secret;
-}
-function entryJson(entry) {
-  return entry.kind === "token" ? JSON.stringify({ kind: "token", wallet: entry.wallet, token: entry.token }) : JSON.stringify({ kind: "scanStart", wallet: entry.wallet, block: entry.block });
-}
-function paddedEntry(entry) {
-  const json = new TextEncoder().encode(entryJson(entry));
-  if (json.length > EVM_RECORD_PLAINTEXT_BYTES)
-    return;
-  const out = new Uint8Array(EVM_RECORD_PLAINTEXT_BYTES).fill(32);
-  out.set(json, 0);
-  return out;
-}
-function concat3(a, b) {
-  const out = new Uint8Array(a.length + b.length);
-  out.set(a, 0);
-  out.set(b, a.length);
-  return out;
-}
-async function lineKey(shared, epk, rpk) {
-  const okm = hkdf(sha2562, shared, concat3(epk, rpk), new TextEncoder().encode(EVM_RECORD_HKDF_INFO), 32);
-  try {
-    return await crypto.subtle.importKey("raw", okm, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
-  } finally {
-    wipe(okm);
-  }
-}
-async function sealEvmRecordLine(entry, recordPublicKey, vaultId) {
-  const plaintext = paddedEntry(entry);
-  if (plaintext === undefined) {
-    throw new VaultError("EVM_RECORD_ENTRY_TOO_LONG", `A sealed EVM record entry is at most ${EVM_RECORD_PLAINTEXT_BYTES} bytes; this one is longer and was not written.`);
-  }
-  const rpk = unb64u(recordPublicKey, "evmRecordPublicKey");
-  const esk = x25519.utils.randomPrivateKey();
-  try {
-    const epk = x25519.getPublicKey(esk);
-    const shared = x25519.getSharedSecret(esk, rpk);
-    try {
-      const key = await lineKey(shared, epk, rpk);
-      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: ZERO_NONCE, additionalData: new TextEncoder().encode(vaultId) }, key, plaintext));
-      return `${JSON.stringify({ v: EVM_RECORD_LINE_VERSION, epk: b64u(epk), ct: b64u(ct) })}
-`;
-    } finally {
-      wipe(shared);
-    }
-  } finally {
-    wipe(esk);
-  }
-}
-function isAddress(value) {
-  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
-}
-async function openEvmRecordLine(line, recordSecret, recordPublicKey, vaultId) {
-  try {
-    const parsed = JSON.parse(line);
-    if (parsed.v !== EVM_RECORD_LINE_VERSION || typeof parsed.epk !== "string" || typeof parsed.ct !== "string") {
-      return;
-    }
-    const epk = unb64u(parsed.epk, "epk");
-    const rpk = unb64u(recordPublicKey, "evmRecordPublicKey");
-    const shared = x25519.getSharedSecret(recordSecret, epk);
-    let plaintext;
-    try {
-      const key = await lineKey(shared, epk, rpk);
-      plaintext = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: ZERO_NONCE, additionalData: new TextEncoder().encode(vaultId) }, key, unb64u(parsed.ct, "ct")));
-    } finally {
-      wipe(shared);
-    }
-    if (plaintext.length !== EVM_RECORD_PLAINTEXT_BYTES)
-      return;
-    const value = JSON.parse(new TextDecoder().decode(plaintext).trimEnd());
-    if (value.kind === "token" && isAddress(value.wallet) && isAddress(value.token)) {
-      return { kind: "token", wallet: value.wallet, token: value.token };
-    }
-    if (value.kind === "scanStart" && isAddress(value.wallet) && Number.isSafeInteger(value.block) && value.block >= 0) {
-      return { kind: "scanStart", wallet: value.wallet, block: value.block };
-    }
-    return;
-  } catch {
-    return;
-  }
-}
-var EVM_RECORD_KEY_BYTES = 32, EVM_RECORD_PLAINTEXT_BYTES = 160, EVM_RECORD_HKDF_INFO = "candle-vault/v4/evm-record", EVM_RECORD_LINE_VERSION = 1, ZERO_NONCE;
-var init_evm_record_key = __esm(() => {
-  init_ed25519();
-  init_hkdf();
-  init_sha256();
-  init_crypto();
-  init_errors();
-  init_format();
-  ZERO_NONCE = new Uint8Array(12);
-});
-
-// src/vault/evm-record.ts
-import { appendFile, readFile as readFile3, rename as rename3, stat as stat2, truncate } from "node:fs/promises";
-function evmRecordPath(vaultPath) {
-  return `${vaultPath.replace(/\.enc$/, "")}.evm-record.sealed`;
-}
-function utcStamp(ms) {
-  return new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-}
-async function readIfPresent(path) {
-  try {
-    return await readFile3(path);
-  } catch (error) {
-    if (error?.code === "ENOENT")
-      return null;
-    throw error;
-  }
-}
-function splitRecord(bytes) {
-  const text = new TextDecoder().decode(bytes);
-  if (text.length === 0)
-    return { lines: [], partialTail: false };
-  const pieces = text.split(`
-`);
-  const last = pieces.pop();
-  return { lines: pieces.filter((line) => line.length > 0), partialTail: last.length > 0 };
-}
-async function appendEvmRecordEntry(input) {
-  const path = evmRecordPath(input.vaultPath);
-  let raw;
-  try {
-    const bytes = await readIfPresent(input.vaultPath);
-    raw = bytes === null ? null : bytes.toString("utf8");
-  } catch (error) {
-    return { written: false, reason: "header-unreadable", detail: messageOf(error), path };
-  }
-  if (raw === null)
-    return { written: false, reason: "no-vault", detail: `no vault at ${input.vaultPath}`, path };
-  let publicKey;
-  let vaultId;
-  try {
-    const header = parseVaultFile(raw);
-    vaultId = header.vaultId;
-    publicKey = header.version === EVM_TEE_VAULT_VERSION ? header.evmRecordPublicKey : undefined;
-  } catch (error) {
-    return { written: false, reason: "header-unreadable", detail: messageOf(error), path };
-  }
-  if (publicKey === undefined) {
-    return {
-      written: false,
-      reason: "no-record-key",
-      detail: "the vault is not version 4, so it has no sealed EVM record key",
-      path
-    };
-  }
-  let line;
-  try {
-    line = await sealEvmRecordLine(input.entry, publicKey, vaultId);
-  } catch (error) {
-    const tooLong = error instanceof VaultError && error.code === "EVM_RECORD_ENTRY_TOO_LONG";
-    return { written: false, reason: tooLong ? "too-long" : "write-failed", detail: messageOf(error), path };
-  }
-  try {
-    const repairedPartial = await withKeystoreLock(path, input.clock, async () => {
-      const repaired = await repairTail(path);
-      await appendFile(path, line, { encoding: "utf8", mode: 384 });
-      return repaired;
-    }, input.lockWaitMs !== undefined ? { waitMs: input.lockWaitMs } : {});
-    return { written: true, repairedPartial, path };
-  } catch (error) {
-    if (error instanceof KeystoreLockedError) {
-      return { written: false, reason: "locked", detail: error.message, path };
-    }
-    return { written: false, reason: "write-failed", detail: messageOf(error), path };
-  }
-}
-async function repairTail(path) {
-  const bytes = await readIfPresent(path);
-  if (bytes === null || bytes.length === 0 || bytes[bytes.length - 1] === 10)
-    return false;
-  const lastNewline = bytes.lastIndexOf(10);
-  await truncate(path, lastNewline + 1);
-  return true;
-}
-function appendNotice(outcome, what) {
-  if (outcome.written) {
-    return outcome.repairedPartial ? `The sealed EVM record at ${outcome.path} ended in a partial line (a torn earlier append); it was dropped before ${what} was added.` : undefined;
-  }
-  return `${what} was not added to the sealed EVM record (${outcome.detail}). A sweep can still find it with --token or --from-block.`;
-}
-async function openVaultRecordKey(vault) {
-  const blob = vault.index.evmRecordKey;
-  const publicKey = vault.file.evmRecordPublicKey;
-  if (blob === undefined || publicKey === undefined)
-    return;
-  return openEvmRecordKey(vault.payloadKey, vault.file.vaultId, blob, publicKey);
-}
-async function readEvmRecord(vault, path = evmRecordPath(vault.path)) {
-  const bytes = await readIfPresent(path);
-  const base = { path, entries: [], unreadableLines: 0, partialTail: false };
-  const secret = await openVaultRecordKey(vault);
-  if (secret === undefined)
-    return { ...base, absent: bytes === null || bytes.length === 0, noKey: true };
-  try {
-    if (bytes === null || bytes.length === 0)
-      return { ...base, absent: true, noKey: false };
-    const { lines, partialTail } = splitRecord(bytes);
-    const seen = new Set;
-    const entries = [];
-    let unreadable = 0;
-    for (const line of lines) {
-      const entry = await openEvmRecordLine(line, secret, vault.file.evmRecordPublicKey, vault.file.vaultId);
-      if (entry === undefined) {
-        unreadable += 1;
-        continue;
-      }
-      const key = JSON.stringify(entry).toLowerCase();
-      if (seen.has(key))
-        continue;
-      seen.add(key);
-      entries.push(entry);
-    }
-    return { path, absent: false, noKey: false, entries, unreadableLines: unreadable, partialTail };
-  } finally {
-    wipe(secret);
-  }
-}
-async function copyEvmRecordForBackup(live, copyPath, clock) {
-  const livePath = evmRecordPath(live.path);
-  try {
-    return await withKeystoreLock(livePath, clock, async () => {
-      const bytes = await readIfPresent(livePath);
-      if (bytes === null)
-        return { present: false, copied: 0, dropped: 0, copyPath };
-      const secret = await openVaultRecordKey(live);
-      const kept = [];
-      let dropped = 0;
-      const { lines, partialTail } = splitRecord(bytes);
-      if (partialTail)
-        dropped += 1;
-      try {
-        for (const line of lines) {
-          const entry = secret === undefined ? undefined : await openEvmRecordLine(line, secret, live.file.evmRecordPublicKey, live.file.vaultId);
-          if (entry === undefined)
-            dropped += 1;
-          else
-            kept.push(`${line}
-`);
-        }
-      } finally {
-        if (secret !== undefined)
-          wipe(secret);
-      }
-      await writeKeystoreFile(copyPath, kept.join(""));
-      return { present: true, copied: kept.length, dropped, copyPath };
-    });
-  } catch (error) {
-    if (error instanceof KeystoreLockedError) {
-      throw new VaultError("EVM_RECORD_UNAVAILABLE", `Could not take the sealed EVM record's lock at ${livePath}.lock, so the backup was not completed and no verified backup was recorded.`, { suggestion: "Wait for the trade or sweep holding it to finish, then run the backup again." });
-    }
-    if (error instanceof VaultError)
-      throw error;
-    throw new VaultError("VAULT_WRITE_FAILED", `Could not copy the sealed EVM record to ${copyPath}: ${messageOf(error)}`);
-  }
-}
-async function verifyEvmRecordCopy(copy, path = evmRecordPath(copy.path)) {
-  if (copy.file.version !== EVM_TEE_VAULT_VERSION)
-    return { notApplicable: true, absent: true, lines: 0, path };
-  const bytes = await readIfPresent(path);
-  if (bytes === null)
-    return { notApplicable: false, absent: true, lines: 0, path };
-  const { lines, partialTail } = splitRecord(bytes);
-  if (partialTail) {
-    throw verifyFailed(`the sealed EVM record at ${path} ends in a partial line`);
-  }
-  const secret = await openVaultRecordKey(copy);
-  if (secret === undefined)
-    throw verifyFailed("the copy has no sealed EVM record key");
-  try {
-    for (const [index, line] of lines.entries()) {
-      const entry = await openEvmRecordLine(line, secret, copy.file.evmRecordPublicKey, copy.file.vaultId);
-      if (entry === undefined) {
-        throw verifyFailed(`line ${index + 1} of the sealed EVM record at ${path} does not decrypt under this copy's key`);
-      }
-    }
-  } finally {
-    wipe(secret);
-  }
-  return { notApplicable: false, absent: false, lines: lines.length, path };
-}
-function verifyFailed(message) {
-  return new VaultError("VAULT_VERIFY_FAILED", `Verification failed at step 9: ${message}.`, {
-    suggestion: "The copy's record changed after it was written. Run `candle vault backup` again; a fresh backup of the same vault copies only the lines that decrypt.",
-    details: { step: "9" }
-  });
-}
-async function moveAsideOrphanRecord(vaultPath, clock) {
-  const path = evmRecordPath(vaultPath);
-  if (!await exists(path))
-    return;
-  return withKeystoreLock(path, clock, async () => {
-    if (!await exists(path))
-      return;
-    let target = `${path}.orphaned-${utcStamp(clock.now())}`;
-    for (let n = 2;await exists(target); n++)
-      target = `${path}.orphaned-${utcStamp(clock.now())}-${n}`;
-    await rename3(path, target);
-    return target;
-  });
-}
-async function exists(path) {
-  try {
-    await stat2(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function messageOf(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-var init_evm_record = __esm(() => {
-  init_wallet_keystore();
-  init_errors();
-  init_evm_record_key();
-  init_format();
-});
-
-// src/vault/sidecar.ts
-import { chmod as chmod3, mkdir as mkdir3, readFile as readFile4, writeFile as writeFile3 } from "node:fs/promises";
-import { dirname as dirname3 } from "node:path";
-function sidecarPath(vaultPath) {
-  return vaultPath.replace(/\.enc$/, "") + ".state.json";
-}
-function sourceDigest(vaultId, bytes) {
-  const id = new TextEncoder().encode(vaultId);
-  const joined = new Uint8Array(id.length + bytes.length);
-  joined.set(id, 0);
-  joined.set(bytes, id.length);
-  return b64u(sha2562(joined));
-}
-async function readSidecar(path) {
-  let raw;
-  try {
-    raw = await readFile4(path, "utf8");
-  } catch {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed?.vaultId !== "string" || !Number.isInteger(parsed?.lastGeneration))
-      return null;
-    return {
-      ...parsed,
-      envelopeIds: Array.isArray(parsed.envelopeIds) ? parsed.envelopeIds : [],
-      removedEnvelopeIds: Array.isArray(parsed.removedEnvelopeIds) ? parsed.removedEnvelopeIds : []
-    };
-  } catch {
-    return null;
-  }
-}
-async function writeSidecar(path, state) {
-  const dir = dirname3(path);
-  await mkdir3(dir, { recursive: true });
-  await chmod3(dir, 448).catch(() => {});
-  await writeFile3(path, `${JSON.stringify(state, null, 2)}
-`, { encoding: "utf8", mode: 384 });
-  await chmod3(path, 384).catch(() => {});
-}
-function nextSidecar(previous, file, patch = {}) {
-  const carried = previous !== null && previous.vaultId === file.vaultId ? previous : null;
-  const currentIds = file.envelopes.map((envelope) => envelope.id);
-  const known = carried?.envelopeIds ?? [];
-  const removed = new Set(carried?.removedEnvelopeIds ?? []);
-  for (const id of known)
-    if (!currentIds.includes(id))
-      removed.add(id);
-  const next = {
-    ...carried ?? {},
-    vaultId: file.vaultId,
-    lastGeneration: file.generation,
-    envelopeIds: currentIds,
-    removedEnvelopeIds: [...removed].sort(),
-    ...patch
-  };
-  next.lastGeneration = Math.max(next.lastGeneration, file.generation, carried?.lastGeneration ?? 0);
-  return next;
-}
-var init_sidecar = __esm(() => {
-  init_sha256();
-  init_crypto();
-});
-
-// src/vault/store.ts
-var exports_store = {};
-__export(exports_store, {
-  writeNewVault: () => writeNewVault,
-  wrapDekForPrf: () => wrapDekForPrf,
-  wrapDekForPassphrase: () => wrapDekForPassphrase,
-  wrapDekForKek: () => wrapDekForKek,
-  withVaultLock: () => withVaultLock,
-  unlockWithPassphrase: () => unlockWithPassphrase,
-  unlockVault: () => unlockVault,
-  serializeVault: () => serializeVault,
-  sealKeyBlob: () => sealKeyBlob,
-  sealIndex: () => sealIndex,
-  readVaultRaw: () => readVaultRaw,
-  ownSecret: () => ownSecret,
-  legacyWalletsPath: () => legacyWalletsPath,
-  freshVaultId: () => freshVaultId,
-  freshKeyId: () => freshKeyId,
-  freshEnvelopeId: () => freshEnvelopeId,
-  freshDek: () => freshDek,
-  fileExists: () => fileExists,
-  entriesOf: () => entriesOf,
-  defaultVaultPath: () => defaultVaultPath,
-  decryptRoot: () => decryptRoot,
-  decryptKey: () => decryptKey,
-  commitVault: () => commitVault,
-  closeVault: () => closeVault,
-  candleConfigDir: () => candleConfigDir,
-  CONFIG_DIR_ENV: () => CONFIG_DIR_ENV
-});
-import { chmod as chmod4, mkdir as mkdir4, readFile as readFile5, stat as stat3 } from "node:fs/promises";
-import { join as join4 } from "node:path";
-function candleConfigDir(env, home) {
-  const configured = env.CANDLE_CONFIG_DIR?.trim();
-  if (configured) {
-    const refusal = refuseUnexpandedTilde(CONFIG_DIR_ENV, configured);
-    if (refusal !== undefined)
-      throw new UsageError(refusal);
-    return configured;
-  }
-  return join4(home, ".config", "candle");
-}
-function defaultVaultPath(env, home) {
-  return join4(candleConfigDir(env, home), "vault.enc");
-}
-function legacyWalletsPath(env, home) {
-  return join4(candleConfigDir(env, home), "wallets.enc");
-}
-async function readVaultRaw(path) {
-  try {
-    return await readFile5(path, "utf8");
-  } catch (error) {
-    if (error?.code === "ENOENT")
-      return null;
-    throw new VaultError("VAULT_UNREADABLE", `Could not read the vault at ${path}.`);
-  }
-}
-async function fileExists(path) {
-  try {
-    await stat3(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function closeVault(vault) {
-  wipe(vault.dek);
-}
-async function unlockVault(path, raw, request, opts = {}) {
-  const file = parseVaultFile(raw);
-  const envelope = pickEnvelope(file, request);
-  const dek = await unwrapDek(file, envelope, request, opts.notice);
-  if (dek.length !== DEK_BYTES) {
-    wipe(dek);
-    throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.");
-  }
-  try {
-    const payloadKey = await derivePayloadKey(dek, unb64u(file.vaultId, "vaultId"));
-    const indexBytes = await open2(payloadKey, file.index, canonicalHeader(file), {
-      code: "VAULT_BLOB_TAMPERED",
-      message: "The vault header was altered, an envelope was added or removed outside this CLI, or this index is from a different write of the vault.",
-      suggestion: "Nothing was written. Restore the file from a verified backup."
-    });
-    let index;
-    try {
-      index = parseIndexPlaintext(indexBytes, file.version);
-    } finally {
-      wipe(indexBytes);
-    }
-    assertKeyIdsAgree(file);
-    if (file.version === EVM_TEE_VAULT_VERSION && index.evmRecordKey !== undefined) {
-      const secret = await openEvmRecordKey(payloadKey, file.vaultId, index.evmRecordKey, file.evmRecordPublicKey);
-      wipe(secret);
-    }
-    return { path, raw, file, index, payloadKey, dek, envelope };
-  } catch (error) {
-    wipe(dek);
-    throw error;
-  }
-}
-async function unwrapDek(file, envelope, request, notice) {
-  if (request.factor === "passphrase") {
-    const kek = await derivePassphraseKek(request.passphrase, passphraseKdf(envelope), notice);
-    return withSecret(kek, async (kekBytes) => {
-      const kekKey2 = await importAesKey(kekBytes);
-      return open2(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
-        code: "VAULT_UNLOCK_FAILED",
-        message: "Could not open the vault: wrong passphrase, or the file is corrupt."
-      });
-    });
-  }
-  if (request.factor === "secure-enclave") {
-    if (!isSecureEnclaveEnvelope(envelope)) {
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a Secure Enclave one.`);
-    }
-    const kekKey2 = await importAesKey(request.kek);
-    return open2(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
-      code: "VAULT_UNLOCK_FAILED",
-      message: "Could not open the vault with the Secure Enclave: what it unwrapped is not this envelope's key, or the file is corrupt.",
-      suggestion: "Nothing was derived from it and no other factor was tried."
-    });
-  }
-  if (!isPrfEnvelope(envelope)) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passkey one.`);
-  }
-  const kekKey = await derivePrfKek(request.prfOutput, unb64u(file.vaultId, "vaultId"));
-  const what = envelope.transport === "platform-macos" ? "this synced passkey" : "this security key";
-  return open2(kekKey, envelope.wrap, envelopeAad(file, envelope), {
-    code: "VAULT_UNLOCK_FAILED",
-    message: `Could not open the vault with ${what}: the assertion did not yield this envelope's key, or the file is corrupt.`,
-    suggestion: "Nothing was derived from it and no other factor was tried."
-  });
-}
-function pickEnvelope(file, request) {
-  const candidates = file.envelopes.filter((envelope) => envelope.factor === request.factor);
-  if (request.envelopeId !== undefined) {
-    const named = candidates.find((envelope) => envelope.id === request.envelopeId);
-    if (!named)
-      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request.factor} envelope with id ${request.envelopeId}.`);
-    return named;
-  }
-  const first = candidates[0];
-  if (!first) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request.factor} envelope.`, {
-      suggestion: "Run `candle vault status` to see which factors can open it."
-    });
-  }
-  return first;
-}
-async function unlockWithPassphrase(path, raw, passphrase, opts = {}) {
-  const file = parseVaultFile(raw);
-  const envelopes = file.envelopes.filter((envelope) => envelope.factor === "passphrase");
-  if (envelopes.length === 0) {
-    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
-  }
-  let last;
-  for (const envelope of envelopes) {
-    try {
-      return await unlockVault(path, raw, { factor: "passphrase", passphrase, envelopeId: envelope.id }, opts);
-    } catch (error) {
-      if (error instanceof VaultError && error.code !== "VAULT_UNLOCK_FAILED")
-        throw error;
-      last = error;
-    }
-  }
-  throw last;
-}
-async function decryptRoot(vault) {
-  return open2(vault.payloadKey, vault.file.root, rootAad(vault.file.vaultId), {
-    code: "VAULT_BLOB_TAMPERED",
-    message: "The vault's root blob failed its authentication tag.",
-    suggestion: "Nothing was written. Restore the file from a verified backup; `vault verify-backup` checks a copy in full."
-  });
-}
-async function decryptKey(vault, keyId) {
-  const blob = vault.file.keys.find((candidate) => candidate.id === keyId);
-  if (!blob)
-    throw new VaultError("VAULT_INDEX_INVALID", `The vault declares key ${keyId} but holds no blob for it.`);
-  return open2(vault.payloadKey, blob, keyAad(vault.file.vaultId, keyId), {
-    code: "VAULT_BLOB_TAMPERED",
-    message: `Key blob ${keyId} failed its authentication tag.`,
-    suggestion: "Nothing was written."
-  });
-}
-function freshId(bytes) {
-  for (;; ) {
-    const id = b64u(crypto.getRandomValues(new Uint8Array(bytes)));
-    if (!id.startsWith("-") && !id.startsWith("_"))
-      return id;
-  }
-}
-function freshEnvelopeId() {
-  return freshId(8);
-}
-function freshKeyId() {
-  return freshId(8);
-}
-function freshVaultId() {
-  return freshId(16);
-}
-function freshDek() {
-  return randomBytes2(DEK_BYTES);
-}
-async function wrapDekForPassphrase(dek, passphrase, envelope, header, notice) {
-  const kek = await derivePassphraseKek(passphrase, passphraseKdf(envelope), notice);
-  return withSecret(kek, async (kekBytes) => {
-    const kekKey = await importAesKey(kekBytes);
-    const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
-    return { alg: VAULT_CIPHER, ...blob };
-  });
-}
-async function wrapDekForPrf(dek, prfOutput, envelope, header) {
-  const kekKey = await derivePrfKek(prfOutput, unb64u(header.vaultId, "vaultId"));
-  const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
-  return { alg: VAULT_CIPHER, ...blob };
-}
-async function wrapDekForKek(dek, kek, envelope, header) {
-  const kekKey = await importAesKey(kek);
-  const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
-  return { alg: VAULT_CIPHER, ...blob };
-}
-function serializeVault(file) {
-  return `${JSON.stringify(file, null, 2)}
-`;
-}
-async function sealIndex(header, index, payloadKey) {
-  const withoutIndex = { ...header };
-  const blob = await sealJson(payloadKey, serializeIndexPlaintext(index, header.version), canonicalHeader(withoutIndex));
-  return { ...withoutIndex, index: blob };
-}
-async function commitVault(vault, plan, clock) {
-  let index = plan.index.evmRecordKey === undefined && vault.index.evmRecordKey !== undefined ? { ...plan.index, evmRecordKey: vault.index.evmRecordKey } : plan.index;
-  let orphaned;
-  const written = await withVaultLock(vault.path, clock, async () => {
-    const current = await readVaultRaw(vault.path);
-    if (current !== vault.raw) {
-      throw new VaultError("VAULT_CHANGED", "The vault changed on disk while this command was running; nothing was written.", {
-        suggestion: "Another candle command wrote to it. Run this one again."
-      });
-    }
-    const envelopes = plan.envelopes ?? vault.file.envelopes;
-    const keys = [...vault.file.keys, ...plan.addKeys ?? []];
-    let evmRecordPublicKey = vault.file.evmRecordPublicKey;
-    if (indexRequiresVersion4(index) && evmRecordPublicKey === undefined) {
-      orphaned = await moveAsideOrphanRecord(vault.path, clock);
-      const created = await createEvmRecordKey(vault.payloadKey, vault.file.vaultId);
-      evmRecordPublicKey = created.publicKey;
-      index = { ...index, evmRecordKey: created.blob };
-    }
-    const version = indexRequiresVersion4(index) ? EVM_TEE_VAULT_VERSION : indexRequiresVersion3(index) ? VAULT_VERSION : vault.file.version;
-    const header = {
-      format: VAULT_FORMAT,
-      version,
-      vaultId: vault.file.vaultId,
-      generation: vault.file.generation + 1,
-      createdAt: vault.file.createdAt,
-      updatedAt: new Date(clock.now()).toISOString(),
-      cipher: VAULT_CIPHER,
-      envelopes,
-      keyIds: keys.map((blob) => blob.id),
-      ...evmRecordPublicKey !== undefined ? { evmRecordPublicKey } : {},
-      root: vault.file.root,
-      keys
-    };
-    const next = await sealIndex(header, index, vault.payloadKey);
-    const contents = serializeVault(next);
-    try {
-      await writeKeystoreFile(vault.path, contents);
-    } catch {
-      throw new VaultError("VAULT_WRITE_FAILED", `Could not write the vault at ${vault.path}.`);
-    }
-    return { next, contents };
-  });
-  const path = sidecarPath(vault.path);
-  await writeSidecar(path, nextSidecar(await readSidecar(path), written.next, plan.sidecar)).catch(() => {});
-  if (orphaned !== undefined) {
-    clock.stderr?.write(`A sealed EVM record from an earlier vault was at ${evmRecordPath(vault.path)}; it was moved to ${orphaned} (never deleted), and this vault starts a fresh record.
-`);
-  }
-  return { ...vault, raw: written.contents, file: written.next, index };
-}
-async function withVaultLock(path, clock, fn) {
-  try {
-    return await withKeystoreLock(path, clock, fn);
-  } catch (error) {
-    if (error instanceof KeystoreLockedError) {
-      throw new VaultError("VAULT_LOCKED", error.message);
-    }
-    throw error;
-  }
-}
-async function sealKeyBlob(vault, keyId, secret) {
-  const blob = await seal(vault.payloadKey, secret, keyAad(vault.file.vaultId, keyId));
-  return { id: keyId, ...blob };
-}
-async function writeNewVault(path, contents) {
-  await mkdir4(candleConfigDirOf(path), { recursive: true });
-  await chmod4(candleConfigDirOf(path), 448).catch(() => {});
-  await writeKeystoreFile(path, contents);
-}
-function candleConfigDirOf(path) {
-  return join4(path, "..");
-}
-function entriesOf(vault) {
-  return vault.index.entries;
-}
-var CONFIG_DIR_ENV = "CANDLE_CONFIG_DIR";
-var init_store = __esm(() => {
-  init_args();
-  init_wallet_keystore();
-  init_crypto();
-  init_errors();
-  init_evm_record();
-  init_evm_record_key();
-  init_format();
-  init_sidecar();
-});
-
-// ../../node_modules/@noble/hashes/esm/sha3.js
-function keccakP(s, rounds = 24) {
-  const B = new Uint32Array(5 * 2);
-  for (let round = 24 - rounds;round < 24; round++) {
-    for (let x = 0;x < 10; x++)
-      B[x] = s[x] ^ s[x + 10] ^ s[x + 20] ^ s[x + 30] ^ s[x + 40];
-    for (let x = 0;x < 10; x += 2) {
-      const idx1 = (x + 8) % 10;
-      const idx0 = (x + 2) % 10;
-      const B0 = B[idx0];
-      const B1 = B[idx0 + 1];
-      const Th = rotlH(B0, B1, 1) ^ B[idx1];
-      const Tl = rotlL(B0, B1, 1) ^ B[idx1 + 1];
-      for (let y = 0;y < 50; y += 10) {
-        s[x + y] ^= Th;
-        s[x + y + 1] ^= Tl;
-      }
-    }
-    let curH = s[2];
-    let curL = s[3];
-    for (let t = 0;t < 24; t++) {
-      const shift = SHA3_ROTL[t];
-      const Th = rotlH(curH, curL, shift);
-      const Tl = rotlL(curH, curL, shift);
-      const PI = SHA3_PI[t];
-      curH = s[PI];
-      curL = s[PI + 1];
-      s[PI] = Th;
-      s[PI + 1] = Tl;
-    }
-    for (let y = 0;y < 50; y += 10) {
-      for (let x = 0;x < 10; x++)
-        B[x] = s[y + x];
-      for (let x = 0;x < 10; x++)
-        s[y + x] ^= ~B[(x + 2) % 10] & B[(x + 4) % 10];
-    }
-    s[0] ^= SHA3_IOTA_H[round];
-    s[1] ^= SHA3_IOTA_L[round];
-  }
-  clean(B);
-}
-var _0n7, _1n7, _2n5, _7n2, _256n, _0x71n, SHA3_PI, SHA3_ROTL, _SHA3_IOTA, IOTAS, SHA3_IOTA_H, SHA3_IOTA_L, rotlH = (h, l, s) => s > 32 ? rotlBH(h, l, s) : rotlSH(h, l, s), rotlL = (h, l, s) => s > 32 ? rotlBL(h, l, s) : rotlSL(h, l, s), Keccak, gen = (suffix, blockLen, outputLen) => createHasher(() => new Keccak(blockLen, suffix, outputLen)), keccak_256;
-var init_sha3 = __esm(() => {
-  init__u64();
-  init_utils();
-  _0n7 = BigInt(0);
-  _1n7 = BigInt(1);
-  _2n5 = BigInt(2);
-  _7n2 = BigInt(7);
-  _256n = BigInt(256);
-  _0x71n = BigInt(113);
-  SHA3_PI = [];
-  SHA3_ROTL = [];
-  _SHA3_IOTA = [];
-  for (let round = 0, R = _1n7, x = 1, y = 0;round < 24; round++) {
-    [x, y] = [y, (2 * x + 3 * y) % 5];
-    SHA3_PI.push(2 * (5 * y + x));
-    SHA3_ROTL.push((round + 1) * (round + 2) / 2 % 64);
-    let t = _0n7;
-    for (let j = 0;j < 7; j++) {
-      R = (R << _1n7 ^ (R >> _7n2) * _0x71n) % _256n;
-      if (R & _2n5)
-        t ^= _1n7 << (_1n7 << /* @__PURE__ */ BigInt(j)) - _1n7;
-    }
-    _SHA3_IOTA.push(t);
-  }
-  IOTAS = split(_SHA3_IOTA, true);
-  SHA3_IOTA_H = IOTAS[0];
-  SHA3_IOTA_L = IOTAS[1];
-  Keccak = class Keccak extends Hash {
-    constructor(blockLen, suffix, outputLen, enableXOF = false, rounds = 24) {
-      super();
-      this.pos = 0;
-      this.posOut = 0;
-      this.finished = false;
-      this.destroyed = false;
-      this.enableXOF = false;
-      this.blockLen = blockLen;
-      this.suffix = suffix;
-      this.outputLen = outputLen;
-      this.enableXOF = enableXOF;
-      this.rounds = rounds;
-      anumber(outputLen);
-      if (!(0 < blockLen && blockLen < 200))
-        throw new Error("only keccak-f1600 function is supported");
-      this.state = new Uint8Array(200);
-      this.state32 = u32(this.state);
-    }
-    clone() {
-      return this._cloneInto();
-    }
-    keccak() {
-      swap32IfBE(this.state32);
-      keccakP(this.state32, this.rounds);
-      swap32IfBE(this.state32);
-      this.posOut = 0;
-      this.pos = 0;
-    }
-    update(data) {
-      aexists(this);
-      data = toBytes(data);
-      abytes(data);
-      const { blockLen, state } = this;
-      const len = data.length;
-      for (let pos = 0;pos < len; ) {
-        const take2 = Math.min(blockLen - this.pos, len - pos);
-        for (let i = 0;i < take2; i++)
-          state[this.pos++] ^= data[pos++];
-        if (this.pos === blockLen)
-          this.keccak();
-      }
-      return this;
-    }
-    finish() {
-      if (this.finished)
-        return;
-      this.finished = true;
-      const { state, suffix, pos, blockLen } = this;
-      state[pos] ^= suffix;
-      if ((suffix & 128) !== 0 && pos === blockLen - 1)
-        this.keccak();
-      state[blockLen - 1] ^= 128;
-      this.keccak();
-    }
-    writeInto(out) {
-      aexists(this, false);
-      abytes(out);
-      this.finish();
-      const bufferOut = this.state;
-      const { blockLen } = this;
-      for (let pos = 0, len = out.length;pos < len; ) {
-        if (this.posOut >= blockLen)
-          this.keccak();
-        const take2 = Math.min(blockLen - this.posOut, len - pos);
-        out.set(bufferOut.subarray(this.posOut, this.posOut + take2), pos);
-        this.posOut += take2;
-        pos += take2;
-      }
-      return out;
-    }
-    xofInto(out) {
-      if (!this.enableXOF)
-        throw new Error("XOF is not possible for this instance");
-      return this.writeInto(out);
-    }
-    xof(bytes) {
-      anumber(bytes);
-      return this.xofInto(new Uint8Array(bytes));
-    }
-    digestInto(out) {
-      aoutput(out, this);
-      if (this.finished)
-        throw new Error("digest() was already called");
-      this.writeInto(out);
-      this.destroy();
-      return out;
-    }
-    digest() {
-      return this.digestInto(new Uint8Array(this.outputLen));
-    }
-    destroy() {
-      this.destroyed = true;
-      clean(this.state);
-    }
-    _cloneInto(to) {
-      const { blockLen, suffix, outputLen, rounds, enableXOF } = this;
-      to || (to = new Keccak(blockLen, suffix, outputLen, enableXOF, rounds));
-      to.state32.set(this.state32);
-      to.pos = this.pos;
-      to.posOut = this.posOut;
-      to.finished = this.finished;
-      to.rounds = rounds;
-      to.suffix = suffix;
-      to.outputLen = outputLen;
-      to.enableXOF = enableXOF;
-      to.destroyed = this.destroyed;
-      return to;
-    }
-  };
-  keccak_256 = /* @__PURE__ */ (() => gen(1, 136, 256 / 8))();
-});
-
 // ../../node_modules/zod/v3/helpers/util.js
 var util, objectUtil, ZodParsedType, getParsedType = (data) => {
   const t = typeof data;
@@ -13931,6 +11580,77 @@ var init_zod = __esm(() => {
   init_external();
 });
 
+// ../../node_modules/@noble/hashes/esm/hmac.js
+var HMAC, hmac = (hash, key, message) => new HMAC(hash, key).update(message).digest();
+var init_hmac = __esm(() => {
+  init_utils();
+  HMAC = class HMAC extends Hash {
+    constructor(hash, _key) {
+      super();
+      this.finished = false;
+      this.destroyed = false;
+      ahash(hash);
+      const key = toBytes(_key);
+      this.iHash = hash.create();
+      if (typeof this.iHash.update !== "function")
+        throw new Error("Expected instance of class which extends utils.Hash");
+      this.blockLen = this.iHash.blockLen;
+      this.outputLen = this.iHash.outputLen;
+      const blockLen = this.blockLen;
+      const pad = new Uint8Array(blockLen);
+      pad.set(key.length > blockLen ? hash.create().update(key).digest() : key);
+      for (let i = 0;i < pad.length; i++)
+        pad[i] ^= 54;
+      this.iHash.update(pad);
+      this.oHash = hash.create();
+      for (let i = 0;i < pad.length; i++)
+        pad[i] ^= 54 ^ 92;
+      this.oHash.update(pad);
+      clean(pad);
+    }
+    update(buf) {
+      aexists(this);
+      this.iHash.update(buf);
+      return this;
+    }
+    digestInto(out) {
+      aexists(this);
+      abytes(out, this.outputLen);
+      this.finished = true;
+      this.iHash.digestInto(out);
+      this.oHash.update(out);
+      this.oHash.digestInto(out);
+      this.destroy();
+    }
+    digest() {
+      const out = new Uint8Array(this.oHash.outputLen);
+      this.digestInto(out);
+      return out;
+    }
+    _cloneInto(to) {
+      to || (to = Object.create(Object.getPrototypeOf(this), {}));
+      const { oHash, iHash, finished, destroyed, blockLen, outputLen } = this;
+      to = to;
+      to.finished = finished;
+      to.destroyed = destroyed;
+      to.blockLen = blockLen;
+      to.outputLen = outputLen;
+      to.oHash = oHash._cloneInto(to.oHash);
+      to.iHash = iHash._cloneInto(to.iHash);
+      return to;
+    }
+    clone() {
+      return this._cloneInto();
+    }
+    destroy() {
+      this.destroyed = true;
+      this.oHash.destroy();
+      this.iHash.destroy();
+    }
+  };
+  hmac.create = (hash, key) => new HMAC(hash, key);
+});
+
 // ../../node_modules/@noble/curves/esm/abstract/weierstrass.js
 function _splitEndoScalar(k, basis, n) {
   const [[a1, b1], [a2, b2]] = basis;
@@ -13938,14 +11658,14 @@ function _splitEndoScalar(k, basis, n) {
   const c2 = divNearest(-b1 * k, n);
   let k1 = k - c1 * a1 - c2 * a2;
   let k2 = -c1 * b1 - c2 * b2;
-  const k1neg = k1 < _0n8;
-  const k2neg = k2 < _0n8;
+  const k1neg = k1 < _0n7;
+  const k2neg = k2 < _0n7;
   if (k1neg)
     k1 = -k1;
   if (k2neg)
     k2 = -k2;
-  const MAX_NUM = bitMask(Math.ceil(bitLen(n) / 2)) + _1n8;
-  if (k1 < _0n8 || k1 >= MAX_NUM || k2 < _0n8 || k2 >= MAX_NUM) {
+  const MAX_NUM = bitMask(Math.ceil(bitLen(n) / 2)) + _1n7;
+  if (k1 < _0n7 || k1 >= MAX_NUM || k2 < _0n7 || k2 >= MAX_NUM) {
     throw new Error("splitScalar (endomorphism): failed, k=" + k);
   }
   return { k1neg, k1, k2neg, k2 };
@@ -14302,9 +12022,9 @@ function weierstrassN(params, extraOpts = {}) {
       const p = this;
       if (!Fn2.isValid(sc))
         throw new Error("invalid scalar: out of range");
-      if (sc === _0n8 || p.is0())
+      if (sc === _0n7 || p.is0())
         return Point.ZERO;
-      if (sc === _1n8)
+      if (sc === _1n7)
         return p;
       if (wnaf.hasCache(this))
         return this.multiply(sc);
@@ -14325,7 +12045,7 @@ function weierstrassN(params, extraOpts = {}) {
     }
     isTorsionFree() {
       const { isTorsionFree } = extraOpts;
-      if (cofactor === _1n8)
+      if (cofactor === _1n7)
         return true;
       if (isTorsionFree)
         return isTorsionFree(Point, this);
@@ -14333,7 +12053,7 @@ function weierstrassN(params, extraOpts = {}) {
     }
     clearCofactor() {
       const { clearCofactor } = extraOpts;
-      if (cofactor === _1n8)
+      if (cofactor === _1n7)
         return this;
       if (clearCofactor)
         return clearCofactor(Point, this);
@@ -14488,7 +12208,7 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
   };
   const defaultSigOpts_format = "compact";
   function isBiggerThanHalfOrder(number) {
-    const HALF = CURVE_ORDER >> _1n8;
+    const HALF = CURVE_ORDER >> _1n7;
     return number > HALF;
   }
   function validateRS(title, num) {
@@ -14539,7 +12259,7 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
       const { r, s, recovery: rec } = this;
       if (rec == null || ![0, 1, 2, 3].includes(rec))
         throw new Error("recovery id invalid");
-      const hasCofactor = CURVE_ORDER * _2n6 < FIELD_ORDER;
+      const hasCofactor = CURVE_ORDER * _2n5 < FIELD_ORDER;
       if (hasCofactor && rec > 1)
         throw new Error("recovery id is ambiguous for h>1 curve");
       const radj = rec === 2 || rec === 3 ? r + CURVE_ORDER : r;
@@ -14611,7 +12331,7 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
   };
   const ORDER_MASK = bitMask(fnBits);
   function int2octets(num) {
-    aInRange("num < 2^" + fnBits, num, _0n8, ORDER_MASK);
+    aInRange("num < 2^" + fnBits, num, _0n7, ORDER_MASK);
     return Fn2.toBytes(num);
   }
   function validateMsgAndHash(message, prehash) {
@@ -14639,12 +12359,12 @@ function ecdsa(Point, hash, ecdsaOpts = {}) {
       const ik = Fn2.inv(k);
       const q = Point.BASE.multiply(k).toAffine();
       const r = Fn2.create(q.x);
-      if (r === _0n8)
+      if (r === _0n7)
         return;
       const s = Fn2.create(ik * Fn2.create(m + r * d));
-      if (s === _0n8)
+      if (s === _0n7)
         return;
-      let recovery = (q.x === r ? 0 : 2) | Number(q.y & _1n8);
+      let recovery = (q.x === r ? 0 : 2) | Number(q.y & _1n7);
       let normS = s;
       if (lowS && isBiggerThanHalfOrder(s)) {
         normS = Fn2.neg(s);
@@ -14787,7 +12507,7 @@ function weierstrass(c) {
   const signs = ecdsa(Point, hash, ecdsaOpts);
   return _ecdsa_new_output_to_legacy(c, signs);
 }
-var divNearest = (num, den) => (num + (num >= 0 ? den : -den) / _2n6) / den, DERErr, DER, _0n8, _1n8, _2n6, _3n3, _4n2;
+var divNearest = (num, den) => (num + (num >= 0 ? den : -den) / _2n5) / den, DERErr, DER, _0n7, _1n7, _2n5, _3n3, _4n2;
 var init_weierstrass = __esm(() => {
   init_hmac();
   init_utils();
@@ -14855,7 +12575,7 @@ var init_weierstrass = __esm(() => {
     _int: {
       encode(num) {
         const { Err: E } = DER;
-        if (num < _0n8)
+        if (num < _0n7)
           throw new E("integer: negative integers are not allowed");
         let hex2 = numberToHexUnpadded(num);
         if (Number.parseInt(hex2[0], 16) & 8)
@@ -14893,9 +12613,9 @@ var init_weierstrass = __esm(() => {
       return tlv.encode(48, seq);
     }
   };
-  _0n8 = BigInt(0);
-  _1n8 = BigInt(1);
-  _2n6 = BigInt(2);
+  _0n7 = BigInt(0);
+  _1n7 = BigInt(1);
+  _2n5 = BigInt(2);
   _3n3 = BigInt(3);
   _4n2 = BigInt(4);
 });
@@ -14919,7 +12639,7 @@ function sqrtMod(y) {
   const b3 = b2 * b2 * y % P2;
   const b6 = pow2(b3, _3n4, P2) * b3 % P2;
   const b9 = pow2(b6, _3n4, P2) * b3 % P2;
-  const b11 = pow2(b9, _2n7, P2) * b2 % P2;
+  const b11 = pow2(b9, _2n6, P2) * b2 % P2;
   const b22 = pow2(b11, _11n, P2) * b11 % P2;
   const b44 = pow2(b22, _22n, P2) * b22 % P2;
   const b88 = pow2(b44, _44n, P2) * b44 % P2;
@@ -14928,12 +12648,12 @@ function sqrtMod(y) {
   const b223 = pow2(b220, _3n4, P2) * b3 % P2;
   const t1 = pow2(b223, _23n, P2) * b22 % P2;
   const t2 = pow2(t1, _6n, P2) * b2 % P2;
-  const root = pow2(t2, _2n7, P2);
+  const root = pow2(t2, _2n6, P2);
   if (!Fpk1.eql(Fpk1.sqr(root), y))
     throw new Error("Cannot find square root");
   return root;
 }
-var secp256k1_CURVE, secp256k1_ENDO, _2n7, Fpk1, secp256k1;
+var secp256k1_CURVE, secp256k1_ENDO, _2n6, Fpk1, secp256k1;
 var init_secp256k1 = __esm(() => {
   init_sha2();
   init__shortw_utils();
@@ -14955,9 +12675,191 @@ var init_secp256k1 = __esm(() => {
       [BigInt("0x114ca50f7a8e2f3f657c1108d9d44cfd8"), BigInt("0x3086d221a7d46bcde86c90e49284eb15")]
     ]
   };
-  _2n7 = /* @__PURE__ */ BigInt(2);
+  _2n6 = /* @__PURE__ */ BigInt(2);
   Fpk1 = Field(secp256k1_CURVE.p, { sqrt: sqrtMod });
   secp256k1 = createCurve({ ...secp256k1_CURVE, Fp: Fpk1, lowS: true, endo: secp256k1_ENDO }, sha256);
+});
+
+// ../../node_modules/@noble/hashes/esm/sha3.js
+function keccakP(s, rounds = 24) {
+  const B = new Uint32Array(5 * 2);
+  for (let round = 24 - rounds;round < 24; round++) {
+    for (let x = 0;x < 10; x++)
+      B[x] = s[x] ^ s[x + 10] ^ s[x + 20] ^ s[x + 30] ^ s[x + 40];
+    for (let x = 0;x < 10; x += 2) {
+      const idx1 = (x + 8) % 10;
+      const idx0 = (x + 2) % 10;
+      const B0 = B[idx0];
+      const B1 = B[idx0 + 1];
+      const Th = rotlH(B0, B1, 1) ^ B[idx1];
+      const Tl = rotlL(B0, B1, 1) ^ B[idx1 + 1];
+      for (let y = 0;y < 50; y += 10) {
+        s[x + y] ^= Th;
+        s[x + y + 1] ^= Tl;
+      }
+    }
+    let curH = s[2];
+    let curL = s[3];
+    for (let t = 0;t < 24; t++) {
+      const shift = SHA3_ROTL[t];
+      const Th = rotlH(curH, curL, shift);
+      const Tl = rotlL(curH, curL, shift);
+      const PI = SHA3_PI[t];
+      curH = s[PI];
+      curL = s[PI + 1];
+      s[PI] = Th;
+      s[PI + 1] = Tl;
+    }
+    for (let y = 0;y < 50; y += 10) {
+      for (let x = 0;x < 10; x++)
+        B[x] = s[y + x];
+      for (let x = 0;x < 10; x++)
+        s[y + x] ^= ~B[(x + 2) % 10] & B[(x + 4) % 10];
+    }
+    s[0] ^= SHA3_IOTA_H[round];
+    s[1] ^= SHA3_IOTA_L[round];
+  }
+  clean(B);
+}
+var _0n8, _1n8, _2n7, _7n2, _256n, _0x71n, SHA3_PI, SHA3_ROTL, _SHA3_IOTA, IOTAS, SHA3_IOTA_H, SHA3_IOTA_L, rotlH = (h, l, s) => s > 32 ? rotlBH(h, l, s) : rotlSH(h, l, s), rotlL = (h, l, s) => s > 32 ? rotlBL(h, l, s) : rotlSL(h, l, s), Keccak, gen = (suffix, blockLen, outputLen) => createHasher(() => new Keccak(blockLen, suffix, outputLen)), keccak_256;
+var init_sha3 = __esm(() => {
+  init__u64();
+  init_utils();
+  _0n8 = BigInt(0);
+  _1n8 = BigInt(1);
+  _2n7 = BigInt(2);
+  _7n2 = BigInt(7);
+  _256n = BigInt(256);
+  _0x71n = BigInt(113);
+  SHA3_PI = [];
+  SHA3_ROTL = [];
+  _SHA3_IOTA = [];
+  for (let round = 0, R = _1n8, x = 1, y = 0;round < 24; round++) {
+    [x, y] = [y, (2 * x + 3 * y) % 5];
+    SHA3_PI.push(2 * (5 * y + x));
+    SHA3_ROTL.push((round + 1) * (round + 2) / 2 % 64);
+    let t = _0n8;
+    for (let j = 0;j < 7; j++) {
+      R = (R << _1n8 ^ (R >> _7n2) * _0x71n) % _256n;
+      if (R & _2n7)
+        t ^= _1n8 << (_1n8 << /* @__PURE__ */ BigInt(j)) - _1n8;
+    }
+    _SHA3_IOTA.push(t);
+  }
+  IOTAS = split(_SHA3_IOTA, true);
+  SHA3_IOTA_H = IOTAS[0];
+  SHA3_IOTA_L = IOTAS[1];
+  Keccak = class Keccak extends Hash {
+    constructor(blockLen, suffix, outputLen, enableXOF = false, rounds = 24) {
+      super();
+      this.pos = 0;
+      this.posOut = 0;
+      this.finished = false;
+      this.destroyed = false;
+      this.enableXOF = false;
+      this.blockLen = blockLen;
+      this.suffix = suffix;
+      this.outputLen = outputLen;
+      this.enableXOF = enableXOF;
+      this.rounds = rounds;
+      anumber(outputLen);
+      if (!(0 < blockLen && blockLen < 200))
+        throw new Error("only keccak-f1600 function is supported");
+      this.state = new Uint8Array(200);
+      this.state32 = u32(this.state);
+    }
+    clone() {
+      return this._cloneInto();
+    }
+    keccak() {
+      swap32IfBE(this.state32);
+      keccakP(this.state32, this.rounds);
+      swap32IfBE(this.state32);
+      this.posOut = 0;
+      this.pos = 0;
+    }
+    update(data) {
+      aexists(this);
+      data = toBytes(data);
+      abytes(data);
+      const { blockLen, state } = this;
+      const len = data.length;
+      for (let pos = 0;pos < len; ) {
+        const take = Math.min(blockLen - this.pos, len - pos);
+        for (let i = 0;i < take; i++)
+          state[this.pos++] ^= data[pos++];
+        if (this.pos === blockLen)
+          this.keccak();
+      }
+      return this;
+    }
+    finish() {
+      if (this.finished)
+        return;
+      this.finished = true;
+      const { state, suffix, pos, blockLen } = this;
+      state[pos] ^= suffix;
+      if ((suffix & 128) !== 0 && pos === blockLen - 1)
+        this.keccak();
+      state[blockLen - 1] ^= 128;
+      this.keccak();
+    }
+    writeInto(out) {
+      aexists(this, false);
+      abytes(out);
+      this.finish();
+      const bufferOut = this.state;
+      const { blockLen } = this;
+      for (let pos = 0, len = out.length;pos < len; ) {
+        if (this.posOut >= blockLen)
+          this.keccak();
+        const take = Math.min(blockLen - this.posOut, len - pos);
+        out.set(bufferOut.subarray(this.posOut, this.posOut + take), pos);
+        this.posOut += take;
+        pos += take;
+      }
+      return out;
+    }
+    xofInto(out) {
+      if (!this.enableXOF)
+        throw new Error("XOF is not possible for this instance");
+      return this.writeInto(out);
+    }
+    xof(bytes) {
+      anumber(bytes);
+      return this.xofInto(new Uint8Array(bytes));
+    }
+    digestInto(out) {
+      aoutput(out, this);
+      if (this.finished)
+        throw new Error("digest() was already called");
+      this.writeInto(out);
+      this.destroy();
+      return out;
+    }
+    digest() {
+      return this.digestInto(new Uint8Array(this.outputLen));
+    }
+    destroy() {
+      this.destroyed = true;
+      clean(this.state);
+    }
+    _cloneInto(to) {
+      const { blockLen, suffix, outputLen, rounds, enableXOF } = this;
+      to || (to = new Keccak(blockLen, suffix, outputLen, enableXOF, rounds));
+      to.state32.set(this.state32);
+      to.pos = this.pos;
+      to.posOut = this.posOut;
+      to.finished = this.finished;
+      to.rounds = rounds;
+      to.suffix = suffix;
+      to.outputLen = outputLen;
+      to.enableXOF = enableXOF;
+      to.destroyed = this.destroyed;
+      return to;
+    }
+  };
+  keccak_256 = /* @__PURE__ */ (() => gen(1, 136, 256 / 8))();
 });
 
 // ../../node_modules/@noble/hashes/esm/legacy.js
@@ -15377,9 +13279,9 @@ function rlpLength(length, offset) {
   if (length < 56)
     return Uint8Array.of(offset + length);
   const lengthBytes = uintToMinimalBytes(BigInt(length));
-  return concat4(Uint8Array.of(offset + 55 + lengthBytes.length), lengthBytes);
+  return concat3(Uint8Array.of(offset + 55 + lengthBytes.length), lengthBytes);
 }
-function concat4(...parts) {
+function concat3(...parts) {
   const out = new Uint8Array(parts.reduce((n, part) => n + part.length, 0));
   let at = 0;
   for (const part of parts) {
@@ -15392,10 +13294,10 @@ function rlpEncode(item) {
   if (item instanceof Uint8Array) {
     if (item.length === 1 && item[0] < 128)
       return item;
-    return concat4(rlpLength(item.length, 128), item);
+    return concat3(rlpLength(item.length, 128), item);
   }
-  const body = concat4(...item.map(rlpEncode));
-  return concat4(rlpLength(body.length, 192), body);
+  const body = concat3(...item.map(rlpEncode));
+  return concat3(rlpLength(body.length, 192), body);
 }
 function toChecksumAddress(address) {
   const lower = (address.startsWith("0x") ? address.slice(2) : address).toLowerCase();
@@ -15478,7 +13380,7 @@ function abiAddress(address) {
   return out;
 }
 function encodeErc20Transfer(recipient, amount) {
-  return concat4(hexToBytes2(ERC20_TRANSFER_SELECTOR), abiAddress(recipient), abiWord(amount));
+  return concat3(hexToBytes2(ERC20_TRANSFER_SELECTOR), abiAddress(recipient), abiWord(amount));
 }
 function decodeErc20Transfer(data) {
   if (data.length !== 68)
@@ -15506,7 +13408,7 @@ function unsignedFields(tx) {
   ];
 }
 function signingPayload(tx) {
-  return keccak_256(concat4(TYPE_2, rlpEncode(unsignedFields(tx))));
+  return keccak_256(concat3(TYPE_2, rlpEncode(unsignedFields(tx))));
 }
 function signTransaction(tx, secret) {
   if (secret.length !== EVM_SECRET_BYTES) {
@@ -15514,7 +13416,7 @@ function signTransaction(tx, secret) {
   }
   const signature = secp256k1.sign(signingPayload(tx), secret, { lowS: true, prehash: false });
   const yParity = signature.recovery === 1 ? 1 : 0;
-  const raw = concat4(TYPE_2, rlpEncode([
+  const raw = concat3(TYPE_2, rlpEncode([
     ...unsignedFields(tx),
     uintToMinimalBytes(BigInt(yParity)),
     uintToMinimalBytes(signature.r),
@@ -15741,7 +13643,7 @@ function createEvmRpc(url, fetchFn) {
     async erc20BalanceOf(token, owner) {
       const answer = await this.call({
         to: token,
-        data: concat4(hexToBytes2(ERC20_BALANCE_OF_SELECTOR), abiAddress(owner))
+        data: concat3(hexToBytes2(ERC20_BALANCE_OF_SELECTOR), abiAddress(owner))
       });
       if (answer.length !== 32)
         throw new EvmRpcError("rpc", "eth_call", "the contract did not answer balanceOf()");
@@ -15814,11 +13716,528 @@ var init_evm_lite = __esm(() => {
   };
 });
 
+// src/relay-constants.ts
+var RELAY_HOOD_DEPOSITORY = "0x4cd00e387622c35bddb9b4c962c136462338bc31", RELAY_HOOD_DEPOSIT_NATIVE_SELECTOR = "0x49290c1c", RELAY_HOOD_DEPOSIT_ERC20_SELECTOR = "0xe8017952", RELAY_SOLANA_DEPOSITORY_PROGRAM = "99vQwtBwYtrqqD9YSXbdum3KBdxPAVxYTaQ3cfnJSrN2";
+var init_relay_constants = () => {};
+
+// src/solana-alt.ts
+function decodeStrictBase64(text) {
+  const trimmed = text.replace(/[\r\n]+$/, "");
+  if (trimmed.length === 0)
+    throw new TransactionDecodeError("the input is empty");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed) || trimmed.length % 4 !== 0) {
+    throw new TransactionDecodeError("the input is not strict base64");
+  }
+  const bytes = Buffer.from(trimmed, "base64");
+  if (bytes.toString("base64") !== trimmed) {
+    throw new TransactionDecodeError("the input is not canonical base64");
+  }
+  return new Uint8Array(bytes);
+}
+function fail(detail) {
+  throw new TransactionDecodeError(detail);
+}
+function u82(r) {
+  const value = r.bytes[r.at];
+  if (value === undefined)
+    fail("the transaction ends early");
+  r.at += 1;
+  return value;
+}
+function shortvec2(r) {
+  let value = 0;
+  for (let i = 0;i < 3; i++) {
+    const byte = u82(r);
+    value |= (byte & 127) << 7 * i;
+    if ((byte & 128) === 0) {
+      if (i === 2 && byte > 3)
+        fail("a compact length is out of range");
+      return value;
+    }
+  }
+  fail("a compact length is malformed");
+}
+function take(r, n) {
+  if (r.at + n > r.bytes.length)
+    fail("the transaction ends early");
+  const out = r.bytes.subarray(r.at, r.at + n);
+  r.at += n;
+  return out;
+}
+function indexes(r) {
+  const count = shortvec2(r);
+  const out = [];
+  for (let i = 0;i < count; i++)
+    out.push(u82(r));
+  return out;
+}
+function decodeTransaction(wire) {
+  const r = { bytes: wire, at: 0 };
+  const signatureCount = shortvec2(r);
+  const signatures = [];
+  for (let i = 0;i < signatureCount; i++)
+    signatures.push(Uint8Array.from(take(r, SIGNATURE_BYTES)));
+  const messageStart = r.at;
+  const prefix = u82(r);
+  let version;
+  if ((prefix & 128) === 0) {
+    version = "legacy";
+    r.at = messageStart;
+  } else {
+    const found = prefix & 127;
+    if (found !== 0)
+      fail(`message version ${found} is not supported (legacy and v0 only)`);
+    version = 0;
+  }
+  const numRequiredSignatures = u82(r);
+  const numReadonlySigned = u82(r);
+  const numReadonlyUnsigned = u82(r);
+  const staticCount = shortvec2(r);
+  const staticKeys = [];
+  for (let i = 0;i < staticCount; i++)
+    staticKeys.push(encodePubkey(Uint8Array.from(take(r, PUBKEY_BYTES))));
+  const recentBlockhash = base58.encode(Uint8Array.from(take(r, BLOCKHASH_BYTES)));
+  const instructionCount = shortvec2(r);
+  const instructions = [];
+  for (let i = 0;i < instructionCount; i++) {
+    const programIdIndex = u82(r);
+    const accountIndexes = indexes(r);
+    const dataLength = shortvec2(r);
+    instructions.push({ programIdIndex, accountIndexes, data: Uint8Array.from(take(r, dataLength)) });
+  }
+  const lookups = [];
+  if (version === 0) {
+    const lookupCount = shortvec2(r);
+    for (let i = 0;i < lookupCount; i++) {
+      const table = encodePubkey(Uint8Array.from(take(r, PUBKEY_BYTES)));
+      const writableIndexes = indexes(r);
+      const readonlyIndexes = indexes(r);
+      lookups.push({ table, writableIndexes, readonlyIndexes });
+    }
+  }
+  if (r.at !== wire.length)
+    fail(`${wire.length - r.at} byte(s) remain after the transaction`);
+  if (signatureCount !== numRequiredSignatures) {
+    fail(`the transaction carries ${signatureCount} signature slot(s) but its message requires ${numRequiredSignatures}`);
+  }
+  if (numRequiredSignatures === 0)
+    fail("the message requires no signature, so it has no fee payer");
+  if (numRequiredSignatures > staticCount)
+    fail("the message requires more signatures than it has static keys");
+  if (numReadonlySigned > numRequiredSignatures)
+    fail("the message's readonly-signed count exceeds its signer count");
+  if (numReadonlyUnsigned > staticCount - numRequiredSignatures) {
+    fail("the message's readonly-unsigned count exceeds its unsigned key count");
+  }
+  if (version === 0 && lookups.length > 0 && numReadonlySigned === numRequiredSignatures) {}
+  const loadedCount = lookups.reduce((n, l) => n + l.writableIndexes.length + l.readonlyIndexes.length, 0);
+  const totalKeys = staticCount + loadedCount;
+  for (const [i, ix] of instructions.entries()) {
+    if (ix.programIdIndex >= totalKeys)
+      fail(`instruction ${i} names a program index outside the account list`);
+    if (ix.programIdIndex >= staticCount)
+      fail(`instruction ${i} names a program from a lookup table, which is not allowed`);
+    for (const index of ix.accountIndexes) {
+      if (index >= totalKeys)
+        fail(`instruction ${i} names an account index outside the account list`);
+    }
+  }
+  const seenTables = new Set;
+  for (const lookup of lookups) {
+    if (seenTables.has(lookup.table))
+      fail(`lookup table ${lookup.table} is named twice`);
+    seenTables.add(lookup.table);
+    if (lookup.writableIndexes.length === 0 && lookup.readonlyIndexes.length === 0) {
+      fail(`lookup table ${lookup.table} is named but loads nothing`);
+    }
+  }
+  return {
+    signatures,
+    message: {
+      version,
+      numRequiredSignatures,
+      numReadonlySigned,
+      numReadonlyUnsigned,
+      staticKeys,
+      recentBlockhash,
+      instructions,
+      lookups,
+      bytes: Uint8Array.from(wire.subarray(messageStart))
+    }
+  };
+}
+function encodeShortvec(n) {
+  const out = [];
+  let rem = n;
+  for (;; ) {
+    let elem = rem & 127;
+    rem >>= 7;
+    if (rem === 0) {
+      out.push(elem);
+      return new Uint8Array(out);
+    }
+    elem |= 128;
+    out.push(elem);
+  }
+}
+function attachSignatures(tx, signed) {
+  const slots = tx.signatures.map((existing, i) => signed.get(i) ?? existing);
+  for (const [i, slot] of slots.entries()) {
+    if (slot.length !== SIGNATURE_BYTES)
+      throw new Error(`signature slot ${i} is not ${SIGNATURE_BYTES} bytes`);
+  }
+  const count = encodeShortvec(slots.length);
+  const out = new Uint8Array(count.length + slots.length * SIGNATURE_BYTES + tx.message.bytes.length);
+  out.set(count, 0);
+  let at = count.length;
+  for (const slot of slots) {
+    out.set(slot, at);
+    at += SIGNATURE_BYTES;
+  }
+  out.set(tx.message.bytes, at);
+  return out;
+}
+function parseLookupTableAddresses(account, table) {
+  if (account === null)
+    throw new LookupTableError(`lookup table ${table} does not exist`);
+  if (account.owner !== ADDRESS_LOOKUP_TABLE_PROGRAM_ID) {
+    throw new LookupTableError(`${table} is not a lookup table (owned by ${account.owner})`);
+  }
+  const data = account.data;
+  if (data.length < LOOKUP_TABLE_META_SIZE || (data.length - LOOKUP_TABLE_META_SIZE) % PUBKEY_BYTES !== 0) {
+    throw new LookupTableError(`lookup table ${table} has a malformed address list`);
+  }
+  const addresses = [];
+  for (let at = LOOKUP_TABLE_META_SIZE;at < data.length; at += PUBKEY_BYTES) {
+    addresses.push(encodePubkey(data.subarray(at, at + PUBKEY_BYTES)));
+  }
+  return addresses;
+}
+async function resolveCompiledKeys(message, rpc) {
+  const loadedWritable = [];
+  const loadedReadonly = [];
+  if (message.lookups.length > 0) {
+    let accounts;
+    try {
+      accounts = await rpc.getMultipleAccounts(message.lookups.map((lookup) => lookup.table));
+    } catch (error) {
+      if (isRateLimited(error))
+        throw error;
+      throw new LookupTableError(`the lookup table(s) could not be fetched: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    for (const [i, lookup] of message.lookups.entries()) {
+      const addresses = parseLookupTableAddresses(accounts[i] ?? null, lookup.table);
+      const lookupAddress = (index) => {
+        const address = addresses[index];
+        if (address === undefined) {
+          throw new LookupTableError(`lookup table ${lookup.table} has ${addresses.length} address(es) and the message indexes ${index}`);
+        }
+        return address;
+      };
+      for (const index of lookup.writableIndexes)
+        loadedWritable.push(lookupAddress(index));
+      for (const index of lookup.readonlyIndexes)
+        loadedReadonly.push(lookupAddress(index));
+    }
+  }
+  const staticCount = message.staticKeys.length;
+  const keys = [...message.staticKeys, ...loadedWritable, ...loadedReadonly];
+  const isSigner = keys.map((_, i) => i < message.numRequiredSignatures);
+  const isWritable = keys.map((_, i) => {
+    if (i < message.numRequiredSignatures)
+      return i < message.numRequiredSignatures - message.numReadonlySigned;
+    if (i < staticCount)
+      return i < staticCount - message.numReadonlyUnsigned;
+    return i < staticCount + loadedWritable.length;
+  });
+  return { keys, isSigner, isWritable, staticCount };
+}
+async function simulateWithSnapshots(rpc, txBase64, compiled) {
+  const writable = compiled.keys.filter((_, i) => compiled.isWritable[i]);
+  const before = await rpc.getMultipleAccounts(writable);
+  const result = await rpc.simulateTransaction(txBase64, writable);
+  return {
+    result,
+    snapshots: writable.map((address, i) => ({
+      address,
+      before: before[i] ?? null,
+      after: result.accounts[i] ?? null
+    }))
+  };
+}
+function tokenBalanceOf(view) {
+  if (view === null)
+    return;
+  if (view.owner !== TOKEN_PROGRAM_ID && view.owner !== TOKEN_2022_PROGRAM_ID)
+    return;
+  if (view.data.length < TOKEN_ACCOUNT_SIZE)
+    return;
+  const dv = new DataView(view.data.buffer, view.data.byteOffset, view.data.byteLength);
+  return {
+    mint: encodePubkey(view.data.subarray(0, 32)),
+    owner: encodePubkey(view.data.subarray(32, 64)),
+    amount: dv.getBigUint64(64, true),
+    tokenProgram: view.owner
+  };
+}
+function computeDeltas(snapshots) {
+  const sol = [];
+  const tokens = [];
+  for (const snapshot of snapshots) {
+    sol.push({
+      address: snapshot.address,
+      before: snapshot.before?.lamports ?? 0n,
+      after: snapshot.after?.lamports ?? 0n
+    });
+    const pre = tokenBalanceOf(snapshot.before);
+    const post = tokenBalanceOf(snapshot.after);
+    const shape = post ?? pre;
+    if (shape === undefined)
+      continue;
+    tokens.push({
+      account: snapshot.address,
+      owner: shape.owner,
+      mint: shape.mint,
+      tokenProgram: shape.tokenProgram,
+      before: pre?.amount ?? 0n,
+      after: post?.amount ?? 0n
+    });
+  }
+  return { sol, tokens };
+}
+function programNameOf(programId) {
+  switch (programId) {
+    case SYSTEM_PROGRAM_ID:
+      return `System (${programId})`;
+    case TOKEN_PROGRAM_ID:
+      return `Token (${programId})`;
+    case TOKEN_2022_PROGRAM_ID:
+      return `Token-2022 (${programId})`;
+    case ASSOCIATED_TOKEN_PROGRAM_ID:
+      return `Associated Token (${programId})`;
+    case COMPUTE_BUDGET_PROGRAM_ID:
+      return `Compute Budget (${programId})`;
+    case MEMO_PROGRAM_ID:
+      return `Memo (${programId})`;
+    case ADDRESS_LOOKUP_TABLE_PROGRAM_ID:
+      return `Address Lookup Table (${programId})`;
+    default:
+      return programId;
+  }
+}
+var ADDRESS_LOOKUP_TABLE_PROGRAM_ID = "AddressLookupTab1e1111111111111111111111111", COMPUTE_BUDGET_PROGRAM_ID = "ComputeBudget111111111111111111111111111111", MEMO_PROGRAM_ID = "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", TransactionDecodeError, LookupTableError, SIGNATURE_BYTES = 64, PUBKEY_BYTES = 32, BLOCKHASH_BYTES = 32, LOOKUP_TABLE_META_SIZE = 56, TOKEN_ACCOUNT_SIZE = 165;
+var init_solana_alt = __esm(() => {
+  init_esm();
+  init_solana_lite();
+  TransactionDecodeError = class TransactionDecodeError extends Error {
+  };
+  LookupTableError = class LookupTableError extends Error {
+  };
+});
+
+// src/solana-endpoint.ts
+function validateSolanaRpcUrl(url, source) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return `${source} is not a valid URL`;
+  }
+  const local = parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
+  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && local)) {
+    return `${source} must be https:// (plain http is allowed only for 127.0.0.1 / localhost).`;
+  }
+  return;
+}
+function sourceLabel(source, ctx) {
+  if (source === "flag")
+    return "--rpc-url";
+  if (source === "env")
+    return RPC_URL_ENV;
+  return `profile ${ctx.profile}'s rpcUrl`;
+}
+function describeSource(endpoint, ctx) {
+  if (endpoint.source === "flag")
+    return "--rpc-url";
+  if (endpoint.source === "env")
+    return RPC_URL_ENV;
+  if (endpoint.source === "profile")
+    return `profile ${ctx.profile}`;
+  return "public default";
+}
+function resolveSolanaEndpoint(ctx, flag, config) {
+  const profileUrl = ctx.profile !== undefined && config.profiles !== undefined && Object.hasOwn(config.profiles, ctx.profile) ? config.profiles[ctx.profile]?.rpcUrl?.trim() || undefined : undefined;
+  const candidates = [
+    ["flag", flag],
+    ["env", ctx.deps.env[RPC_URL_ENV]?.trim() || undefined],
+    ["profile", profileUrl]
+  ];
+  for (const [source, url] of candidates) {
+    if (url === undefined)
+      continue;
+    const fault = validateSolanaRpcUrl(url, sourceLabel(source, ctx));
+    if (fault !== undefined)
+      return { error: fault };
+    return { url, host: new URL(url).host, source };
+  }
+  return { url: PUBLIC_SOLANA_RPC, host: PUBLIC_SOLANA_RPC_HOST, source: "default" };
+}
+function flagEndpoint(url) {
+  return { url, host: new URL(url).host, source: "flag" };
+}
+function profileSetCommand(profile) {
+  return `candle profile set ${profile} --rpc-url ${RPC_PLACEHOLDER}`;
+}
+function rpcFixLines(ctx) {
+  if (ctx.profile !== undefined) {
+    return [profileSetCommand(ctx.profile), `or, for one command, --rpc-url ${RPC_PLACEHOLDER} or ${RPC_URL_ENV}`];
+  }
+  return [
+    `--rpc-url ${RPC_PLACEHOLDER} on this command, or ${RPC_URL_ENV} for every command`,
+    "or sign in (candle auth login) to store one per profile"
+  ];
+}
+function publicRpcNoticeLines(ctx) {
+  const first = `Using the public Solana RPC, ${PUBLIC_SOLANA_RPC_HOST}. It rate-limits heavily, and it sees every address this CLI asks it about.`;
+  const last = "This notice is shown once on this machine.";
+  if (ctx.profile !== undefined) {
+    return [
+      first,
+      `Set your own RPC for this profile: ${profileSetCommand(ctx.profile)}`,
+      `Or for one command: --rpc-url ${RPC_PLACEHOLDER}, or ${RPC_URL_ENV}.`,
+      last
+    ];
+  }
+  return [
+    first,
+    `Set your own RPC for one command with --rpc-url ${RPC_PLACEHOLDER}, or for every command with ${RPC_URL_ENV}.`,
+    "Or sign in (candle auth login) to store one per profile.",
+    last
+  ];
+}
+async function maybeWritePublicRpcNotice(ctx) {
+  let config = {};
+  try {
+    config = await ctx.deps.readConfig();
+  } catch {}
+  if (config.publicRpcNotice?.shownAt !== undefined)
+    return;
+  for (const line of publicRpcNoticeLines(ctx))
+    ctx.deps.stderr.write(`${line}
+`);
+  try {
+    await ctx.deps.writeConfig({ publicRpcNotice: { shownAt: ctx.deps.now() } });
+  } catch {}
+}
+function hostLine(endpoint, ctx) {
+  return `Solana RPC: ${endpoint.host} (${describeSource(endpoint, ctx)})`;
+}
+function disclosing(rpc, disclose) {
+  const wrapped = {};
+  for (const key of Object.keys(rpc)) {
+    const method = rpc[key];
+    if (typeof method !== "function")
+      continue;
+    wrapped[key] = async (...args) => {
+      await disclose();
+      return method(...args);
+    };
+  }
+  return wrapped;
+}
+function solanaClientFor(ctx, endpoint) {
+  let disclosed = false;
+  const disclose = async () => {
+    if (disclosed)
+      return;
+    disclosed = true;
+    if (endpoint.source === "default")
+      await maybeWritePublicRpcNotice(ctx);
+    ctx.deps.stderr.write(`${hostLine(endpoint, ctx)}
+`);
+  };
+  return {
+    endpoint,
+    rpc: disclosing(createSolanaRpc(endpoint.url, ctx.deps.fetch, ctx.deps.sleep), disclose),
+    disclose,
+    async read(read) {
+      try {
+        return await read();
+      } catch (error) {
+        if (isRateLimited(error))
+          throw rpcRateLimitedError(ctx, endpoint.host, error);
+        throw error;
+      }
+    }
+  };
+}
+async function openSolanaClient(ctx, flag) {
+  const endpoint = resolveSolanaEndpoint(ctx, flag, await ctx.deps.readConfig());
+  if ("error" in endpoint)
+    return endpoint;
+  return solanaClientFor(ctx, endpoint);
+}
+function fixSuggestion(ctx, lines) {
+  if (ctx.json)
+    return lines.join(`
+`);
+  const [first, ...rest] = lines;
+  return [`Fix: ${first}`, ...rest.map((line) => `     ${line}`)].join(`
+`);
+}
+function rateLimitedSuggestion(ctx) {
+  return fixSuggestion(ctx, rpcFixLines(ctx));
+}
+function rateLimitedMessage(host, error) {
+  return `The Solana RPC at ${host} is rate-limiting this CLI (${describeRateLimit(error)}, retried once). Nothing was signed or sent.`;
+}
+function rpcRateLimitedError(ctx, host, error) {
+  return new VaultError("RPC_RATE_LIMITED", rateLimitedMessage(host, error), {
+    suggestion: rateLimitedSuggestion(ctx),
+    exitCode: 1
+  });
+}
+function postSignatureFixLines(ctx) {
+  const lines = rpcFixLines(ctx);
+  return ctx.profile === undefined ? lines : lines.slice(0, 1);
+}
+function postSignatureRateLimitMessage(signature) {
+  return `The RPC rate-limited this CLI after the transaction was signed. It may still land: check ${signature} before anything else.`;
+}
+function postSignatureSuggestion(ctx) {
+  return fixSuggestion(ctx, postSignatureFixLines(ctx));
+}
+function notePostSignatureRateLimit(ctx, signature) {
+  const [first, ...rest] = postSignatureFixLines(ctx);
+  ctx.deps.stderr.write(`${postSignatureRateLimitMessage(signature)}
+`);
+  ctx.deps.stderr.write(`Fix: ${first}
+`);
+  for (const line of rest)
+    ctx.deps.stderr.write(`     ${line}
+`);
+}
+function describeRpcFailure(error) {
+  if (error instanceof SolanaRpcError)
+    return error.message;
+  if (error instanceof Error)
+    return error.message.replace(/https?:\/\/\S+/g, "<rpc>");
+  return String(error);
+}
+function rateLimitedReadFailure(ctx, error) {
+  return `RPC_RATE_LIMITED (${describeRateLimit(error)}, retried once). Fix: ${rpcFixLines(ctx).join(", ")}`;
+}
+var PUBLIC_SOLANA_RPC = "https://api.mainnet-beta.solana.com", PUBLIC_SOLANA_RPC_HOST = "api.mainnet-beta.solana.com", RPC_URL_ENV = "CANDLE_SOLANA_RPC_URL", RPC_PLACEHOLDER = "https://<your-rpc>";
+var init_solana_endpoint = __esm(() => {
+  init_solana_lite();
+  init_errors();
+});
+
 // src/trading.ts
 import { createHash as createHash2, sign as sign2 } from "node:crypto";
-import { mkdir as mkdir5, open as open3, readFile as readFile6, rename as rename4, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir2, open as open3, readFile as readFile2, rename as rename2, writeFile as writeFile2 } from "node:fs/promises";
 import { homedir as homedir2 } from "node:os";
-import { join as join5 } from "node:path";
+import { join as join3 } from "node:path";
 function baseAsset(value) {
   return Object.keys(BASES).find((key) => key === value.toUpperCase() || BASES[key]?.mint === value);
 }
@@ -15848,7 +14267,7 @@ function classifyAsset(value) {
 }
 function pairChain(from, to) {
   if (from.chain !== to.chain)
-    throw new TradingError("CHAIN_MISMATCH", `${safeText(from.asset)} is on ${chainName(from.chain)} and ${safeText(to.asset)} is on ${chainName(to.chain)}; a swap stays on one chain. Nothing was built.`);
+    throw new TradingError("CHAIN_MISMATCH", `${safeText(from.asset)} is on ${chainName(from.chain)} and ${safeText(to.asset)} is on ${chainName(to.chain)}; a swap stays on one chain, and only SOL or USDC and ETH or USDG bridge between them. Nothing was built.`);
   return from.chain;
 }
 function chainName(chain2) {
@@ -16123,7 +14542,13 @@ async function relaySignEvmLeg(ctx, key, wallet, leg) {
 function bytesToHexHash(raw) {
   return `0x${Buffer.from(keccak_256(raw)).toString("hex")}`;
 }
-function plannedLegKinds(first, count, hasFee) {
+function plannedLegKinds(first, count, hasFee, primary = "trade") {
+  if (primary === "bridgeDeposit") {
+    if (hasFee)
+      return;
+    const plan = count === 2 ? ["approval", "bridgeDeposit"] : count === 1 ? ["bridgeDeposit"] : [];
+    return plan[0] === first ? plan : undefined;
+  }
   const tail = hasFee ? ["trade", "feeTransfer"] : ["trade"];
   const head = count - tail.length;
   const candidates = [[], ["approval"], ["permit2Approval"], ["approval", "permit2Approval"]];
@@ -16239,13 +14664,13 @@ function jobPath(kind, id) {
   return `/api/v1/${rail}/jobs/${encodeURIComponent(id)}`;
 }
 function operationPath(ctx, key, id) {
-  const dir = ctx.deps.env.CANDLE_CONFIG_DIR || join5(ctx.deps.env.HOME || homedir2(), ".config", "candle");
+  const dir = ctx.deps.env.CANDLE_CONFIG_DIR || join3(ctx.deps.env.HOME || homedir2(), ".config", "candle");
   const hash = createHash2("sha256").update(JSON.stringify([ctx.apiUrl, key, id])).digest("hex");
-  return join5(dir, "operations", `${hash}.json`);
+  return join3(dir, "operations", `${hash}.json`);
 }
 async function savedOperation(ctx, key, id) {
   try {
-    return JSON.parse(await readFile6(operationPath(ctx, key, id), "utf8"));
+    return JSON.parse(await readFile2(operationPath(ctx, key, id), "utf8"));
   } catch (error) {
     if (error.code === "ENOENT" || error instanceof SyntaxError)
       return null;
@@ -16254,7 +14679,7 @@ async function savedOperation(ctx, key, id) {
 }
 async function claimOperation(ctx, key, id, kind) {
   const path = operationPath(ctx, key, id);
-  await mkdir5(join5(path, ".."), { recursive: true, mode: 448 });
+  await mkdir2(join3(path, ".."), { recursive: true, mode: 448 });
   let file;
   try {
     file = await open3(path, "wx", 384);
@@ -16287,6 +14712,18 @@ Price impact: ${quote.priceImpactPct == null ? "unavailable" : `${safeText(quote
 ${quote.fee ? `Tier fee: ${safeText(quote.fee.bps)} bps (${safeText(quote.fee.feeRaw)} raw)
 ` : ""}Minimum received: ${safeText(quote.minimumReceived)}
 `);
+  if (quote.destination)
+    output.write(`Destination: ${safeText(quote.destination)}
+`);
+  if (quote.candleFee)
+    output.write(`Candle fee: ${safeText(quote.candleFee)}
+`);
+  if (quote.relayFees)
+    output.write(`Relay fees: ${safeText(quote.relayFees)}
+`);
+  if (quote.estimatedTime)
+    output.write(`Estimated time: ${safeText(quote.estimatedTime)}
+`);
   if (quote.maxDebitLamports)
     output.write(`Maximum launch debit: ${safeText(quote.maxDebitLamports)} lamports
 `);
@@ -16308,17 +14745,33 @@ ${quote.fee ? `Tier fee: ${safeText(quote.fee.bps)} bps (${safeText(quote.fee.fe
     throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes for an ordinary trade prompt.");
   return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y";
 }
-async function saveOperationHash(ctx, key, id, kind, hash, operationId) {
-  const path = operationPath(ctx, key, id);
+async function saveOperationBridge(ctx, key, id, bridge) {
+  const saved = await savedOperation(ctx, key, id);
+  await writeOperation(operationPath(ctx, key, id), { ...saved ?? { id, kind: "swap" }, bridge });
+}
+async function keptBridge(ctx, key, id) {
+  const bridge = (await savedOperation(ctx, key, id))?.bridge;
+  return bridge ? { bridge } : {};
+}
+async function writeOperation(path, record) {
   const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile4(temporary, JSON.stringify({ id, kind, signature: hash, operationId }), { mode: 384 });
+  await writeFile2(temporary, JSON.stringify(record), { mode: 384 });
   const file = await open3(temporary, "r");
   try {
     await file.sync();
   } finally {
     await file.close();
   }
-  await rename4(temporary, path);
+  await rename2(temporary, path);
+}
+async function saveOperationHash(ctx, key, id, kind, hash, operationId) {
+  await writeOperation(operationPath(ctx, key, id), {
+    id,
+    kind,
+    signature: hash,
+    operationId,
+    ...await keptBridge(ctx, key, id)
+  });
 }
 async function saveOperationSignature(ctx, key, id, kind, transaction) {
   const bytes = Buffer.from(transaction, "base64");
@@ -16335,16 +14788,7 @@ async function saveOperationSignature(ctx, key, id, kind, transaction) {
   if (!count || bytes.length < offset + count * 64 || bytes.subarray(offset, offset + 64).every((byte) => byte === 0))
     throw new TradingError("INVALID_RESPONSE", "Missing payer signature.");
   const signature = base58.encode(bytes.subarray(offset, offset + 64));
-  const path = operationPath(ctx, key, id);
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile4(temporary, JSON.stringify({ id, kind, signature }), { mode: 384 });
-  const file = await open3(temporary, "r");
-  try {
-    await file.sync();
-  } finally {
-    await file.close();
-  }
-  await rename4(temporary, path);
+  await writeOperation(operationPath(ctx, key, id), { id, kind, signature, ...await keptBridge(ctx, key, id) });
   return signature;
 }
 var TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, BASES, HOOD_BASES, sequencedLegSchema, legKindSchema, landedLegSchema, sequencedSchema, ERC20_TRANSFER_GAS = 65000n, ETH_TRANSFER_GAS = 21000n, RESERVE_FEE_MULTIPLIER = 2n, RESERVE_EXTRA_ERC20_TRANSFERS = 1, TradingUsage;
@@ -16488,7 +14932,15 @@ var init_trading = __esm(() => {
     data: exports_external.string().regex(/^0x([0-9a-fA-F]{2})*$/),
     value: exports_external.string().regex(/^\d+$/)
   });
-  legKindSchema = exports_external.enum(["approval", "permit2Approval", "trade", "feeTransfer", "createCurve", "transfer"]);
+  legKindSchema = exports_external.enum([
+    "approval",
+    "permit2Approval",
+    "trade",
+    "feeTransfer",
+    "createCurve",
+    "transfer",
+    "bridgeDeposit"
+  ]);
   landedLegSchema = exports_external.object({ kind: exports_external.string(), hash: exports_external.string() }).passthrough();
   sequencedSchema = exports_external.object({
     mode: exports_external.literal("sequenced"),
@@ -16501,6 +14953,1824 @@ var init_trading = __esm(() => {
   }).passthrough();
   TradingUsage = class TradingUsage extends Error {
   };
+});
+
+// src/bridge.ts
+function isBridgeAsset(value) {
+  return value !== undefined && Object.hasOwn(BRIDGE_ASSETS, value);
+}
+function bridgePair(from, to) {
+  if (from.chain === to.chain || !isBridgeAsset(from.base) || !isBridgeAsset(to.base))
+    return null;
+  return { from: from.base, to: to.base };
+}
+function bridgeLegKinds(origin) {
+  return origin === "USDG" ? ["approval", "bridgeDeposit"] : ["bridgeDeposit"];
+}
+function bridgePlanAdmitted(origin, plan) {
+  const shape = plan?.join();
+  return shape === "bridgeDeposit" || origin === "USDG" && shape === "approval,bridgeDeposit";
+}
+function word(data, index) {
+  return data.slice(10 + index * 64, 10 + (index + 1) * 64);
+}
+function wordAddress(data, index) {
+  const w = word(data, index);
+  return w.length === 64 && /^0{24}/.test(w) ? `0x${w.slice(24)}` : null;
+}
+function wordUint(data, index) {
+  const w = word(data, index);
+  return w.length === 64 ? BigInt(`0x${w}`) : null;
+}
+function relayHoodLegProblem(kind, leg, expect) {
+  const data = leg.data.toLowerCase();
+  const bytes = (data.length - 2) / 2;
+  const selector = data.slice(0, 10);
+  const amount = BigInt(expect.amountRaw);
+  const value = BigInt(leg.value);
+  const payer = expect.payer.toLowerCase();
+  const usdg = HOOD_USDG_ADDRESS.toLowerCase();
+  if (kind === "approval") {
+    if (expect.origin !== "USDG")
+      return "a native ETH bridge has no approval";
+    if (!sameEvmAddress(leg.to, usdg))
+      return `the approval is to ${leg.to}, not USDG`;
+    if (selector !== APPROVE_SELECTOR)
+      return `the approval's selector is ${selector}`;
+    if (bytes !== 68)
+      return `the approval's calldata is ${bytes} bytes, not 68`;
+    if (wordAddress(data, 0) !== RELAY_HOOD_DEPOSITORY)
+      return "the approval's spender is not Relay's depository";
+    if (wordUint(data, 1) !== amount)
+      return `the approval is for ${String(wordUint(data, 1))}, not ${amount}`;
+    if (value !== 0n)
+      return `the approval carries ${value} wei`;
+    return null;
+  }
+  if (kind !== "bridgeDeposit")
+    return `a bridge never signs a ${kind} leg`;
+  if (!sameEvmAddress(leg.to, RELAY_HOOD_DEPOSITORY))
+    return `the deposit is to ${leg.to}, not Relay's depository`;
+  if (expect.origin === "ETH") {
+    if (selector !== RELAY_HOOD_DEPOSIT_NATIVE_SELECTOR)
+      return `the deposit's selector is ${selector}`;
+    if (bytes !== 68)
+      return `the deposit's calldata is ${bytes} bytes, not 68`;
+    if (wordAddress(data, 0) !== payer)
+      return "the deposit's depositor is not this wallet";
+    if (value !== amount)
+      return `the deposit sends ${value} wei, not ${amount}`;
+    return null;
+  }
+  if (selector !== RELAY_HOOD_DEPOSIT_ERC20_SELECTOR)
+    return `the deposit's selector is ${selector}`;
+  if (bytes !== 132)
+    return `the deposit's calldata is ${bytes} bytes, not 132`;
+  if (wordAddress(data, 0) !== payer)
+    return "the deposit's depositor is not this wallet";
+  if (wordAddress(data, 1) !== usdg)
+    return "the deposit's token is not USDG";
+  if (wordUint(data, 2) !== amount)
+    return `the deposit is for ${String(wordUint(data, 2))}, not ${amount}`;
+  if (value !== 0n)
+    return `the deposit carries ${value} wei`;
+  return null;
+}
+async function relaySolanaDepositProblem(transactionBase64, payer, rpc) {
+  let decoded;
+  try {
+    decoded = decodeTransaction(decodeStrictBase64(transactionBase64));
+  } catch (error) {
+    if (error instanceof TransactionDecodeError)
+      return `the deposit does not decode: ${error.message}`;
+    throw error;
+  }
+  const message = decoded.message;
+  if (message.numRequiredSignatures !== 1)
+    return `the deposit needs ${message.numRequiredSignatures} signatures; a bridge has one signer`;
+  if (message.staticKeys[0] !== payer)
+    return `the deposit's fee payer is ${message.staticKeys[0]}, not this wallet`;
+  let keys;
+  try {
+    keys = (await resolveCompiledKeys(message, rpc)).keys;
+  } catch (error) {
+    if (error instanceof LookupTableError)
+      return `a lookup table did not resolve: ${error.message}`;
+    throw error;
+  }
+  if (message.instructions.length === 0)
+    return "the deposit has no instructions";
+  for (const instruction of message.instructions) {
+    const program = keys[instruction.programIdIndex];
+    if (program === COMPUTE_BUDGET_PROGRAM_ID)
+      return "the deposit carries a Compute Budget instruction";
+    if (program !== RELAY_SOLANA_DEPOSITORY_PROGRAM)
+      return `the deposit calls ${program}, not Relay's depository`;
+  }
+  return null;
+}
+function walletBridgesOf(body) {
+  if (!body || typeof body !== "object" || !("bridges" in body))
+    return;
+  const raw = body.bridges;
+  if (raw === undefined)
+    return;
+  if (raw === null)
+    return null;
+  const parsed = exports_external.array(walletBridgeSchema).safeParse(raw);
+  return parsed.success ? parsed.data : null;
+}
+function direction(bridge) {
+  return bridge.role === "recipient" ? "into" : "out of";
+}
+function bridgeSweepGate(address, bridges) {
+  const warnings = [];
+  if (bridges === null)
+    warnings.push(`Warning: Candle could not say whether a bridge into or out of ${address} is open. If one is, its fill or refund lands after this sweep and needs a second sweep.`);
+  const open4 = (bridges ?? []).find((bridge) => bridge.state === "open");
+  if (open4) {
+    const until = open4.blockingUntil !== undefined ? new Date(open4.blockingUntil).toISOString() : "two hours after it opened";
+    return {
+      refusal: {
+        code: "BRIDGE_IN_FLIGHT",
+        message: `A bridge ${direction(open4)} ${address} is still open (${safeText(open4.clientTradeId)}); its fill or refund may still land here.`,
+        suggestion: `Nothing was signed. Check it with candle swap status ${safeText(open4.clientTradeId)} and sweep once it closes. From ${until} it is a warning and the sweep goes ahead.`,
+        details: { bridges }
+      },
+      warnings
+    };
+  }
+  for (const bridge of bridges ?? [])
+    warnings.push(`Warning: bridge ${safeText(bridge.clientTradeId)} ${direction(bridge)} ${address} has had no result for over two hours. The sweep goes ahead; if its fill or refund lands later, sweep this wallet again.`);
+  return { warnings };
+}
+function bridgeDisableWarnings(address, body) {
+  return (walletBridgesOf(body) ?? []).map((bridge) => `Bridge ${safeText(bridge.clientTradeId)} ${direction(bridge)} ${address} is ${bridge.state === "open" ? "still open" : "unresolved after two hours"}: its fill or refund still lands in this wallet. Check it with candle swap status ${safeText(bridge.clientTradeId)}; if it lands after the sweep, sweep again.`);
+}
+function describeBridgeJob(job, facts) {
+  const settlement = jobSettlementSchema.safeParse(job.settlement);
+  const reading = settlement.success ? settlement.data : undefined;
+  const bridge = jobBridgeSchema.safeParse(job.bridge);
+  const open4 = bridge.success ? bridge.data : undefined;
+  const landed = reading !== undefined && reading.legs.length > 0 && reading.legs.every((l) => l.status === "confirmed");
+  let phase;
+  let line;
+  if (reading?.state === "settled") {
+    phase = "filled";
+    const amount = reading.settledOutRaw === undefined ? "an amount Candle did not measure" : facts ? `${decimalAmount(reading.settledOutRaw, BRIDGE_ASSETS[facts.to].decimals)} ${facts.to}` : `${reading.settledOutRaw} raw units`;
+    line = `Filled: received ${amount}${facts ? ` at ${safeText(facts.recipient)}` : ""}.`;
+  } else if (reading?.state === "failed") {
+    phase = "failed";
+    line = landed ? "Failed or refunded: the deposit landed and Relay did not fill it. Relay refunds to the source wallet; check its balance." : "Failed: the deposit did not land on the source chain, so nothing was bridged.";
+  } else if (reading?.state === "uncertain") {
+    phase = "uncertain";
+    line = "Uncertain: Relay reported a result Candle could not attribute to one fill. Check the destination wallet.";
+  } else if (reading?.state === "pending") {
+    phase = landed ? "filling" : "depositing";
+    line = landed ? "Deposit landed; Relay is filling." : "Deposit sent; waiting for it to land.";
+  } else if (job.status === "failed") {
+    phase = "failed";
+    line = "Failed before the deposit was sent; nothing was bridged.";
+  } else if (typeof job.signature === "string" || job.status === "submitted" || job.status === "confirmed") {
+    phase = "depositing";
+    line = "Deposit sent; Candle has not measured it yet.";
+  } else {
+    phase = "not_broadcast";
+    line = "Built; the deposit has not been sent.";
+  }
+  const lines = [line];
+  if (facts?.statusCheck && phase !== "not_broadcast")
+    lines.push(`Relay status: ${safeText(facts.statusCheck)}`);
+  if (open4?.state === "open")
+    lines.push(`Open: a sweep of the source or destination wallet refuses BRIDGE_IN_FLIGHT until it closes or until ${new Date(open4.blockingUntil).toISOString()}.`);
+  if (open4?.state === "uncertain")
+    lines.push("Warning: no result after two hours. Sweeps now go ahead; if the fill or refund lands later, sweep that wallet again.");
+  return {
+    phase,
+    ...open4 ? { open: open4.state } : {},
+    ...open4?.state === "open" ? { blockingUntil: open4.blockingUntil } : {},
+    ...reading?.settledOutRaw !== undefined ? { settledOutRaw: reading.settledOutRaw } : {},
+    lines
+  };
+}
+function bridgeStatusFinal(status) {
+  return status.phase === "filled" || status.phase === "failed" || status.phase === "uncertain" || status.open === "uncertain" || status.phase === "not_broadcast" && status.open === undefined;
+}
+var BRIDGE_ASSETS, APPROVE_SELECTOR = "0x095ea7b3", walletBridgeSchema, EMERGENCY_BRIDGE_NOTE = "An emergency sweep cannot see an open bridge. If a bridge's fill or refund lands in this wallet after the sweep, sweep it again.", jobSettlementSchema, jobBridgeSchema, BRIDGE_WAIT_MS, BRIDGE_WAIT_POLL_MS = 1e4;
+var init_bridge = __esm(() => {
+  init_zod();
+  init_evm_lite();
+  init_relay_constants();
+  init_solana_alt();
+  init_trading();
+  BRIDGE_ASSETS = {
+    SOL: { chain: "solana", decimals: 9 },
+    USDC: { chain: "solana", decimals: 6 },
+    ETH: { chain: "hood", decimals: 18 },
+    USDG: { chain: "hood", decimals: 6 }
+  };
+  walletBridgeSchema = exports_external.object({
+    clientTradeId: exports_external.string(),
+    role: exports_external.enum(["source", "recipient"]),
+    state: exports_external.enum(["open", "uncertain"]),
+    openedAt: exports_external.number(),
+    blockingUntil: exports_external.number().optional()
+  }).passthrough();
+  jobSettlementSchema = exports_external.object({
+    state: exports_external.enum(["settled", "pending", "failed", "uncertain"]),
+    legs: exports_external.array(exports_external.object({ status: exports_external.string() }).passthrough()).default([]),
+    settledOutRaw: exports_external.string().regex(/^\d+$/).optional()
+  }).passthrough();
+  jobBridgeSchema = exports_external.union([
+    exports_external.object({ state: exports_external.literal("open"), blockingUntil: exports_external.number() }).passthrough(),
+    exports_external.object({ state: exports_external.literal("uncertain") }).passthrough()
+  ]);
+  BRIDGE_WAIT_MS = 10 * 60 * 1000;
+});
+
+// src/lp-close.ts
+function isPositionCandidate(account) {
+  return account.programId === TOKEN_2022_PROGRAM_ID && account.amountRaw === "1" && account.decimals === 0;
+}
+function parseCloseArtifact(body) {
+  if (!body || typeof body !== "object")
+    return;
+  const { transaction, accountKeys } = body;
+  if (typeof transaction !== "string" || transaction.length === 0)
+    return;
+  if (!Array.isArray(accountKeys) || !accountKeys.every((key) => typeof key === "string" && key.length > 0))
+    return;
+  return { transaction, accountKeys };
+}
+function isTokenProgram(owner) {
+  return owner === TOKEN_PROGRAM_ID || owner === TOKEN_2022_PROGRAM_ID;
+}
+function isMintAccount(view) {
+  if (view === null || !isTokenProgram(view.owner))
+    return false;
+  if (view.data.length === MINT_BASE_SIZE)
+    return true;
+  if (view.data.length === MULTISIG_SIZE)
+    return false;
+  return view.data.length > ACCOUNT_TYPE_OFFSET && view.data[ACCOUNT_TYPE_OFFSET] === ACCOUNT_TYPE_MINT;
+}
+function isUnsigned(tx) {
+  return tx.signatures.every((slot) => slot.every((byte) => byte === 0));
+}
+function bytesEqual2(a, b) {
+  return a.length === b.length && a.every((byte, i) => byte === b[i]);
+}
+function allZero(bytes) {
+  return bytes.every((byte) => byte === 0);
+}
+async function verifyCloseArtifact(input) {
+  const { artifact, rpc, tee, vault, nftMint, nftAccount } = input;
+  const refuse2 = (reason) => ({ ok: false, reason });
+  const allowedOwner = (address) => address === tee || address === vault;
+  let tx;
+  try {
+    tx = decodeTransaction(decodeStrictBase64(artifact.transaction));
+  } catch (error) {
+    if (error instanceof TransactionDecodeError)
+      return refuse2(`the close transaction is undecodable: ${error.message}`);
+    return refuse2(`the close transaction could not be read: ${error instanceof Error ? error.message : error}`);
+  }
+  if (tx.message.version !== 0)
+    return refuse2("the close transaction is not a v0 message");
+  if (!isUnsigned(tx))
+    return refuse2("the close transaction already carries a signature; close-build must return it unsigned");
+  if (tx.message.numRequiredSignatures !== 1)
+    return refuse2(`the close transaction requires ${tx.message.numRequiredSignatures} signers; a position close needs only the TEE wallet`);
+  if (tx.message.staticKeys[0] !== tee)
+    return refuse2(`the fee payer is ${tx.message.staticKeys[0]}, not the TEE wallet`);
+  let compiled;
+  try {
+    compiled = await resolveCompiledKeys(tx.message, rpc);
+  } catch (error) {
+    if (error instanceof LookupTableError)
+      return refuse2(`a lookup table could not be resolved: ${error.message}`);
+    return refuse2(`the lookup tables could not be read: ${error instanceof Error ? error.message : error}`);
+  }
+  if (compiled.keys.length !== artifact.accountKeys.length)
+    return refuse2(`the server listed ${artifact.accountKeys.length} account keys and the transaction resolves to ${compiled.keys.length}`);
+  for (const [i, key] of compiled.keys.entries()) {
+    if (artifact.accountKeys[i] !== key)
+      return refuse2(`account key ${i} is ${key} in the transaction and ${artifact.accountKeys[i]} in the server's ordered array`);
+  }
+  let dammCalls = 0;
+  for (const [i, ix] of tx.message.instructions.entries()) {
+    const program = compiled.keys[ix.programIdIndex];
+    const account = (at) => compiled.keys[ix.accountIndexes[at] ?? -1];
+    if (program === undefined || !CLOSE_PROGRAM_ALLOWLIST.has(program))
+      return refuse2(`instruction ${i} calls ${program ?? "an unknown program"}, which a position close never does`);
+    switch (program) {
+      case DAMM_V2_PROGRAM_ID:
+        dammCalls += 1;
+        break;
+      case COMPUTE_BUDGET_PROGRAM_ID:
+        break;
+      case ASSOCIATED_TOKEN_PROGRAM_ID: {
+        const kind = ix.data.length === 0 ? ATA_IX_CREATE : ix.data.length === 1 ? ix.data[0] : -1;
+        if (kind !== ATA_IX_CREATE && kind !== ATA_IX_CREATE_IDEMPOTENT)
+          return refuse2(`instruction ${i} is an Associated Token instruction other than Create, which a close never needs`);
+        if (account(0) !== tee || !allowedOwner(account(2) ?? ""))
+          return refuse2(`instruction ${i} creates a token account for ${account(2) ?? "?"}, not the TEE wallet or its vault`);
+        break;
+      }
+      case TOKEN_PROGRAM_ID:
+      case TOKEN_2022_PROGRAM_ID: {
+        if (ix.data[0] !== TOKEN_IX_CLOSE_ACCOUNT || ix.data.length !== 1)
+          return refuse2(`instruction ${i} is a token instruction other than CloseAccount, which a close never issues at the top level`);
+        if (account(1) !== tee || account(2) !== tee)
+          return refuse2(`instruction ${i} closes a token account to ${account(1) ?? "?"}, not the TEE wallet`);
+        break;
+      }
+      default:
+        return refuse2(`instruction ${i} is a top-level System instruction, which a close never issues`);
+    }
+  }
+  if (dammCalls === 0)
+    return refuse2("the transaction calls no DAMM v2 instruction, so it cannot close a position");
+  let simulation;
+  try {
+    simulation = await simulateWithSnapshots(rpc, artifact.transaction, compiled);
+  } catch (error) {
+    return refuse2(`the simulation could not be run: ${error instanceof Error ? error.message : error}`);
+  }
+  if (simulation.result.err !== null && simulation.result.err !== undefined)
+    return refuse2(`the simulation failed: ${JSON.stringify(simulation.result.err)}`);
+  const deltas = computeDeltas(simulation.snapshots);
+  const postState = new Map(simulation.snapshots.map((snapshot) => [snapshot.address, snapshot.after]));
+  for (const token of deltas.tokens) {
+    if (token.after > token.before && !allowedOwner(token.owner))
+      return refuse2(`${token.owner} would receive ${token.after - token.before} raw of ${token.mint} in account ${token.account}`);
+  }
+  for (const sol of deltas.sol) {
+    if (sol.after <= sol.before)
+      continue;
+    if (allowedOwner(sol.address))
+      continue;
+    const balance = tokenBalanceOf(postState.get(sol.address) ?? null);
+    if (balance !== undefined && allowedOwner(balance.owner))
+      continue;
+    return refuse2(`${sol.address} would receive ${sol.after - sol.before} lamports`);
+  }
+  const nftSnapshot = simulation.snapshots.find((snapshot) => snapshot.address === nftAccount);
+  if (nftSnapshot === undefined)
+    return refuse2(`the position NFT account ${nftAccount} is not written by this transaction`);
+  const nftAfter = tokenBalanceOf(nftSnapshot.after);
+  if (nftAfter !== undefined && nftAfter.amount !== 0n)
+    return refuse2(`the position NFT account ${nftAccount} still holds ${nftAfter.amount} after the simulation`);
+  for (const { address, before, after } of simulation.snapshots) {
+    if (allowedOwner(address)) {
+      if (after === null || after.owner !== SYSTEM_PROGRAM_ID || after.data.length !== 0)
+        return refuse2(`${address === tee ? "the TEE wallet" : "the vault"} would no longer be a plain System account after this transaction`);
+    }
+    if (after === null)
+      continue;
+    if (before !== null && after.owner !== before.owner)
+      return refuse2(`writable account ${address} would change owner from ${before.owner} to ${after.owner}`);
+    if (before !== null) {
+      const controlled = tokenBalanceOf(before);
+      if (controlled !== undefined && allowedOwner(controlled.owner)) {
+        if (after.data.length < TOKEN_ACCOUNT_SIZE2)
+          return refuse2(`token account ${address} would no longer decode as a token account`);
+        for (const [start, end, what] of CONTROL_RANGES) {
+          if (!bytesEqual2(before.data.subarray(start, end), after.data.subarray(start, end)))
+            return refuse2(`token account ${address} would change its ${what}, which a close never does`);
+        }
+        continue;
+      }
+    }
+    const created = before === null ? tokenBalanceOf(after) : undefined;
+    if (created !== undefined) {
+      if (!allowedOwner(created.owner))
+        return refuse2(`created token account ${address} would be controlled by ${created.owner}`);
+      if (!allZero(after.data.subarray(72, 108)) || after.data[108] !== TOKEN_ACCOUNT_STATE_INITIALIZED || !allZero(after.data.subarray(121, 129)) || !allZero(after.data.subarray(129, 165)))
+        return refuse2(`created token account ${address} would start with a delegate, a close authority, or a frozen state`);
+    }
+  }
+  const infos = new Map;
+  const infoOf = async (address) => {
+    if (!infos.has(address))
+      infos.set(address, await rpc.getAccountInfo(address));
+    return infos.get(address) ?? null;
+  };
+  const canonical = new Set;
+  for (const key of compiled.keys) {
+    const view = await infoOf(key);
+    if (!isMintAccount(view) || view === null)
+      continue;
+    const mint = decodePubkey(key);
+    const program = decodePubkey(view.owner);
+    canonical.add(encodePubkey(associatedTokenAddress(decodePubkey(tee), mint, program)));
+    canonical.add(encodePubkey(associatedTokenAddress(decodePubkey(vault), mint, program)));
+  }
+  for (const [i, key] of compiled.keys.entries()) {
+    if (!compiled.isWritable[i])
+      continue;
+    const view = await infoOf(key);
+    if (view === null) {
+      if (canonical.has(key))
+        continue;
+      return refuse2(`writable account ${key} does not exist and is not a TEE or vault associated token account for a mint this transaction names`);
+    }
+    if (isTokenProgram(view.owner)) {
+      if (key === nftMint)
+        continue;
+      const balance = tokenBalanceOf(view);
+      if (balance === undefined)
+        return refuse2(`writable account ${key} is owned by a token program but is not a token account`);
+      if (allowedOwner(balance.owner) || key === nftAccount)
+        continue;
+      const authority = await infoOf(balance.owner);
+      if (authority !== null && authority.owner === DAMM_V2_PROGRAM_ID)
+        continue;
+      return refuse2(`writable token account ${key} is controlled by ${balance.owner}, which is neither this wallet, its vault, nor a DAMM v2 pool`);
+    }
+    if (view.owner === SYSTEM_PROGRAM_ID) {
+      if (allowedOwner(key))
+        continue;
+      return refuse2(`writable system account ${key} is neither the TEE wallet nor its vault`);
+    }
+    if (view.owner !== DAMM_V2_PROGRAM_ID)
+      return refuse2(`writable account ${key} is owned by ${view.owner}, not DAMM v2`);
+  }
+  return { ok: true, tx, compiled, simulation };
+}
+function formatSol(lamports) {
+  const negative = lamports < 0n;
+  const abs = negative ? -lamports : lamports;
+  const whole = abs / 1000000000n;
+  const frac = (abs % 1000000000n).toString().padStart(9, "0").replace(/0+$/, "");
+  return `${negative ? "-" : ""}${whole}${frac ? `.${frac}` : ""} SOL`;
+}
+function describeClose(input) {
+  const { verdict, tee, vault, nftMint, nftAccount } = input;
+  const { tx, compiled, simulation } = verdict;
+  const lines = [];
+  lines.push(`message     v0, ${tx.message.instructions.length} instruction(s), ${compiled.keys.length} account(s)${tx.message.lookups.length > 0 ? ` (${tx.message.lookups.length} lookup table(s) resolved)` : ""}, blockhash ${tx.message.recentBlockhash}`);
+  lines.push(`fee payer   ${compiled.keys[0]} (this TEE wallet)`);
+  lines.push(`position    NFT mint ${nftMint}, account ${nftAccount}`);
+  const programs = [...new Set(tx.message.instructions.map((ix) => compiled.keys[ix.programIdIndex] ?? "?"))];
+  for (const program of programs)
+    lines.push(`program     ${program === DAMM_V2_PROGRAM_ID ? `Meteora DAMM v2 (${program})` : programNameOf(program)}`);
+  const deltas = computeDeltas(simulation.snapshots);
+  const who = (address) => address === tee ? "wallet" : address === vault ? "vault" : address;
+  for (const address of [tee, vault]) {
+    const sol = deltas.sol.find((delta) => delta.address === address);
+    if (sol && sol.after !== sol.before)
+      lines.push(`${who(address).padEnd(11)} ${formatSol(sol.before)} -> ${formatSol(sol.after)} (${sol.after >= sol.before ? "+" : ""}${formatSol(sol.after - sol.before)})`);
+    for (const token of deltas.tokens.filter((delta) => delta.owner === address && delta.after !== delta.before)) {
+      lines.push(`${who(address).padEnd(11)} ${token.mint}: ${token.before} -> ${token.after} raw (${token.after >= token.before ? "+" : ""}${token.after - token.before}) in ${token.account}${token.account === nftAccount ? " (position NFT, burned)" : ""}`);
+    }
+  }
+  const nft = simulation.snapshots.find((snapshot) => snapshot.address === nftAccount);
+  if (nft && nft.after === null)
+    lines.push(`position    NFT account ${nftAccount} is closed by this transaction`);
+  const others = deltas.tokens.filter((token) => token.owner !== tee && token.owner !== vault && token.after !== token.before);
+  for (const token of others)
+    lines.push(`${token.owner === undefined ? "?" : "pool"}        ${token.mint}: ${token.before} -> ${token.after} raw in ${token.account} (authority ${token.owner})`);
+  lines.push("checked     ordered keys, programs, simulation, positive deltas, control, writable accounts: all passed");
+  lines.push("note        the simulation is evidence, not a guarantee: a program can behave differently once signed");
+  return lines;
+}
+var DAMM_V2_PROGRAM_ID = "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG", CLOSE_PROGRAM_ALLOWLIST, DAMM_POSITION_CLOSE_UNAVAILABLE = "DAMM_POSITION_CLOSE_UNAVAILABLE", DAMM_CLOSE_TRANSACTION_REFUSED = "DAMM_CLOSE_TRANSACTION_REFUSED", MINT_BASE_SIZE = 82, ACCOUNT_TYPE_OFFSET = 165, ACCOUNT_TYPE_MINT = 1, MULTISIG_SIZE = 355, TOKEN_ACCOUNT_SIZE2 = 165, TOKEN_ACCOUNT_STATE_INITIALIZED = 1, CONTROL_RANGES, TOKEN_IX_CLOSE_ACCOUNT = 9, ATA_IX_CREATE = 0, ATA_IX_CREATE_IDEMPOTENT = 1;
+var init_lp_close = __esm(() => {
+  init_solana_alt();
+  init_solana_lite();
+  CLOSE_PROGRAM_ALLOWLIST = new Set([
+    DAMM_V2_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
+    TOKEN_2022_PROGRAM_ID,
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+    COMPUTE_BUDGET_PROGRAM_ID,
+    SYSTEM_PROGRAM_ID
+  ]);
+  CONTROL_RANGES = [
+    [0, 32, "mint"],
+    [32, 64, "authority"],
+    [72, 108, "delegate"],
+    [108, 109, "state"],
+    [121, 129, "delegated amount"],
+    [129, 165, "close authority"]
+  ];
+});
+
+// src/sweep-pending.ts
+function classifyStatus(status) {
+  if (status === null || status === undefined)
+    return { kind: "missing" };
+  if (status.confirmationStatus === "finalized") {
+    return status.err === null || status.err === undefined ? { kind: "finalized" } : { kind: "failed", err: status.err };
+  }
+  return { kind: "nonfinal", confirmationStatus: status.confirmationStatus, err: status.err };
+}
+function describe(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+async function resolvePending(reads, pending) {
+  let first;
+  try {
+    first = classifyStatus(await reads.status(pending.signature));
+  } catch (error) {
+    return { kind: "uncertain", detail: `status read failed (${describe(error)})` };
+  }
+  const settled = settle(first, pending.signature);
+  if (settled)
+    return settled;
+  if (first.kind === "nonfinal") {
+    return {
+      kind: "uncertain",
+      detail: `observed ${first.confirmationStatus ?? "unknown"}${first.err !== null && first.err !== undefined ? ` with error ${JSON.stringify(first.err)}` : ""}, not yet finalized`
+    };
+  }
+  let valid;
+  try {
+    valid = await reads.blockhashValid(pending.blockhash);
+  } catch (error) {
+    return { kind: "uncertain", detail: `not found, and blockhash validity is unknown (${describe(error)})` };
+  }
+  if (valid)
+    return { kind: "uncertain", detail: "not found yet; its blockhash is still valid, so it may still land" };
+  let second;
+  try {
+    second = classifyStatus(await reads.status(pending.signature));
+  } catch (error) {
+    return { kind: "uncertain", detail: `blockhash expired but the confirming status read failed (${describe(error)})` };
+  }
+  const settledLate = settle(second, pending.signature);
+  if (settledLate)
+    return settledLate;
+  if (second.kind === "nonfinal") {
+    return {
+      kind: "uncertain",
+      detail: `observed ${second.confirmationStatus ?? "unknown"} after its blockhash expired, not yet finalized`
+    };
+  }
+  return { kind: "expired", detail: `never observed and its blockhash is no longer valid: it cannot land` };
+}
+function settle(observation, signature) {
+  if (observation.kind === "finalized")
+    return { kind: "finalized" };
+  if (observation.kind === "failed") {
+    return { kind: "failed", detail: `transaction ${signature} failed on chain: ${JSON.stringify(observation.err)}` };
+  }
+  return null;
+}
+
+// src/token-2022.ts
+function readKey(data, offset) {
+  const bytes = data.subarray(offset, offset + 32);
+  return bytes.some((b) => b !== 0) ? encodePubkey(bytes) : undefined;
+}
+function readFeeSchedule(view, offset) {
+  const basisPoints = view.getUint16(offset + 16, true);
+  if (basisPoints > 1e4)
+    throw new MintReadError("Invalid transfer fee rate");
+  return {
+    epoch: view.getBigUint64(offset, true),
+    maximumFeeRaw: view.getBigUint64(offset + 8, true),
+    basisPoints
+  };
+}
+function parseMintAccount(mint, owner, data) {
+  if (data.length < MINT_BASE_SIZE2 || data[MINT_IS_INITIALIZED_OFFSET] !== 1) {
+    throw new MintReadError(`${mint} is not an initialized mint account`);
+  }
+  const decimals = data[MINT_DECIMALS_OFFSET];
+  if (decimals === undefined)
+    throw new MintReadError(`${mint} is not an initialized mint account`);
+  const profile = {
+    mint,
+    tokenProgram: owner,
+    token2022: owner === TOKEN_2022_PROGRAM_ID,
+    decimals,
+    nonTransferable: false,
+    defaultFrozen: false,
+    paused: false,
+    risks: []
+  };
+  if (!profile.token2022 || data.length === MINT_BASE_SIZE2)
+    return profile;
+  if (data.length < TLV_START || data.length === MULTISIG_SIZE2 || data[ACCOUNT_TYPE_OFFSET2] !== 1) {
+    throw new MintReadError(`${mint} has an invalid mint extension header`);
+  }
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const seen = new Set;
+  for (let offset = TLV_START;offset < data.length; ) {
+    if (data.subarray(offset).every((b) => b === 0))
+      break;
+    if (offset + 4 > data.length)
+      throw new MintReadError(`${mint} has a truncated mint extension header`);
+    const type = view.getUint16(offset, true);
+    const length = view.getUint16(offset + 2, true);
+    offset += 4;
+    if (offset + length > data.length || seen.has(type)) {
+      throw new MintReadError(`${mint} has an invalid mint extension length or a duplicate extension`);
+    }
+    seen.add(type);
+    const requireLength = (expected) => {
+      if (length !== expected)
+        throw new MintReadError(`${mint} has an invalid extension ${type} length`);
+    };
+    switch (type) {
+      case EXT_PERMANENT_DELEGATE: {
+        requireLength(32);
+        const authority = readKey(data, offset);
+        if (authority) {
+          profile.risks.push({
+            kind: "permanent_delegate",
+            message: `Permanent delegate ${authority} can move or burn your tokens.`
+          });
+        }
+        break;
+      }
+      case EXT_TRANSFER_HOOK: {
+        requireLength(64);
+        const hookProgram = readKey(data, offset + 32);
+        if (hookProgram) {
+          profile.transferHookProgram = hookProgram;
+          profile.risks.push({
+            kind: "transfer_hook",
+            message: `Transfer hook ${hookProgram} (unknown program) runs code on every transfer.`
+          });
+        }
+        break;
+      }
+      case EXT_TRANSFER_FEE_CONFIG: {
+        requireLength(108);
+        const older = readFeeSchedule(view, offset + 72);
+        const newer = readFeeSchedule(view, offset + 90);
+        profile.olderTransferFee = older;
+        profile.newerTransferFee = newer;
+        profile.risks.push({
+          kind: "transfer_fee",
+          message: `Transfer fee: ${older.basisPoints / 100}% capped at ${older.maximumFeeRaw} raw units; from epoch ${newer.epoch}, ${newer.basisPoints / 100}% capped at ${newer.maximumFeeRaw} raw units.`
+        });
+        break;
+      }
+      case EXT_DEFAULT_ACCOUNT_STATE: {
+        requireLength(1);
+        const state = data[offset];
+        if (state !== 1 && state !== 2)
+          throw new MintReadError(`${mint} has an invalid default account state`);
+        if (state === 2) {
+          profile.defaultFrozen = true;
+          profile.risks.push({ kind: "default_frozen", message: "New token accounts are frozen by default." });
+        }
+        break;
+      }
+      case EXT_PAUSABLE: {
+        requireLength(33);
+        const authority = readKey(data, offset);
+        const pauseByte = data[offset + 32];
+        if (pauseByte !== 0 && pauseByte !== 1)
+          throw new MintReadError(`${mint} has an invalid pause state`);
+        const paused = pauseByte === 1;
+        profile.paused = paused;
+        if (authority || paused) {
+          profile.risks.push({
+            kind: "pausable",
+            message: `Token ${paused ? "is paused" : "can be paused"}${authority ? ` by ${authority}` : ""}.`
+          });
+        }
+        break;
+      }
+      case EXT_NON_TRANSFERABLE: {
+        requireLength(0);
+        profile.nonTransferable = true;
+        profile.risks.push({ kind: "non_transferable", message: "This token is non-transferable." });
+        break;
+      }
+    }
+    offset += length;
+  }
+  return profile;
+}
+async function readMintProfile(rpc, mint) {
+  const account = await rpc.getAccountInfo(mint);
+  if (account === null)
+    throw new MintReadError(`Mint ${mint} does not exist`);
+  if (account.owner !== TOKEN_PROGRAM_ID && account.owner !== TOKEN_2022_PROGRAM_ID) {
+    throw new MintReadError(`Mint ${mint} is owned by ${account.owner}, which is not a token program`);
+  }
+  return parseMintAccount(mint, account.owner, account.data);
+}
+function transferFeeFor(profile, amount, epoch) {
+  const { olderTransferFee: older, newerTransferFee: newer } = profile;
+  const schedule = newer && epoch >= newer.epoch ? newer : older;
+  if (!schedule)
+    return { feeRaw: 0n, postFeeAmountRaw: amount };
+  const rounded = (amount * BigInt(schedule.basisPoints) + 9999n) / 10000n;
+  const fee = rounded < schedule.maximumFeeRaw ? rounded : schedule.maximumFeeRaw;
+  return { feeRaw: fee, postFeeAmountRaw: amount - fee };
+}
+function extraAccountMetaAddress(mint, hookProgram) {
+  return findProgramAddress([EXTRA_ACCOUNT_METAS_SEED, mint], hookProgram).address;
+}
+function parseExtraAccountMetas(data) {
+  if (data.length < 16)
+    throw new HookResolutionError("the hook's validation account is too short to decode");
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const count = view.getUint32(12, true);
+  if (16 + count * EXTRA_ACCOUNT_META_SIZE > data.length) {
+    throw new HookResolutionError("the hook's validation account declares more extra accounts than it holds");
+  }
+  const metas = [];
+  for (let i = 0;i < count; i++) {
+    const at = 16 + i * EXTRA_ACCOUNT_META_SIZE;
+    const discriminator = data[at];
+    const isSigner = data[at + 33];
+    const isWritable = data[at + 34];
+    if (discriminator === undefined || isSigner === undefined || isWritable === undefined) {
+      throw new HookResolutionError("the hook's validation account holds a truncated extra account");
+    }
+    metas.push({
+      discriminator,
+      addressConfig: data.subarray(at + 1, at + 33),
+      isSigner: isSigner === 1,
+      isWritable: isWritable === 1
+    });
+  }
+  return metas;
+}
+function executeInstructionData(amount) {
+  const data = new Uint8Array(16);
+  data.set(EXECUTE_DISCRIMINATOR, 0);
+  new DataView(data.buffer).setBigUint64(8, amount, true);
+  return data;
+}
+async function unpackSeeds(rpc, config, previous, instructionData) {
+  const seeds = [];
+  let i = 0;
+  while (i < 32) {
+    const discriminator = config[i];
+    const rest = config.subarray(i + 1);
+    if (discriminator === undefined || discriminator === 0)
+      break;
+    if (discriminator === 1) {
+      const length = rest[0];
+      if (length === undefined || rest.length - 1 < length)
+        throw new HookResolutionError("invalid literal seed");
+      seeds.push(rest.subarray(1, 1 + length));
+      i += 2 + length;
+    } else if (discriminator === 2) {
+      const offset = rest[0];
+      const length = rest[1];
+      if (offset === undefined || length === undefined || instructionData.length < offset + length) {
+        throw new HookResolutionError("invalid instruction-data seed");
+      }
+      seeds.push(instructionData.subarray(offset, offset + length));
+      i += 3;
+    } else if (discriminator === 3) {
+      const index = rest[0];
+      const meta = index === undefined ? undefined : previous[index];
+      if (!meta)
+        throw new HookResolutionError("invalid account-key seed");
+      seeds.push(meta.pubkey);
+      i += 2;
+    } else if (discriminator === 4) {
+      const accountIndex = rest[0];
+      const dataIndex = rest[1];
+      const length = rest[2];
+      const meta = accountIndex === undefined ? undefined : previous[accountIndex];
+      if (!meta || dataIndex === undefined || length === undefined) {
+        throw new HookResolutionError("invalid account-data seed");
+      }
+      const account = await rpc.getAccountInfo(encodePubkey(meta.pubkey));
+      if (account === null)
+        throw new HookResolutionError("a seed names an account that does not exist");
+      if (account.data.length < dataIndex + length)
+        throw new HookResolutionError("invalid account-data seed range");
+      seeds.push(account.data.subarray(dataIndex, dataIndex + length));
+      i += 4;
+    } else {
+      throw new HookResolutionError(`unknown seed type ${discriminator}`);
+    }
+  }
+  return seeds;
+}
+async function unpackPubkeyData(rpc, config, previous, instructionData) {
+  const discriminator = config[0];
+  if (discriminator === 1) {
+    const offset = config[1];
+    if (offset === undefined || instructionData.length < offset + 32) {
+      throw new HookResolutionError("a pubkey-data configuration points outside the instruction data");
+    }
+    return instructionData.subarray(offset, offset + 32);
+  }
+  if (discriminator === 2) {
+    const accountIndex = config[1];
+    const dataIndex = config[2];
+    const meta = accountIndex === undefined ? undefined : previous[accountIndex];
+    if (!meta || dataIndex === undefined)
+      throw new HookResolutionError("invalid pubkey-data configuration");
+    const account = await rpc.getAccountInfo(encodePubkey(meta.pubkey));
+    if (account === null)
+      throw new HookResolutionError("a pubkey-data configuration names a missing account");
+    if (account.data.length < dataIndex + 32)
+      throw new HookResolutionError("invalid pubkey-data range");
+    return account.data.subarray(dataIndex, dataIndex + 32);
+  }
+  throw new HookResolutionError(`unknown pubkey-data type ${discriminator ?? "(absent)"}`);
+}
+function deEscalate(meta, previous) {
+  const same = previous.filter((x) => encodePubkey(x.pubkey) === encodePubkey(meta.pubkey));
+  if (same.length === 0)
+    return meta;
+  const isSigner = same.some((x) => x.isSigner);
+  const isWritable = same.some((x) => x.isWritable);
+  return {
+    pubkey: meta.pubkey,
+    isSigner: isSigner ? meta.isSigner : false,
+    isWritable: isWritable ? meta.isWritable : false
+  };
+}
+async function resolveTransferHookAccounts(rpc, input) {
+  const hook = input.profile.transferHookProgram;
+  if (!hook)
+    return { ok: true, accounts: [] };
+  try {
+    const hookProgram = decodePubkey(hook);
+    const mint = decodePubkey(input.profile.mint);
+    const validateState = extraAccountMetaAddress(mint, hookProgram);
+    const validateAccount = await rpc.getAccountInfo(encodePubkey(validateState));
+    if (validateAccount === null)
+      return { ok: true, accounts: [] };
+    const configs = parseExtraAccountMetas(validateAccount.data);
+    const instructionData = executeInstructionData(input.amount);
+    const resolved = [input.source, mint, input.destination, input.owner, validateState].map((pubkey) => ({ pubkey, isSigner: false, isWritable: false }));
+    for (const config of configs) {
+      let meta;
+      if (config.discriminator === 0) {
+        meta = { pubkey: config.addressConfig, isSigner: config.isSigner, isWritable: config.isWritable };
+      } else if (config.discriminator === 2) {
+        meta = {
+          pubkey: await unpackPubkeyData(rpc, config.addressConfig, resolved, instructionData),
+          isSigner: config.isSigner,
+          isWritable: config.isWritable
+        };
+      } else {
+        let programId;
+        if (config.discriminator === 1) {
+          programId = hookProgram;
+        } else {
+          const index = config.discriminator - 128;
+          const owner = index < 0 ? undefined : resolved[index];
+          if (!owner)
+            throw new HookResolutionError(`extra account ${config.discriminator} names no earlier account`);
+          programId = owner.pubkey;
+        }
+        const seeds = await unpackSeeds(rpc, config.addressConfig, resolved, instructionData);
+        meta = {
+          pubkey: findProgramAddress(seeds, programId).address,
+          isSigner: config.isSigner,
+          isWritable: config.isWritable
+        };
+      }
+      resolved.push(deEscalate(meta, resolved));
+    }
+    return {
+      ok: true,
+      accounts: [
+        ...resolved.slice(5),
+        { pubkey: hookProgram, isSigner: false, isWritable: false },
+        { pubkey: validateState, isSigner: false, isWritable: false }
+      ]
+    };
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+function ataFor(profile, owner) {
+  return associatedTokenAddress(owner, decodePubkey(profile.mint), decodePubkey(profile.tokenProgram));
+}
+function classifyTokenSendFailure(input) {
+  if (!input.profile.token2022)
+    return;
+  if (input.profile.nonTransferable)
+    return "TOKEN_2022_NOT_TRANSFERABLE";
+  if (input.frozen)
+    return "TOKEN_2022_FROZEN";
+  if (input.extraAccountsMissing)
+    return "TOKEN_2022_EXTRA_ACCOUNTS_MISSING";
+  if (input.profile.transferHookProgram)
+    return "TOKEN_2022_HOOK_REFUSED";
+  return;
+}
+var MintReadError, MINT_DECIMALS_OFFSET = 44, MINT_IS_INITIALIZED_OFFSET = 45, MINT_BASE_SIZE2 = 82, ACCOUNT_TYPE_OFFSET2 = 165, TLV_START = 166, MULTISIG_SIZE2 = 355, EXT_TRANSFER_FEE_CONFIG = 1, EXT_DEFAULT_ACCOUNT_STATE = 6, EXT_NON_TRANSFERABLE = 9, EXT_PERMANENT_DELEGATE = 12, EXT_TRANSFER_HOOK = 14, EXT_PAUSABLE = 26, EXECUTE_DISCRIMINATOR, EXTRA_ACCOUNT_METAS_SEED, EXTRA_ACCOUNT_META_SIZE = 35, HookResolutionError;
+var init_token_2022 = __esm(() => {
+  init_solana_lite();
+  MintReadError = class MintReadError extends Error {
+  };
+  EXECUTE_DISCRIMINATOR = new Uint8Array([105, 37, 101, 197, 75, 251, 102, 26]);
+  EXTRA_ACCOUNT_METAS_SEED = new TextEncoder().encode("extra-account-metas");
+  HookResolutionError = class HookResolutionError extends Error {
+  };
+});
+
+// src/wallet-keystore.ts
+import { chmod as chmod2, mkdir as mkdir3, readFile as readFile3, rename as rename3, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
+import { dirname as dirname2, join as join4 } from "node:path";
+function defaultTeeKeystorePath(env, home) {
+  return join4(candleConfigDir(env, home), "tee-wallets.enc");
+}
+function legacyTeeKeystorePath(env, home) {
+  return join4(candleConfigDir(env, home), "hot-wallets.enc");
+}
+async function deriveKeystoreKey(passphrase, salt, iterations) {
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, [
+    "deriveKey"
+  ]);
+  return crypto.subtle.deriveKey({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, material, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+}
+async function createKeystore(passphrase) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  return { key: await deriveKeystoreKey(passphrase, salt, KEYSTORE_ITERATIONS), salt, iterations: KEYSTORE_ITERATIONS };
+}
+async function serializeKeystore(entries, key, salt, iterations, purpose) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const sealed = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(JSON.stringify(entries)));
+  const file = {
+    version: KEYSTORE_VERSION,
+    createdAt: new Date().toISOString(),
+    kdf: "PBKDF2-HMAC-SHA256",
+    iterations,
+    salt: b642(salt),
+    cipher: "AES-256-GCM",
+    iv: b642(iv),
+    ciphertext: b642(new Uint8Array(sealed)),
+    ...purpose !== undefined && purpose !== "wallets" ? { purpose } : {}
+  };
+  return `${JSON.stringify(file, null, 2)}
+`;
+}
+async function readKeystore(raw, passphrase, opts = {}) {
+  let file;
+  try {
+    file = JSON.parse(raw);
+  } catch {
+    throw new Error("The keystore file is not valid JSON.");
+  }
+  if (file.version !== KEYSTORE_VERSION) {
+    throw new Error(`Unsupported keystore version ${file.version}: this CLI writes version ${KEYSTORE_VERSION}.`);
+  }
+  const purpose = file.purpose === TEE_KEYSTORE_PURPOSE || file.purpose === LEGACY_TEE_PURPOSE ? TEE_KEYSTORE_PURPOSE : "wallets";
+  if (opts.expectPurpose !== undefined && purpose !== opts.expectPurpose) {
+    throw new Error(purpose === TEE_KEYSTORE_PURPOSE ? "This is a TEE wallet store (tee-wallets.enc). It has no export path; use: candle tee sweep." : "This is not a TEE wallet store. The tee commands only open tee-wallets.enc.");
+  }
+  if (purpose === TEE_KEYSTORE_PURPOSE) {
+    if (file.kdf !== "PBKDF2-HMAC-SHA256" || file.cipher !== "AES-256-GCM") {
+      throw new Error("The TEE wallet store names an unsupported KDF or cipher; refusing to open it.");
+    }
+    if (!Number.isInteger(file.iterations) || file.iterations < TEE_KEYSTORE_MIN_ITERATIONS || file.iterations > TEE_KEYSTORE_MAX_ITERATIONS) {
+      throw new Error(`The TEE wallet store's PBKDF2 iteration count (${file.iterations}) is outside the accepted ` + `${TEE_KEYSTORE_MIN_ITERATIONS}-${TEE_KEYSTORE_MAX_ITERATIONS} range; refusing to open it.`);
+    }
+  }
+  const salt = unb64(file.salt);
+  const key = await deriveKeystoreKey(passphrase, salt, file.iterations);
+  let plain;
+  try {
+    plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64(file.iv) }, key, unb64(file.ciphertext));
+  } catch {
+    throw new Error("Could not decrypt the keystore: wrong passphrase, or the file is corrupt.");
+  }
+  const decoded = JSON.parse(new TextDecoder().decode(plain));
+  return {
+    entries: decoded.map(({ [LEGACY_TEE_FIELD]: legacy, ...entry }) => legacy !== undefined && entry.tee === undefined ? { ...entry, tee: legacy } : entry),
+    key,
+    salt,
+    iterations: file.iterations
+  };
+}
+async function writeKeystoreFile(path, contents) {
+  const dir = dirname2(path);
+  const created = await mkdir3(dir, { recursive: true });
+  if (created !== undefined)
+    await chmod2(dir, 448).catch(() => {});
+  const tmpPath = `${path}.${crypto.randomUUID()}.tmp`;
+  await writeFile3(tmpPath, contents, { encoding: "utf8", mode: 384 });
+  await chmod2(tmpPath, 384);
+  await rename3(tmpPath, path);
+}
+function keystoreLockPath(path) {
+  return `${path}.lock`;
+}
+async function withKeystoreLock(path, clock, fn, opts = {}) {
+  const lockPath = keystoreLockPath(path);
+  const waitMs = opts.waitMs ?? 1e4;
+  const pollMs = opts.pollMs ?? 100;
+  await mkdir3(dirname2(path), { recursive: true });
+  const started = clock.now();
+  for (;; ) {
+    try {
+      await mkdir3(lockPath);
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST")
+        throw error;
+      if (clock.now() - started >= waitMs) {
+        let owner = null;
+        try {
+          owner = (await readFile3(join4(lockPath, "owner"), "utf8")).trim() || null;
+        } catch {
+          owner = null;
+        }
+        throw new KeystoreLockedError(lockPath, owner);
+      }
+      await clock.sleep(pollMs);
+    }
+  }
+  try {
+    await writeFile3(join4(lockPath, "owner"), `${opts.owner ?? `pid ${process.pid}`} since ${new Date().toISOString()}
+`, { encoding: "utf8", mode: 384 }).catch(() => {});
+    return await fn();
+  } finally {
+    await rm2(lockPath, { recursive: true, force: true });
+  }
+}
+var TEE_KEYSTORE_PURPOSE = "ember-tee", LEGACY_TEE_PURPOSE = "ember-hot", LEGACY_TEE_FIELD = "hot", TEE_KEYSTORE_MIN_ITERATIONS = 210000, TEE_KEYSTORE_MAX_ITERATIONS = 2100000, KEYSTORE_VERSION = 1, KEYSTORE_ITERATIONS = 210000, b642 = (bytes) => Buffer.from(bytes).toString("base64"), unb64 = (s) => new Uint8Array(Buffer.from(s, "base64")), KeystoreLockedError;
+var init_wallet_keystore = __esm(() => {
+  init_store();
+  KeystoreLockedError = class KeystoreLockedError extends Error {
+    lockPath;
+    owner;
+    constructor(lockPath, owner) {
+      super(`Another command holds the TEE wallet store lock at ${lockPath}` + `${owner ? ` (${owner})` : ""}. If no other candle tee command is running, remove that directory and retry.`);
+      this.lockPath = lockPath;
+      this.owner = owner;
+      this.name = "KeystoreLockedError";
+    }
+  };
+});
+
+// ../../node_modules/@noble/hashes/esm/hkdf.js
+function extract(hash, ikm, salt) {
+  ahash(hash);
+  if (salt === undefined)
+    salt = new Uint8Array(hash.outputLen);
+  return hmac(hash, toBytes(salt), toBytes(ikm));
+}
+function expand(hash, prk, info, length = 32) {
+  ahash(hash);
+  anumber(length);
+  const olen = hash.outputLen;
+  if (length > 255 * olen)
+    throw new Error("Length should be <= 255*HashLen");
+  const blocks = Math.ceil(length / olen);
+  if (info === undefined)
+    info = EMPTY_BUFFER;
+  const okm = new Uint8Array(blocks * olen);
+  const HMAC2 = hmac.create(hash, prk);
+  const HMACTmp = HMAC2._cloneInto();
+  const T = new Uint8Array(HMAC2.outputLen);
+  for (let counter = 0;counter < blocks; counter++) {
+    HKDF_COUNTER[0] = counter + 1;
+    HMACTmp.update(counter === 0 ? EMPTY_BUFFER : T).update(info).update(HKDF_COUNTER).digestInto(T);
+    okm.set(T, olen * counter);
+    HMAC2._cloneInto(HMACTmp);
+  }
+  HMAC2.destroy();
+  HMACTmp.destroy();
+  clean(T, HKDF_COUNTER);
+  return okm.slice(0, length);
+}
+var HKDF_COUNTER, EMPTY_BUFFER, hkdf = (hash, ikm, salt, info, length) => expand(hash, extract(hash, ikm, salt), info, length);
+var init_hkdf = __esm(() => {
+  init_hmac();
+  init_utils();
+  HKDF_COUNTER = /* @__PURE__ */ Uint8Array.from([0]);
+  EMPTY_BUFFER = /* @__PURE__ */ Uint8Array.of();
+});
+
+// src/vault/evm-record-key.ts
+async function createEvmRecordKey(payloadKey, vaultId) {
+  const secret = x25519.utils.randomPrivateKey();
+  try {
+    const publicKey = x25519.getPublicKey(secret);
+    const blob = await seal(payloadKey, secret, evmRecordKeyAad(vaultId));
+    return { publicKey: b64u(publicKey), blob };
+  } finally {
+    wipe(secret);
+  }
+}
+async function openEvmRecordKey(payloadKey, vaultId, blob, headerPublicKey) {
+  const secret = await open2(payloadKey, blob, evmRecordKeyAad(vaultId), {
+    code: "VAULT_BLOB_TAMPERED",
+    message: "The sealed EVM record's key failed its authentication tag.",
+    suggestion: "Nothing was written. Restore the file from a verified backup."
+  });
+  if (secret.length !== EVM_RECORD_KEY_BYTES) {
+    wipe(secret);
+    throw new VaultError("VAULT_INDEX_INVALID", "The sealed EVM record's key is the wrong length.");
+  }
+  const derived = x25519.getPublicKey(secret);
+  if (!bytesEqual(derived, unb64u(headerPublicKey, "evmRecordPublicKey"))) {
+    wipe(secret);
+    throw new VaultError("VAULT_INDEX_INVALID", "The sealed EVM record's key does not derive the header's evmRecordPublicKey; the pair was altered.", { suggestion: "Nothing was written. Restore the file from a verified backup." });
+  }
+  return secret;
+}
+function entryJson(entry) {
+  return entry.kind === "token" ? JSON.stringify({ kind: "token", wallet: entry.wallet, token: entry.token }) : JSON.stringify({ kind: "scanStart", wallet: entry.wallet, block: entry.block });
+}
+function paddedEntry(entry) {
+  const json = new TextEncoder().encode(entryJson(entry));
+  if (json.length > EVM_RECORD_PLAINTEXT_BYTES)
+    return;
+  const out = new Uint8Array(EVM_RECORD_PLAINTEXT_BYTES).fill(32);
+  out.set(json, 0);
+  return out;
+}
+function concat4(a, b) {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+async function lineKey(shared, epk, rpk) {
+  const okm = hkdf(sha2562, shared, concat4(epk, rpk), new TextEncoder().encode(EVM_RECORD_HKDF_INFO), 32);
+  try {
+    return await crypto.subtle.importKey("raw", okm, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+  } finally {
+    wipe(okm);
+  }
+}
+async function sealEvmRecordLine(entry, recordPublicKey, vaultId) {
+  const plaintext = paddedEntry(entry);
+  if (plaintext === undefined) {
+    throw new VaultError("EVM_RECORD_ENTRY_TOO_LONG", `A sealed EVM record entry is at most ${EVM_RECORD_PLAINTEXT_BYTES} bytes; this one is longer and was not written.`);
+  }
+  const rpk = unb64u(recordPublicKey, "evmRecordPublicKey");
+  const esk = x25519.utils.randomPrivateKey();
+  try {
+    const epk = x25519.getPublicKey(esk);
+    const shared = x25519.getSharedSecret(esk, rpk);
+    try {
+      const key = await lineKey(shared, epk, rpk);
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: ZERO_NONCE, additionalData: new TextEncoder().encode(vaultId) }, key, plaintext));
+      return `${JSON.stringify({ v: EVM_RECORD_LINE_VERSION, epk: b64u(epk), ct: b64u(ct) })}
+`;
+    } finally {
+      wipe(shared);
+    }
+  } finally {
+    wipe(esk);
+  }
+}
+function isAddress(value) {
+  return typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+async function openEvmRecordLine(line, recordSecret, recordPublicKey, vaultId) {
+  try {
+    const parsed = JSON.parse(line);
+    if (parsed.v !== EVM_RECORD_LINE_VERSION || typeof parsed.epk !== "string" || typeof parsed.ct !== "string") {
+      return;
+    }
+    const epk = unb64u(parsed.epk, "epk");
+    const rpk = unb64u(recordPublicKey, "evmRecordPublicKey");
+    const shared = x25519.getSharedSecret(recordSecret, epk);
+    let plaintext;
+    try {
+      const key = await lineKey(shared, epk, rpk);
+      plaintext = new Uint8Array(await crypto.subtle.decrypt({ name: "AES-GCM", iv: ZERO_NONCE, additionalData: new TextEncoder().encode(vaultId) }, key, unb64u(parsed.ct, "ct")));
+    } finally {
+      wipe(shared);
+    }
+    if (plaintext.length !== EVM_RECORD_PLAINTEXT_BYTES)
+      return;
+    const value = JSON.parse(new TextDecoder().decode(plaintext).trimEnd());
+    if (value.kind === "token" && isAddress(value.wallet) && isAddress(value.token)) {
+      return { kind: "token", wallet: value.wallet, token: value.token };
+    }
+    if (value.kind === "scanStart" && isAddress(value.wallet) && Number.isSafeInteger(value.block) && value.block >= 0) {
+      return { kind: "scanStart", wallet: value.wallet, block: value.block };
+    }
+    return;
+  } catch {
+    return;
+  }
+}
+var EVM_RECORD_KEY_BYTES = 32, EVM_RECORD_PLAINTEXT_BYTES = 160, EVM_RECORD_HKDF_INFO = "candle-vault/v4/evm-record", EVM_RECORD_LINE_VERSION = 1, ZERO_NONCE;
+var init_evm_record_key = __esm(() => {
+  init_ed25519();
+  init_hkdf();
+  init_sha256();
+  init_crypto();
+  init_errors();
+  init_format();
+  ZERO_NONCE = new Uint8Array(12);
+});
+
+// src/vault/evm-record.ts
+import { appendFile, readFile as readFile4, rename as rename4, stat as stat2, truncate } from "node:fs/promises";
+function evmRecordPath(vaultPath) {
+  return `${vaultPath.replace(/\.enc$/, "")}.evm-record.sealed`;
+}
+function utcStamp(ms) {
+  return new Date(ms).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+async function readIfPresent(path) {
+  try {
+    return await readFile4(path);
+  } catch (error) {
+    if (error?.code === "ENOENT")
+      return null;
+    throw error;
+  }
+}
+function splitRecord(bytes) {
+  const text = new TextDecoder().decode(bytes);
+  if (text.length === 0)
+    return { lines: [], partialTail: false };
+  const pieces = text.split(`
+`);
+  const last = pieces.pop();
+  return { lines: pieces.filter((line) => line.length > 0), partialTail: last.length > 0 };
+}
+async function appendEvmRecordEntry(input) {
+  const path = evmRecordPath(input.vaultPath);
+  let raw;
+  try {
+    const bytes = await readIfPresent(input.vaultPath);
+    raw = bytes === null ? null : bytes.toString("utf8");
+  } catch (error) {
+    return { written: false, reason: "header-unreadable", detail: messageOf(error), path };
+  }
+  if (raw === null)
+    return { written: false, reason: "no-vault", detail: `no vault at ${input.vaultPath}`, path };
+  let publicKey;
+  let vaultId;
+  try {
+    const header = parseVaultFile(raw);
+    vaultId = header.vaultId;
+    publicKey = header.version === EVM_TEE_VAULT_VERSION ? header.evmRecordPublicKey : undefined;
+  } catch (error) {
+    return { written: false, reason: "header-unreadable", detail: messageOf(error), path };
+  }
+  if (publicKey === undefined) {
+    return {
+      written: false,
+      reason: "no-record-key",
+      detail: "the vault is not version 4, so it has no sealed EVM record key",
+      path
+    };
+  }
+  let line;
+  try {
+    line = await sealEvmRecordLine(input.entry, publicKey, vaultId);
+  } catch (error) {
+    const tooLong = error instanceof VaultError && error.code === "EVM_RECORD_ENTRY_TOO_LONG";
+    return { written: false, reason: tooLong ? "too-long" : "write-failed", detail: messageOf(error), path };
+  }
+  try {
+    const repairedPartial = await withKeystoreLock(path, input.clock, async () => {
+      const repaired = await repairTail(path);
+      await appendFile(path, line, { encoding: "utf8", mode: 384 });
+      return repaired;
+    }, input.lockWaitMs !== undefined ? { waitMs: input.lockWaitMs } : {});
+    return { written: true, repairedPartial, path };
+  } catch (error) {
+    if (error instanceof KeystoreLockedError) {
+      return { written: false, reason: "locked", detail: error.message, path };
+    }
+    return { written: false, reason: "write-failed", detail: messageOf(error), path };
+  }
+}
+async function repairTail(path) {
+  const bytes = await readIfPresent(path);
+  if (bytes === null || bytes.length === 0 || bytes[bytes.length - 1] === 10)
+    return false;
+  const lastNewline = bytes.lastIndexOf(10);
+  await truncate(path, lastNewline + 1);
+  return true;
+}
+function appendNotice(outcome, what) {
+  if (outcome.written) {
+    return outcome.repairedPartial ? `The sealed EVM record at ${outcome.path} ended in a partial line (a torn earlier append); it was dropped before ${what} was added.` : undefined;
+  }
+  return `${what} was not added to the sealed EVM record (${outcome.detail}). A sweep can still find it with --token or --from-block.`;
+}
+async function openVaultRecordKey(vault) {
+  const blob = vault.index.evmRecordKey;
+  const publicKey = vault.file.evmRecordPublicKey;
+  if (blob === undefined || publicKey === undefined)
+    return;
+  return openEvmRecordKey(vault.payloadKey, vault.file.vaultId, blob, publicKey);
+}
+async function readEvmRecord(vault, path = evmRecordPath(vault.path)) {
+  const bytes = await readIfPresent(path);
+  const base = { path, entries: [], unreadableLines: 0, partialTail: false };
+  const secret = await openVaultRecordKey(vault);
+  if (secret === undefined)
+    return { ...base, absent: bytes === null || bytes.length === 0, noKey: true };
+  try {
+    if (bytes === null || bytes.length === 0)
+      return { ...base, absent: true, noKey: false };
+    const { lines, partialTail } = splitRecord(bytes);
+    const seen = new Set;
+    const entries = [];
+    let unreadable = 0;
+    for (const line of lines) {
+      const entry = await openEvmRecordLine(line, secret, vault.file.evmRecordPublicKey, vault.file.vaultId);
+      if (entry === undefined) {
+        unreadable += 1;
+        continue;
+      }
+      const key = JSON.stringify(entry).toLowerCase();
+      if (seen.has(key))
+        continue;
+      seen.add(key);
+      entries.push(entry);
+    }
+    return { path, absent: false, noKey: false, entries, unreadableLines: unreadable, partialTail };
+  } finally {
+    wipe(secret);
+  }
+}
+async function copyEvmRecordForBackup(live, copyPath, clock) {
+  const livePath = evmRecordPath(live.path);
+  try {
+    return await withKeystoreLock(livePath, clock, async () => {
+      const bytes = await readIfPresent(livePath);
+      if (bytes === null)
+        return { present: false, copied: 0, dropped: 0, copyPath };
+      const secret = await openVaultRecordKey(live);
+      const kept = [];
+      let dropped = 0;
+      const { lines, partialTail } = splitRecord(bytes);
+      if (partialTail)
+        dropped += 1;
+      try {
+        for (const line of lines) {
+          const entry = secret === undefined ? undefined : await openEvmRecordLine(line, secret, live.file.evmRecordPublicKey, live.file.vaultId);
+          if (entry === undefined)
+            dropped += 1;
+          else
+            kept.push(`${line}
+`);
+        }
+      } finally {
+        if (secret !== undefined)
+          wipe(secret);
+      }
+      await writeKeystoreFile(copyPath, kept.join(""));
+      return { present: true, copied: kept.length, dropped, copyPath };
+    });
+  } catch (error) {
+    if (error instanceof KeystoreLockedError) {
+      throw new VaultError("EVM_RECORD_UNAVAILABLE", `Could not take the sealed EVM record's lock at ${livePath}.lock, so the backup was not completed and no verified backup was recorded.`, { suggestion: "Wait for the trade or sweep holding it to finish, then run the backup again." });
+    }
+    if (error instanceof VaultError)
+      throw error;
+    throw new VaultError("VAULT_WRITE_FAILED", `Could not copy the sealed EVM record to ${copyPath}: ${messageOf(error)}`);
+  }
+}
+async function verifyEvmRecordCopy(copy, path = evmRecordPath(copy.path)) {
+  if (copy.file.version !== EVM_TEE_VAULT_VERSION)
+    return { notApplicable: true, absent: true, lines: 0, path };
+  const bytes = await readIfPresent(path);
+  if (bytes === null)
+    return { notApplicable: false, absent: true, lines: 0, path };
+  const { lines, partialTail } = splitRecord(bytes);
+  if (partialTail) {
+    throw verifyFailed(`the sealed EVM record at ${path} ends in a partial line`);
+  }
+  const secret = await openVaultRecordKey(copy);
+  if (secret === undefined)
+    throw verifyFailed("the copy has no sealed EVM record key");
+  try {
+    for (const [index, line] of lines.entries()) {
+      const entry = await openEvmRecordLine(line, secret, copy.file.evmRecordPublicKey, copy.file.vaultId);
+      if (entry === undefined) {
+        throw verifyFailed(`line ${index + 1} of the sealed EVM record at ${path} does not decrypt under this copy's key`);
+      }
+    }
+  } finally {
+    wipe(secret);
+  }
+  return { notApplicable: false, absent: false, lines: lines.length, path };
+}
+function verifyFailed(message) {
+  return new VaultError("VAULT_VERIFY_FAILED", `Verification failed at step 9: ${message}.`, {
+    suggestion: "The copy's record changed after it was written. Run `candle vault backup` again; a fresh backup of the same vault copies only the lines that decrypt.",
+    details: { step: "9" }
+  });
+}
+async function moveAsideOrphanRecord(vaultPath, clock) {
+  const path = evmRecordPath(vaultPath);
+  if (!await exists(path))
+    return;
+  return withKeystoreLock(path, clock, async () => {
+    if (!await exists(path))
+      return;
+    let target = `${path}.orphaned-${utcStamp(clock.now())}`;
+    for (let n = 2;await exists(target); n++)
+      target = `${path}.orphaned-${utcStamp(clock.now())}-${n}`;
+    await rename4(path, target);
+    return target;
+  });
+}
+async function exists(path) {
+  try {
+    await stat2(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function messageOf(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+var init_evm_record = __esm(() => {
+  init_wallet_keystore();
+  init_errors();
+  init_evm_record_key();
+  init_format();
+});
+
+// src/vault/sidecar.ts
+import { chmod as chmod3, mkdir as mkdir4, readFile as readFile5, writeFile as writeFile4 } from "node:fs/promises";
+import { dirname as dirname3 } from "node:path";
+function sidecarPath(vaultPath) {
+  return vaultPath.replace(/\.enc$/, "") + ".state.json";
+}
+function sourceDigest(vaultId, bytes) {
+  const id = new TextEncoder().encode(vaultId);
+  const joined = new Uint8Array(id.length + bytes.length);
+  joined.set(id, 0);
+  joined.set(bytes, id.length);
+  return b64u(sha2562(joined));
+}
+async function readSidecar(path) {
+  let raw;
+  try {
+    raw = await readFile5(path, "utf8");
+  } catch {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.vaultId !== "string" || !Number.isInteger(parsed?.lastGeneration))
+      return null;
+    return {
+      ...parsed,
+      envelopeIds: Array.isArray(parsed.envelopeIds) ? parsed.envelopeIds : [],
+      removedEnvelopeIds: Array.isArray(parsed.removedEnvelopeIds) ? parsed.removedEnvelopeIds : []
+    };
+  } catch {
+    return null;
+  }
+}
+async function writeSidecar(path, state) {
+  const dir = dirname3(path);
+  await mkdir4(dir, { recursive: true });
+  await chmod3(dir, 448).catch(() => {});
+  await writeFile4(path, `${JSON.stringify(state, null, 2)}
+`, { encoding: "utf8", mode: 384 });
+  await chmod3(path, 384).catch(() => {});
+}
+function nextSidecar(previous, file, patch = {}) {
+  const carried = previous !== null && previous.vaultId === file.vaultId ? previous : null;
+  const currentIds = file.envelopes.map((envelope) => envelope.id);
+  const known = carried?.envelopeIds ?? [];
+  const removed = new Set(carried?.removedEnvelopeIds ?? []);
+  for (const id of known)
+    if (!currentIds.includes(id))
+      removed.add(id);
+  const next = {
+    ...carried ?? {},
+    vaultId: file.vaultId,
+    lastGeneration: file.generation,
+    envelopeIds: currentIds,
+    removedEnvelopeIds: [...removed].sort(),
+    ...patch
+  };
+  next.lastGeneration = Math.max(next.lastGeneration, file.generation, carried?.lastGeneration ?? 0);
+  return next;
+}
+var init_sidecar = __esm(() => {
+  init_sha256();
+  init_crypto();
+});
+
+// src/vault/store.ts
+var exports_store = {};
+__export(exports_store, {
+  writeNewVault: () => writeNewVault,
+  wrapDekForPrf: () => wrapDekForPrf,
+  wrapDekForPassphrase: () => wrapDekForPassphrase,
+  wrapDekForKek: () => wrapDekForKek,
+  withVaultLock: () => withVaultLock,
+  unlockWithPassphrase: () => unlockWithPassphrase,
+  unlockVault: () => unlockVault,
+  serializeVault: () => serializeVault,
+  sealKeyBlob: () => sealKeyBlob,
+  sealIndex: () => sealIndex,
+  readVaultRaw: () => readVaultRaw,
+  ownSecret: () => ownSecret,
+  legacyWalletsPath: () => legacyWalletsPath,
+  freshVaultId: () => freshVaultId,
+  freshKeyId: () => freshKeyId,
+  freshEnvelopeId: () => freshEnvelopeId,
+  freshDek: () => freshDek,
+  fileExists: () => fileExists,
+  entriesOf: () => entriesOf,
+  defaultVaultPath: () => defaultVaultPath,
+  decryptRoot: () => decryptRoot,
+  decryptKey: () => decryptKey,
+  commitVault: () => commitVault,
+  closeVault: () => closeVault,
+  candleConfigDir: () => candleConfigDir,
+  CONFIG_DIR_ENV: () => CONFIG_DIR_ENV
+});
+import { chmod as chmod4, mkdir as mkdir5, readFile as readFile6, stat as stat3 } from "node:fs/promises";
+import { join as join5 } from "node:path";
+function candleConfigDir(env, home) {
+  const configured = env.CANDLE_CONFIG_DIR?.trim();
+  if (configured) {
+    const refusal = refuseUnexpandedTilde(CONFIG_DIR_ENV, configured);
+    if (refusal !== undefined)
+      throw new UsageError(refusal);
+    return configured;
+  }
+  return join5(home, ".config", "candle");
+}
+function defaultVaultPath(env, home) {
+  return join5(candleConfigDir(env, home), "vault.enc");
+}
+function legacyWalletsPath(env, home) {
+  return join5(candleConfigDir(env, home), "wallets.enc");
+}
+async function readVaultRaw(path) {
+  try {
+    return await readFile6(path, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT")
+      return null;
+    throw new VaultError("VAULT_UNREADABLE", `Could not read the vault at ${path}.`);
+  }
+}
+async function fileExists(path) {
+  try {
+    await stat3(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function closeVault(vault) {
+  wipe(vault.dek);
+}
+async function unlockVault(path, raw, request2, opts = {}) {
+  const file = parseVaultFile(raw);
+  const envelope = pickEnvelope(file, request2);
+  const dek = await unwrapDek(file, envelope, request2, opts.notice);
+  if (dek.length !== DEK_BYTES) {
+    wipe(dek);
+    throw new VaultError("VAULT_UNLOCK_FAILED", "The unwrapped key is the wrong length; this file is corrupt.");
+  }
+  try {
+    const payloadKey = await derivePayloadKey(dek, unb64u(file.vaultId, "vaultId"));
+    const indexBytes = await open2(payloadKey, file.index, canonicalHeader(file), {
+      code: "VAULT_BLOB_TAMPERED",
+      message: "The vault header was altered, an envelope was added or removed outside this CLI, or this index is from a different write of the vault.",
+      suggestion: "Nothing was written. Restore the file from a verified backup."
+    });
+    let index;
+    try {
+      index = parseIndexPlaintext(indexBytes, file.version);
+    } finally {
+      wipe(indexBytes);
+    }
+    assertKeyIdsAgree(file);
+    if (file.version === EVM_TEE_VAULT_VERSION && index.evmRecordKey !== undefined) {
+      const secret = await openEvmRecordKey(payloadKey, file.vaultId, index.evmRecordKey, file.evmRecordPublicKey);
+      wipe(secret);
+    }
+    return { path, raw, file, index, payloadKey, dek, envelope };
+  } catch (error) {
+    wipe(dek);
+    throw error;
+  }
+}
+async function unwrapDek(file, envelope, request2, notice) {
+  if (request2.factor === "passphrase") {
+    const kek = await derivePassphraseKek(request2.passphrase, passphraseKdf(envelope), notice);
+    return withSecret(kek, async (kekBytes) => {
+      const kekKey2 = await importAesKey(kekBytes);
+      return open2(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
+        code: "VAULT_UNLOCK_FAILED",
+        message: "Could not open the vault: wrong passphrase, or the file is corrupt."
+      });
+    });
+  }
+  if (request2.factor === "secure-enclave") {
+    if (!isSecureEnclaveEnvelope(envelope)) {
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a Secure Enclave one.`);
+    }
+    const kekKey2 = await importAesKey(request2.kek);
+    return open2(kekKey2, envelope.wrap, envelopeAad(file, envelope), {
+      code: "VAULT_UNLOCK_FAILED",
+      message: "Could not open the vault with the Secure Enclave: what it unwrapped is not this envelope's key, or the file is corrupt.",
+      suggestion: "Nothing was derived from it and no other factor was tried."
+    });
+  }
+  if (!isPrfEnvelope(envelope)) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `Envelope ${envelope.id} is a ${envelope.factor} envelope, not a passkey one.`);
+  }
+  const kekKey = await derivePrfKek(request2.prfOutput, unb64u(file.vaultId, "vaultId"));
+  const what = envelope.transport === "platform-macos" ? "this synced passkey" : "this security key";
+  return open2(kekKey, envelope.wrap, envelopeAad(file, envelope), {
+    code: "VAULT_UNLOCK_FAILED",
+    message: `Could not open the vault with ${what}: the assertion did not yield this envelope's key, or the file is corrupt.`,
+    suggestion: "Nothing was derived from it and no other factor was tried."
+  });
+}
+function pickEnvelope(file, request2) {
+  const candidates = file.envelopes.filter((envelope) => envelope.factor === request2.factor);
+  if (request2.envelopeId !== undefined) {
+    const named = candidates.find((envelope) => envelope.id === request2.envelopeId);
+    if (!named)
+      throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request2.factor} envelope with id ${request2.envelopeId}.`);
+    return named;
+  }
+  const first = candidates[0];
+  if (!first) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", `This vault has no ${request2.factor} envelope.`, {
+      suggestion: "Run `candle vault status` to see which factors can open it."
+    });
+  }
+  return first;
+}
+async function unlockWithPassphrase(path, raw, passphrase, opts = {}) {
+  const file = parseVaultFile(raw);
+  const envelopes = file.envelopes.filter((envelope) => envelope.factor === "passphrase");
+  if (envelopes.length === 0) {
+    throw new VaultError("VAULT_FACTOR_UNAVAILABLE", "This vault has no passphrase envelope.");
+  }
+  let last;
+  for (const envelope of envelopes) {
+    try {
+      return await unlockVault(path, raw, { factor: "passphrase", passphrase, envelopeId: envelope.id }, opts);
+    } catch (error) {
+      if (error instanceof VaultError && error.code !== "VAULT_UNLOCK_FAILED")
+        throw error;
+      last = error;
+    }
+  }
+  throw last;
+}
+async function decryptRoot(vault) {
+  return open2(vault.payloadKey, vault.file.root, rootAad(vault.file.vaultId), {
+    code: "VAULT_BLOB_TAMPERED",
+    message: "The vault's root blob failed its authentication tag.",
+    suggestion: "Nothing was written. Restore the file from a verified backup; `vault verify-backup` checks a copy in full."
+  });
+}
+async function decryptKey(vault, keyId) {
+  const blob = vault.file.keys.find((candidate) => candidate.id === keyId);
+  if (!blob)
+    throw new VaultError("VAULT_INDEX_INVALID", `The vault declares key ${keyId} but holds no blob for it.`);
+  return open2(vault.payloadKey, blob, keyAad(vault.file.vaultId, keyId), {
+    code: "VAULT_BLOB_TAMPERED",
+    message: `Key blob ${keyId} failed its authentication tag.`,
+    suggestion: "Nothing was written."
+  });
+}
+function freshId(bytes) {
+  for (;; ) {
+    const id = b64u(crypto.getRandomValues(new Uint8Array(bytes)));
+    if (!id.startsWith("-") && !id.startsWith("_"))
+      return id;
+  }
+}
+function freshEnvelopeId() {
+  return freshId(8);
+}
+function freshKeyId() {
+  return freshId(8);
+}
+function freshVaultId() {
+  return freshId(16);
+}
+function freshDek() {
+  return randomBytes2(DEK_BYTES);
+}
+async function wrapDekForPassphrase(dek, passphrase, envelope, header, notice) {
+  const kek = await derivePassphraseKek(passphrase, passphraseKdf(envelope), notice);
+  return withSecret(kek, async (kekBytes) => {
+    const kekKey = await importAesKey(kekBytes);
+    const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
+    return { alg: VAULT_CIPHER, ...blob };
+  });
+}
+async function wrapDekForPrf(dek, prfOutput, envelope, header) {
+  const kekKey = await derivePrfKek(prfOutput, unb64u(header.vaultId, "vaultId"));
+  const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
+  return { alg: VAULT_CIPHER, ...blob };
+}
+async function wrapDekForKek(dek, kek, envelope, header) {
+  const kekKey = await importAesKey(kek);
+  const blob = await seal(kekKey, dek, envelopeAad(header, envelope));
+  return { alg: VAULT_CIPHER, ...blob };
+}
+function serializeVault(file) {
+  return `${JSON.stringify(file, null, 2)}
+`;
+}
+async function sealIndex(header, index, payloadKey) {
+  const withoutIndex = { ...header };
+  const blob = await sealJson(payloadKey, serializeIndexPlaintext(index, header.version), canonicalHeader(withoutIndex));
+  return { ...withoutIndex, index: blob };
+}
+async function commitVault(vault, plan, clock) {
+  let index = plan.index.evmRecordKey === undefined && vault.index.evmRecordKey !== undefined ? { ...plan.index, evmRecordKey: vault.index.evmRecordKey } : plan.index;
+  let orphaned;
+  const written = await withVaultLock(vault.path, clock, async () => {
+    const current = await readVaultRaw(vault.path);
+    if (current !== vault.raw) {
+      throw new VaultError("VAULT_CHANGED", "The vault changed on disk while this command was running; nothing was written.", {
+        suggestion: "Another candle command wrote to it. Run this one again."
+      });
+    }
+    const envelopes = plan.envelopes ?? vault.file.envelopes;
+    const keys = [...vault.file.keys, ...plan.addKeys ?? []];
+    let evmRecordPublicKey = vault.file.evmRecordPublicKey;
+    if (indexRequiresVersion4(index) && evmRecordPublicKey === undefined) {
+      orphaned = await moveAsideOrphanRecord(vault.path, clock);
+      const created = await createEvmRecordKey(vault.payloadKey, vault.file.vaultId);
+      evmRecordPublicKey = created.publicKey;
+      index = { ...index, evmRecordKey: created.blob };
+    }
+    const version = indexRequiresVersion4(index) ? EVM_TEE_VAULT_VERSION : indexRequiresVersion3(index) ? VAULT_VERSION : vault.file.version;
+    const header = {
+      format: VAULT_FORMAT,
+      version,
+      vaultId: vault.file.vaultId,
+      generation: vault.file.generation + 1,
+      createdAt: vault.file.createdAt,
+      updatedAt: new Date(clock.now()).toISOString(),
+      cipher: VAULT_CIPHER,
+      envelopes,
+      keyIds: keys.map((blob) => blob.id),
+      ...evmRecordPublicKey !== undefined ? { evmRecordPublicKey } : {},
+      root: vault.file.root,
+      keys
+    };
+    const next = await sealIndex(header, index, vault.payloadKey);
+    const contents = serializeVault(next);
+    try {
+      await writeKeystoreFile(vault.path, contents);
+    } catch {
+      throw new VaultError("VAULT_WRITE_FAILED", `Could not write the vault at ${vault.path}.`);
+    }
+    return { next, contents };
+  });
+  const path = sidecarPath(vault.path);
+  await writeSidecar(path, nextSidecar(await readSidecar(path), written.next, plan.sidecar)).catch(() => {});
+  if (orphaned !== undefined) {
+    clock.stderr?.write(`A sealed EVM record from an earlier vault was at ${evmRecordPath(vault.path)}; it was moved to ${orphaned} (never deleted), and this vault starts a fresh record.
+`);
+  }
+  return { ...vault, raw: written.contents, file: written.next, index };
+}
+async function withVaultLock(path, clock, fn) {
+  try {
+    return await withKeystoreLock(path, clock, fn);
+  } catch (error) {
+    if (error instanceof KeystoreLockedError) {
+      throw new VaultError("VAULT_LOCKED", error.message);
+    }
+    throw error;
+  }
+}
+async function sealKeyBlob(vault, keyId, secret) {
+  const blob = await seal(vault.payloadKey, secret, keyAad(vault.file.vaultId, keyId));
+  return { id: keyId, ...blob };
+}
+async function writeNewVault(path, contents) {
+  await mkdir5(candleConfigDirOf(path), { recursive: true });
+  await chmod4(candleConfigDirOf(path), 448).catch(() => {});
+  await writeKeystoreFile(path, contents);
+}
+function candleConfigDirOf(path) {
+  return join5(path, "..");
+}
+function entriesOf(vault) {
+  return vault.index.entries;
+}
+var CONFIG_DIR_ENV = "CANDLE_CONFIG_DIR";
+var init_store = __esm(() => {
+  init_args();
+  init_wallet_keystore();
+  init_crypto();
+  init_errors();
+  init_evm_record();
+  init_evm_record_key();
+  init_format();
+  init_sidecar();
 });
 
 // src/enclave-helper/protocol.ts
@@ -30049,9 +30319,11 @@ async function readHoodTeeServer(ctx, entry) {
       };
     }
     const tradedTokens = Array.isArray(body.tradedTokens) ? body.tradedTokens.filter((token) => typeof token === "string" && /^0x[0-9a-fA-F]{40}$/.test(token)) : undefined;
+    const bridges = walletBridgesOf(result.body);
     const extras = {
       ...tradedTokens !== undefined ? { tradedTokens } : {},
-      ...body.tradedTokensTruncated === true ? { tradedTokensTruncated: true } : {}
+      ...body.tradedTokensTruncated === true ? { tradedTokensTruncated: true } : {},
+      ...bridges !== undefined ? { bridges } : {}
     };
     if (body.activeOperation === null)
       return { lock: { state: "free" }, ...extras };
@@ -30094,6 +30366,7 @@ function assertWalletLockFree(entry, lock, now) {
   });
 }
 var init_evm_tee = __esm(() => {
+  init_bridge();
   init_deps();
   init_evm_lite();
   init_errors();
@@ -31106,9 +31379,17 @@ async function sweepEvmWallet(input) {
     }
     server = await readHoodTeeServer(ctx, entry);
     assertWalletLockFree(entry, server.lock, deps.now());
+    const bridgeGate = bridgeSweepGate(address, server.bridges);
+    if (bridgeGate.refusal) {
+      writeLocalFailure(deps, bridgeGate.refusal, json);
+      return 1;
+    }
+    for (const warning of bridgeGate.warnings)
+      note(warning);
   }
   if (emergency) {
     note("EMERGENCY SWEEP: no Candle API call is made. Remote signing authority is NOT verified denied, and a still-authorized agent signer can race these transactions.");
+    note(EMERGENCY_BRIDGE_NOTE);
   }
   deps.stderr.write(`${hoodHostLine(client, "the chain id, nonces, balances and logs")}
 `);
@@ -31662,6 +31943,9 @@ ${suggestion}
       return unconfirmed(`The stop request failed: ${result.message ?? `HTTP ${result.status}`}.`, `Re-run: candle tee disable ${entry.address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`);
     }
     const outcome = readDisableOutcome(result.body);
+    for (const warning of bridgeDisableWarnings(entry.address, result.body))
+      deps.stderr.write(`${warning}
+`);
     if (json) {
       writeJson(deps, { address: entry.address, linkedWalletId, ...result.body });
       return outcome.complete ? 0 : 3;
@@ -31758,6 +32042,7 @@ function keystoreArgs(parsed) {
 var MAX_TOKEN_TRANSFER_GAS = 1000000n;
 var init_tee_evm = __esm(() => {
   init_args();
+  init_bridge();
   init_deps();
   init_evm_lite();
   init_profiles();
@@ -32809,6 +33094,9 @@ ${suggestion}
       return 1;
     }
     const outcome = readDisableOutcome(result.body);
+    for (const warning of bridgeDisableWarnings(address, result.body))
+      deps.stderr.write(`${warning}
+`);
     if (json) {
       deps.stdout.write(`${JSON.stringify({ address, linkedWalletId: entry.linkedWalletId, ...result.body })}
 `);
@@ -32942,6 +33230,7 @@ async function teeSweep(args, ctx) {
     let serverState = "local-only";
     let apiKey;
     let unreadReason = null;
+    let bridges;
     if (entry.linkedWalletId) {
       apiKey = await resolveApiKey(deps, ctx.profile);
       if (!apiKey)
@@ -32952,8 +33241,10 @@ async function teeSweep(args, ctx) {
           unreadReason = `the lifecycle read failed: ${lifecycle.result.message ?? `HTTP ${lifecycle.result.status}`}`;
           if (lifecycle.result.status === 401 || lifecycle.result.status === 403)
             apiKey = undefined;
-        } else
+        } else {
           serverState = lifecycle.body.state ?? "unknown";
+          bridges = walletBridgesOf(lifecycle.body);
+        }
       }
       if (unreadReason !== null) {
         serverState = "unread";
@@ -32985,6 +33276,21 @@ async function teeSweep(args, ctx) {
         writeLocalFailure(deps, { code: "TEE_WALLET_STATE_UNKNOWN", message: `Server reports state "${serverState}"; refusing to sweep.` }, json);
         return 1;
       }
+    }
+    const bridgeGate = bridgeSweepGate(address, bridges);
+    if (bridgeGate.refusal && !emergency) {
+      writeLocalFailure(deps, bridgeGate.refusal, json);
+      return 1;
+    }
+    for (const warning of bridgeGate.warnings)
+      (json ? deps.stderr : deps.stdout).write(`${warning}
+`);
+    if (emergency) {
+      if (bridgeGate.refusal)
+        (json ? deps.stderr : deps.stdout).write(`Warning: ${bridgeGate.refusal.message}
+`);
+      (json ? deps.stderr : deps.stdout).write(`${EMERGENCY_BRIDGE_NOTE}
+`);
     }
     if (emergency && !json) {
       deps.stdout.write(`EMERGENCY SWEEP: remote signing authority is NOT verified denied. A still-authorized agent signer or
@@ -33557,6 +33863,7 @@ var MIN_PASSPHRASE_LENGTH = 12, USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGG
 var init_tee = __esm(() => {
   init_esm();
   init_args();
+  init_bridge();
   init_deps();
   init_lp_close();
   init_profiles();
@@ -49913,7 +50220,9 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 ` + "- A timeout is unknown, not failed. Pass a `clientSwapId` and retry the SAME request, " + "including the same slippage. The replay returns the stored result: the original success, " + "or a stored error. An indeterminate first leg comes back as SWAP_FAILED, retryable false, " + "with the signature in the message -- verify that on-chain before a new id. A swap that is " + "still running, with no stored outcome, is a retryable conflict. A different body under the " + "same id is rejected. A confirmed first leg is replayed with its hash, retryable false, and " + "is not run again. retryable true on the first LEG2_FAILED means send leg 2 as a new request. " + `Omitting the id never coalesces -- do not retry a timed-out call that had no id.
 ` + "- If a bridge times out, check the returned status URLs rather than treating the funds " + `as arrived or lost.
 
-` + 'Amounts are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for ' + "callers that already compute them. Test-environment keys are refused: every leg settles " + "on a live venue.",
+` + 'Amounts are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for ' + "callers that already compute them. Test-environment keys are refused: every leg settles " + `on a live venue.
+
+` + "This tool spends the embedded wallets. A TEE wallet also bridges, from SOL or USDC to ETH " + "or USDG or back, but only into the same key's TEE wallet on the other chain, with no Candle " + "fee: that runs through `candle swap` with the wallet's bound key, not this tool.",
     inputSchema: swapShape
   }, async (args) => callAndRelay("candle_swap", args, cfg));
   register("candle_transfer", {
@@ -50703,17 +51012,17 @@ var HELP = {
   },
   swap: {
     group: "Trade",
-    summary: "Quote, confirm and swap on Solana or Hood; read an operation by id",
-    description: "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed.",
+    summary: "Quote, confirm and swap on Solana or Hood, bridge between them; read an operation by id",
+    description: "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, the key needs a raw cap on the origin asset, and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault.",
     usage: ["candle swap <from> <to> [flags]", "candle swap status <id>"],
     rows: [
       {
-        invocation: "<from> <to> --amount <n>|--percent <n> --wallet <tee>",
-        description: "Quote, confirm and swap on Solana or Hood"
+        invocation: "<from> <to> --amount <n>|--percent <n> --wallet <tee> [--to <tee>] [--wait]",
+        description: "Quote, confirm and swap on Solana or Hood, or bridge between them"
       },
       {
-        invocation: "status <id> [--kind trade|swap|launch]",
-        description: "Read an operation without resending it"
+        invocation: "status <id> [--kind trade|swap|launch] [--wait]",
+        description: "Read an operation without resending it; --wait follows a bridge until it ends"
       }
     ],
     examples: [
@@ -50721,7 +51030,11 @@ var HELP = {
       "candle swap USDC SOL --percent 100 --wallet AgentOne",
       "candle swap ETH USDG --amount 0.05 --wallet HoodOne",
       "candle swap 0xTokenAddress ETH --percent 100 --wallet HoodOne",
-      "candle swap status op_123 --kind swap"
+      "candle swap status op_123 --kind swap",
+      "candle vault fund AgentOneAddress --amount 1 --asset SOL   # vault to vault: fund the Solana TEE wallet",
+      "candle swap SOL ETH --amount 1 --wallet AgentOne   # bridge into this key's Hood TEE wallet",
+      "candle swap status op_123 --wait",
+      "candle tee disable 0xHoodOneAddress   # then: candle tee sweep 0xHoodOneAddress"
     ],
     env: ENV_API
   },
@@ -51286,10 +51599,10 @@ var HELP = {
     examples: ["candle help", "candle help vault", "candle help completion"]
   }
 };
-function topicFor(word) {
-  if (Object.hasOwn(HELP, word))
-    return HELP[word];
-  return Object.values(HELP).find((topic) => topic.display === word);
+function topicFor(word2) {
+  if (Object.hasOwn(HELP, word2))
+    return HELP[word2];
+  return Object.values(HELP).find((topic) => topic.display === word2);
 }
 function displayName(canonical) {
   return HELP[canonical]?.display ?? canonical;
@@ -51323,14 +51636,14 @@ function wrap(text, width) {
     return [text];
   const lines = [];
   let line = "";
-  for (const word of text.split(" ")) {
+  for (const word2 of text.split(" ")) {
     if (line === "")
-      line = word;
-    else if (`${line} ${word}`.length <= width)
-      line = `${line} ${word}`;
+      line = word2;
+    else if (`${line} ${word2}`.length <= width)
+      line = `${line} ${word2}`;
     else {
       lines.push(line);
-      line = word;
+      line = word2;
     }
   }
   if (line !== "")
@@ -51367,14 +51680,14 @@ function renderTopLevel() {
     "       candle help <command>                a command's subcommands, flags and examples"
   ];
   const entries = Object.entries(HELP);
-  const longest = Math.max(...entries.map(([word]) => displayName(word).length));
+  const longest = Math.max(...entries.map(([word2]) => displayName(word2).length));
   const column = 2 + longest + 2;
   for (const group of GROUPS) {
     out.push("", group);
-    for (const [word, topic] of entries) {
+    for (const [word2, topic] of entries) {
       if (topic.group !== group)
         continue;
-      out.push(`  ${displayName(word).padEnd(column - 2)}${topic.summary}`);
+      out.push(`  ${displayName(word2).padEnd(column - 2)}${topic.summary}`);
     }
   }
   out.push("", "Global flags", ...renderRows(GLOBAL_FLAGS, 28));
@@ -51384,11 +51697,11 @@ function renderTopLevel() {
 `)}
 `;
 }
-function renderTopic(word) {
-  const topic = topicFor(word);
+function renderTopic(word2) {
+  const topic = topicFor(word2);
   if (!topic)
     return;
-  const canonical = Object.keys(HELP).find((key) => HELP[key] === topic) ?? word;
+  const canonical = Object.keys(HELP).find((key) => HELP[key] === topic) ?? word2;
   const display = displayName(canonical);
   const out = [wrap(`candle ${display}: ${topic.description}`, WIDTH).join(`
 `)];
@@ -51456,8 +51769,8 @@ function zshScript() {
     "  _candle_flags=()",
     '  case "${words[2]}" in'
   ];
-  for (const { word, subcommands, flags } of perWord()) {
-    lines.push(`    ${word})`);
+  for (const { word: word2, subcommands, flags } of perWord()) {
+    lines.push(`    ${word2})`);
     if (subcommands.length > 0)
       lines.push(`      _candle_subs=(${subcommands.join(" ")})`);
     if (flags.length > 0)
@@ -51486,8 +51799,8 @@ function bashScript() {
     "  fi",
     '  case "${COMP_WORDS[1]}" in'
   ];
-  for (const { word, subcommands, flags } of perWord()) {
-    lines.push(`    ${word})`);
+  for (const { word: word2, subcommands, flags } of perWord()) {
+    lines.push(`    ${word2})`);
     if (subcommands.length > 0)
       lines.push(`      candle_subs="${subcommands.join(" ")}"`);
     if (flags.length > 0)
@@ -51507,8 +51820,8 @@ function fishScript() {
     ""
   ];
   for (const [canonical, topic] of Object.entries(HELP)) {
-    for (const word of topic.display ? [canonical, topic.display] : [canonical]) {
-      lines.push(`complete -c candle -n '__fish_use_subcommand' -a '${word}' -d '${safe(topic.summary)}'`);
+    for (const word2 of topic.display ? [canonical, topic.display] : [canonical]) {
+      lines.push(`complete -c candle -n '__fish_use_subcommand' -a '${word2}' -d '${safe(topic.summary)}'`);
     }
   }
   lines.push("");
@@ -51521,18 +51834,18 @@ function fishScript() {
       }
     }
   }
-  for (const { word, subcommands, flags } of perWord()) {
+  for (const { word: word2, subcommands, flags } of perWord()) {
     if (subcommands.length === 0 && flags.length === 0)
       continue;
     lines.push("");
     for (const sub of subcommands) {
-      lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word}' -a '${sub}'`);
+      lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word2}' -a '${sub}'`);
     }
     for (const flag of flags) {
       if (flag.startsWith("--")) {
-        lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word}' -l '${flag.slice(2)}'`);
+        lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word2}' -l '${flag.slice(2)}'`);
       } else
-        lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word}' -s '${flag.slice(1)}'`);
+        lines.push(`complete -c candle -n '__fish_seen_subcommand_from ${word2}' -s '${flag.slice(1)}'`);
     }
   }
   lines.push("");
@@ -56636,14 +56949,14 @@ async function externalSweep(args, ctx) {
 
 // src/commands/help.ts
 async function help(args, ctx) {
-  const word = args[0];
-  if (word === undefined) {
+  const word2 = args[0];
+  if (word2 === undefined) {
     ctx.deps.stdout.write(renderTopLevel());
     return 0;
   }
-  const topic = renderTopic(word);
+  const topic = renderTopic(word2);
   if (topic === undefined) {
-    ctx.deps.stderr.write(`Unknown command: ${word}
+    ctx.deps.stderr.write(`Unknown command: ${word2}
 `);
     ctx.deps.stderr.write(renderTopLevel());
     return 1;
@@ -57171,6 +57484,7 @@ import { randomUUID as randomUUID2 } from "node:crypto";
 // src/commands/swap.ts
 init_zod();
 init_args();
+init_bridge();
 init_evm_lite();
 init_render();
 init_solana_endpoint();
@@ -57253,21 +57567,73 @@ async function lookupOperation(ctx, key, id, kind) {
   return found[0] ? { ...found[0], ...local?.signature ? { signature: local.signature } : {} } : null;
 }
 async function swapStatus(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--kind"] });
+  const parsed = parseArgs(args, { valueFlags: ["--kind"], booleanFlags: ["--wait"] });
   if ("error" in parsed || parsed.positionals.length !== 1 || !validClientId(parsed.positionals[0] ?? "") || parsed.values["--kind"] !== undefined && !["trade", "swap", "launch"].includes(parsed.values["--kind"])) {
-    writeUsageFailure(ctx.deps, "Usage: candle swap status <id> [--kind trade|swap|launch]", ctx.json);
+    writeUsageFailure(ctx.deps, "Usage: candle swap status <id> [--kind trade|swap|launch] [--wait]", ctx.json);
     return 2;
   }
   try {
     const key = await tradingKey(ctx);
     const id = parsed.positionals[0];
-    const result = await lookupOperation(ctx, key, id, parsed.values["--kind"]);
-    if (!result)
+    const kind = parsed.values["--kind"];
+    const facts = bridgeFactsOf((await savedOperation(ctx, key, id))?.bridge);
+    const found = await lookupOperation(ctx, key, id, kind);
+    if (!found)
       throw new TradingError("JOB_NOT_FOUND", "No operation found on the selected rail(s). This command does not resend a write.");
+    const result = parsed.booleans.has("--wait") ? await waitForSettlement(ctx, key, id, found, facts) : { ...found, ...bridgeStatusField(ctx, found, facts) };
     return printTradingResult(ctx, result);
   } catch (error) {
     return tradingFailure(ctx, error);
   }
+}
+var bridgeFactsSchema = exports_external.object({
+  from: exports_external.enum(["SOL", "USDC", "ETH", "USDG"]),
+  to: exports_external.enum(["SOL", "USDC", "ETH", "USDG"]),
+  recipient: exports_external.string(),
+  statusCheck: exports_external.string().optional()
+});
+function bridgeFactsOf(raw) {
+  const parsed = bridgeFactsSchema.safeParse(raw);
+  return parsed.success ? parsed.data : undefined;
+}
+function isBridgeJob(job, facts) {
+  return facts !== undefined || job.bridge !== null && typeof job.bridge === "object";
+}
+function bridgeStatusField(ctx, found, facts) {
+  const job = found.job ?? {};
+  if (found.kind !== "swap" || !isBridgeJob(job, facts))
+    return {};
+  const status = describeBridgeJob(job, facts);
+  for (const line of status.lines)
+    ctx.deps.stderr.write(`${line}
+`);
+  const { lines: _lines, ...rest } = status;
+  return { bridgeStatus: rest };
+}
+function waitFinished(current, facts, sent) {
+  const job = current.job ?? {};
+  if (current.kind === "swap" && isBridgeJob(job, facts)) {
+    const status = describeBridgeJob(job, facts);
+    if (sent && status.phase === "not_broadcast")
+      return false;
+    return bridgeStatusFinal(status);
+  }
+  const settlement = settlementSchema.safeParse(job.settlement);
+  return !settlement.success || settlement.data.state !== "pending";
+}
+async function waitForSettlement(ctx, key, id, first, facts, sent = false) {
+  const deadline = ctx.deps.now() + BRIDGE_WAIT_MS;
+  let current = first;
+  while (!waitFinished(current, facts, sent) && ctx.deps.now() < deadline) {
+    await ctx.deps.sleep(BRIDGE_WAIT_POLL_MS);
+    current = { ...current, ...operationSchema.parse(await request(ctx, key, jobPath(current.kind, id))) };
+  }
+  const field = bridgeStatusField(ctx, current, facts);
+  const finished = waitFinished(current, facts, sent);
+  if (!finished)
+    ctx.deps.stderr.write(`Still not final after ten minutes. Re-check with candle swap status ${id} --wait.
+`);
+  return { ...current, ...field, waited: { final: finished } };
 }
 async function decimalsFor(ctx, asset, client) {
   if (BASES[asset])
@@ -57298,8 +57664,8 @@ async function assertDeferredExecuteSupported(ctx, key, id) {
 }
 async function swap(args, ctx) {
   const parsed = parseArgs(args, {
-    valueFlags: ["--amount", "--percent", "--wallet", "--client-trade-id", "--slippage-bps", "--rpc-url"],
-    booleanFlags: ["--yes"]
+    valueFlags: ["--amount", "--percent", "--wallet", "--to", "--client-trade-id", "--slippage-bps", "--rpc-url"],
+    booleanFlags: ["--yes", "--wait"]
   });
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
@@ -57309,12 +57675,24 @@ async function swap(args, ctx) {
   const id = flags["--client-trade-id"] ?? `swap-${randomUUID()}`;
   const slippage = Number(flags["--slippage-bps"] ?? "50");
   if (parsed.positionals.length !== 2 || Boolean(flags["--amount"]) === Boolean(flags["--percent"]) || !validClientId(id) || !Number.isInteger(slippage) || slippage < 0 || slippage > 1e4) {
-    writeUsageFailure(ctx.deps, "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token.", ctx.json);
+    writeUsageFailure(ctx.deps, "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--to <tee>] [--wait] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token. SOL or USDC to ETH or USDG, or back, is a bridge between two TEE wallets.", ctx.json);
     return 2;
   }
   try {
     const fromAsset = classifyAsset(parsed.positionals[0]);
     const toAsset = classifyAsset(parsed.positionals[1]);
+    const bridge = bridgePair(fromAsset, toAsset);
+    if (bridge)
+      return await bridgeSwap(ctx, {
+        flags,
+        yes: parsed.booleans.has("--yes"),
+        wait: parsed.booleans.has("--wait"),
+        id,
+        slippage,
+        ...bridge
+      });
+    if (flags["--to"] !== undefined || parsed.booleans.has("--wait"))
+      throw new TradingUsage("--to and --wait are for a bridge: SOL or USDC to ETH or USDG, or back.");
     const chain2 = pairChain(fromAsset, toAsset);
     const walletFlag = flags["--wallet"];
     const named = walletFlag === undefined ? undefined : walletNameChain(walletFlag);
@@ -57516,13 +57894,14 @@ async function recordTradedToken(ctx, wallet, token) {
   return notice;
 }
 var HOOD_TRADE_LEGS = ["approval", "permit2Approval", "trade", "feeTransfer"];
-function describeHoodLegs(first, hasFee) {
-  const kinds = plannedLegKinds(first.legKind, first.plannedLegCount, hasFee);
+function describeHoodLegs(first, hasFee, primary = "trade") {
+  const kinds = plannedLegKinds(first.legKind, first.plannedLegCount, hasFee, primary);
   const names = {
     approval: "approve",
     permit2Approval: "Permit2 approve",
     trade: "trade",
-    feeTransfer: "fee"
+    feeTransfer: "fee",
+    bridgeDeposit: "bridge deposit"
   };
   return kinds ? kinds.map((kind) => names[kind] ?? kind) : [`${first.plannedLegCount} legs, starting with ${names[first.legKind] ?? first.legKind}`];
 }
@@ -57676,6 +58055,258 @@ async function hoodSwap(ctx, args) {
     landedLegs: run2.landed,
     evmRecord: { token: toChecksumAddress(recorded), notices }
   });
+}
+var bridgeBuildSchema = exports_external.object({
+  status: exports_external.literal("built"),
+  swapId: exports_external.string().min(1),
+  venue: exports_external.string(),
+  fee: exports_external.object({ bps: exports_external.number(), feeRaw: exports_external.string() }).passthrough(),
+  expectedOutRaw: exports_external.string().regex(/^\d+$/),
+  expiresAt: exports_external.number().finite(),
+  recipient: exports_external.string().min(1),
+  statusChecks: exports_external.array(exports_external.string()).default([]),
+  transactionsBase64: exports_external.array(exports_external.string()).optional(),
+  walletAddress: exports_external.string().optional(),
+  venueCostUsd: exports_external.number().finite().optional(),
+  venueTimeEstimateSec: exports_external.number().finite().optional()
+}).passthrough();
+async function bridgeOriginBalance(ctx, from, address, solana, evm) {
+  if (from === "ETH")
+    return evmRead("the ETH balance", () => evm().getBalance(address));
+  if (from === "USDG")
+    return evmRead("the USDG balance", () => evm().erc20BalanceOf(HOOD_USDG_ADDRESS, address));
+  const reader = await solana();
+  if (from === "SOL")
+    return tradingRead(ctx, reader, () => reader.rpc.getBalance(address));
+  const mint = BASES.USDC?.mint;
+  const accounts = (await tradingRead(ctx, reader, () => Promise.all([
+    reader.rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
+    reader.rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
+  ]))).flat();
+  return accounts.filter((account) => account.mint === mint).reduce((sum, account) => sum + BigInt(account.amountRaw), 0n);
+}
+async function bridgeSwap(ctx, args) {
+  const { flags, id, from, to } = args;
+  const origin = BRIDGE_ASSETS[from].chain;
+  const destination = BRIDGE_ASSETS[to].chain;
+  const walletFlag = flags["--wallet"];
+  const named = walletFlag === undefined ? undefined : walletNameChain(walletFlag);
+  if (named !== undefined && named !== origin)
+    throw chainMismatch(`--wallet ${safeText(walletFlag)}`, named, origin);
+  if (flags["--amount"])
+    rawAmount(flags["--amount"], 18);
+  const percent = flags["--percent"] ? BigInt(rawAmount(flags["--percent"], 6)) : undefined;
+  if (percent !== undefined && percent > 100000000n)
+    throw new TradingError("INVALID_AMOUNT", "Percent must be greater than 0 and at most 100 (up to six decimal places).");
+  const key = await tradingKey(ctx);
+  const prior = await lookupOperation(ctx, key, id, "swap");
+  if (prior)
+    return printTradingResult(ctx, {
+      ...prior,
+      ...bridgeStatusField(ctx, prior, bridgeFactsOf((await savedOperation(ctx, key, id))?.bridge))
+    });
+  const payer = await tradingPayer(ctx, key, walletFlag, "swap:write", origin);
+  if (payer.kind !== "tee")
+    throw new TradingError("CHAIN_MISMATCH", `Only a TEE wallet bridges, and the embedded wallet ${safeText(payer.address)} is not one. Name a ${chainName(origin)} TEE wallet with --wallet. Nothing was built.`);
+  const wallet = payer.wallet;
+  const { rows } = await listTradingWallets(ctx, key, "swap:write");
+  const onDestination = rows.filter((row) => rowChain(row) === destination);
+  const toFlag = flags["--to"];
+  let toWalletId;
+  let candidates = onDestination.filter((row) => row.active);
+  if (toFlag !== undefined) {
+    const matches = rows.filter((row) => matchesName(row, toFlag));
+    const match = matches[0];
+    if (matches.length > 1)
+      throw new TradingError("TEE_WALLET_REQUIRED", `"${safeText(toFlag)}" matches ${matches.length} TEE wallets on this key: ${matches.map(describeWallet).join("; ")}. Name one by id or address.`);
+    if (!match || rowChain(match) !== destination)
+      throw new TradingError("BRIDGE_DESTINATION_MISSING", `--to ${safeText(toFlag)} is not a ${chainName(destination)} TEE wallet on this key. A bridge lands only in this key's own TEE wallet on ${chainName(destination)}${onDestination.length > 0 ? `: ${onDestination.map(describeWallet).join("; ")}` : ""}. Nothing was built.`);
+    if (!match.active)
+      throw new TradingError("TEE_WALLET_INACTIVE", `The destination ${describeWallet(match)} is not a verified-active TEE wallet. Nothing was built.`);
+    toWalletId = match.id;
+    candidates = [match];
+  } else if (candidates.length !== 1) {
+    throw new TradingError("BRIDGE_DESTINATION_MISSING", candidates.length === 0 ? `This key has no active ${chainName(destination)} TEE wallet to bridge into. Promote one onto this key (candle vault promote), then bridge. Nothing was built.` : `This key has more than one ${chainName(destination)} TEE wallet; name the destination with --to: ${candidates.map(describeWallet).join("; ")}. Nothing was built.`);
+  }
+  const solana = lazySolanaClient(ctx, flags["--rpc-url"]);
+  const evm = lazyEvmRpc(ctx, flags["--rpc-url"]);
+  const decimals = BRIDGE_ASSETS[from].decimals;
+  let amountRaw;
+  if (percent !== undefined) {
+    const balance = await bridgeOriginBalance(ctx, from, wallet.address, solana, evm);
+    amountRaw = (balance * percent / 100000000n).toString();
+    if (amountRaw === "0")
+      throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.");
+  } else
+    amountRaw = rawAmount(flags["--amount"], decimals);
+  if (!await claimOperation(ctx, key, id, "swap"))
+    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
+  ctx.deps.stderr.write(`Operation: ${id}
+`);
+  const built = await request(ctx, key, "/api/v1/agent/swap/build", {
+    clientTradeId: id,
+    from,
+    to,
+    amountRaw,
+    maxSlippageBps: args.slippage,
+    payer: { type: "linked", linkedWalletId: wallet.id },
+    ...toWalletId !== undefined ? { toWalletId } : {}
+  });
+  if (built.job || built.status === "executed")
+    return printTradingResult(ctx, { ...built, clientTradeId: id, kind: "swap" });
+  const body = built.payload ?? {};
+  const parsedBuild = bridgeBuildSchema.safeParse(body);
+  if (!parsedBuild.success)
+    throw new TradingError("INVALID_RESPONSE", "Candle did not return a complete bridge quote; nothing was signed.");
+  const data = parsedBuild.data;
+  if (data.venue !== "relay")
+    throw new TradingError("INVALID_RESPONSE", `A bridge goes through Relay, not ${safeText(data.venue)}; nothing was signed.`);
+  if (data.fee.bps !== 0 || data.fee.feeRaw !== "0")
+    throw new TradingError("INVALID_RESPONSE", "A bridge carries no Candle fee, and this quote has one; nothing was signed.");
+  const recipient = candidates.find((row) => destination === "hood" ? sameEvmAddress(row.address, data.recipient) : row.address === data.recipient);
+  if (!recipient)
+    throw new TradingError("INVALID_RESPONSE", `Candle named ${safeText(data.recipient)} as the destination, which is not ${toWalletId !== undefined ? "the TEE wallet --to named" : `this key's ${chainName(destination)} TEE wallet`}; nothing was signed.`);
+  const facts = {
+    from,
+    to,
+    recipient: recipient.address,
+    ...data.statusChecks[0] !== undefined ? { statusCheck: data.statusChecks[0] } : {}
+  };
+  await saveOperationBridge(ctx, key, id, { ...facts });
+  const refused = (problem) => new TradingError("RELAY_STEP_REFUSED", `Relay's deposit did not pass this machine's check (${problem}); nothing was signed.`);
+  let sequenced;
+  let transaction;
+  const hoodOrigin = from === "ETH" || from === "USDG" ? from : undefined;
+  if (hoodOrigin) {
+    const parsedLeg = sequencedSchema.safeParse(body);
+    if (!parsedLeg.success)
+      throw new TradingError("SEQUENCED_RAIL_REQUIRED", "A Hood TEE wallet bridges one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.");
+    sequenced = parsedLeg.data;
+    if (typeof data.walletAddress !== "string" || !sameEvmAddress(data.walletAddress, wallet.address))
+      throw new TradingError("INVALID_RESPONSE", "The Hood build does not name the requested payer; nothing was signed.");
+    const plan = plannedLegKinds(sequenced.legKind, sequenced.plannedLegCount, false, "bridgeDeposit");
+    if (!bridgePlanAdmitted(hoodOrigin, plan))
+      throw refused(`the plan is ${sequenced.plannedLegCount} leg(s) starting with ${sequenced.legKind}`);
+    const problem = relayHoodLegProblem(sequenced.legKind, sequenced.nextLeg, {
+      origin: hoodOrigin,
+      payer: wallet.address,
+      amountRaw
+    });
+    if (problem)
+      throw refused(problem);
+  } else {
+    if (data.transactionsBase64?.length !== 1)
+      throw refused(`Candle returned ${data.transactionsBase64?.length ?? 0} transactions, not one deposit`);
+    transaction = data.transactionsBase64[0];
+    const reader = await solana();
+    const problem = await tradingRead(ctx, reader, () => relaySolanaDepositProblem(transaction, wallet.address, reader.rpc));
+    if (problem)
+      throw refused(problem);
+  }
+  const outDecimals = BRIDGE_ASSETS[to].decimals;
+  const minimumRaw = (BigInt(data.expectedOutRaw) * BigInt(1e4 - args.slippage) / 10000n).toString();
+  const quote = {
+    intent: `Bridge ${decimalAmount(amountRaw, decimals)} ${from} on ${chainName(origin)} to ${to} on ${chainName(destination)}`,
+    wallet: wallet.address,
+    venue: "relay",
+    priceImpactPct: null,
+    minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to} (Relay's estimate ${decimalAmount(data.expectedOutRaw, outDecimals)} ${to}, less the ${args.slippage} bps slippage bound)`,
+    minimumReceivedRaw: minimumRaw,
+    expectedOutRaw: data.expectedOutRaw,
+    destination: `${recipient.label ? `${recipient.label} ` : ""}${recipient.address} (${chainName(destination)} TEE wallet on this key)`,
+    candleFee: "none",
+    relayFees: data.venueCostUsd !== undefined ? `about $${data.venueCostUsd} as Relay reports it` : "not reported",
+    estimatedTime: data.venueTimeEstimateSec !== undefined ? `about ${data.venueTimeEstimateSec}s as Relay reports it` : "not reported",
+    tokenRisks: []
+  };
+  if (sequenced) {
+    const leg = sequenced.nextLeg;
+    const maxFee = BigInt(leg.maxFeePerGas);
+    const reserve = sweepReserveFloor(maxFee, []);
+    quote.legs = describeHoodLegs(sequenced, false, "bridgeDeposit");
+    quote.gas = `the ${sequenced.legKind} leg up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei); each later leg is priced by Candle when it becomes next`;
+    quote.reserve = `at least ${formatUnits(reserve.wei, 18)} ETH stays in the wallet for a sweep home (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee); a bridge never spends it`;
+    quote.operationId = sequenced.operationId;
+  }
+  if (!await confirmQuote(ctx, quote, args.yes)) {
+    if (sequenced)
+      ctx.deps.stderr.write(`Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade or sweep from it waits until then.
+`);
+    return printTradingResult(ctx, {
+      success: true,
+      status: "cancelled",
+      clientTradeId: id,
+      kind: "swap",
+      quote,
+      ...sequenced ? { operationId: sequenced.operationId, walletHeldUntil: sequenced.expiresAt } : {}
+    });
+  }
+  if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
+    throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
+  let result;
+  let depositHash;
+  if (sequenced && hoodOrigin) {
+    const run2 = await runSequencedLegs(ctx, key, {
+      wallet,
+      first: sequenced,
+      submitPath: "/api/v1/agent/swap/submit",
+      submitFields: { clientTradeId: id, swapId: data.swapId },
+      unwrap: (answer) => answer.payload ?? {},
+      clientId: id,
+      kind: "swap",
+      primaryLeg: "bridgeDeposit",
+      allowedLegs: bridgeLegKinds(hoodOrigin),
+      checkLeg: (kind, leg) => relayHoodLegProblem(kind, leg, { origin: hoodOrigin, payer: wallet.address, amountRaw }) === null,
+      onLanded: async () => {}
+    });
+    depositHash = run2.landed.find((leg) => leg.kind === "bridgeDeposit")?.hash;
+    result = {
+      ...run2.final,
+      chain: "hood",
+      operationId: sequenced.operationId,
+      landedLegs: run2.landed
+    };
+  } else {
+    const signed = await relaySign(ctx, key, wallet, transaction);
+    const submitted = await request(ctx, key, "/api/v1/agent/swap/submit", {
+      clientTradeId: id,
+      swapId: data.swapId,
+      signedTransactionsBase64: [signed]
+    });
+    const payload = submitted.payload ?? {};
+    const hashes = Array.isArray(payload.hashes) ? payload.hashes.filter((h) => typeof h === "string") : [];
+    depositHash = hashes[0];
+    result = submitted;
+  }
+  ctx.deps.stderr.write(`Deposit ${depositHash ? safeText(depositHash) : "sent"}: filling.${args.wait ? "" : ` Check it with candle swap status ${id} (add --wait to follow it).`}
+`);
+  const receipt = {
+    ...result,
+    clientTradeId: id,
+    kind: "swap",
+    bridge: { from, to, destination: recipient.address, ...depositHash ? { depositHash } : {} },
+    quote,
+    wallet: safeText(wallet.address)
+  };
+  if (!args.wait)
+    return printTradingResult(ctx, receipt);
+  try {
+    const found = await lookupOperation(ctx, key, id, "swap");
+    if (!found)
+      return printTradingResult(ctx, { ...receipt, waited: { final: false } });
+    const waited = await waitForSettlement(ctx, key, id, found, facts, true);
+    return printTradingResult(ctx, {
+      ...receipt,
+      job: waited.job,
+      bridgeStatus: waited.bridgeStatus,
+      waited: waited.waited
+    });
+  } catch (error) {
+    const reason = safeText(error instanceof Error ? describeRpcFailure(error) : String(error));
+    ctx.deps.stderr.write(`Could not follow the bridge (${reason}). The deposit was sent; do not send it again. Re-check with candle swap status ${id} --wait.
+`);
+    return printTradingResult(ctx, { ...receipt, waited: { final: false, error: reason } });
+  }
 }
 
 // src/commands/launch.ts
@@ -61487,8 +62118,8 @@ function assertFloorCarried(copy, live) {
     details: { step: "floor", missing: ids }
   });
 }
-function verifiedWithLine(word, envelopeId, how, floorClause) {
-  return `  verified with ${word} ${envelopeId} (${how}); ${floorClause}`;
+function verifiedWithLine(word2, envelopeId, how, floorClause) {
+  return `  verified with ${word2} ${envelopeId} (${how}); ${floorClause}`;
 }
 function carriedClause(passphraseIds) {
   return `passphrase ${passphraseIds.join(", ")} carried byte for byte`;
@@ -62987,7 +63618,7 @@ Anyone who reads them can move every derived key's funds.
   deps.stdout.write(`
 `);
   for (let i = 0;i < words.length; i += 4) {
-    const row = words.slice(i, i + 4).map((word, offset) => `${String(i + offset + 1).padStart(2, " ")}. ${word.padEnd(9, " ")}`).join("  ");
+    const row = words.slice(i, i + 4).map((word2, offset) => `${String(i + offset + 1).padStart(2, " ")}. ${word2.padEnd(9, " ")}`).join("  ");
     deps.stdout.write(`    ${row.trimEnd()}
 `);
   }
@@ -63408,8 +64039,8 @@ async function collectOwn(ctx) {
 // src/commands/vault-factor-dispatch.ts
 init_vault_support();
 async function vaultFactor(args, ctx) {
-  const [word, ...rest] = args;
-  switch (word) {
+  const [word2, ...rest] = args;
+  switch (word2) {
     case "list":
       return vaultFactorList(rest, ctx);
     case "add":
@@ -63419,7 +64050,7 @@ async function vaultFactor(args, ctx) {
     case undefined:
       return usage(ctx, "Usage: candle vault factor <list | add passphrase | add security-key | add touch-id | add passkey | remove <id>>");
     default:
-      return usage(ctx, `Unknown subcommand: vault factor ${word}. Try: list, add, remove`);
+      return usage(ctx, `Unknown subcommand: vault factor ${word2}. Try: list, add, remove`);
   }
 }
 
@@ -64617,12 +65248,12 @@ function matches(entry, filter) {
 // src/commands/vault-phrase-dispatch.ts
 init_vault_support();
 async function vaultPhrase(args, ctx) {
-  const [word, ...rest] = args;
-  if (word === "show")
+  const [word2, ...rest] = args;
+  if (word2 === "show")
     return vaultPhraseShow(rest, ctx);
-  if (word === undefined)
+  if (word2 === undefined)
     return usage(ctx, "Usage: candle vault phrase show");
-  return usage(ctx, `Unknown subcommand: vault phrase ${word}. The only one is: show`);
+  return usage(ctx, `Unknown subcommand: vault phrase ${word2}. The only one is: show`);
 }
 
 // src/commands/vault-promote.ts
@@ -69048,12 +69679,12 @@ var COMMANDS = {
 };
 var ROUTED_COMMANDS = new Set(Object.keys(COMMANDS));
 var ALIASES = { wallet: "wallets" };
-function canonicalCommand(word) {
-  return word !== undefined && Object.hasOwn(ALIASES, word) ? ALIASES[word] : word;
+function canonicalCommand(word2) {
+  return word2 !== undefined && Object.hasOwn(ALIASES, word2) ? ALIASES[word2] : word2;
 }
-var ROUTED_SUBCOMMANDS = Object.fromEntries(Object.entries(COMMANDS).filter(([, route]) => route.subcommands !== undefined).map(([word, route]) => [word, Object.keys(route.subcommands ?? {})]));
-function routeFor(word) {
-  return word !== undefined && Object.hasOwn(COMMANDS, word) ? COMMANDS[word] : undefined;
+var ROUTED_SUBCOMMANDS = Object.fromEntries(Object.entries(COMMANDS).filter(([, route]) => route.subcommands !== undefined).map(([word2, route]) => [word2, Object.keys(route.subcommands ?? {})]));
+function routeFor(word2) {
+  return word2 !== undefined && Object.hasOwn(COMMANDS, word2) ? COMMANDS[word2] : undefined;
 }
 function subHandlerFor(route, sub) {
   const subcommands = route?.subcommands;
@@ -69094,8 +69725,8 @@ async function run2(argv, deps) {
     return 1;
   }
   const extractedForNotice = extractGlobalFlags(argv);
-  const word = "error" in extractedForNotice ? undefined : canonicalCommand(extractedForNotice.rest[0] === "candle" ? extractedForNotice.rest[1] : extractedForNotice.rest[0]);
-  await maybeWriteUpdateNotice(deps, { command: word });
+  const word2 = "error" in extractedForNotice ? undefined : canonicalCommand(extractedForNotice.rest[0] === "candle" ? extractedForNotice.rest[1] : extractedForNotice.rest[0]);
+  await maybeWriteUpdateNotice(deps, { command: word2 });
   return code;
 }
 async function runCommand(argv, deps) {
@@ -69106,7 +69737,7 @@ async function runCommand(argv, deps) {
     return 2;
   }
   const { rest, flags } = extracted;
-  const plugin = pluginInvocation(argv, deps.env, (word2) => ROUTED_COMMANDS.has(canonicalCommand(word2) ?? ""));
+  const plugin = pluginInvocation(argv, deps.env, (word3) => ROUTED_COMMANDS.has(canonicalCommand(word3) ?? ""));
   if (plugin !== undefined) {
     const leading = extractGlobalFlags(argv.slice(0, argv.length - plugin.args.length - 1));
     const pluginFlags = "error" in leading ? flags : leading.flags;
@@ -69187,9 +69818,9 @@ async function runCommand(argv, deps) {
     vaultFactor: flags.vaultFactor,
     vaultDevice: flags.vaultDevice
   };
-  const word = cmd ?? "";
-  const actsAsIdentity = word !== "mcp" || mcpActsAsIdentity(tokens.slice(1));
-  if (ROUTED_COMMANDS.has(word) && !NEVER_GUARDED.has(word) && routesToCommand(cmd, sub) && actsAsIdentity) {
+  const word2 = cmd ?? "";
+  const actsAsIdentity = word2 !== "mcp" || mcpActsAsIdentity(tokens.slice(1));
+  if (ROUTED_COMMANDS.has(word2) && !NEVER_GUARDED.has(word2) && routesToCommand(cmd, sub) && actsAsIdentity) {
     const verdict = await verifyProfileAccount(ctx, config);
     if (!verdict.ok) {
       writeLocalFailure(deps, { code: "ACCOUNT_MISMATCH", message: verdict.message, suggestion: verdict.suggestion }, flags.json);
@@ -69223,11 +69854,11 @@ function splitFix(message) {
   const fixAt = message.indexOf(" Run: ");
   return fixAt === -1 ? { message } : { message: message.slice(0, fixAt), suggestion: message.slice(fixAt + 1) };
 }
-function unknownCommand(deps, token, word) {
+function unknownCommand(deps, token, word2) {
   if (token !== undefined)
     deps.stderr.write(`Unknown command: ${token}
 `);
-  deps.stderr.write((word === undefined ? undefined : renderTopic(word)) ?? renderTopLevel());
+  deps.stderr.write((word2 === undefined ? undefined : renderTopic(word2)) ?? renderTopLevel());
   return 1;
 }
 async function migrateProfiles(deps) {
