@@ -41,14 +41,15 @@
     },
     "wallet_delegation": {
       "retryable": false,
-      "action": "Needs a human in the browser to delegate an embedded wallet. Report exactly which chain is undelegated. EMBEDDED_WALLET_NOT_PERMITTED means the owner withheld the embedded wallet from this key: trade a TEE wallet bound to the key, or ask the owner to allow it.",
+      "action": "Needs a human in the browser to delegate an embedded wallet. Report exactly which chain is undelegated. EMBEDDED_WALLET_NOT_PERMITTED means the owner withheld the embedded wallet from this key: trade a TEE wallet bound to the key, or ask the owner to allow it. BRIDGE_DESTINATION_MISSING is not retryable: promote one verified destination TEE wallet onto this key, or pass toWalletId when more than one qualifies.",
       "codes": [
         "AGENT_WALLET_MISSING",
         "AGENT_WALLET_NOT_DELEGATED",
         "AGENT_WALLET_NOT_EMBEDDED",
         "DELEGATION_REVOKED",
         "EMBEDDED_WALLET_NOT_PERMITTED",
-        "SIGNER_MISMATCH"
+        "SIGNER_MISMATCH",
+        "BRIDGE_DESTINATION_MISSING"
       ]
     },
     "spend_policy": {
