@@ -761,7 +761,12 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " +
         "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits, withdrawals and " +
         "transfers are excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before " +
-        "quoting the number; they mean the total is partial. Reads only.",
+        "quoting the number; they mean the total is partial. `pnl.byWallet` splits the same fills by the " +
+        "wallet that paid for each trade (main or linked, with the linked wallet's label), one row per " +
+        "wallet with the same figures, for tracking one strategy per wallet. Each row is an independent " +
+        "average-cost pool over its own fills, so the rows need not sum to the total (a token moved " +
+        "between wallets, or two wallets holding one token at different costs); the total stays correct. " +
+        "Reads only.",
       inputSchema: profilePnlShape,
     },
     async (args) => callAndRelay("candle_get_profile_pnl", args, cfg),

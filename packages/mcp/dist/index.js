@@ -106,7 +106,7 @@ function percentOfBalance(balanceRaw, percent) {
 import { randomUUID } from "node:crypto";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.2";
+var SERVER_VERSION = "0.10.3";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -914,7 +914,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async (args) => callAndRelay("candle_set_profile_wallets", args, cfg));
   register("candle_get_profile_pnl", {
     title: "Read an agent profile's P&L",
-    description: "Realized profit for this profile's own fills, the Candle fees charged against it, and the " + "positions it still holds with their cost basis, each MARKED at Candle's current price where one " + "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " + "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " + "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits, withdrawals and " + "transfers are excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before " + "quoting the number; they mean the total is partial. Reads only.",
+    description: "Realized profit for this profile's own fills, the Candle fees charged against it, and the " + "positions it still holds with their cost basis, each MARKED at Candle's current price where one " + "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " + "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " + "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits, withdrawals and " + "transfers are excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before " + "quoting the number; they mean the total is partial. `pnl.byWallet` splits the same fills by the " + "wallet that paid for each trade (main or linked, with the linked wallet's label), one row per " + "wallet with the same figures, for tracking one strategy per wallet. Each row is an independent " + "average-cost pool over its own fills, so the rows need not sum to the total (a token moved " + "between wallets, or two wallets holding one token at different costs); the total stays correct. " + "Reads only.",
     inputSchema: profilePnlShape
   }, async (args) => callAndRelay("candle_get_profile_pnl", args, cfg));
   register("candle_get_profile_trades", {

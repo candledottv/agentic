@@ -571,7 +571,52 @@ export interface ProfilePnlResult {
         lookback: number;
         /** True when the lookback window was full, so this is not a lifetime figure. */
         truncated: boolean;
+        /**
+         * The same fills divided by the wallet that paid for each trade, ordered by
+         * `tradesConsidered` then address. Optional: a server that predates it omits it.
+         *
+         * Each row is an independent average-cost pool over its own fills, so the rows need not sum to
+         * the total above, which pools all fills and stays correct. A token bought in one wallet and
+         * sold from another leaves the buyer holding it and the seller with a sale that realizes
+         * nothing; and even with no transfer, A buying 100 X for $100, B buying 100 X for $200 and A
+         * selling 100 X for $300 realizes $150 in total but $200 summed over the wallets.
+         */
+        byWallet?: ProfileWalletPnl[];
     };
+}
+/** One row of `ProfilePnlResult.pnl.byWallet`: one paying wallet's share of a profile's P&L. */
+export interface ProfileWalletPnl {
+    /** The paying wallet's address as stored: base58, or EIP-55 on Hood. */
+    wallet: string;
+    payerType: "main" | "linked";
+    /** Present only for a linked wallet. */
+    linkedWalletId?: string;
+    /** The linked wallet's own label; null for the main wallet or an unlabelled one. */
+    label: string | null;
+    realizedGrossUsd: number;
+    feesUsd: number;
+    realizedNetUsd: number;
+    openPositions: ProfileOpenPosition[];
+    unrealizedUsd: number;
+    unmarkedPositions: number;
+    oldestMarkAt?: number;
+    /** Fills counted, and fills left out of every USD figure (includes `unresolved`). */
+    counted: number;
+    unvalued: number;
+    /** Fills held out because their token has a fill of unknown size. Part of `unvalued`. */
+    unresolved: number;
+    /** The tokens those fills belong to: their P&L is unknown, not zero. */
+    unresolvedMints: string[];
+    /** Fees and measured slippage over this wallet's fills, reported and never netted a second time. */
+    friction: {
+        feesUsd: number;
+        slippageUsd: number;
+        slippageBpsAvg?: number;
+        measured: number;
+        unmeasured: number;
+    };
+    /** Confirmed trades in the window this wallet paid for. */
+    tradesConsidered: number;
 }
 /**
  * One row of a profile's trade history: what was ordered, what actually filled, what it cost,
@@ -1829,7 +1874,7 @@ export declare class CandleClient {
     private jsonRpcCallRaw;
 }
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.4.3";
+export declare const SDK_VERSION = "0.4.4";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

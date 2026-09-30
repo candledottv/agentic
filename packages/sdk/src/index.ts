@@ -61,6 +61,7 @@ export type {
   ProfilePnlResult,
   ProfileTradeRow,
   ProfileTradesResult,
+  ProfileWalletPnl,
   ProfileWalletRow,
   ProfileWalletScope,
   ProfileWalletsResult,

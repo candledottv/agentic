@@ -2911,3 +2911,34 @@ test.each([
   expect((await client.verify("solana", mint)).candleLaunched).toBe(false)
   expect(await client.getMarket("solana", mint)).toMatchObject(market)
 })
+
+describe("getProfilePnl: per-wallet rows", () => {
+  test("a wallet row types its coverage, unresolved and friction fields", async () => {
+    const row = {
+      wallet: "W1",
+      payerType: "linked",
+      linkedWalletId: "lw1",
+      label: "Momentum",
+      realizedGrossUsd: 5,
+      feesUsd: 1,
+      realizedNetUsd: 4,
+      openPositions: [],
+      unrealizedUsd: 0,
+      unmarkedPositions: 0,
+      counted: 2,
+      unvalued: 1,
+      unresolved: 1,
+      unresolvedMints: ["MintA"],
+      friction: { feesUsd: 1, slippageUsd: 0.5, slippageBpsAvg: 30, measured: 2, unmeasured: 0 },
+      tradesConsidered: 3,
+    }
+    const { client } = makeClient(KEYED, [json(200, { success: true, keyPrefix: "ck_a", pnl: { byWallet: [row] } })])
+    const result = await client.getProfilePnl("ck_a")
+    const wallet = result.pnl.byWallet?.[0]
+    // Typed access: each of these is a compile error if the field is missing from the type.
+    expect(wallet?.unresolved).toBe(1)
+    expect(wallet?.unresolvedMints).toEqual(["MintA"])
+    expect(wallet?.friction.measured).toBe(2)
+    expect(wallet?.friction.slippageBpsAvg).toBe(30)
+  })
+})
