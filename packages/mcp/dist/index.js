@@ -860,9 +860,9 @@ function registerTools(server, env = process.env) {
   }, async (args) => callAndRelay("candle_get_market", args, cfg));
   register("candle_token_forensics", {
     title: "Token forensics",
-    description: `Gate a buy before making it: who launched it (resolved on-chain; pump.fun's shared updateAuthority is never the developer), their went-to-zero rate and last coins, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), same-funder insider share, same-funder deployer cluster, and safety.summary with six sourced flags (mintAuthority, freezeAuthority, tokenExtensions, lpLock, sellability, liquidityDrain). Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.
+    description: `Gate a buy before making it: who launched it (resolved on-chain; pump.fun's shared updateAuthority is never the developer; when no developer is on chain, deployer.attribution names the launchpad or issuer instead, e.g. launched via stonk.fun or issued by xStocks), their went-to-zero rate and last coins, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), same-funder insider share, same-funder deployer cluster, and safety.summary with six sourced flags (mintAuthority, freezeAuthority, tokenExtensions, lpLock, sellability, liquidityDrain). Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.
 
-MARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed now answers with a partial report instead.`,
+MARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed, and any Solana mint Jupiter's index knows, now answers with a partial report instead.`,
     inputSchema: tokenForensicsShape
   }, async (args) => callAndRelay("candle_token_forensics", args, cfg));
   register("candle_get_feed", {
@@ -1004,7 +1004,7 @@ START HERE — five tools need NO credential. Call these first to confirm the se
   candle_get_market       price, market cap, volume, curve state for one token
   candle_get_feed         the roster: hot streak, new pairs, graduated, blue chip
   candle_resolve_token    a ticker or partial name -> mint address + chain
-  candle_token_forensics  call this before quoting or buying. Returns the on-chain developer (never a launchpad shared authority), their went-to-zero rate and last coins, who bought in the deploy window (strangers in the same slot are the bundle signal), same-funder insider share, same-funder cluster, and safety.summary with six sourced flags. Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning
+  candle_token_forensics  call this before quoting or buying. Returns the on-chain developer (never a launchpad shared authority; deployer.attribution names the launchpad or issuer when no developer is on chain), their went-to-zero rate and last coins, who bought in the deploy window (strangers in the same slot are the bundle signal), same-funder insider share, same-funder cluster, and safety.summary with six sourced flags. Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning
   candle_get_agent_profile  your own tier, caps and verified activity
 
 COVERAGE — read this before you treat an error as a broken server.
@@ -1020,7 +1020,7 @@ General quotes use POST /api/v1/trade/agent/quote; curve quotes/lifecycle descri
 Stored eligibility is not a successful quote or permission. MARKET_NOT_FOUND remains a legacy
 code: read error.routing.reason, error.discovery and sibling error.retryable. A curve-only
 404 is endpoint guidance, not a verdict that Candle cannot trade external tokens.
-candle_token_forensics also answers for Solana tokens the feed already knows, with a partial
+candle_token_forensics also answers for Solana tokens the feed or Jupiter's index knows, with a partial
 report: on-chain developer (never a launchpad shared authority), went-to-zero record, token
 safety flags, same-funder insiders and cluster. Deploy-window stays unavailable without a
 Candle launch record. Indexed external Hood tokens also answer, with unknown hacc flags.
