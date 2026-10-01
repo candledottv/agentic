@@ -19,6 +19,7 @@ import {
   type LaunchAtomicRequest,
   type LaunchRequest,
   type ListWalletsResult,
+  type PortfolioResult,
   type PresetsPayload,
   type SelfBalancesResult,
   type SpendLimitsResult,
@@ -2569,6 +2570,7 @@ describe("api key requirement", () => {
       () => client.uploadImage(new Uint8Array([1]), "image/png"),
       () => client.listWallets(),
       () => client.getSpendLimits(),
+      () => client.getPortfolio(),
       () => client.swap({ from: "SOL", to: "USDC", amountRaw: "1000000" }),
       () => client.wallets.swapReceipt("sig1"),
       () => client.wallets.selfBalances(),
@@ -2940,5 +2942,127 @@ describe("getProfilePnl: per-wallet rows", () => {
     expect(wallet?.unresolvedMints).toEqual(["MintA"])
     expect(wallet?.friction.measured).toBe(2)
     expect(wallet?.friction.slippageBpsAvg).toBe(30)
+  })
+})
+
+describe("getProfilePnl: per-chain figures (Ember Phase 4d)", () => {
+  const chainSummary = (counted: number) => ({
+    realizedGrossUsd: 0,
+    feesUsd: 0,
+    realizedNetUsd: 0,
+    openPositions: 1,
+    unrealizedUsd: 0,
+    unmarkedPositions: 1,
+    counted,
+    unvalued: 0,
+    unresolved: 0,
+    unresolvedMints: [],
+    friction: { feesUsd: 0, slippageUsd: 0, measured: 0, unmeasured: 0 },
+    tradesConsidered: counted,
+  })
+
+  test("positions, wallet rows and byChain carry their chain", async () => {
+    const pnl = {
+      openPositions: [
+        { mint: "0x9EB31F3a", chain: "hood", quantity: 10, avgEntryUsd: 1, costBasisUsd: 10 },
+        { mint: "MintSo1", chain: "solana", quantity: 100, avgEntryUsd: 1, costBasisUsd: 100 },
+      ],
+      byChain: { solana: chainSummary(1), hood: chainSummary(2) },
+      byWallet: [{ wallet: "0xF628F9fb", payerType: "main", chain: "hood", label: null, openPositions: [] }],
+    }
+    const { client } = makeClient(KEYED, [json(200, { success: true, keyPrefix: "ck_a", pnl })])
+    const result = await client.getProfilePnl("ck_a")
+    // Typed access: each of these is a compile error if the field is missing from the type.
+    expect(result.pnl.openPositions.map((p) => p.chain)).toEqual(["hood", "solana"])
+    expect(result.pnl.byChain?.hood.counted).toBe(2)
+    expect(result.pnl.byChain?.solana.openPositions).toBe(1)
+    expect(result.pnl.byChain?.hood.friction.unmeasured).toBe(0)
+    expect(result.pnl.byWallet?.[0]?.chain).toBe("hood")
+  })
+
+  test("a server that predates per-chain P&L still parses: the new fields are simply absent", async () => {
+    const pnl = { openPositions: [{ mint: "MintSo1", quantity: 1, avgEntryUsd: 1, costBasisUsd: 1 }] }
+    const { client } = makeClient(KEYED, [json(200, { success: true, keyPrefix: "ck_a", pnl })])
+    const result = await client.getProfilePnl("ck_a")
+    expect(result.pnl.byChain).toBeUndefined()
+    expect(result.pnl.openPositions[0]?.chain).toBeUndefined()
+  })
+})
+
+describe("getPortfolio (Ember Phase 4d)", () => {
+  const body: PortfolioResult = {
+    success: true,
+    embedded: [{ chain: "solana", address: "SoLEmbedded1", lamports: "1500000000", tokens: [] }],
+    tee: [
+      {
+        chain: "solana",
+        id: "lw_sol",
+        address: "SoLTee1",
+        label: "momentum",
+        active: true,
+        lamports: null,
+        tokens: null,
+      },
+    ],
+    hood: {
+      embedded: [
+        {
+          chain: "hood",
+          address: "0xEmbeddedHood",
+          wei: "20000000000000000",
+          tokens: [{ chain: "hood", mint: "0x9EB31F3aBcD", amountRaw: "5000", decimals: 18, symbol: "HOOD" }],
+        },
+      ],
+      tee: [{ chain: "hood", id: "lw_hood", address: "0xTeeHood", active: false, wei: null, tokens: null }],
+      unavailable: ["0xTeeHood"],
+      unpriced: 1,
+      unpricedByReason: { "stale-mark": 1 },
+    },
+    prices: {
+      So11111111111111111111111111111111111111112: { priceUsd: 150, source: "jupiter", symbol: "SOL" },
+      "hood:native": { priceUsd: 2500, source: "reference" },
+      "hood:0x9eb31f3abcd": { priceUsd: null, source: null, updatedAt: 1, unpricedReason: "stale-mark" },
+    },
+    unavailable: ["SoLTee1"],
+    complete: false,
+  }
+
+  test("GET /api/v1/agent/portfolio with the agent key header, returns the parsed shape", async () => {
+    const { client, calls } = makeClient(KEYED, [json(200, body)])
+    const result = await client.getPortfolio()
+    expect(calls[0]).toEqual({
+      url: "https://api.test/api/v1/agent/portfolio",
+      method: "GET",
+      headers: { "x-api-key": "cndl_test_key" },
+    })
+    expect(result).toEqual(body)
+    // A Hood token is priced under its lowercased contract (4d-ED-5).
+    const token = result.hood?.embedded[0]?.tokens?.[0]
+    expect(result.prices[`hood:${token?.mint.toLowerCase()}`]?.unpricedReason).toBe("stale-mark")
+    expect(result.hood?.tee[0]?.wei).toBeNull()
+  })
+
+  test("a server that predates Hood in the portfolio still parses: no hood section", async () => {
+    const solanaOnly = {
+      success: true,
+      embedded: [{ address: "SoLEmbedded1", lamports: "1", tokens: [] }],
+      tee: [],
+      prices: {},
+      unavailable: [],
+      complete: true,
+    }
+    const { client } = makeClient(KEYED, [json(200, solanaOnly)])
+    const result = await client.getPortfolio()
+    expect(result.hood).toBeUndefined()
+    expect(result.embedded[0]?.chain).toBeUndefined()
+  })
+
+  test("a key without account:read gets SCOPE_MISSING as a typed error, after one call", async () => {
+    const { client, calls } = makeClient(KEYED, [envelope(403, "SCOPE_MISSING")])
+    const error = (await client.getPortfolio().catch((e: unknown) => e)) as CandleApiError
+    expect(error).toBeInstanceOf(CandleApiError)
+    expect(error.code).toBe("SCOPE_MISSING")
+    expect(error.status).toBe(403)
+    expect(calls.length).toBe(1)
   })
 })

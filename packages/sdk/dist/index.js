@@ -635,6 +635,10 @@ class CandleClient {
     this.requireKey("getProfilePnl()");
     return this.requestJson("GET", `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl`);
   }
+  async getPortfolio() {
+    this.requireKey("getPortfolio()");
+    return this.requestJson("GET", "/api/v1/agent/portfolio");
+  }
   async setProfileWallets(keyPrefix, walletIds) {
     this.requireKey("setProfileWallets()");
     return this.requestJson("PUT", `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/wallets`, { walletIds });
@@ -1109,7 +1113,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.4.4";
+var SDK_VERSION = "0.4.5";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

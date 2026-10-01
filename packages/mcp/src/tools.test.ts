@@ -8,6 +8,7 @@ test("all registered tools are listed", () => {
     "candle_get_feed",
     "candle_get_market",
     "candle_get_operation",
+    "candle_get_portfolio",
     "candle_get_profile_pnl",
     "candle_get_profile_trades",
     "candle_get_profile_wallets",
@@ -146,6 +147,18 @@ describe("buildRequest", () => {
 
     const profile = buildRequest("candle_get_agent_profile", { idOrWallet: "a/b?c" }, { apiUrl: "https://api.test" })
     expect(profile.url).toBe("https://api.test/api/v1/users/a%2Fb%3Fc/agent")
+  })
+  test("get_portfolio is a keyed GET of /api/v1/agent/portfolio with no body", () => {
+    const r = buildRequest("candle_get_portfolio", {}, { apiUrl: "https://api.test", apiKey: "cndl_live_k" })
+    expect(r.url).toBe("https://api.test/api/v1/agent/portfolio")
+    expect(r.init.method).toBe("GET")
+    expect(r.init.body).toBeUndefined()
+    expect((r.init.headers as Record<string, string>)["x-api-key"]).toBe("cndl_live_k")
+  })
+  test("get_portfolio without a key throws before any request is built", () => {
+    expect(() => buildRequest("candle_get_portfolio", {}, { apiUrl: "https://api.test" })).toThrow(
+      /CANDLE_AGENT_API_KEY/,
+    )
   })
   test("launch without an api key throws a clear error", () => {
     expect(() => buildRequest("candle_launch_token", { clientLaunchId: "c" }, { apiUrl: "https://api.test" })).toThrow(
@@ -341,5 +354,24 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
     expect(d).toContain("candle_get_operation")
     expect(d).toContain("SAME clientTradeId")
     expect(d).toContain("double-spend")
+  })
+
+  // Ember Phase 4d (4d-ED-11): both chains, and the facts an agent needs to read Hood correctly.
+  test("get_portfolio names the hood section, the price keys, unpriced reasons and the scope", () => {
+    const d = describeOf("candle_get_portfolio")
+    expect(d).toContain("hood.embedded")
+    expect(d).toContain("hood:native")
+    expect(d).toContain("hood:<contract lowercased>")
+    expect(d).toContain("unpricedReason")
+    expect(d).toContain("complete")
+    expect(d).toContain("account:read")
+    expect(d).toContain("Vault and external wallets are not included")
+  })
+
+  test("get_profile_pnl explains chain and byChain", () => {
+    const d = describeOf("candle_get_profile_pnl")
+    expect(d).toContain("`chain`")
+    expect(d).toContain("pnl.byChain")
+    expect(d).toContain("both chains always present")
   })
 })

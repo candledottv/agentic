@@ -62,6 +62,7 @@ export const TOOL_NAMES = [
   "candle_set_profile_wallets",
   "candle_get_profile_pnl",
   "candle_get_profile_trades",
+  "candle_get_portfolio",
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation",
@@ -284,6 +285,14 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       const { keyPrefix } = args as { keyPrefix: string }
       return {
         url: `${base}/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/pnl`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) },
+      }
+    }
+
+    case "candle_get_portfolio": {
+      const apiKey = requireApiKey(cfg)
+      return {
+        url: `${base}/api/v1/agent/portfolio`,
         init: { method: "GET", headers: jsonHeaders(apiKey) },
       }
     }
@@ -766,7 +775,11 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "wallet with the same figures, for tracking one strategy per wallet. Each row is an independent " +
         "average-cost pool over its own fills, so the rows need not sum to the total (a token moved " +
         "between wallets, or two wallets holding one token at different costs); the total stays correct. " +
-        "Reads only.",
+        "Every open position and every `byWallet` row (and its positions) carries `chain` ('solana' or " +
+        "'hood'), and `pnl.byChain` has the total's figures over each chain's fills alone, both chains " +
+        "always present, with `openPositions` there a count (the positions are in `pnl.openPositions`, by " +
+        "`chain`). Each chain is its own average-cost pool, so the two need not sum exactly to the total. A " +
+        "server that predates per-chain P&L omits `chain` and `byChain`. Reads only.",
       inputSchema: profilePnlShape,
     },
     async (args) => callAndRelay("candle_get_profile_pnl", args, cfg),
@@ -783,6 +796,32 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       inputSchema: profileTradesShape,
     },
     async (args) => callAndRelay("candle_get_profile_trades", args, cfg),
+  )
+
+  register(
+    "candle_get_portfolio",
+    {
+      title: "Read what the account holds, on Solana and Hood",
+      description:
+        "Balances and prices for the wallets Candle already knows on this account, on both chains: the " +
+        "embedded wallet and every TEE wallet. Solana wallets are in `embedded` and `tee` (SOL as raw " +
+        "`lamports`, tokens as raw `amountRaw` with `decimals`). Hood wallets are in `hood.embedded` and " +
+        "`hood.tee` (ETH as raw `wei`, ERC-20s including USDG), never in the top-level arrays. Every " +
+        "wallet and holding carries `chain`. Prices are in `prices`: a Solana mint under its own " +
+        "address, Hood ETH under `hood:native`, and a Hood token under `hood:<contract lowercased>`, so " +
+        "lowercase the address before looking it up. An unpriced entry is `priceUsd: null`, never zero; " +
+        "a Hood one says why in `unpricedReason` (no-market-row, unusable-price, stale-mark, " +
+        "source-unavailable), and `hood.unpriced` / `hood.unpricedByReason` count them. A Hood token " +
+        "mark older than six hours is not used, so many Hood tokens read unpriced. A wallet whose read " +
+        "failed has null balances, never zero, and is listed in `unavailable` (Solana) or " +
+        "`hood.unavailable`; check `complete` before quoting a total. Vault and external wallets are " +
+        "not included: Candle does not know their addresses (the Candle CLI's `candle portfolio` reads " +
+        "them over your own RPC). Needs a key with the account:read scope; without it the answer is " +
+        "SCOPE_MISSING. A server that predates Hood in the portfolio omits `hood` and `chain`. Reads " +
+        "only; moves nothing.",
+      inputSchema: {},
+    },
+    async () => callAndRelay("candle_get_portfolio", {}, cfg),
   )
 
   register(

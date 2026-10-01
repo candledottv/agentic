@@ -29,7 +29,7 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 
 ## The tool surface
 
-Nineteen tools. Five need no key at all, so a client can be pointed at the server and used before
+Twenty tools. Five need no key at all, so a client can be pointed at the server and used before
 anyone signs up for anything.
 
 **Find out what you can do**
@@ -40,8 +40,9 @@ anyone signs up for anything.
 | `candle_get_wallets` | yes | the embedded wallets this key spends from, one per chain |
 | `candle_get_profile_wallets` | yes | which linked wallets this profile may spend from. Read `walletScope` first: an empty list means every wallet under `all`, none under `selected` |
 | `candle_set_profile_wallets` | yes | replace that set. Omitting a wallet revokes its access; an empty list assigns none |
-| `candle_get_profile_pnl` | yes | realized P&L for this profile's own fills, fees charged, and open positions at COST BASIS. Deposits and transfers are excluded; check `unvalued` and `truncated` before quoting it |
+| `candle_get_profile_pnl` | yes | realized P&L for this profile's own fills, fees charged, and open positions at COST BASIS, with `chain` on each position and a per-chain split in `pnl.byChain`. Deposits and transfers are excluded; check `unvalued` and `truncated` before quoting it |
 | `candle_get_profile_trades` | yes | orders, actual fills, fees, timestamps and tx hashes. Includes failed trades, with `errorCode` saying why |
+| `candle_get_portfolio` | yes | what the account's embedded and TEE wallets hold on Solana and Hood, with prices. Needs `account:read`. Hood is in `hood`; a Hood price is keyed `hood:native` or `hood:<contract lowercased>`; unpriced is `null`, never zero |
 
 **Find a token**
 

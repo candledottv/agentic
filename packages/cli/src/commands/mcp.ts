@@ -59,6 +59,7 @@ export const MCP_TOOL_NAMES = [
   "candle_set_profile_wallets",
   "candle_get_profile_pnl",
   "candle_get_profile_trades",
+  "candle_get_portfolio",
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation",

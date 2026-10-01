@@ -81,7 +81,7 @@ Ask an agent to call
 
 ## The tool surface
 
-Nineteen tools. Five need no key, so a client can be pointed at the server and used before anyone
+Twenty tools. Five need no key, so a client can be pointed at the server and used before anyone
 signs up.
 
 | | Tool | Key | What it does |
@@ -92,6 +92,7 @@ signs up.
 | | `candle_set_profile_wallets` | yes | replace the linked wallets this profile may spend from |
 | | `candle_get_profile_pnl` | yes | this profile's realized P&L, fees, and what it still holds at cost |
 | | `candle_get_profile_trades` | yes | this profile's orders, fills, fees and transaction hashes |
+| | `candle_get_portfolio` | yes | what the account's wallets hold on Solana and Hood, with prices (needs `account:read`) |
 | **Find a token** | `candle_resolve_token` | no | an address in, the token and its chain out |
 | | `candle_get_market` | no | live state for one token |
 | | `candle_get_feed` | no | curated feeds with price and market cap |

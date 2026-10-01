@@ -535,6 +535,37 @@ export interface ProfileOpenPosition {
     marketValueUsd?: number;
     /** `marketValueUsd - costBasisUsd`. Absent when unmarked — which is not the same as zero. */
     unrealizedUsd?: number;
+    /** The chain this position was traded on. Optional: a server that predates it omits it. */
+    chain?: Chain;
+}
+/**
+ * One chain's share of a profile's P&L (`ProfilePnlResult.pnl.byChain`): the total's figures over
+ * that chain's fills alone. `openPositions` is a COUNT here; the positions themselves are in
+ * `pnl.openPositions`, each carrying its `chain`.
+ */
+export interface ProfileChainPnl {
+    realizedGrossUsd: number;
+    feesUsd: number;
+    realizedNetUsd: number;
+    /** Open positions on this chain. */
+    openPositions: number;
+    unrealizedUsd: number;
+    unmarkedPositions: number;
+    oldestMarkAt?: number;
+    counted: number;
+    unvalued: number;
+    /** Fills held out because their token has a fill of unknown size. Part of `unvalued`. */
+    unresolved: number;
+    unresolvedMints: string[];
+    friction: {
+        feesUsd: number;
+        slippageUsd: number;
+        slippageBpsAvg?: number;
+        measured: number;
+        unmeasured: number;
+    };
+    /** Confirmed trades on this chain in the window. */
+    tradesConsidered: number;
 }
 /**
  * `GET /api/v1/agent/keys/{prefix}/pnl` response.
@@ -582,6 +613,12 @@ export interface ProfilePnlResult {
          * selling 100 X for $300 realizes $150 in total but $200 summed over the wallets.
          */
         byWallet?: ProfileWalletPnl[];
+        /**
+         * The same figures split by the chain each trade was on, both chains always present. Each is
+         * its own average-cost pool, so the two need not sum exactly to the total above, for the
+         * reason `byWallet` rows need not. Optional: a server that predates it omits it.
+         */
+        byChain?: Record<Chain, ProfileChainPnl>;
     };
 }
 /** One row of `ProfilePnlResult.pnl.byWallet`: one paying wallet's share of a profile's P&L. */
@@ -589,6 +626,11 @@ export interface ProfileWalletPnl {
     /** The paying wallet's address as stored: base58, or EIP-55 on Hood. */
     wallet: string;
     payerType: "main" | "linked";
+    /**
+     * The chain this wallet paid on, from its trades: an address belongs to one chain. Optional: a
+     * server that predates it omits it.
+     */
+    chain?: Chain;
     /** Present only for a linked wallet. */
     linkedWalletId?: string;
     /** The linked wallet's own label; null for the main wallet or an unlabelled one. */
@@ -617,6 +659,126 @@ export interface ProfileWalletPnl {
     };
     /** Confirmed trades in the window this wallet paid for. */
     tradesConsidered: number;
+}
+/**
+ * Why a Hood asset in `PortfolioResult.prices` has no price. Never rendered as zero.
+ *
+ * - `no-market-row`: Candle has never marked this token.
+ * - `unusable-price`: a mark exists and is not a price (zero, negative, not finite).
+ * - `stale-mark`: the mark is older than six hours.
+ * - `source-unavailable`: the price source did not answer.
+ */
+export type PortfolioUnpricedReason = "no-market-row" | "unusable-price" | "stale-mark" | "source-unavailable";
+/**
+ * One entry of `PortfolioResult.prices`. An unpriced entry is `priceUsd: null`, never 0: "worth
+ * nothing" and "nobody priced it" are different answers.
+ */
+export interface PortfolioPrice {
+    priceUsd: number | null;
+    /**
+     * `market` is Candle's own mark, the price P&L marks with; `jupiter` covers Solana tokens Candle
+     * does not index; `reference` is a Hood base asset (ETH from Hood's WETH/USDG pools, USDG at its
+     * peg).
+     */
+    source: "market" | "jupiter" | "reference" | null;
+    /** When a `market` price was last refreshed, epoch ms. Kept on a stale Hood mark too. */
+    updatedAt?: number;
+    symbol?: string;
+    name?: string;
+    /** Why a Hood entry has no price. Set on Hood entries only. */
+    unpricedReason?: PortfolioUnpricedReason;
+}
+/** One SPL token a Solana wallet holds, summed over its accounts under one token program. */
+export interface PortfolioSolanaToken {
+    /** Optional: a server that predates Hood in the portfolio omits it. */
+    chain?: "solana";
+    mint: string;
+    /** Raw base units as a string. */
+    amountRaw: string;
+    decimals: number;
+    program: "token" | "token-2022";
+}
+/** A Solana wallet's balances. A failed half is null, never zero, and the address is in `unavailable`. */
+export interface PortfolioSolanaWallet {
+    /** Optional: a server that predates Hood in the portfolio omits it. */
+    chain?: "solana";
+    address: string;
+    /** Lamports as a string (a u64 does not survive `Number`); null when the SOL read failed. */
+    lamports: string | null;
+    /** Non-zero token balances; null when the token read failed. */
+    tokens: PortfolioSolanaToken[] | null;
+}
+/** A TEE wallet: its linked-wallet id, label, and whether its remote authority is verified-active. */
+export interface PortfolioSolanaTeeWallet extends PortfolioSolanaWallet {
+    id: string;
+    label?: string;
+    active: boolean;
+}
+/** One ERC-20 a Hood wallet holds. */
+export interface PortfolioHoodToken {
+    chain: "hood";
+    /** The token contract, EIP-55. Price it under `hood:<mint lowercased>`. */
+    mint: string;
+    /** Raw base units as a string. */
+    amountRaw: string;
+    decimals: number;
+    symbol?: string;
+    name?: string;
+}
+/** A Hood wallet's balances. A failed read is null, never zero, and the address is in `hood.unavailable`. */
+export interface PortfolioHoodWallet {
+    chain: "hood";
+    address: string;
+    /** Native ETH in wei, as a string; null when the read failed. */
+    wei: string | null;
+    /** Non-zero ERC-20 balances, USDG among them; null when the read failed. */
+    tokens: PortfolioHoodToken[] | null;
+    /** Present when the wallet holds more tokens than Candle lists (200). */
+    truncated?: true;
+}
+/** A Hood TEE wallet: its linked-wallet id, label, and whether its remote authority is verified-active. */
+export interface PortfolioHoodTeeWallet extends PortfolioHoodWallet {
+    id: string;
+    label?: string;
+    active: boolean;
+}
+/** `PortfolioResult.hood`: the account's Hood wallet and its Hood TEE wallets. */
+export interface PortfolioHoodSection {
+    /** The account's own Hood wallet, when it has one. */
+    embedded: PortfolioHoodWallet[];
+    tee: PortfolioHoodTeeWallet[];
+    /** Hood addresses whose read failed. */
+    unavailable: string[];
+    /** Hood holdings with no price: ETH where held, and every token. */
+    unpriced: number;
+    /** The same count, by why. */
+    unpricedByReason: Partial<Record<PortfolioUnpricedReason, number>>;
+}
+/**
+ * `GET /api/v1/agent/portfolio` response: what the account holds in the wallets Candle already
+ * knows, on both chains, with prices.
+ *
+ * Solana wallets are in `embedded` and `tee`; Hood wallets are in `hood`, never in those two
+ * arrays. Vault and external wallets are not here: Candle does not know their addresses, and the
+ * CLI reads them over the operator's own RPC.
+ *
+ * `prices` keys a Solana mint by its address, Hood native ETH as `hood:native`, and a Hood token
+ * as `hood:<lowercased contract>`, so lowercase a Hood `mint` before the lookup. Read `complete`
+ * before quoting a total: it is false when the wallet list was cut off or any wallet's read failed
+ * on either chain.
+ *
+ * Not typed here: the `lp` section a deployment with LP enabled adds.
+ */
+export interface PortfolioResult {
+    success: true;
+    embedded: PortfolioSolanaWallet[];
+    tee: PortfolioSolanaTeeWallet[];
+    /** Optional: a server that predates Hood in the portfolio omits it. */
+    hood?: PortfolioHoodSection;
+    prices: Record<string, PortfolioPrice>;
+    /** Solana addresses whose read failed. Hood's are in `hood.unavailable`. */
+    unavailable: string[];
+    complete: boolean;
 }
 /**
  * One row of a profile's trade history: what was ordered, what actually filled, what it cost,
@@ -1496,6 +1658,16 @@ export declare class CandleClient {
      */
     getProfilePnl(keyPrefix: string): Promise<ProfilePnlResult>;
     /**
+     * What the account holds in the wallets Candle knows, on Solana and Hood, with prices
+     * (GET /api/v1/agent/portfolio): the embedded wallet and every TEE wallet on each chain. Hood
+     * wallets are in `hood`; see `PortfolioResult` for how Hood prices are keyed.
+     *
+     * Needs a key with the `account:read` scope (a whole-account inventory), or the server answers
+     * `SCOPE_MISSING`. Vault and external wallets are not included: Candle does not know their
+     * addresses. Check `complete` before quoting a total.
+     */
+    getPortfolio(): Promise<PortfolioResult>;
+    /**
      * Replaces the wallets an agent profile may spend from
      * (PUT /api/v1/agent/keys/{prefix}/wallets).
      *
@@ -1874,7 +2046,7 @@ export declare class CandleClient {
     private jsonRpcCallRaw;
 }
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.4.4";
+export declare const SDK_VERSION = "0.4.5";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map
