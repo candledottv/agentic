@@ -277,8 +277,9 @@ describe("candle pnl", () => {
     expect(out).toMatch(
       /LP vs holding\s+-\$46\.50\s+\(1 of 1 valued, against holding the deposited tokens \(now \$350\.00\)\)/,
     )
-    // 97 + 12 + 16.5 + 3.5
-    expect(out).toMatch(/Total\s+\$129\.00\s+\(realized net plus unrealized, tokens and LP\)/)
+    // The token Total is the console's figure (P&L spec R4); LP is added on its own line: 109 + 16.5 + 3.5.
+    expect(out).toMatch(/Total\s+\$109\.00\s+\(realized net plus unrealized, tokens only, as the console shows it\)/)
+    expect(out).toMatch(/Total with LP\s+\$129\.00\s+\(the total plus LP realized and unrealized\)/)
     expect(out).toContain("1 LP position was closed outside the ledger")
     expect(out).toContain("Open LP positions")
     expect(out).toMatch(/Posi…AAAA\s+Pool…XXXX\s+TeeW…TTTT\s+\$303\.50\s+\$300\.00\s+\$3\.50\s+-\$46\.50\s+Scalper/)
@@ -295,7 +296,8 @@ describe("candle pnl", () => {
 
     const p = harness({ withProfiles: true, profile: Response.json({ ...PROFILE_PNL, lp: LP }) })
     expect(await run(["pnl", "--profile", "scalper"], p.deps)).toBe(0)
-    expect(p.stdout.text).toMatch(/Total\s+\$29\.00\s+\(realized net plus unrealized, tokens and LP\)/)
+    expect(p.stdout.text).toMatch(/Total\s+\$9\.00\s+\(realized net plus unrealized, tokens only/)
+    expect(p.stdout.text).toMatch(/Total with LP\s+\$29\.00/)
     expect(p.stdout.text).toMatch(/Posi…AAAA\s+Pool…XXXX\s+TeeW…TTTT\s+\$303\.50\s+\$300\.00\s+\$3\.50\s+-\$46\.50\n/)
     expect(p.stdout.text).not.toContain("BOOK")
   })
@@ -578,5 +580,203 @@ describe("Hyperliquid profile PnL", () => {
     expect(await run(["pnl", "--profile", "scalper", "--json"], h.deps)).toBe(0)
     expect(JSON.parse(h.stdout.text).hyperliquid).toEqual(section)
     expect(h.calls).toHaveLength(1)
+  })
+})
+
+/**
+ * P&L rollout A4 (spec 2026-10-02-pnl-one-private-one-public-design.md, R4): both scopes read
+ * the one engine A2 put behind `/books` and `/keys/{prefix}/pnl`, and print the console's figures.
+ */
+const WALLET_A = "WalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA1"
+const WALLET_B = "WalletBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB2"
+const CLOSED = { closed: 3, madeUsd: 60, lostUsd: -20, partialSellsUsd: 57, wins: 1, losses: 1, costUnknown: 1 }
+
+const ENGINE_BOOKS = {
+  ...BOOKS,
+  all: {
+    ...BOOKS.all,
+    totalUsd: 109,
+    openPositions: 3,
+    unmarked: 0,
+    openPositionsExDust: 2,
+    closedRounds: 3,
+    closed: CLOSED,
+  },
+  positions: [
+    { ...BOOKS.positions[0], wallet: WALLET_A, keyPrefix: "AAAAAAAA" },
+    { ...BOOKS.positions[0], quantity: 2, costBasisUsd: 2, wallet: WALLET_B, keyPrefix: null, book: null },
+    {
+      mint: DUST,
+      symbol: "DUSTY",
+      name: null,
+      chain: "solana",
+      book: null,
+      keyPrefix: null,
+      quantity: 1,
+      avgEntryUsd: 0.01,
+      costBasisUsd: 0.01,
+      markPriceUsd: 0.001,
+      marketValueUsd: 0.001,
+      unrealizedUsd: -0.009,
+      dust: true,
+    },
+  ],
+  byAgent: [
+    {
+      keyPrefix: "AAAAAAAA",
+      label: "Scalper",
+      realizedNetUsd: 80,
+      unrealizedUsd: 12,
+      totalUsd: 92,
+      openPositions: 1,
+      closedRounds: 2,
+      unmarked: 0,
+    },
+    {
+      keyPrefix: null,
+      label: null,
+      realizedNetUsd: 17,
+      unrealizedUsd: 0,
+      totalUsd: 17,
+      openPositions: 2,
+      closedRounds: 1,
+      unmarked: 0,
+    },
+  ],
+  costUnknown: [{ wallet: WALLET_B, mint: MEME, quantity: 5, ts: 1, reason: "no-price", chain: "solana" }],
+  movedOutUntracked: [
+    { wallet: WALLET_A, mint: MEME, quantity: 1, costBasisUsd: 1, ts: 2, chain: "solana" },
+    { wallet: WALLET_A, mint: MEME, quantity: 1, costBasisUsd: 1, ts: 3, chain: "solana" },
+  ],
+}
+
+const ENGINE_PROFILE = {
+  ...PROFILE_PNL,
+  pnl: {
+    ...PROFILE_PNL.pnl,
+    totalUsd: 9,
+    openPositionsExDust: 0,
+    closedRounds: 1,
+    closed: { closed: 1, madeUsd: 9, lostUsd: 0, partialSellsUsd: 0, wins: 1, losses: 0, costUnknown: 0 },
+    lookback: 2000,
+    truncated: true,
+    byWallet: [
+      {
+        wallet: WALLET_A,
+        payerType: "main",
+        chain: "solana",
+        label: null,
+        realizedNetUsd: 6,
+        unrealizedUsd: 0,
+        unmarkedPositions: 0,
+        openPositions: [],
+        tradesConsidered: 2,
+        totalUsd: 6,
+      },
+      {
+        wallet: "unknown:solana",
+        payerType: "main",
+        chain: "solana",
+        label: null,
+        realizedNetUsd: 3,
+        unrealizedUsd: 0,
+        unmarkedPositions: 0,
+        openPositions: [],
+        tradesConsidered: 0,
+        totalUsd: 3,
+      },
+    ],
+  },
+}
+
+describe("P&L A4: one engine in candle pnl", () => {
+  test("Total is the server's totalUsd, the console's figure, not a sum the CLI makes", async () => {
+    const skewed = { ...ENGINE_BOOKS, all: { ...ENGINE_BOOKS.all, totalUsd: 50 } }
+    const h = harness({ books: Response.json(skewed) })
+    expect(await run(["pnl"], h.deps)).toBe(0)
+    expect(h.stdout.text).toMatch(/Total\s+\$50\.00\s+\(realized net plus unrealized\)/)
+
+    const chain = {
+      ...ENGINE_BOOKS,
+      solana: { ...BOTH_CHAINS_BOOKS.solana, totalUsd: 77 },
+      hood: { ...BOTH_CHAINS_BOOKS.hood },
+    }
+    const c = harness({ books: Response.json(chain) })
+    expect(await run(["pnl"], c.deps)).toBe(0)
+    const out = c.stdout.text
+    expect(out.slice(out.indexOf("Solana\n"), out.indexOf("Hood\n"))).toMatch(/Total\s+\$77\.00/)
+    // Hood sends no totalUsd (an older API): summed here, as before.
+    expect(out.slice(out.indexOf("Hood\n"), out.indexOf("All chains\n"))).toMatch(/Total\s+\$27\.00/)
+  })
+
+  test("account scope: the closed-position equation, dust, a WALLET column, By agent and the wallet events", async () => {
+    const h = harness({ books: Response.json(ENGINE_BOOKS) })
+    expect(await run(["pnl"], h.deps)).toBe(0)
+    const out = h.stdout.text
+    expect(out).toContain(
+      "Closed: 3 positions (1 won, 1 lost, 1 with unknown cost). Money made $60.00, money lost -$20.00 and partial sells $57.00 add up to the realized net.",
+    )
+    expect(out).toContain(
+      "1 open position is dust (worth under one cent): listed and marked, and counted in the figures.",
+    )
+    expect(out).toContain("1 arrival of tokens came with no cost anyone can state")
+    expect(out).toContain("2 moves out of a wallet went where Candle does not follow")
+    // One token in two wallets is two rows, each with its wallet.
+    expect(out).toMatch(/TOKEN\s+CHAIN\s+WALLET\s+QUANTITY/)
+    expect(out).toMatch(/MEME\s+solana\s+Wall…AAA1\s+6\s+.*Scalper/)
+    expect(out).toMatch(/MEME\s+solana\s+Wall…BBB2\s+2\s+.*-\n/)
+    expect(out).toMatch(/DUSTY \(dust\)\s+solana\s+-\s+1\s+/)
+    // By agent: each key, then Manual, then the account total the rows sum to.
+    expect(out).toContain("By agent (each key, then Manual; the rows sum to the account total)")
+    expect(out).toMatch(/Scalper \(AAAAAAAA\)\s+\$80\.00\s+\$12\.00\s+\$92\.00\s+1\s+2/)
+    expect(out).toMatch(/Manual \(web app\)\s+\$17\.00\s+\$0\.00\s+\$17\.00\s+2\s+1/)
+    expect(out).toMatch(/Account total\s+\$97\.00\s+\$12\.00\s+\$109\.00\s+3\s+3/)
+    expect(out.indexOf("By agent")).toBeLessThan(out.indexOf("Open positions"))
+  })
+
+  test("account scope from an API that predates A2: none of the new lines or columns", async () => {
+    const h = harness()
+    expect(await run(["pnl"], h.deps)).toBe(0)
+    const out = h.stdout.text
+    for (const text of ["Closed:", "dust", "By agent", "WALLET", "arrival", "moves out"])
+      expect(out).not.toContain(text)
+  })
+
+  test("key scope: the key's share, the account's history bound, and wallet rows that sum to the total", async () => {
+    const h = harness({ withProfiles: true, profile: Response.json(ENGINE_PROFILE) })
+    expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
+    const out = h.stdout.text
+    expect(out).toContain("P&L for profile scalper (key BBBBBBBB): this key's share of the account's P&L")
+    expect(out).toMatch(/Total\s+\$9\.00/)
+    expect(out).toContain("Closed: 1 position (1 won, 0 lost). Money made $9.00")
+    expect(out).toContain("History is truncated: this covers the most recent 2000 of the account's ledger rows")
+    expect(out).toContain("By wallet (each its own cost basis; the rows sum to the total)")
+    expect(out).toMatch(/main \(Wall…AAA1\)\s+solana\s+2\s+\$6\.00/)
+    // The pool for legs no record places in a wallet is not an address.
+    expect(out).toMatch(/not placed in a wallet\s+solana\s+0\s+\$3\.00/)
+    expect(out).not.toContain("unknown:")
+  })
+
+  test("key scope from an API that predates A2 keeps the old wording, because its figures mean the old thing", async () => {
+    const older = { ...ENGINE_PROFILE, pnl: { ...ENGINE_PROFILE.pnl, totalUsd: undefined, closed: undefined } }
+    const h = harness({ withProfiles: true, profile: Response.json(older) })
+    expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
+    expect(h.stdout.text).toContain("this key's own fills")
+    expect(h.stdout.text).toContain("the most recent 2000 trades")
+    expect(h.stdout.text).toContain("so the rows need not sum to the total")
+  })
+
+  test("--json passes the engine fields through untouched", async () => {
+    const h = harness({ books: Response.json(ENGINE_BOOKS) })
+    expect(await run(["pnl", "--json"], h.deps)).toBe(0)
+    const doc = JSON.parse(h.stdout.text)
+    expect(doc.byAgent).toEqual(ENGINE_BOOKS.byAgent)
+    expect(doc.all.closed).toEqual(CLOSED)
+    expect(doc.positions[2].dust).toBe(true)
+    expect(doc.movedOutUntracked).toHaveLength(2)
+
+    const p = harness({ withProfiles: true, profile: Response.json(ENGINE_PROFILE) })
+    expect(await run(["pnl", "--profile", "scalper", "--json"], p.deps)).toBe(0)
+    expect(JSON.parse(p.stdout.text).pnl.byWallet[1].wallet).toBe("unknown:solana")
   })
 })

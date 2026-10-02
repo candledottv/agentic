@@ -51344,7 +51344,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async (args) => callAndRelay("candle_set_profile_wallets", args, cfg));
   register("candle_get_profile_pnl", {
     title: "Read an agent profile's P&L",
-    description: "Realized profit for this profile's own fills, the Candle fees charged against it, and the " + "positions it still holds with their cost basis, each MARKED at Candle's current price where one " + "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " + "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " + "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits, withdrawals and " + "transfers are excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before " + "quoting the number; they mean the total is partial. `pnl.byWallet` splits the same fills by the " + "wallet that paid for each trade (main or linked, with the linked wallet's label), one row per " + "wallet with the same figures, for tracking one strategy per wallet. Each row is an independent " + "average-cost pool over its own fills, so the rows need not sum to the total (a token moved " + "between wallets, or two wallets holding one token at different costs); the total stays correct. " + "Every open position and every `byWallet` row (and its positions) carries `chain` ('solana' or " + "'hood'), and `pnl.byChain` has the total's figures over each chain's fills alone, both chains " + "always present, with `openPositions` there a count (the positions are in `pnl.openPositions`, by " + "`chain`). Each chain is its own average-cost pool, so the two need not sum exactly to the total. A " + "server that predates per-chain P&L omits `chain` and `byChain`. While Hyperliquid is enabled, " + "`hyperliquid` separately reports main-perp realized gross, signed funding, fees (inclusive of builder fees), " + "and net = gross + funding - fees, for currently bound EVM TEE wallets since the current TEE binding. " + "Check `read` and `truncated`; historical bindings and unrealized perps are excluded. Reads only.",
+    description: "This profile's share of the account's P&L: realized profit on the sales it made, the Candle fees " + "charged against it, and the positions that belong to it (the wallet's bound key, else the key " + "whose buy opened them) with their cost basis, each MARKED at Candle's current price where one " + "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " + "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " + "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits and withdrawals are " + "excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before quoting the " + "number; they mean the total is partial. The figures come from the account's one P&L read, the " + "same as the console's, to the cent: `pnl.totalUsd` (realized net plus unrealized) is the " + "console's P&L. Positions live in wallets: each wallet is its own average-cost pool, the total " + "is the sum of `pnl.byWallet` (one row per wallet, main or linked, with the linked wallet's " + "label; `unknown:solana` or `unknown:hood` is the row for fills no record places in a wallet), " + "and one token held in two wallets is two positions, each with its `wallet`. A recorded move " + "between the account's wallets carries its cost and realizes nothing. Each position carries " + "`agent` (the key it belongs to) and `dust` when it is worth under one cent; dust stays listed " + "and counted, and `openPositionsExDust` leaves it out. `closed` gives the closed positions as " + "`madeUsd` + `lostUsd` + `partialSellsUsd` = `realizedNetUsd`, with `wins` and `losses`. " + "`lookback` and `truncated` are the account's activity bound, and `tradesConsidered` counts this " + "key's ledger fills. Since 2026-10-02 the total is the sum of wallets rather than one pool across " + "them, so realized figures can differ from earlier reads; a server that predates it omits " + "`totalUsd`, `closed`, `openPositionsExDust`, `wallet`, `agent` and `dust`. " + "Every open position and every `byWallet` row (and its positions) carries `chain` ('solana' or " + "'hood'), and `pnl.byChain` has the total's figures over each chain's fills alone, both chains " + "always present, with `openPositions` there a count (the positions are in `pnl.openPositions`, by " + "`chain`). The two chains sum to the total. A " + "server that predates per-chain P&L omits `chain` and `byChain`. While Hyperliquid is enabled, " + "`hyperliquid` separately reports main-perp realized gross, signed funding, fees (inclusive of builder fees), " + "and net = gross + funding - fees, for currently bound EVM TEE wallets since the current TEE binding. " + "Check `read` and `truncated`; historical bindings and unrealized perps are excluded. Reads only.",
     inputSchema: profilePnlShape
   }, async (args) => callAndRelay("candle_get_profile_pnl", args, cfg));
   register("candle_get_profile_trades", {
@@ -52449,8 +52449,8 @@ var HELP = {
   },
   pnl: {
     group: "Account",
-    summary: "P&L per chain and combined: realized, fees, unrealized and open positions (--profile for one key's own)",
-    description: "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the web P&L chart shows. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its own P&L, with a row per paying wallet. Both show a Solana block, a Hood block, then the combined figure, and a CHAIN column on positions and wallet rows. Unpriced positions are shown as unpriced and never valued at zero. A bridge between Solana and Hood is not a trade: it opens and closes nothing, and bridge and Relay costs are not netted from P&L. Where Candle serves LP, DAMM v2 positions are included: realized (withdrawals against the cost basis at the add, plus claimed fees), unrealized (open positions at their share of the pool plus unclaimed fees, against that basis), and vs holding (what the deposited tokens would be worth held); the total then covers tokens and LP.",
+    summary: "P&L per chain and combined: realized, fees, unrealized and open positions (--profile for one key's share)",
+    description: "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the console shows, to the cent for the same moment. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its share of the same P&L: realized on the sales it made, and the open positions that belong to it (the wallet's bound key, else the key whose buy opened them), with a row per wallet that sums to the total. Positions live in wallets: each wallet is its own average-cost pool, the account is the sum of its wallets, and a recorded move between two of the account's wallets carries its cost and realizes nothing. Both show a Solana block, a Hood block, then the combined figure, the closed positions as money made, minus money lost, plus partial sells, and a CHAIN column (and WALLET, where the API names it) on positions. The account's books add a By agent table (each key, then Manual for web-app trades, then the account total). Unpriced positions are shown as unpriced and never valued at zero; a position worth under one cent is marked dust and still counted. A bridge between Solana and Hood is not a trade: it opens and closes nothing, and bridge and Relay costs are not netted from P&L. Where Candle serves LP, DAMM v2 positions are included: realized (withdrawals against the cost basis at the add, plus claimed fees), unrealized (open positions at their share of the pool plus unclaimed fees, against that basis), and vs holding (what the deposited tokens would be worth held); Total stays the console's token figure, and Total with LP covers tokens and LP.",
     usage: ["candle pnl [--profile <name>] [--json]"],
     rows: [],
     examples: ["candle pnl", "candle pnl --profile scalper --json"],
@@ -61905,7 +61905,10 @@ async function pnl(args, ctx) {
   }
   if (perProfile) {
     const { pnl: p, lp, hyperliquid } = body;
-    deps.stdout.write(`P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills
+    const engine = typeof p.totalUsd === "number";
+    deps.stdout.write(engine ? `P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's share of the account's P&L
+
+` : `P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills
 
 `);
     writeChainBlocks(ctx, p.byChain);
@@ -61917,15 +61920,18 @@ async function pnl(args, ctx) {
       unmarked: p.unmarkedPositions,
       unvalued: p.unvalued,
       counted: p.counted,
+      totalUsd: p.totalUsd,
+      openPositionsExDust: p.openPositionsExDust,
+      closed: p.closed,
       positions: p.openPositions.length,
       truncated: p.truncated,
       lookback: p.lookback,
-      lookbackUnit: "trades",
+      lookbackUnit: engine ? "of the account's ledger rows" : "trades",
       oldestMarkAt: p.oldestMarkAt,
       lp
     });
     writePositions(ctx, p.openPositions, false);
-    writeWallets(ctx, p.byWallet);
+    writeWallets(ctx, p.byWallet, engine);
     writeLpPositions(ctx, lp, false);
     writeHyperliquidPnl(ctx, hyperliquid);
     return 0;
@@ -61944,6 +61950,8 @@ async function pnl(args, ctx) {
     oldestMarkAt: books.oldestMarkAt,
     lp: books.lp
   });
+  writeWalletEvents(ctx, books);
+  writeAgents(ctx, books.byAgent, books.all);
   writePositions(ctx, books.positions, true);
   writeLpPositions(ctx, books.lp, true);
   return 0;
@@ -61974,7 +61982,7 @@ function writeChainBlocks(ctx, byChain) {
         formatUsd(s.unrealizedUsd),
         `${marked} of ${s.openPositions} open ${s.openPositions === 1 ? "position" : "positions"} marked${unmarked > 0 ? `; ${unmarked} unpriced, not counted` : ""}`
       ],
-      ["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized"]
+      ["Total", formatUsd(totalOf(s)), "realized net plus unrealized"]
     ]);
     if (s.unvalued > 0) {
       ctx.deps.stdout.write(`${s.unvalued} ${s.unvalued === 1 ? "fill" : "fills"} could not be valued and are not in these figures.
@@ -61986,6 +61994,12 @@ function writeChainBlocks(ctx, byChain) {
   ctx.deps.stdout.write(`All chains
 `);
 }
+function totalOf(s) {
+  return typeof s.totalUsd === "number" ? s.totalUsd : s.realizedNetUsd + s.unrealizedUsd;
+}
+function isUnplacedWallet(wallet) {
+  return wallet.startsWith("unknown:");
+}
 function writeLines(ctx, lines) {
   const width = Math.max(...lines.map(([label]) => label.length));
   const valueWidth = Math.max(...lines.map(([, value]) => value.length));
@@ -61994,19 +62008,20 @@ function writeLines(ctx, lines) {
 `);
   }
 }
-function writeWallets(ctx, wallets2) {
+function writeWallets(ctx, wallets2, engine) {
   if (!wallets2 || wallets2.length === 0)
     return;
   const rows = wallets2.map((w) => [
-    `${w.label?.trim() ? `${w.label.trim()} ` : w.payerType === "main" ? "main " : ""}(${shortAddress2(w.wallet)})`,
+    isUnplacedWallet(w.wallet) ? "not placed in a wallet" : `${w.label?.trim() ? `${w.label.trim()} ` : w.payerType === "main" ? "main " : ""}(${shortAddress2(w.wallet)})`,
     w.chain ?? "-",
     String(w.tradesConsidered),
     formatUsd(w.realizedNetUsd),
     formatUsd(w.unrealizedUsd),
     `${w.openPositions.length}${w.unmarkedPositions > 0 ? ` (${w.unmarkedPositions} unpriced)` : ""}`
   ]);
+  const heading = engine ? "By wallet (each its own cost basis; the rows sum to the total)" : "By wallet (each its own cost basis, so the rows need not sum to the total)";
   ctx.deps.stdout.write(`
-By wallet (each its own cost basis, so the rows need not sum to the total)
+${heading}
 ${renderTable(["WALLET", "CHAIN", "TRADES", "REALIZED NET", "UNREALIZED", "OPEN"], rows.map((row) => row.map(terminalText)))}
 `);
 }
@@ -62024,6 +62039,7 @@ function writeSummary(ctx, s) {
       `${marked} of ${s.positions} open ${s.positions === 1 ? "position" : "positions"} marked${s.unmarked > 0 ? `; ${s.unmarked} unpriced, not counted` : ""}`
     ]
   ];
+  const total = totalOf(s);
   const lp = s.lp;
   if (lp?.read) {
     const plural2 = (n, one, many) => `${n} ${n === 1 ? one : many}`;
@@ -62039,17 +62055,24 @@ function writeSummary(ctx, s) {
       "LP vs holding",
       lp.vsHoldingPositions > 0 ? formatUsd(lp.vsHoldingUsd) : "-",
       lp.vsHoldingPositions > 0 ? `${lp.vsHoldingPositions} of ${lp.valued} valued, against holding the deposited tokens (now ${formatUsd(lp.holdValueUsd)})` : "no valued LP position with every deposit priced"
-    ], [
-      "Total",
-      formatUsd(s.realizedNetUsd + s.unrealizedUsd + lp.realizedUsd + lp.unrealizedUsd),
-      "realized net plus unrealized, tokens and LP"
+    ], ["Total", formatUsd(total), "realized net plus unrealized, tokens only, as the console shows it"], [
+      "Total with LP",
+      formatUsd(total + lp.realizedUsd + lp.unrealizedUsd),
+      "the total plus LP realized and unrealized"
     ]);
   } else if (lp) {
-    lines.push(["LP", "not read", `${terminalText(lp.reason)}; not in the total`], ["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized, tokens only"]);
+    lines.push(["LP", "not read", `${terminalText(lp.reason)}; not in the total`], ["Total", formatUsd(total), "realized net plus unrealized, tokens only"]);
   } else {
-    lines.push(["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized"]);
+    lines.push(["Total", formatUsd(total), "realized net plus unrealized"]);
   }
   writeLines(ctx, lines);
+  if (s.closed)
+    writeClosed(ctx, s.closed);
+  const dust = s.openPositionsExDust !== undefined ? s.positions - s.openPositionsExDust : 0;
+  if (dust > 0) {
+    ctx.deps.stdout.write(`${dust} open ${dust === 1 ? "position is" : "positions are"} dust (worth under one cent): listed and marked, and counted in the figures.
+`);
+  }
   if (s.oldestMarkAt !== undefined) {
     ctx.deps.stdout.write(`Marks as old as ${new Date(s.oldestMarkAt).toISOString()}.
 `);
@@ -62076,6 +62099,50 @@ function writeSummary(ctx, s) {
 `);
     }
   }
+}
+function writeClosed(ctx, c) {
+  const counts = [`${c.wins} won`, `${c.losses} lost`];
+  if (c.costUnknown > 0)
+    counts.push(`${c.costUnknown} with unknown cost`);
+  ctx.deps.stdout.write(`Closed: ${c.closed} ${c.closed === 1 ? "position" : "positions"} (${counts.join(", ")}). Money made ${formatUsd(c.madeUsd)}, money lost ${formatUsd(c.lostUsd)} and partial sells ${formatUsd(c.partialSellsUsd)} add up to the realized net.
+`);
+}
+function writeWalletEvents(ctx, books) {
+  const unknown = books.costUnknown?.length ?? 0;
+  if (unknown > 0) {
+    ctx.deps.stdout.write(`${unknown} ${unknown === 1 ? "arrival" : "arrivals"} of tokens came with no cost anyone can state: selling them realizes nothing (--json lists them).
+`);
+  }
+  const out = books.movedOutUntracked?.length ?? 0;
+  if (out > 0) {
+    ctx.deps.stdout.write(`${out} ${out === 1 ? "move" : "moves"} out of a wallet went where Candle does not follow: the tokens left at cost, not as a sale (--json lists them).
+`);
+  }
+}
+function writeAgents(ctx, agents, all) {
+  if (!agents || agents.length === 0)
+    return;
+  const open4 = (count, unmarked) => `${count}${unmarked > 0 ? ` (${unmarked} unpriced)` : ""}`;
+  const rows = agents.map((a) => [
+    a.keyPrefix === null ? "Manual (web app)" : a.label && a.label !== a.keyPrefix ? `${a.label} (${a.keyPrefix})` : a.keyPrefix,
+    formatUsd(a.realizedNetUsd),
+    formatUsd(a.unrealizedUsd),
+    formatUsd(totalOf(a)),
+    open4(a.openPositions, a.unmarked),
+    String(a.closedRounds)
+  ]);
+  rows.push([
+    "Account total",
+    formatUsd(all.realizedNetUsd),
+    formatUsd(all.unrealizedUsd),
+    formatUsd(totalOf(all)),
+    open4(all.openPositions, all.unmarked),
+    all.closedRounds !== undefined ? String(all.closedRounds) : "-"
+  ]);
+  ctx.deps.stdout.write(`
+By agent (each key, then Manual; the rows sum to the account total)
+${renderTable(["AGENT", "REALIZED NET", "UNREALIZED", "TOTAL", "OPEN", "CLOSED"], rows.map((row) => row.map(terminalText)))}
+`);
 }
 function writeLpPositions(ctx, lp, withBook) {
   if (!lp?.read || lp.positions.length === 0)
@@ -62110,13 +62177,16 @@ No open positions.
 `);
     return;
   }
-  const headers = ["TOKEN", "CHAIN", "QUANTITY", "AVG ENTRY", "MARK", "UNREALIZED"];
+  const withWallet = positions.some((p) => p.wallet !== undefined);
+  const headers = ["TOKEN", "CHAIN", ...withWallet ? ["WALLET"] : [], "QUANTITY", "AVG ENTRY", "MARK", "UNREALIZED"];
   if (withBook)
     headers.push("BOOK");
+  const wallet = (w) => w === undefined || isUnplacedWallet(w) ? "-" : shortAddress2(w);
   const rows = positions.map((p) => {
     const row = [
-      p.symbol?.trim() || shortAddress2(p.mint),
+      `${p.symbol?.trim() || shortAddress2(p.mint)}${p.dust === true ? " (dust)" : ""}`,
       p.chain ?? "-",
+      ...withWallet ? [wallet(p.wallet)] : [],
       formatQuantity(p.quantity),
       formatPrice(p.avgEntryUsd),
       p.markPriceUsd !== undefined ? formatPrice(p.markPriceUsd) : "unpriced",

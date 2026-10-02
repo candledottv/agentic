@@ -781,17 +781,27 @@ export function registerTools(server: McpServer, env: Record<string, string | un
     {
       title: "Read an agent profile's P&L",
       description:
-        "Realized profit for this profile's own fills, the Candle fees charged against it, and the " +
-        "positions it still holds with their cost basis, each MARKED at Candle's current price where one " +
+        "This profile's share of the account's P&L: realized profit on the sales it made, the Candle fees " +
+        "charged against it, and the positions that belong to it (the wallet's bound key, else the key " +
+        "whose buy opened them) with their cost basis, each MARKED at Candle's current price where one " +
         "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " +
         "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " +
-        "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits, withdrawals and " +
-        "transfers are excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before " +
-        "quoting the number; they mean the total is partial. The figures are this profile's share of " +
-        "the account's one P&L read, the same as the console's. `pnl.byWallet` splits them by wallet " +
-        "(main or linked, with the linked wallet's label), one row per wallet, for tracking one strategy " +
-        "per wallet. Each wallet is its own average-cost pool and the total is the sum of the rows; a " +
-        "token moved between the account's wallets carries its cost once the move is recorded. " +
+        "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits and withdrawals are " +
+        "excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before quoting the " +
+        "number; they mean the total is partial. The figures come from the account's one P&L read, the " +
+        "same as the console's, to the cent: `pnl.totalUsd` (realized net plus unrealized) is the " +
+        "console's P&L. Positions live in wallets: each wallet is its own average-cost pool, the total " +
+        "is the sum of `pnl.byWallet` (one row per wallet, main or linked, with the linked wallet's " +
+        "label; `unknown:solana` or `unknown:hood` is the row for fills no record places in a wallet), " +
+        "and one token held in two wallets is two positions, each with its `wallet`. A recorded move " +
+        "between the account's wallets carries its cost and realizes nothing. Each position carries " +
+        "`agent` (the key it belongs to) and `dust` when it is worth under one cent; dust stays listed " +
+        "and counted, and `openPositionsExDust` leaves it out. `closed` gives the closed positions as " +
+        "`madeUsd` + `lostUsd` + `partialSellsUsd` = `realizedNetUsd`, with `wins` and `losses`. " +
+        "`lookback` and `truncated` are the account's activity bound, and `tradesConsidered` counts this " +
+        "key's ledger fills. Since 2026-10-02 the total is the sum of wallets rather than one pool across " +
+        "them, so realized figures can differ from earlier reads; a server that predates it omits " +
+        "`totalUsd`, `closed`, `openPositionsExDust`, `wallet`, `agent` and `dust`. " +
         "Every open position and every `byWallet` row (and its positions) carries `chain` ('solana' or " +
         "'hood'), and `pnl.byChain` has the total's figures over each chain's fills alone, both chains " +
         "always present, with `openPositions` there a count (the positions are in `pnl.openPositions`, by " +

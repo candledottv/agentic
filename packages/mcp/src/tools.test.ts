@@ -382,4 +382,20 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
     expect(d).toContain("pnl.byChain")
     expect(d).toContain("both chains always present")
   })
+
+  test("get_profile_pnl states the one-engine meaning and names the fields it added (P&L spec R4)", () => {
+    const d = describeOf("candle_get_profile_pnl")
+    expect(d).toContain("share of the account's P&L")
+    expect(d).toContain("the same as the console's, to the cent")
+    expect(d).toContain("the total is the sum of `pnl.byWallet`")
+    expect(d).toContain("carries its cost and realizes nothing")
+    for (const field of ["`pnl.totalUsd`", "`closed`", "`openPositionsExDust`", "`dust`", "`agent`", "`wallet`"]) {
+      expect(d).toContain(field)
+    }
+    expect(d).toContain("`madeUsd` + `lostUsd` + `partialSellsUsd` = `realizedNetUsd`")
+    // The pre-engine wording is gone: the rows now sum to the total, and transfers carry cost.
+    expect(d).not.toContain("need not sum")
+    expect(d).not.toContain("own fills")
+    expect(d).not.toContain("transfers are excluded")
+  })
 })

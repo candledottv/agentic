@@ -40,13 +40,34 @@
  * - **Account scope** reads `/books`' `solana` and `hood` summaries: a block for each, then the
  *   combined figure (`all`) with LP, as before. Positions carry `chain`, shown in a CHAIN column.
  * - **Key scope** reads `pnlByKey`'s `byChain` pair the same way, and its `byWallet` rows become a
- *   by-wallet table with a CHAIN column: each paying wallet's own average-cost pool, so the rows
- *   need not sum to the total (the API says why).
+ *   by-wallet table with a CHAIN column.
  *
  * An answer without the split (an older API) prints exactly what it did, with `-` for a chain it
  * did not name. A 4c bridge is not a trade: it opens no lot and realizes nothing, so it moves value
  * between chains in `candle portfolio` and changes nothing here; bridge and Relay costs are not
  * netted from these figures. `--json` passes the API's body through, chain fields included.
+ *
+ * ── One engine (P&L spec 2026-10-02, R4, rollout A4) ─────────────────────────────────────────
+ *
+ * Since A2 both reads are slices of the account's one P&L run, the same run the console reads, so
+ * this command prints the console's figures to the cent for the same moment:
+ *
+ * - **Total** is the server's `totalUsd` (realized net plus unrealized), the console's Total. An
+ *   older API that sends no `totalUsd` gets the sum computed here, as before. LP is not in the
+ *   console's Total, so with an `lp` section the token Total stays as it is and a separate "Total
+ *   with LP" line adds LP.
+ * - **Positions live in wallets** (PNL-ED-2), so one token held in two wallets is two rows, and a
+ *   WALLET column appears when the API names the wallet. A position worth under one cent is
+ *   marked dust and still listed (PNL-AD-7, PNL-ED-9).
+ * - **Closed positions** (PNL-ED-8): money made, minus money lost, plus partial sells, equals
+ *   realized net, from the server's `closed` summary.
+ * - **Account scope** adds the "By agent" table (`byAgent`: every key, then Manual, with an
+ *   account total that matches the rows), and the counts of `costUnknown` and `movedOutUntracked`.
+ * - **Key scope** is the key's share of the account (PNL-ED-6): realized on the sales it made, and
+ *   the open positions that belong to it (the wallet's bound key, else the key whose buy opened
+ *   them). The by-wallet rows sum to the total, and the history bound is the account's activity
+ *   rows, not 500 of the key's trades. An older API (no `totalUsd` on `pnl`) keeps the old wording,
+ *   because its figures still mean the old thing.
  */
 
 import { parseArgs } from "../args"
@@ -75,9 +96,37 @@ interface Position {
   markPriceUsd?: number
   marketValueUsd?: number
   unrealizedUsd?: number
+  /**
+   * The wallet holding it (PNL-ED-2). `/books` omits it for a leg no record places in a wallet;
+   * `/keys/{prefix}/pnl` names that pool `unknown:<chain>`. Absent from an API that predates A2.
+   */
+  wallet?: string
+  /** Worth under one cent at its mark (PNL-ED-9): still listed, and marked. */
+  dust?: true
 }
 
-interface Summary {
+/** Closed positions as money made, minus money lost, plus partial sells (PNL-ED-8). */
+interface ClosedSummary {
+  closed: number
+  madeUsd: number
+  lostUsd: number
+  partialSellsUsd: number
+  wins: number
+  losses: number
+  costUnknown: number
+}
+
+/** Fields A2 added to every scope. Each is absent from an API that predates it. */
+interface EngineFields {
+  /** Realized net plus unrealized: the console's Total. */
+  totalUsd?: number
+  openPositionsExDust?: number
+  closed?: ClosedSummary
+}
+
+interface Summary extends EngineFields {
+  /** Closed positions in this scope. Absent from an API older than 2026-09-21. */
+  closedRounds?: number
   realizedNetUsd: number
   realizedGrossUsd: number
   feesUsd: number
@@ -133,7 +182,7 @@ type LpSection =
   | { read: false; reason: string }
 
 /** One chain's share of either answer, without the position list (4d-ED-8, 4d-ED-9). */
-interface ChainSummary {
+interface ChainSummary extends EngineFields {
   realizedNetUsd: number
   realizedGrossUsd: number
   feesUsd: number
@@ -146,8 +195,8 @@ interface ChainSummary {
   unvalued: number
 }
 
-/** One paying wallet's share of a profile's P&L (`pnlByKey.byWallet`, 4d-ED-9). */
-interface WalletRow {
+/** One wallet's share of a profile's P&L (`pnlByKey.byWallet`, 4d-ED-9). */
+interface WalletRow extends EngineFields {
   wallet: string
   payerType: "main" | "linked"
   chain?: Chain
@@ -159,11 +208,29 @@ interface WalletRow {
   tradesConsidered: number
 }
 
+/** One row of the "By agent" split (`byAgent`): a key, or Manual when `keyPrefix` is null. */
+interface AgentRow {
+  keyPrefix: string | null
+  label: string | null
+  realizedNetUsd: number
+  unrealizedUsd: number
+  totalUsd: number
+  openPositions: number
+  closedRounds: number
+  unmarked: number
+}
+
 interface BooksBody {
-  all: Summary & { totalUsd: number }
+  all: Summary & { totalUsd: number; openPositions: number }
   solana?: ChainSummary
   hood?: ChainSummary
   positions: Position[]
+  /** Every key with anything on the account, then Manual; sums to `all` (PNL-ED-6). */
+  byAgent?: AgentRow[]
+  /** Tokens that arrived with no cost anyone can state (PNL-ED-4). */
+  costUnknown?: unknown[]
+  /** Tokens that left a wallet for somewhere Candle does not follow, at cost (PNL-ED-5). */
+  movedOutUntracked?: unknown[]
   lookback: number
   truncated: boolean
   oldestMarkAt?: number
@@ -173,7 +240,7 @@ interface BooksBody {
 interface ProfileBody {
   hyperliquid?: HyperliquidPnlSection
   keyPrefix: string
-  pnl: {
+  pnl: EngineFields & {
     realizedNetUsd: number
     realizedGrossUsd: number
     feesUsd: number
@@ -268,7 +335,14 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
 
   if (perProfile) {
     const { pnl: p, lp, hyperliquid } = body as unknown as ProfileBody
-    deps.stdout.write(`P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills\n\n`)
+    // A2's engine sends `totalUsd` on every key scope; an older API does not, and its figures still
+    // mean the old thing (one pool across the key's wallets, its last 500 trades).
+    const engine = typeof p.totalUsd === "number"
+    deps.stdout.write(
+      engine
+        ? `P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's share of the account's P&L\n\n`
+        : `P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills\n\n`,
+    )
     writeChainBlocks(ctx, p.byChain)
     writeSummary(ctx, {
       realizedNetUsd: p.realizedNetUsd,
@@ -278,15 +352,18 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
       unmarked: p.unmarkedPositions,
       unvalued: p.unvalued,
       counted: p.counted,
+      totalUsd: p.totalUsd,
+      openPositionsExDust: p.openPositionsExDust,
+      closed: p.closed,
       positions: p.openPositions.length,
       truncated: p.truncated,
       lookback: p.lookback,
-      lookbackUnit: "trades",
+      lookbackUnit: engine ? "of the account's ledger rows" : "trades",
       oldestMarkAt: p.oldestMarkAt,
       lp,
     })
     writePositions(ctx, p.openPositions, false)
-    writeWallets(ctx, p.byWallet)
+    writeWallets(ctx, p.byWallet, engine)
     writeLpPositions(ctx, lp, false)
     writeHyperliquidPnl(ctx, hyperliquid)
     return 0
@@ -304,6 +381,8 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
     oldestMarkAt: books.oldestMarkAt,
     lp: books.lp,
   })
+  writeWalletEvents(ctx, books)
+  writeAgents(ctx, books.byAgent, books.all)
   writePositions(ctx, books.positions, true)
   writeLpPositions(ctx, books.lp, true)
   return 0
@@ -339,7 +418,7 @@ function writeChainBlocks(ctx: CommandContext, byChain: Partial<Record<Chain, un
         formatUsd(s.unrealizedUsd),
         `${marked} of ${s.openPositions} open ${s.openPositions === 1 ? "position" : "positions"} marked${unmarked > 0 ? `; ${unmarked} unpriced, not counted` : ""}`,
       ],
-      ["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized"],
+      ["Total", formatUsd(totalOf(s)), "realized net plus unrealized"],
     ])
     if (s.unvalued > 0) {
       ctx.deps.stdout.write(
@@ -351,6 +430,16 @@ function writeChainBlocks(ctx: CommandContext, byChain: Partial<Record<Chain, un
   ctx.deps.stdout.write("All chains\n")
 }
 
+/** The server's `totalUsd`, the console's Total; summed here only for an API that sends none. */
+function totalOf(s: { realizedNetUsd: number; unrealizedUsd: number; totalUsd?: number }): number {
+  return typeof s.totalUsd === "number" ? s.totalUsd : s.realizedNetUsd + s.unrealizedUsd
+}
+
+/** The pool `/keys/{prefix}/pnl` names for legs no record places in a wallet: not an address. */
+function isUnplacedWallet(wallet: string): boolean {
+  return wallet.startsWith("unknown:")
+}
+
 function writeLines(ctx: CommandContext, lines: string[][]): void {
   const width = Math.max(...lines.map(([label]) => (label as string).length))
   const valueWidth = Math.max(...lines.map(([, value]) => (value as string).length))
@@ -360,21 +449,27 @@ function writeLines(ctx: CommandContext, lines: string[][]): void {
 }
 
 /**
- * Key scope's by-wallet rows (#1501), with the chain each paying wallet is on (4d-ED-9). Each row
- * is that wallet's own average-cost pool, so the rows need not sum to the total.
+ * Key scope's by-wallet rows (#1501), with the chain each wallet is on (4d-ED-9). Each row is that
+ * wallet's own average-cost pool. Since A2 the key's total is the sum of its wallets, so the rows
+ * add up to it; an older API pooled the key's wallets, and its rows need not.
  */
-function writeWallets(ctx: CommandContext, wallets: WalletRow[] | undefined): void {
+function writeWallets(ctx: CommandContext, wallets: WalletRow[] | undefined, engine: boolean): void {
   if (!wallets || wallets.length === 0) return
   const rows = wallets.map((w) => [
-    `${w.label?.trim() ? `${w.label.trim()} ` : w.payerType === "main" ? "main " : ""}(${shortAddress(w.wallet)})`,
+    isUnplacedWallet(w.wallet)
+      ? "not placed in a wallet"
+      : `${w.label?.trim() ? `${w.label.trim()} ` : w.payerType === "main" ? "main " : ""}(${shortAddress(w.wallet)})`,
     w.chain ?? "-",
     String(w.tradesConsidered),
     formatUsd(w.realizedNetUsd),
     formatUsd(w.unrealizedUsd),
     `${w.openPositions.length}${w.unmarkedPositions > 0 ? ` (${w.unmarkedPositions} unpriced)` : ""}`,
   ])
+  const heading = engine
+    ? "By wallet (each its own cost basis; the rows sum to the total)"
+    : "By wallet (each its own cost basis, so the rows need not sum to the total)"
   ctx.deps.stdout.write(
-    `\nBy wallet (each its own cost basis, so the rows need not sum to the total)\n${renderTable(
+    `\n${heading}\n${renderTable(
       ["WALLET", "CHAIN", "TRADES", "REALIZED NET", "UNREALIZED", "OPEN"],
       rows.map((row) => row.map(terminalText)),
     )}\n`,
@@ -405,6 +500,7 @@ function writeSummary(
       `${marked} of ${s.positions} open ${s.positions === 1 ? "position" : "positions"} marked${s.unmarked > 0 ? `; ${s.unmarked} unpriced, not counted` : ""}`,
     ],
   ]
+  const total = totalOf(s)
   const lp = s.lp
   if (lp?.read) {
     const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
@@ -426,21 +522,29 @@ function writeSummary(
           ? `${lp.vsHoldingPositions} of ${lp.valued} valued, against holding the deposited tokens (now ${formatUsd(lp.holdValueUsd)})`
           : "no valued LP position with every deposit priced",
       ],
+      ["Total", formatUsd(total), "realized net plus unrealized, tokens only, as the console shows it"],
       [
-        "Total",
-        formatUsd(s.realizedNetUsd + s.unrealizedUsd + lp.realizedUsd + lp.unrealizedUsd),
-        "realized net plus unrealized, tokens and LP",
+        "Total with LP",
+        formatUsd(total + lp.realizedUsd + lp.unrealizedUsd),
+        "the total plus LP realized and unrealized",
       ],
     )
   } else if (lp) {
     lines.push(
       ["LP", "not read", `${terminalText(lp.reason)}; not in the total`],
-      ["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized, tokens only"],
+      ["Total", formatUsd(total), "realized net plus unrealized, tokens only"],
     )
   } else {
-    lines.push(["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized"])
+    lines.push(["Total", formatUsd(total), "realized net plus unrealized"])
   }
   writeLines(ctx, lines)
+  if (s.closed) writeClosed(ctx, s.closed)
+  const dust = s.openPositionsExDust !== undefined ? s.positions - s.openPositionsExDust : 0
+  if (dust > 0) {
+    ctx.deps.stdout.write(
+      `${dust} open ${dust === 1 ? "position is" : "positions are"} dust (worth under one cent): listed and marked, and counted in the figures.\n`,
+    )
+  }
   if (s.oldestMarkAt !== undefined) {
     ctx.deps.stdout.write(`Marks as old as ${new Date(s.oldestMarkAt).toISOString()}.\n`)
   }
@@ -471,6 +575,70 @@ function writeSummary(
       )
     }
   }
+}
+
+/**
+ * The closed-position equation (PNL-ED-8): money made, minus money lost, plus partial sells, is
+ * the realized net. `lostUsd` is zero or negative, so the three figures add up as printed.
+ */
+function writeClosed(ctx: CommandContext, c: ClosedSummary): void {
+  const counts = [`${c.wins} won`, `${c.losses} lost`]
+  if (c.costUnknown > 0) counts.push(`${c.costUnknown} with unknown cost`)
+  ctx.deps.stdout.write(
+    `Closed: ${c.closed} ${c.closed === 1 ? "position" : "positions"} (${counts.join(", ")}). Money made ${formatUsd(c.madeUsd)}, money lost ${formatUsd(c.lostUsd)} and partial sells ${formatUsd(c.partialSellsUsd)} add up to the realized net.\n`,
+  )
+}
+
+/** Account scope: tokens with no cost anyone can state, and moves Candle does not follow. */
+function writeWalletEvents(ctx: CommandContext, books: BooksBody): void {
+  const unknown = books.costUnknown?.length ?? 0
+  if (unknown > 0) {
+    ctx.deps.stdout.write(
+      `${unknown} ${unknown === 1 ? "arrival" : "arrivals"} of tokens came with no cost anyone can state: selling them realizes nothing (--json lists them).\n`,
+    )
+  }
+  const out = books.movedOutUntracked?.length ?? 0
+  if (out > 0) {
+    ctx.deps.stdout.write(
+      `${out} ${out === 1 ? "move" : "moves"} out of a wallet went where Candle does not follow: the tokens left at cost, not as a sale (--json lists them).\n`,
+    )
+  }
+}
+
+/**
+ * Account scope's "By agent" table (PNL-AD-6, PNL-ED-6): every key with anything on the account,
+ * then Manual (web-app trades), then the account total. The rows partition the account, so they
+ * sum to the total row, which is the summary's figure.
+ */
+function writeAgents(ctx: CommandContext, agents: AgentRow[] | undefined, all: BooksBody["all"]): void {
+  if (!agents || agents.length === 0) return
+  const open = (count: number, unmarked: number) => `${count}${unmarked > 0 ? ` (${unmarked} unpriced)` : ""}`
+  const rows = agents.map((a) => [
+    a.keyPrefix === null
+      ? "Manual (web app)"
+      : a.label && a.label !== a.keyPrefix
+        ? `${a.label} (${a.keyPrefix})`
+        : a.keyPrefix,
+    formatUsd(a.realizedNetUsd),
+    formatUsd(a.unrealizedUsd),
+    formatUsd(totalOf(a)),
+    open(a.openPositions, a.unmarked),
+    String(a.closedRounds),
+  ])
+  rows.push([
+    "Account total",
+    formatUsd(all.realizedNetUsd),
+    formatUsd(all.unrealizedUsd),
+    formatUsd(totalOf(all)),
+    open(all.openPositions, all.unmarked),
+    all.closedRounds !== undefined ? String(all.closedRounds) : "-",
+  ])
+  ctx.deps.stdout.write(
+    `\nBy agent (each key, then Manual; the rows sum to the account total)\n${renderTable(
+      ["AGENT", "REALIZED NET", "UNREALIZED", "TOTAL", "OPEN", "CLOSED"],
+      rows.map((row) => row.map(terminalText)),
+    )}\n`,
+  )
 }
 
 function writeLpPositions(ctx: CommandContext, lp: LpSection | undefined, withBook: boolean): void {
@@ -511,12 +679,16 @@ function writePositions(ctx: CommandContext, positions: Position[], withBook: bo
     ctx.deps.stdout.write("\nNo open positions.\n")
     return
   }
-  const headers = ["TOKEN", "CHAIN", "QUANTITY", "AVG ENTRY", "MARK", "UNREALIZED"]
+  // Positions live in wallets (PNL-ED-2): name the wallet whenever the API does.
+  const withWallet = positions.some((p) => p.wallet !== undefined)
+  const headers = ["TOKEN", "CHAIN", ...(withWallet ? ["WALLET"] : []), "QUANTITY", "AVG ENTRY", "MARK", "UNREALIZED"]
   if (withBook) headers.push("BOOK")
+  const wallet = (w: string | undefined) => (w === undefined || isUnplacedWallet(w) ? "-" : shortAddress(w))
   const rows = positions.map((p) => {
     const row = [
-      p.symbol?.trim() || shortAddress(p.mint),
+      `${p.symbol?.trim() || shortAddress(p.mint)}${p.dust === true ? " (dust)" : ""}`,
       p.chain ?? "-",
+      ...(withWallet ? [wallet(p.wallet)] : []),
       formatQuantity(p.quantity),
       formatPrice(p.avgEntryUsd),
       p.markPriceUsd !== undefined ? formatPrice(p.markPriceUsd) : "unpriced",

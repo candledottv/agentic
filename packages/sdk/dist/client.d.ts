@@ -549,13 +549,70 @@ export interface ProfileOpenPosition {
     unrealizedUsd?: number;
     /** The chain this position was traded on. Optional: a server that predates it omits it. */
     chain?: Chain;
+    /**
+     * The wallet holding it: positions live in wallets, so one token held in two wallets is two
+     * positions. `unknown:solana` or `unknown:hood` names the pool for fills no record places in a
+     * wallet, which is not an address. Optional: a server that predates 2026-10-02 omits it.
+     */
+    wallet?: string;
+    /**
+     * The key this position belongs to, by prefix: the wallet's bound key, else the key whose buy
+     * opened it; null for Manual (web-app trades). Optional: a server that predates 2026-10-02 omits it.
+     */
+    agent?: string | null;
+    /** When the round behind this position opened, epoch ms. Optional, as `wallet`. */
+    openedTs?: number;
+    /** Why there is no mark. Present exactly when `markPriceUsd` is absent, on a server that sends it. */
+    unpricedReason?: "no-market-row" | "unusable-price";
+    /**
+     * Worth under one cent at its mark. Still listed and still counted; `openPositionsExDust` leaves it
+     * out. An unpriced position is never dust. Optional: a server that predates 2026-10-02 omits it.
+     */
+    dust?: true;
+}
+/**
+ * Closed positions as one equation (P&L spec PNL-ED-8): `madeUsd + lostUsd + partialSellsUsd`
+ * equals the scope's `realizedNetUsd`. A position is closed when its wallet's quantity returns to
+ * zero through a sale.
+ */
+export interface ProfileClosedSummary {
+    /** Closed positions, those with unknown cost included. */
+    closed: number;
+    /** Sum of the closed positions that made money, USD. */
+    madeUsd: number;
+    /** Sum of the closed positions that lost money, USD: zero or negative. */
+    lostUsd: number;
+    /**
+     * The rest of the realized net: partial sells of positions still open, and fees not in a closed
+     * position (a buy fee on an open position, a sell with nothing open).
+     */
+    partialSellsUsd: number;
+    /** Closed positions won and lost, leaving out those with unknown cost. */
+    wins: number;
+    losses: number;
+    /** Closed positions with unknown cost: listed in `closed`, left out of `wins` and `losses`. */
+    costUnknown: number;
+}
+/**
+ * Fields every scope of `ProfilePnlResult` gained on 2026-10-02 (the total, each `byChain` entry
+ * and each `byWallet` row). Each is optional: a server that predates it omits it.
+ */
+export interface ProfilePnlEngineFields {
+    /** Realized net plus unrealized: the figure the console labels P&L, to the cent. */
+    totalUsd?: number;
+    /** Open positions that are not dust. */
+    openPositionsExDust?: number;
+    /** Closed positions this scope's sales closed. */
+    closedRounds?: number;
+    /** Money made, minus money lost, plus partial sells, equals `realizedNetUsd`. */
+    closed?: ProfileClosedSummary;
 }
 /**
  * One chain's share of a profile's P&L (`ProfilePnlResult.pnl.byChain`): the total's figures over
  * that chain's fills alone. `openPositions` is a COUNT here; the positions themselves are in
  * `pnl.openPositions`, each carrying its `chain`.
  */
-export interface ProfileChainPnl {
+export interface ProfileChainPnl extends ProfilePnlEngineFields {
     realizedGrossUsd: number;
     feesUsd: number;
     realizedNetUsd: number;
@@ -587,13 +644,27 @@ export interface ProfileChainPnl {
  * that could be marked. A position with no price is counted in `unmarkedPositions` rather than
  * valued at zero, and `oldestMarkAt` says how old the marks are, so a stale figure is visible.
  * Deposits and withdrawals are excluded entirely: funding a wallet is not trading profit.
+ *
+ * Since 2026-10-02 (P&L spec R2) the figures are this key's share of the account's one P&L read,
+ * the read the console, the dashboard, `/books` and `/keys/pnl` share, so they agree with the
+ * console to the cent for the same moment:
+ * - realized and fees are on the fills this key placed; an open position belongs to the wallet's
+ *   bound key, else to the key whose buy opened it; a closed position to the key whose sale closed it;
+ * - each wallet is its own average-cost pool, and the total is the sum of `byWallet`
+ *   (it used to pool every wallet of the key);
+ * - a recorded move between two of the account's wallets carries its cost and realizes nothing;
+ *   tokens that arrive with no cost anyone can state realize nothing when sold;
+ * - `openPositions` counts one per wallet and token, dust included;
+ * - `tradesConsidered` counts this key's ledger fills, and `lookback` / `truncated` are the
+ *   account's activity bound, not 500 of this key's trades.
+ * Every account's realized figure can move on the day a server ships this.
  */
 export interface ProfilePnlResult {
     /** Optional while Hyperliquid is enabled; separate from spot totals. */
     hyperliquid?: HyperliquidPnlSection;
     success: true;
     keyPrefix: string;
-    pnl: {
+    pnl: ProfilePnlEngineFields & {
         realizedGrossUsd: number;
         /** Candle fees over the counted fills. Reported separately, netted only into realizedNetUsd. */
         feesUsd: number;
@@ -612,7 +683,21 @@ export interface ProfilePnlResult {
         /** Fills counted, and fills that had no trusted USD price and so were left out entirely. */
         counted: number;
         unvalued: number;
+        /** Fills held out because their token has a fill of unknown size. Part of `unvalued`. Optional. */
+        unresolved?: number;
+        /** The tokens those fills belong to: their P&L is unknown, not zero. Optional. */
+        unresolvedMints?: string[];
+        /** Fees and measured slippage, reported and never netted a second time. Optional. */
+        friction?: {
+            feesUsd: number;
+            slippageUsd: number;
+            slippageBpsAvg?: number;
+            measured: number;
+            unmeasured: number;
+        };
+        /** This key's ledger fills in the window. */
         tradesConsidered: number;
+        /** The account's activity bound, shared by every private P&L read (it was 500 of this key's trades). */
         lookback: number;
         /** True when the lookback window was full, so this is not a lifetime figure. */
         truncated: boolean;
@@ -634,9 +719,15 @@ export interface ProfilePnlResult {
         byChain?: Record<Chain, ProfileChainPnl>;
     };
 }
-/** One row of `ProfilePnlResult.pnl.byWallet`: one paying wallet's share of a profile's P&L. */
-export interface ProfileWalletPnl {
-    /** The paying wallet's address as stored: base58, or EIP-55 on Hood. */
+/**
+ * One row of `ProfilePnlResult.pnl.byWallet`: one wallet's share of a profile's P&L. A wallet two
+ * keys trade carries this key's share only.
+ */
+export interface ProfileWalletPnl extends ProfilePnlEngineFields {
+    /**
+     * The wallet's address as stored: base58, or EIP-55 on Hood. `unknown:solana` or `unknown:hood`
+     * is the pool for fills no record places in a wallet: a row, not an address.
+     */
     wallet: string;
     payerType: "main" | "linked";
     /**
@@ -1909,6 +2000,11 @@ export declare class CandleClient {
      * One profile's realized P&L, fees, and open positions marked at current prices
      * (GET /api/v1/agent/keys/{prefix}/pnl). Read `unrealizedUsd` with `unmarkedPositions` and
      * `oldestMarkAt`: an unpriced position is counted there, never valued at zero.
+     *
+     * The figures are the key's share of the account's one P&L read, the console's figures to the
+     * cent (`pnl.totalUsd` is the console's P&L). Since 2026-10-02 the total is the sum of the key's
+     * wallets, not one pool across them, and `lookback` is the account's activity bound; see
+     * `ProfilePnlResult` for every meaning that changed.
      *
      * Check `unvalued` and `truncated` before quoting the number: the first counts fills that had
      * no trusted USD price and were left out rather than counted as zero, the second says the

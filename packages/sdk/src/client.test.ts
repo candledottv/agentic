@@ -2989,6 +2989,64 @@ describe("getProfilePnl: per-chain figures (Ember Phase 4d)", () => {
   })
 })
 
+describe("getProfilePnl: one-engine fields (P&L spec R2, R4)", () => {
+  const closed = { closed: 2, madeUsd: 10, lostUsd: -4, partialSellsUsd: 1, wins: 1, losses: 1, costUnknown: 0 }
+  const engine = { totalUsd: 7, openPositionsExDust: 0, closedRounds: 2, closed }
+
+  test("the total, each chain and each wallet carry totalUsd, the closed equation and the dust-free count", async () => {
+    const pnl = {
+      realizedNetUsd: 7,
+      unrealizedUsd: 0,
+      ...engine,
+      openPositions: [
+        {
+          mint: "MintSo1",
+          chain: "solana",
+          wallet: "unknown:solana",
+          agent: "ck_a",
+          openedTs: 5,
+          quantity: 1,
+          avgEntryUsd: 0.001,
+          costBasisUsd: 0.001,
+          markPriceUsd: 0.0001,
+          marketValueUsd: 0.0001,
+          unrealizedUsd: -0.0009,
+          dust: true,
+        },
+      ],
+      byChain: { solana: { ...engine }, hood: { totalUsd: 0, closedRounds: 0 } },
+      byWallet: [{ wallet: "W1", payerType: "main", label: null, openPositions: [], ...engine }],
+    }
+    const { client } = makeClient(KEYED, [json(200, { success: true, keyPrefix: "ck_a", pnl })])
+    const result = await client.getProfilePnl("ck_a")
+    // Typed access: each of these is a compile error if the field is missing from the type.
+    expect(result.pnl.totalUsd).toBe(7)
+    const c = result.pnl.closed
+    expect(c && c.madeUsd + c.lostUsd + c.partialSellsUsd).toBe(result.pnl.realizedNetUsd)
+    expect(result.pnl.openPositionsExDust).toBe(0)
+    expect(result.pnl.closedRounds).toBe(2)
+    const position = result.pnl.openPositions[0]
+    expect(position?.dust).toBe(true)
+    expect(position?.wallet).toBe("unknown:solana")
+    expect(position?.agent).toBe("ck_a")
+    expect(position?.openedTs).toBe(5)
+    expect(result.pnl.byChain?.solana.closed?.wins).toBe(1)
+    expect(result.pnl.byWallet?.[0]?.totalUsd).toBe(7)
+  })
+
+  test("a server that predates the engine still parses: the new fields are simply absent", async () => {
+    const pnl = {
+      realizedNetUsd: 1,
+      openPositions: [{ mint: "MintSo1", quantity: 1, avgEntryUsd: 1, costBasisUsd: 1 }],
+    }
+    const { client } = makeClient(KEYED, [json(200, { success: true, keyPrefix: "ck_a", pnl })])
+    const result = await client.getProfilePnl("ck_a")
+    expect(result.pnl.totalUsd).toBeUndefined()
+    expect(result.pnl.closed).toBeUndefined()
+    expect(result.pnl.openPositions[0]?.dust).toBeUndefined()
+  })
+})
+
 describe("getPortfolio (Ember Phase 4d)", () => {
   const body: PortfolioResult = {
     success: true,
