@@ -576,7 +576,7 @@ export interface ProfileChainPnl {
         measured: number;
         unmeasured: number;
     };
-    /** Confirmed trades on this chain in the window. */
+    /** This key's ledger fills on this chain in the window. */
     tradesConsidered: number;
 }
 /**
@@ -617,20 +617,19 @@ export interface ProfilePnlResult {
         /** True when the lookback window was full, so this is not a lifetime figure. */
         truncated: boolean;
         /**
-         * The same fills divided by the wallet that paid for each trade, ordered by
-         * `tradesConsidered` then address. Optional: a server that predates it omits it.
+         * The same figures divided by wallet, ordered by `tradesConsidered` then address. Optional: a
+         * server that predates it omits it.
          *
-         * Each row is an independent average-cost pool over its own fills, so the rows need not sum to
-         * the total above, which pools all fills and stays correct. A token bought in one wallet and
-         * sold from another leaves the buyer holding it and the seller with a sale that realizes
-         * nothing; and even with no transfer, A buying 100 X for $100, B buying 100 X for $200 and A
-         * selling 100 X for $300 realizes $150 in total but $200 summed over the wallets.
+         * Each wallet is its own average-cost pool, and the total above is the sum of its wallets: A
+         * buying 100 X for $100, B buying 100 X for $200 and A selling 100 X for $300 realizes $200.
+         * (Before 2026-10-02 the total pooled every wallet and realized $150 here.) A token moved
+         * between two of the account's wallets carries its cost once the move is recorded; until then
+         * the buyer still holds it and the seller's sale realizes nothing.
          */
         byWallet?: ProfileWalletPnl[];
         /**
-         * The same figures split by the chain each trade was on, both chains always present. Each is
-         * its own average-cost pool, so the two need not sum exactly to the total above, for the
-         * reason `byWallet` rows need not. Optional: a server that predates it omits it.
+         * The same figures split by chain, both chains always present. A token lives on one chain, so
+         * the two sum to the total above. Optional: a server that predates it omits it.
          */
         byChain?: Record<Chain, ProfileChainPnl>;
     };
@@ -671,7 +670,7 @@ export interface ProfileWalletPnl {
         measured: number;
         unmeasured: number;
     };
-    /** Confirmed trades in the window this wallet paid for. */
+    /** This key's ledger fills in the window from this wallet. */
     tradesConsidered: number;
 }
 /**
