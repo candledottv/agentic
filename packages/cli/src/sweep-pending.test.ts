@@ -109,3 +109,41 @@ describe("resolvePending", () => {
     expect((await resolvePending(reads([null, new Error("RPC down")], false), P)).kind).toBe("uncertain")
   })
 })
+
+/** BE-658 (P1, S1.5): a finalized status's slot reaches the resolution, and only when it is sent. */
+describe("BE-658: the finalized slot", () => {
+  test("P1: a finalized status with a slot carries it; without one there is no slot key", async () => {
+    expect(classifyStatus({ confirmationStatus: "finalized", err: null, slot: 452_458_642 })).toEqual({
+      kind: "finalized",
+      slot: 452_458_642,
+    })
+    const withSlot = await resolvePending(
+      reads([{ confirmationStatus: "finalized", err: null, slot: 452_458_642 }], false),
+      P,
+    )
+    expect(withSlot).toEqual({ kind: "finalized", slot: 452_458_642 })
+
+    const without = await resolvePending(reads([{ confirmationStatus: "finalized", err: null }], false), P)
+    expect(without).toEqual({ kind: "finalized" })
+    expect("slot" in without).toBe(false)
+
+    // The status/expiry race carries the confirming read's slot.
+    const late = await resolvePending(reads([null, { confirmationStatus: "finalized", err: null, slot: 9 }], false), P)
+    expect(late).toEqual({ kind: "finalized", slot: 9 })
+
+    // A slot that is not a safe integer is not a slot; a nonfinal or failed status never carries one.
+    const odd = { confirmationStatus: "finalized", err: null, slot: 1.5 } as SignatureStatus
+    expect("slot" in classifyStatus(odd)).toBe(false)
+    expect(classifyStatus({ confirmationStatus: "confirmed", err: null, slot: 9 })).toEqual({
+      kind: "nonfinal",
+      confirmationStatus: "confirmed",
+      err: null,
+    })
+    expect(
+      await resolvePending(
+        reads([{ confirmationStatus: "finalized", err: { InstructionError: [0, "Custom"] }, slot: 9 }], true),
+        P,
+      ),
+    ).toMatchObject({ kind: "failed" })
+  })
+})

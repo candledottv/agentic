@@ -6210,6 +6210,31 @@ function serializeSignedTransaction(message, signature) {
 function toBase642(bytes) {
   return Buffer.from(bytes).toString("base64");
 }
+function sanitizeDiagnostic(text, keep) {
+  const clean2 = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/https?:\/\/\S+/gi, "<url>").replace(/(api[-_]?key|token|auth)=\S+/gi, "$1=<redacted>");
+  return clean2.length > keep ? `${clean2.slice(0, keep)}…` : clean2;
+}
+function sanitizeSimulation(message, data) {
+  let err = null;
+  if (data.err !== undefined && data.err !== null) {
+    let encoded;
+    try {
+      encoded = JSON.stringify(data.err);
+    } catch {
+      encoded = "unrepresentable";
+    }
+    err = encoded === undefined ? null : sanitizeDiagnostic(encoded, DIAGNOSTIC_ERR_CHARS - 1);
+  }
+  const lines = Array.isArray(data.logs) ? data.logs.filter((line) => typeof line === "string") : [];
+  const kept = lines.slice(-DIAGNOSTIC_LOG_LINES);
+  return {
+    message: sanitizeDiagnostic(typeof message === "string" ? message : "", DIAGNOSTIC_MESSAGE_CHARS - 1),
+    err,
+    logs: kept.map((line) => sanitizeDiagnostic(line, DIAGNOSTIC_LOG_LINE_CHARS)),
+    logsOmitted: lines.length - kept.length,
+    ...Number.isSafeInteger(data.unitsConsumed) ? { unitsConsumed: data.unitsConsumed } : {}
+  };
+}
 function rpcRetryDelayMs(error) {
   return Math.min(error.retryAfterMs ?? RPC_RETRY_DEFAULT_MS, RPC_RETRY_CAP_MS);
 }
@@ -6273,16 +6298,56 @@ function createSolanaRpc(url, fetchFn, sleep) {
       return await once(method, params, signal);
     }
   }
+  async function read(method, params, opts, answersContext = true) {
+    const required = opts?.minContextSlot;
+    if (required === undefined) {
+      const result = await call(method, params);
+      const slot = answersContext ? contextSlotOf(result) : undefined;
+      if (slot !== undefined)
+        opts?.onContext?.(slot);
+      return result;
+    }
+    let observed;
+    for (let attempt = 0;; attempt += 1) {
+      let slot;
+      try {
+        const result = await call(method, params);
+        if (!answersContext)
+          return result;
+        slot = contextSlotOf(result);
+        if (slot === undefined) {
+          throw new SolanaRpcError(`RPC ${method} answered without a context slot, so minimum context slot ${required} cannot be verified`, { method, contextUnverified: true });
+        }
+        if (slot >= required) {
+          opts?.onContext?.(slot);
+          return result;
+        }
+      } catch (error) {
+        if (!(error instanceof SolanaRpcError) || error.rpcCode !== RPC_MIN_CONTEXT_SLOT_CODE)
+          throw error;
+        slot = error.contextSlot;
+      }
+      if (slot !== undefined)
+        observed = observed === undefined ? slot : Math.max(observed, slot);
+      const wait = RPC_CONTEXT_BEHIND_SLEEPS_MS[attempt];
+      if (wait === undefined) {
+        throw new SolanaRpcError(`RPC ${method} failed: the node is behind minimum context slot ${required} (observed ${observed ?? "unknown"})`, { method, contextBehind: { required, observed } });
+      }
+      await sleep(wait);
+    }
+  }
   async function once(method, params, signal) {
     id += 1;
+    const requestId = id;
     const res = await fetchFn(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }),
       ...signal !== undefined ? { signal } : {}
     });
     if (!res.ok) {
       throw new SolanaRpcError(`RPC ${method} failed: HTTP ${res.status}`, {
+        method,
         status: res.status,
         ...res.status === 429 ? (() => {
           const after = retryAfterMs(res.headers.get("retry-after"), Date.now());
@@ -6292,23 +6357,31 @@ function createSolanaRpc(url, fetchFn, sleep) {
     }
     const json = await res.json();
     if (json.error) {
+      const code = json.error.code;
+      const data = json.error.data;
+      const dataObject = data !== null && typeof data === "object" && !Array.isArray(data) ? data : undefined;
+      const contextSlot = dataObject?.contextSlot;
       throw new SolanaRpcError(`RPC ${method} failed: ${json.error.code ?? ""} ${json.error.message ?? ""}`.trim(), {
-        ...typeof json.error.code === "number" ? { rpcCode: json.error.code } : {}
+        ...typeof code === "number" ? { rpcCode: code } : {},
+        method,
+        responseIdMatched: json.id === requestId,
+        ...code === RPC_PREFLIGHT_FAILED_CODE && dataObject ? { simulation: sanitizeSimulation(json.error.message, dataObject) } : {},
+        ...code === RPC_MIN_CONTEXT_SLOT_CODE && Number.isSafeInteger(contextSlot) ? { contextSlot } : {}
       });
     }
     return json.result;
   }
   return {
-    async getLatestBlockhash() {
-      const r = await call("getLatestBlockhash", [{ commitment: "finalized" }]);
+    async getLatestBlockhash(opts) {
+      const r = await read("getLatestBlockhash", [withMinContextSlot({ commitment: "finalized" }, opts)], opts);
       return r.value.blockhash;
     },
-    async getBalance(address) {
-      const r = await call("getBalance", [address, { commitment: "finalized" }]);
+    async getBalance(address, opts) {
+      const r = await read("getBalance", [address, withMinContextSlot({ commitment: "finalized" }, opts)], opts);
       return BigInt(r.value);
     },
-    async getTokenAccountsByOwner(owner, programId) {
-      const r = await call("getTokenAccountsByOwner", [owner, { programId }, { encoding: "jsonParsed", commitment: "finalized" }]);
+    async getTokenAccountsByOwner(owner, programId, opts) {
+      const r = await read("getTokenAccountsByOwner", [owner, { programId }, withMinContextSlot({ encoding: "jsonParsed", commitment: "finalized" }, opts)], opts);
       return r.value.map((v) => ({
         pubkey: v.pubkey,
         mint: v.account.data.parsed.info.mint,
@@ -6318,8 +6391,8 @@ function createSolanaRpc(url, fetchFn, sleep) {
         programId
       }));
     },
-    async getFeeForMessage(messageBase64) {
-      const r = await call("getFeeForMessage", [messageBase64, { commitment: "finalized" }]);
+    async getFeeForMessage(messageBase64, opts) {
+      const r = await read("getFeeForMessage", [messageBase64, withMinContextSlot({ commitment: "finalized" }, opts)], opts);
       return r.value === null ? null : BigInt(r.value);
     },
     async getMinimumBalanceForRentExemption(size) {
@@ -6328,8 +6401,8 @@ function createSolanaRpc(url, fetchFn, sleep) {
         throw new Error("Invalid rent exemption quote");
       return BigInt(rent);
     },
-    async getAccountInfo(address) {
-      const r = await call("getAccountInfo", [address, { encoding: "base64", commitment: "finalized" }]);
+    async getAccountInfo(address, opts) {
+      const r = await read("getAccountInfo", [address, withMinContextSlot({ encoding: "base64", commitment: "finalized" }, opts)], opts);
       const value = r.value;
       if (!value)
         return null;
@@ -6344,20 +6417,17 @@ function createSolanaRpc(url, fetchFn, sleep) {
         data: new Uint8Array(Buffer.from(encoded, "base64"))
       };
     },
-    async getEpoch() {
-      const r = await call("getEpochInfo", [{ commitment: "finalized" }]);
+    async getEpoch(opts) {
+      const r = await read("getEpochInfo", [withMinContextSlot({ commitment: "finalized" }, opts)], opts, false);
       if (!Number.isSafeInteger(r?.epoch))
         throw new Error("RPC getEpochInfo answered without an epoch");
       return BigInt(r.epoch);
     },
-    async getMultipleAccounts(addresses) {
+    async getMultipleAccounts(addresses, opts) {
       const out = [];
       for (let at = 0;at < addresses.length; at += 100) {
         const chunk = addresses.slice(at, at + 100);
-        const r = await call("getMultipleAccounts", [
-          chunk,
-          { encoding: "base64", commitment: "finalized" }
-        ]);
+        const r = await read("getMultipleAccounts", [chunk, withMinContextSlot({ encoding: "base64", commitment: "finalized" }, opts)], opts);
         if (!Array.isArray(r?.value) || r.value.length !== chunk.length) {
           throw new Error("RPC getMultipleAccounts answered with the wrong number of accounts");
         }
@@ -6366,17 +6436,17 @@ function createSolanaRpc(url, fetchFn, sleep) {
       }
       return out;
     },
-    async simulateTransaction(txBase64, addresses) {
-      const r = await call("simulateTransaction", [
+    async simulateTransaction(txBase64, addresses, opts) {
+      const r = await read("simulateTransaction", [
         txBase64,
-        {
+        withMinContextSlot({
           sigVerify: false,
           replaceRecentBlockhash: true,
           commitment: "finalized",
           encoding: "base64",
           accounts: { encoding: "base64", addresses }
-        }
-      ]);
+        }, opts)
+      ], opts);
       const value = r?.value;
       if (!value || typeof value !== "object")
         throw new Error("RPC simulateTransaction answered without a value");
@@ -6400,22 +6470,26 @@ function createSolanaRpc(url, fetchFn, sleep) {
         throw new SolanaRpcError("RPC getTokenSupply answered without a value");
       return { decimals: r.value.decimals };
     },
-    async sendTransaction(txBase64) {
+    async sendTransaction(txBase64, opts) {
       return await call("sendTransaction", [
         txBase64,
-        { encoding: "base64", skipPreflight: false, preflightCommitment: "finalized", maxRetries: 3 }
+        withMinContextSlot({ encoding: "base64", skipPreflight: false, preflightCommitment: "finalized", maxRetries: 3 }, opts)
       ]);
     },
     async getSignatureStatus(signature) {
       const r = await call("getSignatureStatuses", [[signature], { searchTransactionHistory: true }]);
-      return r.value[0] ?? null;
+      const status = r.value[0] ?? null;
+      if (status === null)
+        return null;
+      const { slot, ...rest } = status;
+      return Number.isSafeInteger(slot) ? { ...rest, slot } : rest;
     },
     async hasSignatureHistory(address) {
       const r = await call("getSignaturesForAddress", [address, { limit: 1 }]);
       return Array.isArray(r) && r.length > 0;
     },
-    async isBlockhashValid(blockhash, commitment = "finalized") {
-      const r = await call("isBlockhashValid", [blockhash, { commitment }]);
+    async isBlockhashValid(blockhash, commitment = "finalized", opts) {
+      const r = await read("isBlockhashValid", [blockhash, withMinContextSlot({ commitment }, opts)], opts);
       if (typeof r?.value !== "boolean")
         throw new Error("isBlockhashValid answered with a non-boolean value");
       return r.value;
@@ -6463,7 +6537,15 @@ function createSolanaRpc(url, fetchFn, sleep) {
     }
   };
 }
-var SYSTEM_PROGRAM_ID = "11111111111111111111111111111111", TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", PDA_MARKER, PROGRAM_ACCOUNTS_V2_LIMIT = 1000, SolanaRpcError, RPC_RATE_LIMIT_CODE = -32429, RPC_RETRY_DEFAULT_MS = 2000, RPC_RETRY_CAP_MS = 1e4, NEVER_RETRIED;
+function withMinContextSlot(config, opts) {
+  return opts?.minContextSlot === undefined ? config : { ...config, minContextSlot: opts.minContextSlot };
+}
+function contextSlotOf(result) {
+  const context = result !== null && typeof result === "object" ? result.context : undefined;
+  const slot = context !== null && typeof context === "object" ? context.slot : undefined;
+  return Number.isSafeInteger(slot) ? slot : undefined;
+}
+var SYSTEM_PROGRAM_ID = "11111111111111111111111111111111", TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", PDA_MARKER, PROGRAM_ACCOUNTS_V2_LIMIT = 1000, SolanaRpcError, RPC_PREFLIGHT_FAILED_CODE = -32002, RPC_MIN_CONTEXT_SLOT_CODE = -32016, RPC_CONTEXT_BEHIND_SLEEPS_MS, DIAGNOSTIC_LOG_LINES = 20, DIAGNOSTIC_LOG_LINE_CHARS = 240, DIAGNOSTIC_MESSAGE_CHARS = 300, DIAGNOSTIC_ERR_CHARS = 512, RPC_RATE_LIMIT_CODE = -32429, RPC_RETRY_DEFAULT_MS = 2000, RPC_RETRY_CAP_MS = 1e4, NEVER_RETRIED;
 var init_solana_lite = __esm(() => {
   init_ed25519();
   init_sha256();
@@ -6474,6 +6556,12 @@ var init_solana_lite = __esm(() => {
     retryAfterMs;
     rpcCode;
     rateLimited;
+    method;
+    responseIdMatched;
+    simulation;
+    contextSlot;
+    contextBehind;
+    contextUnverified;
     constructor(message, facts = {}) {
       super(message);
       this.name = "SolanaRpcError";
@@ -6481,8 +6569,21 @@ var init_solana_lite = __esm(() => {
       this.retryAfterMs = facts.retryAfterMs;
       this.rpcCode = facts.rpcCode;
       this.rateLimited = facts.status === 429 || facts.rpcCode === RPC_RATE_LIMIT_CODE || /too many requests/i.test(message);
+      if (facts.method !== undefined)
+        this.method = facts.method;
+      if (facts.responseIdMatched !== undefined)
+        this.responseIdMatched = facts.responseIdMatched;
+      if (facts.simulation !== undefined)
+        this.simulation = facts.simulation;
+      if (facts.contextSlot !== undefined)
+        this.contextSlot = facts.contextSlot;
+      if (facts.contextBehind !== undefined)
+        this.contextBehind = facts.contextBehind;
+      if (facts.contextUnverified)
+        this.contextUnverified = true;
     }
   };
+  RPC_CONTEXT_BEHIND_SLEEPS_MS = [1000, 2000];
   NEVER_RETRIED = new Set(["sendTransaction", "getProgramAccounts", "getProgramAccountsV2"]);
 });
 
@@ -15462,7 +15563,9 @@ function classifyStatus(status) {
   if (status === null || status === undefined)
     return { kind: "missing" };
   if (status.confirmationStatus === "finalized") {
-    return status.err === null || status.err === undefined ? { kind: "finalized" } : { kind: "failed", err: status.err };
+    if (status.err !== null && status.err !== undefined)
+      return { kind: "failed", err: status.err };
+    return Number.isSafeInteger(status.slot) ? { kind: "finalized", slot: status.slot } : { kind: "finalized" };
   }
   return { kind: "nonfinal", confirmationStatus: status.confirmationStatus, err: status.err };
 }
@@ -15511,8 +15614,9 @@ async function resolvePending(reads, pending) {
   return { kind: "expired", detail: `never observed and its blockhash is no longer valid: it cannot land` };
 }
 function settle(observation, signature) {
-  if (observation.kind === "finalized")
-    return { kind: "finalized" };
+  if (observation.kind === "finalized") {
+    return observation.slot === undefined ? { kind: "finalized" } : { kind: "finalized", slot: observation.slot };
+  }
   if (observation.kind === "failed") {
     return { kind: "failed", detail: `transaction ${signature} failed on chain: ${JSON.stringify(observation.err)}` };
   }

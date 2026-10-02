@@ -370,10 +370,21 @@ export interface SimulationResult {
   unitsConsumed?: number
 }
 
+/**
+ * BE-658 (S1.1): the optional trailing argument of every method a sweep floors. Absent, or with
+ * `minContextSlot` undefined, the request is byte-identical to today's.
+ */
+export interface RpcContextOptions {
+  /** Sent as `minContextSlot`. Absent: the request is byte-identical to today's. */
+  minContextSlot?: number
+  /** Called with `result.context.slot` when the answer carries one. Never called otherwise. */
+  onContext?: (slot: number) => void
+}
+
 export interface SolanaRpc {
-  getLatestBlockhash(): Promise<string>
-  getBalance(address: string): Promise<bigint>
-  getTokenAccountsByOwner(owner: string, programId: string): Promise<TokenAccountView[]>
+  getLatestBlockhash(opts?: RpcContextOptions): Promise<string>
+  getBalance(address: string, opts?: RpcContextOptions): Promise<bigint>
+  getTokenAccountsByOwner(owner: string, programId: string, opts?: RpcContextOptions): Promise<TokenAccountView[]>
   /**
    * Ember Phase 3 (BE-218, P3-ED-7). One base64 `getAccountInfo`, which is what a Token-2022 move
    * needs and a classic one does not: the MINT's owning program (so the transfer, the close and the
@@ -382,9 +393,12 @@ export interface SolanaRpc {
    * account and any account a seed configuration names. It replaced Phase 1's `accountExists`,
    * whose only callers now need the account's state and owner as well as its existence.
    */
-  getAccountInfo(address: string): Promise<AccountView | null>
-  /** The current epoch, which selects a transfer-fee schedule (older vs newer). */
-  getEpoch(): Promise<bigint>
+  getAccountInfo(address: string, opts?: RpcContextOptions): Promise<AccountView | null>
+  /**
+   * The current epoch, which selects a transfer-fee schedule (older vs newer). `getEpochInfo`
+   * answers no `context`, so a floor is sent but never checked (BE-658 S1.4).
+   */
+  getEpoch(opts?: RpcContextOptions): Promise<bigint>
   /**
    * Ember Phase 3 PR F (BE-226, R6): the two reads `candle sign` needs and nothing else here does.
    * `getMultipleAccounts` is the PRE-simulation state of the accounts a transaction writes (and the
@@ -393,9 +407,9 @@ export interface SolanaRpc {
    * is what the displayed deltas are computed from. Decoding, lookup-table reconstruction and the
    * delta arithmetic live in `solana-alt.ts` (P3-ED-6), not here.
    */
-  getMultipleAccounts(addresses: string[]): Promise<Array<AccountView | null>>
-  simulateTransaction(txBase64: string, addresses: string[]): Promise<SimulationResult>
-  getFeeForMessage(messageBase64: string): Promise<bigint | null>
+  getMultipleAccounts(addresses: string[], opts?: RpcContextOptions): Promise<Array<AccountView | null>>
+  simulateTransaction(txBase64: string, addresses: string[], opts?: RpcContextOptions): Promise<SimulationResult>
+  getFeeForMessage(messageBase64: string, opts?: RpcContextOptions): Promise<bigint | null>
   getMinimumBalanceForRentExemption(size: number): Promise<bigint>
   /**
    * BE-355 (D3): a mint's decimals, as `getTokenSupply` answers them at `confirmed`. The trading
@@ -404,15 +418,30 @@ export interface SolanaRpc {
    * validates the value (a non-integer or an absent one is its `INVALID_RESPONSE`).
    */
   getTokenSupply(mint: string): Promise<{ decimals?: unknown }>
-  sendTransaction(txBase64: string): Promise<string>
-  getSignatureStatus(signature: string): Promise<{ confirmationStatus: string | null; err: unknown } | null>
+  /**
+   * `minContextSlot` applies to the preflight bank (BE-658 S1.1). Never retried, for a rate limit
+   * or a node behind the floor (D4); a `-32016` here is a definite rejection (`definiteSendRejection`).
+   */
+  sendTransaction(txBase64: string, opts?: RpcContextOptions): Promise<string>
+  /**
+   * Not floored: `getSignatureStatuses` takes no `minContextSlot`, and its `context.slot` is the
+   * node's processed bank, so it never raises a finalized floor (BE-658 S1.2). `slot` is the slot
+   * the transaction landed in, when the RPC sends it as a safe integer.
+   */
+  getSignatureStatus(
+    signature: string,
+  ): Promise<{ confirmationStatus: string | null; err: unknown; slot?: number } | null>
   /**
    * Whether a transaction built on this blockhash can still land.
    * The default commitment is finalized, which is what pending resolution uses. Pass `"confirmed"`
    * for a blockhash taken at confirmed: close-build does that, and a blockhash newer than the last
    * finalized slot is still valid there while an expired one is not.
    */
-  isBlockhashValid(blockhash: string, commitment?: "finalized" | "confirmed" | "processed"): Promise<boolean>
+  isBlockhashValid(
+    blockhash: string,
+    commitment?: "finalized" | "confirmed" | "processed",
+    opts?: RpcContextOptions,
+  ): Promise<boolean>
   /**
    * Whether this address has ever signed or been touched by a confirmed transaction (Ember Phase 2,
    * BE-136, CC-11). Read-only, and used by exactly one caller: `vault restore --phrase`'s gap scan,
@@ -517,7 +546,22 @@ export class SolanaRpcError extends Error {
    * `error.message` matching "too many requests" (some providers answer HTTP 200 with that).
    */
   readonly rateLimited: boolean
-  constructor(message: string, facts: { status?: number; retryAfterMs?: number; rpcCode?: number } = {}) {
+  /** BE-658 (S2.1): the JSON-RPC method that threw, set on every error `once()` builds. */
+  readonly method?: string
+  /**
+   * BE-658 (S2.1): whether the answer's JSON-RPC `id` equalled the request's. Set on the
+   * `error`-member path only; a successful answer is never checked.
+   */
+  readonly responseIdMatched?: boolean
+  /** BE-658 (S2.4): the sanitized simulation of a `-32002` whose `data` is an object. */
+  readonly simulation?: SimulationDiagnostics
+  /** BE-658 (S2.1): `data.contextSlot` of a `-32016`, when it is a safe integer. */
+  readonly contextSlot?: number
+  /** BE-658 (S1.4): every attempt at a floored read found the node behind the floor. */
+  readonly contextBehind?: { required: number; observed: number | undefined }
+  /** BE-658 (S1.4): a floored read was answered without a numeric `context.slot`. */
+  readonly contextUnverified?: true
+  constructor(message: string, facts: SolanaRpcErrorFacts = {}) {
     super(message)
     this.name = "SolanaRpcError"
     this.status = facts.status
@@ -525,7 +569,137 @@ export class SolanaRpcError extends Error {
     this.rpcCode = facts.rpcCode
     this.rateLimited =
       facts.status === 429 || facts.rpcCode === RPC_RATE_LIMIT_CODE || /too many requests/i.test(message)
+    if (facts.method !== undefined) this.method = facts.method
+    if (facts.responseIdMatched !== undefined) this.responseIdMatched = facts.responseIdMatched
+    if (facts.simulation !== undefined) this.simulation = facts.simulation
+    if (facts.contextSlot !== undefined) this.contextSlot = facts.contextSlot
+    if (facts.contextBehind !== undefined) this.contextBehind = facts.contextBehind
+    if (facts.contextUnverified) this.contextUnverified = true
   }
+}
+
+export interface SolanaRpcErrorFacts {
+  status?: number
+  retryAfterMs?: number
+  rpcCode?: number
+  method?: string
+  responseIdMatched?: boolean
+  simulation?: SimulationDiagnostics
+  contextSlot?: number
+  contextBehind?: { required: number; observed: number | undefined }
+  contextUnverified?: boolean
+}
+
+/** The JSON-RPC code for a failed preflight simulation; `data` is the simulation result. */
+export const RPC_PREFLIGHT_FAILED_CODE = -32002
+/** The JSON-RPC code for "Minimum context slot has not been reached"; `data.contextSlot` is the node's. */
+export const RPC_MIN_CONTEXT_SLOT_CODE = -32016
+
+/**
+ * BE-658 (S1.4): the waits between the attempts of a floored read whose node is behind. Three
+ * attempts and 3 s of waiting at most; D3's single rate-limit retry still applies inside each.
+ */
+export const RPC_CONTEXT_BEHIND_SLEEPS_MS: readonly number[] = [1_000, 2_000]
+
+/**
+ * BE-658 (S2.4): what survives of a failed preflight's `error.data`, bounded and sanitized where
+ * the error is built, so no caller ever holds the raw `data`. At most about 6 KB.
+ */
+export interface SimulationDiagnostics {
+  /** `error.message`, sanitized, at most 300 chars. */
+  message: string
+  /** `JSON.stringify(data.err)`, sanitized, at most 512 chars; "unrepresentable" if it throws. */
+  err: string | null
+  /** The LAST 20 string lines of `data.logs`, sanitized: the failing instruction's lines come last. */
+  logs: string[]
+  /** How many earlier lines were dropped. */
+  logsOmitted: number
+  /** Only when a safe integer. */
+  unitsConsumed?: number
+}
+
+const DIAGNOSTIC_LOG_LINES = 20
+const DIAGNOSTIC_LOG_LINE_CHARS = 240
+const DIAGNOSTIC_MESSAGE_CHARS = 300
+const DIAGNOSTIC_ERR_CHARS = 512
+
+/**
+ * One diagnostic string under the S2.4 rules: C0/C1 controls become a space, a URL becomes
+ * `<url>`, an `api-key=`/`token=`/`auth=` value becomes `<redacted>`, and the text is cut at
+ * `keep` chars plus an ellipsis.
+ */
+function sanitizeDiagnostic(text: string, keep: number): string {
+  const clean = text
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what this strips
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+    .replace(/https?:\/\/\S+/gi, "<url>")
+    .replace(/(api[-_]?key|token|auth)=\S+/gi, "$1=<redacted>")
+  return clean.length > keep ? `${clean.slice(0, keep)}…` : clean
+}
+
+/**
+ * BE-658 (S2.4): the bounded, sanitized view of a simulation `data` object and its message. Keeps
+ * `err`, `logs` and `unitsConsumed`; every other key (`accounts`, `returnData`,
+ * `innerInstructions`, `replacementBlockhash`, ...) is dropped.
+ */
+export function sanitizeSimulation(message: unknown, data: Record<string, unknown>): SimulationDiagnostics {
+  let err: string | null = null
+  if (data.err !== undefined && data.err !== null) {
+    let encoded: string | undefined
+    try {
+      encoded = JSON.stringify(data.err)
+    } catch {
+      encoded = "unrepresentable"
+    }
+    err = encoded === undefined ? null : sanitizeDiagnostic(encoded, DIAGNOSTIC_ERR_CHARS - 1)
+  }
+  const lines = Array.isArray(data.logs) ? data.logs.filter((line): line is string => typeof line === "string") : []
+  const kept = lines.slice(-DIAGNOSTIC_LOG_LINES)
+  return {
+    message: sanitizeDiagnostic(typeof message === "string" ? message : "", DIAGNOSTIC_MESSAGE_CHARS - 1),
+    err,
+    logs: kept.map((line) => sanitizeDiagnostic(line, DIAGNOSTIC_LOG_LINE_CHARS)),
+    logsOmitted: lines.length - kept.length,
+    ...(Number.isSafeInteger(data.unitsConsumed) ? { unitsConsumed: data.unitsConsumed as number } : {}),
+  }
+}
+
+/** BE-658 (S2.1): a send the answering node refused before it forwarded anything. */
+export interface DefiniteRejection {
+  reason: "preflight-failed" | "context-behind"
+  rpcCode: -32002 | -32016
+  /** S2.4; null for context-behind. */
+  diagnostics: SimulationDiagnostics | null
+  /** context-behind only. */
+  contextSlot?: number
+}
+
+/**
+ * BE-658 (S2.1): non-null only when ALL hold: `error` is a `SolanaRpcError` that
+ * `sendTransaction` threw; HTTP was 2xx and the body parsed as JSON; the answer's `id` matched the
+ * request's; it is not a rate limit; and it is either a `-32002` whose simulation `err` is present
+ * and not null, or a `-32016` with a safe-integer `data.contextSlot`. Everything else (transport
+ * errors, 429/5xx, a non-JSON body, a missing or mismatched id, `-32002` without `data` or with a
+ * null `err`, `-32005`, any other code) is null: uncertain, exactly as before. Pure.
+ */
+export function definiteSendRejection(error: unknown): DefiniteRejection | null {
+  if (!(error instanceof SolanaRpcError)) return null
+  if (error.method !== "sendTransaction") return null
+  if (error.status !== undefined) return null
+  if (error.responseIdMatched !== true) return null
+  if (error.rateLimited) return null
+  if (error.rpcCode === RPC_PREFLIGHT_FAILED_CODE && error.simulation !== undefined && error.simulation.err !== null) {
+    return { reason: "preflight-failed", rpcCode: RPC_PREFLIGHT_FAILED_CODE, diagnostics: error.simulation }
+  }
+  if (error.rpcCode === RPC_MIN_CONTEXT_SLOT_CODE && error.contextSlot !== undefined) {
+    return {
+      reason: "context-behind",
+      rpcCode: RPC_MIN_CONTEXT_SLOT_CODE,
+      diagnostics: null,
+      contextSlot: error.contextSlot,
+    }
+  }
+  return null
 }
 
 /** The JSON-RPC error code some providers answer a rate limit with, beside or instead of HTTP 429. */
@@ -624,6 +798,13 @@ function rawAccountView(value: RawAccount | null, address: string): AccountView 
  * `sleep` is a required positional parameter with no default on purpose: a default would compile
  * at every two-argument site and silently opt that site out of the retry, so the compiler is what
  * finds every caller (T19). Every site passes `deps.sleep`, which a test can make instant.
+ *
+ * BE-658 (S1.1, S1.4): the methods in `RpcContextOptions`' table take an optional trailing
+ * argument. Without `minContextSlot` the request is byte-identical to before and nothing is
+ * checked; `onContext` still hears an answer's `context.slot`. With it, the floor is sent and a
+ * node behind it (`-32016`, or a `context.slot` below the floor) is asked again after 1 s and 2 s,
+ * three attempts in all, before `contextBehind`; an answer without a `context.slot` is
+ * `contextUnverified` at once. There is no unfloored fallback. `sendTransaction` is never retried.
  */
 export function createSolanaRpc(url: string, fetchFn: typeof fetch, sleep: (ms: number) => Promise<void>): SolanaRpc {
   let id = 0
@@ -636,16 +817,67 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch, sleep: (ms: 
       return await once<T>(method, params, signal)
     }
   }
+  /**
+   * A read that may carry a context floor (S1.4). `answersContext` is false only for
+   * `getEpochInfo`, whose answer has no `context`: its floor is sent but not checked.
+   */
+  async function read<T>(
+    method: string,
+    params: unknown[],
+    opts: RpcContextOptions | undefined,
+    answersContext = true,
+  ): Promise<T> {
+    const required = opts?.minContextSlot
+    if (required === undefined) {
+      const result = await call<T>(method, params)
+      const slot = answersContext ? contextSlotOf(result) : undefined
+      if (slot !== undefined) opts?.onContext?.(slot)
+      return result
+    }
+    let observed: number | undefined
+    for (let attempt = 0; ; attempt += 1) {
+      let slot: number | undefined
+      try {
+        const result = await call<T>(method, params)
+        if (!answersContext) return result
+        slot = contextSlotOf(result)
+        if (slot === undefined) {
+          throw new SolanaRpcError(
+            `RPC ${method} answered without a context slot, so minimum context slot ${required} cannot be verified`,
+            { method, contextUnverified: true },
+          )
+        }
+        if (slot >= required) {
+          opts?.onContext?.(slot)
+          return result
+        }
+      } catch (error) {
+        if (!(error instanceof SolanaRpcError) || error.rpcCode !== RPC_MIN_CONTEXT_SLOT_CODE) throw error
+        slot = error.contextSlot
+      }
+      if (slot !== undefined) observed = observed === undefined ? slot : Math.max(observed, slot)
+      const wait = RPC_CONTEXT_BEHIND_SLEEPS_MS[attempt]
+      if (wait === undefined) {
+        throw new SolanaRpcError(
+          `RPC ${method} failed: the node is behind minimum context slot ${required} (observed ${observed ?? "unknown"})`,
+          { method, contextBehind: { required, observed } },
+        )
+      }
+      await sleep(wait)
+    }
+  }
   async function once<T>(method: string, params: unknown[], signal?: AbortSignal): Promise<T> {
     id += 1
+    const requestId = id
     const res = await fetchFn(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+      body: JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }),
       ...(signal !== undefined ? { signal } : {}),
     })
     if (!res.ok) {
       throw new SolanaRpcError(`RPC ${method} failed: HTTP ${res.status}`, {
+        method,
         status: res.status,
         ...(res.status === 429
           ? (() => {
@@ -655,25 +887,53 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch, sleep: (ms: 
           : {}),
       })
     }
-    const json = (await res.json()) as { result?: T; error?: { code?: number; message?: string } }
+    const json = (await res.json()) as {
+      id?: unknown
+      result?: T
+      error?: { code?: number; message?: string; data?: unknown }
+    }
     if (json.error) {
+      const code = json.error.code
+      // S2.1, S2.4: `data` is read here and only its sanitized parts leave this function.
+      const data = json.error.data
+      const dataObject =
+        data !== null && typeof data === "object" && !Array.isArray(data)
+          ? (data as Record<string, unknown>)
+          : undefined
+      const contextSlot = dataObject?.contextSlot
       throw new SolanaRpcError(`RPC ${method} failed: ${json.error.code ?? ""} ${json.error.message ?? ""}`.trim(), {
-        ...(typeof json.error.code === "number" ? { rpcCode: json.error.code } : {}),
+        ...(typeof code === "number" ? { rpcCode: code } : {}),
+        method,
+        responseIdMatched: json.id === requestId,
+        ...(code === RPC_PREFLIGHT_FAILED_CODE && dataObject
+          ? { simulation: sanitizeSimulation(json.error.message, dataObject) }
+          : {}),
+        ...(code === RPC_MIN_CONTEXT_SLOT_CODE && Number.isSafeInteger(contextSlot)
+          ? { contextSlot: contextSlot as number }
+          : {}),
       })
     }
     return json.result as T
   }
   return {
-    async getLatestBlockhash() {
-      const r = await call<{ value: { blockhash: string } }>("getLatestBlockhash", [{ commitment: "finalized" }])
+    async getLatestBlockhash(opts) {
+      const r = await read<{ value: { blockhash: string } }>(
+        "getLatestBlockhash",
+        [withMinContextSlot({ commitment: "finalized" }, opts)],
+        opts,
+      )
       return r.value.blockhash
     },
-    async getBalance(address) {
-      const r = await call<{ value: number }>("getBalance", [address, { commitment: "finalized" }])
+    async getBalance(address, opts) {
+      const r = await read<{ value: number }>(
+        "getBalance",
+        [address, withMinContextSlot({ commitment: "finalized" }, opts)],
+        opts,
+      )
       return BigInt(r.value)
     },
-    async getTokenAccountsByOwner(owner, programId) {
-      const r = await call<{
+    async getTokenAccountsByOwner(owner, programId, opts) {
+      const r = await read<{
         value: Array<{
           pubkey: string
           account: {
@@ -682,7 +942,11 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch, sleep: (ms: 
             }
           }
         }>
-      }>("getTokenAccountsByOwner", [owner, { programId }, { encoding: "jsonParsed", commitment: "finalized" }])
+      }>(
+        "getTokenAccountsByOwner",
+        [owner, { programId }, withMinContextSlot({ encoding: "jsonParsed", commitment: "finalized" }, opts)],
+        opts,
+      )
       return r.value.map((v) => ({
         pubkey: v.pubkey,
         mint: v.account.data.parsed.info.mint,
@@ -692,8 +956,12 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch, sleep: (ms: 
         programId,
       }))
     },
-    async getFeeForMessage(messageBase64) {
-      const r = await call<{ value: number | null }>("getFeeForMessage", [messageBase64, { commitment: "finalized" }])
+    async getFeeForMessage(messageBase64, opts) {
+      const r = await read<{ value: number | null }>(
+        "getFeeForMessage",
+        [messageBase64, withMinContextSlot({ commitment: "finalized" }, opts)],
+        opts,
+      )
       return r.value === null ? null : BigInt(r.value)
     },
     async getMinimumBalanceForRentExemption(size) {
@@ -701,10 +969,10 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch, sleep: (ms: 
       if (!Number.isSafeInteger(rent) || rent < 0) throw new Error("Invalid rent exemption quote")
       return BigInt(rent)
     },
-    async getAccountInfo(address) {
-      const r = await call<{
+    async getAccountInfo(address, opts) {
+      const r = await read<{
         value: { owner?: string; lamports?: number; data?: [string, string] } | null
-      }>("getAccountInfo", [address, { encoding: "base64", commitment: "finalized" }])
+      }>("getAccountInfo", [address, withMinContextSlot({ encoding: "base64", commitment: "finalized" }, opts)], opts)
       const value = r.value
       if (!value) return null
       const owner = value.owner
@@ -718,20 +986,26 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch, sleep: (ms: 
         data: new Uint8Array(Buffer.from(encoded, "base64")),
       }
     },
-    async getEpoch() {
-      const r = await call<{ epoch?: number }>("getEpochInfo", [{ commitment: "finalized" }])
+    async getEpoch(opts) {
+      const r = await read<{ epoch?: number }>(
+        "getEpochInfo",
+        [withMinContextSlot({ commitment: "finalized" }, opts)],
+        opts,
+        false,
+      )
       if (!Number.isSafeInteger(r?.epoch)) throw new Error("RPC getEpochInfo answered without an epoch")
       return BigInt(r.epoch as number)
     },
-    async getMultipleAccounts(addresses) {
+    async getMultipleAccounts(addresses, opts) {
       const out: Array<AccountView | null> = []
       // The RPC caps one request at 100 addresses.
       for (let at = 0; at < addresses.length; at += 100) {
         const chunk = addresses.slice(at, at + 100)
-        const r = await call<{ value?: Array<RawAccount | null> }>("getMultipleAccounts", [
-          chunk,
-          { encoding: "base64", commitment: "finalized" },
-        ])
+        const r = await read<{ value?: Array<RawAccount | null> }>(
+          "getMultipleAccounts",
+          [chunk, withMinContextSlot({ encoding: "base64", commitment: "finalized" }, opts)],
+          opts,
+        )
         if (!Array.isArray(r?.value) || r.value.length !== chunk.length) {
           throw new Error("RPC getMultipleAccounts answered with the wrong number of accounts")
         }
@@ -739,21 +1013,28 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch, sleep: (ms: 
       }
       return out
     },
-    async simulateTransaction(txBase64, addresses) {
-      const r = await call<{
+    async simulateTransaction(txBase64, addresses, opts) {
+      const r = await read<{
         value?: { err?: unknown; logs?: unknown; accounts?: Array<RawAccount | null> | null; unitsConsumed?: unknown }
-      }>("simulateTransaction", [
-        txBase64,
-        {
-          sigVerify: false,
-          // The transaction is simulated as it will be signed, but against a blockhash the RPC can
-          // still evaluate; the blockhash the tool put in the message is what is signed and sent.
-          replaceRecentBlockhash: true,
-          commitment: "finalized",
-          encoding: "base64",
-          accounts: { encoding: "base64", addresses },
-        },
-      ])
+      }>(
+        "simulateTransaction",
+        [
+          txBase64,
+          withMinContextSlot(
+            {
+              sigVerify: false,
+              // The transaction is simulated as it will be signed, but against a blockhash the RPC can
+              // still evaluate; the blockhash the tool put in the message is what is signed and sent.
+              replaceRecentBlockhash: true,
+              commitment: "finalized",
+              encoding: "base64",
+              accounts: { encoding: "base64", addresses },
+            },
+            opts,
+          ),
+        ],
+        opts,
+      )
       const value = r?.value
       if (!value || typeof value !== "object") throw new Error("RPC simulateTransaction answered without a value")
       const accounts = Array.isArray(value.accounts) ? value.accounts : []
@@ -779,25 +1060,37 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch, sleep: (ms: 
         throw new SolanaRpcError("RPC getTokenSupply answered without a value")
       return { decimals: r.value.decimals }
     },
-    async sendTransaction(txBase64) {
+    async sendTransaction(txBase64, opts) {
+      // Never through `read`: a send is never retried, behind or not (D4, S1.4). The floor applies
+      // to the preflight bank; a `-32016` is thrown with its `contextSlot` (S2.1).
       return await call<string>("sendTransaction", [
         txBase64,
-        { encoding: "base64", skipPreflight: false, preflightCommitment: "finalized", maxRetries: 3 },
+        withMinContextSlot(
+          { encoding: "base64", skipPreflight: false, preflightCommitment: "finalized", maxRetries: 3 },
+          opts,
+        ),
       ])
     },
     async getSignatureStatus(signature) {
-      const r = await call<{ value: Array<{ confirmationStatus: string | null; err: unknown } | null> }>(
-        "getSignatureStatuses",
-        [[signature], { searchTransactionHistory: true }],
-      )
-      return r.value[0] ?? null
+      const r = await call<{
+        value: Array<{ confirmationStatus: string | null; err: unknown; slot?: unknown } | null>
+      }>("getSignatureStatuses", [[signature], { searchTransactionHistory: true }])
+      const status = r.value[0] ?? null
+      if (status === null) return null
+      // S1.1: `slot` is a safe integer or absent; every other field is passed on as before.
+      const { slot, ...rest } = status
+      return Number.isSafeInteger(slot) ? { ...rest, slot: slot as number } : rest
     },
     async hasSignatureHistory(address) {
       const r = await call<Array<unknown>>("getSignaturesForAddress", [address, { limit: 1 }])
       return Array.isArray(r) && r.length > 0
     },
-    async isBlockhashValid(blockhash, commitment = "finalized") {
-      const r = await call<{ value?: unknown }>("isBlockhashValid", [blockhash, { commitment }])
+    async isBlockhashValid(blockhash, commitment = "finalized", opts) {
+      const r = await read<{ value?: unknown }>(
+        "isBlockhashValid",
+        [blockhash, withMinContextSlot({ commitment }, opts)],
+        opts,
+      )
       // The contract is a boolean. Anything else is not evidence of expiry: throw, and the caller
       // keeps the transaction uncertain.
       if (typeof r?.value !== "boolean") throw new Error("isBlockhashValid answered with a non-boolean value")
@@ -866,5 +1159,102 @@ export function createSolanaRpc(url: string, fetchFn: typeof fetch, sleep: (ms: 
       }
       return sliced ? { accounts, paginationKey } : { pubkeys: accounts, paginationKey }
     }) as SolanaRpc["getProgramAccountsV2"],
+  }
+}
+
+/** `config` with `minContextSlot` appended when the options carry one; otherwise `config` itself. */
+function withMinContextSlot<C extends object>(config: C, opts: RpcContextOptions | undefined): C {
+  return opts?.minContextSlot === undefined ? config : { ...config, minContextSlot: opts.minContextSlot }
+}
+
+/** `result.context.slot` of a context-carrying answer, when it is a safe integer. */
+function contextSlotOf(result: unknown): number | undefined {
+  const context = result !== null && typeof result === "object" ? (result as { context?: unknown }).context : undefined
+  const slot = context !== null && typeof context === "object" ? (context as { slot?: unknown }).slot : undefined
+  return Number.isSafeInteger(slot) ? (slot as number) : undefined
+}
+
+/**
+ * BE-658 (S1.2): the slot no dependent read or send may go below, for one run. It starts at the
+ * highest retained receipt slot (or undefined), and only facts about the FINALIZED bank raise it.
+ */
+export interface ContextFloor {
+  readonly slot: number | undefined
+  /** Monotonic: max(slot, observed). A lower value is ignored. */
+  raise(observed: number): void
+}
+
+export function createContextFloor(seed?: number): ContextFloor {
+  let slot: number | undefined
+  const floor: ContextFloor = {
+    get slot() {
+      return slot
+    },
+    raise(observed) {
+      if (!Number.isSafeInteger(observed) || observed < 0) return
+      if (slot === undefined || observed > slot) slot = observed
+    },
+  }
+  if (seed !== undefined) floor.raise(seed)
+  return floor
+}
+
+/**
+ * BE-658 (S1.2): `rpc` with `floor` passed to every method that takes one. A finalized read sends
+ * the floor as it stands at the time of the call and raises it to the answer's `context.slot`.
+ * `isBlockhashValid` at `confirmed` or `processed` sends the floor but never raises it, and
+ * `sendTransaction` sends it for its preflight. `getSignatureStatus` and every other method pass
+ * through unchanged: a status's `context.slot` is the node's processed bank. A caller's own
+ * options still apply: the higher `minContextSlot` wins and its `onContext` still hears the slot.
+ */
+export function withContextFloor(rpc: SolanaRpc, floor: ContextFloor): SolanaRpc {
+  // `minContextSlot` is a live view: a method that issues several requests for one call (the chunks
+  // of `getMultipleAccounts`) reads it again for each, so a floor raised by chunk 1 reaches chunk 2.
+  const required = (opts?: RpcContextOptions): RpcContextOptions => {
+    const own = opts?.minContextSlot
+    return {
+      get minContextSlot() {
+        return floor.slot === undefined ? own : own === undefined ? floor.slot : Math.max(floor.slot, own)
+      },
+      ...(opts?.onContext !== undefined ? { onContext: opts.onContext } : {}),
+    }
+  }
+  const finalized = (opts?: RpcContextOptions): RpcContextOptions => {
+    const base = required(opts)
+    return {
+      // Not spread: that would freeze the live `minContextSlot` getter at its current value.
+      get minContextSlot() {
+        return base.minContextSlot
+      },
+      onContext: (slot) => {
+        floor.raise(slot)
+        opts?.onContext?.(slot)
+      },
+    }
+  }
+  return {
+    getLatestBlockhash: (opts) => rpc.getLatestBlockhash(finalized(opts)),
+    getBalance: (address, opts) => rpc.getBalance(address, finalized(opts)),
+    getTokenAccountsByOwner: (owner, programId, opts) => rpc.getTokenAccountsByOwner(owner, programId, finalized(opts)),
+    getAccountInfo: (address, opts) => rpc.getAccountInfo(address, finalized(opts)),
+    getEpoch: (opts) => rpc.getEpoch(finalized(opts)),
+    getMultipleAccounts: (addresses, opts) => rpc.getMultipleAccounts(addresses, finalized(opts)),
+    simulateTransaction: (txBase64, addresses, opts) => rpc.simulateTransaction(txBase64, addresses, finalized(opts)),
+    getFeeForMessage: (messageBase64, opts) => rpc.getFeeForMessage(messageBase64, finalized(opts)),
+    sendTransaction: (txBase64, opts) => rpc.sendTransaction(txBase64, required(opts)),
+    isBlockhashValid: (blockhash, commitment, opts) =>
+      rpc.isBlockhashValid(
+        blockhash,
+        commitment,
+        commitment === undefined || commitment === "finalized" ? finalized(opts) : required(opts),
+      ),
+    getSignatureStatus: (signature) => rpc.getSignatureStatus(signature),
+    getMinimumBalanceForRentExemption: (size) => rpc.getMinimumBalanceForRentExemption(size),
+    getTokenSupply: (mint) => rpc.getTokenSupply(mint),
+    hasSignatureHistory: (address) => rpc.hasSignatureHistory(address),
+    getProgramAccounts: ((...args: unknown[]) =>
+      Reflect.apply(rpc.getProgramAccounts, rpc, args)) as SolanaRpc["getProgramAccounts"],
+    getProgramAccountsV2: ((...args: unknown[]) =>
+      Reflect.apply(rpc.getProgramAccountsV2, rpc, args)) as SolanaRpc["getProgramAccountsV2"],
   }
 }

@@ -17,15 +17,21 @@
  * status while the blockhash is still valid, a validity answer that is not a boolean, and any
  * RPC failure. While anything is uncertain the sweep signs nothing new: a competing transfer of
  * the same balance would race the one in flight.
+ *
+ * BE-658 (S1.5): a finalized observation carries the status's `slot` when the RPC sent one as a
+ * safe integer, so the sweep can raise its context floor and store it on the receipt. Without
+ * one there is no `slot` key, and every decision is exactly as before.
  */
 
 export interface SignatureStatus {
   confirmationStatus: string | null
   err: unknown
+  /** The slot the transaction landed in, when the RPC sends it. */
+  slot?: number
 }
 
 export type PendingObservation =
-  | { kind: "finalized" }
+  | { kind: "finalized"; slot?: number }
   | { kind: "failed"; err: unknown }
   | { kind: "nonfinal"; confirmationStatus: string | null; err: unknown }
   | { kind: "missing" }
@@ -34,13 +40,16 @@ export type PendingObservation =
 export function classifyStatus(status: SignatureStatus | null | undefined): PendingObservation {
   if (status === null || status === undefined) return { kind: "missing" }
   if (status.confirmationStatus === "finalized") {
-    return status.err === null || status.err === undefined ? { kind: "finalized" } : { kind: "failed", err: status.err }
+    if (status.err !== null && status.err !== undefined) return { kind: "failed", err: status.err }
+    return Number.isSafeInteger(status.slot)
+      ? { kind: "finalized", slot: status.slot as number }
+      : { kind: "finalized" }
   }
   return { kind: "nonfinal", confirmationStatus: status.confirmationStatus, err: status.err }
 }
 
 export type PendingResolution =
-  | { kind: "finalized" }
+  | { kind: "finalized"; slot?: number }
   | { kind: "failed"; detail: string }
   | { kind: "expired"; detail: string }
   | { kind: "uncertain"; detail: string }
@@ -107,7 +116,9 @@ export async function resolvePending(
 }
 
 function settle(observation: PendingObservation, signature: string): PendingResolution | null {
-  if (observation.kind === "finalized") return { kind: "finalized" }
+  if (observation.kind === "finalized") {
+    return observation.slot === undefined ? { kind: "finalized" } : { kind: "finalized", slot: observation.slot }
+  }
   if (observation.kind === "failed") {
     return { kind: "failed", detail: `transaction ${signature} failed on chain: ${JSON.stringify(observation.err)}` }
   }
