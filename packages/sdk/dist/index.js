@@ -1684,7 +1684,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.4.5";
+var SDK_VERSION = "0.4.6";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))
