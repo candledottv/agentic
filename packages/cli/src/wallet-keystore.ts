@@ -156,6 +156,7 @@ export interface SweepReceiptRecord {
   amountRaw: string
   signature: string
   finalizedAt: string
+  slot?: number
 }
 
 interface KeystoreFile {

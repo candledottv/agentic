@@ -6,7 +6,7 @@
  * solana-lite.test.ts) so the test proves what was SIGNED, not what was logged.
  */
 import { describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, readFile as realReadFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile as realReadFile, rename, rmdir } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ed25519 } from "@noble/curves/ed25519"
@@ -2777,5 +2777,716 @@ describe("BE-315: DAMM v2 positions in tee sweep (P3-ED-6)", () => {
       getAssociatedTokenAddressSync(NFT_MINT, new PublicKey(VAULT), false, SPL_TOKEN_2022).toBase58(),
     )
     expect(stdout.text).toContain("position NFT moved as-is to the vault (emergency")
+  })
+})
+
+// BE-658 PR B: all providers and transactions below are synthetic. Existing fixtures above
+// intentionally keep their original context-less answers to prove backward compatibility.
+describe("BE-667: context floor and guarded preflight rejection (S-T1–S-T16)", () => {
+  type Request = { id: number; method: string; params: unknown[] }
+  type Intercept = (body: Request) => Response | undefined | Promise<Response | undefined>
+  const rejection = (
+    body: Request,
+    err: unknown = { InstructionError: [0, { Custom: 1 }] },
+    logs = [
+      "Program 11111111111111111111111111111111 invoke [1]",
+      "Transfer: insufficient lamports 834880258, need 836389098",
+      "Program 11111111111111111111111111111111 failed: custom program error: 0x1",
+    ],
+  ) =>
+    jsonResponse(200, {
+      jsonrpc: "2.0",
+      id: body.id,
+      error: {
+        code: -32002,
+        message: "Transaction simulation failed",
+        data: { err, logs, unitsConsumed: 150 },
+      },
+    })
+  const zeroAccounts = (n: number) =>
+    Array.from({ length: n }, () => ({
+      pubkey: Keypair.generate().publicKey.toBase58(),
+      mint: Keypair.generate().publicKey.toBase58(),
+      amount: "0",
+      decimals: 6,
+      state: "initialized",
+    }))
+  async function harness(
+    opts: {
+      rpc?: RpcState
+      intercept?: Intercept
+      slot?: number | null
+      entry?: KeystoreEntry
+      endpoint?: string
+      routes?: Record<string, RouteHandler>
+    } = {},
+  ) {
+    const dir = await tempDir()
+    const path = await seedTeeStore(dir, [opts.entry ?? enabledEntry()])
+    const rpc = opts.rpc ?? defaultRpcState()
+    const calls: Request[] = []
+    let records = 0
+    const base = rpcHandler(rpc)
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("quarantined")),
+      "/api/v1/agent/wallets/lw_tee1/swept": () => {
+        records++
+        return jsonResponse(200, { success: true, state: "swept" })
+      },
+      ...opts.routes,
+      [new URL(opts.endpoint ?? RPC).pathname]: async (req) => {
+        const body = JSON.parse(String(req.init.body)) as Request
+        calls.push(body)
+        if (body.method === "sendTransaction") {
+          const wire = body.params[0] as string
+          const pending = (await openStore(dir)).entries[0]?.tee?.sweepPending ?? []
+          expect(pending.map((p) => p.signature)).toContain(sigOf(wire))
+          const tx = VersionedTransaction.deserialize(Buffer.from(wire, "base64"))
+          expect(
+            ed25519.verify(tx.signatures[0] as Uint8Array, tx.message.serialize(), teeKey.publicKey.toBytes()),
+          ).toBe(true)
+          for (const ix of instructionsOf(wire)) {
+            if (ix.programId.toBase58() === SYSTEM_PROGRAM_ID) expect(ix.keys[1]?.toBase58()).toBe(VAULT)
+            if (ix.data[0] === 12 && [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID].includes(ix.programId.toBase58()))
+              expect(ix.keys[2]?.toBase58()).toBe(
+                getAssociatedTokenAddressSync(
+                  ix.keys[1] as PublicKey,
+                  new PublicKey(VAULT),
+                  false,
+                  ix.programId,
+                ).toBase58(),
+              )
+          }
+        }
+        const intercepted = await opts.intercept?.(body)
+        if (intercepted) return intercepted
+        const response = base(req) as Response
+        const result = await response.json()
+        if (opts.slot !== null && result.result && typeof result.result === "object" && "value" in result.result) {
+          result.result.context = { slot: opts.slot ?? 100 }
+          if (body.method === "getSignatureStatuses") {
+            for (const status of result.result.value)
+              if (status?.confirmationStatus === "finalized") status.slot = opts.slot ?? 100
+          }
+        }
+        return jsonResponse(200, result)
+      },
+    })
+    const execute = async (json = true, emergency = false, extra: Record<string, unknown> = {}) => {
+      const io = depsFor(dir, fetch, [PASSPHRASE, VAULT.slice(-6)], extra)
+      const code = await run(
+        [
+          "tee",
+          "sweep",
+          TEE,
+          "--rpc-url",
+          opts.endpoint ?? RPC,
+          ...(json ? ["--json"] : []),
+          ...(emergency ? ["--emergency"] : []),
+        ],
+        io.deps,
+      )
+      return { ...io, code, body: json ? JSON.parse(io.stdout.text) : undefined }
+    }
+    return { dir, path, rpc, calls, execute, records: () => records }
+  }
+  const floorOf = (body: Request) => (body.params.at(-1) as { minContextSlot?: number })?.minContextSlot
+
+  for (const ignoresFloor of [false, true])
+    test(`S-T1 provider pool: older bank ${ignoresFloor ? "ignores" : "refuses"} the floor; incident arithmetic`, async () => {
+      const S = 452_457_956
+      const rpc = defaultRpcState({ lamports: 833_376_418, token2022Accounts: zeroAccounts(2) })
+      let staleReads = 0
+      let sends = 0
+      const h = await harness({
+        rpc,
+        slot: S + 40,
+        intercept: async (b) => {
+          if (b.method === "getBalance" && sends === 2 && staleReads++ === 0) {
+            expect(floorOf(b)).toBeGreaterThanOrEqual(S)
+            return ignoresFloor
+              ? jsonResponse(200, { id: b.id, result: { context: { slot: S - 1 }, value: 833_376_418 } })
+              : jsonResponse(200, {
+                  id: b.id,
+                  error: {
+                    code: -32016,
+                    message: "Minimum context slot has not been reached",
+                    data: { contextSlot: S - 1 },
+                  },
+                })
+          }
+          if (b.method === "getSignatureStatuses")
+            return jsonResponse(200, {
+              id: b.id,
+              result: { value: [{ confirmationStatus: "finalized", err: null, slot: S }] },
+            })
+          if (b.method === "sendTransaction") {
+            // Durable pending evidence exists before EVERY send, and each wire is signed by this TEE.
+            const pending = (await openStore(h.dir)).entries[0]?.tee?.sweepPending ?? []
+            expect(pending.map((p) => p.signature)).toContain(sigOf(b.params[0] as string))
+            expect(Transaction.from(Buffer.from(b.params[0] as string, "base64")).verifySignatures()).toBe(true)
+            if (sends++ < 2) rpc.lamports += 1_513_840
+          }
+        },
+      })
+      const result = await h.execute()
+      expect(result.code).toBe(0)
+      expect(833_376_418 + 2 * (1_513_840 - 5_000)).toBe(836_394_098)
+      const sol = instructionsOf(rpc.sent[2] as string)[0]
+      expect(sol?.data.readBigUInt64LE(4)).toBe(836_389_098n)
+      expect(sol?.keys[1]?.toBase58()).toBe(VAULT)
+      expect(rpc.fee).toBe(5_000)
+      const afterCloses = h.calls.slice(h.calls.findIndex((b) => b.method === "getBalance"))
+      for (const method of ["getBalance", "getLatestBlockhash", "getFeeForMessage", "sendTransaction"])
+        for (const b of afterCloses.filter((b) => b.method === method)) expect(floorOf(b)).toBeGreaterThanOrEqual(S)
+      expect(rpc.sent).toHaveLength(3) // two closes, exactly one SOL transfer
+      expect(result.body.receipts.map((r: { slot: number }) => r.slot)).toEqual([S, S, S])
+      expect(result.body.contextFloorSlot).toBe(S + 40)
+      expect(result.body.pending).toEqual([])
+    })
+
+  for (const fault of ["behind", "unverified", "unsupported"])
+    test(`S-T2 context ${fault} stops SOL signing and completion`, async () => {
+      const h = await harness({
+        intercept: (b) => {
+          if (b.method !== "getBalance") return
+          if (fault === "unverified") return jsonResponse(200, { id: b.id, result: { value: 1_000_000 } })
+          return jsonResponse(200, {
+            id: b.id,
+            error: {
+              code: fault === "behind" ? -32016 : -32602,
+              message: fault === "behind" ? "Minimum context slot has not been reached" : "invalid minContextSlot",
+              data: { contextSlot: 99 },
+            },
+          })
+        },
+      })
+      const r = await h.execute()
+      expect(r.code).toBe(3)
+      expect(h.rpc.sent).toHaveLength(0)
+      expect(r.body.residuals.map((r: { kind: string }) => r.kind)).toContain(
+        `rpc-context-${fault === "behind" ? "behind" : "unverified"}`,
+      )
+      expect(r.body.residuals.some((r: { kind: string }) => r.kind === "sol-remaining")).toBe(false)
+      expect(r.body.residuals[0].detail).toContain("Nothing was signed")
+      expect(r.body.residuals[0].detail).toContain("rpc.test")
+      expect(r.body.residuals[0].detail).toContain("--rpc-url")
+      expect(r.body.residuals[0].detail).not.toContain(RPC)
+      expect(r.body.inventory.verified).toBe(false)
+      expect(h.records()).toBe(0)
+    })
+
+  for (const emergency of [false, true])
+    test(`S-T3/S-T14 SOL rejection, output parity, immediate rerun; emergency=${emergency}`, async () => {
+      let rejecting = true
+      const h = await harness({
+        intercept: (b) => {
+          if (rejecting && b.method === "sendTransaction") return rejection(b)
+          if (rejecting && b.method === "getSignatureStatuses")
+            return jsonResponse(200, { id: b.id, result: { value: [null] } })
+        },
+        entry: emergency ? teeEntry({ tee: { network: "solana-mainnet", vaultDestination: VAULT } }) : undefined,
+      })
+      const r = await h.execute(true, emergency)
+      expect(r.code).toBe(3)
+      const residual = r.body.residuals[0]
+      expect(residual.kind).toBe("sol-transfer-rejected")
+      expect(residual.broadcast).toBe(false)
+      expect(residual.rejection).toEqual({ reason: "preflight-failed", rpcCode: -32002, pendingCleared: true })
+      expect(residual.diagnostics.unitsConsumed).toBe(150)
+      expect(residual.diagnostics.err).toBe('{"InstructionError":[0,{"Custom":1}]}')
+      expect(residual.signature).toBe(sigOf(h.calls.find((b) => b.method === "sendTransaction")?.params[0] as string))
+      expect(r.body.pending).toEqual([])
+      expect(r.body.receipts).toEqual([])
+      expect((await openStore(h.dir)).entries[0]?.tee?.sweepPending).toEqual([])
+      const human = await h.execute(false, emergency)
+      expect(human.stdout.text).toContain("rejected at simulation (not broadcast)")
+      for (const log of residual.diagnostics.logs) expect(human.stdout.text).toContain(log)
+      expect(human.stdout.text).toContain(residual.signature)
+      expect(human.stdout.text).toContain("Re-run this sweep now")
+      for (const output of [r.stdout.text, r.stderr.text, human.stdout.text, human.stderr.text]) {
+        expect(output).not.toContain("may still land")
+        expect(output).not.toContain("still in flight")
+      }
+      expect(h.calls.filter((b) => b.method === "sendTransaction")).toHaveLength(2) // one per run
+      expect(h.calls.filter((b) => b.method === "getSignatureStatuses")).toHaveLength(2) // one guard per rejection
+      rejecting = false
+      const retry = await h.execute(true, emergency)
+      expect(retry.code).toBe(emergency ? 3 : 0)
+      expect(retry.body.receipts).toHaveLength(1)
+      expect(h.rpc.sent).toHaveLength(1)
+      if (emergency) expect(h.records()).toBe(0)
+    })
+
+  test("S-T4/S-T15 fourth close rejected: fifth and SOL finalize to the pinned vault", async () => {
+    const accounts = zeroAccounts(5)
+    let sends = 0
+    let guarding = false
+    const h = await harness({
+      rpc: defaultRpcState({ token2022Accounts: accounts }),
+      intercept: (b) => {
+        if (b.method === "sendTransaction" && ++sends === 4) {
+          guarding = true
+          return rejection(b)
+        }
+        if (b.method === "getSignatureStatuses" && guarding) {
+          guarding = false
+          return jsonResponse(200, { id: b.id, result: { value: [null] } })
+        }
+      },
+    })
+    const r = await h.execute()
+    expect(r.code).toBe(3)
+    expect(sends).toBe(6)
+    expect(r.body.receipts).toHaveLength(5)
+    expect(r.body.residuals).toHaveLength(1)
+    expect(r.body.residuals[0]).toMatchObject({
+      kind: "token-transfer-rejected",
+      account: accounts[3]?.pubkey,
+      broadcast: false,
+    })
+    expect(r.body.residuals[0].detail).toContain("close")
+    expect(h.rpc.token2022Accounts).toHaveLength(1)
+    expect(h.rpc.lamports).toBe(0)
+    for (const wire of h.rpc.sent)
+      for (const ix of instructionsOf(wire)) {
+        if (ix.data[0] === 9) expect(ix.keys[1]?.toBase58()).toBe(TEE) // rent goes to TEE then SOL sweep
+        if (ix.programId.toBase58() === SYSTEM_PROGRAM_ID) expect(ix.keys[1]?.toBase58()).toBe(VAULT)
+      }
+    expect((await openStore(h.dir)).entries[0]?.tee?.sweepPending).toEqual([])
+  })
+
+  test("S-T5 rejection cap lists every skipped account and SOL", async () => {
+    const accounts = zeroAccounts(5)
+    const h = await harness({
+      rpc: defaultRpcState({ token2022Accounts: accounts }),
+      intercept: (b) => {
+        if (b.method === "sendTransaction") return rejection(b)
+        if (b.method === "getSignatureStatuses") return jsonResponse(200, { id: b.id, result: { value: [null] } })
+      },
+    })
+    const r = await h.execute()
+    expect(r.code).toBe(3)
+    expect(h.calls.filter((b) => b.method === "sendTransaction")).toHaveLength(3)
+    expect(r.body.pending).toEqual([])
+    const skipped = r.body.residuals.filter((r: { kind: string }) => r.kind === "not-attempted")
+    expect(skipped).toHaveLength(3)
+    expect(skipped.map((r: { account?: string }) => r.account)).toEqual([
+      accounts[3]?.pubkey,
+      accounts[4]?.pubkey,
+      undefined,
+    ])
+    for (const r of skipped) expect(r.detail).toContain("3 transactions were rejected")
+    expect(r.body.residuals).toHaveLength(6)
+  })
+
+  test("S-T6 BlockhashNotFound is a rejection with empty logs", async () => {
+    const h = await harness({
+      intercept: (b) => {
+        if (b.method === "sendTransaction") return rejection(b, "BlockhashNotFound", [])
+        if (b.method === "getSignatureStatuses") return jsonResponse(200, { id: b.id, result: { value: [null] } })
+      },
+    })
+    const r = await h.execute()
+    expect(r.code).toBe(3)
+    expect(r.body.residuals[0]).toMatchObject({
+      kind: "sol-transfer-rejected",
+      diagnostics: { err: '"BlockhashNotFound"', logs: [] },
+    })
+  })
+
+  for (const fault of [
+    "502",
+    "429",
+    "reset",
+    "non-json",
+    "no-data",
+    "id-mismatch",
+    "deadline",
+    "processed",
+    "confirmed",
+  ]) {
+    test(`S-T7 ${fault} stays uncertain, blocks later accounts, and never resends`, async () => {
+      const accounts = zeroAccounts(2)
+      const h = await harness({
+        rpc: defaultRpcState({ token2022Accounts: accounts }),
+        intercept: (b) => {
+          if (b.method === "sendTransaction") {
+            if (fault === "reset") throw new TypeError("connection reset")
+            if (fault === "502" || fault === "429") return new Response("", { status: Number(fault) })
+            if (fault === "non-json") return new Response("broken")
+            if (fault === "no-data")
+              return jsonResponse(200, { id: b.id, error: { code: -32002, message: "simulation failed" } })
+            if (fault === "id-mismatch")
+              return jsonResponse(200, {
+                id: b.id + 1,
+                error: { code: -32002, message: "simulation failed", data: { err: "BlockhashNotFound", logs: [] } },
+              })
+          }
+          if (b.method === "getSignatureStatuses")
+            return jsonResponse(200, {
+              id: b.id,
+              result: {
+                value: [
+                  fault === "deadline"
+                    ? null
+                    : { confirmationStatus: fault === "confirmed" ? "confirmed" : "processed", err: null, slot: 999 },
+                ],
+              },
+            })
+        },
+      })
+      const r = await h.execute()
+      expect(r.code).toBe(3)
+      expect(h.calls.filter((b) => b.method === "sendTransaction")).toHaveLength(1)
+      expect(r.body.pending).toHaveLength(1)
+      expect(r.body.residuals[0].kind).toBe("finality-uncertain")
+      expect(r.body.residuals[0].detail).toContain("may still land")
+      expect(r.body.residuals.filter((r: { kind: string }) => r.kind === "not-attempted")).toHaveLength(2)
+      expect((await openStore(h.dir)).entries[0]?.tee?.sweepPending).toHaveLength(1)
+      expect(r.body.contextFloorSlot).toBe(100) // processed slot 999 cannot raise a finalized floor
+    })
+  }
+
+  for (const fails of [false, true])
+    test(`S-T8 guard ${fails ? "throws" : "finds processed then finalized"}`, async () => {
+      let polls = 0
+      const h = await harness({
+        rpc: defaultRpcState({ lamports: 0 }),
+        intercept: (b) => {
+          // Show a balance to size the transfer; post-inventory is empty when guard finalizes.
+          if (b.method === "getBalance" && polls === 0)
+            return jsonResponse(200, { id: b.id, result: { value: 1_000_000, context: { slot: 100 } } })
+          if (b.method === "sendTransaction") return rejection(b)
+          if (b.method === "getSignatureStatuses") {
+            if (fails) throw new TypeError("guard connection reset")
+            return jsonResponse(200, {
+              id: b.id,
+              result: {
+                value: [{ confirmationStatus: polls++ === 0 ? "processed" : "finalized", err: null, slot: 100 }],
+              },
+            })
+          }
+        },
+      })
+      const r = await h.execute()
+      expect(r.code).toBe(fails ? 3 : 0)
+      expect(h.calls.filter((b) => b.method === "sendTransaction")).toHaveLength(1)
+      if (fails) {
+        expect(r.body.pending).toHaveLength(1)
+        expect(r.body.residuals[0]).toMatchObject({ kind: "finality-uncertain", diagnostics: { unitsConsumed: 150 } })
+        expect(r.body.residuals[0].detail).toContain("status guard failed")
+        expect(r.body.residuals[0].detail).toContain("rejected at simulation")
+      } else {
+        expect(polls).toBe(2)
+        expect(r.body.receipts).toHaveLength(1)
+        expect(r.body.residuals).toEqual([])
+        expect((await openStore(h.dir)).entries[0]?.tee?.sweepPending).toEqual([])
+      }
+    })
+
+  for (const json of [true, false])
+    test(`S-T9 cleanup write failure and expiry recovery; json=${json}`, async () => {
+      let failCleanup = false
+      let rejecting = true
+      const accounts = zeroAccounts(2)
+      const h = await harness({
+        rpc: defaultRpcState({ token2022Accounts: accounts }),
+        intercept: (b) => {
+          if (rejecting && b.method === "sendTransaction") return rejection(b)
+          if (rejecting && b.method === "getSignatureStatuses") {
+            failCleanup = true
+            return jsonResponse(200, { id: b.id, result: { value: [null] } })
+          }
+        },
+      })
+      const saved = `${h.path}.saved`
+      let obstructed = false
+      const r = await h.execute(json, false, {
+        readFile: async (p: string) => {
+          if (p === h.path && failCleanup) {
+            if (!obstructed) {
+              await rename(h.path, saved)
+              await mkdir(h.path)
+              obstructed = true
+            }
+            return realReadFile(saved, "utf8")
+          }
+          return realReadFile(p, "utf8")
+        },
+      })
+      await rmdir(h.path)
+      await rename(saved, h.path)
+      expect(r.code).toBe(3)
+      if (json) {
+        expect(r.body.residuals[1]).toMatchObject({
+          kind: "token-transfer-rejected",
+          broadcast: false,
+          rejection: { pendingCleared: false },
+        })
+        expect(r.body.pending).toEqual([])
+        expect(r.body.residuals.filter((r: { kind: string }) => r.kind === "not-attempted")).toHaveLength(2)
+      } else {
+        expect(r.stdout.text).toContain("could not be removed")
+        expect(r.stdout.text).toContain("within two minutes")
+        expect(r.stdout.text).not.toContain("in flight")
+        expect(r.stdout.text).not.toContain("may still land")
+        expect(r.stdout.text).toContain("local-record-failed")
+      }
+      expect(h.calls.filter((b) => b.method === "sendTransaction")).toHaveLength(1)
+      expect((await openStore(h.dir)).entries[0]?.tee?.sweepPending).toHaveLength(1)
+      // First next run: missing but valid -> preserve. Then missing + expired + missing -> drop.
+      failCleanup = false
+      rejecting = false
+      h.rpc.statuses = [null]
+      h.rpc.blockhashValid = true
+      const still = await h.execute()
+      expect(still.body.pending).toHaveLength(1)
+      expect(still.body.residuals.filter((r: { kind: string }) => r.kind === "not-attempted")).toHaveLength(3)
+      h.rpc.statuses = [null, null]
+      h.rpc.blockhashValid = false
+      const expired = await h.execute()
+      expect(expired.code).toBe(0)
+      expect(expired.body.pending).toEqual([])
+      expect(h.rpc.sent).toHaveLength(3)
+    })
+
+  for (const slot of [undefined, 250])
+    test(`S-T10 retained receipt slot ${slot} seeds only when present`, async () => {
+      const entry = enabledEntry()
+      if (entry.tee)
+        entry.tee.sweepReceipts = [
+          {
+            kind: "close",
+            signature: "retained",
+            amountRaw: "0",
+            finalizedAt: "2026-10-01T00:00:00Z",
+            ...(slot === undefined ? {} : { slot }),
+          },
+        ]
+      const h = await harness({ entry, slot: slot ?? null })
+      const r = await h.execute()
+      expect(r.code).toBe(0)
+      expect(floorOf(h.calls[0] as Request)).toBe(slot)
+      expect(r.body.contextFloorSlot).toBe(slot ?? null)
+      expect(r.body.receipts[0].signature).toBe("retained")
+    })
+
+  test("S-T11 old pending shape finalizes with a slot before the first inventory read", async () => {
+    const entry = enabledEntry()
+    if (entry.tee)
+      entry.tee.sweepPending = [
+        {
+          kind: "sol",
+          signature: "old-pending",
+          blockhash: BLOCKHASH,
+          amountRaw: "995000",
+          submittedAt: "2026-10-01T00:00:00Z",
+        },
+      ]
+    const h = await harness({ entry, slot: 300, rpc: defaultRpcState({ lamports: 0 }) })
+    const r = await h.execute()
+    expect(r.code).toBe(0)
+    expect(h.rpc.sent).toHaveLength(0)
+    expect(floorOf(h.calls[1] as Request)).toBe(300)
+    expect(r.body.receipts[0]).toMatchObject({ signature: "old-pending", slot: 300 })
+    expect((await openStore(h.dir)).entries[0]?.tee?.sweepReceipts?.[0]?.slot).toBe(300)
+  })
+
+  test("S-T12 credentials, endpoint paths and signed wire never enter JSON or human output", async () => {
+    const endpoint = "https://synthetic.invalid/v1/KEY?api-key=SECRET"
+    const h = await harness({
+      endpoint,
+      intercept: (b) => {
+        if (b.method === "sendTransaction")
+          return jsonResponse(200, {
+            id: b.id,
+            error: {
+              code: -32002,
+              message: `simulation failed ${endpoint} token=SECRET`,
+              data: {
+                err: { url: endpoint },
+                logs: [`failure ${endpoint} auth=SECRET`],
+                returnData: { data: b.params[0] },
+                accounts: [endpoint],
+              },
+            },
+          })
+        if (b.method === "getSignatureStatuses") return jsonResponse(200, { id: b.id, result: { value: [null] } })
+      },
+    })
+    for (const json of [true, false]) {
+      const r = await h.execute(json)
+      expect(r.code).toBe(3)
+      const output = r.stdout.text + r.stderr.text
+      for (const secret of [
+        "KEY",
+        "SECRET",
+        endpoint,
+        ...h.calls.filter((b) => b.method === "sendTransaction").map((b) => b.params[0] as string),
+      ])
+        expect(output).not.toContain(secret)
+    }
+  })
+
+  for (const behind of [false, true])
+    test(`S-T13 completion inventory ${behind ? "all behind" : "reveals late Token-2022 account"} never marks swept`, async () => {
+      const late = zeroAccounts(1)
+      const h = await harness({
+        intercept: (b) => {
+          if (h.rpc.sent.length && b.method === "getTokenAccountsByOwner") {
+            expect(floorOf(b)).toBeGreaterThanOrEqual(100)
+            if (behind)
+              return jsonResponse(200, {
+                id: b.id,
+                error: { code: -32016, message: "behind", data: { contextSlot: 99 } },
+              })
+            if ((b.params[1] as { programId: string }).programId === TOKEN_2022_PROGRAM_ID)
+              h.rpc.token2022Accounts = late
+          }
+        },
+      })
+      const r = await h.execute()
+      expect(r.code).toBe(3)
+      expect(r.body.state).toBe("quarantined")
+      expect(r.body.residuals.map((r: { kind: string }) => r.kind)).toContain(
+        behind ? "inventory-unverified" : "token-account-remaining",
+      )
+      expect(h.records()).toBe(0)
+      expect((await openStore(h.dir)).entries[0]?.tee?.sweptAt).toBeUndefined()
+    })
+
+  test("S-T16 baseline JSON keys and types stay unchanged, floor is additive", async () => {
+    const h = await harness({ slot: null })
+    const r = await h.execute()
+    expect(r.code).toBe(0)
+    expect(r.body).toMatchObject({
+      address: TEE,
+      vaultDestination: VAULT,
+      state: "swept",
+      serverState: "quarantined",
+      emergency: false,
+      newReceipts: 1,
+      retainedReceipts: 0,
+      residuals: [],
+      pending: [],
+      recordedOnServer: true,
+      contextFloorSlot: null,
+      inventory: { verified: true, lamports: "0", tokenAccounts: 0 },
+    })
+    expect(Object.keys(r.body).sort()).toEqual(
+      [
+        "address",
+        "vaultDestination",
+        "state",
+        "serverState",
+        "emergency",
+        "receipts",
+        "newReceipts",
+        "retainedReceipts",
+        "residuals",
+        "pending",
+        "inventory",
+        "recordedOnServer",
+        "contextFloorSlot",
+      ].sort(),
+    )
+    expect(typeof r.body.inventory.observedAt).toBe("string")
+    expect(Object.keys(r.body.receipts[0]).sort()).toEqual(["kind", "amountRaw", "signature", "finalizedAt"].sort())
+  })
+  test("S2 context-behind send is guarded, not retried, and gives the RPC fix", async () => {
+    const h = await harness({
+      intercept: (b) => {
+        if (b.method === "sendTransaction")
+          return jsonResponse(200, {
+            id: b.id,
+            error: { code: -32016, message: "Minimum context slot has not been reached", data: { contextSlot: 99 } },
+          })
+        if (b.method === "getSignatureStatuses") return jsonResponse(200, { id: b.id, result: { value: [null] } })
+      },
+    })
+    const r = await h.execute()
+    expect(r.code).toBe(3)
+    expect(r.body.residuals[0]).toMatchObject({
+      kind: "sol-transfer-rejected",
+      broadcast: false,
+      rejection: { reason: "context-behind", rpcCode: -32016, pendingCleared: true },
+    })
+    expect(r.body.residuals[0].detail).toContain("behind slot 100 (it is at 99)")
+    expect(r.body.residuals[0].diagnostics).toBeUndefined()
+    const human = await h.execute(false)
+    expect(human.stdout.text).toContain("rejected before simulation (not broadcast)")
+    expect(human.stdout.text).toContain("Fix: --rpc-url https://<your-rpc>")
+    expect(h.calls.filter((b) => b.method === "sendTransaction")).toHaveLength(2)
+    expect(h.calls.filter((b) => b.method === "getSignatureStatuses")).toHaveLength(2)
+  })
+
+  for (const hook of [false, true])
+    test(`S1.4 token ${hook ? "hook resolver" : "mint read"} context failure stops all later signatures`, async () => {
+      const accounts = zeroAccounts(2)
+      if (accounts[0]) {
+        accounts[0].mint = MINT_2022.toBase58()
+        accounts[0].amount = "7"
+      }
+      const h = await harness({
+        rpc: defaultRpcState({
+          token2022Accounts: accounts,
+          accounts: mint2022(extendedMint(6, [{ type: 14, body: transferHookBody(Keypair.generate().publicKey) }])),
+        }),
+        intercept: (b) => {
+          if (b.method === "getAccountInfo" && (!hook || b.params[0] !== MINT_2022.toBase58()))
+            return jsonResponse(200, {
+              id: b.id,
+              error: { code: -32016, message: "behind", data: { contextSlot: 99 } },
+            })
+        },
+      })
+      const r = await h.execute()
+      expect(r.code).toBe(3)
+      expect(h.rpc.sent).toHaveLength(0)
+      expect(r.body.residuals[0]).toMatchObject({ kind: "rpc-context-behind", account: accounts[0]?.pubkey })
+      expect(r.body.residuals.filter((r: { kind: string }) => r.kind === "not-attempted")).toHaveLength(2)
+      expect(r.body.residuals.some((r: { kind: string }) => r.kind === "sol-remaining")).toBe(false)
+    })
+
+  test("S1.4 LP verification cannot swallow a context error and allow token or SOL signing", async () => {
+    const accounts = zeroAccounts(2)
+    for (const acct of accounts) {
+      acct.amount = "1"
+      acct.decimals = 0
+    }
+    const message = new TransactionMessage({
+      payerKey: teeKey.publicKey,
+      recentBlockhash: BLOCKHASH,
+      instructions: [
+        new TransactionInstruction({
+          programId: new PublicKey(DAMM_V2_PROGRAM_ID),
+          data: Buffer.alloc(8),
+          keys: [{ pubkey: teeKey.publicKey, isSigner: true, isWritable: true }],
+        }),
+      ],
+    }).compileToV0Message()
+    const artifact = {
+      transaction: Buffer.from(new VersionedTransaction(message).serialize()).toString("base64"),
+      accountKeys: message.staticAccountKeys.map((key) => key.toBase58()),
+    }
+    const h = await harness({
+      rpc: defaultRpcState({ token2022Accounts: accounts, tokenAccounts: zeroAccounts(1) }),
+      routes: Object.fromEntries(
+        accounts.map((acct) => [
+          `/api/v1/agent/lp/positions/${acct.mint}/close-build`,
+          () => jsonResponse(200, artifact),
+        ]),
+      ),
+      intercept: (b) => {
+        if (b.method === "getMultipleAccounts")
+          return jsonResponse(200, { id: b.id, error: { code: -32016, message: "behind", data: { contextSlot: 99 } } })
+      },
+    })
+    const r = await h.execute()
+    expect(r.code).toBe(3)
+    expect(h.rpc.sent).toHaveLength(0)
+    expect(r.body.residuals[0]).toMatchObject({ kind: "rpc-context-behind", account: accounts[0]?.pubkey })
+    expect(r.body.residuals.filter((r: { kind: string }) => r.kind === "not-attempted")).toHaveLength(3)
   })
 })

@@ -43,18 +43,26 @@ import {
   notePostSignatureRateLimit,
   openSolanaClient,
   rateLimitedReadFailure,
+  rpcFixLines,
 } from "../solana-endpoint"
 import {
   type AccountMeta,
   associatedTokenAddress,
+  type ContextFloor,
   compileLegacyMessage,
   createAssociatedTokenAccountIdempotent,
+  createContextFloor,
+  type DefiniteRejection,
   decodePubkey,
+  definiteSendRejection,
   encodePubkey,
   type Instruction,
   isRateLimited,
   pubkeyFromSecret,
+  type SimulationDiagnostics,
   type SolanaRpc,
+  SolanaRpcError,
+  sanitizeSimulation,
   serializeSignedTransaction,
   signMessage,
   systemTransfer,
@@ -64,6 +72,7 @@ import {
   toBase64,
   tokenCloseAccount,
   tokenTransferChecked,
+  withContextFloor,
 } from "../solana-lite"
 import { classifyStatus, resolvePending } from "../sweep-pending"
 import {
@@ -1252,6 +1261,10 @@ interface SweepResidual {
   mint?: string
   account?: string
   amountRaw?: string
+  signature?: string
+  broadcast?: false
+  rejection?: { reason: DefiniteRejection["reason"]; rpcCode: -32002 | -32016; pendingCleared: boolean }
+  diagnostics?: SimulationDiagnostics
 }
 
 /** The typed lifecycle state a refused sweep record carries (`error.state`), or null. */
@@ -1264,10 +1277,11 @@ function refusalState(raw: unknown): "disable-pending" | "enabled" | null {
 }
 
 type BroadcastOutcome =
-  | { status: "finalized"; signature: string }
-  | { status: "failed"; signature: string; error: string }
+  | { status: "finalized"; signature: string; slot?: number }
+  | { status: "failed"; signature: string; error: string; slot?: number }
   /** Sent (or possibly sent) and not finalized within the deadline: the pending record stays. */
-  | { status: "uncertain"; signature: string; error: string }
+  | { status: "uncertain"; signature: string; error: string; diagnostics?: SimulationDiagnostics }
+  | ({ status: "rejected"; signature: string; error: string; pendingCleared: boolean } & DefiniteRejection)
   | { status: "not-sent"; error: string }
 
 /**
@@ -1287,11 +1301,12 @@ async function broadcastAndFinalize(
   instructions: Instruction[],
   pending: Omit<SweepPendingRecord, "signature" | "blockhash" | "submittedAt">,
   recordPending: (record: SweepPendingRecord) => Promise<boolean>,
-  clearPending: (signature: string) => Promise<void>,
+  clearPending: (signature: string) => Promise<boolean>,
+  floor: ContextFloor,
 ): Promise<BroadcastOutcome> {
   const blockhash = await rpc.getLatestBlockhash()
   const message = compileLegacyMessage({ feePayer, recentBlockhash: blockhash, instructions })
-  return broadcastMessage(rpc, ctx, secret, message, blockhash, pending, recordPending, clearPending)
+  return broadcastMessage(rpc, ctx, secret, message, blockhash, pending, recordPending, clearPending, floor)
 }
 
 /**
@@ -1308,7 +1323,8 @@ async function broadcastMessage(
   blockhash: string,
   pending: Omit<SweepPendingRecord, "signature" | "blockhash" | "submittedAt">,
   recordPending: (record: SweepPendingRecord) => Promise<boolean>,
-  clearPending: (signature: string) => Promise<void>,
+  clearPending: (signature: string) => Promise<boolean>,
+  floor: ContextFloor,
 ): Promise<BroadcastOutcome> {
   const { deps } = ctx
   const signatureBytes = signMessage(message, secret)
@@ -1326,6 +1342,7 @@ async function broadcastMessage(
     return { status: "not-sent", error: "could not record the pending transaction locally; not broadcast" }
   }
   let echoNote = ""
+  let guardedStatus: Awaited<ReturnType<SolanaRpc["getSignatureStatus"]>> | undefined
   try {
     const echoed = await rpc.sendTransaction(toBase64(wire))
     if (echoed !== signature) {
@@ -1336,19 +1353,48 @@ async function broadcastMessage(
       echoNote = `; the RPC echoed a different signature (${echoed}), which was ignored`
     }
   } catch (error) {
-    // BE-355 (D4): the outcome and the pending record are unchanged; a rate limit adds the line
-    // that names the signature and the fix. The client never re-sends.
-    if (isRateLimited(error)) notePostSignatureRateLimit(ctx, signature)
-    return {
-      status: "uncertain",
-      signature,
-      error: `send did not answer cleanly (${describeRpcFailure(error)}); it may still land`,
+    const rejection = definiteSendRejection(error)
+    if (rejection) {
+      const detail =
+        rejection.reason === "context-behind"
+          ? `rejected before simulation (not broadcast): the RPC node is behind slot ${floor.slot ?? "required by this run"} (it is at ${rejection.contextSlot})`
+          : `rejected at simulation (not broadcast): RPC ${rejection.rpcCode}: ${rejection.diagnostics?.message ?? "preflight failed"}`
+      try {
+        // Exactly one guard read. A non-null observation joins normal finality polling.
+        guardedStatus = await rpc.getSignatureStatus(signature)
+      } catch (guardError) {
+        if (isRateLimited(guardError)) notePostSignatureRateLimit(ctx, signature)
+        return {
+          status: "uncertain",
+          signature,
+          error: `${detail}; status guard failed (${sanitizeSimulation(describeRpcFailure(guardError), {}).message}); ${signature} may still land`,
+          ...(rejection.diagnostics ? { diagnostics: rejection.diagnostics } : {}),
+        }
+      }
+      if (guardedStatus === null) {
+        return {
+          ...rejection,
+          status: "rejected",
+          signature,
+          error: detail,
+          pendingCleared: await clearPending(signature),
+        }
+      }
+    } else {
+      // BE-355 D4: transport and ambiguous RPC failures keep the record; never re-send.
+      if (isRateLimited(error)) notePostSignatureRateLimit(ctx, signature)
+      return {
+        status: "uncertain",
+        signature,
+        error: `send did not answer cleanly (${describeRpcFailure(error)}); it may still land`,
+      }
     }
   }
   for (let i = 0; i < CONFIRM_MAX_POLLS; i++) {
     let status: Awaited<ReturnType<SolanaRpc["getSignatureStatus"]>>
     try {
-      status = await rpc.getSignatureStatus(signature)
+      status = guardedStatus ?? (await rpc.getSignatureStatus(signature))
+      guardedStatus = undefined
     } catch (error) {
       if (isRateLimited(error)) notePostSignatureRateLimit(ctx, signature)
       return {
@@ -1358,7 +1404,8 @@ async function broadcastMessage(
       }
     }
     const observed = classifyStatus(status)
-    if (observed.kind === "finalized") return { status: "finalized", signature }
+    const slot = status?.slot === undefined ? {} : { slot: status.slot }
+    if (observed.kind === "finalized") return { status: "finalized", signature, ...slot }
     if (observed.kind === "failed") {
       // Final and failed: it can never land. Only a FINALIZED error settles it; an error seen at
       // processed/confirmed can still roll back with its fork and keeps polling.
@@ -1366,6 +1413,7 @@ async function broadcastMessage(
       return {
         status: "failed",
         signature,
+        ...slot,
         error: `transaction ${signature} failed on chain: ${JSON.stringify(observed.err)}`,
       }
     }
@@ -1565,7 +1613,28 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
     }
 
     const vaultKey = decodePubkey(vault)
-    const rpc = solana.rpc
+    const floor = createContextFloor()
+    for (const receipt of entry.tee?.sweepReceipts ?? []) if (receipt.slot !== undefined) floor.raise(receipt.slot)
+    const isContextFailure = (error: unknown): error is SolanaRpcError =>
+      error instanceof SolanaRpcError &&
+      Boolean(error.contextBehind || error.contextUnverified || (floor.slot !== undefined && error.rpcCode === -32602))
+    // Helpers deliberately return refusals on RPC errors. Keep the original context failure so
+    // their fallback cannot accidentally permit a signature later in this run.
+    let contextFailure: SolanaRpcError | undefined
+    const floored = withContextFloor(solana.rpc, floor)
+    const rpc = new Proxy(floored, {
+      get(target, key: keyof SolanaRpc) {
+        const method = target[key] as (...args: unknown[]) => Promise<unknown>
+        return async (...args: unknown[]) => {
+          try {
+            return await method(...args)
+          } catch (error) {
+            if (isContextFailure(error)) contextFailure = error
+            throw error
+          }
+        }
+      },
+    })
     // HW-07 operation evidence: receipts from EARLIER runs of this sweep are retained in the sealed
     // entry and reconciled here; every receipt this run finalizes is persisted before the next
     // transaction is signed, so an outage or an interrupted run never loses what already moved.
@@ -1576,6 +1645,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
     const alreadyRecordedLocally = entry.tee?.sweptAt !== undefined
     const pendingStill: SweepPendingRecord[] = []
     const retainReceipt = async (receipt: SweepReceipt): Promise<void> => {
+      if (receipt.slot !== undefined) floor.raise(receipt.slot)
       receipts.push(receipt)
       const kept = await commitActiveTee(active, (target) => {
         const existing = target.tee?.sweepReceipts ?? []
@@ -1601,31 +1671,82 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
       if (!kept.ok) residuals.push({ kind: "local-record-failed", detail: kept.message })
       return kept.ok
     }
-    const clearPending = async (signature: string): Promise<void> => {
+    const cleanupFailures = new Map<string, string>()
+    const clearPending = async (signature: string): Promise<boolean> => {
       const kept = await commitActiveTee(active, (target) => {
         target.tee = {
           ...(target.tee ?? { network: "solana-mainnet" }),
           sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== signature),
         }
       })
-      if (!kept.ok) residuals.push({ kind: "local-record-failed", detail: kept.message })
+      if (!kept.ok) {
+        residuals.push({ kind: "local-record-failed", detail: kept.message })
+        cleanupFailures.set(signature, sanitizeSimulation(kept.message, {}).message)
+      }
+      return kept.ok
     }
+    const attemptedAccounts = new Set<string>()
     const broadcast = (
       instructions: Instruction[],
       pending: Omit<SweepPendingRecord, "signature" | "blockhash" | "submittedAt">,
-    ) => broadcastAndFinalize(rpc, ctx, secret, teePubkey, instructions, pending, recordPending, clearPending)
+    ) => {
+      if (pending.account) attemptedAccounts.add(pending.account)
+      return broadcastAndFinalize(
+        rpc,
+        ctx,
+        secret,
+        teePubkey,
+        instructions,
+        pending,
+        recordPending,
+        clearPending,
+        floor,
+      )
+    }
     /**
      * Records a non-finalized broadcast outcome; true when this run may keep signing. `failedKind`
-     * is R5's name for this move, used only for a FINALIZED failure: that is the one outcome that
-     * proves the send was refused rather than merely unconfirmed.
+     * is R5's name for a finalized failure or guarded preflight rejection.
      */
+    let rejectionCount = 0
+    let blockingReason = "not signed: an earlier transaction is still in flight"
     const settle = (
       outcome: Exclude<BroadcastOutcome, { status: "finalized" }>,
       pending: Omit<SweepPendingRecord, "signature" | "blockhash" | "submittedAt">,
       describe: string,
       failedKind?: string,
     ): boolean => {
+      if (outcome.status === "rejected") {
+        rejectionCount++
+        const detail = `${outcome.error}; ${pending.kind === "sol" ? "SOL transfer" : pending.kind} of ${pending.amountRaw} ${pending.kind === "sol" ? "lamports" : "raw"}, signed as ${outcome.signature}`
+        residuals.push({
+          ...pending,
+          kind: failedKind ?? `${describe}-rejected`,
+          detail,
+          signature: outcome.signature,
+          broadcast: false,
+          rejection: { reason: outcome.reason, rpcCode: outcome.rpcCode, pendingCleared: outcome.pendingCleared },
+          ...(outcome.diagnostics ? { diagnostics: outcome.diagnostics } : {}),
+        })
+        if (!json) {
+          deps.stdout.write(`  ${detail}\n`)
+          if (outcome.diagnostics) {
+            if (outcome.diagnostics.err !== null) deps.stdout.write(`    program error: ${outcome.diagnostics.err}\n`)
+            for (const line of outcome.diagnostics.logs) deps.stdout.write(`    log: ${line}\n`)
+          }
+        }
+        if (!outcome.pendingCleared) {
+          blockingReason = "not signed: a rejected transaction's local pending record could not be cleared"
+          return false
+        }
+        if (rejectionCount >= 3) {
+          blockingReason =
+            "not signed: 3 transactions were rejected at simulation in this run; re-run after checking the diagnostics"
+          return false
+        }
+        return true
+      }
       if (outcome.status === "failed") {
+        if (outcome.slot !== undefined) floor.raise(outcome.slot)
         residuals.push({
           kind: failedKind ?? `${describe}-failed`,
           detail: outcome.error,
@@ -1636,15 +1757,19 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
         return true
       }
       if (outcome.status === "not-sent") {
-        residuals.push({ kind: `${describe}-not-sent`, detail: outcome.error })
+        residuals.push({ ...pending, kind: `${describe}-not-sent`, detail: outcome.error })
+        blockingReason = "not signed: the local pending transaction could not be recorded"
         return false
       }
       residuals.push({
         kind: "finality-uncertain",
         detail: outcome.error,
+        ...(pending.account ? { account: pending.account } : {}),
+        ...(outcome.diagnostics ? { diagnostics: outcome.diagnostics } : {}),
         ...(pending.mint ? { mint: pending.mint } : {}),
         amountRaw: pending.amountRaw,
       })
+      blockingReason = "not signed: an earlier transaction is still in flight"
       pendingStill.push({ ...pending, signature: outcome.signature, blockhash: "", submittedAt: "" })
       return false
     }
@@ -1655,6 +1780,26 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
     //    keeps this run from signing anything new (a competing transfer of the same balance would
     //    race it), and the address stays residual until it resolves.
     let signingBlocked = false
+    const notAttempted = (acct?: TokenAccountView) => {
+      if (acct && (attemptedAccounts.has(acct.pubkey) || residuals.some((r) => r.account === acct.pubkey))) return
+      residuals.push({
+        kind: "not-attempted",
+        detail: `${acct ? "account" : "SOL transfer"} ${blockingReason}`,
+        ...(acct ? { account: acct.pubkey, mint: acct.mint, amountRaw: acct.amountRaw } : {}),
+      })
+      if (!acct) solHandledAsResidual = true
+    }
+    const stopForContext = (error: unknown, acct?: TokenAccountView): boolean => {
+      if (!isContextFailure(error)) return false
+      blockingReason = "not signed: an RPC context failure stopped signing in this run"
+      signingBlocked = true
+      residuals.push({
+        kind: error.contextBehind ? "rpc-context-behind" : "rpc-context-unverified",
+        detail: `Nothing was signed for ${acct ? "this account" : "this step"}: RPC ${solana.endpoint.host} ${sanitizeSimulation(describeRpcFailure(error), {}).message}. Fix: ${rpcFixLines(ctx).join(", ")}`,
+        ...(acct ? { account: acct.pubkey, mint: acct.mint, amountRaw: acct.amountRaw } : {}),
+      })
+      return true
+    }
     const reads = {
       status: (signature: string) => rpc.getSignatureStatus(signature),
       blockhashValid: (blockhash: string) => rpc.isBlockhashValid(blockhash),
@@ -1667,13 +1812,17 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
           ...(p.mint ? { mint: p.mint } : {}),
           amountRaw: p.amountRaw,
           signature: p.signature,
+          ...(resolution.slot === undefined ? {} : { slot: resolution.slot }),
           finalizedAt: new Date(deps.now()).toISOString(),
         })
         if (!json) deps.stdout.write(`  pending ${p.signature} from an earlier run finalized: receipt retained\n`)
         continue
       }
       if (resolution.kind === "failed" || resolution.kind === "expired") {
-        await clearPending(p.signature)
+        if (!(await clearPending(p.signature))) {
+          signingBlocked = true
+          blockingReason = "not signed: an earlier pending record could not be cleared"
+        }
         if (!json) deps.stdout.write(`  pending ${p.signature}: ${resolution.detail}; its balance is swept again\n`)
         continue
       }
@@ -1706,6 +1855,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
     //    Token-2022 `TransferChecked` to the pinned vault below, to be unwound later from a fresh
     //    TEE wallet.
     const candidateAccounts = new Set<string>()
+    const knownAccounts = new Map<string, TokenAccountView>()
     /** Every verified close this run displayed before signing, for the `--json` document. */
     const lpCloses: Array<{ mint: string; account: string; display: string[] }> = []
     {
@@ -1713,11 +1863,13 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
       try {
         token2022Accounts = await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
       } catch (error) {
-        residuals.push({
-          kind: "inventory",
-          detail: `could not list Token-2022 accounts for position discovery: ${describeRpcFailure(error)}`,
-        })
+        if (!stopForContext(error))
+          residuals.push({
+            kind: "inventory",
+            detail: `could not list Token-2022 accounts for position discovery: ${describeRpcFailure(error)}`,
+          })
       }
+      for (const acct of token2022Accounts) knownAccounts.set(acct.pubkey, acct)
       const candidates = token2022Accounts.filter(isPositionCandidate)
       for (const acct of candidates) candidateAccounts.add(acct.pubkey)
       const leftover = (kind: string, acct: TokenAccountView, detail: string) =>
@@ -1731,7 +1883,10 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
           verdict: Extract<Awaited<ReturnType<typeof verifyCloseArtifact>>, { ok: true }>
         }> = []
         for (const acct of candidates) {
-          if (signingBlocked) break
+          if (signingBlocked) {
+            notAttempted(acct)
+            continue
+          }
           if (!apiKey || !entry.linkedWalletId) {
             leftover(
               DAMM_POSITION_CLOSE_UNAVAILABLE,
@@ -1774,6 +1929,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
             nftMint: acct.mint,
             nftAccount: acct.pubkey,
           })
+          if (contextFailure && stopForContext(contextFailure, acct)) continue
           if (!verdict.ok) {
             leftover(DAMM_CLOSE_TRANSACTION_REFUSED, acct, `${verdict.reason}; refused before signing`)
             continue
@@ -1783,7 +1939,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
         // Phase B: sign and send only what passed, after every artifact has been through Phase A.
         for (const { acct, verdict } of verified) {
           if (signingBlocked) {
-            leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, "not signed: an earlier transaction is still in flight")
+            notAttempted(acct)
             continue
           }
           // The server's blockhash is what gets signed (the simulation replaced it, so a stale
@@ -1797,6 +1953,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
           try {
             blockhashValid = await rpc.isBlockhashValid(verdict.tx.message.recentBlockhash, "confirmed")
           } catch (error) {
+            if (stopForContext(error, acct)) continue
             leftover(
               DAMM_POSITION_CLOSE_UNAVAILABLE,
               acct,
@@ -1825,6 +1982,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
             account: acct.pubkey,
             amountRaw: acct.amountRaw,
           }
+          attemptedAccounts.add(acct.pubkey)
           const outcome = await broadcastMessage(
             rpc,
             ctx,
@@ -1834,6 +1992,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
             pending,
             recordPending,
             clearPending,
+            floor,
           )
           if (outcome.status !== "finalized") {
             // A close that was signed and then failed at finality is `lp-close-failed`, not a
@@ -1846,6 +2005,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
             mint: acct.mint,
             amountRaw: acct.amountRaw,
             signature: outcome.signature,
+            ...(outcome.slot === undefined ? {} : { slot: outcome.slot }),
             finalizedAt: new Date(deps.now()).toISOString(),
           })
           if (!json)
@@ -1865,16 +2025,21 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
       try {
         tokenAccounts.push(...(await rpc.getTokenAccountsByOwner(address, programId)))
       } catch (error) {
-        residuals.push({
-          kind: "inventory",
-          detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${describeRpcFailure(error)}`,
-        })
+        if (!stopForContext(error))
+          residuals.push({
+            kind: "inventory",
+            detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${describeRpcFailure(error)}`,
+          })
       }
     }
+    for (const acct of tokenAccounts) knownAccounts.set(acct.pubkey, acct)
     // One epoch read for the whole sweep, and only when a transfer-fee mint needs it.
     let epoch: bigint | undefined
     for (const acct of tokenAccounts) {
-      if (signingBlocked) break
+      if (signingBlocked) {
+        notAttempted(acct)
+        continue
+      }
       const token2022 = acct.programId === TOKEN_2022_PROGRAM_ID
       if (candidateAccounts.has(acct.pubkey)) {
         // An ordinary sweep never moves a position NFT as a token: it was closed above, or it is
@@ -1919,6 +2084,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
               owner: teePubkey,
               amount,
             })
+            if (contextFailure) throw contextFailure
             if (hook.ok) extraAccounts = hook.accounts
             else {
               // Never a refusal (P3-AD-9): the transfer is sent without the tail it could not
@@ -1979,7 +2145,6 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
             : undefined
           if (!settle(outcome, pending, "token-transfer", named)) {
             signingBlocked = true
-            break
           }
           continue
         }
@@ -1989,11 +2154,13 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
           mint: acct.mint,
           amountRaw: acct.amountRaw,
           signature,
+          ...(outcome.slot === undefined ? {} : { slot: outcome.slot }),
           finalizedAt: new Date(deps.now()).toISOString(),
         })
         if (!json)
           deps.stdout.write(`  moved ${acct.amountRaw} raw of ${acct.mint} and closed its account: ${signature}\n`)
       } catch (error) {
+        if (stopForContext(error, acct)) continue
         residuals.push({
           kind: "token-transfer-failed",
           detail: describeRpcFailure(error),
@@ -2006,6 +2173,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
 
     // 3. Native SOL last, minus the fee this exact transfer will cost. Skipped while an earlier
     //    transaction is still in flight: its fee and its transfer would change this balance.
+    if (signingBlocked) notAttempted()
     try {
       const balance = signingBlocked ? 0n : await rpc.getBalance(address)
       if (balance > 0n) {
@@ -2043,6 +2211,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
               kind: "sol",
               amountRaw: amount.toString(),
               signature,
+              ...(outcome.slot === undefined ? {} : { slot: outcome.slot }),
               finalizedAt: new Date(deps.now()).toISOString(),
             })
             if (!json) deps.stdout.write(`  moved ${amount} lamports (fee ${fee}): ${signature}\n`)
@@ -2051,8 +2220,10 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
       }
     } catch (error) {
       solHandledAsResidual = true
-      residuals.push({ kind: "sol-transfer-failed", detail: describeRpcFailure(error) })
+      if (!stopForContext(error)) residuals.push({ kind: "sol-transfer-failed", detail: describeRpcFailure(error) })
     }
+
+    if (signingBlocked) for (const acct of knownAccounts.values()) notAttempted(acct)
 
     // 4. Post-finality inventory (SC-06, HW-07): completion is decided from what the chain holds
     //    AFTER the receipts finalized, never from the pre-transfer inventory. A deposit that landed
@@ -2185,6 +2356,7 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
             signature: p.signature,
           })),
           inventory,
+          contextFloorSlot: floor.slot ?? null,
           recordedOnServer,
           ...(lpCloses.length > 0 ? { lpCloses } : {}),
         })}\n`,
@@ -2218,6 +2390,19 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
       deps.stdout.write(
         `${pendingStill.length} transaction(s) still in flight (${pendingStill.map((p) => p.signature).join(", ")}). Re-run this sweep: a finalized one becomes a receipt, an expired one is swept again.\n`,
       )
+    const rejected = residuals.filter((r) => r.rejection)
+    if (pendingStill.length === 0 && rejected.length > 0 && rejected.every((r) => r.rejection?.pendingCleared)) {
+      deps.stdout.write(
+        `Nothing from this run is in flight: ${rejected.length} transaction(s) were rejected before broadcast. Re-run this sweep now.\n`,
+      )
+      if (rejected.some((r) => r.rejection?.reason === "context-behind"))
+        deps.stdout.write(`Fix: ${rpcFixLines(ctx).join(", ")}\n`)
+    }
+    for (const r of rejected)
+      if (!r.rejection?.pendingCleared)
+        deps.stdout.write(
+          `The local pending record for ${r.signature} could not be removed (${cleanupFailures.get(r.signature ?? "")}). It was never broadcast; the next run drops it once its blockhash expires, normally within two minutes. Re-run after that.\n`,
+        )
     if (serverState === "disable-pending" && !emergency)
       deps.stdout.write(
         `Remote signing authority is not verified denied. Re-run: candle tee disable ${address}, then re-run this sweep to record it.\n`,

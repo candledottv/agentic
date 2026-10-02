@@ -347,6 +347,10 @@ device token. Sibling device prefixes are not themselves secret: they appear in 
 "minted by" column, which is attribution and grants no capability. Device management is the
 portal's job, not this CLI's.
 
+### Sweeping TEE wallets home
+
+A Solana sweep keeps its reads and send preflight at or after the newest finalized slot it has observed, including retained receipts. If the RPC cannot meet that context, signing stops; choose another RPC with `--rpc-url`. A transaction refused at simulation is reported as **rejected (not broadcast)** with its program error and up to 20 sanitized log lines. Once its local pending record is cleared, re-run the sweep immediately. A failed local cleanup instead requires waiting for blockhash expiry, normally within two minutes. Later independent accounts continue after a cleared rejection, up to three rejections per run; skipped accounts and SOL are listed as `not-attempted`. Connection failures after a send remain uncertain, and the CLI never re-sends automatically. `--json` adds `signature`, `broadcast`, `rejection` and `diagnostics` to rejection residuals, and `contextFloorSlot` (or `null`) at the top level. Exit codes are unchanged.
+
 ### TEE swaps and launches (Phase 3)
 
 Use the profile holding the TEE wallet's bound API key and the machine that holds its

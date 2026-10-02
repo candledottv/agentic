@@ -6235,6 +6235,30 @@ function sanitizeSimulation(message, data) {
     ...Number.isSafeInteger(data.unitsConsumed) ? { unitsConsumed: data.unitsConsumed } : {}
   };
 }
+function definiteSendRejection(error) {
+  if (!(error instanceof SolanaRpcError))
+    return null;
+  if (error.method !== "sendTransaction")
+    return null;
+  if (error.status !== undefined)
+    return null;
+  if (error.responseIdMatched !== true)
+    return null;
+  if (error.rateLimited)
+    return null;
+  if (error.rpcCode === RPC_PREFLIGHT_FAILED_CODE && error.simulation !== undefined && error.simulation.err !== null) {
+    return { reason: "preflight-failed", rpcCode: RPC_PREFLIGHT_FAILED_CODE, diagnostics: error.simulation };
+  }
+  if (error.rpcCode === RPC_MIN_CONTEXT_SLOT_CODE && error.contextSlot !== undefined) {
+    return {
+      reason: "context-behind",
+      rpcCode: RPC_MIN_CONTEXT_SLOT_CODE,
+      diagnostics: null,
+      contextSlot: error.contextSlot
+    };
+  }
+  return null;
+}
 function rpcRetryDelayMs(error) {
   return Math.min(error.retryAfterMs ?? RPC_RETRY_DEFAULT_MS, RPC_RETRY_CAP_MS);
 }
@@ -6544,6 +6568,64 @@ function contextSlotOf(result) {
   const context = result !== null && typeof result === "object" ? result.context : undefined;
   const slot = context !== null && typeof context === "object" ? context.slot : undefined;
   return Number.isSafeInteger(slot) ? slot : undefined;
+}
+function createContextFloor(seed) {
+  let slot;
+  const floor = {
+    get slot() {
+      return slot;
+    },
+    raise(observed) {
+      if (!Number.isSafeInteger(observed) || observed < 0)
+        return;
+      if (slot === undefined || observed > slot)
+        slot = observed;
+    }
+  };
+  if (seed !== undefined)
+    floor.raise(seed);
+  return floor;
+}
+function withContextFloor(rpc, floor) {
+  const required = (opts) => {
+    const own = opts?.minContextSlot;
+    return {
+      get minContextSlot() {
+        return floor.slot === undefined ? own : own === undefined ? floor.slot : Math.max(floor.slot, own);
+      },
+      ...opts?.onContext !== undefined ? { onContext: opts.onContext } : {}
+    };
+  };
+  const finalized = (opts) => {
+    const base = required(opts);
+    return {
+      get minContextSlot() {
+        return base.minContextSlot;
+      },
+      onContext: (slot) => {
+        floor.raise(slot);
+        opts?.onContext?.(slot);
+      }
+    };
+  };
+  return {
+    getLatestBlockhash: (opts) => rpc.getLatestBlockhash(finalized(opts)),
+    getBalance: (address, opts) => rpc.getBalance(address, finalized(opts)),
+    getTokenAccountsByOwner: (owner, programId, opts) => rpc.getTokenAccountsByOwner(owner, programId, finalized(opts)),
+    getAccountInfo: (address, opts) => rpc.getAccountInfo(address, finalized(opts)),
+    getEpoch: (opts) => rpc.getEpoch(finalized(opts)),
+    getMultipleAccounts: (addresses, opts) => rpc.getMultipleAccounts(addresses, finalized(opts)),
+    simulateTransaction: (txBase64, addresses, opts) => rpc.simulateTransaction(txBase64, addresses, finalized(opts)),
+    getFeeForMessage: (messageBase64, opts) => rpc.getFeeForMessage(messageBase64, finalized(opts)),
+    sendTransaction: (txBase64, opts) => rpc.sendTransaction(txBase64, required(opts)),
+    isBlockhashValid: (blockhash, commitment, opts) => rpc.isBlockhashValid(blockhash, commitment, commitment === undefined || commitment === "finalized" ? finalized(opts) : required(opts)),
+    getSignatureStatus: (signature) => rpc.getSignatureStatus(signature),
+    getMinimumBalanceForRentExemption: (size) => rpc.getMinimumBalanceForRentExemption(size),
+    getTokenSupply: (mint) => rpc.getTokenSupply(mint),
+    hasSignatureHistory: (address) => rpc.hasSignatureHistory(address),
+    getProgramAccounts: (...args) => Reflect.apply(rpc.getProgramAccounts, rpc, args),
+    getProgramAccountsV2: (...args) => Reflect.apply(rpc.getProgramAccountsV2, rpc, args)
+  };
 }
 var SYSTEM_PROGRAM_ID = "11111111111111111111111111111111", TOKEN_PROGRAM_ID = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", TOKEN_2022_PROGRAM_ID = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", ASSOCIATED_TOKEN_PROGRAM_ID = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", PDA_MARKER, PROGRAM_ACCOUNTS_V2_LIMIT = 1000, SolanaRpcError, RPC_PREFLIGHT_FAILED_CODE = -32002, RPC_MIN_CONTEXT_SLOT_CODE = -32016, RPC_CONTEXT_BEHIND_SLEEPS_MS, DIAGNOSTIC_LOG_LINES = 20, DIAGNOSTIC_LOG_LINE_CHARS = 240, DIAGNOSTIC_MESSAGE_CHARS = 300, DIAGNOSTIC_ERR_CHARS = 512, RPC_RATE_LIMIT_CODE = -32429, RPC_RETRY_DEFAULT_MS = 2000, RPC_RETRY_CAP_MS = 1e4, NEVER_RETRIED;
 var init_solana_lite = __esm(() => {
@@ -33231,12 +33313,12 @@ function refusalState(raw) {
   const state = error.state;
   return state === "disable-pending" || state === "enabled" ? state : null;
 }
-async function broadcastAndFinalize(rpc, ctx, secret, feePayer, instructions, pending, recordPending, clearPending) {
+async function broadcastAndFinalize(rpc, ctx, secret, feePayer, instructions, pending, recordPending, clearPending, floor) {
   const blockhash = await rpc.getLatestBlockhash();
   const message = compileLegacyMessage({ feePayer, recentBlockhash: blockhash, instructions });
-  return broadcastMessage(rpc, ctx, secret, message, blockhash, pending, recordPending, clearPending);
+  return broadcastMessage(rpc, ctx, secret, message, blockhash, pending, recordPending, clearPending, floor);
 }
-async function broadcastMessage(rpc, ctx, secret, message, blockhash, pending, recordPending, clearPending) {
+async function broadcastMessage(rpc, ctx, secret, message, blockhash, pending, recordPending, clearPending, floor) {
   const { deps } = ctx;
   const signatureBytes = signMessage(message, secret);
   const signature = base58.encode(signatureBytes);
@@ -33251,24 +33333,52 @@ async function broadcastMessage(rpc, ctx, secret, message, blockhash, pending, r
     return { status: "not-sent", error: "could not record the pending transaction locally; not broadcast" };
   }
   let echoNote = "";
+  let guardedStatus;
   try {
     const echoed = await rpc.sendTransaction(toBase642(wire));
     if (echoed !== signature) {
       echoNote = `; the RPC echoed a different signature (${echoed}), which was ignored`;
     }
   } catch (error) {
-    if (isRateLimited(error))
-      notePostSignatureRateLimit(ctx, signature);
-    return {
-      status: "uncertain",
-      signature,
-      error: `send did not answer cleanly (${describeRpcFailure(error)}); it may still land`
-    };
+    const rejection = definiteSendRejection(error);
+    if (rejection) {
+      const detail = rejection.reason === "context-behind" ? `rejected before simulation (not broadcast): the RPC node is behind slot ${floor.slot ?? "required by this run"} (it is at ${rejection.contextSlot})` : `rejected at simulation (not broadcast): RPC ${rejection.rpcCode}: ${rejection.diagnostics?.message ?? "preflight failed"}`;
+      try {
+        guardedStatus = await rpc.getSignatureStatus(signature);
+      } catch (guardError) {
+        if (isRateLimited(guardError))
+          notePostSignatureRateLimit(ctx, signature);
+        return {
+          status: "uncertain",
+          signature,
+          error: `${detail}; status guard failed (${sanitizeSimulation(describeRpcFailure(guardError), {}).message}); ${signature} may still land`,
+          ...rejection.diagnostics ? { diagnostics: rejection.diagnostics } : {}
+        };
+      }
+      if (guardedStatus === null) {
+        return {
+          ...rejection,
+          status: "rejected",
+          signature,
+          error: detail,
+          pendingCleared: await clearPending(signature)
+        };
+      }
+    } else {
+      if (isRateLimited(error))
+        notePostSignatureRateLimit(ctx, signature);
+      return {
+        status: "uncertain",
+        signature,
+        error: `send did not answer cleanly (${describeRpcFailure(error)}); it may still land`
+      };
+    }
   }
   for (let i = 0;i < CONFIRM_MAX_POLLS; i++) {
     let status;
     try {
-      status = await rpc.getSignatureStatus(signature);
+      status = guardedStatus ?? await rpc.getSignatureStatus(signature);
+      guardedStatus = undefined;
     } catch (error) {
       if (isRateLimited(error))
         notePostSignatureRateLimit(ctx, signature);
@@ -33279,13 +33389,15 @@ async function broadcastMessage(rpc, ctx, secret, message, blockhash, pending, r
       };
     }
     const observed = classifyStatus(status);
+    const slot = status?.slot === undefined ? {} : { slot: status.slot };
     if (observed.kind === "finalized")
-      return { status: "finalized", signature };
+      return { status: "finalized", signature, ...slot };
     if (observed.kind === "failed") {
       await clearPending(signature);
       return {
         status: "failed",
         signature,
+        ...slot,
         error: `transaction ${signature} failed on chain: ${JSON.stringify(observed.err)}`
       };
     }
@@ -33430,7 +33542,27 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       return 1;
     }
     const vaultKey = decodePubkey(vault);
-    const rpc = solana.rpc;
+    const floor = createContextFloor();
+    for (const receipt of entry.tee?.sweepReceipts ?? [])
+      if (receipt.slot !== undefined)
+        floor.raise(receipt.slot);
+    const isContextFailure = (error) => error instanceof SolanaRpcError && Boolean(error.contextBehind || error.contextUnverified || floor.slot !== undefined && error.rpcCode === -32602);
+    let contextFailure;
+    const floored = withContextFloor(solana.rpc, floor);
+    const rpc = new Proxy(floored, {
+      get(target, key) {
+        const method = target[key];
+        return async (...args2) => {
+          try {
+            return await method(...args2);
+          } catch (error) {
+            if (isContextFailure(error))
+              contextFailure = error;
+            throw error;
+          }
+        };
+      }
+    });
     const retained = entry.tee?.sweepReceipts ?? [];
     const receipts = [];
     const residuals = [];
@@ -33438,6 +33570,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
     const alreadyRecordedLocally = entry.tee?.sweptAt !== undefined;
     const pendingStill = [];
     const retainReceipt = async (receipt) => {
+      if (receipt.slot !== undefined)
+        floor.raise(receipt.slot);
       receipts.push(receipt);
       const kept = await commitActiveTee(active, (target) => {
         const existing = target.tee?.sweepReceipts ?? [];
@@ -33465,6 +33599,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         residuals.push({ kind: "local-record-failed", detail: kept.message });
       return kept.ok;
     };
+    const cleanupFailures = new Map;
     const clearPending = async (signature) => {
       const kept = await commitActiveTee(active, (target) => {
         target.tee = {
@@ -33472,12 +33607,58 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           sweepPending: (target.tee?.sweepPending ?? []).filter((p) => p.signature !== signature)
         };
       });
-      if (!kept.ok)
+      if (!kept.ok) {
         residuals.push({ kind: "local-record-failed", detail: kept.message });
+        cleanupFailures.set(signature, sanitizeSimulation(kept.message, {}).message);
+      }
+      return kept.ok;
     };
-    const broadcast2 = (instructions, pending) => broadcastAndFinalize(rpc, ctx, secret, teePubkey, instructions, pending, recordPending, clearPending);
+    const attemptedAccounts = new Set;
+    const broadcast2 = (instructions, pending) => {
+      if (pending.account)
+        attemptedAccounts.add(pending.account);
+      return broadcastAndFinalize(rpc, ctx, secret, teePubkey, instructions, pending, recordPending, clearPending, floor);
+    };
+    let rejectionCount = 0;
+    let blockingReason = "not signed: an earlier transaction is still in flight";
     const settle2 = (outcome, pending, describe2, failedKind) => {
+      if (outcome.status === "rejected") {
+        rejectionCount++;
+        const detail = `${outcome.error}; ${pending.kind === "sol" ? "SOL transfer" : pending.kind} of ${pending.amountRaw} ${pending.kind === "sol" ? "lamports" : "raw"}, signed as ${outcome.signature}`;
+        residuals.push({
+          ...pending,
+          kind: failedKind ?? `${describe2}-rejected`,
+          detail,
+          signature: outcome.signature,
+          broadcast: false,
+          rejection: { reason: outcome.reason, rpcCode: outcome.rpcCode, pendingCleared: outcome.pendingCleared },
+          ...outcome.diagnostics ? { diagnostics: outcome.diagnostics } : {}
+        });
+        if (!json) {
+          deps.stdout.write(`  ${detail}
+`);
+          if (outcome.diagnostics) {
+            if (outcome.diagnostics.err !== null)
+              deps.stdout.write(`    program error: ${outcome.diagnostics.err}
+`);
+            for (const line of outcome.diagnostics.logs)
+              deps.stdout.write(`    log: ${line}
+`);
+          }
+        }
+        if (!outcome.pendingCleared) {
+          blockingReason = "not signed: a rejected transaction's local pending record could not be cleared";
+          return false;
+        }
+        if (rejectionCount >= 3) {
+          blockingReason = "not signed: 3 transactions were rejected at simulation in this run; re-run after checking the diagnostics";
+          return false;
+        }
+        return true;
+      }
       if (outcome.status === "failed") {
+        if (outcome.slot !== undefined)
+          floor.raise(outcome.slot);
         residuals.push({
           kind: failedKind ?? `${describe2}-failed`,
           detail: outcome.error,
@@ -33488,19 +33669,46 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         return true;
       }
       if (outcome.status === "not-sent") {
-        residuals.push({ kind: `${describe2}-not-sent`, detail: outcome.error });
+        residuals.push({ ...pending, kind: `${describe2}-not-sent`, detail: outcome.error });
+        blockingReason = "not signed: the local pending transaction could not be recorded";
         return false;
       }
       residuals.push({
         kind: "finality-uncertain",
         detail: outcome.error,
+        ...pending.account ? { account: pending.account } : {},
+        ...outcome.diagnostics ? { diagnostics: outcome.diagnostics } : {},
         ...pending.mint ? { mint: pending.mint } : {},
         amountRaw: pending.amountRaw
       });
+      blockingReason = "not signed: an earlier transaction is still in flight";
       pendingStill.push({ ...pending, signature: outcome.signature, blockhash: "", submittedAt: "" });
       return false;
     };
     let signingBlocked = false;
+    const notAttempted = (acct) => {
+      if (acct && (attemptedAccounts.has(acct.pubkey) || residuals.some((r) => r.account === acct.pubkey)))
+        return;
+      residuals.push({
+        kind: "not-attempted",
+        detail: `${acct ? "account" : "SOL transfer"} ${blockingReason}`,
+        ...acct ? { account: acct.pubkey, mint: acct.mint, amountRaw: acct.amountRaw } : {}
+      });
+      if (!acct)
+        solHandledAsResidual = true;
+    };
+    const stopForContext = (error, acct) => {
+      if (!isContextFailure(error))
+        return false;
+      blockingReason = "not signed: an RPC context failure stopped signing in this run";
+      signingBlocked = true;
+      residuals.push({
+        kind: error.contextBehind ? "rpc-context-behind" : "rpc-context-unverified",
+        detail: `Nothing was signed for ${acct ? "this account" : "this step"}: RPC ${solana.endpoint.host} ${sanitizeSimulation(describeRpcFailure(error), {}).message}. Fix: ${rpcFixLines(ctx).join(", ")}`,
+        ...acct ? { account: acct.pubkey, mint: acct.mint, amountRaw: acct.amountRaw } : {}
+      });
+      return true;
+    };
     const reads = {
       status: (signature) => rpc.getSignatureStatus(signature),
       blockhashValid: (blockhash) => rpc.isBlockhashValid(blockhash)
@@ -33513,6 +33721,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           ...p.mint ? { mint: p.mint } : {},
           amountRaw: p.amountRaw,
           signature: p.signature,
+          ...resolution.slot === undefined ? {} : { slot: resolution.slot },
           finalizedAt: new Date(deps.now()).toISOString()
         });
         if (!json)
@@ -33521,7 +33730,10 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         continue;
       }
       if (resolution.kind === "failed" || resolution.kind === "expired") {
-        await clearPending(p.signature);
+        if (!await clearPending(p.signature)) {
+          signingBlocked = true;
+          blockingReason = "not signed: an earlier pending record could not be cleared";
+        }
         if (!json)
           deps.stdout.write(`  pending ${p.signature}: ${resolution.detail}; its balance is swept again
 `);
@@ -33537,17 +33749,21 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       signingBlocked = true;
     }
     const candidateAccounts = new Set;
+    const knownAccounts = new Map;
     const lpCloses = [];
     {
       let token2022Accounts = [];
       try {
         token2022Accounts = await rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID);
       } catch (error) {
-        residuals.push({
-          kind: "inventory",
-          detail: `could not list Token-2022 accounts for position discovery: ${describeRpcFailure(error)}`
-        });
+        if (!stopForContext(error))
+          residuals.push({
+            kind: "inventory",
+            detail: `could not list Token-2022 accounts for position discovery: ${describeRpcFailure(error)}`
+          });
       }
+      for (const acct of token2022Accounts)
+        knownAccounts.set(acct.pubkey, acct);
       const candidates = token2022Accounts.filter(isPositionCandidate);
       for (const acct of candidates)
         candidateAccounts.add(acct.pubkey);
@@ -33558,8 +33774,10 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
 `);
         const verified = [];
         for (const acct of candidates) {
-          if (signingBlocked)
-            break;
+          if (signingBlocked) {
+            notAttempted(acct);
+            continue;
+          }
           if (!apiKey || !entry.linkedWalletId) {
             leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, "no bound API key is available to build the close; the NFT was left in place");
             continue;
@@ -33590,6 +33808,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
             nftMint: acct.mint,
             nftAccount: acct.pubkey
           });
+          if (contextFailure && stopForContext(contextFailure, acct))
+            continue;
           if (!verdict.ok) {
             leftover(DAMM_CLOSE_TRANSACTION_REFUSED, acct, `${verdict.reason}; refused before signing`);
             continue;
@@ -33598,13 +33818,15 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         }
         for (const { acct, verdict } of verified) {
           if (signingBlocked) {
-            leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, "not signed: an earlier transaction is still in flight");
+            notAttempted(acct);
             continue;
           }
           let blockhashValid;
           try {
             blockhashValid = await rpc.isBlockhashValid(verdict.tx.message.recentBlockhash, "confirmed");
           } catch (error) {
+            if (stopForContext(error, acct))
+              continue;
             leftover(DAMM_POSITION_CLOSE_UNAVAILABLE, acct, `could not check the close build's blockhash: ${describeRpcFailure(error)}; not signed`);
             continue;
           }
@@ -33627,7 +33849,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
             account: acct.pubkey,
             amountRaw: acct.amountRaw
           };
-          const outcome = await broadcastMessage(rpc, ctx, secret, verdict.tx.message.bytes, verdict.tx.message.recentBlockhash, pending, recordPending, clearPending);
+          attemptedAccounts.add(acct.pubkey);
+          const outcome = await broadcastMessage(rpc, ctx, secret, verdict.tx.message.bytes, verdict.tx.message.recentBlockhash, pending, recordPending, clearPending, floor);
           if (outcome.status !== "finalized") {
             if (!settle2(outcome, pending, "lp-close"))
               signingBlocked = true;
@@ -33638,6 +33861,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
             mint: acct.mint,
             amountRaw: acct.amountRaw,
             signature: outcome.signature,
+            ...outcome.slot === undefined ? {} : { slot: outcome.slot },
             finalizedAt: new Date(deps.now()).toISOString()
           });
           if (!json)
@@ -33651,16 +33875,21 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       try {
         tokenAccounts.push(...await rpc.getTokenAccountsByOwner(address, programId));
       } catch (error) {
-        residuals.push({
-          kind: "inventory",
-          detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${describeRpcFailure(error)}`
-        });
+        if (!stopForContext(error))
+          residuals.push({
+            kind: "inventory",
+            detail: `could not list ${programId === TOKEN_PROGRAM_ID ? "token" : "Token-2022"} accounts: ${describeRpcFailure(error)}`
+          });
       }
     }
+    for (const acct of tokenAccounts)
+      knownAccounts.set(acct.pubkey, acct);
     let epoch;
     for (const acct of tokenAccounts) {
-      if (signingBlocked)
-        break;
+      if (signingBlocked) {
+        notAttempted(acct);
+        continue;
+      }
       const token2022 = acct.programId === TOKEN_2022_PROGRAM_ID;
       if (candidateAccounts.has(acct.pubkey)) {
         if (!emergency)
@@ -33700,6 +33929,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
               owner: teePubkey,
               amount
             });
+            if (contextFailure)
+              throw contextFailure;
             if (hook.ok)
               extraAccounts = hook.accounts;
             else {
@@ -33750,7 +33981,6 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           const named = profile ? classifyTokenSendFailure({ profile, frozen: destinationFrozen, extraAccountsMissing }) : undefined;
           if (!settle2(outcome, pending, "token-transfer", named)) {
             signingBlocked = true;
-            break;
           }
           continue;
         }
@@ -33760,12 +33990,15 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           mint: acct.mint,
           amountRaw: acct.amountRaw,
           signature,
+          ...outcome.slot === undefined ? {} : { slot: outcome.slot },
           finalizedAt: new Date(deps.now()).toISOString()
         });
         if (!json)
           deps.stdout.write(`  moved ${acct.amountRaw} raw of ${acct.mint} and closed its account: ${signature}
 `);
       } catch (error) {
+        if (stopForContext(error, acct))
+          continue;
         residuals.push({
           kind: "token-transfer-failed",
           detail: describeRpcFailure(error),
@@ -33775,6 +34008,8 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
         });
       }
     }
+    if (signingBlocked)
+      notAttempted();
     try {
       const balance = signingBlocked ? 0n : await rpc.getBalance(address);
       if (balance > 0n) {
@@ -33813,6 +34048,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
               kind: "sol",
               amountRaw: amount.toString(),
               signature,
+              ...outcome.slot === undefined ? {} : { slot: outcome.slot },
               finalizedAt: new Date(deps.now()).toISOString()
             });
             if (!json)
@@ -33823,8 +34059,12 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
       }
     } catch (error) {
       solHandledAsResidual = true;
-      residuals.push({ kind: "sol-transfer-failed", detail: describeRpcFailure(error) });
+      if (!stopForContext(error))
+        residuals.push({ kind: "sol-transfer-failed", detail: describeRpcFailure(error) });
     }
+    if (signingBlocked)
+      for (const acct of knownAccounts.values())
+        notAttempted(acct);
     const inventory = { observedAt: new Date(deps.now()).toISOString(), verified: false, lamports: null, tokenAccounts: null };
     try {
       const listed = new Set(residuals.map((r) => r.account).filter((a) => a !== undefined));
@@ -33923,6 +34163,7 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
           signature: p.signature
         })),
         inventory,
+        contextFloorSlot: floor.slot ?? null,
         recordedOnServer,
         ...lpCloses.length > 0 ? { lpCloses } : {}
       })}
@@ -33949,6 +34190,18 @@ Stop the agent from your Candle session if you have not, and re-run candle tee d
 `);
     if (pendingStill.length > 0)
       deps.stdout.write(`${pendingStill.length} transaction(s) still in flight (${pendingStill.map((p) => p.signature).join(", ")}). Re-run this sweep: a finalized one becomes a receipt, an expired one is swept again.
+`);
+    const rejected = residuals.filter((r) => r.rejection);
+    if (pendingStill.length === 0 && rejected.length > 0 && rejected.every((r) => r.rejection?.pendingCleared)) {
+      deps.stdout.write(`Nothing from this run is in flight: ${rejected.length} transaction(s) were rejected before broadcast. Re-run this sweep now.
+`);
+      if (rejected.some((r) => r.rejection?.reason === "context-behind"))
+        deps.stdout.write(`Fix: ${rpcFixLines(ctx).join(", ")}
+`);
+    }
+    for (const r of rejected)
+      if (!r.rejection?.pendingCleared)
+        deps.stdout.write(`The local pending record for ${r.signature} could not be removed (${cleanupFailures.get(r.signature ?? "")}). It was never broadcast; the next run drops it once its blockhash expires, normally within two minutes. Re-run after that.
 `);
     if (serverState === "disable-pending" && !emergency)
       deps.stdout.write(`Remote signing authority is not verified denied. Re-run: candle tee disable ${address}, then re-run this sweep to record it.
