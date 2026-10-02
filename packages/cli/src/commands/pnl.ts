@@ -32,6 +32,21 @@
  * held). The total then covers tokens and LP. A position that is unpriced, unreadable, or closed
  * outside the ledger (a sweep close writes no confirmation) is shown as such and never valued.
  * Without an `lp` section the output is exactly what it was.
+ *
+ * ── Both chains (Ember Phase 4d, 4d-ED-8 to 4d-ED-10) ────────────────────────────────────────
+ *
+ * Each answer splits its figures by chain, and the table says which chain each row is on:
+ *
+ * - **Account scope** reads `/books`' `solana` and `hood` summaries: a block for each, then the
+ *   combined figure (`all`) with LP, as before. Positions carry `chain`, shown in a CHAIN column.
+ * - **Key scope** reads `pnlByKey`'s `byChain` pair the same way, and its `byWallet` rows become a
+ *   by-wallet table with a CHAIN column: each paying wallet's own average-cost pool, so the rows
+ *   need not sum to the total (the API says why).
+ *
+ * An answer without the split (an older API) prints exactly what it did, with `-` for a chain it
+ * did not name. A 4c bridge is not a trade: it opens no lot and realizes nothing, so it moves value
+ * between chains in `candle portfolio` and changes nothing here; bridge and Relay costs are not
+ * netted from these figures. `--json` passes the API's body through, chain fields included.
  */
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
@@ -41,8 +56,14 @@ import { apiKeyPrefix, printIdentity } from "../profiles"
 import { renderTable, terminalText, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { formatPrice, formatQuantity, formatUsd, shortAddress } from "../usd"
 
+type Chain = "solana" | "hood"
+const CHAINS: readonly Chain[] = ["solana", "hood"]
+const CHAIN_TITLES: Record<Chain, string> = { solana: "Solana", hood: "Hood" }
+
 interface Position {
   mint: string
+  /** The chain the position was traded on (4d-ED-1). Absent from an API that predates 4d. */
+  chain?: Chain
   symbol?: string | null
   book?: string | null
   quantity: number
@@ -108,8 +129,37 @@ type LpSection =
     }
   | { read: false; reason: string }
 
+/** One chain's share of either answer, without the position list (4d-ED-8, 4d-ED-9). */
+interface ChainSummary {
+  realizedNetUsd: number
+  realizedGrossUsd: number
+  feesUsd: number
+  unrealizedUsd: number
+  /** Open positions on this chain: a count in both answers. */
+  openPositions: number
+  /** `/books` names it `unmarked`, `pnlByKey` names it `unmarkedPositions`. */
+  unmarked?: number
+  unmarkedPositions?: number
+  unvalued: number
+}
+
+/** One paying wallet's share of a profile's P&L (`pnlByKey.byWallet`, 4d-ED-9). */
+interface WalletRow {
+  wallet: string
+  payerType: "main" | "linked"
+  chain?: Chain
+  label?: string | null
+  realizedNetUsd: number
+  unrealizedUsd: number
+  unmarkedPositions: number
+  openPositions: Position[]
+  tradesConsidered: number
+}
+
 interface BooksBody {
   all: Summary & { totalUsd: number }
+  solana?: ChainSummary
+  hood?: ChainSummary
   positions: Position[]
   lookback: number
   truncated: boolean
@@ -131,6 +181,8 @@ interface ProfileBody {
     lookback: number
     truncated: boolean
     oldestMarkAt?: number
+    byChain?: Partial<Record<Chain, ChainSummary>>
+    byWallet?: WalletRow[]
   }
   lp?: LpSection
 }
@@ -213,6 +265,7 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
   if (perProfile) {
     const { pnl: p, lp } = body as unknown as ProfileBody
     deps.stdout.write(`P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills\n\n`)
+    writeChainBlocks(ctx, p.byChain)
     writeSummary(ctx, {
       realizedNetUsd: p.realizedNetUsd,
       realizedGrossUsd: p.realizedGrossUsd,
@@ -229,12 +282,14 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
       lp,
     })
     writePositions(ctx, p.openPositions, false)
+    writeWallets(ctx, p.byWallet)
     writeLpPositions(ctx, lp, false)
     return 0
   }
 
   const books = body as unknown as BooksBody
   deps.stdout.write("P&L for the account: every profile, the web app and the CLI, one ledger\n\n")
+  writeChainBlocks(ctx, { solana: books.solana, hood: books.hood })
   writeSummary(ctx, {
     ...books.all,
     positions: books.positions.length,
@@ -247,6 +302,78 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
   writePositions(ctx, books.positions, true)
   writeLpPositions(ctx, books.lp, true)
   return 0
+}
+
+/** A summary carries real figures, not an empty placeholder some older answers send. */
+function isChainSummary(value: unknown): value is ChainSummary {
+  return typeof value === "object" && value !== null && typeof (value as ChainSummary).realizedNetUsd === "number"
+}
+
+/**
+ * One block per chain, then a heading for the combined figure that follows (4d-ED-8, 4d-ED-9).
+ * Nothing when the answer does not split by chain: an older API reads exactly as it did.
+ */
+function writeChainBlocks(ctx: CommandContext, byChain: Partial<Record<Chain, unknown>> | undefined): void {
+  const blocks = CHAINS.flatMap((chain) => {
+    const summary = byChain?.[chain]
+    return isChainSummary(summary) ? [[chain, summary] as const] : []
+  })
+  if (blocks.length === 0) return
+  for (const [chain, s] of blocks) {
+    const unmarked = s.unmarked ?? s.unmarkedPositions ?? 0
+    const marked = s.openPositions - unmarked
+    ctx.deps.stdout.write(`${CHAIN_TITLES[chain]}\n`)
+    writeLines(ctx, [
+      [
+        "Realized net",
+        formatUsd(s.realizedNetUsd),
+        `gross ${formatUsd(s.realizedGrossUsd)}, fees ${formatUsd(s.feesUsd)}`,
+      ],
+      [
+        "Unrealized",
+        formatUsd(s.unrealizedUsd),
+        `${marked} of ${s.openPositions} open ${s.openPositions === 1 ? "position" : "positions"} marked${unmarked > 0 ? `; ${unmarked} unpriced, not counted` : ""}`,
+      ],
+      ["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized"],
+    ])
+    if (s.unvalued > 0) {
+      ctx.deps.stdout.write(
+        `${s.unvalued} ${s.unvalued === 1 ? "fill" : "fills"} could not be valued and are not in these figures.\n`,
+      )
+    }
+    ctx.deps.stdout.write("\n")
+  }
+  ctx.deps.stdout.write("All chains\n")
+}
+
+function writeLines(ctx: CommandContext, lines: string[][]): void {
+  const width = Math.max(...lines.map(([label]) => (label as string).length))
+  const valueWidth = Math.max(...lines.map(([, value]) => (value as string).length))
+  for (const [label, value, note] of lines) {
+    ctx.deps.stdout.write(`${(label as string).padEnd(width)}  ${(value as string).padStart(valueWidth)}  (${note})\n`)
+  }
+}
+
+/**
+ * Key scope's by-wallet rows (#1501), with the chain each paying wallet is on (4d-ED-9). Each row
+ * is that wallet's own average-cost pool, so the rows need not sum to the total.
+ */
+function writeWallets(ctx: CommandContext, wallets: WalletRow[] | undefined): void {
+  if (!wallets || wallets.length === 0) return
+  const rows = wallets.map((w) => [
+    `${w.label?.trim() ? `${w.label.trim()} ` : w.payerType === "main" ? "main " : ""}(${shortAddress(w.wallet)})`,
+    w.chain ?? "-",
+    String(w.tradesConsidered),
+    formatUsd(w.realizedNetUsd),
+    formatUsd(w.unrealizedUsd),
+    `${w.openPositions.length}${w.unmarkedPositions > 0 ? ` (${w.unmarkedPositions} unpriced)` : ""}`,
+  ])
+  ctx.deps.stdout.write(
+    `\nBy wallet (each its own cost basis, so the rows need not sum to the total)\n${renderTable(
+      ["WALLET", "CHAIN", "TRADES", "REALIZED NET", "UNREALIZED", "OPEN"],
+      rows.map((row) => row.map(terminalText)),
+    )}\n`,
+  )
 }
 
 function writeSummary(
@@ -308,11 +435,7 @@ function writeSummary(
   } else {
     lines.push(["Total", formatUsd(s.realizedNetUsd + s.unrealizedUsd), "realized net plus unrealized"])
   }
-  const width = Math.max(...lines.map(([label]) => (label as string).length))
-  const valueWidth = Math.max(...lines.map(([, value]) => (value as string).length))
-  for (const [label, value, note] of lines) {
-    ctx.deps.stdout.write(`${(label as string).padEnd(width)}  ${(value as string).padStart(valueWidth)}  (${note})\n`)
-  }
+  writeLines(ctx, lines)
   if (s.oldestMarkAt !== undefined) {
     ctx.deps.stdout.write(`Marks as old as ${new Date(s.oldestMarkAt).toISOString()}.\n`)
   }
@@ -383,11 +506,12 @@ function writePositions(ctx: CommandContext, positions: Position[], withBook: bo
     ctx.deps.stdout.write("\nNo open positions.\n")
     return
   }
-  const headers = ["TOKEN", "QUANTITY", "AVG ENTRY", "MARK", "UNREALIZED"]
+  const headers = ["TOKEN", "CHAIN", "QUANTITY", "AVG ENTRY", "MARK", "UNREALIZED"]
   if (withBook) headers.push("BOOK")
   const rows = positions.map((p) => {
     const row = [
       p.symbol?.trim() || shortAddress(p.mint),
+      p.chain ?? "-",
       formatQuantity(p.quantity),
       formatPrice(p.avgEntryUsd),
       p.markPriceUsd !== undefined ? formatPrice(p.markPriceUsd) : "unpriced",

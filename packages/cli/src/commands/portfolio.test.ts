@@ -11,6 +11,7 @@ import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Deps } from "../deps"
+import { FIXTURE_EVM_0, FIXTURE_EVM_1 } from "../evm-lite.test"
 import { run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 import type { IndexPlaintext, KeyEntry } from "../vault/format"
@@ -70,7 +71,12 @@ async function vaultWith(entries: KeyEntry[]): Promise<{ dir: string; path: stri
     const index: IndexPlaintext = {
       hd: {
         ...made.vault.index.hd,
-        nextIndex: { solanaVault: next("0"), solanaTee: next("1"), solanaExternal: next("2"), evm: 0 },
+        nextIndex: {
+          solanaVault: next("0"),
+          solanaTee: next("1"),
+          solanaExternal: next("2"),
+          evm: entries.some((e) => e.chain === "evm") ? 1000 : 0,
+        },
       },
       entries,
     }
@@ -84,6 +90,19 @@ async function vaultWith(entries: KeyEntry[]): Promise<{ dir: string; path: stri
 interface Wallet {
   lamports: string | null
   tokens: { mint: string; amountRaw: string; decimals: number; program: "token" | "token-2022" }[] | null
+}
+
+interface HoodWallet {
+  wei: string | null
+  tokens: { chain: "hood"; mint: string; amountRaw: string; decimals: number; symbol?: string }[] | null
+  truncated?: true
+}
+interface HoodSection {
+  embedded: ({ address: string; chain: "hood" } & HoodWallet)[]
+  tee: ({ id: string; address: string; label?: string; active: boolean; chain: "hood" } & HoodWallet)[]
+  unavailable: string[]
+  unpriced: number
+  unpricedByReason: Record<string, number>
 }
 
 interface Recorded {
@@ -108,6 +127,19 @@ function harness(opts: {
   rpcRateLimitCalls?: number[]
   candleStatus?: number
   tty?: boolean
+  /** The `hood` section Candle adds from Ember 4d. Absent by default: an API that predates it. */
+  hood?: HoodSection
+  /** Answers POST /agent/prices `hood` entries by asset (`native` or a contract, any case). */
+  hoodPrices?: Record<string, { priceUsd: number | null; source: string | null; unpricedReason?: string }>
+  /** The operator's EVM RPC at evm.example.test. */
+  evm?: {
+    chainId?: number
+    chainIdFails?: boolean
+    wei?: (address: string) => bigint
+    usdg?: (address: string) => bigint
+    /** balanceOf (USDG) fails for this address. */
+    usdgFailAddress?: string
+  }
   /** The `lp` section Candle adds when it serves LP (BE-323). Absent by default, as before E2. */
   lp?: {
     positions: {
@@ -143,6 +175,26 @@ function harness(opts: {
     const url = new URL(String(input))
     const body = init?.body ? String(init.body) : ""
     requests.push({ host: url.host, path: url.pathname, method: init?.method ?? "GET", body })
+    if (url.host === "evm.example.test") {
+      const rpc = JSON.parse(body) as { id: number; method: string; params: unknown[] }
+      const answer = (result: string) => Response.json({ jsonrpc: "2.0", id: rpc.id, result })
+      if (rpc.method === "eth_chainId") {
+        if (opts.evm?.chainIdFails) return new Response("down", { status: 503 })
+        return answer(`0x${(opts.evm?.chainId ?? 4663).toString(16)}`)
+      }
+      if (rpc.method === "eth_getBalance")
+        return answer(`0x${(opts.evm?.wei?.(rpc.params[0] as string) ?? 0n).toString(16)}`)
+      if (rpc.method === "eth_call") {
+        const call = rpc.params[0] as { to: string; data: string }
+        const owner = `0x${call.data.slice(-40)}`
+        if (opts.evm?.usdgFailAddress?.toLowerCase() === owner) {
+          return Response.json({ jsonrpc: "2.0", id: rpc.id, error: { code: -32000, message: "execution reverted" } })
+        }
+        const held = opts.evm?.usdg?.(owner) ?? 0n
+        return answer(`0x${held.toString(16).padStart(64, "0")}`)
+      }
+      throw new Error(`Unexpected EVM method ${rpc.method}`)
+    }
     if (url.host === "rpc.example.test") {
       inFlight += 1
       peak = Math.max(peak, inFlight)
@@ -199,22 +251,31 @@ function harness(opts: {
         tee,
         prices: opts.candlePrices ?? { [SOL]: { priceUsd: 100, source: "jupiter", symbol: "SOL" } },
         unavailable: tee.filter((w) => w.lamports === null || w.tokens === null).map((w) => w.address),
-        complete: tee.every((w) => w.lamports !== null && w.tokens !== null) && (opts.lp?.complete ?? true),
+        complete:
+          tee.every((w) => w.lamports !== null && w.tokens !== null) &&
+          (opts.lp?.complete ?? true) &&
+          (opts.hood?.unavailable.length ?? 0) === 0,
         ...(opts.lp ? { lp: opts.lp } : {}),
+        ...(opts.hood ? { hood: opts.hood } : {}),
       })
     }
     if (url.pathname === "/api/v1/agent/prices") {
-      const { mints } = JSON.parse(body) as { mints: string[] }
+      const { mints = [], hood = [] } = JSON.parse(body) as { mints?: string[]; hood?: string[] }
       return Response.json({
         success: true,
-        prices: Object.fromEntries(
-          mints.map((m) => [
+        prices: Object.fromEntries([
+          ...hood.map((asset) => {
+            const key = asset === "native" ? "hood:native" : `hood:${asset.toLowerCase()}`
+            const answer = Object.entries(opts.hoodPrices ?? {}).find(([a]) => a.toLowerCase() === asset.toLowerCase())
+            return [key, answer?.[1] ?? { priceUsd: null, source: null, unpricedReason: "no-market-row" }]
+          }),
+          ...mints.map((m) => [
             m,
             opts.prices?.[m] === undefined
               ? { priceUsd: null, source: null }
               : { priceUsd: opts.prices[m], source: "market" },
           ]),
-        ),
+        ]),
       })
     }
     throw new Error(`Unexpected request ${url.href}`)
@@ -238,7 +299,8 @@ function harness(opts: {
   })
   const candleRequests = () => requests.filter((r) => r.host === "api.example.test")
   const rpcRequests = () => requests.filter((r) => r.host === "rpc.example.test")
-  return { deps, stdout, stderr, asked, requests, candleRequests, rpcRequests, peak: () => peak }
+  const evmRequests = () => requests.filter((r) => r.host === "evm.example.test")
+  return { deps, stdout, stderr, asked, requests, candleRequests, rpcRequests, evmRequests, peak: () => peak }
 }
 
 async function emptyConfigDir(): Promise<string> {
@@ -261,9 +323,9 @@ describe("candle portfolio", () => {
     expect(h.rpcRequests()).toEqual([])
     expect(h.candleRequests().map((r) => `${r.method} ${r.path}`)).toEqual(["GET /api/v1/agent/portfolio"])
     const out = h.stdout.text
-    expect(out).toContain("GROUP     WALLET")
-    expect(out).toMatch(/tee\s+tee-1 \(TeeW…[^)]+\)\s+SOL\s+0\.5\s+\$100\.00\s+\$50\.00/)
-    expect(out).toMatch(/embedded\s+\(Embe…1111\)\s+SOL\s+2\s+\$100\.00\s+\$200\.00/)
+    expect(out).toContain("GROUP     CHAIN   WALLET")
+    expect(out).toMatch(/tee\s+solana\s+tee-1 \(TeeW…[^)]+\)\s+SOL\s+0\.5\s+\$100\.00\s+\$50\.00/)
+    expect(out).toMatch(/embedded\s+solana\s+\(Embe…1111\)\s+SOL\s+2\s+\$100\.00\s+\$200\.00/)
     expect(out).toMatch(/vault\s+-\s+no vault at /)
     // No vault entry, so no request: neither the notice nor the host line was printed (invariant 4).
     expect(h.stderr.text).not.toContain("Solana RPC:")
@@ -411,10 +473,10 @@ describe("candle portfolio", () => {
     const code = await run(["portfolio"], h.deps)
     expect(code).toBe(3)
     // SOL answered, the token read did not: the SOL is shown and counted, the tokens are "not read".
-    expect(h.stdout.text).toMatch(/vault\s+busy \(7xKX…[^)]+\)\s+SOL\s+1\s+\$100\.00\s+\$100\.00/)
-    expect(h.stdout.text).toMatch(/vault\s+busy \(7xKX…[^)]+\)\s+tokens\s+not read\s+-\s+-/)
+    expect(h.stdout.text).toMatch(/vault\s+solana\s+busy \(7xKX…[^)]+\)\s+SOL\s+1\s+\$100\.00\s+\$100\.00/)
+    expect(h.stdout.text).toMatch(/vault\s+solana\s+busy \(7xKX…[^)]+\)\s+tokens\s+not read\s+-\s+-/)
     expect(h.stdout.text).toContain(
-      '1 wallet could not be read in full. What was not read is marked "not read" and is not in the total.',
+      '1 wallet could not be read in full (1 on Solana). What was not read is marked "not read" and is not in the total.',
     )
 
     const j = harness({
@@ -544,7 +606,7 @@ describe("candle portfolio", () => {
     expect(await run(["portfolio"], h.deps)).toBe(0)
     const out = h.stdout.text
     // The token table first, then the LP table.
-    expect(out.indexOf("GROUP     WALLET")).toBeLessThan(out.indexOf("LP positions"))
+    expect(out.indexOf("GROUP     CHAIN   WALLET")).toBeLessThan(out.indexOf("LP positions"))
     expect(out).toContain("GROUP  WALLET             POSITION   POOL       HOLDINGS")
     expect(out).toMatch(
       /tee\s+tee-1 \(TeeW…[^)]+\)\s+Posi…AAAA\s+Pool…XXXX\s+0\.5 SOL \+ 200 USDC\s+0\.01 SOL \+ 1\.5 USDC\s+\$252\.50/,
@@ -697,7 +759,9 @@ describe("candle portfolio", () => {
     expect(await run(["portfolio"], h.deps)).toBe(0)
     // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence.
     expect(h.stdout.text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
-    expect(h.stdout.text).toMatch(/tee\s+tee\[8m-hidden \(TeeW…[^)]+\)\s+\[2J\[31mUSDC\s+1\s+\$2\.00\s+\$2\.00/)
+    expect(h.stdout.text).toMatch(
+      /tee\s+solana\s+tee\[8m-hidden \(TeeW…[^)]+\)\s+\[2J\[31mUSDC\s+1\s+\$2\.00\s+\$2\.00/,
+    )
 
     const j = harness({ dir, tee, candlePrices })
     expect(await run(["portfolio", "--json"], j.deps)).toBe(0)
@@ -739,5 +803,361 @@ describe("BE-355 T13: a rate-limited vault read is partial, and stops", () => {
     )
     expect(h.stderr.text).toContain("Solana RPC: rpc.example.test (CANDLE_SOLANA_RPC_URL)")
     expect(h.stdout.text + h.stderr.text).not.toContain("key-in-path")
+  })
+})
+
+/**
+ * Ember Phase 4d PR B (BE-670, 4d-ED-1 to 4d-ED-7): Hood rows in `candle portfolio`.
+ *
+ * Candle's Hood wallets arrive in the answer's `hood` section; EVM vault keys are read over the
+ * operator's EVM RPC (evm.example.test here) for ETH and USDG, and priced by asset alone.
+ */
+const EVM_RPC_URL = "https://evm.example.test/key-in-path"
+const HOOD_TEE = "0x1111111111111111111111111111111111111111"
+const HOOD_EMBEDDED = "0x2222222222222222222222222222222222222222"
+const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"
+const HOODIE = "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa"
+const STALE = "0xBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBbBb"
+
+function evmEntryAt(index: number, label: string, address: string): KeyEntry {
+  return {
+    ...entryAt(900 + index, label),
+    id: `evm-${String(index).padStart(3, "0")}`,
+    chain: "evm",
+    curve: "secp256k1",
+    address,
+    derivation: { scheme: "bip32-secp256k1", path: `m/44'/60'/${index}'/0/0` },
+  }
+}
+
+/** One Hood TEE wallet (ETH, USDG, a fresh-marked token, a stale one) and the Hood embedded wallet. */
+function hoodSection(overrides: Partial<HoodSection> = {}): HoodSection {
+  return {
+    embedded: [{ address: HOOD_EMBEDDED, chain: "hood", wei: "500000000000000000", tokens: [] }],
+    tee: [
+      {
+        id: "hw1",
+        address: HOOD_TEE,
+        label: "hood-1",
+        active: true,
+        chain: "hood",
+        wei: "1000000000000000000",
+        tokens: [
+          { chain: "hood", mint: USDG, amountRaw: "25000000", decimals: 6 },
+          { chain: "hood", mint: HOODIE, amountRaw: "3000000000000000000", decimals: 18, symbol: "HOODIE" },
+          { chain: "hood", mint: STALE, amountRaw: "7000000000000000000", decimals: 18, symbol: "STALE" },
+        ],
+      },
+    ],
+    unavailable: [],
+    unpriced: 1,
+    unpricedByReason: { "stale-mark": 1 },
+    ...overrides,
+  }
+}
+
+/** Candle's prices map: Solana by mint, Hood under lowercased `hood:` keys (4d-ED-5). */
+const HOOD_PRICES = {
+  [SOL]: { priceUsd: 100, source: "jupiter", symbol: "SOL" },
+  "hood:native": { priceUsd: 2000, source: "reference" },
+  [`hood:${USDG.toLowerCase()}`]: { priceUsd: 1, source: "reference" },
+  [`hood:${HOODIE.toLowerCase()}`]: { priceUsd: 0.5, source: "market", symbol: "HOODIE" },
+  [`hood:${STALE.toLowerCase()}`]: { priceUsd: null, source: null, symbol: "STALE", unpricedReason: "stale-mark" },
+}
+
+describe("Ember 4d: Hood in candle portfolio", () => {
+  test("Candle's hood section: a CHAIN column, ETH, USDG and tokens at hood: prices, the reason where a value would be, per-chain subtotals", async () => {
+    const dir = await emptyConfigDir()
+    const h = harness({
+      dir,
+      tee: [{ id: "w1", address: teeAddress(1), label: "tee-1", active: true, lamports: "500000000", tokens: [] }],
+      candlePrices: HOOD_PRICES,
+      hood: hoodSection(),
+    })
+    expect(await run(["portfolio"], h.deps)).toBe(0)
+    // Hood rows come from Candle's one read; nothing else is asked.
+    expect(h.candleRequests().map((r) => `${r.method} ${r.path}`)).toEqual(["GET /api/v1/agent/portfolio"])
+    expect(h.evmRequests()).toEqual([])
+    const out = h.stdout.text
+    expect(out).toContain("GROUP     CHAIN   WALLET")
+    expect(out).toMatch(/tee\s+solana\s+tee-1 \(TeeW…[^)]+\)\s+SOL\s+0\.5\s+\$100\.00\s+\$50\.00/)
+    expect(out).toMatch(/tee\s+hood\s+hood-1 \(0x11…1111\)\s+ETH\s+1\s+\$2,000\.00\s+\$2,000\.00/)
+    expect(out).toMatch(/tee\s+hood\s+hood-1 \(0x11…1111\)\s+USDG\s+25\s+\$1\.00\s+\$25\.00/)
+    expect(out).toMatch(/tee\s+hood\s+hood-1 \(0x11…1111\)\s+HOODIE\s+3\s+\$0\.5\s+\$1\.50/)
+    // 4d-ED-4: an unpriced Hood token shows its reason where its value would be, never $0.
+    expect(out).toMatch(/tee\s+hood\s+hood-1 \(0x11…1111\)\s+STALE\s+7\s+unpriced\s+stale-mark/)
+    expect(out).toMatch(/embedded\s+hood\s+\(0x22…2222\)\s+ETH\s+0\.5\s+\$2,000\.00\s+\$1,000\.00/)
+    expect(out).toMatch(/embedded\s+solana\s+\(Embe…1111\)\s+SOL\s+2\s+\$100\.00\s+\$200\.00/)
+    // Per group, then per chain, then one total (4d-ED-7). Hood's unpriced line is hood.unpricedByReason.
+    expect(out).toMatch(/tee\s+\$2,076\.50\s+2 wallets, 1 unpriced/)
+    expect(out).toMatch(/embedded\s+\$1,200\.00\s+2 wallets/)
+    expect(out).toMatch(/solana\s+\$250\.00\s+2 wallets\n/)
+    expect(out).toMatch(/hood\s+\$3,026\.50\s+2 wallets, 1 unpriced \(1 stale-mark\)/)
+    expect(out).toMatch(/total\s+\$3,276\.50\s+1 unpriced holding not counted/)
+    const lines = out.split("\n")
+    const at = (label: string) => lines.findIndex((line) => line.startsWith(label))
+    expect(at("embedded ")).toBeLessThan(at("solana "))
+    expect(at("solana ")).toBeLessThan(at("hood "))
+    expect(at("hood ")).toBeLessThan(at("total "))
+  })
+
+  test("--json: chain on every wallet and holding, per-chain and per-group subtotals", async () => {
+    const dir = await emptyConfigDir()
+    const h = harness({
+      dir,
+      tee: [{ id: "w1", address: teeAddress(1), active: true, lamports: "500000000", tokens: [] }],
+      candlePrices: HOOD_PRICES,
+      hood: hoodSection(),
+    })
+    expect(await run(["portfolio", "--json"], h.deps)).toBe(0)
+    const doc = JSON.parse(h.stdout.text)
+    expect(doc.chains).toEqual(["solana", "hood"])
+    expect(doc.complete).toBe(true)
+    expect(doc.totalUsd).toBeCloseTo(3276.5)
+    expect(doc.byChain.solana).toEqual({ valueUsd: 250, unpriced: 0, wallets: 2, unavailable: 0 })
+    expect(doc.byChain.hood).toEqual({
+      valueUsd: 3026.5,
+      unpriced: 1,
+      wallets: 2,
+      unavailable: 0,
+      unpricedByReason: { "stale-mark": 1 },
+    })
+    const tee = doc.groups.find((g: { group: string }) => g.group === "tee")
+    expect(tee.byChain).toEqual({ solana: { valueUsd: 50, unpriced: 0 }, hood: { valueUsd: 2026.5, unpriced: 1 } })
+    for (const group of doc.groups) {
+      for (const wallet of group.wallets) {
+        expect(["solana", "hood"]).toContain(wallet.chain)
+        for (const holding of wallet.holdings ?? []) expect(holding.chain).toBe(wallet.chain)
+      }
+    }
+    const hoodTee = tee.wallets.find((w: { chain: string }) => w.chain === "hood")
+    expect(hoodTee).toMatchObject({ chain: "hood", address: HOOD_TEE, id: "hw1", label: "hood-1", active: true })
+    expect(hoodTee.holdings.map((x: { symbol: string; program: string }) => `${x.symbol}:${x.program}`)).toEqual([
+      "ETH:native",
+      "USDG:erc20",
+      "HOODIE:erc20",
+      "STALE:erc20",
+    ])
+    const stale = hoodTee.holdings.find((x: { symbol: string }) => x.symbol === "STALE")
+    expect(stale).toMatchObject({ priceUsd: null, valueUsd: null, unpricedReason: "stale-mark" })
+    expect(hoodTee.holdings[0]).toMatchObject({ mint: "native", amount: "1", priceUsd: 2000, priceSource: "reference" })
+  })
+
+  test("an EVM vault key: read over the operator's EVM RPC, host on stderr first, priced by asset with no address sent", async () => {
+    const { dir } = await vaultWith([entryAt(0, "treasury"), evmEntryAt(0, "hood-cold", FIXTURE_EVM_0)])
+    const h = harness({
+      dir,
+      env: { CANDLE_SOLANA_RPC_URL: RPC_URL, CANDLE_EVM_RPC_URL: EVM_RPC_URL },
+      rpcLamports: () => 1_000_000_000,
+      evm: { wei: () => 2_000_000_000_000_000_000n, usdg: () => 1_500_000n },
+      hoodPrices: { native: { priceUsd: 2000, source: "reference" }, [USDG]: { priceUsd: 1, source: "reference" } },
+    })
+    expect(await run(["portfolio"], h.deps)).toBe(0)
+    // ETH, then USDG: eth_chainId once, then balance and balanceOf for the one key.
+    expect(h.evmRequests().map((r) => (JSON.parse(r.body) as { method: string }).method)).toEqual([
+      "eth_chainId",
+      "eth_getBalance",
+      "eth_call",
+    ])
+    // The Solana RPC never saw the 0x address; Candle never saw either vault address.
+    for (const r of h.rpcRequests()) expect(r.body).not.toContain(FIXTURE_EVM_0)
+    for (const r of h.candleRequests()) {
+      expect(`${r.path} ${r.body}`.toLowerCase()).not.toContain(FIXTURE_EVM_0.toLowerCase())
+      expect(`${r.path} ${r.body}`).not.toContain(vaultAddress(0))
+    }
+    // 4d-ED-4: one hood price request, `native` and the USDG contract, and nothing else.
+    const hoodPriced = h
+      .candleRequests()
+      .filter((r) => r.path === "/api/v1/agent/prices" && r.body.includes("hood"))
+      .map((r) => JSON.parse(r.body))
+    expect(hoodPriced).toEqual([{ hood: ["native", USDG] }])
+    // 4d-ED-6: the host, never the URL, before the first EVM request.
+    expect(h.stderr.text).toContain(
+      "Reading ETH and USDG for 1 EVM vault address from evm.example.test in 3 requests. That endpoint sees them together; Candle sees none of them.",
+    )
+    expect(h.stderr.text).not.toContain("key-in-path")
+    const out = h.stdout.text
+    expect(out).toMatch(/vault\s+hood\s+hood-cold \(0xF9…A40F\)\s+ETH\s+2\s+\$2,000\.00\s+\$4,000\.00/)
+    expect(out).toMatch(/vault\s+hood\s+hood-cold \(0xF9…A40F\)\s+USDG\s+1\.5\s+\$1\.00\s+\$1\.50/)
+    expect(out).toMatch(/vault\s+solana\s+treasury/)
+    expect(out).toContain("EVM vault keys are read for ETH and USDG only")
+  })
+
+  test("--evm-rpc-url wins over the env, and the built-in Hood RPC is named when neither is set", async () => {
+    const { dir } = await vaultWith([evmEntryAt(0, "hood-cold", FIXTURE_EVM_0)])
+    const h = harness({
+      dir,
+      env: { CANDLE_EVM_RPC_URL: "https://ignored.example.test/rpc" },
+      evm: { wei: () => 0n, usdg: () => 0n },
+    })
+    expect(await run(["portfolio", "--chain", "hood", "--evm-rpc-url", EVM_RPC_URL], h.deps)).toBe(0)
+    expect(h.evmRequests()).toHaveLength(3)
+    expect(h.requests.some((r) => r.host === "ignored.example.test")).toBe(false)
+    // An empty wallet is listed as such, and nothing is priced for it.
+    expect(h.candleRequests().map((r) => r.path)).toEqual(["/api/v1/agent/portfolio"])
+
+    const builtIn = harness({ dir, evm: {} })
+    const hood = new Set<string>()
+    builtIn.deps.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input))
+      if (url.host === "rpc.mainnet.chain.robinhood.com") {
+        hood.add(url.host)
+        return Response.json({ jsonrpc: "2.0", id: 1, error: { code: -32000, message: "not in this test" } })
+      }
+      return h.deps.fetch(input, init)
+    }) as typeof fetch
+    expect(await run(["portfolio", "--chain", "hood"], builtIn.deps)).toBe(3)
+    expect(hood).toEqual(new Set(["rpc.mainnet.chain.robinhood.com"]))
+    expect(builtIn.stderr.text).toContain("from rpc.mainnet.chain.robinhood.com (the built-in Hood RPC)")
+  })
+
+  test("an EVM RPC on another chain is refused by name before any balance is read (4d-ED-3)", async () => {
+    const { dir } = await vaultWith([evmEntryAt(0, "hood-cold", FIXTURE_EVM_0)])
+    const h = harness({ dir, env: { CANDLE_EVM_RPC_URL: EVM_RPC_URL }, evm: { chainId: 1 } })
+    expect(await run(["portfolio"], h.deps)).toBe(1)
+    expect(h.evmRequests().map((r) => (JSON.parse(r.body) as { method: string }).method)).toEqual(["eth_chainId"])
+    expect(h.candleRequests()).toEqual([])
+    expect(h.stderr.text).toContain("evm.example.test answered chain id 1")
+    expect(h.stderr.text).toContain("Hood, chain id 4663, only")
+
+    const j = harness({ dir, env: { CANDLE_EVM_RPC_URL: EVM_RPC_URL }, evm: { chainId: 8453 } })
+    expect(await run(["portfolio", "--json"], j.deps)).toBe(1)
+    expect(JSON.parse(j.stdout.text)).toMatchObject({ ok: false, code: "EVM_CHAIN_MISMATCH" })
+  })
+
+  test("--chain hood reads nothing on Solana and shows Hood alone; --chain solana reads nothing on Hood", async () => {
+    const { dir } = await vaultWith([entryAt(0, "treasury"), evmEntryAt(0, "hood-cold", FIXTURE_EVM_0)])
+    const hood = harness({
+      dir,
+      env: { CANDLE_SOLANA_RPC_URL: RPC_URL, CANDLE_EVM_RPC_URL: EVM_RPC_URL },
+      tee: [{ id: "w1", address: teeAddress(1), active: true, lamports: "500000000", tokens: [] }],
+      candlePrices: HOOD_PRICES,
+      hood: hoodSection(),
+      evm: { wei: () => 1_000_000_000_000_000_000n, usdg: () => 0n },
+    })
+    expect(await run(["portfolio", "--chain", "hood", "--json"], hood.deps)).toBe(0)
+    expect(hood.rpcRequests()).toEqual([])
+    const doc = JSON.parse(hood.stdout.text)
+    expect(doc.chains).toEqual(["hood"])
+    expect(Object.keys(doc.byChain)).toEqual(["hood"])
+    expect(doc.rpcHost).toBeNull()
+    expect(doc.evmRpcHost).toBe("evm.example.test")
+    const wallets = doc.groups.flatMap((g: { wallets: { chain: string }[] }) => g.wallets)
+    expect(wallets.map((w: { chain: string }) => w.chain)).toEqual(["hood", "hood", "hood"])
+
+    const solana = harness({
+      dir,
+      env: { CANDLE_SOLANA_RPC_URL: RPC_URL, CANDLE_EVM_RPC_URL: EVM_RPC_URL },
+      candlePrices: HOOD_PRICES,
+      hood: hoodSection(),
+      rpcLamports: () => 1_000_000_000,
+    })
+    expect(await run(["portfolio", "--chain", "solana"], solana.deps)).toBe(0)
+    expect(solana.evmRequests()).toEqual([])
+    expect(solana.stdout.text).not.toMatch(/\bhood\b/)
+    expect(solana.stdout.text).toMatch(/vault\s+solana\s+treasury/)
+  })
+
+  test("--chain and the RPC flags are checked before anything is asked or sent", async () => {
+    const { dir } = await vaultWith([entryAt(0, "treasury")])
+    for (const argv of [
+      ["portfolio", "--chain", "base"],
+      ["portfolio", "--chain", "solana", "--evm-rpc-url", EVM_RPC_URL],
+      ["portfolio", "--chain", "hood", "--rpc-url", RPC_URL],
+      ["portfolio", "--evm-rpc-url", "http://evm.example.test/rpc"],
+    ]) {
+      const h = harness({ dir })
+      expect(await run(argv, h.deps)).toBe(2)
+      expect(h.asked).toEqual([])
+      expect(h.requests).toEqual([])
+    }
+    const bad = harness({ dir })
+    await run(["portfolio", "--chain", "base"], bad.deps)
+    expect(bad.stderr.text).toContain("--chain must be solana or hood, not base.")
+  })
+
+  test("a Hood wallet Candle could not read: not read, out of the total, exit 3, and the footer names Hood", async () => {
+    const dir = await emptyConfigDir()
+    const h = harness({
+      dir,
+      candlePrices: HOOD_PRICES,
+      hood: hoodSection({
+        tee: [{ id: "hw1", address: HOOD_TEE, label: "hood-1", active: true, chain: "hood", wei: null, tokens: null }],
+        unavailable: [HOOD_TEE],
+        unpriced: 0,
+        unpricedByReason: {},
+      }),
+    })
+    expect(await run(["portfolio"], h.deps)).toBe(3)
+    expect(h.stdout.text).toMatch(/tee\s+hood\s+hood-1 \(0x11…1111\)\s+-\s+not read\s+-\s+-/)
+    expect(h.stdout.text).toContain(
+      '1 wallet could not be read in full (1 on Hood). What was not read is marked "not read" and is not in the total.',
+    )
+
+    const j = harness({
+      dir,
+      candlePrices: HOOD_PRICES,
+      hood: hoodSection({
+        tee: [
+          {
+            id: "hw1",
+            address: HOOD_TEE,
+            active: true,
+            chain: "hood",
+            wei: "1000000000000000000",
+            tokens: null,
+          },
+        ],
+        unavailable: [HOOD_TEE],
+      }),
+    })
+    expect(await run(["portfolio", "--json"], j.deps)).toBe(3)
+    const doc = JSON.parse(j.stdout.text)
+    expect(doc.complete).toBe(false)
+    expect(doc.unavailable).toEqual([HOOD_TEE])
+    expect(doc.unavailableByChain).toEqual({ solana: [], hood: [HOOD_TEE] })
+    const wallet = doc.groups[1].wallets.find((w: { chain: string }) => w.chain === "hood")
+    expect(wallet.unread).toEqual(["hood-tokens"])
+    expect(wallet.holdings.map((x: { symbol: string }) => x.symbol)).toEqual(["ETH"])
+  })
+
+  test("an EVM vault key whose USDG read failed: ETH counted, USDG not read, exit 3, the failure on stderr", async () => {
+    const { dir } = await vaultWith([evmEntryAt(0, "a", FIXTURE_EVM_0), evmEntryAt(1, "b", FIXTURE_EVM_1)])
+    const h = harness({
+      dir,
+      env: { CANDLE_EVM_RPC_URL: EVM_RPC_URL },
+      evm: { wei: () => 1_000_000_000_000_000_000n, usdg: () => 2_000_000n, usdgFailAddress: FIXTURE_EVM_1 },
+      hoodPrices: { native: { priceUsd: 2000, source: "reference" }, [USDG]: { priceUsd: 1, source: "reference" } },
+    })
+    expect(await run(["portfolio", "--chain", "hood", "--json"], h.deps)).toBe(3)
+    const doc = JSON.parse(h.stdout.text)
+    expect(doc.unavailableByChain).toEqual({ hood: [FIXTURE_EVM_1] })
+    const b = doc.groups[0].wallets.find((w: { label: string }) => w.label === "b")
+    expect(b.unread).toEqual(["usdg"])
+    expect(b.holdings.map((x: { symbol: string }) => x.symbol)).toEqual(["ETH"])
+    expect(doc.totalUsd).toBe(4002)
+    expect(h.stderr.text).toContain("1 EVM vault address on Hood could not be read in full")
+
+    // The EVM chain id not answering at all: every EVM vault key unread, partial, not refused.
+    const down = harness({ dir, env: { CANDLE_EVM_RPC_URL: EVM_RPC_URL }, evm: { chainIdFails: true } })
+    expect(await run(["portfolio", "--chain", "hood"], down.deps)).toBe(3)
+    expect(down.stdout.text).toMatch(/vault\s+hood\s+a \(0xF9…A40F\)\s+-\s+not read/)
+    expect(down.stdout.text).toContain("(2 on Hood)")
+  })
+
+  test("an API with no hood section (an older deployment) is no Hood wallets, not an error", async () => {
+    const dir = await emptyConfigDir()
+    const h = harness({
+      dir,
+      tee: [{ id: "w1", address: teeAddress(1), active: true, lamports: "500000000", tokens: [] }],
+    })
+    expect(await run(["portfolio", "--json"], h.deps)).toBe(0)
+    const doc = JSON.parse(h.stdout.text)
+    expect(doc.complete).toBe(true)
+    expect(doc.byChain.hood).toEqual({ valueUsd: 0, unpriced: 0, wallets: 0, unavailable: 0, unpricedByReason: {} })
+    expect(doc.groups.flatMap((g: { wallets: { chain: string }[] }) => g.wallets.map((w) => w.chain))).toEqual([
+      "solana",
+      "solana",
+    ])
   })
 })

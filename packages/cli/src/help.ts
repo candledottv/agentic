@@ -360,27 +360,36 @@ export const HELP: Record<string, Topic> = {
 
   portfolio: {
     group: "Account",
-    summary: "Every wallet's holdings, prices and value in one table (vault read over your own RPC)",
+    summary: "Every wallet's holdings, prices and value on Solana and Hood (vault read over your own RPCs)",
     description:
-      "Vault, TEE and embedded wallets, each token with amount, price and value, then a total. TEE and embedded balances come from Candle; vault and external wallets are read over your own RPC, and Candle is sent only the mints they hold, for prices. Unpriced tokens are shown as unpriced and left out of the total. Where Candle serves LP, each TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial.",
-    usage: ["candle portfolio [--rpc-url <url>] [--json]"],
+      "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade.",
+    usage: ["candle portfolio [--chain solana|hood] [--rpc-url <url>] [--evm-rpc-url <url>] [--json]"],
     rows: [],
     flags: [
+      { invocation: "--chain solana|hood", description: "Show one chain, and read nothing on the other" },
       {
         invocation: "--rpc-url <url>",
         description:
           "Your Solana RPC, for the vault. Without one: CANDLE_SOLANA_RPC_URL, then the profile's, then the public endpoint",
       },
+      {
+        invocation: "--evm-rpc-url <url>",
+        description: "Your Hood RPC, for EVM vault keys. Without one: CANDLE_EVM_RPC_URL, then the built-in Hood RPC",
+      },
       KEYSTORE_FLAG,
     ],
-    examples: ["candle portfolio", "candle portfolio --rpc-url https://your-rpc.example --json"],
+    examples: [
+      "candle portfolio",
+      "candle portfolio --chain hood",
+      "candle portfolio --rpc-url https://your-rpc.example --evm-rpc-url https://your-hood-rpc.example --json",
+    ],
     env: [...ENV_API, ...ENV_LOCAL_SIGNING],
   },
   pnl: {
     group: "Account",
-    summary: "P&L: realized, fees, unrealized and open positions (--profile for one key's own)",
+    summary: "P&L per chain and combined: realized, fees, unrealized and open positions (--profile for one key's own)",
     description:
-      "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the web P&L chart shows. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its own P&L. Unpriced positions are shown as unpriced and never valued at zero. Where Candle serves LP, DAMM v2 positions are included: realized (withdrawals against the cost basis at the add, plus claimed fees), unrealized (open positions at their share of the pool plus unclaimed fees, against that basis), and vs holding (what the deposited tokens would be worth held); the total then covers tokens and LP.",
+      "Without --profile, the account's books: every profile, the web app and the CLI, one ledger, the same figures the web P&L chart shows. Needs a key with the Read scope (account:read). With --profile <name>, that profile's key reads its own P&L, with a row per paying wallet. Both show a Solana block, a Hood block, then the combined figure, and a CHAIN column on positions and wallet rows. Unpriced positions are shown as unpriced and never valued at zero. A bridge between Solana and Hood is not a trade: it opens and closes nothing, and bridge and Relay costs are not netted from P&L. Where Candle serves LP, DAMM v2 positions are included: realized (withdrawals against the cost basis at the add, plus claimed fees), unrealized (open positions at their share of the pool plus unclaimed fees, against that basis), and vs holding (what the deposited tokens would be worth held); the total then covers tokens and LP.",
     usage: ["candle pnl [--profile <name>] [--json]"],
     rows: [],
     examples: ["candle pnl", "candle pnl --profile scalper --json"],

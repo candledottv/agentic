@@ -194,9 +194,11 @@ describe("candle pnl", () => {
     expect(out).toMatch(/Unrealized\s+\$12\.00\s+\(1 of 2 open positions marked; 1 unpriced, not counted\)/)
     expect(out).toMatch(/Total\s+\$109\.00/)
     expect(out).toContain("History is truncated: this covers the most recent 2000 ledger rows")
-    expect(out).toMatch(/MEME\s+6\s+\$1\.00\s+\$3\.00\s+\$12\.00\s+Scalper/)
+    // `solana: {}` and `hood: {}` carry no figures: no chain blocks, the output an older API gets.
+    expect(out).not.toContain("All chains")
+    expect(out).toMatch(/MEME\s+solana\s+6\s+\$1\.00\s+\$3\.00\s+\$12\.00\s+Scalper/)
     // No name and no mark: the short mint, "unpriced", and no figure -- never $0.00.
-    expect(out).toMatch(/Dust…2222\s+1,000\s+\$0\.001\s+unpriced\s+-\s+-/)
+    expect(out).toMatch(/Dust…2222\s+solana\s+1,000\s+\$0\.001\s+unpriced\s+-\s+-/)
   })
 
   test("--json is the books with the scope named, one line", async () => {
@@ -339,7 +341,7 @@ describe("candle pnl", () => {
     expect(await run(["pnl"], h.deps)).toBe(0)
     // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence.
     expect(h.stdout.text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
-    expect(h.stdout.text).toMatch(/\[2JMEME\s+6\s+\$1\.00\s+\$3\.00\s+\$12\.00\s+Scal\[31mper/)
+    expect(h.stdout.text).toMatch(/\[2JMEME\s+solana\s+6\s+\$1\.00\s+\$3\.00\s+\$12\.00\s+Scal\[31mper/)
 
     // The LP table and the not-read reason pass through the same filter.
     const lpHostile = {
@@ -356,5 +358,181 @@ describe("candle pnl", () => {
     // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence.
     expect(r.stdout.text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
     expect(r.stdout.text).toContain("(down; not in the total)")
+  })
+})
+
+/**
+ * Ember Phase 4d PR B (BE-670, 4d-ED-8, 4d-ED-9): both chains in `candle pnl`. The account answer's
+ * `solana` and `hood` summaries, and the key answer's `byChain` and `byWallet[].chain`.
+ */
+const HOODIE = "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa"
+const HOOD_WALLET = "0xF628F9fb00000000000000000000000000000001"
+
+const chainSummary = (realizedNetUsd: number, unrealizedUsd: number, openPositions: number, unmarked = 0) => ({
+  realizedNetUsd,
+  realizedGrossUsd: realizedNetUsd + 1,
+  feesUsd: 1,
+  unrealizedUsd,
+  totalUsd: realizedNetUsd + unrealizedUsd,
+  openPositions,
+  closedRounds: 0,
+  unmarked,
+  counted: 3,
+  unvalued: 0,
+  unresolved: 0,
+  unresolvedMints: [],
+})
+
+const BOTH_CHAINS_BOOKS = {
+  ...BOOKS,
+  all: { ...BOOKS.all, realizedNetUsd: 97, unrealizedUsd: 12 + 20, totalUsd: 129, openPositions: 3 },
+  solana: chainSummary(90, 12, 2, 1),
+  hood: chainSummary(7, 20, 1),
+  positions: [
+    ...BOOKS.positions,
+    {
+      mint: HOODIE,
+      symbol: "HOODIE",
+      name: "Hoodie",
+      chain: "hood",
+      book: "Scalper",
+      quantity: 40,
+      avgEntryUsd: 0.5,
+      costBasisUsd: 20,
+      markPriceUsd: 1,
+      marketValueUsd: 40,
+      unrealizedUsd: 20,
+    },
+  ],
+}
+
+const BOTH_CHAINS_PROFILE = {
+  ...PROFILE_PNL,
+  pnl: {
+    ...PROFILE_PNL.pnl,
+    openPositions: [
+      {
+        mint: HOODIE,
+        symbol: "HOODIE",
+        chain: "hood",
+        quantity: 40,
+        avgEntryUsd: 0.5,
+        costBasisUsd: 20,
+        markPriceUsd: 1,
+        unrealizedUsd: 20,
+      },
+    ],
+    unrealizedUsd: 20,
+    byChain: {
+      solana: { ...chainSummary(4, 0, 0), unmarkedPositions: 0, tradesConsidered: 1 },
+      hood: { ...chainSummary(5, 20, 1), unmarkedPositions: 0, tradesConsidered: 1 },
+    },
+    byWallet: [
+      {
+        wallet: HOOD_WALLET,
+        payerType: "linked",
+        chain: "hood",
+        linkedWalletId: "lw_1",
+        label: "hood-tee",
+        realizedNetUsd: 5,
+        unrealizedUsd: 20,
+        unmarkedPositions: 0,
+        openPositions: [{ mint: HOODIE, chain: "hood" }],
+        tradesConsidered: 1,
+      },
+      {
+        wallet: "MainWa11et1111111111111111111111111111111",
+        payerType: "main",
+        chain: "solana",
+        label: null,
+        realizedNetUsd: 4,
+        unrealizedUsd: 0,
+        unmarkedPositions: 0,
+        openPositions: [],
+        tradesConsidered: 1,
+      },
+    ],
+  },
+}
+
+describe("Ember 4d: both chains in candle pnl", () => {
+  test("account scope: a Solana block, a Hood block, then the combined figure; a CHAIN column on positions", async () => {
+    const h = harness({ books: Response.json(BOTH_CHAINS_BOOKS) })
+    expect(await run(["pnl"], h.deps)).toBe(0)
+    const out = h.stdout.text
+    const at = (text: string) => out.indexOf(text)
+    expect(at("Solana\n")).toBeGreaterThan(-1)
+    expect(at("Solana\n")).toBeLessThan(at("Hood\n"))
+    expect(at("Hood\n")).toBeLessThan(at("All chains\n"))
+    const solana = out.slice(at("Solana\n"), at("Hood\n"))
+    expect(solana).toMatch(/Realized net\s+\$90\.00\s+\(gross \$91\.00, fees \$1\.00\)/)
+    expect(solana).toMatch(/Unrealized\s+\$12\.00\s+\(1 of 2 open positions marked; 1 unpriced, not counted\)/)
+    expect(solana).toMatch(/Total\s+\$102\.00/)
+    const hood = out.slice(at("Hood\n"), at("All chains\n"))
+    expect(hood).toMatch(/Realized net\s+\$7\.00/)
+    expect(hood).toMatch(/Unrealized\s+\$20\.00\s+\(1 of 1 open position marked\)/)
+    expect(hood).toMatch(/Total\s+\$27\.00/)
+    const all = out.slice(at("All chains\n"))
+    expect(all).toMatch(/Realized net\s+\$97\.00/)
+    expect(all).toMatch(/Total\s+\$129\.00/)
+    expect(out).toContain("TOKEN      CHAIN   QUANTITY")
+    expect(out).toMatch(/HOODIE\s+hood\s+40\s+\$0\.5\s+\$1\.00\s+\$20\.00\s+Scalper/)
+    expect(out).toMatch(/MEME\s+solana\s+6/)
+  })
+
+  test("account scope --json is the body as the API sent it: chain summaries and positions' chain included", async () => {
+    const h = harness({ books: Response.json(BOTH_CHAINS_BOOKS) })
+    expect(await run(["pnl", "--json"], h.deps)).toBe(0)
+    const doc = JSON.parse(h.stdout.text)
+    expect(doc.scope).toBe("account")
+    expect(doc.solana.realizedNetUsd).toBe(90)
+    expect(doc.hood.unrealizedUsd).toBe(20)
+    expect(doc.positions.map((p: { chain: string }) => p.chain)).toEqual(["solana", "solana", "hood"])
+  })
+
+  test("key scope: byChain blocks, a CHAIN column on positions, and the by-wallet rows with their chain", async () => {
+    const h = harness({ withProfiles: true, profile: Response.json(BOTH_CHAINS_PROFILE) })
+    expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
+    const out = h.stdout.text
+    const at = (text: string) => out.indexOf(text)
+    expect(at("Solana\n")).toBeLessThan(at("Hood\n"))
+    expect(at("Hood\n")).toBeLessThan(at("All chains\n"))
+    expect(out.slice(at("Hood\n"), at("All chains\n"))).toMatch(/Total\s+\$25\.00/)
+    expect(out).toMatch(/HOODIE\s+hood\s+40/)
+    expect(out).toContain("By wallet (each its own cost basis, so the rows need not sum to the total)")
+    expect(out).toMatch(/WALLET\s+CHAIN\s+TRADES\s+REALIZED NET\s+UNREALIZED\s+OPEN/)
+    expect(out).toMatch(/hood-tee \(0xF6…0001\)\s+hood\s+1\s+\$5\.00\s+\$20\.00\s+1/)
+    expect(out).toMatch(/main \(Main…1111\)\s+solana\s+1\s+\$4\.00\s+\$0\.00\s+0/)
+
+    const j = harness({ withProfiles: true, profile: Response.json(BOTH_CHAINS_PROFILE) })
+    expect(await run(["pnl", "--profile", "scalper", "--json"], j.deps)).toBe(0)
+    const doc = JSON.parse(j.stdout.text)
+    expect(doc.pnl.byWallet.map((w: { chain: string }) => w.chain)).toEqual(["hood", "solana"])
+    expect(Object.keys(doc.pnl.byChain)).toEqual(["solana", "hood"])
+  })
+
+  test("key scope from an API without byChain, byWallet or chain: no blocks, no wallet table, and '-' for the chain", async () => {
+    const older = {
+      ...PROFILE_PNL,
+      pnl: {
+        ...PROFILE_PNL.pnl,
+        openPositions: [{ mint: MEME, symbol: "MEME", quantity: 6, avgEntryUsd: 1, costBasisUsd: 6 }],
+      },
+    }
+    const h = harness({ withProfiles: true, profile: Response.json(older) })
+    expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
+    expect(h.stdout.text).not.toContain("All chains")
+    expect(h.stdout.text).not.toContain("By wallet")
+    expect(h.stdout.text).toMatch(/MEME\s+-\s+6\s+\$1\.00\s+unpriced/)
+  })
+
+  test("control characters in a wallet label never reach the terminal", async () => {
+    const hostile = structuredClone(BOTH_CHAINS_PROFILE)
+    ;(hostile.pnl.byWallet[0] as { label: string }).label = "hood\u001b[2J-tee"
+    const h = harness({ withProfiles: true, profile: Response.json(hostile) })
+    expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: asserting their absence.
+    expect(h.stdout.text).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
+    expect(h.stdout.text).toContain("hood[2J-tee (0xF6…0001)")
   })
 })
