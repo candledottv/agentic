@@ -999,6 +999,20 @@ export interface TradeFee {
 /** Solana "built" artifacts: one unsigned transaction, the fee (if any) already embedded inside it. */
 export interface SolanaTradeArtifacts {
     venue: "curve" | "jupiter";
+    /**
+     * Which quoter built the transaction. On the `jupiter` venue Candle also asks DFlow for a quote and
+     * uses it only when its output is strictly larger; otherwise this is `jupiter`. `curve` on the curve venue.
+     */
+    quoteSource?: "curve" | "jupiter" | "dflow";
+    /**
+     * The Jupiter/DFlow race on a `jupiter` venue build: Jupiter's quoted output, DFlow's when it gave an
+     * accepted quote, and why DFlow did not build the transaction when it did not. Absent on the curve venue.
+     */
+    race?: {
+        jupiterOutRaw: string;
+        dflowOutRaw?: string;
+        dflowRefusal?: string;
+    };
     transactionBase64: string;
     quoteAsset: string;
     quoteMint: string;
