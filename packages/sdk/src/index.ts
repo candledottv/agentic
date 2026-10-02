@@ -138,6 +138,7 @@ export {
   type VerifyPerpsBuildOptions,
   verifyPerpsBuild,
 } from "./hyperliquid"
+export type { HyperliquidPnlFigures, HyperliquidPnlSection, HyperliquidWalletPnl } from "./hyperliquid-pnl"
 export { KeychainSecretStore } from "./keychain-secret-store"
 export type { SecretStore } from "./secret-store"
 export { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store"

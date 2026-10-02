@@ -536,3 +536,47 @@ describe("Ember 4d: both chains in candle pnl", () => {
     expect(h.stdout.text).toContain("hood[2J-tee (0xF6…0001)")
   })
 })
+
+describe("Hyperliquid profile PnL", () => {
+  const section = {
+    read: true,
+    network: "testnet",
+    realizedGrossUsd: 10,
+    fundingUsd: -1,
+    feesUsd: 0.5,
+    realizedNetUsd: 8.5,
+    fills: 2,
+    fundingPayments: 1,
+    fillsLimit: 2000,
+    fundingLimit: 500,
+    walletsLimit: 20,
+    truncated: true,
+    byWallet: [{ address: "0x1111111111111111111111111111111111111111", startTime: 100 }],
+  }
+  test("separate heading, signed funding and history caveat; spot totals unchanged", async () => {
+    const h = harness({ withProfiles: true, profile: Response.json({ ...PROFILE_PNL, hyperliquid: section }) })
+    expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
+    expect(h.stdout.text).toContain("Hyperliquid")
+    expect(h.stdout.text).toMatch(/Realized net\s+\$8.50/)
+    expect(h.stdout.text).toContain("paid negative")
+    expect(h.stdout.text).toContain("includes builder fees")
+    expect(h.stdout.text).toContain("previous bindings excluded")
+    expect(h.stdout.text).toContain("This is a partial figure")
+    expect(h.stdout.text).toMatch(/Total\s+\$9.00/)
+  })
+  test("unavailable section exposes no false zero", async () => {
+    const h = harness({
+      withProfiles: true,
+      profile: Response.json({ ...PROFILE_PNL, hyperliquid: { read: false, reason: "Retry shortly" } }),
+    })
+    expect(await run(["pnl", "--profile", "scalper"], h.deps)).toBe(0)
+    expect(h.stdout.text).toContain("Hyperliquid\nUnavailable: Retry shortly")
+    expect(h.stdout.text.split("Hyperliquid")[1]).not.toContain("$0.00")
+  })
+  test("JSON passes through the section and coverage without extra requests", async () => {
+    const h = harness({ withProfiles: true, profile: Response.json({ ...PROFILE_PNL, hyperliquid: section }) })
+    expect(await run(["pnl", "--profile", "scalper", "--json"], h.deps)).toBe(0)
+    expect(JSON.parse(h.stdout.text).hyperliquid).toEqual(section)
+    expect(h.calls).toHaveLength(1)
+  })
+})

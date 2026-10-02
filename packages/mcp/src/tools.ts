@@ -793,7 +793,10 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "'hood'), and `pnl.byChain` has the total's figures over each chain's fills alone, both chains " +
         "always present, with `openPositions` there a count (the positions are in `pnl.openPositions`, by " +
         "`chain`). Each chain is its own average-cost pool, so the two need not sum exactly to the total. A " +
-        "server that predates per-chain P&L omits `chain` and `byChain`. Reads only.",
+        "server that predates per-chain P&L omits `chain` and `byChain`. While Hyperliquid is enabled, " +
+        "`hyperliquid` separately reports main-perp realized gross, signed funding, fees (inclusive of builder fees), " +
+        "and net = gross + funding - fees, for currently bound EVM TEE wallets since the current TEE binding. " +
+        "Check `read` and `truncated`; historical bindings and unrealized perps are excluded. Reads only.",
       inputSchema: profilePnlShape,
     },
     async (args) => callAndRelay("candle_get_profile_pnl", args, cfg),

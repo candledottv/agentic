@@ -48,13 +48,16 @@
  * between chains in `candle portfolio` and changes nothing here; bridge and Relay costs are not
  * netted from these figures. `--json` passes the API's body through, chain fields included.
  */
+
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
 import { resolveApiKey } from "../deps"
+import type { HyperliquidPnlSection } from "../hyperliquid-pnl"
 import { apiKeyPrefix, printIdentity } from "../profiles"
 import { renderTable, terminalText, writeFailure, writeLocalFailure, writeUsageFailure } from "../render"
 import { formatPrice, formatQuantity, formatUsd, shortAddress } from "../usd"
+import { writeHyperliquidPnl } from "./pnl-hyperliquid"
 
 type Chain = "solana" | "hood"
 const CHAINS: readonly Chain[] = ["solana", "hood"]
@@ -168,6 +171,7 @@ interface BooksBody {
 }
 
 interface ProfileBody {
+  hyperliquid?: HyperliquidPnlSection
   keyPrefix: string
   pnl: {
     realizedNetUsd: number
@@ -263,7 +267,7 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
   }
 
   if (perProfile) {
-    const { pnl: p, lp } = body as unknown as ProfileBody
+    const { pnl: p, lp, hyperliquid } = body as unknown as ProfileBody
     deps.stdout.write(`P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills\n\n`)
     writeChainBlocks(ctx, p.byChain)
     writeSummary(ctx, {
@@ -284,6 +288,7 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
     writePositions(ctx, p.openPositions, false)
     writeWallets(ctx, p.byWallet)
     writeLpPositions(ctx, lp, false)
+    writeHyperliquidPnl(ctx, hyperliquid)
     return 0
   }
 

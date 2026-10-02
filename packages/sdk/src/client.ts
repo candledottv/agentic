@@ -49,6 +49,7 @@ import {
   hyperliquidRelayBody,
   verifyPerpsBuild,
 } from "./hyperliquid"
+import type { HyperliquidPnlSection } from "./hyperliquid-pnl"
 import { describeRpcEndpoint } from "./internal/rpc-endpoint"
 import type { SecretStore } from "./secret-store"
 import { encryptWalletKeyForImport, type WalletChain } from "./wallet-import"
@@ -611,6 +612,8 @@ export interface ProfileChainPnl {
  * Deposits and withdrawals are excluded entirely: funding a wallet is not trading profit.
  */
 export interface ProfilePnlResult {
+  /** Optional while Hyperliquid is enabled; separate from spot totals. */
+  hyperliquid?: HyperliquidPnlSection
   success: true
   keyPrefix: string
   pnl: {

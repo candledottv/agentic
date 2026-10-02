@@ -51172,7 +51172,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async (args) => callAndRelay("candle_set_profile_wallets", args, cfg));
   register("candle_get_profile_pnl", {
     title: "Read an agent profile's P&L",
-    description: "Realized profit for this profile's own fills, the Candle fees charged against it, and the " + "positions it still holds with their cost basis, each MARKED at Candle's current price where one " + "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " + "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " + "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits, withdrawals and " + "transfers are excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before " + "quoting the number; they mean the total is partial. `pnl.byWallet` splits the same fills by the " + "wallet that paid for each trade (main or linked, with the linked wallet's label), one row per " + "wallet with the same figures, for tracking one strategy per wallet. Each row is an independent " + "average-cost pool over its own fills, so the rows need not sum to the total (a token moved " + "between wallets, or two wallets holding one token at different costs); the total stays correct. " + "Every open position and every `byWallet` row (and its positions) carries `chain` ('solana' or " + "'hood'), and `pnl.byChain` has the total's figures over each chain's fills alone, both chains " + "always present, with `openPositions` there a count (the positions are in `pnl.openPositions`, by " + "`chain`). Each chain is its own average-cost pool, so the two need not sum exactly to the total. A " + "server that predates per-chain P&L omits `chain` and `byChain`. Reads only.",
+    description: "Realized profit for this profile's own fills, the Candle fees charged against it, and the " + "positions it still holds with their cost basis, each MARKED at Candle's current price where one " + "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " + "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " + "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits, withdrawals and " + "transfers are excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before " + "quoting the number; they mean the total is partial. `pnl.byWallet` splits the same fills by the " + "wallet that paid for each trade (main or linked, with the linked wallet's label), one row per " + "wallet with the same figures, for tracking one strategy per wallet. Each row is an independent " + "average-cost pool over its own fills, so the rows need not sum to the total (a token moved " + "between wallets, or two wallets holding one token at different costs); the total stays correct. " + "Every open position and every `byWallet` row (and its positions) carries `chain` ('solana' or " + "'hood'), and `pnl.byChain` has the total's figures over each chain's fills alone, both chains " + "always present, with `openPositions` there a count (the positions are in `pnl.openPositions`, by " + "`chain`). Each chain is its own average-cost pool, so the two need not sum exactly to the total. A " + "server that predates per-chain P&L omits `chain` and `byChain`. While Hyperliquid is enabled, " + "`hyperliquid` separately reports main-perp realized gross, signed funding, fees (inclusive of builder fees), " + "and net = gross + funding - fees, for currently bound EVM TEE wallets since the current TEE binding. " + "Check `read` and `truncated`; historical bindings and unrealized perps are excluded. Reads only.",
     inputSchema: profilePnlShape
   }, async (args) => callAndRelay("candle_get_profile_pnl", args, cfg));
   register("candle_get_profile_trades", {
@@ -61417,6 +61417,44 @@ function shortAddress2(address) {
   return address.length > 12 ? `${address.slice(0, 4)}…${address.slice(-4)}` : address;
 }
 
+// src/commands/pnl-hyperliquid.ts
+init_render();
+function writeHyperliquidPnl(ctx, section) {
+  if (!section)
+    return;
+  const out = ctx.deps.stdout;
+  out.write(`
+Hyperliquid
+`);
+  if (!section.read) {
+    out.write(`Unavailable: ${terminalText(section.reason)}
+`);
+    return;
+  }
+  out.write(`Network: ${section.network}
+`);
+  out.write(`Realized gross  ${formatUsd(section.realizedGrossUsd)}
+`);
+  out.write(`Funding         ${formatUsd(section.fundingUsd)} (received positive, paid negative)
+`);
+  out.write(`Fees            ${formatUsd(section.feesUsd)} (includes builder fees)
+`);
+  out.write(`Realized net    ${formatUsd(section.realizedNetUsd)} (gross + funding - fees)
+`);
+  out.write(`${section.fills} fills; ${section.fundingPayments} funding payments. Unrealized perps are excluded.
+`);
+  out.write(`Coverage: currently bound EVM TEE wallets since the current TEE binding; previous bindings excluded.
+`);
+  for (const wallet of section.byWallet) {
+    out.write(`${terminalText(wallet.address)} since ${new Date(wallet.startTime).toISOString()}
+`);
+  }
+  if (section.truncated) {
+    out.write(`History is truncated: at most ${section.fillsLimit} recent fills and ${section.fundingLimit} funding rows per wallet, ${section.walletsLimit} wallets. This is a partial figure.
+`);
+  }
+}
+
 // src/commands/pnl.ts
 var CHAINS = ["solana", "hood"];
 var CHAIN_TITLES = { solana: "Solana", hood: "Hood" };
@@ -61483,7 +61521,7 @@ async function pnl(args, ctx) {
     return 0;
   }
   if (perProfile) {
-    const { pnl: p, lp } = body;
+    const { pnl: p, lp, hyperliquid } = body;
     deps.stdout.write(`P&L for profile ${ctx.profileFlag} (key ${keyPrefix}): this key's own fills
 
 `);
@@ -61506,6 +61544,7 @@ async function pnl(args, ctx) {
     writePositions(ctx, p.openPositions, false);
     writeWallets(ctx, p.byWallet);
     writeLpPositions(ctx, lp, false);
+    writeHyperliquidPnl(ctx, hyperliquid);
     return 0;
   }
   const books = body;

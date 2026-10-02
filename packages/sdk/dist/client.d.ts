@@ -27,6 +27,7 @@
  *   bounded by `maxRetries` (default 3 retries after the initial attempt).
  */
 import { type HyperliquidNetwork, type HyperliquidTypedData } from "./hyperliquid";
+import type { HyperliquidPnlSection } from "./hyperliquid-pnl";
 import type { SecretStore } from "./secret-store";
 import { type WalletChain } from "./wallet-import";
 export type Chain = "solana" | "hood";
@@ -588,6 +589,8 @@ export interface ProfileChainPnl {
  * Deposits and withdrawals are excluded entirely: funding a wallet is not trading profit.
  */
 export interface ProfilePnlResult {
+    /** Optional while Hyperliquid is enabled; separate from spot totals. */
+    hyperliquid?: HyperliquidPnlSection;
     success: true;
     keyPrefix: string;
     pnl: {

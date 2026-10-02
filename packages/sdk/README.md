@@ -170,3 +170,34 @@ The full code table lives in `docs/headless-launch.md`.
 bun test          # pure tests against an injected fake fetch; no server, no network
 bun run typecheck # tsc --noEmit
 ```
+
+### Hyperliquid per-key PnL
+
+`candle pnl --profile <name>` / SDK `getProfilePnl(keyPrefix)` / MCP `candle_get_profile_pnl`
+read the existing `GET /api/v1/agent/keys/{prefix}/pnl`. When `HYPERLIQUID_ENABLED` is on, the
+answer adds an optional `hyperliquid` section, and the CLI prints it under **Hyperliquid**.
+The existing read authentication applies; the switch defaults off and an older API simply omits
+this section. No additional signing, deposit or setup is needed for this read.
+
+The section reports main-exchange perp `realizedGrossUsd` (venue `closedPnl`), signed
+`fundingUsd` (received positive, paid negative), `feesUsd` (venue fees including builder fees;
+rebates are negative), and `realizedNetUsd = realizedGrossUsd + fundingUsd - feesUsd`.
+Builder fees are already included in the venue fee and are not subtracted again. These figures
+stay separate from spot and LP totals and exclude unrealized perps, deposits and withdrawals.
+
+Coverage is **currently bound EVM TEE wallets since the current TEE binding**,
+shown in `byWallet` with `startTime` in epoch milliseconds. That start is the latest rebind
+onto this key, or the wallet's creation time when it was bound then and never rebound. A
+rebound wallet does not bring its previous key's history. A wallet-set row is not required,
+and an older one cannot move the start earlier than the binding. Revoked and previous
+bindings, spot and HIP-3 fills are excluded. This is a binding-period read, not lifetime or
+order-level attribution.
+
+Reads use the venue client's two-second cache. `userFills` is capped at 2,000 recent rows;
+`userFunding` at 500 rows from `startTime`, and this response covers at most 20 bound
+wallets. `truncated` flags any reached history cap or remaining wallet page; `byWallet` names
+`fillsTruncated` and `fundingTruncated`. Funding and fills can cover different time spans when
+capped: a partial net must not be quoted as a lifetime figure. On upstream, wallet-discovery or
+malformed-data failure the section is `{ read: false, reason }`, without amounts; spot PnL still
+answers. An empty successful read is `{ read: true, ... }` with zero amounts. `--json` preserves
+the section and its coverage fields. Agent boards are outside this slice.
