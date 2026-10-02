@@ -101,6 +101,12 @@ export const ENVIRONMENT: EnvVar[] = [
     name: "CANDLE_ENCLAVE_HELPER",
     description: "Path to the signed candle-enclave.app helper (macOS)",
   },
+  {
+    name: "CANDLE_HYPERLIQUID_BUILDER",
+    description:
+      "candle perps: Candle's Hyperliquid builder address, pinned for the check every build passes before it is signed; without it the release's, else the one the server reports",
+  },
+  { name: "CANDLE_HYPERLIQUID_NETWORK", description: "candle perps: set to testnet to trade Hyperliquid testnet" },
   { name: "CANDLE_NO_UPDATE_NOTIFIER", description: "Set to 1 to silence the update notice" },
   {
     name: "CANDLE_KEYSTORE_PASSPHRASE",
@@ -294,6 +300,54 @@ export const HELP: Record<string, Topic> = {
       "candle lp remove <position> --percent 100 --wallet AgentOne",
     ],
     env: ENV_API,
+  },
+  perps: {
+    group: "Trade",
+    summary: "Hyperliquid perpetuals from your EVM TEE wallet: setup, open, close, cancel, orders, positions, leverage",
+    description:
+      "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Free, Believer and Pro pay a 0.1% builder fee; Max pays none.",
+    usage: ["candle perps <subcommand> [flags]"],
+    rows: [
+      {
+        invocation: "setup [--wallet <tee>]",
+        description: "Approve Candle's builder fee once; shows the account's mode and balance",
+      },
+      {
+        invocation: "open <coin> <long|short> <size> [--price <px>]",
+        description: "Market (IOC) without --price, limit with it; optional --tp and --sl",
+      },
+      { invocation: "close <coin> [--size <n>]", description: "Reduce-only IOC close of all or part of a position" },
+      { invocation: "cancel <cloid>", description: "Cancel an order Candle built, by its cloid" },
+      {
+        invocation: "orders [--wallet <tee>]",
+        description: "Open orders on Hyperliquid, and every action Candle built",
+      },
+      { invocation: "positions [--wallet <tee>]", description: "Positions and account value, read live" },
+      { invocation: "leverage <coin> <x> [--isolated]", description: "Set a market's leverage and margin mode" },
+    ],
+    flags: [
+      {
+        invocation: "--wallet <tee>",
+        description: "The EVM TEE wallet by id, address or unique label (default: the only one)",
+      },
+      { invocation: "--tif <Gtc|Alo|Ioc>", description: "open with --price: time in force (default Gtc)" },
+      {
+        invocation: "--slippage-bps <n>",
+        description: "open at market and close: the bound against the mid (default 100)",
+      },
+      { invocation: "--tp <px> / --sl <px>", description: "open: reduce-only take-profit and stop-loss triggers" },
+      { invocation: "--no-submit", description: "Build and check only; sign and submit nothing" },
+      { invocation: "--sign-only", description: "Build, check and sign through the relay; submit nothing" },
+      { invocation: "--yes", description: "Skip the confirmation prompt" },
+    ],
+    examples: [
+      "candle perps setup",
+      "candle perps open BTC long 0.01",
+      "candle perps open ETH short 0.5 --price 3200 --tp 2900 --sl 3400",
+      "candle perps close BTC",
+      "candle perps leverage BTC 5 --isolated",
+    ],
+    env: [...ENV_API, "CANDLE_HYPERLIQUID_BUILDER", "CANDLE_HYPERLIQUID_NETWORK"],
   },
   transfer: {
     group: "Trade",

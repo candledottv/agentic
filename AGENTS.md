@@ -72,6 +72,18 @@ anyone signs up for anything.
 | --- | --- | --- |
 | `candle_get_operation` | yes | look up a trade or launch by the id its write used. Call this after a timeout instead of writing again |
 
+**Perps on Hyperliquid** (needs `perps:write` on the key and `CANDLE_KEY_SIGNER_PEM_FILE`; each write is checked before it is signed and submitted to Hyperliquid by the server)
+
+| Tool | Key | What it does |
+| --- | --- | --- |
+| `candle_perps_setup` | yes | approve Candle's builder fee once, and see the account's mode and balance |
+| `candle_perps_open` | yes | open or add to a position; `price` makes it a limit order |
+| `candle_perps_close` | yes | close all or part of a position, reduce-only |
+| `candle_perps_cancel` | yes | cancel an order Candle built, by cloid |
+| `candle_perps_leverage` | yes | set a market's leverage and margin mode |
+| `candle_perps_orders` | yes | open orders and every action Candle built |
+| `candle_perps_positions` | yes | positions and account value, read live |
+
 ## Which CLI command do I need?
 
 Match the task, not the noun: "make this key use these wallets" is a rebind, not `keys wallets set`.

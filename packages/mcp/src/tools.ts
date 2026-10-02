@@ -43,6 +43,7 @@ import { z } from "zod"
 import { type RequestConfig, resolveConfig } from "./client"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
 import { executeLaunchAndSeed, executeSweep, executeTrade, executionStatus, resolveToken } from "./orchestrate"
+import { executePerps, type PerpsToolName, perpsShapes } from "./perps"
 import { noteVersionHeaders } from "./update-notice"
 
 export const TOOL_NAMES = [
@@ -66,6 +67,14 @@ export const TOOL_NAMES = [
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation",
+  // Hyperliquid perps B (BE-646): the `candle perps` mirror (perps.ts).
+  "candle_perps_setup",
+  "candle_perps_open",
+  "candle_perps_close",
+  "candle_perps_cancel",
+  "candle_perps_orders",
+  "candle_perps_positions",
+  "candle_perps_leverage",
 ] as const
 
 export type ToolName = (typeof TOOL_NAMES)[number]
@@ -101,7 +110,12 @@ export function resolveToolAllowlist(env: Record<string, string | undefined>): S
  */
 type RestToolName = Exclude<
   ToolName,
-  "candle_trade" | "candle_launch_and_seed" | "candle_sweep" | "candle_resolve_token" | "candle_execution_status"
+  | "candle_trade"
+  | "candle_launch_and_seed"
+  | "candle_sweep"
+  | "candle_resolve_token"
+  | "candle_execution_status"
+  | PerpsToolName
 >
 
 export interface BuiltRequest {
@@ -977,5 +991,106 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       const result = await executeLaunchAndSeed(args as never, cfg, fetch)
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true } : {}) }
     },
+  )
+
+  // Hyperliquid perps B (BE-646): perpetuals from the key's EVM TEE wallet. Every write is built by
+  // Candle, checked here before signing (hash, action type, builder), relay-signed, and submitted
+  // to Hyperliquid by this server. Writes need CANDLE_KEY_SIGNER_PEM_FILE.
+  const perpsTool = (tool: PerpsToolName) => async (args: Record<string, unknown>) => {
+    const result = await executePerps(tool, args, cfg, env, fetch)
+    return { content: [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) }
+  }
+  const perpsWrite =
+    " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the action within this key's limits " +
+    "(USD window, maximum leverage, maximum position, slippage and price bands, main-exchange markets only); this " +
+    "server recomputes its hash and checks the action type and Candle's builder before signing, then submits it to " +
+    "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE. A refusal names the limit " +
+    "that refused it (error.limit)."
+
+  register(
+    "candle_perps_setup",
+    {
+      title: "Set up Hyperliquid perps",
+      description:
+        "Approve Candle's Hyperliquid builder fee (0.1%) once for the key's EVM TEE wallet, and report the " +
+        "account's mode and balance. Idempotent: nothing is signed when the approval is already on Hyperliquid." +
+        perpsWrite,
+      inputSchema: perpsShapes.candle_perps_setup,
+    },
+    perpsTool("candle_perps_setup"),
+  )
+
+  register(
+    "candle_perps_open",
+    {
+      title: "Open a perps position",
+      description:
+        "Open or add to a perpetual position on Hyperliquid's main perp exchange: a market order (IOC within " +
+        "slippageBps of the mid) without `price`, a limit order with it, and optional reduce-only takeProfit and " +
+        "stopLoss triggers. Free, Believer and Pro pay a 0.1% builder fee; Max pays none." +
+        perpsWrite,
+      inputSchema: perpsShapes.candle_perps_open,
+    },
+    perpsTool("candle_perps_open"),
+  )
+
+  register(
+    "candle_perps_close",
+    {
+      title: "Close a perps position",
+      description:
+        "Close all or part of a position with a reduce-only IOC order. It reserves nothing, so a key at its USD " +
+        "cap can still close." +
+        perpsWrite,
+      inputSchema: perpsShapes.candle_perps_close,
+    },
+    perpsTool("candle_perps_close"),
+  )
+
+  register(
+    "candle_perps_cancel",
+    {
+      title: "Cancel a perps order",
+      description:
+        "Cancel an order Candle built, by its cloid (from candle_perps_open or candle_perps_orders)." + perpsWrite,
+      inputSchema: perpsShapes.candle_perps_cancel,
+    },
+    perpsTool("candle_perps_cancel"),
+  )
+
+  register(
+    "candle_perps_orders",
+    {
+      title: "Perps orders",
+      description:
+        "Open orders on Hyperliquid for the key's EVM TEE wallet, and every action Candle built for it with what " +
+        "the venue shows. Reads only; moves nothing.",
+      inputSchema: perpsShapes.candle_perps_orders,
+    },
+    perpsTool("candle_perps_orders"),
+  )
+
+  register(
+    "candle_perps_positions",
+    {
+      title: "Perps positions",
+      description:
+        "Positions, account value and withdrawable balance on Hyperliquid for the key's EVM TEE wallet, read " +
+        "live by its address. Reads only; moves nothing.",
+      inputSchema: perpsShapes.candle_perps_positions,
+    },
+    perpsTool("candle_perps_positions"),
+  )
+
+  register(
+    "candle_perps_leverage",
+    {
+      title: "Set perps leverage",
+      description:
+        "Set a market's leverage and margin mode (cross or isolated) on the account, within the key's maximum leverage." +
+        perpsWrite,
+      inputSchema: perpsShapes.candle_perps_leverage,
+    },
+    perpsTool("candle_perps_leverage"),
   )
 }

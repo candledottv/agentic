@@ -36,6 +36,15 @@ import { keysWallets } from "./commands/keys-wallets"
 import { launch } from "./commands/launch"
 import { lpAdd, lpClaim, lpPools, lpPositions, lpRemove } from "./commands/lp"
 import { mcp, mcpActsAsIdentity } from "./commands/mcp"
+import {
+  perpsCancel,
+  perpsClose,
+  perpsLeverage,
+  perpsOpen,
+  perpsOrders,
+  perpsPositions,
+  perpsSetup,
+} from "./commands/perps"
 import { plugins, runPlugin } from "./commands/plugins"
 import { pnl } from "./commands/pnl"
 import { portfolio } from "./commands/portfolio"
@@ -164,6 +173,19 @@ const COMMANDS: Record<string, CommandRoute> = {
   // Ember Phase 3 PR D (BE-315, R4): Meteora DAMM v2 liquidity from a TEE wallet, on the agent
   // rail under the bound key's opt-in `lp:write`. Server-built, relay-signed, never a vault key.
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
+  // Hyperliquid perps B (BE-646): perpetuals from the key's EVM TEE wallet under the bound key's
+  // opt-in `perps:write`. Server-built, checked here before signing, relay-signed, submitted here.
+  perps: {
+    subcommands: {
+      setup: perpsSetup,
+      open: perpsOpen,
+      close: perpsClose,
+      cancel: perpsCancel,
+      orders: perpsOrders,
+      positions: perpsPositions,
+      leverage: perpsLeverage,
+    },
+  },
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
   // BE-361: `keys access` moves an existing key between the three levels in place.
   keys: {

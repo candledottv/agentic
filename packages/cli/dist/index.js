@@ -50297,6 +50297,630 @@ var init_orchestrate = __esm(() => {
   };
 });
 
+// ../mcp/src/hyperliquid.ts
+function pushUint2(out, value, width) {
+  for (let i = width - 1;i >= 0; i--)
+    out.push(Number(value >> BigInt(i * 8) & 0xffn));
+}
+function packInteger2(out, value) {
+  if (value >= 0n) {
+    if (value > UINT64_MAX2)
+      throw new Error("msgpack: integer above uint64");
+    if (value < 0x80n)
+      out.push(Number(value));
+    else if (value <= 0xffn) {
+      out.push(204);
+      pushUint2(out, value, 1);
+    } else if (value <= 0xffffn) {
+      out.push(205);
+      pushUint2(out, value, 2);
+    } else if (value <= 0xffffffffn) {
+      out.push(206);
+      pushUint2(out, value, 4);
+    } else {
+      out.push(207);
+      pushUint2(out, value, 8);
+    }
+    return;
+  }
+  if (value < INT64_MIN2)
+    throw new Error("msgpack: integer below int64");
+  if (value >= -32n)
+    out.push(Number(value & 0xffn));
+  else if (value >= -128n) {
+    out.push(208);
+    pushUint2(out, value & 0xffn, 1);
+  } else if (value >= -32768n) {
+    out.push(209);
+    pushUint2(out, value & 0xffffn, 2);
+  } else if (value >= -2147483648n) {
+    out.push(210);
+    pushUint2(out, value & 0xffffffffn, 4);
+  } else {
+    out.push(211);
+    pushUint2(out, value & UINT64_MAX2, 8);
+  }
+}
+function packHeader2(out, length, fixBase, fixMax, codes) {
+  if (length <= fixMax) {
+    out.push(fixBase | length);
+    return;
+  }
+  const [c8, c16, c32] = codes;
+  if (c8 !== undefined && c8 !== 0 && length <= 255) {
+    out.push(c8);
+    pushUint2(out, BigInt(length), 1);
+  } else if (length <= 65535) {
+    out.push(c16);
+    pushUint2(out, BigInt(length), 2);
+  } else {
+    out.push(c32);
+    pushUint2(out, BigInt(length), 4);
+  }
+}
+function packValue2(out, value) {
+  if (value === null)
+    out.push(192);
+  else if (value === false)
+    out.push(194);
+  else if (value === true)
+    out.push(195);
+  else if (typeof value === "bigint")
+    packInteger2(out, value);
+  else if (typeof value === "number") {
+    if (!Number.isSafeInteger(value))
+      throw new Error(`msgpack: ${value} is not a safe integer`);
+    packInteger2(out, BigInt(value));
+  } else if (typeof value === "string") {
+    const bytes = new TextEncoder().encode(value);
+    packHeader2(out, bytes.length, 160, 31, [217, 218, 219]);
+    for (const b of bytes)
+      out.push(b);
+  } else if (Array.isArray(value)) {
+    packHeader2(out, value.length, 144, 15, [0, 220, 221]);
+    for (const item of value)
+      packValue2(out, item);
+  } else if (typeof value === "object") {
+    const entries = Object.entries(value).filter(([, v]) => v !== undefined);
+    for (const [key] of entries) {
+      if (/^(0|[1-9][0-9]*)$/.test(key))
+        throw new Error(`msgpack: integer-like key "${key}"`);
+    }
+    packHeader2(out, entries.length, 128, 15, [0, 222, 223]);
+    for (const [key, item] of entries) {
+      packValue2(out, key);
+      packValue2(out, item);
+    }
+  } else {
+    throw new Error(`msgpack: cannot encode a ${typeof value}`);
+  }
+}
+function msgpackEncode2(value) {
+  const out = [];
+  packValue2(out, value);
+  return Uint8Array.from(out);
+}
+function toHex2(bytes) {
+  let out = "";
+  for (const b of bytes)
+    out += b.toString(16).padStart(2, "0");
+  return out;
+}
+function hyperliquidActionHash2(action, nonce) {
+  const n = BigInt(nonce);
+  if (n < 0n || n > UINT64_MAX2)
+    throw new Error("hyperliquidActionHash: nonce out of range");
+  const out = Array.from(msgpackEncode2(action));
+  pushUint2(out, n, 8);
+  out.push(0);
+  return `0x${toHex2(keccak_256(Uint8Array.from(out)))}`;
+}
+function hyperliquidL1TypedData2(connectionId, network2) {
+  return {
+    domain: { name: "Exchange", version: "1", chainId: 1337, verifyingContract: ZERO_ADDRESS2 },
+    types: {
+      Agent: [
+        { name: "source", type: "string" },
+        { name: "connectionId", type: "bytes32" }
+      ]
+    },
+    primary_type: "Agent",
+    message: { source: network2 === "mainnet" ? "a" : "b", connectionId }
+  };
+}
+function hyperliquidApproveBuilderFeeTypedData2(builder, nonce) {
+  return {
+    domain: { name: "HyperliquidSignTransaction", version: "1", chainId: 42161, verifyingContract: ZERO_ADDRESS2 },
+    types: {
+      "HyperliquidTransaction:ApproveBuilderFee": [
+        { name: "hyperliquidChain", type: "string" },
+        { name: "maxFeeRate", type: "string" },
+        { name: "builder", type: "address" },
+        { name: "nonce", type: "uint64" }
+      ]
+    },
+    primary_type: "HyperliquidTransaction:ApproveBuilderFee",
+    message: {
+      hyperliquidChain: "Mainnet",
+      maxFeeRate: HYPERLIQUID_MAX_BUILDER_FEE_RATE2,
+      builder: builder.toLowerCase(),
+      nonce
+    }
+  };
+}
+function hyperliquidCanonicalJson2(value) {
+  return canonical2(value);
+}
+function canonical2(value) {
+  if (value === null || typeof value !== "object")
+    return JSON.stringify(value);
+  if (Array.isArray(value))
+    return `[${value.map(canonical2).join(",")}]`;
+  const record2 = value;
+  return `{${Object.keys(record2).sort().map((key) => `${JSON.stringify(key)}:${canonical2(record2[key])}`).join(",")}}`;
+}
+function sameValue2(a, b) {
+  return canonical2(a) === canonical2(b);
+}
+function checkBuilderField2(action, builder) {
+  if (!("builder" in action) || action.builder === undefined)
+    return null;
+  const field = action.builder;
+  if (typeof field !== "object" || field === null)
+    return "builder field is not an object";
+  if (typeof field.b !== "string" || field.b.toLowerCase() !== builder.toLowerCase()) {
+    return "the order names a builder that is not Candle's";
+  }
+  if (typeof field.f !== "number" || !Number.isInteger(field.f) || field.f <= 0 || field.f > HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS2) {
+    return "the builder fee is outside Candle's 0.1% maximum";
+  }
+  return null;
+}
+function decimal2(value) {
+  if (typeof value !== "string" || !/^-?(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(value))
+    return null;
+  const negative = value.startsWith("-");
+  const [whole = "0", frac = ""] = (negative ? value.slice(1) : value).split(".");
+  const n = BigInt(whole) * 10n ** 18n + BigInt(frac.padEnd(18, "0"));
+  return negative ? -n : n;
+}
+function checkActionIntent2(action, intent) {
+  const mainAsset = (a) => typeof a === "number" && Number.isInteger(a) && a >= 0 && a < 1e4;
+  const orderList = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
+  if (!Array.isArray(orderList))
+    return "invalid orders";
+  for (const raw of orderList) {
+    if (!raw || typeof raw !== "object")
+      return "invalid order";
+    const o = raw;
+    if (!mainAsset(o.a))
+      return "order asset is outside the main perp universe";
+    if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal2(o.s) ?? 0n) <= 0n || (decimal2(o.p) ?? 0n) <= 0n)
+      return "invalid order side, size, price or reduce-only flag";
+  }
+  if (action.type === "cancel") {
+    if (!Array.isArray(action.cancels) || action.cancels.length !== 1 || !mainAsset(action.cancels[0]?.a))
+      return "invalid cancel asset";
+  }
+  if ((action.type === "updateLeverage" || action.type === "updateIsolatedMargin") && !mainAsset(action.asset))
+    return "invalid action asset";
+  if (!intent)
+    return null;
+  const { method, params: p } = intent;
+  const types2 = {
+    setup: "approveBuilderFee",
+    open: "order",
+    close: "order",
+    cancel: "cancel",
+    modify: "modify",
+    leverage: "updateLeverage",
+    margin: "updateIsolatedMargin"
+  };
+  if (action.type !== types2[method])
+    return "action type does not match the requested method";
+  if (method === "leverage") {
+    if (action.leverage !== p.leverage || action.isCross !== (p.mode !== "isolated"))
+      return "leverage or mode does not match the request";
+  }
+  if (method === "margin") {
+    const amount = decimal2(p.amount);
+    if (amount === null || amount % 10n ** 12n !== 0n || !Number.isSafeInteger(action.ntli) || BigInt(action.ntli) !== amount / 10n ** 12n || action.isBuy !== true)
+      return "isolated margin amount does not match the request";
+  }
+  if (method === "open" || method === "close" || method === "modify") {
+    const list = orderList;
+    const first = list[0];
+    if (!first)
+      return "missing requested order";
+    const typ = first.t;
+    if (!typ?.limit)
+      return "requested order is not a limit/IOC order";
+    if (method === "open") {
+      const buy = p.side === "long" || p.side === "buy";
+      if (first.b !== buy || first.r !== false || decimal2(first.s) !== decimal2(p.size))
+        return "order side, size or reduce-only flag does not match the request";
+      const tif = (p.type ?? (p.price === undefined ? "market" : "limit")) === "market" ? "Ioc" : p.tif ?? "Gtc";
+      if (typ.limit.tif !== tif)
+        return "order time in force does not match the request";
+      const triggers = [
+        ["takeProfit", "tp"],
+        ["stopLoss", "sl"]
+      ].filter(([field]) => p[field] != null);
+      if (list.length !== 1 + triggers.length || action.grouping !== (triggers.length ? "normalTpsl" : "na"))
+        return "unexpected extra orders or grouping";
+      for (let i = 0;i < triggers.length; i++) {
+        const [field, kind] = triggers[i];
+        const leg = list[i + 1];
+        if (!leg)
+          return "missing trigger order";
+        const trigger = leg.t?.trigger;
+        if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal2(leg.s) !== decimal2(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal2(trigger.triggerPx) !== decimal2(p[field]))
+          return "trigger side, size, reduce-only flag or price does not match the request";
+      }
+    } else {
+      if (list.length !== 1)
+        return "unexpected extra orders";
+      if (method === "close" && (first.r !== true || typ.limit.tif !== "Ioc" || p.size != null && (decimal2(first.s) ?? 0n) > (decimal2(p.size) ?? 0n)))
+        return "close size or reduce-only flag does not match the request";
+      if (method === "modify" && p.size != null && decimal2(first.s) !== decimal2(p.size))
+        return "replacement size does not match the request";
+    }
+    if (p.price != null && decimal2(first.p) !== decimal2(p.price))
+      return "order price does not match the request";
+  }
+  return null;
+}
+async function hyperliquidCloseOrder2(fetcher, network2, address, params) {
+  const read = async (body) => {
+    const res = await fetcher(HYPERLIQUID_EXCHANGE_URLS2[network2].replace("/exchange", "/info"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok)
+      throw new Error("Cannot read the close position from Hyperliquid");
+    return JSON.parse(await res.text());
+  };
+  const [meta, state] = await Promise.all([read({ type: "meta" }), read({ type: "clearinghouseState", user: address })]);
+  const coin = String(params.coin).toUpperCase();
+  const asset = meta.universe.findIndex((m) => m.name.toUpperCase() === coin);
+  const szi = state.assetPositions.find((p) => p.position.coin.toUpperCase() === coin)?.position.szi;
+  const signed = decimal2(szi);
+  if (asset < 0 || asset >= 1e4 || signed === null || signed === 0n)
+    throw new Error("No main-universe position to close");
+  const held = signed < 0n ? -signed : signed;
+  const asked = params.size == null ? held : decimal2(params.size);
+  if (asked === null || asked <= 0n)
+    throw new Error("Invalid close size");
+  const size = asked < held ? String(params.size) : String(szi).replace(/^-/, "");
+  return { asset, isBuy: signed < 0n, size };
+}
+function verifyPerpsBuild2(build, opts) {
+  try {
+    const network2 = opts.network ?? "mainnet";
+    if (!EVM_ADDRESS_RE2.test(opts.builder))
+      return { ok: false, reason: "no valid Candle builder address to check against" };
+    if (build.network !== undefined && build.network !== network2) {
+      return { ok: false, reason: `the build is for ${build.network}, this client trades ${network2}` };
+    }
+    if (opts.address && build.address && build.address.toLowerCase() !== opts.address.toLowerCase()) {
+      return { ok: false, reason: "the build is for a different wallet" };
+    }
+    if (!Number.isSafeInteger(build.nonce) || build.nonce <= 0)
+      return { ok: false, reason: "invalid nonce" };
+    const typed = build.typedData;
+    if (!typed || typeof typed !== "object")
+      return { ok: false, reason: "no typed data" };
+    const action = build.action;
+    if (!action || typeof action !== "object")
+      return { ok: false, reason: "no action" };
+    const intentRefusal = checkActionIntent2(action, opts.intent);
+    if (intentRefusal)
+      return { ok: false, reason: intentRefusal };
+    if (opts.closeOrder) {
+      const order = action.orders[0];
+      if (!order || order.a !== opts.closeOrder.asset || order.b !== opts.closeOrder.isBuy || decimal2(order.s) !== decimal2(opts.closeOrder.size) || order.r !== true)
+        return { ok: false, reason: "close side, asset or size does not match the requested position" };
+    }
+    if (typed.primary_type === "Agent") {
+      const type = action.type;
+      if (typeof type !== "string" || !HYPERLIQUID_ALLOWED_ACTION_TYPES2.includes(type)) {
+        return { ok: false, reason: `action type ${String(type)} is not one Candle builds` };
+      }
+      if (type === "order") {
+        const refusal = checkBuilderField2(action, opts.builder);
+        if (refusal)
+          return { ok: false, reason: refusal };
+      } else if ("builder" in action) {
+        return { ok: false, reason: `a ${type} action carries no builder` };
+      }
+      if ("vaultAddress" in action)
+        return { ok: false, reason: "the action names a vault" };
+      const expected = hyperliquidL1TypedData2(hyperliquidActionHash2(action, build.nonce), network2);
+      if (!sameValue2(typed, expected)) {
+        return { ok: false, reason: "the typed data does not commit to this action and nonce" };
+      }
+      return { ok: true, kind: "l1" };
+    }
+    if (typed.primary_type === "HyperliquidTransaction:ApproveBuilderFee") {
+      const expected = hyperliquidApproveBuilderFeeTypedData2(opts.builder, build.nonce);
+      if (!sameValue2(typed, expected)) {
+        return { ok: false, reason: "the builder approval is not Candle's builder at 0.1% on Mainnet" };
+      }
+      const expectedAction = {
+        type: "approveBuilderFee",
+        hyperliquidChain: "Mainnet",
+        signatureChainId: HYPERLIQUID_SIGNATURE_CHAIN_ID2,
+        maxFeeRate: HYPERLIQUID_MAX_BUILDER_FEE_RATE2,
+        builder: opts.builder.toLowerCase(),
+        nonce: build.nonce
+      };
+      if (!sameValue2(action, expectedAction)) {
+        return { ok: false, reason: "the approval action does not match its typed data" };
+      }
+      return { ok: true, kind: "approveBuilderFee" };
+    }
+    return { ok: false, reason: `primary type ${String(typed.primary_type)} is not one the relay signs` };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : "unreadable build" };
+  }
+}
+function hyperliquidSplitSignature2(signature) {
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature))
+    throw new Error("Not a 65-byte signature");
+  let v = Number.parseInt(signature.slice(130, 132), 16);
+  if (v < 27)
+    v += 27;
+  return { r: `0x${signature.slice(2, 66)}`, s: `0x${signature.slice(66, 130)}`, v };
+}
+function hyperliquidExchangeBody2(action, nonce, signature) {
+  return { action, nonce, signature: hyperliquidSplitSignature2(signature), vaultAddress: null, expiresAfter: null };
+}
+function hyperliquidRelayBody2(typedData) {
+  return { method: "eth_signTypedData_v4", params: { typed_data: typedData } };
+}
+var HYPERLIQUID_ALLOWED_ACTION_TYPES2, HYPERLIQUID_EXCHANGE_URLS2, CANDLE_HYPERLIQUID_BUILDER_ADDRESS2 = null, HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS2 = 100, HYPERLIQUID_MAX_BUILDER_FEE_RATE2 = "0.1%", HYPERLIQUID_SIGNATURE_CHAIN_ID2 = "0xa4b1", ZERO_ADDRESS2 = "0x0000000000000000000000000000000000000000", UINT64_MAX2, INT64_MIN2, EVM_ADDRESS_RE2;
+var init_hyperliquid = __esm(() => {
+  init_sha3();
+  HYPERLIQUID_ALLOWED_ACTION_TYPES2 = [
+    "order",
+    "cancel",
+    "modify",
+    "updateLeverage",
+    "updateIsolatedMargin"
+  ];
+  HYPERLIQUID_EXCHANGE_URLS2 = {
+    mainnet: "https://api.hyperliquid.xyz/exchange",
+    testnet: "https://api.hyperliquid-testnet.xyz/exchange"
+  };
+  UINT64_MAX2 = (1n << 64n) - 1n;
+  INT64_MIN2 = -(1n << 63n);
+  EVM_ADDRESS_RE2 = /^0x[0-9a-fA-F]{40}$/;
+});
+
+// ../mcp/src/perps.ts
+import { createPrivateKey as createPrivateKey2, sign as sign5 } from "node:crypto";
+import { readFile as readFile9 } from "node:fs/promises";
+function fail3(code, message, extra = {}) {
+  return { text: JSON.stringify({ success: false, error: { code, message }, ...extra }), isError: true };
+}
+async function call(cfg, fetch2, method, path, body) {
+  const res = await fetch2(`${cfg.apiUrl.replace(/\/$/, "")}${path}`, {
+    method,
+    headers: { "Content-Type": "application/json", ...cfg.apiKey ? { "x-api-key": cfg.apiKey } : {} },
+    ...body !== undefined ? { body: JSON.stringify(body) } : {}
+  });
+  const text = await res.text();
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = text;
+  }
+  if (!res.ok) {
+    if (res.status === 404 && (typeof parsed !== "object" || parsed === null))
+      throw new Refusal(fail3("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes."));
+    throw new Refusal({ text: typeof parsed === "string" ? parsed : JSON.stringify(parsed), isError: true });
+  }
+  if (typeof parsed !== "object" || parsed === null)
+    throw new Refusal(fail3("INVALID_RESPONSE", "Not a JSON object"));
+  return parsed;
+}
+async function walletFor(cfg, fetch2, name2, scope) {
+  const listed = await call(cfg, fetch2, "GET", "/api/v1/agent/wallets/trading");
+  if (scope && !(Array.isArray(listed.scopes) && listed.scopes.includes(scope)))
+    throw new Refusal(fail3("SCOPE_MISSING", `The key needs ${scope}.`));
+  const rows = Array.isArray(listed.page) ? listed.page : [];
+  const evm = rows.filter((row) => row.chain === "evm");
+  const matches2 = name2 === undefined ? evm : evm.filter((row) => row.id === name2 || row.label === name2 || row.address.toLowerCase() === name2.toLowerCase());
+  if (matches2.length !== 1)
+    throw new Refusal(fail3("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row) => row.label ?? row.id).join(", ")}`));
+  return { row: matches2[0], appId: typeof listed.privyAppId === "string" ? listed.privyAppId : "" };
+}
+async function builderPin2(cfg, fetch2, env) {
+  const pinned = env.CANDLE_HYPERLIQUID_BUILDER?.trim() || CANDLE_HYPERLIQUID_BUILDER_ADDRESS2;
+  if (pinned)
+    return pinned.toLowerCase();
+  const config = await call(cfg, fetch2, "GET", "/api/v1/agent/perps/config");
+  if (typeof config.builder !== "string")
+    throw new Refusal(fail3("PERPS_NOT_CONFIGURED", "The server reports no Hyperliquid builder address."));
+  return config.builder.toLowerCase();
+}
+async function executePerps(tool, args, cfg, env, fetch2) {
+  if (!cfg.apiKey)
+    return fail3("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
+  const network2 = env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet";
+  const name2 = typeof args.wallet === "string" ? args.wallet : undefined;
+  try {
+    if (tool === "candle_perps_orders" || tool === "candle_perps_positions") {
+      const { row: row2 } = await walletFor(cfg, fetch2, name2);
+      const query = new URLSearchParams({ walletId: row2.id });
+      if (typeof args.limit === "number")
+        query.set("limit", String(args.limit));
+      return { text: JSON.stringify(await call(cfg, fetch2, "GET", `${PATHS[tool]}?${query}`)) };
+    }
+    const willSubmit = args.submit !== false;
+    const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim();
+    let signerPem = null;
+    if (willSubmit) {
+      if (!pemFile)
+        return fail3("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign perps actions.");
+      try {
+        signerPem = await readFile9(pemFile, "utf8");
+        createPrivateKey2(signerPem);
+      } catch {
+        return fail3("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
+      }
+    }
+    const { row, appId } = await walletFor(cfg, fetch2, name2, "perps:write");
+    const builder = await builderPin2(cfg, fetch2, env);
+    const { wallet: _w, submit: _s, ...fields } = args;
+    const build = await call(cfg, fetch2, "POST", PATHS[tool], {
+      walletId: row.id,
+      ...fields,
+      ...tool === "candle_perps_open" ? { type: fields.price === undefined ? "market" : "limit" } : {}
+    });
+    if (build.ready === true)
+      return { text: JSON.stringify(build) };
+    const method = PATHS[tool].split("/").at(-1);
+    const check = verifyPerpsBuild2(build, {
+      builder,
+      network: network2,
+      address: row.address,
+      intent: { method, params: fields }
+    });
+    if (!check.ok)
+      return fail3("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`);
+    if (method === "close") {
+      const closeOrder = await hyperliquidCloseOrder2(fetch2, network2, row.address, fields);
+      const closeCheck = verifyPerpsBuild2(build, {
+        builder,
+        network: network2,
+        address: row.address,
+        intent: { method, params: fields },
+        closeOrder
+      });
+      if (!closeCheck.ok)
+        return fail3("PERPS_BUILD_REFUSED", `Refused to sign this build: ${closeCheck.reason}. Nothing was signed.`);
+    }
+    if (!willSubmit || signerPem === null)
+      return { text: JSON.stringify({ ...build, signed: false, submitted: false }) };
+    if (!appId || !row.privyWalletId)
+      return fail3("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers.");
+    const body = hyperliquidRelayBody2(build.typedData);
+    const payload = hyperliquidCanonicalJson2({
+      body,
+      headers: { "privy-app-id": appId },
+      method: "POST",
+      url: `https://api.privy.io/v1/wallets/${row.privyWalletId}/rpc`,
+      version: 1
+    });
+    const authorizationSignature2 = sign5("sha256", Buffer.from(payload), signerPem).toString("base64");
+    const relay = await call(cfg, fetch2, "POST", `/api/v1/agent/wallets/${encodeURIComponent(row.id)}/sign`, {
+      authorizationSignature: authorizationSignature2,
+      body
+    });
+    const signature = relay.signature;
+    if (typeof signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(signature))
+      return fail3("INVALID_RESPONSE", "The relay did not return a signature.");
+    const exchangeBody = hyperliquidExchangeBody2(build.action, build.nonce, signature);
+    let exchange;
+    try {
+      const res = await fetch2(HYPERLIQUID_EXCHANGE_URLS2[network2], {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(exchangeBody)
+      });
+      const text = await res.text();
+      if (!res.ok)
+        throw new Error(`HTTP ${res.status}`);
+      exchange = JSON.parse(text);
+    } catch (error) {
+      return fail3("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). POST exchangeBody to Hyperliquid's /exchange to resubmit.`, { perpOrderId: build.perpOrderId, exchangeBody });
+    }
+    const accepted = typeof exchange === "object" && exchange !== null && exchange.status === "ok" && !(exchange.response?.data?.statuses ?? []).some((status) => typeof status === "object" && status !== null && ("error" in status));
+    return {
+      text: JSON.stringify({
+        success: accepted,
+        perpOrderId: build.perpOrderId,
+        kind: build.kind,
+        network: build.network,
+        address: row.address,
+        ...build.cloid ? { cloid: build.cloid } : {},
+        ...build.childCloids ? { childCloids: build.childCloids } : {},
+        nonce: build.nonce,
+        signature,
+        exchange
+      }),
+      ...accepted ? {} : { isError: true }
+    };
+  } catch (error) {
+    if (error instanceof Refusal)
+      return error.tool;
+    return fail3("MCP_TRANSPORT", error instanceof Error ? error.message : "The perps call failed.");
+  }
+}
+var decimal3, wallet, submit, perpsShapes, PATHS, Refusal;
+var init_perps = __esm(() => {
+  init_zod();
+  init_hyperliquid();
+  decimal3 = exports_external.string().regex(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/, "a plain decimal string");
+  wallet = exports_external.string().optional().describe("The EVM TEE wallet by id, address or label. Omit when the key has exactly one.");
+  submit = exports_external.boolean().optional().describe("false: build and check only, sign and submit nothing. Default true.");
+  perpsShapes = {
+    candle_perps_setup: { wallet, submit },
+    candle_perps_open: {
+      coin: exports_external.string().describe("A market on Hyperliquid's main perp exchange, e.g. BTC"),
+      side: exports_external.enum(["long", "short"]),
+      size: decimal3.describe('Size in the coin, decimal (e.g. "0.01")'),
+      price: decimal3.optional().describe("Limit price. Omit for a market order (IOC within slippageBps of the mid)."),
+      tif: exports_external.enum(["Gtc", "Alo", "Ioc"]).optional().describe("With price: time in force (default Gtc)"),
+      slippageBps: exports_external.number().int().min(1).optional(),
+      takeProfit: decimal3.optional().describe("Reduce-only take-profit trigger price"),
+      stopLoss: decimal3.optional().describe("Reduce-only stop-loss trigger price"),
+      wallet,
+      submit
+    },
+    candle_perps_close: {
+      coin: exports_external.string(),
+      size: decimal3.optional().describe("Part of the position to close; the whole position when omitted"),
+      slippageBps: exports_external.number().int().min(1).optional(),
+      wallet,
+      submit
+    },
+    candle_perps_cancel: {
+      cloid: exports_external.string().regex(/^0x[0-9a-fA-F]{32}$/).describe("The cloid of an order Candle built (an open, or one of its take-profit / stop-loss legs)"),
+      wallet,
+      submit
+    },
+    candle_perps_orders: { wallet, limit: exports_external.number().int().min(1).max(200).optional() },
+    candle_perps_positions: { wallet },
+    candle_perps_leverage: {
+      coin: exports_external.string(),
+      leverage: exports_external.number().int().min(1),
+      mode: exports_external.enum(["cross", "isolated"]).optional(),
+      wallet,
+      submit
+    }
+  };
+  PATHS = {
+    candle_perps_setup: "/api/v1/agent/perps/setup",
+    candle_perps_open: "/api/v1/agent/perps/open",
+    candle_perps_close: "/api/v1/agent/perps/close",
+    candle_perps_cancel: "/api/v1/agent/perps/cancel",
+    candle_perps_orders: "/api/v1/agent/perps/orders",
+    candle_perps_positions: "/api/v1/agent/perps/positions",
+    candle_perps_leverage: "/api/v1/agent/perps/leverage"
+  };
+  Refusal = class Refusal extends Error {
+    tool;
+    constructor(tool) {
+      super("refused");
+      this.tool = tool;
+    }
+  };
+});
+
 // ../mcp/src/tools.ts
 function resolveToolAllowlist(env) {
   const raw = env.CANDLE_MCP_TOOLS?.trim();
@@ -50636,12 +51260,53 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     const result = await executeLaunchAndSeed(args, cfg, fetch);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
+  const perpsTool = (tool) => async (args) => {
+    const result = await executePerps(tool, args, cfg, env, fetch);
+    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+  };
+  const perpsWrite = " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the action within this key's limits " + "(USD window, maximum leverage, maximum position, slippage and price bands, main-exchange markets only); this " + "server recomputes its hash and checks the action type and Candle's builder before signing, then submits it to " + "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE. A refusal names the limit " + "that refused it (error.limit).";
+  register("candle_perps_setup", {
+    title: "Set up Hyperliquid perps",
+    description: "Approve Candle's Hyperliquid builder fee (0.1%) once for the key's EVM TEE wallet, and report the " + "account's mode and balance. Idempotent: nothing is signed when the approval is already on Hyperliquid." + perpsWrite,
+    inputSchema: perpsShapes.candle_perps_setup
+  }, perpsTool("candle_perps_setup"));
+  register("candle_perps_open", {
+    title: "Open a perps position",
+    description: "Open or add to a perpetual position on Hyperliquid's main perp exchange: a market order (IOC within " + "slippageBps of the mid) without `price`, a limit order with it, and optional reduce-only takeProfit and " + "stopLoss triggers. Free, Believer and Pro pay a 0.1% builder fee; Max pays none." + perpsWrite,
+    inputSchema: perpsShapes.candle_perps_open
+  }, perpsTool("candle_perps_open"));
+  register("candle_perps_close", {
+    title: "Close a perps position",
+    description: "Close all or part of a position with a reduce-only IOC order. It reserves nothing, so a key at its USD " + "cap can still close." + perpsWrite,
+    inputSchema: perpsShapes.candle_perps_close
+  }, perpsTool("candle_perps_close"));
+  register("candle_perps_cancel", {
+    title: "Cancel a perps order",
+    description: "Cancel an order Candle built, by its cloid (from candle_perps_open or candle_perps_orders)." + perpsWrite,
+    inputSchema: perpsShapes.candle_perps_cancel
+  }, perpsTool("candle_perps_cancel"));
+  register("candle_perps_orders", {
+    title: "Perps orders",
+    description: "Open orders on Hyperliquid for the key's EVM TEE wallet, and every action Candle built for it with what " + "the venue shows. Reads only; moves nothing.",
+    inputSchema: perpsShapes.candle_perps_orders
+  }, perpsTool("candle_perps_orders"));
+  register("candle_perps_positions", {
+    title: "Perps positions",
+    description: "Positions, account value and withdrawable balance on Hyperliquid for the key's EVM TEE wallet, read " + "live by its address. Reads only; moves nothing.",
+    inputSchema: perpsShapes.candle_perps_positions
+  }, perpsTool("candle_perps_positions"));
+  register("candle_perps_leverage", {
+    title: "Set perps leverage",
+    description: "Set a market's leverage and margin mode (cross or isolated) on the account, within the key's maximum leverage." + perpsWrite,
+    inputSchema: perpsShapes.candle_perps_leverage
+  }, perpsTool("candle_perps_leverage"));
 }
 var TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, getFeedShape, reportActivityShape, getAgentProfileShape, getOperationShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, launchAndSeedShape, transferShape, sweepShape;
 var init_tools = __esm(() => {
   init_zod();
   init_convert();
   init_orchestrate();
+  init_perps();
   init_update_notice();
   TOOL_NAMES = [
     "candle_launch_token",
@@ -50663,7 +51328,14 @@ var init_tools = __esm(() => {
     "candle_get_portfolio",
     "candle_resolve_token",
     "candle_execution_status",
-    "candle_get_operation"
+    "candle_get_operation",
+    "candle_perps_setup",
+    "candle_perps_open",
+    "candle_perps_close",
+    "candle_perps_cancel",
+    "candle_perps_orders",
+    "candle_perps_positions",
+    "candle_perps_leverage"
   ];
   launchTokenShape = {
     clientLaunchId: exports_external.string().describe("Caller-chosen idempotency key, unique per account"),
@@ -50838,7 +51510,7 @@ var init_server2 = __esm(() => {
 // src/index.ts
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod as chmod8, readFile as readFile9, realpath, rename as rename6, unlink, writeFile as writeFile7 } from "node:fs/promises";
+import { chmod as chmod8, readFile as readFile10, realpath, rename as rename6, unlink, writeFile as writeFile7 } from "node:fs/promises";
 import { homedir as homedir6, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -51302,6 +51974,11 @@ var ENVIRONMENT = [
     name: "CANDLE_ENCLAVE_HELPER",
     description: "Path to the signed candle-enclave.app helper (macOS)"
   },
+  {
+    name: "CANDLE_HYPERLIQUID_BUILDER",
+    description: "candle perps: Candle's Hyperliquid builder address, pinned for the check every build passes before it is signed; without it the release's, else the one the server reports"
+  },
+  { name: "CANDLE_HYPERLIQUID_NETWORK", description: "candle perps: set to testnet to trade Hyperliquid testnet" },
   { name: "CANDLE_NO_UPDATE_NOTIFIER", description: "Set to 1 to silence the update notice" },
   {
     name: "CANDLE_KEYSTORE_PASSPHRASE",
@@ -51446,6 +52123,53 @@ var HELP = {
       "candle lp remove <position> --percent 100 --wallet AgentOne"
     ],
     env: ENV_API
+  },
+  perps: {
+    group: "Trade",
+    summary: "Hyperliquid perpetuals from your EVM TEE wallet: setup, open, close, cancel, orders, positions, leverage",
+    description: "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Free, Believer and Pro pay a 0.1% builder fee; Max pays none.",
+    usage: ["candle perps <subcommand> [flags]"],
+    rows: [
+      {
+        invocation: "setup [--wallet <tee>]",
+        description: "Approve Candle's builder fee once; shows the account's mode and balance"
+      },
+      {
+        invocation: "open <coin> <long|short> <size> [--price <px>]",
+        description: "Market (IOC) without --price, limit with it; optional --tp and --sl"
+      },
+      { invocation: "close <coin> [--size <n>]", description: "Reduce-only IOC close of all or part of a position" },
+      { invocation: "cancel <cloid>", description: "Cancel an order Candle built, by its cloid" },
+      {
+        invocation: "orders [--wallet <tee>]",
+        description: "Open orders on Hyperliquid, and every action Candle built"
+      },
+      { invocation: "positions [--wallet <tee>]", description: "Positions and account value, read live" },
+      { invocation: "leverage <coin> <x> [--isolated]", description: "Set a market's leverage and margin mode" }
+    ],
+    flags: [
+      {
+        invocation: "--wallet <tee>",
+        description: "The EVM TEE wallet by id, address or unique label (default: the only one)"
+      },
+      { invocation: "--tif <Gtc|Alo|Ioc>", description: "open with --price: time in force (default Gtc)" },
+      {
+        invocation: "--slippage-bps <n>",
+        description: "open at market and close: the bound against the mid (default 100)"
+      },
+      { invocation: "--tp <px> / --sl <px>", description: "open: reduce-only take-profit and stop-loss triggers" },
+      { invocation: "--no-submit", description: "Build and check only; sign and submit nothing" },
+      { invocation: "--sign-only", description: "Build, check and sign through the relay; submit nothing" },
+      { invocation: "--yes", description: "Skip the confirmation prompt" }
+    ],
+    examples: [
+      "candle perps setup",
+      "candle perps open BTC long 0.01",
+      "candle perps open ETH short 0.5 --price 3200 --tp 2900 --sl 3400",
+      "candle perps close BTC",
+      "candle perps leverage BTC 5 --isolated"
+    ],
+    env: [...ENV_API, "CANDLE_HYPERLIQUID_BUILDER", "CANDLE_HYPERLIQUID_NETWORK"]
   },
   transfer: {
     group: "Trade",
@@ -59336,7 +60060,14 @@ var MCP_TOOL_NAMES = [
   "candle_get_portfolio",
   "candle_resolve_token",
   "candle_execution_status",
-  "candle_get_operation"
+  "candle_get_operation",
+  "candle_perps_setup",
+  "candle_perps_open",
+  "candle_perps_close",
+  "candle_perps_cancel",
+  "candle_perps_orders",
+  "candle_perps_positions",
+  "candle_perps_leverage"
 ];
 var READ_ONLY_TOOL_NAMES = [
   "candle_get_market",
@@ -59441,6 +60172,827 @@ async function mcp(args, ctx) {
       message: `The MCP server could not start: ${error instanceof Error ? error.message : error}`
     }, json);
     return 1;
+  }
+}
+
+// src/commands/perps.ts
+init_args();
+import { sign as sign3 } from "node:crypto";
+
+// src/hyperliquid.ts
+init_sha3();
+var HYPERLIQUID_ALLOWED_ACTION_TYPES = [
+  "order",
+  "cancel",
+  "modify",
+  "updateLeverage",
+  "updateIsolatedMargin"
+];
+var HYPERLIQUID_EXCHANGE_URLS = {
+  mainnet: "https://api.hyperliquid.xyz/exchange",
+  testnet: "https://api.hyperliquid-testnet.xyz/exchange"
+};
+var CANDLE_HYPERLIQUID_BUILDER_ADDRESS = null;
+var HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS = 100;
+var HYPERLIQUID_MAX_BUILDER_FEE_RATE = "0.1%";
+var HYPERLIQUID_SIGNATURE_CHAIN_ID = "0xa4b1";
+var ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+var UINT64_MAX = (1n << 64n) - 1n;
+var INT64_MIN = -(1n << 63n);
+function pushUint(out, value, width) {
+  for (let i = width - 1;i >= 0; i--)
+    out.push(Number(value >> BigInt(i * 8) & 0xffn));
+}
+function packInteger(out, value) {
+  if (value >= 0n) {
+    if (value > UINT64_MAX)
+      throw new Error("msgpack: integer above uint64");
+    if (value < 0x80n)
+      out.push(Number(value));
+    else if (value <= 0xffn) {
+      out.push(204);
+      pushUint(out, value, 1);
+    } else if (value <= 0xffffn) {
+      out.push(205);
+      pushUint(out, value, 2);
+    } else if (value <= 0xffffffffn) {
+      out.push(206);
+      pushUint(out, value, 4);
+    } else {
+      out.push(207);
+      pushUint(out, value, 8);
+    }
+    return;
+  }
+  if (value < INT64_MIN)
+    throw new Error("msgpack: integer below int64");
+  if (value >= -32n)
+    out.push(Number(value & 0xffn));
+  else if (value >= -128n) {
+    out.push(208);
+    pushUint(out, value & 0xffn, 1);
+  } else if (value >= -32768n) {
+    out.push(209);
+    pushUint(out, value & 0xffffn, 2);
+  } else if (value >= -2147483648n) {
+    out.push(210);
+    pushUint(out, value & 0xffffffffn, 4);
+  } else {
+    out.push(211);
+    pushUint(out, value & UINT64_MAX, 8);
+  }
+}
+function packHeader(out, length, fixBase, fixMax, codes) {
+  if (length <= fixMax) {
+    out.push(fixBase | length);
+    return;
+  }
+  const [c8, c16, c32] = codes;
+  if (c8 !== undefined && c8 !== 0 && length <= 255) {
+    out.push(c8);
+    pushUint(out, BigInt(length), 1);
+  } else if (length <= 65535) {
+    out.push(c16);
+    pushUint(out, BigInt(length), 2);
+  } else {
+    out.push(c32);
+    pushUint(out, BigInt(length), 4);
+  }
+}
+function packValue(out, value) {
+  if (value === null)
+    out.push(192);
+  else if (value === false)
+    out.push(194);
+  else if (value === true)
+    out.push(195);
+  else if (typeof value === "bigint")
+    packInteger(out, value);
+  else if (typeof value === "number") {
+    if (!Number.isSafeInteger(value))
+      throw new Error(`msgpack: ${value} is not a safe integer`);
+    packInteger(out, BigInt(value));
+  } else if (typeof value === "string") {
+    const bytes = new TextEncoder().encode(value);
+    packHeader(out, bytes.length, 160, 31, [217, 218, 219]);
+    for (const b of bytes)
+      out.push(b);
+  } else if (Array.isArray(value)) {
+    packHeader(out, value.length, 144, 15, [0, 220, 221]);
+    for (const item of value)
+      packValue(out, item);
+  } else if (typeof value === "object") {
+    const entries = Object.entries(value).filter(([, v]) => v !== undefined);
+    for (const [key] of entries) {
+      if (/^(0|[1-9][0-9]*)$/.test(key))
+        throw new Error(`msgpack: integer-like key "${key}"`);
+    }
+    packHeader(out, entries.length, 128, 15, [0, 222, 223]);
+    for (const [key, item] of entries) {
+      packValue(out, key);
+      packValue(out, item);
+    }
+  } else {
+    throw new Error(`msgpack: cannot encode a ${typeof value}`);
+  }
+}
+function msgpackEncode(value) {
+  const out = [];
+  packValue(out, value);
+  return Uint8Array.from(out);
+}
+function toHex(bytes) {
+  let out = "";
+  for (const b of bytes)
+    out += b.toString(16).padStart(2, "0");
+  return out;
+}
+function hyperliquidActionHash(action, nonce) {
+  const n = BigInt(nonce);
+  if (n < 0n || n > UINT64_MAX)
+    throw new Error("hyperliquidActionHash: nonce out of range");
+  const out = Array.from(msgpackEncode(action));
+  pushUint(out, n, 8);
+  out.push(0);
+  return `0x${toHex(keccak_256(Uint8Array.from(out)))}`;
+}
+function hyperliquidL1TypedData(connectionId, network) {
+  return {
+    domain: { name: "Exchange", version: "1", chainId: 1337, verifyingContract: ZERO_ADDRESS },
+    types: {
+      Agent: [
+        { name: "source", type: "string" },
+        { name: "connectionId", type: "bytes32" }
+      ]
+    },
+    primary_type: "Agent",
+    message: { source: network === "mainnet" ? "a" : "b", connectionId }
+  };
+}
+function hyperliquidApproveBuilderFeeTypedData(builder, nonce) {
+  return {
+    domain: { name: "HyperliquidSignTransaction", version: "1", chainId: 42161, verifyingContract: ZERO_ADDRESS },
+    types: {
+      "HyperliquidTransaction:ApproveBuilderFee": [
+        { name: "hyperliquidChain", type: "string" },
+        { name: "maxFeeRate", type: "string" },
+        { name: "builder", type: "address" },
+        { name: "nonce", type: "uint64" }
+      ]
+    },
+    primary_type: "HyperliquidTransaction:ApproveBuilderFee",
+    message: {
+      hyperliquidChain: "Mainnet",
+      maxFeeRate: HYPERLIQUID_MAX_BUILDER_FEE_RATE,
+      builder: builder.toLowerCase(),
+      nonce
+    }
+  };
+}
+function hyperliquidCanonicalJson(value) {
+  return canonical(value);
+}
+function canonical(value) {
+  if (value === null || typeof value !== "object")
+    return JSON.stringify(value);
+  if (Array.isArray(value))
+    return `[${value.map(canonical).join(",")}]`;
+  const record = value;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
+}
+function sameValue(a, b) {
+  return canonical(a) === canonical(b);
+}
+var EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+function checkBuilderField(action, builder) {
+  if (!("builder" in action) || action.builder === undefined)
+    return null;
+  const field = action.builder;
+  if (typeof field !== "object" || field === null)
+    return "builder field is not an object";
+  if (typeof field.b !== "string" || field.b.toLowerCase() !== builder.toLowerCase()) {
+    return "the order names a builder that is not Candle's";
+  }
+  if (typeof field.f !== "number" || !Number.isInteger(field.f) || field.f <= 0 || field.f > HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS) {
+    return "the builder fee is outside Candle's 0.1% maximum";
+  }
+  return null;
+}
+function decimal(value) {
+  if (typeof value !== "string" || !/^-?(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(value))
+    return null;
+  const negative = value.startsWith("-");
+  const [whole = "0", frac = ""] = (negative ? value.slice(1) : value).split(".");
+  const n = BigInt(whole) * 10n ** 18n + BigInt(frac.padEnd(18, "0"));
+  return negative ? -n : n;
+}
+function checkActionIntent(action, intent) {
+  const mainAsset = (a) => typeof a === "number" && Number.isInteger(a) && a >= 0 && a < 1e4;
+  const orderList = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
+  if (!Array.isArray(orderList))
+    return "invalid orders";
+  for (const raw of orderList) {
+    if (!raw || typeof raw !== "object")
+      return "invalid order";
+    const o = raw;
+    if (!mainAsset(o.a))
+      return "order asset is outside the main perp universe";
+    if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal(o.s) ?? 0n) <= 0n || (decimal(o.p) ?? 0n) <= 0n)
+      return "invalid order side, size, price or reduce-only flag";
+  }
+  if (action.type === "cancel") {
+    if (!Array.isArray(action.cancels) || action.cancels.length !== 1 || !mainAsset(action.cancels[0]?.a))
+      return "invalid cancel asset";
+  }
+  if ((action.type === "updateLeverage" || action.type === "updateIsolatedMargin") && !mainAsset(action.asset))
+    return "invalid action asset";
+  if (!intent)
+    return null;
+  const { method, params: p } = intent;
+  const types2 = {
+    setup: "approveBuilderFee",
+    open: "order",
+    close: "order",
+    cancel: "cancel",
+    modify: "modify",
+    leverage: "updateLeverage",
+    margin: "updateIsolatedMargin"
+  };
+  if (action.type !== types2[method])
+    return "action type does not match the requested method";
+  if (method === "leverage") {
+    if (action.leverage !== p.leverage || action.isCross !== (p.mode !== "isolated"))
+      return "leverage or mode does not match the request";
+  }
+  if (method === "margin") {
+    const amount = decimal(p.amount);
+    if (amount === null || amount % 10n ** 12n !== 0n || !Number.isSafeInteger(action.ntli) || BigInt(action.ntli) !== amount / 10n ** 12n || action.isBuy !== true)
+      return "isolated margin amount does not match the request";
+  }
+  if (method === "open" || method === "close" || method === "modify") {
+    const list = orderList;
+    const first = list[0];
+    if (!first)
+      return "missing requested order";
+    const typ = first.t;
+    if (!typ?.limit)
+      return "requested order is not a limit/IOC order";
+    if (method === "open") {
+      const buy = p.side === "long" || p.side === "buy";
+      if (first.b !== buy || first.r !== false || decimal(first.s) !== decimal(p.size))
+        return "order side, size or reduce-only flag does not match the request";
+      const tif = (p.type ?? (p.price === undefined ? "market" : "limit")) === "market" ? "Ioc" : p.tif ?? "Gtc";
+      if (typ.limit.tif !== tif)
+        return "order time in force does not match the request";
+      const triggers = [
+        ["takeProfit", "tp"],
+        ["stopLoss", "sl"]
+      ].filter(([field]) => p[field] != null);
+      if (list.length !== 1 + triggers.length || action.grouping !== (triggers.length ? "normalTpsl" : "na"))
+        return "unexpected extra orders or grouping";
+      for (let i = 0;i < triggers.length; i++) {
+        const [field, kind] = triggers[i];
+        const leg = list[i + 1];
+        if (!leg)
+          return "missing trigger order";
+        const trigger = leg.t?.trigger;
+        if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal(leg.s) !== decimal(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal(trigger.triggerPx) !== decimal(p[field]))
+          return "trigger side, size, reduce-only flag or price does not match the request";
+      }
+    } else {
+      if (list.length !== 1)
+        return "unexpected extra orders";
+      if (method === "close" && (first.r !== true || typ.limit.tif !== "Ioc" || p.size != null && (decimal(first.s) ?? 0n) > (decimal(p.size) ?? 0n)))
+        return "close size or reduce-only flag does not match the request";
+      if (method === "modify" && p.size != null && decimal(first.s) !== decimal(p.size))
+        return "replacement size does not match the request";
+    }
+    if (p.price != null && decimal(first.p) !== decimal(p.price))
+      return "order price does not match the request";
+  }
+  return null;
+}
+async function hyperliquidCloseOrder(fetcher, network, address, params) {
+  const read = async (body) => {
+    const res = await fetcher(HYPERLIQUID_EXCHANGE_URLS[network].replace("/exchange", "/info"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok)
+      throw new Error("Cannot read the close position from Hyperliquid");
+    return JSON.parse(await res.text());
+  };
+  const [meta, state] = await Promise.all([read({ type: "meta" }), read({ type: "clearinghouseState", user: address })]);
+  const coin = String(params.coin).toUpperCase();
+  const asset = meta.universe.findIndex((m) => m.name.toUpperCase() === coin);
+  const szi = state.assetPositions.find((p) => p.position.coin.toUpperCase() === coin)?.position.szi;
+  const signed = decimal(szi);
+  if (asset < 0 || asset >= 1e4 || signed === null || signed === 0n)
+    throw new Error("No main-universe position to close");
+  const held = signed < 0n ? -signed : signed;
+  const asked = params.size == null ? held : decimal(params.size);
+  if (asked === null || asked <= 0n)
+    throw new Error("Invalid close size");
+  const size = asked < held ? String(params.size) : String(szi).replace(/^-/, "");
+  return { asset, isBuy: signed < 0n, size };
+}
+function verifyPerpsBuild(build, opts) {
+  try {
+    const network = opts.network ?? "mainnet";
+    if (!EVM_ADDRESS_RE.test(opts.builder))
+      return { ok: false, reason: "no valid Candle builder address to check against" };
+    if (build.network !== undefined && build.network !== network) {
+      return { ok: false, reason: `the build is for ${build.network}, this client trades ${network}` };
+    }
+    if (opts.address && build.address && build.address.toLowerCase() !== opts.address.toLowerCase()) {
+      return { ok: false, reason: "the build is for a different wallet" };
+    }
+    if (!Number.isSafeInteger(build.nonce) || build.nonce <= 0)
+      return { ok: false, reason: "invalid nonce" };
+    const typed = build.typedData;
+    if (!typed || typeof typed !== "object")
+      return { ok: false, reason: "no typed data" };
+    const action = build.action;
+    if (!action || typeof action !== "object")
+      return { ok: false, reason: "no action" };
+    const intentRefusal = checkActionIntent(action, opts.intent);
+    if (intentRefusal)
+      return { ok: false, reason: intentRefusal };
+    if (opts.closeOrder) {
+      const order = action.orders[0];
+      if (!order || order.a !== opts.closeOrder.asset || order.b !== opts.closeOrder.isBuy || decimal(order.s) !== decimal(opts.closeOrder.size) || order.r !== true)
+        return { ok: false, reason: "close side, asset or size does not match the requested position" };
+    }
+    if (typed.primary_type === "Agent") {
+      const type = action.type;
+      if (typeof type !== "string" || !HYPERLIQUID_ALLOWED_ACTION_TYPES.includes(type)) {
+        return { ok: false, reason: `action type ${String(type)} is not one Candle builds` };
+      }
+      if (type === "order") {
+        const refusal = checkBuilderField(action, opts.builder);
+        if (refusal)
+          return { ok: false, reason: refusal };
+      } else if ("builder" in action) {
+        return { ok: false, reason: `a ${type} action carries no builder` };
+      }
+      if ("vaultAddress" in action)
+        return { ok: false, reason: "the action names a vault" };
+      const expected = hyperliquidL1TypedData(hyperliquidActionHash(action, build.nonce), network);
+      if (!sameValue(typed, expected)) {
+        return { ok: false, reason: "the typed data does not commit to this action and nonce" };
+      }
+      return { ok: true, kind: "l1" };
+    }
+    if (typed.primary_type === "HyperliquidTransaction:ApproveBuilderFee") {
+      const expected = hyperliquidApproveBuilderFeeTypedData(opts.builder, build.nonce);
+      if (!sameValue(typed, expected)) {
+        return { ok: false, reason: "the builder approval is not Candle's builder at 0.1% on Mainnet" };
+      }
+      const expectedAction = {
+        type: "approveBuilderFee",
+        hyperliquidChain: "Mainnet",
+        signatureChainId: HYPERLIQUID_SIGNATURE_CHAIN_ID,
+        maxFeeRate: HYPERLIQUID_MAX_BUILDER_FEE_RATE,
+        builder: opts.builder.toLowerCase(),
+        nonce: build.nonce
+      };
+      if (!sameValue(action, expectedAction)) {
+        return { ok: false, reason: "the approval action does not match its typed data" };
+      }
+      return { ok: true, kind: "approveBuilderFee" };
+    }
+    return { ok: false, reason: `primary type ${String(typed.primary_type)} is not one the relay signs` };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : "unreadable build" };
+  }
+}
+function hyperliquidSplitSignature(signature) {
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature))
+    throw new Error("Not a 65-byte signature");
+  let v = Number.parseInt(signature.slice(130, 132), 16);
+  if (v < 27)
+    v += 27;
+  return { r: `0x${signature.slice(2, 66)}`, s: `0x${signature.slice(66, 130)}`, v };
+}
+function hyperliquidExchangeBody(action, nonce, signature) {
+  return { action, nonce, signature: hyperliquidSplitSignature(signature), vaultAddress: null, expiresAfter: null };
+}
+function hyperliquidRelayBody(typedData) {
+  return { method: "eth_signTypedData_v4", params: { typed_data: typedData } };
+}
+
+// src/commands/perps.ts
+init_render();
+init_trading();
+var PERPS_SCOPE = "perps:write";
+var DEC_RE = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/;
+var CLOID_RE = /^0x[0-9a-fA-F]{32}$/;
+function usage4(ctx, line) {
+  writeUsageFailure(ctx.deps, line, ctx.json);
+  return 2;
+}
+async function perpsRequest(ctx, key, path, body) {
+  const result = await apiRequest(path, {
+    apiUrl: ctx.apiUrl,
+    credentials: { apiKey: key },
+    auth: "key",
+    method: body ? "POST" : "GET",
+    body,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result.ok) {
+    if (result.status === 404 && !result.code)
+      throw new TradingError("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes (HYPERLIQUID_ENABLED is off there, or the API predates them).");
+    throw new TradingError(result.code ?? "REQUEST_FAILED", result.message);
+  }
+  if (!result.body || typeof result.body !== "object")
+    throw new TradingError("INVALID_RESPONSE", "Candle returned an invalid response.");
+  return result.body;
+}
+function network(ctx) {
+  return ctx.deps.env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet";
+}
+async function builderPin(ctx, key) {
+  const pinned = ctx.deps.env.CANDLE_HYPERLIQUID_BUILDER ?? CANDLE_HYPERLIQUID_BUILDER_ADDRESS;
+  if (pinned) {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(pinned))
+      throw new TradingError("INVALID_ADDRESS", "CANDLE_HYPERLIQUID_BUILDER must be an EVM address.");
+    return pinned.toLowerCase();
+  }
+  const config = await perpsRequest(ctx, key, "/api/v1/agent/perps/config");
+  if (typeof config.builder !== "string")
+    throw new TradingError("PERPS_NOT_CONFIGURED", "The server reports no Hyperliquid builder address.");
+  return config.builder.toLowerCase();
+}
+async function perpsWallet(ctx, key, name2, scope) {
+  const { rows, appId, keyPrefix } = await listTradingWallets(ctx, key, scope);
+  const evm = rows.filter((row2) => row2.chain === "evm");
+  const matches = name2 === undefined ? evm : evm.filter((row2) => matchesName(row2, name2));
+  if (matches.length !== 1) {
+    throw new TradingError("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it. Hyperliquid perps sign only from one." : matches.length === 0 ? `No EVM TEE wallet on this key is called "${name2}". Bound to this key: ${evm.map(describeWallet).join("; ")}.` : `Name one EVM TEE wallet with --wallet: ${matches.map(describeWallet).join("; ")}.`);
+  }
+  const row = matches[0];
+  if (scope === undefined)
+    return { row };
+  const wallet = await completeTradingWallet(ctx, row, appId, scope, "hood", {
+    apiKey: key,
+    ...keyPrefix !== undefined ? { keyPrefix } : {}
+  });
+  return { row, wallet };
+}
+function typedDataAuthorization(wallet, typedData) {
+  const body = hyperliquidRelayBody(typedData);
+  const payload = hyperliquidCanonicalJson({
+    body,
+    headers: { "privy-app-id": wallet.appId },
+    method: "POST",
+    url: `https://api.privy.io/v1/wallets/${wallet.privyWalletId}/rpc`,
+    version: 1
+  });
+  return { body, authorizationSignature: sign3("sha256", Buffer.from(payload), wallet.signer).toString("base64") };
+}
+function previewLines(build) {
+  const action = build.action;
+  if (action.type === "approveBuilderFee")
+    return [`Approve Candle's builder ${safeText(action.builder)} at ${safeText(action.maxFeeRate)} (once).`];
+  if (action.type === "cancel")
+    return action.cancels.map((o) => `Cancel asset ${o.a} order ${o.o}.`);
+  if (action.type === "updateLeverage")
+    return [
+      `Set asset ${safeText(action.asset)} to ${safeText(action.leverage)}x ${action.isCross ? "cross" : "isolated"}.`
+    ];
+  const orders = action.type === "modify" ? [action.order] : action.orders;
+  const lines = orders.map((o) => {
+    const type = o.t;
+    return `${action.type === "modify" ? "Modify to" : o.r ? "Close" : "Open"} ${o.b ? "buy" : "sell"} ${safeText(o.s)} asset ${safeText(o.a)} at ${safeText(o.p)}${type.limit ? ` (${safeText(type.limit.tif)})` : ` (${safeText(type.trigger?.tpsl)} trigger ${safeText(type.trigger?.triggerPx)})`}${o.r ? ", reduce-only" : ""}.`;
+  });
+  const builder = action.builder;
+  lines.push(builder ? `Candle builder ${safeText(builder.b)} fee: ${builder.f / 10} bps.` : "Candle builder fee: none.");
+  return lines;
+}
+async function confirm(ctx, build, address, yes) {
+  const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
+  output.write(`Hyperliquid account: ${safeText(address)} (${safeText(build.network)})
+`);
+  for (const line of previewLines(build))
+    output.write(`${line}
+`);
+  if (yes)
+    return true;
+  if (!ctx.deps.isTTY.stdin)
+    throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.");
+  return (await ctx.deps.promptLine("Sign and submit? [y/N] ")).trim().toLowerCase() === "y";
+}
+function venueRefusal(exchange) {
+  if (!exchange || typeof exchange !== "object")
+    return "Hyperliquid returned no answer.";
+  const answer = exchange;
+  if (answer.status !== "ok")
+    return `Hyperliquid refused it: ${safeText(JSON.stringify(answer.response ?? answer))}`;
+  const statuses = answer.response?.data?.statuses;
+  for (const status of statuses ?? []) {
+    if (status && typeof status === "object" && "error" in status)
+      return `Hyperliquid refused the order: ${safeText(status.error)}`;
+  }
+  return null;
+}
+async function runPerpsWrite(ctx, opts) {
+  const key = await tradingKey(ctx);
+  const { wallet } = await perpsWallet(ctx, key, opts.wallet, PERPS_SCOPE);
+  if (!wallet)
+    throw new TradingError("TEE_WALLET_REQUIRED", "No EVM TEE wallet resolved.");
+  const builder = await builderPin(ctx, key);
+  const build = await perpsRequest(ctx, key, opts.path, { walletId: wallet.id, ...opts.body });
+  if (build.ready === true)
+    return printTradingResult(ctx, build);
+  const net = network(ctx);
+  const method = opts.path.split("/").at(-1);
+  const check = verifyPerpsBuild(build, {
+    builder,
+    network: net,
+    address: wallet.address,
+    intent: { method, params: opts.body }
+  });
+  if (!check.ok)
+    throw new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`);
+  if (method === "close") {
+    const closeOrder = await hyperliquidCloseOrder(ctx.deps.fetch, net, wallet.address, opts.body);
+    const closeCheck = verifyPerpsBuild(build, {
+      builder,
+      network: net,
+      address: wallet.address,
+      intent: { method, params: opts.body },
+      closeOrder
+    });
+    if (!closeCheck.ok)
+      throw new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this build: ${closeCheck.reason}. Nothing was signed.`);
+  }
+  if (!opts.submit)
+    return printTradingResult(ctx, { ...build, signed: false, submitted: false });
+  if (!await confirm(ctx, build, wallet.address, opts.yes)) {
+    throw new TradingError("CANCELLED", "Nothing was signed.");
+  }
+  const relay = await perpsRequest(ctx, key, `/api/v1/agent/wallets/${encodeURIComponent(wallet.id)}/sign`, typedDataAuthorization(wallet, build.typedData));
+  const signature = relay.signature;
+  if (typeof signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(signature))
+    throw new TradingError("INVALID_RESPONSE", "The relay did not return a signature.");
+  const exchangeBody = hyperliquidExchangeBody(build.action, build.nonce, signature);
+  if (opts.signOnly)
+    return printTradingResult(ctx, {
+      success: true,
+      perpOrderId: build.perpOrderId,
+      kind: build.kind,
+      network: build.network,
+      address: wallet.address,
+      nonce: build.nonce,
+      signature,
+      submitted: false,
+      exchangeBody
+    });
+  let exchange;
+  try {
+    const res = await ctx.deps.fetch(HYPERLIQUID_EXCHANGE_URLS[net], {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(exchangeBody)
+    });
+    const text = await res.text();
+    if (!res.ok)
+      throw new Error(`HTTP ${res.status}`);
+    exchange = JSON.parse(text);
+  } catch (error) {
+    throw new TradingError("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). The signed action is in details.exchangeBody; nothing was lost.`, { exitCode: 3, details: { perpOrderId: build.perpOrderId, exchangeBody } });
+  }
+  const refusal = venueRefusal(exchange);
+  if (refusal)
+    throw new TradingError("PERPS_VENUE_REFUSED", refusal, {
+      details: { perpOrderId: build.perpOrderId, exchange }
+    });
+  return printTradingResult(ctx, {
+    success: true,
+    perpOrderId: build.perpOrderId,
+    kind: build.kind,
+    network: build.network,
+    address: wallet.address,
+    ...build.cloid ? { cloid: build.cloid } : {},
+    ...build.childCloids ? { childCloids: build.childCloids } : {},
+    nonce: build.nonce,
+    signature,
+    exchange
+  });
+}
+var WRITE_FLAGS = { valueFlags: ["--wallet"], booleanFlags: ["--yes", "--no-submit", "--sign-only"] };
+function sharedWrite(values, booleans) {
+  return {
+    ...values["--wallet"] !== undefined ? { wallet: values["--wallet"] } : {},
+    yes: booleans.has("--yes"),
+    submit: !booleans.has("--no-submit"),
+    signOnly: booleans.has("--sign-only")
+  };
+}
+function slippage(value) {
+  if (value === undefined)
+    return;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 1 ? n : null;
+}
+async function perpsSetup(args, ctx) {
+  const parsed = parseArgs(args, WRITE_FLAGS);
+  if ("error" in parsed)
+    return usage4(ctx, parsed.error);
+  if (parsed.positionals.length !== 0)
+    return usage4(ctx, "Usage: candle perps setup [--wallet <tee>] [--yes]");
+  try {
+    return await runPerpsWrite(ctx, {
+      path: "/api/v1/agent/perps/setup",
+      body: {},
+      ...sharedWrite(parsed.values, parsed.booleans)
+    });
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+var OPEN_USAGE = "Usage: candle perps open <coin> <long|short> <size> [--price <px>] [--tif Gtc|Alo|Ioc] [--slippage-bps <n>] [--tp <px>] [--sl <px>] [--wallet <tee>] [--yes]";
+async function perpsOpen(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--wallet", "--price", "--tif", "--slippage-bps", "--tp", "--sl"],
+    booleanFlags: ["--yes", "--no-submit", "--sign-only"]
+  });
+  if ("error" in parsed)
+    return usage4(ctx, parsed.error);
+  const [coin, side, size] = parsed.positionals;
+  if (parsed.positionals.length !== 3 || !coin || !side || !size)
+    return usage4(ctx, OPEN_USAGE);
+  if (side !== "long" && side !== "short")
+    return usage4(ctx, OPEN_USAGE);
+  if (!DEC_RE.test(size))
+    return usage4(ctx, "The size must be a plain decimal, e.g. 0.01.");
+  const { values } = parsed;
+  for (const flag of ["--price", "--tp", "--sl"]) {
+    const value = values[flag];
+    if (value !== undefined && !DEC_RE.test(value))
+      return usage4(ctx, `${flag} must be a plain decimal.`);
+  }
+  const tif = values["--tif"];
+  if (tif !== undefined && !["Gtc", "Alo", "Ioc"].includes(tif))
+    return usage4(ctx, "--tif must be Gtc, Alo or Ioc.");
+  if (tif !== undefined && tif !== "Ioc" && values["--price"] === undefined)
+    return usage4(ctx, "--tif Gtc or Alo needs --price.");
+  const slippageBps = slippage(values["--slippage-bps"]);
+  if (slippageBps === null)
+    return usage4(ctx, "--slippage-bps must be a whole number of at least 1.");
+  const body = {
+    coin,
+    side,
+    size,
+    type: values["--price"] === undefined ? "market" : "limit",
+    ...values["--price"] !== undefined ? { price: values["--price"] } : {},
+    ...tif !== undefined && values["--price"] !== undefined ? { tif } : {},
+    ...slippageBps !== undefined ? { slippageBps } : {},
+    ...values["--tp"] !== undefined ? { takeProfit: values["--tp"] } : {},
+    ...values["--sl"] !== undefined ? { stopLoss: values["--sl"] } : {}
+  };
+  try {
+    return await runPerpsWrite(ctx, { path: "/api/v1/agent/perps/open", body, ...sharedWrite(values, parsed.booleans) });
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+async function perpsClose(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--wallet", "--size", "--slippage-bps"],
+    booleanFlags: ["--yes", "--no-submit", "--sign-only"]
+  });
+  if ("error" in parsed)
+    return usage4(ctx, parsed.error);
+  const [coin] = parsed.positionals;
+  if (parsed.positionals.length !== 1 || !coin)
+    return usage4(ctx, "Usage: candle perps close <coin> [--size <n>] [--slippage-bps <n>] [--wallet <tee>] [--yes]");
+  const size = parsed.values["--size"];
+  if (size !== undefined && !DEC_RE.test(size))
+    return usage4(ctx, "--size must be a plain decimal.");
+  const slippageBps = slippage(parsed.values["--slippage-bps"]);
+  if (slippageBps === null)
+    return usage4(ctx, "--slippage-bps must be a whole number of at least 1.");
+  const body = {
+    coin,
+    ...size !== undefined ? { size } : {},
+    ...slippageBps !== undefined ? { slippageBps } : {}
+  };
+  try {
+    return await runPerpsWrite(ctx, {
+      path: "/api/v1/agent/perps/close",
+      body,
+      ...sharedWrite(parsed.values, parsed.booleans)
+    });
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+async function perpsCancel(args, ctx) {
+  const parsed = parseArgs(args, WRITE_FLAGS);
+  if ("error" in parsed)
+    return usage4(ctx, parsed.error);
+  const [cloid] = parsed.positionals;
+  if (parsed.positionals.length !== 1 || !cloid || !CLOID_RE.test(cloid))
+    return usage4(ctx, "Usage: candle perps cancel <cloid> [--wallet <tee>] [--yes]  (cloid: 0x + 32 hex)");
+  try {
+    return await runPerpsWrite(ctx, {
+      path: "/api/v1/agent/perps/cancel",
+      body: { cloid: cloid.toLowerCase() },
+      ...sharedWrite(parsed.values, parsed.booleans)
+    });
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+async function perpsLeverage(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--wallet"],
+    booleanFlags: ["--yes", "--no-submit", "--sign-only", "--isolated"]
+  });
+  if ("error" in parsed)
+    return usage4(ctx, parsed.error);
+  const [coin, leverage] = parsed.positionals;
+  const n = Number(leverage);
+  if (parsed.positionals.length !== 2 || !coin || !Number.isInteger(n) || n < 1)
+    return usage4(ctx, "Usage: candle perps leverage <coin> <x> [--isolated] [--wallet <tee>] [--yes]");
+  try {
+    return await runPerpsWrite(ctx, {
+      path: "/api/v1/agent/perps/leverage",
+      body: { coin, leverage: n, mode: parsed.booleans.has("--isolated") ? "isolated" : "cross" },
+      ...sharedWrite(parsed.values, parsed.booleans)
+    });
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+async function perpsPositions(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--wallet"] });
+  if ("error" in parsed)
+    return usage4(ctx, parsed.error);
+  if (parsed.positionals.length !== 0)
+    return usage4(ctx, "Usage: candle perps positions [--wallet <tee>]");
+  try {
+    const key = await tradingKey(ctx);
+    const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
+    const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/positions?walletId=${encodeURIComponent(row.id)}`);
+    if (ctx.json)
+      return printTradingResult(ctx, result);
+    const out = ctx.deps.stdout;
+    const account = result.account ?? {};
+    out.write(`${safeText(result.address)} (${safeText(result.network)}, ${safeText(result.mode)} mode): account value ${safeText(account.accountValue)} USD, withdrawable ${safeText(result.withdrawable)} USD
+`);
+    const positions = result.positions ?? [];
+    if (positions.length === 0)
+      out.write(`No open positions.
+`);
+    for (const p of positions) {
+      const leverage = p.leverage ?? {};
+      out.write(`  ${safeText(p.coin)} ${safeText(p.szi)} at ${safeText(p.entryPx)}, value ${safeText(p.positionValue)}, uPnL ${safeText(p.unrealizedPnl)}, ${safeText(leverage.value)}x ${safeText(leverage.type)}, liq ${safeText(p.liquidationPx ?? "none")}
+`);
+    }
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+async function perpsOrders(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--wallet", "--limit"] });
+  if ("error" in parsed)
+    return usage4(ctx, parsed.error);
+  const limit = parsed.values["--limit"];
+  if (parsed.positionals.length !== 0 || limit !== undefined && !/^[1-9][0-9]{0,2}$/.test(limit))
+    return usage4(ctx, "Usage: candle perps orders [--wallet <tee>] [--limit <n>]");
+  try {
+    const key = await tradingKey(ctx);
+    const { row } = await perpsWallet(ctx, key, parsed.values["--wallet"]);
+    const query = new URLSearchParams({ walletId: row.id });
+    if (limit !== undefined)
+      query.set("limit", limit);
+    const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/orders?${query}`);
+    if (ctx.json)
+      return printTradingResult(ctx, result);
+    const out = ctx.deps.stdout;
+    const open4 = result.open ?? [];
+    out.write(`Open on Hyperliquid (${open4.length}):
+`);
+    for (const o of open4) {
+      out.write(`  ${safeText(o.coin)} ${o.side === "B" ? "buy" : "sell"} ${safeText(o.sz)} at ${safeText(o.limitPx)}${o.reduceOnly ? " reduce-only" : ""}${o.isTrigger ? ` trigger ${safeText(o.triggerPx)}` : ""}, cloid ${safeText(o.cloid ?? "none")}
+`);
+    }
+    const recorded = result.recorded ?? [];
+    out.write(`Built by Candle (${recorded.length}, newest first):
+`);
+    for (const r of recorded) {
+      out.write(`  ${safeText(r.kind)} ${safeText(r.coin ?? "")} ${safeText(r.status)}${r.venueStatus ? ` (${safeText(r.venueStatus)})` : ""}${r.cloid ? `, cloid ${safeText(r.cloid)}` : ""}${r.targetCloid ? `, target ${safeText(r.targetCloid)}` : ""}
+`);
+    }
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
   }
 }
 
@@ -59637,20 +61189,20 @@ async function writeSecretNames(deps, profile, names) {
   else
     await deps.updateProfile(profile, { secretNames: sorted });
 }
-function usage4(ctx, line) {
+function usage5(ctx, line) {
   writeUsageFailure(ctx.deps, line, ctx.json);
   return 2;
 }
 async function secretsSet(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage5(ctx, parsed.error);
   const [raw, extra] = parsed.positionals;
   if (!raw || extra !== undefined)
-    return usage4(ctx, "Usage: candle secrets set <name>");
+    return usage5(ctx, "Usage: candle secrets set <name>");
   const name2 = canonicalSecretName(raw);
   if (name2 === undefined) {
-    return usage4(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage5(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
   }
   if (!ctx.deps.isTTY.stdin || !ctx.deps.isTTY.stdout) {
     writeLocalFailure(ctx.deps, {
@@ -59662,7 +61214,7 @@ async function secretsSet(args, ctx) {
   }
   const value = await ctx.deps.promptSecret(`Value for ${name2} (input hidden): `);
   if (value.length === 0)
-    return usage4(ctx, "An empty value was typed; nothing was stored.");
+    return usage5(ctx, "An empty value was typed; nothing was stored.");
   try {
     await ctx.deps.secretsStore.set(secretRef(ctx.profile, name2), value);
   } catch (error) {
@@ -59682,9 +61234,9 @@ async function secretsSet(args, ctx) {
 async function secretsList(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage5(ctx, parsed.error);
   if (parsed.positionals.length > 0)
-    return usage4(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+    return usage5(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
   const names = await storedSecretNames(ctx.deps, ctx.profile);
   if (ctx.json) {
     ctx.deps.stdout.write(`${JSON.stringify({ ok: true, names, backend: ctx.deps.backend })}
@@ -59703,13 +61255,13 @@ async function secretsList(args, ctx) {
 async function secretsRemove(args, ctx) {
   const parsed = parseArgs(args, {});
   if ("error" in parsed)
-    return usage4(ctx, parsed.error);
+    return usage5(ctx, parsed.error);
   const [raw, extra] = parsed.positionals;
   if (!raw || extra !== undefined)
-    return usage4(ctx, "Usage: candle secrets remove <name>");
+    return usage5(ctx, "Usage: candle secrets remove <name>");
   const name2 = canonicalSecretName(raw);
   if (name2 === undefined) {
-    return usage4(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
+    return usage5(ctx, `A secret name is letters, digits and underscores, starting with a letter: ${raw}`);
   }
   await ctx.deps.secretsStore.delete(secretRef(ctx.profile, name2));
   const names = await storedSecretNames(ctx.deps, ctx.profile);
@@ -59835,11 +61387,11 @@ init_render();
 function formatUsd(value) {
   if (!Number.isFinite(value))
     return "?";
-  const sign3 = value < 0 ? "-" : "";
+  const sign4 = value < 0 ? "-" : "";
   const abs = Math.abs(value);
   if (abs > 0 && abs < 0.005)
-    return `${sign3}<$0.01`;
-  return `${sign3}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    return `${sign4}<$0.01`;
+  return `${sign4}$${abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 function formatPrice(value) {
   if (!Number.isFinite(value) || value <= 0)
@@ -61367,7 +62919,7 @@ function displayLines(input) {
   lines.push("note        the simulation is evidence, not a guarantee: a program can behave differently once signed");
   return lines;
 }
-async function sign3(args, ctx) {
+async function sign4(args, ctx) {
   const lifted = takeRepeatedFlag(args, "--wallet");
   if ("error" in lifted)
     return usage(ctx, lifted.error);
@@ -64875,10 +66427,10 @@ init_solana_lite();
 init_token_2022();
 init_errors();
 var USDC_MINT2 = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-function decimalToRaw2(decimal, decimals) {
-  if (!/^\d+(\.\d+)?$/.test(decimal))
+function decimalToRaw2(decimal2, decimals) {
+  if (!/^\d+(\.\d+)?$/.test(decimal2))
     return null;
-  const [whole, frac = ""] = decimal.split(".");
+  const [whole, frac = ""] = decimal2.split(".");
   if (frac.length > decimals)
     return null;
   return BigInt((whole ?? "0") + frac.padEnd(decimals, "0"));
@@ -65446,11 +66998,11 @@ function mapLegacyTeeEntry(entry, keyId, grant, createdAtFallback) {
 }
 function buildTeeMeta(entry, lifecycle, grant) {
   const source = entry.tee;
-  const network = source?.network ?? "solana-mainnet";
-  if (network !== "solana-mainnet") {
-    throw new VaultError("VAULT_INDEX_INVALID", `Legacy entry ${entry.address} names network ${String(network)}; only solana-mainnet migrates.`);
+  const network2 = source?.network ?? "solana-mainnet";
+  if (network2 !== "solana-mainnet") {
+    throw new VaultError("VAULT_INDEX_INVALID", `Legacy entry ${entry.address} names network ${String(network2)}; only solana-mainnet migrates.`);
   }
-  const meta = { network, lifecycle };
+  const meta = { network: network2, lifecycle };
   carryOptional(meta, source, [
     "vaultDestination",
     "boundKeyPrefix",
@@ -65462,7 +67014,7 @@ function buildTeeMeta(entry, lifecycle, grant) {
     "sweptAt"
   ]);
   if (lifecycle === "local-candidate") {
-    return { network, lifecycle };
+    return { network: network2, lifecycle };
   }
   if (lifecycle === "enabled") {
     if (meta.vaultDestination === undefined) {
@@ -68874,7 +70426,7 @@ async function writeRestoredIndex(ctx, vault, derived, matches2, counts) {
   await commitVault(vault, { index: { hd, entries }, addKeys: derived.entries.map((entry) => entry.blob) }, ctx.deps);
   return { entries, hd };
 }
-function teeFieldsFor(row, ctx, network = "solana-mainnet") {
+function teeFieldsFor(row, ctx, network2 = "solana-mainnet") {
   const remoteState = row.sweptAt !== undefined ? "swept" : row.revokedAt !== undefined ? "quarantined" : "enabled";
   const grantIdentity = {
     account: "",
@@ -68882,7 +70434,7 @@ function teeFieldsFor(row, ctx, network = "solana-mainnet") {
     source: "recorded-at-operation"
   };
   const common = {
-    network,
+    network: network2,
     ...row.vaultDestination !== undefined ? { vaultDestination: row.vaultDestination } : {},
     ...row.boundKeyPrefix !== undefined ? { boundKeyPrefix: row.boundKeyPrefix } : {},
     ...row.remoteAuthority !== undefined ? { remoteAuthority: row.remoteAuthority } : {},
@@ -69869,7 +71421,7 @@ function solOf(lamports) {
   const digits = lamports.padStart(10, "0");
   return `${digits.slice(0, -9)}.${digits.slice(-9)}`.replace(/\.?0+$/, "");
 }
-function previewLines(preview) {
+function previewLines2(preview) {
   const lines = [
     `Close ${preview.accountCount} empty token account${preview.accountCount === 1 ? "" : "s"} on the embedded wallet ${safeText(preview.wallet)}`,
     `Rent returned to that same wallet: ${safeText(preview.totalSol)} SOL in ${preview.transactions} transaction${preview.transactions === 1 ? "" : "s"}, network fee about ${solOf(preview.estimatedFeeLamports)} SOL, net ${safeText(preview.netSol)} SOL`
@@ -69949,7 +71501,7 @@ async function walletsCloseEmpty(args, ctx) {
       const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
       output.write(`No empty token accounts to close on the embedded wallet ${safeText(wallet)}.
 `);
-      for (const line of previewLines(preview).slice(2))
+      for (const line of previewLines2(preview).slice(2))
         output.write(`${line}
 `);
       return printTradingResult(ctx, {
@@ -69959,7 +71511,7 @@ async function walletsCloseEmpty(args, ctx) {
         preview
       });
     }
-    const confirmed = await confirmClose(ctx, previewLines(preview), parsed.booleans.has("--yes"));
+    const confirmed = await confirmClose(ctx, previewLines2(preview), parsed.booleans.has("--yes"));
     if (!confirmed)
       return printTradingResult(ctx, {
         success: true,
@@ -70052,7 +71604,7 @@ function trustTable(rows) {
 }
 async function setTrust(args, ctx, trusted) {
   const { deps, apiUrl, json } = ctx;
-  const usage5 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
+  const usage6 = trusted ? USAGE_TRUST : USAGE_UNTRUST;
   const command = trusted ? "wallets trust" : "wallets untrust";
   const parsed = parseArgs(args, trusted ? {} : { booleanFlags: ["--yes"] });
   if ("error" in parsed) {
@@ -70060,7 +71612,7 @@ async function setTrust(args, ctx, trusted) {
     return 2;
   }
   if (parsed.positionals.length === 0) {
-    writeUsageFailure(deps, `Name at least one wallet. ${usage5}`, json);
+    writeUsageFailure(deps, `Name at least one wallet. ${usage6}`, json);
     return 2;
   }
   const skipConfirm = !trusted && parsed.booleans.has("--yes");
@@ -70332,6 +71884,17 @@ var COMMANDS = {
   pnl: { bare: pnl },
   portfolio: { bare: portfolio },
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
+  perps: {
+    subcommands: {
+      setup: perpsSetup,
+      open: perpsOpen,
+      close: perpsClose,
+      cancel: perpsCancel,
+      orders: perpsOrders,
+      positions: perpsPositions,
+      leverage: perpsLeverage
+    }
+  },
   auth: { subcommands: { login: authLogin, status: authStatus, logout: authLogout } },
   keys: {
     subcommands: {
@@ -70403,7 +71966,7 @@ var COMMANDS = {
     }
   },
   external: { subcommands: { new: externalNew, list: externalList, sweep: externalSweep } },
-  sign: { subcommands: { message: signMessage2 }, bare: sign3 },
+  sign: { subcommands: { message: signMessage2 }, bare: sign4 },
   secrets: { subcommands: { set: secretsSet, list: secretsList, remove: secretsRemove } },
   plugins: { bare: plugins },
   doctor: { bare: doctor },
@@ -70707,8 +72270,8 @@ async function buildRealDeps() {
       const { runStdioServer: runStdioServer2 } = await Promise.resolve().then(() => (init_server2(), exports_server));
       await runStdioServer2(env);
     },
-    readFile: (path) => readFile9(path, "utf8"),
-    readBytes: (path) => readFile9(path),
+    readFile: (path) => readFile10(path, "utf8"),
+    readBytes: (path) => readFile10(path),
     readStdin: () => new Promise((resolve4, reject) => {
       const chunks = [];
       process.stdin.on("data", (chunk) => chunks.push(chunk));

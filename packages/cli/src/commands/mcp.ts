@@ -63,6 +63,13 @@ export const MCP_TOOL_NAMES = [
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation",
+  "candle_perps_setup",
+  "candle_perps_open",
+  "candle_perps_close",
+  "candle_perps_cancel",
+  "candle_perps_orders",
+  "candle_perps_positions",
+  "candle_perps_leverage",
 ] as const
 
 /**

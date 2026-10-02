@@ -5,7 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
 // src/tools.ts
-import { z } from "zod";
+import { z as z2 } from "zod";
 
 // src/client.ts
 var DEFAULT_API_URL = "https://api.alpha.candle.tv";
@@ -551,6 +551,631 @@ async function executionStatus(cfg, doFetch) {
   };
 }
 
+// src/perps.ts
+import { createPrivateKey, sign } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { z } from "zod";
+
+// src/hyperliquid.ts
+import { keccak_256 } from "@noble/hashes/sha3";
+var HYPERLIQUID_ALLOWED_ACTION_TYPES = [
+  "order",
+  "cancel",
+  "modify",
+  "updateLeverage",
+  "updateIsolatedMargin"
+];
+var HYPERLIQUID_EXCHANGE_URLS = {
+  mainnet: "https://api.hyperliquid.xyz/exchange",
+  testnet: "https://api.hyperliquid-testnet.xyz/exchange"
+};
+var CANDLE_HYPERLIQUID_BUILDER_ADDRESS = null;
+var HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS = 100;
+var HYPERLIQUID_MAX_BUILDER_FEE_RATE = "0.1%";
+var HYPERLIQUID_SIGNATURE_CHAIN_ID = "0xa4b1";
+var ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+var UINT64_MAX = (1n << 64n) - 1n;
+var INT64_MIN = -(1n << 63n);
+function pushUint(out, value, width) {
+  for (let i = width - 1;i >= 0; i--)
+    out.push(Number(value >> BigInt(i * 8) & 0xffn));
+}
+function packInteger(out, value) {
+  if (value >= 0n) {
+    if (value > UINT64_MAX)
+      throw new Error("msgpack: integer above uint64");
+    if (value < 0x80n)
+      out.push(Number(value));
+    else if (value <= 0xffn) {
+      out.push(204);
+      pushUint(out, value, 1);
+    } else if (value <= 0xffffn) {
+      out.push(205);
+      pushUint(out, value, 2);
+    } else if (value <= 0xffffffffn) {
+      out.push(206);
+      pushUint(out, value, 4);
+    } else {
+      out.push(207);
+      pushUint(out, value, 8);
+    }
+    return;
+  }
+  if (value < INT64_MIN)
+    throw new Error("msgpack: integer below int64");
+  if (value >= -32n)
+    out.push(Number(value & 0xffn));
+  else if (value >= -128n) {
+    out.push(208);
+    pushUint(out, value & 0xffn, 1);
+  } else if (value >= -32768n) {
+    out.push(209);
+    pushUint(out, value & 0xffffn, 2);
+  } else if (value >= -2147483648n) {
+    out.push(210);
+    pushUint(out, value & 0xffffffffn, 4);
+  } else {
+    out.push(211);
+    pushUint(out, value & UINT64_MAX, 8);
+  }
+}
+function packHeader(out, length, fixBase, fixMax, codes) {
+  if (length <= fixMax) {
+    out.push(fixBase | length);
+    return;
+  }
+  const [c8, c16, c32] = codes;
+  if (c8 !== undefined && c8 !== 0 && length <= 255) {
+    out.push(c8);
+    pushUint(out, BigInt(length), 1);
+  } else if (length <= 65535) {
+    out.push(c16);
+    pushUint(out, BigInt(length), 2);
+  } else {
+    out.push(c32);
+    pushUint(out, BigInt(length), 4);
+  }
+}
+function packValue(out, value) {
+  if (value === null)
+    out.push(192);
+  else if (value === false)
+    out.push(194);
+  else if (value === true)
+    out.push(195);
+  else if (typeof value === "bigint")
+    packInteger(out, value);
+  else if (typeof value === "number") {
+    if (!Number.isSafeInteger(value))
+      throw new Error(`msgpack: ${value} is not a safe integer`);
+    packInteger(out, BigInt(value));
+  } else if (typeof value === "string") {
+    const bytes = new TextEncoder().encode(value);
+    packHeader(out, bytes.length, 160, 31, [217, 218, 219]);
+    for (const b of bytes)
+      out.push(b);
+  } else if (Array.isArray(value)) {
+    packHeader(out, value.length, 144, 15, [0, 220, 221]);
+    for (const item of value)
+      packValue(out, item);
+  } else if (typeof value === "object") {
+    const entries = Object.entries(value).filter(([, v]) => v !== undefined);
+    for (const [key] of entries) {
+      if (/^(0|[1-9][0-9]*)$/.test(key))
+        throw new Error(`msgpack: integer-like key "${key}"`);
+    }
+    packHeader(out, entries.length, 128, 15, [0, 222, 223]);
+    for (const [key, item] of entries) {
+      packValue(out, key);
+      packValue(out, item);
+    }
+  } else {
+    throw new Error(`msgpack: cannot encode a ${typeof value}`);
+  }
+}
+function msgpackEncode(value) {
+  const out = [];
+  packValue(out, value);
+  return Uint8Array.from(out);
+}
+function toHex(bytes) {
+  let out = "";
+  for (const b of bytes)
+    out += b.toString(16).padStart(2, "0");
+  return out;
+}
+function hyperliquidActionHash(action, nonce) {
+  const n = BigInt(nonce);
+  if (n < 0n || n > UINT64_MAX)
+    throw new Error("hyperliquidActionHash: nonce out of range");
+  const out = Array.from(msgpackEncode(action));
+  pushUint(out, n, 8);
+  out.push(0);
+  return `0x${toHex(keccak_256(Uint8Array.from(out)))}`;
+}
+function hyperliquidL1TypedData(connectionId, network) {
+  return {
+    domain: { name: "Exchange", version: "1", chainId: 1337, verifyingContract: ZERO_ADDRESS },
+    types: {
+      Agent: [
+        { name: "source", type: "string" },
+        { name: "connectionId", type: "bytes32" }
+      ]
+    },
+    primary_type: "Agent",
+    message: { source: network === "mainnet" ? "a" : "b", connectionId }
+  };
+}
+function hyperliquidApproveBuilderFeeTypedData(builder, nonce) {
+  return {
+    domain: { name: "HyperliquidSignTransaction", version: "1", chainId: 42161, verifyingContract: ZERO_ADDRESS },
+    types: {
+      "HyperliquidTransaction:ApproveBuilderFee": [
+        { name: "hyperliquidChain", type: "string" },
+        { name: "maxFeeRate", type: "string" },
+        { name: "builder", type: "address" },
+        { name: "nonce", type: "uint64" }
+      ]
+    },
+    primary_type: "HyperliquidTransaction:ApproveBuilderFee",
+    message: {
+      hyperliquidChain: "Mainnet",
+      maxFeeRate: HYPERLIQUID_MAX_BUILDER_FEE_RATE,
+      builder: builder.toLowerCase(),
+      nonce
+    }
+  };
+}
+function hyperliquidCanonicalJson(value) {
+  return canonical(value);
+}
+function canonical(value) {
+  if (value === null || typeof value !== "object")
+    return JSON.stringify(value);
+  if (Array.isArray(value))
+    return `[${value.map(canonical).join(",")}]`;
+  const record = value;
+  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`).join(",")}}`;
+}
+function sameValue(a, b) {
+  return canonical(a) === canonical(b);
+}
+var EVM_ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/;
+function checkBuilderField(action, builder) {
+  if (!("builder" in action) || action.builder === undefined)
+    return null;
+  const field = action.builder;
+  if (typeof field !== "object" || field === null)
+    return "builder field is not an object";
+  if (typeof field.b !== "string" || field.b.toLowerCase() !== builder.toLowerCase()) {
+    return "the order names a builder that is not Candle's";
+  }
+  if (typeof field.f !== "number" || !Number.isInteger(field.f) || field.f <= 0 || field.f > HYPERLIQUID_MAX_BUILDER_FEE_TENTHS_BPS) {
+    return "the builder fee is outside Candle's 0.1% maximum";
+  }
+  return null;
+}
+function decimal(value) {
+  if (typeof value !== "string" || !/^-?(0|[1-9][0-9]*)(\.[0-9]{1,18})?$/.test(value))
+    return null;
+  const negative = value.startsWith("-");
+  const [whole = "0", frac = ""] = (negative ? value.slice(1) : value).split(".");
+  const n = BigInt(whole) * 10n ** 18n + BigInt(frac.padEnd(18, "0"));
+  return negative ? -n : n;
+}
+function checkActionIntent(action, intent) {
+  const mainAsset = (a) => typeof a === "number" && Number.isInteger(a) && a >= 0 && a < 1e4;
+  const orderList = action.type === "order" ? action.orders : action.type === "modify" ? [action.order] : [];
+  if (!Array.isArray(orderList))
+    return "invalid orders";
+  for (const raw of orderList) {
+    if (!raw || typeof raw !== "object")
+      return "invalid order";
+    const o = raw;
+    if (!mainAsset(o.a))
+      return "order asset is outside the main perp universe";
+    if (typeof o.b !== "boolean" || typeof o.r !== "boolean" || (decimal(o.s) ?? 0n) <= 0n || (decimal(o.p) ?? 0n) <= 0n)
+      return "invalid order side, size, price or reduce-only flag";
+  }
+  if (action.type === "cancel") {
+    if (!Array.isArray(action.cancels) || action.cancels.length !== 1 || !mainAsset(action.cancels[0]?.a))
+      return "invalid cancel asset";
+  }
+  if ((action.type === "updateLeverage" || action.type === "updateIsolatedMargin") && !mainAsset(action.asset))
+    return "invalid action asset";
+  if (!intent)
+    return null;
+  const { method, params: p } = intent;
+  const types = {
+    setup: "approveBuilderFee",
+    open: "order",
+    close: "order",
+    cancel: "cancel",
+    modify: "modify",
+    leverage: "updateLeverage",
+    margin: "updateIsolatedMargin"
+  };
+  if (action.type !== types[method])
+    return "action type does not match the requested method";
+  if (method === "leverage") {
+    if (action.leverage !== p.leverage || action.isCross !== (p.mode !== "isolated"))
+      return "leverage or mode does not match the request";
+  }
+  if (method === "margin") {
+    const amount = decimal(p.amount);
+    if (amount === null || amount % 10n ** 12n !== 0n || !Number.isSafeInteger(action.ntli) || BigInt(action.ntli) !== amount / 10n ** 12n || action.isBuy !== true)
+      return "isolated margin amount does not match the request";
+  }
+  if (method === "open" || method === "close" || method === "modify") {
+    const list = orderList;
+    const first = list[0];
+    if (!first)
+      return "missing requested order";
+    const typ = first.t;
+    if (!typ?.limit)
+      return "requested order is not a limit/IOC order";
+    if (method === "open") {
+      const buy = p.side === "long" || p.side === "buy";
+      if (first.b !== buy || first.r !== false || decimal(first.s) !== decimal(p.size))
+        return "order side, size or reduce-only flag does not match the request";
+      const tif = (p.type ?? (p.price === undefined ? "market" : "limit")) === "market" ? "Ioc" : p.tif ?? "Gtc";
+      if (typ.limit.tif !== tif)
+        return "order time in force does not match the request";
+      const triggers = [
+        ["takeProfit", "tp"],
+        ["stopLoss", "sl"]
+      ].filter(([field]) => p[field] != null);
+      if (list.length !== 1 + triggers.length || action.grouping !== (triggers.length ? "normalTpsl" : "na"))
+        return "unexpected extra orders or grouping";
+      for (let i = 0;i < triggers.length; i++) {
+        const [field, kind] = triggers[i];
+        const leg = list[i + 1];
+        if (!leg)
+          return "missing trigger order";
+        const trigger = leg.t?.trigger;
+        if (leg.a !== first.a || leg.b !== !buy || leg.r !== true || decimal(leg.s) !== decimal(p.size) || trigger?.tpsl !== kind || trigger.isMarket !== true || decimal(trigger.triggerPx) !== decimal(p[field]))
+          return "trigger side, size, reduce-only flag or price does not match the request";
+      }
+    } else {
+      if (list.length !== 1)
+        return "unexpected extra orders";
+      if (method === "close" && (first.r !== true || typ.limit.tif !== "Ioc" || p.size != null && (decimal(first.s) ?? 0n) > (decimal(p.size) ?? 0n)))
+        return "close size or reduce-only flag does not match the request";
+      if (method === "modify" && p.size != null && decimal(first.s) !== decimal(p.size))
+        return "replacement size does not match the request";
+    }
+    if (p.price != null && decimal(first.p) !== decimal(p.price))
+      return "order price does not match the request";
+  }
+  return null;
+}
+async function hyperliquidCloseOrder(fetcher, network, address, params) {
+  const read = async (body) => {
+    const res = await fetcher(HYPERLIQUID_EXCHANGE_URLS[network].replace("/exchange", "/info"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok)
+      throw new Error("Cannot read the close position from Hyperliquid");
+    return JSON.parse(await res.text());
+  };
+  const [meta, state] = await Promise.all([read({ type: "meta" }), read({ type: "clearinghouseState", user: address })]);
+  const coin = String(params.coin).toUpperCase();
+  const asset = meta.universe.findIndex((m) => m.name.toUpperCase() === coin);
+  const szi = state.assetPositions.find((p) => p.position.coin.toUpperCase() === coin)?.position.szi;
+  const signed = decimal(szi);
+  if (asset < 0 || asset >= 1e4 || signed === null || signed === 0n)
+    throw new Error("No main-universe position to close");
+  const held = signed < 0n ? -signed : signed;
+  const asked = params.size == null ? held : decimal(params.size);
+  if (asked === null || asked <= 0n)
+    throw new Error("Invalid close size");
+  const size = asked < held ? String(params.size) : String(szi).replace(/^-/, "");
+  return { asset, isBuy: signed < 0n, size };
+}
+function verifyPerpsBuild(build, opts) {
+  try {
+    const network = opts.network ?? "mainnet";
+    if (!EVM_ADDRESS_RE.test(opts.builder))
+      return { ok: false, reason: "no valid Candle builder address to check against" };
+    if (build.network !== undefined && build.network !== network) {
+      return { ok: false, reason: `the build is for ${build.network}, this client trades ${network}` };
+    }
+    if (opts.address && build.address && build.address.toLowerCase() !== opts.address.toLowerCase()) {
+      return { ok: false, reason: "the build is for a different wallet" };
+    }
+    if (!Number.isSafeInteger(build.nonce) || build.nonce <= 0)
+      return { ok: false, reason: "invalid nonce" };
+    const typed = build.typedData;
+    if (!typed || typeof typed !== "object")
+      return { ok: false, reason: "no typed data" };
+    const action = build.action;
+    if (!action || typeof action !== "object")
+      return { ok: false, reason: "no action" };
+    const intentRefusal = checkActionIntent(action, opts.intent);
+    if (intentRefusal)
+      return { ok: false, reason: intentRefusal };
+    if (opts.closeOrder) {
+      const order = action.orders[0];
+      if (!order || order.a !== opts.closeOrder.asset || order.b !== opts.closeOrder.isBuy || decimal(order.s) !== decimal(opts.closeOrder.size) || order.r !== true)
+        return { ok: false, reason: "close side, asset or size does not match the requested position" };
+    }
+    if (typed.primary_type === "Agent") {
+      const type = action.type;
+      if (typeof type !== "string" || !HYPERLIQUID_ALLOWED_ACTION_TYPES.includes(type)) {
+        return { ok: false, reason: `action type ${String(type)} is not one Candle builds` };
+      }
+      if (type === "order") {
+        const refusal = checkBuilderField(action, opts.builder);
+        if (refusal)
+          return { ok: false, reason: refusal };
+      } else if ("builder" in action) {
+        return { ok: false, reason: `a ${type} action carries no builder` };
+      }
+      if ("vaultAddress" in action)
+        return { ok: false, reason: "the action names a vault" };
+      const expected = hyperliquidL1TypedData(hyperliquidActionHash(action, build.nonce), network);
+      if (!sameValue(typed, expected)) {
+        return { ok: false, reason: "the typed data does not commit to this action and nonce" };
+      }
+      return { ok: true, kind: "l1" };
+    }
+    if (typed.primary_type === "HyperliquidTransaction:ApproveBuilderFee") {
+      const expected = hyperliquidApproveBuilderFeeTypedData(opts.builder, build.nonce);
+      if (!sameValue(typed, expected)) {
+        return { ok: false, reason: "the builder approval is not Candle's builder at 0.1% on Mainnet" };
+      }
+      const expectedAction = {
+        type: "approveBuilderFee",
+        hyperliquidChain: "Mainnet",
+        signatureChainId: HYPERLIQUID_SIGNATURE_CHAIN_ID,
+        maxFeeRate: HYPERLIQUID_MAX_BUILDER_FEE_RATE,
+        builder: opts.builder.toLowerCase(),
+        nonce: build.nonce
+      };
+      if (!sameValue(action, expectedAction)) {
+        return { ok: false, reason: "the approval action does not match its typed data" };
+      }
+      return { ok: true, kind: "approveBuilderFee" };
+    }
+    return { ok: false, reason: `primary type ${String(typed.primary_type)} is not one the relay signs` };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : "unreadable build" };
+  }
+}
+function hyperliquidSplitSignature(signature) {
+  if (!/^0x[0-9a-fA-F]{130}$/.test(signature))
+    throw new Error("Not a 65-byte signature");
+  let v = Number.parseInt(signature.slice(130, 132), 16);
+  if (v < 27)
+    v += 27;
+  return { r: `0x${signature.slice(2, 66)}`, s: `0x${signature.slice(66, 130)}`, v };
+}
+function hyperliquidExchangeBody(action, nonce, signature) {
+  return { action, nonce, signature: hyperliquidSplitSignature(signature), vaultAddress: null, expiresAfter: null };
+}
+function hyperliquidRelayBody(typedData) {
+  return { method: "eth_signTypedData_v4", params: { typed_data: typedData } };
+}
+
+// src/perps.ts
+var decimal2 = z.string().regex(/^(0|[1-9][0-9]*)(\.[0-9]+)?$/, "a plain decimal string");
+var wallet = z.string().optional().describe("The EVM TEE wallet by id, address or label. Omit when the key has exactly one.");
+var submit = z.boolean().optional().describe("false: build and check only, sign and submit nothing. Default true.");
+var perpsShapes = {
+  candle_perps_setup: { wallet, submit },
+  candle_perps_open: {
+    coin: z.string().describe("A market on Hyperliquid's main perp exchange, e.g. BTC"),
+    side: z.enum(["long", "short"]),
+    size: decimal2.describe('Size in the coin, decimal (e.g. "0.01")'),
+    price: decimal2.optional().describe("Limit price. Omit for a market order (IOC within slippageBps of the mid)."),
+    tif: z.enum(["Gtc", "Alo", "Ioc"]).optional().describe("With price: time in force (default Gtc)"),
+    slippageBps: z.number().int().min(1).optional(),
+    takeProfit: decimal2.optional().describe("Reduce-only take-profit trigger price"),
+    stopLoss: decimal2.optional().describe("Reduce-only stop-loss trigger price"),
+    wallet,
+    submit
+  },
+  candle_perps_close: {
+    coin: z.string(),
+    size: decimal2.optional().describe("Part of the position to close; the whole position when omitted"),
+    slippageBps: z.number().int().min(1).optional(),
+    wallet,
+    submit
+  },
+  candle_perps_cancel: {
+    cloid: z.string().regex(/^0x[0-9a-fA-F]{32}$/).describe("The cloid of an order Candle built (an open, or one of its take-profit / stop-loss legs)"),
+    wallet,
+    submit
+  },
+  candle_perps_orders: { wallet, limit: z.number().int().min(1).max(200).optional() },
+  candle_perps_positions: { wallet },
+  candle_perps_leverage: {
+    coin: z.string(),
+    leverage: z.number().int().min(1),
+    mode: z.enum(["cross", "isolated"]).optional(),
+    wallet,
+    submit
+  }
+};
+var PATHS = {
+  candle_perps_setup: "/api/v1/agent/perps/setup",
+  candle_perps_open: "/api/v1/agent/perps/open",
+  candle_perps_close: "/api/v1/agent/perps/close",
+  candle_perps_cancel: "/api/v1/agent/perps/cancel",
+  candle_perps_orders: "/api/v1/agent/perps/orders",
+  candle_perps_positions: "/api/v1/agent/perps/positions",
+  candle_perps_leverage: "/api/v1/agent/perps/leverage"
+};
+function fail(code, message, extra = {}) {
+  return { text: JSON.stringify({ success: false, error: { code, message }, ...extra }), isError: true };
+}
+
+class Refusal extends Error {
+  tool;
+  constructor(tool) {
+    super("refused");
+    this.tool = tool;
+  }
+}
+async function call(cfg, fetch2, method, path, body) {
+  const res = await fetch2(`${cfg.apiUrl.replace(/\/$/, "")}${path}`, {
+    method,
+    headers: { "Content-Type": "application/json", ...cfg.apiKey ? { "x-api-key": cfg.apiKey } : {} },
+    ...body !== undefined ? { body: JSON.stringify(body) } : {}
+  });
+  const text = await res.text();
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = text;
+  }
+  if (!res.ok) {
+    if (res.status === 404 && (typeof parsed !== "object" || parsed === null))
+      throw new Refusal(fail("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes."));
+    throw new Refusal({ text: typeof parsed === "string" ? parsed : JSON.stringify(parsed), isError: true });
+  }
+  if (typeof parsed !== "object" || parsed === null)
+    throw new Refusal(fail("INVALID_RESPONSE", "Not a JSON object"));
+  return parsed;
+}
+async function walletFor(cfg, fetch2, name, scope) {
+  const listed = await call(cfg, fetch2, "GET", "/api/v1/agent/wallets/trading");
+  if (scope && !(Array.isArray(listed.scopes) && listed.scopes.includes(scope)))
+    throw new Refusal(fail("SCOPE_MISSING", `The key needs ${scope}.`));
+  const rows = Array.isArray(listed.page) ? listed.page : [];
+  const evm = rows.filter((row) => row.chain === "evm");
+  const matches = name === undefined ? evm : evm.filter((row) => row.id === name || row.label === name || row.address.toLowerCase() === name.toLowerCase());
+  if (matches.length !== 1)
+    throw new Refusal(fail("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row) => row.label ?? row.id).join(", ")}`));
+  return { row: matches[0], appId: typeof listed.privyAppId === "string" ? listed.privyAppId : "" };
+}
+async function builderPin(cfg, fetch2, env) {
+  const pinned = env.CANDLE_HYPERLIQUID_BUILDER?.trim() || CANDLE_HYPERLIQUID_BUILDER_ADDRESS;
+  if (pinned)
+    return pinned.toLowerCase();
+  const config = await call(cfg, fetch2, "GET", "/api/v1/agent/perps/config");
+  if (typeof config.builder !== "string")
+    throw new Refusal(fail("PERPS_NOT_CONFIGURED", "The server reports no Hyperliquid builder address."));
+  return config.builder.toLowerCase();
+}
+async function executePerps(tool, args, cfg, env, fetch2) {
+  if (!cfg.apiKey)
+    return fail("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
+  const network = env.CANDLE_HYPERLIQUID_NETWORK === "testnet" ? "testnet" : "mainnet";
+  const name = typeof args.wallet === "string" ? args.wallet : undefined;
+  try {
+    if (tool === "candle_perps_orders" || tool === "candle_perps_positions") {
+      const { row: row2 } = await walletFor(cfg, fetch2, name);
+      const query = new URLSearchParams({ walletId: row2.id });
+      if (typeof args.limit === "number")
+        query.set("limit", String(args.limit));
+      return { text: JSON.stringify(await call(cfg, fetch2, "GET", `${PATHS[tool]}?${query}`)) };
+    }
+    const willSubmit = args.submit !== false;
+    const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim();
+    let signerPem = null;
+    if (willSubmit) {
+      if (!pemFile)
+        return fail("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign perps actions.");
+      try {
+        signerPem = await readFile(pemFile, "utf8");
+        createPrivateKey(signerPem);
+      } catch {
+        return fail("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
+      }
+    }
+    const { row, appId } = await walletFor(cfg, fetch2, name, "perps:write");
+    const builder = await builderPin(cfg, fetch2, env);
+    const { wallet: _w, submit: _s, ...fields } = args;
+    const build = await call(cfg, fetch2, "POST", PATHS[tool], {
+      walletId: row.id,
+      ...fields,
+      ...tool === "candle_perps_open" ? { type: fields.price === undefined ? "market" : "limit" } : {}
+    });
+    if (build.ready === true)
+      return { text: JSON.stringify(build) };
+    const method = PATHS[tool].split("/").at(-1);
+    const check = verifyPerpsBuild(build, {
+      builder,
+      network,
+      address: row.address,
+      intent: { method, params: fields }
+    });
+    if (!check.ok)
+      return fail("PERPS_BUILD_REFUSED", `Refused to sign this build: ${check.reason}. Nothing was signed.`);
+    if (method === "close") {
+      const closeOrder = await hyperliquidCloseOrder(fetch2, network, row.address, fields);
+      const closeCheck = verifyPerpsBuild(build, {
+        builder,
+        network,
+        address: row.address,
+        intent: { method, params: fields },
+        closeOrder
+      });
+      if (!closeCheck.ok)
+        return fail("PERPS_BUILD_REFUSED", `Refused to sign this build: ${closeCheck.reason}. Nothing was signed.`);
+    }
+    if (!willSubmit || signerPem === null)
+      return { text: JSON.stringify({ ...build, signed: false, submitted: false }) };
+    if (!appId || !row.privyWalletId)
+      return fail("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers.");
+    const body = hyperliquidRelayBody(build.typedData);
+    const payload = hyperliquidCanonicalJson({
+      body,
+      headers: { "privy-app-id": appId },
+      method: "POST",
+      url: `https://api.privy.io/v1/wallets/${row.privyWalletId}/rpc`,
+      version: 1
+    });
+    const authorizationSignature = sign("sha256", Buffer.from(payload), signerPem).toString("base64");
+    const relay = await call(cfg, fetch2, "POST", `/api/v1/agent/wallets/${encodeURIComponent(row.id)}/sign`, {
+      authorizationSignature,
+      body
+    });
+    const signature = relay.signature;
+    if (typeof signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(signature))
+      return fail("INVALID_RESPONSE", "The relay did not return a signature.");
+    const exchangeBody = hyperliquidExchangeBody(build.action, build.nonce, signature);
+    let exchange;
+    try {
+      const res = await fetch2(HYPERLIQUID_EXCHANGE_URLS[network], {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(exchangeBody)
+      });
+      const text = await res.text();
+      if (!res.ok)
+        throw new Error(`HTTP ${res.status}`);
+      exchange = JSON.parse(text);
+    } catch (error) {
+      return fail("PERPS_SUBMIT_FAILED", `Signed, but the submit to Hyperliquid failed (${error instanceof Error ? error.message : "unknown"}). POST exchangeBody to Hyperliquid's /exchange to resubmit.`, { perpOrderId: build.perpOrderId, exchangeBody });
+    }
+    const accepted = typeof exchange === "object" && exchange !== null && exchange.status === "ok" && !(exchange.response?.data?.statuses ?? []).some((status) => typeof status === "object" && status !== null && ("error" in status));
+    return {
+      text: JSON.stringify({
+        success: accepted,
+        perpOrderId: build.perpOrderId,
+        kind: build.kind,
+        network: build.network,
+        address: row.address,
+        ...build.cloid ? { cloid: build.cloid } : {},
+        ...build.childCloids ? { childCloids: build.childCloids } : {},
+        nonce: build.nonce,
+        signature,
+        exchange
+      }),
+      ...accepted ? {} : { isError: true }
+    };
+  } catch (error) {
+    if (error instanceof Refusal)
+      return error.tool;
+    return fail("MCP_TRANSPORT", error instanceof Error ? error.message : "The perps call failed.");
+  }
+}
+
 // src/tools.ts
 var TOOL_NAMES = [
   "candle_launch_token",
@@ -572,7 +1197,14 @@ var TOOL_NAMES = [
   "candle_get_portfolio",
   "candle_resolve_token",
   "candle_execution_status",
-  "candle_get_operation"
+  "candle_get_operation",
+  "candle_perps_setup",
+  "candle_perps_open",
+  "candle_perps_close",
+  "candle_perps_cancel",
+  "candle_perps_orders",
+  "candle_perps_positions",
+  "candle_perps_leverage"
 ];
 function resolveToolAllowlist(env) {
   const raw = env.CANDLE_MCP_TOOLS?.trim();
@@ -751,102 +1383,102 @@ async function callAndRelay(name, args, cfg) {
   };
 }
 var launchTokenShape = {
-  clientLaunchId: z.string().describe("Caller-chosen idempotency key, unique per account"),
-  name: z.string().describe("Token name"),
-  symbol: z.string().describe("Token symbol"),
-  imageUrl: z.string().describe("https URL to the token image. Must be roughly SQUARE (aspect ratio at most 1.5:1): it " + "renders as a small circle/square avatar everywhere. Share cards, OG images and banners " + "are rejected with IMAGE_WRONG_SHAPE -- pass those as bannerUrl instead"),
-  bannerUrl: z.string().optional().describe("Optional https URL to WIDE artwork for the token page's banner strip (wider than 1.5:1, " + "e.g. 1200x630). This is where a share card or OG image belongs. A square image here is " + "rejected with BANNER_WRONG_SHAPE. Omit it and the strip falls back to imageUrl"),
-  chain: z.string().optional().describe('"solana" or "hood"; defaults to solana'),
-  quoteAsset: z.string().optional().describe("Quote asset symbol; defaults per chain"),
-  mode: z.string().optional().describe('"open" or "exclusive"; defaults to open. "test-open" / "test-exclusive" launch the ' + "low-threshold test curves (~1/80 economics) where the API has ENABLE_TEST_CURVES on"),
-  stakerAllocationBps: z.number().optional().describe("Staker allocation in basis points"),
-  dexVersion: z.string().nullable().optional().describe('"v3" or "v4"; required for hood launches'),
-  buyAmount: z.union([z.string(), z.number()]).optional().describe("Initial buy, in quote base units (string or number)"),
-  description: z.string().optional(),
-  socials: z.record(z.string()).optional().describe("Social links keyed by platform"),
-  visibility: z.string().optional().describe('"production", "test", "local", or "hidden"'),
-  dryRun: z.boolean().optional().describe("Validate without executing the launch")
+  clientLaunchId: z2.string().describe("Caller-chosen idempotency key, unique per account"),
+  name: z2.string().describe("Token name"),
+  symbol: z2.string().describe("Token symbol"),
+  imageUrl: z2.string().describe("https URL to the token image. Must be roughly SQUARE (aspect ratio at most 1.5:1): it " + "renders as a small circle/square avatar everywhere. Share cards, OG images and banners " + "are rejected with IMAGE_WRONG_SHAPE -- pass those as bannerUrl instead"),
+  bannerUrl: z2.string().optional().describe("Optional https URL to WIDE artwork for the token page's banner strip (wider than 1.5:1, " + "e.g. 1200x630). This is where a share card or OG image belongs. A square image here is " + "rejected with BANNER_WRONG_SHAPE. Omit it and the strip falls back to imageUrl"),
+  chain: z2.string().optional().describe('"solana" or "hood"; defaults to solana'),
+  quoteAsset: z2.string().optional().describe("Quote asset symbol; defaults per chain"),
+  mode: z2.string().optional().describe('"open" or "exclusive"; defaults to open. "test-open" / "test-exclusive" launch the ' + "low-threshold test curves (~1/80 economics) where the API has ENABLE_TEST_CURVES on"),
+  stakerAllocationBps: z2.number().optional().describe("Staker allocation in basis points"),
+  dexVersion: z2.string().nullable().optional().describe('"v3" or "v4"; required for hood launches'),
+  buyAmount: z2.union([z2.string(), z2.number()]).optional().describe("Initial buy, in quote base units (string or number)"),
+  description: z2.string().optional(),
+  socials: z2.record(z2.string()).optional().describe("Social links keyed by platform"),
+  visibility: z2.string().optional().describe('"production", "test", "local", or "hidden"'),
+  dryRun: z2.boolean().optional().describe("Validate without executing the launch")
 };
 var getMarketShape = {
-  chain: z.string().describe('"solana" or "hood"'),
-  mint: z.string().describe("Token mint (solana) or contract address (hood)")
+  chain: z2.string().describe('"solana" or "hood"'),
+  mint: z2.string().describe("Token mint (solana) or contract address (hood)")
 };
 var tokenForensicsShape = {
-  chain: z.string().describe('"solana" or "hood"'),
-  mint: z.string().describe("Token mint (solana) or contract address (hood)")
+  chain: z2.string().describe('"solana" or "hood"'),
+  mint: z2.string().describe("Token mint (solana) or contract address (hood)")
 };
 var getFeedShape = {
-  bucket: z.enum(["new", "graduated", "onfire", "bluechip"]),
-  chain: z.string().optional().describe("Optional chain filter"),
-  where: z.string().optional().describe('JSON filter, e.g. {"marketCap":{"lt":150000},"liquidityUsd":{"gte":25000},"mintAuthorityDisabled":{"eq":true}}. ' + "Comparators: eq, ne, lt, lte, gt, gte, present. An ABSENT field satisfies none of them except " + "present:false, so a filter for mintAuthorityDisabled eq true returns only tokens that actually say " + "true, never ones where the flag is simply missing. Use present:false to find the tokens with no data."),
-  sort: z.string().optional().describe('Sort as "field" or "field:asc" / "field:desc". A bare field means desc.'),
-  fields: z.string().optional().describe("Comma-separated fields to return, e.g. symbol,marketCap,liquidityUsd. chain, address and symbol always " + "ride along. Cuts a 135KB response to a couple of KB."),
-  limit: z.string().optional().describe("Max rows to return, 1-200.")
+  bucket: z2.enum(["new", "graduated", "onfire", "bluechip"]),
+  chain: z2.string().optional().describe("Optional chain filter"),
+  where: z2.string().optional().describe('JSON filter, e.g. {"marketCap":{"lt":150000},"liquidityUsd":{"gte":25000},"mintAuthorityDisabled":{"eq":true}}. ' + "Comparators: eq, ne, lt, lte, gt, gte, present. An ABSENT field satisfies none of them except " + "present:false, so a filter for mintAuthorityDisabled eq true returns only tokens that actually say " + "true, never ones where the flag is simply missing. Use present:false to find the tokens with no data."),
+  sort: z2.string().optional().describe('Sort as "field" or "field:asc" / "field:desc". A bare field means desc.'),
+  fields: z2.string().optional().describe("Comma-separated fields to return, e.g. symbol,marketCap,liquidityUsd. chain, address and symbol always " + "ride along. Cuts a 135KB response to a couple of KB."),
+  limit: z2.string().optional().describe("Max rows to return, 1-200.")
 };
 var reportActivityShape = {
-  chain: z.string().describe('"solana" or "hood"'),
-  signature: z.string().describe("Transaction signature/hash to verify and record")
+  chain: z2.string().describe('"solana" or "hood"'),
+  signature: z2.string().describe("Transaction signature/hash to verify and record")
 };
 var getAgentProfileShape = {
-  idOrWallet: z.string().describe("Candle username or wallet address")
+  idOrWallet: z2.string().describe("Candle username or wallet address")
 };
 var getOperationShape = {
-  clientId: z.string().describe("The clientTradeId or clientLaunchId the write used, or that the tool echoed back to you"),
-  kind: z.enum(["trade", "launch"]).describe("Which rail the id belongs to. Required: ids are caller-chosen strings with no shape to dispatch on")
+  clientId: z2.string().describe("The clientTradeId or clientLaunchId the write used, or that the tool echoed back to you"),
+  kind: z2.enum(["trade", "launch"]).describe("Which rail the id belongs to. Required: ids are caller-chosen strings with no shape to dispatch on")
 };
 var resolveTokenShape = {
-  mint: z.string().describe("Token mint (Solana, base58) or contract address (Hood, 0x-prefixed)")
+  mint: z2.string().describe("Token mint (Solana, base58) or contract address (Hood, 0x-prefixed)")
 };
 var profileWalletsShape = {
-  keyPrefix: z.string().describe("The profile's API key prefix, as listed by candle keys list or in the dashboard")
+  keyPrefix: z2.string().describe("The profile's API key prefix, as listed by candle keys list or in the dashboard")
 };
 var profilePnlShape = {
-  keyPrefix: z.string().describe("The profile's API key prefix")
+  keyPrefix: z2.string().describe("The profile's API key prefix")
 };
 var profileTradesShape = {
-  keyPrefix: z.string().describe("The profile's API key prefix"),
-  limit: z.number().optional().describe("How many of the most recent trades to return. Default 200, max 1000.")
+  keyPrefix: z2.string().describe("The profile's API key prefix"),
+  limit: z2.number().optional().describe("How many of the most recent trades to return. Default 200, max 1000.")
 };
 var setProfileWalletsShape = {
-  keyPrefix: z.string().describe("The profile's API key prefix"),
-  walletIds: z.array(z.string()).describe("The linked-wallet ids the profile may spend from -- ids, not addresses. This REPLACES the " + "whole set: any wallet omitted loses access. An empty array assigns none.")
+  keyPrefix: z2.string().describe("The profile's API key prefix"),
+  walletIds: z2.array(z2.string()).describe("The linked-wallet ids the profile may spend from -- ids, not addresses. This REPLACES the " + "whole set: any wallet omitted loses access. An empty array assigns none.")
 };
 var swapShape = {
-  from: z.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to spend"),
-  to: z.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to receive; must differ from `from`"),
-  amount: z.string().optional().describe('Decimal amount of `from` to spend, e.g. "0.5". Preferred. Pass exactly one of amount or amountRaw.'),
-  amountRaw: z.string().optional().describe("Raw base units of `from`, as a positive integer string. Kept for callers that already " + "compute raw units; new callers should use `amount`."),
-  maxSlippageBps: z.number().optional().describe("Slippage bound in bps, 0-10000. Server defaults to 100 (1%)"),
-  clientSwapId: z.string().optional().describe("Durable idempotency key. Same id + same from/to/amountRaw/effective slippage (omitted means " + "100 bps) replays the stored result, including an indeterminate SWAP_FAILED with the " + "signature in the message. A different body is rejected. Omit it and nothing is coalesced. " + "Pass one so a timeout retry returns that stored result.")
+  from: z2.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to spend"),
+  to: z2.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).describe("Base asset to receive; must differ from `from`"),
+  amount: z2.string().optional().describe('Decimal amount of `from` to spend, e.g. "0.5". Preferred. Pass exactly one of amount or amountRaw.'),
+  amountRaw: z2.string().optional().describe("Raw base units of `from`, as a positive integer string. Kept for callers that already " + "compute raw units; new callers should use `amount`."),
+  maxSlippageBps: z2.number().optional().describe("Slippage bound in bps, 0-10000. Server defaults to 100 (1%)"),
+  clientSwapId: z2.string().optional().describe("Durable idempotency key. Same id + same from/to/amountRaw/effective slippage (omitted means " + "100 bps) replays the stored result, including an indeterminate SWAP_FAILED with the " + "signature in the message. A different body is rejected. Omit it and nothing is coalesced. " + "Pass one so a timeout retry returns that stored result.")
 };
 var tradeShape = {
-  mint: z.string().describe("Token mint (solana) or contract address (hood)"),
-  side: z.enum(["buy", "sell"]),
-  amount: z.string().optional().describe("Decimal amount. Buys: how much of THIS TOKEN'S OWN quote asset to spend (SOL for a " + 'SOL-launched token, USDC for a USDC-quoted one, and so on: e.g. "0.5"). Sells: how many ' + "TOKENS to sell. Pass exactly one of amount or percent."),
-  percent: z.number().optional().describe("Sells only: sell this percent (integer 1-100) of the holding. Live trades size against the " + "embedded wallet. Paper trades (`paper: true`) size against this key's paper inventory -- " + "the position a previous paper buy credited -- because paper never moves the live wallet."),
-  quoteAsset: z.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' + "to an arbitrary mint Candle never launched (Pro/Max) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
-  maxSlippageBps: z.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
-  clientTradeId: z.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade."),
-  paper: z.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, z.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost. " + "A sell of a mint this key already paper-bought also closes that paper book when the " + "live wallet is empty, even if this flag is omitted."))
+  mint: z2.string().describe("Token mint (solana) or contract address (hood)"),
+  side: z2.enum(["buy", "sell"]),
+  amount: z2.string().optional().describe("Decimal amount. Buys: how much of THIS TOKEN'S OWN quote asset to spend (SOL for a " + 'SOL-launched token, USDC for a USDC-quoted one, and so on: e.g. "0.5"). Sells: how many ' + "TOKENS to sell. Pass exactly one of amount or percent."),
+  percent: z2.number().optional().describe("Sells only: sell this percent (integer 1-100) of the holding. Live trades size against the " + "embedded wallet. Paper trades (`paper: true`) size against this key's paper inventory -- " + "the position a previous paper buy credited -- because paper never moves the live wallet."),
+  quoteAsset: z2.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' + "to an arbitrary mint Candle never launched (Pro/Max) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
+  maxSlippageBps: z2.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
+  clientTradeId: z2.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade."),
+  paper: z2.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, z2.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost. " + "A sell of a mint this key already paper-bought also closes that paper book when the " + "live wallet is empty, even if this flag is omitted."))
 };
 var { buyAmount: _rawBuyAmount, ...seedableLaunchShape } = launchTokenShape;
 var launchAndSeedShape = {
   ...seedableLaunchShape,
-  clientLaunchId: z.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result."),
-  devBuy: z.string().optional().describe('Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' + "ETH on hood), bundled into the launch transaction itself. Follows quoteAsset, which " + "defaults to sol on solana and eth on hood. Capped by the platform dev-buy ceiling; for " + "a larger seed, launch then follow with candle_trade.")
+  clientLaunchId: z2.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result."),
+  devBuy: z2.string().optional().describe('Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' + "ETH on hood), bundled into the launch transaction itself. Follows quoteAsset, which " + "defaults to sol on solana and eth on hood. Capped by the platform dev-buy ceiling; for " + "a larger seed, launch then follow with candle_trade.")
 };
 var transferShape = {
-  chain: z.enum(["solana", "hood"]).describe("Which chain the transfer executes on"),
-  asset: z.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).optional().describe("A base asset key. Pass exactly one of asset or mint."),
-  mint: z.string().optional().describe("An arbitrary token: SPL mint (Solana) or ERC-20 contract (Hood). Own-wallet destinations only; withdrawals to approved addresses are base-assets-only."),
-  amountRaw: z.string().describe('RAW base units as a decimal string (lamports, wei, token raw units), or "max" to sweep the spendable balance. NOT a human decimal: 1 SOL is "1000000000".'),
-  to: z.string().describe("Destination address. Must be one of the account's own wallets, or an address the OWNER pre-approved as a withdrawal address in the Candle console -- anything else is refused before signing."),
-  clientTransferId: z.string().optional().describe("Caller-chosen idempotency key for safe retries")
+  chain: z2.enum(["solana", "hood"]).describe("Which chain the transfer executes on"),
+  asset: z2.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).optional().describe("A base asset key. Pass exactly one of asset or mint."),
+  mint: z2.string().optional().describe("An arbitrary token: SPL mint (Solana) or ERC-20 contract (Hood). Own-wallet destinations only; withdrawals to approved addresses are base-assets-only."),
+  amountRaw: z2.string().describe('RAW base units as a decimal string (lamports, wei, token raw units), or "max" to sweep the spendable balance. NOT a human decimal: 1 SOL is "1000000000".'),
+  to: z2.string().describe("Destination address. Must be one of the account's own wallets, or an address the OWNER pre-approved as a withdrawal address in the Candle console -- anything else is refused before signing."),
+  clientTransferId: z2.string().optional().describe("Caller-chosen idempotency key for safe retries")
 };
 var sweepShape = {
-  chain: z.enum(["solana", "hood"]).describe("Which chain to sweep"),
-  to: z.string().describe("Destination address, same rules as candle_transfer's `to`"),
-  mints: z.array(z.string()).optional().describe("Extra token mints/contracts to sweep besides the chain's base assets (own-wallet destinations only).")
+  chain: z2.enum(["solana", "hood"]).describe("Which chain to sweep"),
+  to: z2.string().describe("Destination address, same rules as candle_transfer's `to`"),
+  mints: z2.array(z2.string()).optional().describe("Extra token mints/contracts to sweep besides the chain's base assets (own-wallet destinations only).")
 };
 function registerTools(server, env = process.env) {
   const cfg = resolveConfig(env);
@@ -1010,6 +1642,46 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     const result = await executeLaunchAndSeed(args, cfg, fetch);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
+  const perpsTool = (tool) => async (args) => {
+    const result = await executePerps(tool, args, cfg, env, fetch);
+    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+  };
+  const perpsWrite = " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the action within this key's limits " + "(USD window, maximum leverage, maximum position, slippage and price bands, main-exchange markets only); this " + "server recomputes its hash and checks the action type and Candle's builder before signing, then submits it to " + "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE. A refusal names the limit " + "that refused it (error.limit).";
+  register("candle_perps_setup", {
+    title: "Set up Hyperliquid perps",
+    description: "Approve Candle's Hyperliquid builder fee (0.1%) once for the key's EVM TEE wallet, and report the " + "account's mode and balance. Idempotent: nothing is signed when the approval is already on Hyperliquid." + perpsWrite,
+    inputSchema: perpsShapes.candle_perps_setup
+  }, perpsTool("candle_perps_setup"));
+  register("candle_perps_open", {
+    title: "Open a perps position",
+    description: "Open or add to a perpetual position on Hyperliquid's main perp exchange: a market order (IOC within " + "slippageBps of the mid) without `price`, a limit order with it, and optional reduce-only takeProfit and " + "stopLoss triggers. Free, Believer and Pro pay a 0.1% builder fee; Max pays none." + perpsWrite,
+    inputSchema: perpsShapes.candle_perps_open
+  }, perpsTool("candle_perps_open"));
+  register("candle_perps_close", {
+    title: "Close a perps position",
+    description: "Close all or part of a position with a reduce-only IOC order. It reserves nothing, so a key at its USD " + "cap can still close." + perpsWrite,
+    inputSchema: perpsShapes.candle_perps_close
+  }, perpsTool("candle_perps_close"));
+  register("candle_perps_cancel", {
+    title: "Cancel a perps order",
+    description: "Cancel an order Candle built, by its cloid (from candle_perps_open or candle_perps_orders)." + perpsWrite,
+    inputSchema: perpsShapes.candle_perps_cancel
+  }, perpsTool("candle_perps_cancel"));
+  register("candle_perps_orders", {
+    title: "Perps orders",
+    description: "Open orders on Hyperliquid for the key's EVM TEE wallet, and every action Candle built for it with what " + "the venue shows. Reads only; moves nothing.",
+    inputSchema: perpsShapes.candle_perps_orders
+  }, perpsTool("candle_perps_orders"));
+  register("candle_perps_positions", {
+    title: "Perps positions",
+    description: "Positions, account value and withdrawable balance on Hyperliquid for the key's EVM TEE wallet, read " + "live by its address. Reads only; moves nothing.",
+    inputSchema: perpsShapes.candle_perps_positions
+  }, perpsTool("candle_perps_positions"));
+  register("candle_perps_leverage", {
+    title: "Set perps leverage",
+    description: "Set a market's leverage and margin mode (cross or isolated) on the account, within the key's maximum leverage." + perpsWrite,
+    inputSchema: perpsShapes.candle_perps_leverage
+  }, perpsTool("candle_perps_leverage"));
 }
 
 // src/server.ts

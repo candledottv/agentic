@@ -26,6 +26,7 @@
  *   validation error). Backoff is 250ms * 2^n, jittered to 50-100% of that, capped at 8s,
  *   bounded by `maxRetries` (default 3 retries after the initial attempt).
  */
+import { type HyperliquidNetwork, type HyperliquidTypedData } from "./hyperliquid";
 import type { SecretStore } from "./secret-store";
 import { type WalletChain } from "./wallet-import";
 export type Chain = "solana" | "hood";
@@ -83,6 +84,16 @@ export interface CandleClientOptions {
      * is unset, before any signing.
      */
     evmRpcUrl?: string;
+    /**
+     * Candle's Hyperliquid builder address, pinned by the caller. Every perps build is checked
+     * against it before signing: an order must name exactly this builder (or none, on a Max order),
+     * and setup must approve exactly it. Unset, the client uses `CANDLE_HYPERLIQUID_BUILDER_ADDRESS`
+     * when this release carries one, and otherwise trusts the builder `GET /agent/perps/config`
+     * reports the first time and holds every later build to that same address.
+     */
+    hyperliquidBuilder?: string;
+    /** The Hyperliquid network this client trades on. Default mainnet; a build for another is refused. */
+    hyperliquidNetwork?: HyperliquidNetwork;
 }
 /** The bonding-curve terms of one (chain, quote asset, tier) cell. */
 export interface CurveTerms {
@@ -1161,6 +1172,166 @@ export interface SignLinkedTransactionResult {
     signedTransaction: string;
     encoding: string;
 }
+/** The EVM TEE wallet a perps action signs from: its row id and its Privy wallet id. */
+export interface PerpsWalletRef {
+    /** The linked wallet's row id (the relay's :id, and the secretStore key). */
+    walletId: string;
+    /** The same wallet's Privy wallet id, the authorization signature's URL target. */
+    privyWalletId: string;
+    /** Sign and submit (default), or stop after the build and its check and return the build. */
+    submit?: boolean;
+}
+export type PerpsSide = "long" | "short";
+export interface PerpsOpenParams extends PerpsWalletRef {
+    coin: string;
+    side: PerpsSide;
+    /** Size in the coin, a decimal string. */
+    size: string;
+    /** `market` (IOC at the mid moved by the slippage) or `limit`. Default: limit when `price` is set. */
+    type?: "market" | "limit";
+    price?: string;
+    tif?: "Gtc" | "Alo" | "Ioc";
+    slippageBps?: number;
+    /** Optional reduce-only take-profit trigger price. */
+    takeProfit?: string;
+    /** Optional reduce-only stop-loss trigger price. */
+    stopLoss?: string;
+}
+export interface PerpsCloseParams extends PerpsWalletRef {
+    coin: string;
+    /** Part of the position to close; the whole position when omitted. */
+    size?: string;
+    slippageBps?: number;
+}
+export interface PerpsCancelParams extends PerpsWalletRef {
+    /** The cloid of an order Candle built (an open, or one of its take-profit / stop-loss legs). */
+    cloid: string;
+}
+export interface PerpsModifyParams extends PerpsWalletRef {
+    cloid: string;
+    price?: string;
+    size?: string;
+    slippageBps?: number;
+}
+export interface PerpsLeverageParams extends PerpsWalletRef {
+    coin: string;
+    leverage: number;
+    mode?: "cross" | "isolated";
+}
+export interface PerpsMarginParams extends PerpsWalletRef {
+    coin: string;
+    /** USD, up to 6 decimals; negative removes isolated margin. */
+    amount: string;
+}
+/** What a perps build route returns: the plaintext action, its nonce, and the stamped typed data. */
+export interface PerpsBuild {
+    success: true;
+    perpOrderId: string;
+    kind: "open" | "close" | "modify" | "cancel" | "leverage" | "margin" | "setup";
+    network: HyperliquidNetwork;
+    walletId: string;
+    address: string;
+    nonce: number;
+    action: Record<string, unknown>;
+    typedData: HyperliquidTypedData;
+    claimHash: string;
+    cloid?: string;
+    childCloids?: string[];
+    targetCloid?: string;
+    notionalUsdMicros: number | null;
+    reservedUsdMicros: number;
+    windowKey: string | null;
+    builder: {
+        address: string;
+        feeTenthsBps: number;
+    } | null;
+    exchangeUrl: string;
+    preview: Record<string, unknown>;
+}
+/**
+ * The outcome of one perps action. `signature` is present once the relay signed; it stays valid
+ * for resubmission until the nonce leaves Hyperliquid's two-day window, so a failed submit keeps
+ * it. `exchange` is Hyperliquid's own answer, unchanged (`status: "ok"` or `"err"`, and per-order
+ * statuses for an order).
+ */
+export interface PerpsActionResult {
+    build: PerpsBuild;
+    signature: string | null;
+    submitted: boolean;
+    exchange: unknown | null;
+    submitError?: string;
+}
+export interface PerpsAccountStatus {
+    walletId: string;
+    address: string;
+    network: HyperliquidNetwork;
+    mode: string;
+    standardMode: boolean;
+    accountValue: string;
+    withdrawable: string;
+    builder: string;
+    approvedFeeTenthsBps: number;
+}
+/** `ready: true` when the builder approval is already on Hyperliquid; otherwise the setup action's outcome. */
+export type PerpsSetupResult = PerpsAccountStatus & {
+    ready: boolean;
+    action?: PerpsActionResult;
+};
+export interface PerpsConfig {
+    success: true;
+    network: HyperliquidNetwork;
+    exchangeUrl: string;
+    builder: string | null;
+    builderFeeTenthsBps: number;
+    maxBuilderFeeRate: string;
+    allowedActionTypes: string[];
+    limits: Record<string, unknown>;
+}
+export interface PerpsPositions {
+    success: true;
+    walletId: string;
+    address: string;
+    network: HyperliquidNetwork;
+    mode: string;
+    standardMode: boolean;
+    account: Record<string, string>;
+    withdrawable: string;
+    positions: Record<string, unknown>[];
+}
+export interface PerpsOrderRecord {
+    perpOrderId: string;
+    kind: PerpsBuild["kind"];
+    actionType: string;
+    coin: string | null;
+    nonce: number;
+    cloid: string | null;
+    childCloids: string[];
+    targetCloid: string | null;
+    status: string;
+    venueStatus: string | null;
+    filledSz: string | null;
+    notionalUsdMicros: number | null;
+    reservedUsdMicros: number;
+    releasedUsdMicros: number;
+    windowKey: string | null;
+    builtAt: number;
+    settledAt: number | null;
+}
+export interface PerpsOrders {
+    success: true;
+    walletId: string;
+    address: string;
+    network: HyperliquidNetwork;
+    /** Hyperliquid's open orders for the wallet's address. */
+    open: Record<string, unknown>[];
+    /** Candle's record of every action it built for this wallet, newest first. */
+    recorded: PerpsOrderRecord[];
+    settled: {
+        perpOrderId: string;
+        status: string;
+        releasedUsdMicros: number;
+    }[];
+}
 /**
  * The base assets `swap()` converts between. Inlined rather than imported from `@candle/shared`'s
  * `BaseAssetKey`, for the same reason `packages/mcp` inlines its curve constants: this SDK is
@@ -1560,6 +1731,8 @@ export declare class CandleClient {
     private readonly secretStore?;
     private readonly solanaRpcUrl?;
     private readonly evmRpcUrl?;
+    private readonly hyperliquidNetwork;
+    private hyperliquidBuilder?;
     /** Reads scoped to what this key may spend: a one-shot swap's receipt, and spendable balances. */
     readonly wallets: CandleWallets;
     constructor(opts: CandleClientOptions);
@@ -2019,6 +2192,54 @@ export declare class CandleClient {
      * depends on an earlier leg already being mined.
      */
     private signBroadcastAndWaitEvmLeg;
+    /** The server's perps settings: network, Candle's builder, this key's fee, and its limits. */
+    perpsConfig(): Promise<PerpsConfig>;
+    /**
+     * One-time setup (R1): approves Candle's builder fee at 0.1% unless Hyperliquid already shows
+     * it, and reports the account's mode and balance. Idempotent.
+     */
+    perpsSetup(params: PerpsWalletRef): Promise<PerpsSetupResult>;
+    /** Open (or add to) a position: build, check, sign through the relay, submit to Hyperliquid. */
+    perpsOpen(params: PerpsOpenParams): Promise<PerpsActionResult>;
+    /** Close all or part of a position with a reduce-only IOC order. Reserves nothing. */
+    perpsClose(params: PerpsCloseParams): Promise<PerpsActionResult>;
+    /** Cancel an order Candle built, by its cloid. */
+    perpsCancel(params: PerpsCancelParams): Promise<PerpsActionResult>;
+    /** Change a resting order's price or size. The replacement gets a new cloid. */
+    perpsModify(params: PerpsModifyParams): Promise<PerpsActionResult>;
+    /** Set a market's leverage and margin mode on the account, within the key's maxLeverage. */
+    perpsLeverage(params: PerpsLeverageParams): Promise<PerpsActionResult>;
+    /** Add (positive) or remove (negative) isolated margin on an isolated position. */
+    perpsMargin(params: PerpsMarginParams): Promise<PerpsActionResult>;
+    /** Positions and account value, read live from Hyperliquid by the wallet's address. */
+    perpsPositions(walletId: string): Promise<PerpsPositions>;
+    /** Open orders on Hyperliquid, and Candle's record of every action it built, settled first. */
+    perpsOrders(walletId: string, opts?: {
+        limit?: number;
+    }): Promise<PerpsOrders>;
+    /** Fills, read live from Hyperliquid by the wallet's address. */
+    perpsFills(walletId: string): Promise<{
+        success: true;
+        fills: Record<string, unknown>[];
+    }>;
+    /** Funding payments since `startTime` (epoch ms; default the last 7 days). */
+    perpsFunding(walletId: string, startTime?: number): Promise<{
+        success: true;
+        startTime: number;
+        funding: Record<string, unknown>[];
+    }>;
+    /** The builder every perps build is checked against (see `hyperliquidBuilder` in the options). */
+    private perpsBuilder;
+    /**
+     * Check, sign, submit (HL-ED-2, HL-ED-5). The check runs before the relay is called; a build
+     * that fails it is refused with nothing signed.
+     */
+    private perpsComplete;
+    /**
+     * Sign EIP-712 typed data with a linked EVM TEE wallet through the relay
+     * (`eth_signTypedData_v4`). The relay signs only typed data a perps build stamped.
+     */
+    private signLinkedTypedData;
     private requireKey;
     private headers;
     private requestJson;

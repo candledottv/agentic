@@ -39,6 +39,16 @@ import {
   fetchNonce,
   waitForReceipt,
 } from "./evm-tx"
+import {
+  CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
+  HYPERLIQUID_EXCHANGE_URLS,
+  type HyperliquidNetwork,
+  type HyperliquidTypedData,
+  hyperliquidCloseOrder,
+  hyperliquidExchangeBody,
+  hyperliquidRelayBody,
+  verifyPerpsBuild,
+} from "./hyperliquid"
 import { describeRpcEndpoint } from "./internal/rpc-endpoint"
 import type { SecretStore } from "./secret-store"
 import { encryptWalletKeyForImport, type WalletChain } from "./wallet-import"
@@ -99,6 +109,16 @@ export interface CandleClientOptions {
    * is unset, before any signing.
    */
   evmRpcUrl?: string
+  /**
+   * Candle's Hyperliquid builder address, pinned by the caller. Every perps build is checked
+   * against it before signing: an order must name exactly this builder (or none, on a Max order),
+   * and setup must approve exactly it. Unset, the client uses `CANDLE_HYPERLIQUID_BUILDER_ADDRESS`
+   * when this release carries one, and otherwise trusts the builder `GET /agent/perps/config`
+   * reports the first time and holds every later build to that same address.
+   */
+  hyperliquidBuilder?: string
+  /** The Hyperliquid network this client trades on. Default mainnet; a build for another is refused. */
+  hyperliquidNetwork?: HyperliquidNetwork
 }
 
 // ---------------------------------------------------------------------------
@@ -1188,6 +1208,174 @@ export interface SignLinkedTransactionResult {
   encoding: string
 }
 
+// -- Hyperliquid perps (spec 2026-10-01-hyperliquid-perps-tee-design.md) ---------------------
+
+/** The EVM TEE wallet a perps action signs from: its row id and its Privy wallet id. */
+export interface PerpsWalletRef {
+  /** The linked wallet's row id (the relay's :id, and the secretStore key). */
+  walletId: string
+  /** The same wallet's Privy wallet id, the authorization signature's URL target. */
+  privyWalletId: string
+  /** Sign and submit (default), or stop after the build and its check and return the build. */
+  submit?: boolean
+}
+
+export type PerpsSide = "long" | "short"
+
+export interface PerpsOpenParams extends PerpsWalletRef {
+  coin: string
+  side: PerpsSide
+  /** Size in the coin, a decimal string. */
+  size: string
+  /** `market` (IOC at the mid moved by the slippage) or `limit`. Default: limit when `price` is set. */
+  type?: "market" | "limit"
+  price?: string
+  tif?: "Gtc" | "Alo" | "Ioc"
+  slippageBps?: number
+  /** Optional reduce-only take-profit trigger price. */
+  takeProfit?: string
+  /** Optional reduce-only stop-loss trigger price. */
+  stopLoss?: string
+}
+
+export interface PerpsCloseParams extends PerpsWalletRef {
+  coin: string
+  /** Part of the position to close; the whole position when omitted. */
+  size?: string
+  slippageBps?: number
+}
+
+export interface PerpsCancelParams extends PerpsWalletRef {
+  /** The cloid of an order Candle built (an open, or one of its take-profit / stop-loss legs). */
+  cloid: string
+}
+
+export interface PerpsModifyParams extends PerpsWalletRef {
+  cloid: string
+  price?: string
+  size?: string
+  slippageBps?: number
+}
+
+export interface PerpsLeverageParams extends PerpsWalletRef {
+  coin: string
+  leverage: number
+  mode?: "cross" | "isolated"
+}
+
+export interface PerpsMarginParams extends PerpsWalletRef {
+  coin: string
+  /** USD, up to 6 decimals; negative removes isolated margin. */
+  amount: string
+}
+
+/** What a perps build route returns: the plaintext action, its nonce, and the stamped typed data. */
+export interface PerpsBuild {
+  success: true
+  perpOrderId: string
+  kind: "open" | "close" | "modify" | "cancel" | "leverage" | "margin" | "setup"
+  network: HyperliquidNetwork
+  walletId: string
+  address: string
+  nonce: number
+  action: Record<string, unknown>
+  typedData: HyperliquidTypedData
+  claimHash: string
+  cloid?: string
+  childCloids?: string[]
+  targetCloid?: string
+  notionalUsdMicros: number | null
+  reservedUsdMicros: number
+  windowKey: string | null
+  builder: { address: string; feeTenthsBps: number } | null
+  exchangeUrl: string
+  preview: Record<string, unknown>
+}
+
+/**
+ * The outcome of one perps action. `signature` is present once the relay signed; it stays valid
+ * for resubmission until the nonce leaves Hyperliquid's two-day window, so a failed submit keeps
+ * it. `exchange` is Hyperliquid's own answer, unchanged (`status: "ok"` or `"err"`, and per-order
+ * statuses for an order).
+ */
+export interface PerpsActionResult {
+  build: PerpsBuild
+  signature: string | null
+  submitted: boolean
+  exchange: unknown | null
+  submitError?: string
+}
+
+export interface PerpsAccountStatus {
+  walletId: string
+  address: string
+  network: HyperliquidNetwork
+  mode: string
+  standardMode: boolean
+  accountValue: string
+  withdrawable: string
+  builder: string
+  approvedFeeTenthsBps: number
+}
+
+/** `ready: true` when the builder approval is already on Hyperliquid; otherwise the setup action's outcome. */
+export type PerpsSetupResult = PerpsAccountStatus & { ready: boolean; action?: PerpsActionResult }
+
+export interface PerpsConfig {
+  success: true
+  network: HyperliquidNetwork
+  exchangeUrl: string
+  builder: string | null
+  builderFeeTenthsBps: number
+  maxBuilderFeeRate: string
+  allowedActionTypes: string[]
+  limits: Record<string, unknown>
+}
+
+export interface PerpsPositions {
+  success: true
+  walletId: string
+  address: string
+  network: HyperliquidNetwork
+  mode: string
+  standardMode: boolean
+  account: Record<string, string>
+  withdrawable: string
+  positions: Record<string, unknown>[]
+}
+
+export interface PerpsOrderRecord {
+  perpOrderId: string
+  kind: PerpsBuild["kind"]
+  actionType: string
+  coin: string | null
+  nonce: number
+  cloid: string | null
+  childCloids: string[]
+  targetCloid: string | null
+  status: string
+  venueStatus: string | null
+  filledSz: string | null
+  notionalUsdMicros: number | null
+  reservedUsdMicros: number
+  releasedUsdMicros: number
+  windowKey: string | null
+  builtAt: number
+  settledAt: number | null
+}
+
+export interface PerpsOrders {
+  success: true
+  walletId: string
+  address: string
+  network: HyperliquidNetwork
+  /** Hyperliquid's open orders for the wallet's address. */
+  open: Record<string, unknown>[]
+  /** Candle's record of every action it built for this wallet, newest first. */
+  recorded: PerpsOrderRecord[]
+  settled: { perpOrderId: string; status: string; releasedUsdMicros: number }[]
+}
+
 /**
  * The base assets `swap()` converts between. Inlined rather than imported from `@candle/shared`'s
  * `BaseAssetKey`, for the same reason `packages/mcp` inlines its curve constants: this SDK is
@@ -1850,6 +2038,8 @@ export class CandleClient {
   private readonly secretStore?: SecretStore
   private readonly solanaRpcUrl?: string
   private readonly evmRpcUrl?: string
+  private readonly hyperliquidNetwork: HyperliquidNetwork
+  private hyperliquidBuilder?: string
 
   /** Reads scoped to what this key may spend: a one-shot swap's receipt, and spendable balances. */
   readonly wallets: CandleWallets = {
@@ -1887,6 +2077,9 @@ export class CandleClient {
     if (opts.secretStore !== undefined) this.secretStore = opts.secretStore
     if (opts.solanaRpcUrl !== undefined) this.solanaRpcUrl = opts.solanaRpcUrl
     if (opts.evmRpcUrl !== undefined) this.evmRpcUrl = opts.evmRpcUrl
+    this.hyperliquidNetwork = opts.hyperliquidNetwork ?? "mainnet"
+    const builder = opts.hyperliquidBuilder ?? CANDLE_HYPERLIQUID_BUILDER_ADDRESS
+    if (builder) this.hyperliquidBuilder = builder.toLowerCase()
   }
 
   // -- reads ----------------------------------------------------------------
@@ -3008,6 +3201,230 @@ export class CandleClient {
     const txHash = await this.broadcastSignedTransaction("evm", signed.signedTransaction, signed.encoding)
     await waitForReceipt(params.rpc, txHash)
     return txHash
+  }
+
+  // -- Hyperliquid perps (spec 2026-10-01-hyperliquid-perps-tee-design.md) ---
+
+  /** The server's perps settings: network, Candle's builder, this key's fee, and its limits. */
+  async perpsConfig(): Promise<PerpsConfig> {
+    this.requireKey("perpsConfig()")
+    return this.requestJson<PerpsConfig>("GET", "/api/v1/agent/perps/config")
+  }
+
+  /**
+   * One-time setup (R1): approves Candle's builder fee at 0.1% unless Hyperliquid already shows
+   * it, and reports the account's mode and balance. Idempotent.
+   */
+  async perpsSetup(params: PerpsWalletRef): Promise<PerpsSetupResult> {
+    this.requireKey("perpsSetup()")
+    const res = await this.requestJson<PerpsAccountStatus & { ready: boolean } & Partial<PerpsBuild>>(
+      "POST",
+      "/api/v1/agent/perps/setup",
+      { walletId: params.walletId },
+    )
+    const status: PerpsAccountStatus & { ready: boolean } = {
+      walletId: res.walletId as string,
+      address: res.address as string,
+      network: res.network as HyperliquidNetwork,
+      mode: res.mode,
+      standardMode: res.standardMode,
+      accountValue: res.accountValue,
+      withdrawable: res.withdrawable,
+      builder: res.builder as unknown as string,
+      approvedFeeTenthsBps: res.approvedFeeTenthsBps,
+      ready: res.ready,
+    }
+    if (res.ready) return status
+    return { ...status, action: await this.perpsComplete(res as PerpsBuild, params, "setup") }
+  }
+
+  /** Open (or add to) a position: build, check, sign through the relay, submit to Hyperliquid. */
+  async perpsOpen(params: PerpsOpenParams): Promise<PerpsActionResult> {
+    this.requireKey("perpsOpen()")
+    const { walletId, privyWalletId: _p, submit: _s, ...order } = params
+    const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/open", { walletId, ...order })
+    return this.perpsComplete(build, params, "open")
+  }
+
+  /** Close all or part of a position with a reduce-only IOC order. Reserves nothing. */
+  async perpsClose(params: PerpsCloseParams): Promise<PerpsActionResult> {
+    this.requireKey("perpsClose()")
+    const { walletId, privyWalletId: _p, submit: _s, ...close } = params
+    const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/close", { walletId, ...close })
+    return this.perpsComplete(build, params, "close")
+  }
+
+  /** Cancel an order Candle built, by its cloid. */
+  async perpsCancel(params: PerpsCancelParams): Promise<PerpsActionResult> {
+    this.requireKey("perpsCancel()")
+    const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/cancel", {
+      walletId: params.walletId,
+      cloid: params.cloid,
+    })
+    return this.perpsComplete(build, params, "cancel")
+  }
+
+  /** Change a resting order's price or size. The replacement gets a new cloid. */
+  async perpsModify(params: PerpsModifyParams): Promise<PerpsActionResult> {
+    this.requireKey("perpsModify()")
+    const { walletId, privyWalletId: _p, submit: _s, ...modify } = params
+    const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/modify", { walletId, ...modify })
+    return this.perpsComplete(build, params, "modify")
+  }
+
+  /** Set a market's leverage and margin mode on the account, within the key's maxLeverage. */
+  async perpsLeverage(params: PerpsLeverageParams): Promise<PerpsActionResult> {
+    this.requireKey("perpsLeverage()")
+    const { walletId, privyWalletId: _p, submit: _s, ...leverage } = params
+    const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/leverage", { walletId, ...leverage })
+    return this.perpsComplete(build, params, "leverage")
+  }
+
+  /** Add (positive) or remove (negative) isolated margin on an isolated position. */
+  async perpsMargin(params: PerpsMarginParams): Promise<PerpsActionResult> {
+    this.requireKey("perpsMargin()")
+    const build = await this.requestJson<PerpsBuild>("POST", "/api/v1/agent/perps/margin", {
+      walletId: params.walletId,
+      coin: params.coin,
+      amount: params.amount,
+    })
+    return this.perpsComplete(build, params, "margin")
+  }
+
+  /** Positions and account value, read live from Hyperliquid by the wallet's address. */
+  async perpsPositions(walletId: string): Promise<PerpsPositions> {
+    this.requireKey("perpsPositions()")
+    return this.requestJson<PerpsPositions>(
+      "GET",
+      `/api/v1/agent/perps/positions?walletId=${encodeURIComponent(walletId)}`,
+    )
+  }
+
+  /** Open orders on Hyperliquid, and Candle's record of every action it built, settled first. */
+  async perpsOrders(walletId: string, opts: { limit?: number } = {}): Promise<PerpsOrders> {
+    this.requireKey("perpsOrders()")
+    const params = new URLSearchParams({ walletId })
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit))
+    return this.requestJson<PerpsOrders>("GET", `/api/v1/agent/perps/orders?${params}`)
+  }
+
+  /** Fills, read live from Hyperliquid by the wallet's address. */
+  async perpsFills(walletId: string): Promise<{ success: true; fills: Record<string, unknown>[] }> {
+    this.requireKey("perpsFills()")
+    return this.requestJson("GET", `/api/v1/agent/perps/fills?walletId=${encodeURIComponent(walletId)}`)
+  }
+
+  /** Funding payments since `startTime` (epoch ms; default the last 7 days). */
+  async perpsFunding(
+    walletId: string,
+    startTime?: number,
+  ): Promise<{ success: true; startTime: number; funding: Record<string, unknown>[] }> {
+    this.requireKey("perpsFunding()")
+    const params = new URLSearchParams({ walletId })
+    if (startTime !== undefined) params.set("startTime", String(startTime))
+    return this.requestJson("GET", `/api/v1/agent/perps/funding?${params}`)
+  }
+
+  /** The builder every perps build is checked against (see `hyperliquidBuilder` in the options). */
+  private async perpsBuilder(): Promise<string> {
+    if (this.hyperliquidBuilder) return this.hyperliquidBuilder
+    const config = await this.perpsConfig()
+    if (!config.builder) throw new Error("perps: the server reports no Hyperliquid builder address")
+    this.hyperliquidBuilder = config.builder.toLowerCase()
+    return this.hyperliquidBuilder
+  }
+
+  /**
+   * Check, sign, submit (HL-ED-2, HL-ED-5). The check runs before the relay is called; a build
+   * that fails it is refused with nothing signed.
+   */
+  private async perpsComplete(
+    build: PerpsBuild,
+    ref: PerpsWalletRef,
+    method: "setup" | "open" | "close" | "cancel" | "modify" | "leverage" | "margin",
+  ): Promise<PerpsActionResult> {
+    const check = verifyPerpsBuild(build, {
+      builder: await this.perpsBuilder(),
+      network: this.hyperliquidNetwork,
+      intent: { method, params: ref as unknown as Record<string, unknown> },
+    })
+    if (!check.ok) throw new Error(`perps: refused to sign this build: ${check.reason}`)
+    if (method === "close") {
+      const closeOrder = await hyperliquidCloseOrder(
+        this.fetchImpl,
+        this.hyperliquidNetwork,
+        build.address,
+        ref as unknown as Record<string, unknown>,
+      )
+      const closeCheck = verifyPerpsBuild(build, {
+        builder: await this.perpsBuilder(),
+        network: this.hyperliquidNetwork,
+        intent: { method, params: ref as unknown as Record<string, unknown> },
+        closeOrder,
+      })
+      if (!closeCheck.ok) throw new Error(`perps: refused to sign this build: ${closeCheck.reason}`)
+    }
+    if (ref.submit === false) return { build, signature: null, submitted: false, exchange: null }
+    const signature = await this.signLinkedTypedData({
+      linkedWalletId: ref.walletId,
+      privyWalletId: ref.privyWalletId,
+      typedData: build.typedData,
+    })
+    try {
+      const res = await this.fetchImpl(HYPERLIQUID_EXCHANGE_URLS[this.hyperliquidNetwork], {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(hyperliquidExchangeBody(build.action, build.nonce, signature)),
+      })
+      const text = await res.text()
+      if (!res.ok) {
+        return { build, signature, submitted: false, exchange: null, submitError: `HTTP ${res.status}: ${text}` }
+      }
+      return { build, signature, submitted: true, exchange: JSON.parse(text) as unknown }
+    } catch (err) {
+      return {
+        build,
+        signature,
+        submitted: false,
+        exchange: null,
+        submitError: err instanceof Error ? err.message : String(err),
+      }
+    }
+  }
+
+  /**
+   * Sign EIP-712 typed data with a linked EVM TEE wallet through the relay
+   * (`eth_signTypedData_v4`). The relay signs only typed data a perps build stamped.
+   */
+  private async signLinkedTypedData(params: {
+    linkedWalletId: string
+    privyWalletId: string
+    typedData: HyperliquidTypedData
+  }): Promise<string> {
+    if (!this.privyAppId) {
+      throw new Error("perps signing requires privyAppId in CandleClientOptions (the relay's Privy app id)")
+    }
+    if (!this.secretStore) throw new Error("perps signing requires a secretStore in CandleClientOptions")
+    const privateKeyPem = await this.secretStore.get(params.linkedWalletId)
+    if (!privateKeyPem) {
+      throw new Error(`perps: no signer key stored for linked wallet "${params.linkedWalletId}"`)
+    }
+    const body = hyperliquidRelayBody(params.typedData)
+    const authorizationSignature = await buildPrivyAuthorizationSignature({
+      privateKeyPem,
+      privyWalletId: params.privyWalletId,
+      appId: this.privyAppId,
+      body,
+    })
+    const res = await this.requestJson<{ success: true; signature: string }>(
+      "POST",
+      `/api/v1/agent/wallets/${encodeURIComponent(params.linkedWalletId)}/sign`,
+      { authorizationSignature, body },
+    )
+    if (typeof res.signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(res.signature)) {
+      throw new Error("perps: the relay returned no signature")
+    }
+    return res.signature
   }
 
   // -- plumbing -------------------------------------------------------------

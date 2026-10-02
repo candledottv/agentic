@@ -106,6 +106,13 @@ signs up.
 | | `candle_launch_and_seed` | yes | launch and seed with a dev buy in one transaction |
 | | `candle_report_activity` | yes | report agent activity for verification |
 | **What happened?** | `candle_get_operation` | yes | look up a trade or launch by the id its write used |
+| **Perps (Hyperliquid)** | `candle_perps_setup` | yes | approve Candle's builder fee once (needs `perps:write`) |
+| | `candle_perps_open` | yes | open or add to a position, with optional take-profit and stop-loss |
+| | `candle_perps_close` | yes | close all or part of a position, reduce-only |
+| | `candle_perps_cancel` | yes | cancel an order Candle built, by cloid |
+| | `candle_perps_leverage` | yes | set a market's leverage and margin mode |
+| | `candle_perps_orders` | yes | open orders and every action Candle built |
+| | `candle_perps_positions` | yes | positions and account value, read live |
 
 ### A whole job
 

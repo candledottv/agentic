@@ -55,6 +55,22 @@ export type {
   ListWalletsResult,
   MarketState,
   MigrationStatus,
+  PerpsAccountStatus,
+  PerpsActionResult,
+  PerpsBuild,
+  PerpsCancelParams,
+  PerpsCloseParams,
+  PerpsConfig,
+  PerpsLeverageParams,
+  PerpsMarginParams,
+  PerpsModifyParams,
+  PerpsOpenParams,
+  PerpsOrderRecord,
+  PerpsOrders,
+  PerpsPositions,
+  PerpsSetupResult,
+  PerpsSide,
+  PerpsWalletRef,
   PortfolioHoodSection,
   PortfolioHoodTeeWallet,
   PortfolioHoodToken,
@@ -110,6 +126,18 @@ export type {
 export { CandleClient } from "./client"
 export type { BridgeErrorCode, CandleErrorPayload, CandleRoutingDetail, SolanaRpcErrorData } from "./errors"
 export { BRIDGE_ERROR_CODES, CandleApiError, isSolanaRpcErrorData, JsonRpcError } from "./errors"
+export {
+  CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
+  HYPERLIQUID_ALLOWED_ACTION_TYPES,
+  HYPERLIQUID_EXCHANGE_URLS,
+  type HyperliquidNetwork,
+  type HyperliquidTypedData,
+  hyperliquidActionHash,
+  type PerpsBuildCheck,
+  type PerpsBuildToVerify,
+  type VerifyPerpsBuildOptions,
+  verifyPerpsBuild,
+} from "./hyperliquid"
 export { KeychainSecretStore } from "./keychain-secret-store"
 export type { SecretStore } from "./secret-store"
 export { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store"

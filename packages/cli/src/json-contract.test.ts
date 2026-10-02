@@ -220,6 +220,11 @@ const JSON_ANSWERING: { name: string; argv: string[] }[] = [
   { name: "lp add", argv: ["lp", "add"] },
   { name: "lp remove", argv: ["lp", "remove", "Pos1111"] },
   { name: "lp claim", argv: ["lp", "claim"] },
+  // BE-646: the perps writes answer usage without a terminal or a key; the reads need a key first.
+  { name: "perps open", argv: ["perps", "open"] },
+  { name: "perps close", argv: ["perps", "close"] },
+  { name: "perps cancel", argv: ["perps", "cancel"] },
+  { name: "perps leverage", argv: ["perps", "leverage"] },
   { name: "vault status", argv: ["vault", "status"] },
   // BE-274: new surface. Without a terminal it is D7's unlock refusal, exactly as every other
   // command that prompts is.
