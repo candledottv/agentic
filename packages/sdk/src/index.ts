@@ -61,6 +61,9 @@ export type {
   PerpsCancelParams,
   PerpsCloseParams,
   PerpsConfig,
+  PerpsDepositBuild,
+  PerpsDepositParams,
+  PerpsDepositResult,
   PerpsLeverageParams,
   PerpsMarginParams,
   PerpsModifyParams,
@@ -123,7 +126,7 @@ export type {
   TradeSide,
   VerifyResult,
 } from "./client"
-export { CandleClient } from "./client"
+export { CandleClient, perpsDepositProblem } from "./client"
 export type { BridgeErrorCode, CandleErrorPayload, CandleRoutingDetail, SolanaRpcErrorData } from "./errors"
 export { BRIDGE_ERROR_CODES, CandleApiError, isSolanaRpcErrorData, JsonRpcError } from "./errors"
 export {

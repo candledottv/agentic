@@ -43,7 +43,7 @@ import { z } from "zod"
 import { type RequestConfig, resolveConfig } from "./client"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
 import { executeLaunchAndSeed, executeSweep, executeTrade, executionStatus, resolveToken } from "./orchestrate"
-import { executePerps, type PerpsToolName, perpsShapes } from "./perps"
+import { executePerps, executePerpsDeposit, type PerpsToolName, perpsDepositShape, perpsShapes } from "./perps"
 import { noteVersionHeaders } from "./update-notice"
 
 export const TOOL_NAMES = [
@@ -75,6 +75,8 @@ export const TOOL_NAMES = [
   "candle_perps_orders",
   "candle_perps_positions",
   "candle_perps_leverage",
+  // Hyperliquid perps C (BE-647): the Relay deposit (perps.ts).
+  "candle_perps_deposit",
 ] as const
 
 export type ToolName = (typeof TOOL_NAMES)[number]
@@ -116,6 +118,7 @@ type RestToolName = Exclude<
   | "candle_resolve_token"
   | "candle_execution_status"
   | PerpsToolName
+  | "candle_perps_deposit"
 >
 
 export interface BuiltRequest {
@@ -1095,5 +1098,23 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       inputSchema: perpsShapes.candle_perps_leverage,
     },
     perpsTool("candle_perps_leverage"),
+  )
+
+  register(
+    "candle_perps_deposit",
+    {
+      title: "Deposit to Hyperliquid",
+      description:
+        "MOVES REAL FUNDS unless submit is false. Deposit onto the key's Hyperliquid account through Relay: SOL or " +
+        "USDC from its Solana TEE wallet, or ETH or USDG from its Hood TEE wallet, credited as Hyperliquid perps " +
+        "USDC at the key's EVM TEE wallet's own address (Candle resolves it; no recipient is taken). Refused below a " +
+        "floor that covers Hyperliquid's 1 USDC first-deposit charge. No Candle fee. Needs swap:write and a raw cap " +
+        "on the asset, and CANDLE_KEY_SIGNER_PEM_FILE to sign. There is no withdrawal from Hyperliquid yet.",
+      inputSchema: perpsDepositShape,
+    },
+    async (args) => {
+      const result = await executePerpsDeposit(args as Record<string, unknown>, cfg, env, fetch)
+      return { content: [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) }
+    },
   )
 }

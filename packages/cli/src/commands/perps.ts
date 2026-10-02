@@ -1,6 +1,7 @@
 /**
  * Hyperliquid perps B (BE-646, spec 2026-10-01-hyperliquid-perps-tee-design.md, HL-ED-2, HL-ED-11):
- * `candle perps setup | open | close | cancel | orders | positions | leverage`.
+ * `candle perps setup | open | close | cancel | orders | positions | leverage`, and from perps C
+ * (BE-647, HL-ED-8) `deposit`, which pays Relay from the key's Hood or Solana TEE wallet.
  *
  * Perpetuals on Hyperliquid's main perp exchange from the key's EVM TEE wallet. Every write is the
  * same four steps: Candle's server builds the action and stamps a single-use relay claim; this
@@ -16,10 +17,19 @@
  * `CANDLE_HYPERLIQUID_BUILDER_ADDRESS` applies when it carries one, and otherwise the builder the
  * server's `/perps/config` reports. `CANDLE_HYPERLIQUID_NETWORK=testnet` trades testnet.
  */
-import { sign } from "node:crypto"
+import { randomUUID, sign } from "node:crypto"
 import { parseArgs } from "../args"
+import {
+  BRIDGE_ASSETS,
+  type BridgeAsset,
+  bridgeLegKinds,
+  bridgePlanAdmitted,
+  relayHoodLegProblem,
+  relaySolanaDepositProblem,
+} from "../bridge"
 import { apiRequest } from "../client"
 import type { CommandContext } from "../deps"
+import { sameEvmAddress } from "../evm-lite"
 import {
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
   HYPERLIQUID_EXCHANGE_URLS,
@@ -34,16 +44,24 @@ import {
 import { writeUsageFailure } from "../render"
 import {
   completeTradingWallet,
+  decimalAmount,
   describeWallet,
   type Json,
   listTradingWallets,
   matchesName,
+  plannedLegKinds,
+  rawAmount,
+  relaySign,
+  runSequencedLegs,
+  type SequencedBody,
   safeText,
+  sequencedSchema,
   TradingError,
   type TradingWallet,
   tradingKey,
+  tradingPayer,
 } from "../trading"
-import { printTradingResult, tradingFailure } from "./swap"
+import { lazySolanaClient, printTradingResult, tradingFailure, tradingRead } from "./swap"
 
 const PERPS_SCOPE = "perps:write"
 const DEC_RE = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/
@@ -513,6 +531,229 @@ export async function perpsOrders(args: string[], ctx: CommandContext): Promise<
     }
     return 0
   } catch (error) {
+    return tradingFailure(ctx, error)
+  }
+}
+
+// ── deposit (BE-647, HL-ED-8, R2) ────────────────────────────────────────────────────────────
+
+/** Relay's chain and currency for Hyperliquid perps USDC: what every deposit build must name. */
+const HYPERLIQUID_RELAY_CHAIN_ID = 1337
+const HYPERLIQUID_RELAY_USDC = "0x00000000000000000000000000000000"
+const DEPOSIT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/
+const DEPOSIT_USAGE =
+  "Usage: candle perps deposit <amount> <SOL|USDC|ETH|USDG> [--wallet <tee>] [--to <evm tee>] [--id <clientDepositId>] [--slippage-bps <n>] [--rpc-url <url>] [--yes] [--no-submit] | candle perps deposit status <clientDepositId>"
+
+function isDepositAsset(value: string | undefined): value is BridgeAsset {
+  return value !== undefined && Object.hasOwn(BRIDGE_ASSETS, value)
+}
+
+/**
+ * The deposit build, checked against what was asked before anything is signed: the source wallet,
+ * asset and amount; Hyperliquid USDC on chain 1337 at the expected account; no Candle fee; and
+ * Relay's own steps, by the same rules `candle swap` applies to a bridge (`bridge.ts`).
+ */
+function depositBuildProblem(
+  build: Json,
+  expect: { walletId: string; asset: BridgeAsset; amountRaw: string; destination: string },
+): string | null {
+  const destination = (build.destination ?? {}) as Record<string, unknown>
+  if (build.walletId !== expect.walletId) return "the build names another paying wallet"
+  if (build.asset !== expect.asset || build.amountRaw !== expect.amountRaw) return "the build is for another amount"
+  if (destination.chainId !== HYPERLIQUID_RELAY_CHAIN_ID)
+    return `the build lands on chain ${safeText(destination.chainId)}`
+  if (destination.currency !== HYPERLIQUID_RELAY_USDC) return "the build does not deliver Hyperliquid USDC"
+  if (typeof destination.address !== "string" || !sameEvmAddress(destination.address, expect.destination))
+    return `the build lands on ${safeText(destination.address)}, not ${expect.destination}`
+  const fee = (build.fee ?? {}) as Record<string, unknown>
+  if (fee.bps !== 0 || fee.feeRaw !== "0") return "the build carries a Candle fee"
+  return null
+}
+
+async function perpsDepositStatus(ctx: CommandContext, id: string): Promise<number> {
+  const key = await tradingKey(ctx)
+  const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/deposit/${encodeURIComponent(id)}`)
+  if (ctx.json) return printTradingResult(ctx, result)
+  const job = (result.job ?? {}) as Record<string, unknown>
+  const destination = (job.destination ?? {}) as Record<string, unknown>
+  const relay = job.relay as { status?: unknown } | null | undefined
+  ctx.deps.stdout.write(
+    `Deposit ${safeText(id)}: ${safeText(job.status)}${job.signature ? ` (${safeText(job.signature)})` : ""}, ${safeText(job.amountRaw)} raw ${safeText(job.asset)} to ${safeText(destination.address)} on Hyperliquid. Relay: ${relay ? safeText(relay.status) : "not sent yet, or unknown"}.\n`,
+  )
+  return 0
+}
+
+/**
+ * `candle perps deposit`: move USDC onto the key's Hyperliquid account through Relay, from its Hood
+ * or Solana TEE wallet. The asset decides the paying chain. From Hood the account is the paying
+ * wallet's own address; from Solana it is the key's EVM TEE wallet (`--to` names it when the key has
+ * more than one). Needs `swap:write` and a raw cap on the asset. No withdrawal exists yet: what is
+ * deposited stays on Hyperliquid until a later release adds one, and `tee disable` or `tee sweep`
+ * do not reach it.
+ */
+export async function perpsDeposit(args: string[], ctx: CommandContext): Promise<number> {
+  if (args[0] === "status") {
+    if (args.length !== 2 || !DEPOSIT_ID_RE.test(args[1] as string)) return usage(ctx, DEPOSIT_USAGE)
+    try {
+      return await perpsDepositStatus(ctx, args[1] as string)
+    } catch (error) {
+      return tradingFailure(ctx, error)
+    }
+  }
+  const parsed = parseArgs(args, {
+    valueFlags: ["--wallet", "--to", "--id", "--slippage-bps", "--rpc-url"],
+    booleanFlags: ["--yes", "--no-submit"],
+  })
+  if ("error" in parsed) return usage(ctx, parsed.error)
+  const [amount, asset] = parsed.positionals
+  if (parsed.positionals.length !== 2 || !amount || !DEC_RE.test(amount) || !isDepositAsset(asset))
+    return usage(ctx, DEPOSIT_USAGE)
+  const { values } = parsed
+  const id = values["--id"] ?? `deposit-${randomUUID()}`
+  if (!DEPOSIT_ID_RE.test(id)) return usage(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.")
+  const slippageBps = Number(values["--slippage-bps"] ?? "100")
+  if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 1000)
+    return usage(ctx, "--slippage-bps must be a whole number from 1 to 1000.")
+  const origin = BRIDGE_ASSETS[asset].chain
+  try {
+    const key = await tradingKey(ctx)
+    const payer = await tradingPayer(ctx, key, values["--wallet"], "swap:write", origin)
+    if (payer.kind !== "tee")
+      throw new TradingError(
+        "TEE_WALLET_REQUIRED",
+        `A Hyperliquid deposit pays only from this key's ${origin === "hood" ? "Hood" : "Solana"} TEE wallet, and ${safeText(payer.address)} is the embedded wallet. Name the TEE wallet with --wallet. Nothing was built.`,
+      )
+    const wallet = payer.wallet
+    // HL-ED-1: the Hyperliquid account is an EVM TEE wallet's own address.
+    let destination: { id: string; address: string }
+    if (origin === "hood") {
+      if (values["--to"] !== undefined)
+        throw new TradingError(
+          "BRIDGE_DESTINATION_MISSING",
+          "From a Hood TEE wallet the deposit lands on that wallet's own Hyperliquid account; drop --to. Nothing was built.",
+        )
+      destination = { id: wallet.id, address: wallet.address }
+    } else {
+      destination = (await perpsWallet(ctx, key, values["--to"])).row
+    }
+    const amountRaw = rawAmount(amount, BRIDGE_ASSETS[asset].decimals)
+    ctx.deps.stderr.write(`Deposit: ${id}\n`)
+    const build = await perpsRequest(ctx, key, "/api/v1/agent/perps/deposit", {
+      clientDepositId: id,
+      walletId: wallet.id,
+      asset,
+      amountRaw,
+      maxSlippageBps: slippageBps,
+      ...(origin === "solana" ? { perpsWalletId: destination.id } : {}),
+    })
+    // The id already names a deposit this key built: report it, and send nothing again.
+    if (build.job) return printTradingResult(ctx, build)
+    const refused = (problem: string) =>
+      new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem}. Nothing was signed.`)
+    const problem = depositBuildProblem(build, {
+      walletId: wallet.id,
+      asset,
+      amountRaw,
+      destination: destination.address,
+    })
+    if (problem) throw refused(problem)
+
+    let sequenced: SequencedBody | undefined
+    let transaction: string | undefined
+    const hoodOrigin = asset === "ETH" || asset === "USDG" ? asset : undefined
+    if (hoodOrigin) {
+      const parsedLeg = sequencedSchema.safeParse(build)
+      if (!parsedLeg.success) throw refused("Candle did not answer with a sequenced Hood leg")
+      sequenced = parsedLeg.data
+      const plan = plannedLegKinds(sequenced.legKind, sequenced.plannedLegCount, false, "bridgeDeposit")
+      if (!bridgePlanAdmitted(hoodOrigin, plan))
+        throw refused(`the plan is ${sequenced.plannedLegCount} leg(s) starting with ${sequenced.legKind}`)
+      const legProblem = relayHoodLegProblem(sequenced.legKind, sequenced.nextLeg, {
+        origin: hoodOrigin,
+        payer: wallet.address,
+        amountRaw,
+      })
+      if (legProblem) throw refused(legProblem)
+    } else {
+      const txs = Array.isArray(build.transactionsBase64) ? build.transactionsBase64 : []
+      if (txs.length !== 1 || typeof txs[0] !== "string")
+        throw refused(`Candle returned ${txs.length} transactions, not one deposit`)
+      transaction = txs[0]
+      const reader = await lazySolanaClient(ctx, values["--rpc-url"])()
+      const solanaProblem = await tradingRead(ctx, reader, () =>
+        relaySolanaDepositProblem(transaction as string, wallet.address, reader.rpc),
+      )
+      if (solanaProblem) throw refused(solanaProblem)
+    }
+
+    const decimals = Number(build.outDecimals)
+    const minimum = decimalAmount(String(build.minimumOutRaw), decimals)
+    const estimate = decimalAmount(String(build.expectedOutRaw), decimals)
+    const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
+    output.write(
+      `Deposit ${amount} ${asset} from ${safeText(wallet.address)} (${origin === "hood" ? "Hood" : "Solana"} TEE wallet) to Hyperliquid account ${safeText(destination.address)} through Relay.\n`,
+    )
+    output.write(
+      `Relay delivers at least ${minimum} USDC (estimate ${estimate})${build.firstDeposit ? "; Hyperliquid keeps 1 USDC to activate this new account" : ""}. Candle fee: none.\n`,
+    )
+    output.write(
+      "There is no withdrawal from Hyperliquid in this release, and `candle tee disable` or `tee sweep` do not reach it.\n",
+    )
+    if (sequenced)
+      output.write(
+        `Legs, signed one at a time: ${sequenced.plannedLegCount === 2 ? "approval, bridgeDeposit" : "bridgeDeposit"}\n`,
+      )
+    if (parsed.booleans.has("--no-submit"))
+      return printTradingResult(ctx, { ...build, signed: false, submitted: false })
+    if (!parsed.booleans.has("--yes")) {
+      if (!ctx.deps.isTTY.stdin)
+        throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.")
+      if ((await ctx.deps.promptLine("Sign and send? [y/N] ")).trim().toLowerCase() !== "y") {
+        if (sequenced)
+          ctx.deps.stderr.write(
+            `Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}.\n`,
+          )
+        throw new TradingError("CANCELLED", "Nothing was signed.")
+      }
+    }
+    if (typeof build.expiresAt !== "number" || build.expiresAt <= ctx.deps.now())
+      throw new TradingError("QUOTE_EXPIRED", "The deposit build expired before signing. Start again with a new --id.")
+
+    let result: Json
+    if (sequenced && hoodOrigin) {
+      const run = await runSequencedLegs(ctx, key, {
+        wallet,
+        first: sequenced,
+        submitPath: "/api/v1/agent/perps/deposit/submit",
+        submitFields: { clientDepositId: id, depositId: build.depositId as string },
+        unwrap: (answer) => answer,
+        primaryLeg: "bridgeDeposit",
+        allowedLegs: bridgeLegKinds(hoodOrigin),
+        checkLeg: (kind, leg) =>
+          relayHoodLegProblem(kind, leg, { origin: hoodOrigin, payer: wallet.address, amountRaw }) === null,
+        onLanded: async () => {},
+      })
+      result = { ...run.final, landedLegs: run.landed }
+    } else {
+      const signed = await relaySign(ctx, key, wallet, transaction as string)
+      result = await perpsRequest(ctx, key, "/api/v1/agent/perps/deposit/submit", {
+        clientDepositId: id,
+        depositId: build.depositId as string,
+        signedTransactionsBase64: [signed],
+      })
+    }
+    ctx.deps.stderr.write(
+      `Deposit sent; Relay fills it on Hyperliquid. Check it with candle perps deposit status ${id}.\n`,
+    )
+    return printTradingResult(ctx, {
+      ...result,
+      clientDepositId: id,
+      expectedOutRaw: build.expectedOutRaw,
+      minimumOutRaw: build.minimumOutRaw,
+      outDecimals: build.outDecimals,
+    } as Json)
+  } catch (error) {
+    // The id is on stderr above; `candle perps deposit status <id>` reads it before another try.
     return tradingFailure(ctx, error)
   }
 }

@@ -70,6 +70,7 @@ export const MCP_TOOL_NAMES = [
   "candle_perps_orders",
   "candle_perps_positions",
   "candle_perps_leverage",
+  "candle_perps_deposit",
 ] as const
 
 /**

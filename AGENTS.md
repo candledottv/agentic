@@ -81,6 +81,7 @@ anyone signs up for anything.
 | `candle_perps_close` | yes | close all or part of a position, reduce-only |
 | `candle_perps_cancel` | yes | cancel an order Candle built, by cloid |
 | `candle_perps_leverage` | yes | set a market's leverage and margin mode |
+| `candle_perps_deposit` | yes | deposit onto the Hyperliquid account through Relay from the Solana or Hood TEE wallet (needs `swap:write`) |
 | `candle_perps_orders` | yes | open orders and every action Candle built |
 | `candle_perps_positions` | yes | positions and account value, read live |
 

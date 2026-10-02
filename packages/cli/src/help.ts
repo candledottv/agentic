@@ -303,7 +303,8 @@ export const HELP: Record<string, Topic> = {
   },
   perps: {
     group: "Trade",
-    summary: "Hyperliquid perpetuals from your EVM TEE wallet: setup, open, close, cancel, orders, positions, leverage",
+    summary:
+      "Hyperliquid perpetuals from your EVM TEE wallet: setup, deposit, open, close, cancel, orders, positions, leverage",
     description:
       "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Free, Believer and Pro pay a 0.1% builder fee; Max pays none.",
     usage: ["candle perps <subcommand> [flags]"],
@@ -311,6 +312,11 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "setup [--wallet <tee>]",
         description: "Approve Candle's builder fee once; shows the account's mode and balance",
+      },
+      {
+        invocation: "deposit <amount> <SOL|USDC|ETH|USDG> [--wallet <tee>] [--to <evm tee>] | deposit status <id>",
+        description:
+          "Move funds onto the Hyperliquid account through Relay, from the key's Solana or Hood TEE wallet (swap:write); status reads one",
       },
       {
         invocation: "open <coin> <long|short> <size> [--price <px>]",
@@ -328,20 +334,28 @@ export const HELP: Record<string, Topic> = {
     flags: [
       {
         invocation: "--wallet <tee>",
-        description: "The EVM TEE wallet by id, address or unique label (default: the only one)",
+        description:
+          "The EVM TEE wallet by id, address or unique label (default: the only one); for deposit, the paying TEE wallet",
       },
       { invocation: "--tif <Gtc|Alo|Ioc>", description: "open with --price: time in force (default Gtc)" },
       {
         invocation: "--slippage-bps <n>",
-        description: "open at market and close: the bound against the mid (default 100)",
+        description: "open at market and close: the bound against the mid; deposit: Relay's slippage (default 100)",
       },
       { invocation: "--tp <px> / --sl <px>", description: "open: reduce-only take-profit and stop-loss triggers" },
+      {
+        invocation: "--to <evm tee>",
+        description: "deposit from Solana: the EVM TEE wallet whose account receives it",
+      },
+      { invocation: "--id <clientDepositId>", description: "deposit: the idempotency id (default: a new one)" },
+      { invocation: "--rpc-url <url>", description: "deposit from Solana: the RPC the deposit check reads" },
       { invocation: "--no-submit", description: "Build and check only; sign and submit nothing" },
       { invocation: "--sign-only", description: "Build, check and sign through the relay; submit nothing" },
       { invocation: "--yes", description: "Skip the confirmation prompt" },
     ],
     examples: [
       "candle perps setup",
+      "candle perps deposit 25 USDC",
       "candle perps open BTC long 0.01",
       "candle perps open ETH short 0.5 --price 3200 --tp 2900 --sl 3400",
       "candle perps close BTC",

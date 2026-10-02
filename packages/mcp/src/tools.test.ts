@@ -17,6 +17,7 @@ test("all registered tools are listed", () => {
     "candle_launch_token",
     "candle_perps_cancel",
     "candle_perps_close",
+    "candle_perps_deposit",
     "candle_perps_leverage",
     "candle_perps_open",
     "candle_perps_orders",

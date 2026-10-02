@@ -1336,6 +1336,89 @@ export interface PerpsOrders {
     }[];
 }
 /**
+ * Perps C (BE-647, HL-ED-8): `perpsDeposit()`. Relay moves funds from the key's Hood or Solana TEE
+ * wallet onto Hyperliquid perps USDC at the key's EVM TEE wallet's own address. The asset decides
+ * the paying chain: SOL or USDC from the Solana TEE wallet, ETH or USDG from the Hood one. Needs
+ * `swap:write` and a raw cap on the asset. There is no withdrawal yet.
+ */
+export interface PerpsDepositParams {
+    /** Idempotency id, 1 to 128 of `A-Za-z0-9._:-`. Rebuilding under the same id answers its job. */
+    clientDepositId: string;
+    asset: "SOL" | "USDC" | "ETH" | "USDG";
+    /** Raw base units of `asset`, as a decimal string. */
+    amountRaw: string;
+    /** The paying TEE wallet's row id (the relay's :id, and the secretStore key). */
+    walletId: string;
+    /** The paying wallet's Privy wallet id. */
+    privyWalletId: string;
+    /** The Hyperliquid account: the EVM TEE wallet's address. The build is refused if it names another. */
+    account: string;
+    /** From Solana only: the EVM TEE wallet whose Hyperliquid account receives. Omit from Hood. */
+    perpsWalletId?: string;
+    /** Relay slippage, 1 to 1000 bps (default 100). */
+    maxSlippageBps?: number;
+    /** Sign and submit (default), or stop after the build and its check. */
+    submit?: boolean;
+}
+/** What `POST /agent/perps/deposit` builds. A Hood build also carries the first sequenced leg. */
+export interface PerpsDepositBuild {
+    success: true;
+    status: "built";
+    clientDepositId: string;
+    depositId: string;
+    chain: "solana" | "hood";
+    venue: "relay";
+    network: HyperliquidNetwork;
+    asset: PerpsDepositParams["asset"];
+    amountRaw: string;
+    walletId: string;
+    walletAddress: string;
+    destination: {
+        walletId: string;
+        address: string;
+        chainId: number;
+        currency: string;
+    };
+    firstDeposit: boolean;
+    expectedOutRaw: string;
+    minimumOutRaw: string;
+    outDecimals: number;
+    floorUsdcMicros: string;
+    minimumCreditUsdcMicros: string;
+    fee: {
+        bps: number;
+        feeRaw: string;
+    };
+    statusChecks: string[];
+    requestId: string | null;
+    expiresAt: number;
+    /** Solana: the one unsigned deposit. */
+    transactionsBase64?: string[];
+    /** Hood: the sequenced leg protocol's first body. */
+    mode?: "sequenced";
+    operationId?: string;
+    legKind?: string;
+    plannedLegCount?: number;
+    nextLeg?: {
+        chainId: number;
+        nonce: number;
+        gas: string;
+        maxFeePerGas: string;
+        maxPriorityFeePerGas: string;
+        to: string;
+        data: string;
+        value: string;
+    };
+}
+export interface PerpsDepositResult {
+    build: PerpsDepositBuild;
+    submitted: boolean;
+    /** `/perps/deposit/submit`'s final answer: `status: "submitted"` and the chain hashes. */
+    result: Record<string, unknown> | null;
+}
+/** Why a deposit build must not be signed, or null. */
+export declare function perpsDepositProblem(build: PerpsDepositBuild, params: PerpsDepositParams): string | null;
+/**
  * The base assets `swap()` converts between. Inlined rather than imported from `@candle/shared`'s
  * `BaseAssetKey`, for the same reason `packages/mcp` inlines its curve constants: this SDK is
  * published standalone and must not depend on a monorepo-internal package.
@@ -2230,6 +2313,20 @@ export declare class CandleClient {
         success: true;
         startTime: number;
         funding: Record<string, unknown>[];
+    }>;
+    /**
+     * Deposit onto the key's Hyperliquid account through Relay (Perps C, HL-ED-8): build, check the
+     * build names `account` on chain 1337 with no Candle fee, then sign through the relay and submit.
+     * From Solana that is one deposit transaction; from Hood each sequenced leg (approve, then the
+     * deposit) is signed and submitted in turn. The fill is Relay's, after the deposit lands: read it
+     * with `perpsDepositStatus()`. Candle checks Relay's steps before it stamps them; `candle perps
+     * deposit` additionally decodes them on the caller's machine.
+     */
+    perpsDeposit(params: PerpsDepositParams): Promise<PerpsDepositResult>;
+    /** A deposit's job: what was built and submitted, the Hood operation, and Relay's fill status. */
+    perpsDepositStatus(clientDepositId: string): Promise<{
+        success: true;
+        job: Record<string, unknown>;
     }>;
     /** The builder every perps build is checked against (see `hyperliquidBuilder` in the options). */
     private perpsBuilder;

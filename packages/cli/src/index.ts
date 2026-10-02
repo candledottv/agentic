@@ -39,6 +39,7 @@ import { mcp, mcpActsAsIdentity } from "./commands/mcp"
 import {
   perpsCancel,
   perpsClose,
+  perpsDeposit,
   perpsLeverage,
   perpsOpen,
   perpsOrders,
@@ -178,6 +179,7 @@ const COMMANDS: Record<string, CommandRoute> = {
   perps: {
     subcommands: {
       setup: perpsSetup,
+      deposit: perpsDeposit,
       open: perpsOpen,
       close: perpsClose,
       cancel: perpsCancel,

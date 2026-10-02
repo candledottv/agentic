@@ -49881,7 +49881,7 @@ var init_update_notice = __esm(() => {
 });
 
 // ../mcp/src/orchestrate.ts
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { randomUUID as randomUUID6 } from "node:crypto";
 function requireApiKey(cfg) {
   if (!cfg.apiKey) {
     throw new Error("CANDLE_AGENT_API_KEY is required for this tool. Set it in the environment or MCP client config.");
@@ -49993,7 +49993,7 @@ async function readPaperInventory(cfg, doFetch, extra) {
 }
 async function executeTrade(args, cfg, doFetch) {
   const apiKey = requireApiKey(cfg);
-  const clientTradeId = args.clientTradeId ?? randomUUID5();
+  const clientTradeId = args.clientTradeId ?? randomUUID6();
   if (args.amount !== undefined && args.percent !== undefined) {
     return errText("pass exactly one of amount or percent, not both", { clientTradeId });
   }
@@ -50131,7 +50131,7 @@ async function executeTrade(args, cfg, doFetch) {
 }
 async function executeLaunchAndSeed(args, cfg, doFetch) {
   const apiKey = requireApiKey(cfg);
-  const clientLaunchId = args.clientLaunchId ?? randomUUID5();
+  const clientLaunchId = args.clientLaunchId ?? randomUUID6();
   const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...launchFields } = args;
   let buyAmount;
   if (devBuy !== undefined) {
@@ -50860,7 +50860,164 @@ async function executePerps(tool, args, cfg, env, fetch2) {
     return fail3("MCP_TRANSPORT", error instanceof Error ? error.message : "The perps call failed.");
   }
 }
-var decimal3, wallet, submit, perpsShapes, PATHS, Refusal;
+function rawUnits(amount, decimals) {
+  const [whole = "", fraction = ""] = amount.split(".");
+  if (fraction.length > decimals)
+    return null;
+  const raw = BigInt(whole + fraction.padEnd(decimals, "0"));
+  return raw > 0n ? raw.toString() : null;
+}
+function pickWallet(rows, chain2, name2, what) {
+  const onChain = rows.filter((row) => row.chain === chain2);
+  const matches2 = name2 === undefined ? onChain : onChain.filter((row) => row.id === name2 || row.label === name2 || row.address.toLowerCase() === name2.toLowerCase());
+  if (matches2.length !== 1)
+    throw new Refusal(fail3("TEE_WALLET_REQUIRED", onChain.length === 0 ? `This key has no ${what} bound to it.` : `Name exactly one ${what}: ${onChain.map((row) => row.label ?? row.id).join(", ")}`));
+  return matches2[0];
+}
+function depositProblem(build, expect) {
+  const destination = build.destination ?? {};
+  const fee = build.fee ?? {};
+  const same = (a, b) => typeof a === "string" && a.toLowerCase() === b.toLowerCase();
+  if (build.walletId !== expect.walletId)
+    return "the build names another paying wallet";
+  if (build.asset !== expect.asset || build.amountRaw !== expect.amountRaw)
+    return "the build is for another amount";
+  if (destination.chainId !== HYPERLIQUID_RELAY_CHAIN_ID2)
+    return "the build does not land on Hyperliquid";
+  if (destination.currency !== HYPERLIQUID_RELAY_USDC2)
+    return "the build does not deliver Hyperliquid USDC";
+  if (!same(destination.address, expect.account))
+    return "the build lands on another account";
+  if (fee.bps !== 0 || fee.feeRaw !== "0")
+    return "the build carries a Candle fee";
+  if (expect.hood !== (build.chain === "hood"))
+    return "the build pays from the wrong chain";
+  if (!expect.hood && !(Array.isArray(build.transactionsBase64) && build.transactionsBase64.length === 1))
+    return "the build is not one Solana deposit";
+  return null;
+}
+async function executePerpsDeposit(args, cfg, env, fetch2) {
+  if (!cfg.apiKey)
+    return fail3("MCP_VALIDATION", "CANDLE_AGENT_API_KEY is required for this tool.");
+  const asset = args.asset;
+  const spec = DEPOSIT_ASSETS[asset];
+  if (!spec)
+    return fail3("MCP_VALIDATION", "asset must be SOL, USDC, ETH or USDG.");
+  const amountRaw = typeof args.amount === "string" ? rawUnits(args.amount, spec.decimals) : null;
+  if (!amountRaw)
+    return fail3("MCP_VALIDATION", `amount must be a positive ${asset} amount with at most ${spec.decimals} decimals.`);
+  const hood = spec.chain === "evm";
+  const clientDepositId = typeof args.clientDepositId === "string" ? args.clientDepositId : `deposit-${crypto.randomUUID()}`;
+  const willSubmit = args.submit !== false;
+  let signerPem = null;
+  if (willSubmit) {
+    const pemFile = env.CANDLE_KEY_SIGNER_PEM_FILE?.trim();
+    if (!pemFile)
+      return fail3("SIGNER_UNAVAILABLE", "Set CANDLE_KEY_SIGNER_PEM_FILE to the key signer PEM (candle tee signer new --out <pem>) to sign a deposit.");
+    try {
+      signerPem = await readFile9(pemFile, "utf8");
+      createPrivateKey2(signerPem);
+    } catch {
+      return fail3("SIGNER_UNAVAILABLE", "CANDLE_KEY_SIGNER_PEM_FILE does not hold a readable private key PEM.");
+    }
+  }
+  try {
+    const listed = await call(cfg, fetch2, "GET", "/api/v1/agent/wallets/trading");
+    if (!(Array.isArray(listed.scopes) && listed.scopes.includes("swap:write")))
+      throw new Refusal(fail3("SCOPE_MISSING", "A deposit needs swap:write on the key."));
+    const rows = Array.isArray(listed.page) ? listed.page : [];
+    const appId = typeof listed.privyAppId === "string" ? listed.privyAppId : "";
+    const name2 = typeof args.wallet === "string" ? args.wallet : undefined;
+    const source = pickWallet(rows, spec.chain, name2, `${hood ? "Hood" : "Solana"} TEE wallet`);
+    if (hood && args.perpsWallet !== undefined)
+      return fail3("MCP_VALIDATION", "From a Hood TEE wallet the deposit lands on that wallet's own account; omit perpsWallet.");
+    const account = hood ? source : pickWallet(rows, "evm", typeof args.perpsWallet === "string" ? args.perpsWallet : undefined, "EVM TEE wallet");
+    const build = await call(cfg, fetch2, "POST", "/api/v1/agent/perps/deposit", {
+      clientDepositId,
+      walletId: source.id,
+      asset,
+      amountRaw,
+      ...typeof args.maxSlippageBps === "number" ? { maxSlippageBps: args.maxSlippageBps } : {},
+      ...hood ? {} : { perpsWalletId: account.id }
+    });
+    if (build.job !== undefined)
+      return { text: JSON.stringify(build) };
+    const problem = depositProblem(build, { walletId: source.id, asset, amountRaw, account: account.address, hood });
+    if (problem)
+      return fail3("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem}. Nothing was signed.`);
+    if (!willSubmit || signerPem === null)
+      return { text: JSON.stringify({ ...build, signed: false, submitted: false }) };
+    if (!appId || !source.privyWalletId)
+      return fail3("SIGNER_UNAVAILABLE", "The server did not return its relay identifiers.");
+    const pem = signerPem;
+    const relaySign2 = async (body2) => {
+      const payload = hyperliquidCanonicalJson2({
+        body: body2,
+        headers: { "privy-app-id": appId },
+        method: "POST",
+        url: `https://api.privy.io/v1/wallets/${source.privyWalletId}/rpc`,
+        version: 1
+      });
+      const authorizationSignature2 = sign5("sha256", Buffer.from(payload), pem).toString("base64");
+      const relay = await call(cfg, fetch2, "POST", `/api/v1/agent/wallets/${encodeURIComponent(source.id)}/sign`, {
+        authorizationSignature: authorizationSignature2,
+        body: body2
+      });
+      if (typeof relay.signedTransaction !== "string")
+        throw new Refusal(fail3("INVALID_RESPONSE", "The relay did not return a signed transaction."));
+      return relay.signedTransaction;
+    };
+    const ids = { clientDepositId, depositId: build.depositId };
+    const submitPath = "/api/v1/agent/perps/deposit/submit";
+    if (!hood) {
+      const transaction = build.transactionsBase64[0];
+      const signed = await relaySign2({ method: "signTransaction", params: { encoding: "base64", transaction } });
+      return {
+        text: JSON.stringify(await call(cfg, fetch2, "POST", submitPath, { ...ids, signedTransactionsBase64: [signed] }))
+      };
+    }
+    const allowed = asset === "USDG" ? ["approval", "bridgeDeposit"] : ["bridgeDeposit"];
+    const planned = build.plannedLegCount;
+    const hex4 = (value) => `0x${BigInt(String(value)).toString(16)}`;
+    const signedKinds = new Set;
+    let body = build;
+    while (body.mode === "sequenced") {
+      const leg = body.nextLeg;
+      const kind = String(body.legKind);
+      if (!leg || body.operationId !== build.operationId || body.plannedLegCount !== planned || typeof planned !== "number" || planned > allowed.length || !allowed.includes(kind) || signedKinds.has(kind) || leg.chainId !== 4663)
+        return fail3("PERPS_BUILD_REFUSED", `Refused to sign deposit leg ${kind}: it is not the plan this deposit was built with.`, { clientDepositId, operationId: build.operationId });
+      signedKinds.add(kind);
+      const signed = await relaySign2({
+        method: "eth_signTransaction",
+        params: {
+          transaction: {
+            chain_id: leg.chainId,
+            data: leg.data,
+            from: source.address,
+            gas_limit: hex4(leg.gas),
+            max_fee_per_gas: hex4(leg.maxFeePerGas),
+            max_priority_fee_per_gas: hex4(leg.maxPriorityFeePerGas),
+            nonce: leg.nonce,
+            to: leg.to,
+            type: 2,
+            value: hex4(leg.value)
+          }
+        }
+      });
+      body = await call(cfg, fetch2, "POST", submitPath, {
+        ...ids,
+        operationId: build.operationId,
+        signedTransaction: signed
+      });
+    }
+    return { text: JSON.stringify({ ...body, clientDepositId }) };
+  } catch (error) {
+    if (error instanceof Refusal)
+      return error.tool;
+    return fail3("MCP_TRANSPORT", error instanceof Error ? error.message : "The deposit call failed.");
+  }
+}
+var decimal3, wallet, submit, perpsShapes, PATHS, Refusal, HYPERLIQUID_RELAY_CHAIN_ID2 = 1337, HYPERLIQUID_RELAY_USDC2 = "0x00000000000000000000000000000000", DEPOSIT_ASSETS, perpsDepositShape;
 var init_perps = __esm(() => {
   init_zod();
   init_hyperliquid();
@@ -50918,6 +51075,21 @@ var init_perps = __esm(() => {
       super("refused");
       this.tool = tool;
     }
+  };
+  DEPOSIT_ASSETS = {
+    SOL: { chain: "solana", decimals: 9 },
+    USDC: { chain: "solana", decimals: 6 },
+    ETH: { chain: "evm", decimals: 18 },
+    USDG: { chain: "evm", decimals: 6 }
+  };
+  perpsDepositShape = {
+    asset: exports_external.enum(["SOL", "USDC", "ETH", "USDG"]).describe("What to deposit. SOL or USDC pay from the key's Solana TEE wallet; ETH or USDG from its Hood one."),
+    amount: decimal3.describe('Amount of the asset, decimal (e.g. "25")'),
+    wallet: exports_external.string().optional().describe("The paying TEE wallet by id, address or label. Omit when the key has exactly one on that chain."),
+    perpsWallet: exports_external.string().optional().describe("From Solana only: the EVM TEE wallet whose Hyperliquid account receives it. Omit when the key has one."),
+    clientDepositId: exports_external.string().regex(/^[A-Za-z0-9._:-]{1,128}$/).optional().describe("Idempotency id; the same id answers the deposit it already built. Default: a new one."),
+    maxSlippageBps: exports_external.number().int().min(1).max(1000).optional().describe("Relay slippage (default 100)"),
+    submit
   };
 });
 
@@ -51300,6 +51472,14 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     description: "Set a market's leverage and margin mode (cross or isolated) on the account, within the key's maximum leverage." + perpsWrite,
     inputSchema: perpsShapes.candle_perps_leverage
   }, perpsTool("candle_perps_leverage"));
+  register("candle_perps_deposit", {
+    title: "Deposit to Hyperliquid",
+    description: "MOVES REAL FUNDS unless submit is false. Deposit onto the key's Hyperliquid account through Relay: SOL or " + "USDC from its Solana TEE wallet, or ETH or USDG from its Hood TEE wallet, credited as Hyperliquid perps " + "USDC at the key's EVM TEE wallet's own address (Candle resolves it; no recipient is taken). Refused below a " + "floor that covers Hyperliquid's 1 USDC first-deposit charge. No Candle fee. Needs swap:write and a raw cap " + "on the asset, and CANDLE_KEY_SIGNER_PEM_FILE to sign. There is no withdrawal from Hyperliquid yet.",
+    inputSchema: perpsDepositShape
+  }, async (args) => {
+    const result = await executePerpsDeposit(args, cfg, env, fetch);
+    return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
+  });
 }
 var TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, getFeedShape, reportActivityShape, getAgentProfileShape, getOperationShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, launchAndSeedShape, transferShape, sweepShape;
 var init_tools = __esm(() => {
@@ -51335,7 +51515,8 @@ var init_tools = __esm(() => {
     "candle_perps_cancel",
     "candle_perps_orders",
     "candle_perps_positions",
-    "candle_perps_leverage"
+    "candle_perps_leverage",
+    "candle_perps_deposit"
   ];
   launchTokenShape = {
     clientLaunchId: exports_external.string().describe("Caller-chosen idempotency key, unique per account"),
@@ -52126,13 +52307,17 @@ var HELP = {
   },
   perps: {
     group: "Trade",
-    summary: "Hyperliquid perpetuals from your EVM TEE wallet: setup, open, close, cancel, orders, positions, leverage",
+    summary: "Hyperliquid perpetuals from your EVM TEE wallet: setup, deposit, open, close, cancel, orders, positions, leverage",
     description: "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Free, Believer and Pro pay a 0.1% builder fee; Max pays none.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
       {
         invocation: "setup [--wallet <tee>]",
         description: "Approve Candle's builder fee once; shows the account's mode and balance"
+      },
+      {
+        invocation: "deposit <amount> <SOL|USDC|ETH|USDG> [--wallet <tee>] [--to <evm tee>] | deposit status <id>",
+        description: "Move funds onto the Hyperliquid account through Relay, from the key's Solana or Hood TEE wallet (swap:write); status reads one"
       },
       {
         invocation: "open <coin> <long|short> <size> [--price <px>]",
@@ -52150,20 +52335,27 @@ var HELP = {
     flags: [
       {
         invocation: "--wallet <tee>",
-        description: "The EVM TEE wallet by id, address or unique label (default: the only one)"
+        description: "The EVM TEE wallet by id, address or unique label (default: the only one); for deposit, the paying TEE wallet"
       },
       { invocation: "--tif <Gtc|Alo|Ioc>", description: "open with --price: time in force (default Gtc)" },
       {
         invocation: "--slippage-bps <n>",
-        description: "open at market and close: the bound against the mid (default 100)"
+        description: "open at market and close: the bound against the mid; deposit: Relay's slippage (default 100)"
       },
       { invocation: "--tp <px> / --sl <px>", description: "open: reduce-only take-profit and stop-loss triggers" },
+      {
+        invocation: "--to <evm tee>",
+        description: "deposit from Solana: the EVM TEE wallet whose account receives it"
+      },
+      { invocation: "--id <clientDepositId>", description: "deposit: the idempotency id (default: a new one)" },
+      { invocation: "--rpc-url <url>", description: "deposit from Solana: the RPC the deposit check reads" },
       { invocation: "--no-submit", description: "Build and check only; sign and submit nothing" },
       { invocation: "--sign-only", description: "Build, check and sign through the relay; submit nothing" },
       { invocation: "--yes", description: "Skip the confirmation prompt" }
     ],
     examples: [
       "candle perps setup",
+      "candle perps deposit 25 USDC",
       "candle perps open BTC long 0.01",
       "candle perps open ETH short 0.5 --price 3200 --tp 2900 --sl 3400",
       "candle perps close BTC",
@@ -60067,7 +60259,8 @@ var MCP_TOOL_NAMES = [
   "candle_perps_cancel",
   "candle_perps_orders",
   "candle_perps_positions",
-  "candle_perps_leverage"
+  "candle_perps_leverage",
+  "candle_perps_deposit"
 ];
 var READ_ONLY_TOOL_NAMES = [
   "candle_get_market",
@@ -60177,7 +60370,9 @@ async function mcp(args, ctx) {
 
 // src/commands/perps.ts
 init_args();
-import { sign as sign3 } from "node:crypto";
+init_bridge();
+init_evm_lite();
+import { randomUUID as randomUUID4, sign as sign3 } from "node:crypto";
 
 // src/hyperliquid.ts
 init_sha3();
@@ -60991,6 +61186,194 @@ async function perpsOrders(args, ctx) {
 `);
     }
     return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+var HYPERLIQUID_RELAY_CHAIN_ID = 1337;
+var HYPERLIQUID_RELAY_USDC = "0x00000000000000000000000000000000";
+var DEPOSIT_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+var DEPOSIT_USAGE = "Usage: candle perps deposit <amount> <SOL|USDC|ETH|USDG> [--wallet <tee>] [--to <evm tee>] [--id <clientDepositId>] [--slippage-bps <n>] [--rpc-url <url>] [--yes] [--no-submit] | candle perps deposit status <clientDepositId>";
+function isDepositAsset(value) {
+  return value !== undefined && Object.hasOwn(BRIDGE_ASSETS, value);
+}
+function depositBuildProblem(build, expect) {
+  const destination = build.destination ?? {};
+  if (build.walletId !== expect.walletId)
+    return "the build names another paying wallet";
+  if (build.asset !== expect.asset || build.amountRaw !== expect.amountRaw)
+    return "the build is for another amount";
+  if (destination.chainId !== HYPERLIQUID_RELAY_CHAIN_ID)
+    return `the build lands on chain ${safeText(destination.chainId)}`;
+  if (destination.currency !== HYPERLIQUID_RELAY_USDC)
+    return "the build does not deliver Hyperliquid USDC";
+  if (typeof destination.address !== "string" || !sameEvmAddress(destination.address, expect.destination))
+    return `the build lands on ${safeText(destination.address)}, not ${expect.destination}`;
+  const fee = build.fee ?? {};
+  if (fee.bps !== 0 || fee.feeRaw !== "0")
+    return "the build carries a Candle fee";
+  return null;
+}
+async function perpsDepositStatus(ctx, id) {
+  const key = await tradingKey(ctx);
+  const result = await perpsRequest(ctx, key, `/api/v1/agent/perps/deposit/${encodeURIComponent(id)}`);
+  if (ctx.json)
+    return printTradingResult(ctx, result);
+  const job = result.job ?? {};
+  const destination = job.destination ?? {};
+  const relay = job.relay;
+  ctx.deps.stdout.write(`Deposit ${safeText(id)}: ${safeText(job.status)}${job.signature ? ` (${safeText(job.signature)})` : ""}, ${safeText(job.amountRaw)} raw ${safeText(job.asset)} to ${safeText(destination.address)} on Hyperliquid. Relay: ${relay ? safeText(relay.status) : "not sent yet, or unknown"}.
+`);
+  return 0;
+}
+async function perpsDeposit(args, ctx) {
+  if (args[0] === "status") {
+    if (args.length !== 2 || !DEPOSIT_ID_RE.test(args[1]))
+      return usage4(ctx, DEPOSIT_USAGE);
+    try {
+      return await perpsDepositStatus(ctx, args[1]);
+    } catch (error) {
+      return tradingFailure(ctx, error);
+    }
+  }
+  const parsed = parseArgs(args, {
+    valueFlags: ["--wallet", "--to", "--id", "--slippage-bps", "--rpc-url"],
+    booleanFlags: ["--yes", "--no-submit"]
+  });
+  if ("error" in parsed)
+    return usage4(ctx, parsed.error);
+  const [amount, asset] = parsed.positionals;
+  if (parsed.positionals.length !== 2 || !amount || !DEC_RE.test(amount) || !isDepositAsset(asset))
+    return usage4(ctx, DEPOSIT_USAGE);
+  const { values } = parsed;
+  const id = values["--id"] ?? `deposit-${randomUUID4()}`;
+  if (!DEPOSIT_ID_RE.test(id))
+    return usage4(ctx, "--id must be 1 to 128 letters, digits, '.', '_', ':' or '-'.");
+  const slippageBps = Number(values["--slippage-bps"] ?? "100");
+  if (!Number.isInteger(slippageBps) || slippageBps < 1 || slippageBps > 1000)
+    return usage4(ctx, "--slippage-bps must be a whole number from 1 to 1000.");
+  const origin = BRIDGE_ASSETS[asset].chain;
+  try {
+    const key = await tradingKey(ctx);
+    const payer = await tradingPayer(ctx, key, values["--wallet"], "swap:write", origin);
+    if (payer.kind !== "tee")
+      throw new TradingError("TEE_WALLET_REQUIRED", `A Hyperliquid deposit pays only from this key's ${origin === "hood" ? "Hood" : "Solana"} TEE wallet, and ${safeText(payer.address)} is the embedded wallet. Name the TEE wallet with --wallet. Nothing was built.`);
+    const wallet = payer.wallet;
+    let destination;
+    if (origin === "hood") {
+      if (values["--to"] !== undefined)
+        throw new TradingError("BRIDGE_DESTINATION_MISSING", "From a Hood TEE wallet the deposit lands on that wallet's own Hyperliquid account; drop --to. Nothing was built.");
+      destination = { id: wallet.id, address: wallet.address };
+    } else {
+      destination = (await perpsWallet(ctx, key, values["--to"])).row;
+    }
+    const amountRaw = rawAmount(amount, BRIDGE_ASSETS[asset].decimals);
+    ctx.deps.stderr.write(`Deposit: ${id}
+`);
+    const build = await perpsRequest(ctx, key, "/api/v1/agent/perps/deposit", {
+      clientDepositId: id,
+      walletId: wallet.id,
+      asset,
+      amountRaw,
+      maxSlippageBps: slippageBps,
+      ...origin === "solana" ? { perpsWalletId: destination.id } : {}
+    });
+    if (build.job)
+      return printTradingResult(ctx, build);
+    const refused = (problem2) => new TradingError("PERPS_BUILD_REFUSED", `Refused to sign this deposit: ${problem2}. Nothing was signed.`);
+    const problem = depositBuildProblem(build, {
+      walletId: wallet.id,
+      asset,
+      amountRaw,
+      destination: destination.address
+    });
+    if (problem)
+      throw refused(problem);
+    let sequenced;
+    let transaction;
+    const hoodOrigin = asset === "ETH" || asset === "USDG" ? asset : undefined;
+    if (hoodOrigin) {
+      const parsedLeg = sequencedSchema.safeParse(build);
+      if (!parsedLeg.success)
+        throw refused("Candle did not answer with a sequenced Hood leg");
+      sequenced = parsedLeg.data;
+      const plan = plannedLegKinds(sequenced.legKind, sequenced.plannedLegCount, false, "bridgeDeposit");
+      if (!bridgePlanAdmitted(hoodOrigin, plan))
+        throw refused(`the plan is ${sequenced.plannedLegCount} leg(s) starting with ${sequenced.legKind}`);
+      const legProblem = relayHoodLegProblem(sequenced.legKind, sequenced.nextLeg, {
+        origin: hoodOrigin,
+        payer: wallet.address,
+        amountRaw
+      });
+      if (legProblem)
+        throw refused(legProblem);
+    } else {
+      const txs = Array.isArray(build.transactionsBase64) ? build.transactionsBase64 : [];
+      if (txs.length !== 1 || typeof txs[0] !== "string")
+        throw refused(`Candle returned ${txs.length} transactions, not one deposit`);
+      transaction = txs[0];
+      const reader = await lazySolanaClient(ctx, values["--rpc-url"])();
+      const solanaProblem = await tradingRead(ctx, reader, () => relaySolanaDepositProblem(transaction, wallet.address, reader.rpc));
+      if (solanaProblem)
+        throw refused(solanaProblem);
+    }
+    const decimals = Number(build.outDecimals);
+    const minimum = decimalAmount(String(build.minimumOutRaw), decimals);
+    const estimate2 = decimalAmount(String(build.expectedOutRaw), decimals);
+    const output = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
+    output.write(`Deposit ${amount} ${asset} from ${safeText(wallet.address)} (${origin === "hood" ? "Hood" : "Solana"} TEE wallet) to Hyperliquid account ${safeText(destination.address)} through Relay.
+`);
+    output.write(`Relay delivers at least ${minimum} USDC (estimate ${estimate2})${build.firstDeposit ? "; Hyperliquid keeps 1 USDC to activate this new account" : ""}. Candle fee: none.
+`);
+    output.write("There is no withdrawal from Hyperliquid in this release, and `candle tee disable` or `tee sweep` do not reach it.\n");
+    if (sequenced)
+      output.write(`Legs, signed one at a time: ${sequenced.plannedLegCount === 2 ? "approval, bridgeDeposit" : "bridgeDeposit"}
+`);
+    if (parsed.booleans.has("--no-submit"))
+      return printTradingResult(ctx, { ...build, signed: false, submitted: false });
+    if (!parsed.booleans.has("--yes")) {
+      if (!ctx.deps.isTTY.stdin)
+        throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or use --yes.");
+      if ((await ctx.deps.promptLine("Sign and send? [y/N] ")).trim().toLowerCase() !== "y") {
+        if (sequenced)
+          ctx.deps.stderr.write(`Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}.
+`);
+        throw new TradingError("CANCELLED", "Nothing was signed.");
+      }
+    }
+    if (typeof build.expiresAt !== "number" || build.expiresAt <= ctx.deps.now())
+      throw new TradingError("QUOTE_EXPIRED", "The deposit build expired before signing. Start again with a new --id.");
+    let result;
+    if (sequenced && hoodOrigin) {
+      const run2 = await runSequencedLegs(ctx, key, {
+        wallet,
+        first: sequenced,
+        submitPath: "/api/v1/agent/perps/deposit/submit",
+        submitFields: { clientDepositId: id, depositId: build.depositId },
+        unwrap: (answer) => answer,
+        primaryLeg: "bridgeDeposit",
+        allowedLegs: bridgeLegKinds(hoodOrigin),
+        checkLeg: (kind, leg) => relayHoodLegProblem(kind, leg, { origin: hoodOrigin, payer: wallet.address, amountRaw }) === null,
+        onLanded: async () => {}
+      });
+      result = { ...run2.final, landedLegs: run2.landed };
+    } else {
+      const signed = await relaySign(ctx, key, wallet, transaction);
+      result = await perpsRequest(ctx, key, "/api/v1/agent/perps/deposit/submit", {
+        clientDepositId: id,
+        depositId: build.depositId,
+        signedTransactionsBase64: [signed]
+      });
+    }
+    ctx.deps.stderr.write(`Deposit sent; Relay fills it on Hyperliquid. Check it with candle perps deposit status ${id}.
+`);
+    return printTradingResult(ctx, {
+      ...result,
+      clientDepositId: id,
+      expectedOutRaw: build.expectedOutRaw,
+      minimumOutRaw: build.minimumOutRaw,
+      outDecimals: build.outDecimals
+    });
   } catch (error) {
     return tradingFailure(ctx, error);
   }
@@ -71428,7 +71811,7 @@ init_wallets();
 init_args();
 init_render();
 init_trading();
-import { randomUUID as randomUUID4 } from "node:crypto";
+import { randomUUID as randomUUID5 } from "node:crypto";
 var USAGE5 = "Usage: candle wallet close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
@@ -71513,7 +71896,7 @@ async function walletsCloseEmpty(args, ctx) {
     return 2;
   }
   const named = parsed.values["--client-trade-id"];
-  const id = named ?? `close-${randomUUID4()}`;
+  const id = named ?? `close-${randomUUID5()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
     writeUsageFailure(ctx.deps, USAGE5, ctx.json);
     return 2;
@@ -71926,6 +72309,7 @@ var COMMANDS = {
   perps: {
     subcommands: {
       setup: perpsSetup,
+      deposit: perpsDeposit,
       open: perpsOpen,
       close: perpsClose,
       cancel: perpsCancel,

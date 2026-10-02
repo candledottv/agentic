@@ -1380,6 +1380,103 @@ export interface PerpsOrders {
 }
 
 /**
+ * Perps C (BE-647, HL-ED-8): `perpsDeposit()`. Relay moves funds from the key's Hood or Solana TEE
+ * wallet onto Hyperliquid perps USDC at the key's EVM TEE wallet's own address. The asset decides
+ * the paying chain: SOL or USDC from the Solana TEE wallet, ETH or USDG from the Hood one. Needs
+ * `swap:write` and a raw cap on the asset. There is no withdrawal yet.
+ */
+export interface PerpsDepositParams {
+  /** Idempotency id, 1 to 128 of `A-Za-z0-9._:-`. Rebuilding under the same id answers its job. */
+  clientDepositId: string
+  asset: "SOL" | "USDC" | "ETH" | "USDG"
+  /** Raw base units of `asset`, as a decimal string. */
+  amountRaw: string
+  /** The paying TEE wallet's row id (the relay's :id, and the secretStore key). */
+  walletId: string
+  /** The paying wallet's Privy wallet id. */
+  privyWalletId: string
+  /** The Hyperliquid account: the EVM TEE wallet's address. The build is refused if it names another. */
+  account: string
+  /** From Solana only: the EVM TEE wallet whose Hyperliquid account receives. Omit from Hood. */
+  perpsWalletId?: string
+  /** Relay slippage, 1 to 1000 bps (default 100). */
+  maxSlippageBps?: number
+  /** Sign and submit (default), or stop after the build and its check. */
+  submit?: boolean
+}
+
+/** What `POST /agent/perps/deposit` builds. A Hood build also carries the first sequenced leg. */
+export interface PerpsDepositBuild {
+  success: true
+  status: "built"
+  clientDepositId: string
+  depositId: string
+  chain: "solana" | "hood"
+  venue: "relay"
+  network: HyperliquidNetwork
+  asset: PerpsDepositParams["asset"]
+  amountRaw: string
+  walletId: string
+  walletAddress: string
+  destination: { walletId: string; address: string; chainId: number; currency: string }
+  firstDeposit: boolean
+  expectedOutRaw: string
+  minimumOutRaw: string
+  outDecimals: number
+  floorUsdcMicros: string
+  minimumCreditUsdcMicros: string
+  fee: { bps: number; feeRaw: string }
+  statusChecks: string[]
+  requestId: string | null
+  expiresAt: number
+  /** Solana: the one unsigned deposit. */
+  transactionsBase64?: string[]
+  /** Hood: the sequenced leg protocol's first body. */
+  mode?: "sequenced"
+  operationId?: string
+  legKind?: string
+  plannedLegCount?: number
+  nextLeg?: {
+    chainId: number
+    nonce: number
+    gas: string
+    maxFeePerGas: string
+    maxPriorityFeePerGas: string
+    to: string
+    data: string
+    value: string
+  }
+}
+
+export interface PerpsDepositResult {
+  build: PerpsDepositBuild
+  submitted: boolean
+  /** `/perps/deposit/submit`'s final answer: `status: "submitted"` and the chain hashes. */
+  result: Record<string, unknown> | null
+}
+
+/** Relay's chain and currency for Hyperliquid perps USDC. */
+const HYPERLIQUID_RELAY_CHAIN_ID = 1337
+const HYPERLIQUID_RELAY_USDC = "0x00000000000000000000000000000000"
+
+/** Why a deposit build must not be signed, or null. */
+export function perpsDepositProblem(build: PerpsDepositBuild, params: PerpsDepositParams): string | null {
+  const same = (a: unknown, b: string) => typeof a === "string" && a.toLowerCase() === b.toLowerCase()
+  if (build.walletId !== params.walletId) return "the build names another paying wallet"
+  if (build.asset !== params.asset || build.amountRaw !== params.amountRaw) return "the build is for another amount"
+  if (build.destination?.chainId !== HYPERLIQUID_RELAY_CHAIN_ID) return "the build does not land on Hyperliquid"
+  if (build.destination.currency !== HYPERLIQUID_RELAY_USDC) return "the build does not deliver Hyperliquid USDC"
+  if (!same(build.destination.address, params.account)) return "the build lands on another account"
+  if (build.fee?.bps !== 0 || build.fee.feeRaw !== "0") return "the build carries a Candle fee"
+  const hood = params.asset === "ETH" || params.asset === "USDG"
+  if (hood !== (build.chain === "hood")) return "the build pays from the wrong chain"
+  if (hood && !same(build.walletAddress, params.account))
+    return "a Hood deposit lands only on the paying wallet's own account"
+  if (!hood && build.transactionsBase64?.length !== 1) return "the build is not one Solana deposit"
+  return null
+}
+
+/**
  * The base assets `swap()` converts between. Inlined rather than imported from `@candle/shared`'s
  * `BaseAssetKey`, for the same reason `packages/mcp` inlines its curve constants: this SDK is
  * published standalone and must not depend on a monorepo-internal package.
@@ -3326,6 +3423,100 @@ export class CandleClient {
     const params = new URLSearchParams({ walletId })
     if (startTime !== undefined) params.set("startTime", String(startTime))
     return this.requestJson("GET", `/api/v1/agent/perps/funding?${params}`)
+  }
+
+  /**
+   * Deposit onto the key's Hyperliquid account through Relay (Perps C, HL-ED-8): build, check the
+   * build names `account` on chain 1337 with no Candle fee, then sign through the relay and submit.
+   * From Solana that is one deposit transaction; from Hood each sequenced leg (approve, then the
+   * deposit) is signed and submitted in turn. The fill is Relay's, after the deposit lands: read it
+   * with `perpsDepositStatus()`. Candle checks Relay's steps before it stamps them; `candle perps
+   * deposit` additionally decodes them on the caller's machine.
+   */
+  async perpsDeposit(params: PerpsDepositParams): Promise<PerpsDepositResult> {
+    this.requireKey("perpsDeposit()")
+    const build = await this.requestJson<PerpsDepositBuild & { job?: unknown }>("POST", "/api/v1/agent/perps/deposit", {
+      clientDepositId: params.clientDepositId,
+      walletId: params.walletId,
+      asset: params.asset,
+      amountRaw: params.amountRaw,
+      ...(params.perpsWalletId !== undefined ? { perpsWalletId: params.perpsWalletId } : {}),
+      ...(params.maxSlippageBps !== undefined ? { maxSlippageBps: params.maxSlippageBps } : {}),
+    })
+    if (build.job !== undefined)
+      throw new Error(
+        `perpsDeposit(): ${params.clientDepositId} already names a deposit; read it with perpsDepositStatus()`,
+      )
+    const problem = perpsDepositProblem(build, params)
+    if (problem) throw new Error(`perps: refused to sign this deposit: ${problem}`)
+    if (params.submit === false) return { build, submitted: false, result: null }
+    const submitPath = "/api/v1/agent/perps/deposit/submit"
+    const ids = { clientDepositId: params.clientDepositId, depositId: build.depositId }
+
+    if (build.chain === "solana") {
+      const signed = await this.signLinkedTransaction({
+        chain: "solana",
+        linkedWalletId: params.walletId,
+        privyWalletId: params.privyWalletId,
+        unsignedTransactionBase64: (build.transactionsBase64 as string[])[0] as string,
+      })
+      const result = await this.requestJson<Record<string, unknown>>("POST", submitPath, {
+        ...ids,
+        signedTransactionsBase64: [signed.signedTransaction],
+      })
+      return { build, submitted: true, result }
+    }
+
+    const allowed = params.asset === "USDG" ? ["approval", "bridgeDeposit"] : ["bridgeDeposit"]
+    const planned = build.plannedLegCount ?? 0
+    const hex = (value: string) => `0x${BigInt(value).toString(16)}`
+    let body: Record<string, unknown> = build as unknown as Record<string, unknown>
+    const signedKinds = new Set<string>()
+    while (body.mode === "sequenced") {
+      const leg = body.nextLeg as PerpsDepositBuild["nextLeg"]
+      const kind = String(body.legKind)
+      if (
+        !leg ||
+        body.operationId !== build.operationId ||
+        body.plannedLegCount !== planned ||
+        planned > allowed.length ||
+        !allowed.includes(kind) ||
+        signedKinds.has(kind) ||
+        leg.chainId !== 4663
+      ) {
+        throw new Error(`perps: refused to sign deposit leg ${kind}: it is not the plan this deposit was built with`)
+      }
+      signedKinds.add(kind)
+      const signed = await this.signLinkedTransaction({
+        chain: "evm",
+        linkedWalletId: params.walletId,
+        privyWalletId: params.privyWalletId,
+        evmTxParams: {
+          chain_id: leg.chainId,
+          data: leg.data,
+          from: build.walletAddress,
+          gas_limit: hex(leg.gas),
+          max_fee_per_gas: hex(leg.maxFeePerGas),
+          max_priority_fee_per_gas: hex(leg.maxPriorityFeePerGas),
+          nonce: leg.nonce,
+          to: leg.to,
+          type: 2,
+          value: hex(leg.value),
+        },
+      })
+      body = await this.requestJson<Record<string, unknown>>("POST", submitPath, {
+        ...ids,
+        operationId: build.operationId,
+        signedTransaction: signed.signedTransaction,
+      })
+    }
+    return { build, submitted: true, result: body }
+  }
+
+  /** A deposit's job: what was built and submitted, the Hood operation, and Relay's fill status. */
+  async perpsDepositStatus(clientDepositId: string): Promise<{ success: true; job: Record<string, unknown> }> {
+    this.requireKey("perpsDepositStatus()")
+    return this.requestJson("GET", `/api/v1/agent/perps/deposit/${encodeURIComponent(clientDepositId)}`)
   }
 
   /** The builder every perps build is checked against (see `hyperliquidBuilder` in the options). */

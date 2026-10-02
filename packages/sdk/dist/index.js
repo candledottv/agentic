@@ -750,6 +750,31 @@ ${lines.join(`
 }
 
 // src/client.ts
+var HYPERLIQUID_RELAY_CHAIN_ID = 1337;
+var HYPERLIQUID_RELAY_USDC = "0x00000000000000000000000000000000";
+function perpsDepositProblem(build, params) {
+  const same = (a, b) => typeof a === "string" && a.toLowerCase() === b.toLowerCase();
+  if (build.walletId !== params.walletId)
+    return "the build names another paying wallet";
+  if (build.asset !== params.asset || build.amountRaw !== params.amountRaw)
+    return "the build is for another amount";
+  if (build.destination?.chainId !== HYPERLIQUID_RELAY_CHAIN_ID)
+    return "the build does not land on Hyperliquid";
+  if (build.destination.currency !== HYPERLIQUID_RELAY_USDC)
+    return "the build does not deliver Hyperliquid USDC";
+  if (!same(build.destination.address, params.account))
+    return "the build lands on another account";
+  if (build.fee?.bps !== 0 || build.fee.feeRaw !== "0")
+    return "the build carries a Candle fee";
+  const hood = params.asset === "ETH" || params.asset === "USDG";
+  if (hood !== (build.chain === "hood"))
+    return "the build pays from the wrong chain";
+  if (hood && !same(build.walletAddress, params.account))
+    return "a Hood deposit lands only on the paying wallet's own account";
+  if (!hood && build.transactionsBase64?.length !== 1)
+    return "the build is not one Solana deposit";
+  return null;
+}
 var BACKOFF_BASE_MS = 250;
 var BACKOFF_CAP_MS = 8000;
 function retryDelayMs(retry) {
@@ -1522,6 +1547,79 @@ class CandleClient {
       params.set("startTime", String(startTime));
     return this.requestJson("GET", `/api/v1/agent/perps/funding?${params}`);
   }
+  async perpsDeposit(params) {
+    this.requireKey("perpsDeposit()");
+    const build = await this.requestJson("POST", "/api/v1/agent/perps/deposit", {
+      clientDepositId: params.clientDepositId,
+      walletId: params.walletId,
+      asset: params.asset,
+      amountRaw: params.amountRaw,
+      ...params.perpsWalletId !== undefined ? { perpsWalletId: params.perpsWalletId } : {},
+      ...params.maxSlippageBps !== undefined ? { maxSlippageBps: params.maxSlippageBps } : {}
+    });
+    if (build.job !== undefined)
+      throw new Error(`perpsDeposit(): ${params.clientDepositId} already names a deposit; read it with perpsDepositStatus()`);
+    const problem = perpsDepositProblem(build, params);
+    if (problem)
+      throw new Error(`perps: refused to sign this deposit: ${problem}`);
+    if (params.submit === false)
+      return { build, submitted: false, result: null };
+    const submitPath = "/api/v1/agent/perps/deposit/submit";
+    const ids = { clientDepositId: params.clientDepositId, depositId: build.depositId };
+    if (build.chain === "solana") {
+      const signed = await this.signLinkedTransaction({
+        chain: "solana",
+        linkedWalletId: params.walletId,
+        privyWalletId: params.privyWalletId,
+        unsignedTransactionBase64: build.transactionsBase64[0]
+      });
+      const result = await this.requestJson("POST", submitPath, {
+        ...ids,
+        signedTransactionsBase64: [signed.signedTransaction]
+      });
+      return { build, submitted: true, result };
+    }
+    const allowed = params.asset === "USDG" ? ["approval", "bridgeDeposit"] : ["bridgeDeposit"];
+    const planned = build.plannedLegCount ?? 0;
+    const hex = (value) => `0x${BigInt(value).toString(16)}`;
+    let body = build;
+    const signedKinds = new Set;
+    while (body.mode === "sequenced") {
+      const leg = body.nextLeg;
+      const kind = String(body.legKind);
+      if (!leg || body.operationId !== build.operationId || body.plannedLegCount !== planned || planned > allowed.length || !allowed.includes(kind) || signedKinds.has(kind) || leg.chainId !== 4663) {
+        throw new Error(`perps: refused to sign deposit leg ${kind}: it is not the plan this deposit was built with`);
+      }
+      signedKinds.add(kind);
+      const signed = await this.signLinkedTransaction({
+        chain: "evm",
+        linkedWalletId: params.walletId,
+        privyWalletId: params.privyWalletId,
+        evmTxParams: {
+          chain_id: leg.chainId,
+          data: leg.data,
+          from: build.walletAddress,
+          gas_limit: hex(leg.gas),
+          max_fee_per_gas: hex(leg.maxFeePerGas),
+          max_priority_fee_per_gas: hex(leg.maxPriorityFeePerGas),
+          nonce: leg.nonce,
+          to: leg.to,
+          type: 2,
+          value: hex(leg.value)
+        }
+      });
+      body = await this.requestJson("POST", submitPath, {
+        ...ids,
+        operationId: build.operationId,
+        signedTransaction: signed.signedTransaction
+      });
+    }
+    return { build, submitted: true, result: body };
+  }
+  async perpsDepositStatus(clientDepositId) {
+    this.requireKey("perpsDepositStatus()");
+    return this.requestJson("GET", `/api/v1/agent/perps/deposit/${encodeURIComponent(clientDepositId)}`);
+  }
   async perpsBuilder() {
     if (this.hyperliquidBuilder)
       return this.hyperliquidBuilder;
@@ -1970,6 +2068,7 @@ function verifyWebhookSignature(secret, header, body, nowSec, toleranceSec = 300
 export {
   verifyWebhookSignature,
   verifyPerpsBuild,
+  perpsDepositProblem,
   isSolanaRpcErrorData,
   hyperliquidActionHash,
   generateSignerKeypair,
