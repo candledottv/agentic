@@ -1197,6 +1197,12 @@ export interface ExecutedTradeResult {
    * server had already read. Present on the executed response since 2026-09-04.
    */
   route?: TradeRoute
+  /**
+   * Solana `jupiter` venue only: which quoter built the transaction that executed (`jupiter` or `dflow`),
+   * and the Jupiter/DFlow race behind it. Absent on the curve venue, on Hood, and on an idempotent replay.
+   */
+  quoteSource?: "jupiter" | "dflow"
+  race?: { jupiterOutRaw: string; dflowOutRaw?: string; dflowRefusal?: string }
 }
 
 /** POST /api/v1/trade/agent/build response: "built" for a linked payer, "executed" for a main payer (or an idempotent replay of an already-confirmed trade under the same clientTradeId). */
