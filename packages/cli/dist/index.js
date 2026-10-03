@@ -51467,7 +51467,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async (args) => callAndRelay("candle_get_profile_trades", args, cfg));
   register("candle_get_portfolio", {
     title: "Read what the account holds, on Solana and Hood",
-    description: "Balances and prices for the wallets Candle already knows on this account, on both chains: the " + "embedded wallet and every TEE wallet. Solana wallets are in `embedded` and `tee` (SOL as raw " + "`lamports`, tokens as raw `amountRaw` with `decimals`). Hood wallets are in `hood.embedded` and " + "`hood.tee` (ETH as raw `wei`, ERC-20s including USDG), never in the top-level arrays. Every " + "wallet and holding carries `chain`. Prices are in `prices`: a Solana mint under its own " + "address, Hood ETH under `hood:native`, and a Hood token under `hood:<contract lowercased>`, so " + "lowercase the address before looking it up. An unpriced entry is `priceUsd: null`, never zero; " + "a Hood one says why in `unpricedReason` (no-market-row, unusable-price, stale-mark, " + "source-unavailable), and `hood.unpriced` / `hood.unpricedByReason` count them. A Hood token " + "mark older than six hours is not used, so many Hood tokens read unpriced. A wallet whose read " + "failed has null balances, never zero, and is listed in `unavailable` (Solana) or " + "`hood.unavailable`; check `complete` before quoting a total. Vault and external wallets are " + "not included: Candle does not know their addresses (the Candle CLI's `candle portfolio` reads " + "them over your own RPC). Needs a key with the account:read scope; without it the answer is " + "SCOPE_MISSING. A server that predates Hood in the portfolio omits `hood` and `chain`. Reads " + "only; moves nothing.",
+    description: "Balances and prices for the wallets Candle already knows on this account, on both chains: the " + "embedded wallet and every TEE wallet. Solana wallets are in `embedded` and `tee` (SOL as raw " + "`lamports`, tokens as raw `amountRaw` with `decimals`). Hood wallets are in `hood.embedded` and " + "`hood.tee` (ETH as raw `wei`, ERC-20s including USDG), never in the top-level arrays. Every " + "wallet and holding carries `chain`. Prices are in `prices`: a Solana mint under its own " + "address, Hood ETH under `hood:native`, and a Hood token under `hood:<contract lowercased>`, so " + "lowercase the address before looking it up. An unpriced entry is `priceUsd: null`, never zero; " + "a Hood one says why in `unpricedReason` (no-market-row, unusable-price, stale-mark, " + "source-unavailable), and `hood.unpriced` / `hood.unpricedByReason` count them. A Hood token " + "mark older than six hours is not used, so many Hood tokens read unpriced. A wallet whose read " + "failed has null balances, never zero, and is listed in `unavailable` (Solana) or " + "`hood.unavailable`; check `complete` before quoting a total. `walletsComplete` is false only " + "when the wallet list itself was cut off, and is absent on a server that predates it: then " + "`complete: false` may be a cut-off list or a failed read. Vault and external wallets are " + "not included: Candle does not know their addresses (the Candle CLI's `candle portfolio` reads " + "them over your own RPC). Needs a key with the account:read scope; without it the answer is " + "SCOPE_MISSING. A server that predates Hood in the portfolio omits `hood` and `chain`. Reads " + "only; moves nothing.",
     inputSchema: {}
   }, async () => callAndRelay("candle_get_portfolio", {}, cfg));
   register("candle_resolve_token", {
@@ -52543,7 +52543,7 @@ var HELP = {
   portfolio: {
     group: "Account",
     summary: "Every wallet's holdings, prices and value on Solana and Hood (vault read over your own RPCs)",
-    description: "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade. With a filter, only the wallets whose label or address contains it are read and shown, the subtotals and total are for those wallets, and the first line says how many matched.",
+    description: "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade. With a filter, only the wallets whose label or address contains it are read and shown, the subtotals and total are for those wallets, and the first line says how many matched. When Candle listed only part of the account's wallets, the result stays partial even if every wallet shown was read, and no match says so.",
     usage: ["candle portfolio [<filter>] [--chain solana|hood] [--rpc-url <url>] [--evm-rpc-url <url>] [--json]"],
     rows: [
       {
@@ -62766,9 +62766,10 @@ async function portfolio(args, ctx) {
     };
     const unavailable = chains.flatMap((chain2) => unavailableByChain[chain2]);
     const lpUnread = (lpSection?.unreadable ?? []).length;
-    const candleExplained = (answered.unavailable ?? []).length > 0 || (answered.hood?.unavailable ?? []).length > 0 || (answered.lp?.unreadable ?? []).length > 0;
-    const listCutOff = answered.complete === false && !candleExplained;
-    const complete = !listCutOff && unavailable.length === 0 && lpUnread === 0;
+    const listStatus = walletListStatus(answered);
+    const shownUnread = unavailable.length > 0 || lpUnread > 0;
+    const listNote = listStatus === "cut-off" ? "cut-off" : listStatus === "unknown" && !shownUnread ? "unknown" : null;
+    const complete = listNote === null && !shownUnread;
     const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0);
     const unpriced = groups.reduce((sum, g) => sum + g.unpriced, 0);
     const lp = lpSection ? {
@@ -62831,8 +62832,10 @@ async function portfolio(args, ctx) {
       deps.stdout.write(matched.matched === 0 ? `No wallet matches "${terminalText(matched.filter)}". ${matched.wallets} ${matched.wallets === 1 ? "wallet" : "wallets"} on this account and vault; candle portfolio with no filter shows them.
 ` : `${matched.matched} of ${matched.wallets} wallets match "${terminalText(matched.filter)}". Every figure below is for those wallets only.
 `);
-      if (matched.matched === 0)
+      if (matched.matched === 0) {
+        writeListNote(deps.stdout, listNote);
         return complete ? 0 : 3;
+      }
     }
     writeTable(ctx, groups, {
       totalUsd,
@@ -62840,7 +62843,7 @@ async function portfolio(args, ctx) {
       chains,
       byChain,
       unavailableByChain,
-      listCutOff,
+      listNote,
       lp
     });
     return complete ? 0 : 3;
@@ -62879,6 +62882,24 @@ function filterCandle(body, keep) {
       }
     } : {}
   };
+}
+function walletListStatus(answered) {
+  if (typeof answered.walletsComplete === "boolean")
+    return answered.walletsComplete ? "complete" : "cut-off";
+  if (answered.complete !== false)
+    return "complete";
+  const readFailed = (answered.unavailable ?? []).length > 0 || (answered.hood?.unavailable ?? []).length > 0 || (answered.lp?.unreadable ?? []).length > 0;
+  return readFailed ? "unknown" : "cut-off";
+}
+var LIST_CUT_OFF_LINE = `Candle listed only part of this account's wallets. The total is partial.
+`;
+var LIST_UNKNOWN_LINE = `Candle did not say whether it listed every wallet. One it left out would be missing here, so this is not a complete result.
+`;
+function writeListNote(stdout, note) {
+  if (note === "cut-off")
+    stdout.write(LIST_CUT_OFF_LINE);
+  else if (note === "unknown")
+    stdout.write(LIST_UNKNOWN_LINE);
 }
 async function startEvmRead(addresses, rpcUrl, fetchFn) {
   const rpc = createEvmRpc(rpcUrl, fetchFn);
@@ -63190,10 +63211,7 @@ ${renderTable(["GROUP", "WALLET", "POSITION", "POOL", "HOLDINGS", "UNCLAIMED FEE
     deps.stdout.write(`${unavailable} ${unavailable === 1 ? "wallet" : "wallets"} could not be read in full (${unreadByChain.map(([chain2, n]) => `${n} on ${CHAIN_NAMES[chain2]}`).join(", ")}). What was not read is marked "not read" and is not in the total.
 `);
   }
-  if (totals.listCutOff) {
-    deps.stdout.write(`Candle listed only part of this account's wallets. The total is partial.
-`);
-  }
+  writeListNote(deps.stdout, totals.listNote);
   const truncated = groups.flatMap((g) => g.wallets).filter((w) => w.truncated).length;
   if (truncated > 0) {
     deps.stdout.write(`${truncated} Hood ${truncated === 1 ? "wallet holds" : "wallets hold"} more tokens than Candle lists. The rest are not shown and not in the total.

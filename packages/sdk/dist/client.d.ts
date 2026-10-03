@@ -897,8 +897,9 @@ export interface PortfolioHoodSection {
  *
  * `prices` keys a Solana mint by its address, Hood native ETH as `hood:native`, and a Hood token
  * as `hood:<lowercased contract>`, so lowercase a Hood `mint` before the lookup. Read `complete`
- * before quoting a total: it is false when the wallet list was cut off or any wallet's read failed
- * on either chain.
+ * before quoting a total: it is false when the wallet list was cut off, any wallet's read failed
+ * on either chain, or an LP position could not be read. `walletsComplete` is the list on its own.
+ * Absent on a server that predates it, in which case `complete: false` may be either cause.
  *
  * Not typed here: the `lp` section a deployment with LP enabled adds.
  */
@@ -912,6 +913,11 @@ export interface PortfolioResult {
     /** Solana addresses whose read failed. Hood's are in `hood.unavailable`. */
     unavailable: string[];
     complete: boolean;
+    /**
+     * Whether every wallet Candle knows was listed. False only when that list was cut off.
+     * Independent of `complete`. Absent on a server that predates the field.
+     */
+    walletsComplete?: boolean;
 }
 /**
  * One row of a profile's trade history: what was ordered, what actually filled, what it cost,

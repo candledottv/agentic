@@ -373,6 +373,7 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
     expect(d).toContain("hood:<contract lowercased>")
     expect(d).toContain("unpricedReason")
     expect(d).toContain("complete")
+    expect(d).toContain("walletsComplete")
     expect(d).toContain("account:read")
     expect(d).toContain("Vault and external wallets are not included")
   })

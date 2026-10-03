@@ -64,7 +64,10 @@
  * read, so a vault of 168 keys asked for seven sends seven: fewer requests (the public endpoint
  * rate-limits the full read) and a smaller disclosure. TEE and embedded rows come from Candle in
  * one request whatever the filter, and are narrowed after. Every figure is over the matched
- * wallets only, and the output says how many matched.
+ * wallets only, and the output says how many matched. A wallet list Candle had to cut off
+ * (`walletsComplete: false`) stays partial after that narrowing, including when nothing matched.
+ * An older API omits the field and folds the cut-off into `complete` with failed reads, so a
+ * false `complete` next to a failed read is not called complete once the failure is filtered out.
  *
  * `--chain solana|hood` shows one chain and reads nothing for the other. A failed Hood read is
  * partial like a failed Solana one (exit 3), with `unread` naming `eth`, `usdg` or `hood-tokens`,
@@ -73,7 +76,7 @@
  */
 import { parseArgs } from "../args"
 import { apiRequest } from "../client"
-import type { CommandContext } from "../deps"
+import type { CommandContext, Writer } from "../deps"
 import { resolveApiKey } from "../deps"
 import {
   createEvmRpc,
@@ -204,6 +207,11 @@ interface CandlePortfolio {
   prices: Record<string, MintPrice>
   unavailable: string[]
   complete: boolean
+  /**
+   * Whether Candle listed every wallet it knows. Independent of `complete`, which is also false
+   * when a wallet or an LP position could not be read. Absent on an older API.
+   */
+  walletsComplete?: boolean
   /** Present when the API serves LP (BE-323). Absent means no LP section, not "no positions". */
   lp?: {
     positions: CandleLpPosition[]
@@ -637,15 +645,17 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     }
     const unavailable = chains.flatMap((chain) => unavailableByChain[chain])
     const lpUnread = (lpSection?.unreadable ?? []).length
-    // Candle's `complete` also covers a wallet list it had to cut off, which no `unavailable`
-    // entry names: when it is false with nothing else to explain it, the run is partial too.
-    // Read from Candle's whole answer: a wallet the filter left out still explains `complete`.
-    const candleExplained =
-      (answered.unavailable ?? []).length > 0 ||
-      (answered.hood?.unavailable ?? []).length > 0 ||
-      (answered.lp?.unreadable ?? []).length > 0
-    const listCutOff = answered.complete === false && !candleExplained
-    const complete = !listCutOff && unavailable.length === 0 && lpUnread === 0
+    // The list, from Candle's whole answer. A filter can drop the failed read that used to keep
+    // `complete` false, and must not turn a cut-off list into a finished one.
+    const listStatus = walletListStatus(answered)
+    const shownUnread = unavailable.length > 0 || lpUnread > 0
+    // Unknown is an older API: `complete: false` beside a failed read, which may or may not also
+    // be a cut-off. Unfiltered, that failed read is still shown and the footer already says the
+    // result is partial, as a released CLI does. Once the failure is no longer in view, say so
+    // instead of reporting the result complete.
+    const listNote: "cut-off" | "unknown" | null =
+      listStatus === "cut-off" ? "cut-off" : listStatus === "unknown" && !shownUnread ? "unknown" : null
+    const complete = listNote === null && !shownUnread
     const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0)
     const unpriced = groups.reduce((sum, g) => sum + g.unpriced, 0)
     const lp = lpSection
@@ -720,13 +730,17 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
 
     if (matched) {
       // Before the table, so a short table is read as a filtered one. No match is an answer, not
-      // a refusal (`vault list`'s rule): the exit code still says whether the reads were whole.
+      // a refusal (`vault list`'s rule): the exit code still says whether the list and the reads
+      // were whole, and a cut-off list says so on this line too.
       deps.stdout.write(
         matched.matched === 0
           ? `No wallet matches "${terminalText(matched.filter)}". ${matched.wallets} ${matched.wallets === 1 ? "wallet" : "wallets"} on this account and vault; candle portfolio with no filter shows them.\n`
           : `${matched.matched} of ${matched.wallets} wallets match "${terminalText(matched.filter)}". Every figure below is for those wallets only.\n`,
       )
-      if (matched.matched === 0) return complete ? 0 : 3
+      if (matched.matched === 0) {
+        writeListNote(deps.stdout, listNote)
+        return complete ? 0 : 3
+      }
     }
     writeTable(ctx, groups, {
       totalUsd,
@@ -734,7 +748,7 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       chains,
       byChain,
       unavailableByChain,
-      listCutOff,
+      listNote,
       lp,
     })
     return complete ? 0 : 3
@@ -792,6 +806,34 @@ function filterCandle(
         }
       : {}),
   }
+}
+
+/** Whether Candle's wallet list was whole, cut off, or (an older API) impossible to tell. */
+type WalletListStatus = "complete" | "cut-off" | "unknown"
+
+/**
+ * The wallet list, from Candle's whole answer, before a filter drops rows.
+ *
+ * `walletsComplete` is that fact on its own. An older API folds it into `complete` together with
+ * failed reads, so a false `complete` next to a failed read is not proof of either cause.
+ */
+function walletListStatus(answered: CandlePortfolio): WalletListStatus {
+  if (typeof answered.walletsComplete === "boolean") return answered.walletsComplete ? "complete" : "cut-off"
+  if (answered.complete !== false) return "complete"
+  const readFailed =
+    (answered.unavailable ?? []).length > 0 ||
+    (answered.hood?.unavailable ?? []).length > 0 ||
+    (answered.lp?.unreadable ?? []).length > 0
+  return readFailed ? "unknown" : "cut-off"
+}
+
+const LIST_CUT_OFF_LINE = "Candle listed only part of this account's wallets. The total is partial.\n"
+const LIST_UNKNOWN_LINE =
+  "Candle did not say whether it listed every wallet. One it left out would be missing here, so this is not a complete result.\n"
+
+function writeListNote(stdout: Writer, note: "cut-off" | "unknown" | null): void {
+  if (note === "cut-off") stdout.write(LIST_CUT_OFF_LINE)
+  else if (note === "unknown") stdout.write(LIST_UNKNOWN_LINE)
 }
 
 /**
@@ -1068,7 +1110,7 @@ function writeTable(
       Record<Chain, ChainSubtotal & { wallets: number; unpricedByReason?: Partial<Record<HoodUnpricedReason, number>> }>
     >
     unavailableByChain: Record<Chain, string[]>
-    listCutOff: boolean
+    listNote: "cut-off" | "unknown" | null
     lp?: { positions: number; unpriced: number; unreadable: number; valueUsd: number }
   },
 ): void {
@@ -1192,9 +1234,7 @@ function writeTable(
       `${unavailable} ${unavailable === 1 ? "wallet" : "wallets"} could not be read in full (${unreadByChain.map(([chain, n]) => `${n} on ${CHAIN_NAMES[chain]}`).join(", ")}). What was not read is marked "not read" and is not in the total.\n`,
     )
   }
-  if (totals.listCutOff) {
-    deps.stdout.write("Candle listed only part of this account's wallets. The total is partial.\n")
-  }
+  writeListNote(deps.stdout, totals.listNote)
   const truncated = groups.flatMap((g) => g.wallets).filter((w) => w.truncated).length
   if (truncated > 0) {
     deps.stdout.write(

@@ -3132,6 +3132,8 @@ describe("getPortfolio (Ember Phase 4d)", () => {
     },
     unavailable: ["SoLTee1"],
     complete: false,
+    // The list finished. The failed reads are what make `complete` false.
+    walletsComplete: true,
   }
 
   test("GET /api/v1/agent/portfolio with the agent key header, returns the parsed shape", async () => {
@@ -3162,6 +3164,7 @@ describe("getPortfolio (Ember Phase 4d)", () => {
     const result = await client.getPortfolio()
     expect(result.hood).toBeUndefined()
     expect(result.embedded[0]?.chain).toBeUndefined()
+    expect(result.walletsComplete).toBeUndefined()
   })
 
   test("a key without account:read gets SCOPE_MISSING as a typed error, after one call", async () => {

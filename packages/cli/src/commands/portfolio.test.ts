@@ -163,6 +163,12 @@ function harness(opts: {
     unreadable: { position: string; wallet: string; walletId: string }[]
     complete: boolean
   }
+  /** `walletsComplete` on the answer. Default true: the list finished. */
+  walletsComplete?: boolean
+  /** Omit `walletsComplete`, as an API from before the field. */
+  legacyPortfolio?: boolean
+  /** Force Candle's combined `complete`. */
+  candleComplete?: boolean
 }) {
   const stdout = createCapture()
   const stderr = createCapture()
@@ -245,16 +251,19 @@ function harness(opts: {
         )
       }
       const tee = opts.tee ?? []
+      const readsComplete =
+        tee.every((w) => w.lamports !== null && w.tokens !== null) &&
+        (opts.lp?.complete ?? true) &&
+        (opts.hood?.unavailable.length ?? 0) === 0
+      const walletsComplete = opts.walletsComplete ?? true
       return Response.json({
         success: true,
         embedded: [{ address: EMBEDDED, lamports: "2000000000", tokens: [] }],
         tee,
         prices: opts.candlePrices ?? { [SOL]: { priceUsd: 100, source: "jupiter", symbol: "SOL" } },
         unavailable: tee.filter((w) => w.lamports === null || w.tokens === null).map((w) => w.address),
-        complete:
-          tee.every((w) => w.lamports !== null && w.tokens !== null) &&
-          (opts.lp?.complete ?? true) &&
-          (opts.hood?.unavailable.length ?? 0) === 0,
+        complete: opts.candleComplete ?? (walletsComplete && readsComplete),
+        ...(opts.legacyPortfolio ? {} : { walletsComplete }),
         ...(opts.lp ? { lp: opts.lp } : {}),
         ...(opts.hood ? { hood: opts.hood } : {}),
       })
@@ -1249,5 +1258,149 @@ describe("candle portfolio <filter>", () => {
     expect(await run(["portfolio", "p-", "extra"], h.deps)).toBe(2)
     expect(await run(["portfolio", " "], h.deps)).toBe(2)
     expect(h.rpcRequests()).toHaveLength(0)
+  })
+})
+
+/**
+ * BE-767. `walletsComplete` is the wallet list on its own. A filter that drops a failed read must
+ * not turn a cut-off list into `complete: true`. An older API, which omits the field, stays partial
+ * when those two causes cannot be separated.
+ */
+describe("BE-767: a cut-off wallet list stays partial on its own", () => {
+  const CUT_OFF = "Candle listed only part of this account's wallets. The total is partial."
+  const UNKNOWN =
+    "Candle did not say whether it listed every wallet. One it left out would be missing here, so this is not a complete result."
+  const keep = { id: "ok", address: teeAddress(1), label: "keep", active: true, lamports: "1000000000", tokens: [] }
+  const omitFailed = { id: "bad", address: teeAddress(2), label: "omit", active: true, lamports: null, tokens: null }
+  const omitHealthy = {
+    id: "bad",
+    address: teeAddress(2),
+    label: "omit",
+    active: true,
+    lamports: "1000000000",
+    tokens: [],
+  }
+  const lpOnOmit = {
+    positions: [],
+    unreadable: [{ position: "PosUnread111111111111111111111111111111", wallet: teeAddress(2), walletId: "bad" }],
+    complete: false,
+  }
+  const hoodOmit = "0x3333333333333333333333333333333333333333"
+  const hoodBoth = () =>
+    hoodSection({
+      tee: [
+        { id: "hk", address: HOOD_TEE, label: "keep", active: true, chain: "hood", wei: "0", tokens: [] },
+        { id: "ho", address: hoodOmit, label: "omit", active: true, chain: "hood", wei: null, tokens: null },
+      ],
+      unavailable: [hoodOmit],
+    })
+
+  async function portfolio(opts: Parameters<typeof harness>[0], argv: string[]) {
+    const h = harness({ dir: await emptyConfigDir(), ...opts })
+    const code = await run(["portfolio", ...argv], h.deps)
+    return { h, code }
+  }
+
+  test("a cut-off list alone stays partial, including when nothing matches", async () => {
+    const filtered = await portfolio({ tee: [keep], walletsComplete: false }, ["keep", "--json"])
+    expect(filtered.code).toBe(3)
+    expect(JSON.parse(filtered.h.stdout.text).complete).toBe(false)
+
+    const table = await portfolio({ tee: [keep], walletsComplete: false }, ["keep"])
+    expect(table.code).toBe(3)
+    expect(table.h.stdout.text).toContain(CUT_OFF)
+
+    const none = await portfolio({ tee: [keep], walletsComplete: false }, ["nomatch"])
+    expect(none.code).toBe(3)
+    expect(none.h.stdout.text).toContain('No wallet matches "nomatch".')
+    expect(none.h.stdout.text).toContain(CUT_OFF)
+  })
+
+  test("an excluded failure alone, on a finished list, is a complete result", async () => {
+    const wallet = await portfolio({ tee: [keep, omitFailed] }, ["keep", "--json"])
+    expect(wallet.code).toBe(0)
+    const doc = JSON.parse(wallet.h.stdout.text)
+    expect(doc.complete).toBe(true)
+    expect(doc.unavailable).toEqual([])
+
+    const lp = await portfolio({ tee: [keep, omitHealthy], lp: lpOnOmit }, ["keep", "--json"])
+    expect(lp.code).toBe(0)
+    const lpDoc = JSON.parse(lp.h.stdout.text)
+    expect(lpDoc.complete).toBe(true)
+    expect(lpDoc.lp).toEqual({ positions: 0, unpriced: 0, unreadable: 0, valueUsd: 0 })
+
+    const hood = await portfolio({ tee: [keep], candlePrices: HOOD_PRICES, hood: hoodBoth() }, ["keep", "--json"])
+    expect(hood.code).toBe(0)
+    const hoodDoc = JSON.parse(hood.h.stdout.text)
+    expect(hoodDoc.complete).toBe(true)
+    expect(hoodDoc.unavailable).toEqual([])
+  })
+
+  test("a cut-off list and an excluded failure together stay partial", async () => {
+    const wallet = await portfolio({ tee: [keep, omitFailed], walletsComplete: false }, ["keep"])
+    expect(wallet.code).toBe(3)
+    expect(wallet.h.stdout.text).toContain(CUT_OFF)
+    expect(wallet.h.stdout.text).not.toContain("could not be read in full")
+
+    const walletJson = await portfolio({ tee: [keep, omitFailed], walletsComplete: false }, ["keep", "--json"])
+    expect(walletJson.code).toBe(3)
+    const doc = JSON.parse(walletJson.h.stdout.text)
+    expect(doc.complete).toBe(false)
+    expect(doc.unavailable).toEqual([])
+
+    const lp = await portfolio({ tee: [keep, omitHealthy], lp: lpOnOmit, walletsComplete: false }, ["keep", "--json"])
+    expect(lp.code).toBe(3)
+    expect(JSON.parse(lp.h.stdout.text).complete).toBe(false)
+
+    const hood = await portfolio({ tee: [keep], walletsComplete: false, candlePrices: HOOD_PRICES, hood: hoodBoth() }, [
+      "keep",
+    ])
+    expect(hood.code).toBe(3)
+    expect(hood.h.stdout.text).toContain(CUT_OFF)
+  })
+
+  test("an older API that cannot separate the causes does not call the filtered result complete", async () => {
+    const wallet = await portfolio({ tee: [keep, omitFailed], legacyPortfolio: true }, ["keep"])
+    expect(wallet.code).toBe(3)
+    expect(wallet.h.stdout.text).toContain(UNKNOWN)
+    expect(wallet.h.stdout.text).not.toContain(CUT_OFF)
+
+    const walletJson = await portfolio({ tee: [keep, omitFailed], legacyPortfolio: true }, ["keep", "--json"])
+    expect(walletJson.code).toBe(3)
+    expect(JSON.parse(walletJson.h.stdout.text).complete).toBe(false)
+
+    const lp = await portfolio({ tee: [keep, omitHealthy], lp: lpOnOmit, legacyPortfolio: true }, ["keep", "--json"])
+    expect(lp.code).toBe(3)
+    expect(JSON.parse(lp.h.stdout.text).complete).toBe(false)
+
+    const hood = await portfolio({ tee: [keep], legacyPortfolio: true, candlePrices: HOOD_PRICES, hood: hoodBoth() }, [
+      "keep",
+      "--json",
+    ])
+    expect(hood.code).toBe(3)
+    expect(JSON.parse(hood.h.stdout.text).complete).toBe(false)
+
+    const cutoff = await portfolio({ tee: [keep], legacyPortfolio: true, candleComplete: false }, ["nomatch"])
+    expect(cutoff.code).toBe(3)
+    expect(cutoff.h.stdout.text).toContain('No wallet matches "nomatch".')
+    expect(cutoff.h.stdout.text).toContain(CUT_OFF)
+    expect(cutoff.h.stdout.text).not.toContain(UNKNOWN)
+  })
+
+  test("an unfiltered failed read keeps the released footer", async () => {
+    for (const extra of [{}, { legacyPortfolio: true }]) {
+      const shown = await portfolio({ tee: [omitFailed], ...extra }, [])
+      expect(shown.code).toBe(3)
+      expect(shown.h.stdout.text).toContain("could not be read in full")
+      expect(shown.h.stdout.text).not.toContain(CUT_OFF)
+      expect(shown.h.stdout.text).not.toContain("did not say")
+    }
+  })
+
+  test("an unfiltered cut-off list names the cut-off as well as the failed read", async () => {
+    const shown = await portfolio({ tee: [omitFailed], walletsComplete: false }, [])
+    expect(shown.code).toBe(3)
+    expect(shown.h.stdout.text).toContain("could not be read in full")
+    expect(shown.h.stdout.text).toContain(CUT_OFF)
   })
 })

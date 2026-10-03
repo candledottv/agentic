@@ -898,7 +898,9 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "source-unavailable), and `hood.unpriced` / `hood.unpricedByReason` count them. A Hood token " +
         "mark older than six hours is not used, so many Hood tokens read unpriced. A wallet whose read " +
         "failed has null balances, never zero, and is listed in `unavailable` (Solana) or " +
-        "`hood.unavailable`; check `complete` before quoting a total. Vault and external wallets are " +
+        "`hood.unavailable`; check `complete` before quoting a total. `walletsComplete` is false only " +
+        "when the wallet list itself was cut off, and is absent on a server that predates it: then " +
+        "`complete: false` may be a cut-off list or a failed read. Vault and external wallets are " +
         "not included: Candle does not know their addresses (the Candle CLI's `candle portfolio` reads " +
         "them over your own RPC). Needs a key with the account:read scope; without it the answer is " +
         "SCOPE_MISSING. A server that predates Hood in the portfolio omits `hood` and `chain`. Reads " +
