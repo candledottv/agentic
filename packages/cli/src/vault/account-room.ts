@@ -18,7 +18,7 @@ import { type CommandContext, resolveApiKey } from "../deps"
 import { VaultError } from "./errors"
 
 export interface AccountRoom {
-  /** The live tier the import route checks: `pro`, `max`, `free`, `believer`. */
+  /** The live tier the import route checks: `pro`, `max` or `free` (`believer` from a server before the three plans). */
   tier: string
   active: number
   /** The enforced cap for Pro and Max (env override included), 0 for any other tier. */
@@ -82,7 +82,7 @@ function batchSuggestion(tier: string, room: number): string {
   return `${revokeOrUpgrade(tier)} ${IRREVERSIBLE}`
 }
 
-/** `TIER_REQUIRED` for an account whose enforced cap is 0 (Free or Believer). */
+/** `TIER_REQUIRED` for an account whose enforced cap is 0 (Free, or Believer before the three plans). */
 function tierRefusal(room: AccountRoom): VaultError {
   return new VaultError(
     "TIER_REQUIRED",

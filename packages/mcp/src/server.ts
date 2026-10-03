@@ -41,12 +41,13 @@ import { SERVER_VERSION } from "./version"
  */
 const INSTRUCTIONS = `Candle is a trading and token-launch rail for agents. You hold a scoped API key, never a private key; signing and funding stay with the key owner's wallet.
 
-START HERE — five tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
+START HERE — six tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
   candle_get_market       price, market cap, volume, curve state for one token
   candle_get_feed         the roster: hot streak, new pairs, graduated, blue chip
   candle_resolve_token    a ticker or partial name -> mint address + chain
   candle_token_forensics  call this before quoting or buying. Returns the on-chain developer (never a launchpad shared authority; deployer.attribution names the launchpad or issuer when no developer is on chain), their went-to-zero rate and last coins, who bought in the deploy window (strangers in the same slot are the bundle signal), same-funder insider share, same-funder cluster, and safety.summary with six sourced flags. Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning
   candle_get_agent_profile  your own tier, caps and verified activity
+  candle_get_plans        every plan's price, fees, limits and what it can do; quote these, never from memory
 
 COVERAGE — read this before you treat an error as a broken server.
 candle_get_feed indexes the wider market (pump.fun, pons.family and other external launchpads).

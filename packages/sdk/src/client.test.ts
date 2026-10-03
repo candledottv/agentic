@@ -357,6 +357,55 @@ describe("request shapes", () => {
     expect(calls[0]).toEqual({ url: "https://api.test/api/v1/agent/tier", method: "GET", headers: {} })
   })
 
+  test("getAgentTier: carries the plan table and a promo lapse source", async () => {
+    const plans = {
+      plans: [
+        {
+          plan: "free" as const,
+          feeBps: 100,
+          perpFeeBps: 10,
+          price: null,
+          limits: { rateLimitPerMin: 30, dailyLaunchCap: 5, uploadsPerMin: 10, linkedWallets: 0 },
+        },
+      ],
+      promoMaxDays: 0,
+    }
+    const payload: AgentTierInfo = {
+      success: true,
+      tier: "free",
+      liveTier: "free",
+      stakedCndl: 0,
+      heldCndl: 0,
+      thresholds: { minStakedCndl: 500_000, minHeldCndl: 1_000_000, graceMs: 0 },
+      grace: { active: false, startedAt: null, endsAt: null },
+      maxTierExpiresAt: null,
+      maxExpired: true,
+      maxExpiredAt: 1,
+      maxExpiredSource: "promo",
+      feeBps: 100,
+      feeTotals: [],
+      maxPricing: { pricePerMonthUsd: 200, currency: "USDC", approval: "self_serve" },
+      proPricing: { pricePerMonthUsd: 50, currency: "USDC", approval: "self_serve" },
+      planTable: plans,
+    }
+    const { client } = makeClient(KEYED, [json(200, payload)])
+    expect((await client.getAgentTier()).planTable).toEqual(plans)
+  })
+
+  test("getPlans: GET /api/v1/agent/plans with no credential, returns the table whole", async () => {
+    const body = { success: true as const, plans: [], promoMaxDays: 30 }
+    const { client, calls } = makeClient({}, [json(200, body)])
+    expect(await client.getPlans()).toEqual(body)
+    expect(calls[0]).toEqual({ url: "https://api.test/api/v1/agent/plans", method: "GET", headers: {} })
+  })
+
+  test("getPlans: an older server's 404 is a CandleApiError", async () => {
+    const { client } = makeClient({}, [
+      json(404, { success: false, error: { code: "NOT_FOUND", message: "Not found" } }),
+    ])
+    await expect(client.getPlans()).rejects.toBeInstanceOf(CandleApiError)
+  })
+
   test("listWallets: GET /api/v1/agent/wallets with the agent key header, no query param by default", async () => {
     const body: ListWalletsResult = {
       success: true,

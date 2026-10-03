@@ -225,7 +225,7 @@ export const HELP: Record<string, Topic> = {
     group: "Start here",
     summary: "Diagnose CLI setup: credentials, storage backend, API reachability, security key helper",
     description:
-      "One PASS/FAIL/SKIP table over the runtime, the storage backend, both credentials, API reachability, wallet delegation, the install method and whether the security key helper (candle-fido2) is beside the binary. Its output is meant to be pasted into a bug report. Exits nonzero on any FAIL.",
+      "One PASS/FAIL/SKIP table over the runtime, the storage backend, both credentials, API reachability, wallet delegation, the install method, the account's plan and its trade fee, and whether the security key helper (candle-fido2) is beside the binary. Its output is meant to be pasted into a bug report. Exits nonzero on any FAIL.",
     usage: ["candle doctor [--role owner|bot|auto]"],
     rows: [],
     examples: ["candle doctor", "candle doctor --json"],
@@ -236,7 +236,7 @@ export const HELP: Record<string, Topic> = {
     group: "Trade",
     summary: "Quote, confirm and swap on Solana or Hood, bridge between them; read an operation by id",
     description:
-      "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, the key needs a raw cap on the origin asset, and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault.",
+      "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, the key needs a raw cap on the origin asset, and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault. Every plan can trade Candle-launched tokens and base assets, and sell a token it holds that was not launched on Candle; buying such a token needs Pro or Max (TIER_REQUIRED otherwise). Each trade pays the plan's agent fee on top; a base-pair swap or a bridge between this key's own wallets pays none. candle plans shows the fees in force.",
     usage: ["candle swap <from> <to> [flags]", "candle swap status <id>"],
     rows: [
       {
@@ -306,7 +306,7 @@ export const HELP: Record<string, Topic> = {
     summary:
       "Hyperliquid perpetuals from your EVM TEE wallet: setup, deposit, open, close, cancel, orders, positions, leverage",
     description:
-      "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Free, Believer and Pro pay a 0.1% builder fee; Max pays none.",
+      "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay, and the account's P&L (candle pnl) carries a Hyperliquid section.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
       {
@@ -403,7 +403,7 @@ export const HELP: Record<string, Topic> = {
     group: "Trade",
     summary: "Create a token on Solana or Hood (the first buy is a separate swap)",
     description:
-      "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and an operator-enabled allowLaunch. The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed.",
+      "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and an operator-enabled allowLaunch. The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans).",
     usage: [
       "candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee> [--quote-asset <asset>] [--dex-version v3|v4]",
     ],
@@ -463,6 +463,16 @@ export const HELP: Record<string, Topic> = {
     rows: [],
     examples: ["candle pnl", "candle pnl --profile scalper --json"],
     env: ENV_API,
+  },
+  plans: {
+    group: "Account",
+    summary: "The plans this API serves: prices, fees, limits and what each can do",
+    description:
+      "The plan table in force on the API this profile points at (GET /api/v1/agent/plans): each plan's monthly price, the agent trade fee, the Hyperliquid perps builder fee, the limits a new key gets, and one row per capability (buying and selling tokens not launched on Candle, self-launch, atomic launch, linked wallets, perps, limit orders). Every number is the server's; the CLI bundles none. Needs no key and sends none. Which plan this account is on is candle doctor's Plan row.",
+    usage: ["candle plans [--json]"],
+    rows: [],
+    examples: ["candle plans", "candle plans --json", "candle plans --api-url https://staging.api.candle.tv"],
+    env: ["CANDLE_API_URL"],
   },
   keys: {
     group: "Account",

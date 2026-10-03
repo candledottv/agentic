@@ -42842,20 +42842,20 @@ var require_resolve = __commonJS((exports) => {
     return false;
   }
   function countKeys(schema) {
-    let count = 0;
+    let count2 = 0;
     for (const key in schema) {
       if (key === "$ref")
         return Infinity;
-      count++;
+      count2++;
       if (SIMPLE_INLINED.has(key))
         continue;
       if (typeof schema[key] == "object") {
-        (0, util_1.eachItem)(schema[key], (sch) => count += countKeys(sch));
+        (0, util_1.eachItem)(schema[key], (sch) => count2 += countKeys(sch));
       }
-      if (count === Infinity)
+      if (count2 === Infinity)
         return Infinity;
     }
-    return count;
+    return count2;
   }
   function getFullPath(resolver, id = "", normalize4) {
     if (normalize4 !== false)
@@ -45910,8 +45910,8 @@ var require_contains = __commonJS((exports) => {
       cxt.result(valid, () => cxt.reset());
       function validateItemsWithCount() {
         const schValid = gen2.name("_valid");
-        const count = gen2.let("count", 0);
-        validateItems(schValid, () => gen2.if(schValid, () => checkLimits(count)));
+        const count2 = gen2.let("count", 0);
+        validateItems(schValid, () => gen2.if(schValid, () => checkLimits(count2)));
       }
       function validateItems(_valid, block2) {
         gen2.forRange("i", 0, len, (i) => {
@@ -45924,16 +45924,16 @@ var require_contains = __commonJS((exports) => {
           block2();
         });
       }
-      function checkLimits(count) {
-        gen2.code((0, codegen_1._)`${count}++`);
+      function checkLimits(count2) {
+        gen2.code((0, codegen_1._)`${count2}++`);
         if (max === undefined) {
-          gen2.if((0, codegen_1._)`${count} >= ${min}`, () => gen2.assign(valid, true).break());
+          gen2.if((0, codegen_1._)`${count2} >= ${min}`, () => gen2.assign(valid, true).break());
         } else {
-          gen2.if((0, codegen_1._)`${count} > ${max}`, () => gen2.assign(valid, false).break());
+          gen2.if((0, codegen_1._)`${count2} > ${max}`, () => gen2.assign(valid, false).break());
           if (min === 1)
             gen2.assign(valid, true);
           else
-            gen2.if((0, codegen_1._)`${count} >= ${min}`, () => gen2.assign(valid, true));
+            gen2.if((0, codegen_1._)`${count2} >= ${min}`, () => gen2.assign(valid, true));
         }
       }
     }
@@ -51093,6 +51093,82 @@ var init_perps = __esm(() => {
   };
 });
 
+// ../mcp/src/plans.ts
+function planLabel2(plan) {
+  return Object.hasOwn(PLAN_LABELS2, plan) ? PLAN_LABELS2[plan] : plan;
+}
+function formatPlanBps2(bps) {
+  return bps === 0 ? "none" : `${Number((bps / 100).toFixed(4))}%`;
+}
+function count2(n) {
+  return n.toLocaleString("en-US");
+}
+function priceCell2(entry) {
+  if (entry.price)
+    return `$${count2(entry.price.pricePerMonthUsd)} a month`;
+  return entry.plan === "free" ? "free" : "not sold";
+}
+function planTableRows2(table) {
+  const plans2 = table.plans;
+  const row = (label, cell) => [label, ...plans2.map(cell)];
+  const rows = [
+    row("Price", priceCell2),
+    row("Agent trade fee", (e) => formatPlanBps2(e.feeBps)),
+    row("Perps builder fee", (e) => formatPlanBps2(e.perpFeeBps)),
+    row("Requests per minute", (e) => count2(e.limits.rateLimitPerMin)),
+    row("Launches per day", (e) => count2(e.limits.dailyLaunchCap)),
+    row("Uploads per minute", (e) => count2(e.limits.uploadsPerMin)),
+    row("Linked wallets", (e) => count2(e.limits.linkedWallets))
+  ];
+  const known = Object.keys(PLAN_CAPABILITY_LABELS2);
+  const served = new Set;
+  for (const entry of plans2)
+    for (const key of Object.keys(entry.capabilities ?? {}))
+      served.add(key);
+  const keys = [
+    ...known.filter((k) => served.has(k)),
+    ...[...served].filter((k) => !Object.hasOwn(PLAN_CAPABILITY_LABELS2, k))
+  ];
+  for (const key of keys) {
+    const label = Object.hasOwn(PLAN_CAPABILITY_LABELS2, key) ? PLAN_CAPABILITY_LABELS2[key] : key;
+    rows.push(row(label, (e) => {
+      const value = e.capabilities?.[key];
+      return value === true ? "yes" : value === false ? "no" : "-";
+    }));
+  }
+  return { headers: ["", ...plans2.map((e) => planLabel2(e.plan))], rows };
+}
+function planPromotionLine2(table) {
+  if (!(table.promoMaxDays > 0))
+    return null;
+  const days = table.promoMaxDays === 1 ? "1 day" : `${table.promoMaxDays} days`;
+  return `A first Pro purchase includes Max for its first ${days}, then continues on Pro.`;
+}
+function planTableMarkdown(table) {
+  const { headers: headers2, rows } = planTableRows2(table);
+  const line = (cells) => `| ${cells.map((c) => c.replace(/\|/g, "\\|")).join(" | ")} |`;
+  return [line(headers2), line(headers2.map(() => "---")), ...rows.map(line)].join(`
+`);
+}
+var PLAN_CAPABILITY_NOTE2 = "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs.", PLAN_CAPABILITY_LABELS2, PLAN_LABELS2;
+var init_plans = __esm(() => {
+  PLAN_CAPABILITY_LABELS2 = {
+    tradeCandleTokens: "Trade Candle-launched tokens",
+    tradeBaseAssets: "Trade base assets",
+    freeBaseTransfers: "Base-pair swaps and own-wallet bridges (when enabled), no Candle fee",
+    sellExternalTokens: "Sell tokens not launched on Candle",
+    buyExternalTokens: "Buy tokens not launched on Candle",
+    hyperliquidPerps: "Hyperliquid perps (when enabled)",
+    selfLaunch: "Self-launch from a linked wallet",
+    atomicLaunch: "Atomic launch with first buys",
+    createLinkedWallets: "Create linked wallets",
+    importLinkedWallets: "Import linked wallets",
+    limitOrders: "Limit orders",
+    quant: "Quant on Telegram"
+  };
+  PLAN_LABELS2 = { free: "Free", believer: "Believer", pro: "Pro", max: "Max" };
+});
+
 // ../mcp/src/tools.ts
 function resolveToolAllowlist(env) {
   const raw = env.CANDLE_MCP_TOOLS?.trim();
@@ -51191,6 +51267,9 @@ function buildRequest(name2, args, cfg) {
         init: { method: "GET", headers: jsonHeaders() }
       };
     }
+    case "candle_get_plans": {
+      return { url: `${base2}/api/v1/agent/plans`, init: { method: "GET", headers: jsonHeaders() } };
+    }
     case "candle_swap": {
       const apiKey = requireApiKey2(cfg);
       return {
@@ -51260,6 +51339,22 @@ function buildRequest(name2, args, cfg) {
     }
   }
 }
+function plansMarkdown(body) {
+  try {
+    const table = JSON.parse(body);
+    if (!Array.isArray(table.plans))
+      return "";
+    const promotion = planPromotionLine2(table);
+    const markdown = `${planTableMarkdown(table)}
+
+${PLAN_CAPABILITY_NOTE2}`;
+    return promotion ? `${markdown}
+
+${promotion}` : markdown;
+  } catch {
+    return "";
+  }
+}
 async function callAndRelay(name2, args, cfg) {
   const { url, init } = buildRequest(name2, args, cfg);
   const res = await fetch(url, init);
@@ -51314,6 +51409,24 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     description: "Read a Candle user's public agent profile: whether agent features are enabled and launch counts.",
     inputSchema: getAgentProfileShape
   }, async (args) => callAndRelay("candle_get_agent_profile", args, cfg));
+  register("candle_get_plans", {
+    title: "Plans: prices, fees, limits and what each can do",
+    description: "The plan table this Candle deployment serves (GET /api/v1/agent/plans). No key needed. Reads only. For " + "each plan: price (null when not sold), feeBps (the agent fee charged on top of every trade or dev buy the " + "API builds), perpFeeBps (the Hyperliquid builder fee), limits for a new key (requests per minute, launches " + "per day, uploads per minute, linked wallets) and capabilities: buyExternalTokens, sellExternalTokens, " + "tradeBaseAssets, tradeCandleTokens, selfLaunch, atomicLaunch, createLinkedWallets, importLinkedWallets, " + "hyperliquidPerps, limitOrders, quant, freeBaseTransfers. promoMaxDays is the days of Max a first Pro " + "purchase includes (0: no promotion). Quote prices and fees from here, never from memory: they differ by " + "deployment and change at the three-plan launch (Free, Pro, Max). The account's own plan and fee are in " + "candle_execution_status's tier. A TIER_REQUIRED refusal names a capability this table shows the account's " + "plan lacks. A capability true here is plan eligibility, not deployment availability: perps and own-wallet bridges " + "are each behind a deployment switch and need their wallet, scopes and setup. Returns the server's JSON, then the same table as Markdown.",
+    inputSchema: {}
+  }, async () => {
+    const { url, init } = buildRequest("candle_get_plans", {}, cfg);
+    const res = await fetch(url, init);
+    noteVersionHeaders(res);
+    const text = await res.text();
+    if (!res.ok)
+      return { content: [{ type: "text", text }], isError: true };
+    return {
+      content: [
+        { type: "text", text },
+        { type: "text", text: plansMarkdown(text) }
+      ]
+    };
+  });
   register("candle_get_operation", {
     title: "What happened to a write",
     description: "Look up a trade or launch by the id its write used, and find out whether it landed. " + `Reads only; moves nothing.
@@ -51414,6 +51527,8 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 
 ` + "Arguments: `mint` and `side` are required. Amounts are DECIMAL, never raw base units " + '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' + `position.
 
+` + "Plans: every plan can buy and sell Candle-launched tokens and base assets, and SELL a token it holds that " + "Candle did not launch. BUYING such a token needs Pro or Max (TIER_REQUIRED otherwise). Each trade pays the " + `plan's agent fee on top (feeBps in candle_get_plans).
+
 ` + "Pass `paper: true` to rehearse: every admission rule runs and the quote is recorded, but " + "nothing broadcasts and no funds move. A paper buy credits this key's paper inventory, " + "including for external Solana mints routed through Jupiter. A later sell by amount or " + "percent closes that book without reading the live wallet and without MARKET_NOT_FOUND " + "-- including when `paper` is omitted on the exit, as long as the paper position exists. " + "Do this before the first live trade of a new strategy, and whenever you are unsure a " + `trade would be admitted at all.
 
 ` + `After the call:
@@ -51444,7 +51559,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, perpsTool("candle_perps_setup"));
   register("candle_perps_open", {
     title: "Open a perps position",
-    description: "Open or add to a perpetual position on Hyperliquid's main perp exchange: a market order (IOC within " + "slippageBps of the mid) without `price`, a limit order with it, and optional reduce-only takeProfit and " + "stopLoss triggers. Free, Believer and Pro pay a 0.1% builder fee; Max pays none." + perpsWrite,
+    description: "Open or add to a perpetual position on Hyperliquid's main perp exchange: a market order (IOC within " + "slippageBps of the mid) without `price`, a limit order with it, and optional reduce-only takeProfit and " + "stopLoss triggers. Every plan except Max pays Candle a builder fee on each order (0.1% today; perpFeeBps in " + "candle_get_plans); Max pays none." + perpsWrite,
     inputSchema: perpsShapes.candle_perps_open
   }, perpsTool("candle_perps_open"));
   register("candle_perps_close", {
@@ -51487,6 +51602,7 @@ var init_tools = __esm(() => {
   init_convert();
   init_orchestrate();
   init_perps();
+  init_plans();
   init_update_notice();
   TOOL_NAMES = [
     "candle_launch_token",
@@ -51495,6 +51611,7 @@ var init_tools = __esm(() => {
     "candle_token_forensics",
     "candle_report_activity",
     "candle_get_agent_profile",
+    "candle_get_plans",
     "candle_trade",
     "candle_launch_and_seed",
     "candle_swap",
@@ -51592,7 +51709,7 @@ var init_tools = __esm(() => {
     side: exports_external.enum(["buy", "sell"]),
     amount: exports_external.string().optional().describe("Decimal amount. Buys: how much of THIS TOKEN'S OWN quote asset to spend (SOL for a " + 'SOL-launched token, USDC for a USDC-quoted one, and so on: e.g. "0.5"). Sells: how many ' + "TOKENS to sell. Pass exactly one of amount or percent."),
     percent: exports_external.number().optional().describe("Sells only: sell this percent (integer 1-100) of the holding. Live trades size against the " + "embedded wallet. Paper trades (`paper: true`) size against this key's paper inventory -- " + "the position a previous paper buy credited -- because paper never moves the live wallet."),
-    quoteAsset: exports_external.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' + "to an arbitrary mint Candle never launched (Pro/Max) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
+    quoteAsset: exports_external.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' + "to an arbitrary mint Candle never launched (a buy needs Pro or Max; a sell works on any plan) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
     maxSlippageBps: exports_external.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
     clientTradeId: exports_external.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade."),
     paper: exports_external.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, exports_external.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost. " + "A sell of a mint this key already paper-bought also closes that paper book when the " + "live wallet is empty, even if this flag is omitted."))
@@ -51642,12 +51759,13 @@ async function runStdioServer(env = process.env, transport = new StdioServerTran
 }
 var INSTRUCTIONS = `Candle is a trading and token-launch rail for agents. You hold a scoped API key, never a private key; signing and funding stay with the key owner's wallet.
 
-START HERE — five tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
+START HERE — six tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
   candle_get_market       price, market cap, volume, curve state for one token
   candle_get_feed         the roster: hot streak, new pairs, graduated, blue chip
   candle_resolve_token    a ticker or partial name -> mint address + chain
   candle_token_forensics  call this before quoting or buying. Returns the on-chain developer (never a launchpad shared authority; deployer.attribution names the launchpad or issuer when no developer is on chain), their went-to-zero rate and last coins, who bought in the deploy window (strangers in the same slot are the bundle signal), same-funder insider share, same-funder cluster, and safety.summary with six sourced flags. Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning
   candle_get_agent_profile  your own tier, caps and verified activity
+  candle_get_plans        every plan's price, fees, limits and what it can do; quote these, never from memory
 
 COVERAGE — read this before you treat an error as a broken server.
 candle_get_feed indexes the wider market (pump.fun, pons.family and other external launchpads).
@@ -52232,7 +52350,7 @@ var HELP = {
   doctor: {
     group: "Start here",
     summary: "Diagnose CLI setup: credentials, storage backend, API reachability, security key helper",
-    description: "One PASS/FAIL/SKIP table over the runtime, the storage backend, both credentials, API reachability, wallet delegation, the install method and whether the security key helper (candle-fido2) is beside the binary. Its output is meant to be pasted into a bug report. Exits nonzero on any FAIL.",
+    description: "One PASS/FAIL/SKIP table over the runtime, the storage backend, both credentials, API reachability, wallet delegation, the install method, the account's plan and its trade fee, and whether the security key helper (candle-fido2) is beside the binary. Its output is meant to be pasted into a bug report. Exits nonzero on any FAIL.",
     usage: ["candle doctor [--role owner|bot|auto]"],
     rows: [],
     examples: ["candle doctor", "candle doctor --json"],
@@ -52241,7 +52359,7 @@ var HELP = {
   swap: {
     group: "Trade",
     summary: "Quote, confirm and swap on Solana or Hood, bridge between them; read an operation by id",
-    description: "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, the key needs a raw cap on the origin asset, and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault.",
+    description: "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, the key needs a raw cap on the origin asset, and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault. Every plan can trade Candle-launched tokens and base assets, and sell a token it holds that was not launched on Candle; buying such a token needs Pro or Max (TIER_REQUIRED otherwise). Each trade pays the plan's agent fee on top; a base-pair swap or a bridge between this key's own wallets pays none. candle plans shows the fees in force.",
     usage: ["candle swap <from> <to> [flags]", "candle swap status <id>"],
     rows: [
       {
@@ -52308,7 +52426,7 @@ var HELP = {
   perps: {
     group: "Trade",
     summary: "Hyperliquid perpetuals from your EVM TEE wallet: setup, deposit, open, close, cancel, orders, positions, leverage",
-    description: "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Free, Believer and Pro pay a 0.1% builder fee; Max pays none.",
+    description: "Trade perpetuals on Hyperliquid's main perp exchange from the EVM TEE wallet bound to this key (scope perps:write, opt-in). Candle builds each action within the key's limits; this machine recomputes its hash and checks the action type and Candle's builder before anything is signed, then Candle's relay signs and this machine submits to Hyperliquid. Every plan is eligible for perps, once the deployment has perps enabled. Every plan except Max pays Candle a builder fee on each order (0.1% today); Max pays none. candle plans shows the rate in force. Deposits move SOL, USDC, ETH or USDG onto the Hyperliquid account through Relay, and the account's P&L (candle pnl) carries a Hyperliquid section.",
     usage: ["candle perps <subcommand> [flags]"],
     rows: [
       {
@@ -52400,7 +52518,7 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood (the first buy is a separate swap)",
-    description: "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and an operator-enabled allowLaunch. The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed.",
+    description: "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and an operator-enabled allowLaunch. The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans).",
     usage: [
       "candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee> [--quote-asset <asset>] [--dex-version v3|v4]"
     ],
@@ -52455,6 +52573,15 @@ var HELP = {
     rows: [],
     examples: ["candle pnl", "candle pnl --profile scalper --json"],
     env: ENV_API
+  },
+  plans: {
+    group: "Account",
+    summary: "The plans this API serves: prices, fees, limits and what each can do",
+    description: "The plan table in force on the API this profile points at (GET /api/v1/agent/plans): each plan's monthly price, the agent trade fee, the Hyperliquid perps builder fee, the limits a new key gets, and one row per capability (buying and selling tokens not launched on Candle, self-launch, atomic launch, linked wallets, perps, limit orders). Every number is the server's; the CLI bundles none. Needs no key and sends none. Which plan this account is on is candle doctor's Plan row.",
+    usage: ["candle plans [--json]"],
+    rows: [],
+    examples: ["candle plans", "candle plans --json", "candle plans --api-url https://staging.api.candle.tv"],
+    env: ["CANDLE_API_URL"]
   },
   keys: {
     group: "Account",
@@ -60239,6 +60366,7 @@ var MCP_TOOL_NAMES = [
   "candle_get_feed",
   "candle_token_forensics",
   "candle_get_agent_profile",
+  "candle_get_plans",
   "candle_report_activity",
   "candle_trade",
   "candle_swap",
@@ -60267,7 +60395,8 @@ var READ_ONLY_TOOL_NAMES = [
   "candle_get_feed",
   "candle_token_forensics",
   "candle_get_agent_profile",
-  "candle_resolve_token"
+  "candle_resolve_token",
+  "candle_get_plans"
 ];
 var CREDENTIAL_ENV_NAMES = [
   "CANDLE_API_KEY",
@@ -61379,6 +61508,130 @@ async function perpsDeposit(args, ctx) {
   }
 }
 
+// src/commands/plans.ts
+init_args();
+
+// src/plans.ts
+var PLAN_CAPABILITY_NOTE = "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs.";
+var PLAN_CAPABILITY_LABELS = {
+  tradeCandleTokens: "Trade Candle-launched tokens",
+  tradeBaseAssets: "Trade base assets",
+  freeBaseTransfers: "Base-pair swaps and own-wallet bridges (when enabled), no Candle fee",
+  sellExternalTokens: "Sell tokens not launched on Candle",
+  buyExternalTokens: "Buy tokens not launched on Candle",
+  hyperliquidPerps: "Hyperliquid perps (when enabled)",
+  selfLaunch: "Self-launch from a linked wallet",
+  atomicLaunch: "Atomic launch with first buys",
+  createLinkedWallets: "Create linked wallets",
+  importLinkedWallets: "Import linked wallets",
+  limitOrders: "Limit orders",
+  quant: "Quant on Telegram"
+};
+var PLAN_LABELS = { free: "Free", believer: "Believer", pro: "Pro", max: "Max" };
+function planLabel(plan) {
+  return Object.hasOwn(PLAN_LABELS, plan) ? PLAN_LABELS[plan] : plan;
+}
+function formatPlanBps(bps) {
+  return bps === 0 ? "none" : `${Number((bps / 100).toFixed(4))}%`;
+}
+function count(n) {
+  return n.toLocaleString("en-US");
+}
+function priceCell(entry) {
+  if (entry.price)
+    return `$${count(entry.price.pricePerMonthUsd)} a month`;
+  return entry.plan === "free" ? "free" : "not sold";
+}
+function planTableRows(table) {
+  const plans = table.plans;
+  const row = (label, cell) => [label, ...plans.map(cell)];
+  const rows = [
+    row("Price", priceCell),
+    row("Agent trade fee", (e) => formatPlanBps(e.feeBps)),
+    row("Perps builder fee", (e) => formatPlanBps(e.perpFeeBps)),
+    row("Requests per minute", (e) => count(e.limits.rateLimitPerMin)),
+    row("Launches per day", (e) => count(e.limits.dailyLaunchCap)),
+    row("Uploads per minute", (e) => count(e.limits.uploadsPerMin)),
+    row("Linked wallets", (e) => count(e.limits.linkedWallets))
+  ];
+  const known = Object.keys(PLAN_CAPABILITY_LABELS);
+  const served = new Set;
+  for (const entry of plans)
+    for (const key of Object.keys(entry.capabilities ?? {}))
+      served.add(key);
+  const keys = [
+    ...known.filter((k) => served.has(k)),
+    ...[...served].filter((k) => !Object.hasOwn(PLAN_CAPABILITY_LABELS, k))
+  ];
+  for (const key of keys) {
+    const label = Object.hasOwn(PLAN_CAPABILITY_LABELS, key) ? PLAN_CAPABILITY_LABELS[key] : key;
+    rows.push(row(label, (e) => {
+      const value = e.capabilities?.[key];
+      return value === true ? "yes" : value === false ? "no" : "-";
+    }));
+  }
+  return { headers: ["", ...plans.map((e) => planLabel(e.plan))], rows };
+}
+function planPromotionLine(table) {
+  if (!(table.promoMaxDays > 0))
+    return null;
+  const days = table.promoMaxDays === 1 ? "1 day" : `${table.promoMaxDays} days`;
+  return `A first Pro purchase includes Max for its first ${days}, then continues on Pro.`;
+}
+
+// src/commands/plans.ts
+init_render();
+var USAGE3 = "Usage: candle plans";
+async function plans(args, ctx) {
+  const parsed = parseArgs(args, {});
+  if ("error" in parsed || parsed.positionals.length > 0) {
+    writeUsageFailure(ctx.deps, "error" in parsed ? `${parsed.error}
+${USAGE3}` : USAGE3, ctx.json);
+    return 2;
+  }
+  const result = await apiRequest("/api/v1/agent/plans", {
+    auth: "none",
+    credentials: {},
+    apiUrl: ctx.apiUrl,
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result.ok) {
+    if (result.status === 404 && !ctx.json) {
+      ctx.deps.stderr.write(`${ctx.apiUrl} does not serve the plan table yet (GET /api/v1/agent/plans answered 404).
+`);
+      return 1;
+    }
+    writeFailure(ctx.deps, result, { apiUrl: ctx.apiUrl, authType: "none" }, ctx.json);
+    return 1;
+  }
+  const body = result.body;
+  if (ctx.json) {
+    ctx.deps.stdout.write(`${JSON.stringify(body)}
+`);
+    return 0;
+  }
+  const { headers, rows } = planTableRows(body);
+  const out = ctx.deps.stdout;
+  out.write(`Plans served by ${ctx.apiUrl}
+
+`);
+  out.write(`${renderTable(headers.map(terminalText), rows.map((row) => row.map(terminalText)))}
+`);
+  const promotion = planPromotionLine(body);
+  if (promotion)
+    out.write(`
+${promotion}
+`);
+  out.write(`
+${PLAN_CAPABILITY_NOTE}
+`);
+  out.write(`
+The agent trade fee is charged on top of each trade or dev buy the API builds. Your account's plan: candle doctor.
+`);
+  return 0;
+}
+
 // src/commands/plugins.ts
 init_args();
 
@@ -62122,7 +62375,7 @@ function writeWalletEvents(ctx, books) {
 function writeAgents(ctx, agents, all) {
   if (!agents || agents.length === 0)
     return;
-  const open4 = (count, unmarked) => `${count}${unmarked > 0 ? ` (${unmarked} unpriced)` : ""}`;
+  const open4 = (count2, unmarked) => `${count2}${unmarked > 0 ? ` (${unmarked} unpriced)` : ""}`;
   const rows = agents.map((a) => [
     a.keyPrefix === null ? "Manual (web app)" : a.label && a.label !== a.keyPrefix ? `${a.label} (${a.keyPrefix})` : a.keyPrefix,
     formatUsd(a.realizedNetUsd),
@@ -62818,11 +63071,11 @@ function writeTable(ctx, groups, totals) {
         rows.push([g.group, w.chain, name2, UNREAD_LABELS[part], "not read", "-", "-"]);
     }
     const empty = g.wallets.length - shown.length;
-    const count = `${g.wallets.length} ${g.wallets.length === 1 ? "wallet" : "wallets"}`;
+    const count2 = `${g.wallets.length} ${g.wallets.length === 1 ? "wallet" : "wallets"}`;
     notes.push([
       g.group,
       g.read ? formatUsd(g.valueUsd) : "-",
-      g.read ? `${count}${empty > 0 ? `, ${empty} empty not shown` : ""}${lpCount > 0 ? `, ${lpCount} LP ${lpCount === 1 ? "position" : "positions"}` : ""}${lpUnread > 0 ? `, ${lpUnread} LP not read` : ""}${g.unpriced > 0 ? `, ${g.unpriced} unpriced` : ""}` : g.reason ?? "not read"
+      g.read ? `${count2}${empty > 0 ? `, ${empty} empty not shown` : ""}${lpCount > 0 ? `, ${lpCount} LP ${lpCount === 1 ? "position" : "positions"}` : ""}${lpUnread > 0 ? `, ${lpUnread} LP not read` : ""}${g.unpriced > 0 ? `, ${g.unpriced} unpriced` : ""}` : g.reason ?? "not read"
     ]);
   }
   if (rows.length > 0)
@@ -63702,7 +63955,7 @@ init_evm_lite();
 init_profiles();
 init_render();
 init_trading();
-var USAGE3 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
+var USAGE4 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
 var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 async function readLinkedWallets(ctx, key) {
@@ -63788,7 +64041,7 @@ async function transfer(args, ctx) {
   const flags = parsed.values;
   const asset = flags["--asset"]?.toUpperCase();
   if (parsed.positionals.length !== 0 || !flags["--to"] || !flags["--amount"] || [flags["--asset"], flags["--mint"], flags["--token"]].filter(Boolean).length !== 1 || asset !== undefined && !TRANSFER_ASSETS.includes(asset) || flags["--mint"] !== undefined && !BASE58_ADDRESS.test(flags["--mint"]) || flags["--token"] !== undefined && !checkEvmAddress(flags["--token"]).ok) {
-    writeUsageFailure(ctx.deps, USAGE3, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE4, ctx.json);
     return 2;
   }
   const to = flags["--to"];
@@ -66430,11 +66683,11 @@ Anyone who reads them can move every derived key's funds.
 `);
   return 0;
 }
-function randomPositions(count, of = PHRASE_WORDS) {
+function randomPositions(count2, of = PHRASE_WORDS) {
   const chosen = new Set;
   const scratch = new Uint32Array(1);
   const limit = Math.floor(4294967296 / of) * of;
-  while (chosen.size < count) {
+  while (chosen.size < count2) {
     crypto.getRandomValues(scratch);
     const draw = scratch[0] ?? 0;
     if (draw >= limit)
@@ -67842,8 +68095,8 @@ async function readEvmBalances(addresses, rpcUrl, fetchFn) {
   }
   return read;
 }
-function evmRequestsPlanned(count) {
-  return `${1 + count} to ${1 + 2 * count}`;
+function evmRequestsPlanned(count2) {
+  return `${1 + count2} to ${1 + 2 * count2}`;
 }
 async function vaultList(args, ctx) {
   const parsed = parseArgs(args, {
@@ -70470,9 +70723,9 @@ function resolveTarget(index, old, id) {
     throw new VaultError("VAULT_LABEL_NOT_FOUND", id === undefined ? `No key in this vault is called ${old}, and no key has that address or id.` : `No key in this vault has the id ${id}.`, { suggestion: "List them with their labels: `candle vault status --unlock`" });
   }
   const candidates = match.candidates.map((entry) => `${entry.address} (${entry.id})`).join(", ");
-  const count = match.candidates.length;
+  const count2 = match.candidates.length;
   const first = match.candidates[0];
-  throw new VaultError("VAULT_LABEL_AMBIGUOUS", match.by === "label" ? `${count} keys in this vault are called ${old}, so this rename would not say which one it meant. Nothing was written.` : `${count} keys in this vault have the address ${old}, so this rename would not say which one it meant. Nothing was written.`, {
+  throw new VaultError("VAULT_LABEL_AMBIGUOUS", match.by === "label" ? `${count2} keys in this vault are called ${old}, so this rename would not say which one it meant. Nothing was written.` : `${count2} keys in this vault have the address ${old}, so this rename would not say which one it meant. Nothing was written.`, {
     suggestion: match.by === "label" ? `Name one by address or id. The candidates are ${candidates}.` : `Name one by id. The candidates are ${candidates}. Re-run: \`candle vault rename ${old} <new-label> --id ${first.id}\`.`
   });
 }
@@ -70636,7 +70889,7 @@ async function discardIncompleteRestore(ctx, path, sidecarExisted) {
   }
 }
 var RESTORED_BRANCHES = ["solanaVault", "solanaTee", "solanaExternal"];
-function parseCounts(count, teeCount, externalCount, rpcUrl, evmCount, evmTeeCount) {
+function parseCounts(count2, teeCount, externalCount, rpcUrl, evmCount, evmTeeCount) {
   const parse = (raw, flag) => {
     if (raw === undefined)
       return;
@@ -70645,7 +70898,7 @@ function parseCounts(count, teeCount, externalCount, rpcUrl, evmCount, evmTeeCou
       return { error: `${flag} must be a whole number, zero or greater.` };
     return value;
   };
-  const vaultCount = parse(count, "--count");
+  const vaultCount = parse(count2, "--count");
   if (typeof vaultCount === "object" && vaultCount !== null)
     return vaultCount;
   const teeParsed = parse(teeCount, "--tee-count");
@@ -71775,7 +72028,7 @@ init_args();
 init_release();
 import { dirname as dirname10, join as join11 } from "node:path";
 init_render();
-var USAGE4 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
+var USAGE5 = "Usage: candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]";
 async function resolveIdentity(deps, bundlePath, flag) {
   if (flag)
     return { kind: "ok", uri: flag, provenance: "identity from --identity" };
@@ -71807,19 +72060,19 @@ async function verify(args, ctx) {
   });
   if ("error" in parsed) {
     writeUsageFailure(deps, `${parsed.error}
-${USAGE4}`, json);
+${USAGE5}`, json);
     return 2;
   }
   const file = parsed.positionals[0];
   if (parsed.positionals.length !== 1 || file === undefined) {
     writeUsageFailure(deps, `verify takes exactly one file.
-${USAGE4}`, json);
+${USAGE5}`, json);
     return 2;
   }
   const bundlePath = parsed.values["--bundle"];
   if (!bundlePath) {
     writeUsageFailure(deps, `--bundle is required.
-${USAGE4}`, json);
+${USAGE5}`, json);
     return 2;
   }
   const resolved = await resolveIdentity(deps, bundlePath, parsed.values["--identity"]);
@@ -71833,7 +72086,7 @@ ${USAGE4}`, json);
   }
   if (resolved.kind === "absent") {
     writeUsageFailure(deps, `--identity is required: there is no latest.json beside ${bundlePath} to take the release version from.
-${USAGE4}`, json);
+${USAGE5}`, json);
     return 2;
   }
   const identity = resolved.uri;
@@ -71882,7 +72135,7 @@ init_args();
 init_render();
 init_trading();
 import { randomUUID as randomUUID5 } from "node:crypto";
-var USAGE5 = "Usage: candle wallet close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
+var USAGE6 = "Usage: candle wallet close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
 function splitKeep(args) {
@@ -71957,7 +72210,7 @@ async function embeddedSolana(ctx, key, wallet) {
 async function walletsCloseEmpty(args, ctx) {
   const lifted = splitKeep(args);
   if ("error" in lifted) {
-    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE5}`, ctx.json);
+    writeUsageFailure(ctx.deps, `${lifted.error}. ${USAGE6}`, ctx.json);
     return 2;
   }
   const parsed = parseArgs(lifted.rest, { valueFlags: ["--wallet", "--client-trade-id"], booleanFlags: ["--yes"] });
@@ -71968,7 +72221,7 @@ async function walletsCloseEmpty(args, ctx) {
   const named = parsed.values["--client-trade-id"];
   const id = named ?? `close-${randomUUID5()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
-    writeUsageFailure(ctx.deps, USAGE5, ctx.json);
+    writeUsageFailure(ctx.deps, USAGE6, ctx.json);
     return 2;
   }
   const keep = lifted.keep;
@@ -72375,6 +72628,7 @@ var COMMANDS = {
   launch: { bare: launch },
   pnl: { bare: pnl },
   portfolio: { bare: portfolio },
+  plans: { bare: plans },
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
   perps: {
     subcommands: {
@@ -72501,6 +72755,7 @@ var NEVER_GUARDED = new Set([
   "profile",
   "doctor",
   "verify",
+  "plans",
   "update",
   "help",
   "completion",

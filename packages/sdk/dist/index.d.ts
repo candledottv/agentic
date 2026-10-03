@@ -5,6 +5,7 @@ export { BRIDGE_ERROR_CODES, CandleApiError, isSolanaRpcErrorData, JsonRpcError 
 export { CANDLE_HYPERLIQUID_BUILDER_ADDRESS, HYPERLIQUID_ALLOWED_ACTION_TYPES, HYPERLIQUID_EXCHANGE_URLS, type HyperliquidNetwork, type HyperliquidTypedData, hyperliquidActionHash, type PerpsBuildCheck, type PerpsBuildToVerify, type VerifyPerpsBuildOptions, verifyPerpsBuild, } from "./hyperliquid";
 export type { HyperliquidPnlFigures, HyperliquidPnlSection, HyperliquidWalletPnl } from "./hyperliquid-pnl";
 export { KeychainSecretStore } from "./keychain-secret-store";
+export { type AgentPlansResult, formatPlanBps, PLAN_CAPABILITY_LABELS, PLAN_CAPABILITY_NOTE, type PlanCapabilities, type PlanLimits, type PlanName, type PlanPrice, type PlanTable, type PlanTableEntry, planLabel, planPromotionLine, planTableMarkdown, planTableRows, } from "./plans";
 export type { SecretStore } from "./secret-store";
 export { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store";
 export type { EncryptWalletKeyParams, EncryptWalletKeyResult, SignerKeypair, WalletChain } from "./wallet-import";

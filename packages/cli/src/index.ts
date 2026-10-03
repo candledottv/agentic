@@ -46,6 +46,7 @@ import {
   perpsPositions,
   perpsSetup,
 } from "./commands/perps"
+import { plans } from "./commands/plans"
 import { plugins, runPlugin } from "./commands/plugins"
 import { pnl } from "./commands/pnl"
 import { portfolio } from "./commands/portfolio"
@@ -171,6 +172,8 @@ const COMMANDS: Record<string, CommandRoute> = {
   // per-key request (see commands/pnl.ts).
   pnl: { bare: pnl },
   portfolio: { bare: portfolio },
+  // BE-723 (Plans v2 P6): the served plan table. Public, so it reads and sends no credential.
+  plans: { bare: plans },
   // Ember Phase 3 PR D (BE-315, R4): Meteora DAMM v2 liquidity from a TEE wallet, on the agent
   // rail under the bound key's opt-in `lp:write`. Server-built, relay-signed, never a vault key.
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
@@ -397,6 +400,8 @@ export const NEVER_GUARDED = new Set([
   "profile",
   "doctor",
   "verify",
+  // BE-723: `GET /agent/plans` is public; the command acts as no identity.
+  "plans",
   "update",
   "help",
   "completion",

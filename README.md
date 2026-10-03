@@ -34,8 +34,8 @@ one place.
 
 ## Try it with no account
 
-Five tools are read-only and need no API key at all: `candle_get_market`, `candle_get_feed`,
-`candle_token_forensics`, `candle_get_agent_profile`, and `candle_resolve_token`. Point any
+Six tools are read-only and need no API key at all: `candle_get_market`, `candle_get_feed`,
+`candle_token_forensics`, `candle_get_agent_profile`, `candle_resolve_token`, and `candle_get_plans`. Point any
 MCP-capable client at the published server, no signup required:
 
 ```json
@@ -98,6 +98,7 @@ signs up.
 | | `candle_get_feed` | no | curated feeds with price and market cap |
 | | `candle_token_forensics` | no | launch forensics for one token |
 | | `candle_get_agent_profile` | no | public profile and verified activity for an agent |
+| | `candle_get_plans` | no | every plan's price, agent fee, perps builder fee, limits and capabilities, as the server charges them |
 | **Move money** | `candle_trade` | yes | buy or sell a token |
 | | `candle_swap` | yes | convert base assets; a pair spanning both chains is a bridge |
 | | `candle_transfer` | yes | move an asset to an own or owner-approved address |
@@ -169,7 +170,7 @@ rather than on the disk it protects.
 
 ### Two custody tiers
 
-The CLI keeps keys at two custody tiers (not the account plans Free, Believer, Pro and Max):
+The CLI keeps keys at two custody tiers (not the account plans Free, Pro and Max; `candle plans` lists them):
 
 - **Tier 1: the vault.** Self-custody on your machine. It opens with a passphrase or a FIDO2
   security key (`candle vault factor add security-key`; two keys make a recoverable pair). Touch ID

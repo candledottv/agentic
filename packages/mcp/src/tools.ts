@@ -44,6 +44,7 @@ import { type RequestConfig, resolveConfig } from "./client"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
 import { executeLaunchAndSeed, executeSweep, executeTrade, executionStatus, resolveToken } from "./orchestrate"
 import { executePerps, executePerpsDeposit, type PerpsToolName, perpsDepositShape, perpsShapes } from "./perps"
+import { PLAN_CAPABILITY_NOTE, type PlanTable, planPromotionLine, planTableMarkdown } from "./plans"
 import { noteVersionHeaders } from "./update-notice"
 
 export const TOOL_NAMES = [
@@ -53,6 +54,8 @@ export const TOOL_NAMES = [
   "candle_token_forensics",
   "candle_report_activity",
   "candle_get_agent_profile",
+  // BE-723 (Plans v2 P6): the served plan table, keyless.
+  "candle_get_plans",
   "candle_trade",
   "candle_launch_and_seed",
   "candle_swap",
@@ -241,6 +244,11 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       }
     }
 
+    case "candle_get_plans": {
+      // Public: no key is sent even when one is configured, since the table is about no account.
+      return { url: `${base}/api/v1/agent/plans`, init: { method: "GET", headers: jsonHeaders() } }
+    }
+
     case "candle_swap": {
       const apiKey = requireApiKey(cfg)
       // `amount` is decimal, `amountRaw` is what the API takes. Converting here is safe without a
@@ -335,6 +343,19 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
 }
 
 /** Fetches the request and hands the raw response text back to the agent, error body included. */
+/** The served table as Markdown, with the promotion line. Falls back to nothing on a body it cannot read. */
+export function plansMarkdown(body: string): string {
+  try {
+    const table = JSON.parse(body) as PlanTable
+    if (!Array.isArray(table.plans)) return ""
+    const promotion = planPromotionLine(table)
+    const markdown = `${planTableMarkdown(table)}\n\n${PLAN_CAPABILITY_NOTE}`
+    return promotion ? `${markdown}\n\n${promotion}` : markdown
+  } catch {
+    return ""
+  }
+}
+
 async function callAndRelay(name: RestToolName, args: Record<string, unknown>, cfg: RequestConfig) {
   const { url, init } = buildRequest(name, args, cfg)
   const res = await fetch(url, init)
@@ -517,7 +538,7 @@ const tradeShape = {
     .describe(
       'What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' +
         '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' +
-        "to an arbitrary mint Candle never launched (Pro/Max) and is ignored for a Candle token, " +
+        "to an arbitrary mint Candle never launched (a buy needs Pro or Max; a sell works on any plan) and is ignored for a Candle token, " +
         "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " +
         "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " +
         "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement.",
@@ -706,6 +727,39 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       inputSchema: getAgentProfileShape,
     },
     async (args) => callAndRelay("candle_get_agent_profile", args, cfg),
+  )
+
+  register(
+    "candle_get_plans",
+    {
+      title: "Plans: prices, fees, limits and what each can do",
+      description:
+        "The plan table this Candle deployment serves (GET /api/v1/agent/plans). No key needed. Reads only. For " +
+        "each plan: price (null when not sold), feeBps (the agent fee charged on top of every trade or dev buy the " +
+        "API builds), perpFeeBps (the Hyperliquid builder fee), limits for a new key (requests per minute, launches " +
+        "per day, uploads per minute, linked wallets) and capabilities: buyExternalTokens, sellExternalTokens, " +
+        "tradeBaseAssets, tradeCandleTokens, selfLaunch, atomicLaunch, createLinkedWallets, importLinkedWallets, " +
+        "hyperliquidPerps, limitOrders, quant, freeBaseTransfers. promoMaxDays is the days of Max a first Pro " +
+        "purchase includes (0: no promotion). Quote prices and fees from here, never from memory: they differ by " +
+        "deployment and change at the three-plan launch (Free, Pro, Max). The account's own plan and fee are in " +
+        "candle_execution_status's tier. A TIER_REQUIRED refusal names a capability this table shows the account's " +
+        "plan lacks. A capability true here is plan eligibility, not deployment availability: perps and own-wallet bridges " +
+        "are each behind a deployment switch and need their wallet, scopes and setup. Returns the server's JSON, then the same table as Markdown.",
+      inputSchema: {},
+    },
+    async () => {
+      const { url, init } = buildRequest("candle_get_plans", {}, cfg)
+      const res = await fetch(url, init)
+      noteVersionHeaders(res)
+      const text = await res.text()
+      if (!res.ok) return { content: [{ type: "text" as const, text }], isError: true }
+      return {
+        content: [
+          { type: "text" as const, text },
+          { type: "text" as const, text: plansMarkdown(text) },
+        ],
+      }
+    },
   )
 
   register(
@@ -971,6 +1025,9 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "Arguments: `mint` and `side` are required. Amounts are DECIMAL, never raw base units " +
         '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' +
         "position.\n\n" +
+        "Plans: every plan can buy and sell Candle-launched tokens and base assets, and SELL a token it holds that " +
+        "Candle did not launch. BUYING such a token needs Pro or Max (TIER_REQUIRED otherwise). Each trade pays the " +
+        "plan's agent fee on top (feeBps in candle_get_plans).\n\n" +
         "Pass `paper: true` to rehearse: every admission rule runs and the quote is recorded, but " +
         "nothing broadcasts and no funds move. A paper buy credits this key's paper inventory, " +
         "including for external Solana mints routed through Jupiter. A later sell by amount or " +
@@ -1043,7 +1100,8 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       description:
         "Open or add to a perpetual position on Hyperliquid's main perp exchange: a market order (IOC within " +
         "slippageBps of the mid) without `price`, a limit order with it, and optional reduce-only takeProfit and " +
-        "stopLoss triggers. Free, Believer and Pro pay a 0.1% builder fee; Max pays none." +
+        "stopLoss triggers. Every plan except Max pays Candle a builder fee on each order (0.1% today; perpFeeBps in " +
+        "candle_get_plans); Max pays none." +
         perpsWrite,
       inputSchema: perpsShapes.candle_perps_open,
     },

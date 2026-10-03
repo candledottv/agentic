@@ -989,6 +989,9 @@ class CandleClient {
   async getAgentTier() {
     return this.requestJson("GET", "/api/v1/agent/tier");
   }
+  async getPlans() {
+    return this.requestJson("GET", "/api/v1/agent/plans");
+  }
   async dryRunLaunch(req) {
     this.requireKey("dryRunLaunch()");
     return this.requestJson("POST", "/api/v1/launch/headless/dry-run", req);
@@ -1907,6 +1910,79 @@ class KeychainSecretStore {
     await this.exec("secret-tool", ["clear", "service", SERVICE, "account", ref]);
   }
 }
+// src/plans.ts
+var PLAN_CAPABILITY_NOTE = "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs.";
+var PLAN_CAPABILITY_LABELS = {
+  tradeCandleTokens: "Trade Candle-launched tokens",
+  tradeBaseAssets: "Trade base assets",
+  freeBaseTransfers: "Base-pair swaps and own-wallet bridges (when enabled), no Candle fee",
+  sellExternalTokens: "Sell tokens not launched on Candle",
+  buyExternalTokens: "Buy tokens not launched on Candle",
+  hyperliquidPerps: "Hyperliquid perps (when enabled)",
+  selfLaunch: "Self-launch from a linked wallet",
+  atomicLaunch: "Atomic launch with first buys",
+  createLinkedWallets: "Create linked wallets",
+  importLinkedWallets: "Import linked wallets",
+  limitOrders: "Limit orders",
+  quant: "Quant on Telegram"
+};
+var PLAN_LABELS = { free: "Free", believer: "Believer", pro: "Pro", max: "Max" };
+function planLabel(plan) {
+  return Object.hasOwn(PLAN_LABELS, plan) ? PLAN_LABELS[plan] : plan;
+}
+function formatPlanBps(bps) {
+  return bps === 0 ? "none" : `${Number((bps / 100).toFixed(4))}%`;
+}
+function count(n) {
+  return n.toLocaleString("en-US");
+}
+function priceCell(entry) {
+  if (entry.price)
+    return `$${count(entry.price.pricePerMonthUsd)} a month`;
+  return entry.plan === "free" ? "free" : "not sold";
+}
+function planTableRows(table) {
+  const plans = table.plans;
+  const row = (label, cell) => [label, ...plans.map(cell)];
+  const rows = [
+    row("Price", priceCell),
+    row("Agent trade fee", (e) => formatPlanBps(e.feeBps)),
+    row("Perps builder fee", (e) => formatPlanBps(e.perpFeeBps)),
+    row("Requests per minute", (e) => count(e.limits.rateLimitPerMin)),
+    row("Launches per day", (e) => count(e.limits.dailyLaunchCap)),
+    row("Uploads per minute", (e) => count(e.limits.uploadsPerMin)),
+    row("Linked wallets", (e) => count(e.limits.linkedWallets))
+  ];
+  const known = Object.keys(PLAN_CAPABILITY_LABELS);
+  const served = new Set;
+  for (const entry of plans)
+    for (const key of Object.keys(entry.capabilities ?? {}))
+      served.add(key);
+  const keys = [
+    ...known.filter((k) => served.has(k)),
+    ...[...served].filter((k) => !Object.hasOwn(PLAN_CAPABILITY_LABELS, k))
+  ];
+  for (const key of keys) {
+    const label = Object.hasOwn(PLAN_CAPABILITY_LABELS, key) ? PLAN_CAPABILITY_LABELS[key] : key;
+    rows.push(row(label, (e) => {
+      const value = e.capabilities?.[key];
+      return value === true ? "yes" : value === false ? "no" : "-";
+    }));
+  }
+  return { headers: ["", ...plans.map((e) => planLabel(e.plan))], rows };
+}
+function planPromotionLine(table) {
+  if (!(table.promoMaxDays > 0))
+    return null;
+  const days = table.promoMaxDays === 1 ? "1 day" : `${table.promoMaxDays} days`;
+  return `A first Pro purchase includes Max for its first ${days}, then continues on Pro.`;
+}
+function planTableMarkdown(table) {
+  const { headers, rows } = planTableRows(table);
+  const line = (cells) => `| ${cells.map((c) => c.replace(/\|/g, "\\|")).join(" | ")} |`;
+  return [line(headers), line(headers.map(() => "---")), ...rows.map(line)].join(`
+`);
+}
 // src/file-lock.ts
 var STALE_MS = 30000;
 var RETRY_MS = 25;
@@ -2068,11 +2144,18 @@ function verifyWebhookSignature(secret, header, body, nowSec, toleranceSec = 300
 export {
   verifyWebhookSignature,
   verifyPerpsBuild,
+  planTableRows,
+  planTableMarkdown,
+  planPromotionLine,
+  planLabel,
   perpsDepositProblem,
   isSolanaRpcErrorData,
   hyperliquidActionHash,
   generateSignerKeypair,
+  formatPlanBps,
   encryptWalletKeyForImport,
+  PLAN_CAPABILITY_NOTE,
+  PLAN_CAPABILITY_LABELS,
   KeychainSecretStore,
   JsonRpcError,
   InMemorySecretStore,

@@ -1350,6 +1350,80 @@ async function executePerpsDeposit(args, cfg, env, fetch2) {
   }
 }
 
+// src/plans.ts
+var PLAN_CAPABILITY_NOTE = "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs.";
+var PLAN_CAPABILITY_LABELS = {
+  tradeCandleTokens: "Trade Candle-launched tokens",
+  tradeBaseAssets: "Trade base assets",
+  freeBaseTransfers: "Base-pair swaps and own-wallet bridges (when enabled), no Candle fee",
+  sellExternalTokens: "Sell tokens not launched on Candle",
+  buyExternalTokens: "Buy tokens not launched on Candle",
+  hyperliquidPerps: "Hyperliquid perps (when enabled)",
+  selfLaunch: "Self-launch from a linked wallet",
+  atomicLaunch: "Atomic launch with first buys",
+  createLinkedWallets: "Create linked wallets",
+  importLinkedWallets: "Import linked wallets",
+  limitOrders: "Limit orders",
+  quant: "Quant on Telegram"
+};
+var PLAN_LABELS = { free: "Free", believer: "Believer", pro: "Pro", max: "Max" };
+function planLabel(plan) {
+  return Object.hasOwn(PLAN_LABELS, plan) ? PLAN_LABELS[plan] : plan;
+}
+function formatPlanBps(bps) {
+  return bps === 0 ? "none" : `${Number((bps / 100).toFixed(4))}%`;
+}
+function count(n) {
+  return n.toLocaleString("en-US");
+}
+function priceCell(entry) {
+  if (entry.price)
+    return `$${count(entry.price.pricePerMonthUsd)} a month`;
+  return entry.plan === "free" ? "free" : "not sold";
+}
+function planTableRows(table) {
+  const plans = table.plans;
+  const row = (label, cell) => [label, ...plans.map(cell)];
+  const rows = [
+    row("Price", priceCell),
+    row("Agent trade fee", (e) => formatPlanBps(e.feeBps)),
+    row("Perps builder fee", (e) => formatPlanBps(e.perpFeeBps)),
+    row("Requests per minute", (e) => count(e.limits.rateLimitPerMin)),
+    row("Launches per day", (e) => count(e.limits.dailyLaunchCap)),
+    row("Uploads per minute", (e) => count(e.limits.uploadsPerMin)),
+    row("Linked wallets", (e) => count(e.limits.linkedWallets))
+  ];
+  const known = Object.keys(PLAN_CAPABILITY_LABELS);
+  const served = new Set;
+  for (const entry of plans)
+    for (const key of Object.keys(entry.capabilities ?? {}))
+      served.add(key);
+  const keys = [
+    ...known.filter((k) => served.has(k)),
+    ...[...served].filter((k) => !Object.hasOwn(PLAN_CAPABILITY_LABELS, k))
+  ];
+  for (const key of keys) {
+    const label = Object.hasOwn(PLAN_CAPABILITY_LABELS, key) ? PLAN_CAPABILITY_LABELS[key] : key;
+    rows.push(row(label, (e) => {
+      const value = e.capabilities?.[key];
+      return value === true ? "yes" : value === false ? "no" : "-";
+    }));
+  }
+  return { headers: ["", ...plans.map((e) => planLabel(e.plan))], rows };
+}
+function planPromotionLine(table) {
+  if (!(table.promoMaxDays > 0))
+    return null;
+  const days = table.promoMaxDays === 1 ? "1 day" : `${table.promoMaxDays} days`;
+  return `A first Pro purchase includes Max for its first ${days}, then continues on Pro.`;
+}
+function planTableMarkdown(table) {
+  const { headers: headers2, rows } = planTableRows(table);
+  const line = (cells) => `| ${cells.map((c) => c.replace(/\|/g, "\\|")).join(" | ")} |`;
+  return [line(headers2), line(headers2.map(() => "---")), ...rows.map(line)].join(`
+`);
+}
+
 // src/tools.ts
 var TOOL_NAMES = [
   "candle_launch_token",
@@ -1358,6 +1432,7 @@ var TOOL_NAMES = [
   "candle_token_forensics",
   "candle_report_activity",
   "candle_get_agent_profile",
+  "candle_get_plans",
   "candle_trade",
   "candle_launch_and_seed",
   "candle_swap",
@@ -1478,6 +1553,9 @@ function buildRequest(name, args, cfg) {
         init: { method: "GET", headers: jsonHeaders() }
       };
     }
+    case "candle_get_plans": {
+      return { url: `${base2}/api/v1/agent/plans`, init: { method: "GET", headers: jsonHeaders() } };
+    }
     case "candle_swap": {
       const apiKey = requireApiKey2(cfg);
       return {
@@ -1545,6 +1623,22 @@ function buildRequest(name, args, cfg) {
         init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify(args) }
       };
     }
+  }
+}
+function plansMarkdown(body) {
+  try {
+    const table = JSON.parse(body);
+    if (!Array.isArray(table.plans))
+      return "";
+    const promotion = planPromotionLine(table);
+    const markdown = `${planTableMarkdown(table)}
+
+${PLAN_CAPABILITY_NOTE}`;
+    return promotion ? `${markdown}
+
+${promotion}` : markdown;
+  } catch {
+    return "";
   }
 }
 async function callAndRelay(name, args, cfg) {
@@ -1631,7 +1725,7 @@ var tradeShape = {
   side: z2.enum(["buy", "sell"]),
   amount: z2.string().optional().describe("Decimal amount. Buys: how much of THIS TOKEN'S OWN quote asset to spend (SOL for a " + 'SOL-launched token, USDC for a USDC-quoted one, and so on: e.g. "0.5"). Sells: how many ' + "TOKENS to sell. Pass exactly one of amount or percent."),
   percent: z2.number().optional().describe("Sells only: sell this percent (integer 1-100) of the holding. Live trades size against the " + "embedded wallet. Paper trades (`paper: true`) size against this key's paper inventory -- " + "the position a previous paper buy credited -- because paper never moves the live wallet."),
-  quoteAsset: z2.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' + "to an arbitrary mint Candle never launched (Pro/Max) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
+  quoteAsset: z2.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' + "to an arbitrary mint Candle never launched (a buy needs Pro or Max; a sell works on any plan) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
   maxSlippageBps: z2.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
   clientTradeId: z2.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade."),
   paper: z2.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, z2.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost. " + "A sell of a mint this key already paper-bought also closes that paper book when the " + "live wallet is empty, even if this flag is omitted."))
@@ -1699,6 +1793,24 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     description: "Read a Candle user's public agent profile: whether agent features are enabled and launch counts.",
     inputSchema: getAgentProfileShape
   }, async (args) => callAndRelay("candle_get_agent_profile", args, cfg));
+  register("candle_get_plans", {
+    title: "Plans: prices, fees, limits and what each can do",
+    description: "The plan table this Candle deployment serves (GET /api/v1/agent/plans). No key needed. Reads only. For " + "each plan: price (null when not sold), feeBps (the agent fee charged on top of every trade or dev buy the " + "API builds), perpFeeBps (the Hyperliquid builder fee), limits for a new key (requests per minute, launches " + "per day, uploads per minute, linked wallets) and capabilities: buyExternalTokens, sellExternalTokens, " + "tradeBaseAssets, tradeCandleTokens, selfLaunch, atomicLaunch, createLinkedWallets, importLinkedWallets, " + "hyperliquidPerps, limitOrders, quant, freeBaseTransfers. promoMaxDays is the days of Max a first Pro " + "purchase includes (0: no promotion). Quote prices and fees from here, never from memory: they differ by " + "deployment and change at the three-plan launch (Free, Pro, Max). The account's own plan and fee are in " + "candle_execution_status's tier. A TIER_REQUIRED refusal names a capability this table shows the account's " + "plan lacks. A capability true here is plan eligibility, not deployment availability: perps and own-wallet bridges " + "are each behind a deployment switch and need their wallet, scopes and setup. Returns the server's JSON, then the same table as Markdown.",
+    inputSchema: {}
+  }, async () => {
+    const { url, init } = buildRequest("candle_get_plans", {}, cfg);
+    const res = await fetch(url, init);
+    noteVersionHeaders(res);
+    const text = await res.text();
+    if (!res.ok)
+      return { content: [{ type: "text", text }], isError: true };
+    return {
+      content: [
+        { type: "text", text },
+        { type: "text", text: plansMarkdown(text) }
+      ]
+    };
+  });
   register("candle_get_operation", {
     title: "What happened to a write",
     description: "Look up a trade or launch by the id its write used, and find out whether it landed. " + `Reads only; moves nothing.
@@ -1799,6 +1911,8 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 
 ` + "Arguments: `mint` and `side` are required. Amounts are DECIMAL, never raw base units " + '(amount: "0.5", not lamports). Omitting the amount on a sell sells the whole ' + `position.
 
+` + "Plans: every plan can buy and sell Candle-launched tokens and base assets, and SELL a token it holds that " + "Candle did not launch. BUYING such a token needs Pro or Max (TIER_REQUIRED otherwise). Each trade pays the " + `plan's agent fee on top (feeBps in candle_get_plans).
+
 ` + "Pass `paper: true` to rehearse: every admission rule runs and the quote is recorded, but " + "nothing broadcasts and no funds move. A paper buy credits this key's paper inventory, " + "including for external Solana mints routed through Jupiter. A later sell by amount or " + "percent closes that book without reading the live wallet and without MARKET_NOT_FOUND " + "-- including when `paper` is omitted on the exit, as long as the paper position exists. " + "Do this before the first live trade of a new strategy, and whenever you are unsure a " + `trade would be admitted at all.
 
 ` + `After the call:
@@ -1829,7 +1943,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, perpsTool("candle_perps_setup"));
   register("candle_perps_open", {
     title: "Open a perps position",
-    description: "Open or add to a perpetual position on Hyperliquid's main perp exchange: a market order (IOC within " + "slippageBps of the mid) without `price`, a limit order with it, and optional reduce-only takeProfit and " + "stopLoss triggers. Free, Believer and Pro pay a 0.1% builder fee; Max pays none." + perpsWrite,
+    description: "Open or add to a perpetual position on Hyperliquid's main perp exchange: a market order (IOC within " + "slippageBps of the mid) without `price`, a limit order with it, and optional reduce-only takeProfit and " + "stopLoss triggers. Every plan except Max pays Candle a builder fee on each order (0.1% today; perpFeeBps in " + "candle_get_plans); Max pays none." + perpsWrite,
     inputSchema: perpsShapes.candle_perps_open
   }, perpsTool("candle_perps_open"));
   register("candle_perps_close", {
@@ -1870,12 +1984,13 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 // src/server.ts
 var INSTRUCTIONS = `Candle is a trading and token-launch rail for agents. You hold a scoped API key, never a private key; signing and funding stay with the key owner's wallet.
 
-START HERE — five tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
+START HERE — six tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
   candle_get_market       price, market cap, volume, curve state for one token
   candle_get_feed         the roster: hot streak, new pairs, graduated, blue chip
   candle_resolve_token    a ticker or partial name -> mint address + chain
   candle_token_forensics  call this before quoting or buying. Returns the on-chain developer (never a launchpad shared authority; deployer.attribution names the launchpad or issuer when no developer is on chain), their went-to-zero rate and last coins, who bought in the deploy window (strangers in the same slot are the bundle signal), same-funder insider share, same-funder cluster, and safety.summary with six sourced flags. Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning
   candle_get_agent_profile  your own tier, caps and verified activity
+  candle_get_plans        every plan's price, fees, limits and what it can do; quote these, never from memory
 
 COVERAGE — read this before you treat an error as a broken server.
 candle_get_feed indexes the wider market (pump.fun, pons.family and other external launchpads).

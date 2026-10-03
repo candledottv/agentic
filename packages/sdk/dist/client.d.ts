@@ -28,6 +28,7 @@
  */
 import { type HyperliquidNetwork, type HyperliquidTypedData } from "./hyperliquid";
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl";
+import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans";
 import type { SecretStore } from "./secret-store";
 import { type WalletChain } from "./wallet-import";
 export type Chain = "solana" | "hood";
@@ -410,21 +411,30 @@ export interface AgentProfile {
  */
 export interface AgentTierInfo {
     success: true;
-    /** Display tier: max > pro > believer > free. */
+    /**
+     * Display tier: max > pro > believer > free. From the three-plan launch the server sends only
+     * `free`, `pro` or `max`; `believer` stays in this type for one release after it, then goes.
+     */
     tier: "free" | "believer" | "pro" | "max";
     /** Live-evaluated tier, independent of the Believer key-issuance label. */
     liveTier: "free" | "pro" | "max";
     stakedCndl: number;
     heldCndl: number;
+    /** `graceMs` is 0 from the three-plan launch: Pro through CNDL then has no grace window. */
     thresholds: {
         minStakedCndl: number;
         minHeldCndl: number;
         graceMs: number;
     };
-    /** `startedAt` is null unless `active` (see the endpoint's own doc for why). */
+    /**
+     * `startedAt` is null unless `active` (see the endpoint's own doc for why). `endsAt` is the
+     * server's deadline for an open window; absent from an older server. Never active from the
+     * three-plan launch.
+     */
     grace: {
         active: boolean;
         startedAt: number | null;
+        endsAt?: number | null;
     };
     maxTierExpiresAt: number | null;
     /**
@@ -436,8 +446,12 @@ export interface AgentTierInfo {
     maxExpired: boolean;
     /** When the lapsed grant ended (ms). Present only when `maxExpired`. */
     maxExpiredAt?: number;
-    /** Which kind of grant lapsed. Present only when `maxExpired`. */
-    maxExpiredSource?: "subscription" | "trial" | "team";
+    /**
+     * Which kind of grant lapsed. Present only when `maxExpired`. `"promo"` is the Max that came free
+     * with a first Pro purchase; while the account still pays for Pro, that lapse is not reported.
+     * Treat an unknown value as a generic Max expiry.
+     */
+    maxExpiredSource?: "subscription" | "trial" | "team" | "promo";
     /**
      * The server's own sentence about the lapse, dated, with the renewal link. Relay it verbatim:
      * it is the same copy the CLI doctor row, the MCP notice, and the tier refusals use, so every
@@ -454,6 +468,21 @@ export interface AgentTierInfo {
         feeRawSum: string;
         count: number;
     }>;
+    /** The live tier's cap floors. Absent from an older server. */
+    tierCaps?: {
+        rateLimitPerMin: number;
+        dailyLaunchCap: number;
+        uploadsPerMin: number;
+        linkedWallets: number;
+    };
+    /** When the tier was evaluated (ms), so a caller can say how fresh it is. Absent from an older server. */
+    checkedAt?: number;
+    /** Max's price. Kept beside `planTable` for compatibility; read `planTable` for every plan. */
+    maxPricing?: PlanPrice;
+    /** Pro's price, null while Pro is not sold. Absent from a server before the plan table. */
+    proPricing?: PlanPrice | null;
+    /** The plan table in force, the same one `getPlans()` returns. Absent from an older server. */
+    planTable?: PlanTable;
 }
 /**
  * One per-transaction spend cap, mirroring `SpendLimit` in `apps/api/src/lib/agent-policy.ts`
@@ -1962,6 +1991,14 @@ export declare class CandleClient {
      * with (possibly none) and lets the server's own auth middleware decide.
      */
     getAgentTier(): Promise<AgentTierInfo>;
+    /**
+     * The plan table in force on this deployment (`GET /api/v1/agent/plans`, no credential): each
+     * plan's price, agent fee, perps builder fee, the limits a new key gets, what it can do
+     * (`capabilities`), and `promoMaxDays`. Quote prices and fees from here rather than hard-coding
+     * them: they differ by deployment and change at the three-plan launch. `planTableRows()` renders
+     * it. A server that predates the table answers 404 (`CandleApiError`).
+     */
+    getPlans(): Promise<AgentPlansResult>;
     dryRunLaunch(req: LaunchRequest): Promise<DryRunResult>;
     /**
      * Blocking launch with idempotent retries. Generates `clientLaunchId` when absent and
