@@ -1008,6 +1008,28 @@ export type TradeSide = "buy" | "sell"
 /** Who pays for a trade: the account's own delegated wallet ("main"), or an imported linked wallet. */
 export type TradePayer = { type: "main" } | { type: "linked"; linkedWalletId: string }
 
+/**
+ * The Jupiter/DFlow race one Solana `jupiter`-venue build ran. Raw amounts and lamports are decimal
+ * strings. Present only while DFlow is enabled on the deployment, and never on paper or a replay.
+ */
+export interface TradeRace {
+  jupiterOutRaw: string
+  /** DFlow's quoted output, when it gave an accepted quote. */
+  dflowOutRaw?: string
+  /**
+   * Why DFlow did not build the transaction: `quote:<reason>`, `build:<reason>` (including
+   * `build:priority_fee_over_cap`), or `net:fee_exceeds_edge` when its larger output did not
+   * cover its larger priority fee.
+   */
+  dflowRefusal?: string
+  /** The priority-fee ceiling both builds were given, in lamports. Absent from an older server. */
+  priorityFeeCapLamports?: string
+  /** The priority fee decoded from Jupiter's built transaction. Absent when Jupiter built none. */
+  jupiterPriorityFeeLamports?: string
+  /** The priority fee decoded from DFlow's built transaction. Absent when DFlow returned none. */
+  dflowPriorityFeeLamports?: string
+}
+
 /** POST /api/v1/trade/agent/build request body. */
 export interface BuildTradeRequest {
   /** Idempotency key, unique per account; shared with the matching confirmTrade() call. */
@@ -1019,6 +1041,18 @@ export interface BuildTradeRequest {
   payer: TradePayer
   /** Bps, 0-10000. Server defaults to 100 (1%) when omitted. */
   maxSlippageBps?: number
+  /**
+   * The most this build may bid as a Solana priority fee, in lamports: an integer from 0 to
+   * 10,000,000. Replaces the default ceiling of 25 bps of the trade's SOL leg (floored at 100,000,
+   * capped at 10,000,000), so it can raise the ceiling for a small trade that has to land as well
+   * as lower it. `0` asks for no priority fee, and is not the same as omitting the field.
+   *
+   * Applies to Solana `jupiter`-venue builds and is ignored everywhere else (Hood, the curve
+   * venue, paper). A hard limit on DFlow; a requested limit on Jupiter, whose paid figure is
+   * `race.jupiterPriorityFeeLamports` when the response carries `race`. A very low value may not
+   * land before its blockhash expires.
+   */
+  maxPriorityFeeLamports?: number
   /**
    * What the wallet spends on a buy, or receives on a sell. Safe to pass straight through from a
    * `POST /trade/agent/quote` response: the two endpoints take the same ids.
@@ -1073,14 +1107,15 @@ export interface SolanaTradeArtifacts {
   venue: "curve" | "jupiter"
   /**
    * Which quoter built the transaction. On the `jupiter` venue Candle also asks DFlow for a quote and
-   * uses it only when its output is strictly larger; otherwise this is `jupiter`. `curve` on the curve venue.
+   * uses it only when its output is strictly larger: net of each venue's priority fee when a leg is
+   * SOL, raw otherwise. Otherwise this is `jupiter`. `curve` on the curve venue.
    */
   quoteSource?: "curve" | "jupiter" | "dflow"
   /**
    * The Jupiter/DFlow race on a `jupiter` venue build: Jupiter's quoted output, DFlow's when it gave an
    * accepted quote, and why DFlow did not build the transaction when it did not. Absent on the curve venue.
    */
-  race?: { jupiterOutRaw: string; dflowOutRaw?: string; dflowRefusal?: string }
+  race?: TradeRace
   transactionBase64: string
   quoteAsset: string
   quoteMint: string
@@ -1231,7 +1266,7 @@ export interface ExecutedTradeResult {
    * and the Jupiter/DFlow race behind it. Absent on the curve venue, on Hood, and on an idempotent replay.
    */
   quoteSource?: "jupiter" | "dflow"
-  race?: { jupiterOutRaw: string; dflowOutRaw?: string; dflowRefusal?: string }
+  race?: TradeRace
 }
 
 /** POST /api/v1/trade/agent/build response: "built" for a linked payer, "executed" for a main payer (or an idempotent replay of an already-confirmed trade under the same clientTradeId). */

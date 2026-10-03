@@ -122,6 +122,7 @@ export type {
   SwapSettlementState,
   TradeFee,
   TradePayer,
+  TradeRace,
   TradeRequest,
   TradeRoute,
   TradeRouteHop,
