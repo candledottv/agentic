@@ -800,8 +800,9 @@ export const HELP: Record<string, Topic> = {
         description: "Print the funding instruction for your vault to sign",
       },
       {
-        invocation: "status <address> [--rpc-url <url>]",
-        description: "Server lifecycle state and on-chain balances; on Hood, ETH, USDG, the gas reserve and gas: low",
+        invocation: "status <address> [--rpc-url <url>] [--verify]",
+        description:
+          "Server lifecycle state and on-chain balances without unlocking; --verify opens the vault and checks the key. On Hood, ETH, USDG, the gas reserve and gas: low",
       },
       {
         invocation: "disable <address>",
@@ -821,7 +822,7 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "signer new --key <prefix|label> [--out <pem>] [--force]",
         description:
-          "On the trading machine, with that key's API key: generate the key's signer here and wait for the owner to approve it. Its wallets then trade from this machine. --out also writes a plaintext PEM for an SDK process (weaker than the secret store); --force adds a signer while an old one here still owns wallets",
+          "On the trading machine, with that key's API key: generate the key's signer here and wait for the owner to approve it. Its wallets then trade from this machine. --out also writes a plaintext PEM for an SDK process (weaker than the secret store); --force adds a signer while an older signer on THIS machine still owns wallets; it moves, revokes and deletes nothing",
       },
     ],
     flags: [KEYSTORE_FLAG],

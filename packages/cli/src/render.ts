@@ -278,6 +278,10 @@ export function writeUsageFailure(deps: ModeWriters, message: string, json: bool
  * ever touched -- the reconstructed URL is always `<origin>/agents`, never carrying over any
  * path `apiUrl` had (this is a portal deep link with its own fixed path, not a URL rewrite).
  */
+export function portalDevicesUrl(apiUrl: string, portalOrigin?: string): string {
+  return `${portalDeviceUrl(apiUrl, portalOrigin)}?tab=keys#connected-devices`
+}
+
 export function portalDeviceUrl(apiUrl: string, portalOrigin?: string): string {
   if (portalOrigin) {
     try {

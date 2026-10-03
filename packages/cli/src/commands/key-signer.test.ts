@@ -631,6 +631,9 @@ describe("T11: candle tee rebind onto a key", () => {
     expect(await run(["tee", "rebind", "W1", "--to-key", TO, "--json"], h.deps)).toBe(1)
     const doc = JSON.parse(h.stdout.text)
     expect(doc.code).toBe("KEY_SIGNER_SIGNATURE_REQUIRED")
+    expect(doc.suggestion).toContain(
+      "https://docs.candle.tv/developers/cli-headless#moving-wallets-onto-a-key-that-has-a-signer",
+    )
     expect(doc.message).toContain(
       `the machine that holds key ${FROM}'s signer ${sim.keys.get(FROM)?.active?.fingerprint}`,
     )
@@ -701,4 +704,78 @@ describe("T12: doctor's key-signer rows", () => {
     expect(await keySignerDoctorRows(ctx, { apiKey: API_KEY, deviceToken: DEVICE_TOKEN })).toEqual([])
     expect(h.calls).toHaveLength(0)
   })
+})
+
+describe("signer replacement notices", () => {
+  for (const count of [0, 1]) {
+    test(`tee signer new with active signer on another machine warns and adds JSON replaces (${count} wallets)`, async () => {
+      const clock = createFakeClock(1_000)
+      const sim = new SignerSim(clock.now)
+      const old = pair()
+      const signer = sim.signer(old.publicKeyDer, "q-old")
+      sim.addKey({ keyPrefix: PREFIX, apiKey: API_KEY, active: signer })
+      if (count) sim.wallets.push(wallet("owned", { recorded: "q-old", owner: "q-old" }))
+      sim.approveOnRead = 2
+      const h = machine(sim, { apiKey: true, clock })
+      expect(await run(["tee", "signer", "new", "--key", PREFIX, "--json"], h.deps)).toBe(0)
+      expect(JSON.parse(h.stdout.text).replaces).toEqual({ fingerprint: signer.fingerprint, wallets: count })
+      expect(h.stderr.text).toContain("Approving this request replaces it")
+      expect(h.stderr.text).toContain(
+        count ? `candle keys signer move ${PREFIX}` : "It owns no wallets, so nothing has to move",
+      )
+    })
+  }
+  test("tee signer new with no active signer prints no notice", async () => {
+    const clock = createFakeClock(1_000)
+    const sim = new SignerSim(clock.now)
+    sim.addKey({ keyPrefix: PREFIX, apiKey: API_KEY })
+    sim.approveOnRead = 2
+    const h = machine(sim, { apiKey: true, clock })
+    expect(await run(["tee", "signer", "new", "--key", PREFIX, "--json"], h.deps)).toBe(0)
+    expect(JSON.parse(h.stdout.text).replaces).toBeNull()
+    expect(h.stderr.text).not.toContain("Approving this request replaces it")
+  })
+  test("keys signer approve prints the replace line when active signer owns no wallets", async () => {
+    const sim = new SignerSim(() => 1_000)
+    const old = sim.signer(pair().publicKeyDer, "q-old")
+    const pending = pair()
+    const sha = spkiSha256Of(pending.publicKeyDer)
+    const fingerprint = keySignerFingerprint(sha)
+    sim.addKey({
+      keyPrefix: PREFIX,
+      active: old,
+      pending: {
+        publicKeyDer: pending.publicKeyDer,
+        spkiSha256: sha,
+        fingerprint,
+        userCode: "ABCD-EFGH",
+        expiresAt: 1e12,
+      },
+    })
+    const h = machine(sim, { deviceToken: true, secrets: [fingerprint] })
+    expect(await run(["keys", "signer", "approve", "ABCD-EFGH", "--key", PREFIX], h.deps)).toBe(0)
+    expect(h.stderr.text).toContain(`Approving replaces signer ${old.fingerprint} as this key's active signer.`)
+  })
+})
+
+test("tee signer new echoes supersededPending", async () => {
+  const clock = createFakeClock(1_000)
+  const sim = new SignerSim(clock.now)
+  const pending = pair()
+  const sha = spkiSha256Of(pending.publicKeyDer)
+  sim.addKey({
+    keyPrefix: PREFIX,
+    apiKey: API_KEY,
+    pending: {
+      publicKeyDer: pending.publicKeyDer,
+      spkiSha256: sha,
+      fingerprint: keySignerFingerprint(sha),
+      userCode: "OLD-CODE",
+      expiresAt: 1e12,
+    },
+  })
+  sim.approveOnRead = 2
+  const h = machine(sim, { apiKey: true, clock })
+  expect(await run(["tee", "signer", "new", "--key", PREFIX], h.deps)).toBe(0)
+  expect(h.stderr.text).toContain("An earlier pending request for this key was cancelled.")
 })

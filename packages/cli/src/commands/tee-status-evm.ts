@@ -8,10 +8,10 @@
  * own traded-token list for the wallet, which no route hands to the CLI, so the figure here is the
  * reserve's floor, and the output says so.
  *
- * The vault is read first, and only read: an EVM key that is not a TEE wallet is refused by name
- * before any request, as every Solana-only `tee` command refuses it. A wallet this machine's vault
- * does not hold (an agent machine with no vault) is still reported from the server and the chain.
- * Nothing is signed or written.
+ * By default the selected API key discovers the wallet from the server without reading the vault.
+ * With --verify, the vault is read first: an EVM key that is not a TEE wallet is refused by name
+ * before any request. A wallet this machine's vault does not hold is still reported from the server
+ * and the chain. Nothing is signed or written.
  */
 import type { ParsedArgs } from "../args"
 import { apiRequest } from "../client"
@@ -34,6 +34,8 @@ import { describeRpcFailure } from "../solana-endpoint"
 import { listTradingWallets, sweepReserveFloor, TradingError } from "../trading"
 import { isVaultError, VaultError } from "../vault/errors"
 import { closeVault, readVaultRaw } from "../vault/store"
+import { tradingFailure } from "./swap"
+import { serverTeeWallet, UNVERIFIED_KEY_LINE } from "./tee-status-wallet"
 import { unlockInteractively, vaultPathFor } from "./vault-support"
 
 /** D5: `gas: low` when the wallet's ETH is under this many reserves. */
@@ -88,9 +90,10 @@ export async function teeStatusEvm(ctx: CommandContext, parsed: ParsedArgs, addr
     return 2
   }
 
+  const verify = parsed.booleans.has("--verify")
   let vault: VaultView | null
   try {
-    vault = await readVaultEntry(ctx, checked.address)
+    vault = verify ? await readVaultEntry(ctx, checked.address) : null
   } catch (error) {
     if (error instanceof TradingError && error.code === "USAGE") {
       writeUsageFailure(deps, error.message, json)
@@ -107,11 +110,24 @@ export async function teeStatusEvm(ctx: CommandContext, parsed: ParsedArgs, addr
     throw error
   }
 
+  let serverWallet: Awaited<ReturnType<typeof serverTeeWallet>> | null = null
+  if (!verify) {
+    try {
+      serverWallet = await serverTeeWallet(ctx, address, "evm")
+    } catch (error) {
+      return tradingFailure(ctx, error)
+    }
+  }
+
   const report: Record<string, unknown> = {
     address: checked.address,
     chain: "hood",
     label: vault?.label ?? null,
     source: vault ? "vault" : "server",
+    verified: verify,
+    ...(!verify
+      ? { localState: null, retainedSweepReceipts: null, pendingSweepTransactions: null, vaultLifecycle: null }
+      : {}),
     linkedWalletId: vault?.linkedWalletId ?? null,
     vaultDestination: vault?.vaultDestination ?? null,
     observedAt: new Date(deps.now()).toISOString(),
@@ -121,7 +137,7 @@ export async function teeStatusEvm(ctx: CommandContext, parsed: ParsedArgs, addr
   if (!apiKey) report.server = { error: "no API key available; server state not read" }
   else {
     try {
-      const { rows } = await listTradingWallets(ctx, apiKey)
+      const rows = serverWallet ? [serverWallet.row] : (await listTradingWallets(ctx, apiKey)).rows
       const row = rows.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address))
       if (row) {
         report.linkedWalletId ??= row.id
@@ -184,6 +200,7 @@ export async function teeStatusEvm(ctx: CommandContext, parsed: ParsedArgs, addr
   deps.stdout.write(`${checked.address}  ${report.label ?? ""}\n`)
   deps.stdout.write(`  chain         Hood (4663)\n`)
   deps.stdout.write(`  source        ${report.source}\n`)
+  if (!verify) deps.stdout.write(`${UNVERIFIED_KEY_LINE}\n`)
   if (vault?.vaultDestination) deps.stdout.write(`  vault         ${vault.vaultDestination}\n`)
   const server = report.server as { state?: string; remoteAuthority?: string; error?: string } | undefined
   if (server?.error) deps.stdout.write(`  server        (unavailable: ${server.error})\n`)

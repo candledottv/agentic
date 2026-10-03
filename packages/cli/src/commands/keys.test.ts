@@ -543,7 +543,7 @@ describe("keys create --embedded-wallet (BE-503, R5.11)", () => {
     }
     expect(await run(["keys", "create", "--embedded-wallet", "allow"], deps)).toBe(0)
     expect(prompts).toEqual(["Create the key with the embedded wallet allowed? [y/N] "])
-    expect(stderr.text).toContain("trade, launch and transfer from the account's embedded wallet")
+    expect(stderr.text).toContain("transfers only with transfer:write")
     expect(JSON.parse(String(calls[0]?.init.body)).embeddedWallet).toBe("allowed")
     expect(stdout.text).toContain("Embedded wallet: allowed.")
   })

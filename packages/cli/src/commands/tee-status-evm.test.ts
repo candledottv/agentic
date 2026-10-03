@@ -6,7 +6,7 @@
  * `vault-solana-only.test.ts`.
  */
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { evmAddressFromSecret, hexToBytes } from "../evm-lite"
@@ -87,6 +87,8 @@ describe("tee status on a Hood TEE wallet (D5)", () => {
       address: wallet,
       chain: "hood",
       source: "server",
+      verified: false,
+      vaultDestination: null,
       linkedWalletId: "hood-tee",
       server: { state: "verified-active" },
       balances: { eth: "1", usdg: "2.5" },
@@ -114,12 +116,11 @@ describe("tee status on a Hood TEE wallet (D5)", () => {
     expect(JSON.parse(f.stdout.text).gas).toBe("ok")
   })
 
-  test("a wallet not bound to this key still reports the chain, and says the server has no record", async () => {
+  test("tee status unknown address fails TEE_WALLET_NOT_ON_KEY", async () => {
     const f = await fixture({ ethWei: 10n ** 18n, bound: false })
-    expect(await run(["tee", "status", wallet, "--json"], f.deps)).toBe(0)
-    const report = JSON.parse(f.stdout.text)
-    expect(report.server).toEqual({ error: "not a TEE wallet on this key" })
-    expect(report.gas).toBe("ok")
+    expect(await run(["tee", "status", wallet, "--json"], f.deps)).toBe(1)
+    expect(JSON.parse(f.stdout.text).code).toBe("TEE_WALLET_NOT_ON_KEY")
+    expect(f.calls.some((url) => url.startsWith(EVM_RPC))).toBe(false)
   })
 
   test("a malformed 0x address is a usage error before any request", async () => {
@@ -127,4 +128,15 @@ describe("tee status on a Hood TEE wallet (D5)", () => {
     expect(await run(["tee", "status", `0x${"aB".repeat(20)}`, "--json"], f.deps)).toBe(2)
     expect(f.calls).toEqual([])
   })
+})
+
+test("tee status Hood reads without unlocking a present vault", async () => {
+  const f = await fixture({ ethWei: 10n ** 18n })
+  await writeFile(join(f.deps.env.CANDLE_CONFIG_DIR as string, "vault.enc"), "must never be opened")
+  f.deps.promptSecret = async () => {
+    throw new Error("must not unlock")
+  }
+  f.deps.env.CANDLE_KEYSTORE_PASSPHRASE = "must-not-be-used"
+  expect(await run(["tee", "status", wallet, "--json"], f.deps)).toBe(0)
+  expect(JSON.parse(f.stdout.text)).toMatchObject({ source: "server", verified: false })
 })

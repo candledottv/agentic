@@ -41,13 +41,14 @@ import {
   effectiveProfileFields,
   identityLine,
   isValidProfileName,
+  PRE_PROFILE_FIELDS,
   printIdentity,
   profileSecretRef,
 } from "../profiles"
 import {
   ALL_AGENT_SCOPES,
   formatScopesForSummary,
-  portalDeviceUrl,
+  portalDevicesUrl,
   renderTable,
   writeFailure,
   writeUsageFailure,
@@ -382,7 +383,7 @@ export async function authLogout(args: string[], ctx: CommandContext): Promise<n
   const config = await deps.readConfig()
   // In profile mode these come from the profile's own fields, not the (unused, legacy) top-level
   // ones -- a second profile's key prefix must never leak into a different profile's logout.
-  const { keyPrefix, portalOrigin } = effectiveProfileFields(config, ctx.profile)
+  const { keyPrefix, portalOrigin, deviceTokenPrefix, label } = effectiveProfileFields(config, ctx.profile)
   const deviceToken = await resolveDeviceToken(deps, ctx.profile)
 
   let revokedKey: string | undefined
@@ -424,15 +425,19 @@ export async function authLogout(args: string[], ctx: CommandContext): Promise<n
       ...(config.activeProfile === ctx.profile ? { activeProfile: undefined } : {}),
     })
   } else {
-    // Pre-profile mode: today's behavior, unchanged.
+    // Authentication fields are profile state; machine signer and notice metadata survive.
     await deps.store.delete(SECRET_REFS.deviceToken)
     await deps.store.delete(SECRET_REFS.apiKey)
-    await deps.clearConfig()
+    const patch = Object.fromEntries(PRE_PROFILE_FIELDS.map((field) => [field, undefined]))
+    const remaining = { ...config, ...patch }
+    if (Object.values(remaining).some((value) => value !== undefined)) await deps.writeConfig(patch)
+    else await deps.clearConfig()
   }
 
   // Read from state captured BEFORE the mutations above: the stored portal origin is exactly
   // what makes this pointer right on a non-default backend, and it is gone by this line.
-  const portalUrl = portalDeviceUrl(apiUrl, portalOrigin)
+  const portalUrl = portalDevicesUrl(apiUrl, portalOrigin)
+  const device = deviceTokenPrefix ? { prefix: deviceTokenPrefix, label: label ?? null } : null
 
   // Clearing the store does not clear the shell. Either env var still set means a live credential
   // survives this logout, which "Local credentials cleared." on its own would misrepresent. Same
@@ -441,7 +446,7 @@ export async function authLogout(args: string[], ctx: CommandContext): Promise<n
 
   if (json) {
     deps.stdout.write(
-      `${JSON.stringify({ success: true, revokedKey: revokedKey ?? null, portalUrl, envOverrides: liveEnvOverrides })}\n`,
+      `${JSON.stringify({ success: true, revokedKey: revokedKey ?? null, portalUrl, device, envOverrides: liveEnvOverrides })}\n`,
     )
     return 0
   }
@@ -455,7 +460,11 @@ export async function authLogout(args: string[], ctx: CommandContext): Promise<n
   deps.stdout.write(
     "The device token itself is session-only to revoke -- that is intentional (a stolen token cannot read device metadata or revoke a sibling device). Sign in to the portal to revoke it there.\n",
   )
-  deps.stdout.write(`Portal: ${portalUrl}\n`)
+  if (device)
+    deps.stdout.write(
+      `Device ${device.prefix}${device.label ? ` (${device.label})` : ""} is still live on the server. Revoke it under Connected devices: ${portalUrl}\n`,
+    )
+  else deps.stdout.write(`Connected devices: ${portalUrl}\n`)
   return 0
 }
 

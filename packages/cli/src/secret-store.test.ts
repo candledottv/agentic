@@ -1,3 +1,4 @@
+import { promptHiddenSecret } from "./secret-store"
 /**
  * `EncryptedFileSecretStore`: the CLI's fallback `SecretStore` when no OS keychain is available.
  * Covers the at-rest contract (AES-256-GCM, per-entry salt and persisted iteration count, file
@@ -184,4 +185,15 @@ describe("EncryptedFileSecretStore serializes concurrent writers", () => {
     for (const ref of refs.slice(4)) expect(await reopened.get(ref)).toBe(`value-${ref}`)
     await expect(stat(`${path}.lock`)).rejects.toThrow()
   })
+})
+
+test("promptHiddenSecret without TTY no longer mentions --key-file", async () => {
+  process.stdin.isTTY = false as unknown as true
+  try {
+    await promptHiddenSecret("secret: ")
+    throw new Error("must refuse")
+  } catch (error) {
+    expect((error as Error).message).toBe("No TTY available for hidden input; run this in a terminal.")
+    expect((error as Error).message).not.toContain("--key-file")
+  }
 })

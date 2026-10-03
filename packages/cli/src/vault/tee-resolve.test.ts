@@ -160,7 +160,7 @@ describe("BE-178 finding 8: the secret survives the resolve only for signing", (
   test("tee status on a vault-owned address reports it, and prints no secret", async () => {
     const v = await vaultWithTee()
     const { deps, stdout } = context(v.dir, true)
-    expect(await run(["tee", "status", v.address, "--json"], deps)).toBe(0)
+    expect(await run(["tee", "status", "--verify", v.address, "--json"], deps)).toBe(0)
     const report = JSON.parse(stdout.text.trim()) as Record<string, unknown>
     expect(report.source).toBe("vault")
     expect(report.address).toBe(v.address)
@@ -172,7 +172,7 @@ describe("BE-178 finding 8: the secret survives the resolve only for signing", (
     const v = await vaultWithTee()
     await tamperTeeBlob(v.path)
     const { deps, stdout } = context(v.dir, true)
-    expect(await run(["tee", "status", v.address, "--json"], deps)).toBe(1)
+    expect(await run(["tee", "status", "--verify", v.address, "--json"], deps)).toBe(1)
     const failure = JSON.parse(stdout.text.trim()) as { ok?: boolean; code?: string }
     expect(failure.ok).toBe(false)
     expect(failure.code).toBe("VAULT_BLOB_TAMPERED")

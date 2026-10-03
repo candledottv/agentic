@@ -349,7 +349,7 @@ describe("T37: CC-05 TEE store migration", () => {
         profiles: { t37: { account: ACCOUNT, apiUrl: API, accountCachedAt: Date.now() } },
       })
       const before = await readFile(vaultPath, "utf8")
-      const code = await run(["tee", "status", failedAddress, "--json"], deps)
+      const code = await run(["tee", "status", "--verify", failedAddress, "--json"], deps)
       if (code !== 0) throw new Error(`tee status failed (${code}): ${stderr.text}\n${stdout.text}`)
       expect(code).toBe(0)
       expect(stdout.text).toContain("enabled")
@@ -464,7 +464,7 @@ describe("T37: CC-05 TEE store migration", () => {
         activeProfile: "t37",
         profiles: { t37: { account: ACCOUNT, apiUrl: API, accountCachedAt: Date.now() } },
       })
-      const code = await run(["tee", "status", candidate.address], statusDeps)
+      const code = await run(["tee", "status", "--verify", candidate.address], statusDeps)
       expect(code).toBe(1)
       expect(statusOut.text + (await readFile(vaultPath, "utf8"))).toBeTruthy()
       expect(await readFile(vaultPath, "utf8")).toBe(before)
@@ -509,7 +509,7 @@ describe("T37: CC-05 TEE store migration", () => {
         },
       })
       // Use an enabled migrated address that already has recorded-at-operation identity.
-      const code = await run(["tee", "status", fixture.active.address, "--json"], deps)
+      const code = await run(["tee", "status", "--verify", fixture.active.address, "--json"], deps)
       // enabled entries skip reconcile; identity mismatch is for local-candidate without matching
       // identity. Exercise reconcileGrant directly against the active entry's grantIdentity by
       // forcing a local-candidate with a recorded identity via the stranded path is heavier —

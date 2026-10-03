@@ -110,8 +110,10 @@ import {
   withKeystoreLock,
   writeKeystoreFile,
 } from "../wallet-keystore"
+import { tradingFailure } from "./swap"
 import { namesEvmWallet, teeDisableEvm, teeSweepEvm } from "./tee-evm"
 import { teeStatusEvm } from "./tee-status-evm"
+import { serverTeeWallet, UNVERIFIED_KEY_LINE } from "./tee-status-wallet"
 import { readDisableOutcome } from "./wallets"
 
 const MIN_PASSPHRASE_LENGTH = 12
@@ -1004,45 +1006,63 @@ async function readLifecycle(
 
 export async function teeStatus(args: string[], ctx: CommandContext): Promise<number> {
   const { deps, json } = ctx
-  if (!refuseEnvPassphrase(ctx)) return 1
-  const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"], pathFlags: ["--keystore"] })
+  const parsed = parseArgs(args, {
+    valueFlags: ["--rpc-url", "--keystore"],
+    pathFlags: ["--keystore"],
+    booleanFlags: ["--verify"],
+  })
   if ("error" in parsed) return usage(ctx, parsed.error)
+  const verify = parsed.booleans.has("--verify")
+  if (verify && !refuseEnvPassphrase(ctx)) return 1
   const [address, extra] = parsed.positionals
-  if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee status <address> [--rpc-url <url>]")
+  if (!address || extra !== undefined)
+    return usage(ctx, "Usage: candle tee status <address> [--rpc-url <url>] [--verify]")
   // Phase 4b-1 (BE-392, D5): a Hood TEE wallet reads ETH, USDG and the gas reserve instead.
   if (/^0x/i.test(address)) return await teeStatusEvm(ctx, parsed, address)
   // BE-355 (D1): the balances are always read, over the resolved endpoint; validated before the prompt.
   const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
   if ("error" in solana) return usage(ctx, solana.error)
 
-  const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed))
-  if (!resolved.ok) return resolved.code
+  let local: ResolvedTee | null = null
+  let entry: Pick<KeystoreEntry, "address" | "label" | "linkedWalletId" | "tee">
+  if (verify) {
+    const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed))
+    if (!resolved.ok) return resolved.code
+    local = resolved.resolved
+    entry = local.source === "vault" ? local.legacyView : local.entry
+  } else {
+    try {
+      const { row } = await serverTeeWallet(ctx, address, "solana")
+      entry = { address, label: row.label ?? "", linkedWalletId: row.id }
+    } catch (error) {
+      return tradingFailure(ctx, error)
+    }
+  }
   try {
-    if (resolved.resolved.source === "vault") {
-      const reconciled = await maybeReconcileVaultTee(ctx, resolved.resolved)
+    if (local?.source === "vault") {
+      const reconciled = await maybeReconcileVaultTee(ctx, local)
       if (reconciled.code !== null) return reconciled.code
     }
-    const entry = resolved.resolved.source === "vault" ? resolved.resolved.legacyView : resolved.resolved.entry
-
     const report: Record<string, unknown> = {
       address,
       label: entry.label,
-      source: resolved.resolved.source,
+      source: local?.source ?? "server",
+      verified: verify,
       linkedWalletId: entry.linkedWalletId ?? null,
-      vaultDestination: entry.tee?.vaultDestination ?? null,
-      localState: entry.tee?.sweptAt
-        ? "swept"
-        : entry.tee?.stopRequestedAt
-          ? "stop-requested"
-          : entry.linkedWalletId
-            ? "enabled"
-            : "local-only",
-      retainedSweepReceipts: entry.tee?.sweepReceipts?.length ?? 0,
-      pendingSweepTransactions: entry.tee?.sweepPending?.length ?? 0,
+      vaultDestination: verify ? (entry.tee?.vaultDestination ?? null) : null,
+      vaultLifecycle: local?.source === "vault" ? (local.entry.tee?.lifecycle ?? null) : null,
+      localState: !verify
+        ? null
+        : entry.tee?.sweptAt
+          ? "swept"
+          : entry.tee?.stopRequestedAt
+            ? "stop-requested"
+            : entry.linkedWalletId
+              ? "enabled"
+              : "local-only",
+      retainedSweepReceipts: verify ? (entry.tee?.sweepReceipts?.length ?? 0) : null,
+      pendingSweepTransactions: verify ? (entry.tee?.sweepPending?.length ?? 0) : null,
       observedAt: new Date(deps.now()).toISOString(),
-    }
-    if (resolved.resolved.source === "vault") {
-      report.vaultLifecycle = resolved.resolved.entry.tee?.lifecycle ?? null
     }
 
     if (entry.linkedWalletId) {
@@ -1092,11 +1112,12 @@ export async function teeStatus(args: string[], ctx: CommandContext): Promise<nu
       return 0
     }
     deps.stdout.write(`${address}  ${entry.label}\n`)
-    if (resolved.resolved.source === "vault") {
+    if (local?.source === "vault") {
       deps.stdout.write(`  source        vault (Phase 1 store is read-only for this address)\n`)
-      deps.stdout.write(`  vault life    ${resolved.resolved.entry.tee?.lifecycle ?? "?"}\n`)
+      deps.stdout.write(`  vault life    ${local.entry.tee?.lifecycle ?? "?"}\n`)
     }
-    deps.stdout.write(`  local state   ${report.localState}\n`)
+    if (!verify) deps.stdout.write(`${UNVERIFIED_KEY_LINE}\n`)
+    else deps.stdout.write(`  local state   ${report.localState}\n`)
     if (entry.tee?.vaultDestination) deps.stdout.write(`  vault         ${entry.tee.vaultDestination}\n`)
     const server = report.server as LifecycleResponse | { error: string } | undefined
     if (server) {
@@ -1124,7 +1145,7 @@ export async function teeStatus(args: string[], ctx: CommandContext): Promise<nu
     deps.stdout.write(`  observed at   ${report.observedAt}\n`)
     return 0
   } finally {
-    releaseResolvedTee(resolved.resolved)
+    if (local) releaseResolvedTee(local)
   }
 }
 

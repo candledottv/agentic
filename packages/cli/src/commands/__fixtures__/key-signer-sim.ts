@@ -185,6 +185,7 @@ export class SignerSim {
       this.requests.push({ keyPrefix: key.keyPrefix, publicKeyDer, userCode })
       this.readsSinceRequest = 0
       const expiresAt = this.now() + 10 * 60 * 1000
+      const supersededPending = key.pending !== null
       key.pending = { publicKeyDer, spkiSha256, fingerprint: keySignerFingerprint(spkiSha256), userCode, expiresAt }
       return jsonResponse(200, {
         success: true,
@@ -195,6 +196,7 @@ export class SignerSim {
         verificationUri: "https://staging.candle.tv/dev/agent/device",
         verificationUriComplete: `https://staging.candle.tv/dev/agent/device?signer=${key.keyPrefix}&code=${userCode}`,
         expiresAt,
+        supersededPending,
       })
     }
     for (const key of this.keys.values()) {

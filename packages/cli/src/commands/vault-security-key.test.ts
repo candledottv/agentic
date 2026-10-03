@@ -1059,7 +1059,10 @@ describe("TEE paths honour --factor and --device (the vault-backed TEE lifecycle
         }),
     })
     const status = await teeHarness(v.dir, { secrets: [PIN], fetch: routes.fetch })
-    const code = await run(["tee", "status", TEE, "--json", "--factor", v.keyId, "--no-verify-account"], status.deps)
+    const code = await run(
+      ["tee", "status", "--verify", TEE, "--json", "--factor", v.keyId, "--no-verify-account"],
+      status.deps,
+    )
     expect(status.stderr.text).not.toContain("Error")
     expect(code).toBe(0)
     const report = JSON.parse(status.stdout.text) as {
@@ -1079,12 +1082,12 @@ describe("TEE paths honour --factor and --device (the vault-backed TEE lifecycle
   test("with both factors drivable and no --factor, the TEE command asks which, like every vault command", async () => {
     const v = await vaultWithKeyAndTee()
     const byKey = await teeHarness(v.dir, { lines: [v.keyId], secrets: [PIN] })
-    expect(await run(["tee", "status", TEE, "--json", "--no-verify-account"], byKey.deps)).toBe(0)
+    expect(await run(["tee", "status", "--verify", TEE, "--json", "--no-verify-account"], byKey.deps)).toBe(0)
     expect(byKey.asked[0]).toContain("Unlock with:")
     expect(byKey.calls.map((call) => call.op)).toEqual(["probe", "assert"])
 
     const byPassphrase = await teeHarness(v.dir, { lines: ["passphrase"], secrets: [v.passphrase] })
-    expect(await run(["tee", "status", TEE, "--json", "--no-verify-account"], byPassphrase.deps)).toBe(0)
+    expect(await run(["tee", "status", "--verify", TEE, "--json", "--no-verify-account"], byPassphrase.deps)).toBe(0)
     expect(byPassphrase.calls.map((call) => call.op)).toEqual(["probe"])
   })
 
@@ -1094,7 +1097,9 @@ describe("TEE paths honour --factor and --device (the vault-backed TEE lifecycle
       secrets: [PIN],
       script: { ...goodScript(), assert: { error: { code: "NO_CREDENTIAL", message: "FIDO_ERR_NO_CREDENTIALS" } } },
     })
-    expect(await run(["tee", "status", TEE, "--json", "--factor", v.keyId, "--no-verify-account"], status.deps)).toBe(1)
+    expect(
+      await run(["tee", "status", "--verify", TEE, "--json", "--factor", v.keyId, "--no-verify-account"], status.deps),
+    ).toBe(1)
     expect(JSON.parse(status.stdout.text)).toMatchObject({ code: "VAULT_CREDENTIAL_NOT_PRESENT" })
     expect(status.asked).toEqual([expect.stringContaining("PIN for YubiKey 5 NFC")])
     expect(status.calls.map((call) => call.op)).toEqual(["assert"])

@@ -104,7 +104,14 @@ export function resolveProfileNameForLogin(
   return { ok: true, name: names.length === 1 ? names[0] : undefined }
 }
 
-const PRE_PROFILE_FIELDS = ["apiUrl", "keyPrefix", "deviceTokenPrefix", "scopes", "label", "portalOrigin"] as const
+export const PRE_PROFILE_FIELDS = [
+  "apiUrl",
+  "keyPrefix",
+  "deviceTokenPrefix",
+  "scopes",
+  "label",
+  "portalOrigin",
+] as const
 
 /**
  * The config half of migration: a pre-profile install becomes profile "default", active. The old

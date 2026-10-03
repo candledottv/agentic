@@ -327,7 +327,7 @@ export class EncryptedFileSecretStore implements SecretStore {
  */
 export async function promptHiddenSecret(promptText: string): Promise<string> {
   if (!process.stdin.isTTY) {
-    throw new Error("No TTY available for interactive input; pass --key-file instead")
+    throw new Error("No TTY available for hidden input; run this in a terminal.")
   }
   return readHiddenLine(promptText, realPromptStreams())
 }

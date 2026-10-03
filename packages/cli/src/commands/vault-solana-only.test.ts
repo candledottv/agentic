@@ -97,7 +97,7 @@ describe("E12: Solana-only commands", () => {
     },
     { name: "tee enable <evm address>", argv: (fx) => ["tee", "enable", FIXTURE_EVM_0, "--vault", fx.cold] },
     { name: "tee enable --vault-key <evm>", argv: (fx) => ["tee", "enable", fx.external, "--vault-key", "hood-cold"] },
-    { name: "tee status <evm address>", argv: () => ["tee", "status", FIXTURE_EVM_0] },
+    { name: "tee status <evm address>", argv: () => ["tee", "status", "--verify", FIXTURE_EVM_0] },
     {
       name: "external sweep --to <evm>",
       argv: () => ["external", "sweep", "trader", "--to", "hood-cold", "--rpc-url", RPC],

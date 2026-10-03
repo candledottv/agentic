@@ -199,7 +199,7 @@ describe("T10: CANDLE_CONFIG_DIR is refused too, and doctor reports it", () => {
   // The env-var check used to hold only on `vaultPathFor` / `doctor`. Tee lookups go through
   // `defaultVaultPath` / `defaultTeeKeystorePath` instead; T10 has to cover those too.
   const teeEnvRefused: { name: string; argv: string[] }[] = [
-    { name: "tee status", argv: ["tee", "status", "SomeAddress1111"] },
+    { name: "tee status", argv: ["tee", "status", "--verify", "SomeAddress1111"] },
     { name: "tee new", argv: ["tee", "new"] },
     { name: "tee enable --vault-key", argv: ["tee", "enable", "SomeAddress1111", "--vault-key", "treasury"] },
   ]

@@ -13,6 +13,7 @@ import {
   createTestDeps,
   jsonResponse,
 } from "../test-support"
+import { embeddedWalletLine } from "./keys-embedded-wallet"
 
 const PREFIX = "Ab3dEf9h"
 const API_KEY = `cndl_live_${PREFIX}${"q".repeat(35)}`
@@ -234,4 +235,8 @@ describe("keys self embedded-wallet deny (the profile's own API key)", () => {
     expect(calls).toHaveLength(0)
     expect(JSON.parse(stdout.text).code).toBe("API_KEY_REQUIRED")
   })
+})
+
+test("embeddedWalletLine allowed names transfer:write", () => {
+  expect(embeddedWalletLine("allowed", PREFIX)).toContain("transfers only with transfer:write")
 })

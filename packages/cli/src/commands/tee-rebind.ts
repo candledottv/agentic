@@ -375,7 +375,8 @@ export function missingSignerFailure(missing: Array<{ walletId: string; where: s
     message: `The target key has a signer, so the owner of ${missing.length === 1 ? "this wallet" : "these wallets"} must change with the binding, and this machine does not hold the current owner. Nothing changed.\n${missing
       .map((m) => `  ${m.walletId}: on ${m.where}`)
       .join("\n")}`,
-    suggestion: "Run the same rebind on the machine named for each wallet, with the device token there.",
+    suggestion:
+      "Run the same rebind on the machine named for each wallet. If that is a trading machine with no login, sign in there on a temporary profile for the move: https://docs.candle.tv/developers/cli-headless#moving-wallets-onto-a-key-that-has-a-signer",
   }
 }
 

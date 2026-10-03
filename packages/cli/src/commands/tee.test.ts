@@ -400,7 +400,7 @@ describe("T27: every tee command refuses while CANDLE_KEYSTORE_PASSPHRASE is set
       ["tee", "new"],
       ["tee", "enable", TEE, "--vault", VAULT],
       ["tee", "fund", TEE, "--amount", "1"],
-      ["tee", "status", TEE],
+      ["tee", "status", "--verify", TEE],
       ["tee", "disable", TEE],
       ["tee", "sweep", TEE, "--rpc-url", RPC],
     ]) {
@@ -486,7 +486,7 @@ describe("the store written before the tee rename (hot-wallets.enc)", () => {
     await seedLegacyStore(dir, teeEntry())
     const { fetch, calls } = createRoutedFetch({})
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["tee", "status", TEE, "--json"], deps)).toBe(0)
+    expect(await run(["tee", "status", "--verify", TEE, "--json"], deps)).toBe(0)
     expect(JSON.parse(stdout.text.trim()).localState).toBe("local-only")
     // BE-355: the balances are always read, here over the public default (unrouted in this fixture).
     expect(calls.map((call) => new URL(call.url).host)).toEqual(["api.mainnet-beta.solana.com"])
@@ -514,9 +514,9 @@ describe("the store written before the tee rename (hot-wallets.enc)", () => {
     await seedLegacyStore(dir, teeEntry({ address: otherAddress, privateKey: base58.encode(other.secretKey) }))
     await seedTeeStore(dir, [teeEntry()])
     const { fetch } = createRoutedFetch({})
-    expect(await run(["tee", "status", TEE, "--json"], depsFor(dir, fetch, [PASSPHRASE]).deps)).toBe(0)
+    expect(await run(["tee", "status", "--verify", TEE, "--json"], depsFor(dir, fetch, [PASSPHRASE]).deps)).toBe(0)
     const legacyOnly = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["tee", "status", otherAddress, "--json"], legacyOnly.deps)).toBe(1)
+    expect(await run(["tee", "status", "--verify", otherAddress, "--json"], legacyOnly.deps)).toBe(1)
     expect(JSON.parse(legacyOnly.stdout.text.trim()).code).toBe("TEE_WALLET_UNKNOWN")
   })
 
@@ -524,7 +524,7 @@ describe("the store written before the tee rename (hot-wallets.enc)", () => {
     const dir = await tempDir()
     const { fetch } = createRoutedFetch({})
     const { deps, stdout } = depsFor(dir, fetch, [])
-    expect(await run(["tee", "status", TEE, "--json"], deps)).toBe(1)
+    expect(await run(["tee", "status", "--verify", TEE, "--json"], deps)).toBe(1)
     const parsed = JSON.parse(stdout.text.trim())
     expect(parsed.code).toBe("TEE_STORE_MISSING")
     expect(parsed.message).toContain("tee-wallets.enc")
@@ -700,8 +700,9 @@ describe("tee status (T21 partial, T29)", () => {
       "/rpc": rpcHandler(rpc),
     })
     const { deps, stdout } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["tee", "status", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    expect(await run(["tee", "status", "--verify", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     const parsed = JSON.parse(stdout.text.trim())
+    expect(parsed.verified).toBe(true)
     expect(parsed.server.state).toBe("enabled")
     expect(parsed.balances.lamports).toBe("1000000")
     expect(parsed.balances.tokens).toHaveLength(2)
@@ -715,7 +716,7 @@ describe("tee status (T21 partial, T29)", () => {
     await seedTeeStore(dir, [teeEntry()])
     const { fetch, calls } = createRoutedFetch({})
     const { deps, stdout, stderr } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["tee", "status", TEE, "--json"], deps)).toBe(0)
+    expect(await run(["tee", "status", "--verify", TEE, "--json"], deps)).toBe(0)
     const report = JSON.parse(stdout.text.trim())
     expect(report.localState).toBe("local-only")
     // The only request is the balance read, over the public default, disclosed first on stderr.
@@ -1371,7 +1372,7 @@ describe("BE-355: rate limits (T10, T11)", () => {
     const seen: string[] = []
     const { fetch } = createRoutedFetch({ "/rpc": limitedRpc(seen) })
     const { deps, stdout, stderr } = depsFor(dir, fetch, [PASSPHRASE])
-    expect(await run(["tee", "status", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    expect(await run(["tee", "status", "--verify", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
     const report = JSON.parse(stdout.text.trim())
     expect(report.balances.error).toBe(`RPC_RATE_LIMITED (HTTP 429, retried once). Fix: ${PRE_PROFILE_FIX.join(", ")}`)
     expect(seen).toEqual(["getBalance", "getBalance"])
@@ -3488,5 +3489,55 @@ describe("BE-667: context floor and guarded preflight rejection (S-T1–S-T16)",
     expect(h.rpc.sent).toHaveLength(0)
     expect(r.body.residuals[0]).toMatchObject({ kind: "rpc-context-behind", account: accounts[0]?.pubkey })
     expect(r.body.residuals.filter((r: { kind: string }) => r.kind === "not-attempted")).toHaveLength(3)
+  })
+})
+
+describe("tee status server read", () => {
+  test("tee status reads lifecycle and balances without unlocking a present vault; T27 exception ignores env passphrase", async () => {
+    const dir = await tempDir()
+    await mkdir(join(dir, "vault"), { recursive: true })
+    await Bun.write(join(dir, "vault.enc"), "must never be opened")
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/trading": () =>
+        jsonResponse(200, {
+          scopes: [],
+          privyAppId: null,
+          page: [
+            { id: "lw_tee1", address: TEE, label: "server-tee", chain: "solana", active: true, allowLaunch: false },
+          ],
+          isDone: true,
+        }),
+      "/api/v1/agent/wallets/lw_tee1/lifecycle": () => jsonResponse(200, LIFECYCLE("enabled")),
+      "/rpc": rpcHandler(defaultRpcState()),
+    })
+    const { deps, stdout } = depsFor(dir, fetch, [], {
+      env: { CANDLE_CONFIG_DIR: dir, CANDLE_KEYSTORE_PASSPHRASE: "must-not-be-used" },
+      promptSecret: async () => {
+        throw new Error("status must never unlock")
+      },
+    })
+    expect(await run(["tee", "status", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(0)
+    expect(JSON.parse(stdout.text)).toMatchObject({
+      source: "server",
+      verified: false,
+      label: "server-tee",
+      localState: null,
+      vaultDestination: null,
+      retainedSweepReceipts: null,
+      pendingSweepTransactions: null,
+      vaultLifecycle: null,
+      server: { state: "enabled" },
+      balances: { lamports: "1000000" },
+    })
+  })
+
+  test("tee status unknown address fails TEE_WALLET_NOT_ON_KEY", async () => {
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/trading": () =>
+        jsonResponse(200, { scopes: [], privyAppId: null, page: [], isDone: true }),
+    })
+    const { deps, stdout } = depsFor(await tempDir(), fetch, [])
+    expect(await run(["tee", "status", TEE, "--rpc-url", RPC, "--json"], deps)).toBe(1)
+    expect(JSON.parse(stdout.text)).toMatchObject({ code: "TEE_WALLET_NOT_ON_KEY" })
   })
 })

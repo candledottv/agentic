@@ -76,7 +76,7 @@ export const SIGNER_POLL_MS = 5_000
  * and reported by `doctor`.
  */
 export const DEVICE_TOKEN_BESIDE_SIGNER_LINE =
-  "Warning: this machine holds a device token as well as a key signer. A machine with both can approve its own signer request. Do not log the trading machine in: run candle auth logout here, and approve from the owner's machine."
+  "Warning: this machine holds a device token as well as a key signer. A machine with both can approve its own signer request. Do not leave the trading machine logged in. If you signed in for a move, run candle auth logout --profile <that profile> here, and approve from the owner's machine."
 
 const unsupported = {
   code: "KEY_SIGNER_UNSUPPORTED",
@@ -188,6 +188,7 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
     return reportApproved(ctx, view, recorded, { resumed: true, requested: false })
   }
 
+  let replaces: { fingerprint: string; wallets: number } | null = null
   let resumed = entry !== undefined
   if (entry === undefined) {
     // 5.1 / T10: a different signer of this key on this machine that still owns wallets keeps
@@ -211,6 +212,12 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
         json,
       )
       return 1
+    }
+    if (active !== null) {
+      replaces = { fingerprint: active.fingerprint, wallets: view.wallets.onSigner.length }
+      deps.stderr.write(
+        `Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}\n`,
+      )
     }
     const pair = generatePair()
     const spkiSha256 = spkiSha256Of(pair.publicKeyDer)
@@ -248,6 +255,7 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
         return reportApproved(ctx, reread.ok ? (reread.body as SignerView) : view, recorded, {
           resumed,
           requested: true,
+          replaces,
         })
       }
     }
@@ -265,7 +273,9 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
     verificationUri: string
     verificationUriComplete: string
     expiresAt: number
+    supersededPending?: boolean
   }
+  if (body.supersededPending) deps.stderr.write("An earlier pending request for this key was cancelled.\n")
   // T1: the fingerprint printed is the one the server hashed from what was sent.
   if (body.spkiSha256 !== entry.spkiSha256) {
     writeLocalFailure(
@@ -302,7 +312,7 @@ async function teeSignerNew(args: string[], ctx: CommandContext): Promise<number
     if (now !== null && now.spkiSha256 === entry.spkiSha256) {
       const recorded: KeySignerEntry = { ...entry, signerQuorumId: now.signerQuorumId }
       await saveKeySignerEntry(deps, recorded)
-      return reportApproved(ctx, view, recorded, { resumed, requested: true })
+      return reportApproved(ctx, view, recorded, { resumed, requested: true, replaces })
     }
     if (view.pending === null || view.pending.spkiSha256 !== entry.spkiSha256) {
       writeLocalFailure(
@@ -346,7 +356,7 @@ function reportApproved(
   ctx: CommandContext,
   view: SignerView,
   entry: KeySignerEntry,
-  how: { resumed: boolean; requested: boolean },
+  how: { resumed: boolean; requested: boolean; replaces?: { fingerprint: string; wallets: number } | null },
 ): number {
   const { deps, json } = ctx
   const { onSigner, legacy, moving } = view.wallets
@@ -362,6 +372,7 @@ function reportApproved(
         signerQuorumId: entry.signerQuorumId,
         resumed: how.resumed,
         requested: how.requested,
+        replaces: how.replaces ?? null,
         wallets: {
           onSigner: onSigner.map((w) => w.id),
           legacy: legacy.map((w) => w.id),
@@ -501,6 +512,7 @@ async function keysSignerApprove(args: string[], ctx: CommandContext): Promise<n
       "",
       "Requested from a machine using this key. Compare the fingerprint with what that machine printed.",
       `Wallets on this key: ${all.length}.`,
+      ...(active !== null ? [`Approving replaces signer ${active.fingerprint} as this key's active signer.`] : []),
       ...(active !== null && onActive > 0
         ? [
             `${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.`,

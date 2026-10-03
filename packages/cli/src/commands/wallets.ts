@@ -446,6 +446,8 @@ async function resolveKeyMaterial(
       return { ok: false, message: `Could not read --key-file: ${error instanceof Error ? error.message : error}` }
     }
   }
+  if (!ctx.deps.isTTY.stdin)
+    return { ok: false, message: "No TTY available for private key input; pass --key-file instead" }
   try {
     const promptText =
       chain === "solana"

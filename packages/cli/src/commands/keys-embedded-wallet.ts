@@ -44,7 +44,7 @@ export function effectiveEmbeddedWallet(value: unknown): EmbeddedWalletPermissio
 /** The one-line explanation printed beside a permission, on create and on update. */
 export function embeddedWalletLine(permission: EmbeddedWalletPermission, keyPrefix: string): string {
   return permission === "allowed"
-    ? "Embedded wallet: allowed. This key may trade, launch and transfer from the account's embedded wallet, with Candle signing."
+    ? "Embedded wallet: allowed. This key may use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write."
     : `Embedded wallet: denied. This key cannot spend the account's embedded wallet; the owner can allow it with: candle keys update ${keyPrefix} --embedded-wallet allow`
 }
 
@@ -139,7 +139,7 @@ export async function confirmCreateAllow(ctx: CommandContext): Promise<number | 
     return 1
   }
   deps.stderr.write(
-    "This key will be allowed to trade, launch and transfer from the account's embedded wallet, with Candle signing.\n" +
+    "This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write.\n" +
       "A key that only trades its own TEE wallets does not need it.\n",
   )
   const answer = await deps.promptLine("Create the key with the embedded wallet allowed? [y/N] ")
@@ -258,7 +258,7 @@ export async function keysUpdate(args: string[], ctx: CommandContext): Promise<n
       "",
       `Embedded wallet ${shown.from}  ->  ${shown.to}   (${shown.direction})`,
       widen
-        ? "It can trade, launch and transfer from the account's embedded wallet as soon as you confirm."
+        ? "It can use the account's embedded wallet for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write."
         : "It stops spending the account's embedded wallet from its next request.",
       "",
       "",

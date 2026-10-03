@@ -20,6 +20,7 @@ import {
   jsonResponse,
 } from "../test-support"
 import { CLI_VERSION } from "../version"
+import { authLogout } from "./auth"
 
 const CODE_RESPONSE = {
   deviceCode: "dc_abc123",
@@ -616,8 +617,8 @@ describe("auth logout", () => {
     // Asserted on the Portal line itself rather than on the whole of stdout: the identity line
     // logout now prints ahead of everything names the API host legitimately, and the claim here
     // was only ever about the portal pointer not being derived from it.
-    expect(stdout.text.split("\n").find((line) => line.startsWith("Portal: "))).toBe(
-      "Portal: https://staging.candle.tv/agents",
+    expect(stdout.text.split("\n").find((line) => line.startsWith("Connected devices: "))).toBe(
+      "Connected devices: https://staging.candle.tv/agents?tab=keys#connected-devices",
     )
   })
 
@@ -1161,8 +1162,8 @@ describe("profiles", () => {
     expect(code).toBe(0)
     expect(stdout.text.startsWith("Profile: staging   Account: FaKwE2xX at https://staging.api.candle.tv\n")).toBe(true)
     // And the portal pointer still comes from the profile's own recorded origin.
-    expect(stdout.text.split("\n").find((line) => line.startsWith("Portal: "))).toBe(
-      "Portal: https://staging.candle.tv/agents",
+    expect(stdout.text.split("\n").find((line) => line.startsWith("Connected devices: "))).toBe(
+      "Connected devices: https://staging.candle.tv/agents?tab=keys#connected-devices",
     )
   })
 
@@ -1245,5 +1246,80 @@ describe("auth login never requests transfer:bound", () => {
     const codeCall = calls.find((call) => call.url.endsWith("/api/v1/agent/device/code"))
     expect(codeCall).toBeDefined()
     expect("scopes" in (JSON.parse(String(codeCall?.init.body)) as Record<string, unknown>)).toBe(false)
+  })
+})
+
+describe("logout device and machine metadata", () => {
+  for (const json of [false, true]) {
+    test(`auth logout prints device prefix and label and connected-devices URL (json=${json})`, async () => {
+      const config = createFakeConfigStore({
+        deviceTokenPrefix: "dvc12345",
+        label: "test-box",
+        portalOrigin: "https://staging.candle.tv",
+      })
+      const stdout = createCapture()
+      const deps = createTestDeps({
+        fetch: createRoutedFetch({}).fetch,
+        stdout,
+        readConfig: config.readConfig,
+        writeConfig: config.writeConfig,
+        clearConfig: config.clearConfig,
+      })
+      expect(await authLogout([], { deps, apiUrl: "https://staging.api.candle.tv", json, verifyAccount: false })).toBe(
+        0,
+      )
+      if (json)
+        expect(JSON.parse(stdout.text)).toMatchObject({
+          device: { prefix: "dvc12345", label: "test-box" },
+          portalUrl: "https://staging.candle.tv/agents?tab=keys#connected-devices",
+        })
+      else
+        expect(stdout.text).toContain(
+          "Device dvc12345 (test-box) is still live on the server. Revoke it under Connected devices: https://staging.candle.tv/agents?tab=keys#connected-devices",
+        )
+    })
+  }
+  test("auth logout without --profile keeps keySigners, secretNames, updateNotice, and publicRpcNotice", async () => {
+    const machine = {
+      keySigners: { entries: [], pins: {} },
+      secretNames: ["rpc"],
+      updateNotice: { shownAt: 1, version: "0.11.16" },
+      publicRpcNotice: { shownAt: 1 },
+    }
+    const config = createFakeConfigStore({
+      ...machine,
+      apiUrl: "https://api.test",
+      keyPrefix: "prefix",
+      label: "box",
+      deviceTokenPrefix: "device",
+      portalOrigin: "https://portal.test",
+      scopes: [],
+    })
+    const deps = createTestDeps({
+      fetch: createRoutedFetch({}).fetch,
+      readConfig: config.readConfig,
+      writeConfig: config.writeConfig,
+      clearConfig: async () => {
+        throw new Error("metadata must survive")
+      },
+    })
+    expect(await authLogout([], { deps, apiUrl: "https://api.test", json: true, verifyAccount: false })).toBe(0)
+    expect(await config.readConfig()).toEqual(machine)
+  })
+  test("auth logout without --profile deletes config.json only when machine fields are absent too", async () => {
+    const config = createFakeConfigStore({ keyPrefix: "prefix", deviceTokenPrefix: "device" })
+    let cleared = false
+    const deps = createTestDeps({
+      fetch: createRoutedFetch({}).fetch,
+      readConfig: config.readConfig,
+      writeConfig: config.writeConfig,
+      clearConfig: async () => {
+        cleared = true
+        await config.clearConfig()
+      },
+    })
+    expect(await authLogout([], { deps, apiUrl: "https://api.test", json: true, verifyAccount: false })).toBe(0)
+    expect(cleared).toBe(true)
+    expect(await config.readConfig()).toEqual({})
   })
 })

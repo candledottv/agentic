@@ -27,6 +27,7 @@ import {
   sameEvmAddress,
   toChecksumAddress,
 } from "../evm-lite"
+import { apiKeyPrefix } from "../profiles"
 import { writeLocalFailure, writeUsageFailure } from "../render"
 import { describeRpcFailure, type SolanaClient } from "../solana-endpoint"
 import { isRateLimited, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "../solana-lite"
@@ -222,7 +223,10 @@ export async function swapStatus(args: string[], ctx: CommandContext): Promise<n
     if (!found)
       throw new TradingError(
         "JOB_NOT_FOUND",
-        "No operation found on the selected rail(s). This command does not resend a write.",
+        `No operation ${id} is visible to key ${apiKeyPrefix(key) ?? "this key"} on the ${kind ?? "trade, swap, launch"} rail(s). Nothing was resent.`,
+        {
+          suggestion: `Trade and launch jobs are readable by any key on this account; swap jobs only by the key that placed them. If another key or profile placed it, run: candle swap status ${id} --profile <that profile>`,
+        },
       )
     const result = parsed.booleans.has("--wait")
       ? await waitForSettlement(ctx, key, id, found, facts)

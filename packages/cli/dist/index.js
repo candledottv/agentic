@@ -444,6 +444,9 @@ function writeUsageFailure(deps, message, json) {
     deps.stderr.write(`${message}
 `);
 }
+function portalDevicesUrl(apiUrl, portalOrigin) {
+  return `${portalDeviceUrl(apiUrl, portalOrigin)}?tab=keys#connected-devices`;
+}
 function portalDeviceUrl(apiUrl, portalOrigin) {
   if (portalOrigin) {
     try {
@@ -653,7 +656,14 @@ function profileTable(config, now) {
 }
 var PRE_PROFILE_FIELDS, API_KEY_PREFIXES, API_KEY_RANDOM_LENGTH = 43, INVALID_RPC_HOST = "invalid (fix with profile set)";
 var init_profiles = __esm(() => {
-  PRE_PROFILE_FIELDS = ["apiUrl", "keyPrefix", "deviceTokenPrefix", "scopes", "label", "portalOrigin"];
+  PRE_PROFILE_FIELDS = [
+    "apiUrl",
+    "keyPrefix",
+    "deviceTokenPrefix",
+    "scopes",
+    "label",
+    "portalOrigin"
+  ];
   API_KEY_PREFIXES = ["cndl_live_", "cndl_test_"];
 });
 
@@ -821,7 +831,7 @@ class EncryptedFileSecretStore {
 }
 async function promptHiddenSecret(promptText) {
   if (!process.stdin.isTTY) {
-    throw new Error("No TTY available for interactive input; pass --key-file instead");
+    throw new Error("No TTY available for hidden input; run this in a terminal.");
   }
   return readHiddenLine(promptText, realPromptStreams());
 }
@@ -26900,10 +26910,18 @@ async function assertNotOlderCopy(ctx, path, raw, accept) {
 }
 async function confirmLastSix(ctx, address, what) {
   const expected = address.slice(-6);
-  const typed = (await ctx.deps.promptLine(`Type the last six characters of ${what} (${address}) to confirm: `)).trim();
-  if (typed !== expected) {
-    throw new VaultError("DESTINATION_NOT_CONFIRMED", "That is not the last six characters of that address; nothing was done.", { suggestion: "Nothing was signed. Run it again and type the last six characters exactly as shown." });
+  const normalize3 = (value) => address.startsWith("0x") ? value.toLowerCase() : value;
+  for (let attempt = 0;attempt < 3; attempt++) {
+    const typed = (await ctx.deps.promptLine(`Type the last six characters of ${what} (${address}) to confirm: `)).trim();
+    if (normalize3(typed) === normalize3(expected))
+      return;
+    const difference = Array.from({ length: Math.max(expected.length, typed.length) }, (_, i) => i).find((i) => normalize3(typed)[i] !== normalize3(expected)[i]) ?? 0;
+    ctx.deps.stderr.write(`Expected  ${expected}
+You typed ${typed}
+${" ".repeat(10 + difference)}^ character ${difference + 1} differs
+`);
   }
+  throw new VaultError("DESTINATION_NOT_CONFIRMED", "That is not the last six characters of that address; nothing was done.", { suggestion: "Nothing was signed. Run it again and type the last six characters exactly as shown." });
 }
 function writeVaultFailure(ctx, error) {
   if (isUsageError(error))
@@ -30286,6 +30304,840 @@ var init_wallet_keygen = __esm(() => {
   init_esm();
 });
 
+// src/commands/swap.ts
+import { randomUUID } from "node:crypto";
+function tradingFailure(ctx, error, id) {
+  if (error instanceof TradingUsage) {
+    writeUsageFailure(ctx.deps, error.message, ctx.json);
+    return 2;
+  }
+  writeLocalFailure(ctx.deps, {
+    code: error instanceof TradingError ? error.code : "TRADING_FAILED",
+    message: `${error instanceof Error ? describeRpcFailure(error) : "Trading failed."}${id ? ` Operation ${id}; use candle swap status ${id} before another attempt.` : ""}`,
+    ...error instanceof TradingError && error.suggestion ? { suggestion: error.suggestion } : {},
+    ...error instanceof TradingError && error.details ? { details: error.details } : {}
+  }, ctx.json);
+  return error instanceof TradingError ? error.exitCode : 1;
+}
+function lazySolanaClient(ctx, flag) {
+  let pending;
+  return () => {
+    pending ??= tradingSolanaClient(ctx, flag);
+    return pending;
+  };
+}
+async function tradingRead(ctx, client, read) {
+  try {
+    return await read();
+  } catch (error) {
+    if (isRateLimited(error))
+      throw tradingRateLimited(ctx, client.endpoint.host, error);
+    throw error;
+  }
+}
+function printTradingResult(ctx, result) {
+  ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(result)}
+` : `${JSON.stringify(result, null, 2)}
+`);
+  return 0;
+}
+function reportSettlement(ctx, settlement, out, id) {
+  const parsed = settlementSchema.safeParse(settlement);
+  const reading = parsed.success ? parsed.data : undefined;
+  if (reading?.state === "settled" && reading.settledOutRaw !== undefined)
+    ctx.deps.stderr.write(`settled ${decimalAmount(reading.settledOutRaw, out.decimals)} ${out.asset}
+`);
+  else {
+    const state = !reading ? "not measured" : reading.state === "settled" ? "settled, amount not measured" : reading.state;
+    ctx.deps.stderr.write(`Settlement: ${state}. Re-check with GET /api/v1/agent/swap/jobs/${id} (candle swap status ${id}).
+`);
+  }
+  return settlement !== null && typeof settlement === "object" ? { settlement } : {};
+}
+function validClientId(id) {
+  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id);
+}
+async function lookupOperation(ctx, key, id, kind) {
+  const local = await savedOperation(ctx, key, id);
+  const kinds = kind ? [kind] : local && local.kind !== "lp" ? [local.kind] : ["trade", "swap", "launch"];
+  const found = [];
+  for (const candidate of kinds) {
+    try {
+      found.push({
+        ...operationSchema.parse(await request(ctx, key, jobPath(candidate, id))),
+        kind: candidate,
+        clientTradeId: id
+      });
+    } catch (error) {
+      if (!(error instanceof TradingError && error.code === "JOB_NOT_FOUND"))
+        throw error;
+    }
+  }
+  if (found.length > 1)
+    throw new TradingError("AMBIGUOUS_OPERATION", "This id exists on multiple rails; specify --kind trade, swap or launch.");
+  return found[0] ? { ...found[0], ...local?.signature ? { signature: local.signature } : {} } : null;
+}
+async function swapStatus(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--kind"], booleanFlags: ["--wait"] });
+  if ("error" in parsed || parsed.positionals.length !== 1 || !validClientId(parsed.positionals[0] ?? "") || parsed.values["--kind"] !== undefined && !["trade", "swap", "launch"].includes(parsed.values["--kind"])) {
+    writeUsageFailure(ctx.deps, "Usage: candle swap status <id> [--kind trade|swap|launch] [--wait]", ctx.json);
+    return 2;
+  }
+  try {
+    const key = await tradingKey(ctx);
+    const id = parsed.positionals[0];
+    const kind = parsed.values["--kind"];
+    const facts = bridgeFactsOf((await savedOperation(ctx, key, id))?.bridge);
+    const found = await lookupOperation(ctx, key, id, kind);
+    if (!found)
+      throw new TradingError("JOB_NOT_FOUND", `No operation ${id} is visible to key ${apiKeyPrefix(key) ?? "this key"} on the ${kind ?? "trade, swap, launch"} rail(s). Nothing was resent.`, {
+        suggestion: `Trade and launch jobs are readable by any key on this account; swap jobs only by the key that placed them. If another key or profile placed it, run: candle swap status ${id} --profile <that profile>`
+      });
+    const result = parsed.booleans.has("--wait") ? await waitForSettlement(ctx, key, id, found, facts) : { ...found, ...bridgeStatusField(ctx, found, facts) };
+    return printTradingResult(ctx, result);
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+function bridgeFactsOf(raw) {
+  const parsed = bridgeFactsSchema.safeParse(raw);
+  return parsed.success ? parsed.data : undefined;
+}
+function isBridgeJob(job, facts) {
+  return facts !== undefined || job.bridge !== null && typeof job.bridge === "object";
+}
+function bridgeStatusField(ctx, found, facts) {
+  const job = found.job ?? {};
+  if (found.kind !== "swap" || !isBridgeJob(job, facts))
+    return {};
+  const status = describeBridgeJob(job, facts);
+  for (const line of status.lines)
+    ctx.deps.stderr.write(`${line}
+`);
+  const { lines: _lines, ...rest } = status;
+  return { bridgeStatus: rest };
+}
+function waitFinished(current, facts, sent) {
+  const job = current.job ?? {};
+  if (current.kind === "swap" && isBridgeJob(job, facts)) {
+    const status = describeBridgeJob(job, facts);
+    if (sent && status.phase === "not_broadcast")
+      return false;
+    return bridgeStatusFinal(status);
+  }
+  const settlement = settlementSchema.safeParse(job.settlement);
+  return !settlement.success || settlement.data.state !== "pending";
+}
+async function waitForSettlement(ctx, key, id, first, facts, sent = false) {
+  const deadline = ctx.deps.now() + BRIDGE_WAIT_MS;
+  let current = first;
+  while (!waitFinished(current, facts, sent) && ctx.deps.now() < deadline) {
+    await ctx.deps.sleep(BRIDGE_WAIT_POLL_MS);
+    current = { ...current, ...operationSchema.parse(await request(ctx, key, jobPath(current.kind, id))) };
+  }
+  const field = bridgeStatusField(ctx, current, facts);
+  const finished = waitFinished(current, facts, sent);
+  if (!finished)
+    ctx.deps.stderr.write(`Still not final after ten minutes. Re-check with candle swap status ${id} --wait.
+`);
+  return { ...current, ...field, waited: { final: finished } };
+}
+async function decimalsFor(ctx, asset, client) {
+  if (BASES[asset])
+    return BASES[asset].decimals;
+  const reader = await client();
+  let result;
+  try {
+    result = await tradingRead(ctx, reader, () => reader.rpc.getTokenSupply(asset));
+  } catch (error) {
+    if (error instanceof TradingError)
+      throw error;
+    throw new TradingError("RPC_FAILED", "Solana getTokenSupply failed; no automatic re-send was made.");
+  }
+  const decimals = result.decimals;
+  if (typeof decimals !== "number" || !Number.isInteger(decimals) || decimals < 0 || decimals > 18)
+    throw new TradingError("INVALID_RESPONSE", "RPC returned invalid mint decimals.");
+  return decimals;
+}
+async function assertDeferredExecuteSupported(ctx, key, id) {
+  try {
+    await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
+  } catch (error) {
+    if (error instanceof TradingError && error.code === "JOB_NOT_FOUND")
+      return;
+    throw new TradingError("EMBEDDED_PAYER_UNSUPPORTED", "This Candle deployment cannot hold an embedded-wallet trade back for confirmation, so the quote could not be shown before the money moved. Nothing was built. Name a TEE wallet with --wallet, or point at a deployment that has it.");
+  }
+  throw new TradingError("INVALID_RESPONSE", "The execute route answered for a trade that does not exist.");
+}
+async function swap(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--amount", "--percent", "--wallet", "--to", "--client-trade-id", "--slippage-bps", "--rpc-url"],
+    booleanFlags: ["--yes", "--wait"]
+  });
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  const flags = parsed.values;
+  const id = flags["--client-trade-id"] ?? `swap-${randomUUID()}`;
+  const slippage = Number(flags["--slippage-bps"] ?? "50");
+  if (parsed.positionals.length !== 2 || Boolean(flags["--amount"]) === Boolean(flags["--percent"]) || !validClientId(id) || !Number.isInteger(slippage) || slippage < 0 || slippage > 1e4) {
+    writeUsageFailure(ctx.deps, "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--to <tee>] [--wait] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token. SOL or USDC to ETH or USDG, or back, is a bridge between two TEE wallets.", ctx.json);
+    return 2;
+  }
+  try {
+    const fromAsset = classifyAsset(parsed.positionals[0]);
+    const toAsset = classifyAsset(parsed.positionals[1]);
+    const bridge = bridgePair(fromAsset, toAsset);
+    if (bridge)
+      return await bridgeSwap(ctx, {
+        flags,
+        yes: parsed.booleans.has("--yes"),
+        wait: parsed.booleans.has("--wait"),
+        id,
+        slippage,
+        ...bridge
+      });
+    if (flags["--to"] !== undefined || parsed.booleans.has("--wait"))
+      throw new TradingUsage("--to and --wait are for a bridge: SOL or USDC to ETH or USDG, or back.");
+    const chain2 = pairChain(fromAsset, toAsset);
+    const walletFlag = flags["--wallet"];
+    const named = walletFlag === undefined ? undefined : walletNameChain(walletFlag);
+    if (named !== undefined && named !== chain2)
+      throw chainMismatch(`--wallet ${safeText(walletFlag)}`, named, chain2);
+    if (chain2 === "hood")
+      return await hoodSwap(ctx, {
+        flags,
+        yes: parsed.booleans.has("--yes"),
+        id,
+        slippage,
+        from: fromAsset,
+        to: toAsset
+      });
+    const from = fromAsset.asset;
+    const to = toAsset.asset;
+    if (from === to)
+      throw new TradingError("PAIR_UNSUPPORTED", "Choose two distinct assets.");
+    const fromBase = baseAsset(from);
+    const toBase = baseAsset(to);
+    if (!fromBase && !toBase)
+      throw new TradingError("PAIR_UNSUPPORTED", "A token trade must have SOL, USDC or CNDL on one side; token-to-token routing is unavailable.");
+    if (flags["--amount"])
+      rawAmount(flags["--amount"], 18);
+    const percent = flags["--percent"] ? BigInt(rawAmount(flags["--percent"], 6)) : undefined;
+    if (percent !== undefined && percent > 100000000n)
+      throw new TradingError("INVALID_AMOUNT", "Percent must be greater than 0 and at most 100 (up to six decimal places).");
+    const kind = fromBase && toBase ? "swap" : "trade";
+    const key = await tradingKey(ctx);
+    const prior = await lookupOperation(ctx, key, id, kind);
+    if (prior)
+      return printTradingResult(ctx, prior);
+    const payerWallet = await tradingPayer(ctx, key, flags["--wallet"]);
+    if (payerWallet.kind === "embedded" && kind === "swap")
+      throw new TradingError("PAIR_UNSUPPORTED", "The embedded wallet cannot swap between base assets from this command yet: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a TEE wallet for a base pair.");
+    const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address };
+    const solana = lazySolanaClient(ctx, flags["--rpc-url"]);
+    const decimals = await decimalsFor(ctx, from, solana);
+    const outDecimals = await decimalsFor(ctx, to, solana);
+    let amountRaw;
+    if (percent !== undefined) {
+      const reader = await solana();
+      let balance;
+      if (from === "SOL")
+        balance = await tradingRead(ctx, reader, () => reader.rpc.getBalance(wallet.address));
+      else {
+        const mint = BASES[from]?.mint ?? from;
+        const accounts = (await tradingRead(ctx, reader, () => Promise.all([
+          reader.rpc.getTokenAccountsByOwner(wallet.address, TOKEN_PROGRAM_ID),
+          reader.rpc.getTokenAccountsByOwner(wallet.address, TOKEN_2022_PROGRAM_ID)
+        ]))).flat();
+        balance = accounts.filter((account) => account.mint === mint).reduce((sum, account) => sum + BigInt(account.amountRaw), 0n);
+      }
+      amountRaw = (balance * percent / 100000000n).toString();
+      if (amountRaw === "0")
+        throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.");
+    } else
+      amountRaw = rawAmount(flags["--amount"], decimals);
+    if (BigInt(amountRaw) > BigInt(Number.MAX_SAFE_INTEGER))
+      throw new TradingError("INVALID_AMOUNT", "Amount exceeds the venue's exact integer range.");
+    if (payerWallet.kind === "embedded")
+      await assertDeferredExecuteSupported(ctx, key, id);
+    if (!await claimOperation(ctx, key, id, kind))
+      throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
+    ctx.deps.stderr.write(`Operation: ${id}
+`);
+    const payer = payerWallet.kind === "tee" ? { type: "linked", linkedWalletId: payerWallet.wallet.id } : { type: "main" };
+    const built = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/build", {
+      clientTradeId: id,
+      from,
+      to,
+      amountRaw,
+      maxSlippageBps: slippage,
+      payer
+    }) : await request(ctx, key, "/api/v1/trade/agent/build", {
+      clientTradeId: id,
+      chain: "solana",
+      mint: fromBase ? to : from,
+      side: fromBase ? "buy" : "sell",
+      quoteAsset: (fromBase ?? toBase)?.toLowerCase(),
+      amountRaw,
+      maxSlippageBps: slippage,
+      payer,
+      ...payerWallet.kind === "embedded" ? { deferExecution: true } : {}
+    });
+    if (built.job || built.status === "executed")
+      return printTradingResult(ctx, { ...built, clientTradeId: id, kind });
+    const data = swapBuildSchema.parse(kind === "swap" ? built.payload : built);
+    if (kind === "swap" && (data.venue !== "jupiter" || data.recipient !== wallet.address))
+      throw new TradingError("INVALID_RESPONSE", "A TEE base swap must use Jupiter and return to its payer.");
+    if (kind === "trade" && (built.chain !== "solana" || built.walletAddress !== wallet.address))
+      throw new TradingError("INVALID_RESPONSE", "The token build does not name the requested Solana payer.");
+    const artifacts = kind === "swap" ? { ...data, transactionBase64: undefined, quoteSource: undefined, quoteAsset: undefined } : data.artifacts;
+    if (!artifacts)
+      throw new TradingError("INVALID_RESPONSE", "Missing quote artifacts.");
+    if (kind === "trade" && artifacts.quoteAsset !== (fromBase ?? toBase)?.toLowerCase())
+      throw new TradingError("PAIR_UNSUPPORTED", `This token settles in ${artifacts.quoteAsset ?? "an unknown asset"}, not the requested pair. Nothing was signed.`);
+    if (data?.status !== "built" || typeof data.minOutRaw !== "string" || !/^\d+$/.test(data.minOutRaw) || !data.fee || !Number.isFinite(data.fee.bps))
+      throw new TradingError("INVALID_RESPONSE", "Candle did not return a complete quote; nothing was signed.");
+    const minimumRaw = !fromBase && artifacts.venue === "curve" ? (BigInt(data.minOutRaw) > BigInt(data.fee.feeRaw) ? BigInt(data.minOutRaw) - BigInt(data.fee.feeRaw) : 0n).toString() : data.minOutRaw;
+    const quote = {
+      intent: `Swap ${decimalAmount(amountRaw, decimals)} ${from} to ${to}`,
+      wallet: wallet.address,
+      venue: artifacts.quoteSource ?? artifacts.venue,
+      priceImpactPct: artifacts.priceImpactPct ?? null,
+      fee: data.fee,
+      minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to}`,
+      minOutRaw: data.minOutRaw,
+      minimumReceivedRaw: minimumRaw,
+      tokenRisks: artifacts.tokenRisks ?? []
+    };
+    if (!await confirmQuote(ctx, quote, parsed.booleans.has("--yes")))
+      return printTradingResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind, quote });
+    if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
+      throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
+    if (payerWallet.kind === "embedded") {
+      const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
+      return printTradingResult(ctx, {
+        ...executed,
+        clientTradeId: id,
+        kind,
+        quote,
+        wallet: safeText(payerWallet.address)
+      });
+    }
+    const transaction = kind === "swap" ? data.transactionsBase64?.[0] : artifacts.transactionBase64;
+    if (kind === "swap" && data.transactionsBase64?.length !== 1)
+      throw new TradingError("INVALID_RESPONSE", "A TEE swap must contain exactly one same-chain transaction.");
+    if (!transaction)
+      throw new TradingError("INVALID_RESPONSE", "Missing transaction.");
+    const signed = await relaySign(ctx, key, payerWallet.wallet, transaction);
+    const result = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/submit", {
+      clientTradeId: id,
+      swapId: data.swapId,
+      signedTransactionsBase64: [signed]
+    }) : await request(ctx, key, "/api/v1/trade/agent/submit", { clientTradeId: id, signedTransactions: [signed] });
+    const settled = kind === "swap" ? reportSettlement(ctx, result.payload?.settlement, { asset: to, decimals: outDecimals }, id) : {};
+    return printTradingResult(ctx, {
+      ...result,
+      clientTradeId: id,
+      kind,
+      quote,
+      wallet: safeText(wallet.address),
+      ...settled
+    });
+  } catch (error) {
+    return tradingFailure(ctx, error, id);
+  }
+}
+function lazyEvmRpc(ctx, flag) {
+  let rpc;
+  return () => {
+    if (rpc)
+      return rpc;
+    const resolved = resolveEvmRpcUrl(flag, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url");
+    if ("error" in resolved)
+      throw new TradingUsage(resolved.error);
+    ctx.deps.stderr.write(`Reading from ${rpcHostOf2(resolved.url)} (Hood RPC; reads only, nothing is sent there)
+`);
+    rpc = createEvmRpc(resolved.url, ctx.deps.fetch);
+    return rpc;
+  };
+}
+async function evmRead(what, read) {
+  try {
+    return await read();
+  } catch (error) {
+    if (error instanceof TradingError || error instanceof TradingUsage)
+      throw error;
+    throw new TradingError("RPC_FAILED", `Reading ${what} over the Hood RPC failed; nothing was built or signed.`);
+  }
+}
+async function hoodDecimals(asset, rpc) {
+  const base = asset.base ? HOOD_BASES[asset.base] : undefined;
+  if (base)
+    return base.decimals;
+  const decimals = await evmRead(`${asset.asset} decimals()`, () => rpc().erc20Decimals(asset.asset));
+  if (decimals > 36)
+    throw new TradingError("INVALID_RESPONSE", "The token's decimals() is out of range.");
+  return decimals;
+}
+async function recordTradedToken(ctx, wallet, token) {
+  const skipped = (reason) => `Notice: the sealed EVM record was not updated for ${token} (${reason}). The leg landed. A later sweep still finds this token with --token ${token}, or with --from-block.`;
+  const append = ctx.deps.appendEvmRecord;
+  let notice;
+  if (!append)
+    notice = skipped("this CLI build has no sealed EVM record writer");
+  else {
+    try {
+      const outcome = await append(ctx, { kind: "token", wallet: toChecksumAddress(wallet), token });
+      notice = outcome.appended ? outcome.notice : skipped(outcome.notice);
+    } catch (error) {
+      notice = skipped(error instanceof Error ? error.message : "the append failed");
+    }
+  }
+  if (notice)
+    ctx.deps.stderr.write(`${safeText(notice)}
+`);
+  return notice;
+}
+function describeHoodLegs(first, hasFee, primary = "trade") {
+  const kinds = plannedLegKinds(first.legKind, first.plannedLegCount, hasFee, primary);
+  const names = {
+    approval: "approve",
+    permit2Approval: "Permit2 approve",
+    trade: "trade",
+    feeTransfer: "fee",
+    bridgeDeposit: "bridge deposit"
+  };
+  return kinds ? kinds.map((kind) => names[kind] ?? kind) : [`${first.plannedLegCount} legs, starting with ${names[first.legKind] ?? first.legKind}`];
+}
+async function hoodSwap(ctx, args) {
+  const { flags, id, from, to } = args;
+  if (from.asset === to.asset)
+    throw new TradingError("PAIR_UNSUPPORTED", "Choose two distinct assets.");
+  if (!from.base && !to.base)
+    throw new TradingError("PAIR_UNSUPPORTED", "A Hood token trade must have ETH or USDG on one side; token-to-token routing is unavailable.");
+  if (flags["--amount"])
+    rawAmount(flags["--amount"], 18);
+  const percent = flags["--percent"] ? BigInt(rawAmount(flags["--percent"], 6)) : undefined;
+  if (percent !== undefined && percent > 100000000n)
+    throw new TradingError("INVALID_AMOUNT", "Percent must be greater than 0 and at most 100 (up to six decimal places).");
+  const kind = from.base && to.base ? "swap" : "trade";
+  const key = await tradingKey(ctx);
+  const prior = await lookupOperation(ctx, key, id, kind);
+  if (prior)
+    return printTradingResult(ctx, prior);
+  const payer = await tradingPayer(ctx, key, flags["--wallet"], "swap:write", "hood");
+  if (payer.kind === "embedded" && kind === "swap")
+    throw new TradingError("PAIR_UNSUPPORTED", "The embedded wallet cannot swap ETH and USDG from this command: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a Hood TEE wallet.");
+  const payerAddress = payer.kind === "tee" ? payer.wallet.address : payer.address;
+  const rpc = lazyEvmRpc(ctx, flags["--rpc-url"]);
+  const decimals = await hoodDecimals(from, rpc);
+  const outDecimals = await hoodDecimals(to, rpc);
+  let amountRaw;
+  if (percent !== undefined) {
+    const balance = from.asset === "ETH" ? await evmRead("the ETH balance", () => rpc().getBalance(payerAddress)) : await evmRead(`the ${from.asset} balance`, () => rpc().erc20BalanceOf(from.asset === "USDG" ? HOOD_USDG_ADDRESS : from.asset, payerAddress));
+    amountRaw = (balance * percent / 100000000n).toString();
+    if (amountRaw === "0")
+      throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.");
+  } else
+    amountRaw = rawAmount(flags["--amount"], decimals);
+  if (payer.kind === "embedded")
+    await assertDeferredExecuteSupported(ctx, key, id);
+  if (!await claimOperation(ctx, key, id, kind))
+    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
+  ctx.deps.stderr.write(`Operation: ${id}
+`);
+  const payerBody = payer.kind === "tee" ? { type: "linked", linkedWalletId: payer.wallet.id } : { type: "main" };
+  const base = from.base ?? to.base;
+  const token = from.base ? to.asset : from.asset;
+  const built = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/build", {
+    clientTradeId: id,
+    from: from.asset,
+    to: to.asset,
+    amountRaw,
+    maxSlippageBps: args.slippage,
+    payer: payerBody
+  }) : await request(ctx, key, "/api/v1/trade/agent/build", {
+    clientTradeId: id,
+    chain: "hood",
+    mint: token,
+    side: from.base ? "buy" : "sell",
+    quoteAsset: base.toLowerCase(),
+    amountRaw,
+    maxSlippageBps: args.slippage,
+    payer: payerBody,
+    ...payer.kind === "embedded" ? { deferExecution: true } : {}
+  });
+  if (built.job || built.status === "executed")
+    return printTradingResult(ctx, { ...built, clientTradeId: id, kind });
+  const body = kind === "swap" ? built.payload : built;
+  const data = swapBuildSchema.parse(body);
+  const echoed = kind === "swap" ? body?.recipient : body?.walletAddress;
+  if (body?.chain !== "hood" || typeof echoed !== "string" || echoed.toLowerCase() !== payerAddress.toLowerCase())
+    throw new TradingError("INVALID_RESPONSE", "The Hood build does not name the requested payer; nothing was signed.");
+  const artifacts = kind === "swap" ? { ...data, quoteAsset: undefined, quoteSource: undefined } : data.artifacts;
+  if (!artifacts)
+    throw new TradingError("INVALID_RESPONSE", "Missing quote artifacts.");
+  if (kind === "trade" && artifacts.quoteAsset !== base.toLowerCase())
+    throw new TradingError("PAIR_UNSUPPORTED", `This token settles in ${artifacts.quoteAsset ?? "an unknown asset"}, not ${base}. Nothing was signed.`);
+  let sequenced;
+  if (payer.kind === "tee") {
+    const parsed = sequencedSchema.safeParse(body);
+    if (!parsed.success)
+      throw new TradingError("SEQUENCED_RAIL_REQUIRED", "A Hood TEE wallet trades one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.");
+    sequenced = parsed.data;
+  }
+  const minimumRaw = !from.base && artifacts.venue === "curve" ? (BigInt(data.minOutRaw) > BigInt(data.fee.feeRaw) ? BigInt(data.minOutRaw) - BigInt(data.fee.feeRaw) : 0n).toString() : data.minOutRaw;
+  const quote = {
+    intent: `Swap ${decimalAmount(amountRaw, decimals)} ${from.asset} to ${to.asset} on Hood`,
+    wallet: payerAddress,
+    venue: artifacts.quoteSource ?? artifacts.venue,
+    priceImpactPct: artifacts.priceImpactPct ?? null,
+    fee: data.fee,
+    minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to.asset}`,
+    minOutRaw: data.minOutRaw,
+    minimumReceivedRaw: minimumRaw,
+    tokenRisks: artifacts.tokenRisks ?? []
+  };
+  if (sequenced) {
+    const leg = sequenced.nextLeg;
+    const maxFee = BigInt(leg.maxFeePerGas);
+    const reserve = sweepReserveFloor(maxFee, kind === "trade" ? [token] : []);
+    quote.legs = describeHoodLegs(sequenced, BigInt(data.fee.feeRaw) > 0n);
+    quote.gas = `the ${sequenced.legKind} leg up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei); each later leg is priced by Candle when it becomes next`;
+    quote.reserve = `at least ${formatUnits(reserve.wei, 18)} ETH stays in the wallet for a sweep home (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee); a trade never spends it`;
+    quote.operationId = sequenced.operationId;
+  }
+  if (!await confirmQuote(ctx, quote, args.yes)) {
+    if (sequenced)
+      ctx.deps.stderr.write(`Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade from it is refused as WALLET_BUSY until then.
+`);
+    return printTradingResult(ctx, {
+      success: true,
+      status: "cancelled",
+      clientTradeId: id,
+      kind,
+      quote,
+      ...sequenced ? { operationId: sequenced.operationId, walletHeldUntil: sequenced.expiresAt } : {}
+    });
+  }
+  if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
+    throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
+  if (payer.kind === "embedded") {
+    const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
+    return printTradingResult(ctx, { ...executed, clientTradeId: id, kind, quote, wallet: safeText(payerAddress) });
+  }
+  const wallet = payer.wallet;
+  if (wallet.chain !== "evm" || !sequenced)
+    throw chainMismatch(`TEE wallet ${wallet.id}`, wallet.chain === "evm" ? "hood" : "solana", "hood");
+  const recorded = kind === "trade" ? token : HOOD_USDG_ADDRESS;
+  const notices = [];
+  const run = await runSequencedLegs(ctx, key, {
+    wallet,
+    first: sequenced,
+    submitPath: kind === "swap" ? "/api/v1/agent/swap/submit" : "/api/v1/trade/agent/submit",
+    submitFields: kind === "swap" ? { clientTradeId: id, swapId: data.swapId } : { clientTradeId: id },
+    unwrap: (answer) => kind === "swap" ? answer.payload ?? {} : answer,
+    clientId: id,
+    kind,
+    allowedLegs: HOOD_TRADE_LEGS,
+    onLanded: async (_leg) => {
+      const notice = await recordTradedToken(ctx, wallet.address, toChecksumAddress(recorded));
+      if (notice)
+        notices.push(notice);
+    }
+  });
+  const settled = kind === "swap" ? reportSettlement(ctx, run.final.settlement, { asset: to.asset, decimals: outDecimals }, id) : {};
+  return printTradingResult(ctx, {
+    ...run.final,
+    ...settled,
+    clientTradeId: id,
+    kind,
+    chain: "hood",
+    quote,
+    wallet: safeText(wallet.address),
+    operationId: sequenced.operationId,
+    landedLegs: run.landed,
+    evmRecord: { token: toChecksumAddress(recorded), notices }
+  });
+}
+async function bridgeOriginBalance(ctx, from, address, solana, evm) {
+  if (from === "ETH")
+    return evmRead("the ETH balance", () => evm().getBalance(address));
+  if (from === "USDG")
+    return evmRead("the USDG balance", () => evm().erc20BalanceOf(HOOD_USDG_ADDRESS, address));
+  const reader = await solana();
+  if (from === "SOL")
+    return tradingRead(ctx, reader, () => reader.rpc.getBalance(address));
+  const mint = BASES.USDC?.mint;
+  const accounts = (await tradingRead(ctx, reader, () => Promise.all([
+    reader.rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
+    reader.rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
+  ]))).flat();
+  return accounts.filter((account) => account.mint === mint).reduce((sum, account) => sum + BigInt(account.amountRaw), 0n);
+}
+async function bridgeSwap(ctx, args) {
+  const { flags, id, from, to } = args;
+  const origin = BRIDGE_ASSETS[from].chain;
+  const destination = BRIDGE_ASSETS[to].chain;
+  const walletFlag = flags["--wallet"];
+  const named = walletFlag === undefined ? undefined : walletNameChain(walletFlag);
+  if (named !== undefined && named !== origin)
+    throw chainMismatch(`--wallet ${safeText(walletFlag)}`, named, origin);
+  if (flags["--amount"])
+    rawAmount(flags["--amount"], 18);
+  const percent = flags["--percent"] ? BigInt(rawAmount(flags["--percent"], 6)) : undefined;
+  if (percent !== undefined && percent > 100000000n)
+    throw new TradingError("INVALID_AMOUNT", "Percent must be greater than 0 and at most 100 (up to six decimal places).");
+  const key = await tradingKey(ctx);
+  const prior = await lookupOperation(ctx, key, id, "swap");
+  if (prior)
+    return printTradingResult(ctx, {
+      ...prior,
+      ...bridgeStatusField(ctx, prior, bridgeFactsOf((await savedOperation(ctx, key, id))?.bridge))
+    });
+  const payer = await tradingPayer(ctx, key, walletFlag, "swap:write", origin);
+  if (payer.kind !== "tee")
+    throw new TradingError("CHAIN_MISMATCH", `Only a TEE wallet bridges, and the embedded wallet ${safeText(payer.address)} is not one. Name a ${chainName(origin)} TEE wallet with --wallet. Nothing was built.`);
+  const wallet = payer.wallet;
+  const { rows } = await listTradingWallets(ctx, key, "swap:write");
+  const onDestination = rows.filter((row) => rowChain(row) === destination);
+  const toFlag = flags["--to"];
+  let toWalletId;
+  let candidates = onDestination.filter((row) => row.active);
+  if (toFlag !== undefined) {
+    const matches = rows.filter((row) => matchesName(row, toFlag));
+    const match = matches[0];
+    if (matches.length > 1)
+      throw new TradingError("TEE_WALLET_REQUIRED", `"${safeText(toFlag)}" matches ${matches.length} TEE wallets on this key: ${matches.map(describeWallet).join("; ")}. Name one by id or address.`);
+    if (!match || rowChain(match) !== destination)
+      throw new TradingError("BRIDGE_DESTINATION_MISSING", `--to ${safeText(toFlag)} is not a ${chainName(destination)} TEE wallet on this key. A bridge lands only in this key's own TEE wallet on ${chainName(destination)}${onDestination.length > 0 ? `: ${onDestination.map(describeWallet).join("; ")}` : ""}. Nothing was built.`);
+    if (!match.active)
+      throw new TradingError("TEE_WALLET_INACTIVE", `The destination ${describeWallet(match)} is not a verified-active TEE wallet. Nothing was built.`);
+    toWalletId = match.id;
+    candidates = [match];
+  } else if (candidates.length !== 1) {
+    throw new TradingError("BRIDGE_DESTINATION_MISSING", candidates.length === 0 ? `This key has no active ${chainName(destination)} TEE wallet to bridge into. Promote one onto this key (candle vault promote), then bridge. Nothing was built.` : `This key has more than one ${chainName(destination)} TEE wallet; name the destination with --to: ${candidates.map(describeWallet).join("; ")}. Nothing was built.`);
+  }
+  const solana = lazySolanaClient(ctx, flags["--rpc-url"]);
+  const evm = lazyEvmRpc(ctx, flags["--rpc-url"]);
+  const decimals = BRIDGE_ASSETS[from].decimals;
+  let amountRaw;
+  if (percent !== undefined) {
+    const balance = await bridgeOriginBalance(ctx, from, wallet.address, solana, evm);
+    amountRaw = (balance * percent / 100000000n).toString();
+    if (amountRaw === "0")
+      throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.");
+  } else
+    amountRaw = rawAmount(flags["--amount"], decimals);
+  if (!await claimOperation(ctx, key, id, "swap"))
+    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
+  ctx.deps.stderr.write(`Operation: ${id}
+`);
+  const built = await request(ctx, key, "/api/v1/agent/swap/build", {
+    clientTradeId: id,
+    from,
+    to,
+    amountRaw,
+    maxSlippageBps: args.slippage,
+    payer: { type: "linked", linkedWalletId: wallet.id },
+    ...toWalletId !== undefined ? { toWalletId } : {}
+  });
+  if (built.job || built.status === "executed")
+    return printTradingResult(ctx, { ...built, clientTradeId: id, kind: "swap" });
+  const body = built.payload ?? {};
+  const parsedBuild = bridgeBuildSchema.safeParse(body);
+  if (!parsedBuild.success)
+    throw new TradingError("INVALID_RESPONSE", "Candle did not return a complete bridge quote; nothing was signed.");
+  const data = parsedBuild.data;
+  if (data.venue !== "relay")
+    throw new TradingError("INVALID_RESPONSE", `A bridge goes through Relay, not ${safeText(data.venue)}; nothing was signed.`);
+  if (data.fee.bps !== 0 || data.fee.feeRaw !== "0")
+    throw new TradingError("INVALID_RESPONSE", "A bridge carries no Candle fee, and this quote has one; nothing was signed.");
+  const recipient = candidates.find((row) => destination === "hood" ? sameEvmAddress(row.address, data.recipient) : row.address === data.recipient);
+  if (!recipient)
+    throw new TradingError("INVALID_RESPONSE", `Candle named ${safeText(data.recipient)} as the destination, which is not ${toWalletId !== undefined ? "the TEE wallet --to named" : `this key's ${chainName(destination)} TEE wallet`}; nothing was signed.`);
+  const facts = {
+    from,
+    to,
+    recipient: recipient.address,
+    ...data.statusChecks[0] !== undefined ? { statusCheck: data.statusChecks[0] } : {}
+  };
+  await saveOperationBridge(ctx, key, id, { ...facts });
+  const refused = (problem) => new TradingError("RELAY_STEP_REFUSED", `Relay's deposit did not pass this machine's check (${problem}); nothing was signed.`);
+  let sequenced;
+  let transaction;
+  const hoodOrigin = from === "ETH" || from === "USDG" ? from : undefined;
+  if (hoodOrigin) {
+    const parsedLeg = sequencedSchema.safeParse(body);
+    if (!parsedLeg.success)
+      throw new TradingError("SEQUENCED_RAIL_REQUIRED", "A Hood TEE wallet bridges one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.");
+    sequenced = parsedLeg.data;
+    if (typeof data.walletAddress !== "string" || !sameEvmAddress(data.walletAddress, wallet.address))
+      throw new TradingError("INVALID_RESPONSE", "The Hood build does not name the requested payer; nothing was signed.");
+    const plan = plannedLegKinds(sequenced.legKind, sequenced.plannedLegCount, false, "bridgeDeposit");
+    if (!bridgePlanAdmitted(hoodOrigin, plan))
+      throw refused(`the plan is ${sequenced.plannedLegCount} leg(s) starting with ${sequenced.legKind}`);
+    const problem = relayHoodLegProblem(sequenced.legKind, sequenced.nextLeg, {
+      origin: hoodOrigin,
+      payer: wallet.address,
+      amountRaw
+    });
+    if (problem)
+      throw refused(problem);
+  } else {
+    if (data.transactionsBase64?.length !== 1)
+      throw refused(`Candle returned ${data.transactionsBase64?.length ?? 0} transactions, not one deposit`);
+    transaction = data.transactionsBase64[0];
+    const reader = await solana();
+    const problem = await tradingRead(ctx, reader, () => relaySolanaDepositProblem(transaction, wallet.address, reader.rpc));
+    if (problem)
+      throw refused(problem);
+  }
+  const outDecimals = BRIDGE_ASSETS[to].decimals;
+  const minimumRaw = (BigInt(data.expectedOutRaw) * BigInt(1e4 - args.slippage) / 10000n).toString();
+  const quote = {
+    intent: `Bridge ${decimalAmount(amountRaw, decimals)} ${from} on ${chainName(origin)} to ${to} on ${chainName(destination)}`,
+    wallet: wallet.address,
+    venue: "relay",
+    priceImpactPct: null,
+    minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to} (Relay's estimate ${decimalAmount(data.expectedOutRaw, outDecimals)} ${to}, less the ${args.slippage} bps slippage bound)`,
+    minimumReceivedRaw: minimumRaw,
+    expectedOutRaw: data.expectedOutRaw,
+    destination: `${recipient.label ? `${recipient.label} ` : ""}${recipient.address} (${chainName(destination)} TEE wallet on this key)`,
+    candleFee: "none",
+    relayFees: data.venueCostUsd !== undefined ? `about $${data.venueCostUsd} as Relay reports it` : "not reported",
+    estimatedTime: data.venueTimeEstimateSec !== undefined ? `about ${data.venueTimeEstimateSec}s as Relay reports it` : "not reported",
+    tokenRisks: []
+  };
+  if (sequenced) {
+    const leg = sequenced.nextLeg;
+    const maxFee = BigInt(leg.maxFeePerGas);
+    const reserve = sweepReserveFloor(maxFee, []);
+    quote.legs = describeHoodLegs(sequenced, false, "bridgeDeposit");
+    quote.gas = `the ${sequenced.legKind} leg up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei); each later leg is priced by Candle when it becomes next`;
+    quote.reserve = `at least ${formatUnits(reserve.wei, 18)} ETH stays in the wallet for a sweep home (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee); a bridge never spends it`;
+    quote.operationId = sequenced.operationId;
+  }
+  if (!await confirmQuote(ctx, quote, args.yes)) {
+    if (sequenced)
+      ctx.deps.stderr.write(`Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade or sweep from it waits until then.
+`);
+    return printTradingResult(ctx, {
+      success: true,
+      status: "cancelled",
+      clientTradeId: id,
+      kind: "swap",
+      quote,
+      ...sequenced ? { operationId: sequenced.operationId, walletHeldUntil: sequenced.expiresAt } : {}
+    });
+  }
+  if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
+    throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
+  let result;
+  let depositHash;
+  if (sequenced && hoodOrigin) {
+    const run = await runSequencedLegs(ctx, key, {
+      wallet,
+      first: sequenced,
+      submitPath: "/api/v1/agent/swap/submit",
+      submitFields: { clientTradeId: id, swapId: data.swapId },
+      unwrap: (answer) => answer.payload ?? {},
+      clientId: id,
+      kind: "swap",
+      primaryLeg: "bridgeDeposit",
+      allowedLegs: bridgeLegKinds(hoodOrigin),
+      checkLeg: (kind, leg) => relayHoodLegProblem(kind, leg, { origin: hoodOrigin, payer: wallet.address, amountRaw }) === null,
+      onLanded: async () => {}
+    });
+    depositHash = run.landed.find((leg) => leg.kind === "bridgeDeposit")?.hash;
+    result = {
+      ...run.final,
+      chain: "hood",
+      operationId: sequenced.operationId,
+      landedLegs: run.landed
+    };
+  } else {
+    const signed = await relaySign(ctx, key, wallet, transaction);
+    const submitted = await request(ctx, key, "/api/v1/agent/swap/submit", {
+      clientTradeId: id,
+      swapId: data.swapId,
+      signedTransactionsBase64: [signed]
+    });
+    const payload = submitted.payload ?? {};
+    const hashes = Array.isArray(payload.hashes) ? payload.hashes.filter((h) => typeof h === "string") : [];
+    depositHash = hashes[0];
+    result = submitted;
+  }
+  ctx.deps.stderr.write(`Deposit ${depositHash ? safeText(depositHash) : "sent"}: filling.${args.wait ? "" : ` Check it with candle swap status ${id} (add --wait to follow it).`}
+`);
+  const receipt = {
+    ...result,
+    clientTradeId: id,
+    kind: "swap",
+    bridge: { from, to, destination: recipient.address, ...depositHash ? { depositHash } : {} },
+    quote,
+    wallet: safeText(wallet.address)
+  };
+  if (!args.wait)
+    return printTradingResult(ctx, receipt);
+  try {
+    const found = await lookupOperation(ctx, key, id, "swap");
+    if (!found)
+      return printTradingResult(ctx, { ...receipt, waited: { final: false } });
+    const waited = await waitForSettlement(ctx, key, id, found, facts, true);
+    return printTradingResult(ctx, {
+      ...receipt,
+      job: waited.job,
+      bridgeStatus: waited.bridgeStatus,
+      waited: waited.waited
+    });
+  } catch (error) {
+    const reason = safeText(error instanceof Error ? describeRpcFailure(error) : String(error));
+    ctx.deps.stderr.write(`Could not follow the bridge (${reason}). The deposit was sent; do not send it again. Re-check with candle swap status ${id} --wait.
+`);
+    return printTradingResult(ctx, { ...receipt, waited: { final: false, error: reason } });
+  }
+}
+var settlementSchema, bridgeFactsSchema, HOOD_TRADE_LEGS, bridgeBuildSchema;
+var init_swap = __esm(() => {
+  init_zod();
+  init_args();
+  init_bridge();
+  init_evm_lite();
+  init_profiles();
+  init_render();
+  init_solana_endpoint();
+  init_solana_lite();
+  init_trading();
+  settlementSchema = exports_external.object({
+    state: exports_external.enum(["settled", "pending", "failed", "uncertain"]),
+    settledOutRaw: exports_external.string().regex(/^\d+$/).optional()
+  });
+  bridgeFactsSchema = exports_external.object({
+    from: exports_external.enum(["SOL", "USDC", "ETH", "USDG"]),
+    to: exports_external.enum(["SOL", "USDC", "ETH", "USDG"]),
+    recipient: exports_external.string(),
+    statusCheck: exports_external.string().optional()
+  });
+  HOOD_TRADE_LEGS = ["approval", "permit2Approval", "trade", "feeTransfer"];
+  bridgeBuildSchema = exports_external.object({
+    status: exports_external.literal("built"),
+    swapId: exports_external.string().min(1),
+    venue: exports_external.string(),
+    fee: exports_external.object({ bps: exports_external.number(), feeRaw: exports_external.string() }).passthrough(),
+    expectedOutRaw: exports_external.string().regex(/^\d+$/),
+    expiresAt: exports_external.number().finite(),
+    recipient: exports_external.string().min(1),
+    statusChecks: exports_external.array(exports_external.string()).default([]),
+    transactionsBase64: exports_external.array(exports_external.string()).optional(),
+    walletAddress: exports_external.string().optional(),
+    venueCostUsd: exports_external.number().finite().optional(),
+    venueTimeEstimateSec: exports_external.number().finite().optional()
+  }).passthrough();
+});
+
 // src/vault/evm-sweep.ts
 function sameToken(a, b) {
   return a.toLowerCase() === b.toLowerCase();
@@ -31128,6 +31980,8 @@ async function resolveKeyMaterial(keyFile, chain2, ctx) {
       return { ok: false, message: `Could not read --key-file: ${error instanceof Error ? error.message : error}` };
     }
   }
+  if (!ctx.deps.isTTY.stdin)
+    return { ok: false, message: "No TTY available for private key input; pass --key-file instead" };
   try {
     const promptText = chain2 === "solana" ? "Solana private key (base58 or id.json contents; input hidden): " : "EVM private key (hex; input hidden): ";
     const entered = (await ctx.deps.promptSecret(promptText)).trim();
@@ -32244,6 +33098,26 @@ var init_tee_evm = __esm(() => {
   init_wallets();
 });
 
+// src/commands/tee-status-wallet.ts
+async function serverTeeWallet(ctx, address, chain2) {
+  const apiKey = await resolveApiKey(ctx.deps, ctx.profile);
+  const suggestion = "Pass --verify to read it from this machine's vault, or select the profile holding its key.";
+  if (!apiKey)
+    throw new TradingError("TEE_WALLET_NOT_ON_KEY", `${address}: no API key available.`, { suggestion });
+  const { rows } = await listTradingWallets(ctx, apiKey);
+  const row = rows.find((candidate) => candidate.chain === chain2 && (chain2 === "evm" ? sameEvmAddress(candidate.address, address) : candidate.address === address));
+  if (!row)
+    throw new TradingError("TEE_WALLET_NOT_ON_KEY", `${address} is not a TEE wallet bound to key ${apiKeyPrefix(apiKey) ?? "this key"}.`, { suggestion });
+  return { row, apiKey };
+}
+var UNVERIFIED_KEY_LINE = "Key not verified on this machine. Pass --verify to open the vault and check it.";
+var init_tee_status_wallet = __esm(() => {
+  init_deps();
+  init_evm_lite();
+  init_profiles();
+  init_trading();
+});
+
 // src/commands/tee-status-evm.ts
 async function readVaultEntry(ctx, address) {
   const resolved = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
@@ -32282,9 +33156,10 @@ async function teeStatusEvm(ctx, parsed, address) {
     writeUsageFailure(deps, rpcUrl.error, json);
     return 2;
   }
+  const verify = parsed.booleans.has("--verify");
   let vault;
   try {
-    vault = await readVaultEntry(ctx, checked.address);
+    vault = verify ? await readVaultEntry(ctx, checked.address) : null;
   } catch (error) {
     if (error instanceof TradingError && error.code === "USAGE") {
       writeUsageFailure(deps, error.message, json);
@@ -32296,11 +33171,21 @@ async function teeStatusEvm(ctx, parsed, address) {
     }
     throw error;
   }
+  let serverWallet = null;
+  if (!verify) {
+    try {
+      serverWallet = await serverTeeWallet(ctx, address, "evm");
+    } catch (error) {
+      return tradingFailure(ctx, error);
+    }
+  }
   const report = {
     address: checked.address,
     chain: "hood",
     label: vault?.label ?? null,
     source: vault ? "vault" : "server",
+    verified: verify,
+    ...!verify ? { localState: null, retainedSweepReceipts: null, pendingSweepTransactions: null, vaultLifecycle: null } : {},
     linkedWalletId: vault?.linkedWalletId ?? null,
     vaultDestination: vault?.vaultDestination ?? null,
     observedAt: new Date(deps.now()).toISOString()
@@ -32310,7 +33195,7 @@ async function teeStatusEvm(ctx, parsed, address) {
     report.server = { error: "no API key available; server state not read" };
   else {
     try {
-      const { rows } = await listTradingWallets(ctx, apiKey);
+      const rows = serverWallet ? [serverWallet.row] : (await listTradingWallets(ctx, apiKey)).rows;
       const row = rows.find((candidate) => candidate.chain === "evm" && sameEvmAddress(candidate.address, address));
       if (row) {
         report.linkedWalletId ??= row.id;
@@ -32378,6 +33263,9 @@ async function teeStatusEvm(ctx, parsed, address) {
 `);
   deps.stdout.write(`  source        ${report.source}
 `);
+  if (!verify)
+    deps.stdout.write(`${UNVERIFIED_KEY_LINE}
+`);
   if (vault?.vaultDestination)
     deps.stdout.write(`  vault         ${vault.vaultDestination}
 `);
@@ -32417,6 +33305,8 @@ var init_tee_status_evm = __esm(() => {
   init_trading();
   init_errors();
   init_store();
+  init_swap();
+  init_tee_status_wallet();
   init_vault_support();
 });
 
@@ -33082,43 +33972,59 @@ async function readLifecycle(ctx, apiKey, linkedWalletId) {
 }
 async function teeStatus(args, ctx) {
   const { deps, json } = ctx;
-  if (!refuseEnvPassphrase2(ctx))
-    return 1;
-  const parsed = parseArgs(args, { valueFlags: ["--rpc-url", "--keystore"], pathFlags: ["--keystore"] });
+  const parsed = parseArgs(args, {
+    valueFlags: ["--rpc-url", "--keystore"],
+    pathFlags: ["--keystore"],
+    booleanFlags: ["--verify"]
+  });
   if ("error" in parsed)
     return usage2(ctx, parsed.error);
+  const verify = parsed.booleans.has("--verify");
+  if (verify && !refuseEnvPassphrase2(ctx))
+    return 1;
   const [address, extra] = parsed.positionals;
   if (!address || extra !== undefined)
-    return usage2(ctx, "Usage: candle tee status <address> [--rpc-url <url>]");
+    return usage2(ctx, "Usage: candle tee status <address> [--rpc-url <url>] [--verify]");
   if (/^0x/i.test(address))
     return await teeStatusEvm(ctx, parsed, address);
   const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"]);
   if ("error" in solana)
     return usage2(ctx, solana.error);
-  const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed));
-  if (!resolved.ok)
-    return resolved.code;
+  let local = null;
+  let entry;
+  if (verify) {
+    const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed));
+    if (!resolved.ok)
+      return resolved.code;
+    local = resolved.resolved;
+    entry = local.source === "vault" ? local.legacyView : local.entry;
+  } else {
+    try {
+      const { row } = await serverTeeWallet(ctx, address, "solana");
+      entry = { address, label: row.label ?? "", linkedWalletId: row.id };
+    } catch (error) {
+      return tradingFailure(ctx, error);
+    }
+  }
   try {
-    if (resolved.resolved.source === "vault") {
-      const reconciled = await maybeReconcileVaultTee(ctx, resolved.resolved);
+    if (local?.source === "vault") {
+      const reconciled = await maybeReconcileVaultTee(ctx, local);
       if (reconciled.code !== null)
         return reconciled.code;
     }
-    const entry = resolved.resolved.source === "vault" ? resolved.resolved.legacyView : resolved.resolved.entry;
     const report = {
       address,
       label: entry.label,
-      source: resolved.resolved.source,
+      source: local?.source ?? "server",
+      verified: verify,
       linkedWalletId: entry.linkedWalletId ?? null,
-      vaultDestination: entry.tee?.vaultDestination ?? null,
-      localState: entry.tee?.sweptAt ? "swept" : entry.tee?.stopRequestedAt ? "stop-requested" : entry.linkedWalletId ? "enabled" : "local-only",
-      retainedSweepReceipts: entry.tee?.sweepReceipts?.length ?? 0,
-      pendingSweepTransactions: entry.tee?.sweepPending?.length ?? 0,
+      vaultDestination: verify ? entry.tee?.vaultDestination ?? null : null,
+      vaultLifecycle: local?.source === "vault" ? local.entry.tee?.lifecycle ?? null : null,
+      localState: !verify ? null : entry.tee?.sweptAt ? "swept" : entry.tee?.stopRequestedAt ? "stop-requested" : entry.linkedWalletId ? "enabled" : "local-only",
+      retainedSweepReceipts: verify ? entry.tee?.sweepReceipts?.length ?? 0 : null,
+      pendingSweepTransactions: verify ? entry.tee?.sweepPending?.length ?? 0 : null,
       observedAt: new Date(deps.now()).toISOString()
     };
-    if (resolved.resolved.source === "vault") {
-      report.vaultLifecycle = resolved.resolved.entry.tee?.lifecycle ?? null;
-    }
     if (entry.linkedWalletId) {
       const apiKey = await resolveApiKey(deps, ctx.profile);
       if (apiKey) {
@@ -33164,13 +34070,17 @@ async function teeStatus(args, ctx) {
     }
     deps.stdout.write(`${address}  ${entry.label}
 `);
-    if (resolved.resolved.source === "vault") {
+    if (local?.source === "vault") {
       deps.stdout.write(`  source        vault (Phase 1 store is read-only for this address)
 `);
-      deps.stdout.write(`  vault life    ${resolved.resolved.entry.tee?.lifecycle ?? "?"}
+      deps.stdout.write(`  vault life    ${local.entry.tee?.lifecycle ?? "?"}
 `);
     }
-    deps.stdout.write(`  local state   ${report.localState}
+    if (!verify)
+      deps.stdout.write(`${UNVERIFIED_KEY_LINE}
+`);
+    else
+      deps.stdout.write(`  local state   ${report.localState}
 `);
     if (entry.tee?.vaultDestination)
       deps.stdout.write(`  vault         ${entry.tee.vaultDestination}
@@ -33206,7 +34116,8 @@ async function teeStatus(args, ctx) {
 `);
     return 0;
   } finally {
-    releaseResolvedTee(resolved.resolved);
+    if (local)
+      releaseResolvedTee(local);
   }
 }
 async function teeDisable(args, ctx) {
@@ -34233,8 +35144,10 @@ var init_tee = __esm(() => {
   init_wallet_import_flow();
   init_wallet_keygen();
   init_wallet_keystore();
+  init_swap();
   init_tee_evm();
   init_tee_status_evm();
+  init_tee_status_wallet();
   init_wallets();
   StoreChangedError = class StoreChangedError extends Error {
   };
@@ -34400,7 +35313,7 @@ function missingSignerFailure(missing) {
     message: `The target key has a signer, so the owner of ${missing.length === 1 ? "this wallet" : "these wallets"} must change with the binding, and this machine does not hold the current owner. Nothing changed.
 ${missing.map((m) => `  ${m.walletId}: on ${m.where}`).join(`
 `)}`,
-    suggestion: "Run the same rebind on the machine named for each wallet, with the device token there."
+    suggestion: "Run the same rebind on the machine named for each wallet. If that is a trading machine with no login, sign in there on a temporary profile for the move: https://docs.candle.tv/developers/cli-headless#moving-wallets-onto-a-key-that-has-a-signer"
   };
 }
 function rebindFailureDetails(result, context) {
@@ -34750,7 +35663,7 @@ function effectiveEmbeddedWallet(value) {
   return value === "denied" ? "denied" : "allowed";
 }
 function embeddedWalletLine(permission, keyPrefix) {
-  return permission === "allowed" ? "Embedded wallet: allowed. This key may trade, launch and transfer from the account's embedded wallet, with Candle signing." : `Embedded wallet: denied. This key cannot spend the account's embedded wallet; the owner can allow it with: candle keys update ${keyPrefix} --embedded-wallet allow`;
+  return permission === "allowed" ? "Embedded wallet: allowed. This key may use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write." : `Embedded wallet: denied. This key cannot spend the account's embedded wallet; the owner can allow it with: candle keys update ${keyPrefix} --embedded-wallet allow`;
 }
 function keyName(keyPrefix, label) {
   const cleaned = labelCell(label ?? undefined);
@@ -34791,7 +35704,7 @@ async function confirmCreateAllow(ctx) {
     writeLocalFailure(deps, ALLOW_REQUIRES_TTY, json);
     return 1;
   }
-  deps.stderr.write(`This key will be allowed to trade, launch and transfer from the account's embedded wallet, with Candle signing.
+  deps.stderr.write(`This key will be allowed to use the account's embedded wallet, with Candle signing, for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write.
 ` + `A key that only trades its own TEE wallets does not need it.
 `);
   const answer = await deps.promptLine("Create the key with the embedded wallet allowed? [y/N] ");
@@ -34890,7 +35803,7 @@ async function keysUpdate(args, ctx) {
     `API             ${apiUrl}  (${candleEnvironment(apiUrl) ?? "not a Candle host"})`,
     "",
     `Embedded wallet ${shown.from}  ->  ${shown.to}   (${shown.direction})`,
-    widen ? "It can trade, launch and transfer from the account's embedded wallet as soon as you confirm." : "It stops spending the account's embedded wallet from its next request.",
+    widen ? "It can use the account's embedded wallet for what its scopes allow: trades with swap:write, launches with launch:write, transfers only with transfer:write." : "It stops spending the account's embedded wallet from its next request.",
     "",
     ""
   ].join(`
@@ -51857,7 +52770,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.15";
+var CLI_VERSION = "0.11.16";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -52084,7 +52997,7 @@ async function authLogout(args, ctx) {
   const keepKey = parsed.booleans.has("--keep-key");
   await printIdentity(ctx);
   const config = await deps.readConfig();
-  const { keyPrefix, portalOrigin } = effectiveProfileFields(config, ctx.profile);
+  const { keyPrefix, portalOrigin, deviceTokenPrefix, label } = effectiveProfileFields(config, ctx.profile);
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   let revokedKey;
   if (!keepKey && deviceToken && keyPrefix) {
@@ -52120,12 +53033,18 @@ async function authLogout(args, ctx) {
   } else {
     await deps.store.delete(SECRET_REFS.deviceToken);
     await deps.store.delete(SECRET_REFS.apiKey);
-    await deps.clearConfig();
+    const patch = Object.fromEntries(PRE_PROFILE_FIELDS.map((field) => [field, undefined]));
+    const remaining = { ...config, ...patch };
+    if (Object.values(remaining).some((value) => value !== undefined))
+      await deps.writeConfig(patch);
+    else
+      await deps.clearConfig();
   }
-  const portalUrl = portalDeviceUrl(apiUrl, portalOrigin);
+  const portalUrl = portalDevicesUrl(apiUrl, portalOrigin);
+  const device = deviceTokenPrefix ? { prefix: deviceTokenPrefix, label: label ?? null } : null;
   const liveEnvOverrides = credentialEnvOverrides(deps.env);
   if (json) {
-    deps.stdout.write(`${JSON.stringify({ success: true, revokedKey: revokedKey ?? null, portalUrl, envOverrides: liveEnvOverrides })}
+    deps.stdout.write(`${JSON.stringify({ success: true, revokedKey: revokedKey ?? null, portalUrl, device, envOverrides: liveEnvOverrides })}
 `);
     return 0;
   }
@@ -52137,7 +53056,11 @@ async function authLogout(args, ctx) {
   }
   deps.stdout.write(`The device token itself is session-only to revoke -- that is intentional (a stolen token cannot read device metadata or revoke a sibling device). Sign in to the portal to revoke it there.
 `);
-  deps.stdout.write(`Portal: ${portalUrl}
+  if (device)
+    deps.stdout.write(`Device ${device.prefix}${device.label ? ` (${device.label})` : ""} is still live on the server. Revoke it under Connected devices: ${portalUrl}
+`);
+  else
+    deps.stdout.write(`Connected devices: ${portalUrl}
 `);
   return 0;
 }
@@ -52865,8 +53788,8 @@ var HELP = {
         description: "Print the funding instruction for your vault to sign"
       },
       {
-        invocation: "status <address> [--rpc-url <url>]",
-        description: "Server lifecycle state and on-chain balances; on Hood, ETH, USDG, the gas reserve and gas: low"
+        invocation: "status <address> [--rpc-url <url>] [--verify]",
+        description: "Server lifecycle state and on-chain balances without unlocking; --verify opens the vault and checks the key. On Hood, ETH, USDG, the gas reserve and gas: low"
       },
       {
         invocation: "disable <address>",
@@ -52883,7 +53806,7 @@ var HELP = {
       { invocation: "rebinds [wallet]", description: "List TEE wallet rebinds for this account (owner only)" },
       {
         invocation: "signer new --key <prefix|label> [--out <pem>] [--force]",
-        description: "On the trading machine, with that key's API key: generate the key's signer here and wait for the owner to approve it. Its wallets then trade from this machine. --out also writes a plaintext PEM for an SDK process (weaker than the secret store); --force adds a signer while an old one here still owns wallets"
+        description: "On the trading machine, with that key's API key: generate the key's signer here and wait for the owner to approve it. Its wallets then trade from this machine. --out also writes a plaintext PEM for an SDK process (weaker than the secret store); --force adds a signer while an older signer on THIS machine still owns wallets; it moves, revokes and deletes nothing"
       }
     ],
     flags: [KEYSTORE_FLAG],
@@ -53949,7 +54872,7 @@ init_tee_rebind();
 var USAGE_TEE_SIGNER = "Usage: candle tee signer new --key <prefix|label> [--out <pem>] [--force] [--json]";
 var USAGE_KEYS_SIGNER = "Usage: candle keys signer approve <code> --key <prefix|label> [--reject] | candle keys signer move <prefix|label> [--to-key <prefix|label>] [--json]";
 var SIGNER_POLL_MS = 5000;
-var DEVICE_TOKEN_BESIDE_SIGNER_LINE = "Warning: this machine holds a device token as well as a key signer. A machine with both can approve its own signer request. Do not log the trading machine in: run candle auth logout here, and approve from the owner's machine.";
+var DEVICE_TOKEN_BESIDE_SIGNER_LINE = "Warning: this machine holds a device token as well as a key signer. A machine with both can approve its own signer request. Do not leave the trading machine logged in. If you signed in for a move, run candle auth logout --profile <that profile> here, and approve from the owner's machine.";
 var unsupported = {
   code: "KEY_SIGNER_UNSUPPORTED",
   message: "This Candle API does not serve key signers yet; nothing changed.",
@@ -54032,6 +54955,7 @@ async function teeSignerNew(args, ctx) {
     await writeOut(ctx, out, recorded);
     return reportApproved(ctx, view, recorded, { resumed: true, requested: false });
   }
+  let replaces = null;
   let resumed = entry !== undefined;
   if (entry === undefined) {
     const all = allSignerWallets(view);
@@ -54045,6 +54969,11 @@ async function teeSignerNew(args, ctx) {
         details: { keyPrefix, wallets: count }
       }, json);
       return 1;
+    }
+    if (active !== null) {
+      replaces = { fingerprint: active.fingerprint, wallets: view.wallets.onSigner.length };
+      deps.stderr.write(`Key ${keyPrefix} already has active signer ${replaces.fingerprint}. Approving this request replaces it. ${replaces.wallets > 0 ? `Its ${plural(replaces.wallets, "wallet")} keep trading only from the machine that holds it until candle keys signer move ${keyPrefix} runs there.` : "It owns no wallets, so nothing has to move."}
+`);
     }
     const pair = generatePair();
     const spkiSha256 = spkiSha256Of(pair.publicKeyDer);
@@ -54075,7 +55004,8 @@ async function teeSignerNew(args, ctx) {
         const reread = await readSigner(ctx, "self", { apiKey });
         return reportApproved(ctx, reread.ok ? reread.body : view, recorded, {
           resumed,
-          requested: true
+          requested: true,
+          replaces
         });
       }
     }
@@ -54086,6 +55016,9 @@ async function teeSignerNew(args, ctx) {
     return 1;
   }
   const body = requested.body;
+  if (body.supersededPending)
+    deps.stderr.write(`An earlier pending request for this key was cancelled.
+`);
   if (body.spkiSha256 !== entry.spkiSha256) {
     writeLocalFailure(deps, {
       code: "KEY_SIGNER_CHANGED",
@@ -54115,7 +55048,7 @@ async function teeSignerNew(args, ctx) {
     if (now !== null && now.spkiSha256 === entry.spkiSha256) {
       const recorded = { ...entry, signerQuorumId: now.signerQuorumId };
       await saveKeySignerEntry(deps, recorded);
-      return reportApproved(ctx, view, recorded, { resumed, requested: true });
+      return reportApproved(ctx, view, recorded, { resumed, requested: true, replaces });
     }
     if (view.pending === null || view.pending.spkiSha256 !== entry.spkiSha256) {
       writeLocalFailure(deps, {
@@ -54159,6 +55092,7 @@ function reportApproved(ctx, view, entry, how) {
       signerQuorumId: entry.signerQuorumId,
       resumed: how.resumed,
       requested: how.requested,
+      replaces: how.replaces ?? null,
       wallets: {
         onSigner: onSigner.map((w) => w.id),
         legacy: legacy.map((w) => w.id),
@@ -54267,6 +55201,7 @@ async function keysSignerApprove(args, ctx) {
     "",
     "Requested from a machine using this key. Compare the fingerprint with what that machine printed.",
     `Wallets on this key: ${all.length}.`,
+    ...active !== null ? [`Approving replaces signer ${active.fingerprint} as this key's active signer.`] : [],
     ...active !== null && onActive > 0 ? [
       `${plural(onActive, "wallet")} ${onActive === 1 ? "is" : "are"} owned by signer ${active.fingerprint}. They keep trading from the machine that holds that signer until you move them.`
     ] : [],
@@ -58914,837 +59849,8 @@ init_render();
 init_solana_endpoint();
 init_solana_lite();
 init_trading();
+init_swap();
 import { randomUUID as randomUUID2 } from "node:crypto";
-
-// src/commands/swap.ts
-init_zod();
-init_args();
-init_bridge();
-init_evm_lite();
-init_render();
-init_solana_endpoint();
-init_solana_lite();
-init_trading();
-import { randomUUID } from "node:crypto";
-function tradingFailure(ctx, error, id) {
-  if (error instanceof TradingUsage) {
-    writeUsageFailure(ctx.deps, error.message, ctx.json);
-    return 2;
-  }
-  writeLocalFailure(ctx.deps, {
-    code: error instanceof TradingError ? error.code : "TRADING_FAILED",
-    message: `${error instanceof Error ? describeRpcFailure(error) : "Trading failed."}${id ? ` Operation ${id}; use candle swap status ${id} before another attempt.` : ""}`,
-    ...error instanceof TradingError && error.suggestion ? { suggestion: error.suggestion } : {},
-    ...error instanceof TradingError && error.details ? { details: error.details } : {}
-  }, ctx.json);
-  return error instanceof TradingError ? error.exitCode : 1;
-}
-function lazySolanaClient(ctx, flag) {
-  let pending;
-  return () => {
-    pending ??= tradingSolanaClient(ctx, flag);
-    return pending;
-  };
-}
-async function tradingRead(ctx, client, read) {
-  try {
-    return await read();
-  } catch (error) {
-    if (isRateLimited(error))
-      throw tradingRateLimited(ctx, client.endpoint.host, error);
-    throw error;
-  }
-}
-function printTradingResult(ctx, result) {
-  ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(result)}
-` : `${JSON.stringify(result, null, 2)}
-`);
-  return 0;
-}
-var settlementSchema = exports_external.object({
-  state: exports_external.enum(["settled", "pending", "failed", "uncertain"]),
-  settledOutRaw: exports_external.string().regex(/^\d+$/).optional()
-});
-function reportSettlement(ctx, settlement, out, id) {
-  const parsed = settlementSchema.safeParse(settlement);
-  const reading = parsed.success ? parsed.data : undefined;
-  if (reading?.state === "settled" && reading.settledOutRaw !== undefined)
-    ctx.deps.stderr.write(`settled ${decimalAmount(reading.settledOutRaw, out.decimals)} ${out.asset}
-`);
-  else {
-    const state = !reading ? "not measured" : reading.state === "settled" ? "settled, amount not measured" : reading.state;
-    ctx.deps.stderr.write(`Settlement: ${state}. Re-check with GET /api/v1/agent/swap/jobs/${id} (candle swap status ${id}).
-`);
-  }
-  return settlement !== null && typeof settlement === "object" ? { settlement } : {};
-}
-function validClientId(id) {
-  return /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id);
-}
-async function lookupOperation(ctx, key, id, kind) {
-  const local = await savedOperation(ctx, key, id);
-  const kinds = kind ? [kind] : local && local.kind !== "lp" ? [local.kind] : ["trade", "swap", "launch"];
-  const found = [];
-  for (const candidate of kinds) {
-    try {
-      found.push({
-        ...operationSchema.parse(await request(ctx, key, jobPath(candidate, id))),
-        kind: candidate,
-        clientTradeId: id
-      });
-    } catch (error) {
-      if (!(error instanceof TradingError && error.code === "JOB_NOT_FOUND"))
-        throw error;
-    }
-  }
-  if (found.length > 1)
-    throw new TradingError("AMBIGUOUS_OPERATION", "This id exists on multiple rails; specify --kind trade, swap or launch.");
-  return found[0] ? { ...found[0], ...local?.signature ? { signature: local.signature } : {} } : null;
-}
-async function swapStatus(args, ctx) {
-  const parsed = parseArgs(args, { valueFlags: ["--kind"], booleanFlags: ["--wait"] });
-  if ("error" in parsed || parsed.positionals.length !== 1 || !validClientId(parsed.positionals[0] ?? "") || parsed.values["--kind"] !== undefined && !["trade", "swap", "launch"].includes(parsed.values["--kind"])) {
-    writeUsageFailure(ctx.deps, "Usage: candle swap status <id> [--kind trade|swap|launch] [--wait]", ctx.json);
-    return 2;
-  }
-  try {
-    const key = await tradingKey(ctx);
-    const id = parsed.positionals[0];
-    const kind = parsed.values["--kind"];
-    const facts = bridgeFactsOf((await savedOperation(ctx, key, id))?.bridge);
-    const found = await lookupOperation(ctx, key, id, kind);
-    if (!found)
-      throw new TradingError("JOB_NOT_FOUND", "No operation found on the selected rail(s). This command does not resend a write.");
-    const result = parsed.booleans.has("--wait") ? await waitForSettlement(ctx, key, id, found, facts) : { ...found, ...bridgeStatusField(ctx, found, facts) };
-    return printTradingResult(ctx, result);
-  } catch (error) {
-    return tradingFailure(ctx, error);
-  }
-}
-var bridgeFactsSchema = exports_external.object({
-  from: exports_external.enum(["SOL", "USDC", "ETH", "USDG"]),
-  to: exports_external.enum(["SOL", "USDC", "ETH", "USDG"]),
-  recipient: exports_external.string(),
-  statusCheck: exports_external.string().optional()
-});
-function bridgeFactsOf(raw) {
-  const parsed = bridgeFactsSchema.safeParse(raw);
-  return parsed.success ? parsed.data : undefined;
-}
-function isBridgeJob(job, facts) {
-  return facts !== undefined || job.bridge !== null && typeof job.bridge === "object";
-}
-function bridgeStatusField(ctx, found, facts) {
-  const job = found.job ?? {};
-  if (found.kind !== "swap" || !isBridgeJob(job, facts))
-    return {};
-  const status = describeBridgeJob(job, facts);
-  for (const line of status.lines)
-    ctx.deps.stderr.write(`${line}
-`);
-  const { lines: _lines, ...rest } = status;
-  return { bridgeStatus: rest };
-}
-function waitFinished(current, facts, sent) {
-  const job = current.job ?? {};
-  if (current.kind === "swap" && isBridgeJob(job, facts)) {
-    const status = describeBridgeJob(job, facts);
-    if (sent && status.phase === "not_broadcast")
-      return false;
-    return bridgeStatusFinal(status);
-  }
-  const settlement = settlementSchema.safeParse(job.settlement);
-  return !settlement.success || settlement.data.state !== "pending";
-}
-async function waitForSettlement(ctx, key, id, first, facts, sent = false) {
-  const deadline = ctx.deps.now() + BRIDGE_WAIT_MS;
-  let current = first;
-  while (!waitFinished(current, facts, sent) && ctx.deps.now() < deadline) {
-    await ctx.deps.sleep(BRIDGE_WAIT_POLL_MS);
-    current = { ...current, ...operationSchema.parse(await request(ctx, key, jobPath(current.kind, id))) };
-  }
-  const field = bridgeStatusField(ctx, current, facts);
-  const finished = waitFinished(current, facts, sent);
-  if (!finished)
-    ctx.deps.stderr.write(`Still not final after ten minutes. Re-check with candle swap status ${id} --wait.
-`);
-  return { ...current, ...field, waited: { final: finished } };
-}
-async function decimalsFor(ctx, asset, client) {
-  if (BASES[asset])
-    return BASES[asset].decimals;
-  const reader = await client();
-  let result;
-  try {
-    result = await tradingRead(ctx, reader, () => reader.rpc.getTokenSupply(asset));
-  } catch (error) {
-    if (error instanceof TradingError)
-      throw error;
-    throw new TradingError("RPC_FAILED", "Solana getTokenSupply failed; no automatic re-send was made.");
-  }
-  const decimals = result.decimals;
-  if (typeof decimals !== "number" || !Number.isInteger(decimals) || decimals < 0 || decimals > 18)
-    throw new TradingError("INVALID_RESPONSE", "RPC returned invalid mint decimals.");
-  return decimals;
-}
-async function assertDeferredExecuteSupported(ctx, key, id) {
-  try {
-    await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
-  } catch (error) {
-    if (error instanceof TradingError && error.code === "JOB_NOT_FOUND")
-      return;
-    throw new TradingError("EMBEDDED_PAYER_UNSUPPORTED", "This Candle deployment cannot hold an embedded-wallet trade back for confirmation, so the quote could not be shown before the money moved. Nothing was built. Name a TEE wallet with --wallet, or point at a deployment that has it.");
-  }
-  throw new TradingError("INVALID_RESPONSE", "The execute route answered for a trade that does not exist.");
-}
-async function swap(args, ctx) {
-  const parsed = parseArgs(args, {
-    valueFlags: ["--amount", "--percent", "--wallet", "--to", "--client-trade-id", "--slippage-bps", "--rpc-url"],
-    booleanFlags: ["--yes", "--wait"]
-  });
-  if ("error" in parsed) {
-    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
-    return 2;
-  }
-  const flags = parsed.values;
-  const id = flags["--client-trade-id"] ?? `swap-${randomUUID()}`;
-  const slippage = Number(flags["--slippage-bps"] ?? "50");
-  if (parsed.positionals.length !== 2 || Boolean(flags["--amount"]) === Boolean(flags["--percent"]) || !validClientId(id) || !Number.isInteger(slippage) || slippage < 0 || slippage > 1e4) {
-    writeUsageFailure(ctx.deps, "Usage: candle swap <from> <to> --amount <decimal> | --percent <n> [--wallet <tee-or-embedded>] [--to <tee>] [--wait] [--client-trade-id <id>] [--slippage-bps 50] [--rpc-url <url>] [--yes]. Solana: SOL, USDC, CNDL or a mint. Hood: ETH, USDG or a 0x token. SOL or USDC to ETH or USDG, or back, is a bridge between two TEE wallets.", ctx.json);
-    return 2;
-  }
-  try {
-    const fromAsset = classifyAsset(parsed.positionals[0]);
-    const toAsset = classifyAsset(parsed.positionals[1]);
-    const bridge = bridgePair(fromAsset, toAsset);
-    if (bridge)
-      return await bridgeSwap(ctx, {
-        flags,
-        yes: parsed.booleans.has("--yes"),
-        wait: parsed.booleans.has("--wait"),
-        id,
-        slippage,
-        ...bridge
-      });
-    if (flags["--to"] !== undefined || parsed.booleans.has("--wait"))
-      throw new TradingUsage("--to and --wait are for a bridge: SOL or USDC to ETH or USDG, or back.");
-    const chain2 = pairChain(fromAsset, toAsset);
-    const walletFlag = flags["--wallet"];
-    const named = walletFlag === undefined ? undefined : walletNameChain(walletFlag);
-    if (named !== undefined && named !== chain2)
-      throw chainMismatch(`--wallet ${safeText(walletFlag)}`, named, chain2);
-    if (chain2 === "hood")
-      return await hoodSwap(ctx, {
-        flags,
-        yes: parsed.booleans.has("--yes"),
-        id,
-        slippage,
-        from: fromAsset,
-        to: toAsset
-      });
-    const from = fromAsset.asset;
-    const to = toAsset.asset;
-    if (from === to)
-      throw new TradingError("PAIR_UNSUPPORTED", "Choose two distinct assets.");
-    const fromBase = baseAsset(from);
-    const toBase = baseAsset(to);
-    if (!fromBase && !toBase)
-      throw new TradingError("PAIR_UNSUPPORTED", "A token trade must have SOL, USDC or CNDL on one side; token-to-token routing is unavailable.");
-    if (flags["--amount"])
-      rawAmount(flags["--amount"], 18);
-    const percent = flags["--percent"] ? BigInt(rawAmount(flags["--percent"], 6)) : undefined;
-    if (percent !== undefined && percent > 100000000n)
-      throw new TradingError("INVALID_AMOUNT", "Percent must be greater than 0 and at most 100 (up to six decimal places).");
-    const kind = fromBase && toBase ? "swap" : "trade";
-    const key = await tradingKey(ctx);
-    const prior = await lookupOperation(ctx, key, id, kind);
-    if (prior)
-      return printTradingResult(ctx, prior);
-    const payerWallet = await tradingPayer(ctx, key, flags["--wallet"]);
-    if (payerWallet.kind === "embedded" && kind === "swap")
-      throw new TradingError("PAIR_UNSUPPORTED", "The embedded wallet cannot swap between base assets from this command yet: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a TEE wallet for a base pair.");
-    const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address };
-    const solana = lazySolanaClient(ctx, flags["--rpc-url"]);
-    const decimals = await decimalsFor(ctx, from, solana);
-    const outDecimals = await decimalsFor(ctx, to, solana);
-    let amountRaw;
-    if (percent !== undefined) {
-      const reader = await solana();
-      let balance;
-      if (from === "SOL")
-        balance = await tradingRead(ctx, reader, () => reader.rpc.getBalance(wallet.address));
-      else {
-        const mint = BASES[from]?.mint ?? from;
-        const accounts = (await tradingRead(ctx, reader, () => Promise.all([
-          reader.rpc.getTokenAccountsByOwner(wallet.address, TOKEN_PROGRAM_ID),
-          reader.rpc.getTokenAccountsByOwner(wallet.address, TOKEN_2022_PROGRAM_ID)
-        ]))).flat();
-        balance = accounts.filter((account) => account.mint === mint).reduce((sum, account) => sum + BigInt(account.amountRaw), 0n);
-      }
-      amountRaw = (balance * percent / 100000000n).toString();
-      if (amountRaw === "0")
-        throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.");
-    } else
-      amountRaw = rawAmount(flags["--amount"], decimals);
-    if (BigInt(amountRaw) > BigInt(Number.MAX_SAFE_INTEGER))
-      throw new TradingError("INVALID_AMOUNT", "Amount exceeds the venue's exact integer range.");
-    if (payerWallet.kind === "embedded")
-      await assertDeferredExecuteSupported(ctx, key, id);
-    if (!await claimOperation(ctx, key, id, kind))
-      throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
-    ctx.deps.stderr.write(`Operation: ${id}
-`);
-    const payer = payerWallet.kind === "tee" ? { type: "linked", linkedWalletId: payerWallet.wallet.id } : { type: "main" };
-    const built = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/build", {
-      clientTradeId: id,
-      from,
-      to,
-      amountRaw,
-      maxSlippageBps: slippage,
-      payer
-    }) : await request(ctx, key, "/api/v1/trade/agent/build", {
-      clientTradeId: id,
-      chain: "solana",
-      mint: fromBase ? to : from,
-      side: fromBase ? "buy" : "sell",
-      quoteAsset: (fromBase ?? toBase)?.toLowerCase(),
-      amountRaw,
-      maxSlippageBps: slippage,
-      payer,
-      ...payerWallet.kind === "embedded" ? { deferExecution: true } : {}
-    });
-    if (built.job || built.status === "executed")
-      return printTradingResult(ctx, { ...built, clientTradeId: id, kind });
-    const data = swapBuildSchema.parse(kind === "swap" ? built.payload : built);
-    if (kind === "swap" && (data.venue !== "jupiter" || data.recipient !== wallet.address))
-      throw new TradingError("INVALID_RESPONSE", "A TEE base swap must use Jupiter and return to its payer.");
-    if (kind === "trade" && (built.chain !== "solana" || built.walletAddress !== wallet.address))
-      throw new TradingError("INVALID_RESPONSE", "The token build does not name the requested Solana payer.");
-    const artifacts = kind === "swap" ? { ...data, transactionBase64: undefined, quoteSource: undefined, quoteAsset: undefined } : data.artifacts;
-    if (!artifacts)
-      throw new TradingError("INVALID_RESPONSE", "Missing quote artifacts.");
-    if (kind === "trade" && artifacts.quoteAsset !== (fromBase ?? toBase)?.toLowerCase())
-      throw new TradingError("PAIR_UNSUPPORTED", `This token settles in ${artifacts.quoteAsset ?? "an unknown asset"}, not the requested pair. Nothing was signed.`);
-    if (data?.status !== "built" || typeof data.minOutRaw !== "string" || !/^\d+$/.test(data.minOutRaw) || !data.fee || !Number.isFinite(data.fee.bps))
-      throw new TradingError("INVALID_RESPONSE", "Candle did not return a complete quote; nothing was signed.");
-    const minimumRaw = !fromBase && artifacts.venue === "curve" ? (BigInt(data.minOutRaw) > BigInt(data.fee.feeRaw) ? BigInt(data.minOutRaw) - BigInt(data.fee.feeRaw) : 0n).toString() : data.minOutRaw;
-    const quote = {
-      intent: `Swap ${decimalAmount(amountRaw, decimals)} ${from} to ${to}`,
-      wallet: wallet.address,
-      venue: artifacts.quoteSource ?? artifacts.venue,
-      priceImpactPct: artifacts.priceImpactPct ?? null,
-      fee: data.fee,
-      minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to}`,
-      minOutRaw: data.minOutRaw,
-      minimumReceivedRaw: minimumRaw,
-      tokenRisks: artifacts.tokenRisks ?? []
-    };
-    if (!await confirmQuote(ctx, quote, parsed.booleans.has("--yes")))
-      return printTradingResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind, quote });
-    if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
-      throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
-    if (payerWallet.kind === "embedded") {
-      const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
-      return printTradingResult(ctx, {
-        ...executed,
-        clientTradeId: id,
-        kind,
-        quote,
-        wallet: safeText(payerWallet.address)
-      });
-    }
-    const transaction = kind === "swap" ? data.transactionsBase64?.[0] : artifacts.transactionBase64;
-    if (kind === "swap" && data.transactionsBase64?.length !== 1)
-      throw new TradingError("INVALID_RESPONSE", "A TEE swap must contain exactly one same-chain transaction.");
-    if (!transaction)
-      throw new TradingError("INVALID_RESPONSE", "Missing transaction.");
-    const signed = await relaySign(ctx, key, payerWallet.wallet, transaction);
-    const result = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/submit", {
-      clientTradeId: id,
-      swapId: data.swapId,
-      signedTransactionsBase64: [signed]
-    }) : await request(ctx, key, "/api/v1/trade/agent/submit", { clientTradeId: id, signedTransactions: [signed] });
-    const settled = kind === "swap" ? reportSettlement(ctx, result.payload?.settlement, { asset: to, decimals: outDecimals }, id) : {};
-    return printTradingResult(ctx, {
-      ...result,
-      clientTradeId: id,
-      kind,
-      quote,
-      wallet: safeText(wallet.address),
-      ...settled
-    });
-  } catch (error) {
-    return tradingFailure(ctx, error, id);
-  }
-}
-function lazyEvmRpc(ctx, flag) {
-  let rpc;
-  return () => {
-    if (rpc)
-      return rpc;
-    const resolved = resolveEvmRpcUrl(flag, ctx.deps.env[EVM_RPC_URL_ENV], "--rpc-url");
-    if ("error" in resolved)
-      throw new TradingUsage(resolved.error);
-    ctx.deps.stderr.write(`Reading from ${rpcHostOf2(resolved.url)} (Hood RPC; reads only, nothing is sent there)
-`);
-    rpc = createEvmRpc(resolved.url, ctx.deps.fetch);
-    return rpc;
-  };
-}
-async function evmRead(what, read) {
-  try {
-    return await read();
-  } catch (error) {
-    if (error instanceof TradingError || error instanceof TradingUsage)
-      throw error;
-    throw new TradingError("RPC_FAILED", `Reading ${what} over the Hood RPC failed; nothing was built or signed.`);
-  }
-}
-async function hoodDecimals(asset, rpc) {
-  const base = asset.base ? HOOD_BASES[asset.base] : undefined;
-  if (base)
-    return base.decimals;
-  const decimals = await evmRead(`${asset.asset} decimals()`, () => rpc().erc20Decimals(asset.asset));
-  if (decimals > 36)
-    throw new TradingError("INVALID_RESPONSE", "The token's decimals() is out of range.");
-  return decimals;
-}
-async function recordTradedToken(ctx, wallet, token) {
-  const skipped = (reason) => `Notice: the sealed EVM record was not updated for ${token} (${reason}). The leg landed. A later sweep still finds this token with --token ${token}, or with --from-block.`;
-  const append = ctx.deps.appendEvmRecord;
-  let notice;
-  if (!append)
-    notice = skipped("this CLI build has no sealed EVM record writer");
-  else {
-    try {
-      const outcome = await append(ctx, { kind: "token", wallet: toChecksumAddress(wallet), token });
-      notice = outcome.appended ? outcome.notice : skipped(outcome.notice);
-    } catch (error) {
-      notice = skipped(error instanceof Error ? error.message : "the append failed");
-    }
-  }
-  if (notice)
-    ctx.deps.stderr.write(`${safeText(notice)}
-`);
-  return notice;
-}
-var HOOD_TRADE_LEGS = ["approval", "permit2Approval", "trade", "feeTransfer"];
-function describeHoodLegs(first, hasFee, primary = "trade") {
-  const kinds = plannedLegKinds(first.legKind, first.plannedLegCount, hasFee, primary);
-  const names = {
-    approval: "approve",
-    permit2Approval: "Permit2 approve",
-    trade: "trade",
-    feeTransfer: "fee",
-    bridgeDeposit: "bridge deposit"
-  };
-  return kinds ? kinds.map((kind) => names[kind] ?? kind) : [`${first.plannedLegCount} legs, starting with ${names[first.legKind] ?? first.legKind}`];
-}
-async function hoodSwap(ctx, args) {
-  const { flags, id, from, to } = args;
-  if (from.asset === to.asset)
-    throw new TradingError("PAIR_UNSUPPORTED", "Choose two distinct assets.");
-  if (!from.base && !to.base)
-    throw new TradingError("PAIR_UNSUPPORTED", "A Hood token trade must have ETH or USDG on one side; token-to-token routing is unavailable.");
-  if (flags["--amount"])
-    rawAmount(flags["--amount"], 18);
-  const percent = flags["--percent"] ? BigInt(rawAmount(flags["--percent"], 6)) : undefined;
-  if (percent !== undefined && percent > 100000000n)
-    throw new TradingError("INVALID_AMOUNT", "Percent must be greater than 0 and at most 100 (up to six decimal places).");
-  const kind = from.base && to.base ? "swap" : "trade";
-  const key = await tradingKey(ctx);
-  const prior = await lookupOperation(ctx, key, id, kind);
-  if (prior)
-    return printTradingResult(ctx, prior);
-  const payer = await tradingPayer(ctx, key, flags["--wallet"], "swap:write", "hood");
-  if (payer.kind === "embedded" && kind === "swap")
-    throw new TradingError("PAIR_UNSUPPORTED", "The embedded wallet cannot swap ETH and USDG from this command: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a Hood TEE wallet.");
-  const payerAddress = payer.kind === "tee" ? payer.wallet.address : payer.address;
-  const rpc = lazyEvmRpc(ctx, flags["--rpc-url"]);
-  const decimals = await hoodDecimals(from, rpc);
-  const outDecimals = await hoodDecimals(to, rpc);
-  let amountRaw;
-  if (percent !== undefined) {
-    const balance = from.asset === "ETH" ? await evmRead("the ETH balance", () => rpc().getBalance(payerAddress)) : await evmRead(`the ${from.asset} balance`, () => rpc().erc20BalanceOf(from.asset === "USDG" ? HOOD_USDG_ADDRESS : from.asset, payerAddress));
-    amountRaw = (balance * percent / 100000000n).toString();
-    if (amountRaw === "0")
-      throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.");
-  } else
-    amountRaw = rawAmount(flags["--amount"], decimals);
-  if (payer.kind === "embedded")
-    await assertDeferredExecuteSupported(ctx, key, id);
-  if (!await claimOperation(ctx, key, id, kind))
-    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
-  ctx.deps.stderr.write(`Operation: ${id}
-`);
-  const payerBody = payer.kind === "tee" ? { type: "linked", linkedWalletId: payer.wallet.id } : { type: "main" };
-  const base = from.base ?? to.base;
-  const token = from.base ? to.asset : from.asset;
-  const built = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/build", {
-    clientTradeId: id,
-    from: from.asset,
-    to: to.asset,
-    amountRaw,
-    maxSlippageBps: args.slippage,
-    payer: payerBody
-  }) : await request(ctx, key, "/api/v1/trade/agent/build", {
-    clientTradeId: id,
-    chain: "hood",
-    mint: token,
-    side: from.base ? "buy" : "sell",
-    quoteAsset: base.toLowerCase(),
-    amountRaw,
-    maxSlippageBps: args.slippage,
-    payer: payerBody,
-    ...payer.kind === "embedded" ? { deferExecution: true } : {}
-  });
-  if (built.job || built.status === "executed")
-    return printTradingResult(ctx, { ...built, clientTradeId: id, kind });
-  const body = kind === "swap" ? built.payload : built;
-  const data = swapBuildSchema.parse(body);
-  const echoed = kind === "swap" ? body?.recipient : body?.walletAddress;
-  if (body?.chain !== "hood" || typeof echoed !== "string" || echoed.toLowerCase() !== payerAddress.toLowerCase())
-    throw new TradingError("INVALID_RESPONSE", "The Hood build does not name the requested payer; nothing was signed.");
-  const artifacts = kind === "swap" ? { ...data, quoteAsset: undefined, quoteSource: undefined } : data.artifacts;
-  if (!artifacts)
-    throw new TradingError("INVALID_RESPONSE", "Missing quote artifacts.");
-  if (kind === "trade" && artifacts.quoteAsset !== base.toLowerCase())
-    throw new TradingError("PAIR_UNSUPPORTED", `This token settles in ${artifacts.quoteAsset ?? "an unknown asset"}, not ${base}. Nothing was signed.`);
-  let sequenced;
-  if (payer.kind === "tee") {
-    const parsed = sequencedSchema.safeParse(body);
-    if (!parsed.success)
-      throw new TradingError("SEQUENCED_RAIL_REQUIRED", "A Hood TEE wallet trades one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.");
-    sequenced = parsed.data;
-  }
-  const minimumRaw = !from.base && artifacts.venue === "curve" ? (BigInt(data.minOutRaw) > BigInt(data.fee.feeRaw) ? BigInt(data.minOutRaw) - BigInt(data.fee.feeRaw) : 0n).toString() : data.minOutRaw;
-  const quote = {
-    intent: `Swap ${decimalAmount(amountRaw, decimals)} ${from.asset} to ${to.asset} on Hood`,
-    wallet: payerAddress,
-    venue: artifacts.quoteSource ?? artifacts.venue,
-    priceImpactPct: artifacts.priceImpactPct ?? null,
-    fee: data.fee,
-    minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to.asset}`,
-    minOutRaw: data.minOutRaw,
-    minimumReceivedRaw: minimumRaw,
-    tokenRisks: artifacts.tokenRisks ?? []
-  };
-  if (sequenced) {
-    const leg = sequenced.nextLeg;
-    const maxFee = BigInt(leg.maxFeePerGas);
-    const reserve = sweepReserveFloor(maxFee, kind === "trade" ? [token] : []);
-    quote.legs = describeHoodLegs(sequenced, BigInt(data.fee.feeRaw) > 0n);
-    quote.gas = `the ${sequenced.legKind} leg up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei); each later leg is priced by Candle when it becomes next`;
-    quote.reserve = `at least ${formatUnits(reserve.wei, 18)} ETH stays in the wallet for a sweep home (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee); a trade never spends it`;
-    quote.operationId = sequenced.operationId;
-  }
-  if (!await confirmQuote(ctx, quote, args.yes)) {
-    if (sequenced)
-      ctx.deps.stderr.write(`Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade from it is refused as WALLET_BUSY until then.
-`);
-    return printTradingResult(ctx, {
-      success: true,
-      status: "cancelled",
-      clientTradeId: id,
-      kind,
-      quote,
-      ...sequenced ? { operationId: sequenced.operationId, walletHeldUntil: sequenced.expiresAt } : {}
-    });
-  }
-  if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
-    throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
-  if (payer.kind === "embedded") {
-    const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
-    return printTradingResult(ctx, { ...executed, clientTradeId: id, kind, quote, wallet: safeText(payerAddress) });
-  }
-  const wallet = payer.wallet;
-  if (wallet.chain !== "evm" || !sequenced)
-    throw chainMismatch(`TEE wallet ${wallet.id}`, wallet.chain === "evm" ? "hood" : "solana", "hood");
-  const recorded = kind === "trade" ? token : HOOD_USDG_ADDRESS;
-  const notices = [];
-  const run2 = await runSequencedLegs(ctx, key, {
-    wallet,
-    first: sequenced,
-    submitPath: kind === "swap" ? "/api/v1/agent/swap/submit" : "/api/v1/trade/agent/submit",
-    submitFields: kind === "swap" ? { clientTradeId: id, swapId: data.swapId } : { clientTradeId: id },
-    unwrap: (answer) => kind === "swap" ? answer.payload ?? {} : answer,
-    clientId: id,
-    kind,
-    allowedLegs: HOOD_TRADE_LEGS,
-    onLanded: async (_leg) => {
-      const notice = await recordTradedToken(ctx, wallet.address, toChecksumAddress(recorded));
-      if (notice)
-        notices.push(notice);
-    }
-  });
-  const settled = kind === "swap" ? reportSettlement(ctx, run2.final.settlement, { asset: to.asset, decimals: outDecimals }, id) : {};
-  return printTradingResult(ctx, {
-    ...run2.final,
-    ...settled,
-    clientTradeId: id,
-    kind,
-    chain: "hood",
-    quote,
-    wallet: safeText(wallet.address),
-    operationId: sequenced.operationId,
-    landedLegs: run2.landed,
-    evmRecord: { token: toChecksumAddress(recorded), notices }
-  });
-}
-var bridgeBuildSchema = exports_external.object({
-  status: exports_external.literal("built"),
-  swapId: exports_external.string().min(1),
-  venue: exports_external.string(),
-  fee: exports_external.object({ bps: exports_external.number(), feeRaw: exports_external.string() }).passthrough(),
-  expectedOutRaw: exports_external.string().regex(/^\d+$/),
-  expiresAt: exports_external.number().finite(),
-  recipient: exports_external.string().min(1),
-  statusChecks: exports_external.array(exports_external.string()).default([]),
-  transactionsBase64: exports_external.array(exports_external.string()).optional(),
-  walletAddress: exports_external.string().optional(),
-  venueCostUsd: exports_external.number().finite().optional(),
-  venueTimeEstimateSec: exports_external.number().finite().optional()
-}).passthrough();
-async function bridgeOriginBalance(ctx, from, address, solana, evm) {
-  if (from === "ETH")
-    return evmRead("the ETH balance", () => evm().getBalance(address));
-  if (from === "USDG")
-    return evmRead("the USDG balance", () => evm().erc20BalanceOf(HOOD_USDG_ADDRESS, address));
-  const reader = await solana();
-  if (from === "SOL")
-    return tradingRead(ctx, reader, () => reader.rpc.getBalance(address));
-  const mint = BASES.USDC?.mint;
-  const accounts = (await tradingRead(ctx, reader, () => Promise.all([
-    reader.rpc.getTokenAccountsByOwner(address, TOKEN_PROGRAM_ID),
-    reader.rpc.getTokenAccountsByOwner(address, TOKEN_2022_PROGRAM_ID)
-  ]))).flat();
-  return accounts.filter((account) => account.mint === mint).reduce((sum, account) => sum + BigInt(account.amountRaw), 0n);
-}
-async function bridgeSwap(ctx, args) {
-  const { flags, id, from, to } = args;
-  const origin = BRIDGE_ASSETS[from].chain;
-  const destination = BRIDGE_ASSETS[to].chain;
-  const walletFlag = flags["--wallet"];
-  const named = walletFlag === undefined ? undefined : walletNameChain(walletFlag);
-  if (named !== undefined && named !== origin)
-    throw chainMismatch(`--wallet ${safeText(walletFlag)}`, named, origin);
-  if (flags["--amount"])
-    rawAmount(flags["--amount"], 18);
-  const percent = flags["--percent"] ? BigInt(rawAmount(flags["--percent"], 6)) : undefined;
-  if (percent !== undefined && percent > 100000000n)
-    throw new TradingError("INVALID_AMOUNT", "Percent must be greater than 0 and at most 100 (up to six decimal places).");
-  const key = await tradingKey(ctx);
-  const prior = await lookupOperation(ctx, key, id, "swap");
-  if (prior)
-    return printTradingResult(ctx, {
-      ...prior,
-      ...bridgeStatusField(ctx, prior, bridgeFactsOf((await savedOperation(ctx, key, id))?.bridge))
-    });
-  const payer = await tradingPayer(ctx, key, walletFlag, "swap:write", origin);
-  if (payer.kind !== "tee")
-    throw new TradingError("CHAIN_MISMATCH", `Only a TEE wallet bridges, and the embedded wallet ${safeText(payer.address)} is not one. Name a ${chainName(origin)} TEE wallet with --wallet. Nothing was built.`);
-  const wallet = payer.wallet;
-  const { rows } = await listTradingWallets(ctx, key, "swap:write");
-  const onDestination = rows.filter((row) => rowChain(row) === destination);
-  const toFlag = flags["--to"];
-  let toWalletId;
-  let candidates = onDestination.filter((row) => row.active);
-  if (toFlag !== undefined) {
-    const matches = rows.filter((row) => matchesName(row, toFlag));
-    const match = matches[0];
-    if (matches.length > 1)
-      throw new TradingError("TEE_WALLET_REQUIRED", `"${safeText(toFlag)}" matches ${matches.length} TEE wallets on this key: ${matches.map(describeWallet).join("; ")}. Name one by id or address.`);
-    if (!match || rowChain(match) !== destination)
-      throw new TradingError("BRIDGE_DESTINATION_MISSING", `--to ${safeText(toFlag)} is not a ${chainName(destination)} TEE wallet on this key. A bridge lands only in this key's own TEE wallet on ${chainName(destination)}${onDestination.length > 0 ? `: ${onDestination.map(describeWallet).join("; ")}` : ""}. Nothing was built.`);
-    if (!match.active)
-      throw new TradingError("TEE_WALLET_INACTIVE", `The destination ${describeWallet(match)} is not a verified-active TEE wallet. Nothing was built.`);
-    toWalletId = match.id;
-    candidates = [match];
-  } else if (candidates.length !== 1) {
-    throw new TradingError("BRIDGE_DESTINATION_MISSING", candidates.length === 0 ? `This key has no active ${chainName(destination)} TEE wallet to bridge into. Promote one onto this key (candle vault promote), then bridge. Nothing was built.` : `This key has more than one ${chainName(destination)} TEE wallet; name the destination with --to: ${candidates.map(describeWallet).join("; ")}. Nothing was built.`);
-  }
-  const solana = lazySolanaClient(ctx, flags["--rpc-url"]);
-  const evm = lazyEvmRpc(ctx, flags["--rpc-url"]);
-  const decimals = BRIDGE_ASSETS[from].decimals;
-  let amountRaw;
-  if (percent !== undefined) {
-    const balance = await bridgeOriginBalance(ctx, from, wallet.address, solana, evm);
-    amountRaw = (balance * percent / 100000000n).toString();
-    if (amountRaw === "0")
-      throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.");
-  } else
-    amountRaw = rawAmount(flags["--amount"], decimals);
-  if (!await claimOperation(ctx, key, id, "swap"))
-    throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
-  ctx.deps.stderr.write(`Operation: ${id}
-`);
-  const built = await request(ctx, key, "/api/v1/agent/swap/build", {
-    clientTradeId: id,
-    from,
-    to,
-    amountRaw,
-    maxSlippageBps: args.slippage,
-    payer: { type: "linked", linkedWalletId: wallet.id },
-    ...toWalletId !== undefined ? { toWalletId } : {}
-  });
-  if (built.job || built.status === "executed")
-    return printTradingResult(ctx, { ...built, clientTradeId: id, kind: "swap" });
-  const body = built.payload ?? {};
-  const parsedBuild = bridgeBuildSchema.safeParse(body);
-  if (!parsedBuild.success)
-    throw new TradingError("INVALID_RESPONSE", "Candle did not return a complete bridge quote; nothing was signed.");
-  const data = parsedBuild.data;
-  if (data.venue !== "relay")
-    throw new TradingError("INVALID_RESPONSE", `A bridge goes through Relay, not ${safeText(data.venue)}; nothing was signed.`);
-  if (data.fee.bps !== 0 || data.fee.feeRaw !== "0")
-    throw new TradingError("INVALID_RESPONSE", "A bridge carries no Candle fee, and this quote has one; nothing was signed.");
-  const recipient = candidates.find((row) => destination === "hood" ? sameEvmAddress(row.address, data.recipient) : row.address === data.recipient);
-  if (!recipient)
-    throw new TradingError("INVALID_RESPONSE", `Candle named ${safeText(data.recipient)} as the destination, which is not ${toWalletId !== undefined ? "the TEE wallet --to named" : `this key's ${chainName(destination)} TEE wallet`}; nothing was signed.`);
-  const facts = {
-    from,
-    to,
-    recipient: recipient.address,
-    ...data.statusChecks[0] !== undefined ? { statusCheck: data.statusChecks[0] } : {}
-  };
-  await saveOperationBridge(ctx, key, id, { ...facts });
-  const refused = (problem) => new TradingError("RELAY_STEP_REFUSED", `Relay's deposit did not pass this machine's check (${problem}); nothing was signed.`);
-  let sequenced;
-  let transaction;
-  const hoodOrigin = from === "ETH" || from === "USDG" ? from : undefined;
-  if (hoodOrigin) {
-    const parsedLeg = sequencedSchema.safeParse(body);
-    if (!parsedLeg.success)
-      throw new TradingError("SEQUENCED_RAIL_REQUIRED", "A Hood TEE wallet bridges one leg at a time, and this Candle deployment did not answer with a sequenced leg. Nothing was signed.");
-    sequenced = parsedLeg.data;
-    if (typeof data.walletAddress !== "string" || !sameEvmAddress(data.walletAddress, wallet.address))
-      throw new TradingError("INVALID_RESPONSE", "The Hood build does not name the requested payer; nothing was signed.");
-    const plan = plannedLegKinds(sequenced.legKind, sequenced.plannedLegCount, false, "bridgeDeposit");
-    if (!bridgePlanAdmitted(hoodOrigin, plan))
-      throw refused(`the plan is ${sequenced.plannedLegCount} leg(s) starting with ${sequenced.legKind}`);
-    const problem = relayHoodLegProblem(sequenced.legKind, sequenced.nextLeg, {
-      origin: hoodOrigin,
-      payer: wallet.address,
-      amountRaw
-    });
-    if (problem)
-      throw refused(problem);
-  } else {
-    if (data.transactionsBase64?.length !== 1)
-      throw refused(`Candle returned ${data.transactionsBase64?.length ?? 0} transactions, not one deposit`);
-    transaction = data.transactionsBase64[0];
-    const reader = await solana();
-    const problem = await tradingRead(ctx, reader, () => relaySolanaDepositProblem(transaction, wallet.address, reader.rpc));
-    if (problem)
-      throw refused(problem);
-  }
-  const outDecimals = BRIDGE_ASSETS[to].decimals;
-  const minimumRaw = (BigInt(data.expectedOutRaw) * BigInt(1e4 - args.slippage) / 10000n).toString();
-  const quote = {
-    intent: `Bridge ${decimalAmount(amountRaw, decimals)} ${from} on ${chainName(origin)} to ${to} on ${chainName(destination)}`,
-    wallet: wallet.address,
-    venue: "relay",
-    priceImpactPct: null,
-    minimumReceived: `${decimalAmount(minimumRaw, outDecimals)} ${to} (Relay's estimate ${decimalAmount(data.expectedOutRaw, outDecimals)} ${to}, less the ${args.slippage} bps slippage bound)`,
-    minimumReceivedRaw: minimumRaw,
-    expectedOutRaw: data.expectedOutRaw,
-    destination: `${recipient.label ? `${recipient.label} ` : ""}${recipient.address} (${chainName(destination)} TEE wallet on this key)`,
-    candleFee: "none",
-    relayFees: data.venueCostUsd !== undefined ? `about $${data.venueCostUsd} as Relay reports it` : "not reported",
-    estimatedTime: data.venueTimeEstimateSec !== undefined ? `about ${data.venueTimeEstimateSec}s as Relay reports it` : "not reported",
-    tokenRisks: []
-  };
-  if (sequenced) {
-    const leg = sequenced.nextLeg;
-    const maxFee = BigInt(leg.maxFeePerGas);
-    const reserve = sweepReserveFloor(maxFee, []);
-    quote.legs = describeHoodLegs(sequenced, false, "bridgeDeposit");
-    quote.gas = `the ${sequenced.legKind} leg up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei); each later leg is priced by Candle when it becomes next`;
-    quote.reserve = `at least ${formatUnits(reserve.wei, 18)} ETH stays in the wallet for a sweep home (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee); a bridge never spends it`;
-    quote.operationId = sequenced.operationId;
-  }
-  if (!await confirmQuote(ctx, quote, args.yes)) {
-    if (sequenced)
-      ctx.deps.stderr.write(`Nothing was signed. Operation ${sequenced.operationId} holds this wallet until ${new Date(sequenced.expiresAt).toISOString()}; a new Hood trade or sweep from it waits until then.
-`);
-    return printTradingResult(ctx, {
-      success: true,
-      status: "cancelled",
-      clientTradeId: id,
-      kind: "swap",
-      quote,
-      ...sequenced ? { operationId: sequenced.operationId, walletHeldUntil: sequenced.expiresAt } : {}
-    });
-  }
-  if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
-    throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
-  let result;
-  let depositHash;
-  if (sequenced && hoodOrigin) {
-    const run2 = await runSequencedLegs(ctx, key, {
-      wallet,
-      first: sequenced,
-      submitPath: "/api/v1/agent/swap/submit",
-      submitFields: { clientTradeId: id, swapId: data.swapId },
-      unwrap: (answer) => answer.payload ?? {},
-      clientId: id,
-      kind: "swap",
-      primaryLeg: "bridgeDeposit",
-      allowedLegs: bridgeLegKinds(hoodOrigin),
-      checkLeg: (kind, leg) => relayHoodLegProblem(kind, leg, { origin: hoodOrigin, payer: wallet.address, amountRaw }) === null,
-      onLanded: async () => {}
-    });
-    depositHash = run2.landed.find((leg) => leg.kind === "bridgeDeposit")?.hash;
-    result = {
-      ...run2.final,
-      chain: "hood",
-      operationId: sequenced.operationId,
-      landedLegs: run2.landed
-    };
-  } else {
-    const signed = await relaySign(ctx, key, wallet, transaction);
-    const submitted = await request(ctx, key, "/api/v1/agent/swap/submit", {
-      clientTradeId: id,
-      swapId: data.swapId,
-      signedTransactionsBase64: [signed]
-    });
-    const payload = submitted.payload ?? {};
-    const hashes = Array.isArray(payload.hashes) ? payload.hashes.filter((h) => typeof h === "string") : [];
-    depositHash = hashes[0];
-    result = submitted;
-  }
-  ctx.deps.stderr.write(`Deposit ${depositHash ? safeText(depositHash) : "sent"}: filling.${args.wait ? "" : ` Check it with candle swap status ${id} (add --wait to follow it).`}
-`);
-  const receipt = {
-    ...result,
-    clientTradeId: id,
-    kind: "swap",
-    bridge: { from, to, destination: recipient.address, ...depositHash ? { depositHash } : {} },
-    quote,
-    wallet: safeText(wallet.address)
-  };
-  if (!args.wait)
-    return printTradingResult(ctx, receipt);
-  try {
-    const found = await lookupOperation(ctx, key, id, "swap");
-    if (!found)
-      return printTradingResult(ctx, { ...receipt, waited: { final: false } });
-    const waited = await waitForSettlement(ctx, key, id, found, facts, true);
-    return printTradingResult(ctx, {
-      ...receipt,
-      job: waited.job,
-      bridgeStatus: waited.bridgeStatus,
-      waited: waited.waited
-    });
-  } catch (error) {
-    const reason = safeText(error instanceof Error ? describeRpcFailure(error) : String(error));
-    ctx.deps.stderr.write(`Could not follow the bridge (${reason}). The deposit was sent; do not send it again. Re-check with candle swap status ${id} --wait.
-`);
-    return printTradingResult(ctx, { ...receipt, waited: { final: false, error: reason } });
-  }
-}
-
-// src/commands/launch.ts
 var USAGE2 = "Usage: candle launch --name <name> --symbol <symbol> --image-url <https-url> --wallet <tee> [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version.";
 var QUOTE_CHAIN = {
   sol: "solana",
@@ -59991,6 +60097,7 @@ init_render();
 init_solana_endpoint();
 init_solana_lite();
 init_trading();
+init_swap();
 import { randomUUID as randomUUID3 } from "node:crypto";
 var LP_SCOPE = "lp:write";
 var CONFIRM_POLL_MS3 = 2000;
@@ -60922,6 +61029,7 @@ function hyperliquidRelayBody(typedData) {
 // src/commands/perps.ts
 init_render();
 init_trading();
+init_swap();
 var PERPS_SCOPE = "perps:write";
 var DEC_RE = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/;
 var CLOID_RE = /^0x[0-9a-fA-F]{32}$/;
@@ -64033,6 +64141,7 @@ async function signMessage2(args, ctx) {
 }
 
 // src/index.ts
+init_swap();
 init_tee();
 init_tee_rebind();
 
@@ -64042,6 +64151,7 @@ init_evm_lite();
 init_profiles();
 init_render();
 init_trading();
+init_swap();
 var USAGE4 = "Usage: candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <name>] [--rpc-url <url>] [--yes] [--json]";
 var TRANSFER_ASSETS = [...Object.keys(BASES), ...Object.keys(HOOD_BASES)];
 var BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -72221,6 +72331,7 @@ init_wallets();
 init_args();
 init_render();
 init_trading();
+init_swap();
 import { randomUUID as randomUUID5 } from "node:crypto";
 var USAGE6 = "Usage: candle wallet close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;

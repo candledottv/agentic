@@ -1041,14 +1041,25 @@ export async function assertNotOlderCopy(
 /** CC-08's confirmation. The last six characters, typed, visible, before anything is signed or pinned. */
 export async function confirmLastSix(ctx: CommandContext, address: string, what: string): Promise<void> {
   const expected = address.slice(-6)
-  const typed = (await ctx.deps.promptLine(`Type the last six characters of ${what} (${address}) to confirm: `)).trim()
-  if (typed !== expected) {
-    throw new VaultError(
-      "DESTINATION_NOT_CONFIRMED",
-      "That is not the last six characters of that address; nothing was done.",
-      { suggestion: "Nothing was signed. Run it again and type the last six characters exactly as shown." },
+  const normalize = (value: string) => (address.startsWith("0x") ? value.toLowerCase() : value)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const typed = (
+      await ctx.deps.promptLine(`Type the last six characters of ${what} (${address}) to confirm: `)
+    ).trim()
+    if (normalize(typed) === normalize(expected)) return
+    const difference =
+      Array.from({ length: Math.max(expected.length, typed.length) }, (_, i) => i).find(
+        (i) => normalize(typed)[i] !== normalize(expected)[i],
+      ) ?? 0
+    ctx.deps.stderr.write(
+      `Expected  ${expected}\nYou typed ${typed}\n${" ".repeat(10 + difference)}^ character ${difference + 1} differs\n`,
     )
   }
+  throw new VaultError(
+    "DESTINATION_NOT_CONFIRMED",
+    "That is not the last six characters of that address; nothing was done.",
+    { suggestion: "Nothing was signed. Run it again and type the last six characters exactly as shown." },
+  )
 }
 
 /** Writes a vault failure in whichever mode this invocation is in, and answers its exit code. */

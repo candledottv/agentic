@@ -666,3 +666,16 @@ describe("BE-505 (R8.4): the settled receipt of a base-pair swap", () => {
     expect(f.stderr.text).not.toMatch(/^settled /m)
   })
 })
+
+for (const key of ["cndl_live_Abcd1234" + "x".repeat(35), "unrecognized-key"]) {
+  test(`swap status unknown id names acting key and per-rail rule: ${key.slice(0, 20)}`, async () => {
+    const f = await fixture()
+    f.deps.env.CANDLE_API_KEY = key
+    expect(await run(["swap", "status", "unknown-op", "--json"], f.deps)).toBe(1)
+    const report = JSON.parse(f.stdout.text)
+    expect(report.code).toBe("JOB_NOT_FOUND")
+    expect(report.message).toContain(key.startsWith("cndl_live_") ? "key Abcd1234" : "key this key")
+    expect(report.message).toContain("Nothing was resent")
+    expect(report.suggestion).toContain("swap jobs only by the key that placed them")
+  })
+}

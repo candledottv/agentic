@@ -304,7 +304,7 @@ describe("vault fund <external>: vault-signed, decoded, last six of the DESTINAT
     h.stderr.text = ""
     expect(await run(["vault", "fund", "trader", "--amount", "0.1", "--rpc-url", RPC, "--yes"], h.deps)).toBe(2)
     expect(h.stderr.text).toContain("Unknown flag: --yes")
-    h.lines.push(expectedVault0.slice(-6)) // the SOURCE's last six, which is not the destination's
+    h.lines.push(...Array(3).fill(expectedVault0.slice(-6))) // the SOURCE's last six, which is not the destination's
     expect(await run(["vault", "fund", "trader", "--amount", "0.1", "--rpc-url", RPC], h.deps)).toBe(1)
     expect(h.stderr.text).toContain("not the last six characters")
     expect(rpc.sends).toEqual([])
@@ -375,7 +375,7 @@ describe("external sweep <external> --to <vault>: both named, neither inferred, 
     const h = await harness({ rpc })
     expect(await run(["vault", "new-key", "--chain", "solana", "--label", "cold"], h.deps)).toBe(0)
     expect(await run(["external", "new", "--label", "trader"], h.deps)).toBe(0)
-    h.lines.push(expectedExternal0.slice(-6))
+    h.lines.push(...Array(3).fill(expectedExternal0.slice(-6)))
     expect(await run(["external", "sweep", "trader", "--to", "cold", "--rpc-url", RPC], h.deps)).toBe(1)
     expect(h.stderr.text).toContain("not the last six characters")
     expect(rpc.sends).toEqual([])

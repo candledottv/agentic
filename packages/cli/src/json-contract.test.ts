@@ -100,6 +100,7 @@ const FROZEN_CODES: readonly string[] = [
   "TEE_WALLET_ALREADY_ENABLED",
   "TEE_WALLET_DISABLE_PENDING",
   "TEE_WALLET_NOT_ENABLED",
+  "TEE_WALLET_NOT_ON_KEY",
   "TEE_WALLET_NOT_VERIFIED",
   "TEE_WALLET_NO_VAULT",
   "TEE_WALLET_STATE_UNKNOWN",
@@ -166,6 +167,7 @@ async function codesInSource(): Promise<Set<string>> {
       // Both shapes count. A `code: "X"` literal is a code the CLI MINTS; a `code === "X"` or
       // `"X":` comparison is one it recognises off an API error body and passes straight through
       // (`renderError`'s mapping), which is just as much a code an agent switches on.
+      for (const match of src.matchAll(/new TradingError\(\s*"([A-Z0-9_]+)"/g)) found.add(match[1] as string)
       for (const match of src.matchAll(/code: "([A-Z0-9_]+)"/g)) found.add(match[1] as string)
       for (const match of src.matchAll(/code === "([A-Z0-9_]+)"/g)) found.add(match[1] as string)
       for (const match of src.matchAll(/^\s{2}([A-Z][A-Z0-9_]{3,}):/gm)) found.add(match[1] as string)
@@ -423,4 +425,16 @@ test("R2.9 doctor row ids are stable across role-dependent labels", async () => 
   expect(body.role).toBe("owner")
   expect(body.provenance).toBeDefined()
   for (const row of body.rows) expect(Object.values(DOCTOR_ROW_IDS)).toContain(row.id)
+})
+
+// 0.11.16: the credential-free status refusal remains a single JSON envelope.
+test("tee status server read adds TEE_WALLET_NOT_ON_KEY and keeps exit 1", async () => {
+  const result = await jsonRun(["tee", "status", "SomeAddress1111"])
+  expect(result.code).toBe(1)
+  expect(JSON.parse(result.stdout)).toEqual({
+    ok: false,
+    code: "TEE_WALLET_NOT_ON_KEY",
+    message: "SomeAddress1111: no API key available.",
+    suggestion: "Pass --verify to read it from this machine's vault, or select the profile holding its key.",
+  })
 })

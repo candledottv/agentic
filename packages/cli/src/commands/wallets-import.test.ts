@@ -485,3 +485,20 @@ describe("wallets revoke", () => {
     expect(stderr.text).toContain("Usage: candle wallets revoke")
   })
 })
+
+test("wallets import without TTY names --key-file before prompting", async () => {
+  const stdout = createCapture()
+  const stderr = createCapture()
+  const deps = createTestDeps({
+    fetch: createRoutedFetch({}).fetch,
+    store: createFakeStore({ api_key: "ck_live_x" }),
+    stdout,
+    stderr,
+    isTTY: { stdin: false, stdout: false, stderr: false },
+    promptSecret: async () => {
+      throw new Error("must not prompt")
+    },
+  })
+  expect(await run(["wallets", "import", "--chain", "solana", "--json"], deps)).toBe(1)
+  expect(stdout.text + stderr.text).toContain("--key-file")
+})

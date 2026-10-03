@@ -1354,11 +1354,11 @@ describe("BE-296: vault promote --in-place: one sentence, live block, always-on 
   test("T4: the subject's last six is still asked first; a wrong answer is DESTINATION_NOT_CONFIRMED with zero writes and confirm is never asked", async () => {
     const f = await setup("t4")
     const before = await readFile(f.vaultPath, "utf8")
-    const r = await runSingle(f, { lines: ["zzzzzz", "confirm"], json: true })
+    const r = await runSingle(f, { lines: ["zzzzzz", "zzzzzz", "zzzzzz", "confirm"], json: true })
     expect(r.code).toBe(1)
     const doc = JSON.parse(r.out.split("\n").filter((line) => line.startsWith("{"))[0] as string)
     expect(doc).toMatchObject({ ok: false, code: "DESTINATION_NOT_CONFIRMED" })
-    expect(r.asked).toHaveLength(1)
+    expect(r.asked).toHaveLength(3)
     expect(r.asked[0]).toContain("Type the last six characters of the address being promoted")
     expect(r.importCalls.n).toBe(0)
     expect(await readFile(f.vaultPath, "utf8")).toBe(before)
