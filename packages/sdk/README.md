@@ -1,21 +1,24 @@
 # @candledottv/agent-sdk
 
 A typed TypeScript SDK for the Candle agent rail. It wraps the REST surface documented in
-`docs/headless-launch.md` (headless launches, jobs, dry runs, market state, quotes, feeds,
-verification, presets, agent profiles, image uploads), ships the webhook signature verifier,
-and drives the client-side HPKE seal behind linked-wallet import, so an agent integrates
-against typed methods instead of hand-rolled HTTP.
+[Headless launch](https://docs.candle.tv/developers/headless-launch) and
+[Agent trading](https://docs.candle.tv/developers/agent-trading) (launches, jobs, dry runs, trades,
+swaps, market state, quotes, feeds, verification, presets, plans, P&L, agent profiles, image
+uploads), ships the webhook signature verifier, and drives the client-side HPKE seal behind
+linked-wallet import, so an agent integrates against typed methods instead of hand-rolled HTTP.
+The full guide is [TypeScript SDK](https://docs.candle.tv/developers/sdk).
 
-Built on the global `fetch`; runs on Bun and Node 18+. Three runtime dependencies --
-`@hpke/core`, `@hpke/chacha20poly1305`, and `@scure/base` -- exist solely to power
-`importWallet()`'s client-side HPKE seal and base58 decode (see "Importing a wallet" below);
-nothing else in the SDK needs them. The one `node:` builtin used is `node:crypto` (webhook
+Built on the global `fetch`; runs on Bun and Node 18+. Five runtime dependencies:
+`@hpke/core`, `@hpke/chacha20poly1305` and `@scure/base` power `importWallet()`'s client-side
+HPKE seal and base58 decode (see "Importing a wallet" below), and `canonicalize` and
+`@noble/hashes` build the payloads a key signer signs (Privy authorization signatures and
+Hyperliquid actions). The one `node:` builtin used is `node:crypto` (webhook
 verification only), which Bun also provides. Edge runtimes without `node:crypto` would need a
 Web Crypto port of the verifier; that is a deliberate later concern.
 
-> **Not yet published to npm.** Publishing `@candledottv/agent-sdk` (and `@candledottv/mcp`)
-> is the post-Phase-2 follow-up. Until then, consume it as a workspace package:
-> `import { CandleClient } from "@candledottv/agent-sdk"`.
+```bash
+npm i @candledottv/agent-sdk
+```
 
 ## Quick start
 
@@ -91,6 +94,33 @@ else console.error("failed:", job.errorCode)
 Need a hosted image first? `uploadImage(bytes, contentType)` posts raw bytes to
 `/api/v1/uploads/agent-image` and returns `{ imageUrl }`, ready for the launch body.
 
+`selfLaunch()` launches from a linked wallet the agent signs for locally, and `launchAtomic()`
+launches and seeds in one transaction; both need the Pro or Max plan.
+
+## Trading, swaps and account reads
+
+```ts
+const fill = await candle.trade({ mint: "9dXSV8...CNDL", side: "buy", amountRaw: "200000000", from: "main" })
+// fill.amounts.expectedOutRaw is the quote; fill.amounts.actualOutRaw is what arrived (Solana only)
+```
+
+- `trade()` buys or sells a token in one call, from the account's main wallet (executed inline)
+  or from a linked wallet the caller signs for. Amounts are raw units. On Solana,
+  `amounts.actualOutRaw` is the delivered amount, decoded from the payer's balance change; book
+  positions from it rather than from `expectedOutRaw`. It is absent on Hood.
+- `swap()` converts base assets (`SOL`, `USDC`, `CNDL`, `ETH`, `USDG`); a pair that spans Solana
+  and Hood is a bridge.
+- `getPlans()` (no key) returns every plan's price, fees, limits and capabilities as the server
+  serves them.
+- `getPortfolio()`, `getProfilePnl(keyPrefix)`, `getProfileTrades(keyPrefix)` and
+  `getSpendLimits()` read the account's holdings, a profile's P&L and fills, and this key's caps.
+- `closeEmptyAccounts()` closes the embedded wallet's empty token accounts and returns the rent.
+- The `perps*` methods (`perpsSetup`, `perpsOpen`, `perpsClose`, `perpsOrders`,
+  `perpsPositions`, ...) drive Hyperliquid perps.
+
+Limit orders are a REST surface only (`/api/v1/trade/agent/orders`); the SDK has no method for
+them.
+
 ## Importing a wallet
 
 `importWallet()` drives Candle's ciphertext-only wallet import end to end: it fetches Privy's
@@ -149,7 +179,8 @@ async function handleWebhook(req: Request): Promise<Response> {
   if (!ok) return new Response("invalid signature", { status: 401 })
 
   const event = JSON.parse(rawBody)
-  // handle launch.confirmed, launch.failed, curve.graduated, migration.completed, migration.delayed
+  // event is one of the sixteen the endpoint subscribed to: launch.confirmed, trade.executed,
+  // order.triggered, transfer.executed, key.access_widened, ... (see the Webhooks docs page)
   return new Response("ok")
 }
 ```
@@ -160,9 +191,12 @@ bodies all return `false`. Comparison is constant-time (`timingSafeEqual`).
 ## Errors
 
 Every non-2xx response throws `CandleApiError` with `code`, `status`, `retryable`, and
-(for field-level validation) `field`. Structured envelopes map straight through; the few
-legacy endpoints without envelopes (activity, users) surface as `code: "HTTP_<status>"`.
-The full code table lives in `docs/headless-launch.md`.
+(for field-level validation) `field`, plus `routing`, `discovery`, `coverage`, `uiHint` and
+`docsPath` when the envelope carries them. Structured envelopes map straight through; the few
+legacy endpoints without envelopes (activity, users) surface as `code: "HTTP_<status>"`. A
+Solana or EVM JSON-RPC failure throws `JsonRpcError`, with the RPC's numeric `code` and its
+`data` (for a failed simulation, `{ err, logs }`). The full code table is on
+[Headless launch](https://docs.candle.tv/developers/headless-launch).
 
 ## Development
 
@@ -174,10 +208,9 @@ bun run typecheck # tsc --noEmit
 ### Hyperliquid per-key PnL
 
 `candle pnl --profile <name>` / SDK `getProfilePnl(keyPrefix)` / MCP `candle_get_profile_pnl`
-read the existing `GET /api/v1/agent/keys/{prefix}/pnl`. When `HYPERLIQUID_ENABLED` is on, the
-answer adds an optional `hyperliquid` section, and the CLI prints it under **Hyperliquid**.
-The existing read authentication applies; the switch defaults off and an older API simply omits
-this section. No additional signing, deposit or setup is needed for this read.
+read the existing `GET /api/v1/agent/keys/{prefix}/pnl`. The answer adds an optional
+`hyperliquid` section, and the CLI prints it under **Hyperliquid**. The existing read
+authentication applies; on an older API the section is simply absent. No additional signing, deposit or setup is needed for this read.
 
 The section reports main-exchange perp `realizedGrossUsd` (venue `closedPnl`), signed
 `fundingUsd` (received positive, paid negative), `feesUsd` (venue fees including builder fees;

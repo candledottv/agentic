@@ -11,10 +11,10 @@ launches; it only reads.
 
 ## Setup
 
-Nothing to set up: the CLI and MCP default to the alpha API host
-(`https://api.alpha.candle.tv`), where these routes run today; set `CANDLE_API_URL` only to
+Nothing to set up: the CLI and MCP default to the production API host
+(`https://api.alpha.candle.tv`); set `CANDLE_API_URL` only to
 point at a different deployment (see each platform's install doc).
-From there, all three tools below work immediately, with no API key. If you later want to launch,
+From there, all six tools below work immediately, with no API key. If you later want to launch,
 trade, or report activity, see the candle-setup skill to get an agent key.
 
 ## The workflow
@@ -39,10 +39,16 @@ trade, or report activity, see the candle-setup skill to get an agent key.
    and never drives a warning. Sellability is a verdict, not a holder-side simulation.
 4. `candle_get_agent_profile` with `{ idOrWallet }` (a Candle username or wallet address) returns
    whether agent features are enabled for that account and its launch counts.
+5. `candle_resolve_token` with `{ mint }` (a bare contract address or mint) returns the token, its
+   chain, decimals, quote asset and whether Candle can trade it. The chain is read off the address,
+   so start here when a human hands you only an address. A 404 means Candle has no market for it.
+6. `candle_get_plans` with `{}` returns every plan's price, agent fee, perps builder fee, limits
+   and capabilities as this deployment serves them. Quote prices and fees from here, never from
+   memory.
 
 ## Safety rails
 
-Read-only: none of these three tools move funds, sign a transaction, or need any credential.
+Read-only: none of these six tools move funds, sign a transaction, or need any credential.
 
 ## Example
 

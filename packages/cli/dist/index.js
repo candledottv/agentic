@@ -51709,7 +51709,7 @@ var init_tools = __esm(() => {
     side: exports_external.enum(["buy", "sell"]),
     amount: exports_external.string().optional().describe("Decimal amount. Buys: how much of THIS TOKEN'S OWN quote asset to spend (SOL for a " + 'SOL-launched token, USDC for a USDC-quoted one, and so on: e.g. "0.5"). Sells: how many ' + "TOKENS to sell. Pass exactly one of amount or percent."),
     percent: exports_external.number().optional().describe("Sells only: sell this percent (integer 1-100) of the holding. Live trades size against the " + "embedded wallet. Paper trades (`paper: true`) size against this key's paper inventory -- " + "the position a previous paper buy credited -- because paper never moves the live wallet."),
-    quoteAsset: exports_external.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' + "to an arbitrary mint Candle never launched (a buy needs Pro or Max; a sell works on any plan) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
+    quoteAsset: exports_external.string().optional().describe('What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' + '"eth" or "usdg" on Hood. Echoing the `quoteAsset` a quote (POST /api/v1/trade/agent/quote) returned is safe. On Solana it applies only ' + "to an arbitrary mint Candle never launched (a buy needs Pro or Max; a sell works on any plan) and is ignored for a Candle token, " + "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " + "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " + "the cheapest path to the asset is chosen separately. Defaults to sol / ETH settlement."),
     maxSlippageBps: exports_external.number().optional().describe("Max slippage in basis points; API default applies when omitted"),
     clientTradeId: exports_external.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result. Retrying with the " + "SAME id is safe (idempotent replay); a new id is a SECOND trade."),
     paper: exports_external.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, exports_external.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost. " + "A sell of a mint this key already paper-bought also closes that paper book when the " + "live wallet is empty, even if this flag is omitted."))
@@ -52992,9 +52992,16 @@ var HELP = {
     group: "Maintain",
     summary: "Verify a release asset's Sigstore bundle",
     description: "Verifies a release asset against the trusted root compiled into this binary. No network, no credentials, and nothing else installed: the bundle carries the certificate and the transparency-log entry.",
-    usage: ["candle verify <file> --bundle <path>"],
+    usage: ["candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]"],
     rows: [],
-    flags: [{ invocation: "--bundle <path>", description: "The .sigstore.json bundle beside the asset" }],
+    flags: [
+      { invocation: "--bundle <path>", description: "The .sigstore.json bundle beside the asset" },
+      {
+        invocation: "--identity <uri>",
+        description: "The signing identity to require; defaults to the release identity for the version in a latest.json beside the bundle"
+      },
+      { invocation: "--issuer <url>", description: "The certificate issuer to require; defaults to GitHub Actions'" }
+    ],
     examples: ["candle verify ./candle-darwin-arm64 --bundle ./candle-darwin-arm64.sigstore.json"]
   },
   completion: {

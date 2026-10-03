@@ -40,9 +40,10 @@ Both work. Decide on purpose, because limits attach to the key, not the wallet.
 | Signers on the trading machine | One | One per key |
 | Keys to track, rotate and revoke | One | Several |
 
-**Embedded wallet.** A key with trade scope can pay from the account's embedded wallet unless the key
-is set to deny it (`--embedded-wallet deny` on key create or update, where the CLI offers it). Set the
-deny on bot keys that should only trade their TEE wallets (owner). If a bot is meant to trade a TEE
+**Embedded wallet.** A key can pay from the account's embedded wallet only when it is allowed
+(`--embedded-wallet allow` on `candle keys create`, or `candle keys update <key> --embedded-wallet
+allow`, owner). New keys are denied by default; keep bot keys that should only trade their TEE
+wallets denied. If a bot is meant to trade a TEE
 wallet, it names that wallet as payer and refuses any request that would pay from another.
 
 ## Signers (bots on a different machine from the vault)
@@ -61,7 +62,7 @@ then splits across two machines:
   stays on the promoting machine.)
 - **One active signer per key.** Replace it on purpose (a new trading machine), never by adding a
   second to fix a fault. A second `candle tee signer new` leaves a second, pending request next to the
-  active signer; the owner rejects it (`candle keys signer approve <code> --reject`).
+  active signer; the owner rejects it (`candle keys signer approve <code> --key <label> --reject`).
 - **No device token on the trading machine.** A machine holding both a device token and a key
   signer can approve its own signer requests.
 
@@ -101,8 +102,9 @@ formality in an emergency; whoever takes one reports it to the owner at once.
 - **Copy destinations only from your own wallet list or vault list.** Never from transaction
   history, an explorer's recent list, or a chat message. Compare the whole address, not its ends.
   Confirm prompts that ask for the destination's last characters want them exactly, case included.
-- **Agent transfers reach only the vault and trusted wallets.** Trusting a wallet
-  (`candle wallets trust`, owner) is what lets an agent send to it, so trust only your own wallets.
+- **Agent transfers reach only the wallet's vault and the wallets you linked while signed in or
+  marked trusted.** Trusting a wallet (`candle wallets trust`, owner) is what lets an agent send to
+  it, so trust only your own wallets.
 - **Know what a `max` or percent amount includes.** It may be refused for tokens, or take rent and
   fee reserves along with it. When that matters, send an exact amount read from the chain just
   before the transfer.

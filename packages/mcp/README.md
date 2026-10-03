@@ -35,7 +35,7 @@ Unset means all twenty-nine. An unknown name fails startup with the valid names 
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
 
-Most tools are a thin wrapper: a one-request mapping onto `apps/api`
+Most tools are a thin wrapper: a one-request mapping onto Candle's REST API
 (`POST /api/v1/launch/headless`, `GET /api/v1/markets/:chain/:mint`, `GET /api/v1/markets/feed`,
 `POST /api/v1/activity/report`, `GET /api/v1/users/:idOrWallet/agent`) that hands the response body
 straight back to the caller, unchanged, error responses included. `candle_trade` and
@@ -48,7 +48,8 @@ Both take decimal amounts, never raw base units, and resolve the scale themselve
 - A `candle_trade` **buy** is denominated in the token's OWN quote asset, whatever it was launched
   against (SOL for a SOL-launched token, USDC or CNDL for those quote pairs). The tool reads the
   market first and converts against its `quoteDecimals`; the `quoteAsset` field applies only to a
-  mint Candle never launched, the arbitrary-token path a Pro or Max key trades through Jupiter. A
+  mint Candle never launched, the path traded through Jupiter (buying needs Pro or Max; selling
+  works on any plan). A
   **sell** is denominated in tokens and converts against the market's own `decimals`.
 - A `candle_launch_and_seed` `devBuy` is denominated in the quote asset that launch selects, since
   there the caller genuinely picks the new token's quote pair: `quoteAsset` if given, otherwise
@@ -56,11 +57,11 @@ Both take decimal amounts, never raw base units, and resolve the scale themselve
 
 For a full walkthrough of `candle_launch_and_seed` and `candle_trade`, including the keyless read
 tools, getting a key, funding the embedded wallet, and idempotent retries, see
-`docs/mcp-launch-and-seed.md` in the `candle-monorepo` repo.
+[Candle MCP server](https://docs.candle.tv/developers/mcp-server).
 
 ## Environment
 
-- `CANDLE_API_URL` -- base URL of the Candle API. Defaults to `https://api.alpha.candle.tv` (the alpha deployment; production does not serve the agent API yet). Set it to
+- `CANDLE_API_URL` -- base URL of the Candle API. Defaults to `https://api.alpha.candle.tv`, production. Set it to
   `http://localhost:3001` when developing against a local API. A cleartext `http://` URL pointing
   at a NON-loopback host is refused at startup, since every write tool sends `x-api-key`; loopback
   (`localhost`, `127.0.0.0/8`, `::1`) needs no opt-in.
@@ -73,8 +74,8 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
   `candle_execution_status`, `candle_get_operation`) as well as the writes; those six
   work without it, so the server is useful the moment it is installed and only asks for a key when
   you try to write. `candle_trade` additionally needs the key's `swap:write` scope server-side,
-  which is opt-in only and never granted by omission, see `docs/mcp-launch-and-seed.md` in the
-  `candle-monorepo` repo.
+  which is opt-in only and never granted by omission, see
+  [Agent access](https://docs.candle.tv/developers/agent-access).
 - `CANDLE_KEY_SIGNER_PEM_FILE` -- the perps write tools only: the path to the key signer's PEM
   (`candle tee signer new --out <pem>` writes one). The relay's authorization is signed with it;
   without it those tools refuse before anything is built.
@@ -136,9 +137,9 @@ twenty-nine tools:
 
 - `candle_launch_token`, `candle_get_market`, and `candle_get_feed` hit endpoints that use the
   structured envelope `{ success: false, error: { code, message, ... } }`. Branch on `error.code`.
-- `candle_report_activity` relays `apps/api/src/routes/activity.ts`'s own plain error shape
+- `candle_report_activity` relays the activity endpoint's own plain error shape
   verbatim: `{ error: true, payload: string }`.
-- `candle_get_agent_profile` relays `apps/api/src/routes/users.ts`'s own plain error shape
+- `candle_get_agent_profile` relays the users endpoint's own plain error shape
   verbatim: `{ error: string }`.
 - `candle_trade` and `candle_launch_and_seed` wrap the underlying REST body instead of relaying it
   bare, in one of two shapes depending on how far the call got:
@@ -167,8 +168,9 @@ twenty-nine tools:
     `candle_get_market` to fetch it separately.
   - Either way, both tools echo their idempotency id (`clientTradeId` / `clientLaunchId`) at the
     top level, so a caller can always find it to retry safely: retrying with the SAME id is a safe
-    replay, a new id is a second trade or launch. See `docs/mcp-launch-and-seed.md` in the
-    `candle-monorepo` repo for the full idempotent-retry rule.
+    replay, a new id is a second trade or launch. See
+    [Candle MCP server](https://docs.candle.tv/developers/mcp-server) for the full idempotent-retry
+    rule.
 
 ## MCP client config
 
@@ -227,10 +229,9 @@ code. Re-check this pin when bumping the SDK.
 ### Hyperliquid per-key PnL
 
 `candle pnl --profile <name>` / SDK `getProfilePnl(keyPrefix)` / MCP `candle_get_profile_pnl`
-read the existing `GET /api/v1/agent/keys/{prefix}/pnl`. When `HYPERLIQUID_ENABLED` is on, the
-answer adds an optional `hyperliquid` section, and the CLI prints it under **Hyperliquid**.
-The existing read authentication applies; the switch defaults off and an older API simply omits
-this section. No additional signing, deposit or setup is needed for this read.
+read the existing `GET /api/v1/agent/keys/{prefix}/pnl`. The answer adds an optional
+`hyperliquid` section, and the CLI prints it under **Hyperliquid**. The existing read
+authentication applies; on an older API the section is simply absent. No additional signing, deposit or setup is needed for this read.
 
 The section reports main-exchange perp `realizedGrossUsd` (venue `closedPnl`), signed
 `fundingUsd` (received positive, paid negative), `feesUsd` (venue fees including builder fees;

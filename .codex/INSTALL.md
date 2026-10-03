@@ -1,21 +1,26 @@
 # Installing Candle for Codex
 
-Candle ships two things Codex can use directly: an MCP server (nineteen tools: launch, seed, trade,
+Candle ships two things Codex can use directly: an MCP server (twenty-nine tools: launch, seed, trade,
 read markets and feeds, report activity, read an agent profile, and more) and a `skills/` directory of
 `SKILL.md` files, which Codex's own skill system loads natively from a set of recognized
 locations, no MCP call involved.
 
 ## Prerequisites
 
-- Git and [Bun](https://bun.sh)
+- Node 18 or later (for `npx`), or the Candle CLI
+- Git, to clone this repository for the skills (and [Bun](https://bun.sh) only to build the server from that clone)
 - Optional: a Candle agent API key, for `candle_launch_token`, `candle_launch_and_seed`,
   `candle_trade`, and `candle_report_activity`. Not required for market reads. See the
   candle-setup skill (below) for how to provision one.
 
-## 1. Build the MCP server
+## 1. Get the MCP server
 
-`@candledottv/mcp` is not published to npm yet (publish is gated on Candle reaching production),
-so the working install today is a clone and a local build, not a package install:
+Nothing to build: the server is published to npm as `@candledottv/mcp`, and the config below runs it
+with `npx -y @candledottv/mcp`. If you have the Candle CLI installed, `candle mcp` runs the same
+server from the binary instead, with the key the CLI already stores; `candle mcp --print-config`
+prints the block for your install.
+
+To build from a clone instead (for example to run unreleased changes):
 
 ```bash
 git clone https://github.com/candledottv/agentic.git
@@ -24,8 +29,7 @@ bun install
 bun run --cwd packages/mcp build
 ```
 
-This produces `packages/mcp/dist/index.js`. Once npm publish lands, this whole step is replaced by
-a plain `npx -y @candledottv/mcp` reference in the config below, no clone required.
+That produces `packages/mcp/dist/index.js`; use `node` and its absolute path in place of `npx` below.
 
 ## 2. Register the server in config.toml
 
@@ -35,27 +39,27 @@ marked that project trusted):
 
 ```toml
 [mcp_servers.candle]
-command = "node"
-args = ["/absolute/path/to/agentic/packages/mcp/dist/index.js"]
+command = "npx"
+args = ["-y", "@candledottv/mcp"]
 
 [mcp_servers.candle.env]
 CANDLE_API_URL = "https://api.alpha.candle.tv"
 ```
 
-Substitute the actual absolute path to your clone from step 1 (Codex spawns the server from its
-own working directory, so a relative path will not resolve). The server already defaults to the
-alpha API host (`https://api.alpha.candle.tv`), where these routes run today; the explicit
-`CANDLE_API_URL` below just pins that, and is where you point elsewhere (e.g. production, once
-the feature reaches it). This works as written for the five keyless read tools,
-`candle_get_market`, `candle_get_feed`, `candle_token_forensics`, `candle_get_agent_profile` and
-`candle_resolve_token`, no key needed.
+If you built from a clone, use `command = "node"` and the absolute path to
+`packages/mcp/dist/index.js` (Codex spawns the server from its own working directory, so a
+relative path will not resolve). The server already defaults to production
+(`https://api.alpha.candle.tv`); the explicit `CANDLE_API_URL` just pins that, and is where you
+point elsewhere (e.g. staging, `https://staging.api.candle.tv`). This works as written for the six
+keyless read tools, `candle_get_market`, `candle_get_feed`, `candle_token_forensics`,
+`candle_get_agent_profile`, `candle_resolve_token` and `candle_get_plans`, no key needed.
 
 To launch, trade, or report activity, add your agent API key alongside it:
 
 ```toml
 [mcp_servers.candle]
-command = "node"
-args = ["/absolute/path/to/agentic/packages/mcp/dist/index.js"]
+command = "npx"
+args = ["-y", "@candledottv/mcp"]
 
 [mcp_servers.candle.env]
 CANDLE_API_URL = "https://api.alpha.candle.tv"

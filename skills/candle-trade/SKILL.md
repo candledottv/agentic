@@ -74,11 +74,11 @@ Two things to hold onto about a paper fill:
    - A sell's `amount` is denominated in the token itself, and converts against the market's own
      `decimals`. Or pass `percent` (an integer 1-100) to sell a slice of the wallet's
      current holding; the MCP resolves the balance for you.
-   - `quoteAsset` only matters for an arbitrary Solana mint Candle never launched, the Pro/Max-only
-     path traded through Jupiter. It changes nothing for a Candle-launched token.
+   - `quoteAsset` only matters for an arbitrary Solana mint Candle never launched, the path traded
+     through Jupiter (buying needs Pro or Max; selling works on any plan). It changes nothing for a Candle-launched token.
    - Swapping the base assets themselves (SOL, USDC, and CNDL on Solana) against one another is
      open to EVERY tier, a separate rule from the Candle-launched-token one: the Pro/Max gate
-     applies only to arbitrary mints Candle never launched, never to a base pair.
+     applies only to BUYING arbitrary mints Candle never launched, never to a base pair.
    - `maxSlippageBps` overrides the API's default slippage tolerance.
 2. Every call carries a `clientTradeId`, auto-generated and echoed back when omitted.
    **Retry a timed-out or uncertain call with the SAME id and the same body**: it replays the
@@ -107,8 +107,8 @@ that wallet is empty, nothing on hood can succeed, and the trade rail cannot fil
 moves a token against its quote asset, it does not convert one base asset into another.
 
 `candle_swap` is that conversion. It takes `from` and `to` as base-asset keys (`SOL`, `USDC`, `CNDL`
-on the Solana side; `ETH`, `USDG` on the Hood side), plus `amountRaw` in RAW base units rather than
-the decimal amounts the trade tool accepts. A pair spanning the two sides routes through the bridge,
+on the Solana side; `ETH`, `USDG` on the Hood side), plus `amount` as a decimal, the same as the trade
+tool (e.g. `"0.5"`; `amountRaw` still accepts raw base units for older callers). A pair spanning the two sides routes through the bridge,
 so `{from: "SOL", to: "ETH"}` is how a Hood wallet gets funded out of Solana holdings. The swap rail
 charges no platform fee at any tier and is not subject to the spend cap, though the `swap:write`
 scope and the per-key rate limit apply exactly as they do to a trade.

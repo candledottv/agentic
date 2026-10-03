@@ -29,7 +29,7 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 
 ## The tool surface
 
-Twenty tools. Five need no key at all, so a client can be pointed at the server and used before
+Twenty-nine tools. Six need no key at all, so a client can be pointed at the server and used before
 anyone signs up for anything.
 
 **Find out what you can do**
@@ -40,7 +40,7 @@ anyone signs up for anything.
 | `candle_get_wallets` | yes | the embedded wallets this key spends from, one per chain |
 | `candle_get_profile_wallets` | yes | which linked wallets this profile may spend from. Read `walletScope` first: an empty list means every wallet under `all`, none under `selected` |
 | `candle_set_profile_wallets` | yes | replace that set. Omitting a wallet revokes its access; an empty list assigns none |
-| `candle_get_profile_pnl` | yes | realized P&L for this profile's own fills, fees charged, and open positions at COST BASIS, with `chain` on each position and a per-chain split in `pnl.byChain`. Deposits and transfers are excluded; check `unvalued` and `truncated` before quoting it |
+| `candle_get_profile_pnl` | yes | this profile's P&L: realized on its own fills, fees charged, and open positions at cost basis MARKED at Candle's current price (`unrealizedUsd`; `pnl.totalUsd` is realized net plus unrealized), with `chain` on each position and a per-chain split in `pnl.byChain`. Deposits and transfers are excluded; check `unvalued` and `truncated` before quoting it |
 | `candle_get_profile_trades` | yes | orders, actual fills, fees, timestamps and tx hashes. Includes failed trades, with `errorCode` saying why |
 | `candle_get_portfolio` | yes | what the account's embedded and TEE wallets hold on Solana and Hood, with prices. Needs `account:read`. Hood is in `hood`; a Hood price is keyed `hood:native` or `hood:<contract lowercased>`; unpriced is `null`, never zero |
 
@@ -95,9 +95,10 @@ Match the task, not the noun: "make this key use these wallets" is a rebind, not
 | Give a key TEE wallets, or move them to another key | `candle tee rebind <wallets...> --to-key <key>` (or `--label-prefix <p>` for many) |
 | Let a key use a linked wallet you imported | The agent console's Agents tab, signed in (`keys wallets set` from a key can only narrow) |
 | Turn a vault key into a TEE wallet | `candle vault promote --in-place <label> --sweep-to <cold key>`, or `--from <cold key>` for a fresh one |
-| Send funds out of a TEE wallet as the agent | `candle transfer --to vault` (or to a trusted wallet) with a Read:Write:Transfer key |
-| Send funds anywhere yourself | `candle vault transfer <address> --from <label>` |
+| Send funds out of a TEE wallet as the agent | `candle transfer --to vault --asset <A> --amount <n\|max> --wallet <tee>` (or `--to` a linked or trusted wallet) with a Read:Write:Transfer key |
+| Send funds anywhere yourself | `candle vault transfer <address> --amount <n\|max> --asset <A> --from <label>` |
 | Mark wallets as yours so agents can send to them | `candle wallets trust <selectors...>` |
+| Change a key's access level (after a `SCOPE_MISSING`) | `candle keys access <prefix> --access read\|read-write\|read-write-transfer` (owner, device token; widening is confirmed at a terminal) |
 | Stop an agent | `candle tee disable <address>`, then `candle keys revoke <prefix>` |
 | Bring everything home | `candle tee disable <address>`, then `candle tee sweep <address>` or `candle vault demote <address>` (see Safety rails in candle-setup for `--emergency`) |
 
@@ -139,7 +140,7 @@ partial report (on-chain developer, went-to-zero record, token safety flags, sam
 cluster). Deploy-window stays unavailable without a Candle launch record. Indexed external Hood tokens also answer, with unknown hacc flags. Unknown mints can still
 come back `MARKET_NOT_FOUND`.
 
-Forensics refusals are a coverage boundary. On other surfaces, Release A still uses the legacy
+Forensics refusals are a coverage boundary. Other surfaces still use the legacy
 `MARKET_NOT_FOUND`: read `error.routing.reason`, discovery and explicit `retryable`, which
 overrides catalog defaults. A curve-only 404 directs callers to the general quote endpoint;
 it is not proof a token cannot trade. `hood_market_unavailable` stays non-retryable per address.
@@ -149,8 +150,9 @@ not run, so report that you could not check the token rather than reporting the 
 The same rule governs the coverage note on every individual forensics measurement: `unavailable`
 is not `clean`.
 
-**Scopes are fixed at issuance.** A key cannot gain a scope later. If you need `swap:write`, ask
-for it when the key is created; it is deliberately never granted by omission.
+**A key cannot widen its own scopes.** The owner can widen it in place with `candle keys access
+<prefix> --access ...` (device token); otherwise ask for the scope when the key is created. A scope
+such as `swap:write` is deliberately never granted by omission.
 
 **Reads are free, writes are not.** Every write is signed and paid for by the key owner's wallet.
 Never describe a launch or trade to a user as costless.
@@ -217,12 +219,13 @@ setting -- run it before asking a human.
 | --- | --- |
 | `CANDLE_API_URL` | which environment to talk to |
 | `CANDLE_API_KEY` | agent API key, when not using the keychain |
-| `CANDLE_AGENT_API_KEY` | accepted alias for the same key |
+| `CANDLE_AGENT_API_KEY` | the MCP server's key variable (the CLI reads `CANDLE_API_KEY`) |
 | `CANDLE_DEVICE_TOKEN` | device token from `candle auth login` |
 | `CANDLE_CONFIG_DIR` | override the config location |
 | `CANDLE_KEYRING_PASSPHRASE` | unlock the keyring in headless environments |
 | `CANDLE_MCP_TOOLS` | comma-separated tool allowlist for the MCP server (`candle mcp --tools` sets it) |
-| `CANDLE_SOLANA_RPC_URL` | Solana RPC for `vault list`, `vault promote-batch`, `tee status` and `tee sweep` when `--rpc-url` is not given; `vault transfer`, `fund`, `demote` and `promote --in-place` ignore it and need `--rpc-url` |
+| `CANDLE_SOLANA_RPC_URL` | Solana RPC for every Solana command when `--rpc-url` is not given (then the profile's, then the public endpoint); `vault restore`'s gap scan needs `--rpc-url` |
+| `CANDLE_KEY_SIGNER_PEM_FILE` | the key's signer PEM, which the MCP perps tools sign with |
 
 ## When you are stuck
 

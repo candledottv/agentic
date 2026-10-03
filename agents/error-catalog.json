@@ -1,16 +1,17 @@
 {
   "$comment": [
-    "Every error code the Candle agent rail returns, grouped so an agent can decide what to do",
+    "Every error code the Candle agent launch and trade rail returns, grouped so an agent can decide what to do",
     "without parsing prose. Branch on `code`, never on `message`: the code is stable, the message",
     "is written for humans and will change.",
     "",
     "`retryable` means the SAME request may succeed later, unchanged. Explicit error.retryable",
     "overrides category defaults for market and transient responses. Read error.routing.reason.",
-    "Release A retains MARKET_NOT_FOUND/404 and baseline retryability; finer reasons disambiguate it.",
+    "MARKET_NOT_FOUND keeps its 404 and baseline retryability; finer reasons disambiguate it.",
     "MARKET_NOT_FOUND is deprecated on migrating surfaces; forensics retains its coverage refusal.",
     "",
     "Source of truth is LAUNCH_ERROR_CODES in the monorepo. Coverage is asserted in CI, so a new",
-    "code cannot ship without landing in a category here."
+    "code cannot ship without landing in a category here. LP and perps routes return their own",
+    "LP_* and PERPS_* codes, which this catalog does not cover yet."
   ],
   "version": 1,
   "categories": {

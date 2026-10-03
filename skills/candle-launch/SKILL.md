@@ -54,7 +54,7 @@ point at a different deployment.
    candle-trade skill's `candle_trade` buy.
 6. If your agent holds its own linked wallet's signing key rather than trading through Candle's
    server-side embedded wallet, the SDK's `selfLaunch` function launches the same way but has the
-   agent sign locally. There is no MCP tool for this path (the MCP server never handles private key
+   agent sign locally. Self-launch needs the Pro or Max plan. There is no MCP tool for this path (the MCP server never handles private key
    material by design), so it is an SDK-only route for agents that already manage their own keys.
 7. Attribute it: once the launch confirms, call `candle_report_activity` with `{ "chain": "solana",
    "signature": "<the launch's signature>" }` (or `chain: "hood"` for a Hood launch) so Candle

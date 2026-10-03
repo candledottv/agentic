@@ -55,21 +55,29 @@ any of this: they work with no key at all.
 6. Give the agent a TEE wallet (Tier 2) by promoting a vault key. `candle vault promote --from
    <cold label>` derives a fresh wallet pinned to that cold key; `candle vault promote --in-place
    <label> --sweep-to <cold label> --rpc-url <url>` promotes an existing key at its own address;
-   `candle vault promote-batch --pairs-from <file> --rpc-url <url>` does many at once. Each
+   `candle vault promote-batch --pairs-from <file> --rpc-url <url>` does many at once. An EVM vault key
+   (`candle vault new-key --chain evm`) promotes the same way into a Hood TEE wallet, with
+   `--sweep-to` naming a cold EVM vault key. Each
    promote shows what is being handed over. `--in-place` and `promote-batch` ask the user to type
    `confirm`; `--from` asks for the last six characters of the vault key it sweeps home to. `--to-key
    <prefix|label>` binds the wallet to another of the user's keys. The pinned vault key is where
    `candle tee sweep` and `candle vault demote` send funds home. Trade the wallet from the machine
-   that promoted it, because its relay signer stays there. `vault list`, `vault promote-batch`,
-   `tee status` and `tee sweep` take `--rpc-url` or `CANDLE_SOLANA_RPC_URL`; `vault transfer`,
-   `vault fund`, `vault demote` and `vault promote --in-place` need `--rpc-url` every time.
+   that promoted it, because its relay signer stays there. Every Solana command uses `--rpc-url`,
+   else `CANDLE_SOLANA_RPC_URL`, else the profile's RPC (`candle profile set <name> --rpc-url`),
+   else the public endpoint (which refuses a promote's token-authority scans, so pass your own);
+   only `vault restore`'s gap scan needs `--rpc-url` itself.
 7. Mint the agent's key at the access level it needs with `candle keys create --access
    read|read-write|read-write-transfer`: Read changes nothing, Read:Write trades and launches, and
    only Read:Write:Transfer can move funds out of its TEE wallet with `candle transfer`. The levels
    and the active key limit are in https://docs.candle.tv/developers/agent-access#access-levels, and
    what a trusted wallet allows in https://docs.candle.tv/developers/agent-wallets#trusted-wallets.
    `candle keys list` and `candle keys revoke <prefix>` manage them, and `candle keys wallets
-   <prefix>` shows which wallets a key's profile may use.
+   <prefix>` shows which wallets a key's profile may use. `candle keys access <prefix|label|self>
+   --access ...` changes an existing key's level in place (same key, wallets and caps; widening
+   needs the device token and is confirmed at a terminal, `self` can only narrow), and `--history`
+   lists its changes. A new key cannot spend the account's embedded wallet unless created with
+   `--embedded-wallet allow` (the default is deny), or later allowed with `candle keys update
+   <prefix|label> --embedded-wallet allow`.
 8. Run `candle doctor` any time: one PASS/FAIL/SKIP table over the runtime, the storage backend,
    both credentials, API reachability, wallet delegation, the install method and whether the
    security key helper is installed.
@@ -93,8 +101,9 @@ Match the task, not the noun: "make this key use these wallets" is a rebind, not
 | Give a key TEE wallets, or move them to another key | `candle tee rebind <wallets...> --to-key <key>` (or `--label-prefix <p>` for many) |
 | Let a key use a linked wallet you imported | The agent console's Agents tab, signed in (`keys wallets set` from a key can only narrow) |
 | Turn a vault key into a TEE wallet | `candle vault promote --in-place <label> --sweep-to <cold key>`, or `--from <cold key>` for a fresh one |
-| Send funds out of a TEE wallet as the agent | `candle transfer --to vault` (or to a trusted wallet) with a Read:Write:Transfer key |
-| Send funds anywhere yourself | `candle vault transfer <address> --from <label>` |
+| Send funds out of a TEE wallet as the agent | `candle transfer --to vault --asset <A> --amount <n\|max> --wallet <tee>` (or `--to` a linked or trusted wallet) with a Read:Write:Transfer key |
+| Send funds anywhere yourself | `candle vault transfer <address> --amount <n\|max> --asset <A> --from <label>` |
+| Change a key's access level | `candle keys access <prefix> --access read\|read-write\|read-write-transfer` |
 | Mark wallets as yours so agents can send to them | `candle wallets trust <selectors...>` |
 | Stop an agent | `candle tee disable <address>`, then `candle keys revoke <prefix>` |
 | Bring everything home | `candle tee disable <address>`, then `candle tee sweep <address>` or `candle vault demote <address>` (`--emergency`: see below) |

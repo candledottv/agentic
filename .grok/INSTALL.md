@@ -1,22 +1,27 @@
 # Installing Candle for Grok Build
 
-Candle ships two things Grok Build can use directly: an MCP server (nineteen tools: launch, seed,
+Candle ships two things Grok Build can use directly: an MCP server (twenty-nine tools: launch, seed,
 trade, read markets and feeds, report activity, read an agent profile, and more) and a `skills/` directory
 of `SKILL.md` files in Claude Code's own frontmatter shape (`name` plus `description`), which Grok
 Build reads natively.
 
 ## Prerequisites
 
-- Git and [Bun](https://bun.sh)
+- Node 18 or later (for `npx`), or the Candle CLI
+- Git, to clone this repository for the skills (and [Bun](https://bun.sh) only to build the server from that clone)
 - The `grok` CLI, already installed and authenticated
 - Optional: a Candle agent API key, for `candle_launch_token`, `candle_launch_and_seed`,
   `candle_trade`, and `candle_report_activity`. Not required for market reads. See the
   candle-setup skill (below) for how to provision one.
 
-## 1. Build the MCP server
+## 1. Get the MCP server
 
-`@candledottv/mcp` is not published to npm yet (publish is gated on Candle reaching production),
-so the working install today is a clone and a local build, not a package install:
+Nothing to build: the server is published to npm as `@candledottv/mcp`, and the config below runs it
+with `npx -y @candledottv/mcp`. If you have the Candle CLI installed, `candle mcp` runs the same
+server from the binary instead, with the key the CLI already stores; `candle mcp --print-config`
+prints the block for your install.
+
+To build from a clone instead (for example to run unreleased changes):
 
 ```bash
 git clone https://github.com/candledottv/agentic.git
@@ -25,31 +30,32 @@ bun install
 bun run --cwd packages/mcp build
 ```
 
-This produces `packages/mcp/dist/index.js`. Once npm publish lands, this whole step is replaced by
-a plain `npx -y @candledottv/mcp` reference in the command below, no clone required.
+That produces `packages/mcp/dist/index.js`; use `node` and its absolute path in place of `npx` below.
 
 ## 2. Register the server with grok mcp add
 
 ```bash
-grok mcp add candle -- node /absolute/path/to/agentic/packages/mcp/dist/index.js
+grok mcp add candle -- npx -y @candledottv/mcp
 ```
 
-Substitute the actual absolute path to your clone from step 1 (Grok Build spawns the server from
-its own working directory, so a relative path will not resolve). `grok mcp add` defaults to user
+If you built from a clone, use `node` and the absolute path to `packages/mcp/dist/index.js`
+instead (Grok Build spawns the server from its own working directory, so a relative path will not
+resolve). `grok mcp add` defaults to user
 scope (`~/.grok/config.toml`); add `--scope project` to write it to the current project's
 `.grok/config.toml` instead, so the server definition ships with the repo. Confirm the server is
 registered with `grok mcp list`; remove it later with `grok mcp remove candle`.
 
-`grok mcp add` has no flag for environment variables on a stdio server, so add the `env` table by
-hand to the entry it just wrote (in `~/.grok/config.toml`, or `.grok/config.toml` if you used
-`--scope project`). This is required even for the five keyless read tools, `candle_get_market`,
-`candle_get_feed`, `candle_token_forensics`, `candle_get_agent_profile` and `candle_resolve_token`: the server defaults to the alpha API host
-(`https://api.alpha.candle.tv`), where these routes run today.
+`grok mcp add` has no flag for environment variables on a stdio server, so any `env` table is
+added by hand to the entry it just wrote (in `~/.grok/config.toml`, or `.grok/config.toml` if you
+used `--scope project`). The table is optional for the six keyless read tools,
+`candle_get_market`, `candle_get_feed`, `candle_token_forensics`, `candle_get_agent_profile`,
+`candle_resolve_token` and `candle_get_plans`: the server already defaults to
+`https://api.alpha.candle.tv`.
 
 ```toml
 [mcp_servers.candle]
-command = "node"
-args = ["/absolute/path/to/agentic/packages/mcp/dist/index.js"]
+command = "npx"
+args = ["-y", "@candledottv/mcp"]
 env = { CANDLE_API_URL = "https://api.alpha.candle.tv" }
 ```
 
@@ -59,8 +65,8 @@ table:
 
 ```toml
 [mcp_servers.candle]
-command = "node"
-args = ["/absolute/path/to/agentic/packages/mcp/dist/index.js"]
+command = "npx"
+args = ["-y", "@candledottv/mcp"]
 env = { CANDLE_API_URL = "https://api.alpha.candle.tv", CANDLE_AGENT_API_KEY = "cndl_live_..." }
 ```
 

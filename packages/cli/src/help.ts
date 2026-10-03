@@ -938,9 +938,17 @@ export const HELP: Record<string, Topic> = {
     summary: "Verify a release asset's Sigstore bundle",
     description:
       "Verifies a release asset against the trusted root compiled into this binary. No network, no credentials, and nothing else installed: the bundle carries the certificate and the transparency-log entry.",
-    usage: ["candle verify <file> --bundle <path>"],
+    usage: ["candle verify <file> --bundle <path> [--identity <uri>] [--issuer <url>]"],
     rows: [],
-    flags: [{ invocation: "--bundle <path>", description: "The .sigstore.json bundle beside the asset" }],
+    flags: [
+      { invocation: "--bundle <path>", description: "The .sigstore.json bundle beside the asset" },
+      {
+        invocation: "--identity <uri>",
+        description:
+          "The signing identity to require; defaults to the release identity for the version in a latest.json beside the bundle",
+      },
+      { invocation: "--issuer <url>", description: "The certificate issuer to require; defaults to GitHub Actions'" },
+    ],
     examples: ["candle verify ./candle-darwin-arm64 --bundle ./candle-darwin-arm64.sigstore.json"],
   },
   completion: {

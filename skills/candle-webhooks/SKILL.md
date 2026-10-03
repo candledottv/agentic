@@ -24,9 +24,12 @@ delivery verification requires.
 ## The workflow
 
 1. From a logged-in session, register an endpoint: `POST /api/v1/agent/webhooks` with a public
-   https `url` and the `events` you want (for example `curve.graduated`, `trade.executed`,
-   `order.triggered`, `launch.confirmed`, `launch.failed`, `migration.completed`,
-   `migration.delayed`). The response
+   https `url` and the `events` you want. The sixteen events are `launch.confirmed`,
+   `launch.failed`, `curve.graduated`, `migration.completed`, `migration.delayed`,
+   `trade.executed`, `order.triggered`, `transfer.executed`, `withdrawal_address.added`,
+   `withdrawal_address.revoked`, `tracked_wallet.traded`, `tracked_wallet.launched`,
+   `linked_wallet.trusted`, `linked_wallet.untrusted`, `key.access_widened` and
+   `key.access_narrowed`. An endpoint receives only the events it lists. The response
    includes a signing secret (`whsec_...`) shown exactly once; store it where your agent's own code
    can reach it, since it is never shown again.
 2. Verify every delivery before acting on it, using only that secret. Each delivery carries a
@@ -37,8 +40,11 @@ delivery verification requires.
    signature.
 3. Respond 2xx quickly. A failing or slow endpoint gets retried on a backoff for roughly 12 hours
    before Candle gives up on that delivery.
-4. List endpoints, inspect recent delivery attempts, or revoke an endpoint, all from that same
-   session surface (`GET`/`DELETE /api/v1/agent/webhooks`, `GET /api/v1/agent/webhooks/:id/deliveries`).
+4. List endpoints, inspect recent delivery attempts, rotate a signing secret, or revoke an
+   endpoint, all from that same session surface (`GET /api/v1/agent/webhooks`,
+   `GET /api/v1/agent/webhooks/:id/deliveries`, `POST /api/v1/agent/webhooks/:id/rotate`,
+   `DELETE /api/v1/agent/webhooks/:id`). Rotating keeps the endpoint's id, url, events and history
+   and returns the new secret once; update your verifier with it.
 
 ## Safety rails
 

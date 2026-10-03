@@ -74,14 +74,12 @@ back `MARKET_NOT_FOUND`. That is a coverage boundary rather than a fault -- it i
 retry, and from forensics it is not a clean bill of health either. It is the single most common
 reason an agent decides the integration is broken when it is working.
 
-Use the real absolute path to your clone (MCP clients spawn from their own working directory).
-Ask an agent to call
-`candle_get_feed` with `{ "bucket": "new" }` and it works before signing up for anything. Details:
+Ask an agent to call `candle_get_feed` with `{ "bucket": "new" }` and it works before signing up for anything. Details:
 [Candle MCP server](https://docs.candle.tv/developers/mcp-server).
 
 ## The tool surface
 
-Twenty tools. Five need no key, so a client can be pointed at the server and used before anyone
+Twenty-nine tools. Six need no key, so a client can be pointed at the server and used before anyone
 signs up.
 
 | | Tool | Key | What it does |
@@ -90,7 +88,7 @@ signs up.
 | | `candle_get_wallets` | yes | the embedded wallets this key spends from |
 | | `candle_get_profile_wallets` | yes | which linked wallets this profile may spend from, and whether it is scoped |
 | | `candle_set_profile_wallets` | yes | replace the linked wallets this profile may spend from |
-| | `candle_get_profile_pnl` | yes | this profile's realized P&L, fees, and what it still holds at cost |
+| | `candle_get_profile_pnl` | yes | this profile's P&L: realized, unrealized at current marks, fees, open positions |
 | | `candle_get_profile_trades` | yes | this profile's orders, fills, fees and transaction hashes |
 | | `candle_get_portfolio` | yes | what the account's wallets hold on Solana and Hood, with prices (needs `account:read`) |
 | **Find a token** | `candle_resolve_token` | no | an address in, the token and its chain out |
@@ -133,7 +131,7 @@ Selling a fraction is the same shape with `{ "side": "sell", "percent": 50 }`.
 
 ## The CLI
 
-`candle` (current version 0.11.11) is the terminal half of all of this: it authorizes a device,
+`candle` (install the latest release) is the terminal half of all of this: it authorizes a device,
 holds your API key in the OS keychain, runs the MCP server with no config file, keeps your own keys
 in a local encrypted vault, and hands an agent a TEE wallet it can trade.
 
@@ -170,14 +168,14 @@ rather than on the disk it protects.
 
 ### Two custody tiers
 
-The CLI keeps keys at two custody tiers (not the account plans Free, Pro and Max; `candle plans` lists them):
+The CLI keeps keys at two custody tiers (not the account plans; `candle plans` lists the ones in force):
 
 - **Tier 1: the vault.** Self-custody on your machine. It opens with a passphrase or a FIDO2
   security key (`candle vault factor add security-key`; two keys make a recoverable pair). Touch ID
   and passkey factors are built and arrive once Apple approves the signed helper. No API, relay or
   server ever sees a vault key.
-- **Tier 2: TEE wallets.** Agent access. `candle vault promote` turns a vault key into a Solana
-  wallet whose key is also held in Privy's TEE and bound to one API key, so an agent can trade it
+- **Tier 2: TEE wallets.** Agent access. `candle vault promote` turns a vault key into a Solana or
+  Hood TEE wallet whose key is also held in Privy's TEE and bound to one API key, so an agent can trade it
   without the vault being unlocked. `--in-place <label> --sweep-to <cold label>` keeps the key's own
   address and funds, `--from <cold label>` derives a fresh one, `candle vault promote-batch` does
   many under one unlock, and `--to-key` binds the result to another of your keys. Each TEE wallet
@@ -243,7 +241,7 @@ The absolute path, because GUI hosts launch servers with the app's environment a
 PATH. `candle mcp` runs the server built into the binary, with the key and API URL this device
 just stored, so the credential never sits in a config file and the host needs nothing else
 installed.
-`--read-only` pins it to the five keyless read tools; `--tools` takes an explicit allowlist;
+`--read-only` pins it to the six keyless read tools; `--tools` takes an explicit allowlist;
 `--print-config` prints the block above filled in for this install. The full command surface,
 credential storage, and headless use are documented on the
 [Candle CLI](https://docs.candle.tv/developers/cli) page.
@@ -261,7 +259,7 @@ Every platform below installs the same nineteen skills (in `skills/`).
 | Grok Build | Follow the install doc | [`.grok/INSTALL.md`](.grok/INSTALL.md) |
 
 No platform wires the MCP server for you: the skills install on their own, and the server is set
-up separately with the clone-and-build config above. Each platform's install doc spells out where
+up separately with the `npx` or `candle mcp` config above. Each platform's install doc spells out where
 that config goes; the skills-vs-server split is explained under
 [Skills for coding agents](https://docs.candle.tv/developers/coding-agents).
 
@@ -380,7 +378,7 @@ Three artifacts exist so an agent does not have to scrape prose:
 
 | Artifact | What it answers |
 | --- | --- |
-| [`agents/error-catalog.json`](agents/error-catalog.json) | every error code the rail returns, grouped, each carrying `retryable` and an action |
+| [`agents/error-catalog.json`](agents/error-catalog.json) | every error code the launch and trade rail returns, grouped, each carrying `retryable` and an action |
 | [`openapi.json`](https://api.alpha.candle.tv/api/v1/openapi.json) | the exact request and response shape of every endpoint, gated against drift in CI |
 | [`llms.txt`](https://docs.candle.tv/llms.txt) | the whole documentation set as one context-sized file, freshness-gated |
 
@@ -401,8 +399,9 @@ order the CLI does, so it separates "no key" from "key for the other environment
 which the error alone cannot.
 
 **Writes fail but reads work.** Reads need no key at all, so this is almost always a missing scope
-or an undelegated wallet. Scopes are fixed when a key is issued and cannot be added later; check
-the code against `agents/error-catalog.json` and issue a new key if the scope is absent.
+or an undelegated wallet. Check the code against `agents/error-catalog.json`. A key cannot widen its
+own scopes, but the owner can widen it in place with `candle keys access <prefix> --access
+read-write|read-write-transfer` (device token), or issue a new key with the scope.
 
 **Calls hit the wrong environment.** `CANDLE_API_URL` decides which one you are on, and production is
 `https://api.alpha.candle.tv` (the CLI's default) and staging is `https://staging.api.candle.tv`. A key issued for one environment does not work

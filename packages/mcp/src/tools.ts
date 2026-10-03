@@ -537,7 +537,7 @@ const tradeShape = {
     .optional()
     .describe(
       'What the wallet spends on a buy or receives on a sell: "sol", "usdc" or "cndl" on Solana, ' +
-        '"eth" or "usdg" on Hood. Safe to pass through from candle_quote. On Solana it applies only ' +
+        '"eth" or "usdg" on Hood. Echoing the `quoteAsset` a quote (POST /api/v1/trade/agent/quote) returned is safe. On Solana it applies only ' +
         "to an arbitrary mint Candle never launched (a buy needs Pro or Max; a sell works on any plan) and is ignored for a Candle token, " +
         "whose quote comes from the token itself. On Hood it is the settlement asset of a DEX " +
         "trade; a USDG buy adds an approval transaction an ETH buy does not. It is not the route: " +

@@ -62,7 +62,8 @@ Size for the checks that actually ran or skip the trade; do not infer safety fro
 and a stop being placed by hand there is a window where the position is naked, and on this class
 of token that window is long enough to lose most of it.
 
-Place the exits as part of the entry rather than as a follow-up. A bracket is validated before the
+Place the exits as part of the entry rather than as a follow-up. Brackets and standing orders are
+limit orders, which need the Max plan. A bracket is validated before the
 buy is spent, so an exit that cannot be honoured costs you nothing; a bracket placed afterwards
 can fail with the position already open.
 

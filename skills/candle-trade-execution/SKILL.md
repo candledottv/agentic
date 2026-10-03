@@ -25,11 +25,14 @@ The failures cluster into three families, in order of how much they cost:
       amountRaw: string       // what you asked to spend or sell
       minOutRaw: string       // the enforced floor, guaranteed by the swap
       expectedOutRaw: string  // THE QUOTE. Not what you received.
+      quoteAsset: string
+      actualOutRaw?: string   // what arrived, on Solana only
     }
 
-`expectedOutRaw` is the pre-trade expectation. **It is not the delivered amount, and the SDK does not
-return the delivered amount anywhere.** Every executed-trade path resolves to the same
-`ExecutedTradeResult`, so there is no field to reach for.
+`expectedOutRaw` is the pre-trade expectation. **It is not the delivered amount.** On Solana,
+`amounts.actualOutRaw` is what actually arrived, decoded from the payer's own balance change when the
+server confirmed the trade; book from it. It is absent on Hood (and on a server that predates it),
+where you still read the chain as below.
 
 If you book a position's quantity from `expectedOutRaw`, your ledger drifts from the wallet by exactly
 the buy's realised slippage, in whichever direction the fill went:
@@ -46,7 +49,7 @@ with the very first live order, every one marked `executed / success: true`.
 
 ### What to do instead
 
-**Book from physical reality.** After a buy confirms, fetch the transaction and diff the owner's pre
+**Book from physical reality.** On Solana, `actualOutRaw` is that reality. Where it is absent, fetch the transaction and diff the owner's pre
 and post token balances for that mint. Read it with the highest transaction version your RPC and
 client library document. Treat an unsupported-version error as an error, never as a reason to book
 from the quote:
@@ -138,7 +141,8 @@ attempt, not one of them.
 
 ## 3. Read the error's structure, never its prose
 
-Candle's errors carry `.code` and `.data`. The SDK's own docs say to branch on `code` and never on
+API errors (`CandleApiError`) carry `.code`, `.status`, `.retryable` and, where present, `.field`
+and `.routing`; RPC errors (`JsonRpcError`) carry `.code` and `.data`. The SDK's own docs say to branch on `code` and never on
 `message`. Do that. Three specific consequences:
 
 ### `-32002` is a preflight rejection, and it is definite
