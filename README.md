@@ -249,7 +249,7 @@ credential storage, and headless use are documented on the
 
 ## Install as a skill package
 
-Every platform below installs the same seventeen skills (in `skills/`).
+Every platform below installs the same nineteen skills (in `skills/`).
 
 | Platform | Install | Details |
 | --- | --- | --- |
@@ -337,6 +337,17 @@ each rule holds, with a checklist, and refers to the skills above instead of rep
 - [`skills/candle-agent-operations`](skills/candle-agent-operations/SKILL.md): restart into the same
   state, fixed deadlines and budgets, health from evidence, host sleep and priority, limit
   provenance, handoff notes.
+
+Two more cover a new user's first week: laying out keys, wallets and signers for more than one
+strategy, and the plumbing test before and during a bot's first live trades.
+
+- [`skills/candle-wallet-layout`](skills/candle-wallet-layout/SKILL.md): a wallet per strategy,
+  cold sweep homes, one key or a key per book chosen on purpose, one signer per key on the trading
+  machine, and destinations copied from your own lists, never from history.
+- [`skills/candle-first-live-trade`](skills/candle-first-live-trade/SKILL.md): a supervised
+  minimum-size round trip through the bot's own code, exited through a control and reconciled to
+  the lamport; one position until the first exit reconciles; pause buys, not wallet disable, when
+  the operator cannot be asked.
 
 These skills are advisory. They do not authorize trades, transfers, or limit changes; those remain
 your operator's decision.
