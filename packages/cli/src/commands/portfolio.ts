@@ -1,5 +1,5 @@
 /**
- * `candle portfolio [--rpc-url <url>] [--keystore <path>] [--json]` (Ember Phase 3 R7; BE-316).
+ * `candle portfolio [<filter>] [--rpc-url <url>] [--keystore <path>] [--json]` (Ember Phase 3 R7; BE-316).
  *
  * Every wallet the operator holds, in one table: grouped as vault, TEE and embedded, each token
  * with its amount, price and value, and a total.
@@ -58,6 +58,13 @@
  *   name before a balance is read. Their prices come from `POST /agent/prices` with a `hood` list
  *   of `native` and the USDG contract: never a vault address.
  * - External wallets stay Solana-only: there are no external EVM keys.
+ *
+ * `<filter>` keeps the wallets whose label or address contains it, in every group (`vault list`'s
+ * rule: case-insensitive substring, no glob). Vault and external keys are filtered BEFORE the RPC
+ * read, so a vault of 168 keys asked for seven sends seven: fewer requests (the public endpoint
+ * rate-limits the full read) and a smaller disclosure. TEE and embedded rows come from Candle in
+ * one request whatever the filter, and are narrowed after. Every figure is over the matched
+ * wallets only, and the output says how many matched.
  *
  * `--chain solana|hood` shows one chain and reads nothing for the other. A failed Hood read is
  * partial like a failed Solana one (exit 3), with `unread` naming `eth`, `usdg` or `hood-tokens`,
@@ -288,7 +295,10 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     pathFlags: ["--keystore"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
-  if (parsed.positionals.length > 0) return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`)
+  if (parsed.positionals.length > 1) return usage(ctx, `Unexpected argument: ${parsed.positionals[1]}`)
+  const filter = parsed.positionals[0]
+  if (filter !== undefined && filter.trim() === "") return usage(ctx, "The filter is empty.")
+  const keep = (wallet: { address: string; label?: string }) => filter === undefined || matches(wallet, filter)
   const { deps } = ctx
 
   // 4d-ED-6: one chain, or both. A flag for the chain not shown reads nothing, so it is said.
@@ -333,6 +343,8 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     let vaultEntries: { address: string; label: string; role: "vault" | "external" }[] | undefined
     let evmEntries: { address: string; label: string }[] | undefined
     let vaultReason: string | undefined
+    // Wallets before the filter, for "N of M": the vault's here, Candle's once it has answered.
+    let known = 0
     const raw = await readVaultRaw(resolvedVault.path)
     if (raw === null) {
       vaultReason = `no vault at ${resolvedVault.path}`
@@ -351,6 +363,10 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
             .filter((entry) => entry.chain === "evm" && entry.role === "vault")
             .map((entry) => ({ address: entry.address, label: entry.label }))
         : []
+      // Filtered here, before any request: an address the filter did not keep is never sent.
+      known += vaultEntries.length + evmEntries.length
+      vaultEntries = vaultEntries.filter(keep)
+      evmEntries = evmEntries.filter(keep)
     }
 
     await printIdentity(ctx)
@@ -415,7 +431,11 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       writeFailure(deps, candle, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json)
       return 1
     }
-    const fromCandle = candle.body as CandlePortfolio
+    const answered = candle.body as CandlePortfolio
+    known +=
+      (showSolana ? (answered.tee ?? []).length + (answered.embedded ?? []).length : 0) +
+      (showHood ? (answered.hood?.tee ?? []).length + (answered.hood?.embedded ?? []).length : 0)
+    const fromCandle = filter === undefined ? answered : filterCandle(answered, keep)
     const prices: Record<string, MintPrice> = { ...(fromCandle.prices ?? {}) }
     // An API that predates 4d sends no `hood` section: no Hood wallets, not an error.
     const candleHood = showHood ? fromCandle.hood : undefined
@@ -619,11 +639,12 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     const lpUnread = (lpSection?.unreadable ?? []).length
     // Candle's `complete` also covers a wallet list it had to cut off, which no `unavailable`
     // entry names: when it is false with nothing else to explain it, the run is partial too.
+    // Read from Candle's whole answer: a wallet the filter left out still explains `complete`.
     const candleExplained =
-      (fromCandle.unavailable ?? []).length > 0 ||
-      (fromCandle.hood?.unavailable ?? []).length > 0 ||
-      (fromCandle.lp?.unreadable ?? []).length > 0
-    const listCutOff = fromCandle.complete === false && !candleExplained
+      (answered.unavailable ?? []).length > 0 ||
+      (answered.hood?.unavailable ?? []).length > 0 ||
+      (answered.lp?.unreadable ?? []).length > 0
+    const listCutOff = answered.complete === false && !candleExplained
     const complete = !listCutOff && unavailable.length === 0 && lpUnread === 0
     const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0)
     const unpriced = groups.reduce((sum, g) => sum + g.unpriced, 0)
@@ -657,24 +678,31 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     }
     const hoodTotals = byChain.hood
     if (hoodTotals) {
-      const reasons: Partial<Record<HoodUnpricedReason, number>> = { ...(candleHood?.unpricedByReason ?? {}) }
-      let vaultUnpriced = 0
-      for (const w of groups[0]?.wallets ?? []) {
+      // Under a filter Candle's own counts cover wallets that are not shown, so every Hood wallet
+      // shown is counted here instead; without one, Candle's counts plus the EVM vault's.
+      const counted = filter === undefined ? (groups[0]?.wallets ?? []) : all
+      const reasons: Partial<Record<HoodUnpricedReason, number>> =
+        filter === undefined ? { ...(candleHood?.unpricedByReason ?? {}) } : {}
+      let localUnpriced = 0
+      for (const w of counted) {
         if (w.chain !== "hood") continue
         for (const h of w.holdings ?? []) {
           if (h.priceUsd !== null) continue
-          vaultUnpriced += 1
+          localUnpriced += 1
           const reason = h.unpricedReason ?? "source-unavailable"
           reasons[reason] = (reasons[reason] ?? 0) + 1
         }
       }
-      if (candleHood) hoodTotals.unpriced = (candleHood.unpriced ?? 0) + vaultUnpriced
+      if (filter !== undefined) hoodTotals.unpriced = localUnpriced
+      else if (candleHood) hoodTotals.unpriced = (candleHood.unpriced ?? 0) + localUnpriced
       hoodTotals.unpricedByReason = reasons
     }
+    const matched = filter === undefined ? undefined : { filter, matched: all.length, wallets: known }
 
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
+        ...(matched ?? {}),
         chains,
         totalUsd,
         unpriced,
@@ -690,6 +718,16 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
       return complete ? 0 : 3
     }
 
+    if (matched) {
+      // Before the table, so a short table is read as a filtered one. No match is an answer, not
+      // a refusal (`vault list`'s rule): the exit code still says whether the reads were whole.
+      deps.stdout.write(
+        matched.matched === 0
+          ? `No wallet matches "${terminalText(matched.filter)}". ${matched.wallets} ${matched.wallets === 1 ? "wallet" : "wallets"} on this account and vault; candle portfolio with no filter shows them.\n`
+          : `${matched.matched} of ${matched.wallets} wallets match "${terminalText(matched.filter)}". Every figure below is for those wallets only.\n`,
+      )
+      if (matched.matched === 0) return complete ? 0 : 3
+    }
     writeTable(ctx, groups, {
       totalUsd,
       unpriced,
@@ -701,6 +739,59 @@ export async function portfolio(args: string[], ctx: CommandContext): Promise<nu
     })
     return complete ? 0 : 3
   })
+}
+
+/**
+ * The filter, `vault list`'s rule (BE-274 D10): a case-insensitive substring over label and
+ * address. No glob and no regex. An embedded wallet has no label, so only its address can match.
+ */
+function matches(wallet: { address: string; label?: string }, filter: string): boolean {
+  const needle = filter.toLowerCase()
+  return (wallet.label ?? "").toLowerCase().includes(needle) || wallet.address.toLowerCase().includes(needle)
+}
+
+/**
+ * Candle's answer narrowed to the wallets the filter keeps: the rows, and what is said ABOUT rows
+ * (`unavailable`, LP positions and unreadable positions, by wallet address). Prices are left
+ * whole. Hood's own unpriced counts are dropped: they cover every wallet, so the caller counts
+ * the ones shown.
+ */
+function filterCandle(
+  body: CandlePortfolio,
+  keep: (wallet: { address: string; label?: string }) => boolean,
+): CandlePortfolio {
+  const tee = (body.tee ?? []).filter(keep)
+  const embedded = (body.embedded ?? []).filter(keep)
+  const kept = new Set([...tee, ...embedded].map((row) => row.address))
+  const hoodTee = (body.hood?.tee ?? []).filter(keep)
+  const hoodEmbedded = (body.hood?.embedded ?? []).filter(keep)
+  const hoodKept = new Set([...hoodTee, ...hoodEmbedded].map((row) => row.address))
+  return {
+    ...body,
+    tee,
+    embedded,
+    unavailable: (body.unavailable ?? []).filter((address) => kept.has(address)),
+    ...(body.lp
+      ? {
+          lp: {
+            ...body.lp,
+            positions: body.lp.positions.filter((position) => kept.has(position.wallet)),
+            unreadable: body.lp.unreadable.filter((position) => kept.has(position.wallet)),
+          },
+        }
+      : {}),
+    ...(body.hood
+      ? {
+          hood: {
+            tee: hoodTee,
+            embedded: hoodEmbedded,
+            unavailable: (body.hood.unavailable ?? []).filter((address) => hoodKept.has(address)),
+            unpriced: 0,
+            unpricedByReason: {},
+          },
+        }
+      : {}),
+  }
 }
 
 /**

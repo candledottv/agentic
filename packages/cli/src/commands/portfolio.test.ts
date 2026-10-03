@@ -1161,3 +1161,93 @@ describe("Ember 4d: Hood in candle portfolio", () => {
     ])
   })
 })
+
+describe("candle portfolio <filter>", () => {
+  const owners = (h: ReturnType<typeof harness>) =>
+    new Set(
+      h.rpcRequests().flatMap((r) => {
+        const rpc = JSON.parse(r.body) as { method: string; params: unknown[] }
+        return rpc.method === "getMultipleAccounts" ? (rpc.params[0] as string[]) : [rpc.params[0] as string]
+      }),
+    )
+  const setup = async () => {
+    const { dir } = await vaultWith([
+      entryAt(0, "p-one"),
+      entryAt(1, "treasury"),
+      entryAt(2, "P-Two"),
+      entryAt(3, "ext-1", "external"),
+    ])
+    return harness({
+      dir,
+      env: { CANDLE_SOLANA_RPC_URL: RPC_URL },
+      tee: [
+        { id: "w1", address: teeAddress(1), label: "p-bot", active: true, lamports: "1000000000", tokens: [] },
+        { id: "w2", address: teeAddress(2), label: "scalper", active: true, lamports: "5000000000", tokens: [] },
+      ],
+      candlePrices: { [SOL]: { priceUsd: 100, source: "jupiter", symbol: "SOL" } },
+      rpcLamports: (a) => (a === vaultAddress(0) ? 3_000_000_000 : a === vaultAddress(1) ? 9_000_000_000 : 0),
+    })
+  }
+
+  test("only the matched vault keys are sent to the RPC, and every figure is for the matched wallets", async () => {
+    const h = await setup()
+    expect(await run(["portfolio", "p-", "--json"], h.deps)).toBe(0)
+    // Two of four vault keys, case-insensitively: the other two are never named to the endpoint.
+    expect(owners(h)).toEqual(new Set([vaultAddress(0), vaultAddress(2)]))
+    expect(h.stderr.text).toContain("Reading 2 vault addresses")
+
+    const doc = JSON.parse(h.stdout.text)
+    // 4 vault and external keys, 2 TEE wallets and the embedded wallet are known; 3 match.
+    expect([doc.filter, doc.matched, doc.wallets]).toEqual(["p-", 3, 7])
+    const labels = (name: string) =>
+      doc.groups.find((g: { group: string }) => g.group === name).wallets.map((w: { label?: string }) => w.label)
+    expect(labels("vault")).toEqual(["p-one", "P-Two"])
+    expect(labels("tee")).toEqual(["p-bot"])
+    // The embedded wallet has no label, so only its address could match.
+    expect(labels("embedded")).toEqual([])
+    // 300 (p-one) + 100 (p-bot): not treasury's 900, the other TEE wallet's 500 or the embedded 200.
+    expect(doc.totalUsd).toBeCloseTo(400, 10)
+    expect(doc.byChain.solana.wallets).toBe(3)
+    expect(doc.complete).toBe(true)
+  })
+
+  test("the table says how many matched before it prints", async () => {
+    const h = await setup()
+    expect(await run(["portfolio", "p-"], h.deps)).toBe(0)
+    expect(h.stdout.text).toContain('3 of 7 wallets match "p-". Every figure below is for those wallets only.')
+    expect(h.stdout.text).not.toContain("treasury")
+    expect(h.stdout.text).not.toContain("scalper")
+  })
+
+  test("an address fragment matches too, in any group", async () => {
+    const h = await setup()
+    expect(await run(["portfolio", EMBEDDED.slice(0, 8).toLowerCase(), "--json"], h.deps)).toBe(0)
+    const doc = JSON.parse(h.stdout.text)
+    expect(doc.matched).toBe(1)
+    expect(doc.groups.find((g: { group: string }) => g.group === "embedded").wallets).toHaveLength(1)
+    // No vault key matched, so the RPC was not asked anything.
+    expect(h.rpcRequests()).toHaveLength(0)
+  })
+
+  test("no match is one line and exit 0, with no RPC request", async () => {
+    const h = await setup()
+    expect(await run(["portfolio", "nope"], h.deps)).toBe(0)
+    expect(h.stdout.text).toContain('No wallet matches "nope". 7 wallets on this account and vault')
+    expect(h.rpcRequests()).toHaveLength(0)
+  })
+
+  test("without a filter nothing about matching is printed or carried", async () => {
+    const h = await setup()
+    expect(await run(["portfolio", "--json"], h.deps)).toBe(0)
+    const doc = JSON.parse(h.stdout.text)
+    expect("filter" in doc || "matched" in doc || "wallets" in doc).toBe(false)
+    expect(owners(h)).toEqual(new Set([0, 1, 2, 3].map(vaultAddress)))
+  })
+
+  test("a second positional and an empty filter are usage refusals", async () => {
+    const h = await setup()
+    expect(await run(["portfolio", "p-", "extra"], h.deps)).toBe(2)
+    expect(await run(["portfolio", " "], h.deps)).toBe(2)
+    expect(h.rpcRequests()).toHaveLength(0)
+  })
+})

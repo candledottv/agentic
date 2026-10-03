@@ -39338,8 +39338,8 @@ var require_checkpoint = __commonJS((exports) => {
       const split2 = envelope.indexOf(CHECKPOINT_SEPARATOR);
       const header = envelope.slice(0, split2 + 1);
       const data = envelope.slice(split2 + CHECKPOINT_SEPARATOR.length);
-      const matches = data.matchAll(SIGNATURE_REGEX);
-      const signatures = Array.from(matches, (match) => {
+      const matches2 = data.matchAll(SIGNATURE_REGEX);
+      const signatures = Array.from(matches2, (match) => {
         const [, name2, signature] = match;
         const sigBytes = Buffer.from(signature, "base64");
         if (sigBytes.length < 5) {
@@ -43413,11 +43413,11 @@ var require_validate2 = __commonJS((exports) => {
       jsonPointer = $data;
       data = names_1.default.rootData;
     } else {
-      const matches2 = RELATIVE_JSON_POINTER.exec($data);
-      if (!matches2)
+      const matches3 = RELATIVE_JSON_POINTER.exec($data);
+      if (!matches3)
         throw new Error(`Invalid JSON-pointer: ${$data}`);
-      const up = +matches2[1];
-      jsonPointer = matches2[2];
+      const up = +matches3[1];
+      jsonPointer = matches3[2];
       if (jsonPointer === "#") {
         if (up >= dataLevel)
           throw new Error(errorMsg("property/index", up));
@@ -44094,11 +44094,11 @@ var require_schemes = __commonJS((exports, module) => {
       urnComponent.error = "URN can not be parsed";
       return urnComponent;
     }
-    const matches2 = urnComponent.path.match(URN_REG);
-    if (matches2) {
+    const matches3 = urnComponent.path.match(URN_REG);
+    if (matches3) {
       const scheme = options.scheme || urnComponent.scheme || "urn";
-      urnComponent.nid = matches2[1].toLowerCase();
-      urnComponent.nss = matches2[2];
+      urnComponent.nid = matches3[1].toLowerCase();
+      urnComponent.nss = matches3[2];
       const urnScheme = `${scheme}:${options.nid || urnComponent.nid}`;
       const schemeHandler = getSchemeHandler(urnScheme);
       urnComponent.path = undefined;
@@ -44344,8 +44344,8 @@ var require_fast_uri = __commonJS((exports, module) => {
   var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
   var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
   var AUTHORITY_INTRODUCER_REGION = /^(?:[^#/:?]+:)?([/\\\t\n\r]*)/;
-  function getParseError(parsed, matches2) {
-    if (matches2[2] !== undefined && parsed.path && parsed.path[0] !== "/") {
+  function getParseError(parsed, matches3) {
+    if (matches3[2] !== undefined && parsed.path && parsed.path[0] !== "/") {
       return 'URI path must start with "/" when authority is present.';
     }
     if (typeof parsed.port === "number" && (parsed.port < 0 || parsed.port > 65535)) {
@@ -44392,19 +44392,19 @@ var require_fast_uri = __commonJS((exports, module) => {
         }
       }
     }
-    const matches2 = uri.match(URI_PARSE);
-    if (matches2) {
-      parsed.scheme = matches2[1];
-      parsed.userinfo = matches2[3];
-      parsed.host = matches2[4];
-      parsed.port = parseInt(matches2[5], 10);
-      parsed.path = matches2[6] || "";
-      parsed.query = matches2[7];
-      parsed.fragment = matches2[8];
+    const matches3 = uri.match(URI_PARSE);
+    if (matches3) {
+      parsed.scheme = matches3[1];
+      parsed.userinfo = matches3[3];
+      parsed.host = matches3[4];
+      parsed.port = parseInt(matches3[5], 10);
+      parsed.path = matches3[6] || "";
+      parsed.query = matches3[7];
+      parsed.fragment = matches3[8];
       if (isNaN(parsed.port)) {
-        parsed.port = matches2[5];
+        parsed.port = matches3[5];
       }
-      const parseError = getParseError(parsed, matches2);
+      const parseError = getParseError(parsed, matches3);
       if (parseError !== undefined) {
         parsed.error = parsed.error || parseError;
         malformedAuthorityOrPort = true;
@@ -47063,12 +47063,12 @@ var require_formats = __commonJS((exports) => {
   var DATE = /^(\d\d\d\d)-(\d\d)-(\d\d)$/;
   var DAYS = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   function date(str) {
-    const matches2 = DATE.exec(str);
-    if (!matches2)
+    const matches3 = DATE.exec(str);
+    if (!matches3)
       return false;
-    const year = +matches2[1];
-    const month = +matches2[2];
-    const day = +matches2[3];
+    const year = +matches3[1];
+    const month = +matches3[2];
+    const day = +matches3[3];
     return month >= 1 && month <= 12 && day >= 1 && day <= (month === 2 && isLeapYear(year) ? 29 : DAYS[month]);
   }
   function compareDate(d1, d2) {
@@ -47083,16 +47083,16 @@ var require_formats = __commonJS((exports) => {
   var TIME = /^(\d\d):(\d\d):(\d\d(?:\.\d+)?)(z|([+-])(\d\d)(?::?(\d\d))?)?$/i;
   function getTime(strictTimeZone) {
     return function time(str) {
-      const matches2 = TIME.exec(str);
-      if (!matches2)
+      const matches3 = TIME.exec(str);
+      if (!matches3)
         return false;
-      const hr = +matches2[1];
-      const min = +matches2[2];
-      const sec = +matches2[3];
-      const tz = matches2[4];
-      const tzSign = matches2[5] === "-" ? -1 : 1;
-      const tzH = +(matches2[6] || 0);
-      const tzM = +(matches2[7] || 0);
+      const hr = +matches3[1];
+      const min = +matches3[2];
+      const sec = +matches3[3];
+      const tz = matches3[4];
+      const tzSign = matches3[5] === "-" ? -1 : 1;
+      const tzH = +(matches3[6] || 0);
+      const tzM = +(matches3[7] || 0);
       if (tzH > 23 || tzM > 59 || strictTimeZone && !tz)
         return false;
       if (hr <= 23 && min <= 59 && sec < 60)
@@ -50732,10 +50732,10 @@ async function walletFor(cfg, fetch2, name2, scope) {
     throw new Refusal(fail3("SCOPE_MISSING", `The key needs ${scope}.`));
   const rows = Array.isArray(listed.page) ? listed.page : [];
   const evm = rows.filter((row) => row.chain === "evm");
-  const matches2 = name2 === undefined ? evm : evm.filter((row) => row.id === name2 || row.label === name2 || row.address.toLowerCase() === name2.toLowerCase());
-  if (matches2.length !== 1)
+  const matches3 = name2 === undefined ? evm : evm.filter((row) => row.id === name2 || row.label === name2 || row.address.toLowerCase() === name2.toLowerCase());
+  if (matches3.length !== 1)
     throw new Refusal(fail3("TEE_WALLET_REQUIRED", evm.length === 0 ? "This key has no EVM TEE wallet bound to it." : `Name exactly one EVM TEE wallet: ${evm.map((row) => row.label ?? row.id).join(", ")}`));
-  return { row: matches2[0], appId: typeof listed.privyAppId === "string" ? listed.privyAppId : "" };
+  return { row: matches3[0], appId: typeof listed.privyAppId === "string" ? listed.privyAppId : "" };
 }
 async function builderPin2(cfg, fetch2, env) {
   const pinned = env.CANDLE_HYPERLIQUID_BUILDER?.trim() || CANDLE_HYPERLIQUID_BUILDER_ADDRESS2;
@@ -50869,10 +50869,10 @@ function rawUnits(amount, decimals) {
 }
 function pickWallet(rows, chain2, name2, what) {
   const onChain = rows.filter((row) => row.chain === chain2);
-  const matches2 = name2 === undefined ? onChain : onChain.filter((row) => row.id === name2 || row.label === name2 || row.address.toLowerCase() === name2.toLowerCase());
-  if (matches2.length !== 1)
+  const matches3 = name2 === undefined ? onChain : onChain.filter((row) => row.id === name2 || row.label === name2 || row.address.toLowerCase() === name2.toLowerCase());
+  if (matches3.length !== 1)
     throw new Refusal(fail3("TEE_WALLET_REQUIRED", onChain.length === 0 ? `This key has no ${what} bound to it.` : `Name exactly one ${what}: ${onChain.map((row) => row.label ?? row.id).join(", ")}`));
-  return matches2[0];
+  return matches3[0];
 }
 function depositProblem(build, expect) {
   const destination = build.destination ?? {};
@@ -52543,9 +52543,14 @@ var HELP = {
   portfolio: {
     group: "Account",
     summary: "Every wallet's holdings, prices and value on Solana and Hood (vault read over your own RPCs)",
-    description: "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade.",
-    usage: ["candle portfolio [--chain solana|hood] [--rpc-url <url>] [--evm-rpc-url <url>] [--json]"],
-    rows: [],
+    description: "Vault, TEE and embedded wallets on Solana and Hood, each token with its chain, amount, price and value, then subtotals per group and per chain and one total. TEE and embedded balances, on both chains, come from Candle. Solana vault and external wallets are read over your own Solana RPC, and Candle is sent only the mints they hold, for prices. EVM vault keys are read over your own EVM RPC for ETH and USDG only (the CLI cannot list other tokens), which must be Hood's (chain id 4663); any other chain is refused. Their prices come from Candle by asset (ETH, USDG), never by address. Unpriced tokens are shown as unpriced with the reason (no-market-row, stale-mark, unusable-price, source-unavailable) and left out of the total. A wallet that could not be read in full is marked not read, the footer names its chain, and the exit is 3. Where Candle serves LP, each Solana TEE wallet's DAMM v2 positions follow the tokens (share of the pool plus unclaimed fees, valued by Candle at the same marks) and count in the total; a position whose pool could not be read is shown as not read and the total says it is partial. A bridge moves value between the chain subtotals; it is not a trade. With a filter, only the wallets whose label or address contains it are read and shown, the subtotals and total are for those wallets, and the first line says how many matched.",
+    usage: ["candle portfolio [<filter>] [--chain solana|hood] [--rpc-url <url>] [--evm-rpc-url <url>] [--json]"],
+    rows: [
+      {
+        invocation: "<filter>",
+        description: "Keep the wallets whose label or address contains this text, in every group. Vault keys it leaves out are never sent to your RPC"
+      }
+    ],
     flags: [
       { invocation: "--chain solana|hood", description: "Show one chain, and read nothing on the other" },
       {
@@ -52561,6 +52566,7 @@ var HELP = {
     examples: [
       "candle portfolio",
       "candle portfolio --chain hood",
+      "candle portfolio p-",
       "candle portfolio --rpc-url https://your-rpc.example --evm-rpc-url https://your-hood-rpc.example --json"
     ],
     env: [...ENV_API, ...ENV_LOCAL_SIGNING]
@@ -62508,8 +62514,12 @@ async function portfolio(args, ctx) {
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
-  if (parsed.positionals.length > 0)
-    return usage(ctx, `Unexpected argument: ${parsed.positionals[0]}`);
+  if (parsed.positionals.length > 1)
+    return usage(ctx, `Unexpected argument: ${parsed.positionals[1]}`);
+  const filter = parsed.positionals[0];
+  if (filter !== undefined && filter.trim() === "")
+    return usage(ctx, "The filter is empty.");
+  const keep = (wallet) => filter === undefined || matches(wallet, filter);
   const { deps } = ctx;
   const chainFlag = parsed.values["--chain"];
   if (chainFlag !== undefined && !CHAINS2.includes(chainFlag)) {
@@ -62550,6 +62560,7 @@ async function portfolio(args, ctx) {
     let vaultEntries;
     let evmEntries;
     let vaultReason;
+    let known = 0;
     const raw = await readVaultRaw(resolvedVault.path);
     if (raw === null) {
       vaultReason = `no vault at ${resolvedVault.path}`;
@@ -62561,6 +62572,9 @@ async function portfolio(args, ctx) {
       const vault = hold((await unlockInteractively(ctx, resolvedVault.path, raw)).vault);
       vaultEntries = showSolana ? vault.index.entries.filter((entry) => entry.chain === "solana" && (entry.role === "vault" || entry.role === "external")).map((entry) => ({ address: entry.address, label: entry.label, role: entry.role })) : [];
       evmEntries = showHood ? vault.index.entries.filter((entry) => entry.chain === "evm" && entry.role === "vault").map((entry) => ({ address: entry.address, label: entry.label })) : [];
+      known += vaultEntries.length + evmEntries.length;
+      vaultEntries = vaultEntries.filter(keep);
+      evmEntries = evmEntries.filter(keep);
     }
     await printIdentity(ctx);
     const rpcHost = solana?.endpoint.host;
@@ -62603,7 +62617,9 @@ async function portfolio(args, ctx) {
       writeFailure(deps, candle, { apiUrl: ctx.apiUrl, authType: "key" }, ctx.json);
       return 1;
     }
-    const fromCandle = candle.body;
+    const answered = candle.body;
+    known += (showSolana ? (answered.tee ?? []).length + (answered.embedded ?? []).length : 0) + (showHood ? (answered.hood?.tee ?? []).length + (answered.hood?.embedded ?? []).length : 0);
+    const fromCandle = filter === undefined ? answered : filterCandle(answered, keep);
     const prices = { ...fromCandle.prices ?? {} };
     const candleHood = showHood ? fromCandle.hood : undefined;
     let priceFailure;
@@ -62750,8 +62766,8 @@ async function portfolio(args, ctx) {
     };
     const unavailable = chains.flatMap((chain2) => unavailableByChain[chain2]);
     const lpUnread = (lpSection?.unreadable ?? []).length;
-    const candleExplained = (fromCandle.unavailable ?? []).length > 0 || (fromCandle.hood?.unavailable ?? []).length > 0 || (fromCandle.lp?.unreadable ?? []).length > 0;
-    const listCutOff = fromCandle.complete === false && !candleExplained;
+    const candleExplained = (answered.unavailable ?? []).length > 0 || (answered.hood?.unavailable ?? []).length > 0 || (answered.lp?.unreadable ?? []).length > 0;
+    const listCutOff = answered.complete === false && !candleExplained;
     const complete = !listCutOff && unavailable.length === 0 && lpUnread === 0;
     const totalUsd = groups.reduce((sum, g) => sum + g.valueUsd, 0);
     const unpriced = groups.reduce((sum, g) => sum + g.unpriced, 0);
@@ -62772,26 +62788,31 @@ async function portfolio(args, ctx) {
     }
     const hoodTotals = byChain.hood;
     if (hoodTotals) {
-      const reasons = { ...candleHood?.unpricedByReason ?? {} };
-      let vaultUnpriced = 0;
-      for (const w of groups[0]?.wallets ?? []) {
+      const counted = filter === undefined ? groups[0]?.wallets ?? [] : all;
+      const reasons = filter === undefined ? { ...candleHood?.unpricedByReason ?? {} } : {};
+      let localUnpriced = 0;
+      for (const w of counted) {
         if (w.chain !== "hood")
           continue;
         for (const h of w.holdings ?? []) {
           if (h.priceUsd !== null)
             continue;
-          vaultUnpriced += 1;
+          localUnpriced += 1;
           const reason = h.unpricedReason ?? "source-unavailable";
           reasons[reason] = (reasons[reason] ?? 0) + 1;
         }
       }
-      if (candleHood)
-        hoodTotals.unpriced = (candleHood.unpriced ?? 0) + vaultUnpriced;
+      if (filter !== undefined)
+        hoodTotals.unpriced = localUnpriced;
+      else if (candleHood)
+        hoodTotals.unpriced = (candleHood.unpriced ?? 0) + localUnpriced;
       hoodTotals.unpricedByReason = reasons;
     }
+    const matched = filter === undefined ? undefined : { filter, matched: all.length, wallets: known };
     if (ctx.json) {
       writeJson(deps, {
         ok: true,
+        ...matched ?? {},
         chains,
         totalUsd,
         unpriced,
@@ -62806,6 +62827,13 @@ async function portfolio(args, ctx) {
       });
       return complete ? 0 : 3;
     }
+    if (matched) {
+      deps.stdout.write(matched.matched === 0 ? `No wallet matches "${terminalText(matched.filter)}". ${matched.wallets} ${matched.wallets === 1 ? "wallet" : "wallets"} on this account and vault; candle portfolio with no filter shows them.
+` : `${matched.matched} of ${matched.wallets} wallets match "${terminalText(matched.filter)}". Every figure below is for those wallets only.
+`);
+      if (matched.matched === 0)
+        return complete ? 0 : 3;
+    }
     writeTable(ctx, groups, {
       totalUsd,
       unpriced,
@@ -62817,6 +62845,40 @@ async function portfolio(args, ctx) {
     });
     return complete ? 0 : 3;
   });
+}
+function matches(wallet, filter) {
+  const needle = filter.toLowerCase();
+  return (wallet.label ?? "").toLowerCase().includes(needle) || wallet.address.toLowerCase().includes(needle);
+}
+function filterCandle(body, keep) {
+  const tee = (body.tee ?? []).filter(keep);
+  const embedded = (body.embedded ?? []).filter(keep);
+  const kept = new Set([...tee, ...embedded].map((row) => row.address));
+  const hoodTee = (body.hood?.tee ?? []).filter(keep);
+  const hoodEmbedded = (body.hood?.embedded ?? []).filter(keep);
+  const hoodKept = new Set([...hoodTee, ...hoodEmbedded].map((row) => row.address));
+  return {
+    ...body,
+    tee,
+    embedded,
+    unavailable: (body.unavailable ?? []).filter((address) => kept.has(address)),
+    ...body.lp ? {
+      lp: {
+        ...body.lp,
+        positions: body.lp.positions.filter((position) => kept.has(position.wallet)),
+        unreadable: body.lp.unreadable.filter((position) => kept.has(position.wallet))
+      }
+    } : {},
+    ...body.hood ? {
+      hood: {
+        tee: hoodTee,
+        embedded: hoodEmbedded,
+        unavailable: (body.hood.unavailable ?? []).filter((address) => hoodKept.has(address)),
+        unpriced: 0,
+        unpricedByReason: {}
+      }
+    } : {}
+  };
 }
 async function startEvmRead(addresses, rpcUrl, fetchFn) {
   const rpc = createEvmRpc(rpcUrl, fetchFn);
@@ -63999,10 +64061,10 @@ async function resolveDestination(ctx, key, source, to, chain2 = "solana") {
   }
   const rowChain2 = hood ? "evm" : "solana";
   const rows = (await readLinkedWallets(ctx, key)).filter((row) => row.chain === rowChain2 && row.revokedAt === undefined && !same(row.address, source.address));
-  const matches = rows.filter((row) => row.label === to || row._id === to || same(row.address, to));
-  if (matches.length > 1)
-    throw new TradingError("DESTINATION_AMBIGUOUS", `"${to}" names ${matches.length} linked wallets: ${matches.map((row) => `${row.label ?? ""} (${row._id}, ${row.address})`.trim()).join("; ")}. Name one by id or address.`);
-  const match = matches[0];
+  const matches2 = rows.filter((row) => row.label === to || row._id === to || same(row.address, to));
+  if (matches2.length > 1)
+    throw new TradingError("DESTINATION_AMBIGUOUS", `"${to}" names ${matches2.length} linked wallets: ${matches2.map((row) => `${row.label ?? ""} (${row._id}, ${row.address})`.trim()).join("; ")}. Name one by id or address.`);
+  const match = matches2[0];
   if (match)
     return { kind: "linked", address: match.address, id: match._id, ...match.label ? { label: match.label } : {} };
   if (same(to, source.address))
@@ -68149,7 +68211,7 @@ async function vaultList(args, ctx) {
       throw missingVault(ctx, resolvedVault);
     const vault = hold((await unlockInteractively(ctx, path, raw, { acceptOlderCopy: parsed.booleans.has("--accept-older-copy") })).vault);
     const all = vault.index.entries;
-    const matched = filter === undefined ? all : all.filter((entry) => matches(entry, filter));
+    const matched = filter === undefined ? all : all.filter((entry) => matches2(entry, filter));
     const solana = balances ? matched.filter((entry) => entry.chain === "solana") : [];
     const requests = Math.ceil(solana.length / CHUNK2);
     const rpcHost = solanaClient?.endpoint.host;
@@ -68284,7 +68346,7 @@ total  ${formatSol3(totalLamports)} SOL across ${solana.length - unavailable.len
     return complete ? 0 : 3;
   });
 }
-function matches(entry, filter) {
+function matches2(entry, filter) {
   const needle = filter.toLowerCase();
   return entry.label.toLowerCase().includes(needle) || entry.address.toLowerCase().includes(needle);
 }
@@ -70346,8 +70408,8 @@ async function runRebindPhase(ctx, phase, results) {
 async function verifySubjectSecret(vault, subject) {
   const secret = await decryptKey(vault, subject.id);
   try {
-    const matches2 = subject.chain === "evm" ? sameEvmAddress(evmAddressFromSecret(secret), subject.address) : addressFromSecret64(secret) === subject.address;
-    if (!matches2) {
+    const matches3 = subject.chain === "evm" ? sameEvmAddress(evmAddressFromSecret(secret), subject.address) : addressFromSecret64(secret) === subject.address;
+    if (!matches3) {
       throw new VaultError("VAULT_VERIFY_FAILED", "Stored secret does not match the subject address.");
     }
   } catch (error) {
@@ -70837,7 +70899,7 @@ New vault at ${path}, verified in full (all eight steps).
       const solana = rpcUrlFlag === undefined ? undefined : solanaClientFor(ctx, flagEndpoint(rpcUrlFlag));
       const derived = await deriveWithinBounds(ctx, vault, counts, solana);
       const apiKey = await resolveApiKey(deps, ctx.profile);
-      let matches2 = {
+      let matches3 = {
         matched: [],
         unmatched: [],
         account: undefined,
@@ -70845,16 +70907,16 @@ New vault at ${path}, verified in full (all eight steps).
         reason: "no API key is stored, so no exposure could be read"
       };
       if (apiKey !== undefined) {
-        matches2 = await matchAgainstAccount(ctx, apiKey, derived);
+        matches3 = await matchAgainstAccount(ctx, apiKey, derived);
       } else {
         deps.stderr.write(`No API key is stored for this profile, so this restore read no exposure at all.
 `);
       }
-      const outcome = await writeRestoredIndex(ctx, vault, derived, matches2, counts);
+      const outcome = await writeRestoredIndex(ctx, vault, derived, matches3, counts);
       committed = true;
       const config = await deps.readConfig();
       const ambient = Boolean(deps.env[RPC_URL_ENV]?.trim()) || Boolean(ctx.profile !== undefined && config.profiles?.[ctx.profile]?.rpcUrl?.trim());
-      const result = reportRestore(ctx, vault, derived, matches2, outcome, counts, ambient);
+      const result = reportRestore(ctx, vault, derived, matches3, outcome, counts, ambient);
       const footer = nonDefaultVaultFooter(resolvedVault);
       if (footer !== undefined)
         deps.stdout.write(footer);
@@ -71071,9 +71133,9 @@ This profile acts as account ${read.account}.
   }
   return { matched, unmatched, externalListed, account: read.account, complete: true };
 }
-async function writeRestoredIndex(ctx, vault, derived, matches2, counts) {
+async function writeRestoredIndex(ctx, vault, derived, matches3, counts) {
   const now = new Date(ctx.deps.now()).toISOString();
-  const matchByAddress = new Map(matches2.matched.map((match) => [match.entry.address, match.row]));
+  const matchByAddress = new Map(matches3.matched.map((match) => [match.entry.address, match.row]));
   const entries = derived.entries.map((entry) => {
     const row = matchByAddress.get(entry.address);
     if (entry.branch === "evmTee") {
@@ -71143,7 +71205,7 @@ async function writeRestoredIndex(ctx, vault, derived, matches2, counts) {
       exposed[located.branch].push(located.index);
   }
   const highestMatched = { solanaVault: -1, solanaTee: -1, solanaExternal: -1 };
-  for (const match of matches2.matched) {
+  for (const match of matches3.matched) {
     if (match.entry.branch === "solanaVault")
       highestMatched.solanaVault = Math.max(highestMatched.solanaVault, match.entry.index);
     if (match.entry.branch === "solanaTee")
@@ -71168,12 +71230,12 @@ async function writeRestoredIndex(ctx, vault, derived, matches2, counts) {
     },
     discovery: {
       restoredAt: now,
-      account: matches2.account ?? "",
+      account: matches3.account ?? "",
       requestedCounts: counts.requested,
       highestMatched,
       complete: false
     },
-    ...matches2.complete ? { exposureReconciledAt: now } : {}
+    ...matches3.complete ? { exposureReconciledAt: now } : {}
   };
   await commitVault(vault, { index: { hd, entries }, addKeys: derived.entries.map((entry) => entry.blob) }, ctx.deps);
   return { entries, hd };
@@ -71201,7 +71263,7 @@ function teeFieldsFor(row, ctx, network2 = "solana-mainnet") {
   }
   return { role: "tee-wallet", tee: { ...common, lifecycle: "stranded", grantIdentity } };
 }
-function reportRestore(ctx, vault, derived, matches2, outcome, counts, ambientSolanaEndpoint) {
+function reportRestore(ctx, vault, derived, matches3, outcome, counts, ambientSolanaEndpoint) {
   const { deps } = ctx;
   deps.stdout.write(`
 Recovered ${outcome.entries.length} address(es) from the phrase.
@@ -71244,29 +71306,29 @@ Every one of them is recorded with an unknown history and stays that way: this p
     deps.stdout.write(`  evm tee: indices 0 to ${counts.evmTee - 1}, on m/44'/60'/n'/1'/0'. The sealed EVM record is not restored by a phrase: a sweep of these wallets needs --from-block <n> (a Hood block at or before the first transfer in) or --token <0x...> to find tokens beyond USDG and WETH.
 `);
   }
-  if ((matches2.externalListed?.length ?? 0) > 0) {
+  if ((matches3.externalListed?.length ?? 0) > 0) {
     deps.stdout.write(`
-${matches2.externalListed?.length} address(es) this account imported are external-branch keys of this root. An external key is never registered with Candle, so this read does not flag them; their history is unknown like every other recovered key's.
+${matches3.externalListed?.length} address(es) this account imported are external-branch keys of this root. An external key is never registered with Candle, so this read does not flag them; their history is unknown like every other recovered key's.
 `);
   }
-  if (!matches2.complete) {
-    if (matches2.refused !== undefined)
+  if (!matches3.complete) {
+    if (matches3.refused !== undefined)
       deps.stdout.write(`
-${matches2.refused}: the account was not confirmed.
+${matches3.refused}: the account was not confirmed.
 `);
     deps.stdout.write(`
-No exposure was recorded: ${matches2.reason ?? "the linked-wallet read did not complete"}.
+No exposure was recorded: ${matches3.reason ?? "the linked-wallet read did not complete"}.
 `);
-    deps.stdout.write(matches2.refused !== undefined ? `The vault was created, verified and written in full; nothing in it is flagged. Run \`candle vault reconcile-exposure\` once you are on the right profile.
+    deps.stdout.write(matches3.refused !== undefined ? `The vault was created, verified and written in full; nothing in it is flagged. Run \`candle vault reconcile-exposure\` once you are on the right profile.
 ` : `A partial list that happened to be empty would read as good news, so nothing was flagged at all. Run \`candle vault reconcile-exposure\` once the read succeeds.
 `);
     return 3;
   }
-  if (matches2.unmatched.length > 0) {
+  if (matches3.unmatched.length > 0) {
     deps.stdout.write(`
-${matches2.unmatched.length} address(es) this account imported were NOT derived by this restore:
+${matches3.unmatched.length} address(es) this account imported were NOT derived by this restore:
 `);
-    for (const address of matches2.unmatched)
+    for (const address of matches3.unmatched)
       deps.stdout.write(`  ${address}
 `);
     deps.stdout.write(`
@@ -71278,7 +71340,7 @@ Either this root derives them at an index beyond the bounds used here, in which 
   }
   closeVault(vault);
   deps.stdout.write(`
-${matches2.matched.length} of them are addresses this account imported, and each is flagged as remotely exposed.
+${matches3.matched.length} of them are addresses this account imported, and each is flagged as remotely exposed.
 `);
   return 0;
 }
