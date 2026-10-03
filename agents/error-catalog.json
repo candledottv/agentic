@@ -133,7 +133,7 @@
     },
     "state_conflict": {
       "retryable": false,
-      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed. CLOSE_IN_PROGRESS: an earlier close under this id is still sending; read its job. CLOSE_FAILED closed nothing and settled its id; preview again and close under a new id. BRIDGE_IN_FLIGHT: a bridge into or out of this wallet is still open; read `candle swap status` and record the sweep once it closes or its two hours pass.",
+      "action": "The operation already happened, or the referenced object is gone. Read current state instead of retrying, or you may pay twice. QUOTE_EXPIRED is the one entry you resolve by building again: the row is fine, its price is stale. TRADE_REVERTED spent only its network fee; trade again under a new id. REBIND_BUILD_OPEN carries retryAfter: stop the old key and rebind after it. REBIND_FORWARD_OPEN has no clock: a sign is in flight or not yet provably expired; nothing changed. CLOSE_IN_PROGRESS: an earlier close under this id is still sending; read its job. CLOSE_FAILED closed nothing and settled its id; preview again and close under a new id. BRIDGE_IN_FLIGHT: a bridge into or out of this wallet is still open; read `candle swap status` and record the sweep once it closes or its two hours pass. HOLD_NOT_RELEASABLE: the trade's USD window hold stays; when error.retryable is true, call again after retryAfter (or at once for reason `changed`).",
       "codes": [
         "IDEMPOTENCY_CONFLICT",
         "TRADE_ALREADY_CLAIMED",
@@ -162,7 +162,8 @@
         "WALLET_BUSY",
         "BRIDGE_IN_FLIGHT",
         "CLOSE_IN_PROGRESS",
-        "CLOSE_FAILED"
+        "CLOSE_FAILED",
+        "HOLD_NOT_RELEASABLE"
       ]
     },
     "quota": {
