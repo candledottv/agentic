@@ -109,7 +109,7 @@ const fill = await candle.trade({ mint: "9dXSV8...CNDL", side: "buy", amountRaw:
 // fill.amounts.expectedOutRaw is the quote; fill.amounts.actualOutRaw is what arrived (Solana only)
 ```
 
-- `trade()` buys or sells a token in one call, from the account's main wallet (executed inline)
+- `trade()` buys or sells a token in one call, from the account's embedded wallet (executed inline)
   or from a linked wallet the caller signs for. Amounts are raw units. On Solana,
   `amounts.actualOutRaw` is the delivered amount, decoded from the payer's balance change; book
   positions from it rather than from `expectedOutRaw`. It is absent on Hood.
