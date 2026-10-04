@@ -214,11 +214,12 @@ describe("wallets signer column", () => {
     }
     const linkedBody = {
       success: true,
+      // walletKind (BE-860) rides through with the rest of each row.
       page: [
-        { _id: "lw_here", address: "So1Here", chain: "solana", label: "here" },
-        { _id: "lw_elsewhere", address: "So1Elsewhere", chain: "solana" },
-        { _id: "lw_stale", address: "So1Stale", chain: "solana", revokedAt: 1_724_500_000_000 },
-        { _id: "lw_gone", address: "So1Gone", chain: "solana", revokedAt: 1_724_500_000_000 },
+        { _id: "lw_here", address: "So1Here", chain: "solana", label: "here", walletKind: "imported" },
+        { _id: "lw_elsewhere", address: "So1Elsewhere", chain: "solana", walletKind: "linked" },
+        { _id: "lw_stale", address: "So1Stale", chain: "solana", revokedAt: 1_724_500_000_000, walletKind: "tee" },
+        { _id: "lw_gone", address: "So1Gone", chain: "solana", revokedAt: 1_724_500_000_000, walletKind: "linked" },
       ],
       isDone: true,
       continueCursor: null,

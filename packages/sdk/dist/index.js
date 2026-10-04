@@ -1120,6 +1120,10 @@ class CandleClient {
       ...params.label !== undefined ? { label: params.label } : {}
     });
   }
+  async dryRunSelfLaunch(req) {
+    this.requireKey("dryRunSelfLaunch()");
+    return this.requestJson("POST", "/api/v1/launch/self/dry-run", req);
+  }
   async buildSelfLaunch(req) {
     this.requireKey("buildSelfLaunch()");
     return this.requestJson("POST", "/api/v1/launch/self/build", req);

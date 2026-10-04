@@ -103,6 +103,7 @@ export type {
   QuoteResult,
   SelfBalancesOptions,
   SelfBalancesResult,
+  SelfLaunchDryRunResult,
   SelfLaunchRequest,
   SelfWallet,
   SelfWalletBalance,
@@ -128,6 +129,7 @@ export type {
   TradeRouteHop,
   TradeSide,
   VerifyResult,
+  WalletKind,
 } from "./client"
 export { CandleClient, perpsDepositProblem } from "./client"
 export type { BridgeErrorCode, CandleErrorPayload, CandleRoutingDetail, SolanaRpcErrorData } from "./errors"

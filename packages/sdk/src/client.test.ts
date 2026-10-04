@@ -27,6 +27,7 @@ import {
   type SubmitTradeRequest,
   type SwapResult,
   type SwapSettlement,
+  type WalletKind,
 } from "./client"
 
 import { CandleApiError, JsonRpcError } from "./errors"
@@ -200,6 +201,46 @@ describe("request shapes", () => {
       headers: JSON_HEADERS,
       body: JSON.stringify(LAUNCH_REQ),
     })
+  })
+
+  test("BE-860: dryRunSelfLaunch POSTs /api/v1/launch/self/dry-run and types the paying wallet and its id", async () => {
+    const req = { ...LAUNCH_REQ, linkedWalletId: "lw_1" }
+    const wire = {
+      success: true,
+      dryRun: true,
+      launchWallet: "LinkedPayer1",
+      launchWalletId: "lw_1",
+      resolved: {
+        chain: "solana",
+        quoteAsset: "sol",
+        mode: "open",
+        stakerAllocationBps: 50,
+        dexVersion: null,
+        visibility: "production",
+        buyAmount: "0",
+      },
+      checks: { image: "ok" },
+      matrixVersion: 1,
+    }
+    const { client, calls } = makeClient(KEYED, [json(200, wire)])
+    const result = await client.dryRunSelfLaunch(req)
+    expect(calls[0]).toEqual({
+      url: "https://api.test/api/v1/launch/self/dry-run",
+      method: "POST",
+      headers: JSON_HEADERS,
+      body: JSON.stringify(req),
+    })
+    // Typed reads: a self dry run always names its payer, so neither field is nullable.
+    const launchWallet: string = result.launchWallet
+    const launchWalletId: string = result.launchWalletId
+    expect({ launchWallet, launchWalletId }).toEqual({ launchWallet: "LinkedPayer1", launchWalletId: "lw_1" })
+  })
+
+  test("BE-860: dryRunSelfLaunch needs an API key", async () => {
+    const { client } = makeClient({}, [])
+    await expect(client.dryRunSelfLaunch({ ...LAUNCH_REQ, linkedWalletId: "lw_1" })).rejects.toThrow(
+      "dryRunSelfLaunch()",
+    )
   })
 
   test("BE-850: DryRunResult types size and checks.banner, and exclusiveEligible is optional", async () => {
@@ -484,6 +525,33 @@ describe("request shapes", () => {
       profile: "ember-tee",
       allowLaunch: true,
     })
+  })
+
+  test("BE-860: listWallets types walletKind, the server-decided kind of each row", async () => {
+    const page = [
+      {
+        _id: "row-tee",
+        chain: "evm",
+        address: "0xTee",
+        privyWalletId: "pw-1",
+        profile: "ember-tee",
+        walletKind: "tee",
+      },
+      {
+        _id: "row-imp",
+        chain: "solana",
+        address: "SoLImp",
+        privyWalletId: "pw-2",
+        privyPolicyId: "p",
+        walletKind: "imported",
+      },
+      { _id: "row-lnk", chain: "solana", address: "SoLLnk", privyWalletId: "pw-3", walletKind: "linked" },
+    ]
+    const { client } = makeClient(KEYED, [json(200, { success: true, page, isDone: true, continueCursor: null })])
+    const rows = (await client.listWallets()).page
+    // Typed read: this does not compile against a LinkedWalletRow without the field.
+    const kinds: Array<WalletKind | undefined> = rows.map((row) => row.walletKind)
+    expect(kinds).toEqual(["tee", "imported", "linked"])
   })
 
   test("listWallets: includeRevoked: false is the same as omitting it (no query param)", async () => {

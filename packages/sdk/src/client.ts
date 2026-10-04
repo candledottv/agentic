@@ -295,6 +295,16 @@ export interface DryRunResult {
   size?: { txBytes: number; limit: number; maxNameBytes: number; fits: boolean }
 }
 
+/**
+ * POST /api/v1/launch/self/dry-run response: the headless dry run's shape, with `launchWallet` the
+ * linked or TEE wallet `buildSelfLaunch()` would pay from, and `launchWalletId` its id. Never
+ * checks that wallet's balance.
+ */
+export interface SelfLaunchDryRunResult extends Omit<DryRunResult, "launchWallet"> {
+  launchWallet: string
+  launchWalletId: string
+}
+
 /** POST /api/v1/launch/headless blocking (or replayed) success response. */
 export interface LaunchResult {
   success: true
@@ -546,11 +556,17 @@ export interface ImportWalletResult {
 }
 
 /**
+ * What a linked wallet can do, decided by the server (BE-860): `tee`, a TEE wallet bound to one
+ * key; `imported`, a spend-capable wallet from the import flow; `linked`, attribution-only, which
+ * cannot sign. Not `SelfWallet.kind`, whose `linked` covers both of the last two.
+ */
+export type WalletKind = "tee" | "imported" | "linked"
+
+/**
  * One row of `GET /api/v1/agent/wallets`'s `page` array. The server returns the whole linkedWallets
  * row, so a page also carries fields this type does not name (`userAddress`, `addressLower`,
- * `verifiedAt` and others); the type names the ones a caller acts on. `privyPolicyId` present is
- * what makes a row spend-capable (the import flow); its absence means attribution-only
- * (link-existing). `revokedAt` set means the row is a tombstone -- `listWallets()` excludes these
+ * `verifiedAt` and others); the type names the ones a caller acts on. Branch on `walletKind` for
+ * what a row can do. `revokedAt` set means the row is a tombstone -- `listWallets()` excludes these
  * by default; pass `includeRevoked: true` to see them.
  */
 export interface LinkedWalletRow {
@@ -564,7 +580,16 @@ export interface LinkedWalletRow {
   signerQuorumId?: string
   revokedAt?: number
   addedVia: "agent" | "session"
-  /** `"ember-tee"` (or `"ember-hot"`) on a dedicated TEE wallet; absent on every other row. */
+  /**
+   * What this wallet can do: `tee`, `imported` (spend-capable) or `linked` (attribution-only).
+   * Stable; derived by the server. Absent only from an API that predates it (before 2026-10), where
+   * `privyPolicyId` present meant spend-capable and its absence attribution-only.
+   */
+  walletKind?: WalletKind
+  /**
+   * Served, but its values are internal code names and not promised (today `"ember-tee"`, or the
+   * legacy `"ember-hot"`, on a TEE wallet; absent on every other row). Use `walletKind`.
+   */
   profile?: "ember-tee" | "ember-hot"
   /**
    * TEE wallets only: whether the account owner has allowed this wallet to pay for a launch.
@@ -2806,6 +2831,18 @@ export class CandleClient {
       signerPublicKey: params.signerPublicKey,
       ...(params.label !== undefined ? { label: params.label } : {}),
     })
+  }
+
+  /**
+   * Self-signed launch dry run: the same body as `buildSelfLaunch()`, the same checks (payer and
+   * TEE rules, plan, the key's caps), and the same refusals, without building, reserving or
+   * recording anything; the `clientLaunchId` stays unused. Does not check the payer's balance, the
+   * day cap, a `clientLaunchId` already used with another body or payer, or a Solana TEE wallet's
+   * USD spend window; `buildSelfLaunch()` can still refuse for those.
+   */
+  async dryRunSelfLaunch(req: BuildSelfLaunchRequest): Promise<SelfLaunchDryRunResult> {
+    this.requireKey("dryRunSelfLaunch()")
+    return this.requestJson<SelfLaunchDryRunResult>("POST", "/api/v1/launch/self/dry-run", req)
   }
 
   /**
