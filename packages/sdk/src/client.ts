@@ -264,6 +264,8 @@ export interface ConfirmSelfLaunchResult extends LaunchResult {
 export interface DryRunResult {
   success: true
   dryRun: true
+  /** Wallet the real launch pays from; null when no wallet is available for the resolved chain. */
+  launchWallet: string | null
   resolved: {
     chain: Chain
     quoteAsset: string
