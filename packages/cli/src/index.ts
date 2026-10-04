@@ -79,6 +79,7 @@ import { vaultStatus } from "./commands/vault-status"
 import { vaultTransfer } from "./commands/vault-transfer"
 import { verify } from "./commands/verify"
 import { wallets, walletsImport, walletsRevoke } from "./commands/wallets"
+import { walletsAllowLaunch, walletsDisallowLaunch } from "./commands/wallets-allow-launch"
 import { walletsCloseEmpty } from "./commands/wallets-close-empty"
 import { walletsTrust, walletsUntrust } from "./commands/wallets-trust"
 import type { CliConfig } from "./config"
@@ -221,6 +222,9 @@ const COMMANDS: Record<string, CommandRoute> = {
       revoke: walletsRevoke,
       trust: walletsTrust,
       untrust: walletsUntrust,
+      // BE-850: the owner's allowLaunch on a TEE wallet, over the device token, like trust.
+      "allow-launch": walletsAllowLaunch,
+      "disallow-launch": walletsDisallowLaunch,
       "close-empty": walletsCloseEmpty,
     },
     bare: wallets,

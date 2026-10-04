@@ -403,7 +403,7 @@ export const HELP: Record<string, Topic> = {
     group: "Trade",
     summary: "Create a token on Solana or Hood (the first buy is a separate swap)",
     description:
-      "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (PUT /api/v1/agent/wallets/<id>/capabilities with a device token or web session; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path.",
+      "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path.",
     usage: [
       "candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee> [--quote-asset <asset>] [--dex-version v3|v4]",
     ],
@@ -581,6 +581,15 @@ export const HELP: Record<string, Topic> = {
         description: "Clear the mark; moving funds in needs the withdrawal allowlist again (owner only)",
       },
       {
+        invocation: "allow-launch <label|address|id|prefix*>...",
+        description:
+          "Let TEE wallets pay for a launch (candle launch), after a screen of label, address and bound key (owner only; typed confirm)",
+      },
+      {
+        invocation: "disallow-launch <label|address|id|prefix*>... [--yes]",
+        description: "Stop TEE wallets paying for a launch; trading is unchanged (owner only)",
+      },
+      {
         invocation: "close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes]",
         description:
           "Close the embedded wallet's empty token accounts and return their rent to it, after a preview (transfer:write)",
@@ -591,6 +600,7 @@ export const HELP: Record<string, Topic> = {
       "candle wallet import --chain solana --key-file ./signer.json",
       "candle wallet revoke wal_123",
       "candle wallet trust 'tr-*' 'dest-*'",
+      "candle wallet allow-launch launcher-1",
       "candle wallet close-empty --keep EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
     ],
     env: ENV_API,

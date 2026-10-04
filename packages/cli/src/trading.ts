@@ -434,7 +434,7 @@ export async function completeTradingWallet(
   if (scope === "launch:write" && row.allowLaunch !== true)
     throw new TradingError(
       "LAUNCH_NOT_ALLOWED",
-      `The account owner must turn on allowLaunch for wallet ${row.id}: PUT /api/v1/agent/wallets/${row.id}/capabilities with {"capability":"allowLaunch","enabled":true}, using a device token or web session. An agent key cannot.`,
+      `The account owner must turn on allowLaunch for wallet ${row.id}: run candle wallets allow-launch ${row.id} on a profile signed in with candle auth login. An agent key cannot.`,
     )
   if (!appId || !row.privyWalletId)
     throw new TradingError("SIGNER_UNAVAILABLE", "The server did not return its relay public identifiers.")

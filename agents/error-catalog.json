@@ -70,6 +70,7 @@
         "IMAGE_TOO_LARGE",
         "IMAGE_UNREACHABLE",
         "IMAGE_WRONG_SHAPE",
+        "DEV_BUY_TOO_LOW",
         "IMAGE_REDIRECT_NOT_ALLOWED",
         "BANNER_UNREACHABLE",
         "BANNER_WRONG_SHAPE",
@@ -98,7 +99,6 @@
       "codes": [
         "AMOUNT_TOO_LOW",
         "DEV_BUY_TOO_HIGH",
-        "DEV_BUY_TOO_LOW",
         "SLIPPAGE_EXCEEDED",
         "INSUFFICIENT_OWNER_BALANCE",
         "TRANSFER_AMOUNT_UNAVAILABLE",

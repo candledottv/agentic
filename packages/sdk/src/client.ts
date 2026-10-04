@@ -275,8 +275,24 @@ export interface DryRunResult {
     visibility: string
     buyAmount: string
   }
-  checks: { image: string; exclusiveEligible: boolean }
+  checks: {
+    image: string
+    /** `"ok"` when a `bannerUrl` was sent and checked; absent otherwise. */
+    banner?: string
+    /**
+     * Present only for an exclusive (or test-exclusive) mode, the modes that run the Believer
+     * check, and then `true`: an ineligible account gets EXCLUSIVE_NOT_ELIGIBLE instead. Absent in
+     * any other mode, where nothing was checked.
+     */
+    exclusiveEligible?: boolean
+  }
   matrixVersion: number
+  /**
+   * Solana only: the assembled launch transaction's size. Absent on Hood, and when the size
+   * computation itself failed transiently. A body that would not fit fails the dry run with
+   * TRANSACTION_TOO_LARGE instead, so `fits` is always true when present.
+   */
+  size?: { txBytes: number; limit: number; maxNameBytes: number; fits: boolean }
 }
 
 /** POST /api/v1/launch/headless blocking (or replayed) success response. */
@@ -530,22 +546,32 @@ export interface ImportWalletResult {
 }
 
 /**
- * One row of `GET /api/v1/agent/wallets`'s `page` array: the linkedWallets Convex row minus
- * internal bookkeeping fields (userAddress/addressLower/privyWalletId/verifiedAt) a caller has
- * no use for. `privyPolicyId` present is what makes a row spend-capable (the import flow); its
- * absence means attribution-only (link-existing). `revokedAt` set means the row is a
- * tombstone -- `listWallets()` excludes these by default; pass `includeRevoked: true` to see
- * them.
+ * One row of `GET /api/v1/agent/wallets`'s `page` array. The server returns the whole linkedWallets
+ * row, so a page also carries fields this type does not name (`userAddress`, `addressLower`,
+ * `verifiedAt` and others); the type names the ones a caller acts on. `privyPolicyId` present is
+ * what makes a row spend-capable (the import flow); its absence means attribution-only
+ * (link-existing). `revokedAt` set means the row is a tombstone -- `listWallets()` excludes these
+ * by default; pass `includeRevoked: true` to see them.
  */
 export interface LinkedWalletRow {
   _id: string
   chain: WalletChain
   address: string
+  /** The wallet's Privy id: what `selfLaunch()`, `trade()` and `launchAtomic()` sign a linked leg with. */
+  privyWalletId: string
   label?: string
   privyPolicyId?: string
   signerQuorumId?: string
   revokedAt?: number
   addedVia: "agent" | "session"
+  /** `"ember-tee"` (or `"ember-hot"`) on a dedicated TEE wallet; absent on every other row. */
+  profile?: "ember-tee" | "ember-hot"
+  /**
+   * TEE wallets only: whether the account owner has allowed this wallet to pay for a launch.
+   * Absent reads as false. Only the owner can change it (`PUT /api/v1/agent/wallets/:id/capabilities`
+   * with a device token or session; the CLI's `candle wallets allow-launch`).
+   */
+  allowLaunch?: boolean
 }
 
 /** GET /api/v1/agent/wallets response: one page of the account's linked wallets. */

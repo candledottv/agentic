@@ -14574,7 +14574,7 @@ async function completeTradingWallet(ctx, row, appId, scope, chain2 = "solana", 
   if (!row.active)
     throw new TradingError("TEE_WALLET_INACTIVE", `The payer must be a verified-active ${chainName(chain2)} TEE wallet.`);
   if (scope === "launch:write" && row.allowLaunch !== true)
-    throw new TradingError("LAUNCH_NOT_ALLOWED", `The account owner must turn on allowLaunch for wallet ${row.id}: PUT /api/v1/agent/wallets/${row.id}/capabilities with {"capability":"allowLaunch","enabled":true}, using a device token or web session. An agent key cannot.`);
+    throw new TradingError("LAUNCH_NOT_ALLOWED", `The account owner must turn on allowLaunch for wallet ${row.id}: run candle wallets allow-launch ${row.id} on a profile signed in with candle auth login. An agent key cannot.`);
   if (!appId || !row.privyWalletId)
     throw new TradingError("SIGNER_UNAVAILABLE", "The server did not return its relay public identifiers.");
   const signer = await localSignerFor(ctx.deps, row.id, row.signerQuorumId);
@@ -53494,7 +53494,7 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood (the first buy is a separate swap)",
-    description: "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (PUT /api/v1/agent/wallets/<id>/capabilities with a device token or web session; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path.",
+    description: "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path.",
     usage: [
       "candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee> [--quote-asset <asset>] [--dex-version v3|v4]"
     ],
@@ -53650,6 +53650,14 @@ var HELP = {
         description: "Clear the mark; moving funds in needs the withdrawal allowlist again (owner only)"
       },
       {
+        invocation: "allow-launch <label|address|id|prefix*>...",
+        description: "Let TEE wallets pay for a launch (candle launch), after a screen of label, address and bound key (owner only; typed confirm)"
+      },
+      {
+        invocation: "disallow-launch <label|address|id|prefix*>... [--yes]",
+        description: "Stop TEE wallets paying for a launch; trading is unchanged (owner only)"
+      },
+      {
         invocation: "close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes]",
         description: "Close the embedded wallet's empty token accounts and return their rent to it, after a preview (transfer:write)"
       }
@@ -53659,6 +53667,7 @@ var HELP = {
       "candle wallet import --chain solana --key-file ./signer.json",
       "candle wallet revoke wal_123",
       "candle wallet trust 'tr-*' 'dest-*'",
+      "candle wallet allow-launch launcher-1",
       "candle wallet close-empty --keep EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     ],
     env: ENV_API
@@ -72380,6 +72389,176 @@ function messageOf3(error) {
 // src/index.ts
 init_wallets();
 
+// src/commands/wallets-allow-launch.ts
+init_args();
+init_deps();
+init_profiles();
+init_render();
+init_promote_support();
+var PREVIEW_PATH = "/api/v1/agent/tee-wallets/allow-launch/preview";
+var capabilityPath = (id) => `/api/v1/agent/wallets/${encodeURIComponent(id)}/capabilities`;
+var USAGE_ALLOW = "Usage: candle wallets allow-launch <label|address|id|prefix*>... [--json]";
+var USAGE_DISALLOW = "Usage: candle wallets disallow-launch <label|address|id|prefix*>... [--yes] [--json]";
+var DEVICE_TOKEN_REQUIRED2 = {
+  code: "DEVICE_TOKEN_REQUIRED",
+  message: "Changing whether a TEE wallet may launch needs the device token, the owner's credential; an API key cannot do it.",
+  suggestion: "Run: candle auth login"
+};
+var nameOf = (row) => row.label ?? row.address;
+function allowLaunchTable(rows) {
+  return renderTable(["line", "label", "wallet", "address", "bound key"], rows.map((row, i) => [String(i + 1), row.label ?? "-", row.chain, row.address, row.boundKeyPrefix ?? "-"]));
+}
+function nothingToChangeLine(shown, enabled) {
+  const bits = [];
+  if (shown.unchanged.length === 1)
+    bits.push(`that wallet already has allowLaunch ${enabled ? "on" : "off"}`);
+  else if (shown.unchanged.length > 1) {
+    bits.push(`all ${shown.unchanged.length} wallets already have allowLaunch ${enabled ? "on" : "off"}`);
+  }
+  if (shown.notTee.length > 0) {
+    bits.push(`${shown.notTee.map(nameOf).join(", ")} ${shown.notTee.length === 1 ? "is" : "are"} not a TEE wallet`);
+  }
+  if (bits.length === 0)
+    return `Nothing to change.
+`;
+  return `Nothing to change: ${bits.join("; ")}.
+`;
+}
+function writeFailure2(ctx, result) {
+  const { deps, apiUrl, json } = ctx;
+  let code = result.code;
+  let message = result.message;
+  let suggestion;
+  if (result.status === 404) {
+    code = "ALLOW_LAUNCH_UNSUPPORTED";
+    message = "This Candle API does not offer allowLaunch on TEE wallets (an older API, or TEE launch is off); nothing changed.";
+  } else {
+    const error = result.raw?.error;
+    if (error?.reason === "ambiguous" && Array.isArray(error.matches)) {
+      const ids = error.matches.map((m) => String(m.id)).join(", ");
+      suggestion = `Name one of them by id or address: ${ids}`;
+    } else if (error?.reason === "not_found") {
+      suggestion = "Run: candle wallets, to see this account's linked wallets and their labels.";
+    }
+  }
+  const envelope = errorEnvelope({ ...result, code, message }, { apiUrl, authType: "device" });
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ ...envelope, ...suggestion ? { suggestion } : {} })}
+`);
+  } else {
+    deps.stderr.write(`${code ?? `HTTP ${result.status}`}: ${message}${suggestion ? ` ${suggestion}` : ""}
+`);
+  }
+  return 1;
+}
+async function setAllowLaunch(args, ctx, enabled) {
+  const { deps, apiUrl, json } = ctx;
+  const usage6 = enabled ? USAGE_ALLOW : USAGE_DISALLOW;
+  const command = enabled ? "wallets allow-launch" : "wallets disallow-launch";
+  const parsed = parseArgs(args, enabled ? {} : { booleanFlags: ["--yes"] });
+  if ("error" in parsed) {
+    writeUsageFailure(deps, parsed.error, json);
+    return 2;
+  }
+  if (parsed.positionals.length === 0) {
+    writeUsageFailure(deps, `Name at least one wallet. ${usage6}`, json);
+    return 2;
+  }
+  const skipConfirm = !enabled && parsed.booleans.has("--yes");
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED2, json);
+    return 1;
+  }
+  if (!skipConfirm && (!deps.isTTY.stdin || !deps.isTTY.stdout)) {
+    writeLocalFailure(deps, {
+      code: "ALLOW_LAUNCH_REQUIRES_TTY",
+      message: `candle ${command} needs a terminal: the acknowledgement is typed, and nothing else supplies it.`,
+      suggestion: enabled ? "Run it in an interactive shell; there is no flag and no environment variable for confirm." : "Run it in an interactive shell, or pass --yes to turn it off without the prompt."
+    }, json);
+    return 1;
+  }
+  const request2 = (path, method, body) => apiRequest(path, {
+    method,
+    body,
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  const preview = await request2(PREVIEW_PATH, "POST", { wallets: parsed.positionals, enabled });
+  if (!preview.ok)
+    return writeFailure2(ctx, preview);
+  const shown = preview.body;
+  const changing = shown.changed;
+  if (changing.length === 0) {
+    if (json)
+      deps.stdout.write(`${JSON.stringify({ ...shown, command })}
+`);
+    else
+      deps.stdout.write(nothingToChangeLine(shown, enabled));
+    return shown.unchanged.length === 0 && shown.notTee.length > 0 ? 1 : 0;
+  }
+  const n = changing.length;
+  const screen = [
+    allowLaunchTable(changing),
+    ...shown.unchanged.length > 0 ? [`${shown.unchanged.length} already ${enabled ? "on" : "off"}: ${shown.unchanged.map(nameOf).join(", ")}`] : [],
+    ...shown.notTee.length > 0 ? [`Not a TEE wallet, left alone: ${shown.notTee.map(nameOf).join(", ")}`] : [],
+    "",
+    enabled ? `${n === 1 ? "This wallet" : `These ${n} wallets`} will be allowed to pay for a launch: the bound key, with launch:write, can create tokens from ${n === 1 ? "it" : "them"} (candle launch).` : `${n === 1 ? "This wallet" : `These ${n} wallets`} will no longer be able to pay for a launch. Trading is unchanged.`,
+    ""
+  ];
+  deps.stderr.write(`${screen.join(`
+`)}
+`);
+  if (!skipConfirm) {
+    const typed = await deps.promptLine(`Type ${CONFIRM_WORD} to ${enabled ? "allow" : "stop"} launches from ${n === 1 ? "this wallet" : `these ${n} wallets`}: `);
+    if (typed.trim().toLowerCase() !== CONFIRM_WORD) {
+      writeLocalFailure(deps, {
+        code: "ALLOW_LAUNCH_NOT_ACKNOWLEDGED",
+        message: `The acknowledgement is the word ${CONFIRM_WORD}; nothing changed.`,
+        suggestion: `Run the command again and type ${CONFIRM_WORD} at the prompt.`
+      }, json);
+      return 1;
+    }
+  }
+  const done = [];
+  const failed = [];
+  for (const row of changing) {
+    const result = await request2(capabilityPath(row.id), "PUT", { capability: "allowLaunch", enabled });
+    if (result.ok)
+      done.push({ ...row, allowLaunch: enabled });
+    else {
+      failed.push({
+        id: row.id,
+        code: result.status === 404 ? "WALLET_NOT_FOUND" : result.code ?? null,
+        message: result.status === 404 ? "no longer an active TEE wallet on this account" : result.message
+      });
+    }
+  }
+  if (json) {
+    deps.stdout.write(`${JSON.stringify({ success: failed.length === 0, command, enabled, changed: done, unchanged: shown.unchanged, notTee: shown.notTee, failed })}
+`);
+    return failed.length > 0 ? 1 : 0;
+  }
+  const verb = enabled ? "Allowed launches from" : "Stopped launches from";
+  deps.stdout.write(`${verb} ${done.length} wallet${done.length === 1 ? "" : "s"}.
+`);
+  for (const failure of failed) {
+    deps.stderr.write(`Not changed: ${failure.id}: ${failure.message}${failure.code ? ` (${failure.code})` : ""}.
+`);
+  }
+  return failed.length > 0 ? 1 : 0;
+}
+function walletsAllowLaunch(args, ctx) {
+  return setAllowLaunch(args, ctx, true);
+}
+function walletsDisallowLaunch(args, ctx) {
+  return setAllowLaunch(args, ctx, false);
+}
+
 // src/commands/wallets-close-empty.ts
 init_args();
 init_render();
@@ -72537,7 +72716,7 @@ init_promote_support();
 var TRUST_PATH = "/api/v1/agent/linked-wallets/trust";
 var USAGE_TRUST = "Usage: candle wallets trust <label|address|id|prefix*>... [--json]";
 var USAGE_UNTRUST = "Usage: candle wallets untrust <label|address|id|prefix*>... [--yes] [--json]";
-var DEVICE_TOKEN_REQUIRED2 = {
+var DEVICE_TOKEN_REQUIRED3 = {
   code: "DEVICE_TOKEN_REQUIRED",
   message: "Marking a wallet trusted needs the device token, the owner's credential; an API key cannot do it.",
   suggestion: "Run: candle auth login"
@@ -72548,7 +72727,7 @@ function sessionLinkedLine(rows) {
   const names = rows.map((row) => row.label ?? row.address).join(", ");
   return `${n} linked while signed in (${names}): always yours while linked. Revoke ${it} to remove ${it}.`;
 }
-function nothingToChangeLine(shown, trusted) {
+function nothingToChangeLine2(shown, trusted) {
   const session = shown.sessionLinked ?? [];
   const unchanged = shown.unchanged;
   if (session.length > 0 && unchanged.length === 0) {
@@ -72615,7 +72794,7 @@ async function setTrust(args, ctx, trusted) {
   await printIdentity(ctx);
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   if (!deviceToken) {
-    writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED2, json);
+    writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED3, json);
     return 1;
   }
   if (!skipConfirm && (!deps.isTTY.stdin || !deps.isTTY.stdout)) {
@@ -72645,7 +72824,7 @@ async function setTrust(args, ctx, trusted) {
       deps.stdout.write(`${JSON.stringify({ ...shown, command })}
 `);
     } else {
-      deps.stdout.write(nothingToChangeLine(shown, trusted));
+      deps.stdout.write(nothingToChangeLine2(shown, trusted));
     }
     return 0;
   }
@@ -72912,6 +73091,8 @@ var COMMANDS = {
       revoke: walletsRevoke,
       trust: walletsTrust,
       untrust: walletsUntrust,
+      "allow-launch": walletsAllowLaunch,
+      "disallow-launch": walletsDisallowLaunch,
       "close-empty": walletsCloseEmpty
     },
     bare: wallets

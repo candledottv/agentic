@@ -202,6 +202,37 @@ describe("request shapes", () => {
     })
   })
 
+  test("BE-850: DryRunResult types size and checks.banner, and exclusiveEligible is optional", async () => {
+    const wire = {
+      success: true,
+      dryRun: true,
+      launchWallet: "SoLEmbedded1",
+      resolved: {
+        chain: "solana",
+        quoteAsset: "sol",
+        mode: "open",
+        stakerAllocationBps: 50,
+        dexVersion: null,
+        visibility: "production",
+        buyAmount: "0",
+      },
+      checks: { image: "ok", banner: "ok" },
+      matrixVersion: 1,
+      size: { txBytes: 1100, limit: 1232, maxNameBytes: 32, fits: true },
+    }
+    const { client } = makeClient(KEYED, [json(200, wire)])
+    const result = await client.dryRunLaunch(LAUNCH_REQ)
+    // Typed reads: these lines do not compile against a DryRunResult without the fields.
+    const maxNameBytes: number | undefined = result.size?.maxNameBytes
+    const banner: string | undefined = result.checks.banner
+    const exclusiveEligible: boolean | undefined = result.checks.exclusiveEligible
+    expect({ maxNameBytes, banner, exclusiveEligible }).toEqual({
+      maxNameBytes: 32,
+      banner: "ok",
+      exclusiveEligible: undefined,
+    })
+  })
+
   test("launch: POST /api/v1/launch/headless with key and JSON body", async () => {
     const { client, calls } = makeClient(KEYED, [json(200, LAUNCH_OK)])
     const result = await client.launch(LAUNCH_REQ)
@@ -409,7 +440,7 @@ describe("request shapes", () => {
   test("listWallets: GET /api/v1/agent/wallets with the agent key header, no query param by default", async () => {
     const body: ListWalletsResult = {
       success: true,
-      page: [{ _id: "row-1", chain: "solana", address: "SoLWallet1", addedVia: "session" }],
+      page: [{ _id: "row-1", chain: "solana", address: "SoLWallet1", privyWalletId: "pw-1", addedVia: "session" }],
       isDone: true,
       continueCursor: null,
     }
@@ -423,6 +454,38 @@ describe("request shapes", () => {
     expect(result).toEqual(body)
   })
 
+  test("BE-850: listWallets types the TEE fields and privyWalletId the server already sends", async () => {
+    // The wire row, as GET /api/v1/agent/wallets serves it: the whole linkedWallets row.
+    const wire = {
+      _id: "row-tee",
+      userAddress: "SoLOwner1",
+      chain: "evm",
+      address: "0xTee",
+      addressLower: "0xtee",
+      privyWalletId: "pw-tee",
+      privyPolicyId: "pol-1",
+      verifiedAt: 1_700_000_000_000,
+      addedVia: "agent",
+      profile: "ember-tee",
+      boundKeyPrefix: "cndl_live_abc",
+      allowLaunch: true,
+    }
+    const { client } = makeClient(KEYED, [
+      json(200, { success: true, page: [wire], isDone: true, continueCursor: null }),
+    ])
+    const [row] = (await client.listWallets()).page
+    if (!row) throw new Error("expected one row")
+    // Typed reads: these lines do not compile against a LinkedWalletRow without the fields.
+    const privyWalletId: string = row.privyWalletId
+    const profile: "ember-tee" | "ember-hot" | undefined = row.profile
+    const allowLaunch: boolean | undefined = row.allowLaunch
+    expect({ privyWalletId, profile, allowLaunch }).toEqual({
+      privyWalletId: "pw-tee",
+      profile: "ember-tee",
+      allowLaunch: true,
+    })
+  })
+
   test("listWallets: includeRevoked: false is the same as omitting it (no query param)", async () => {
     const body: ListWalletsResult = { success: true, page: [], isDone: true, continueCursor: null }
     const { client, calls } = makeClient(KEYED, [json(200, body)])
@@ -434,8 +497,15 @@ describe("request shapes", () => {
     const body: ListWalletsResult = {
       success: true,
       page: [
-        { _id: "row-1", chain: "solana", address: "SoLWallet1", addedVia: "session" },
-        { _id: "row-2", chain: "evm", address: "0xAbC", addedVia: "agent", revokedAt: 1_700_000_000_000 },
+        { _id: "row-1", chain: "solana", address: "SoLWallet1", privyWalletId: "pw-1", addedVia: "session" },
+        {
+          _id: "row-2",
+          chain: "evm",
+          address: "0xAbC",
+          privyWalletId: "pw-2",
+          addedVia: "agent",
+          revokedAt: 1_700_000_000_000,
+        },
       ],
       isDone: true,
       continueCursor: null,
