@@ -14574,7 +14574,7 @@ async function completeTradingWallet(ctx, row, appId, scope, chain2 = "solana", 
   if (!row.active)
     throw new TradingError("TEE_WALLET_INACTIVE", `The payer must be a verified-active ${chainName(chain2)} TEE wallet.`);
   if (scope === "launch:write" && row.allowLaunch !== true)
-    throw new TradingError("LAUNCH_NOT_ALLOWED", `The operator must enable allowLaunch for wallet ${row.id} through PUT /api/v1/agent/wallets/${row.id}/capabilities using device/session authentication.`);
+    throw new TradingError("LAUNCH_NOT_ALLOWED", `The account owner must turn on allowLaunch for wallet ${row.id}: PUT /api/v1/agent/wallets/${row.id}/capabilities with {"capability":"allowLaunch","enabled":true}, using a device token or web session. An agent key cannot.`);
   if (!appId || !row.privyWalletId)
     throw new TradingError("SIGNER_UNAVAILABLE", "The server did not return its relay public identifiers.");
   const signer = await localSignerFor(ctx.deps, row.id, row.signerQuorumId);
@@ -53494,7 +53494,7 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood (the first buy is a separate swap)",
-    description: "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and an operator-enabled allowLaunch. The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path.",
+    description: "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (PUT /api/v1/agent/wallets/<id>/capabilities with a device token or web session; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path.",
     usage: [
       "candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee> [--quote-asset <asset>] [--dex-version v3|v4]"
     ],
