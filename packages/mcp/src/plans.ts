@@ -88,7 +88,7 @@ export interface AgentPlansResult extends PlanTable {
  * the feature switched on, so perps and own-wallet bridges say "when enabled" in their labels.
  */
 export const PLAN_CAPABILITY_NOTE =
-  "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs."
+  "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs. Every plan can launch a token from its embedded wallet, with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the headless launch; the two launch rows are additional routes, not the only ones."
 
 /** The row label for each capability, in the order the rows are shown. */
 export const PLAN_CAPABILITY_LABELS: Record<keyof PlanCapabilities, string> = {
@@ -98,8 +98,8 @@ export const PLAN_CAPABILITY_LABELS: Record<keyof PlanCapabilities, string> = {
   sellExternalTokens: "Sell tokens not launched on Candle",
   buyExternalTokens: "Buy tokens not launched on Candle",
   hyperliquidPerps: "Hyperliquid perps (when enabled)",
-  selfLaunch: "Self-launch from a linked wallet",
-  atomicLaunch: "Atomic launch with first buys",
+  selfLaunch: "Launch from a linked or TEE wallet (self-signed)",
+  atomicLaunch: "Atomic launch: launch + 1–4 first buys in one bundle",
   createLinkedWallets: "Create linked wallets",
   importLinkedWallets: "Import linked wallets",
   limitOrders: "Limit orders",

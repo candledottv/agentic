@@ -3207,8 +3207,9 @@ export class CandleClient {
    * Signs, broadcasts, and waits for its receipt, then -- when the build carried a `feeTransfer`
    * leg (a platform fee applies) -- does that leg next at `nonce + 1` and captures `feeTxHash`.
    * Requires `evmRpcUrl`; throws a clear error naming it when unset, before any signing. Does NOT
-   * send a dev buy: a Hood self-launch's dev buy runs out-of-band, server-side, after confirm --
-   * the build response never includes a dev-buy leg, and this method does not assemble one.
+   * send a dev buy: a Hood self-launch's dev buy is a separate transaction the caller sends itself
+   * and reports to `confirmSelfLaunch` as `devBuySignature`. The build response never includes a
+   * dev-buy leg, and this method does not assemble one.
    */
   async selfLaunch(req: SelfLaunchRequest): Promise<ConfirmSelfLaunchResult> {
     const { privyWalletId, ...launchReq } = req

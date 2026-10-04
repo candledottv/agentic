@@ -94,8 +94,13 @@ else console.error("failed:", job.errorCode)
 Need a hosted image first? `uploadImage(bytes, contentType)` posts raw bytes to
 `/api/v1/uploads/agent-image` and returns `{ imageUrl }`, ready for the launch body.
 
-`selfLaunch()` launches from a linked wallet the agent signs for locally, and `launchAtomic()`
-launches and seeds in one transaction; both need the Pro or Max plan.
+`launch()` works on every plan, Free included: it launches from the account's embedded wallet,
+and `buyAmount` adds an optional dev buy: in the launch transaction on Solana (up to 0.5 SOL by default), a best-effort follow-up transaction on Hood.
+
+Two more paths need the Pro or Max plan. `selfLaunch()` launches from a linked or TEE wallet the
+agent signs for locally. `launchAtomic()` lands the launch and 1 to 4 first buys in one Jito bundle: several
+transactions in the same block, all or none. Each buy is paid by the embedded wallet or a linked
+wallet (never a TEE wallet); the same payer may fund more than one leg.
 
 ## Trading, swaps and account reads
 

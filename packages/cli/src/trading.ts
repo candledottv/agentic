@@ -323,7 +323,29 @@ export async function request(ctx: CommandContext, key: string, path: string, bo
     fetch: ctx.deps.fetch,
     env: ctx.deps.env,
   })
-  if (!result.ok) throw new TradingError(result.code ?? "REQUEST_FAILED", result.message)
+  if (!result.ok) {
+    const raw = result.raw as { error?: Json } | null
+    const error = raw?.error
+    const details: Json = {}
+    for (const field of [
+      "field",
+      "stage",
+      "signature",
+      "leg",
+      "legs",
+      "hashes",
+      "retryable",
+      "evidenceStored",
+      "terminal",
+    ]) {
+      if (error?.[field] !== undefined && (field === "field" || path === "/api/v1/agent/swap/submit"))
+        details[field] = error[field]
+    }
+    throw new TradingError(result.code ?? "REQUEST_FAILED", result.message, {
+      ...(Object.keys(details).length ? { details } : {}),
+      ...(path === "/api/v1/agent/swap/submit" && error?.stage === "unconfirmed" ? { exitCode: 3 as const } : {}),
+    })
+  }
   if (!result.body || typeof result.body !== "object")
     throw new TradingError("INVALID_RESPONSE", "Candle returned an invalid response.")
   return result.body as Json

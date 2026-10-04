@@ -14506,8 +14506,29 @@ async function request(ctx, key, path, body) {
     fetch: ctx.deps.fetch,
     env: ctx.deps.env
   });
-  if (!result.ok)
-    throw new TradingError(result.code ?? "REQUEST_FAILED", result.message);
+  if (!result.ok) {
+    const raw = result.raw;
+    const error = raw?.error;
+    const details = {};
+    for (const field of [
+      "field",
+      "stage",
+      "signature",
+      "leg",
+      "legs",
+      "hashes",
+      "retryable",
+      "evidenceStored",
+      "terminal"
+    ]) {
+      if (error?.[field] !== undefined && (field === "field" || path === "/api/v1/agent/swap/submit"))
+        details[field] = error[field];
+    }
+    throw new TradingError(result.code ?? "REQUEST_FAILED", result.message, {
+      ...Object.keys(details).length ? { details } : {},
+      ...path === "/api/v1/agent/swap/submit" && error?.stage === "unconfirmed" ? { exitCode: 3 } : {}
+    });
+  }
   if (!result.body || typeof result.body !== "object")
     throw new TradingError("INVALID_RESPONSE", "Candle returned an invalid response.");
   return result.body;
@@ -30311,6 +30332,8 @@ function tradingFailure(ctx, error, id) {
     writeUsageFailure(ctx.deps, error.message, ctx.json);
     return 2;
   }
+  if (error instanceof TradingError && error.details)
+    describeSwapEvidence(ctx, error.details, error.details.terminal === true);
   writeLocalFailure(ctx.deps, {
     code: error instanceof TradingError ? error.code : "TRADING_FAILED",
     message: `${error instanceof Error ? describeRpcFailure(error) : "Trading failed."}${id ? ` Operation ${id}; use candle swap status ${id} before another attempt.` : ""}`,
@@ -30335,7 +30358,31 @@ async function tradingRead(ctx, client, read) {
     throw error;
   }
 }
+async function requestSwapBuild(ctx, key, body) {
+  try {
+    return await request(ctx, key, "/api/v1/agent/swap/build", body);
+  } catch (error) {
+    if (body.payer?.type === "main" && error instanceof TradingError && error.code === "VALIDATION_FAILED" && error.details?.field === "payer") {
+      throw new TradingError("EMBEDDED_PAYER_UNSUPPORTED", "This Candle deployment cannot hold an embedded-wallet swap back for confirmation. Nothing was built. Name a TEE wallet with --wallet, or point at a deployment that supports embedded swap builds.");
+    }
+    throw error;
+  }
+}
+function describeSwapEvidence(ctx, details, terminal) {
+  if (details.stage === "not_broadcast" && terminal)
+    ctx.deps.stderr.write(`Nothing was sent. This swap job is terminal; retry with a new id.
+`);
+  if (details.stage === "unconfirmed") {
+    const hashes = Array.isArray(details.hashes) ? details.hashes : typeof details.signature === "string" ? [details.signature] : [];
+    ctx.deps.stderr.write(`Swap outcome needs verification${details.leg !== undefined ? ` (leg ${safeText(String(details.leg))})` : ""}. Known hashes: ${hashes.length ? hashes.map((hash) => safeText(String(hash))).join(", ") : "unknown"}. Do not automatically retry or use a new id.
+`);
+  }
+}
 function printTradingResult(ctx, result) {
+  if (result.kind === "swap" && result.job && typeof result.job === "object") {
+    const job = result.job;
+    describeSwapEvidence(ctx, job, job.status === "failed");
+  }
   ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(result)}
 ` : `${JSON.stringify(result, null, 2)}
 `);
@@ -30533,8 +30580,6 @@ async function swap(args, ctx) {
     if (prior)
       return printTradingResult(ctx, prior);
     const payerWallet = await tradingPayer(ctx, key, flags["--wallet"]);
-    if (payerWallet.kind === "embedded" && kind === "swap")
-      throw new TradingError("PAIR_UNSUPPORTED", "The embedded wallet cannot swap between base assets from this command yet: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a TEE wallet for a base pair.");
     const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address };
     const solana = lazySolanaClient(ctx, flags["--rpc-url"]);
     const decimals = await decimalsFor(ctx, from, solana);
@@ -30560,14 +30605,14 @@ async function swap(args, ctx) {
       amountRaw = rawAmount(flags["--amount"], decimals);
     if (BigInt(amountRaw) > BigInt(Number.MAX_SAFE_INTEGER))
       throw new TradingError("INVALID_AMOUNT", "Amount exceeds the venue's exact integer range.");
-    if (payerWallet.kind === "embedded")
+    if (payerWallet.kind === "embedded" && kind === "trade")
       await assertDeferredExecuteSupported(ctx, key, id);
     if (!await claimOperation(ctx, key, id, kind))
       throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
     ctx.deps.stderr.write(`Operation: ${id}
 `);
     const payer = payerWallet.kind === "tee" ? { type: "linked", linkedWalletId: payerWallet.wallet.id } : { type: "main" };
-    const built = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/build", {
+    const built = kind === "swap" ? await requestSwapBuild(ctx, key, {
       clientTradeId: id,
       from,
       to,
@@ -30589,7 +30634,7 @@ async function swap(args, ctx) {
       return printTradingResult(ctx, { ...built, clientTradeId: id, kind });
     const data = swapBuildSchema.parse(kind === "swap" ? built.payload : built);
     if (kind === "swap" && (data.venue !== "jupiter" || data.recipient !== wallet.address))
-      throw new TradingError("INVALID_RESPONSE", "A TEE base swap must use Jupiter and return to its payer.");
+      throw new TradingError("INVALID_RESPONSE", "A base swap must use Jupiter and return to its payer.");
     if (kind === "trade" && (built.chain !== "solana" || built.walletAddress !== wallet.address))
       throw new TradingError("INVALID_RESPONSE", "The token build does not name the requested Solana payer.");
     const artifacts = kind === "swap" ? { ...data, transactionBase64: undefined, quoteSource: undefined, quoteAsset: undefined } : data.artifacts;
@@ -30616,9 +30661,11 @@ async function swap(args, ctx) {
     if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
       throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
     if (payerWallet.kind === "embedded") {
-      const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
+      const executed = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/submit", { clientTradeId: id, swapId: data.swapId }) : await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
+      const settled2 = kind === "swap" ? reportSettlement(ctx, executed.payload?.settlement, { asset: to, decimals: outDecimals }, id) : {};
       return printTradingResult(ctx, {
         ...executed,
+        ...settled2,
         clientTradeId: id,
         kind,
         quote,
@@ -30728,8 +30775,6 @@ async function hoodSwap(ctx, args) {
   if (prior)
     return printTradingResult(ctx, prior);
   const payer = await tradingPayer(ctx, key, flags["--wallet"], "swap:write", "hood");
-  if (payer.kind === "embedded" && kind === "swap")
-    throw new TradingError("PAIR_UNSUPPORTED", "The embedded wallet cannot swap ETH and USDG from this command: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a Hood TEE wallet.");
   const payerAddress = payer.kind === "tee" ? payer.wallet.address : payer.address;
   const rpc = lazyEvmRpc(ctx, flags["--rpc-url"]);
   const decimals = await hoodDecimals(from, rpc);
@@ -30742,7 +30787,7 @@ async function hoodSwap(ctx, args) {
       throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.");
   } else
     amountRaw = rawAmount(flags["--amount"], decimals);
-  if (payer.kind === "embedded")
+  if (payer.kind === "embedded" && kind === "trade")
     await assertDeferredExecuteSupported(ctx, key, id);
   if (!await claimOperation(ctx, key, id, kind))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
@@ -30751,7 +30796,7 @@ async function hoodSwap(ctx, args) {
   const payerBody = payer.kind === "tee" ? { type: "linked", linkedWalletId: payer.wallet.id } : { type: "main" };
   const base = from.base ?? to.base;
   const token = from.base ? to.asset : from.asset;
-  const built = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/build", {
+  const built = kind === "swap" ? await requestSwapBuild(ctx, key, {
     clientTradeId: id,
     from: from.asset,
     to: to.asset,
@@ -30825,8 +30870,16 @@ async function hoodSwap(ctx, args) {
   if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
     throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.");
   if (payer.kind === "embedded") {
-    const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
-    return printTradingResult(ctx, { ...executed, clientTradeId: id, kind, quote, wallet: safeText(payerAddress) });
+    const executed = kind === "swap" ? await request(ctx, key, "/api/v1/agent/swap/submit", { clientTradeId: id, swapId: data.swapId }) : await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id });
+    const settled2 = kind === "swap" ? reportSettlement(ctx, executed.payload?.settlement, { asset: to.asset, decimals: outDecimals }, id) : {};
+    return printTradingResult(ctx, {
+      ...executed,
+      ...settled2,
+      clientTradeId: id,
+      kind,
+      quote,
+      wallet: safeText(payerAddress)
+    });
   }
   const wallet = payer.wallet;
   if (wallet.chain !== "evm" || !sequenced)
@@ -30935,7 +30988,7 @@ async function bridgeSwap(ctx, args) {
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.");
   ctx.deps.stderr.write(`Operation: ${id}
 `);
-  const built = await request(ctx, key, "/api/v1/agent/swap/build", {
+  const built = await requestSwapBuild(ctx, key, {
     clientTradeId: id,
     from,
     to,
@@ -52063,7 +52116,7 @@ function planTableMarkdown(table) {
   return [line(headers2), line(headers2.map(() => "---")), ...rows.map(line)].join(`
 `);
 }
-var PLAN_CAPABILITY_NOTE2 = "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs.", PLAN_CAPABILITY_LABELS2, PLAN_LABELS2;
+var PLAN_CAPABILITY_NOTE2 = "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs. Every plan can launch a token from its embedded wallet, with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the headless launch; the two launch rows are additional routes, not the only ones.", PLAN_CAPABILITY_LABELS2, PLAN_LABELS2;
 var init_plans = __esm(() => {
   PLAN_CAPABILITY_LABELS2 = {
     tradeCandleTokens: "Trade Candle-launched tokens",
@@ -52072,8 +52125,8 @@ var init_plans = __esm(() => {
     sellExternalTokens: "Sell tokens not launched on Candle",
     buyExternalTokens: "Buy tokens not launched on Candle",
     hyperliquidPerps: "Hyperliquid perps (when enabled)",
-    selfLaunch: "Self-launch from a linked wallet",
-    atomicLaunch: "Atomic launch with first buys",
+    selfLaunch: "Launch from a linked or TEE wallet (self-signed)",
+    atomicLaunch: "Atomic launch: launch + 1–4 first buys in one bundle",
     createLinkedWallets: "Create linked wallets",
     importLinkedWallets: "Import linked wallets",
     limitOrders: "Limit orders",
@@ -52288,7 +52341,7 @@ function registerTools(server, env = process.env) {
   };
   register("candle_launch_token", {
     title: "Launch a token on Candle",
-    description: "Launch a new token via the Candle headless launch API. Set dryRun: true to validate without spending anything.",
+    description: "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything.",
     inputSchema: launchTokenShape
   }, async (args) => callAndRelay("candle_launch_token", args, cfg));
   register("candle_get_market", {
@@ -52454,7 +52507,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   });
   register("candle_launch_and_seed", {
     title: "Launch a token and seed it",
-    description: "Launch a new token with an optional dev-buy seed bundled into the launch itself, then " + "return the fresh market state and token links in one result. MOVES REAL FUNDS unless " + "dryRun. Seeds above the platform dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH); " + "launch, then top up with candle_trade.",
+    description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed (in the " + "launch transaction on solana, a best-effort follow-up on hood). Works on every plan, Free included (this is not the atomic launch). Then " + "return the fresh market state and token links in one result. MOVES REAL FUNDS unless " + "dryRun. Seeds above the platform dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH); " + "launch, then top up with candle_trade.",
     inputSchema: launchAndSeedShape
   }, async (args) => {
     const result = await executeLaunchAndSeed(args, cfg, fetch);
@@ -52631,7 +52684,7 @@ var init_tools = __esm(() => {
   launchAndSeedShape = {
     ...seedableLaunchShape,
     clientLaunchId: exports_external.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result."),
-    devBuy: exports_external.string().optional().describe('Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' + "ETH on hood), bundled into the launch transaction itself. Follows quoteAsset, which " + "defaults to sol on solana and eth on hood. Capped by the platform dev-buy ceiling; for " + "a larger seed, launch then follow with candle_trade.")
+    devBuy: exports_external.string().optional().describe('Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' + "ETH on hood), bundled into the launch transaction itself on solana and sent as a follow-up " + "transaction on hood. Paid from the account's embedded wallet. Follows quoteAsset, which " + "defaults to sol on solana and eth on hood. Capped by the platform dev-buy ceiling; for " + "a larger seed, launch then follow with candle_trade.")
   };
   transferShape = {
     chain: exports_external.enum(["solana", "hood"]).describe("Which chain the transfer executes on"),
@@ -53441,7 +53494,7 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood (the first buy is a separate swap)",
-    description: "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and an operator-enabled allowLaunch. The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans).",
+    description: "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and an operator-enabled allowLaunch. The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path.",
     usage: [
       "candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee> [--quote-asset <asset>] [--dex-version v3|v4]"
     ],
@@ -61633,7 +61686,7 @@ async function perpsDeposit(args, ctx) {
 init_args();
 
 // src/plans.ts
-var PLAN_CAPABILITY_NOTE = "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs.";
+var PLAN_CAPABILITY_NOTE = "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs. Every plan can launch a token from its embedded wallet, with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the headless launch; the two launch rows are additional routes, not the only ones.";
 var PLAN_CAPABILITY_LABELS = {
   tradeCandleTokens: "Trade Candle-launched tokens",
   tradeBaseAssets: "Trade base assets",
@@ -61641,8 +61694,8 @@ var PLAN_CAPABILITY_LABELS = {
   sellExternalTokens: "Sell tokens not launched on Candle",
   buyExternalTokens: "Buy tokens not launched on Candle",
   hyperliquidPerps: "Hyperliquid perps (when enabled)",
-  selfLaunch: "Self-launch from a linked wallet",
-  atomicLaunch: "Atomic launch with first buys",
+  selfLaunch: "Launch from a linked or TEE wallet (self-signed)",
+  atomicLaunch: "Atomic launch: launch + 1–4 first buys in one bundle",
   createLinkedWallets: "Create linked wallets",
   importLinkedWallets: "Import linked wallets",
   limitOrders: "Limit orders",

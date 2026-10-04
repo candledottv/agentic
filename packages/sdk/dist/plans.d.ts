@@ -79,7 +79,7 @@ export interface AgentPlansResult extends PlanTable {
  * What a capability "yes" means. It is the plan's eligibility, not a statement that the deployment has
  * the feature switched on, so perps and own-wallet bridges say "when enabled" in their labels.
  */
-export declare const PLAN_CAPABILITY_NOTE = "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs.";
+export declare const PLAN_CAPABILITY_NOTE = "A capability marked yes is what the plan allows. It is subject to the deployment's own switches (perps and own-wallet bridges each have one) and to the wallet, scopes and setup the feature needs. Every plan can launch a token from its embedded wallet, with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the headless launch; the two launch rows are additional routes, not the only ones.";
 /** The row label for each capability, in the order the rows are shown. */
 export declare const PLAN_CAPABILITY_LABELS: Record<keyof PlanCapabilities, string>;
 /** "Free", "Pro", "Max", "Believer"; an unknown name as served. */

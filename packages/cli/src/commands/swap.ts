@@ -87,6 +87,8 @@ export function tradingFailure(ctx: CommandContext, error: unknown, id?: string)
     writeUsageFailure(ctx.deps, error.message, ctx.json)
     return 2
   }
+  if (error instanceof TradingError && error.details)
+    describeSwapEvidence(ctx, error.details, error.details.terminal === true)
   writeLocalFailure(
     ctx.deps,
     {
@@ -127,7 +129,45 @@ export async function tradingRead<T>(ctx: CommandContext, client: SolanaClient, 
     throw error
   }
 }
+async function requestSwapBuild(ctx: CommandContext, key: string, body: Json): Promise<Json> {
+  try {
+    return await request(ctx, key, "/api/v1/agent/swap/build", body)
+  } catch (error) {
+    if (
+      (body.payer as Json)?.type === "main" &&
+      error instanceof TradingError &&
+      error.code === "VALIDATION_FAILED" &&
+      error.details?.field === "payer"
+    ) {
+      throw new TradingError(
+        "EMBEDDED_PAYER_UNSUPPORTED",
+        "This Candle deployment cannot hold an embedded-wallet swap back for confirmation. Nothing was built. Name a TEE wallet with --wallet, or point at a deployment that supports embedded swap builds.",
+      )
+    }
+    throw error
+  }
+}
+
+function describeSwapEvidence(ctx: CommandContext, details: Json, terminal: boolean): void {
+  if (details.stage === "not_broadcast" && terminal)
+    ctx.deps.stderr.write("Nothing was sent. This swap job is terminal; retry with a new id.\n")
+  if (details.stage === "unconfirmed") {
+    const hashes = Array.isArray(details.hashes)
+      ? details.hashes
+      : typeof details.signature === "string"
+        ? [details.signature]
+        : []
+    ctx.deps.stderr.write(
+      `Swap outcome needs verification${details.leg !== undefined ? ` (leg ${safeText(String(details.leg))})` : ""}. Known hashes: ${hashes.length ? hashes.map((hash) => safeText(String(hash))).join(", ") : "unknown"}. Do not automatically retry or use a new id.\n`,
+    )
+  }
+}
+
 export function printTradingResult(ctx: CommandContext, result: Json): number {
+  if (result.kind === "swap" && result.job && typeof result.job === "object") {
+    const job = result.job as Json
+    describeSwapEvidence(ctx, job, job.status === "failed")
+  }
   ctx.deps.stdout.write(ctx.json ? `${JSON.stringify(result)}\n` : `${JSON.stringify(result, null, 2)}\n`)
   return 0
 }
@@ -440,18 +480,6 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
     const prior = await lookupOperation(ctx, key, id, kind)
     if (prior) return printTradingResult(ctx, prior)
     const payerWallet = await tradingPayer(ctx, key, flags["--wallet"])
-    // BE-249's one scope boundary, stated where it bites. A base-asset pair (SOL/USDC/CNDL both
-    // sides) is `kind: "swap"`, which goes to /agent/swap/build -- a route that refuses a main
-    // payer outright, because the embedded rail's base-pair path is the one-shot POST /agent/swap,
-    // and that executes inside the request with no quote handed back. The deferred build/execute
-    // shape this command now uses exists on the TOKEN rail only. Refusing plainly is the honest
-    // answer: routing to the one-shot would turn the confirmation prompt below into a prompt about
-    // a trade that already happened, which is exactly the trap this card was opened to close.
-    if (payerWallet.kind === "embedded" && kind === "swap")
-      throw new TradingError(
-        "PAIR_UNSUPPORTED",
-        "The embedded wallet cannot swap between base assets from this command yet: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a TEE wallet for a base pair.",
-      )
     const wallet = payerWallet.kind === "tee" ? payerWallet.wallet : { address: payerWallet.address }
     const solana = lazySolanaClient(ctx, flags["--rpc-url"])
     const decimals = await decimalsFor(ctx, from, solana)
@@ -481,7 +509,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
     } else amountRaw = rawAmount(flags["--amount"] as string, decimals)
     if (BigInt(amountRaw) > BigInt(Number.MAX_SAFE_INTEGER))
       throw new TradingError("INVALID_AMOUNT", "Amount exceeds the venue's exact integer range.")
-    if (payerWallet.kind === "embedded") await assertDeferredExecuteSupported(ctx, key, id)
+    if (payerWallet.kind === "embedded" && kind === "trade") await assertDeferredExecuteSupported(ctx, key, id)
     if (!(await claimOperation(ctx, key, id, kind)))
       throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.")
     ctx.deps.stderr.write(`Operation: ${id}\n`)
@@ -489,7 +517,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
       payerWallet.kind === "tee" ? { type: "linked", linkedWalletId: payerWallet.wallet.id } : { type: "main" }
     const built =
       kind === "swap"
-        ? await request(ctx, key, "/api/v1/agent/swap/build", {
+        ? await requestSwapBuild(ctx, key, {
             clientTradeId: id,
             from,
             to,
@@ -515,7 +543,7 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
     if (built.job || built.status === "executed") return printTradingResult(ctx, { ...built, clientTradeId: id, kind })
     const data = swapBuildSchema.parse(kind === "swap" ? built.payload : built)
     if (kind === "swap" && (data.venue !== "jupiter" || data.recipient !== wallet.address))
-      throw new TradingError("INVALID_RESPONSE", "A TEE base swap must use Jupiter and return to its payer.")
+      throw new TradingError("INVALID_RESPONSE", "A base swap must use Jupiter and return to its payer.")
     if (kind === "trade" && (built.chain !== "solana" || built.walletAddress !== wallet.address))
       throw new TradingError("INVALID_RESPONSE", "The token build does not name the requested Solana payer.")
     const artifacts =
@@ -563,15 +591,24 @@ export async function swap(args: string[], ctx: CommandContext): Promise<number>
     // the local half, which costs nothing and answers before a round trip.
     if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
       throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.")
-    // BE-249: the embedded payer's second call. Candle already holds this wallet's delegation, so
-    // there is nothing for this machine to sign and nothing to hand back -- /execute takes the id
-    // and signs the plan the build kept. That asymmetry is the whole reason the build above had to
-    // ask to defer: without it, this line would be printing a receipt for a trade the QUOTE call
-    // had already made.
+    // Embedded swaps submit the stored swap plan; embedded token trades keep /execute.
     if (payerWallet.kind === "embedded") {
-      const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id })
+      const executed =
+        kind === "swap"
+          ? await request(ctx, key, "/api/v1/agent/swap/submit", { clientTradeId: id, swapId: data.swapId })
+          : await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id })
+      const settled =
+        kind === "swap"
+          ? reportSettlement(
+              ctx,
+              (executed.payload as Json | undefined)?.settlement,
+              { asset: to, decimals: outDecimals },
+              id,
+            )
+          : {}
       return printTradingResult(ctx, {
         ...executed,
+        ...settled,
         clientTradeId: id,
         kind,
         quote,
@@ -733,11 +770,6 @@ async function hoodSwap(
   const prior = await lookupOperation(ctx, key, id, kind)
   if (prior) return printTradingResult(ctx, prior)
   const payer = await tradingPayer(ctx, key, flags["--wallet"], "swap:write", "hood")
-  if (payer.kind === "embedded" && kind === "swap")
-    throw new TradingError(
-      "PAIR_UNSUPPORTED",
-      "The embedded wallet cannot swap ETH and USDG from this command: that rail executes in one call, so there would be nothing to confirm. Trade a token with it, or name a Hood TEE wallet.",
-    )
   const payerAddress = payer.kind === "tee" ? payer.wallet.address : payer.address
   const rpc = lazyEvmRpc(ctx, flags["--rpc-url"])
   const decimals = await hoodDecimals(from, rpc)
@@ -753,7 +785,7 @@ async function hoodSwap(
     amountRaw = ((balance * percent) / 100_000_000n).toString()
     if (amountRaw === "0") throw new TradingError("INVALID_AMOUNT", "The selected percentage rounds to zero raw units.")
   } else amountRaw = rawAmount(flags["--amount"] as string, decimals)
-  if (payer.kind === "embedded") await assertDeferredExecuteSupported(ctx, key, id)
+  if (payer.kind === "embedded" && kind === "trade") await assertDeferredExecuteSupported(ctx, key, id)
   if (!(await claimOperation(ctx, key, id, kind)))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.")
   ctx.deps.stderr.write(`Operation: ${id}\n`)
@@ -762,7 +794,7 @@ async function hoodSwap(
   const token = from.base ? to.asset : from.asset
   const built =
     kind === "swap"
-      ? await request(ctx, key, "/api/v1/agent/swap/build", {
+      ? await requestSwapBuild(ctx, key, {
           clientTradeId: id,
           from: from.asset,
           to: to.asset,
@@ -852,8 +884,27 @@ async function hoodSwap(
   if (!Number.isFinite(data.expiresAt) || data.expiresAt <= ctx.deps.now())
     throw new TradingError("QUOTE_EXPIRED", "The quote expired before signing. Start a new intention with a new id.")
   if (payer.kind === "embedded") {
-    const executed = await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id })
-    return printTradingResult(ctx, { ...executed, clientTradeId: id, kind, quote, wallet: safeText(payerAddress) })
+    const executed =
+      kind === "swap"
+        ? await request(ctx, key, "/api/v1/agent/swap/submit", { clientTradeId: id, swapId: data.swapId })
+        : await request(ctx, key, "/api/v1/trade/agent/execute", { clientTradeId: id })
+    const settled =
+      kind === "swap"
+        ? reportSettlement(
+            ctx,
+            (executed.payload as Json | undefined)?.settlement,
+            { asset: to.asset, decimals: outDecimals },
+            id,
+          )
+        : {}
+    return printTradingResult(ctx, {
+      ...executed,
+      ...settled,
+      clientTradeId: id,
+      kind,
+      quote,
+      wallet: safeText(payerAddress),
+    })
   }
   const wallet = payer.wallet as TradingWallet
   if (wallet.chain !== "evm" || !sequenced)
@@ -1031,7 +1082,7 @@ async function bridgeSwap(
   if (!(await claimOperation(ctx, key, id, "swap")))
     throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; no write was resent.")
   ctx.deps.stderr.write(`Operation: ${id}\n`)
-  const built = await request(ctx, key, "/api/v1/agent/swap/build", {
+  const built = await requestSwapBuild(ctx, key, {
     clientTradeId: id,
     from,
     to,

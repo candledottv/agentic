@@ -589,7 +589,8 @@ const launchAndSeedShape = {
     .optional()
     .describe(
       'Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' +
-        "ETH on hood), bundled into the launch transaction itself. Follows quoteAsset, which " +
+        "ETH on hood), bundled into the launch transaction itself on solana and sent as a follow-up " +
+        "transaction on hood. Paid from the account's embedded wallet. Follows quoteAsset, which " +
         "defaults to sol on solana and eth on hood. Capped by the platform dev-buy ceiling; for " +
         "a larger seed, launch then follow with candle_trade.",
     ),
@@ -652,7 +653,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
     {
       title: "Launch a token on Candle",
       description:
-        "Launch a new token via the Candle headless launch API. Set dryRun: true to validate without spending anything.",
+        "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything.",
       inputSchema: launchTokenShape,
     },
     async (args) => callAndRelay("candle_launch_token", args, cfg),
@@ -1056,7 +1057,8 @@ export function registerTools(server: McpServer, env: Record<string, string | un
     {
       title: "Launch a token and seed it",
       description:
-        "Launch a new token with an optional dev-buy seed bundled into the launch itself, then " +
+        "Launch a new token from the account's embedded wallet, with an optional dev-buy seed (in the " +
+        "launch transaction on solana, a best-effort follow-up on hood). Works on every plan, Free included (this is not the atomic launch). Then " +
         "return the fresh market state and token links in one result. MOVES REAL FUNDS unless " +
         "dryRun. Seeds above the platform dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH); " +
         "launch, then top up with candle_trade.",

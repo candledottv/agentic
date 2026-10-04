@@ -102,7 +102,7 @@ signs up.
 | | `candle_transfer` | yes | move an asset to an own or owner-approved address |
 | | `candle_sweep` | yes | sweep a wallet's base assets to one destination |
 | | `candle_launch_token` | yes | launch a token on Solana or Hood |
-| | `candle_launch_and_seed` | yes | launch and seed with a dev buy in one transaction |
+| | `candle_launch_and_seed` | yes | launch from the embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), on every plan |
 | | `candle_report_activity` | yes | report agent activity for verification |
 | **What happened?** | `candle_get_operation` | yes | look up a trade or launch by the id its write used |
 | **Perps (Hyperliquid)** | `candle_perps_setup` | yes | approve Candle's builder fee once (needs `perps:write`) |
@@ -268,7 +268,7 @@ that config goes; the skills-vs-server split is explained under
 Five cover the surface: what you can call, and how to call it.
 
 - [`skills/candle-launch`](skills/candle-launch/SKILL.md): launch a token on Solana or Hood,
-  optionally seeded with a dev buy bundled into the same transaction.
+  optionally seeded with a dev buy (same transaction on Solana; best-effort follow-up on Hood).
 - [`skills/candle-trade`](skills/candle-trade/SKILL.md): buy, sell, or place a Max-tier limit
   order against a Candle-launched token.
 - [`skills/candle-market`](skills/candle-market/SKILL.md): read market state, curated feeds

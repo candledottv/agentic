@@ -242,9 +242,9 @@ async function fixture(opts: FixtureOptions = {}) {
           minOutRaw: "99",
           fee: { bps: 0, feeRaw: "0" },
           expectedOutRaw: "100",
-          recipient: hoodTee,
-          walletAddress: hoodTee,
-          ...sequenced(0, "swap"),
+          recipient: body.payer?.type === "main" ? hoodEmbedded : hoodTee,
+          walletAddress: body.payer?.type === "main" ? hoodEmbedded : hoodTee,
+          ...(body.payer?.type === "main" ? { expiresAt: 10000 } : sequenced(0, "swap")),
         },
       })
     }
@@ -264,6 +264,11 @@ async function fixture(opts: FixtureOptions = {}) {
       return ok({ success: true, signedTransaction: bytesToHex(signed.raw), encoding: "rlp" })
     }
     if (path === "/api/v1/trade/agent/submit" || path === "/api/v1/agent/swap/submit") {
+      if (body.swapId && !body.signedTransaction)
+        return ok({
+          success: true,
+          payload: { hashes: ["trade-hash"], settlement: { state: "settled", settledOutRaw: "100" } },
+        })
       const swapRail = path.includes("swap")
       const current = planned[index]
       const outcome = outcomes.shift() ?? "land"
@@ -806,4 +811,13 @@ describe("TEE limits on Hood: only the server decides", () => {
     expect(await run(buyArgs(), f.deps)).toBe(0)
     expect(builds(f.calls)).toHaveLength(1)
   })
+})
+
+test("embedded ETH to USDG builds and confirms on swap rail, with no execute probe or relay", async () => {
+  const f = await fixture({ rows: [], embedded: { evm: hoodEmbedded } })
+  expect(await run(["swap", "ETH", "USDG", "--amount", "0.1", "--yes", "--json"], f.deps)).toBe(0)
+  expect(f.calls.find((call) => call.path === "/api/v1/agent/swap/build")?.body?.payer).toEqual({ type: "main" })
+  expect(f.calls.find((call) => call.path === "/api/v1/agent/swap/submit")?.body).toMatchObject({ swapId: "swap-1" })
+  expect(f.calls.some((call) => call.path.endsWith("/sign") || call.path === "/api/v1/trade/agent/execute")).toBe(false)
+  expect(f.stderr.text).toContain("settled")
 })

@@ -1,12 +1,14 @@
 ---
 name: candle-launch
-description: "[TOKEN LAUNCH] Launch a new token on Candle, on Solana or Hood, optionally seeded with a dev buy bundled into the same transaction. Use when the user asks to launch, create, deploy, or seed a token."
+description: "[TOKEN LAUNCH] Launch a new token on Candle, on Solana or Hood, optionally seeded with a dev buy (same transaction on Solana; best-effort follow-up on Hood). Use when the user asks to launch, create, deploy, or seed a token."
 ---
 
 ## What this does
 
 Launches a new token through Candle's headless launch API, on Solana or Hood, optionally seeding
-the curve with a dev buy bundled into the launch transaction itself. The account that launches a
+the curve with a dev buy. On Solana the dev buy is in the launch transaction itself; on Hood it is
+a follow-up transaction. This works on every plan, Free included: the launch and the dev buy are
+paid from the account's embedded wallet. The account that launches a
 token becomes its on-chain creator, and Candle-launched tokens pay creator fees back to whoever
 created them, on every trade against that token afterward.
 
@@ -52,10 +54,12 @@ point at a different deployment.
    minus `devBuy` (it also accepts `dryRun: true`).
 5. Need a bigger seed than the dev-buy ceiling allows? Launch first, then top up with the
    candle-trade skill's `candle_trade` buy.
-6. If your agent holds its own linked wallet's signing key rather than trading through Candle's
-   server-side embedded wallet, the SDK's `selfLaunch` function launches the same way but has the
-   agent sign locally. Self-launch needs the Pro or Max plan. There is no MCP tool for this path (the MCP server never handles private key
-   material by design), so it is an SDK-only route for agents that already manage their own keys.
+6. Two other launch paths exist, both for the Pro or Max plan and neither an MCP tool. The SDK's
+   `selfLaunch` launches from a linked or TEE wallet the agent signs for locally (the CLI's
+   `candle launch` is this path, from a TEE wallet, with no first buy). The SDK's `launchAtomic`
+   lands the launch and 1 to 4 first buys in one bundle (payers are the embedded or linked wallets and may repeat). Neither is needed
+   for a launch with a dev buy: steps 1 to 3 above do that on any plan. The MCP server never
+   handles private key material by design, so both stay SDK routes.
 7. Attribute it: once the launch confirms, call `candle_report_activity` with `{ "chain": "solana",
    "signature": "<the launch's signature>" }` (or `chain: "hood"` for a Hood launch) so Candle
    records and verifies it under your account's activity. `activity:write` is already in the

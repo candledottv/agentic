@@ -46,6 +46,9 @@ async function fixture(
     /** BE-500: `teeReadiness` on GET /keys/self/limits. Absent by default, as an older API answers. */
     readiness?: unknown
     /** BE-505: the body POST /agent/swap/submit answers with. Defaults to one without `settlement`. */
+    swapBuildError?: Record<string, unknown>
+    swapSubmitError?: Record<string, unknown>
+    swapJob?: Record<string, unknown>
     swapSubmit?: unknown
     /** BE-503: `embeddedWalletPermission` on GET /wallets/embedded. Absent by default (an older API). */
     embeddedPermission?: "allowed" | "denied"
@@ -62,9 +65,13 @@ async function fixture(
     const ok = (value: unknown) => Response.json(value)
     if (opts.failure === path) throw new Error("lost response")
     if (path.includes("/jobs/"))
-      return built
-        ? ok({ success: true, job: { status: "built" } })
-        : Response.json({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, { status: 404 })
+      return opts.swapJob
+        ? path.includes("/agent/swap/jobs/")
+          ? ok({ success: true, job: opts.swapJob })
+          : Response.json({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, { status: 404 })
+        : built
+          ? ok({ success: true, job: { status: "built" } })
+          : Response.json({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, { status: 404 })
     if (path === "/api/v1/agent/wallets/trading")
       return ok({
         scopes: opts.scopes ?? ["swap:write", "launch:write"],
@@ -101,13 +108,15 @@ async function fixture(
         : Response.json({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, { status: 404 })
     }
     if (path.endsWith("/build")) {
+      if (path === "/api/v1/agent/swap/build" && opts.swapBuildError)
+        return Response.json({ error: opts.swapBuildError }, { status: 400 })
       built = true
       if (path.includes("launch"))
         return ok({ success: true, transaction: "unsigned", maxDebitLamports: "30000000", expiresAt: 10000 })
       const quote = {
         status: "built",
         swapId: "server-swap",
-        recipient: mint,
+        recipient: body?.payer?.type === "main" ? embedded : mint,
         minOutRaw: "123456",
         fee: { bps: 50, feeRaw: "5000" },
         expiresAt: 10000,
@@ -128,6 +137,8 @@ async function fixture(
         : ok({ success: true, payload: quote })
     }
     if (path.endsWith("/sign")) return ok({ signedTransaction: signed, encoding: "base64" })
+    if (path === "/api/v1/agent/swap/submit" && opts.swapSubmitError)
+      return Response.json({ error: opts.swapSubmitError }, { status: 400 })
     if (path === "/api/v1/agent/swap/submit" && opts.swapSubmit !== undefined) return ok(opts.swapSubmit)
     if (path.endsWith("/submit") || path.endsWith("/confirm"))
       return ok({ success: true, status: "executed", signature })
@@ -427,13 +438,75 @@ describe("TEE CLI trading", () => {
     expect(message).toContain("wallet")
     expect(message).not.toContain("Name exactly one TEE wallet")
   })
-  test("a base pair refuses the embedded payer rather than executing one-shot", async () => {
-    const f = await fixture()
+  test("embedded SOL to USDC builds, confirms and submits without a sign relay or deferred execute probe", async () => {
+    const f = await fixture({
+      swapSubmit: {
+        success: true,
+        payload: { hashes: [signature], settlement: { state: "settled", settledOutRaw: "300000" } },
+      },
+    })
     expect(
       await run(["swap", "SOL", "USDC", "--amount", "0.25", "--wallet", embedded, "--yes", "--json"], f.deps),
-    ).toBe(1)
-    expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
-    expect(JSON.parse(f.stdout.text).code).toBe("PAIR_UNSUPPORTED")
+    ).toBe(0)
+    expect(f.calls.find((call) => call.path === "/api/v1/agent/swap/build")?.body.payer).toEqual({ type: "main" })
+    expect(f.calls.find((call) => call.path === "/api/v1/agent/swap/submit")?.body).toMatchObject({
+      swapId: "server-swap",
+    })
+    expect(f.calls.some((call) => call.path.includes("trade/agent/execute") || call.path.endsWith("/sign"))).toBe(false)
+    expect(f.stderr.text).toContain("settled")
+  })
+  test("old API payer refusal maps to EMBEDDED_PAYER_UNSUPPORTED, no submit", async () => {
+    const f = await fixture({
+      swapBuildError: { code: "VALIDATION_FAILED", field: "payer", message: "main unsupported" },
+    })
+    expect(await run(["swap", "SOL", "USDC", "--amount", "1", "--wallet", embedded, "--yes", "--json"], f.deps)).toBe(1)
+    expect(JSON.parse(f.stdout.text).code).toBe("EMBEDDED_PAYER_UNSUPPORTED")
+    expect(f.calls.some((call) => call.path.endsWith("/submit"))).toBe(false)
+  })
+  for (const terminal of [true, false])
+    test(`not_broadcast terminal=${terminal} prints new-id instruction only for a terminal job`, async () => {
+      const f = await fixture({
+        swapSubmitError: { code: "SWAP_FAILED", message: "refused", stage: "not_broadcast", terminal },
+      })
+      expect(await run(["swap", "SOL", "USDC", "--amount", "1", "--wallet", embedded, "--yes", "--json"], f.deps)).toBe(
+        1,
+      )
+      expect(f.stderr.text.includes("retry with a new id")).toBe(terminal)
+    })
+  for (const leg of ["approval", "trade", 1])
+    test(`unconfirmed ${leg} displays evidence and never retries`, async () => {
+      const f = await fixture({
+        swapSubmitError: {
+          code: "SWAP_FAILED",
+          message: "unknown",
+          stage: "unconfirmed",
+          leg,
+          hashes: ["known-hash"],
+          legs: [{ leg, outcome: "unknown", hashUnknown: true }],
+        },
+      })
+      expect(await run(["swap", "SOL", "USDC", "--amount", "1", "--wallet", embedded, "--yes", "--json"], f.deps)).toBe(
+        3,
+      )
+      expect(f.stderr.text).toContain("known-hash")
+      expect(f.stderr.text).toContain(`leg ${leg}`)
+      expect(f.stderr.text).toContain("Do not automatically retry")
+      expect(f.calls.filter((call) => call.path === "/api/v1/agent/swap/submit")).toHaveLength(1)
+    })
+  test("swap status reads an embedded job with durable leg evidence and no write", async () => {
+    const f = await fixture({
+      swapJob: {
+        status: "submitted",
+        stage: "unconfirmed",
+        leg: "approval",
+        hashes: ["approval-hash"],
+        signature: null,
+      },
+    })
+    expect(await run(["swap", "status", "embedded-id", "--json"], f.deps)).toBe(0)
+    expect(JSON.parse(f.stdout.text).job.stage).toBe("unconfirmed")
+    expect(f.stderr.text).toContain("approval-hash")
+    expect(f.calls.some((call) => call.body)).toBe(false)
   })
   test("a deployment without /execute never builds an embedded trade", async () => {
     const f = await fixture({ noExecuteRoute: true })
