@@ -248,7 +248,7 @@ credential storage, and headless use are documented on the
 
 ## Install as a skill package
 
-Every platform below installs the same nineteen skills (in `skills/`).
+Every platform below installs the same twenty-two skills (in `skills/`).
 
 | Platform | Install | Details |
 | --- | --- | --- |
@@ -347,6 +347,21 @@ strategy, and the plumbing test before and during a bot's first live trades.
   minimum-size round trip through the bot's own code, exited through a control and reconciled to
   the lamport; one position until the first exit reconciles; pause buys, not wallet disable, when
   the operator cannot be asked.
+
+Three more cover the cycle before a bot exists: finding and cheaply triaging leads, turning a lead
+into a strategy that can be tested and judged by its payoff shape, and building it into a
+deterministic bot. They teach method, not any strategy.
+
+- [`skills/candle-strategy-hunt`](skills/candle-strategy-hunt/SKILL.md): start from what the market
+  just did, keep a census with a random control, name who pays, know the regime, and triage
+  cheapest test first under your own costs and latency; a failure records the conditions it failed
+  under.
+- [`skills/candle-strategy-design`](skills/candle-strategy-design/SKILL.md): a one-page spec,
+  judging and sizing matched to the payoff shape, exits per profit source, a bar written before
+  live, layers judged against the layer below, no interference, and a close-out verdict.
+- [`skills/candle-strategy-to-bot`](skills/candle-strategy-to-bot/SKILL.md): policy as data
+  approved by its exact hash, variants as settings with parity tests, one code path for replay,
+  paper and live, fail-closed entries that never block exits, and the test order before money.
 
 These skills are advisory. They do not authorize trades, transfers, or limit changes; those remain
 your operator's decision.
