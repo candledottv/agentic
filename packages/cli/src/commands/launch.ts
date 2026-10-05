@@ -6,12 +6,16 @@ import { writeUsageFailure } from "../render"
 import { postSignatureRateLimitMessage, postSignatureSuggestion } from "../solana-endpoint"
 import { isRateLimited } from "../solana-lite"
 import {
+  BASES,
   chainName,
   claimOperation,
   confirmQuote,
+  decimalAmount,
+  HOOD_BASES,
   type Json,
   launchBuildSchema,
   type QuoteDisplay,
+  rawAmount,
   relaySign,
   request,
   runSequencedLegs,
@@ -33,7 +37,7 @@ import {
 import { lookupOperation, printTradingResult, recordTradedToken, tradingFailure, validClientId } from "./swap"
 
 const USAGE =
-  "Usage: candle launch --name <name> --symbol <symbol> --image-url <https-url> --wallet <tee> [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
+  "Usage: candle launch --name <name> --symbol <symbol> --image-url <https-url> --wallet <tee> [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
 
 /** The launch quote assets by chain, as the server's launch matrix lists them. */
 const QUOTE_CHAIN: Record<string, TradeChain> = {
@@ -46,6 +50,61 @@ const QUOTE_CHAIN: Record<string, TradeChain> = {
 
 /** A Hood TEE launch signs these legs and no other (D9): the curve, then the fee when one applies. */
 const HOOD_LAUNCH_LEGS = ["createCurve", "feeTransfer"] as const
+/** With `--buy` (BE-869): Candle's server-built curve buy follows the curve and the fee. */
+const HOOD_LAUNCH_BUY_LEGS = ["createCurve", "feeTransfer", "trade"] as const
+
+/** A launch's first buy (BE-869): `--buy` in whole units of the quote asset, and the same in base units. */
+interface LaunchBuy {
+  raw: string
+  display: string
+}
+
+/**
+ * `--buy` converted as `candle swap` converts `--amount`: whole units of the launch's quote asset
+ * (SOL by default on Solana, ETH on Hood) to its base units. Undefined without `--buy`, which
+ * launches exactly as before.
+ */
+function launchBuy(flags: Record<string, string>, chain: TradeChain): LaunchBuy | undefined {
+  const amount = flags["--buy"]
+  if (amount === undefined) return undefined
+  const quote = (flags["--quote-asset"] ?? (chain === "hood" ? "eth" : "sol")).toUpperCase()
+  const decimals = chain === "hood" ? HOOD_BASES[quote]?.decimals : BASES[quote]?.decimals
+  if (decimals === undefined)
+    throw new TradingError(
+      "INVALID_AMOUNT",
+      `--buy is in the launch's quote asset, and ${safeText(quote)} is not one on ${chainName(chain)}. Nothing was built.`,
+    )
+  const raw = rawAmount(amount, decimals)
+  return { raw, display: `${decimalAmount(raw, decimals)} ${quote}` }
+}
+
+/**
+ * The server's refusal of a non-zero `buyAmount` from a TEE wallet, said plainly (BE-869). Candle
+ * takes a first buy on a TEE launch only with TEE_LAUNCH_BUYS_ENABLED on, and answers
+ * `VALIDATION_FAILED` on field `buyAmount` while it is off. Any other error passes through as is.
+ */
+function buyRefusal(error: unknown): unknown {
+  if (!(error instanceof TradingError) || error.code !== "VALIDATION_FAILED" || error.details?.field !== "buyAmount")
+    return error
+  return new TradingError(
+    "VALIDATION_FAILED",
+    `Candle refused the first buy on this TEE launch: ${safeText(error.message)}. A TEE wallet's launch takes --buy only where the server has TEE_LAUNCH_BUYS_ENABLED on, and it is off on this deployment. Nothing was built or signed.`,
+    {
+      suggestion:
+        "Launch without --buy under a new --client-trade-id, then make the first buy with candle swap once the token lands.",
+      details: error.details,
+    },
+  )
+}
+
+/** The line printed before the confirm: what the launch does about a first buy. */
+function buyNotice(buy: LaunchBuy | undefined, chain: TradeChain): string {
+  if (!buy)
+    return "Launch creates the token only. Make the first buy with a separate candle swap. Price impact does not apply to creation.\n"
+  return chain === "hood"
+    ? `Launch creates the token, then spends ${buy.display} on a first buy on the new curve, as the last leg. Candle reserves the buy against this key's spend window before any leg is signed. If the buy leg never lands, the token exists with no first buy. Price impact does not apply to creation.\n`
+    : `Launch creates the token and spends ${buy.display} on a first buy in the same transaction. Candle reserves the whole debit against this key's spend window before anything is signed. Price impact does not apply to creation.\n`
+}
 
 /**
  * Phase 4b-2 (D6, D9): the wallet decides a launch's chain. Before any request, what the flags
@@ -83,6 +142,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       "--quote-asset",
       "--mode",
       "--dex-version",
+      "--buy",
     ],
     booleanFlags: ["--yes"],
   })
@@ -105,6 +165,8 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     return 2
   }
   try {
+    // Before any request, as `candle swap` checks `--amount`; the quote asset's decimals come later.
+    if (flags["--buy"] !== undefined) rawAmount(flags["--buy"], 18)
     const hinted = flagChain(flags)
     if (hinted === "hood" && flags["--dex-version"] === undefined) {
       writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE}`, ctx.json)
@@ -131,8 +193,10 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     if (wallet.chain === "evm") {
       if (flags["--dex-version"] === undefined)
         throw new TradingUsage(`${wallet.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`)
-      return await hoodLaunch(ctx, key, { flags, id, wallet, yes: parsed.booleans.has("--yes") })
+      const buy = launchBuy(flags, "hood")
+      return await hoodLaunch(ctx, key, { flags, id, wallet, buy, yes: parsed.booleans.has("--yes") })
     }
+    const buy = launchBuy(flags, "solana")
     const solana = await tradingSolanaClient(ctx, flags["--rpc-url"])
     if (!(await claimOperation(ctx, key, id, "launch")))
       throw new TradingError(
@@ -144,7 +208,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       await request(ctx, key, "/api/v1/launch/self/build", {
         clientLaunchId: id,
         chain: "solana",
-        buyAmount: 0,
+        buyAmount: buy ? buy.raw : 0,
         name: flags["--name"],
         symbol: flags["--symbol"],
         imageUrl: flags["--image-url"],
@@ -152,6 +216,8 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         ...(flags["--description"] ? { description: flags["--description"] } : {}),
         ...(flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {}),
         ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
+      }).catch((error) => {
+        throw buyRefusal(error)
       }),
     )
     if (!built.transaction || !/^\d+$/.test(built.maxDebitLamports ?? ""))
@@ -160,18 +226,16 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         "Candle did not return a launch transaction and maximum debit; nothing was signed.",
       )
     const quote = {
-      intent: `Launch ${flags["--name"]} (${flags["--symbol"]})`,
+      intent: `Launch ${flags["--name"]} (${flags["--symbol"]})${buy ? ` with a first buy of ${buy.display}` : ""}`,
       wallet: wallet.address,
       venue: "curve launch",
       priceImpactPct: null,
       fee: built.fee ?? { bps: 0, feeRaw: "0" },
-      minimumReceived: "0 tokens (no first buy)",
+      minimumReceived: buy ? "not quoted (the first buy on the new curve)" : "0 tokens (no first buy)",
       maxDebitLamports: built.maxDebitLamports,
       tokenRisks: [],
     }
-    ctx.deps.stderr.write(
-      "Launch creates the token only. Make the first buy with a separate candle swap. Price impact does not apply to creation.\n",
-    )
+    ctx.deps.stderr.write(buyNotice(buy, "solana"))
     if (!(await confirmQuote(ctx, quote, parsed.booleans.has("--yes"))))
       return printTradingResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind: "launch", quote })
     if (!Number.isFinite(built.expiresAt) || built.expiresAt <= ctx.deps.now())
@@ -206,17 +270,19 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
 /**
  * `candle launch --wallet <hood tee>`: the launch's legs (`createCurve`, then the fee when one
  * applies) run through the D4 leg loop, one at a time, each relay-signed with
- * `eth_signTransaction` and sent by Candle, which answers only after its receipt. The build's
- * `buyAmount` is always 0: the dev buy is a separate `candle swap`, gated like any trade. Nothing
- * here reads or writes over a Hood RPC: the server sets nonces and fees, broadcasts, and records
- * the launch from the legs it sent.
+ * `eth_signTransaction` and sent by Candle, which answers only after its receipt. Without `--buy`
+ * the build's `buyAmount` is 0 and the first buy is a separate `candle swap`. With it (BE-869),
+ * Candle adds its own curve buy as the last leg, for exactly that amount, and reserves it against
+ * the key's spend window when the operation opens. Nothing here reads or writes over a Hood RPC:
+ * the server sets nonces and fees, broadcasts, and records the launch from the legs it sent.
  */
 async function hoodLaunch(
   ctx: CommandContext,
   key: string,
-  args: { flags: Record<string, string>; id: string; wallet: TradingWallet; yes: boolean },
+  args: { flags: Record<string, string>; id: string; wallet: TradingWallet; buy?: LaunchBuy; yes: boolean },
 ): Promise<number> {
-  const { flags, id, wallet } = args
+  const { flags, id, wallet, buy } = args
+  const allowedLegs = buy ? HOOD_LAUNCH_BUY_LEGS : HOOD_LAUNCH_LEGS
   if (!(await claimOperation(ctx, key, id, "launch")))
     throw new TradingError(
       "OPERATION_ALREADY_STARTED",
@@ -226,7 +292,7 @@ async function hoodLaunch(
   const built = await request(ctx, key, "/api/v1/launch/self/build", {
     clientLaunchId: id,
     chain: "hood",
-    buyAmount: 0,
+    buyAmount: buy ? buy.raw : 0,
     name: flags["--name"],
     symbol: flags["--symbol"],
     imageUrl: flags["--image-url"],
@@ -235,6 +301,8 @@ async function hoodLaunch(
     ...(flags["--description"] ? { description: flags["--description"] } : {}),
     ...(flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"].toLowerCase() } : {}),
     ...(flags["--mode"] ? { mode: flags["--mode"] } : {}),
+  }).catch((error) => {
+    throw buyRefusal(error)
   })
   // D4: a Hood TEE wallet signs one leg at a time. An answer without the sequenced envelope is a
   // deployment that predates it, and its transaction is never signed from this wallet.
@@ -257,7 +325,12 @@ async function hoodLaunch(
       "INVALID_RESPONSE",
       "The Hood launch build does not name this launch and payer; nothing was signed.",
     )
-  if (first.legKind !== "createCurve" || first.plannedLegCount > HOOD_LAUNCH_LEGS.length)
+  // With --buy the plan must have room for the buy leg after the curve.
+  if (
+    first.legKind !== "createCurve" ||
+    first.plannedLegCount > allowedLegs.length ||
+    (buy !== undefined && first.plannedLegCount < 2)
+  )
     throw new TradingError(
       "INVALID_RESPONSE",
       `A Hood launch starts with its createCurve leg, and Candle offered ${safeText(first.legKind)} of ${first.plannedLegCount}; nothing was signed.`,
@@ -266,21 +339,19 @@ async function hoodLaunch(
   const maxFee = BigInt(leg.maxFeePerGas)
   const reserve = sweepReserveFloor(maxFee)
   const quote: QuoteDisplay & Json = {
-    intent: `Launch ${flags["--name"]} (${flags["--symbol"]}) on Hood`,
+    intent: `Launch ${flags["--name"]} (${flags["--symbol"]}) on Hood${buy ? ` with a first buy of ${buy.display}` : ""}`,
     wallet: wallet.address,
     venue: "curve launch",
     priceImpactPct: null,
-    minimumReceived: "0 tokens (no first buy)",
+    minimumReceived: buy ? "not quoted (Candle's buy leg sets its floor on the new curve)" : "0 tokens (no first buy)",
     tokenRisks: [],
-    legs: first.plannedLegCount === 2 ? ["create curve", "fee"] : ["create curve"],
-    gas: `the createCurve leg up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei)${first.plannedLegCount === 2 ? "; the fee leg is priced by Candle when it becomes next" : ""}`,
+    legs: hoodLaunchLegNames(first.plannedLegCount, buy !== undefined),
+    gas: `the createCurve leg up to ${formatUnits(BigInt(leg.gas) * maxFee, 18)} ETH (gas ${leg.gas} at ${formatUnits(maxFee, 9)} gwei)${hoodLaterLegsGas(first.plannedLegCount, buy !== undefined)}`,
     reserve: `at least ${formatUnits(reserve.wei, 18)} ETH stays in the wallet for a sweep home (${reserve.erc20Transfers} ERC-20 transfers and the final ETH transfer at twice the fee)`,
     curveAddress: curve.address,
     operationId: first.operationId,
   }
-  ctx.deps.stderr.write(
-    "Launch creates the token only. Make the first buy with a separate candle swap. Price impact does not apply to creation.\n",
-  )
+  ctx.deps.stderr.write(buyNotice(buy, "hood"))
   if (!(await confirmQuote(ctx, quote, args.yes))) {
     // The build holds the wallet (D4, one operation per wallet) until its window closes.
     ctx.deps.stderr.write(
@@ -297,6 +368,12 @@ async function hoodLaunch(
       walletHeldUntil: first.expiresAt,
     })
   }
+  const confirmedPlan: readonly string[] | undefined = buy
+    ? first.plannedLegCount === 3
+      ? ["createCurve", "feeTransfer", "trade"]
+      : ["createCurve", "trade"]
+    : undefined
+  let position = 0
   const run = await runSequencedLegs(ctx, key, {
     wallet,
     first,
@@ -306,11 +383,30 @@ async function hoodLaunch(
     clientId: id,
     kind: "launch",
     primaryLeg: "createCurve",
-    allowedLegs: HOOD_LAUNCH_LEGS,
-    // The factory's createCurve is not payable. A fee leg may still carry ETH.
-    checkLeg: (kind, leg) => kind !== "createCurve" || leg.value === "0",
+    allowedLegs,
+    // The factory's createCurve is not payable. A fee leg may still carry ETH. The buy leg pays
+    // this launch's own curve exactly the amount confirmed.
+    checkLeg: (kind, leg) => {
+      // With a buy, the confirmed sequence is the only one signed: each leg must be the kind the
+      // plan puts at its position, so a fee in the buy's slot or after it is never signed.
+      if (confirmedPlan && confirmedPlan[position++] !== kind) return false
+      return kind === "createCurve"
+        ? leg.value === "0"
+        : kind !== "trade" || (buy !== undefined && leg.value === buy.raw && sameEvmAddress(leg.to, curve.address))
+    },
     onLanded: async () => {},
   })
+  // A final answer before the buy landed is not the launch the user confirmed.
+  if (confirmedPlan && run.landed.map((done) => done.kind).join() !== confirmedPlan.join())
+    throw new TradingError(
+      "INVALID_RESPONSE",
+      `Candle ended the launch before every confirmed leg landed (${confirmedPlan.join(", ")}).${
+        run.landed.length === 0
+          ? " No leg landed."
+          : ` Landed: ${run.landed.map((done) => `${done.kind} ${safeText(done.hash)}`).join(", ")}.`
+      }`,
+      { details: { operationId: first.operationId, landedLegs: run.landed } },
+    )
   return printTradingResult(ctx, {
     ...run.final,
     ...(await recordLaunchedToken(ctx, wallet, run.final)),
@@ -322,6 +418,20 @@ async function hoodLaunch(
     operationId: first.operationId,
     landedLegs: run.landed,
   })
+}
+
+/** What the gas line says about the legs after createCurve, which Candle prices when each becomes next. */
+function hoodLaterLegsGas(count: number, buys: boolean): string {
+  if (count < 2) return ""
+  return buys
+    ? "; the later legs are priced by Candle when each becomes next"
+    : "; the fee leg is priced by Candle when it becomes next"
+}
+
+/** The legs a Hood launch names before its confirm, from the planned count and whether it buys. */
+function hoodLaunchLegNames(count: number, buys: boolean): string[] {
+  if (!buys) return count === 2 ? ["create curve", "fee"] : ["create curve"]
+  return count === 3 ? ["create curve", "fee", "first buy"] : ["create curve", "first buy"]
 }
 
 /** D1: the launched token is one line of the sealed EVM record, so a later sweep finds it. */

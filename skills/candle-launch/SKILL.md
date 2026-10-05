@@ -56,7 +56,9 @@ point at a different deployment.
    candle-trade skill's `candle_trade` buy.
 6. Two other launch paths exist, both for the Pro or Max plan and neither an MCP tool. The SDK's
    `selfLaunch` launches from a linked or TEE wallet the agent signs for locally (the CLI's
-   `candle launch` is this path, from a TEE wallet, with no first buy). The SDK's `launchAtomic`
+   `candle launch` is this path, from a TEE wallet; `--buy <amount>` adds a first buy from the
+   same wallet where the server has `TEE_LAUNCH_BUYS_ENABLED` on, which is off by default, and
+   without it the first buy is a separate swap). The SDK's `launchAtomic`
    lands the launch and 1 to 4 first buys in one bundle (payers are the embedded or linked wallets and may repeat). Neither is needed
    for a launch with a dev buy: steps 1 to 3 above do that on any plan. The MCP server never
    handles private key material by design, so both stay SDK routes.

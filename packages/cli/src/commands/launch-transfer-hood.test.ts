@@ -80,7 +80,7 @@ interface FixtureOptions {
   /** A deployment without the sequenced rail: the Hood build answers the caller-broadcast shape. */
   unsequenced?: boolean
   /** A Candle error the build answers instead. */
-  buildError?: { code: string; message: string }
+  buildError?: { code: string; message: string; field?: string }
   rows?: Array<"hood" | "solana">
   scopes?: string[]
   prompt?: string
@@ -440,6 +440,126 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
     expect(f.stderr.text).toContain("Gas: the createCurve leg up to 0.0006 ETH")
     expect(f.stderr.text).toContain("Gas reserve: at least")
     expect(f.stderr.text).not.toContain("Tier fee")
+  })
+
+  const ONE_MILLI_ETH = (10n ** 15n).toString()
+  const buyLegs = (value = ONE_MILLI_ETH, to = curve) => [
+    { kind: "createCurve", leg: leg(3, factory, "0xc0ffee") },
+    { kind: "feeTransfer", leg: leg(4, treasury, "0x", "5000") },
+    { kind: "trade", leg: leg(5, to, "0xd96a094a", value) },
+  ]
+
+  test("BE-869: --buy sends the buy in wei; Candle's buy leg is signed last, to the curve, for exactly that amount", async () => {
+    const f = await fixture({ launchLegs: buyLegs(), appendEvmRecord: async () => ({ appended: true }) })
+    expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(0)
+    expect(builds(f.calls)[0]?.body).toMatchObject({ chain: "hood", buyAmount: ONE_MILLI_ETH, dexVersion: "v4" })
+    expect(f.stderr.text).toContain("with a first buy of 0.001000000000000000 ETH")
+    expect(f.stderr.text).toContain("Legs, signed one at a time: create curve, fee, first buy")
+    expect(f.stderr.text).toContain("spends 0.001000000000000000 ETH on a first buy on the new curve")
+    expect(f.stderr.text).toContain("the later legs are priced by Candle")
+    expect(f.stderr.text).toContain("If the buy leg never lands, the token exists with no first buy")
+    expect(f.stderr.text).not.toContain("separate candle swap")
+    const signed = signs(f.calls)
+    expect(signed).toHaveLength(3)
+    const last = (signed[2]?.body as { body: { params: { transaction: Record<string, unknown> } } }).body.params
+      .transaction
+    expect(last).toMatchObject({ nonce: 5, to: curve, value: "0x38d7ea4c68000" })
+    const result = lastJson(f.stdout.text)
+    expect((result.landedLegs as Array<{ kind: string }>).map((l) => l.kind)).toEqual([
+      "createCurve",
+      "feeTransfer",
+      "trade",
+    ])
+  })
+
+  const wrongBuys: Array<[string, ReturnType<typeof buyLegs>]> = [
+    ["another amount", buyLegs("2000000000000000")],
+    ["another address", buyLegs(ONE_MILLI_ETH, treasury)],
+  ]
+  for (const [name, legs] of wrongBuys)
+    test(`BE-869: a buy leg to ${name} is never signed; the curve and fee legs that landed are listed`, async () => {
+      const f = await fixture({ launchLegs: legs })
+      expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
+      const failure = lastJson(f.stdout.text)
+      expect(failure.code).toBe("INVALID_RESPONSE")
+      expect(String(failure.message)).toContain("Landed: createCurve")
+      expect(signs(f.calls)).toHaveLength(2)
+    })
+
+  const curveLeg = { kind: "createCurve", leg: leg(3, factory, "0xc0ffee") }
+  const feeLeg = { kind: "feeTransfer", leg: leg(4, treasury, "0x", "5000") }
+  const tradeLeg = (nonce = 5) => ({ kind: "trade", leg: leg(nonce, curve, "0xd96a094a", ONE_MILLI_ETH) })
+
+  test("BE-869: a two-leg plan with --buy is the curve then the buy, and lands", async () => {
+    const f = await fixture({ launchLegs: [curveLeg, tradeLeg(4)] })
+    expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(0)
+    expect(signs(f.calls)).toHaveLength(2)
+    expect((lastJson(f.stdout.text).landedLegs as Array<{ kind: string }>).map((l) => l.kind)).toEqual([
+      "createCurve",
+      "trade",
+    ])
+  })
+
+  const wrongOrders: Array<[string, FixtureOptions, number, string]> = [
+    ["a fee-only two-leg plan", { launchLegs: [curveLeg, feeLeg] }, 1, "createCurve"],
+    ["a fee after the buy", { launchLegs: [curveLeg, tradeLeg(4), feeLeg] }, 1, "createCurve"],
+    [
+      "a buy before the fee",
+      { launchLegs: [curveLeg, tradeLeg(4), feeLeg], plannedLegCountAt: () => 3 },
+      1,
+      "createCurve",
+    ],
+  ]
+  for (const [name, options, signed, landedKind] of wrongOrders)
+    test(`BE-869: ${name} with --buy is not signed past the confirmed sequence`, async () => {
+      const f = await fixture(options)
+      expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
+      const failure = lastJson(f.stdout.text)
+      expect(failure.code).toBe("INVALID_RESPONSE")
+      expect(String(failure.message)).toContain(`Landed: ${landedKind}`)
+      expect(signs(f.calls)).toHaveLength(signed)
+    })
+
+  test("BE-869: a final answer before the buy landed is rejected with the landed curve and fee listed", async () => {
+    const f = await fixture({ launchLegs: [curveLeg, feeLeg], plannedLegCountAt: () => 3 })
+    expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("INVALID_RESPONSE")
+    expect(String(failure.message)).toContain("createCurve")
+    expect(String(failure.message)).toContain("feeTransfer")
+    expect(signs(f.calls)).toHaveLength(2)
+  })
+
+  test("BE-869: a final answer right after the curve in a three-leg plan is rejected", async () => {
+    const f = await fixture({ launchLegs: [curveLeg], plannedLegCountAt: () => 3 })
+    expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("INVALID_RESPONSE")
+    expect(String(failure.message)).toContain("Landed: createCurve")
+    expect(signs(f.calls)).toHaveLength(1)
+  })
+
+  test("BE-869: without --buy a buy leg is never signed", async () => {
+    const f = await fixture({ launchLegs: buyLegs() })
+    expect(await run(hoodLaunch(), f.deps)).toBe(1)
+    expect(lastJson(f.stdout.text).code).toBe("INVALID_RESPONSE")
+    expect(signs(f.calls)).toEqual([])
+  })
+
+  test("BE-869: a server that refuses a TEE first buy is told plainly: TEE_LAUNCH_BUYS_ENABLED, nothing signed", async () => {
+    const f = await fixture({
+      buildError: {
+        code: "VALIDATION_FAILED",
+        message: "A TEE wallet launches with buyAmount 0; buy the new token with a separate swap once it lands",
+        field: "buyAmount",
+      },
+    })
+    expect(await run(hoodLaunch(["--buy", "0.001"]), f.deps)).toBe(1)
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("VALIDATION_FAILED")
+    expect(String(failure.message)).toContain("TEE_LAUNCH_BUYS_ENABLED")
+    expect(String(failure.suggestion)).toContain("candle swap")
+    expect(signs(f.calls)).toEqual([])
   })
 
   test("a single-leg launch (no fee) signs one leg and records the token", async () => {

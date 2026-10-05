@@ -100,7 +100,9 @@ and `buyAmount` adds an optional dev buy: in the launch transaction on Solana (u
 Two more paths need the Pro or Max plan. `selfLaunch()` launches from a linked or TEE wallet the
 agent signs for locally. `launchAtomic()` lands the launch and 1 to 4 first buys in one Jito bundle: several
 transactions in the same block, all or none. Each buy is paid by the embedded wallet or a linked
-wallet (never a TEE wallet); the same payer may fund more than one leg.
+wallet; the same payer may fund more than one leg. A TEE wallet can be the creator or a buyer, and
+`selfLaunch()` from a TEE wallet can carry a `buyAmount`, only where the server has
+`TEE_LAUNCH_BUYS_ENABLED` on. It is off by default, and a TEE wallet is refused there until it is.
 
 ## Trading, swaps and account reads
 

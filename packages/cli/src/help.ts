@@ -236,7 +236,7 @@ export const HELP: Record<string, Topic> = {
     group: "Trade",
     summary: "Quote, confirm and swap on Solana or Hood, bridge between them; read an operation by id",
     description:
-      "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent, and the first buy after a launch is this command rather than part of the launch. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, the key needs a raw cap on the origin asset, and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault. Every plan can trade Candle-launched tokens and base assets, and sell a token it holds that was not launched on Candle; buying such a token needs Pro or Max (TIER_REQUIRED otherwise). Each trade pays the plan's agent fee on top; a base-pair swap or a bridge between this key's own wallets pays none. candle plans shows the fees in force.",
+      "Swaps run through a TEE wallet's bound key: the quote is shown and confirmed before anything is sent. The first buy after a launch is this command, unless the launch carried it with candle launch --buy. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana) and a named wallet must be on it. A Hood TEE wallet signs one leg at a time: approve, Permit2, trade, then the fee, each only after the one before it landed. SOL or USDC to ETH or USDG, or back, is a bridge through Relay from a TEE wallet into this key's own TEE wallet on the other chain (--to names it when there are several); Candle charges no fee, the key needs a raw cap on the origin asset, and this machine checks Relay's deposit before it is signed. The bridge prints its deposit and returns while Relay fills; --wait follows it for up to ten minutes. While it is open, a sweep of either wallet refuses BRIDGE_IN_FLIGHT for two hours. Vault to vault: fund the Solana TEE wallet from the vault, bridge, then disable and sweep the Hood TEE wallet into its vault. Every plan can trade Candle-launched tokens and base assets, and sell a token it holds that was not launched on Candle; buying such a token needs Pro or Max (TIER_REQUIRED otherwise). Each trade pays the plan's agent fee on top; a base-pair swap or a bridge between this key's own wallets pays none. candle plans shows the fees in force.",
     usage: ["candle swap <from> <to> [flags]", "candle swap status <id>"],
     rows: [
       {
@@ -401,11 +401,11 @@ export const HELP: Record<string, Topic> = {
 
   launch: {
     group: "Trade",
-    summary: "Create a token on Solana or Hood (the first buy is a separate swap)",
+    summary: "Create a token on Solana or Hood, with an optional first buy",
     description:
-      "Creates a token with no first buy, so the launch and the position are two decisions rather than one. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path.",
+      "Creates a token from a TEE wallet. Without --buy it makes no first buy, so the launch and the position are two decisions, and the buy is a separate candle swap. --buy <amount> adds a first buy from the same wallet, in whole units of the quote asset (SOL, USDC or CNDL on Solana, ETH on Hood; not USDG), within the dev-buy ceilings: on Solana it rides in the launch transaction, and on Hood it is a last leg after the curve and the fee. Candle reserves the buy against the key's spend window before anything is signed. --buy needs a server with TEE_LAUNCH_BUYS_ENABLED on, which is off by default; while it is off Candle refuses the buy and nothing is built. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee, then the buy with --buy), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path.",
     usage: [
-      "candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee> [--quote-asset <asset>] [--dex-version v3|v4]",
+      "candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee> [--buy <amount>] [--quote-asset <asset>] [--dex-version v3|v4]",
     ],
     rows: [],
     flags: [
@@ -413,6 +413,11 @@ export const HELP: Record<string, Topic> = {
       { invocation: "--symbol <symbol>", description: "The token's ticker" },
       { invocation: "--image-url <url>", description: "The token image, already hosted" },
       { invocation: "--wallet <tee>", description: "The TEE wallet that creates it" },
+      {
+        invocation: "--buy <amount>",
+        description:
+          "A first buy from the same wallet, in whole units of the quote asset; needs TEE_LAUNCH_BUYS_ENABLED on the server",
+      },
       { invocation: "--quote-asset <asset>", description: "sol, usdc or cndl on Solana; eth or usdg on Hood" },
       {
         invocation: "--dex-version v3|v4",
@@ -422,6 +427,7 @@ export const HELP: Record<string, Topic> = {
     examples: [
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet HoodAgent --dex-version v4",
+      "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --buy 0.1",
     ],
     env: ENV_API,
   },

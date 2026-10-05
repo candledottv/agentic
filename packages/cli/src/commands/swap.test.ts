@@ -52,6 +52,8 @@ async function fixture(
     swapSubmit?: unknown
     /** BE-503: `embeddedWalletPermission` on GET /wallets/embedded. Absent by default (an older API). */
     embeddedPermission?: "allowed" | "denied"
+    /** BE-869: a Candle error POST /launch/self/build answers instead of a transaction. */
+    launchBuildError?: Record<string, unknown>
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "candle-trade-"))
@@ -110,6 +112,8 @@ async function fixture(
     if (path.endsWith("/build")) {
       if (path === "/api/v1/agent/swap/build" && opts.swapBuildError)
         return Response.json({ error: opts.swapBuildError }, { status: 400 })
+      if (path.includes("launch") && opts.launchBuildError)
+        return Response.json({ success: false, error: opts.launchBuildError }, { status: 400 })
       built = true
       if (path.includes("launch"))
         return ok({ success: true, transaction: "unsigned", maxDebitLamports: "30000000", expiresAt: 10000 })
@@ -346,6 +350,64 @@ describe("TEE CLI trading", () => {
     })
     expect(f.calls.find((call) => call.path.endsWith("self/confirm"))?.body.signature).toBe(signature)
     expect(f.stderr.text).toContain("Maximum launch debit: 30000000")
+  })
+  test("BE-869: launch --buy sends the buy in lamports, says it rides in the launch transaction, and signs as before", async () => {
+    const f = await fixture({ scopes: ["launch:write"] })
+    expect(await run([...launchArgs, "--buy", "0.1"], f.deps)).toBe(0)
+    expect(f.calls.find((call) => call.path.endsWith("self/build"))?.body).toMatchObject({
+      clientLaunchId: "launch-1",
+      buyAmount: "100000000",
+      chain: "solana",
+      linkedWalletId: "wallet",
+    })
+    expect(f.stderr.text).toContain("Launch Token (TOK) with a first buy of 0.100000000 SOL")
+    expect(f.stderr.text).toContain("spends 0.100000000 SOL on a first buy in the same transaction")
+    expect(f.stderr.text).toContain("Minimum received: not quoted (the first buy on the new curve)")
+    expect(f.stderr.text).not.toContain("separate candle swap")
+    expect(f.calls.find((call) => call.path.endsWith("self/confirm"))?.body.signature).toBe(signature)
+  })
+  test("BE-869: launch --buy is in the quote asset's whole units: 2.5 USDC is 2500000", async () => {
+    const f = await fixture({ scopes: ["launch:write"] })
+    expect(await run([...launchArgs, "--quote-asset", "usdc", "--buy", "2.5"], f.deps)).toBe(0)
+    expect(f.calls.find((call) => call.path.endsWith("self/build"))?.body).toMatchObject({
+      buyAmount: "2500000",
+      quoteAsset: "usdc",
+    })
+  })
+  for (const amount of ["0", "abc", "1e3", "0.0000000001"])
+    test(`BE-869: launch --buy ${amount} is INVALID_AMOUNT before any build`, async () => {
+      const f = await fixture()
+      expect(await run([...launchArgs, "--buy", amount], f.deps)).toBe(1)
+      expect(JSON.parse(f.stdout.text.trim().split("\n").at(-1) ?? "").code).toBe("INVALID_AMOUNT")
+      expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
+    })
+  test("BE-869: a server that refuses a TEE first buy is told plainly: TEE_LAUNCH_BUYS_ENABLED, nothing signed", async () => {
+    const f = await fixture({
+      launchBuildError: {
+        code: "VALIDATION_FAILED",
+        message: "A TEE wallet launches with buyAmount 0; buy the new token with a separate swap once it lands",
+        field: "buyAmount",
+      },
+    })
+    expect(await run([...launchArgs, "--buy", "0.1"], f.deps)).toBe(1)
+    const failure = JSON.parse(f.stdout.text.trim().split("\n").at(-1) ?? "")
+    expect(failure.code).toBe("VALIDATION_FAILED")
+    expect(failure.message).toContain("Candle refused the first buy on this TEE launch")
+    expect(failure.message).toContain("TEE_LAUNCH_BUYS_ENABLED")
+    expect(failure.message).toContain("Nothing was built or signed")
+    expect(failure.suggestion).toContain("Launch without --buy")
+    expect(failure.details).toMatchObject({ field: "buyAmount" })
+    expect(f.calls.some((call) => call.path.endsWith("/sign"))).toBe(false)
+    expect(f.calls.some((call) => call.body?.method === "sendTransaction")).toBe(false)
+  })
+  test("BE-869: any other build refusal passes through unchanged", async () => {
+    const f = await fixture({
+      launchBuildError: { code: "VALIDATION_FAILED", message: "name is required", field: "name" },
+    })
+    expect(await run([...launchArgs, "--buy", "0.1"], f.deps)).toBe(1)
+    const failure = JSON.parse(f.stdout.text.trim().split("\n").at(-1) ?? "")
+    expect(failure.message).toStartWith("name is required")
+    expect(failure.message).not.toContain("TEE_LAUNCH_BUYS_ENABLED")
   })
   for (const opts of [{ allowLaunch: false }, { scopes: ["swap:write"] }])
     test(`launch requires scope and operator capability ${JSON.stringify(opts)}`, async () => {
