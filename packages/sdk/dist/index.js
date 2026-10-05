@@ -1,6 +1,9 @@
 import { createRequire } from "node:module";
 var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
+// src/client.ts
+import { keccak_256 as keccak_2562 } from "@noble/hashes/sha3";
+
 // src/authorization-signature.ts
 import canonicalize from "canonicalize";
 
@@ -84,6 +87,12 @@ class CandleApiError extends Error {
   coverage;
   uiHint;
   docsPath;
+  stage;
+  signature;
+  recorded;
+  feeRaw;
+  quoteAsset;
+  treasury;
   constructor(args) {
     super(args.message);
     this.name = "CandleApiError";
@@ -97,6 +106,37 @@ class CandleApiError extends Error {
     this.coverage = args.coverage;
     this.uiHint = args.uiHint;
     this.docsPath = args.docsPath;
+    if (args.stage !== undefined)
+      this.stage = args.stage;
+    if (args.signature !== undefined)
+      this.signature = args.signature;
+    if (args.recorded !== undefined)
+      this.recorded = args.recorded;
+    if (args.feeRaw !== undefined)
+      this.feeRaw = args.feeRaw;
+    if (args.quoteAsset !== undefined)
+      this.quoteAsset = args.quoteAsset;
+    if (args.treasury !== undefined)
+      this.treasury = args.treasury;
+  }
+}
+
+class TradeLandedFeeLegError extends Error {
+  clientTradeId;
+  tradeTxHash;
+  feeTxHash;
+  feeOutcome;
+  stage = "executed";
+  constructor(args) {
+    const reason = args.cause instanceof Error ? args.cause.message : String(args.cause);
+    const recover = args.feeOutcome === "unknown" ? args.feeTxHash ? `Do NOT repeat the trade. Do NOT pay again: the fee may already be pending or mined. Check feeTxHash ` + `${args.feeTxHash} and re-confirm clientTradeId ${args.clientTradeId} with tradeTxHash ` + `${args.tradeTxHash} and that same feeTxHash.` : `Do NOT repeat the trade. Do NOT pay again: the fee broadcast outcome is unknown and it may already ` + `be pending or mined. Check the payer wallet before any new payment, then re-confirm clientTradeId ` + `${args.clientTradeId} with tradeTxHash ${args.tradeTxHash} and the fee hash you find.` : `Do NOT repeat the trade: pay the fee, then call confirmTrade for clientTradeId ${args.clientTradeId} ` + `with tradeTxHash and the fee's feeTxHash.`;
+    super(`trade executed; fee/booking incomplete: the trade landed (tradeTxHash ${args.tradeTxHash}) but its fee ` + `transfer ${args.feeOutcome === "unknown" ? "outcome is unknown" : "failed"} (${reason}). The trade is ` + `NOT confirmed or booked. ${recover}`, { cause: args.cause });
+    this.name = "TradeLandedFeeLegError";
+    this.clientTradeId = args.clientTradeId;
+    this.tradeTxHash = args.tradeTxHash;
+    this.feeOutcome = args.feeOutcome;
+    if (args.feeTxHash !== undefined)
+      this.feeTxHash = args.feeTxHash;
   }
 }
 function isSolanaRpcErrorData(data) {
@@ -138,7 +178,13 @@ function envelopeError(body) {
     code: error.code,
     message: error.message,
     ...typeof error.field === "string" ? { field: error.field } : {},
-    ...typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}
+    ...typeof error.retryable === "boolean" ? { retryable: error.retryable } : {},
+    ...typeof error.stage === "string" ? { stage: error.stage } : {},
+    ...typeof error.signature === "string" ? { signature: error.signature } : {},
+    ...typeof error.recorded === "boolean" ? { recorded: error.recorded } : {},
+    ...typeof error.feeRaw === "string" ? { feeRaw: error.feeRaw } : {},
+    ...typeof error.quoteAsset === "string" ? { quoteAsset: error.quoteAsset } : {},
+    ...typeof error.treasury === "string" ? { treasury: error.treasury } : {}
   };
 }
 function candleApiErrorFromResponse(status, bodyText) {
@@ -750,6 +796,9 @@ ${lines.join(`
 }
 
 // src/client.ts
+function historyTime(value) {
+  return value instanceof Date ? String(value.getTime()) : String(value);
+}
 var HYPERLIQUID_RELAY_CHAIN_ID = 1337;
 var HYPERLIQUID_RELAY_USDC = "0x00000000000000000000000000000000";
 function perpsDepositProblem(build, params) {
@@ -1062,7 +1111,16 @@ class CandleClient {
   }
   async getProfileTrades(keyPrefix, opts = {}) {
     this.requireKey("getProfileTrades()");
-    const query = opts.limit !== undefined ? `?limit=${encodeURIComponent(String(opts.limit))}` : "";
+    const params = new URLSearchParams;
+    if (opts.limit !== undefined)
+      params.set("limit", String(opts.limit));
+    if (opts.since !== undefined)
+      params.set("since", historyTime(opts.since));
+    if (opts.until !== undefined)
+      params.set("until", historyTime(opts.until));
+    if (opts.cursor !== undefined)
+      params.set("cursor", opts.cursor);
+    const query = params.toString() === "" ? "" : `?${params.toString()}`;
     return this.requestJson("GET", `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/trades${query}`);
   }
   async getProfilePnl(keyPrefix) {
@@ -1274,18 +1332,26 @@ class CandleClient {
       const leg = legs[i];
       if (!leg)
         continue;
-      const txHash = await this.signBroadcastAndWaitEvmLeg({
-        rpc,
-        from,
-        to: leg.to,
-        data: leg.data,
-        valueDecimal: leg.value,
-        nonce: baseNonce + i,
-        chainId,
-        feeData,
-        linkedWalletId,
-        privyWalletId
-      });
+      let txHash;
+      try {
+        txHash = await this.signBroadcastAndWaitEvmLeg({
+          rpc,
+          from,
+          to: leg.to,
+          data: leg.data,
+          valueDecimal: leg.value,
+          nonce: baseNonce + i,
+          chainId,
+          feeData,
+          linkedWalletId,
+          privyWalletId
+        }, { surfaceLegOutcome: leg.kind === "feeTransfer" });
+      } catch (err) {
+        if (leg.kind === "feeTransfer" && tradeTxHash) {
+          throw tradeLandedFeeLegError({ clientTradeId: built.clientTradeId, tradeTxHash, err });
+        }
+        throw err;
+      }
       if (leg.kind === "trade")
         tradeTxHash = txHash;
       if (leg.kind === "feeTransfer")
@@ -1441,7 +1507,16 @@ class CandleClient {
       callRaw: (method, params) => this.jsonRpcCallRaw(url, method, params)
     };
   }
-  async signBroadcastAndWaitEvmLeg(params) {
+  async signBroadcastAndWaitEvmLeg(params, opts = {}) {
+    try {
+      return await this.broadcastAndWaitEvmLeg(params);
+    } catch (err) {
+      if (opts.surfaceLegOutcome || !(err instanceof EvmLegOutcome))
+        throw err;
+      throw err.cause;
+    }
+  }
+  async broadcastAndWaitEvmLeg(params) {
     const gasLimitHex = await estimateGas(params.rpc, {
       from: params.from,
       to: params.to,
@@ -1464,8 +1539,23 @@ class CandleClient {
       chain: "evm",
       evmTxParams
     });
-    const txHash = await this.broadcastSignedTransaction("evm", signed.signedTransaction, signed.encoding);
-    await waitForReceipt(params.rpc, txHash);
+    const predicted = evmSignedTxHash(signed.signedTransaction, signed.encoding);
+    let txHash;
+    try {
+      txHash = await this.broadcastSignedTransaction("evm", signed.signedTransaction, signed.encoding);
+    } catch (err) {
+      if (!isDefiniteBroadcastRejection(err)) {
+        throw new EvmLegOutcome({ kind: "unknown", txHash: predicted, cause: err });
+      }
+      throw err;
+    }
+    try {
+      await waitForReceipt(params.rpc, txHash, evmReceiptWaitForTest ?? {});
+    } catch (err) {
+      if (isRevertedReceipt(err))
+        throw new EvmLegOutcome({ kind: "reverted", txHash, cause: err });
+      throw new EvmLegOutcome({ kind: "unknown", txHash, cause: err });
+    }
     return txHash;
   }
   async perpsConfig() {
@@ -1779,6 +1869,66 @@ class CandleClient {
     }
     return parsed.result;
   }
+}
+
+class EvmLegOutcome extends Error {
+  kind;
+  txHash;
+  cause;
+  constructor(args) {
+    super(args.cause instanceof Error ? args.cause.message : String(args.cause), { cause: args.cause });
+    this.name = "EvmLegOutcome";
+    this.kind = args.kind;
+    this.txHash = args.txHash;
+    this.cause = args.cause;
+  }
+}
+var evmReceiptWaitForTest = null;
+function tradeLandedFeeLegError(args) {
+  if (args.err instanceof EvmLegOutcome) {
+    return new TradeLandedFeeLegError({
+      clientTradeId: args.clientTradeId,
+      tradeTxHash: args.tradeTxHash,
+      cause: args.err.cause,
+      feeOutcome: args.err.kind,
+      ...args.err.txHash !== undefined ? { feeTxHash: args.err.txHash } : {}
+    });
+  }
+  return new TradeLandedFeeLegError({
+    clientTradeId: args.clientTradeId,
+    tradeTxHash: args.tradeTxHash,
+    cause: args.err,
+    feeOutcome: "not-broadcast"
+  });
+}
+function evmSignedTxHash(signedTransaction, encoding) {
+  const enc = encoding.toLowerCase();
+  let bytes;
+  if (enc === "base64") {
+    bytes = fromBase64(signedTransaction);
+  } else if (enc === "hex" || enc === "rlp" || signedTransaction.startsWith("0x")) {
+    const hex2 = signedTransaction.startsWith("0x") ? signedTransaction.slice(2) : signedTransaction;
+    if (!/^[0-9a-fA-F]+$/.test(hex2) || hex2.length % 2 !== 0)
+      return;
+    bytes = new Uint8Array(hex2.length / 2);
+    for (let i = 0;i < bytes.length; i++)
+      bytes[i] = Number.parseInt(hex2.slice(i * 2, i * 2 + 2), 16);
+  }
+  if (!bytes || bytes.length === 0)
+    return;
+  let hex = "";
+  for (const b of keccak_2562(bytes))
+    hex += b.toString(16).padStart(2, "0");
+  return `0x${hex}`;
+}
+function isDefiniteBroadcastRejection(err) {
+  if (!(err instanceof JsonRpcError))
+    return false;
+  const rpcMessage = err.message.match(/\(code -?\d+\): (.*)$/)?.[1]?.toLowerCase();
+  return rpcMessage === "insufficient funds for gas * price + value" || rpcMessage === "intrinsic gas too low" || rpcMessage === "invalid sender";
+}
+function isRevertedReceipt(err) {
+  return err instanceof Error && err.message.includes("transaction reverted (receipt status 0x0)");
 }
 function generateSdkId() {
   return `sdk-${crypto.randomUUID()}`;
@@ -2158,6 +2308,7 @@ export {
   generateSignerKeypair,
   formatPlanBps,
   encryptWalletKeyForImport,
+  TradeLandedFeeLegError,
   PLAN_CAPABILITY_NOTE,
   PLAN_CAPABILITY_LABELS,
   KeychainSecretStore,

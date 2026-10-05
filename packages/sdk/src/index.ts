@@ -92,6 +92,7 @@ export type {
   ProfilePnlEngineFields,
   ProfilePnlResult,
   ProfileTradeRow,
+  ProfileTradesOptions,
   ProfileTradesResult,
   ProfileWalletPnl,
   ProfileWalletRow,
@@ -133,7 +134,13 @@ export type {
 } from "./client"
 export { CandleClient, perpsDepositProblem } from "./client"
 export type { BridgeErrorCode, CandleErrorPayload, CandleRoutingDetail, SolanaRpcErrorData } from "./errors"
-export { BRIDGE_ERROR_CODES, CandleApiError, isSolanaRpcErrorData, JsonRpcError } from "./errors"
+export {
+  BRIDGE_ERROR_CODES,
+  CandleApiError,
+  isSolanaRpcErrorData,
+  JsonRpcError,
+  TradeLandedFeeLegError,
+} from "./errors"
 export {
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
   HYPERLIQUID_ALLOWED_ACTION_TYPES,

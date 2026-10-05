@@ -32,3 +32,29 @@ describe("Release A structured failures", () => {
     ).toMatchObject({ code: "MARKET_NOT_FOUND", retryable: false, routing: undefined })
   })
 })
+
+describe("BE-902 stage, signature and fee details survive the parser", () => {
+  test("a Hood FEE_LEG_MISSING keeps stage, signature, recorded and the fee payment details", () => {
+    const error = {
+      code: "FEE_LEG_MISSING",
+      message: "Warning: trade executed; fee/booking incomplete.",
+      retryable: true,
+      stage: "executed",
+      signature: "0xabc",
+      recorded: true,
+      feeRaw: "5000",
+      quoteAsset: "eth",
+      treasury: "0xTreasury",
+    }
+    const parsed = candleApiErrorFromResponse(402, JSON.stringify({ success: false, error }))
+    expect(parsed).toMatchObject({ ...error, status: 402 })
+  })
+  test("an error without them leaves them undefined", () => {
+    const parsed = candleApiErrorFromResponse(
+      402,
+      JSON.stringify({ success: false, error: { code: "FEE_LEG_MISSING", message: "x" } }),
+    )
+    expect(parsed.stage).toBeUndefined()
+    expect(parsed.signature).toBeUndefined()
+  })
+})

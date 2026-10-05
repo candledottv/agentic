@@ -5,7 +5,9 @@
  */
 
 import { describe, expect, test } from "bun:test"
+import { keccak_256 } from "@noble/hashes/sha3"
 import {
+  __setEvmReceiptWaitForTest,
   type AgentTierInfo,
   type BuildAtomicLaunchRequest,
   type BuildSelfLaunchRequest,
@@ -30,7 +32,7 @@ import {
   type WalletKind,
 } from "./client"
 
-import { CandleApiError, JsonRpcError } from "./errors"
+import { CandleApiError, JsonRpcError, TradeLandedFeeLegError } from "./errors"
 import { InMemorySecretStore, type SecretStore } from "./secret-store"
 import { generateSignerKeypair } from "./wallet-import"
 
@@ -2056,6 +2058,259 @@ describe("linked-wallet signing relay + one-shot flows", () => {
       })
     })
 
+    test("from: linked (Hood) whose fee transfer throws AFTER the trade landed reports the landed trade, never a bare error", async () => {
+      const store = await keyedSecretStore()
+      const { client, calls } = makeClient(
+        { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC },
+        [
+          json(200, HOOD_BUILT_TRADE_WITH_APPROVAL), // build
+          ...evmSetupResponses(),
+          ...evmLegResponses("0xApprovalTxHash"),
+          ...evmLegResponses("0xTradeTxHash"),
+          // feeTransfer: eth_estimateGas fails
+          json(200, { jsonrpc: "2.0", id: 1, error: { code: -32000, message: "insufficient funds for fee" } }),
+        ],
+      )
+      const err = await client
+        .trade({
+          mint: "0xMint",
+          side: "buy",
+          amountRaw: "500000",
+          from: { linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
+        })
+        .then(
+          () => null,
+          (e: unknown) => e,
+        )
+      expect(err).toBeInstanceOf(TradeLandedFeeLegError)
+      expect(err).toMatchObject({
+        stage: "executed",
+        tradeTxHash: "0xTradeTxHash",
+        clientTradeId: HOOD_BUILT_TRADE_WITH_APPROVAL.clientTradeId,
+        feeOutcome: "not-broadcast",
+      })
+      expect((err as TradeLandedFeeLegError).feeTxHash).toBeUndefined()
+      expect((err as Error).message).toContain("trade executed; fee/booking incomplete")
+      expect((err as Error).message).toContain("Do NOT repeat the trade")
+      expect((err as Error).message).toContain("pay the fee")
+      expect((err as Error).message).not.toContain("Do NOT pay again")
+      expect((err as Error).message).toContain("insufficient funds for fee")
+      // Nothing was confirmed or rebuilt on the way out.
+      expect(calls.some((c) => c.url === "https://api.test/api/v1/trade/agent/confirm")).toBe(false)
+    })
+
+    test("a known Hood fee hash is kept when the receipt read, the receipt wait, or the send is not a definite rejection", async () => {
+      const signedFee = "c2lnbmVkLXR4"
+      let predicted = ""
+      for (const b of keccak_256(Buffer.from(signedFee, "base64"))) predicted += b.toString(16).padStart(2, "0")
+      const predictedHash = `0x${predicted}`
+      const rpcError = (message: string, code = -32000) =>
+        json(200, { jsonrpc: "2.0", id: 1, error: { code, message } })
+      const cases: [string, (Response | Error)[], string][] = [
+        [
+          "receipt-read failure",
+          [evmRpcOk("0x186a0"), json(200, SIGN_RELAY_OK), evmRpcOk("0xFeeTxHash"), rpcError("header not found")],
+          "0xFeeTxHash",
+        ],
+        [
+          "timeout",
+          [evmRpcOk("0x186a0"), json(200, SIGN_RELAY_OK), evmRpcOk("0xFeeTxHash"), evmRpcOk(null)],
+          "0xFeeTxHash",
+        ],
+        ["ambiguous send", [evmRpcOk("0x186a0"), json(200, SIGN_RELAY_OK), rpcError("already known")], predictedHash],
+        [
+          "proxy lost upstream result",
+          [evmRpcOk("0x186a0"), json(200, SIGN_RELAY_OK), rpcError("upstream connection reset")],
+          predictedHash,
+        ],
+        [
+          "internal error",
+          [evmRpcOk("0x186a0"), json(200, SIGN_RELAY_OK), rpcError("Internal error", -32603)],
+          predictedHash,
+        ],
+        [
+          "server error",
+          [evmRpcOk("0x186a0"), json(200, SIGN_RELAY_OK), rpcError("Server error", -32001)],
+          predictedHash,
+        ],
+        ["send timeout", [evmRpcOk("0x186a0"), json(200, SIGN_RELAY_OK), rpcError("request timed out")], predictedHash],
+        [
+          "nonce already mined",
+          [evmRpcOk("0x186a0"), json(200, SIGN_RELAY_OK), rpcError("nonce too low")],
+          predictedHash,
+        ],
+        [
+          "lost transport response",
+          [evmRpcOk("0x186a0"), json(200, SIGN_RELAY_OK), new TypeError("fetch failed: connection closed after send")],
+          predictedHash,
+        ],
+        [
+          "proxy HTTP failure",
+          [evmRpcOk("0x186a0"), json(200, SIGN_RELAY_OK), new Response("Bad Gateway", { status: 502 })],
+          predictedHash,
+        ],
+        [
+          "proxy mentions rejection",
+          [
+            evmRpcOk("0x186a0"),
+            json(200, SIGN_RELAY_OK),
+            rpcError("upstream unavailable while checking insufficient funds for gas * price + value"),
+          ],
+          predictedHash,
+        ],
+      ]
+      for (const [label, feeResponses, feeHash] of cases) {
+        const store = await keyedSecretStore()
+        if (label === "timeout") __setEvmReceiptWaitForTest({ timeoutMs: 0, pollMs: 1 })
+        try {
+          const { client, calls } = makeClient(
+            { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC },
+            [
+              json(200, HOOD_BUILT_TRADE_WITH_APPROVAL),
+              ...evmSetupResponses(),
+              ...evmLegResponses("0xApprovalTxHash"),
+              ...evmLegResponses("0xTradeTxHash"),
+              ...feeResponses,
+            ],
+          )
+          const err = await client
+            .trade({
+              mint: "0xMint",
+              side: "buy",
+              amountRaw: "500000",
+              from: { linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
+            })
+            .then(
+              () => null,
+              (e: unknown) => e,
+            )
+          expect(err, label).toBeInstanceOf(TradeLandedFeeLegError)
+          expect(err, label).toMatchObject({
+            stage: "executed",
+            feeOutcome: "unknown",
+            tradeTxHash: "0xTradeTxHash",
+            feeTxHash: feeHash,
+            clientTradeId: HOOD_BUILT_TRADE_WITH_APPROVAL.clientTradeId,
+          })
+          const message = (err as Error).message
+          expect(message, label).toContain("trade executed; fee/booking incomplete")
+          expect(message, label).toContain("Do NOT repeat the trade")
+          expect(message, label).toContain("Do NOT pay again")
+          expect(message.toLowerCase(), label).not.toContain("pay the fee")
+          expect(message, label).toContain(feeHash)
+          expect(message, label).toContain(HOOD_BUILT_TRADE_WITH_APPROVAL.clientTradeId)
+          const sends = calls.filter((c) => {
+            if (c.url !== EVM_RPC) return false
+            return JSON.parse(String(c.body)).method === "eth_sendRawTransaction"
+          })
+          expect(sends, label).toHaveLength(3)
+          expect(JSON.parse(String(sends[2]?.body)).params).toEqual([signedFee])
+          expect(
+            calls.some((c) => c.url === "https://api.test/api/v1/trade/agent/confirm"),
+            label,
+          ).toBe(false)
+        } finally {
+          __setEvmReceiptWaitForTest(null)
+        }
+      }
+    })
+
+    test("explicit Hood fee send rejections still report not-broadcast", async () => {
+      for (const message of ["insufficient funds for gas * price + value", "intrinsic gas too low", "invalid sender"]) {
+        const store = await keyedSecretStore()
+        const { client, calls } = makeClient(
+          { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC },
+          [
+            json(200, HOOD_BUILT_TRADE_WITH_APPROVAL),
+            ...evmSetupResponses(),
+            ...evmLegResponses("0xApprovalTxHash"),
+            ...evmLegResponses("0xTradeTxHash"),
+            evmRpcOk("0x186a0"),
+            json(200, SIGN_RELAY_OK),
+            json(200, { jsonrpc: "2.0", id: 1, error: { code: -32000, message } }),
+          ],
+        )
+        const err = await client
+          .trade({
+            mint: "0xMint",
+            side: "buy",
+            amountRaw: "500000",
+            from: { linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
+          })
+          .then(
+            () => null,
+            (e: unknown) => e,
+          )
+        expect(err, message).toBeInstanceOf(TradeLandedFeeLegError)
+        expect(err, message).toMatchObject({
+          stage: "executed",
+          tradeTxHash: "0xTradeTxHash",
+          feeOutcome: "not-broadcast",
+        })
+        expect((err as TradeLandedFeeLegError).feeTxHash, message).toBeUndefined()
+        expect((err as Error).message).toContain("pay the fee")
+        expect((err as Error).message).not.toContain("Do NOT pay again")
+        expect(calls.at(-1)?.body).toContain("eth_sendRawTransaction")
+      }
+    })
+
+    test("a reverted Hood fee receipt still says to pay, and keeps the reverted hash", async () => {
+      const store = await keyedSecretStore()
+      const { client } = makeClient({ ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC }, [
+        json(200, HOOD_BUILT_TRADE_WITH_APPROVAL),
+        ...evmSetupResponses(),
+        ...evmLegResponses("0xApprovalTxHash"),
+        ...evmLegResponses("0xTradeTxHash"),
+        evmRpcOk("0x186a0"),
+        json(200, SIGN_RELAY_OK),
+        evmRpcOk("0xFeeTxHash"),
+        evmRpcOk({ status: "0x0" }),
+      ])
+      const err = await client
+        .trade({
+          mint: "0xMint",
+          side: "buy",
+          amountRaw: "500000",
+          from: { linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
+        })
+        .then(
+          () => null,
+          (e: unknown) => e,
+        )
+      expect(err).toBeInstanceOf(TradeLandedFeeLegError)
+      expect(err).toMatchObject({
+        stage: "executed",
+        feeOutcome: "reverted",
+        tradeTxHash: "0xTradeTxHash",
+        feeTxHash: "0xFeeTxHash",
+      })
+      expect((err as Error).message).toContain("pay the fee")
+      expect((err as Error).message).not.toContain("Do NOT pay again")
+    })
+
+    test("from: linked (Hood) whose TRADE leg throws is unchanged: the original error, not a landed-trade error", async () => {
+      const store = await keyedSecretStore()
+      const { client } = makeClient({ ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC }, [
+        json(200, HOOD_BUILT_TRADE_WITH_APPROVAL),
+        ...evmSetupResponses(),
+        ...evmLegResponses("0xApprovalTxHash"),
+        json(200, { jsonrpc: "2.0", id: 1, error: { code: -32000, message: "execution reverted" } }),
+      ])
+      const err = await client
+        .trade({
+          mint: "0xMint",
+          side: "buy",
+          amountRaw: "500000",
+          from: { linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID },
+        })
+        .then(
+          () => null,
+          (e: unknown) => e,
+        )
+      expect(err).not.toBeInstanceOf(TradeLandedFeeLegError)
+      expect((err as Error).message).toContain("execution reverted")
+    })
+
     test("from: linked (Hood) with no approval and no fee leg confirms with just tradeTxHash", async () => {
       const store = await keyedSecretStore()
       const confirmed = {
@@ -3312,5 +3567,52 @@ describe("getPortfolio (Ember Phase 4d)", () => {
     expect(error.code).toBe("SCOPE_MISSING")
     expect(error.status).toBe(403)
     expect(calls.length).toBe(1)
+  })
+})
+
+describe("getProfileTrades: range, paging and fee fields (BE-900)", () => {
+  test("sends limit, since, until and cursor, and types the new row and page fields", async () => {
+    const row = {
+      clientTradeId: "t1",
+      createdAt: 1_000,
+      status: "built",
+      chain: "solana",
+      side: "buy",
+      mint: "MintA",
+      quoteAsset: "SOL",
+      amountRaw: "10",
+      feeBps: 100,
+      feeRaw: "100",
+      landedUnconfirmed: true,
+      payerWallet: "W1",
+      signature: "sig",
+      errorCode: "FEE_LEG_MISSING",
+    }
+    const { client, calls } = makeClient(KEYED, [
+      json(200, { success: true, keyPrefix: "ck_a", trades: [row], nextCursor: "abc" }),
+    ])
+    const result = await client.getProfileTrades("ck_a", {
+      limit: 50,
+      since: "2026-10-04T00:00:00Z",
+      until: new Date(1_759_622_400_000),
+      cursor: "prev+/=",
+    })
+    const url = new URL(calls[0]?.url ?? "")
+    expect(url.pathname).toBe("/api/v1/agent/keys/ck_a/trades")
+    expect(url.searchParams.get("limit")).toBe("50")
+    expect(url.searchParams.get("since")).toBe("2026-10-04T00:00:00Z")
+    expect(url.searchParams.get("until")).toBe("1759622400000")
+    expect(url.searchParams.get("cursor")).toBe("prev+/=")
+    // Typed access: each is a compile error if the field is missing from the type.
+    expect(result.nextCursor).toBe("abc")
+    expect(result.trades[0]?.landedUnconfirmed).toBe(true)
+    expect(result.trades[0]?.feeRaw).toBe("100")
+    expect(result.trades[0]?.feeCollectedRaw).toBeUndefined()
+  })
+
+  test("no options sends no query string", async () => {
+    const { client, calls } = makeClient(KEYED, [json(200, { success: true, keyPrefix: "ck_a", trades: [] })])
+    await client.getProfileTrades("ck_a")
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/agent/keys/ck_a/trades")
   })
 })

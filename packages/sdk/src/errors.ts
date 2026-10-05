@@ -27,6 +27,19 @@ export interface CandleErrorPayload {
   message: string
   field?: string
   retryable?: boolean
+  /**
+   * How far a trade got when the refusal was answered (`"executed"` / `"reverted"`). A trade that
+   * is `"executed"` is on chain: do not build it again.
+   */
+  stage?: string
+  /** The transaction the refusal is about (the landed trade's hash or signature), when known. */
+  signature?: string
+  /** True when the server stored `signature` on the trade's row. */
+  recorded?: boolean
+  /** A Hood fee refusal's payment details: raw units owed, the quote asset id, the treasury address. */
+  feeRaw?: string
+  quoteAsset?: string
+  treasury?: string
 }
 
 /**
@@ -58,6 +71,14 @@ export class CandleApiError extends Error {
   readonly coverage?: unknown
   readonly uiHint?: string
   readonly docsPath?: string
+  /** See `CandleErrorPayload.stage`. Present when the server says how far the trade got. */
+  readonly stage?: string
+  /** See `CandleErrorPayload.signature`. */
+  readonly signature?: string
+  readonly recorded?: boolean
+  readonly feeRaw?: string
+  readonly quoteAsset?: string
+  readonly treasury?: string
 
   constructor(args: CandleErrorPayload & { status: number; retryable: boolean }) {
     super(args.message)
@@ -71,6 +92,64 @@ export class CandleApiError extends Error {
     this.coverage = args.coverage
     this.uiHint = args.uiHint
     this.docsPath = args.docsPath
+    if (args.stage !== undefined) this.stage = args.stage
+    if (args.signature !== undefined) this.signature = args.signature
+    if (args.recorded !== undefined) this.recorded = args.recorded
+    if (args.feeRaw !== undefined) this.feeRaw = args.feeRaw
+    if (args.quoteAsset !== undefined) this.quoteAsset = args.quoteAsset
+    if (args.treasury !== undefined) this.treasury = args.treasury
+  }
+}
+
+/**
+ * Thrown by `trade()` on Hood when the trade leg landed and the fee leg then failed or its
+ * outcome is unknown. The trade is on chain, so rebuilding it would be a SECOND trade.
+ *
+ * `feeOutcome` says which recovery is safe:
+ * - `not-broadcast` / `reverted`: the fee was not sent, or its receipt reverted. Pay the fee,
+ *   then `confirmTrade({ clientTradeId, tradeTxHash, feeTxHash })` with the new payment.
+ * - `unknown`: the broadcast or the receipt read did not say whether the fee landed. `feeTxHash`
+ *   is that payment once it is known. Do not pay again. Re-confirm this clientTradeId with that
+ *   same hash.
+ */
+export class TradeLandedFeeLegError extends Error {
+  readonly clientTradeId: string
+  readonly tradeTxHash: string
+  /** Set once the fee transaction hash is known, including when its broadcast or receipt is unknown. */
+  readonly feeTxHash?: string
+  readonly feeOutcome: "not-broadcast" | "reverted" | "unknown"
+  readonly stage = "executed" as const
+
+  constructor(args: {
+    clientTradeId: string
+    tradeTxHash: string
+    cause: unknown
+    feeOutcome: "not-broadcast" | "reverted" | "unknown"
+    feeTxHash?: string
+  }) {
+    const reason = args.cause instanceof Error ? args.cause.message : String(args.cause)
+    const recover =
+      args.feeOutcome === "unknown"
+        ? args.feeTxHash
+          ? `Do NOT repeat the trade. Do NOT pay again: the fee may already be pending or mined. Check feeTxHash ` +
+            `${args.feeTxHash} and re-confirm clientTradeId ${args.clientTradeId} with tradeTxHash ` +
+            `${args.tradeTxHash} and that same feeTxHash.`
+          : `Do NOT repeat the trade. Do NOT pay again: the fee broadcast outcome is unknown and it may already ` +
+            `be pending or mined. Check the payer wallet before any new payment, then re-confirm clientTradeId ` +
+            `${args.clientTradeId} with tradeTxHash ${args.tradeTxHash} and the fee hash you find.`
+        : `Do NOT repeat the trade: pay the fee, then call confirmTrade for clientTradeId ${args.clientTradeId} ` +
+          `with tradeTxHash and the fee's feeTxHash.`
+    super(
+      `trade executed; fee/booking incomplete: the trade landed (tradeTxHash ${args.tradeTxHash}) but its fee ` +
+        `transfer ${args.feeOutcome === "unknown" ? "outcome is unknown" : "failed"} (${reason}). The trade is ` +
+        `NOT confirmed or booked. ${recover}`,
+      { cause: args.cause },
+    )
+    this.name = "TradeLandedFeeLegError"
+    this.clientTradeId = args.clientTradeId
+    this.tradeTxHash = args.tradeTxHash
+    this.feeOutcome = args.feeOutcome
+    if (args.feeTxHash !== undefined) this.feeTxHash = args.feeTxHash
   }
 }
 
@@ -154,6 +233,12 @@ function envelopeError(body: unknown): CandleErrorPayload | null {
     message: error.message,
     ...(typeof error.field === "string" ? { field: error.field } : {}),
     ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
+    ...(typeof error.stage === "string" ? { stage: error.stage } : {}),
+    ...(typeof error.signature === "string" ? { signature: error.signature } : {}),
+    ...(typeof error.recorded === "boolean" ? { recorded: error.recorded } : {}),
+    ...(typeof error.feeRaw === "string" ? { feeRaw: error.feeRaw } : {}),
+    ...(typeof error.quoteAsset === "string" ? { quoteAsset: error.quoteAsset } : {}),
+    ...(typeof error.treasury === "string" ? { treasury: error.treasury } : {}),
   }
 }
 

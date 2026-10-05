@@ -27,8 +27,9 @@
  *   bounded by `maxRetries` (default 3 retries after the initial attempt).
  */
 
+import { keccak_256 } from "@noble/hashes/sha3"
 import { buildPrivyAuthorizationSignature } from "./authorization-signature"
-import { CandleApiError, candleApiErrorFromResponse, JsonRpcError } from "./errors"
+import { CandleApiError, candleApiErrorFromResponse, JsonRpcError, TradeLandedFeeLegError } from "./errors"
 import {
   assembleEvmTx,
   decimalToHexQuantity,
@@ -50,6 +51,7 @@ import {
   verifyPerpsBuild,
 } from "./hyperliquid"
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl"
+import { fromBase64 } from "./internal/encoding"
 import { describeRpcEndpoint } from "./internal/rpc-endpoint"
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans"
 import type { SecretStore } from "./secret-store"
@@ -1025,7 +1027,26 @@ export interface ProfileTradeRow {
   filledAmount?: number
   usdValue?: number
   feeBps: number
+  /**
+   * An estimate from the trade's size and rate, scaled by collected over planned fee. 0 when no fee
+   * was collected, including when the plan forgoes it.
+   */
   feeUsd?: number
+  /**
+   * The fee the build planned, in raw units of `quoteAsset`: every venue pays its fee in the quote
+   * asset. Absent on a server before 2026-10-05.
+   */
+  feeRaw?: string
+  /**
+   * What the treasury received, in raw units of `quoteAsset`. Confirmed rows only. Equal to
+   * `feeRaw` unless it was measured otherwise.
+   */
+  feeCollectedRaw?: string
+  /**
+   * True for a `built` row that holds a signature: the trade is on chain but was not booked.
+   * `errorCode` says why. Absent on a server before 2026-10-05.
+   */
+  landedUnconfirmed?: boolean
   payerWallet: string
   venue?: "curve" | "jupiter" | "dex"
   signature?: string
@@ -1037,6 +1058,27 @@ export interface ProfileTradesResult {
   success: true
   keyPrefix: string
   trades: ProfileTradeRow[]
+  /**
+   * Pass back as `cursor` for the next, older page. Present whenever the page read a full `limit`,
+   * so a short or even empty page can still have one: only its absence means the end.
+   */
+  nextCursor?: string
+}
+
+/** Options for `getProfileTrades`. */
+export interface ProfileTradesOptions {
+  /** Rows to read, 1 to 1,000. Default 200. */
+  limit?: number
+  /** Inclusive lower bound on `createdAt`: an ISO 8601 string, epoch milliseconds, or a `Date`. */
+  since?: string | number | Date
+  /** Exclusive upper bound on `createdAt`, in the same forms as `since`. */
+  until?: string | number | Date
+  /** A previous page's `nextCursor`, verbatim. */
+  cursor?: string
+}
+
+function historyTime(value: string | number | Date): string {
+  return value instanceof Date ? String(value.getTime()) : String(value)
 }
 
 /** `GET /api/v1/agent/keys/{prefix}/wallets` response. */
@@ -2623,10 +2665,18 @@ export class CandleClient {
    * Includes FAILED trades, deliberately: a record that dropped them would misrepresent what the
    * agent did, and `errorCode` is how you find out why one did not go through. For a spreadsheet
    * instead of JSON, request the same path with `?format=csv`.
+   *
+   * Newest first. Narrow by `since` / `until` and page by passing `nextCursor` back as `cursor`
+   * until it is absent; a short page is not the end.
    */
-  async getProfileTrades(keyPrefix: string, opts: { limit?: number } = {}): Promise<ProfileTradesResult> {
+  async getProfileTrades(keyPrefix: string, opts: ProfileTradesOptions = {}): Promise<ProfileTradesResult> {
     this.requireKey("getProfileTrades()")
-    const query = opts.limit !== undefined ? `?limit=${encodeURIComponent(String(opts.limit))}` : ""
+    const params = new URLSearchParams()
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit))
+    if (opts.since !== undefined) params.set("since", historyTime(opts.since))
+    if (opts.until !== undefined) params.set("until", historyTime(opts.until))
+    if (opts.cursor !== undefined) params.set("cursor", opts.cursor)
+    const query = params.toString() === "" ? "" : `?${params.toString()}`
     return this.requestJson<ProfileTradesResult>(
       "GET",
       `/api/v1/agent/keys/${encodeURIComponent(keyPrefix)}/trades${query}`,
@@ -3234,18 +3284,35 @@ export class CandleClient {
       if (!leg) continue
       // Sequential by design, not a missed Promise.all: each leg must be mined before the next
       // leg's estimateGas runs (see this method's jsdoc).
-      const txHash = await this.signBroadcastAndWaitEvmLeg({
-        rpc,
-        from,
-        to: leg.to,
-        data: leg.data,
-        valueDecimal: leg.value,
-        nonce: baseNonce + i,
-        chainId,
-        feeData,
-        linkedWalletId,
-        privyWalletId,
-      })
+      let txHash: string
+      try {
+        txHash = await this.signBroadcastAndWaitEvmLeg(
+          {
+            rpc,
+            from,
+            to: leg.to,
+            data: leg.data,
+            valueDecimal: leg.value,
+            nonce: baseNonce + i,
+            chainId,
+            feeData,
+            linkedWalletId,
+            privyWalletId,
+          },
+          // Only the fee leg keeps a hash whose broadcast or receipt is unknown. Other legs
+          // still throw the original error.
+          { surfaceLegOutcome: leg.kind === "feeTransfer" },
+        )
+      } catch (err) {
+        // The fee transfer comes after the trade leg. If it throws, the trade is already on chain:
+        // say so, with its hash, instead of an error that reads as "nothing happened". A fee hash
+        // that is already known stays on the error, and an unknown broadcast or receipt says not
+        // to pay that fee a second time.
+        if (leg.kind === "feeTransfer" && tradeTxHash) {
+          throw tradeLandedFeeLegError({ clientTradeId: built.clientTradeId, tradeTxHash, err })
+        }
+        throw err
+      }
       if (leg.kind === "trade") tradeTxHash = txHash
       if (leg.kind === "feeTransfer") feeTxHash = txHash
     }
@@ -3516,13 +3583,40 @@ export class CandleClient {
    * transaction hash. Shared by trade()'s and selfLaunch()'s Hood branches, both of which must run
    * their legs strictly sequentially -- see trade()'s jsdoc for why a later leg's `estimateGas`
    * depends on an earlier leg already being mined.
+   *
+   * `surfaceLegOutcome` is the fee leg only. A receipt revert, a receipt read that fails, a
+   * receipt timeout, or a broadcast whose result is ambiguous then throws `EvmLegOutcome` with
+   * the hash once it is known. Every other caller gets the original error.
    */
-  private async signBroadcastAndWaitEvmLeg(params: {
+  private async signBroadcastAndWaitEvmLeg(
+    params: {
+      rpc: EvmRpc
+      from: string
+      to: string
+      data: string
+      /** Decimal wei string, as a build leg's `value` field ships it (see evm-tx.ts's assembleEvmTx doc). */
+      valueDecimal: string
+      nonce: number
+      chainId: number
+      feeData: { maxFeePerGasHex: string; maxPriorityFeePerGasHex: string }
+      linkedWalletId: string
+      privyWalletId: string
+    },
+    opts: { surfaceLegOutcome?: boolean } = {},
+  ): Promise<string> {
+    try {
+      return await this.broadcastAndWaitEvmLeg(params)
+    } catch (err) {
+      if (opts.surfaceLegOutcome || !(err instanceof EvmLegOutcome)) throw err
+      throw err.cause
+    }
+  }
+
+  private async broadcastAndWaitEvmLeg(params: {
     rpc: EvmRpc
     from: string
     to: string
     data: string
-    /** Decimal wei string, as a build leg's `value` field ships it (see evm-tx.ts's assembleEvmTx doc). */
     valueDecimal: string
     nonce: number
     chainId: number
@@ -3552,8 +3646,23 @@ export class CandleClient {
       chain: "evm",
       evmTxParams,
     })
-    const txHash = await this.broadcastSignedTransaction("evm", signed.signedTransaction, signed.encoding)
-    await waitForReceipt(params.rpc, txHash)
+    // Hash the signed bytes before the send. A lost response still names the transaction.
+    const predicted = evmSignedTxHash(signed.signedTransaction, signed.encoding)
+    let txHash: string
+    try {
+      txHash = await this.broadcastSignedTransaction("evm", signed.signedTransaction, signed.encoding)
+    } catch (err) {
+      if (!isDefiniteBroadcastRejection(err)) {
+        throw new EvmLegOutcome({ kind: "unknown", txHash: predicted, cause: err })
+      }
+      throw err
+    }
+    try {
+      await waitForReceipt(params.rpc, txHash, evmReceiptWaitForTest ?? {})
+    } catch (err) {
+      if (isRevertedReceipt(err)) throw new EvmLegOutcome({ kind: "reverted", txHash, cause: err })
+      throw new EvmLegOutcome({ kind: "unknown", txHash, cause: err })
+    }
     return txHash
   }
 
@@ -3975,6 +4084,92 @@ export class CandleClient {
     }
     return parsed.result
   }
+}
+
+/**
+ * A Hood leg whose broadcast was attempted or whose receipt did not come back clean.
+ * `unknown` means the fee may already be in flight. `reverted` means the receipt said it was not.
+ */
+class EvmLegOutcome extends Error {
+  readonly kind: "unknown" | "reverted"
+  readonly txHash?: string
+  override readonly cause: unknown
+
+  constructor(args: { kind: "unknown" | "reverted"; txHash?: string; cause: unknown }) {
+    super(args.cause instanceof Error ? args.cause.message : String(args.cause), { cause: args.cause })
+    this.name = "EvmLegOutcome"
+    this.kind = args.kind
+    this.txHash = args.txHash
+    this.cause = args.cause
+  }
+}
+
+/** Receipt wait used by tests. Production leaves this null and waitForReceipt keeps its own defaults. */
+let evmReceiptWaitForTest: { timeoutMs?: number; pollMs?: number } | null = null
+
+/** Test-only. Pass null to restore the production receipt wait. */
+export function __setEvmReceiptWaitForTest(opts: { timeoutMs?: number; pollMs?: number } | null): void {
+  evmReceiptWaitForTest = opts
+}
+
+function tradeLandedFeeLegError(args: {
+  clientTradeId: string
+  tradeTxHash: string
+  err: unknown
+}): TradeLandedFeeLegError {
+  if (args.err instanceof EvmLegOutcome) {
+    return new TradeLandedFeeLegError({
+      clientTradeId: args.clientTradeId,
+      tradeTxHash: args.tradeTxHash,
+      cause: args.err.cause,
+      feeOutcome: args.err.kind,
+      ...(args.err.txHash !== undefined ? { feeTxHash: args.err.txHash } : {}),
+    })
+  }
+  return new TradeLandedFeeLegError({
+    clientTradeId: args.clientTradeId,
+    tradeTxHash: args.tradeTxHash,
+    cause: args.err,
+    feeOutcome: "not-broadcast",
+  })
+}
+
+/** keccak256 of a signed EVM transaction, the hash eth_sendRawTransaction would return. */
+function evmSignedTxHash(signedTransaction: string, encoding: string): string | undefined {
+  const enc = encoding.toLowerCase()
+  let bytes: Uint8Array | undefined
+  if (enc === "base64") {
+    bytes = fromBase64(signedTransaction)
+  } else if (enc === "hex" || enc === "rlp" || signedTransaction.startsWith("0x")) {
+    const hex = signedTransaction.startsWith("0x") ? signedTransaction.slice(2) : signedTransaction
+    if (!/^[0-9a-fA-F]+$/.test(hex) || hex.length % 2 !== 0) return undefined
+    bytes = new Uint8Array(hex.length / 2)
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+  }
+  if (!bytes || bytes.length === 0) return undefined
+  let hex = ""
+  for (const b of keccak_256(bytes)) hex += b.toString(16).padStart(2, "0")
+  return `0x${hex}`
+}
+
+/**
+ * Only an explicit node validation rejection proves the transaction was not accepted. A generic
+ * JSON-RPC server/internal/proxy error is an unknown outcome, just like a lost transport response.
+ * Match the complete RPC message, not a phrase mentioned in a proxy's error. Unrecognised variants
+ * stay unknown. "Already known" and "nonce too low" may mean this exact transaction already mined.
+ */
+function isDefiniteBroadcastRejection(err: unknown): boolean {
+  if (!(err instanceof JsonRpcError)) return false
+  const rpcMessage = err.message.match(/\(code -?\d+\): (.*)$/)?.[1]?.toLowerCase()
+  return (
+    rpcMessage === "insufficient funds for gas * price + value" ||
+    rpcMessage === "intrinsic gas too low" ||
+    rpcMessage === "invalid sender"
+  )
+}
+
+function isRevertedReceipt(err: unknown): boolean {
+  return err instanceof Error && err.message.includes("transaction reverted (receipt status 0x0)")
 }
 
 /** Shared `sdk-<uuid>` id generator behind generateClientLaunchId()/generateClientTradeId() below. */

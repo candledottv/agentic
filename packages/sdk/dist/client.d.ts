@@ -994,7 +994,26 @@ export interface ProfileTradeRow {
     filledAmount?: number;
     usdValue?: number;
     feeBps: number;
+    /**
+     * An estimate from the trade's size and rate, scaled by collected over planned fee. 0 when no fee
+     * was collected, including when the plan forgoes it.
+     */
     feeUsd?: number;
+    /**
+     * The fee the build planned, in raw units of `quoteAsset`: every venue pays its fee in the quote
+     * asset. Absent on a server before 2026-10-05.
+     */
+    feeRaw?: string;
+    /**
+     * What the treasury received, in raw units of `quoteAsset`. Confirmed rows only. Equal to
+     * `feeRaw` unless it was measured otherwise.
+     */
+    feeCollectedRaw?: string;
+    /**
+     * True for a `built` row that holds a signature: the trade is on chain but was not booked.
+     * `errorCode` says why. Absent on a server before 2026-10-05.
+     */
+    landedUnconfirmed?: boolean;
     payerWallet: string;
     venue?: "curve" | "jupiter" | "dex";
     signature?: string;
@@ -1005,6 +1024,22 @@ export interface ProfileTradesResult {
     success: true;
     keyPrefix: string;
     trades: ProfileTradeRow[];
+    /**
+     * Pass back as `cursor` for the next, older page. Present whenever the page read a full `limit`,
+     * so a short or even empty page can still have one: only its absence means the end.
+     */
+    nextCursor?: string;
+}
+/** Options for `getProfileTrades`. */
+export interface ProfileTradesOptions {
+    /** Rows to read, 1 to 1,000. Default 200. */
+    limit?: number;
+    /** Inclusive lower bound on `createdAt`: an ISO 8601 string, epoch milliseconds, or a `Date`. */
+    since?: string | number | Date;
+    /** Exclusive upper bound on `createdAt`, in the same forms as `since`. */
+    until?: string | number | Date;
+    /** A previous page's `nextCursor`, verbatim. */
+    cursor?: string;
 }
 /** `GET /api/v1/agent/keys/{prefix}/wallets` response. */
 export interface ProfileWalletsResult {
@@ -2138,10 +2173,11 @@ export declare class CandleClient {
      * Includes FAILED trades, deliberately: a record that dropped them would misrepresent what the
      * agent did, and `errorCode` is how you find out why one did not go through. For a spreadsheet
      * instead of JSON, request the same path with `?format=csv`.
+     *
+     * Newest first. Narrow by `since` / `until` and page by passing `nextCursor` back as `cursor`
+     * until it is absent; a short page is not the end.
      */
-    getProfileTrades(keyPrefix: string, opts?: {
-        limit?: number;
-    }): Promise<ProfileTradesResult>;
+    getProfileTrades(keyPrefix: string, opts?: ProfileTradesOptions): Promise<ProfileTradesResult>;
     /**
      * One profile's realized P&L, fees, and open positions marked at current prices
      * (GET /api/v1/agent/keys/{prefix}/pnl). Read `unrealizedUsd` with `unmarkedPositions` and
@@ -2526,8 +2562,13 @@ export declare class CandleClient {
      * transaction hash. Shared by trade()'s and selfLaunch()'s Hood branches, both of which must run
      * their legs strictly sequentially -- see trade()'s jsdoc for why a later leg's `estimateGas`
      * depends on an earlier leg already being mined.
+     *
+     * `surfaceLegOutcome` is the fee leg only. A receipt revert, a receipt read that fails, a
+     * receipt timeout, or a broadcast whose result is ambiguous then throws `EvmLegOutcome` with
+     * the hash once it is known. Every other caller gets the original error.
      */
     private signBroadcastAndWaitEvmLeg;
+    private broadcastAndWaitEvmLeg;
     /** The server's perps settings: network, Candle's builder, this key's fee, and its limits. */
     perpsConfig(): Promise<PerpsConfig>;
     /**
@@ -2616,6 +2657,11 @@ export declare class CandleClient {
      */
     private jsonRpcCallRaw;
 }
+/** Test-only. Pass null to restore the production receipt wait. */
+export declare function __setEvmReceiptWaitForTest(opts: {
+    timeoutMs?: number;
+    pollMs?: number;
+} | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
 export declare const SDK_VERSION = "0.4.7";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */

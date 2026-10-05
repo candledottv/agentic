@@ -25,6 +25,19 @@ export interface CandleErrorPayload {
     message: string;
     field?: string;
     retryable?: boolean;
+    /**
+     * How far a trade got when the refusal was answered (`"executed"` / `"reverted"`). A trade that
+     * is `"executed"` is on chain: do not build it again.
+     */
+    stage?: string;
+    /** The transaction the refusal is about (the landed trade's hash or signature), when known. */
+    signature?: string;
+    /** True when the server stored `signature` on the trade's row. */
+    recorded?: boolean;
+    /** A Hood fee refusal's payment details: raw units owed, the quote asset id, the treasury address. */
+    feeRaw?: string;
+    quoteAsset?: string;
+    treasury?: string;
 }
 /**
  * The codes a TEE bridge between Solana and Hood adds (Ember Phase 4c). `code` stays an open
@@ -54,9 +67,43 @@ export declare class CandleApiError extends Error {
     readonly coverage?: unknown;
     readonly uiHint?: string;
     readonly docsPath?: string;
+    /** See `CandleErrorPayload.stage`. Present when the server says how far the trade got. */
+    readonly stage?: string;
+    /** See `CandleErrorPayload.signature`. */
+    readonly signature?: string;
+    readonly recorded?: boolean;
+    readonly feeRaw?: string;
+    readonly quoteAsset?: string;
+    readonly treasury?: string;
     constructor(args: CandleErrorPayload & {
         status: number;
         retryable: boolean;
+    });
+}
+/**
+ * Thrown by `trade()` on Hood when the trade leg landed and the fee leg then failed or its
+ * outcome is unknown. The trade is on chain, so rebuilding it would be a SECOND trade.
+ *
+ * `feeOutcome` says which recovery is safe:
+ * - `not-broadcast` / `reverted`: the fee was not sent, or its receipt reverted. Pay the fee,
+ *   then `confirmTrade({ clientTradeId, tradeTxHash, feeTxHash })` with the new payment.
+ * - `unknown`: the broadcast or the receipt read did not say whether the fee landed. `feeTxHash`
+ *   is that payment once it is known. Do not pay again. Re-confirm this clientTradeId with that
+ *   same hash.
+ */
+export declare class TradeLandedFeeLegError extends Error {
+    readonly clientTradeId: string;
+    readonly tradeTxHash: string;
+    /** Set once the fee transaction hash is known, including when its broadcast or receipt is unknown. */
+    readonly feeTxHash?: string;
+    readonly feeOutcome: "not-broadcast" | "reverted" | "unknown";
+    readonly stage: "executed";
+    constructor(args: {
+        clientTradeId: string;
+        tradeTxHash: string;
+        cause: unknown;
+        feeOutcome: "not-broadcast" | "reverted" | "unknown";
+        feeTxHash?: string;
     });
 }
 /**
