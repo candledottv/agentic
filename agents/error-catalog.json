@@ -169,7 +169,7 @@
     },
     "quota": {
       "retryable": false,
-      "action": "A per-account ceiling is full. Revoke or delete something first; waiting does not help.",
+      "action": "A per-account ceiling is full. Revoke or delete something first; waiting does not help. KEY_LIMIT_REACHED is the key's USD volume cap: honor error.retryable. With resetsAt, retry after it or trade a smaller amount. With reason limit_unavailable, Candle could not value the trade, read the key's usage, or reserve the cap, so nothing was signed: wait until error.retryAfter, back off exponentially if it repeats, and never rebuild in a tight loop.",
       "codes": [
         "KEY_LIMIT_REACHED",
         "ORDER_LIMIT_REACHED",
