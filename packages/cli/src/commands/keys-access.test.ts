@@ -221,8 +221,10 @@ describe("T-B2: which key", () => {
       [ACCESS_PATH]: handlers,
     })
     const { deps, stdout } = depsFor(fetch)
-    expect(await run(["keys", "access", "cndl", "--access", "read-write"], deps)).toBe(0)
-    expect(stdout.text).toContain(`${PREFIX} (cndl) is already Read:Write. Nothing changed.`)
+    for (const level of ["write", "read-write"]) {
+      expect(await run(["keys", "access", "cndl", "--access", level], deps)).toBe(0)
+    }
+    expect(stdout.text).toContain(`${PREFIX} (cndl) is already Write. Nothing changed.`)
   })
 
   test("no match lists the labelled keys; an ambiguous label lists the prefixes; nothing is changed", async () => {
@@ -289,18 +291,22 @@ describe("T-B4: the typed prefix", () => {
     }
   })
 
-  test("the right prefix (trimmed) commits with the preview's scopes as expectScopes", async () => {
+  test.each([
+    "withdraw",
+    "transfer",
+    "read-write-transfer",
+  ])("--access %s commits with the preview's scopes as expectScopes", async (level) => {
     const { handlers, bodies } = accessApi("widen")
     const { fetch } = createRoutedFetch({ [ACCESS_PATH]: handlers })
     const { deps, stdout, stderr } = depsFor(fetch, { answers: [`  ${PREFIX} `] })
-    expect(await run(["keys", "access", PREFIX, "--access", "read-write-transfer"], deps)).toBe(0)
+    expect(await run(["keys", "access", PREFIX, "--access", level], deps)).toBe(0)
     expect(bodies[1]).toEqual({ access: "readwritetransfer", expectScopes: RW })
-    expect(lastLine(stdout.text)).toBe(`Changed ${PREFIX} (cndl) to Read:Write:Transfer. Change id j97abc`)
+    expect(lastLine(stdout.text)).toBe(`Changed ${PREFIX} (cndl) to Withdraw. Change id j97abc`)
     // The screen: key, account, API, the change, the fund-moving label, the wallets and the caps.
     expect(stderr.text).toContain(`Key             ${PREFIX}  cndl`)
     expect(stderr.text).toContain("Candle account  Quant-")
     expect(stderr.text).toContain("API             https://api.alpha.candle.tv  (production)")
-    expect(stderr.text).toContain("Access          Read:Write  ->  Read:Write:Transfer   (widen)")
+    expect(stderr.text).toContain("Access          Write  ->  Withdraw   (widen)")
     expect(stderr.text).toContain("Adds            transfer:bound (moves funds")
     expect(stderr.text).toContain("Removes         nothing")
     expect(stderr.text).toContain("TEE wallets on this key: 3  (tr-01, tr-02, tr-03)")
@@ -332,7 +338,7 @@ describe("T-B5: narrowing", () => {
     expect(await run(["keys", "access", PREFIX, "--access", "read-write", "--yes"], deps)).toBe(0)
     expect(prompts).toHaveLength(0)
     expect(bodies[1]).toEqual({ access: "readwrite", expectScopes: RWT })
-    expect(stdout.text).toContain(`Changed ${PREFIX} (cndl) to Read:Write.`)
+    expect(stdout.text).toContain(`Changed ${PREFIX} (cndl) to Write.`)
     expect(stderr.text).toContain("Warning: 2 prepared transactions will be refused at signing.")
   })
 
@@ -342,7 +348,7 @@ describe("T-B5: narrowing", () => {
       const { fetch } = createRoutedFetch({ [ACCESS_PATH]: handlers })
       const { deps, prompts } = depsFor(fetch, { answers: ["y"] })
       expect(await run(["keys", "access", PREFIX, "--access", "read-write"], deps)).toBe(0)
-      expect(prompts).toEqual([`Change ${PREFIX} (cndl) from Read:Write:Transfer to Read:Write? [y/N] `])
+      expect(prompts).toEqual([`Change ${PREFIX} (cndl) from Withdraw to Write? [y/N] `])
       expect(bodies).toHaveLength(2)
     }
     {
@@ -371,7 +377,7 @@ describe("T-B6: unchanged", () => {
     const { fetch } = createRoutedFetch({ [ACCESS_PATH]: handlers })
     const { deps, stdout, prompts } = depsFor(fetch)
     expect(await run(["keys", "access", PREFIX, "--access", "read-write"], deps)).toBe(0)
-    expect(lastLine(stdout.text)).toBe(`${PREFIX} (cndl) is already Read:Write. Nothing changed.`)
+    expect(lastLine(stdout.text)).toBe(`${PREFIX} (cndl) is already Write. Nothing changed.`)
     expect(prompts).toHaveLength(0)
     expect(bodies).toHaveLength(1)
   })
@@ -387,7 +393,7 @@ describe("T-B7: --json", () => {
     expect(lines).toHaveLength(1)
     const doc = JSON.parse(lines[0] as string)
     expect(doc).toMatchObject({ command: "keys access", direction: "widen", changeId: "j97abc", dryRun: false })
-    expect(stderr.text).toContain("Access          Read:Write  ->  Read:Write:Transfer")
+    expect(stderr.text).toContain("Access          Write  ->  Withdraw")
   })
 
   test("unchanged under --json is the preview document, tagged", async () => {
@@ -445,7 +451,7 @@ describe("T-B9: self", () => {
     expect(await run(["keys", "access", "self", "--access", "read-write-transfer"], deps)).toBe(1)
     expect(stderr.text).toContain("LOOSEN_REQUIRES_SESSION")
     expect(stderr.text).toContain(
-      "Widen it from a signed-in session or with the device token: candle keys access <prefix> --access read-write-transfer",
+      "Widen it from a signed-in session or with the device token: candle keys access <prefix> --access withdraw",
     )
   })
 
@@ -511,7 +517,7 @@ describe("T-B11: --history", () => {
     })
     const { deps, stdout } = depsFor(fetch)
     expect(await run(["keys", "access", PREFIX, "--history"], deps)).toBe(0)
-    expect(stdout.text).toContain("Read:Write:Transfer")
+    expect(stdout.text).toContain("Withdraw")
     expect(stdout.text).toContain("custom (")
     expect(stdout.text).toContain("dvc12345")
     expect(stdout.text).toContain("agent")

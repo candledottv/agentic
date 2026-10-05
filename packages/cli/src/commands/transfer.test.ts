@@ -291,11 +291,9 @@ describe("candle transfer (R19)", () => {
     expect(failure.code).toBe("SCOPE_MISSING")
     // BE-361 (T-B12): widening the bound key in place is the first path; the test key is not a
     // real key, so the prefix is named as a placeholder rather than guessed.
-    expect(failure.message).toContain(
-      "Widen the bound key with: candle keys access <bound prefix> --access read-write-transfer",
-    )
+    expect(failure.message).toContain("Widen the bound key with: candle keys access <bound prefix> --access withdraw")
     expect(failure.message.indexOf("candle keys access")).toBeLessThan(failure.message.indexOf("candle keys create"))
-    expect(failure.message).toContain("candle keys create --access read-write-transfer")
+    expect(failure.message).toContain("candle keys create --access withdraw")
     expect(failure.message).toContain("candle tee rebind")
     expect(f.paths()).not.toContain("/api/v1/agent/transfer/build")
   })

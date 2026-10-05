@@ -1,7 +1,7 @@
 /**
  * What an agent key GRANTS, in one place: the scope mirror, the three portal presets, the
  * capability chips, and the inverse that turns a key's stored scopes back into `Read` /
- * `Read:Write` / `Read:Write:Transfer`.
+ * `Write` / `Withdraw`.
  *
  * The web imports this through `@candle/shared`. The CLI carries a byte-identical copy
  * (`packages/cli/src/agent-key-access.ts`), because the CLI is published alone into the agentic
@@ -19,7 +19,7 @@
  * Deliberately NOT the API's whole list: `lp:write`, `entitlement:read` and `hacc:sync` are
  * absent, and stay absent. The two partner-only scopes cannot be named through self-service
  * issuance at all, and `lp:write` was never part of Full Access, so adding it here would widen
- * what Read:Write grants (Read and Read:Write agent key scopes, 2026-09-22 spec, A5 and 3.8).
+ * what Write grants (Read and Read:Write agent key scopes, 2026-09-22 spec, A5 and 3.8).
  * `scripts/check-agent-key-scope-mirrors.test.ts` checks this mirror carries `account:read`.
  */
 export const AGENT_KEY_SCOPES = [
@@ -31,12 +31,12 @@ export const AGENT_KEY_SCOPES = [
   "activity:write",
   "swap:write",
   // Agent transfers (2026-08-23 spec): move assets between the account's own wallets (and to
-  // owner-approved withdrawal addresses once the allowlist ships). Included in Read:Write (the
+  // owner-approved withdrawal addresses once the allowlist ships). Included in Write (the
   // withdrawal allowlist is the hard gate on external sends), never in Read.
   "transfer:write",
   // Read:Write:Transfer (2026-09-24 spec, D1): move funds OUT OF the wallet this key runs, to
   // wallets the owner linked while signed in or marked trusted, or to that wallet's own vault.
-  // Only the third preset grants it; never Read:Write, so no existing key changes power.
+  // Only the third preset grants it; never Write, so no existing key changes power.
   "transfer:bound",
 ] as const
 export type AgentKeyScope = (typeof AGENT_KEY_SCOPES)[number]
@@ -45,7 +45,7 @@ export type AgentKeyScope = (typeof AGENT_KEY_SCOPES)[number]
  * Three presets. Read and Read:Write (2026-09-22 spec, R1) replaced "Launch only" / "Full
  * access": the old split asked "can this key move funds", and every read on the account rode
  * along on whichever WRITE scope gated it, so there was no way to grant reading without granting
- * doing. Read:Write:Transfer (2026-09-24 spec, D1 / R3) is Read:Write plus `transfer:bound`: the
+ * doing. Read:Write:Transfer (2026-09-24 spec, D1 / R3) is Write plus `transfer:bound`: the
  * same key can also move funds out of the wallet it is bound to, to the account's own wallets.
  *
  * The ids are new rather than reused (`launcher` / `full`) on purpose: `scopesForPreset("full")`
@@ -58,7 +58,7 @@ export type AgentKeyPreset = "read" | "readwrite" | "readwritetransfer"
 const READ_SCOPES: readonly AgentKeyScope[] = ["account:read"]
 
 /**
- * Read:Write: everything Full Access granted, plus `account:read`. An EXPLICIT list, never
+ * Write: everything Full Access granted, plus `account:read`. An EXPLICIT list, never
  * `[...AGENT_KEY_SCOPES]`: spreading the mirror would let a later addition to it silently widen
  * this preset (spec 3.8). `lp:write` is not here because Full Access never granted it (spec A5).
  */
@@ -72,8 +72,8 @@ const READWRITE_SCOPES: readonly AgentKeyScope[] = [
 ]
 
 /**
- * Read:Write:Transfer: exactly Read:Write plus `transfer:bound`, again as an EXPLICIT list (2026-09-24
- * spec, D1: "an explicit list, never a spread"). `transfer:write` stays in Read:Write, so the new
+ * Withdraw: exactly Write plus `transfer:bound`, again as an EXPLICIT list (2026-09-24
+ * spec, D1: "an explicit list, never a spread"). `transfer:write` stays in Write, so the new
  * power is isolated by the new scope alone, and the API refuses `transfer:bound` without
  * `transfer:write` at mint, which this list satisfies.
  */
@@ -109,8 +109,8 @@ export function scopesForPreset(preset: AgentKeyPreset): AgentKeyScope[] {
 /** The words each preset is shown as: the web's create-form picker and the CLI's Access column. */
 export const AGENT_KEY_PRESET_LABELS = {
   read: "Read",
-  readwrite: "Read:Write",
-  readwritetransfer: "Read:Write:Transfer",
+  readwrite: "Write",
+  readwritetransfer: "Withdraw",
 } as const satisfies Record<AgentKeyPreset, string>
 
 function sameSet(scopes: readonly string[], preset: readonly string[]): boolean {
@@ -121,7 +121,7 @@ function sameSet(scopes: readonly string[], preset: readonly string[]): boolean 
 /**
  * The inverse of `scopesForPreset`: which preset a key's STORED scopes are. Set equality against
  * each preset's own list, so order and duplicates do not matter and the answer cannot drift from
- * what the create form mints. Anything else -- a strict subset, a superset (Read:Write plus
+ * what the create form mints. Anything else -- a strict subset, a superset (Write plus
  * `lp:write`), or a legacy Full Access key without `account:read` -- is null.
  */
 export function presetForScopes(scopes: readonly string[]): AgentKeyPreset | null {
@@ -150,7 +150,7 @@ export interface AgentKeyCapabilities {
  * `activity:write` grants activity reporting.
  *
  * Derived from the STORED scopes, never from a preset name: a key issued before the Read /
- * Read:Write presets existed keeps its scopes until revoked, matches neither preset, and must be
+ * Write presets existed keeps its scopes until revoked, matches neither preset, and must be
  * described by what it can actually do (Read and Read:Write agent key scopes, 2026-09-22 spec, R6).
  */
 export function agentKeyCapabilities(scopes: readonly string[]): AgentKeyCapabilities {
@@ -173,7 +173,7 @@ export const AGENT_KEY_CAPABILITY_CHIPS = [
   ["Launch", "launch"],
   ["Trade", "trade"],
   ["Transfer", "transfer"],
-  ["Linked transfer", "linkedTransfer"],
+  ["Withdraw", "linkedTransfer"],
   ["Report", "report"],
 ] as const satisfies ReadonlyArray<readonly [string, keyof AgentKeyCapabilities]>
 

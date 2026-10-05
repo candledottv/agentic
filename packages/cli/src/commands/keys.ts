@@ -36,12 +36,16 @@ import {
 const KEYS_PATH = "/api/v1/agent/keys"
 
 /**
- * `keys create --access <level>`: the web picker's three presets by their CLI spellings (Read:
- * Write:Transfer, 2026-09-24 spec, D6 / R17). Each maps to the exact scope list the shared module
+ * `keys create --access <level>`: the web picker's three presets by their CLI spellings (2026-09-24
+ * spec, D6 / R17). Each maps to the exact scope list the shared module
  * mints for that preset, so a key created here and one created on the web are the same key.
  */
 export const ACCESS_LEVELS: Record<string, AgentKeyPreset> = {
   read: "read",
+  write: "readwrite",
+  withdraw: "readwritetransfer",
+  // Permanent compatibility aliases; help and suggestions use the short names above.
+  transfer: "readwritetransfer",
   "read-write": "readwrite",
   "read-write-transfer": "readwritetransfer",
 }
@@ -105,8 +109,8 @@ export function labelCell(label: string | undefined): string {
 }
 
 /**
- * What a key IS, in one cell: `Read` or `Read:Write` when its stored scopes are exactly one of the
- * web's two presets, otherwise the web key manager's chip words for what it holds, or `–` (the
+ * What a key IS, in one cell: `Read`, `Write` or `Withdraw` when its stored scopes are exactly one of the
+ * web's three presets, otherwise the web key manager's chip words for what it holds, or `–` (the
  * web's own "cannot" glyph) when it holds none. The same shared classification the web reads, so
  * the two surfaces describe a key the same way (keys list Access and Name spec, 2026-09-23, D3).
  */
@@ -226,7 +230,7 @@ export async function keysCreate(args: string[], ctx: CommandContext): Promise<n
   if (parsed.values["--access"] !== undefined) {
     const preset = ACCESS_LEVELS[parsed.values["--access"]]
     if (preset === undefined) {
-      writeUsageFailure(deps, `--access must be one of: ${Object.keys(ACCESS_LEVELS).join(", ")}.`, json)
+      writeUsageFailure(deps, "--access must be one of: read, write, withdraw.", json)
       return 2
     }
     accessScopes = scopesForPreset(preset)

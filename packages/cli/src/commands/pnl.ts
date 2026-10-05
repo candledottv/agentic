@@ -316,7 +316,7 @@ export async function pnl(args: string[], ctx: CommandContext): Promise<number> 
         {
           code: "SCOPE_MISSING",
           message: "The account's P&L needs a key with the Read scope (account:read); this profile's key has none.",
-          suggestion: "Log in with a Read or Read:Write key, or read this key's own P&L: candle pnl --profile <name>",
+          suggestion: "Log in with a Read or Write key, or read this key's own P&L: candle pnl --profile <name>",
         },
         json,
       )

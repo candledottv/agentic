@@ -165,7 +165,7 @@ interface CommandRoute {
  */
 const COMMANDS: Record<string, CommandRoute> = {
   swap: { bare: swap, subcommands: { status: swapStatus } },
-  // Read:Write:Transfer (BE-332 PR C): move funds out of a TEE wallet through its bound key, to
+  // Transfer (BE-332 PR C): move funds out of a TEE wallet through its bound key, to
   // the account's own wallets or the wallet's vault. Server-built, relay-signed, never a vault key.
   transfer: { bare: transfer },
   launch: { bare: launch },

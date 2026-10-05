@@ -249,7 +249,7 @@ describe("formatScopesForSummary", () => {
     expect(summary.toLowerCase()).not.toContain("fund")
   })
 
-  // Read:Write:Transfer (BE-332 PR C): the third fund-moving scope is called out and never defaulted.
+  // Transfer (BE-332 PR C): the third fund-moving scope is called out and never defaulted.
   test("calls out transfer:bound as fund-moving, naming the wallet it runs", () => {
     const summary = formatScopesForSummary(["transfer:write", "transfer:bound"])
     expect(summary).toContain("transfer:bound (moves funds")

@@ -171,7 +171,7 @@ describe("keys list: Name and Access", () => {
     return lines.slice(headerAt).map((line) => line.split(/ {2,}/).map((cell) => cell.trim()))
   }
 
-  test("both of the operator's keys read Read:Write, the named one leads with its name, the other is blank", async () => {
+  test("both of the operator's keys read Write, the named one leads with its name, the other is blank", async () => {
     const { stdout } = await list([JPVPY8GS, B6P_TSRS])
     const lines = stdout.split("\n")
     const header = lines.find((line) => line.startsWith("Prefix")) ?? ""
@@ -189,10 +189,10 @@ describe("keys list: Name and Access", () => {
     const first = lines.find((line) => line.startsWith("JpVPY8gs")) ?? ""
     const second = lines.find((line) => line.startsWith("B6P-TSRs")) ?? ""
     // Neither row stores an embedded-wallet value, which is how a key from before it reads: allowed.
-    expect(first).toMatch(/^JpVPY8gs {2}cndl {2}Read:Write {2}allowed {3}production /)
+    expect(first).toMatch(/^JpVPY8gs {2}cndl {2}Write {3}allowed {3}production /)
     // Blank Name: the cell is padded to the column's width, so Access starts where it does above.
-    expect(second).toMatch(/^B6P-TSRs {8}Read:Write {2}allowed {3}production /)
-    expect(second.indexOf("Read:Write")).toBe(first.indexOf("Read:Write"))
+    expect(second).toMatch(/^B6P-TSRs {8}Write {3}allowed {3}production /)
+    expect(second.indexOf("Write")).toBe(first.indexOf("Write"))
     expect(first.endsWith("browser session")).toBe(true)
     expect(second.endsWith("this device")).toBe(true)
     expect(stdout).not.toContain("account:read")
@@ -236,14 +236,14 @@ describe("keys list: Name and Access", () => {
     const { stdout } = await list([JPVPY8GS, B6P_TSRS], ["--scopes"])
     const rows = tableRows(stdout)
     expect(rows[0]?.slice(0, 4)).toEqual(["Prefix", "Name", "Access", "Scopes"])
-    expect(rows.find((row) => row[0] === "JpVPY8gs")?.slice(1, 4)).toEqual(["cndl", "Read:Write", SORTED])
-    expect(rows.find((row) => row[0] === "B6P-TSRs")?.slice(1, 3)).toEqual(["Read:Write", SORTED])
+    expect(rows.find((row) => row[0] === "JpVPY8gs")?.slice(1, 4)).toEqual(["cndl", "Write", SORTED])
+    expect(rows.find((row) => row[0] === "B6P-TSRs")?.slice(1, 3)).toEqual(["Write", SORTED])
   })
 
   test("a label carrying a newline and a bidi override renders on one line with neither", async () => {
     const { stdout } = await list([{ ...JPVPY8GS, label: "evil\nname‮gnp.exe" }])
     const row = stdout.split("\n").find((line) => line.startsWith("JpVPY8gs")) ?? ""
-    expect(row).toContain("evil name gnp.exe  Read:Write")
+    expect(row).toContain("evil name gnp.exe  Write")
     expect(stdout).not.toContain("‮")
     expect(stdout.split("\n").some((line) => line.startsWith("name"))).toBe(false)
   })
@@ -762,6 +762,8 @@ describe("keys create --access (R17)", () => {
       ],
     ],
   ]
+  // Both generations of spellings send identical scopes, without deprecation output.
+  LEVELS.push(["write", LEVELS[1]?.[1] ?? []], ["withdraw", LEVELS[2]?.[1] ?? []], ["transfer", LEVELS[2]?.[1] ?? []])
   for (const [level, scopes] of LEVELS) {
     test(`--access ${level} sends exactly the preset's scope list`, async () => {
       const { fetch, calls } = createRoutedFetch({
@@ -784,6 +786,7 @@ describe("keys create --access (R17)", () => {
       expect(calls).toHaveLength(1)
       expect((JSON.parse(String(calls[0]?.init.body)) as Record<string, unknown>).scopes).toEqual(scopes)
       expect(stdout.text).not.toContain("No --access or --scopes given")
+      expect(stdout.text).not.toMatch(/deprecated|alias/i)
     })
   }
 
@@ -835,14 +838,14 @@ describe("keys create --access (R17)", () => {
     )
     expect(code).toBe(2)
     expect(calls).toHaveLength(0)
-    expect(stderr.text).toContain("read, read-write, read-write-transfer")
+    expect(stderr.text).toContain("read, write, withdraw")
   })
 })
 
 // R18: `keys list` reads the shared classification, so the third preset prints its name and a
-// key holding transfer:bound in any other combination prints its chip words, Linked transfer included.
-describe("keys list: Read:Write:Transfer (R18)", () => {
-  test("prints Read:Write:Transfer for the preset and Linked transfer for a custom set", async () => {
+// key holding transfer:bound in any other combination prints its chip words, Withdraw included.
+describe("keys list: Withdraw (R18)", () => {
+  test("prints Withdraw for the preset and Withdraw for a custom set", async () => {
     const { fetch } = createRoutedFetch({
       "/api/v1/agent/keys": () =>
         jsonResponse(200, {
@@ -882,8 +885,8 @@ describe("keys list: Read:Write:Transfer (R18)", () => {
     const [, ...tableLines] = stdout.text.split("\n")
     const first = tableLines.find((line) => line.startsWith("ck_livermt"))
     const second = tableLines.find((line) => line.startsWith("ck_livecus"))
-    expect(first).toMatch(/^ck_livermt {2}rebalancer {2}Read:Write:Transfer {2,}allowed {2,}production /)
-    expect(second).toContain("Transfer, Linked transfer")
-    expect(second).not.toContain("Read:Write:Transfer")
+    expect(first).toMatch(/^ck_livermt {2}rebalancer {2}Withdraw {2,}allowed {2,}production /)
+    expect(second).toContain("Transfer, Withdraw")
+    expect(second).not.toMatch(/ {2}Withdraw {2}/)
   })
 })

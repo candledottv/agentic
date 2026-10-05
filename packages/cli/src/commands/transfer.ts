@@ -225,7 +225,7 @@ export async function transfer(args: string[], ctx: CommandContext): Promise<num
     if (!payer.scopes.includes("transfer:bound"))
       throw new TradingError(
         "SCOPE_MISSING",
-        `Moving funds out of a TEE wallet needs a Read:Write:Transfer key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access read-write-transfer. Or mint one with: candle keys create --access read-write-transfer, then bind the wallet to it with: candle tee rebind`,
+        `Moving funds out of a TEE wallet needs a Withdraw key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access withdraw. Or mint one with: candle keys create --access withdraw, then bind the wallet to it with: candle tee rebind`,
       )
     const wallet = payer.wallet
     const destination = await resolveDestination(ctx, key, wallet, to)
@@ -344,7 +344,7 @@ async function hoodTransfer(
   if (!payer.scopes.includes("transfer:bound"))
     throw new TradingError(
       "SCOPE_MISSING",
-      `Moving funds out of a TEE wallet needs a Read:Write:Transfer key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access read-write-transfer. Or mint one with: candle keys create --access read-write-transfer, then bind the wallet to it with: candle tee rebind`,
+      `Moving funds out of a TEE wallet needs a Withdraw key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access withdraw. Or mint one with: candle keys create --access withdraw, then bind the wallet to it with: candle tee rebind`,
     )
   const wallet: TradingWallet = payer.wallet
   const destination = await resolveDestination(ctx, key, wallet, to, "hood")

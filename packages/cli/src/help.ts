@@ -367,7 +367,7 @@ export const HELP: Record<string, Topic> = {
     group: "Trade",
     summary: "Move funds out of a TEE wallet to your own wallets or its vault, through its bound key",
     description:
-      "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Read:Write:Transfer key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted. To a linked wallet the amount counts against the key's spend caps and must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
+      "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Withdraw key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted. To a linked wallet the amount counts against the key's spend caps and must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
     usage: [
       "candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <tee>] [--yes] [--json]",
     ],
@@ -496,17 +496,16 @@ export const HELP: Record<string, Topic> = {
     rows: [
       {
         invocation: "list [--scopes]",
-        description:
-          "List API keys: name and Read, Read:Write or Read:Write:Transfer access; --scopes adds the raw scopes",
+        description: "List API keys: name and Read, Write or Withdraw access; --scopes adds the raw scopes",
       },
       {
         invocation:
-          "create [--access read|read-write|read-write-transfer | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow]",
+          "create [--access read|write|withdraw | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow]",
         description:
-          "Create an API key; --access mints one of the three levels (read-write-transfer can move funds out of the wallet it runs). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal",
+          "Create an API key; --access mints one of the three levels (withdraw can move funds out of the wallet it runs). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal",
       },
       {
-        invocation: "access <prefix|label|self> (--access read|read-write|read-write-transfer [--yes] | --history)",
+        invocation: "access <prefix|label|self> (--access read|write|withdraw [--yes] | --history)",
         description:
           "Change an existing key's level in place (same key, wallets and caps). Widening needs the device token and the prefix typed back at a terminal; --yes skips the prompt when narrowing; self narrows the profile's own key. --history lists the key's changes and who made them",
       },
@@ -551,9 +550,9 @@ export const HELP: Record<string, Topic> = {
     ],
     examples: [
       "candle keys list",
-      "candle keys create --access read-write-transfer --label rebalancer",
+      "candle keys create --access withdraw --label rebalancer",
       "candle keys create --scopes trade:write --label agent-one",
-      "candle keys access cndl --access read-write-transfer",
+      "candle keys access cndl --access withdraw",
       "candle keys access self --access read --yes",
       "candle keys update agent-one --embedded-wallet deny --yes",
       "candle keys self embedded-wallet deny",

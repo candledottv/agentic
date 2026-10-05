@@ -1,6 +1,6 @@
 /**
  * `candle keys access` (BE-361, spec docs/superpowers/specs/2026-09-24-change-key-access-design.md,
- * section 9): move an existing API key between Read, Read:Write and Read:Write:Transfer in place.
+ * section 9): move an existing API key between Read, Write and Withdraw in place.
  * Same prefix, same secret, same profile, same wallets, same caps.
  *
  * For a prefix or a label the credential is the device token, the owner's CLI credential
@@ -38,16 +38,18 @@ import { PORTAL_REVOKE_LINE, resolveTargetKey } from "./tee-rebind"
 const KEYS_PATH = "/api/v1/agent/keys"
 
 export const USAGE_ACCESS =
-  "Usage: candle keys access <prefix|label|self> --access <read|read-write|read-write-transfer> [--yes] [--json]\n" +
+  "Usage: candle keys access <prefix|label|self> --access <read|write|withdraw> [--yes] [--json]\n" +
   "       candle keys access <prefix|label> --history [--json]"
 
 /** `self` names the acting key; a key prefix is 8 characters, so it is never a real prefix. */
 const SELF = "self"
 
 /** The CLI spelling of each preset, the inverse of `ACCESS_LEVELS`, for the suggestions. */
-const CLI_SPELLING: Record<AgentKeyPreset, string> = Object.fromEntries(
-  Object.entries(ACCESS_LEVELS).map(([spelling, preset]) => [preset, spelling]),
-) as Record<AgentKeyPreset, string>
+const CLI_SPELLING: Record<AgentKeyPreset, string> = {
+  read: "read",
+  readwrite: "write",
+  readwritetransfer: "withdraw",
+}
 
 const NO_API_KEY = {
   code: "API_KEY_REQUIRED",
@@ -263,7 +265,7 @@ export async function keysAccess(args: string[], ctx: CommandContext): Promise<n
   }
   const preset = ACCESS_LEVELS[accessFlag as string]
   if (preset === undefined) {
-    writeUsageFailure(deps, `--access must be one of: ${Object.keys(ACCESS_LEVELS).join(", ")}.`, json)
+    writeUsageFailure(deps, "--access must be one of: read, write, withdraw.", json)
     return 2
   }
 

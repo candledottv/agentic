@@ -343,14 +343,14 @@ var init_agent_key_access = __esm(() => {
   ];
   AGENT_KEY_PRESET_LABELS = {
     read: "Read",
-    readwrite: "Read:Write",
-    readwritetransfer: "Read:Write:Transfer"
+    readwrite: "Write",
+    readwritetransfer: "Withdraw"
   };
   AGENT_KEY_CAPABILITY_CHIPS = [
     ["Launch", "launch"],
     ["Trade", "trade"],
     ["Transfer", "transfer"],
-    ["Linked transfer", "linkedTransfer"],
+    ["Withdraw", "linkedTransfer"],
     ["Report", "report"]
   ];
 });
@@ -1028,7 +1028,7 @@ async function keysCreate(args, ctx) {
   if (parsed.values["--access"] !== undefined) {
     const preset = ACCESS_LEVELS[parsed.values["--access"]];
     if (preset === undefined) {
-      writeUsageFailure(deps, `--access must be one of: ${Object.keys(ACCESS_LEVELS).join(", ")}.`, json);
+      writeUsageFailure(deps, "--access must be one of: read, write, withdraw.", json);
       return 2;
     }
     accessScopes = scopesForPreset(preset);
@@ -1226,6 +1226,9 @@ var init_keys = __esm(() => {
   init_keys_embedded_wallet();
   ACCESS_LEVELS = {
     read: "read",
+    write: "readwrite",
+    withdraw: "readwritetransfer",
+    transfer: "readwritetransfer",
     "read-write": "readwrite",
     "read-write-transfer": "readwritetransfer"
   };
@@ -52847,7 +52850,7 @@ async function authLogin(args, ctx) {
   }
   const scopes = parsed.values["--scopes"] ? parseScopesList(parsed.values["--scopes"]) : undefined;
   if (scopes?.includes("transfer:bound")) {
-    writeUsageFailure(deps, "transfer:bound is not available on a device login. Mint a Read:Write:Transfer key with: candle keys create --access read-write-transfer, or widen an existing key with: candle keys access <prefix> --access read-write-transfer", json);
+    writeUsageFailure(deps, "transfer:bound is not available on a device login. Mint a Withdraw key with: candle keys create --access withdraw, or widen an existing key with: candle keys access <prefix> --access withdraw", json);
     return 2;
   }
   const label = parsed.values["--label"]?.trim();
@@ -53460,7 +53463,7 @@ var HELP = {
   transfer: {
     group: "Trade",
     summary: "Move funds out of a TEE wallet to your own wallets or its vault, through its bound key",
-    description: "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Read:Write:Transfer key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted. To a linked wallet the amount counts against the key's spend caps and must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
+    description: "Moves one asset out of a TEE wallet this machine can sign for. The bound key must be a Withdraw key (transfer:bound); from that wallet, Candle allows only its own pinned vault or another of the account's wallets you linked while signed in or marked trusted. To a linked wallet the amount counts against the key's spend caps and must be a base asset; to the vault any token and max are allowed. Candle builds the transaction, this machine approves the relay, Privy signs, Candle broadcasts. The destination and its kind are shown before you confirm. The asset decides the chain: ETH, USDG or --token is Hood, from a Hood TEE wallet, where this machine checks the one leg moves exactly what you confirmed before it is signed, and ETH max leaves the gas reserve.",
     usage: [
       "candle transfer --to <address|wallet name|vault> --asset <SOL|USDC|CNDL|ETH|USDG>|--mint <mint>|--token <0x...> --amount <decimal|max> [--wallet <tee>] [--yes] [--json]"
     ],
@@ -53578,14 +53581,14 @@ var HELP = {
     rows: [
       {
         invocation: "list [--scopes]",
-        description: "List API keys: name and Read, Read:Write or Read:Write:Transfer access; --scopes adds the raw scopes"
+        description: "List API keys: name and Read, Write or Withdraw access; --scopes adds the raw scopes"
       },
       {
-        invocation: "create [--access read|read-write|read-write-transfer | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow]",
-        description: "Create an API key; --access mints one of the three levels (read-write-transfer can move funds out of the wallet it runs). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal"
+        invocation: "create [--access read|write|withdraw | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow]",
+        description: "Create an API key; --access mints one of the three levels (withdraw can move funds out of the wallet it runs). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal"
       },
       {
-        invocation: "access <prefix|label|self> (--access read|read-write|read-write-transfer [--yes] | --history)",
+        invocation: "access <prefix|label|self> (--access read|write|withdraw [--yes] | --history)",
         description: "Change an existing key's level in place (same key, wallets and caps). Widening needs the device token and the prefix typed back at a terminal; --yes skips the prompt when narrowing; self narrows the profile's own key. --history lists the key's changes and who made them"
       },
       {
@@ -53620,9 +53623,9 @@ var HELP = {
     ],
     examples: [
       "candle keys list",
-      "candle keys create --access read-write-transfer --label rebalancer",
+      "candle keys create --access withdraw --label rebalancer",
       "candle keys create --scopes trade:write --label agent-one",
-      "candle keys access cndl --access read-write-transfer",
+      "candle keys access cndl --access withdraw",
       "candle keys access self --access read --yes",
       "candle keys update agent-one --embedded-wallet deny --yes",
       "candle keys self embedded-wallet deny",
@@ -59415,10 +59418,14 @@ init_promote_support();
 init_keys();
 init_tee_rebind();
 var KEYS_PATH4 = "/api/v1/agent/keys";
-var USAGE_ACCESS = `Usage: candle keys access <prefix|label|self> --access <read|read-write|read-write-transfer> [--yes] [--json]
+var USAGE_ACCESS = `Usage: candle keys access <prefix|label|self> --access <read|write|withdraw> [--yes] [--json]
 ` + "       candle keys access <prefix|label> --history [--json]";
 var SELF = "self";
-var CLI_SPELLING = Object.fromEntries(Object.entries(ACCESS_LEVELS).map(([spelling, preset]) => [preset, spelling]));
+var CLI_SPELLING = {
+  read: "read",
+  readwrite: "write",
+  readwritetransfer: "withdraw"
+};
 var NO_API_KEY2 = {
   code: "API_KEY_REQUIRED",
   message: "candle keys access self changes the profile's own API key, and this profile holds none.",
@@ -59563,7 +59570,7 @@ async function keysAccess(args, ctx) {
   }
   const preset = ACCESS_LEVELS[accessFlag];
   if (preset === undefined) {
-    writeUsageFailure(deps, `--access must be one of: ${Object.keys(ACCESS_LEVELS).join(", ")}.`, json);
+    writeUsageFailure(deps, "--access must be one of: read, write, withdraw.", json);
     return 2;
   }
   await printIdentity(ctx);
@@ -62384,7 +62391,7 @@ async function pnl(args, ctx) {
       writeLocalFailure(deps, {
         code: "SCOPE_MISSING",
         message: "The account's P&L needs a key with the Read scope (account:read); this profile's key has none.",
-        suggestion: "Log in with a Read or Read:Write key, or read this key's own P&L: candle pnl --profile <name>"
+        suggestion: "Log in with a Read or Write key, or read this key's own P&L: candle pnl --profile <name>"
       }, json);
       return 1;
     }
@@ -64381,7 +64388,7 @@ async function transfer(args, ctx) {
     if (payer.kind === "embedded")
       throw new TradingError("PAYER_UNSUPPORTED", "This command moves a linked wallet this machine can sign for. The embedded wallet transfers through the agent transfer rail (MCP candle_transfer), not from here. Name a TEE wallet with --wallet.");
     if (!payer.scopes.includes("transfer:bound"))
-      throw new TradingError("SCOPE_MISSING", `Moving funds out of a TEE wallet needs a Read:Write:Transfer key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access read-write-transfer. Or mint one with: candle keys create --access read-write-transfer, then bind the wallet to it with: candle tee rebind`);
+      throw new TradingError("SCOPE_MISSING", `Moving funds out of a TEE wallet needs a Withdraw key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access withdraw. Or mint one with: candle keys create --access withdraw, then bind the wallet to it with: candle tee rebind`);
     const wallet = payer.wallet;
     const destination = await resolveDestination(ctx, key, wallet, to);
     const label = asset ?? flags["--mint"];
@@ -64453,7 +64460,7 @@ async function hoodTransfer(ctx, args) {
   if (payer.kind === "embedded")
     throw new TradingError("PAYER_UNSUPPORTED", "This command moves a linked wallet this machine can sign for. The embedded wallet transfers through the agent transfer rail (MCP candle_transfer), not from here. Name a Hood TEE wallet with --wallet.");
   if (!payer.scopes.includes("transfer:bound"))
-    throw new TradingError("SCOPE_MISSING", `Moving funds out of a TEE wallet needs a Read:Write:Transfer key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access read-write-transfer. Or mint one with: candle keys create --access read-write-transfer, then bind the wallet to it with: candle tee rebind`);
+    throw new TradingError("SCOPE_MISSING", `Moving funds out of a TEE wallet needs a Withdraw key. Widen the bound key with: candle keys access ${apiKeyPrefix(key) ?? "<bound prefix>"} --access withdraw. Or mint one with: candle keys create --access withdraw, then bind the wallet to it with: candle tee rebind`);
   const wallet = payer.wallet;
   const destination = await resolveDestination(ctx, key, wallet, to, "hood");
   const decimals = asset ? HOOD_BASES[asset]?.decimals ?? 18 : await hoodDecimals({ chain: "hood", asset: tokenAddress }, lazyEvmRpc(ctx, flags["--rpc-url"]));
