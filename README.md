@@ -253,14 +253,15 @@ Every platform below installs the same twenty-two skills (in `skills/`).
 
 | Platform | Install | Details |
 | --- | --- | --- |
-| Claude Code | `/plugin marketplace add candledottv/agentic` | [`.claude-plugin/`](.claude-plugin/) |
+| Claude Code | `claude plugin marketplace add candledottv/agentic`, then `claude plugin install candle@candle` | [`.claude-plugin/`](.claude-plugin/) |
 | Cursor | Follow the install doc | [`.cursor-plugin/INSTALL.md`](.cursor-plugin/INSTALL.md) |
 | Codex | Follow the install doc | [`.codex/INSTALL.md`](.codex/INSTALL.md) |
 | OpenCode | Follow the install doc | [`.opencode/INSTALL.md`](.opencode/INSTALL.md) |
 | Grok Build | Follow the install doc | [`.grok/INSTALL.md`](.grok/INSTALL.md) |
 
 No platform wires the MCP server for you: the skills install on their own, and the server is set
-up separately with the `npx` or `candle mcp` config above. Each platform's install doc spells out where
+up separately with the `npx` or `candle mcp` config above. In Claude Code, after `candle auth login`:
+`claude mcp add --scope user candle -- "$(command -v candle)" mcp`. Each platform's install doc spells out where
 that config goes; the skills-vs-server split is explained under
 [Skills for coding agents](https://docs.candle.tv/developers/coding-agents).
 
