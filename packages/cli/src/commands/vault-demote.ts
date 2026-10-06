@@ -8,22 +8,20 @@
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"
 import { writeLocalFailure } from "../render"
+import { openSolanaClient } from "../solana-endpoint"
 import { VaultError } from "../vault/errors"
 import { assertColdVaultDestination } from "../vault/promote-support"
 import { requireTeeDestination } from "../vault/reconcile-grant"
-import { commitVault } from "../vault/store"
-import { maybeReconcileVaultTee, releaseResolvedTee, resolveTeeAddress } from "../vault/tee-resolve"
-import { teeDisable, teeSweep } from "./tee"
-import { namesEvmWallet, vaultDemoteEvm } from "./tee-evm"
 import {
-  refuseEnvPassphrase,
-  requireTty,
-  requireVaultRaw,
-  runVaultCommand,
-  unlockInteractively,
-  usage,
-  vaultPathFor,
-} from "./vault-support"
+  applyVault,
+  commitVaultTeeEntry,
+  maybeReconcileVaultTee,
+  releaseResolvedTee,
+  resolveTeeAddress,
+} from "../vault/tee-resolve"
+import { type DemoteStep, nothingLeftToSweep, teeDisable, teeSweep } from "./tee"
+import { namesEvmWallet, vaultDemoteEvm } from "./tee-evm"
+import { assertNotOlderCopy, refuseEnvPassphrase, requireTty, usage, vaultPathFor } from "./vault-support"
 
 export async function vaultDemote(args: string[], ctx: CommandContext): Promise<number> {
   // Phase 4b (BE-391, D1): a Hood TEE wallet is demoted by `tee-evm.ts` (disable, then sweep).
@@ -38,9 +36,6 @@ export async function vaultDemote(args: string[], ctx: CommandContext): Promise<
   if (!address || extra !== undefined) {
     return usage(ctx, "Usage: candle vault demote <tee-address> [--rpc-url <url>] [--emergency] [--sweep-to <label>]")
   }
-  // BE-355: forwarded to `tee sweep` only when the member gave it; otherwise the sweep resolves
-  // for itself, so the host line prints once, in the sweep, with the true source.
-  const rpcUrl = parsed.values["--rpc-url"]
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "vault demote")) return 1
 
@@ -51,7 +46,14 @@ export async function vaultDemote(args: string[], ctx: CommandContext): Promise<
   const path = resolvedVault.path
   const emergency = parsed.booleans.has("--emergency")
   const sweepTo = parsed.values["--sweep-to"]
+  // BE-355 / BE-981: one client for the whole demote, resolved from --rpc-url when given and
+  // otherwise exactly as `tee sweep` would. Building it makes no request, so a bad --rpc-url is
+  // refused before the unlock, and the host line prints once, on the first read.
+  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
+  if ("error" in solana) return usage(ctx, solana.error)
 
+  // BE-981: the only unlock in a Solana demote. The disable and the sweep below run against this
+  // open vault, and it is closed once, in the finally block.
   const resolved = await resolveTeeAddress(ctx, parsed, address, async () => ({
     ok: false as const,
     code: 1,
@@ -84,13 +86,13 @@ export async function vaultDemote(args: string[], ctx: CommandContext): Promise<
     return 1
   }
 
-  let released = false
+  const vaultResolved = resolved.resolved
   try {
-    const vaultResolved = resolved.resolved
     // CC-10 demote column: unresolved / unreadable / strand-final continue into adapter recovery.
     const reconciled = await maybeReconcileVaultTee(ctx, vaultResolved, "demote")
     if (reconciled.code !== null) return reconciled.code
     const entry = reconciled.entry
+    const step: DemoteStep = { resolved: vaultResolved, solana }
 
     if (entry.tee?.vaultDestination === undefined) {
       if (sweepTo === undefined) {
@@ -99,47 +101,25 @@ export async function vaultDemote(args: string[], ctx: CommandContext): Promise<
             "Pass --sweep-to <vault-key-label> (subject to the recovery destination rule), or adopt the server's pin.",
         })
       }
-      releaseResolvedTee(resolved.resolved)
-      released = true
-      return await runVaultCommand(ctx, async ({ hold }) => {
-        const raw = await requireVaultRaw(ctx, resolvedVault)
-        const opened = await unlockInteractively(ctx, path, raw, {
-          acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
-        })
-        const vault = hold(opened.vault)
-        const destination = assertColdVaultDestination(vault.index, sweepTo, {})
-        await commitVault(
-          vault,
-          {
-            index: {
-              hd: vault.index.hd,
-              entries: vault.index.entries.map((e) =>
-                e.address === address
-                  ? {
-                      ...e,
-                      tee: {
-                        ...(e.tee ?? { network: "solana-mainnet", lifecycle: "local-candidate" }),
-                        vaultDestination: destination.address,
-                      },
-                    }
-                  : e,
-              ),
-            },
-          },
-          ctx.deps,
-        )
-        return demoteWithAdapter(ctx, { linkedWalletId: entry.linkedWalletId }, address, rpcUrl, true)
+      // ED-6: pinning the destination writes the vault, and an older copy of the file is refused
+      // for that write unless --accept-older-copy, as the separate unlock for it used to refuse.
+      await assertNotOlderCopy(ctx, path, vaultResolved.vault.raw, parsed.booleans.has("--accept-older-copy"))
+      const destination = assertColdVaultDestination(vaultResolved.vault.index, sweepTo, {})
+      const next = await commitVaultTeeEntry(ctx, vaultResolved.vault, entry.id, (target) => {
+        target.tee = {
+          ...(target.tee ?? { network: "solana-mainnet", lifecycle: "local-candidate" }),
+          vaultDestination: destination.address,
+        }
       })
+      applyVault(vaultResolved, next)
+      return await demoteWithAdapter(ctx, step, address, parsed.values["--rpc-url"], true)
     }
 
     requireTeeDestination(entry)
     // Unresolved, strand-final, and unreadable all recover under the emergency sweep path when
     // the grant is not identified (no linkedWalletId) or the entry is stranded.
     const needsEmergency = emergency || entry.linkedWalletId === undefined || entry.tee?.lifecycle === "stranded"
-    const snapshot = { linkedWalletId: entry.linkedWalletId }
-    releaseResolvedTee(resolved.resolved)
-    released = true
-    return demoteWithAdapter(ctx, snapshot, address, rpcUrl, needsEmergency)
+    return await demoteWithAdapter(ctx, step, address, parsed.values["--rpc-url"], needsEmergency)
   } catch (error) {
     if (error instanceof VaultError) {
       writeLocalFailure(
@@ -155,23 +135,26 @@ export async function vaultDemote(args: string[], ctx: CommandContext): Promise<
     }
     throw error
   } finally {
-    if (!released) releaseResolvedTee(resolved.resolved)
+    releaseResolvedTee(vaultResolved)
   }
 }
 
 /**
  * CC-10 adapter: call disable only when linkedWalletId is known; otherwise emergency sweep without
- * claiming a stop, and never print "never enabled".
+ * claiming a stop, and never print "never enabled". Both steps run inside demote's one unlock
+ * (BE-981), and a wallet the chain shows empty is not swept at all.
  */
 async function demoteWithAdapter(
   ctx: CommandContext,
-  entry: { linkedWalletId?: string },
+  step: DemoteStep,
   address: string,
   rpcUrl: string | undefined,
   emergency: boolean,
 ): Promise<number> {
-  if (entry.linkedWalletId !== undefined) {
-    const disableCode = await teeDisable([address], ctx)
+  const linkedWalletId = step.resolved.entry.linkedWalletId
+  let disableCode: number | null = null
+  if (linkedWalletId !== undefined) {
+    disableCode = await teeDisable([address], ctx, step)
     if (disableCode !== 0 && disableCode !== 3 && !emergency) return disableCode
   } else {
     ctx.deps.stdout.write(
@@ -179,7 +162,23 @@ async function demoteWithAdapter(
     )
   }
 
+  const destination = step.resolved.entry.tee?.vaultDestination
+  if (await nothingLeftToSweep(step.solana, step.resolved.entry)) {
+    // Not a retirement: the entry keeps its lifecycle, as a sweep with no receipts would leave it.
+    // Exit 0 only when the disable was verified; otherwise remote authority is still open.
+    const code = disableCode === 0 ? 0 : 3
+    if (ctx.json) {
+      ctx.deps.stdout.write(
+        `${JSON.stringify({ address, vaultDestination: destination, swept: false, nothingToSweep: true, lamports: "0", tokenAccounts: 0 })}\n`,
+      )
+    } else {
+      ctx.deps.stdout.write("Nothing to sweep: 0 SOL, 0 token accounts.\n")
+    }
+    return code
+  }
+
+  if (!ctx.json) ctx.deps.stdout.write(`Sweeping remaining funds to ${destination}...\n`)
   const sweepArgs = rpcUrl === undefined ? [address] : [address, "--rpc-url", rpcUrl]
-  if (emergency || entry.linkedWalletId === undefined) sweepArgs.push("--emergency")
-  return teeSweep(sweepArgs, ctx)
+  if (emergency || linkedWalletId === undefined) sweepArgs.push("--emergency")
+  return teeSweep(sweepArgs, ctx, step)
 }

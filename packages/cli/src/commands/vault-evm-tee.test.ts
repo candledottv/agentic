@@ -938,6 +938,22 @@ describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
     expect(fx.stdout.text).toContain("Swept.")
   })
 
+  test("BE-981: vault demote unlocks once and prints no 'Recover the funds' hint", async () => {
+    const fx = await promoted()
+    fx.node.setEth(fx.wallet, ETH)
+    fx.node.setToken(USDG, fx.wallet, 9n)
+    fx.prompts.length = 0
+    expect(await fx.cli(["vault", "demote", fx.wallet])).toBe(0)
+    expect(fx.prompts.filter((prompt) => /passphrase/i.test(prompt))).toHaveLength(1)
+    expect(fx.stdout.text).toContain("Stopped")
+    expect(fx.stdout.text).not.toContain("Recover the funds:")
+    expect(fx.stdout.text).toContain(`Sweeping remaining funds to ${FIXTURE_EVM_0}...`)
+    expect(fx.stdout.text).toContain("Swept.")
+    // The disable reached the server before the sweep signed anything.
+    expect(fx.api.state.calls.some((call) => call.method === "DELETE")).toBe(true)
+    expect(fx.node.tokenOf(USDG, fx.wallet)).toBe(0n)
+  })
+
   test("the production deps wire the record writer; a landed leg's append never fails: no vault, a version 3 header", async () => {
     const { buildRealDeps } = await import("../index")
     expect((await buildRealDeps()).appendEvmRecord).toBe(appendEvmRecordForTrade)

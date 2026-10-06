@@ -161,6 +161,34 @@ export async function resolveTeeAddress(
   }
 }
 
+/** A resolve that hit the vault: the open vault, its entry, and the Phase 1-shaped view. */
+export type VaultResolvedTee = Extract<ResolvedTee, { source: "vault" }>
+
+/**
+ * BE-981: `vault demote` resolves once with `access: "read"` and signs its sweep with the same
+ * open vault, rather than unlocking a second time. This is the sign half of `resolveTeeAddress`
+ * against that vault: the secret is decrypted again, must re-derive the entry's address, and only
+ * then is kept as base58 for the signer. Throws `VAULT_VERIFY_FAILED` on a mismatch; the caller
+ * still owns the vault and releases it.
+ */
+export async function grantSignAccess(resolved: VaultResolvedTee): Promise<void> {
+  if (resolved.privateKeyBase58 === null) {
+    const secret = await decryptKey(resolved.vault, resolved.entry.id)
+    try {
+      if (addressFromSecret64(secret) !== resolved.entry.address) {
+        throw new VaultError(
+          "VAULT_VERIFY_FAILED",
+          `${resolved.entry.address} in the vault does not re-derive from its stored secret.`,
+        )
+      }
+      resolved.privateKeyBase58 = base58.encode(secret)
+    } finally {
+      wipe(secret)
+    }
+  }
+  resolved.legacyView = keyEntryAsKeystore(resolved.entry, resolved.privateKeyBase58)
+}
+
 export function releaseResolvedTee(resolved: ResolvedTee): void {
   if (resolved.source === "vault") closeVault(resolved.vault)
 }
@@ -358,7 +386,8 @@ export async function maybeReconcileVaultTee(
   return { entry: resolved.entry, code: null }
 }
 
-function applyVault(resolved: Extract<ResolvedTee, { source: "vault" }>, next: UnlockedVault): void {
+/** Points `resolved` at the vault a commit returned, and rebuilds its entry and Phase 1 view. */
+export function applyVault(resolved: VaultResolvedTee, next: UnlockedVault): void {
   resolved.vault.raw = next.raw
   resolved.vault.file = next.file
   resolved.vault.index = next.index

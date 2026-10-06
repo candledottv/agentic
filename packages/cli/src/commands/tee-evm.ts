@@ -223,6 +223,32 @@ export async function teeSweepEvm(args: string[], ctx: CommandContext): Promise<
       "Usage: candle tee sweep <0x address> [--rpc-url <url>] [--emergency] [--token <0x...>]... [--from-block <n>]",
     )
   }
+  const options = sweepOptions(ctx, parsed, tokenFlags)
+  if (typeof options === "number") return options
+  const { tokens, fromBlock, client } = options
+  if (!refuseEnvPassphrase(ctx)) return 1
+  if (!requireTty(ctx, "tee sweep")) return 1
+  const resolvedVault = vaultPathFor(ctx, parsed)
+  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
+  const emergency = parsed.booleans.has("--emergency")
+
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(ctx, resolvedVault)
+    // ED-6 stays best effort on the tee commands (tee-lookup.ts): an older copy opens with the warning.
+    const opened = await unlockInteractively(ctx, resolvedVault.path, raw, { acceptOlderCopy: true })
+    const vault = hold(opened.vault)
+    const entry = findEvmTee(vault, address)
+    if (entry === undefined) return unknownWallet(ctx, address)
+    return sweepEvmWallet({ ctx, vault, hold, entry, client, emergency, tokenFlags: tokens, fromBlock })
+  })
+}
+
+/** `--token`, `--from-block` and `--rpc-url` for a sweep, checked before any unlock; a number is a usage exit. */
+function sweepOptions(
+  ctx: CommandContext,
+  parsed: { values: Record<string, string> },
+  tokenFlags: string[],
+): { tokens: string[]; fromBlock: bigint | undefined; client: HoodClient } | number {
   const tokens: string[] = []
   for (const raw of tokenFlags) {
     const checked = checkEvmAddress(raw)
@@ -239,21 +265,7 @@ export async function teeSweepEvm(args: string[], ctx: CommandContext): Promise<
   }
   const client = resolveHoodClient(ctx, parsed.values["--rpc-url"])
   if ("error" in client) return usage(ctx, client.error)
-  if (!refuseEnvPassphrase(ctx)) return 1
-  if (!requireTty(ctx, "tee sweep")) return 1
-  const resolvedVault = vaultPathFor(ctx, parsed)
-  if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
-  const emergency = parsed.booleans.has("--emergency")
-
-  return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault)
-    // ED-6 stays best effort on the tee commands (tee-lookup.ts): an older copy opens with the warning.
-    const opened = await unlockInteractively(ctx, resolvedVault.path, raw, { acceptOlderCopy: true })
-    const vault = hold(opened.vault)
-    const entry = findEvmTee(vault, address)
-    if (entry === undefined) return unknownWallet(ctx, address)
-    return sweepEvmWallet({ ctx, vault, hold, entry, client, emergency, tokenFlags: tokens, fromBlock })
-  })
+  return { tokens, fromBlock, client }
 }
 
 interface SweepInput {
@@ -950,82 +962,100 @@ export async function teeDisableEvm(args: string[], ctx: CommandContext): Promis
   if (!requireTty(ctx, "tee disable")) return 1
   const resolvedVault = vaultPathFor(ctx, parsed)
   if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
-  const { deps, json } = ctx
   await printIdentity(ctx)
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, resolvedVault.path, raw, { acceptOlderCopy: true })
-    let vault = hold(opened.vault)
+    const vault = hold(opened.vault)
     const entry = findEvmTee(vault, address)
     if (entry === undefined) return unknownWallet(ctx, address)
-    if (entry.linkedWalletId === undefined) {
-      writeLocalFailure(
-        deps,
-        { code: "TEE_WALLET_NOT_ENABLED", message: `${entry.address} was never enabled; there is nothing to stop.` },
-        json,
-      )
-      return 1
-    }
-    const linkedWalletId = entry.linkedWalletId
-    const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date(deps.now()).toISOString()
-    vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({ ...tee, stopRequestedAt })))
-    const unconfirmed = (detail: string, suggestion: string): number => {
-      if (json) {
-        writeJson(deps, {
-          ok: false,
-          code: "STOP_UNCONFIRMED",
-          message: detail,
-          address: entry.address,
-          linkedWalletId,
-          stopRequestedAt,
-          remoteEnforcement: "unconfirmed",
-          suggestion,
-        })
-        return 1
-      }
-      deps.stderr.write(
-        `${detail}\nStop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${entry.address} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.\n${suggestion}\n`,
-      )
-      return 1
-    }
-    const apiKey = await resolveApiKey(deps, ctx.profile)
-    if (!apiKey) {
-      return unconfirmed(
-        "No API key available, so the server was not asked to stop the agent.",
-        `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle tee disable ${entry.address}`,
-      )
-    }
-    const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(linkedWalletId)}`, {
-      method: "DELETE",
-      auth: "key",
-      credentials: { apiKey },
-      apiUrl: ctx.apiUrl,
-      fetch: deps.fetch,
-      env: deps.env,
-    })
-    if (!result.ok) {
-      return unconfirmed(
-        `The stop request failed: ${result.message ?? `HTTP ${result.status}`}.`,
-        `Re-run: candle tee disable ${entry.address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`,
-      )
-    }
-    const outcome = readDisableOutcome(result.body)
-    // Ember 4c (4c-ED-10): disabling is never blocked by a bridge; it says the fill or refund still lands.
-    for (const warning of bridgeDisableWarnings(entry.address, result.body)) deps.stderr.write(`${warning}\n`)
-    if (json) {
-      writeJson(deps, { address: entry.address, linkedWalletId, ...(result.body as object) })
-      return outcome.complete ? 0 : 3
-    }
-    if (outcome.complete) {
-      deps.stdout.write(`Stopped ${entry.address}. Remote signing denial verified; the wallet is quarantined.\n`)
-      deps.stdout.write(`Recover the funds: candle tee sweep ${entry.address}\n`)
-      return 0
-    }
-    deps.stdout.write(
-      `Agent trading stopped at Candle for ${entry.address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.\nFunds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${entry.address}\nIf the provider is down or theft is suspected: candle tee sweep ${entry.address} --emergency\n`,
-    )
-    return 3
+    return (await disableEvmEntry(ctx, vault, hold, entry, false)).code
   })
+}
+
+/**
+ * The disable itself, against a vault the caller opened: `tee disable` after its own unlock, and
+ * `vault demote` inside its one unlock (BE-981). Returns the exit code and the newest vault, which
+ * the stop-intent write replaced. Under demote the standalone "Recover the funds" hint is not
+ * printed: demote sweeps next on its own.
+ */
+async function disableEvmEntry(
+  ctx: CommandContext,
+  opened: UnlockedVault,
+  hold: (vault: UnlockedVault) => UnlockedVault,
+  entry: KeyEntry,
+  inDemote: boolean,
+): Promise<{ code: number; vault: UnlockedVault }> {
+  const { deps, json } = ctx
+  let vault = opened
+  if (entry.linkedWalletId === undefined) {
+    writeLocalFailure(
+      deps,
+      { code: "TEE_WALLET_NOT_ENABLED", message: `${entry.address} was never enabled; there is nothing to stop.` },
+      json,
+    )
+    return { code: 1, vault }
+  }
+  const linkedWalletId = entry.linkedWalletId
+  const stopRequestedAt = entry.tee?.stopRequestedAt ?? new Date(deps.now()).toISOString()
+  vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({ ...tee, stopRequestedAt })))
+  const unconfirmed = (detail: string, suggestion: string): { code: number; vault: UnlockedVault } => {
+    if (json) {
+      writeJson(deps, {
+        ok: false,
+        code: "STOP_UNCONFIRMED",
+        message: detail,
+        address: entry.address,
+        linkedWalletId,
+        stopRequestedAt,
+        remoteEnforcement: "unconfirmed",
+        suggestion,
+      })
+      return { code: 1, vault }
+    }
+    deps.stderr.write(
+      `${detail}\nStop intent recorded locally at ${stopRequestedAt}: this CLI will not fund ${entry.address} again. Remote enforcement is UNCONFIRMED: the agent may still trade until the server acknowledges the stop.\n${suggestion}\n`,
+    )
+    return { code: 1, vault }
+  }
+  const apiKey = await resolveApiKey(deps, ctx.profile)
+  if (!apiKey) {
+    return unconfirmed(
+      "No API key available, so the server was not asked to stop the agent.",
+      `Stop it from your Candle session (revoke linked wallet ${linkedWalletId}), or restore the key and re-run: candle tee disable ${entry.address}`,
+    )
+  }
+  const result = await apiRequest(`/api/v1/agent/wallets/${encodeURIComponent(linkedWalletId)}`, {
+    method: "DELETE",
+    auth: "key",
+    credentials: { apiKey },
+    apiUrl: ctx.apiUrl,
+    fetch: deps.fetch,
+    env: deps.env,
+  })
+  if (!result.ok) {
+    return unconfirmed(
+      `The stop request failed: ${result.message ?? `HTTP ${result.status}`}.`,
+      `Re-run: candle tee disable ${entry.address}. If the key is lost or revoked, stop it from your Candle session (revoke linked wallet ${linkedWalletId}).`,
+    )
+  }
+  const outcome = readDisableOutcome(result.body)
+  // Ember 4c (4c-ED-10): disabling is never blocked by a bridge; it says the fill or refund still lands.
+  for (const warning of bridgeDisableWarnings(entry.address, result.body)) deps.stderr.write(`${warning}\n`)
+  if (json) {
+    writeJson(deps, { address: entry.address, linkedWalletId, ...(result.body as object) })
+    return { code: outcome.complete ? 0 : 3, vault }
+  }
+  if (outcome.complete) {
+    deps.stdout.write(`Stopped ${entry.address}. Remote signing denial verified; the wallet is quarantined.\n`)
+    if (!inDemote) deps.stdout.write(`Recover the funds: candle tee sweep ${entry.address}\n`)
+    return { code: 0, vault }
+  }
+  // Under demote, the line after this one says what to run if the provider is down.
+  deps.stdout.write(
+    `Agent trading stopped at Candle for ${entry.address}. Remote policy verification is pending${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.\nFunds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${entry.address}\n${inDemote ? "" : `If the provider is down or theft is suspected: candle tee sweep ${entry.address} --emergency\n`}`,
+  )
+  return { code: 3, vault }
 }
 
 // ── vault demote ──────────────────────────────────────────────────────────────────────────────
@@ -1049,6 +1079,8 @@ export async function vaultDemoteEvm(args: string[], ctx: CommandContext): Promi
   if (!address || extra !== undefined) {
     return usage(ctx, "Usage: candle vault demote <tee-address> [--rpc-url <url>] [--emergency] [--sweep-to <label>]")
   }
+  const options = sweepOptions(ctx, parsed, tokenFlags)
+  if (typeof options === "number") return options
   if (!refuseEnvPassphrase(ctx)) return 1
   if (!requireTty(ctx, "vault demote")) return 1
   const resolvedVault = vaultPathFor(ctx, parsed)
@@ -1056,13 +1088,15 @@ export async function vaultDemoteEvm(args: string[], ctx: CommandContext): Promi
   const sweepTo = parsed.values["--sweep-to"]
   let emergency = parsed.booleans.has("--emergency")
 
-  const snapshot = await runVaultCommand(ctx, async ({ hold }) => {
+  // BE-981: one unlock for the whole demote. The pin, the disable and the sweep all run against
+  // this vault (each write replaces it, and `hold` closes every copy on the way out).
+  return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, resolvedVault.path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
-    const vault = hold(opened.vault)
-    const entry = findEvmTee(vault, address)
+    let vault = hold(opened.vault)
+    let entry = findEvmTee(vault, address)
     if (entry === undefined) return unknownWallet(ctx, address)
     if (entry.tee?.vaultDestination === undefined) {
       if (sweepTo === undefined) {
@@ -1076,7 +1110,8 @@ export async function vaultDemoteEvm(args: string[], ctx: CommandContext): Promi
         chain: "evm",
         acceptUnknownExposure: parsed.booleans.has("--accept-unknown-exposure"),
       })
-      hold(await patchTee(ctx, vault, entry.id, (tee) => ({ ...tee, vaultDestination: destination.address })))
+      vault = hold(await patchTee(ctx, vault, entry.id, (tee) => ({ ...tee, vaultDestination: destination.address })))
+      entry = findEvmTee(vault, address) as KeyEntry
     }
     if (entry.linkedWalletId === undefined) {
       ctx.deps.stdout.write(
@@ -1084,27 +1119,29 @@ export async function vaultDemoteEvm(args: string[], ctx: CommandContext): Promi
       )
       emergency = true
     }
-    return 0
-  })
-  if (snapshot !== 0) return snapshot
 
-  if (!emergency) {
-    const disableCode = await teeDisableEvm([address, ...keystoreArgs(parsed)], ctx)
-    if (disableCode !== 0 && disableCode !== 3) return disableCode
-    if (disableCode === 3) {
-      ctx.deps.stdout.write(
-        `The disable is not yet verified; the sweep below will wait for quarantine. If the provider is down or theft is suspected, run: candle vault demote ${address} --emergency\n`,
-      )
+    if (!emergency) {
+      await printIdentity(ctx)
+      const disabled = await disableEvmEntry(ctx, vault, hold, entry, true)
+      if (disabled.code !== 0 && disabled.code !== 3) return disabled.code
+      vault = disabled.vault
+      entry = findEvmTee(vault, address) as KeyEntry
+      if (disabled.code === 3) {
+        ctx.deps.stdout.write(
+          `The disable is not yet verified; the sweep below will wait for quarantine. If the provider is down or theft is suspected, run: candle vault demote ${address} --emergency\n`,
+        )
+      }
     }
-  }
-  const sweepArgs = [address, ...keystoreArgs(parsed)]
-  if (parsed.values["--rpc-url"] !== undefined) sweepArgs.push("--rpc-url", parsed.values["--rpc-url"])
-  if (parsed.values["--from-block"] !== undefined) sweepArgs.push("--from-block", parsed.values["--from-block"])
-  for (const token of tokenFlags) sweepArgs.push("--token", token)
-  if (emergency) sweepArgs.push("--emergency")
-  return teeSweepEvm(sweepArgs, ctx)
-}
-
-function keystoreArgs(parsed: { values: Record<string, string> }): string[] {
-  return parsed.values["--keystore"] !== undefined ? ["--keystore", parsed.values["--keystore"]] : []
+    if (!ctx.json) ctx.deps.stdout.write(`Sweeping remaining funds to ${entry.tee?.vaultDestination}...\n`)
+    return sweepEvmWallet({
+      ctx,
+      vault,
+      hold,
+      entry,
+      client: options.client,
+      emergency,
+      tokenFlags: options.tokens,
+      fromBlock: options.fromBlock,
+    })
+  })
 }

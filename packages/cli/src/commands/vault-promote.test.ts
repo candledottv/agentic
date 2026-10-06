@@ -967,6 +967,221 @@ describe("T41: vault demote adapter basics", () => {
   })
 })
 
+/**
+ * BE-981: `vault demote` on an enabled Solana TEE wallet unlocks the vault once for the disable
+ * and the sweep together, prints no standalone "Recover the funds" hint, and skips the sweep (no
+ * vault confirmation) when the chain shows the wallet empty.
+ */
+describe("BE-981: vault demote unlocks once", () => {
+  async function seedEnabled(dir: string, passphrase: string, cold: string): Promise<string> {
+    const address = await newKey(dir, passphrase, "agent")
+    const vaultPath = join(dir, "vault.enc")
+    const opened = await unlockWithPassphrase(vaultPath, await readFile(vaultPath, "utf8"), passphrase)
+    try {
+      const entries = opened.index.entries.map((e) =>
+        e.address === address
+          ? {
+              ...e,
+              role: "tee-wallet" as const,
+              exposure: { everRemoteExposed: true, everExported: false },
+              linkedWalletId: "lw_demote",
+              tee: {
+                network: "solana-mainnet" as const,
+                lifecycle: "enabled" as const,
+                vaultDestination: cold,
+                grantIdentity: { account: ACCOUNT, apiBaseUrl: API, source: "recorded-at-operation" as const },
+                remoteAuthority: "verified-active" as const,
+              },
+            }
+          : e,
+      )
+      await commitVault(opened, { index: { hd: opened.index.hd, entries } }, {
+        now: () => Date.now(),
+        sleep: async () => {},
+      } as never)
+    } finally {
+      closeVault(opened)
+    }
+    return address
+  }
+
+  /** A node holding `lamports` until a transaction is sent, then nothing. */
+  function drainingRpc(lamports: number): RouteHandler {
+    let sent = false
+    const base = rpcHandler()
+    return async (req) => {
+      const body = typeof req.init.body === "string" ? JSON.parse(req.init.body) : {}
+      if (body.method === "sendTransaction") sent = true
+      if (body.method === "getBalance") {
+        return jsonResponse(200, { jsonrpc: "2.0", id: body.id, result: { value: sent ? 0 : lamports } })
+      }
+      return base(req)
+    }
+  }
+
+  async function demoteOnce(lamports: number) {
+    const dir = await mkdtemp(join(tmpdir(), "candle-be981-"))
+    const { passphrase } = await initVault(dir)
+    const cold = await newKey(dir, passphrase, "cold")
+    const address = await seedEnabled(dir, passphrase, cold)
+    const { fetch, calls } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_demote": () =>
+        jsonResponse(200, { success: true, state: "quarantined", complete: true, remoteAuthority: "verified-denied" }),
+      "/api/v1/agent/wallets/lw_demote/lifecycle": () => jsonResponse(200, { success: true, state: "quarantined" }),
+      "/api/v1/agent/wallets/lw_demote/swept": () => jsonResponse(200, { success: true, state: "swept" }),
+      "/rpc": drainingRpc(lamports),
+    })
+    const out = createCapture()
+    const err = createCapture()
+    const prompts: string[] = []
+    const deps = createTestDeps({
+      fetch,
+      store: createFakeStore({ "profile:prc:api_key": API_KEY }),
+      stdout: out,
+      stderr: err,
+      env: { CANDLE_CONFIG_DIR: dir, CANDLE_API_URL: API },
+      promptSecret: async (text: string) => {
+        prompts.push(text)
+        if (/LAST 6/i.test(text)) return cold.slice(-6)
+        return passphrase
+      },
+      readFile: (path) => readFile(path, "utf8"),
+      writeFile: (path, content) => writeFile(path, content, "utf8"),
+    })
+    await deps.writeConfig({
+      activeProfile: "prc",
+      profiles: { prc: { account: ACCOUNT, apiUrl: API, accountCachedAt: Date.now() } },
+    })
+    const code = await run(["vault", "demote", address, "--rpc-url", RPC], deps)
+    const unlocks = prompts.filter((text) => !/LAST 6/i.test(text))
+    const confirmations = prompts.filter((text) => /LAST 6/i.test(text))
+    return { code, out, err, unlocks, confirmations, calls, dir, passphrase, address, cold }
+  }
+
+  test("disable and sweep share one unlock, and no 'Recover the funds' hint is printed", async () => {
+    const r = await demoteOnce(1_000_000_000)
+    expect(r.unlocks).toHaveLength(1)
+    expect(r.out.text).toContain("Stopped")
+    expect(r.out.text).not.toContain("Recover the funds:")
+    expect(r.out.text).toContain(`Sweeping remaining funds to ${r.cold}...`)
+    expect(r.out.text).toContain("Swept.")
+    // The sweep still asks for the destination's last six before it signs.
+    expect(r.confirmations).toHaveLength(1)
+    expect(r.code).toBe(0)
+    // The disable ran before the sweep signed anything.
+    const order = r.calls.map((c) => `${c.init.method ?? "GET"} ${new URL(c.url).pathname}`)
+    const disableAt = order.indexOf("DELETE /api/v1/agent/wallets/lw_demote")
+    const firstSend = r.calls.findIndex(
+      (c) => typeof c.init.body === "string" && c.init.body.includes('"sendTransaction"'),
+    )
+    expect(disableAt).toBeGreaterThanOrEqual(0)
+    expect(firstSend).toBeGreaterThan(disableAt)
+
+    const vaultPath = join(r.dir, "vault.enc")
+    const again = await unlockWithPassphrase(vaultPath, await readFile(vaultPath, "utf8"), r.passphrase)
+    try {
+      const entry = again.index.entries.find((e) => e.address === r.address)
+      expect(entry?.tee?.stopRequestedAt).toBeDefined()
+      expect(entry?.tee?.sweptAt).toBeDefined()
+      expect(entry?.tee?.lifecycle).toBe("retired")
+    } finally {
+      closeVault(again)
+    }
+  })
+
+  test("an empty wallet is not swept: no vault confirmation, and a 'Nothing to sweep' line", async () => {
+    const r = await demoteOnce(0)
+    expect(r.unlocks).toHaveLength(1)
+    expect(r.confirmations).toHaveLength(0)
+    expect(r.out.text).toContain("Stopped")
+    expect(r.out.text).not.toContain("Recover the funds:")
+    expect(r.out.text).toContain("Nothing to sweep: 0 SOL, 0 token accounts.")
+    expect(r.out.text).not.toContain("Sweeping remaining funds")
+    expect(r.calls.some((c) => typeof c.init.body === "string" && c.init.body.includes('"sendTransaction"'))).toBe(
+      false,
+    )
+    expect(r.calls.some((c) => new URL(c.url).pathname.endsWith("/swept"))).toBe(false)
+    // The disable was verified, so the demote succeeded; the entry is stopped, not retired.
+    expect(r.code).toBe(0)
+    const vaultPath = join(r.dir, "vault.enc")
+    const again = await unlockWithPassphrase(vaultPath, await readFile(vaultPath, "utf8"), r.passphrase)
+    try {
+      const entry = again.index.entries.find((e) => e.address === r.address)
+      expect(entry?.tee?.stopRequestedAt).toBeDefined()
+      expect(entry?.tee?.sweptAt).toBeUndefined()
+    } finally {
+      closeVault(again)
+    }
+  })
+
+  test("an empty wallet with a pending sweep from an earlier run still runs the sweep", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "candle-be981-pending-"))
+    const { passphrase } = await initVault(dir)
+    const cold = await newKey(dir, passphrase, "cold")
+    const address = await seedEnabled(dir, passphrase, cold)
+    const vaultPath = join(dir, "vault.enc")
+    const opened = await unlockWithPassphrase(vaultPath, await readFile(vaultPath, "utf8"), passphrase)
+    try {
+      const entries = opened.index.entries.map((e) =>
+        e.address === address && e.tee
+          ? {
+              ...e,
+              tee: {
+                ...e.tee,
+                sweepPending: [
+                  {
+                    kind: "sol",
+                    amountRaw: "5",
+                    signature: "SigPending111111111111111111111111111111111111111111",
+                    blockhash: BLOCKHASH,
+                    submittedAt: new Date().toISOString(),
+                  },
+                ],
+              },
+            }
+          : e,
+      )
+      await commitVault(opened, { index: { hd: opened.index.hd, entries } }, {
+        now: () => Date.now(),
+        sleep: async () => {},
+      } as never)
+    } finally {
+      closeVault(opened)
+    }
+    const { fetch } = createRoutedFetch({
+      "/api/v1/agent/wallets/lw_demote": () =>
+        jsonResponse(200, { success: true, state: "quarantined", complete: true, remoteAuthority: "verified-denied" }),
+      "/api/v1/agent/wallets/lw_demote/lifecycle": () => jsonResponse(200, { success: true, state: "quarantined" }),
+      "/api/v1/agent/wallets/lw_demote/swept": () => jsonResponse(200, { success: true, state: "swept" }),
+      "/rpc": drainingRpc(0),
+    })
+    const { deps, out } = demoteDepsFor(dir, passphrase, cold, fetch)
+    await deps.writeConfig({
+      activeProfile: "prc",
+      profiles: { prc: { account: ACCOUNT, apiUrl: API, accountCachedAt: Date.now() } },
+    })
+    await run(["vault", "demote", address, "--rpc-url", RPC], deps)
+    expect(out.text).not.toContain("Nothing to sweep: 0 SOL, 0 token accounts.")
+    expect(out.text).toContain("Sweeping remaining funds")
+    expect(out.text).toContain("from an earlier run finalized")
+  })
+
+  function demoteDepsFor(dir: string, passphrase: string, cold: string, fetch: typeof globalThis.fetch) {
+    const out = createCapture()
+    const deps = createTestDeps({
+      fetch,
+      store: createFakeStore({ "profile:prc:api_key": API_KEY }),
+      stdout: out,
+      stderr: createCapture(),
+      env: { CANDLE_CONFIG_DIR: dir, CANDLE_API_URL: API },
+      promptSecret: async (text: string) => (/LAST 6/i.test(text) ? cold.slice(-6) : passphrase),
+      readFile: (path) => readFile(path, "utf8"),
+      writeFile: (path, content) => writeFile(path, content, "utf8"),
+    })
+    return { deps, out }
+  }
+})
+
 describe("T52 pending gate", () => {
   test("recorded as pending, not executed", () => {
     expect(T52_PENDING).toContain("pending")

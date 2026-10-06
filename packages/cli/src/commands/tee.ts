@@ -44,6 +44,7 @@ import {
   openSolanaClient,
   rateLimitedReadFailure,
   rpcFixLines,
+  type SolanaClient,
 } from "../solana-endpoint"
 import {
   type AccountMeta,
@@ -82,16 +83,19 @@ import {
   resolveTransferHookAccounts,
   transferFeeFor,
 } from "../token-2022"
+import { isVaultError } from "../vault/errors"
 import type { KeyEntry } from "../vault/format"
 import { CONFIG_DIR_ENV } from "../vault/store"
 import {
   commitVaultTeeEntry,
+  grantSignAccess,
   maybeReconcileVaultTee,
   type ResolvedTee,
   refuseLegacyWriteForVaultAddress,
   releaseResolvedTee,
   resolveTeeAddress,
   type TeeAccess,
+  type VaultResolvedTee,
 } from "../vault/tee-resolve"
 import { runImportFlow, TEE_PROFILE } from "../wallet-import-flow"
 import { generateWallet } from "../wallet-keygen"
@@ -347,6 +351,22 @@ type ActiveTee =
       ctx: CommandContext
     }
 
+/**
+ * BE-981: what `vault demote` hands its disable and sweep steps. Demote unlocks the vault once and
+ * owns that open vault, so a step run inside it does not resolve the address again (which would
+ * unlock a second time), does not close the vault, and does not print the standalone next-command
+ * hint for a step demote is about to run itself.
+ */
+export interface DemoteStep {
+  resolved: VaultResolvedTee
+  /** The sweep's RPC client, opened by demote so its host line prints once. */
+  solana: SolanaClient
+}
+
+function vaultActiveTee(ctx: CommandContext, resolved: VaultResolvedTee): ActiveTee {
+  return { source: "vault", resolved, entry: resolved.legacyView, path: "vault", ctx }
+}
+
 function applyKeystoreViewToVaultEntry(entry: KeyEntry, view: KeystoreEntry): void {
   if (view.linkedWalletId !== undefined) entry.linkedWalletId = view.linkedWalletId
   else delete entry.linkedWalletId
@@ -402,18 +422,7 @@ async function openActiveTee(
 ): Promise<{ ok: true; active: ActiveTee } | { ok: false; code: number }> {
   const resolved = await resolveTeeAddress(ctx, parsed, address, () => openExistingTeeStore(ctx, parsed), access)
   if (!resolved.ok) return { ok: false, code: resolved.code }
-  if (resolved.resolved.source === "vault") {
-    return {
-      ok: true,
-      active: {
-        source: "vault",
-        resolved: resolved.resolved,
-        entry: resolved.resolved.legacyView,
-        path: "vault",
-        ctx,
-      },
-    }
-  }
+  if (resolved.resolved.source === "vault") return { ok: true, active: vaultActiveTee(ctx, resolved.resolved) }
   return {
     ok: true,
     active: {
@@ -1151,7 +1160,7 @@ export async function teeStatus(args: string[], ctx: CommandContext): Promise<nu
 
 // ── tee disable ─────────────────────────────────────────────────────────────────────────────
 
-export async function teeDisable(args: string[], ctx: CommandContext): Promise<number> {
+export async function teeDisable(args: string[], ctx: CommandContext, demote?: DemoteStep): Promise<number> {
   const { deps, apiUrl, json } = ctx
   // Phase 4b (BE-391, D1): a Hood TEE wallet is stopped by `tee-evm.ts`.
   if (namesEvmWallet(args)) return teeDisableEvm(args, ctx)
@@ -1162,8 +1171,11 @@ export async function teeDisable(args: string[], ctx: CommandContext): Promise<n
   if (!address || extra !== undefined) return usage(ctx, "Usage: candle tee disable <address>")
 
   await printIdentity(ctx)
-  // Disable reads the grant handle and never signs: the key is verified, not kept.
-  const openedActive = await openActiveTee(ctx, parsed, address, "read")
+  // Disable reads the grant handle and never signs: the key is verified, not kept. Under demote
+  // the entry was already resolved (and verified) by demote's one unlock.
+  const openedActive = demote
+    ? { ok: true as const, active: vaultActiveTee(ctx, demote.resolved) }
+    : await openActiveTee(ctx, parsed, address, "read")
   if (!openedActive.ok) return openedActive.code
   const { active } = openedActive
   try {
@@ -1253,22 +1265,44 @@ export async function teeDisable(args: string[], ctx: CommandContext): Promise<n
     }
     if (outcome.complete) {
       deps.stdout.write(`Stopped ${address}. Remote signing denial verified; the wallet is quarantined.\n`)
-      deps.stdout.write(`Recover the funds: candle tee sweep ${address}\n`)
+      // Demote sweeps next on its own; the standalone hint would read as a step left to the operator.
+      if (!demote) deps.stdout.write(`Recover the funds: candle tee sweep ${address}\n`)
       return 0
     }
     deps.stdout.write(
       `Agent trading stopped at Candle for ${address}. Remote policy verification is pending` +
         `${outcome.reasonCode ? ` (${outcome.reasonCode})` : ""}.\n` +
         `Funds remain in the TEE wallet and its TEE signing authority may still be active. Re-run: candle tee disable ${address}\n` +
-        `If the provider is down or theft is suspected: candle tee sweep ${address} --emergency\n`,
+        `If the provider is down or theft is suspected: ${demote ? `candle vault demote ${address}` : `candle tee sweep ${address}`} --emergency\n`,
     )
     return 3
   } finally {
-    releaseActiveTee(active)
+    if (!demote) releaseActiveTee(active)
   }
 }
 
 // ── tee sweep ───────────────────────────────────────────────────────────────────────────────
+
+/**
+ * BE-981: `vault demote` skips its sweep only when this is true: the chain shows no lamports and
+ * no token account under either program, and the entry holds no pending transaction or
+ * unrecorded receipt from an earlier sweep (those still need the sweep to settle them). Any read
+ * failure answers false, so the sweep runs and reports the failure itself.
+ */
+export async function nothingLeftToSweep(solana: SolanaClient, entry: KeyEntry): Promise<boolean> {
+  const tee = entry.tee
+  if ((tee?.sweepPending?.length ?? 0) > 0) return false
+  if ((tee?.sweepReceipts?.length ?? 0) > 0 && tee?.sweptAt === undefined) return false
+  try {
+    if ((await solana.rpc.getBalance(entry.address)) > 0n) return false
+    for (const programId of [TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID]) {
+      if ((await solana.rpc.getTokenAccountsByOwner(entry.address, programId)).length > 0) return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
 
 type SweepReceipt = SweepReceiptRecord
 
@@ -1447,7 +1481,7 @@ async function broadcastMessage(
   }
 }
 
-export async function teeSweep(args: string[], ctx: CommandContext): Promise<number> {
+export async function teeSweep(args: string[], ctx: CommandContext, demote?: DemoteStep): Promise<number> {
   const { deps, apiUrl, json } = ctx
   // Phase 4b (BE-391, D1): a Hood TEE wallet is swept by `tee-evm.ts`.
   if (namesEvmWallet(args)) return teeSweepEvm(args, ctx)
@@ -1464,12 +1498,25 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
   // BE-355 (D1): --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's, else the public
   // endpoint, validated before the prompt. The emergency path is unchanged by it: the default is
   // not Candle's (decision 6), so recovery still needs nothing from Candle.
-  const solana = await openSolanaClient(ctx, parsed.values["--rpc-url"])
+  const solana = demote ? demote.solana : await openSolanaClient(ctx, parsed.values["--rpc-url"])
   if ("error" in solana) return usage(ctx, solana.error)
   const emergency = parsed.booleans.has("--emergency")
 
   // The one tee command that signs with the key, so the one that may keep it after the verify.
-  const openedActive = await openActiveTee(ctx, parsed, address, "sign")
+  // Under demote the key comes from demote's open vault, verified again here, not a second unlock.
+  let openedActive: Awaited<ReturnType<typeof openActiveTee>>
+  if (demote) {
+    try {
+      await grantSignAccess(demote.resolved)
+    } catch (error) {
+      if (!isVaultError(error)) throw error
+      writeLocalFailure(deps, { code: error.code, message: error.message }, json)
+      return error.exitCode
+    }
+    openedActive = { ok: true, active: vaultActiveTee(ctx, demote.resolved) }
+  } else {
+    openedActive = await openActiveTee(ctx, parsed, address, "sign")
+  }
   if (!openedActive.ok) return openedActive.code
   const { active } = openedActive
   try {
@@ -2434,6 +2481,6 @@ export async function teeSweep(args: string[], ctx: CommandContext): Promise<num
     )
     return 3
   } finally {
-    releaseActiveTee(active)
+    if (!demote) releaseActiveTee(active)
   }
 }
