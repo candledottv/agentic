@@ -60,9 +60,10 @@ comes from the CLI's own store rather than sitting in a config file.
 (Building from a clone still works -- `bun run --cwd packages/mcp build`, then point the client at
 `packages/mcp/dist/index.js` with `node`.)
 
-This repository also ships that configuration as [`.mcp.json`](.mcp.json) at the root, so a client
-that reads a project-scoped MCP file (Claude Code, and others that follow the same convention)
-picks the server up from a clone with no JSON to write by hand.
+This repository deliberately ships no `.mcp.json`: the Claude Code plugin is installed from the
+repository root, so one there would register a second, keyless Candle server beside the keyed
+`candle mcp` that setup adds, and the relative path it needs does not resolve from the plugin
+cache. Register the server with the commands above instead.
 
 **One thing to know before the first call.** `candle_get_feed` indexes the wider market, not just
 Candle's own launches. `candle_get_market` answers for every same-chain indexed token, including
