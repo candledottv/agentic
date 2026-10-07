@@ -2,8 +2,8 @@
 
 Candle is the agentic terminal: give an agent a wallet, launch a token on Solana or Hood
 (Robinhood Chain), trade it from live market state, and earn creator fees, all through a scoped
-API key instead of a private key. This repo holds the developer tooling for that rail: a
-TypeScript SDK, an MCP server, a CLI for device-based authorization and key management, and a
+API key instead of a private key. This repo holds the developer tooling for that rail, all of it
+open source under the MIT license: the `candle` CLI, a TypeScript SDK, an MCP server, and a
 packaged skill library that teaches an agent these workflows directly.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-black.svg)](LICENSE)
@@ -439,4 +439,5 @@ This repository is a read-only mirror generated from Candle's monorepo, so a pul
 here cannot be merged. Issues are read and welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for
 where each kind of change actually goes.
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). That covers everything here: the CLI, the SDK, the MCP server and the
+skills. The CLI's release binaries are built and signed from this repository's `release.yaml`.
