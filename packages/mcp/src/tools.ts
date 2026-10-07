@@ -851,7 +851,8 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "and one token held in two wallets is two positions, each with its `wallet`. A recorded move " +
         "between the account's wallets carries its cost and realizes nothing. Moved-in positions and " +
         "`closedPositions` carry additive `transferredIn`, `basisSource` and `basisComplete`; " +
-        "`basisSource` says whether cost comes from Candle history, on-chain trades or the arrival price. " +
+        "`basisSource` says whether cost comes from Candle history, on-chain trades or the arrival price; " +
+        "`zero-cost` (with `zeroCostQuantity`) is Solana CNDL with no purchase found, carried at $0. " +
         "Public `realizedFromTransfersUsd` and `unrealizedFromTransfersUsd` are shares already included in " +
         "total P&L and rank; do not add them again. Moved-in closes count toward W/L and eligibility. Each position carries " +
         "`agent` (the key it belongs to) and `dust` when it is worth under one cent; dust stays listed " +

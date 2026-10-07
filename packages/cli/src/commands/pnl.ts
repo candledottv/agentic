@@ -87,10 +87,20 @@ const CHAIN_TITLES: Record<Chain, string> = { solana: "Solana", hood: "Hood" }
 interface Position {
   /** Additive transfer provenance; omitted by an older server or for a position bought by trade. */
   transferredIn?: boolean
-  basisSource?: "candle-wallet" | "chain" | "transfer-price" | "before-window" | "unknown" | "pending" | "mixed"
+  basisSource?:
+    | "candle-wallet"
+    | "chain"
+    | "transfer-price"
+    | "before-window"
+    | "unknown"
+    | "pending"
+    | "mixed"
+    | "zero-cost"
   basisComplete?: boolean
   movedInFromWallet?: string
   basisCoveragePct?: number
+  /** Moved-in quantity carried at $0, no purchase found (Solana CNDL). Absent with none or on an older server. */
+  zeroCostQuantity?: number
 
   mint: string
   /** The chain the position was traded on (4d-ED-1). Absent from an API that predates 4d. */
@@ -711,7 +721,7 @@ function writePositions(ctx: CommandContext, positions: Position[], withBook: bo
     if (withBasis)
       row.push(
         p.transferredIn
-          ? `Moved in${p.movedInFromWallet ? ` from ${shortAddress(p.movedInFromWallet)}` : ""}: ${p.basisSource ?? "unknown"}${p.basisComplete === false ? " (partial)" : ""}`
+          ? `Moved in${p.movedInFromWallet ? ` from ${shortAddress(p.movedInFromWallet)}` : ""}: ${p.basisSource ?? "unknown"}${p.zeroCostQuantity ? `, ${formatQuantity(p.zeroCostQuantity)} at $0 (no purchase found)` : ""}${p.basisComplete === false ? " (partial)" : ""}`
           : "-",
       )
     return row

@@ -620,10 +620,12 @@ export interface ProfileWalletRow {
 export interface ProfileOpenPosition {
     /** Additive transfer provenance; omitted by an older server or for a position bought by trade. */
     transferredIn?: boolean;
-    basisSource?: "candle-wallet" | "chain" | "transfer-price" | "before-window" | "unknown" | "pending" | "mixed";
+    basisSource?: "candle-wallet" | "chain" | "transfer-price" | "before-window" | "unknown" | "pending" | "mixed" | "zero-cost";
     basisComplete?: boolean;
     movedInFromWallet?: string;
     basisCoveragePct?: number;
+    /** Moved-in quantity carried at $0, no purchase found (Solana CNDL). Absent with none or on an older server. */
+    zeroCostQuantity?: number;
     mint: string;
     quantity: number;
     avgEntryUsd: number;
@@ -659,7 +661,7 @@ export interface ProfileOpenPosition {
     dust?: true;
 }
 /** One fully closed private position, with optional recorded-arrival provenance. */
-export interface ProfileClosedPosition extends Pick<ProfileOpenPosition, "mint" | "wallet" | "agent" | "transferredIn" | "basisSource" | "basisComplete" | "movedInFromWallet" | "basisCoveragePct"> {
+export interface ProfileClosedPosition extends Pick<ProfileOpenPosition, "mint" | "wallet" | "agent" | "transferredIn" | "basisSource" | "basisComplete" | "movedInFromWallet" | "basisCoveragePct" | "zeroCostQuantity"> {
     openedTs: number;
     closedTs: number;
     quantity: number;
