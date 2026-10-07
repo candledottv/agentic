@@ -849,7 +849,11 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "is the sum of `pnl.byWallet` (one row per wallet, main or linked, with the linked wallet's " +
         "label; `unknown:solana` or `unknown:hood` is the row for fills no record places in a wallet), " +
         "and one token held in two wallets is two positions, each with its `wallet`. A recorded move " +
-        "between the account's wallets carries its cost and realizes nothing. Each position carries " +
+        "between the account's wallets carries its cost and realizes nothing. Moved-in positions and " +
+        "`closedPositions` carry additive `transferredIn`, `basisSource` and `basisComplete`; " +
+        "`basisSource` says whether cost comes from Candle history, on-chain trades or the arrival price. " +
+        "Public totals keep `realizedFromTransfersUsd` and `unrealizedFromTransfersUsd` beside ranked " +
+        "own-trade P&L; moved-in P&L does not change rank. Each position carries " +
         "`agent` (the key it belongs to) and `dust` when it is worth under one cent; dust stays listed " +
         "and counted, and `openPositionsExDust` leaves it out. `closed` gives the closed positions as " +
         "`madeUsd` + `lostUsd` + `partialSellsUsd` = `realizedNetUsd`, with `wins` and `losses`. " +

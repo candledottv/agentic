@@ -85,6 +85,13 @@ const CHAINS: readonly Chain[] = ["solana", "hood"]
 const CHAIN_TITLES: Record<Chain, string> = { solana: "Solana", hood: "Hood" }
 
 interface Position {
+  /** Additive transfer provenance; omitted by an older server or for a position bought by trade. */
+  transferredIn?: boolean
+  basisSource?: "candle-wallet" | "chain" | "transfer-price" | "before-window" | "unknown" | "pending" | "mixed"
+  basisComplete?: boolean
+  movedInFromWallet?: string
+  basisCoveragePct?: number
+
   mint: string
   /** The chain the position was traded on (4d-ED-1). Absent from an API that predates 4d. */
   chain?: Chain
@@ -681,8 +688,10 @@ function writePositions(ctx: CommandContext, positions: Position[], withBook: bo
   }
   // Positions live in wallets (PNL-ED-2): name the wallet whenever the API does.
   const withWallet = positions.some((p) => p.wallet !== undefined)
+  const withBasis = positions.some((p) => p.transferredIn === true)
   const headers = ["TOKEN", "CHAIN", ...(withWallet ? ["WALLET"] : []), "QUANTITY", "AVG ENTRY", "MARK", "UNREALIZED"]
   if (withBook) headers.push("BOOK")
+  if (withBasis) headers.push("COST SOURCE")
   const wallet = (w: string | undefined) => (w === undefined || isUnplacedWallet(w) ? "-" : shortAddress(w))
   const rows = positions.map((p) => {
     const row = [
@@ -695,6 +704,12 @@ function writePositions(ctx: CommandContext, positions: Position[], withBook: bo
       p.unrealizedUsd !== undefined ? formatUsd(p.unrealizedUsd) : "-",
     ]
     if (withBook) row.push(p.book ?? "-")
+    if (withBasis)
+      row.push(
+        p.transferredIn
+          ? `Moved in${p.movedInFromWallet ? ` from ${shortAddress(p.movedInFromWallet)}` : ""}: ${p.basisSource ?? "unknown"}${p.basisComplete === false ? " (partial)" : ""}`
+          : "-",
+      )
     return row
   })
   ctx.deps.stdout.write(

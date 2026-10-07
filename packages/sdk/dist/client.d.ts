@@ -618,6 +618,12 @@ export interface ProfileWalletRow {
 }
 /** One position a profile still holds, for the caller to mark against a current price. */
 export interface ProfileOpenPosition {
+    /** Additive transfer provenance; omitted by an older server or for a position bought by trade. */
+    transferredIn?: boolean;
+    basisSource?: "candle-wallet" | "chain" | "transfer-price" | "before-window" | "unknown" | "pending" | "mixed";
+    basisComplete?: boolean;
+    movedInFromWallet?: string;
+    basisCoveragePct?: number;
     mint: string;
     quantity: number;
     avgEntryUsd: number;
@@ -652,6 +658,17 @@ export interface ProfileOpenPosition {
      */
     dust?: true;
 }
+/** One fully closed private position, with optional recorded-arrival provenance. */
+export interface ProfileClosedPosition extends Pick<ProfileOpenPosition, "mint" | "wallet" | "agent" | "transferredIn" | "basisSource" | "basisComplete" | "movedInFromWallet" | "basisCoveragePct"> {
+    openedTs: number;
+    closedTs: number;
+    quantity: number;
+    transferredInQuantity?: number;
+    soldQuantity: number;
+    costBasisUsd: number;
+    proceedsUsd: number;
+    realizedNetUsd: number;
+}
 /**
  * Closed positions as one equation (P&L spec PNL-ED-8): `madeUsd + lostUsd + partialSellsUsd`
  * equals the scope's `realizedNetUsd`. A position is closed when its wallet's quantity returns to
@@ -680,6 +697,9 @@ export interface ProfileClosedSummary {
  * and each `byWallet` row). Each is optional: a server that predates it omits it.
  */
 export interface ProfilePnlEngineFields {
+    /** Public totals keep moved-in P&L separate from the figure used for ranking. */
+    realizedFromTransfersUsd?: number;
+    unrealizedFromTransfersUsd?: number;
     /** Realized net plus unrealized: the figure the console labels P&L, to the cent. */
     totalUsd?: number;
     /** Open positions that are not dust. */
@@ -751,6 +771,7 @@ export interface ProfilePnlResult {
         /** Candle fees over the counted fills. Reported separately, netted only into realizedNetUsd. */
         feesUsd: number;
         realizedNetUsd: number;
+        closedPositions?: ProfileClosedPosition[];
         openPositions: ProfileOpenPosition[];
         /**
          * Unrealized across the positions that could be marked. Read it WITH `unmarkedPositions` and

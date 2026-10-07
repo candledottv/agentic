@@ -87,6 +87,7 @@ export type {
   PresetsPayload,
   PreviewCloseEmptyAccountsRequest,
   ProfileChainPnl,
+  ProfileClosedPosition,
   ProfileClosedSummary,
   ProfileOpenPosition,
   ProfilePnlEngineFields,

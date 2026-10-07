@@ -780,3 +780,22 @@ describe("P&L A4: one engine in candle pnl", () => {
     expect(JSON.parse(p.stdout.text).pnl.byWallet[1].wallet).toBe("unknown:solana")
   })
 })
+
+test("moved-in cost source is visible in the table and preserved in JSON", async () => {
+  const position = {
+    ...BOOKS.positions[0],
+    transferredIn: true,
+    basisSource: "chain",
+    basisComplete: false,
+    movedInFromWallet: "SenderWallet11111111111111111111111111111",
+  }
+  const body = { ...BOOKS, positions: [position] }
+  const table = harness({ books: Response.json(body) })
+  expect(await run(["pnl"], table.deps)).toBe(0)
+  expect(table.stdout.text).toContain("COST SOURCE")
+  expect(table.stdout.text).toContain("Moved in from")
+  expect(table.stdout.text).toContain("chain (partial)")
+  const json = harness({ books: Response.json(body) })
+  expect(await run(["pnl", "--json"], json.deps)).toBe(0)
+  expect(JSON.parse(json.stdout.text).positions[0]).toEqual(position)
+})
