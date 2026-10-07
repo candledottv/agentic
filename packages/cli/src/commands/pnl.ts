@@ -125,6 +125,10 @@ interface ClosedSummary {
 
 /** Fields A2 added to every scope. Each is absent from an API that predates it. */
 interface EngineFields {
+  /** Public moved-in realized share already included in realizedNetUsd and rank, when present. */
+  realizedFromTransfersUsd?: number
+  /** Public moved-in unrealized share already included in unrealizedUsd; do not add again. */
+  unrealizedFromTransfersUsd?: number
   /** Realized net plus unrealized: the console's Total. */
   totalUsd?: number
   openPositionsExDust?: number

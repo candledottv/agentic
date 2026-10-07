@@ -852,8 +852,8 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "between the account's wallets carries its cost and realizes nothing. Moved-in positions and " +
         "`closedPositions` carry additive `transferredIn`, `basisSource` and `basisComplete`; " +
         "`basisSource` says whether cost comes from Candle history, on-chain trades or the arrival price. " +
-        "Public totals keep `realizedFromTransfersUsd` and `unrealizedFromTransfersUsd` beside ranked " +
-        "own-trade P&L; moved-in P&L does not change rank. Each position carries " +
+        "Public `realizedFromTransfersUsd` and `unrealizedFromTransfersUsd` are shares already included in " +
+        "total P&L and rank; do not add them again. Moved-in closes count toward W/L and eligibility. Each position carries " +
         "`agent` (the key it belongs to) and `dust` when it is worth under one cent; dust stays listed " +
         "and counted, and `openPositionsExDust` leaves it out. `closed` gives the closed positions as " +
         "`madeUsd` + `lostUsd` + `partialSellsUsd` = `realizedNetUsd`, with `wins` and `losses`. " +

@@ -697,8 +697,9 @@ export interface ProfileClosedSummary {
  * and each `byWallet` row). Each is optional: a server that predates it omits it.
  */
 export interface ProfilePnlEngineFields {
-    /** Public totals keep moved-in P&L separate from the figure used for ranking. */
+    /** Public moved-in realized share, already included in realizedNetUsd and ranking. */
     realizedFromTransfersUsd?: number;
+    /** Public moved-in unrealized share, already included in unrealizedUsd and total P&L. */
     unrealizedFromTransfersUsd?: number;
     /** Realized net plus unrealized: the figure the console labels P&L, to the cent. */
     totalUsd?: number;
