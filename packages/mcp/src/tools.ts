@@ -39,10 +39,18 @@
  * autocomplete.
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
+import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
 import { type RequestConfig, resolveConfig } from "./client"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
-import { executeLaunchAndSeed, executeSweep, executeTrade, executionStatus, resolveToken } from "./orchestrate"
+import {
+  executeLaunchAndSeed,
+  executeSweep,
+  executeTrade,
+  executionStatus,
+  type FetchLike,
+  resolveToken,
+} from "./orchestrate"
 import { executePerps, executePerpsDeposit, type PerpsToolName, perpsDepositShape, perpsShapes } from "./perps"
 import { PLAN_CAPABILITY_NOTE, type PlanTable, planPromotionLine, planTableMarkdown } from "./plans"
 import { noteVersionHeaders } from "./update-notice"
@@ -356,9 +364,9 @@ export function plansMarkdown(body: string): string {
   }
 }
 
-async function callAndRelay(name: RestToolName, args: Record<string, unknown>, cfg: RequestConfig) {
+async function callAndRelay(name: RestToolName, args: Record<string, unknown>, cfg: RequestConfig, doFetch: FetchLike) {
   const { url, init } = buildRequest(name, args, cfg)
-  const res = await fetch(url, init)
+  const res = await doFetch(url, init)
   noteVersionHeaders(res)
   const text = await res.text()
   return {
@@ -642,11 +650,48 @@ export function registerTools(server: McpServer, env: Record<string, string | un
   // Fail-fast at startup on a bad allowlist: the process exits before the transport connects,
   // and the operator sees the valid names instead of a server that silently has the wrong tools.
   const allowed = resolveToolAllowlist(env)
-  // One local guard for all eight registrations rather than eight if-wrappers: every call site
-  // below goes through `register`, so the filter cannot drift out of one of them.
-  const register: McpServer["registerTool"] = (name, ...rest) => {
-    if (!allowed.has(name as ToolName)) return undefined as never
-    return (server.registerTool as (...a: unknown[]) => never)(name, ...rest)
+  registerToolSubset(server, { tools: [...allowed], getConfig: () => cfg, env })
+}
+
+export interface ToolRegistrationMetadata {
+  description?: string
+  annotations?: ToolAnnotations
+  _meta?: Record<string, unknown>
+}
+
+export interface ToolSubsetOptions {
+  tools: readonly ToolName[]
+  /** Resolved at invocation, so request credentials/config never become process-wide state. */
+  getConfig: () => RequestConfig
+  fetch?: FetchLike
+  metadata?: Partial<Record<ToolName, ToolRegistrationMetadata>>
+  /** Local signer settings for hosts that explicitly register the perps tools. */
+  env?: Record<string, string | undefined>
+}
+
+/** Reusable registration only; the caller owns transport, request context and result policy. */
+export function registerToolSubset(server: McpServer, options: ToolSubsetOptions): void {
+  const unknown = options.tools.filter((name) => !(TOOL_NAMES as readonly string[]).includes(name))
+  if (unknown.length) throw new Error(`Unknown tool name(s): ${unknown.join(", ")}`)
+  const allowed = new Set(options.tools)
+  const getConfig = options.getConfig
+  const env = options.env ?? {}
+  // Preserve stdio's late-bound global fetch (including a host's test seam).
+  const doFetch: FetchLike = options.fetch ?? ((url, init) => fetch(url, init))
+  // Every registration goes through this guard, so the subset cannot drift past it.
+  // Our schemas are Zod 3 raw shapes. Keeping this wrapper specific avoids expanding the
+  // SDK's Zod 3/4 and output-schema overloads at every registration.
+  const register = <Shape extends z.ZodRawShape>(
+    name: ToolName,
+    definition: { title: string; description: string; inputSchema: Shape },
+    handler: (args: z.infer<z.ZodObject<Shape>>) => Promise<CallToolResult>,
+  ): void => {
+    if (!allowed.has(name)) return
+    ;(server.registerTool as (...a: unknown[]) => unknown)(
+      name,
+      { ...definition, ...options.metadata?.[name] },
+      handler,
+    )
   }
   register(
     "candle_launch_token",
@@ -656,7 +701,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything.",
       inputSchema: launchTokenShape,
     },
-    async (args) => callAndRelay("candle_launch_token", args, cfg),
+    async (args) => callAndRelay("candle_launch_token", args, getConfig(), doFetch),
   )
 
   register(
@@ -671,7 +716,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
       inputSchema: getMarketShape,
     },
-    async (args) => callAndRelay("candle_get_market", args, cfg),
+    async (args) => callAndRelay("candle_get_market", args, getConfig(), doFetch),
   )
 
   register(
@@ -682,7 +727,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "Gate a buy before making it: who launched it (resolved on-chain; pump.fun's shared updateAuthority is never the developer; when no developer is on chain, deployer.attribution names the launchpad or issuer instead, e.g. launched via stonk.fun or issued by xStocks), their went-to-zero rate and last coins, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), same-funder insider share, same-funder deployer cluster, and safety.summary with six sourced flags (mintAuthority, freezeAuthority, tokenExtensions, lpLock, sellability, liquidityDrain). Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.\n\nMARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed, and any Solana mint Jupiter's index knows, now answers with a partial report instead. On Hood, a token Candle did not launch names its launch account (deployer.method cvc_launch_account) for pons.family and pools.trade launches, with no record of earlier coins; other Hood launchpads return no developer.",
       inputSchema: tokenForensicsShape,
     },
-    async (args) => callAndRelay("candle_token_forensics", args, cfg),
+    async (args) => callAndRelay("candle_token_forensics", args, getConfig(), doFetch),
   )
 
   register(
@@ -707,7 +752,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "only tokens that actually say so.",
       inputSchema: getFeedShape,
     },
-    async (args) => callAndRelay("candle_get_feed", args, cfg),
+    async (args) => callAndRelay("candle_get_feed", args, getConfig(), doFetch),
   )
 
   register(
@@ -717,7 +762,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       description: "Report a client-executed transaction (transfer, swap, stake) so Candle records and verifies it.",
       inputSchema: reportActivityShape,
     },
-    async (args) => callAndRelay("candle_report_activity", args, cfg),
+    async (args) => callAndRelay("candle_report_activity", args, getConfig(), doFetch),
   )
 
   register(
@@ -727,7 +772,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       description: "Read a Candle user's public agent profile: whether agent features are enabled and launch counts.",
       inputSchema: getAgentProfileShape,
     },
-    async (args) => callAndRelay("candle_get_agent_profile", args, cfg),
+    async (args) => callAndRelay("candle_get_agent_profile", args, getConfig(), doFetch),
   )
 
   register(
@@ -749,8 +794,8 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       inputSchema: {},
     },
     async () => {
-      const { url, init } = buildRequest("candle_get_plans", {}, cfg)
-      const res = await fetch(url, init)
+      const { url, init } = buildRequest("candle_get_plans", {}, getConfig())
+      const res = await doFetch(url, init)
       noteVersionHeaders(res)
       const text = await res.text()
       if (!res.ok) return { content: [{ type: "text" as const, text }], isError: true }
@@ -783,7 +828,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "and you already know what you asked for.",
       inputSchema: getOperationShape,
     },
-    async (args) => callAndRelay("candle_get_operation", args, cfg),
+    async (args) => callAndRelay("candle_get_operation", args, getConfig(), doFetch),
   )
 
   register(
@@ -798,7 +843,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "Balances are not included: read a specific one with the market and balance endpoints.",
       inputSchema: {},
     },
-    async () => callAndRelay("candle_get_wallets", {}, cfg),
+    async () => callAndRelay("candle_get_wallets", {}, getConfig(), doFetch),
   )
 
   register(
@@ -812,7 +857,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "Reads only; moves nothing.",
       inputSchema: profileWalletsShape,
     },
-    async (args) => callAndRelay("candle_get_profile_wallets", args, cfg),
+    async (args) => callAndRelay("candle_get_profile_wallets", args, getConfig(), doFetch),
   )
 
   register(
@@ -828,7 +873,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "linked-wallet ids, not addresses.",
       inputSchema: setProfileWalletsShape,
     },
-    async (args) => callAndRelay("candle_set_profile_wallets", args, cfg),
+    async (args) => callAndRelay("candle_set_profile_wallets", args, getConfig(), doFetch),
   )
 
   register(
@@ -872,7 +917,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "Check `read` and `truncated`; historical bindings and unrealized perps are excluded. Reads only.",
       inputSchema: profilePnlShape,
     },
-    async (args) => callAndRelay("candle_get_profile_pnl", args, cfg),
+    async (args) => callAndRelay("candle_get_profile_pnl", args, getConfig(), doFetch),
   )
 
   register(
@@ -885,7 +930,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "my order' as well as 'what did I trade'. Reads only; moves nothing.",
       inputSchema: profileTradesShape,
     },
-    async (args) => callAndRelay("candle_get_profile_trades", args, cfg),
+    async (args) => callAndRelay("candle_get_profile_trades", args, getConfig(), doFetch),
   )
 
   register(
@@ -913,7 +958,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "only; moves nothing.",
       inputSchema: {},
     },
-    async () => callAndRelay("candle_get_portfolio", {}, cfg),
+    async () => callAndRelay("candle_get_portfolio", {}, getConfig(), doFetch),
   )
 
   register(
@@ -929,7 +974,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       inputSchema: resolveTokenShape,
     },
     async (args) => {
-      const result = await resolveToken(args as never, cfg, fetch)
+      const result = await resolveToken(args as never, getConfig(), doFetch)
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true } : {}) }
     },
   )
@@ -948,7 +993,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       inputSchema: {},
     },
     async () => {
-      const result = await executionStatus(cfg, fetch)
+      const result = await executionStatus(getConfig(), doFetch)
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true } : {}) }
     },
   )
@@ -986,7 +1031,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "fee: that runs through `candle swap` with the wallet's bound key, not this tool.",
       inputSchema: swapShape,
     },
-    async (args) => callAndRelay("candle_swap", args, cfg),
+    async (args) => callAndRelay("candle_swap", args, getConfig(), doFetch),
   )
 
   register(
@@ -997,7 +1042,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
         "Move an asset from the account's embedded wallet to one of the account's own wallets, or to an owner-approved withdrawal address. amountRaw 'max' sweeps the spendable balance of that asset.",
       inputSchema: transferShape,
     },
-    async (args) => callAndRelay("candle_transfer", args, cfg),
+    async (args) => callAndRelay("candle_transfer", args, getConfig(), doFetch),
   )
 
   register(
@@ -1009,7 +1054,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       inputSchema: sweepShape,
     },
     async (args) => {
-      const result = await executeSweep(args as never, cfg, fetch)
+      const result = await executeSweep(args as never, getConfig(), doFetch)
       return { content: [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) }
     },
   )
@@ -1052,7 +1097,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       inputSchema: tradeShape,
     },
     async (args) => {
-      const result = await executeTrade(args as never, cfg, fetch)
+      const result = await executeTrade(args as never, getConfig(), doFetch)
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true } : {}) }
     },
   )
@@ -1070,7 +1115,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       inputSchema: launchAndSeedShape,
     },
     async (args) => {
-      const result = await executeLaunchAndSeed(args as never, cfg, fetch)
+      const result = await executeLaunchAndSeed(args as never, getConfig(), doFetch)
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true } : {}) }
     },
   )
@@ -1079,7 +1124,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
   // Candle, checked here before signing (hash, action type, builder), relay-signed, and submitted
   // to Hyperliquid by this server. Writes need CANDLE_KEY_SIGNER_PEM_FILE.
   const perpsTool = (tool: PerpsToolName) => async (args: Record<string, unknown>) => {
-    const result = await executePerps(tool, args, cfg, env, fetch)
+    const result = await executePerps(tool, args, getConfig(), env, doFetch)
     return { content: [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) }
   }
   const perpsWrite =
@@ -1190,7 +1235,7 @@ export function registerTools(server: McpServer, env: Record<string, string | un
       inputSchema: perpsDepositShape,
     },
     async (args) => {
-      const result = await executePerpsDeposit(args as Record<string, unknown>, cfg, env, fetch)
+      const result = await executePerpsDeposit(args as Record<string, unknown>, getConfig(), env, doFetch)
       return { content: [{ type: "text" as const, text: result.text }], ...(result.isError ? { isError: true } : {}) }
     },
   )

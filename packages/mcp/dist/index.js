@@ -106,7 +106,7 @@ function percentOfBalance(balanceRaw, percent) {
 import { randomUUID } from "node:crypto";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.7";
+var SERVER_VERSION = "0.10.8";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -1641,9 +1641,9 @@ ${promotion}` : markdown;
     return "";
   }
 }
-async function callAndRelay(name, args, cfg) {
+async function callAndRelay(name, args, cfg, doFetch) {
   const { url, init } = buildRequest(name, args, cfg);
-  const res = await fetch(url, init);
+  const res = await doFetch(url, init);
   noteVersionHeaders(res);
   const text = await res.text();
   return {
@@ -1752,28 +1752,38 @@ var sweepShape = {
 function registerTools(server, env = process.env) {
   const cfg = resolveConfig(env);
   const allowed = resolveToolAllowlist(env);
-  const register = (name, ...rest) => {
+  registerToolSubset(server, { tools: [...allowed], getConfig: () => cfg, env });
+}
+function registerToolSubset(server, options) {
+  const unknown = options.tools.filter((name) => !TOOL_NAMES.includes(name));
+  if (unknown.length)
+    throw new Error(`Unknown tool name(s): ${unknown.join(", ")}`);
+  const allowed = new Set(options.tools);
+  const getConfig = options.getConfig;
+  const env = options.env ?? {};
+  const doFetch = options.fetch ?? ((url, init) => fetch(url, init));
+  const register = (name, definition, handler) => {
     if (!allowed.has(name))
       return;
-    return server.registerTool(name, ...rest);
+    server.registerTool(name, { ...definition, ...options.metadata?.[name] }, handler);
   };
   register("candle_launch_token", {
     title: "Launch a token on Candle",
     description: "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything.",
     inputSchema: launchTokenShape
-  }, async (args) => callAndRelay("candle_launch_token", args, cfg));
+  }, async (args) => callAndRelay("candle_launch_token", args, getConfig(), doFetch));
   register("candle_get_market", {
     title: "Get market state",
     description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
     inputSchema: getMarketShape
-  }, async (args) => callAndRelay("candle_get_market", args, cfg));
+  }, async (args) => callAndRelay("candle_get_market", args, getConfig(), doFetch));
   register("candle_token_forensics", {
     title: "Token forensics",
     description: `Gate a buy before making it: who launched it (resolved on-chain; pump.fun's shared updateAuthority is never the developer; when no developer is on chain, deployer.attribution names the launchpad or issuer instead, e.g. launched via stonk.fun or issued by xStocks), their went-to-zero rate and last coins, who bought in the deploy window (the creator's own wallets are marked disclosed; strangers in the same slot are the bundle signal), same-funder insider share, same-funder deployer cluster, and safety.summary with six sourced flags (mintAuthority, freezeAuthority, tokenExtensions, lpLock, sellability, liquidityDrain). Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning. Every measurement carries a coverage note -- 'unavailable' is not 'clean'. No key needed.
 
 MARKET_NOT_FOUND means Candle has no market for that token and this could not run. That is also not 'clean': report that you could not check it, rather than reporting the token as safe. That refusal now carries error.coverage -- covered:false, a reason ('external_launchpad' when the token launched somewhere else, 'unknown_mint' when nobody has indexed it), the launchpad when known, and every check that consequently did not run. Read it instead of guessing. Most of the feed, and any Solana mint Jupiter's index knows, now answers with a partial report instead. On Hood, a token Candle did not launch names its launch account (deployer.method cvc_launch_account) for pons.family and pools.trade launches, with no record of earlier coins; other Hood launchpads return no developer.`,
     inputSchema: tokenForensicsShape
-  }, async (args) => callAndRelay("candle_token_forensics", args, cfg));
+  }, async (args) => callAndRelay("candle_token_forensics", args, getConfig(), doFetch));
   register("candle_get_feed", {
     title: "Get a token feed",
     description: "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip. Reads " + `only; moves nothing. No key needed. Start here when nobody has named a token.
@@ -1782,24 +1792,24 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 
 ` + "Filter, sort and pick fields SERVER-SIDE rather than reading the whole feed: an " + "unfiltered response is around 135KB and will not fit in a tool result. See `where`, " + "`sort` and `fields`.\n\n" + "One rule to know before screening on safety: a missing field is NOT a false one. " + "mintAuthorityDisabled and freezeAuthorityDisabled are absent on a real share of rows, " + "and absent means nobody checked, not that the authority is disabled. `where` never lets " + 'an absent field satisfy a comparison, so {"mintAuthorityDisabled":{"eq":true}} returns ' + "only tokens that actually say so.",
     inputSchema: getFeedShape
-  }, async (args) => callAndRelay("candle_get_feed", args, cfg));
+  }, async (args) => callAndRelay("candle_get_feed", args, getConfig(), doFetch));
   register("candle_report_activity", {
     title: "Report on-chain activity",
     description: "Report a client-executed transaction (transfer, swap, stake) so Candle records and verifies it.",
     inputSchema: reportActivityShape
-  }, async (args) => callAndRelay("candle_report_activity", args, cfg));
+  }, async (args) => callAndRelay("candle_report_activity", args, getConfig(), doFetch));
   register("candle_get_agent_profile", {
     title: "Get an agent profile",
     description: "Read a Candle user's public agent profile: whether agent features are enabled and launch counts.",
     inputSchema: getAgentProfileShape
-  }, async (args) => callAndRelay("candle_get_agent_profile", args, cfg));
+  }, async (args) => callAndRelay("candle_get_agent_profile", args, getConfig(), doFetch));
   register("candle_get_plans", {
     title: "Plans: prices, fees, limits and what each can do",
     description: "The plan table this Candle deployment serves (GET /api/v1/agent/plans). No key needed. Reads only. For " + "each plan: price (null when not sold), feeBps (the agent fee charged on top of every trade or dev buy the " + "API builds), perpFeeBps (the Hyperliquid builder fee), limits for a new key (requests per minute, launches " + "per day, uploads per minute, linked wallets) and capabilities: buyExternalTokens, sellExternalTokens, " + "tradeBaseAssets, tradeCandleTokens, selfLaunch, atomicLaunch, createLinkedWallets, importLinkedWallets, " + "hyperliquidPerps, limitOrders, quant, freeBaseTransfers. promoMaxDays is the days of Max a first Pro " + "purchase includes (0: no promotion). Quote prices and fees from here, never from memory: they differ by " + "deployment and change at the three-plan launch (Free, Pro, Max). The account's own plan and fee are in " + "candle_execution_status's tier. A TIER_REQUIRED refusal names a capability this table shows the account's " + "plan lacks. A capability true here is plan eligibility, not deployment availability: perps and own-wallet bridges " + "are each behind a deployment switch and need their wallet, scopes and setup. Returns the server's JSON, then the same table as Markdown.",
     inputSchema: {}
   }, async () => {
-    const { url, init } = buildRequest("candle_get_plans", {}, cfg);
-    const res = await fetch(url, init);
+    const { url, init } = buildRequest("candle_get_plans", {}, getConfig());
+    const res = await doFetch(url, init);
     noteVersionHeaders(res);
     const text = await res.text();
     if (!res.ok)
@@ -1823,43 +1833,43 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 
 ` + "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " + "and you already know what you asked for.",
     inputSchema: getOperationShape
-  }, async (args) => callAndRelay("candle_get_operation", args, cfg));
+  }, async (args) => callAndRelay("candle_get_operation", args, getConfig(), doFetch));
   register("candle_get_wallets", {
     title: "List the wallets Candle executes with",
     description: "The account's EMBEDDED wallets, one per chain, with their delegation state. These are " + "the wallets candle_trade, candle_swap and candle_transfer spend from, so this is how an " + "agent finds its own funding addresses. Reads only; moves nothing. Not the same as the " + "account's LINKED wallets, which are the owner's own wallets and are not spent from here. " + "Balances are not included: read a specific one with the market and balance endpoints.",
     inputSchema: {}
-  }, async () => callAndRelay("candle_get_wallets", {}, cfg));
+  }, async () => callAndRelay("candle_get_wallets", {}, getConfig(), doFetch));
   register("candle_get_profile_wallets", {
     title: "Read which wallets an agent profile can spend from",
     description: "An agent profile (API key) either spends from EVERY wallet on its account or only from " + "the ones assigned to it. Read walletScope before drawing any conclusion from the list: " + "an empty list means 'every wallet' under scope 'all' and 'none at all' under 'selected'. " + "Reads only; moves nothing.",
     inputSchema: profileWalletsShape
-  }, async (args) => callAndRelay("candle_get_profile_wallets", args, cfg));
+  }, async (args) => callAndRelay("candle_get_profile_wallets", args, getConfig(), doFetch));
   register("candle_set_profile_wallets", {
     title: "Set which wallets an agent profile can spend from",
     description: "REPLACES the profile's whole wallet set with the ids given, so a wallet left out of the " + "list loses access; pass an empty list to leave the profile with no wallets. NARROWING " + "ONLY: an API key can remove wallets from its OWN profile, but naming one it does not " + "already hold is a grant and needs a human in the dashboard, as does editing any other " + "profile. Takes effect only while the profile's scope is 'selected'. Wallet ids are the " + "linked-wallet ids, not addresses.",
     inputSchema: setProfileWalletsShape
-  }, async (args) => callAndRelay("candle_set_profile_wallets", args, cfg));
+  }, async (args) => callAndRelay("candle_set_profile_wallets", args, getConfig(), doFetch));
   register("candle_get_profile_pnl", {
     title: "Read an agent profile's P&L",
     description: "This profile's share of the account's P&L: realized profit on the sales it made, the Candle fees " + "charged against it, and the positions that belong to it (the wallet's bound key, else the key " + "whose buy opened them) with their cost basis, each MARKED at Candle's current price where one " + "exists: `markPriceUsd`, `marketValueUsd` and `unrealizedUsd` per position, and `unrealizedUsd` " + "overall. A position with no price is counted in `unmarkedPositions` and left out of unrealized, " + "never valued at zero; `oldestMarkAt` says how old the marks are. Deposits and withdrawals are " + "excluded: funding a wallet is not profit. Check `unvalued` and `truncated` before quoting the " + "number; they mean the total is partial. The figures come from the account's one P&L read, the " + "same as the console's, to the cent: `pnl.totalUsd` (realized net plus unrealized) is the " + "console's P&L. Positions live in wallets: each wallet is its own average-cost pool, the total " + "is the sum of `pnl.byWallet` (one row per wallet, main or linked, with the linked wallet's " + "label; `unknown:solana` or `unknown:hood` is the row for fills no record places in a wallet), " + "and one token held in two wallets is two positions, each with its `wallet`. A recorded move " + "between the account's wallets carries its cost and realizes nothing. Moved-in positions and " + "`closedPositions` carry additive `transferredIn`, `basisSource` and `basisComplete`; " + "`basisSource` says whether cost comes from Candle history, on-chain trades or the arrival price; " + "`zero-cost` (with `zeroCostQuantity`) is Solana CNDL with no purchase found, carried at $0. " + "Public `realizedFromTransfersUsd` and `unrealizedFromTransfersUsd` are shares already included in " + "total P&L and rank; do not add them again. Moved-in closes count toward W/L and eligibility. Each position carries " + "`agent` (the key it belongs to) and `dust` when it is worth under one cent; dust stays listed " + "and counted, and `openPositionsExDust` leaves it out. `closed` gives the closed positions as " + "`madeUsd` + `lostUsd` + `partialSellsUsd` = `realizedNetUsd`, with `wins` and `losses`. " + "`lookback` and `truncated` are the account's activity bound, and `tradesConsidered` counts this " + "key's ledger fills. Since 2026-10-02 the total is the sum of wallets rather than one pool across " + "them, so realized figures can differ from earlier reads; a server that predates it omits " + "`totalUsd`, `closed`, `openPositionsExDust`, `wallet`, `agent` and `dust`. " + "Every open position and every `byWallet` row (and its positions) carries `chain` ('solana' or " + "'hood'), and `pnl.byChain` has the total's figures over each chain's fills alone, both chains " + "always present, with `openPositions` there a count (the positions are in `pnl.openPositions`, by " + "`chain`). The two chains sum to the total. A " + "server that predates per-chain P&L omits `chain` and `byChain`. While Hyperliquid is enabled, " + "`hyperliquid` separately reports main-perp realized gross, signed funding, fees (inclusive of builder fees), " + "and net = gross + funding - fees, for currently bound EVM TEE wallets since the current TEE binding. " + "Check `read` and `truncated`; historical bindings and unrealized perps are excluded. Reads only.",
     inputSchema: profilePnlShape
-  }, async (args) => callAndRelay("candle_get_profile_pnl", args, cfg));
+  }, async (args) => callAndRelay("candle_get_profile_pnl", args, getConfig(), doFetch));
   register("candle_get_profile_trades", {
     title: "Read an agent profile's trade history",
     description: "Orders, actual fills, fees, timestamps and transaction hashes for this profile. Includes FAILED " + "trades, with an errorCode saying why each did not go through, so this answers 'what happened to " + "my order' as well as 'what did I trade'. Reads only; moves nothing.",
     inputSchema: profileTradesShape
-  }, async (args) => callAndRelay("candle_get_profile_trades", args, cfg));
+  }, async (args) => callAndRelay("candle_get_profile_trades", args, getConfig(), doFetch));
   register("candle_get_portfolio", {
     title: "Read what the account holds, on Solana and Hood",
     description: "Balances and prices for the wallets Candle already knows on this account, on both chains: the " + "embedded wallet and every TEE wallet. Solana wallets are in `embedded` and `tee` (SOL as raw " + "`lamports`, tokens as raw `amountRaw` with `decimals`). Hood wallets are in `hood.embedded` and " + "`hood.tee` (ETH as raw `wei`, ERC-20s including USDG), never in the top-level arrays. Every " + "wallet and holding carries `chain`. Prices are in `prices`: a Solana mint under its own " + "address, Hood ETH under `hood:native`, and a Hood token under `hood:<contract lowercased>`, so " + "lowercase the address before looking it up. An unpriced entry is `priceUsd: null`, never zero; " + "a Hood one says why in `unpricedReason` (no-market-row, unusable-price, stale-mark, " + "source-unavailable), and `hood.unpriced` / `hood.unpricedByReason` count them. A Hood token " + "mark older than six hours is not used, so many Hood tokens read unpriced. A wallet whose read " + "failed has null balances, never zero, and is listed in `unavailable` (Solana) or " + "`hood.unavailable`; check `complete` before quoting a total. `walletsComplete` is false only " + "when the wallet list itself was cut off, and is absent on a server that predates it: then " + "`complete: false` may be a cut-off list or a failed read. Vault and external wallets are " + "not included: Candle does not know their addresses (the Candle CLI's `candle portfolio` reads " + "them over your own RPC). Needs a key with the account:read scope; without it the answer is " + "SCOPE_MISSING. A server that predates Hood in the portfolio omits `hood` and `chain`. Reads " + "only; moves nothing.",
     inputSchema: {}
-  }, async () => callAndRelay("candle_get_portfolio", {}, cfg));
+  }, async () => callAndRelay("candle_get_portfolio", {}, getConfig(), doFetch));
   register("candle_resolve_token", {
     title: "Resolve a contract address to a token",
     description: "Turn a bare contract address or mint into Candle's market for it: chain, symbol, " + "decimals, quote asset, and whether Candle can trade it. Start here when a human gives " + "you an address and nothing else. The chain is read off the address's own shape and is " + "not guessed, so it does not need to be supplied. Reads only; moves nothing. A 404 means " + "Candle has no market for that address, which is an answer, not a failure to retry.",
     inputSchema: resolveTokenShape
   }, async (args) => {
-    const result = await resolveToken(args, cfg, fetch);
+    const result = await resolveToken(args, getConfig(), doFetch);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
   register("candle_execution_status", {
@@ -1867,7 +1877,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     description: "One call before trading: the embedded wallets to spend from, the tier that decides what " + "may be traded, and this key's own spend limits. Reads only; moves nothing. Call it when " + "a run starts, or after an authorization error, rather than inferring readiness from a " + "failed trade. If a read could not be completed the tool says which one and does NOT " + "claim the account is unready: an unreachable endpoint and a missing tier are different " + "problems with different fixes.",
     inputSchema: {}
   }, async () => {
-    const result = await executionStatus(cfg, fetch);
+    const result = await executionStatus(getConfig(), doFetch);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
   register("candle_swap", {
@@ -1886,18 +1896,18 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 
 ` + "This tool spends the embedded wallets. A TEE wallet also bridges, from SOL or USDC to ETH " + "or USDG or back, but only into the same key's TEE wallet on the other chain, with no Candle " + "fee: that runs through `candle swap` with the wallet's bound key, not this tool.",
     inputSchema: swapShape
-  }, async (args) => callAndRelay("candle_swap", args, cfg));
+  }, async (args) => callAndRelay("candle_swap", args, getConfig(), doFetch));
   register("candle_transfer", {
     title: "Transfer an asset",
     description: "Move an asset from the account's embedded wallet to one of the account's own wallets, or to an owner-approved withdrawal address. amountRaw 'max' sweeps the spendable balance of that asset.",
     inputSchema: transferShape
-  }, async (args) => callAndRelay("candle_transfer", args, cfg));
+  }, async (args) => callAndRelay("candle_transfer", args, getConfig(), doFetch));
   register("candle_sweep", {
     title: "Sweep a wallet",
     description: "Sweep the embedded wallet on one chain to a destination: every base asset (plus any explicitly named mints), one transfer per asset with amountRaw 'max'. Assets with nothing spendable are reported as empty, not errors.",
     inputSchema: sweepShape
   }, async (args) => {
-    const result = await executeSweep(args, cfg, fetch);
+    const result = await executeSweep(args, getConfig(), doFetch);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
   register("candle_trade", {
@@ -1920,7 +1930,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 ` + "- If you no longer hold the result, do not re-send to find out what happened. Ask " + "candle_get_operation with the clientTradeId; a 404 there means the trade never reached " + "the rail and nothing moved.",
     inputSchema: tradeShape
   }, async (args) => {
-    const result = await executeTrade(args, cfg, fetch);
+    const result = await executeTrade(args, getConfig(), doFetch);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
   register("candle_launch_and_seed", {
@@ -1928,11 +1938,11 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed (in the " + "launch transaction on solana, a best-effort follow-up on hood). Works on every plan, Free included (this is not the atomic launch). Then " + "return the fresh market state and token links in one result. MOVES REAL FUNDS unless " + "dryRun. Seeds above the platform dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH); " + "launch, then top up with candle_trade.",
     inputSchema: launchAndSeedShape
   }, async (args) => {
-    const result = await executeLaunchAndSeed(args, cfg, fetch);
+    const result = await executeLaunchAndSeed(args, getConfig(), doFetch);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
   const perpsTool = (tool) => async (args) => {
-    const result = await executePerps(tool, args, cfg, env, fetch);
+    const result = await executePerps(tool, args, getConfig(), env, doFetch);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   };
   const perpsWrite = " MOVES REAL FUNDS on Hyperliquid unless submit is false. Candle builds the action within this key's limits " + "(USD window, maximum leverage, maximum position, slippage and price bands, main-exchange markets only); this " + "server recomputes its hash and checks the action type and Candle's builder before signing, then submits it to " + "Hyperliquid itself. Needs perps:write on the key and CANDLE_KEY_SIGNER_PEM_FILE. A refusal names the limit " + "that refused it (error.limit).";
@@ -1976,7 +1986,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     description: "MOVES REAL FUNDS unless submit is false. Deposit onto the key's Hyperliquid account through Relay: SOL or " + "USDC from its Solana TEE wallet, or ETH or USDG from its Hood TEE wallet, credited as Hyperliquid perps " + "USDC at the key's EVM TEE wallet's own address (Candle resolves it; no recipient is taken). Refused below a " + "floor that covers Hyperliquid's 1 USDC first-deposit charge. No Candle fee. Needs swap:write and a raw cap " + "on the asset, and CANDLE_KEY_SIGNER_PEM_FILE to sign. There is no withdrawal from Hyperliquid yet.",
     inputSchema: perpsDepositShape
   }, async (args) => {
-    const result = await executePerpsDeposit(args, cfg, env, fetch);
+    const result = await executePerpsDeposit(args, getConfig(), env, doFetch);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
 }

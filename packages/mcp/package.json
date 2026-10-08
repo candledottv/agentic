@@ -1,6 +1,6 @@
 {
   "name": "@candledottv/mcp",
-  "version": "0.10.7",
+  "version": "0.10.8",
   "description": "MCP server for the Candle agent rail: launch tokens, read markets, report activity",
   "type": "module",
   "license": "MIT",
@@ -46,7 +46,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.22.0",
+    "@modelcontextprotocol/sdk": "1.26.0",
     "@noble/hashes": "1.8.0",
     "zod": "^3.23.0"
   },
