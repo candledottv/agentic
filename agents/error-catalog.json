@@ -167,7 +167,8 @@
         "BRIDGE_IN_FLIGHT",
         "CLOSE_IN_PROGRESS",
         "CLOSE_FAILED",
-        "HOLD_NOT_RELEASABLE"
+        "HOLD_NOT_RELEASABLE",
+        "OPERATION_PENDING"
       ]
     },
     "quota": {
