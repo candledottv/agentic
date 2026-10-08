@@ -97,6 +97,16 @@ describe("server instructions", () => {
     expect(instructions).toContain("START HERE")
   })
 
+  test("initialize instructions distinguish external placeholders from measurements", () => {
+    for (const field of ["buysOpen", "sellsOpen", "quoteMint", "feeBps", "venue", "graduationVenue", "poolAddress"]) {
+      expect(instructions).toContain(field)
+    }
+    expect(instructions).toContain("external: true")
+    expect(instructions).toContain("compatibility placeholders, not measured facts")
+    expect(instructions).toContain("trade.routable is stored eligibility")
+    expect(instructions).toContain("does not verify those fields")
+  })
+
   test("every tool the instructions name actually exists", () => {
     const named = [...(instructions ?? "").matchAll(/candle_[a-z_]+/g)].map((m) => m[0])
     expect(named.length).toBeGreaterThan(0)

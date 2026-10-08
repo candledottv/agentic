@@ -4,6 +4,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
+// src/market-disclosure.ts
+var EXTERNAL_MARKET_DISCLOSURE = "For external tokens (external: true), buysOpen, sellsOpen, quoteMint, feeBps, venue, " + "graduationVenue and poolAddress are compatibility placeholders, not measured facts about " + "trading availability, pool pairing, fees or pool venue; trade.routable is stored eligibility " + "and does not verify those fields.";
+
 // src/tools.ts
 import { z as z2 } from "zod";
 
@@ -1783,7 +1786,7 @@ function registerToolSubset(server, options) {
   }, async (args) => callAndRelay("candle_launch_token", args, getConfig(), doFetch));
   register("candle_get_market", {
     title: "Get market state",
-    description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
+    description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
     inputSchema: getMarketShape
   }, async (args) => callAndRelay("candle_get_market", args, getConfig(), doFetch));
   register("candle_token_forensics", {
@@ -1875,7 +1878,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async () => callAndRelay("candle_get_portfolio", {}, getConfig(), doFetch));
   register("candle_resolve_token", {
     title: "Resolve a contract address to a token",
-    description: "Turn a bare contract address or mint into Candle's market for it: chain, symbol, " + "decimals, quote asset, and whether Candle can trade it. Start here when a human gives " + "you an address and nothing else. The chain is read off the address's own shape and is " + "not guessed, so it does not need to be supplied. Reads only; moves nothing. A 404 means " + "Candle has no market for that address, which is an answer, not a failure to retry.",
+    description: "Turn a bare contract address or mint into Candle's market for it: chain, symbol, " + "decimals, quote asset, and whether Candle can trade it. Start here when a human gives " + "you an address and nothing else. The chain is read off the address's own shape and is " + "not guessed, so it does not need to be supplied. Reads only; moves nothing. A 404 means " + "Candle has no market for that address, which is an answer, not a failure to retry. " + EXTERNAL_MARKET_DISCLOSURE,
     inputSchema: resolveTokenShape
   }, async (args) => {
     const result = await resolveToken(args, getConfig(), doFetch);
@@ -2020,6 +2023,7 @@ only when organic0LiveOk is false.
 candle_get_market and candle_resolve_token answer for same-chain indexed external mints even
 when trade.routable is false. Read candleLaunched, launchpad, venue and trade; jupiterOk and
 paperDiscoveryOk are separate signals. Identity-only Solana reads have route_unverified.
+${EXTERNAL_MARKET_DISCLOSURE}
 General quotes use POST /api/v1/trade/agent/quote; curve quotes/lifecycle describe Candle launches.
 Stored eligibility is not a successful quote or permission. MARKET_NOT_FOUND remains a legacy
 code: read error.routing.reason, error.discovery and sibling error.retryable. A curve-only

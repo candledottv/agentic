@@ -336,6 +336,17 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
     expect(d).toContain("error.routing.reason")
   })
 
+  test.each(["candle_get_market", "candle_resolve_token"])("%s identifies external placeholders", (name) => {
+    const description = describeOf(name)
+    for (const field of ["buysOpen", "sellsOpen", "quoteMint", "feeBps", "venue", "graduationVenue", "poolAddress"]) {
+      expect(description).toContain(field)
+    }
+    expect(description).toContain("external: true")
+    expect(description).toContain("compatibility placeholders, not measured facts")
+    expect(description).toContain("trade.routable is stored eligibility")
+    expect(description).toContain("does not verify those fields")
+  })
+
   test("forensics refuses to let MARKET_NOT_FOUND read as clean", () => {
     const d = describeOf("candle_token_forensics")
     expect(d).toContain("MARKET_NOT_FOUND")

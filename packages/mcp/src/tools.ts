@@ -43,6 +43,7 @@ import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/
 import { z } from "zod"
 import { type RequestConfig, resolveConfig } from "./client"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
+import { EXTERNAL_MARKET_DISCLOSURE } from "./market-disclosure"
 import {
   executeLaunchAndSeed,
   executeSweep,
@@ -735,6 +736,8 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       title: "Get market state",
       description:
         "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. " +
+        EXTERNAL_MARKET_DISCLOSURE +
+        " " +
         "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " +
         "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " +
         "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " +
@@ -995,7 +998,8 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "decimals, quote asset, and whether Candle can trade it. Start here when a human gives " +
         "you an address and nothing else. The chain is read off the address's own shape and is " +
         "not guessed, so it does not need to be supplied. Reads only; moves nothing. A 404 means " +
-        "Candle has no market for that address, which is an answer, not a failure to retry.",
+        "Candle has no market for that address, which is an answer, not a failure to retry. " +
+        EXTERNAL_MARKET_DISCLOSURE,
       inputSchema: resolveTokenShape,
     },
     async (args) => {

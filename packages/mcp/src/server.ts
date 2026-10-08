@@ -19,6 +19,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
+import { EXTERNAL_MARKET_DISCLOSURE } from "./market-disclosure"
 import { registerTools } from "./tools"
 import { SERVER_VERSION } from "./version"
 
@@ -58,6 +59,7 @@ only when organic0LiveOk is false.
 candle_get_market and candle_resolve_token answer for same-chain indexed external mints even
 when trade.routable is false. Read candleLaunched, launchpad, venue and trade; jupiterOk and
 paperDiscoveryOk are separate signals. Identity-only Solana reads have route_unverified.
+${EXTERNAL_MARKET_DISCLOSURE}
 General quotes use POST /api/v1/trade/agent/quote; curve quotes/lifecycle describe Candle launches.
 Stored eligibility is not a successful quote or permission. MARKET_NOT_FOUND remains a legacy
 code: read error.routing.reason, error.discovery and sibling error.retryable. A curve-only
