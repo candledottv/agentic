@@ -1,6 +1,6 @@
 {
   "name": "@candledottv/mcp",
-  "version": "0.10.8",
+  "version": "0.10.9",
   "description": "MCP server for the Candle agent rail: launch tokens, read markets, report activity",
   "type": "module",
   "license": "MIT",

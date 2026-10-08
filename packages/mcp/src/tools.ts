@@ -217,7 +217,7 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
         where?: string
         sort?: string
         fields?: string
-        limit?: string
+        limit?: number | string
       }
       // Every optional knob is forwarded only when set. An empty string would reach the API as a
       // present-but-blank parameter, and a blank `where` treated as "no filter" would hand back
@@ -228,7 +228,7 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
         ...(where ? { where } : {}),
         ...(sort ? { sort } : {}),
         ...(fields ? { fields } : {}),
-        ...(limit ? { limit } : {}),
+        ...(limit !== undefined && limit !== "" ? { limit: String(limit) } : {}),
       })
       return {
         url: `${base}/api/v1/markets/feed?${query.toString()}`,
@@ -425,6 +425,31 @@ const tokenForensicsShape = {
   mint: z.string().describe("Token mint (solana) or contract address (hood)"),
 }
 
+const FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200"
+
+/**
+ * The feed's row cap, published as an integer 1-200 so a model sends a number. A numeric string
+ * ("3") is still accepted, because clients and saved prompts sent one while this was typed as a
+ * string, and an empty string still means "not set", as it always has. Anything else (0, 201,
+ * 2.5, "abc") is refused here with one readable message rather than forwarded for the API to
+ * interpret.
+ */
+const feedLimit = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") return value
+    const trimmed = value.trim()
+    if (trimmed === "") return undefined
+    return /^[0-9]+$/.test(trimmed) ? Number(trimmed) : value
+  },
+  z
+    .number({ invalid_type_error: FEED_LIMIT_MESSAGE })
+    .int(FEED_LIMIT_MESSAGE)
+    .min(1, FEED_LIMIT_MESSAGE)
+    .max(200, FEED_LIMIT_MESSAGE)
+    .optional()
+    .describe("Max rows to return, an integer from 1 to 200."),
+)
+
 const getFeedShape = {
   bucket: z.enum(["new", "graduated", "onfire", "bluechip"]),
   chain: z.string().optional().describe("Optional chain filter"),
@@ -445,7 +470,7 @@ const getFeedShape = {
       "Comma-separated fields to return, e.g. symbol,marketCap,liquidityUsd. chain, address and symbol always " +
         "ride along. Cuts a 135KB response to a couple of KB.",
     ),
-  limit: z.string().optional().describe("Max rows to return, 1-200."),
+  limit: feedLimit,
 }
 
 // The activity report body is a passthrough: the API is the authoritative validator, and its

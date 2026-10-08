@@ -106,7 +106,7 @@ function percentOfBalance(balanceRaw, percent) {
 import { randomUUID } from "node:crypto";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.8";
+var SERVER_VERSION = "0.10.9";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -1532,7 +1532,7 @@ function buildRequest(name, args, cfg) {
         ...where ? { where } : {},
         ...sort ? { sort } : {},
         ...fields ? { fields } : {},
-        ...limit ? { limit } : {}
+        ...limit !== undefined && limit !== "" ? { limit: String(limit) } : {}
       });
       return {
         url: `${base2}/api/v1/markets/feed?${query.toString()}`,
@@ -1676,13 +1676,22 @@ var tokenForensicsShape = {
   chain: z2.string().describe('"solana" or "hood"'),
   mint: z2.string().describe("Token mint (solana) or contract address (hood)")
 };
+var FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200";
+var feedLimit = z2.preprocess((value) => {
+  if (typeof value !== "string")
+    return value;
+  const trimmed = value.trim();
+  if (trimmed === "")
+    return;
+  return /^[0-9]+$/.test(trimmed) ? Number(trimmed) : value;
+}, z2.number({ invalid_type_error: FEED_LIMIT_MESSAGE }).int(FEED_LIMIT_MESSAGE).min(1, FEED_LIMIT_MESSAGE).max(200, FEED_LIMIT_MESSAGE).optional().describe("Max rows to return, an integer from 1 to 200."));
 var getFeedShape = {
   bucket: z2.enum(["new", "graduated", "onfire", "bluechip"]),
   chain: z2.string().optional().describe("Optional chain filter"),
   where: z2.string().optional().describe('JSON filter, e.g. {"marketCap":{"lt":150000},"liquidityUsd":{"gte":25000},"mintAuthorityDisabled":{"eq":true}}. ' + "Comparators: eq, ne, lt, lte, gt, gte, present. An ABSENT field satisfies none of them except " + "present:false, so a filter for mintAuthorityDisabled eq true returns only tokens that actually say " + "true, never ones where the flag is simply missing. Use present:false to find the tokens with no data."),
   sort: z2.string().optional().describe('Sort as "field" or "field:asc" / "field:desc". A bare field means desc.'),
   fields: z2.string().optional().describe("Comma-separated fields to return, e.g. symbol,marketCap,liquidityUsd. chain, address and symbol always " + "ride along. Cuts a 135KB response to a couple of KB."),
-  limit: z2.string().optional().describe("Max rows to return, 1-200.")
+  limit: feedLimit
 };
 var reportActivityShape = {
   chain: z2.string().describe('"solana" or "hood"'),
