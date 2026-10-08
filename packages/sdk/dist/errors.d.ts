@@ -32,6 +32,8 @@ export interface CandleErrorPayload {
     stage?: string;
     /** The transaction the refusal is about (the landed trade's hash or signature), when known. */
     signature?: string;
+    /** A headless launch's mint, once the attempt has an identity. A retry must not launch another. */
+    mint?: string;
     /** True when the server stored `signature` on the trade's row. */
     recorded?: boolean;
     /** A Hood fee refusal's payment details: raw units owed, the quote asset id, the treasury address. */
@@ -71,6 +73,8 @@ export declare class CandleApiError extends Error {
     readonly stage?: string;
     /** See `CandleErrorPayload.signature`. */
     readonly signature?: string;
+    /** See `CandleErrorPayload.mint`. */
+    readonly mint?: string;
     readonly recorded?: boolean;
     readonly feeRaw?: string;
     readonly quoteAsset?: string;

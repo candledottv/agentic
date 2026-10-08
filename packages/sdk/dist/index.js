@@ -89,6 +89,7 @@ class CandleApiError extends Error {
   docsPath;
   stage;
   signature;
+  mint;
   recorded;
   feeRaw;
   quoteAsset;
@@ -110,6 +111,8 @@ class CandleApiError extends Error {
       this.stage = args.stage;
     if (args.signature !== undefined)
       this.signature = args.signature;
+    if (args.mint !== undefined)
+      this.mint = args.mint;
     if (args.recorded !== undefined)
       this.recorded = args.recorded;
     if (args.feeRaw !== undefined)
@@ -181,6 +184,7 @@ function envelopeError(body) {
     ...typeof error.retryable === "boolean" ? { retryable: error.retryable } : {},
     ...typeof error.stage === "string" ? { stage: error.stage } : {},
     ...typeof error.signature === "string" ? { signature: error.signature } : {},
+    ...typeof error.mint === "string" ? { mint: error.mint } : {},
     ...typeof error.recorded === "boolean" ? { recorded: error.recorded } : {},
     ...typeof error.feeRaw === "string" ? { feeRaw: error.feeRaw } : {},
     ...typeof error.quoteAsset === "string" ? { quoteAsset: error.quoteAsset } : {},
@@ -833,6 +837,8 @@ function retryDelayMs(retry) {
 function isRetryableLaunchFailure(error) {
   if (!(error instanceof CandleApiError))
     return true;
+  if (error.stage === "executed" || error.stage === "unconfirmed" || error.mint !== undefined)
+    return false;
   if (error.code.startsWith("HTTP_"))
     return error.status >= 500;
   if (!error.retryable)

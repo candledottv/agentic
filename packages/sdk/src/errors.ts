@@ -34,6 +34,8 @@ export interface CandleErrorPayload {
   stage?: string
   /** The transaction the refusal is about (the landed trade's hash or signature), when known. */
   signature?: string
+  /** A headless launch's mint, once the attempt has an identity. A retry must not launch another. */
+  mint?: string
   /** True when the server stored `signature` on the trade's row. */
   recorded?: boolean
   /** A Hood fee refusal's payment details: raw units owed, the quote asset id, the treasury address. */
@@ -75,6 +77,8 @@ export class CandleApiError extends Error {
   readonly stage?: string
   /** See `CandleErrorPayload.signature`. */
   readonly signature?: string
+  /** See `CandleErrorPayload.mint`. */
+  readonly mint?: string
   readonly recorded?: boolean
   readonly feeRaw?: string
   readonly quoteAsset?: string
@@ -94,6 +98,7 @@ export class CandleApiError extends Error {
     this.docsPath = args.docsPath
     if (args.stage !== undefined) this.stage = args.stage
     if (args.signature !== undefined) this.signature = args.signature
+    if (args.mint !== undefined) this.mint = args.mint
     if (args.recorded !== undefined) this.recorded = args.recorded
     if (args.feeRaw !== undefined) this.feeRaw = args.feeRaw
     if (args.quoteAsset !== undefined) this.quoteAsset = args.quoteAsset
@@ -235,6 +240,7 @@ function envelopeError(body: unknown): CandleErrorPayload | null {
     ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
     ...(typeof error.stage === "string" ? { stage: error.stage } : {}),
     ...(typeof error.signature === "string" ? { signature: error.signature } : {}),
+    ...(typeof error.mint === "string" ? { mint: error.mint } : {}),
     ...(typeof error.recorded === "boolean" ? { recorded: error.recorded } : {}),
     ...(typeof error.feeRaw === "string" ? { feeRaw: error.feeRaw } : {}),
     ...(typeof error.quoteAsset === "string" ? { quoteAsset: error.quoteAsset } : {}),

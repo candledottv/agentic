@@ -23,8 +23,9 @@
  *   caller omits one and re-sends the SAME id on network errors, non-envelope 5xx responses,
  *   retryable envelopes with 5xx status, and the retryable in-flight 409. It never retries a
  *   non-retryable envelope (IDEMPOTENCY_CONFLICT with a different body, LAUNCH_DISABLED, every
- *   validation error). Backoff is 250ms * 2^n, jittered to 50-100% of that, capped at 8s,
- *   bounded by `maxRetries` (default 3 retries after the initial attempt).
+ *   validation error), and it never retries a launch whose stage is `executed` or `unconfirmed`
+ *   or whose error already names a mint. Backoff is 250ms * 2^n, jittered to 50-100% of that,
+ *   capped at 8s, bounded by `maxRetries` (default 3 retries after the initial attempt).
  */
 import { type HyperliquidNetwork, type HyperliquidTypedData } from "./hyperliquid";
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl";
@@ -317,6 +318,11 @@ export interface LaunchJob {
     errorCode?: string;
     createdAt: number;
     updatedAt: number;
+    /**
+     * Set when a headless attempt has broadcast evidence and is not yet confirmed.
+     * `executed` / `unconfirmed` means this id is reserved; a later POST resumes it.
+     */
+    stage?: "executed" | "unconfirmed";
 }
 export interface MigrationStatus {
     status: "not_started" | "in_progress" | "completed" | "delayed";

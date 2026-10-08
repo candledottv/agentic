@@ -69,7 +69,14 @@ function json(status: number, body: unknown): Response {
 function envelope(
   status: number,
   code: string,
-  opts: { retryable?: boolean; field?: string; message?: string } = {},
+  opts: {
+    retryable?: boolean
+    field?: string
+    message?: string
+    stage?: string
+    mint?: string
+    signature?: string
+  } = {},
 ): Response {
   return json(status, {
     success: false,
@@ -77,6 +84,9 @@ function envelope(
       code,
       message: opts.message ?? `${code} message`,
       ...(opts.field !== undefined ? { field: opts.field } : {}),
+      ...(opts.stage !== undefined ? { stage: opts.stage } : {}),
+      ...(opts.mint !== undefined ? { mint: opts.mint } : {}),
+      ...(opts.signature !== undefined ? { signature: opts.signature } : {}),
       retryable: opts.retryable === true,
     },
   })
@@ -3119,6 +3129,27 @@ describe("launch retry policy", () => {
     const { client, calls } = makeClient(KEYED, [envelope(503, "LAUNCH_DISABLED", { retryable: false })])
     const error = (await client.launch(LAUNCH_REQ).catch((e: unknown) => e)) as CandleApiError
     expect(error.code).toBe("LAUNCH_DISABLED")
+    expect(calls.length).toBe(1)
+  })
+
+  test("a retryable 500 whose stage is executed is not sent again", async () => {
+    const { client, calls } = makeClient(KEYED, [
+      envelope(500, "LAUNCH_FAILED", { retryable: true, stage: "executed", mint: "Mint111", signature: "Sig111" }),
+      json(200, LAUNCH_OK),
+    ])
+    const error = (await client.launch(LAUNCH_REQ).catch((e: unknown) => e)) as CandleApiError
+    expect(error.stage).toBe("executed")
+    expect(error.mint).toBe("Mint111")
+    expect(calls.length).toBe(1)
+  })
+
+  test("a retryable 500 whose stage is unconfirmed is not sent again", async () => {
+    const { client, calls } = makeClient(KEYED, [
+      envelope(500, "LAUNCH_FAILED", { retryable: true, stage: "unconfirmed", signature: "Sig111" }),
+      json(200, LAUNCH_OK),
+    ])
+    const error = (await client.launch(LAUNCH_REQ).catch((e: unknown) => e)) as CandleApiError
+    expect(error.stage).toBe("unconfirmed")
     expect(calls.length).toBe(1)
   })
 
