@@ -676,6 +676,25 @@ describe("unlocking with Touch ID", () => {
     ])
   })
 
+  test("a vault send's one unlock names the send in the Touch ID prompt (ED-12, 2026-10-09 amendment)", async () => {
+    const t = await vaultWithTouchId()
+    const to = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+    // Each send stops after the unlock on a --from or target this vault does not hold, so the one
+    // unlock is all that runs: its reason is the command line's amount, asset and destination.
+    const sends: Array<[string[], string]> = [
+      [["vault", "transfer", to, "--amount", "1.5", "--asset", "SOL", "--from", "nope"], `send 1.5 SOL to ${to}`],
+      [["vault", "fund", "nope", "--amount", "2", "--asset", "usdc"], "send 2 USDC to nope"],
+      [["external", "sweep", "nope", "--to", "cold"], "send everything from nope to cold"],
+    ]
+    for (const [args, reason] of sends) {
+      const h = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, script: { store: t.add.script.store } })
+      expect(await run([...args, "--factor", "touch-id", "--keystore", t.vaultPath], h.deps)).not.toBe(0)
+      expect(h.calls.filter((call) => call.op === "decrypt").map((call) => call.reason)).toEqual([reason])
+      expect(h.stderr.text).toContain(`Confirm with Touch ID to ${reason}.`)
+      expect(h.asked).toEqual([])
+    }
+  })
+
   test("with a passphrase and Touch ID both drivable and no --factor, the operator is asked which", async () => {
     const t = await vaultWithTouchId()
     const byId = await harness({

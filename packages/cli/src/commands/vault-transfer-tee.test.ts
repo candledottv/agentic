@@ -2,7 +2,8 @@
  * BE-326 (Phase 2 ED-10 amendment, 2026-09-24): `vault transfer --from` a promoted wallet.
  *
  * The signing is `vault transfer`'s own, so what is asserted here is that a `role: "tee-wallet"`
- * source reaches it with the same prompts and last-six as a vault key, plus the three things the
+ * source reaches it with the same prompts as a vault key (one unlock, one typed `confirm`, since
+ * `2026-10-09-cli-transfer-confirm-and-batch-rename-design.md`), plus the three things the BE-326
  * amendment adds for that source only: the pending-sweep refusal, the server-state warning before
  * the confirmation, and the activity report after finality. A vault key's transfer is asserted to
  * make none of those calls.
@@ -49,6 +50,8 @@ async function fixture(opts: { lifecycle?: Handler; report?: Handler; apiKey?: b
   const sent: Transaction[] = []
   const events: string[] = []
   let signingPrompts = 0
+  // Everything printed before the confirmation prompt was shown.
+  let shownAtConfirm = ""
   const { fetch, calls } = createRoutedFetch({
     "/rpc": async (req) => {
       const { method, params, id } = JSON.parse(String(req.init.body))
@@ -96,9 +99,10 @@ async function fixture(opts: { lifecycle?: Handler; report?: Handler; apiKey?: b
       return made.passphrase
     },
     promptLine: async (prompt) => {
-      events.push(`last-six after ${JSON.stringify(output.text + errors.text)}`)
-      expect(prompt).toContain(DESTINATION)
-      return DESTINATION.slice(-6)
+      events.push("confirm")
+      shownAtConfirm = output.text + errors.text
+      expect(prompt).toBe(`Type confirm to send 0.1 ${prompt.includes("USDC") ? "USDC" : "SOL"} to ${DESTINATION}: `)
+      return "confirm"
     },
   })
   for (const label of ["cold", "desk"]) {
@@ -140,6 +144,9 @@ async function fixture(opts: { lifecycle?: Handler; report?: Handler; apiKey?: b
     get signingPrompts() {
       return signingPrompts - signingPromptsAtSetup
     },
+    get shownAtConfirm() {
+      return shownAtConfirm
+    },
     apiCalls: (path: string) => calls.slice(setupCalls).filter((call) => new URL(call.url).pathname === path),
     transfer: (from: string, asset = "SOL", extra: string[] = []) =>
       run(
@@ -163,7 +170,7 @@ async function fixture(opts: { lifecycle?: Handler; report?: Handler; apiKey?: b
 }
 
 describe("BE-326: vault transfer from a promoted wallet", () => {
-  test("signs and broadcasts a SOL transfer by label, with the vault key's prompts and last-six", async () => {
+  test("signs and broadcasts a SOL transfer by label, with the vault key's one unlock and typed confirm", async () => {
     const f = await fixture()
     expect(await f.transfer("desk")).toBe(0)
     expect(f.sent).toHaveLength(1)
@@ -172,9 +179,10 @@ describe("BE-326: vault transfer from a promoted wallet", () => {
     const ix = tx.instructions[0]!
     expect(ix.programId.equals(SystemProgram.programId)).toBe(true)
     expect(ix.keys[1]?.pubkey.toBase58()).toBe(DESTINATION)
-    // The factor a second time, then the broadcast: the same sequence a vault key goes through.
-    expect(f.signingPrompts).toBe(1)
-    expect(f.events.filter((e) => !e.startsWith("last-six"))).toEqual(["factor", "broadcast"])
+    // No factor a second time: the typed confirm, then the broadcast, as a vault key goes through.
+    expect(f.signingPrompts).toBe(0)
+    expect(f.events).toEqual(["confirm", "broadcast"])
+    expect(f.shownAtConfirm).toContain("to   9WzD XwBb mkg8 ZTbN MqUx vQRA yrZz DsGY dLVL 9zYt AWWM\n")
     expect(f.output.text).toContain(`fee payer   ${f.teeAddress}`)
     expect(f.output.text).toContain(`Transferred 0.1 SOL to ${DESTINATION}: ${base58.encode(tx.signature!)}`)
   })
@@ -201,8 +209,7 @@ describe("BE-326: vault transfer from a promoted wallet", () => {
   test("an enabled wallet is warned about before the confirmation, and the transfer proceeds", async () => {
     const f = await fixture()
     expect(await f.transfer("desk")).toBe(0)
-    const lastSix = f.events.find((e) => e.startsWith("last-six"))!
-    expect(lastSix).toContain("an agent may be trading it now")
+    expect(f.shownAtConfirm).toContain("an agent may be trading it now")
     expect(f.apiCalls(LIFECYCLE)).toHaveLength(1)
   })
 
@@ -215,8 +222,7 @@ describe("BE-326: vault transfer from a promoted wallet", () => {
   test("an unreadable state is reported and does not block", async () => {
     const f = await fixture({ lifecycle: () => jsonResponse(503, { error: "down" }) })
     expect(await f.transfer("desk")).toBe(0)
-    const lastSix = f.events.find((e) => e.startsWith("last-six"))!
-    expect(lastSix).toContain("Could not read this wallet's Candle state")
+    expect(f.shownAtConfirm).toContain("Could not read this wallet's Candle state")
     expect(f.sent).toHaveLength(1)
   })
 

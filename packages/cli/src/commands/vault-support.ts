@@ -305,9 +305,11 @@ export interface UnlockOptions {
    */
   passphraseOnlyEvenIfSole?: boolean
   /**
-   * What the Touch ID prompt says this unlock is for (ED-12: the reason string names the
-   * operation). Commands that move value name the amount, the asset and the destination through
-   * `confirm` instead; this is the first open's line, and it defaults to unlocking the vault.
+   * What the Touch ID prompt, the passkey line and the security-key line say this unlock is for
+   * (ED-12: the reason string names the operation). It defaults to unlocking the vault. The three
+   * vault sends (`vault transfer`, `vault fund`, `external sweep`) pass `send <amount> <asset> to
+   * <to>` here, built from the command line before the unlock: this is their one verification
+   * (spec `2026-10-09-cli-transfer-confirm-and-batch-rename-design.md`, 1.3).
    */
   reason?: string
   /**
@@ -1060,6 +1062,53 @@ export async function confirmLastSix(ctx: CommandContext, address: string, what:
     "That is not the last six characters of that address; nothing was done.",
     { suggestion: "Nothing was signed. Run it again and type the last six characters exactly as shown." },
   )
+}
+
+/**
+ * An address in groups of four, for the eye to check against the destination it expects. `0x` is
+ * its own first group, so an EVM address's forty hex characters group from the start. Removing
+ * the spaces gives the address back exactly.
+ */
+export function groupAddress(address: string): string {
+  const prefix = address.startsWith("0x") ? "0x" : ""
+  const body = address.slice(prefix.length)
+  const groups = body.match(/.{1,4}/g) ?? []
+  return [...(prefix ? [prefix] : []), ...groups].join(" ")
+}
+
+/** What a vault send is about to do, as `confirmSend` and the unlock reason name it. */
+export interface SendConfirmation {
+  amount: string
+  /** Omitted when the amount already says what moves (`external sweep`: everything). */
+  asset?: string
+  address: string
+}
+
+/**
+ * The operation a vault send names, in the unlock reason (ED-12) and in the typed confirmation.
+ * `to` is the destination as the command line gave it before the unlock, or the resolved address.
+ */
+export function describeSend(amount: string, asset: string | undefined, to: string): string {
+  return `send ${amount}${asset !== undefined ? ` ${asset}` : ""} to ${to}`
+}
+
+/**
+ * The typed confirmation on `vault transfer`, `vault fund` and `external sweep` (spec
+ * `2026-10-09-cli-transfer-confirm-and-batch-rename-design.md`, 1.3, amending ED-10 and CC-08):
+ * after the decoded display, the destination in full on its own line, grouped in fours, then one
+ * prompt naming the send with the address ungrouped, so it can still be copied. The word is
+ * trimmed and compared without case. Anything else refuses with nothing signed; there is no retry,
+ * since there is nothing to mistype. The grouped line is display only: under `--json` it goes to
+ * stderr, never into the document.
+ */
+export async function confirmSend(ctx: CommandContext, send: SendConfirmation): Promise<void> {
+  const display = ctx.json ? ctx.deps.stderr : ctx.deps.stdout
+  display.write(`to   ${groupAddress(send.address)}\n`)
+  const typed = await ctx.deps.promptLine(`Type confirm to ${describeSend(send.amount, send.asset, send.address)}: `)
+  if (typed.trim().toLowerCase() === "confirm") return
+  throw new VaultError("DESTINATION_NOT_CONFIRMED", "The send was not confirmed; nothing was done.", {
+    suggestion: "Nothing was signed. Run it again and type confirm at the prompt.",
+  })
 }
 
 /** Writes a vault failure in whichever mode this invocation is in, and answers its exit code. */

@@ -510,6 +510,37 @@ describe("factor add security-key: the ceremony", () => {
 })
 
 describe("unlocking with a security key", () => {
+  test("a vault transfer's one unlock names the send on the key's line (ED-12, 2026-10-09 amendment)", async () => {
+    const v = await vaultWithKey()
+    const h = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [PIN] })
+    const to = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+    // `--from nope` stops the transfer right after the unlock: one PIN, one assertion, no second.
+    expect(
+      await run(
+        [
+          "vault",
+          "transfer",
+          to,
+          "--amount",
+          "1.5",
+          "--asset",
+          "SOL",
+          "--from",
+          "nope",
+          "--factor",
+          v.keyId,
+          "--keystore",
+          v.vaultPath,
+        ],
+        h.deps,
+      ),
+    ).toBe(2)
+    expect(h.calls.map((call) => call.op)).toEqual(["assert"])
+    expect(h.asked).toEqual([expect.stringContaining("PIN for YubiKey 5 NFC")])
+    expect(h.stderr.text).toContain(`to send 1.5 SOL to ${to}.`)
+    expect(h.stderr.text).not.toContain("to unlock the vault")
+  })
+
   test("--factor <id> drives that envelope; status --unlock lists the keys; two assertions for new-key", async () => {
     const v = await vaultWithKey()
     const status = await harness({ env: { CANDLE_CONFIG_DIR: v.dir }, secrets: [PIN] })

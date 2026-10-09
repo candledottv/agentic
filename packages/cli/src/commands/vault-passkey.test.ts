@@ -755,6 +755,36 @@ describe("unlocking with a synced passkey", () => {
     )
   })
 
+  test("a vault transfer's one unlock names the send on the passkey line (ED-12, 2026-10-09 amendment)", async () => {
+    const t = await vaultWithPasskey()
+    const h = await harness({ env: { CANDLE_CONFIG_DIR: t.dir }, script: { store: t.add.script.store } })
+    const to = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"
+    // `--from nope` stops the transfer right after the unlock: the one sheet is all that runs.
+    expect(
+      await run(
+        [
+          "vault",
+          "transfer",
+          to,
+          "--amount",
+          "1.5",
+          "--asset",
+          "SOL",
+          "--from",
+          "nope",
+          "--factor",
+          "passkey",
+          "--keystore",
+          t.vaultPath,
+        ],
+        h.deps,
+      ),
+    ).toBe(2)
+    expect(ops(h).filter((op) => op === "passkey-assert")).toHaveLength(1)
+    expect(h.stderr.text).toContain(`Confirm the synced passkey to send 1.5 SOL to ${to}.`)
+    expect(h.stderr.text).not.toContain("to unlock the Candle vault")
+  })
+
   test("with a passphrase and a passkey both drivable and no --factor, the operator is asked which", async () => {
     const t = await vaultWithPasskey()
     const chosen = await harness({

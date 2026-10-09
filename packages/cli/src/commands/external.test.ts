@@ -4,9 +4,11 @@
  * The vault format half of the BYO matrix: a version 2 vault stays version 2 through every write
  * that does not touch the external branch, and becomes version 3 on exactly the write that
  * allocates the first external key; a restored vault refuses that allocation and nothing else.
- * Then the money half: `vault fund <external>` confirms the last six of the DESTINATION and has no
- * `--yes`; `external sweep <external> --to <vault>` names both ends, infers neither, and confirms
- * the last six of the vault receive key while displaying the source above it.
+ * Then the money half: `vault fund <external>` confirms the DESTINATION and has no `--yes`;
+ * `external sweep <external> --to <vault>` names both ends, infers neither, and confirms the vault
+ * receive key while displaying the source above it. Since the 2026-10-09 amendment
+ * (`2026-10-09-cli-transfer-confirm-and-batch-rename-design.md`) the confirmation is one typed
+ * `confirm` after the destination is shown grouped, and the unlock is the only secret prompt.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
 import { mkdtemp, readFile } from "node:fs/promises"
@@ -22,6 +24,7 @@ import { deriveSolanaKey, solanaExternalPath, solanaTeePath, solanaVaultPath } f
 import { closeVault, commitVault, freshKeyId, sealKeyBlob } from "../vault/store"
 import { FIXTURE_ENTROPY, makeVault, reopen, testClock, useCheapKdf } from "../vault/test-vault"
 import { restoreSeedHd } from "./vault-restore"
+import { groupAddress } from "./vault-support"
 
 setDefaultTimeout(90_000)
 useCheapKdf()
@@ -273,30 +276,31 @@ function fundRpc() {
   return { ...rpc, sends }
 }
 
-describe("vault fund <external>: vault-signed, decoded, last six of the DESTINATION, no --yes", () => {
-  test("funds from the only vault key, confirming the external address's last six", async () => {
+describe("vault fund <external>: vault-signed, decoded, the DESTINATION confirmed, no --yes", () => {
+  test("funds from the only vault key, confirming the external address with one typed confirm", async () => {
     const rpc = fundRpc()
     const h = await harness({ rpc })
     expect(await run(["vault", "new-key", "--chain", "solana", "--label", "cold"], h.deps)).toBe(0)
     expect(await run(["external", "new", "--label", "trader"], h.deps)).toBe(0)
-    h.lines.push(expectedExternal0.slice(-6))
+    h.lines.push("confirm")
     h.stdout.text = ""
     const prompts = h.secretPrompts
     expect(await run(["vault", "fund", "trader", "--amount", "0.1", "--asset", "SOL", "--rpc-url", RPC], h.deps)).toBe(
       0,
     )
-    expect(h.asked.filter((a) => a.startsWith("line:")).at(-1)).toContain(
-      `the external wallet destination (${expectedExternal0})`,
+    expect(h.asked.filter((a) => a.startsWith("line:")).at(-1)).toBe(
+      `line: Type confirm to send 0.1 SOL to ${expectedExternal0}: `,
     )
-    // The factor a second time before signing: the passphrase typed again (no --yes exists).
-    expect(h.secretPrompts).toBe(prompts + 2)
+    // One secret prompt, the unlock, which names the send; no factor a second time (no --yes exists).
+    expect(h.secretPrompts).toBe(prompts + 1)
+    expect(h.stdout.text).toContain(`to   ${groupAddress(expectedExternal0)}\n`)
     expect(h.stdout.text).toContain(`destination ${expectedExternal0}`)
     expect(h.stdout.text).toContain("fund a session, not a float")
     expect(rpc.sends).toEqual([expectedVault0])
     expect(h.stdout.text).toContain("Funded trader")
   })
 
-  test("--yes is not a flag this command has, and the wrong last six signs nothing", async () => {
+  test("--yes is not a flag this command has, and anything but confirm signs nothing", async () => {
     const rpc = fundRpc()
     const h = await harness({ rpc })
     expect(await run(["external", "new", "--label", "trader"], h.deps)).toBe(0)
@@ -304,9 +308,14 @@ describe("vault fund <external>: vault-signed, decoded, last six of the DESTINAT
     h.stderr.text = ""
     expect(await run(["vault", "fund", "trader", "--amount", "0.1", "--rpc-url", RPC, "--yes"], h.deps)).toBe(2)
     expect(h.stderr.text).toContain("Unknown flag: --yes")
-    h.lines.push(...Array(3).fill(expectedVault0.slice(-6))) // the SOURCE's last six, which is not the destination's
-    expect(await run(["vault", "fund", "trader", "--amount", "0.1", "--rpc-url", RPC], h.deps)).toBe(1)
-    expect(h.stderr.text).toContain("not the last six characters")
+    // The old answer, the destination's last six, is no longer a confirmation; one prompt, no retry.
+    h.lines.push(expectedExternal0.slice(-6))
+    expect(await run(["vault", "fund", "trader", "--amount", "0.1", "--rpc-url", RPC, "--json"], h.deps)).toBe(1)
+    expect(JSON.parse(h.stdout.text.trim().split("\n").at(-1) ?? "")).toMatchObject({
+      ok: false,
+      code: "DESTINATION_NOT_CONFIRMED",
+    })
+    expect(h.lines).toEqual([])
     expect(rpc.sends).toEqual([])
   })
 
@@ -319,7 +328,7 @@ describe("vault fund <external>: vault-signed, decoded, last six of the DESTINAT
     expect(await run(["vault", "fund", "trader", "--amount", "0.1", "--rpc-url", RPC], h.deps)).toBe(2)
     expect(h.stderr.text).toContain("--from <label>")
     expect(h.stderr.text).toContain("cold, warm")
-    h.lines.push(expectedExternal0.slice(-6))
+    h.lines.push("confirm")
     expect(await run(["vault", "fund", "trader", "--amount", "0.1", "--rpc-url", RPC, "--from", "warm"], h.deps)).toBe(
       0,
     )
@@ -351,16 +360,19 @@ function sweepRpc(opts: { lamports?: number } = {}) {
 }
 
 describe("external sweep <external> --to <vault>: both named, neither inferred, the DESTINATION confirmed", () => {
-  test("sweeps SOL to the named vault key, confirming that key's last six and displaying the source above it", async () => {
+  test("sweeps SOL to the named vault key, confirming that key with one typed confirm and displaying the source above it", async () => {
     const rpc = sweepRpc()
     const h = await harness({ rpc })
     expect(await run(["vault", "new-key", "--chain", "solana", "--label", "cold"], h.deps)).toBe(0)
     expect(await run(["external", "new", "--label", "trader"], h.deps)).toBe(0)
     h.stdout.text = ""
-    h.lines.push(expectedVault0.slice(-6))
+    h.lines.push("confirm")
+    const prompts = h.secretPrompts
     expect(await run(["external", "sweep", "trader", "--to", "cold", "--rpc-url", RPC], h.deps)).toBe(0)
     const prompt = h.asked.filter((a) => a.startsWith("line:")).at(-1) ?? ""
-    expect(prompt).toContain(`the vault destination (${expectedVault0})`)
+    expect(prompt).toBe(`line: Type confirm to send everything from trader to ${expectedVault0}: `)
+    expect(h.secretPrompts).toBe(prompts + 1)
+    expect(h.stdout.text).toContain(`to   ${groupAddress(expectedVault0)}\n`)
     const source = h.stdout.text.indexOf(`source      trader  ${expectedExternal0}`)
     const destination = h.stdout.text.indexOf(`destination cold  ${expectedVault0}`)
     expect(source).toBeGreaterThan(-1)
@@ -370,15 +382,18 @@ describe("external sweep <external> --to <vault>: both named, neither inferred, 
     expect(h.stdout.text).toContain("Swept: 1 transaction(s) finalized")
   })
 
-  test("the source's last six is rejected; the destination's is what confirms", async () => {
+  test("anything but confirm refuses with nothing signed; the word is trimmed and compared without case", async () => {
     const rpc = sweepRpc()
     const h = await harness({ rpc })
     expect(await run(["vault", "new-key", "--chain", "solana", "--label", "cold"], h.deps)).toBe(0)
     expect(await run(["external", "new", "--label", "trader"], h.deps)).toBe(0)
-    h.lines.push(...Array(3).fill(expectedExternal0.slice(-6)))
+    h.lines.push(expectedVault0.slice(-6))
     expect(await run(["external", "sweep", "trader", "--to", "cold", "--rpc-url", RPC], h.deps)).toBe(1)
-    expect(h.stderr.text).toContain("not the last six characters")
+    expect(h.stderr.text).toContain("The send was not confirmed; nothing was done.")
     expect(rpc.sends).toEqual([])
+    h.lines.push("  CONFIRM ")
+    expect(await run(["external", "sweep", "trader", "--to", "cold", "--rpc-url", RPC], h.deps)).toBe(0)
+    expect(rpc.sends).toEqual([expectedExternal0])
   })
 
   test("omitting --to refuses even with several receive keys; the roles are not reinterpreted", async () => {
@@ -404,7 +419,7 @@ describe("external sweep <external> --to <vault>: both named, neither inferred, 
     const made = await restoredWithExternal()
     const rpc = sweepRpc()
     const stdout = createCapture()
-    const lines = [expectedVault0.slice(-6), expectedExternal0.slice(-6)]
+    const lines = ["confirm", "confirm"]
     const deps = createTestDeps({
       fetch: rpc.fetch,
       stdout,
@@ -447,7 +462,7 @@ describe("BE-355 T11: a rate-limited send during external sweep", () => {
     expect(await run(["external", "new", "--label", "trader"], h.deps)).toBe(0)
     h.stdout.text = ""
     h.stderr.text = ""
-    h.lines.push(expectedVault0.slice(-6))
+    h.lines.push("confirm")
     expect(await run(["external", "sweep", "trader", "--to", "cold", "--rpc-url", RPC, "--json"], h.deps)).toBe(3)
     expect(rpc.methods.filter((m) => m === "sendTransaction")).toHaveLength(1)
     const body = JSON.parse(h.stdout.text.trim())

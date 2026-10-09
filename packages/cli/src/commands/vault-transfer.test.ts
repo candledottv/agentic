@@ -68,7 +68,7 @@ async function fixture(opts: { rateLimit?: Record<string, number>; profile?: boo
     stderr,
     env: { CANDLE_CONFIG_DIR: made.dir, HOME: made.dir, CANDLE_SOLANA_RPC_URL: RPC },
     promptSecret: async () => made.passphrase,
-    promptLine: async () => DESTINATION.slice(-6),
+    promptLine: async () => "confirm",
     ...(opts.profile ? createFakeConfigStore({ profiles: { work: {} }, activeProfile: "work" }) : {}),
   })
   expect(await run(["vault", "new-key", "--chain", "solana", "--label", "cold"], deps)).toBe(0)

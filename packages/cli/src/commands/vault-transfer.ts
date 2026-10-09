@@ -4,6 +4,12 @@
  * Vault keys build and sign only the two transfer shapes, decoded and displayed before the factor
  * prompt, with the destination confirmed by typing its last six characters.
  *
+ * Amended 2026-10-09 (spec `2026-10-09-cli-transfer-confirm-and-batch-rename-design.md`, Part 1):
+ * one verification per send. The unlock is it, and its prompt names the send (ED-12, through the
+ * unlock `reason`); then the decoded display, the destination grouped on its own line, and one
+ * typed `confirm`. The last six and the factor presented again are gone from this command. No
+ * `--yes`, and a terminal is still required.
+ *
  * BE-326 (ED-10 amendment, 2026-09-24): `--from` may also name a promoted wallet
  * (`role: "tee-wallet"`), under every safeguard above. For that source only, a pending sweep
  * refuses before anything is signed, the wallet's server state is read and an enabled wallet is
@@ -52,7 +58,8 @@ import {
   signAndBroadcastTransfer,
 } from "../vault/vault-transfer-sign"
 import {
-  confirmLastSix,
+  confirmSend,
+  describeSend,
   refuseEnvPassphrase,
   requireTty,
   requireVaultRaw,
@@ -109,6 +116,8 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
       promptText: "Vault passphrase (input hidden): ",
+      // ED-12: the one verification names the send, from the command line as typed.
+      reason: describeSend(amount, asset, to),
     })
     const vault = hold(opened.vault)
     const fromEntry = findTransferSource(vault.index, fromLabel)
@@ -149,14 +158,13 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
           to,
           amount,
           asset,
-          confirmLastSix: (address, what) => confirmLastSix(ctx, address, what),
-          confirmFactor: (what) => opened.confirm(what),
+          confirmSend: (send) => confirmSend(ctx, send),
           decryptSecret: () => decryptKey(vault, secretRef.id),
           usage: (line) => usage(ctx, line),
           writeJson: (value) => writeJson(ctx.deps, value),
           ...(promotedEvm
             ? {
-                // And again after the factor, immediately before the signature (D1).
+                // And again after the confirmation, immediately before the signature (D1).
                 beforeSign: async () =>
                   assertWalletLockFree(fromEntry, (await readHoodTeeServer(ctx, fromEntry)).lock, ctx.deps.now()),
                 afterOutcome: async ({ hash, status }) => {
@@ -203,11 +211,8 @@ export async function vaultTransfer(args: string[], ctx: CommandContext): Promis
       const notice = serverStateNotice(await readTeeServerState(ctx, fromEntry, apiKey))
       if (notice !== undefined) note(notice)
     }
-    await confirmLastSix(ctx, to, "the destination")
-
-    // The factor a second time before anything is signed: the passphrase typed again, or the
-    // security key touched again. A mismatch refuses without signing; the vault is already open.
-    await opened.confirm(`sign transfer of ${plan.amount} ${plan.asset} to ${to}`)
+    // The one typed confirmation; anything but `confirm` refuses with nothing signed.
+    await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: to })
 
     const secret = await decryptKey(vault, fromEntry.id)
     try {

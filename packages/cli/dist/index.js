@@ -26400,13 +26400,16 @@ __export(exports_vault_support, {
   nonDefaultVaultFooter: () => nonDefaultVaultFooter,
   missingVault: () => missingVault,
   menuSafeText: () => menuSafeText,
+  groupAddress: () => groupAddress,
   findExternalEntry: () => findExternalEntry,
   factorMenu: () => factorMenu,
   factorAddPassphraseOnlyReason: () => factorAddPassphraseOnlyReason,
   factorAddAmong: () => factorAddAmong,
+  describeSend: () => describeSend,
   describeRole: () => describeRole,
   describeEntry: () => describeEntry,
   derivationNotice: () => derivationNotice,
+  confirmSend: () => confirmSend,
   confirmLastSix: () => confirmLastSix,
   assertVaultHelperIdentities: () => assertVaultHelperIdentities,
   assertNotOlderCopy: () => assertNotOlderCopy,
@@ -26945,6 +26948,26 @@ ${" ".repeat(10 + difference)}^ character ${difference + 1} differs
 `);
   }
   throw new VaultError("DESTINATION_NOT_CONFIRMED", "That is not the last six characters of that address; nothing was done.", { suggestion: "Nothing was signed. Run it again and type the last six characters exactly as shown." });
+}
+function groupAddress(address) {
+  const prefix = address.startsWith("0x") ? "0x" : "";
+  const body = address.slice(prefix.length);
+  const groups = body.match(/.{1,4}/g) ?? [];
+  return [...prefix ? [prefix] : [], ...groups].join(" ");
+}
+function describeSend(amount, asset, to) {
+  return `send ${amount}${asset !== undefined ? ` ${asset}` : ""} to ${to}`;
+}
+async function confirmSend(ctx, send) {
+  const display = ctx.json ? ctx.deps.stderr : ctx.deps.stdout;
+  display.write(`to   ${groupAddress(send.address)}
+`);
+  const typed = await ctx.deps.promptLine(`Type confirm to ${describeSend(send.amount, send.asset, send.address)}: `);
+  if (typed.trim().toLowerCase() === "confirm")
+    return;
+  throw new VaultError("DESTINATION_NOT_CONFIRMED", "The send was not confirmed; nothing was done.", {
+    suggestion: "Nothing was signed. Run it again and type confirm at the prompt."
+  });
 }
 function writeVaultFailure(ctx, error) {
   if (isUsageError(error))
@@ -31677,9 +31700,6 @@ function displayEvmTransferPlan(ctx, plan) {
     ctx.deps.stdout.write(`  ${line}
 `);
 }
-function evmFactorPrompt(plan) {
-  return `sign transfer of ${plan.amount} ${plan.asset.symbol} to ${plan.recipient}${plan.hood ? " on Hood" : ` on chain ${plan.chainId}`}`;
-}
 function judgeReceipt(receipt, head, depth, hash, chainId) {
   if (receipt.status === 0) {
     throw new VaultError("EVM_TRANSFER_REVERTED", `Transaction ${hash} reverted in block ${receipt.blockNumber}; the fee was spent.`, {
@@ -31796,18 +31816,17 @@ async function runEvmTransfer(input, rpc) {
     return input.usage(planned.usage);
   const plan = planned;
   displayEvmTransferPlan(ctx, plan);
-  await input.confirmLastSix(plan.recipient, plan.asset.kind === "erc20" ? "the token recipient" : "the destination");
-  await input.confirmFactor(evmFactorPrompt(plan));
+  await input.confirmSend({ amount: plan.amount, asset: plan.asset.symbol, address: plan.recipient });
   const chainIdAgain = await rpc.chainId();
   if (chainIdAgain !== plan.chainId) {
-    throw refuse2("EVM_CHAIN_MISMATCH", `The RPC answered chain id ${chainIdAgain} after the factor, but ${plan.chainId} was displayed.`);
+    throw refuse2("EVM_CHAIN_MISMATCH", `The RPC answered chain id ${chainIdAgain} after the confirmation, but ${plan.chainId} was displayed.`);
   }
   if ((input.pinHoodChain === true || input.from.role === "tee-wallet") && plan.chainId !== BigInt(HOOD_CHAIN_ID)) {
     throw refuse2("EVM_CHAIN_MISMATCH", `Signing refused: this transfer must be on Hood (chain id ${HOOD_CHAIN_ID}), and the RPC's chain id is ${plan.chainId}.`);
   }
   const nonceAgain = await rpc.getTransactionCount(plan.from.address, "pending");
   if (nonceAgain !== plan.tx.nonce) {
-    throw refuse2("EVM_NONCE_STALE", `The pending nonce is ${nonceAgain} after the factor, but ${plan.tx.nonce} was displayed; another transaction moved it.`, { suggestion: "Nothing was signed. Run the transfer again; it reads the pending nonce afresh." });
+    throw refuse2("EVM_NONCE_STALE", `The pending nonce is ${nonceAgain} after the confirmation, but ${plan.tx.nonce} was displayed; another transaction moved it.`, { suggestion: "Nothing was signed. Run the transfer again; it reads the pending nonce afresh." });
   }
   await input.beforeSign?.();
   const secret = await input.decryptSecret();
@@ -63147,7 +63166,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.18";
+var CLI_VERSION = "0.11.19";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -64083,7 +64102,7 @@ var HELP = {
       },
       {
         invocation: "transfer <to> --amount <n|max> --asset SOL|<mint>|ETH|USDG|<0x token> --from <label> [--rpc-url <url>]",
-        description: "Sign a transfer locally from a vault key or a promoted TEE wallet (Solana, or Hood: refused while a sequenced trade holds the wallet's nonce, and when that cannot be read). From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint"
+        description: "Sign a transfer locally from a vault key or a promoted TEE wallet (Solana, or Hood: refused while a sequenced trade holds the wallet's nonce, and when that cannot be read). From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint. One verification: the unlock names the send; after the decoded display you type confirm. No --yes"
       },
       {
         invocation: "promote --from|--in-place <label> [--sweep-to <label>] [--rpc-url <url>] [--to-key <prefix|label>]",
@@ -64095,7 +64114,7 @@ var HELP = {
       },
       {
         invocation: "fund <tee-address|external> --amount <n> --asset SOL|USDC|ETH|USDG [--rpc-url <url>] [--from <label>]",
-        description: "Fund a TEE or external wallet from a vault key. A Hood TEE wallet takes ETH or USDG from its pinned EVM vault key"
+        description: "Fund a TEE or external wallet from a vault key. A Hood TEE wallet takes ETH or USDG from its pinned EVM vault key. One verification: the unlock names the send; after the decoded display you type confirm. No --yes"
       },
       {
         invocation: "demote <tee-address> [--rpc-url <url>] [--emergency] [--sweep-to <label>] [--token <0x...>] [--from-block <n>]",
@@ -64225,7 +64244,7 @@ var HELP = {
       { invocation: "list", description: "The external wallets in the vault" },
       {
         invocation: "sweep <external> --to <vault> [--rpc-url <url>]",
-        description: "Send everything an external wallet holds back to a vault key"
+        description: "Send everything an external wallet holds back to a vault key. One verification: the unlock names the send; after the display you type confirm"
       }
     ],
     flags: [KEYSTORE_FLAG],
@@ -69632,7 +69651,8 @@ async function externalSweep(args, ctx) {
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
-      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      reason: describeSend(`everything from ${source}`, undefined, to)
     });
     const vault = hold(opened.vault);
     assertNotEvmEntry(vault.index, source, "external sweep");
@@ -69658,8 +69678,7 @@ async function externalSweep(args, ctx) {
       deps.stdout.write(`SOL, classic SPL and Token-2022 balances move, signed locally with the external key.
 `);
     }
-    await confirmLastSix(ctx, destination.address, "the vault destination");
-    await opened.confirm(`sweep ${sourceEntry.label} to ${destination.address}`);
+    await confirmSend(ctx, { amount: `everything from ${sourceEntry.label}`, address: destination.address });
     const secret = await decryptKey(vault, sourceEntry.id);
     try {
       const outcome = await sweepEverythingTo({
@@ -78039,7 +78058,7 @@ async function signAndBroadcastTransfer(input) {
 
 // src/commands/vault-fund.ts
 init_vault_support();
-async function fundExternal(ctx, opened, vault, external2, input) {
+async function fundExternal(ctx, vault, external2, input) {
   const vaultKeys = vault.index.entries.filter((entry) => entry.role === "vault" && entry.chain === "solana");
   const fromFlag = input.parsed.values["--from"];
   let fromEntry;
@@ -78073,8 +78092,7 @@ async function fundExternal(ctx, opened, vault, external2, input) {
   }));
   const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions));
   displayTransferPlan(ctx, plan, feeQuote);
-  await confirmLastSix(ctx, external2.address, "the external wallet destination");
-  await opened.confirm(`fund ${plan.amount} ${plan.asset} to external wallet ${external2.label}`);
+  await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: external2.address });
   const secret = await decryptKey(vault, fromEntry.id);
   try {
     const result = await signAndBroadcastTransfer({ ctx, solana, secret64: secret, plan });
@@ -78133,7 +78151,8 @@ async function vaultFund(args, ctx) {
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
-      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      reason: describeSend(amount, asset, teeAddress)
     });
     const vault = hold(opened.vault);
     assertNotEvmEntry(vault.index, teeAddress, "vault fund");
@@ -78143,7 +78162,7 @@ async function vaultFund(args, ctx) {
     if (teeEntry === undefined) {
       const external2 = findExternalEntry(vault.index, teeAddress);
       if (external2 !== undefined)
-        return fundExternal(ctx, opened, vault, external2, { amount, asset, solana, parsed });
+        return fundExternal(ctx, vault, external2, { amount, asset, solana, parsed });
       writeLocalFailure(ctx.deps, {
         code: "TEE_WALLET_UNKNOWN",
         message: `${teeAddress} is neither a TEE wallet nor an external wallet in this vault.`,
@@ -78188,8 +78207,7 @@ async function vaultFund(args, ctx) {
     }));
     const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions));
     displayTransferPlan(ctx, plan, feeQuote);
-    await confirmLastSix(ctx, teeAddress, "the TEE wallet destination");
-    await opened.confirm(`fund ${plan.amount} ${plan.asset} to ${teeAddress}`);
+    await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: teeAddress });
     const secret = await decryptKey(vault, fromEntry.id);
     try {
       let receipt;
@@ -78262,7 +78280,8 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
-      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      reason: describeSend(amount, asset, teeAddress)
     });
     const vault = hold(opened.vault);
     const teeEntry = vault.index.entries.find((entry) => entry.chain === "evm" && entry.role === "tee-wallet" && sameAddress(entry.address, teeAddress));
@@ -78301,8 +78320,7 @@ async function vaultFundEvm(ctx, parsed, teeAddress) {
       to: teeEntry.address,
       amount,
       asset,
-      confirmLastSix: (address) => confirmLastSix(ctx, address, "the TEE wallet destination"),
-      confirmFactor: (what) => opened.confirm(what.replace(/^sign transfer of /, "fund ")),
+      confirmSend: (send) => confirmSend(ctx, send),
       decryptSecret: () => decryptKey(vault, fromEntry.id),
       usage: (line) => usage(ctx, line),
       writeJson: (value) => writeJson(ctx.deps, { ...value, tee: teeEntry.address })
@@ -82554,7 +82572,8 @@ async function vaultTransfer(args, ctx) {
     const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
-      promptText: "Vault passphrase (input hidden): "
+      promptText: "Vault passphrase (input hidden): ",
+      reason: describeSend(amount, asset, to)
     });
     const vault = hold(opened.vault);
     const fromEntry = findTransferSource(vault.index, fromLabel);
@@ -82590,8 +82609,7 @@ async function vaultTransfer(args, ctx) {
         to,
         amount,
         asset,
-        confirmLastSix: (address, what) => confirmLastSix(ctx, address, what),
-        confirmFactor: (what) => opened.confirm(what),
+        confirmSend: (send) => confirmSend(ctx, send),
         decryptSecret: () => decryptKey(vault, secretRef2.id),
         usage: (line) => usage(ctx, line),
         writeJson: (value) => writeJson(ctx.deps, value),
@@ -82638,8 +82656,7 @@ async function vaultTransfer(args, ctx) {
       if (notice !== undefined)
         note(notice);
     }
-    await confirmLastSix(ctx, to, "the destination");
-    await opened.confirm(`sign transfer of ${plan.amount} ${plan.asset} to ${to}`);
+    await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: to });
     const secret = await decryptKey(vault, fromEntry.id);
     try {
       const result = await signAndBroadcastTransfer({ ctx, solana, secret64: secret, plan });

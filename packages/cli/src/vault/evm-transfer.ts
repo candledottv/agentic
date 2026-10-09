@@ -8,10 +8,12 @@
  *
  * D5's order is the shape of `runEvmTransfer`: resolve `--from` → read the chain id → resolve the
  * asset → read the pending nonce and the fees → estimate gas → set a native `max` → build → display
- * → the recipient's last six typed → the factor again → RE-READ the chain id and the pending nonce
- * → refuse if either moved → sign → broadcast → wait for the receipt. The re-read is after the
- * factor and before any signature, because the factor prompt can take minutes; there is no read of
- * the chain id after signing, because the type-2 envelope already binds the id that was signed.
+ * → `confirm` typed (amended 2026-10-09: it replaces the recipient's last six and the factor again,
+ * spec `2026-10-09-cli-transfer-confirm-and-batch-rename-design.md` 1.3) → RE-READ the chain id
+ * and the pending nonce → refuse if either moved → sign → broadcast → wait for the receipt. The
+ * re-read is after the confirmation and before any signature, because the prompt can wait for
+ * minutes; there is no read of the chain id after signing, because the type-2 envelope already
+ * binds the id that was signed.
  *
  * D6's table is the second half: every pre-sign refusal is exit 1 with no signature, and every
  * post-sign outcome names the hash the CLI computed locally before it sent anything. `confirmed`
@@ -19,6 +21,7 @@
  * document says so with `depth` and `finalized: false`, so a caller cannot read EVM exit 0 as
  * Solana finality.
  */
+import type { SendConfirmation } from "../commands/vault-support"
 import type { CommandContext } from "../deps"
 import {
   buildErc20Transfer,
@@ -66,7 +69,7 @@ export interface ResolvedEvmAsset {
   token?: string
 }
 
-/** What is displayed before the last-six prompt (D5), and what the factor prompt names. */
+/** What is displayed before the typed confirmation (D5), and what that prompt names. */
 export interface EvmTransferPlan {
   chainId: bigint
   hood: boolean
@@ -90,10 +93,8 @@ export interface EvmTransferInput {
   to: string
   amount: string
   asset: string
-  /** The last-six prompt (CC-08), shared with the Solana path. */
-  confirmLastSix: (address: string, what: string) => Promise<void>
-  /** The factor presented again before signing (ED-10). */
-  confirmFactor: (what: string) => Promise<void>
+  /** The typed `confirm` after the display (ED-10 and CC-08 as amended 2026-10-09), shared with the Solana path. */
+  confirmSend: (send: SendConfirmation) => Promise<void>
   /** Decrypts the `--from` key's 32-byte scalar. The transfer owns and zeroes it. */
   decryptSecret: () => Promise<Uint8Array>
   /** A usage refusal (exit 2), for a flag value that is wrong rather than a state that is refused. */
@@ -107,7 +108,7 @@ export interface EvmTransferInput {
    */
   pinHoodChain?: boolean
   /**
-   * Phase 4b (BE-391, D1): a last check after the factor and the nonce re-read, immediately before
+   * Phase 4b (BE-391, D1): a last check after the confirmation and the nonce re-read, immediately before
    * the signature, that throws to refuse with nothing signed. A promoted Hood wallet reads the D4
    * operation lock here, so the lock read is the last thing before its nonce is used.
    */
@@ -388,11 +389,6 @@ export function displayEvmTransferPlan(ctx: CommandContext, plan: EvmTransferPla
   for (const line of plan.displayLines) ctx.deps.stdout.write(`  ${line}\n`)
 }
 
-/** What the factor prompt names (ED-10): amount, asset and the human recipient. */
-export function evmFactorPrompt(plan: EvmTransferPlan): string {
-  return `sign transfer of ${plan.amount} ${plan.asset.symbol} to ${plan.recipient}${plan.hood ? " on Hood" : ` on chain ${plan.chainId}`}`
-}
-
 export interface Outcome {
   status: EvmTransferStatus
   exit: 0 | 3
@@ -557,16 +553,16 @@ export async function runEvmTransfer(input: EvmTransferInput, rpc: EvmRpc): Prom
   const plan = planned
 
   displayEvmTransferPlan(ctx, plan)
-  await input.confirmLastSix(plan.recipient, plan.asset.kind === "erc20" ? "the token recipient" : "the destination")
-  await input.confirmFactor(evmFactorPrompt(plan))
+  // The human recipient: for an ERC-20 the calldata's, not the token contract the display also shows.
+  await input.confirmSend({ amount: plan.amount, asset: plan.asset.symbol, address: plan.recipient })
 
-  // D6: the pause on the factor is where a nonce or a chain id moves. Re-read both, refuse on
+  // D6: the pause on the confirmation is where a nonce or a chain id moves. Re-read both, refuse on
   // either, and only then sign. Nothing is read again after the signature.
   const chainIdAgain = await rpc.chainId()
   if (chainIdAgain !== plan.chainId) {
     throw refuse(
       "EVM_CHAIN_MISMATCH",
-      `The RPC answered chain id ${chainIdAgain} after the factor, but ${plan.chainId} was displayed.`,
+      `The RPC answered chain id ${chainIdAgain} after the confirmation, but ${plan.chainId} was displayed.`,
     )
   }
   if ((input.pinHoodChain === true || input.from.role === "tee-wallet") && plan.chainId !== BigInt(HOOD_CHAIN_ID)) {
@@ -579,7 +575,7 @@ export async function runEvmTransfer(input: EvmTransferInput, rpc: EvmRpc): Prom
   if (nonceAgain !== plan.tx.nonce) {
     throw refuse(
       "EVM_NONCE_STALE",
-      `The pending nonce is ${nonceAgain} after the factor, but ${plan.tx.nonce} was displayed; another transaction moved it.`,
+      `The pending nonce is ${nonceAgain} after the confirmation, but ${plan.tx.nonce} was displayed; another transaction moved it.`,
       { suggestion: "Nothing was signed. Run the transfer again; it reads the pending nonce afresh." },
     )
   }

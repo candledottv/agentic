@@ -6,7 +6,10 @@
  * the key `candle sign` signs with for outside tools, so the vault stays cold (P3-AD-2) and TEE
  * wallets stay on Candle's rails. It is funded from the vault by `candle vault fund <external>` and
  * swept back by `candle external sweep <external> --to <vault>`, both local, both decoded and
- * displayed, both confirmed by the typed last six of the DESTINATION.
+ * displayed, both confirmed by the typed last six of the DESTINATION. Amended 2026-10-09 (spec
+ * `2026-10-09-cli-transfer-confirm-and-batch-rename-design.md`, Part 1): both now confirm with one
+ * typed `confirm` after the display, the destination grouped on its own line; the unlock is the one
+ * verification and names the send (ED-12).
  *
  * `external new` is an ALLOCATION (CC-11), so it refuses in a restored vault with the same code as
  * `vault new-key` and names the same exit. Recovered external keys keep working for everything that
@@ -28,8 +31,9 @@ import { assertNotEvmEntry, findVaultRoleEntry } from "../vault/promote-support"
 import { commitVault, decryptKey, decryptRoot, freshKeyId, sealKeyBlob } from "../vault/store"
 import { nextAllocatableIndex, verifyWritten } from "./vault-new-key"
 import {
-  confirmLastSix,
+  confirmSend,
   describeRole,
+  describeSend,
   findExternalEntry,
   refuseEnvPassphrase,
   requireTty,
@@ -252,6 +256,8 @@ export async function externalSweep(args: string[], ctx: CommandContext): Promis
     const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      // ED-12: the one verification names the send, with both wallets as typed.
+      reason: describeSend(`everything from ${source}`, undefined, to),
     })
     const vault = hold(opened.vault)
 
@@ -285,8 +291,8 @@ export async function externalSweep(args: string[], ctx: CommandContext): Promis
       deps.stdout.write(`  destination ${destination.label}  ${destination.address}\n`)
       deps.stdout.write(`SOL, classic SPL and Token-2022 balances move, signed locally with the external key.\n`)
     }
-    await confirmLastSix(ctx, destination.address, "the vault destination")
-    await opened.confirm(`sweep ${sourceEntry.label} to ${destination.address}`)
+    // The one typed confirmation; anything but `confirm` refuses with nothing signed.
+    await confirmSend(ctx, { amount: `everything from ${sourceEntry.label}`, address: destination.address })
 
     const secret = await decryptKey(vault, sourceEntry.id)
     try {

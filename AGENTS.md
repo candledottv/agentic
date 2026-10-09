@@ -96,7 +96,7 @@ Match the task, not the noun: "make this key use these wallets" is a rebind, not
 | Let a key use a linked wallet you imported | The agent console's Agents tab, signed in (`keys wallets set` from a key can only narrow) |
 | Turn a vault key into a TEE wallet | `candle vault promote --in-place <label> --sweep-to <cold key>`, or `--from <cold key>` for a fresh one |
 | Send funds out of a TEE wallet as the agent | `candle transfer --to vault --asset <A> --amount <n\|max> --wallet <tee>` (or `--to` a linked or trusted wallet) with a Read:Write:Transfer key |
-| Send funds anywhere yourself | `candle vault transfer <address> --amount <n\|max> --asset <A> --from <label>` |
+| Send funds anywhere yourself | `candle vault transfer <address> --amount <n\|max> --asset <A> --from <label>` (a human at a terminal: one unlock that names the send, then type `confirm`; no `--yes`) |
 | Mark wallets as yours so agents can send to them | `candle wallets trust <selectors...>` |
 | Change a key's access level (after a `SCOPE_MISSING`) | `candle keys access <prefix> --access read\|read-write\|read-write-transfer` (owner, device token; widening is confirmed at a terminal) |
 | Stop an agent | `candle tee disable <address>`, then `candle keys revoke <prefix>` |

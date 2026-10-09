@@ -247,3 +247,22 @@ describe("BE-355 T18: the help rows", () => {
     }
   })
 })
+
+describe("the vault send rows (spec 2026-10-09-cli-transfer-confirm-and-batch-rename-design.md, 1.6)", () => {
+  test("transfer, fund and sweep state one verification and the typed confirm, and no last six", () => {
+    for (const [word, prefix] of [
+      ["vault", "transfer "],
+      ["vault", "fund "],
+      ["external", "sweep "],
+    ] as const) {
+      const description = HELP[word]?.rows.find((r) => r.invocation.startsWith(prefix))?.description ?? ""
+      expect([word, prefix, description.includes("One verification: the unlock names the send")]).toEqual([
+        word,
+        prefix,
+        true,
+      ])
+      expect([word, prefix, description.includes("type confirm")]).toEqual([word, prefix, true])
+      expect([word, prefix, /last six|again/i.test(description)]).toEqual([word, prefix, false])
+    }
+  })
+})

@@ -35,6 +35,7 @@ import {
   testClock,
   useCheapKdf,
 } from "../vault/test-vault"
+import { groupAddress } from "./vault-support"
 
 setDefaultTimeout(120_000)
 useCheapKdf()
@@ -552,15 +553,16 @@ describe("H3: vault promote on EVM", () => {
 // ── H9 ────────────────────────────────────────────────────────────────────────────────────────
 
 describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
-  test("vault fund sends ETH or USDG from the pinned EVM vault key, with the last six and the factor", async () => {
+  test("vault fund sends ETH or USDG from the pinned EVM vault key, with one unlock and one typed confirm", async () => {
     const fx = await promoted()
     fx.node.setEth(FIXTURE_EVM_0, 2n * ETH)
     fx.node.setToken(USDG, FIXTURE_EVM_0, 50_000_000n)
     fx.prompts.length = 0
     expect(await fx.cli(["vault", "fund", fx.wallet, "--amount", "0.25", "--asset", "ETH", "--json"])).toBe(0)
     expect(fx.node.ethOf(fx.wallet)).toBe(ETH / 4n)
-    expect(fx.prompts.some((prompt) => prompt.includes(`the TEE wallet destination (${fx.wallet})`))).toBe(true)
-    expect(fx.prompts.some((prompt) => prompt.includes("fund 0.25 ETH"))).toBe(true)
+    // The unlock (the passphrase here) and `confirm`: no last six, no factor a second time.
+    expect(fx.prompts).toEqual(["Vault passphrase (input hidden): ", `Type confirm to send 0.25 ETH to ${fx.wallet}: `])
+    expect(fx.stderr.text).toContain(`to   ${groupAddress(fx.wallet)}\n`)
     expect(lastJson(fx.stdout.text)).toMatchObject({ ok: true, tee: fx.wallet, from: FIXTURE_EVM_0 })
 
     expect(await fx.cli(["vault", "fund", fx.wallet, "--amount", "10", "--asset", "USDG"])).toBe(0)
@@ -630,6 +632,28 @@ describe("H9: fund, transfer and sweep a Hood TEE wallet", () => {
     expect(lastJson(fx.stdout.text)).toMatchObject({ ok: true, activityReport: "reported" })
     const report = fx.api.state.calls.find((call) => call.path === "/api/v1/activity/report")
     expect(report?.body).toEqual({ chain: "hood", signature: fx.node.state.sent[0]?.hash })
+  })
+
+  test("vault transfer --from a Hood TEE wallet reads the lock again after confirm, immediately before the signature", async () => {
+    const fx = await promoted()
+    fx.node.setEth(fx.wallet, ETH)
+    fx.api.state.hoodTeeAddress = fx.wallet.toLowerCase()
+    // The lock is free at the first read and taken while the operator is at the prompt.
+    const answer = fx.deps.promptLine
+    let confirmed = false
+    fx.deps.promptLine = async (prompt) => {
+      if (prompt.startsWith("Type confirm to send")) {
+        confirmed = true
+        fx.api.state.activeOperation = { operationId: "op-88", kind: "trade", expiresAt: 10_000_000 }
+      }
+      return answer(prompt)
+    }
+    expect(
+      await fx.cli(["vault", "transfer", OTHER, "--amount", "0.1", "--asset", "ETH", "--from", "evm-tee-0", "--json"]),
+    ).toBe(1)
+    expect(confirmed).toBe(true)
+    expect(lastJson(fx.stdout.text)).toMatchObject({ code: "WALLET_BUSY", details: { operationId: "op-88" } })
+    expect(fx.node.state.sent).toHaveLength(0)
   })
 
   // A path on the Hood host that is not the built-in URL, so `builtIn` is false and the second

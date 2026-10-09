@@ -3,9 +3,10 @@
  * E4 to E8: `vault transfer` from an EVM vault key on a fake JSON-RPC.
  *
  * The fake node records every method in order and every raw transaction it is sent, so the claims
- * here are counts and orderings rather than prose: the post-factor re-read happens after the factor
- * and before the one broadcast (E4), a refusal leaves the node with zero signed bytes (E5), and each
- * post-sign outcome is decided by the receipt and the head the node answers (E6). The raw bytes the
+ * here are counts and orderings rather than prose: the re-read happens after the typed `confirm`
+ * (spec `2026-10-09-cli-transfer-confirm-and-batch-rename-design.md` 1.3, which replaced the last
+ * six and the factor again) and before the one broadcast (E4), a refusal leaves the node with zero
+ * signed bytes (E5), and each post-sign outcome is decided by the receipt and the head the node answers (E6). The raw bytes the
  * node receives are decoded with `viem` to check what was signed is what was displayed.
  */
 import { describe, expect, setDefaultTimeout, test } from "bun:test"
@@ -40,7 +41,7 @@ interface Receipt {
 /** The node's script. Every field has a Hood-shaped default; a test overrides what it is about. */
 interface NodeScript {
   chainId?: bigint
-  /** The chain id answered from the second `eth_chainId` on (the post-factor re-read). */
+  /** The chain id answered from the second `eth_chainId` on (the re-read after the confirmation). */
   chainIdLater?: bigint
   nonce?: bigint
   nonceLater?: bigint
@@ -170,9 +171,10 @@ async function fixture(script: NodeScript = {}, env: Record<string, string> = {}
   const rpc = node(script)
   const events: string[] = []
   const asked: string[] = []
-  let lastSixPrompt = ""
-  let displayAtLastSix = ""
-  let factorPrompt = ""
+  let confirmPrompt = ""
+  let displayAtConfirm = ""
+  // What the operator types at the confirmation; a test that refuses changes it.
+  let typed = "confirm"
   const deps = createTestDeps({
     fetch: rpc.fetch,
     stdout,
@@ -181,18 +183,15 @@ async function fixture(script: NodeScript = {}, env: Record<string, string> = {}
     isTTY: { stdin: true, stdout: true, stderr: true },
     promptSecret: async (prompt) => {
       asked.push(prompt)
-      if (prompt.startsWith("Vault passphrase to")) {
-        factorPrompt = prompt
-        events.push("factor")
-      }
+      // A second factor presentation is gone (1.3); one here would be a regression.
+      if (prompt.startsWith("Vault passphrase to")) events.push("factor")
       return made.passphrase
     },
     promptLine: async (prompt) => {
-      lastSixPrompt = prompt
-      displayAtLastSix = stdout.text
-      events.push("last-six")
-      const match = /\(([^)]+)\) to confirm/.exec(prompt)
-      return (match?.[1] ?? "").slice(-6)
+      confirmPrompt = prompt
+      displayAtConfirm = stdout.text
+      events.push("confirm")
+      return typed
     },
   })
   expect(await run(["vault", "new-key", "--chain", "evm", "--label", "hood-cold"], deps)).toBe(0)
@@ -209,14 +208,14 @@ async function fixture(script: NodeScript = {}, env: Record<string, string> = {}
     events,
     asked,
     path: made.path,
-    get lastSixPrompt() {
-      return lastSixPrompt
+    get confirmPrompt() {
+      return confirmPrompt
     },
-    get displayAtLastSix() {
-      return displayAtLastSix
+    get displayAtConfirm() {
+      return displayAtConfirm
     },
-    get factorPrompt() {
-      return factorPrompt
+    type(word: string) {
+      typed = word
     },
     transfer: (args: string[]) => run(["vault", "transfer", ...args], deps),
   }
@@ -227,14 +226,14 @@ function lastJson(text: string): Record<string, unknown> {
   return JSON.parse(text.trimEnd().split("\n").at(-1) ?? "")
 }
 
-/** The methods the node saw around the factor: everything before the broadcast, in order. */
+/** The methods the node saw around the confirmation: everything before the broadcast, in order. */
 function methodsBeforeBroadcast(methods: string[]): string[] {
   const at = methods.indexOf("eth_sendRawTransaction")
   return at === -1 ? methods : methods.slice(0, at)
 }
 
 describe("E4: the native and ERC-20 shapes, displayed, confirmed, re-read, broadcast once", () => {
-  test("native: the display, the last six of `to`, the factor named, the re-read after it, one broadcast, the bytes signed", async () => {
+  test("native: the display, `to` grouped, one typed confirm naming the send, the re-read after it, one broadcast, the bytes signed", async () => {
     const fx = await fixture({ balance: 2n * ETH, estimate: 21_000n, baseFee: 100n, tip: 10n, nonce: 7n })
     expect(await fx.transfer([DEAD, "--amount", "0.5", "--asset", "ETH", "--from", "hood-cold"])).toBe(0)
 
@@ -242,8 +241,8 @@ describe("E4: the native and ERC-20 shapes, displayed, confirmed, re-read, broad
     expect(fx.stderr.text).toContain(`from ${HOOD_HOST} (the built-in Hood RPC)`)
     expect(fx.rpc.hosts).toEqual(new Set([HOOD_HOST]))
 
-    // The display (D5), all of it before the last-six prompt.
-    const shown = fx.displayAtLastSix
+    // The display (D5), all of it before the confirmation, ending with `to` grouped in fours.
+    const shown = fx.displayAtConfirm
     expect(shown).toContain("chain       4663 (Hood)")
     expect(shown).toContain(`from        hood-cold  ${FIXTURE_EVM_0}`)
     expect(shown).toContain(`to          ${DEAD}`)
@@ -252,11 +251,13 @@ describe("E4: the native and ERC-20 shapes, displayed, confirmed, re-read, broad
     expect(shown).toContain("max fee     210 wei/gas (priority 10 wei/gas)") // 2 × 100 + 10
     expect(shown).toContain("fee cap     0.000000000005292 ETH") // 25200 × 210 wei
     expect(shown).toContain("nonce       7")
-    expect(fx.lastSixPrompt).toContain(`the destination (${DEAD})`)
-    expect(fx.factorPrompt).toContain("sign transfer of 0.5 ETH to 0x000000000000000000000000000000000000dEaD on Hood")
-    expect(fx.events).toEqual(["last-six", "factor"])
+    expect(shown).toContain("to   0x 0000 0000 0000 0000 0000 0000 0000 0000 0000 dEaD\n")
+    expect(fx.confirmPrompt).toBe(`Type confirm to send 0.5 ETH to ${DEAD}: `)
+    expect(fx.events).toEqual(["confirm"])
+    // The one verification is the unlock: one secret prompt in the whole send.
+    expect(fx.asked).toEqual(["Vault passphrase (input hidden): "])
 
-    // D5's order: the reads, then (after both prompts) the chain id and the pending nonce again,
+    // D5's order: the reads, then (after the confirmation) the chain id and the pending nonce again,
     // then exactly one broadcast, and nothing read the chain id after it.
     expect(methodsBeforeBroadcast(fx.rpc.methods)).toEqual([
       "eth_chainId",
@@ -293,12 +294,15 @@ describe("E4: the native and ERC-20 shapes, displayed, confirmed, re-read, broad
   test("ERC-20: the display shows the contract as `to` and the decoded recipient, the last six is the recipient's, and the calldata is transfer(address,uint256)", async () => {
     const fx = await fixture({ decimals: 6, tokenBalance: 5_000_000n, estimate: 50_000n })
     expect(await fx.transfer([DEAD, "--amount", "1.5", "--asset", "USDG", "--from", "hood-cold", "--json"])).toBe(0)
-    const shown = fx.displayAtLastSix
+    const shown = fx.displayAtConfirm
     expect(shown).toContain(`to          ${USDG_CHECKSUMMED}  (the USDG contract, 6 dp)`)
     expect(shown).toContain(`recipient   ${DEAD}  (decoded from transfer(address,uint256))`)
     expect(shown).toContain("amount      1.5 USDG = 1500000 raw")
-    expect(fx.lastSixPrompt).toContain(`the token recipient (${DEAD})`)
-    expect(fx.factorPrompt).toContain(`sign transfer of 1.5 USDG to ${DEAD}`)
+    // The recipient is what is confirmed, never the token contract; under --json the grouped line is
+    // on stderr, outside the document.
+    expect(fx.confirmPrompt).toBe(`Type confirm to send 1.5 USDG to ${DEAD}: `)
+    expect(fx.stderr.text).toContain("to   0x 0000 0000 0000 0000 0000 0000 0000 0000 0000 dEaD\n")
+    expect(fx.stdout.text).not.toContain("to   0x 0000")
     // The contract was asked its decimals and symbol is not asked for USDG (it is named), then balance was not needed.
     expect(fx.rpc.params.eth_call?.some((p) => String((p[0] as { data: string }).data).startsWith("0x313ce567"))).toBe(
       true,
@@ -353,9 +357,9 @@ describe("E4: the native and ERC-20 shapes, displayed, confirmed, re-read, broad
     expect(fx.stderr.text).toContain("from flag.evm.test")
     expect(fx.stderr.text).not.toContain("built-in")
     // The median of the last ten blocks' 50th-percentile rewards: [1, 3, 2] → 2.
-    expect(fx.displayAtLastSix).toContain("max fee     202 wei/gas (priority 2 wei/gas)")
-    expect(fx.displayAtLastSix).toContain("chain       8453\n")
-    expect(fx.displayAtLastSix).toContain("amount      0.5 ETH on chain 8453 =")
+    expect(fx.displayAtConfirm).toContain("max fee     202 wei/gas (priority 2 wei/gas)")
+    expect(fx.displayAtConfirm).toContain("chain       8453\n")
+    expect(fx.displayAtConfirm).toContain("amount      0.5 ETH on chain 8453 =")
 
     const fromEnv = await fixture(
       { chainId: 8453n, head: () => 1_001n, receipt: () => ({ status: 1, blockNumber: 1_000n }) },
@@ -412,8 +416,8 @@ describe("E7: native max", () => {
     expect(estimateCall.to.toLowerCase()).toBe(DEAD.toLowerCase())
     const feeCap = 25_200n * 210n
     const expected = ETH - feeCap
-    expect(fx.displayAtLastSix).toContain(`amount      ${(Number(expected) / 1e18).toString()}`)
-    expect(fx.displayAtLastSix).toContain(`= ${expected} wei`)
+    expect(fx.displayAtConfirm).toContain(`amount      ${(Number(expected) / 1e18).toString()}`)
+    expect(fx.displayAtConfirm).toContain(`= ${expected} wei`)
     const tx = parseTransaction(fx.rpc.sent[0] as `0x${string}`)
     expect(tx.value).toBe(expected)
     expect(lastJson(fx.stdout.text)).toMatchObject({ amountRaw: expected.toString() })
@@ -441,13 +445,13 @@ describe("E5: every pre-sign refusal in D6 fires with no signature", () => {
       code: "EVM_CHAIN_MISMATCH",
       script: { chainIdLater: 1n },
       args: [DEAD, "--amount", "0.1", "--asset", "ETH"],
-      prompts: ["last-six", "factor"],
+      prompts: ["confirm"],
     },
     {
       code: "EVM_NONCE_STALE",
       script: { nonce: 7n, nonceLater: 8n },
       args: [DEAD, "--amount", "0.1", "--asset", "ETH"],
-      prompts: ["last-six", "factor"],
+      prompts: ["confirm"],
     },
     {
       code: "EVM_TOKEN_UNREADABLE",
@@ -498,6 +502,39 @@ describe("E5: every pre-sign refusal in D6 fires with no signature", () => {
       expect(fx.events).toEqual(c.prompts ?? [])
     })
   }
+
+  test("the re-read names the confirmation: a chain id or nonce that moved while the prompt waited", async () => {
+    const chain = await fixture({ chainIdLater: 1n })
+    expect(await chain.transfer([DEAD, "--amount", "0.1", "--asset", "ETH", "--from", "hood-cold", "--json"])).toBe(1)
+    expect(lastJson(chain.stdout.text).message).toBe(
+      "The RPC answered chain id 1 after the confirmation, but 4663 was displayed.",
+    )
+    const nonce = await fixture({ nonce: 7n, nonceLater: 8n })
+    expect(await nonce.transfer([DEAD, "--amount", "0.1", "--asset", "ETH", "--from", "hood-cold", "--json"])).toBe(1)
+    expect(lastJson(nonce.stdout.text).message).toBe(
+      "The pending nonce is 8 after the confirmation, but 7 was displayed; another transaction moved it.",
+    )
+  })
+
+  test("anything but confirm refuses with DESTINATION_NOT_CONFIRMED before the re-read: no signature", async () => {
+    for (const word of ["", "yes", "dEaD", "confirmed"]) {
+      const fx = await fixture()
+      fx.type(word)
+      expect(await fx.transfer([DEAD, "--amount", "0.1", "--asset", "ETH", "--from", "hood-cold", "--json"])).toBe(1)
+      expect(lastJson(fx.stdout.text)).toMatchObject({ ok: false, code: "DESTINATION_NOT_CONFIRMED" })
+      expect(fx.events).toEqual(["confirm"])
+      // The prompt is the last thing: no second chain id or nonce read, nothing sent.
+      expect(fx.rpc.methods.filter((m) => m === "eth_chainId")).toHaveLength(1)
+      expect(fx.rpc.sent).toEqual([])
+    }
+  })
+
+  test("the typed word is trimmed and compared without case", async () => {
+    const fx = await fixture()
+    fx.type("  CoNfIrM \t")
+    expect(await fx.transfer([DEAD, "--amount", "0.1", "--asset", "ETH", "--from", "hood-cold", "--json"])).toBe(0)
+    expect(fx.rpc.sent).toHaveLength(1)
+  })
 
   test("TRANSFER_CHAIN_MISMATCH the other way: a 0x destination for a Solana key, before any read", async () => {
     const fx = await fixture()
@@ -696,9 +733,9 @@ describe("E8: named assets and depth follow the chain id, not the endpoint", () 
       },
     )
     expect(await eth.transfer([DEAD, "--amount", "0.1", "--asset", "ETH", "--from", "hood-cold"])).toBe(0)
-    expect(eth.displayAtLastSix).toContain("chain       8453")
-    expect(eth.displayAtLastSix).toContain("0.1 ETH on chain 8453")
-    expect(eth.factorPrompt).toContain("on chain 8453")
+    expect(eth.displayAtConfirm).toContain("chain       8453")
+    expect(eth.displayAtConfirm).toContain("0.1 ETH on chain 8453")
+    expect(eth.confirmPrompt).toBe(`Type confirm to send 0.1 ETH to ${DEAD}: `)
     // Depth 2 off Hood: head 1001 with the receipt in 1000 is exactly 2 deep.
     expect(eth.stdout.text).toContain("2 blocks deep (depth 2, not finality)")
   })
@@ -731,7 +768,7 @@ describe("E8: named assets and depth follow the chain id, not the endpoint", () 
     expect(
       await token.transfer([DEAD, "--amount", "0.25", "--asset", OTHER_TOKEN, "--from", "hood-cold", "--json"]),
     ).toBe(0)
-    expect(token.displayAtLastSix).toContain("(the WETH contract, 18 dp)")
+    expect(token.displayAtConfirm).toContain("(the WETH contract, 18 dp)")
     expect(lastJson(token.stdout.text)).toMatchObject({ asset: "WETH", amountRaw: "250000000000000000", depth: 2 })
   })
 })

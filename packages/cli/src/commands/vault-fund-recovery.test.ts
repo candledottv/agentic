@@ -111,10 +111,15 @@ async function fixture() {
     readFile: (path) => readFile(path, "utf8"),
     promptSecret: async (prompt) => {
       if (prompt.startsWith("Type the LAST 6")) return from.slice(-6)
-      if (prompt.startsWith("Vault passphrase to")) signingPrompts++
       return made.passphrase
     },
-    promptLine: async () => teeAddress.slice(-6),
+    // The typed confirmation is the last prompt before a send signs (2026-10-09 amendment): a
+    // blocked path never reaches it.
+    promptLine: async (prompt) => {
+      if (!prompt.startsWith("Type confirm to send")) return teeAddress.slice(-6)
+      signingPrompts++
+      return "confirm"
+    },
   })
   for (const label of ["cold", "tee"]) {
     expect(await run(["vault", "new-key", "--chain", "solana", "--label", label], deps)).toBe(0)
@@ -188,6 +193,8 @@ describe("BE-190 durable funding", () => {
       expect(receipts[0]?.finalized).toBe(false)
       expect(receipts[0]?.signature).not.toBe("UntrustedRpcEcho")
       f.setFault("status")
+      // The first fund reached its one confirmation; the blocked ones below reach none.
+      expect(f.signingPrompts).toBe(1)
       const prompts = f.signingPrompts
       expect(await f.fund()).toBe(3)
       expect(await f.transfer()).toBe(3)

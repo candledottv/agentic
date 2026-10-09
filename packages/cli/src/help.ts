@@ -704,7 +704,7 @@ export const HELP: Record<string, Topic> = {
         invocation:
           "transfer <to> --amount <n|max> --asset SOL|<mint>|ETH|USDG|<0x token> --from <label> [--rpc-url <url>]",
         description:
-          "Sign a transfer locally from a vault key or a promoted TEE wallet (Solana, or Hood: refused while a sequenced trade holds the wallet's nonce, and when that cannot be read). From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint",
+          "Sign a transfer locally from a vault key or a promoted TEE wallet (Solana, or Hood: refused while a sequenced trade holds the wallet's nonce, and when that cannot be read). From an EVM key: ETH or an ERC-20, on Hood by default (--rpc-url for any EVM chain; the chain id is read from the RPC), exit 0 means depth-confirmed (1 block on Hood, 2 elsewhere), not finalized. A Solana key reads and sends over --rpc-url, else CANDLE_SOLANA_RPC_URL, else the profile's RPC, else the public endpoint. One verification: the unlock names the send; after the decoded display you type confirm. No --yes",
       },
       {
         invocation:
@@ -721,7 +721,7 @@ export const HELP: Record<string, Topic> = {
         invocation:
           "fund <tee-address|external> --amount <n> --asset SOL|USDC|ETH|USDG [--rpc-url <url>] [--from <label>]",
         description:
-          "Fund a TEE or external wallet from a vault key. A Hood TEE wallet takes ETH or USDG from its pinned EVM vault key",
+          "Fund a TEE or external wallet from a vault key. A Hood TEE wallet takes ETH or USDG from its pinned EVM vault key. One verification: the unlock names the send; after the decoded display you type confirm. No --yes",
       },
       {
         invocation:
@@ -866,7 +866,8 @@ export const HELP: Record<string, Topic> = {
       { invocation: "list", description: "The external wallets in the vault" },
       {
         invocation: "sweep <external> --to <vault> [--rpc-url <url>]",
-        description: "Send everything an external wallet holds back to a vault key",
+        description:
+          "Send everything an external wallet holds back to a vault key. One verification: the unlock names the send; after the display you type confirm",
       },
     ],
     flags: [KEYSTORE_FLAG],

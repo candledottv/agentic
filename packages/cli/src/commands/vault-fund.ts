@@ -18,6 +18,11 @@
  * from its pinned EVM vault key, signed locally through 4a's `evm-transfer`: the decoded display,
  * the destination's last six, and the factor again. No `--yes`, as ever. The RPC must answer Hood's
  * chain id, and the wallet must be enabled with verified remote authority, exactly as on Solana.
+ *
+ * Amended 2026-10-09 (spec `2026-10-09-cli-transfer-confirm-and-batch-rename-design.md`, Part 1):
+ * on every path above, the destination's last six and the factor presented again are replaced by
+ * one typed `confirm` after the display. The unlock is the one verification and names the send
+ * (ED-12). Still no `--yes`, and a terminal is still required.
  */
 import { type ParsedArgs, parseArgs } from "../args"
 import type { CommandContext } from "../deps"
@@ -40,7 +45,8 @@ import {
   signAndBroadcastTransfer,
 } from "../vault/vault-transfer-sign"
 import {
-  confirmLastSix,
+  confirmSend,
+  describeSend,
   findExternalEntry,
   type OpenedVault,
   refuseEnvPassphrase,
@@ -55,13 +61,11 @@ import {
 
 /**
  * R6: fund an external wallet from a vault receive key. The `role: "vault"` clause of the Phase 2
- * ED-10 amendment, unchanged: decoded, displayed, the destination's last six typed, the factor
- * presented again, then signed locally. No funding receipt is kept (an external entry has no `tee`
+ * ED-10 amendment, as amended 2026-10-09: decoded, displayed, `confirm` typed, then signed locally. No funding receipt is kept (an external entry has no `tee`
  * record to hold one); an uncertain send reports its signature and exits 3.
  */
 async function fundExternal(
   ctx: CommandContext,
-  opened: OpenedVault,
   vault: OpenedVault["vault"],
   external: KeyEntry,
   input: { amount: string; asset: string; solana: SolanaClient; parsed: ParsedArgs },
@@ -108,8 +112,7 @@ async function fundExternal(
   )
   const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions))
   displayTransferPlan(ctx, plan, feeQuote)
-  await confirmLastSix(ctx, external.address, "the external wallet destination")
-  await opened.confirm(`fund ${plan.amount} ${plan.asset} to external wallet ${external.label}`)
+  await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: external.address })
 
   const secret = await decryptKey(vault, fromEntry.id)
   try {
@@ -174,6 +177,8 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
     const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      // ED-12: the one verification names the send, with the target as typed.
+      reason: describeSend(amount, asset, teeAddress),
     })
     const vault = hold(opened.vault)
 
@@ -183,7 +188,7 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
     const teeEntry = vault.index.entries.find((entry) => entry.address === teeAddress && entry.role === "tee-wallet")
     if (teeEntry === undefined) {
       const external = findExternalEntry(vault.index, teeAddress)
-      if (external !== undefined) return fundExternal(ctx, opened, vault, external, { amount, asset, solana, parsed })
+      if (external !== undefined) return fundExternal(ctx, vault, external, { amount, asset, solana, parsed })
       writeLocalFailure(
         ctx.deps,
         {
@@ -257,10 +262,8 @@ export async function vaultFund(args: string[], ctx: CommandContext): Promise<nu
     )
     const feeQuote = await solana.read(() => quoteTransferFee(solana.rpc, plan.from, plan.instructions))
     displayTransferPlan(ctx, plan, feeQuote)
-    await confirmLastSix(ctx, teeAddress, "the TEE wallet destination")
-
-    // The factor a second time before anything is signed (passphrase re-typed, or key re-touched).
-    await opened.confirm(`fund ${plan.amount} ${plan.asset} to ${teeAddress}`)
+    // The one typed confirmation; anything but `confirm` refuses with nothing signed.
+    await confirmSend(ctx, { amount: plan.amount, asset: plan.asset, address: teeAddress })
 
     const secret = await decryptKey(vault, fromEntry.id)
     try {
@@ -338,6 +341,8 @@ async function vaultFundEvm(ctx: CommandContext, parsed: ParsedArgs, teeAddress:
     const raw = await requireVaultRaw(ctx, resolvedVault)
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
+      // ED-12: the one verification names the send, with the target as typed.
+      reason: describeSend(amount, asset, teeAddress),
     })
     const vault = hold(opened.vault)
     const teeEntry = vault.index.entries.find(
@@ -396,8 +401,7 @@ async function vaultFundEvm(ctx: CommandContext, parsed: ParsedArgs, teeAddress:
         to: teeEntry.address,
         amount,
         asset,
-        confirmLastSix: (address) => confirmLastSix(ctx, address, "the TEE wallet destination"),
-        confirmFactor: (what) => opened.confirm(what.replace(/^sign transfer of /, "fund ")),
+        confirmSend: (send) => confirmSend(ctx, send),
         decryptSecret: () => decryptKey(vault, fromEntry.id),
         usage: (line) => usage(ctx, line),
         writeJson: (value) => writeJson(ctx.deps, { ...(value as object), tee: teeEntry.address }),
