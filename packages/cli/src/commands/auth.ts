@@ -30,6 +30,7 @@
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { fetchAccount } from "../account"
+import { scopesForPreset } from "../agent-key-access"
 import { parseArgs, parseScopesList } from "../args"
 import { type CheckRow, runLiveCheck } from "../checks"
 import { apiRequest } from "../client"
@@ -45,14 +46,7 @@ import {
   printIdentity,
   profileSecretRef,
 } from "../profiles"
-import {
-  ALL_AGENT_SCOPES,
-  formatScopesForSummary,
-  portalDevicesUrl,
-  renderTable,
-  writeFailure,
-  writeUsageFailure,
-} from "../render"
+import { formatScopesForSummary, portalDevicesUrl, renderTable, writeFailure, writeUsageFailure } from "../render"
 import { SECRET_REFS } from "../secret-store"
 import { CLI_VERSION } from "../version"
 import { embeddedWalletLine } from "./keys-embedded-wallet"
@@ -355,7 +349,9 @@ async function finishLogin(
       deps.stdout.write(`${embeddedWalletLine(body.apiKey.embeddedWallet, body.apiKey.keyPrefix)}\n`)
     }
   } else if (body.apiKeyError) {
-    const authorizedScopes = requested.scopes ?? [...ALL_AGENT_SCOPES]
+    // No --scopes: the device route grants its default, which is the Write preset (key default
+    // without transfer, 2026-10-08 spec, section 6) -- never transfer:write or transfer:bound.
+    const authorizedScopes = requested.scopes ?? scopesForPreset("readwrite")
     deps.stdout.write(`Authorized scopes (no key issued yet): ${formatScopesForSummary(authorizedScopes)}\n`)
     deps.stdout.write(`${body.apiKeyError}\n`)
     deps.stdout.write("Run: candle keys create\n")

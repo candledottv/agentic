@@ -373,6 +373,21 @@ describe("auth login: --label names the key as well as the device", () => {
     expect(patchCalls(calls)).toHaveLength(0)
   })
 
+  // Key default without transfer (2026-10-08 spec, section 6): a scope-less login whose key was
+  // not issued yet reports what the device route will grant, the Write preset, not every scope.
+  test("no key and no --scopes: the authorized scopes are Write, without transfer", async () => {
+    const { fetch } = createRoutedFetch(labelRoutes(undefined, null))
+    const stdout = createCapture()
+
+    const code = await run(["auth", "login"], createTestDeps({ fetch, stdout }))
+
+    expect(code).toBe(0)
+    const line = stdout.text.split("\n").find((l) => l.startsWith("Authorized scopes (no key issued yet): ")) ?? ""
+    expect(line).toContain("account:read, activity:write, launch:read, launch:write, swap:write (")
+    expect(line).not.toContain("transfer:write")
+    expect(line).not.toContain("transfer:bound")
+  })
+
   test("no --label: no PATCH, and neither new line nor field", async () => {
     const { fetch, calls } = createRoutedFetch(labelRoutes(() => jsonResponse(200, { success: true })))
     const stdout = createCapture()

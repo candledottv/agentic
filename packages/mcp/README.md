@@ -98,8 +98,8 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_trade` | Buy or sell a token | Reads the market for its decimals (or wallet balance, for a percent sell) then `POST /api/v1/trade/agent/build` | `CANDLE_AGENT_API_KEY` (`swap:write`) |
 | `candle_launch_and_seed` | Launch a token and seed it | `POST /api/v1/launch/headless` (or `/dry-run`), then a follow-up `GET /api/v1/markets/:chain/:mint` | `CANDLE_AGENT_API_KEY` |
 | `candle_swap` | Swap between base assets | `POST /api/v1/agent/swap` | `CANDLE_AGENT_API_KEY` (`swap:write`) |
-| `candle_transfer` | Transfer an asset | `POST /api/v1/agent/transfer` | `CANDLE_AGENT_API_KEY` (`transfer:write`) |
-| `candle_sweep` | Sweep a wallet to one destination | One `POST /api/v1/agent/transfer` per asset, `amountRaw: "max"` | `CANDLE_AGENT_API_KEY` (`transfer:write`) |
+| `candle_transfer` | Transfer an asset | `POST /api/v1/agent/transfer` | `CANDLE_AGENT_API_KEY`, Withdraw (`transfer:write`) |
+| `candle_sweep` | Sweep a wallet to one destination | One `POST /api/v1/agent/transfer` per asset, `amountRaw: "max"` | `CANDLE_AGENT_API_KEY`, Withdraw (`transfer:write`) |
 | `candle_resolve_token` | Turn a bare mint or contract address into Candle's market for it | `GET /api/v1/markets/:chain/:mint` | none |
 | `candle_get_wallets` | The account's embedded wallets, one per chain, with delegation state | `GET /api/v1/agent/wallets/embedded` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_profile_wallets` | Which wallets an agent profile may spend from, and whether it is scoped | `GET /api/v1/agent/keys/:prefix/wallets` | `CANDLE_AGENT_API_KEY` |

@@ -30,13 +30,13 @@ export const AGENT_KEY_SCOPES = [
   "account:read",
   "activity:write",
   "swap:write",
-  // Agent transfers (2026-08-23 spec): move assets between the account's own wallets (and to
-  // owner-approved withdrawal addresses once the allowlist ships). Included in Write (the
-  // withdrawal allowlist is the hard gate on external sends), never in Read.
+  // Agent transfers (2026-08-23 spec): move assets between the account's own wallets and to
+  // owner-approved withdrawal addresses. Withdraw only, never Write or Read (key default without
+  // transfer, 2026-10-08 spec, D1): Write trades and launches; Withdraw is the level that moves funds.
   "transfer:write",
   // Read:Write:Transfer (2026-09-24 spec, D1): move funds OUT OF the wallet this key runs, to
   // wallets the owner linked while signed in or marked trusted, or to that wallet's own vault.
-  // Only the third preset grants it; never Write, so no existing key changes power.
+  // Only the third preset grants it; never Write.
   "transfer:bound",
 ] as const
 export type AgentKeyScope = (typeof AGENT_KEY_SCOPES)[number]
@@ -47,6 +47,8 @@ export type AgentKeyScope = (typeof AGENT_KEY_SCOPES)[number]
  * along on whichever WRITE scope gated it, so there was no way to grant reading without granting
  * doing. Read:Write:Transfer (2026-09-24 spec, D1 / R3) is Write plus `transfer:bound`: the
  * same key can also move funds out of the wallet it is bound to, to the account's own wallets.
+ * Since the 2026-10-08 spec (D1) it also holds `transfer:write`, which Write no longer does, so
+ * Withdraw is the one preset that moves funds.
  *
  * The ids are new rather than reused (`launcher` / `full`) on purpose: `scopesForPreset("full")`
  * would otherwise keep a name no surface shows, and the retired Launch Only must not survive as
@@ -58,24 +60,25 @@ export type AgentKeyPreset = "read" | "readwrite" | "readwritetransfer"
 const READ_SCOPES: readonly AgentKeyScope[] = ["account:read"]
 
 /**
- * Write: everything Full Access granted, plus `account:read`. An EXPLICIT list, never
- * `[...AGENT_KEY_SCOPES]`: spreading the mirror would let a later addition to it silently widen
- * this preset (spec 3.8). `lp:write` is not here because Full Access never granted it (spec A5).
+ * Write: trade and launch, plus `account:read`. An EXPLICIT list, never `[...AGENT_KEY_SCOPES]`:
+ * spreading the mirror would let a later addition to it silently widen this preset (spec 3.8).
+ * `lp:write` is not here because Full Access never granted it (spec A5). `transfer:write` is not
+ * here either (key default without transfer, 2026-10-08 spec, D1): Write cannot move funds. A key
+ * minted before that change still holds it, matches no preset, and reads as custom (D3).
  */
 const READWRITE_SCOPES: readonly AgentKeyScope[] = [
   "launch:write",
   "launch:read",
   "activity:write",
   "swap:write",
-  "transfer:write",
   "account:read",
 ]
 
 /**
- * Withdraw: exactly Write plus `transfer:bound`, again as an EXPLICIT list (2026-09-24
- * spec, D1: "an explicit list, never a spread"). `transfer:write` stays in Write, so the new
- * power is isolated by the new scope alone, and the API refuses `transfer:bound` without
- * `transfer:write` at mint, which this list satisfies.
+ * Withdraw: exactly Write plus `transfer:write` and `transfer:bound`, again as an EXPLICIT list
+ * (2026-09-24 spec, D1: "an explicit list, never a spread"). The only preset that moves funds
+ * (2026-10-08 spec, D2). The API refuses `transfer:bound` without `transfer:write` at mint, which
+ * this list satisfies.
  */
 const READWRITETRANSFER_SCOPES: readonly AgentKeyScope[] = [
   "launch:write",
@@ -91,9 +94,12 @@ const READWRITETRANSFER_SCOPES: readonly AgentKeyScope[] = [
  * Scopes granted by each portal preset, sent verbatim as `POST /keys`'s `scopes` field.
  *   read              -- `account:read` only: trades, positions, P&L, transactions, workers, the
  *                        tier snapshot, and the hacc.fun tape; no trades, no launches, no transfers.
- *   readwrite         -- the Full Access list plus `account:read`, `swap:write` (trading) included.
- *   readwritetransfer -- readwrite plus `transfer:bound`: moving funds out of the wallet the key
- *                        runs, to the owner's session-linked or trusted wallets and its vault.
+ *   readwrite         -- trade and launch plus `account:read`; `swap:write` (trading) included,
+ *                        `transfer:write` not: a Write key cannot move funds.
+ *   readwritetransfer -- readwrite plus `transfer:write` and `transfer:bound`: moving funds between
+ *                        the account's own wallets and to approved addresses, and out of the
+ *                        wallet the key runs to the owner's session-linked or trusted wallets and
+ *                        its vault.
  */
 export function scopesForPreset(preset: AgentKeyPreset): AgentKeyScope[] {
   switch (preset) {

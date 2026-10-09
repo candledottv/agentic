@@ -30,9 +30,10 @@ any of this: they work with no key at all.
    skill and MCP install lines, and finishes with the full `candle doctor` check. `candle auth login`
    does only the authorization step. The CLI defaults to the alpha API
    (`https://api.alpha.candle.tv`); pass `--api-url` only to target a different deployment.
-   Omitting `--scopes` mints a Read:Write key: `launch:write`, `launch:read`, `account:read`,
-   `activity:write`, `swap:write` and `transfer:write`. Pass your own `--scopes` list to mint a
-   narrower key instead. A device login cannot request `transfer:bound` (see step 7).
+   Omitting `--scopes` mints a Write key: `launch:write`, `launch:read`, `account:read`,
+   `activity:write` and `swap:write`. It trades and launches and cannot move funds; moving funds
+   takes the Withdraw level. Pass your own `--scopes` list to mint a narrower key instead. A device
+   login cannot request `transfer:bound` (see step 7).
 3. In the browser, confirm the client name and scopes match what you expect, rendered in plain
    language rather than raw scope strings. `swap:write` is never granted silently: the screen calls
    it out prominently as the grant that moves funds from the account's own wallet, before you can
@@ -67,8 +68,10 @@ any of this: they work with no key at all.
    else the public endpoint (which refuses a promote's token-authority scans, so pass your own);
    only `vault restore`'s gap scan needs `--rpc-url` itself.
 7. Mint the agent's key at the access level it needs with `candle keys create --access
-   read|read-write|read-write-transfer`: Read changes nothing, Read:Write trades and launches, and
-   only Read:Write:Transfer can move funds out of its TEE wallet with `candle transfer`. The levels
+   read|read-write|read-write-transfer`: Read changes nothing, Read:Write trades and launches and
+   cannot move funds, and only Read:Write:Transfer (Withdraw) can move funds: between the account's
+   own wallets, to approved addresses, and out of its TEE wallet with `candle transfer`. A Write key
+   minted before 2026-10-08 still holds `transfer:write` and lists as custom. The levels
    and the active key limit are in https://docs.candle.tv/developers/agent-access#access-levels, and
    what a trusted wallet allows in https://docs.candle.tv/developers/agent-wallets#trusted-wallets.
    `candle keys list` and `candle keys revoke <prefix>` manage them, and `candle keys wallets

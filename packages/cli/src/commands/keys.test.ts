@@ -125,23 +125,26 @@ describe("keys list", () => {
 })
 
 describe("keys list: Name and Access", () => {
-  // The operator's two keys from 2026-09-23, verbatim: the same six scopes stored in two orders
-  // (the web minted the first, the device flow the second), and only the first one named.
+  // The operator's two keys from 2026-09-23, re-minted as today's Write (key default without
+  // transfer, 2026-10-08 spec, D1): the same five scopes stored in two orders (the web minted the
+  // first, the device flow the second), and only the first one named. As stored on 2026-09-23 they
+  // also held transfer:write; that old Write list reads as custom now (OLD_WRITE, below).
   const JPVPY8GS = {
     keyPrefix: "JpVPY8gs",
     label: "cndl",
-    scopes: ["launch:write", "launch:read", "activity:write", "swap:write", "transfer:write", "account:read"],
+    scopes: ["launch:write", "launch:read", "activity:write", "swap:write", "account:read"],
     environment: "production",
     createdAt: Date.UTC(2026, 8, 20),
   }
   const B6P_TSRS = {
     keyPrefix: "B6P-TSRs",
-    scopes: ["launch:write", "launch:read", "account:read", "activity:write", "swap:write", "transfer:write"],
+    scopes: ["launch:write", "launch:read", "account:read", "activity:write", "swap:write"],
     environment: "production",
     createdAt: Date.UTC(2026, 8, 23),
     mintedByDevicePrefix: "dvcpref1",
   }
-  const SORTED = "account:read,activity:write,launch:read,launch:write,swap:write,transfer:write"
+  const SORTED = "account:read,activity:write,launch:read,launch:write,swap:write"
+  const OLD_WRITE = ["launch:write", "launch:read", "activity:write", "swap:write", "transfer:write", "account:read"]
 
   async function list(keys: object[], argv: string[] = []) {
     const payload = { success: true, tier: "free", keys }
@@ -219,7 +222,8 @@ describe("keys list: Name and Access", () => {
     const rows = tableRows(
       (
         await list([
-          { ...B6P_TSRS, keyPrefix: "legacyful", scopes: JPVPY8GS.scopes.filter((s) => s !== "account:read") },
+          { ...B6P_TSRS, keyPrefix: "legacyful", scopes: OLD_WRITE.filter((s) => s !== "account:read") },
+          { ...B6P_TSRS, keyPrefix: "oldwrite1", scopes: OLD_WRITE },
           { ...B6P_TSRS, keyPrefix: "readonly1", scopes: ["launch:read"] },
           { ...B6P_TSRS, keyPrefix: "readkey01", scopes: ["account:read"] },
         ])
@@ -228,6 +232,9 @@ describe("keys list: Name and Access", () => {
     const access = (prefix: string) => rows.find((row) => row[0] === prefix)?.[1]
     // No label on these rows, so the blank Name cell collapses and Access is the second cell.
     expect(access("legacyful")).toBe("Launch, Trade, Transfer, Report")
+    // A Write key minted before 2026-10-08 still holds transfer:write: custom, and the Transfer word
+    // is the flag (D3).
+    expect(access("oldwrite1")).toBe("Launch, Trade, Transfer, Report")
     expect(access("readonly1")).toBe("–")
     expect(access("readkey01")).toBe("Read")
   })
@@ -748,7 +755,7 @@ describe("keys create: a storage failure never swallows the key", () => {
 describe("keys create --access (R17)", () => {
   const LEVELS: Array<[string, string[]]> = [
     ["read", ["account:read"]],
-    ["read-write", ["launch:write", "launch:read", "activity:write", "swap:write", "transfer:write", "account:read"]],
+    ["read-write", ["launch:write", "launch:read", "activity:write", "swap:write", "account:read"]],
     [
       "read-write-transfer",
       [

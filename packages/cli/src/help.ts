@@ -502,7 +502,7 @@ export const HELP: Record<string, Topic> = {
         invocation:
           "create [--access read|write|withdraw | --scopes <a,b,c>] [--label <name>] [--expires-in <days>] [--tx-limit <usd> [--reset daily|weekly|monthly|never]] [--embedded-wallet deny|allow]",
         description:
-          "Create an API key; --access mints one of the three levels (withdraw can move funds out of the wallet it runs). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal",
+          "Create an API key; --access mints one of the three levels (write trades and launches; only withdraw can move funds). --embedded-wallet defaults to deny; allow lets the key spend the account's embedded wallet and is confirmed at a terminal",
       },
       {
         invocation: "access <prefix|label|self> (--access read|write|withdraw [--yes] | --history)",
