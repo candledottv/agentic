@@ -148,15 +148,14 @@ export async function vaultRename(args: string[], ctx: CommandContext): Promise<
 
     const entry = resolveTarget(vault.index, old, id)
 
-    // D6: a TEE wallet's label also lives on the linked wallet Candle holds, and no route updates
-    // that copy, so renaming the local half would give one wallet two names.
+    // D6: a TEE wallet's label also lives on the linked wallet Candle holds, so renaming the local
+    // half here would give one wallet two names. `tee rename` changes both (BE-1146).
     if (entry.role === "tee-wallet") {
       throw new VaultError(
         "VAULT_RENAME_ROLE_REFUSED",
-        `${entry.label} is a TEE wallet. Its label was sent to Candle when it was enabled and \`candle wallets\` lists that copy, so renaming it here would give one wallet two names and nothing reconciles them.`,
+        `${entry.label} is a TEE wallet. Its label was sent to Candle when it was enabled and \`candle wallets\` lists that copy, so renaming it here would give one wallet two names.`,
         {
-          suggestion:
-            "A vault key or an external wallet renames here. For a TEE wallet, nothing in this release changes the name on either side.",
+          suggestion: `A vault key or an external wallet renames here. A TEE wallet renames on both sides with: candle tee rename ${entry.address} <new-label>`,
         },
       )
     }

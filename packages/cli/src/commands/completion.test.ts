@@ -17,7 +17,7 @@ import { spawnSync } from "node:child_process"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { COMPLETION_SHELLS, documentedSubcommands, GLOBAL_FLAGS, HELP } from "../help"
+import { COMPLETION_SHELLS, documentedFlags, documentedSubcommands, GLOBAL_FLAGS, HELP, type Topic } from "../help"
 import { ROUTED_COMMANDS, ROUTED_SUBCOMMANDS, run } from "../index"
 import { createCapture, createTestDeps } from "../test-support"
 
@@ -58,6 +58,25 @@ describe("T15: the completion scripts", () => {
       const text = await script(shell)
       expect(namesFlag(text, shell, "--pairs-from")).toBe(true)
       expect(namesFlag(text, shell, "--dry-run")).toBe(true)
+    }
+  })
+  test("tee rename and its file and dry-run flags reach all three shells (BE-1146)", async () => {
+    expect(documentedSubcommands(HELP.tee as Topic)).toContain("rename")
+    expect(documentedFlags(HELP.tee as Topic)).toEqual(expect.arrayContaining(["--pairs-from", "--dry-run"]))
+    for (const shell of COMPLETION_SHELLS) {
+      const text = await script(shell)
+      // The tee word's own block: its `case` arm in zsh and bash, its `complete` lines in fish.
+      const offered =
+        shell === "fish"
+          ? text
+              .split("\n")
+              .filter((line) => line.includes("__fish_seen_subcommand_from tee'"))
+              .join("\n")
+          : (text.split(/^\s*tee\)\s*$/m)[1]?.split(";;")[0] ?? "")
+      expect([shell, offered.length > 0]).toEqual([shell, true])
+      expect([shell, /(?<![\w-])rename(?![\w-])/.test(offered)]).toEqual([shell, true])
+      expect([shell, namesFlag(offered, shell, "--pairs-from")]).toEqual([shell, true])
+      expect([shell, namesFlag(offered, shell, "--dry-run")]).toEqual([shell, true])
     }
   })
   test("each script names every routed word, every routed subcommand, every global flag and -k", async () => {

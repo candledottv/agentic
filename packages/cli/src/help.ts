@@ -846,12 +846,33 @@ export const HELP: Record<string, Topic> = {
       },
       { invocation: "rebinds [wallet]", description: "List TEE wallet rebinds for this account (owner only)" },
       {
+        invocation: "rename <label|address|id> <new-label>",
+        description:
+          "Rename one TEE wallet: the label Candle holds and, when its key is in this vault, the vault entry (owner only). New names: at most 64 characters, no edge whitespace. Funds, the address and the key do not change",
+      },
+      {
+        invocation: "  rename --pairs-from <file> [--dry-run]",
+        description:
+          "Rename 1–256 TEE wallets with one server call, all or nothing, then one vault commit. Every finding refuses the whole file. The vault is unlocked once, only when a named TEE wallet may be in it. --dry-run prints the plan and changes nothing; if the vault write fails after the server accepted, it prints address-keyed rows to re-run",
+      },
+      {
         invocation: "signer new --key <prefix|label> [--out <pem>] [--force]",
         description:
           "On the trading machine, with that key's API key: generate the key's signer here and wait for the owner to approve it. Its wallets then trade from this machine. --out also writes a plaintext PEM for an SDK process (weaker than the secret store); --force adds a signer while an older signer on THIS machine still owns wallets; it moves, revokes and deletes nothing",
       },
     ],
-    flags: [KEYSTORE_FLAG],
+    flags: [
+      KEYSTORE_FLAG,
+      {
+        invocation: "--pairs-from <file>",
+        description:
+          "rename: one '<label|address|id> <new-label>' per line, or CSV columns from,to (1–256 rows; blank lines and # comments skipped). No trimming of names; use CSV for names with spaces.",
+      },
+      {
+        invocation: "--dry-run",
+        description: "rename --pairs-from: resolve and check every row, print the plan, and change nothing",
+      },
+    ],
     examples: [
       "candle tee new --label AgentOne",
       "candle tee status AgentOneAddress",
@@ -859,6 +880,8 @@ export const HELP: Record<string, Topic> = {
       "candle tee sweep 0x000000000000000000000000000000000000dEaD --emergency --from-block 1200000",
       "candle tee rebind tr-01 tr-02 --to-key Ab3dEf9h",
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
+      "candle tee rename tr-01 desk-01",
+      "candle tee rename --pairs-from ./tee-names.csv --dry-run",
       "candle tee signer new --key tr-2",
     ],
     env: ENV_LOCAL_SIGNING,

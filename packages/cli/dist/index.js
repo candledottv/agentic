@@ -61915,9 +61915,9 @@ function verifyPerpsBuild2(build, opts) {
         return { ok: false, reason: `action type ${String(type)} is not one Candle builds` };
       }
       if (type === "order") {
-        const refusal = checkBuilderField2(action, opts.builder);
-        if (refusal)
-          return { ok: false, reason: refusal };
+        const refusal2 = checkBuilderField2(action, opts.builder);
+        if (refusal2)
+          return { ok: false, reason: refusal2 };
       } else if ("builder" in action) {
         return { ok: false, reason: `a ${type} action carries no builder` };
       }
@@ -63167,7 +63167,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.20";
+var CLI_VERSION = "0.11.21";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -64225,11 +64225,29 @@ var HELP = {
       },
       { invocation: "rebinds [wallet]", description: "List TEE wallet rebinds for this account (owner only)" },
       {
+        invocation: "rename <label|address|id> <new-label>",
+        description: "Rename one TEE wallet: the label Candle holds and, when its key is in this vault, the vault entry (owner only). New names: at most 64 characters, no edge whitespace. Funds, the address and the key do not change"
+      },
+      {
+        invocation: "  rename --pairs-from <file> [--dry-run]",
+        description: "Rename 1–256 TEE wallets with one server call, all or nothing, then one vault commit. Every finding refuses the whole file. The vault is unlocked once, only when a named TEE wallet may be in it. --dry-run prints the plan and changes nothing; if the vault write fails after the server accepted, it prints address-keyed rows to re-run"
+      },
+      {
         invocation: "signer new --key <prefix|label> [--out <pem>] [--force]",
         description: "On the trading machine, with that key's API key: generate the key's signer here and wait for the owner to approve it. Its wallets then trade from this machine. --out also writes a plaintext PEM for an SDK process (weaker than the secret store); --force adds a signer while an older signer on THIS machine still owns wallets; it moves, revokes and deletes nothing"
       }
     ],
-    flags: [KEYSTORE_FLAG],
+    flags: [
+      KEYSTORE_FLAG,
+      {
+        invocation: "--pairs-from <file>",
+        description: "rename: one '<label|address|id> <new-label>' per line, or CSV columns from,to (1–256 rows; blank lines and # comments skipped). No trimming of names; use CSV for names with spaces."
+      },
+      {
+        invocation: "--dry-run",
+        description: "rename --pairs-from: resolve and check every row, print the plan, and change nothing"
+      }
+    ],
     examples: [
       "candle tee new --label AgentOne",
       "candle tee status AgentOneAddress",
@@ -64237,6 +64255,8 @@ var HELP = {
       "candle tee sweep 0x000000000000000000000000000000000000dEaD --emergency --from-block 1200000",
       "candle tee rebind tr-01 tr-02 --to-key Ab3dEf9h",
       "candle tee rebind --label-prefix dest- --to-key Ab3dEf9h",
+      "candle tee rename tr-01 desk-01",
+      "candle tee rename --pairs-from ./tee-names.csv --dry-run",
       "candle tee signer new --key tr-2"
     ],
     env: ENV_LOCAL_SIGNING
@@ -74628,6 +74648,644 @@ init_swap();
 init_tee();
 init_tee_rebind();
 
+// src/commands/tee-rename.ts
+init_args();
+init_deps();
+init_profiles();
+init_render();
+init_errors();
+
+// src/vault/labels.ts
+function entriesWithLabel(index, label) {
+  return index.entries.filter((entry) => entry.label === label);
+}
+function duplicateLabels(index) {
+  const byLabel = new Map;
+  for (const entry of index.entries) {
+    const holders = byLabel.get(entry.label);
+    if (holders === undefined)
+      byLabel.set(entry.label, [entry]);
+    else
+      holders.push(entry);
+  }
+  const out = [];
+  for (const [label, entries] of byLabel) {
+    if (entries.length > 1)
+      out.push({ label, entries });
+  }
+  return out;
+}
+function hasControlCharacter(label) {
+  for (const char of label) {
+    const code = char.codePointAt(0) ?? 0;
+    if (code < 32 || code === 127)
+      return true;
+  }
+  return false;
+}
+function validateLabel(label) {
+  if (label.trim().length === 0)
+    return "A key's label cannot be empty.";
+  if (hasControlCharacter(label)) {
+    return "A key's label cannot contain a newline, a tab or a control character.";
+  }
+  if (label.startsWith("-")) {
+    return `A key's label cannot begin with "-": it would be read as a flag everywhere a label is typed.`;
+  }
+  if (label !== label.trim())
+    return "A key's label cannot begin or end with whitespace.";
+  if (label.length > 64)
+    return "A key's label cannot exceed 64 characters.";
+  return;
+}
+function resolveRenameTarget(index, old, id) {
+  if (id !== undefined) {
+    const entry = index.entries.find((candidate) => candidate.id === id);
+    return entry === undefined ? { kind: "none" } : { kind: "found", entry, by: "id" };
+  }
+  const byLabel = entriesWithLabel(index, old);
+  if (byLabel.length === 1)
+    return { kind: "found", entry: byLabel[0], by: "label" };
+  if (byLabel.length > 1)
+    return { kind: "ambiguous", by: "label", candidates: byLabel };
+  const byAddress = index.entries.filter((entry) => entry.address === old);
+  if (byAddress.length === 1)
+    return { kind: "found", entry: byAddress[0], by: "address" };
+  if (byAddress.length > 1)
+    return { kind: "ambiguous", by: "address", candidates: byAddress };
+  const byId = index.entries.find((entry) => entry.id === old);
+  if (byId !== undefined)
+    return { kind: "found", entry: byId, by: "id" };
+  return { kind: "none" };
+}
+
+// src/vault/rename-batch.ts
+var MAX_RENAME_BATCH = 256;
+function csvCells(text) {
+  const cells = [];
+  let cell = "";
+  let quoted = false;
+  let closed = false;
+  for (let i = 0;i < text.length; i++) {
+    const char = text[i];
+    if (quoted) {
+      if (char === '"') {
+        if (text[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else {
+          quoted = false;
+          closed = true;
+        }
+      } else
+        cell += char;
+    } else if (char === ",") {
+      cells.push(cell);
+      cell = "";
+      closed = false;
+    } else if (char === '"' && cell === "" && !closed)
+      quoted = true;
+    else if (char === '"' || closed)
+      return;
+    else
+      cell += char;
+  }
+  if (quoted)
+    return;
+  cells.push(cell);
+  return cells;
+}
+function parseRenamePairs(contents) {
+  const lines = contents.split(/\r?\n/).map((text, at) => ({ text, line: at + 1 })).filter(({ text }) => text.trim() !== "" && !/^\s*#/.test(text));
+  const rows = [];
+  const findings = [];
+  const header = csvCells(lines[0]?.text ?? "")?.map((cell) => cell.trim()) ?? [];
+  const csv = header.length > 1 && (header.includes("from") || header.includes("to"));
+  if (csv && (header.filter((name2) => name2 === "from").length !== 1 || header.filter((name2) => name2 === "to").length !== 1)) {
+    return {
+      rows,
+      findings: [{ line: lines[0]?.line ?? 0, problem: "A CSV needs exactly one from and one to column." }]
+    };
+  }
+  const data = csv ? lines.slice(1) : lines;
+  if (data.length < 1 || data.length > MAX_RENAME_BATCH) {
+    findings.push({ line: 0, problem: `A rename file must hold 1 to ${MAX_RENAME_BATCH} rows; found ${data.length}.` });
+  }
+  for (const { text, line } of data) {
+    let from;
+    let to;
+    if (csv) {
+      const cells = csvCells(text);
+      if (cells === undefined || cells.length !== header.length) {
+        findings.push({ line, problem: "Malformed CSV row or field count does not match the header." });
+        continue;
+      }
+      from = cells[header.indexOf("from")];
+      to = cells[header.indexOf("to")];
+    } else {
+      const match = /^(\S+)[ \t]+(\S+)([ \t]*)$/.exec(text);
+      if (match !== null)
+        [from, to] = [match[1], `${match[2]}${match[3]}`];
+    }
+    if (from === undefined || from === "" || to === undefined) {
+      findings.push({ line, problem: 'A row needs "<label|address|id> <new-label>" (CSV columns: from,to).' });
+      continue;
+    }
+    rows.push({ line, from, to });
+    const invalid = validateLabel(to);
+    if (invalid !== undefined)
+      findings.push({ line, problem: invalid });
+  }
+  for (const field of ["from", "to"]) {
+    const seen = new Map;
+    for (const row of rows) {
+      const earlier = seen.get(row[field]);
+      if (earlier !== undefined)
+        findings.push({ line: row.line, problem: `Duplicate ${field} ${row[field]} (line ${earlier}).` });
+      else
+        seen.set(row[field], row.line);
+    }
+  }
+  return { rows, findings };
+}
+function planBatchRename(index, rows) {
+  const plan = [];
+  const findings = [];
+  const seen = new Map;
+  for (const row of rows) {
+    const match = resolveRenameTarget(index, row.from);
+    if (match.kind !== "found") {
+      findings.push({
+        line: row.line,
+        problem: match.kind === "none" ? `No key matches ${row.from}.` : `${row.from} is ambiguous; use an id. Candidates: ${match.candidates.map((entry2) => `${entry2.address} (${entry2.id})`).join(", ")}.`
+      });
+      continue;
+    }
+    const entry = match.entry;
+    const earlier = seen.get(entry.id);
+    if (earlier !== undefined)
+      findings.push({ line: row.line, problem: `Same key as line ${earlier}, named by another handle.` });
+    else
+      seen.set(entry.id, row.line);
+    if (entry.role !== "vault" && entry.role !== "external") {
+      findings.push({
+        line: row.line,
+        problem: `${entry.label} is a TEE wallet; vault rename only changes vault or external keys. Use candle tee rename.`
+      });
+    }
+    if (entry.label === row.to)
+      findings.push({ line: row.line, problem: `${row.to} is already this key's label.` });
+    plan.push({ ...row, entry });
+  }
+  const targets = new Set(plan.map(({ entry }) => entry.id));
+  for (const row of plan) {
+    if (index.entries.some((entry) => entry.label === row.to && !targets.has(entry.id))) {
+      findings.push({ line: row.line, problem: `New name ${row.to} is taken by a key outside the batch.` });
+    }
+  }
+  return { plan, findings };
+}
+
+// src/commands/tee-rename.ts
+init_store();
+init_tee();
+
+// src/commands/vault-rename.ts
+init_args();
+init_errors();
+init_store();
+init_vault_support();
+var RENAME_USAGE = "Usage: candle vault rename <label|address|id> <new-label> [--id <entry-id>] | --pairs-from <file> [--dry-run]";
+var SAME_STRING_LINE = "The two arguments are the same string; nothing to do.";
+async function vaultRename(args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--keystore", "--id", "--pairs-from"],
+    booleanFlags: ["--accept-older-copy", "--dry-run"],
+    pathFlags: ["--keystore", "--pairs-from"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  const [old, next, extra] = parsed.positionals;
+  const pairsFile = parsed.values["--pairs-from"];
+  const batch = pairsFile !== undefined;
+  if (batch ? parsed.positionals.length > 0 || parsed.values["--id"] !== undefined : old === undefined || next === undefined || extra !== undefined || parsed.booleans.has("--dry-run")) {
+    return usage(ctx, RENAME_USAGE);
+  }
+  if (!batch && next !== undefined) {
+    const invalid = validateLabel(next);
+    if (invalid !== undefined)
+      return usage(ctx, invalid);
+    if (old === next)
+      return usage(ctx, SAME_STRING_LINE);
+  }
+  const id = parsed.values["--id"];
+  if (!refuseEnvPassphrase(ctx))
+    return 1;
+  if (!requireTty(ctx, "vault rename"))
+    return 1;
+  const { deps } = ctx;
+  const resolvedVault = vaultPathFor(ctx, parsed);
+  if ("error" in resolvedVault)
+    return usage(ctx, resolvedVault.error);
+  const path = resolvedVault.path;
+  let rows = [];
+  if (pairsFile !== undefined) {
+    let contents;
+    try {
+      contents = await deps.readFile(pairsFile);
+    } catch (error) {
+      return usage(ctx, `Could not read --pairs-from: ${error instanceof Error ? error.message : error}`);
+    }
+    const parsedFile = parseRenamePairs(contents);
+    if (parsedFile.findings.length > 0)
+      return batchRefusal(ctx, parsedFile.findings, 2);
+    rows = parsedFile.rows;
+  }
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const raw = await requireVaultRaw(ctx, resolvedVault);
+    const opened = await unlockInteractively(ctx, path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    });
+    const vault = hold(opened.vault);
+    if (batch) {
+      const { plan, findings } = planBatchRename(vault.index, rows);
+      if (findings.length > 0)
+        return batchRefusal(ctx, findings, 1);
+      const renamed = plan.map(({ entry: entry2, to }) => ({
+        id: entry2.id,
+        address: entry2.address,
+        role: entry2.role,
+        from: entry2.label,
+        to
+      }));
+      const dryRun = parsed.booleans.has("--dry-run");
+      if (!dryRun) {
+        const names = new Map(renamed.map(({ id: id2, to }) => [id2, to]));
+        await commitVault(vault, {
+          index: {
+            hd: vault.index.hd,
+            entries: vault.index.entries.map((entry2) => names.has(entry2.id) ? { ...entry2, label: names.get(entry2.id) } : entry2)
+          }
+        }, deps);
+      }
+      if (ctx.json)
+        writeJson(deps, { ok: true, renamed, ...dryRun ? { dryRun: true } : {} });
+      else {
+        deps.stdout.write(dryRun ? `Dry run: nothing was written.
+` : `Renamed ${renamed.length} keys in one commit.
+`);
+        for (const row of renamed)
+          deps.stdout.write(`  ${row.from} -> ${row.to}  ${row.address} (${row.id}, ${row.role})
+`);
+      }
+      return 0;
+    }
+    if (old === undefined || next === undefined)
+      return usage(ctx, RENAME_USAGE);
+    const entry = resolveTarget(vault.index, old, id);
+    if (entry.role === "tee-wallet") {
+      throw new VaultError("VAULT_RENAME_ROLE_REFUSED", `${entry.label} is a TEE wallet. Its label was sent to Candle when it was enabled and \`candle wallets\` lists that copy, so renaming it here would give one wallet two names.`, {
+        suggestion: `A vault key or an external wallet renames here. A TEE wallet renames on both sides with: candle tee rename ${entry.address} <new-label>`
+      });
+    }
+    if (entry.label === next) {
+      throw new VaultError("VAULT_LABEL_UNCHANGED", `${next} is already this key's label. Nothing was written.`, {
+        suggestion: "Nothing to rename. `candle vault status --unlock` lists every label."
+      });
+    }
+    if (entriesWithLabel(vault.index, next).length > 0) {
+      throw new VaultError("VAULT_LABEL_TAKEN", `A key labelled ${next} already exists in this vault. Nothing was written.`, {
+        suggestion: "Choose a name no key has, or rename that key first: `candle vault status --unlock` lists them."
+      });
+    }
+    const from = entry.label;
+    await commitVault(vault, {
+      index: {
+        hd: vault.index.hd,
+        entries: vault.index.entries.map((candidate) => candidate.id === entry.id ? { ...candidate, label: next } : candidate)
+      }
+    }, deps);
+    if (ctx.json) {
+      writeJson(deps, { ok: true, id: entry.id, address: entry.address, role: entry.role, from, to: next });
+      return 0;
+    }
+    deps.stdout.write(`Renamed ${from} to ${next}.
+`);
+    deps.stdout.write(`  address     ${entry.address}
+`);
+    deps.stdout.write(`  id          ${entry.id}
+`);
+    deps.stdout.write(`  role        ${entry.role}
+`);
+    deps.stdout.write(`  unchanged   address, derivation path, key blob, every envelope
+`);
+    return 0;
+  });
+}
+function batchRefusal(ctx, findings, exit) {
+  const message = "Batch rename refused. Nothing was written.";
+  if (ctx.json)
+    writeJson(ctx.deps, { ok: false, code: "VAULT_RENAME_BATCH_REFUSED", message, findings });
+  else {
+    ctx.deps.stderr.write(`${message}
+`);
+    for (const finding of findings)
+      ctx.deps.stderr.write(`  ${finding.line === 0 ? "file" : `line ${finding.line}`}: ${finding.problem}
+`);
+  }
+  return exit;
+}
+function resolveTarget(index, old, id) {
+  const match = resolveRenameTarget(index, old, id);
+  if (match.kind === "found")
+    return match.entry;
+  if (match.kind === "none") {
+    throw new VaultError("VAULT_LABEL_NOT_FOUND", id === undefined ? `No key in this vault is called ${old}, and no key has that address or id.` : `No key in this vault has the id ${id}.`, { suggestion: "List them with their labels: `candle vault status --unlock`" });
+  }
+  const candidates = match.candidates.map((entry) => `${entry.address} (${entry.id})`).join(", ");
+  const count2 = match.candidates.length;
+  const first = match.candidates[0];
+  throw new VaultError("VAULT_LABEL_AMBIGUOUS", match.by === "label" ? `${count2} keys in this vault are called ${old}, so this rename would not say which one it meant. Nothing was written.` : `${count2} keys in this vault have the address ${old}, so this rename would not say which one it meant. Nothing was written.`, {
+    suggestion: match.by === "label" ? `Name one by address or id. The candidates are ${candidates}.` : `Name one by id. The candidates are ${candidates}. Re-run: \`candle vault rename ${old} <new-label> --id ${first.id}\`.`
+  });
+}
+
+// src/commands/tee-rename.ts
+init_vault_support();
+var RENAME_PATH = "/api/v1/agent/linked-wallets/rename";
+var TEE_RENAME_USAGE = "Usage: candle tee rename <label|address|id> <new-label> | --pairs-from <file> [--dry-run]";
+var DEVICE_TOKEN_REQUIRED2 = {
+  code: "DEVICE_TOKEN_REQUIRED",
+  message: "Renaming a TEE wallet needs the device token, the owner's credential; an API key cannot do it.",
+  suggestion: "Run: candle auth login"
+};
+function rerunFile(rows) {
+  if (rows.every((row) => !/[\s,"]/.test(row.to)))
+    return rows.map((row) => `${row.from} ${row.to}`);
+  return ["from,to", ...rows.map((row) => `${row.from},"${row.to.replaceAll('"', '""')}"`)];
+}
+function refusal(ctx, findings, exit) {
+  const message = "TEE rename refused. Nothing was changed.";
+  if (ctx.json)
+    writeJson(ctx.deps, { ok: false, code: "TEE_RENAME_BATCH_REFUSED", message, findings });
+  else {
+    ctx.deps.stderr.write(`${message}
+`);
+    for (const finding of findings)
+      ctx.deps.stderr.write(`  ${finding.line === 0 ? "file" : `line ${finding.line}`}: ${finding.problem}
+`);
+  }
+  return exit;
+}
+function serverFailure(ctx, result, pairs, batch) {
+  const { deps, apiUrl, json } = ctx;
+  if (result.status === 404) {
+    writeLocalFailure(deps, {
+      code: "TEE_RENAME_UNSUPPORTED",
+      message: "This Candle API does not support renaming TEE wallets yet; nothing changed."
+    }, json);
+    return 1;
+  }
+  const raw = result.raw?.error?.findings;
+  if (Array.isArray(raw) && raw.length > 0) {
+    const findings = raw.map((finding) => {
+      const ids = Array.isArray(finding.matches) ? ` Candidates: ${finding.matches.map((m) => String(m.id)).join(", ")}.` : "";
+      return {
+        line: batch ? pairs[Number(finding.row)]?.line ?? 0 : 0,
+        problem: `${String(finding.problem)}${ids}`
+      };
+    });
+    if (batch)
+      return refusal(ctx, findings, 1);
+    writeLocalFailure(deps, {
+      code: "TEE_RENAME_REFUSED",
+      message: `${findings.map((finding) => finding.problem).join(" ")} Nothing was changed.`,
+      suggestion: "Run: candle wallets, to see this account's linked wallets and their labels."
+    }, json);
+    return 1;
+  }
+  writeFailure(deps, result, { apiUrl, authType: "device" }, json);
+  return 1;
+}
+function vaultEntriesFor(entries, row) {
+  const lower = row.address.toLowerCase();
+  return entries.filter((entry) => entry.role === "tee-wallet" && (entry.linkedWalletId === row.id || entry.address === row.address || entry.chain === "evm" && row.chain === "evm" && entry.address.toLowerCase() === lower));
+}
+function unknownCommit(ctx, rows, onServer, inVault) {
+  const { deps, json } = ctx;
+  const changing = new Set([...onServer.map((row) => row.id), ...inVault.map(({ row }) => row.id)]);
+  const rerun = rows.filter((row) => changing.has(row.id)).map((row) => ({ from: row.address, to: row.label }));
+  const message = `The rename request got no answer, so whether the server applied it is unknown. Nothing was written to the vault. ${rerun.length} wallet${rerun.length === 1 ? "" : "s"} may or may not carry the new name on the server.`;
+  if (json)
+    writeJson(deps, { ok: false, code: "TEE_RENAME_SERVER_UNKNOWN", message, rerun });
+  else {
+    deps.stderr.write(`${message}
+`);
+    deps.stderr.write(`Re-run it with these rows, saved to a file (the old labels may no longer resolve):
+`);
+    for (const line of rerunFile(rerun))
+      deps.stderr.write(`  ${line}
+`);
+    deps.stderr.write(`Then run: candle tee rename --pairs-from <file>
+`);
+  }
+  return 1;
+}
+async function teeRename(args, ctx) {
+  const { deps, apiUrl, json } = ctx;
+  if (!refuseEnvPassphrase2(ctx))
+    return 1;
+  const parsed = parseArgs(args, {
+    valueFlags: ["--pairs-from"],
+    booleanFlags: ["--dry-run", "--accept-older-copy"],
+    pathFlags: ["--pairs-from"]
+  });
+  if ("error" in parsed)
+    return usage(ctx, parsed.error);
+  const [old, next, extra] = parsed.positionals;
+  const pairsFile = parsed.values["--pairs-from"];
+  const batch = pairsFile !== undefined;
+  const dryRun = parsed.booleans.has("--dry-run");
+  if (batch ? parsed.positionals.length > 0 : old === undefined || next === undefined || extra !== undefined || dryRun) {
+    return usage(ctx, TEE_RENAME_USAGE);
+  }
+  let pairs;
+  if (pairsFile !== undefined) {
+    let contents;
+    try {
+      contents = await deps.readFile(pairsFile);
+    } catch (error) {
+      return usage(ctx, `Could not read --pairs-from: ${error instanceof Error ? error.message : error}`);
+    }
+    const parsedFile = parseRenamePairs(contents);
+    if (parsedFile.findings.length > 0)
+      return refusal(ctx, parsedFile.findings, 2);
+    pairs = parsedFile.rows;
+  } else {
+    const invalid = validateLabel(next);
+    if (invalid !== undefined)
+      return usage(ctx, invalid);
+    if (old === next)
+      return usage(ctx, SAME_STRING_LINE);
+    pairs = [{ line: 0, from: old, to: next }];
+  }
+  await printIdentity(ctx);
+  const deviceToken = await resolveDeviceToken(deps, ctx.profile);
+  if (!deviceToken) {
+    writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED2, json);
+    return 1;
+  }
+  const call = (body) => apiRequest(RENAME_PATH, {
+    method: "POST",
+    body,
+    auth: "device",
+    credentials: { deviceToken },
+    apiUrl,
+    fetch: deps.fetch,
+    env: deps.env
+  });
+  const preview = await call({
+    dryRun: true,
+    renames: pairs.map((pair) => ({ wallet: pair.from, label: pair.to }))
+  });
+  if (!preview.ok)
+    return serverFailure(ctx, preview, pairs, batch);
+  const shown = preview.body;
+  const rows = [...shown.renamed ?? [], ...shown.unchanged ?? []].sort((a, b) => a.row - b.row);
+  if (rows.length !== pairs.length || rows.some((row, at) => row.row !== at || row.label !== pairs[at]?.to)) {
+    writeLocalFailure(deps, {
+      code: "TEE_RENAME_PREVIEW_INVALID",
+      message: "The API's preview did not answer every row; nothing was changed."
+    }, json);
+    return 1;
+  }
+  const vaultPath = vaultPathFor(ctx, { values: {}, booleans: new Set, positionals: [] });
+  if ("error" in vaultPath)
+    return usage(ctx, vaultPath.error);
+  const raw = rows.some((row) => row.tee) ? await readVaultRaw(vaultPath.path) : null;
+  if (raw !== null && !requireTty(ctx, "tee rename"))
+    return 1;
+  return runVaultCommand(ctx, async ({ hold }) => {
+    const vault = raw === null ? null : hold((await unlockInteractively(ctx, vaultPath.path, raw, {
+      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
+    })).vault);
+    const local = [];
+    const findings = [];
+    let twice = false;
+    if (vault !== null) {
+      for (const row of rows) {
+        const line = pairs[row.row]?.line ?? 0;
+        const entries = vaultEntriesFor(vault.index.entries, row);
+        if (entries.length > 1) {
+          twice = true;
+          findings.push({
+            line,
+            problem: `The vault holds ${entries.length} TEE entries for ${row.address}; a rename would give them one name.`
+          });
+        } else if (entries[0] !== undefined)
+          local.push({ row, entry: entries[0] });
+      }
+      const targets = new Set(local.map(({ entry }) => entry.id));
+      for (const { row, entry } of local) {
+        if (entry.label === row.label)
+          continue;
+        if (vault.index.entries.some((other) => other.label === row.label && !targets.has(other.id))) {
+          findings.push({
+            line: pairs[row.row]?.line ?? 0,
+            problem: `New name ${row.label} is taken by a vault key outside this rename.`
+          });
+        }
+      }
+    }
+    if (findings.length > 0) {
+      if (batch)
+        return refusal(ctx, findings, 1);
+      writeLocalFailure(deps, {
+        code: twice ? "VAULT_LABEL_AMBIGUOUS" : "VAULT_LABEL_TAKEN",
+        message: `${findings.map((finding) => finding.problem).join(" ")} Nothing was changed.`,
+        suggestion: twice ? "`candle vault list` shows both entries." : "Choose a name no vault key has: `candle vault list` shows them."
+      }, json);
+      return 1;
+    }
+    const localById = new Map(local.map(({ row, entry }) => [row.id, entry]));
+    const receipt = rows.map((row) => {
+      const entry = localById.get(row.id);
+      return {
+        id: row.id,
+        chain: row.chain,
+        address: row.address,
+        from: row.from,
+        to: row.label,
+        server: row.from === row.label ? "unchanged" : "renamed",
+        vault: entry === undefined ? "none" : entry.label === row.label ? "unchanged" : "renamed"
+      };
+    });
+    const onServer = rows.filter((row) => row.from !== row.label);
+    const inVault = local.filter(({ row, entry }) => entry.label !== row.label);
+    const print = (headline) => {
+      if (json)
+        return writeJson(deps, { ok: true, renamed: receipt, ...dryRun ? { dryRun: true } : {} });
+      deps.stdout.write(`${headline}
+`);
+      for (const row of receipt) {
+        const sides = row.server === "renamed" && row.vault === "renamed" ? "server and vault" : row.server === "renamed" ? "server" : row.vault === "renamed" ? "vault; the server already had this name" : "already named";
+        const was = row.server === "renamed" ? row.from : localById.get(row.id)?.label ?? row.from;
+        deps.stdout.write(`  ${was ?? "(none)"} -> ${row.to}  ${row.address} (${sides})
+`);
+      }
+    };
+    if (dryRun) {
+      print("Dry run: nothing was changed.");
+      return 0;
+    }
+    if (onServer.length === 0 && inVault.length === 0) {
+      print("Nothing to change: every wallet already has its new name.");
+      return 0;
+    }
+    if (onServer.length > 0) {
+      const committed = await call({ renames: onServer.map((row) => ({ id: row.id, label: row.label })) });
+      if (!committed.ok) {
+        if (committed.status === 0)
+          return unknownCommit(ctx, rows, onServer, inVault);
+        return serverFailure(ctx, committed, onServer.map((row) => pairs[row.row]), batch);
+      }
+    }
+    if (vault !== null && inVault.length > 0) {
+      const names = new Map(inVault.map(({ row, entry }) => [entry.id, row.label]));
+      try {
+        await commitVault(vault, {
+          index: {
+            hd: vault.index.hd,
+            entries: vault.index.entries.map((entry) => names.has(entry.id) ? { ...entry, label: names.get(entry.id) } : entry)
+          }
+        }, deps);
+      } catch (error) {
+        const rerun = inVault.map(({ row }) => ({ from: row.address, to: row.label }));
+        const cause = isVaultError(error) ? error.code : "VAULT_UNREADABLE";
+        const why = error instanceof Error ? error.message : String(error);
+        const message = `The server renamed ${onServer.length} wallet${onServer.length === 1 ? "" : "s"}, but the vault write failed (${cause}: ${why}). ${rerun.length} vault ${rerun.length === 1 ? "entry still has its" : "entries still have their"} old name.`;
+        if (json) {
+          writeJson(deps, { ok: false, code: "TEE_RENAME_VAULT_INCOMPLETE", message, cause, rerun, renamed: receipt });
+        } else {
+          deps.stderr.write(`${message}
+`);
+          deps.stderr.write(`Finish it with these rows, saved to a file (the old labels no longer resolve):
+`);
+          for (const line of rerunFile(rerun))
+            deps.stderr.write(`  ${line}
+`);
+          deps.stderr.write(`Then run: candle tee rename --pairs-from <file>
+`);
+        }
+        return 1;
+      }
+    }
+    const changed = receipt.filter((row) => row.server === "renamed" || row.vault === "renamed").length;
+    print(`Renamed ${changed} wallet${changed === 1 ? "" : "s"}.`);
+    return 0;
+  });
+}
+
 // src/commands/transfer.ts
 init_args();
 init_evm_lite();
@@ -79631,9 +80289,9 @@ async function refuseWithoutRoom(ctx) {
     ctx.deps.stderr.write(unreadableRoomLine(read.reason));
     return;
   }
-  const refusal = singleRoomRefusal(read.room);
-  if (refusal !== null)
-    throw refusal;
+  const refusal2 = singleRoomRefusal(read.room);
+  if (refusal2 !== null)
+    throw refusal2;
 }
 async function reopenFromDisk(path, reopen, previous) {
   closeVault(previous);
@@ -80406,15 +81064,15 @@ function annotate(error, row, classified, pinnedBy, promotedBy) {
 var CONTINUATION_SENTENCE = (total) => `Each row was checked against the vault as it will be when the rows above it have run, so this is
 ` + `every row that fails on that basis. Fix these rows and run again; the next run re-checks all ${total}
 ` + `from scratch.`;
-function writeBatchRefusal(deps, json, refusal) {
-  const n = refusal.rows.length;
+function writeBatchRefusal(deps, json, refusal2) {
+  const n = refusal2.rows.length;
   if (json) {
     deps.stdout.write(`${JSON.stringify({
       ok: false,
       code: "PROMOTE_BATCH_REFUSED",
-      message: `${n} of ${refusal.total} rows cannot run; nothing was written.`,
+      message: `${n} of ${refusal2.total} rows cannot run; nothing was written.`,
       suggestion: "Fix the rows below and run again; the next run re-checks every row from scratch.",
-      rows: refusal.rows.map((row) => ({
+      rows: refusal2.rows.map((row) => ({
         line: row.line,
         label: row.label,
         destination: row.destination,
@@ -80426,18 +81084,18 @@ function writeBatchRefusal(deps, json, refusal) {
 `);
     return;
   }
-  const table = renderTable(["line", "label", "destination", "code", "why"], refusal.rows.map((row) => [
+  const table = renderTable(["line", "label", "destination", "code", "why"], refusal2.rows.map((row) => [
     String(row.line),
     row.label,
     row.destination,
     row.code,
     row.why !== undefined ? `${row.message} ${row.why}` : row.message
   ]));
-  deps.stderr.write(`This batch was refused and NOTHING was written. ${n} of ${refusal.total} rows cannot run:
+  deps.stderr.write(`This batch was refused and NOTHING was written. ${n} of ${refusal2.total} rows cannot run:
 
 ${table}
 
-${CONTINUATION_SENTENCE(refusal.total)}
+${CONTINUATION_SENTENCE(refusal2.total)}
 `);
 }
 function parseValueUsdCell(raw) {
@@ -81256,359 +81914,6 @@ function finish(ctx, opts) {
 `);
   }
   return exit;
-}
-
-// src/commands/vault-rename.ts
-init_args();
-init_errors();
-
-// src/vault/labels.ts
-function entriesWithLabel(index, label) {
-  return index.entries.filter((entry) => entry.label === label);
-}
-function duplicateLabels(index) {
-  const byLabel = new Map;
-  for (const entry of index.entries) {
-    const holders = byLabel.get(entry.label);
-    if (holders === undefined)
-      byLabel.set(entry.label, [entry]);
-    else
-      holders.push(entry);
-  }
-  const out = [];
-  for (const [label, entries] of byLabel) {
-    if (entries.length > 1)
-      out.push({ label, entries });
-  }
-  return out;
-}
-function hasControlCharacter(label) {
-  for (const char of label) {
-    const code = char.codePointAt(0) ?? 0;
-    if (code < 32 || code === 127)
-      return true;
-  }
-  return false;
-}
-function validateLabel(label) {
-  if (label.trim().length === 0)
-    return "A key's label cannot be empty.";
-  if (hasControlCharacter(label)) {
-    return "A key's label cannot contain a newline, a tab or a control character.";
-  }
-  if (label.startsWith("-")) {
-    return `A key's label cannot begin with "-": it would be read as a flag everywhere a label is typed.`;
-  }
-  if (label !== label.trim())
-    return "A key's label cannot begin or end with whitespace.";
-  if (label.length > 64)
-    return "A key's label cannot exceed 64 characters.";
-  return;
-}
-function resolveRenameTarget(index, old, id) {
-  if (id !== undefined) {
-    const entry = index.entries.find((candidate) => candidate.id === id);
-    return entry === undefined ? { kind: "none" } : { kind: "found", entry, by: "id" };
-  }
-  const byLabel = entriesWithLabel(index, old);
-  if (byLabel.length === 1)
-    return { kind: "found", entry: byLabel[0], by: "label" };
-  if (byLabel.length > 1)
-    return { kind: "ambiguous", by: "label", candidates: byLabel };
-  const byAddress = index.entries.filter((entry) => entry.address === old);
-  if (byAddress.length === 1)
-    return { kind: "found", entry: byAddress[0], by: "address" };
-  if (byAddress.length > 1)
-    return { kind: "ambiguous", by: "address", candidates: byAddress };
-  const byId = index.entries.find((entry) => entry.id === old);
-  if (byId !== undefined)
-    return { kind: "found", entry: byId, by: "id" };
-  return { kind: "none" };
-}
-
-// src/vault/rename-batch.ts
-var MAX_RENAME_BATCH = 256;
-function csvCells(text) {
-  const cells = [];
-  let cell = "";
-  let quoted = false;
-  let closed = false;
-  for (let i = 0;i < text.length; i++) {
-    const char = text[i];
-    if (quoted) {
-      if (char === '"') {
-        if (text[i + 1] === '"') {
-          cell += '"';
-          i++;
-        } else {
-          quoted = false;
-          closed = true;
-        }
-      } else
-        cell += char;
-    } else if (char === ",") {
-      cells.push(cell);
-      cell = "";
-      closed = false;
-    } else if (char === '"' && cell === "" && !closed)
-      quoted = true;
-    else if (char === '"' || closed)
-      return;
-    else
-      cell += char;
-  }
-  if (quoted)
-    return;
-  cells.push(cell);
-  return cells;
-}
-function parseRenamePairs(contents) {
-  const lines = contents.split(/\r?\n/).map((text, at) => ({ text, line: at + 1 })).filter(({ text }) => text.trim() !== "" && !/^\s*#/.test(text));
-  const rows = [];
-  const findings = [];
-  const header = csvCells(lines[0]?.text ?? "")?.map((cell) => cell.trim()) ?? [];
-  const csv = header.length > 1 && (header.includes("from") || header.includes("to"));
-  if (csv && (header.filter((name2) => name2 === "from").length !== 1 || header.filter((name2) => name2 === "to").length !== 1)) {
-    return {
-      rows,
-      findings: [{ line: lines[0]?.line ?? 0, problem: "A CSV needs exactly one from and one to column." }]
-    };
-  }
-  const data = csv ? lines.slice(1) : lines;
-  if (data.length < 1 || data.length > MAX_RENAME_BATCH) {
-    findings.push({ line: 0, problem: `A rename file must hold 1 to ${MAX_RENAME_BATCH} rows; found ${data.length}.` });
-  }
-  for (const { text, line } of data) {
-    let from;
-    let to;
-    if (csv) {
-      const cells = csvCells(text);
-      if (cells === undefined || cells.length !== header.length) {
-        findings.push({ line, problem: "Malformed CSV row or field count does not match the header." });
-        continue;
-      }
-      from = cells[header.indexOf("from")];
-      to = cells[header.indexOf("to")];
-    } else {
-      const match = /^(\S+)[ \t]+(\S+)([ \t]*)$/.exec(text);
-      if (match !== null)
-        [from, to] = [match[1], `${match[2]}${match[3]}`];
-    }
-    if (from === undefined || from === "" || to === undefined) {
-      findings.push({ line, problem: 'A row needs "<label|address|id> <new-label>" (CSV columns: from,to).' });
-      continue;
-    }
-    rows.push({ line, from, to });
-    const invalid = validateLabel(to);
-    if (invalid !== undefined)
-      findings.push({ line, problem: invalid });
-  }
-  for (const field of ["from", "to"]) {
-    const seen = new Map;
-    for (const row of rows) {
-      const earlier = seen.get(row[field]);
-      if (earlier !== undefined)
-        findings.push({ line: row.line, problem: `Duplicate ${field} ${row[field]} (line ${earlier}).` });
-      else
-        seen.set(row[field], row.line);
-    }
-  }
-  return { rows, findings };
-}
-function planBatchRename(index, rows) {
-  const plan = [];
-  const findings = [];
-  const seen = new Map;
-  for (const row of rows) {
-    const match = resolveRenameTarget(index, row.from);
-    if (match.kind !== "found") {
-      findings.push({
-        line: row.line,
-        problem: match.kind === "none" ? `No key matches ${row.from}.` : `${row.from} is ambiguous; use an id. Candidates: ${match.candidates.map((entry2) => `${entry2.address} (${entry2.id})`).join(", ")}.`
-      });
-      continue;
-    }
-    const entry = match.entry;
-    const earlier = seen.get(entry.id);
-    if (earlier !== undefined)
-      findings.push({ line: row.line, problem: `Same key as line ${earlier}, named by another handle.` });
-    else
-      seen.set(entry.id, row.line);
-    if (entry.role !== "vault" && entry.role !== "external") {
-      findings.push({
-        line: row.line,
-        problem: `${entry.label} is a TEE wallet; vault rename only changes vault or external keys.`
-      });
-    }
-    if (entry.label === row.to)
-      findings.push({ line: row.line, problem: `${row.to} is already this key's label.` });
-    plan.push({ ...row, entry });
-  }
-  const targets = new Set(plan.map(({ entry }) => entry.id));
-  for (const row of plan) {
-    if (index.entries.some((entry) => entry.label === row.to && !targets.has(entry.id))) {
-      findings.push({ line: row.line, problem: `New name ${row.to} is taken by a key outside the batch.` });
-    }
-  }
-  return { plan, findings };
-}
-
-// src/commands/vault-rename.ts
-init_store();
-init_vault_support();
-var RENAME_USAGE = "Usage: candle vault rename <label|address|id> <new-label> [--id <entry-id>] | --pairs-from <file> [--dry-run]";
-var SAME_STRING_LINE = "The two arguments are the same string; nothing to do.";
-async function vaultRename(args, ctx) {
-  const parsed = parseArgs(args, {
-    valueFlags: ["--keystore", "--id", "--pairs-from"],
-    booleanFlags: ["--accept-older-copy", "--dry-run"],
-    pathFlags: ["--keystore", "--pairs-from"]
-  });
-  if ("error" in parsed)
-    return usage(ctx, parsed.error);
-  const [old, next, extra] = parsed.positionals;
-  const pairsFile = parsed.values["--pairs-from"];
-  const batch = pairsFile !== undefined;
-  if (batch ? parsed.positionals.length > 0 || parsed.values["--id"] !== undefined : old === undefined || next === undefined || extra !== undefined || parsed.booleans.has("--dry-run")) {
-    return usage(ctx, RENAME_USAGE);
-  }
-  if (!batch && next !== undefined) {
-    const invalid = validateLabel(next);
-    if (invalid !== undefined)
-      return usage(ctx, invalid);
-    if (old === next)
-      return usage(ctx, SAME_STRING_LINE);
-  }
-  const id = parsed.values["--id"];
-  if (!refuseEnvPassphrase(ctx))
-    return 1;
-  if (!requireTty(ctx, "vault rename"))
-    return 1;
-  const { deps } = ctx;
-  const resolvedVault = vaultPathFor(ctx, parsed);
-  if ("error" in resolvedVault)
-    return usage(ctx, resolvedVault.error);
-  const path = resolvedVault.path;
-  let rows = [];
-  if (pairsFile !== undefined) {
-    let contents;
-    try {
-      contents = await deps.readFile(pairsFile);
-    } catch (error) {
-      return usage(ctx, `Could not read --pairs-from: ${error instanceof Error ? error.message : error}`);
-    }
-    const parsedFile = parseRenamePairs(contents);
-    if (parsedFile.findings.length > 0)
-      return batchRefusal(ctx, parsedFile.findings, 2);
-    rows = parsedFile.rows;
-  }
-  return runVaultCommand(ctx, async ({ hold }) => {
-    const raw = await requireVaultRaw(ctx, resolvedVault);
-    const opened = await unlockInteractively(ctx, path, raw, {
-      acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
-    });
-    const vault = hold(opened.vault);
-    if (batch) {
-      const { plan, findings } = planBatchRename(vault.index, rows);
-      if (findings.length > 0)
-        return batchRefusal(ctx, findings, 1);
-      const renamed = plan.map(({ entry: entry2, to }) => ({
-        id: entry2.id,
-        address: entry2.address,
-        role: entry2.role,
-        from: entry2.label,
-        to
-      }));
-      const dryRun = parsed.booleans.has("--dry-run");
-      if (!dryRun) {
-        const names = new Map(renamed.map(({ id: id2, to }) => [id2, to]));
-        await commitVault(vault, {
-          index: {
-            hd: vault.index.hd,
-            entries: vault.index.entries.map((entry2) => names.has(entry2.id) ? { ...entry2, label: names.get(entry2.id) } : entry2)
-          }
-        }, deps);
-      }
-      if (ctx.json)
-        writeJson(deps, { ok: true, renamed, ...dryRun ? { dryRun: true } : {} });
-      else {
-        deps.stdout.write(dryRun ? `Dry run: nothing was written.
-` : `Renamed ${renamed.length} keys in one commit.
-`);
-        for (const row of renamed)
-          deps.stdout.write(`  ${row.from} -> ${row.to}  ${row.address} (${row.id}, ${row.role})
-`);
-      }
-      return 0;
-    }
-    if (old === undefined || next === undefined)
-      return usage(ctx, RENAME_USAGE);
-    const entry = resolveTarget(vault.index, old, id);
-    if (entry.role === "tee-wallet") {
-      throw new VaultError("VAULT_RENAME_ROLE_REFUSED", `${entry.label} is a TEE wallet. Its label was sent to Candle when it was enabled and \`candle wallets\` lists that copy, so renaming it here would give one wallet two names and nothing reconciles them.`, {
-        suggestion: "A vault key or an external wallet renames here. For a TEE wallet, nothing in this release changes the name on either side."
-      });
-    }
-    if (entry.label === next) {
-      throw new VaultError("VAULT_LABEL_UNCHANGED", `${next} is already this key's label. Nothing was written.`, {
-        suggestion: "Nothing to rename. `candle vault status --unlock` lists every label."
-      });
-    }
-    if (entriesWithLabel(vault.index, next).length > 0) {
-      throw new VaultError("VAULT_LABEL_TAKEN", `A key labelled ${next} already exists in this vault. Nothing was written.`, {
-        suggestion: "Choose a name no key has, or rename that key first: `candle vault status --unlock` lists them."
-      });
-    }
-    const from = entry.label;
-    await commitVault(vault, {
-      index: {
-        hd: vault.index.hd,
-        entries: vault.index.entries.map((candidate) => candidate.id === entry.id ? { ...candidate, label: next } : candidate)
-      }
-    }, deps);
-    if (ctx.json) {
-      writeJson(deps, { ok: true, id: entry.id, address: entry.address, role: entry.role, from, to: next });
-      return 0;
-    }
-    deps.stdout.write(`Renamed ${from} to ${next}.
-`);
-    deps.stdout.write(`  address     ${entry.address}
-`);
-    deps.stdout.write(`  id          ${entry.id}
-`);
-    deps.stdout.write(`  role        ${entry.role}
-`);
-    deps.stdout.write(`  unchanged   address, derivation path, key blob, every envelope
-`);
-    return 0;
-  });
-}
-function batchRefusal(ctx, findings, exit) {
-  const message = "Batch rename refused. Nothing was written.";
-  if (ctx.json)
-    writeJson(ctx.deps, { ok: false, code: "VAULT_RENAME_BATCH_REFUSED", message, findings });
-  else {
-    ctx.deps.stderr.write(`${message}
-`);
-    for (const finding of findings)
-      ctx.deps.stderr.write(`  ${finding.line === 0 ? "file" : `line ${finding.line}`}: ${finding.problem}
-`);
-  }
-  return exit;
-}
-function resolveTarget(index, old, id) {
-  const match = resolveRenameTarget(index, old, id);
-  if (match.kind === "found")
-    return match.entry;
-  if (match.kind === "none") {
-    throw new VaultError("VAULT_LABEL_NOT_FOUND", id === undefined ? `No key in this vault is called ${old}, and no key has that address or id.` : `No key in this vault has the id ${id}.`, { suggestion: "List them with their labels: `candle vault status --unlock`" });
-  }
-  const candidates = match.candidates.map((entry) => `${entry.address} (${entry.id})`).join(", ");
-  const count2 = match.candidates.length;
-  const first = match.candidates[0];
-  throw new VaultError("VAULT_LABEL_AMBIGUOUS", match.by === "label" ? `${count2} keys in this vault are called ${old}, so this rename would not say which one it meant. Nothing was written.` : `${count2} keys in this vault have the address ${old}, so this rename would not say which one it meant. Nothing was written.`, {
-    suggestion: match.by === "label" ? `Name one by address or id. The candidates are ${candidates}.` : `Name one by id. The candidates are ${candidates}. Re-run: \`candle vault rename ${old} <new-label> --id ${first.id}\`.`
-  });
 }
 
 // src/commands/vault-restore.ts
@@ -83020,7 +83325,7 @@ var PREVIEW_PATH = "/api/v1/agent/tee-wallets/allow-launch/preview";
 var capabilityPath = (id) => `/api/v1/agent/wallets/${encodeURIComponent(id)}/capabilities`;
 var USAGE_ALLOW = "Usage: candle wallets allow-launch <label|address|id|prefix*>... [--json]";
 var USAGE_DISALLOW = "Usage: candle wallets disallow-launch <label|address|id|prefix*>... [--yes] [--json]";
-var DEVICE_TOKEN_REQUIRED2 = {
+var DEVICE_TOKEN_REQUIRED3 = {
   code: "DEVICE_TOKEN_REQUIRED",
   message: "Changing whether a TEE wallet may launch needs the device token, the owner's credential; an API key cannot do it.",
   suggestion: "Run: candle auth login"
@@ -83089,7 +83394,7 @@ async function setAllowLaunch(args, ctx, enabled) {
   await printIdentity(ctx);
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   if (!deviceToken) {
-    writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED2, json);
+    writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED3, json);
     return 1;
   }
   if (!skipConfirm && (!deps.isTTY.stdin || !deps.isTTY.stdout)) {
@@ -83337,7 +83642,7 @@ init_promote_support();
 var TRUST_PATH = "/api/v1/agent/linked-wallets/trust";
 var USAGE_TRUST = "Usage: candle wallets trust <label|address|id|prefix*>... [--json]";
 var USAGE_UNTRUST = "Usage: candle wallets untrust <label|address|id|prefix*>... [--yes] [--json]";
-var DEVICE_TOKEN_REQUIRED3 = {
+var DEVICE_TOKEN_REQUIRED4 = {
   code: "DEVICE_TOKEN_REQUIRED",
   message: "Marking a wallet trusted needs the device token, the owner's credential; an API key cannot do it.",
   suggestion: "Run: candle auth login"
@@ -83415,7 +83720,7 @@ async function setTrust(args, ctx, trusted) {
   await printIdentity(ctx);
   const deviceToken = await resolveDeviceToken(deps, ctx.profile);
   if (!deviceToken) {
-    writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED3, json);
+    writeLocalFailure(deps, DEVICE_TOKEN_REQUIRED4, json);
     return 1;
   }
   if (!skipConfirm && (!deps.isTTY.stdin || !deps.isTTY.stdout)) {
@@ -83752,6 +84057,7 @@ var COMMANDS = {
       sweep: teeSweep,
       rebind: teeRebind,
       rebinds: teeRebinds,
+      rename: teeRename,
       signer: teeSigner
     }
   },

@@ -1,6 +1,6 @@
 # @candledottv/cli
 
-The Candle CLI (current version 0.11.20): authorize a device from your browser, keep your own keys
+The Candle CLI (current version 0.11.21): authorize a device from your browser, keep your own keys
 in an encrypted vault on this machine, hand an agent a TEE wallet it can trade, and manage API
 keys, wallets, and setup health from the terminal. Zero runtime dependencies; the whole thing is
 one self-contained `dist/index.js` that runs under plain Node.
@@ -16,7 +16,21 @@ unlocks and prints the plan without writing; `--json` returns
 `{ ok, renamed: [{ id, address, role, from, to }] }` (plus `dryRun: true` for a dry run).
 Single and batch rename require new labels of at most 64 characters, without edge whitespace,
 control characters or a leading `-`; names are never trimmed. Existing longer labels still
-resolve as targets. A terminal is required. TEE wallets are refused by `vault rename`.
+resolve as targets. A terminal is required. TEE wallets are refused by `vault rename`; use
+`candle tee rename`.
+
+`candle tee rename <label|address|id> <new-label>` renames a TEE wallet on both sides: the label
+Candle holds and, when the wallet's key is in this vault, the vault entry.
+`candle tee rename --pairs-from <file> [--dry-run]` does 1–256 of them from the same file shape
+(lines, or CSV columns `from,to`) under the same label rule (at most 64 characters, never
+trimmed). It is owner only (the device token; an API key cannot rename a wallet). One server
+call renames every row, all or nothing, then one vault commit; the vault is unlocked once, and
+only when a named TEE wallet may be in it. A new name a vault key outside the rename already has
+refuses before the server is called. `--json` returns
+`{ ok, renamed: [{ id, chain, address, from, to, server, vault }] }`. If the vault write fails
+after the server accepted, the command prints address-keyed rows (`<address> <new-label>`, `rerun`
+under `--json`) to run again: the old label no longer resolves on the server, and a re-run leaves
+the server label alone and finishes the vault.
 
 ## Quick start
 
@@ -103,6 +117,7 @@ emergency procedure, rebinding, trusted wallets and API key access levels are al
 | `candle tee status\|disable\|sweep\|fund` | Operate a TEE wallet (Tier 2): `status` shows its server state and on-chain balances, `disable` stops the agent (exit 0 only on a verified stop, 3 while pending), `sweep --rpc-url <url>` moves everything to the pinned vault, signed locally (closing DAMM v2 positions after verifying each server-built close; `--emergency` sweeps when the API cannot be read and moves the position NFT instead), and `fund` prints what your vault signs. On a Hood wallet (0x), `status` shows ETH, USDG and the gas reserve, and `sweep` moves USDG, WETH, every `--token` and then ETH last. See [CLI custody](https://docs.candle.tv/developers/cli-custody). |
 | `candle tee signer new --key <prefix\|label> [--out <pem>] [--force]` | On the trading machine, with that key's API key: generates the key's signer here and waits for the owner to approve it with `keys signer approve`. The key's wallets then trade from this machine. `--out` also writes a plaintext PEM for an SDK process. |
 | `candle tee rebind <wallet...> --to-key <prefix\|label>`, `candle tee rebinds [wallet]` | Move TEE wallets to another key on the same account (owner only, preview then `confirm`; funds and the relay signer do not move), and list the rebind history. |
+| `candle tee rename <label\|address\|id> <new-label>`, `candle tee rename --pairs-from <file> [--dry-run]` | Rename one TEE wallet, or 1–256 from a pairs file: the label Candle holds and the vault entry when there is one (owner only; one server call, all or nothing, then one vault commit). |
 | `candle tee new\|enable` | The legacy path: `new` seals a fresh key in its own `tee-wallets.enc` and `enable <address> --vault <address>` delegates it with a pinned sweep vault. New setups use `vault promote`; `vault import-legacy --tee` migrates an existing store. |
 | `candle swap <from> <to> --amount <n>\|--percent <n> --wallet <tee> [--to <tee>] [--wait]` | Quote, confirm and swap through the TEE wallet's bound key; the first buy after a launch is this command, unless `candle launch --buy` made it. The assets decide the chain (ETH, USDG or a 0x token is Hood; SOL, USDC, CNDL or a mint is Solana). SOL or USDC to ETH or USDG, or back, is a bridge through Relay into this key's own TEE wallet on the other chain (`--to` names it when there are several); `--wait` follows it for up to ten minutes. |
 | `candle swap status <id> [--kind trade\|swap\|launch] [--wait]` | Read an operation without resending it; `--wait` follows a bridge until it ends. |

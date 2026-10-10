@@ -93,6 +93,7 @@ Match the task, not the noun: "make this key use these wallets" is a rebind, not
 | I want to | Run |
 | --- | --- |
 | Give a key TEE wallets, or move them to another key | `candle tee rebind <wallets...> --to-key <key>` (or `--label-prefix <p>` for many) |
+| Rename a TEE wallet | `candle tee rename <wallet> <new-label>` (or `--pairs-from <file>` for many); `vault rename` is for vault and external keys |
 | Let a key use a linked wallet you imported | The agent console's Agents tab, signed in (`keys wallets set` from a key can only narrow) |
 | Turn a vault key into a TEE wallet | `candle vault promote --in-place <label> --sweep-to <cold key>`, or `--from <cold key>` for a fresh one |
 | Send funds out of a TEE wallet as the agent | `candle transfer --to vault --asset <A> --amount <n\|max> --wallet <tee>` (or `--to` a linked or trusted wallet) with a Read:Write:Transfer key |

@@ -259,6 +259,31 @@ describe("vault batch rename help", () => {
   })
 })
 
+describe("tee rename help (BE-1146)", () => {
+  test("the single and batch rows, the file and dry-run flags, and the half-done re-run are documented", () => {
+    const tee = HELP.tee as Topic
+    const single = tee.rows.find((row) => row.invocation.startsWith("rename <"))
+    expect(single?.invocation).toBe("rename <label|address|id> <new-label>")
+    expect(single?.description).toContain("the vault entry")
+    expect(single?.description).toContain("owner only")
+    expect(single?.description).toContain("64 characters")
+    const batch = tee.rows.find((row) => row.invocation.includes("rename --pairs-from"))
+    expect(batch?.invocation.trim()).toBe("rename --pairs-from <file> [--dry-run]")
+    expect(batch?.description).toContain("one server call, all or nothing")
+    expect(batch?.description).toContain("one vault commit")
+    expect(batch?.description).toContain("address-keyed rows")
+    expect(documentedSubcommands(tee)).toContain("rename")
+    expect(documentedFlags(tee)).toContain("--pairs-from")
+    expect(documentedFlags(tee)).toContain("--dry-run")
+    expect(tee.examples).toContain("candle tee rename tr-01 desk-01")
+  })
+
+  test("vault rename's own rows do not claim the TEE role", () => {
+    const row = HELP.vault?.rows.find((row) => row.invocation.startsWith("rename <"))
+    expect(row?.description).toContain("vault or external key")
+  })
+})
+
 describe("the vault send rows (spec 2026-10-09-cli-transfer-confirm-and-batch-rename-design.md, 1.6)", () => {
   test("transfer, fund and sweep state one verification and the typed confirm, and no last six", () => {
     for (const [word, prefix] of [

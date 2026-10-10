@@ -132,7 +132,7 @@ export function planBatchRename(
     if (entry.role !== "vault" && entry.role !== "external") {
       findings.push({
         line: row.line,
-        problem: `${entry.label} is a TEE wallet; vault rename only changes vault or external keys.`,
+        problem: `${entry.label} is a TEE wallet; vault rename only changes vault or external keys. Use candle tee rename.`,
       })
     }
     if (entry.label === row.to) findings.push({ line: row.line, problem: `${row.to} is already this key's label.` })

@@ -330,10 +330,12 @@ describe("T8: the five refusals, each with its code, exit, message, suggestion a
     const { body } = await refused(fx, ["vault", "rename", "hot", "cold"])
     expect(body.code).toBe("VAULT_RENAME_ROLE_REFUSED")
     expect(body.message).toBe(
-      "hot is a TEE wallet. Its label was sent to Candle when it was enabled and `candle wallets` lists that copy, so renaming it here would give one wallet two names and nothing reconciles them.",
+      "hot is a TEE wallet. Its label was sent to Candle when it was enabled and `candle wallets` lists that copy, so renaming it here would give one wallet two names.",
     )
+    // BE-1146: the refusal points at the command that changes both sides, by the handle that
+    // still resolves after it.
     expect(body.suggestion).toBe(
-      "A vault key or an external wallet renames here. For a TEE wallet, nothing in this release changes the name on either side.",
+      `A vault key or an external wallet renames here. A TEE wallet renames on both sides with: candle tee rename ${keypair.publicKey.toBase58()} <new-label>`,
     )
     // By address and by --id the answer is the same: the role decides, not the handle.
     expect((await refused(fx, ["vault", "rename", keypair.publicKey.toBase58(), "cold"])).body.code).toBe(

@@ -57,6 +57,7 @@ import { sign, signMessage } from "./commands/sign"
 import { swap, swapStatus } from "./commands/swap"
 import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./commands/tee"
 import { teeRebind, teeRebinds } from "./commands/tee-rebind"
+import { teeRename } from "./commands/tee-rename"
 import { transfer } from "./commands/transfer"
 import { update } from "./commands/update"
 import { vaultBackup, vaultVerifyBackup } from "./commands/vault-backup"
@@ -275,6 +276,8 @@ const COMMANDS: Record<string, CommandRoute> = {
       // BE-303: owner-only, device token, never the vault.
       rebind: teeRebind,
       rebinds: teeRebinds,
+      // BE-1146: the server label and, for a wallet in the vault, the vault entry.
+      rename: teeRename,
       // Key signers K3: `tee signer new`, on the trading machine, with that key's API key.
       signer: teeSigner,
     },
