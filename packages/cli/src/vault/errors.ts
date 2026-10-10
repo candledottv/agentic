@@ -89,6 +89,7 @@ export const VAULT_ERROR_CODES = [
   "VAULT_LABEL_TAKEN",
   "VAULT_LABEL_UNCHANGED",
   "VAULT_RENAME_ROLE_REFUSED",
+  "VAULT_RENAME_BATCH_REFUSED",
   // BE-285 (spec 2026-09-22-cli-vault-promote-batch-design.md, D7): `candle vault promote-batch`'s
   // one new code. The whole-set preflight refuses with it and lists every failing row, each row
   // carrying its OWN shipped `PROMOTE_*` code unchanged. Thrown nowhere: the report is returned and

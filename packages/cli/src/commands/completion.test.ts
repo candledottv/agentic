@@ -53,6 +53,13 @@ function shellOnPath(shell: string): boolean {
 }
 
 describe("T15: the completion scripts", () => {
+  test("batch rename's file and dry-run flags reach all three shells", async () => {
+    for (const shell of COMPLETION_SHELLS) {
+      const text = await script(shell)
+      expect(namesFlag(text, shell, "--pairs-from")).toBe(true)
+      expect(namesFlag(text, shell, "--dry-run")).toBe(true)
+    }
+  })
   test("each script names every routed word, every routed subcommand, every global flag and -k", async () => {
     for (const shell of COMPLETION_SHELLS) {
       const text = await script(shell)

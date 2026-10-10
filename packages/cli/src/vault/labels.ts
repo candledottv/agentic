@@ -62,8 +62,8 @@ function hasControlCharacter(label: string): boolean {
  * - beginning with `-`: it would parse as a flag everywhere a label is typed. Unreachable through
  *   argv and stated anyway, because `--labels-from` can already write one.
  *
- * No length cap: `new-key --label` enforces none today, and a cap only `rename` applied would make
- * some names creatable and not reachable-by-rename (§7 item 4).
+ * New names share the server's 64-character cap and refuse edge whitespace without trimming.
+ * This validates new names only; existing longer labels still resolve as targets.
  */
 export function validateLabel(label: string): string | undefined {
   if (label.trim().length === 0) return "A key's label cannot be empty."
@@ -73,6 +73,8 @@ export function validateLabel(label: string): string | undefined {
   if (label.startsWith("-")) {
     return `A key's label cannot begin with "-": it would be read as a flag everywhere a label is typed.`
   }
+  if (label !== label.trim()) return "A key's label cannot begin or end with whitespace."
+  if (label.length > 64) return "A key's label cannot exceed 64 characters."
   return undefined
 }
 
@@ -84,7 +86,7 @@ export type RenameTargetMatch =
 
 /**
  * Resolves the entry `rename` will write, in the order `findEntryByLabelOrAddress` already uses
- * (`promote-support.ts`): exact label first, then exact address. Label wins over address when a
+ * (`promote-support.ts`): exact label first, then exact address, then id. Label wins over address when a
  * label happens to spell one, which is the existing house behaviour. `--id` is exclusive with
  * the positional's other meanings and is matched first when given: the entry id is the one handle
  * unique by construction (`freshKeyId` and `assertKeyIdsAgree`), so it is the floor under the
@@ -104,5 +106,7 @@ export function resolveRenameTarget(index: IndexPlaintext, old: string, id?: str
   const byAddress = index.entries.filter((entry) => entry.address === old)
   if (byAddress.length === 1) return { kind: "found", entry: byAddress[0] as KeyEntry, by: "address" }
   if (byAddress.length > 1) return { kind: "ambiguous", by: "address", candidates: byAddress }
+  const byId = index.entries.find((entry) => entry.id === old)
+  if (byId !== undefined) return { kind: "found", entry: byId, by: "id" }
   return { kind: "none" }
 }

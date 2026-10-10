@@ -1,12 +1,22 @@
 # @candledottv/cli
 
-The Candle CLI (current version 0.11.19): authorize a device from your browser, keep your own keys
+The Candle CLI (current version 0.11.20): authorize a device from your browser, keep your own keys
 in an encrypted vault on this machine, hand an agent a TEE wallet it can trade, and manage API
 keys, wallets, and setup health from the terminal. Zero runtime dependencies; the whole thing is
 one self-contained `dist/index.js` that runs under plain Node.
 
 The full custody guide is [CLI custody](https://docs.candle.tv/developers/cli-custody), and every
 command and flag is in the [Candle CLI reference](https://docs.candle.tv/developers/cli).
+
+`candle vault rename --pairs-from <file> [--dry-run]` renames 1–256 vault or external keys under
+one unlock and one commit. Use `<label|address|id> <new-label>` lines or CSV columns `from,to`
+(picked by name; quote names with spaces or commas). Blank lines and `#` comments are skipped.
+Every finding refuses the whole file before any write; swaps within the batch work. `--dry-run`
+unlocks and prints the plan without writing; `--json` returns
+`{ ok, renamed: [{ id, address, role, from, to }] }` (plus `dryRun: true` for a dry run).
+Single and batch rename require new labels of at most 64 characters, without edge whitespace,
+control characters or a leading `-`; names are never trimmed. Existing longer labels still
+resolve as targets. A terminal is required. TEE wallets are refused by `vault rename`.
 
 ## Quick start
 

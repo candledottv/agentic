@@ -248,6 +248,17 @@ describe("BE-355 T18: the help rows", () => {
   })
 })
 
+describe("vault batch rename help", () => {
+  test("the batch spelling, dry run and receipt are documented without offering prefix", () => {
+    const row = HELP.vault?.rows.find((row) => row.invocation.includes("rename --pairs-from"))
+    expect(row?.invocation).toContain("--dry-run")
+    expect(row?.description).toContain("one commit")
+    expect(row?.description).toContain("--json")
+    expect(documentedFlags(HELP.vault as Topic)).toContain("--dry-run")
+    expect(documentedFlags(HELP.vault as Topic)).not.toContain("--prefix")
+  })
+})
+
 describe("the vault send rows (spec 2026-10-09-cli-transfer-confirm-and-batch-rename-design.md, 1.6)", () => {
   test("transfer, fund and sweep state one verification and the typed confirm, and no last six", () => {
     for (const [word, prefix] of [

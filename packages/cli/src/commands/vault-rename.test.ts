@@ -89,6 +89,7 @@ async function cmd(
   let prompted = 0
   const deps = createTestDeps({
     fetch: unreachableFetch,
+    readFile: (path) => readFile(path, "utf8"),
     stdout,
     stderr,
     env: { CANDLE_CONFIG_DIR: fx.dir, HOME: fx.dir },
@@ -598,6 +599,161 @@ describe("the argument-shape refusals: exit 2, before any prompt", () => {
     expect(out.code).toBe(1)
     expect(out.prompted).toBe(0)
     expect(json(out).code).toBe("VAULT_UNLOCK_FAILED")
+  })
+})
+
+describe("BE-1145: batch rename", () => {
+  async function pairs(fx: Fixture, contents: string): Promise<string> {
+    const file = join(fx.dir, "rename.csv")
+    await writeFile(file, contents)
+    return file
+  }
+
+  test("a vault/external swap has one unlock, one generation increment and a complete JSON receipt", async () => {
+    const fx = await fixture()
+    await newKey(fx, "a")
+    expect((await cmd(fx, ["external", "new", "--label", "b"])).code).toBe(0)
+    const before = await readVaultJson(fx.path)
+    const beforeIndex = await indexOf(fx)
+    const file = await pairs(fx, "# swap\n\na b\nb a\n")
+    const out = await cmd(fx, ["vault", "rename", "--pairs-from", file, "--json"])
+    expect(out.code).toBe(0)
+    expect(out.prompted).toBe(1)
+    expect(json(out)).toEqual({
+      ok: true,
+      renamed: beforeIndex.entries.map((entry) => ({
+        id: entry.id,
+        address: entry.address,
+        role: entry.role,
+        from: entry.label,
+        to: entry.label === "a" ? "b" : "a",
+      })),
+    })
+    const after = await readVaultJson(fx.path)
+    expect(after.generation).toBe(before.generation + 1)
+    expect(after.version).toBe(before.version)
+    for (const field of ["root", "keys", "keyIds", "envelopes", "vaultId", "createdAt", "cipher", "format"] as const) {
+      expect(after[field], field).toEqual(before[field] as never)
+    }
+    const afterIndex = await indexOf(fx)
+    expect(afterIndex.hd).toEqual(beforeIndex.hd)
+    expect(afterIndex.entries).toEqual(
+      beforeIndex.entries.map((entry) => ({ ...entry, label: entry.label === "a" ? "b" : "a" })),
+    )
+  })
+
+  test("CSV resolves address and id; dry run prints the same plan and keeps the file byte-identical", async () => {
+    const fx = await fixture()
+    const address = await newKey(fx, "a")
+    await newKey(fx, "b")
+    const b = (await entries(fx))[1] as KeyEntry
+    const file = await pairs(fx, `note,to,from\nignored,"cold, one",${address}\nignored,cold two,${b.id}\n`)
+    const before = await bytes(fx)
+    for (const mode of [[], ["--json"]]) {
+      const out = await cmd(fx, ["vault", "rename", "--pairs-from", file, "--dry-run", ...mode])
+      expect(out.code).toBe(0)
+      expect(out.prompted).toBe(1)
+      expect(await bytes(fx)).toBe(before)
+      if (mode.length)
+        expect(json(out)).toMatchObject({
+          ok: true,
+          dryRun: true,
+          renamed: [
+            { from: "a", to: "cold, one" },
+            { from: "b", to: "cold two" },
+          ],
+        })
+      else expect(out.stdout).toContain("Dry run: nothing was written.")
+    }
+    expect((await cmd(fx, ["vault", "rename", "--pairs-from", file])).code).toBe(0)
+    expect((await entries(fx)).map((entry) => entry.label)).toEqual(["cold, one", "cold two"])
+  })
+
+  test("all post-unlock findings are reported together and no row lands", async () => {
+    const fx = await fixture()
+    const address = await newKey(fx, "a")
+    await newKey(fx, "outside")
+    await importLegacy(fx, [legacyEntry("hot", 0).entry])
+    const file = await pairs(fx, `a outside\n${address} other\nmissing cold\nhot renamed\n`)
+    const { body, out } = await refused(fx, ["vault", "rename", "--pairs-from", file])
+    expect(out.prompted).toBe(1)
+    expect(body.code).toBe("VAULT_RENAME_BATCH_REFUSED")
+    const findings = body.findings as { line: number; problem: string }[]
+    expect(findings).toHaveLength(4)
+    expect(findings.map((finding) => finding.line).sort()).toEqual([1, 2, 3, 4])
+    expect(JSON.stringify(findings)).toContain("outside the batch")
+    expect(JSON.stringify(findings)).toContain("TEE wallet")
+  })
+
+  test("all file findings refuse before unlock, including invalid labels and duplicates", async () => {
+    const fx = await fixture()
+    const file = await pairs(
+      fx,
+      `from,to\na, cold\na,-dash\nb,${"x".repeat(65)}\nc,same\nd,same\ne,bad\tname\nf,cold \n`,
+    )
+    const before = await bytes(fx)
+    const out = await cmd(fx, ["vault", "rename", "--pairs-from", file, "--json"])
+    expect(out.code).toBe(2)
+    expect(out.prompted).toBe(0)
+    expect(json(out).findings as unknown[]).toHaveLength(7)
+    expect(await bytes(fx)).toBe(before)
+  })
+
+  test("batch needs a terminal, refuses env passphrases and incompatible modes before any unlock", async () => {
+    const fx = await fixture()
+    const file = await pairs(fx, "a cold\n")
+    for (const deps of [
+      { isTTY: { stdin: false, stdout: false, stderr: false } },
+      { env: { CANDLE_KEYSTORE_PASSPHRASE: "refused" } },
+    ]) {
+      const out = await cmd(fx, ["vault", "rename", "--pairs-from", file, "--json"], { deps })
+      expect(out.code).toBe(1)
+      expect(out.prompted).toBe(0)
+    }
+    for (const args of [
+      ["a", "b", "--pairs-from", file],
+      ["--pairs-from", file, "--id", "id"],
+      ["a", "b", "--dry-run"],
+      ["--pairs-from", "~/file"],
+      ["--prefix", "a", "b"],
+    ]) {
+      const out = await cmd(fx, ["vault", "rename", ...args])
+      expect(out.code).toBe(2)
+      expect(out.prompted).toBe(0)
+    }
+  })
+
+  test("single and batch rename accept existing long labels as targets but reject invalid new labels", async () => {
+    const fx = await fixture()
+    const long = "x".repeat(100)
+    await newKey(fx, long)
+    const before = await bytes(fx)
+    for (const label of ["x".repeat(65), " cold", "cold "]) {
+      const out = await cmd(fx, ["vault", "rename", long, label])
+      expect(out.code).toBe(2)
+      expect(out.prompted).toBe(0)
+    }
+    expect(await bytes(fx)).toBe(before)
+    const file = await pairs(fx, `${long} ${"b".repeat(64)}\n`)
+    expect((await cmd(fx, ["vault", "rename", "--pairs-from", file])).code).toBe(0)
+    await newKey(fx, long)
+    expect((await cmd(fx, ["vault", "rename", long, "short"])).code).toBe(0)
+  })
+
+  test("a concurrent write still refuses the whole batch with VAULT_CHANGED", async () => {
+    const fx = await fixture()
+    await newKey(fx, "a")
+    await newKey(fx, "b")
+    const file = await pairs(fx, "a cold\nb other\n")
+    let other: Run | undefined
+    const out = await cmd(fx, ["vault", "rename", "--pairs-from", file, "--json"], {
+      beforeSecret: async () => {
+        if (other === undefined) other = await cmd(fx, ["vault", "rename", "b", "outside"])
+      },
+    })
+    expect(other?.code).toBe(0)
+    expect(json(out).code).toBe("VAULT_CHANGED")
+    expect((await entries(fx)).map((entry) => entry.label)).toEqual(["a", "outside"])
   })
 })
 

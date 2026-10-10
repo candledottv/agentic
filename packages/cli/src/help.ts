@@ -663,8 +663,14 @@ export const HELP: Record<string, Topic> = {
           "Derive the next Solana key (m/44'/501'/n'/0') or EVM key (m/44'/60'/n'/0/0), or n of them under one unlock; the name must be free",
       },
       {
-        invocation: "rename <label|address> <new-label> [--id <entry-id>]",
-        description: "Rename one key. The address, the derivation and the key blob do not change",
+        invocation: "rename <label|address|id> <new-label> [--id <entry-id>]",
+        description:
+          "Rename one vault or external key. New names: at most 64 characters, no edge whitespace. The address, the derivation and the key blob do not change",
+      },
+      {
+        invocation: "  rename --pairs-from <file> [--dry-run]",
+        description:
+          "Rename 1–256 vault or external keys under one unlock and one commit. All findings refuse the whole file; swaps are allowed. --dry-run prints the plan and writes nothing; --json returns the renamed rows",
       },
       { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
       {
@@ -764,7 +770,11 @@ export const HELP: Record<string, Topic> = {
       {
         invocation: "--pairs-from <file>",
         description:
-          "promote-batch: one '<label> <destination>' per line, or a CSV with label and sweep_to columns (max 256). Every row is checked against the whole set before anything is written, and each key is committed on its own, so an interrupted batch keeps what landed and re-running the same file resumes.",
+          "rename: one '<label|address|id> <new-label>' per line, or CSV columns from,to (1–256 rows; blank lines and # comments skipped). No trimming of names; use CSV for names with spaces. promote-batch: one '<label> <destination>' per line, or a CSV with label and sweep_to columns (max 256). Every row is checked against the whole set before anything is written, and each key is committed on its own, so an interrupted batch keeps what landed and re-running the same file resumes.",
+      },
+      {
+        invocation: "--dry-run",
+        description: "rename --pairs-from: unlock, check every row, print the plan, and write nothing",
       },
       {
         invocation: "--to-key <prefix|label>",
@@ -779,6 +789,7 @@ export const HELP: Record<string, Topic> = {
       "candle vault transfer 0x000000000000000000000000000000000000dEaD --amount 0.5 --asset USDG --from hood-cold",
       "candle vault list cn-s",
       "candle vault rename key-7 treasury-cold",
+      "candle vault rename --pairs-from ./rename-plan.csv --dry-run",
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
       "candle vault promote-batch --pairs-from ./promote-plan.csv",
       "candle vault promote-batch --pairs-from ./promote-plan.csv --to-key tr-01",

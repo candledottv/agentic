@@ -57,8 +57,11 @@ describe("validateLabel: the argument-shape rules for <new>", () => {
     expect(validateLabel("treasury-cold")).toBeUndefined()
   })
 
-  test("no length cap, and non-ASCII is fine", () => {
-    expect(validateLabel("x".repeat(500))).toBeUndefined()
+  test("new labels have a 64-character cap without trimming; non-ASCII and interior spaces are fine", () => {
+    expect(validateLabel("x".repeat(64))).toBeUndefined()
+    expect(validateLabel("x".repeat(65))).toBe("A key's label cannot exceed 64 characters.")
+    expect(validateLabel(" cold")).toBe("A key's label cannot begin or end with whitespace.")
+    expect(validateLabel("cold ")).toBe("A key's label cannot begin or end with whitespace.")
     expect(validateLabel("trésorerie")).toBeUndefined()
     expect(validateLabel("treasury cold")).toBeUndefined()
   })
@@ -135,5 +138,8 @@ describe("resolveRenameTarget: label first, then address, --id first of all", ()
 
   test("nothing matches", () => {
     expect(resolveRenameTarget(index, "ghost")).toEqual({ kind: "none" })
+  })
+  test("an id is also a positional handle, after label and address", () => {
+    expect(resolveRenameTarget(index, "i4")).toEqual({ kind: "found", entry: i4, by: "id" })
   })
 })

@@ -1319,6 +1319,7 @@ var init_errors = __esm(() => {
     "VAULT_LABEL_TAKEN",
     "VAULT_LABEL_UNCHANGED",
     "VAULT_RENAME_ROLE_REFUSED",
+    "VAULT_RENAME_BATCH_REFUSED",
     "PROMOTE_BATCH_REFUSED",
     "WALLET_LIMIT_REACHED",
     "TIER_REQUIRED",
@@ -63166,7 +63167,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.19";
+var CLI_VERSION = "0.11.20";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -64067,8 +64068,12 @@ var HELP = {
         description: "Derive the next Solana key (m/44'/501'/n'/0') or EVM key (m/44'/60'/n'/0/0), or n of them under one unlock; the name must be free"
       },
       {
-        invocation: "rename <label|address> <new-label> [--id <entry-id>]",
-        description: "Rename one key. The address, the derivation and the key blob do not change"
+        invocation: "rename <label|address|id> <new-label> [--id <entry-id>]",
+        description: "Rename one vault or external key. New names: at most 64 characters, no edge whitespace. The address, the derivation and the key blob do not change"
+      },
+      {
+        invocation: "  rename --pairs-from <file> [--dry-run]",
+        description: "Rename 1–256 vault or external keys under one unlock and one commit. All findings refuse the whole file; swaps are allowed. --dry-run prints the plan and writes nothing; --json returns the renamed rows"
       },
       { invocation: "phrase show", description: "Show the 24-word recovery phrase (terminal only)" },
       {
@@ -64149,7 +64154,11 @@ var HELP = {
       },
       {
         invocation: "--pairs-from <file>",
-        description: "promote-batch: one '<label> <destination>' per line, or a CSV with label and sweep_to columns (max 256). Every row is checked against the whole set before anything is written, and each key is committed on its own, so an interrupted batch keeps what landed and re-running the same file resumes."
+        description: "rename: one '<label|address|id> <new-label>' per line, or CSV columns from,to (1–256 rows; blank lines and # comments skipped). No trimming of names; use CSV for names with spaces. promote-batch: one '<label> <destination>' per line, or a CSV with label and sweep_to columns (max 256). Every row is checked against the whole set before anything is written, and each key is committed on its own, so an interrupted batch keeps what landed and re-running the same file resumes."
+      },
+      {
+        invocation: "--dry-run",
+        description: "rename --pairs-from: unlock, check every row, print the plan, and write nothing"
       },
       {
         invocation: "--to-key <prefix|label>",
@@ -64163,6 +64172,7 @@ var HELP = {
       "candle vault transfer 0x000000000000000000000000000000000000dEaD --amount 0.5 --asset USDG --from hood-cold",
       "candle vault list cn-s",
       "candle vault rename key-7 treasury-cold",
+      "candle vault rename --pairs-from ./rename-plan.csv --dry-run",
       "candle vault new-key --chain solana --labels-from ./replacement-names.txt",
       "candle vault promote-batch --pairs-from ./promote-plan.csv",
       "candle vault promote-batch --pairs-from ./promote-plan.csv --to-key tr-01",
@@ -81289,6 +81299,10 @@ function validateLabel(label) {
   if (label.startsWith("-")) {
     return `A key's label cannot begin with "-": it would be read as a flag everywhere a label is typed.`;
   }
+  if (label !== label.trim())
+    return "A key's label cannot begin or end with whitespace.";
+  if (label.length > 64)
+    return "A key's label cannot exceed 64 characters.";
   return;
 }
 function resolveRenameTarget(index, old, id) {
@@ -81306,30 +81320,165 @@ function resolveRenameTarget(index, old, id) {
     return { kind: "found", entry: byAddress[0], by: "address" };
   if (byAddress.length > 1)
     return { kind: "ambiguous", by: "address", candidates: byAddress };
+  const byId = index.entries.find((entry) => entry.id === old);
+  if (byId !== undefined)
+    return { kind: "found", entry: byId, by: "id" };
   return { kind: "none" };
+}
+
+// src/vault/rename-batch.ts
+var MAX_RENAME_BATCH = 256;
+function csvCells(text) {
+  const cells = [];
+  let cell = "";
+  let quoted = false;
+  let closed = false;
+  for (let i = 0;i < text.length; i++) {
+    const char = text[i];
+    if (quoted) {
+      if (char === '"') {
+        if (text[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else {
+          quoted = false;
+          closed = true;
+        }
+      } else
+        cell += char;
+    } else if (char === ",") {
+      cells.push(cell);
+      cell = "";
+      closed = false;
+    } else if (char === '"' && cell === "" && !closed)
+      quoted = true;
+    else if (char === '"' || closed)
+      return;
+    else
+      cell += char;
+  }
+  if (quoted)
+    return;
+  cells.push(cell);
+  return cells;
+}
+function parseRenamePairs(contents) {
+  const lines = contents.split(/\r?\n/).map((text, at) => ({ text, line: at + 1 })).filter(({ text }) => text.trim() !== "" && !/^\s*#/.test(text));
+  const rows = [];
+  const findings = [];
+  const header = csvCells(lines[0]?.text ?? "")?.map((cell) => cell.trim()) ?? [];
+  const csv = header.length > 1 && (header.includes("from") || header.includes("to"));
+  if (csv && (header.filter((name2) => name2 === "from").length !== 1 || header.filter((name2) => name2 === "to").length !== 1)) {
+    return {
+      rows,
+      findings: [{ line: lines[0]?.line ?? 0, problem: "A CSV needs exactly one from and one to column." }]
+    };
+  }
+  const data = csv ? lines.slice(1) : lines;
+  if (data.length < 1 || data.length > MAX_RENAME_BATCH) {
+    findings.push({ line: 0, problem: `A rename file must hold 1 to ${MAX_RENAME_BATCH} rows; found ${data.length}.` });
+  }
+  for (const { text, line } of data) {
+    let from;
+    let to;
+    if (csv) {
+      const cells = csvCells(text);
+      if (cells === undefined || cells.length !== header.length) {
+        findings.push({ line, problem: "Malformed CSV row or field count does not match the header." });
+        continue;
+      }
+      from = cells[header.indexOf("from")];
+      to = cells[header.indexOf("to")];
+    } else {
+      const match = /^(\S+)[ \t]+(\S+)([ \t]*)$/.exec(text);
+      if (match !== null)
+        [from, to] = [match[1], `${match[2]}${match[3]}`];
+    }
+    if (from === undefined || from === "" || to === undefined) {
+      findings.push({ line, problem: 'A row needs "<label|address|id> <new-label>" (CSV columns: from,to).' });
+      continue;
+    }
+    rows.push({ line, from, to });
+    const invalid = validateLabel(to);
+    if (invalid !== undefined)
+      findings.push({ line, problem: invalid });
+  }
+  for (const field of ["from", "to"]) {
+    const seen = new Map;
+    for (const row of rows) {
+      const earlier = seen.get(row[field]);
+      if (earlier !== undefined)
+        findings.push({ line: row.line, problem: `Duplicate ${field} ${row[field]} (line ${earlier}).` });
+      else
+        seen.set(row[field], row.line);
+    }
+  }
+  return { rows, findings };
+}
+function planBatchRename(index, rows) {
+  const plan = [];
+  const findings = [];
+  const seen = new Map;
+  for (const row of rows) {
+    const match = resolveRenameTarget(index, row.from);
+    if (match.kind !== "found") {
+      findings.push({
+        line: row.line,
+        problem: match.kind === "none" ? `No key matches ${row.from}.` : `${row.from} is ambiguous; use an id. Candidates: ${match.candidates.map((entry2) => `${entry2.address} (${entry2.id})`).join(", ")}.`
+      });
+      continue;
+    }
+    const entry = match.entry;
+    const earlier = seen.get(entry.id);
+    if (earlier !== undefined)
+      findings.push({ line: row.line, problem: `Same key as line ${earlier}, named by another handle.` });
+    else
+      seen.set(entry.id, row.line);
+    if (entry.role !== "vault" && entry.role !== "external") {
+      findings.push({
+        line: row.line,
+        problem: `${entry.label} is a TEE wallet; vault rename only changes vault or external keys.`
+      });
+    }
+    if (entry.label === row.to)
+      findings.push({ line: row.line, problem: `${row.to} is already this key's label.` });
+    plan.push({ ...row, entry });
+  }
+  const targets = new Set(plan.map(({ entry }) => entry.id));
+  for (const row of plan) {
+    if (index.entries.some((entry) => entry.label === row.to && !targets.has(entry.id))) {
+      findings.push({ line: row.line, problem: `New name ${row.to} is taken by a key outside the batch.` });
+    }
+  }
+  return { plan, findings };
 }
 
 // src/commands/vault-rename.ts
 init_store();
 init_vault_support();
-var RENAME_USAGE = "Usage: candle vault rename <label|address> <new-label> [--id <entry-id>]";
+var RENAME_USAGE = "Usage: candle vault rename <label|address|id> <new-label> [--id <entry-id>] | --pairs-from <file> [--dry-run]";
 var SAME_STRING_LINE = "The two arguments are the same string; nothing to do.";
 async function vaultRename(args, ctx) {
   const parsed = parseArgs(args, {
-    valueFlags: ["--keystore", "--id"],
-    booleanFlags: ["--accept-older-copy"],
-    pathFlags: ["--keystore"]
+    valueFlags: ["--keystore", "--id", "--pairs-from"],
+    booleanFlags: ["--accept-older-copy", "--dry-run"],
+    pathFlags: ["--keystore", "--pairs-from"]
   });
   if ("error" in parsed)
     return usage(ctx, parsed.error);
   const [old, next, extra] = parsed.positionals;
-  if (old === undefined || next === undefined || extra !== undefined)
+  const pairsFile = parsed.values["--pairs-from"];
+  const batch = pairsFile !== undefined;
+  if (batch ? parsed.positionals.length > 0 || parsed.values["--id"] !== undefined : old === undefined || next === undefined || extra !== undefined || parsed.booleans.has("--dry-run")) {
     return usage(ctx, RENAME_USAGE);
-  const invalid = validateLabel(next);
-  if (invalid !== undefined)
-    return usage(ctx, invalid);
-  if (old === next)
-    return usage(ctx, SAME_STRING_LINE);
+  }
+  if (!batch && next !== undefined) {
+    const invalid = validateLabel(next);
+    if (invalid !== undefined)
+      return usage(ctx, invalid);
+    if (old === next)
+      return usage(ctx, SAME_STRING_LINE);
+  }
   const id = parsed.values["--id"];
   if (!refuseEnvPassphrase(ctx))
     return 1;
@@ -81340,12 +81489,60 @@ async function vaultRename(args, ctx) {
   if ("error" in resolvedVault)
     return usage(ctx, resolvedVault.error);
   const path = resolvedVault.path;
+  let rows = [];
+  if (pairsFile !== undefined) {
+    let contents;
+    try {
+      contents = await deps.readFile(pairsFile);
+    } catch (error) {
+      return usage(ctx, `Could not read --pairs-from: ${error instanceof Error ? error.message : error}`);
+    }
+    const parsedFile = parseRenamePairs(contents);
+    if (parsedFile.findings.length > 0)
+      return batchRefusal(ctx, parsedFile.findings, 2);
+    rows = parsedFile.rows;
+  }
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault);
     const opened = await unlockInteractively(ctx, path, raw, {
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy")
     });
     const vault = hold(opened.vault);
+    if (batch) {
+      const { plan, findings } = planBatchRename(vault.index, rows);
+      if (findings.length > 0)
+        return batchRefusal(ctx, findings, 1);
+      const renamed = plan.map(({ entry: entry2, to }) => ({
+        id: entry2.id,
+        address: entry2.address,
+        role: entry2.role,
+        from: entry2.label,
+        to
+      }));
+      const dryRun = parsed.booleans.has("--dry-run");
+      if (!dryRun) {
+        const names = new Map(renamed.map(({ id: id2, to }) => [id2, to]));
+        await commitVault(vault, {
+          index: {
+            hd: vault.index.hd,
+            entries: vault.index.entries.map((entry2) => names.has(entry2.id) ? { ...entry2, label: names.get(entry2.id) } : entry2)
+          }
+        }, deps);
+      }
+      if (ctx.json)
+        writeJson(deps, { ok: true, renamed, ...dryRun ? { dryRun: true } : {} });
+      else {
+        deps.stdout.write(dryRun ? `Dry run: nothing was written.
+` : `Renamed ${renamed.length} keys in one commit.
+`);
+        for (const row of renamed)
+          deps.stdout.write(`  ${row.from} -> ${row.to}  ${row.address} (${row.id}, ${row.role})
+`);
+      }
+      return 0;
+    }
+    if (old === undefined || next === undefined)
+      return usage(ctx, RENAME_USAGE);
     const entry = resolveTarget(vault.index, old, id);
     if (entry.role === "tee-wallet") {
       throw new VaultError("VAULT_RENAME_ROLE_REFUSED", `${entry.label} is a TEE wallet. Its label was sent to Candle when it was enabled and \`candle wallets\` lists that copy, so renaming it here would give one wallet two names and nothing reconciles them.`, {
@@ -81385,6 +81582,19 @@ async function vaultRename(args, ctx) {
 `);
     return 0;
   });
+}
+function batchRefusal(ctx, findings, exit) {
+  const message = "Batch rename refused. Nothing was written.";
+  if (ctx.json)
+    writeJson(ctx.deps, { ok: false, code: "VAULT_RENAME_BATCH_REFUSED", message, findings });
+  else {
+    ctx.deps.stderr.write(`${message}
+`);
+    for (const finding of findings)
+      ctx.deps.stderr.write(`  ${finding.line === 0 ? "file" : `line ${finding.line}`}: ${finding.problem}
+`);
+  }
+  return exit;
 }
 function resolveTarget(index, old, id) {
   const match = resolveRenameTarget(index, old, id);

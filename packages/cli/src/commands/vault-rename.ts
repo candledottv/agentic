@@ -33,6 +33,7 @@ import type { CommandContext } from "../deps"
 import { VaultError } from "../vault/errors"
 import type { KeyEntry } from "../vault/format"
 import { entriesWithLabel, resolveRenameTarget, validateLabel } from "../vault/labels"
+import { parseRenamePairs, planBatchRename, type RenameFinding, type RenamePair } from "../vault/rename-batch"
 import { commitVault } from "../vault/store"
 import {
   refuseEnvPassphrase,
@@ -45,26 +46,37 @@ import {
   writeJson,
 } from "./vault-support"
 
-export const RENAME_USAGE = "Usage: candle vault rename <label|address> <new-label> [--id <entry-id>]"
+export const RENAME_USAGE =
+  "Usage: candle vault rename <label|address|id> <new-label> [--id <entry-id>] | --pairs-from <file> [--dry-run]"
 
 /** The pre-unlock refusal for `rename X X`: the raw positionals, compared as strings (D11). */
 export const SAME_STRING_LINE = "The two arguments are the same string; nothing to do."
 
 export async function vaultRename(args: string[], ctx: CommandContext): Promise<number> {
   const parsed = parseArgs(args, {
-    valueFlags: ["--keystore", "--id"],
-    booleanFlags: ["--accept-older-copy"],
-    pathFlags: ["--keystore"],
+    valueFlags: ["--keystore", "--id", "--pairs-from"],
+    booleanFlags: ["--accept-older-copy", "--dry-run"],
+    pathFlags: ["--keystore", "--pairs-from"],
   })
   if ("error" in parsed) return usage(ctx, parsed.error)
   const [old, next, extra] = parsed.positionals
-  if (old === undefined || next === undefined || extra !== undefined) return usage(ctx, RENAME_USAGE)
+  const pairsFile = parsed.values["--pairs-from"]
+  const batch = pairsFile !== undefined
+  if (
+    batch
+      ? parsed.positionals.length > 0 || parsed.values["--id"] !== undefined
+      : old === undefined || next === undefined || extra !== undefined || parsed.booleans.has("--dry-run")
+  ) {
+    return usage(ctx, RENAME_USAGE)
+  }
 
   // Argument shape, decided before the unlock (D11). None of these resolves `<old>`: the vault is
   // not opened, so nothing is written and `generation` is not bumped.
-  const invalid = validateLabel(next)
-  if (invalid !== undefined) return usage(ctx, invalid)
-  if (old === next) return usage(ctx, SAME_STRING_LINE)
+  if (!batch && next !== undefined) {
+    const invalid = validateLabel(next)
+    if (invalid !== undefined) return usage(ctx, invalid)
+    if (old === next) return usage(ctx, SAME_STRING_LINE)
+  }
   const id = parsed.values["--id"]
 
   if (!refuseEnvPassphrase(ctx)) return 1
@@ -74,6 +86,18 @@ export async function vaultRename(args: string[], ctx: CommandContext): Promise<
   const resolvedVault = vaultPathFor(ctx, parsed)
   if ("error" in resolvedVault) return usage(ctx, resolvedVault.error)
   const path = resolvedVault.path
+  let rows: RenamePair[] = []
+  if (pairsFile !== undefined) {
+    let contents: string
+    try {
+      contents = await deps.readFile(pairsFile)
+    } catch (error) {
+      return usage(ctx, `Could not read --pairs-from: ${error instanceof Error ? error.message : error}`)
+    }
+    const parsedFile = parseRenamePairs(contents)
+    if (parsedFile.findings.length > 0) return batchRefusal(ctx, parsedFile.findings, 2)
+    rows = parsedFile.rows
+  }
 
   return runVaultCommand(ctx, async ({ hold }) => {
     const raw = await requireVaultRaw(ctx, resolvedVault)
@@ -81,6 +105,46 @@ export async function vaultRename(args: string[], ctx: CommandContext): Promise<
       acceptOlderCopy: parsed.booleans.has("--accept-older-copy"),
     })
     const vault = hold(opened.vault)
+
+    if (batch) {
+      const { plan, findings } = planBatchRename(vault.index, rows)
+      if (findings.length > 0) return batchRefusal(ctx, findings, 1)
+      const renamed = plan.map(({ entry, to }) => ({
+        id: entry.id,
+        address: entry.address,
+        role: entry.role,
+        from: entry.label,
+        to,
+      }))
+      const dryRun = parsed.booleans.has("--dry-run")
+      if (!dryRun) {
+        const names = new Map(renamed.map(({ id, to }) => [id, to]))
+        await commitVault(
+          vault,
+          {
+            index: {
+              hd: vault.index.hd,
+              entries: vault.index.entries.map((entry) =>
+                names.has(entry.id) ? { ...entry, label: names.get(entry.id) as string } : entry,
+              ),
+            },
+          },
+          deps,
+        )
+      }
+      if (ctx.json) writeJson(deps, { ok: true, renamed, ...(dryRun ? { dryRun: true } : {}) })
+      else {
+        deps.stdout.write(
+          dryRun ? "Dry run: nothing was written.\n" : `Renamed ${renamed.length} keys in one commit.\n`,
+        )
+        for (const row of renamed)
+          deps.stdout.write(`  ${row.from} -> ${row.to}  ${row.address} (${row.id}, ${row.role})\n`)
+      }
+      return 0
+    }
+
+    // The single-command shape was checked before unlock.
+    if (old === undefined || next === undefined) return usage(ctx, RENAME_USAGE)
 
     const entry = resolveTarget(vault.index, old, id)
 
@@ -144,6 +208,17 @@ export async function vaultRename(args: string[], ctx: CommandContext): Promise<
     deps.stdout.write(`  unchanged   address, derivation path, key blob, every envelope\n`)
     return 0
   })
+}
+
+function batchRefusal(ctx: CommandContext, findings: RenameFinding[], exit: 1 | 2): number {
+  const message = "Batch rename refused. Nothing was written."
+  if (ctx.json) writeJson(ctx.deps, { ok: false, code: "VAULT_RENAME_BATCH_REFUSED", message, findings })
+  else {
+    ctx.deps.stderr.write(`${message}\n`)
+    for (const finding of findings)
+      ctx.deps.stderr.write(`  ${finding.line === 0 ? "file" : `line ${finding.line}`}: ${finding.problem}\n`)
+  }
+  return exit
 }
 
 /**
