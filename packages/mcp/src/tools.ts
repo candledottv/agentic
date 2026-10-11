@@ -452,7 +452,11 @@ const feedLimit = z.preprocess(
 )
 
 const getFeedShape = {
-  bucket: z.enum(["new", "graduated", "onfire", "bluechip"]),
+  bucket: z
+    .enum(["new", "graduated", "onfire", "bluechip", "finalstretch"])
+    .describe(
+      "finalstretch: pump.fun tokens at 50% or more of their bonding curve, most complete first; no delta, read the whole list. Where it is not switched on it is refused as an unknown bucket: use another bucket. bluechip is deprecated and will be removed.",
+    ),
   chain: z.string().optional().describe("Optional chain filter"),
   where: z
     .string()
@@ -763,7 +767,9 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     {
       title: "Get a token feed",
       description:
-        "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip. Reads " +
+        "Read one of the trade page's public feeds: new, graduated, onfire, or finalstretch " +
+        "(bluechip still answers, is deprecated, and will be removed; where finalstretch is not " +
+        "switched on it is refused as an unknown bucket, so use another bucket). Reads " +
         "only; moves nothing. No key needed. Start here when nobody has named a token.\n\n" +
         "This indexes the WIDER market, not just Candle's own launches. Rows carry launchpad and " +
         "discovery flags (jupiterOk, externalTradeable, paperDiscoveryOk, organic0LiveOk). " +

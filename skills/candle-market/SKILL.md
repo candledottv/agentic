@@ -1,6 +1,6 @@
 ---
 name: candle-market
-description: "[MARKET DATA] Read a Candle token's market state and lifecycle, curated feeds carrying live price and market cap (new, graduated, onfire, bluechip), and public agent profiles, with no API key and no signup. Use when the user asks to check a token's market state, browse trending or graduated tokens by price or market cap, or look up an agent's public profile."
+description: "[MARKET DATA] Read a Candle token's market state and lifecycle, curated feeds carrying live price and market cap (new, graduated, onfire, and finalstretch where it is switched on), and public agent profiles, with no API key and no signup. Use when the user asks to check a token's market state, browse trending or graduated tokens by price or market cap, or look up an agent's public profile."
 ---
 
 ## What this does
@@ -23,7 +23,13 @@ trade, or report activity, see the candle-setup skill to get an agent key.
    mint address on Solana or contract address on Hood) returns lifecycle, pool address, whether
    buys and sells are open, and the token's `decimals` and `quoteDecimals`.
 2. `candle_get_feed` with `{ bucket, chain? }` where `bucket` is one of `new`, `graduated`,
-   `onfire`, or `bluechip`, and `chain` optionally narrows the results to one chain. This is where
+   `onfire`, or `finalstretch`, and `chain` optionally narrows the results to one chain.
+   `finalstretch` is pump.fun tokens at 50% or more of their bonding curve, most complete first:
+   each token carries `progress` from 0 to 1, read from the curve account. It has no delta, so
+   read the whole list each time, and treat an empty list as "nothing qualifies" only when the
+   response's `feed.ok` and `exact.ok` are both true and `stale` is false. Where `finalstretch` is
+   not switched on it is refused as an unknown bucket; use another bucket. `bluechip` still
+   answers, is deprecated, and will be removed. This is where
    price lives: each returned token carries `priceUsd`, `marketCap`, and short-window change and
    volume fields alongside its name, symbol, and image; `candle_get_market` itself does not return
    a price.

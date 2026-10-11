@@ -66,7 +66,12 @@ export type Chain = "solana" | "hood"
  * otherwise, so client code needs no gate of its own.
  */
 export type LaunchTier = "open" | "exclusive" | "test-open" | "test-exclusive"
-export type FeedBucket = "new" | "graduated" | "onfire" | "bluechip"
+/**
+ * `finalstretch`: pump.fun tokens at 50% or more of their bonding curve, most complete first; no delta, read the whole list.
+ * It exists only where the API has it switched on; elsewhere it is refused like an unknown bucket.
+ * `bluechip` is deprecated and will be removed.
+ */
+export type FeedBucket = "new" | "graduated" | "onfire" | "bluechip" | "finalstretch"
 
 export interface CandleClientOptions {
   /** Base URL of the Candle API, e.g. "https://api.alpha.candle.tv" (the alpha deployment). Trailing slashes are trimmed. */
@@ -431,6 +436,19 @@ export interface FeedResult {
   success: true
   bucket: FeedBucket
   tokens: FeedToken[]
+  cursor?: string
+  matched?: number
+  scanned?: number
+  warming?: boolean
+  /** True on every `finalstretch` read: replace what you hold, there is no delta. */
+  reset?: boolean
+  /** `finalstretch` only. When the list was read; null before the first read. */
+  asOf?: string | null
+  /** `finalstretch` only. True when the list is old: an empty `tokens` then means nothing is known. */
+  stale?: boolean
+  /** `finalstretch` only. An empty `tokens` means "nothing qualifies" only while `feed.ok`, `exact.ok` and `!stale`. */
+  feed?: { ok: boolean; lastCurveTradeAt: string | null; ageS: number | null }
+  exact?: { ok: boolean; lastReadAt: string | null }
 }
 
 /** GET /api/v1/verify/:chain/:mint. Branch on `candleLaunched`; unknown mints are not 404s. */
@@ -4250,7 +4268,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.4.8"
+export const SDK_VERSION = "0.4.9"
 
 let sdkUpdateWarned = false
 

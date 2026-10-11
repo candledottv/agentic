@@ -61132,7 +61132,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.9";
+var SERVER_VERSION = "0.10.10";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -62689,7 +62689,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   }, async (args) => callAndRelay("candle_token_forensics", args, getConfig(), doFetch));
   register("candle_get_feed", {
     title: "Get a token feed",
-    description: "Read one of the trade page's public feeds: new, graduated, onfire, or bluechip. Reads " + `only; moves nothing. No key needed. Start here when nobody has named a token.
+    description: "Read one of the trade page's public feeds: new, graduated, onfire, or finalstretch " + "(bluechip still answers, is deprecated, and will be removed; where finalstretch is not " + "switched on it is refused as an unknown bucket, so use another bucket). Reads " + `only; moves nothing. No key needed. Start here when nobody has named a token.
 
 ` + "This indexes the WIDER market, not just Candle's own launches. Rows carry launchpad and " + "discovery flags (jupiterOk, externalTradeable, paperDiscoveryOk, organic0LiveOk). " + "candle_get_market resolves Jupiter-indexed rows; do not hard-skip organicScore=0 on live " + "when organic0LiveOk is true. liquidityDrawdownBps is a signal only — nothing here blocks " + `resolve or trade on drain; filter with where if you want to avoid draining pools.
 
@@ -62967,7 +62967,7 @@ var init_tools = __esm(() => {
     return /^[0-9]+$/.test(trimmed) ? Number(trimmed) : value;
   }, exports_external.number({ invalid_type_error: FEED_LIMIT_MESSAGE }).int(FEED_LIMIT_MESSAGE).min(1, FEED_LIMIT_MESSAGE).max(200, FEED_LIMIT_MESSAGE).optional().describe("Max rows to return, an integer from 1 to 200."));
   getFeedShape = {
-    bucket: exports_external.enum(["new", "graduated", "onfire", "bluechip"]),
+    bucket: exports_external.enum(["new", "graduated", "onfire", "bluechip", "finalstretch"]).describe("finalstretch: pump.fun tokens at 50% or more of their bonding curve, most complete first; no delta, read the whole list. Where it is not switched on it is refused as an unknown bucket: use another bucket. bluechip is deprecated and will be removed."),
     chain: exports_external.string().optional().describe("Optional chain filter"),
     where: exports_external.string().optional().describe('JSON filter, e.g. {"marketCap":{"lt":150000},"liquidityUsd":{"gte":25000},"mintAuthorityDisabled":{"eq":true}}. ' + "Comparators: eq, ne, lt, lte, gt, gte, present. An ABSENT field satisfies none of them except " + "present:false, so a filter for mintAuthorityDisabled eq true returns only tokens that actually say " + "true, never ones where the flag is simply missing. Use present:false to find the tokens with no data."),
     sort: exports_external.string().optional().describe('Sort as "field" or "field:asc" / "field:desc". A bare field means desc.'),
@@ -63073,7 +63073,7 @@ var init_server2 = __esm(() => {
 
 START HERE — six tools need NO credential. Call these first to confirm the server is wired before asking anyone for anything:
   candle_get_market       price, market cap, volume, curve state for one token
-  candle_get_feed         the roster: hot streak, new pairs, graduated, blue chip
+  candle_get_feed         the roster: hot streak, new pairs, graduated, final stretch, blue chip (final stretch is refused where it is not switched on; use another bucket)
   candle_resolve_token    a ticker or partial name -> mint address + chain
   candle_token_forensics  call this before quoting or buying. Returns the on-chain developer (never a launchpad shared authority; deployer.attribution names the launchpad or issuer when no developer is on chain), their went-to-zero rate and last coins, who bought in the deploy window (strangers in the same slot are the bundle signal), same-funder insider share, same-funder cluster, and safety.summary with six sourced flags. Refuse an unprompted buy when flagged; incomplete or unknown is not clearance. launch.deployerLaunches is an inclusive informational count, never a warning
   candle_get_agent_profile  your own tier, caps and verified activity
@@ -63167,7 +63167,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.21";
+var CLI_VERSION = "0.11.22";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
