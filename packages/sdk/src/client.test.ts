@@ -724,6 +724,66 @@ describe("request shapes", () => {
     expect(result.complete).toBeUndefined()
   })
 
+  test("FE-438 fees.list: GET /api/v1/agent/fees, cursor and limit in the query", async () => {
+    const body = {
+      success: true,
+      page: [
+        {
+          mint: "Mint111",
+          chain: "solana",
+          recipient: "Wallet111",
+          claimableAmounts: [
+            { symbol: "SOL", mint: "So11111111111111111111111111111111111111112", decimals: 9, amountRaw: "5" },
+          ],
+          claimable: true,
+        },
+      ],
+      isDone: false,
+      continueCursor: "c1",
+    }
+    const { client, calls } = makeClient(KEYED, [json(200, body), json(200, body)])
+    expect(await client.fees.list()).toEqual(body as never)
+    expect(calls[0]).toEqual({
+      url: "https://api.test/api/v1/agent/fees",
+      method: "GET",
+      headers: { "x-api-key": "cndl_test_key" },
+    })
+    await client.fees.list({ cursor: "c1", limit: 5 })
+    expect(calls[1]?.url).toBe("https://api.test/api/v1/agent/fees?cursor=c1&limit=5")
+  })
+
+  test("FE-438 fees.claim: POSTs dryRun to the mint's claim route and sends no destination", async () => {
+    const body = {
+      success: true,
+      mint: "Mint/1",
+      chain: "solana",
+      dryRun: true,
+      recipient: "Wallet111",
+      claimed: [],
+      remaining: [],
+    }
+    const { client, calls } = makeClient(KEYED, [json(200, body), json(200, body)])
+    expect(await client.fees.claim("Mint/1", { dryRun: true })).toEqual(body as never)
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/agent/fees/Mint%2F1/claim")
+    expect(calls[0]?.method).toBe("POST")
+    expect(JSON.parse(String(calls[0]?.body))).toEqual({ dryRun: true })
+    await client.fees.claim("Mint111")
+    expect(JSON.parse(String(calls[1]?.body))).toEqual({ dryRun: false })
+  })
+
+  test("FE-438 fees.claim: a switched-off claim is LAUNCH_DISABLED", async () => {
+    const { client } = makeClient(KEYED, [envelope(503, "LAUNCH_DISABLED")])
+    const error = await client.fees.claim("Mint111").catch((caught: unknown) => caught)
+    expect(error).toBeInstanceOf(CandleApiError)
+    expect((error as CandleApiError).code).toBe("LAUNCH_DISABLED")
+  })
+
+  test("FE-438 fees: both need an API key", async () => {
+    const { client } = makeClient({ apiUrl: "https://api.test" } as never, [])
+    await expect(client.fees.list()).rejects.toThrow("fees.list()")
+    await expect(client.fees.claim("Mint111")).rejects.toThrow("fees.claim()")
+  })
+
   test("swap: a cross-chain fill reports every leg's hash and its status URLs", async () => {
     const payload = {
       hashes: ["solanaSig", "0xhoodTx"],

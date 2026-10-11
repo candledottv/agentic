@@ -1960,6 +1960,97 @@ export interface CandleWallets {
   selfBalances(opts?: SelfBalancesOptions): Promise<SelfBalancesResult>
 }
 
+/** Why a token's creator fees are not claimable by this key (FE-438; `GET /agent/fees`). */
+export type AgentFeeReason =
+  | "below_dust"
+  | "wallet_not_signable"
+  | "delegation_off"
+  | "embedded_wallet_not_permitted"
+  | "not_recipient"
+  | "insufficient_gas"
+
+/** One asset's raw amount, from direct chain reads. `symbol` is empty when nothing names the asset. */
+export interface AgentFeeAmount {
+  symbol: string
+  mint: string
+  decimals: number
+  amountRaw: string
+}
+
+/** One launched token in `fees.list()`. No earned or paid-out totals: those are not on this route. */
+export interface AgentFeeToken {
+  mint: string
+  chain: "solana" | "hood"
+  symbol?: string | null
+  name?: string | null
+  /** The wallet fixed at launch. Null when the token has no vault or splitter. */
+  recipient: string | null
+  claimableAmounts: AgentFeeAmount[]
+  claimable: boolean
+  reason?: AgentFeeReason
+  /** The chain read for this token failed; its amounts are unknown, not zero. */
+  unreadable?: true
+}
+
+export interface AgentFeesOptions {
+  /** The previous page's `continueCursor`, verbatim. */
+  cursor?: string
+  /** Tokens per page, 1 to 50 (default 20). Each one costs chain reads. */
+  limit?: number
+}
+
+/** `GET /api/v1/agent/fees` response: one page of the account's launched tokens. */
+export interface AgentFeesPage {
+  success: true
+  page: AgentFeeToken[]
+  isDone: boolean
+  continueCursor: string | null
+}
+
+export interface AgentFeeClaimOptions {
+  /** Run every check and read the amounts, but send nothing and write nothing. */
+  dryRun?: boolean
+}
+
+/** `POST /api/v1/agent/fees/{mint}/claim` response. */
+export interface AgentFeeClaimResult {
+  success: true
+  mint: string
+  chain: "solana" | "hood"
+  dryRun: boolean
+  /** The wallet fixed at launch. The request has no destination field. */
+  recipient: string
+  /** What was claimed; under `dryRun`, what would be, with `txHash: null`. */
+  claimed: (AgentFeeAmount & { txHash: string | null })[]
+  /** What is still claimable, in the same shape as `fees.list()`. */
+  remaining: AgentFeeAmount[]
+  /** `dryRun` only. */
+  claimable?: boolean
+  /** `dryRun` only: why a real claim would be refused. */
+  reason?: AgentFeeReason
+  /** A real claim only: any leg or collect that failed. A 200 can be partial. */
+  warnings?: string[]
+}
+
+/** `client.fees`: the creator fees this account's launched tokens can pay (FE-438). */
+export interface CandleFees {
+  /**
+   * Lists the tokens launched by the account's own wallets, with what each could pay now
+   * (GET /api/v1/agent/fees). Needs `account:read` (an older key reads with `launch:write`).
+   * Amounts are raw units from direct chain reads. A token that cannot be claimed carries a `reason`.
+   */
+  list(opts?: AgentFeesOptions): Promise<AgentFeesPage>
+  /**
+   * Claims one token's creator fees to the wallet fixed at launch
+   * (POST /api/v1/agent/fees/{mint}/claim). Needs `launch:write`. There is no destination
+   * argument: the money goes to the recipient the token named at launch. The server leaves this
+   * off unless it sets AGENT_FEE_CLAIM_ENABLED; while off, every call, a dry run included, throws
+   * `LAUNCH_DISABLED` (503). Candle signs with the embedded wallet, which pays the network fee.
+   * `dryRun: true` sends nothing.
+   */
+  claim(mint: string, opts?: AgentFeeClaimOptions): Promise<AgentFeeClaimResult>
+}
+
 /** One token account a close would reclaim (BE-418). `lamports` is its rent, returned to the wallet. */
 export interface EmptyTokenAccount {
   account: string
@@ -2498,6 +2589,24 @@ export class CandleClient {
       if (opts.cursor !== undefined) params.set("cursor", opts.cursor)
       const query = params.size ? `?${params}` : ""
       return this.requestJson<SelfBalancesResult>("GET", `/api/v1/agent/wallets/self/balances${query}`)
+    },
+  }
+
+  /** The creator fees this account's launched tokens can pay, and the claim (FE-438). */
+  readonly fees: CandleFees = {
+    list: async (opts = {}) => {
+      this.requireKey("fees.list()")
+      const params = new URLSearchParams()
+      if (opts.cursor !== undefined) params.set("cursor", opts.cursor)
+      if (opts.limit !== undefined) params.set("limit", String(opts.limit))
+      const query = params.size ? `?${params}` : ""
+      return this.requestJson<AgentFeesPage>("GET", `/api/v1/agent/fees${query}`)
+    },
+    claim: async (mint, opts = {}) => {
+      this.requireKey("fees.claim()")
+      return this.requestJson<AgentFeeClaimResult>("POST", `/api/v1/agent/fees/${encodeURIComponent(mint)}/claim`, {
+        dryRun: opts.dryRun === true,
+      })
     },
   }
 
@@ -4268,7 +4377,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.4.9"
+export const SDK_VERSION = "0.4.10"
 
 let sdkUpdateWarned = false
 

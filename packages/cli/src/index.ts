@@ -27,6 +27,7 @@ import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { completion, completionBash, completionFish, completionZsh } from "./commands/completion"
 import { doctor } from "./commands/doctor"
 import { externalList, externalNew, externalSweep } from "./commands/external"
+import { feesClaim, feesList } from "./commands/fees"
 import { help } from "./commands/help"
 import { keysSigner, teeSigner } from "./commands/key-signer"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
@@ -174,6 +175,9 @@ const COMMANDS: Record<string, CommandRoute> = {
   // per-key request (see commands/pnl.ts).
   pnl: { bare: pnl },
   portfolio: { bare: portfolio },
+  // FE-438: the creator fees this account's launched tokens can pay, and the claim to the wallet
+  // fixed at launch. Candle signs; this machine sends a mint and a dry-run flag.
+  fees: { bare: feesList, subcommands: { claim: feesClaim } },
   // BE-723 (Plans v2 P6): the served plan table. Public, so it reads and sends no credential.
   plans: { bare: plans },
   // Ember Phase 3 PR D (BE-315, R4): Meteora DAMM v2 liquidity from a TEE wallet, on the agent

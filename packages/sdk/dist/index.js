@@ -973,6 +973,24 @@ class CandleClient {
       return this.requestJson("GET", `/api/v1/agent/wallets/self/balances${query}`);
     }
   };
+  fees = {
+    list: async (opts = {}) => {
+      this.requireKey("fees.list()");
+      const params = new URLSearchParams;
+      if (opts.cursor !== undefined)
+        params.set("cursor", opts.cursor);
+      if (opts.limit !== undefined)
+        params.set("limit", String(opts.limit));
+      const query = params.size ? `?${params}` : "";
+      return this.requestJson("GET", `/api/v1/agent/fees${query}`);
+    },
+    claim: async (mint, opts = {}) => {
+      this.requireKey("fees.claim()");
+      return this.requestJson("POST", `/api/v1/agent/fees/${encodeURIComponent(mint)}/claim`, {
+        dryRun: opts.dryRun === true
+      });
+    }
+  };
   constructor(opts) {
     assertTransportSecurity(opts.apiUrl, opts.allowInsecureHttp === true);
     this.apiUrl = opts.apiUrl.replace(/\/+$/, "");
@@ -1945,7 +1963,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.4.9";
+var SDK_VERSION = "0.4.10";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

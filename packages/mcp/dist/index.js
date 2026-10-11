@@ -109,7 +109,7 @@ function percentOfBalance(balanceRaw, percent) {
 import { randomUUID } from "node:crypto";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.10";
+var SERVER_VERSION = "0.10.11";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -1450,6 +1450,8 @@ var TOOL_NAMES = [
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation",
+  "candle_get_fees",
+  "candle_claim_fees",
   "candle_perps_setup",
   "candle_perps_open",
   "candle_perps_close",
@@ -1571,6 +1573,27 @@ function buildRequest(name, args, cfg) {
       const { clientId, kind } = args;
       const path = kind === "launch" ? `/api/v1/launch/headless/jobs/${encodeURIComponent(clientId)}` : `/api/v1/trade/agent/jobs/${encodeURIComponent(clientId)}`;
       return { url: `${base2}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } };
+    }
+    case "candle_get_fees": {
+      const apiKey = requireApiKey2(cfg);
+      const { cursor, limit } = args;
+      const params = new URLSearchParams;
+      if (cursor !== undefined)
+        params.set("cursor", cursor);
+      if (limit !== undefined)
+        params.set("limit", String(limit));
+      return {
+        url: `${base2}/api/v1/agent/fees${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) }
+      };
+    }
+    case "candle_claim_fees": {
+      const apiKey = requireApiKey2(cfg);
+      const { mint, dryRun } = args;
+      return {
+        url: `${base2}/api/v1/agent/fees/${encodeURIComponent(mint)}/claim`,
+        init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify({ dryRun: dryRun === true }) }
+      };
     }
     case "candle_get_wallets": {
       const apiKey = requireApiKey2(cfg);
@@ -1706,6 +1729,14 @@ var getAgentProfileShape = {
 var getOperationShape = {
   clientId: z2.string().describe("The clientTradeId or clientLaunchId the write used, or that the tool echoed back to you"),
   kind: z2.enum(["trade", "launch"]).describe("Which rail the id belongs to. Required: ids are caller-chosen strings with no shape to dispatch on")
+};
+var getFeesShape = {
+  cursor: z2.string().optional().describe("The previous page's continueCursor, verbatim"),
+  limit: z2.number().optional().describe("Tokens per page, 1 to 50 (default 20). Each one costs chain reads")
+};
+var claimFeesShape = {
+  mint: z2.string().describe("The launched token: a Solana mint or a Hood token address, as candle_get_fees lists it"),
+  dryRun: z2.boolean().optional().describe("Check and read only. Sends nothing and writes nothing. Use it first to see what would be claimed")
 };
 var resolveTokenShape = {
   mint: z2.string().describe("Token mint (Solana, base58) or contract address (Hood, 0x-prefixed)")
@@ -1846,6 +1877,16 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 ` + "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " + "and you already know what you asked for.",
     inputSchema: getOperationShape
   }, async (args) => callAndRelay("candle_get_operation", args, getConfig(), doFetch));
+  register("candle_get_fees", {
+    title: "Read the creator fees this account's tokens can pay",
+    description: "The tokens launched by the account's own wallets, with what each could pay now in creator fees " + "(raw units from direct chain reads) and `claimable: true` or the `reason` it is not. Reads only; " + "moves nothing. It returns no earned or paid-out totals. An unreadable token is marked, never " + "shown as zero. Paged: pass `continueCursor` back as `cursor`.",
+    inputSchema: getFeesShape
+  }, async (args) => callAndRelay("candle_get_fees", args, getConfig(), doFetch));
+  register("candle_claim_fees", {
+    title: "Claim a token's creator fees",
+    description: "Collect one token's creator fees and pay them to the wallet fixed at launch. There is no destination " + "argument and the tool cannot send funds anywhere else. Candle signs with the embedded wallet, which " + "pays the network fee. Needs launch:write, and the server keeps it off until it is enabled (LAUNCH_DISABLED). " + "Call it with dryRun: true first; a real claim moves real funds into the recipient wallet, which may be " + "the wallet this agent trades from. Not idempotent by id: if the result is lost, read candle_get_fees " + "before claiming again.",
+    inputSchema: claimFeesShape
+  }, async (args) => callAndRelay("candle_claim_fees", args, getConfig(), doFetch));
   register("candle_get_wallets", {
     title: "List the wallets Candle executes with",
     description: "The account's EMBEDDED wallets, one per chain, with their delegation state. These are " + "the wallets candle_trade, candle_swap and candle_transfer spend from, so this is how an " + "agent finds its own funding addresses. Reads only; moves nothing. Not the same as the " + "account's LINKED wallets, which are the owner's own wallets and are not spent from here. " + "Balances are not included: read a specific one with the market and balance endpoints.",

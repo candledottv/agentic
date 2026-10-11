@@ -73,6 +73,13 @@ anyone signs up for anything.
 | --- | --- | --- |
 | `candle_get_operation` | yes | look up a trade or launch by the id its write used. Call this after a timeout instead of writing again |
 
+**Creator fees**
+
+| Tool | Key | What it does |
+| --- | --- | --- |
+| `candle_get_fees` | yes | the creator fees your launched tokens can pay, and the reason a token cannot be claimed |
+| `candle_claim_fees` | yes | pay one token's creator fees to the wallet fixed at launch. It has no destination argument. Use `dryRun: true` first; it answers `LAUNCH_DISABLED` until the server enables it |
+
 **Perps on Hyperliquid** (needs `perps:write` on the key and `CANDLE_KEY_SIGNER_PEM_FILE`; each write is checked before it is signed and submitted to Hyperliquid by the server)
 
 | Tool | Key | What it does |

@@ -3,9 +3,11 @@ import { buildRequest, registerTools, resolveToolAllowlist, swapBody, TOOL_NAMES
 
 test("all registered tools are listed", () => {
   expect([...TOOL_NAMES].sort()).toEqual([
+    "candle_claim_fees",
     "candle_execution_status",
     "candle_get_agent_profile",
     "candle_get_feed",
+    "candle_get_fees",
     "candle_get_market",
     "candle_get_operation",
     "candle_get_plans",
@@ -33,6 +35,32 @@ test("all registered tools are listed", () => {
     "candle_trade",
     "candle_transfer",
   ])
+})
+
+describe("buildRequest: creator fees (FE-438)", () => {
+  const cfg = { apiUrl: "https://api.test", apiKey: "k" }
+
+  test("candle_get_fees reads the list with its cursor and limit", () => {
+    expect(buildRequest("candle_get_fees", {}, cfg).url).toBe("https://api.test/api/v1/agent/fees")
+    const r = buildRequest("candle_get_fees", { cursor: "c1", limit: 5 }, cfg)
+    expect(r.url).toBe("https://api.test/api/v1/agent/fees?cursor=c1&limit=5")
+    expect(r.init.method).toBe("GET")
+  })
+
+  test("candle_claim_fees posts the dry-run flag and nothing else, mint in the path", () => {
+    const r = buildRequest("candle_claim_fees", { mint: "Mint/1", dryRun: true, to: "Elsewhere" }, cfg)
+    expect(r.url).toBe("https://api.test/api/v1/agent/fees/Mint%2F1/claim")
+    expect(r.init.method).toBe("POST")
+    expect(JSON.parse(String(r.init.body))).toEqual({ dryRun: true })
+    expect(JSON.parse(String(buildRequest("candle_claim_fees", { mint: "M" }, cfg).init.body))).toEqual({
+      dryRun: false,
+    })
+  })
+
+  test("both need a key", () => {
+    expect(() => buildRequest("candle_get_fees", {}, { apiUrl: "https://api.test" })).toThrow()
+    expect(() => buildRequest("candle_claim_fees", { mint: "M" }, { apiUrl: "https://api.test" })).toThrow()
+  })
 })
 
 describe("buildRequest: the feed's server-side query", () => {

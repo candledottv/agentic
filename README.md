@@ -106,6 +106,8 @@ signs up.
 | | `candle_launch_and_seed` | yes | launch from the embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), on every plan |
 | | `candle_report_activity` | yes | report agent activity for verification |
 | **What happened?** | `candle_get_operation` | yes | look up a trade or launch by the id its write used |
+| **Creator fees** | `candle_get_fees` | yes | the creator fees your launched tokens can pay, and why one cannot be claimed (needs `account:read`) |
+| | `candle_claim_fees` | yes | pay one token's creator fees to the wallet fixed at launch; no destination argument, `dryRun` first (needs `launch:write`; off until the server enables it) |
 | **Perps (Hyperliquid)** | `candle_perps_setup` | yes | approve Candle's builder fee once (needs `perps:write`) |
 | | `candle_perps_open` | yes | open or add to a position, with optional take-profit and stop-loss |
 | | `candle_perps_close` | yes | close all or part of a position, reduce-only |

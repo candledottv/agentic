@@ -61132,7 +61132,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.10";
+var SERVER_VERSION = "0.10.11";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -62570,6 +62570,27 @@ function buildRequest(name2, args, cfg) {
       const path = kind === "launch" ? `/api/v1/launch/headless/jobs/${encodeURIComponent(clientId)}` : `/api/v1/trade/agent/jobs/${encodeURIComponent(clientId)}`;
       return { url: `${base2}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } };
     }
+    case "candle_get_fees": {
+      const apiKey = requireApiKey2(cfg);
+      const { cursor, limit } = args;
+      const params = new URLSearchParams;
+      if (cursor !== undefined)
+        params.set("cursor", cursor);
+      if (limit !== undefined)
+        params.set("limit", String(limit));
+      return {
+        url: `${base2}/api/v1/agent/fees${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) }
+      };
+    }
+    case "candle_claim_fees": {
+      const apiKey = requireApiKey2(cfg);
+      const { mint, dryRun } = args;
+      return {
+        url: `${base2}/api/v1/agent/fees/${encodeURIComponent(mint)}/claim`,
+        init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify({ dryRun: dryRun === true }) }
+      };
+    }
     case "candle_get_wallets": {
       const apiKey = requireApiKey2(cfg);
       return {
@@ -62737,6 +62758,16 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 ` + "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " + "and you already know what you asked for.",
     inputSchema: getOperationShape
   }, async (args) => callAndRelay("candle_get_operation", args, getConfig(), doFetch));
+  register("candle_get_fees", {
+    title: "Read the creator fees this account's tokens can pay",
+    description: "The tokens launched by the account's own wallets, with what each could pay now in creator fees " + "(raw units from direct chain reads) and `claimable: true` or the `reason` it is not. Reads only; " + "moves nothing. It returns no earned or paid-out totals. An unreadable token is marked, never " + "shown as zero. Paged: pass `continueCursor` back as `cursor`.",
+    inputSchema: getFeesShape
+  }, async (args) => callAndRelay("candle_get_fees", args, getConfig(), doFetch));
+  register("candle_claim_fees", {
+    title: "Claim a token's creator fees",
+    description: "Collect one token's creator fees and pay them to the wallet fixed at launch. There is no destination " + "argument and the tool cannot send funds anywhere else. Candle signs with the embedded wallet, which " + "pays the network fee. Needs launch:write, and the server keeps it off until it is enabled (LAUNCH_DISABLED). " + "Call it with dryRun: true first; a real claim moves real funds into the recipient wallet, which may be " + "the wallet this agent trades from. Not idempotent by id: if the result is lost, read candle_get_fees " + "before claiming again.",
+    inputSchema: claimFeesShape
+  }, async (args) => callAndRelay("candle_claim_fees", args, getConfig(), doFetch));
   register("candle_get_wallets", {
     title: "List the wallets Candle executes with",
     description: "The account's EMBEDDED wallets, one per chain, with their delegation state. These are " + "the wallets candle_trade, candle_swap and candle_transfer spend from, so this is how an " + "agent finds its own funding addresses. Reads only; moves nothing. Not the same as the " + "account's LINKED wallets, which are the owner's own wallets and are not spent from here. " + "Balances are not included: read a specific one with the market and balance endpoints.",
@@ -62893,7 +62924,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
 }
-var TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, getOperationShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, launchAndSeedShape, transferShape, sweepShape;
+var TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, getOperationShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, launchAndSeedShape, transferShape, sweepShape;
 var init_tools = __esm(() => {
   init_zod();
   init_convert();
@@ -62924,6 +62955,8 @@ var init_tools = __esm(() => {
     "candle_resolve_token",
     "candle_execution_status",
     "candle_get_operation",
+    "candle_get_fees",
+    "candle_claim_fees",
     "candle_perps_setup",
     "candle_perps_open",
     "candle_perps_close",
@@ -62984,6 +63017,14 @@ var init_tools = __esm(() => {
   getOperationShape = {
     clientId: exports_external.string().describe("The clientTradeId or clientLaunchId the write used, or that the tool echoed back to you"),
     kind: exports_external.enum(["trade", "launch"]).describe("Which rail the id belongs to. Required: ids are caller-chosen strings with no shape to dispatch on")
+  };
+  getFeesShape = {
+    cursor: exports_external.string().optional().describe("The previous page's continueCursor, verbatim"),
+    limit: exports_external.number().optional().describe("Tokens per page, 1 to 50 (default 20). Each one costs chain reads")
+  };
+  claimFeesShape = {
+    mint: exports_external.string().describe("The launched token: a Solana mint or a Hood token address, as candle_get_fees lists it"),
+    dryRun: exports_external.boolean().optional().describe("Check and read only. Sends nothing and writes nothing. Use it first to see what would be claimed")
   };
   resolveTokenShape = {
     mint: exports_external.string().describe("Token mint (Solana, base58) or contract address (Hood, 0x-prefixed)")
@@ -63167,7 +63208,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.22";
+var CLI_VERSION = "0.11.23";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -63895,6 +63936,24 @@ var HELP = {
       "candle portfolio --rpc-url https://your-rpc.example --evm-rpc-url https://your-hood-rpc.example --json"
     ],
     env: [...ENV_API, ...ENV_LOCAL_SIGNING]
+  },
+  fees: {
+    group: "Account",
+    summary: "Creator fees your launched tokens can pay, and the claim",
+    description: "Lists the tokens launched by this account's wallets and what each could pay now, from direct chain reads, with the reason a token cannot be claimed. `fees claim` collects one token's creator fees and pays them to the wallet fixed at launch: there is no destination option, Candle signs with the embedded wallet, and that wallet pays the network fee. The key needs launch:write to claim and account:read to list. The server keeps the claim off until it is enabled, and while off even --dry-run answers LAUNCH_DISABLED. A Phantom-signup account's Solana fees are credited to the external wallet, which Candle cannot sign for, so its agent cannot claim them.",
+    usage: ["candle fees [--cursor <cursor>] [--limit <1-50>]", "candle fees claim <mint> [--dry-run]"],
+    rows: [
+      {
+        invocation: "claim <mint> [--dry-run]",
+        description: "Claim one token's creator fees; --dry-run sends nothing"
+      }
+    ],
+    flags: [
+      { invocation: "--cursor <cursor>", description: "The previous page's continue cursor" },
+      { invocation: "--limit <n>", description: "Tokens per page, 1 to 50 (default 20)" }
+    ],
+    examples: ["candle fees", "candle fees claim <mint> --dry-run", "candle fees claim <mint>"],
+    env: ENV_API
   },
   pnl: {
     group: "Account",
@@ -69757,6 +69816,122 @@ async function externalSweep(args, ctx) {
   });
 }
 
+// src/commands/fees.ts
+init_args();
+init_render();
+init_trading();
+init_swap();
+var LIST_USAGE = "Usage: candle fees [--cursor <cursor>] [--limit <1-50>] [--json]";
+var CLAIM_USAGE = "Usage: candle fees claim <mint> [--dry-run] [--json]";
+function amountText(row) {
+  const raw = typeof row.amountRaw === "string" && /^\d+$/.test(row.amountRaw) ? row.amountRaw : null;
+  if (raw === null)
+    return "unknown";
+  const decimals = Number.isInteger(row.decimals) ? row.decimals : 0;
+  const label = row.symbol ? row.symbol : row.mint ?? "";
+  const value = decimalAmount(raw, decimals);
+  return `${value.includes(".") ? value.replace(/\.?0+$/, "") : value} ${safeText(label)}`.trim();
+}
+function amountsText(rows) {
+  if (!Array.isArray(rows) || rows.length === 0)
+    return "none";
+  return rows.map((row) => amountText(row)).join(", ");
+}
+var REASON_WORDS = {
+  below_dust: "under the dust floor",
+  wallet_not_signable: "the recipient is a wallet Candle cannot sign for",
+  delegation_off: "the embedded wallet is not delegated for agent access",
+  embedded_wallet_not_permitted: "this key may not use the embedded wallet",
+  not_recipient: "the fees go to someone else, or the token has no fee vault",
+  insufficient_gas: "the recipient wallet cannot cover the network fee"
+};
+function reasonText(reason) {
+  return typeof reason === "string" ? REASON_WORDS[reason] ?? safeText(reason) : "unknown";
+}
+async function feesList(args, ctx) {
+  const parsed = parseArgs(args, { valueFlags: ["--cursor", "--limit"] });
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  const limit = parsed.values["--limit"];
+  if (parsed.positionals.length !== 0 || limit !== undefined && !/^(?:[1-9]|[1-4]\d|50)$/.test(limit)) {
+    writeUsageFailure(ctx.deps, LIST_USAGE, ctx.json);
+    return 2;
+  }
+  const cursor = parsed.values["--cursor"];
+  try {
+    const key = await tradingKey(ctx);
+    const params = new URLSearchParams;
+    if (cursor !== undefined)
+      params.set("cursor", cursor);
+    if (limit !== undefined)
+      params.set("limit", limit);
+    const body = await request(ctx, key, `/api/v1/agent/fees${params.size ? `?${params}` : ""}`);
+    if (ctx.json)
+      return printTradingResult(ctx, body);
+    const page = Array.isArray(body.page) ? body.page : [];
+    const out = ctx.deps.stdout;
+    if (page.length === 0)
+      out.write(`No launched tokens on this account.
+`);
+    for (const row of page) {
+      const name2 = safeText(String(row.symbol ?? row.name ?? row.mint));
+      const status = row.unreadable ? "could not be read" : row.claimable ? `claimable: ${amountsText(row.claimableAmounts)}` : `not claimable: ${reasonText(row.reason)}`;
+      out.write(`${name2}  ${safeText(String(row.chain))}  ${safeText(String(row.mint))}  ${status}
+`);
+    }
+    if (body.isDone === false && typeof body.continueCursor === "string")
+      out.write(`More: candle fees --cursor ${safeText(body.continueCursor)}
+`);
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+async function feesClaim(args, ctx) {
+  const parsed = parseArgs(args, { booleanFlags: ["--dry-run"] });
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  const mint = parsed.positionals[0];
+  if (parsed.positionals.length !== 1 || !mint) {
+    writeUsageFailure(ctx.deps, CLAIM_USAGE, ctx.json);
+    return 2;
+  }
+  const dryRun = parsed.booleans.has("--dry-run");
+  try {
+    const key = await tradingKey(ctx);
+    const body = await request(ctx, key, `/api/v1/agent/fees/${encodeURIComponent(mint)}/claim`, { dryRun });
+    if (ctx.json)
+      return printTradingResult(ctx, body);
+    const out = ctx.deps.stdout;
+    const claimed = Array.isArray(body.claimed) ? body.claimed : [];
+    if (dryRun) {
+      out.write(body.claimable === false ? `Dry run: would be refused: ${reasonText(body.reason)}. Nothing was sent.
+` : `Dry run: would claim ${amountsText(claimed)} to ${safeText(String(body.recipient))}. Nothing was sent.
+`);
+    } else {
+      out.write(`Claimed ${amountsText(claimed)} to ${safeText(String(body.recipient))}
+`);
+      for (const row of claimed)
+        if (row.txHash)
+          out.write(`  ${safeText(row.txHash)}
+`);
+    }
+    out.write(`Still claimable: ${amountsText(body.remaining)}
+`);
+    if (Array.isArray(body.warnings))
+      for (const warning of body.warnings)
+        ctx.deps.stderr.write(`Warning: ${safeText(String(warning))}
+`);
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+
 // src/commands/help.ts
 async function help(args, ctx) {
   const word2 = args[0];
@@ -70999,6 +71174,8 @@ var MCP_TOOL_NAMES = [
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation",
+  "candle_get_fees",
+  "candle_claim_fees",
   "candle_perps_setup",
   "candle_perps_open",
   "candle_perps_close",
@@ -75412,9 +75589,9 @@ async function transfer(args, ctx) {
       const decimals = asset ? BASES[asset]?.decimals ?? 9 : await decimalsFor(ctx, flags["--mint"], lazySolanaClient(ctx, flags["--rpc-url"]));
       amountRaw = rawAmount(flags["--amount"], decimals);
     }
-    const amountText = isMax ? `the full spendable balance of ${label}` : `${flags["--amount"]} ${label}`;
+    const amountText2 = isMax ? `the full spendable balance of ${label}` : `${flags["--amount"]} ${label}`;
     const confirmed = await confirmTransfer(ctx, [
-      `Transfer ${amountText} from ${wallet.address} (${wallet.id}) to ${describeDestination(destination)}`,
+      `Transfer ${amountText2} from ${wallet.address} (${wallet.id}) to ${describeDestination(destination)}`,
       destination.kind === "vault" ? "Destination: this wallet's own vault, pinned when it was imported." : destination.kind === "linked" ? "Destination: a linked wallet on this account. Candle allows it only if you linked it while signed in or marked it trusted, and the amount counts against this key's spend caps." : "Destination: an address Candle will classify at build; from a TEE wallet only its vault or a trusted linked wallet is allowed."
     ], parsed.booleans.has("--yes"));
     if (!confirmed)
@@ -75478,9 +75655,9 @@ async function hoodTransfer(ctx, args) {
   const destination = await resolveDestination(ctx, key, wallet, to, "hood");
   const decimals = asset ? HOOD_BASES[asset]?.decimals ?? 18 : await hoodDecimals({ chain: "hood", asset: tokenAddress }, lazyEvmRpc(ctx, flags["--rpc-url"]));
   const requested = isMax ? "max" : rawAmount(flags["--amount"], decimals);
-  const amountText = isMax ? `the full spendable balance of ${label}` : `${flags["--amount"]} ${label}`;
+  const amountText2 = isMax ? `the full spendable balance of ${label}` : `${flags["--amount"]} ${label}`;
   const confirmed = await confirmTransfer(ctx, [
-    `Transfer ${amountText} on Hood from ${wallet.address} (${wallet.id}) to ${describeDestination(destination)}`,
+    `Transfer ${amountText2} on Hood from ${wallet.address} (${wallet.id}) to ${describeDestination(destination)}`,
     destination.kind === "vault" ? "Destination: this wallet's own vault, pinned when it was imported." : destination.kind === "linked" ? "Destination: a linked wallet on this account. Candle allows it only if you linked it while signed in or marked it trusted, only for ETH or USDG, and the amount counts against this key's spend caps." : "Destination: an address Candle will classify at build; from a TEE wallet only its vault or a trusted linked wallet is allowed.",
     ...asset === "ETH" ? [
       "ETH keeps this send's gas and the sweep-home gas reserve in the wallet; Candle refuses an amount that would spend them."
@@ -83984,6 +84161,7 @@ var COMMANDS = {
   launch: { bare: launch },
   pnl: { bare: pnl },
   portfolio: { bare: portfolio },
+  fees: { bare: feesList, subcommands: { claim: feesClaim } },
   plans: { bare: plans },
   lp: { subcommands: { pools: lpPools, add: lpAdd, positions: lpPositions, remove: lpRemove, claim: lpClaim } },
   perps: {

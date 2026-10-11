@@ -79,6 +79,9 @@ export const TOOL_NAMES = [
   "candle_resolve_token",
   "candle_execution_status",
   "candle_get_operation",
+  // FE-438: the creator fees this account's launched tokens can pay, and the claim.
+  "candle_get_fees",
+  "candle_claim_fees",
   // Hyperliquid perps B (BE-646): the `candle perps` mirror (perps.ts).
   "candle_perps_setup",
   "candle_perps_open",
@@ -286,6 +289,29 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
           ? `/api/v1/launch/headless/jobs/${encodeURIComponent(clientId)}`
           : `/api/v1/trade/agent/jobs/${encodeURIComponent(clientId)}`
       return { url: `${base}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } }
+    }
+
+    case "candle_get_fees": {
+      const apiKey = requireApiKey(cfg)
+      const { cursor, limit } = args as { cursor?: string; limit?: number }
+      const params = new URLSearchParams()
+      if (cursor !== undefined) params.set("cursor", cursor)
+      if (limit !== undefined) params.set("limit", String(limit))
+      return {
+        url: `${base}/api/v1/agent/fees${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) },
+      }
+    }
+
+    case "candle_claim_fees": {
+      const apiKey = requireApiKey(cfg)
+      // The body is the dry-run flag and nothing else: the route has no destination, and the
+      // mint rides the path. Nothing else in `args` is forwarded.
+      const { mint, dryRun } = args as { mint: string; dryRun?: boolean }
+      return {
+        url: `${base}/api/v1/agent/fees/${encodeURIComponent(mint)}/claim`,
+        init: { method: "POST", headers: jsonHeaders(apiKey), body: JSON.stringify({ dryRun: dryRun === true }) },
+      }
     }
 
     case "candle_get_wallets": {
@@ -496,6 +522,19 @@ const getOperationShape = {
   kind: z
     .enum(["trade", "launch"])
     .describe("Which rail the id belongs to. Required: ids are caller-chosen strings with no shape to dispatch on"),
+}
+
+const getFeesShape = {
+  cursor: z.string().optional().describe("The previous page's continueCursor, verbatim"),
+  limit: z.number().optional().describe("Tokens per page, 1 to 50 (default 20). Each one costs chain reads"),
+}
+
+const claimFeesShape = {
+  mint: z.string().describe("The launched token: a Solana mint or a Hood token address, as candle_get_fees lists it"),
+  dryRun: z
+    .boolean()
+    .optional()
+    .describe("Check and read only. Sends nothing and writes nothing. Use it first to see what would be claimed"),
 }
 
 const resolveTokenShape = {
@@ -863,6 +902,36 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: getOperationShape,
     },
     async (args) => callAndRelay("candle_get_operation", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_get_fees",
+    {
+      title: "Read the creator fees this account's tokens can pay",
+      description:
+        "The tokens launched by the account's own wallets, with what each could pay now in creator fees " +
+        "(raw units from direct chain reads) and `claimable: true` or the `reason` it is not. Reads only; " +
+        "moves nothing. It returns no earned or paid-out totals. An unreadable token is marked, never " +
+        "shown as zero. Paged: pass `continueCursor` back as `cursor`.",
+      inputSchema: getFeesShape,
+    },
+    async (args) => callAndRelay("candle_get_fees", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_claim_fees",
+    {
+      title: "Claim a token's creator fees",
+      description:
+        "Collect one token's creator fees and pay them to the wallet fixed at launch. There is no destination " +
+        "argument and the tool cannot send funds anywhere else. Candle signs with the embedded wallet, which " +
+        "pays the network fee. Needs launch:write, and the server keeps it off until it is enabled (LAUNCH_DISABLED). " +
+        "Call it with dryRun: true first; a real claim moves real funds into the recipient wallet, which may be " +
+        "the wallet this agent trades from. Not idempotent by id: if the result is lost, read candle_get_fees " +
+        "before claiming again.",
+      inputSchema: claimFeesShape,
+    },
+    async (args) => callAndRelay("candle_claim_fees", args, getConfig(), doFetch),
   )
 
   register(
