@@ -234,6 +234,7 @@ setting -- run it before asking a human.
 | `CANDLE_MCP_TOOLS` | comma-separated tool allowlist for the MCP server (`candle mcp --tools` sets it) |
 | `CANDLE_SOLANA_RPC_URL` | Solana RPC for every Solana command when `--rpc-url` is not given (then the profile's, then the public endpoint); `vault restore`'s gap scan needs `--rpc-url` |
 | `CANDLE_KEY_SIGNER_PEM_FILE` | the key's signer PEM, which the MCP perps tools sign with |
+| `CANDLE_IMAGE_DIR` | a directory of images you mean to publish; set, the MCP launch tools accept `imagePath` for a file inside it, and the upload is public and permanent |
 
 ## When you are stuck
 

@@ -25,6 +25,7 @@
 import { randomUUID } from "node:crypto"
 import type { RequestConfig } from "./client"
 import { decimalToRaw, defaultQuoteId, percentOfBalance, QUOTE_DECIMALS } from "./convert"
+import { type ImageFs, imageRefusalBody, resolveLaunchImage, UPLOADED_IMAGE_NOTE } from "./image"
 import { noteVersionHeaders, updateAvailable } from "./update-notice"
 
 export type FetchLike = (
@@ -452,7 +453,10 @@ export interface LaunchAndSeedArgs {
   clientLaunchId?: string
   name: string
   symbol: string
-  imageUrl: string
+  /** Required by the API. Optional here only where `imagePath` may stand in for it (image.ts). */
+  imageUrl?: string
+  /** Never forwarded: uploaded first, and the launch is made with the URL that comes back. */
+  imagePath?: string
   chain?: string
   quoteAsset?: string
   mode?: string
@@ -475,11 +479,14 @@ export async function executeLaunchAndSeed(
   args: LaunchAndSeedArgs,
   cfg: RequestConfig,
   doFetch: FetchLike,
+  /** The operator's CANDLE_IMAGE_DIR, when this registration has one. Undefined offers no imagePath. */
+  imageDir?: string,
+  imageFs?: ImageFs,
 ): Promise<ToolText> {
   const apiKey = requireApiKey(cfg)
   const clientLaunchId = args.clientLaunchId ?? randomUUID()
   // buyAmount is destructured off and never forwarded: see LaunchAndSeedArgs.buyAmount.
-  const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...launchFields } = args
+  const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...imageFields } = args
 
   let buyAmount: string | undefined
   if (devBuy !== undefined) {
@@ -493,23 +500,44 @@ export async function executeLaunchAndSeed(
     buyAmount = converted.raw
   }
 
+  // After every refusal this tool can decide for itself, and before the launch: an upload is a
+  // publication that cannot be taken back, so a bad devBuy must not cost one.
+  const image = await resolveLaunchImage(imageFields, imageDir, cfg, doFetch, imageFs)
+  if ("refused" in image) return { text: imageRefusalBody(image.refused, { clientLaunchId }), isError: true }
+  if ("uploadFailed" in image) {
+    let api: unknown
+    try {
+      api = JSON.parse(image.uploadFailed)
+    } catch {
+      api = image.uploadFailed
+    }
+    return { text: JSON.stringify({ clientLaunchId, api }), isError: true }
+  }
+  // Once a file was uploaded, every result says where, the failures included: it is public either way.
+  const uploaded = image.uploaded === undefined ? {} : { imageUrl: image.uploaded, imageNote: UPLOADED_IMAGE_NOTE }
+
   const path = dryRun ? "/api/v1/launch/headless/dry-run" : "/api/v1/launch/headless"
   const posted = await postJson(
     `${base(cfg)}${path}`,
     apiKey,
     {
-      ...launchFields,
+      ...image.args,
       clientLaunchId,
       ...(buyAmount !== undefined ? { buyAmount } : {}),
     },
     doFetch,
   )
-  if ("thrown" in posted) return transportError("clientLaunchId", clientLaunchId, posted.thrown)
+  if ("thrown" in posted) {
+    const failed = transportError("clientLaunchId", clientLaunchId, posted.thrown)
+    return image.uploaded === undefined
+      ? failed
+      : { ...failed, text: JSON.stringify({ ...JSON.parse(failed.text), ...uploaded }) }
+  }
   if (!posted.ok) {
-    return { text: JSON.stringify({ clientLaunchId, api: posted.body }), isError: true }
+    return { text: JSON.stringify({ clientLaunchId, ...uploaded, api: posted.body }), isError: true }
   }
   if (dryRun) {
-    return { text: JSON.stringify({ clientLaunchId, dryRun: true, api: posted.body }) }
+    return { text: JSON.stringify({ clientLaunchId, dryRun: true, ...uploaded, api: posted.body }) }
   }
 
   const launch = posted.body as { chain?: string; mint?: string }
@@ -541,7 +569,7 @@ export async function executeLaunchAndSeed(
   }
 
   return {
-    text: JSON.stringify({ clientLaunchId, launch, market, ...(note ? { note } : {}) }),
+    text: JSON.stringify({ clientLaunchId, ...uploaded, launch, market, ...(note ? { note } : {}) }),
   }
 }
 

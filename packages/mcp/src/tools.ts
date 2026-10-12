@@ -43,6 +43,7 @@ import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/
 import { z } from "zod"
 import { type RequestConfig, resolveConfig } from "./client"
 import { decimalToRaw, QUOTE_DECIMALS } from "./convert"
+import { configuredImageDir, imageRefusalBody, resolveLaunchImage, UPLOADED_IMAGE_NOTE } from "./image"
 import { EXTERNAL_MARKET_DISCLOSURE } from "./market-disclosure"
 import {
   executeLaunchAndSeed,
@@ -655,8 +656,7 @@ const tradeShape = {
 // raw amount the tool never converted. executeLaunchAndSeed strips it from the body as well.
 const { buyAmount: _rawBuyAmount, ...seedableLaunchShape } = launchTokenShape
 
-const launchAndSeedShape = {
-  ...seedableLaunchShape,
+const seedShape = {
   clientLaunchId: z
     .string()
     .optional()
@@ -672,6 +672,37 @@ const launchAndSeedShape = {
         "a larger seed, launch then follow with candle_trade.",
     ),
 }
+
+const launchAndSeedShape = { ...seedableLaunchShape, ...seedShape }
+
+/**
+ * The image input where the operator set CANDLE_IMAGE_DIR (image.ts): either field, and the
+ * handler requires exactly one. A raw shape cannot say "one of", so both are optional here and
+ * `resolveLaunchImage` refuses both-or-neither before any file is read. Without the variable the
+ * tools keep `launchTokenShape` exactly as it was, `imageUrl` required and no `imagePath`.
+ */
+const localImageShape = {
+  imageUrl: launchTokenShape.imageUrl
+    .optional()
+    .describe(`${launchTokenShape.imageUrl.description}. Pass this or imagePath, never both`),
+  imagePath: z
+    .string()
+    .optional()
+    .describe(
+      "An absolute image path inside CANDLE_IMAGE_DIR. The file is uploaded and becomes public and permanent, " +
+        "including on a dry run. PNG, JPEG, GIF or WebP, at most 10MB, read from the file's first bytes. " +
+        "Uploading spends no funds and does not count against the launch cap; only the upload limit applies. " +
+        "Pass this or imageUrl, never both. The result carries the imageUrl used: pass that on a retry, or " +
+        "after a dry run, instead of uploading the file again. bannerUrl takes no file",
+    ),
+}
+const localLaunchTokenShape = { ...launchTokenShape, ...localImageShape }
+const localLaunchAndSeedShape = { ...seedableLaunchShape, ...localImageShape, ...seedShape }
+
+/** Added to both launch tools' descriptions where imagePath is offered: an upload is a publication. */
+const IMAGE_PATH_DISCLOSURE =
+  " With imagePath, the image file is uploaded first and becomes public and permanent, on a dry run too; " +
+  "nothing about a dry run keeps that file private."
 
 const transferShape = {
   chain: z.enum(["solana", "hood"]).describe("Which chain the transfer executes on"),
@@ -762,15 +793,31 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       handler,
     )
   }
+  // The launch shape is chosen here, from this registration's own environment (spec 3.3): a host
+  // that set CANDLE_IMAGE_DIR offers imagePath beside imageUrl, and one that passes no `env` (the
+  // hosted server) gets the URL-only schema with no code of its own.
+  const imageDir = configuredImageDir(env)
   register(
     "candle_launch_token",
     {
       title: "Launch a token on Candle",
       description:
-        "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything.",
-      inputSchema: launchTokenShape,
+        "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything." +
+        (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
+      inputSchema: (imageDir ? localLaunchTokenShape : launchTokenShape) as typeof localLaunchTokenShape,
     },
-    async (args) => callAndRelay("candle_launch_token", args, getConfig(), doFetch),
+    async (args) => {
+      const image = await resolveLaunchImage(args, imageDir, getConfig(), doFetch)
+      if ("refused" in image) {
+        return { content: [{ type: "text", text: imageRefusalBody(image.refused) }], isError: true }
+      }
+      if ("uploadFailed" in image) return { content: [{ type: "text", text: image.uploadFailed }], isError: true }
+      const relayed = await callAndRelay("candle_launch_token", image.args, getConfig(), doFetch)
+      if (image.uploaded === undefined) return relayed
+      // The API's body stays verbatim in the first block; what this server did rides in a second.
+      const uploaded = JSON.stringify({ imageUrl: image.uploaded, note: UPLOADED_IMAGE_NOTE })
+      return { ...relayed, content: [...relayed.content, { type: "text" as const, text: uploaded }] }
+    },
   )
 
   register(
@@ -1215,11 +1262,12 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "launch transaction on solana, a best-effort follow-up on hood). Works on every plan, Free included (this is not the atomic launch). Then " +
         "return the fresh market state and token links in one result. MOVES REAL FUNDS unless " +
         "dryRun. Seeds above the platform dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH); " +
-        "launch, then top up with candle_trade.",
-      inputSchema: launchAndSeedShape,
+        "launch, then top up with candle_trade." +
+        (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
+      inputSchema: (imageDir ? localLaunchAndSeedShape : launchAndSeedShape) as typeof localLaunchAndSeedShape,
     },
     async (args) => {
-      const result = await executeLaunchAndSeed(args as never, getConfig(), doFetch)
+      const result = await executeLaunchAndSeed(args as never, getConfig(), doFetch, imageDir)
       return { content: [{ type: "text", text: result.text }], ...(result.isError ? { isError: true } : {}) }
     },
   )

@@ -38,7 +38,8 @@ point at a different deployment.
      "dryRun": true
    }
    ```
-   `imageUrl` must be a roughly square https image. `chain` is `"solana"` or `"hood"` (defaults to
+   `imageUrl` must be a roughly square https image (for a file on this machine, see "If the image
+   is a file" below). `chain` is `"solana"` or `"hood"` (defaults to
    solana); a Hood launch also needs `dexVersion` (`"v3"` or `"v4"`). `devBuy` is a DECIMAL amount
    of the launch's own quote asset (SOL on Solana, ETH on Hood, unless `quoteAsset` says
    otherwise), never a raw base-unit amount, and it is capped by a platform dev-buy ceiling: asking
@@ -66,6 +67,33 @@ point at a different deployment.
    "signature": "<the launch's signature>" }` (or `chain: "hood"` for a Hood launch) so Candle
    records and verifies it under your account's activity. `activity:write` is already in the
    default key scope set, so this needs no extra setup.
+
+## If the image is a file
+
+`imageUrl` is always an https URL on the wire. When the image is a file, it is uploaded first and
+the launch is made with the URL Candle returns. An upload is public and permanent, with any
+metadata the file carries, and a dry run uploads too: upload only an image that is meant to be
+public. The file must be a PNG, JPEG, GIF or WebP of at most 10MB.
+
+- **Local MCP server with `CANDLE_IMAGE_DIR` set:** pass `imagePath`, an absolute path to a file
+  inside that directory, in place of `imageUrl` on `candle_launch_and_seed` or
+  `candle_launch_token`. One or the other, never both. The result carries the `imageUrl` that was
+  used: after a dry run, or on a retry, pass that `imageUrl` rather than `imagePath`, so the file
+  is not uploaded a second time. A path outside the directory is refused with "Image files must be
+  inside the configured CANDLE_IMAGE_DIR." If the tool has no `imagePath` argument, the directory
+  is not configured; only the operator can set it, so use one of the ways below instead.
+- **CLI:** `candle image upload <path>` prints the hosted URL; pass it as `imageUrl`.
+  `candle launch --image <path>` uploads and launches in one command, on the TEE-wallet path of
+  step 6. Both need CLI 0.11.24 or later.
+- **Hosted MCP server:** it runs on Candle's machines, cannot read a file on your computer and has
+  no `imagePath`. Ask the user to install the Candle CLI 0.11.24 or later, configure an agent key
+  with `launch:write`, run `candle image upload <path>` in a terminal, and give you the URL it
+  prints. Signing in to the hosted server supplies neither the CLI nor that key.
+- **REST:** `POST /api/v1/uploads/agent-image` with the file's bytes and its image content type
+  (or a multipart `image` field), under a key with `launch:write`, answers
+  `{ "success": true, "imageUrl": "https://..." }`.
+
+`bannerUrl` is always a URL: the upload crops to a square, so it cannot host a banner.
 
 ## Safety rails
 

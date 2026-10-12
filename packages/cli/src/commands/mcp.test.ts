@@ -17,7 +17,7 @@ import {
   createRoutedFetch,
   createTestDeps,
 } from "../test-support"
-import { MCP_TOOL_NAMES, READ_ONLY_TOOL_NAMES } from "./mcp"
+import { CREDENTIAL_ENV_NAMES, MCP_TOOL_NAMES, READ_ONLY_TOOL_NAMES } from "./mcp"
 
 interface CapturedStart {
   env: Record<string, string | undefined>
@@ -119,6 +119,31 @@ describe("mcp", () => {
     expect(code).toBe(0)
     expect(calls[0]?.env.CANDLE_AGENT_API_KEY).toBe("cndl_live_from_store")
     expect(calls[0]?.env.CANDLE_KEYRING_PASSPHRASE).toBeUndefined()
+  })
+
+  // BE-1346 (local-image spec 3.2): the connector offers `imagePath` only where its environment
+  // names CANDLE_IMAGE_DIR. `candle mcp` hosts that connector in-process and hands it the
+  // inherited environment minus the credential names, so the operator's directory must survive
+  // the strip, exactly as set. No pass-through code exists; this pins that none is needed.
+  test("CANDLE_IMAGE_DIR reaches the bundled server untouched, beside the resolved key", async () => {
+    const { fetch } = createRoutedFetch({})
+    const { calls, runMcpServer } = captureMcpServer()
+    const store = createFakeStore({ api_key: "cndl_live_from_store" })
+    const env = { CANDLE_IMAGE_DIR: "/home/agent/launch-images", CANDLE_API_KEY: "cndl_live_ambient" }
+    const code = await run(["mcp"], createTestDeps({ fetch, store, runMcpServer, env }))
+    expect(code).toBe(0)
+    expect(calls[0]?.env.CANDLE_IMAGE_DIR).toBe("/home/agent/launch-images")
+    expect(CREDENTIAL_ENV_NAMES as readonly string[]).not.toContain("CANDLE_IMAGE_DIR")
+    // The strip still ran: the directory rides along with the cleared names, it does not replace them.
+    expect(calls[0]?.env.CANDLE_API_KEY).toBeUndefined()
+  })
+
+  test("with no CANDLE_IMAGE_DIR set, none is invented for the server", async () => {
+    const { fetch } = createRoutedFetch({})
+    const { calls, runMcpServer } = captureMcpServer()
+    const store = createFakeStore({ api_key: "cndl_live_secret" })
+    expect(await run(["mcp"], createTestDeps({ fetch, store, runMcpServer }))).toBe(0)
+    expect(calls[0]?.env.CANDLE_IMAGE_DIR).toBeUndefined()
   })
 
   test("an inherited CANDLE_MCP_TOOLS cannot widen what --read-only pinned", async () => {

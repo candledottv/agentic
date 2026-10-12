@@ -61135,7 +61135,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.11";
+var SERVER_VERSION = "0.10.12";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -61168,6 +61168,213 @@ function updateAvailable() {
 var PLAIN_VERSION, latestSeen = null, warned = false;
 var init_update_notice = __esm(() => {
   PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
+});
+
+// ../mcp/src/image.ts
+import { constants as constants5 } from "node:fs";
+import { lstat as lstat2, open as open5, realpath } from "node:fs/promises";
+import { dirname as dirname11, isAbsolute as isAbsolute2, relative, sep as sep2 } from "node:path";
+function configuredImageDir(env) {
+  return env.CANDLE_IMAGE_DIR?.trim() || undefined;
+}
+function sniffImageType2(bytes) {
+  const at = (offset, signature) => signature.every((byte, i) => bytes[offset + i] === byte);
+  if (at(0, [137, 80, 78, 71, 13, 10, 26, 10]))
+    return "image/png";
+  if (at(0, [255, 216, 255]))
+    return "image/jpeg";
+  if (at(0, [71, 73, 70, 56]) && (bytes[4] === 55 || bytes[4] === 57) && bytes[5] === 97)
+    return "image/gif";
+  if (at(0, [82, 73, 70, 70]) && at(8, [87, 69, 66, 80]))
+    return "image/webp";
+  return;
+}
+function isInside(dir, path) {
+  const rel = relative(dir, path);
+  return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep2}`) && !isAbsolute2(rel);
+}
+function errno(error2) {
+  return error2?.code;
+}
+async function realImageDir(imageDir, fs) {
+  const invalid = () => new ImageRefusal("IMAGE_DIR_INVALID", `CANDLE_IMAGE_DIR must be an absolute path to an existing directory, and not the filesystem root. ${NOTHING_UPLOADED2}`);
+  if (!isAbsolute2(imageDir))
+    throw invalid();
+  try {
+    const real = await fs.realpath(imageDir);
+    if (dirname11(real) === real || !(await fs.lstat(real, { bigint: true })).isDirectory())
+      throw invalid();
+    return real;
+  } catch {
+    throw invalid();
+  }
+}
+async function missingInside(dirReal, path, fs) {
+  const absent = (error2) => errno(error2) === "ENOENT" || errno(error2) === "ENOTDIR";
+  for (let current = path;; ) {
+    try {
+      await fs.lstat(current, { bigint: true });
+      return false;
+    } catch (error2) {
+      if (!absent(error2))
+        return false;
+    }
+    const parent = dirname11(current);
+    if (parent === current)
+      return false;
+    try {
+      const real = await fs.realpath(parent);
+      return real === dirReal || isInside(dirReal, real);
+    } catch (error2) {
+      if (!absent(error2))
+        return false;
+      current = parent;
+    }
+  }
+}
+async function readImageInDir(imageDir, imagePath, fs = nodeFs) {
+  if (!isAbsolute2(imagePath))
+    throw new ImageRefusal("MCP_VALIDATION", `imagePath must be an absolute path inside CANDLE_IMAGE_DIR; this server's working directory is not something a caller can know. ${NOTHING_UPLOADED2}`);
+  const dirReal = await realImageDir(imageDir, fs);
+  const outside = () => new ImageRefusal("IMAGE_OUTSIDE_DIR", OUTSIDE_IMAGE_DIR);
+  const unreadable2 = (why) => new ImageRefusal("IMAGE_UNREADABLE", `Could not read the image at imagePath: ${why}. ${NOTHING_UPLOADED2}`);
+  const tooLarge = () => new ImageRefusal("IMAGE_TOO_LARGE", `The file at imagePath is over 10MB, the largest image Candle hosts. ${NOTHING_UPLOADED2}`);
+  let fileReal;
+  try {
+    fileReal = await fs.realpath(imagePath);
+  } catch {
+    throw await missingInside(dirReal, imagePath, fs) ? unreadable2("there is no file at that path") : outside();
+  }
+  if (!isInside(dirReal, fileReal))
+    throw outside();
+  let handle;
+  try {
+    handle = await fs.open(fileReal, constants5.O_RDONLY | (constants5.O_NOFOLLOW ?? 0) | (constants5.O_NONBLOCK ?? 0));
+  } catch (error2) {
+    throw errno(error2) === "ELOOP" ? outside() : unreadable2("it could not be opened");
+  }
+  let bytes;
+  try {
+    const opened = await handle.stat({ bigint: true });
+    let named;
+    try {
+      if (await fs.realpath(fileReal) !== fileReal || !isInside(await realImageDir(imageDir, fs), fileReal))
+        throw outside();
+      named = await fs.lstat(fileReal, { bigint: true });
+    } catch {
+      throw outside();
+    }
+    if (named.dev !== opened.dev || named.ino !== opened.ino)
+      throw outside();
+    if (!opened.isFile())
+      throw unreadable2("it is not a regular file");
+    const chunks = [];
+    let total = 0;
+    try {
+      while (total <= MAX_IMAGE_BYTES2) {
+        const want = Math.min(READ_CHUNK_BYTES, MAX_IMAGE_BYTES2 + 1 - total);
+        const chunk = new Uint8Array(want);
+        const { bytesRead } = await handle.read(chunk, 0, want, null);
+        if (bytesRead === 0)
+          break;
+        chunks.push(chunk.subarray(0, bytesRead));
+        total += bytesRead;
+      }
+    } catch {
+      throw unreadable2("the read failed");
+    }
+    if (total > MAX_IMAGE_BYTES2)
+      throw tooLarge();
+    bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.length;
+    }
+  } finally {
+    await handle.close().catch(() => {});
+  }
+  const contentType = sniffImageType2(bytes);
+  if (!contentType)
+    throw new ImageRefusal("IMAGE_TYPE_UNSUPPORTED", `The file at imagePath is not a PNG, JPEG, GIF or WebP image. The type is read from the file's first bytes, not its name. ${NOTHING_UPLOADED2}`);
+  return { bytes, contentType };
+}
+async function resolveLaunchImage(args, imageDir, cfg, doFetch, fs = nodeFs) {
+  const { imagePath, ...rest } = args;
+  const hasPath = typeof imagePath === "string" && imagePath.length > 0;
+  const hasUrl = typeof rest.imageUrl === "string" && rest.imageUrl.length > 0;
+  const invalid = (message) => ({ refused: { code: "MCP_VALIDATION", message } });
+  if (imageDir === undefined) {
+    if (imagePath !== undefined)
+      return invalid(`imagePath is not available on this server: no CANDLE_IMAGE_DIR is configured. Pass imageUrl, an https URL. ${NOTHING_UPLOADED2}`);
+    return { args: rest };
+  }
+  if (hasPath && hasUrl)
+    return invalid(`Pass exactly one of imageUrl or imagePath, not both. ${NOTHING_UPLOADED2}`);
+  if (!hasPath && !hasUrl)
+    return invalid("Pass imageUrl (an https URL) or imagePath (an absolute path to an image file inside CANDLE_IMAGE_DIR).");
+  if (!hasPath)
+    return { args: rest };
+  if (!cfg.apiKey)
+    return invalid(`CANDLE_AGENT_API_KEY is required to upload an image; the key needs the launch:write scope. ${NOTHING_UPLOADED2}`);
+  let image;
+  try {
+    image = await readImageInDir(imageDir, imagePath, fs);
+  } catch (error2) {
+    if (error2 instanceof ImageRefusal)
+      return { refused: { code: error2.code, message: error2.message } };
+    throw error2;
+  }
+  let res;
+  try {
+    res = await doFetch(`${cfg.apiUrl.replace(/\/$/, "")}/api/v1/uploads/agent-image`, {
+      method: "POST",
+      headers: { "Content-Type": image.contentType, "x-api-key": cfg.apiKey },
+      body: image.bytes
+    });
+  } catch (error2) {
+    return {
+      refused: {
+        code: "MCP_TRANSPORT",
+        message: `The image upload failed in transit (${error2 instanceof Error ? error2.message : String(error2)}). ` + "No launch was attempted. The upload may or may not have reached Candle; if it did, the file is public."
+      }
+    };
+  }
+  noteVersionHeaders(res);
+  const text = await res.text();
+  if (!res.ok)
+    return { uploadFailed: text };
+  let uploaded;
+  try {
+    uploaded = JSON.parse(text)?.imageUrl;
+  } catch {
+    uploaded = undefined;
+  }
+  if (typeof uploaded !== "string" || !uploaded.startsWith("https://"))
+    return {
+      refused: {
+        code: "MCP_TRANSPORT",
+        message: "Candle did not return an https URL for the uploaded image. No launch was attempted."
+      }
+    };
+  return { args: { ...rest, imageUrl: uploaded }, uploaded };
+}
+function imageRefusalBody(refused, extra) {
+  return JSON.stringify({ ...extra, success: false, error: { code: refused.code, message: refused.message } });
+}
+var MAX_IMAGE_BYTES2, OUTSIDE_IMAGE_DIR = "Image files must be inside the configured CANDLE_IMAGE_DIR.", NOTHING_UPLOADED2 = "Nothing was uploaded.", READ_CHUNK_BYTES, ImageRefusal, nodeFs, UPLOADED_IMAGE_NOTE = "imagePath was uploaded to imageUrl, which is public and permanent. To retry, or to launch after a dry run, pass this imageUrl instead of imagePath, so the file is not uploaded again.";
+var init_image = __esm(() => {
+  init_update_notice();
+  MAX_IMAGE_BYTES2 = 10 * 1024 * 1024;
+  READ_CHUNK_BYTES = 256 * 1024;
+  ImageRefusal = class ImageRefusal extends Error {
+    code;
+    constructor(code, message) {
+      super(message);
+      this.code = code;
+    }
+  };
+  nodeFs = { realpath, lstat: lstat2, open: open5 };
 });
 
 // ../mcp/src/orchestrate.ts
@@ -61419,10 +61626,10 @@ async function executeTrade(args, cfg, doFetch) {
   const wrapped = JSON.stringify({ clientTradeId, resolved, api: posted.body });
   return posted.ok ? { text: wrapped } : { text: wrapped, isError: true };
 }
-async function executeLaunchAndSeed(args, cfg, doFetch) {
+async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs) {
   const apiKey = requireApiKey(cfg);
   const clientLaunchId = args.clientLaunchId ?? randomUUID6();
-  const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...launchFields } = args;
+  const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...imageFields } = args;
   let buyAmount;
   if (devBuy !== undefined) {
     const q = quoteIdDecimals(args.quoteAsset, args.chain, { clientLaunchId });
@@ -61433,19 +61640,34 @@ async function executeLaunchAndSeed(args, cfg, doFetch) {
       return converted.err;
     buyAmount = converted.raw;
   }
+  const image = await resolveLaunchImage(imageFields, imageDir, cfg, doFetch, imageFs);
+  if ("refused" in image)
+    return { text: imageRefusalBody(image.refused, { clientLaunchId }), isError: true };
+  if ("uploadFailed" in image) {
+    let api2;
+    try {
+      api2 = JSON.parse(image.uploadFailed);
+    } catch {
+      api2 = image.uploadFailed;
+    }
+    return { text: JSON.stringify({ clientLaunchId, api: api2 }), isError: true };
+  }
+  const uploaded = image.uploaded === undefined ? {} : { imageUrl: image.uploaded, imageNote: UPLOADED_IMAGE_NOTE };
   const path = dryRun ? "/api/v1/launch/headless/dry-run" : "/api/v1/launch/headless";
   const posted = await postJson(`${base(cfg)}${path}`, apiKey, {
-    ...launchFields,
+    ...image.args,
     clientLaunchId,
     ...buyAmount !== undefined ? { buyAmount } : {}
   }, doFetch);
-  if ("thrown" in posted)
-    return transportError("clientLaunchId", clientLaunchId, posted.thrown);
+  if ("thrown" in posted) {
+    const failed = transportError("clientLaunchId", clientLaunchId, posted.thrown);
+    return image.uploaded === undefined ? failed : { ...failed, text: JSON.stringify({ ...JSON.parse(failed.text), ...uploaded }) };
+  }
   if (!posted.ok) {
-    return { text: JSON.stringify({ clientLaunchId, api: posted.body }), isError: true };
+    return { text: JSON.stringify({ clientLaunchId, ...uploaded, api: posted.body }), isError: true };
   }
   if (dryRun) {
-    return { text: JSON.stringify({ clientLaunchId, dryRun: true, api: posted.body }) };
+    return { text: JSON.stringify({ clientLaunchId, dryRun: true, ...uploaded, api: posted.body }) };
   }
   const launch2 = posted.body;
   let market = null;
@@ -61466,7 +61688,7 @@ async function executeLaunchAndSeed(args, cfg, doFetch) {
     note = "launch confirmed; the follow-up market read failed, read it via candle_get_market";
   }
   return {
-    text: JSON.stringify({ clientLaunchId, launch: launch2, market, ...note ? { note } : {} })
+    text: JSON.stringify({ clientLaunchId, ...uploaded, launch: launch2, market, ...note ? { note } : {} })
   };
 }
 async function executeSweep(args, cfg, doFetch) {
@@ -61580,6 +61802,7 @@ async function executionStatus(cfg, doFetch) {
 var SWEEP_BASE_ASSETS;
 var init_orchestrate = __esm(() => {
   init_convert();
+  init_image();
   init_update_notice();
   SWEEP_BASE_ASSETS = {
     solana: ["USDC", "CNDL", "SOL"],
@@ -62694,11 +62917,24 @@ function registerToolSubset(server, options) {
       return;
     server.registerTool(name2, { ...definition, ...options.metadata?.[name2] }, handler);
   };
+  const imageDir = configuredImageDir(env);
   register("candle_launch_token", {
     title: "Launch a token on Candle",
-    description: "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything.",
-    inputSchema: launchTokenShape
-  }, async (args) => callAndRelay("candle_launch_token", args, getConfig(), doFetch));
+    description: "Launch a new token via the Candle headless launch API, from the account's embedded wallet. Works on every plan, Free included. Set dryRun: true to validate without spending anything." + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
+    inputSchema: imageDir ? localLaunchTokenShape : launchTokenShape
+  }, async (args) => {
+    const image = await resolveLaunchImage(args, imageDir, getConfig(), doFetch);
+    if ("refused" in image) {
+      return { content: [{ type: "text", text: imageRefusalBody(image.refused) }], isError: true };
+    }
+    if ("uploadFailed" in image)
+      return { content: [{ type: "text", text: image.uploadFailed }], isError: true };
+    const relayed = await callAndRelay("candle_launch_token", image.args, getConfig(), doFetch);
+    if (image.uploaded === undefined)
+      return relayed;
+    const uploaded = JSON.stringify({ imageUrl: image.uploaded, note: UPLOADED_IMAGE_NOTE });
+    return { ...relayed, content: [...relayed.content, { type: "text", text: uploaded }] };
+  });
   register("candle_get_market", {
     title: "Get market state",
     description: "Read Candle and indexed external markets, including indexed-but-not-routable tokens. No key needed. " + EXTERNAL_MARKET_DISCLOSURE + " " + "Read candleLaunched, launchpad, venue and trade.routable; jupiterOk and discovery flags are distinct. " + "Routability is stored eligibility, not a quote or permission. General quotes use POST /api/v1/trade/agent/quote. " + "Curve quotes and lifecycle describe Candle launches. MARKET_NOT_FOUND is a legacy code: read " + "error.routing.reason, error.discovery and sibling error.retryable. A curve-only 404 does not mean untradeable.",
@@ -62872,10 +63108,10 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
   });
   register("candle_launch_and_seed", {
     title: "Launch a token and seed it",
-    description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed (in the " + "launch transaction on solana, a best-effort follow-up on hood). Works on every plan, Free included (this is not the atomic launch). Then " + "return the fresh market state and token links in one result. MOVES REAL FUNDS unless " + "dryRun. Seeds above the platform dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH); " + "launch, then top up with candle_trade.",
-    inputSchema: launchAndSeedShape
+    description: "Launch a new token from the account's embedded wallet, with an optional dev-buy seed (in the " + "launch transaction on solana, a best-effort follow-up on hood). Works on every plan, Free included (this is not the atomic launch). Then " + "return the fresh market state and token links in one result. MOVES REAL FUNDS unless " + "dryRun. Seeds above the platform dev-buy ceiling are rejected (DEV_BUY_TOO_HIGH); " + "launch, then top up with candle_trade." + (imageDir ? IMAGE_PATH_DISCLOSURE : ""),
+    inputSchema: imageDir ? localLaunchAndSeedShape : launchAndSeedShape
   }, async (args) => {
-    const result = await executeLaunchAndSeed(args, getConfig(), doFetch);
+    const result = await executeLaunchAndSeed(args, getConfig(), doFetch, imageDir);
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
   const perpsTool = (tool) => async (args) => {
@@ -62927,10 +63163,11 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
 }
-var TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, getOperationShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, launchAndSeedShape, transferShape, sweepShape;
+var TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, getOperationShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, seedShape, launchAndSeedShape, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape;
 var init_tools = __esm(() => {
   init_zod();
   init_convert();
+  init_image();
   init_market_disclosure();
   init_orchestrate();
   init_perps();
@@ -63065,11 +63302,18 @@ var init_tools = __esm(() => {
     paper: exports_external.preprocess((value) => value === "true" || value === 1 || value === "1" ? true : value === "false" || value === 0 || value === "0" ? false : value, exports_external.boolean().optional().describe("Rehearse instead of trading. The request passes every admission rule a live trade passes " + "-- the same planner, spend gate, key cap and loss limits -- and records the quote, but " + "nothing is ever broadcast and no funds move. Use it to check that a strategy is admitted " + "before risking anything on it. A paper fill is optimistic by construction: it books the " + "quoted price, so the gap between a paper arm and a live one IS the execution cost. " + "A sell of a mint this key already paper-bought also closes that paper book when the " + "live wallet is empty, even if this flag is omitted."))
   };
   ({ buyAmount: _rawBuyAmount, ...seedableLaunchShape } = launchTokenShape);
-  launchAndSeedShape = {
-    ...seedableLaunchShape,
+  seedShape = {
     clientLaunchId: exports_external.string().optional().describe("Idempotency key. Auto-generated when omitted and echoed in the result."),
     devBuy: exports_external.string().optional().describe('Seed buy in DECIMAL units of the quote asset this launch selects (e.g. "0.25" SOL, or ' + "ETH on hood), bundled into the launch transaction itself on solana and sent as a follow-up " + "transaction on hood. Paid from the account's embedded wallet. Follows quoteAsset, which " + "defaults to sol on solana and eth on hood. Capped by the platform dev-buy ceiling; for " + "a larger seed, launch then follow with candle_trade.")
   };
+  launchAndSeedShape = { ...seedableLaunchShape, ...seedShape };
+  localImageShape = {
+    imageUrl: launchTokenShape.imageUrl.optional().describe(`${launchTokenShape.imageUrl.description}. Pass this or imagePath, never both`),
+    imagePath: exports_external.string().optional().describe("An absolute image path inside CANDLE_IMAGE_DIR. The file is uploaded and becomes public and permanent, " + "including on a dry run. PNG, JPEG, GIF or WebP, at most 10MB, read from the file's first bytes. " + "Uploading spends no funds and does not count against the launch cap; only the upload limit applies. " + "Pass this or imageUrl, never both. The result carries the imageUrl used: pass that on a retry, or " + "after a dry run, instead of uploading the file again. bannerUrl takes no file")
+  };
+  localLaunchTokenShape = { ...launchTokenShape, ...localImageShape };
+  localLaunchAndSeedShape = { ...seedableLaunchShape, ...localImageShape, ...seedShape };
+  IMAGE_PATH_DISCLOSURE = " With imagePath, the image file is uploaded first and becomes public and permanent, on a dry run too; " + "nothing about a dry run keeps that file private.";
   transferShape = {
     chain: exports_external.enum(["solana", "hood"]).describe("Which chain the transfer executes on"),
     asset: exports_external.enum(["SOL", "USDC", "CNDL", "ETH", "USDG"]).optional().describe("A base asset key. Pass exactly one of asset or mint."),
@@ -63162,7 +63406,7 @@ Full reference, error catalogue and end-to-end recipes: https://docs.candle.tv â
 // src/index.ts
 import { spawn as spawn3 } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { chmod as chmod8, readFile as readFile10, realpath, rename as rename6, unlink, writeFile as writeFile7 } from "node:fs/promises";
+import { chmod as chmod8, readFile as readFile10, realpath as realpath2, rename as rename6, unlink, writeFile as writeFile7 } from "node:fs/promises";
 import { homedir as homedir6, hostname } from "node:os";
 import { pathToFileURL } from "node:url";
 
@@ -63211,7 +63455,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.24";
+var CLI_VERSION = "0.11.25";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -84755,7 +84999,7 @@ async function buildRealDeps() {
     platformKey: platformKey(process.platform, process.arch),
     platform: process.platform,
     arch: process.arch,
-    realpath: (path) => realpath(path),
+    realpath: (path) => realpath2(path),
     spawnHelper: realSpawnHelper,
     releasePolicy: RELEASE_POLICY,
     writeBytes: async (path, bytes) => {

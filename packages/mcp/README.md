@@ -79,6 +79,10 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 - `CANDLE_KEY_SIGNER_PEM_FILE` -- the perps write tools only: the path to the key signer's PEM
   (`candle tee signer new --out <pem>` writes one). The relay's authorization is signed with it;
   without it those tools refuse before anything is built.
+- `CANDLE_IMAGE_DIR` -- the launch tools only: an absolute path to a directory of images you mean
+  to publish. Set, `candle_launch_token` and `candle_launch_and_seed` accept `imagePath` for a
+  file inside it; unset, they take `imageUrl` only and the server reads no image file. See
+  [Launching with an image file](#launching-with-an-image-file).
 - `CANDLE_HYPERLIQUID_BUILDER` / `CANDLE_HYPERLIQUID_NETWORK` -- the perps tools: pin Candle's
   Hyperliquid builder address for the pre-sign check, and set `testnet` to trade testnet.
 - `CANDLE_API_KEY` -- alias for `CANDLE_AGENT_API_KEY`, the same variable name the Candle CLI uses
@@ -88,7 +92,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 
 | Tool | Description | REST call | Auth |
 | --- | --- | --- | --- |
-| `candle_launch_token` | Launch a token on Candle | `POST /api/v1/launch/headless` (or `/dry-run` when `dryRun: true`) | `CANDLE_AGENT_API_KEY` |
+| `candle_launch_token` | Launch a token on Candle | `POST /api/v1/launch/headless` (or `/dry-run` when `dryRun: true`); with `imagePath`, `POST /api/v1/uploads/agent-image` first | `CANDLE_AGENT_API_KEY` |
 | `candle_get_market` | Get market state | `GET /api/v1/markets/:chain/:mint` | none |
 | `candle_get_feed` | Get a token feed | `GET /api/v1/markets/feed?bucket=...` | none |
 | `candle_token_forensics` | Deployer history, deploy-window buyers, sourced token safety flags | `GET /api/v1/markets/:chain/:mint/forensics` | none |
@@ -96,7 +100,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_get_agent_profile` | Get an agent profile | `GET /api/v1/users/:idOrWallet/agent` | none |
 | `candle_get_plans` | Plans: prices, fees, limits and what each can do, as JSON and a Markdown table | `GET /api/v1/agent/plans` | none |
 | `candle_trade` | Buy or sell a token | Reads the market for its decimals (or wallet balance, for a percent sell) then `POST /api/v1/trade/agent/build` | `CANDLE_AGENT_API_KEY` (`swap:write`) |
-| `candle_launch_and_seed` | Launch a token and seed it | `POST /api/v1/launch/headless` (or `/dry-run`), then a follow-up `GET /api/v1/markets/:chain/:mint` | `CANDLE_AGENT_API_KEY` |
+| `candle_launch_and_seed` | Launch a token and seed it | `POST /api/v1/launch/headless` (or `/dry-run`), then a follow-up `GET /api/v1/markets/:chain/:mint`; with `imagePath`, `POST /api/v1/uploads/agent-image` first | `CANDLE_AGENT_API_KEY` |
 | `candle_swap` | Swap between base assets | `POST /api/v1/agent/swap` | `CANDLE_AGENT_API_KEY` (`swap:write`) |
 | `candle_transfer` | Transfer an asset | `POST /api/v1/agent/transfer` | `CANDLE_AGENT_API_KEY`, Withdraw (`transfer:write`) |
 | `candle_sweep` | Sweep a wallet to one destination | One `POST /api/v1/agent/transfer` per asset, `amountRaw: "max"` | `CANDLE_AGENT_API_KEY`, Withdraw (`transfer:write`) |
@@ -119,6 +123,35 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_perps_deposit` | Deposit onto the key's Hyperliquid account through Relay, from its Solana or Hood TEE wallet | `POST /api/v1/agent/perps/deposit`, checked here, relay-signed, `POST /api/v1/agent/perps/deposit/submit` | `CANDLE_AGENT_API_KEY` (`swap:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
 | `candle_perps_orders` | Open Hyperliquid orders and every action Candle built | `GET /api/v1/agent/perps/orders` | `CANDLE_AGENT_API_KEY` |
 | `candle_perps_positions` | Perps positions and account value, read live | `GET /api/v1/agent/perps/positions` | `CANDLE_AGENT_API_KEY` |
+
+### Launching with an image file
+
+A launch takes its image as `imageUrl`, an `https://` URL. With `CANDLE_IMAGE_DIR` set to an
+absolute directory path, `candle_launch_token` and `candle_launch_and_seed` also accept
+`imagePath`: an absolute path to a PNG, JPEG, GIF or WebP file of at most 10MB inside that
+directory. The server uploads it through `POST /api/v1/uploads/agent-image` and launches with the
+URL that comes back; the launch routes never see a path. Pass exactly one of `imageUrl` and
+`imagePath`.
+
+- **The directory is the operator's grant.** A file is read only when its real path is inside the
+  real path of `CANDLE_IMAGE_DIR`; a link that leads outside is refused, and every path outside
+  gets the same sentence (`IMAGE_OUTSIDE_DIR`) whether or not anything is there. Keep only images
+  you mean to publish in it.
+- **An upload is public and permanent, on a dry run too.** `dryRun: true` uploads as well, because
+  the dry run fetches the image it validates. The URL cannot be withdrawn, and a square image
+  keeps its original bytes, metadata such as EXIF and GPS data included.
+- **Checked before any request.** The type comes from the file's first bytes
+  (`IMAGE_TYPE_UNSUPPORTED`), over 10MB is `IMAGE_TOO_LARGE`, a missing or non-regular file is
+  `IMAGE_UNREADABLE`, and a `CANDLE_IMAGE_DIR` that is not an existing directory (or is the
+  filesystem root) refuses every `imagePath` with `IMAGE_DIR_INVALID`.
+- **The result carries the `imageUrl` used.** Pass that on a retry, or after a dry run, instead of
+  uploading the file again.
+- The upload needs `launch:write`, spends no funds and does not count against the daily launch
+  cap; the plan's uploads-per-minute limit applies. `bannerUrl` is always a URL.
+
+The hosted server at `mcp.candle.tv` has no `imagePath`: it cannot read your disk. There, run
+`candle image upload <path>` (Candle CLI 0.11.24 or later, with a `launch:write` key) and pass the
+URL it prints as `imageUrl`.
 
 ### Transfers and sweeps
 
