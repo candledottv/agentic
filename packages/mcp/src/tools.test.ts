@@ -18,6 +18,7 @@ test("all registered tools are listed", () => {
     "candle_get_wallets",
     "candle_launch_and_seed",
     "candle_launch_token",
+    "candle_list_agents",
     "candle_perps_cancel",
     "candle_perps_close",
     "candle_perps_deposit",
@@ -35,6 +36,44 @@ test("all registered tools are listed", () => {
     "candle_trade",
     "candle_transfer",
   ])
+})
+
+describe("buildRequest: the agent directory (FE-431)", () => {
+  const cfg = { apiUrl: "https://api.test/", apiKey: "cndl_live_secret" }
+
+  test("no arguments is the plain list, and a configured key is never sent", () => {
+    const { url, init } = buildRequest("candle_list_agents", {}, cfg)
+    expect(url).toBe("https://api.test/api/v1/agent/directory")
+    expect(init.method).toBe("GET")
+    expect(init.headers).toEqual({ "Content-Type": "application/json" })
+    expect(init.body).toBeUndefined()
+  })
+
+  test("every knob is forwarded under the route's own name, encoded", () => {
+    const { url } = buildRequest(
+      "candle_list_agents",
+      { sort: "pnl", strategy: "momentum", q: "@fox value", limit: 48, cursor: "pnl|momentum|12.5|42.5" },
+      cfg,
+    )
+    const parsed = new URL(url)
+    expect(parsed.pathname).toBe("/api/v1/agent/directory")
+    expect(Object.fromEntries(parsed.searchParams)).toEqual({
+      sort: "pnl",
+      strategy: "momentum",
+      q: "@fox value",
+      limit: "48",
+      cursor: "pnl|momentum|12.5|42.5",
+    })
+  })
+
+  test("a blank knob is left off rather than sent empty, and there is no model argument", () => {
+    const { url } = buildRequest(
+      "candle_list_agents",
+      { sort: "", strategy: "", q: "", cursor: "", model: "claude" },
+      cfg,
+    )
+    expect(url).toBe("https://api.test/api/v1/agent/directory")
+  })
 })
 
 describe("buildRequest: creator fees (FE-438)", () => {

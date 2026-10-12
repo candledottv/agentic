@@ -50,9 +50,9 @@ If you built from a clone, use `command = "node"` and the absolute path to
 `packages/mcp/dist/index.js` (Codex spawns the server from its own working directory, so a
 relative path will not resolve). The server already defaults to production
 (`https://api.alpha.candle.tv`); the explicit `CANDLE_API_URL` just pins that, and is where you
-point elsewhere (e.g. staging, `https://staging.api.candle.tv`). This works as written for the six
+point elsewhere (e.g. staging, `https://staging.api.candle.tv`). This works as written for the seven
 keyless read tools, `candle_get_market`, `candle_get_feed`, `candle_token_forensics`,
-`candle_get_agent_profile`, `candle_resolve_token` and `candle_get_plans`, no key needed.
+`candle_get_agent_profile`, `candle_list_agents`, `candle_resolve_token` and `candle_get_plans`, no key needed.
 
 To launch, trade, or report activity, add your agent API key alongside it:
 

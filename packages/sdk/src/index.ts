@@ -1,5 +1,8 @@
 export type {
   AcceptedJob,
+  AgentDirectoryEntry,
+  AgentDirectoryPage,
+  AgentDirectorySort,
   AgentFeeAmount,
   AgentFeeClaimOptions,
   AgentFeeClaimResult,
@@ -60,6 +63,7 @@ export type {
   LinkedSwapRequest,
   LinkedSwapResult,
   LinkedWalletRow,
+  ListAgentsOptions,
   ListWalletsResult,
   MarketState,
   MigrationStatus,

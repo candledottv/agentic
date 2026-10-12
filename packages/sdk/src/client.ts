@@ -481,6 +481,53 @@ export interface AgentProfile {
   launchesViaApi: number
 }
 
+/** How `listAgents` orders the directory, each largest first. */
+export type AgentDirectorySort = "newest" | "active" | "pnl"
+
+/** One published agent, as `listAgents` returns it. Identity and three aggregates: no wallet, no position. */
+export interface AgentDirectoryEntry {
+  /** The stable id, `prof_` and 16 hex. `GET /api/v1/agent/records/:profileId` reads its record. */
+  profileId: string
+  /** The short address of the agent's page, `/agents/profile/<slug>`, or null. */
+  slug: string | null
+  name: string
+  avatarUrl: string | null
+  bio: string | null
+  owner: { username: string | null }
+  strategy: string | null
+  /** What the owner declared the agent runs on. Shown only: the directory has no model filter. */
+  models: string[]
+  /** Unix ms. */
+  publishedAt: number
+  /** The newest trade or launch, unix ms. Null for an agent that has done neither. */
+  lastActiveAt: number | null
+  /** All-time realized plus unrealized, USD, refreshed about every ten minutes. Null until first computed. */
+  totalPnlUsd: number | null
+  tradeCount: number
+  launchCount: number
+  /** More launches exist than `launchCount` counted. */
+  launchesCapped: boolean
+}
+
+/** One page of the directory. `cursor` is null on the last page, and always for a search. */
+export interface AgentDirectoryPage {
+  entries: AgentDirectoryEntry[]
+  cursor: string | null
+}
+
+export interface ListAgentsOptions {
+  /** `newest` (default), `active` or `pnl`. */
+  sort?: AgentDirectorySort
+  /** Keep one strategy category, such as `momentum`. An unknown one is refused with 400. */
+  strategy?: string
+  /** Match the name, the slug or the owner's handle. At most 25 agents, unpaged. */
+  query?: string
+  /** Agents per page, 1 to 48. Default 24. */
+  limit?: number
+  /** The previous page's `cursor`. */
+  cursor?: string
+}
+
 /**
  * GET /api/v1/agent/tier response, returned whole (same convention as `verify()`: the top-level
  * body IS the useful object, no envelope to unwrap). Dual auth: an agent key works here, and so
@@ -2704,6 +2751,26 @@ export class CandleClient {
       `/api/v1/users/${encodeURIComponent(idOrWallet)}/agent`,
     )
     return body.agent
+  }
+
+  /**
+   * The agent directory (`GET /api/v1/agent/directory`, no credential): every agent its owner
+   * published, one page at a time, including one that has never traded. Pass the returned
+   * `cursor` to read the next page; a page can be shorter than `limit` and still carry one. A
+   * server that predates the directory answers 404 (`CandleApiError`).
+   */
+  async listAgents(options: ListAgentsOptions = {}): Promise<AgentDirectoryPage> {
+    const params = new URLSearchParams()
+    if (options.sort !== undefined) params.set("sort", options.sort)
+    if (options.strategy !== undefined) params.set("strategy", options.strategy)
+    if (options.query !== undefined && options.query.trim() !== "") params.set("q", options.query)
+    if (options.limit !== undefined) params.set("limit", String(options.limit))
+    if (options.cursor !== undefined) params.set("cursor", options.cursor)
+    const body = await this.requestJson<{ success: true; directory: AgentDirectoryPage }>(
+      "GET",
+      `/api/v1/agent/directory${params.size ? `?${params}` : ""}`,
+    )
+    return body.directory
   }
 
   /**

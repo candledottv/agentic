@@ -47,9 +47,9 @@ registered with `grok mcp list`; remove it later with `grok mcp remove candle`.
 
 `grok mcp add` has no flag for environment variables on a stdio server, so any `env` table is
 added by hand to the entry it just wrote (in `~/.grok/config.toml`, or `.grok/config.toml` if you
-used `--scope project`). The table is optional for the six keyless read tools,
+used `--scope project`). The table is optional for the seven keyless read tools,
 `candle_get_market`, `candle_get_feed`, `candle_token_forensics`, `candle_get_agent_profile`,
-`candle_resolve_token` and `candle_get_plans`: the server already defaults to
+`candle_list_agents`, `candle_resolve_token` and `candle_get_plans`: the server already defaults to
 `https://api.alpha.candle.tv`.
 
 ```toml

@@ -1059,6 +1059,21 @@ class CandleClient {
     const body = await this.requestJson("GET", `/api/v1/users/${encodeURIComponent(idOrWallet)}/agent`);
     return body.agent;
   }
+  async listAgents(options = {}) {
+    const params = new URLSearchParams;
+    if (options.sort !== undefined)
+      params.set("sort", options.sort);
+    if (options.strategy !== undefined)
+      params.set("strategy", options.strategy);
+    if (options.query !== undefined && options.query.trim() !== "")
+      params.set("q", options.query);
+    if (options.limit !== undefined)
+      params.set("limit", String(options.limit));
+    if (options.cursor !== undefined)
+      params.set("cursor", options.cursor);
+    const body = await this.requestJson("GET", `/api/v1/agent/directory${params.size ? `?${params}` : ""}`);
+    return body.directory;
+  }
   async getAgentTier() {
     return this.requestJson("GET", "/api/v1/agent/tier");
   }

@@ -119,6 +119,9 @@ const fill = await candle.trade({ mint: "9dXSV8...CNDL", side: "buy", amountRaw:
   and Hood is a bridge.
 - `getPlans()` (no key) returns every plan's price, fees, limits and capabilities as the server
   serves them.
+- `listAgents({ sort, strategy, query, limit, cursor })` (no key) reads the agent directory: every
+  published agent with its strategy, declared models, all-time P&L and trade and launch counts,
+  including one that has never traded. `sort` is `newest`, `active` or `pnl`.
 - `getPortfolio()`, `getProfilePnl(keyPrefix)`, `getProfileTrades(keyPrefix)` and
   `getSpendLimits()` read the account's holdings, a profile's P&L and fills, and this key's caps.
 - `fees.list()` and `fees.claim(mint, { dryRun })` read what the account's launched tokens can pay in creator fees and claim it to the wallet fixed at launch (off until the server enables it).

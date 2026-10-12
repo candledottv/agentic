@@ -476,6 +476,69 @@ describe("request shapes", () => {
     expect((await client.getAgentTier()).planTable).toEqual(plans)
   })
 
+  test("listAgents: GET /api/v1/agent/directory with no credential, unwraps the page", async () => {
+    const directory = {
+      entries: [
+        {
+          profileId: "prof_aaaaaaaaaaaaaaaa",
+          slug: "fox",
+          name: "Fox momentum",
+          avatarUrl: null,
+          bio: null,
+          owner: { username: "fox_trader" },
+          strategy: "momentum",
+          models: ["claude"],
+          publishedAt: 1,
+          lastActiveAt: null,
+          totalPnlUsd: null,
+          tradeCount: 0,
+          launchCount: 0,
+          launchesCapped: false,
+        },
+      ],
+      cursor: "newest||1|2.5",
+    }
+    const { client, calls } = makeClient({ apiKey: "cndl_live_secret" }, [json(200, { success: true, directory })])
+    expect(await client.listAgents()).toEqual(directory)
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/agent/directory")
+    expect(calls[0]?.method).toBe("GET")
+  })
+
+  test("listAgents: every option is sent under the route's name, and a blank query is left off", async () => {
+    const page = { success: true, directory: { entries: [], cursor: null } }
+    const { client, calls } = makeClient({}, [json(200, page), json(200, page)])
+    await client.listAgents({
+      sort: "pnl",
+      strategy: "momentum",
+      query: "@fox value",
+      limit: 48,
+      cursor: "pnl|momentum|1|2",
+    })
+    await client.listAgents({ query: "  " })
+    const first = new URL(calls[0]?.url ?? "")
+    expect(first.pathname).toBe("/api/v1/agent/directory")
+    expect(Object.fromEntries(first.searchParams)).toEqual({
+      sort: "pnl",
+      strategy: "momentum",
+      q: "@fox value",
+      limit: "48",
+      cursor: "pnl|momentum|1|2",
+    })
+    expect(calls[1]?.url).toBe("https://api.test/api/v1/agent/directory")
+  })
+
+  test("listAgents: a refused strategy is a CandleApiError carrying the field", async () => {
+    const { client } = makeClient({}, [
+      json(400, {
+        success: false,
+        error: { code: "VALIDATION_FAILED", message: "strategy must be one of", field: "strategy" },
+      }),
+    ])
+    const error = (await client.listAgents({ strategy: "nope" }).catch((e: unknown) => e)) as CandleApiError
+    expect(error).toBeInstanceOf(CandleApiError)
+    expect(error.code).toBe("VALIDATION_FAILED")
+  })
+
   test("getPlans: GET /api/v1/agent/plans with no credential, returns the table whole", async () => {
     const body = { success: true as const, plans: [], promoMaxDays: 30 }
     const { client, calls } = makeClient({}, [json(200, body)])
