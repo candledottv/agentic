@@ -34,10 +34,11 @@ import {
   tradingWallet,
   walletNameChain,
 } from "../trading"
+import { type LocalImage, readLocalImage, uploadImage, uploadNotice } from "./image"
 import { lookupOperation, printTradingResult, recordTradedToken, tradingFailure, validClientId } from "./swap"
 
 const USAGE =
-  "Usage: candle launch --name <name> --symbol <symbol> --image-url <https-url> --wallet <tee> [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
+  "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version."
 
 /** The launch quote assets by chain, as the server's launch matrix lists them. */
 const QUOTE_CHAIN: Record<string, TradeChain> = {
@@ -134,6 +135,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     valueFlags: [
       "--name",
       "--symbol",
+      "--image",
       "--image-url",
       "--description",
       "--wallet",
@@ -145,6 +147,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       "--buy",
     ],
     booleanFlags: ["--yes"],
+    pathFlags: ["--image"],
   })
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json)
@@ -152,11 +155,29 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
   }
   const flags = parsed.values
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID()}`
+  // BE-1283: the image is a file on this machine or a hosted URL, exactly one of the two.
+  if (flags["--image"] !== undefined && flags["--image-url"] !== undefined) {
+    writeUsageFailure(
+      ctx.deps,
+      `Pass --image <path> or --image-url <https-url>, not both: a launch has one image. ${USAGE}`,
+      ctx.json,
+    )
+    return 2
+  }
+  // The server's own rule (`imageUrl must be an https URL`), answered here with the way forward.
+  if (flags["--image-url"] !== undefined && !flags["--image-url"].startsWith("https://")) {
+    writeUsageFailure(
+      ctx.deps,
+      "--image-url takes an https:// URL; for an image file on this machine, use --image <path> instead.",
+      ctx.json,
+    )
+    return 2
+  }
   if (
     parsed.positionals.length ||
     !flags["--name"] ||
     !flags["--symbol"] ||
-    !flags["--image-url"] ||
+    (flags["--image"] === undefined && flags["--image-url"] === undefined) ||
     !flags["--wallet"] ||
     !validClientId(id) ||
     (flags["--dex-version"] !== undefined && flags["--dex-version"] !== "v3" && flags["--dex-version"] !== "v4")
@@ -171,6 +192,14 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     if (hinted === "hood" && flags["--dex-version"] === undefined) {
       writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE}`, ctx.json)
       return 2
+    }
+    // BE-1283: a file that is unreadable, over 10MB or not one of the four image types is refused
+    // here, before any request. No launch id is involved yet, so the failure names none.
+    let image: LocalImage | undefined
+    try {
+      if (flags["--image"] !== undefined) image = await readLocalImage(flags["--image"])
+    } catch (error) {
+      return tradingFailure(ctx, error)
     }
     const key = await tradingKey(ctx)
     const prior = await lookupOperation(ctx, key, id, "launch")
@@ -190,14 +219,31 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       return printTradingResult(ctx, prior)
     }
     const wallet = await tradingWallet(ctx, key, flags["--wallet"], "launch:write", hinted ?? "any")
-    if (wallet.chain === "evm") {
-      if (flags["--dex-version"] === undefined)
-        throw new TradingUsage(`${wallet.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`)
-      const buy = launchBuy(flags, "hood")
-      return await hoodLaunch(ctx, key, { flags, id, wallet, buy, yes: parsed.booleans.has("--yes") })
+    const chain: TradeChain = wallet.chain === "evm" ? "hood" : "solana"
+    if (chain === "hood" && flags["--dex-version"] === undefined)
+      throw new TradingUsage(`${wallet.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`)
+    const buy = launchBuy(flags, chain)
+    // Only a Solana launch reads an RPC. Resolved before the upload, so an endpoint that fails
+    // validation refuses the launch with nothing published.
+    const solana = chain === "solana" ? await tradingSolanaClient(ctx, flags["--rpc-url"]) : undefined
+    // BE-1283: one upload, on a first run only (a resumed operation returned above), after every
+    // refusal this machine can decide and before either chain claims the launch id. A failed upload
+    // therefore leaves the id unused, and both chains build with the URL that came back.
+    let imageUrl = flags["--image-url"] ?? ""
+    if (image) {
+      ctx.deps.stderr.write(uploadNotice(image))
+      try {
+        imageUrl = await uploadImage(ctx, key, image)
+      } catch (error) {
+        ctx.deps.stderr.write(`The launch was not started, and its id ${id} is unused.\n`)
+        return tradingFailure(ctx, error)
+      }
+      ctx.deps.stderr.write(`Image: ${safeText(imageUrl)}\n`)
     }
-    const buy = launchBuy(flags, "solana")
-    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"])
+    // With --image the result carries the URL the launch was made with.
+    const used: Json = image ? { imageUrl: safeText(imageUrl) } : {}
+    if (!solana)
+      return await hoodLaunch(ctx, key, { flags, id, wallet, buy, imageUrl, used, yes: parsed.booleans.has("--yes") })
     if (!(await claimOperation(ctx, key, id, "launch")))
       throw new TradingError(
         "OPERATION_ALREADY_STARTED",
@@ -211,7 +257,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
         buyAmount: buy ? buy.raw : 0,
         name: flags["--name"],
         symbol: flags["--symbol"],
-        imageUrl: flags["--image-url"],
+        imageUrl,
         linkedWalletId: wallet.id,
         ...(flags["--description"] ? { description: flags["--description"] } : {}),
         ...(flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {}),
@@ -237,7 +283,14 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
     }
     ctx.deps.stderr.write(buyNotice(buy, "solana"))
     if (!(await confirmQuote(ctx, quote, parsed.booleans.has("--yes"))))
-      return printTradingResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind: "launch", quote })
+      return printTradingResult(ctx, {
+        success: true,
+        status: "cancelled",
+        clientTradeId: id,
+        kind: "launch",
+        quote,
+        ...used,
+      })
     if (!Number.isFinite(built.expiresAt) || built.expiresAt <= ctx.deps.now())
       throw new TradingError("QUOTE_EXPIRED", "The launch build expired before signing.")
     const signed = await relaySign(ctx, key, wallet, built.transaction)
@@ -259,7 +312,7 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
       throw new TradingError("RPC_FAILED", "RPC returned a different transaction signature; check the saved operation.")
     ctx.deps.stderr.write(`Launch signature: ${signature}\n`)
     const result = await request(ctx, key, "/api/v1/launch/self/confirm", { clientLaunchId: id, signature })
-    return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch", quote })
+    return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch", quote, ...used })
   } catch (error) {
     return tradingFailure(ctx, error, id)
   }
@@ -279,7 +332,17 @@ export async function launch(args: string[], ctx: CommandContext): Promise<numbe
 async function hoodLaunch(
   ctx: CommandContext,
   key: string,
-  args: { flags: Record<string, string>; id: string; wallet: TradingWallet; buy?: LaunchBuy; yes: boolean },
+  args: {
+    flags: Record<string, string>
+    id: string
+    wallet: TradingWallet
+    buy?: LaunchBuy
+    /** The image the build is made with: `--image-url`, or the URL `--image`'s upload returned. */
+    imageUrl: string
+    /** What the result carries beside the launch: the uploaded image's URL, with `--image`. */
+    used: Json
+    yes: boolean
+  },
 ): Promise<number> {
   const { flags, id, wallet, buy } = args
   const allowedLegs = buy ? HOOD_LAUNCH_BUY_LEGS : HOOD_LAUNCH_LEGS
@@ -295,7 +358,7 @@ async function hoodLaunch(
     buyAmount: buy ? buy.raw : 0,
     name: flags["--name"],
     symbol: flags["--symbol"],
-    imageUrl: flags["--image-url"],
+    imageUrl: args.imageUrl,
     linkedWalletId: wallet.id,
     dexVersion: flags["--dex-version"],
     ...(flags["--description"] ? { description: flags["--description"] } : {}),
@@ -366,6 +429,7 @@ async function hoodLaunch(
       quote,
       operationId: first.operationId,
       walletHeldUntil: first.expiresAt,
+      ...args.used,
     })
   }
   const confirmedPlan: readonly string[] | undefined = buy
@@ -417,6 +481,7 @@ async function hoodLaunch(
     wallet: safeText(wallet.address),
     operationId: first.operationId,
     landedLegs: run.landed,
+    ...args.used,
   })
 }
 

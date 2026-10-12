@@ -29,6 +29,7 @@ import { doctor } from "./commands/doctor"
 import { externalList, externalNew, externalSweep } from "./commands/external"
 import { feesClaim, feesList } from "./commands/fees"
 import { help } from "./commands/help"
+import { imageUpload } from "./commands/image"
 import { keysSigner, teeSigner } from "./commands/key-signer"
 import { keysCreate, keysList, keysRevoke } from "./commands/keys"
 import { keysAccess } from "./commands/keys-access"
@@ -171,6 +172,9 @@ const COMMANDS: Record<string, CommandRoute> = {
   // the account's own wallets or the wallet's vault. Server-built, relay-signed, never a vault key.
   transfer: { bare: transfer },
   launch: { bare: launch },
+  // BE-1283: host an image file from this machine and print its URL. `launch --image` uploads
+  // through the same code; this is the upload alone, for a launch made somewhere else.
+  image: { subcommands: { upload: imageUpload } },
   // Ember Phase 3 R7 (BE-316): read-only. `pnl --profile <name>` reads the global flag as the
   // per-key request (see commands/pnl.ts).
   pnl: { bare: pnl },

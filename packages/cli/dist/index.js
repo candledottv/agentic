@@ -98,7 +98,10 @@ function resolveApiUrl(configuredApiUrl, env = process.env) {
   return trimTrailingSlashes(resolved);
 }
 function buildHeaders(opts) {
-  const headers = { "content-type": "application/json", accept: "application/json" };
+  const headers = {
+    "content-type": opts.raw?.contentType ?? "application/json",
+    accept: "application/json"
+  };
   if (opts.auth === "device" && opts.credentials.deviceToken) {
     headers.authorization = `Bearer ${opts.credentials.deviceToken}`;
   } else if (opts.auth === "key" && opts.credentials.apiKey) {
@@ -156,7 +159,7 @@ async function apiRequest(path, opts) {
     return { ok: false, status: 0, code: "INSECURE_API_URL", message: insecure, raw: undefined };
   }
   const headers = buildHeaders(opts);
-  const body = opts.body === undefined ? undefined : JSON.stringify(opts.body);
+  const body = opts.raw ? opts.raw.bytes : opts.body === undefined ? undefined : JSON.stringify(opts.body);
   const doFetch = opts.fetch ?? fetch;
   let response;
   try {
@@ -61554,7 +61557,7 @@ async function executionStatus(cfg, doFetch) {
     get("/api/v1/agent/tier"),
     get("/api/v1/agent/keys/self/limits")
   ]);
-  const unreadable = [
+  const unreadable2 = [
     ["wallets", wallets2],
     ["tier", tier],
     ["limits", limits]
@@ -61563,15 +61566,15 @@ async function executionStatus(cfg, doFetch) {
   return {
     text: JSON.stringify({
       success: true,
-      ready: unreadable.length === 0 ? true : undefined,
+      ready: unreadable2.length === 0 ? true : undefined,
       notice: tierBody?.maxExpired ? tierBody.maxExpiredNotice : undefined,
       updateAvailable: updateAvailable() ?? undefined,
-      unreadable: unreadable.length > 0 ? unreadable.map(([name2]) => name2) : undefined,
+      unreadable: unreadable2.length > 0 ? unreadable2.map(([name2]) => name2) : undefined,
       wallets: wallets2.body,
       tier: tier.body,
       limits: limits.body
     }, null, 2),
-    ...unreadable.length > 0 ? { isError: true } : {}
+    ...unreadable2.length > 0 ? { isError: true } : {}
   };
 }
 var SWEEP_BASE_ASSETS;
@@ -63208,7 +63211,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.23";
+var CLI_VERSION = "0.11.24";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -63879,15 +63882,19 @@ var HELP = {
   launch: {
     group: "Trade",
     summary: "Create a token on Solana or Hood, with an optional first buy",
-    description: "Creates a token from a TEE wallet. Without --buy it makes no first buy, so the launch and the position are two decisions, and the buy is a separate candle swap. --buy <amount> adds a first buy from the same wallet, in whole units of the quote asset (SOL, USDC or CNDL on Solana, ETH on Hood; not USDG), within the dev-buy ceilings: on Solana it rides in the launch transaction, and on Hood it is a last leg after the curve and the fee. Candle reserves the buy against the key's spend window before anything is signed. --buy needs a server with TEE_LAUNCH_BUYS_ENABLED on, which is off by default; while it is off Candle refuses the buy and nothing is built. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee, then the buy with --buy), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path.",
+    description: "Creates a token from a TEE wallet. Without --buy it makes no first buy, so the launch and the position are two decisions, and the buy is a separate candle swap. --buy <amount> adds a first buy from the same wallet, in whole units of the quote asset (SOL, USDC or CNDL on Solana, ETH on Hood; not USDG), within the dev-buy ceilings: on Solana it rides in the launch transaction, and on Hood it is a last leg after the curve and the fee. Candle reserves the buy against the key's spend window before anything is signed. --buy needs a server with TEE_LAUNCH_BUYS_ENABLED on, which is off by default; while it is off Candle refuses the buy and nothing is built. Needs the launch:write scope and allowLaunch on the wallet, which only the account owner can turn on (candle wallets allow-launch <wallet>, over the device token; an agent key cannot). The wallet decides the chain: a Hood TEE wallet launches on Hood, needs --dex-version, and signs one leg at a time (the curve, then the fee, then the buy with --buy), each only after the one before it landed. Launching from a TEE wallet needs Pro or Max (TIER_REQUIRED otherwise; candle plans). Every plan, Free included, can launch from its embedded wallet with an optional dev buy (same transaction on Solana; best-effort follow-up on Hood), through the MCP tool candle_launch_and_seed or the SDK's launch(); this command does not use that path. The image is one of two flags, never both: --image-url <https-url> for one already hosted, or --image <path> for a PNG, JPEG, GIF or WebP file on this machine, at most 10MB. With --image the file is uploaded to Candle first and the launch is made with the URL that comes back, which --json reports as imageUrl. The upload happens before the confirm prompt and cannot be undone: the file becomes public and permanent even if you then decline or the launch fails. Re-running with the same --client-trade-id resumes the launch without uploading again. --image-url takes only an https:// URL.",
     usage: [
-      "candle launch --name <name> --symbol <symbol> --image-url <url> --wallet <tee> [--buy <amount>] [--quote-asset <asset>] [--dex-version v3|v4]"
+      "candle launch --name <name> --symbol <symbol> --image <path>|--image-url <url> --wallet <tee> [--buy <amount>] [--quote-asset <asset>] [--dex-version v3|v4]"
     ],
     rows: [],
     flags: [
       { invocation: "--name <name>", description: "The token's name" },
       { invocation: "--symbol <symbol>", description: "The token's ticker" },
-      { invocation: "--image-url <url>", description: "The token image, already hosted" },
+      {
+        invocation: "--image <path>",
+        description: "The token image as a file on this machine (PNG, JPEG, GIF or WebP, at most 10MB). Uploaded before the confirm prompt; it becomes public and permanent"
+      },
+      { invocation: "--image-url <url>", description: "The token image, already hosted at an https:// URL" },
       { invocation: "--wallet <tee>", description: "The TEE wallet that creates it" },
       {
         invocation: "--buy <amount>",
@@ -63900,10 +63907,25 @@ var HELP = {
       }
     ],
     examples: [
+      "candle launch --name Demo --symbol DEMO --image ./logo.png --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet HoodAgent --dex-version v4",
       "candle launch --name Demo --symbol DEMO --image-url https://example.com/d.png --wallet AgentOne --buy 0.1"
     ],
+    env: ENV_API
+  },
+  image: {
+    group: "Trade",
+    summary: "Host an image file from this machine and print its https URL",
+    description: "Uploads a PNG, JPEG, GIF or WebP file, at most 10MB, to Candle and prints the https URL it is hosted at, ready to be a launch's image. The type is read from the file's first bytes, not its name, and a file that is none of the four or is too large is refused before any request. The upload is a publication: Candle pins the file to public storage, the URL cannot be withdrawn, and whatever the file carries (metadata included) goes with it, so upload only an image meant to be public. It spends no funds and does not count against the daily launch cap; the key's uploads-per-minute limit applies. Needs an API key with the launch:write scope. candle launch --image <path> does this upload itself; use this command for the link alone, or to launch through the hosted connector, which cannot read a file on your machine. Candle crops the image to a square, so this hosts a token image and not a banner.",
+    usage: ["candle image upload <path> [--json]"],
+    rows: [
+      {
+        invocation: "upload <path>",
+        description: "Upload the file and print its URL; --json adds the content type and the size in bytes"
+      }
+    ],
+    examples: ["candle image upload ./logo.png", "candle image upload /Users/me/art/logo.webp --json"],
     env: ENV_API
   },
   portfolio: {
@@ -69950,6 +69972,121 @@ async function help(args, ctx) {
   return 0;
 }
 
+// src/commands/image.ts
+init_args();
+init_deps();
+init_render();
+init_trading();
+init_swap();
+import { open as open4 } from "node:fs/promises";
+var UPLOAD_USAGE = "Usage: candle image upload <path> [--json]";
+var MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+var IMAGE_TYPES = "PNG, JPEG, GIF or WebP";
+var NOTHING_UPLOADED = "Nothing was uploaded.";
+function sniffImageType(bytes) {
+  const at = (offset, signature) => signature.every((byte, i) => bytes[offset + i] === byte);
+  if (at(0, [137, 80, 78, 71, 13, 10, 26, 10]))
+    return "image/png";
+  if (at(0, [255, 216, 255]))
+    return "image/jpeg";
+  if (at(0, [71, 73, 70, 56]) && (bytes[4] === 55 || bytes[4] === 57) && bytes[5] === 97)
+    return "image/gif";
+  if (at(0, [82, 73, 70, 70]) && at(8, [87, 69, 66, 80]))
+    return "image/webp";
+  return;
+}
+function unreadable(path, error) {
+  const code = error.code;
+  const why = code === "ENOENT" || code === "ENOTDIR" ? "there is no file at that path" : code === "EACCES" || code === "EPERM" ? "this user may not read it" : code === "EISDIR" ? "it is not a file" : `the read failed${code ? ` (${code})` : ""}`;
+  return new TradingError("IMAGE_UNREADABLE", `Could not read ${safeText(path)}: ${why}. ${NOTHING_UPLOADED}`);
+}
+async function readLocalImage(path) {
+  const tooLarge = () => new TradingError("IMAGE_TOO_LARGE", `${safeText(path)} is over 10MB, the largest image Candle hosts. ${NOTHING_UPLOADED}`);
+  let bytes;
+  try {
+    const file = await open4(path, "r");
+    try {
+      const stat4 = await file.stat();
+      if (!stat4.isFile())
+        throw Object.assign(new Error("not a regular file"), { code: "EISDIR" });
+      if (stat4.size > MAX_IMAGE_BYTES)
+        throw tooLarge();
+      const buffer = new Uint8Array(MAX_IMAGE_BYTES + 1);
+      let total = 0;
+      while (total < buffer.length) {
+        const { bytesRead } = await file.read(buffer, total, buffer.length - total, null);
+        if (bytesRead === 0)
+          break;
+        total += bytesRead;
+      }
+      bytes = buffer.slice(0, total);
+    } finally {
+      await file.close();
+    }
+  } catch (error) {
+    throw error instanceof TradingError ? error : unreadable(path, error);
+  }
+  if (bytes.length > MAX_IMAGE_BYTES)
+    throw tooLarge();
+  const contentType = sniffImageType(bytes);
+  if (!contentType)
+    throw new TradingError("IMAGE_TYPE_UNSUPPORTED", `${safeText(path)} is not a ${IMAGE_TYPES} image. The type is read from the file's first bytes, not its name. ${NOTHING_UPLOADED}`);
+  return { path, bytes, contentType };
+}
+function uploadNotice(image) {
+  return `Uploading ${safeText(image.path)} (${image.contentType}, ${image.bytes.length} bytes). The file becomes public and permanent: Candle pins it, and the URL cannot be withdrawn.
+`;
+}
+async function uploadImage(ctx, key, image) {
+  const result = await apiRequest("/api/v1/uploads/agent-image", {
+    apiUrl: ctx.apiUrl,
+    credentials: { apiKey: key },
+    auth: "key",
+    method: "POST",
+    raw: { bytes: image.bytes, contentType: image.contentType },
+    fetch: ctx.deps.fetch,
+    env: ctx.deps.env
+  });
+  if (!result.ok)
+    throw new TradingError(result.code ?? "REQUEST_FAILED", result.message);
+  const imageUrl = result.body?.imageUrl;
+  if (typeof imageUrl !== "string" || !imageUrl.startsWith("https://"))
+    throw new TradingError("INVALID_RESPONSE", "Candle did not return an https URL for the uploaded image.");
+  return imageUrl;
+}
+async function imageUpload(args, ctx) {
+  const parsed = parseArgs(args, { pathPositionals: ["<path>"] });
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  const [path, ...rest] = parsed.positionals;
+  if (path === undefined || rest.length !== 0) {
+    writeUsageFailure(ctx.deps, UPLOAD_USAGE, ctx.json);
+    return 2;
+  }
+  try {
+    const image = await readLocalImage(path);
+    const key = await resolveApiKey(ctx.deps, ctx.profile);
+    if (!key) {
+      writeLocalFailure(ctx.deps, {
+        code: "NO_API_KEY",
+        message: `No API key available. ${NOTHING_UPLOADED}`,
+        suggestion: "Run: candle auth login, or set CANDLE_API_KEY. The key needs the launch:write scope."
+      }, ctx.json);
+      return 1;
+    }
+    ctx.deps.stderr.write(uploadNotice(image));
+    const imageUrl = safeText(await uploadImage(ctx, key, image));
+    ctx.deps.stdout.write(ctx.json ? `${JSON.stringify({ success: true, imageUrl, contentType: image.contentType, bytes: image.bytes.length })}
+` : `${imageUrl}
+`);
+    return 0;
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
+}
+
 // src/index.ts
 init_keys();
 
@@ -70468,9 +70605,9 @@ init_render();
 init_solana_endpoint();
 init_solana_lite();
 init_trading();
-init_swap();
 import { randomUUID as randomUUID2 } from "node:crypto";
-var USAGE2 = "Usage: candle launch --name <name> --symbol <symbol> --image-url <https-url> --wallet <tee> [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version.";
+init_swap();
+var USAGE2 = "Usage: candle launch --name <name> --symbol <symbol> --image <path>|--image-url <https-url> --wallet <tee> [--buy <amount>] [--client-trade-id <id>] [--quote-asset sol|usdc|cndl|eth|usdg] [--dex-version v3|v4] [--mode <mode>] [--rpc-url <url>] [--yes]. A Hood TEE wallet launches on Hood and needs --dex-version.";
 var QUOTE_CHAIN = {
   sol: "solana",
   usdc: "solana",
@@ -70529,6 +70666,7 @@ async function launch(args, ctx) {
     valueFlags: [
       "--name",
       "--symbol",
+      "--image",
       "--image-url",
       "--description",
       "--wallet",
@@ -70539,7 +70677,8 @@ async function launch(args, ctx) {
       "--dex-version",
       "--buy"
     ],
-    booleanFlags: ["--yes"]
+    booleanFlags: ["--yes"],
+    pathFlags: ["--image"]
   });
   if ("error" in parsed) {
     writeUsageFailure(ctx.deps, parsed.error, ctx.json);
@@ -70547,7 +70686,15 @@ async function launch(args, ctx) {
   }
   const flags = parsed.values;
   const id = flags["--client-trade-id"] ?? `launch-${randomUUID2()}`;
-  if (parsed.positionals.length || !flags["--name"] || !flags["--symbol"] || !flags["--image-url"] || !flags["--wallet"] || !validClientId(id) || flags["--dex-version"] !== undefined && flags["--dex-version"] !== "v3" && flags["--dex-version"] !== "v4") {
+  if (flags["--image"] !== undefined && flags["--image-url"] !== undefined) {
+    writeUsageFailure(ctx.deps, `Pass --image <path> or --image-url <https-url>, not both: a launch has one image. ${USAGE2}`, ctx.json);
+    return 2;
+  }
+  if (flags["--image-url"] !== undefined && !flags["--image-url"].startsWith("https://")) {
+    writeUsageFailure(ctx.deps, "--image-url takes an https:// URL; for an image file on this machine, use --image <path> instead.", ctx.json);
+    return 2;
+  }
+  if (parsed.positionals.length || !flags["--name"] || !flags["--symbol"] || flags["--image"] === undefined && flags["--image-url"] === undefined || !flags["--wallet"] || !validClientId(id) || flags["--dex-version"] !== undefined && flags["--dex-version"] !== "v3" && flags["--dex-version"] !== "v4") {
     writeUsageFailure(ctx.deps, USAGE2, ctx.json);
     return 2;
   }
@@ -70558,6 +70705,13 @@ async function launch(args, ctx) {
     if (hinted === "hood" && flags["--dex-version"] === undefined) {
       writeUsageFailure(ctx.deps, `A Hood launch needs --dex-version v3|v4. ${USAGE2}`, ctx.json);
       return 2;
+    }
+    let image;
+    try {
+      if (flags["--image"] !== undefined)
+        image = await readLocalImage(flags["--image"]);
+    } catch (error) {
+      return tradingFailure(ctx, error);
     }
     const key = await tradingKey(ctx);
     const prior = await lookupOperation(ctx, key, id, "launch");
@@ -70576,14 +70730,27 @@ async function launch(args, ctx) {
       return printTradingResult(ctx, prior);
     }
     const wallet = await tradingWallet(ctx, key, flags["--wallet"], "launch:write", hinted ?? "any");
-    if (wallet.chain === "evm") {
-      if (flags["--dex-version"] === undefined)
-        throw new TradingUsage(`${wallet.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`);
-      const buy2 = launchBuy(flags, "hood");
-      return await hoodLaunch(ctx, key, { flags, id, wallet, buy: buy2, yes: parsed.booleans.has("--yes") });
+    const chain2 = wallet.chain === "evm" ? "hood" : "solana";
+    if (chain2 === "hood" && flags["--dex-version"] === undefined)
+      throw new TradingUsage(`${wallet.address} is a Hood TEE wallet, and a Hood launch needs --dex-version v3|v4.`);
+    const buy = launchBuy(flags, chain2);
+    const solana = chain2 === "solana" ? await tradingSolanaClient(ctx, flags["--rpc-url"]) : undefined;
+    let imageUrl = flags["--image-url"] ?? "";
+    if (image) {
+      ctx.deps.stderr.write(uploadNotice(image));
+      try {
+        imageUrl = await uploadImage(ctx, key, image);
+      } catch (error) {
+        ctx.deps.stderr.write(`The launch was not started, and its id ${id} is unused.
+`);
+        return tradingFailure(ctx, error);
+      }
+      ctx.deps.stderr.write(`Image: ${safeText(imageUrl)}
+`);
     }
-    const buy = launchBuy(flags, "solana");
-    const solana = await tradingSolanaClient(ctx, flags["--rpc-url"]);
+    const used = image ? { imageUrl: safeText(imageUrl) } : {};
+    if (!solana)
+      return await hoodLaunch(ctx, key, { flags, id, wallet, buy, imageUrl, used, yes: parsed.booleans.has("--yes") });
     if (!await claimOperation(ctx, key, id, "launch"))
       throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this launch id; no write was resent.");
     ctx.deps.stderr.write(`Operation: ${id}
@@ -70594,7 +70761,7 @@ async function launch(args, ctx) {
       buyAmount: buy ? buy.raw : 0,
       name: flags["--name"],
       symbol: flags["--symbol"],
-      imageUrl: flags["--image-url"],
+      imageUrl,
       linkedWalletId: wallet.id,
       ...flags["--description"] ? { description: flags["--description"] } : {},
       ...flags["--quote-asset"] ? { quoteAsset: flags["--quote-asset"] } : {},
@@ -70616,7 +70783,14 @@ async function launch(args, ctx) {
     };
     ctx.deps.stderr.write(buyNotice(buy, "solana"));
     if (!await confirmQuote(ctx, quote, parsed.booleans.has("--yes")))
-      return printTradingResult(ctx, { success: true, status: "cancelled", clientTradeId: id, kind: "launch", quote });
+      return printTradingResult(ctx, {
+        success: true,
+        status: "cancelled",
+        clientTradeId: id,
+        kind: "launch",
+        quote,
+        ...used
+      });
     if (!Number.isFinite(built.expiresAt) || built.expiresAt <= ctx.deps.now())
       throw new TradingError("QUOTE_EXPIRED", "The launch build expired before signing.");
     const signed = await relaySign(ctx, key, wallet, built.transaction);
@@ -70634,7 +70808,7 @@ async function launch(args, ctx) {
     ctx.deps.stderr.write(`Launch signature: ${signature}
 `);
     const result = await request(ctx, key, "/api/v1/launch/self/confirm", { clientLaunchId: id, signature });
-    return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch", quote });
+    return printTradingResult(ctx, { ...result, clientTradeId: id, kind: "launch", quote, ...used });
   } catch (error) {
     return tradingFailure(ctx, error, id);
   }
@@ -70652,7 +70826,7 @@ async function hoodLaunch(ctx, key, args) {
     buyAmount: buy ? buy.raw : 0,
     name: flags["--name"],
     symbol: flags["--symbol"],
-    imageUrl: flags["--image-url"],
+    imageUrl: args.imageUrl,
     linkedWalletId: wallet.id,
     dexVersion: flags["--dex-version"],
     ...flags["--description"] ? { description: flags["--description"] } : {},
@@ -70698,7 +70872,8 @@ async function hoodLaunch(ctx, key, args) {
       chain: "hood",
       quote,
       operationId: first.operationId,
-      walletHeldUntil: first.expiresAt
+      walletHeldUntil: first.expiresAt,
+      ...args.used
     });
   }
   const confirmedPlan = buy ? first.plannedLegCount === 3 ? ["createCurve", "feeTransfer", "trade"] : ["createCurve", "trade"] : undefined;
@@ -70731,7 +70906,8 @@ async function hoodLaunch(ctx, key, args) {
     quote,
     wallet: safeText(wallet.address),
     operationId: first.operationId,
-    landedLegs: run2.landed
+    landedLegs: run2.landed,
+    ...args.used
   });
 }
 function hoodLaterLegsGas(count, buys) {
@@ -72096,10 +72272,10 @@ async function perpsOrders(args, ctx) {
     if (ctx.json)
       return printTradingResult(ctx, result);
     const out = ctx.deps.stdout;
-    const open4 = result.open ?? [];
-    out.write(`Open on Hyperliquid (${open4.length}):
+    const open5 = result.open ?? [];
+    out.write(`Open on Hyperliquid (${open5.length}):
 `);
-    for (const o of open4) {
+    for (const o of open5) {
       out.write(`  ${safeText(o.coin)} ${o.side === "B" ? "buy" : "sell"} ${safeText(o.sz)} at ${safeText(o.limitPx)}${o.reduceOnly ? " reduce-only" : ""}${o.isTrigger ? ` trigger ${safeText(o.triggerPx)}` : ""}, cloid ${safeText(o.cloid ?? "none")}
 `);
     }
@@ -73171,13 +73347,13 @@ function writeWalletEvents(ctx, books) {
 function writeAgents(ctx, agents, all) {
   if (!agents || agents.length === 0)
     return;
-  const open4 = (count2, unmarked) => `${count2}${unmarked > 0 ? ` (${unmarked} unpriced)` : ""}`;
+  const open5 = (count2, unmarked) => `${count2}${unmarked > 0 ? ` (${unmarked} unpriced)` : ""}`;
   const rows = agents.map((a) => [
     a.keyPrefix === null ? "Manual (web app)" : a.label && a.label !== a.keyPrefix ? `${a.label} (${a.keyPrefix})` : a.keyPrefix,
     formatUsd(a.realizedNetUsd),
     formatUsd(a.unrealizedUsd),
     formatUsd(totalOf(a)),
-    open4(a.openPositions, a.unmarked),
+    open5(a.openPositions, a.unmarked),
     String(a.closedRounds)
   ]);
   rows.push([
@@ -73185,7 +73361,7 @@ function writeAgents(ctx, agents, all) {
     formatUsd(all.realizedNetUsd),
     formatUsd(all.unrealizedUsd),
     formatUsd(totalOf(all)),
-    open4(all.openPositions, all.unmarked),
+    open5(all.openPositions, all.unmarked),
     all.closedRounds !== undefined ? String(all.closedRounds) : "-"
   ]);
   ctx.deps.stdout.write(`
@@ -84159,6 +84335,7 @@ var COMMANDS = {
   swap: { bare: swap, subcommands: { status: swapStatus } },
   transfer: { bare: transfer },
   launch: { bare: launch },
+  image: { subcommands: { upload: imageUpload } },
   pnl: { bare: pnl },
   portfolio: { bare: portfolio },
   fees: { bare: feesList, subcommands: { claim: feesClaim } },

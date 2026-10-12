@@ -42,6 +42,13 @@ export type ApiResult =
 export interface ApiRequestOptions {
   method?: string
   body?: unknown
+  /**
+   * Raw bytes sent as the request body under their own content type, instead of a JSON `body`
+   * (`candle image upload` and `candle launch --image`: `POST /api/v1/uploads/agent-image` takes
+   * the image itself). Through this function rather than a second `fetch` call so the cleartext
+   * refusal and the credential headers stay in one place.
+   */
+  raw?: { bytes: Uint8Array; contentType: string }
   auth: "device" | "key" | "none"
   credentials: { deviceToken?: string; apiKey?: string }
   apiUrl: string
@@ -185,7 +192,10 @@ export function resolveApiUrl(
 }
 
 function buildHeaders(opts: ApiRequestOptions): Record<string, string> {
-  const headers: Record<string, string> = { "content-type": "application/json", accept: "application/json" }
+  const headers: Record<string, string> = {
+    "content-type": opts.raw?.contentType ?? "application/json",
+    accept: "application/json",
+  }
   if (opts.auth === "device" && opts.credentials.deviceToken) {
     headers.authorization = `Bearer ${opts.credentials.deviceToken}`
   } else if (opts.auth === "key" && opts.credentials.apiKey) {
@@ -295,7 +305,7 @@ export async function apiRequest(path: string, opts: ApiRequestOptions): Promise
   // (circular references, a BigInt without a toJSON) is a programmer error in the caller, not a
   // network failure, and should throw as itself rather than being reported as "Could not reach
   // <url>" with status 0, which would contradict this module's own header comment.
-  const body = opts.body === undefined ? undefined : JSON.stringify(opts.body)
+  const body = opts.raw ? (opts.raw.bytes as BodyInit) : opts.body === undefined ? undefined : JSON.stringify(opts.body)
   const doFetch = opts.fetch ?? fetch
 
   let response: Response

@@ -13,7 +13,8 @@
  */
 import { afterEach, describe, expect, test } from "bun:test"
 import { generateKeyPairSync } from "node:crypto"
-import { mkdtemp, rm } from "node:fs/promises"
+import { readdirSync } from "node:fs"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { EvmRecordAppendOutcome, EvmRecordTokenEntry } from "../deps"
@@ -48,6 +49,9 @@ const NINE_NINETY_NINE_ETH = (999n * 10n ** 18n).toString()
 const trusted = toChecksumAddress("0x8888888888888888888888888888888888888888")
 const token = toChecksumAddress("0x1111111111111111111111111111111111111111")
 const EVM_RPC = "https://hood.test/rpc"
+/** BE-1283: what POST /uploads/agent-image answers, and the smallest file that sniffs as a PNG. */
+const hostedImage = "https://ipfs.candle.test/ipfs/bafyimage"
+const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13])
 
 const folders: string[] = []
 afterEach(async () => {
@@ -102,12 +106,22 @@ interface FixtureOptions {
    * offer another leg without raising the count the CLI accepted.
    */
   trailingLeg?: { kind: string; leg: SequencedLeg; plannedLegCount?: number }
+  /** BE-1283: a Candle error POST /uploads/agent-image answers instead of a URL. */
+  uploadError?: { code: string; message: string }
 }
 
 async function fixture(opts: FixtureOptions = {}) {
   const dir = await mkdtemp(join(tmpdir(), "candle-hood-4b2-"))
   folders.push(dir)
-  const calls: { path: string; body: Record<string, unknown> | undefined; url: string }[] = []
+  /** `claims` is how many operation ids this machine had claimed when the request was made. */
+  const calls: { path: string; body: Record<string, unknown> | undefined; url: string; claims: number }[] = []
+  const claims = () => {
+    try {
+      return readdirSync(join(dir, "operations")).length
+    } catch {
+      return 0
+    }
+  }
   let planned: Array<{ kind: string; leg: SequencedLeg }> = []
   const outcomes = [...(opts.outcomes ?? [])]
   const landed: Array<{ kind: string; hash: string }> = []
@@ -127,11 +141,14 @@ async function fixture(opts: FixtureOptions = {}) {
   const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input)
     const path = new URL(url).pathname
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined
-    calls.push({ path, body, url })
+    // An image upload's body is the file's bytes, not JSON.
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined
+    calls.push({ path, body, url, claims: claims() })
     const ok = (value: unknown) => Response.json(value)
     const candleError = (error: Record<string, unknown>, status = 400) =>
       Response.json({ success: false, error }, { status })
+    if (path === "/api/v1/uploads/agent-image")
+      return opts.uploadError ? candleError(opts.uploadError) : ok({ success: true, imageUrl: hostedImage })
     if (url.startsWith(EVM_RPC)) {
       const selector = body.method === "eth_call" ? String(body.params[0].data).slice(0, 10) : ""
       const result = selector === "0x313ce567" ? `0x${"0".repeat(62)}12` : "0x0"
@@ -346,7 +363,13 @@ async function fixture(opts: FixtureOptions = {}) {
         }
       : {}),
   })
-  return { deps, calls, stdout, stderr, appended }
+  /** BE-1283: writes a file beside the config and returns its path. */
+  const file = async (name: string, bytes: Uint8Array) => {
+    const path = join(dir, name)
+    await writeFile(path, bytes)
+    return path
+  }
+  return { deps, calls, stdout, stderr, appended, file }
 }
 
 function lastJson(text: string): Record<string, unknown> {
@@ -749,6 +772,91 @@ describe("H11: candle launch from a Hood TEE wallet", () => {
     expect(await run(hoodLaunch(), f.deps)).toBe(0)
     expect(f.appended).toEqual([])
     expect(f.stderr.text).toContain("did not name the launched token")
+  })
+
+  describe("BE-1283: --image", () => {
+    /** The image flag and its value sit at 5 and 6 in `launchArgs`. */
+    const imageFile = (argv: string[], path: string) =>
+      argv.map((arg, i) => (i === 5 ? "--image" : i === 6 ? path : arg))
+    const withImage = (path: string) => imageFile(hoodLaunch(), path)
+    const uploads = <T extends { path: string }>(calls: T[]) =>
+      calls.filter((call) => call.path === "/api/v1/uploads/agent-image")
+
+    test("one upload before the build and before the id is claimed; the Hood build carries imageUrl and never a path", async () => {
+      const f = await fixture()
+      const path = await f.file("logo.png", pngBytes)
+      expect(await run(withImage(path), f.deps)).toBe(0)
+      const upload = uploads(f.calls)
+      expect(upload).toHaveLength(1)
+      expect(upload[0]?.claims).toBe(0)
+      const build = builds(f.calls)
+      expect(build).toHaveLength(1)
+      expect(build[0]?.claims).toBe(1)
+      expect(f.calls.indexOf(upload[0] as (typeof f.calls)[number])).toBeLessThan(
+        f.calls.indexOf(build[0] as (typeof f.calls)[number]),
+      )
+      expect(build[0]?.body).toEqual({
+        clientLaunchId: "hl-1",
+        chain: "hood",
+        buyAmount: 0,
+        name: "Demo",
+        symbol: "DEMO",
+        imageUrl: hostedImage,
+        linkedWalletId: "hood-tee",
+        dexVersion: "v4",
+      })
+      expect(f.stderr.text).toContain("The file becomes public and permanent")
+      expect(lastJson(f.stdout.text)).toMatchObject({ mint: launched, chain: "hood", imageUrl: hostedImage })
+    })
+
+    test("declining after the upload signs nothing, and the cancelled result still names the public URL", async () => {
+      const f = await fixture({ prompt: "n" })
+      const path = await f.file("logo.png", pngBytes)
+      expect(
+        await run(
+          withImage(path).filter((arg) => arg !== "--yes"),
+          f.deps,
+        ),
+      ).toBe(0)
+      expect(uploads(f.calls)).toHaveLength(1)
+      expect(signs(f.calls)).toEqual([])
+      expect(lastJson(f.stdout.text)).toMatchObject({ status: "cancelled", imageUrl: hostedImage })
+    })
+
+    test("a re-run of a started Hood launch posts no upload", async () => {
+      const job = { status: "submitted", operation: { operationId: "op-1", status: "active", expiresAt: 10_000 } }
+      const f = await fixture({ outcomes: ["unconfirmed"], job })
+      const path = await f.file("logo.png", pngBytes)
+      expect(await run(withImage(path), f.deps)).toBe(3)
+      const before = f.calls.length
+      expect(await run(withImage(path), f.deps)).toBe(3)
+      expect(paths(f.calls.slice(before))).toEqual(["/api/v1/launch/headless/jobs/hl-1"])
+      job.operation.status = "expired"
+      expect(await run(withImage(path), f.deps)).toBe(0)
+      expect(uploads(f.calls)).toHaveLength(1)
+    })
+
+    test("a refused upload comes back unchanged and claims nothing: no build, no signature", async () => {
+      const f = await fixture({ uploadError: { code: "UPLOAD_INVALID", message: "Image must be less than 10MB" } })
+      const path = await f.file("logo.png", pngBytes)
+      expect(await run(withImage(path), f.deps)).toBe(1)
+      expect(lastJson(f.stdout.text)).toEqual({
+        ok: false,
+        code: "UPLOAD_INVALID",
+        message: "Image must be less than 10MB",
+      })
+      expect(builds(f.calls)).toEqual([])
+      expect(signs(f.calls)).toEqual([])
+      expect(f.calls.at(-1)?.claims).toBe(0)
+    })
+
+    test("a Hood wallet named by label without --dex-version is refused before the file is published", async () => {
+      const f = await fixture()
+      const path = await f.file("logo.png", pngBytes)
+      const argv = imageFile(launchArgs(["--wallet", "hood"]), path)
+      expect(await run(argv, f.deps)).toBe(2)
+      expect(uploads(f.calls)).toEqual([])
+    })
   })
 
   test("a Solana TEE launch is unchanged: chain solana, no dexVersion, the Solana rail", async () => {

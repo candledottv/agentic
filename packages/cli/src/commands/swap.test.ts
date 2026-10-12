@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { generateKeyPairSync, verify } from "node:crypto"
-import { mkdtemp, rm } from "node:fs/promises"
+import { readdirSync } from "node:fs"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { base58 } from "@scure/base"
@@ -17,6 +18,9 @@ const mint = "7ZL9FvkpCMgdvzfoMSYZSuCXLCYN25dfgtDXej1BBJaB"
 const embedded = "9dXSV8VWuYvGfTzqvkBeoFwH9ihVTybDuWo5VaJPCNDL"
 const signed = Buffer.concat([Buffer.from([1]), Buffer.alloc(64, 5), Buffer.alloc(40)]).toString("base64")
 const signature = base58.encode(Buffer.alloc(64, 5))
+/** BE-1283: what POST /uploads/agent-image answers, and the smallest file that sniffs as a PNG. */
+const hostedImage = "https://ipfs.candle.test/ipfs/bafyimage"
+const pngBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13])
 const folders: string[] = []
 afterEach(async () => {
   await Promise.all(folders.splice(0).map((path) => rm(path, { recursive: true, force: true })))
@@ -54,18 +58,33 @@ async function fixture(
     embeddedPermission?: "allowed" | "denied"
     /** BE-869: a Candle error POST /launch/self/build answers instead of a transaction. */
     launchBuildError?: Record<string, unknown>
+    /** BE-1283: a Candle error POST /uploads/agent-image answers instead of a URL, until cleared. */
+    uploadError?: { code: string; message: string } | null
   } = {},
 ) {
   const dir = await mkdtemp(join(tmpdir(), "candle-trade-"))
   folders.push(dir)
-  const calls: { path: string; body: Record<string, unknown>; headers: Headers }[] = []
+  /** `claims` is how many operation ids this machine had claimed when the request was made. */
+  const calls: { path: string; body: Record<string, unknown>; headers: Headers; claims: number }[] = []
+  const claims = () => {
+    try {
+      return readdirSync(join(dir, "operations")).length
+    } catch {
+      return 0
+    }
+  }
   let built = false
   const fetcher = (async (input: string | URL | Request, init?: RequestInit) => {
     const path = new URL(String(input)).pathname
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined
-    calls.push({ path, body, headers: new Headers(init?.headers) })
+    // An image upload's body is the file's bytes, not JSON.
+    const body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined
+    calls.push({ path, body, headers: new Headers(init?.headers), claims: claims() })
     const ok = (value: unknown) => Response.json(value)
     if (opts.failure === path) throw new Error("lost response")
+    if (path === "/api/v1/uploads/agent-image")
+      return opts.uploadError
+        ? Response.json({ success: false, error: opts.uploadError }, { status: 429 })
+        : ok({ success: true, imageUrl: hostedImage })
     if (path.includes("/jobs/"))
       return opts.swapJob
         ? path.includes("/agent/swap/jobs/")
@@ -193,6 +212,13 @@ async function fixture(
     setBuilt: () => {
       built = true
     },
+    /** BE-1283: writes a file beside the config and returns its path. */
+    file: async (name: string, bytes: Uint8Array) => {
+      const path = join(dir, name)
+      await writeFile(path, bytes)
+      return path
+    },
+    opts,
   }
 }
 const swapArgs = [
@@ -422,6 +448,114 @@ describe("TEE CLI trading", () => {
     expect(f.calls.filter((call) => call.path.endsWith("/build"))).toHaveLength(1)
     expect(f.calls.filter((call) => call.body?.method === "sendTransaction")).toHaveLength(1)
     expect(f.calls.filter((call) => call.path.endsWith("/confirm"))).toHaveLength(2)
+  })
+  describe("BE-1283: launch --image uploads the file, then launches with the URL that came back", () => {
+    /** `launchArgs` with its image, the value after `--image-url`, replaced by `flag value`. */
+    const imageArgs = (flag: string, value: string) =>
+      launchArgs.map((arg, i) => (arg === "--image-url" ? flag : launchArgs[i - 1] === "--image-url" ? value : arg))
+    const withImage = (path: string) => imageArgs("--image", path)
+    const uploads = <T extends { path: string }>(calls: T[]) =>
+      calls.filter((call) => call.path.endsWith("/uploads/agent-image"))
+    const lastJson = (text: string) => JSON.parse(text.trimEnd().split("\n").at(-1) ?? "")
+
+    test("one upload under the key, before the build and before the id is claimed; the build carries imageUrl and never a path", async () => {
+      const f = await fixture({ scopes: ["launch:write"] })
+      const path = await f.file("logo.png", pngBytes)
+      expect(await run(withImage(path), f.deps)).toBe(0)
+      const upload = uploads(f.calls)
+      expect(upload).toHaveLength(1)
+      expect(upload[0]?.headers.get("content-type")).toBe("image/png")
+      expect(upload[0]?.headers.get("x-api-key")).toBe("bound-key")
+      // Nothing was claimed when the file went up; the build is made under the claim.
+      expect(upload[0]?.claims).toBe(0)
+      const build = f.calls.find((call) => call.path.endsWith("self/build"))
+      expect(build?.claims).toBe(1)
+      expect(f.calls.indexOf(upload[0] as (typeof f.calls)[number])).toBeLessThan(f.calls.indexOf(build as never))
+      expect(build?.body).toMatchObject({ clientLaunchId: "launch-1", chain: "solana", imageUrl: hostedImage })
+      expect(JSON.stringify(build?.body)).not.toContain(path)
+      expect(Object.keys(build?.body ?? {})).not.toContain("imagePath")
+      // The publication is said before the confirm, and the result names the URL that was used.
+      expect(f.stderr.text).toContain("The file becomes public and permanent")
+      expect(f.stderr.text).toContain(`Image: ${hostedImage}`)
+      expect(lastJson(f.stdout.text)).toMatchObject({ kind: "launch", imageUrl: hostedImage })
+    })
+
+    test("a resumed operation confirms the saved signature and uploads nothing", async () => {
+      const f = await fixture({ failure: "/api/v1/launch/self/confirm" })
+      const path = await f.file("logo.png", pngBytes)
+      expect(await run(withImage(path), f.deps)).toBe(1)
+      expect(await run(withImage(path), f.deps)).toBe(1)
+      expect(uploads(f.calls)).toHaveLength(1)
+      expect(f.calls.filter((call) => call.path.endsWith("/build"))).toHaveLength(1)
+      expect(f.calls.filter((call) => call.path.endsWith("/confirm"))).toHaveLength(2)
+    })
+
+    test("a refused upload comes back unchanged, claims nothing, and leaves the launch id usable", async () => {
+      const f = await fixture({
+        uploadError: { code: "RATE_LIMITED", message: "Too many image uploads; retry shortly" },
+      })
+      const path = await f.file("logo.png", pngBytes)
+      expect(await run(withImage(path), f.deps)).toBe(1)
+      expect(lastJson(f.stdout.text)).toEqual({
+        ok: false,
+        code: "RATE_LIMITED",
+        message: "Too many image uploads; retry shortly",
+      })
+      expect(f.stderr.text).toContain("The launch was not started, and its id launch-1 is unused.")
+      expect(f.calls.some((call) => call.path.endsWith("/build"))).toBe(false)
+      expect(f.calls.at(-1)?.claims).toBe(0)
+      // The same id launches once the route accepts the file: the failure did not consume it.
+      f.opts.uploadError = null
+      expect(await run(withImage(path), f.deps)).toBe(0)
+      expect(f.calls.find((call) => call.path.endsWith("self/build"))?.body).toMatchObject({
+        clientLaunchId: "launch-1",
+        imageUrl: hostedImage,
+      })
+    })
+
+    test("a file that is not an image, or is over 10MB, is refused with no request made", async () => {
+      const f = await fixture()
+      const text = await f.file("logo.png", new TextEncoder().encode("not an image"))
+      expect(await run(withImage(text), f.deps)).toBe(1)
+      expect(lastJson(f.stdout.text)).toMatchObject({ ok: false, code: "IMAGE_TYPE_UNSUPPORTED" })
+      const big = new Uint8Array(11 * 1024 * 1024)
+      big.set(pngBytes)
+      expect(await run(withImage(await f.file("big.png", big)), f.deps)).toBe(1)
+      const tooLarge = lastJson(f.stdout.text)
+      expect(tooLarge).toMatchObject({ ok: false, code: "IMAGE_TOO_LARGE" })
+      // No launch id is involved yet, so the failure sends nobody to `swap status`.
+      expect(tooLarge.message).not.toContain("launch-1")
+      expect(f.calls).toEqual([])
+    })
+
+    test("both image flags, or neither, is a usage refusal with no request made", async () => {
+      const f = await fixture()
+      const path = await f.file("logo.png", pngBytes)
+      expect(await run([...launchArgs, "--image", path], f.deps)).toBe(2)
+      expect(lastJson(f.stdout.text).message).toContain("not both")
+      const neither = launchArgs.filter((arg, i) => arg !== "--image-url" && launchArgs[i - 1] !== "--image-url")
+      expect(await run(neither, f.deps)).toBe(2)
+      expect(lastJson(f.stdout.text)).toMatchObject({ ok: false, code: "USAGE" })
+      expect(f.calls).toEqual([])
+    })
+
+    test("--image-url with anything but an https:// URL is refused here, naming --image", async () => {
+      for (const value of ["./logo.png", "/Users/me/logo.png", "http://example.test/image.png", "logo.png"]) {
+        const f = await fixture()
+        expect(await run(imageArgs("--image-url", value), f.deps)).toBe(2)
+        const failure = lastJson(f.stdout.text)
+        expect(failure).toMatchObject({ ok: false, code: "USAGE" })
+        expect(failure.message).toContain("--image <path>")
+        expect(f.calls).toEqual([])
+      }
+    })
+
+    test("with --image-url nothing is uploaded and the result is as before", async () => {
+      const f = await fixture({ scopes: ["launch:write"] })
+      expect(await run(launchArgs, f.deps)).toBe(0)
+      expect(uploads(f.calls)).toEqual([])
+      expect(lastJson(f.stdout.text)).not.toHaveProperty("imageUrl")
+    })
   })
   test("relay signature cryptographically matches the SDK canonical payload", () => {
     const wallet = { signer: pem, id: "wallet", address: mint, appId: "app", privyWalletId: "privy" }

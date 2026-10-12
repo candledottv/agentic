@@ -213,6 +213,8 @@ const JSON_ANSWERING: { name: string; argv: string[] }[] = [
   // BE-332 PR C: with no flags it is a usage error, like `swap` with no pair.
   { name: "transfer", argv: ["transfer"] },
   { name: "launch", argv: ["launch"] },
+  // BE-1283: with no path it is a usage error, before any file is read or any request made.
+  { name: "image upload", argv: ["image", "upload"] },
   // BE-316: read-only. With no credentials both answer NO_API_KEY before any request.
   { name: "pnl", argv: ["pnl"] },
   { name: "portfolio", argv: ["portfolio"] },

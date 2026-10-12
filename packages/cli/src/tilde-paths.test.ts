@@ -138,6 +138,12 @@ const REFUSED: { argv: string[]; flag: string }[] = [
   { argv: ["sign", "--wallet", "w", "--file", "~in/tx.b64"], flag: "--file" },
   { argv: ["sign", "message", "--wallet", "w", "--file", "~in/msg.txt"], flag: "--file" },
   { argv: ["verify", "~dist/candle"], flag: "<file>" },
+  // BE-1283: the two places an image file is named.
+  { argv: ["image", "upload", "~art/logo.png"], flag: "<path>" },
+  {
+    argv: ["launch", "--name", "Demo", "--symbol", "DEMO", "--wallet", "agent", "--image", "~art/logo.png"],
+    flag: "--image",
+  },
   { argv: ["verify", "/tmp/candle", "--bundle", "~dist/candle.sigstore.json"], flag: "--bundle" },
   { argv: ["wallet", "import", "--chain", "solana", "--key-file", "~keys/k.json"], flag: "--key-file" },
   {
@@ -231,7 +237,7 @@ describe("T10: CANDLE_CONFIG_DIR is refused too, and doctor reports it", () => {
  * must list it in `pathFlags`. `--to` / `--from` are mixed (file on some commands, label on
  * others) and stay out of this scan; T10's per-invocation table covers those.
  */
-const ALWAYS_PATH_FLAGS = ["--keystore", "--file", "--key-file", "--signer-out", "--bundle"] as const
+const ALWAYS_PATH_FLAGS = ["--keystore", "--file", "--key-file", "--signer-out", "--bundle", "--image"] as const
 
 async function commandSourceFiles(): Promise<{ file: string; src: string }[]> {
   const dir = resolve(import.meta.dir, "commands")
