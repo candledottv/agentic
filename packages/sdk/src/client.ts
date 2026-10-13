@@ -26,11 +26,30 @@
  *   validation error), and it never retries a launch whose stage is `executed` or `unconfirmed`
  *   or whose error already names a mint. Backoff is 250ms * 2^n, jittered to 50-100% of that,
  *   capped at 8s, bounded by `maxRetries` (default 3 retries after the initial attempt).
+ * - The id on every outcome. The six one-call write methods (`trade()`, `launch()`,
+ *   `launchAsync()`, `selfLaunch()`, `buildAtomicLaunch()`, `launchAtomic()`) send one idempotency
+ *   id per call, the caller's or a generated one, and once the first request carrying it has been
+ *   sent, every exit exposes that id: on the returned value, and on the thrown error
+ *   (`operationIds(error)`). A `CandleApiError` or `JsonRpcError` keeps its class and gains the id;
+ *   anything else (a rejected fetch, a 2xx body that is not JSON, a plain Error from one of the
+ *   method's own steps) is wrapped once, at the outermost method, in a `CandleOperationError` with
+ *   the original as `cause`. An error raised before anything was sent (no API key) carries no id
+ *   and is not wrapped. The SDK never reuses an id between calls and adds no retry of its own: a
+ *   call that passes no id is a new operation. The retry is the caller's, with the id passed back.
+ *   The README's "Retrying a write that failed or timed out" is the caller-facing procedure.
  */
 
 import { keccak_256 } from "@noble/hashes/sha3"
 import { buildPrivyAuthorizationSignature } from "./authorization-signature"
-import { CandleApiError, candleApiErrorFromResponse, JsonRpcError, TradeLandedFeeLegError } from "./errors"
+import {
+  CandleApiError,
+  candleApiErrorFromResponse,
+  JsonRpcError,
+  type OperationFlow,
+  type OperationIds,
+  TradeLandedFeeLegError,
+  withOperationIds,
+} from "./errors"
 import {
   assembleEvmTx,
   decimalToHexQuantity,
@@ -314,9 +333,15 @@ export interface SelfLaunchDryRunResult extends Omit<DryRunResult, "launchWallet
   launchWalletId: string
 }
 
-/** POST /api/v1/launch/headless blocking (or replayed) success response. */
+/**
+ * POST /api/v1/launch/headless blocking (or replayed) success response, plus `clientLaunchId`.
+ * The server's body does not carry the id: `launch()`, `selfLaunch()` and `confirmSelfLaunch()`
+ * set it from the request they sent, so a caller who let the SDK generate it still has it.
+ */
 export interface LaunchResult {
   success: true
+  /** The idempotency id this launch was sent under, the caller's or the generated one. */
+  clientLaunchId: string
   chain: Chain
   mint: string
   pool: string | null
@@ -1499,6 +1524,38 @@ export type ConfirmTradeRequest =
 export type ConfirmTradeResult = ExecutedTradeResult
 
 /**
+ * One trade from the idempotency ledger, from GET /api/v1/trade/agent/jobs/:clientTradeId
+ * (`getTradeJob()`). `amountRaw` is raw units: the quote asset's on a buy, the token's on a sell.
+ * `status` is `built` (in flight, or built and never confirmed), `confirmed` (landed; `signature`
+ * is set) or `failed` (`errorCode` says why; `TRADE_REVERTED` means it landed and reverted).
+ */
+export interface TradeJob {
+  clientTradeId: string
+  chain: Chain
+  side: TradeSide
+  mint: string
+  quoteAsset: string
+  amountRaw: string
+  status: "built" | "confirmed" | "failed"
+  signature?: string
+  errorCode?: string
+  createdAt: number
+  updatedAt: number
+  /** A Hood TEE trade only: its sequenced operation, leg by leg. `kind` and `status` are open strings. */
+  operation?: {
+    operationId: string
+    kind: string
+    status: string
+    plannedLegCount: number
+    currentLegIndex: number
+    legs: Array<{ kind: string; status: string; hash?: string; nonce?: number }>
+    expiresAt: number
+    /** The fee a trade that landed after its lock expired still owes, once the read has recorded it. */
+    feeOwed?: Record<string, unknown>
+  }
+}
+
+/**
  * POST /api/v1/trade/agent/submit request body. `signedTransactions` is the ordered signed legs:
  * one for Solana; one to four for Hood in the fixed approval, permit2Approval, trade, feeTransfer
  * order (omitting a leg that was not built). The server broadcasts them itself and confirms
@@ -2246,7 +2303,10 @@ export interface TradeRequest {
    * The server defaults it when omitted, which is `sol` on Solana and ETH settlement on Hood.
    */
   quoteAsset?: "sol" | "usdc" | "cndl" | "eth" | "usdg"
-  /** Idempotency key shared by the build and confirm calls; generated ("sdk-" + UUID) when omitted. */
+  /**
+   * Idempotency key shared by the build and confirm calls; generated ("sdk-" + UUID) when omitted.
+   * Pass your own for anything that moves funds and store it before the call: see `trade()`.
+   */
   clientTradeId?: string
 }
 
@@ -2304,8 +2364,14 @@ export interface AtomicBundleResponseLeg {
   expectedFill?: { amountOutRaw: string }
 }
 
-/** POST /api/v1/launch/atomic/build response. */
+/**
+ * POST /api/v1/launch/atomic/build response, plus `clientLaunchId`. The server's body does not
+ * carry the id: `buildAtomicLaunch()` sets it from the request it sent. It is the launch's
+ * identity (`bundleId` is single-use), so a caller driving build and submit by hand keeps it.
+ */
 export interface BuildAtomicLaunchResult {
+  /** The idempotency id this build was sent under, the caller's or the generated one. */
+  clientLaunchId: string
   bundleId: string
   legs: AtomicBundleResponseLeg[]
   expiresAt: number
@@ -2326,19 +2392,33 @@ export interface SubmitAtomicLaunchRequest {
  * are the 502 body -- all three are NORMAL, expected outcomes of submitting a Jito bundle that
  * this route documents as part of its own response surface, so `submitAtomicLaunch()`/
  * `launchAtomic()` return them here rather than throwing `CandleApiError` (every OTHER non-2xx
- * status still throws, same as every other method). `retryable` is always `false` for `"failed"`;
- * for `"timeout"` it is `true` only when the bundle's shared blockhash was proven to have expired
- * with no confirmation -- `false` means the resolution window simply ran out with no definitive
- * answer and the bundle MIGHT STILL LAND, so the caller should wait rather than immediately
- * rebuild under a fresh `clientLaunchId`. In every case, `bundleId` itself is dead once this
- * response arrives: it is consumed on the first `/submit` call regardless of outcome, so recovery
- * is always a fresh `buildAtomicLaunch()`/`launchAtomic()` call, never a retried `submit` with the
- * same id. See "Atomic launch with first buys" in docs/headless-launch.md for the full model.
+ * status still throws, same as every other method).
+ *
+ * `retryable` is `false` on every `"failed"` and on every `"timeout"` the server returns today.
+ * It is not permission to relaunch, whatever its value: a `"timeout"` means the resolution window
+ * ran out with no definitive answer and the bundle MIGHT STILL LAND. Treat every `"timeout"` as
+ * unresolved and never rebuild under a new `clientLaunchId` because of one: that is a second
+ * token. (This comment used to describe a `true` case meaning "the blockhash expired, relaunch".
+ * No server path returns it.)
+ *
+ * `bundleId` itself is dead once this response arrives: it is consumed on the first `/submit`
+ * call regardless of outcome and is never resubmitted. The launch's identity is the
+ * `clientLaunchId` the build was sent under, and recovery goes through it: read
+ * `getLaunchJob(clientLaunchId)`, then call `launchAtomic()` again with the SAME id when the job
+ * says to (the steps are on `launchAtomic()`). See "Atomic launch with first buys" in
+ * docs/headless-launch.md for the full model.
  */
 export type SubmitAtomicLaunchResult =
   | { status: "landed"; bundleId: string; mint: string; signatures: string[] }
   | { status: "failed"; bundleId: string; retryable: false }
   | { status: "timeout"; bundleId: string; retryable: boolean }
+
+/**
+ * What `launchAtomic()` returns: `submitAtomicLaunch()`'s outcome plus the `clientLaunchId` the
+ * launch was sent under, on all three of `landed`, `failed` and `timeout`. `submitAtomicLaunch()`
+ * itself is given only a `bundleId` and cannot know the launch id.
+ */
+export type LaunchAtomicResult = SubmitAtomicLaunchResult & { clientLaunchId: string }
 
 /** Who pays for one leg of launchAtomic()'s one-call request. Mirrors AtomicLaunchPayer, but a "linked" payer also carries the privyWalletId signLinkedTransaction() needs to sign that leg -- mirrors TradeRequest's `from` field. */
 export type LaunchAtomicPayer = { type: "main" } | { type: "linked"; linkedWalletId: string; privyWalletId: string }
@@ -2522,6 +2602,21 @@ function isAtomicSubmitOutcome(value: unknown): value is SubmitAtomicLaunchResul
     return typeof v.mint === "string" && Array.isArray(v.signatures) && v.signatures.every((s) => typeof s === "string")
   }
   return false
+}
+
+// ---------------------------------------------------------------------------
+// The id on every outcome (one-call write methods)
+// ---------------------------------------------------------------------------
+
+/**
+ * What a one-call write method tracks so that every exit can expose the id it sent. `sent` flips
+ * the moment the method's first request is handed to fetch (requestJson() sets it): before that
+ * nothing reached the server, there is nothing to replay, and an error leaves untouched. `ids`
+ * grows as the method learns more (`launchAtomic()` adds `bundleId` once its build answers).
+ */
+interface OperationContext {
+  sent: boolean
+  ids: OperationIds
 }
 
 // ---------------------------------------------------------------------------
@@ -2836,32 +2931,55 @@ export class CandleClient {
   /**
    * Blocking launch with idempotent retries. Generates `clientLaunchId` when absent and
    * re-sends the SAME id on retryable failures; see the module doc for the exact policy.
+   *
+   * The id this call sent, yours or the generated one, is on the result
+   * (`result.clientLaunchId`) and on every error thrown after the first request was sent
+   * (`operationIds(error).clientLaunchId`), including the one thrown when the retries run out.
+   * The built-in retries are safe only inside this one call. To retry after it throws, call
+   * `launch()` again with that SAME id and the same body, or read `getLaunchJob(id)`. Never retry
+   * without the id: a call with no id, or a new one, is a second launch. Pass your own id and
+   * store it before the call when you can: an error can carry the id only if the process is
+   * still running to catch it.
    */
   async launch(req: LaunchRequest): Promise<LaunchResult> {
     this.requireKey("launch()")
-    const body: LaunchRequest = { ...req, clientLaunchId: req.clientLaunchId ?? generateClientLaunchId() }
-    let lastError: unknown
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      if (attempt > 0) await sleep(retryDelayMs(attempt - 1))
-      try {
-        return await this.requestJson<LaunchResult>("POST", "/api/v1/launch/headless", body)
-      } catch (error) {
-        if (!isRetryableLaunchFailure(error)) throw error
-        lastError = error
+    const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId()
+    const body: LaunchRequest = { ...req, clientLaunchId }
+    return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
+      let lastError: unknown
+      for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+        if (attempt > 0) await sleep(retryDelayMs(attempt - 1))
+        try {
+          const result = await this.requestJson<LaunchResult>("POST", "/api/v1/launch/headless", body, op)
+          return { ...result, clientLaunchId }
+        } catch (error) {
+          if (!isRetryableLaunchFailure(error)) throw error
+          lastError = error
+        }
       }
-    }
-    throw lastError
+      throw lastError
+    })
   }
 
   /**
    * Fire-and-poll launch: sends `async: true`, returns the 202 body. Single attempt (poll
    * `waitForLaunch` instead of retrying the POST). Generates `clientLaunchId` like `launch()`
    * so the returned body always carries the id to poll.
+   *
+   * An error thrown after the request was sent carries that id too
+   * (`operationIds(error).clientLaunchId`): the launch may have been accepted. Poll
+   * `getLaunchJob(id)` / `waitForLaunch(id)`, or call again with the SAME id and body. Never
+   * retry without the id: a call with no id, or a new one, is a second launch. Pass your own id
+   * and store it before the call when you can.
    */
   async launchAsync(req: LaunchRequest): Promise<AcceptedJob> {
     this.requireKey("launchAsync()")
-    const body = { ...req, clientLaunchId: req.clientLaunchId ?? generateClientLaunchId(), async: true }
-    return this.requestJson<AcceptedJob>("POST", "/api/v1/launch/headless", body)
+    const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId()
+    const body = { ...req, clientLaunchId, async: true }
+    return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
+      const accepted = await this.requestJson<AcceptedJob>("POST", "/api/v1/launch/headless", body, op)
+      return { ...accepted, clientLaunchId: accepted.clientLaunchId ?? clientLaunchId }
+    })
   }
 
   async getLaunchJob(clientLaunchId: string): Promise<LaunchJob> {
@@ -3189,19 +3307,29 @@ export class CandleClient {
    * docs/headless-launch.md.
    */
   async buildSelfLaunch(req: BuildSelfLaunchRequest): Promise<BuildSelfLaunchResult> {
+    return this.postSelfLaunchBuild(req)
+  }
+
+  /** buildSelfLaunch()'s request; selfLaunch() passes its `op` so its exits can expose the id. */
+  private async postSelfLaunchBuild(
+    req: BuildSelfLaunchRequest,
+    op?: OperationContext,
+  ): Promise<BuildSelfLaunchResult> {
     this.requireKey("buildSelfLaunch()")
-    return this.requestJson<BuildSelfLaunchResult>("POST", "/api/v1/launch/self/build", req)
+    return this.requestJson<BuildSelfLaunchResult>("POST", "/api/v1/launch/self/build", req, op)
   }
 
   /**
    * Self-signed launch confirm: verifies the agent's own broadcast on-chain, then records the
    * launch identically to the headless path. Signature is the transaction hash from the agent's
    * own broadcast. devBuySignature (Hood only) is the optional follow-up dev-buy transaction. See
-   * selfLaunch() below for the one-call version of this whole flow (Solana).
+   * selfLaunch() below for the one-call version of this whole flow (Solana). The result carries
+   * the `clientLaunchId` from the request (the server's body does not).
    */
   async confirmSelfLaunch(req: ConfirmSelfLaunchRequest): Promise<ConfirmSelfLaunchResult> {
     this.requireKey("confirmSelfLaunch()")
-    return this.requestJson<ConfirmSelfLaunchResult>("POST", "/api/v1/launch/self/confirm", req)
+    const result = await this.requestJson<ConfirmSelfLaunchResult>("POST", "/api/v1/launch/self/confirm", req)
+    return { ...result, clientLaunchId: req.clientLaunchId }
   }
 
   /**
@@ -3253,8 +3381,43 @@ export class CandleClient {
    *   `built | confirmed | failed`.
    */
   async buildTrade(req: BuildTradeRequest): Promise<BuildTradeResult> {
+    return this.postTradeBuild(req)
+  }
+
+  /** buildTrade()'s request; trade() passes its `op` so its exits can expose the id. */
+  private async postTradeBuild(req: BuildTradeRequest, op?: OperationContext): Promise<BuildTradeResult> {
     this.requireKey("buildTrade()")
-    return this.requestJson<BuildTradeResult>("POST", "/api/v1/trade/agent/build", req)
+    return this.requestJson<BuildTradeResult>("POST", "/api/v1/trade/agent/build", req, op)
+  }
+
+  /**
+   * Reads one trade from the idempotency ledger by its `clientTradeId`, without sending
+   * anything: the read to make after a `trade()` that threw or timed out, before deciding whether
+   * to send again. Needs `swap:write` (the scope the trade itself needed) and answers during a
+   * kill switch.
+   *
+   * - 404 `JOB_NOT_FOUND` (a thrown `CandleApiError`): the write never began. Call again with the
+   *   same id.
+   * - `confirmed`: the trade landed; `signature` is on the job. A same-id `trade()` replays it.
+   * - `failed` with `errorCode: "TRADE_REVERTED"`: it landed and reverted. A new trade needs a
+   *   new id.
+   * - `failed`, other: not confirmed. A row with broadcast evidence may still be on chain; a
+   *   same-id `trade()` is the check, and answers `IDEMPOTENCY_CONFLICT` with
+   *   `stage: "unconfirmed"` for it.
+   * - `built`: in flight or unresolved. A same-id `trade()` answers `IDEMPOTENCY_CONFLICT`; if it
+   *   carries `stage: "unconfirmed"` and `retryable: false`, check its `signature` on chain and
+   *   do not retry.
+   *
+   * For a linked payer, also check the wallet's recent transactions before sending again: see
+   * `trade()`.
+   */
+  async getTradeJob(clientTradeId: string): Promise<TradeJob> {
+    this.requireKey("getTradeJob()")
+    const body = await this.requestJson<{ success: true; job: TradeJob }>(
+      "GET",
+      `/api/v1/trade/agent/jobs/${encodeURIComponent(clientTradeId)}`,
+    )
+    return body.job
   }
 
   /**
@@ -3469,6 +3632,26 @@ export class CandleClient {
    *   opt-in, but only for a caller that has already confirmed the build carries neither an
    *   `approval` nor a `permit2Approval` leg. Requires `evmRpcUrl`; throws a clear error
    *   naming it when unset, before any RPC read or signing.
+   *
+   * ## The id, and retrying
+   *
+   * The `clientTradeId` this call sent, yours or the generated one, is on the result and on every
+   * error thrown after the build request was sent (`operationIds(error).clientTradeId`): a
+   * `CandleApiError` or `JsonRpcError` gains it, and a lost response or any other failure is a
+   * `CandleOperationError` carrying it, with the original as `cause`. Pass your own id for
+   * anything that moves funds and store it before the call: an error can carry the id only if
+   * the process is still running to catch it. Never retry without the id: a call with no id, or a
+   * new one, is a second, independent trade. This method does not retry on its own.
+   *
+   * - **Main payer** (`from: "main"`): the trade executes inside the build call, so a lost
+   *   response can sit on a trade that already moved funds. With the id, read `getTradeJob(id)`
+   *   or call `trade()` again with the same id and body. Both are safe: the same-id call is a
+   *   replay, not a second trade. `getTradeJob()`'s jsdoc says what each job state means.
+   * - **Linked payer**: the id is necessary and NOT sufficient. The caller's side signs and
+   *   broadcasts here, so an error after the broadcast may sit on a transaction that landed, and
+   *   calling again under the same id can build and broadcast a second one. Read
+   *   `getTradeJob(id)` first; if it is not `confirmed`, check the wallet's recent transactions
+   *   before sending again.
    */
   async trade(req: TradeRequest): Promise<ExecutedTradeResult> {
     const clientTradeId = req.clientTradeId ?? generateClientTradeId()
@@ -3481,9 +3664,23 @@ export class CandleClient {
       ...(req.maxSlippageBps !== undefined ? { maxSlippageBps: req.maxSlippageBps } : {}),
       ...(req.quoteAsset !== undefined ? { quoteAsset: req.quoteAsset } : {}),
     }
+    // A linked payer signs and broadcasts on the caller's side: a same-id call can broadcast
+    // again (BE-1126), so its wrapped errors never say a plain "retry with this id".
+    const flow: OperationFlow = req.from === "main" ? "server-executed" : "caller-broadcast"
+    return this.runOperation({ clientTradeId }, flow, async (op) => {
+      const result = await this.tradeSteps(req, buildReq, op)
+      return typeof result.clientTradeId === "string" ? result : { ...result, clientTradeId }
+    })
+  }
 
+  /** trade()'s steps. Every error leaves through trade()'s runOperation(), which adds the id. */
+  private async tradeSteps(
+    req: TradeRequest,
+    buildReq: BuildTradeRequest,
+    op: OperationContext,
+  ): Promise<ExecutedTradeResult> {
     if (req.from === "main") {
-      const result = await this.buildTrade(buildReq)
+      const result = await this.postTradeBuild(buildReq, op)
       if (result.status !== "executed") {
         throw new Error(`trade({ from: "main" }) expected an executed result but got status "${result.status}"`)
       }
@@ -3491,7 +3688,7 @@ export class CandleClient {
     }
 
     const { linkedWalletId, privyWalletId } = req.from
-    const built = await this.buildTrade(buildReq)
+    const built = await this.postTradeBuild(buildReq, op)
     if (built.status !== "built") {
       // Idempotent replay of an already-confirmed trade: buildTrade already returned it executed.
       return built
@@ -3620,14 +3817,36 @@ export class CandleClient {
    * send a dev buy: a Hood self-launch's dev buy is a separate transaction the caller sends itself
    * and reports to `confirmSelfLaunch` as `devBuySignature`. The build response never includes a
    * dev-buy leg, and this method does not assemble one.
+   *
+   * ## The id, and retrying
+   *
+   * The `clientLaunchId` this call sent, yours or the generated one, is on the result and on every
+   * error thrown after the build request was sent (`operationIds(error).clientLaunchId`). Pass
+   * your own id and store it before the call when you can. Never retry without the id: a call
+   * with no id, or a new one, is a second, independent launch.
+   *
+   * Here the id is necessary and NOT sufficient. This method signs and broadcasts on the caller's
+   * side, so an error after the broadcast may sit on a launch transaction that landed, and
+   * calling `selfLaunch()` again under the same id can build and broadcast a second one. Read
+   * `getLaunchJob(id)` first; if it is not `confirmed`, check the wallet's recent transactions
+   * before sending again.
    */
   async selfLaunch(req: SelfLaunchRequest): Promise<ConfirmSelfLaunchResult> {
     const { privyWalletId, ...launchReq } = req
-    const body: BuildSelfLaunchRequest = {
-      ...launchReq,
-      clientLaunchId: launchReq.clientLaunchId ?? generateClientLaunchId(),
-    }
-    const built = await this.buildSelfLaunch(body)
+    const clientLaunchId = launchReq.clientLaunchId ?? generateClientLaunchId()
+    const body: BuildSelfLaunchRequest = { ...launchReq, clientLaunchId }
+    return this.runOperation({ clientLaunchId }, "caller-broadcast", (op) =>
+      this.selfLaunchSteps(body, privyWalletId, op),
+    )
+  }
+
+  /** selfLaunch()'s steps. Every error leaves through selfLaunch()'s runOperation(), which adds the id. */
+  private async selfLaunchSteps(
+    body: BuildSelfLaunchRequest,
+    privyWalletId: string,
+    op: OperationContext,
+  ): Promise<ConfirmSelfLaunchResult> {
+    const built = await this.postSelfLaunchBuild(body, op)
 
     if (typeof built.transaction === "string") {
       // The one client-side rebuild-on-blockhash-expiry loop left in this file. It used to say
@@ -3659,7 +3878,7 @@ export class CandleClient {
           // buildSelfLaunch() call that lands on an already-confirmed row throws a CandleApiError
           // here, uncaught, and propagates out of this loop as-is (never flattened into the stale
           // blockhash error below); no explicit "return the replay" branch is needed on this path.
-          const rebuilt = await this.buildSelfLaunch(body)
+          const rebuilt = await this.postSelfLaunchBuild(body, op)
           if (typeof rebuilt.transaction !== "string") throw error
           unsignedTransactionBase64 = rebuilt.transaction
           clientLaunchId = rebuilt.clientLaunchId
@@ -3734,11 +3953,36 @@ export class CandleClient {
    * the full model: Pro/Max tier, `launch:write` + `swap:write` scopes, Solana only, the 1-4 buy
    * cap (Jito's 5-transaction bundle limit), and why every buy leg's own on-chain `minAmountOut` is
    * "0" inside the bundle (`expectedFill` on the returned legs is the real consent surface).
+   *
+   * The result carries the `clientLaunchId` the build was sent under (the server's body does
+   * not), and so does every error thrown after the request was sent
+   * (`operationIds(error).clientLaunchId`). Keep it: `bundleId` is single-use, and the launch's
+   * identity for any later read or retry is the `clientLaunchId`. Retry a failed build with the
+   * SAME id and body, or read `getLaunchJob(id)`; a call with no id, or a new one, is a second
+   * launch. After a submit, follow the steps on `launchAtomic()`. Pass your own id and store it
+   * before the call when you can.
    */
   async buildAtomicLaunch(req: BuildAtomicLaunchRequest): Promise<BuildAtomicLaunchResult> {
     this.requireKey("buildAtomicLaunch()")
-    const body: BuildAtomicLaunchRequest = { ...req, clientLaunchId: req.clientLaunchId ?? generateClientLaunchId() }
-    return this.requestJson<BuildAtomicLaunchResult>("POST", "/api/v1/launch/atomic/build", body)
+    const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId()
+    const body: BuildAtomicLaunchRequest = { ...req, clientLaunchId }
+    return this.runOperation({ clientLaunchId }, "server-executed", (op) =>
+      this.postAtomicBuild(body, clientLaunchId, op),
+    )
+  }
+
+  /**
+   * The atomic build request itself. Sets `clientLaunchId` on the result from the request, since
+   * the server's body omits it. Shared by buildAtomicLaunch() and launchAtomic(), each of which
+   * runs it inside its OWN runOperation(), so an error is wrapped once, by the outermost method.
+   */
+  private async postAtomicBuild(
+    body: BuildAtomicLaunchRequest,
+    clientLaunchId: string,
+    op: OperationContext,
+  ): Promise<BuildAtomicLaunchResult> {
+    const built = await this.requestJson<BuildAtomicLaunchResult>("POST", "/api/v1/launch/atomic/build", body, op)
+    return { ...built, clientLaunchId }
   }
 
   /**
@@ -3760,7 +4004,15 @@ export class CandleClient {
    * roughly 150-160s in the worst case (Jito's own ~60s poll budget plus a further ~90s resolution
    * phase), since Candle checks the launch signature's own on-chain status before answering. Set a
    * client-side timeout no shorter than ~160s (or none) for this call, or you risk abandoning a
-   * request that was about to return a normal, if late, response.
+   * request that was about to return a normal, if late, response. A same-id
+   * `buildAtomicLaunch()`/`launchAtomic()` after a send can itself take up to about 95 seconds to
+   * answer, because the server resolves the first attempt against the chain before doing anything
+   * new: allow for that too.
+   *
+   * This method is given only a `bundleId`, so its result cannot carry the launch's
+   * `clientLaunchId`. Keep the one `buildAtomicLaunch()` returned: after a `"failed"` or
+   * `"timeout"`, recovery goes through it (the steps are on `launchAtomic()`), never through
+   * this `bundleId` and never through a new id.
    */
   async submitAtomicLaunch(req: SubmitAtomicLaunchRequest): Promise<SubmitAtomicLaunchResult> {
     this.requireKey("submitAtomicLaunch()")
@@ -3799,19 +4051,70 @@ export class CandleClient {
    * bundle with no linked payer at all (every leg "main") skips the signing round entirely and
    * goes straight from build to submit.
    *
-   * Returns `submitAtomicLaunch()`'s own result untouched -- see that method's jsdoc for why
-   * `"failed"`/`"timeout"` are returned here rather than thrown, and for the recommended
-   * client-side timeout.
+   * Returns `submitAtomicLaunch()`'s outcome plus the `clientLaunchId` the launch was sent under
+   * (`LaunchAtomicResult`), on `"landed"`, `"failed"` and `"timeout"` alike -- see that method's
+   * jsdoc for why `"failed"`/`"timeout"` are returned here rather than thrown, and for the
+   * recommended client-side timeout. A thrown error carries `clientLaunchId` too, and `bundleId`
+   * once the build has answered (`operationIds(error)`). Pass your own id and store it before the
+   * call when you can: an error can carry the id only if the process is still running to catch it.
+   *
+   * ## After a `timeout`, a `failed`, or an error that carries `clientLaunchId`
+   *
+   * `bundleId` is dead once `/submit` has been called and is never resubmitted; it is for log
+   * correlation only. The launch's identity is `clientLaunchId`:
+   *
+   * 1. Read `getLaunchJob(clientLaunchId)`. It needs `launch:read` on the key; a key whose scopes
+   *    were named by hand holds it only if it was named. A scope refusal is not "not found".
+   * 2. `confirmed`: the bundle landed. The mint is on the job. Stop.
+   * 3. 404 `JOB_NOT_FOUND`: the build never began. Call `launchAtomic()` again with the same id.
+   * 4. `failed`: the bundle did not land. Call `launchAtomic()` again with the SAME id; the server
+   *    starts a clean attempt under it.
+   * 5. Any other status: the bundle may still land. Wait, then read the job again or call
+   *    `launchAtomic()` again with the SAME id and the same body. The server resolves the first
+   *    attempt before doing anything new. It answers 409 `IDEMPOTENCY_CONFLICT` while the first
+   *    attempt is unresolved or has just been found landed, so on that 409 read the job again. It
+   *    builds a fresh bundle only when the first is proven reverted. This same-id call can take
+   *    about 95 seconds to answer, because the server waits on the chain.
+   * 6. Never send a new id while the job is not `failed`: that is a second token. This includes
+   *    the 409 whose message says "use a new clientLaunchId to launch again": read the job first,
+   *    because that message is also what a caller sees for a launch it does not yet know landed.
+   * 7. One state has no terminal answer today. The same-id call keeps answering 409 "This launch
+   *    was sent; its original attempt must be resolved" and the job is neither `confirmed` nor
+   *    `failed`, still, a few minutes after the submit (a blockhash lives about 90 seconds and the
+   *    rebuild itself can take about 95). Stop: do not send a new id on a timer, and report the
+   *    `clientLaunchId` and `bundleId` to whoever operates the key.
+   * 8. Treat every `timeout` as unresolved. `retryable` is `false` on every one the server returns
+   *    today, and it is never permission to relaunch under a new id.
    */
-  async launchAtomic(req: LaunchAtomicRequest): Promise<SubmitAtomicLaunchResult> {
+  async launchAtomic(req: LaunchAtomicRequest): Promise<LaunchAtomicResult> {
+    this.requireKey("buildAtomicLaunch()")
     const { payer, firstBuys, ...launchFields } = req
+    const clientLaunchId = launchFields.clientLaunchId ?? generateClientLaunchId()
     const buildReq: BuildAtomicLaunchRequest = {
       ...launchFields,
-      clientLaunchId: launchFields.clientLaunchId ?? generateClientLaunchId(),
+      clientLaunchId,
       payer: toAtomicWirePayer(payer),
       firstBuys: firstBuys.map((leg) => ({ payer: toAtomicWirePayer(leg.payer), amountRaw: leg.amountRaw })),
     }
-    const built = await this.buildAtomicLaunch(buildReq)
+    // Server-executed even with linked buyers: the caller signs, but Candle relays the bundle.
+    return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
+      const outcome = await this.launchAtomicSteps(req, buildReq, clientLaunchId, op)
+      return { ...outcome, clientLaunchId }
+    })
+  }
+
+  /** launchAtomic()'s steps. Every error leaves through launchAtomic()'s runOperation(), which adds the ids. */
+  private async launchAtomicSteps(
+    req: LaunchAtomicRequest,
+    buildReq: BuildAtomicLaunchRequest,
+    clientLaunchId: string,
+    op: OperationContext,
+  ): Promise<SubmitAtomicLaunchResult> {
+    const { payer, firstBuys } = req
+    // Not buildAtomicLaunch(): that wraps its own errors, and an error is wrapped once, here.
+    const built = await this.postAtomicBuild(buildReq, clientLaunchId, op)
+    // From here an error names the bundle as well. It is single-use: for logs, never resubmitted.
+    op.ids.bundleId = built.bundleId
 
     const signedTxsBase64: string[] = []
     for (const leg of built.legs) {
@@ -4280,15 +4583,50 @@ export class CandleClient {
     return headers
   }
 
+  /**
+   * Runs a one-call write method's steps so that every exit exposes the idempotency id it sent
+   * (see the module doc, "The id on every outcome"). The steps pass `op` to the request that
+   * carries the id. Until that request is handed to fetch, an error leaves unchanged: nothing
+   * reached the server, so there is nothing to replay. After it, `withOperationIds()` puts the
+   * ids on a `CandleApiError`/`JsonRpcError` and wraps anything else in a `CandleOperationError`.
+   *
+   * Called once per public method, never nested: an inner step that is itself a one-call method
+   * (launchAtomic()'s build) runs its plain request, so the error is wrapped once, here.
+   */
+  private async runOperation<T>(
+    ids: OperationIds,
+    flow: OperationFlow,
+    steps: (op: OperationContext) => Promise<T>,
+  ): Promise<T> {
+    const op: OperationContext = { sent: false, ids: { ...ids } }
+    try {
+      return await steps(op)
+    } catch (error) {
+      if (!op.sent) throw error
+      throw withOperationIds(error, op.ids, flow)
+    }
+  }
+
   // PUT joins GET/POST for the profile-wallet routes, which are replace-semantics writes. The
   // verb is passed straight to fetch and nothing below branches on it, so this widening is a
   // type change only.
-  private async requestJson<T>(method: "GET" | "POST" | "PUT", path: string, body?: unknown): Promise<T> {
-    const res = await this.fetchImpl(`${this.apiUrl}${path}`, {
+  //
+  // `op` is a one-call write method's context (runOperation() above). It is marked sent only
+  // once the request is fully built, immediately before fetch: a body that cannot be serialized
+  // throws before anything left, and that error must not claim a request may have reached Candle.
+  private async requestJson<T>(
+    method: "GET" | "POST" | "PUT",
+    path: string,
+    body?: unknown,
+    op?: OperationContext,
+  ): Promise<T> {
+    const init = {
       method,
       headers: this.headers({ json: body !== undefined }),
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    })
+    }
+    if (op) op.sent = true
+    const res = await this.fetchImpl(`${this.apiUrl}${path}`, init)
     return this.parseResponse<T>(res)
   }
 
@@ -4475,7 +4813,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.4.11"
+export const SDK_VERSION = "0.5.0"
 
 let sdkUpdateWarned = false
 

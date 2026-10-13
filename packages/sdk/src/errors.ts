@@ -8,7 +8,29 @@
  * the legacy plain-shape endpoints like activity/report and the users routes) still throws
  * `CandleApiError`, with `code: "HTTP_" + status` and `retryable: false`, so callers always
  * catch one error type and always branch on `code`, never on `message`.
+ *
+ * The one-call write methods (`trade()`, `launch()`, `launchAsync()`, `selfLaunch()`,
+ * `buildAtomicLaunch()`, `launchAtomic()`) also put the idempotency id they sent on every error
+ * that leaves them after their first request went out: on `CandleApiError` and `JsonRpcError` as
+ * extra fields, and on a `CandleOperationError` wrapped around anything else. `operationIds()`
+ * reads it back from any of them.
  */
+
+/**
+ * The idempotency ids a one-call write method sent, as `operationIds()` reads them back from one
+ * of its errors. The ids are not secrets and may be logged.
+ */
+export interface OperationIds {
+  /** The id `trade()` sent. Pass it back as `clientTradeId` to replay; `getTradeJob()` reads its job. */
+  clientTradeId?: string
+  /** The id a launch method sent. Pass it back as `clientLaunchId`; `getLaunchJob()` reads its job. */
+  clientLaunchId?: string
+  /**
+   * `launchAtomic()` only, once its build answered. Single-use and never resubmitted: it is here
+   * for log correlation. The launch's identity is `clientLaunchId`.
+   */
+  bundleId?: string
+}
 
 export interface CandleRoutingDetail {
   /** Open string vocabulary for compatibility with additive server reasons. */
@@ -83,6 +105,16 @@ export class CandleApiError extends Error {
   readonly feeRaw?: string
   readonly quoteAsset?: string
   readonly treasury?: string
+  /**
+   * The idempotency id of the one-call method this error left (see `OperationIds`). Set by the
+   * SDK from the request it sent, never read from the server envelope, and absent on an error
+   * from any other method.
+   */
+  declare readonly clientTradeId?: string
+  /** See `clientTradeId` above: the launch methods' id. */
+  declare readonly clientLaunchId?: string
+  /** See `OperationIds.bundleId`. */
+  declare readonly bundleId?: string
 
   constructor(args: CandleErrorPayload & { status: number; retryable: boolean }) {
     super(args.message)
@@ -205,6 +237,15 @@ export class JsonRpcError extends Error {
   readonly code: number
   /** The JSON-RPC error's `data` field, verbatim. Solana: typically `{ err, logs }`. */
   readonly data: unknown
+  /**
+   * The idempotency id of the one-call method this error left (see `OperationIds`). Set by the
+   * SDK; absent when the error came from `broadcastSignedTransaction()` called directly.
+   */
+  declare readonly clientTradeId?: string
+  /** See `clientTradeId` above: the launch methods' id. */
+  declare readonly clientLaunchId?: string
+  /** See `OperationIds.bundleId`. */
+  declare readonly bundleId?: string
 
   constructor(args: { code: number; message: string; data?: unknown }) {
     super(args.message)
@@ -212,6 +253,117 @@ export class JsonRpcError extends Error {
     this.code = args.code
     this.data = args.data
   }
+}
+
+/**
+ * Which of the two recovery messages a `CandleOperationError` carries. Chosen by the flow the
+ * method was running, never by the stage it failed at, because agent callers act on the text.
+ *
+ * - `server-executed`: Candle broadcasts (`trade({ from: "main" })`, `launch()`, `launchAsync()`,
+ *   `buildAtomicLaunch()`, `launchAtomic()`). A same-id call is a replay.
+ * - `caller-broadcast`: the caller signs and broadcasts (`selfLaunch()`, `trade()` with a linked
+ *   payer). A same-id call can sign and broadcast a second transaction (BE-1126), so the message
+ *   never says to retry with the id.
+ */
+export type OperationFlow = "server-executed" | "caller-broadcast"
+
+function operationErrorMessage(cause: unknown, ids: OperationIds, flow: OperationFlow): string {
+  const original = cause instanceof Error ? cause.message : String(cause)
+  const isTrade = ids.clientTradeId !== undefined
+  const idName = isTrade ? "clientTradeId" : "clientLaunchId"
+  const noun = isTrade ? "trade" : "launch"
+  const read = isTrade ? "getTradeJob()" : "getLaunchJob()"
+  const bundle =
+    ids.bundleId !== undefined ? ` (bundleId ${ids.bundleId}, single-use: for logs only, never resubmitted)` : ""
+  const head =
+    `${original} -- ${idName} ${ids.clientTradeId ?? ids.clientLaunchId}${bundle}: ` +
+    "the request may or may not have reached Candle."
+  const tail = `A call with a new id, or with none, is a second, independent ${noun}.`
+  if (flow === "server-executed") {
+    return `${head} Read the job for this id (${read}), or retry the call with this same ${idName} and the same request. ${tail}`
+  }
+  return (
+    `${head} This id identifies the job: read the job for this id (${read}), and check the wallet's recent ` +
+    `transactions before sending again, because a call under the same id can sign and broadcast a second ` +
+    `transaction. ${tail}`
+  )
+}
+
+/**
+ * Thrown by a one-call write method (`trade()`, `launch()`, `launchAsync()`, `selfLaunch()`,
+ * `buildAtomicLaunch()`, `launchAtomic()`) when it fails, after its first request was sent, with
+ * anything that is not already a `CandleApiError`, `JsonRpcError` or `TradeLandedFeeLegError`: a
+ * rejected `fetch` (a lost response, a proxy timeout, a socket reset), a 2xx body that is not
+ * JSON, a plain `Error` from one of the method's own steps, or a thrown value that is not an
+ * `Error`. The original is `cause`, untouched.
+ *
+ * The request may or may not have reached Candle, so this error carries the idempotency id the
+ * method sent: without it the only retry is a call with a new id, which is a second trade or
+ * launch. `message` starts with the original message, then names the id and says what to do with
+ * it. It has two forms (see `OperationFlow`): a server-executed flow says to read the job or
+ * retry with the same id; `selfLaunch()` and a linked `trade()` say to read the job and check the
+ * wallet's recent transactions first, because a same-id call there can broadcast again.
+ *
+ * An error is wrapped once, at the outermost method, so `cause` is never a `CandleOperationError`.
+ */
+export class CandleOperationError extends Error {
+  /** See `OperationIds.clientTradeId`. */
+  declare readonly clientTradeId?: string
+  /** See `OperationIds.clientLaunchId`. */
+  declare readonly clientLaunchId?: string
+  /** See `OperationIds.bundleId`. */
+  declare readonly bundleId?: string
+  /** The value the method originally threw or was rejected with. */
+  declare readonly cause: unknown
+
+  constructor(args: { cause: unknown; ids: OperationIds; flow: OperationFlow }) {
+    super(operationErrorMessage(args.cause, args.ids, args.flow), { cause: args.cause })
+    this.name = "CandleOperationError"
+    Object.assign(this, definedIds(args.ids))
+  }
+}
+
+function definedIds(ids: OperationIds): OperationIds {
+  return {
+    ...(typeof ids.clientTradeId === "string" ? { clientTradeId: ids.clientTradeId } : {}),
+    ...(typeof ids.clientLaunchId === "string" ? { clientLaunchId: ids.clientLaunchId } : {}),
+    ...(typeof ids.bundleId === "string" ? { bundleId: ids.bundleId } : {}),
+  }
+}
+
+/**
+ * The idempotency ids on an error from a one-call write method, so a `catch (error: unknown)`
+ * block needs no cast: `{ clientTradeId?, clientLaunchId?, bundleId? }` from a `CandleApiError`,
+ * `JsonRpcError`, `TradeLandedFeeLegError` or `CandleOperationError`, and `{}` from anything else.
+ *
+ * `{}` means nothing was sent (a missing API key, for example), so there is nothing to replay.
+ */
+export function operationIds(error: unknown): OperationIds {
+  if (
+    error instanceof CandleApiError ||
+    error instanceof JsonRpcError ||
+    error instanceof TradeLandedFeeLegError ||
+    error instanceof CandleOperationError
+  ) {
+    return definedIds(error)
+  }
+  return {}
+}
+
+/**
+ * SDK-internal (client.ts), not exported from the package root: the error a one-call method
+ * throws for `error`, carrying `ids`. A `CandleApiError` or `JsonRpcError` is the SAME object
+ * with the ids set on it as own, enumerable properties. A `TradeLandedFeeLegError` already names
+ * its `clientTradeId` and passes through. Anything else is wrapped in a `CandleOperationError`.
+ */
+export function withOperationIds(error: unknown, ids: OperationIds, flow: OperationFlow): unknown {
+  if (error instanceof CandleApiError || error instanceof JsonRpcError) return Object.assign(error, definedIds(ids))
+  if (error instanceof TradeLandedFeeLegError) return error
+  // Never a wrapper around a wrapper: keep the original as `cause` and the ids it already named.
+  if (error instanceof CandleOperationError) {
+    return new CandleOperationError({ cause: error.cause, ids: { ...operationIds(error), ...definedIds(ids) }, flow })
+  }
+  return new CandleOperationError({ cause: error, ids, flow })
 }
 
 /** Extracts the structured error payload when `body` is a Candle error envelope; null otherwise. */

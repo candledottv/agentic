@@ -55,6 +55,7 @@ export type {
   LaunchAtomicFirstBuyRequest,
   LaunchAtomicPayer,
   LaunchAtomicRequest,
+  LaunchAtomicResult,
   LaunchJob,
   LaunchPreset,
   LaunchRequest,
@@ -136,6 +137,7 @@ export type {
   SwapSettlementLeg,
   SwapSettlementState,
   TradeFee,
+  TradeJob,
   TradePayer,
   TradeRace,
   TradeRequest,
@@ -146,12 +148,20 @@ export type {
   WalletKind,
 } from "./client"
 export { CandleClient, perpsDepositProblem } from "./client"
-export type { BridgeErrorCode, CandleErrorPayload, CandleRoutingDetail, SolanaRpcErrorData } from "./errors"
+export type {
+  BridgeErrorCode,
+  CandleErrorPayload,
+  CandleRoutingDetail,
+  OperationIds,
+  SolanaRpcErrorData,
+} from "./errors"
 export {
   BRIDGE_ERROR_CODES,
   CandleApiError,
+  CandleOperationError,
   isSolanaRpcErrorData,
   JsonRpcError,
+  operationIds,
   TradeLandedFeeLegError,
 } from "./errors"
 export {

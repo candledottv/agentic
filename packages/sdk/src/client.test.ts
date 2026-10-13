@@ -295,7 +295,7 @@ describe("request shapes", () => {
       headers: JSON_HEADERS,
       body: JSON.stringify(LAUNCH_REQ),
     })
-    expect(result).toEqual(LAUNCH_OK as never)
+    expect(result).toEqual({ ...LAUNCH_OK, clientLaunchId: "run-1" } as never)
   })
 
   test("launch generates a sdk- prefixed clientLaunchId when the caller omits one", async () => {
@@ -1021,7 +1021,7 @@ describe("request shapes", () => {
       headers: JSON_HEADERS,
       body: JSON.stringify(confirmReq),
     })
-    expect(result).toEqual(LAUNCH_OK as never)
+    expect(result).toEqual({ ...LAUNCH_OK, clientLaunchId: "run-1" } as never)
   })
 
   test("confirmSelfLaunch with optional devBuySignature", async () => {
@@ -1433,7 +1433,7 @@ describe("atomic launch (build/submit request shapes, no linked signing)", () =>
       headers: JSON_HEADERS,
       body: JSON.stringify(ATOMIC_BUILD_REQ),
     })
-    expect(result).toEqual(ATOMIC_BUILD_RESULT_ALL_SERVER as never)
+    expect(result).toEqual({ ...ATOMIC_BUILD_RESULT_ALL_SERVER, clientLaunchId: "atomic-run-1" } as never)
   })
 
   test("buildAtomicLaunch generates a sdk- prefixed clientLaunchId when the caller omits one", async () => {
@@ -1555,7 +1555,7 @@ describe("atomic launch (build/submit request shapes, no linked signing)", () =>
       firstBuys: [{ payer: { type: "main" }, amountRaw: "1000000" }],
     }
     const result = await client.launchAtomic(req)
-    expect(result).toEqual(landed as never)
+    expect(result).toEqual({ ...landed, clientLaunchId: "atomic-run-1" } as never)
     expect(calls.map((c) => c.url)).toEqual([
       "https://api.test/api/v1/launch/atomic/build",
       "https://api.test/api/v1/launch/atomic/submit",
@@ -1573,7 +1573,7 @@ describe("atomic launch (build/submit request shapes, no linked signing)", () =>
       firstBuys: [{ payer: { type: "main" }, amountRaw: "1000000" }],
     }
     const result = await client.launchAtomic(req)
-    expect(result).toEqual(failed as never)
+    expect(result).toEqual({ ...failed, clientLaunchId: "atomic-run-1" } as never)
   })
 
   test("launchAtomic(): a server-legs-only bundle that times out is returned, not thrown", async () => {
@@ -1585,7 +1585,7 @@ describe("atomic launch (build/submit request shapes, no linked signing)", () =>
       firstBuys: [{ payer: { type: "main" }, amountRaw: "1000000" }],
     }
     const result = await client.launchAtomic(req)
-    expect(result).toEqual(timedOut as never)
+    expect(result).toEqual({ ...timedOut, clientLaunchId: "atomic-run-1" } as never)
   })
 })
 
@@ -2676,7 +2676,7 @@ describe("linked-wallet signing relay + one-shot flows", () => {
         linkedWalletId: LINKED_WALLET_ID,
         privyWalletId: PRIVY_WALLET_ID,
       })
-      expect(result).toEqual(LAUNCH_OK as never)
+      expect(result).toEqual({ ...LAUNCH_OK, clientLaunchId: "run-linked-1" } as never)
       expect(calls.map((c) => c.url)).toEqual([
         "https://api.test/api/v1/launch/self/build",
         SIGN_RELAY_URL,
@@ -2706,7 +2706,7 @@ describe("linked-wallet signing relay + one-shot flows", () => {
         linkedWalletId: LINKED_WALLET_ID,
         privyWalletId: PRIVY_WALLET_ID,
       })
-      expect(result).toEqual(confirmed as never)
+      expect(result).toEqual({ ...confirmed, clientLaunchId: "run-linked-2" } as never)
       expect(calls.map((c) => c.url)).toEqual([
         "https://api.test/api/v1/launch/self/build",
         EVM_RPC, // eth_chainId
@@ -2752,7 +2752,7 @@ describe("linked-wallet signing relay + one-shot flows", () => {
         linkedWalletId: LINKED_WALLET_ID,
         privyWalletId: PRIVY_WALLET_ID,
       })
-      expect(result).toEqual(confirmed as never)
+      expect(result).toEqual({ ...confirmed, clientLaunchId: "run-linked-3" } as never)
 
       const signCalls = calls.filter((c) => c.url === SIGN_RELAY_URL)
       const transactions = signCalls.map(
@@ -2824,7 +2824,7 @@ describe("linked-wallet signing relay + one-shot flows", () => {
           linkedWalletId: LINKED_WALLET_ID,
           privyWalletId: PRIVY_WALLET_ID,
         })
-        expect(result).toEqual(confirmedSecondAttempt as never)
+        expect(result).toEqual({ ...confirmedSecondAttempt, clientLaunchId: "run-linked-1" } as never)
 
         const buildCalls = calls.filter((c) => c.url === "https://api.test/api/v1/launch/self/build")
         expect(buildCalls).toHaveLength(2)
@@ -2976,7 +2976,7 @@ describe("linked-wallet signing relay + one-shot flows", () => {
         ],
       }
       const result = await client.launchAtomic(req)
-      expect(result).toEqual(landed as never)
+      expect(result).toEqual({ ...landed, clientLaunchId: "atomic-run-linked-1" } as never)
 
       // build -> sign leg 0 (LINKED_WALLET_ID) -> sign leg 2 (the SECOND wallet) -> submit, in that
       // exact order; no call at all for leg 1 (the server/main-payer leg).
@@ -3032,7 +3032,7 @@ describe("linked-wallet signing relay + one-shot flows", () => {
           },
         ],
       })
-      expect(result).toEqual(failed as never)
+      expect(result).toEqual({ ...failed, clientLaunchId: "atomic-run-linked-1" } as never)
     })
 
     test("a missing secretStore/privyAppId throws a clear error BEFORE any client leg is submitted", async () => {

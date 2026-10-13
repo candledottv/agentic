@@ -53,11 +53,13 @@ refuse to fetch without one and throw a plain `Error` locally instead of a serve
 
 `launch()` fills in a `clientLaunchId` (`"sdk-" + crypto.randomUUID()`) when you omit one, and
 retries transient failures by re-sending the SAME id, which the server's idempotency ledger
-resolves safely (no double mint, ever). Retries cover network errors, non-envelope 5xx
-responses, retryable 5xx envelopes, and the retryable in-flight 409; a non-retryable envelope
-(validation errors, an id reused with a different body, `LAUNCH_DISABLED`) is thrown
-immediately. Backoff is 250ms doubling per attempt, jittered, capped at 8s, bounded by
-`maxRetries` (default 3).
+resolves safely: no double mint inside one `launch()` call. That holds only inside the call. A
+second `launch()` call with no id is a new launch under a new id, so to retry after `launch()`
+throws, pass the id back: see "Retrying a write that failed or timed out" below. Retries cover
+network errors, non-envelope 5xx responses, retryable 5xx envelopes, and the retryable in-flight
+409; a non-retryable envelope (validation errors, an id reused with a different body,
+`LAUNCH_DISABLED`) is thrown immediately. Backoff is 250ms doubling per attempt, jittered, capped
+at 8s, bounded by `maxRetries` (default 3).
 
 ```ts
 import { CandleApiError } from "@candledottv/agent-sdk"
@@ -70,11 +72,12 @@ try {
     chain: "solana",
     buyAmount: 100_000_000, // lamports
   })
-  console.log("minted", result.mint, "explorer:", result.links.explorer)
+  console.log("minted", result.mint, "explorer:", result.links.explorer, "id:", result.clientLaunchId)
 } catch (error) {
   if (error instanceof CandleApiError) {
     // Branch on code, never on message. error.status, error.retryable, error.field ride along.
-    console.error("launch failed:", error.code)
+    // error.clientLaunchId is the id this call sent: keep it for the retry.
+    console.error("launch failed:", error.code, error.clientLaunchId)
   } else {
     throw error
   }
@@ -115,6 +118,8 @@ const fill = await candle.trade({ mint: "9dXSV8...CNDL", side: "buy", amountRaw:
   or from a linked wallet the caller signs for. Amounts are raw units. On Solana,
   `amounts.actualOutRaw` is the delivered amount, decoded from the payer's balance change; book
   positions from it rather than from `expectedOutRaw`. It is absent on Hood.
+- `getTradeJob(clientTradeId)` reads one trade from the idempotency ledger without sending
+  anything: the read to make after a `trade()` that threw or timed out. Needs `swap:write`.
 - `swap()` converts base assets (`SOL`, `USDC`, `CNDL`, `ETH`, `USDG`); a pair that spans Solana
   and Hood is a bridge.
 - `getPlans()` (no key) returns every plan's price, fees, limits and capabilities as the server
@@ -131,6 +136,135 @@ const fill = await candle.trade({ mint: "9dXSV8...CNDL", side: "buy", amountRaw:
 
 Limit orders are a REST surface only (`/api/v1/trade/agent/orders`); the SDK has no method for
 them.
+
+## Retrying a write that failed or timed out
+
+Six methods send an idempotency id, and generate one (`"sdk-" + crypto.randomUUID()`) when you
+pass none: `trade()`, `launch()`, `launchAsync()`, `selfLaunch()`, `buildAtomicLaunch()` and
+`launchAtomic()`. The server treats that id as the whole identity of the operation: the same id
+is a replay, and a new id is a second, independent trade or launch. A call that does not come
+back with a normal answer (a lost response, a proxy timeout, a 5xx) may still have executed, so
+what you do next depends on having the id.
+
+1. **Pass your own id for anything that moves funds, and store it before the call.** An error can
+   carry the id only if the process is still running to catch it. A crash or a kill mid-call
+   leaves nothing, and only an id you stored first survives that.
+2. **If you did not, read the id from the result or the error**, and send it back on the retry
+   with the same request body. Every one of the six methods exposes the id it sent on every
+   outcome: on the result (`result.clientTradeId`, `result.clientLaunchId`) and on every error
+   thrown after its first request was sent (`operationIds(error)`). This is the whole procedure
+   for the flows Candle executes. For `selfLaunch()` and a linked `trade()` it is not enough: see
+   below.
+3. **Never retry without the id.** A call with no id, or a new one, is a second trade or launch.
+   The SDK does not remember ids between calls and adds no retry of its own to `trade()`,
+   `selfLaunch()` or `launchAtomic()`; only `launch()` retries, inside its one call.
+
+What the error is:
+
+| The method threw | Class | The id |
+| --- | --- | --- |
+| a Candle error response | `CandleApiError`, unchanged | `error.clientTradeId` or `error.clientLaunchId`, and `error.bundleId` from `launchAtomic()` once its build answered |
+| a JSON-RPC failure from a broadcast | `JsonRpcError`, unchanged | the same fields |
+| a Hood trade whose fee leg failed after the trade landed | `TradeLandedFeeLegError`, unchanged | `error.clientTradeId` |
+| anything else after the first request was sent: a rejected `fetch`, a 2xx body that is not JSON, a plain `Error` from one of the method's own steps | `CandleOperationError`, with the original as `error.cause` | the same fields |
+| an error before anything was sent, such as no API key | the plain error | none: nothing reached the server, so there is nothing to replay |
+
+`operationIds(error)` returns `{ clientTradeId?, clientLaunchId?, bundleId? }` from any of these and
+`{}` from anything else, so a `catch (error: unknown)` block needs no cast. The ids are not secrets
+and may be logged. A `CandleOperationError`'s message starts with the original message, names the
+id, and says what to do with it.
+
+**Changed in 0.5.0:** a transport or local failure from these six methods used to surface as the
+raw error (a `TypeError` from `fetch`, for example). It is now a `CandleOperationError` with the
+original as `error.cause`. Code that matched `error instanceof TypeError` or
+`error.name === "AbortError"` on these calls should read `error.cause`. `launch()`, `selfLaunch()`,
+`confirmSelfLaunch()` and `buildAtomicLaunch()` results gained `clientLaunchId`, and
+`launchAtomic()` returns `LaunchAtomicResult`, its old result plus `clientLaunchId`.
+
+A main-payer trade (`from: "main"`), where the retry is safe once you have the id:
+
+```ts
+import { operationIds } from "@candledottv/agent-sdk"
+
+try {
+  return await candle.trade(req)
+} catch (error) {
+  const { clientTradeId } = operationIds(error)
+  if (!clientTradeId) throw error // nothing was sent
+  return await candle.trade({ ...req, clientTradeId }) // from: "main" only: a replay, not a second trade
+}
+```
+
+This example is not safe for a linked payer or for `selfLaunch()`: a same-id call there can
+broadcast again.
+
+### `trade()`
+
+With the id: read `getTradeJob(id)`, or call `trade()` again with the same id and body. Both are
+safe for a main payer.
+
+| The job read says | Meaning | Do |
+| --- | --- | --- |
+| 404 `JOB_NOT_FOUND` (thrown as `CandleApiError`) | the write never began | call again with the same id |
+| `confirmed` | the trade landed; `signature` is on the job | stop. A same-id `trade()` replays the result |
+| `failed`, `errorCode: "TRADE_REVERTED"` | it landed and reverted | a new trade needs a new id |
+| `failed`, other | not confirmed. A row with broadcast evidence may still be on chain, and a same-id call answers `stage: "unconfirmed"` for it. The same-id call is the check | call again with the same id |
+| `built` | in flight or unresolved | a same-id `trade()` answers `IDEMPOTENCY_CONFLICT`. If it carries `stage: "unconfirmed"` and `retryable: false`, check its `signature` on chain and do not retry |
+
+### `launch()`, `launchAsync()`
+
+Retry with the same `clientLaunchId` and body, or read `getLaunchJob(id)` (`waitForLaunch(id)`
+polls it). The rules are the ones under "Idempotency" in
+[Headless launch](https://docs.candle.tv/developers/headless-launch#idempotency); what is new is
+that you always have the id.
+
+### `selfLaunch()` and a linked `trade()`
+
+You sign and broadcast in these flows, so the id is necessary and **not** sufficient. An error
+after the broadcast may sit on a transaction that landed, and calling the method again under the
+same id builds and broadcasts a new one. So a `CandleOperationError` from these flows does not
+tell you to retry with the id. Read the job first (`getLaunchJob(id)`, `getTradeJob(id)`); if it
+is not `confirmed`, check the wallet's recent transactions before sending again.
+
+### `launchAtomic()`
+
+`launchAtomic()` returns `timeout` and `failed` as values, not errors, and each carries
+`clientLaunchId`. `bundleId` is dead once `/submit` has been called and is never resubmitted; it
+is on the result and the error for log correlation only. The launch's identity is
+`clientLaunchId`. After a `timeout` result, a `failed` result, or an error that carries
+`clientLaunchId`:
+
+1. Read `getLaunchJob(clientLaunchId)`. This needs `launch:read` on the key. The Write and
+   Withdraw access levels hold it; a key whose scopes were named one by one holds it only if it
+   was named, so add `launch:read` to any key that runs atomic launches. A scope refusal
+   (`SCOPE_MISSING`) is not "not found".
+2. `confirmed`: the bundle landed. The mint is on the job. Stop.
+3. 404 `JOB_NOT_FOUND`: the build never began. Call `launchAtomic()` again with the same id.
+4. `failed`: the bundle did not land. Call `launchAtomic()` again with the **same** id; the server
+   starts a clean attempt under it.
+5. Any other status: the bundle may still land. Wait, then either read the job again or call
+   `launchAtomic()` again with the **same** id and the same body. The server resolves the first
+   attempt before doing anything new. It answers 409 `IDEMPOTENCY_CONFLICT` while the first
+   attempt is unresolved or has just been found landed, so on that 409 read the job again. It
+   builds a fresh bundle only when the first is proven reverted.
+6. **Never send a new id while the job is not `failed`.** That is the one path the server cannot
+   refuse, and it is a second token. This includes the 409 whose message says "use a new
+   clientLaunchId to launch again": read the job first, because that message is also what you see
+   for a launch you do not yet know landed.
+7. One state has no terminal answer today. For an attempt whose blockhash expired with no
+   signature on record, the same-id `launchAtomic()` keeps answering 409 `IDEMPOTENCY_CONFLICT`,
+   "This launch was sent; its original attempt must be resolved", and the job read is still
+   neither `confirmed` nor `failed`. Treat it as this state when that remains true well after the
+   bundle's blockhash must have expired: a Solana blockhash lives about 90 seconds and a same-id
+   rebuild can itself take about 95 seconds, so a few minutes after the submit. Then stop. Do not
+   send a new id on a timer; report the `clientLaunchId` and `bundleId` to whoever operates the
+   key.
+8. Treat every `timeout` as unresolved. `retryable` is `false` on every `timeout` the server
+   returns today, and it is never permission to relaunch under a new id.
+
+A same-id rebuild can take up to about 95 seconds to answer, because the server waits on the
+chain, and a submit can take up to about 160 seconds. Set no client-side timeout shorter than
+that on these calls.
 
 ## Importing a wallet
 
@@ -206,7 +340,9 @@ Every non-2xx response throws `CandleApiError` with `code`, `status`, `retryable
 `docsPath` when the envelope carries them. Structured envelopes map straight through; the few
 legacy endpoints without envelopes (activity, users) surface as `code: "HTTP_<status>"`. A
 Solana or EVM JSON-RPC failure throws `JsonRpcError`, with the RPC's numeric `code` and its
-`data` (for a failed simulation, `{ err, logs }`). The full code table is on
+`data` (for a failed simulation, `{ err, logs }`). The one-call write methods also put the
+idempotency id they sent on these errors, and wrap any other failure in `CandleOperationError`:
+see "Retrying a write that failed or timed out" above. The full code table is on
 [Headless launch](https://docs.candle.tv/developers/headless-launch).
 
 ## Development

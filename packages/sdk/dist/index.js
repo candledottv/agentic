@@ -161,6 +161,51 @@ class JsonRpcError extends Error {
     this.data = args.data;
   }
 }
+function operationErrorMessage(cause, ids, flow) {
+  const original = cause instanceof Error ? cause.message : String(cause);
+  const isTrade = ids.clientTradeId !== undefined;
+  const idName = isTrade ? "clientTradeId" : "clientLaunchId";
+  const noun = isTrade ? "trade" : "launch";
+  const read = isTrade ? "getTradeJob()" : "getLaunchJob()";
+  const bundle = ids.bundleId !== undefined ? ` (bundleId ${ids.bundleId}, single-use: for logs only, never resubmitted)` : "";
+  const head = `${original} -- ${idName} ${ids.clientTradeId ?? ids.clientLaunchId}${bundle}: ` + "the request may or may not have reached Candle.";
+  const tail = `A call with a new id, or with none, is a second, independent ${noun}.`;
+  if (flow === "server-executed") {
+    return `${head} Read the job for this id (${read}), or retry the call with this same ${idName} and the same request. ${tail}`;
+  }
+  return `${head} This id identifies the job: read the job for this id (${read}), and check the wallet's recent ` + `transactions before sending again, because a call under the same id can sign and broadcast a second ` + `transaction. ${tail}`;
+}
+
+class CandleOperationError extends Error {
+  constructor(args) {
+    super(operationErrorMessage(args.cause, args.ids, args.flow), { cause: args.cause });
+    this.name = "CandleOperationError";
+    Object.assign(this, definedIds(args.ids));
+  }
+}
+function definedIds(ids) {
+  return {
+    ...typeof ids.clientTradeId === "string" ? { clientTradeId: ids.clientTradeId } : {},
+    ...typeof ids.clientLaunchId === "string" ? { clientLaunchId: ids.clientLaunchId } : {},
+    ...typeof ids.bundleId === "string" ? { bundleId: ids.bundleId } : {}
+  };
+}
+function operationIds(error) {
+  if (error instanceof CandleApiError || error instanceof JsonRpcError || error instanceof TradeLandedFeeLegError || error instanceof CandleOperationError) {
+    return definedIds(error);
+  }
+  return {};
+}
+function withOperationIds(error, ids, flow) {
+  if (error instanceof CandleApiError || error instanceof JsonRpcError)
+    return Object.assign(error, definedIds(ids));
+  if (error instanceof TradeLandedFeeLegError)
+    return error;
+  if (error instanceof CandleOperationError) {
+    return new CandleOperationError({ cause: error.cause, ids: { ...operationIds(error), ...definedIds(ids) }, flow });
+  }
+  return new CandleOperationError({ cause: error, ids, flow });
+}
 function envelopeError(body) {
   if (typeof body !== "object" || body === null)
     return null;
@@ -1105,25 +1150,33 @@ class CandleClient {
   }
   async launch(req) {
     this.requireKey("launch()");
-    const body = { ...req, clientLaunchId: req.clientLaunchId ?? generateClientLaunchId() };
-    let lastError;
-    for (let attempt = 0;attempt <= this.maxRetries; attempt++) {
-      if (attempt > 0)
-        await sleep2(retryDelayMs(attempt - 1));
-      try {
-        return await this.requestJson("POST", "/api/v1/launch/headless", body);
-      } catch (error) {
-        if (!isRetryableLaunchFailure(error))
-          throw error;
-        lastError = error;
+    const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId();
+    const body = { ...req, clientLaunchId };
+    return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
+      let lastError;
+      for (let attempt = 0;attempt <= this.maxRetries; attempt++) {
+        if (attempt > 0)
+          await sleep2(retryDelayMs(attempt - 1));
+        try {
+          const result = await this.requestJson("POST", "/api/v1/launch/headless", body, op);
+          return { ...result, clientLaunchId };
+        } catch (error) {
+          if (!isRetryableLaunchFailure(error))
+            throw error;
+          lastError = error;
+        }
       }
-    }
-    throw lastError;
+      throw lastError;
+    });
   }
   async launchAsync(req) {
     this.requireKey("launchAsync()");
-    const body = { ...req, clientLaunchId: req.clientLaunchId ?? generateClientLaunchId(), async: true };
-    return this.requestJson("POST", "/api/v1/launch/headless", body);
+    const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId();
+    const body = { ...req, clientLaunchId, async: true };
+    return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
+      const accepted = await this.requestJson("POST", "/api/v1/launch/headless", body, op);
+      return { ...accepted, clientLaunchId: accepted.clientLaunchId ?? clientLaunchId };
+    });
   }
   async getLaunchJob(clientLaunchId) {
     this.requireKey("getLaunchJob()");
@@ -1241,16 +1294,28 @@ class CandleClient {
     return this.requestJson("POST", "/api/v1/launch/self/dry-run", req);
   }
   async buildSelfLaunch(req) {
+    return this.postSelfLaunchBuild(req);
+  }
+  async postSelfLaunchBuild(req, op) {
     this.requireKey("buildSelfLaunch()");
-    return this.requestJson("POST", "/api/v1/launch/self/build", req);
+    return this.requestJson("POST", "/api/v1/launch/self/build", req, op);
   }
   async confirmSelfLaunch(req) {
     this.requireKey("confirmSelfLaunch()");
-    return this.requestJson("POST", "/api/v1/launch/self/confirm", req);
+    const result = await this.requestJson("POST", "/api/v1/launch/self/confirm", req);
+    return { ...result, clientLaunchId: req.clientLaunchId };
   }
   async buildTrade(req) {
+    return this.postTradeBuild(req);
+  }
+  async postTradeBuild(req, op) {
     this.requireKey("buildTrade()");
-    return this.requestJson("POST", "/api/v1/trade/agent/build", req);
+    return this.requestJson("POST", "/api/v1/trade/agent/build", req, op);
+  }
+  async getTradeJob(clientTradeId) {
+    this.requireKey("getTradeJob()");
+    const body = await this.requestJson("GET", `/api/v1/trade/agent/jobs/${encodeURIComponent(clientTradeId)}`);
+    return body.job;
   }
   async confirmTrade(req) {
     this.requireKey("confirmTrade()");
@@ -1339,15 +1404,22 @@ class CandleClient {
       ...req.maxSlippageBps !== undefined ? { maxSlippageBps: req.maxSlippageBps } : {},
       ...req.quoteAsset !== undefined ? { quoteAsset: req.quoteAsset } : {}
     };
+    const flow = req.from === "main" ? "server-executed" : "caller-broadcast";
+    return this.runOperation({ clientTradeId }, flow, async (op) => {
+      const result = await this.tradeSteps(req, buildReq, op);
+      return typeof result.clientTradeId === "string" ? result : { ...result, clientTradeId };
+    });
+  }
+  async tradeSteps(req, buildReq, op) {
     if (req.from === "main") {
-      const result = await this.buildTrade(buildReq);
+      const result = await this.postTradeBuild(buildReq, op);
       if (result.status !== "executed") {
         throw new Error(`trade({ from: "main" }) expected an executed result but got status "${result.status}"`);
       }
       return result;
     }
     const { linkedWalletId, privyWalletId } = req.from;
-    const built = await this.buildTrade(buildReq);
+    const built = await this.postTradeBuild(buildReq, op);
     if (built.status !== "built") {
       return built;
     }
@@ -1426,11 +1498,12 @@ class CandleClient {
   }
   async selfLaunch(req) {
     const { privyWalletId, ...launchReq } = req;
-    const body = {
-      ...launchReq,
-      clientLaunchId: launchReq.clientLaunchId ?? generateClientLaunchId()
-    };
-    const built = await this.buildSelfLaunch(body);
+    const clientLaunchId = launchReq.clientLaunchId ?? generateClientLaunchId();
+    const body = { ...launchReq, clientLaunchId };
+    return this.runOperation({ clientLaunchId }, "caller-broadcast", (op) => this.selfLaunchSteps(body, privyWalletId, op));
+  }
+  async selfLaunchSteps(body, privyWalletId, op) {
+    const built = await this.postSelfLaunchBuild(body, op);
     if (typeof built.transaction === "string") {
       let unsignedTransactionBase64 = built.transaction;
       let clientLaunchId = built.clientLaunchId;
@@ -1449,7 +1522,7 @@ class CandleClient {
             throw error;
           if (attempt === MAX_BLOCKHASH_REBUILDS)
             throw withRpcLagHint(error);
-          const rebuilt = await this.buildSelfLaunch(body);
+          const rebuilt = await this.postSelfLaunchBuild(body, op);
           if (typeof rebuilt.transaction !== "string")
             throw error;
           unsignedTransactionBase64 = rebuilt.transaction;
@@ -1502,8 +1575,13 @@ class CandleClient {
   }
   async buildAtomicLaunch(req) {
     this.requireKey("buildAtomicLaunch()");
-    const body = { ...req, clientLaunchId: req.clientLaunchId ?? generateClientLaunchId() };
-    return this.requestJson("POST", "/api/v1/launch/atomic/build", body);
+    const clientLaunchId = req.clientLaunchId ?? generateClientLaunchId();
+    const body = { ...req, clientLaunchId };
+    return this.runOperation({ clientLaunchId }, "server-executed", (op) => this.postAtomicBuild(body, clientLaunchId, op));
+  }
+  async postAtomicBuild(body, clientLaunchId, op) {
+    const built = await this.requestJson("POST", "/api/v1/launch/atomic/build", body, op);
+    return { ...built, clientLaunchId };
   }
   async submitAtomicLaunch(req) {
     this.requireKey("submitAtomicLaunch()");
@@ -1526,14 +1604,24 @@ class CandleClient {
     throw new Error(`submitAtomicLaunch(): unexpected 200 response shape: ${text}`);
   }
   async launchAtomic(req) {
+    this.requireKey("buildAtomicLaunch()");
     const { payer, firstBuys, ...launchFields } = req;
+    const clientLaunchId = launchFields.clientLaunchId ?? generateClientLaunchId();
     const buildReq = {
       ...launchFields,
-      clientLaunchId: launchFields.clientLaunchId ?? generateClientLaunchId(),
+      clientLaunchId,
       payer: toAtomicWirePayer(payer),
       firstBuys: firstBuys.map((leg) => ({ payer: toAtomicWirePayer(leg.payer), amountRaw: leg.amountRaw }))
     };
-    const built = await this.buildAtomicLaunch(buildReq);
+    return this.runOperation({ clientLaunchId }, "server-executed", async (op) => {
+      const outcome = await this.launchAtomicSteps(req, buildReq, clientLaunchId, op);
+      return { ...outcome, clientLaunchId };
+    });
+  }
+  async launchAtomicSteps(req, buildReq, clientLaunchId, op) {
+    const { payer, firstBuys } = req;
+    const built = await this.postAtomicBuild(buildReq, clientLaunchId, op);
+    op.ids.bundleId = built.bundleId;
     const signedTxsBase64 = [];
     for (const leg of built.legs) {
       if (leg.signer !== "client")
@@ -1869,12 +1957,25 @@ class CandleClient {
       headers["x-api-key"] = this.apiKey;
     return headers;
   }
-  async requestJson(method, path, body) {
-    const res = await this.fetchImpl(`${this.apiUrl}${path}`, {
+  async runOperation(ids, flow, steps) {
+    const op = { sent: false, ids: { ...ids } };
+    try {
+      return await steps(op);
+    } catch (error) {
+      if (!op.sent)
+        throw error;
+      throw withOperationIds(error, op.ids, flow);
+    }
+  }
+  async requestJson(method, path, body, op) {
+    const init = {
       method,
       headers: this.headers({ json: body !== undefined }),
       ...body !== undefined ? { body: JSON.stringify(body) } : {}
-    });
+    };
+    if (op)
+      op.sent = true;
+    const res = await this.fetchImpl(`${this.apiUrl}${path}`, init);
     return this.parseResponse(res);
   }
   async parseResponse(res) {
@@ -1997,7 +2098,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.4.11";
+var SDK_VERSION = "0.5.0";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))
@@ -2361,6 +2462,7 @@ export {
   planPromotionLine,
   planLabel,
   perpsDepositProblem,
+  operationIds,
   isSolanaRpcErrorData,
   hyperliquidActionHash,
   generateSignerKeypair,
@@ -2375,6 +2477,7 @@ export {
   HYPERLIQUID_EXCHANGE_URLS,
   HYPERLIQUID_ALLOWED_ACTION_TYPES,
   EncryptedFileSecretStore,
+  CandleOperationError,
   CandleClient,
   CandleApiError,
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,
