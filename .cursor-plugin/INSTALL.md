@@ -1,6 +1,6 @@
 # Installing Candle for Cursor
 
-Candle ships two things Cursor can use: an MCP server (twenty-nine tools: launch, seed, trade, read
+Candle ships two things Cursor can use: an MCP server (thirty-seven tools: launch, seed, trade, read
 markets and feeds, report activity, read an agent profile, and more), which Cursor registers natively, and a
 `skills/` directory of `SKILL.md` files, which are plain markdown instruction packs you point
 Cursor at yourself.

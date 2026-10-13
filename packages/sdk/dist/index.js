@@ -991,6 +991,25 @@ class CandleClient {
       });
     }
   };
+  staking = {
+    positions: async () => {
+      this.requireKey("staking.positions()");
+      return this.requestJson("GET", "/api/v1/agent/staking");
+    },
+    stake: async (request) => this.stakingBuild("stake", { ...request, payer: request.payer ?? "main" }),
+    unstake: async (request) => this.stakingBuild("unstake", { ...request, payer: request.payer ?? "main" }),
+    finish: async (request) => this.stakingBuild("finish", { ...request, payer: request.payer ?? "main" }),
+    claimReward: async (rewardId) => {
+      this.requireKey("staking.claimReward()");
+      return this.requestJson("POST", `/api/v1/agent/staking/rewards/${encodeURIComponent(rewardId)}/claim`, {});
+    },
+    submit: async (request) => this.stakingBuild("submit", request),
+    confirm: async (request) => this.stakingBuild("confirm", request)
+  };
+  async stakingBuild(action, request) {
+    this.requireKey(`staking.${action}()`);
+    return this.requestJson("POST", `/api/v1/agent/staking/${action === "submit" || action === "confirm" ? action : `${action}/build`}`, request);
+  }
   constructor(opts) {
     assertTransportSecurity(opts.apiUrl, opts.allowInsecureHttp === true);
     this.apiUrl = opts.apiUrl.replace(/\/+$/, "");
@@ -1978,7 +1997,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.4.10";
+var SDK_VERSION = "0.4.11";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))

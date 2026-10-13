@@ -80,7 +80,7 @@ Ask an agent to call `candle_get_feed` with `{ "bucket": "new" }` and it works b
 
 ## The tool surface
 
-Twenty-nine tools. Seven need no key, so a client can be pointed at the server and used before anyone
+Thirty-seven tools. Seven need no key, so a client can be pointed at the server and used before anyone
 signs up.
 
 | | Tool | Key | What it does |
@@ -109,6 +109,11 @@ signs up.
 | **What happened?** | `candle_get_operation` | yes | look up a trade or launch by the id its write used |
 | **Creator fees** | `candle_get_fees` | yes | the creator fees your launched tokens can pay, and why one cannot be claimed (needs `account:read`) |
 | | `candle_claim_fees` | yes | pay one token's creator fees to the wallet fixed at launch; no destination argument, `dryRun` first (needs `launch:write`; off until the server enables it) |
+| **Staking** | `candle_get_staking` | yes | read eligible Solana wallets' CNDL/sCNDL, withdrawals, rewards, pool wait and eligibility notes |
+| **Staking** | `candle_stake` | yes | stake raw CNDL from the embedded wallet or build for a linked/TEE payer; stable clientStakeId, dryRun first |
+| **Staking** | `candle_unstake` | yes | start withdrawing raw sCNDL; no instant unstake, wait for the pool timelock |
+| **Staking** | `candle_finish_unstake` | yes | finish a selected wallet's matured withdrawal; stable clientStakeId, dryRun first |
+| **Staking** | `candle_claim_staking_reward` | yes | pay one Solana reward to its recorded owner; retry the same rewardId to resolve a pending claim |
 | **Perps (Hyperliquid)** | `candle_perps_setup` | yes | approve Candle's builder fee once (needs `perps:write`) |
 | | `candle_perps_open` | yes | open or add to a position, with optional take-profit and stop-loss |
 | | `candle_perps_close` | yes | close all or part of a position, reduce-only |
@@ -444,3 +449,12 @@ where each kind of change actually goes.
 
 MIT, see [LICENSE](LICENSE). That covers everything here: the CLI, the SDK, the MCP server and the
 skills. The CLI's release binaries are built and signed from this repository's `release.yaml`.
+
+
+Staking writes require `swap:write` and the deployment's agent-staking flag (off by default).
+They MOVE REAL FUNDS; read the pool's wait and SOL costs before approving them. There is no
+instant unstake on agent surfaces. Pending withdrawal CNDL counts toward nothing for Pro.
+Outside the account's primary wallet sCNDL earns Solana rewards but no Hood rewards; Pro
+eligibility follows the API's tier mode. The hosted connector offers these five only at Trade,
+only with the flag on, and only for the embedded Solana wallet. Local linked/TEE tools return
+bytes for external signing followed by SDK staking.submit/confirm.

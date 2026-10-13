@@ -111,7 +111,7 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, sep } from "node:path";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.12";
+var SERVER_VERSION = "0.10.13";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -1650,6 +1650,13 @@ function planTableMarkdown(table) {
 }
 
 // src/tools.ts
+var STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. Outside the account's main wallet, sCNDL earns no Hood staking rewards; Pro eligibility follows the deployment's tier mode (main-wallet mode excludes it). CNDL in a pending withdrawal counts toward nothing for Pro.";
+var stakingWriteShape = {
+  payer: z2.enum(["main", "linked"]).optional().describe("main is the embedded wallet; linked names a linked or TEE wallet"),
+  linkedWalletId: z2.string().min(1).optional(),
+  clientStakeId: z2.string().min(1).max(128).describe("Stable id for one operation; reuse the same id and body on retry"),
+  dryRun: z2.boolean().optional()
+};
 var TOOL_NAMES = [
   "candle_launch_token",
   "candle_get_market",
@@ -1675,6 +1682,11 @@ var TOOL_NAMES = [
   "candle_get_operation",
   "candle_get_fees",
   "candle_claim_fees",
+  "candle_get_staking",
+  "candle_stake",
+  "candle_unstake",
+  "candle_finish_unstake",
+  "candle_claim_staking_reward",
   "candle_perps_setup",
   "candle_perps_open",
   "candle_perps_close",
@@ -1810,6 +1822,32 @@ function buildRequest(name, args, cfg) {
       const { clientId, kind } = args;
       const path = kind === "launch" ? `/api/v1/launch/headless/jobs/${encodeURIComponent(clientId)}` : `/api/v1/trade/agent/jobs/${encodeURIComponent(clientId)}`;
       return { url: `${base2}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } };
+    }
+    case "candle_get_staking": {
+      return { url: `${base2}/api/v1/agent/staking`, init: { method: "GET", headers: jsonHeaders(requireApiKey2(cfg)) } };
+    }
+    case "candle_stake":
+    case "candle_unstake":
+    case "candle_finish_unstake": {
+      const action = name === "candle_stake" ? "stake" : name === "candle_unstake" ? "unstake" : "finish";
+      const { payer = "main", linkedWalletId, amountRaw, withdrawal, clientStakeId, dryRun } = args;
+      const body = {
+        payer,
+        ...linkedWalletId !== undefined ? { linkedWalletId } : {},
+        ...action === "finish" ? { withdrawal } : { amountRaw },
+        clientStakeId,
+        dryRun: dryRun === true
+      };
+      return {
+        url: `${base2}/api/v1/agent/staking/${action}/build`,
+        init: { method: "POST", headers: jsonHeaders(requireApiKey2(cfg)), body: JSON.stringify(body) }
+      };
+    }
+    case "candle_claim_staking_reward": {
+      return {
+        url: `${base2}/api/v1/agent/staking/rewards/${encodeURIComponent(String(args.rewardId))}/claim`,
+        init: { method: "POST", headers: jsonHeaders(requireApiKey2(cfg)), body: "{}" }
+      };
     }
     case "candle_get_fees": {
       const apiKey = requireApiKey2(cfg);
@@ -2146,6 +2184,33 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 ` + "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " + "and you already know what you asked for.",
     inputSchema: getOperationShape
   }, async (args) => callAndRelay("candle_get_operation", args, getConfig(), doFetch));
+  register("candle_get_staking", {
+    title: "Read CNDL staking positions",
+    description: "Read eligible embedded, linked and TEE Solana wallets: CNDL, sCNDL, withdrawals, unclaimed rewards, the pool wait and eligibility notes. Reads only. " + STAKING_DISCLOSURE,
+    inputSchema: {}
+  }, async (args) => callAndRelay("candle_get_staking", args, getConfig(), doFetch));
+  const stakingShape = options.embeddedStakingOnly ? { clientStakeId: stakingWriteShape.clientStakeId, dryRun: stakingWriteShape.dryRun } : stakingWriteShape;
+  const stakingDescription = (detail) => "MOVES REAL FUNDS from the selected Solana wallet (embedded by default). " + detail + " Use dryRun first. Reuse clientStakeId and the same body on retry. A linked or TEE build returns transaction bytes; sign those unchanged, then use the SDK staking.submit or staking.confirm with the same id. " + STAKING_DISCLOSURE;
+  register("candle_stake", {
+    title: "Stake CNDL",
+    description: stakingDescription("Input is raw CNDL; receive sCNDL in the same wallet."),
+    inputSchema: { ...stakingShape, amountRaw: z2.string().regex(/^[1-9][0-9]*$/) }
+  }, async (args) => callAndRelay("candle_stake", args, getConfig(), doFetch));
+  register("candle_unstake", {
+    title: "Start unstaking CNDL",
+    description: stakingDescription("Input is raw sCNDL. Starts a withdrawal; CNDL is unavailable during the pool wait."),
+    inputSchema: { ...stakingShape, amountRaw: z2.string().regex(/^[1-9][0-9]*$/) }
+  }, async (args) => callAndRelay("candle_unstake", args, getConfig(), doFetch));
+  register("candle_finish_unstake", {
+    title: "Finish a matured withdrawal",
+    description: stakingDescription("Name a withdrawal belonging to the wallet whose pool wait has passed."),
+    inputSchema: { ...stakingShape, withdrawal: z2.string().min(1) }
+  }, async (args) => callAndRelay("candle_finish_unstake", args, getConfig(), doFetch));
+  register("candle_claim_staking_reward", {
+    title: "Claim a Solana staking reward",
+    description: "MOVES REAL FUNDS into the wallet recorded as the reward's owner, only if this key may use it. No destination argument. Retry the same rewardId to resolve a pending claim without paying twice. " + STAKING_DISCLOSURE,
+    inputSchema: { rewardId: z2.string().min(1) }
+  }, async (args) => callAndRelay("candle_claim_staking_reward", args, getConfig(), doFetch));
   register("candle_get_fees", {
     title: "Read the creator fees this account's tokens can pay",
     description: "The tokens launched by the account's own wallets, with what each could pay now in creator fees " + "(raw units from direct chain reads) and `claimable: true` or the `reason` it is not. Reads only; " + "moves nothing. It returns no earned or paid-out totals. An unreadable token is marked, never " + "shown as zero. Paged: pass `continueCursor` back as `cursor`.",

@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. It exposes Candle's REST API as
-thirty-two tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
+thirty-seven tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, report on-chain activity, and check an agent profile without hand-rolling HTTP
 calls.
@@ -31,7 +31,7 @@ Environment below -- or skip env editing entirely: install the Candle CLI
 environment.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all thirty-two. An unknown name fails startup with the valid names in the message, rather
+Unset means all thirty-seven. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
 
@@ -116,6 +116,11 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_get_operation` | Look up a trade or launch by the id its write used, and whether it landed | `GET /api/v1/trade/agent/jobs/:clientId` or `/api/v1/launch/headless/jobs/:clientId` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_fees` | The creator fees the account's launched tokens can pay: raw amounts from chain reads, and the reason a token cannot be claimed | `GET /api/v1/agent/fees` | `CANDLE_AGENT_API_KEY` (`account:read`) |
 | `candle_claim_fees` | Collect one token's creator fees to the wallet fixed at launch (no destination argument); `dryRun` sends nothing. Answers `LAUNCH_DISABLED` until the server enables agent claims | `POST /api/v1/agent/fees/:mint/claim` | `CANDLE_AGENT_API_KEY` (`launch:write`) |
+| `candle_get_staking` | Read CNDL/sCNDL, withdrawals, rewards, pool wait and wallet eligibility notes | `GET /api/v1/agent/staking` |
+| `candle_stake` | Stake raw CNDL; stable clientStakeId, dryRun first | `POST /api/v1/agent/staking/stake/build` |
+| `candle_unstake` | Start a withdrawal of raw sCNDL; no instant unstake | `POST /api/v1/agent/staking/unstake/build` |
+| `candle_finish_unstake` | Finish a wallet-owned withdrawal after its pool wait | `POST /api/v1/agent/staking/finish/build` |
+| `candle_claim_staking_reward` | Claim a Solana reward to its recorded owner; retry the same rewardId to resolve a pending claim | `POST /api/v1/agent/staking/rewards/:rewardId/claim` |
 | `candle_perps_setup` | Approve Candle's Hyperliquid builder fee once; report the account's mode and balance | `POST /api/v1/agent/perps/setup`, then relay sign and Hyperliquid submit | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
 | `candle_perps_open` | Open or add to a perps position, with optional take-profit and stop-loss | `POST /api/v1/agent/perps/open`, checked here, relay-signed, submitted to Hyperliquid | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
 | `candle_perps_close` | Close all or part of a perps position, reduce-only | `POST /api/v1/agent/perps/close`, the same | `CANDLE_AGENT_API_KEY` (`perps:write`), `CANDLE_KEY_SIGNER_PEM_FILE` |
@@ -169,7 +174,7 @@ explicitly. Assets with nothing spendable report `empty`; a failed asset never s
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-thirty-two tools:
+thirty-seven tools:
 
 - `candle_launch_token`, `candle_get_market`, and `candle_get_feed` hit endpoints that use the
   structured envelope `{ success: false, error: { code, message, ... } }`. Branch on `error.code`.
@@ -291,3 +296,17 @@ capped: a partial net must not be quoted as a lifetime figure. On upstream, wall
 malformed-data failure the section is `{ read: false, reason }`, without amounts; spot PnL still
 answers. An empty successful read is `{ read: true, ... }` with zero amounts. `--json` preserves
 the section and its coverage fields. Agent boards are outside this slice.
+
+
+## CNDL staking
+
+Solana staking is available through the agent rail while the deployment enables it (off by
+default). There is no instant unstake. Read the pool wait and wallet eligibility notes first:
+pending withdrawal CNDL counts toward nothing for Pro; outside the primary wallet sCNDL earns
+Solana rewards but no Hood rewards, and Pro follows the served tier mode.
+
+Tools: `candle_get_staking`, `candle_stake`, `candle_unstake`, `candle_finish_unstake`,
+`candle_claim_staking_reward`. Build tools accept stable `clientStakeId`, raw `amountRaw`
+(finish: `withdrawal`), optional `dryRun`, `payer` (main/linked) and `linkedWalletId`. Embedded
+writes MOVE REAL FUNDS. Linked/TEE builds return bytes for signing and SDK submit/confirm.
+Reward claims pay only the recorded owner and resolve the same signature when retried.

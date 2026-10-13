@@ -4,7 +4,9 @@ import { buildRequest, registerTools, resolveToolAllowlist, swapBody, TOOL_NAMES
 test("all registered tools are listed", () => {
   expect([...TOOL_NAMES].sort()).toEqual([
     "candle_claim_fees",
+    "candle_claim_staking_reward",
     "candle_execution_status",
+    "candle_finish_unstake",
     "candle_get_agent_profile",
     "candle_get_feed",
     "candle_get_fees",
@@ -15,6 +17,7 @@ test("all registered tools are listed", () => {
     "candle_get_profile_pnl",
     "candle_get_profile_trades",
     "candle_get_profile_wallets",
+    "candle_get_staking",
     "candle_get_wallets",
     "candle_launch_and_seed",
     "candle_launch_token",
@@ -30,11 +33,13 @@ test("all registered tools are listed", () => {
     "candle_report_activity",
     "candle_resolve_token",
     "candle_set_profile_wallets",
+    "candle_stake",
     "candle_swap",
     "candle_sweep",
     "candle_token_forensics",
     "candle_trade",
     "candle_transfer",
+    "candle_unstake",
   ])
 })
 

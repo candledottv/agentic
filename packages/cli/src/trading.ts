@@ -1094,9 +1094,9 @@ export function tradingRateLimited(ctx: CommandContext, host: string, error: Sol
     suggestion: rateLimitedSuggestion(ctx),
   })
 }
-export type OperationKind = "trade" | "swap" | "launch" | "lp"
-/** The kinds with a jobs route. An LP operation is looked up by its build's replay instead (lp.ts). */
-export type JobKind = Exclude<OperationKind, "lp">
+export type OperationKind = "trade" | "swap" | "launch" | "lp" | "stake"
+/** The kinds with a jobs route. LP and staking resolve through their saved build or confirmation. */
+export type JobKind = Exclude<OperationKind, "lp" | "stake">
 export function jobPath(kind: JobKind, id: string): string {
   const rail = kind === "launch" ? "launch/headless" : kind === "swap" ? "agent/swap" : "trade/agent"
   return `/api/v1/${rail}/jobs/${encodeURIComponent(id)}`
@@ -1112,7 +1112,14 @@ export async function savedOperation(
   ctx: CommandContext,
   key: string,
   id: string,
-): Promise<{ kind: OperationKind; signature?: string; operationId?: string; bridge?: Json } | null> {
+): Promise<{
+  kind: OperationKind
+  signature?: string
+  operationId?: string
+  bridge?: Json
+  stakingRequest?: { action: string; body: Json }
+  signedTransaction?: string
+} | null> {
   try {
     return JSON.parse(await readFile(operationPath(ctx, key, id), "utf8"))
   } catch (error) {
@@ -1183,6 +1190,21 @@ export async function saveOperationBridge(ctx: CommandContext, key: string, id: 
   await writeOperation(operationPath(ctx, key, id), { ...(saved ?? { id, kind: "swap" }), bridge })
 }
 
+/** Save staking intent before an embedded build can send, so retries replay it before a balance preview. */
+export async function saveStakingRequest(
+  ctx: CommandContext,
+  key: string,
+  id: string,
+  action: string,
+  body: Json,
+): Promise<void> {
+  const saved = await savedOperation(ctx, key, id)
+  await writeOperation(operationPath(ctx, key, id), {
+    ...(saved ?? { id, kind: "stake" }),
+    stakingRequest: { action, body },
+  })
+}
+
 /** The bridge facts an earlier write recorded, carried into the next one. */
 async function keptBridge(ctx: CommandContext, key: string, id: string): Promise<{ bridge?: Json }> {
   const bridge = (await savedOperation(ctx, key, id))?.bridge
@@ -1220,13 +1242,15 @@ export async function saveOperationHash(
 }
 
 /** Save the payer signature before broadcast for confirmation-only recovery after a restart.
- * No transaction bytes or keys are persisted in this operation record. */
+ * No keys are persisted. Staking passes `keepSigned` so a rerun can post the same signed
+ * transaction to the repeat-safe /submit; the other kinds keep only the signature. */
 export async function saveOperationSignature(
   ctx: CommandContext,
   key: string,
   id: string,
   kind: OperationKind,
   transaction: string,
+  keepSigned = false,
 ): Promise<string> {
   const bytes = Buffer.from(transaction, "base64")
   let offset = 0
@@ -1240,6 +1264,12 @@ export async function saveOperationSignature(
   if (!count || bytes.length < offset + count * 64 || bytes.subarray(offset, offset + 64).every((byte) => byte === 0))
     throw new TradingError("INVALID_RESPONSE", "Missing payer signature.")
   const signature = base58.encode(bytes.subarray(offset, offset + 64))
-  await writeOperation(operationPath(ctx, key, id), { id, kind, signature, ...(await keptBridge(ctx, key, id)) })
+  await writeOperation(operationPath(ctx, key, id), {
+    id,
+    kind,
+    signature,
+    ...(keepSigned ? { signedTransaction: transaction } : {}),
+    ...(await keptBridge(ctx, key, id)),
+  })
   return signature
 }

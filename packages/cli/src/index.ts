@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 /**
  * `candle`: the CLI's dispatch entry. `run(argv, deps)` is exported for tests (see
  * `test-support.ts`'s fakes) and is what the bin entry at the bottom of this file calls with real
@@ -56,6 +57,7 @@ import { profileAdd, profileList, profileRemove, profileRename, profileSet, prof
 import { secretsList, secretsRemove, secretsSet } from "./commands/secrets"
 import { setup } from "./commands/setup"
 import { sign, signMessage } from "./commands/sign"
+import { stake, stakeAdd, stakeClaim, stakeFinish, stakeRemove } from "./commands/stake"
 import { swap, swapStatus } from "./commands/swap"
 import { teeDisable, teeEnable, teeFund, teeNew, teeStatus, teeSweep } from "./commands/tee"
 import { teeRebind, teeRebinds } from "./commands/tee-rebind"
@@ -167,6 +169,7 @@ interface CommandRoute {
  * listed and gated in one edit.
  */
 const COMMANDS: Record<string, CommandRoute> = {
+  stake: { bare: stake, subcommands: { add: stakeAdd, remove: stakeRemove, finish: stakeFinish, claim: stakeClaim } },
   swap: { bare: swap, subcommands: { status: swapStatus } },
   // Transfer (BE-332 PR C): move funds out of a TEE wallet through its bound key, to
   // the account's own wallets or the wallet's vault. Server-built, relay-signed, never a vault key.

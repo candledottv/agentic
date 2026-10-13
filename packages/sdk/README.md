@@ -245,3 +245,20 @@ capped: a partial net must not be quoted as a lifetime figure. On upstream, wall
 malformed-data failure the section is `{ read: false, reason }`, without amounts; spot PnL still
 answers. An empty successful read is `{ read: true, ... }` with zero amounts. `--json` preserves
 the section and its coverage fields. Agent boards are outside this slice.
+
+
+## CNDL staking
+
+Solana staking is available through the agent rail while the deployment enables it (off by
+default). There is no instant unstake. Read the pool wait and wallet eligibility notes first:
+pending withdrawal CNDL counts toward nothing for Pro; outside the primary wallet sCNDL earns
+Solana rewards but no Hood rewards, and Pro follows the served tier mode.
+
+Use `client.staking.positions()`, `.stake({ amountRaw, clientStakeId, dryRun })`,
+`.unstake({ amountRaw, clientStakeId, dryRun })`, `.finish({ withdrawal, clientStakeId, dryRun })`
+and `.claimReward(rewardId)`. Builds default to the embedded wallet and MOVE REAL FUNDS after
+approval. `payer: "linked"` with `linkedWalletId` returns a build for external/TEE signing;
+`.submit({ clientStakeId, signedTransaction })` or `.confirm({ clientStakeId, signature })`
+records its landing. Preserve the unstake's withdrawal co-signature. Reuse the same operation id
+and body on retry; reward retries use the same rewardId. Amounts are raw CNDL on stake and raw
+sCNDL on unstake.

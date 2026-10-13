@@ -57,6 +57,22 @@ import { executePerps, executePerpsDeposit, type PerpsToolName, perpsDepositShap
 import { PLAN_CAPABILITY_NOTE, type PlanTable, planPromotionLine, planTableMarkdown } from "./plans"
 import { noteVersionHeaders } from "./update-notice"
 
+export const STAKING_DISCLOSURE =
+  "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. Outside the account's main wallet, sCNDL earns no Hood staking rewards; Pro eligibility follows the deployment's tier mode (main-wallet mode excludes it). CNDL in a pending withdrawal counts toward nothing for Pro."
+const stakingWriteShape = {
+  payer: z
+    .enum(["main", "linked"])
+    .optional()
+    .describe("main is the embedded wallet; linked names a linked or TEE wallet"),
+  linkedWalletId: z.string().min(1).optional(),
+  clientStakeId: z
+    .string()
+    .min(1)
+    .max(128)
+    .describe("Stable id for one operation; reuse the same id and body on retry"),
+  dryRun: z.boolean().optional(),
+}
+
 export const TOOL_NAMES = [
   "candle_launch_token",
   "candle_get_market",
@@ -85,6 +101,12 @@ export const TOOL_NAMES = [
   // FE-438: the creator fees this account's launched tokens can pay, and the claim.
   "candle_get_fees",
   "candle_claim_fees",
+  "candle_get_staking",
+  "candle_stake",
+  "candle_unstake",
+  "candle_finish_unstake",
+  "candle_claim_staking_reward",
+
   // Hyperliquid perps B (BE-646): the `candle perps` mirror (perps.ts).
   "candle_perps_setup",
   "candle_perps_open",
@@ -315,6 +337,34 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
           ? `/api/v1/launch/headless/jobs/${encodeURIComponent(clientId)}`
           : `/api/v1/trade/agent/jobs/${encodeURIComponent(clientId)}`
       return { url: `${base}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } }
+    }
+
+    case "candle_get_staking": {
+      return { url: `${base}/api/v1/agent/staking`, init: { method: "GET", headers: jsonHeaders(requireApiKey(cfg)) } }
+    }
+    case "candle_stake":
+    case "candle_unstake":
+    case "candle_finish_unstake": {
+      const action = name === "candle_stake" ? "stake" : name === "candle_unstake" ? "unstake" : "finish"
+      const { payer = "main", linkedWalletId, amountRaw, withdrawal, clientStakeId, dryRun } = args
+      const body = {
+        payer,
+        // Forwarded whenever supplied so the route refuses a mismatched payer by name.
+        ...(linkedWalletId !== undefined ? { linkedWalletId } : {}),
+        ...(action === "finish" ? { withdrawal } : { amountRaw }),
+        clientStakeId,
+        dryRun: dryRun === true,
+      }
+      return {
+        url: `${base}/api/v1/agent/staking/${action}/build`,
+        init: { method: "POST", headers: jsonHeaders(requireApiKey(cfg)), body: JSON.stringify(body) },
+      }
+    }
+    case "candle_claim_staking_reward": {
+      return {
+        url: `${base}/api/v1/agent/staking/rewards/${encodeURIComponent(String(args.rewardId))}/claim`,
+        init: { method: "POST", headers: jsonHeaders(requireApiKey(cfg)), body: "{}" },
+      }
     }
 
     case "candle_get_fees": {
@@ -807,6 +857,7 @@ export interface ToolRegistrationMetadata {
 
 export interface ToolSubsetOptions {
   tools: readonly ToolName[]
+  embeddedStakingOnly?: boolean
   /** Resolved at invocation, so request credentials/config never become process-wide state. */
   getConfig: () => RequestConfig
   fetch?: FetchLike
@@ -1015,6 +1066,66 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: getOperationShape,
     },
     async (args) => callAndRelay("candle_get_operation", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_get_staking",
+    {
+      title: "Read CNDL staking positions",
+      description:
+        "Read eligible embedded, linked and TEE Solana wallets: CNDL, sCNDL, withdrawals, unclaimed rewards, the pool wait and eligibility notes. Reads only. " +
+        STAKING_DISCLOSURE,
+      inputSchema: {},
+    },
+    async (args) => callAndRelay("candle_get_staking", args, getConfig(), doFetch),
+  )
+  const stakingShape = options.embeddedStakingOnly
+    ? { clientStakeId: stakingWriteShape.clientStakeId, dryRun: stakingWriteShape.dryRun }
+    : stakingWriteShape
+  const stakingDescription = (detail: string) =>
+    "MOVES REAL FUNDS from the selected Solana wallet (embedded by default). " +
+    detail +
+    " Use dryRun first. Reuse clientStakeId and the same body on retry. A linked or TEE build returns transaction bytes; sign those unchanged, then use the SDK staking.submit or staking.confirm with the same id. " +
+    STAKING_DISCLOSURE
+  register(
+    "candle_stake",
+    {
+      title: "Stake CNDL",
+      description: stakingDescription("Input is raw CNDL; receive sCNDL in the same wallet."),
+      inputSchema: { ...stakingShape, amountRaw: z.string().regex(/^[1-9][0-9]*$/) },
+    },
+    async (args) => callAndRelay("candle_stake", args, getConfig(), doFetch),
+  )
+  register(
+    "candle_unstake",
+    {
+      title: "Start unstaking CNDL",
+      description: stakingDescription(
+        "Input is raw sCNDL. Starts a withdrawal; CNDL is unavailable during the pool wait.",
+      ),
+      inputSchema: { ...stakingShape, amountRaw: z.string().regex(/^[1-9][0-9]*$/) },
+    },
+    async (args) => callAndRelay("candle_unstake", args, getConfig(), doFetch),
+  )
+  register(
+    "candle_finish_unstake",
+    {
+      title: "Finish a matured withdrawal",
+      description: stakingDescription("Name a withdrawal belonging to the wallet whose pool wait has passed."),
+      inputSchema: { ...stakingShape, withdrawal: z.string().min(1) },
+    },
+    async (args) => callAndRelay("candle_finish_unstake", args, getConfig(), doFetch),
+  )
+  register(
+    "candle_claim_staking_reward",
+    {
+      title: "Claim a Solana staking reward",
+      description:
+        "MOVES REAL FUNDS into the wallet recorded as the reward's owner, only if this key may use it. No destination argument. Retry the same rewardId to resolve a pending claim without paying twice. " +
+        STAKING_DISCLOSURE,
+      inputSchema: { rewardId: z.string().min(1) },
+    },
+    async (args) => callAndRelay("candle_claim_staking_reward", args, getConfig(), doFetch),
   )
 
   register(

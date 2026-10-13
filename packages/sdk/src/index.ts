@@ -186,6 +186,7 @@ export {
 } from "./plans"
 export type { SecretStore } from "./secret-store"
 export { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store"
+export type * from "./staking"
 export type { EncryptWalletKeyParams, EncryptWalletKeyResult, SignerKeypair, WalletChain } from "./wallet-import"
 export { encryptWalletKeyForImport, generateSignerKeypair } from "./wallet-import"
 export { verifyWebhookSignature } from "./webhooks"

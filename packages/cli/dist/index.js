@@ -14969,6 +14969,13 @@ async function saveOperationBridge(ctx, key, id, bridge) {
   const saved = await savedOperation(ctx, key, id);
   await writeOperation(operationPath(ctx, key, id), { ...saved ?? { id, kind: "swap" }, bridge });
 }
+async function saveStakingRequest(ctx, key, id, action, body) {
+  const saved = await savedOperation(ctx, key, id);
+  await writeOperation(operationPath(ctx, key, id), {
+    ...saved ?? { id, kind: "stake" },
+    stakingRequest: { action, body }
+  });
+}
 async function keptBridge(ctx, key, id) {
   const bridge = (await savedOperation(ctx, key, id))?.bridge;
   return bridge ? { bridge } : {};
@@ -14993,7 +15000,7 @@ async function saveOperationHash(ctx, key, id, kind, hash, operationId) {
     ...await keptBridge(ctx, key, id)
   });
 }
-async function saveOperationSignature(ctx, key, id, kind, transaction) {
+async function saveOperationSignature(ctx, key, id, kind, transaction, keepSigned = false) {
   const bytes = Buffer.from(transaction, "base64");
   let offset = 0;
   let count = 0;
@@ -15008,7 +15015,13 @@ async function saveOperationSignature(ctx, key, id, kind, transaction) {
   if (!count || bytes.length < offset + count * 64 || bytes.subarray(offset, offset + 64).every((byte) => byte === 0))
     throw new TradingError("INVALID_RESPONSE", "Missing payer signature.");
   const signature = base58.encode(bytes.subarray(offset, offset + 64));
-  await writeOperation(operationPath(ctx, key, id), { id, kind, signature, ...await keptBridge(ctx, key, id) });
+  await writeOperation(operationPath(ctx, key, id), {
+    id,
+    kind,
+    signature,
+    ...keepSigned ? { signedTransaction: transaction } : {},
+    ...await keptBridge(ctx, key, id)
+  });
   return signature;
 }
 var TradingError, feeSchema, risksSchema, artifactSchema, swapBuildSchema, launchBuildSchema, walletSchema, walletPageSchema, embeddedSchema, operationSchema, lpAmountSchema, lpBuildSchema, lpPositionsSchema, lpPoolsSchema, BASES, HOOD_BASES, sequencedLegSchema, legKindSchema, landedLegSchema, sequencedSchema, ERC20_TRANSFER_GAS = 65000n, ETH_TRANSFER_GAS = 21000n, RESERVE_FEE_MULTIPLIER = 2n, RESERVE_EXTRA_ERC20_TRANSFERS = 1, TradingUsage;
@@ -30449,7 +30462,7 @@ function validClientId(id) {
 }
 async function lookupOperation(ctx, key, id, kind) {
   const local = await savedOperation(ctx, key, id);
-  const kinds = kind ? [kind] : local && local.kind !== "lp" ? [local.kind] : ["trade", "swap", "launch"];
+  const kinds = kind ? [kind] : local && local.kind !== "lp" && local.kind !== "stake" ? [local.kind] : ["trade", "swap", "launch"];
   const found = [];
   for (const candidate of kinds) {
     try {
@@ -61135,7 +61148,7 @@ var init_convert = __esm(() => {
 });
 
 // ../mcp/src/version.ts
-var SERVER_VERSION = "0.10.12";
+var SERVER_VERSION = "0.10.13";
 
 // ../mcp/src/update-notice.ts
 function newer(a, b) {
@@ -61378,7 +61391,7 @@ var init_image = __esm(() => {
 });
 
 // ../mcp/src/orchestrate.ts
-import { randomUUID as randomUUID6 } from "node:crypto";
+import { randomUUID as randomUUID7 } from "node:crypto";
 function requireApiKey(cfg) {
   if (!cfg.apiKey) {
     throw new Error("CANDLE_AGENT_API_KEY is required for this tool. Set it in the environment or MCP client config.");
@@ -61490,7 +61503,7 @@ async function readPaperInventory(cfg, doFetch, extra) {
 }
 async function executeTrade(args, cfg, doFetch) {
   const apiKey = requireApiKey(cfg);
-  const clientTradeId = args.clientTradeId ?? randomUUID6();
+  const clientTradeId = args.clientTradeId ?? randomUUID7();
   if (args.amount !== undefined && args.percent !== undefined) {
     return errText("pass exactly one of amount or percent, not both", { clientTradeId });
   }
@@ -61628,7 +61641,7 @@ async function executeTrade(args, cfg, doFetch) {
 }
 async function executeLaunchAndSeed(args, cfg, doFetch, imageDir, imageFs) {
   const apiKey = requireApiKey(cfg);
-  const clientLaunchId = args.clientLaunchId ?? randomUUID6();
+  const clientLaunchId = args.clientLaunchId ?? randomUUID7();
   const { devBuy, dryRun, buyAmount: _rawBuyAmount, ...imageFields } = args;
   let buyAmount;
   if (devBuy !== undefined) {
@@ -62810,6 +62823,32 @@ function buildRequest(name2, args, cfg) {
       const path = kind === "launch" ? `/api/v1/launch/headless/jobs/${encodeURIComponent(clientId)}` : `/api/v1/trade/agent/jobs/${encodeURIComponent(clientId)}`;
       return { url: `${base2}${path}`, init: { method: "GET", headers: jsonHeaders(apiKey) } };
     }
+    case "candle_get_staking": {
+      return { url: `${base2}/api/v1/agent/staking`, init: { method: "GET", headers: jsonHeaders(requireApiKey2(cfg)) } };
+    }
+    case "candle_stake":
+    case "candle_unstake":
+    case "candle_finish_unstake": {
+      const action = name2 === "candle_stake" ? "stake" : name2 === "candle_unstake" ? "unstake" : "finish";
+      const { payer = "main", linkedWalletId, amountRaw, withdrawal: withdrawal2, clientStakeId, dryRun } = args;
+      const body = {
+        payer,
+        ...linkedWalletId !== undefined ? { linkedWalletId } : {},
+        ...action === "finish" ? { withdrawal: withdrawal2 } : { amountRaw },
+        clientStakeId,
+        dryRun: dryRun === true
+      };
+      return {
+        url: `${base2}/api/v1/agent/staking/${action}/build`,
+        init: { method: "POST", headers: jsonHeaders(requireApiKey2(cfg)), body: JSON.stringify(body) }
+      };
+    }
+    case "candle_claim_staking_reward": {
+      return {
+        url: `${base2}/api/v1/agent/staking/rewards/${encodeURIComponent(String(args.rewardId))}/claim`,
+        init: { method: "POST", headers: jsonHeaders(requireApiKey2(cfg)), body: "{}" }
+      };
+    }
     case "candle_get_fees": {
       const apiKey = requireApiKey2(cfg);
       const { cursor, limit } = args;
@@ -63016,6 +63055,33 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 ` + "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " + "and you already know what you asked for.",
     inputSchema: getOperationShape
   }, async (args) => callAndRelay("candle_get_operation", args, getConfig(), doFetch));
+  register("candle_get_staking", {
+    title: "Read CNDL staking positions",
+    description: "Read eligible embedded, linked and TEE Solana wallets: CNDL, sCNDL, withdrawals, unclaimed rewards, the pool wait and eligibility notes. Reads only. " + STAKING_DISCLOSURE,
+    inputSchema: {}
+  }, async (args) => callAndRelay("candle_get_staking", args, getConfig(), doFetch));
+  const stakingShape = options.embeddedStakingOnly ? { clientStakeId: stakingWriteShape.clientStakeId, dryRun: stakingWriteShape.dryRun } : stakingWriteShape;
+  const stakingDescription = (detail) => "MOVES REAL FUNDS from the selected Solana wallet (embedded by default). " + detail + " Use dryRun first. Reuse clientStakeId and the same body on retry. A linked or TEE build returns transaction bytes; sign those unchanged, then use the SDK staking.submit or staking.confirm with the same id. " + STAKING_DISCLOSURE;
+  register("candle_stake", {
+    title: "Stake CNDL",
+    description: stakingDescription("Input is raw CNDL; receive sCNDL in the same wallet."),
+    inputSchema: { ...stakingShape, amountRaw: exports_external.string().regex(/^[1-9][0-9]*$/) }
+  }, async (args) => callAndRelay("candle_stake", args, getConfig(), doFetch));
+  register("candle_unstake", {
+    title: "Start unstaking CNDL",
+    description: stakingDescription("Input is raw sCNDL. Starts a withdrawal; CNDL is unavailable during the pool wait."),
+    inputSchema: { ...stakingShape, amountRaw: exports_external.string().regex(/^[1-9][0-9]*$/) }
+  }, async (args) => callAndRelay("candle_unstake", args, getConfig(), doFetch));
+  register("candle_finish_unstake", {
+    title: "Finish a matured withdrawal",
+    description: stakingDescription("Name a withdrawal belonging to the wallet whose pool wait has passed."),
+    inputSchema: { ...stakingShape, withdrawal: exports_external.string().min(1) }
+  }, async (args) => callAndRelay("candle_finish_unstake", args, getConfig(), doFetch));
+  register("candle_claim_staking_reward", {
+    title: "Claim a Solana staking reward",
+    description: "MOVES REAL FUNDS into the wallet recorded as the reward's owner, only if this key may use it. No destination argument. Retry the same rewardId to resolve a pending claim without paying twice. " + STAKING_DISCLOSURE,
+    inputSchema: { rewardId: exports_external.string().min(1) }
+  }, async (args) => callAndRelay("candle_claim_staking_reward", args, getConfig(), doFetch));
   register("candle_get_fees", {
     title: "Read the creator fees this account's tokens can pay",
     description: "The tokens launched by the account's own wallets, with what each could pay now in creator fees " + "(raw units from direct chain reads) and `claimable: true` or the `reason` it is not. Reads only; " + "moves nothing. It returns no earned or paid-out totals. An unreadable token is marked, never " + "shown as zero. Paged: pass `continueCursor` back as `cursor`.",
@@ -63182,7 +63248,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
     return { content: [{ type: "text", text: result.text }], ...result.isError ? { isError: true } : {} };
   });
 }
-var TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, getOperationShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, seedShape, launchAndSeedShape, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape;
+var STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. Outside the account's main wallet, sCNDL earns no Hood staking rewards; Pro eligibility follows the deployment's tier mode (main-wallet mode excludes it). CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, getOperationShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, seedShape, launchAndSeedShape, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape;
 var init_tools = __esm(() => {
   init_zod();
   init_convert();
@@ -63192,6 +63258,12 @@ var init_tools = __esm(() => {
   init_perps();
   init_plans();
   init_update_notice();
+  stakingWriteShape = {
+    payer: exports_external.enum(["main", "linked"]).optional().describe("main is the embedded wallet; linked names a linked or TEE wallet"),
+    linkedWalletId: exports_external.string().min(1).optional(),
+    clientStakeId: exports_external.string().min(1).max(128).describe("Stable id for one operation; reuse the same id and body on retry"),
+    dryRun: exports_external.boolean().optional()
+  };
   TOOL_NAMES = [
     "candle_launch_token",
     "candle_get_market",
@@ -63217,6 +63289,11 @@ var init_tools = __esm(() => {
     "candle_get_operation",
     "candle_get_fees",
     "candle_claim_fees",
+    "candle_get_staking",
+    "candle_stake",
+    "candle_unstake",
+    "candle_finish_unstake",
+    "candle_claim_staking_reward",
     "candle_perps_setup",
     "candle_perps_open",
     "candle_perps_close",
@@ -63483,7 +63560,7 @@ init_render();
 init_secret_store();
 
 // src/version.ts
-var CLI_VERSION = "0.11.25";
+var CLI_VERSION = "0.11.26";
 
 // src/commands/auth.ts
 init_keys_embedded_wallet();
@@ -64019,6 +64096,47 @@ var HELP = {
       "candle tee disable 0xHoodOneAddress   # then: candle tee sweep 0xHoodOneAddress"
     ],
     env: ENV_API
+  },
+  stake: {
+    group: "Trade",
+    summary: "Stake CNDL, start and finish withdrawals, claim Solana staking rewards",
+    description: "Solana only. MOVES REAL FUNDS from the embedded wallet (default) or a named TEE wallet whose relay signer is on this machine. add takes decimal CNDL; remove takes decimal sCNDL. No instant unstake: finish waits for the pool's withdrawalTimelockSeconds, shown by candle stake. Solana rewards accrue to the holding wallet; outside the main wallet sCNDL earns no Hood rewards, and Pro follows the API's tier mode (main-wallet mode excludes it). Pending withdrawals count toward nothing for Pro. Writes require swap:write and an enabled agent staking rail. Reuse --client-stake-id on retry: a rerun posts the saved signed transaction to submit again without re-signing. The server reads the chain for that signature first, so it lands once. The signed transaction is kept in the CLI operations directory for that retry. Ordinary linked wallets use SDK builds and external signing.",
+    usage: [
+      "candle stake [--wallet <wallet>]",
+      "candle stake add <amount>",
+      "candle stake remove <amount>",
+      "candle stake finish [<withdrawal>]",
+      "candle stake claim <rewardId> | --all"
+    ],
+    rows: [
+      { invocation: "add <amount>", description: "Stake decimal CNDL in the selected wallet" },
+      { invocation: "remove <amount>", description: "Start a withdrawal of decimal sCNDL" },
+      {
+        invocation: "finish [<withdrawal>]",
+        description: "Finish a matured withdrawal; omit only when exactly one is ready in the selected wallet"
+      },
+      {
+        invocation: "claim <rewardId> | --all",
+        description: "Claim one reward or all listed unclaimed rewards, including unresolved claims"
+      }
+    ],
+    flags: [
+      { invocation: "--wallet <wallet>", description: "main (embedded), or a wallet id, address or label" },
+      {
+        invocation: "--client-stake-id <id>",
+        description: "Stable operation id, up to 128 characters; reuse on retry"
+      },
+      { invocation: "--yes", description: "Approve the displayed wallet, amounts and costs without a prompt" },
+      { invocation: "--all", description: "claim only: claim every listed reward for the selected wallets" }
+    ],
+    examples: [
+      "candle stake --json",
+      "candle stake add 100 --wallet main --client-stake-id stake-1 --yes",
+      "candle stake remove 100 --wallet tee",
+      "candle stake finish",
+      "candle stake claim --all --yes"
+    ],
+    env: ["CANDLE_API_KEY", "CANDLE_API_URL", "CANDLE_CONFIG_DIR"]
   },
   lp: {
     group: "Trade",
@@ -71625,6 +71743,11 @@ var MCP_TOOL_NAMES = [
   "candle_get_operation",
   "candle_get_fees",
   "candle_claim_fees",
+  "candle_get_staking",
+  "candle_stake",
+  "candle_unstake",
+  "candle_finish_unstake",
+  "candle_claim_staking_reward",
   "candle_perps_setup",
   "candle_perps_open",
   "candle_perps_close",
@@ -75268,6 +75391,200 @@ async function signMessage2(args, ctx) {
 `);
     return 0;
   });
+}
+
+// src/commands/stake.ts
+init_zod();
+init_args();
+init_render();
+init_trading();
+init_swap();
+import { randomUUID as randomUUID5 } from "node:crypto";
+var withdrawal = exports_external.object({ withdrawal: exports_external.string(), amountRaw: exports_external.string(), endTime: exports_external.string(), claimable: exports_external.boolean() }).passthrough();
+var positionsSchema = exports_external.object({
+  success: exports_external.literal(true),
+  pool: exports_external.object({ withdrawalTimelockSeconds: exports_external.number(), paused: exports_external.boolean(), maxActiveWithdrawals: exports_external.number() }).nullable(),
+  notes: exports_external.array(exports_external.string()),
+  wallets: exports_external.array(exports_external.object({
+    payer: exports_external.enum(["main", "linked"]),
+    address: exports_external.string(),
+    linkedWalletId: exports_external.string().optional(),
+    label: exports_external.string().nullable().optional(),
+    tee: exports_external.boolean().optional(),
+    cndl: exports_external.object({ amountRaw: exports_external.string(), decimals: exports_external.number().int() }).passthrough(),
+    staked: exports_external.object({ amountRaw: exports_external.string(), decimals: exports_external.number().int() }).passthrough(),
+    pendingWithdrawalRaw: exports_external.string(),
+    withdrawals: exports_external.object({ active: exports_external.array(withdrawal), finished: exports_external.array(withdrawal) }),
+    unclaimedRewards: exports_external.array(exports_external.object({ rewardId: exports_external.string(), amountRaw: exports_external.string(), mint: exports_external.string() }).passthrough())
+  }).passthrough())
+});
+var ROOT = "/api/v1/agent/staking";
+function selected(wallets2, name2) {
+  if (name2 === undefined)
+    return wallets2;
+  const matches2 = wallets2.filter((w) => (name2 === "main" || name2 === "embedded") && w.payer === "main" || w.address === name2 || w.linkedWalletId === name2 || w.label === name2);
+  if (matches2.length !== 1)
+    throw new TradingError("STAKING_WALLET_REQUIRED", "--wallet must name one eligible Solana wallet by main, id, address or label. See candle stake.");
+  return matches2;
+}
+async function approval(ctx, message, yes) {
+  (ctx.json ? ctx.deps.stderr : ctx.deps.stdout).write(`${message}
+`);
+  if (yes)
+    return true;
+  if (!ctx.deps.isTTY.stdin)
+    throw new TradingError("CONFIRMATION_REQUIRED", "Run interactively to confirm, or pass --yes.");
+  return (await ctx.deps.promptLine("Proceed? [y/N] ")).trim().toLowerCase() === "y";
+}
+async function stake(args, ctx) {
+  return runStake("positions", args, ctx);
+}
+var stakeAdd = (args, ctx) => runStake("stake", args, ctx);
+var stakeRemove = (args, ctx) => runStake("unstake", args, ctx);
+var stakeFinish = (args, ctx) => runStake("finish", args, ctx);
+var stakeClaim = (args, ctx) => runStake("claim", args, ctx);
+async function runStake(action, args, ctx) {
+  const parsed = parseArgs(args, {
+    valueFlags: ["--wallet", "--client-stake-id"],
+    booleanFlags: ["--yes", ...action === "claim" ? ["--all"] : []]
+  });
+  const usage6 = "Usage: candle stake [add <amount> | remove <amount> | finish [<withdrawal>] | claim <rewardId> | claim --all] [--wallet <main|id|address|label>] [--client-stake-id <id>] [--yes] [--json]";
+  if ("error" in parsed) {
+    writeUsageFailure(ctx.deps, parsed.error, ctx.json);
+    return 2;
+  }
+  const { values, positionals, booleans } = parsed;
+  const id = values["--client-stake-id"] ?? `stake-${randomUUID5()}`;
+  const all = booleans.has("--all");
+  if (!validClientId(id) || id.length > 128 || (action === "positions" ? positionals.length !== 0 : action === "finish" ? positionals.length > 1 : action === "claim" ? all ? positionals.length !== 0 : positionals.length !== 1 : positionals.length !== 1)) {
+    writeUsageFailure(ctx.deps, usage6, ctx.json);
+    return 2;
+  }
+  try {
+    if (action === "stake" || action === "unstake")
+      rawAmount(positionals[0], 18);
+    const key = await tradingKey(ctx);
+    if (!["positions", "claim"].includes(action)) {
+      const saved2 = await savedOperation(ctx, key, id);
+      if (saved2 && saved2.kind !== "stake")
+        throw new TradingError("IDEMPOTENCY_CONFLICT", "This local id names another kind of operation.");
+      if (saved2?.signature && saved2.signedTransaction)
+        return printTradingResult(ctx, {
+          ...await request(ctx, key, `${ROOT}/submit`, {
+            clientStakeId: id,
+            signedTransaction: saved2.signedTransaction
+          }),
+          resumed: true
+        });
+      if (saved2?.signature)
+        return printTradingResult(ctx, {
+          ...await request(ctx, key, `${ROOT}/confirm`, { clientStakeId: id, signature: saved2.signature }),
+          resumed: true
+        });
+      if (saved2?.stakingRequest) {
+        const intent = saved2.stakingRequest;
+        if (intent.action !== action)
+          throw new TradingError("IDEMPOTENCY_CONFLICT", "The saved staking id names a different action.");
+        if (intent.body.payer === "main") {
+          const view2 = positionsSchema.parse(await request(ctx, key, ROOT));
+          const candidates2 = values["--wallet"] ? selected(view2.wallets, values["--wallet"]) : view2.wallets.filter((w) => w.payer === "main");
+          const wallet2 = candidates2.length === 1 ? candidates2[0] : undefined;
+          const sameAmount = action === "finish" ? positionals[0] === undefined || positionals[0] === intent.body.withdrawal : wallet2 !== undefined && intent.body.amountRaw === rawAmount(positionals[0], action === "stake" ? wallet2.cndl.decimals : wallet2.staked.decimals);
+          if (wallet2?.payer !== "main" || !sameAmount)
+            throw new TradingError("IDEMPOTENCY_CONFLICT", "This client stake id was used with a different wallet or amount. Use a new id.");
+          return printTradingResult(ctx, {
+            ...await request(ctx, key, `${ROOT}/${intent.action}/build`, intent.body),
+            resumed: true
+          });
+        }
+      }
+    }
+    const view = positionsSchema.parse(await request(ctx, key, ROOT));
+    const wallets2 = selected(view.wallets, values["--wallet"]);
+    if (action === "positions") {
+      if (ctx.json)
+        return printTradingResult(ctx, { ...view, wallets: wallets2 });
+      const out = ctx.deps.stdout;
+      out.write(`Pool wait: ${view.pool?.withdrawalTimelockSeconds ?? "unavailable"} seconds
+`);
+      for (const w of wallets2) {
+        out.write(`${safeText(w.label ?? w.payer)} (${safeText(w.address)})
+  CNDL: ${decimalAmount(w.cndl.amountRaw, w.cndl.decimals)}; sCNDL: ${decimalAmount(w.staked.amountRaw, w.staked.decimals)}; pending CNDL (raw): ${safeText(w.pendingWithdrawalRaw)}
+`);
+        for (const row of w.withdrawals.active)
+          out.write(`  Withdrawal ${safeText(row.withdrawal)}: ${safeText(row.amountRaw)} raw CNDL; ends ${safeText(row.endTime)}; ${row.claimable ? "ready" : "waiting"}
+`);
+        for (const reward of w.unclaimedRewards)
+          out.write(`  Reward ${safeText(reward.rewardId)}: ${safeText(reward.amountRaw)} raw ${safeText(reward.mint)}
+`);
+      }
+      for (const note of view.notes)
+        out.write(`${safeText(note)}
+`);
+      return 0;
+    }
+    const notes = view.notes.map(safeText).join(`
+`);
+    if (action === "claim") {
+      const rewards = wallets2.flatMap((w) => w.unclaimedRewards.map((r) => ({ ...r, owner: w.address })));
+      const ids = all ? rewards.map((r) => r.rewardId) : [positionals[0]];
+      if (!all && values["--wallet"] && !rewards.some((r) => r.rewardId === ids[0]))
+        throw new TradingError("STAKING_REWARD_NOT_OWNED", "The reward is not listed for --wallet. Omit --wallet to resolve an already paid reward.");
+      if (!await approval(ctx, `MOVES REAL FUNDS: claim ${ids.length} reward(s) to their recorded owners.
+${rewards.filter((r) => ids.includes(r.rewardId)).map((r) => `${safeText(r.rewardId)} -> ${safeText(r.owner)} (${safeText(r.amountRaw)} raw ${safeText(r.mint)})`).join(`
+`)}
+${notes}`, booleans.has("--yes")))
+        return printTradingResult(ctx, { success: true, status: "cancelled" });
+      const results = [];
+      for (const rewardId of ids)
+        results.push(await request(ctx, key, `${ROOT}/rewards/${encodeURIComponent(rewardId)}/claim`, {}));
+      return printTradingResult(ctx, { success: true, rewards: results });
+    }
+    const candidates = values["--wallet"] ? wallets2 : wallets2.filter((w) => w.payer === "main");
+    if (candidates.length !== 1)
+      throw new TradingError("STAKING_WALLET_REQUIRED", "Name one wallet with --wallet. See candle stake.");
+    const wallet = candidates[0];
+    const body = {
+      payer: wallet.payer,
+      ...wallet.payer === "linked" ? { linkedWalletId: wallet.linkedWalletId } : {},
+      clientStakeId: id
+    };
+    if (action === "finish") {
+      const ready = wallet.withdrawals.active.filter((w) => w.claimable);
+      const address = positionals[0] ?? (ready.length === 1 ? ready[0]?.withdrawal : undefined);
+      if (!address)
+        throw new TradingError("STAKING_WITHDRAWAL_REQUIRED", "Name a withdrawal; omission requires exactly one matured withdrawal in the selected wallet.");
+      body.withdrawal = address;
+    } else
+      body.amountRaw = rawAmount(positionals[0], action === "stake" ? wallet.cndl.decimals : wallet.staked.decimals);
+    const signer = wallet.payer === "linked" ? await tradingWallet(ctx, key, wallet.linkedWalletId, "swap:write") : null;
+    const preview = await request(ctx, key, `${ROOT}/${action}/build`, { ...body, dryRun: true });
+    if (preview.wallet !== wallet.address || preview.action !== action || preview.clientStakeId !== id || preview.dryRun !== true)
+      throw new TradingError("INVALID_RESPONSE", "The preview does not match the requested wallet and operation.");
+    ctx.deps.stderr.write(`Operation: ${id}
+`);
+    if (!await approval(ctx, `MOVES REAL FUNDS: ${action} from ${safeText(wallet.address)}; amount ${safeText(preview.amountRaw)} raw units.
+Pool wait: ${view.pool?.withdrawalTimelockSeconds ?? "unavailable"} seconds.
+SOL costs and reserve (lamports): ${safeText(JSON.stringify(preview.figures))}
+${notes}`, booleans.has("--yes")))
+      return printTradingResult(ctx, { success: true, status: "cancelled", clientStakeId: id });
+    const saved = await savedOperation(ctx, key, id);
+    if (!saved && !await claimOperation(ctx, key, id, "stake"))
+      throw new TradingError("OPERATION_ALREADY_STARTED", "This machine already started this id; retry with the same id.");
+    await saveStakingRequest(ctx, key, id, action, body);
+    const built = await request(ctx, key, `${ROOT}/${action}/build`, body);
+    if (built.wallet !== wallet.address || built.action !== action || built.clientStakeId !== id)
+      throw new TradingError("INVALID_RESPONSE", "The build does not match the requested wallet and operation; nothing was signed.");
+    if (built.status === "confirmed")
+      return printTradingResult(ctx, built);
+    if (!signer || built.status !== "built" || typeof built.transaction !== "string")
+      throw new TradingError("INVALID_RESPONSE", "Expected a linked wallet build or embedded confirmation.");
+    const signed = await relaySign(ctx, key, signer, built.transaction);
+    await saveOperationSignature(ctx, key, id, "stake", signed, true);
+    return printTradingResult(ctx, await request(ctx, key, `${ROOT}/submit`, { clientStakeId: id, signedTransaction: signed }));
+  } catch (error) {
+    return tradingFailure(ctx, error);
+  }
 }
 
 // src/index.ts
@@ -84117,7 +84434,7 @@ init_args();
 init_render();
 init_trading();
 init_swap();
-import { randomUUID as randomUUID5 } from "node:crypto";
+import { randomUUID as randomUUID6 } from "node:crypto";
 var USAGE6 = "Usage: candle wallet close-empty [--wallet embedded] [--keep <mint>]... [--client-trade-id <id>] [--yes] [--json]";
 var BASE58_ADDRESS2 = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 var LISTED_ROWS = 50;
@@ -84202,7 +84519,7 @@ async function walletsCloseEmpty(args, ctx) {
     return 2;
   }
   const named = parsed.values["--client-trade-id"];
-  const id = named ?? `close-${randomUUID5()}`;
+  const id = named ?? `close-${randomUUID6()}`;
   if (parsed.positionals.length !== 0 || !validClientId(id) || !lifted.keep.every((m) => BASE58_ADDRESS2.test(m))) {
     writeUsageFailure(ctx.deps, USAGE6, ctx.json);
     return 2;
@@ -84606,6 +84923,7 @@ function extractGlobalFlags(argv) {
   return { rest, flags };
 }
 var COMMANDS = {
+  stake: { bare: stake, subcommands: { add: stakeAdd, remove: stakeRemove, finish: stakeFinish, claim: stakeClaim } },
   swap: { bare: swap, subcommands: { status: swapStatus } },
   transfer: { bare: transfer },
   launch: { bare: launch },

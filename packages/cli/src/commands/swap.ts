@@ -223,7 +223,11 @@ export async function lookupOperation(
   kind?: JobKind,
 ): Promise<(Json & { job: { status: string } }) | null> {
   const local = await savedOperation(ctx, key, id)
-  const kinds: JobKind[] = kind ? [kind] : local && local.kind !== "lp" ? [local.kind] : ["trade", "swap", "launch"]
+  const kinds: JobKind[] = kind
+    ? [kind]
+    : local && local.kind !== "lp" && local.kind !== "stake"
+      ? [local.kind]
+      : ["trade", "swap", "launch"]
   const found: (Json & { job: { status: string } })[] = []
   for (const candidate of kinds) {
     try {

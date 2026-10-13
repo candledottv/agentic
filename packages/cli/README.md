@@ -506,3 +506,20 @@ capped: a partial net must not be quoted as a lifetime figure. On upstream, wall
 malformed-data failure the section is `{ read: false, reason }`, without amounts; spot PnL still
 answers. An empty successful read is `{ read: true, ... }` with zero amounts. `--json` preserves
 the section and its coverage fields. Agent boards are outside this slice.
+
+
+## CNDL staking
+
+Solana staking is available through the agent rail while the deployment enables it (off by
+default). There is no instant unstake. Read the pool wait and wallet eligibility notes first:
+pending withdrawal CNDL counts toward nothing for Pro; outside the primary wallet sCNDL earns
+Solana rewards but no Hood rewards, and Pro follows the served tier mode.
+
+Commands: `candle stake`, `candle stake add <amount>`, `candle stake remove <amount>`,
+`candle stake finish [<withdrawal>]`, `candle stake claim <rewardId>` or `candle stake claim --all`.
+Use `--wallet main` (default for builds) or a TEE wallet with a local relay signer,
+`--client-stake-id <id>` for replay-safe retries, `--yes` to approve the displayed wallet/costs,
+and `--json` for the result. Add/remove amounts are decimal CNDL/sCNDL respectively. Writes
+MOVE REAL FUNDS. A rerun posts the saved signed TEE transaction to submit again without
+re-signing; the server reads the chain first, so it lands once. The signed transaction is kept
+in the CLI operations directory for that retry. An embedded rerun replays the saved build.

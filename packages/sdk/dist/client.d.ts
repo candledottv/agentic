@@ -31,6 +31,7 @@ import { type HyperliquidNetwork, type HyperliquidTypedData } from "./hyperliqui
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl";
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans";
 import type { SecretStore } from "./secret-store";
+import type { CandleStaking } from "./staking";
 import { type WalletChain } from "./wallet-import";
 export type Chain = "solana" | "hood";
 /**
@@ -2265,6 +2266,9 @@ export declare class CandleClient {
     readonly wallets: CandleWallets;
     /** The creator fees this account's launched tokens can pay, and the claim (FE-438). */
     readonly fees: CandleFees;
+    /** Solana staking. The server supplies the pool wait and wallet eligibility notes. */
+    readonly staking: CandleStaking;
+    private stakingBuild;
     constructor(opts: CandleClientOptions);
     getQuotePairs(chain?: Chain): Promise<QuotePairsPayload>;
     getPresets(): Promise<PresetsPayload>;
@@ -2851,7 +2855,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.4.10";
+export declare const SDK_VERSION = "0.4.11";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

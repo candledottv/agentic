@@ -29,7 +29,7 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 
 ## The tool surface
 
-Twenty-nine tools. Seven need no key at all, so a client can be pointed at the server and used before
+Thirty-seven tools. Seven need no key at all, so a client can be pointed at the server and used before
 anyone signs up for anything.
 
 **Find out what you can do**
@@ -80,6 +80,11 @@ anyone signs up for anything.
 | --- | --- | --- |
 | `candle_get_fees` | yes | the creator fees your launched tokens can pay, and the reason a token cannot be claimed |
 | `candle_claim_fees` | yes | pay one token's creator fees to the wallet fixed at launch. It has no destination argument. Use `dryRun: true` first; it answers `LAUNCH_DISABLED` until the server enables it |
+| `candle_get_staking` | yes | read eligible Solana wallets' CNDL/sCNDL, withdrawals, rewards, pool wait and eligibility notes |
+| `candle_stake` | yes | stake raw CNDL from the embedded wallet or build for a linked/TEE payer; stable clientStakeId, dryRun first |
+| `candle_unstake` | yes | start withdrawing raw sCNDL; no instant unstake, wait for the pool timelock |
+| `candle_finish_unstake` | yes | finish a selected wallet's matured withdrawal; stable clientStakeId, dryRun first |
+| `candle_claim_staking_reward` | yes | pay one Solana reward to its recorded owner; retry the same rewardId to resolve a pending claim |
 
 **Perps on Hyperliquid** (needs `perps:write` on the key and `CANDLE_KEY_SIGNER_PEM_FILE`; each write is checked before it is signed and submitted to Hyperliquid by the server)
 
@@ -242,3 +247,12 @@ setting -- run it before asking a human.
 Run `candle doctor` and report its output verbatim. It resolves credentials in the same order the
 CLI does, so it distinguishes "no key" from "wrong environment" from "key revoked", which the
 error alone often cannot.
+
+
+Staking writes require `swap:write` and the deployment's agent-staking flag (off by default).
+They MOVE REAL FUNDS; read the pool's wait and SOL costs before approving them. There is no
+instant unstake on agent surfaces. Pending withdrawal CNDL counts toward nothing for Pro.
+Outside the account's primary wallet sCNDL earns Solana rewards but no Hood rewards; Pro
+eligibility follows the API's tier mode. The hosted connector offers these five only at Trade,
+only with the flag on, and only for the embedded Solana wallet. Local linked/TEE tools return
+bytes for external signing followed by SDK staking.submit/confirm.

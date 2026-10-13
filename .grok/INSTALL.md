@@ -1,6 +1,6 @@
 # Installing Candle for Grok Build
 
-Candle ships two things Grok Build can use directly: an MCP server (twenty-nine tools: launch, seed,
+Candle ships two things Grok Build can use directly: an MCP server (thirty-seven tools: launch, seed,
 trade, read markets and feeds, report activity, read an agent profile, and more) and a `skills/` directory
 of `SKILL.md` files in Claude Code's own frontmatter shape (`name` plus `description`), which Grok
 Build reads natively.

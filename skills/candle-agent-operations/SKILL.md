@@ -135,3 +135,23 @@ instructions. Include:
 - `candle-market-data-ingestion`: cursors and gaps for the collectors being supervised.
 
 This skill is advisory. It does not authorize trades, transfers, or limit changes; those remain your operator's decision.
+
+
+## Staking operations
+
+Read `candle stake --json` before changing a position: it supplies wallet balances, the pool wait,
+withdrawals, rewards and eligibility notes. `candle stake add <amount>` takes decimal CNDL;
+`candle stake remove <amount>` takes decimal sCNDL. Select `--wallet main` (embedded) or a TEE
+wallet whose relay signer is on this machine. Writes move real funds; approve the wallet, amount,
+SOL fees/rent and notes before using `--yes`. Use a stable `--client-stake-id <id>` for every
+build and reuse it on retries: a rerun posts the saved signed transaction again without
+re-signing. The server reads the chain for that signature first, so it lands once. The signed
+transaction is kept in the CLI operations directory for that retry.
+
+There is no instant unstake. `candle stake finish [<withdrawal>]` requires the pool wait to have
+passed; omit the withdrawal only when exactly one is ready in the selected wallet. Pending CNDL
+counts toward nothing for Pro. Outside the account's primary wallet sCNDL earns Solana rewards
+but no Hood rewards; Pro follows the served tier mode. `candle stake claim <rewardId>` or
+`candle stake claim --all` pays rewards to their recorded owners. Retry the same reward id on
+an unresolved claim; never choose another id to resolve an uncertain operation. The write rail
+requires swap:write and is off unless the owner enables agent staking on the deployment.

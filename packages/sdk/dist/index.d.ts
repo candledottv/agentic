@@ -8,6 +8,7 @@ export { KeychainSecretStore } from "./keychain-secret-store";
 export { type AgentPlansResult, formatPlanBps, PLAN_CAPABILITY_LABELS, PLAN_CAPABILITY_NOTE, type PlanCapabilities, type PlanLimits, type PlanName, type PlanPrice, type PlanTable, type PlanTableEntry, planLabel, planPromotionLine, planTableMarkdown, planTableRows, } from "./plans";
 export type { SecretStore } from "./secret-store";
 export { EncryptedFileSecretStore, InMemorySecretStore } from "./secret-store";
+export type * from "./staking";
 export type { EncryptWalletKeyParams, EncryptWalletKeyResult, SignerKeypair, WalletChain } from "./wallet-import";
 export { encryptWalletKeyForImport, generateSignerKeypair } from "./wallet-import";
 export { verifyWebhookSignature } from "./webhooks";

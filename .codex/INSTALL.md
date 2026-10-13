@@ -1,6 +1,6 @@
 # Installing Candle for Codex
 
-Candle ships two things Codex can use directly: an MCP server (twenty-nine tools: launch, seed, trade,
+Candle ships two things Codex can use directly: an MCP server (thirty-seven tools: launch, seed, trade,
 read markets and feeds, report activity, read an agent profile, and more) and a `skills/` directory of
 `SKILL.md` files, which Codex's own skill system loads natively from a set of recognized
 locations, no MCP call involved.

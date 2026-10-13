@@ -261,6 +261,48 @@ export const HELP: Record<string, Topic> = {
     ],
     env: ENV_API,
   },
+  stake: {
+    group: "Trade",
+    summary: "Stake CNDL, start and finish withdrawals, claim Solana staking rewards",
+    description:
+      "Solana only. MOVES REAL FUNDS from the embedded wallet (default) or a named TEE wallet whose relay signer is on this machine. add takes decimal CNDL; remove takes decimal sCNDL. No instant unstake: finish waits for the pool's withdrawalTimelockSeconds, shown by candle stake. Solana rewards accrue to the holding wallet; outside the main wallet sCNDL earns no Hood rewards, and Pro follows the API's tier mode (main-wallet mode excludes it). Pending withdrawals count toward nothing for Pro. Writes require swap:write and an enabled agent staking rail. Reuse --client-stake-id on retry: a rerun posts the saved signed transaction to submit again without re-signing. The server reads the chain for that signature first, so it lands once. The signed transaction is kept in the CLI operations directory for that retry. Ordinary linked wallets use SDK builds and external signing.",
+    usage: [
+      "candle stake [--wallet <wallet>]",
+      "candle stake add <amount>",
+      "candle stake remove <amount>",
+      "candle stake finish [<withdrawal>]",
+      "candle stake claim <rewardId> | --all",
+    ],
+    rows: [
+      { invocation: "add <amount>", description: "Stake decimal CNDL in the selected wallet" },
+      { invocation: "remove <amount>", description: "Start a withdrawal of decimal sCNDL" },
+      {
+        invocation: "finish [<withdrawal>]",
+        description: "Finish a matured withdrawal; omit only when exactly one is ready in the selected wallet",
+      },
+      {
+        invocation: "claim <rewardId> | --all",
+        description: "Claim one reward or all listed unclaimed rewards, including unresolved claims",
+      },
+    ],
+    flags: [
+      { invocation: "--wallet <wallet>", description: "main (embedded), or a wallet id, address or label" },
+      {
+        invocation: "--client-stake-id <id>",
+        description: "Stable operation id, up to 128 characters; reuse on retry",
+      },
+      { invocation: "--yes", description: "Approve the displayed wallet, amounts and costs without a prompt" },
+      { invocation: "--all", description: "claim only: claim every listed reward for the selected wallets" },
+    ],
+    examples: [
+      "candle stake --json",
+      "candle stake add 100 --wallet main --client-stake-id stake-1 --yes",
+      "candle stake remove 100 --wallet tee",
+      "candle stake finish",
+      "candle stake claim --all --yes",
+    ],
+    env: ["CANDLE_API_KEY", "CANDLE_API_URL", "CANDLE_CONFIG_DIR"],
+  },
   lp: {
     group: "Trade",
     summary: "Meteora DAMM v2 liquidity from a TEE wallet: pools, add, positions, remove, claim",

@@ -56,6 +56,7 @@ import { fromBase64 } from "./internal/encoding"
 import { describeRpcEndpoint } from "./internal/rpc-endpoint"
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans"
 import type { SecretStore } from "./secret-store"
+import type { CandleStaking, StakingPositions, StakingResult, StakingRewardClaim } from "./staking"
 import { encryptWalletKeyForImport, type WalletChain } from "./wallet-import"
 
 export type Chain = "solana" | "hood"
@@ -2657,6 +2658,36 @@ export class CandleClient {
     },
   }
 
+  /** Solana staking. The server supplies the pool wait and wallet eligibility notes. */
+  readonly staking: CandleStaking = {
+    positions: async () => {
+      this.requireKey("staking.positions()")
+      return this.requestJson<StakingPositions>("GET", "/api/v1/agent/staking")
+    },
+    stake: async (request) => this.stakingBuild("stake", { ...request, payer: request.payer ?? "main" }),
+    unstake: async (request) => this.stakingBuild("unstake", { ...request, payer: request.payer ?? "main" }),
+    finish: async (request) => this.stakingBuild("finish", { ...request, payer: request.payer ?? "main" }),
+    claimReward: async (rewardId) => {
+      this.requireKey("staking.claimReward()")
+      return this.requestJson<StakingRewardClaim>(
+        "POST",
+        `/api/v1/agent/staking/rewards/${encodeURIComponent(rewardId)}/claim`,
+        {},
+      )
+    },
+    submit: async (request) => this.stakingBuild("submit", request),
+    confirm: async (request) => this.stakingBuild("confirm", request),
+  }
+
+  private async stakingBuild(action: string, request: object): Promise<StakingResult> {
+    this.requireKey(`staking.${action}()`)
+    return this.requestJson<StakingResult>(
+      "POST",
+      `/api/v1/agent/staking/${action === "submit" || action === "confirm" ? action : `${action}/build`}`,
+      request,
+    )
+  }
+
   constructor(opts: CandleClientOptions) {
     assertTransportSecurity(opts.apiUrl, opts.allowInsecureHttp === true)
     this.apiUrl = opts.apiUrl.replace(/\/+$/, "")
@@ -4444,7 +4475,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.4.10"
+export const SDK_VERSION = "0.4.11"
 
 let sdkUpdateWarned = false
 
