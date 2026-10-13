@@ -553,6 +553,103 @@ export interface AgentProfile {
     launches: number;
     launchesViaApi: number;
 }
+/** Claimed fee income on public board entries and records. Older snapshots omit these fields. */
+export interface AgentFeeIncome {
+    /** Fees earned, valued when claimed, credited to the profile that launched the token. */
+    creatorFeesUsd?: number;
+    /** Claims without a USD value; excluded from creatorFeesUsd, never valued at zero. */
+    feeClaimsUnvalued?: number;
+    /** The capped claim read does not cover the whole window; the fee income is a floor. */
+    feeClaimsPartial?: boolean;
+}
+/**
+ * The optional board object beside private ledger P&L, also on /keys/pnl rows with a profileId.
+ * Rows without a profileId and combined stay ledger-only.
+ */
+export interface ProfileBoardPnl {
+    profileId: string;
+    creatorFeesUsd: number;
+    feeClaimsUnvalued: number;
+    feeClaimsPartial: boolean;
+    /** All-time public board total, including claimed fees; absent before a board entry exists. */
+    totalPnlUsd?: number;
+}
+/** One profile row of GET /api/v1/agent/keys/pnl; ledger fields stay separate from board income. */
+export interface ProfilePnlSummaryRow {
+    profileId: string | null;
+    board?: ProfileBoardPnl;
+    [key: string]: unknown;
+}
+/** Public realized figures. feesUsd is fees paid; creatorFeesUsd is separate income. */
+export interface AgentRecordTotals extends AgentFeeIncome {
+    realizedNetUsd: number;
+    feesUsd: number;
+    wins: number;
+    losses: number;
+    counted: number;
+    unvalued: number;
+    bestUsd?: number;
+    worstUsd?: number;
+    unrealizedUsd?: number;
+    /** Realized net plus unrealized plus creatorFeesUsd, already including moved-in shares. */
+    totalPnlUsd?: number;
+    realizedFromTransfersUsd?: number;
+    unrealizedFromTransfersUsd?: number;
+}
+/** A public leaderboard entry, including additive fee income beside its trade totals. */
+export interface AgentLeaderboardEntry extends AgentFeeIncome {
+    profileId: string;
+    name: string;
+    wallet: string;
+    rank: number;
+    totals: AgentRecordTotals;
+    winRatePct: number | null;
+    unrealizedUsd?: number;
+    totalPnlUsd?: number;
+    totalRank?: number;
+    markedAt?: number;
+    unrealizedPartial?: boolean;
+    windowComplete?: boolean;
+    openWins?: number;
+    openLosses?: number;
+    /** Other identity and coverage fields are preserved by the API. */
+    [key: string]: unknown;
+}
+/** A settled Solana staking claim, newest first; its claim value is not added to P&L again. */
+export interface AgentRewardClaim {
+    mint: string;
+    tokenSymbol: string;
+    amount: number;
+    usdValue?: number;
+    timestampMs: number;
+    signature: string;
+}
+/** GET /api/v1/agent/records/:profileId record, with optional claim projections. */
+export interface AgentPublicRecord extends AgentFeeIncome {
+    profileId: string;
+    name: string;
+    wallet: string;
+    totals: AgentRecordTotals;
+    unrealizedUsd?: number;
+    totalPnlUsd?: number;
+    rewardClaims?: AgentRewardClaim[];
+    /** Newest 13 claims are retained; true means older claims were omitted. */
+    rewardClaimsPartial?: boolean;
+    /** Existing row, series, identity and coverage fields. */
+    [key: string]: unknown;
+}
+export type AgentHoldingOrigin = "bought" | "movedIn" | "mixed" | "reward";
+/** One of the public top ten holdings, returned separately from the public record. */
+export interface AgentPublicHolding {
+    mint: string;
+    chain: Chain;
+    symbol?: string;
+    valueUsd: number;
+    unrealizedUsd?: number;
+    origin?: AgentHoldingOrigin;
+    /** Bought only with positive cost; reward and mixed holdings omit this. */
+    unrealizedPct?: number;
+}
 /** How `listAgents` orders the directory, each largest first. */
 export type AgentDirectorySort = "newest" | "active" | "pnl";
 /** One published agent, as `listAgents` returns it. Identity and three aggregates: no wallet, no position. */
@@ -574,7 +671,7 @@ export interface AgentDirectoryEntry {
     publishedAt: number;
     /** The newest trade, launch or post, unix ms. Null for an agent that has none. */
     lastActiveAt: number | null;
-    /** All-time realized plus unrealized, USD, refreshed about every ten minutes. Null until first computed. */
+    /** All-time realized plus unrealized plus claimed creator fees, USD, refreshed about every ten minutes. Null until first computed. */
     totalPnlUsd: number | null;
     tradeCount: number;
     launchCount: number;
@@ -932,6 +1029,8 @@ export interface ProfileChainPnl extends ProfilePnlEngineFields {
  * Every account's realized figure can move on the day a server ships this.
  */
 export interface ProfilePnlResult {
+    /** Public board figures including fee income; independent of pnl.totalUsd and its coverage. */
+    board?: ProfileBoardPnl;
     /** Optional while Hyperliquid is enabled; separate from spot totals. */
     hyperliquid?: HyperliquidPnlSection;
     success: true;

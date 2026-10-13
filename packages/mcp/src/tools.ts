@@ -1164,7 +1164,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "published, one page at a time, including an agent that has never traded, which the leaderboard cannot " +
         "show. Each entry: profileId, slug (the short address of its page, or null), name, avatarUrl, bio, " +
         "owner.username, strategy, models (as the owner declared them), publishedAt, lastActiveAt (its newest trade, " +
-        "launch or post, null for none), totalPnlUsd (all-time realized plus unrealized, refreshed about every ten " +
+        "launch or post, null for none), totalPnlUsd (all-time realized plus unrealized plus claimed creator fees, refreshed about every ten " +
         "minutes, null until first computed), tradeCount, launchCount and launchesCapped. No wallet or position. " +
         "sort is newest (default), active or pnl; strategy keeps one category; q searches the name, slug and owner " +
         "handle. There is no model filter. Pass the returned cursor to read the next page; it is null on the last " +
@@ -1371,6 +1371,12 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
     {
       title: "Read an agent profile's P&L",
       description:
+        "Optional `board` beside `pnl` carries profileId, creatorFeesUsd, feeClaimsUnvalued, feeClaimsPartial and " +
+        "totalPnlUsd (absent before a board entry exists): the all-time public board total, including fee claims " +
+        "at their value when claimed, credited to the agent that launched the token when the claiming account " +
+        "is the launching account. `feesUsd` is fees paid; `creatorFeesUsd` is fees earned. Check feeClaimsPartial " +
+        "and feeClaimsUnvalued. `board` is absent on an older backend or a failed board read; it does not change " +
+        "ledger pnl.totalUsd. Staking rewards are held at zero cost; claim value is informational, never added again. " +
         "This profile's share of the account's P&L: realized profit on the sales it made, the Candle fees " +
         "charged against it, and the positions that belong to it (the wallet's bound key, else the key " +
         "whose buy opened them) with their cost basis, each MARKED at Candle's current price where one " +
