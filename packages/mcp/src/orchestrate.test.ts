@@ -599,6 +599,32 @@ describe("executeTrade: relay discipline", () => {
     expect(result.text).toContain("t-5")
   })
 
+  // BE-1411 T4 (I2): a limit refusal of a same-id resend adds no REST field. The id is in what the
+  // MCP client is told because every build answer is wrapped with it.
+  test("a build that answers KEY_LIMIT_REACHED comes back with clientTradeId at the top level", async () => {
+    const refusal = {
+      success: false,
+      error: {
+        code: "KEY_LIMIT_REACHED",
+        message: "This key's transaction volume cap would be exceeded by this trade",
+      },
+    }
+    const { fetch } = fakeFetch({
+      "https://api.test/api/v1/markets/solana/M1nt": SOL_MARKET,
+      "https://api.test/api/v1/trade/agent/build": { status: 403, body: refusal },
+    })
+    const result = await executeTrade(
+      { mint: "M1nt", side: "buy", amount: "0.5", clientTradeId: "t-limit" },
+      CFG,
+      fetch,
+    )
+    expect(result.isError).toBe(true)
+    const parsed = JSON.parse(result.text)
+    expect(parsed.clientTradeId).toBe("t-limit")
+    // The REST body is relayed as it is, with no id added to it.
+    expect(parsed.api).toEqual(refusal)
+  })
+
   test("a rejected trade POST returns MCP_TRANSPORT carrying the id, never a throw", async () => {
     const doFetch: FetchLike = async (url) => {
       if (url.startsWith("https://api.test/api/v1/markets/")) {

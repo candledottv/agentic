@@ -87,9 +87,16 @@ function relayRead(body: string, extra: Record<string, unknown>): ToolText {
  * when a retry matters most) or a body that is not JSON. The idempotency id MUST survive it,
  * because that id is the only thing that makes the retry safe, and for the composite a throw here
  * can sit on top of a real, confirmed launch.
+ *
+ * Exported for candle_swap (tools.ts), which sends its own request and needs the same envelope.
  */
-function transportError(idKey: "clientTradeId" | "clientLaunchId", id: string, thrown: unknown): ToolText {
+export function transportError(
+  idKey: "clientTradeId" | "clientLaunchId" | "clientSwapId",
+  id: string,
+  thrown: unknown,
+): ToolText {
   const detail = thrown instanceof Error ? thrown.message : String(thrown)
+  const second = idKey === "clientSwapId" ? "swap" : "trade or launch"
   return {
     text: JSON.stringify({
       [idKey]: id,
@@ -100,7 +107,7 @@ function transportError(idKey: "clientTradeId" | "clientLaunchId", id: string, t
           `The request failed in transit (${detail}). It may or may not have reached Candle. ` +
           `Retry with THIS SAME ${idKey} ("${id}") and the same body: the same id replays the ` +
           "original result instead of executing a second time, while a NEW id is a second, independent " +
-          "trade or launch.",
+          `${second}.`,
         retryable: true,
       },
     }),

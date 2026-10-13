@@ -7,7 +7,10 @@
  * mocking a transport. `registerTools` is the only function that touches the MCP SDK; it wires
  * each tool's zod input schema, calls `buildRequest`, fetches, and hands the response text back
  * verbatim -- this package never reinterprets an error body, it relays exactly what the endpoint
- * sent. That body is NOT one uniform shape across all six one-request tools:
+ * sent. Two tools ADD top-level fields to that body and change none of its own: `candle_swap`
+ * adds the `clientSwapId` it sent, and `candle_get_operation` adds `outcome` and `next` to a 404
+ * `JOB_NOT_FOUND` (see `swap` and `getOperation` below). That body is NOT one uniform shape
+ * across all six one-request tools:
  *   - `candle_launch_token`, `candle_get_market`, `candle_get_feed`, and `candle_swap` hit
  *     endpoints that use the structured `{ success: false, error: { code, message, ... } }`
  *     envelope (apps/api/src/lib/launch-errors.ts); agents branch on `error.code`.
@@ -38,6 +41,8 @@
  * place for them to go stale. Shapes and required-ness are enough to give an MCP client useful
  * autocomplete.
  */
+
+import { randomUUID } from "node:crypto"
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js"
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
@@ -52,6 +57,7 @@ import {
   executionStatus,
   type FetchLike,
   resolveToken,
+  transportError,
 } from "./orchestrate"
 import { executePerps, executePerpsDeposit, type PerpsToolName, perpsDepositShape, perpsShapes } from "./perps"
 import { PLAN_CAPABILITY_NOTE, type PlanTable, planPromotionLine, planTableMarkdown } from "./plans"
@@ -536,6 +542,106 @@ async function callAndRelay(name: RestToolName, args: Record<string, unknown>, c
   }
 }
 
+/**
+ * What a caller may conclude from a 404 on candle_get_operation, and all it may conclude. A
+ * missing row is not proof that a write did not run: a trade build can run for tens of seconds
+ * before its first ledger write, a request can still be in transit, and an id read under the
+ * wrong `kind` names no row in the ledger that was asked. So the one safe move is the same
+ * request under the same id, which the ledger coalesces.
+ *
+ * One text for every place a 404 is described: this server's tool description, the hosted
+ * connector's (apps/api/src/mcp/hosted.ts), and the `next` on the result itself.
+ */
+export const OPERATION_NOT_FOUND_RULE =
+  "No record exists under this id in the ledger `kind` asked. That does not prove the write did " +
+  "not run: a write that is still starting has no record yet. If a write was sent with this id, " +
+  "send the SAME request again with the SAME id. It returns the stored outcome, or reports the one " +
+  "still running. It never executes a second time. A refusal of that resend (a conflict or a " +
+  "limit) is an answer about the resend, not about the write: read candle_get_operation again " +
+  "before reporting an outcome. Never send it under a new id: a new id is a second trade or " +
+  "launch. Check `kind`: a swap id is not read here, so replay the swap with its `clientSwapId`."
+
+/** The same four points on the result, naming the id and the kind that were asked. */
+export function operationNotFoundNext(clientId: string, kind: "trade" | "launch"): string {
+  const other = kind === "launch" ? "trade" : "launch"
+  return (
+    `No ${kind} record under id "${clientId}" yet. That does not prove the write did not run: a ` +
+    "write that is still starting has no record yet. If a write was sent with this id, send the " +
+    `SAME request again with the SAME id ("${clientId}"). It returns the stored outcome, or reports ` +
+    "the one still running. It never executes a second time. A refusal of that resend (a conflict " +
+    "or a limit) is an answer about the resend, not about the write: read candle_get_operation " +
+    `again before reporting an outcome. Never send it under a new id: a new id is a second ${kind}. ` +
+    `This read asked kind "${kind}": a ${other} id has no record there, and a swap id is not read by ` +
+    "this tool at all, so replay the swap with its clientSwapId."
+  )
+}
+
+/**
+ * candle_get_operation: the API's answer relayed as it is, except a 404 `JOB_NOT_FOUND`, which
+ * gains `outcome: "unknown"` and `next` at the top level so a client that never read the tool
+ * description still gets the guidance. `error` is untouched and the result stays an error.
+ */
+async function getOperation(args: Record<string, unknown>, cfg: RequestConfig, doFetch: FetchLike) {
+  const { url, init } = buildRequest("candle_get_operation", args, cfg)
+  const res = await doFetch(url, init)
+  noteVersionHeaders(res)
+  let text = await res.text()
+  if (res.status === 404) {
+    let body: unknown
+    try {
+      body = JSON.parse(text)
+    } catch {
+      // Not the API's envelope: relayed as it is, below.
+    }
+    const code = (body as { error?: { code?: unknown } } | null)?.error?.code
+    if (code === "JOB_NOT_FOUND") {
+      const { clientId, kind } = args as { clientId: string; kind?: "trade" | "launch" }
+      const next = operationNotFoundNext(clientId, kind === "launch" ? "launch" : "trade")
+      text = JSON.stringify({ ...(body as Record<string, unknown>), outcome: "unknown", next })
+    }
+  }
+  return {
+    content: [{ type: "text" as const, text }],
+    ...(res.ok ? {} : { isError: true }),
+  }
+}
+
+/**
+ * candle_swap. The swap always has an id: a caller's own is used unchanged, and one is generated
+ * when it is absent or empty, before the request is built. Without one a swap that fails in
+ * transit can neither be replayed nor asked about, since candle_get_operation reads no swap.
+ *
+ * A refusal made before anything is sent (both or neither amount, an unknown asset, a missing
+ * key) still throws out of `buildRequest`, with no id, as it always did. Once the request is in
+ * flight every result carries the id: a rejected fetch, a body that cannot be read and a body
+ * that is not a JSON object come back as MCP_TRANSPORT, and a JSON object from the API gains
+ * `clientSwapId` at the top level when it has none (the swap route does not echo it). No other
+ * field moves or changes.
+ */
+async function swap(args: Record<string, unknown>, cfg: RequestConfig, doFetch: FetchLike) {
+  const clientSwapId =
+    typeof args.clientSwapId === "string" && args.clientSwapId.length > 0 ? args.clientSwapId : randomUUID()
+  const { url, init } = buildRequest("candle_swap", { ...args, clientSwapId }, cfg)
+  let ok: boolean
+  let body: unknown
+  try {
+    const res = await doFetch(url, init)
+    noteVersionHeaders(res)
+    ok = res.ok
+    body = JSON.parse(await res.text())
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      throw new Error("the response was not a JSON object")
+    }
+  } catch (thrown) {
+    const failed = transportError("clientSwapId", clientSwapId, thrown)
+    return { content: [{ type: "text" as const, text: failed.text }], isError: true }
+  }
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({ clientSwapId, ...(body as Record<string, unknown>) }) }],
+    ...(ok ? {} : { isError: true }),
+  }
+}
+
 const launchTokenShape = {
   clientLaunchId: z.string().describe("Caller-chosen idempotency key, unique per account"),
   name: z.string().describe("Token name"),
@@ -764,8 +870,9 @@ const swapShape = {
     .describe(
       "Durable idempotency key. Same id + same from/to/amountRaw/effective slippage (omitted means " +
         "100 bps) replays the stored result, including an indeterminate SWAP_FAILED with the " +
-        "signature in the message. A different body is rejected. Omit it and nothing is coalesced. " +
-        "Pass one so a timeout retry returns that stored result.",
+        "signature in the message. A different body is rejected. Omit it and one is generated, " +
+        "sent with the swap and returned in the result as `clientSwapId`: keep it, so a retry after " +
+        "a timeout returns that stored result.",
     ),
 }
 
@@ -1221,14 +1328,13 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "- `confirmed`/`failed`: it is over. `signature` proves the first, `errorCode` explains " +
         "the second.\n" +
         "- `built`/`submitted`: still in flight. Wait and ask again.\n" +
-        "- 404 (`JOB_NOT_FOUND`): Candle never saw this id, so the write never reached the rail " +
-        "and nothing moved. The original request is safe to send again exactly as it was. This " +
-        "is a definite answer, not a failure to retry.\n\n" +
+        `- 404 (\`JOB_NOT_FOUND\`): unknown, not an outcome. ${OPERATION_NOT_FOUND_RULE} The result ` +
+        'says the same in `outcome: "unknown"` and `next`.\n\n' +
         "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " +
         "and you already know what you asked for.",
       inputSchema: getOperationShape,
     },
-    async (args) => callAndRelay("candle_get_operation", args, getConfig(), doFetch),
+    async (args) => getOperation(args, getConfig(), doFetch),
   )
 
   register(
@@ -1510,14 +1616,16 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "- A confirmed source transaction is NOT proof the destination was credited. Read the " +
         "returned status before treating the funds as arrived; the response carries the venue's " +
         "own status URLs for the cross-chain fill.\n" +
-        "- A timeout is unknown, not failed. Pass a `clientSwapId` and retry the SAME request, " +
-        "including the same slippage. The replay returns the stored result: the original success, " +
+        "- A timeout is unknown, not failed. Every result carries a `clientSwapId`: yours, or one " +
+        "generated when you pass none. Keep the returned `clientSwapId`, and after a timeout or " +
+        "`MCP_TRANSPORT` send the SAME request with that id, including the same slippage. A new id " +
+        "is a second swap, and so is a call with no id. " +
+        "The replay returns the stored result: the original success, " +
         "or a stored error. An indeterminate first leg comes back as SWAP_FAILED, retryable false, " +
         "with the signature in the message -- verify that on-chain before a new id. A swap that is " +
         "still running, with no stored outcome, is a retryable conflict. A different body under the " +
         "same id is rejected. A confirmed first leg is replayed with its hash, retryable false, and " +
-        "is not run again. retryable true on the first LEG2_FAILED means send leg 2 as a new request. " +
-        "Omitting the id never coalesces -- do not retry a timed-out call that had no id.\n" +
+        "is not run again. retryable true on the first LEG2_FAILED means send leg 2 as a new request.\n" +
         "- If a bridge times out, check the returned status URLs rather than treating the funds " +
         "as arrived or lost.\n\n" +
         'Amounts are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for ' +
@@ -1528,7 +1636,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "fee: that runs through `candle swap` with the wallet's bound key, not this tool.",
       inputSchema: swapShape,
     },
-    async (args) => callAndRelay("candle_swap", args, getConfig(), doFetch),
+    async (args) => swap(args, getConfig(), doFetch),
   )
 
   register(
@@ -1589,8 +1697,8 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
         "- A timeout is not a failure. Retry with the SAME clientTradeId from the result -- it " +
         "coalesces the duplicate. A NEW id is a SECOND trade, and that is how you double-spend.\n" +
         "- If you no longer hold the result, do not re-send to find out what happened. Ask " +
-        "candle_get_operation with the clientTradeId; a 404 there means the trade never reached " +
-        "the rail and nothing moved.",
+        "candle_get_operation with the clientTradeId. A 404 there is unknown, not an outcome. " +
+        OPERATION_NOT_FOUND_RULE,
       inputSchema: tradeShape,
     },
     async (args) => {

@@ -138,7 +138,8 @@ up front:
 3. `candle_trade { "mint": "9dXSV8...CNDL", "side": "buy", "amount": "0.2" }` -- `amount` is
    **decimal**. Never convert to lamports or wei yourself. Keep the `clientTradeId` from the result.
 4. Only if step 3 times out: `candle_get_operation { "kind": "trade", "clientId": "<that id>" }`.
-   A 404 means Candle never saw the id, so nothing moved and the request is safe to send again.
+   A 404 means no record under that id yet, which does not prove the trade did not run. Send the
+   same request again with the same `clientTradeId`: it never trades twice. Never use a new id.
 
 Selling a fraction is the same shape with `{ "side": "sell", "percent": 50 }`.
 

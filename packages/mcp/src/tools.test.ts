@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test"
+import type { FetchLike } from "./orchestrate"
 import {
   buildRequest,
   PROFILE_EDIT_TOOL_NAMES,
+  registerToolSubset,
   registerTools,
   resolveToolAllowlist,
   swapBody,
   TOOL_NAMES,
+  type ToolName,
 } from "./tools"
 
 test("all registered tools are listed", () => {
@@ -462,6 +465,39 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
     expect(d).toContain("double-spend")
   })
 
+  // BE-1411 T4 (R1, R2, I2). A missing row is "no record yet": a build can run for tens of seconds
+  // before agentTrades.begin, so the 404 proves nothing about the write.
+  test("a 404 from get_operation is no record yet, never proof, on get_operation and on trade", () => {
+    for (const name of ["candle_get_operation", "candle_trade"]) {
+      const d = describeOf(name)
+      expect(d.toLowerCase()).not.toContain("nothing moved")
+      expect(d.toLowerCase()).not.toContain("never reached")
+      expect(d).not.toContain("safe to send again exactly as it was")
+      expect(d).toContain("SAME request again with the SAME id")
+      expect(d).toMatch(/new id/)
+      // R2's four points: not proof, the same-id resend and what a refusal of it means, never a
+      // new id, and the kind that was asked. Both local descriptions carry all four.
+      expect(d).toContain("That does not prove the write did not run")
+      expect(d).toContain("It never executes a second time")
+      expect(d).toContain("is an answer about the resend, not about the write")
+      expect(d).toContain("read candle_get_operation again before reporting an outcome")
+      expect(d).toContain("a new id is a second trade or launch")
+      expect(d).toContain("Check `kind`")
+      expect(d).toContain("`clientSwapId`")
+    }
+    expect(describeOf("candle_get_operation")).not.toContain("This is a definite answer")
+  })
+
+  // BE-1411 R10: the swap text changes with the behaviour.
+  test("swap says the id is generated and returned, and what to do with it after a timeout", () => {
+    const d = describeOf("candle_swap")
+    expect(d).not.toContain("never coalesces")
+    expect(d).not.toContain("had no id")
+    expect(d).toContain("Keep the returned `clientSwapId`")
+    expect(d).toContain("`MCP_TRANSPORT`")
+    expect(d).toContain("A new id is a second swap")
+  })
+
   // Ember Phase 4d (4d-ED-11): both chains, and the facts an agent needs to read Hood correctly.
   test("get_portfolio names the hood section, the price keys, unpriced reasons and the scope", () => {
     const d = describeOf("candle_get_portfolio")
@@ -496,5 +532,200 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
     expect(d).not.toContain("need not sum")
     expect(d).not.toContain("own fills")
     expect(d).not.toContain("transfers are excluded")
+  })
+})
+
+/** Registers the named tools on a recorder and returns their handlers and schemas, wired to `doFetch`. */
+function toolsWith(names: readonly ToolName[], doFetch: FetchLike) {
+  type Result = { content: { type: string; text: string }[]; isError?: boolean }
+  const tools = new Map<
+    string,
+    {
+      inputSchema: Record<string, { description?: string }>
+      handler: (args: Record<string, unknown>) => Promise<Result>
+    }
+  >()
+  const server = {
+    registerTool(
+      name: string,
+      definition: { inputSchema: Record<string, { description?: string }> },
+      handler: (args: Record<string, unknown>) => Promise<Result>,
+    ) {
+      tools.set(name, { inputSchema: definition.inputSchema, handler })
+    },
+  } as unknown as Parameters<typeof registerToolSubset>[0]
+  registerToolSubset(server, {
+    tools: names,
+    getConfig: () => ({ apiUrl: "https://api.test", apiKey: "cndl_live_k" }),
+    fetch: doFetch,
+  })
+  const call = async (name: ToolName, args: Record<string, unknown>) => {
+    const tool = tools.get(name)
+    if (!tool) throw new Error(`${name} was not registered`)
+    const result = await tool.handler(args)
+    return { result, text: String(result.content[0]?.text) }
+  }
+  return { tools, call }
+}
+
+const answer = (status: number, text: string) => ({ ok: status < 400, status, text: async () => text })
+
+// BE-1411 T5 (R3): the result carries the guidance, so a client that never read the description
+// still gets it.
+describe("candle_get_operation: what a 404 returns", () => {
+  const NOT_FOUND = {
+    success: false,
+    error: { code: "JOB_NOT_FOUND", message: "No trade with that clientTradeId for this account" },
+  }
+
+  test("a 404 JOB_NOT_FOUND is the API's body plus outcome unknown and a next naming the id and kind", async () => {
+    const urls: string[] = []
+    const { call } = toolsWith(["candle_get_operation"], async (url) => {
+      urls.push(url)
+      return answer(404, JSON.stringify(NOT_FOUND))
+    })
+    for (const kind of ["trade", "launch"] as const) {
+      const { result, text } = await call("candle_get_operation", { clientId: "op-1", kind })
+      expect(result.isError).toBe(true)
+      const body = JSON.parse(text)
+      // The API's own fields are untouched; two are added.
+      expect(body).toEqual({ ...NOT_FOUND, outcome: "unknown", next: body.next })
+      expect(body.next).toContain('"op-1"')
+      expect(body.next).toContain(`kind "${kind}"`)
+      expect(body.next).toContain("That does not prove the write did not run")
+      expect(body.next).toContain("SAME request again with the SAME id")
+      expect(body.next).toContain("It never executes a second time")
+      expect(body.next).toContain("is an answer about the resend, not about the write")
+      expect(body.next).toContain("read candle_get_operation again before reporting an outcome")
+      expect(body.next).toContain(`a new id is a second ${kind}`)
+      expect(body.next).toContain("clientSwapId")
+      expect(body.next.toLowerCase()).not.toContain("nothing moved")
+      expect(body.next.toLowerCase()).not.toContain("never reached")
+    }
+    expect(urls).toEqual([
+      "https://api.test/api/v1/trade/agent/jobs/op-1",
+      "https://api.test/api/v1/launch/headless/jobs/op-1",
+    ])
+  })
+
+  test("a 200, a 401, a 404 with another code and a 404 that is not JSON are relayed unchanged", async () => {
+    const cases: [number, string][] = [
+      [200, JSON.stringify({ success: true, job: { clientTradeId: "op-1", status: "confirmed", signature: "Sig" } })],
+      [401, JSON.stringify({ success: false, error: { code: "UNAUTHORIZED", message: "Invalid API key" } })],
+      [404, JSON.stringify({ success: false, error: { code: "NOT_FOUND", message: "No such route" } })],
+      [404, "<html>404 Not Found</html>"],
+      [404, JSON.stringify(["JOB_NOT_FOUND"])],
+    ]
+    for (const [status, sent] of cases) {
+      const { call } = toolsWith(["candle_get_operation"], async () => answer(status, sent))
+      const { result, text } = await call("candle_get_operation", { clientId: "op-1", kind: "trade" })
+      expect(text).toBe(sent)
+      expect(result.isError).toBe(status === 200 ? undefined : true)
+    }
+  })
+})
+
+// BE-1411 T7 to T10 (R6 to R9, I3, I4): the local swap always has an id.
+describe("candle_swap: the request always carries an id, and every result returns it", () => {
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+  const SWAP = { from: "SOL", to: "USDC", amount: "0.5" }
+
+  /** A swap fetch that records each posted body. */
+  function swapWith(respond: () => ReturnType<FetchLike>) {
+    const posted: Record<string, unknown>[] = []
+    const { tools, call } = toolsWith(["candle_swap"], async (url, init) => {
+      expect(url).toBe("https://api.test/api/v1/agent/swap")
+      posted.push(JSON.parse(String(init?.body)))
+      return respond()
+    })
+    return { tools, posted, swap: (args: Record<string, unknown>) => call("candle_swap", args) }
+  }
+
+  test("T7: no id posts a generated UUID, a caller's id is posted unchanged, an empty one is replaced", async () => {
+    const { posted, swap } = swapWith(async () => answer(200, JSON.stringify({ success: true })))
+    await swap(SWAP)
+    await swap({ ...SWAP, clientSwapId: "mine-1" })
+    await swap({ ...SWAP, clientSwapId: "" })
+    expect(String(posted[0]?.clientSwapId)).toMatch(UUID)
+    expect(posted[1]).toEqual({ from: "SOL", to: "USDC", amountRaw: "500000000", clientSwapId: "mine-1" })
+    expect(String(posted[2]?.clientSwapId)).toMatch(UUID)
+    // Two calls with no id are two swaps: nothing in the tool can tell a retry from a new intent.
+    expect(posted[2]?.clientSwapId).not.toBe(posted[0]?.clientSwapId)
+  })
+
+  test("T8: a rejected fetch, an unreadable body and a non-JSON body return MCP_TRANSPORT with the id sent", async () => {
+    const failures: (() => ReturnType<FetchLike>)[] = [
+      async () => {
+        throw new Error("socket hang up")
+      },
+      async () => ({
+        ok: true,
+        status: 200,
+        text: async () => {
+          throw new Error("body stream interrupted")
+        },
+      }),
+      async () => answer(502, "<html>502 Bad Gateway</html>"),
+      // A JSON body that is not an object has nowhere to carry the id, so it is not relayed bare.
+      async () => answer(200, "null"),
+    ]
+    for (const respond of failures) {
+      const { posted, swap } = swapWith(respond)
+      const { result, text } = await swap(SWAP)
+      expect(result.isError).toBe(true)
+      const body = JSON.parse(text)
+      expect(body.clientSwapId).toMatch(UUID)
+      // I4: the id returned is the id that was sent.
+      expect(body.clientSwapId).toBe(posted[0]?.clientSwapId)
+      expect(body.success).toBe(false)
+      expect(body.error.code).toBe("MCP_TRANSPORT")
+      expect(body.error.retryable).toBe(true)
+      expect(body.error.message).toContain(`SAME clientSwapId ("${body.clientSwapId}")`)
+      expect(body.error.message).toContain("a NEW id is a second, independent swap")
+    }
+    const { swap } = swapWith(failures[0] as () => ReturnType<FetchLike>)
+    const own = JSON.parse((await swap({ ...SWAP, clientSwapId: "mine-2" })).text)
+    expect(own.clientSwapId).toBe("mine-2")
+    expect(own.error.message).toContain("socket hang up")
+  })
+
+  test("T9: a 200 and a 4xx JSON body come back with clientSwapId added and every other field equal", async () => {
+    const bodies: [number, Record<string, unknown>][] = [
+      [200, { success: true, signature: "SwapSig", from: "SOL", to: "USDC", amounts: { inRaw: "500000000" } }],
+      [
+        409,
+        { success: false, error: { code: "IDEMPOTENCY_CONFLICT", message: "Swap still running", retryable: true } },
+      ],
+      [400, { success: false, error: { code: "VALIDATION_FAILED", message: "Unknown asset", field: "from" } }],
+    ]
+    for (const [status, sent] of bodies) {
+      const { posted, swap } = swapWith(async () => answer(status, JSON.stringify(sent)))
+      const { result, text } = await swap(SWAP)
+      expect(result.isError).toBe(status === 200 ? undefined : true)
+      const { clientSwapId, ...rest } = JSON.parse(text)
+      expect(rest).toEqual(sent)
+      expect(clientSwapId).toMatch(UUID)
+      expect(clientSwapId).toBe(posted[0]?.clientSwapId)
+    }
+    // A body that already names the id (the hosted pending answer does) is relayed as it is.
+    const pending = { success: false, error: { code: "OPERATION_PENDING", message: "…" }, clientSwapId: "mine-3" }
+    const { swap } = swapWith(async () => answer(504, JSON.stringify(pending)))
+    expect(JSON.parse((await swap({ ...SWAP, clientSwapId: "mine-3" })).text)).toEqual(pending)
+  })
+
+  test("T10: a refusal made before anything is sent is unchanged and makes no request", async () => {
+    const { posted, swap } = swapWith(async () => answer(200, "{}"))
+    await expect(swap({ from: "SOL", to: "USDC", amount: "0.5", amountRaw: "1" })).rejects.toThrow(/exactly one/)
+    await expect(swap({ from: "SOL", to: "USDC" })).rejects.toThrow(/Pass an amount/)
+    await expect(swap({ from: "DOGE", to: "USDC", amount: "1" })).rejects.toThrow(/Unknown decimals/)
+    expect(posted).toEqual([])
+  })
+
+  test("R10: the clientSwapId field says it is generated when omitted and returned in the result", () => {
+    const { tools } = swapWith(async () => answer(200, "{}"))
+    const described = String(tools.get("candle_swap")?.inputSchema.clientSwapId?.description)
+    expect(described).toContain("generated")
+    expect(described).toContain("returned in the result")
+    expect(described).not.toContain("nothing is coalesced")
   })
 })

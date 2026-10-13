@@ -20,8 +20,11 @@ up by it:
 ```
 
 `confirmed` or `failed` means it is over. `built` means it is still in flight, so wait and ask
-again. A 404 means Candle never saw that id, so the write never reached the rail and nothing moved:
-the original request is safe to send again exactly as it was.
+again. A 404 means no record under that id yet. That does not prove the trade did not run: a build
+that is still starting has no record yet. Send the same request again with the same
+`clientTradeId`. It returns the stored outcome or reports the trade still running, and it never
+trades twice. If that resend is refused (a conflict or a limit), the refusal is about the resend,
+not about the trade: ask `candle_get_operation` again before reporting an outcome.
 
 Retrying `candle_trade` with the SAME `clientTradeId` is also safe, because the rail replays rather
 than trading twice. Retrying with a NEW id is a second trade.

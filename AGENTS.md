@@ -189,8 +189,13 @@ not tell you the price.
 **Honour idempotency, and prefer asking over retrying.** Launch and trade calls take a
 client-supplied id; reuse the same id when retrying the same intent, or you risk launching twice.
 After a timeout the better move is `candle_get_operation`, which tells you whether the write landed
-before you decide. A 404 there means Candle never saw the id, so nothing moved and the original
-request is safe to send again unchanged.
+before you decide. A 404 there means no record under that id yet. That does not prove the write
+did not run: a write that is still starting has no record yet. Send the same request again with
+the same id. It returns the stored outcome or reports the one still running, and it never executes
+a second time. Never send it under a new id, which is a second trade or launch. A refusal of that
+resend (a conflict or a limit) is an answer about the resend, not about the write: read
+`candle_get_operation` again before reporting an outcome. A swap id is not read there at all:
+replay the swap with its `clientSwapId`.
 
 **A swap timeout is unknown, not failed.** Pass a `clientSwapId` and retry the same request,
 including the same slippage. The replay returns the stored result: the original success, or a

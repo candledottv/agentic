@@ -8,6 +8,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 var EXTERNAL_MARKET_DISCLOSURE = "For external tokens (external: true), buysOpen, sellsOpen, quoteMint, feeBps, venue, " + "graduationVenue and poolAddress are compatibility placeholders, not measured facts about " + "trading availability, pool pairing, fees or pool venue; trade.routable is stored eligibility " + "and does not verify those fields.";
 
 // src/tools.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
 import { z as z2 } from "zod";
 
 // src/client.ts
@@ -111,7 +112,7 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, sep } from "node:path";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.13";
+var SERVER_VERSION = "0.10.14";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
@@ -383,13 +384,14 @@ function relayRead(body, extra) {
 }
 function transportError(idKey, id, thrown) {
   const detail = thrown instanceof Error ? thrown.message : String(thrown);
+  const second = idKey === "clientSwapId" ? "swap" : "trade or launch";
   return {
     text: JSON.stringify({
       [idKey]: id,
       success: false,
       error: {
         code: "MCP_TRANSPORT",
-        message: `The request failed in transit (${detail}). It may or may not have reached Candle. ` + `Retry with THIS SAME ${idKey} ("${id}") and the same body: the same id replays the ` + "original result instead of executing a second time, while a NEW id is a second, independent " + "trade or launch.",
+        message: `The request failed in transit (${detail}). It may or may not have reached Candle. ` + `Retry with THIS SAME ${idKey} ("${id}") and the same body: the same id replays the ` + "original result instead of executing a second time, while a NEW id is a second, independent " + `${second}.`,
         retryable: true
       }
     }),
@@ -1996,6 +1998,55 @@ async function callAndRelay(name, args, cfg, doFetch) {
     ...res.ok ? {} : { isError: true }
   };
 }
+var OPERATION_NOT_FOUND_RULE = "No record exists under this id in the ledger `kind` asked. That does not prove the write did " + "not run: a write that is still starting has no record yet. If a write was sent with this id, " + "send the SAME request again with the SAME id. It returns the stored outcome, or reports the one " + "still running. It never executes a second time. A refusal of that resend (a conflict or a " + "limit) is an answer about the resend, not about the write: read candle_get_operation again " + "before reporting an outcome. Never send it under a new id: a new id is a second trade or " + "launch. Check `kind`: a swap id is not read here, so replay the swap with its `clientSwapId`.";
+function operationNotFoundNext(clientId, kind) {
+  const other = kind === "launch" ? "trade" : "launch";
+  return `No ${kind} record under id "${clientId}" yet. That does not prove the write did not run: a ` + "write that is still starting has no record yet. If a write was sent with this id, send the " + `SAME request again with the SAME id ("${clientId}"). It returns the stored outcome, or reports ` + "the one still running. It never executes a second time. A refusal of that resend (a conflict " + "or a limit) is an answer about the resend, not about the write: read candle_get_operation " + `again before reporting an outcome. Never send it under a new id: a new id is a second ${kind}. ` + `This read asked kind "${kind}": a ${other} id has no record there, and a swap id is not read by ` + "this tool at all, so replay the swap with its clientSwapId.";
+}
+async function getOperation(args, cfg, doFetch) {
+  const { url, init } = buildRequest("candle_get_operation", args, cfg);
+  const res = await doFetch(url, init);
+  noteVersionHeaders(res);
+  let text = await res.text();
+  if (res.status === 404) {
+    let body;
+    try {
+      body = JSON.parse(text);
+    } catch {}
+    const code = body?.error?.code;
+    if (code === "JOB_NOT_FOUND") {
+      const { clientId, kind } = args;
+      const next = operationNotFoundNext(clientId, kind === "launch" ? "launch" : "trade");
+      text = JSON.stringify({ ...body, outcome: "unknown", next });
+    }
+  }
+  return {
+    content: [{ type: "text", text }],
+    ...res.ok ? {} : { isError: true }
+  };
+}
+async function swap(args, cfg, doFetch) {
+  const clientSwapId = typeof args.clientSwapId === "string" && args.clientSwapId.length > 0 ? args.clientSwapId : randomUUID2();
+  const { url, init } = buildRequest("candle_swap", { ...args, clientSwapId }, cfg);
+  let ok;
+  let body;
+  try {
+    const res = await doFetch(url, init);
+    noteVersionHeaders(res);
+    ok = res.ok;
+    body = JSON.parse(await res.text());
+    if (typeof body !== "object" || body === null || Array.isArray(body)) {
+      throw new Error("the response was not a JSON object");
+    }
+  } catch (thrown) {
+    const failed = transportError("clientSwapId", clientSwapId, thrown);
+    return { content: [{ type: "text", text: failed.text }], isError: true };
+  }
+  return {
+    content: [{ type: "text", text: JSON.stringify({ clientSwapId, ...body }) }],
+    ...ok ? {} : { isError: true }
+  };
+}
 var launchTokenShape = {
   clientLaunchId: z2.string().describe("Caller-chosen idempotency key, unique per account"),
   name: z2.string().describe("Token name"),
@@ -2102,7 +2153,7 @@ var swapShape = {
   amount: z2.string().optional().describe('Decimal amount of `from` to spend, e.g. "0.5". Preferred. Pass exactly one of amount or amountRaw.'),
   amountRaw: z2.string().optional().describe("Raw base units of `from`, as a positive integer string. Kept for callers that already " + "compute raw units; new callers should use `amount`."),
   maxSlippageBps: z2.number().optional().describe("Slippage bound in bps, 0-10000. Server defaults to 100 (1%)"),
-  clientSwapId: z2.string().optional().describe("Durable idempotency key. Same id + same from/to/amountRaw/effective slippage (omitted means " + "100 bps) replays the stored result, including an indeterminate SWAP_FAILED with the " + "signature in the message. A different body is rejected. Omit it and nothing is coalesced. " + "Pass one so a timeout retry returns that stored result.")
+  clientSwapId: z2.string().optional().describe("Durable idempotency key. Same id + same from/to/amountRaw/effective slippage (omitted means " + "100 bps) replays the stored result, including an indeterminate SWAP_FAILED with the " + "signature in the message. A different body is rejected. Omit it and one is generated, " + "sent with the swap and returned in the result as `clientSwapId`: keep it, so a retry after " + "a timeout returns that stored result.")
 };
 var tradeShape = {
   mint: z2.string().describe("Token mint (solana) or contract address (hood)"),
@@ -2275,11 +2326,9 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 
 ` + `Four answers, four different next moves:
 ` + "- `confirmed`/`failed`: it is over. `signature` proves the first, `errorCode` explains " + `the second.
-` + "- `built`/`submitted`: still in flight. Wait and ask again.\n" + "- 404 (`JOB_NOT_FOUND`): Candle never saw this id, so the write never reached the rail " + "and nothing moved. The original request is safe to send again exactly as it was. This " + `is a definite answer, not a failure to retry.
-
-` + "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " + "and you already know what you asked for.",
+` + "- `built`/`submitted`: still in flight. Wait and ask again.\n" + `- 404 (\`JOB_NOT_FOUND\`): unknown, not an outcome. ${OPERATION_NOT_FOUND_RULE} The result ` + 'says the same in `outcome: "unknown"` and `next`.\n\n' + "Amounts come back RAW, deliberately: the answer you need after a timeout is the outcome, " + "and you already know what you asked for.",
     inputSchema: getOperationShape
-  }, async (args) => callAndRelay("candle_get_operation", args, getConfig(), doFetch));
+  }, async (args) => getOperation(args, getConfig(), doFetch));
   register("candle_get_staking", {
     title: "Read CNDL staking positions",
     description: "Read eligible embedded, linked and TEE Solana wallets: CNDL, sCNDL, withdrawals, unclaimed rewards, the pool wait and eligibility notes. Reads only. " + STAKING_DISCLOSURE,
@@ -2372,14 +2421,14 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 ` + `A bridge behaves differently and the difference matters:
 ` + `- It is several transactions, not one, and it takes time rather than settling on the call.
 ` + "- A confirmed source transaction is NOT proof the destination was credited. Read the " + "returned status before treating the funds as arrived; the response carries the venue's " + `own status URLs for the cross-chain fill.
-` + "- A timeout is unknown, not failed. Pass a `clientSwapId` and retry the SAME request, " + "including the same slippage. The replay returns the stored result: the original success, " + "or a stored error. An indeterminate first leg comes back as SWAP_FAILED, retryable false, " + "with the signature in the message -- verify that on-chain before a new id. A swap that is " + "still running, with no stored outcome, is a retryable conflict. A different body under the " + "same id is rejected. A confirmed first leg is replayed with its hash, retryable false, and " + "is not run again. retryable true on the first LEG2_FAILED means send leg 2 as a new request. " + `Omitting the id never coalesces -- do not retry a timed-out call that had no id.
+` + "- A timeout is unknown, not failed. Every result carries a `clientSwapId`: yours, or one " + "generated when you pass none. Keep the returned `clientSwapId`, and after a timeout or " + "`MCP_TRANSPORT` send the SAME request with that id, including the same slippage. A new id " + "is a second swap, and so is a call with no id. " + "The replay returns the stored result: the original success, " + "or a stored error. An indeterminate first leg comes back as SWAP_FAILED, retryable false, " + "with the signature in the message -- verify that on-chain before a new id. A swap that is " + "still running, with no stored outcome, is a retryable conflict. A different body under the " + "same id is rejected. A confirmed first leg is replayed with its hash, retryable false, and " + `is not run again. retryable true on the first LEG2_FAILED means send leg 2 as a new request.
 ` + "- If a bridge times out, check the returned status URLs rather than treating the funds " + `as arrived or lost.
 
 ` + 'Amounts are decimal (`amount`, e.g. "0.5"); `amountRaw` still accepts raw base units for ' + "callers that already compute them. Test-environment keys are refused: every leg settles " + `on a live venue.
 
 ` + "This tool spends the embedded wallets. A TEE wallet also bridges, from SOL or USDC to ETH " + "or USDG or back, but only into the same key's TEE wallet on the other chain, with no Candle " + "fee: that runs through `candle swap` with the wallet's bound key, not this tool.",
     inputSchema: swapShape
-  }, async (args) => callAndRelay("candle_swap", args, getConfig(), doFetch));
+  }, async (args) => swap(args, getConfig(), doFetch));
   register("candle_transfer", {
     title: "Transfer an asset",
     description: "Move an asset from the account's embedded wallet to one of the account's own wallets, or to an owner-approved withdrawal address. amountRaw 'max' sweeps the spendable balance of that asset.",
@@ -2410,7 +2459,7 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 
 ` + `After the call:
 ` + "- A timeout is not a failure. Retry with the SAME clientTradeId from the result -- it " + `coalesces the duplicate. A NEW id is a SECOND trade, and that is how you double-spend.
-` + "- If you no longer hold the result, do not re-send to find out what happened. Ask " + "candle_get_operation with the clientTradeId; a 404 there means the trade never reached " + "the rail and nothing moved.",
+` + "- If you no longer hold the result, do not re-send to find out what happened. Ask " + "candle_get_operation with the clientTradeId. A 404 there is unknown, not an outcome. " + OPERATION_NOT_FOUND_RULE,
     inputSchema: tradeShape
   }, async (args) => {
     const result = await executeTrade(args, getConfig(), doFetch);
