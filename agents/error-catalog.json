@@ -56,6 +56,11 @@
         "BRIDGE_DESTINATION_MISSING"
       ]
     },
+    "profile_permission": {
+      "retryable": false,
+      "action": "Public page editing is off for this key or an admin locked the profile. Only the owner Privy session can restore the permission; only an admin can lift the lock.",
+      "codes": ["PROFILE_SELF_EDIT_DENIED"]
+    },
     "spend_policy": {
       "retryable": false,
       "action": "A spend limit refused the amount. Lower the amount or have the owner raise the limit. Never retry the same size.",

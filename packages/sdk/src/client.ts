@@ -498,6 +498,38 @@ export type VerifyResult =
       attribution?: { program: string; signer?: string }
     }
 
+/** Fields an eligible agent key may edit. Name, slug and visibility stay owner-only. */
+export interface OwnAgentProfilePatch {
+  publicAvatar?: string | null
+  publicBanner?: string | null
+  publicThesis?: string | null
+  publicStrategy?: string | null
+  publicStrategyNote?: string | null
+  publicModel?: string | null
+  publicModels?: string[] | null
+  publicLinks?: { website?: string | null; x?: string | null } | null
+}
+
+export interface OwnAgentProfile {
+  success: true
+  profileId: string
+  keyPrefix: string
+  profileSelfEdit: "allowed" | "denied"
+  canEdit: boolean
+  agentEditsLocked: boolean
+  display: {
+    name: string | null
+    avatarUrl: string | null
+    bannerUrl: string | null
+    thesis: string | null
+    strategy: string | null
+    strategyNote: string | null
+    model: string | null
+    models: string[]
+    links: { website: string | null; x: string | null }
+  }
+}
+
 /** GET /api/v1/users/:idOrWallet/agent, unwrapped from `{ success, agent }`. */
 export interface AgentProfile {
   enabled: boolean
@@ -2871,6 +2903,36 @@ export class CandleClient {
     return this.requestJson<VerifyResult>("GET", `/api/v1/verify/${chain}/${encodeURIComponent(mint)}`)
   }
 
+  async getOwnProfile(): Promise<OwnAgentProfile> {
+    this.requireKey("getOwnProfile()")
+    return this.requestJson<OwnAgentProfile>("GET", "/api/v1/agent/keys/self/public-profile")
+  }
+
+  async updateOwnProfile(patch: OwnAgentProfilePatch): Promise<{ success: true; profileId: string }> {
+    this.requireKey("updateOwnProfile()")
+    return this.requestJson("PATCH", "/api/v1/agent/keys/self/public-profile", patch)
+  }
+
+  /** The server counts, audits and saves this image without a subsequent PATCH. */
+  async uploadProfileImage(
+    kind: "avatar" | "banner",
+    bytes: Uint8Array,
+    contentType: string,
+  ): Promise<{ imageUrl: string; profileId: string }> {
+    this.requireKey("uploadProfileImage()")
+    const form = new FormData()
+    form.set("kind", kind)
+    form.set("image", new Blob([bytes as BlobPart], { type: contentType }), "profile.image")
+    const headers = this.headers()
+    delete headers["Content-Type"]
+    const res = await this.fetchImpl(`${this.apiUrl}/api/v1/uploads/agent-profile-image`, {
+      method: "POST",
+      headers,
+      body: form,
+    })
+    return this.parseResponse(res)
+  }
+
   async getAgentProfile(idOrWallet: string): Promise<AgentProfile> {
     const body = await this.requestJson<{ success: true; agent: AgentProfile }>(
       "GET",
@@ -4607,15 +4669,15 @@ export class CandleClient {
     }
   }
 
-  // PUT joins GET/POST for the profile-wallet routes, which are replace-semantics writes. The
-  // verb is passed straight to fetch and nothing below branches on it, so this widening is a
-  // type change only.
+  // PUT joins GET/POST for the profile-wallet routes, which are replace-semantics writes; PATCH
+  // serves updateOwnProfile(). The verb is passed straight to fetch and nothing below branches
+  // on it, so this widening is a type change only.
   //
   // `op` is a one-call write method's context (runOperation() above). It is marked sent only
   // once the request is fully built, immediately before fetch: a body that cannot be serialized
   // throws before anything left, and that error must not claim a request may have reached Candle.
   private async requestJson<T>(
-    method: "GET" | "POST" | "PUT",
+    method: "GET" | "POST" | "PUT" | "PATCH",
     path: string,
     body?: unknown,
     op?: OperationContext,

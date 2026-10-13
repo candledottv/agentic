@@ -20,7 +20,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import { EXTERNAL_MARKET_DISCLOSURE } from "./market-disclosure"
-import { registerTools } from "./tools"
+import { registerEligibleProfileTool, registerTools } from "./tools"
 import { SERVER_VERSION } from "./version"
 
 /**
@@ -114,7 +114,14 @@ export async function runStdioServer(
   transport: Transport = new StdioServerTransport(),
 ): Promise<void> {
   const server = createCandleMcpServer(env)
+  await registerEligibleProfileTool(server, env)
   await server.connect(transport)
+  const dispatch = transport.onmessage
+  transport.onmessage = (message, extra) => {
+    if ("method" in message && message.method === "tools/list") {
+      void registerEligibleProfileTool(server, env).then(() => dispatch?.(message, extra))
+    } else dispatch?.(message, extra)
+  }
   await new Promise<void>((resolve) => {
     const sdkOnClose = transport.onclose
     transport.onclose = () => {

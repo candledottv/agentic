@@ -472,6 +472,42 @@ export type VerifyResult = {
         signer?: string;
     };
 };
+/** Fields an eligible agent key may edit. Name, slug and visibility stay owner-only. */
+export interface OwnAgentProfilePatch {
+    publicAvatar?: string | null;
+    publicBanner?: string | null;
+    publicThesis?: string | null;
+    publicStrategy?: string | null;
+    publicStrategyNote?: string | null;
+    publicModel?: string | null;
+    publicModels?: string[] | null;
+    publicLinks?: {
+        website?: string | null;
+        x?: string | null;
+    } | null;
+}
+export interface OwnAgentProfile {
+    success: true;
+    profileId: string;
+    keyPrefix: string;
+    profileSelfEdit: "allowed" | "denied";
+    canEdit: boolean;
+    agentEditsLocked: boolean;
+    display: {
+        name: string | null;
+        avatarUrl: string | null;
+        bannerUrl: string | null;
+        thesis: string | null;
+        strategy: string | null;
+        strategyNote: string | null;
+        model: string | null;
+        models: string[];
+        links: {
+            website: string | null;
+            x: string | null;
+        };
+    };
+}
 /** GET /api/v1/users/:idOrWallet/agent, unwrapped from `{ success, agent }`. */
 export interface AgentProfile {
     enabled: boolean;
@@ -2364,6 +2400,16 @@ export declare class CandleClient {
     }): Promise<QuoteResult>;
     getFeed(bucket: FeedBucket, chain?: Chain): Promise<FeedResult>;
     verify(chain: Chain, mint: string): Promise<VerifyResult>;
+    getOwnProfile(): Promise<OwnAgentProfile>;
+    updateOwnProfile(patch: OwnAgentProfilePatch): Promise<{
+        success: true;
+        profileId: string;
+    }>;
+    /** The server counts, audits and saves this image without a subsequent PATCH. */
+    uploadProfileImage(kind: "avatar" | "banner", bytes: Uint8Array, contentType: string): Promise<{
+        imageUrl: string;
+        profileId: string;
+    }>;
     getAgentProfile(idOrWallet: string): Promise<AgentProfile>;
     /**
      * The agent directory (`GET /api/v1/agent/directory`, no credential): every agent its owner

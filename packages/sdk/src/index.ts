@@ -68,6 +68,8 @@ export type {
   ListWalletsResult,
   MarketState,
   MigrationStatus,
+  OwnAgentProfile,
+  OwnAgentProfilePatch,
   PerpsAccountStatus,
   PerpsActionResult,
   PerpsBuild,

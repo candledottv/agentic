@@ -29,7 +29,7 @@ Signing and funding stay with the key owner's own wallet. Candle never holds it.
 
 ## The tool surface
 
-Thirty-seven tools. Seven need no key at all, so a client can be pointed at the server and used before
+Thirty-eight tools in the current source; public page editing is unreleased until the next npm release. Seven need no key at all, so a client can be pointed at the server and used before
 anyone signs up for anything.
 
 **Find out what you can do**
@@ -40,6 +40,7 @@ anyone signs up for anything.
 | `candle_get_wallets` | yes | the embedded wallets this key spends from, one per chain |
 | `candle_get_profile_wallets` | yes | which linked wallets this profile may spend from. Read `walletScope` first: an empty list means every wallet under `all`, none under `selected` |
 | `candle_set_profile_wallets` | yes | replace that set. Omitting a wallet revokes its access; an empty list assigns none |
+| `candle_update_profile` | yes, eligible acting key | edit this agent's public page only when profileSelfEdit is allowed and no admin lock applies; Read and hosted Read cannot edit; 20 edits per profile/UTC day; name, slug and visibility stay owner-only |
 | `candle_get_profile_pnl` | yes | this profile's P&L: realized on its own fills, fees charged, and open positions at cost basis MARKED at Candle's current price (`unrealizedUsd`; `pnl.totalUsd` is realized net plus unrealized), with `chain` on each position and a per-chain split in `pnl.byChain`. Deposits and transfers are excluded; check `unvalued` and `truncated` before quoting it |
 | `candle_get_profile_trades` | yes | orders, actual fills, fees, timestamps and tx hashes. Includes failed trades, with `errorCode` saying why |
 | `candle_get_portfolio` | yes | what the account's embedded and TEE wallets hold on Solana and Hood, with prices. Needs `account:read`. Hood is in `hood`; a Hood price is keyed `hood:native` or `hood:<contract lowercased>`; unpriced is `null`, never zero |
@@ -168,7 +169,8 @@ is not `clean`.
 <prefix> --access ...` (device token); otherwise ask for the scope when the key is created. A scope
 such as `swap:write` is deliberately never granted by omission.
 
-**Reads are free, writes are not.** Every write is signed and paid for by the key owner's wallet.
+**Transaction writes have costs.** Transactions are signed and paid for by the key owner's wallet.
+Public-page edits consume the shared daily profile quota.
 Never describe a launch or trade to a user as costless.
 
 **Amounts are DECIMAL, not raw base units.** `candle_trade` takes `amount: "0.2"`, and

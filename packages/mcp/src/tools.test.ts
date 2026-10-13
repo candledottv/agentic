@@ -40,6 +40,7 @@ test("all registered tools are listed", () => {
     "candle_trade",
     "candle_transfer",
     "candle_unstake",
+    "candle_update_profile",
   ])
 })
 
@@ -283,7 +284,7 @@ describe("registerTools: CANDLE_MCP_TOOLS filtering", () => {
   test("no allowlist: all eight tools register", () => {
     const { server, registered } = fakeServer()
     registerTools(server, {})
-    expect(new Set(registered)).toEqual(new Set(TOOL_NAMES))
+    expect(new Set(registered)).toEqual(new Set(TOOL_NAMES.filter((name) => name !== "candle_update_profile")))
   })
 
   test("an allowlist registers exactly the named tools", () => {

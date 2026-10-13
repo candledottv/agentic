@@ -1119,6 +1119,28 @@ class CandleClient {
   async verify(chain, mint) {
     return this.requestJson("GET", `/api/v1/verify/${chain}/${encodeURIComponent(mint)}`);
   }
+  async getOwnProfile() {
+    this.requireKey("getOwnProfile()");
+    return this.requestJson("GET", "/api/v1/agent/keys/self/public-profile");
+  }
+  async updateOwnProfile(patch) {
+    this.requireKey("updateOwnProfile()");
+    return this.requestJson("PATCH", "/api/v1/agent/keys/self/public-profile", patch);
+  }
+  async uploadProfileImage(kind, bytes, contentType) {
+    this.requireKey("uploadProfileImage()");
+    const form = new FormData;
+    form.set("kind", kind);
+    form.set("image", new Blob([bytes], { type: contentType }), "profile.image");
+    const headers = this.headers();
+    delete headers["Content-Type"];
+    const res = await this.fetchImpl(`${this.apiUrl}/api/v1/uploads/agent-profile-image`, {
+      method: "POST",
+      headers,
+      body: form
+    });
+    return this.parseResponse(res);
+  }
   async getAgentProfile(idOrWallet) {
     const body = await this.requestJson("GET", `/api/v1/users/${encodeURIComponent(idOrWallet)}/agent`);
     return body.agent;
