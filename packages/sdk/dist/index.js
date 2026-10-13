@@ -186,6 +186,42 @@ class TradeLandedFeeLegError extends Error {
       this.feeTxHash = args.feeTxHash;
   }
 }
+function selfLaunchOutcomeMessage(args) {
+  const reason = args.cause instanceof Error ? args.cause.message : String(args.cause);
+  const feeTxHash = "feeTxHash" in args ? args.feeTxHash : undefined;
+  const head = `launch executed; ${args.step === "confirm" ? "confirmation" : "fee"} incomplete: the Hood curve is on chain ` + `(createCurveTxHash ${args.createCurveTxHash}, clientLaunchId ${args.clientLaunchId}), and a later step ` + `failed (${reason}). Do NOT call selfLaunch() or buildSelfLaunch() again for this attempt, under this id ` + `or a new one: a rebuild can create a second curve. Keep the id and every hash on this error.`;
+  const confirmWith = (fee) => `confirmSelfLaunch({ clientLaunchId, signature: createCurveTxHash${fee} }) for clientLaunchId ${args.clientLaunchId}`;
+  if (args.step === "confirm") {
+    const fee = args.feeOutcome === "landed" ? `The fee transfer landed (feeTxHash ${feeTxHash}).` : "This build had no fee transfer, so none is owed.";
+    return `${head} ${fee} The confirm call was refused or its answer was lost, so Candle may or may not have ` + `recorded the launch: read getLaunchJob(clientLaunchId). If the job is not confirmed and this error's ` + `cause allows it, call ${confirmWith(args.feeOutcome === "landed" ? ", feeTxHash" : "")} with these same ` + `hashes. Nothing needs signing or sending.`;
+  }
+  if (args.feeOutcome === "unknown") {
+    return `${head} The fee transfer MAY have paid: its outcome is unknown. Do NOT pay it again. ` + (feeTxHash ? `Check feeTxHash ${feeTxHash} and the payer wallet's history; a hash alone does not prove payment. ` : "Its hash is not known: reconcile the payer wallet's transactions before any payment decision. ") + `Once that exact fee is verified successful, call ${confirmWith(", feeTxHash")}.`;
+  }
+  const proof = args.feeOutcome === "reverted" ? `its receipt reverted${feeTxHash ? ` (feeTxHash ${feeTxHash})` : ""}` : `it was not broadcast${feeTxHash ? ` (feeTxHash ${feeTxHash} names the refused transaction, not a payment)` : ""}`;
+  return `${head} The fee transfer did NOT pay: ${proof}. The launch is not recorded without it. Pay only the ` + `missing fee, to the original build's treasury in its quote asset and raw amount, then call ` + `${confirmWith(", feeTxHash")} with the successful fee hash.`;
+}
+
+class SelfLaunchOutcomeError extends Error {
+  name = "SelfLaunchOutcomeError";
+  chain = "hood";
+  clientLaunchId;
+  createCurveTxHash;
+  stage = "executed";
+  step;
+  feeOutcome;
+  cause;
+  constructor(args) {
+    super(selfLaunchOutcomeMessage(args), { cause: args.cause });
+    this.clientLaunchId = args.clientLaunchId;
+    this.createCurveTxHash = args.createCurveTxHash;
+    this.step = args.step;
+    this.feeOutcome = args.feeOutcome;
+    if ("feeTxHash" in args && args.feeTxHash !== undefined)
+      this.feeTxHash = args.feeTxHash;
+    this.cause = args.cause;
+  }
+}
 function isSolanaRpcErrorData(data) {
   if (typeof data !== "object" || data === null)
     return false;
@@ -235,7 +271,7 @@ function definedIds(ids) {
   };
 }
 function operationIds(error) {
-  if (error instanceof CandleApiError || error instanceof JsonRpcError || error instanceof TradeLandedFeeLegError || error instanceof TradeLegOutcomeError || error instanceof TradeLandedUnconfirmedError || error instanceof CandleOperationError) {
+  if (error instanceof CandleApiError || error instanceof JsonRpcError || error instanceof TradeLandedFeeLegError || error instanceof TradeLegOutcomeError || error instanceof TradeLandedUnconfirmedError || error instanceof SelfLaunchOutcomeError || error instanceof CandleOperationError) {
     return definedIds(error);
   }
   return {};
@@ -243,7 +279,7 @@ function operationIds(error) {
 function withOperationIds(error, ids, flow) {
   if (error instanceof CandleApiError || error instanceof JsonRpcError)
     return Object.assign(error, definedIds(ids));
-  if (error instanceof TradeLandedFeeLegError || error instanceof TradeLegOutcomeError || error instanceof TradeLandedUnconfirmedError)
+  if (error instanceof TradeLandedFeeLegError || error instanceof TradeLegOutcomeError || error instanceof TradeLandedUnconfirmedError || error instanceof SelfLaunchOutcomeError)
     return error;
   if (error instanceof CandleOperationError) {
     return new CandleOperationError({ cause: error.cause, ids: { ...operationIds(error), ...definedIds(ids) }, flow });
@@ -1608,7 +1644,7 @@ class CandleClient {
     const built = await this.postSelfLaunchBuild(body, op);
     if (typeof built.transaction === "string") {
       let unsignedTransactionBase64 = built.transaction;
-      let clientLaunchId = built.clientLaunchId;
+      let clientLaunchId2 = built.clientLaunchId;
       let signed;
       for (let attempt = 0;attempt <= MAX_BLOCKHASH_REBUILDS; attempt++) {
         if (signed?.forTransaction !== unsignedTransactionBase64) {
@@ -1622,7 +1658,7 @@ class CandleClient {
         }
         try {
           const signature = await this.broadcastSignedTransaction("solana", signed.signedTransaction, signed.encoding);
-          return this.confirmSelfLaunch({ clientLaunchId, signature });
+          return this.confirmSelfLaunch({ clientLaunchId: clientLaunchId2, signature });
         } catch (error) {
           if (!isBlockhashExpiry(error))
             throw error;
@@ -1638,14 +1674,14 @@ class CandleClient {
             if (reason === "prior_attempt_on_chain") {
               const signature = solanaSignedTxSignature(signed.signedTransaction, signed.encoding);
               if (signature)
-                return this.confirmSelfLaunch({ clientLaunchId, signature });
+                return this.confirmSelfLaunch({ clientLaunchId: clientLaunchId2, signature });
             }
             throw buildError;
           }
           if (typeof rebuilt.transaction !== "string")
             throw error;
           unsignedTransactionBase64 = rebuilt.transaction;
-          clientLaunchId = rebuilt.clientLaunchId;
+          clientLaunchId2 = rebuilt.clientLaunchId;
         }
       }
       throw new Error("selfLaunch(): blockhash-rebuild loop exited without returning or throwing");
@@ -1671,26 +1707,41 @@ class CandleClient {
       linkedWalletId: body.linkedWalletId,
       privyWalletId
     });
+    const clientLaunchId = built.clientLaunchId;
     let feeTxHash;
     if (hoodBuilt.feeTransfer) {
-      feeTxHash = await this.signBroadcastAndWaitEvmLeg({
-        rpc,
-        from,
-        to: hoodBuilt.feeTransfer.to,
-        data: hoodBuilt.feeTransfer.data,
-        valueDecimal: hoodBuilt.feeTransfer.value,
-        nonce: baseNonce + 1,
-        chainId,
-        feeData,
-        linkedWalletId: body.linkedWalletId,
-        privyWalletId
+      try {
+        feeTxHash = await this.signBroadcastAndWaitEvmLeg({
+          rpc,
+          from,
+          to: hoodBuilt.feeTransfer.to,
+          data: hoodBuilt.feeTransfer.data,
+          valueDecimal: hoodBuilt.feeTransfer.value,
+          nonce: baseNonce + 1,
+          chainId,
+          feeData,
+          linkedWalletId: body.linkedWalletId,
+          privyWalletId
+        }, { surfaceLegOutcome: true });
+      } catch (err) {
+        throw selfLaunchFeeLegError({ clientLaunchId, createCurveTxHash, err });
+      }
+    }
+    try {
+      return await this.confirmSelfLaunch({
+        clientLaunchId,
+        signature: createCurveTxHash,
+        ...feeTxHash ? { feeTxHash } : {}
+      });
+    } catch (cause) {
+      throw new SelfLaunchOutcomeError({
+        clientLaunchId,
+        createCurveTxHash,
+        step: "confirm",
+        ...feeTxHash ? { feeOutcome: "landed", feeTxHash } : { feeOutcome: "not-required" },
+        cause
       });
     }
-    return this.confirmSelfLaunch({
-      clientLaunchId: built.clientLaunchId,
-      signature: createCurveTxHash,
-      ...feeTxHash ? { feeTxHash } : {}
-    });
   }
   async buildAtomicLaunch(req) {
     this.requireKey("buildAtomicLaunch()");
@@ -2179,6 +2230,17 @@ function tradeLandedFeeLegError(args) {
     feeOutcome: "not-broadcast"
   });
 }
+function selfLaunchFeeLegError(args) {
+  const outcome = args.err instanceof EvmLegOutcome ? args.err : undefined;
+  return new SelfLaunchOutcomeError({
+    clientLaunchId: args.clientLaunchId,
+    createCurveTxHash: args.createCurveTxHash,
+    step: "feeTransfer",
+    feeOutcome: outcome?.kind ?? "not-broadcast",
+    ...outcome?.txHash !== undefined ? { feeTxHash: outcome.txHash } : {},
+    cause: outcome ? outcome.cause : args.err
+  });
+}
 function solanaSignedTxSignature(signedTransaction, encoding) {
   const enc = encoding.toLowerCase();
   let bytes;
@@ -2611,6 +2673,7 @@ export {
   TradeLegOutcomeError,
   TradeLandedUnconfirmedError,
   TradeLandedFeeLegError,
+  SelfLaunchOutcomeError,
   PLAN_CAPABILITY_NOTE,
   PLAN_CAPABILITY_LABELS,
   KeychainSecretStore,

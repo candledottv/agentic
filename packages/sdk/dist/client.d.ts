@@ -3079,6 +3079,19 @@ export declare class CandleClient {
      * On Hood the id is necessary and NOT sufficient: a rebuild under the same id builds a new
      * curve, so calling `selfLaunch()` again can create and broadcast a second one. If the job is
      * not `confirmed`, check the wallet's recent transactions before sending again.
+     *
+     * ## Hood: a failure after the curve landed
+     *
+     * Once the create-curve transaction is mined successfully, a failure of the fee transfer or of
+     * the confirm call throws a `SelfLaunchOutcomeError`, not a `CandleOperationError` or a bare
+     * `CandleApiError`. It carries `clientLaunchId`, `createCurveTxHash`, `step`
+     * (`"feeTransfer"` or `"confirm"`), `feeOutcome` and every fee hash this call learned
+     * (`feeTxHash`); the original error is its `cause`. The curve exists: never call `selfLaunch()`
+     * or `buildSelfLaunch()` again for that attempt, under the same id or a new one. Recover with
+     * `confirmSelfLaunch({ clientLaunchId, signature: createCurveTxHash, feeTxHash? })` as the
+     * error's doc describes for each `feeOutcome`. This method sends nothing a second time and
+     * does not pay a fee again. An error from before the create-curve receipt is unchanged,
+     * including a create-curve broadcast whose answer was lost: that case keeps no hash.
      */
     selfLaunch(req: SelfLaunchRequest): Promise<ConfirmSelfLaunchResult>;
     /** selfLaunch()'s steps. Every error leaves through selfLaunch()'s runOperation(), which adds the id. */
@@ -3201,9 +3214,10 @@ export declare class CandleClient {
      * their legs strictly sequentially -- see trade()'s jsdoc for why a later leg's `estimateGas`
      * depends on an earlier leg already being mined.
      *
-     * `surfaceLegOutcome` is the fee leg only. A receipt revert, a receipt read that fails, a
-     * receipt timeout, or a broadcast whose result is ambiguous then throws `EvmLegOutcome` with
-     * the hash once it is known. Every other caller gets the original error.
+     * `surfaceLegOutcome` is every Hood trade leg and selfLaunch()'s fee leg. A receipt revert, a
+     * receipt read that fails, a receipt timeout, or a broadcast that was refused or whose result
+     * is ambiguous then throws `EvmLegOutcome` with the hash once it is known. Every other caller
+     * (selfLaunch()'s create-curve leg) gets the original error.
      */
     private signBroadcastAndWaitEvmLeg;
     private broadcastAndWaitEvmLeg;

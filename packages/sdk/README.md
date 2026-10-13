@@ -278,6 +278,23 @@ id builds and broadcasts a new transaction.
 Inside one `selfLaunch()` call, a blockhash error from your Solana RPC is retried with the bytes
 already signed. They are signed again only when the server returns a different transaction.
 
+`selfLaunch()` on Hood throws a `SelfLaunchOutcomeError` when the create-curve transaction was
+mined and the fee transfer or the confirm then failed. The curve exists: never call
+`selfLaunch()` or `buildSelfLaunch()` again for that attempt, under the same id or a new one.
+The error keeps `clientLaunchId`, `createCurveTxHash`, `step` (`feeTransfer` or `confirm`),
+`feeOutcome`, every known `feeTxHash`, and the original error as `cause`. `stage: "executed"`
+means the curve landed, not that Candle recorded the launch.
+
+| `step`, `feeOutcome` | Recovery |
+| --- | --- |
+| `confirm`, `landed` or `not-required` | Read `getLaunchJob(id)`; the answer may have been lost after booking. If it is not `confirmed` and `cause` allows it, call `confirmSelfLaunch({ clientLaunchId, signature: createCurveTxHash, feeTxHash? })` with the same hashes. |
+| `feeTransfer`, `unknown` | The fee may have paid. Do not pay again. Check `feeTxHash` and the payer's history, then confirm with that hash once the fee is verified. |
+| `feeTransfer`, `not-broadcast` or `reverted` | The fee did not pay. Pay only the missing fee of the original build, then confirm with the create-curve hash and the successful fee hash. |
+
+An error from before the create-curve receipt is unchanged and keeps no hash.
+`operationIds()` reads the id from a `SelfLaunchOutcomeError`, and it is never wrapped in a
+`CandleOperationError`.
+
 ### `launchAtomic()`
 
 `launchAtomic()` returns `timeout` and `failed` as values, not errors, and each carries

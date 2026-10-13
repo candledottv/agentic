@@ -48,6 +48,7 @@ import {
   JsonRpcError,
   type OperationFlow,
   type OperationIds,
+  SelfLaunchOutcomeError,
   type SignedTradeLeg,
   TradeLandedFeeLegError,
   TradeLandedUnconfirmedError,
@@ -4124,6 +4125,19 @@ export class CandleClient {
    * On Hood the id is necessary and NOT sufficient: a rebuild under the same id builds a new
    * curve, so calling `selfLaunch()` again can create and broadcast a second one. If the job is
    * not `confirmed`, check the wallet's recent transactions before sending again.
+   *
+   * ## Hood: a failure after the curve landed
+   *
+   * Once the create-curve transaction is mined successfully, a failure of the fee transfer or of
+   * the confirm call throws a `SelfLaunchOutcomeError`, not a `CandleOperationError` or a bare
+   * `CandleApiError`. It carries `clientLaunchId`, `createCurveTxHash`, `step`
+   * (`"feeTransfer"` or `"confirm"`), `feeOutcome` and every fee hash this call learned
+   * (`feeTxHash`); the original error is its `cause`. The curve exists: never call `selfLaunch()`
+   * or `buildSelfLaunch()` again for that attempt, under the same id or a new one. Recover with
+   * `confirmSelfLaunch({ clientLaunchId, signature: createCurveTxHash, feeTxHash? })` as the
+   * error's doc describes for each `feeOutcome`. This method sends nothing a second time and
+   * does not pay a fee again. An error from before the create-curve receipt is unchanged,
+   * including a create-curve broadcast whose answer was lost: that case keeps no hash.
    */
   async selfLaunch(req: SelfLaunchRequest): Promise<ConfirmSelfLaunchResult> {
     const { privyWalletId, ...launchReq } = req
@@ -4238,27 +4252,49 @@ export class CandleClient {
       privyWalletId,
     })
 
+    // The curve is on chain from here, so a failure below must not read as "nothing happened":
+    // it leaves as a SelfLaunchOutcomeError carrying the id and every hash this call learned.
+    // Nothing below signs, sends or builds a second time.
+    const clientLaunchId = built.clientLaunchId
     let feeTxHash: string | undefined
     if (hoodBuilt.feeTransfer) {
-      feeTxHash = await this.signBroadcastAndWaitEvmLeg({
-        rpc,
-        from,
-        to: hoodBuilt.feeTransfer.to,
-        data: hoodBuilt.feeTransfer.data,
-        valueDecimal: hoodBuilt.feeTransfer.value,
-        nonce: baseNonce + 1,
-        chainId,
-        feeData,
-        linkedWalletId: body.linkedWalletId,
-        privyWalletId,
-      })
+      try {
+        feeTxHash = await this.signBroadcastAndWaitEvmLeg(
+          {
+            rpc,
+            from,
+            to: hoodBuilt.feeTransfer.to,
+            data: hoodBuilt.feeTransfer.data,
+            valueDecimal: hoodBuilt.feeTransfer.value,
+            nonce: baseNonce + 1,
+            chainId,
+            feeData,
+            linkedWalletId: body.linkedWalletId,
+            privyWalletId,
+          },
+          { surfaceLegOutcome: true },
+        )
+      } catch (err) {
+        throw selfLaunchFeeLegError({ clientLaunchId, createCurveTxHash, err })
+      }
     }
 
-    return this.confirmSelfLaunch({
-      clientLaunchId: built.clientLaunchId,
-      signature: createCurveTxHash,
-      ...(feeTxHash ? { feeTxHash } : {}),
-    })
+    // Awaited inside the try: a returned promise would reject past this catch.
+    try {
+      return await this.confirmSelfLaunch({
+        clientLaunchId,
+        signature: createCurveTxHash,
+        ...(feeTxHash ? { feeTxHash } : {}),
+      })
+    } catch (cause) {
+      throw new SelfLaunchOutcomeError({
+        clientLaunchId,
+        createCurveTxHash,
+        step: "confirm",
+        ...(feeTxHash ? { feeOutcome: "landed", feeTxHash } : { feeOutcome: "not-required" }),
+        cause,
+      })
+    }
   }
 
   // -- atomic launch (a launch plus 1-4 first buys, landed as one Jito bundle) ----------------
@@ -4487,9 +4523,10 @@ export class CandleClient {
    * their legs strictly sequentially -- see trade()'s jsdoc for why a later leg's `estimateGas`
    * depends on an earlier leg already being mined.
    *
-   * `surfaceLegOutcome` is the fee leg only. A receipt revert, a receipt read that fails, a
-   * receipt timeout, or a broadcast whose result is ambiguous then throws `EvmLegOutcome` with
-   * the hash once it is known. Every other caller gets the original error.
+   * `surfaceLegOutcome` is every Hood trade leg and selfLaunch()'s fee leg. A receipt revert, a
+   * receipt read that fails, a receipt timeout, or a broadcast that was refused or whose result
+   * is ambiguous then throws `EvmLegOutcome` with the hash once it is known. Every other caller
+   * (selfLaunch()'s create-curve leg) gets the original error.
    */
   private async signBroadcastAndWaitEvmLeg(
     params: {
@@ -5069,6 +5106,27 @@ function tradeLandedFeeLegError(args: {
     tradeTxHash: args.tradeTxHash,
     cause: args.err,
     feeOutcome: "not-broadcast",
+  })
+}
+
+/**
+ * selfLaunch()'s Hood fee leg failed after the curve landed. Unlike a trade's fee error, a
+ * refused broadcast keeps its signed hash here: the launch error retains every known fee hash.
+ * An error from before the broadcast (gas estimation, assembly, signing) has no hash to keep.
+ */
+function selfLaunchFeeLegError(args: {
+  clientLaunchId: string
+  createCurveTxHash: string
+  err: unknown
+}): SelfLaunchOutcomeError {
+  const outcome = args.err instanceof EvmLegOutcome ? args.err : undefined
+  return new SelfLaunchOutcomeError({
+    clientLaunchId: args.clientLaunchId,
+    createCurveTxHash: args.createCurveTxHash,
+    step: "feeTransfer",
+    feeOutcome: outcome?.kind ?? "not-broadcast",
+    ...(outcome?.txHash !== undefined ? { feeTxHash: outcome.txHash } : {}),
+    cause: outcome ? outcome.cause : args.err,
   })
 }
 

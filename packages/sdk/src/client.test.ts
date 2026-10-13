@@ -35,12 +35,15 @@ import {
 
 import {
   CandleApiError,
+  CandleOperationError,
   JsonRpcError,
   operationIds,
+  SelfLaunchOutcomeError,
   TradeLandedFeeLegError,
   TradeLandedUnconfirmedError,
   TradeLegOutcomeError,
 } from "./errors"
+import * as packageRoot from "./index"
 import { InMemorySecretStore, type SecretStore } from "./secret-store"
 import { generateSignerKeypair } from "./wallet-import"
 
@@ -2896,6 +2899,470 @@ describe("linked-wallet signing relay + one-shot flows", () => {
         }),
       ).rejects.toThrow(/evmRpcUrl/)
       expect(calls).toHaveLength(1)
+    })
+
+    // BE-1412 (spec 2026-10-13-sdk-hood-self-launch-outcome-design.md, tests A1 to A9). Every
+    // case drives the public selfLaunch() promise, so a missing await or an operation wrapper
+    // around the typed error fails here.
+    describe("Hood: a failure after the curve landed keeps the id and every hash", () => {
+      const BUILD_URL = "https://api.test/api/v1/launch/self/build"
+      const CONFIRM_URL = "https://api.test/api/v1/launch/self/confirm"
+      const CREATE_CURVE_HASH = "0xCreateCurveTxHash"
+      const FEE_HASH = "0xFeeTxHash"
+      /** keccak256 of the relay's signed bytes: the hash a lost or refused send still names. */
+      const SIGNED_FEE_HASH = `0x${Buffer.from(keccak_256(Buffer.from(SIGN_RELAY_OK.signedTransaction, "base64"))).toString("hex")}`
+      const CONFIRMED = { ...LAUNCH_OK, chain: "hood", signature: CREATE_CURVE_HASH }
+
+      const rpcError = (message: string, code = -32000) =>
+        json(200, { jsonrpc: "2.0", id: 1, error: { code, message } })
+      /** The fee leg's estimateGas and sign, both answered: what comes next is the send. */
+      const feeSigned = (): Response[] => [evmRpcOk("0x186a0"), json(200, SIGN_RELAY_OK)]
+
+      function counts(calls: RecordedRequest[]) {
+        const rpcMethods = calls
+          .filter((c) => c.url === EVM_RPC)
+          .map((c) => (JSON.parse(String(c.body)) as { method: string }).method)
+        return {
+          builds: calls.filter((c) => c.url === BUILD_URL).length,
+          signs: calls.filter((c) => c.url === SIGN_RELAY_URL).length,
+          sends: rpcMethods.filter((m) => m === "eth_sendRawTransaction").length,
+          confirms: calls.filter((c) => c.url === CONFIRM_URL).length,
+        }
+      }
+
+      /** Runs selfLaunch() through a mined create-curve leg, then `afterCreateCurve`. */
+      async function launchPastCreateCurve(
+        build: typeof BUILD_SELF_LAUNCH_HOOD | typeof BUILD_SELF_LAUNCH_HOOD_WITH_FEE,
+        afterCreateCurve: (Response | Error)[],
+      ) {
+        const store = await keyedSecretStore()
+        const { client, calls } = makeClient(
+          { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC },
+          [json(200, build), ...evmSetupResponses(), ...evmLegResponses(CREATE_CURVE_HASH), ...afterCreateCurve],
+        )
+        const error: unknown = await client
+          .selfLaunch({
+            ...LAUNCH_REQ,
+            chain: "hood",
+            clientLaunchId: build.clientLaunchId,
+            linkedWalletId: LINKED_WALLET_ID,
+            privyWalletId: PRIVY_WALLET_ID,
+          })
+          .then(
+            () => null,
+            (e: unknown) => e,
+          )
+        return { client, calls, error }
+      }
+
+      /** The typed error, thrown directly: never inside a CandleOperationError. */
+      function outcomeError(error: unknown, label = ""): SelfLaunchOutcomeError {
+        expect(error, label).toBeInstanceOf(SelfLaunchOutcomeError)
+        expect(error, label).not.toBeInstanceOf(CandleOperationError)
+        const typed = error as SelfLaunchOutcomeError
+        expect(typed.name, label).toBe("SelfLaunchOutcomeError")
+        expect(typed.chain, label).toBe("hood")
+        expect(typed.stage, label).toBe("executed")
+        expect(typed.createCurveTxHash, label).toBe(CREATE_CURVE_HASH)
+        expect("retryable" in typed, label).toBe(false)
+        expect(typed.message, label).toContain("the Hood curve is on chain")
+        expect(typed.message, label).toContain(CREATE_CURVE_HASH)
+        expect(typed.message, label).toContain("Do NOT call selfLaunch() or buildSelfLaunch() again")
+        return typed
+      }
+
+      test("A1: fee estimation or fee signing rejects: not-broadcast, no hash, no confirm, no second send", async () => {
+        const cases: [string, (Response | Error)[], (cause: unknown) => void][] = [
+          [
+            "estimateGas",
+            [rpcError("insufficient funds for fee")],
+            (cause) => {
+              expect(cause).toBeInstanceOf(JsonRpcError)
+              expect((cause as JsonRpcError).code).toBe(-32000)
+            },
+          ],
+          [
+            "sign relay",
+            [evmRpcOk("0x186a0"), envelope(403, "SIGN_REFUSED", { message: "the relay refused this transaction" })],
+            (cause) => {
+              expect(cause).toBeInstanceOf(CandleApiError)
+              expect(cause).toMatchObject({ code: "SIGN_REFUSED", status: 403, retryable: false })
+            },
+          ],
+        ]
+        for (const [label, feeResponses, expectCause] of cases) {
+          const { calls, error } = await launchPastCreateCurve(BUILD_SELF_LAUNCH_HOOD_WITH_FEE, feeResponses)
+          const typed = outcomeError(error, label)
+          expect(typed, label).toMatchObject({
+            clientLaunchId: "run-linked-3",
+            step: "feeTransfer",
+            feeOutcome: "not-broadcast",
+          })
+          expect("feeTxHash" in typed, label).toBe(false)
+          expectCause(typed.cause)
+          expect(typed.message, label).toContain("did NOT pay")
+          expect(typed.message, label).not.toContain("MAY have paid")
+          // Only the create-curve send went out, and the fee was signed at most once.
+          expect(counts(calls), label).toEqual({
+            builds: 1,
+            signs: label === "sign relay" ? 2 : 1,
+            sends: 1,
+            confirms: 0,
+          })
+        }
+      })
+
+      test("A2: a refused fee send keeps the signed hash as not-broadcast; a reverted receipt keeps its hash as reverted", async () => {
+        for (const message of [
+          "insufficient funds for gas * price + value",
+          "intrinsic gas too low",
+          "invalid sender",
+        ]) {
+          const { calls, error } = await launchPastCreateCurve(BUILD_SELF_LAUNCH_HOOD_WITH_FEE, [
+            ...feeSigned(),
+            rpcError(message),
+          ])
+          const typed = outcomeError(error, message)
+          expect(typed, message).toMatchObject({
+            clientLaunchId: "run-linked-3",
+            step: "feeTransfer",
+            feeOutcome: "not-broadcast",
+            feeTxHash: SIGNED_FEE_HASH,
+          })
+          expect(typed.cause, message).toBeInstanceOf(JsonRpcError)
+          expect(typed.message, message).toContain("did NOT pay")
+          expect(typed.message, message).toContain("names the refused transaction, not a payment")
+          expect(counts(calls), message).toEqual({ builds: 1, signs: 2, sends: 2, confirms: 0 })
+        }
+
+        const { calls, error } = await launchPastCreateCurve(BUILD_SELF_LAUNCH_HOOD_WITH_FEE, [
+          ...feeSigned(),
+          evmRpcOk(FEE_HASH),
+          evmRpcOk({ status: "0x0" }),
+        ])
+        const typed = outcomeError(error)
+        expect(typed).toMatchObject({ step: "feeTransfer", feeOutcome: "reverted", feeTxHash: FEE_HASH })
+        expect(typed.message).toContain("did NOT pay")
+        expect(typed.message).toContain("its receipt reverted")
+        expect(typed.message).not.toContain("MAY have paid")
+        expect(counts(calls)).toEqual({ builds: 1, signs: 2, sends: 2, confirms: 0 })
+      })
+
+      test("A3: an ambiguous fee send, a failed receipt read and a receipt timeout are unknown, with the hash, and are never resent or confirmed", async () => {
+        const lost = new TypeError("fetch failed: connection closed after send")
+        const cases: [string, (Response | Error)[], string][] = [
+          ["already known", [...feeSigned(), rpcError("already known")], SIGNED_FEE_HASH],
+          ["nonce too low", [...feeSigned(), rpcError("nonce too low")], SIGNED_FEE_HASH],
+          ["internal error", [...feeSigned(), rpcError("Internal error", -32603)], SIGNED_FEE_HASH],
+          ["lost transport response", [...feeSigned(), lost], SIGNED_FEE_HASH],
+          ["proxy HTTP failure", [...feeSigned(), new Response("Bad Gateway", { status: 502 })], SIGNED_FEE_HASH],
+          ["receipt read rejects", [...feeSigned(), evmRpcOk(FEE_HASH), rpcError("header not found")], FEE_HASH],
+          ["receipt timeout", [...feeSigned(), evmRpcOk(FEE_HASH), evmRpcOk(null)], FEE_HASH],
+        ]
+        for (const [label, feeResponses, feeHash] of cases) {
+          if (label === "receipt timeout") __setEvmReceiptWaitForTest({ timeoutMs: 0, pollMs: 1 })
+          try {
+            const { calls, error } = await launchPastCreateCurve(BUILD_SELF_LAUNCH_HOOD_WITH_FEE, feeResponses)
+            const typed = outcomeError(error, label)
+            expect(typed, label).toMatchObject({
+              clientLaunchId: "run-linked-3",
+              step: "feeTransfer",
+              feeOutcome: "unknown",
+              feeTxHash: feeHash,
+            })
+            if (label === "lost transport response") expect(typed.cause).toBe(lost)
+            else expect(typed.cause, label).toBeInstanceOf(Error)
+            expect(typed.message, label).toContain("MAY have paid")
+            expect(typed.message, label).toContain("Do NOT pay it again")
+            expect(typed.message, label).toContain(feeHash)
+            expect(typed.message, label).not.toContain("did NOT pay")
+            // The fee was sent once, with the bytes the relay signed, and nothing followed it
+            // but the receipt read: no resend, no confirm, no rebuild.
+            expect(counts(calls), label).toEqual({ builds: 1, signs: 2, sends: 2, confirms: 0 })
+            const sends = calls.filter(
+              (c) => c.url === EVM_RPC && JSON.parse(String(c.body)).method === "eth_sendRawTransaction",
+            )
+            expect(JSON.parse(String(sends[1]?.body)).params, label).toEqual([SIGN_RELAY_OK.signedTransaction])
+          } finally {
+            __setEvmReceiptWaitForTest(null)
+          }
+        }
+      })
+
+      test("A4: the fee landed and confirm's fetch rejects: both hashes, step confirm, landed, the original cause", async () => {
+        const lost = new TypeError("fetch failed: socket hang up")
+        const { calls, error } = await launchPastCreateCurve(BUILD_SELF_LAUNCH_HOOD_WITH_FEE, [
+          ...evmLegResponses(FEE_HASH),
+          lost,
+        ])
+        const typed = outcomeError(error)
+        expect(typed).toMatchObject({
+          clientLaunchId: "run-linked-3",
+          step: "confirm",
+          feeOutcome: "landed",
+          feeTxHash: FEE_HASH,
+        })
+        expect(typed.cause).toBe(lost)
+        // The answer may have been lost after booking: the message sends the caller to the job
+        // read and the same hashes, and never says the launch is unrecorded.
+        expect(typed.message).toContain("may or may not have recorded the launch")
+        expect(typed.message).toContain("getLaunchJob(clientLaunchId)")
+        expect(typed.message).toContain(`The fee transfer landed (feeTxHash ${FEE_HASH})`)
+        expect(typed.message).not.toContain("is not recorded")
+        expect(counts(calls)).toEqual({ builds: 1, signs: 2, sends: 2, confirms: 1 })
+        expect(calls.at(-1)?.url).toBe(CONFIRM_URL)
+        expect(JSON.parse(String(calls.at(-1)?.body))).toEqual({
+          clientLaunchId: "run-linked-3",
+          signature: CREATE_CURVE_HASH,
+          feeTxHash: FEE_HASH,
+        })
+      })
+
+      test("A4: a confirm rejection that is not an Error is kept as the cause, untouched", async () => {
+        const store = await keyedSecretStore()
+        const queued = fakeFetch([
+          json(200, BUILD_SELF_LAUNCH_HOOD_WITH_FEE),
+          ...evmSetupResponses(),
+          ...evmLegResponses(CREATE_CURVE_HASH),
+          ...evmLegResponses(FEE_HASH),
+        ])
+        const rejection = { reason: "aborted by the host" }
+        const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+          if (String(input) === CONFIRM_URL) throw rejection
+          return queued.impl(input as never, init)
+        }) as unknown as typeof fetch
+        const client = new CandleClient({
+          apiUrl: "https://api.test",
+          fetch: fetchImpl,
+          ...KEYED,
+          secretStore: store,
+          privyAppId: PRIVY_APP_ID,
+          evmRpcUrl: EVM_RPC,
+        })
+        const error: unknown = await client
+          .selfLaunch({
+            ...LAUNCH_REQ,
+            chain: "hood",
+            clientLaunchId: "run-linked-3",
+            linkedWalletId: LINKED_WALLET_ID,
+            privyWalletId: PRIVY_WALLET_ID,
+          })
+          .then(
+            () => null,
+            (e: unknown) => e,
+          )
+        const typed = outcomeError(error)
+        expect(typed).toMatchObject({ step: "confirm", feeOutcome: "landed", feeTxHash: FEE_HASH })
+        expect(typed.cause).toBe(rejection)
+      })
+
+      test("A5: a structured confirm refusal or a malformed confirm answer keeps the same fields, and the API details stay on cause", async () => {
+        const refusals: [string, Response, Record<string, unknown>][] = [
+          [
+            "FEE_LEG_MISSING",
+            envelope(402, "FEE_LEG_MISSING", { message: "the fee transfer could not be verified" }),
+            { code: "FEE_LEG_MISSING", status: 402, retryable: false },
+          ],
+          [
+            "JOB_NOT_FOUND",
+            envelope(404, "JOB_NOT_FOUND", { message: "no such launch" }),
+            { code: "JOB_NOT_FOUND", status: 404, retryable: false },
+          ],
+          [
+            "retryable VALIDATION_FAILED",
+            envelope(400, "VALIDATION_FAILED", { retryable: true, message: "retry /confirm" }),
+            { code: "VALIDATION_FAILED", status: 400, retryable: true },
+          ],
+        ]
+        for (const [label, refusal, details] of refusals) {
+          const { calls, error } = await launchPastCreateCurve(BUILD_SELF_LAUNCH_HOOD_WITH_FEE, [
+            ...evmLegResponses(FEE_HASH),
+            refusal,
+          ])
+          const typed = outcomeError(error, label)
+          expect(typed, label).toMatchObject({
+            clientLaunchId: "run-linked-3",
+            step: "confirm",
+            feeOutcome: "landed",
+            feeTxHash: FEE_HASH,
+          })
+          expect(typed.cause, label).toBeInstanceOf(CandleApiError)
+          expect(typed.cause, label).toMatchObject(details)
+          expect(counts(calls), label).toEqual({ builds: 1, signs: 2, sends: 2, confirms: 1 })
+        }
+
+        const malformed = await launchPastCreateCurve(BUILD_SELF_LAUNCH_HOOD_WITH_FEE, [
+          ...evmLegResponses(FEE_HASH),
+          new Response("<html>gateway</html>", { status: 200 }),
+        ])
+        const typed = outcomeError(malformed.error)
+        expect(typed).toMatchObject({
+          clientLaunchId: "run-linked-3",
+          step: "confirm",
+          feeOutcome: "landed",
+          feeTxHash: FEE_HASH,
+        })
+        expect(typed.cause).toBeInstanceOf(SyntaxError)
+        expect(counts(malformed.calls)).toEqual({ builds: 1, signs: 2, sends: 2, confirms: 1 })
+      })
+
+      test("A6: a build with no fee leg whose confirm rejects is not-required, with no invented fee hash", async () => {
+        const refused = await launchPastCreateCurve(BUILD_SELF_LAUNCH_HOOD, [
+          envelope(503, "LAUNCH_FAILED", { retryable: true, message: "could not record the launch" }),
+        ])
+        const lost = new TypeError("fetch failed")
+        const dropped = await launchPastCreateCurve(BUILD_SELF_LAUNCH_HOOD, [lost])
+        for (const [label, { calls, error }] of [
+          ["refused", refused],
+          ["lost", dropped],
+        ] as const) {
+          const typed = outcomeError(error, label)
+          expect(typed, label).toMatchObject({
+            clientLaunchId: "run-linked-2",
+            step: "confirm",
+            feeOutcome: "not-required",
+          })
+          expect("feeTxHash" in typed, label).toBe(false)
+          expect(typed.message, label).toContain("This build had no fee transfer")
+          expect(typed.message, label).not.toContain("feeTxHash")
+          expect(counts(calls), label).toEqual({ builds: 1, signs: 1, sends: 1, confirms: 1 })
+          expect(JSON.parse(String(calls.at(-1)?.body)), label).toEqual({
+            clientLaunchId: "run-linked-2",
+            signature: CREATE_CURVE_HASH,
+          })
+        }
+        expect(refused.error).toMatchObject({ cause: { code: "LAUNCH_FAILED", status: 503, retryable: true } })
+        expect((dropped.error as SelfLaunchOutcomeError).cause).toBe(lost)
+      })
+
+      test("A7: a supplied and a generated id are both on the error, operationIds() reads them, and the package root exports the class", async () => {
+        // Supplied.
+        const supplied = await launchPastCreateCurve(BUILD_SELF_LAUNCH_HOOD_WITH_FEE, [rpcError("execution reverted")])
+        const mine = outcomeError(supplied.error)
+        expect(mine.clientLaunchId).toBe("run-linked-3")
+        expect(operationIds(mine)).toEqual({ clientLaunchId: "run-linked-3" })
+        expect(packageRoot.SelfLaunchOutcomeError).toBe(SelfLaunchOutcomeError)
+        expect(mine).toBeInstanceOf(packageRoot.SelfLaunchOutcomeError)
+        expect(packageRoot.operationIds(mine)).toEqual({ clientLaunchId: "run-linked-3" })
+
+        // Generated: the build answers with the id the request carried, as the server does.
+        const store = await keyedSecretStore()
+        const queued = fakeFetch([
+          ...evmSetupResponses(),
+          ...evmLegResponses(CREATE_CURVE_HASH),
+          ...evmLegResponses(FEE_HASH),
+          envelope(402, "FEE_LEG_MISSING"),
+        ])
+        let sentId = ""
+        const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+          if (String(input) !== BUILD_URL) return queued.impl(input as never, init)
+          sentId = (JSON.parse(String(init?.body)) as { clientLaunchId: string }).clientLaunchId
+          return json(200, { ...BUILD_SELF_LAUNCH_HOOD_WITH_FEE, clientLaunchId: sentId })
+        }) as unknown as typeof fetch
+        const client = new CandleClient({
+          apiUrl: "https://api.test",
+          fetch: fetchImpl,
+          ...KEYED,
+          secretStore: store,
+          privyAppId: PRIVY_APP_ID,
+          evmRpcUrl: EVM_RPC,
+        })
+        const { clientLaunchId: _omitted, ...withoutId } = LAUNCH_REQ
+        const error: unknown = await client
+          .selfLaunch({ ...withoutId, chain: "hood", linkedWalletId: LINKED_WALLET_ID, privyWalletId: PRIVY_WALLET_ID })
+          .then(
+            () => null,
+            (e: unknown) => e,
+          )
+        const generated = outcomeError(error)
+        expect(sentId).toMatch(/^sdk-/)
+        expect(generated.clientLaunchId).toBe(sentId)
+        expect(generated).toMatchObject({ step: "confirm", feeOutcome: "landed", feeTxHash: FEE_HASH })
+        expect(operationIds(generated)).toEqual({ clientLaunchId: sentId })
+        expect(generated).toBeInstanceOf(packageRoot.SelfLaunchOutcomeError)
+        const confirmCall = queued.calls.at(-1)
+        expect(confirmCall?.url).toBe(CONFIRM_URL)
+        expect(JSON.parse(String(confirmCall?.body))).toEqual({
+          clientLaunchId: sentId,
+          signature: CREATE_CURVE_HASH,
+          feeTxHash: FEE_HASH,
+        })
+      })
+
+      test("A8: a confirm that committed and lost its answer is recovered with the error's id and hashes, with no build, sign or send", async () => {
+        for (const build of [BUILD_SELF_LAUNCH_HOOD_WITH_FEE, BUILD_SELF_LAUNCH_HOOD]) {
+          const label = build.clientLaunchId
+          const hasFee = "feeTransfer" in build
+          const { client, calls, error } = await launchPastCreateCurve(build, [
+            ...(hasFee ? evmLegResponses(FEE_HASH) : []),
+            new TypeError("fetch failed: the response was lost"),
+            json(200, CONFIRMED), // the stored success, replayed
+          ])
+          const typed = outcomeError(error, label)
+          const before = counts(calls)
+          expect(before, label).toEqual({ builds: 1, signs: hasFee ? 2 : 1, sends: hasFee ? 2 : 1, confirms: 1 })
+
+          const replayed = await client.confirmSelfLaunch({
+            clientLaunchId: typed.clientLaunchId,
+            signature: typed.createCurveTxHash,
+            ...(typed.feeTxHash ? { feeTxHash: typed.feeTxHash } : {}),
+          })
+          expect(replayed, label).toEqual({ ...CONFIRMED, clientLaunchId: build.clientLaunchId } as never)
+          expect(counts(calls), label).toEqual({ ...before, confirms: 2 })
+          // The recovery is one request, and it repeats the body selfLaunch() itself sent.
+          expect(calls.at(-1)?.url, label).toBe(CONFIRM_URL)
+          expect(calls.at(-1)?.body, label).toEqual(calls.at(-2)?.body)
+          expect(JSON.parse(String(calls.at(-1)?.body)), label).toEqual({
+            clientLaunchId: build.clientLaunchId,
+            signature: CREATE_CURVE_HASH,
+            ...(hasFee ? { feeTxHash: FEE_HASH } : {}),
+          })
+        }
+      })
+
+      test("A9: an error before the create-curve receipt keeps its old shape and is never a SelfLaunchOutcomeError", async () => {
+        async function failCreateCurve(createCurveResponses: (Response | Error)[]) {
+          const store = await keyedSecretStore()
+          const { client, calls } = makeClient(
+            { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, evmRpcUrl: EVM_RPC },
+            [json(200, BUILD_SELF_LAUNCH_HOOD_WITH_FEE), ...evmSetupResponses(), ...createCurveResponses],
+          )
+          const error: unknown = await client
+            .selfLaunch({
+              ...LAUNCH_REQ,
+              chain: "hood",
+              clientLaunchId: "run-linked-3",
+              linkedWalletId: LINKED_WALLET_ID,
+              privyWalletId: PRIVY_WALLET_ID,
+            })
+            .then(
+              () => null,
+              (e: unknown) => e,
+            )
+          expect(error).not.toBeInstanceOf(SelfLaunchOutcomeError)
+          expect(operationIds(error)).toEqual({ clientLaunchId: "run-linked-3" })
+          expect(counts(calls).confirms).toBe(0)
+          return error
+        }
+
+        // Gas estimation: the JsonRpcError itself, with the id set on it.
+        const estimate = await failCreateCurve([rpcError("execution reverted")])
+        expect(estimate).toBeInstanceOf(JsonRpcError)
+
+        // A refused send: the same.
+        const refused = await failCreateCurve([...feeSigned(), rpcError("insufficient funds for gas * price + value")])
+        expect(refused).toBeInstanceOf(JsonRpcError)
+
+        // A reverted create-curve receipt and a lost create-curve send: wrapped as before, the
+        // original as cause. Keeping the hash of an ambiguous create-curve send is a later slice.
+        const reverted = await failCreateCurve([...feeSigned(), evmRpcOk("0xCreate"), evmRpcOk({ status: "0x0" })])
+        expect(reverted).toBeInstanceOf(CandleOperationError)
+        expect((reverted as Error).message).toContain("transaction reverted (receipt status 0x0)")
+        const lost = new TypeError("fetch failed")
+        const dropped = await failCreateCurve([...feeSigned(), lost])
+        expect(dropped).toBeInstanceOf(CandleOperationError)
+        expect((dropped as CandleOperationError).cause).toBe(lost)
+      })
     })
 
     describe("Solana blockhash-expiry rebuild", () => {

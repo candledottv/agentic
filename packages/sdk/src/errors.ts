@@ -13,7 +13,9 @@
  * `buildAtomicLaunch()`, `launchAtomic()`) also put the idempotency id they sent on every error
  * that leaves them after their first request went out: on `CandleApiError` and `JsonRpcError` as
  * extra fields, and on a `CandleOperationError` wrapped around anything else. `operationIds()`
- * reads it back from any of them.
+ * reads it back from any of them. The typed outcome errors (`TradeLandedFeeLegError`,
+ * `TradeLegOutcomeError`, `TradeLandedUnconfirmedError`, `SelfLaunchOutcomeError`) name the id
+ * themselves and leave unwrapped.
  */
 
 /**
@@ -267,6 +269,121 @@ export class TradeLandedFeeLegError extends Error {
   }
 }
 
+/** What `SelfLaunchOutcomeError` knows about the Hood fee transfer. See the class doc. */
+export type SelfLaunchFeeOutcome = "not-required" | "not-broadcast" | "reverted" | "unknown" | "landed"
+
+/**
+ * `SelfLaunchOutcomeError`'s constructor arguments. A fee-transfer failure never claims the fee
+ * landed, and a confirm failure names the landed fee hash or says the build had no fee leg.
+ */
+export type SelfLaunchOutcomeErrorArgs = {
+  clientLaunchId: string
+  createCurveTxHash: string
+  cause: unknown
+} & (
+  | { step: "feeTransfer"; feeOutcome: "not-broadcast" | "reverted" | "unknown"; feeTxHash?: string }
+  | { step: "confirm"; feeOutcome: "landed"; feeTxHash: string }
+  | { step: "confirm"; feeOutcome: "not-required" }
+)
+
+function selfLaunchOutcomeMessage(args: SelfLaunchOutcomeErrorArgs): string {
+  const reason = args.cause instanceof Error ? args.cause.message : String(args.cause)
+  const feeTxHash = "feeTxHash" in args ? args.feeTxHash : undefined
+  const head =
+    `launch executed; ${args.step === "confirm" ? "confirmation" : "fee"} incomplete: the Hood curve is on chain ` +
+    `(createCurveTxHash ${args.createCurveTxHash}, clientLaunchId ${args.clientLaunchId}), and a later step ` +
+    `failed (${reason}). Do NOT call selfLaunch() or buildSelfLaunch() again for this attempt, under this id ` +
+    `or a new one: a rebuild can create a second curve. Keep the id and every hash on this error.`
+  const confirmWith = (fee: string) =>
+    `confirmSelfLaunch({ clientLaunchId, signature: createCurveTxHash${fee} }) for clientLaunchId ${args.clientLaunchId}`
+  if (args.step === "confirm") {
+    const fee =
+      args.feeOutcome === "landed"
+        ? `The fee transfer landed (feeTxHash ${feeTxHash}).`
+        : "This build had no fee transfer, so none is owed."
+    return (
+      `${head} ${fee} The confirm call was refused or its answer was lost, so Candle may or may not have ` +
+      `recorded the launch: read getLaunchJob(clientLaunchId). If the job is not confirmed and this error's ` +
+      `cause allows it, call ${confirmWith(args.feeOutcome === "landed" ? ", feeTxHash" : "")} with these same ` +
+      `hashes. Nothing needs signing or sending.`
+    )
+  }
+  if (args.feeOutcome === "unknown") {
+    return (
+      `${head} The fee transfer MAY have paid: its outcome is unknown. Do NOT pay it again. ` +
+      (feeTxHash
+        ? `Check feeTxHash ${feeTxHash} and the payer wallet's history; a hash alone does not prove payment. `
+        : "Its hash is not known: reconcile the payer wallet's transactions before any payment decision. ") +
+      `Once that exact fee is verified successful, call ${confirmWith(", feeTxHash")}.`
+    )
+  }
+  const proof =
+    args.feeOutcome === "reverted"
+      ? `its receipt reverted${feeTxHash ? ` (feeTxHash ${feeTxHash})` : ""}`
+      : `it was not broadcast${feeTxHash ? ` (feeTxHash ${feeTxHash} names the refused transaction, not a payment)` : ""}`
+  return (
+    `${head} The fee transfer did NOT pay: ${proof}. The launch is not recorded without it. Pay only the ` +
+    `missing fee, to the original build's treasury in its quote asset and raw amount, then call ` +
+    `${confirmWith(", feeTxHash")} with the successful fee hash.`
+  )
+}
+
+/**
+ * Thrown by `selfLaunch()` on Hood when the create-curve transaction was mined successfully and
+ * the fee transfer or the confirm call then failed. The curve exists, so a second `selfLaunch()`
+ * or `buildSelfLaunch()` for this attempt, under the same id or a new one, can create a SECOND
+ * curve. Persist `clientLaunchId`, `createCurveTxHash` and `feeTxHash` before recovering.
+ *
+ * `stage: "executed"` means the create-curve transaction succeeded. It does not say Candle
+ * recorded the launch or collected a fee: on `step: "confirm"` the answer may have been lost
+ * after the launch was booked, so read `getLaunchJob(clientLaunchId)` first.
+ *
+ * `step` and `feeOutcome` say which recovery is safe:
+ * - `confirm` with `landed` (the fee paid, `feeTxHash` is its hash) or `not-required` (the build
+ *   had no fee leg, `feeTxHash` is absent): once the job read and `cause` allow it, call
+ *   `confirmSelfLaunch({ clientLaunchId, signature: createCurveTxHash, feeTxHash? })` with these
+ *   same hashes. Nothing is signed or sent.
+ * - `feeTransfer` with `unknown`: the broadcast or the receipt read did not say whether the fee
+ *   paid. Do not pay again. Check `feeTxHash` and the payer's history, then confirm with that
+ *   same hash once the fee is verified.
+ * - `feeTransfer` with `not-broadcast` or `reverted`: the fee did not pay. Complete only the
+ *   missing fee with the original build's treasury, quote asset and raw amount, then confirm with
+ *   the create-curve hash and the successful fee hash.
+ *
+ * `feeTxHash` is every fee hash this call learned, including a refused or reverted one. A hash
+ * alone does not prove payment. There is no `retryable` field: the original error is `cause`,
+ * untouched, with its own `code`, `status`, `retryable` and `reason` when it is a
+ * `CandleApiError`.
+ */
+export class SelfLaunchOutcomeError extends Error {
+  override readonly name = "SelfLaunchOutcomeError" as const
+  readonly chain = "hood" as const
+  readonly clientLaunchId: string
+  /** The successfully mined create-curve transaction. */
+  readonly createCurveTxHash: string
+  readonly stage = "executed" as const
+  /** The step that failed after the curve landed. */
+  readonly step: "feeTransfer" | "confirm"
+  readonly feeOutcome: SelfLaunchFeeOutcome
+  /**
+   * Set whenever a fee hash is known, whatever `feeOutcome` says about it. Declared, not
+   * initialized: with no known hash the property is absent, not `undefined`.
+   */
+  declare readonly feeTxHash?: string
+  /** The value the failed step originally threw or was rejected with. */
+  override readonly cause: unknown
+
+  constructor(args: SelfLaunchOutcomeErrorArgs) {
+    super(selfLaunchOutcomeMessage(args), { cause: args.cause })
+    this.clientLaunchId = args.clientLaunchId
+    this.createCurveTxHash = args.createCurveTxHash
+    this.step = args.step
+    this.feeOutcome = args.feeOutcome
+    if ("feeTxHash" in args && args.feeTxHash !== undefined) this.feeTxHash = args.feeTxHash
+    this.cause = args.cause
+  }
+}
+
 /**
  * Structured error thrown by the SDK's internal `jsonRpcCall()`/`jsonRpcCallRaw()` (client.ts)
  * when a Solana or EVM JSON-RPC endpoint responds with a JSON-RPC `error` envelope. Unlike a
@@ -369,8 +486,9 @@ function operationErrorMessage(cause: unknown, ids: OperationIds, flow: Operatio
 /**
  * Thrown by a one-call write method (`trade()`, `launch()`, `launchAsync()`, `selfLaunch()`,
  * `buildAtomicLaunch()`, `launchAtomic()`) when it fails, after its first request was sent, with
- * anything that is not already a `CandleApiError`, `JsonRpcError` or `TradeLandedFeeLegError`: a
- * rejected `fetch` (a lost response, a proxy timeout, a socket reset), a 2xx body that is not
+ * anything that is not already a `CandleApiError`, `JsonRpcError` or one of the typed outcome
+ * errors (`TradeLandedFeeLegError`, `TradeLegOutcomeError`, `TradeLandedUnconfirmedError`,
+ * `SelfLaunchOutcomeError`): a rejected `fetch` (a lost response, a proxy timeout, a socket reset), a 2xx body that is not
  * JSON, a plain `Error` from one of the method's own steps, or a thrown value that is not an
  * `Error`. The original is `cause`, untouched.
  *
@@ -411,7 +529,8 @@ function definedIds(ids: OperationIds): OperationIds {
 /**
  * The idempotency ids on an error from a one-call write method, so a `catch (error: unknown)`
  * block needs no cast: `{ clientTradeId?, clientLaunchId?, bundleId? }` from a `CandleApiError`,
- * `JsonRpcError`, `TradeLandedFeeLegError` or `CandleOperationError`, and `{}` from anything else.
+ * `JsonRpcError`, `TradeLandedFeeLegError`, `TradeLegOutcomeError`, `TradeLandedUnconfirmedError`,
+ * `SelfLaunchOutcomeError` or `CandleOperationError`, and `{}` from anything else.
  *
  * `{}` means nothing was sent (a missing API key, for example), so there is nothing to replay.
  */
@@ -422,6 +541,7 @@ export function operationIds(error: unknown): OperationIds {
     error instanceof TradeLandedFeeLegError ||
     error instanceof TradeLegOutcomeError ||
     error instanceof TradeLandedUnconfirmedError ||
+    error instanceof SelfLaunchOutcomeError ||
     error instanceof CandleOperationError
   ) {
     return definedIds(error)
@@ -433,14 +553,17 @@ export function operationIds(error: unknown): OperationIds {
  * SDK-internal (client.ts), not exported from the package root: the error a one-call method
  * throws for `error`, carrying `ids`. A `CandleApiError` or `JsonRpcError` is the SAME object
  * with the ids set on it as own, enumerable properties. A `TradeLandedFeeLegError` already names
- * its `clientTradeId` and passes through. Anything else is wrapped in a `CandleOperationError`.
+ * its `clientTradeId` and passes through, as do the other typed outcome errors, among them
+ * `SelfLaunchOutcomeError` with its `clientLaunchId`. Anything else is wrapped in a
+ * `CandleOperationError`.
  */
 export function withOperationIds(error: unknown, ids: OperationIds, flow: OperationFlow): unknown {
   if (error instanceof CandleApiError || error instanceof JsonRpcError) return Object.assign(error, definedIds(ids))
   if (
     error instanceof TradeLandedFeeLegError ||
     error instanceof TradeLegOutcomeError ||
-    error instanceof TradeLandedUnconfirmedError
+    error instanceof TradeLandedUnconfirmedError ||
+    error instanceof SelfLaunchOutcomeError
   )
     return error
   // Never a wrapper around a wrapper: keep the original as `cause` and the ids it already named.

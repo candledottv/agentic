@@ -170,6 +170,8 @@ export type {
   CandleErrorPayload,
   CandleRoutingDetail,
   OperationIds,
+  SelfLaunchFeeOutcome,
+  SelfLaunchOutcomeErrorArgs,
   SolanaRpcErrorData,
 } from "./errors"
 export {
@@ -179,6 +181,7 @@ export {
   isSolanaRpcErrorData,
   JsonRpcError,
   operationIds,
+  SelfLaunchOutcomeError,
   type SignedTradeLeg,
   TradeLandedFeeLegError,
   TradeLandedUnconfirmedError,
