@@ -58,3 +58,22 @@ describe("BE-902 stage, signature and fee details survive the parser", () => {
     expect(parsed.signature).toBeUndefined()
   })
 })
+
+test("T21: Hood reason, retryAfter and legs survive the envelope parser", () => {
+  const legs = [{ leg: "trade", hash: "0xhash", nonce: 8, outcome: "pending" }]
+  const error = candleApiErrorFromResponse(
+    409,
+    JSON.stringify({
+      success: false,
+      error: {
+        code: "IDEMPOTENCY_CONFLICT",
+        message: "pending",
+        retryable: true,
+        reason: "prior_attempt_in_flight",
+        retryAfter: 1000,
+        legs,
+      },
+    }),
+  )
+  expect(error).toMatchObject({ reason: "prior_attempt_in_flight", retryAfter: 1000, legs })
+})

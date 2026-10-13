@@ -195,7 +195,7 @@ try {
 }
 ```
 
-This example is not safe for a linked payer or for `selfLaunch()`: a same-id call there can
+This example is for a main payer. For linked Hood recovery, see the table below. For a linked Solana payer or `selfLaunch()`, a same-id call can
 broadcast again.
 
 ### `trade()`
@@ -218,7 +218,42 @@ polls it). The rules are the ones under "Idempotency" in
 [Headless launch](https://docs.candle.tv/developers/headless-launch#idempotency); what is new is
 that you always have the id.
 
-### `selfLaunch()` and a linked `trade()`
+
+### Non-TEE Hood linked trade recovery
+
+Once any leg is signed, a same-id build is refused: it does not rebuild or broadcast a second trade.
+The sign relay records each signed transaction's hash and nonce. Builds and job reads resolve
+receipts when asked; there is no background resolver. Error `legs` and job `signedLegs` list every
+consumed claim across builds, in build/leg order, as `{ leg, hash?, nonce?, outcome }`.
+An older claim without a leg label is conservatively treated as the trade leg.
+
+| Build answer | Meaning and recovery |
+| --- | --- |
+| 500 `SWAP_FAILED`, `chain_read_failed`, retryable | The chain read failed; retry with the same id. |
+| 409 `IDEMPOTENCY_CONFLICT`, `prior_attempt_on_chain`, not retryable | The trade landed. Read the job: for a still-`built` row, call `confirmTrade` with `signature` as `tradeTxHash` and the fee leg hash from `legs`. Pay a fee that did not land first, following `TradeLandedFeeLegError`. For a `failed` row, this id cannot be recorded with `/confirm`; do not retry or rebuild. Retain all hashes for the restoration follow-up. |
+| 409 `TRADE_REVERTED`, `stage: reverted`, not retryable | Every consumed, not refused trade leg has a reverted receipt. This id is settled; a new trade needs a new id. Other builds' open claims are not retired by this answer. |
+| 409 `IDEMPOTENCY_CONFLICT`, `sign_claim_in_flight`, retryable | The relay is asking Privy. Retry after `retryAfter`, bounded at two minutes from that claim's consume. |
+| 409 `IDEMPOTENCY_CONFLICT`, `prior_attempt_in_flight`, retryable | A signed trade or approval has no final answer. Retry after `retryAfter`, within 180 seconds of the newest consumed, not refused claim across this id's builds and legs. |
+| 409 `IDEMPOTENCY_CONFLICT`, `prior_attempt_unprovable`, not retryable | The hash is missing, the signed transaction has no receipt after that window, or retirement cannot be proved. It can still land; inspect the wallet and hashes. Do not retry or rebuild. |
+| 409 `IDEMPOTENCY_CONFLICT`, `prior_attempt_lapsed`, not retryable | A signed transaction's nonce was used and no receipt was found. Check every hash. Do not retry or rebuild from this answer; another leg can still land, and open claims were not retired. |
+| 409 `IDEMPOTENCY_CONFLICT`, `prior_attempt_approval_only`, `stage: not_broadcast`, not retryable | No swap was signed. The build transactionally retired its open claims, so the old artifact cannot be signed. Use a new id. Later builds repeat this answer unchanged. Job reads never retire claims. |
+
+A revert beside a pending, forwarding, unknown or lapsed trade leg follows that unsettled leg's
+answer, with the revert still in `legs`: it is not `TRADE_REVERTED` and does not advise a new id.
+Lapsed beside reverted stores no reverted trade-row outcome. A later visible receipt can change the
+answer to landed, or to reverted once every eligible trade leg has a reverted receipt.
+
+SDK 0.6.0 exports `TradeLegOutcomeError` for a non-fee Hood leg failure when a hash exists:
+`clientTradeId`, `leg`, `outcome`, `txHash?`, `landedLegs`, and the original `cause`.
+Inspect the hashes, then call `trade()` with the same id and body, or read `getTradeJob(id)`,
+for Candle's view. Never retry an id after a `retryable: false` answer.
+A first leg failure before signing retains the original error behavior.
+`TradeLandedUnconfirmedError` means all legs landed but confirmation failed; it keeps
+`tradeTxHash`, `feeTxHash?`, `clientTradeId`, `stage: executed`, and `cause`.
+Read the job before another `confirmTrade`; a failed row cannot be booked with `/confirm`.
+`operationIds()` handles both errors. `CandleApiError` exposes `reason`, `retryAfter` and `legs`.
+
+### `selfLaunch()` and a linked Solana `trade()`
 
 You sign and broadcast in these flows, so the id is necessary and **not** sufficient. An error
 after the broadcast may sit on a transaction that landed. So a `CandleOperationError` from these
@@ -226,7 +261,7 @@ flows does not tell you to retry with the id. Read the job first (`getLaunchJob(
 `getTradeJob(id)`); if it is not `confirmed`, check the wallet's recent transactions before
 sending again.
 
-For a linked `trade()`, and for `selfLaunch()` on Hood, calling the method again under the same
+For a linked Solana `trade()`, and for `selfLaunch()` on Hood, calling the method again under the same
 id builds and broadcasts a new transaction.
 
 `selfLaunch()` on Solana does not build a second launch. One id has one build at a time:

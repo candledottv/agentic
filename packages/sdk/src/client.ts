@@ -48,7 +48,10 @@ import {
   JsonRpcError,
   type OperationFlow,
   type OperationIds,
+  type SignedTradeLeg,
   TradeLandedFeeLegError,
+  TradeLandedUnconfirmedError,
+  TradeLegOutcomeError,
   withOperationIds,
 } from "./errors"
 import {
@@ -1714,6 +1717,7 @@ export type ConfirmTradeResult = ExecutedTradeResult
  * is set) or `failed` (`errorCode` says why; `TRADE_REVERTED` means it landed and reverted).
  */
 export interface TradeJob {
+  signedLegs?: SignedTradeLeg[]
   clientTradeId: string
   chain: Chain
   side: TradeSide
@@ -3660,6 +3664,11 @@ export class CandleClient {
    *   carries `stage: "unconfirmed"` and `retryable: false`, check its `signature` on chain and
    *   do not retry.
    *
+   * Non-TEE Hood linked jobs include signedLegs and resolve receipts on read. A landed trade
+   * on a built row can be recorded with confirmTrade using the trade and fee hashes; on a failed
+   * row it cannot: do not retry or rebuild. A reverted leg beside an unsettled one is not a
+   * settled id. Approval-only new-id advice is obtained on build only, after claim retirement.
+   *
    * For a linked payer, also check the wallet's recent transactions before sending again: see
    * `trade()`.
    */
@@ -3899,11 +3908,16 @@ export class CandleClient {
    *   response can sit on a trade that already moved funds. With the id, read `getTradeJob(id)`
    *   or call `trade()` again with the same id and body. Both are safe: the same-id call is a
    *   replay, not a second trade. `getTradeJob()`'s jsdoc says what each job state means.
-   * - **Linked payer**: the id is necessary and NOT sufficient. The caller's side signs and
-   *   broadcasts here, so an error after the broadcast may sit on a transaction that landed, and
-   *   calling again under the same id can build and broadcast a second one. Read
-   *   `getTradeJob(id)` first; if it is not `confirmed`, check the wallet's recent transactions
-   *   before sending again.
+   * - **Linked Hood payer**: once any leg is signed, the server refuses a same-id build.
+   *   TradeLegOutcomeError keeps the failing leg's txHash and earlier landedLegs. Inspect those
+   *   hashes, then read getTradeJob(id) or call trade() with the same id and body for Candle's
+   *   view. Never retry a retryable:false answer. A built prior_attempt_on_chain can be recorded
+   *   with confirmTrade using signature as tradeTxHash and the fee hash from legs (pay a missing
+   *   fee first, following TradeLandedFeeLegError). A failed row cannot be recorded with /confirm:
+   *   retain the hashes and do not retry or rebuild. Approval-only new-id advice follows committed
+   *   retirement and repeats unchanged. Reverted beside an unsettled leg never advises a new id.
+   *   TradeLandedUnconfirmedError means all legs landed but booking failed: read the job first.
+   * - **Linked Solana payer**: read getTradeJob(id) and check the wallet before sending again.
    */
   async trade(req: TradeRequest): Promise<ExecutedTradeResult> {
     const clientTradeId = req.clientTradeId ?? generateClientTradeId()
@@ -4006,6 +4020,7 @@ export class CandleClient {
       legs.push({ kind: "feeTransfer", ...built.artifacts.feeTransfer })
     }
 
+    const landedLegs: Array<{ leg: SignedTradeLeg["leg"]; txHash: string }> = []
     let tradeTxHash: string | undefined
     let feeTxHash: string | undefined
     for (let i = 0; i < legs.length; i++) {
@@ -4028,9 +4043,8 @@ export class CandleClient {
             linkedWalletId,
             privyWalletId,
           },
-          // Only the fee leg keeps a hash whose broadcast or receipt is unknown. Other legs
-          // still throw the original error.
-          { surfaceLegOutcome: leg.kind === "feeTransfer" },
+          // Every Hood trade leg keeps its signed hash on an indeterminate outcome.
+          { surfaceLegOutcome: true },
         )
       } catch (err) {
         // The fee transfer comes after the trade leg. If it throws, the trade is already on chain:
@@ -4040,8 +4054,19 @@ export class CandleClient {
         if (leg.kind === "feeTransfer" && tradeTxHash) {
           throw tradeLandedFeeLegError({ clientTradeId: built.clientTradeId, tradeTxHash, err })
         }
-        throw err
+        if ((err instanceof EvmLegOutcome && err.txHash !== undefined) || landedLegs.length > 0) {
+          throw new TradeLegOutcomeError({
+            clientTradeId: built.clientTradeId,
+            leg: leg.kind,
+            outcome: err instanceof EvmLegOutcome ? err.kind : "not-broadcast",
+            txHash: err instanceof EvmLegOutcome ? err.txHash : undefined,
+            landedLegs: [...landedLegs],
+            cause: err instanceof EvmLegOutcome ? err.cause : err,
+          })
+        }
+        throw err instanceof EvmLegOutcome ? err.cause : err
       }
+      landedLegs.push({ leg: leg.kind, txHash })
       if (leg.kind === "trade") tradeTxHash = txHash
       if (leg.kind === "feeTransfer") feeTxHash = txHash
     }
@@ -4050,11 +4075,15 @@ export class CandleClient {
       throw new Error("trade(): Hood leg sequence completed without a trade leg")
     }
 
-    return this.confirmTrade({
-      clientTradeId: built.clientTradeId,
-      tradeTxHash,
-      ...(feeTxHash ? { feeTxHash } : {}),
-    })
+    try {
+      return await this.confirmTrade({
+        clientTradeId: built.clientTradeId,
+        tradeTxHash,
+        ...(feeTxHash ? { feeTxHash } : {}),
+      })
+    } catch (cause) {
+      throw new TradeLandedUnconfirmedError({ clientTradeId: built.clientTradeId, tradeTxHash, feeTxHash, cause })
+    }
   }
 
   /**
@@ -4529,7 +4558,7 @@ export class CandleClient {
       if (!isDefiniteBroadcastRejection(err)) {
         throw new EvmLegOutcome({ kind: "unknown", txHash: predicted, cause: err })
       }
-      throw err
+      throw new EvmLegOutcome({ kind: "not-broadcast", txHash: predicted, cause: err })
     }
     try {
       await waitForReceipt(params.rpc, txHash, evmReceiptWaitForTest ?? {})
@@ -5000,11 +5029,11 @@ export class CandleClient {
  * `unknown` means the fee may already be in flight. `reverted` means the receipt said it was not.
  */
 class EvmLegOutcome extends Error {
-  readonly kind: "unknown" | "reverted"
+  readonly kind: "not-broadcast" | "unknown" | "reverted"
   readonly txHash?: string
   override readonly cause: unknown
 
-  constructor(args: { kind: "unknown" | "reverted"; txHash?: string; cause: unknown }) {
+  constructor(args: { kind: "not-broadcast" | "unknown" | "reverted"; txHash?: string; cause: unknown }) {
     super(args.cause instanceof Error ? args.cause.message : String(args.cause), { cause: args.cause })
     this.name = "EvmLegOutcome"
     this.kind = args.kind
@@ -5032,7 +5061,7 @@ function tradeLandedFeeLegError(args: {
       tradeTxHash: args.tradeTxHash,
       cause: args.err.cause,
       feeOutcome: args.err.kind,
-      ...(args.err.txHash !== undefined ? { feeTxHash: args.err.txHash } : {}),
+      ...(args.err.kind !== "not-broadcast" && args.err.txHash !== undefined ? { feeTxHash: args.err.txHash } : {}),
     })
   }
   return new TradeLandedFeeLegError({
@@ -5128,7 +5157,7 @@ function generateClientTradeId(): string {
 // CANDLE_NO_UPDATE_NOTICE=1.
 
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export const SDK_VERSION = "0.5.0"
+export const SDK_VERSION = "0.6.0"
 
 let sdkUpdateWarned = false
 

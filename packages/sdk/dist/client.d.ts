@@ -38,6 +38,7 @@
  *   call that passes no id is a new operation. The retry is the caller's, with the id passed back.
  *   The README's "Retrying a write that failed or timed out" is the caller-facing procedure.
  */
+import { type SignedTradeLeg } from "./errors";
 import { type HyperliquidNetwork, type HyperliquidTypedData } from "./hyperliquid";
 import type { HyperliquidPnlSection } from "./hyperliquid-pnl";
 import type { AgentPlansResult, PlanPrice, PlanTable } from "./plans";
@@ -1644,6 +1645,7 @@ export type ConfirmTradeResult = ExecutedTradeResult;
  * is set) or `failed` (`errorCode` says why; `TRADE_REVERTED` means it landed and reverted).
  */
 export interface TradeJob {
+    signedLegs?: SignedTradeLeg[];
     clientTradeId: string;
     chain: Chain;
     side: TradeSide;
@@ -2902,6 +2904,11 @@ export declare class CandleClient {
      *   carries `stage: "unconfirmed"` and `retryable: false`, check its `signature` on chain and
      *   do not retry.
      *
+     * Non-TEE Hood linked jobs include signedLegs and resolve receipts on read. A landed trade
+     * on a built row can be recorded with confirmTrade using the trade and fee hashes; on a failed
+     * row it cannot: do not retry or rebuild. A reverted leg beside an unsettled one is not a
+     * settled id. Approval-only new-id advice is obtained on build only, after claim retirement.
+     *
      * For a linked payer, also check the wallet's recent transactions before sending again: see
      * `trade()`.
      */
@@ -3020,11 +3027,16 @@ export declare class CandleClient {
      *   response can sit on a trade that already moved funds. With the id, read `getTradeJob(id)`
      *   or call `trade()` again with the same id and body. Both are safe: the same-id call is a
      *   replay, not a second trade. `getTradeJob()`'s jsdoc says what each job state means.
-     * - **Linked payer**: the id is necessary and NOT sufficient. The caller's side signs and
-     *   broadcasts here, so an error after the broadcast may sit on a transaction that landed, and
-     *   calling again under the same id can build and broadcast a second one. Read
-     *   `getTradeJob(id)` first; if it is not `confirmed`, check the wallet's recent transactions
-     *   before sending again.
+     * - **Linked Hood payer**: once any leg is signed, the server refuses a same-id build.
+     *   TradeLegOutcomeError keeps the failing leg's txHash and earlier landedLegs. Inspect those
+     *   hashes, then read getTradeJob(id) or call trade() with the same id and body for Candle's
+     *   view. Never retry a retryable:false answer. A built prior_attempt_on_chain can be recorded
+     *   with confirmTrade using signature as tradeTxHash and the fee hash from legs (pay a missing
+     *   fee first, following TradeLandedFeeLegError). A failed row cannot be recorded with /confirm:
+     *   retain the hashes and do not retry or rebuild. Approval-only new-id advice follows committed
+     *   retirement and repeats unchanged. Reverted beside an unsettled leg never advises a new id.
+     *   TradeLandedUnconfirmedError means all legs landed but booking failed: read the job first.
+     * - **Linked Solana payer**: read getTradeJob(id) and check the wallet before sending again.
      */
     trade(req: TradeRequest): Promise<ExecutedTradeResult>;
     /** trade()'s steps. Every error leaves through trade()'s runOperation(), which adds the id. */
@@ -3300,7 +3312,7 @@ export declare function __setEvmReceiptWaitForTest(opts: {
     pollMs?: number;
 } | null): void;
 /** This build's own version. Kept in lockstep with package.json by the release-bump CI guard. */
-export declare const SDK_VERSION = "0.5.0";
+export declare const SDK_VERSION = "0.6.0";
 /** Test seam: the once-per-process latch would otherwise weld the suite's first case to the rest. */
 export declare function __resetSdkUpdateNoticeForTest(): void;
 //# sourceMappingURL=client.d.ts.map

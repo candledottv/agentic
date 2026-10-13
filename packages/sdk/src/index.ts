@@ -179,7 +179,10 @@ export {
   isSolanaRpcErrorData,
   JsonRpcError,
   operationIds,
+  type SignedTradeLeg,
   TradeLandedFeeLegError,
+  TradeLandedUnconfirmedError,
+  TradeLegOutcomeError,
 } from "./errors"
 export {
   CANDLE_HYPERLIQUID_BUILDER_ADDRESS,

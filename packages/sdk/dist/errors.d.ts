@@ -36,7 +36,14 @@ export interface CandleRoutingDetail {
     adaptersAttempted?: string[];
     kyberAttempt?: string;
 }
+export interface SignedTradeLeg {
+    leg: "approval" | "permit2Approval" | "trade" | "feeTransfer";
+    hash?: string;
+    nonce?: number;
+    outcome: "landed" | "reverted" | "pending" | "lapsed" | "forwarding" | "unknown" | "refused";
+}
 export interface CandleErrorPayload {
+    legs?: SignedTradeLeg[];
     routing?: CandleRoutingDetail;
     discovery?: Record<string, unknown>;
     coverage?: unknown;
@@ -86,6 +93,7 @@ export interface CandleErrorPayload {
 export declare const BRIDGE_ERROR_CODES: readonly ["BRIDGE_DESTINATION_MISSING", "RELAY_STEP_REFUSED", "BRIDGE_IN_FLIGHT"];
 export type BridgeErrorCode = (typeof BRIDGE_ERROR_CODES)[number];
 export declare class CandleApiError extends Error {
+    readonly legs?: SignedTradeLeg[];
     /** The envelope's `error.code`, or `"HTTP_" + status` for non-envelope responses. */
     readonly code: string;
     /** HTTP status of the response that produced this error. */
@@ -139,6 +147,43 @@ export declare class CandleApiError extends Error {
  *   is that payment once it is known. Do not pay again. Re-confirm this clientTradeId with that
  *   same hash.
  */
+/** A Hood leg failed after this call acquired at least one transaction hash. */
+export declare class TradeLegOutcomeError extends Error {
+    readonly clientTradeId: string;
+    readonly leg: SignedTradeLeg["leg"];
+    readonly outcome: "not-broadcast" | "reverted" | "unknown";
+    readonly txHash?: string;
+    readonly landedLegs: Array<{
+        leg: SignedTradeLeg["leg"];
+        txHash: string;
+    }>;
+    readonly cause: unknown;
+    constructor(args: {
+        clientTradeId: string;
+        leg: SignedTradeLeg["leg"];
+        outcome: "not-broadcast" | "reverted" | "unknown";
+        txHash?: string;
+        landedLegs: Array<{
+            leg: SignedTradeLeg["leg"];
+            txHash: string;
+        }>;
+        cause: unknown;
+    });
+}
+/** All Hood legs landed, but the confirmation response was refused or lost. */
+export declare class TradeLandedUnconfirmedError extends Error {
+    readonly clientTradeId: string;
+    readonly tradeTxHash: string;
+    readonly feeTxHash?: string;
+    readonly stage: "executed";
+    readonly cause: unknown;
+    constructor(args: {
+        clientTradeId: string;
+        tradeTxHash: string;
+        feeTxHash?: string;
+        cause: unknown;
+    });
+}
 export declare class TradeLandedFeeLegError extends Error {
     readonly clientTradeId: string;
     readonly tradeTxHash: string;

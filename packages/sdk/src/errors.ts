@@ -39,7 +39,15 @@ export interface CandleRoutingDetail {
   kyberAttempt?: string
 }
 
+export interface SignedTradeLeg {
+  leg: "approval" | "permit2Approval" | "trade" | "feeTransfer"
+  hash?: string
+  nonce?: number
+  outcome: "landed" | "reverted" | "pending" | "lapsed" | "forwarding" | "unknown" | "refused"
+}
+
 export interface CandleErrorPayload {
+  legs?: SignedTradeLeg[]
   routing?: CandleRoutingDetail
   discovery?: Record<string, unknown>
   coverage?: unknown
@@ -91,6 +99,7 @@ export const BRIDGE_ERROR_CODES = ["BRIDGE_DESTINATION_MISSING", "RELAY_STEP_REF
 export type BridgeErrorCode = (typeof BRIDGE_ERROR_CODES)[number]
 
 export class CandleApiError extends Error {
+  readonly legs?: SignedTradeLeg[]
   /** The envelope's `error.code`, or `"HTTP_" + status` for non-envelope responses. */
   readonly code: string
   /** HTTP status of the response that produced this error. */
@@ -132,6 +141,7 @@ export class CandleApiError extends Error {
   constructor(args: CandleErrorPayload & { status: number; retryable: boolean }) {
     super(args.message)
     this.name = "CandleApiError"
+    this.legs = args.legs
     this.code = args.code
     this.status = args.status
     this.retryable = args.retryable
@@ -164,6 +174,58 @@ export class CandleApiError extends Error {
  *   is that payment once it is known. Do not pay again. Re-confirm this clientTradeId with that
  *   same hash.
  */
+
+/** A Hood leg failed after this call acquired at least one transaction hash. */
+export class TradeLegOutcomeError extends Error {
+  readonly clientTradeId: string
+  readonly leg: SignedTradeLeg["leg"]
+  readonly outcome: "not-broadcast" | "reverted" | "unknown"
+  readonly txHash?: string
+  readonly landedLegs: Array<{ leg: SignedTradeLeg["leg"]; txHash: string }>
+  override readonly cause: unknown
+  constructor(args: {
+    clientTradeId: string
+    leg: SignedTradeLeg["leg"]
+    outcome: "not-broadcast" | "reverted" | "unknown"
+    txHash?: string
+    landedLegs: Array<{ leg: SignedTradeLeg["leg"]; txHash: string }>
+    cause: unknown
+  }) {
+    super(
+      (args.cause instanceof Error ? args.cause.message + ". " : "") +
+        "A Hood trade leg failed. Inspect txHash and landedLegs on chain; read getTradeJob(clientTradeId) or call trade with the same id and body for Candle's view. Never retry a retryable:false answer.",
+      { cause: args.cause },
+    )
+    this.name = "TradeLegOutcomeError"
+    this.clientTradeId = args.clientTradeId
+    this.leg = args.leg
+    this.outcome = args.outcome
+    this.txHash = args.txHash
+    this.landedLegs = args.landedLegs
+    this.cause = args.cause
+  }
+}
+
+/** All Hood legs landed, but the confirmation response was refused or lost. */
+export class TradeLandedUnconfirmedError extends Error {
+  readonly clientTradeId: string
+  readonly tradeTxHash: string
+  readonly feeTxHash?: string
+  readonly stage = "executed" as const
+  override readonly cause: unknown
+  constructor(args: { clientTradeId: string; tradeTxHash: string; feeTxHash?: string; cause: unknown }) {
+    super(
+      "The trade is on chain and not booked. Read getTradeJob(clientTradeId) before calling confirmTrade again with these hashes. If the row is failed, this id cannot be recorded with /confirm; retain the hashes and do not retry or rebuild.",
+      { cause: args.cause },
+    )
+    this.name = "TradeLandedUnconfirmedError"
+    this.clientTradeId = args.clientTradeId
+    this.tradeTxHash = args.tradeTxHash
+    this.feeTxHash = args.feeTxHash
+    this.cause = args.cause
+  }
+}
+
 export class TradeLandedFeeLegError extends Error {
   readonly clientTradeId: string
   readonly tradeTxHash: string
@@ -358,6 +420,8 @@ export function operationIds(error: unknown): OperationIds {
     error instanceof CandleApiError ||
     error instanceof JsonRpcError ||
     error instanceof TradeLandedFeeLegError ||
+    error instanceof TradeLegOutcomeError ||
+    error instanceof TradeLandedUnconfirmedError ||
     error instanceof CandleOperationError
   ) {
     return definedIds(error)
@@ -373,7 +437,12 @@ export function operationIds(error: unknown): OperationIds {
  */
 export function withOperationIds(error: unknown, ids: OperationIds, flow: OperationFlow): unknown {
   if (error instanceof CandleApiError || error instanceof JsonRpcError) return Object.assign(error, definedIds(ids))
-  if (error instanceof TradeLandedFeeLegError) return error
+  if (
+    error instanceof TradeLandedFeeLegError ||
+    error instanceof TradeLegOutcomeError ||
+    error instanceof TradeLandedUnconfirmedError
+  )
+    return error
   // Never a wrapper around a wrapper: keep the original as `cause` and the ids it already named.
   if (error instanceof CandleOperationError) {
     return new CandleOperationError({ cause: error.cause, ids: { ...operationIds(error), ...definedIds(ids) }, flow })
@@ -405,6 +474,7 @@ function envelopeError(body: unknown): CandleErrorPayload | null {
     message: error.message,
     ...(typeof error.field === "string" ? { field: error.field } : {}),
     ...(typeof error.retryable === "boolean" ? { retryable: error.retryable } : {}),
+    ...(Array.isArray(error.legs) ? { legs: error.legs as SignedTradeLeg[] } : {}),
     ...(typeof error.stage === "string" ? { stage: error.stage } : {}),
     ...(typeof error.signature === "string" ? { signature: error.signature } : {}),
     ...(typeof error.mint === "string" ? { mint: error.mint } : {}),

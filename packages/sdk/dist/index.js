@@ -79,6 +79,7 @@ async function buildPrivyAuthorizationSignature(params) {
 var BRIDGE_ERROR_CODES = ["BRIDGE_DESTINATION_MISSING", "RELAY_STEP_REFUSED", "BRIDGE_IN_FLIGHT"];
 
 class CandleApiError extends Error {
+  legs;
   code;
   status;
   retryable;
@@ -100,6 +101,7 @@ class CandleApiError extends Error {
   constructor(args) {
     super(args.message);
     this.name = "CandleApiError";
+    this.legs = args.legs;
     this.code = args.code;
     this.status = args.status;
     this.retryable = args.retryable;
@@ -128,6 +130,41 @@ class CandleApiError extends Error {
       this.reason = args.reason;
     if (args.retryAfter !== undefined)
       this.retryAfter = args.retryAfter;
+  }
+}
+
+class TradeLegOutcomeError extends Error {
+  clientTradeId;
+  leg;
+  outcome;
+  txHash;
+  landedLegs;
+  cause;
+  constructor(args) {
+    super((args.cause instanceof Error ? args.cause.message + ". " : "") + "A Hood trade leg failed. Inspect txHash and landedLegs on chain; read getTradeJob(clientTradeId) or call trade with the same id and body for Candle's view. Never retry a retryable:false answer.", { cause: args.cause });
+    this.name = "TradeLegOutcomeError";
+    this.clientTradeId = args.clientTradeId;
+    this.leg = args.leg;
+    this.outcome = args.outcome;
+    this.txHash = args.txHash;
+    this.landedLegs = args.landedLegs;
+    this.cause = args.cause;
+  }
+}
+
+class TradeLandedUnconfirmedError extends Error {
+  clientTradeId;
+  tradeTxHash;
+  feeTxHash;
+  stage = "executed";
+  cause;
+  constructor(args) {
+    super("The trade is on chain and not booked. Read getTradeJob(clientTradeId) before calling confirmTrade again with these hashes. If the row is failed, this id cannot be recorded with /confirm; retain the hashes and do not retry or rebuild.", { cause: args.cause });
+    this.name = "TradeLandedUnconfirmedError";
+    this.clientTradeId = args.clientTradeId;
+    this.tradeTxHash = args.tradeTxHash;
+    this.feeTxHash = args.feeTxHash;
+    this.cause = args.cause;
   }
 }
 
@@ -198,7 +235,7 @@ function definedIds(ids) {
   };
 }
 function operationIds(error) {
-  if (error instanceof CandleApiError || error instanceof JsonRpcError || error instanceof TradeLandedFeeLegError || error instanceof CandleOperationError) {
+  if (error instanceof CandleApiError || error instanceof JsonRpcError || error instanceof TradeLandedFeeLegError || error instanceof TradeLegOutcomeError || error instanceof TradeLandedUnconfirmedError || error instanceof CandleOperationError) {
     return definedIds(error);
   }
   return {};
@@ -206,7 +243,7 @@ function operationIds(error) {
 function withOperationIds(error, ids, flow) {
   if (error instanceof CandleApiError || error instanceof JsonRpcError)
     return Object.assign(error, definedIds(ids));
-  if (error instanceof TradeLandedFeeLegError)
+  if (error instanceof TradeLandedFeeLegError || error instanceof TradeLegOutcomeError || error instanceof TradeLandedUnconfirmedError)
     return error;
   if (error instanceof CandleOperationError) {
     return new CandleOperationError({ cause: error.cause, ids: { ...operationIds(error), ...definedIds(ids) }, flow });
@@ -234,6 +271,7 @@ function envelopeError(body) {
     message: error.message,
     ...typeof error.field === "string" ? { field: error.field } : {},
     ...typeof error.retryable === "boolean" ? { retryable: error.retryable } : {},
+    ...Array.isArray(error.legs) ? { legs: error.legs } : {},
     ...typeof error.stage === "string" ? { stage: error.stage } : {},
     ...typeof error.signature === "string" ? { signature: error.signature } : {},
     ...typeof error.mint === "string" ? { mint: error.mint } : {},
@@ -1504,6 +1542,7 @@ class CandleClient {
     if (built.artifacts.feeTransfer) {
       legs.push({ kind: "feeTransfer", ...built.artifacts.feeTransfer });
     }
+    const landedLegs = [];
     let tradeTxHash;
     let feeTxHash;
     for (let i = 0;i < legs.length; i++) {
@@ -1523,13 +1562,24 @@ class CandleClient {
           feeData,
           linkedWalletId,
           privyWalletId
-        }, { surfaceLegOutcome: leg.kind === "feeTransfer" });
+        }, { surfaceLegOutcome: true });
       } catch (err) {
         if (leg.kind === "feeTransfer" && tradeTxHash) {
           throw tradeLandedFeeLegError({ clientTradeId: built.clientTradeId, tradeTxHash, err });
         }
-        throw err;
+        if (err instanceof EvmLegOutcome && err.txHash !== undefined || landedLegs.length > 0) {
+          throw new TradeLegOutcomeError({
+            clientTradeId: built.clientTradeId,
+            leg: leg.kind,
+            outcome: err instanceof EvmLegOutcome ? err.kind : "not-broadcast",
+            txHash: err instanceof EvmLegOutcome ? err.txHash : undefined,
+            landedLegs: [...landedLegs],
+            cause: err instanceof EvmLegOutcome ? err.cause : err
+          });
+        }
+        throw err instanceof EvmLegOutcome ? err.cause : err;
       }
+      landedLegs.push({ leg: leg.kind, txHash });
       if (leg.kind === "trade")
         tradeTxHash = txHash;
       if (leg.kind === "feeTransfer")
@@ -1538,11 +1588,15 @@ class CandleClient {
     if (!tradeTxHash) {
       throw new Error("trade(): Hood leg sequence completed without a trade leg");
     }
-    return this.confirmTrade({
-      clientTradeId: built.clientTradeId,
-      tradeTxHash,
-      ...feeTxHash ? { feeTxHash } : {}
-    });
+    try {
+      return await this.confirmTrade({
+        clientTradeId: built.clientTradeId,
+        tradeTxHash,
+        ...feeTxHash ? { feeTxHash } : {}
+      });
+    } catch (cause) {
+      throw new TradeLandedUnconfirmedError({ clientTradeId: built.clientTradeId, tradeTxHash, feeTxHash, cause });
+    }
   }
   async selfLaunch(req) {
     const { privyWalletId, ...launchReq } = req;
@@ -1758,7 +1812,7 @@ class CandleClient {
       if (!isDefiniteBroadcastRejection(err)) {
         throw new EvmLegOutcome({ kind: "unknown", txHash: predicted, cause: err });
       }
-      throw err;
+      throw new EvmLegOutcome({ kind: "not-broadcast", txHash: predicted, cause: err });
     }
     try {
       await waitForReceipt(params.rpc, txHash, evmReceiptWaitForTest ?? {});
@@ -2115,7 +2169,7 @@ function tradeLandedFeeLegError(args) {
       tradeTxHash: args.tradeTxHash,
       cause: args.err.cause,
       feeOutcome: args.err.kind,
-      ...args.err.txHash !== undefined ? { feeTxHash: args.err.txHash } : {}
+      ...args.err.kind !== "not-broadcast" && args.err.txHash !== undefined ? { feeTxHash: args.err.txHash } : {}
     });
   }
   return new TradeLandedFeeLegError({
@@ -2184,7 +2238,7 @@ function generateClientLaunchId() {
 function generateClientTradeId() {
   return generateSdkId();
 }
-var SDK_VERSION = "0.5.0";
+var SDK_VERSION = "0.6.0";
 var sdkUpdateWarned = false;
 function noteLatestSdkVersion(value) {
   if (sdkUpdateWarned || !value || !/^\d+\.\d+\.\d+$/.test(value))
@@ -2554,6 +2608,8 @@ export {
   generateSignerKeypair,
   formatPlanBps,
   encryptWalletKeyForImport,
+  TradeLegOutcomeError,
+  TradeLandedUnconfirmedError,
   TradeLandedFeeLegError,
   PLAN_CAPABILITY_NOTE,
   PLAN_CAPABILITY_LABELS,
