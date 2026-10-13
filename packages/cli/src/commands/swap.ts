@@ -78,8 +78,9 @@ import {
 } from "../trading"
 
 /**
- * One failure envelope for every trading command. Exit 1, except the one uncertain outcome
- * (BE-355, D4): a `TradingError` that carries exit 3, a rate limit after a signature. A
+ * One failure envelope for every trading command. Exit 1, except a `TradingError` that carries
+ * exit 3: a rate limit after a signature (BE-355, D4), or a submit answered `stage: "unconfirmed"`
+ * or, for a token trade, `"executed"` (BE-1397), where the transaction may be on chain. A
  * `TradingUsage` (an endpoint that fails validation) is the `USAGE` envelope, exit 2.
  */
 export function tradingFailure(ctx: CommandContext, error: unknown, id?: string): number {
@@ -161,6 +162,11 @@ function describeSwapEvidence(ctx: CommandContext, details: Json, terminal: bool
       `Swap outcome needs verification${details.leg !== undefined ? ` (leg ${safeText(String(details.leg))})` : ""}. Known hashes: ${hashes.length ? hashes.map((hash) => safeText(String(hash))).join(", ") : "unknown"}. Do not automatically retry or use a new id.\n`,
     )
   }
+  // BE-1397: a token trade whose trade leg landed and whose later step (the Hood fee leg) did not.
+  if (details.stage === "executed")
+    ctx.deps.stderr.write(
+      `The trade landed${typeof details.signature === "string" ? ` (${safeText(details.signature)})` : ""} and a later step failed. Do not retry or use a new id.\n`,
+    )
 }
 
 export function printTradingResult(ctx: CommandContext, result: Json): number {

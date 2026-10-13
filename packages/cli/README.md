@@ -207,6 +207,11 @@ guarantee is unconfirmed: a wallet stop whose remote enforcement is still pendin
 enabled without verified signing authority, or a sweep that left a residual). Treat `3` as not
 done: follow the printed next step, usually re-running the same command.
 
+A swap or token trade also exits `3` when it may be on chain: the server answered
+`stage: "unconfirmed"` (sent, outcome not seen) or, for a token trade, `stage: "executed"` (the
+trade landed and a later step failed). The envelope's `details` keep `stage` and `signature`.
+Never retry under a new id; read `candle swap status <id>` first.
+
 The value is complete when the process exits, whatever stdout is connected to: a file, a pipe
 into `jq`, a subprocess, or an MCP host. The CLI exits only after stdout has drained, and a
 reader that closes the pipe early (`| head`) ends the output without an error.

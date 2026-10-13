@@ -31,9 +31,9 @@ export class TradingError extends Error {
   /** A fix the failure envelope carries beside the message, when there is one (BE-355, D3, D4). */
   readonly suggestion?: string
   /**
-   * 1 for every refusal, as always. 3 for the one uncertain outcome a trading command has: a rate
-   * limit after a signature (BE-355, D4), where the transaction may still land and nothing is
-   * re-sent. `tradingFailure` returns it.
+   * 1 for every refusal, as always. 3 when the transaction may still land, or did, and nothing is
+   * re-sent: a rate limit after a signature (BE-355, D4), or a submit the server answered with
+   * `stage: "unconfirmed"` or, for a token trade, `"executed"` (BE-1397). `tradingFailure` returns it.
    */
   readonly exitCode: 1 | 3
   /**
@@ -313,6 +313,29 @@ export async function tradingKey(ctx: CommandContext): Promise<string> {
     )
   return key
 }
+const SWAP_SUBMIT_EVIDENCE = [
+  "field",
+  "stage",
+  "signature",
+  "leg",
+  "legs",
+  "hashes",
+  "retryable",
+  "evidenceStored",
+  "terminal",
+]
+/** The token-trade calls that sign and broadcast, so the only ones whose refusal can name a stage. */
+const TRADE_BROADCAST_PATHS = new Set(["/api/v1/trade/agent/execute", "/api/v1/trade/agent/submit"])
+const TRADE_BROADCAST_EVIDENCE = ["field", "stage", "signature", "priorSignatures", "retryable"]
+/**
+ * BE-1397: the two stages a token trade's refusal names when the trade is, or may be, on chain.
+ * `unconfirmed` was broadcast and its outcome was not seen; `executed` landed and a later step
+ * (the Hood fee leg) failed. Neither is a failed trade, so both are exit 3: a retry under a new
+ * id would trade twice.
+ */
+export function mayHaveLanded(stage: unknown): boolean {
+  return stage === "unconfirmed" || stage === "executed"
+}
 export async function request(ctx: CommandContext, key: string, path: string, body?: Json): Promise<Json> {
   const result = await apiRequest(path, {
     apiUrl: ctx.apiUrl,
@@ -327,23 +350,21 @@ export async function request(ctx: CommandContext, key: string, path: string, bo
     const raw = result.raw as { error?: Json } | null
     const error = raw?.error
     const details: Json = {}
-    for (const field of [
-      "field",
-      "stage",
-      "signature",
-      "leg",
-      "legs",
-      "hashes",
-      "retryable",
-      "evidenceStored",
-      "terminal",
-    ]) {
-      if (error?.[field] !== undefined && (field === "field" || path === "/api/v1/agent/swap/submit"))
-        details[field] = error[field]
+    const kept =
+      path === "/api/v1/agent/swap/submit"
+        ? SWAP_SUBMIT_EVIDENCE
+        : TRADE_BROADCAST_PATHS.has(path)
+          ? TRADE_BROADCAST_EVIDENCE
+          : ["field"]
+    for (const field of kept) {
+      if (error?.[field] !== undefined) details[field] = error[field]
     }
     throw new TradingError(result.code ?? "REQUEST_FAILED", result.message, {
       ...(Object.keys(details).length ? { details } : {}),
-      ...(path === "/api/v1/agent/swap/submit" && error?.stage === "unconfirmed" ? { exitCode: 3 as const } : {}),
+      ...((path === "/api/v1/agent/swap/submit" && error?.stage === "unconfirmed") ||
+      (TRADE_BROADCAST_PATHS.has(path) && mayHaveLanded(error?.stage))
+        ? { exitCode: 3 as const }
+        : {}),
     })
   }
   if (!result.body || typeof result.body !== "object")
@@ -1011,22 +1032,28 @@ export async function runSequencedLegs(
     if (!posted.ok) {
       const error = errorObject(posted.raw)
       await noteLanded(landedFrom(posted.raw, error))
+      // BE-1397: the server's own stage and signature ride in the details beside `hash`.
+      const evidence = {
+        ...(typeof error.stage === "string" ? { stage: error.stage } : {}),
+        ...(typeof error.signature === "string" ? { signature: error.signature } : {}),
+      }
       if (posted.status === 0 || error.stage === "unconfirmed") {
         const hash = typeof error.signature === "string" ? error.signature : signed.hash
         throw failWith(
           "LEG_UNCONFIRMED",
           `The ${current.legKind} leg ${hash} was posted and its receipt was not seen; it may still land. Nothing was re-sent.`,
           3,
-          { hash, legKind: current.legKind },
+          { hash, legKind: current.legKind, ...evidence },
         )
       }
       throw failWith(
         posted.code ?? "REQUEST_FAILED",
         `The ${current.legKind} leg failed: ${posted.message}`,
-        1,
+        // `executed`: an earlier leg landed and this one did not. Not a failed trade.
+        error.stage === "executed" ? 3 : 1,
         typeof error.signature === "string"
-          ? { hash: error.signature, legKind: current.legKind }
-          : { legKind: current.legKind },
+          ? { hash: error.signature, legKind: current.legKind, ...evidence }
+          : { legKind: current.legKind, ...evidence },
       )
     }
     const answer = opts.unwrap((posted.body ?? {}) as Json)

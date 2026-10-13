@@ -52,6 +52,9 @@ async function fixture(
     /** BE-505: the body POST /agent/swap/submit answers with. Defaults to one without `settlement`. */
     swapBuildError?: Record<string, unknown>
     swapSubmitError?: Record<string, unknown>
+    /** BE-1397: a Candle error the token trade's /execute (after the build) or /submit answers. */
+    tradeExecuteError?: Record<string, unknown>
+    tradeSubmitError?: Record<string, unknown>
     swapJob?: Record<string, unknown>
     swapSubmit?: unknown
     /** BE-503: `embeddedWalletPermission` on GET /wallets/embedded. Absent by default (an older API). */
@@ -124,6 +127,7 @@ async function fixture(
       if (opts.noExecuteRoute) return new Response("404 Not Found", { status: 404 })
       // The support probe: no row for this id yet, so the real route answers JOB_NOT_FOUND. A
       // second call, after a build, is the execution itself.
+      if (built && opts.tradeExecuteError) return Response.json({ error: opts.tradeExecuteError }, { status: 500 })
       return built
         ? ok({ success: true, status: "executed", signature })
         : Response.json({ error: { code: "JOB_NOT_FOUND", message: "not found" } }, { status: 404 })
@@ -163,6 +167,8 @@ async function fixture(
     if (path === "/api/v1/agent/swap/submit" && opts.swapSubmitError)
       return Response.json({ error: opts.swapSubmitError }, { status: 400 })
     if (path === "/api/v1/agent/swap/submit" && opts.swapSubmit !== undefined) return ok(opts.swapSubmit)
+    if (path === "/api/v1/trade/agent/submit" && opts.tradeSubmitError)
+      return Response.json({ error: opts.tradeSubmitError }, { status: 500 })
     if (path.endsWith("/submit") || path.endsWith("/confirm"))
       return ok({ success: true, status: "executed", signature })
     if (path === "/rpc") {
@@ -689,6 +695,57 @@ describe("TEE CLI trading", () => {
       expect(f.stderr.text).toContain("Do not automatically retry")
       expect(f.calls.filter((call) => call.path === "/api/v1/agent/swap/submit")).toHaveLength(1)
     })
+  // ── BE-1397 (BE-1123 item 12): a token trade that may have landed ──────────────────────────
+  for (const [rail, wallet, option, path] of [
+    ["embedded /execute", embedded, "tradeExecuteError", "/api/v1/trade/agent/execute"],
+    ["TEE /submit", "tee", "tradeSubmitError", "/api/v1/trade/agent/submit"],
+  ] as const) {
+    for (const stage of ["unconfirmed", "executed"])
+      test(`a token trade refused at ${rail} with stage ${stage} exits 3 and keeps stage and signature`, async () => {
+        const f = await fixture({
+          [option]: {
+            code: "SWAP_FAILED",
+            message: "outcome unknown",
+            retryable: false,
+            stage,
+            signature: "trade-sig",
+            priorSignatures: ["approval-sig"],
+          },
+        })
+        const args = ["swap", "SOL", mint, "--amount", "1", "--wallet", wallet, "--client-trade-id", "t-1", "--yes"]
+        expect(await run([...args, "--json"], f.deps)).toBe(3)
+        const failure = JSON.parse(f.stdout.text)
+        expect(failure).toMatchObject({
+          ok: false,
+          code: "SWAP_FAILED",
+          details: { stage, signature: "trade-sig", priorSignatures: ["approval-sig"], retryable: false },
+        })
+        expect(failure.message).toContain("candle swap status t-1")
+        expect(f.stderr.text).toContain("trade-sig")
+        expect(f.stderr.text).toContain(stage === "executed" ? "Do not retry" : "Do not automatically retry")
+        // One call past the embedded rail's support probe: nothing is re-sent.
+        expect(f.calls.filter((call) => call.path === path)).toHaveLength(rail.startsWith("embedded") ? 2 : 1)
+      })
+    for (const [stage, code] of [
+      ["not_broadcast", "SWAP_FAILED"],
+      ["reverted", "TRADE_REVERTED"],
+    ])
+      test(`a token trade refused at ${rail} with stage ${stage} is still exit 1, with its stage`, async () => {
+        const f = await fixture({
+          [option]: { code, message: "failed", stage, ...(stage === "reverted" ? { signature: "trade-sig" } : {}) },
+        })
+        expect(await run(["swap", "SOL", mint, "--amount", "1", "--wallet", wallet, "--yes", "--json"], f.deps)).toBe(1)
+        const failure = JSON.parse(f.stdout.text)
+        expect(failure.code).toBe(code)
+        expect(failure.details.stage).toBe(stage)
+        expect(failure.details.signature).toBe(stage === "reverted" ? "trade-sig" : undefined)
+      })
+  }
+  test("a refusal with no stage keeps exit 1 and adds no details", async () => {
+    const f = await fixture({ tradeSubmitError: { code: "QUOTE_EXPIRED", message: "expired" } })
+    expect(await run(["swap", "SOL", mint, "--amount", "1", "--wallet", "tee", "--yes", "--json"], f.deps)).toBe(1)
+    expect(JSON.parse(f.stdout.text)).not.toHaveProperty("details")
+  })
   test("swap status reads an embedded job with durable leg evidence and no write", async () => {
     const f = await fixture({
       swapJob: {

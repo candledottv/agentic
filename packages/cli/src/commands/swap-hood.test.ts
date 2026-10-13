@@ -91,7 +91,7 @@ interface Planned {
  * final result after the last), `revert` answers the route's reverted failure, `unconfirmed` the
  * route's no-receipt answer, `lost` throws as a dropped connection.
  */
-type Outcome = "land" | "revert" | "unconfirmed" | "lost"
+type Outcome = "land" | "revert" | "unconfirmed" | "executed" | "lost"
 
 interface FixtureOptions {
   legs?: Planned[]
@@ -289,13 +289,14 @@ async function fixture(opts: FixtureOptions = {}) {
           { status: 400 },
         )
       }
-      if (outcome === "unconfirmed") {
+      if (outcome === "unconfirmed" || outcome === "executed") {
         const error = {
           code: "SWAP_FAILED",
-          message: "no receipt",
+          message: outcome === "executed" ? "the trade landed; the fee leg failed" : "no receipt",
           retryable: false,
-          stage: "unconfirmed",
-          signature: hash,
+          stage: outcome,
+          // `executed` names the trade leg that landed, not the leg this submit carried.
+          signature: outcome === "executed" ? (landed.find((leg) => leg.kind === "trade")?.hash ?? hash) : hash,
         }
         return Response.json(
           swapRail
@@ -578,6 +579,29 @@ describe("H8: the sequenced leg loop", () => {
     expect((failure.details as { hash: string }).hash).toBe(`0x${"2".repeat(64)}`)
     expect(String(failure.message)).toContain("candle swap status hood-1")
     expect(f.calls.filter((call) => call.path.endsWith("/submit"))).toHaveLength(2)
+  })
+
+  test("BE-1397: an uncertain leg keeps the server's stage and signature beside its hash", async () => {
+    const f = await fixture({ outcomes: ["land", "unconfirmed"] })
+    expect(await run(buyArgs(), f.deps)).toBe(3)
+    expect(lastJson(f.stdout.text).details).toMatchObject({
+      stage: "unconfirmed",
+      signature: `0x${"2".repeat(64)}`,
+      hash: `0x${"2".repeat(64)}`,
+    })
+  })
+
+  test("BE-1397: a fee leg refused after the trade landed (stage executed) exits 3 with the trade's hash", async () => {
+    const f = await fixture({ outcomes: ["land", "land", "executed"] })
+    expect(await run(buyArgs(), f.deps)).toBe(3)
+    const failure = lastJson(f.stdout.text)
+    expect(failure.code).toBe("SWAP_FAILED")
+    const details = failure.details as { stage: string; signature: string; landedLegs: Array<{ kind: string }> }
+    expect(details.stage).toBe("executed")
+    expect(details.signature).toBe(`0x${"2".repeat(64)}`)
+    expect(details.landedLegs.map((leg) => leg.kind)).toEqual(["approval", "trade"])
+    expect(f.stderr.text).toContain("Do not retry")
+    expect(f.calls.filter((call) => call.path.endsWith("/submit"))).toHaveLength(3)
   })
 
   test("a submit that gets no answer at all exits 3 with the hash of the bytes it posted", async () => {
