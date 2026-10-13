@@ -3,6 +3,7 @@ var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
 // src/client.ts
 import { keccak_256 as keccak_2562 } from "@noble/hashes/sha3";
+import { base58 as base582 } from "@scure/base";
 
 // src/authorization-signature.ts
 import canonicalize from "canonicalize";
@@ -94,6 +95,8 @@ class CandleApiError extends Error {
   feeRaw;
   quoteAsset;
   treasury;
+  reason;
+  retryAfter;
   constructor(args) {
     super(args.message);
     this.name = "CandleApiError";
@@ -121,6 +124,10 @@ class CandleApiError extends Error {
       this.quoteAsset = args.quoteAsset;
     if (args.treasury !== undefined)
       this.treasury = args.treasury;
+    if (args.reason !== undefined)
+      this.reason = args.reason;
+    if (args.retryAfter !== undefined)
+      this.retryAfter = args.retryAfter;
   }
 }
 
@@ -233,7 +240,9 @@ function envelopeError(body) {
     ...typeof error.recorded === "boolean" ? { recorded: error.recorded } : {},
     ...typeof error.feeRaw === "string" ? { feeRaw: error.feeRaw } : {},
     ...typeof error.quoteAsset === "string" ? { quoteAsset: error.quoteAsset } : {},
-    ...typeof error.treasury === "string" ? { treasury: error.treasury } : {}
+    ...typeof error.treasury === "string" ? { treasury: error.treasury } : {},
+    ...typeof error.reason === "string" ? { reason: error.reason } : {},
+    ...typeof error.retryAfter === "number" ? { retryAfter: error.retryAfter } : {}
   };
 }
 function candleApiErrorFromResponse(status, bodyText) {
@@ -1546,13 +1555,17 @@ class CandleClient {
     if (typeof built.transaction === "string") {
       let unsignedTransactionBase64 = built.transaction;
       let clientLaunchId = built.clientLaunchId;
+      let signed;
       for (let attempt = 0;attempt <= MAX_BLOCKHASH_REBUILDS; attempt++) {
-        const signed = await this.signLinkedTransaction({
-          linkedWalletId: body.linkedWalletId,
-          privyWalletId,
-          chain: "solana",
-          unsignedTransactionBase64
-        });
+        if (signed?.forTransaction !== unsignedTransactionBase64) {
+          const result = await this.signLinkedTransaction({
+            linkedWalletId: body.linkedWalletId,
+            privyWalletId,
+            chain: "solana",
+            unsignedTransactionBase64
+          });
+          signed = { forTransaction: unsignedTransactionBase64, ...result };
+        }
         try {
           const signature = await this.broadcastSignedTransaction("solana", signed.signedTransaction, signed.encoding);
           return this.confirmSelfLaunch({ clientLaunchId, signature });
@@ -1561,7 +1574,20 @@ class CandleClient {
             throw error;
           if (attempt === MAX_BLOCKHASH_REBUILDS)
             throw withRpcLagHint(error);
-          const rebuilt = await this.postSelfLaunchBuild(body, op);
+          let rebuilt;
+          try {
+            rebuilt = await this.postSelfLaunchBuild(body, op);
+          } catch (buildError) {
+            const reason = buildError instanceof CandleApiError ? buildError.reason : undefined;
+            if (reason === "prior_attempt_in_flight")
+              continue;
+            if (reason === "prior_attempt_on_chain") {
+              const signature = solanaSignedTxSignature(signed.signedTransaction, signed.encoding);
+              if (signature)
+                return this.confirmSelfLaunch({ clientLaunchId, signature });
+            }
+            throw buildError;
+          }
           if (typeof rebuilt.transaction !== "string")
             throw error;
           unsignedTransactionBase64 = rebuilt.transaction;
@@ -2098,6 +2124,27 @@ function tradeLandedFeeLegError(args) {
     cause: args.err,
     feeOutcome: "not-broadcast"
   });
+}
+function solanaSignedTxSignature(signedTransaction, encoding) {
+  const enc = encoding.toLowerCase();
+  let bytes;
+  try {
+    if (enc === "base64")
+      bytes = fromBase64(signedTransaction);
+    else if (enc === "base58")
+      bytes = base582.decode(signedTransaction);
+    else
+      return;
+  } catch {
+    return;
+  }
+  const count = bytes[0];
+  if (count === undefined || count === 0 || count >= 128 || bytes.length < 1 + count * 64)
+    return;
+  const first = bytes.subarray(1, 65);
+  if (first.every((byte) => byte === 0))
+    return;
+  return base582.encode(first);
 }
 function evmSignedTxHash(signedTransaction, encoding) {
   const enc = encoding.toLowerCase();

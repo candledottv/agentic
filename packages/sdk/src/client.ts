@@ -40,6 +40,7 @@
  */
 
 import { keccak_256 } from "@noble/hashes/sha3"
+import { base58 } from "@scure/base"
 import { buildPrivyAuthorizationSignature } from "./authorization-signature"
 import {
   CandleApiError,
@@ -4076,11 +4077,24 @@ export class CandleClient {
    * your own id and store it before the call when you can. Never retry without the id: a call
    * with no id, or a new one, is a second, independent launch.
    *
-   * Here the id is necessary and NOT sufficient. This method signs and broadcasts on the caller's
-   * side, so an error after the broadcast may sit on a launch transaction that landed, and
-   * calling `selfLaunch()` again under the same id can build and broadcast a second one. Read
-   * `getLaunchJob(id)` first; if it is not `confirmed`, check the wallet's recent transactions
-   * before sending again.
+   * This method signs and broadcasts on the caller's side, so an error after the broadcast may
+   * sit on a launch transaction that landed. Read `getLaunchJob(id)` first.
+   *
+   * On Solana the id is enough to keep a second launch from being built. One id has one build
+   * at a time: `buildSelfLaunch()` under the same id returns the SAME transaction while the
+   * earlier one can still land, refuses with `IDEMPOTENCY_CONFLICT` and
+   * `reason: "prior_attempt_on_chain"` once it has landed, and builds a new transaction only
+   * after the chain proves the earlier one expired. A launch that landed is recorded with
+   * `confirmSelfLaunch({ clientLaunchId, signature })`, which keeps working after the build's
+   * 30-minute `expiresAt`. Inside this call, a blockhash error from your Solana RPC is retried
+   * with the bytes already signed: they are signed once, and signed again only when the server
+   * returns a different transaction. Calling `selfLaunch()` again under the same id while the
+   * earlier build is still live is refused by the sign relay, because that transaction's sign
+   * claim is already spent: broadcast what was signed, or wait for it to expire.
+   *
+   * On Hood the id is necessary and NOT sufficient: a rebuild under the same id builds a new
+   * curve, so calling `selfLaunch()` again can create and broadcast a second one. If the job is
+   * not `confirmed`, check the wallet's recent transactions before sending again.
    */
   async selfLaunch(req: SelfLaunchRequest): Promise<ConfirmSelfLaunchResult> {
     const { privyWalletId, ...launchReq } = req
@@ -4106,15 +4120,27 @@ export class CandleClient {
       // owns expiry. Tracked as plain fields (not the whole `built` object)
       // because `typeof built.transaction === "string"` narrows that one property, not the full
       // BuildSelfLaunchResult union (see the Hood branch's cast below for the same caveat).
+      //
+      // The signed bytes are kept across a repeat /build. One clientLaunchId has one build at a
+      // time on the server: while that build can still land, a repeat /build returns the SAME
+      // transaction (or refuses `prior_attempt_in_flight`), and its sign claim is single use, so
+      // asking the relay to sign those bytes again is refused. A blockhash error from this
+      // client's own RPC is usually that RPC lagging, not the transaction expiring, so the held
+      // bytes are broadcast again. Only a DIFFERENT transaction, which the server builds once the
+      // chain proves the earlier one expired, is signed anew.
       let unsignedTransactionBase64 = built.transaction
       let clientLaunchId = built.clientLaunchId
+      let signed: { forTransaction: string; signedTransaction: string; encoding: string } | undefined
       for (let attempt = 0; attempt <= MAX_BLOCKHASH_REBUILDS; attempt++) {
-        const signed = await this.signLinkedTransaction({
-          linkedWalletId: body.linkedWalletId,
-          privyWalletId,
-          chain: "solana",
-          unsignedTransactionBase64,
-        })
+        if (signed?.forTransaction !== unsignedTransactionBase64) {
+          const result = await this.signLinkedTransaction({
+            linkedWalletId: body.linkedWalletId,
+            privyWalletId,
+            chain: "solana",
+            unsignedTransactionBase64,
+          })
+          signed = { forTransaction: unsignedTransactionBase64, ...result }
+        }
         try {
           const signature = await this.broadcastSignedTransaction("solana", signed.signedTransaction, signed.encoding)
           return this.confirmSelfLaunch({ clientLaunchId, signature })
@@ -4127,9 +4153,23 @@ export class CandleClient {
           // IDEMPOTENCY_CONFLICT (`begin.kind === "replay" && begin.row.status === "confirmed"`)
           // -- there is no "already executed" SUCCESS shape it could return instead. So a
           // buildSelfLaunch() call that lands on an already-confirmed row throws a CandleApiError
-          // here, uncaught, and propagates out of this loop as-is (never flattened into the stale
-          // blockhash error below); no explicit "return the replay" branch is needed on this path.
-          const rebuilt = await this.postSelfLaunchBuild(body, op)
+          // here, and propagates out of this loop as-is (never flattened into the stale blockhash
+          // error below). Two refusals are about the build this call already signed, and are
+          // answered from the bytes it holds instead.
+          let rebuilt: BuildSelfLaunchResult
+          try {
+            rebuilt = await this.postSelfLaunchBuild(body, op)
+          } catch (buildError) {
+            const reason = buildError instanceof CandleApiError ? buildError.reason : undefined
+            // It can still land: broadcast the same signed bytes again, without signing.
+            if (reason === "prior_attempt_in_flight") continue
+            // It landed (this client's RPC only failed to say so): record it with its signature.
+            if (reason === "prior_attempt_on_chain") {
+              const signature = solanaSignedTxSignature(signed.signedTransaction, signed.encoding)
+              if (signature) return this.confirmSelfLaunch({ clientLaunchId, signature })
+            }
+            throw buildError
+          }
           if (typeof rebuilt.transaction !== "string") throw error
           unsignedTransactionBase64 = rebuilt.transaction
           clientLaunchId = rebuilt.clientLaunchId
@@ -5001,6 +5041,30 @@ function tradeLandedFeeLegError(args: {
     cause: args.err,
     feeOutcome: "not-broadcast",
   })
+}
+
+/**
+ * The signature (transaction id) of a signed Solana transaction: the first signature in its
+ * serialized bytes, base58, which is what `sendTransaction` returns for it. Undefined when the
+ * bytes are not a signed transaction this can read.
+ */
+function solanaSignedTxSignature(signedTransaction: string, encoding: string): string | undefined {
+  const enc = encoding.toLowerCase()
+  let bytes: Uint8Array
+  try {
+    if (enc === "base64") bytes = fromBase64(signedTransaction)
+    else if (enc === "base58") bytes = base58.decode(signedTransaction)
+    else return undefined
+  } catch {
+    return undefined
+  }
+  // A compact-u16 signature count (one byte below 128), then 64 bytes per signature.
+  const count = bytes[0]
+  if (count === undefined || count === 0 || count >= 0x80 || bytes.length < 1 + count * 64) return undefined
+  const first = bytes.subarray(1, 65)
+  // An all-zero first signature is the unsigned placeholder, not a signature.
+  if (first.every((byte) => byte === 0)) return undefined
+  return base58.encode(first)
 }
 
 /** keccak256 of a signed EVM transaction, the hash eth_sendRawTransaction would return. */

@@ -6,6 +6,7 @@
 
 import { describe, expect, test } from "bun:test"
 import { keccak_256 } from "@noble/hashes/sha3"
+import { base58 } from "@scure/base"
 import {
   __setEvmReceiptWaitForTest,
   type AgentTierInfo,
@@ -2871,16 +2872,18 @@ describe("linked-wallet signing relay + one-shot flows", () => {
 
       test("exhausting every rebuild throws the last JsonRpcError after exactly MAX_BLOCKHASH_REBUILDS + 1 (3) broadcast attempts", async () => {
         const store = await keyedSecretStore()
+        const rebuilt2 = { ...BUILD_SELF_LAUNCH_SOLANA, transaction: "AQADABc5rebuilt2" }
+        const rebuilt3 = { ...BUILD_SELF_LAUNCH_SOLANA, transaction: "AQADABc5rebuilt3" }
         const { client, calls } = makeClient(
           { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
           [
             json(200, BUILD_SELF_LAUNCH_SOLANA), // build #1
             json(200, SIGN_RELAY_OK), // sign #1
             blockhashNotFoundError(), // broadcast #1 fails
-            json(200, BUILD_SELF_LAUNCH_SOLANA), // build #2 (rebuild)
+            json(200, rebuilt2), // build #2 (rebuild: the earlier one expired, a new transaction)
             json(200, SIGN_RELAY_OK), // sign #2
             blockhashNotFoundError(), // broadcast #2 fails
-            json(200, BUILD_SELF_LAUNCH_SOLANA), // build #3 (rebuild)
+            json(200, rebuilt3), // build #3 (rebuild)
             json(200, SIGN_RELAY_OK), // sign #3
             blockhashNotFoundError(), // broadcast #3 fails -- attempts exhausted, throw
           ],
@@ -2902,6 +2905,200 @@ describe("linked-wallet signing relay + one-shot flows", () => {
         expect(calls.filter((c) => c.url === "https://api.test/api/v1/launch/self/build")).toHaveLength(3)
         expect(calls.filter((c) => c.url === SOLANA_RPC)).toHaveLength(3)
         expect(calls.some((c) => c.url === "https://api.test/api/v1/launch/self/confirm")).toBe(false)
+      })
+
+      // BE-1382 (A24): one clientLaunchId has one build at a time on the server. A repeat /build
+      // answers the same transaction while it can still land, and its sign claim is single use,
+      // so selfLaunch() keeps the bytes it signed instead of asking the relay to sign them again.
+      describe("the signed bytes are kept across a repeat build", () => {
+        /** A signed transaction: one signature (the transaction id), then its message. */
+        const SIGNATURE_BYTES = new Uint8Array(64).map((_, i) => i + 1)
+        const HELD_SIGNATURE = base58.encode(SIGNATURE_BYTES)
+        const SIGNED_TX = Buffer.from([1, ...SIGNATURE_BYTES, 9, 9, 9]).toString("base64")
+        const SIGN_RELAY_SIGNED = { success: true, signedTransaction: SIGNED_TX, encoding: "base64" }
+        const BUILD_URL = "https://api.test/api/v1/launch/self/build"
+        const CONFIRM_URL = "https://api.test/api/v1/launch/self/confirm"
+        const refusal = (reason: string, retryable: boolean) =>
+          json(409, {
+            success: false,
+            error: {
+              code: "IDEMPOTENCY_CONFLICT",
+              message: "An earlier build of this launch",
+              retryable,
+              reason,
+              mint: "Mint111",
+              ...(retryable ? { retryAfter: 1692345699000 } : {}),
+            },
+          })
+        const launch = (client: CandleClient) =>
+          client.selfLaunch({
+            ...LAUNCH_REQ,
+            clientLaunchId: "run-linked-1",
+            linkedWalletId: LINKED_WALLET_ID,
+            privyWalletId: PRIVY_WALLET_ID,
+          })
+        const broadcastOf = (call: { body?: unknown } | undefined) =>
+          (JSON.parse(String(call?.body)) as { params: [string, { encoding: string }] }).params[0]
+
+        test("the same transaction back is broadcast again with the held bytes, and signed once", async () => {
+          const store = await keyedSecretStore()
+          const confirmed = { ...LAUNCH_OK, signature: "BroadcastSig444" }
+          const { client, calls } = makeClient(
+            { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
+            [
+              json(200, BUILD_SELF_LAUNCH_SOLANA), // build #1
+              json(200, SIGN_RELAY_SIGNED), // sign, once
+              blockhashNotFoundError(), // broadcast #1: this client's RPC is behind
+              json(200, BUILD_SELF_LAUNCH_SOLANA), // build #2: the same transaction, still live
+              solanaRpcOk("BroadcastSig444"), // broadcast #2, the held bytes
+              json(200, confirmed),
+            ],
+          )
+          expect(await launch(client)).toEqual({ ...confirmed, clientLaunchId: "run-linked-1" } as never)
+          expect(calls.filter((c) => c.url === BUILD_URL)).toHaveLength(2)
+          expect(calls.filter((c) => c.url === SIGN_RELAY_URL)).toHaveLength(1)
+          const broadcasts = calls.filter((c) => c.url === SOLANA_RPC)
+          expect(broadcasts.map(broadcastOf)).toEqual([SIGNED_TX, SIGNED_TX])
+          expect(JSON.parse(String(calls.at(-1)?.body))).toEqual({
+            clientLaunchId: "run-linked-1",
+            signature: "BroadcastSig444",
+          })
+        })
+
+        test("prior_attempt_in_flight does the same: no second sign, the held bytes again", async () => {
+          const store = await keyedSecretStore()
+          const { client, calls } = makeClient(
+            { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
+            [
+              json(200, BUILD_SELF_LAUNCH_SOLANA),
+              json(200, SIGN_RELAY_SIGNED),
+              blockhashNotFoundError(),
+              refusal("prior_attempt_in_flight", true), // build #2 refused: it can still land
+              solanaRpcOk("BroadcastSig444"),
+              json(200, LAUNCH_OK),
+            ],
+          )
+          expect(await launch(client)).toMatchObject({ clientLaunchId: "run-linked-1" })
+          expect(calls.filter((c) => c.url === SIGN_RELAY_URL)).toHaveLength(1)
+          expect(calls.filter((c) => c.url === SOLANA_RPC).map(broadcastOf)).toEqual([SIGNED_TX, SIGNED_TX])
+          expect(calls.filter((c) => c.url === CONFIRM_URL)).toHaveLength(1)
+        })
+
+        test("prior_attempt_on_chain confirms with the signature of the bytes it holds", async () => {
+          const store = await keyedSecretStore()
+          const confirmed = { ...LAUNCH_OK, signature: HELD_SIGNATURE }
+          const { client, calls } = makeClient(
+            { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
+            [
+              json(200, BUILD_SELF_LAUNCH_SOLANA),
+              json(200, SIGN_RELAY_SIGNED),
+              blockhashNotFoundError(),
+              refusal("prior_attempt_on_chain", false), // build #2 refused: it landed
+              json(200, confirmed),
+            ],
+          )
+          expect(await launch(client)).toEqual({ ...confirmed, clientLaunchId: "run-linked-1" } as never)
+          expect(calls.filter((c) => c.url === SIGN_RELAY_URL)).toHaveLength(1)
+          expect(calls.filter((c) => c.url === SOLANA_RPC)).toHaveLength(1)
+          expect(JSON.parse(String(calls.at(-1)?.body))).toEqual({
+            clientLaunchId: "run-linked-1",
+            signature: HELD_SIGNATURE,
+          })
+        })
+
+        test("a different transaction is signed once, and that one is broadcast", async () => {
+          const store = await keyedSecretStore()
+          const rebuiltLaunch = { ...BUILD_SELF_LAUNCH_SOLANA, transaction: "AQADABc5rebuiltunsignedlaunch" }
+          const { client, calls } = makeClient(
+            { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
+            [
+              json(200, BUILD_SELF_LAUNCH_SOLANA), // build #1
+              json(200, SIGN_RELAY_SIGNED), // sign #1
+              blockhashNotFoundError(),
+              json(200, rebuiltLaunch), // build #2: the first expired, a new transaction
+              json(200, SIGN_RELAY_OK), // sign #2, the new transaction
+              blockhashNotFoundError(),
+              json(200, rebuiltLaunch), // build #3: the same new transaction, still live
+              solanaRpcOk("BroadcastSig555"), // broadcast #3, with the bytes of sign #2
+              json(200, LAUNCH_OK),
+            ],
+          )
+          await launch(client)
+          const signedFor = calls
+            .filter((c) => c.url === SIGN_RELAY_URL)
+            .map(
+              (c) =>
+                (JSON.parse(String(c.body)) as { body: { params: { transaction: string } } }).body.params.transaction,
+            )
+          expect(signedFor).toEqual(["AQADABc5unsignedlaunch", "AQADABc5rebuiltunsignedlaunch"])
+          expect(calls.filter((c) => c.url === SOLANA_RPC).map(broadcastOf)).toEqual([
+            SIGNED_TX,
+            SIGN_RELAY_OK.signedTransaction,
+            SIGN_RELAY_OK.signedTransaction,
+          ])
+        })
+
+        test("the loop bound is unchanged: three broadcasts of the held bytes, then the lag hint", async () => {
+          const store = await keyedSecretStore()
+          const { client, calls } = makeClient(
+            { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
+            [
+              json(200, BUILD_SELF_LAUNCH_SOLANA),
+              json(200, SIGN_RELAY_SIGNED),
+              blockhashNotFoundError(),
+              json(200, BUILD_SELF_LAUNCH_SOLANA),
+              blockhashNotFoundError(),
+              refusal("prior_attempt_in_flight", true),
+              blockhashNotFoundError(),
+            ],
+          )
+          const error = await launch(client).catch((e) => e)
+          expect(error).toBeInstanceOf(JsonRpcError)
+          expect((error as JsonRpcError).message).toContain("lagging or rate-limited")
+          expect(calls.filter((c) => c.url === SIGN_RELAY_URL)).toHaveLength(1)
+          expect(calls.filter((c) => c.url === SOLANA_RPC)).toHaveLength(3)
+          expect(calls.filter((c) => c.url === BUILD_URL)).toHaveLength(3)
+        })
+
+        test("prior_attempt_on_chain with bytes that carry no signature throws the refusal, with its reason", async () => {
+          const store = await keyedSecretStore()
+          const { client, calls } = makeClient(
+            { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
+            [
+              json(200, BUILD_SELF_LAUNCH_SOLANA),
+              json(200, SIGN_RELAY_OK), // "signed-tx": not a transaction a signature can be read from
+              blockhashNotFoundError(),
+              refusal("prior_attempt_on_chain", false),
+            ],
+          )
+          const error = await launch(client).catch((e) => e)
+          expect(error).toBeInstanceOf(CandleApiError)
+          expect(error).toMatchObject({
+            code: "IDEMPOTENCY_CONFLICT",
+            reason: "prior_attempt_on_chain",
+            mint: "Mint111",
+            clientLaunchId: "run-linked-1",
+          })
+          expect(calls.some((c) => c.url === CONFIRM_URL)).toBe(false)
+        })
+
+        test("any other refusal of the repeat build still throws as it is", async () => {
+          const store = await keyedSecretStore()
+          const { client } = makeClient(
+            { ...KEYED, secretStore: store, privyAppId: PRIVY_APP_ID, solanaRpcUrl: SOLANA_RPC },
+            [
+              json(200, BUILD_SELF_LAUNCH_SOLANA),
+              json(200, SIGN_RELAY_SIGNED),
+              blockhashNotFoundError(),
+              json(500, {
+                success: false,
+                error: { code: "LAUNCH_FAILED", message: "chain", retryable: true, reason: "chain_read_failed" },
+              }),
+            ],
+          )
+          const error = await launch(client).catch((e) => e)
+          expect(error).toMatchObject({ code: "LAUNCH_FAILED", reason: "chain_read_failed", retryable: true })
+        })
       })
     })
   })

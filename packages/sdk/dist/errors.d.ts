@@ -61,6 +61,15 @@ export interface CandleErrorPayload {
     feeRaw?: string;
     quoteAsset?: string;
     treasury?: string;
+    /**
+     * The named check behind a refusal whose `code` it shares with other causes. An open string.
+     * On a repeat self-launch build: `prior_attempt_on_chain` (an earlier build of this
+     * clientLaunchId landed: confirm it, do not build again), `prior_attempt_in_flight` (it can
+     * still land: broadcast what was signed, or retry after `retryAfter`), `chain_read_failed`.
+     */
+    reason?: string;
+    /** Epoch milliseconds after which a retryable refusal is worth retrying, when the server knows. */
+    retryAfter?: number;
 }
 /**
  * The codes a TEE bridge between Solana and Hood adds (Ember Phase 4c). `code` stays an open
@@ -100,6 +109,10 @@ export declare class CandleApiError extends Error {
     readonly feeRaw?: string;
     readonly quoteAsset?: string;
     readonly treasury?: string;
+    /** See `CandleErrorPayload.reason`. */
+    readonly reason?: string;
+    /** See `CandleErrorPayload.retryAfter`. */
+    readonly retryAfter?: number;
     /**
      * The idempotency id of the one-call method this error left (see `OperationIds`). Set by the
      * SDK from the request it sent, never read from the server envelope, and absent on an error

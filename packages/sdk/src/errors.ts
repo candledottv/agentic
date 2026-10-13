@@ -64,6 +64,15 @@ export interface CandleErrorPayload {
   feeRaw?: string
   quoteAsset?: string
   treasury?: string
+  /**
+   * The named check behind a refusal whose `code` it shares with other causes. An open string.
+   * On a repeat self-launch build: `prior_attempt_on_chain` (an earlier build of this
+   * clientLaunchId landed: confirm it, do not build again), `prior_attempt_in_flight` (it can
+   * still land: broadcast what was signed, or retry after `retryAfter`), `chain_read_failed`.
+   */
+  reason?: string
+  /** Epoch milliseconds after which a retryable refusal is worth retrying, when the server knows. */
+  retryAfter?: number
 }
 
 /**
@@ -105,6 +114,10 @@ export class CandleApiError extends Error {
   readonly feeRaw?: string
   readonly quoteAsset?: string
   readonly treasury?: string
+  /** See `CandleErrorPayload.reason`. */
+  readonly reason?: string
+  /** See `CandleErrorPayload.retryAfter`. */
+  readonly retryAfter?: number
   /**
    * The idempotency id of the one-call method this error left (see `OperationIds`). Set by the
    * SDK from the request it sent, never read from the server envelope, and absent on an error
@@ -135,6 +148,8 @@ export class CandleApiError extends Error {
     if (args.feeRaw !== undefined) this.feeRaw = args.feeRaw
     if (args.quoteAsset !== undefined) this.quoteAsset = args.quoteAsset
     if (args.treasury !== undefined) this.treasury = args.treasury
+    if (args.reason !== undefined) this.reason = args.reason
+    if (args.retryAfter !== undefined) this.retryAfter = args.retryAfter
   }
 }
 
@@ -397,6 +412,8 @@ function envelopeError(body: unknown): CandleErrorPayload | null {
     ...(typeof error.feeRaw === "string" ? { feeRaw: error.feeRaw } : {}),
     ...(typeof error.quoteAsset === "string" ? { quoteAsset: error.quoteAsset } : {}),
     ...(typeof error.treasury === "string" ? { treasury: error.treasury } : {}),
+    ...(typeof error.reason === "string" ? { reason: error.reason } : {}),
+    ...(typeof error.retryAfter === "number" ? { retryAfter: error.retryAfter } : {}),
   }
 }
 

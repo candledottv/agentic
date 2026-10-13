@@ -3049,11 +3049,24 @@ export declare class CandleClient {
      * your own id and store it before the call when you can. Never retry without the id: a call
      * with no id, or a new one, is a second, independent launch.
      *
-     * Here the id is necessary and NOT sufficient. This method signs and broadcasts on the caller's
-     * side, so an error after the broadcast may sit on a launch transaction that landed, and
-     * calling `selfLaunch()` again under the same id can build and broadcast a second one. Read
-     * `getLaunchJob(id)` first; if it is not `confirmed`, check the wallet's recent transactions
-     * before sending again.
+     * This method signs and broadcasts on the caller's side, so an error after the broadcast may
+     * sit on a launch transaction that landed. Read `getLaunchJob(id)` first.
+     *
+     * On Solana the id is enough to keep a second launch from being built. One id has one build
+     * at a time: `buildSelfLaunch()` under the same id returns the SAME transaction while the
+     * earlier one can still land, refuses with `IDEMPOTENCY_CONFLICT` and
+     * `reason: "prior_attempt_on_chain"` once it has landed, and builds a new transaction only
+     * after the chain proves the earlier one expired. A launch that landed is recorded with
+     * `confirmSelfLaunch({ clientLaunchId, signature })`, which keeps working after the build's
+     * 30-minute `expiresAt`. Inside this call, a blockhash error from your Solana RPC is retried
+     * with the bytes already signed: they are signed once, and signed again only when the server
+     * returns a different transaction. Calling `selfLaunch()` again under the same id while the
+     * earlier build is still live is refused by the sign relay, because that transaction's sign
+     * claim is already spent: broadcast what was signed, or wait for it to expire.
+     *
+     * On Hood the id is necessary and NOT sufficient: a rebuild under the same id builds a new
+     * curve, so calling `selfLaunch()` again can create and broadcast a second one. If the job is
+     * not `confirmed`, check the wallet's recent transactions before sending again.
      */
     selfLaunch(req: SelfLaunchRequest): Promise<ConfirmSelfLaunchResult>;
     /** selfLaunch()'s steps. Every error leaves through selfLaunch()'s runOperation(), which adds the id. */

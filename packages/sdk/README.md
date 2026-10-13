@@ -221,10 +221,27 @@ that you always have the id.
 ### `selfLaunch()` and a linked `trade()`
 
 You sign and broadcast in these flows, so the id is necessary and **not** sufficient. An error
-after the broadcast may sit on a transaction that landed, and calling the method again under the
-same id builds and broadcasts a new one. So a `CandleOperationError` from these flows does not
-tell you to retry with the id. Read the job first (`getLaunchJob(id)`, `getTradeJob(id)`); if it
-is not `confirmed`, check the wallet's recent transactions before sending again.
+after the broadcast may sit on a transaction that landed. So a `CandleOperationError` from these
+flows does not tell you to retry with the id. Read the job first (`getLaunchJob(id)`,
+`getTradeJob(id)`); if it is not `confirmed`, check the wallet's recent transactions before
+sending again.
+
+For a linked `trade()`, and for `selfLaunch()` on Hood, calling the method again under the same
+id builds and broadcasts a new transaction.
+
+`selfLaunch()` on Solana does not build a second launch. One id has one build at a time:
+
+- While the first transaction can still land, the server returns that same transaction again.
+  The sign relay signs a build once, so a second `selfLaunch()` call throws instead of launching
+  again. Broadcast what was signed, or wait until it has expired.
+- Once it has landed, the build is refused with `IDEMPOTENCY_CONFLICT` and
+  `error.reason: "prior_attempt_on_chain"`. Record it with
+  `confirmSelfLaunch({ clientLaunchId, signature })`, taking the signature from the wallet's
+  recent transactions. This keeps working after the build's `expiresAt`.
+- A new transaction is built only after the chain proves the first one can never land.
+
+Inside one `selfLaunch()` call, a blockhash error from your Solana RPC is retried with the bytes
+already signed. They are signed again only when the server returns a different transaction.
 
 ### `launchAtomic()`
 
