@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { buildRequest, registerEligibleProfileTool } from "./tools"
+import { buildRequest, PROFILE_EDIT_TOOL_NAMES, registerEligibleProfileTool } from "./tools"
 
 test("profile update maps to an authenticated PATCH", () => {
   const patch = { publicLinks: { website: "https://example.com" }, publicStrategyNote: "Trades dips" }
@@ -16,24 +16,24 @@ test("profile update maps to an authenticated PATCH", () => {
 
 test("local discovery only offers the tool when the server allows acting edits; refresh removes it", async () => {
   const names: string[] = []
-  let enabled = false
+  const tools: { enabled: boolean }[] = []
   const server = {
     registerTool(name: string) {
       names.push(name)
-      enabled = true
-      return {
-        get enabled() {
-          return enabled
-        },
+      const tool = {
+        enabled: true,
         enable: () => {
-          enabled = true
+          tool.enabled = true
         },
         disable: () => {
-          enabled = false
+          tool.enabled = false
         },
       }
+      tools.push(tool)
+      return tool
     },
   } as unknown as McpServer
+  const enabled = () => tools.map((tool) => tool.enabled)
   const env = { CANDLE_API_URL: "https://api.test", CANDLE_AGENT_API_KEY: "fixture-key" }
   let canEdit = false
   const fetcher = async () => Response.json({ success: true, canEdit })
@@ -41,18 +41,18 @@ test("local discovery only offers the tool when the server allows acting edits; 
   expect(names).toEqual([])
   canEdit = true
   expect(await registerEligibleProfileTool(server, env, fetcher)).toBe(true)
-  expect(names).toEqual(["candle_update_profile"])
+  expect(names).toEqual([...PROFILE_EDIT_TOOL_NAMES])
   canEdit = false
   expect(await registerEligibleProfileTool(server, env, fetcher)).toBe(false)
-  expect(enabled).toBe(false)
+  expect(enabled()).toEqual([false, false, false])
   canEdit = true
   expect(await registerEligibleProfileTool(server, env, fetcher)).toBe(true)
-  expect(enabled).toBe(true)
-  expect(names).toHaveLength(1)
+  expect(enabled()).toEqual([true, true, true])
+  expect(names).toHaveLength(3)
   expect(await registerEligibleProfileTool(server, { ...env, CANDLE_MCP_TOOLS: "candle_get_market" }, fetcher)).toBe(
     false,
   )
-  expect(enabled).toBe(false)
+  expect(enabled()).toEqual([false, false, false])
 })
 
 test("anonymous, denied, and old/offline API discovery fail closed", async () => {

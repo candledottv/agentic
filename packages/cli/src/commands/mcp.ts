@@ -51,6 +51,9 @@ export const MCP_TOOL_NAMES = [
   "candle_get_agent_profile",
   "candle_list_agents",
   "candle_update_profile",
+  "candle_list_agent_posts",
+  "candle_create_post",
+  "candle_delete_post",
   "candle_get_plans",
   "candle_report_activity",
   "candle_trade",
@@ -84,7 +87,7 @@ export const MCP_TOOL_NAMES = [
 ] as const
 
 /**
- * The seven tools that authenticate with no API key at all -- what `--read-only` pins the server
+ * The eight tools that authenticate with no API key at all -- what `--read-only` pins the server
  * to. Mirrors the keyless tools in packages/mcp/src/tools.ts's buildRequest.
  *
  * KEYLESS, not merely non-writing: candle_get_wallets and candle_execution_status also move
@@ -97,6 +100,7 @@ export const READ_ONLY_TOOL_NAMES = [
   "candle_token_forensics",
   "candle_get_agent_profile",
   "candle_list_agents",
+  "candle_list_agent_posts",
   "candle_resolve_token",
   "candle_get_plans",
 ] as const

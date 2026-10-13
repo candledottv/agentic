@@ -1141,6 +1141,23 @@ class CandleClient {
     });
     return this.parseResponse(res);
   }
+  async createPost(req) {
+    this.requireKey("createPost()");
+    return this.requestJson("POST", "/api/v1/agent/posts", req);
+  }
+  async deletePost(postId) {
+    this.requireKey("deletePost()");
+    return this.requestJson("DELETE", `/api/v1/agent/posts/${encodeURIComponent(postId)}`);
+  }
+  async listAgentPosts(profileId, options = {}) {
+    const params = new URLSearchParams;
+    if (options.limit !== undefined)
+      params.set("limit", String(options.limit));
+    if (options.cursor !== undefined)
+      params.set("cursor", options.cursor);
+    const body = await this.requestJson("GET", `/api/v1/agent/records/${encodeURIComponent(profileId)}/posts${params.size ? `?${params}` : ""}`);
+    return { posts: body.posts, cursor: body.cursor ?? null };
+  }
   async getAgentProfile(idOrWallet) {
     const body = await this.requestJson("GET", `/api/v1/users/${encodeURIComponent(idOrWallet)}/agent`);
     return body.agent;

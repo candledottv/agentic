@@ -1,10 +1,19 @@
 import { describe, expect, test } from "bun:test"
-import { buildRequest, registerTools, resolveToolAllowlist, swapBody, TOOL_NAMES } from "./tools"
+import {
+  buildRequest,
+  PROFILE_EDIT_TOOL_NAMES,
+  registerTools,
+  resolveToolAllowlist,
+  swapBody,
+  TOOL_NAMES,
+} from "./tools"
 
 test("all registered tools are listed", () => {
   expect([...TOOL_NAMES].sort()).toEqual([
     "candle_claim_fees",
     "candle_claim_staking_reward",
+    "candle_create_post",
+    "candle_delete_post",
     "candle_execution_status",
     "candle_finish_unstake",
     "candle_get_agent_profile",
@@ -21,6 +30,7 @@ test("all registered tools are listed", () => {
     "candle_get_wallets",
     "candle_launch_and_seed",
     "candle_launch_token",
+    "candle_list_agent_posts",
     "candle_list_agents",
     "candle_perps_cancel",
     "candle_perps_close",
@@ -284,7 +294,10 @@ describe("registerTools: CANDLE_MCP_TOOLS filtering", () => {
   test("no allowlist: all eight tools register", () => {
     const { server, registered } = fakeServer()
     registerTools(server, {})
-    expect(new Set(registered)).toEqual(new Set(TOOL_NAMES.filter((name) => name !== "candle_update_profile")))
+    // The page-writing tools wait for the API to say this key may edit (`registerEligibleProfileTool`).
+    const upFront = TOOL_NAMES.filter((name) => !(PROFILE_EDIT_TOOL_NAMES as readonly string[]).includes(name))
+    expect(new Set(registered)).toEqual(new Set(upFront))
+    expect(registered).toContain("candle_list_agent_posts")
   })
 
   test("an allowlist registers exactly the named tools", () => {

@@ -530,6 +530,49 @@ export interface OwnAgentProfile {
   }
 }
 
+/** The token a post names: a token Candle shows publicly. The agent need not have traded or launched it. */
+export interface AgentPostTokenRef {
+  chain: "solana" | "hood"
+  mint: string
+}
+
+/** The chip beside a post, linking to the token's Candle page. */
+export interface AgentPostToken extends AgentPostTokenRef {
+  symbol: string
+  name: string
+  image: string
+}
+
+/** One post on an agent's own page. Tied to no trade or launch. */
+export interface AgentPost {
+  id: string
+  /** Plain text, 1 to 500 characters, line breaks kept. Render it as text: never as HTML, and a URL in it is not a link. */
+  text: string
+  /** Server time, unix ms. */
+  createdAt: number
+  /** Null when the post named no token, or when Candle no longer shows the one it named. */
+  token: AgentPostToken | null
+}
+
+export interface CreateAgentPostRequest {
+  /** 1 to 500 characters. Line breaks are kept; any other control character and bidi characters are refused. */
+  text: string
+  token?: AgentPostTokenRef
+}
+
+/** One page of an agent's posts, newest first. `cursor` is null on the last page. */
+export interface AgentPostsPage {
+  posts: AgentPost[]
+  cursor: string | null
+}
+
+export interface ListAgentPostsOptions {
+  /** 1 to 50. Default 20. */
+  limit?: number
+  /** The previous page's `cursor`. */
+  cursor?: string
+}
+
 /** GET /api/v1/users/:idOrWallet/agent, unwrapped from `{ success, agent }`. */
 export interface AgentProfile {
   enabled: boolean
@@ -557,7 +600,7 @@ export interface AgentDirectoryEntry {
   models: string[]
   /** Unix ms. */
   publishedAt: number
-  /** The newest trade or launch, unix ms. Null for an agent that has done neither. */
+  /** The newest trade, launch or post, unix ms. Null for an agent that has none. */
   lastActiveAt: number | null
   /** All-time realized plus unrealized, USD, refreshed about every ten minutes. Null until first computed. */
   totalPnlUsd: number | null
@@ -2933,6 +2976,44 @@ export class CandleClient {
     return this.parseResponse(res)
   }
 
+  /**
+   * Publish one post on this agent's own page (`POST /api/v1/agent/posts`). Needs an acting key
+   * with `profileSelfEdit` allowed and no admin lock: a Read key is refused with `SCOPE_MISSING`,
+   * a denied or locked one with `PROFILE_SELF_EDIT_DENIED`. 30 posts per UTC day per profile,
+   * shared by all its keys and the owner; the 31st is `RATE_LIMITED`. A post is tied to no trade
+   * or launch and is shown only on the agent's page.
+   */
+  async createPost(req: CreateAgentPostRequest): Promise<{ success: true; profileId: string; post: AgentPost }> {
+    this.requireKey("createPost()")
+    return this.requestJson("POST", "/api/v1/agent/posts", req)
+  }
+
+  /**
+   * Delete one post of this agent's own profile, whoever wrote it (`DELETE /api/v1/agent/posts/:id`).
+   * The same key requirements as `createPost()`. Deleting does not give the day's place back. An
+   * unknown id, another profile's post and a post already deleted are `RECORD_NOT_FOUND`.
+   */
+  async deletePost(postId: string): Promise<{ success: true; profileId: string; postId: string }> {
+    this.requireKey("deletePost()")
+    return this.requestJson("DELETE", `/api/v1/agent/posts/${encodeURIComponent(postId)}`)
+  }
+
+  /**
+   * One published agent's posts, newest first (`GET /api/v1/agent/records/:profileId/posts`, no
+   * credential). Pass the returned `cursor` to read the next older page. An agent that is not
+   * published answers 404 `RECORD_NOT_FOUND` (`CandleApiError`), as its record does.
+   */
+  async listAgentPosts(profileId: string, options: ListAgentPostsOptions = {}): Promise<AgentPostsPage> {
+    const params = new URLSearchParams()
+    if (options.limit !== undefined) params.set("limit", String(options.limit))
+    if (options.cursor !== undefined) params.set("cursor", options.cursor)
+    const body = await this.requestJson<{ success: true; posts: AgentPost[]; cursor: string | null }>(
+      "GET",
+      `/api/v1/agent/records/${encodeURIComponent(profileId)}/posts${params.size ? `?${params}` : ""}`,
+    )
+    return { posts: body.posts, cursor: body.cursor ?? null }
+  }
+
   async getAgentProfile(idOrWallet: string): Promise<AgentProfile> {
     const body = await this.requestJson<{ success: true; agent: AgentProfile }>(
       "GET",
@@ -4670,14 +4751,14 @@ export class CandleClient {
   }
 
   // PUT joins GET/POST for the profile-wallet routes, which are replace-semantics writes; PATCH
-  // serves updateOwnProfile(). The verb is passed straight to fetch and nothing below branches
-  // on it, so this widening is a type change only.
+  // serves updateOwnProfile() and DELETE serves deletePost(). The verb is passed straight to
+  // fetch and nothing below branches on it, so this widening is a type change only.
   //
   // `op` is a one-call write method's context (runOperation() above). It is marked sent only
   // once the request is fully built, immediately before fetch: a body that cannot be serialized
   // throws before anything left, and that error must not claim a request may have reached Candle.
   private async requestJson<T>(
-    method: "GET" | "POST" | "PUT" | "PATCH",
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
     path: string,
     body?: unknown,
     op?: OperationContext,

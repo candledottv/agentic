@@ -24,6 +24,7 @@ import { chmod, readFile, realpath, rename, unlink, writeFile } from "node:fs/pr
 import { homedir, hostname } from "node:os"
 import { pathToFileURL } from "node:url"
 import { resolveApiUrl } from "./client"
+import { agentPost } from "./commands/agent-post"
 import { agentProfile } from "./commands/agent-profile"
 import { authLogin, authLogout, authStatus } from "./commands/auth"
 import { completion, completionBash, completionFish, completionZsh } from "./commands/completion"
@@ -185,7 +186,7 @@ const COMMANDS: Record<string, CommandRoute> = {
   portfolio: { bare: portfolio },
   // FE-438: the creator fees this account's launched tokens can pay, and the claim to the wallet
   // fixed at launch. Candle signs; this machine sends a mint and a dry-run flag.
-  agent: { subcommands: { profile: agentProfile } },
+  agent: { subcommands: { profile: agentProfile, post: agentPost } },
   fees: { bare: feesList, subcommands: { claim: feesClaim } },
   // BE-723 (Plans v2 P6): the served plan table. Public, so it reads and sends no credential.
   plans: { bare: plans },
