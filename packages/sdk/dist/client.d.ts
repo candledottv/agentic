@@ -349,7 +349,7 @@ export interface LaunchJob {
     stage?: "executed" | "unconfirmed";
 }
 export interface MigrationStatus {
-    status: "not_started" | "in_progress" | "completed" | "delayed";
+    status: "not_started" | "in_progress" | "completed" | "delayed" | "cancelled";
     migratedAt?: number;
     attempts?: number;
     nextAttemptAt?: number;
@@ -386,6 +386,15 @@ export interface MarketState {
     graduationVenue: string;
     tier: string | null;
     crossingModel: "full-fill-surplus" | "capped-refund";
+    recovery?: {
+        curve: string;
+        quoteToken: string;
+        reserveSnapshotRaw: string;
+        eligibleSupplyRaw: string;
+        surrenderedRaw: string;
+        method: "claimRecovery(uint256)";
+        requiresApprovalTo: string;
+    };
     migration: MigrationStatus;
 }
 /** All amounts are decimal strings in the relevant asset's smallest unit. */
