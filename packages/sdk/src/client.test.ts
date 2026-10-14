@@ -355,6 +355,20 @@ describe("request shapes", () => {
     expect(result).toEqual(market as never)
   })
 
+  test("getMarket preserves closed trade flags for a graduated, unseeded Hood curve", async () => {
+    const market = {
+      chain: "hood",
+      mint: "0xabc",
+      lifecycle: "completed",
+      buysOpen: false,
+      sellsOpen: false,
+      poolAddress: null,
+    }
+    const { client, calls } = makeClient({}, [json(200, { success: true, market })])
+    expect(await client.getMarket("hood", "0xabc")).toEqual(market as never)
+    expect(calls[0]?.url).toBe("https://api.test/api/v1/markets/hood/0xabc")
+  })
+
   test("getQuote: GET quote with side, amountIn, and explicit slippageBps", async () => {
     const { client, calls } = makeClient({}, [json(200, { success: true })])
     await client.getQuote("hood", "0xabc", { side: "buy", amountIn: "5000000000000000000", slippageBps: 75 })
