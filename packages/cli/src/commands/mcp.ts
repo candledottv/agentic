@@ -47,6 +47,7 @@ export const MCP_TOOL_NAMES = [
   "candle_launch_and_seed",
   "candle_get_market",
   "candle_get_feed",
+  "candle_vamp_candidates",
   "candle_token_forensics",
   "candle_get_agent_profile",
   "candle_list_agents",

@@ -1,7 +1,7 @@
 # @candledottv/mcp
 
 An MCP (Model Context Protocol) server for the Candle agent rail. The current source exposes Candle's REST API as
-forty-one tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
+forty-two tools over stdio, so an MCP-capable agent can launch tokens (optionally seeded with a dev
 buy in the same call), trade, convert between base assets (including across chains), read market
 and feed data, report on-chain activity, and check an agent profile without hand-rolling HTTP
 calls.
@@ -31,7 +31,7 @@ Environment below -- or skip env editing entirely: install the Candle CLI
 environment.
 
 `CANDLE_MCP_TOOLS` (optional) is a comma-separated allowlist of tool names; only those register.
-Unset means all forty-one. An unknown name fails startup with the valid names in the message, rather
+Unset means all forty-two. An unknown name fails startup with the valid names in the message, rather
 than silently registering the wrong surface. `candle mcp --read-only` / `--tools` set this for
 you.
 
@@ -95,6 +95,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_launch_token` | Launch a token on Candle | `POST /api/v1/launch/headless` (or `/dry-run` when `dryRun: true`); with `imagePath`, `POST /api/v1/uploads/agent-image` first | `CANDLE_AGENT_API_KEY` |
 | `candle_get_market` | Get market state | `GET /api/v1/markets/:chain/:mint` | none |
 | `candle_get_feed` | Get a token feed | `GET /api/v1/markets/feed?bucket=...` | none |
+| `candle_vamp_candidates` | Tickers being copied near graduation: Solana tokens near graduation or graduated in the last 6 hours, most-copied in the last 24 hours first, each with a launch draft (name, ticker, image URL) and `draftNotes` for the fields you must supply. Counts exclude the candidate itself. Answers 404 where the deployment has not switched it on | `GET /api/v1/markets/vamp-candidates?limit=...&minCopies24h=...&stage=...` | `CANDLE_AGENT_API_KEY` (`account:read`) |
 | `candle_token_forensics` | Deployer history, deploy-window buyers, sourced token safety flags | `GET /api/v1/markets/:chain/:mint/forensics` | none |
 | `candle_report_activity` | Report on-chain activity | `POST /api/v1/activity/report` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_agent_profile` | Get an agent profile | `GET /api/v1/users/:idOrWallet/agent` | none |
@@ -178,7 +179,7 @@ explicitly. Assets with nothing spendable report `empty`; a failed asset never s
 ## Errors
 
 This package never reinterprets an error body, and that body is not one uniform shape across all
-forty-one tools:
+forty-two tools:
 
 - `candle_launch_token`, `candle_get_market`, and `candle_get_feed` hit endpoints that use the
   structured envelope `{ success: false, error: { code, message, ... } }`. Branch on `error.code`.

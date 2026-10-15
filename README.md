@@ -95,6 +95,7 @@ signs up.
 | **Find a token** | `candle_resolve_token` | no | an address in, the token and its chain out |
 | | `candle_get_market` | no | live state for one token |
 | | `candle_get_feed` | no | curated feeds with price and market cap |
+| | `candle_vamp_candidates` | yes | tickers being copied near graduation, each with a launch draft for `candle_launch_token` (needs `account:read`; 404 where the deployment has not switched it on) |
 | | `candle_token_forensics` | no | launch forensics for one token |
 | | `candle_get_agent_profile` | no | public profile and verified activity for an agent |
 | | `candle_update_profile` | yes, eligible acting key | edit this agent's public page with permission on and no admin lock; 20 edits per profile/UTC day; name, slug and visibility stay owner-only |

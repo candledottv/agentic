@@ -62795,6 +62795,21 @@ function buildRequest(name2, args, cfg) {
         init: { method: "GET", headers: jsonHeaders() }
       };
     }
+    case "candle_vamp_candidates": {
+      const apiKey = requireApiKey2(cfg);
+      const { limit, minCopies24h, stage: stage2 } = args;
+      const params = new URLSearchParams;
+      if (limit !== undefined)
+        params.set("limit", String(limit));
+      if (minCopies24h !== undefined)
+        params.set("minCopies24h", String(minCopies24h));
+      if (stage2 !== undefined)
+        params.set("stage", stage2);
+      return {
+        url: `${base2}/api/v1/markets/vamp-candidates${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) }
+      };
+    }
     case "candle_report_activity": {
       const apiKey = requireApiKey2(cfg);
       return {
@@ -63115,6 +63130,11 @@ MARKET_NOT_FOUND means Candle has no market for that token and this could not ru
 ` + "Filter, sort and pick fields SERVER-SIDE rather than reading the whole feed: an " + "unfiltered response is around 135KB and will not fit in a tool result. See `where`, " + "`sort` and `fields`.\n\n" + "One rule to know before screening on safety: a missing field is NOT a false one. " + "mintAuthorityDisabled and freezeAuthorityDisabled are absent on a real share of rows, " + "and absent means nobody checked, not that the authority is disabled. `where` never lets " + 'an absent field satisfy a comparison, so {"mintAuthorityDisabled":{"eq":true}} returns ' + "only tokens that actually say so.",
     inputSchema: getFeedShape
   }, async (args) => callAndRelay("candle_get_feed", args, getConfig(), doFetch));
+  register("candle_vamp_candidates", {
+    title: "Tickers being copied near graduation",
+    description: VAMP_CANDIDATES_DESCRIPTION,
+    inputSchema: vampCandidatesShape
+  }, async (args) => callAndRelay("candle_vamp_candidates", args, getConfig(), doFetch));
   register("candle_report_activity", {
     title: "Report on-chain activity",
     description: "Report a client-executed transaction (transfer, swap, stake) so Candle records and verifies it.",
@@ -63409,7 +63429,7 @@ async function registerEligibleProfileTool(server, env = process.env, doFetch = 
   }
   return eligible;
 }
-var localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. Outside the account's main wallet, sCNDL earns no Hood staking rewards; Pro eligibility follows the deployment's tier mode (main-wallet mode excludes it). CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name2) => PROFILE_EDIT_TOOL_NAMES.includes(name2), OPERATION_NOT_FOUND_RULE, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getOperationShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, seedShape, launchAndSeedShape, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape;
+var VAMP_CANDIDATES_DESCRIPTION, localProfileTools, STAKING_DISCLOSURE = "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. Outside the account's main wallet, sCNDL earns no Hood staking rewards; Pro eligibility follows the deployment's tier mode (main-wallet mode excludes it). CNDL in a pending withdrawal counts toward nothing for Pro.", stakingWriteShape, TOOL_NAMES, PROFILE_EDIT_TOOL_NAMES, isProfileEditTool = (name2) => PROFILE_EDIT_TOOL_NAMES.includes(name2), OPERATION_NOT_FOUND_RULE, launchTokenShape, getMarketShape, tokenForensicsShape, FEED_LIMIT_MESSAGE = "limit must be a whole number from 1 to 200", feedLimit, getFeedShape, reportActivityShape, getAgentProfileShape, listAgentsShape, createPostShape, deletePostShape, listAgentPostsShape, getOperationShape, vampCandidatesShape, getFeesShape, claimFeesShape, resolveTokenShape, profileWalletsShape, profilePnlShape, profileTradesShape, setProfileWalletsShape, swapShape, tradeShape, _rawBuyAmount, seedableLaunchShape, seedShape, launchAndSeedShape, localImageShape, localLaunchTokenShape, localLaunchAndSeedShape, IMAGE_PATH_DISCLOSURE, transferShape, sweepShape;
 var init_tools = __esm(() => {
   init_zod();
   init_convert();
@@ -63419,6 +63439,7 @@ var init_tools = __esm(() => {
   init_perps();
   init_plans();
   init_update_notice();
+  VAMP_CANDIDATES_DESCRIPTION = "Lists Solana tokens that are close to graduating or graduated in the last 6 hours whose ticker other tokens " + "are copying, most-copied in the last 24 hours first. Each entry carries a launch draft (name, ticker, image URL) " + "for `candle_launch_token` or `candle_launch_and_seed`; draft notes identify fields you must supply or adjust. " + "Upload your own image through the agent image upload when the image is unavailable. Use `dryRun: true` first. " + "Counts exclude the candidate itself and cover both Solana and Hood launches at the venues returned in " + "`coverage`, not Candle's own. `coverage.since` is the returned Solana coverage date; Hood history may differ.";
   localProfileTools = new WeakMap;
   stakingWriteShape = {
     payer: exports_external.enum(["main", "linked"]).optional().describe("main is the embedded wallet; linked names a linked or TEE wallet"),
@@ -63430,6 +63451,7 @@ var init_tools = __esm(() => {
     "candle_launch_token",
     "candle_get_market",
     "candle_get_feed",
+    "candle_vamp_candidates",
     "candle_token_forensics",
     "candle_report_activity",
     "candle_get_agent_profile",
@@ -63548,6 +63570,11 @@ var init_tools = __esm(() => {
   getOperationShape = {
     clientId: exports_external.string().describe("The clientTradeId or clientLaunchId the write used, or that the tool echoed back to you"),
     kind: exports_external.enum(["trade", "launch"]).describe("Which rail the id belongs to. Required: ids are caller-chosen strings with no shape to dispatch on")
+  };
+  vampCandidatesShape = {
+    limit: exports_external.number().optional().describe("Entries to return, 1 to 50 (default 20)"),
+    minCopies24h: exports_external.number().optional().describe("Only tokens whose ticker was copied at least this many times in the last 24 hours (default 1)"),
+    stage: exports_external.enum(["final_stretch", "graduated", "all"]).optional().describe("final_stretch: still on the bonding curve; graduated: graduated in the last 6 hours; all (default)")
   };
   getFeesShape = {
     cursor: exports_external.string().optional().describe("The previous page's continueCursor, verbatim"),
@@ -63694,6 +63721,8 @@ on it" and let the human decide.
 Never let a MARKET_NOT_FOUND stand in for a clean bill of health. The same rule governs the
 coverage note on every forensics measurement: "unavailable" is NOT "clean" — say so rather than
 reporting a token as safe.
+
+LAUNCHING A COPY: candle_vamp_candidates (a key with account:read) lists Solana tickers being copied near graduation, each with a launch draft for candle_launch_token or candle_launch_and_seed. Supply any draft field that is null (draftNotes says why), and launch with dryRun: true first. Where the deployment has not switched it on it answers 404.
 
 WRITING (trade, launch, transfer, sweep, swap) needs a key. If a call returns an auth error, the fix is on the human's side: they run \`candle auth login\`, which authorizes a device in the browser and stores the credentials. Do not ask them to paste a key into a config file, and do not retry the call until they confirm.
 
@@ -72116,6 +72145,7 @@ var MCP_TOOL_NAMES = [
   "candle_launch_and_seed",
   "candle_get_market",
   "candle_get_feed",
+  "candle_vamp_candidates",
   "candle_token_forensics",
   "candle_get_agent_profile",
   "candle_list_agents",

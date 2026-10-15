@@ -115,6 +115,12 @@ describe("server instructions", () => {
     }
   })
 
+  test("BE-1504: the vamp candidates tool is named as a keyed read for launching copies, dry run first", () => {
+    expect(instructions).toContain("candle_vamp_candidates (a key with account:read)")
+    expect(instructions).toContain("dryRun: true first")
+    expect(instructions).not.toMatch(/vamp[^\n]*(risk|original|fake)/i)
+  })
+
   test("forensics is called out, because a model will not run it unprompted", () => {
     expect(instructions).toContain("candle_token_forensics")
     // "unavailable is not clean" is the one judgement the rail cannot make for the model.

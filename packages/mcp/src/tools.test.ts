@@ -9,6 +9,7 @@ import {
   swapBody,
   TOOL_NAMES,
   type ToolName,
+  VAMP_CANDIDATES_DESCRIPTION,
 } from "./tools"
 
 test("all registered tools are listed", () => {
@@ -54,6 +55,7 @@ test("all registered tools are listed", () => {
     "candle_transfer",
     "candle_unstake",
     "candle_update_profile",
+    "candle_vamp_candidates",
   ])
 })
 
@@ -118,6 +120,33 @@ describe("buildRequest: creator fees (FE-438)", () => {
   test("both need a key", () => {
     expect(() => buildRequest("candle_get_fees", {}, { apiUrl: "https://api.test" })).toThrow()
     expect(() => buildRequest("candle_claim_fees", { mint: "M" }, { apiUrl: "https://api.test" })).toThrow()
+  })
+})
+
+describe("buildRequest: vamp candidates (BE-1504)", () => {
+  const cfg = { apiUrl: "https://api.test/", apiKey: "k" }
+
+  test("no arguments is the plain list, so the API's defaults apply", () => {
+    const r = buildRequest("candle_vamp_candidates", {}, cfg)
+    expect(r.url).toBe("https://api.test/api/v1/markets/vamp-candidates")
+    expect(r.init.method).toBe("GET")
+    expect(r.init.headers).toEqual({ "Content-Type": "application/json", "x-api-key": "k" })
+    expect(r.init.body).toBeUndefined()
+  })
+
+  test("limit, minCopies24h and stage are forwarded when set, and nothing else is", () => {
+    const r = buildRequest(
+      "candle_vamp_candidates",
+      { limit: 5, minCopies24h: 0, stage: "graduated", chain: "hood", where: "{}" },
+      cfg,
+    )
+    expect(r.url).toBe("https://api.test/api/v1/markets/vamp-candidates?limit=5&minCopies24h=0&stage=graduated")
+  })
+
+  test("needs a key: the list is a launcher's tool, not a keyless read", () => {
+    expect(() => buildRequest("candle_vamp_candidates", {}, { apiUrl: "https://api.test" })).toThrow(
+      /CANDLE_AGENT_API_KEY/,
+    )
   })
 })
 
@@ -415,6 +444,19 @@ describe("tool descriptions carry the rules an agent needs at call time", () => 
     // claim being present, not about how it is typeset.
     expect(d.toLowerCase()).toContain("wider market")
     expect(d).toContain("liquidityDrawdownBps")
+  })
+
+  test("vamp candidates says plainly it is for launching copies, in the spec's words (BE-1504)", () => {
+    const d = describeOf("candle_vamp_candidates")
+    expect(d).toBe(VAMP_CANDIDATES_DESCRIPTION)
+    expect(d).toContain("whose ticker other tokens are copying")
+    expect(d).toContain("candle_launch_token")
+    expect(d).toContain("candle_launch_and_seed")
+    expect(d).toContain("dryRun: true")
+    expect(d).toContain("Counts exclude the candidate itself")
+    expect(d).toContain("coverage.since")
+    // Never calls a copy risky, "original" or "fake", and never names the data suppliers.
+    expect(d).not.toMatch(/risk|original|fake|hacc|pump\.fun|helius|alchemy/i)
   })
 
   test("get_market explains routing, provenance and the general quote endpoint", () => {

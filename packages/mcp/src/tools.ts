@@ -63,6 +63,20 @@ import { executePerps, executePerpsDeposit, type PerpsToolName, perpsDepositShap
 import { PLAN_CAPABILITY_NOTE, type PlanTable, planPromotionLine, planTableMarkdown } from "./plans"
 import { noteVersionHeaders } from "./update-notice"
 
+/**
+ * candle_vamp_candidates' description, shared word for word with the hosted server
+ * (docs/superpowers/specs/2026-10-15-vamp-finder-agent-tool-design.md, section 3). It says plainly
+ * that the list is for launching copies, never calls a copy risky, "original" or "fake", and does
+ * not name the data suppliers.
+ */
+export const VAMP_CANDIDATES_DESCRIPTION =
+  "Lists Solana tokens that are close to graduating or graduated in the last 6 hours whose ticker other tokens " +
+  "are copying, most-copied in the last 24 hours first. Each entry carries a launch draft (name, ticker, image URL) " +
+  "for `candle_launch_token` or `candle_launch_and_seed`; draft notes identify fields you must supply or adjust. " +
+  "Upload your own image through the agent image upload when the image is unavailable. Use `dryRun: true` first. " +
+  "Counts exclude the candidate itself and cover both Solana and Hood launches at the venues returned in " +
+  "`coverage`, not Candle's own. `coverage.since` is the returned Solana coverage date; Hood history may differ."
+
 const localProfileTools = new WeakMap<McpServer, Map<ToolName, RegisteredTool>>()
 export const STAKING_DISCLOSURE =
   "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. Outside the account's main wallet, sCNDL earns no Hood staking rewards; Pro eligibility follows the deployment's tier mode (main-wallet mode excludes it). CNDL in a pending withdrawal counts toward nothing for Pro."
@@ -84,6 +98,8 @@ export const TOOL_NAMES = [
   "candle_launch_token",
   "candle_get_market",
   "candle_get_feed",
+  // BE-1504: tickers being copied near graduation, each with a launch draft. Needs a key.
+  "candle_vamp_candidates",
   "candle_token_forensics",
   "candle_report_activity",
   "candle_get_agent_profile",
@@ -288,6 +304,20 @@ export function buildRequest(name: RestToolName, args: Record<string, unknown>, 
       return {
         url: `${base}/api/v1/markets/feed?${query.toString()}`,
         init: { method: "GET", headers: jsonHeaders() },
+      }
+    }
+
+    case "candle_vamp_candidates": {
+      const apiKey = requireApiKey(cfg)
+      const { limit, minCopies24h, stage } = args as { limit?: number; minCopies24h?: number; stage?: string }
+      // Only what was set is forwarded, so the API's own defaults (20, 1, all) apply otherwise.
+      const params = new URLSearchParams()
+      if (limit !== undefined) params.set("limit", String(limit))
+      if (minCopies24h !== undefined) params.set("minCopies24h", String(minCopies24h))
+      if (stage !== undefined) params.set("stage", stage)
+      return {
+        url: `${base}/api/v1/markets/vamp-candidates${params.size ? `?${params}` : ""}`,
+        init: { method: "GET", headers: jsonHeaders(apiKey) },
       }
     }
 
@@ -809,6 +839,18 @@ const getOperationShape = {
     .describe("Which rail the id belongs to. Required: ids are caller-chosen strings with no shape to dispatch on"),
 }
 
+const vampCandidatesShape = {
+  limit: z.number().optional().describe("Entries to return, 1 to 50 (default 20)"),
+  minCopies24h: z
+    .number()
+    .optional()
+    .describe("Only tokens whose ticker was copied at least this many times in the last 24 hours (default 1)"),
+  stage: z
+    .enum(["final_stretch", "graduated", "all"])
+    .optional()
+    .describe("final_stretch: still on the bonding curve; graduated: graduated in the last 6 hours; all (default)"),
+}
+
 const getFeesShape = {
   cursor: z.string().optional().describe("The previous page's continueCursor, verbatim"),
   limit: z.number().optional().describe("Tokens per page, 1 to 50 (default 20). Each one costs chain reads"),
@@ -1169,6 +1211,16 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       inputSchema: getFeedShape,
     },
     async (args) => callAndRelay("candle_get_feed", args, getConfig(), doFetch),
+  )
+
+  register(
+    "candle_vamp_candidates",
+    {
+      title: "Tickers being copied near graduation",
+      description: VAMP_CANDIDATES_DESCRIPTION,
+      inputSchema: vampCandidatesShape,
+    },
+    async (args) => callAndRelay("candle_vamp_candidates", args, getConfig(), doFetch),
   )
 
   register(

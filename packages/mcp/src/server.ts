@@ -79,6 +79,8 @@ Never let a MARKET_NOT_FOUND stand in for a clean bill of health. The same rule 
 coverage note on every forensics measurement: "unavailable" is NOT "clean" — say so rather than
 reporting a token as safe.
 
+LAUNCHING A COPY: candle_vamp_candidates (a key with account:read) lists Solana tickers being copied near graduation, each with a launch draft for candle_launch_token or candle_launch_and_seed. Supply any draft field that is null (draftNotes says why), and launch with dryRun: true first. Where the deployment has not switched it on it answers 404.
+
 WRITING (trade, launch, transfer, sweep, swap) needs a key. If a call returns an auth error, the fix is on the human's side: they run \`candle auth login\`, which authorizes a device in the browser and stores the credentials. Do not ask them to paste a key into a config file, and do not retry the call until they confirm.
 
 Two chains: solana and hood. Most tools take an explicit chain — resolve it with candle_resolve_token rather than guessing.
