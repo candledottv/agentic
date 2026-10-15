@@ -112,7 +112,7 @@ import { lstat, open, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, sep } from "node:path";
 
 // src/version.ts
-var SERVER_VERSION = "0.10.14";
+var SERVER_VERSION = "0.10.15";
 
 // src/update-notice.ts
 var PLAIN_VERSION = /^\d+\.\d+\.\d+$/;
