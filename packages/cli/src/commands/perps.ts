@@ -73,9 +73,9 @@ function usage(ctx: CommandContext, line: string): number {
 }
 
 /**
- * One perps request. The perps router answers a bare 404 with no Candle error code while
- * `HYPERLIQUID_ENABLED` is off; naming it separates "this deployment has not enabled perps" from
- * "something broke". A refusal keeps the server's `limit`, the limit that refused (R3).
+ * One perps request. An API that predates the perps router answers a bare 404 with no Candle
+ * error code; naming it separates "this deployment does not serve perps" from "something broke".
+ * A refusal keeps the server's `limit`, the limit that refused (R3).
  */
 async function perpsRequest(ctx: CommandContext, key: string, path: string, body?: Json): Promise<Json> {
   const result = await apiRequest(path, {
@@ -91,7 +91,7 @@ async function perpsRequest(ctx: CommandContext, key: string, path: string, body
     if (result.status === 404 && !result.code)
       throw new TradingError(
         "PERPS_NOT_ENABLED",
-        "This Candle deployment does not serve perps routes (HYPERLIQUID_ENABLED is off there, or the API predates them).",
+        "This Candle deployment does not serve perps routes (the API predates them).",
       )
     throw new TradingError(result.code ?? "REQUEST_FAILED", result.message)
   }

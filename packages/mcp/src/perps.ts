@@ -141,7 +141,7 @@ async function call(
     parsed = text
   }
   if (!res.ok) {
-    // The perps router answers a bare 404 while HYPERLIQUID_ENABLED is off.
+    // An API that predates the perps router answers a bare 404.
     if (res.status === 404 && (typeof parsed !== "object" || parsed === null))
       throw new Refusal(fail("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes."))
     throw new Refusal({ text: typeof parsed === "string" ? parsed : JSON.stringify(parsed), isError: true })

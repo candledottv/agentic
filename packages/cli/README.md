@@ -410,8 +410,7 @@ Use the profile holding the TEE wallet's bound API key and the machine that hold
 relay authorization key. `--wallet` accepts its id, address or unique label. These commands
 never open or locally sign with a vault or TEE private key. Candle builds the transaction,
 and Privy signs it through Candle's relay. The server's scopes, raw/USD caps and atomic
-budget reservation apply to the human and the agent alike. Wide routes require the server's
-`TEE_WIDE_ROUTES_ENABLED=1`; it remains off by default.
+budget reservation apply to the human and the agent alike.
 
 ```sh
 candle swap SOL USDC --amount 0.1 --wallet trading --client-trade-id lunch-1

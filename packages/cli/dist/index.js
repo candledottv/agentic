@@ -72725,7 +72725,7 @@ async function perpsRequest(ctx, key, path, body) {
   });
   if (!result.ok) {
     if (result.status === 404 && !result.code)
-      throw new TradingError("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes (HYPERLIQUID_ENABLED is off there, or the API predates them).");
+      throw new TradingError("PERPS_NOT_ENABLED", "This Candle deployment does not serve perps routes (the API predates them).");
     throw new TradingError(result.code ?? "REQUEST_FAILED", result.message);
   }
   if (!result.body || typeof result.body !== "object")
