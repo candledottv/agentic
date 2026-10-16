@@ -859,7 +859,7 @@ describe("request shapes", () => {
     expect(JSON.parse(String(calls[1]?.body))).toEqual({ dryRun: false })
   })
 
-  test("FE-438 fees.claim: a switched-off claim is LAUNCH_DISABLED", async () => {
+  test("FE-438 fees.claim: a LAUNCH_DISABLED 503 answer is surfaced", async () => {
     const { client } = makeClient(KEYED, [envelope(503, "LAUNCH_DISABLED")])
     const error = await client.fees.claim("Mint111").catch((caught: unknown) => caught)
     expect(error).toBeInstanceOf(CandleApiError)

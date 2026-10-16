@@ -2232,9 +2232,8 @@ export interface CandleFees {
     /**
      * Claims one token's creator fees to the wallet fixed at launch
      * (POST /api/v1/agent/fees/{mint}/claim). Needs `launch:write`. There is no destination
-     * argument: the money goes to the recipient the token named at launch. The server leaves this
-     * off unless it sets AGENT_FEE_CLAIM_ENABLED; while off, every call, a dry run included, throws
-     * `LAUNCH_DISABLED` (503). Candle signs with the embedded wallet, which pays the network fee.
+     * argument: the money goes to the recipient the token named at launch. Candle signs with the
+     * embedded wallet, which pays the network fee.
      * `dryRun: true` sends nothing.
      */
     claim(mint: string, opts?: AgentFeeClaimOptions): Promise<AgentFeeClaimResult>;

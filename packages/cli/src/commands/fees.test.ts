@@ -118,7 +118,7 @@ describe("candle fees claim (FE-438)", () => {
     expect(f.stderr.text).toContain("Warning: a leg failed")
   })
 
-  test("the switch being off is LAUNCH_DISABLED, exit 1", async () => {
+  test("a LAUNCH_DISABLED 503 answer exits 1", async () => {
     const f = fixture({
       [PATH]: () =>
         Response.json({ success: false, error: { code: "LAUNCH_DISABLED", message: "off" } }, { status: 503 }),

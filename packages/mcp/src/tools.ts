@@ -92,7 +92,7 @@ export const CUSTOM_CURVE_RULE =
   "is finer than the quote's decimals, and when the dev buy is at most 10% of G; a curve past a limit is " +
   "CURVE_OUT_OF_RANGE, and at the ceiling it carries maxThresholdRaw, the largest G that fits. " +
   "Dry-run it first (dryRun: true): the dry run spends nothing and returns curveTerms, the market cap at start and " +
-  "at graduation and the supply sold by graduation. Only where the API has EXP_CURVES and EXP_CUSTOM_CURVES on; " +
+  "at graduation and the supply sold by graduation. Only where the API has EXP_CUSTOM_CURVES on; " +
   "elsewhere exp-custom is refused as an unknown mode."
 
 const localProfileTools = new WeakMap<McpServer, Map<ToolName, RegisteredTool>>()
@@ -1506,7 +1506,7 @@ export function registerToolSubset(server: McpServer, options: ToolSubsetOptions
       description:
         "Collect one token's creator fees and pay them to the wallet fixed at launch. There is no destination " +
         "argument and the tool cannot send funds anywhere else. Candle signs with the embedded wallet, which " +
-        "pays the network fee. Needs launch:write, and the server keeps it off until it is enabled (LAUNCH_DISABLED). " +
+        "pays the network fee. Needs launch:write. " +
         "Call it with dryRun: true first; a real claim moves real funds into the recipient wallet, which may be " +
         "the wallet this agent trades from. Not idempotent by id: if the result is lost, read candle_get_fees " +
         "before claiming again.",

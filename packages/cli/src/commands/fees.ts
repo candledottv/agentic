@@ -8,8 +8,7 @@
  * The request carries a mint and a dry-run flag, nothing else: the money goes to the recipient
  * fixed at launch, and this machine signs nothing (Candle signs with the embedded wallet, which
  * pays the network fee). Amounts are shown in each asset's own units from the raw figure the
- * server read off chain; `--json` is the server's answer as sent. The server leaves the claim off
- * unless it enables it, and then answers LAUNCH_DISABLED even for a dry run.
+ * server read off chain; `--json` is the server's answer as sent.
  */
 import { parseArgs } from "../args"
 import type { CommandContext } from "../deps"

@@ -575,7 +575,7 @@ export const HELP: Record<string, Topic> = {
     group: "Account",
     summary: "Creator fees your launched tokens can pay, and the claim",
     description:
-      "Lists the tokens launched by this account's wallets and what each could pay now, from direct chain reads, with the reason a token cannot be claimed. `fees claim` collects one token's creator fees and pays them to the wallet fixed at launch: there is no destination option, Candle signs with the embedded wallet, and that wallet pays the network fee. The key needs launch:write to claim and account:read to list. The server keeps the claim off until it is enabled, and while off even --dry-run answers LAUNCH_DISABLED. A Phantom-signup account's Solana fees are credited to the external wallet, which Candle cannot sign for, so its agent cannot claim them.",
+      "Lists the tokens launched by this account's wallets and what each could pay now, from direct chain reads, with the reason a token cannot be claimed. `fees claim` collects one token's creator fees and pays them to the wallet fixed at launch: there is no destination option, Candle signs with the embedded wallet, and that wallet pays the network fee. The key needs launch:write to claim and account:read to list. A Phantom-signup account's Solana fees are credited to the external wallet, which Candle cannot sign for, so its agent cannot claim them.",
     usage: ["candle fees [--cursor <cursor>] [--limit <1-50>]", "candle fees claim <mint> [--dry-run]"],
     rows: [
       {

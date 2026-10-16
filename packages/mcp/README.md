@@ -126,7 +126,7 @@ tools, getting a key, funding the embedded wallet, and idempotent retries, see
 | `candle_execution_status` | One call before trading: wallets to spend from, tier, and whether trading is possible | Composes the wallet and tier reads | `CANDLE_AGENT_API_KEY` |
 | `candle_get_operation` | Look up a trade or launch by the id its write used, and whether it landed | `GET /api/v1/trade/agent/jobs/:clientId` or `/api/v1/launch/headless/jobs/:clientId` | `CANDLE_AGENT_API_KEY` |
 | `candle_get_fees` | The creator fees the account's launched tokens can pay: raw amounts from chain reads, and the reason a token cannot be claimed | `GET /api/v1/agent/fees` | `CANDLE_AGENT_API_KEY` (`account:read`) |
-| `candle_claim_fees` | Collect one token's creator fees to the wallet fixed at launch (no destination argument); `dryRun` sends nothing. Answers `LAUNCH_DISABLED` until the server enables agent claims | `POST /api/v1/agent/fees/:mint/claim` | `CANDLE_AGENT_API_KEY` (`launch:write`) |
+| `candle_claim_fees` | Collect one token's creator fees to the wallet fixed at launch (no destination argument); `dryRun` sends nothing | `POST /api/v1/agent/fees/:mint/claim` | `CANDLE_AGENT_API_KEY` (`launch:write`) |
 | `candle_get_staking` | Read CNDL/sCNDL, withdrawals, rewards, pool wait and wallet eligibility notes | `GET /api/v1/agent/staking` |
 | `candle_stake` | Stake raw CNDL; stable clientStakeId, dryRun first | `POST /api/v1/agent/staking/stake/build` |
 | `candle_unstake` | Start a withdrawal of raw sCNDL; no instant unstake | `POST /api/v1/agent/staking/unstake/build` |
