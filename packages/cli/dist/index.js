@@ -62705,7 +62705,7 @@ var init_plans = __esm(() => {
     createLinkedWallets: "Create linked wallets",
     importLinkedWallets: "Import linked wallets",
     limitOrders: "Limit orders",
-    quant: "Quant on Telegram"
+    quant: "Quant deep analyses (Max)"
   };
   PLAN_LABELS2 = { free: "Free", believer: "Believer", pro: "Pro", max: "Max" };
 });
@@ -73327,7 +73327,7 @@ var PLAN_CAPABILITY_LABELS = {
   createLinkedWallets: "Create linked wallets",
   importLinkedWallets: "Import linked wallets",
   limitOrders: "Limit orders",
-  quant: "Quant on Telegram"
+  quant: "Quant deep analyses (Max)"
 };
 var PLAN_LABELS = { free: "Free", believer: "Believer", pro: "Pro", max: "Max" };
 function planLabel(plan) {

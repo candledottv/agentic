@@ -50,7 +50,7 @@ export interface PlanCapabilities {
   /** Plan eligibility only: whether perps are open on the deployment is its own switch, and trading needs the wallet and scopes. */
   hyperliquidPerps: boolean
   limitOrders: boolean
-  /** The quant bot on Telegram. */
+  /** Max-level Quant: the deep `run_analysis` studies. Pro also has Quant, on Telegram and in Candle, but by its plan name, not this flag. */
   quant: boolean
   /** Base-pair swaps and base-asset bridges between the key's own wallets carry no Candle fee. A bridge also needs its own deployment switch. */
   freeBaseTransfers: boolean
@@ -103,7 +103,7 @@ export const PLAN_CAPABILITY_LABELS: Record<keyof PlanCapabilities, string> = {
   createLinkedWallets: "Create linked wallets",
   importLinkedWallets: "Import linked wallets",
   limitOrders: "Limit orders",
-  quant: "Quant on Telegram",
+  quant: "Quant deep analyses (Max)",
 }
 
 const PLAN_LABELS: Record<PlanName, string> = { free: "Free", believer: "Believer", pro: "Pro", max: "Max" }
