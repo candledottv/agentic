@@ -263,7 +263,8 @@ error alone often cannot.
 Staking writes require `swap:write` and the deployment's agent-staking flag (off by default).
 They MOVE REAL FUNDS; read the pool's wait and SOL costs before approving them. There is no
 instant unstake on agent surfaces. Pending withdrawal CNDL counts toward nothing for Pro.
-Outside the account's primary wallet sCNDL earns Solana rewards but no Hood rewards; Pro
-eligibility follows the API's tier mode. The hosted connector offers these five only at Trade,
+sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood reward
+(except a wallet another account also claims, wallets past the 200-wallet cap, and an account
+with no EVM wallet). The hosted connector offers these five only at Trade,
 only with the flag on, and only for the embedded Solana wallet. Local linked/TEE tools return
 bytes for external signing followed by SDK staking.submit/confirm.

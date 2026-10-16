@@ -97,7 +97,7 @@ export const CUSTOM_CURVE_RULE =
 
 const localProfileTools = new WeakMap<McpServer, Map<ToolName, RegisteredTool>>()
 export const STAKING_DISCLOSURE =
-  "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. Outside the account's main wallet, sCNDL earns no Hood staking rewards; Pro eligibility follows the deployment's tier mode (main-wallet mode excludes it). CNDL in a pending withdrawal counts toward nothing for Pro."
+  "No instant unstake. Read pool.withdrawalTimelockSeconds for the wait. Solana rewards accrue to the holding wallet. sCNDL in any eligible account wallet counts toward Pro and earns the account's Hood staking reward, except a wallet another account also claims, wallets past the 200-wallet cap, and an account with no EVM wallet. CNDL in a pending withdrawal counts toward nothing for Pro."
 const stakingWriteShape = {
   payer: z
     .enum(["main", "linked"])

@@ -313,8 +313,9 @@ the section and its coverage fields. Agent boards are outside this slice.
 
 Solana staking is available through the agent rail while the deployment enables it (off by
 default). There is no instant unstake. Read the pool wait and wallet eligibility notes first:
-pending withdrawal CNDL counts toward nothing for Pro; outside the primary wallet sCNDL earns
-Solana rewards but no Hood rewards, and Pro follows the served tier mode.
+pending withdrawal CNDL counts toward nothing for Pro; sCNDL in any eligible account wallet
+counts toward Pro and earns the account's Hood reward, except a wallet another account also
+claims, wallets past the 200-wallet cap, and an account with no EVM wallet.
 
 Tools: `candle_get_staking`, `candle_stake`, `candle_unstake`, `candle_finish_unstake`,
 `candle_claim_staking_reward`. Build tools accept stable `clientStakeId`, raw `amountRaw`

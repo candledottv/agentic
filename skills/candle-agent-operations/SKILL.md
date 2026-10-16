@@ -150,8 +150,8 @@ transaction is kept in the CLI operations directory for that retry.
 
 There is no instant unstake. `candle stake finish [<withdrawal>]` requires the pool wait to have
 passed; omit the withdrawal only when exactly one is ready in the selected wallet. Pending CNDL
-counts toward nothing for Pro. Outside the account's primary wallet sCNDL earns Solana rewards
-but no Hood rewards; Pro follows the served tier mode. `candle stake claim <rewardId>` or
+counts toward nothing for Pro. sCNDL in any eligible account wallet counts toward Pro and earns
+the account's Hood reward (not a wallet another account also claims, past the 200-wallet cap, or on an account with no EVM wallet). `candle stake claim <rewardId>` or
 `candle stake claim --all` pays rewards to their recorded owners. Retry the same reward id on
 an unresolved claim; never choose another id to resolve an uncertain operation. The write rail
 requires swap:write and is off unless the owner enables agent staking on the deployment.
